@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLMJob - Decentralized AI Inference Marketplace</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: {
+                            50: '#f0f9ff',
+                            500: '#3b82f6',
+                            600: '#2563eb',
+                            700: '#1d4ed8',
+                            800: '#1e40af',
+                            900: '#1e3a8a',
+                        }
+                    },
+                    animation: {
+                        'fade-in': 'fadeIn 0.5s ease-in-out',
+                        'slide-up': 'slideUp 0.5s ease-out',
+                    },
+                    keyframes: {
+                        fadeIn: {
+                            '0%': { opacity: '0' },
+                            '100%': { opacity: '1' },
+                        },
+                        slideUp: {
+                            '0%': { transform: 'translateY(20px)', opacity: '0' },
+                            '100%': { transform: 'translateY(0)', opacity: '1' },
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .gradient-text {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .card-hover {
+            transition: all 0.3s ease;
+        }
+        .card-hover:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+        }
+    </style>
+</head>
+<body class="bg-white text-gray-900 transition-colors duration-200">
+    <!-- Navigation -->
+    <nav class="sticky top-0 z-50 bg-white/95 backdrop-blur-lg border-b border-gray-200">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between items-center h-16">
+                <div class="flex items-center">
+                    <a href="#" class="text-2xl font-bold gradient-text">LLMJob</a>
+                </div>
+                <div class="flex items-center space-x-8">
+                    <a href="#models" class="text-gray-600 hover:text-gray-900 transition">Models</a>
+                    <a href="#" class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition">Sign In</a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="pt-20 pb-32 px-4 sm:px-6 lg:px-8">
+        <div class="max-w-7xl mx-auto text-center">
+            <h1 class="text-5xl sm:text-6xl font-bold mb-6 animate-fade-in">
+                The <span class="gradient-text">Uber for AI Inference</span>
+            </h1>
+            <p class="text-xl text-gray-600 mb-8 max-w-3xl mx-auto animate-slide-up">
+                Connect your batch LLM jobs with idle GPUs worldwide. Get inference at 50-70% less than traditional APIs.
+            </p>
+            <div class="flex flex-col sm:flex-row gap-4 justify-center animate-slide-up">
+                <a href="#" class="px-8 py-3 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition text-lg font-semibold">
+                    Submit a Job
+                </a>
+                <a href="#" class="px-8 py-3 bg-gray-100 text-gray-900 rounded-lg hover:bg-gray-200 transition text-lg font-semibold">
+                    Monetize Your GPU
+                </a>
+            </div>
+            
+            <!-- Stats -->
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-8 mt-20 max-w-4xl mx-auto">
+                <div class="text-center">
+                    <div class="text-4xl font-bold text-primary-600 mb-2">50-70%</div>
+                    <div class="text-gray-600">Cost Savings</div>
+                </div>
+                <div class="text-center">
+                    <div class="text-4xl font-bold text-primary-600 mb-2">24/7</div>
+                    <div class="text-gray-600">GPU Availability</div>
+                </div>
+                <div class="text-center">
+                    <div class="text-4xl font-bold text-primary-600 mb-2">10-20%</div>
+                    <div class="text-gray-600">Platform Fee</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- How to Get Started Section -->
+    <section id="features" class="py-20 bg-gray-50">
+        <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+                <!-- Step 1: Signup -->
+                <div class="text-left">
+                    <div class="flex items-start mb-4">
+                        <div class="w-8 h-8 bg-gray-200 rounded-full flex items-center justify-center text-sm font-semibold mr-3 flex-shrink-0">1</div>
+                        <div>
+                            <h3 class="text-lg font-semibold mb-2">Signup</h3>
+                            <p class="text-gray-600 text-sm">Create an account to get started. You can set up an org for your team later.</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Step 2: Buy credits -->
+                <div class="text-left">
+                    <div class="flex items-start mb-4">
+                        <div class="w-8 h-8 bg-gray-200 rounded-full flex items-center justify-center text-sm font-semibold mr-3 flex-shrink-0">2</div>
+                        <div class="w-full">
+                            <h3 class="text-lg font-semibold mb-2">Buy credits</h3>
+                            <p class="text-gray-600 text-sm mb-4">Credits can be used with any model or provider.</p>
+                            
+                            <!-- Credit purchase history -->
+                            <div class="space-y-2">
+                                <div class="flex justify-between items-center text-sm">
+                                    <span class="text-gray-500">Apr 1</span>
+                                    <span class="font-semibold">$99</span>
+                                </div>
+                                <div class="flex justify-between items-center text-sm">
+                                    <span class="text-gray-500">Mar 30</span>
+                                    <span class="font-semibold">$10</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Step 3: Get API key -->
+                <div class="text-left">
+                    <div class="flex items-start mb-4">
+                        <div class="w-8 h-8 bg-gray-200 rounded-full flex items-center justify-center text-sm font-semibold mr-3 flex-shrink-0">3</div>
+                        <div class="w-full">
+                            <h3 class="text-lg font-semibold mb-2">Get your API key</h3>
+                            <p class="text-gray-600 text-sm mb-4">Create an API key and start making requests. Fully OpenAI compatible.</p>
+                            
+                            <!-- API Key display -->
+                            <div class="bg-gray-100 rounded-lg p-3">
+                                <div class="text-xs text-gray-500 mb-1">LLMJOB_API_KEY</div>
+                                <div class="font-mono text-sm">••••••••••••••••</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Use Cases Section -->
+    <section id="use-cases" class="py-20">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <h2 class="text-4xl font-bold text-center mb-12">Perfect Use Cases</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <div class="border border-gray-200 rounded-lg p-6 hover:border-primary-500 transition">
+                    <h3 class="text-lg font-semibold mb-2">Bulk Social Media Filtering</h3>
+                    <p class="text-gray-600 dark:text-gray-400 text-sm">Process thousands of posts for content moderation and categorization.</p>
+                </div>
+                <div class="border border-gray-200 rounded-lg p-6 hover:border-primary-500 transition">
+                    <h3 class="text-lg font-semibold mb-2">Dataset Labeling</h3>
+                    <p class="text-gray-600 dark:text-gray-400 text-sm">Annotate large datasets for machine learning training.</p>
+                </div>
+                <div class="border border-gray-200 rounded-lg p-6 hover:border-primary-500 transition">
+                    <h3 class="text-lg font-semibold mb-2">SEO Content Analysis</h3>
+                    <p class="text-gray-600 dark:text-gray-400 text-sm">Analyze and optimize content at scale for search engines.</p>
+                </div>
+                <div class="border border-gray-200 rounded-lg p-6 hover:border-primary-500 transition">
+                    <h3 class="text-lg font-semibold mb-2">Document Summarization</h3>
+                    <p class="text-gray-600 dark:text-gray-400 text-sm">Process large volumes of documents for key insights.</p>
+                </div>
+                <div class="border border-gray-200 rounded-lg p-6 hover:border-primary-500 transition">
+                    <h3 class="text-lg font-semibold mb-2">Benchmark Testing</h3>
+                    <p class="text-gray-600 dark:text-gray-400 text-sm">Run comprehensive benchmarks across multiple models.</p>
+                </div>
+                <div class="border border-gray-200 rounded-lg p-6 hover:border-primary-500 transition">
+                    <h3 class="text-lg font-semibold mb-2">Data Extraction</h3>
+                    <p class="text-gray-600 dark:text-gray-400 text-sm">Extract structured data from unstructured text sources.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- How It Works -->
+    <section id="how-it-works" class="py-20 bg-gray-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <h2 class="text-4xl font-bold text-center mb-12">How It Works</h2>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+                <div class="text-center">
+                    <div class="w-16 h-16 bg-primary-600 text-white rounded-full flex items-center justify-center mx-auto mb-4 text-2xl font-bold">1</div>
+                    <h3 class="text-xl font-semibold mb-2">Submit Your Job</h3>
+                    <p class="text-gray-600">Upload your batch LLM processing job with requirements and budget.</p>
+                </div>
+                <div class="text-center">
+                    <div class="w-16 h-16 bg-primary-600 text-white rounded-full flex items-center justify-center mx-auto mb-4 text-2xl font-bold">2</div>
+                    <h3 class="text-xl font-semibold mb-2">GPU Owners Claim</h3>
+                    <p class="text-gray-600">Available GPU owners claim and process your job using open models.</p>
+                </div>
+                <div class="text-center">
+                    <div class="w-16 h-16 bg-primary-600 text-white rounded-full flex items-center justify-center mx-auto mb-4 text-2xl font-bold">3</div>
+                    <h3 class="text-xl font-semibold mb-2">Get Results</h3>
+                    <p class="text-gray-600">Receive processed results quickly at a fraction of the cost.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Pricing Section -->
+    <section id="pricing" class="py-20">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <h2 class="text-4xl font-bold text-center mb-12">Simple, Transparent Pricing</h2>
+            <div class="max-w-3xl mx-auto">
+                <div class="bg-white rounded-2xl shadow-xl p-8">
+                    <div class="text-center mb-8">
+                        <h3 class="text-2xl font-bold mb-4">Pay-As-You-Go</h3>
+                        <p class="text-gray-600">Only pay for what you use, with transparent platform fees</p>
+                    </div>
+                    <div class="space-y-4">
+                        <div class="flex justify-between items-center pb-4 border-b border-gray-200">
+                            <span class="text-lg">GPU Provider Rate</span>
+                            <span class="text-lg font-semibold">Market-based pricing</span>
+                        </div>
+                        <div class="flex justify-between items-center pb-4 border-b border-gray-200">
+                            <span class="text-lg">Platform Fee</span>
+                            <span class="text-lg font-semibold">10-20% of transaction</span>
+                        </div>
+                        <div class="flex justify-between items-center pt-4">
+                            <span class="text-xl font-bold">Total Savings vs Traditional APIs</span>
+                            <span class="text-2xl font-bold text-primary-600">50-70%</span>
+                        </div>
+                    </div>
+                    <div class="mt-8 text-center">
+                        <a href="#" class="inline-block px-8 py-3 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition text-lg font-semibold">
+                            Start Saving Today
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA Section -->
+    <section class="py-20 bg-gradient-to-r from-primary-600 to-purple-600">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+            <h2 class="text-4xl font-bold text-white mb-6">Ready to Revolutionize Your AI Costs?</h2>
+            <p class="text-xl text-white/90 mb-8 max-w-2xl mx-auto">
+                Join the decentralized AI inference revolution. Whether you need cheap compute or want to monetize your GPU, we've got you covered.
+            </p>
+            <div class="flex flex-col sm:flex-row gap-4 justify-center">
+                <a href="#" class="px-8 py-3 bg-white text-primary-600 rounded-lg hover:bg-gray-100 transition text-lg font-semibold">
+                    Submit Your First Job
+                </a>
+                <a href="#" class="px-8 py-3 bg-transparent border-2 border-white text-white rounded-lg hover:bg-white/10 transition text-lg font-semibold">
+                    Become a GPU Provider
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="bg-gray-50 border-t border-gray-200">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-8">
+                <div>
+                    <h3 class="text-2xl font-bold gradient-text mb-4">LLMJob</h3>
+                    <p class="text-gray-600">The marketplace for decentralized AI inference.</p>
+                </div>
+                <div>
+                    <h4 class="font-semibold mb-4">Product</h4>
+                    <ul class="space-y-2 text-gray-600">
+                        <li><a href="#" class="hover:text-primary-600 transition">Features</a></li>
+                        <li><a href="#" class="hover:text-primary-600 transition">Pricing</a></li>
+                        <li><a href="#" class="hover:text-primary-600 transition">Use Cases</a></li>
+                    </ul>
+                </div>
+                <div>
+                    <h4 class="font-semibold mb-4">Company</h4>
+                    <ul class="space-y-2 text-gray-600">
+                        <li><a href="#" class="hover:text-primary-600 transition">About</a></li>
+                        <li><a href="#" class="hover:text-primary-600 transition">Blog</a></li>
+                        <li><a href="#" class="hover:text-primary-600 transition">Contact</a></li>
+                    </ul>
+                </div>
+                <div>
+                    <h4 class="font-semibold mb-4">Legal</h4>
+                    <ul class="space-y-2 text-gray-600">
+                        <li><a href="#" class="hover:text-primary-600 transition">Privacy Policy</a></li>
+                        <li><a href="#" class="hover:text-primary-600 transition">Terms of Service</a></li>
+                    </ul>
+                </div>
+            </div>
+            <div class="mt-8 pt-8 border-t border-gray-200 text-center text-gray-600">
+                <p>&copy; 2024 LLMJob. All rights reserved.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        // Smooth scrolling for anchor links
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                if (target) {
+                    target.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'start'
+                    });
+                }
+            });
+        });
+    </script>
+</body>
+</html>
