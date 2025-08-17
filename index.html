@@ -18,32 +18,12 @@
                             800: '#1e40af',
                             900: '#1e3a8a',
                         }
-                    },
-                    animation: {
-                        'fade-in': 'fadeIn 0.5s ease-in-out',
-                        'slide-up': 'slideUp 0.5s ease-out',
-                    },
-                    keyframes: {
-                        fadeIn: {
-                            '0%': { opacity: '0' },
-                            '100%': { opacity: '1' },
-                        },
-                        slideUp: {
-                            '0%': { transform: 'translateY(20px)', opacity: '0' },
-                            '100%': { transform: 'translateY(0)', opacity: '1' },
-                        }
                     }
                 }
             }
         }
     </script>
     <style>
-        .gradient-text {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
         .card-hover {
             transition: all 0.3s ease;
         }
@@ -53,16 +33,17 @@
         }
     </style>
 </head>
-<body class="bg-white text-gray-900 transition-colors duration-200">
+<body class="bg-white text-gray-900">
     <!-- Navigation -->
     <nav class="sticky top-0 z-50 bg-white/95 backdrop-blur-lg border-b border-gray-200">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div class="flex justify-between items-center h-16">
                 <div class="flex items-center">
-                    <a href="#" class="text-2xl font-bold gradient-text">LLMJob</a>
+                    <a href="#" class="text-2xl font-bold text-gray-900">LLMJob</a>
                 </div>
                 <div class="flex items-center space-x-8">
                     <a href="#models" class="text-gray-600 hover:text-gray-900 transition">Models</a>
+                    <a href="#" class="text-gray-600 hover:text-gray-900 transition">Chat</a>
                     <a href="#" class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition">Sign In</a>
                 </div>
             </div>
@@ -72,13 +53,13 @@
     <!-- Hero Section -->
     <section class="pt-20 pb-32 px-4 sm:px-6 lg:px-8">
         <div class="max-w-7xl mx-auto text-center">
-            <h1 class="text-5xl sm:text-6xl font-bold mb-6 animate-fade-in">
-                The <span class="gradient-text">Uber for AI Inference</span>
+            <h1 class="text-5xl sm:text-6xl font-bold mb-6">
+                The <span class="text-primary-600">Uber for AI Inference</span>
             </h1>
-            <p class="text-xl text-gray-600 mb-8 max-w-3xl mx-auto animate-slide-up">
+            <p class="text-xl text-gray-600 mb-8 max-w-3xl mx-auto">
                 Connect your batch LLM jobs with idle GPUs worldwide. Get inference at 50-70% less than traditional APIs.
             </p>
-            <div class="flex flex-col sm:flex-row gap-4 justify-center animate-slide-up">
+            <div class="flex flex-col sm:flex-row gap-4 justify-center">
                 <a href="#" class="px-8 py-3 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition text-lg font-semibold">
                     Submit a Job
                 </a>
@@ -87,19 +68,23 @@
                 </a>
             </div>
             
-            <!-- Stats -->
-            <div class="grid grid-cols-1 sm:grid-cols-3 gap-8 mt-20 max-w-4xl mx-auto">
+            <!-- Live Stats -->
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-8 mt-20 max-w-5xl mx-auto">
                 <div class="text-center">
-                    <div class="text-4xl font-bold text-primary-600 mb-2">50-70%</div>
-                    <div class="text-gray-600">Cost Savings</div>
+                    <div class="text-3xl font-bold text-gray-900 mb-2">2.4B</div>
+                    <div class="text-gray-600 text-sm">Tokens Processed</div>
                 </div>
                 <div class="text-center">
-                    <div class="text-4xl font-bold text-primary-600 mb-2">24/7</div>
-                    <div class="text-gray-600">GPU Availability</div>
+                    <div class="text-3xl font-bold text-gray-900 mb-2">1,247</div>
+                    <div class="text-gray-600 text-sm">Active Users</div>
                 </div>
                 <div class="text-center">
-                    <div class="text-4xl font-bold text-primary-600 mb-2">10-20%</div>
-                    <div class="text-gray-600">Platform Fee</div>
+                    <div class="text-3xl font-bold text-gray-900 mb-2">42</div>
+                    <div class="text-gray-600 text-sm">Available Models</div>
+                </div>
+                <div class="text-center">
+                    <div class="text-3xl font-bold text-gray-900 mb-2">384</div>
+                    <div class="text-gray-600 text-sm">Online GPUs</div>
                 </div>
             </div>
         </div>
@@ -277,7 +262,7 @@
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
             <div class="grid grid-cols-1 md:grid-cols-4 gap-8">
                 <div>
-                    <h3 class="text-2xl font-bold gradient-text mb-4">LLMJob</h3>
+                    <h3 class="text-2xl font-bold text-gray-900 mb-4">LLMJob</h3>
                     <p class="text-gray-600">The marketplace for decentralized AI inference.</p>
                 </div>
                 <div>
