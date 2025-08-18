@@ -12,9 +12,3 @@ cd llmjob
 # Open in browser
 open index.html
 ```
-
-## Tech Stack
-
-- HTML5
-- Tailwind CSS (via CDN)
-- Vanilla JavaScript
