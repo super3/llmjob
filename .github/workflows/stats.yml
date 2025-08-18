@@ -70,8 +70,8 @@ jobs:
                   timestamp: new Date().toISOString(),
                   // You can add more stats here later
                   tokens_processed: "1.2M", // Keep as static for now
-                  models_available: 12,
-                  online_gpus: 23
+                  models_available: 2,
+                  online_nodes: 2
                 };
                 
                 // Write to stats.json

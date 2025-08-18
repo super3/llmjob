@@ -2,6 +2,6 @@
   "users": 0,
   "timestamp": "2025-01-01T00:00:00.000Z",
   "tokens_processed": "1.2M",
-  "models_available": 12,
-  "online_gpus": 23
+  "models_available": 2,
+  "online_nodes": 2
 }
