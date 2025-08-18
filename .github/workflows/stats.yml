@@ -1,0 +1,112 @@
+name: Update Stats
+
+on:
+  schedule:
+    # Run every 24 hours at midnight UTC
+    - cron: '0 0 * * *'
+  workflow_dispatch: # Allow manual trigger
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  update-stats:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Fetch Clerk stats
+        env:
+          CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
+        run: |
+          # Create a Node.js script to fetch stats
+          cat > fetch-stats.js << 'EOF'
+          const https = require('https');
+          const fs = require('fs');
+
+          const CLERK_SECRET_KEY = process.env.CLERK_SECRET_KEY;
+
+          if (!CLERK_SECRET_KEY) {
+            console.error('CLERK_SECRET_KEY is not set');
+            process.exit(1);
+          }
+
+          const options = {
+            hostname: 'api.clerk.com',
+            path: '/v1/users?limit=1',
+            method: 'GET',
+            headers: {
+              'Authorization': `Bearer ${CLERK_SECRET_KEY}`,
+              'Content-Type': 'application/json'
+            }
+          };
+
+          const req = https.request(options, (res) => {
+            let data = '';
+
+            res.on('data', (chunk) => {
+              data += chunk;
+            });
+
+            res.on('end', () => {
+              try {
+                const response = JSON.parse(data);
+                
+                // Extract total count from response
+                const userCount = response.total_count || 0;
+                
+                // Create stats object
+                const stats = {
+                  users: userCount,
+                  timestamp: new Date().toISOString(),
+                  // You can add more stats here later
+                  tokens_processed: "1.2M", // Keep as static for now
+                  models_available: 12,
+                  online_gpus: 23
+                };
+                
+                // Write to stats.json
+                fs.writeFileSync('stats.json', JSON.stringify(stats, null, 2));
+                console.log('Stats updated:', stats);
+                
+              } catch (error) {
+                console.error('Error parsing response:', error);
+                console.error('Response data:', data);
+                process.exit(1);
+              }
+            });
+          });
+
+          req.on('error', (error) => {
+            console.error('Request error:', error);
+            process.exit(1);
+          });
+
+          req.end();
+          EOF
+          
+          # Run the script
+          node fetch-stats.js
+      
+      - name: Commit and push stats
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          # Check if stats.json has changed
+          if git diff --quiet stats.json; then
+            echo "No changes to stats.json"
+          else
+            git add stats.json
+            git commit -m "Update stats.json [skip ci]"
+            git push
+          fi

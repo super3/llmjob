@@ -84,21 +84,21 @@
             </div>
             
             <!-- Live Stats -->
-            <div class="grid grid-cols-2 sm:grid-cols-4 gap-8 mt-20 max-w-5xl mx-auto">
+            <div id="stats-container" class="grid grid-cols-2 sm:grid-cols-4 gap-8 mt-20 max-w-5xl mx-auto">
                 <div class="text-center">
-                    <div class="text-4xl font-bold text-primary-600 mb-2">1.2M</div>
+                    <div class="text-4xl font-bold text-primary-600 mb-2" id="stat-tokens">1.2M</div>
                     <div class="text-gray-500 text-sm font-medium">Tokens Processed</div>
                 </div>
                 <div class="text-center">
-                    <div class="text-4xl font-bold text-primary-600 mb-2">847</div>
+                    <div class="text-4xl font-bold text-primary-600 mb-2" id="stat-users">0</div>
                     <div class="text-gray-500 text-sm font-medium">Active Users</div>
                 </div>
                 <div class="text-center">
-                    <div class="text-4xl font-bold text-primary-600 mb-2">12</div>
+                    <div class="text-4xl font-bold text-primary-600 mb-2" id="stat-models">12</div>
                     <div class="text-gray-500 text-sm font-medium">Models Available</div>
                 </div>
                 <div class="text-center">
-                    <div class="text-4xl font-bold text-primary-600 mb-2">23</div>
+                    <div class="text-4xl font-bold text-primary-600 mb-2" id="stat-gpus">23</div>
                     <div class="text-gray-500 text-sm font-medium">Online GPUs</div>
                 </div>
             </div>
@@ -259,6 +259,27 @@
     </footer>
 
     <script>
+        // Fetch and update stats
+        async function updateStats() {
+            try {
+                const response = await fetch('/stats.json');
+                if (response.ok) {
+                    const stats = await response.json();
+                    
+                    // Update the displayed stats
+                    document.getElementById('stat-tokens').textContent = stats.tokens_processed || '1.2M';
+                    document.getElementById('stat-users').textContent = stats.users || '0';
+                    document.getElementById('stat-models').textContent = stats.models_available || '12';
+                    document.getElementById('stat-gpus').textContent = stats.online_gpus || '23';
+                }
+            } catch (error) {
+                console.log('Could not fetch stats, using defaults');
+            }
+        }
+        
+        // Update stats on page load
+        updateStats();
+        
         // Smooth scrolling for anchor links
         document.querySelectorAll('a[href^="#"]').forEach(anchor => {
             anchor.addEventListener('click', function (e) {
