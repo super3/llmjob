@@ -5,108 +5,126 @@ on:
     # Run every 24 hours at midnight UTC
     - cron: '0 0 * * *'
   workflow_dispatch: # Allow manual trigger
-  push:
-    branches: [ main ]
-
-permissions:
-  contents: write
 
 jobs:
   update-stats:
     runs-on: ubuntu-latest
     
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-      
-      - name: Fetch Clerk stats
+    steps:      
+      - name: Fetch Clerk stats and update Gist
         env:
           CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIST_ID: ${{ secrets.STATS_GIST_ID }}
         run: |
-          # Create a Node.js script to fetch stats
-          cat > fetch-stats.js << 'EOF'
+          # Create a Node.js script to fetch stats and update Gist
+          cat > update-stats.js << 'EOF'
           const https = require('https');
-          const fs = require('fs');
 
           const CLERK_SECRET_KEY = process.env.CLERK_SECRET_KEY;
+          const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+          const GIST_ID = process.env.GIST_ID;
 
-          if (!CLERK_SECRET_KEY) {
-            console.error('CLERK_SECRET_KEY is not set');
+          if (!CLERK_SECRET_KEY || !GITHUB_TOKEN || !GIST_ID) {
+            console.error('Required environment variables are not set');
             process.exit(1);
           }
 
-          const options = {
-            hostname: 'api.clerk.com',
-            path: '/v1/users?limit=1',
-            method: 'GET',
-            headers: {
-              'Authorization': `Bearer ${CLERK_SECRET_KEY}`,
-              'Content-Type': 'application/json'
-            }
-          };
+          // Fetch stats from Clerk
+          function fetchClerkStats() {
+            return new Promise((resolve, reject) => {
+              const options = {
+                hostname: 'api.clerk.com',
+                path: '/v1/users?limit=1',
+                method: 'GET',
+                headers: {
+                  'Authorization': `Bearer ${CLERK_SECRET_KEY}`,
+                  'Content-Type': 'application/json'
+                }
+              };
 
-          const req = https.request(options, (res) => {
-            let data = '';
+              const req = https.request(options, (res) => {
+                let data = '';
+                res.on('data', (chunk) => data += chunk);
+                res.on('end', () => {
+                  try {
+                    const response = JSON.parse(data);
+                    const userCount = response.total_count || 0;
+                    
+                    const stats = {
+                      users: userCount,
+                      timestamp: new Date().toISOString(),
+                      tokens_processed: "1.2M",
+                      models_available: 2,
+                      online_nodes: 2
+                    };
+                    
+                    resolve(stats);
+                  } catch (error) {
+                    reject(error);
+                  }
+                });
+              });
 
-            res.on('data', (chunk) => {
-              data += chunk;
+              req.on('error', reject);
+              req.end();
             });
+          }
 
-            res.on('end', () => {
-              try {
-                const response = JSON.parse(data);
-                
-                // Extract total count from response
-                const userCount = response.total_count || 0;
-                
-                // Create stats object
-                const stats = {
-                  users: userCount,
-                  timestamp: new Date().toISOString(),
-                  // You can add more stats here later
-                  tokens_processed: "1.2M", // Keep as static for now
-                  models_available: 2,
-                  online_nodes: 2
-                };
-                
-                // Write to stats.json
-                fs.writeFileSync('stats.json', JSON.stringify(stats, null, 2));
-                console.log('Stats updated:', stats);
-                
-              } catch (error) {
-                console.error('Error parsing response:', error);
-                console.error('Response data:', data);
-                process.exit(1);
-              }
+          // Update GitHub Gist
+          function updateGist(stats) {
+            return new Promise((resolve, reject) => {
+              const data = JSON.stringify({
+                files: {
+                  'llmjob-stats.json': {
+                    content: JSON.stringify(stats, null, 2)
+                  }
+                }
+              });
+
+              const options = {
+                hostname: 'api.github.com',
+                path: `/gists/${GIST_ID}`,
+                method: 'PATCH',
+                headers: {
+                  'Authorization': `token ${GITHUB_TOKEN}`,
+                  'Content-Type': 'application/json',
+                  'User-Agent': 'LLMJob-Stats-Updater',
+                  'Content-Length': data.length
+                }
+              };
+
+              const req = https.request(options, (res) => {
+                let response = '';
+                res.on('data', (chunk) => response += chunk);
+                res.on('end', () => {
+                  if (res.statusCode === 200) {
+                    console.log('Gist updated successfully');
+                    resolve();
+                  } else {
+                    reject(new Error(`Failed to update gist: ${res.statusCode} - ${response}`));
+                  }
+                });
+              });
+
+              req.on('error', reject);
+              req.write(data);
+              req.end();
             });
-          });
+          }
 
-          req.on('error', (error) => {
-            console.error('Request error:', error);
-            process.exit(1);
-          });
-
-          req.end();
+          // Main execution
+          fetchClerkStats()
+            .then(stats => {
+              console.log('Stats fetched:', stats);
+              return updateGist(stats);
+            })
+            .then(() => console.log('Stats successfully updated in Gist'))
+            .catch(error => {
+              console.error('Error:', error);
+              process.exit(1);
+            });
           EOF
           
           # Run the script
-          node fetch-stats.js
-      
-      - name: Commit and push stats
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          
-          # Check if stats.json has changed
-          if git diff --quiet stats.json; then
-            echo "No changes to stats.json"
-          else
-            git add stats.json
-            git commit -m "Update stats.json [skip ci]"
-            git push
-          fi
+          node update-stats.js
