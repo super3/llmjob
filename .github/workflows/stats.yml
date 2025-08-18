@@ -15,7 +15,7 @@ jobs:
         env:
           CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GIST_ID: ${{ secrets.STATS_GIST_ID }}
+          GIST_ID: d5792cdd581c2cfef9b7c02c7b866179
         run: |
           # Create a Node.js script to fetch stats and update Gist
           cat > update-stats.js << 'EOF'
