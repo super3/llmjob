@@ -5,10 +5,6 @@ Build your own AI infrastructure with spare GPUs and devices. Get OpenAI-compati
 ## Development
 
 ```bash
-# Clone the repository
-git clone https://github.com/super3/llmjob.git
-cd llmjob
-
-# Open in browser
+git clone https://github.com/super3/llmjob.git && cd llmjob
 open index.html
 ```
