@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Your Cluster - LLMJob</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Clerk Authentication -->
+    <script
+        async
+        crossorigin="anonymous"
+        data-clerk-publishable-key="pk_test_Ym9zcy10YXJwb24tMjMuY2xlcmsuYWNjb3VudHMuZGV2JA"
+        src="https://boss-tarpon-23.clerk.accounts.dev/npm/@clerk/clerk-js@5/dist/clerk.browser.js"
+        type="text/javascript"
+    ></script>
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: {
+                            50: '#f0f9ff',
+                            500: '#3b82f6',
+                            600: '#2563eb',
+                            700: '#1d4ed8',
+                            800: '#1e40af',
+                            900: '#1e3a8a',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-gray-50 text-gray-900 min-h-screen flex flex-col">
+    <!-- Navigation -->
+    <nav class="sticky top-0 z-50 bg-white/95 backdrop-blur-lg border-b border-gray-200">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between items-center h-16">
+                <div class="flex items-center">
+                    <a href="index.html" class="text-2xl font-bold text-gray-900">⚡ LLMJob</a>
+                </div>
+                <div class="flex items-center space-x-8">
+                    <a href="nodes.html" class="text-gray-600 hover:text-gray-900 transition">Stats</a>
+                    <div id="user-button-nav"></div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
+        <!-- Welcome Section -->
+        <div class="mb-8">
+            <h1 class="text-3xl font-bold text-gray-900 mb-2">Your Cluster</h1>
+            <p class="text-gray-600">Manage your nodes, monitor performance, and access your API.</p>
+        </div>
+
+        <!-- Stats Grid -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+            <div class="bg-white rounded-lg p-6 shadow-sm border border-gray-200">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm font-medium text-gray-500">Total Nodes</span>
+                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2z"></path>
+                    </svg>
+                </div>
+                <div class="text-2xl font-bold text-gray-900">2</div>
+                <p class="text-sm text-green-600 mt-1">2 online</p>
+            </div>
+            
+            <div class="bg-white rounded-lg p-6 shadow-sm border border-gray-200">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm font-medium text-gray-500">Tokens Processed</span>
+                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"></path>
+                    </svg>
+                </div>
+                <div class="text-2xl font-bold text-gray-900">0</div>
+                <p class="text-sm text-gray-500 mt-1">Last 24 hours</p>
+            </div>
+            
+            <div class="bg-white rounded-lg p-6 shadow-sm border border-gray-200">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm font-medium text-gray-500">Total VRAM</span>
+                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"></path>
+                    </svg>
+                </div>
+                <div class="text-2xl font-bold text-gray-900">48 GB</div>
+                <p class="text-sm text-gray-500 mt-1">Available capacity</p>
+            </div>
+            
+            <div class="bg-white rounded-lg p-6 shadow-sm border border-gray-200">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm font-medium text-gray-500">Models Available</span>
+                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path>
+                    </svg>
+                </div>
+                <div class="text-2xl font-bold text-gray-900">3</div>
+                <p class="text-sm text-gray-500 mt-1">Ready to use</p>
+            </div>
+        </div>
+
+        <!-- Main Grid -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <!-- Nodes Section (2 columns wide) -->
+            <div class="lg:col-span-2">
+                <div class="bg-white rounded-lg shadow-sm border border-gray-200">
+                    <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                        <h2 class="text-lg font-semibold text-gray-900">Your Nodes</h2>
+                        <button class="px-4 py-2 bg-primary-600 text-white text-sm rounded-lg hover:bg-primary-700 transition">
+                            + Add Node
+                        </button>
+                    </div>
+                    <div class="divide-y divide-gray-200">
+                        <!-- Node 1 -->
+                        <div class="p-6 hover:bg-gray-50 transition">
+                            <div class="flex items-start justify-between">
+                                <div class="flex items-start space-x-3">
+                                    <span class="inline-flex items-center justify-center w-2 h-2 mt-2">
+                                        <span class="w-2 h-2 bg-green-500 rounded-full"></span>
+                                    </span>
+                                    <div>
+                                        <div class="flex items-center space-x-2">
+                                            <h3 class="text-sm font-semibold text-gray-900">RTX 4090 Workstation</h3>
+                                            <span class="text-xs font-mono text-gray-500">4f2a8b</span>
+                                        </div>
+                                        <div class="mt-1 text-sm text-gray-600">
+                                            NVIDIA RTX 4090 • 24GB VRAM • 128GB RAM
+                                        </div>
+                                        <div class="mt-2 flex items-center space-x-4 text-xs text-gray-500">
+                                            <span>Uptime: 14h 32m</span>
+                                            <span>Tasks: 1,247</span>
+                                            <span>Atlanta, GA</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <button class="text-gray-400 hover:text-gray-600">
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"></path>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- Node 2 -->
+                        <div class="p-6 hover:bg-gray-50 transition">
+                            <div class="flex items-start justify-between">
+                                <div class="flex items-start space-x-3">
+                                    <span class="inline-flex items-center justify-center w-2 h-2 mt-2">
+                                        <span class="w-2 h-2 bg-green-500 rounded-full"></span>
+                                    </span>
+                                    <div>
+                                        <div class="flex items-center space-x-2">
+                                            <h3 class="text-sm font-semibold text-gray-900">MacBook Pro M2</h3>
+                                            <span class="text-xs font-mono text-gray-500">9c1d7e</span>
+                                        </div>
+                                        <div class="mt-1 text-sm text-gray-600">
+                                            Apple M2 Max • 24GB Unified • 96GB RAM
+                                        </div>
+                                        <div class="mt-2 flex items-center space-x-4 text-xs text-gray-500">
+                                            <span>Uptime: 6h 18m</span>
+                                            <span>Tasks: 892</span>
+                                            <span>Atlanta, GA</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <button class="text-gray-400 hover:text-gray-600">
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"></path>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Activity Section -->
+                <div class="bg-white rounded-lg shadow-sm border border-gray-200 mt-6">
+                    <div class="px-6 py-4 border-b border-gray-200">
+                        <h2 class="text-lg font-semibold text-gray-900">Recent Activity</h2>
+                    </div>
+                    <div class="p-6">
+                        <div class="space-y-4">
+                            <div class="flex items-start space-x-3">
+                                <div class="w-2 h-2 bg-green-500 rounded-full mt-1.5"></div>
+                                <div class="flex-1">
+                                    <p class="text-sm text-gray-900">Node <span class="font-mono">4f2a8b</span> came online</p>
+                                    <p class="text-xs text-gray-500">2 minutes ago</p>
+                                </div>
+                            </div>
+                            <div class="flex items-start space-x-3">
+                                <div class="w-2 h-2 bg-blue-500 rounded-full mt-1.5"></div>
+                                <div class="flex-1">
+                                    <p class="text-sm text-gray-900">Processed 15,234 tokens</p>
+                                    <p class="text-xs text-gray-500">1 hour ago</p>
+                                </div>
+                            </div>
+                            <div class="flex items-start space-x-3">
+                                <div class="w-2 h-2 bg-yellow-500 rounded-full mt-1.5"></div>
+                                <div class="flex-1">
+                                    <p class="text-sm text-gray-900">Model llama2-7b loaded</p>
+                                    <p class="text-xs text-gray-500">3 hours ago</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Sidebar -->
+            <div class="space-y-6">
+                <!-- API Access -->
+                <div class="bg-white rounded-lg shadow-sm border border-gray-200">
+                    <div class="px-6 py-4 border-b border-gray-200">
+                        <h2 class="text-lg font-semibold text-gray-900">API Access</h2>
+                    </div>
+                    <div class="p-6">
+                        <div class="mb-4">
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Your API Key</label>
+                            <div class="flex items-center space-x-2">
+                                <input type="password" value="lj-abc123def456..." readonly class="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono bg-gray-50" id="api-key">
+                                <button onclick="toggleApiKey()" class="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition">
+                                    <svg class="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="mb-4">
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Endpoint</label>
+                            <input type="text" value="https://llmjob.com/api/v1" readonly class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono bg-gray-50">
+                        </div>
+                        <button class="w-full px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition text-sm font-medium">
+                            View Documentation
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Quick Actions -->
+                <div class="bg-white rounded-lg shadow-sm border border-gray-200">
+                    <div class="px-6 py-4 border-b border-gray-200">
+                        <h2 class="text-lg font-semibold text-gray-900">Quick Actions</h2>
+                    </div>
+                    <div class="p-6 space-y-3">
+                        <button class="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 rounded-lg transition flex items-center justify-between">
+                            <span>Download CLI Tool</span>
+                            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
+                            </svg>
+                        </button>
+                        <button class="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 rounded-lg transition flex items-center justify-between">
+                            <span>Model Library</span>
+                            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
+                            </svg>
+                        </button>
+                        <button class="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 rounded-lg transition flex items-center justify-between">
+                            <span>Usage & Billing</span>
+                            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
+                            </svg>
+                        </button>
+                        <button class="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 rounded-lg transition flex items-center justify-between">
+                            <span>Settings</span>
+                            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize Clerk when the page loads
+        window.addEventListener('load', async function () {
+            if (typeof Clerk === 'undefined') {
+                console.error('Clerk is not loaded');
+                return;
+            }
+
+            await Clerk.load();
+            
+            // Check if user is authenticated
+            if (!Clerk.user) {
+                // Redirect to home page if not authenticated
+                window.location.href = '/';
+                return;
+            }
+
+            // Mount user button
+            const userButtonDiv = document.getElementById('user-button-nav');
+            if (userButtonDiv) {
+                Clerk.mountUserButton(userButtonDiv, {
+                    appearance: {
+                        elements: {
+                            avatarBox: 'w-8 h-8'
+                        }
+                    }
+                });
+            }
+        });
+
+        // Toggle API key visibility
+        function toggleApiKey() {
+            const input = document.getElementById('api-key');
+            if (input.type === 'password') {
+                input.type = 'text';
+            } else {
+                input.type = 'password';
+            }
+        }
+    </script>
+</body>
+</html>

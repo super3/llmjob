@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LLMJob - Network Nodes</title>
+    <title>LLMJob - Network Stats</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
     <script src="https://cdn.tailwindcss.com"></script>
     
@@ -33,6 +33,9 @@
                 }
             }
         }
+        
+        // Check for Clerk session cookie to determine initial button state
+        const hasClerkSession = document.cookie.includes('__session');
     </script>
 </head>
 <body class="bg-gray-50 text-gray-900 min-h-screen flex flex-col">
@@ -44,12 +47,17 @@
                     <a href="index.html" class="text-2xl font-bold text-gray-900">⚡ LLMJob</a>
                 </div>
                 <div class="flex items-center space-x-8">
-                    <a href="nodes.html" class="text-gray-900 font-medium">Nodes</a>
+                    <a href="nodes.html" class="text-gray-900 font-medium">Stats</a>
                     <div id="auth-buttons" class="flex items-center space-x-2">
-                        <!-- Default button shown until Clerk loads -->
-                        <button class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition">
-                            Sign In
-                        </button>
+                        <!-- Initial button based on session state -->
+                        <script>
+                            // Render initial button based on session cookie
+                            if (hasClerkSession) {
+                                document.write('<button class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition" onclick="window.location.href=\'/cluster\'" disabled>Your Cluster</button>');
+                            } else {
+                                document.write('<button class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition" disabled>Sign In</button>');
+                            }
+                        </script>
                     </div>
                 </div>
             </div>
@@ -60,8 +68,8 @@
     <section class="bg-gray-50">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-12 pb-6">
             <div class="mb-6">
-                <h1 class="text-4xl font-bold mb-2">Node Overview</h1>
-                <p class="text-lg text-gray-600">Public Nodes and Private Nodes in the LLMJob network.</p>
+                <h1 class="text-4xl font-bold mb-2">Network Statistics</h1>
+                <p class="text-lg text-gray-600">Public and private nodes in the LLMJob network.</p>
             </div>
             
         </div>
@@ -230,22 +238,21 @@
             const authButtonsDiv = document.getElementById('auth-buttons');
             if (authButtonsDiv) {
                 if (Clerk.user) {
-                    // User is signed in - show user button
-                    authButtonsDiv.innerHTML = '<div id="user-button-nav"></div>';
-                    const userButtonDiv = document.getElementById('user-button-nav');
-                    Clerk.mountUserButton(userButtonDiv, {
-                        appearance: {
-                            elements: {
-                                avatarBox: 'w-8 h-8'
-                            }
-                        }
-                    });
+                    // User is signed in - enable cluster button
+                    const btn = authButtonsDiv.querySelector('button');
+                    if (btn) {
+                        btn.textContent = 'Your Cluster';
+                        btn.disabled = false;
+                        btn.onclick = () => window.location.href = '/cluster';
+                    }
                 } else {
-                    // User is signed out - attach handler to existing button
-                    const signInBtn = authButtonsDiv.querySelector('button');
-                    signInBtn?.addEventListener('click', () => {
-                        Clerk.openSignIn();
-                    });
+                    // User is signed out - enable sign in button
+                    const btn = authButtonsDiv.querySelector('button');
+                    if (btn) {
+                        btn.textContent = 'Sign In';
+                        btn.disabled = false;
+                        btn.onclick = () => Clerk.openSignIn();
+                    }
                 }
             }
 
