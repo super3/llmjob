@@ -34,6 +34,12 @@
             }
         }
     </script>
+    <style>
+        .tab-active {
+            border-bottom: 2px solid #2563eb;
+            color: #2563eb;
+        }
+    </style>
 </head>
 <body class="bg-gray-50 text-gray-900 min-h-screen flex flex-col">
     <!-- Navigation -->
@@ -45,241 +51,410 @@
                 </div>
                 <div class="flex items-center space-x-8">
                     <a href="nodes.html" class="text-gray-600 hover:text-gray-900 transition">Stats</a>
-                    <div id="user-button-nav"></div>
+                    <div id="user-button-nav" class="w-8 h-8">
+                        <!-- Loading placeholder to prevent flicker -->
+                        <div class="w-8 h-8 bg-gray-200 rounded-full animate-pulse"></div>
+                    </div>
                 </div>
             </div>
         </div>
     </nav>
 
+    <!-- Header Section -->
+    <section class="bg-gray-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-12 pb-6">
+            <div class="mb-6">
+                <h1 class="text-4xl font-bold mb-2">Your Cluster</h1>
+                <p class="text-lg text-gray-600">Manage your nodes, models, and API access.</p>
+            </div>
+        </div>
+    </section>
+
     <!-- Main Content -->
-    <div class="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
-        <!-- Welcome Section -->
-        <div class="mb-8">
-            <h1 class="text-3xl font-bold text-gray-900 mb-2">Your Cluster</h1>
-            <p class="text-gray-600">Manage your nodes, monitor performance, and access your API.</p>
-        </div>
-
-        <!-- Stats Grid -->
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-            <div class="bg-white rounded-lg p-6 shadow-sm border border-gray-200">
-                <div class="flex items-center justify-between mb-2">
-                    <span class="text-sm font-medium text-gray-500">Total Nodes</span>
-                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2z"></path>
-                    </svg>
-                </div>
-                <div class="text-2xl font-bold text-gray-900">2</div>
-                <p class="text-sm text-green-600 mt-1">2 online</p>
-            </div>
-            
-            <div class="bg-white rounded-lg p-6 shadow-sm border border-gray-200">
-                <div class="flex items-center justify-between mb-2">
-                    <span class="text-sm font-medium text-gray-500">Tokens Processed</span>
-                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"></path>
-                    </svg>
-                </div>
-                <div class="text-2xl font-bold text-gray-900">0</div>
-                <p class="text-sm text-gray-500 mt-1">Last 24 hours</p>
-            </div>
-            
-            <div class="bg-white rounded-lg p-6 shadow-sm border border-gray-200">
-                <div class="flex items-center justify-between mb-2">
-                    <span class="text-sm font-medium text-gray-500">Total VRAM</span>
-                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"></path>
-                    </svg>
-                </div>
-                <div class="text-2xl font-bold text-gray-900">48 GB</div>
-                <p class="text-sm text-gray-500 mt-1">Available capacity</p>
-            </div>
-            
-            <div class="bg-white rounded-lg p-6 shadow-sm border border-gray-200">
-                <div class="flex items-center justify-between mb-2">
-                    <span class="text-sm font-medium text-gray-500">Models Available</span>
-                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path>
-                    </svg>
-                </div>
-                <div class="text-2xl font-bold text-gray-900">3</div>
-                <p class="text-sm text-gray-500 mt-1">Ready to use</p>
-            </div>
-        </div>
-
-        <!-- Main Grid -->
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <!-- Nodes Section (2 columns wide) -->
-            <div class="lg:col-span-2">
-                <div class="bg-white rounded-lg shadow-sm border border-gray-200">
-                    <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-                        <h2 class="text-lg font-semibold text-gray-900">Your Nodes</h2>
-                        <button class="px-4 py-2 bg-primary-600 text-white text-sm rounded-lg hover:bg-primary-700 transition">
-                            + Add Node
+    <section class="flex-1 bg-gray-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-12">
+            <!-- Tabbed Content -->
+            <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+                <!-- Tab Navigation -->
+                <div class="border-b border-gray-200">
+                    <nav class="flex space-x-8 px-6" aria-label="Tabs">
+                        <button onclick="switchTab('nodes')" id="nodes-tab" class="py-4 px-1 text-sm font-medium text-gray-500 hover:text-gray-700 tab-active">
+                            Nodes
                         </button>
+                        <button onclick="switchTab('models')" id="models-tab" class="py-4 px-1 text-sm font-medium text-gray-500 hover:text-gray-700">
+                            Models
+                        </button>
+                        <button onclick="switchTab('api')" id="api-tab" class="py-4 px-1 text-sm font-medium text-gray-500 hover:text-gray-700">
+                            API
+                        </button>
+                    </nav>
+                </div>
+
+                <!-- Nodes Tab Content -->
+                <div id="nodes-content">
+                    <!-- Header with Stats -->
+                    <div class="px-6 py-4 border-b border-gray-200">
+                        <div class="flex items-center justify-between">
+                            <h3 class="text-lg font-semibold text-gray-900">Your Nodes</h3>
+                            <div class="flex items-center gap-6">
+                                <div class="flex items-center gap-2">
+                                    <span class="text-gray-600 text-sm">Total Nodes:</span>
+                                    <span class="text-xl font-bold text-primary-600">2</span>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <span class="text-gray-600 text-sm">Total VRAM:</span>
+                                    <span class="text-xl font-bold text-primary-600">48 GB</span>
+                                </div>
+                                <button class="px-4 py-2 bg-primary-600 text-white text-sm rounded-lg hover:bg-primary-700 transition">
+                                    + Add Node
+                                </button>
+                            </div>
+                        </div>
                     </div>
-                    <div class="divide-y divide-gray-200">
-                        <!-- Node 1 -->
-                        <div class="p-6 hover:bg-gray-50 transition">
-                            <div class="flex items-start justify-between">
-                                <div class="flex items-start space-x-3">
-                                    <span class="inline-flex items-center justify-center w-2 h-2 mt-2">
-                                        <span class="w-2 h-2 bg-green-500 rounded-full"></span>
-                                    </span>
-                                    <div>
-                                        <div class="flex items-center space-x-2">
-                                            <h3 class="text-sm font-semibold text-gray-900">RTX 4090 Workstation</h3>
-                                            <span class="text-xs font-mono text-gray-500">4f2a8b</span>
-                                        </div>
-                                        <div class="mt-1 text-sm text-gray-600">
-                                            NVIDIA RTX 4090 • 24GB VRAM • 128GB RAM
-                                        </div>
-                                        <div class="mt-2 flex items-center space-x-4 text-xs text-gray-500">
-                                            <span>Uptime: 14h 32m</span>
-                                            <span>Tasks: 1,247</span>
-                                            <span>Atlanta, GA</span>
-                                        </div>
+                    
+                    <!-- Table -->
+                    <div class="overflow-x-auto">
+                        <table class="w-full">
+                            <thead class="bg-gray-50 border-b border-gray-200">
+                                <tr>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Hardware</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">VRAM</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">RAM</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Location</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Uptime</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tasks</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-200">
+                                <tr class="hover:bg-gray-50 transition">
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <span class="inline-flex items-center gap-1">
+                                            <span class="w-2 h-2 bg-green-500 rounded-full"></span>
+                                            <span class="text-sm font-medium text-green-600">Online</span>
+                                        </span>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <div class="text-sm font-medium text-gray-900">RTX 4090 Workstation</div>
+                                        <div class="text-xs text-gray-500 font-mono">4f2a8b</div>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                        NVIDIA RTX 4090
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                        24 GB
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                        128 GB
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                        Atlanta, GA
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                        14h 32m
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                        1,247
+                                    </td>
+                                </tr>
+                                <tr class="hover:bg-gray-50 transition">
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <span class="inline-flex items-center gap-1">
+                                            <span class="w-2 h-2 bg-green-500 rounded-full"></span>
+                                            <span class="text-sm font-medium text-green-600">Online</span>
+                                        </span>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <div class="text-sm font-medium text-gray-900">MacBook Pro M2</div>
+                                        <div class="text-xs text-gray-500 font-mono">9c1d7e</div>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                        Apple M2 Max
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                        24 GB
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                        96 GB
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                        Atlanta, GA
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                        6h 18m
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                        892
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Models Tab Content -->
+                <div id="models-content" class="hidden">
+                    <!-- Header with Stats -->
+                    <div class="px-6 py-4 border-b border-gray-200">
+                        <div class="flex items-center justify-between">
+                            <h3 class="text-lg font-semibold text-gray-900">Available Models</h3>
+                            <div class="flex items-center gap-6">
+                                <div class="flex items-center gap-2">
+                                    <span class="text-gray-600 text-sm">Total Models:</span>
+                                    <span class="text-xl font-bold text-primary-600">3</span>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <span class="text-gray-600 text-sm">Models Loaded:</span>
+                                    <span class="text-xl font-bold text-primary-600">2</span>
+                                </div>
+                                <button class="px-4 py-2 bg-primary-600 text-white text-sm rounded-lg hover:bg-primary-700 transition">
+                                    + Add Model
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Table -->
+                    <div class="overflow-x-auto">
+                        <table class="w-full">
+                            <thead class="bg-gray-50 border-b border-gray-200">
+                                <tr>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Model</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Size</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">VRAM Required</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Node</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Requests</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-200">
+                                <tr class="hover:bg-gray-50 transition">
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <div class="text-sm font-medium text-gray-900">Llama 2 7B</div>
+                                        <div class="text-xs text-gray-500">meta-llama/Llama-2-7b-chat-hf</div>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                        7B
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                        14 GB
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <span class="px-2 py-1 text-xs font-medium text-green-700 bg-green-100 rounded-full">
+                                            Loaded
+                                        </span>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                        RTX 4090 Workstation
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                        342
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm">
+                                        <button class="text-primary-600 hover:text-primary-700">Unload</button>
+                                    </td>
+                                </tr>
+                                <tr class="hover:bg-gray-50 transition">
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <div class="text-sm font-medium text-gray-900">Mistral 7B</div>
+                                        <div class="text-xs text-gray-500">mistralai/Mistral-7B-Instruct-v0.2</div>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                        7B
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                        14 GB
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <span class="px-2 py-1 text-xs font-medium text-gray-700 bg-gray-100 rounded-full">
+                                            Available
+                                        </span>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                        -
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                        0
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm">
+                                        <button class="text-primary-600 hover:text-primary-700">Load</button>
+                                    </td>
+                                </tr>
+                                <tr class="hover:bg-gray-50 transition">
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <div class="text-sm font-medium text-gray-900">GPT-2</div>
+                                        <div class="text-xs text-gray-500">openai/gpt2-medium</div>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                        355M
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                        2 GB
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <span class="px-2 py-1 text-xs font-medium text-green-700 bg-green-100 rounded-full">
+                                            Loaded
+                                        </span>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                        MacBook Pro M2
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                        128
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm">
+                                        <button class="text-primary-600 hover:text-primary-700">Unload</button>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- API Tab Content -->
+                <div id="api-content" class="hidden">
+                    <!-- Header with Stats -->
+                    <div class="px-6 py-4 border-b border-gray-200">
+                        <div class="flex items-center justify-between">
+                            <h3 class="text-lg font-semibold text-gray-900">API Configuration</h3>
+                            <div class="flex items-center gap-6">
+                                <div class="flex items-center gap-2">
+                                    <span class="text-gray-600 text-sm">Requests Today:</span>
+                                    <span class="text-xl font-bold text-primary-600">470</span>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <span class="text-gray-600 text-sm">Tokens Used:</span>
+                                    <span class="text-xl font-bold text-primary-600">15.2K</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="p-6">
+                        <div class="max-w-3xl">
+                            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                <!-- API Key Section -->
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Your API Key</label>
+                                    <div class="flex items-center space-x-2">
+                                        <input type="password" value="lj-abc123def456ghijk789lmnop" readonly class="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono bg-gray-50" id="api-key">
+                                        <button onclick="toggleApiKey()" class="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition" title="Toggle visibility">
+                                            <svg class="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
+                                            </svg>
+                                        </button>
+                                        <button onclick="copyApiKey()" class="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition" title="Copy to clipboard">
+                                            <svg class="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+                                            </svg>
+                                        </button>
                                     </div>
                                 </div>
-                                <button class="text-gray-400 hover:text-gray-600">
-                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"></path>
-                                    </svg>
-                                </button>
-                            </div>
-                        </div>
-                        
-                        <!-- Node 2 -->
-                        <div class="p-6 hover:bg-gray-50 transition">
-                            <div class="flex items-start justify-between">
-                                <div class="flex items-start space-x-3">
-                                    <span class="inline-flex items-center justify-center w-2 h-2 mt-2">
-                                        <span class="w-2 h-2 bg-green-500 rounded-full"></span>
-                                    </span>
-                                    <div>
-                                        <div class="flex items-center space-x-2">
-                                            <h3 class="text-sm font-semibold text-gray-900">MacBook Pro M2</h3>
-                                            <span class="text-xs font-mono text-gray-500">9c1d7e</span>
-                                        </div>
-                                        <div class="mt-1 text-sm text-gray-600">
-                                            Apple M2 Max • 24GB Unified • 96GB RAM
-                                        </div>
-                                        <div class="mt-2 flex items-center space-x-4 text-xs text-gray-500">
-                                            <span>Uptime: 6h 18m</span>
-                                            <span>Tasks: 892</span>
-                                            <span>Atlanta, GA</span>
-                                        </div>
+
+                                <!-- Base URL Section -->
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Base URL</label>
+                                    <div class="flex items-center space-x-2">
+                                        <input type="text" value="https://llmjob.com/api/v1" readonly class="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono bg-gray-50">
+                                        <button onclick="copyBaseUrl()" class="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition" title="Copy to clipboard">
+                                            <svg class="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+                                            </svg>
+                                        </button>
                                     </div>
                                 </div>
-                                <button class="text-gray-400 hover:text-gray-600">
-                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"></path>
-                                    </svg>
+                            </div>
+
+                            <!-- Quick Start Code -->
+                            <div class="mt-6">
+                                <h3 class="text-sm font-medium text-gray-700 mb-3">Quick Start</h3>
+                                <div class="bg-gray-900 text-gray-100 rounded-lg p-4 font-mono text-sm">
+                                    <div class="text-green-400"># Install OpenAI SDK</div>
+                                    <div class="mb-3">pip install openai</div>
+                                    <div class="text-green-400"># Python example</div>
+                                    <div>from openai import OpenAI</div>
+                                    <div class="mt-2">client = OpenAI(</div>
+                                    <div class="ml-4">api_key="lj-...",</div>
+                                    <div class="ml-4">base_url="https://llmjob.com/api/v1"</div>
+                                    <div>)</div>
+                                    <div class="mt-2">response = client.chat.completions.create(</div>
+                                    <div class="ml-4">model="llama2-7b",</div>
+                                    <div class="ml-4">messages=[{"role": "user", "content": "Hello!"}]</div>
+                                    <div>)</div>
+                                </div>
+                            </div>
+
+                            <!-- Action Buttons -->
+                            <div class="flex space-x-4 mt-6">
+                                <button class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition text-sm font-medium">
+                                    View Documentation
+                                </button>
+                                <button class="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition text-sm font-medium">
+                                    Regenerate Key
                                 </button>
                             </div>
                         </div>
-                    </div>
-                </div>
-
-                <!-- Activity Section -->
-                <div class="bg-white rounded-lg shadow-sm border border-gray-200 mt-6">
-                    <div class="px-6 py-4 border-b border-gray-200">
-                        <h2 class="text-lg font-semibold text-gray-900">Recent Activity</h2>
-                    </div>
-                    <div class="p-6">
-                        <div class="space-y-4">
-                            <div class="flex items-start space-x-3">
-                                <div class="w-2 h-2 bg-green-500 rounded-full mt-1.5"></div>
-                                <div class="flex-1">
-                                    <p class="text-sm text-gray-900">Node <span class="font-mono">4f2a8b</span> came online</p>
-                                    <p class="text-xs text-gray-500">2 minutes ago</p>
-                                </div>
-                            </div>
-                            <div class="flex items-start space-x-3">
-                                <div class="w-2 h-2 bg-blue-500 rounded-full mt-1.5"></div>
-                                <div class="flex-1">
-                                    <p class="text-sm text-gray-900">Processed 15,234 tokens</p>
-                                    <p class="text-xs text-gray-500">1 hour ago</p>
-                                </div>
-                            </div>
-                            <div class="flex items-start space-x-3">
-                                <div class="w-2 h-2 bg-yellow-500 rounded-full mt-1.5"></div>
-                                <div class="flex-1">
-                                    <p class="text-sm text-gray-900">Model llama2-7b loaded</p>
-                                    <p class="text-xs text-gray-500">3 hours ago</p>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Right Sidebar -->
-            <div class="space-y-6">
-                <!-- API Access -->
-                <div class="bg-white rounded-lg shadow-sm border border-gray-200">
-                    <div class="px-6 py-4 border-b border-gray-200">
-                        <h2 class="text-lg font-semibold text-gray-900">API Access</h2>
-                    </div>
-                    <div class="p-6">
-                        <div class="mb-4">
-                            <label class="block text-sm font-medium text-gray-700 mb-2">Your API Key</label>
-                            <div class="flex items-center space-x-2">
-                                <input type="password" value="lj-abc123def456..." readonly class="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono bg-gray-50" id="api-key">
-                                <button onclick="toggleApiKey()" class="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition">
-                                    <svg class="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
-                                    </svg>
-                                </button>
-                            </div>
-                        </div>
-                        <div class="mb-4">
-                            <label class="block text-sm font-medium text-gray-700 mb-2">Endpoint</label>
-                            <input type="text" value="https://llmjob.com/api/v1" readonly class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono bg-gray-50">
-                        </div>
-                        <button class="w-full px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition text-sm font-medium">
-                            View Documentation
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Quick Actions -->
-                <div class="bg-white rounded-lg shadow-sm border border-gray-200">
-                    <div class="px-6 py-4 border-b border-gray-200">
-                        <h2 class="text-lg font-semibold text-gray-900">Quick Actions</h2>
-                    </div>
-                    <div class="p-6 space-y-3">
-                        <button class="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 rounded-lg transition flex items-center justify-between">
-                            <span>Download CLI Tool</span>
-                            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
-                            </svg>
-                        </button>
-                        <button class="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 rounded-lg transition flex items-center justify-between">
-                            <span>Model Library</span>
-                            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
-                            </svg>
-                        </button>
-                        <button class="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 rounded-lg transition flex items-center justify-between">
-                            <span>Usage & Billing</span>
-                            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
-                            </svg>
-                        </button>
-                        <button class="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 rounded-lg transition flex items-center justify-between">
-                            <span>Settings</span>
-                            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
-                            </svg>
-                        </button>
                     </div>
                 </div>
             </div>
         </div>
-    </div>
+    </section>
 
     <script>
+        // Tab switching functionality
+        function switchTab(tabName) {
+            // Hide all content
+            document.getElementById('nodes-content').classList.add('hidden');
+            document.getElementById('models-content').classList.add('hidden');
+            document.getElementById('api-content').classList.add('hidden');
+            
+            // Remove active class from all tabs
+            document.getElementById('nodes-tab').classList.remove('tab-active');
+            document.getElementById('models-tab').classList.remove('tab-active');
+            document.getElementById('api-tab').classList.remove('tab-active');
+            
+            // Show selected content and mark tab as active
+            document.getElementById(tabName + '-content').classList.remove('hidden');
+            document.getElementById(tabName + '-tab').classList.add('tab-active');
+        }
+
+        // Toggle API key visibility
+        function toggleApiKey() {
+            const input = document.getElementById('api-key');
+            if (input.type === 'password') {
+                input.type = 'text';
+            } else {
+                input.type = 'password';
+            }
+        }
+
+        // Copy API key to clipboard
+        function copyApiKey() {
+            const input = document.getElementById('api-key');
+            const originalType = input.type;
+            input.type = 'text';
+            input.select();
+            document.execCommand('copy');
+            input.type = originalType;
+            
+            // Visual feedback could be added here
+        }
+
+        // Copy base URL to clipboard
+        function copyBaseUrl() {
+            const tempInput = document.createElement('input');
+            tempInput.value = 'https://llmjob.com/api/v1';
+            document.body.appendChild(tempInput);
+            tempInput.select();
+            document.execCommand('copy');
+            document.body.removeChild(tempInput);
+            
+            // Visual feedback could be added here
+        }
+
         // Initialize Clerk when the page loads
         window.addEventListener('load', async function () {
             if (typeof Clerk === 'undefined') {
@@ -299,6 +474,8 @@
             // Mount user button
             const userButtonDiv = document.getElementById('user-button-nav');
             if (userButtonDiv) {
+                // Clear the placeholder
+                userButtonDiv.innerHTML = '';
                 Clerk.mountUserButton(userButtonDiv, {
                     appearance: {
                         elements: {
@@ -308,16 +485,6 @@
                 });
             }
         });
-
-        // Toggle API key visibility
-        function toggleApiKey() {
-            const input = document.getElementById('api-key');
-            if (input.type === 'password') {
-                input.type = 'text';
-            } else {
-                input.type = 'password';
-            }
-        }
     </script>
 </body>
 </html>
