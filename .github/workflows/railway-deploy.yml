@@ -1,0 +1,46 @@
+name: Deploy Server to Railway
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'server/**'
+      - '.github/workflows/railway-deploy.yml'
+  workflow_dispatch:
+
+jobs:
+  test-and-deploy:
+    name: Test and Deploy Server
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22.x'
+        cache: 'npm'
+        cache-dependency-path: server/package-lock.json
+    
+    - name: Install dependencies
+      working-directory: ./server
+      run: npm ci
+    
+    - name: Run tests with coverage
+      working-directory: ./server
+      run: |
+        npm test
+        echo "✅ All tests passed!"
+    
+    - name: Deploy to Railway
+      if: success() && github.ref == 'refs/heads/main'
+      uses: bervProject/railway-deploy@main
+      with:
+        railway_token: ${{ secrets.RAILWAY_TOKEN }}
+        service: "node-tracking-server"
+        root_directory: "server"
+      env:
+        CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY }}
+        CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
