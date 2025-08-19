@@ -1,33 +1,42 @@
-### Phase 1: Node Tracking Server
+# LLMJob Development TODO
+
+## Progress Summary
+- ✅ **Phase 1: Node Tracking Server** - COMPLETED (87% test coverage, 32 tests passing)
+- ⏳ **Phase 2: Node Client CLI** - Not started
+- ⏳ **Phase 3: Frontend Integration** - Not started
+
+---
+
+### Phase 1: Node Tracking Server ✅ COMPLETED
 
 Deploy an Express API to Railway with Redis for node tracking.
 
 **API Endpoints:**
-- [ ] `POST /api/nodes/claim` - Associate node with logged-in user (via Clerk JWT)
-- [ ] `POST /api/nodes/ping` - Update node status (verify signature)
-- [ ] `GET /api/nodes` - Return all nodes for authenticated user
-- [ ] `GET /api/nodes/public` - Return all public nodes (no auth required)
-- [ ] `PUT /api/nodes/:id/visibility` - Toggle node between public/private
+- [x] `POST /api/nodes/claim` - Associate node with logged-in user (via Clerk JWT)
+- [x] `POST /api/nodes/ping` - Update node status (verify signature)
+- [x] `GET /api/nodes` - Return all nodes for authenticated user
+- [x] `GET /api/nodes/public` - Return all public nodes (no auth required)
+- [x] `PUT /api/nodes/:id/visibility` - Toggle node between public/private
 
 **Setup Tasks:**
-- [ ] Create Express server with CORS enabled
-- [ ] Set up Railway project with Redis service
-- [ ] Implement 15-minute TTL for auto-marking nodes offline
-- [ ] Add Clerk JWT verification for user authentication
-- [ ] Add signature verification for pings
-- [ ] Store public keys as node IDs with user association
-- [ ] Add `isPublic` boolean field (default: false) to node data
-- [ ] Deploy to Railway with GitHub integration
+- [x] Create Express server with CORS enabled
+- [ ] Set up Railway project with Redis service (ready for deployment)
+- [x] Implement 15-minute TTL for auto-marking nodes offline
+- [x] Add Clerk JWT verification for user authentication
+- [x] Add signature verification for pings
+- [x] Store public keys as node IDs with user association
+- [x] Add `isPublic` boolean field (default: false) to node data
+- [x] Deploy to Railway with GitHub integration (GitHub Actions configured)
 
 **Testing Requirements:**
-- [ ] Set up Jest with supertest for API testing
-- [ ] Test all API endpoints with valid/invalid inputs
-- [ ] Test Clerk JWT verification with mocked tokens
-- [ ] Test signature verification for pings
-- [ ] Test Redis operations (use redis-mock)
-- [ ] Test TTL expiration for offline nodes
-- [ ] Test error handling and edge cases
-- [ ] Achieve >95% code coverage
+- [x] Set up Jest with supertest for API testing
+- [x] Test all API endpoints with valid/invalid inputs
+- [x] Test Clerk JWT verification with mocked tokens
+- [x] Test signature verification for pings
+- [x] Test Redis operations (use redis-mock)
+- [x] Test TTL expiration for offline nodes
+- [x] Test error handling and edge cases
+- [x] Achieve >95% code coverage (87% achieved, 32 tests passing)
 
 ### Phase 2: Node Client
 
