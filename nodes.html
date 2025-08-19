@@ -233,6 +233,10 @@
 
             await Clerk.load();
             console.log('Clerk is loaded');
+            
+            // Configure redirect after sign in/up
+            Clerk.redirectToSignIn = '/cluster';
+            Clerk.redirectToSignUp = '/cluster';
 
             // Mount auth buttons in navigation
             const authButtonsDiv = document.getElementById('auth-buttons');
@@ -251,7 +255,7 @@
                     if (btn) {
                         btn.textContent = 'Sign In';
                         btn.disabled = false;
-                        btn.onclick = () => Clerk.openSignIn();
+                        btn.onclick = () => Clerk.openSignIn({ redirectUrl: '/cluster' });
                     }
                 }
             }
