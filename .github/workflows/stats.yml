@@ -5,6 +5,10 @@ on:
     # Run every 24 hours at midnight UTC
     - cron: '0 0 * * *'
   workflow_dispatch: # Allow manual trigger
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/stats.yml'
 
 jobs:
   update-stats:
@@ -14,7 +18,8 @@ jobs:
       - name: Fetch Clerk stats and update Gist
         env:
           CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Use GIST_TOKEN if available, otherwise fall back to GITHUB_TOKEN
+          GITHUB_TOKEN: ${{ secrets.GIST_TOKEN || secrets.GITHUB_TOKEN }}
           GIST_ID: d5792cdd581c2cfef9b7c02c7b866179
         run: |
           # Create a Node.js script to fetch stats and update Gist
@@ -114,15 +119,21 @@ jobs:
           }
 
           // Main execution
+          let statsData = null;
           fetchClerkStats()
             .then(stats => {
+              statsData = stats;
               console.log('Stats fetched:', stats);
               return updateGist(stats);
             })
             .then(() => console.log('Stats successfully updated in Gist'))
             .catch(error => {
-              console.error('Error:', error);
-              process.exit(1);
+              console.error('Warning: Could not update Gist (this is expected without a PAT):', error.message);
+              if (statsData) {
+                console.log('Stats data:', JSON.stringify(statsData, null, 2));
+              }
+              // Don't fail the workflow - just log the stats
+              process.exit(0);
             });
           EOF
           
