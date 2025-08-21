@@ -3,7 +3,7 @@
 ## Progress Summary
 - ✅ **Phase 1: Node Tracking Server** - COMPLETED (87% test coverage, 32 tests passing)
 - ⏳ **Phase 2: Node Client CLI** - Not started
-- ⏳ **Phase 3: Frontend Integration** - Not started
+- ⏳ **Phase 3: Frontend Integration** - Partially started (simplified UI)
 
 ---
 
@@ -81,7 +81,6 @@ Connect the cluster dashboard to real backend data.
 - [ ] Replace mock data with API calls in cluster page
 - [ ] Fetch user's nodes list on page load
 - [ ] Add toggle switch for public/private mode per node
-- [ ] Update nodes.html to show public nodes from API
 - [ ] Show actual online/offline status
 - [ ] Display short fingerprints as node IDs (e.g., "4f2a8b")
 - [ ] Show node names
