@@ -38,8 +38,8 @@ jobs:
       if: success() && github.ref == 'refs/heads/main'
       uses: bervProject/railway-deploy@main
       with:
-        railway_token: ${{ secrets.RAILWAY_TOKEN }}
         service: "llmjob"  # Using repo name as service name
       env:
+        RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY }}
         CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
