@@ -1,4 +1,5 @@
 const express = require('express');
+const path = require('path');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const { createClient } = require('redis');
@@ -39,6 +40,9 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Serve static files from root directory
+app.use(express.static(path.join(__dirname, '../..')));
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
@@ -53,13 +57,38 @@ async function startServer() {
     await connectRedis();
     
     // Check node statuses every minute
-    setInterval(async () => {
+    const statusInterval = setInterval(async () => {
       await checkNodeStatuses(redisClient);
     }, 60000);
     
-    app.listen(PORT, () => {
+    const server = app.listen(PORT, '0.0.0.0', () => {
       console.log(`Server running on port ${PORT}`);
     });
+
+    // Graceful shutdown handling
+    const gracefulShutdown = async (signal) => {
+      console.log(`Received ${signal}, starting graceful shutdown...`);
+      
+      clearInterval(statusInterval);
+      
+      server.close(() => {
+        console.log('HTTP server closed');
+        
+        redisClient.quit(() => {
+          console.log('Redis connection closed');
+          process.exit(0);
+        });
+      });
+      
+      // Force shutdown after 10 seconds
+      setTimeout(() => {
+        console.error('Could not close connections in time, forcefully shutting down');
+        process.exit(1);
+      }, 10000);
+    };
+
+    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
   } catch (error) {
     console.error('Failed to start server:', error);
     process.exit(1);

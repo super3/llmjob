@@ -7,8 +7,8 @@
     "test": "tests"
   },
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "nodemon src/index.js",
+    "start": "node server/src/index.js",
+    "dev": "nodemon server/src/index.js",
     "test": "jest --coverage",
     "test:watch": "jest --watch"
   },

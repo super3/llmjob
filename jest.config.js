@@ -2,11 +2,11 @@ module.exports = {
   testEnvironment: 'node',
   coverageDirectory: 'coverage',
   collectCoverageFrom: [
-    'src/**/*.js',
-    '!src/index.js', // Exclude main server file from coverage
+    'server/src/**/*.js',
+    '!server/src/index.js', // Exclude main server file from coverage
   ],
   testMatch: [
-    '**/tests/**/*.test.js'
+    '**/server/tests/**/*.test.js'
   ],
   coverageThreshold: {
     global: {
@@ -16,5 +16,5 @@ module.exports = {
       statements: 50
     }
   },
-  setupFilesAfterEnv: ['./tests/setup.js']
+  setupFilesAfterEnv: ['./server/tests/setup.js']
 };
