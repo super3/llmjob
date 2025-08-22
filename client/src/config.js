@@ -70,7 +70,7 @@ class ConfigManager {
         nodeId,
         publicKey: keypair.publicKey,
         secretKey: keypair.secretKey,
-        serverUrl: process.env.LLMJOB_SERVER_URL || 'https://llmjob.up.railway.app',
+        serverUrl: process.env.LLMJOB_SERVER_URL || 'https://llmjob-production.up.railway.app',
         createdAt: new Date().toISOString()
       };
       

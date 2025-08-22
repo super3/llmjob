@@ -249,7 +249,7 @@ describe('ConfigManager', () => {
       
       const config = configManager.getOrCreateConfig();
       
-      expect(config.serverUrl).toBe('https://llmjob.up.railway.app');
+      expect(config.serverUrl).toBe('https://llmjob-production.up.railway.app');
     });
 
     it('should generate valid nodeId from public key', () => {
