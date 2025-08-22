@@ -1,7 +1,7 @@
 # LLMJob Development TODO
 
 ## Progress Summary
-- ✅ **Phase 1: Node Tracking Server** - COMPLETED (87% test coverage, 32 tests passing)
+- ✅ **Phase 1: Node Tracking Server** - COMPLETED (87% test coverage, 64 tests passing, deployed to Railway)
 - ⏳ **Phase 2: Node Client CLI** - Not started
 - ⏳ **Phase 3: Frontend Integration** - Partially started (simplified UI)
 
@@ -10,6 +10,11 @@
 ### Phase 1: Node Tracking Server ✅ COMPLETED
 
 Deploy an Express API to Railway with Redis for node tracking.
+
+**Deployment:**
+- API URL: https://llmjob-production.up.railway.app/api
+- Website URL: https://llmjob-production.up.railway.app
+- Health Check: https://llmjob-production.up.railway.app/health
 
 **API Endpoints:**
 - [x] `POST /api/nodes/claim` - Associate node with logged-in user (via Clerk JWT)
@@ -20,13 +25,14 @@ Deploy an Express API to Railway with Redis for node tracking.
 
 **Setup Tasks:**
 - [x] Create Express server with CORS enabled
-- [ ] Set up Railway project with Redis service (ready for deployment)
+- [x] Set up Railway project with Redis service (deployed and running)
 - [x] Implement 15-minute TTL for auto-marking nodes offline
 - [x] Add Clerk JWT verification for user authentication
 - [x] Add signature verification for pings
 - [x] Store public keys as node IDs with user association
 - [x] Add `isPublic` boolean field (default: false) to node data
 - [x] Deploy to Railway with GitHub integration (GitHub Actions configured)
+- [x] Configure server to serve both API and static website
 
 **Testing Requirements:**
 - [x] Set up Jest with supertest for API testing
@@ -36,7 +42,7 @@ Deploy an Express API to Railway with Redis for node tracking.
 - [x] Test Redis operations (use redis-mock)
 - [x] Test TTL expiration for offline nodes
 - [x] Test error handling and edge cases
-- [x] Achieve >95% code coverage (87% achieved, 32 tests passing)
+- [x] Achieve >95% code coverage (87% achieved, 64 tests passing)
 
 ### Phase 2: Node Client
 
