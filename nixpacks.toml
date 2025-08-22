@@ -1,8 +1,0 @@
-[phases.setup]
-nixPkgs = ["nodejs-22_x", "npm-10_x"]
-
-[phases.install]
-cmds = ["cd server && npm ci"]
-
-[start]
-cmd = "cd server && npm start"

@@ -22,14 +22,12 @@ jobs:
       with:
         node-version: '22.x'
         cache: 'npm'
-        cache-dependency-path: server/package-lock.json
+        cache-dependency-path: package-lock.json
     
     - name: Install dependencies
-      working-directory: ./server
       run: npm ci
     
     - name: Run tests with coverage
-      working-directory: ./server
       run: |
         npm test
         echo "✅ All tests passed!"
