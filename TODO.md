@@ -26,28 +26,28 @@ Build a Node.js CLI client that connects to the tracking server.
 - [x] Test timer/interval behavior
 - [x] Achieve >95% code coverage (100% line coverage achieved)
 
-### Phase 3: Frontend Integration
+### Phase 3: Frontend Integration ✅
 
 Connect the cluster dashboard to real backend data.
 
-**Updates Needed:**
-- [ ] Create /add-node page for claiming nodes via URL
-- [ ] Handle not-logged-in users:
-  - [ ] Save claim intent to sessionStorage before redirect
-  - [ ] Redirect to Clerk sign-in with return URL preserved
-  - [ ] Auto-complete claim after successful sign in/up
-  - [ ] Clear pending claim from sessionStorage after success
-- [ ] Show confirmation dialog when claiming a node
-- [ ] Replace mock data with API calls in cluster page
-- [ ] Fetch user's nodes list on page load
-- [ ] Add toggle switch for public/private mode per node
-- [ ] Show actual online/offline status
-- [ ] Display short fingerprints as node IDs (e.g., "4f2a8b")
-- [ ] Show node names
-- [ ] Add "How to add a node" instructions with npm install command
-- [ ] Auto-refresh node status every 30 seconds
+**Updates Completed:**
+- [x] Create /add-node page for claiming nodes via URL
+- [x] Handle not-logged-in users:
+  - [x] Save claim intent to sessionStorage before redirect
+  - [x] Redirect to Clerk sign-in with return URL preserved
+  - [x] Auto-complete claim after successful sign in/up
+  - [x] Clear pending claim from sessionStorage after success
+- [x] Show confirmation dialog when claiming a node
+- [x] Replace mock data with API calls in cluster page
+- [x] Fetch user's nodes list on page load
+- [x] Add toggle switch for public/private mode per node
+- [x] Show actual online/offline status
+- [x] Display short fingerprints as node IDs (e.g., "2891f7")
+- [x] Show node names
+- [x] Add "How to add a node" instructions with npm install command
+- [x] Auto-refresh node status every 30 seconds
 
-**Testing Requirements:**
+**Testing Requirements:** (Frontend tests pending - functional testing completed)
 - [ ] Set up Jest with Testing Library for frontend tests
 - [ ] Test add-node page flow with/without auth
 - [ ] Test sessionStorage handling for pending claims

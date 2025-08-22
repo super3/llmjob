@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Add Node - LLMJob</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Clerk Authentication -->
+    <script
+        async
+        crossorigin="anonymous"
+        data-clerk-publishable-key="pk_test_Ym9zcy10YXJwb24tMjMuY2xlcmsuYWNjb3VudHMuZGV2JA"
+        src="https://boss-tarpon-23.clerk.accounts.dev/npm/@clerk/clerk-js@5/dist/clerk.browser.js"
+        type="text/javascript"
+    ></script>
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: {
+                            50: '#f0f9ff',
+                            500: '#3b82f6',
+                            600: '#2563eb',
+                            700: '#1d4ed8',
+                            800: '#1e40af',
+                            900: '#1e3a8a',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-gray-50 text-gray-900">
+    <!-- Navigation -->
+    <nav class="sticky top-0 z-50 bg-white/95 backdrop-blur-lg border-b border-gray-200">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between items-center h-16">
+                <div class="flex items-center">
+                    <a href="/" class="text-2xl font-bold text-gray-900">⚡ LLMJob</a>
+                </div>
+                <div class="flex items-center space-x-8">
+                    <div id="auth-buttons" class="flex items-center space-x-2">
+                        <span id="user-info" class="text-sm text-gray-600"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="max-w-2xl mx-auto px-4 py-12">
+        <!-- Loading State -->
+        <div id="loading-state" class="bg-white rounded-lg shadow-sm p-8 text-center">
+            <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mx-auto mb-4"></div>
+            <p class="text-gray-600">Loading node information...</p>
+        </div>
+
+        <!-- Sign In Required State -->
+        <div id="signin-required" class="hidden bg-white rounded-lg shadow-sm p-8">
+            <h1 class="text-2xl font-bold mb-4">Sign In Required</h1>
+            <p class="text-gray-600 mb-6">You need to sign in to claim this node and add it to your cluster.</p>
+            <div class="bg-gray-50 rounded-lg p-4 mb-6">
+                <p class="text-sm text-gray-500 mb-2">Node to be claimed:</p>
+                <div class="font-mono text-sm">
+                    <p>ID: <span id="preview-node-id" class="text-primary-600">-</span></p>
+                    <p>Name: <span id="preview-node-name" class="text-gray-700">-</span></p>
+                </div>
+            </div>
+            <button id="signin-btn" class="w-full px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition">
+                Sign In to Claim Node
+            </button>
+            <p class="text-xs text-gray-500 mt-4 text-center">
+                The node information will be saved and automatically claimed after you sign in.
+            </p>
+        </div>
+
+        <!-- Claim Node Form -->
+        <div id="claim-form" class="hidden bg-white rounded-lg shadow-sm p-8">
+            <h1 class="text-2xl font-bold mb-6">Claim Node</h1>
+            
+            <div class="space-y-4 mb-6">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Node ID</label>
+                    <input type="text" id="node-id" class="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 font-mono text-sm" readonly>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Node Name</label>
+                    <input type="text" id="node-name" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-primary-500 focus:border-primary-500" placeholder="My Node">
+                </div>
+                
+                <div class="hidden">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Public Key</label>
+                    <textarea id="public-key" class="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 font-mono text-xs" rows="2" readonly></textarea>
+                </div>
+            </div>
+
+            <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+                <p class="text-sm text-blue-800">
+                    <strong>Note:</strong> Make sure your node client is running and configured to use this server.
+                </p>
+            </div>
+
+            <button id="claim-btn" class="w-full px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition">
+                Claim This Node
+            </button>
+        </div>
+
+        <!-- Success State -->
+        <div id="success-state" class="hidden bg-white rounded-lg shadow-sm p-8 text-center">
+            <div class="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <svg class="w-8 h-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                </svg>
+            </div>
+            <h1 class="text-2xl font-bold mb-2">Node Claimed Successfully!</h1>
+            <p class="text-gray-600 mb-6">Your node has been added to your cluster.</p>
+            <div class="bg-gray-50 rounded-lg p-4 mb-6">
+                <p class="font-mono text-sm">
+                    Node ID: <span id="success-node-id" class="text-primary-600 font-bold">-</span>
+                </p>
+            </div>
+            <div class="space-y-2">
+                <a href="/cluster" class="block w-full px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition text-center">
+                    View Your Cluster
+                </a>
+                <a href="/" class="block w-full px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition text-center">
+                    Back to Home
+                </a>
+            </div>
+        </div>
+
+        <!-- Error State -->
+        <div id="error-state" class="hidden bg-white rounded-lg shadow-sm p-8">
+            <div class="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <svg class="w-8 h-8 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                </svg>
+            </div>
+            <h1 class="text-2xl font-bold mb-2 text-center">Error Claiming Node</h1>
+            <p id="error-message" class="text-red-600 text-center mb-6">-</p>
+            <div class="space-y-2">
+                <button onclick="location.reload()" class="block w-full px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition text-center">
+                    Try Again
+                </button>
+                <a href="/" class="block w-full px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition text-center">
+                    Back to Home
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let nodeInfo = null;
+        const API_BASE = window.location.hostname === 'localhost' 
+            ? 'http://localhost:3001' 
+            : 'https://llmjob-production.up.railway.app';
+
+        // Parse URL parameters
+        function parseUrlParams() {
+            const params = new URLSearchParams(window.location.search);
+            const publicKey = params.get('publicKey');
+            const nodeId = params.get('id');
+            const name = params.get('name') || `Node-${nodeId || 'Unknown'}`;
+
+            if (!publicKey && !nodeId) {
+                showError('Invalid URL: Missing node information');
+                return null;
+            }
+
+            return {
+                publicKey: publicKey || '',
+                nodeId: nodeId || '',
+                name: name
+            };
+        }
+
+        // Show different states
+        function showLoading() {
+            document.getElementById('loading-state').classList.remove('hidden');
+            document.getElementById('signin-required').classList.add('hidden');
+            document.getElementById('claim-form').classList.add('hidden');
+            document.getElementById('success-state').classList.add('hidden');
+            document.getElementById('error-state').classList.add('hidden');
+        }
+
+        function showSignInRequired() {
+            document.getElementById('loading-state').classList.add('hidden');
+            document.getElementById('signin-required').classList.remove('hidden');
+            document.getElementById('claim-form').classList.add('hidden');
+            document.getElementById('success-state').classList.add('hidden');
+            document.getElementById('error-state').classList.add('hidden');
+        }
+
+        function showClaimForm() {
+            document.getElementById('loading-state').classList.add('hidden');
+            document.getElementById('signin-required').classList.add('hidden');
+            document.getElementById('claim-form').classList.remove('hidden');
+            document.getElementById('success-state').classList.add('hidden');
+            document.getElementById('error-state').classList.add('hidden');
+        }
+
+        function showSuccess(nodeId) {
+            document.getElementById('loading-state').classList.add('hidden');
+            document.getElementById('signin-required').classList.add('hidden');
+            document.getElementById('claim-form').classList.add('hidden');
+            document.getElementById('success-state').classList.remove('hidden');
+            document.getElementById('error-state').classList.add('hidden');
+            document.getElementById('success-node-id').textContent = nodeId;
+        }
+
+        function showError(message) {
+            document.getElementById('loading-state').classList.add('hidden');
+            document.getElementById('signin-required').classList.add('hidden');
+            document.getElementById('claim-form').classList.add('hidden');
+            document.getElementById('success-state').classList.add('hidden');
+            document.getElementById('error-state').classList.remove('hidden');
+            document.getElementById('error-message').textContent = message;
+        }
+
+        // Claim node via API
+        async function claimNode() {
+            const claimBtn = document.getElementById('claim-btn');
+            claimBtn.disabled = true;
+            claimBtn.textContent = 'Claiming...';
+
+            try {
+                const token = await Clerk.session.getToken();
+                const response = await fetch(`${API_BASE}/api/nodes/claim`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({
+                        publicKey: nodeInfo.publicKey,
+                        name: document.getElementById('node-name').value || nodeInfo.name
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    // Clear saved node info from sessionStorage
+                    sessionStorage.removeItem('pendingNodeClaim');
+                    showSuccess(data.nodeId);
+                } else {
+                    throw new Error(data.error || 'Failed to claim node');
+                }
+            } catch (error) {
+                console.error('Error claiming node:', error);
+                showError(error.message || 'Failed to claim node. Please try again.');
+                claimBtn.disabled = false;
+                claimBtn.textContent = 'Claim This Node';
+            }
+        }
+
+        // Initialize page
+        async function init() {
+            showLoading();
+
+            // Parse URL parameters
+            nodeInfo = parseUrlParams();
+            if (!nodeInfo) {
+                return;
+            }
+
+            // Wait for Clerk to load
+            if (typeof Clerk === 'undefined') {
+                setTimeout(init, 100);
+                return;
+            }
+
+            await Clerk.load();
+
+            // Check if user is signed in
+            if (Clerk.user) {
+                // User is signed in
+                const userInfo = document.getElementById('user-info');
+                userInfo.textContent = Clerk.user.primaryEmailAddress?.emailAddress || 'Signed In';
+
+                // Check if we have a pending claim from before sign-in
+                const pendingClaim = sessionStorage.getItem('pendingNodeClaim');
+                if (pendingClaim) {
+                    try {
+                        nodeInfo = JSON.parse(pendingClaim);
+                        console.log('Resuming pending node claim:', nodeInfo);
+                    } catch (e) {
+                        console.error('Error parsing pending claim:', e);
+                    }
+                }
+
+                // Show claim form
+                showClaimForm();
+                document.getElementById('node-id').value = nodeInfo.nodeId || 'Generated from public key';
+                document.getElementById('node-name').value = nodeInfo.name;
+                if (nodeInfo.publicKey) {
+                    document.getElementById('public-key').value = nodeInfo.publicKey;
+                    document.getElementById('public-key').parentElement.classList.remove('hidden');
+                }
+
+                // Add claim button handler
+                document.getElementById('claim-btn').addEventListener('click', claimNode);
+
+                // Auto-claim if this was a redirect after sign-in
+                if (pendingClaim) {
+                    setTimeout(() => {
+                        if (confirm('Would you like to claim the node now?')) {
+                            claimNode();
+                        }
+                    }, 500);
+                }
+            } else {
+                // User is not signed in
+                // Save node info to sessionStorage
+                sessionStorage.setItem('pendingNodeClaim', JSON.stringify(nodeInfo));
+
+                // Show sign-in required state
+                showSignInRequired();
+                document.getElementById('preview-node-id').textContent = nodeInfo.nodeId || 'Generated';
+                document.getElementById('preview-node-name').textContent = nodeInfo.name;
+
+                // Add sign-in button handler
+                document.getElementById('signin-btn').addEventListener('click', () => {
+                    // Redirect back to this page after sign-in
+                    Clerk.redirectToSignIn({ redirectUrl: window.location.href });
+                });
+            }
+        }
+
+        // Start initialization when page loads
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>

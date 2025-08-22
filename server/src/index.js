@@ -41,7 +41,13 @@ app.get('/health', (req, res) => {
 });
 
 // Serve static files from root directory
-app.use(express.static(path.join(__dirname, '../..')));
+// In production (Railway), files are at /app root
+// In development, files are at project root (two levels up from server/src)
+const staticPath = process.env.NODE_ENV === 'production' 
+  ? '/app' 
+  : path.join(__dirname, '../..');
+app.use(express.static(staticPath));
+console.log(`Serving static files from: ${staticPath}`);
 
 // Error handling middleware
 app.use((err, req, res, next) => {

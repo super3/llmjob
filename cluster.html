@@ -98,9 +98,9 @@
                             <div class="flex items-center gap-6">
                                 <div class="flex items-center gap-2">
                                     <span class="text-gray-600 text-sm">Total Nodes:</span>
-                                    <span class="text-xl font-bold text-primary-600">2</span>
+                                    <span id="total-nodes" class="text-xl font-bold text-primary-600">0</span>
                                 </div>
-                                <button class="px-4 py-2 bg-primary-600 text-white text-sm rounded-lg hover:bg-primary-700 transition">
+                                <button onclick="showAddNodeInstructions()" class="px-4 py-2 bg-primary-600 text-white text-sm rounded-lg hover:bg-primary-700 transition">
                                     + Add Node
                                 </button>
                             </div>
@@ -115,39 +115,53 @@
                                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Node ID</th>
                                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Seen</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Visibility</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                                 </tr>
                             </thead>
-                            <tbody class="divide-y divide-gray-200">
-                                <tr class="hover:bg-gray-50 transition">
-                                    <td class="px-6 py-4 whitespace-nowrap">
-                                        <span class="inline-flex items-center gap-1">
-                                            <span class="w-2 h-2 bg-green-500 rounded-full"></span>
-                                            <span class="text-sm font-medium text-green-600">Online</span>
-                                        </span>
-                                    </td>
-                                    <td class="px-6 py-4 whitespace-nowrap">
-                                        <div class="text-sm font-mono text-gray-900">4f2a8b</div>
-                                    </td>
-                                    <td class="px-6 py-4 whitespace-nowrap">
-                                        <div class="text-sm font-medium text-gray-900">RTX 4090 Workstation</div>
-                                    </td>
-                                </tr>
-                                <tr class="hover:bg-gray-50 transition">
-                                    <td class="px-6 py-4 whitespace-nowrap">
-                                        <span class="inline-flex items-center gap-1">
-                                            <span class="w-2 h-2 bg-green-500 rounded-full"></span>
-                                            <span class="text-sm font-medium text-green-600">Online</span>
-                                        </span>
-                                    </td>
-                                    <td class="px-6 py-4 whitespace-nowrap">
-                                        <div class="text-sm font-mono text-gray-900">9c1d7e</div>
-                                    </td>
-                                    <td class="px-6 py-4 whitespace-nowrap">
-                                        <div class="text-sm font-medium text-gray-900">MacBook Pro M2</div>
+                            <tbody id="nodes-tbody" class="divide-y divide-gray-200">
+                                <!-- Loading state -->
+                                <tr id="nodes-loading">
+                                    <td colspan="6" class="px-6 py-8 text-center">
+                                        <div class="inline-flex items-center gap-2">
+                                            <div class="animate-spin rounded-full h-4 w-4 border-b-2 border-primary-600"></div>
+                                            <span class="text-gray-500">Loading nodes...</span>
+                                        </div>
                                     </td>
                                 </tr>
                             </tbody>
                         </table>
+                    </div>
+                    
+                    <!-- Add Node Instructions Modal -->
+                    <div id="add-node-modal" class="hidden fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50">
+                        <div class="bg-white rounded-lg p-6 max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto">
+                            <h3 class="text-lg font-semibold mb-4">How to Add a Node</h3>
+                            <div class="space-y-4">
+                                <div>
+                                    <h4 class="font-medium mb-2">1. Install the LLMJob Node Client</h4>
+                                    <div class="bg-gray-900 text-gray-100 rounded-lg p-3 font-mono text-sm">
+                                        npm install -g llmjob-node
+                                    </div>
+                                </div>
+                                <div>
+                                    <h4 class="font-medium mb-2">2. Start Your Node</h4>
+                                    <div class="bg-gray-900 text-gray-100 rounded-lg p-3 font-mono text-sm">
+                                        llmjob-node start --name "My Node"
+                                    </div>
+                                </div>
+                                <div>
+                                    <h4 class="font-medium mb-2">3. Claim Your Node</h4>
+                                    <p class="text-sm text-gray-600 mb-2">Visit the URL shown in the client output to claim the node.</p>
+                                </div>
+                                <div class="pt-4 border-t">
+                                    <button onclick="hideAddNodeInstructions()" class="w-full px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition">
+                                        Got it!
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -362,6 +376,13 @@
     </section>
 
     <script>
+        // API Configuration
+        const API_BASE = window.location.hostname === 'localhost' 
+            ? 'http://localhost:3001' 
+            : 'https://llmjob-production.up.railway.app';
+
+        let refreshInterval = null;
+
         // Tab switching functionality
         function switchTab(tabName) {
             // Hide all content
@@ -377,6 +398,129 @@
             // Show selected content and mark tab as active
             document.getElementById(tabName + '-content').classList.remove('hidden');
             document.getElementById(tabName + '-tab').classList.add('tab-active');
+        }
+
+        // Show/Hide Add Node Instructions
+        function showAddNodeInstructions() {
+            document.getElementById('add-node-modal').classList.remove('hidden');
+        }
+
+        function hideAddNodeInstructions() {
+            document.getElementById('add-node-modal').classList.add('hidden');
+        }
+
+        // Format last seen time
+        function formatLastSeen(timestamp) {
+            if (!timestamp) return 'Never';
+            const now = Date.now();
+            const diff = now - timestamp;
+            const minutes = Math.floor(diff / 60000);
+            
+            if (minutes < 1) return 'Just now';
+            if (minutes < 60) return `${minutes}m ago`;
+            const hours = Math.floor(minutes / 60);
+            if (hours < 24) return `${hours}h ago`;
+            const days = Math.floor(hours / 24);
+            return `${days}d ago`;
+        }
+
+        // Toggle node visibility
+        async function toggleNodeVisibility(nodeId, currentStatus) {
+            try {
+                const token = await Clerk.session.getToken();
+                const response = await fetch(`${API_BASE}/api/nodes/${nodeId}/visibility`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({
+                        isPublic: !currentStatus
+                    })
+                });
+
+                if (response.ok) {
+                    // Refresh the nodes list
+                    fetchNodes();
+                } else {
+                    console.error('Failed to update node visibility');
+                }
+            } catch (error) {
+                console.error('Error updating node visibility:', error);
+            }
+        }
+
+        // Fetch and display nodes
+        async function fetchNodes() {
+            try {
+                const token = await Clerk.session.getToken();
+                const response = await fetch(`${API_BASE}/api/nodes`, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to fetch nodes');
+                }
+
+                const data = await response.json();
+                const nodes = data.nodes || [];
+                
+                // Update total count
+                document.getElementById('total-nodes').textContent = nodes.length;
+                
+                // Build table rows
+                const tbody = document.getElementById('nodes-tbody');
+                
+                if (nodes.length === 0) {
+                    tbody.innerHTML = `
+                        <tr>
+                            <td colspan="6" class="px-6 py-8 text-center text-gray-500">
+                                No nodes found. Click "Add Node" to get started.
+                            </td>
+                        </tr>
+                    `;
+                } else {
+                    tbody.innerHTML = nodes.map(node => `
+                        <tr class="hover:bg-gray-50 transition">
+                            <td class="px-6 py-4 whitespace-nowrap">
+                                <span class="inline-flex items-center gap-1">
+                                    <span class="w-2 h-2 ${node.status === 'online' ? 'bg-green-500' : 'bg-gray-400'} rounded-full"></span>
+                                    <span class="text-sm font-medium ${node.status === 'online' ? 'text-green-600' : 'text-gray-500'}">${node.status === 'online' ? 'Online' : 'Offline'}</span>
+                                </span>
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap">
+                                <div class="text-sm font-mono text-gray-900">${node.nodeId}</div>
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap">
+                                <div class="text-sm font-medium text-gray-900">${node.name || 'Unnamed Node'}</div>
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap">
+                                <div class="text-sm text-gray-500">${formatLastSeen(node.lastSeen)}</div>
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap">
+                                <button onclick="toggleNodeVisibility('${node.nodeId}', ${node.isPublic})" class="inline-flex items-center px-2 py-1 text-xs font-medium rounded-full ${node.isPublic ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700'} hover:opacity-80 transition">
+                                    ${node.isPublic ? 'Public' : 'Private'}
+                                </button>
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm">
+                                <button onclick="alert('Node management features coming soon!')" class="text-primary-600 hover:text-primary-700">Manage</button>
+                            </td>
+                        </tr>
+                    `).join('');
+                }
+            } catch (error) {
+                console.error('Error fetching nodes:', error);
+                const tbody = document.getElementById('nodes-tbody');
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="6" class="px-6 py-8 text-center text-red-600">
+                            Failed to load nodes. Please refresh the page.
+                        </td>
+                    </tr>
+                `;
+            }
         }
 
         // Toggle API key visibility
@@ -441,6 +585,19 @@
                         }
                     }
                 });
+            }
+
+            // Fetch nodes data
+            fetchNodes();
+
+            // Auto-refresh every 30 seconds
+            refreshInterval = setInterval(fetchNodes, 30000);
+        });
+
+        // Clean up interval when page unloads
+        window.addEventListener('beforeunload', () => {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
             }
         });
     </script>
