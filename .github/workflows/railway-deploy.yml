@@ -34,14 +34,12 @@ jobs:
         npm test
         echo "✅ All tests passed!"
     
-    - name: Install Railway CLI
-      if: success() && github.ref == 'refs/heads/main'
-      run: npm install -g @railway/cli
-    
     - name: Deploy to Railway
       if: success() && github.ref == 'refs/heads/main'
-      working-directory: ./server
+      uses: bervProject/railway-deploy@main
+      with:
+        railway_token: ${{ secrets.RAILWAY_TOKEN }}
+        service: "llmjob"  # Using repo name as service name
       env:
-        RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}  # Now using project token
-      run: |
-        railway up --detach
+        CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY }}
+        CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
