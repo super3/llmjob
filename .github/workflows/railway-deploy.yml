@@ -44,4 +44,4 @@ jobs:
       env:
         RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}  # Now using project token
       run: |
-        railway up --service node-tracking-server --detach
+        railway up --detach
