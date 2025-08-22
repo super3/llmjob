@@ -1,4 +1,5 @@
 const express = require('express');
+const path = require('path');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const { createClient } = require('redis');
@@ -38,6 +39,9 @@ app.use('/api', routes);
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+
+// Serve static files from root directory
+app.use(express.static(path.join(__dirname, '..')));
 
 // Error handling middleware
 app.use((err, req, res, next) => {
