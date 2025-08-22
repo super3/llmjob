@@ -356,5 +356,126 @@ describe('Node Service', () => {
       
       consoleSpy.mockRestore();
     });
+
+    it('should handle empty node list', async () => {
+      const consoleSpy = jest.spyOn(console, 'log').mockImplementation();
+      
+      await nodeService.checkNodeStatuses(redisClient);
+      
+      expect(consoleSpy).toHaveBeenCalledWith('Node status check: 0 online, 0 offline');
+      
+      consoleSpy.mockRestore();
+    });
+
+    it('should count online nodes with positive TTL', async () => {
+      const consoleSpy = jest.spyOn(console, 'log').mockImplementation();
+      
+      // Add a node and update its status to online (with TTL)
+      const result = await nodeService.claimNode(redisClient, 'key1', 'Node 1', 'user1');
+      await nodeService.updateNodeStatus(redisClient, result.nodeId, 'key1');
+      
+      await nodeService.checkNodeStatuses(redisClient);
+      
+      expect(consoleSpy).toHaveBeenCalled();
+      const logMessage = consoleSpy.mock.calls[0][0];
+      expect(logMessage).toContain('1 online');
+      
+      consoleSpy.mockRestore();
+    });
+  });
+
+  describe('getPublicNodes edge cases', () => {
+    it('should handle empty nodes', async () => {
+      const nodes = await nodeService.getPublicNodes(redisClient);
+      expect(nodes).toEqual([]);
+    });
+
+    it('should handle null data from redis', async () => {
+      // Mock Redis to return keys but null data
+      redisClient.keys = jest.fn().mockResolvedValue(['node:test']);
+      redisClient.get = jest.fn().mockResolvedValue(null);
+      
+      const nodes = await nodeService.getPublicNodes(redisClient);
+      expect(nodes).toEqual([]);
+    });
+
+    it('should mark old public nodes as offline', async () => {
+      // Add a public node with old lastSeen
+      const oldTime = Date.now() - (20 * 60 * 1000); // 20 minutes ago
+      await redisClient.set('node:old', JSON.stringify({
+        nodeId: 'old',
+        publicKey: 'key_old',
+        name: 'Old Node',
+        userId: 'user1',
+        status: 'online',
+        isPublic: true,
+        lastSeen: oldTime
+      }));
+      
+      const nodes = await nodeService.getPublicNodes(redisClient);
+      expect(nodes).toHaveLength(1);
+      expect(nodes[0].status).toBe('offline');
+    });
+  });
+
+  describe('getUserNodes edge cases', () => {
+    it('should handle null data from redis', async () => {
+      // Add node ID to user's list but no actual node data
+      await redisClient.sadd('user_nodes:user1', 'nonexistent');
+      
+      const nodes = await nodeService.getUserNodes(redisClient, 'user1');
+      expect(nodes).toEqual([]);
+    });
+  });
+
+  describe('updateNodeVisibility edge cases', () => {
+    it('should handle node with expired TTL', async () => {
+      // Setup a node
+      await nodeService.claimNode(redisClient, 'key1', 'Node 1', 'user1');
+      const nodeId = nodeService.generateNodeFingerprint('key1');
+      
+      // Mock TTL to return -1 (expired)
+      redisClient.ttl = jest.fn().mockResolvedValue(-1);
+      
+      const result = await nodeService.updateNodeVisibility(redisClient, nodeId, 'user1', true);
+      
+      expect(result.success).toBe(true);
+      expect(result.isPublic).toBe(true);
+    });
+
+    it('should handle node with positive TTL', async () => {
+      // Setup a node with online status (has TTL)
+      const result = await nodeService.claimNode(redisClient, 'key2', 'Node 2', 'user2');
+      await nodeService.updateNodeStatus(redisClient, result.nodeId, 'key2');
+      
+      // Mock TTL to return positive value
+      redisClient.ttl = jest.fn().mockResolvedValue(300); // 5 minutes
+      
+      const updateResult = await nodeService.updateNodeVisibility(redisClient, result.nodeId, 'user2', true);
+      
+      expect(updateResult.success).toBe(true);
+      expect(updateResult.isPublic).toBe(true);
+    });
+  });
+
+  describe('claimNode edge cases', () => {
+    it('should allow claiming unclaimed node', async () => {
+      // Create a node without userId (unclaimed)
+      const nodeId = nodeService.generateNodeFingerprint('key1');
+      await redisClient.set(`node:${nodeId}`, JSON.stringify({
+        nodeId,
+        publicKey: 'key1',
+        name: 'Unclaimed Node',
+        // No userId
+        status: 'offline',
+        isPublic: false,
+        lastSeen: Date.now()
+      }));
+      
+      const result = await nodeService.claimNode(redisClient, 'key1', 'Claimed Node', 'user1');
+      
+      expect(result.success).toBe(true);
+      expect(result.nodeId).toBe(nodeId);
+    });
   });
 });

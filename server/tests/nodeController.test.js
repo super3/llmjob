@@ -416,4 +416,150 @@ describe('Node API Endpoints', () => {
       expect(response.body.error).toBe('Node not found');
     });
   });
+
+  describe('Error handling', () => {
+    it('should handle database errors in claimNode', async () => {
+      // Mock Redis error
+      redisClient.get = jest.fn().mockRejectedValue(new Error('Database error'));
+      
+      const response = await request(app)
+        .post('/api/nodes/claim')
+        .set('Authorization', 'Bearer test_token')
+        .send({
+          publicKey: testPublicKey,
+          name: 'Test Node'
+        });
+
+      expect(response.status).toBe(500);
+      expect(response.body.error).toBe('Failed to claim node');
+    });
+
+    it('should handle database errors in pingNode', async () => {
+      // Setup node first
+      await redisClient.set(`node:${testNodeId}`, JSON.stringify({
+        nodeId: testNodeId,
+        publicKey: testPublicKey,
+        name: 'Test Node',
+        userId: 'test_user_123',
+        status: 'offline',
+        isPublic: false,
+        lastSeen: Date.now(),
+        claimedAt: Date.now()
+      }));
+
+      // Mock Redis error
+      redisClient.setex = jest.fn().mockRejectedValue(new Error('Database error'));
+      
+      const timestamp = Date.now();
+      const message = `${testNodeId}:${timestamp}`;
+      const messageBytes = naclUtil.decodeUTF8(message);
+      const signature = nacl.sign.detached(messageBytes, testKeypair.secretKey);
+      const signatureBase64 = naclUtil.encodeBase64(signature);
+
+      const response = await request(app)
+        .post('/api/nodes/ping')
+        .send({
+          publicKey: testPublicKey,
+          signature: signatureBase64,
+          timestamp,
+          nodeId: testNodeId
+        });
+
+      expect(response.status).toBe(500);
+      expect(response.body.error).toBe('Failed to update node status');
+    });
+
+    it('should handle database errors in getUserNodes', async () => {
+      // Mock Redis error
+      redisClient.smembers = jest.fn().mockRejectedValue(new Error('Database error'));
+      
+      const response = await request(app)
+        .get('/api/nodes')
+        .set('Authorization', 'Bearer test_token');
+
+      expect(response.status).toBe(500);
+      expect(response.body.error).toBe('Failed to get nodes');
+    });
+
+    it('should handle database errors in getPublicNodes', async () => {
+      // Mock Redis error
+      redisClient.keys = jest.fn().mockRejectedValue(new Error('Database error'));
+      
+      const response = await request(app)
+        .get('/api/nodes/public');
+
+      expect(response.status).toBe(500);
+      expect(response.body.error).toBe('Failed to get public nodes');
+    });
+
+    it('should handle database errors in updateNodeVisibility', async () => {
+      // Mock updateNodeVisibility to throw an error
+      const nodeService = require('../src/services/nodeService');
+      const originalUpdateVisibility = nodeService.updateNodeVisibility;
+      nodeService.updateNodeVisibility = jest.fn().mockRejectedValue(new Error('Database error'));
+      
+      const response = await request(app)
+        .put(`/api/nodes/${testNodeId}/visibility`)
+        .set('Authorization', 'Bearer test_token')
+        .send({ isPublic: true });
+
+      expect(response.status).toBe(500);
+      expect(response.body.error).toBe('Failed to update node visibility');
+      
+      // Restore original function
+      nodeService.updateNodeVisibility = originalUpdateVisibility;
+    });
+
+    it('should handle service errors in pingNode', async () => {
+      // Setup a node without required fields to trigger service error
+      await redisClient.set(`node:${testNodeId}`, JSON.stringify({
+        nodeId: testNodeId,
+        // Missing publicKey to trigger error
+        name: 'Test Node',
+        userId: 'test_user_123',
+        status: 'offline',
+        isPublic: false,
+        lastSeen: Date.now(),
+        claimedAt: Date.now()
+      }));
+
+      const timestamp = Date.now();
+      const message = `${testNodeId}:${timestamp}`;
+      const messageBytes = naclUtil.decodeUTF8(message);
+      const signature = nacl.sign.detached(messageBytes, testKeypair.secretKey);
+      const signatureBase64 = naclUtil.encodeBase64(signature);
+
+      const response = await request(app)
+        .post('/api/nodes/ping')
+        .send({
+          publicKey: testPublicKey,
+          signature: signatureBase64,
+          timestamp,
+          nodeId: testNodeId
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toBeDefined();
+    });
+
+    it('should handle service error without status in updateNodeVisibility', async () => {
+      // Mock updateNodeVisibility to return error without status field
+      const nodeService = require('../src/services/nodeService');
+      const originalUpdateVisibility = nodeService.updateNodeVisibility;
+      nodeService.updateNodeVisibility = jest.fn().mockResolvedValue({
+        error: 'Some error without status field'
+      });
+      
+      const response = await request(app)
+        .put(`/api/nodes/${testNodeId}/visibility`)
+        .set('Authorization', 'Bearer test_token')
+        .send({ isPublic: true });
+
+      expect(response.status).toBe(400); // Should default to 400
+      expect(response.body.error).toBe('Some error without status field');
+      
+      // Restore original function
+      nodeService.updateNodeVisibility = originalUpdateVisibility;
+    });
+  });
 });
