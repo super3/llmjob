@@ -25,10 +25,17 @@ npm install
 docker run -p 6379:6379 redis:alpine
 ```
 
-3. Create `.env` file:
+3. Create `.env` file with the following variables:
 ```bash
-cp .env.example .env
-# Edit .env with your Clerk keys
+# Server Configuration
+PORT=3001
+
+# Redis Configuration
+REDIS_URL=redis://localhost:6379
+
+# Clerk Configuration (get from Clerk dashboard)
+CLERK_PUBLISHABLE_KEY=your_clerk_publishable_key
+CLERK_SECRET_KEY=your_clerk_secret_key
 ```
 
 4. Start development server:
