@@ -12,7 +12,7 @@ jest.mock('redis', () => require('redis-mock'));
 jest.mock('@clerk/clerk-sdk-node', () => ({
   clerkClient: {
     sessions: {
-      verifySession: jest.fn().mockResolvedValue({ userId: 'test_user_123' })
+      getSession: jest.fn().mockResolvedValue({ userId: 'test_user_123' })
     },
     users: {
       getUser: jest.fn().mockResolvedValue({
@@ -101,9 +101,12 @@ describe('Node API Endpoints', () => {
 
   describe('POST /api/nodes/claim', () => {
     it('should claim a node successfully', async () => {
+      const payload = { sid: 'sess_123', sub: 'test_user_123' };
+      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
+      
       const response = await request(app)
         .post('/api/nodes/claim')
-        .set('Authorization', 'Bearer test_token')
+        .set('Authorization', `Bearer ${mockToken}`)
         .send({
           publicKey: testPublicKey,
           name: 'Test Node'
@@ -128,9 +131,12 @@ describe('Node API Endpoints', () => {
     });
 
     it('should reject claim with missing fields', async () => {
+      const payload = { sid: 'sess_123', sub: 'test_user_123' };
+      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
+      
       const response = await request(app)
         .post('/api/nodes/claim')
-        .set('Authorization', 'Bearer test_token')
+        .set('Authorization', `Bearer ${mockToken}`)
         .send({
           publicKey: testPublicKey
         });
@@ -141,9 +147,12 @@ describe('Node API Endpoints', () => {
 
     it('should prevent claiming already claimed node', async () => {
       // First claim
+      const payload = { sid: 'sess_123', sub: 'test_user_123' };
+      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
+      
       await request(app)
         .post('/api/nodes/claim')
-        .set('Authorization', 'Bearer test_token')
+        .set('Authorization', `Bearer ${mockToken}`)
         .send({
           publicKey: testPublicKey,
           name: 'Test Node'
@@ -151,7 +160,7 @@ describe('Node API Endpoints', () => {
 
       // Mock different user
       const { clerkClient } = require('@clerk/clerk-sdk-node');
-      clerkClient.sessions.verifySession.mockResolvedValueOnce({ userId: 'different_user' });
+      clerkClient.sessions.getSession.mockResolvedValueOnce({ userId: 'different_user' });
       clerkClient.users.getUser.mockResolvedValueOnce({
         id: 'different_user',
         emailAddresses: [{ emailAddress: 'other@example.com' }],
@@ -159,9 +168,12 @@ describe('Node API Endpoints', () => {
       });
 
       // Try to claim same node
+      const payload2 = { sid: 'sess_456', sub: 'different_user' };
+      const mockToken2 = `header.${Buffer.from(JSON.stringify(payload2)).toString('base64')}.signature`;
+      
       const response = await request(app)
         .post('/api/nodes/claim')
-        .set('Authorization', 'Bearer test_token')
+        .set('Authorization', `Bearer ${mockToken2}`)
         .send({
           publicKey: testPublicKey,
           name: 'Test Node'
@@ -284,9 +296,12 @@ describe('Node API Endpoints', () => {
     });
 
     it('should return user nodes with auth', async () => {
+      const payload = { sid: 'sess_123', sub: 'test_user_123' };
+      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
+      
       const response = await request(app)
         .get('/api/nodes')
-        .set('Authorization', 'Bearer test_token');
+        .set('Authorization', `Bearer ${mockToken}`);
 
       expect(response.status).toBe(200);
       expect(response.body.nodes).toHaveLength(2);
@@ -364,9 +379,12 @@ describe('Node API Endpoints', () => {
     });
 
     it('should update node visibility', async () => {
+      const payload = { sid: 'sess_123', sub: 'test_user_123' };
+      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
+      
       const response = await request(app)
         .put(`/api/nodes/${testNodeId}/visibility`)
-        .set('Authorization', 'Bearer test_token')
+        .set('Authorization', `Bearer ${mockToken}`)
         .send({ isPublic: true });
 
       expect(response.status).toBe(200);
@@ -387,9 +405,12 @@ describe('Node API Endpoints', () => {
         lastSeen: Date.now()
       }));
 
+      const payload = { sid: 'sess_123', sub: 'test_user_123' };
+      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
+      
       const response = await request(app)
         .put('/api/nodes/other/visibility')
-        .set('Authorization', 'Bearer test_token')
+        .set('Authorization', `Bearer ${mockToken}`)
         .send({ isPublic: true });
 
       expect(response.status).toBe(403);
@@ -397,9 +418,12 @@ describe('Node API Endpoints', () => {
     });
 
     it('should reject with invalid isPublic value', async () => {
+      const payload = { sid: 'sess_123', sub: 'test_user_123' };
+      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
+      
       const response = await request(app)
         .put(`/api/nodes/${testNodeId}/visibility`)
-        .set('Authorization', 'Bearer test_token')
+        .set('Authorization', `Bearer ${mockToken}`)
         .send({ isPublic: 'not_boolean' });
 
       expect(response.status).toBe(400);
@@ -407,9 +431,12 @@ describe('Node API Endpoints', () => {
     });
 
     it('should return 404 for non-existent node', async () => {
+      const payload = { sid: 'sess_123', sub: 'test_user_123' };
+      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
+      
       const response = await request(app)
         .put('/api/nodes/nonexistent/visibility')
-        .set('Authorization', 'Bearer test_token')
+        .set('Authorization', `Bearer ${mockToken}`)
         .send({ isPublic: true });
 
       expect(response.status).toBe(404);
@@ -422,9 +449,12 @@ describe('Node API Endpoints', () => {
       // Mock Redis error
       redisClient.get = jest.fn().mockRejectedValue(new Error('Database error'));
       
+      const payload = { sid: 'sess_123', sub: 'test_user_123' };
+      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
+      
       const response = await request(app)
         .post('/api/nodes/claim')
-        .set('Authorization', 'Bearer test_token')
+        .set('Authorization', `Bearer ${mockToken}`)
         .send({
           publicKey: testPublicKey,
           name: 'Test Node'
@@ -473,9 +503,12 @@ describe('Node API Endpoints', () => {
       // Mock Redis error
       redisClient.smembers = jest.fn().mockRejectedValue(new Error('Database error'));
       
+      const payload = { sid: 'sess_123', sub: 'test_user_123' };
+      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
+      
       const response = await request(app)
         .get('/api/nodes')
-        .set('Authorization', 'Bearer test_token');
+        .set('Authorization', `Bearer ${mockToken}`);
 
       expect(response.status).toBe(500);
       expect(response.body.error).toBe('Failed to get nodes');
@@ -498,9 +531,12 @@ describe('Node API Endpoints', () => {
       const originalUpdateVisibility = nodeService.updateNodeVisibility;
       nodeService.updateNodeVisibility = jest.fn().mockRejectedValue(new Error('Database error'));
       
+      const payload = { sid: 'sess_123', sub: 'test_user_123' };
+      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
+      
       const response = await request(app)
         .put(`/api/nodes/${testNodeId}/visibility`)
-        .set('Authorization', 'Bearer test_token')
+        .set('Authorization', `Bearer ${mockToken}`)
         .send({ isPublic: true });
 
       expect(response.status).toBe(500);
@@ -550,9 +586,12 @@ describe('Node API Endpoints', () => {
         error: 'Some error without status field'
       });
       
+      const payload = { sid: 'sess_123', sub: 'test_user_123' };
+      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
+      
       const response = await request(app)
         .put(`/api/nodes/${testNodeId}/visibility`)
-        .set('Authorization', 'Bearer test_token')
+        .set('Authorization', `Bearer ${mockToken}`)
         .send({ isPublic: true });
 
       expect(response.status).toBe(400); // Should default to 400
