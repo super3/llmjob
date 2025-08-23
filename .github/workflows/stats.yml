@@ -35,8 +35,43 @@ jobs:
             process.exit(1);
           }
 
+          // Fetch node stats from API
+          function fetchNodeStats() {
+            return new Promise((resolve, reject) => {
+              const options = {
+                hostname: 'llmjob-production.up.railway.app',
+                path: '/api/nodes/public',
+                method: 'GET',
+                headers: {
+                  'Content-Type': 'application/json'
+                }
+              };
+
+              const req = https.request(options, (res) => {
+                let data = '';
+                res.on('data', (chunk) => data += chunk);
+                res.on('end', () => {
+                  try {
+                    const response = JSON.parse(data);
+                    const onlineNodes = response.nodes ? response.nodes.filter(node => node.status === 'online').length : 0;
+                    resolve(onlineNodes);
+                  } catch (error) {
+                    console.error('Failed to fetch node stats:', error);
+                    resolve(0);
+                  }
+                });
+              });
+
+              req.on('error', (error) => {
+                console.error('Failed to fetch node stats:', error);
+                resolve(0);
+              });
+              req.end();
+            });
+          }
+
           // Fetch stats from Clerk
-          function fetchClerkStats() {
+          function fetchClerkStats(nodeCount) {
             return new Promise((resolve, reject) => {
               const options = {
                 hostname: 'api.clerk.com',
@@ -61,7 +96,7 @@ jobs:
                       timestamp: new Date().toISOString(),
                       tokens_processed: "1.2M",
                       models_available: 2,
-                      online_nodes: 2
+                      online_nodes: nodeCount
                     };
                     
                     resolve(stats);
@@ -120,7 +155,11 @@ jobs:
 
           // Main execution
           let statsData = null;
-          fetchClerkStats()
+          fetchNodeStats()
+            .then(nodeCount => {
+              console.log('Node count fetched:', nodeCount);
+              return fetchClerkStats(nodeCount);
+            })
             .then(stats => {
               statsData = stats;
               console.log('Stats fetched:', stats);
