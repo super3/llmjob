@@ -53,7 +53,8 @@ jobs:
                 res.on('end', () => {
                   try {
                     const response = JSON.parse(data);
-                    const onlineNodes = response.nodes ? response.nodes.filter(node => node.status === 'online').length : 0;
+                    // Use totalOnline count which includes both public and private nodes
+                    const onlineNodes = response.totalOnline || 0;
                     resolve(onlineNodes);
                   } catch (error) {
                     console.error('Failed to fetch node stats:', error);

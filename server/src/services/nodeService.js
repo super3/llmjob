@@ -125,35 +125,39 @@ async function getPublicNodes(redisClient) {
   const keys = await redis.keys(`${NODE_PREFIX}*`);
   
   if (!keys || keys.length === 0) {
-    return [];
+    return { nodes: [], totalOnline: 0 };
   }
   
   const publicNodes = [];
+  let totalOnlineCount = 0;
+  
   for (const key of keys) {
     const nodeData = await redis.get(key);
     
     if (nodeData) {
       const node = JSON.parse(nodeData);
       
-      // Only include public nodes
+      // Check if node should be marked as offline
+      const timeSinceLastSeen = Date.now() - node.lastSeen;
+      const isOnline = timeSinceLastSeen <= NODE_TTL * 1000;
+      
+      if (isOnline && node.status === 'online') {
+        totalOnlineCount++;
+      }
+      
+      // Only include public nodes in the detailed list
       if (node.isPublic) {
-        // Check if node should be marked as offline
-        const timeSinceLastSeen = Date.now() - node.lastSeen;
-        if (timeSinceLastSeen > NODE_TTL * 1000) {
-          node.status = 'offline';
-        }
-        
         publicNodes.push({
           nodeId: node.nodeId,
           name: node.name,
-          status: node.status,
+          status: isOnline ? node.status : 'offline',
           lastSeen: node.lastSeen
         });
       }
     }
   }
   
-  return publicNodes;
+  return { nodes: publicNodes, totalOnline: totalOnlineCount };
 }
 
 async function updateNodeVisibility(redisClient, nodeId, userId, isPublic) {

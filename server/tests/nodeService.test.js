@@ -259,10 +259,11 @@ describe('Node Service', () => {
     });
 
     it('should return only public nodes', async () => {
-      const nodes = await nodeService.getPublicNodes(redisClient);
+      const result = await nodeService.getPublicNodes(redisClient);
 
-      expect(nodes).toHaveLength(2);
-      expect(nodes.every(n => n.name.includes('Public'))).toBe(true);
+      expect(result.nodes).toHaveLength(2);
+      expect(result.nodes.every(n => n.name.includes('Public'))).toBe(true);
+      expect(result.totalOnline).toBe(0); // All nodes start offline
     });
   });
 
@@ -292,8 +293,8 @@ describe('Node Service', () => {
       expect(result.isPublic).toBe(true);
 
       // Verify it appears in public nodes
-      const publicNodes = await nodeService.getPublicNodes(redisClient);
-      expect(publicNodes.some(n => n.nodeId === nodeId)).toBe(true);
+      const publicResult = await nodeService.getPublicNodes(redisClient);
+      expect(publicResult.nodes.some(n => n.nodeId === nodeId)).toBe(true);
     });
 
     it('should update node visibility to private', async () => {
@@ -312,8 +313,8 @@ describe('Node Service', () => {
       expect(result.isPublic).toBe(false);
 
       // Verify it doesn't appear in public nodes
-      const publicNodes = await nodeService.getPublicNodes(redisClient);
-      expect(publicNodes.some(n => n.nodeId === nodeId)).toBe(false);
+      const publicResult = await nodeService.getPublicNodes(redisClient);
+      expect(publicResult.nodes.some(n => n.nodeId === nodeId)).toBe(false);
     });
 
     it('should reject update from non-owner', async () => {
@@ -386,8 +387,8 @@ describe('Node Service', () => {
 
   describe('getPublicNodes edge cases', () => {
     it('should handle empty nodes', async () => {
-      const nodes = await nodeService.getPublicNodes(redisClient);
-      expect(nodes).toEqual([]);
+      const result = await nodeService.getPublicNodes(redisClient);
+      expect(result).toEqual({ nodes: [], totalOnline: 0 });
     });
 
     it('should handle null data from redis', async () => {
@@ -395,8 +396,8 @@ describe('Node Service', () => {
       redisClient.keys = jest.fn().mockResolvedValue(['node:test']);
       redisClient.get = jest.fn().mockResolvedValue(null);
       
-      const nodes = await nodeService.getPublicNodes(redisClient);
-      expect(nodes).toEqual([]);
+      const result = await nodeService.getPublicNodes(redisClient);
+      expect(result).toEqual({ nodes: [], totalOnline: 0 });
     });
 
     it('should mark old public nodes as offline', async () => {
@@ -412,9 +413,10 @@ describe('Node Service', () => {
         lastSeen: oldTime
       }));
       
-      const nodes = await nodeService.getPublicNodes(redisClient);
-      expect(nodes).toHaveLength(1);
-      expect(nodes[0].status).toBe('offline');
+      const result = await nodeService.getPublicNodes(redisClient);
+      expect(result.nodes).toHaveLength(1);
+      expect(result.nodes[0].status).toBe('offline');
+      expect(result.totalOnline).toBe(0); // Old node is offline
     });
   });
 

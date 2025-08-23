@@ -58,8 +58,8 @@ async function getPublicNodes(req, res) {
   try {
     const redis = req.app.locals.redis;
     
-    const nodes = await nodeService.getPublicNodes(redis);
-    res.json({ nodes });
+    const result = await nodeService.getPublicNodes(redis);
+    res.json(result);
   } catch (error) {
     console.error('Get public nodes error:', error);
     res.status(500).json({ error: 'Failed to get public nodes' });
