@@ -90,7 +90,14 @@ jobs:
                 res.on('end', () => {
                   try {
                     const response = JSON.parse(data);
+                    
+                    // Log the Clerk API response for debugging
+                    if (res.statusCode !== 200) {
+                      console.log('Clerk API error:', res.statusCode, data);
+                    }
+                    
                     const userCount = response.total_count || 0;
+                    console.log('Clerk API response - Total users:', userCount);
                     
                     const stats = {
                       users: userCount,
@@ -102,6 +109,8 @@ jobs:
                     
                     resolve(stats);
                   } catch (error) {
+                    console.error('Failed to parse Clerk response:', error);
+                    console.error('Response data:', data);
                     reject(error);
                   }
                 });
