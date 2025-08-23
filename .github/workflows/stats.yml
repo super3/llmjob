@@ -96,8 +96,9 @@ jobs:
                       console.log('Clerk API error:', res.statusCode, data);
                     }
                     
-                    const userCount = response.total_count || 0;
-                    console.log('Clerk API response - Total users:', userCount);
+                    // Clerk returns the total count in the X-Total-Count header
+                    const userCount = parseInt(res.headers['x-total-count'] || '0', 10);
+                    console.log('Clerk API response - Total users from header:', userCount);
                     
                     const stats = {
                       users: userCount,
