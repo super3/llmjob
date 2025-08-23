@@ -5,7 +5,7 @@ const { clerkClient } = require('@clerk/clerk-sdk-node');
 jest.mock('@clerk/clerk-sdk-node', () => ({
   clerkClient: {
     sessions: {
-      verifySession: jest.fn()
+      getSession: jest.fn()
     },
     users: {
       getUser: jest.fn()
@@ -30,10 +30,13 @@ describe('Auth Middleware', () => {
   });
 
   describe('requireAuth', () => {
-    it('should authenticate valid token', async () => {
-      req.headers.authorization = 'Bearer valid_token';
+    it('should authenticate valid token with session ID', async () => {
+      // Create a mock JWT token with session ID
+      const payload = { sid: 'sess_123', sub: 'user_123' };
+      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
+      req.headers.authorization = `Bearer ${mockToken}`;
       
-      clerkClient.sessions.verifySession.mockResolvedValue({
+      clerkClient.sessions.getSession.mockResolvedValue({
         userId: 'user_123'
       });
       
@@ -76,9 +79,11 @@ describe('Auth Middleware', () => {
     });
 
     it('should handle token verification failure', async () => {
-      req.headers.authorization = 'Bearer invalid_token';
+      const payload = { sid: 'sess_invalid' };
+      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
+      req.headers.authorization = `Bearer ${mockToken}`;
       
-      clerkClient.sessions.verifySession.mockRejectedValue(
+      clerkClient.sessions.getSession.mockRejectedValue(
         new Error('Invalid token')
       );
 
@@ -92,9 +97,11 @@ describe('Auth Middleware', () => {
     });
 
     it('should handle user fetch failure', async () => {
-      req.headers.authorization = 'Bearer valid_token';
+      const payload = { sid: 'sess_123', sub: 'user_123' };
+      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
+      req.headers.authorization = `Bearer ${mockToken}`;
       
-      clerkClient.sessions.verifySession.mockResolvedValue({
+      clerkClient.sessions.getSession.mockResolvedValue({
         userId: 'user_123'
       });
       
@@ -129,9 +136,11 @@ describe('Auth Middleware', () => {
     });
 
     it('should handle user without email addresses', async () => {
-      req.headers.authorization = 'Bearer valid_token';
+      const payload = { sid: 'sess_123', sub: 'user_123' };
+      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
+      req.headers.authorization = `Bearer ${mockToken}`;
       
-      clerkClient.sessions.verifySession.mockResolvedValue({
+      clerkClient.sessions.getSession.mockResolvedValue({
         userId: 'user_123'
       });
       
@@ -149,6 +158,40 @@ describe('Auth Middleware', () => {
         email: undefined,
         username: 'testuser'
       });
+    });
+
+    it('should authenticate token with only user ID (no session)', async () => {
+      const payload = { sub: 'user_123' }; // No sid
+      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
+      req.headers.authorization = `Bearer ${mockToken}`;
+      
+      clerkClient.users.getUser.mockResolvedValue({
+        id: 'user_123',
+        emailAddresses: [{ emailAddress: 'test@example.com' }],
+        username: 'testuser'
+      });
+
+      await requireAuth(req, res, next);
+
+      expect(next).toHaveBeenCalled();
+      expect(req.user).toEqual({
+        id: 'user_123',
+        email: 'test@example.com',
+        username: 'testuser'
+      });
+      expect(clerkClient.sessions.getSession).not.toHaveBeenCalled();
+    });
+
+    it('should reject token with invalid format', async () => {
+      req.headers.authorization = 'Bearer invalid.token'; // Only 2 parts
+      
+      await requireAuth(req, res, next);
+      
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'Invalid or expired token'
+      });
+      expect(next).not.toHaveBeenCalled();
     });
   });
 });
