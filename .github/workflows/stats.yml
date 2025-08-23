@@ -76,7 +76,7 @@ jobs:
             return new Promise((resolve, reject) => {
               const options = {
                 hostname: 'api.clerk.com',
-                path: '/v1/users?limit=1',
+                path: '/v1/users',
                 method: 'GET',
                 headers: {
                   'Authorization': `Bearer ${CLERK_SECRET_KEY}`,
@@ -96,13 +96,9 @@ jobs:
                       console.log('Clerk API error:', res.statusCode, data);
                     }
                     
-                    // Log all headers for debugging
-                    console.log('Response headers:', JSON.stringify(res.headers));
-                    
-                    // Clerk returns the total count in the X-Total-Count header
-                    const userCount = parseInt(res.headers['x-total-count'] || '0', 10);
-                    console.log('Clerk API response - Total users from header:', userCount);
-                    console.log('Response body (first user):', JSON.stringify(response[0]).substring(0, 100));
+                    // Clerk returns an array of users directly
+                    const userCount = Array.isArray(response) ? response.length : 0;
+                    console.log('Clerk API response - Total users:', userCount);
                     
                     const stats = {
                       users: userCount,
