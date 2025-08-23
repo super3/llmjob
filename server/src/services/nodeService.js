@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { createRedisCompat } = require('../utils/redisCompat');
 
 const NODE_TTL = 15 * 60; // 15 minutes in seconds
 const NODE_PREFIX = 'node:';
@@ -10,7 +11,8 @@ function generateNodeFingerprint(publicKey) {
   return hash.substring(0, 6);
 }
 
-async function claimNode(redis, publicKey, name, userId) {
+async function claimNode(redisClient, publicKey, name, userId) {
+  const redis = createRedisCompat(redisClient);
   const nodeId = generateNodeFingerprint(publicKey);
   const nodeKey = `${NODE_PREFIX}${nodeId}`;
   
@@ -40,7 +42,7 @@ async function claimNode(redis, publicKey, name, userId) {
   
   // Add to user's node list
   const userNodesKey = `${USER_NODES_PREFIX}${userId}`;
-  await redis.sadd(userNodesKey, nodeId);
+  await redis.sAdd(userNodesKey, nodeId);
   
   return {
     success: true,
@@ -49,7 +51,8 @@ async function claimNode(redis, publicKey, name, userId) {
   };
 }
 
-async function updateNodeStatus(redis, nodeId, publicKey) {
+async function updateNodeStatus(redisClient, nodeId, publicKey) {
+  const redis = createRedisCompat(redisClient);
   const nodeKey = `${NODE_PREFIX}${nodeId}`;
   
   // Get existing node
@@ -70,7 +73,7 @@ async function updateNodeStatus(redis, nodeId, publicKey) {
   node.lastSeen = Date.now();
   
   // Store with TTL
-  await redis.setex(nodeKey, NODE_TTL, JSON.stringify(node));
+  await redis.setEx(nodeKey, NODE_TTL, JSON.stringify(node));
   
   return {
     success: true,
@@ -79,11 +82,12 @@ async function updateNodeStatus(redis, nodeId, publicKey) {
   };
 }
 
-async function getUserNodes(redis, userId) {
+async function getUserNodes(redisClient, userId) {
+  const redis = createRedisCompat(redisClient);
   const userNodesKey = `${USER_NODES_PREFIX}${userId}`;
   
   // Get all node IDs for user
-  const nodeIds = await redis.smembers(userNodesKey);
+  const nodeIds = await redis.sMembers(userNodesKey);
   
   if (!nodeIds || nodeIds.length === 0) {
     return [];
@@ -115,7 +119,8 @@ async function getUserNodes(redis, userId) {
   return nodes;
 }
 
-async function getPublicNodes(redis) {
+async function getPublicNodes(redisClient) {
+  const redis = createRedisCompat(redisClient);
   // Get all node keys
   const keys = await redis.keys(`${NODE_PREFIX}*`);
   
@@ -151,7 +156,8 @@ async function getPublicNodes(redis) {
   return publicNodes;
 }
 
-async function updateNodeVisibility(redis, nodeId, userId, isPublic) {
+async function updateNodeVisibility(redisClient, nodeId, userId, isPublic) {
+  const redis = createRedisCompat(redisClient);
   const nodeKey = `${NODE_PREFIX}${nodeId}`;
   
   // Get existing node
@@ -173,7 +179,7 @@ async function updateNodeVisibility(redis, nodeId, userId, isPublic) {
   // Store updated node
   const ttl = await redis.ttl(nodeKey);
   if (ttl > 0) {
-    await redis.setex(nodeKey, ttl, JSON.stringify(node));
+    await redis.setEx(nodeKey, ttl, JSON.stringify(node));
   } else {
     await redis.set(nodeKey, JSON.stringify(node));
   }
@@ -186,7 +192,8 @@ async function updateNodeVisibility(redis, nodeId, userId, isPublic) {
   };
 }
 
-async function checkNodeStatuses(redis) {
+async function checkNodeStatuses(redisClient) {
+  const redis = createRedisCompat(redisClient);
   // This function is called periodically to clean up expired nodes
   // Redis TTL will automatically remove nodes that haven't pinged in 15 minutes
   // This is just for logging/monitoring purposes
