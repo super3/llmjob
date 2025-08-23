@@ -40,36 +40,12 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Debug endpoint to check file availability
-app.get('/debug/files', (req, res) => {
-  const fs = require('fs');
-  const staticPath = process.env.RAILWAY_ENVIRONMENT ? '/app' : path.join(__dirname, '../..');
-  
-  try {
-    const files = fs.readdirSync(staticPath);
-    const htmlFiles = files.filter(f => f.endsWith('.html'));
-    res.json({
-      staticPath,
-      totalFiles: files.length,
-      htmlFiles,
-      allFiles: files.slice(0, 50) // Limit to first 50 files
-    });
-  } catch (error) {
-    res.json({
-      error: error.message,
-      staticPath
-    });
-  }
-});
-
 // Serve static files from root directory
 // In production (Railway), files are at /app root
 // In development, files are at project root (two levels up from server/src)
 const staticPath = process.env.RAILWAY_ENVIRONMENT 
   ? '/app' 
   : path.join(__dirname, '../..');
-console.log(`Environment: NODE_ENV=${process.env.NODE_ENV}, RAILWAY_ENVIRONMENT=${process.env.RAILWAY_ENVIRONMENT}`);
-console.log(`Serving static files from: ${staticPath}`);
 app.use(express.static(staticPath));
 
 // Error handling middleware
