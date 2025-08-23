@@ -312,8 +312,8 @@
             console.log('Clerk is loaded');
             
             // Configure redirect after sign in/up
-            Clerk.redirectToSignIn = '/cluster';
-            Clerk.redirectToSignUp = '/cluster';
+            Clerk.redirectToSignIn = '/cluster.html';
+            Clerk.redirectToSignUp = '/cluster.html';
 
             // Mount auth buttons in navigation
             const authButtonsDiv = document.getElementById('auth-buttons');
@@ -332,7 +332,7 @@
                     if (btn) {
                         btn.textContent = 'Sign In';
                         btn.disabled = false;
-                        btn.onclick = () => Clerk.openSignIn({ redirectUrl: '/cluster' });
+                        btn.onclick = () => Clerk.openSignIn({ redirectUrl: '/cluster.html' });
                     }
                 }
             }
@@ -343,7 +343,7 @@
                 if (Clerk.user) {
                     window.location.href = '/cluster.html';
                 } else {
-                    Clerk.openSignUp({ redirectUrl: '/cluster' });
+                    Clerk.openSignUp({ redirectUrl: '/cluster.html' });
                 }
             });
 
@@ -353,7 +353,7 @@
                 if (Clerk.user) {
                     window.location.href = '/cluster.html';
                 } else {
-                    Clerk.openSignUp({ redirectUrl: '/cluster' });
+                    Clerk.openSignUp({ redirectUrl: '/cluster.html' });
                 }
             });
 
@@ -367,15 +367,15 @@
                 
                 // Add click handlers to existing buttons
                 githubBtn?.addEventListener('click', () => {
-                    Clerk.openSignUp({ redirectUrl: '/cluster' });
+                    Clerk.openSignUp({ redirectUrl: '/cluster.html' });
                 });
                 
                 googleBtn?.addEventListener('click', () => {
-                    Clerk.openSignUp({ redirectUrl: '/cluster' });
+                    Clerk.openSignUp({ redirectUrl: '/cluster.html' });
                 });
                 
                 emailBtn?.addEventListener('click', () => {
-                    Clerk.openSignUp({ redirectUrl: '/cluster' });
+                    Clerk.openSignUp({ redirectUrl: '/cluster.html' });
                 });
             } else if (signUpDiv && Clerk.user) {
                 // User is already signed in
