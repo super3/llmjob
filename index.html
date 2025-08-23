@@ -269,17 +269,17 @@
                     
                     // Update the displayed stats
                     document.getElementById('stat-tokens').textContent = stats.tokens_processed || '1.2M';
-                    document.getElementById('stat-users').textContent = stats.users || '0';
-                    document.getElementById('stat-models').textContent = stats.models_available || '2';
-                    document.getElementById('stat-nodes').textContent = stats.online_nodes || '0';
+                    document.getElementById('stat-users').textContent = stats.users || '1';
+                    document.getElementById('stat-models').textContent = stats.models_available || '1';
+                    document.getElementById('stat-nodes').textContent = stats.online_nodes || '1';
                 }
             } catch (error) {
                 console.log('Could not fetch stats from Gist, using defaults');
                 // Set default values if Gist fetch fails
                 document.getElementById('stat-tokens').textContent = '1.2M';
-                document.getElementById('stat-users').textContent = '0';
-                document.getElementById('stat-models').textContent = '2';
-                document.getElementById('stat-nodes').textContent = '0';
+                document.getElementById('stat-users').textContent = '1';
+                document.getElementById('stat-models').textContent = '1';
+                document.getElementById('stat-nodes').textContent = '1';
             }
         }
         
