@@ -61,7 +61,7 @@
                         <script>
                             // Render initial button based on session cookie
                             if (hasClerkSession) {
-                                document.write('<button class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition" onclick="window.location.href=\'/cluster\'" disabled>Your Cluster</button>');
+                                document.write('<button class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition" onclick="window.location.href=\'/cluster.html\'" disabled>Your Cluster</button>');
                             } else {
                                 document.write('<button class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition" disabled>Sign In</button>');
                             }
@@ -324,7 +324,7 @@
                     if (btn) {
                         btn.textContent = 'Your Cluster';
                         btn.disabled = false;
-                        btn.onclick = () => window.location.href = '/cluster';
+                        btn.onclick = () => window.location.href = '/cluster.html';
                     }
                 } else {
                     // User is signed out - enable sign in button
@@ -341,7 +341,7 @@
             const startClusterBtn = document.getElementById('start-cluster-btn');
             startClusterBtn?.addEventListener('click', () => {
                 if (Clerk.user) {
-                    window.location.href = '/cluster';
+                    window.location.href = '/cluster.html';
                 } else {
                     Clerk.openSignUp({ redirectUrl: '/cluster' });
                 }
@@ -351,7 +351,7 @@
             const createClusterBtn = document.getElementById('create-cluster-btn');
             createClusterBtn?.addEventListener('click', () => {
                 if (Clerk.user) {
-                    window.location.href = '/cluster';
+                    window.location.href = '/cluster.html';
                 } else {
                     Clerk.openSignUp({ redirectUrl: '/cluster' });
                 }
