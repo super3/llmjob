@@ -80,9 +80,6 @@
                         <button onclick="switchTab('nodes')" id="nodes-tab" class="py-4 px-1 text-sm font-medium text-gray-500 hover:text-gray-700 tab-active">
                             Nodes
                         </button>
-                        <button onclick="switchTab('models')" id="models-tab" class="py-4 px-1 text-sm font-medium text-gray-500 hover:text-gray-700">
-                            Models
-                        </button>
                         <button onclick="switchTab('api')" id="api-tab" class="py-4 px-1 text-sm font-medium text-gray-500 hover:text-gray-700">
                             API
                         </button>
@@ -165,125 +162,6 @@
                     </div>
                 </div>
 
-                <!-- Models Tab Content -->
-                <div id="models-content" class="hidden">
-                    <!-- Header with Stats -->
-                    <div class="px-6 py-4 border-b border-gray-200">
-                        <div class="flex items-center justify-between">
-                            <h3 class="text-lg font-semibold text-gray-900">Available Models</h3>
-                            <div class="flex items-center gap-6">
-                                <div class="flex items-center gap-2">
-                                    <span class="text-gray-600 text-sm">Total Models:</span>
-                                    <span class="text-xl font-bold text-primary-600">3</span>
-                                </div>
-                                <div class="flex items-center gap-2">
-                                    <span class="text-gray-600 text-sm">Models Loaded:</span>
-                                    <span class="text-xl font-bold text-primary-600">2</span>
-                                </div>
-                                <button class="px-4 py-2 bg-primary-600 text-white text-sm rounded-lg hover:bg-primary-700 transition">
-                                    + Add Model
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- Table -->
-                    <div class="overflow-x-auto">
-                        <table class="w-full">
-                            <thead class="bg-gray-50 border-b border-gray-200">
-                                <tr>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Model</th>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Size</th>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">VRAM Required</th>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Node</th>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Requests</th>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody class="divide-y divide-gray-200">
-                                <tr class="hover:bg-gray-50 transition">
-                                    <td class="px-6 py-4 whitespace-nowrap">
-                                        <div class="text-sm font-medium text-gray-900">Llama 2 7B</div>
-                                        <div class="text-xs text-gray-500">meta-llama/Llama-2-7b-chat-hf</div>
-                                    </td>
-                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                        7B
-                                    </td>
-                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                        14 GB
-                                    </td>
-                                    <td class="px-6 py-4 whitespace-nowrap">
-                                        <span class="px-2 py-1 text-xs font-medium text-green-700 bg-green-100 rounded-full">
-                                            Loaded
-                                        </span>
-                                    </td>
-                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                        RTX 4090 Workstation
-                                    </td>
-                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                        342
-                                    </td>
-                                    <td class="px-6 py-4 whitespace-nowrap text-sm">
-                                        <button class="text-primary-600 hover:text-primary-700">Unload</button>
-                                    </td>
-                                </tr>
-                                <tr class="hover:bg-gray-50 transition">
-                                    <td class="px-6 py-4 whitespace-nowrap">
-                                        <div class="text-sm font-medium text-gray-900">Mistral 7B</div>
-                                        <div class="text-xs text-gray-500">mistralai/Mistral-7B-Instruct-v0.2</div>
-                                    </td>
-                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                        7B
-                                    </td>
-                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                        14 GB
-                                    </td>
-                                    <td class="px-6 py-4 whitespace-nowrap">
-                                        <span class="px-2 py-1 text-xs font-medium text-gray-700 bg-gray-100 rounded-full">
-                                            Available
-                                        </span>
-                                    </td>
-                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                        -
-                                    </td>
-                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                        0
-                                    </td>
-                                    <td class="px-6 py-4 whitespace-nowrap text-sm">
-                                        <button class="text-primary-600 hover:text-primary-700">Load</button>
-                                    </td>
-                                </tr>
-                                <tr class="hover:bg-gray-50 transition">
-                                    <td class="px-6 py-4 whitespace-nowrap">
-                                        <div class="text-sm font-medium text-gray-900">GPT-2</div>
-                                        <div class="text-xs text-gray-500">openai/gpt2-medium</div>
-                                    </td>
-                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                        355M
-                                    </td>
-                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                        2 GB
-                                    </td>
-                                    <td class="px-6 py-4 whitespace-nowrap">
-                                        <span class="px-2 py-1 text-xs font-medium text-green-700 bg-green-100 rounded-full">
-                                            Loaded
-                                        </span>
-                                    </td>
-                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                        MacBook Pro M2
-                                    </td>
-                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                        128
-                                    </td>
-                                    <td class="px-6 py-4 whitespace-nowrap text-sm">
-                                        <button class="text-primary-600 hover:text-primary-700">Unload</button>
-                                    </td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
 
                 <!-- API Tab Content -->
                 <div id="api-content" class="hidden">
@@ -387,12 +265,10 @@
         function switchTab(tabName) {
             // Hide all content
             document.getElementById('nodes-content').classList.add('hidden');
-            document.getElementById('models-content').classList.add('hidden');
             document.getElementById('api-content').classList.add('hidden');
             
             // Remove active class from all tabs
             document.getElementById('nodes-tab').classList.remove('tab-active');
-            document.getElementById('models-tab').classList.remove('tab-active');
             document.getElementById('api-tab').classList.remove('tab-active');
             
             // Show selected content and mark tab as active
