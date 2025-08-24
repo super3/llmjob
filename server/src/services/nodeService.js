@@ -1,7 +1,8 @@
 const crypto = require('crypto');
 const { createRedisCompat } = require('../utils/redisCompat');
 
-const NODE_TTL = 15 * 60; // 15 minutes in seconds
+const NODE_TTL = 7 * 24 * 60 * 60; // 7 days in seconds - nodes stay in Redis for a week
+const OFFLINE_THRESHOLD = 15 * 60 * 1000; // 15 minutes in milliseconds - mark offline after this
 const NODE_PREFIX = 'node:';
 const USER_NODES_PREFIX = 'user_nodes:';
 
@@ -103,7 +104,7 @@ async function getUserNodes(redisClient, userId) {
       const node = JSON.parse(nodeData);
       // Check if node should be marked as offline
       const timeSinceLastSeen = Date.now() - node.lastSeen;
-      if (timeSinceLastSeen > NODE_TTL * 1000) {
+      if (timeSinceLastSeen > OFFLINE_THRESHOLD) {
         node.status = 'offline';
       }
       nodes.push({
@@ -139,7 +140,7 @@ async function getPublicNodes(redisClient) {
       
       // Check if node should be marked as offline
       const timeSinceLastSeen = Date.now() - node.lastSeen;
-      const isOnline = timeSinceLastSeen <= NODE_TTL * 1000;
+      const isOnline = timeSinceLastSeen <= OFFLINE_THRESHOLD;
       
       if (isOnline && node.status === 'online') {
         totalOnlineCount++;
@@ -199,7 +200,7 @@ async function updateNodeVisibility(redisClient, nodeId, userId, isPublic) {
 async function checkNodeStatuses(redisClient) {
   const redis = createRedisCompat(redisClient);
   // This function is called periodically to clean up expired nodes
-  // Redis TTL will automatically remove nodes that haven't pinged in 15 minutes
+  // Redis TTL will automatically remove nodes that haven't pinged in 7 days
   // This is just for logging/monitoring purposes
   
   const keys = await redis.keys(`${NODE_PREFIX}*`);

@@ -236,7 +236,7 @@ describe('Node Service', () => {
         userId: 'user456',
         status: 'online',
         isPublic: false,
-        lastSeen: Date.now() - (20 * 60 * 1000) // 20 minutes ago
+        lastSeen: Date.now() - (20 * 60 * 1000) // 20 minutes ago - should be offline
       }));
       await redisClient.sadd('user_nodes:user456', nodeId);
 
@@ -386,6 +386,7 @@ describe('Node Service', () => {
   });
 
   describe('getPublicNodes edge cases', () => {
+    const OFFLINE_THRESHOLD = 10 * 60 * 1000; // 10 minutes in milliseconds
     it('should handle empty nodes', async () => {
       const result = await nodeService.getPublicNodes(redisClient);
       expect(result).toEqual({ nodes: [], totalOnline: 0 });
@@ -402,7 +403,7 @@ describe('Node Service', () => {
 
     it('should mark old public nodes as offline', async () => {
       // Add a public node with old lastSeen
-      const oldTime = Date.now() - (20 * 60 * 1000); // 20 minutes ago
+      const oldTime = Date.now() - (20 * 60 * 1000); // 20 minutes ago - beyond offline threshold
       await redisClient.set('node:old', JSON.stringify({
         nodeId: 'old',
         publicKey: 'key_old',

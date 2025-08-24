@@ -76,7 +76,7 @@ class NodeClient {
     }
   }
 
-  startPinging(interval = 10 * 60 * 1000, onPing = null) {
+  startPinging(interval = 5 * 60 * 1000, onPing = null) {
     // Initial ping
     this.ping().then(result => {
       if (onPing) onPing(result);

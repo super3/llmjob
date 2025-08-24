@@ -7,7 +7,8 @@ Express API server for tracking distributed LLM nodes with Redis storage.
 - Node registration with public key authentication
 - Signature-based ping verification  
 - Public/private node visibility
-- Automatic offline detection (15-minute TTL)
+- Automatic offline detection (15 minutes)
+- Node persistence for 7 days (allowing recovery from extended downtime)
 - Clerk JWT authentication for users
 - OpenAPI-compatible endpoints
 
@@ -100,7 +101,7 @@ Required for production:
 ## Architecture
 
 - Express.js server with CORS
-- Redis for data storage with TTL
+- Redis for data storage with intelligent TTL management
 - ED25519 signatures for node authentication
 - Clerk for user authentication
 - Jest + Supertest for testing

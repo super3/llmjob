@@ -18,7 +18,7 @@ program
 program
   .command('start')
   .description('Start the node client and begin pinging the server')
-  .option('-i, --interval <minutes>', 'Ping interval in minutes', '10')
+  .option('-i, --interval <minutes>', 'Ping interval in minutes', '5')
   .option('-n, --name <name>', 'Node name for claiming')
   .action((options) => {
     const config = configManager.getOrCreateConfig();
