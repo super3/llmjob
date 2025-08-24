@@ -7,6 +7,7 @@ on:
       - 'server/**'
       - 'index.html'
       - 'cluster.html'
+      - 'add-node.html'
       - '.github/workflows/railway-deploy.yml'
   workflow_dispatch:
 

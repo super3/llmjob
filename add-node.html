@@ -44,8 +44,9 @@
                     <a href="/" class="text-2xl font-bold text-gray-900">⚡ LLMJob</a>
                 </div>
                 <div class="flex items-center space-x-8">
-                    <div id="auth-buttons" class="flex items-center space-x-2">
-                        <span id="user-info" class="text-sm text-gray-600"></span>
+                    <div id="user-button-nav" class="w-8 h-8">
+                        <!-- Loading placeholder to prevent flicker -->
+                        <div class="w-8 h-8 bg-gray-200 rounded-full animate-pulse"></div>
                     </div>
                 </div>
             </div>
@@ -280,9 +281,19 @@
 
             // Check if user is signed in
             if (Clerk.user) {
-                // User is signed in
-                const userInfo = document.getElementById('user-info');
-                userInfo.textContent = Clerk.user.primaryEmailAddress?.emailAddress || 'Signed In';
+                // User is signed in - mount user button
+                const userButtonDiv = document.getElementById('user-button-nav');
+                if (userButtonDiv) {
+                    // Clear the placeholder
+                    userButtonDiv.innerHTML = '';
+                    Clerk.mountUserButton(userButtonDiv, {
+                        appearance: {
+                            elements: {
+                                avatarBox: 'w-8 h-8'
+                            }
+                        }
+                    });
+                }
 
                 // Check if we have a pending claim from before sign-in
                 const pendingClaim = sessionStorage.getItem('pendingNodeClaim');
