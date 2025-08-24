@@ -1,31 +1,3 @@
-### Phase 2: Node Client ✅
-
-Build a Node.js CLI client that connects to the tracking server.
-
-**Core Features:**
-- [x] Generate ED25519 keypair on first run
-- [x] Use public key fingerprint as short node ID
-- [x] Store keypair securely in local config (~/.llmjob/config.json)
-- [x] Generate claim URL with public key and name
-- [x] Display both full URL and short link for claiming
-- [x] Sign each ping with private key
-- [x] Send ping to server every 10 minutes
-- [x] Start pinging immediately (no user association required)
-- [x] Implement retry logic for failed connections
-- [x] Package as installable npm module
-
-**Testing Requirements:**
-- [x] Set up Jest for CLI testing
-- [x] Test keypair generation and storage
-- [x] Test config file creation and reading
-- [x] Test URL generation with correct parameters
-- [x] Test ping signature generation
-- [x] Test retry logic with mocked network failures
-- [x] Test CLI argument parsing
-- [x] Mock filesystem operations for testing
-- [x] Test timer/interval behavior
-- [x] Achieve >95% code coverage (100% line coverage achieved)
-
 ### Phase 3: Frontend Integration ✅
 
 Connect the cluster dashboard to real backend data.
