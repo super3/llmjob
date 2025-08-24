@@ -1,32 +1,38 @@
-### Phase 3: Frontend Integration ✅
+### Phase 4: LLM Integration with Ollama
 
-Connect the cluster dashboard to real backend data.
+Transform the node client into a wrapper for Ollama to enable distributed LLM inference.
 
-**Updates Completed:**
-- [x] Create /add-node page for claiming nodes via URL
-- [x] Handle not-logged-in users:
-  - [x] Save claim intent to sessionStorage before redirect
-  - [x] Redirect to Clerk sign-in with return URL preserved
-  - [x] Auto-complete claim after successful sign in/up
-  - [x] Clear pending claim from sessionStorage after success
-- [x] Show confirmation dialog when claiming a node
-- [x] Replace mock data with API calls in cluster page
-- [x] Fetch user's nodes list on page load
-- [x] Add toggle switch for public/private mode per node
-- [x] Show actual online/offline status
-- [x] Display short fingerprints as node IDs (e.g., "2891f7")
-- [x] Show node names
-- [x] Add "How to add a node" instructions with npm install command
-- [x] Auto-refresh node status every 30 seconds
+**Core Features:**
+- [ ] Ollama integration
+  - [ ] Detect Ollama installation and version
+  - [ ] Check Ollama service status (http://localhost:11434/api/version)
+  - [ ] List available models via API
+  - [ ] Pull models on demand with progress reporting
+  - [ ] Forward inference requests from job system
+  - [ ] Handle streaming responses
+  - [ ] Report model capabilities and requirements
 
-**Testing Requirements:** (Frontend tests pending - functional testing completed)
-- [ ] Set up Jest with Testing Library for frontend tests
-- [ ] Test add-node page flow with/without auth
-- [ ] Test sessionStorage handling for pending claims
-- [ ] Test API call error handling
-- [ ] Test auto-refresh functionality with timers
-- [ ] Test public/private toggle functionality
-- [ ] Mock Clerk authentication states
-- [ ] Mock fetch calls to backend API
-- [ ] Test UI state changes (loading, error, success)
-- [ ] Achieve >90% code coverage (excluding Clerk SDK)
+- [ ] Job execution system
+  - [ ] Poll server for assigned jobs and download specifications
+  - [ ] Execute inference locally with Ollama
+  - [ ] Stream results back to server with metrics (tokens/sec, memory)
+  - [ ] Handle job cancellation gracefully
+
+- [ ] Resource management
+  - [ ] Detect and report hardware capabilities (GPU, RAM, CPU)
+  - [ ] Implement resource and concurrent job limits
+  - [ ] Graceful shutdown during active jobs
+
+**Server-side changes:**
+- [ ] Job queue system with Redis
+- [ ] Job assignment algorithm based on node capabilities
+- [ ] Result storage and status tracking (pending, assigned, running, completed, failed)
+- [ ] API endpoints for job submission/results with WebSocket support
+
+**Testing Requirements:**
+- [ ] Mock Ollama API endpoints and test availability detection
+- [ ] Test model listing, pulling, and job execution flow
+- [ ] Test error handling and streaming responses
+- [ ] Test graceful degradation when Ollama unavailable
+- [ ] Integration tests with actual Ollama (optional/manual)
+- [ ] Load testing for job queue system
