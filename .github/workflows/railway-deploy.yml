@@ -5,6 +5,8 @@ on:
     branches: [ main ]
     paths:
       - 'server/**'
+      - 'index.html'
+      - 'cluster.html'
       - '.github/workflows/railway-deploy.yml'
   workflow_dispatch:
 
