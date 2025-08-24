@@ -1,37 +1,36 @@
 ### Phase 4: LLM Integration with Ollama
 
-Transform the node client into a wrapper for Ollama to enable distributed LLM inference.
+**4A: Local Client Ollama Integration (Test First)**
+- [ ] Detect hardware capabilities (CPU cores, RAM, GPU type)
+- [ ] Store capabilities in ~/.llmjob/capabilities.json
+- [ ] Detect Ollama installation, auto-install if missing (brew/curl script)
+- [ ] Check service status at http://localhost:11434/api/version
+- [ ] Auto-pull llama3.2:3b model with progress reporting
+- [ ] Test local inference with streaming responses
+- [ ] Benchmark actual inference speed (tokens/sec)
+- [ ] Add Jest tests for Ollama integration
 
-**Core Features:**
-- [ ] Ollama integration
-  - [ ] Detect Ollama installation and auto-install if missing
-  - [ ] Check Ollama service status (http://localhost:11434/api/version)
-  - [ ] Auto-pull llama3.2:3b model if not present (MVP default)
-  - [ ] Forward inference requests from job system
-  - [ ] Handle streaming responses
-  - [ ] Report model capabilities and requirements
+**4B: Server Integration**
+- [ ] Report capabilities during node ping
+- [ ] Poll server for assigned jobs every 30 seconds
+- [ ] Execute inference with Ollama API (/api/generate)
+- [ ] Stream results with metrics back to server (tokens/sec, memory usage)
+- [ ] Handle job cancellation and concurrent job limits
+- [ ] Graceful shutdown if job is running
 
-- [ ] Job execution system
-  - [ ] Poll server for assigned jobs and download specifications
-  - [ ] Execute inference locally with Ollama
-  - [ ] Stream results back to server with metrics (tokens/sec, memory)
-  - [ ] Handle job cancellation gracefully
+**4C: Server-side Changes**
+- [ ] Redis job queue with priority and assignment algorithm
+- [ ] Job status tracking (pending, assigned, running, completed, failed)
+- [ ] Result storage with streaming support
+- [ ] API endpoints for job submission and results
+- [ ] WebSocket support for real-time updates
 
-- [ ] Resource management
-  - [ ] Detect and report hardware capabilities (GPU, RAM, CPU)
-  - [ ] Implement resource and concurrent job limits
-  - [ ] Graceful shutdown during active jobs
-
-**Server-side changes:**
-- [ ] Job queue system with Redis
-- [ ] Job assignment algorithm based on node capabilities
-- [ ] Result storage and status tracking (pending, assigned, running, completed, failed)
-- [ ] API endpoints for job submission/results with WebSocket support
-
-**Testing Requirements:**
-- [ ] Mock Ollama API endpoints and test availability detection
-- [ ] Test model listing, pulling, and job execution flow
-- [ ] Test error handling and streaming responses
-- [ ] Test graceful degradation when Ollama unavailable
-- [ ] Integration tests with actual Ollama (optional/manual)
-- [ ] Load testing for job queue system
+**4D: Testing Requirements**
+- [ ] Mock Ollama API endpoints for unit tests
+- [ ] Test installation detection and model pulling
+- [ ] Test local inference execution and streaming
+- [ ] Test hardware detection and benchmarking
+- [ ] Test job polling, execution, and result streaming
+- [ ] Test error handling and Ollama unavailability
+- [ ] Integration tests with real Ollama (manual)
+- [ ] Load test job queue with multiple nodes
