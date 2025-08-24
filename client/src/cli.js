@@ -32,11 +32,10 @@ program
     console.log(chalk.white('Server:'), chalk.gray(config.serverUrl));
     console.log();
     
-    // Generate claim URLs
-    const urls = client.generateClaimUrl(options.name);
+    // Generate claim URL
+    const url = client.generateClaimUrl(options.name);
     console.log(chalk.green.bold('✨ Claim your node:'));
-    console.log(chalk.white('   Full URL:'), chalk.blue.underline(urls.full));
-    console.log(chalk.white('   Short URL:'), chalk.blue.underline(urls.short));
+    console.log(chalk.white('   '), chalk.blue.underline(url.full));
     console.log();
     console.log(chalk.gray('Visit the URL above to associate this node with your account'));
     console.log(chalk.cyan('───────────────────────────────────────────────────────────'));
@@ -91,10 +90,9 @@ program
     console.log(chalk.white('Created:'), chalk.gray(new Date(config.createdAt).toLocaleString()));
     console.log();
     
-    const urls = client.generateClaimUrl();
-    console.log(chalk.green.bold('Claim URLs:'));
-    console.log(chalk.white('  Full:'), chalk.blue.underline(urls.full));
-    console.log(chalk.white('  Short:'), chalk.blue.underline(urls.short));
+    const url = client.generateClaimUrl();
+    console.log(chalk.green.bold('Claim URL:'));
+    console.log(chalk.white('  '), chalk.blue.underline(url.full));
     console.log();
   });
 

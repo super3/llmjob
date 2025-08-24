@@ -26,20 +26,20 @@ async function claimNode(redisClient, publicKey, name, userId) {
     }
   }
   
-  // Create or update node
+  // Create or update node - mark as online immediately when claimed
   const nodeData = {
     nodeId,
     publicKey,
     name,
     userId,
-    status: 'offline',
+    status: 'online',
     isPublic: false,
     lastSeen: Date.now(),
     claimedAt: Date.now()
   };
   
-  // Store node data
-  await redis.set(nodeKey, JSON.stringify(nodeData));
+  // Store node data with TTL as if it just pinged
+  await redis.setEx(nodeKey, NODE_TTL, JSON.stringify(nodeData));
   
   // Add to user's node list
   const userNodesKey = `${USER_NODES_PREFIX}${userId}`;

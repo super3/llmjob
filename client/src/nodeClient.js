@@ -28,12 +28,10 @@ class NodeClient {
       name: nodeName || `Node-${this.config.nodeId}`
     });
     
-    const fullUrl = `${baseUrl}/add-node?${params.toString()}`;
-    const shortUrl = `${baseUrl}/add-node?id=${this.config.nodeId}`;
+    const fullUrl = `${baseUrl}/add-node.html?${params.toString()}`;
     
     return {
-      full: fullUrl,
-      short: shortUrl
+      full: fullUrl
     };
   }
 

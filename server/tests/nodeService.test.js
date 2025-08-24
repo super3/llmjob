@@ -116,6 +116,7 @@ describe('Node Service', () => {
       expect(node.name).toBe('Test Node');
       expect(node.userId).toBe('user123');
       expect(node.isPublic).toBe(false);
+      expect(node.status).toBe('online'); // Node should be online when claimed
     });
 
     it('should prevent claiming node already owned by another user', async () => {
@@ -263,7 +264,7 @@ describe('Node Service', () => {
 
       expect(result.nodes).toHaveLength(2);
       expect(result.nodes.every(n => n.name.includes('Public'))).toBe(true);
-      expect(result.totalOnline).toBe(0); // All nodes start offline
+      expect(result.totalOnline).toBe(3); // All nodes are online when claimed
     });
   });
 
