@@ -4,10 +4,9 @@ Transform the node client into a wrapper for Ollama to enable distributed LLM in
 
 **Core Features:**
 - [ ] Ollama integration
-  - [ ] Detect Ollama installation and version
+  - [ ] Detect Ollama installation and auto-install if missing
   - [ ] Check Ollama service status (http://localhost:11434/api/version)
-  - [ ] List available models via API
-  - [ ] Pull models on demand with progress reporting
+  - [ ] Auto-pull llama3.2:3b model if not present (MVP default)
   - [ ] Forward inference requests from job system
   - [ ] Handle streaming responses
   - [ ] Report model capabilities and requirements
