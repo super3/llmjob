@@ -76,29 +76,27 @@ describe('NodeClient', () => {
   });
 
   describe('generateClaimUrl', () => {
-    it('should generate full and short URLs with custom name', () => {
+    it('should generate full URL with custom name', () => {
       const urls = nodeClient.generateClaimUrl('MyNode');
       
-      expect(urls.full).toContain('https://test.server.com/add-node');
+      expect(urls.full).toContain('https://test.server.com/add-node.html');
       expect(urls.full).toContain(`publicKey=${encodeURIComponent(mockConfig.publicKey)}`);
       expect(urls.full).toContain('name=MyNode');
-      
-      expect(urls.short).toBe('https://test.server.com/add-node?id=test123');
     });
 
-    it('should generate URLs with default name if none provided', () => {
+    it('should generate URL with default name if none provided', () => {
       const urls = nodeClient.generateClaimUrl();
       
       expect(urls.full).toContain(`name=Node-test123`);
-      expect(urls.short).toBe('https://test.server.com/add-node?id=test123');
+      expect(urls.full).toContain('https://test.server.com/add-node.html');
     });
 
     it('should handle server URL with /api suffix', () => {
       nodeClient.config.serverUrl = 'https://test.server.com/api';
       const urls = nodeClient.generateClaimUrl('TestNode');
       
-      expect(urls.full).toContain('https://test.server.com/add-node');
-      expect(urls.short).toBe('https://test.server.com/add-node?id=test123');
+      expect(urls.full).toContain('https://test.server.com/add-node.html');
+      expect(urls.full).toContain('name=TestNode');
     });
   });
 

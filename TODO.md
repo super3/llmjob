@@ -1,14 +1,15 @@
 ### Phase 4: LLM Integration with Ollama
 
-**4A: Local Client Ollama Integration (Test First)**
-- [ ] Detect hardware capabilities (CPU cores, RAM, GPU type)
-- [ ] Store capabilities in ~/.llmjob/capabilities.json
-- [ ] Detect Ollama installation, auto-install if missing (brew/curl script)
-- [ ] Check service status at http://localhost:11434/api/version
-- [ ] Auto-pull llama3.2:3b model with progress reporting
-- [ ] Test local inference with streaming responses
-- [ ] Benchmark actual inference speed (tokens/sec)
-- [ ] Add Jest tests for Ollama integration
+**4A: Local Client Ollama Integration (Test First)** ✅
+- [x] Detect hardware capabilities (CPU cores, RAM, GPU type)
+- [x] Store capabilities in ~/.llmjob/capabilities.json
+- [x] Detect Ollama installation, auto-install if missing (brew/curl script)
+- [x] Check service status at http://localhost:11434/api/version
+- [x] Auto-pull llama3.2:3b model with progress reporting
+- [x] Test local inference with streaming responses
+- [x] Benchmark actual inference speed (tokens/sec)
+- [x] Add Jest tests for Ollama integration
+- [x] Refactored to use official ollama npm package for better maintainability
 
 **4B: Server Integration**
 - [ ] Report capabilities during node ping
