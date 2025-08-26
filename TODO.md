@@ -13,7 +13,7 @@
 
 **4B: Server Integration**
 - [ ] Report capabilities during node ping
-- [ ] Poll server for assigned jobs every 30 seconds
+- [ ] Poll server for assigned jobs every 5 seconds
 - [ ] Execute inference with Ollama API (/api/generate)
 - [ ] Stream results with metrics back to server (tokens/sec, memory usage)
 - [ ] Handle job cancellation and concurrent job limits
@@ -22,6 +22,8 @@
 **4C: Server-side Changes**
 - [ ] Redis job queue with priority and assignment algorithm
 - [ ] Job status tracking (pending, assigned, running, completed, failed)
+- [ ] Implement job locking with 10-minute timeout (return to queue if not completed)
+- [ ] Worker heartbeat every 30 seconds to detect failures
 - [ ] Result storage with streaming support
 - [ ] API endpoints for job submission and results
 - [ ] WebSocket support for real-time updates
