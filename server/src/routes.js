@@ -25,6 +25,7 @@ router.put('/nodes/:id/visibility', requireAuth, nodeController.updateNodeVisibi
 // Initialize job controller with dependencies
 const initJobRoutes = (redis) => {
   const jobService = new JobService(redis);
+  // Pass the nodeService module directly - it contains the functions needed
   const jobController = new JobController(jobService, nodeService, redis);
 
   // Job submission and management

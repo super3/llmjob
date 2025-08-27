@@ -76,7 +76,7 @@ class JobController {
       const { nodeId, signature, timestamp, status, activeJobs } = req.body;
 
       // Verify node
-      const node = await this.nodeService.getNode(nodeId);
+      const node = await this.nodeService.getNode(nodeId, this.redis);
       if (!node) {
         return res.status(404).json({ error: 'Node not found' });
       }
@@ -101,7 +101,7 @@ class JobController {
       const { nodeId, signature, timestamp, chunkIndex, content, metrics, isFinal } = req.body;
 
       // Verify node
-      const node = await this.nodeService.getNode(nodeId);
+      const node = await this.nodeService.getNode(nodeId, this.redis);
       if (!node) {
         return res.status(404).json({ error: 'Node not found' });
       }
@@ -132,7 +132,7 @@ class JobController {
       const { nodeId, signature, timestamp } = req.body;
 
       // Verify node
-      const node = await this.nodeService.getNode(nodeId);
+      const node = await this.nodeService.getNode(nodeId, this.redis);
       if (!node) {
         return res.status(404).json({ error: 'Node not found' });
       }
@@ -157,7 +157,7 @@ class JobController {
       const { nodeId, signature, timestamp, error: failureReason } = req.body;
 
       // Verify node
-      const node = await this.nodeService.getNode(nodeId);
+      const node = await this.nodeService.getNode(nodeId, this.redis);
       if (!node) {
         return res.status(404).json({ error: 'Node not found' });
       }
