@@ -15,7 +15,7 @@
 - [ ] Report capabilities during node ping
 - [ ] Poll server for assigned jobs every 5 seconds
 - [ ] Execute inference with Ollama API (/api/generate)
-- [ ] Stream results with metrics back to server (tokens/sec, memory usage)
+- [ ] Stream results via HTTP POST chunks with metrics (tokens/sec, memory usage)
 - [ ] Handle job cancellation and concurrent job limits
 - [ ] Graceful shutdown if job is running
 
@@ -24,9 +24,8 @@
 - [ ] Job status tracking (pending, assigned, running, completed, failed)
 - [ ] Implement job locking with 10-minute timeout (return to queue if not completed)
 - [ ] Worker heartbeat every 30 seconds to detect failures
-- [ ] Result storage with streaming support
-- [ ] API endpoints for job submission and results
-- [ ] WebSocket support for real-time updates
+- [ ] Result storage with chunked streaming support
+- [ ] API endpoints for job submission, chunk receiving, and results
 
 **4D: Testing Requirements**
 - [ ] Mock Ollama API endpoints for unit tests
