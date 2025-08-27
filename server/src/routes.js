@@ -29,8 +29,8 @@ const initJobRoutes = (redis) => {
 
   // Job submission and management
   router.post('/jobs', requireAuth, (req, res) => jobController.submitJob(req, res));
-  router.get('/jobs/:jobId', (req, res) => jobController.getJob(req, res));
   router.get('/jobs/stats', (req, res) => jobController.getStats(req, res));
+  router.get('/jobs/:jobId', (req, res) => jobController.getJob(req, res));
   
   // Node job operations (require signature verification)
   router.post('/jobs/poll', verifySignature, (req, res) => jobController.pollJobs(req, res));
@@ -44,4 +44,7 @@ const initJobRoutes = (redis) => {
   router.post('/jobs/check-timeouts', (req, res) => jobController.checkTimeouts(req, res));
 };
 
-module.exports = { router, initJobRoutes };
+// Export router as default for backward compatibility with tests
+module.exports = router;
+// Also export initJobRoutes as a named export
+module.exports.initJobRoutes = initJobRoutes;

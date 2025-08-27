@@ -69,12 +69,35 @@ class JobService {
         redis.del(key, (err, result) => resolve(result));
       });
     };
+    
+    compat.ttl = async (key) => {
+      if (typeof redis.ttl === 'function') {
+        const result = redis.ttl(key);
+        if (result && typeof result.then === 'function') {
+          return result;
+        }
+      }
+      return new Promise((resolve) => {
+        redis.ttl(key, (err, result) => resolve(result !== undefined ? result : -2));
+      });
+    };
 
     compat.sRem = async (key, member) => {
       if (typeof redis.sRem === 'function') {
         return redis.sRem(key, member);
       }
-      return redis.srem(key, member);
+      return new Promise((resolve) => {
+        redis.srem(key, member, (err, result) => resolve(result));
+      });
+    };
+    
+    compat.sAdd = async (key, ...members) => {
+      if (typeof redis.sAdd === 'function') {
+        return redis.sAdd(key, ...members);
+      }
+      return new Promise((resolve) => {
+        redis.sadd(key, ...members, (err, result) => resolve(result));
+      });
     };
     
     // Override set to handle options
@@ -89,12 +112,19 @@ class JobService {
             return null; // Key already exists, NX prevents setting
           }
           // Set with expiration
-          await originalSet(key, value);
+          const result = await originalSet(key, value);
           await compat.expire(key, options.EX);
           return 'OK';
+        } else if (options.EX) {
+          // Just expiration, no NX
+          const result = await originalSet(key, value);
+          await compat.expire(key, options.EX);
+          return result;
         }
       }
-      return originalSet(key, value);
+      // Make sure we await the original set for redis-mock compatibility
+      const result = await originalSet(key, value);
+      return result;
     };
     
     this.redis = compat;

@@ -400,15 +400,17 @@ describe('JobService', () => {
   describe('cleanupOldJobs', () => {
     it('should remove old completed and failed jobs', async () => {
       const job1 = await jobService.createJob({ prompt: 'Test 1', userId: 'user123' });
-      const job2 = await jobService.createJob({ prompt: 'Test 2', userId: 'user123' });
 
       // Complete one job
-      await jobService.assignJobsToNode('node1', 1);
-      await jobService.completeJob(job1.id, 'node1');
+      const assignedToNode1 = await jobService.assignJobsToNode('node1', 1);
+      expect(assignedToNode1).toHaveLength(1);
+      await jobService.completeJob(assignedToNode1[0].id, 'node1');
 
-      // Fail another job
-      await jobService.assignJobsToNode('node2', 1);
-      await jobService.failJob(job2.id, 'node2', 'Test failure');
+      // Create and fail another job
+      const job2 = await jobService.createJob({ prompt: 'Test 2', userId: 'user123' });
+      const assignedToNode2 = await jobService.assignJobsToNode('node2', 1);
+      expect(assignedToNode2).toHaveLength(1);
+      await jobService.failJob(assignedToNode2[0].id, 'node2', 'Test failure');
 
       // Set jobs to be old (manually update their timestamps)
       const oldTime = Date.now() - 25 * 60 * 60 * 1000; // 25 hours ago

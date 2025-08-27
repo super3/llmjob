@@ -3,7 +3,8 @@ const path = require('path');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const { createClient } = require('redis');
-const { router, initJobRoutes } = require('./routes');
+const routes = require('./routes');
+const { initJobRoutes } = require('./routes');
 const { checkNodeStatuses } = require('./services/nodeService');
 const JobService = require('./services/jobService');
 
@@ -34,7 +35,7 @@ async function connectRedis() {
 }
 
 // Routes
-app.use('/api', router);
+app.use('/api', routes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {

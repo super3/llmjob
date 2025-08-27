@@ -2,8 +2,35 @@
 function createRedisCompat(redis) {
   return {
     // Basic operations
-    get: (key) => redis.get(key),
-    set: (key, value) => redis.set(key, value),
+    get: async (key) => {
+      if (typeof redis.get === 'function') {
+        const result = redis.get(key);
+        // Handle both Promise and callback-based APIs
+        if (result && typeof result.then === 'function') {
+          return result;
+        }
+        // For redis-mock callback-based API
+        return new Promise((resolve) => {
+          redis.get(key, (err, result) => resolve(result));
+        });
+      }
+      return null;
+    },
+    
+    set: async (key, value) => {
+      if (typeof redis.set === 'function') {
+        const result = redis.set(key, value);
+        // Handle both Promise and callback-based APIs
+        if (result && typeof result.then === 'function') {
+          return result;
+        }
+        // For redis-mock callback-based API
+        return new Promise((resolve) => {
+          redis.set(key, value, (err, result) => resolve(result || 'OK'));
+        });
+      }
+      return 'OK';
+    },
     
     // Set operations - try camelCase first, fallback to lowercase
     sAdd: async (key, ...members) => {
