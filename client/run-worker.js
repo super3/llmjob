@@ -73,10 +73,10 @@ async function runWorker() {
       }
     });
     
-    // Start the worker
+    // Start the worker with 1 minute polling interval
     console.log('🏃 Starting worker...\n');
-    await jobWorker.start();
-    console.log('✅ Worker is running and polling for jobs\n');
+    await jobWorker.start(60000); // Poll every 60 seconds
+    console.log('✅ Worker is running and polling for jobs every minute\n');
     console.log('Press Ctrl+C to stop\n');
     
     // Handle graceful shutdown
