@@ -5,6 +5,7 @@ const chalk = require('chalk');
 const ConfigManager = require('./config');
 const NodeClient = require('./nodeClient');
 const OllamaClient = require('./ollama');
+const JobWorker = require('./jobWorker');
 const packageJson = require('../package.json');
 
 // Support test environment config directory
@@ -21,6 +22,7 @@ program
   .description('Start the node client and begin pinging the server')
   .option('-i, --interval <minutes>', 'Ping interval in minutes', '5')
   .option('-n, --name <name>', 'Node name for claiming')
+  .option('--no-jobs', 'Disable job processing (ping only mode)')
   .action((options) => {
     const config = configManager.getOrCreateConfig();
     const client = new NodeClient(config);
@@ -31,6 +33,7 @@ program
     console.log();
     console.log(chalk.white('Node ID:'), chalk.yellow(config.nodeId));
     console.log(chalk.white('Server:'), chalk.gray(config.serverUrl));
+    console.log(chalk.white('Mode:'), options.jobs ? chalk.green('Full (ping + job processing)') : chalk.yellow('Ping only'));
     console.log();
     
     // Generate claim URL
@@ -122,6 +125,136 @@ program
   .description('Display configuration file location')
   .action(() => {
     console.log(chalk.white('Config file:'), chalk.gray(configManager.configFile));
+  });
+
+program
+  .command('worker')
+  .description('Start the node as a job processing worker')
+  .option('-p, --poll-interval <seconds>', 'Job polling interval in seconds', '5')
+  .option('-j, --max-jobs <number>', 'Maximum concurrent jobs', '1')
+  .option('-n, --name <name>', 'Node name for claiming')
+  .action(async (options) => {
+    const config = configManager.getOrCreateConfig();
+    config.configDir = configManager.configDir;
+    const client = new NodeClient(config);
+    const worker = new JobWorker(client, config);
+    
+    console.log(chalk.cyan('═══════════════════════════════════════════════════════════'));
+    console.log(chalk.cyan.bold('           LLMJob Worker Started'));
+    console.log(chalk.cyan('═══════════════════════════════════════════════════════════'));
+    console.log();
+    
+    try {
+      // Initialize worker and Ollama
+      console.log(chalk.white('Initializing Ollama integration...'));
+      const capabilities = await worker.initialize();
+      
+      console.log(chalk.green('✓ Ollama initialized'));
+      console.log();
+      console.log(chalk.white('Node ID:'), chalk.yellow(config.nodeId));
+      console.log(chalk.white('Server:'), chalk.gray(config.serverUrl));
+      console.log();
+      console.log(chalk.white('Hardware Capabilities:'));
+      console.log(chalk.gray(`  CPU: ${capabilities.cpu.cores} cores - ${capabilities.cpu.model}`));
+      console.log(chalk.gray(`  RAM: ${capabilities.memory.total} GB`));
+      console.log(chalk.gray(`  GPU: ${capabilities.gpu.model} (${capabilities.gpu.available ? 'Available' : 'Not available'})`));
+      console.log();
+      console.log(chalk.white('Worker Settings:'));
+      console.log(chalk.gray(`  Max concurrent jobs: ${options.maxJobs}`));
+      console.log(chalk.gray(`  Polling interval: ${options.pollInterval} seconds`));
+      console.log();
+      
+      // Generate claim URL
+      const url = client.generateClaimUrl(options.name);
+      console.log(chalk.green.bold('✨ Claim your node:'));
+      console.log(chalk.white('   '), chalk.blue.underline(url.full));
+      console.log();
+      console.log(chalk.gray('Visit the URL above to associate this node with your account'));
+      console.log(chalk.cyan('───────────────────────────────────────────────────────────'));
+      console.log();
+      
+      // Set max concurrent jobs
+      worker.setMaxConcurrentJobs(parseInt(options.maxJobs));
+      
+      // Set up event listeners
+      worker.on('job:started', ({ jobId, job }) => {
+        const timestamp = new Date().toLocaleTimeString();
+        console.log(chalk.blue(`[${timestamp}] 🚀 Job started: ${jobId}`));
+        console.log(chalk.gray(`    Model: ${job.model || 'default'}`));
+      });
+      
+      worker.on('job:completed', ({ jobId, totalTokens, duration }) => {
+        const timestamp = new Date().toLocaleTimeString();
+        const tokensPerSec = Math.round((totalTokens / duration) * 10) / 10;
+        console.log(chalk.green(`[${timestamp}] ✅ Job completed: ${jobId}`));
+        console.log(chalk.gray(`    Tokens: ${totalTokens}, Duration: ${duration}s, Speed: ${tokensPerSec} t/s`));
+      });
+      
+      worker.on('job:failed', ({ jobId, error }) => {
+        const timestamp = new Date().toLocaleTimeString();
+        console.log(chalk.red(`[${timestamp}] ❌ Job failed: ${jobId}`));
+        console.log(chalk.red(`    Error: ${error}`));
+      });
+      
+      worker.on('job:cancelling', ({ jobId }) => {
+        const timestamp = new Date().toLocaleTimeString();
+        console.log(chalk.yellow(`[${timestamp}] ⚠ Cancelling job: ${jobId}`));
+      });
+      
+      worker.on('error', ({ type, error, jobId }) => {
+        const timestamp = new Date().toLocaleTimeString();
+        console.log(chalk.red(`[${timestamp}] Error (${type}): ${error}`));
+        if (jobId) {
+          console.log(chalk.red(`    Job ID: ${jobId}`));
+        }
+      });
+      
+      worker.on('warning', ({ type, error, jobId }) => {
+        const timestamp = new Date().toLocaleTimeString();
+        console.log(chalk.yellow(`[${timestamp}] Warning (${type}): ${error}`));
+        if (jobId) {
+          console.log(chalk.yellow(`    Job ID: ${jobId}`));
+        }
+      });
+      
+      // Start the worker
+      await worker.start(parseInt(options.pollInterval) * 1000);
+      
+      console.log(chalk.green('✓ Worker started, polling for jobs...'));
+      console.log();
+      
+      // Handle graceful shutdown
+      process.on('SIGINT', async () => {
+        console.log();
+        console.log(chalk.yellow('Received SIGINT, shutting down gracefully...'));
+        await worker.stop(true);
+        console.log(chalk.green('✓ Worker stopped'));
+        process.exit(0);
+      });
+      
+      process.on('SIGTERM', async () => {
+        console.log(chalk.yellow('Received SIGTERM, shutting down gracefully...'));
+        await worker.stop(true);
+        process.exit(0);
+      });
+      
+      // Listen for waiting events during shutdown
+      worker.on('waiting', ({ message, activeJobs }) => {
+        console.log(chalk.yellow(message));
+        if (activeJobs.length > 0) {
+          console.log(chalk.yellow(`Active jobs: ${activeJobs.join(', ')}`));
+        }
+      });
+      
+    } catch (error) {
+      console.error(chalk.red('Failed to start worker:'), error.message);
+      console.log();
+      console.log(chalk.yellow('Tips:'));
+      console.log(chalk.gray('  1. Ensure Ollama is installed and running'));
+      console.log(chalk.gray('  2. Run "llmjob-node ollama --init" to set up Ollama'));
+      console.log(chalk.gray('  3. Check that the llama3.2:3b model is available'));
+      process.exit(1);
+    }
   });
 
 program
