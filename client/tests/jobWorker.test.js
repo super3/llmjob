@@ -51,6 +51,9 @@ describe('JobWorker', () => {
     if (jobWorker.pollingInterval) {
       clearInterval(jobWorker.pollingInterval);
     }
+    if (jobWorker.pingInterval) {
+      clearInterval(jobWorker.pingInterval);
+    }
     for (const [, jobInfo] of jobWorker.activeJobs) {
       if (jobInfo.heartbeatInterval) {
         clearInterval(jobInfo.heartbeatInterval);
@@ -335,6 +338,17 @@ describe('JobWorker', () => {
   describe('start/stop', () => {
     beforeEach(() => {
       jest.useFakeTimers();
+      
+      // Setup default mock for ping endpoint
+      mockAxiosInstance.post.mockImplementation((url) => {
+        if (url === '/api/nodes/ping') {
+          return Promise.resolve({ data: { success: true } });
+        }
+        if (url === '/api/jobs/poll') {
+          return Promise.resolve({ data: { jobs: [] } });
+        }
+        return Promise.resolve({ data: {} });
+      });
     });
 
     afterEach(() => {
@@ -342,11 +356,10 @@ describe('JobWorker', () => {
     });
 
     it('should start polling for jobs', async () => {
-      mockAxiosInstance.post.mockResolvedValue({ data: { jobs: [] } });
-      
       const startHandler = jest.fn();
       jobWorker.on('started', startHandler);
       
+      await jobWorker.initialize();
       await jobWorker.start(1000);
       
       expect(startHandler).toHaveBeenCalled();
@@ -365,6 +378,7 @@ describe('JobWorker', () => {
     });
 
     it('should prevent duplicate starts', async () => {
+      await jobWorker.initialize();
       await jobWorker.start();
       
       await expect(jobWorker.start()).rejects.toThrow('Worker is already running');
@@ -373,6 +387,7 @@ describe('JobWorker', () => {
     });
 
     it('should handle graceful shutdown with active jobs', async () => {
+      await jobWorker.initialize();
       await jobWorker.start();
       
       // Add mock active job
@@ -410,6 +425,7 @@ describe('JobWorker', () => {
     });
 
     it('should force stop without waiting', async () => {
+      await jobWorker.initialize();
       await jobWorker.start();
       
       // Add mock active job

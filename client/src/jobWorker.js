@@ -362,6 +362,17 @@ class JobWorker extends EventEmitter {
       });
     }
 
+    // Send regular pings every 30 seconds to maintain online status
+    this.pingInterval = setInterval(async () => {
+      const pingResult = await this.pingWithCapabilities();
+      if (!pingResult.success) {
+        this.emit('warning', {
+          type: 'ping_failed',
+          error: pingResult.error
+        });
+      }
+    }, 30000); // Ping every 30 seconds
+
     // Start polling for jobs
     this.pollingInterval = setInterval(async () => {
       if (this.activeJobs.size >= this.maxConcurrentJobs) {
@@ -401,6 +412,12 @@ class JobWorker extends EventEmitter {
     if (this.pollingInterval) {
       clearInterval(this.pollingInterval);
       this.pollingInterval = null;
+    }
+
+    // Stop pinging
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = null;
     }
 
     if (graceful && this.activeJobs.size > 0) {
