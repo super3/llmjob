@@ -67,6 +67,7 @@ class JobWorker extends EventEmitter {
 
     const data = {
       nodeId: this.config.nodeId,
+      publicKey: this.config.publicKey,
       signature,
       timestamp,
       maxJobs: this.maxConcurrentJobs - this.activeJobs.size
@@ -83,7 +84,8 @@ class JobWorker extends EventEmitter {
     } catch (error) {
       this.emit('error', {
         type: 'poll_error',
-        error: error.message
+        error: error.message,
+        details: error.response?.data
       });
       return [];
     }
@@ -209,6 +211,7 @@ class JobWorker extends EventEmitter {
 
     const data = {
       nodeId: this.config.nodeId,
+      publicKey: this.config.publicKey,
       jobId,
       signature,
       timestamp,
@@ -239,6 +242,7 @@ class JobWorker extends EventEmitter {
 
     const data = {
       nodeId: this.config.nodeId,
+      publicKey: this.config.publicKey,
       jobId,
       signature,
       timestamp,
@@ -288,6 +292,7 @@ class JobWorker extends EventEmitter {
 
     const data = {
       nodeId: this.config.nodeId,
+      publicKey: this.config.publicKey,
       jobId,
       signature,
       timestamp,
@@ -309,6 +314,7 @@ class JobWorker extends EventEmitter {
 
     const data = {
       nodeId: this.config.nodeId,
+      publicKey: this.config.publicKey,
       jobId,
       signature,
       timestamp,
@@ -348,7 +354,13 @@ class JobWorker extends EventEmitter {
     this.isRunning = true;
     
     // Send initial ping with capabilities
-    await this.pingWithCapabilities();
+    const pingResult = await this.pingWithCapabilities();
+    if (!pingResult.success) {
+      this.emit('error', {
+        type: 'ping_error',
+        error: pingResult.error
+      });
+    }
 
     // Start polling for jobs
     this.pollingInterval = setInterval(async () => {
