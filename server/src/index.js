@@ -3,8 +3,9 @@ const path = require('path');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const { createClient } = require('redis');
-const routes = require('./routes');
+const { router, initJobRoutes } = require('./routes');
 const { checkNodeStatuses } = require('./services/nodeService');
+const JobService = require('./services/jobService');
 
 dotenv.config();
 
@@ -33,7 +34,7 @@ async function connectRedis() {
 }
 
 // Routes
-app.use('/api', routes);
+app.use('/api', router);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -61,10 +62,40 @@ async function startServer() {
   try {
     await connectRedis();
     
+    // Initialize job routes with Redis
+    initJobRoutes(redisClient);
+    
+    // Initialize job service for background tasks
+    const jobService = new JobService(redisClient);
+    
     // Check node statuses every minute
     const statusInterval = setInterval(async () => {
       await checkNodeStatuses(redisClient);
     }, 60000);
+    
+    // Check for timed out jobs every 30 seconds
+    const timeoutInterval = setInterval(async () => {
+      try {
+        const timeoutJobs = await jobService.checkTimeouts();
+        if (timeoutJobs.length > 0) {
+          console.log(`Returned ${timeoutJobs.length} timed out jobs to queue`);
+        }
+      } catch (error) {
+        console.error('Error checking job timeouts:', error);
+      }
+    }, 30000);
+    
+    // Clean up old jobs every hour
+    const cleanupInterval = setInterval(async () => {
+      try {
+        const cleaned = await jobService.cleanupOldJobs();
+        if (cleaned > 0) {
+          console.log(`Cleaned up ${cleaned} old jobs`);
+        }
+      } catch (error) {
+        console.error('Error cleaning up jobs:', error);
+      }
+    }, 3600000);
     
     const server = app.listen(PORT, '0.0.0.0', () => {
       console.log(`Server running on port ${PORT}`);
@@ -75,6 +106,8 @@ async function startServer() {
       console.log(`Received ${signal}, starting graceful shutdown...`);
       
       clearInterval(statusInterval);
+      clearInterval(timeoutInterval);
+      clearInterval(cleanupInterval);
       
       server.close(() => {
         console.log('HTTP server closed');

@@ -52,7 +52,7 @@ async function claimNode(redisClient, publicKey, name, userId) {
   };
 }
 
-async function updateNodeStatus(redisClient, nodeId, publicKey) {
+async function updateNodeStatus(redisClient, nodeId, publicKey, additionalData = {}) {
   const redis = createRedisCompat(redisClient);
   const nodeKey = `${NODE_PREFIX}${nodeId}`;
   
@@ -69,9 +69,20 @@ async function updateNodeStatus(redisClient, nodeId, publicKey) {
     return { error: 'Public key mismatch' };
   }
   
-  // Update node status
+  // Update node status and capabilities if provided
   node.status = 'online';
   node.lastSeen = Date.now();
+  
+  // Add capabilities and job information if provided
+  if (additionalData.capabilities) {
+    node.capabilities = additionalData.capabilities;
+  }
+  if (additionalData.activeJobs !== undefined) {
+    node.activeJobs = additionalData.activeJobs;
+  }
+  if (additionalData.maxConcurrentJobs !== undefined) {
+    node.maxConcurrentJobs = additionalData.maxConcurrentJobs;
+  }
   
   // Store with TTL
   await redis.setEx(nodeKey, NODE_TTL, JSON.stringify(node));
@@ -81,6 +92,19 @@ async function updateNodeStatus(redisClient, nodeId, publicKey) {
     status: 'online',
     message: 'Node status updated'
   };
+}
+
+// Add a new function to get a node by ID (needed by JobController)
+async function getNode(nodeId) {
+  const redis = createRedisCompat(this);
+  const nodeKey = `${NODE_PREFIX}${nodeId}`;
+  
+  const nodeData = await redis.get(nodeKey);
+  if (!nodeData) {
+    return null;
+  }
+  
+  return JSON.parse(nodeData);
 }
 
 async function getUserNodes(redisClient, userId) {
@@ -224,12 +248,26 @@ async function checkNodeStatuses(redisClient) {
   console.log(`Node status check: ${onlineCount} online, ${offlineCount} offline`);
 }
 
-module.exports = {
+// Create a singleton instance with proper redis access
+const nodeService = {
   claimNode,
   updateNodeStatus,
   getUserNodes,
   getPublicNodes,
   updateNodeVisibility,
   checkNodeStatuses,
-  generateNodeFingerprint
+  generateNodeFingerprint,
+  getNode: async (nodeId, redisClient) => {
+    const redis = createRedisCompat(redisClient);
+    const nodeKey = `${NODE_PREFIX}${nodeId}`;
+    
+    const nodeData = await redis.get(nodeKey);
+    if (!nodeData) {
+      return null;
+    }
+    
+    return JSON.parse(nodeData);
+  }
 };
+
+module.exports = nodeService;

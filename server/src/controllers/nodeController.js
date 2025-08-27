@@ -26,9 +26,15 @@ async function claimNode(req, res) {
 async function pingNode(req, res) {
   try {
     const { publicKey, nodeId } = req.verifiedNode;
+    const { capabilities, activeJobs, maxConcurrentJobs } = req.body;
     const redis = req.app.locals.redis;
     
-    const result = await nodeService.updateNodeStatus(redis, nodeId, publicKey);
+    // Update node status with capabilities if provided
+    const result = await nodeService.updateNodeStatus(redis, nodeId, publicKey, {
+      capabilities,
+      activeJobs,
+      maxConcurrentJobs
+    });
     
     if (result.error) {
       return res.status(400).json({ error: result.error });
