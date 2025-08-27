@@ -8,6 +8,12 @@ class JobService {
     // Add missing sorted set and other operations
     compat.zAdd = async (key, ...args) => {
       if (typeof redis.zAdd === 'function') {
+        // Redis v5 expects an array of objects with score and value properties
+        if (args.length === 1 && typeof args[0] === 'object' && 'member' in args[0]) {
+          // Convert our format { score, member } to Redis v5 format { score, value }
+          const { score, member } = args[0];
+          return redis.zAdd(key, [{ score, value: member }]);
+        }
         return redis.zAdd(key, ...args);
       }
       // For redis-mock, convert object format to flat args
