@@ -206,7 +206,7 @@ class JobWorker extends EventEmitter {
   // Stream a chunk to the server
   async streamChunk(jobId, chunk) {
     const timestamp = Date.now();
-    const message = `${this.config.nodeId}:${jobId}:${timestamp}`;
+    const message = `${this.config.nodeId}:${timestamp}`;
     const signature = this.nodeClient.signMessage(message, this.config.secretKey);
 
     const data = {
@@ -237,7 +237,7 @@ class JobWorker extends EventEmitter {
   // Send heartbeat for a job
   async sendHeartbeat(jobId) {
     const timestamp = Date.now();
-    const message = `${this.config.nodeId}:${jobId}:${timestamp}`;
+    const message = `${this.config.nodeId}:${timestamp}`;
     const signature = this.nodeClient.signMessage(message, this.config.secretKey);
 
     const data = {
@@ -287,7 +287,7 @@ class JobWorker extends EventEmitter {
   // Complete a job
   async completeJob(jobId) {
     const timestamp = Date.now();
-    const message = `${this.config.nodeId}:${jobId}:${timestamp}`;
+    const message = `${this.config.nodeId}:${timestamp}`;
     const signature = this.nodeClient.signMessage(message, this.config.secretKey);
 
     const data = {
@@ -309,7 +309,7 @@ class JobWorker extends EventEmitter {
   // Fail a job
   async failJob(jobId, reason) {
     const timestamp = Date.now();
-    const message = `${this.config.nodeId}:${jobId}:${timestamp}`;
+    const message = `${this.config.nodeId}:${timestamp}`;
     const signature = this.nodeClient.signMessage(message, this.config.secretKey);
 
     const data = {

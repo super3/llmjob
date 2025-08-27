@@ -326,7 +326,9 @@ describe('JobService', () => {
 
       expect(result.status).toBe('running');
       expect(result.partial).toBe('Partial result');
-      expect(result.chunks).toBe(2);
+      expect(result.chunks.length).toBe(2);
+      expect(result.chunks[0].content).toBe('Partial ');
+      expect(result.chunks[1].content).toBe('result');
     });
 
     it('should return failed status for failed job', async () => {

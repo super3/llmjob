@@ -429,13 +429,22 @@ class JobService {
       throw new Error(`Job ${jobId} not found`);
     }
 
+    // Always get chunks for any status where they might exist
+    let chunks = [];
+    if (job.status === 'running' || job.status === 'completed') {
+      const rawChunks = await this.redis.zRange(`job:${jobId}:chunks`, 0, -1);
+      chunks = rawChunks.map(chunk => JSON.parse(chunk));
+    }
+
     if (job.status === 'completed') {
       return {
         jobId,
         status: 'completed',
         result: job.result,
+        chunks: chunks, // Include chunks array for UI compatibility
         metrics: job.lastMetrics,
-        completedAt: job.completedAt
+        completedAt: job.completedAt,
+        assignedTo: job.assignedTo
       };
     }
 
@@ -444,30 +453,32 @@ class JobService {
         jobId,
         status: 'failed',
         error: job.failureReason,
-        failedAt: job.failedAt
+        failedAt: job.failedAt,
+        assignedTo: job.assignedTo
       };
     }
 
     // For running jobs, return partial results from chunks
     if (job.status === 'running') {
-      const chunks = await this.redis.zRange(`job:${jobId}:chunks`, 0, -1);
       const partialContent = chunks
-        .map(chunk => JSON.parse(chunk).content)
+        .map(chunk => chunk.content)
         .join('');
 
       return {
         jobId,
         status: 'running',
         partial: partialContent,
+        chunks: chunks, // Return chunks array instead of count
         metrics: job.lastMetrics,
-        chunks: chunks.length
+        assignedTo: job.assignedTo
       };
     }
 
     return {
       jobId,
       status: job.status,
-      createdAt: job.createdAt
+      createdAt: job.createdAt,
+      assignedTo: job.assignedTo
     };
   }
 

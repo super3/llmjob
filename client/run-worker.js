@@ -44,22 +44,22 @@ async function runWorker() {
       console.log(`   Prompt: ${job.prompt.substring(0, 50)}...`);
     });
     
-    jobWorker.on('job:started', (jobId) => {
-      console.log(`▶️  Job started: ${jobId}`);
+    jobWorker.on('job:started', (data) => {
+      console.log(`▶️  Job started: ${data.jobId}`);
     });
     
     jobWorker.on('job:chunk', (jobId, chunk) => {
       process.stdout.write('.');
     });
     
-    jobWorker.on('job:completed', (jobId, result) => {
-      console.log(`\n✅ Job completed: ${jobId}`);
-      console.log(`   Result length: ${result.length} characters`);
+    jobWorker.on('job:completed', (data) => {
+      console.log(`\n✅ Job completed: ${data.jobId}`);
+      console.log(`   Duration: ${data.duration}s, Tokens: ${data.totalTokens}`);
     });
     
-    jobWorker.on('job:failed', (jobId, error) => {
-      console.log(`\n❌ Job failed: ${jobId}`);
-      console.log(`   Error: ${error}`);
+    jobWorker.on('job:failed', (data) => {
+      console.log(`\n❌ Job failed: ${data.jobId}`);
+      console.log(`   Error: ${data.error}`);
     });
     
     jobWorker.on('polling', () => {
