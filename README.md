@@ -4,6 +4,7 @@ A distributed job processing system for AI inference workloads, enabling decentr
 
 [![npm version](https://badge.fury.io/js/llmjob.svg)](https://www.npmjs.com/package/llmjob)
 [![Test Status](https://img.shields.io/github/actions/workflow/status/super3/llmjob/test.yml?branch=main&label=tests)](https://github.com/super3/llmjob/actions/workflows/test.yml)
+[![Deploy Status](https://img.shields.io/github/actions/workflow/status/super3/llmjob/railway-deploy.yml?branch=main&label=deploy)](https://github.com/super3/llmjob/actions/workflows/railway-deploy.yml)
 [![Coverage Status](https://coveralls.io/repos/github/super3/llmjob/badge.svg?branch=main)](https://coveralls.io/github/super3/llmjob?branch=main)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg?label=license)](https://github.com/super3/llmjob/blob/main/LICENSE)
 
@@ -13,10 +14,6 @@ A distributed job processing system for AI inference workloads, enabling decentr
 - 🤖 OpenAI-compatible API endpoints
 - 📊 Real-time cluster monitoring dashboard
 - 🔄 Automatic job timeout and retry handling
-- 🔐 Secure authentication with Clerk
-- 💾 Redis-backed persistent storage
-- 🌐 RESTful API for job submission and management
-- 📈 Node status tracking and health checks
 
 ## Installation
 
