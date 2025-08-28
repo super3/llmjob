@@ -1,19 +1,19 @@
 # LLMJob
 
-A distributed job processing system for AI inference workloads, enabling decentralized compute networks.
+Build your own AI infrastructure with spare GPUs and devices. Get OpenAI-compatible API access and monetize excess capacity when idle.
 
-[![npm version](https://badge.fury.io/js/llmjob.svg)](https://www.npmjs.com/package/llmjob)
 [![Test Status](https://img.shields.io/github/actions/workflow/status/super3/llmjob/test.yml?branch=main&label=tests)](https://github.com/super3/llmjob/actions/workflows/test.yml)
 [![Deploy Status](https://img.shields.io/github/actions/workflow/status/super3/llmjob/railway-deploy.yml?branch=main&label=deploy)](https://github.com/super3/llmjob/actions/workflows/railway-deploy.yml)
 [![Coverage Status](https://coveralls.io/repos/github/super3/llmjob/badge.svg?branch=main)](https://coveralls.io/github/super3/llmjob?branch=main)
+[![npm version](https://badge.fury.io/js/llmjob.svg)](https://www.npmjs.com/package/llmjob)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg?label=license)](https://github.com/super3/llmjob/blob/main/LICENSE)
 
 ## Features
 
-- ⚡ High-performance distributed job processing
-- 🤖 OpenAI-compatible API endpoints
+- ⚡ Pool office workstations and spare hardware into a private AI cluster
+- 🤖 Fully OpenAI-compatible API endpoints  
 - 📊 Real-time cluster monitoring dashboard
-- 🔄 Automatic job timeout and retry handling
+- 🔒 Keep sensitive data on your own infrastructure
 
 ## Installation
 
