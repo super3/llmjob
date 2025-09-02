@@ -1,3 +1,23 @@
+// Create mock execAsync before any imports
+const mockExecAsync = jest.fn();
+
+// Mock modules before imports
+jest.mock('ollama');
+jest.mock('fs', () => ({
+  promises: {
+    mkdir: jest.fn(),
+    writeFile: jest.fn(),
+    readFile: jest.fn(),
+    rm: jest.fn()
+  }
+}));
+jest.mock('child_process');
+jest.mock('util', () => ({
+  ...jest.requireActual('util'),
+  promisify: jest.fn(() => mockExecAsync)
+}));
+
+// Now import modules
 const OllamaClient = require('../src/ollama');
 const { Ollama } = require('ollama');
 const fs = require('fs').promises;
@@ -5,15 +25,6 @@ const path = require('path');
 const os = require('os');
 const { exec } = require('child_process');
 const { promisify } = require('util');
-
-// Mock the ollama module
-jest.mock('ollama');
-jest.mock('fs').promises;
-jest.mock('child_process');
-jest.mock('util', () => ({
-  ...jest.requireActual('util'),
-  promisify: jest.fn(() => jest.fn())
-}));
 
 describe('OllamaClient', () => {
   let client;
@@ -35,10 +46,15 @@ describe('OllamaClient', () => {
     // Mock Ollama constructor
     Ollama.mockImplementation(() => mockOllama);
     
-    client = new OllamaClient(tempDir);
-    
-    // Reset all mocks
+    // Reset all mocks including execAsync and fs
     jest.clearAllMocks();
+    mockExecAsync.mockReset();
+    fs.mkdir.mockReset();
+    fs.writeFile.mockReset();
+    fs.readFile.mockReset();
+    fs.rm.mockReset();
+    
+    client = new OllamaClient(tempDir);
   });
   
   afterEach(async () => {
@@ -91,8 +107,8 @@ describe('OllamaClient', () => {
       client.detectHardwareCapabilities = jest.fn().mockResolvedValue(mockCapabilities);
       
       // Mock fs operations
-      fs.mkdir = jest.fn().mockResolvedValue();
-      fs.writeFile = jest.fn().mockResolvedValue();
+      fs.mkdir.mockResolvedValue();
+      fs.writeFile.mockResolvedValue();
       
       const result = await client.storeCapabilities();
       
@@ -118,7 +134,7 @@ describe('OllamaClient', () => {
         detectedAt: '2024-01-01T00:00:00.000Z'
       };
       
-      fs.readFile = jest.fn().mockResolvedValue(JSON.stringify(mockCapabilities));
+      fs.readFile.mockResolvedValue(JSON.stringify(mockCapabilities));
       
       const result = await client.loadCapabilities();
       
@@ -131,7 +147,7 @@ describe('OllamaClient', () => {
     });
     
     it('should detect and store capabilities if file does not exist', async () => {
-      fs.readFile = jest.fn().mockRejectedValue(new Error('File not found'));
+      fs.readFile.mockRejectedValue(new Error('File not found'));
       
       const mockCapabilities = {
         cpu: { cores: 8, model: 'Test CPU', speed: 2400 },
@@ -152,25 +168,21 @@ describe('OllamaClient', () => {
   });
   
   describe('isOllamaInstalled', () => {
-    it.skip('should return true if ollama is installed', async () => {
-      const mockExecAsync = jest.fn().mockResolvedValue({ stdout: '/usr/local/bin/ollama' });
-      require('util').promisify.mockReturnValue(mockExecAsync);
-      
-      // Create a new client instance after mocking
-      client = new OllamaClient(tempDir);
+    it('should return true if ollama is installed', async () => {
+      mockExecAsync.mockResolvedValue({ stdout: '/usr/local/bin/ollama' });
       
       const result = await client.isOllamaInstalled();
+      
+      expect(mockExecAsync).toHaveBeenCalledWith('which ollama');
       expect(result).toBe(true);
     });
     
-    it.skip('should return false if ollama is not installed', async () => {
-      const mockExecAsync = jest.fn().mockRejectedValue(new Error('Command not found'));
-      require('util').promisify.mockReturnValue(mockExecAsync);
-      
-      // Create a new client instance after mocking
-      client = new OllamaClient(tempDir);
+    it('should return false if ollama is not installed', async () => {
+      mockExecAsync.mockRejectedValue(new Error('Command not found'));
       
       const result = await client.isOllamaInstalled();
+      
+      expect(mockExecAsync).toHaveBeenCalledWith('which ollama');
       expect(result).toBe(false);
     });
   });
@@ -195,26 +207,20 @@ describe('OllamaClient', () => {
   });
   
   describe('getVersion', () => {
-    it.skip('should return version info', async () => {
-      const mockExecAsync = jest.fn().mockResolvedValue({ stdout: 'ollama version 0.1.0\n' });
-      require('util').promisify.mockReturnValue(mockExecAsync);
-      
-      // Create a new client instance after mocking
-      client = new OllamaClient(tempDir);
+    it('should return version info', async () => {
+      mockExecAsync.mockResolvedValue({ stdout: 'ollama version 0.1.0\n' });
       
       const result = await client.getVersion();
       
+      expect(mockExecAsync).toHaveBeenCalledWith('ollama --version');
       expect(result).toEqual({ version: 'ollama version 0.1.0' });
     });
     
-    it.skip('should throw error if command fails', async () => {
-      const mockExecAsync = jest.fn().mockRejectedValue(new Error('Command not found'));
-      require('util').promisify.mockReturnValue(mockExecAsync);
-      
-      // Create a new client instance after mocking
-      client = new OllamaClient(tempDir);
+    it('should throw error if command fails', async () => {
+      mockExecAsync.mockRejectedValue(new Error('Command not found'));
       
       await expect(client.getVersion()).rejects.toThrow('Failed to get Ollama version');
+      expect(mockExecAsync).toHaveBeenCalledWith('ollama --version');
     });
   });
   
