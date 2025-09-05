@@ -7,7 +7,7 @@
  * the system under load.
  * 
  * Usage:
- *   node server/tests/load-test.js [options]
+ *   node server/tests/loadTest.js [options]
  * 
  * Options:
  *   --nodes <n>     Number of worker nodes to simulate (default: 3)
