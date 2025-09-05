@@ -32,19 +32,35 @@ function createRedisCompat(redis) {
       return 'OK';
     },
     
-    // Set operations - try camelCase first, fallback to lowercase
+    // Set operations - try camelCase first, fallback to lowercase with callback
     sAdd: async (key, ...members) => {
       if (typeof redis.sAdd === 'function') {
         return redis.sAdd(key, ...members);
       }
-      return redis.sadd(key, ...members);
+      // For redis-mock callback-based API
+      return new Promise((resolve) => {
+        redis.sadd(key, ...members, (err, result) => resolve(result || 0));
+      });
     },
     
     sMembers: async (key) => {
       if (typeof redis.sMembers === 'function') {
         return redis.sMembers(key);
       }
-      return redis.smembers(key);
+      // For redis-mock callback-based API
+      return new Promise((resolve) => {
+        redis.smembers(key, (err, result) => resolve(result || []));
+      });
+    },
+    
+    sRem: async (key, ...members) => {
+      if (typeof redis.sRem === 'function') {
+        return redis.sRem(key, ...members);
+      }
+      // For redis-mock callback-based API
+      return new Promise((resolve) => {
+        redis.srem(key, ...members, (err, result) => resolve(result || 0));
+      });
     },
     
     // Expiration operations
