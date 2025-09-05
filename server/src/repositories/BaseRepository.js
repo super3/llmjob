@@ -197,7 +197,8 @@ class BaseRepository {
   createExistsCompat(redis) {
     return async (key) => {
       if (typeof redis.exists === 'function') {
-        return redis.exists(key);
+        const result = await redis.exists(key);
+        return result === 1 || result === true;
       }
       return new Promise((resolve) => {
         redis.exists(key, (err, result) => resolve(result === 1));

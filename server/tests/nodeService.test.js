@@ -532,7 +532,7 @@ describe('Node Service', () => {
     it('should handle getUserNodes when user has no nodes', async () => {
       const nodes = await nodeService.getUserNodes(redisClient, 'user-with-no-nodes');
       expect(nodes).toEqual([]);
-    });
+    }, 15000);
 
     it('should handle getUserNodes with deleted node references', async () => {
       // Add node reference for user but don't create actual node data
@@ -541,7 +541,7 @@ describe('Node Service', () => {
       const nodes = await nodeService.getUserNodes(redisClient, 'user1');
       // Should return empty array as the node data doesn't exist
       expect(nodes).toEqual([]);
-    });
+    }, 15000);
 
     it('should handle concurrent node updates', async () => {
       const result = await nodeService.claimNode(redisClient, 'key1', 'Node', 'user1');

@@ -244,7 +244,7 @@ class NodeRepository extends BaseRepository {
 
   // Cleanup operations
   async cleanupInactiveNodes(maxInactiveTime = 30 * 24 * 60 * 60 * 1000) { // 30 days
-    const allNodeKeys = await this.keys('*');
+    const allNodeKeys = await this.keys('*') || [];
     let deletedCount = 0;
     
     for (const key of allNodeKeys) {
@@ -262,8 +262,8 @@ class NodeRepository extends BaseRepository {
 
   // Statistics
   async getNodeStats() {
-    const allNodeKeys = await this.keys('*');
-    const publicNodeIds = await this.sMembersDirect(this.publicNodesKey);
+    const allNodeKeys = await this.keys('*') || [];
+    const publicNodeIds = await this.sMembersDirect(this.publicNodesKey) || [];
     
     let onlineCount = 0;
     let offlineCount = 0;
@@ -286,7 +286,7 @@ class NodeRepository extends BaseRepository {
       total: allNodeKeys.length,
       online: onlineCount,
       offline: offlineCount,
-      public: publicNodeIds ? publicNodeIds.length : 0
+      public: publicNodeIds.length
     };
   }
 }
