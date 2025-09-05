@@ -482,4 +482,108 @@ describe('Node Service', () => {
       expect(result.nodeId).toBe(nodeId);
     });
   });
+
+  describe('getNode', () => {
+    it('should retrieve node using getNode method', async () => {
+      // Create a node
+      const result = await nodeService.claimNode(redisClient, 'key1', 'Node 1', 'user1');
+      
+      // Get node using the getNode method
+      const node = await nodeService.getNode(result.nodeId, redisClient);
+      
+      expect(node).toBeDefined();
+      expect(node.nodeId).toBe(result.nodeId);
+      expect(node.publicKey).toBe('key1');
+      expect(node.name).toBe('Node 1');
+    });
+
+    it('should return null for non-existent node', async () => {
+      const node = await nodeService.getNode('non-existent', redisClient);
+      expect(node).toBeNull();
+    });
+
+    it('should handle getNode with malformed data', async () => {
+      const nodeId = 'test-node';
+      // Set invalid JSON data
+      await redisClient.set(`node:${nodeId}`, 'invalid-json');
+      
+      // Should throw when trying to parse invalid JSON
+      await expect(nodeService.getNode(nodeId, redisClient))
+        .rejects.toThrow();
+    });
+  });
+
+  describe('Additional edge cases', () => {
+    it('should handle updateNodeStatus with missing node gracefully', async () => {
+      const result = await nodeService.updateNodeStatus(redisClient, 'non-existent', 'key1');
+      expect(result.error).toBe('Node not found. Please claim the node first.');
+    });
+
+    it('should handle getPublicNodes with malformed node data', async () => {
+      // Add a public node to the index but with malformed data
+      await redisClient.sadd('publicNodes', 'broken-node');
+      await redisClient.set('node:broken-node', 'invalid-json');
+      
+      // Should throw an error when trying to parse invalid JSON
+      await expect(nodeService.getPublicNodes(redisClient))
+        .rejects.toThrow('Unexpected token');
+    });
+
+    it('should handle getUserNodes when user has no nodes', async () => {
+      const nodes = await nodeService.getUserNodes(redisClient, 'user-with-no-nodes');
+      expect(nodes).toEqual([]);
+    });
+
+    it('should handle getUserNodes with deleted node references', async () => {
+      // Add node reference for user but don't create actual node data
+      await redisClient.sadd('userNodes:user1', 'deleted-node');
+      
+      const nodes = await nodeService.getUserNodes(redisClient, 'user1');
+      // Should return empty array as the node data doesn't exist
+      expect(nodes).toEqual([]);
+    });
+
+    it('should handle concurrent node updates', async () => {
+      const result = await nodeService.claimNode(redisClient, 'key1', 'Node', 'user1');
+      
+      // Simulate concurrent updates
+      await Promise.all([
+        nodeService.updateNodeStatus(redisClient, result.nodeId, 'key1'),
+        nodeService.updateNodeVisibility(redisClient, result.nodeId, 'user1', true)
+      ]);
+      
+      const node = await nodeService.getNode(result.nodeId, redisClient);
+      expect(node).toBeDefined();
+      expect(node.status).toBe('online');
+    });
+
+    it('should handle node visibility toggle for offline node', async () => {
+      const result = await nodeService.claimNode(redisClient, 'key1', 'Node', 'user1');
+      
+      // Try to make offline node public
+      const visibilityResult = await nodeService.updateNodeVisibility(
+        redisClient, 
+        result.nodeId, 
+        'user1', 
+        true
+      );
+      
+      expect(visibilityResult.success).toBe(true);
+      expect(visibilityResult.isPublic).toBe(true);
+    });
+
+    it('should reject visibility update from wrong user', async () => {
+      const result = await nodeService.claimNode(redisClient, 'key1', 'Node', 'user1');
+      
+      // Try to update visibility from different user
+      const visibilityResult = await nodeService.updateNodeVisibility(
+        redisClient, 
+        result.nodeId, 
+        'wrong-user', 
+        true
+      );
+      
+      expect(visibilityResult.error).toBe('Unauthorized: You do not own this node');
+    });
+  });
 });
