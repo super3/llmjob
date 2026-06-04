@@ -14,24 +14,41 @@ Build your own AI infrastructure with spare GPUs and devices. Get OpenAI-compati
 - 📊 Real-time cluster monitoring dashboard
 - 🔒 Keep sensitive data on your own infrastructure
 
-## Installation
+This repository contains two packages:
 
-### npm (Recommended)
+- **Server** (repo root) — the Express API plus the static dashboard pages,
+  backed by Postgres and deployed to Railway / GitHub Pages.
+- **Node client** ([`client/`](client)) — the `llmjob-node` worker that runs on
+  a machine with a GPU and processes jobs via Ollama.
+
+## Add a node
+
+The quickest way to connect a machine is the one-line installer (a pure-shell
+agent — no Node or npm required). Grab your personalized command, which bakes in
+the server URL and join token, from the **Add Node** page in the dashboard:
+
 ```bash
-npm install -g llmjob
+curl -fsSL https://llmjob-production.up.railway.app/install.sh/<token> | bash
 ```
 
-### From Source
+Prefer the Node.js client? See [`client/README.md`](client/README.md):
+
+```bash
+npm install -g llmjob-node
+llmjob-node start
+```
+
+## Running the server
+
 ```bash
 git clone https://github.com/super3/llmjob.git && cd llmjob
-npm install && npm link            # Install dependencies and llmjob command globally
-```
+npm install                        # Install dependencies
 
-## Usage
-
-```bash
-npm start                          # Start the server (default port 3001)
-npm run dev                        # Start with auto-reload (development)
-npm test                           # Run test suite
+npm start                          # Apply migrations, then start the server (default port 3001)
+npm run dev                        # Same, with auto-reload (development)
+npm test                           # Run test suite with coverage
 npm run test:watch                 # Run tests in watch mode
 ```
+
+The server requires a `DATABASE_URL` pointing at Postgres; migrations in
+[`migrations/`](migrations) are applied automatically by `npm start` / `npm run dev`.

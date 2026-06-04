@@ -279,8 +279,9 @@ LOAD TESTING INSTRUCTIONS
 
 To perform load testing with multiple nodes:
 
-1. Start the Redis server:
-   redis-server
+1. Provision Postgres and apply migrations:
+   export DATABASE_URL=postgres://localhost:5432/llmjob
+   npm run migrate:up
 
 2. Start the main server:
    npm start

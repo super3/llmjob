@@ -1,10 +1,10 @@
 {
-  "name": "server",
+  "name": "llmjob-server",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "LLMJob server — Express API and dashboard for pooling spare GPUs into an OpenAI-compatible AI cluster.",
+  "main": "server/src/index.js",
   "directories": {
-    "test": "tests"
+    "test": "server/tests"
   },
   "scripts": {
     "start": "node-pg-migrate up -m migrations && node server/src/index.js",
@@ -16,9 +16,16 @@
     "migrate:down": "node-pg-migrate down -m migrations",
     "migrate:create": "node-pg-migrate create -m migrations --migration-file-language cjs"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "llmjob",
+    "llm",
+    "inference",
+    "gpu",
+    "cluster",
+    "openai-compatible"
+  ],
+  "author": "super3",
+  "license": "MIT",
   "type": "commonjs",
   "engines": {
     "node": ">=22.0.0",
