@@ -5,7 +5,7 @@ const dotenv = require('dotenv');
 const { createClient } = require('redis');
 const routes = require('./routes');
 const { initJobRoutes } = require('./routes');
-const { checkNodeStatuses } = require('./services/nodeService');
+const NodeService = require('./services/nodeService');
 const JobService = require('./services/jobService');
 
 dotenv.config();
@@ -66,12 +66,13 @@ async function startServer() {
     // Initialize job routes with Redis
     initJobRoutes(redisClient);
     
-    // Initialize job service for background tasks
+    // Initialize services for background tasks
     const jobService = new JobService(redisClient);
-    
+    const nodeService = new NodeService(redisClient);
+
     // Check node statuses every minute
     const statusInterval = setInterval(async () => {
-      await checkNodeStatuses(redisClient);
+      await nodeService.checkNodeStatuses();
     }, 60000);
     
     // Check for timed out jobs every 30 seconds

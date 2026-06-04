@@ -3,10 +3,8 @@ const express = require('express');
 const nacl = require('tweetnacl');
 const naclUtil = require('tweetnacl-util');
 const routes = require('../src/routes');
-const redisMock = require('redis-mock');
-
-// Mock Redis
-jest.mock('redis', () => require('redis-mock'));
+const NodeService = require('../src/services/nodeService');
+const { createCamelClient } = require('./helpers/camelRedis');
 
 // Mock Clerk
 jest.mock('@clerk/clerk-sdk-node', () => ({
@@ -46,51 +44,14 @@ describe('Node API Endpoints', () => {
     // Create Express app
     app = express();
     app.use(express.json());
-    
-    // Create Redis client
-    redisClient = redisMock.createClient();
-    
-    // Wrap Redis methods to be async
-    const originalGet = redisClient.get.bind(redisClient);
-    redisClient.get = (key) => new Promise((resolve) => {
-      originalGet(key, (err, result) => resolve(result));
-    });
-    
-    const originalSet = redisClient.set.bind(redisClient);
-    redisClient.set = (key, value) => new Promise((resolve) => {
-      originalSet(key, value, (err, result) => resolve(result));
-    });
-    
-    const originalSetex = redisClient.setex.bind(redisClient);
-    redisClient.setex = (key, ttl, value) => new Promise((resolve) => {
-      originalSetex(key, ttl, value, (err, result) => resolve(result));
-    });
-    
-    const originalSadd = redisClient.sadd.bind(redisClient);
-    redisClient.sadd = (key, ...members) => new Promise((resolve) => {
-      originalSadd(key, ...members, (err, result) => resolve(result));
-    });
-    
-    const originalSmembers = redisClient.smembers.bind(redisClient);
-    redisClient.smembers = (key) => new Promise((resolve) => {
-      originalSmembers(key, (err, result) => resolve(result || []));
-    });
-    
-    const originalKeys = redisClient.keys.bind(redisClient);
-    redisClient.keys = (pattern) => new Promise((resolve) => {
-      originalKeys(pattern, (err, result) => resolve(result || []));
-    });
-    
-    const originalTtl = redisClient.ttl.bind(redisClient);
-    redisClient.ttl = (key) => new Promise((resolve) => {
-      originalTtl(key, (err, result) => resolve(result || -1));
-    });
-    
+
+    // Create a Redis client (v5-style camelCase API, as in production)
+    redisClient = createCamelClient();
     app.locals.redis = redisClient;
-    
+
     // Mount routes
     app.use('/api', routes);
-    
+
     // Clear Redis
     await redisClient.flushall();
   });
@@ -292,7 +253,7 @@ describe('Node API Endpoints', () => {
         lastSeen: Date.now() - (20 * 60 * 1000) // 20 minutes ago
       }));
       
-      await redisClient.sadd('user_nodes:test_user_123', 'node1', 'node2');
+      await redisClient.sAdd('user_nodes:test_user_123', 'node1', 'node2');
     });
 
     it('should return user nodes with auth', async () => {
@@ -478,7 +439,7 @@ describe('Node API Endpoints', () => {
       }));
 
       // Mock Redis error
-      redisClient.setex = jest.fn().mockRejectedValue(new Error('Database error'));
+      redisClient.setEx = jest.fn().mockRejectedValue(new Error('Database error'));
       
       const timestamp = Date.now();
       const message = `${testNodeId}:${timestamp}`;
@@ -501,7 +462,7 @@ describe('Node API Endpoints', () => {
 
     it('should handle database errors in getUserNodes', async () => {
       // Mock Redis error
-      redisClient.smembers = jest.fn().mockRejectedValue(new Error('Database error'));
+      redisClient.sMembers = jest.fn().mockRejectedValue(new Error('Database error'));
       
       const payload = { sid: 'sess_123', sub: 'test_user_123' };
       const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
@@ -526,14 +487,13 @@ describe('Node API Endpoints', () => {
     });
 
     it('should handle database errors in updateNodeVisibility', async () => {
-      // Mock updateNodeVisibility to throw an error
-      const nodeService = require('../src/services/nodeService');
-      const originalUpdateVisibility = nodeService.updateNodeVisibility;
-      nodeService.updateNodeVisibility = jest.fn().mockRejectedValue(new Error('Database error'));
-      
+      // Make the service method throw
+      const spy = jest.spyOn(NodeService.prototype, 'updateNodeVisibility')
+        .mockRejectedValue(new Error('Database error'));
+
       const payload = { sid: 'sess_123', sub: 'test_user_123' };
       const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
-      
+
       const response = await request(app)
         .put(`/api/nodes/${testNodeId}/visibility`)
         .set('Authorization', `Bearer ${mockToken}`)
@@ -541,9 +501,8 @@ describe('Node API Endpoints', () => {
 
       expect(response.status).toBe(500);
       expect(response.body.error).toBe('Failed to update node visibility');
-      
-      // Restore original function
-      nodeService.updateNodeVisibility = originalUpdateVisibility;
+
+      spy.mockRestore();
     });
 
     it('should handle service errors in pingNode', async () => {
@@ -579,16 +538,13 @@ describe('Node API Endpoints', () => {
     });
 
     it('should handle service error without status in updateNodeVisibility', async () => {
-      // Mock updateNodeVisibility to return error without status field
-      const nodeService = require('../src/services/nodeService');
-      const originalUpdateVisibility = nodeService.updateNodeVisibility;
-      nodeService.updateNodeVisibility = jest.fn().mockResolvedValue({
-        error: 'Some error without status field'
-      });
-      
+      // Service returns an error object without a status field -> defaults to 400
+      const spy = jest.spyOn(NodeService.prototype, 'updateNodeVisibility')
+        .mockResolvedValue({ error: 'Some error without status field' });
+
       const payload = { sid: 'sess_123', sub: 'test_user_123' };
       const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
-      
+
       const response = await request(app)
         .put(`/api/nodes/${testNodeId}/visibility`)
         .set('Authorization', `Bearer ${mockToken}`)
@@ -596,9 +552,8 @@ describe('Node API Endpoints', () => {
 
       expect(response.status).toBe(400); // Should default to 400
       expect(response.body.error).toBe('Some error without status field');
-      
-      // Restore original function
-      nodeService.updateNodeVisibility = originalUpdateVisibility;
+
+      spy.mockRestore();
     });
   });
 });

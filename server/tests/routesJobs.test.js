@@ -16,17 +16,17 @@ jest.mock('../src/middleware/signature', () => ({
 
 const request = require('supertest');
 const express = require('express');
-const redis = require('redis-mock');
+const { createCamelClient } = require('./helpers/camelRedis');
 const router = require('../src/routes');
 const { initJobRoutes } = require('../src/routes');
-const nodeService = require('../src/services/nodeService');
+const NodeService = require('../src/services/nodeService');
 
 describe('Job routes (handlers executed end-to-end)', () => {
   let app;
   let redisClient;
 
   beforeEach(async () => {
-    redisClient = redis.createClient();
+    redisClient = createCamelClient();
     await new Promise((r) => redisClient.flushall(r));
     initJobRoutes(redisClient);
     app = express();
@@ -47,8 +47,8 @@ describe('Job routes (handlers executed end-to-end)', () => {
 
   it('handles node-facing job endpoints', async () => {
     // Register a node so poll can find it
-    await nodeService.claimNode(redisClient, 'route-key', 'Route Node', 'user-routes');
-    const nodeId = nodeService.generateNodeFingerprint('route-key');
+    await new NodeService(redisClient).claimNode('route-key', 'Route Node', 'user-routes');
+    const nodeId = NodeService.generateNodeFingerprint('route-key');
 
     const submit = await request(app).post('/api/jobs').send({ prompt: 'hi' });
     const jobId = submit.body.job.id;

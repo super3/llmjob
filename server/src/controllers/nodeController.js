@@ -1,21 +1,21 @@
-const nodeService = require('../services/nodeService');
+const NodeService = require('../services/nodeService');
 
 async function claimNode(req, res) {
   try {
     const { publicKey, name } = req.body;
     const userId = req.user.id;
-    const redis = req.app.locals.redis;
-    
+
     if (!publicKey || !name) {
       return res.status(400).json({ error: 'Public key and name are required' });
     }
-    
-    const result = await nodeService.claimNode(redis, publicKey, name, userId);
-    
+
+    const nodeService = new NodeService(req.app.locals.redis);
+    const result = await nodeService.claimNode(publicKey, name, userId);
+
     if (result.error) {
       return res.status(400).json({ error: result.error });
     }
-    
+
     res.json(result);
   } catch (error) {
     console.error('Claim node error:', error);
@@ -27,19 +27,18 @@ async function pingNode(req, res) {
   try {
     const { publicKey, nodeId } = req.verifiedNode;
     const { capabilities, activeJobs, maxConcurrentJobs } = req.body;
-    const redis = req.app.locals.redis;
-    
-    // Update node status with capabilities if provided
-    const result = await nodeService.updateNodeStatus(redis, nodeId, publicKey, {
+
+    const nodeService = new NodeService(req.app.locals.redis);
+    const result = await nodeService.updateNodeStatus(nodeId, publicKey, {
       capabilities,
       activeJobs,
       maxConcurrentJobs
     });
-    
+
     if (result.error) {
       return res.status(400).json({ error: result.error });
     }
-    
+
     res.json(result);
   } catch (error) {
     console.error('Ping node error:', error);
@@ -50,9 +49,9 @@ async function pingNode(req, res) {
 async function getUserNodes(req, res) {
   try {
     const userId = req.user.id;
-    const redis = req.app.locals.redis;
-    
-    const nodes = await nodeService.getUserNodes(redis, userId);
+
+    const nodeService = new NodeService(req.app.locals.redis);
+    const nodes = await nodeService.getUserNodes(userId);
     res.json({ nodes });
   } catch (error) {
     console.error('Get user nodes error:', error);
@@ -62,9 +61,8 @@ async function getUserNodes(req, res) {
 
 async function getPublicNodes(req, res) {
   try {
-    const redis = req.app.locals.redis;
-    
-    const result = await nodeService.getPublicNodes(redis);
+    const nodeService = new NodeService(req.app.locals.redis);
+    const result = await nodeService.getPublicNodes();
     res.json(result);
   } catch (error) {
     console.error('Get public nodes error:', error);
@@ -77,18 +75,18 @@ async function updateNodeVisibility(req, res) {
     const { id: nodeId } = req.params;
     const { isPublic } = req.body;
     const userId = req.user.id;
-    const redis = req.app.locals.redis;
-    
+
     if (typeof isPublic !== 'boolean') {
       return res.status(400).json({ error: 'isPublic must be a boolean' });
     }
-    
-    const result = await nodeService.updateNodeVisibility(redis, nodeId, userId, isPublic);
-    
+
+    const nodeService = new NodeService(req.app.locals.redis);
+    const result = await nodeService.updateNodeVisibility(nodeId, userId, isPublic);
+
     if (result.error) {
       return res.status(result.status || 400).json({ error: result.error });
     }
-    
+
     res.json(result);
   } catch (error) {
     console.error('Update visibility error:', error);

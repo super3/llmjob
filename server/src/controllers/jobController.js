@@ -1,15 +1,25 @@
 class JobController {
-  constructor(jobService, nodeService, redis) {
+  constructor(jobService, nodeService) {
     this.jobService = jobService;
     this.nodeService = nodeService;
-    this.redis = redis;
+  }
+
+  // Look up the node for a request, responding with 404 when it is unknown.
+  // Returns the node on success, or null after sending the response.
+  async _requireNode(nodeId, res) {
+    const node = await this.nodeService.getNode(nodeId);
+    if (!node) {
+      res.status(404).json({ error: 'Node not found' });
+      return null;
+    }
+    return node;
   }
 
   // POST /api/jobs - Submit a new job
   async submitJob(req, res) {
     try {
       const { prompt, model, options, priority, maxTokens, temperature } = req.body;
-      
+
       // Validate required fields
       if (!prompt) {
         return res.status(400).json({ error: 'Prompt is required' });
@@ -41,13 +51,10 @@ class JobController {
   // POST /api/jobs/poll - Poll for available jobs (called by nodes)
   async pollJobs(req, res) {
     try {
-      const { nodeId, signature, timestamp, maxJobs } = req.body;
+      const { nodeId, maxJobs } = req.body;
 
       // Verify node exists and is active
-      const node = await this.nodeService.getNode(nodeId, this.redis);
-      if (!node) {
-        return res.status(404).json({ error: 'Node not found' });
-      }
+      if (!(await this._requireNode(nodeId, res))) return;
 
       // Assign jobs to node
       const jobs = await this.jobService.assignJobsToNode(nodeId, maxJobs || 1);
@@ -73,13 +80,10 @@ class JobController {
   async heartbeat(req, res) {
     try {
       const { jobId } = req.params;
-      const { nodeId, signature, timestamp, status, activeJobs } = req.body;
+      const { nodeId } = req.body;
 
       // Verify node
-      const node = await this.nodeService.getNode(nodeId, this.redis);
-      if (!node) {
-        return res.status(404).json({ error: 'Node not found' });
-      }
+      if (!(await this._requireNode(nodeId, res))) return;
 
       // Handle heartbeat
       await this.jobService.handleHeartbeat(jobId, nodeId);
@@ -98,13 +102,10 @@ class JobController {
   async receiveChunk(req, res) {
     try {
       const { jobId } = req.params;
-      const { nodeId, signature, timestamp, chunkIndex, content, metrics, isFinal } = req.body;
+      const { nodeId, chunkIndex, content, metrics, isFinal, timestamp } = req.body;
 
       // Verify node
-      const node = await this.nodeService.getNode(nodeId, this.redis);
-      if (!node) {
-        return res.status(404).json({ error: 'Node not found' });
-      }
+      if (!(await this._requireNode(nodeId, res))) return;
 
       // Store chunk
       const result = await this.jobService.storeChunk(jobId, nodeId, {
@@ -129,13 +130,10 @@ class JobController {
   async completeJob(req, res) {
     try {
       const { jobId } = req.params;
-      const { nodeId, signature, timestamp } = req.body;
+      const { nodeId } = req.body;
 
       // Verify node
-      const node = await this.nodeService.getNode(nodeId, this.redis);
-      if (!node) {
-        return res.status(404).json({ error: 'Node not found' });
-      }
+      if (!(await this._requireNode(nodeId, res))) return;
 
       // Complete job
       const job = await this.jobService.completeJob(jobId, nodeId);
@@ -154,13 +152,10 @@ class JobController {
   async failJob(req, res) {
     try {
       const { jobId } = req.params;
-      const { nodeId, signature, timestamp, error: failureReason } = req.body;
+      const { nodeId, error: failureReason } = req.body;
 
       // Verify node
-      const node = await this.nodeService.getNode(nodeId, this.redis);
-      if (!node) {
-        return res.status(404).json({ error: 'Node not found' });
-      }
+      if (!(await this._requireNode(nodeId, res))) return;
 
       // Fail job
       const job = await this.jobService.failJob(jobId, nodeId, failureReason);
@@ -211,7 +206,7 @@ class JobController {
   async cleanupJobs(req, res) {
     try {
       const { maxAge } = req.body;
-      
+
       const cleaned = await this.jobService.cleanupOldJobs(maxAge);
 
       res.json({
