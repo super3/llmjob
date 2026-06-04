@@ -158,6 +158,14 @@
   .cmd button { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: #A6A498; background: transparent; border: 1px solid #3A3A2E; border-radius: 6px; padding: 4px 9px; cursor: pointer; transition: color .14s, border-color .14s; flex: none; }
   .cmd button:hover { color: #ECEAE1; border-color: #5A5A48; }
 
+  .add-step { margin-top: 16px; }
+  .add-step:first-of-type { margin-top: 18px; }
+  .add-step-l { display: flex; align-items: center; gap: 9px; font-size: 13.5px; font-weight: 500; color: var(--ink); }
+  .add-num { width: 20px; height: 20px; border-radius: 50%; background: var(--panel-2); border: 1px solid var(--line); color: var(--ink-2); font-family: "IBM Plex Mono", monospace; font-size: 11px; display: inline-grid; place-items: center; flex: none; }
+  .add-step .cmd { margin-top: 9px; margin-left: 29px; }
+  .add-step-p { font-size: 13px; color: var(--ink-2); margin-top: 8px; margin-left: 29px; line-height: 1.5; }
+  .add-step-p a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+
   .field { margin-top: 16px; }
   .field label { display: block; font-family: "IBM Plex Mono", monospace; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 7px; }
   .field input { width: 100%; font-family: "Space Grotesk", sans-serif; font-size: 14px; padding: 10px 12px; border: 1px solid var(--line-2); border-radius: 9px; background: var(--bg); color: var(--ink); }
@@ -380,9 +388,8 @@ function App() {
 
   // add-node modal
   const [showAdd, setShowAdd] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const JOIN = "curl -fsSL https://llmjob.dev/join | sh";
-  const copyJoin = () => { navigator.clipboard && navigator.clipboard.writeText(JOIN).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }); };
+  const [copiedCmd, setCopiedCmd] = useState(null);
+  const copyCmd = (i, text) => { navigator.clipboard && navigator.clipboard.writeText(text).then(() => { setCopiedCmd(i); setTimeout(() => setCopiedCmd(null), 1500); }); };
 
   // create-key modal
   const [showCreate, setShowCreate] = useState(false);
@@ -529,7 +536,7 @@ function App() {
               </div>
               <div className="node-actions">
                 <span className={`status ${onlineCount > 0 ? 'on' : 'off'}`} style={{ fontSize: 13 }}><span className={`dot ${onlineCount > 0 ? 'on' : 'off'}`}></span> {onlineCount} online</span>
-                <button className="btn-add" onClick={() => { setCopied(false); setShowAdd(true); }}>{I.plus} Add node</button>
+                <button className="btn-add" onClick={() => { setCopiedCmd(null); setShowAdd(true); }}>{I.plus} Add node</button>
               </div>
             </div>
             <NodesTable nodes={nodes} loading={false} />
@@ -601,12 +608,30 @@ function App() {
               <h3>Add a node</h3>
               <button className="x" onClick={() => setShowAdd(false)}>×</button>
             </div>
-            <p>Run this on the machine you want to add to your cluster:</p>
-            <div className="cmd">
-              <code>{JOIN}</code>
-              <button onClick={copyJoin}>{copied ? "copied" : "copy"}</button>
+            <p>Run the node client on the machine you want to add:</p>
+
+            <div className="add-step">
+              <div className="add-step-l"><span className="add-num">1</span> Install the client</div>
+              <div className="cmd">
+                <code>npm install -g llmjob-node</code>
+                <button onClick={() => copyCmd(0, 'npm install -g llmjob-node')}>{copiedCmd === 0 ? "copied" : "copy"}</button>
+              </div>
             </div>
-            <p className="hint">It'll show up here automatically once it connects.</p>
+
+            <div className="add-step">
+              <div className="add-step-l"><span className="add-num">2</span> Start it on the machine</div>
+              <div className="cmd">
+                <code>llmjob-node start --name "My Node"</code>
+                <button onClick={() => copyCmd(1, 'llmjob-node start --name "My Node"')}>{copiedCmd === 1 ? "copied" : "copy"}</button>
+              </div>
+            </div>
+
+            <div className="add-step">
+              <div className="add-step-l"><span className="add-num">3</span> Claim it</div>
+              <p className="add-step-p">The client generates a key on the machine and prints a claim link. Open it while signed in to attach the node to your account.</p>
+            </div>
+
+            <p className="hint">Once claimed, the node shows up here automatically.</p>
           </div>
         </div>
       )}
