@@ -307,7 +307,7 @@ To perform load testing with multiple nodes:
    done
 
 5. Monitor the cluster dashboard:
-   Open http://localhost:3001/cluster.html
+   Open http://localhost:3001/dashboard.html
 
 6. Check job processing metrics:
    curl http://localhost:3001/api/jobs/stats
