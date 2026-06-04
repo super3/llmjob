@@ -460,8 +460,19 @@ function App() {
   // Clerk gate + initial load
   useEffect(() => {
     let cancelled = false;
+    // The Clerk script loads async, so window.Clerk may not exist yet when this
+    // effect first runs. Wait for it to appear before deciding auth is unavailable.
+    const waitForClerk = async (timeoutMs = 10000) => {
+      const start = Date.now();
+      while (typeof window.Clerk === 'undefined') {
+        if (Date.now() - start > timeoutMs) return false;
+        await new Promise(r => setTimeout(r, 50));
+      }
+      return true;
+    };
     (async () => {
-      if (typeof window.Clerk === 'undefined') { setAuthError(true); return; }
+      if (!(await waitForClerk())) { if (!cancelled) setAuthError(true); return; }
+      if (cancelled) return;
       await window.Clerk.load();
       if (!window.Clerk.user) {
         // Not signed in: send them through Clerk's sign-in, returning here after.
