@@ -74,23 +74,27 @@ npm run test:watch
 
 - `GET /api/nodes/public` - Get all public nodes
 - `POST /api/nodes/ping` - Node status update (node signature required)
-- `POST /api/nodes/join` - Self-register a node with a **join token** (used by the `install.sh` installer); attaches the node to the token owner's account
+- `POST /api/nodes/join` - Self-register a node with a **join token** (used by the node agent); attaches the node to the token owner's account
 - `POST /api/usage` - Record a completed generation (LLMJob **API key** required); writes a request log entry and bills the key's token usage
 
 ### Node join flow
 
-The dashboard's "Add node" dialog shows a one-line installer:
+The dashboard's "Add node" dialog shows a one-line command:
 
 ```bash
-curl -fsSL <base>/install.sh | sh -s -- --server <base> --token <join-token>
+curl -fsSL <base>/node-agent.js | node - join --server <base> --token <join-token>
 ```
 
-`install.sh` fetches the node client from source (the repo tarball — it is not
-published to npm), installs its dependencies, and runs `llmjob-node join --token …`,
-which generates the node's keypair **locally** (only the public key is sent) and calls
-`POST /api/nodes/join`. The join token authorizes the claim without an interactive
-login; rotate it from the dashboard to revoke outstanding installers. Pin a specific
-branch or tag with `--source <tarball-url>`.
+`node-agent.js` is a single, dependency-free script served by the app (requires
+Node 18+ for built-in Ed25519 + `fetch`). It generates the node's keypair
+**locally** (only the public key is sent), calls `POST /api/nodes/join` with the
+token to claim the node, then pings on an interval so it shows as online. The
+join token authorizes the claim without an interactive login; rotate it from the
+dashboard to revoke outstanding agents.
+
+> The full `llmjob-node` client (in `client/`) still provides the heavier
+> worker/Ollama path and a `join` command; the agent above is the lightweight,
+> zero-install path used by the dashboard.
 
 ### API key authentication
 

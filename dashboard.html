@@ -409,11 +409,7 @@ function App() {
     finally { setJoinLoading(false); }
   };
   const openAdd = () => { setCopiedCmd(null); setShowAdd(true); if (!joinToken) loadJoinToken(); };
-  // TEMPORARY: pin the installer to this PR branch so it includes the node `join`
-  // command/endpoint. Remove `--source ${INSTALL_SOURCE}` below once this branch is
-  // merged to main — install.sh already defaults to the main tarball.
-  const INSTALL_SOURCE = 'https://github.com/super3/llmjob/archive/refs/heads/claude/clever-planck-7L8Pb.tar.gz';
-  const installCmd = joinToken ? `curl -fsSL ${API_BASE}/install.sh | sh -s -- --server ${API_BASE} --token ${joinToken} --source ${INSTALL_SOURCE}` : '';
+  const installCmd = joinToken ? `curl -fsSL ${API_BASE}/node-agent.js | node - join --server ${API_BASE} --token ${joinToken}` : '';
 
   // create-key modal
   const [showCreate, setShowCreate] = useState(false);
@@ -632,7 +628,7 @@ function App() {
               <h3>Add a node</h3>
               <button className="x" onClick={() => setShowAdd(false)}>×</button>
             </div>
-            <p>Run this on the machine you want to add. It installs the node client and connects the machine to your account:</p>
+            <p>Run this on the machine you want to add (requires Node 18+). It runs a small agent that connects the machine to your account:</p>
             <div className="cmd">
               <code>{joinLoading ? 'Generating your command…' : installCmd}</code>
               <button onClick={() => copyCmd(0, installCmd)} disabled={!joinToken}>{copiedCmd === 0 ? "copied" : "copy"}</button>
