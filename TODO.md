@@ -8,7 +8,7 @@
 - [ ] Add input validation layer using Joi or Zod instead of manual validation
 
 **5B: Architecture Improvements**
-- [x] Remove code duplication in Redis operations (services now use the redis v5 client directly; the unused Repository pattern and dual-API compat layer were removed)
+- [x] Migrate persistence from Redis to Postgres (services now run parameterized SQL through the `pg` pool; the Repository pattern and dual-API compat layer were removed)
 - [x] Consolidate the server jest.config.js into the root configuration
 - [ ] Add TypeScript or comprehensive JSDoc for type safety
 - [ ] Extract constants and enums (job statuses: pending, assigned, running, completed, failed)
@@ -18,7 +18,7 @@
 
 **6A: Token Tracking**
 - [ ] Count tokens in JobService when jobs complete (input + output)
-- [ ] Store in Redis: `stats:tokens:total` counter
+- [ ] Persist a running total in Postgres (e.g. a `stats` table or aggregate query)
 - [ ] Create GET /api/stats endpoint with token count
 
 **6B: Frontend Updates**
@@ -30,7 +30,7 @@
 
 **7A: API Key Management**
 - [ ] Generate unique API keys per user (lj-{userId}-{randomString})
-- [ ] Store API keys in Redis with user mapping
+- [ ] Store API keys in Postgres with user mapping
 - [ ] Add POST /api/keys/generate endpoint
 - [ ] Add POST /api/keys/revoke endpoint
 

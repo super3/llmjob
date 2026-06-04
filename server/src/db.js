@@ -2,7 +2,7 @@ const { Pool } = require('pg');
 
 // All persistent state lives in Postgres. Jobs keep their full payload in a
 // `data` jsonb column (with a few promoted columns for querying); everything
-// else is columnar. Redis-style TTLs are modeled with explicit *_at columns
+// else is columnar. Expirations/TTLs are modeled with explicit *_at columns
 // that callers compare against the current time.
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS nodes (
