@@ -475,8 +475,11 @@ function App() {
       if (cancelled) return;
       await window.Clerk.load();
       if (!window.Clerk.user) {
-        // Not signed in: send them through Clerk's sign-in, returning here after.
-        if (window.Clerk.redirectToSignIn) {
+        // Not signed in: open Clerk's sign-in modal in place, reloading the
+        // console once the user authenticates.
+        if (window.Clerk.openSignIn) {
+          window.Clerk.openSignIn({ afterSignInUrl: window.location.href, afterSignUpUrl: window.location.href });
+        } else if (window.Clerk.redirectToSignIn) {
           window.Clerk.redirectToSignIn({ afterSignInUrl: window.location.href, afterSignUpUrl: window.location.href });
         } else {
           window.location.href = 'index.html';
