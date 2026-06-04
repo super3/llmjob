@@ -82,8 +82,11 @@ npm run test:watch
 The dashboard's "Add node" dialog shows a one-line command:
 
 ```bash
-curl -fsSL <base>/install.sh | sh -s -- --server <base> --token <join-token>
+curl -fsSL <base>/install.sh | sh -s -- --token <join-token>
 ```
+
+The server bakes its own host into `install.sh` when serving it, so the command
+only needs the join token (pass `--server <url>` to override).
 
 `install.sh` is a pure POSIX-shell script served by the app — no Node, no npm,
 just `curl` and `openssl` (OpenSSL 1.1.1+). It creates an Ed25519 key

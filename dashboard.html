@@ -386,6 +386,13 @@ function App() {
   const [activity, setActivity] = useState(new Array(24).fill(0));
   const [refreshing, setRefreshing] = useState(false);
 
+  const authedFetch = useCallback(async (path, opts = {}) => {
+    const token = await window.Clerk.session.getToken();
+    const headers = { 'Authorization': `Bearer ${token}`, ...(opts.headers || {}) };
+    if (opts.body) headers['Content-Type'] = 'application/json';
+    return fetch(`${API_BASE}${path}`, { ...opts, headers });
+  }, []);
+
   // add-node modal
   const [showAdd, setShowAdd] = useState(false);
   const [copiedCmd, setCopiedCmd] = useState(null);
@@ -409,7 +416,7 @@ function App() {
     finally { setJoinLoading(false); }
   };
   const openAdd = () => { setCopiedCmd(null); setShowAdd(true); if (!joinToken) loadJoinToken(); };
-  const installCmd = joinToken ? `curl -fsSL ${API_BASE}/install.sh | sh -s -- --server ${API_BASE} --token ${joinToken}` : '';
+  const installCmd = joinToken ? `curl -fsSL ${API_BASE}/install.sh | sh -s -- --token ${joinToken}` : '';
 
   // create-key modal
   const [showCreate, setShowCreate] = useState(false);
@@ -418,13 +425,6 @@ function App() {
   const [creating, setCreating] = useState(false);
   const [copiedKey, setCopiedKey] = useState(false);
   const [keyQuery, setKeyQuery] = useState("");
-
-  const authedFetch = useCallback(async (path, opts = {}) => {
-    const token = await window.Clerk.session.getToken();
-    const headers = { 'Authorization': `Bearer ${token}`, ...(opts.headers || {}) };
-    if (opts.body) headers['Content-Type'] = 'application/json';
-    return fetch(`${API_BASE}${path}`, { ...opts, headers });
-  }, []);
 
   const loadNodes = useCallback(async () => {
     const res = await authedFetch('/api/nodes');
@@ -476,11 +476,11 @@ function App() {
       const u = window.Clerk.user;
       const email = u.primaryEmailAddress && u.primaryEmailAddress.emailAddress;
       setUsername(u.username || u.firstName || email || 'account');
-      await refreshAll();
+      await Promise.all([refreshAll(), loadJoinToken()]);
       if (!cancelled) setReady(true);
     })();
     return () => { cancelled = true; };
-  }, [refreshAll]);
+  }, [refreshAll, loadJoinToken]);
 
   const signOut = () => {
     if (window.Clerk && window.Clerk.signOut) {

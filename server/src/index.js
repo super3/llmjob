@@ -1,5 +1,6 @@
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const { createClient } = require('redis');
@@ -45,9 +46,24 @@ app.get('/health', (req, res) => {
 // Serve static files from root directory
 // In production (Railway), files are at /app root
 // In development, files are at project root (two levels up from server/src)
-const staticPath = process.env.RAILWAY_ENVIRONMENT 
-  ? '/app' 
+const staticPath = process.env.RAILWAY_ENVIRONMENT
+  ? '/app'
   : path.join(__dirname, '../..');
+
+// Serve the node installer with this host baked in as the default server, so
+// the dashboard's "Add node" command only needs the join token.
+app.get('/install.sh', (req, res) => {
+  const proto = req.get('x-forwarded-proto') || req.protocol;
+  const base = `${proto}://${req.get('host')}`;
+  fs.readFile(path.join(staticPath, 'install.sh'), 'utf8', (err, script) => {
+    if (err) {
+      return res.status(404).send('install.sh not found');
+    }
+    res.type('text/x-shellscript')
+      .send(script.replace('https://llmjob-production.up.railway.app', base));
+  });
+});
+
 app.use(express.static(staticPath));
 
 // Error handling middleware
