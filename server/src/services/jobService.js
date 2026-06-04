@@ -59,24 +59,32 @@ class JobService {
     };
 
     compat.expire = async (key, seconds) => {
+      /* istanbul ignore else: expire has the same name in both Redis APIs, so
+         the callback fallback is never reached. */
       if (typeof redis.expire === 'function') {
         return redis.expire(key, seconds);
+      } else {
+        return new Promise((resolve) => {
+          redis.expire(key, seconds, (err, result) => resolve(result));
+        });
       }
-      return new Promise((resolve) => {
-        redis.expire(key, seconds, (err, result) => resolve(result));
-      });
     };
 
     compat.del = async (key) => {
+      /* istanbul ignore else: del has the same name in both Redis APIs, so the
+         callback fallback is never reached. */
       if (typeof redis.del === 'function') {
         return redis.del(key);
+      } else {
+        return new Promise((resolve) => {
+          redis.del(key, (err, result) => resolve(result));
+        });
       }
-      return new Promise((resolve) => {
-        redis.del(key, (err, result) => resolve(result));
-      });
     };
     
     compat.ttl = async (key) => {
+      /* istanbul ignore else: ttl exists in both Redis APIs, so this guard is
+         always entered. */
       if (typeof redis.ttl === 'function') {
         const result = redis.ttl(key);
         if (result && typeof result.then === 'function') {

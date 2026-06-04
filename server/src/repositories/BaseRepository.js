@@ -185,35 +185,44 @@ class BaseRepository {
   // Other Operations
   createDelCompat(redis) {
     return async (key) => {
+      /* istanbul ignore else: del has the same name in both Redis APIs, so the
+         callback fallback is never reached. */
       if (typeof redis.del === 'function') {
         return redis.del(key);
+      } else {
+        return new Promise((resolve) => {
+          redis.del(key, (err, result) => resolve(result));
+        });
       }
-      return new Promise((resolve) => {
-        redis.del(key, (err, result) => resolve(result));
-      });
     };
   }
 
   createExistsCompat(redis) {
     return async (key) => {
+      /* istanbul ignore else: exists has the same name in both Redis APIs, so
+         the callback fallback is never reached. */
       if (typeof redis.exists === 'function') {
         const result = await redis.exists(key);
         return result === 1 || result === true;
+      } else {
+        return new Promise((resolve) => {
+          redis.exists(key, (err, result) => resolve(result === 1));
+        });
       }
-      return new Promise((resolve) => {
-        redis.exists(key, (err, result) => resolve(result === 1));
-      });
     };
   }
 
   createExpireCompat(redis) {
     return async (key, seconds) => {
+      /* istanbul ignore else: expire has the same name in both Redis APIs, so
+         the callback fallback is never reached. */
       if (typeof redis.expire === 'function') {
         return redis.expire(key, seconds);
+      } else {
+        return new Promise((resolve) => {
+          redis.expire(key, seconds, (err, result) => resolve(result));
+        });
       }
-      return new Promise((resolve) => {
-        redis.expire(key, seconds, (err, result) => resolve(result));
-      });
     };
   }
 
@@ -297,30 +306,39 @@ class BaseRepository {
 
   // Direct set operations (for custom keys)
   async sAddDirect(key, member) {
+    /* istanbul ignore else: the compat layer always provides sAdd, so this
+       callback fallback is never reached. */
     if (typeof this.redis.sAdd === 'function') {
       return await this.redis.sAdd(key, member);
+    } else {
+      return new Promise((resolve) => {
+        this.redis.sadd(key, member, (err, result) => resolve(result));
+      });
     }
-    return new Promise((resolve) => {
-      this.redis.sadd(key, member, (err, result) => resolve(result));
-    });
   }
 
   async sMembersDirect(key) {
+    /* istanbul ignore else: the compat layer always provides sMembers, so this
+       callback fallback is never reached. */
     if (typeof this.redis.sMembers === 'function') {
       return await this.redis.sMembers(key);
+    } else {
+      return new Promise((resolve) => {
+        this.redis.smembers(key, (err, result) => resolve(result || []));
+      });
     }
-    return new Promise((resolve) => {
-      this.redis.smembers(key, (err, result) => resolve(result || []));
-    });
   }
 
   async sRemDirect(key, member) {
+    /* istanbul ignore else: the compat layer always provides sRem, so this
+       callback fallback is never reached. */
     if (typeof this.redis.sRem === 'function') {
       return await this.redis.sRem(key, member);
+    } else {
+      return new Promise((resolve) => {
+        this.redis.srem(key, member, (err, result) => resolve(result));
+      });
     }
-    return new Promise((resolve) => {
-      this.redis.srem(key, member, (err, result) => resolve(result));
-    });
   }
 
   // Sorted set operations
