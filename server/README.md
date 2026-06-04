@@ -82,11 +82,12 @@ npm run test:watch
 The dashboard's "Add node" dialog shows a one-line command:
 
 ```bash
-curl -fsSL <base>/install.sh | sh -s -- --token <join-token>
+curl -fsSL <base>/install.sh/<join-token> | bash
 ```
 
-The server bakes its own host into `install.sh` when serving it, so the command
-only needs the join token (pass `--server <url>` to override).
+The app bakes both its own host **and** the join token into `install.sh` when
+serving the per-account `/install.sh/<token>` URL, so the command takes no
+arguments. The token is validated (`[A-Za-z0-9_-]+`) before being injected.
 
 `install.sh` is a pure POSIX-shell script served by the app — no Node, no npm,
 just `curl` and `openssl` (OpenSSL 1.1.1+). It creates an Ed25519 key

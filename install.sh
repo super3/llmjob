@@ -2,10 +2,11 @@
 # LLMJob node agent — pure shell, no Node and no npm. Needs only curl + openssl
 # (preinstalled on most Linux). Served by the app and meant to be run from a pipe:
 #
-#   curl -fsSL <server>/install.sh | sh -s -- --token <token> [--name <name>]
+#   curl -fsSL <server>/install.sh/<token> | bash
 #
-# The server is baked in when the app serves this script, so only the join token
-# is required. Pass --server <url> to override it.
+# The app bakes the server and join token into this script when it serves the
+# per-account URL, so no arguments are needed. You can still override with
+# --server <url> / --token <token> / --name <name>.
 #
 # It creates an Ed25519 key locally (only the public key ever leaves the
 # machine), joins this machine to your account with the join token, then pings
