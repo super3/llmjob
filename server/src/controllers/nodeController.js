@@ -26,13 +26,20 @@ async function claimNode(req, res) {
 async function pingNode(req, res) {
   try {
     const { publicKey, nodeId } = req.verifiedNode;
-    const { capabilities, activeJobs, maxConcurrentJobs } = req.body;
+    const { capabilities, activeJobs, maxConcurrentJobs,
+      device, vramTotal, vramUsed, model, quant, tps } = req.body;
 
     const nodeService = new NodeService(req.app.locals.redis);
     const result = await nodeService.updateNodeStatus(nodeId, publicKey, {
       capabilities,
       activeJobs,
-      maxConcurrentJobs
+      maxConcurrentJobs,
+      device,
+      vramTotal,
+      vramUsed,
+      model,
+      quant,
+      tps
     });
 
     if (result.error) {

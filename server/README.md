@@ -58,16 +58,27 @@ npm run test:watch
 
 ## API Endpoints
 
-### Authentication Required
+### Authentication Required (Clerk)
 
 - `POST /api/nodes/claim` - Associate node with user account
-- `GET /api/nodes` - Get user's nodes
+- `GET /api/nodes` - Get user's nodes (incl. dashboard telemetry: device, VRAM, served model/quant, throughput, uptime)
 - `PUT /api/nodes/:id/visibility` - Toggle public/private
+- `POST /api/keys` - Create an API key (raw secret returned **once**)
+- `GET /api/keys` - List the user's API keys (redacted, with usage + last-used)
+- `DELETE /api/keys/:id` - Revoke an API key
+- `GET /api/logs` - Recent request logs plus a 24-bucket activity histogram
 
-### No Authentication
+### No Clerk Authentication
 
 - `GET /api/nodes/public` - Get all public nodes
-- `POST /api/nodes/ping` - Node status update (signature required)
+- `POST /api/nodes/ping` - Node status update (node signature required)
+- `POST /api/usage` - Record a completed generation (LLMJob **API key** required); writes a request log entry and bills the key's token usage
+
+### API key authentication
+
+API keys (`lj-live-…`) authenticate OpenAI-compatible / usage requests via the
+`Authorization: Bearer <key>` header. Only a SHA-256 hash of each key is stored,
+so the raw secret is shown exactly once at creation and is unrecoverable.
 
 ## Deployment
 

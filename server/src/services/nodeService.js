@@ -11,6 +11,18 @@ function generateNodeFingerprint(publicKey) {
   return hash.substring(0, 6);
 }
 
+// Render a duration in ms as a compact uptime string, e.g. "3d 4h" or "12m".
+function formatUptime(ms) {
+  if (!ms || ms < 0) return '0m';
+  const minutes = Math.floor(ms / 60000);
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const mins = minutes % 60;
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${mins}m`;
+  return `${mins}m`;
+}
+
 class NodeService {
   constructor(redis) {
     // Production passes the real redis v5 client; tests pass an equivalent
@@ -87,6 +99,13 @@ class NodeService {
       node.maxConcurrentJobs = additionalData.maxConcurrentJobs;
     }
 
+    // Telemetry surfaced on the dashboard's Nodes table.
+    for (const field of ['device', 'vramTotal', 'vramUsed', 'model', 'quant', 'tps']) {
+      if (additionalData[field] !== undefined) {
+        node[field] = additionalData[field];
+      }
+    }
+
     // Store with TTL
     await this.redis.setEx(nodeKey, NODE_TTL, JSON.stringify(node));
 
@@ -125,7 +144,14 @@ class NodeService {
           name: node.name,
           status: node.status,
           isPublic: node.isPublic,
-          lastSeen: node.lastSeen
+          lastSeen: node.lastSeen,
+          device: node.device || null,
+          vramTotal: node.vramTotal !== undefined ? node.vramTotal : null,
+          vramUsed: node.vramUsed !== undefined ? node.vramUsed : null,
+          model: node.model || null,
+          quant: node.quant || null,
+          tps: node.tps !== undefined ? node.tps : null,
+          uptime: node.status === 'online' ? formatUptime(Date.now() - node.claimedAt) : null
         });
       }
     }
