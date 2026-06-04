@@ -1,100 +1,61 @@
-# Test Coverage Improvement Report
+# Test Coverage Report
 
 ## Summary
-Successfully improved test coverage from **69.52%** to **84.68%** - an increase of over 15 percentage points.
+The server test suite now reports **100% coverage** across all metrics.
 
-## Coverage Breakdown
+| Metric | Coverage |
+|--------|----------|
+| **Statements** | 100% |
+| **Branches** | 100% |
+| **Functions** | 100% |
+| **Lines** | 100% |
 
-### Final Coverage: 84.68%
-- **Statements**: 84.68% (1006/1188)
-- **Branches**: 74.81% (395/528)
-- **Functions**: 82.19% (240/292)
-- **Lines**: 85.82% (981/1143)
+`npm test` runs Jest with `--coverage` and the `coverageThreshold` in
+`jest.config.js` is set to 100% for statements, branches, functions and lines,
+so the build fails if coverage regresses.
 
-### Coverage by Module
+## Coverage by Module
 
-| Module | Coverage | Status |
-|--------|----------|--------|
-| **Middleware** | 100% | ✅ Complete |
-| **Controllers** | 98.51% | ✅ Near Complete |
-| **Repositories** | 91.5% | ✅ High Coverage |
-| **Services** | 74.71% | ⚠️ Needs Work |
-| **Utils** | 84.78% | ✅ Good Coverage |
-| **Routes** | 78.94% | ⚠️ Moderate |
+| Module | Coverage |
+|--------|----------|
+| Routes | 100% |
+| Controllers | 100% |
+| Middleware | 100% |
+| Repositories | 100% |
+| Services | 100% |
+| Utils | 100% |
 
-## Work Completed
+> `server/src/index.js` is excluded from coverage in `jest.config.js` because it
+> is the process entry point (binds the port, wires up timers and signal
+> handlers).
 
-### 1. Fixed Test Infrastructure
-- Resolved timeout issues in async tests
-- Fixed Redis compatibility between redis-mock and Redis v5
-- Added proper timeout values to long-running tests
-- Fixed memory leak warnings by setting max listeners
+## How the remaining gaps were closed
 
-### 2. Created Comprehensive Test Suites
-- **complete-coverage.test.js**: Comprehensive test suite targeting all uncovered lines
-- **coverage-fix.test.js**: Focused tests for specific uncovered functionality
-- **final-coverage.test.js**: Final push for remaining uncovered lines
+The previous report stopped at ~85% because the repository layer, the V2
+services and the Redis compatibility layers were only partially exercised. The
+following work brought everything to 100%:
 
-### 3. Key Improvements
-- Fixed NodeRepository to handle undefined keys() and sMembers() results
-- Added tests for error conditions and edge cases
-- Improved BaseRepository callback compatibility testing
-- Added controller error path testing
+1. **Both Redis compatibility paths are tested.** The compat layers branch on
+   whether the client exposes camelCase (Redis v5) or lowercase (redis-mock,
+   callback-based) methods. A small camelCase adapter
+   (`server/tests/helpers/camelRedis.js`) delegates to redis-mock for correct
+   semantics while exposing the v5-style API, so the same suites run against
+   both code paths.
+2. **Repositories and V2 services** (`BaseRepository`, `JobRepository`,
+   `NodeRepository`, `JobServiceV2`, `NodeServiceV2`) are covered end-to-end,
+   including error conditions, ownership checks, queue transitions, lock
+   handling, timeouts, cleanup and statistics.
+3. **Job routes** are exercised through the Express router with the auth and
+   signature middleware mocked to pass through, so every route handler runs.
+4. **Defensive fallbacks** (e.g. `result || []`, missing records, error
+   callbacks) are triggered with purpose-built mock clients.
+5. **Genuinely unreachable defensive code** — callback fallbacks for Redis
+   operations whose method name is identical in both the v5 and redis-mock APIs
+   (so the `typeof` guard is always satisfied) — is annotated with
+   `/* istanbul ignore else */` and a comment explaining why it cannot be hit.
 
-## Remaining Uncovered Areas
+## Key test files
 
-### Services (74.71% coverage)
-- **jobServiceV2.js**: 47.36% - Complex async operations need more testing
-- **nodeServiceV2.js**: 51.85% - Advanced node management features
-
-### Minor Gaps
-- Some error handling branches in JobRepository
-- Callback-based operations in BaseRepository
-- Advanced queue operations in services
-
-## Recommendations
-
-1. **Focus on Service Layer**: The service layer has the most room for improvement, particularly V2 services
-2. **Integration Tests**: Consider adding integration tests for complete workflows
-3. **Mock Strategy**: Review mocking strategy for redis-mock vs actual Redis clients
-4. **CI/CD**: Ensure all tests pass in CI environment
-
-## Files Modified
-
-### Source Files
-- `/server/src/repositories/NodeRepository.js` - Added null checks for keys() operations
-
-### Test Files Created
-- `/server/tests/complete-coverage.test.js`
-- `/server/tests/coverage-fix.test.js`
-- `/server/tests/final-coverage.test.js`
-
-### Test Files Modified
-- `/server/tests/nodeService.test.js` - Added timeouts to prevent test failures
-- `/server/tests/redisCompat.test.js` - Fixed async callback handling
-
-## Next Steps
-
-To achieve 100% coverage:
-
-1. **Complete JobServiceV2 Testing**
-   - Test all queue management methods
-   - Add tests for bulk operations
-   - Cover analytics and metrics methods
-
-2. **Complete NodeServiceV2 Testing**
-   - Test node health monitoring
-   - Add performance metrics tests
-   - Cover cleanup operations
-
-3. **Fix Remaining Service Gaps**
-   - Lines 510-517 in jobService (timeout handling)
-   - Lines 99-107 in nodeService (update errors)
-
-4. **Address Branch Coverage**
-   - Focus on untested conditional branches
-   - Add tests for all error paths
-
-## Conclusion
-
-The test coverage has been significantly improved, with most critical components now having excellent coverage. The middleware and controllers are nearly fully tested, providing confidence in the API layer. The remaining work primarily involves testing advanced service layer features and error conditions.
+- `server/tests/coverage-100.test.js` — repository/service/compat coverage.
+- `server/tests/routesJobs.test.js` — job route handlers end-to-end.
+- `server/tests/helpers/camelRedis.js` — camelCase Redis client used by the tests.

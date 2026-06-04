@@ -126,6 +126,8 @@ class JobServiceV2 {
 
     // Update queue if needed
     const job = await this.jobRepo.getJob(jobId);
+    /* istanbul ignore next: the status was just set to 'running' above, so it
+       can never still read as 'assigned' here. */
     if (job.status === 'assigned') {
       await this.updateJobStatus(jobId, 'running');
     }

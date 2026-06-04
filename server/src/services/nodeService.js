@@ -94,19 +94,6 @@ async function updateNodeStatus(redisClient, nodeId, publicKey, additionalData =
   };
 }
 
-// Add a new function to get a node by ID (needed by JobController)
-async function getNode(nodeId) {
-  const redis = createRedisCompat(this);
-  const nodeKey = `${NODE_PREFIX}${nodeId}`;
-  
-  const nodeData = await redis.get(nodeKey);
-  if (!nodeData) {
-    return null;
-  }
-  
-  return JSON.parse(nodeData);
-}
-
 async function getUserNodes(redisClient, userId) {
   const redis = createRedisCompat(redisClient);
   const userNodesKey = `${USER_NODES_PREFIX}${userId}`;

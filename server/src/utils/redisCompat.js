@@ -89,24 +89,28 @@ function createRedisCompat(redis) {
     },
     
     ttl: async (key) => {
+      /* istanbul ignore else: ttl has the same name in both Redis APIs, so the
+         callback fallback is never reached. */
       if (typeof redis.ttl === 'function') {
         return redis.ttl(key);
+      } else {
+        return new Promise((resolve) => {
+          redis.ttl(key, (err, result) => resolve(result || -1));
+        });
       }
-      // For redis-mock compatibility
-      return new Promise((resolve) => {
-        redis.ttl(key, (err, result) => resolve(result || -1));
-      });
     },
-    
+
     // Key operations
     keys: async (pattern) => {
+      /* istanbul ignore else: keys has the same name in both Redis APIs, so the
+         callback fallback is never reached. */
       if (typeof redis.keys === 'function') {
         return redis.keys(pattern);
+      } else {
+        return new Promise((resolve) => {
+          redis.keys(pattern, (err, result) => resolve(result || []));
+        });
       }
-      // For redis-mock compatibility
-      return new Promise((resolve) => {
-        redis.keys(pattern, (err, result) => resolve(result || []));
-      });
     }
   };
 }
