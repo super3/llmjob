@@ -3,7 +3,7 @@
 Build your own AI infrastructure with spare GPUs and devices. Get OpenAI-compatible API access and monetize excess capacity when idle.
 
 [![Test Status](https://img.shields.io/github/actions/workflow/status/super3/llmjob/test.yml?branch=main&label=tests)](https://github.com/super3/llmjob/actions/workflows/test.yml)
-[![Deploy Status](https://img.shields.io/github/actions/workflow/status/super3/llmjob/railway-deploy.yml?branch=main&label=deploy)](https://github.com/super3/llmjob/actions/workflows/railway-deploy.yml)
+[![Deploy Status](https://img.shields.io/website?url=https%3A%2F%2Fllmjob-production.up.railway.app%2Fhealth&label=deploy&up_message=live&down_message=down)](https://llmjob-production.up.railway.app)
 [![Coverage Status](https://coveralls.io/repos/github/super3/llmjob/badge.svg?branch=main)](https://coveralls.io/github/super3/llmjob?branch=main)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg?label=license)](https://github.com/super3/llmjob/blob/main/LICENSE)
 
