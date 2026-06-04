@@ -85,10 +85,12 @@ The dashboard's "Add node" dialog shows a one-line installer:
 curl -fsSL <base>/install.sh | sh -s -- --server <base> --token <join-token>
 ```
 
-`install.sh` installs the `llmjob-node` client and runs `llmjob-node join --token …`,
+`install.sh` fetches the node client from source (the repo tarball — it is not
+published to npm), installs its dependencies, and runs `llmjob-node join --token …`,
 which generates the node's keypair **locally** (only the public key is sent) and calls
 `POST /api/nodes/join`. The join token authorizes the claim without an interactive
-login; rotate it from the dashboard to revoke outstanding installers.
+login; rotate it from the dashboard to revoke outstanding installers. Pin a specific
+branch or tag with `--source <tarball-url>`.
 
 ### API key authentication
 
