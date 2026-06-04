@@ -2,7 +2,7 @@
 # LLMJob node agent — pure shell, no Node and no npm. Needs only curl + openssl
 # (preinstalled on most Linux). Served by the app and meant to be run from a pipe:
 #
-#   curl -fsSL <server>/agent.sh | sh -s -- --server <server> --token <token> [--name <name>]
+#   curl -fsSL <server>/install.sh | sh -s -- --server <server> --token <token> [--name <name>]
 #
 # It creates an Ed25519 key locally (only the public key ever leaves the
 # machine), joins this machine to your account with the join token, then pings

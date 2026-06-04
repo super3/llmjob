@@ -82,10 +82,10 @@ npm run test:watch
 The dashboard's "Add node" dialog shows a one-line command:
 
 ```bash
-curl -fsSL <base>/agent.sh | sh -s -- --server <base> --token <join-token>
+curl -fsSL <base>/install.sh | sh -s -- --server <base> --token <join-token>
 ```
 
-`agent.sh` is a pure POSIX-shell script served by the app — no Node, no npm,
+`install.sh` is a pure POSIX-shell script served by the app — no Node, no npm,
 just `curl` and `openssl` (OpenSSL 1.1.1+). It creates an Ed25519 key
 **locally** (only the public key is sent), calls `POST /api/nodes/join` with the
 token to claim the node, then pings on an interval so it shows as online. The
@@ -93,7 +93,7 @@ join token authorizes the claim without an interactive login; rotate it from the
 dashboard to revoke outstanding agents.
 
 > The full `llmjob-node` client (in `client/`) still provides the heavier
-> worker/Ollama path and a `join` command; `agent.sh` is the lightweight,
+> worker/Ollama path and a `join` command; `install.sh` is the lightweight,
 > dependency-free path used by the dashboard.
 
 ### API key authentication

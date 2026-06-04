@@ -409,7 +409,7 @@ function App() {
     finally { setJoinLoading(false); }
   };
   const openAdd = () => { setCopiedCmd(null); setShowAdd(true); if (!joinToken) loadJoinToken(); };
-  const installCmd = joinToken ? `curl -fsSL ${API_BASE}/agent.sh | sh -s -- --server ${API_BASE} --token ${joinToken}` : '';
+  const installCmd = joinToken ? `curl -fsSL ${API_BASE}/install.sh | sh -s -- --server ${API_BASE} --token ${joinToken}` : '';
 
   // create-key modal
   const [showCreate, setShowCreate] = useState(false);
