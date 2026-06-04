@@ -1,19 +1,20 @@
 const LogService = require('../src/services/logService');
-const { createCamelClient } = require('./helpers/camelRedis');
+const { createTestDb } = require('./helpers/pgmem');
 
 describe('LogService', () => {
-  let redisClient;
+  let db;
   let service;
 
   beforeEach(async () => {
-    redisClient = createCamelClient();
-    service = new LogService(redisClient);
-    await redisClient.flushall();
+    db = await createTestDb();
+    service = new LogService(db);
   });
 
   afterEach(async () => {
-    await redisClient.quit();
+    if (db.end) await db.end();
   });
+
+  const count = async () => (await db.query('SELECT count(*)::int AS c FROM request_logs')).rows[0].c;
 
   describe('recordLog', () => {
     it('stores an entry with defaults filled in', async () => {
@@ -42,14 +43,11 @@ describe('LogService', () => {
     });
 
     it('trims old entries beyond the cap', async () => {
-      // Cap is 200; insert 205 and confirm only 200 remain.
       for (let i = 0; i < 205; i++) {
         await service.recordLog('user1', { model: 'm', node: 'n', timestamp: 1000 + i });
       }
-      const count = await redisClient.zCard('user_logs:user1');
-      expect(count).toBe(200);
+      expect(await count()).toBe(200);
 
-      // The five oldest timestamps should have been evicted.
       const logs = await service.getLogs('user1', 1000);
       const timestamps = logs.map((l) => l.timestamp);
       expect(Math.min(...timestamps)).toBe(1005);
@@ -82,8 +80,6 @@ describe('LogService', () => {
 
     it('buckets entries by hour within the window', async () => {
       const now = 24 * 60 * 60 * 1000; // window start is 0
-      const HOUR = 60 * 60 * 1000;
-      // Two in the first hour, one in the last hour.
       await service.recordLog('user1', { model: 'm', node: 'n', timestamp: 10 });
       await service.recordLog('user1', { model: 'm', node: 'n', timestamp: 20 });
       await service.recordLog('user1', { model: 'm', node: 'n', timestamp: now });
@@ -97,7 +93,6 @@ describe('LogService', () => {
       const HOUR = 60 * 60 * 1000;
       const now = 100 * HOUR;
       const windowStart = now - 24 * HOUR;
-      // Exactly at the window start (idx 0) and exactly at now (would be idx 24).
       await service.recordLog('user1', { model: 'm', node: 'n', timestamp: windowStart });
       await service.recordLog('user1', { model: 'm', node: 'n', timestamp: now });
 

@@ -10,7 +10,7 @@ async function claimNode(req, res) {
       return res.status(400).json({ error: 'Public key and name are required' });
     }
 
-    const nodeService = new NodeService(req.app.locals.redis);
+    const nodeService = new NodeService(req.app.locals.db);
     const result = await nodeService.claimNode(publicKey, name, userId);
 
     if (result.error) {
@@ -30,7 +30,7 @@ async function pingNode(req, res) {
     const { capabilities, activeJobs, maxConcurrentJobs,
       device, vramTotal, vramUsed, model, quant, tps } = req.body;
 
-    const nodeService = new NodeService(req.app.locals.redis);
+    const nodeService = new NodeService(req.app.locals.db);
     const result = await nodeService.updateNodeStatus(nodeId, publicKey, {
       capabilities,
       activeJobs,
@@ -58,7 +58,7 @@ async function getUserNodes(req, res) {
   try {
     const userId = req.user.id;
 
-    const nodeService = new NodeService(req.app.locals.redis);
+    const nodeService = new NodeService(req.app.locals.db);
     const nodes = await nodeService.getUserNodes(userId);
     res.json({ nodes });
   } catch (error) {
@@ -69,7 +69,7 @@ async function getUserNodes(req, res) {
 
 async function getPublicNodes(req, res) {
   try {
-    const nodeService = new NodeService(req.app.locals.redis);
+    const nodeService = new NodeService(req.app.locals.db);
     const result = await nodeService.getPublicNodes();
     res.json(result);
   } catch (error) {
@@ -88,7 +88,7 @@ async function updateNodeVisibility(req, res) {
       return res.status(400).json({ error: 'isPublic must be a boolean' });
     }
 
-    const nodeService = new NodeService(req.app.locals.redis);
+    const nodeService = new NodeService(req.app.locals.db);
     const result = await nodeService.updateNodeVisibility(nodeId, userId, isPublic);
 
     if (result.error) {
@@ -106,7 +106,7 @@ async function updateNodeVisibility(req, res) {
 async function getJoinToken(req, res) {
   try {
     const userId = req.user.id;
-    const tokenService = new NodeTokenService(req.app.locals.redis);
+    const tokenService = new NodeTokenService(req.app.locals.db);
     const record = await tokenService.getOrCreateToken(userId);
     res.json(record);
   } catch (error) {
@@ -119,7 +119,7 @@ async function getJoinToken(req, res) {
 async function rotateJoinToken(req, res) {
   try {
     const userId = req.user.id;
-    const tokenService = new NodeTokenService(req.app.locals.redis);
+    const tokenService = new NodeTokenService(req.app.locals.db);
     const record = await tokenService.rotateToken(userId);
     res.json(record);
   } catch (error) {
@@ -138,13 +138,13 @@ async function joinNode(req, res) {
       return res.status(400).json({ error: 'token and publicKey are required' });
     }
 
-    const tokenService = new NodeTokenService(req.app.locals.redis);
+    const tokenService = new NodeTokenService(req.app.locals.db);
     const userId = await tokenService.verifyToken(token);
     if (!userId) {
       return res.status(401).json({ error: 'Invalid join token' });
     }
 
-    const nodeService = new NodeService(req.app.locals.redis);
+    const nodeService = new NodeService(req.app.locals.db);
     const result = await nodeService.claimNode(publicKey, name || 'node', userId);
 
     if (result.error) {

@@ -1,42 +1,32 @@
 const crypto = require('crypto');
 
 // Join tokens authorize a machine to attach itself to a user's account from a
-// non-interactive context (the `curl | sh` installer), where an interactive
-// Clerk login isn't possible. Unlike API keys, a join token is reusable and
-// shown repeatedly in the dashboard, so the raw value is stored (not just a
-// hash) and can be rotated.
-const USER_TOKEN_PREFIX = 'nodejoin:user:';
-const TOKEN_PREFIX = 'nodejoin:token:';
-
+// non-interactive context (the installer), where an interactive Clerk login
+// isn't possible. The token is reusable and shown repeatedly in the dashboard,
+// so the raw value is stored (one row per user) and can be rotated.
 function generateToken() {
   return 'ljn_' + crypto.randomBytes(18).toString('hex');
 }
 
 class NodeTokenService {
-  constructor(redis) {
-    // Production passes the real redis v5 client; tests pass an equivalent
-    // adapter. Either way it is used directly.
-    this.redis = redis;
+  constructor(db) {
+    this.db = db;
   }
 
   // Return the user's current join token, creating one on first use.
   async getOrCreateToken(userId) {
-    const userKey = `${USER_TOKEN_PREFIX}${userId}`;
-    const existing = await this.redis.get(userKey);
-    if (existing) {
-      return JSON.parse(existing);
+    const r = await this.db.query(
+      'SELECT token, created_at FROM node_join_tokens WHERE user_id = $1',
+      [userId]
+    );
+    if (r.rows.length > 0) {
+      return { token: r.rows[0].token, createdAt: Number(r.rows[0].created_at) };
     }
     return this._issue(userId);
   }
 
   // Replace the user's join token, invalidating the previous one.
   async rotateToken(userId) {
-    const userKey = `${USER_TOKEN_PREFIX}${userId}`;
-    const existing = await this.redis.get(userKey);
-    if (existing) {
-      const old = JSON.parse(existing);
-      await this.redis.del(`${TOKEN_PREFIX}${old.token}`);
-    }
     return this._issue(userId);
   }
 
@@ -45,15 +35,23 @@ class NodeTokenService {
     if (!rawToken) {
       return null;
     }
-    const userId = await this.redis.get(`${TOKEN_PREFIX}${rawToken}`);
-    return userId || null;
+    const r = await this.db.query(
+      'SELECT user_id FROM node_join_tokens WHERE token = $1',
+      [rawToken]
+    );
+    return r.rows.length > 0 ? r.rows[0].user_id : null;
   }
 
   async _issue(userId) {
-    const record = { token: generateToken(), createdAt: Date.now() };
-    await this.redis.set(`${USER_TOKEN_PREFIX}${userId}`, JSON.stringify(record));
-    await this.redis.set(`${TOKEN_PREFIX}${record.token}`, userId);
-    return record;
+    const token = generateToken();
+    const createdAt = Date.now();
+    await this.db.query(
+      `INSERT INTO node_join_tokens (user_id, token, created_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (user_id) DO UPDATE SET token = EXCLUDED.token, created_at = EXCLUDED.created_at`,
+      [userId, token, createdAt]
+    );
+    return { token, createdAt };
   }
 }
 

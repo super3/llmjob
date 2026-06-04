@@ -1,6 +1,6 @@
 # LLMJob Node Tracking Server
 
-Express API server for tracking distributed LLM nodes with Redis storage.
+Express API server for tracking distributed LLM nodes with Postgres storage.
 
 ## Features
 
@@ -21,9 +21,9 @@ Express API server for tracking distributed LLM nodes with Redis storage.
 npm install
 ```
 
-2. Set up Redis locally:
+2. Set up Postgres locally:
 ```bash
-docker run -p 6379:6379 redis:alpine
+docker run -p 5432:5432 -e POSTGRES_DB=llmjob -e POSTGRES_HOST_AUTH_METHOD=trust postgres:16
 ```
 
 3. Create `.env` file with the following variables:
@@ -31,18 +31,37 @@ docker run -p 6379:6379 redis:alpine
 # Server Configuration
 PORT=3001
 
-# Redis Configuration
-REDIS_URL=redis://localhost:6379
+# Postgres Configuration
+DATABASE_URL=postgres://localhost:5432/llmjob
 
 # Clerk Configuration (get from Clerk dashboard)
 CLERK_PUBLISHABLE_KEY=your_clerk_publishable_key
 CLERK_SECRET_KEY=your_clerk_secret_key
 ```
 
-4. Start development server:
+4. Run database migrations:
+```bash
+npm run migrate:up
+```
+
+5. Start development server (also runs migrations):
 ```bash
 npm run dev
 ```
+
+### Database migrations
+
+Schema is managed with [node-pg-migrate](https://github.com/salsita/node-pg-migrate).
+Migrations live in `migrations/`; `npm start` / `npm run dev` apply them automatically.
+
+```bash
+npm run migrate:up                 # apply pending migrations
+npm run migrate:down               # roll back the last migration
+npm run migrate:create my_change   # scaffold a new migration (CJS)
+```
+
+Tests run against an in-memory Postgres (pg-mem) using the same schema, so no
+database is required for `npm test`.
 
 ### Testing
 
@@ -132,13 +151,13 @@ Required for production:
 
 - `CLERK_PUBLISHABLE_KEY` - From Clerk dashboard
 - `CLERK_SECRET_KEY` - From Clerk dashboard  
-- `REDIS_URL` - Automatically provided by Railway
+- `DATABASE_URL` - Automatically provided by Railway (Postgres plugin)
 - `PORT` - Automatically provided by Railway
 
 ## Architecture
 
 - Express.js server with CORS
-- Redis for data storage with intelligent TTL management
+- Postgres for data storage, schema managed by node-pg-migrate
 - ED25519 signatures for node authentication
 - Clerk for user authentication
 - Jest + Supertest for testing

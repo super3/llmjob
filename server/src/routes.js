@@ -51,9 +51,9 @@ router.get('/logs', requireAuth, logController.getLogs);
 router.post('/usage', apiKeyAuth, logController.recordUsage);
 
 // Initialize job controller with dependencies
-const initJobRoutes = (redis) => {
-  const jobService = new JobService(redis);
-  const nodeService = new NodeService(redis);
+const initJobRoutes = (db) => {
+  const jobService = new JobService(db);
+  const nodeService = new NodeService(db);
   const jobController = new JobController(jobService, nodeService);
 
   // Job submission and management

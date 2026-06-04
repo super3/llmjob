@@ -1,18 +1,17 @@
 const NodeTokenService = require('../src/services/nodeTokenService');
-const { createCamelClient } = require('./helpers/camelRedis');
+const { createTestDb } = require('./helpers/pgmem');
 
 describe('NodeTokenService', () => {
-  let redisClient;
+  let db;
   let service;
 
   beforeEach(async () => {
-    redisClient = createCamelClient();
-    service = new NodeTokenService(redisClient);
-    await redisClient.flushall();
+    db = await createTestDb();
+    service = new NodeTokenService(db);
   });
 
   afterEach(async () => {
-    await redisClient.quit();
+    if (db.end) await db.end();
   });
 
   describe('generateToken', () => {

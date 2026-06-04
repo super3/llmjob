@@ -8,7 +8,7 @@ async function getLogs(req, res) {
     const userId = req.user.id;
     const limit = req.query.limit ? parseInt(req.query.limit, 10) : 50;
 
-    const logService = new LogService(req.app.locals.redis);
+    const logService = new LogService(req.app.locals.db);
     const logs = await logService.getLogs(userId, limit);
     const activity = await logService.getActivity(userId);
 
@@ -33,8 +33,8 @@ async function recordUsage(req, res) {
       return res.status(400).json({ error: 'model and node are required' });
     }
 
-    const logService = new LogService(req.app.locals.redis);
-    const apiKeyService = new ApiKeyService(req.app.locals.redis);
+    const logService = new LogService(req.app.locals.db);
+    const apiKeyService = new ApiKeyService(req.app.locals.db);
 
     const entry = await logService.recordLog(userId, {
       model,

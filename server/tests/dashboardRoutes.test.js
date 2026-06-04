@@ -3,7 +3,8 @@ const express = require('express');
 const routes = require('../src/routes');
 const ApiKeyService = require('../src/services/apiKeyService');
 const NodeTokenService = require('../src/services/nodeTokenService');
-const { createCamelClient } = require('./helpers/camelRedis');
+const NodeService = require('../src/services/nodeService');
+const { createTestDb } = require('./helpers/pgmem');
 
 // Mock Clerk so requireAuth resolves to a fixed user.
 jest.mock('@clerk/clerk-sdk-node', () => ({
@@ -28,20 +29,22 @@ const mockToken = () => {
 
 describe('Dashboard API (keys, logs, usage)', () => {
   let app;
-  let redisClient;
+  let db;
 
   beforeEach(async () => {
     app = express();
     app.use(express.json());
-    redisClient = createCamelClient();
-    app.locals.redis = redisClient;
+    db = await createTestDb();
+    app.locals.db = db;
     app.use('/api', routes);
-    await redisClient.flushall();
   });
 
   afterEach(async () => {
-    await redisClient.quit();
+    if (db.end) await db.end();
   });
+
+  // Make every service query reject, to exercise the controllers' 500 paths.
+  const breakDb = () => { db.query = jest.fn().mockRejectedValue(new Error('boom')); };
 
   // ---- API keys -----------------------------------------------------------
   describe('POST /api/keys', () => {
@@ -73,7 +76,7 @@ describe('Dashboard API (keys, logs, usage)', () => {
     });
 
     it('returns 500 when storage fails', async () => {
-      redisClient.set = jest.fn().mockRejectedValue(new Error('boom'));
+      breakDb();
       const res = await request(app)
         .post('/api/keys')
         .set('Authorization', `Bearer ${mockToken()}`)
@@ -84,7 +87,7 @@ describe('Dashboard API (keys, logs, usage)', () => {
 
   describe('GET /api/keys', () => {
     it('lists the user keys', async () => {
-      await new ApiKeyService(redisClient).createKey('test_user_123', 'home');
+      await new ApiKeyService(db).createKey('test_user_123', 'home');
       const res = await request(app)
         .get('/api/keys')
         .set('Authorization', `Bearer ${mockToken()}`);
@@ -94,7 +97,7 @@ describe('Dashboard API (keys, logs, usage)', () => {
     });
 
     it('returns 500 when storage fails', async () => {
-      redisClient.sMembers = jest.fn().mockRejectedValue(new Error('boom'));
+      breakDb();
       const res = await request(app)
         .get('/api/keys')
         .set('Authorization', `Bearer ${mockToken()}`);
@@ -104,7 +107,7 @@ describe('Dashboard API (keys, logs, usage)', () => {
 
   describe('DELETE /api/keys/:id', () => {
     it('revokes an owned key', async () => {
-      const created = await new ApiKeyService(redisClient).createKey('test_user_123', 'home');
+      const created = await new ApiKeyService(db).createKey('test_user_123', 'home');
       const res = await request(app)
         .delete(`/api/keys/${created.id}`)
         .set('Authorization', `Bearer ${mockToken()}`);
@@ -130,7 +133,7 @@ describe('Dashboard API (keys, logs, usage)', () => {
     });
 
     it('returns 500 when storage fails', async () => {
-      redisClient.sMembers = jest.fn().mockRejectedValue(new Error('boom'));
+      breakDb();
       const res = await request(app)
         .delete('/api/keys/key_x')
         .set('Authorization', `Bearer ${mockToken()}`);
@@ -157,7 +160,7 @@ describe('Dashboard API (keys, logs, usage)', () => {
     });
 
     it('returns 500 when storage fails', async () => {
-      redisClient.zRange = jest.fn().mockRejectedValue(new Error('boom'));
+      breakDb();
       const res = await request(app)
         .get('/api/logs')
         .set('Authorization', `Bearer ${mockToken()}`);
@@ -170,7 +173,7 @@ describe('Dashboard API (keys, logs, usage)', () => {
     let rawKey;
 
     beforeEach(async () => {
-      const created = await new ApiKeyService(redisClient).createKey('test_user_123', 'home');
+      const created = await new ApiKeyService(db).createKey('test_user_123', 'home');
       rawKey = created.key;
     });
 
@@ -183,7 +186,6 @@ describe('Dashboard API (keys, logs, usage)', () => {
       expect(res.status).toBe(201);
       expect(res.body.log.key).toBe('home');
 
-      // The log shows up for the dashboard user, and usage was billed.
       const logsRes = await request(app)
         .get('/api/logs')
         .set('Authorization', `Bearer ${mockToken()}`);
@@ -235,7 +237,7 @@ describe('Dashboard API (keys, logs, usage)', () => {
     });
 
     it('returns 500 when key verification fails', async () => {
-      redisClient.get = jest.fn().mockRejectedValue(new Error('boom'));
+      breakDb();
       const res = await request(app)
         .post('/api/usage')
         .set('Authorization', `Bearer ${rawKey}`)
@@ -244,7 +246,13 @@ describe('Dashboard API (keys, logs, usage)', () => {
     });
 
     it('returns 500 when recording fails', async () => {
-      redisClient.zAdd = jest.fn().mockRejectedValue(new Error('boom'));
+      // Let auth succeed, then make the next query (the log insert) fail.
+      const real = db.query.bind(db);
+      let calls = 0;
+      db.query = jest.fn((...args) => {
+        calls += 1;
+        return calls === 1 ? real(...args) : Promise.reject(new Error('boom'));
+      });
       const res = await request(app)
         .post('/api/usage')
         .set('Authorization', `Bearer ${rawKey}`)
@@ -264,7 +272,7 @@ describe('Dashboard API (keys, logs, usage)', () => {
     });
 
     it('returns 500 when storage fails', async () => {
-      redisClient.get = jest.fn().mockRejectedValue(new Error('boom'));
+      breakDb();
       const res = await request(app)
         .get('/api/nodes/join-token')
         .set('Authorization', `Bearer ${mockToken()}`);
@@ -274,7 +282,7 @@ describe('Dashboard API (keys, logs, usage)', () => {
 
   describe('POST /api/nodes/join-token/rotate', () => {
     it('issues a different token', async () => {
-      const first = await new NodeTokenService(redisClient).getOrCreateToken('test_user_123');
+      const first = await new NodeTokenService(db).getOrCreateToken('test_user_123');
       const res = await request(app)
         .post('/api/nodes/join-token/rotate')
         .set('Authorization', `Bearer ${mockToken()}`);
@@ -284,7 +292,7 @@ describe('Dashboard API (keys, logs, usage)', () => {
     });
 
     it('returns 500 when storage fails', async () => {
-      redisClient.get = jest.fn().mockRejectedValue(new Error('boom'));
+      breakDb();
       const res = await request(app)
         .post('/api/nodes/join-token/rotate')
         .set('Authorization', `Bearer ${mockToken()}`);
@@ -294,7 +302,7 @@ describe('Dashboard API (keys, logs, usage)', () => {
 
   describe('POST /api/nodes/join', () => {
     it('registers a node with a valid token and surfaces it in the list', async () => {
-      const { token } = await new NodeTokenService(redisClient).getOrCreateToken('test_user_123');
+      const { token } = await new NodeTokenService(db).getOrCreateToken('test_user_123');
 
       const res = await request(app)
         .post('/api/nodes/join')
@@ -305,11 +313,11 @@ describe('Dashboard API (keys, logs, usage)', () => {
       const list = await request(app)
         .get('/api/nodes')
         .set('Authorization', `Bearer ${mockToken()}`);
-      expect(list.body.nodes.some(n => n.name === 'rig4090')).toBe(true);
+      expect(list.body.nodes.some((n) => n.name === 'rig4090')).toBe(true);
     });
 
     it('defaults the node name when omitted', async () => {
-      const { token } = await new NodeTokenService(redisClient).getOrCreateToken('test_user_123');
+      const { token } = await new NodeTokenService(db).getOrCreateToken('test_user_123');
       const res = await request(app)
         .post('/api/nodes/join')
         .send({ token, publicKey: 'pk-join-2' });
@@ -331,10 +339,8 @@ describe('Dashboard API (keys, logs, usage)', () => {
     });
 
     it('surfaces a claim conflict as 400', async () => {
-      const { token } = await new NodeTokenService(redisClient).getOrCreateToken('test_user_123');
-      // Pre-claim the node under a different user so the join attempt conflicts.
-      const NodeService = require('../src/services/nodeService');
-      await new NodeService(redisClient).claimNode('pk-taken', 'taken', 'other_user');
+      const { token } = await new NodeTokenService(db).getOrCreateToken('test_user_123');
+      await new NodeService(db).claimNode('pk-taken', 'taken', 'other_user');
 
       const res = await request(app)
         .post('/api/nodes/join')
@@ -343,7 +349,7 @@ describe('Dashboard API (keys, logs, usage)', () => {
     });
 
     it('returns 500 when verification fails', async () => {
-      redisClient.get = jest.fn().mockRejectedValue(new Error('boom'));
+      breakDb();
       const res = await request(app)
         .post('/api/nodes/join')
         .send({ token: 'ljn_whatever', publicKey: 'pk-x', name: 'n' });

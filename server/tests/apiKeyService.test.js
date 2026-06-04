@@ -1,18 +1,17 @@
 const ApiKeyService = require('../src/services/apiKeyService');
-const { createCamelClient } = require('./helpers/camelRedis');
+const { createTestDb } = require('./helpers/pgmem');
 
 describe('ApiKeyService', () => {
-  let redisClient;
+  let db;
   let service;
 
   beforeEach(async () => {
-    redisClient = createCamelClient();
-    service = new ApiKeyService(redisClient);
-    await redisClient.flushall();
+    db = await createTestDb();
+    service = new ApiKeyService(db);
   });
 
   afterEach(async () => {
-    await redisClient.quit();
+    if (db.end) await db.end();
   });
 
   describe('generateKey', () => {
@@ -43,8 +42,8 @@ describe('ApiKeyService', () => {
       expect(result.usage).toBe(0);
       expect(result.lastUsed).toBeNull();
 
-      const hashes = await redisClient.sMembers('user_apikeys:user1');
-      expect(hashes).toHaveLength(1);
+      const keys = await service.listKeys('user1');
+      expect(keys).toHaveLength(1);
     });
   });
 
@@ -55,9 +54,9 @@ describe('ApiKeyService', () => {
 
     it('returns redacted keys newest first', async () => {
       const a = await service.createKey('user1', 'first');
-      // Force a later createdAt for the second key.
       const b = await service.createKey('user1', 'second');
-      await bumpCreatedAt(redisClient, 'user1', b.id, a.createdAt + 1000);
+      // Force a later createdAt for the second key.
+      await db.query('UPDATE api_keys SET created_at = $1 WHERE id = $2', [a.createdAt + 1000, b.id]);
 
       const keys = await service.listKeys('user1');
       expect(keys).toHaveLength(2);
@@ -66,14 +65,6 @@ describe('ApiKeyService', () => {
       // No secret material is ever returned.
       expect(keys[0].key).toBeUndefined();
       expect(keys[0].masked).toContain('…');
-    });
-
-    it('skips hashes whose metadata is missing', async () => {
-      await service.createKey('user1', 'real');
-      await redisClient.sAdd('user_apikeys:user1', 'dangling-hash');
-
-      const keys = await service.listKeys('user1');
-      expect(keys).toHaveLength(1);
     });
   });
 
@@ -119,32 +110,17 @@ describe('ApiKeyService', () => {
       expect(await service.listKeys('user1')).toEqual([]);
     });
 
-    it('returns 404 when the id is not found, skipping dangling hashes', async () => {
+    it('returns 404 when the id is not found', async () => {
       await service.createKey('user1', 'laptop');
-      await redisClient.sAdd('user_apikeys:user1', 'dangling-hash');
       const result = await service.revokeKey('user1', 'key_missing');
       expect(result).toEqual({ error: 'Key not found', status: 404 });
     });
 
-    it('ignores dangling hashes while searching', async () => {
+    it('will not revoke a key owned by another user', async () => {
       const created = await service.createKey('user1', 'laptop');
-      await redisClient.sAdd('user_apikeys:user1', 'dangling-hash');
-
-      const result = await service.revokeKey('user1', created.id);
-      expect(result.success).toBe(true);
+      const result = await service.revokeKey('other', created.id);
+      expect(result).toEqual({ error: 'Key not found', status: 404 });
+      expect(await service.listKeys('user1')).toHaveLength(1);
     });
   });
 });
-
-// Helper: rewrite a key's createdAt so list ordering is deterministic.
-async function bumpCreatedAt(redis, userId, keyId, createdAt) {
-  const hashes = await redis.sMembers(`user_apikeys:${userId}`);
-  for (const hash of hashes) {
-    const data = await redis.get(`apikey:${hash}`);
-    const meta = JSON.parse(data);
-    if (meta.id === keyId) {
-      meta.createdAt = createdAt;
-      await redis.set(`apikey:${hash}`, JSON.stringify(meta));
-    }
-  }
-}

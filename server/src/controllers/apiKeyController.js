@@ -9,7 +9,7 @@ async function createKey(req, res) {
       return res.status(400).json({ error: 'Key name is required' });
     }
 
-    const apiKeyService = new ApiKeyService(req.app.locals.redis);
+    const apiKeyService = new ApiKeyService(req.app.locals.db);
     const result = await apiKeyService.createKey(userId, name.trim());
 
     // `result.key` is the raw secret — returned exactly once.
@@ -24,7 +24,7 @@ async function listKeys(req, res) {
   try {
     const userId = req.user.id;
 
-    const apiKeyService = new ApiKeyService(req.app.locals.redis);
+    const apiKeyService = new ApiKeyService(req.app.locals.db);
     const keys = await apiKeyService.listKeys(userId);
     res.json({ keys });
   } catch (error) {
@@ -38,7 +38,7 @@ async function revokeKey(req, res) {
     const { id } = req.params;
     const userId = req.user.id;
 
-    const apiKeyService = new ApiKeyService(req.app.locals.redis);
+    const apiKeyService = new ApiKeyService(req.app.locals.db);
     const result = await apiKeyService.revokeKey(userId, id);
 
     if (result.error) {

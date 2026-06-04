@@ -15,7 +15,7 @@ async function apiKeyAuth(req, res, next) {
       return res.status(401).json({ error: 'Invalid API key' });
     }
 
-    const apiKeyService = new ApiKeyService(req.app.locals.redis);
+    const apiKeyService = new ApiKeyService(req.app.locals.db);
     const resolved = await apiKeyService.verifyKey(rawKey);
 
     if (!resolved) {

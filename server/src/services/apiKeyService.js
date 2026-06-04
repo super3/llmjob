@@ -3,9 +3,6 @@ const crypto = require('crypto');
 // API keys let a user authenticate OpenAI-compatible API requests without
 // going through Clerk. Only a SHA-256 hash of each key is ever stored, so the
 // raw secret is shown exactly once at creation time and can never be recovered.
-const KEY_PREFIX = 'apikey:';
-const USER_KEYS_PREFIX = 'user_apikeys:';
-
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
@@ -16,10 +13,8 @@ function maskKey(rawKey) {
 }
 
 class ApiKeyService {
-  constructor(redis) {
-    // Production passes the real redis v5 client (camelCase, promise-based);
-    // tests pass an equivalent adapter. Either way we use it directly.
-    this.redis = redis;
+  constructor(db) {
+    this.db = db;
   }
 
   // Generate a fresh secret. `lj-live-` prefix mirrors the dashboard mock.
@@ -33,96 +28,70 @@ class ApiKeyService {
   async createKey(userId, name) {
     const { raw, hash, masked } = ApiKeyService.generateKey();
     const id = 'key_' + crypto.randomBytes(6).toString('hex');
+    const createdAt = Date.now();
 
-    const meta = {
-      id,
-      userId,
-      name,
-      masked,
-      createdAt: Date.now(),
-      lastUsed: null,
-      usage: 0
-    };
+    await this.db.query(
+      `INSERT INTO api_keys (hash, id, user_id, name, masked, created_at, last_used, usage)
+       VALUES ($1, $2, $3, $4, $5, $6, NULL, 0)`,
+      [hash, id, userId, name, masked, createdAt]
+    );
 
-    await this.redis.set(`${KEY_PREFIX}${hash}`, JSON.stringify(meta));
-    await this.redis.sAdd(`${USER_KEYS_PREFIX}${userId}`, hash);
-
-    return { ...meta, key: raw };
+    return { id, userId, name, masked, createdAt, lastUsed: null, usage: 0, key: raw };
   }
 
   // List a user's keys (redacted), newest first.
   async listKeys(userId) {
-    const hashes = await this.redis.sMembers(`${USER_KEYS_PREFIX}${userId}`);
-    if (!hashes || hashes.length === 0) {
-      return [];
-    }
-
-    const keys = [];
-    for (const hash of hashes) {
-      const data = await this.redis.get(`${KEY_PREFIX}${hash}`);
-      if (data) {
-        const meta = JSON.parse(data);
-        keys.push({
-          id: meta.id,
-          name: meta.name,
-          masked: meta.masked,
-          createdAt: meta.createdAt,
-          lastUsed: meta.lastUsed,
-          usage: meta.usage
-        });
-      }
-    }
-
-    keys.sort((a, b) => b.createdAt - a.createdAt);
-    return keys;
+    const r = await this.db.query(
+      `SELECT id, name, masked, created_at, last_used, usage
+       FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC`,
+      [userId]
+    );
+    return r.rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      masked: row.masked,
+      createdAt: Number(row.created_at),
+      lastUsed: row.last_used == null ? null : Number(row.last_used),
+      usage: Number(row.usage)
+    }));
   }
 
   // Resolve a raw key to its owner. Updates lastUsed on success.
   async verifyKey(rawKey) {
     const hash = sha256(rawKey);
-    const data = await this.redis.get(`${KEY_PREFIX}${hash}`);
-    if (!data) {
+    const r = await this.db.query(
+      'UPDATE api_keys SET last_used = $2 WHERE hash = $1 RETURNING user_id, id, name',
+      [hash, Date.now()]
+    );
+    if (r.rows.length === 0) {
       return null;
     }
-
-    const meta = JSON.parse(data);
-    meta.lastUsed = Date.now();
-    await this.redis.set(`${KEY_PREFIX}${hash}`, JSON.stringify(meta));
-
-    return { userId: meta.userId, id: meta.id, name: meta.name, hash };
+    const row = r.rows[0];
+    return { userId: row.user_id, id: row.id, name: row.name, hash };
   }
 
   // Add token usage to a key identified by its hash.
   async recordUsage(hash, tokens) {
-    const data = await this.redis.get(`${KEY_PREFIX}${hash}`);
-    if (!data) {
+    const r = await this.db.query(
+      'UPDATE api_keys SET usage = usage + $2 WHERE hash = $1 RETURNING usage',
+      [hash, tokens]
+    );
+    if (r.rows.length === 0) {
       return { error: 'Key not found' };
     }
-
-    const meta = JSON.parse(data);
-    meta.usage = (meta.usage || 0) + tokens;
-    await this.redis.set(`${KEY_PREFIX}${hash}`, JSON.stringify(meta));
-
-    return { success: true, usage: meta.usage };
+    return { success: true, usage: Number(r.rows[0].usage) };
   }
 
-  // Revoke a key by its public id. Verifies ownership via the user's set.
+  // Revoke a key by its public id. Verifies ownership via the user id.
   async revokeKey(userId, keyId) {
-    const hashes = await this.redis.sMembers(`${USER_KEYS_PREFIX}${userId}`);
-
-    for (const hash of hashes) {
-      const data = await this.redis.get(`${KEY_PREFIX}${hash}`);
-      if (data) {
-        const meta = JSON.parse(data);
-        if (meta.id === keyId) {
-          await this.redis.del(`${KEY_PREFIX}${hash}`);
-          await this.redis.sRem(`${USER_KEYS_PREFIX}${userId}`, hash);
-          return { success: true, id: keyId, message: 'Key revoked' };
-        }
-      }
+    const r = await this.db.query(
+      'DELETE FROM api_keys WHERE user_id = $1 AND id = $2 RETURNING id',
+      [userId, keyId]
+    );
+    if (r.rows.length === 0) {
+      return { error: 'Key not found', status: 404 };
     }
-
-    return { error: 'Key not found', status: 404 };
+    return { success: true, id: keyId, message: 'Key revoked' };
   }
 }
 
