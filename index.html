@@ -5,6 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>LLMJob — Run LLMs at home</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2222%22 fill=%22%2316160F%22/><path transform=%22translate(26,26) scale(2)%22 d=%22M13 2 4 14h6l-1 8 9-12h-6l1-8z%22 fill=%22%23FBFAF8%22/></svg>">
+
+<!-- Clerk Authentication -->
+<script
+    async
+    crossorigin="anonymous"
+    data-clerk-publishable-key="pk_test_cHJpbWFyeS1kb2ctNDYuY2xlcmsuYWNjb3VudHMuZGV2JA"
+    src="https://primary-dog-46.clerk.accounts.dev/npm/@clerk/clerk-js@5/dist/clerk.browser.js"
+    type="text/javascript"
+></script>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -184,7 +193,7 @@
     </span> LLMJob</a>
     <nav class="nav-links">
       <a class="link" href="benchmark.html">Benchmarks</a>
-      <a class="btn btn-ghost" href="dashboard.html">Login</a>
+      <a class="btn btn-ghost" href="dashboard.html" data-auth="signin">Login</a>
     </nav>
   </div>
 </header>
@@ -366,6 +375,31 @@
   const nav = document.getElementById('nav');
   const onScroll = () => nav.classList.toggle('scrolled', window.scrollY > 8);
   window.addEventListener('scroll', onScroll); onScroll();
+
+  // Open Clerk's sign-in/up modal over the homepage instead of navigating to
+  // the console and showing its loading screen behind the modal.
+  window.addEventListener('load', async () => {
+    if (typeof Clerk === 'undefined') return; // links fall back to dashboard.html
+    try { await Clerk.load(); } catch (e) { return; }
+
+    // In modal mode Clerk just closes the modal on success and leaves us on the
+    // homepage, so redirect to the console ourselves once a session is active.
+    let authPending = false;
+    Clerk.addListener(({ user }) => {
+      if (authPending && user) { authPending = false; window.location.href = 'dashboard.html'; }
+    });
+
+    document.querySelectorAll('a[href="dashboard.html"]').forEach((link) => {
+      link.addEventListener('click', (e) => {
+        e.preventDefault();
+        if (Clerk.user) { window.location.href = 'dashboard.html'; return; }
+        authPending = true;
+        const opts = { afterSignInUrl: 'dashboard.html', afterSignUpUrl: 'dashboard.html' };
+        if (link.dataset.auth === 'signin') Clerk.openSignIn(opts);
+        else Clerk.openSignUp(opts);
+      });
+    });
+  });
 </script>
 </body>
 </html>
