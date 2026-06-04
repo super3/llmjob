@@ -32,34 +32,51 @@ function createRedisCompat(redis) {
       return 'OK';
     },
     
-    // Set operations - try camelCase first, fallback to lowercase with callback
+    // Set operations - try camelCase first, fallback to lowercase.
+    // The lowercase fallback supports both callback-based (real redis-mock)
+    // and promise-based (patched/async) APIs, mirroring get/set above.
     sAdd: async (key, ...members) => {
       if (typeof redis.sAdd === 'function') {
         return redis.sAdd(key, ...members);
       }
-      // For redis-mock callback-based API
-      return new Promise((resolve) => {
-        redis.sadd(key, ...members, (err, result) => resolve(result || 0));
+      return new Promise((resolve, reject) => {
+        const result = redis.sadd(key, ...members, (err, res) => {
+          if (err) reject(err);
+          else resolve(res || 0);
+        });
+        if (result && typeof result.then === 'function') {
+          result.then((res) => resolve(res || 0), reject);
+        }
       });
     },
-    
+
     sMembers: async (key) => {
       if (typeof redis.sMembers === 'function') {
         return redis.sMembers(key);
       }
-      // For redis-mock callback-based API
-      return new Promise((resolve) => {
-        redis.smembers(key, (err, result) => resolve(result || []));
+      return new Promise((resolve, reject) => {
+        const result = redis.smembers(key, (err, res) => {
+          if (err) reject(err);
+          else resolve(res || []);
+        });
+        if (result && typeof result.then === 'function') {
+          result.then((res) => resolve(res || []), reject);
+        }
       });
     },
-    
+
     sRem: async (key, ...members) => {
       if (typeof redis.sRem === 'function') {
         return redis.sRem(key, ...members);
       }
-      // For redis-mock callback-based API
-      return new Promise((resolve) => {
-        redis.srem(key, ...members, (err, result) => resolve(result || 0));
+      return new Promise((resolve, reject) => {
+        const result = redis.srem(key, ...members, (err, res) => {
+          if (err) reject(err);
+          else resolve(res || 0);
+        });
+        if (result && typeof result.then === 'function') {
+          result.then((res) => resolve(res || 0), reject);
+        }
       });
     },
     
