@@ -29,12 +29,12 @@ so the build fails if coverage regresses.
 
 ## How the suite stays at 100%
 
-The server code talks to Redis through the real `redis` v5 client (camelCase,
-promise-based) with no compatibility shim. Tests run against a single faithful
-adapter, `server/tests/helpers/camelRedis.js`, which exposes the same v5-style
-API (including `set` `NX`/`EX` options and the v5 `zAdd` format) on top of
-`redis-mock`. Because production and tests exercise the same API shape, there
-are no dual code paths and no `istanbul ignore` annotations.
+The server code talks to Postgres through the real `pg` `Pool` (parameterized
+queries) with no compatibility shim. Tests run against an in-memory Postgres,
+`server/tests/helpers/pgmem.js`, which builds a `pg`-compatible pool with
+[pg-mem](https://github.com/oguimbal/pg-mem) and applies the same `SCHEMA` from
+`server/src/db.js`. Because production and tests exercise real SQL against the
+same schema, there are no dual code paths and no `istanbul ignore` annotations.
 
 Coverage is driven entirely by behaviour-focused suites — one per unit — rather
 than a dedicated "hit every line" file:
@@ -43,8 +43,9 @@ than a dedicated "hit every line" file:
   edge branches (lock contention, heartbeat/timeout transitions, cleanup).
 - `jobController.test.js` / `nodeController.test.js` — controller responses and
   error handling, including the node-verification and auth-fallback branches.
+- `dashboardRoutes.test.js` — API keys, request logs, usage, and join tokens.
 - `routes.test.js` / `routesJobs.test.js` — route wiring and handlers
   end-to-end through the Express router.
 - `auth.test.js` / `signature.test.js` — middleware.
-- `server/tests/helpers/camelRedis.js` — the single Redis adapter used by the
-  tests above.
+- `db.test.js` — the pool factory and shared schema.
+- `server/tests/helpers/pgmem.js` — the in-memory Postgres used by the tests.

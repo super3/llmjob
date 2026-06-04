@@ -1,20 +1,20 @@
 const JobController = require('../src/controllers/jobController');
 const JobService = require('../src/services/jobService');
-const { createCamelClient } = require('./helpers/camelRedis');
+const { createTestDb } = require('./helpers/pgmem');
 
 describe('JobController', () => {
   let jobController;
   let jobService;
   let nodeService;
-  let redisClient;
+  let db;
   let req, res;
   let consoleErrorSpy;
 
   beforeEach(async () => {
     // Mock console.error for error tests
     consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation();
-    redisClient = createCamelClient();
-    jobService = new JobService(redisClient);
+    db = await createTestDb();
+    jobService = new JobService(db);
 
     // Mock nodeService
     nodeService = {
@@ -22,10 +22,7 @@ describe('JobController', () => {
     };
 
     jobController = new JobController(jobService, nodeService);
-    
-    // Clear any existing data
-    await new Promise(resolve => redisClient.flushall(resolve));
-    
+
     // Setup request and response mocks
     req = {
       body: {},
@@ -41,8 +38,8 @@ describe('JobController', () => {
     };
   });
 
-  afterEach(() => {
-    redisClient.quit();
+  afterEach(async () => {
+    if (db.end) await db.end();
     jest.clearAllMocks();
     consoleErrorSpy.mockRestore();
   });

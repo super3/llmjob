@@ -1,16 +1,15 @@
+const LOCK_MS = 10 * 60 * 1000;       // assignment lock lifetime (10 min)
+const HEARTBEAT_STALE_MS = 60 * 1000; // consider a job stalled after 60s silence
+
 class JobService {
-  constructor(redis) {
-    // Production passes the real redis v5 client (camelCase, promise-based);
-    // tests pass an equivalent adapter. Either way we use it directly.
-    this.redis = redis;
+  constructor(db) {
+    this.db = db;
   }
 
-  // Generate a unique job ID
   generateJobId() {
     return `job-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   }
 
-  // Create a new job
   async createJob(jobData) {
     const jobId = this.generateJobId();
     const timestamp = Date.now();
@@ -29,130 +28,109 @@ class JobService {
       temperature: jobData.temperature || 0.7
     };
 
-    // Store job data
-    await this.redis.set(`job:${jobId}`, JSON.stringify(job));
-
-    // Add to pending queue with priority score (higher priority = lower score for earlier processing)
-    await this.redis.zAdd('jobs:pending', {
-      score: -job.priority * 1000000 + timestamp, // Negative priority for reverse order, then timestamp
-      value: jobId
-    });
+    await this.db.query(
+      `INSERT INTO jobs (id, data, status, priority, created_at, updated_at, user_id)
+       VALUES ($1, $2, 'pending', $3, $4, $4, $5)`,
+      [jobId, JSON.stringify(job), job.priority, timestamp, job.userId]
+    );
 
     return job;
   }
 
-  // Get job by ID
   async getJob(jobId) {
-    const data = await this.redis.get(`job:${jobId}`);
-    return data ? JSON.parse(data) : null;
+    const r = await this.db.query('SELECT data FROM jobs WHERE id = $1', [jobId]);
+    return r.rows.length > 0 ? r.rows[0].data : null;
   }
 
-  // Update job status
   async updateJobStatus(jobId, status, additionalData = {}) {
     const job = await this.getJob(jobId);
     if (!job) {
       throw new Error(`Job ${jobId} not found`);
     }
 
-    const updatedJob = {
-      ...job,
-      status,
-      ...additionalData,
-      updatedAt: Date.now()
-    };
+    const updatedJob = { ...job, status, ...additionalData, updatedAt: Date.now() };
 
-    await this.redis.set(`job:${jobId}`, JSON.stringify(updatedJob));
-
-    // Remove from old status set and add to new one
-    const statusSets = ['pending', 'assigned', 'running', 'completed', 'failed'];
-    for (const s of statusSets) {
-      if (s !== status) {
-        await this.redis.zRem(`jobs:${s}`, jobId);
-      }
-    }
-
-    // Add to new status set
-    if (status !== 'pending') { // pending jobs stay in the priority queue
-      await this.redis.zAdd(`jobs:${status}`, {
-        score: Date.now(),
-        value: jobId
-      });
-    }
+    await this.db.query(
+      'UPDATE jobs SET data = $2, status = $3, assigned_to = $4, updated_at = $5 WHERE id = $1',
+      [jobId, JSON.stringify(updatedJob), status, updatedJob.assignedTo || null, updatedJob.updatedAt]
+    );
 
     return updatedJob;
   }
 
-  // Assign jobs to a node
+  // Claim up to maxJobs pending jobs for a node, locking them in one transaction.
   async assignJobsToNode(nodeId, maxJobs = 1) {
     const assignedJobs = [];
+    const client = await this.db.connect();
+    try {
+      await client.query('BEGIN');
+      const pending = await client.query(
+        `SELECT id, data FROM jobs WHERE status = 'pending'
+         ORDER BY priority DESC, created_at ASC LIMIT $1 FOR UPDATE`,
+        [maxJobs]
+      );
 
-    // Get pending jobs sorted by priority/timestamp
-    const pendingJobIds = await this.redis.zRange('jobs:pending', 0, maxJobs - 1);
-
-    for (const jobId of pendingJobIds) {
-      // Try to acquire lock on this job
-      const lockKey = `job:${jobId}:lock`;
-      const lockAcquired = await this.redis.set(lockKey, nodeId, {
-        NX: true, // Only set if doesn't exist
-        EX: 600   // 10 minute expiry
-      });
-
-      if (lockAcquired) {
-        // Remove from pending queue
-        await this.redis.zRem('jobs:pending', jobId);
-
-        // Update job status
-        const job = await this.updateJobStatus(jobId, 'assigned', {
-          assignedTo: nodeId,
-          assignedAt: Date.now()
-        });
-
-        // Track assignment for this node
-        await this.redis.sAdd(`node:${nodeId}:jobs`, jobId);
-
+      for (const row of pending.rows) {
+        const now = Date.now();
+        const job = { ...row.data, status: 'assigned', assignedTo: nodeId, assignedAt: now, updatedAt: now };
+        await client.query(
+          `UPDATE jobs SET data = $2, status = 'assigned', assigned_to = $3, updated_at = $4,
+             lock_node = $3, lock_expires_at = $5 WHERE id = $1`,
+          [job.id, JSON.stringify(job), nodeId, now, now + LOCK_MS]
+        );
         assignedJobs.push(job);
       }
+
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
     }
 
     return assignedJobs;
   }
 
-  // Handle job heartbeat
-  async handleHeartbeat(jobId, nodeId) {
-    const lockKey = `job:${jobId}:lock`;
-    const currentLock = await this.redis.get(lockKey);
-
-    if (currentLock !== nodeId) {
+  // Verify the node holds a live lock on the job; returns the row or throws.
+  async _assertLock(jobId, nodeId) {
+    const r = await this.db.query(
+      'SELECT data, status, lock_node, lock_expires_at FROM jobs WHERE id = $1',
+      [jobId]
+    );
+    const row = r.rows[0];
+    const now = Date.now();
+    const held = row && row.lock_expires_at != null && Number(row.lock_expires_at) > now;
+    if (!held || row.lock_node !== nodeId) {
       throw new Error('Node does not hold lock for this job');
     }
+    return row;
+  }
 
-    // Extend lock timeout
-    await this.redis.expire(lockKey, 600); // Reset to 10 minutes
+  async handleHeartbeat(jobId, nodeId) {
+    const row = await this._assertLock(jobId, nodeId);
+    const now = Date.now();
 
-    // Update last heartbeat time
-    await this.redis.set(`job:${jobId}:heartbeat`, Date.now(), { EX: 60 }); // 60 second expiry
-
-    // Update job status if needed
-    const job = await this.getJob(jobId);
-    if (job && job.status === 'assigned') {
-      await this.updateJobStatus(jobId, 'running', {
-        startedAt: job.startedAt || Date.now()
-      });
+    if (row.status === 'assigned') {
+      const job = { ...row.data, status: 'running', startedAt: row.data.startedAt || now, updatedAt: now };
+      await this.db.query(
+        `UPDATE jobs SET data = $2, status = 'running', updated_at = $3,
+           lock_expires_at = $4, heartbeat_at = $3 WHERE id = $1`,
+        [jobId, JSON.stringify(job), now, now + LOCK_MS]
+      );
+    } else {
+      await this.db.query(
+        'UPDATE jobs SET lock_expires_at = $2, heartbeat_at = $3 WHERE id = $1',
+        [jobId, now + LOCK_MS, now]
+      );
     }
 
     return { success: true };
   }
 
-  // Store job chunk
   async storeChunk(jobId, nodeId, chunkData) {
-    const lockKey = `job:${jobId}:lock`;
-    const currentLock = await this.redis.get(lockKey);
+    await this._assertLock(jobId, nodeId);
 
-    if (currentLock !== nodeId) {
-      throw new Error('Node does not hold lock for this job');
-    }
-
-    const chunkKey = `job:${jobId}:chunks`;
     const chunk = {
       index: chunkData.chunkIndex,
       content: chunkData.content,
@@ -161,148 +139,107 @@ class JobService {
       timestamp: chunkData.timestamp || Date.now()
     };
 
-    // Store chunk in sorted set by index
-    await this.redis.zAdd(chunkKey, {
-      score: chunk.index,
-      value: JSON.stringify(chunk)
-    });
+    await this.db.query(
+      `INSERT INTO job_chunks (job_id, idx, chunk) VALUES ($1, $2, $3)
+       ON CONFLICT (job_id, idx) DO UPDATE SET chunk = EXCLUDED.chunk`,
+      [jobId, chunk.index, JSON.stringify(chunk)]
+    );
 
-    // Update job with latest metrics
     if (chunkData.metrics) {
       const job = await this.getJob(jobId);
-      await this.redis.set(`job:${jobId}`, JSON.stringify({
-        ...job,
-        lastMetrics: chunkData.metrics,
-        updatedAt: Date.now()
-      }));
+      const updated = { ...job, lastMetrics: chunkData.metrics, updatedAt: Date.now() };
+      await this.db.query('UPDATE jobs SET data = $2, updated_at = $3 WHERE id = $1',
+        [jobId, JSON.stringify(updated), updated.updatedAt]);
     }
 
     return { success: true, chunkIndex: chunk.index };
   }
 
-  // Complete a job
+  async _getChunks(jobId) {
+    const r = await this.db.query('SELECT chunk FROM job_chunks WHERE job_id = $1 ORDER BY idx', [jobId]);
+    return r.rows.map((row) => row.chunk);
+  }
+
   async completeJob(jobId, nodeId) {
-    const lockKey = `job:${jobId}:lock`;
-    const currentLock = await this.redis.get(lockKey);
+    await this._assertLock(jobId, nodeId);
 
-    if (currentLock !== nodeId) {
-      throw new Error('Node does not hold lock for this job');
-    }
+    const chunks = await this._getChunks(jobId);
+    const assembledContent = chunks.map((c) => c.content).join('');
 
-    // Get all chunks and assemble result
-    const chunks = await this.redis.zRange(`job:${jobId}:chunks`, 0, -1);
-    const assembledContent = chunks
-      .map(chunk => JSON.parse(chunk).content)
-      .join('');
-
-    // Update job status
     const job = await this.updateJobStatus(jobId, 'completed', {
       completedAt: Date.now(),
       result: assembledContent,
       chunks: chunks.length
     });
 
-    // Release lock
-    await this.redis.del(lockKey);
-
-    // Remove from node's active jobs
-    await this.redis.sRem(`node:${nodeId}:jobs`, jobId);
-
-    // Clean up heartbeat
-    await this.redis.del(`job:${jobId}:heartbeat`);
-
+    await this._releaseLock(jobId);
     return job;
   }
 
-  // Fail a job
   async failJob(jobId, nodeId, reason) {
-    const lockKey = `job:${jobId}:lock`;
-    const currentLock = await this.redis.get(lockKey);
+    await this._assertLock(jobId, nodeId);
 
-    if (currentLock !== nodeId) {
-      throw new Error('Node does not hold lock for this job');
-    }
-
-    // Update job status
     const job = await this.updateJobStatus(jobId, 'failed', {
       failedAt: Date.now(),
       failureReason: reason
     });
 
-    // Release lock
-    await this.redis.del(lockKey);
-
-    // Remove from node's active jobs
-    await this.redis.sRem(`node:${nodeId}:jobs`, jobId);
-
-    // Clean up heartbeat
-    await this.redis.del(`job:${jobId}:heartbeat`);
-
+    await this._releaseLock(jobId);
     return job;
   }
 
-  // Check for timed out jobs and return them to queue
+  async _releaseLock(jobId) {
+    await this.db.query(
+      'UPDATE jobs SET lock_node = NULL, lock_expires_at = NULL, heartbeat_at = NULL WHERE id = $1',
+      [jobId]
+    );
+  }
+
+  // Return assigned/running jobs whose lock expired or heartbeat went stale.
   async checkTimeouts() {
     const now = Date.now();
+    const r = await this.db.query(
+      `SELECT id, data, status, lock_expires_at, heartbeat_at FROM jobs
+       WHERE status IN ('assigned', 'running')`,
+      []
+    );
+
     const timeoutJobs = [];
+    for (const row of r.rows) {
+      const lockExpired = row.lock_expires_at == null || Number(row.lock_expires_at) <= now;
+      const heartbeatStale = row.heartbeat_at != null && now - Number(row.heartbeat_at) > HEARTBEAT_STALE_MS;
 
-    // Get all assigned and running jobs
-    const assignedJobs = await this.redis.zRange('jobs:assigned', 0, -1);
-    const runningJobs = await this.redis.zRange('jobs:running', 0, -1);
-    const allJobs = [...assignedJobs, ...runningJobs];
-
-    for (const jobId of allJobs) {
-      const lockKey = `job:${jobId}:lock`;
-      const heartbeatKey = `job:${jobId}:heartbeat`;
-
-      // Check if lock exists
-      const lockTTL = await this.redis.ttl(lockKey);
-      const lastHeartbeat = await this.redis.get(heartbeatKey);
-
-      // If lock expired or no recent heartbeat
-      if (lockTTL === -2 || (lastHeartbeat && now - parseInt(lastHeartbeat) > 60000)) {
-        const job = await this.getJob(jobId);
-        if (job) {
-          // Return to pending queue
-          await this.updateJobStatus(jobId, 'pending', {
-            previousStatus: job.status,
-            returnedToQueue: now,
-            timeoutReason: lockTTL === -2 ? 'lock_expired' : 'heartbeat_timeout'
-          });
-
-          // Re-add to pending queue
-          await this.redis.zAdd('jobs:pending', {
-            score: -job.priority * 1000000 + now,
-            value: jobId
-          });
-
-          // Clean up
-          await this.redis.del(lockKey);
-          await this.redis.del(heartbeatKey);
-          if (job.assignedTo) {
-            await this.redis.sRem(`node:${job.assignedTo}:jobs`, jobId);
-          }
-
-          timeoutJobs.push(jobId);
-        }
+      if (lockExpired || heartbeatStale) {
+        const job = { ...row.data };
+        const updated = {
+          ...job,
+          status: 'pending',
+          previousStatus: row.status,
+          returnedToQueue: now,
+          timeoutReason: lockExpired ? 'lock_expired' : 'heartbeat_timeout',
+          updatedAt: now
+        };
+        await this.db.query(
+          `UPDATE jobs SET data = $2, status = 'pending', assigned_to = NULL, updated_at = $3,
+             lock_node = NULL, lock_expires_at = NULL, heartbeat_at = NULL WHERE id = $1`,
+          [job.id, JSON.stringify(updated), now]
+        );
+        timeoutJobs.push(job.id);
       }
     }
 
     return timeoutJobs;
   }
 
-  // Get job results
   async getJobResult(jobId) {
     const job = await this.getJob(jobId);
     if (!job) {
       throw new Error(`Job ${jobId} not found`);
     }
 
-    // Always get chunks for any status where they might exist
     let chunks = [];
     if (job.status === 'running' || job.status === 'completed') {
-      const rawChunks = await this.redis.zRange(`job:${jobId}:chunks`, 0, -1);
-      chunks = rawChunks.map(chunk => JSON.parse(chunk));
+      chunks = await this._getChunks(jobId);
     }
 
     if (job.status === 'completed') {
@@ -310,7 +247,7 @@ class JobService {
         jobId,
         status: 'completed',
         result: job.result,
-        chunks: chunks, // Include chunks array for UI compatibility
+        chunks,
         metrics: job.lastMetrics,
         completedAt: job.completedAt,
         assignedTo: job.assignedTo
@@ -327,17 +264,12 @@ class JobService {
       };
     }
 
-    // For running jobs, return partial results from chunks
     if (job.status === 'running') {
-      const partialContent = chunks
-        .map(chunk => chunk.content)
-        .join('');
-
       return {
         jobId,
         status: 'running',
-        partial: partialContent,
-        chunks: chunks, // Return chunks array instead of count
+        partial: chunks.map((c) => c.content).join(''),
+        chunks,
         metrics: job.lastMetrics,
         assignedTo: job.assignedTo
       };
@@ -351,42 +283,31 @@ class JobService {
     };
   }
 
-  // Get queue statistics
   async getQueueStats() {
-    const stats = {
-      pending: await this.redis.zCard('jobs:pending'),
-      assigned: await this.redis.zCard('jobs:assigned'),
-      running: await this.redis.zCard('jobs:running'),
-      completed: await this.redis.zCard('jobs:completed'),
-      failed: await this.redis.zCard('jobs:failed')
-    };
-
+    const r = await this.db.query('SELECT status, count(*)::int AS c FROM jobs GROUP BY status', []);
+    const stats = { pending: 0, assigned: 0, running: 0, completed: 0, failed: 0 };
+    for (const row of r.rows) {
+      if (row.status in stats) {
+        stats[row.status] = row.c;
+      }
+    }
     return stats;
   }
 
-  // Clean up old completed/failed jobs
-  async cleanupOldJobs(maxAge = 86400000) { // Default 24 hours
+  async cleanupOldJobs(maxAge = 86400000) {
     const cutoff = Date.now() - maxAge;
+    const r = await this.db.query(
+      `SELECT id FROM jobs WHERE status IN ('completed', 'failed') AND updated_at < $1`,
+      [cutoff]
+    );
+    const ids = r.rows.map((row) => row.id);
 
-    // Get old completed jobs
-    const completedJobs = await this.redis.zRangeByScore('jobs:completed', 0, cutoff);
-    const failedJobs = await this.redis.zRangeByScore('jobs:failed', 0, cutoff);
-
-    const allOldJobs = [...completedJobs, ...failedJobs];
-
-    for (const jobId of allOldJobs) {
-      // Delete job data
-      await this.redis.del(`job:${jobId}`);
-      await this.redis.del(`job:${jobId}:chunks`);
-      await this.redis.del(`job:${jobId}:lock`);
-      await this.redis.del(`job:${jobId}:heartbeat`);
-
-      // Remove from status sets
-      await this.redis.zRem('jobs:completed', jobId);
-      await this.redis.zRem('jobs:failed', jobId);
+    for (const id of ids) {
+      await this.db.query('DELETE FROM job_chunks WHERE job_id = $1', [id]);
+      await this.db.query('DELETE FROM jobs WHERE id = $1', [id]);
     }
 
-    return allOldJobs.length;
+    return ids.length;
   }
 }
 

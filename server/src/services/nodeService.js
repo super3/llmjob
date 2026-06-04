@@ -1,9 +1,7 @@
 const crypto = require('crypto');
 
-const NODE_TTL = 7 * 24 * 60 * 60; // 7 days in seconds - nodes stay in Redis for a week
-const OFFLINE_THRESHOLD = 15 * 60 * 1000; // 15 minutes in milliseconds - mark offline after this
-const NODE_PREFIX = 'node:';
-const USER_NODES_PREFIX = 'user_nodes:';
+const NODE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // prune nodes not seen in a week
+const OFFLINE_THRESHOLD = 15 * 60 * 1000;    // mark offline after 15 minutes
 
 // Generate a short fingerprint from a public key.
 function generateNodeFingerprint(publicKey) {
@@ -11,194 +9,143 @@ function generateNodeFingerprint(publicKey) {
   return hash.substring(0, 6);
 }
 
+// Render a duration in ms as a compact uptime string, e.g. "3d 4h" or "12m".
+function formatUptime(ms) {
+  if (!ms || ms < 0) return '0m';
+  const minutes = Math.floor(ms / 60000);
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const mins = minutes % 60;
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${mins}m`;
+  return `${mins}m`;
+}
+
+const num = (v) => (v == null ? null : Number(v));
+
 class NodeService {
-  constructor(redis) {
-    // Production passes the real redis v5 client; tests pass an equivalent
-    // adapter. Either way it is used directly.
-    this.redis = redis;
+  constructor(db) {
+    this.db = db;
   }
 
   async claimNode(publicKey, name, userId) {
     const nodeId = generateNodeFingerprint(publicKey);
-    const nodeKey = `${NODE_PREFIX}${nodeId}`;
 
-    // Check if node already exists
-    const existingNode = await this.redis.get(nodeKey);
-    if (existingNode) {
-      const node = JSON.parse(existingNode);
-      if (node.userId && node.userId !== userId) {
+    const existing = await this.db.query('SELECT user_id FROM nodes WHERE node_id = $1', [nodeId]);
+    if (existing.rows.length > 0) {
+      const owner = existing.rows[0].user_id;
+      if (owner && owner !== userId) {
         return { error: 'Node already claimed by another user' };
       }
     }
 
-    // Create or update node - mark as online immediately when claimed
-    const nodeData = {
-      nodeId,
-      publicKey,
-      name,
-      userId,
-      status: 'online',
-      isPublic: false,
-      lastSeen: Date.now(),
-      claimedAt: Date.now()
-    };
+    const now = Date.now();
+    await this.db.query(
+      `INSERT INTO nodes (node_id, public_key, name, user_id, status, is_public, last_seen, claimed_at)
+       VALUES ($1, $2, $3, $4, 'online', false, $5, $5)
+       ON CONFLICT (node_id) DO UPDATE SET
+         public_key = EXCLUDED.public_key, name = EXCLUDED.name, user_id = EXCLUDED.user_id,
+         status = 'online', is_public = false, last_seen = EXCLUDED.last_seen, claimed_at = EXCLUDED.claimed_at`,
+      [nodeId, publicKey, name, userId, now]
+    );
 
-    // Store node data with TTL as if it just pinged
-    await this.redis.setEx(nodeKey, NODE_TTL, JSON.stringify(nodeData));
-
-    // Add to user's node list
-    const userNodesKey = `${USER_NODES_PREFIX}${userId}`;
-    await this.redis.sAdd(userNodesKey, nodeId);
-
-    return {
-      success: true,
-      nodeId,
-      message: 'Node claimed successfully'
-    };
+    return { success: true, nodeId, message: 'Node claimed successfully' };
   }
 
   async updateNodeStatus(nodeId, publicKey, additionalData = {}) {
-    const nodeKey = `${NODE_PREFIX}${nodeId}`;
-
-    // Get existing node
-    const existingNodeData = await this.redis.get(nodeKey);
-    if (!existingNodeData) {
+    const r = await this.db.query('SELECT * FROM nodes WHERE node_id = $1', [nodeId]);
+    if (r.rows.length === 0) {
       return { error: 'Node not found. Please claim the node first.' };
     }
-
-    const node = JSON.parse(existingNodeData);
-
-    // Verify public key matches
-    if (node.publicKey !== publicKey) {
+    const node = r.rows[0];
+    if (node.public_key !== publicKey) {
       return { error: 'Public key mismatch' };
     }
 
-    // Update node status and capabilities if provided
-    node.status = 'online';
-    node.lastSeen = Date.now();
+    // Keep existing values unless the ping provides a new one.
+    const pick = (val, current) => (val !== undefined ? val : current);
+    const capabilities = pick(additionalData.capabilities, node.capabilities);
 
-    if (additionalData.capabilities) {
-      node.capabilities = additionalData.capabilities;
-    }
-    if (additionalData.activeJobs !== undefined) {
-      node.activeJobs = additionalData.activeJobs;
-    }
-    if (additionalData.maxConcurrentJobs !== undefined) {
-      node.maxConcurrentJobs = additionalData.maxConcurrentJobs;
-    }
+    await this.db.query(
+      `UPDATE nodes SET status = 'online', last_seen = $2, capabilities = $3,
+         active_jobs = $4, max_concurrent_jobs = $5, device = $6, vram_total = $7,
+         vram_used = $8, model = $9, quant = $10, tps = $11
+       WHERE node_id = $1`,
+      [
+        nodeId, Date.now(),
+        capabilities == null ? null : JSON.stringify(capabilities),
+        pick(additionalData.activeJobs, node.active_jobs),
+        pick(additionalData.maxConcurrentJobs, node.max_concurrent_jobs),
+        pick(additionalData.device, node.device),
+        pick(additionalData.vramTotal, node.vram_total),
+        pick(additionalData.vramUsed, node.vram_used),
+        pick(additionalData.model, node.model),
+        pick(additionalData.quant, node.quant),
+        pick(additionalData.tps, node.tps)
+      ]
+    );
 
-    // Store with TTL
-    await this.redis.setEx(nodeKey, NODE_TTL, JSON.stringify(node));
-
-    return {
-      success: true,
-      status: 'online',
-      message: 'Node status updated'
-    };
+    return { success: true, status: 'online', message: 'Node status updated' };
   }
 
   async getUserNodes(userId) {
-    const userNodesKey = `${USER_NODES_PREFIX}${userId}`;
+    const r = await this.db.query('SELECT * FROM nodes WHERE user_id = $1 ORDER BY seq', [userId]);
+    const now = Date.now();
+    return r.rows.map((node) => {
+      const lastSeen = num(node.last_seen);
+      const claimedAt = num(node.claimed_at);
+      const status = (now - lastSeen > OFFLINE_THRESHOLD) ? 'offline' : node.status;
+      return {
+        nodeId: node.node_id,
+        name: node.name,
+        status,
+        isPublic: node.is_public,
+        lastSeen,
+        device: node.device || null,
+        vramTotal: num(node.vram_total),
+        vramUsed: num(node.vram_used),
+        model: node.model || null,
+        quant: node.quant || null,
+        tps: num(node.tps),
+        uptime: status === 'online' ? formatUptime(claimedAt == null ? null : now - claimedAt) : null
+      };
+    });
+  }
 
-    // Get all node IDs for user
-    const nodeIds = await this.redis.sMembers(userNodesKey);
-
-    if (!nodeIds || nodeIds.length === 0) {
-      return [];
-    }
-
-    // Get node data for each ID
+  async getPublicNodes() {
+    const r = await this.db.query('SELECT * FROM nodes', []);
+    const now = Date.now();
     const nodes = [];
-    for (const nodeId of nodeIds) {
-      const nodeKey = `${NODE_PREFIX}${nodeId}`;
-      const nodeData = await this.redis.get(nodeKey);
+    let totalOnline = 0;
 
-      if (nodeData) {
-        const node = JSON.parse(nodeData);
-        // Check if node should be marked as offline
-        const timeSinceLastSeen = Date.now() - node.lastSeen;
-        if (timeSinceLastSeen > OFFLINE_THRESHOLD) {
-          node.status = 'offline';
-        }
+    for (const node of r.rows) {
+      const isOnline = (now - num(node.last_seen)) <= OFFLINE_THRESHOLD;
+      if (isOnline && node.status === 'online') {
+        totalOnline++;
+      }
+      if (node.is_public) {
         nodes.push({
-          nodeId: node.nodeId,
+          nodeId: node.node_id,
           name: node.name,
-          status: node.status,
-          isPublic: node.isPublic,
-          lastSeen: node.lastSeen
+          status: isOnline ? node.status : 'offline',
+          lastSeen: num(node.last_seen)
         });
       }
     }
 
-    return nodes;
-  }
-
-  async getPublicNodes() {
-    // Get all node keys
-    const keys = await this.redis.keys(`${NODE_PREFIX}*`);
-
-    if (!keys || keys.length === 0) {
-      return { nodes: [], totalOnline: 0 };
-    }
-
-    const publicNodes = [];
-    let totalOnlineCount = 0;
-
-    for (const key of keys) {
-      const nodeData = await this.redis.get(key);
-
-      if (nodeData) {
-        const node = JSON.parse(nodeData);
-
-        // Check if node should be marked as offline
-        const timeSinceLastSeen = Date.now() - node.lastSeen;
-        const isOnline = timeSinceLastSeen <= OFFLINE_THRESHOLD;
-
-        if (isOnline && node.status === 'online') {
-          totalOnlineCount++;
-        }
-
-        // Only include public nodes in the detailed list
-        if (node.isPublic) {
-          publicNodes.push({
-            nodeId: node.nodeId,
-            name: node.name,
-            status: isOnline ? node.status : 'offline',
-            lastSeen: node.lastSeen
-          });
-        }
-      }
-    }
-
-    return { nodes: publicNodes, totalOnline: totalOnlineCount };
+    return { nodes, totalOnline };
   }
 
   async updateNodeVisibility(nodeId, userId, isPublic) {
-    const nodeKey = `${NODE_PREFIX}${nodeId}`;
-
-    // Get existing node
-    const existingNodeData = await this.redis.get(nodeKey);
-    if (!existingNodeData) {
+    const r = await this.db.query('SELECT user_id FROM nodes WHERE node_id = $1', [nodeId]);
+    if (r.rows.length === 0) {
       return { error: 'Node not found', status: 404 };
     }
-
-    const node = JSON.parse(existingNodeData);
-
-    // Verify ownership
-    if (node.userId !== userId) {
+    if (r.rows[0].user_id !== userId) {
       return { error: 'Unauthorized: You do not own this node', status: 403 };
     }
 
-    // Update visibility
-    node.isPublic = isPublic;
-
-    // Store updated node, preserving any remaining TTL
-    const ttl = await this.redis.ttl(nodeKey);
-    if (ttl > 0) {
-      await this.redis.setEx(nodeKey, ttl, JSON.stringify(node));
-    } else {
-      await this.redis.set(nodeKey, JSON.stringify(node));
-    }
+    await this.db.query('UPDATE nodes SET is_public = $2 WHERE node_id = $1', [nodeId, isPublic]);
 
     return {
       success: true,
@@ -208,45 +155,49 @@ class NodeService {
     };
   }
 
-  // Called periodically to log node online/offline counts. Redis TTL handles
-  // the actual removal of nodes that have not pinged in NODE_TTL.
+  // Prune nodes that haven't pinged within NODE_TTL_MS and log a status summary.
   async checkNodeStatuses() {
-    const keys = await this.redis.keys(`${NODE_PREFIX}*`);
+    const now = Date.now();
+    await this.db.query('DELETE FROM nodes WHERE last_seen < $1', [now - NODE_TTL_MS]);
 
-    if (!keys || keys.length === 0) {
-      console.log('Node status check: 0 online, 0 offline');
-      return;
-    }
-
+    const r = await this.db.query('SELECT last_seen FROM nodes', []);
     let onlineCount = 0;
     let offlineCount = 0;
-
-    for (const key of keys) {
-      const ttl = await this.redis.ttl(key);
-      if (ttl > 0) {
-        onlineCount++;
-      } else {
-        offlineCount++;
-      }
+    for (const row of r.rows) {
+      if (now - num(row.last_seen) <= OFFLINE_THRESHOLD) onlineCount++;
+      else offlineCount++;
     }
-
     console.log(`Node status check: ${onlineCount} online, ${offlineCount} offline`);
   }
 
   async getNode(nodeId) {
-    const nodeKey = `${NODE_PREFIX}${nodeId}`;
-
-    const nodeData = await this.redis.get(nodeKey);
-    if (!nodeData) {
+    const r = await this.db.query('SELECT * FROM nodes WHERE node_id = $1', [nodeId]);
+    if (r.rows.length === 0) {
       return null;
     }
-
-    return JSON.parse(nodeData);
+    const node = r.rows[0];
+    return {
+      nodeId: node.node_id,
+      publicKey: node.public_key,
+      name: node.name,
+      userId: node.user_id,
+      status: node.status,
+      isPublic: node.is_public,
+      lastSeen: num(node.last_seen),
+      claimedAt: num(node.claimed_at),
+      capabilities: node.capabilities,
+      activeJobs: node.active_jobs,
+      maxConcurrentJobs: node.max_concurrent_jobs,
+      device: node.device,
+      vramTotal: num(node.vram_total),
+      vramUsed: num(node.vram_used),
+      model: node.model,
+      quant: node.quant,
+      tps: num(node.tps)
+    };
   }
 }
 
-// Expose the fingerprint helper for callers that need a node id without an
-// instance (e.g. tests and signature verification).
 NodeService.generateNodeFingerprint = generateNodeFingerprint;
 
 module.exports = NodeService;

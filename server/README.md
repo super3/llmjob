@@ -1,6 +1,6 @@
 # LLMJob Node Tracking Server
 
-Express API server for tracking distributed LLM nodes with Redis storage.
+Express API server for tracking distributed LLM nodes with Postgres storage.
 
 ## Features
 
@@ -21,9 +21,9 @@ Express API server for tracking distributed LLM nodes with Redis storage.
 npm install
 ```
 
-2. Set up Redis locally:
+2. Set up Postgres locally:
 ```bash
-docker run -p 6379:6379 redis:alpine
+docker run -p 5432:5432 -e POSTGRES_DB=llmjob -e POSTGRES_HOST_AUTH_METHOD=trust postgres:16
 ```
 
 3. Create `.env` file with the following variables:
@@ -31,18 +31,37 @@ docker run -p 6379:6379 redis:alpine
 # Server Configuration
 PORT=3001
 
-# Redis Configuration
-REDIS_URL=redis://localhost:6379
+# Postgres Configuration
+DATABASE_URL=postgres://localhost:5432/llmjob
 
 # Clerk Configuration (get from Clerk dashboard)
 CLERK_PUBLISHABLE_KEY=your_clerk_publishable_key
 CLERK_SECRET_KEY=your_clerk_secret_key
 ```
 
-4. Start development server:
+4. Run database migrations:
+```bash
+npm run migrate:up
+```
+
+5. Start development server (also runs migrations):
 ```bash
 npm run dev
 ```
+
+### Database migrations
+
+Schema is managed with [node-pg-migrate](https://github.com/salsita/node-pg-migrate).
+Migrations live in `migrations/`; `npm start` / `npm run dev` apply them automatically.
+
+```bash
+npm run migrate:up                 # apply pending migrations
+npm run migrate:down               # roll back the last migration
+npm run migrate:create my_change   # scaffold a new migration (CJS)
+```
+
+Tests run against an in-memory Postgres (pg-mem) using the same schema, so no
+database is required for `npm test`.
 
 ### Testing
 
@@ -58,16 +77,53 @@ npm run test:watch
 
 ## API Endpoints
 
-### Authentication Required
+### Authentication Required (Clerk)
 
 - `POST /api/nodes/claim` - Associate node with user account
-- `GET /api/nodes` - Get user's nodes
+- `GET /api/nodes` - Get user's nodes (incl. dashboard telemetry: device, VRAM, served model/quant, throughput, uptime)
 - `PUT /api/nodes/:id/visibility` - Toggle public/private
+- `POST /api/keys` - Create an API key (raw secret returned **once**)
+- `GET /api/keys` - List the user's API keys (redacted, with usage + last-used)
+- `DELETE /api/keys/:id` - Revoke an API key
+- `GET /api/logs` - Recent request logs plus a 24-bucket activity histogram
+- `GET /api/nodes/join-token` - Get the user's reusable node join token (created on first use)
+- `POST /api/nodes/join-token/rotate` - Rotate the join token, invalidating the old one
 
-### No Authentication
+### No Clerk Authentication
 
 - `GET /api/nodes/public` - Get all public nodes
-- `POST /api/nodes/ping` - Node status update (signature required)
+- `POST /api/nodes/ping` - Node status update (node signature required)
+- `POST /api/nodes/join` - Self-register a node with a **join token** (used by the node agent); attaches the node to the token owner's account
+- `POST /api/usage` - Record a completed generation (LLMJob **API key** required); writes a request log entry and bills the key's token usage
+
+### Node join flow
+
+The dashboard's "Add node" dialog shows a one-line command:
+
+```bash
+curl -fsSL <base>/install.sh/<join-token> | bash
+```
+
+The app bakes both its own host **and** the join token into `install.sh` when
+serving the per-account `/install.sh/<token>` URL, so the command takes no
+arguments. The token is validated (`[A-Za-z0-9_-]+`) before being injected.
+
+`install.sh` is a pure POSIX-shell script served by the app — no Node, no npm,
+just `curl` and `openssl` (OpenSSL 1.1.1+). It creates an Ed25519 key
+**locally** (only the public key is sent), calls `POST /api/nodes/join` with the
+token to claim the node, then pings on an interval so it shows as online. The
+join token authorizes the claim without an interactive login; rotate it from the
+dashboard to revoke outstanding agents.
+
+> The full `llmjob-node` client (in `client/`) still provides the heavier
+> worker/Ollama path and a `join` command; `install.sh` is the lightweight,
+> dependency-free path used by the dashboard.
+
+### API key authentication
+
+API keys (`lj-live-…`) authenticate OpenAI-compatible / usage requests via the
+`Authorization: Bearer <key>` header. Only a SHA-256 hash of each key is stored,
+so the raw secret is shown exactly once at creation and is unrecoverable.
 
 ## Deployment
 
@@ -95,13 +151,13 @@ Required for production:
 
 - `CLERK_PUBLISHABLE_KEY` - From Clerk dashboard
 - `CLERK_SECRET_KEY` - From Clerk dashboard  
-- `REDIS_URL` - Automatically provided by Railway
+- `DATABASE_URL` - Automatically provided by Railway (Postgres plugin)
 - `PORT` - Automatically provided by Railway
 
 ## Architecture
 
 - Express.js server with CORS
-- Redis for data storage with intelligent TTL management
+- Postgres for data storage, schema managed by node-pg-migrate
 - ED25519 signatures for node authentication
 - Clerk for user authentication
 - Jest + Supertest for testing

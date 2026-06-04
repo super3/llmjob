@@ -4,7 +4,7 @@ const nacl = require('tweetnacl');
 const naclUtil = require('tweetnacl-util');
 const routes = require('../src/routes');
 const NodeService = require('../src/services/nodeService');
-const { createCamelClient } = require('./helpers/camelRedis');
+const { createTestDb } = require('./helpers/pgmem');
 
 // Mock Clerk
 jest.mock('@clerk/clerk-sdk-node', () => ({
@@ -22,56 +22,62 @@ jest.mock('@clerk/clerk-sdk-node', () => ({
   }
 }));
 
+const authHeader = (sub = 'test_user_123') => {
+  const payload = { sid: 'sess_123', sub };
+  return `Bearer header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
+};
+
 describe('Node API Endpoints', () => {
   let app;
-  let redisClient;
+  let db;
   let testKeypair;
   let testPublicKey;
   let testNodeId;
 
   beforeAll(() => {
-    // Generate test keypair
     testKeypair = nacl.sign.keyPair();
     testPublicKey = naclUtil.encodeBase64(testKeypair.publicKey);
-    
-    // Calculate node ID (first 6 chars of SHA256 hash)
     const crypto = require('crypto');
-    const hash = crypto.createHash('sha256').update(testPublicKey).digest('hex');
-    testNodeId = hash.substring(0, 6);
+    testNodeId = crypto.createHash('sha256').update(testPublicKey).digest('hex').substring(0, 6);
   });
 
   beforeEach(async () => {
-    // Create Express app
     app = express();
     app.use(express.json());
-
-    // Create a Redis client (v5-style camelCase API, as in production)
-    redisClient = createCamelClient();
-    app.locals.redis = redisClient;
-
-    // Mount routes
+    db = await createTestDb();
+    app.locals.db = db;
     app.use('/api', routes);
-
-    // Clear Redis
-    await redisClient.flushall();
   });
 
   afterEach(async () => {
-    await redisClient.quit();
+    if (db.end) await db.end();
   });
+
+  const seedNode = (over = {}) => {
+    const n = {
+      node_id: 'n', public_key: 'k', name: 'N', user_id: 'u', status: 'online',
+      is_public: false, last_seen: Date.now(), claimed_at: Date.now(), ...over
+    };
+    return db.query(
+      `INSERT INTO nodes (node_id, public_key, name, user_id, status, is_public, last_seen, claimed_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [n.node_id, n.public_key, n.name, n.user_id, n.status, n.is_public, n.last_seen, n.claimed_at]
+    );
+  };
+
+  const signedPing = (over = {}) => {
+    const timestamp = over.timestamp ?? Date.now();
+    const message = `${testNodeId}:${timestamp}`;
+    const signature = naclUtil.encodeBase64(nacl.sign.detached(naclUtil.decodeUTF8(message), testKeypair.secretKey));
+    return { publicKey: testPublicKey, signature, timestamp, nodeId: testNodeId, ...over };
+  };
 
   describe('POST /api/nodes/claim', () => {
     it('should claim a node successfully', async () => {
-      const payload = { sid: 'sess_123', sub: 'test_user_123' };
-      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
-      
       const response = await request(app)
         .post('/api/nodes/claim')
-        .set('Authorization', `Bearer ${mockToken}`)
-        .send({
-          publicKey: testPublicKey,
-          name: 'Test Node'
-        });
+        .set('Authorization', authHeader())
+        .send({ publicKey: testPublicKey, name: 'Test Node' });
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
@@ -82,44 +88,28 @@ describe('Node API Endpoints', () => {
     it('should reject claim without auth token', async () => {
       const response = await request(app)
         .post('/api/nodes/claim')
-        .send({
-          publicKey: testPublicKey,
-          name: 'Test Node'
-        });
+        .send({ publicKey: testPublicKey, name: 'Test Node' });
 
       expect(response.status).toBe(401);
       expect(response.body.error).toBe('No authorization token provided');
     });
 
     it('should reject claim with missing fields', async () => {
-      const payload = { sid: 'sess_123', sub: 'test_user_123' };
-      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
-      
       const response = await request(app)
         .post('/api/nodes/claim')
-        .set('Authorization', `Bearer ${mockToken}`)
-        .send({
-          publicKey: testPublicKey
-        });
+        .set('Authorization', authHeader())
+        .send({ publicKey: testPublicKey });
 
       expect(response.status).toBe(400);
       expect(response.body.error).toBe('Public key and name are required');
     });
 
     it('should prevent claiming already claimed node', async () => {
-      // First claim
-      const payload = { sid: 'sess_123', sub: 'test_user_123' };
-      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
-      
       await request(app)
         .post('/api/nodes/claim')
-        .set('Authorization', `Bearer ${mockToken}`)
-        .send({
-          publicKey: testPublicKey,
-          name: 'Test Node'
-        });
+        .set('Authorization', authHeader())
+        .send({ publicKey: testPublicKey, name: 'Test Node' });
 
-      // Mock different user
       const { clerkClient } = require('@clerk/clerk-sdk-node');
       clerkClient.sessions.getSession.mockResolvedValueOnce({ userId: 'different_user' });
       clerkClient.users.getUser.mockResolvedValueOnce({
@@ -128,17 +118,10 @@ describe('Node API Endpoints', () => {
         username: 'otheruser'
       });
 
-      // Try to claim same node
-      const payload2 = { sid: 'sess_456', sub: 'different_user' };
-      const mockToken2 = `header.${Buffer.from(JSON.stringify(payload2)).toString('base64')}.signature`;
-      
       const response = await request(app)
         .post('/api/nodes/claim')
-        .set('Authorization', `Bearer ${mockToken2}`)
-        .send({
-          publicKey: testPublicKey,
-          name: 'Test Node'
-        });
+        .set('Authorization', authHeader('different_user'))
+        .send({ publicKey: testPublicKey, name: 'Test Node' });
 
       expect(response.status).toBe(400);
       expect(response.body.error).toBe('Node already claimed by another user');
@@ -147,72 +130,26 @@ describe('Node API Endpoints', () => {
 
   describe('POST /api/nodes/ping', () => {
     beforeEach(async () => {
-      // Claim a node first
-      await redisClient.set(`node:${testNodeId}`, JSON.stringify({
-        nodeId: testNodeId,
-        publicKey: testPublicKey,
-        name: 'Test Node',
-        userId: 'test_user_123',
-        status: 'offline',
-        isPublic: false,
-        lastSeen: Date.now(),
-        claimedAt: Date.now()
-      }));
+      await seedNode({ node_id: testNodeId, public_key: testPublicKey, name: 'Test Node', user_id: 'test_user_123', status: 'offline' });
     });
 
     it('should update node status with valid signature', async () => {
-      const timestamp = Date.now();
-      const message = `${testNodeId}:${timestamp}`;
-      const messageBytes = naclUtil.decodeUTF8(message);
-      const signature = nacl.sign.detached(messageBytes, testKeypair.secretKey);
-      const signatureBase64 = naclUtil.encodeBase64(signature);
-
-      const response = await request(app)
-        .post('/api/nodes/ping')
-        .send({
-          publicKey: testPublicKey,
-          signature: signatureBase64,
-          timestamp,
-          nodeId: testNodeId
-        });
-
+      const response = await request(app).post('/api/nodes/ping').send(signedPing());
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
       expect(response.body.status).toBe('online');
     });
 
     it('should reject ping with invalid signature', async () => {
-      const timestamp = Date.now();
-      
       const response = await request(app)
         .post('/api/nodes/ping')
-        .send({
-          publicKey: testPublicKey,
-          signature: 'invalid_signature',
-          timestamp,
-          nodeId: testNodeId
-        });
-
+        .send({ publicKey: testPublicKey, signature: 'invalid_signature', timestamp: Date.now(), nodeId: testNodeId });
       expect(response.status).toBe(401);
       expect(response.body.error).toBe('Invalid signature format');
     });
 
     it('should reject ping with old timestamp', async () => {
-      const timestamp = Date.now() - (10 * 60 * 1000); // 10 minutes ago
-      const message = `${testNodeId}:${timestamp}`;
-      const messageBytes = naclUtil.decodeUTF8(message);
-      const signature = nacl.sign.detached(messageBytes, testKeypair.secretKey);
-      const signatureBase64 = naclUtil.encodeBase64(signature);
-
-      const response = await request(app)
-        .post('/api/nodes/ping')
-        .send({
-          publicKey: testPublicKey,
-          signature: signatureBase64,
-          timestamp,
-          nodeId: testNodeId
-        });
-
+      const response = await request(app).post('/api/nodes/ping').send(signedPing({ timestamp: Date.now() - 10 * 60 * 1000 }));
       expect(response.status).toBe(401);
       expect(response.body.error).toBe('Timestamp too old or too far in future');
     });
@@ -220,11 +157,7 @@ describe('Node API Endpoints', () => {
     it('should reject ping with missing fields', async () => {
       const response = await request(app)
         .post('/api/nodes/ping')
-        .send({
-          publicKey: testPublicKey,
-          nodeId: testNodeId
-        });
-
+        .send({ publicKey: testPublicKey, nodeId: testNodeId });
       expect(response.status).toBe(400);
       expect(response.body.error).toBe('Missing required fields');
     });
@@ -232,38 +165,12 @@ describe('Node API Endpoints', () => {
 
   describe('GET /api/nodes', () => {
     beforeEach(async () => {
-      // Add some test nodes
-      await redisClient.set(`node:node1`, JSON.stringify({
-        nodeId: 'node1',
-        publicKey: 'key1',
-        name: 'Node 1',
-        userId: 'test_user_123',
-        status: 'online',
-        isPublic: false,
-        lastSeen: Date.now()
-      }));
-      
-      await redisClient.set(`node:node2`, JSON.stringify({
-        nodeId: 'node2',
-        publicKey: 'key2',
-        name: 'Node 2',
-        userId: 'test_user_123',
-        status: 'offline',
-        isPublic: true,
-        lastSeen: Date.now() - (20 * 60 * 1000) // 20 minutes ago
-      }));
-      
-      await redisClient.sAdd('user_nodes:test_user_123', 'node1', 'node2');
+      await seedNode({ node_id: 'node1', public_key: 'key1', name: 'Node 1', user_id: 'test_user_123', status: 'online' });
+      await seedNode({ node_id: 'node2', public_key: 'key2', name: 'Node 2', user_id: 'test_user_123', is_public: true, last_seen: Date.now() - 20 * 60 * 1000 });
     });
 
     it('should return user nodes with auth', async () => {
-      const payload = { sid: 'sess_123', sub: 'test_user_123' };
-      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
-      
-      const response = await request(app)
-        .get('/api/nodes')
-        .set('Authorization', `Bearer ${mockToken}`);
-
+      const response = await request(app).get('/api/nodes').set('Authorization', authHeader());
       expect(response.status).toBe(200);
       expect(response.body.nodes).toHaveLength(2);
       expect(response.body.nodes[0].nodeId).toBe('node1');
@@ -273,9 +180,7 @@ describe('Node API Endpoints', () => {
     });
 
     it('should reject without auth token', async () => {
-      const response = await request(app)
-        .get('/api/nodes');
-
+      const response = await request(app).get('/api/nodes');
       expect(response.status).toBe(401);
       expect(response.body.error).toBe('No authorization token provided');
     });
@@ -283,71 +188,29 @@ describe('Node API Endpoints', () => {
 
   describe('GET /api/nodes/public', () => {
     beforeEach(async () => {
-      // Add test nodes
-      await redisClient.set(`node:public1`, JSON.stringify({
-        nodeId: 'public1',
-        publicKey: 'key1',
-        name: 'Public Node 1',
-        userId: 'user1',
-        status: 'online',
-        isPublic: true,
-        lastSeen: Date.now()
-      }));
-      
-      await redisClient.set(`node:private1`, JSON.stringify({
-        nodeId: 'private1',
-        publicKey: 'key2',
-        name: 'Private Node',
-        userId: 'user2',
-        status: 'online',
-        isPublic: false,
-        lastSeen: Date.now()
-      }));
-      
-      await redisClient.set(`node:public2`, JSON.stringify({
-        nodeId: 'public2',
-        publicKey: 'key3',
-        name: 'Public Node 2',
-        userId: 'user3',
-        status: 'online',
-        isPublic: true,
-        lastSeen: Date.now()
-      }));
+      await seedNode({ node_id: 'public1', name: 'Public Node 1', user_id: 'user1', is_public: true });
+      await seedNode({ node_id: 'private1', name: 'Private Node', user_id: 'user2', is_public: false });
+      await seedNode({ node_id: 'public2', name: 'Public Node 2', user_id: 'user3', is_public: true });
     });
 
     it('should return only public nodes without auth', async () => {
-      const response = await request(app)
-        .get('/api/nodes/public');
-
+      const response = await request(app).get('/api/nodes/public');
       expect(response.status).toBe(200);
       expect(response.body.nodes).toHaveLength(2);
-      expect(response.body.nodes.every(n => n.nodeId.startsWith('public'))).toBe(true);
+      expect(response.body.nodes.every((n) => n.nodeId.startsWith('public'))).toBe(true);
     });
   });
 
   describe('PUT /api/nodes/:id/visibility', () => {
     beforeEach(async () => {
-      // Add a test node owned by test user
-      await redisClient.set(`node:${testNodeId}`, JSON.stringify({
-        nodeId: testNodeId,
-        publicKey: testPublicKey,
-        name: 'Test Node',
-        userId: 'test_user_123',
-        status: 'online',
-        isPublic: false,
-        lastSeen: Date.now()
-      }));
+      await seedNode({ node_id: testNodeId, public_key: testPublicKey, name: 'Test Node', user_id: 'test_user_123' });
     });
 
     it('should update node visibility', async () => {
-      const payload = { sid: 'sess_123', sub: 'test_user_123' };
-      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
-      
       const response = await request(app)
         .put(`/api/nodes/${testNodeId}/visibility`)
-        .set('Authorization', `Bearer ${mockToken}`)
+        .set('Authorization', authHeader())
         .send({ isPublic: true });
-
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
       expect(response.body.isPublic).toBe(true);
@@ -355,51 +218,29 @@ describe('Node API Endpoints', () => {
     });
 
     it('should reject update for non-owned node', async () => {
-      // Add node owned by different user
-      await redisClient.set(`node:other`, JSON.stringify({
-        nodeId: 'other',
-        publicKey: 'otherkey',
-        name: 'Other Node',
-        userId: 'different_user',
-        status: 'online',
-        isPublic: false,
-        lastSeen: Date.now()
-      }));
-
-      const payload = { sid: 'sess_123', sub: 'test_user_123' };
-      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
-      
+      await seedNode({ node_id: 'other', public_key: 'otherkey', name: 'Other Node', user_id: 'different_user' });
       const response = await request(app)
         .put('/api/nodes/other/visibility')
-        .set('Authorization', `Bearer ${mockToken}`)
+        .set('Authorization', authHeader())
         .send({ isPublic: true });
-
       expect(response.status).toBe(403);
       expect(response.body.error).toBe('Unauthorized: You do not own this node');
     });
 
     it('should reject with invalid isPublic value', async () => {
-      const payload = { sid: 'sess_123', sub: 'test_user_123' };
-      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
-      
       const response = await request(app)
         .put(`/api/nodes/${testNodeId}/visibility`)
-        .set('Authorization', `Bearer ${mockToken}`)
+        .set('Authorization', authHeader())
         .send({ isPublic: 'not_boolean' });
-
       expect(response.status).toBe(400);
       expect(response.body.error).toBe('isPublic must be a boolean');
     });
 
     it('should return 404 for non-existent node', async () => {
-      const payload = { sid: 'sess_123', sub: 'test_user_123' };
-      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
-      
       const response = await request(app)
         .put('/api/nodes/nonexistent/visibility')
-        .set('Authorization', `Bearer ${mockToken}`)
+        .set('Authorization', authHeader())
         .send({ isPublic: true });
-
       expect(response.status).toBe(404);
       expect(response.body.error).toBe('Node not found');
     });
@@ -407,152 +248,66 @@ describe('Node API Endpoints', () => {
 
   describe('Error handling', () => {
     it('should handle database errors in claimNode', async () => {
-      // Mock Redis error
-      redisClient.get = jest.fn().mockRejectedValue(new Error('Database error'));
-      
-      const payload = { sid: 'sess_123', sub: 'test_user_123' };
-      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
-      
+      db.query = jest.fn().mockRejectedValue(new Error('Database error'));
       const response = await request(app)
         .post('/api/nodes/claim')
-        .set('Authorization', `Bearer ${mockToken}`)
-        .send({
-          publicKey: testPublicKey,
-          name: 'Test Node'
-        });
-
+        .set('Authorization', authHeader())
+        .send({ publicKey: testPublicKey, name: 'Test Node' });
       expect(response.status).toBe(500);
       expect(response.body.error).toBe('Failed to claim node');
     });
 
     it('should handle database errors in pingNode', async () => {
-      // Setup node first
-      await redisClient.set(`node:${testNodeId}`, JSON.stringify({
-        nodeId: testNodeId,
-        publicKey: testPublicKey,
-        name: 'Test Node',
-        userId: 'test_user_123',
-        status: 'offline',
-        isPublic: false,
-        lastSeen: Date.now(),
-        claimedAt: Date.now()
-      }));
-
-      // Mock Redis error
-      redisClient.setEx = jest.fn().mockRejectedValue(new Error('Database error'));
-      
-      const timestamp = Date.now();
-      const message = `${testNodeId}:${timestamp}`;
-      const messageBytes = naclUtil.decodeUTF8(message);
-      const signature = nacl.sign.detached(messageBytes, testKeypair.secretKey);
-      const signatureBase64 = naclUtil.encodeBase64(signature);
-
-      const response = await request(app)
-        .post('/api/nodes/ping')
-        .send({
-          publicKey: testPublicKey,
-          signature: signatureBase64,
-          timestamp,
-          nodeId: testNodeId
-        });
-
+      await seedNode({ node_id: testNodeId, public_key: testPublicKey, name: 'Test Node', user_id: 'test_user_123', status: 'offline' });
+      db.query = jest.fn().mockRejectedValue(new Error('Database error'));
+      const response = await request(app).post('/api/nodes/ping').send(signedPing());
       expect(response.status).toBe(500);
       expect(response.body.error).toBe('Failed to update node status');
     });
 
     it('should handle database errors in getUserNodes', async () => {
-      // Mock Redis error
-      redisClient.sMembers = jest.fn().mockRejectedValue(new Error('Database error'));
-      
-      const payload = { sid: 'sess_123', sub: 'test_user_123' };
-      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
-      
-      const response = await request(app)
-        .get('/api/nodes')
-        .set('Authorization', `Bearer ${mockToken}`);
-
+      db.query = jest.fn().mockRejectedValue(new Error('Database error'));
+      const response = await request(app).get('/api/nodes').set('Authorization', authHeader());
       expect(response.status).toBe(500);
       expect(response.body.error).toBe('Failed to get nodes');
     });
 
     it('should handle database errors in getPublicNodes', async () => {
-      // Mock Redis error
-      redisClient.keys = jest.fn().mockRejectedValue(new Error('Database error'));
-      
-      const response = await request(app)
-        .get('/api/nodes/public');
-
+      db.query = jest.fn().mockRejectedValue(new Error('Database error'));
+      const response = await request(app).get('/api/nodes/public');
       expect(response.status).toBe(500);
       expect(response.body.error).toBe('Failed to get public nodes');
     });
 
     it('should handle database errors in updateNodeVisibility', async () => {
-      // Make the service method throw
       const spy = jest.spyOn(NodeService.prototype, 'updateNodeVisibility')
         .mockRejectedValue(new Error('Database error'));
-
-      const payload = { sid: 'sess_123', sub: 'test_user_123' };
-      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
-
       const response = await request(app)
         .put(`/api/nodes/${testNodeId}/visibility`)
-        .set('Authorization', `Bearer ${mockToken}`)
+        .set('Authorization', authHeader())
         .send({ isPublic: true });
-
       expect(response.status).toBe(500);
       expect(response.body.error).toBe('Failed to update node visibility');
-
       spy.mockRestore();
     });
 
     it('should handle service errors in pingNode', async () => {
-      // Setup a node without required fields to trigger service error
-      await redisClient.set(`node:${testNodeId}`, JSON.stringify({
-        nodeId: testNodeId,
-        // Missing publicKey to trigger error
-        name: 'Test Node',
-        userId: 'test_user_123',
-        status: 'offline',
-        isPublic: false,
-        lastSeen: Date.now(),
-        claimedAt: Date.now()
-      }));
-
-      const timestamp = Date.now();
-      const message = `${testNodeId}:${timestamp}`;
-      const messageBytes = naclUtil.decodeUTF8(message);
-      const signature = nacl.sign.detached(messageBytes, testKeypair.secretKey);
-      const signatureBase64 = naclUtil.encodeBase64(signature);
-
-      const response = await request(app)
-        .post('/api/nodes/ping')
-        .send({
-          publicKey: testPublicKey,
-          signature: signatureBase64,
-          timestamp,
-          nodeId: testNodeId
-        });
-
+      // Node exists but with no stored public key -> "Public key mismatch" (400).
+      await seedNode({ node_id: testNodeId, public_key: null, name: 'Test Node', user_id: 'test_user_123', status: 'offline' });
+      const response = await request(app).post('/api/nodes/ping').send(signedPing());
       expect(response.status).toBe(400);
       expect(response.body.error).toBeDefined();
     });
 
     it('should handle service error without status in updateNodeVisibility', async () => {
-      // Service returns an error object without a status field -> defaults to 400
       const spy = jest.spyOn(NodeService.prototype, 'updateNodeVisibility')
         .mockResolvedValue({ error: 'Some error without status field' });
-
-      const payload = { sid: 'sess_123', sub: 'test_user_123' };
-      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
-
       const response = await request(app)
         .put(`/api/nodes/${testNodeId}/visibility`)
-        .set('Authorization', `Bearer ${mockToken}`)
+        .set('Authorization', authHeader())
         .send({ isPublic: true });
-
-      expect(response.status).toBe(400); // Should default to 400
+      expect(response.status).toBe(400);
       expect(response.body.error).toBe('Some error without status field');
-
       spy.mockRestore();
     });
   });

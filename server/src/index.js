@@ -1,8 +1,9 @@
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
 const cors = require('cors');
 const dotenv = require('dotenv');
-const { createClient } = require('redis');
+const { createPool } = require('./db');
 const routes = require('./routes');
 const { initJobRoutes } = require('./routes');
 const NodeService = require('./services/nodeService');
@@ -17,21 +18,17 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
-// Redis client
-let redisClient;
+// Postgres pool
+let db;
 
-async function connectRedis() {
-  redisClient = createClient({
-    url: process.env.REDIS_URL || 'redis://localhost:6379'
-  });
+async function connectDb() {
+  db = createPool();
+  // Fail fast if the database is unreachable.
+  await db.query('SELECT 1');
+  console.log('Connected to Postgres');
 
-  redisClient.on('error', (err) => console.error('Redis Client Error', err));
-  
-  await redisClient.connect();
-  console.log('Connected to Redis');
-  
-  // Make redis client available to routes
-  app.locals.redis = redisClient;
+  // Make the pool available to routes.
+  app.locals.db = db;
 }
 
 // Routes
@@ -45,9 +42,37 @@ app.get('/health', (req, res) => {
 // Serve static files from root directory
 // In production (Railway), files are at /app root
 // In development, files are at project root (two levels up from server/src)
-const staticPath = process.env.RAILWAY_ENVIRONMENT 
-  ? '/app' 
+const staticPath = process.env.RAILWAY_ENVIRONMENT
+  ? '/app'
   : path.join(__dirname, '../..');
+
+// Serve the node installer with this host (and optionally the join token) baked
+// in, so the dashboard's "Add node" command is simply:
+//   curl -fsSL <base>/install.sh/<token> | bash
+function serveInstaller(req, res, token) {
+  const proto = req.get('x-forwarded-proto') || req.protocol;
+  const base = `${proto}://${req.get('host')}`;
+  fs.readFile(path.join(staticPath, 'install.sh'), 'utf8', (err, script) => {
+    if (err) {
+      return res.status(404).send('install.sh not found');
+    }
+    let out = script.replace('https://llmjob-production.up.railway.app', base);
+    if (token) {
+      out = out.replace('TOKEN=""', `TOKEN="${token}"`);
+    }
+    res.type('text/x-shellscript').send(out);
+  });
+}
+
+app.get('/install.sh', (req, res) => serveInstaller(req, res, null));
+app.get('/install.sh/:token', (req, res) => {
+  // Tokens are baked into the shell script, so only allow safe characters.
+  if (!/^[A-Za-z0-9_-]+$/.test(req.params.token)) {
+    return res.status(400).send('invalid token');
+  }
+  serveInstaller(req, res, req.params.token);
+});
+
 app.use(express.static(staticPath));
 
 // Error handling middleware
@@ -61,20 +86,20 @@ app.use((err, req, res, next) => {
 // Start server
 async function startServer() {
   try {
-    await connectRedis();
-    
-    // Initialize job routes with Redis
-    initJobRoutes(redisClient);
-    
+    await connectDb();
+
+    // Initialize job routes with the database pool
+    initJobRoutes(db);
+
     // Initialize services for background tasks
-    const jobService = new JobService(redisClient);
-    const nodeService = new NodeService(redisClient);
+    const jobService = new JobService(db);
+    const nodeService = new NodeService(db);
 
     // Check node statuses every minute
     const statusInterval = setInterval(async () => {
       await nodeService.checkNodeStatuses();
     }, 60000);
-    
+
     // Check for timed out jobs every 30 seconds
     const timeoutInterval = setInterval(async () => {
       try {
@@ -86,7 +111,7 @@ async function startServer() {
         console.error('Error checking job timeouts:', error);
       }
     }, 30000);
-    
+
     // Clean up old jobs every hour
     const cleanupInterval = setInterval(async () => {
       try {
@@ -98,7 +123,7 @@ async function startServer() {
         console.error('Error cleaning up jobs:', error);
       }
     }, 3600000);
-    
+
     const server = app.listen(PORT, '0.0.0.0', () => {
       console.log(`Server running on port ${PORT}`);
     });
@@ -106,20 +131,18 @@ async function startServer() {
     // Graceful shutdown handling
     const gracefulShutdown = async (signal) => {
       console.log(`Received ${signal}, starting graceful shutdown...`);
-      
+
       clearInterval(statusInterval);
       clearInterval(timeoutInterval);
       clearInterval(cleanupInterval);
-      
-      server.close(() => {
+
+      server.close(async () => {
         console.log('HTTP server closed');
-        
-        redisClient.quit(() => {
-          console.log('Redis connection closed');
-          process.exit(0);
-        });
+        await db.end();
+        console.log('Postgres connection closed');
+        process.exit(0);
       });
-      
+
       // Force shutdown after 10 seconds
       setTimeout(() => {
         console.error('Could not close connections in time, forcefully shutting down');

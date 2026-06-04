@@ -100,6 +100,44 @@ describe('NodeClient', () => {
     });
   });
 
+  describe('join', () => {
+    it('posts the public key with the token and returns success', async () => {
+      mockAxiosInstance.post.mockResolvedValue({ data: { success: true, nodeId: 'test123' } });
+
+      const result = await nodeClient.join('ljn_abc', 'MyNode');
+
+      expect(mockAxiosInstance.post).toHaveBeenCalledWith('/api/nodes/join', {
+        token: 'ljn_abc',
+        nodeId: 'test123',
+        publicKey: mockConfig.publicKey,
+        name: 'MyNode'
+      });
+      // The secret key is never transmitted.
+      const sent = mockAxiosInstance.post.mock.calls[0][1];
+      expect(sent.secretKey).toBeUndefined();
+      expect(result).toEqual({ success: true, data: { success: true, nodeId: 'test123' } });
+    });
+
+    it('defaults the node name from the node id', async () => {
+      mockAxiosInstance.post.mockResolvedValue({ data: { success: true } });
+      await nodeClient.join('ljn_abc');
+      expect(mockAxiosInstance.post).toHaveBeenCalledWith('/api/nodes/join',
+        expect.objectContaining({ name: 'Node-test123' }));
+    });
+
+    it('returns the server error message on failure', async () => {
+      mockAxiosInstance.post.mockRejectedValue({ response: { data: { error: 'Invalid join token' }, status: 401 } });
+      const result = await nodeClient.join('ljn_bad', 'MyNode');
+      expect(result).toEqual({ success: false, error: 'Invalid join token', statusCode: 401 });
+    });
+
+    it('falls back to the raw error when there is no response body', async () => {
+      mockAxiosInstance.post.mockRejectedValue(new Error('Network down'));
+      const result = await nodeClient.join('ljn_bad', 'MyNode');
+      expect(result).toEqual({ success: false, error: 'Network down', statusCode: undefined });
+    });
+  });
+
   describe('ping', () => {
     it('should send ping with valid signature', async () => {
       const mockResponse = { data: { success: true, status: 'online' } };

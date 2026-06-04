@@ -7,10 +7,14 @@
     "test": "tests"
   },
   "scripts": {
-    "start": "node server/src/index.js",
-    "dev": "nodemon server/src/index.js",
+    "start": "node-pg-migrate up -m migrations && node server/src/index.js",
+    "dev": "node-pg-migrate up -m migrations && nodemon server/src/index.js",
     "test": "jest --coverage",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "migrate": "node-pg-migrate -m migrations",
+    "migrate:up": "node-pg-migrate up -m migrations",
+    "migrate:down": "node-pg-migrate down -m migrations",
+    "migrate:create": "node-pg-migrate create -m migrations --migration-file-language cjs"
   },
   "keywords": [],
   "author": "",
@@ -25,7 +29,8 @@
     "cors": "^2.8.5",
     "dotenv": "^17.2.1",
     "express": "^5.1.0",
-    "redis": "^5.8.1",
+    "node-pg-migrate": "^8.0.4",
+    "pg": "^8.21.0",
     "tweetnacl": "^1.0.3",
     "tweetnacl-util": "^0.15.1"
   },
@@ -33,7 +38,7 @@
     "@types/jest": "^30.0.0",
     "jest": "^30.0.5",
     "nodemon": "^3.1.10",
-    "redis-mock": "^0.56.3",
+    "pg-mem": "^3.0.14",
     "supertest": "^7.1.4"
   }
 }
