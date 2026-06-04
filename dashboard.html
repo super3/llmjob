@@ -409,7 +409,11 @@ function App() {
     finally { setJoinLoading(false); }
   };
   const openAdd = () => { setCopiedCmd(null); setShowAdd(true); if (!joinToken) loadJoinToken(); };
-  const installCmd = joinToken ? `curl -fsSL ${API_BASE}/install.sh | sh -s -- --server ${API_BASE} --token ${joinToken}` : '';
+  // TEMPORARY: pin the installer to this PR branch so it includes the node `join`
+  // command/endpoint. Remove `--source ${INSTALL_SOURCE}` below once this branch is
+  // merged to main — install.sh already defaults to the main tarball.
+  const INSTALL_SOURCE = 'https://github.com/super3/llmjob/archive/refs/heads/claude/clever-planck-7L8Pb.tar.gz';
+  const installCmd = joinToken ? `curl -fsSL ${API_BASE}/install.sh | sh -s -- --server ${API_BASE} --token ${joinToken} --source ${INSTALL_SOURCE}` : '';
 
   // create-key modal
   const [showCreate, setShowCreate] = useState(false);
