@@ -1,6 +1,6 @@
 const JobController = require('../src/controllers/jobController');
 const JobService = require('../src/services/jobService');
-const redis = require('redis-mock');
+const { createCamelClient } = require('./helpers/camelRedis');
 
 describe('JobController', () => {
   let jobController;
@@ -13,15 +13,15 @@ describe('JobController', () => {
   beforeEach(async () => {
     // Mock console.error for error tests
     consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation();
-    redisClient = redis.createClient();
+    redisClient = createCamelClient();
     jobService = new JobService(redisClient);
-    
+
     // Mock nodeService
     nodeService = {
       getNode: jest.fn()
     };
-    
-    jobController = new JobController(jobService, nodeService, redisClient);
+
+    jobController = new JobController(jobService, nodeService);
     
     // Clear any existing data
     await new Promise(resolve => redisClient.flushall(resolve));
@@ -78,6 +78,19 @@ describe('JobController', () => {
       expect(res.status).toHaveBeenCalledWith(400);
       expect(res.json).toHaveBeenCalledWith({ error: 'Prompt is required' });
     });
+
+    it('should fall back to an anonymous user id when no auth user is present', async () => {
+      req.user = undefined;
+      req.body = { prompt: 'Test prompt' };
+
+      await jobController.submitJob(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(201);
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        job: expect.objectContaining({ userId: 'anonymous' })
+      });
+    });
   });
 
   describe('pollJobs', () => {
@@ -103,7 +116,7 @@ describe('JobController', () => {
 
       await jobController.pollJobs(req, res);
 
-      expect(nodeService.getNode).toHaveBeenCalledWith('node123', redisClient);
+      expect(nodeService.getNode).toHaveBeenCalledWith('node123');
       expect(res.json).toHaveBeenCalledWith({
         success: true,
         jobs: expect.arrayContaining([
@@ -112,6 +125,23 @@ describe('JobController', () => {
             model: 'llama3.2:3b'
           })
         ])
+      });
+    });
+
+    it('should default to one job when maxJobs is omitted', async () => {
+      nodeService.getNode.mockResolvedValue({
+        nodeId: 'node123',
+        publicKey: 'test-public-key',
+        status: 'online'
+      });
+
+      req.body = { nodeId: 'node123' }; // no maxJobs
+
+      await jobController.pollJobs(req, res);
+
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        jobs: expect.any(Array)
       });
     });
 

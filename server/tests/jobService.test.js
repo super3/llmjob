@@ -1,12 +1,12 @@
 const JobService = require('../src/services/jobService');
-const redis = require('redis-mock');
+const { createCamelClient } = require('./helpers/camelRedis');
 
 describe('JobService', () => {
   let jobService;
   let redisClient;
 
   beforeEach(async () => {
-    redisClient = redis.createClient();
+    redisClient = createCamelClient();
     jobService = new JobService(redisClient);
     
     // Clear any existing data
@@ -386,7 +386,7 @@ describe('JobService', () => {
       
       // Manually expire the lock for testing
       const lockKey = `job:${job.id}:lock`;
-      await new Promise(resolve => redisClient.del(lockKey, resolve));
+      await redisClient.del(lockKey);
 
       const timeoutJobs = await jobService.checkTimeouts();
 
@@ -401,28 +401,96 @@ describe('JobService', () => {
 
   describe('cleanupOldJobs', () => {
     it('should remove old completed and failed jobs', async () => {
-      const job1 = await jobService.createJob({ prompt: 'Test 1', userId: 'user123' });
+      const completed = await jobService.createJob({ prompt: 'Test 1', userId: 'user123' });
+      const failed = await jobService.createJob({ prompt: 'Test 2', userId: 'user123' });
 
-      // Complete one job
-      const assignedToNode1 = await jobService.assignJobsToNode('node1', 1);
-      expect(assignedToNode1).toHaveLength(1);
-      await jobService.completeJob(assignedToNode1[0].id, 'node1');
+      // Place both jobs in their status sets with an old timestamp score so they
+      // fall within the cleanup cutoff.
+      await redisClient.zAdd('jobs:completed', { score: 1000, value: completed.id });
+      await redisClient.zAdd('jobs:failed', { score: 1000, value: failed.id });
 
-      // Create and fail another job
-      const job2 = await jobService.createJob({ prompt: 'Test 2', userId: 'user123' });
-      const assignedToNode2 = await jobService.assignJobsToNode('node2', 1);
-      expect(assignedToNode2).toHaveLength(1);
-      await jobService.failJob(assignedToNode2[0].id, 'node2', 'Test failure');
+      const cleaned = await jobService.cleanupOldJobs();
 
-      // Set jobs to be old (manually update their timestamps)
-      const oldTime = Date.now() - 25 * 60 * 60 * 1000; // 25 hours ago
-      
-      // Cleanup jobs older than 1 hour
-      const cleaned = await jobService.cleanupOldJobs(60 * 60 * 1000);
+      expect(cleaned).toBe(2);
+      expect(await jobService.getJob(completed.id)).toBeNull();
+      expect(await jobService.getJob(failed.id)).toBeNull();
+    });
 
-      // In a real scenario with proper timestamp manipulation, 
-      // this would clean up the old jobs
-      expect(cleaned).toBeGreaterThanOrEqual(0);
+    it('should return zero when there are no old jobs', async () => {
+      expect(await jobService.cleanupOldJobs()).toBe(0);
+    });
+  });
+
+  describe('assignJobsToNode branch coverage', () => {
+    it('assigns using a default maxJobs when omitted', async () => {
+      await jobService.createJob({ prompt: 'p', userId: 'u' });
+
+      const assigned = await jobService.assignJobsToNode('nodeA'); // default maxJobs
+
+      expect(assigned).toHaveLength(1);
+    });
+
+    it('skips pending jobs whose lock is already held', async () => {
+      const job = await jobService.createJob({ prompt: 'p', userId: 'u' });
+      // Pre-set a lock while leaving the job in the pending queue
+      await redisClient.set(`job:${job.id}:lock`, 'someone-else');
+
+      const assigned = await jobService.assignJobsToNode('nodeA', 1);
+
+      expect(assigned).toHaveLength(0);
+    });
+  });
+
+  describe('handleHeartbeat branch coverage', () => {
+    it('leaves status unchanged on a heartbeat for an already-running job', async () => {
+      const job = await jobService.createJob({ prompt: 'p', userId: 'u' });
+      await jobService.assignJobsToNode('nodeA', 1);
+
+      await jobService.handleHeartbeat(job.id, 'nodeA'); // assigned -> running
+      const result = await jobService.handleHeartbeat(job.id, 'nodeA'); // already running
+
+      expect(result.success).toBe(true);
+      expect((await jobService.getJob(job.id)).status).toBe('running');
+    });
+  });
+
+  describe('checkTimeouts branch coverage', () => {
+    it('leaves a freshly assigned, still-locked job alone', async () => {
+      await jobService.createJob({ prompt: 'p', userId: 'u' });
+      await jobService.assignJobsToNode('nodeA', 1); // lock alive, no heartbeat yet
+
+      expect(await jobService.checkTimeouts()).toEqual([]);
+    });
+
+    it('returns jobs whose heartbeat has gone stale', async () => {
+      const job = await jobService.createJob({ prompt: 'p', userId: 'u' });
+      await jobService.assignJobsToNode('nodeA', 1);
+      // Lock still alive, but the heartbeat is old
+      await redisClient.set(`job:${job.id}:heartbeat`, String(Date.now() - 120000));
+
+      const timedOut = await jobService.checkTimeouts();
+
+      expect(timedOut).toContain(job.id);
+      expect((await jobService.getJob(job.id)).timeoutReason).toBe('heartbeat_timeout');
+    });
+
+    it('skips timed out job ids whose data has disappeared', async () => {
+      // A job id sits in the assigned queue with no data and no lock (ttl -2)
+      await redisClient.zAdd('jobs:assigned', { score: Date.now(), value: 'ghost' });
+
+      const timedOut = await jobService.checkTimeouts();
+
+      expect(timedOut).not.toContain('ghost');
+    });
+
+    it('returns timed out jobs that have no assigned node', async () => {
+      const job = await jobService.createJob({ prompt: 'p', userId: 'u' });
+      // Mark assigned without an assignedTo field and with no lock -> ttl is -2
+      await jobService.updateJobStatus(job.id, 'assigned');
+
+      const timedOut = await jobService.checkTimeouts();
+
+      expect(timedOut).toContain(job.id);
     });
   });
 
@@ -565,29 +633,6 @@ describe('JobService', () => {
       expect(stats.pending + stats.assigned).toBeGreaterThan(0);
     });
 
-    it('should handle Redis v5 zAdd format', async () => {
-      // Mock a Redis v5 style client
-      const mockRedisV5 = {
-        zAdd: jest.fn().mockResolvedValue(1),
-        zRem: jest.fn().mockResolvedValue(1),
-        zRange: jest.fn().mockResolvedValue(['job1']),
-        hGetAll: jest.fn().mockResolvedValue({
-          id: 'job1',
-          prompt: 'Test',
-          status: 'pending',
-          userId: 'user123'
-        }),
-        hSet: jest.fn().mockResolvedValue('OK')
-      };
-      
-      const jobServiceV5 = new JobService(mockRedisV5);
-      
-      // Create a job - should call zAdd with Redis v5 format
-      const job = await jobServiceV5.createJob({ prompt: 'Test', userId: 'user123' });
-      
-      expect(job.id).toBeDefined();
-    });
-
     it('should handle edge cases in job data parsing', async () => {
       // Test with various types of invalid data that could come from Redis
       const job = await jobService.createJob({ 
@@ -600,23 +645,6 @@ describe('JobService', () => {
       
       expect(job.id).toBeDefined();
       expect(job.prompt).toBe('Test');
-    });
-
-    it('should handle Redis operations with missing methods', async () => {
-      // Create a minimal mock Redis client
-      const minimalRedis = {
-        zadd: jest.fn().mockResolvedValue(1),
-        zrem: jest.fn().mockResolvedValue(1),
-        zrange: jest.fn().mockResolvedValue([]),
-        hgetall: jest.fn().mockResolvedValue(null),
-        hset: jest.fn().mockResolvedValue('OK')
-      };
-      
-      const minimalJobService = new JobService(minimalRedis);
-      
-      // Should still be able to create and query jobs
-      const job = await minimalJobService.createJob({ prompt: 'Test', userId: 'user123' });
-      expect(job.id).toBeDefined();
     });
   });
 });

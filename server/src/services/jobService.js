@@ -1,147 +1,8 @@
-const { createRedisCompat } = require('../utils/redisCompat');
-
 class JobService {
   constructor(redis) {
-    // Create basic compat layer
-    let compat = createRedisCompat(redis);
-    
-    // Add missing sorted set and other operations
-    compat.zAdd = async (key, ...args) => {
-      if (typeof redis.zAdd === 'function') {
-        // Redis v5 expects an array of objects with score and value properties
-        if (args.length === 1 && typeof args[0] === 'object' && 'member' in args[0]) {
-          // Convert our format { score, member } to Redis v5 format { score, value }
-          const { score, member } = args[0];
-          return redis.zAdd(key, [{ score, value: member }]);
-        }
-        return redis.zAdd(key, ...args);
-      }
-      // For redis-mock, convert object format to flat args
-      if (args.length === 1 && typeof args[0] === 'object') {
-        const { score, member } = args[0];
-        return redis.zadd(key, score, member);
-      }
-      return redis.zadd(key, ...args);
-    };
-
-    compat.zRem = async (key, member) => {
-      if (typeof redis.zRem === 'function') {
-        return redis.zRem(key, member);
-      }
-      return redis.zrem(key, member);
-    };
-
-    compat.zRange = async (key, start, stop) => {
-      if (typeof redis.zRange === 'function') {
-        return redis.zRange(key, start, stop);
-      }
-      return new Promise((resolve) => {
-        redis.zrange(key, start, stop, (err, result) => resolve(result || []));
-      });
-    };
-
-    compat.zCard = async (key) => {
-      if (typeof redis.zCard === 'function') {
-        return redis.zCard(key);
-      }
-      return new Promise((resolve) => {
-        redis.zcard(key, (err, result) => resolve(result || 0));
-      });
-    };
-
-    compat.zRangeByScore = async (key, min, max) => {
-      if (typeof redis.zRangeByScore === 'function') {
-        return redis.zRangeByScore(key, min, max);
-      }
-      return new Promise((resolve) => {
-        redis.zrangebyscore(key, min, max, (err, result) => resolve(result || []));
-      });
-    };
-
-    compat.expire = async (key, seconds) => {
-      /* istanbul ignore else: expire has the same name in both Redis APIs, so
-         the callback fallback is never reached. */
-      if (typeof redis.expire === 'function') {
-        return redis.expire(key, seconds);
-      } else {
-        return new Promise((resolve) => {
-          redis.expire(key, seconds, (err, result) => resolve(result));
-        });
-      }
-    };
-
-    compat.del = async (key) => {
-      /* istanbul ignore else: del has the same name in both Redis APIs, so the
-         callback fallback is never reached. */
-      if (typeof redis.del === 'function') {
-        return redis.del(key);
-      } else {
-        return new Promise((resolve) => {
-          redis.del(key, (err, result) => resolve(result));
-        });
-      }
-    };
-    
-    compat.ttl = async (key) => {
-      /* istanbul ignore else: ttl exists in both Redis APIs, so this guard is
-         always entered. */
-      if (typeof redis.ttl === 'function') {
-        const result = redis.ttl(key);
-        if (result && typeof result.then === 'function') {
-          return result;
-        }
-      }
-      return new Promise((resolve) => {
-        redis.ttl(key, (err, result) => resolve(result !== undefined ? result : -2));
-      });
-    };
-
-    compat.sRem = async (key, member) => {
-      if (typeof redis.sRem === 'function') {
-        return redis.sRem(key, member);
-      }
-      return new Promise((resolve) => {
-        redis.srem(key, member, (err, result) => resolve(result));
-      });
-    };
-    
-    compat.sAdd = async (key, ...members) => {
-      if (typeof redis.sAdd === 'function') {
-        return redis.sAdd(key, ...members);
-      }
-      return new Promise((resolve) => {
-        redis.sadd(key, ...members, (err, result) => resolve(result));
-      });
-    };
-    
-    // Override set to handle options
-    const originalSet = compat.set;
-    compat.set = async (key, value, options) => {
-      if (options) {
-        // Handle NX and EX options for redis-mock
-        if (options.NX && options.EX) {
-          // Check if key exists
-          const exists = await compat.get(key);
-          if (exists) {
-            return null; // Key already exists, NX prevents setting
-          }
-          // Set with expiration
-          const result = await originalSet(key, value);
-          await compat.expire(key, options.EX);
-          return 'OK';
-        } else if (options.EX) {
-          // Just expiration, no NX
-          const result = await originalSet(key, value);
-          await compat.expire(key, options.EX);
-          return result;
-        }
-      }
-      // Make sure we await the original set for redis-mock compatibility
-      const result = await originalSet(key, value);
-      return result;
-    };
-    
-    this.redis = compat;
+    // Production passes the real redis v5 client (camelCase, promise-based);
+    // tests pass an equivalent adapter. Either way we use it directly.
+    this.redis = redis;
   }
 
   // Generate a unique job ID
@@ -153,7 +14,7 @@ class JobService {
   async createJob(jobData) {
     const jobId = this.generateJobId();
     const timestamp = Date.now();
-    
+
     const job = {
       id: jobId,
       prompt: jobData.prompt,
@@ -170,11 +31,11 @@ class JobService {
 
     // Store job data
     await this.redis.set(`job:${jobId}`, JSON.stringify(job));
-    
+
     // Add to pending queue with priority score (higher priority = lower score for earlier processing)
     await this.redis.zAdd('jobs:pending', {
       score: -job.priority * 1000000 + timestamp, // Negative priority for reverse order, then timestamp
-      member: jobId
+      value: jobId
     });
 
     return job;
@@ -201,7 +62,7 @@ class JobService {
     };
 
     await this.redis.set(`job:${jobId}`, JSON.stringify(updatedJob));
-    
+
     // Remove from old status set and add to new one
     const statusSets = ['pending', 'assigned', 'running', 'completed', 'failed'];
     for (const s of statusSets) {
@@ -209,12 +70,12 @@ class JobService {
         await this.redis.zRem(`jobs:${s}`, jobId);
       }
     }
-    
+
     // Add to new status set
     if (status !== 'pending') { // pending jobs stay in the priority queue
       await this.redis.zAdd(`jobs:${status}`, {
         score: Date.now(),
-        member: jobId
+        value: jobId
       });
     }
 
@@ -224,10 +85,10 @@ class JobService {
   // Assign jobs to a node
   async assignJobsToNode(nodeId, maxJobs = 1) {
     const assignedJobs = [];
-    
+
     // Get pending jobs sorted by priority/timestamp
     const pendingJobIds = await this.redis.zRange('jobs:pending', 0, maxJobs - 1);
-    
+
     for (const jobId of pendingJobIds) {
       // Try to acquire lock on this job
       const lockKey = `job:${jobId}:lock`;
@@ -239,16 +100,16 @@ class JobService {
       if (lockAcquired) {
         // Remove from pending queue
         await this.redis.zRem('jobs:pending', jobId);
-        
+
         // Update job status
         const job = await this.updateJobStatus(jobId, 'assigned', {
           assignedTo: nodeId,
           assignedAt: Date.now()
         });
-        
+
         // Track assignment for this node
         await this.redis.sAdd(`node:${nodeId}:jobs`, jobId);
-        
+
         assignedJobs.push(job);
       }
     }
@@ -260,17 +121,17 @@ class JobService {
   async handleHeartbeat(jobId, nodeId) {
     const lockKey = `job:${jobId}:lock`;
     const currentLock = await this.redis.get(lockKey);
-    
+
     if (currentLock !== nodeId) {
       throw new Error('Node does not hold lock for this job');
     }
 
     // Extend lock timeout
     await this.redis.expire(lockKey, 600); // Reset to 10 minutes
-    
+
     // Update last heartbeat time
     await this.redis.set(`job:${jobId}:heartbeat`, Date.now(), { EX: 60 }); // 60 second expiry
-    
+
     // Update job status if needed
     const job = await this.getJob(jobId);
     if (job && job.status === 'assigned') {
@@ -286,7 +147,7 @@ class JobService {
   async storeChunk(jobId, nodeId, chunkData) {
     const lockKey = `job:${jobId}:lock`;
     const currentLock = await this.redis.get(lockKey);
-    
+
     if (currentLock !== nodeId) {
       throw new Error('Node does not hold lock for this job');
     }
@@ -303,7 +164,7 @@ class JobService {
     // Store chunk in sorted set by index
     await this.redis.zAdd(chunkKey, {
       score: chunk.index,
-      member: JSON.stringify(chunk)
+      value: JSON.stringify(chunk)
     });
 
     // Update job with latest metrics
@@ -323,7 +184,7 @@ class JobService {
   async completeJob(jobId, nodeId) {
     const lockKey = `job:${jobId}:lock`;
     const currentLock = await this.redis.get(lockKey);
-    
+
     if (currentLock !== nodeId) {
       throw new Error('Node does not hold lock for this job');
     }
@@ -343,10 +204,10 @@ class JobService {
 
     // Release lock
     await this.redis.del(lockKey);
-    
+
     // Remove from node's active jobs
     await this.redis.sRem(`node:${nodeId}:jobs`, jobId);
-    
+
     // Clean up heartbeat
     await this.redis.del(`job:${jobId}:heartbeat`);
 
@@ -357,7 +218,7 @@ class JobService {
   async failJob(jobId, nodeId, reason) {
     const lockKey = `job:${jobId}:lock`;
     const currentLock = await this.redis.get(lockKey);
-    
+
     if (currentLock !== nodeId) {
       throw new Error('Node does not hold lock for this job');
     }
@@ -370,10 +231,10 @@ class JobService {
 
     // Release lock
     await this.redis.del(lockKey);
-    
+
     // Remove from node's active jobs
     await this.redis.sRem(`node:${nodeId}:jobs`, jobId);
-    
+
     // Clean up heartbeat
     await this.redis.del(`job:${jobId}:heartbeat`);
 
@@ -393,11 +254,11 @@ class JobService {
     for (const jobId of allJobs) {
       const lockKey = `job:${jobId}:lock`;
       const heartbeatKey = `job:${jobId}:heartbeat`;
-      
+
       // Check if lock exists
       const lockTTL = await this.redis.ttl(lockKey);
       const lastHeartbeat = await this.redis.get(heartbeatKey);
-      
+
       // If lock expired or no recent heartbeat
       if (lockTTL === -2 || (lastHeartbeat && now - parseInt(lastHeartbeat) > 60000)) {
         const job = await this.getJob(jobId);
@@ -408,20 +269,20 @@ class JobService {
             returnedToQueue: now,
             timeoutReason: lockTTL === -2 ? 'lock_expired' : 'heartbeat_timeout'
           });
-          
+
           // Re-add to pending queue
           await this.redis.zAdd('jobs:pending', {
             score: -job.priority * 1000000 + now,
-            member: jobId
+            value: jobId
           });
-          
+
           // Clean up
           await this.redis.del(lockKey);
           await this.redis.del(heartbeatKey);
           if (job.assignedTo) {
             await this.redis.sRem(`node:${job.assignedTo}:jobs`, jobId);
           }
-          
+
           timeoutJobs.push(jobId);
         }
       }
@@ -506,20 +367,20 @@ class JobService {
   // Clean up old completed/failed jobs
   async cleanupOldJobs(maxAge = 86400000) { // Default 24 hours
     const cutoff = Date.now() - maxAge;
-    
+
     // Get old completed jobs
     const completedJobs = await this.redis.zRangeByScore('jobs:completed', 0, cutoff);
     const failedJobs = await this.redis.zRangeByScore('jobs:failed', 0, cutoff);
-    
+
     const allOldJobs = [...completedJobs, ...failedJobs];
-    
+
     for (const jobId of allOldJobs) {
       // Delete job data
       await this.redis.del(`job:${jobId}`);
       await this.redis.del(`job:${jobId}:chunks`);
       await this.redis.del(`job:${jobId}:lock`);
       await this.redis.del(`job:${jobId}:heartbeat`);
-      
+
       // Remove from status sets
       await this.redis.zRem('jobs:completed', jobId);
       await this.redis.zRem('jobs:failed', jobId);

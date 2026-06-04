@@ -2,7 +2,7 @@ const request = require('supertest');
 const express = require('express');
 const router = require('../src/routes');
 const { initJobRoutes } = require('../src/routes');
-const redis = require('redis-mock');
+const { createCamelClient } = require('./helpers/camelRedis');
 
 describe('Routes', () => {
   let app;
@@ -11,7 +11,7 @@ describe('Routes', () => {
   beforeEach(() => {
     app = express();
     app.use(express.json());
-    redisClient = redis.createClient();
+    redisClient = createCamelClient();
   });
 
   afterEach(() => {

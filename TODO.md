@@ -8,8 +8,8 @@
 - [ ] Add input validation layer using Joi or Zod instead of manual validation
 
 **5B: Architecture Improvements**
-- [x] Remove code duplication in Redis operations (create Repository pattern)
-- [ ] Consolidate 3 separate jest.config.js files into root configuration
+- [x] Remove code duplication in Redis operations (services now use the redis v5 client directly; the unused Repository pattern and dual-API compat layer were removed)
+- [x] Consolidate the server jest.config.js into the root configuration
 - [ ] Add TypeScript or comprehensive JSDoc for type safety
 - [ ] Extract constants and enums (job statuses: pending, assigned, running, completed, failed)
 - [ ] Implement dependency injection container (Awilix) for better testability

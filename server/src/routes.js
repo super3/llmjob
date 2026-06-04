@@ -5,7 +5,7 @@ const { verifySignature } = require('./middleware/signature');
 const nodeController = require('./controllers/nodeController');
 const JobController = require('./controllers/jobController');
 const JobService = require('./services/jobService');
-const nodeService = require('./services/nodeService');
+const NodeService = require('./services/nodeService');
 
 // POST /api/nodes/claim - Associate node with logged-in user (requires auth)
 router.post('/nodes/claim', requireAuth, nodeController.claimNode);
@@ -25,8 +25,8 @@ router.put('/nodes/:id/visibility', requireAuth, nodeController.updateNodeVisibi
 // Initialize job controller with dependencies
 const initJobRoutes = (redis) => {
   const jobService = new JobService(redis);
-  // Pass the nodeService module directly - it contains the functions needed
-  const jobController = new JobController(jobService, nodeService, redis);
+  const nodeService = new NodeService(redis);
+  const jobController = new JobController(jobService, nodeService);
 
   // Job submission and management
   router.post('/jobs', requireAuth, (req, res) => jobController.submitJob(req, res));
