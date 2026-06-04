@@ -381,10 +381,19 @@
   window.addEventListener('load', async () => {
     if (typeof Clerk === 'undefined') return; // links fall back to dashboard.html
     try { await Clerk.load(); } catch (e) { return; }
+
+    // In modal mode Clerk just closes the modal on success and leaves us on the
+    // homepage, so redirect to the console ourselves once a session is active.
+    let authPending = false;
+    Clerk.addListener(({ user }) => {
+      if (authPending && user) { authPending = false; window.location.href = 'dashboard.html'; }
+    });
+
     document.querySelectorAll('a[href="dashboard.html"]').forEach((link) => {
       link.addEventListener('click', (e) => {
         e.preventDefault();
         if (Clerk.user) { window.location.href = 'dashboard.html'; return; }
+        authPending = true;
         const opts = { afterSignInUrl: 'dashboard.html', afterSignUpUrl: 'dashboard.html' };
         if (link.dataset.auth === 'signin') Clerk.openSignIn(opts);
         else Clerk.openSignUp(opts);
