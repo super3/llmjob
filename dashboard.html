@@ -389,7 +389,27 @@ function App() {
   // add-node modal
   const [showAdd, setShowAdd] = useState(false);
   const [copiedCmd, setCopiedCmd] = useState(null);
+  const [joinToken, setJoinToken] = useState(null);
+  const [joinLoading, setJoinLoading] = useState(false);
   const copyCmd = (i, text) => { navigator.clipboard && navigator.clipboard.writeText(text).then(() => { setCopiedCmd(i); setTimeout(() => setCopiedCmd(null), 1500); }); };
+  const loadJoinToken = useCallback(async () => {
+    setJoinLoading(true);
+    try {
+      const res = await authedFetch('/api/nodes/join-token');
+      if (res.ok) setJoinToken((await res.json()).token);
+    } catch (e) { console.error('Join token failed:', e); }
+    finally { setJoinLoading(false); }
+  }, [authedFetch]);
+  const rotateToken = async () => {
+    setJoinLoading(true);
+    try {
+      const res = await authedFetch('/api/nodes/join-token/rotate', { method: 'POST' });
+      if (res.ok) setJoinToken((await res.json()).token);
+    } catch (e) { console.error('Rotate token failed:', e); }
+    finally { setJoinLoading(false); }
+  };
+  const openAdd = () => { setCopiedCmd(null); setShowAdd(true); if (!joinToken) loadJoinToken(); };
+  const installCmd = joinToken ? `curl -fsSL ${API_BASE}/install.sh | sh -s -- --server ${API_BASE} --token ${joinToken}` : '';
 
   // create-key modal
   const [showCreate, setShowCreate] = useState(false);
@@ -536,7 +556,7 @@ function App() {
               </div>
               <div className="node-actions">
                 <span className={`status ${onlineCount > 0 ? 'on' : 'off'}`} style={{ fontSize: 13 }}><span className={`dot ${onlineCount > 0 ? 'on' : 'off'}`}></span> {onlineCount} online</span>
-                <button className="btn-add" onClick={() => { setCopiedCmd(null); setShowAdd(true); }}>{I.plus} Add node</button>
+                <button className="btn-add" onClick={openAdd}>{I.plus} Add node</button>
               </div>
             </div>
             <NodesTable nodes={nodes} loading={false} />
@@ -608,30 +628,17 @@ function App() {
               <h3>Add a node</h3>
               <button className="x" onClick={() => setShowAdd(false)}>×</button>
             </div>
-            <p>Run the node client on the machine you want to add:</p>
-
-            <div className="add-step">
-              <div className="add-step-l"><span className="add-num">1</span> Install the client</div>
-              <div className="cmd">
-                <code>npm install -g llmjob-node</code>
-                <button onClick={() => copyCmd(0, 'npm install -g llmjob-node')}>{copiedCmd === 0 ? "copied" : "copy"}</button>
-              </div>
+            <p>Run this on the machine you want to add. It installs the node client and connects the machine to your account:</p>
+            <div className="cmd">
+              <code>{joinLoading ? 'Generating your command…' : installCmd}</code>
+              <button onClick={() => copyCmd(0, installCmd)} disabled={!joinToken}>{copiedCmd === 0 ? "copied" : "copy"}</button>
             </div>
-
-            <div className="add-step">
-              <div className="add-step-l"><span className="add-num">2</span> Start it on the machine</div>
-              <div className="cmd">
-                <code>llmjob-node start --name "My Node"</code>
-                <button onClick={() => copyCmd(1, 'llmjob-node start --name "My Node"')}>{copiedCmd === 1 ? "copied" : "copy"}</button>
-              </div>
-            </div>
-
-            <div className="add-step">
-              <div className="add-step-l"><span className="add-num">3</span> Claim it</div>
-              <p className="add-step-p">The client generates a key on the machine and prints a claim link. Open it while signed in to attach the node to your account.</p>
-            </div>
-
-            <p className="hint">Once claimed, the node shows up here automatically.</p>
+            <p className="add-step-p" style={{ marginLeft: 0 }}>
+              The node generates its own key locally — only its public key is sent.
+              Keep this command private; anyone with it can add a node to your account.
+              {' '}<a role="button" tabIndex="0" onClick={rotateToken} style={{ cursor: 'pointer' }}>Regenerate token</a>
+            </p>
+            <p className="hint">Once it connects, the node shows up here automatically.</p>
           </div>
         </div>
       )}

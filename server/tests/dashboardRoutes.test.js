@@ -2,6 +2,7 @@ const request = require('supertest');
 const express = require('express');
 const routes = require('../src/routes');
 const ApiKeyService = require('../src/services/apiKeyService');
+const NodeTokenService = require('../src/services/nodeTokenService');
 const { createCamelClient } = require('./helpers/camelRedis');
 
 // Mock Clerk so requireAuth resolves to a fixed user.
@@ -248,6 +249,104 @@ describe('Dashboard API (keys, logs, usage)', () => {
         .post('/api/usage')
         .set('Authorization', `Bearer ${rawKey}`)
         .send({ model: 'gemma', node: 'rig1' });
+      expect(res.status).toBe(500);
+    });
+  });
+
+  // ---- Node join tokens ---------------------------------------------------
+  describe('GET /api/nodes/join-token', () => {
+    it('returns a join token for the user', async () => {
+      const res = await request(app)
+        .get('/api/nodes/join-token')
+        .set('Authorization', `Bearer ${mockToken()}`);
+      expect(res.status).toBe(200);
+      expect(res.body.token).toMatch(/^ljn_/);
+    });
+
+    it('returns 500 when storage fails', async () => {
+      redisClient.get = jest.fn().mockRejectedValue(new Error('boom'));
+      const res = await request(app)
+        .get('/api/nodes/join-token')
+        .set('Authorization', `Bearer ${mockToken()}`);
+      expect(res.status).toBe(500);
+    });
+  });
+
+  describe('POST /api/nodes/join-token/rotate', () => {
+    it('issues a different token', async () => {
+      const first = await new NodeTokenService(redisClient).getOrCreateToken('test_user_123');
+      const res = await request(app)
+        .post('/api/nodes/join-token/rotate')
+        .set('Authorization', `Bearer ${mockToken()}`);
+      expect(res.status).toBe(200);
+      expect(res.body.token).toMatch(/^ljn_/);
+      expect(res.body.token).not.toBe(first.token);
+    });
+
+    it('returns 500 when storage fails', async () => {
+      redisClient.get = jest.fn().mockRejectedValue(new Error('boom'));
+      const res = await request(app)
+        .post('/api/nodes/join-token/rotate')
+        .set('Authorization', `Bearer ${mockToken()}`);
+      expect(res.status).toBe(500);
+    });
+  });
+
+  describe('POST /api/nodes/join', () => {
+    it('registers a node with a valid token and surfaces it in the list', async () => {
+      const { token } = await new NodeTokenService(redisClient).getOrCreateToken('test_user_123');
+
+      const res = await request(app)
+        .post('/api/nodes/join')
+        .send({ token, publicKey: 'pk-join-1', name: 'rig4090' });
+      expect(res.status).toBe(201);
+      expect(res.body.success).toBe(true);
+
+      const list = await request(app)
+        .get('/api/nodes')
+        .set('Authorization', `Bearer ${mockToken()}`);
+      expect(list.body.nodes.some(n => n.name === 'rig4090')).toBe(true);
+    });
+
+    it('defaults the node name when omitted', async () => {
+      const { token } = await new NodeTokenService(redisClient).getOrCreateToken('test_user_123');
+      const res = await request(app)
+        .post('/api/nodes/join')
+        .send({ token, publicKey: 'pk-join-2' });
+      expect(res.status).toBe(201);
+    });
+
+    it('rejects a request missing token or publicKey', async () => {
+      const res = await request(app)
+        .post('/api/nodes/join')
+        .send({ publicKey: 'pk-only' });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects an invalid token', async () => {
+      const res = await request(app)
+        .post('/api/nodes/join')
+        .send({ token: 'ljn_bogus', publicKey: 'pk-x', name: 'n' });
+      expect(res.status).toBe(401);
+    });
+
+    it('surfaces a claim conflict as 400', async () => {
+      const { token } = await new NodeTokenService(redisClient).getOrCreateToken('test_user_123');
+      // Pre-claim the node under a different user so the join attempt conflicts.
+      const NodeService = require('../src/services/nodeService');
+      await new NodeService(redisClient).claimNode('pk-taken', 'taken', 'other_user');
+
+      const res = await request(app)
+        .post('/api/nodes/join')
+        .send({ token, publicKey: 'pk-taken', name: 'n' });
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 500 when verification fails', async () => {
+      redisClient.get = jest.fn().mockRejectedValue(new Error('boom'));
+      const res = await request(app)
+        .post('/api/nodes/join')
+        .send({ token: 'ljn_whatever', publicKey: 'pk-x', name: 'n' });
       expect(res.status).toBe(500);
     });
   });

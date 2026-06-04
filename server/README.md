@@ -67,12 +67,28 @@ npm run test:watch
 - `GET /api/keys` - List the user's API keys (redacted, with usage + last-used)
 - `DELETE /api/keys/:id` - Revoke an API key
 - `GET /api/logs` - Recent request logs plus a 24-bucket activity histogram
+- `GET /api/nodes/join-token` - Get the user's reusable node join token (created on first use)
+- `POST /api/nodes/join-token/rotate` - Rotate the join token, invalidating the old one
 
 ### No Clerk Authentication
 
 - `GET /api/nodes/public` - Get all public nodes
 - `POST /api/nodes/ping` - Node status update (node signature required)
+- `POST /api/nodes/join` - Self-register a node with a **join token** (used by the `install.sh` installer); attaches the node to the token owner's account
 - `POST /api/usage` - Record a completed generation (LLMJob **API key** required); writes a request log entry and bills the key's token usage
+
+### Node join flow
+
+The dashboard's "Add node" dialog shows a one-line installer:
+
+```bash
+curl -fsSL <base>/install.sh | sh -s -- --server <base> --token <join-token>
+```
+
+`install.sh` installs the `llmjob-node` client and runs `llmjob-node join --token …`,
+which generates the node's keypair **locally** (only the public key is sent) and calls
+`POST /api/nodes/join`. The join token authorizes the claim without an interactive
+login; rotate it from the dashboard to revoke outstanding installers.
 
 ### API key authentication
 

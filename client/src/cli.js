@@ -78,6 +78,63 @@ program
   });
 
 program
+  .command('join')
+  .description('Join this node to your account using a join token, then start pinging')
+  .requiredOption('-t, --token <token>', 'Join token from your LLMJob dashboard')
+  .option('-s, --server <url>', 'Server URL (overrides saved config)')
+  .option('-n, --name <name>', 'Node name')
+  .option('-i, --interval <minutes>', 'Ping interval in minutes', '5')
+  .action(async (options) => {
+    let config = configManager.getOrCreateConfig();
+    if (options.server) {
+      config = configManager.updateConfig({ serverUrl: options.server });
+    }
+    const client = new NodeClient(config);
+
+    console.log(chalk.cyan('═══════════════════════════════════════════════════════════'));
+    console.log(chalk.cyan.bold('           Joining node to your account'));
+    console.log(chalk.cyan('═══════════════════════════════════════════════════════════'));
+    console.log();
+    console.log(chalk.white('Node ID:'), chalk.yellow(config.nodeId));
+    console.log(chalk.white('Server:'), chalk.gray(config.serverUrl));
+    console.log();
+
+    const result = await client.join(options.token, options.name);
+    if (!result.success) {
+      console.error(chalk.red('✗ Failed to join:'), result.error);
+      process.exit(1);
+    }
+
+    console.log(chalk.green.bold('✓ Node joined and claimed to your account'));
+    console.log();
+
+    const intervalMs = parseInt(options.interval) * 60 * 1000;
+    console.log(chalk.white(`Pinging server every ${options.interval} minutes...`));
+    console.log();
+
+    const intervalId = client.startPinging(intervalMs, (res) => {
+      const timestamp = new Date().toLocaleTimeString();
+      if (res.success) {
+        console.log(chalk.green(`[${timestamp}] ✓ Ping successful (attempt ${res.attempt})`));
+      } else {
+        console.log(chalk.red(`[${timestamp}] ✗ Ping failed: ${res.error} (attempt ${res.attempt})`));
+      }
+    });
+
+    process.on('SIGINT', () => {
+      console.log();
+      console.log(chalk.yellow('Shutting down...'));
+      client.stopPinging(intervalId);
+      process.exit(0);
+    });
+
+    process.on('SIGTERM', () => {
+      client.stopPinging(intervalId);
+      process.exit(0);
+    });
+  });
+
+program
   .command('info')
   .description('Display node information and claim URLs')
   .action(() => {

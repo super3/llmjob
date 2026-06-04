@@ -35,6 +35,29 @@ class NodeClient {
     };
   }
 
+  // Register this node with a user's account using a join token. The secret
+  // key never leaves this machine; only the public key is sent.
+  async join(token, nodeName) {
+    const data = {
+      token,
+      nodeId: this.config.nodeId,
+      publicKey: this.config.publicKey,
+      name: nodeName || `Node-${this.config.nodeId}`
+    };
+
+    try {
+      const response = await this.axiosInstance.post('/api/nodes/join', data);
+      return { success: true, data: response.data };
+    } catch (error) {
+      const errorMessage = error.response?.data?.error || error.message;
+      return {
+        success: false,
+        error: errorMessage,
+        statusCode: error.response?.status
+      };
+    }
+  }
+
   async ping(retries = 3, retryDelay = 5000) {
     const timestamp = Date.now();
     const message = `${this.config.nodeId}:${timestamp}`;

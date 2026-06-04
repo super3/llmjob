@@ -1,4 +1,5 @@
 const NodeService = require('../services/nodeService');
+const NodeTokenService = require('../services/nodeTokenService');
 
 async function claimNode(req, res) {
   try {
@@ -101,10 +102,69 @@ async function updateNodeVisibility(req, res) {
   }
 }
 
+// GET /api/nodes/join-token - Return the user's join token (creating on first use)
+async function getJoinToken(req, res) {
+  try {
+    const userId = req.user.id;
+    const tokenService = new NodeTokenService(req.app.locals.redis);
+    const record = await tokenService.getOrCreateToken(userId);
+    res.json(record);
+  } catch (error) {
+    console.error('Get join token error:', error);
+    res.status(500).json({ error: 'Failed to get join token' });
+  }
+}
+
+// POST /api/nodes/join-token/rotate - Issue a fresh join token, invalidating the old one
+async function rotateJoinToken(req, res) {
+  try {
+    const userId = req.user.id;
+    const tokenService = new NodeTokenService(req.app.locals.redis);
+    const record = await tokenService.rotateToken(userId);
+    res.json(record);
+  } catch (error) {
+    console.error('Rotate join token error:', error);
+    res.status(500).json({ error: 'Failed to rotate join token' });
+  }
+}
+
+// POST /api/nodes/join - Attach a node using a join token (no Clerk session).
+// Used by the install script so a machine can self-register non-interactively.
+async function joinNode(req, res) {
+  try {
+    const { token, publicKey, name } = req.body;
+
+    if (!token || !publicKey) {
+      return res.status(400).json({ error: 'token and publicKey are required' });
+    }
+
+    const tokenService = new NodeTokenService(req.app.locals.redis);
+    const userId = await tokenService.verifyToken(token);
+    if (!userId) {
+      return res.status(401).json({ error: 'Invalid join token' });
+    }
+
+    const nodeService = new NodeService(req.app.locals.redis);
+    const result = await nodeService.claimNode(publicKey, name || 'node', userId);
+
+    if (result.error) {
+      return res.status(400).json({ error: result.error });
+    }
+
+    res.status(201).json({ success: true, nodeId: result.nodeId });
+  } catch (error) {
+    console.error('Join node error:', error);
+    res.status(500).json({ error: 'Failed to join node' });
+  }
+}
+
 module.exports = {
   claimNode,
   pingNode,
   getUserNodes,
   getPublicNodes,
-  updateNodeVisibility
+  updateNodeVisibility,
+  getJoinToken,
+  rotateJoinToken,
+  joinNode
 };

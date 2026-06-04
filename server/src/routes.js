@@ -25,6 +25,15 @@ router.get('/nodes/public', nodeController.getPublicNodes);
 // PUT /api/nodes/:id/visibility - Toggle node between public/private
 router.put('/nodes/:id/visibility', requireAuth, nodeController.updateNodeVisibility);
 
+// GET /api/nodes/join-token - Get the user's reusable join token (dashboard)
+router.get('/nodes/join-token', requireAuth, nodeController.getJoinToken);
+
+// POST /api/nodes/join-token/rotate - Rotate the user's join token
+router.post('/nodes/join-token/rotate', requireAuth, nodeController.rotateJoinToken);
+
+// POST /api/nodes/join - Self-register a node with a join token (install script)
+router.post('/nodes/join', nodeController.joinNode);
+
 // API keys (dashboard, Clerk auth)
 // POST /api/keys - Create a new API key (raw secret returned once)
 router.post('/keys', requireAuth, apiKeyController.createKey);
