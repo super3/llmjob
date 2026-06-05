@@ -33,12 +33,32 @@ if [ -z "$TOKEN" ]; then
   echo "Error: --token is required (copy the full command from your dashboard)." >&2
   exit 1
 fi
-for c in curl openssl; do
-  if ! command -v "$c" >/dev/null 2>&1; then
-    echo "Error: '$c' is required but was not found." >&2
-    exit 1
+if ! command -v curl >/dev/null 2>&1; then
+  echo "Error: 'curl' is required but was not found." >&2
+  exit 1
+fi
+
+# Pick an OpenSSL that can actually generate Ed25519 keys. macOS ships
+# LibreSSL, which only gained Ed25519 support in 3.3 (macOS 13+); on older
+# systems fall back to a Homebrew OpenSSL if one is installed.
+OPENSSL=""
+for c in openssl \
+         /opt/homebrew/opt/openssl/bin/openssl \
+         /usr/local/opt/openssl/bin/openssl \
+         /opt/homebrew/bin/openssl \
+         /usr/local/bin/openssl; do
+  command -v "$c" >/dev/null 2>&1 || continue
+  _probe=$(mktemp)
+  if "$c" genpkey -algorithm ed25519 -out "$_probe" 2>/dev/null; then
+    OPENSSL="$c"; rm -f "$_probe"; break
   fi
+  rm -f "$_probe"
 done
+if [ -z "$OPENSSL" ]; then
+  echo "Error: no OpenSSL with Ed25519 support was found (need OpenSSL 1.1.1+ or LibreSSL 3.3+)." >&2
+  echo "On macOS: run 'brew install openssl' and try again." >&2
+  exit 1
+fi
 
 CONFIG_DIR="${LLMJOB_CONFIG_DIR:-$HOME/.llmjob}"
 KEY="$CONFIG_DIR/node.pem"
@@ -46,15 +66,15 @@ mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR" 2>/dev/null || true
 
 if [ ! -f "$KEY" ]; then
-  ( umask 077; openssl genpkey -algorithm ed25519 -out "$KEY" 2>/dev/null ) || {
+  ( umask 077; "$OPENSSL" genpkey -algorithm ed25519 -out "$KEY" 2>/dev/null ) || {
     echo "Error: could not generate an Ed25519 key (needs OpenSSL 1.1.1+)." >&2
     exit 1
   }
 fi
 
 # Raw 32-byte public key (tail of the SPKI DER), base64; nodeId is its fingerprint.
-PUBKEY=$(openssl pkey -in "$KEY" -pubout -outform DER 2>/dev/null | tail -c 32 | openssl base64 -A)
-NODEID=$(printf '%s' "$PUBKEY" | openssl dgst -sha256 | awk '{print $NF}' | cut -c1-6)
+PUBKEY=$("$OPENSSL" pkey -in "$KEY" -pubout -outform DER 2>/dev/null | tail -c 32 | "$OPENSSL" base64 -A)
+NODEID=$(printf '%s' "$PUBKEY" | "$OPENSSL" dgst -sha256 | awk '{print $NF}' | cut -c1-6)
 
 RESP=$(mktemp)
 trap 'rm -f "$RESP"' EXIT
@@ -65,10 +85,10 @@ json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 sign() {
   _m=$(mktemp); _s=$(mktemp)
   printf '%s' "$1" > "$_m"
-  if ! openssl pkeyutl -sign -inkey "$KEY" -rawin -in "$_m" -out "$_s" 2>/dev/null; then
-    openssl pkeyutl -sign -inkey "$KEY" -in "$_m" -out "$_s" 2>/dev/null
+  if ! "$OPENSSL" pkeyutl -sign -inkey "$KEY" -rawin -in "$_m" -out "$_s" 2>/dev/null; then
+    "$OPENSSL" pkeyutl -sign -inkey "$KEY" -in "$_m" -out "$_s" 2>/dev/null
   fi
-  openssl base64 -A < "$_s"
+  "$OPENSSL" base64 -A < "$_s"
   rm -f "$_m" "$_s"
 }
 
