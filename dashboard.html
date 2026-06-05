@@ -218,11 +218,16 @@
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useCallback } = React;
 
-// Same origin in dev/prod as the rest of the site; falls back to the Railway
-// API host when the static files are served from elsewhere.
+// Talk to the local API in dev, and to the Railway API host in production.
+// The dashboard is also published to GitHub Pages, which has no API, so we
+// only treat the page origin as the API when it's actually the Railway app —
+// otherwise window.location.origin would point /api/* requests at a host that
+// returns 404 for them.
 const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
   ? 'http://localhost:3001'
-  : (window.location.origin || 'https://llmjob-production.up.railway.app');
+  : (window.location.hostname.endsWith('.railway.app')
+      ? window.location.origin
+      : 'https://llmjob-production.up.railway.app');
 
 const PALETTE = ['var(--accent)', 'var(--violet)', 'var(--amber)', 'var(--online)'];
 const colorFor = (s) => {
