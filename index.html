@@ -128,15 +128,14 @@
 
   /* public nodes */
   .nodes-sec { padding-top: 80px; border-top: 1px solid var(--line); }
-  .nodes-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; flex-wrap: wrap; margin-bottom: 28px; }
+  .nodes-head { display: flex; align-items: center; justify-content: space-between; gap: 28px; flex-wrap: wrap; margin-bottom: 28px; }
   .nodes-head .eb { display: block; line-height: 1; font-family: "IBM Plex Mono", monospace; font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-3); }
   .nodes-head h2 { font-size: clamp(26px, 3.2vw, 34px); letter-spacing: -0.025em; font-weight: 600; line-height: 1; margin-top: 12px; }
-  .nodes-head p { color: var(--ink-2); font-size: 15px; margin-top: 8px; max-width: 38em; }
+  .nodes-head p { color: var(--ink-2); font-size: 15px; margin-top: 8px; max-width: 44em; }
   .nodes-live { display: inline-flex; align-items: center; gap: 8px; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--online); white-space: nowrap; }
-  .nodes-total { text-align: right; white-space: nowrap; }
-  .nodes-total .nt-eb { font-family: "IBM Plex Mono", monospace; font-size: 12px; line-height: 1; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-3); display: block; }
-  .nodes-total .nv { font-family: "IBM Plex Mono", monospace; font-size: clamp(28px, 3.4vw, 38px); font-weight: 500; letter-spacing: -0.02em; display: block; line-height: 1; margin-top: 12px; }
-  .nodes-total .nl { font-size: 12.5px; color: var(--ink-3); margin-top: 8px; display: block; }
+  .nodes-total { text-align: right; white-space: nowrap; flex: none; border: 1px solid var(--line); border-radius: 12px; padding: 15px 22px; background: #fff; }
+  .nodes-total .nv { font-family: "IBM Plex Mono", monospace; font-size: clamp(26px, 3vw, 32px); font-weight: 500; letter-spacing: -0.02em; display: block; line-height: 1; }
+  .nodes-total .nl { font-family: "IBM Plex Mono", monospace; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-3); margin-top: 9px; display: block; }
   .nodes-sec .dot, .nodes-live .dot, .nrow2 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--online); display: inline-block; flex: none; }
   .nodes-live .dot.live { animation: nblink 1.8s ease-in-out infinite; }
   @keyframes nblink { 0%,100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--online) 55%, transparent); } 60% { box-shadow: 0 0 0 6px transparent; } }
@@ -304,12 +303,11 @@
           <div>
             <span class="eb">The network</span>
             <h2>Real computers, running right now.</h2>
-            <p>People sharing the power they're not using. Every node below is someone's own hardware — open for others to run on.</p>
+            <p>People sharing the power they're not using. That idle compute runs benchmarks — so everyone can see which models and settings work best at home.</p>
           </div>
           <div class="nodes-total">
-            <span class="nt-eb">Tokens served</span>
             <span class="nv tnum">3.8M</span>
-            <span class="nl">across the network</span>
+            <span class="nl">tokens served</span>
           </div>
         </div>
         <div class="nodes-list">
@@ -335,7 +333,7 @@
         <div class="bridge-inner">
           <span class="eyebrow">Where we're starting</span>
           <h2>First, we find out what actually runs well at home.</h2>
-          <p>Not every model fits on a home computer, and the ones that do run at different speeds. So we test them — measuring how smart and how fast each one is on a single graphics card.</p>
+          <p>Spare capacity shared across the network goes to running benchmarks — measuring how smart and how fast every model and setting is on real home hardware, so you know what's worth running before you do.</p>
           <a class="btn btn-on-dark btn-arrow" href="benchmark.html">See the first results
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
           </a>

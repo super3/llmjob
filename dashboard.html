@@ -71,9 +71,9 @@
   .card { margin-top: 18px; border: 1px solid var(--line); border-radius: 13px; overflow: hidden; background: var(--panel); }
   .tscroll { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; min-width: 760px; }
-  thead th { text-align: left; font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); font-weight: 500; padding: 12px 16px; border-bottom: 1px solid var(--line); white-space: nowrap; background: var(--panel-2); }
+  thead th { text-align: left; font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); font-weight: 500; padding: 11px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; background: var(--panel-2); }
   th.num, td.num { text-align: right; }
-  tbody td { padding: 13px 16px; border-bottom: 1px solid var(--line); font-size: 13.5px; white-space: nowrap; vertical-align: middle; }
+  tbody td { padding: 12px 12px; border-bottom: 1px solid var(--line); font-size: 13.5px; white-space: nowrap; vertical-align: middle; }
   tbody tr:last-child td { border-bottom: none; }
   tbody tr { transition: background .12s; }
   tbody tr:hover { background: var(--panel-2); }
@@ -106,6 +106,16 @@
   .flag { background: none; border: none; cursor: pointer; color: var(--ink-3); padding: 4px; border-radius: 6px; transition: color .14s, background .14s; display: inline-grid; place-items: center; }
   .flag:hover { color: var(--ink-2); background: var(--panel-3); }
   .flag.on { color: var(--amber); }
+
+  /* node sharing toggle */
+  .vis-cell { display: inline-flex; align-items: center; gap: 11px; }
+  .vtoggle { width: 36px; height: 20px; border-radius: 99px; background: var(--line-2); border: none; cursor: pointer; position: relative; transition: background .16s; flex: none; padding: 0; }
+  .vtoggle.on { background: var(--accent); }
+  .vtoggle .knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .16s; box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+  .vtoggle.on .knob { transform: translateX(16px); }
+  .vlabel { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; width: 52px; }
+  .vlabel.pub { color: var(--accent); }
+  .vlabel.priv { color: var(--ink-3); }
 
   /* logs head controls */
   .logs-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-top: 36px; }
@@ -257,20 +267,25 @@ const I = {
 };
 
 function NodesTable({ nodes, loading }) {
+  // Public/Private sharing toggle is a per-node visual control. Default to the
+  // node's stored visibility, then track local overrides keyed by node id.
+  const [pub, setPub] = useState({});
+  const isPub = (n) => pub[n.nodeId] !== undefined ? pub[n.nodeId] : !!n.public;
+  const toggle = (n) => setPub(p => ({ ...p, [n.nodeId]: !isPub(n) }));
   return (
     <div className="card">
       <div className="tscroll">
         <table>
           <thead>
             <tr>
-              <th>Node</th><th>Device</th><th>Status</th><th>Serving</th>
-              <th className="num">Uptime</th>
+              <th>Node</th><th>Device</th><th>Status</th><th>Model</th>
+              <th>Sharing</th><th className="num">Uptime</th>
             </tr>
           </thead>
           <tbody>
-            {loading && <tr className="loading-row"><td colSpan="5">Loading nodes…</td></tr>}
+            {loading && <tr className="loading-row"><td colSpan="6">Loading nodes…</td></tr>}
             {!loading && nodes.length === 0 && (
-              <tr><td colSpan="5"><div className="empty-state">No nodes yet. Click “Add node” to connect one.</div></td></tr>
+              <tr><td colSpan="6"><div className="empty-state">No nodes yet. Click “Add node” to connect one.</div></td></tr>
             )}
             {!loading && nodes.map((n) => (
               <tr key={n.nodeId}>
@@ -285,6 +300,12 @@ function NodesTable({ nodes, loading }) {
                 <td>{n.model
                   ? <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><span className="mono" style={{ color: "var(--ink)" }}>{n.model}</span>{n.quant && <span className="pill q">{n.quant}</span>}</span>
                   : <span className="dash mono">idle</span>}</td>
+                <td>
+                  <span className="vis-cell">
+                    <button className={`vtoggle ${isPub(n) ? "on" : ""}`} onClick={() => toggle(n)} role="switch" aria-checked={isPub(n)} title={isPub(n) ? "Public — listed on the network" : "Private — only you"}><span className="knob"></span></button>
+                    <span className={`vlabel ${isPub(n) ? "pub" : "priv"}`}>{isPub(n) ? "Public" : "Private"}</span>
+                  </span>
+                </td>
                 <td className="num mono" style={{ color: "var(--ink-2)" }}>{n.uptime || <span className="dash">—</span>}</td>
               </tr>
             ))}
@@ -299,33 +320,31 @@ function LogsTable({ logs, loading }) {
   return (
     <div className="card">
       <div className="tscroll">
-        <table style={{ minWidth: 900 }}>
+        <table style={{ minWidth: 640 }}>
           <thead>
             <tr>
-              <th>Time</th><th>Model</th><th>Node</th><th>App</th>
+              <th>Time</th><th>Model</th><th>Node</th>
               <th className="num">Input</th><th className="num">Output</th>
-              <th className="num">Speed</th><th>Finish</th><th>Key</th>
+              <th>Speed</th><th>Finish</th><th>Key</th>
             </tr>
           </thead>
           <tbody>
-            {loading && <tr className="loading-row"><td colSpan="9">Loading logs…</td></tr>}
+            {loading && <tr className="loading-row"><td colSpan="8">Loading logs…</td></tr>}
             {!loading && logs.length === 0 && (
-              <tr><td colSpan="9"><div className="empty-state">No requests logged yet.</div></td></tr>
+              <tr><td colSpan="8"><div className="empty-state">No requests logged yet.</div></td></tr>
             )}
             {!loading && logs.map((r) => (
               <tr key={r.id}>
                 <td className="mono" style={{ color: "var(--ink-2)" }}>{fmtLogTime(r.timestamp)}</td>
                 <td>
                   <span className="cell-ic">
-                    <span className="ic-sq" style={{ background: colorFor(r.model) }}>{initials(r.model)}</span>
                     <span className="nm">{r.model}</span>
                   </span>
                 </td>
                 <td className="mono" style={{ color: "var(--ink-2)" }}>{r.node}</td>
-                <td style={{ color: "var(--ink-2)" }}>{r.app}</td>
-                <td className="num mononum">{fmtTokens(r.in)}<span className="unit">tok</span></td>
-                <td className="num mononum">{fmtTokens(r.out)}<span className="unit">tok</span></td>
-                <td className="num mononum">{(r.speed || 0).toFixed(1)}<span className="unit">tok/s</span></td>
+                <td className="num mononum">{fmtTokens(r.in)}</td>
+                <td className="num mononum">{fmtTokens(r.out)}</td>
+                <td className="mononum">{(r.speed || 0).toFixed(1)}<span className="unit">tok/s</span></td>
                 <td><span className="finish">{r.finish}</span></td>
                 <td>{r.key ? <span className="pill key"><span className="k">{I.key}</span> {r.key}</span> : <span className="dash">—</span>}</td>
               </tr>
@@ -541,8 +560,8 @@ function App() {
           <section id="keys" style={{ marginTop: 48 }}>
             <div className="sec-title">
               <div>
-                <h2>API keys</h2>
-                <div className="sub" style={{ display: "flex", alignItems: "center", gap: 6 }}>Create and manage your API keys. <span style={{ display: "inline-flex", color: "var(--ink-3)" }}>{I.info}</span></div>
+                <h2>API</h2>
+                <div className="sub">Create a key to get your endpoint and start making requests.</div>
               </div>
               <button className="btn-add" onClick={openCreate}>{I.plus} New key</button>
             </div>

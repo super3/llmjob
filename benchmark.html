@@ -62,6 +62,18 @@
   .intro h1 .accent { color: var(--accent); }
   .intro .lede { font-size: 17px; color: var(--ink-2); margin: 14px 0 0; max-width: 40em; }
 
+  .cards { margin-top: 8px; }
+  .card-group { margin-top: 46px; }
+  .card-group:first-child { margin-top: 30px; }
+  .card-hd { display: flex; align-items: center; gap: 13px; padding-bottom: 14px; border-bottom: 2px solid var(--ink); }
+  .card-hd .gpu-ic { width: 34px; height: 34px; border-radius: 9px; background: var(--ink); color: var(--bg); display: grid; place-items: center; flex: none; }
+  .card-hd h2 { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
+  .card-hd .vbadge { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--ink-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 3px 9px; white-space: nowrap; }
+  .model-block { margin-top: 22px; }
+  .model-hd { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+  .model-hd .mname { font-family: "IBM Plex Mono", monospace; font-size: 15px; font-weight: 500; color: var(--ink); }
+  .model-hd .mdesc { font-size: 13px; color: var(--ink-3); }
+
   /* live hero card (dark) */
   .rig { margin-top: 34px; background: var(--dark); border: 1px solid var(--dark-line); border-radius: 16px; overflow: hidden; box-shadow: 0 30px 70px -45px rgba(0,0,0,.6); }
   .rig-top { display: flex; align-items: center; justify-content: space-between; padding: 15px 18px; border-bottom: 1px solid var(--dark-line); gap: 12px; }
@@ -153,14 +165,46 @@ const { useState, useEffect } = React;
    status: "done" | "running" | "queued"
    running row also uses doneQ for live progress.
    =========================================================== */
-const MODEL = { id: "google/gemma-4-26B-A4B", desc: "26B params · 4B active (MoE)" };
 const BENCH = { name: "MMLU", setup: "5-shot", subjects: 57, totalQ: 14042 };
-const RIG = { name: "rig-01", gpu: "RTX 4090 · 24GB", host: "llama.cpp b3441" };
 
-const RUNS = [
-  { quant: "Q4_K_M", mmlu: null, tps: null, vram: 15.8, status: "pending" },
-  { quant: "Q3_K_M", mmlu: null, tps: null, vram: 12.6, status: "pending" },
-  { quant: "Q2_K",   mmlu: null, tps: null, vram: 9.7,  status: "pending" },
+/* Models grouped by GPU — the recommended models to run on each card.
+   Add a card, then list models that fit, each with its quant runs. */
+const CARDS = [
+  {
+    gpu: "RTX 4090",
+    vram: 24,
+    models: [
+      {
+        id: "google/gemma-4-26B-A4B",
+        desc: "26B params · 4B active (MoE) · bartowski GGUF",
+        runs: [
+          { quant: "Q5_K_L",   mmlu: null, tps: null, vram: 19.50, ctx: "8K", status: "pending" },
+          { quant: "Q5_K_M",   mmlu: null, tps: null, vram: 19.32, ctx: "8K", status: "pending" },
+          { quant: "Q5_K_S",   mmlu: null, tps: null, vram: 18.13, ctx: "8K", status: "pending" },
+          { quant: "Q4_K_L",   mmlu: null, tps: null, vram: 17.21, ctx: "8K", status: "pending" },
+          { quant: "Q4_K_M",   mmlu: null, tps: null, vram: 17.04, ctx: "8K", status: "pending" },
+          { quant: "Q4_1",     mmlu: null, tps: null, vram: 16.14, ctx: "8K", status: "pending" },
+          { quant: "Q4_K_S",   mmlu: null, tps: null, vram: 15.84, ctx: "8K", status: "pending" },
+          { quant: "Q4_0",     mmlu: null, tps: null, vram: 14.76, ctx: "8K", status: "pending" },
+          { quant: "IQ4_NL",   mmlu: null, tps: null, vram: 14.70, ctx: "8K", status: "pending" },
+          { quant: "IQ4_XS",   mmlu: null, tps: null, vram: 14.21, ctx: "8K", status: "pending" },
+          { quant: "Q3_K_XL",  mmlu: null, tps: null, vram: 13.38, ctx: "8K", status: "pending" },
+          { quant: "IQ3_M",    mmlu: null, tps: null, vram: 13.28, ctx: "8K", status: "pending" },
+          { quant: "Q3_K_L",   mmlu: null, tps: null, vram: 13.20, ctx: "8K", status: "pending" },
+          { quant: "Q3_K_M",   mmlu: null, tps: null, vram: 13.02, ctx: "8K", status: "pending" },
+          { quant: "Q3_K_S",   mmlu: null, tps: null, vram: 12.55, ctx: "8K", status: "pending" },
+          { quant: "IQ3_XS",   mmlu: null, tps: null, vram: 12.44, ctx: "8K", status: "pending" },
+          { quant: "IQ3_XXS",  mmlu: null, tps: null, vram: 12.16, ctx: "8K", status: "pending" },
+          { quant: "Q2_K_L",   mmlu: null, tps: null, vram: 11.13, ctx: "8K", status: "pending" },
+          { quant: "Q2_K",     mmlu: null, tps: null, vram: 10.95, ctx: "8K", status: "pending" },
+          { quant: "IQ2_M",    mmlu: null, tps: null, vram: 10.70, ctx: "8K", status: "pending" },
+          { quant: "IQ2_S",    mmlu: null, tps: null, vram: 10.23, ctx: "8K", status: "pending" },
+          { quant: "IQ2_XS",   mmlu: null, tps: null, vram: 10.13, ctx: "8K", status: "pending" },
+          { quant: "IQ2_XXS",  mmlu: null, tps: null, vram: 9.66,  ctx: "8K", status: "pending" },
+        ],
+      },
+    ],
+  },
 ];
 /* ===================== end editable data ===================== */
 
@@ -168,46 +212,18 @@ const I = {
   bolt: <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/></svg>,
   beaker: <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M9 3v6L4 19a1.5 1.5 0 0 0 1.3 2.2h13.4A1.5 1.5 0 0 0 20 19l-5-10V3"/><path d="M8 3h8M7 14h10"/></svg>,
   github: <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49v-1.7c-2.78.62-3.37-1.21-3.37-1.21-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.62.07-.62 1 .07 1.53 1.06 1.53 1.06.9 1.57 2.36 1.12 2.94.85.09-.66.35-1.12.63-1.37-2.22-.26-4.56-1.14-4.56-5.06 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.7 0 0 .84-.28 2.75 1.05a9.4 9.4 0 0 1 5 0c1.91-1.33 2.75-1.05 2.75-1.05.55 1.4.2 2.44.1 2.7.64.72 1.03 1.63 1.03 2.75 0 3.93-2.34 4.8-4.57 5.05.36.32.68.94.68 1.9v2.81c0 .27.18.6.69.49A10.02 10.02 0 0 0 22 12.25C22 6.58 17.52 2 12 2z"/></svg>,
+  chip: <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v2M14 3v2M10 19v2M14 19v2M3 10h2M3 14h2M19 10h2M19 14h2"/></svg>,
 };
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const rand = (a, b) => a + Math.random() * (b - a);
 
-/* featured result, shown static at the top */
-function ResultCard({ run }) {
-  return (
-    <div className="rig">
-      <div className="rig-top">
-        <div className="rig-id">
-          <span className="ic">{I.beaker}</span>
-          <div style={{ minWidth: 0 }}>
-            <div className="nm">{BENCH.name} · {BENCH.setup} · {run.quant}</div>
-            <div className="sub">{MODEL.id} · {MODEL.desc}</div>
-          </div>
-        </div>
-        <span className="rig-status" style={{ color: "var(--dark-ink-2)", border: "1px solid var(--dark-line)" }}>{run.quant}</span>
-      </div>
-
-      <div className="score">
-        <div className="big"><span className="v tnum">{run.mmlu.toFixed(1)}</span><span className="pc">%</span></div>
-        <div className="score-meta">
-          <div className="sm-l">MMLU accuracy</div>
-          <div className="sm-sub">{BENCH.totalQ.toLocaleString()} questions · {BENCH.subjects} subjects · {BENCH.setup}</div>
-        </div>
-      </div>
-
-      <div className="hstats">
-        <div className="hstat"><div className="hl">Decode speed</div><div className="hv tnum">{run.tps}<span className="u"> tok/s</span></div></div>
-        <div className="hstat"><div className="hl">VRAM</div><div className="hv tnum">{run.vram.toFixed(1)}<span className="u"> /24 GB</span></div></div>
-        <div className="hstat"><div className="hl">Quant</div><div className="hv">{run.quant}</div></div>
-      </div>
-    </div>
-  );
-}
-
-function CompareTable() {
-  const bestMmlu = Math.max(...RUNS.filter(r => r.mmlu != null).map(r => r.mmlu));
-  const bestTps = Math.max(...RUNS.filter(r => r.tps != null).map(r => r.tps));
+/* per-model quant comparison table */
+function CompareTable({ runs }) {
+  const scored = runs.filter(r => r.mmlu != null);
+  const bestMmlu = scored.length ? Math.max(...scored.map(r => r.mmlu)) : null;
+  const tpsd = runs.filter(r => r.tps != null);
+  const bestTps = tpsd.length ? Math.max(...tpsd.map(r => r.tps)) : null;
   return (
     <div className="tbl-wrap">
       <table className="q">
@@ -215,30 +231,50 @@ function CompareTable() {
           <tr>
             <th className="l">Quant</th>
             <th>MMLU</th>
-            <th>Decode t/s</th>
-            <th className="hide">VRAM</th>
+            <th>Avg t/s</th>
+            <th className="hide">VRAM (est.)</th>
+            <th className="hide">Context</th>
             <th>Status</th>
           </tr>
         </thead>
         <tbody>
-          {RUNS.map((r, i) => (
+          {runs.map((r, i) => (
             <tr key={i} className={r.status}>
               <td className="l"><span className="quant">{r.quant}</span>{r.note && <span className="qnote">{r.note}</span>}</td>
               <td className="num">{r.mmlu != null ? <span className={`mmlu-v ${r.mmlu === bestMmlu ? "best" : ""}`}>{r.mmlu.toFixed(1)}%</span> : <span className="dash">—</span>}</td>
               <td className="num">{r.tps != null ? <span style={{ fontWeight: r.tps === bestTps ? 500 : 400 }}>{r.tps} t/s</span> : <span className="dash">—</span>}</td>
-              <td className="num hide">{r.vram.toFixed(1)} GB</td>
-              <td>
-                {r.status === "done"
-                  ? <span className="st done">✓ done</span>
-                  : <span className="st queued">pending</span>}
-              </td>
+              <td className="num hide">{r.vram.toFixed(2)} GB</td>
+              <td className="num hide">{r.ctx || "—"}</td>
+              <td>{r.status === "done" ? <span className="st done">✓ done</span> : <span className="st queued">pending</span>}</td>
             </tr>
           ))}
-          {RUNS.length === 0 && (
-            <tr><td colSpan="5" style={{ textAlign: "center", padding: "44px 16px", color: "var(--ink-3)", fontFamily: '"IBM Plex Mono", monospace', fontSize: 13 }}>No benchmarks logged yet.</td></tr>
+          {runs.length === 0 && (
+            <tr><td colSpan="6" style={{ textAlign: "center", padding: "44px 16px", color: "var(--ink-3)", fontFamily: '"IBM Plex Mono", monospace', fontSize: 13 }}>No benchmarks logged yet.</td></tr>
           )}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/* a GPU card with its recommended models */
+function CardGroup({ card }) {
+  return (
+    <div className="card-group">
+      <div className="card-hd">
+        <span className="gpu-ic">{I.chip}</span>
+        <h2>{card.gpu}</h2>
+        <span className="vbadge">{card.vram} GB</span>
+      </div>
+      {card.models.map((m, i) => (
+        <div className="model-block" key={i}>
+          <div className="model-hd">
+            <span className="mname">{m.id}</span>
+            <span className="mdesc">{m.desc}</span>
+          </div>
+          <CompareTable runs={m.runs} />
+        </div>
+      ))}
     </div>
   );
 }
@@ -265,22 +301,19 @@ function App() {
         <div className={`wrap fade-up ${seen ? "in" : ""}`}>
           <span className="eyebrow">Benchmark 01 · MMLU</span>
           <div className="intro">
-            <h1><span className="accent">google/gemma-4-26B-A4B</span></h1>
-            <p className="lede">MMLU accuracy and decode throughput across quantizations on a single RTX 4090. Only Q4 and smaller fit in 24GB — anything larger spills off the card.</p>
+            <h1>What to run on each card</h1>
+            <p className="lede">MMLU accuracy and decode throughput for the models worth running on each GPU. Only the configs that actually fit a card's VRAM are listed.</p>
           </div>
 
-          <div className="compare">
-            <div className="compare-head">
-              <h2>Across quantizations</h2>
-              <span className="note">5-shot · {BENCH.subjects} subjects · {RIG.gpu}</span>
-            </div>
-            <CompareTable />
-            <div className="next">
-              <span className="pill">Next</span>
-              <span>Agentic benchmarks — tool use and multi-step tasks — once the MMLU sweep is complete.</span>
-            </div>
-            <p className="undernote">Every run is the same model at a different quantization, scored on <b>{RIG.name}</b> — a single RTX 4090.</p>
+          <div className="cards">
+            {CARDS.map((c, i) => <CardGroup card={c} key={i} />)}
           </div>
+
+          <div className="next" style={{ marginTop: 36 }}>
+            <span className="pill">Next</span>
+            <span>More cards as I get my hands on them — and agentic benchmarks (tool use, multi-step tasks) once the MMLU sweep is complete.</span>
+          </div>
+          <p className="undernote">Each model is scored with {BENCH.name} ({BENCH.setup}, {BENCH.subjects} subjects) at every quantization that fits the card.</p>
         </div>
       </main>
 
