@@ -125,15 +125,6 @@
   .tab:hover { color: var(--ink-2); }
   .tab.active { color: var(--ink); border-bottom-color: var(--accent); }
 
-  /* activity chart */
-  .chart { margin-top: 26px; padding: 0 4px; }
-  .chart-bars { display: flex; align-items: flex-end; gap: 4px; height: 96px; }
-  .chart-bars .b { flex: 1; background: var(--accent); border-radius: 3px 3px 0 0; min-height: 2px; opacity: .9; transition: opacity .14s; }
-  .chart-bars .b:hover { opacity: 1; }
-  .chart-bars .b.empty { background: var(--panel-3); }
-  .chart-axis { display: flex; justify-content: space-between; margin-top: 10px; font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--ink-3); }
-  .chart-y { position: relative; }
-  .chart-y .yl { position: absolute; left: 0; font-family: "IBM Plex Mono", monospace; font-size: 10px; color: var(--ink-3); }
 
   .empty-state { padding: 56px 20px; text-align: center; color: var(--ink-3); font-family: "IBM Plex Mono", monospace; font-size: 13px; }
   .loading-row td { text-align: center; color: var(--ink-3); font-family: "IBM Plex Mono", monospace; font-size: 13px; padding: 40px 16px; }
@@ -184,10 +175,6 @@
   .newkey-box button { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: #A6A498; background: transparent; border: 1px solid #3A3A2E; border-radius: 6px; padding: 4px 9px; cursor: pointer; flex: none; }
   .newkey-box button:hover { color: #ECEAE1; border-color: #5A5A48; }
 
-  .keys-search { display: flex; align-items: center; gap: 9px; margin: 14px 14px 0; padding: 9px 13px; background: var(--bg); border: 1px solid var(--line); border-radius: 9px; }
-  .keys-search svg { color: var(--ink-3); flex: none; }
-  .keys-search input { border: none; background: none; outline: none; font-family: "Space Grotesk", sans-serif; font-size: 14px; color: var(--ink); width: 100%; }
-  .keys-search input::placeholder { color: var(--ink-3); }
   .ck { width: 18px; height: 18px; border-radius: 5px; border: 1.5px solid var(--line-2); display: inline-grid; place-items: center; cursor: pointer; color: #fff; transition: background .14s, border-color .14s; }
   .ck.on { background: var(--accent); border-color: var(--accent); }
   .keycell .kname { font-size: 14px; font-weight: 500; color: var(--ink); }
@@ -260,20 +247,12 @@ const fmtLogTime = (ts) => {
   const time = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
   return `${date}, ${time}`;
 };
-// Five axis labels spanning the 24-hour activity window, oldest -> now.
-const activityLabels = (now = Date.now()) => {
-  const HOUR = 3600000;
-  return [24, 18, 12, 6, 0].map((back) =>
-    new Date(now - back * HOUR).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }));
-};
-
 const I = {
   bolt: <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/></svg>,
   refresh: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>,
   key: <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="15" r="4"/><path d="m10.5 12.5 7-7M16 6l2 2M19 3l2 2"/></svg>,
   chip: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v2M14 3v2M10 19v2M14 19v2M3 10h2M3 14h2M19 10h2M19 14h2"/></svg>,
   plus: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round"><path d="M12 5v14M5 12h14"/></svg>,
-  search: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>,
   info: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg>,
 };
 
@@ -311,27 +290,6 @@ function NodesTable({ nodes, loading }) {
             ))}
           </tbody>
         </table>
-      </div>
-    </div>
-  );
-}
-
-function ActivityChart({ activity, now }) {
-  const max = Math.max(1, ...activity);
-  const labels = activityLabels(now);
-  return (
-    <div className="chart">
-      <div className="chart-y" style={{ paddingLeft: 30 }}>
-        <span className="yl" style={{ top: 0 }}>{max}</span>
-        <span className="yl" style={{ top: "50%" }}>{Math.round(max / 2)}</span>
-        <div className="chart-bars">
-          {activity.map((v, i) => (
-            <div key={i} className={`b ${v === 0 ? "empty" : ""}`} style={{ height: v === 0 ? 2 : (v / max * 96) + "px" }} title={v + " requests"}></div>
-          ))}
-        </div>
-      </div>
-      <div className="chart-axis" style={{ paddingLeft: 30 }}>
-        {labels.map((l, i) => <span key={i}>{l}</span>)}
       </div>
     </div>
   );
@@ -388,7 +346,6 @@ function App() {
   const [nodes, setNodes] = useState([]);
   const [keys, setKeys] = useState([]);
   const [logs, setLogs] = useState([]);
-  const [activity, setActivity] = useState(new Array(24).fill(0));
   const [refreshing, setRefreshing] = useState(false);
 
   const authedFetch = useCallback(async (path, opts = {}) => {
@@ -429,7 +386,7 @@ function App() {
   const [genKey, setGenKey] = useState(null);
   const [creating, setCreating] = useState(false);
   const [copiedKey, setCopiedKey] = useState(false);
-  const [keyQuery, setKeyQuery] = useState("");
+  const [copiedEndpoint, setCopiedEndpoint] = useState(false);
 
   const loadNodes = useCallback(async () => {
     const res = await authedFetch('/api/nodes');
@@ -444,7 +401,6 @@ function App() {
     if (res.ok) {
       const d = await res.json();
       setLogs(d.logs || []);
-      setActivity((d.activity && d.activity.length) ? d.activity : new Array(24).fill(0));
     }
   }, [authedFetch]);
 
@@ -509,7 +465,7 @@ function App() {
     }
   };
 
-  const openCreate = () => { setNewKeyName(""); setGenKey(null); setCopiedKey(false); setShowCreate(true); };
+  const openCreate = () => { setNewKeyName(""); setGenKey(null); setCopiedKey(false); setCopiedEndpoint(false); setShowCreate(true); };
   const createKey = async () => {
     setCreating(true);
     try {
@@ -523,13 +479,13 @@ function App() {
     finally { setCreating(false); }
   };
   const copyNewKey = () => { navigator.clipboard && genKey && navigator.clipboard.writeText(genKey).then(() => { setCopiedKey(true); setTimeout(() => setCopiedKey(false), 1500); }); };
-  const closeCreate = () => { setShowCreate(false); setGenKey(null); setNewKeyName(""); };
+  const copyEndpoint = () => { navigator.clipboard && navigator.clipboard.writeText(`${window.location.origin}/api/usage`).then(() => { setCopiedEndpoint(true); setTimeout(() => setCopiedEndpoint(false), 1500); }); };
+  const closeCreate = () => { setShowCreate(false); setGenKey(null); setNewKeyName(""); setCopiedEndpoint(false); };
   const revoke = async (id) => {
     const res = await authedFetch(`/api/keys/${id}`, { method: 'DELETE' });
     if (res.ok) await loadKeys();
   };
 
-  const shownKeys = keys.filter(k => k.name.toLowerCase().includes(keyQuery.toLowerCase()));
   const onlineCount = nodes.filter(n => n.status === 'online').length;
 
   if (authError) {
@@ -591,12 +547,6 @@ function App() {
               <button className="btn-add" onClick={openCreate}>{I.plus} New key</button>
             </div>
             <div className="card">
-              {keys.length > 0 && (
-                <div className="keys-search">
-                  {I.search}
-                  <input value={keyQuery} onChange={e => setKeyQuery(e.target.value)} placeholder="Search keys…" />
-                </div>
-              )}
               <div className="tscroll">
                 <table style={{ minWidth: 860 }}>
                   <thead>
@@ -605,7 +555,7 @@ function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {shownKeys.map((k) => (
+                    {keys.map((k) => (
                       <tr key={k.id}>
                         <td><span className="kname">{k.name}</span></td>
                         <td><span className="kmask">{k.masked}</span></td>
@@ -615,7 +565,6 @@ function App() {
                       </tr>
                     ))}
                     {keys.length === 0 && <tr><td colSpan="5"><div className="empty-state">No API keys yet. Create one to start making requests.</div></td></tr>}
-                    {keys.length > 0 && shownKeys.length === 0 && <tr><td colSpan="5"><div className="empty-state">No keys match “{keyQuery}”.</div></td></tr>}
                   </tbody>
                 </table>
               </div>
@@ -634,7 +583,6 @@ function App() {
               </div>
             </div>
 
-            <ActivityChart activity={activity} now={Date.now()} />
             <LogsTable logs={logs} loading={false} />
           </section>
         </div>
@@ -687,6 +635,11 @@ function App() {
                 <div className="newkey-box">
                   <code>{genKey}</code>
                   <button onClick={copyNewKey}>{copiedKey ? "copied" : "copy"}</button>
+                </div>
+                <p>Send requests to this endpoint with an <code style={{ fontFamily: '"IBM Plex Mono", monospace', fontSize: 12.5 }}>Authorization: Bearer &lt;key&gt;</code> header:</p>
+                <div className="newkey-box">
+                  <code>POST {window.location.origin}/api/usage</code>
+                  <button onClick={copyEndpoint}>{copiedEndpoint ? "copied" : "copy"}</button>
                 </div>
                 <div className="modal-actions">
                   <button className="btn-sm primary" onClick={closeCreate}>Done</button>
