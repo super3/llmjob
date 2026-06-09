@@ -6,16 +6,113 @@
 #
 # The app bakes the server and join token into this script when it serves the
 # per-account URL, so no arguments are needed. You can still override with
-# --server <url> / --token <token> / --name <name>.
+# --server <url> / --token <token> / --name <name>, or the LLMJOB_SERVER /
+# LLMJOB_TOKEN / LLMJOB_NODE_NAME environment variables (used by the systemd
+# unit in scripts/systemd/).
 #
 # It creates an Ed25519 key locally (only the public key ever leaves the
 # machine), joins this machine to your account with the join token, then pings
-# so the node shows as online.
+# so the node shows as online. Each ping also carries best-effort telemetry
+# (GPU, VRAM, served model, quant, tok/s) gathered from nvidia-smi, the local
+# llama.cpp server and journald — any source that is missing is simply omitted.
 
-SERVER="https://llmjob-production.up.railway.app"
-TOKEN=""
-NAME=""
+SERVER="${LLMJOB_SERVER:-https://llmjob-production.up.railway.app}"
+TOKEN="${LLMJOB_TOKEN:-}"
+NAME="${LLMJOB_NODE_NAME:-}"
 PING_INTERVAL=300  # seconds
+LLAMA_ENDPOINT="${LLAMA_ENDPOINT:-http://127.0.0.1:8000}"
+LLAMA_UNIT="${LLAMA_UNIT:-llama-qwen}"
+
+json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+# Emit ,"key":"value" (JSON-escaped string) only when the value is non-empty,
+# so absent telemetry is omitted entirely — the server keeps its prior value.
+json_str_field() {
+  if [ -n "$2" ]; then printf ',"%s":"%s"' "$1" "$(json_escape "$2")"; fi
+}
+
+# Emit ,"key":value (unquoted number) only when the value is a plain number.
+json_num_field() {
+  case "$2" in
+    ''|*[!0-9.]*|.|*.*.*) ;;
+    *) printf ',"%s":%s' "$1" "$2" ;;
+  esac
+}
+
+# Extract the GGUF quant token from a model filename, e.g.
+# Qwen_Qwen3.6-27B-Q6_K.gguf -> Q6_K. Prints nothing when no token is present.
+parse_quant() {
+  printf '%s\n' "$1" \
+    | grep -oiE 'I?Q[0-9](_[A-Z0-9]+)*|BF16|F16|F32' \
+    | tail -n 1 | tr '[:lower:]' '[:upper:]'
+}
+
+# Round a MiB count to whole GB (97887 -> 96). Prints nothing for non-numbers.
+mib_to_gb() {
+  case "$1" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s' $(( ($1 + 512) / 1024 ))
+}
+
+# Pull the most recent generation speed (tok/s, 1 decimal) out of llama.cpp
+# journal output: the last "eval time" timing line — NOT the prefill line,
+# which reads "prompt eval time" and reports a much higher tok/s.
+parse_tps() {
+  printf '%s\n' "$1" \
+    | grep -F 'tokens per second' | grep -F 'eval time =' | grep -Fv 'prompt eval time' \
+    | tail -n 1 \
+    | sed -nE 's/.*[ (]([0-9]+\.?[0-9]*) tokens per second.*/\1/p' \
+    | LC_ALL=C awk '{ printf "%.1f", $0 }'
+}
+
+# Best-effort telemetry, gathered fresh before every ping. Every collector
+# tolerates a missing source (no GPU, no llama.cpp, no journald) by leaving
+# its variable empty, which omits the field from the ping body.
+collect_telemetry() {
+  DEVICE=""; VRAM_TOTAL=""; VRAM_USED=""; MODEL=""; QUANT=""; TPS=""
+
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    _gpu=$(nvidia-smi --query-gpu=name,memory.total,memory.used \
+      --format=csv,noheader,nounits 2>/dev/null | head -n 1)
+    if [ -n "$_gpu" ]; then
+      DEVICE=$(printf '%s' "$_gpu" | awk -F', *' '{print $1}')
+      VRAM_TOTAL=$(mib_to_gb "$(printf '%s' "$_gpu" | awk -F', *' '{print $2}')")
+      VRAM_USED=$(mib_to_gb "$(printf '%s' "$_gpu" | awk -F', *' '{print $3}')")
+    fi
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    MODEL=$(curl -fsS --max-time 5 "$LLAMA_ENDPOINT/v1/models" 2>/dev/null \
+      | python3 -c 'import sys,json; print(json.load(sys.stdin)["models"][0]["name"])' 2>/dev/null)
+    _mp=$(curl -fsS --max-time 5 "$LLAMA_ENDPOINT/props" 2>/dev/null \
+      | python3 -c 'import sys,json; print(json.load(sys.stdin)["model_path"])' 2>/dev/null)
+    if [ -n "$_mp" ]; then QUANT=$(parse_quant "${_mp##*/}"); fi
+  fi
+
+  if command -v journalctl >/dev/null 2>&1; then
+    TPS=$(parse_tps "$(journalctl -u "$LLAMA_UNIT" --no-pager -n 400 -o cat 2>/dev/null)")
+  fi
+}
+
+# Build the ping JSON: the four base fields are mandatory and unchanged (the
+# Ed25519 signature still covers only "nodeId:timestamp"); telemetry fields
+# are appended only when collected.
+build_ping_body() { # nodeId publicKey signature timestamp
+  printf '{"nodeId":"%s","publicKey":"%s","signature":"%s","timestamp":%s' \
+    "$1" "$2" "$3" "$4"
+  json_str_field device "$DEVICE"
+  json_num_field vramTotal "$VRAM_TOTAL"
+  json_num_field vramUsed "$VRAM_USED"
+  json_str_field model "$MODEL"
+  json_str_field quant "$QUANT"
+  json_num_field tps "$TPS"
+  printf '}'
+}
+
+# Sourced with LLMJOB_TEST_MODE set, the script defines its helpers and stops
+# before any side effects, so the parsers above can be unit-tested.
+if [ -n "${LLMJOB_TEST_MODE:-}" ]; then
+  return 0 2>/dev/null || exit 0
+fi
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -76,10 +173,12 @@ fi
 PUBKEY=$("$OPENSSL" pkey -in "$KEY" -pubout -outform DER 2>/dev/null | tail -c 32 | "$OPENSSL" base64 -A)
 NODEID=$(printf '%s' "$PUBKEY" | "$OPENSSL" dgst -sha256 | awk '{print $NF}' | cut -c1-6)
 
+# Persist the nodeId so companion tools (the usage log-shipper) can attribute
+# their records to this node without re-deriving it from the key.
+printf '%s\n' "$NODEID" > "$CONFIG_DIR/node_id" 2>/dev/null || true
+
 RESP=$(mktemp)
 trap 'rm -f "$RESP"' EXIT
-
-json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 
 # sign <message> -> base64 signature (handles OpenSSL 3 -rawin and 1.1.1)
 sign() {
@@ -110,10 +209,10 @@ case "$code" in
 esac
 
 ping_once() {
+  collect_telemetry
   ts=$(( $(date +%s) * 1000 ))
   sig=$(sign "${NODEID}:${ts}")
-  body=$(printf '{"nodeId":"%s","publicKey":"%s","signature":"%s","timestamp":%s}' \
-    "$NODEID" "$PUBKEY" "$sig" "$ts")
+  body=$(build_ping_body "$NODEID" "$PUBKEY" "$sig" "$ts")
   code=$(post /api/nodes/ping "$body")
   t=$(date '+%H:%M:%S')
   case "$code" in

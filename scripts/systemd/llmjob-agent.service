@@ -1,0 +1,16 @@
+[Unit]
+Description=LLMJob node agent (join + telemetry ping loop)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=worker
+WorkingDirectory=/home/worker
+EnvironmentFile=/etc/llmjob/agent.env
+ExecStart=/bin/sh /opt/llmjob/install.sh
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
