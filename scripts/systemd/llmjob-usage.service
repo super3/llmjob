@@ -1,0 +1,18 @@
+[Unit]
+Description=LLMJob usage log-shipper (llama.cpp journal -> /api/usage)
+After=network-online.target llama-qwen.service
+Wants=network-online.target llama-qwen.service
+
+[Service]
+Type=simple
+User=worker
+WorkingDirectory=/home/worker
+EnvironmentFile=/etc/llmjob/agent.env
+# Reading another unit's journal requires journal access for the service user.
+SupplementaryGroups=systemd-journal
+ExecStart=/bin/bash /opt/llmjob/scripts/llmjob-usage.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

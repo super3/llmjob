@@ -6,7 +6,8 @@ module.exports = {
     '!server/src/index.js', // Exclude main server file from coverage
   ],
   testMatch: [
-    '**/server/tests/**/*.test.js'
+    '**/server/tests/**/*.test.js',
+    '**/scripts/tests/**/*.test.js'
   ],
   coverageThreshold: {
     global: {
