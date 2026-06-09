@@ -108,6 +108,46 @@ build_ping_body() { # nodeId publicKey signature timestamp
   printf '}'
 }
 
+# Detect the system package manager. Prints its name, fails when none found.
+detect_pkg_manager() {
+  for _pm in apt-get dnf yum pacman zypper apk brew; do
+    if command -v "$_pm" >/dev/null 2>&1; then printf '%s' "$_pm"; return 0; fi
+  done
+  return 1
+}
+
+# Install a package with the detected manager, non-interactively. Uses sudo
+# without a password prompt (-n) when not root, so a piped install can never
+# hang waiting for input; fails quietly when installation isn't possible.
+pkg_install() {
+  _pm=$(detect_pkg_manager) || return 1
+  _sudo=""
+  if [ "$(id -u 2>/dev/null)" != "0" ] && [ "$_pm" != "brew" ]; then
+    command -v sudo >/dev/null 2>&1 || return 1
+    _sudo="sudo -n"
+  fi
+  case "$_pm" in
+    apt-get) $_sudo apt-get update -qq >/dev/null 2>&1
+             $_sudo apt-get install -y -qq "$1" >/dev/null 2>&1 ;;
+    dnf|yum) $_sudo "$_pm" install -y "$1" >/dev/null 2>&1 ;;
+    pacman)  $_sudo pacman -Sy --noconfirm "$1" >/dev/null 2>&1 ;;
+    zypper)  $_sudo zypper --non-interactive install "$1" >/dev/null 2>&1 ;;
+    apk)     $_sudo apk add "$1" >/dev/null 2>&1 ;;
+    brew)    brew install "$1" >/dev/null 2>&1 ;;
+  esac
+}
+
+# Make sure command $1 exists, attempting to install package $2 (defaults to
+# the command name) when it doesn't. Succeeds only if the command ends up
+# available; the caller decides whether that is fatal.
+ensure_dep() {
+  command -v "$1" >/dev/null 2>&1 && return 0
+  echo "Dependency '$1' not found — attempting to install '${2:-$1}'..."
+  pkg_install "${2:-$1}" \
+    || echo "Warning: could not install '${2:-$1}' automatically." >&2
+  command -v "$1" >/dev/null 2>&1
+}
+
 # Sourced with LLMJOB_TEST_MODE set, the script defines its helpers and stops
 # before any side effects, so the parsers above can be unit-tested.
 if [ -n "${LLMJOB_TEST_MODE:-}" ]; then
@@ -130,27 +170,46 @@ if [ -z "$TOKEN" ]; then
   echo "Error: --token is required (copy the full command from your dashboard)." >&2
   exit 1
 fi
-if ! command -v curl >/dev/null 2>&1; then
-  echo "Error: 'curl' is required but was not found." >&2
+if ! ensure_dep curl curl; then
+  echo "Error: 'curl' is required and could not be installed automatically." >&2
   exit 1
+fi
+
+# python3 is only used to parse JSON from the local llama.cpp server; without
+# it the model/quant telemetry fields are simply omitted from pings.
+_py_pkg=python3
+[ "$(detect_pkg_manager 2>/dev/null)" = "pacman" ] && _py_pkg=python
+if ! ensure_dep python3 "$_py_pkg"; then
+  echo "Note: 'python3' is unavailable; model/quant telemetry will be omitted." >&2
 fi
 
 # Pick an OpenSSL that can actually generate Ed25519 keys. macOS ships
 # LibreSSL, which only gained Ed25519 support in 3.3 (macOS 13+); on older
 # systems fall back to a Homebrew OpenSSL if one is installed.
-OPENSSL=""
-for c in openssl \
-         /opt/homebrew/opt/openssl/bin/openssl \
-         /usr/local/opt/openssl/bin/openssl \
-         /opt/homebrew/bin/openssl \
-         /usr/local/bin/openssl; do
-  command -v "$c" >/dev/null 2>&1 || continue
-  _probe=$(mktemp)
-  if "$c" genpkey -algorithm ed25519 -out "$_probe" 2>/dev/null; then
-    OPENSSL="$c"; rm -f "$_probe"; break
-  fi
-  rm -f "$_probe"
-done
+find_openssl() {
+  for c in openssl \
+           /opt/homebrew/opt/openssl/bin/openssl \
+           /usr/local/opt/openssl/bin/openssl \
+           /opt/homebrew/bin/openssl \
+           /usr/local/bin/openssl; do
+    command -v "$c" >/dev/null 2>&1 || continue
+    _probe=$(mktemp)
+    if "$c" genpkey -algorithm ed25519 -out "$_probe" 2>/dev/null; then
+      rm -f "$_probe"; printf '%s' "$c"; return 0
+    fi
+    rm -f "$_probe"
+  done
+  return 1
+}
+
+OPENSSL=$(find_openssl) || OPENSSL=""
+if [ -z "$OPENSSL" ]; then
+  # Either openssl is missing or it's a LibreSSL without Ed25519 — try to
+  # install a modern one and probe again.
+  echo "No Ed25519-capable OpenSSL found — attempting to install 'openssl'..."
+  pkg_install openssl || echo "Warning: could not install 'openssl' automatically." >&2
+  OPENSSL=$(find_openssl) || OPENSSL=""
+fi
 if [ -z "$OPENSSL" ]; then
   echo "Error: no OpenSSL with Ed25519 support was found (need OpenSSL 1.1.1+ or LibreSSL 3.3+)." >&2
   echo "On macOS: run 'brew install openssl' and try again." >&2
