@@ -21,7 +21,12 @@ The Ed25519 signing scheme is unchanged — the signature still covers only
 ## Prerequisites
 
 - `curl`, `openssl` (agent); additionally `bash`, `journalctl`, `python3`
-  (usage shipper). `nvidia-smi` is optional.
+  (usage shipper). `nvidia-smi` is optional. The agent installs missing
+  `curl`/`openssl`/`python3` automatically when a supported package manager
+  (apt, dnf, yum, pacman, zypper, apk, or Homebrew) is available — it uses
+  non-interactive `sudo`, so pre-install them yourself on hosts where sudo
+  needs a password. Hardware/system tools (`nvidia-smi`, `journalctl`) are
+  never installed; the related telemetry is simply omitted without them.
 - llama.cpp `llama-server` running as a systemd unit (default `llama-qwen`)
   serving its OpenAI-compatible API (default `http://127.0.0.1:8000`).
 - An **API key** for the usage shipper: dashboard → **API Keys** → create —

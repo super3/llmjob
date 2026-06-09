@@ -145,6 +145,58 @@ describe('install.sh ping body builder', () => {
   });
 });
 
+describe('install.sh dependency bootstrap', () => {
+  const fs = require('fs');
+  const os = require('os');
+  let stubDir;
+
+  // A PATH containing only the named stub executables.
+  function makeStubs(...names) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'llmjob-stubs-'));
+    for (const name of names) {
+      fs.writeFileSync(path.join(dir, name), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    }
+    return dir;
+  }
+
+  afterEach(() => {
+    if (stubDir) fs.rmSync(stubDir, { recursive: true, force: true });
+    stubDir = undefined;
+  });
+
+  test('detect_pkg_manager finds apt-get', () => {
+    stubDir = makeStubs('apt-get');
+    expect(sh('PATH="$STUBS"; detect_pkg_manager', { STUBS: stubDir })).toBe('apt-get');
+  });
+
+  test('detect_pkg_manager finds brew', () => {
+    stubDir = makeStubs('brew');
+    expect(sh('PATH="$STUBS"; detect_pkg_manager', { STUBS: stubDir })).toBe('brew');
+  });
+
+  test('detect_pkg_manager fails when no package manager exists', () => {
+    stubDir = makeStubs();
+    expect(
+      sh('PATH="$STUBS"; detect_pkg_manager; echo "rc=$?"', { STUBS: stubDir }).trim()
+    ).toBe('rc=1');
+  });
+
+  test('ensure_dep is a no-op when the command already exists', () => {
+    expect(sh('ensure_dep sh; echo "rc=$?"').trim()).toBe('rc=0');
+  });
+
+  test('ensure_dep fails gracefully when install is impossible', () => {
+    stubDir = makeStubs();
+    const out = sh(
+      'PATH="$STUBS"; ensure_dep llmjob-no-such-cmd 2>/dev/null; echo "rc=$?"',
+      { STUBS: stubDir }
+    );
+    expect(out).toContain("Dependency 'llmjob-no-such-cmd' not found");
+    const rc = Number(out.trim().match(/rc=(\d+)$/)[1]);
+    expect(rc).not.toBe(0);
+  });
+});
+
 describe('llmjob-usage.sh record assembly', () => {
   test('one task produces one complete usage record', () => {
     const lines = ship(JOURNAL_FIXTURE + '\n').trim().split('\n');
