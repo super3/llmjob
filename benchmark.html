@@ -56,7 +56,10 @@
   .section-hd .gpu-ic { width: 34px; height: 34px; border-radius: 9px; background: var(--ink); color: var(--bg); display: grid; place-items: center; flex: none; }
   .section-hd h2 { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
   .section-hd .vbadge { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--ink-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 3px 9px; white-space: nowrap; }
-  .section-sub { margin: 14px 0 16px; font-size: 14.5px; color: var(--ink-2); max-width: 46em; }
+  .section-sub { margin: 14px 0 16px; font-size: 14.5px; color: var(--ink-2); }
+  .subtbl-hd { margin: 28px 0 12px; display: flex; align-items: baseline; gap: 10px; }
+  .subtbl-hd h3 { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
+  .subtbl-hd .note { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--ink-3); }
 
   /* tables */
   .tbl-wrap { border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: #fff; }
@@ -82,7 +85,7 @@
   .reco b { color: var(--ink); font-weight: 600; }
   .reco .mono { font-size: 12.5px; }
 
-  .tbl-note { margin-top: 12px; font-size: 12.5px; color: var(--ink-3); max-width: 52em; }
+  .tbl-note { margin-top: 12px; font-size: 12.5px; color: var(--ink-3); }
 
   .next { margin-top: 40px; display: flex; align-items: center; gap: 11px; padding: 14px 16px; border: 1px dashed var(--line-2); border-radius: 12px; color: var(--ink-2); font-size: 13.5px; background: var(--bg-2); }
   .next .pill { font-family: "IBM Plex Mono", monospace; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); border: 1px solid var(--line-2); border-radius: 6px; padding: 3px 8px; background: #fff; flex: none; }
@@ -152,9 +155,23 @@ const GPUS = [
       { model: "GLM-4.7 (Reasoning)",           lab: "Z AI",     score: 42.1, quant: "FP8",    ctx: "256K", weights: 50, kvgb: 6.4,  total: 56, headroom: 40 },
       { model: "Qwen3.5 27B (Reasoning)",       lab: "Alibaba",  score: 42.1, quant: "FP8",    ctx: "262K", weights: 28, kvgb: 8.2,  total: 36, headroom: 60 },
       { model: "Qwen3.5 122B A10B (Reasoning)", lab: "Alibaba",  score: 41.6, quant: "Q4_K_M", ctx: "262K", weights: 78, kvgb: 8.2,  total: 86, headroom: 10 },
-      { model: "DeepSeek V4 Flash (Reasoning)", lab: "DeepSeek", score: 46.5, quant: "Q2",     ctx: "1M",   weights: 71, kvgb: 10.4, total: 81, headroom: 15, tag: "1M ctx option" },
     ],
-    reco: <React.Fragment><b>Qwen3.6 27B @ FP8</b> + INT8 KV ≈ <span className="mono">36 GB</span> — highest AA score on the card with effectively zero quantization loss, and ~60 GB of headroom. With 96 GB, everything ≤50B runs at FP8, so quant quality loss disappears from this tier. If a workload genuinely needs more than 262K context, <b>DeepSeek V4 Flash @ Q2</b> is the only single-card path to a true 1M-token window — but expect Q2 to materially degrade reasoning and tool use, so its 46.5 full-precision score won't survive quantization.</React.Fragment>,
+    /* Models that only fit at 2-bit (INT4 KV). Scores are full-precision —
+       Q2 materially degrades reasoning/tool use, so this tier is for
+       context windows beyond 262K, not quality. */
+    q2: [
+      { model: "MiniMax-M2.7",                       lab: "MiniMax",  score: 49.6, nctx: "200K", octx: "200K", weights: 57, kvgb: 6.3,  total: 63, headroom: 33 },
+      { model: "MiMo-V2.5",                          lab: "Xiaomi",   score: 49,   nctx: "1M",   octx: "512K", weights: 78, kvgb: 14.1, total: 92, headroom: 4 },
+      { model: "DeepSeek V4 Flash (Reasoning, Max)", lab: "DeepSeek", score: 46.5, nctx: "1M",   octx: "1M",   weights: 71, kvgb: 10.4, total: 81, headroom: 15, pick: true, tag: "1M ctx" },
+      { model: "DeepSeek V4 Flash (Reasoning, High)", lab: "DeepSeek", score: 46,  nctx: "1M",   octx: "1M",   weights: 71, kvgb: 10.4, total: 81, headroom: 15 },
+      { model: "Step 3.7 Flash",                     lab: "StepFun",  score: 42.6, nctx: "256K", octx: "256K", weights: 49, kvgb: 1.6,  total: 51, headroom: 45 },
+      { model: "Hy3-preview (Reasoning)",            lab: "Tencent",  score: 41.9, nctx: "256K", octx: "256K", weights: 74, kvgb: 7.0,  total: 81, headroom: 15 },
+      { model: "MiniMax-M2.5",                       lab: "MiniMax",  score: 41.9, nctx: "200K", octx: "200K", weights: 57, kvgb: 6.3,  total: 63, headroom: 33 },
+      { model: "MiMo-V2-Flash (Feb 2026)",           lab: "Xiaomi",   score: 41.5, nctx: "256K", octx: "256K", weights: 77, kvgb: 7.0,  total: 84, headroom: 12 },
+      { model: "MiniMax-M2.1",                       lab: "MiniMax",  score: 39.4, nctx: "200K", octx: "200K", weights: 57, kvgb: 6.3,  total: 63, headroom: 33 },
+    ],
+    q2note: "Scores are full-precision (API-measured) — Q2 quantization materially degrades tool use and reasoning, often enough that a Q2 of a larger model underperforms a Q4 of a smaller one. After Q2 loss, none of these reliably beats the FP8 ★ pick above on intelligence — use this tier only when a workload needs more than 262K context. DeepSeek V4 Flash is the headline: the only single-card path to a genuine 1M-token window (MLA compresses KV aggressively). MiMo-V2.5 is VRAM-capped at ~512K; the MiniMax models are capped by their 200K native window. Step 3.7 Flash also fits at Q3 (~74 GB, ~22 GB headroom) — the best quality-per-GB option in this tier.",
+    reco: <React.Fragment><b>Qwen3.6 27B @ FP8</b> + INT8 KV ≈ <span className="mono">36 GB</span> — highest AA score on the card with effectively zero quantization loss, and ~60 GB of headroom. With 96 GB, everything ≤50B runs at FP8, so quant quality loss disappears from this tier. Throughput alternative: <b>Qwen3.5 122B A10B @ Q4_K_M</b> — only 10B active params per token makes it ~2–3× faster in long agent loops, at a lower score plus Q4 loss.</React.Fragment>,
     note: "Score is full-precision (API-measured); Q2 rows lose meaningful quality. Qwen 27B / 122B use hybrid attention — only attention layers store KV, which is why long-context KV stays small.",
   },
   {
@@ -174,6 +191,10 @@ const GPUS = [
 ];
 /* ===================== end editable data ===================== */
 
+/* Leading proprietary score — all "% frontier" columns are relative to this. */
+const FRONTIER = Math.max(...PROPRIETARY.map(r => r.score));
+const pctFrontier = (score) => Math.round((score / FRONTIER) * 100) + "%";
+
 const I = {
   bolt: <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/></svg>,
   chip: <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v2M14 3v2M10 19v2M14 19v2M3 10h2M3 14h2M19 10h2M19 14h2"/></svg>,
@@ -191,6 +212,7 @@ function ProprietaryTable() {
             <th className="l">Model</th>
             <th className="hide">Lab</th>
             <th>AA Score</th>
+            <th>% Frontier</th>
             <th className="hide">Context</th>
           </tr>
         </thead>
@@ -201,6 +223,7 @@ function ProprietaryTable() {
               <td className="l"><span className="mname">{r.model}</span></td>
               <td className="hide" style={{ color: "var(--ink-2)" }}>{r.lab}</td>
               <td className="num"><span className={`score-v ${r.score === best ? "best" : ""}`}>{r.score.toFixed(1)}</span></td>
+              <td className="num">{pctFrontier(r.score)}</td>
               <td className="num hide">{r.ctx}</td>
             </tr>
           ))}
@@ -225,6 +248,7 @@ function GpuSection({ gpu }) {
             <tr>
               <th className="l">Model</th>
               <th>AA Score</th>
+              <th>% Frontier</th>
               <th>Quant</th>
               <th className="hide">Context</th>
               <th className="hide">Weights</th>
@@ -243,6 +267,7 @@ function GpuSection({ gpu }) {
                   {m.tag && <span className="tag ctx">{m.tag}</span>}
                 </td>
                 <td className="num"><span className={`score-v ${m.pick ? "best" : ""}`}>{m.score.toFixed(1)}</span></td>
+                <td className="num">{pctFrontier(m.score)}</td>
                 <td><span className="quant">{m.quant}</span></td>
                 <td className="num hide">{m.ctx}</td>
                 <td className="num hide">~{m.weights} GB</td>
@@ -259,6 +284,51 @@ function GpuSection({ gpu }) {
         <span>{gpu.reco}</span>
       </div>
       <p className="tbl-note">{gpu.note}</p>
+      {gpu.q2 && (
+        <React.Fragment>
+          <div className="subtbl-hd">
+            <h3>Fits at Q2 only</h3>
+            <span className="note">2-bit weights · INT4 KV cache</span>
+          </div>
+          <div className="tbl-wrap">
+            <table className="q">
+              <thead>
+                <tr>
+                  <th className="l">Model</th>
+                  <th>AA Score</th>
+                  <th>% Frontier</th>
+                  <th className="hide">Native ctx</th>
+                  <th>Op ctx</th>
+                  <th className="hide">Weights</th>
+                  <th className="hide">KV</th>
+                  <th>VRAM</th>
+                  <th>Headroom</th>
+                </tr>
+              </thead>
+              <tbody>
+                {gpu.q2.map((m, i) => (
+                  <tr key={i} className={m.pick ? "pick" : ""}>
+                    <td className="l">
+                      <span className="mname">{m.model}</span>
+                      <span className="mlab">{m.lab}</span>
+                      {m.pick && <span className="tag pick">★ {m.tag}</span>}
+                    </td>
+                    <td className="num"><span className={`score-v ${m.pick ? "best" : ""}`}>{m.score.toFixed(1)}</span></td>
+                    <td className="num">{pctFrontier(m.score)}</td>
+                    <td className="num hide">{m.nctx}</td>
+                    <td className="num">{m.octx}</td>
+                    <td className="num hide">~{m.weights} GB</td>
+                    <td className="num hide">~{m.kvgb} GB</td>
+                    <td className="num">~{m.total} GB</td>
+                    <td className="num">{m.headroom} GB</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="tbl-note">{gpu.q2note}</p>
+        </React.Fragment>
+      )}
     </div>
   );
 }
@@ -289,17 +359,17 @@ function App() {
             <p className="lede">The recommended open-weights models for each GPU, ranked by <a href="https://artificialanalysis.ai" target="_blank" rel="noopener">Artificial Analysis</a> Intelligence Index v4.0 — only configs that actually fit the card's VRAM at full native context.</p>
           </div>
 
+          {GPUS.map((g, i) => <GpuSection gpu={g} key={i} />)}
+
           <div className="section">
             <div className="section-hd">
               <span className="gpu-ic">{I.lock}</span>
               <h2>Proprietary frontier</h2>
               <span className="vbadge">API-only</span>
             </div>
-            <p className="section-sub">For context: the closed models you can't run locally. The best open-weights model below scores 45.8 — about 70% of the frontier (Claude Fable 5 at 64.9).</p>
+            <p className="section-sub">For context: the closed models you can't run locally. The % frontier columns above are relative to Claude Fable 5 at {FRONTIER} — the best open-weights pick reaches about 71% of it.</p>
             <ProprietaryTable />
           </div>
-
-          {GPUS.map((g, i) => <GpuSection gpu={g} key={i} />)}
 
           <div className="next">
             <span className="pill">Next</span>
