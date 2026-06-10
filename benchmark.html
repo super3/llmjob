@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>LLMJob — MMLU across quants · google/gemma-4-26B-A4B</title>
+<title>LLMJob — What to run on RTX PRO 6000 &amp; RTX 5090</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2222%22 fill=%22%2316160F%22/><path transform=%22translate(26,26) scale(2)%22 d=%22M13 2 4 14h6l-1 8 9-12h-6l1-8z%22 fill=%22%23FBFAF8%22/></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -20,13 +20,6 @@
     --accent: oklch(0.58 0.21 256);
     --online: oklch(0.66 0.16 150);
     --warn: oklch(0.72 0.15 67);
-    --dark: #131310;
-    --dark-2: #1C1C16;
-    --dark-3: #26261E;
-    --dark-line: #33332A;
-    --dark-ink: #EDEBE3;
-    --dark-ink-2: #9C9A8E;
-    --dark-ink-3: #6E6D62;
     font-synthesis-weight: none;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -37,16 +30,11 @@
     min-height: 100vh; display: flex; flex-direction: column;
   }
   .mono { font-family: "IBM Plex Mono", monospace; }
-  .tnum { font-variant-numeric: tabular-nums; }
   a { color: inherit; text-decoration: none; }
   .wrap { width: 100%; max-width: 1000px; margin: 0 auto; padding: 0 32px; }
 
   .eyebrow { font-family: "IBM Plex Mono", monospace; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3); display: inline-flex; align-items: center; gap: 9px; }
   .eyebrow::before { content: ""; width: 18px; height: 1px; background: var(--line-2); }
-
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--online); flex: none; }
-  .dot.live { animation: blink 1.8s ease-in-out infinite; }
-  @keyframes blink { 0%,100% { box-shadow: 0 0 0 0 color-mix(in srgb,var(--online) 55%, transparent); } 60% { box-shadow: 0 0 0 7px transparent; } }
 
   /* nav */
   header.nav { position: sticky; top: 0; z-index: 50; background: color-mix(in srgb, var(--bg) 82%, transparent); backdrop-filter: saturate(1.2) blur(12px); border-bottom: 1px solid transparent; transition: border-color .2s ease; }
@@ -59,53 +47,18 @@
 
   main { flex: 1; padding: 54px 0 64px; }
   .intro h1 { font-family: "IBM Plex Mono", monospace; font-size: clamp(22px, 3.6vw, 32px); font-weight: 500; letter-spacing: -0.02em; margin: 16px 0 0; line-height: 1.15; word-break: break-word; }
-  .intro h1 .accent { color: var(--accent); }
-  .intro .lede { font-size: 17px; color: var(--ink-2); margin: 14px 0 0; max-width: 40em; }
+  .intro .lede { font-size: 17px; color: var(--ink-2); margin: 14px 0 0; max-width: 42em; }
+  .intro .lede a { color: var(--ink-2); text-decoration: underline; text-underline-offset: 2px; text-decoration-color: var(--line-2); }
+  .intro .lede a:hover { color: var(--ink); }
 
-  .cards { margin-top: 8px; }
-  .card-group { margin-top: 46px; }
-  .card-group:first-child { margin-top: 30px; }
-  .card-hd { display: flex; align-items: center; gap: 13px; padding-bottom: 14px; border-bottom: 2px solid var(--ink); }
-  .card-hd .gpu-ic { width: 34px; height: 34px; border-radius: 9px; background: var(--ink); color: var(--bg); display: grid; place-items: center; flex: none; }
-  .card-hd h2 { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
-  .card-hd .vbadge { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--ink-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 3px 9px; white-space: nowrap; }
-  .model-block { margin-top: 22px; }
-  .model-hd { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
-  .model-hd .mname { font-family: "IBM Plex Mono", monospace; font-size: 15px; font-weight: 500; color: var(--ink); }
-  .model-hd .mdesc { font-size: 13px; color: var(--ink-3); }
+  .section { margin-top: 48px; }
+  .section-hd { display: flex; align-items: center; gap: 13px; padding-bottom: 14px; border-bottom: 2px solid var(--ink); }
+  .section-hd .gpu-ic { width: 34px; height: 34px; border-radius: 9px; background: var(--ink); color: var(--bg); display: grid; place-items: center; flex: none; }
+  .section-hd h2 { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
+  .section-hd .vbadge { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--ink-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 3px 9px; white-space: nowrap; }
+  .section-sub { margin: 14px 0 16px; font-size: 14.5px; color: var(--ink-2); max-width: 46em; }
 
-  /* live hero card (dark) */
-  .rig { margin-top: 34px; background: var(--dark); border: 1px solid var(--dark-line); border-radius: 16px; overflow: hidden; box-shadow: 0 30px 70px -45px rgba(0,0,0,.6); }
-  .rig-top { display: flex; align-items: center; justify-content: space-between; padding: 15px 18px; border-bottom: 1px solid var(--dark-line); gap: 12px; }
-  .rig-id { display: flex; align-items: center; gap: 11px; min-width: 0; }
-  .rig-id .ic { width: 32px; height: 32px; border-radius: 9px; background: var(--dark-3); display: grid; place-items: center; color: var(--dark-ink); flex: none; }
-  .rig-id .nm { font-size: 14px; font-weight: 500; color: var(--dark-ink); }
-  .rig-id .sub { font-family: "IBM Plex Mono", monospace; font-size: 10.5px; color: var(--dark-ink-3); letter-spacing: .03em; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .rig-status { display: inline-flex; align-items: center; gap: 7px; font-family: "IBM Plex Mono", monospace; font-size: 11px; border-radius: 99px; padding: 5px 11px; flex: none; }
-
-  .score { padding: 24px 20px; display: flex; align-items: center; gap: 26px; border-bottom: 1px solid var(--dark-line); flex-wrap: wrap; }
-  .score .big { display: flex; align-items: baseline; }
-  .score .big .v { font-family: "IBM Plex Mono", monospace; font-size: 58px; font-weight: 500; color: var(--dark-ink); letter-spacing: -0.04em; line-height: 1; }
-  .score .big .pc { font-family: "IBM Plex Mono", monospace; font-size: 22px; color: var(--dark-ink-2); margin-left: 2px; }
-  .score-meta { flex: 1; min-width: 220px; }
-  .score-meta .sm-l { font-family: "IBM Plex Mono", monospace; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--dark-ink-3); }
-  .score-meta .sm-sub { font-family: "IBM Plex Mono", monospace; font-size: 11.5px; color: var(--dark-ink-2); margin-top: 10px; line-height: 1.5; }
-  .score-meta .prog { margin-top: 11px; }
-  .score-meta .prog .bar { height: 6px; background: var(--dark-3); border-radius: 99px; overflow: hidden; }
-  .score-meta .prog .bar i { display: block; height: 100%; background: var(--online); border-radius: 99px; transition: width .8s cubic-bezier(.4,0,.2,1); }
-  .score-meta .prog .prog-meta { display: flex; justify-content: space-between; margin-top: 8px; font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--dark-ink-3); }
-
-  .hstats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--dark-line); }
-  .hstat { background: var(--dark); padding: 15px 18px; }
-  .hstat .hl { font-family: "IBM Plex Mono", monospace; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--dark-ink-3); }
-  .hstat .hv { font-family: "IBM Plex Mono", monospace; font-size: 19px; font-weight: 500; color: var(--dark-ink); margin-top: 6px; letter-spacing: -0.01em; }
-  .hstat .hv .u { font-size: 11px; color: var(--dark-ink-3); margin-left: 2px; }
-
-  /* compare table */
-  .compare { margin-top: 30px; }
-  .compare-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
-  .compare-head h2 { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
-  .compare-head .note { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--ink-3); }
+  /* tables */
   .tbl-wrap { border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: #fff; }
   table.q { width: 100%; border-collapse: collapse; }
   table.q th { text-align: right; font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-3); font-weight: 500; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--bg-2); white-space: nowrap; }
@@ -113,20 +66,25 @@
   table.q td { padding: 14px 16px; border-bottom: 1px solid var(--line); font-size: 14px; text-align: right; }
   table.q td.l { text-align: left; }
   table.q tr:last-child td { border-bottom: none; }
-  table.q tbody tr.run { background: color-mix(in srgb, var(--online) 7%, #fff); }
-  table.q tbody tr.queued td { color: var(--ink-3); }
-  .quant { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; font-weight: 500; color: var(--ink); }
-  .qnote { font-family: "IBM Plex Mono", monospace; font-size: 10px; color: var(--ink-3); margin-left: 7px; }
+  table.q tbody tr.pick { background: color-mix(in srgb, var(--accent) 6%, #fff); }
   td.num { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; }
-  .mmlu-v { font-weight: 500; }
-  .mmlu-v.best { color: var(--accent); }
-  .st { font-family: "IBM Plex Mono", monospace; font-size: 11px; display: inline-flex; align-items: center; gap: 6px; justify-content: flex-end; white-space: nowrap; }
-  .st.done { color: var(--ink-3); }
-  .st.run { color: var(--online); }
-  .st.queued { color: var(--ink-3); }
-  .dash { color: var(--ink-3); }
+  .mname { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; font-weight: 500; color: var(--ink); }
+  .mlab { font-size: 12px; color: var(--ink-3); margin-left: 7px; }
+  .quant { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; font-weight: 500; }
+  .score-v { font-weight: 500; }
+  .score-v.best { color: var(--accent); }
+  .tag { font-family: "IBM Plex Mono", monospace; font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase; border-radius: 5px; padding: 2px 7px; margin-left: 8px; white-space: nowrap; vertical-align: middle; }
+  .tag.pick { background: color-mix(in srgb, var(--accent) 12%, #fff); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 30%, #fff); }
+  .tag.ctx { background: var(--bg-2); color: var(--ink-2); border: 1px solid var(--line-2); }
 
-  .next { margin-top: 18px; display: flex; align-items: center; gap: 11px; padding: 14px 16px; border: 1px dashed var(--line-2); border-radius: 12px; color: var(--ink-2); font-size: 13.5px; background: var(--bg-2); }
+  .reco { margin-top: 16px; display: flex; gap: 11px; padding: 15px 16px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 12px; background: #fff; font-size: 13.5px; color: var(--ink-2); }
+  .reco .pill { font-family: "IBM Plex Mono", monospace; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 30%, #fff); background: color-mix(in srgb, var(--accent) 8%, #fff); border-radius: 6px; padding: 3px 8px; flex: none; height: fit-content; margin-top: 1px; }
+  .reco b { color: var(--ink); font-weight: 600; }
+  .reco .mono { font-size: 12.5px; }
+
+  .tbl-note { margin-top: 12px; font-size: 12.5px; color: var(--ink-3); max-width: 52em; }
+
+  .next { margin-top: 40px; display: flex; align-items: center; gap: 11px; padding: 14px 16px; border: 1px dashed var(--line-2); border-radius: 12px; color: var(--ink-2); font-size: 13.5px; background: var(--bg-2); }
   .next .pill { font-family: "IBM Plex Mono", monospace; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); border: 1px solid var(--line-2); border-radius: 6px; padding: 3px 8px; background: #fff; flex: none; }
 
   .undernote { margin-top: 20px; font-size: 13px; color: var(--ink-3); }
@@ -138,14 +96,14 @@
   .foot-inner .c { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--ink-3); }
   .foot-inner .links a:hover { color: var(--ink); }
 
-  @media (max-width: 560px) {
-    .score { gap: 16px; }
+  @media (max-width: 640px) {
     table.q th.hide, table.q td.hide { display: none; }
+    .mlab { display: block; margin: 2px 0 0; }
   }
 
   .fade-up { opacity: 0; transform: translateY(14px); transition: opacity .6s cubic-bezier(.2,.7,.2,1), transform .6s cubic-bezier(.2,.7,.2,1); }
   .fade-up.in { opacity: 1; transform: none; }
-  @media (prefers-reduced-motion: reduce) { .fade-up { opacity: 1; transform: none; transition: none; } .dot.live { animation: none; } }
+  @media (prefers-reduced-motion: reduce) { .fade-up { opacity: 1; transform: none; transition: none; } }
 </style>
 </head>
 <body>
@@ -159,122 +117,148 @@
 const { useState, useEffect } = React;
 
 /* ===========================================================
-   EDIT ME — one model, MMLU across quantizations.
-   Each row = same model, different quant/settings.
-   mmlu = accuracy % · tps = decode tokens/sec · vram in GB
-   status: "done" | "running" | "queued"
-   running row also uses doneQ for live progress.
+   EDIT ME — data from Artificial Analysis Intelligence Index
+   v4.0 (artificialanalysis.ai), June 2026. Scores are measured
+   on full-precision models via API; quant configs are what
+   actually fits each card at full native context.
    =========================================================== */
-const BENCH = { name: "MMLU", setup: "5-shot", subjects: 57, totalQ: 14042 };
 
-/* Models grouped by GPU — the recommended models to run on each card.
-   Add a card, then list models that fit, each with its quant runs. */
-const CARDS = [
+/* Top proprietary models — context for where open weights sit. */
+const PROPRIETARY = [
+  { rank: 1,  model: "Claude Fable 5",        lab: "Anthropic", score: 64.9, ctx: "1M" },
+  { rank: 2,  model: "Claude Opus 4.8",       lab: "Anthropic", score: 61.4, ctx: "1M" },
+  { rank: 3,  model: "GPT-5.5 (xhigh)",       lab: "OpenAI",    score: 60.2, ctx: "1M" },
+  { rank: 4,  model: "GPT-5.5 (high)",        lab: "OpenAI",    score: 58.9, ctx: "1M" },
+  { rank: 5,  model: "Claude Opus 4.7",       lab: "Anthropic", score: 57.3, ctx: "1M" },
+  { rank: 6,  model: "Gemini 3.1 Pro Preview", lab: "Google",   score: 57.2, ctx: "1M" },
+  { rank: 7,  model: "GPT-5.4 (xhigh)",       lab: "OpenAI",    score: 56.8, ctx: "1M" },
+  { rank: 8,  model: "GPT-5.5 (medium)",      lab: "OpenAI",    score: 56.7, ctx: "1M" },
+  { rank: 9,  model: "Gemini 3.5 Flash (high)",   lab: "Google", score: 55.3, ctx: "1M" },
+  { rank: 10, model: "Gemini 3.5 Flash (medium)", lab: "Google", score: 54.8, ctx: "1M" },
+];
+
+/* Recommended open-weights models per GPU.
+   Best quant that fits at full native context, KV cache included.
+   pick: highlighted recommendation · tag: extra label on the row */
+const GPUS = [
   {
-    gpu: "RTX 4090",
-    vram: 24,
+    gpu: "RTX PRO 6000",
+    vram: 96,
+    kv: "INT8 KV cache, full native context",
     models: [
-      {
-        id: "google/gemma-4-26B-A4B",
-        desc: "26B params · 4B active (MoE) · bartowski GGUF",
-        runs: [
-          { quant: "Q5_K_L",   mmlu: null, tps: null, vram: 19.50, ctx: "8K", status: "pending" },
-          { quant: "Q5_K_M",   mmlu: null, tps: null, vram: 19.32, ctx: "8K", status: "pending" },
-          { quant: "Q5_K_S",   mmlu: null, tps: null, vram: 18.13, ctx: "8K", status: "pending" },
-          { quant: "Q4_K_L",   mmlu: null, tps: null, vram: 17.21, ctx: "8K", status: "pending" },
-          { quant: "Q4_K_M",   mmlu: null, tps: null, vram: 17.04, ctx: "8K", status: "pending" },
-          { quant: "Q4_1",     mmlu: null, tps: null, vram: 16.14, ctx: "8K", status: "pending" },
-          { quant: "Q4_K_S",   mmlu: null, tps: null, vram: 15.84, ctx: "8K", status: "pending" },
-          { quant: "Q4_0",     mmlu: null, tps: null, vram: 14.76, ctx: "8K", status: "pending" },
-          { quant: "IQ4_NL",   mmlu: null, tps: null, vram: 14.70, ctx: "8K", status: "pending" },
-          { quant: "IQ4_XS",   mmlu: null, tps: null, vram: 14.21, ctx: "8K", status: "pending" },
-          { quant: "Q3_K_XL",  mmlu: null, tps: null, vram: 13.38, ctx: "8K", status: "pending" },
-          { quant: "IQ3_M",    mmlu: null, tps: null, vram: 13.28, ctx: "8K", status: "pending" },
-          { quant: "Q3_K_L",   mmlu: null, tps: null, vram: 13.20, ctx: "8K", status: "pending" },
-          { quant: "Q3_K_M",   mmlu: null, tps: null, vram: 13.02, ctx: "8K", status: "pending" },
-          { quant: "Q3_K_S",   mmlu: null, tps: null, vram: 12.55, ctx: "8K", status: "pending" },
-          { quant: "IQ3_XS",   mmlu: null, tps: null, vram: 12.44, ctx: "8K", status: "pending" },
-          { quant: "IQ3_XXS",  mmlu: null, tps: null, vram: 12.16, ctx: "8K", status: "pending" },
-          { quant: "Q2_K_L",   mmlu: null, tps: null, vram: 11.13, ctx: "8K", status: "pending" },
-          { quant: "Q2_K",     mmlu: null, tps: null, vram: 10.95, ctx: "8K", status: "pending" },
-          { quant: "IQ2_M",    mmlu: null, tps: null, vram: 10.70, ctx: "8K", status: "pending" },
-          { quant: "IQ2_S",    mmlu: null, tps: null, vram: 10.23, ctx: "8K", status: "pending" },
-          { quant: "IQ2_XS",   mmlu: null, tps: null, vram: 10.13, ctx: "8K", status: "pending" },
-          { quant: "IQ2_XXS",  mmlu: null, tps: null, vram: 9.66,  ctx: "8K", status: "pending" },
-        ],
-      },
+      { model: "Qwen3.6 27B (Reasoning)",       lab: "Alibaba",  score: 45.8, quant: "FP8",    ctx: "262K", weights: 28, kvgb: 8.2,  total: 36, headroom: 60, pick: true },
+      { model: "KAT Coder Pro V2",              lab: "KwaiKAT",  score: 43.8, quant: "FP8",    ctx: "256K", weights: 30, kvgb: 8.0,  total: 38, headroom: 58 },
+      { model: "Qwen3.6 35B A3B (Reasoning)",   lab: "Alibaba",  score: 43.5, quant: "FP8",    ctx: "262K", weights: 35, kvgb: 6.2,  total: 41, headroom: 55 },
+      { model: "GLM-4.7 (Reasoning)",           lab: "Z AI",     score: 42.1, quant: "FP8",    ctx: "256K", weights: 50, kvgb: 6.4,  total: 56, headroom: 40 },
+      { model: "Qwen3.5 27B (Reasoning)",       lab: "Alibaba",  score: 42.1, quant: "FP8",    ctx: "262K", weights: 28, kvgb: 8.2,  total: 36, headroom: 60 },
+      { model: "Qwen3.5 122B A10B (Reasoning)", lab: "Alibaba",  score: 41.6, quant: "Q4_K_M", ctx: "262K", weights: 78, kvgb: 8.2,  total: 86, headroom: 10 },
+      { model: "DeepSeek V4 Flash (Reasoning)", lab: "DeepSeek", score: 46.5, quant: "Q2",     ctx: "1M",   weights: 71, kvgb: 10.4, total: 81, headroom: 15, tag: "1M ctx option" },
     ],
+    reco: <React.Fragment><b>Qwen3.6 27B @ FP8</b> + INT8 KV ≈ <span className="mono">36 GB</span> — highest AA score on the card with effectively zero quantization loss, and ~60 GB of headroom. With 96 GB, everything ≤50B runs at FP8, so quant quality loss disappears from this tier. If a workload genuinely needs more than 262K context, <b>DeepSeek V4 Flash @ Q2</b> is the only single-card path to a true 1M-token window — but expect Q2 to materially degrade reasoning and tool use, so its 46.5 full-precision score won't survive quantization.</React.Fragment>,
+    note: "Score is full-precision (API-measured); Q2 rows lose meaningful quality. Qwen 27B / 122B use hybrid attention — only attention layers store KV, which is why long-context KV stays small.",
+  },
+  {
+    gpu: "RTX 5090",
+    vram: 32,
+    kv: "K8/V4 KV cache, full native context",
+    models: [
+      { model: "Qwen3.6 27B (Reasoning)",     lab: "Alibaba", score: 45.8, quant: "Q6_K",   ctx: "262K", weights: 23,   kvgb: 6.2, total: 29, headroom: 3, pick: true },
+      { model: "KAT Coder Pro V2",            lab: "KwaiKAT", score: 43.8, quant: "Q5_K_M", ctx: "256K", weights: 21,   kvgb: 6.0, total: 27, headroom: 5 },
+      { model: "Qwen3.6 35B A3B (Reasoning)", lab: "Alibaba", score: 43.5, quant: "Q5_K_S", ctx: "262K", weights: 23.5, kvgb: 4.7, total: 28, headroom: 4 },
+      { model: "GLM-4.7 (Reasoning)",         lab: "Z AI",    score: 42.1, quant: "Q3_K_M", ctx: "256K", weights: 25,   kvgb: 4.8, total: 30, headroom: 2 },
+      { model: "Qwen3.5 27B (Reasoning)",     lab: "Alibaba", score: 42.1, quant: "Q6_K",   ctx: "262K", weights: 23,   kvgb: 6.2, total: 29, headroom: 3 },
+    ],
+    reco: <React.Fragment><b>Qwen3.6 27B @ Q6_K</b> + K8/V4 KV ≈ <span className="mono">29 GB</span> — the highest-fidelity quant of the highest-scoring model that fits at full 262K native context. If your agent loops inject heavy tool output, drop to Q5_K_M (~26 GB total, ~6 GB headroom) for comfort. GLM-4.7 offers 50B dense params, but its lower native score plus Q3 loss make it the worse pick.</React.Fragment>,
+    note: "K8/V4 KV (q8_0 K / q4_0 V) instead of full INT8 spends the savings on higher-fidelity weights. All five fit at full native context; nothing else becomes viable at Q2 on 32 GB without CPU offload.",
   },
 ];
 /* ===================== end editable data ===================== */
 
 const I = {
   bolt: <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/></svg>,
-  beaker: <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M9 3v6L4 19a1.5 1.5 0 0 0 1.3 2.2h13.4A1.5 1.5 0 0 0 20 19l-5-10V3"/><path d="M8 3h8M7 14h10"/></svg>,
-  github: <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49v-1.7c-2.78.62-3.37-1.21-3.37-1.21-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.62.07-.62 1 .07 1.53 1.06 1.53 1.06.9 1.57 2.36 1.12 2.94.85.09-.66.35-1.12.63-1.37-2.22-.26-4.56-1.14-4.56-5.06 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.7 0 0 .84-.28 2.75 1.05a9.4 9.4 0 0 1 5 0c1.91-1.33 2.75-1.05 2.75-1.05.55 1.4.2 2.44.1 2.7.64.72 1.03 1.63 1.03 2.75 0 3.93-2.34 4.8-4.57 5.05.36.32.68.94.68 1.9v2.81c0 .27.18.6.69.49A10.02 10.02 0 0 0 22 12.25C22 6.58 17.52 2 12 2z"/></svg>,
   chip: <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v2M14 3v2M10 19v2M14 19v2M3 10h2M3 14h2M19 10h2M19 14h2"/></svg>,
+  lock: <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>,
 };
 
-const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-const rand = (a, b) => a + Math.random() * (b - a);
-
-/* per-model quant comparison table */
-function CompareTable({ runs }) {
-  const scored = runs.filter(r => r.mmlu != null);
-  const bestMmlu = scored.length ? Math.max(...scored.map(r => r.mmlu)) : null;
-  const tpsd = runs.filter(r => r.tps != null);
-  const bestTps = tpsd.length ? Math.max(...tpsd.map(r => r.tps)) : null;
+function ProprietaryTable() {
+  const best = Math.max(...PROPRIETARY.map(r => r.score));
   return (
     <div className="tbl-wrap">
       <table className="q">
         <thead>
           <tr>
-            <th className="l">Quant</th>
-            <th>MMLU</th>
-            <th>Avg t/s</th>
-            <th className="hide">VRAM (est.)</th>
+            <th>#</th>
+            <th className="l">Model</th>
+            <th className="hide">Lab</th>
+            <th>AA Score</th>
             <th className="hide">Context</th>
-            <th>Status</th>
           </tr>
         </thead>
         <tbody>
-          {runs.map((r, i) => (
-            <tr key={i} className={r.status}>
-              <td className="l"><span className="quant">{r.quant}</span>{r.note && <span className="qnote">{r.note}</span>}</td>
-              <td className="num">{r.mmlu != null ? <span className={`mmlu-v ${r.mmlu === bestMmlu ? "best" : ""}`}>{r.mmlu.toFixed(1)}%</span> : <span className="dash">—</span>}</td>
-              <td className="num">{r.tps != null ? <span style={{ fontWeight: r.tps === bestTps ? 500 : 400 }}>{r.tps} t/s</span> : <span className="dash">—</span>}</td>
-              <td className="num hide">{r.vram.toFixed(2)} GB</td>
-              <td className="num hide">{r.ctx || "—"}</td>
-              <td>{r.status === "done" ? <span className="st done">✓ done</span> : <span className="st queued">pending</span>}</td>
+          {PROPRIETARY.map((r) => (
+            <tr key={r.rank}>
+              <td className="num">{r.rank}</td>
+              <td className="l"><span className="mname">{r.model}</span></td>
+              <td className="hide" style={{ color: "var(--ink-2)" }}>{r.lab}</td>
+              <td className="num"><span className={`score-v ${r.score === best ? "best" : ""}`}>{r.score.toFixed(1)}</span></td>
+              <td className="num hide">{r.ctx}</td>
             </tr>
           ))}
-          {runs.length === 0 && (
-            <tr><td colSpan="6" style={{ textAlign: "center", padding: "44px 16px", color: "var(--ink-3)", fontFamily: '"IBM Plex Mono", monospace', fontSize: 13 }}>No benchmarks logged yet.</td></tr>
-          )}
         </tbody>
       </table>
     </div>
   );
 }
 
-/* a GPU card with its recommended models */
-function CardGroup({ card }) {
+function GpuSection({ gpu }) {
   return (
-    <div className="card-group">
-      <div className="card-hd">
+    <div className="section">
+      <div className="section-hd">
         <span className="gpu-ic">{I.chip}</span>
-        <h2>{card.gpu}</h2>
-        <span className="vbadge">{card.vram} GB</span>
+        <h2>{gpu.gpu}</h2>
+        <span className="vbadge">{gpu.vram} GB</span>
       </div>
-      {card.models.map((m, i) => (
-        <div className="model-block" key={i}>
-          <div className="model-hd">
-            <span className="mname">{m.id}</span>
-            <span className="mdesc">{m.desc}</span>
-          </div>
-          <CompareTable runs={m.runs} />
-        </div>
-      ))}
+      <p className="section-sub">Best quant per model that fits at full native context ({gpu.kv}).</p>
+      <div className="tbl-wrap">
+        <table className="q">
+          <thead>
+            <tr>
+              <th className="l">Model</th>
+              <th>AA Score</th>
+              <th>Quant</th>
+              <th className="hide">Context</th>
+              <th className="hide">Weights</th>
+              <th className="hide">KV</th>
+              <th>VRAM</th>
+              <th>Headroom</th>
+            </tr>
+          </thead>
+          <tbody>
+            {gpu.models.map((m, i) => (
+              <tr key={i} className={m.pick ? "pick" : ""}>
+                <td className="l">
+                  <span className="mname">{m.model}</span>
+                  <span className="mlab">{m.lab}</span>
+                  {m.pick && <span className="tag pick">★ Pick</span>}
+                  {m.tag && <span className="tag ctx">{m.tag}</span>}
+                </td>
+                <td className="num"><span className={`score-v ${m.pick ? "best" : ""}`}>{m.score.toFixed(1)}</span></td>
+                <td><span className="quant">{m.quant}</span></td>
+                <td className="num hide">{m.ctx}</td>
+                <td className="num hide">~{m.weights} GB</td>
+                <td className="num hide">~{m.kvgb} GB</td>
+                <td className="num">~{m.total} GB</td>
+                <td className="num">{m.headroom} GB</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="reco">
+        <span className="pill">★ Run this</span>
+        <span>{gpu.reco}</span>
+      </div>
+      <p className="tbl-note">{gpu.note}</p>
     </div>
   );
 }
@@ -299,21 +283,29 @@ function App() {
 
       <main>
         <div className={`wrap fade-up ${seen ? "in" : ""}`}>
-          <span className="eyebrow">Benchmark 01 · MMLU</span>
+          <span className="eyebrow">Model Rankings · June 2026</span>
           <div className="intro">
             <h1>What to run on each card</h1>
-            <p className="lede">MMLU accuracy and decode throughput for the models worth running on each GPU. Only the configs that actually fit a card's VRAM are listed.</p>
+            <p className="lede">The recommended open-weights models for each GPU, ranked by <a href="https://artificialanalysis.ai" target="_blank" rel="noopener">Artificial Analysis</a> Intelligence Index v4.0 — only configs that actually fit the card's VRAM at full native context.</p>
           </div>
 
-          <div className="cards">
-            {CARDS.map((c, i) => <CardGroup card={c} key={i} />)}
+          <div className="section">
+            <div className="section-hd">
+              <span className="gpu-ic">{I.lock}</span>
+              <h2>Proprietary frontier</h2>
+              <span className="vbadge">API-only</span>
+            </div>
+            <p className="section-sub">For context: the closed models you can't run locally. The best open-weights model below scores 45.8 — about 70% of the frontier (Claude Fable 5 at 64.9).</p>
+            <ProprietaryTable />
           </div>
 
-          <div className="next" style={{ marginTop: 36 }}>
+          {GPUS.map((g, i) => <GpuSection gpu={g} key={i} />)}
+
+          <div className="next">
             <span className="pill">Next</span>
-            <span>More cards as I get my hands on them — and agentic benchmarks (tool use, multi-step tasks) once the MMLU sweep is complete.</span>
+            <span>More cards as I get my hands on them — and local MMLU + agentic benchmarks to verify how much each quant actually loses versus the API-measured scores above.</span>
           </div>
-          <p className="undernote">Each model is scored with {BENCH.name} ({BENCH.setup}, {BENCH.subjects} subjects) at every quantization that fits the card.</p>
+          <p className="undernote">Scores: <a href="https://artificialanalysis.ai" target="_blank" rel="noopener">Artificial Analysis</a> Intelligence Index v4.0 (10 evals incl. GDPval-AA, Terminal-Bench Hard, SciCode, GPQA Diamond, Humanity's Last Exam). VRAM figures include weights + KV cache at the listed context. Last updated 2026-06-10.</p>
         </div>
       </main>
 
