@@ -71,6 +71,7 @@
   table.q tr:last-child td { border-bottom: none; }
   table.q tbody tr.pick { background: color-mix(in srgb, var(--accent) 6%, #fff); }
   td.num { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; }
+  td.lab { color: var(--ink-2); }
   .mname { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; font-weight: 500; color: var(--ink); }
   .mlab { font-size: 12px; color: var(--ink-3); margin-left: 7px; }
   .quant { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; font-weight: 500; }
@@ -78,7 +79,6 @@
   .score-v.best { color: var(--accent); }
   .tag { font-family: "IBM Plex Mono", monospace; font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase; border-radius: 5px; padding: 2px 7px; margin-left: 8px; white-space: nowrap; vertical-align: middle; }
   .tag.pick { background: color-mix(in srgb, var(--accent) 12%, #fff); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 30%, #fff); }
-  .tag.ctx { background: var(--bg-2); color: var(--ink-2); border: 1px solid var(--line-2); }
 
   .reco { margin-top: 16px; display: flex; gap: 11px; padding: 15px 16px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 12px; background: #fff; font-size: 13.5px; color: var(--ink-2); }
   .reco .pill { font-family: "IBM Plex Mono", monospace; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 30%, #fff); background: color-mix(in srgb, var(--accent) 8%, #fff); border-radius: 6px; padding: 3px 8px; flex: none; height: fit-content; margin-top: 1px; }
@@ -100,285 +100,444 @@
     table.q th.hide, table.q td.hide { display: none; }
     .mlab { display: block; margin: 2px 0 0; }
   }
-
-  .fade-up { opacity: 0; transform: translateY(14px); transition: opacity .6s cubic-bezier(.2,.7,.2,1), transform .6s cubic-bezier(.2,.7,.2,1); }
-  .fade-up.in { opacity: 1; transform: none; }
-  @media (prefers-reduced-motion: reduce) { .fade-up { opacity: 1; transform: none; transition: none; } }
 </style>
 </head>
 <body>
-<div id="root"></div>
+<header class="nav" id="nav">
+  <div class="wrap nav-inner">
+    <a class="logo" href="index.html"><span class="bolt">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/></svg>
+    </span> LLMJob</a>
+    <a class="ghl" href="index.html">← Home</a>
+  </div>
+</header>
 
-<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
-
-<script type="text/babel" data-presets="react">
-const { useState, useEffect } = React;
-
-/* ===========================================================
-   EDIT ME — data from Artificial Analysis Intelligence Index
-   v4.0 (artificialanalysis.ai), June 2026. Scores are measured
-   on full-precision models via API; quant configs are what
-   actually fits each card at full native context.
-   =========================================================== */
-
-/* Top proprietary models — context for where open weights sit. */
-const PROPRIETARY = [
-  { rank: 1,  model: "Claude Fable 5",        lab: "Anthropic", score: 64.9, ctx: "1M" },
-  { rank: 2,  model: "Claude Opus 4.8",       lab: "Anthropic", score: 61.4, ctx: "1M" },
-  { rank: 3,  model: "GPT-5.5 (xhigh)",       lab: "OpenAI",    score: 60.2, ctx: "1M" },
-  { rank: 4,  model: "GPT-5.5 (high)",        lab: "OpenAI",    score: 58.9, ctx: "1M" },
-  { rank: 5,  model: "Claude Opus 4.7",       lab: "Anthropic", score: 57.3, ctx: "1M" },
-  { rank: 6,  model: "Gemini 3.1 Pro Preview", lab: "Google",   score: 57.2, ctx: "1M" },
-  { rank: 7,  model: "GPT-5.4 (xhigh)",       lab: "OpenAI",    score: 56.8, ctx: "1M" },
-  { rank: 8,  model: "GPT-5.5 (medium)",      lab: "OpenAI",    score: 56.7, ctx: "1M" },
-  { rank: 9,  model: "Gemini 3.5 Flash (high)",   lab: "Google", score: 55.3, ctx: "1M" },
-  { rank: 10, model: "Gemini 3.5 Flash (medium)", lab: "Google", score: 54.8, ctx: "1M" },
-];
-
-/* Recommended open-weights models per GPU.
-   Best quant that fits at full native context, KV cache included.
-   pick: highlighted recommendation · tag: extra label on the row */
-const GPUS = [
-  {
-    gpu: "RTX PRO 6000",
-    vram: 96,
-    kv: "INT8 KV cache, full native context",
-    models: [
-      { model: "Qwen3.6 27B (Reasoning)",       lab: "Alibaba",  score: 45.8, quant: "FP8",    ctx: "262K", weights: 28, kvgb: 8.2,  total: 36, pick: true },
-      { model: "KAT Coder Pro V2",              lab: "KwaiKAT",  score: 43.8, quant: "FP8",    ctx: "256K", weights: 30, kvgb: 8.0,  total: 38 },
-      { model: "Qwen3.6 35B A3B (Reasoning)",   lab: "Alibaba",  score: 43.5, quant: "FP8",    ctx: "262K", weights: 35, kvgb: 6.2,  total: 41 },
-      { model: "GLM-4.7 (Reasoning)",           lab: "Z AI",     score: 42.1, quant: "FP8",    ctx: "256K", weights: 50, kvgb: 6.4,  total: 56 },
-      { model: "Qwen3.5 27B (Reasoning)",       lab: "Alibaba",  score: 42.1, quant: "FP8",    ctx: "262K", weights: 28, kvgb: 8.2,  total: 36 },
-      { model: "Qwen3.5 122B A10B (Reasoning)", lab: "Alibaba",  score: 41.6, quant: "Q4_K_M", ctx: "262K", weights: 78, kvgb: 8.2,  total: 86 },
-    ],
-    /* Models that only fit at 2-bit (INT4 KV). Scores are full-precision —
-       Q2 materially degrades reasoning/tool use, so this tier is for
-       context windows beyond 262K, not quality. */
-    q2: [
-      { model: "MiniMax-M2.7",                       lab: "MiniMax",  score: 49.6, nctx: "200K", octx: "200K", weights: 57, kvgb: 6.3,  total: 63 },
-      { model: "MiMo-V2.5",                          lab: "Xiaomi",   score: 49,   nctx: "1M",   octx: "512K", weights: 78, kvgb: 14.1, total: 92 },
-      { model: "DeepSeek V4 Flash (Reasoning, Max)", lab: "DeepSeek", score: 46.5, nctx: "1M",   octx: "1M",   weights: 71, kvgb: 10.4, total: 81, pick: true, tag: "1M ctx" },
-      { model: "DeepSeek V4 Flash (Reasoning, High)", lab: "DeepSeek", score: 46,  nctx: "1M",   octx: "1M",   weights: 71, kvgb: 10.4, total: 81 },
-      { model: "Step 3.7 Flash",                     lab: "StepFun",  score: 42.6, nctx: "256K", octx: "256K", weights: 49, kvgb: 1.6,  total: 51 },
-      { model: "Hy3-preview (Reasoning)",            lab: "Tencent",  score: 41.9, nctx: "256K", octx: "256K", weights: 74, kvgb: 7.0,  total: 81 },
-      { model: "MiniMax-M2.5",                       lab: "MiniMax",  score: 41.9, nctx: "200K", octx: "200K", weights: 57, kvgb: 6.3,  total: 63 },
-      { model: "MiMo-V2-Flash (Feb 2026)",           lab: "Xiaomi",   score: 41.5, nctx: "256K", octx: "256K", weights: 77, kvgb: 7.0,  total: 84 },
-      { model: "MiniMax-M2.1",                       lab: "MiniMax",  score: 39.4, nctx: "200K", octx: "200K", weights: 57, kvgb: 6.3,  total: 63 },
-    ],
-    q2note: "Scores are full-precision (API-measured) — Q2 quantization materially degrades tool use and reasoning, often enough that a Q2 of a larger model underperforms a Q4 of a smaller one. After Q2 loss, none of these reliably beats the FP8 ★ pick above on intelligence — use this tier only when a workload needs more than 262K context. DeepSeek V4 Flash is the headline: the only single-card path to a genuine 1M-token window (MLA compresses KV aggressively). MiMo-V2.5 is VRAM-capped at ~512K; the MiniMax models are capped by their 200K native window. Step 3.7 Flash also fits at Q3 (~74 GB) — the best quality-per-GB option in this tier.",
-    reco: <React.Fragment><b>Qwen3.6 27B @ FP8</b> + INT8 KV ≈ <span className="mono">36 GB</span> — highest AA score on the card with effectively zero quantization loss. With 96 GB, everything ≤50B runs at FP8, so quant quality loss disappears from this tier. Throughput alternative: <b>Qwen3.5 122B A10B @ Q4_K_M</b> — only 10B active params per token makes it ~2–3× faster in long agent loops, at a lower score plus Q4 loss.</React.Fragment>,
-    note: "Score is full-precision (API-measured); Q2 rows lose meaningful quality. Qwen 27B / 122B use hybrid attention — only attention layers store KV, which is why long-context KV stays small.",
-  },
-  {
-    gpu: "RTX 5090",
-    vram: 32,
-    kv: "K8/V4 KV cache, full native context",
-    models: [
-      { model: "Qwen3.6 27B (Reasoning)",     lab: "Alibaba", score: 45.8, quant: "Q6_K",   ctx: "262K", weights: 23,   kvgb: 6.2, total: 29, pick: true },
-      { model: "KAT Coder Pro V2",            lab: "KwaiKAT", score: 43.8, quant: "Q5_K_M", ctx: "256K", weights: 21,   kvgb: 6.0, total: 27 },
-      { model: "Qwen3.6 35B A3B (Reasoning)", lab: "Alibaba", score: 43.5, quant: "Q5_K_S", ctx: "262K", weights: 23.5, kvgb: 4.7, total: 28 },
-      { model: "GLM-4.7 (Reasoning)",         lab: "Z AI",    score: 42.1, quant: "Q3_K_M", ctx: "256K", weights: 25,   kvgb: 4.8, total: 30 },
-      { model: "Qwen3.5 27B (Reasoning)",     lab: "Alibaba", score: 42.1, quant: "Q6_K",   ctx: "262K", weights: 23,   kvgb: 6.2, total: 29 },
-    ],
-    reco: <React.Fragment><b>Qwen3.6 27B @ Q6_K</b> + K8/V4 KV ≈ <span className="mono">29 GB</span> — the highest-fidelity quant of the highest-scoring model that fits at full 262K native context. If your agent loops inject heavy tool output, drop to Q5_K_M (~26 GB total) for comfort. GLM-4.7 offers 50B dense params, but its lower native score plus Q3 loss make it the worse pick.</React.Fragment>,
-    note: "K8/V4 KV (q8_0 K / q4_0 V) instead of full INT8 spends the savings on higher-fidelity weights. All five fit at full native context; nothing else becomes viable at Q2 on 32 GB without CPU offload.",
-  },
-];
-/* ===================== end editable data ===================== */
-
-/* Leading proprietary score — all "% frontier" columns are relative to this. */
-const FRONTIER = Math.max(...PROPRIETARY.map(r => r.score));
-const pctFrontier = (score) => Math.round((score / FRONTIER) * 100) + "%";
-
-const I = {
-  bolt: <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/></svg>,
-  chip: <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v2M14 3v2M10 19v2M14 19v2M3 10h2M3 14h2M19 10h2M19 14h2"/></svg>,
-  lock: <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>,
-};
-
-function ProprietaryTable() {
-  const best = Math.max(...PROPRIETARY.map(r => r.score));
-  return (
-    <div className="tbl-wrap">
-      <table className="q">
-        <thead>
-          <tr>
-            <th>#</th>
-            <th className="l">Model</th>
-            <th className="hide">Lab</th>
-            <th>AA Score</th>
-            <th>% Frontier</th>
-            <th className="hide">Context</th>
-          </tr>
-        </thead>
-        <tbody>
-          {PROPRIETARY.map((r) => (
-            <tr key={r.rank}>
-              <td className="num">{r.rank}</td>
-              <td className="l"><span className="mname">{r.model}</span></td>
-              <td className="hide" style={{ color: "var(--ink-2)" }}>{r.lab}</td>
-              <td className="num"><span className={`score-v ${r.score === best ? "best" : ""}`}>{r.score.toFixed(1)}</span></td>
-              <td className="num">{pctFrontier(r.score)}</td>
-              <td className="num hide">{r.ctx}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+<main>
+  <div class="wrap">
+    <span class="eyebrow">Model Rankings · June 2026</span>
+    <div class="intro">
+      <h1>What to run on each card</h1>
+      <p class="lede">The recommended open-weights models for each GPU, ranked by <a href="https://artificialanalysis.ai" target="_blank" rel="noopener">Artificial Analysis</a> Intelligence Index v4.0 — only configs that actually fit the card's VRAM at full native context.</p>
     </div>
-  );
-}
 
-function GpuSection({ gpu }) {
-  return (
-    <div className="section">
-      <div className="section-hd">
-        <span className="gpu-ic">{I.chip}</span>
-        <h2>{gpu.gpu}</h2>
-        <span className="vbadge">{gpu.vram} GB</span>
+    <!-- RTX PRO 6000 -->
+    <div class="section">
+      <div class="section-hd">
+        <span class="gpu-ic">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v2M14 3v2M10 19v2M14 19v2M3 10h2M3 14h2M19 10h2M19 14h2"/></svg>
+        </span>
+        <h2>RTX PRO 6000</h2>
+        <span class="vbadge">96 GB</span>
       </div>
-      <p className="section-sub">Best quant per model that fits at full native context ({gpu.kv}).</p>
-      <div className="tbl-wrap">
-        <table className="q">
+      <p class="section-sub">Best quant per model that fits at full native context (INT8 KV cache, full native context).</p>
+      <div class="tbl-wrap">
+        <table class="q">
           <thead>
             <tr>
-              <th className="l">Model</th>
+              <th class="l">Model</th>
               <th>AA Score</th>
               <th>% Frontier</th>
               <th>Quant</th>
-              <th className="hide">Context</th>
-              <th className="hide">Weights</th>
-              <th className="hide">KV</th>
+              <th class="hide">Context</th>
+              <th class="hide">Weights</th>
+              <th class="hide">KV</th>
               <th>VRAM</th>
             </tr>
           </thead>
           <tbody>
-            {gpu.models.map((m, i) => (
-              <tr key={i} className={m.pick ? "pick" : ""}>
-                <td className="l">
-                  <span className="mname">{m.model}</span>
-                  <span className="mlab">{m.lab}</span>
-                  {m.pick && <span className="tag pick">★ Pick</span>}
-                  {m.tag && <span className="tag ctx">{m.tag}</span>}
-                </td>
-                <td className="num"><span className={`score-v ${m.pick ? "best" : ""}`}>{m.score.toFixed(1)}</span></td>
-                <td className="num">{pctFrontier(m.score)}</td>
-                <td><span className="quant">{m.quant}</span></td>
-                <td className="num hide">{m.ctx}</td>
-                <td className="num hide">~{m.weights} GB</td>
-                <td className="num hide">~{m.kvgb} GB</td>
-                <td className="num">~{m.total} GB</td>
-              </tr>
-            ))}
+            <tr class="pick">
+              <td class="l"><span class="mname">Qwen3.6 27B (Reasoning)</span><span class="mlab">Alibaba</span><span class="tag pick">★ Pick</span></td>
+              <td class="num"><span class="score-v best">45.8</span></td>
+              <td class="num">71%</td>
+              <td><span class="quant">FP8</span></td>
+              <td class="num hide">262K</td>
+              <td class="num hide">~28 GB</td>
+              <td class="num hide">~8.2 GB</td>
+              <td class="num">~36 GB</td>
+            </tr>
+            <tr>
+              <td class="l"><span class="mname">KAT Coder Pro V2</span><span class="mlab">KwaiKAT</span></td>
+              <td class="num"><span class="score-v">43.8</span></td>
+              <td class="num">67%</td>
+              <td><span class="quant">FP8</span></td>
+              <td class="num hide">256K</td>
+              <td class="num hide">~30 GB</td>
+              <td class="num hide">~8 GB</td>
+              <td class="num">~38 GB</td>
+            </tr>
+            <tr>
+              <td class="l"><span class="mname">Qwen3.6 35B A3B (Reasoning)</span><span class="mlab">Alibaba</span></td>
+              <td class="num"><span class="score-v">43.5</span></td>
+              <td class="num">67%</td>
+              <td><span class="quant">FP8</span></td>
+              <td class="num hide">262K</td>
+              <td class="num hide">~35 GB</td>
+              <td class="num hide">~6.2 GB</td>
+              <td class="num">~41 GB</td>
+            </tr>
+            <tr>
+              <td class="l"><span class="mname">GLM-4.7 (Reasoning)</span><span class="mlab">Z AI</span></td>
+              <td class="num"><span class="score-v">42.1</span></td>
+              <td class="num">65%</td>
+              <td><span class="quant">FP8</span></td>
+              <td class="num hide">256K</td>
+              <td class="num hide">~50 GB</td>
+              <td class="num hide">~6.4 GB</td>
+              <td class="num">~56 GB</td>
+            </tr>
+            <tr>
+              <td class="l"><span class="mname">Qwen3.5 27B (Reasoning)</span><span class="mlab">Alibaba</span></td>
+              <td class="num"><span class="score-v">42.1</span></td>
+              <td class="num">65%</td>
+              <td><span class="quant">FP8</span></td>
+              <td class="num hide">262K</td>
+              <td class="num hide">~28 GB</td>
+              <td class="num hide">~8.2 GB</td>
+              <td class="num">~36 GB</td>
+            </tr>
+            <tr>
+              <td class="l"><span class="mname">Qwen3.5 122B A10B (Reasoning)</span><span class="mlab">Alibaba</span></td>
+              <td class="num"><span class="score-v">41.6</span></td>
+              <td class="num">64%</td>
+              <td><span class="quant">Q4_K_M</span></td>
+              <td class="num hide">262K</td>
+              <td class="num hide">~78 GB</td>
+              <td class="num hide">~8.2 GB</td>
+              <td class="num">~86 GB</td>
+            </tr>
           </tbody>
         </table>
       </div>
-      <div className="reco">
-        <span className="pill">★ Run this</span>
-        <span>{gpu.reco}</span>
+      <div class="reco">
+        <span class="pill">★ Run this</span>
+        <span><b>Qwen3.6 27B @ FP8</b> + INT8 KV ≈ <span class="mono">36 GB</span> — highest AA score on the card with effectively zero quantization loss. With 96 GB, everything ≤50B runs at FP8, so quant quality loss disappears from this tier. Throughput alternative: <b>Qwen3.5 122B A10B @ Q4_K_M</b> — only 10B active params per token makes it ~2–3× faster in long agent loops, at a lower score plus Q4 loss.</span>
       </div>
-      <p className="tbl-note">{gpu.note}</p>
-      {gpu.q2 && (
-        <React.Fragment>
-          <div className="subtbl-hd">
-            <h3>Fits at Q2 only</h3>
-            <span className="note">2-bit weights · INT4 KV cache</span>
-          </div>
-          <div className="tbl-wrap">
-            <table className="q">
-              <thead>
-                <tr>
-                  <th className="l">Model</th>
-                  <th>AA Score</th>
-                  <th>% Frontier</th>
-                  <th className="hide">Native ctx</th>
-                  <th>Op ctx</th>
-                  <th className="hide">Weights</th>
-                  <th className="hide">KV</th>
-                  <th>VRAM</th>
-                </tr>
-              </thead>
-              <tbody>
-                {gpu.q2.map((m, i) => (
-                  <tr key={i} className={m.pick ? "pick" : ""}>
-                    <td className="l">
-                      <span className="mname">{m.model}</span>
-                      <span className="mlab">{m.lab}</span>
-                      {m.pick && <span className="tag pick">★ {m.tag}</span>}
-                    </td>
-                    <td className="num"><span className={`score-v ${m.pick ? "best" : ""}`}>{m.score.toFixed(1)}</span></td>
-                    <td className="num">{pctFrontier(m.score)}</td>
-                    <td className="num hide">{m.nctx}</td>
-                    <td className="num">{m.octx}</td>
-                    <td className="num hide">~{m.weights} GB</td>
-                    <td className="num hide">~{m.kvgb} GB</td>
-                    <td className="num">~{m.total} GB</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <p className="tbl-note">{gpu.q2note}</p>
-        </React.Fragment>
-      )}
+      <p class="tbl-note">Score is full-precision (API-measured); Q2 rows lose meaningful quality. Qwen 27B / 122B use hybrid attention — only attention layers store KV, which is why long-context KV stays small.</p>
+
+      <div class="subtbl-hd">
+        <h3>Fits at Q2 only</h3>
+        <span class="note">2-bit weights · INT4 KV cache</span>
+      </div>
+      <div class="tbl-wrap">
+        <table class="q">
+          <thead>
+            <tr>
+              <th class="l">Model</th>
+              <th>AA Score</th>
+              <th>% Frontier</th>
+              <th class="hide">Native ctx</th>
+              <th>Op ctx</th>
+              <th class="hide">Weights</th>
+              <th class="hide">KV</th>
+              <th>VRAM</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="l"><span class="mname">MiniMax-M2.7</span><span class="mlab">MiniMax</span></td>
+              <td class="num"><span class="score-v">49.6</span></td>
+              <td class="num">76%</td>
+              <td class="num hide">200K</td>
+              <td class="num">200K</td>
+              <td class="num hide">~57 GB</td>
+              <td class="num hide">~6.3 GB</td>
+              <td class="num">~63 GB</td>
+            </tr>
+            <tr>
+              <td class="l"><span class="mname">MiMo-V2.5</span><span class="mlab">Xiaomi</span></td>
+              <td class="num"><span class="score-v">49.0</span></td>
+              <td class="num">76%</td>
+              <td class="num hide">1M</td>
+              <td class="num">512K</td>
+              <td class="num hide">~78 GB</td>
+              <td class="num hide">~14.1 GB</td>
+              <td class="num">~92 GB</td>
+            </tr>
+            <tr class="pick">
+              <td class="l"><span class="mname">DeepSeek V4 Flash (Reasoning, Max)</span><span class="mlab">DeepSeek</span><span class="tag pick">★ 1M ctx</span></td>
+              <td class="num"><span class="score-v best">46.5</span></td>
+              <td class="num">72%</td>
+              <td class="num hide">1M</td>
+              <td class="num">1M</td>
+              <td class="num hide">~71 GB</td>
+              <td class="num hide">~10.4 GB</td>
+              <td class="num">~81 GB</td>
+            </tr>
+            <tr>
+              <td class="l"><span class="mname">DeepSeek V4 Flash (Reasoning, High)</span><span class="mlab">DeepSeek</span></td>
+              <td class="num"><span class="score-v">46.0</span></td>
+              <td class="num">71%</td>
+              <td class="num hide">1M</td>
+              <td class="num">1M</td>
+              <td class="num hide">~71 GB</td>
+              <td class="num hide">~10.4 GB</td>
+              <td class="num">~81 GB</td>
+            </tr>
+            <tr>
+              <td class="l"><span class="mname">Step 3.7 Flash</span><span class="mlab">StepFun</span></td>
+              <td class="num"><span class="score-v">42.6</span></td>
+              <td class="num">66%</td>
+              <td class="num hide">256K</td>
+              <td class="num">256K</td>
+              <td class="num hide">~49 GB</td>
+              <td class="num hide">~1.6 GB</td>
+              <td class="num">~51 GB</td>
+            </tr>
+            <tr>
+              <td class="l"><span class="mname">Hy3-preview (Reasoning)</span><span class="mlab">Tencent</span></td>
+              <td class="num"><span class="score-v">41.9</span></td>
+              <td class="num">65%</td>
+              <td class="num hide">256K</td>
+              <td class="num">256K</td>
+              <td class="num hide">~74 GB</td>
+              <td class="num hide">~7 GB</td>
+              <td class="num">~81 GB</td>
+            </tr>
+            <tr>
+              <td class="l"><span class="mname">MiniMax-M2.5</span><span class="mlab">MiniMax</span></td>
+              <td class="num"><span class="score-v">41.9</span></td>
+              <td class="num">65%</td>
+              <td class="num hide">200K</td>
+              <td class="num">200K</td>
+              <td class="num hide">~57 GB</td>
+              <td class="num hide">~6.3 GB</td>
+              <td class="num">~63 GB</td>
+            </tr>
+            <tr>
+              <td class="l"><span class="mname">MiMo-V2-Flash (Feb 2026)</span><span class="mlab">Xiaomi</span></td>
+              <td class="num"><span class="score-v">41.5</span></td>
+              <td class="num">64%</td>
+              <td class="num hide">256K</td>
+              <td class="num">256K</td>
+              <td class="num hide">~77 GB</td>
+              <td class="num hide">~7 GB</td>
+              <td class="num">~84 GB</td>
+            </tr>
+            <tr>
+              <td class="l"><span class="mname">MiniMax-M2.1</span><span class="mlab">MiniMax</span></td>
+              <td class="num"><span class="score-v">39.4</span></td>
+              <td class="num">61%</td>
+              <td class="num hide">200K</td>
+              <td class="num">200K</td>
+              <td class="num hide">~57 GB</td>
+              <td class="num hide">~6.3 GB</td>
+              <td class="num">~63 GB</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="tbl-note">Scores are full-precision (API-measured) — Q2 quantization materially degrades tool use and reasoning, often enough that a Q2 of a larger model underperforms a Q4 of a smaller one. After Q2 loss, none of these reliably beats the FP8 ★ pick above on intelligence — use this tier only when a workload needs more than 262K context. DeepSeek V4 Flash is the headline: the only single-card path to a genuine 1M-token window (MLA compresses KV aggressively). MiMo-V2.5 is VRAM-capped at ~512K; the MiniMax models are capped by their 200K native window. Step 3.7 Flash also fits at Q3 (~74 GB) — the best quality-per-GB option in this tier.</p>
     </div>
-  );
-}
 
-function App() {
-  const [seen, setSeen] = useState(true);
-  const [scrolled, setScrolled] = useState(false);
-  useEffect(() => { setSeen(true); }, []);
-  useEffect(() => {
-    const onS = () => setScrolled(window.scrollY > 8);
-    window.addEventListener("scroll", onS); onS();
-    return () => window.removeEventListener("scroll", onS);
-  }, []);
-  return (
-    <React.Fragment>
-      <header className={`nav ${scrolled ? "scrolled" : ""}`}>
-        <div className="wrap nav-inner">
-          <a className="logo" href="index.html"><span className="bolt">{I.bolt}</span> LLMJob</a>
-          <a className="ghl" href="index.html">← Home</a>
-        </div>
-      </header>
+    <!-- RTX 5090 -->
+    <div class="section">
+      <div class="section-hd">
+        <span class="gpu-ic">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v2M14 3v2M10 19v2M14 19v2M3 10h2M3 14h2M19 10h2M19 14h2"/></svg>
+        </span>
+        <h2>RTX 5090</h2>
+        <span class="vbadge">32 GB</span>
+      </div>
+      <p class="section-sub">Best quant per model that fits at full native context (K8/V4 KV cache, full native context).</p>
+      <div class="tbl-wrap">
+        <table class="q">
+          <thead>
+            <tr>
+              <th class="l">Model</th>
+              <th>AA Score</th>
+              <th>% Frontier</th>
+              <th>Quant</th>
+              <th class="hide">Context</th>
+              <th class="hide">Weights</th>
+              <th class="hide">KV</th>
+              <th>VRAM</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="pick">
+              <td class="l"><span class="mname">Qwen3.6 27B (Reasoning)</span><span class="mlab">Alibaba</span><span class="tag pick">★ Pick</span></td>
+              <td class="num"><span class="score-v best">45.8</span></td>
+              <td class="num">71%</td>
+              <td><span class="quant">Q6_K</span></td>
+              <td class="num hide">262K</td>
+              <td class="num hide">~23 GB</td>
+              <td class="num hide">~6.2 GB</td>
+              <td class="num">~29 GB</td>
+            </tr>
+            <tr>
+              <td class="l"><span class="mname">KAT Coder Pro V2</span><span class="mlab">KwaiKAT</span></td>
+              <td class="num"><span class="score-v">43.8</span></td>
+              <td class="num">67%</td>
+              <td><span class="quant">Q5_K_M</span></td>
+              <td class="num hide">256K</td>
+              <td class="num hide">~21 GB</td>
+              <td class="num hide">~6 GB</td>
+              <td class="num">~27 GB</td>
+            </tr>
+            <tr>
+              <td class="l"><span class="mname">Qwen3.6 35B A3B (Reasoning)</span><span class="mlab">Alibaba</span></td>
+              <td class="num"><span class="score-v">43.5</span></td>
+              <td class="num">67%</td>
+              <td><span class="quant">Q5_K_S</span></td>
+              <td class="num hide">262K</td>
+              <td class="num hide">~23.5 GB</td>
+              <td class="num hide">~4.7 GB</td>
+              <td class="num">~28 GB</td>
+            </tr>
+            <tr>
+              <td class="l"><span class="mname">GLM-4.7 (Reasoning)</span><span class="mlab">Z AI</span></td>
+              <td class="num"><span class="score-v">42.1</span></td>
+              <td class="num">65%</td>
+              <td><span class="quant">Q3_K_M</span></td>
+              <td class="num hide">256K</td>
+              <td class="num hide">~25 GB</td>
+              <td class="num hide">~4.8 GB</td>
+              <td class="num">~30 GB</td>
+            </tr>
+            <tr>
+              <td class="l"><span class="mname">Qwen3.5 27B (Reasoning)</span><span class="mlab">Alibaba</span></td>
+              <td class="num"><span class="score-v">42.1</span></td>
+              <td class="num">65%</td>
+              <td><span class="quant">Q6_K</span></td>
+              <td class="num hide">262K</td>
+              <td class="num hide">~23 GB</td>
+              <td class="num hide">~6.2 GB</td>
+              <td class="num">~29 GB</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="reco">
+        <span class="pill">★ Run this</span>
+        <span><b>Qwen3.6 27B @ Q6_K</b> + K8/V4 KV ≈ <span class="mono">29 GB</span> — the highest-fidelity quant of the highest-scoring model that fits at full 262K native context. If your agent loops inject heavy tool output, drop to Q5_K_M (~26 GB total) for comfort. GLM-4.7 offers 50B dense params, but its lower native score plus Q3 loss make it the worse pick.</span>
+      </div>
+      <p class="tbl-note">K8/V4 KV (q8_0 K / q4_0 V) instead of full INT8 spends the savings on higher-fidelity weights. All five fit at full native context; nothing else becomes viable at Q2 on 32 GB without CPU offload.</p>
+    </div>
 
-      <main>
-        <div className={`wrap fade-up ${seen ? "in" : ""}`}>
-          <span className="eyebrow">Model Rankings · June 2026</span>
-          <div className="intro">
-            <h1>What to run on each card</h1>
-            <p className="lede">The recommended open-weights models for each GPU, ranked by <a href="https://artificialanalysis.ai" target="_blank" rel="noopener">Artificial Analysis</a> Intelligence Index v4.0 — only configs that actually fit the card's VRAM at full native context.</p>
-          </div>
+    <!-- PROPRIETARY FRONTIER -->
+    <div class="section">
+      <div class="section-hd">
+        <span class="gpu-ic">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+        </span>
+        <h2>Proprietary frontier</h2>
+        <span class="vbadge">API-only</span>
+      </div>
+      <p class="section-sub">For context: the closed models you can't run locally. The % frontier columns above are relative to Claude Fable 5 at 64.9 — the best open-weights pick reaches about 71% of it.</p>
+      <div class="tbl-wrap">
+        <table class="q">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th class="l">Model</th>
+              <th class="hide">Lab</th>
+              <th>AA Score</th>
+              <th>% Frontier</th>
+              <th class="hide">Context</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="num">1</td>
+              <td class="l"><span class="mname">Claude Fable 5</span></td>
+              <td class="hide lab">Anthropic</td>
+              <td class="num"><span class="score-v best">64.9</span></td>
+              <td class="num">100%</td>
+              <td class="num hide">1M</td>
+            </tr>
+            <tr>
+              <td class="num">2</td>
+              <td class="l"><span class="mname">Claude Opus 4.8</span></td>
+              <td class="hide lab">Anthropic</td>
+              <td class="num"><span class="score-v">61.4</span></td>
+              <td class="num">95%</td>
+              <td class="num hide">1M</td>
+            </tr>
+            <tr>
+              <td class="num">3</td>
+              <td class="l"><span class="mname">GPT-5.5 (xhigh)</span></td>
+              <td class="hide lab">OpenAI</td>
+              <td class="num"><span class="score-v">60.2</span></td>
+              <td class="num">93%</td>
+              <td class="num hide">1M</td>
+            </tr>
+            <tr>
+              <td class="num">4</td>
+              <td class="l"><span class="mname">GPT-5.5 (high)</span></td>
+              <td class="hide lab">OpenAI</td>
+              <td class="num"><span class="score-v">58.9</span></td>
+              <td class="num">91%</td>
+              <td class="num hide">1M</td>
+            </tr>
+            <tr>
+              <td class="num">5</td>
+              <td class="l"><span class="mname">Claude Opus 4.7</span></td>
+              <td class="hide lab">Anthropic</td>
+              <td class="num"><span class="score-v">57.3</span></td>
+              <td class="num">88%</td>
+              <td class="num hide">1M</td>
+            </tr>
+            <tr>
+              <td class="num">6</td>
+              <td class="l"><span class="mname">Gemini 3.1 Pro Preview</span></td>
+              <td class="hide lab">Google</td>
+              <td class="num"><span class="score-v">57.2</span></td>
+              <td class="num">88%</td>
+              <td class="num hide">1M</td>
+            </tr>
+            <tr>
+              <td class="num">7</td>
+              <td class="l"><span class="mname">GPT-5.4 (xhigh)</span></td>
+              <td class="hide lab">OpenAI</td>
+              <td class="num"><span class="score-v">56.8</span></td>
+              <td class="num">88%</td>
+              <td class="num hide">1M</td>
+            </tr>
+            <tr>
+              <td class="num">8</td>
+              <td class="l"><span class="mname">GPT-5.5 (medium)</span></td>
+              <td class="hide lab">OpenAI</td>
+              <td class="num"><span class="score-v">56.7</span></td>
+              <td class="num">87%</td>
+              <td class="num hide">1M</td>
+            </tr>
+            <tr>
+              <td class="num">9</td>
+              <td class="l"><span class="mname">Gemini 3.5 Flash (high)</span></td>
+              <td class="hide lab">Google</td>
+              <td class="num"><span class="score-v">55.3</span></td>
+              <td class="num">85%</td>
+              <td class="num hide">1M</td>
+            </tr>
+            <tr>
+              <td class="num">10</td>
+              <td class="l"><span class="mname">Gemini 3.5 Flash (medium)</span></td>
+              <td class="hide lab">Google</td>
+              <td class="num"><span class="score-v">54.8</span></td>
+              <td class="num">84%</td>
+              <td class="num hide">1M</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
 
-          {GPUS.map((g, i) => <GpuSection gpu={g} key={i} />)}
+    <p class="undernote">Scores: <a href="https://artificialanalysis.ai" target="_blank" rel="noopener">Artificial Analysis</a> Intelligence Index v4.0 (10 evals incl. GDPval-AA, Terminal-Bench Hard, SciCode, GPQA Diamond, Humanity's Last Exam). VRAM figures include weights + KV cache at the listed context. Last updated 2026-06-10.</p>
+  </div>
+</main>
 
-          <div className="section">
-            <div className="section-hd">
-              <span className="gpu-ic">{I.lock}</span>
-              <h2>Proprietary frontier</h2>
-              <span className="vbadge">API-only</span>
-            </div>
-            <p className="section-sub">For context: the closed models you can't run locally. The % frontier columns above are relative to Claude Fable 5 at {FRONTIER} — the best open-weights pick reaches about 71% of it.</p>
-            <ProprietaryTable />
-          </div>
+<footer>
+  <div class="foot-inner">
+    <div class="c">© 2026 LLMJob</div>
+    <div class="links"><a class="ghl" href="index.html" style="font-size:13.5px;">← Home</a></div>
+  </div>
+</footer>
 
-          <p className="undernote">Scores: <a href="https://artificialanalysis.ai" target="_blank" rel="noopener">Artificial Analysis</a> Intelligence Index v4.0 (10 evals incl. GDPval-AA, Terminal-Bench Hard, SciCode, GPQA Diamond, Humanity's Last Exam). VRAM figures include weights + KV cache at the listed context. Last updated 2026-06-10.</p>
-        </div>
-      </main>
-
-      <footer>
-        <div className="foot-inner">
-          <div className="c">© 2026 LLMJob</div>
-          <div className="links"><a className="ghl" href="index.html" style={{ fontSize: 13.5 }}>← Home</a></div>
-        </div>
-      </footer>
-    </React.Fragment>
-  );
-}
-
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+<script>
+  const nav = document.getElementById("nav");
+  const onScroll = () => nav.classList.toggle("scrolled", window.scrollY > 8);
+  window.addEventListener("scroll", onScroll);
+  onScroll();
 </script>
 </body>
 </html>
