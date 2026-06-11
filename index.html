@@ -125,41 +125,6 @@
   @media (max-width: 740px) { .steps { grid-template-columns: 1fr; gap: 40px; } }
 
   /* benchmark bridge */
-
-  /* public nodes */
-  .nodes-sec { padding-top: 80px; border-top: 1px solid var(--line); }
-  .nodes-head { display: flex; align-items: center; justify-content: space-between; gap: 28px; flex-wrap: wrap; margin-bottom: 28px; }
-  .nodes-head .eb { display: block; line-height: 1; font-family: "IBM Plex Mono", monospace; font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-3); }
-  .nodes-head h2 { font-size: clamp(26px, 3.2vw, 34px); letter-spacing: -0.025em; font-weight: 600; line-height: 1; margin-top: 12px; }
-  .nodes-head p { color: var(--ink-2); font-size: 15px; margin-top: 8px; max-width: 44em; }
-  .nodes-live { display: inline-flex; align-items: center; gap: 8px; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--online); white-space: nowrap; }
-  .nodes-total { text-align: right; white-space: nowrap; flex: none; border: 1px solid var(--line); border-radius: 12px; padding: 15px 22px; background: #fff; }
-  .nodes-total .nv { font-family: "IBM Plex Mono", monospace; font-size: clamp(26px, 3vw, 32px); font-weight: 500; letter-spacing: -0.02em; display: block; line-height: 1; }
-  .nodes-total .nl { font-family: "IBM Plex Mono", monospace; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-3); margin-top: 9px; display: block; }
-  .nodes-sec .dot, .nodes-live .dot, .nrow2 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--online); display: inline-block; flex: none; }
-  .nodes-live .dot.live { animation: nblink 1.8s ease-in-out infinite; }
-  @keyframes nblink { 0%,100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--online) 55%, transparent); } 60% { box-shadow: 0 0 0 6px transparent; } }
-  .nodes-list { border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: #fff; }
-  .nrow2 { display: grid; grid-template-columns: 1.4fr 1fr 1.4fr 0.9fr 0.7fr; align-items: center; gap: 18px; padding: 16px 20px; }
-  .nrow2 + .nrow2 { border-top: 1px solid var(--line); }
-  .nrow2 .who { display: flex; align-items: center; gap: 11px; min-width: 0; }
-  .nrow2 .av { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; color: #fff; flex: none; }
-  .nrow2 .nm { font-family: "IBM Plex Mono", monospace; font-size: 14px; font-weight: 500; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .nrow2 .nm .ow { color: var(--ink-3); }
-  .nrow2 .dev { font-family: "IBM Plex Mono", monospace; font-size: 13px; color: var(--ink-2); }
-  .nrow2 .mdl { font-size: 13.5px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .nrow2 .mdl .qd { font-family: "IBM Plex Mono", monospace; font-size: 10.5px; color: var(--ink-3); background: var(--bg-2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; margin-left: 8px; }
-  .nrow2 .st { display: inline-flex; align-items: center; gap: 7px; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--online); }
-  .nrow2 .shared { font-family: "IBM Plex Mono", monospace; font-size: 13px; color: var(--ink); text-align: right; }
-  .nrow2 .shared .u { color: var(--ink-3); font-size: 11px; margin-left: 2px; }
-  .nodes-hd-row { display: grid; grid-template-columns: 1.4fr 1fr 1.4fr 0.9fr 0.7fr; gap: 18px; padding: 11px 20px; background: var(--bg-2); border-bottom: 1px solid var(--line); font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
-  .nodes-hd-row .h-shared { text-align: right; }
-  @media (max-width: 680px) {
-    .nrow2, .nodes-hd-row { grid-template-columns: 1.4fr 1fr 0.7fr; }
-    .nrow2 .dev, .nrow2 .st, .nodes-hd-row .h-dev, .nodes-hd-row .h-st { display: none; }
-  }
-
-  /* benchmark bridge orig */
   .bridge { border: 1px solid var(--line); border-radius: 18px; overflow: hidden; background: var(--dark); color: var(--dark-ink); position: relative; }
   .bridge::before { content: ""; position: absolute; inset: 0; background-image: linear-gradient(var(--dark-line) 1px, transparent 1px), linear-gradient(90deg, var(--dark-line) 1px, transparent 1px); background-size: 32px 32px; opacity: .35; mask-image: radial-gradient(120% 100% at 100% 0%, #000, transparent 70%); }
   .bridge-inner { position: relative; padding: 48px 44px; max-width: 40em; }
@@ -191,7 +156,7 @@
       <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/></svg>
     </span> LLMJob</a>
     <nav class="nav-links">
-      <a class="link" href="benchmark.html">Benchmarks</a>
+      <a class="link" href="rankings.html">Rankings</a>
       <a class="btn btn-ghost" href="dashboard.html" data-auth="signin">Login</a>
     </nav>
   </div>
@@ -207,7 +172,7 @@
         <a class="btn btn-primary btn-arrow" href="dashboard.html">Join now
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
         </a>
-        <a class="btn btn-ghost" href="benchmark.html">See the benchmarks</a>
+        <a class="btn btn-ghost" href="rankings.html">See the rankings</a>
       </div>
     </div>
   </section>
@@ -295,37 +260,6 @@
     </div>
   </section>
 
-  <!-- PUBLIC NODES -->
-  <section class="band">
-    <div class="wrap">
-      <div class="nodes-sec">
-        <div class="nodes-head">
-          <div>
-            <span class="eb">The network</span>
-            <h2>Real computers, running right now.</h2>
-            <p>People sharing the power they're not using. That idle compute runs benchmarks — so everyone can see which models and settings work best at home.</p>
-          </div>
-          <div class="nodes-total">
-            <span class="nv tnum">3.8M</span>
-            <span class="nl">tokens served</span>
-          </div>
-        </div>
-        <div class="nodes-list">
-          <div class="nodes-hd-row">
-            <span>Node</span><span class="h-dev">Device</span><span>Serving</span><span class="h-st">Status</span><span class="h-shared">Tokens</span>
-          </div>
-          <div class="nrow2">
-            <span class="who"><span class="av" style="background:var(--accent)"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="9" cy="12" r="2.4"/><circle cx="16" cy="12" r="1.4"/></svg></span><span class="nm"><span class="ow">super3 /</span> rig4090</span></span>
-            <span class="dev">RTX 4090 · 24GB</span>
-            <span class="mdl">gemma-4-26B-A4B<span class="qd">Q4_K_M</span></span>
-            <span class="st"><span class="dot"></span> online</span>
-            <span class="shared">3.8<span class="u">M tok</span></span>
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
-
   <!-- BENCHMARK BRIDGE -->
   <section class="band">
     <div class="wrap">
@@ -334,7 +268,7 @@
           <span class="eyebrow">Where we're starting</span>
           <h2>First, we find out what actually runs well at home.</h2>
           <p>Spare capacity shared across the network goes to running benchmarks — measuring how smart and how fast every model and setting is on real home hardware, so you know what's worth running before you do.</p>
-          <a class="btn btn-on-dark btn-arrow" href="benchmark.html">See the first results
+          <a class="btn btn-on-dark btn-arrow" href="rankings.html">See the rankings
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
           </a>
         </div>
@@ -352,7 +286,7 @@
       <a class="btn btn-primary btn-arrow" href="dashboard.html">Join now
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
       </a>
-      <a class="btn btn-ghost" href="benchmark.html">See the benchmarks</a>
+      <a class="btn btn-ghost" href="rankings.html">See the rankings</a>
     </div>
   </div>
 </section>
@@ -363,7 +297,7 @@
       <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/></svg>
     </span> LLMJob</a>
     <div class="foot-links">
-      <a href="benchmark.html">Benchmarks</a>
+      <a href="rankings.html">Rankings</a>
     </div>
     <div class="c">© 2026 LLMJob</div>
   </div>
