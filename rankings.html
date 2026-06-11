@@ -194,9 +194,12 @@
       <span class="pill">★ Run this</span>
       <span id="rk-reco-text"></span>
     </div>
+    <p class="tbl-note" id="rk-cap-note" hidden>
+      <span class="cap">*</span> Context capped by this hardware's memory — the model natively supports a larger window, but its KV cache wouldn't fit. The table shows the largest context that fits.
+    </p>
     <p class="tbl-note">
-      Ranked by AA score adjusted for estimated quantization loss, at the best quant that fits at full native context
-      (falls back to a capped context, marked *). Q2/Q3 rows lose meaningful quality. Models that don't fit aren't shown.
+      Ranked by AA score adjusted for estimated quantization loss, at the best quant that fits at full native context.
+      Q2/Q3 rows lose meaningful quality. Models that don't fit aren't shown.
       Click a row to see every quant that fits.
     </p>
 
@@ -546,7 +549,7 @@ function rkRenderTable() {
       <td class="num"><span class="score-v${i === 0 ? " best" : ""}">${r.model.score.toFixed(1)}</span></td>
       <td class="num hide">${rkPct(r.model.score)}%</td>
       <td><span class="quant${b.loss >= 2 ? " lossy" : ""}">${b.quant}</span></td>
-      <td class="num hide">${rkCtxFmt(b.ctxK)}${b.capped ? '<i class="cap" title="capped by memory — below native context">*</i>' : ""}</td>
+      <td class="num hide">${rkCtxFmt(b.ctxK)}${b.capped ? `<i class="cap" title="Capped by memory — native context is ${rkCtxFmt(r.model.ctxK)}">*</i>` : ""}</td>
       <td class="num">~${b.vram} GB</td>
       <td class="c-x chev${open ? " open" : ""}">${CHEV}</td>`;
     tr.querySelector(".mname").textContent = r.model.name;
@@ -569,6 +572,9 @@ function rkRenderTable() {
       tbody.appendChild(sub);
     }
   });
+
+  document.getElementById("rk-cap-note").hidden =
+    !rows.some(r => r.best.capped || (rkOpenName === r.model.name && r.all.some(c => c.capped)));
 
   const reco = document.getElementById("rk-reco");
   if (rows.length) {
