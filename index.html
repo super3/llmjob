@@ -4,9 +4,8 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>LLMJob — Run LLMs at home</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2222%22 fill=%22%2316160F%22/><path transform=%22translate(26,26) scale(2)%22 d=%22M13 2 4 14h6l-1 8 9-12h-6l1-8z%22 fill=%22%23FBFAF8%22/></svg>">
 
-<!-- Clerk Authentication -->
+<!-- Clerk (waitlist mode) -->
 <script
     async
     crossorigin="anonymous"
@@ -14,6 +13,8 @@
     src="https://primary-dog-46.clerk.accounts.dev/npm/@clerk/clerk-js@5/dist/clerk.browser.js"
     type="text/javascript"
 ></script>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2222%22 fill=%22%2316160F%22/><path transform=%22translate(26,26) scale(2)%22 d=%22M13 2 4 14h6l-1 8 9-12h-6l1-8z%22 fill=%22%23FBFAF8%22/></svg>">
+
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -76,7 +77,15 @@
   .hero .lede { font-size: clamp(18px, 2.4vw, 22px); color: var(--ink-2); margin: 24px auto 0; max-width: 27em; line-height: 1.5; }
   .hero .tagline { font-family: "IBM Plex Mono", monospace; font-size: 13px; color: var(--ink-3); margin-top: 18px; letter-spacing: .01em; }
   .hero .tagline b { color: var(--ink-2); font-weight: 500; }
-  .hero-actions { display: flex; align-items: center; justify-content: center; gap: 13px; margin-top: 36px; flex-wrap: wrap; }
+  /* waitlist */
+  .waitlist { display: flex; align-items: stretch; justify-content: center; gap: 10px; margin-top: 36px; flex-wrap: wrap; }
+  .wl-input { font-family: "Space Grotesk", sans-serif; font-size: 15px; color: var(--ink); background: #fff; border: 1px solid var(--line-2); border-radius: 10px; padding: 13px 18px; width: min(320px, 100%); outline: none; transition: border-color .12s, box-shadow .12s; }
+  .wl-input::placeholder { color: var(--ink-3); }
+  .wl-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent); }
+  .wl-done { flex-basis: 100%; text-align: center; font-family: "IBM Plex Mono", monospace; font-size: 13.5px; color: var(--online); margin: 4px 0 0; }
+  .wl-done.err { color: oklch(0.55 0.18 35); }
+  .waitlist.sent .wl-input, .waitlist.sent .btn { display: none; }
+  .waitlist .btn:disabled { opacity: .6; cursor: default; }
   .hero-stats { display: flex; justify-content: center; flex-wrap: wrap; gap: 0; margin-top: 58px; border-top: 1px solid var(--line); }
   .hero-stats .hs { padding: 22px 38px; }
   .hero-stats .hs + .hs { border-left: 1px solid var(--line); }
@@ -139,7 +148,7 @@
   .cta { text-align: center; padding: 90px 0 96px; border-top: 1px solid var(--line); }
   .cta h2 { font-size: clamp(28px, 4vw, 44px); letter-spacing: -0.03em; font-weight: 600; line-height: 1.05; }
   .cta p { color: var(--ink-2); font-size: 17px; margin: 16px auto 0; max-width: 28em; }
-  .cta .hero-actions { margin-top: 30px; }
+  .cta .waitlist { margin-top: 30px; }
 
   /* footer */
   footer.foot { border-top: 1px solid var(--line); padding: 32px 0; }
@@ -157,7 +166,7 @@
     </span> LLMJob</a>
     <nav class="nav-links">
       <a class="link" href="rankings.html">Rankings</a>
-      <a class="btn btn-ghost" href="dashboard.html" data-auth="signin">Login</a>
+      <a class="btn btn-ghost" href="#join" id="nav-join">Join waitlist</a>
     </nav>
   </div>
 </header>
@@ -168,12 +177,13 @@
     <div class="wrap">
       <h1>Run LLMs <span class="accent">at home.</span></h1>
       <p class="lede">Your own AI, running on your own computer. Share the power you're not using.</p>
-      <div class="hero-actions">
-        <a class="btn btn-primary btn-arrow" href="dashboard.html">Join now
+      <form class="waitlist" id="join" autocomplete="off">
+        <input class="wl-input" type="email" name="email" placeholder="you@example.com" required aria-label="Email address" />
+        <button class="btn btn-primary btn-arrow" type="submit">Join the waitlist
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-        </a>
-        <a class="btn btn-ghost" href="rankings.html">See the rankings</a>
-      </div>
+        </button>
+        <p class="wl-done" hidden>You're on the list — we'll be in touch.</p>
+      </form>
     </div>
   </section>
 
@@ -282,12 +292,13 @@
   <div class="wrap">
     <h2>Bring your AI home.</h2>
     <p>Start with the hardware you already own.</p>
-    <div class="hero-actions">
-      <a class="btn btn-primary btn-arrow" href="dashboard.html">Join now
+    <form class="waitlist" autocomplete="off">
+      <input class="wl-input" type="email" name="email" placeholder="you@example.com" required aria-label="Email address" />
+      <button class="btn btn-primary btn-arrow" type="submit">Join the waitlist
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-      </a>
-      <a class="btn btn-ghost" href="rankings.html">See the rankings</a>
-    </div>
+      </button>
+      <p class="wl-done" hidden>You're on the list — we'll be in touch.</p>
+    </form>
   </div>
 </section>
 
@@ -308,28 +319,57 @@
   const onScroll = () => nav.classList.toggle('scrolled', window.scrollY > 8);
   window.addEventListener('scroll', onScroll); onScroll();
 
-  // Open Clerk's sign-in/up modal over the homepage instead of navigating to
-  // the console and showing its loading screen behind the modal.
-  window.addEventListener('load', async () => {
-    if (typeof Clerk === 'undefined') return; // links fall back to dashboard.html
-    try { await Clerk.load(); } catch (e) { return; }
+  // Nav "Join waitlist": scroll to the hero form and focus the email field.
+  document.getElementById('nav-join').addEventListener('click', (e) => {
+    e.preventDefault();
+    const form = document.getElementById('join');
+    const y = form.getBoundingClientRect().top + window.scrollY - 120;
+    window.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
+    const input = form.querySelector('.wl-input');
+    if (input) setTimeout(() => input.focus({ preventScroll: true }), 450);
+  });
 
-    // In modal mode Clerk just closes the modal on success and leaves us on the
-    // homepage, so redirect to the console ourselves once a session is active.
-    let authPending = false;
-    Clerk.addListener(({ user }) => {
-      if (authPending && user) { authPending = false; window.location.href = 'dashboard.html'; }
-    });
+  // Waitlist forms: submit to Clerk's waitlist (requires Waitlist sign-up
+  // mode to be enabled in the Clerk dashboard).
+  let clerkLoading = null;
+  async function getClerk() {
+    if (!clerkLoading) {
+      clerkLoading = (async () => {
+        // The Clerk script is async — wait briefly for it if needed.
+        for (let i = 0; i < 50 && typeof Clerk === 'undefined'; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        if (typeof Clerk === 'undefined') throw new Error('Clerk failed to load');
+        await Clerk.load();
+        return Clerk;
+      })();
+      clerkLoading.catch(() => { clerkLoading = null; }); // allow retry on failure
+    }
+    return clerkLoading;
+  }
 
-    document.querySelectorAll('a[href="dashboard.html"]').forEach((link) => {
-      link.addEventListener('click', (e) => {
-        e.preventDefault();
-        if (Clerk.user) { window.location.href = 'dashboard.html'; return; }
-        authPending = true;
-        const opts = { afterSignInUrl: 'dashboard.html', afterSignUpUrl: 'dashboard.html' };
-        if (link.dataset.auth === 'signin') Clerk.openSignIn(opts);
-        else Clerk.openSignUp(opts);
-      });
+  document.querySelectorAll('.waitlist').forEach((form) => {
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const input = form.querySelector('.wl-input');
+      const btn = form.querySelector('button[type="submit"]');
+      const done = form.querySelector('.wl-done');
+      btn.disabled = true;
+      done.hidden = true;
+      try {
+        const clerk = await getClerk();
+        await clerk.joinWaitlist({ emailAddress: input.value.trim() });
+        form.classList.add('sent');
+        done.textContent = "You're on the list — we'll be in touch.";
+        done.classList.remove('err');
+        done.hidden = false;
+      } catch (err) {
+        done.textContent = err?.errors?.[0]?.longMessage || err?.errors?.[0]?.message
+          || "Something went wrong — please try again.";
+        done.classList.add('err');
+        done.hidden = false;
+        btn.disabled = false;
+      }
     });
   });
 </script>
