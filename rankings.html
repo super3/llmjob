@@ -336,6 +336,9 @@ const RK_HARDWARE = [
     { id: "rx-6700xt",  name: "RX 6700 XT",  mem: 12, bw: 384, type: "gpu" },
     { id: "rx-6600",    name: "RX 6600",     mem: 8,  bw: 224, type: "gpu" },
   ]},
+  { group: "Intel", items: [
+    { id: "arc-pro-b70", name: "Arc Pro B70", mem: 32, bw: 608, type: "gpu" },
+  ]},
   { group: "CPU only", items: [
     { id: "cpu-128-ddr5", name: "CPU · 128GB DDR5", mem: 128, bw: 90, type: "cpu" },
     { id: "cpu-64-ddr5",  name: "CPU · 64GB DDR5",  mem: 64,  bw: 90, type: "cpu" },
@@ -397,6 +400,9 @@ const RK_GPU_ROWS = {
   AMD: [
     { label: "RX 7000", ids: ["rx-7900xtx", "rx-7900xt", "rx-7900gre", "rx-7800xt", "rx-7700xt", "rx-7600"] },
     { label: "RX 6000", ids: ["rx-6950xt", "rx-6900xt", "rx-6800xt", "rx-6800", "rx-6700xt", "rx-6600"] },
+  ],
+  Intel: [
+    { label: "Arc Pro", ids: ["arc-pro-b70"] },
   ],
 };
 
@@ -464,7 +470,7 @@ function rkTiersFor(tab) {
       label: r.label,
       items: r.ids.map(id => {
         const h = rkFind(id);
-        return { id, label: h.name.replace(/^(RTX|GTX|RX)\s/, ""), sub: `${h.mem}GB` };
+        return { id, label: h.name.replace(/^(RTX|GTX|RX|Arc Pro)\s/, ""), sub: `${h.mem}GB` };
       }),
     }));
   }
