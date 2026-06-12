@@ -106,7 +106,7 @@
   td.chev.open svg { transform: rotate(180deg); }
   tr.sub td { background: var(--bg-2); padding: 10px 14px 16px; }
   .subgrid { display: flex; flex-direction: column; gap: 0; border: 1px solid var(--line); border-radius: 9px; background: #fff; overflow: hidden; }
-  .sg-row { display: grid; grid-template-columns: 1.2fr 1fr 1fr 1fr; gap: 12px; padding: 8px 13px; font-size: 13px; border-bottom: 1px solid var(--line); align-items: baseline; }
+  .sg-row { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 12px; padding: 8px 13px; font-size: 13px; border-bottom: 1px solid var(--line); align-items: baseline; }
   .sg-row:last-child { border-bottom: none; }
   .sg-row .num { font-family: "IBM Plex Mono", monospace; text-align: right; }
   .sg-row.hd { font-family: "IBM Plex Mono", monospace; font-size: 10px; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-3); background: var(--bg-2); }
@@ -622,10 +622,9 @@ function rkRenderTable() {
       const sub = document.createElement("tr");
       sub.className = "sub";
       sub.innerHTML = `<td></td><td colspan="7"><div class="subgrid">
-        <div class="sg-row hd"><span>Quant</span><span>Adj. score</span><span>Context</span><span>VRAM</span></div>
+        <div class="sg-row hd"><span>Quant</span><span>Context</span><span>VRAM</span></div>
         ${r.all.map(c => `<div class="sg-row${c.quant === b.quant ? " on" : ""}">
           <span class="quant${c.loss >= 2 ? " lossy" : ""}">${c.quant}</span>
-          <span class="num">${c.eff.toFixed(1)}</span>
           <span class="num">${rkCtxFmt(c.ctxK)}${c.capped ? "*" : ""}</span>
           <span class="num">~${c.vram} GB</span>
         </div>`).join("")}
