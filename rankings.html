@@ -51,7 +51,8 @@
 
   /* ---- hardware selector ---- */
   .rk-selector { margin-top: 16px; border: 1px solid var(--line); border-radius: 14px; background: #fff; padding: 13px 15px; }
-  .rk-tabs { display: flex; gap: 5px; flex-wrap: wrap; border-bottom: 1px solid var(--line); padding-bottom: 11px; }
+  .rk-top { display: flex; align-items: center; justify-content: space-between; gap: 6px 14px; flex-wrap: wrap; border-bottom: 1px solid var(--line); padding-bottom: 11px; }
+  .rk-tabs { display: flex; gap: 5px; flex-wrap: wrap; }
   .rk-tab { white-space: nowrap; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; letter-spacing: .03em; color: var(--ink-2); background: transparent; border: 1px solid transparent; border-radius: 7px; padding: 6px 12px; transition: background .12s, color .12s, border-color .12s; }
   .rk-tab:hover { background: var(--bg-2); }
   .rk-tab.on { background: var(--ink); color: var(--bg); }
@@ -66,7 +67,7 @@
   .rk-tier .tr:hover { background: var(--bg-2); color: var(--ink); }
   .rk-tier .tr.on { background: var(--accent); color: #fff; border-right-color: var(--accent); }
   .rk-tier .tr.on i { color: color-mix(in srgb, #fff 75%, transparent); }
-  .rk-count { margin-top: 11px; border-top: 1px solid var(--line); }
+  .rk-count { margin-left: auto; }
 
   /* ---- selected summary ---- */
   .rk-sum { display: flex; align-items: center; gap: 11px; flex-wrap: wrap; margin: 26px 0 0; padding-bottom: 14px; border-bottom: 2px solid var(--ink); }
@@ -159,9 +160,11 @@
     </div>
 
     <div class="rk-selector">
-      <div class="rk-tabs" id="rk-tabs"></div>
+      <div class="rk-top">
+        <div class="rk-tabs" id="rk-tabs"></div>
+        <div class="rk-count" id="rk-count" hidden></div>
+      </div>
       <div class="rk-strips" id="rk-strips"></div>
-      <div class="rk-strips rk-count" id="rk-count" hidden></div>
     </div>
 
     <div class="rk-sum">
