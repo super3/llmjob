@@ -67,7 +67,7 @@
   .rk-tier .tr:hover { background: var(--bg-2); color: var(--ink); }
   .rk-tier .tr.on { background: var(--accent); color: #fff; border-right-color: var(--accent); }
   .rk-tier .tr.on i { color: color-mix(in srgb, #fff 75%, transparent); }
-  .rk-count { margin-left: auto; }
+  .rk-count { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 
   /* ---- selected summary ---- */
   .rk-sum { display: flex; align-items: center; gap: 11px; flex-wrap: wrap; margin: 26px 0 0; padding-bottom: 14px; border-bottom: 2px solid var(--ink); }
@@ -106,7 +106,7 @@
   td.chev.open svg { transform: rotate(180deg); }
   tr.sub td { background: var(--bg-2); padding: 10px 14px 16px; }
   .subgrid { display: flex; flex-direction: column; gap: 0; border: 1px solid var(--line); border-radius: 9px; background: #fff; overflow: hidden; }
-  .sg-row { display: grid; grid-template-columns: 1.2fr 1fr 1fr 1fr; gap: 12px; padding: 8px 13px; font-size: 13px; border-bottom: 1px solid var(--line); align-items: baseline; }
+  .sg-row { display: grid; grid-template-columns: 1.2fr 1fr 1fr 1.2fr 0.8fr; gap: 12px; padding: 8px 13px; font-size: 13px; border-bottom: 1px solid var(--line); align-items: baseline; }
   .sg-row:last-child { border-bottom: none; }
   .sg-row .num { font-family: "IBM Plex Mono", monospace; text-align: right; }
   .sg-row.hd { font-family: "IBM Plex Mono", monospace; font-size: 10px; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-3); background: var(--bg-2); }
@@ -176,7 +176,7 @@
     </div>
 
     <div class="rk-note">
-      Fit is <b>estimated</b> from memory — nothing has been benchmarked on the network yet. Scores are full-precision (API-measured).<span id="rk-multi-note" hidden> Multi-GPU assumes the model is split across cards (tensor/pipeline parallel), with ~1 GB reserved per card.</span>
+      Fit and <b>tok/s</b> are <b>estimated</b> from memory size and bandwidth — nothing has been benchmarked on the network yet. Scores are full-precision (API-measured).<span id="rk-multi-note" hidden> Multi-GPU assumes the model is layer-split across cards (~1 GB reserved per card); memory adds up, token speed doesn't.</span>
     </div>
     <div class="tbl-wrap">
       <table class="q rk">
@@ -188,7 +188,8 @@
             <th class="hide">% Frontier</th>
             <th>Quant</th>
             <th class="hide">Context</th>
-            <th>VRAM</th>
+            <th>Memory</th>
+            <th>tok/s</th>
             <th class="c-x"></th>
           </tr>
         </thead>
@@ -202,8 +203,12 @@
     <p class="tbl-note" id="rk-cap-note" hidden>
       <span class="cap">*</span> Context capped by this hardware's memory — the model natively supports a larger window, but its KV cache wouldn't fit. The table shows the largest context that fits.
     </p>
+    <p class="tbl-note" id="rk-offl-note" hidden>
+      <span class="cap">†</span> Partially offloaded: what doesn't fit in VRAM sits in system RAM (llama.cpp-style), which costs speed. Assumes dual-channel DDR5 ≈ 90 GB/s; set RAM to <span class="mono">off</span> to see pure-VRAM configs only.
+    </p>
     <p class="tbl-note">
-      Ranked by AA score adjusted for estimated quantization loss, at the best quant that fits at full native context.
+      Ranked by AA score adjusted for estimated quantization loss, at the best quant that fits at full native context
+      (between quants with equal adjusted score, the faster config wins).
       Q2/Q3 rows lose meaningful quality. Models that don't fit aren't shown.
       Click a row to see every quant that fits.
     </p>
@@ -239,7 +244,7 @@
       </div>
     </div>
 
-    <p class="undernote">Scores: <a href="https://artificialanalysis.ai" target="_blank" rel="noopener">Artificial Analysis</a> Intelligence Index v4.0 (10 evals incl. GDPval-AA, Terminal-Bench Hard, SciCode, GPQA Diamond, Humanity's Last Exam). VRAM figures include weights + KV cache at the listed context. Last updated 2026-06-11.</p>
+    <p class="undernote">Scores: <a href="https://artificialanalysis.ai" target="_blank" rel="noopener">Artificial Analysis</a> Intelligence Index v4.0 (10 evals incl. GDPval-AA, Terminal-Bench Hard, SciCode, GPQA Diamond, Humanity's Last Exam). Memory figures include weights + KV cache at the listed context. Tok/s is bandwidth-bound decode speed: active-parameter bytes per token ÷ memory bandwidth, at ~55% efficiency (method after <a href="https://github.com/onepunk/llmsizer" target="_blank" rel="noopener">llmsizer</a>, MIT). Last updated 2026-06-12.</p>
   </div>
 </main>
 
@@ -257,7 +262,8 @@
    are estimates until real network benchmarks exist.
    =========================================================== */
 
-/* Quants in fidelity order. gb = GB per B params, kv = KV-cache scale
+/* Quants in fidelity order. gb = GB per B params (matches real GGUF file
+   sizes — Q2_K is ~0.37, not the theoretical 2 bits), kv = KV-cache scale
    (Q2 tier uses INT4 KV), loss = quality-loss tier. */
 const RK_QUANTS = [
   { q: "FP8",    gb: 1.05, kv: 1,   loss: 0 },
@@ -265,7 +271,7 @@ const RK_QUANTS = [
   { q: "Q5_K_M", gb: 0.71, kv: 1,   loss: 0 },
   { q: "Q4_K_M", gb: 0.64, kv: 1,   loss: 1 },
   { q: "Q3_K_M", gb: 0.49, kv: 1,   loss: 2 },
-  { q: "Q2",     gb: 0.25, kv: 0.5, loss: 3 },
+  { q: "Q2",     gb: 0.37, kv: 0.5, loss: 3 },
 ];
 const RK_RETENTION = [1, 0.985, 0.95, 0.87]; // estimated score retention per loss tier
 const RK_FRONTIER_TOP = 64.9; // Claude Fable 5
@@ -423,17 +429,33 @@ const RK_GPU_ROWS = {
 };
 
 /* ---- fit estimation ---- */
-const RK_OV = 0.5; // GB runtime overhead
+const RK_OV = 0.5;       // GB runtime overhead
+const RK_EFF = 0.55;     // memory-bandwidth → tok/s efficiency factor
+const RK_RAM_BW = 90;    // assumed dual-channel DDR5, GB/s (for offload)
+const RK_RAM_USE = 0.6;  // fraction of system RAM usable for offload
 const RK_CTX_SNAP = [8, 16, 32, 64, 128, 192, 256, 512, 1024];
 const RK_GPU_COUNTS = [1, 2, 3, 4, 6, 8];
-const rkUsable = (hw, count = 1) =>
-  hw.type === "apple" ? hw.mem * 0.72 :
-  hw.type === "cpu"   ? hw.mem * 0.60 :
-  (hw.mem - 1) * count;
+const RK_RAM_OPTS = [0, 32, 64, 96, 128, 192];
+
+/* Memory pools: fast = VRAM/unified memory, slow = system RAM (GPU offload). */
+function rkPools(hw, count = 1, ramGb = 0) {
+  if (hw.type === "apple") return { fast: hw.mem * 0.72, fastBw: hw.bw, slow: 0, slowBw: RK_RAM_BW };
+  if (hw.type === "cpu")   return { fast: hw.mem * 0.60, fastBw: hw.bw, slow: 0, slowBw: RK_RAM_BW };
+  return {
+    fast: (hw.mem - 1) * count,
+    /* layer-split across cards runs them serially per token, so bandwidth
+       stays per-card; ~2% interconnect overhead per extra card */
+    fastBw: hw.bw * (1 - 0.02 * (count - 1)),
+    slow: ramGb * RK_RAM_USE,
+    slowBw: RK_RAM_BW,
+  };
+}
 const rkPct = (s) => Math.round((s / RK_FRONTIER_TOP) * 100);
 const rkCtxFmt = (k) => k >= 1024 ? "1M" : `${k}K`;
+const rkTpsFmt = (t) => t >= 10 ? Math.round(t) : Math.round(t * 10) / 10;
 
-function rkConfig(m, q, usable) {
+function rkConfig(m, q, pools) {
+  const usable = pools.fast + pools.slow;
   const w = m.p * q.gb;
   const kvFull = m.kvN * q.kv;
   let ctxK, capped = false;
@@ -448,22 +470,35 @@ function rkConfig(m, q, usable) {
     capped = true;
   }
   const kvUsed = kvFull * (ctxK / m.ctxK);
+  const need = w + kvUsed + RK_OV;
+  const fastGb = Math.min(need, pools.fast);
+  const slowGb = need - fastGb;
+  /* tok/s: each token streams the active params once; time splits across the
+     pools proportionally to where the weights live (bandwidth-bound model). */
+  const bpt = m.a * q.gb; // GB read per token
+  const secPerTok = bpt * ((fastGb / need) / pools.fastBw + (slowGb / need) / pools.slowBw) / RK_EFF;
   return {
     quant: q.q, loss: q.loss, ctxK, capped,
-    vram: Math.round(w + kvUsed + RK_OV),
+    offload: slowGb > 0.05,
+    vram: Math.round(fastGb), ram: Math.round(slowGb),
+    tps: 1 / secPerTok,
     eff: m.score * RK_RETENTION[q.loss],
   };
 }
 
-function rkRank(hw, count = 1) {
-  const usable = rkUsable(hw, count);
+function rkRank(hw, count = 1, ramGb = 0) {
+  const pools = rkPools(hw, count, ramGb);
   const rows = RK_MODELS.map(m => {
-    const all = RK_QUANTS.map(q => rkConfig(m, q, usable)).filter(Boolean);
+    const all = RK_QUANTS.map(q => rkConfig(m, q, pools)).filter(Boolean);
     if (!all.length) return null;
-    const best = all.find(c => !c.capped) || all.slice().sort((a, b) => b.ctxK - a.ctxK || a.loss - b.loss)[0];
+    /* best = full-context config with the highest adjusted score; among equal
+       scores (same loss tier) prefer the fastest, so e.g. Q5_K_M beats an
+       offloaded FP8. Fall back to the largest capped context. */
+    const full = all.filter(c => !c.capped).sort((a, b) => b.eff - a.eff || b.tps - a.tps);
+    const best = full[0] || all.slice().sort((a, b) => b.ctxK - a.ctxK || a.loss - b.loss)[0];
     return { model: m, best, all };
   }).filter(Boolean);
-  return rows.sort((a, b) => b.best.eff - a.best.eff);
+  return rows.sort((a, b) => b.best.eff - a.best.eff || b.best.tps - a.best.tps);
 }
 
 /* ===========================================================
@@ -471,12 +506,13 @@ function rkRank(hw, count = 1) {
    =========================================================== */
 const CHEV = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg>';
 
-let rkHw = null, rkCount = 1;
+let rkHw = null, rkCount = 1, rkRam = 64;
 try {
   const saved = JSON.parse(localStorage.getItem("llmjob-rankings-hw") || "null");
   if (saved && rkFind(saved.id)) {
     rkHw = rkFind(saved.id);
     if (rkHw.type === "gpu" && RK_GPU_COUNTS.includes(saved.count)) rkCount = saved.count;
+    if (RK_RAM_OPTS.includes(saved.ram)) rkRam = saved.ram;
   }
 } catch (e) {}
 if (!rkHw) rkHw = rkFind("rtx-3060");
@@ -484,7 +520,7 @@ let rkTab = rkHw.group;
 let rkOpenName = null;
 
 function rkSave() {
-  try { localStorage.setItem("llmjob-rankings-hw", JSON.stringify({ id: rkHw.id, count: rkCount })); } catch (e) {}
+  try { localStorage.setItem("llmjob-rankings-hw", JSON.stringify({ id: rkHw.id, count: rkCount, ram: rkRam })); } catch (e) {}
 }
 
 function rkTiersFor(tab) {
@@ -555,47 +591,55 @@ function rkRenderCount() {
   el.hidden = rkHw.type !== "gpu";
   el.innerHTML = "";
   if (el.hidden) return;
-  const tier = document.createElement("div");
-  tier.className = "rk-tier";
-  const tn = document.createElement("span");
-  tn.className = "tn";
-  tn.textContent = "GPUs";
-  tier.appendChild(tn);
-  RK_GPU_COUNTS.forEach(n => {
-    const b = document.createElement("button");
-    b.className = "tr" + (rkCount === n ? " on" : "");
-    b.textContent = `${n}×`;
-    b.onclick = () => {
-      rkCount = n;
-      rkOpenName = null;
-      rkSave();
-      rkRenderCount();
-      rkRenderSummary();
-      rkRenderTable();
-    };
-    tier.appendChild(b);
-  });
-  el.appendChild(tier);
+  const rerender = () => {
+    rkOpenName = null;
+    rkSave();
+    rkRenderCount();
+    rkRenderSummary();
+    rkRenderTable();
+  };
+  const strip = (label, opts, current, fmt, set) => {
+    const tier = document.createElement("div");
+    tier.className = "rk-tier";
+    const tn = document.createElement("span");
+    tn.className = "tn";
+    tn.textContent = label;
+    tier.appendChild(tn);
+    opts.forEach(n => {
+      const b = document.createElement("button");
+      b.className = "tr" + (current === n ? " on" : "");
+      b.textContent = fmt(n);
+      b.onclick = () => { set(n); rerender(); };
+      tier.appendChild(b);
+    });
+    el.appendChild(tier);
+  };
+  strip("GPUs", RK_GPU_COUNTS, rkCount, n => `${n}×`, n => { rkCount = n; });
+  strip("+RAM", RK_RAM_OPTS, rkRam, n => n ? `${n}G` : "off", n => { rkRam = n; });
 }
 
 function rkRenderSummary() {
   const kind = rkHw.type === "apple" ? "unified memory" : rkHw.type === "cpu" ? "system RAM" : "VRAM";
   const multi = rkHw.type === "gpu" && rkCount > 1;
   document.getElementById("rk-sum-name").textContent = multi ? `${rkCount}× ${rkHw.name}` : rkHw.name;
-  document.getElementById("rk-sum-meta").textContent = multi
+  let meta = multi
     ? `${rkHw.mem * rkCount} GB ${kind} (${rkCount} × ${rkHw.mem} GB)`
     : `${rkHw.mem} GB ${kind}`;
+  if (rkHw.type === "gpu" && rkRam > 0) meta += ` + ${rkRam} GB RAM`;
+  document.getElementById("rk-sum-meta").textContent = meta;
   document.getElementById("rk-multi-note").hidden = !multi;
 }
 
+const rkMemCell = (c) => `~${c.vram}${c.offload ? `+${c.ram}` : ""} GB${c.offload ? `<i class="cap" title="${c.vram} GB VRAM + ${c.ram} GB system RAM (offload)">†</i>` : ""}`;
+
 function rkRenderTable() {
-  const rows = rkRank(rkHw, rkHw.type === "gpu" ? rkCount : 1);
+  const rows = rkRank(rkHw, rkHw.type === "gpu" ? rkCount : 1, rkHw.type === "gpu" ? rkRam : 0);
   const tbody = document.getElementById("rk-rows");
   tbody.innerHTML = "";
 
   if (!rows.length) {
     const tr = document.createElement("tr");
-    tr.innerHTML = '<td colspan="8" class="empty">Nothing fits this memory budget — try a larger card, more GPUs, or system RAM.</td>';
+    tr.innerHTML = '<td colspan="9" class="empty">Nothing fits this memory budget — try a larger card, more GPUs, or more system RAM for offload.</td>';
     tbody.appendChild(tr);
   }
 
@@ -611,7 +655,8 @@ function rkRenderTable() {
       <td class="num hide">${rkPct(r.model.score)}%</td>
       <td><span class="quant${b.loss >= 2 ? " lossy" : ""}">${b.quant}</span></td>
       <td class="num hide">${rkCtxFmt(b.ctxK)}${b.capped ? `<i class="cap" title="Capped by memory — native context is ${rkCtxFmt(r.model.ctxK)}">*</i>` : ""}</td>
-      <td class="num">~${b.vram} GB</td>
+      <td class="num">${rkMemCell(b)}</td>
+      <td class="num">~${rkTpsFmt(b.tps)}</td>
       <td class="c-x chev${open ? " open" : ""}">${CHEV}</td>`;
     tr.querySelector(".mname").textContent = r.model.name;
     tr.querySelector(".mlab").textContent = r.model.lab;
@@ -621,13 +666,14 @@ function rkRenderTable() {
     if (open) {
       const sub = document.createElement("tr");
       sub.className = "sub";
-      sub.innerHTML = `<td></td><td colspan="7"><div class="subgrid">
-        <div class="sg-row hd"><span>Quant</span><span>Adj. score</span><span>Context</span><span>VRAM</span></div>
+      sub.innerHTML = `<td></td><td colspan="8"><div class="subgrid">
+        <div class="sg-row hd"><span>Quant</span><span>Adj. score</span><span>Context</span><span>Memory</span><span>tok/s</span></div>
         ${r.all.map(c => `<div class="sg-row${c.quant === b.quant ? " on" : ""}">
           <span class="quant${c.loss >= 2 ? " lossy" : ""}">${c.quant}</span>
           <span class="num">${c.eff.toFixed(1)}</span>
           <span class="num">${rkCtxFmt(c.ctxK)}${c.capped ? "*" : ""}</span>
-          <span class="num">~${c.vram} GB</span>
+          <span class="num">${rkMemCell(c)}</span>
+          <span class="num">~${rkTpsFmt(c.tps)}</span>
         </div>`).join("")}
       </div></td>`;
       tbody.appendChild(sub);
@@ -636,13 +682,15 @@ function rkRenderTable() {
 
   document.getElementById("rk-cap-note").hidden =
     !rows.some(r => r.best.capped || (rkOpenName === r.model.name && r.all.some(c => c.capped)));
+  document.getElementById("rk-offl-note").hidden =
+    !rows.some(r => r.best.offload || (rkOpenName === r.model.name && r.all.some(c => c.offload)));
 
   const reco = document.getElementById("rk-reco");
   if (rows.length) {
     const pick = rows[0];
     reco.hidden = false;
     document.getElementById("rk-reco-text").innerHTML =
-      `<b></b> ≈ <span class="mono">${pick.best.vram} GB</span> · ${rkCtxFmt(pick.best.ctxK)} context · ${rkPct(pick.model.score)}% of frontier`;
+      `<b></b> ≈ <span class="mono">${pick.best.vram + (pick.best.ram || 0)} GB</span> · ${rkCtxFmt(pick.best.ctxK)} context · ~${rkTpsFmt(pick.best.tps)} tok/s · ${rkPct(pick.model.score)}% of frontier`;
     reco.querySelector("b").textContent = `${pick.model.name} @ ${pick.best.quant}`;
   } else {
     reco.hidden = true;
