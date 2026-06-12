@@ -565,11 +565,6 @@ function rkRenderCount() {
     const b = document.createElement("button");
     b.className = "tr" + (rkCount === n ? " on" : "");
     b.textContent = `${n}×`;
-    if (n > 1) {
-      const i = document.createElement("i");
-      i.textContent = `${rkHw.mem * n}GB`;
-      b.appendChild(i);
-    }
     b.onclick = () => {
       rkCount = n;
       rkOpenName = null;
