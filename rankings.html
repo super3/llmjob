@@ -97,6 +97,7 @@
   .score-v.best { color: var(--accent); }
   .tag { font-family: "IBM Plex Mono", monospace; font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase; border-radius: 5px; padding: 2px 7px; margin-left: 8px; white-space: nowrap; vertical-align: middle; }
   .tag.pick { background: color-mix(in srgb, var(--accent) 12%, #fff); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 30%, #fff); }
+  .tag.est { background: var(--bg-2); color: var(--ink-3); border: 1px solid var(--line-2); }
   .cap { font-style: normal; color: var(--warn); }
   table.rk tbody tr.rowx { cursor: pointer; }
   table.rk tbody tr.rowx:hover { background: var(--bg-2); }
@@ -176,7 +177,7 @@
     </div>
 
     <div class="rk-note">
-      Fit is <b>estimated</b> from memory — nothing has been benchmarked on the network yet. Scores are full-precision (API-measured).<span id="rk-multi-note" hidden> Multi-GPU assumes the model is split across cards (tensor/pipeline parallel), with ~1 GB reserved per card.</span>
+      Fit is <b>estimated</b> from memory — nothing has been benchmarked on the network yet. Scores are full-precision (API-measured); models tagged <b>est. score</b> sit below AA's top-50 cutoff and carry our estimates instead.<span id="rk-multi-note" hidden> Multi-GPU assumes the model is split across cards (tensor/pipeline parallel), with ~1 GB reserved per card.</span>
     </div>
     <div class="tbl-wrap">
       <table class="q rk">
@@ -204,7 +205,8 @@
     </p>
     <p class="tbl-note">
       Ranked by AA score adjusted for estimated quantization loss, at the best quant that fits at full native context.
-      Q2/Q3 rows lose meaningful quality. Models that don't fit aren't shown.
+      % Frontier compares that quant-adjusted score to the leading proprietary model (Claude Fable 5, 64.9), so lossy
+      quants show what you actually get. Q2/Q3 rows lose meaningful quality. Models that don't fit aren't shown.
       Click a row to see every quant that fits.
     </p>
 
@@ -239,7 +241,7 @@
       </div>
     </div>
 
-    <p class="undernote">Scores: <a href="https://artificialanalysis.ai" target="_blank" rel="noopener">Artificial Analysis</a> Intelligence Index v4.0 (10 evals incl. GDPval-AA, Terminal-Bench Hard, SciCode, GPQA Diamond, Humanity's Last Exam). VRAM figures include weights + KV cache at the listed context. Last updated 2026-06-11.</p>
+    <p class="undernote">Scores: <a href="https://artificialanalysis.ai" target="_blank" rel="noopener">Artificial Analysis</a> Intelligence Index v4.0 (10 evals incl. GDPval-AA, Terminal-Bench Hard, SciCode, GPQA Diamond, Humanity's Last Exam). VRAM figures include weights + KV cache at the listed context. Last updated 2026-06-12.</p>
   </div>
 </main>
 
@@ -270,24 +272,39 @@ const RK_QUANTS = [
 const RK_RETENTION = [1, 0.985, 0.95, 0.87]; // estimated score retention per loss tier
 const RK_FRONTIER_TOP = 64.9; // Claude Fable 5
 
-/* p = total params (B), a = active (B), score = AA Index (full precision),
-   ctxK = native context in K tokens (1024 = 1M), kvN = KV GB (INT8) at native ctx. */
+/* p = total params (B), a = active (B; = p when dense or undisclosed),
+   score = AA Index (full precision), ctxK = native context in K tokens
+   (1024 = 1M), kvN = KV GB (INT8) at native ctx (estimated for models
+   not on the original hand-built tables), est = score is our estimate
+   (below AA's top-50 cutoff, not AA-ranked). */
 const RK_MODELS = [
-  { name: "MiniMax-M2.7",                        lab: "MiniMax",   p: 228,  a: 10,   score: 49.6, ctxK: 200,  kvN: 12.6 },
-  { name: "MiMo-V2.5",                           lab: "Xiaomi",    p: 312,  a: 17,   score: 49.0, ctxK: 1024, kvN: 56 },
-  { name: "DeepSeek V4 Flash (Reasoning, Max)",  lab: "DeepSeek",  p: 284,  a: 14,   score: 46.5, ctxK: 1024, kvN: 20.8 },
-  { name: "DeepSeek V4 Flash (Reasoning, High)", lab: "DeepSeek",  p: 284,  a: 14,   score: 46.0, ctxK: 1024, kvN: 20.8 },
-  { name: "Qwen3.6 27B (Reasoning)",             lab: "Alibaba",   p: 27,   a: 27,   score: 45.8, ctxK: 262,  kvN: 8.2 },
-  { name: "KAT Coder Pro V2",                    lab: "KwaiKAT",   p: 28.5, a: 28.5, score: 43.8, ctxK: 256,  kvN: 8 },
-  { name: "Qwen3.6 35B A3B (Reasoning)",         lab: "Alibaba",   p: 33.5, a: 3.3,  score: 43.5, ctxK: 262,  kvN: 6.2 },
-  { name: "Step 3.7 Flash",                      lab: "StepFun",   p: 196,  a: 7,    score: 42.6, ctxK: 256,  kvN: 3.2 },
-  { name: "GLM-4.7 (Reasoning)",                 lab: "Z AI",      p: 47.6, a: 47.6, score: 42.1, ctxK: 256,  kvN: 6.4 },
-  { name: "Qwen3.5 27B (Reasoning)",             lab: "Alibaba",   p: 27,   a: 27,   score: 42.1, ctxK: 262,  kvN: 8.2 },
-  { name: "Hy3-preview (Reasoning)",             lab: "Tencent",   p: 296,  a: 13,   score: 41.9, ctxK: 256,  kvN: 14 },
-  { name: "MiniMax-M2.5",                        lab: "MiniMax",   p: 228,  a: 10,   score: 41.9, ctxK: 200,  kvN: 12.6 },
-  { name: "Qwen3.5 122B A10B (Reasoning)",       lab: "Alibaba",   p: 122,  a: 10,   score: 41.6, ctxK: 262,  kvN: 8.2 },
-  { name: "MiMo-V2-Flash (Feb 2026)",            lab: "Xiaomi",    p: 308,  a: 15,   score: 41.5, ctxK: 256,  kvN: 14 },
-  { name: "MiniMax-M2.1",                        lab: "MiniMax",   p: 228,  a: 10,   score: 39.4, ctxK: 200,  kvN: 12.6 },
+  { name: "Kimi K2.6",                          lab: "Kimi",      p: 1000, a: 32,   score: 53.9, ctxK: 256,  kvN: 10 },
+  { name: "MiMo-V2.5-Pro",                      lab: "Xiaomi",    p: 1020, a: 42,   score: 53.8, ctxK: 1024, kvN: 56 },
+  { name: "GLM-5.1 (Reasoning)",                lab: "Z AI",      p: 754,  a: 754,  score: 51.4, ctxK: 200,  kvN: 12 },
+  { name: "GLM-5 (Reasoning)",                  lab: "Z AI",      p: 744,  a: 744,  score: 49.8, ctxK: 200,  kvN: 12 },
+  { name: "MiniMax-M2.7",                       lab: "MiniMax",   p: 229,  a: 229,  score: 49.6, ctxK: 200,  kvN: 12.6 },
+  { name: "MiMo-V2.5",                          lab: "Xiaomi",    p: 310,  a: 15,   score: 49.0, ctxK: 1024, kvN: 56 },
+  { name: "Nemotron 3 Ultra 550B A55B (Reasoning)", lab: "NVIDIA", p: 550, a: 55,   score: 47.7, ctxK: 262,  kvN: 14 },
+  { name: "GLM-5-Turbo",                        lab: "Z AI",      p: 500,  a: 500,  score: 46.8, ctxK: 200,  kvN: 12 },
+  { name: "Kimi K2.5 (Reasoning)",              lab: "Kimi",      p: 1000, a: 32,   score: 46.8, ctxK: 256,  kvN: 10 },
+  { name: "DeepSeek V4 Flash (Reasoning)",      lab: "DeepSeek",  p: 284,  a: 13,   score: 46.5, ctxK: 1024, kvN: 20.8 },
+  { name: "Qwen3.6 27B (Reasoning)",            lab: "Alibaba",   p: 28,   a: 28,   score: 45.8, ctxK: 262,  kvN: 8.2 },
+  { name: "Qwen3.5 397B A17B (Reasoning)",      lab: "Alibaba",   p: 403,  a: 17,   score: 45.0, ctxK: 262,  kvN: 12 },
+  { name: "KAT Coder Pro V2",                   lab: "KwaiKAT",   p: 30,   a: 30,   score: 43.8, ctxK: 256,  kvN: 8 },
+  { name: "Qwen3.6 35B A3B (Reasoning)",        lab: "Alibaba",   p: 35,   a: 3,    score: 43.5, ctxK: 262,  kvN: 6.2 },
+  { name: "Step 3.7 Flash",                     lab: "StepFun",   p: 196,  a: 11,   score: 42.6, ctxK: 256,  kvN: 3.2 },
+  { name: "GLM-4.7 (Reasoning)",                lab: "Z AI",      p: 50,   a: 50,   score: 42.1, ctxK: 256,  kvN: 6.4 },
+  { name: "Qwen3.5 27B (Reasoning)",            lab: "Alibaba",   p: 28,   a: 28,   score: 42.1, ctxK: 262,  kvN: 8.2 },
+  { name: "Hy3-preview (Reasoning)",            lab: "Tencent",   p: 295,  a: 21,   score: 41.9, ctxK: 256,  kvN: 14 },
+  { name: "MiniMax-M2.5",                       lab: "MiniMax",   p: 229,  a: 229,  score: 41.9, ctxK: 200,  kvN: 12.6 },
+  { name: "Qwen3.5 122B A10B (Reasoning)",      lab: "Alibaba",   p: 128,  a: 10,   score: 41.6, ctxK: 262,  kvN: 8.2 },
+  { name: "MiMo-V2-Flash (Feb 2026)",           lab: "Xiaomi",    p: 309,  a: 15,   score: 41.5, ctxK: 256,  kvN: 14 },
+  { name: "MiniMax-M2.1",                       lab: "MiniMax",   p: 229,  a: 229,  score: 39.4, ctxK: 200,  kvN: 12.6 },
+  { name: "Qwen3.6 14B (Reasoning)",            lab: "Alibaba",   p: 14,   a: 14,   score: 38.5, ctxK: 262,  kvN: 5,   est: true },
+  { name: "Gemma 4 26B-A4B",                    lab: "Google",    p: 26,   a: 4,    score: 36.0, ctxK: 128,  kvN: 4,   est: true },
+  { name: "Qwen3.6 9B (Reasoning)",             lab: "Alibaba",   p: 9,    a: 9,    score: 34.5, ctxK: 262,  kvN: 4,   est: true },
+  { name: "Gemma 4 9B",                         lab: "Google",    p: 9,    a: 9,    score: 32.0, ctxK: 128,  kvN: 3,   est: true },
+  { name: "Qwen3.6 4B (Reasoning)",             lab: "Alibaba",   p: 4,    a: 4,    score: 28.0, ctxK: 262,  kvN: 2.5, est: true },
 ];
 
 /* Hardware. mem = GB, bw = memory bandwidth GB/s. */
@@ -606,9 +623,9 @@ function rkRenderTable() {
     tr.className = "rowx" + (i === 0 ? " pick" : "");
     tr.innerHTML = `
       <td class="num">${i + 1}</td>
-      <td class="l"><span class="mname"></span><span class="mlab"></span>${i === 0 ? '<span class="tag pick">★ Pick</span>' : ""}</td>
+      <td class="l"><span class="mname"></span><span class="mlab"></span>${i === 0 ? '<span class="tag pick">★ Pick</span>' : ""}${r.model.est ? '<span class="tag est">est. score</span>' : ""}</td>
       <td class="num"><span class="score-v${i === 0 ? " best" : ""}">${r.model.score.toFixed(1)}</span></td>
-      <td class="num hide">${rkPct(r.model.score)}%</td>
+      <td class="num hide">${rkPct(b.eff)}%</td>
       <td><span class="quant${b.loss >= 2 ? " lossy" : ""}">${b.quant}</span></td>
       <td class="num hide">${rkCtxFmt(b.ctxK)}${b.capped ? `<i class="cap" title="Capped by memory — native context is ${rkCtxFmt(r.model.ctxK)}">*</i>` : ""}</td>
       <td class="num">~${b.vram} GB</td>
@@ -642,7 +659,7 @@ function rkRenderTable() {
     const pick = rows[0];
     reco.hidden = false;
     document.getElementById("rk-reco-text").innerHTML =
-      `<b></b> ≈ <span class="mono">${pick.best.vram} GB</span> · ${rkCtxFmt(pick.best.ctxK)} context · ${rkPct(pick.model.score)}% of frontier`;
+      `<b></b> ≈ <span class="mono">${pick.best.vram} GB</span> · ${rkCtxFmt(pick.best.ctxK)} context · ${rkPct(pick.best.eff)}% of frontier`;
     reco.querySelector("b").textContent = `${pick.model.name} @ ${pick.best.quant}`;
   } else {
     reco.hidden = true;
