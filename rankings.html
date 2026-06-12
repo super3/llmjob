@@ -66,6 +66,7 @@
   .rk-tier .tr:hover { background: var(--bg-2); color: var(--ink); }
   .rk-tier .tr.on { background: var(--accent); color: #fff; border-right-color: var(--accent); }
   .rk-tier .tr.on i { color: color-mix(in srgb, #fff 75%, transparent); }
+  .rk-count { margin-top: 11px; border-top: 1px solid var(--line); }
 
   /* ---- selected summary ---- */
   .rk-sum { display: flex; align-items: center; gap: 11px; flex-wrap: wrap; margin: 26px 0 0; padding-bottom: 14px; border-bottom: 2px solid var(--ink); }
@@ -160,6 +161,7 @@
     <div class="rk-selector">
       <div class="rk-tabs" id="rk-tabs"></div>
       <div class="rk-strips" id="rk-strips"></div>
+      <div class="rk-strips rk-count" id="rk-count" hidden></div>
     </div>
 
     <div class="rk-sum">
@@ -171,7 +173,7 @@
     </div>
 
     <div class="rk-note">
-      Fit is <b>estimated</b> from memory — nothing has been benchmarked on the network yet. Scores are full-precision (API-measured).
+      Fit is <b>estimated</b> from memory — nothing has been benchmarked on the network yet. Scores are full-precision (API-measured).<span id="rk-multi-note" hidden> Multi-GPU assumes the model is split across cards (tensor/pipeline parallel), with ~1 GB reserved per card.</span>
     </div>
     <div class="tbl-wrap">
       <table class="q rk">
@@ -420,10 +422,11 @@ const RK_GPU_ROWS = {
 /* ---- fit estimation ---- */
 const RK_OV = 0.5; // GB runtime overhead
 const RK_CTX_SNAP = [8, 16, 32, 64, 128, 192, 256, 512, 1024];
-const rkUsable = (hw) =>
+const RK_GPU_COUNTS = [1, 2, 3, 4, 6, 8];
+const rkUsable = (hw, count = 1) =>
   hw.type === "apple" ? hw.mem * 0.72 :
   hw.type === "cpu"   ? hw.mem * 0.60 :
-  hw.mem - 1;
+  (hw.mem - 1) * count;
 const rkPct = (s) => Math.round((s / RK_FRONTIER_TOP) * 100);
 const rkCtxFmt = (k) => k >= 1024 ? "1M" : `${k}K`;
 
@@ -449,8 +452,8 @@ function rkConfig(m, q, usable) {
   };
 }
 
-function rkRank(hw) {
-  const usable = rkUsable(hw);
+function rkRank(hw, count = 1) {
+  const usable = rkUsable(hw, count);
   const rows = RK_MODELS.map(m => {
     const all = RK_QUANTS.map(q => rkConfig(m, q, usable)).filter(Boolean);
     if (!all.length) return null;
@@ -465,15 +468,21 @@ function rkRank(hw) {
    =========================================================== */
 const CHEV = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg>';
 
-let rkHw = (() => {
-  try {
-    const saved = JSON.parse(localStorage.getItem("llmjob-rankings-hw") || "null");
-    if (saved && rkFind(saved.id)) return rkFind(saved.id);
-  } catch (e) {}
-  return rkFind("rtx-3060");
-})();
+let rkHw = null, rkCount = 1;
+try {
+  const saved = JSON.parse(localStorage.getItem("llmjob-rankings-hw") || "null");
+  if (saved && rkFind(saved.id)) {
+    rkHw = rkFind(saved.id);
+    if (rkHw.type === "gpu" && RK_GPU_COUNTS.includes(saved.count)) rkCount = saved.count;
+  }
+} catch (e) {}
+if (!rkHw) rkHw = rkFind("rtx-3060");
 let rkTab = rkHw.group;
 let rkOpenName = null;
+
+function rkSave() {
+  try { localStorage.setItem("llmjob-rankings-hw", JSON.stringify({ id: rkHw.id, count: rkCount })); } catch (e) {}
+}
 
 function rkTiersFor(tab) {
   if (RK_GPU_ROWS[tab]) {
@@ -538,20 +547,57 @@ function rkRenderStrips() {
   });
 }
 
+function rkRenderCount() {
+  const el = document.getElementById("rk-count");
+  el.hidden = rkHw.type !== "gpu";
+  el.innerHTML = "";
+  if (el.hidden) return;
+  const tier = document.createElement("div");
+  tier.className = "rk-tier";
+  const tn = document.createElement("span");
+  tn.className = "tn";
+  tn.textContent = "GPUs";
+  tier.appendChild(tn);
+  RK_GPU_COUNTS.forEach(n => {
+    const b = document.createElement("button");
+    b.className = "tr" + (rkCount === n ? " on" : "");
+    b.textContent = `${n}×`;
+    if (n > 1) {
+      const i = document.createElement("i");
+      i.textContent = `${rkHw.mem * n}GB`;
+      b.appendChild(i);
+    }
+    b.onclick = () => {
+      rkCount = n;
+      rkOpenName = null;
+      rkSave();
+      rkRenderCount();
+      rkRenderSummary();
+      rkRenderTable();
+    };
+    tier.appendChild(b);
+  });
+  el.appendChild(tier);
+}
+
 function rkRenderSummary() {
   const kind = rkHw.type === "apple" ? "unified memory" : rkHw.type === "cpu" ? "system RAM" : "VRAM";
-  document.getElementById("rk-sum-name").textContent = rkHw.name;
-  document.getElementById("rk-sum-meta").textContent = `${rkHw.mem} GB ${kind}`;
+  const multi = rkHw.type === "gpu" && rkCount > 1;
+  document.getElementById("rk-sum-name").textContent = multi ? `${rkCount}× ${rkHw.name}` : rkHw.name;
+  document.getElementById("rk-sum-meta").textContent = multi
+    ? `${rkHw.mem * rkCount} GB ${kind} (${rkCount} × ${rkHw.mem} GB)`
+    : `${rkHw.mem} GB ${kind}`;
+  document.getElementById("rk-multi-note").hidden = !multi;
 }
 
 function rkRenderTable() {
-  const rows = rkRank(rkHw);
+  const rows = rkRank(rkHw, rkHw.type === "gpu" ? rkCount : 1);
   const tbody = document.getElementById("rk-rows");
   tbody.innerHTML = "";
 
   if (!rows.length) {
     const tr = document.createElement("tr");
-    tr.innerHTML = '<td colspan="8" class="empty">Nothing fits this memory budget — try a larger card or system RAM.</td>';
+    tr.innerHTML = '<td colspan="8" class="empty">Nothing fits this memory budget — try a larger card, more GPUs, or system RAM.</td>';
     tbody.appendChild(tr);
   }
 
@@ -607,15 +653,18 @@ function rkRenderTable() {
 
 function rkPick(h) {
   rkHw = h;
+  if (h.type !== "gpu") rkCount = 1;
   rkOpenName = null;
-  try { localStorage.setItem("llmjob-rankings-hw", JSON.stringify({ id: h.id })); } catch (e) {}
+  rkSave();
   rkRenderStrips();
+  rkRenderCount();
   rkRenderSummary();
   rkRenderTable();
 }
 
 rkRenderTabs();
 rkRenderStrips();
+rkRenderCount();
 rkRenderSummary();
 rkRenderTable();
 
