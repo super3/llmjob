@@ -59,6 +59,7 @@
 
   /* compact strip grid */
   .rk-strips { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 11px; }
+  .rk-strips .rk-br { flex-basis: 100%; height: 0; }
   .rk-tier { display: inline-flex; flex-wrap: wrap; align-items: stretch; max-width: 100%; border: 1px solid var(--line-2); border-radius: 7px; overflow: hidden; background: #fff; }
   .rk-tier .tn { display: inline-flex; align-items: center; font-family: "IBM Plex Mono", monospace; font-size: 11.5px; font-weight: 500; color: var(--ink-2); padding: 6px 10px; border-right: 1px solid var(--line); background: var(--bg-2); white-space: nowrap; }
   .rk-tier .tr { display: inline-flex; align-items: baseline; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--ink-2); background: #fff; border: none; border-right: 1px solid var(--line); padding: 6px 10px; white-space: nowrap; transition: background .12s, color .12s; }
@@ -429,8 +430,7 @@ const RK_GPU_ROWS = {
   ],
   AMD: [
     { label: "RX 9000", ids: ["rx-9070xt", "rx-9070", "rx-9070gre", "rx-9060xt16", "rx-9060xt", "rx-9060"] },
-    { label: "RX 7000", ids: ["rx-7900xtx", "rx-7900xt", "rx-7900gre", "rx-7800xt", "rx-7700xt", "rx-7600xt"] },
-    { label: null,      ids: ["rx-7600"] },
+    { label: "RX 7000", ids: ["rx-7900xtx", "rx-7900xt", "rx-7900gre", "rx-7800xt", "rx-7700xt", "rx-7600xt", "rx-7600"] },
     { label: "RX 6000", ids: ["rx-6950xt", "rx-6900xt", "rx-6800xt", "rx-6800", "rx-6750xt", "rx-6700xt"] },
     { label: null,      ids: ["rx-6700", "rx-6650xt", "rx-6600xt", "rx-6600"] },
     { label: "RX 5000", ids: ["rx-5700xt", "rx-5700", "rx-5600xt"] },
@@ -546,7 +546,13 @@ function rkRenderTabs() {
 function rkRenderStrips() {
   const el = document.getElementById("rk-strips");
   el.innerHTML = "";
-  rkTiersFor(rkTab).forEach(t => {
+  const lineBreaks = !!RK_GPU_ROWS[rkTab]; // one series row per line
+  rkTiersFor(rkTab).forEach((t, idx) => {
+    if (lineBreaks && idx > 0) {
+      const br = document.createElement("span");
+      br.className = "rk-br";
+      el.appendChild(br);
+    }
     const tier = document.createElement("div");
     tier.className = "rk-tier";
     if (t.label) {
