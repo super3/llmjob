@@ -59,7 +59,7 @@
 
   /* compact strip grid */
   .rk-strips { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 11px; }
-  .rk-strips .rk-br { flex-basis: 100%; height: 0; }
+  .rk-strips .rk-series { display: inline-flex; flex-wrap: wrap; gap: 6px; max-width: 100%; }
   .rk-tier { display: inline-flex; flex-wrap: wrap; align-items: stretch; max-width: 100%; border: 1px solid var(--line-2); border-radius: 7px; overflow: hidden; background: #fff; }
   .rk-tier .tn { display: inline-flex; align-items: center; font-family: "IBM Plex Mono", monospace; font-size: 11.5px; font-weight: 500; color: var(--ink-2); padding: 6px 10px; border-right: 1px solid var(--line); background: var(--bg-2); white-space: nowrap; }
   .rk-tier .tr { display: inline-flex; align-items: baseline; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--ink-2); background: #fff; border: none; border-right: 1px solid var(--line); padding: 6px 10px; white-space: nowrap; transition: background .12s, color .12s; }
@@ -546,12 +546,20 @@ function rkRenderTabs() {
 function rkRenderStrips() {
   const el = document.getElementById("rk-strips");
   el.innerHTML = "";
-  const lineBreaks = !!RK_GPU_ROWS[rkTab]; // one series row per line
-  rkTiersFor(rkTab).forEach((t, idx) => {
-    if (lineBreaks && idx > 0) {
-      const br = document.createElement("span");
-      br.className = "rk-br";
-      el.appendChild(br);
+  /* On GPU tabs, a labeled strip and its unlabeled overflow strips form one
+     series; wrapping them together lets small series share a line while
+     keeping overflow strips attached to their series. */
+  const grouped = !!RK_GPU_ROWS[rkTab];
+  let series = null;
+  rkTiersFor(rkTab).forEach(t => {
+    let parent = el;
+    if (grouped) {
+      if (t.label || !series) {
+        series = document.createElement("div");
+        series.className = "rk-series";
+        el.appendChild(series);
+      }
+      parent = series;
     }
     const tier = document.createElement("div");
     tier.className = "rk-tier";
@@ -573,7 +581,7 @@ function rkRenderStrips() {
       b.onclick = () => rkPick(rkFind(it.id));
       tier.appendChild(b);
     });
-    el.appendChild(tier);
+    parent.appendChild(tier);
   });
 }
 
