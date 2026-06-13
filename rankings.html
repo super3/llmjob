@@ -57,15 +57,15 @@
   .rk-tab:hover { background: var(--bg-2); }
   .rk-tab.on { background: var(--ink); color: var(--bg); }
 
-  /* compact strip grid */
+  /* compact connected strips — each section is one rounded strip of joined
+     segments (dark label + cards); strips wrap and pack onto shared rows. */
   .rk-strips { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 11px; }
   .rk-tier { display: inline-flex; flex-wrap: wrap; align-items: stretch; max-width: 100%; border: 1px solid var(--line-2); border-radius: 7px; overflow: hidden; background: #fff; }
-  .rk-tier .tn { display: inline-flex; align-items: center; font-family: "IBM Plex Mono", monospace; font-size: 11.5px; font-weight: 500; color: var(--ink-2); padding: 6px 10px; border-right: 1px solid var(--line); background: var(--bg-2); white-space: nowrap; }
-  .rk-tier .tr { display: inline-flex; align-items: baseline; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--ink-2); background: #fff; border: none; border-right: 1px solid var(--line); padding: 6px 10px; white-space: nowrap; transition: background .12s, color .12s; }
-  .rk-tier .tr:last-child { border-right: none; }
+  .rk-tier .tn { display: inline-flex; align-items: center; font-family: "IBM Plex Mono", monospace; font-size: 11.5px; font-weight: 500; color: var(--bg); padding: 6px 11px; background: var(--ink); white-space: nowrap; }
+  .rk-tier .tr { display: inline-flex; align-items: baseline; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--ink-2); background: #fff; border: none; border-left: 1px solid var(--line); padding: 6px 10px; white-space: nowrap; transition: background .12s, color .12s; }
   .rk-tier .tr i { font-style: normal; font-size: 10px; color: var(--ink-3); margin-left: 3px; }
   .rk-tier .tr:hover { background: var(--bg-2); color: var(--ink); }
-  .rk-tier .tr.on { background: var(--accent); color: #fff; border-right-color: var(--accent); }
+  .rk-tier .tr.on { background: var(--accent); color: #fff; }
   .rk-tier .tr.on i { color: color-mix(in srgb, #fff 75%, transparent); }
   .rk-count { margin-left: auto; }
 
@@ -328,18 +328,34 @@ const RK_HARDWARE = [
   ]},
   { group: "Apple", items: [] /* generated from RK_APPLE below */ },
   { group: "AMD", items: [
+    { id: "rx-9070xt",  name: "RX 9070 XT",  mem: 16, bw: 645, type: "gpu" },
+    { id: "rx-9070",    name: "RX 9070",     mem: 16, bw: 645, type: "gpu" },
+    { id: "rx-9070gre", name: "RX 9070 GRE", mem: 12, bw: 432, type: "gpu" },
+    { id: "rx-9060xt16",name: "RX 9060 XT",  mem: 16, bw: 320, type: "gpu" },
+    { id: "rx-9060xt",  name: "RX 9060 XT",  mem: 8,  bw: 320, type: "gpu" },
+    { id: "rx-9060",    name: "RX 9060",     mem: 8,  bw: 320, type: "gpu" },
     { id: "rx-7900xtx", name: "RX 7900 XTX", mem: 24, bw: 960, type: "gpu" },
     { id: "rx-7900xt",  name: "RX 7900 XT",  mem: 20, bw: 800, type: "gpu" },
     { id: "rx-7900gre", name: "RX 7900 GRE", mem: 16, bw: 576, type: "gpu" },
     { id: "rx-7800xt",  name: "RX 7800 XT",  mem: 16, bw: 624, type: "gpu" },
     { id: "rx-7700xt",  name: "RX 7700 XT",  mem: 12, bw: 432, type: "gpu" },
+    { id: "rx-7600xt",  name: "RX 7600 XT",  mem: 16, bw: 288, type: "gpu" },
     { id: "rx-7600",    name: "RX 7600",     mem: 8,  bw: 288, type: "gpu" },
     { id: "rx-6950xt",  name: "RX 6950 XT",  mem: 16, bw: 576, type: "gpu" },
     { id: "rx-6900xt",  name: "RX 6900 XT",  mem: 16, bw: 512, type: "gpu" },
     { id: "rx-6800xt",  name: "RX 6800 XT",  mem: 16, bw: 512, type: "gpu" },
     { id: "rx-6800",    name: "RX 6800",     mem: 16, bw: 512, type: "gpu" },
+    { id: "rx-6750xt",  name: "RX 6750 XT",  mem: 12, bw: 432, type: "gpu" },
     { id: "rx-6700xt",  name: "RX 6700 XT",  mem: 12, bw: 384, type: "gpu" },
+    { id: "rx-6700",    name: "RX 6700",     mem: 10, bw: 320, type: "gpu" },
+    { id: "rx-6650xt",  name: "RX 6650 XT",  mem: 8,  bw: 280, type: "gpu" },
+    { id: "rx-6600xt",  name: "RX 6600 XT",  mem: 8,  bw: 256, type: "gpu" },
     { id: "rx-6600",    name: "RX 6600",     mem: 8,  bw: 224, type: "gpu" },
+    { id: "rx-5700xt",  name: "RX 5700 XT",  mem: 8,  bw: 448, type: "gpu" },
+    { id: "rx-5700",    name: "RX 5700",     mem: 8,  bw: 448, type: "gpu" },
+    { id: "rx-5600xt",  name: "RX 5600 XT",  mem: 6,  bw: 288, type: "gpu" },
+    { id: "radeon-vii", name: "Radeon VII",  mem: 16, bw: 1024, type: "gpu" },
+    { id: "rx-580",     name: "RX 580",      mem: 8,  bw: 256, type: "gpu" },
   ]},
   { group: "Intel", items: [
     { id: "arc-pro-b70", name: "Arc Pro B70", mem: 32, bw: 608, type: "gpu" },
@@ -412,8 +428,12 @@ const RK_GPU_ROWS = {
     { label: "GTX",    ids: ["gtx-1660s", "gtx-1080ti", "gtx-1070", "gtx-1060"] },
   ],
   AMD: [
-    { label: "RX 7000", ids: ["rx-7900xtx", "rx-7900xt", "rx-7900gre", "rx-7800xt", "rx-7700xt", "rx-7600"] },
-    { label: "RX 6000", ids: ["rx-6950xt", "rx-6900xt", "rx-6800xt", "rx-6800", "rx-6700xt", "rx-6600"] },
+    { label: "RX 9000", ids: ["rx-9070xt", "rx-9070", "rx-9070gre", "rx-9060xt16", "rx-9060xt", "rx-9060"] },
+    { label: "RX 7000", ids: ["rx-7900xtx", "rx-7900xt", "rx-7900gre", "rx-7800xt", "rx-7700xt", "rx-7600xt", "rx-7600"] },
+    { label: "RX 6000", ids: ["rx-6950xt", "rx-6900xt", "rx-6800xt", "rx-6800", "rx-6750xt", "rx-6700xt"] },
+    { label: null,      ids: ["rx-6700", "rx-6650xt", "rx-6600xt", "rx-6600"] },
+    { label: "RX 5000", ids: ["rx-5700xt", "rx-5700", "rx-5600xt"] },
+    { label: "Older",   ids: ["radeon-vii", "rx-580"] },
   ],
   Intel: [
     { label: "Arc Pro", ids: ["arc-pro-b70", "arc-pro-b65", "arc-pro-b60", "arc-pro-b50"] },
@@ -525,9 +545,17 @@ function rkRenderTabs() {
 function rkRenderStrips() {
   const el = document.getElementById("rk-strips");
   el.innerHTML = "";
+  /* On GPU tabs each section is one connected strip; an unlabeled (overflow)
+     row continues the previous section's strip, while every labeled row starts
+     a new one. Strips wrap and pack onto shared rows. */
+  const sections = !!RK_GPU_ROWS[rkTab];
+  let tier = null;
   rkTiersFor(rkTab).forEach(t => {
-    const tier = document.createElement("div");
-    tier.className = "rk-tier";
+    if (!sections || t.label || !tier) {
+      tier = document.createElement("div");
+      tier.className = "rk-tier";
+      el.appendChild(tier);
+    }
     if (t.label) {
       const tn = document.createElement("span");
       tn.className = "tn";
@@ -546,7 +574,6 @@ function rkRenderStrips() {
       b.onclick = () => rkPick(rkFind(it.id));
       tier.appendChild(b);
     });
-    el.appendChild(tier);
   });
 }
 
