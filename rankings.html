@@ -57,15 +57,15 @@
   .rk-tab:hover { background: var(--bg-2); }
   .rk-tab.on { background: var(--ink); color: var(--bg); }
 
-  /* compact pill grid — each card/label is its own chip so they pack tightly
-     across every line while series labels mark where each series begins. */
+  /* compact connected strips — each section is one rounded strip of joined
+     segments (dark label + cards); strips wrap and pack onto shared rows. */
   .rk-strips { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 11px; }
-  .rk-tier { display: contents; }
-  .rk-tier .tn { display: inline-flex; align-items: center; font-family: "IBM Plex Mono", monospace; font-size: 11.5px; font-weight: 500; color: var(--bg); padding: 6px 11px; border: 1px solid var(--ink); border-radius: 7px; background: var(--ink); white-space: nowrap; }
-  .rk-tier .tr { display: inline-flex; align-items: baseline; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--ink-2); background: #fff; border: 1px solid var(--line-2); border-radius: 7px; padding: 6px 10px; white-space: nowrap; transition: background .12s, color .12s, border-color .12s; }
+  .rk-tier { display: inline-flex; flex-wrap: wrap; align-items: stretch; max-width: 100%; border: 1px solid var(--line-2); border-radius: 7px; overflow: hidden; background: #fff; }
+  .rk-tier .tn { display: inline-flex; align-items: center; font-family: "IBM Plex Mono", monospace; font-size: 11.5px; font-weight: 500; color: var(--bg); padding: 6px 11px; background: var(--ink); white-space: nowrap; }
+  .rk-tier .tr { display: inline-flex; align-items: baseline; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--ink-2); background: #fff; border: none; border-left: 1px solid var(--line); padding: 6px 10px; white-space: nowrap; transition: background .12s, color .12s; }
   .rk-tier .tr i { font-style: normal; font-size: 10px; color: var(--ink-3); margin-left: 3px; }
-  .rk-tier .tr:hover { background: var(--bg-2); color: var(--ink); border-color: var(--ink-3); }
-  .rk-tier .tr.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .rk-tier .tr:hover { background: var(--bg-2); color: var(--ink); }
+  .rk-tier .tr.on { background: var(--accent); color: #fff; }
   .rk-tier .tr.on i { color: color-mix(in srgb, #fff 75%, transparent); }
   .rk-count { margin-left: auto; }
 
@@ -545,13 +545,13 @@ function rkRenderTabs() {
 function rkRenderStrips() {
   const el = document.getElementById("rk-strips");
   el.innerHTML = "";
-  /* On GPU tabs, render every series into one continuous wrapping strip so
-     cards fill each line regardless of series boundaries; the grey label
-     segments mark where each series begins. Other tabs keep one strip per row. */
-  const oneStrip = !!RK_GPU_ROWS[rkTab];
+  /* On GPU tabs each section is one connected strip; an unlabeled (overflow)
+     row continues the previous section's strip, while every labeled row starts
+     a new one. Strips wrap and pack onto shared rows. */
+  const sections = !!RK_GPU_ROWS[rkTab];
   let tier = null;
   rkTiersFor(rkTab).forEach(t => {
-    if (!oneStrip || !tier) {
+    if (!sections || t.label || !tier) {
       tier = document.createElement("div");
       tier.className = "rk-tier";
       el.appendChild(tier);
