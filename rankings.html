@@ -57,17 +57,29 @@
   .rk-tab:hover { background: var(--bg-2); }
   .rk-tab.on { background: var(--ink); color: var(--bg); }
 
-  /* compact connected strips — each section is one rounded strip of joined
-     segments (dark label + cards); strips wrap and pack onto shared rows. */
-  .rk-strips { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 11px; }
-  .rk-tier { display: inline-flex; flex-wrap: wrap; align-items: stretch; max-width: 100%; border: 1px solid var(--line-2); border-radius: 7px; overflow: hidden; background: #fff; }
-  .rk-tier .tn { display: inline-flex; align-items: center; font-family: "IBM Plex Mono", monospace; font-size: 11.5px; font-weight: 500; color: var(--bg); padding: 6px 11px; background: var(--ink); white-space: nowrap; }
-  .rk-tier .tr { display: inline-flex; align-items: baseline; justify-content: center; flex-grow: 1; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--ink-2); background: #fff; border: none; border-left: 1px solid var(--line); padding: 6px 10px; white-space: nowrap; transition: background .12s, color .12s; }
-  .rk-tier .tr i { font-style: normal; font-size: 10px; color: var(--ink-3); margin-left: 3px; }
-  .rk-tier .tr:hover { background: var(--bg-2); color: var(--ink); }
-  .rk-tier .tr.on { background: var(--accent); color: #fff; }
-  .rk-tier .tr.on i { color: color-mix(in srgb, #fff 75%, transparent); }
+  /* Hardware grid: cards keep their natural size and flow as one continuous
+     stream so every line fills. Cards within a series are joined (shared
+     borders, rounded ends); a dark label + small gap marks each series. */
+  .rk-strips { display: flex; flex-wrap: wrap; row-gap: 6px; column-gap: 0; align-items: stretch; padding-top: 11px; }
+  .rk-tier { display: contents; }
+  .rk-strips .tn { display: inline-flex; align-items: center; font-family: "IBM Plex Mono", monospace; font-size: 11.5px; font-weight: 500; color: var(--bg); padding: 6px 11px; background: var(--ink); border-radius: 7px 0 0 7px; margin-left: 7px; white-space: nowrap; }
+  .rk-strips > .tn:first-child { margin-left: 0; }
+  .rk-strips .tr { display: inline-flex; align-items: baseline; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--ink-2); background: #fff; border: 1px solid var(--line-2); margin-left: -1px; padding: 6px 10px; white-space: nowrap; transition: background .12s, color .12s, border-color .12s; }
+  .rk-strips .tn + .tr { margin-left: 0; }
+  .rk-strips .tr:has(+ .tn) { border-radius: 0 7px 7px 0; }
+  .rk-strips .tr:last-child { border-radius: 0 7px 7px 0; }
+  .rk-strips .tr i { font-style: normal; font-size: 10px; color: var(--ink-3); margin-left: 3px; }
+  .rk-strips .tr:hover { background: var(--bg-2); color: var(--ink); border-color: var(--ink-3); position: relative; z-index: 1; }
+  .rk-strips .tr.on { background: var(--accent); color: #fff; border-color: var(--accent); position: relative; z-index: 1; }
+  .rk-strips .tr.on i { color: color-mix(in srgb, #fff 75%, transparent); }
+
+  /* GPU-count selector stays one self-contained connected strip */
   .rk-count { margin-left: auto; }
+  .rk-count .rk-tier { display: inline-flex; align-items: stretch; border: 1px solid var(--line-2); border-radius: 7px; overflow: hidden; background: #fff; }
+  .rk-count .tn { display: inline-flex; align-items: center; font-family: "IBM Plex Mono", monospace; font-size: 11.5px; font-weight: 500; color: var(--bg); padding: 6px 11px; background: var(--ink); white-space: nowrap; }
+  .rk-count .tr { display: inline-flex; align-items: baseline; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--ink-2); background: #fff; border: none; border-left: 1px solid var(--line); padding: 6px 11px; white-space: nowrap; transition: background .12s, color .12s; }
+  .rk-count .tr:hover { background: var(--bg-2); color: var(--ink); }
+  .rk-count .tr.on { background: var(--accent); color: #fff; }
 
   /* ---- selected summary ---- */
   .rk-sum { display: flex; align-items: center; gap: 11px; flex-wrap: wrap; margin: 26px 0 0; padding-bottom: 14px; border-bottom: 2px solid var(--ink); }
@@ -545,22 +557,15 @@ function rkRenderTabs() {
 function rkRenderStrips() {
   const el = document.getElementById("rk-strips");
   el.innerHTML = "";
-  /* On GPU tabs each section is one connected strip; an unlabeled (overflow)
-     row continues the previous section's strip, while every labeled row starts
-     a new one. Strips wrap and pack onto shared rows. */
-  const sections = !!RK_GPU_ROWS[rkTab];
-  let tier = null;
+  /* Append every label and card as a flat sibling so cards flow as one
+     continuous stream (lines fill across series). A series label starts a new
+     run; an unlabeled (overflow) row just continues the previous run's cards. */
   rkTiersFor(rkTab).forEach(t => {
-    if (!sections || t.label || !tier) {
-      tier = document.createElement("div");
-      tier.className = "rk-tier";
-      el.appendChild(tier);
-    }
     if (t.label) {
       const tn = document.createElement("span");
       tn.className = "tn";
       tn.textContent = t.label;
-      tier.appendChild(tn);
+      el.appendChild(tn);
     }
     t.items.forEach(it => {
       const b = document.createElement("button");
@@ -572,7 +577,7 @@ function rkRenderStrips() {
         b.appendChild(i);
       }
       b.onclick = () => rkPick(rkFind(it.id));
-      tier.appendChild(b);
+      el.appendChild(b);
     });
   });
 }
