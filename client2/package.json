@@ -1,0 +1,36 @@
+{
+  "name": "llmjob-miner",
+  "version": "0.1.0",
+  "description": "LLMJob Miner — desktop GUI wrapper for the AlphaPool alpha-miner (Pearl / PRL). Paste a payout address and mine, no command line.",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "dist:win": "electron-builder --win"
+  },
+  "keywords": ["llmjob", "pearl", "prl", "mining", "alpha-miner", "electron", "gpu"],
+  "author": "super3",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "jest": "^30.0.5"
+  },
+  "build": {
+    "appId": "com.llmjob.miner",
+    "productName": "LLMJob Miner",
+    "files": ["src/**/*", "package.json"],
+    "win": {
+      "target": "nsis",
+      "artifactName": "LLMJob-Miner-${version}-win.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

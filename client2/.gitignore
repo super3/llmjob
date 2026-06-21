@@ -1,0 +1,8 @@
+node_modules/
+dist/
+coverage/
+*.log
+
+# Bundled miner engine binaries (downloaded at runtime / packaged separately)
+bin/
+*.exe

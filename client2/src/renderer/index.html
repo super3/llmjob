@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>LLMJob Miner</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div class="app">
+  <!-- HEADER -->
+  <div class="app-head">
+    <span class="brand">
+      <span class="bolt"><svg width="15" height="15" viewBox="0 0 24 24" fill="#fff"><path d="M13 2 L4 14 h6 l-1 8 10-13 h-7 l1-7 z"></path></svg></span>LLMJob
+    </span>
+    <button id="btn-settings" class="settings-pill" type="button">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+      Settings
+    </button>
+  </div>
+
+  <!-- MINER (setup / running) -->
+  <section id="view-miner">
+    <div class="field-label">
+      <span class="lbl">Payout Address</span>
+      <span class="meta">Balance: <b class="mono" id="balance">0.000</b><b class="prl">PRL</b> <span class="usd" id="balance-usd">≈ $0.00</span></span>
+    </div>
+    <input id="addr-input" class="field-box" type="text" spellcheck="false" placeholder="Paste your prl1p… address" />
+    <div id="addr-static" class="field-box mono" hidden></div>
+
+    <div class="field-label">
+      <span class="lbl">Total Hashrate</span>
+      <span class="meta" id="device-label">GPU · auto-detect</span>
+    </div>
+    <div class="chart-card">
+      <div class="chart-val">
+        <span class="num" id="hashrate">0.0</span>
+        <span class="unit">TH/s</span>
+      </div>
+      <svg viewBox="0 0 480 56" width="100%" height="40" preserveAspectRatio="none">
+        <defs><linearGradient id="mkFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2563eb" stop-opacity="0.18"></stop><stop offset="1" stop-color="#2563eb" stop-opacity="0"></stop></linearGradient></defs>
+        <path id="mk-area" d="M0 56 L0 55 L480 55 L480 56 Z" fill="url(#mkFill)"></path>
+        <path id="mk-line" d="M0 55 L480 55" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>
+      </svg>
+      <div class="mk-stats">
+        <div class="mk-stat"><div class="k">Accepted shares</div><div class="v" id="accepted">0</div></div>
+        <div class="mk-stat"><div class="k">Uptime</div><div class="v" id="uptime">0m 00s</div></div>
+        <div class="mk-stat"><div class="k">Est. earnings</div><div class="v accent"><span id="estday">$0.00</span><span class="day">/day</span></div></div>
+      </div>
+    </div>
+
+    <button id="btn-start" class="start-btn" type="button" disabled>START</button>
+    <button id="btn-stop" class="stop-btn" type="button" hidden><span class="dot"></span>STOP MINING</button>
+  </section>
+
+  <!-- SETTINGS -->
+  <section id="view-settings" hidden>
+    <div class="view-head"><span class="lbl">Settings</span><span class="back" data-back>← Back</span></div>
+
+    <div class="settings-section">Mining Device</div>
+    <div class="device-card">
+      <div class="device-left">
+        <span class="device-ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7" width="10" height="10" rx="2"></rect><path d="M10 2v3M14 2v3M10 19v3M14 19v3M2 10h3M2 14h3M19 10h3M19 14h3"></path></svg></span>
+        <input id="set-device" class="device-input" type="text" placeholder="e.g. RTX 5090 (auto)" />
+      </div>
+    </div>
+
+    <div class="settings-section">Connection</div>
+    <div class="settings-rows">
+      <div class="settings-row"><span class="rk">Worker</span><input id="set-worker" class="rv-input" type="text" /></div>
+      <div class="settings-row"><span class="rk">Pool region</span>
+        <select id="set-region" class="rv-input"></select>
+      </div>
+      <div class="settings-row"><span class="rk">Static difficulty</span><input id="set-difficulty" class="rv-input" type="number" min="0" /></div>
+    </div>
+    <p class="settings-note">Pin a static difficulty for steady shares from the first second. <a data-ext="https://pearl.alphapool.tech/#setup">Difficulty cheat-sheet →</a></p>
+  </section>
+
+  <!-- LOGS -->
+  <section id="view-logs" hidden>
+    <div class="view-head"><span class="lbl">Logs</span><span class="back" data-back>← Back</span></div>
+    <div id="log-term" class="log-term"></div>
+  </section>
+
+  <!-- FOOTER -->
+  <div class="app-foot">
+    <span id="btn-logs" class="foot-link">VIEW LOGS</span>
+    <span class="foot-link" data-ext="https://discord.gg/3pkrrwUmUB">NEED HELP?</span>
+  </div>
+</div>
+
+<script src="renderer.js"></script>
+</body>
+</html>

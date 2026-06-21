@@ -1,0 +1,42 @@
+name: Miner build (Windows)
+
+# Builds the LLMJob Miner (client2) Windows app. Runs the unit tests, then
+# produces the NSIS installer on a Windows runner and uploads it as an artifact.
+on:
+  push:
+    branches: [ main ]
+    paths: [ 'client2/**', '.github/workflows/miner-build.yml' ]
+  pull_request:
+    paths: [ 'client2/**', '.github/workflows/miner-build.yml' ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: client2
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test (100% coverage gate)
+        run: npm test
+
+      - name: Build Windows installer
+        run: npx electron-builder --win --publish never
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: llmjob-miner-windows
+          path: |
+            client2/dist/*.exe
+            client2/dist/*.blockmap
+          if-no-files-found: error
