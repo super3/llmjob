@@ -5,13 +5,17 @@
 // preview). All testable logic lives in ../shared and ./minerManager.
 
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const http = require('http');
+const https = require('https');
 
 const { MinerManager } = require('./minerManager');
+const { EngineManager } = require('./engineManager');
 const { Simulator } = require('../shared/simulator');
 const { REGIONS, DEFAULTS, MINER, endpointFor, difficultyForCard } = require('../shared/config');
+const { progressPercent } = require('../shared/engine');
 const earnings = require('../shared/earnings');
 const format = require('../shared/format');
 
@@ -58,10 +62,57 @@ function statsView(snap) {
   };
 }
 
-function startMining(settings) {
+// Stream a URL to a file, following redirects and reporting download progress.
+function downloadFile(url, dest, onProgress, redirects) {
+  redirects = redirects || 0;
+  return new Promise((resolve, reject) => {
+    if (redirects > 5) return reject(new Error('too many redirects'));
+    const lib = url.startsWith('https') ? https : http;
+    const req = lib.get(url, (res) => {
+      const code = res.statusCode || 0;
+      if (code >= 300 && code < 400 && res.headers.location) {
+        res.resume();
+        return resolve(downloadFile(new URL(res.headers.location, url).toString(), dest, onProgress, redirects + 1));
+      }
+      if (code !== 200) {
+        res.resume();
+        return reject(new Error('HTTP ' + code + ' for ' + url));
+      }
+      const total = parseInt(res.headers['content-length'] || '0', 10);
+      let received = 0;
+      const out = fs.createWriteStream(dest);
+      res.on('data', (c) => { received += c.length; if (onProgress) onProgress(progressPercent(received, total)); });
+      res.pipe(out);
+      out.on('finish', () => out.close(() => resolve(dest)));
+      out.on('error', reject);
+    });
+    req.on('error', reject);
+  });
+}
+
+// Extract the engine .exe from a downloaded zip to `dest`. Windows-only: uses
+// PowerShell's Expand-Archive, so there's no extra runtime dependency.
+function extractZip(zipPath, dest) {
+  return new Promise((resolve, reject) => {
+    const tmp = dest + '.unzip';
+    const wanted = path.basename(dest);
+    const ps = "$ErrorActionPreference='Stop';"
+      + "Expand-Archive -LiteralPath '" + zipPath + "' -DestinationPath '" + tmp + "' -Force;"
+      + "$e = Get-ChildItem -Path '" + tmp + "' -Recurse -Filter '" + wanted + "' | Select-Object -First 1;"
+      + "if(-not $e){ $e = Get-ChildItem -Path '" + tmp + "' -Recurse -Filter '*.exe' | Select-Object -First 1 }"
+      + "Copy-Item -LiteralPath $e.FullName -Destination '" + dest + "' -Force;"
+      + "Remove-Item -LiteralPath '" + tmp + "' -Recurse -Force";
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], (err) => {
+      if (err) return reject(err);
+      resolve(dest);
+    });
+  });
+}
+
+async function startMining(settings) {
   persistSettings(settings);
 
-  // Live preview numbers (the engine itself reports via logs/events).
+  // Live preview numbers (the engine itself also reports via logs/events).
   sim = new Simulator({ uptimeSec: 0 });
   send('miner:stats', statsView(sim.snapshot()));
   if (ticker) clearInterval(ticker);
@@ -70,20 +121,48 @@ function startMining(settings) {
   const endpoint = settings.endpoint || endpointFor(settings.region || DEFAULTS.region);
   send('miner:log', { level: 'info', line: 'connecting to ' + endpoint + ' · worker ' + (settings.worker || DEFAULTS.worker) });
 
+  // Ensure the engine is installed — download and set it up on first run.
+  let binaryPath = settings.binaryPath;
+  if (!binaryPath) {
+    const engine = new EngineManager({
+      dir: path.join(app.getPath('userData'), 'engine'),
+      platform: process.platform,
+      gpu: settings.gpu,
+      fs: fs,
+      download: downloadFile,
+      extract: extractZip,
+      chmod: fs.chmodSync,
+    });
+    try {
+      if (engine.isInstalled()) {
+        send('miner:log', { level: 'info', line: 'engine found: ' + engine.binaryPath() });
+      } else {
+        send('miner:engine', { phase: 'downloading' });
+        send('miner:log', { level: 'info', line: 'downloading mining engine from ' + MINER.downloadUrl + ' …' });
+      }
+      binaryPath = await engine.ensure();
+      send('miner:engine', { phase: 'ready' });
+      send('miner:log', { level: 'info', line: 'engine ready: ' + binaryPath });
+    } catch (e) {
+      binaryPath = undefined;
+      send('miner:engine', { phase: 'error', message: e.message });
+      send('miner:log', { level: 'error', line: 'engine setup failed: ' + e.message + ' — showing simulated stats. Manual download: ' + MINER.downloadUrl });
+    }
+  }
+
   // Real alpha-miner engine.
   miner = new MinerManager({ spawn });
   miner.on('log', (l) => send('miner:log', l));
   miner.on('event', (e) => send('miner:event', e));
-  miner.on('error', (err) => send('miner:log', {
-    level: 'error',
-    line: 'alpha-miner engine not found (' + err.message + '). Showing simulated stats — download the engine: ' + MINER.downloadUrl,
-  }));
+  miner.on('error', (err) => send('miner:log', { level: 'error', line: 'engine error: ' + err.message }));
   miner.on('stopped', (code) => send('miner:log', { level: 'info', line: 'engine exited (code ' + code + ')' }));
 
-  try {
-    miner.start(Object.assign({ platform: process.platform }, settings));
-  } catch (e) {
-    send('miner:log', { level: 'error', line: 'failed to launch engine: ' + e.message });
+  if (binaryPath) {
+    try {
+      miner.start(Object.assign({}, settings, { platform: process.platform, binaryPath: binaryPath }));
+    } catch (e) {
+      send('miner:log', { level: 'error', line: 'failed to launch engine: ' + e.message });
+    }
   }
 }
 
@@ -123,7 +202,9 @@ ipcMain.handle('settings:get', () => Object.assign(
 ));
 ipcMain.handle('config:get', () => ({ regions: REGIONS, defaults: DEFAULTS, miner: MINER }));
 ipcMain.handle('miner:difficultyForCard', (_e, name) => difficultyForCard(name));
-ipcMain.on('miner:start', (_e, settings) => startMining(settings || {}));
+ipcMain.on('miner:start', (_e, settings) => {
+  startMining(settings || {}).catch((e) => send('miner:log', { level: 'error', line: 'start failed: ' + e.message }));
+});
 ipcMain.on('miner:stop', () => stopMining());
 ipcMain.on('open-external', (_e, url) => { shell.openExternal(url); });
 

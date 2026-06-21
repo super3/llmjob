@@ -28,6 +28,7 @@
     setRegion: $('set-region'),
     setDifficulty: $('set-difficulty'),
     logTerm: $('log-term'),
+    engineStatus: $('engine-status'),
   };
 
   const state = { mining: false, view: 'miner', address: '' };
@@ -70,6 +71,7 @@
       el.estday.textContent = '$0.00';
       el.line.setAttribute('d', FLAT_LINE);
       el.area.setAttribute('d', FLAT_AREA);
+      el.engineStatus.hidden = true;
     }
     el.btnStart.disabled = !isValid(state.address);
   }
@@ -177,6 +179,21 @@
     if (api.onStats) api.onStats(applyStats);
     if (api.onLog) api.onLog(appendLog);
     if (api.onStopped) api.onStopped(() => { state.mining = false; renderMiningState(); });
+    if (api.onEngine) api.onEngine((e) => {
+      if (!e) return;
+      if (e.phase === 'downloading') {
+        el.engineStatus.hidden = false;
+        el.engineStatus.classList.remove('err');
+        el.engineStatus.textContent = 'Downloading & setting up the mining engine…';
+      } else if (e.phase === 'ready') {
+        el.engineStatus.hidden = true;
+        el.engineStatus.textContent = '';
+      } else if (e.phase === 'error') {
+        el.engineStatus.hidden = false;
+        el.engineStatus.classList.add('err');
+        el.engineStatus.textContent = 'Engine setup failed — see Logs.';
+      }
+    });
     renderView();
     renderMiningState();
   }

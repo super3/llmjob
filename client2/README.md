@@ -17,18 +17,23 @@ command line. Built with Electron; **Windows** is the shipped target for now.
   - `parser.js` — turns `alpha-miner` stdout into structured events (shares, hashrate, connect).
   - `minerArgs.js` — builds the engine argument vector / launcher env (`--password "x;d=N"`, etc.).
   - `simulator.js` — a believable live-stats feed for the in-app preview.
+  - `engine.js` — engine download URLs, binary names, and progress math.
 - **`src/main/`** — Electron main process:
   - `minerManager.js` — spawns and supervises the engine (injectable `spawn`, unit-tested).
+  - `engineManager.js` — downloads + installs the engine on first run (injected IO, unit-tested).
   - `main.js` / `preload.js` — window, settings persistence, IPC bridge (thin shells).
 - **`src/renderer/`** — the GUI (Setup → Running → Settings → Logs), pure display + IPC.
 
 ## The mining engine
 
-The pool ships the engine separately (it's statically linked, ~36 MB). Download the
-Windows build from the [AlphaPool setup page](https://pearl.alphapool.tech/#setup)
-— `AlphaMiner-Pearl-Windows.zip` contains `alpha-miner-windows.exe`. Place it on the
-`PATH` or point `binaryPath` at it. Until the engine is present the app shows
-**simulated** stats so the UI is usable for preview/demo.
+The app **downloads the engine for you** on first **Start** and caches it under the
+user-data folder (`…/LLMJob Miner/engine/`) — nothing is bundled. On Windows it
+fetches `AlphaMiner-Pearl-Windows.zip` from the pool's `/downloads/` path and
+extracts `alpha-miner-windows.exe` (via PowerShell `Expand-Archive`, no extra
+dependency); the base URL is overridable. If the download fails (offline, etc.) the
+app falls back to **simulated** stats and links the
+[manual download](https://pearl.alphapool.tech/#setup). You can also point
+`binaryPath` at an engine you installed yourself to skip the download entirely.
 
 Settings map to the documented knobs: Stratum user `‹address›.‹worker›`, static
 difficulty via the password (`x;d=N`), and the regional endpoint
