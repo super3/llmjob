@@ -396,7 +396,7 @@
     <a href="#about">About</a>
     <a href="network.html">Network</a>
     <a href="calculator.html">Calculator</a>
-    <a href="dashboard.html">Login</a>
+    <a href="dashboard.html" id="foot-login">Login</a>
     <a href="https://discord.gg/3pkrrwUmUB" target="_blank" rel="noopener">Discord</a>
   </div>
   <span>© 2026 LLMJob</span>
@@ -496,6 +496,26 @@
       clerkLoading.catch(() => { clerkLoading = null; }); // allow retry on failure
     }
     return clerkLoading;
+  }
+
+  // Footer "Login": open Clerk's sign-in modal in place (ported from the prior
+  // landing page). If the visitor is already signed in, go straight to the
+  // dashboard; on any failure, fall back to navigating to dashboard.html.
+  const footLogin = document.getElementById('foot-login');
+  if (footLogin) {
+    footLogin.addEventListener('click', async (e) => {
+      e.preventDefault();
+      try {
+        const clerk = await getClerk();
+        if (clerk.user) { window.location.href = 'dashboard.html'; return; }
+        const opts = { afterSignInUrl: 'dashboard.html', afterSignUpUrl: 'dashboard.html' };
+        if (clerk.openSignIn) clerk.openSignIn(opts);
+        else if (clerk.redirectToSignIn) clerk.redirectToSignIn(opts);
+        else window.location.href = 'dashboard.html';
+      } catch (err) {
+        window.location.href = 'dashboard.html';
+      }
+    });
   }
 
   document.querySelectorAll('.waitlist-form').forEach((form) => {
