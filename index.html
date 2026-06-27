@@ -309,7 +309,7 @@
     </span> LLMJob</a>
     <div class="foot-links">
       <a href="rankings.html">Rankings</a>
-      <a href="dashboard.html">Log in</a>
+      <a href="dashboard.html" id="foot-login">Log in</a>
     </div>
     <div class="c">© 2026 LLMJob</div>
   </div>
@@ -347,6 +347,33 @@
       clerkLoading.catch(() => { clerkLoading = null; }); // allow retry on failure
     }
     return clerkLoading;
+  }
+
+  // Footer "Log in": open Clerk's sign-in modal in place. If the visitor is
+  // already signed in, send them straight to their dashboard. Falls back to
+  // navigating to dashboard.html (the href) if Clerk fails to load.
+  const footLogin = document.getElementById('foot-login');
+  if (footLogin) {
+    footLogin.addEventListener('click', async (e) => {
+      e.preventDefault();
+      try {
+        const clerk = await getClerk();
+        if (clerk.user) {
+          window.location.href = 'dashboard.html';
+          return;
+        }
+        const opts = { afterSignInUrl: 'dashboard.html', afterSignUpUrl: 'dashboard.html' };
+        if (clerk.openSignIn) {
+          clerk.openSignIn(opts);
+        } else if (clerk.redirectToSignIn) {
+          clerk.redirectToSignIn(opts);
+        } else {
+          window.location.href = 'dashboard.html';
+        }
+      } catch (err) {
+        window.location.href = 'dashboard.html';
+      }
+    });
   }
 
   document.querySelectorAll('.waitlist').forEach((form) => {
