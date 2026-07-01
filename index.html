@@ -231,7 +231,6 @@
       </button>
       <div class="dl-menu down">
         <a class="dl-item" href="#" data-dl-choose><span class="os">Windows</span><span class="ext">.exe</span></a>
-        <a class="dl-item" href="#" data-dl-choose><span class="os">macOS</span><span class="ext">.dmg</span></a>
         <a class="dl-item" href="#" data-dl-choose><span class="os">Linux</span><span class="ext">.deb</span></a>
       </div>
     </div>
@@ -380,7 +379,6 @@
       </button>
       <div class="dl-menu up">
         <a class="dl-item" href="#" data-dl-choose><span class="os">Windows</span><span class="ext">.exe</span></a>
-        <a class="dl-item" href="#" data-dl-choose><span class="os">macOS</span><span class="ext">.dmg</span></a>
         <a class="dl-item" href="#" data-dl-choose><span class="os">Linux</span><span class="ext">.deb</span></a>
       </div>
     </div>
@@ -403,7 +401,7 @@
 </footer>
 
 <script>
-  /* ---- Download dropdowns (Windows / macOS / Linux) ---- */
+  /* ---- Download dropdowns (Windows / Linux) ---- */
   // No release binaries yet — the menu mirrors the design; items just close it.
   document.querySelectorAll('[data-dl]').forEach((dl) => {
     const toggle = dl.querySelector('[data-dl-toggle]');
