@@ -71,21 +71,9 @@
   .btn-dl:active { transform: translateY(1px); }
   .btn-dl .grid-ic { display: inline-grid; grid-template-columns: 1fr 1fr; gap: 2px; width: 15px; height: 15px; }
   .btn-dl .grid-ic i { background: currentColor; border-radius: 1px; }
-  .btn-dl .caret { opacity: .6; font-size: 12px; margin-left: 2px; }
   .btn-ghost { color: var(--ink); background: #fff; border: 1px solid var(--line); font-size: 16px; font-weight: 600; padding: 14px 26px; border-radius: 10px; display: inline-flex; align-items: center; gap: 9px; transition: border-color .15s ease, background .15s ease; }
   .btn-ghost:hover { border-color: var(--muted-3); background: #fff; }
   .btn-ghost .arr { opacity: .5; }
-
-  /* download dropdown */
-  .dl { position: relative; display: inline-block; }
-  .dl-menu { position: absolute; left: 50%; transform: translateX(-50%); background: #fff; border: 1px solid #e9e8e2; border-radius: 12px; box-shadow: 0 18px 44px -18px rgba(40,50,70,.4); padding: 6px; min-width: 212px; text-align: left; z-index: 30; display: none; }
-  .dl-menu.down { top: calc(100% + 10px); }
-  .dl-menu.up { bottom: calc(100% + 10px); }
-  .dl.open .dl-menu { display: block; }
-  .dl-item { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 10px 14px; border-radius: 8px; transition: background .12s ease; }
-  .dl-item:hover { background: #f4f3ee; }
-  .dl-item .os { font-size: 14px; font-weight: 600; color: var(--ink); }
-  .dl-item .ext { font-size: 11.5px; color: var(--muted-3); font-family: "IBM Plex Mono", monospace; white-space: nowrap; }
 
   /* hero */
   .hero { max-width: 880px; margin: 0 auto; padding: 96px 28px 0; text-align: center; }
@@ -225,15 +213,9 @@
   <h1>Mine Pearl at home.</h1>
   <p class="lede">Your own mining rig, running on the GPUs you already own.<br>Turn idle graphics cards into PRL — no command line.</p>
   <div class="hero-cta">
-    <div class="dl" data-dl>
-      <button class="btn-dl" type="button" data-dl-toggle>
-        <span class="grid-ic"><i></i><i></i><i></i><i></i></span>Download for free<span class="caret">▾</span>
-      </button>
-      <div class="dl-menu down">
-        <a class="dl-item" href="#" data-dl-choose><span class="os">Windows</span><span class="ext">.exe</span></a>
-        <a class="dl-item" href="#" data-dl-choose><span class="os">Linux</span><span class="ext">.deb</span></a>
-      </div>
-    </div>
+    <a class="btn-dl" href="#">
+      <span class="grid-ic"><i></i><i></i><i></i><i></i></span>Download for Windows
+    </a>
     <a class="btn-ghost" href="calculator.html">Earnings calculator <span class="arr">→</span></a>
   </div>
 </section>
@@ -373,15 +355,9 @@
   <h2>Bring Pearl home.</h2>
   <p>Start with the GPUs you already own.</p>
   <div class="cta-dl">
-    <div class="dl" data-dl>
-      <button class="btn-dl" type="button" data-dl-toggle>
-        <span class="grid-ic"><i></i><i></i><i></i><i></i></span>Download for free<span class="caret">▾</span>
-      </button>
-      <div class="dl-menu up">
-        <a class="dl-item" href="#" data-dl-choose><span class="os">Windows</span><span class="ext">.exe</span></a>
-        <a class="dl-item" href="#" data-dl-choose><span class="os">Linux</span><span class="ext">.deb</span></a>
-      </div>
-    </div>
+    <a class="btn-dl" href="#">
+      <span class="grid-ic"><i></i><i></i><i></i><i></i></span>Download for Windows
+    </a>
   </div>
 </section>
 
@@ -401,29 +377,6 @@
 </footer>
 
 <script>
-  /* ---- Download dropdowns (Windows / Linux) ---- */
-  // No release binaries yet — the menu mirrors the design; items just close it.
-  document.querySelectorAll('[data-dl]').forEach((dl) => {
-    const toggle = dl.querySelector('[data-dl-toggle]');
-    toggle.addEventListener('click', (e) => {
-      e.preventDefault();
-      const isOpen = dl.classList.contains('open');
-      document.querySelectorAll('[data-dl].open').forEach((o) => o.classList.remove('open'));
-      dl.classList.toggle('open', !isOpen);
-    });
-    dl.querySelectorAll('[data-dl-choose]').forEach((item) => {
-      item.addEventListener('click', (e) => { e.preventDefault(); dl.classList.remove('open'); });
-    });
-  });
-  document.addEventListener('click', (e) => {
-    if (!e.target.closest('[data-dl]')) {
-      document.querySelectorAll('[data-dl].open').forEach((o) => o.classList.remove('open'));
-    }
-  });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') document.querySelectorAll('[data-dl].open').forEach((o) => o.classList.remove('open'));
-  });
-
   /* ---- Live miner mockup (chart + ticking stats) ---- */
   (function () {
     const elTotal = document.getElementById('mk-total');
