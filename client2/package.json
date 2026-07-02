@@ -1,0 +1,39 @@
+{
+  "name": "llmjob-earn",
+  "version": "0.1.0",
+  "description": "LLMJob Earn — desktop GUI that turns the excess compute on GPUs you already own into crypto (Pearl / PRL) via the AlphaPool alpha-miner. Paste a payout address and start earning, no command line.",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "dist:win": "electron-builder --win"
+  },
+  "keywords": ["llmjob", "pearl", "prl", "mining", "alpha-miner", "electron", "gpu"],
+  "author": "super3",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "jest": "^30.0.5"
+  },
+  "build": {
+    "appId": "com.llmjob.earn",
+    "productName": "LLMJob Earn",
+    "files": ["src/**/*", "package.json"],
+    "win": {
+      "target": "nsis",
+      "artifactName": "LLMJob-Earn-Setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "publish": [
+      { "provider": "github", "owner": "super3", "repo": "llmjob", "releaseType": "release" }
+    ]
+  }
+}
