@@ -111,14 +111,6 @@
   /* value props */
   .props { margin-top: 118px; }
 
-  /* about (dark) */
-  .about { margin-top: 118px; }
-  .about-inner { background: var(--dark); border-radius: 20px; padding: 56px; color: #fff; }
-  .about-eyebrow { font-size: 12px; letter-spacing: .16em; text-transform: uppercase; color: #7c8088; font-weight: 600; margin-bottom: 20px; }
-  .about-inner h2 { font-weight: 800; font-size: clamp(30px, 5vw, 42px); line-height: 1.1; letter-spacing: -.03em; max-width: 16em; color: #fff; }
-  .about-inner p { font-size: 17px; line-height: 1.6; color: var(--dark-muted); margin-top: 22px; max-width: 42em; text-wrap: pretty; }
-  .about-inner .btn { margin-top: 30px; }
-
   /* cta */
   .cta { max-width: 880px; margin: 118px auto 0; padding: 0 28px 110px; text-align: center; }
   .cta h2 { font-weight: 800; font-size: clamp(34px, 6vw, 52px); line-height: 1.02; letter-spacing: -.04em; }
@@ -134,9 +126,8 @@
 
   @media (max-width: 760px) {
     .triple { grid-template-columns: 1fr; gap: 40px; }
-    .about-inner { padding: 36px 26px; }
     .steps { margin-top: 80px; }
-    .props, .about { margin-top: 84px; }
+    .props { margin-top: 84px; }
     .cta { margin-top: 84px; }
   }
   @media (max-width: 720px) { .nav-link { display: none; } }
@@ -214,18 +205,6 @@
       <h3 class="col-title">No subscriptions</h3>
       <p class="col-text">You already paid for the hardware. No monthly fee, and no charge every time you ask it something.</p>
     </div>
-  </div>
-</section>
-
-<!-- ABOUT / VISION -->
-<section class="band about">
-  <div class="about-inner">
-    <div class="about-eyebrow">Where this is going</div>
-    <h2>The more GPUs come online, the smarter it gets.</h2>
-    <p>Every machine that joins adds capacity to a shared, OpenAI-compatible network that runs on hardware people already own. No datacenters. No rented servers. The bigger it grows, the more it can do.</p>
-    <a class="btn btn-on-dark btn-arrow" href="miner.html">Run the miner
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-    </a>
   </div>
 </section>
 
