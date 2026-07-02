@@ -84,6 +84,7 @@
   .mr-hash { font-family: "IBM Plex Mono", monospace; font-size: 13px; font-weight: 600; color: var(--accent); }
   .mr-last { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--muted-3); }
   .nt-foot { padding: 14px 22px; text-align: center; font-size: 13px; color: var(--muted-3); border-top: 1px solid #efeee8; }
+  .nt-empty { padding: 44px 22px; text-align: center; font-size: 14px; color: var(--muted-2); }
 
   /* footer */
   footer.foot { border-top: 1px solid #ededea; max-width: 1080px; margin: 80px auto 0; padding: 26px 28px; display: flex; align-items: center; justify-content: space-between; color: var(--muted-3); font-size: 14px; gap: 18px; flex-wrap: wrap; }
@@ -119,7 +120,7 @@
 <section class="wrap pg-head">
   <div class="live-row">
     <span class="d"></span>
-    <span class="t">Live · <span id="net-active-h">142</span> miners online</span>
+    <span class="t">Live · <span id="net-active-h">0</span> miners online</span>
   </div>
   <h1>Who's mining right now.</h1>
   <p>Every rig running the LLMJob GUI against the pool, ranked by live hashrate. Anonymous — each row is a Pearl address.</p>
@@ -131,21 +132,21 @@
     <span class="stat-ic blue"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3"></circle><path d="M3.5 19 a5.5 5.5 0 0 1 11 0"></path><path d="M16 6 a3 3 0 0 1 0 5.6"></path><path d="M17.5 13.5 a5.5 5.5 0 0 1 3 5"></path></svg></span>
     <div>
       <div class="stat-k">Miners online</div>
-      <div class="stat-v accent" id="net-active">142</div>
+      <div class="stat-v accent" id="net-active">0</div>
     </div>
   </div>
   <div class="stat-card">
     <span class="stat-ic grey"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="#6b7077" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7" width="10" height="10" rx="2"></rect><path d="M10 2v3M14 2v3M10 19v3M14 19v3M2 10h3M2 14h3M19 10h3M19 14h3"></path></svg></span>
     <div>
       <div class="stat-k">Workers online</div>
-      <div class="stat-v" id="net-workers">122</div>
+      <div class="stat-v" id="net-workers">0</div>
     </div>
   </div>
   <div class="stat-card">
     <span class="stat-ic blue"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12 h3.5 l2.2 6 3.8-13 2.3 9 h5.7"></path></svg></span>
     <div>
       <div class="stat-k">Total hashrate</div>
-      <div class="stat-v" id="net-hr">4.50 PH/s</div>
+      <div class="stat-v" id="net-hr">—</div>
     </div>
   </div>
 </section>
@@ -155,7 +156,7 @@
   <div class="net-table">
     <div class="nt-top">
       <div class="ttl">Top miners</div>
-      <div class="upd">updates live · 1h hashrate</div>
+      <div class="upd">1h hashrate</div>
     </div>
     <div class="nt-scroll">
       <div class="nt-cols">
@@ -163,7 +164,7 @@
       </div>
       <div id="miners"></div>
     </div>
-    <div class="nt-foot">Showing top <span id="net-shown">14</span> of <span id="net-active-f">142</span> miners</div>
+    <div class="nt-foot" id="net-foot">Waiting for the first miner to connect…</div>
   </div>
 </section>
 
@@ -187,63 +188,37 @@
     const cont = document.getElementById('miners');
     if (!cont) return;
 
-    let miners = [
-      { addr: 'prl1pq8x4…m2k7v', gpu: 'H100', workers: 2, hash: 712, shares: 41280 },
-      { addr: 'prl1pk6m2…w9r4x', gpu: 'H100', workers: 1, hash: 698, shares: 38910 },
-      { addr: 'prl1pz3v9…h7t1q', gpu: 'RTX 5090', workers: 3, hash: 540, shares: 31040 },
-      { addr: 'prl1pt9w7…c2n8d', gpu: 'RTX 4090', workers: 2, hash: 421, shares: 23170 },
-      { addr: 'prl1pv4r1…k8m3s', gpu: 'RTX 5080', workers: 4, hash: 388, shares: 21640 },
-      { addr: 'prl1pql8r…nd4p6c', gpu: 'RTX 5090', workers: 1, hash: 354, shares: 14820 },
-      { addr: 'prl1pe7n3…p1v6w', gpu: 'RTX 4090', workers: 1, hash: 311, shares: 17220 },
-      { addr: 'prl1ph2k8…t5x9r', gpu: 'RTX 5070 Ti', workers: 2, hash: 268, shares: 14060 },
-      { addr: 'prl1pw5t6…m4d2k', gpu: 'RTX 4080', workers: 3, hash: 240, shares: 12880 },
-      { addr: 'prl1pc1x9…r7w3n', gpu: 'RTX 5080', workers: 1, hash: 203, shares: 10410 },
-      { addr: 'prl1pn8d4…v2k6t', gpu: 'RTX 3090', workers: 2, hash: 187, shares: 9320 },
-      { addr: 'prl1pm3r7…x9t1c', gpu: 'RTX 3090', workers: 1, hash: 154, shares: 7640 },
-      { addr: 'prl1pb6w2…k3n8v', gpu: 'RTX 3080', workers: 2, hash: 132, shares: 6180 },
-      { addr: 'prl1pd9t5…w7r2m', gpu: 'RTX 3070', workers: 1, hash: 96, shares: 4210 },
-    ].map((m, i) => Object.assign({}, m, { last: 3 + i * 2 }));
-
-    let activeMiners = 142;
-
+    // No live pool data yet. When the network API is ready, fetch the miners
+    // (sorted by 1h hashrate) and pass them to render().
     function esc(str) { return String(str).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
+    function setText(id, v) { const el = document.getElementById(id); if (el) el.textContent = v; }
 
-    function render() {
-      const poolTh = miners.reduce((a, m) => a + m.hash, 0);
-      const workers = miners.reduce((a, m) => a + m.workers, 0) + 96;
-      cont.innerHTML = miners.map((m, i) =>
-        '<div class="miner-row">' +
-          '<div class="mr-rank">' + (i + 1) + '</div>' +
-          '<div class="mr-addr"><span class="dot"></span><span class="a">' + esc(m.addr) + '</span></div>' +
-          '<div class="mr-gpu">' + esc(m.gpu) + '</div>' +
-          '<div class="mr-hash">' + m.hash.toFixed(1) + ' TH/s</div>' +
-          '<div class="mr-last">' + m.last + 's ago</div>' +
-        '</div>'
-      ).join('');
-      document.getElementById('net-active').textContent = activeMiners.toLocaleString();
-      document.getElementById('net-active-h').textContent = activeMiners.toLocaleString();
-      document.getElementById('net-active-f').textContent = activeMiners.toLocaleString();
-      document.getElementById('net-workers').textContent = workers.toLocaleString();
-      document.getElementById('net-hr').textContent = (poolTh / 1000).toFixed(2) + ' PH/s';
-      document.getElementById('net-shown').textContent = miners.length;
+    function render(miners) {
+      const rows = miners || [];
+      const online = rows.length;
+      const poolTh = rows.reduce((a, m) => a + (Number(m.hash) || 0), 0);
+      const workers = rows.reduce((a, m) => a + (Number(m.workers) || 0), 0);
+
+      cont.innerHTML = online
+        ? rows.map((m, i) =>
+            '<div class="miner-row">' +
+              '<div class="mr-rank">' + (i + 1) + '</div>' +
+              '<div class="mr-addr"><span class="dot"></span><span class="a">' + esc(m.addr) + '</span></div>' +
+              '<div class="mr-gpu">' + esc(m.gpu) + '</div>' +
+              '<div class="mr-hash">' + Number(m.hash).toFixed(1) + ' TH/s</div>' +
+              '<div class="mr-last">' + esc(m.last) + '</div>' +
+            '</div>'
+          ).join('')
+        : '<div class="nt-empty">No miners online yet — be the first to connect a rig.</div>';
+
+      setText('net-active', online.toLocaleString());
+      setText('net-active-h', online.toLocaleString());
+      setText('net-workers', workers.toLocaleString());
+      setText('net-hr', online ? (poolTh / 1000).toFixed(2) + ' PH/s' : '—');
+      setText('net-foot', online ? ('Showing ' + online + ' of ' + online + ' miners') : 'Waiting for the first miner to connect…');
     }
 
-    function tick() {
-      miners = miners.map((m) => {
-        const drift = 1 + (Math.random() - 0.5) * 0.06;
-        const hash = Math.max(40, m.hash * drift);
-        const shares = m.shares + (Math.random() < 0.7 ? Math.round(Math.random() * 4) : 0);
-        const last = Math.random() < 0.6 ? Math.max(1, Math.round(Math.random() * 8)) : m.last;
-        return Object.assign({}, m, { hash, shares, last });
-      });
-      miners.sort((a, b) => b.hash - a.hash);
-      activeMiners = Math.max(120, Math.min(168, activeMiners + Math.round((Math.random() - 0.5) * 3)));
-      render();
-    }
-
-    render();
-    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (!reduce) setInterval(tick, 2000);
+    render([]);
   })();
 </script>
 </body>
