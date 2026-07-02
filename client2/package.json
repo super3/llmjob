@@ -26,11 +26,14 @@
     "files": ["src/**/*", "package.json"],
     "win": {
       "target": "nsis",
-      "artifactName": "LLMJob-Miner-${version}-win.${ext}"
+      "artifactName": "LLMJob-Miner-Setup.${ext}"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
-    }
+    },
+    "publish": [
+      { "provider": "github", "owner": "super3", "repo": "llmjob", "releaseType": "release" }
+    ]
   }
 }
