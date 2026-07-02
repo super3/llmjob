@@ -55,6 +55,9 @@
   .nav-right { display: flex; align-items: center; gap: 26px; }
   .nav-link { font-size: 15px; font-weight: 500; color: var(--ink); transition: opacity .15s; }
   .nav-link:hover { opacity: .65; }
+  .btn-discord { color: #fff; background: var(--dark); font-size: 15px; font-weight: 600; padding: 9px 17px; border-radius: 8px; display: inline-flex; align-items: center; gap: 8px; transition: transform .12s ease, box-shadow .15s ease; }
+  .btn-discord:hover { box-shadow: 0 8px 20px -10px rgba(26,26,23,.6); }
+  .btn-discord:active { transform: translateY(1px); }
 
   /* buttons */
   .btn { font-family: inherit; font-size: 15px; font-weight: 600; border: none; border-radius: 10px; padding: 12px 22px; cursor: pointer; display: inline-flex; align-items: center; gap: 9px; transition: transform .12s ease, box-shadow .15s ease, border-color .15s ease, background .15s ease; white-space: nowrap; }
@@ -70,8 +73,6 @@
 
   /* hero */
   .hero { max-width: 880px; margin: 0 auto; padding: 84px 28px 0; text-align: center; }
-  .eyebrow { display: inline-flex; align-items: center; gap: 8px; font-family: "IBM Plex Mono", monospace; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted-2); background: #fff; border: 1px solid var(--line); border-radius: 99px; padding: 6px 14px; }
-  .eyebrow .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
   .hero h1 { font-weight: 800; font-size: clamp(46px, 9vw, 78px); line-height: 1.0; letter-spacing: -.04em; margin-top: 24px; }
   .hero h1 .accent { color: var(--accent); }
   .hero .lede { font-size: clamp(18px, 2.6vw, 22px); line-height: 1.5; color: var(--muted); max-width: 27em; margin: 24px auto 0; }
@@ -138,7 +139,7 @@
     .props, .about { margin-top: 84px; }
     .cta { margin-top: 84px; }
   }
-  @media (max-width: 680px) { .nav-link.hide-sm { display: none; } }
+  @media (max-width: 720px) { .nav-link { display: none; } }
 </style>
 </head>
 <body id="top">
@@ -150,13 +151,16 @@
   </a>
   <div class="nav-right">
     <a class="nav-link" href="miner.html">Miner</a>
-    <a class="btn btn-ghost" href="#join" id="nav-join">Join waitlist</a>
+    <a class="nav-link" href="network.html">Network</a>
+    <a class="nav-link" href="calculator.html">Calculator</a>
+    <a class="btn-discord" href="https://discord.gg/3pkrrwUmUB" target="_blank" rel="noopener">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="#fff"><path d="M19.3 5.3A17 17 0 0 0 15 4l-.2.4a13 13 0 0 1 3.7 1.2 12.7 12.7 0 0 0-9-1.6 12 12 0 0 0-2 .4A13 13 0 0 1 9.2 4.4 17 17 0 0 0 4.7 5.3 17.6 17.6 0 0 0 2 17.3a17 17 0 0 0 5.2 2.6l.6-1a11 11 0 0 1-1.8-.9l.4-.3a12.2 12.2 0 0 0 10.4 0l.4.3a11 11 0 0 1-1.8.9l.6 1a17 17 0 0 0 5.2-2.6 17.4 17.4 0 0 0-2.7-12zM9 14.4c-.8 0-1.5-.8-1.5-1.7s.7-1.7 1.5-1.7 1.5.8 1.5 1.7-.6 1.7-1.5 1.7zm6 0c-.8 0-1.5-.8-1.5-1.7s.7-1.7 1.5-1.7 1.5.8 1.5 1.7-.6 1.7-1.5 1.7z"></path></svg>Discord
+    </a>
   </div>
 </nav>
 
 <!-- HERO -->
 <section class="hero">
-  <span class="eyebrow"><span class="dot"></span>Private beta</span>
   <h1>Run LLMs <span class="accent">at home.</span></h1>
   <p class="lede">Your own AI, running on your own computer. Pool the power you're not using into one OpenAI-compatible network.</p>
   <form class="waitlist" id="join" autocomplete="off">
@@ -246,6 +250,8 @@
   </a>
   <div class="foot-links">
     <a href="miner.html">Miner</a>
+    <a href="network.html">Network</a>
+    <a href="calculator.html">Calculator</a>
     <a href="dashboard.html" id="foot-login">Login</a>
     <a href="https://discord.gg/3pkrrwUmUB" target="_blank" rel="noopener">Discord</a>
   </div>
@@ -253,16 +259,6 @@
 </footer>
 
 <script>
-  // Nav "Join waitlist": scroll to the hero form and focus the email field.
-  document.getElementById('nav-join').addEventListener('click', (e) => {
-    e.preventDefault();
-    const form = document.getElementById('join');
-    const y = form.getBoundingClientRect().top + window.scrollY - 120;
-    window.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
-    const input = form.querySelector('.wl-input');
-    if (input) setTimeout(() => input.focus({ preventScroll: true }), 450);
-  });
-
   // Clerk loader (waitlist + footer login).
   let clerkLoading = null;
   async function getClerk() {
