@@ -113,6 +113,8 @@
   .props-card { background: var(--dark); border-radius: 20px; padding: 56px; }
   .props-card .col-title { color: #fff; }
   .props-card .col-text { color: var(--dark-muted); }
+  .prop-ic { width: 42px; height: 42px; border-radius: 12px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.10); display: inline-flex; align-items: center; justify-content: center; color: #fff; margin-bottom: 20px; }
+  .prop-ic svg { width: 21px; height: 21px; }
 
   /* cta */
   .cta { max-width: 880px; margin: 118px auto 0; padding: 0 28px 110px; text-align: center; }
@@ -199,14 +201,17 @@
   <div class="props-card">
     <div class="triple">
       <div>
+        <span class="prop-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/></svg></span>
         <h3 class="col-title">Your hardware</h3>
         <p class="col-text">The AI runs on the graphics card already in your machine — not a rented server somewhere.</p>
       </div>
       <div>
+        <span class="prop-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>
         <h3 class="col-title">Your data</h3>
         <p class="col-text">Everything you type and everything it answers stays on your machine. Nothing is sent off to be stored or trained on.</p>
       </div>
       <div>
+        <span class="prop-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4M16 2v4"/><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18"/><path d="m10 15 4 4M14 15l-4 4"/></svg></span>
         <h3 class="col-title">No subscriptions</h3>
         <p class="col-text">You already paid for the hardware. No monthly fee, and no charge every time you ask it something.</p>
       </div>
