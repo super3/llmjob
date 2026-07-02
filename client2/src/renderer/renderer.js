@@ -1,6 +1,6 @@
 'use strict';
 
-// Renderer UI for the LLMJob Miner window. Pure display + IPC glue — all
+// Renderer UI for the LLMJob Earn window. Pure display + IPC glue — all
 // computation happens in the main process (../shared modules). Kept thin and
 // out of the coverage gate; the logic it leans on is unit-tested separately.
 (function () {
@@ -115,7 +115,7 @@
     if (!isValid(state.address)) return;
     state.mining = true;
     renderMiningState();
-    appendLog({ level: 'info', line: 'starting LLMJob Miner…' });
+    appendLog({ level: 'info', line: 'starting LLMJob Earn…' });
     if (api.startMiner) api.startMiner(currentSettings());
   }
 

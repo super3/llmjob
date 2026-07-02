@@ -1,6 +1,6 @@
-name: Miner build (Windows)
+name: Earn build (Windows)
 
-# Builds the LLMJob Miner (client2) Windows app. Runs the unit tests, then
+# Builds the LLMJob Earn (client2) Windows app. Runs the unit tests, then
 # produces the NSIS installer on a Windows runner and uploads it as an artifact.
 on:
   push:
@@ -41,7 +41,7 @@ jobs:
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: llmjob-miner-windows
+          name: llmjob-earn-windows
           path: |
             client2/dist/*.exe
             client2/dist/*.blockmap

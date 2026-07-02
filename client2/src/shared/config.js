@@ -1,6 +1,6 @@
 'use strict';
 
-// Static configuration for the LLMJob Miner desktop wrapper.
+// Static configuration for the LLMJob Earn desktop wrapper.
 //
 // The app wraps the AlphaPool `alpha-miner` engine for Pearl (PRL). All values
 // below come from the AlphaPool setup page (pearl.alphapool.tech/#setup):

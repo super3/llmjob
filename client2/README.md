@@ -1,11 +1,12 @@
-# LLMJob Miner (`client2`)
+# LLMJob Earn (`client2`)
 
-A desktop GUI that wraps the AlphaPool [`alpha-miner`](https://pearl.alphapool.tech/#setup)
-engine for Pearl (**PRL**). Paste a payout address, hit **Start**, and mine — no
-command line. Built with Electron; **Windows** is the shipped target for now.
+A desktop GUI that turns the excess compute on GPUs you already own into crypto,
+wrapping the AlphaPool [`alpha-miner`](https://pearl.alphapool.tech/#setup) engine
+for Pearl (**PRL**). Paste a payout address, hit **Start**, and earn — no command
+line. Built with Electron; **Windows** is the shipped target for now.
 
 > The LLM "co-mining" side of LLMJob comes later — this app is the easy on-ramp
-> that gets GPUs onto the network via Pearl mining.
+> that gets GPUs onto the network and earning today.
 
 ## How it works
 
@@ -27,7 +28,7 @@ command line. Built with Electron; **Windows** is the shipped target for now.
 ## The mining engine
 
 The app **downloads the engine for you** on first **Start** and caches it under the
-user-data folder (`…/LLMJob Miner/engine/`) — nothing is bundled. On Windows it
+user-data folder (`…/LLMJob Earn/engine/`) — nothing is bundled. On Windows it
 fetches `AlphaMiner-Pearl-Windows.zip` from the pool's `/downloads/` path and
 extracts `alpha-miner-windows.exe` (via PowerShell `Expand-Archive`, no extra
 dependency); the base URL is overridable. If the download fails (offline, etc.) the
@@ -50,7 +51,7 @@ npm test           # jest — 100% coverage gate on shared/* + minerManager
 ## Build (Windows)
 
 ```bash
-npm run dist:win   # electron-builder --win  → dist/LLMJob-Miner-<version>-win.exe (NSIS)
+npm run dist:win   # electron-builder --win  → dist/LLMJob-Earn-Setup.exe (NSIS)
 ```
 
 Producing the Windows **installer** must happen on Windows (or Linux + Wine).

@@ -1,7 +1,7 @@
 {
-  "name": "llmjob-miner",
+  "name": "llmjob-earn",
   "version": "0.1.0",
-  "description": "LLMJob Miner — desktop GUI wrapper for the AlphaPool alpha-miner (Pearl / PRL). Paste a payout address and mine, no command line.",
+  "description": "LLMJob Earn — desktop GUI that turns the excess compute on GPUs you already own into crypto (Pearl / PRL) via the AlphaPool alpha-miner. Paste a payout address and start earning, no command line.",
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
@@ -21,12 +21,12 @@
     "jest": "^30.0.5"
   },
   "build": {
-    "appId": "com.llmjob.miner",
-    "productName": "LLMJob Miner",
+    "appId": "com.llmjob.earn",
+    "productName": "LLMJob Earn",
     "files": ["src/**/*", "package.json"],
     "win": {
       "target": "nsis",
-      "artifactName": "LLMJob-Miner-Setup.${ext}"
+      "artifactName": "LLMJob-Earn-Setup.${ext}"
     },
     "nsis": {
       "oneClick": false,

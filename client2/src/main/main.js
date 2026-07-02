@@ -186,7 +186,7 @@ function createWindow() {
     minHeight: 680,
     backgroundColor: '#fcfcfb',
     autoHideMenuBar: true,
-    title: 'LLMJob Miner',
+    title: 'LLMJob Earn',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
