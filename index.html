@@ -108,8 +108,11 @@
   .mini-row .on .d { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
   .mini-row .key { font-family: "IBM Plex Mono", monospace; color: var(--accent); font-weight: 600; }
 
-  /* value props */
+  /* value props (dark card) */
   .props { margin-top: 118px; }
+  .props-card { background: var(--dark); border-radius: 20px; padding: 56px; }
+  .props-card .col-title { color: #fff; }
+  .props-card .col-text { color: var(--dark-muted); }
 
   /* cta */
   .cta { max-width: 880px; margin: 118px auto 0; padding: 0 28px 110px; text-align: center; }
@@ -126,6 +129,7 @@
 
   @media (max-width: 760px) {
     .triple { grid-template-columns: 1fr; gap: 40px; }
+    .props-card { padding: 36px 26px; }
     .steps { margin-top: 80px; }
     .props { margin-top: 84px; }
     .cta { margin-top: 84px; }
@@ -192,18 +196,20 @@
 
 <!-- VALUE PROPS -->
 <section class="band props">
-  <div class="triple">
-    <div>
-      <h3 class="col-title">Your hardware</h3>
-      <p class="col-text">The AI runs on the graphics card already in your machine — not a rented server somewhere.</p>
-    </div>
-    <div>
-      <h3 class="col-title">Your data</h3>
-      <p class="col-text">Everything you type and everything it answers stays on your machine. Nothing is sent off to be stored or trained on.</p>
-    </div>
-    <div>
-      <h3 class="col-title">No subscriptions</h3>
-      <p class="col-text">You already paid for the hardware. No monthly fee, and no charge every time you ask it something.</p>
+  <div class="props-card">
+    <div class="triple">
+      <div>
+        <h3 class="col-title">Your hardware</h3>
+        <p class="col-text">The AI runs on the graphics card already in your machine — not a rented server somewhere.</p>
+      </div>
+      <div>
+        <h3 class="col-title">Your data</h3>
+        <p class="col-text">Everything you type and everything it answers stays on your machine. Nothing is sent off to be stored or trained on.</p>
+      </div>
+      <div>
+        <h3 class="col-title">No subscriptions</h3>
+        <p class="col-text">You already paid for the hardware. No monthly fee, and no charge every time you ask it something.</p>
+      </div>
     </div>
   </div>
 </section>
