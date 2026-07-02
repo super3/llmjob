@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>LLMJob Miner — Mine Pearl at home</title>
+<meta name="description" content="Turn the idle GPUs you already own into Pearl (PRL) — a simple desktop miner, no command line. Co-mine LLMs coming soon." />
+
+<!-- Clerk (waitlist mode) -->
+<script
+    async
+    crossorigin="anonymous"
+    data-clerk-publishable-key="pk_live_Y2xlcmsubGxtam9iLmNvbSQ"
+    src="https://clerk.llmjob.com/npm/@clerk/clerk-js@5/dist/clerk.browser.js"
+    type="text/javascript"
+></script>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2222%22 fill=%22%231A1A17%22/><path transform=%22translate(26,26) scale(2)%22 d=%22M13 2 L4 14 h6 l-1 8 10-13 h-7 l1-7 z%22 fill=%22%23FFFFFF%22/></svg>">
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #fcfcfb;
+    --ink: #0e0f10;
+    --ink-strong: #16160F;
+    --muted: #5b5e62;
+    --muted-2: #8a8f98;
+    --muted-3: #9a9da1;
+    --line: #e3e1d9;
+    --line-soft: #ebeae5;
+    --field-line: #e1ddd3;
+    --field: #faf9f6;
+    --accent: #2563eb;
+    --green: #16a34a;
+    --green-2: #3ddc84;
+    --dark: #1a1a17;
+    --dark-2: #201f1c;
+    --dark-line: #2c2c28;
+    --dark-muted: #9aa0a8;
+    font-synthesis-weight: none;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body { background: var(--bg); color: var(--ink); font-family: "Schibsted Grotesk", sans-serif; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  ::selection { background: #d7f3df; }
+  .mono { font-family: "IBM Plex Mono", monospace; }
+  a { color: inherit; text-decoration: none; }
+
+  @keyframes amPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .3; transform: scale(.8); } }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+
+  /* layout */
+  .wrap { width: 100%; max-width: 1080px; margin: 0 auto; padding: 0 28px; }
+
+  /* nav */
+  nav.nav { max-width: 1080px; margin: 0 auto; padding: 26px 28px; display: flex; align-items: center; justify-content: space-between; }
+  .logo { font-weight: 700; font-size: 21px; letter-spacing: -.02em; display: inline-flex; align-items: center; gap: 11px; color: var(--ink); }
+  .logo .bolt { display: inline-flex; width: 38px; height: 38px; border-radius: 11px; background: var(--dark); align-items: center; justify-content: center; flex: none; }
+  .nav-right { display: flex; align-items: center; gap: 26px; }
+  .nav-link { font-size: 15px; font-weight: 500; color: var(--ink); transition: opacity .15s; }
+  .nav-link:hover { opacity: .65; }
+  .nav-link.active { color: var(--accent); font-weight: 600; }
+  .btn-discord { color: #fff; background: var(--dark); font-size: 15px; font-weight: 600; padding: 9px 17px; border-radius: 8px; display: inline-flex; align-items: center; gap: 8px; transition: transform .12s ease, box-shadow .15s ease; }
+  .btn-discord:hover { box-shadow: 0 8px 20px -10px rgba(26,26,23,.6); }
+  .btn-discord:active { transform: translateY(1px); }
+  @media (max-width: 720px) { .nav-link { display: none; } }
+
+  /* shared buttons */
+  .btn-dl { color: #fff; background: var(--accent); font-size: 16px; font-weight: 600; padding: 15px 30px; border-radius: 10px; display: inline-flex; align-items: center; gap: 11px; cursor: pointer; border: none; box-shadow: 0 10px 26px -10px rgba(37,99,235,.6); transition: transform .12s ease, box-shadow .15s ease; font-family: inherit; }
+  .btn-dl:hover { box-shadow: 0 14px 32px -10px rgba(37,99,235,.7); }
+  .btn-dl:active { transform: translateY(1px); }
+  .btn-dl .grid-ic { display: inline-grid; grid-template-columns: 1fr 1fr; gap: 2px; width: 15px; height: 15px; }
+  .btn-dl .grid-ic i { background: currentColor; border-radius: 1px; }
+  .btn-ghost { color: var(--ink); background: #fff; border: 1px solid var(--line); font-size: 16px; font-weight: 600; padding: 14px 26px; border-radius: 10px; display: inline-flex; align-items: center; gap: 9px; transition: border-color .15s ease, background .15s ease; }
+  .btn-ghost:hover { border-color: var(--muted-3); background: #fff; }
+  .btn-ghost .arr { opacity: .5; }
+
+  /* hero */
+  .hero { max-width: 880px; margin: 0 auto; padding: 96px 28px 0; text-align: center; }
+  .hero h1 { font-weight: 800; font-size: clamp(44px, 9vw, 74px); line-height: 1.0; letter-spacing: -.04em; }
+  .hero .lede { font-size: clamp(18px, 2.6vw, 21px); line-height: 1.5; color: var(--muted); max-width: 620px; margin: 28px auto 0; }
+  .hero-cta { margin-top: 36px; display: flex; align-items: center; justify-content: center; gap: 13px; flex-wrap: wrap; }
+
+  /* app window mockup */
+  .mockup { max-width: 1040px; margin: 60px auto 0; padding: 0 24px; }
+  .window { background: #fff; border-radius: 13px; overflow: hidden; border: 1px solid #e9e8e2; box-shadow: 0 30px 70px -30px rgba(40,50,70,.4), 0 10px 26px -16px rgba(40,50,70,.3); }
+  .titlebar { position: relative; height: 42px; background: linear-gradient(#fafaf8, #f1f0ea); border-bottom: 1px solid #e7e5dd; display: flex; align-items: center; padding: 0 14px; }
+  .traffic { display: flex; gap: 8px; }
+  .traffic span { width: 12px; height: 12px; border-radius: 50%; }
+  .titlebar .title { position: absolute; left: 0; right: 0; text-align: center; font-size: 13px; font-weight: 600; color: var(--muted-2); pointer-events: none; }
+  .app-body { padding: 26px 28px 22px; }
+  .app-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
+  .app-brand { display: inline-flex; align-items: center; gap: 9px; font-weight: 800; font-size: 22px; letter-spacing: -.02em; color: var(--ink-strong); }
+  .app-brand .bolt { display: inline-flex; width: 30px; height: 30px; border-radius: 8px; background: var(--ink-strong); align-items: center; justify-content: center; flex: none; }
+  .app-settings { display: inline-flex; align-items: center; gap: 8px; background: #fff; border: 1px solid var(--line); color: #6b7077; font-weight: 600; font-size: 13.5px; padding: 9px 14px; border-radius: 9px; }
+  .field-label { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+  .field-label .lbl { font-size: 14px; font-weight: 700; color: #2a2e34; }
+  .field-label .meta { font-size: 13px; color: var(--muted-2); }
+  .field-label .meta b { color: var(--ink-strong); font-weight: 600; }
+  .field-label .meta .usd { color: #9a9ea6; }
+  .field-box { width: 100%; border: 1px solid var(--field-line); background: var(--field); border-radius: 9px; padding: 13px 14px; font-family: "IBM Plex Mono", monospace; font-size: 13.5px; color: #3d4148; margin-bottom: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chart-card { border: 1px solid var(--field-line); background: var(--field); border-radius: 9px; padding: 12px 14px 14px; margin-bottom: 20px; }
+  .chart-val { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+  .chart-val .num { font-weight: 800; font-size: 27px; letter-spacing: -.02em; color: var(--ink-strong); }
+  .chart-val .unit { font-size: 14px; font-weight: 600; color: #9a9ea6; }
+  .chart-card svg { display: block; }
+  .mk-stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin-top: 14px; padding-top: 14px; border-top: 1px solid #ebe9e1; }
+  .mk-stat .k { font-size: 11.5px; color: var(--muted-2); font-weight: 500; margin-bottom: 4px; }
+  .mk-stat .v { font-family: "IBM Plex Mono", monospace; font-size: 17px; font-weight: 600; color: var(--ink-strong); }
+  .mk-stat .v.accent { color: var(--accent); }
+  .mk-stat .v .day { font-size: 12px; color: #9a9ea6; font-weight: 500; }
+  .stop-btn { width: 100%; display: flex; align-items: center; justify-content: center; gap: 10px; background: var(--accent); color: #fff; font-weight: 800; font-size: 15px; letter-spacing: .06em; padding: 16px; border-radius: 11px; }
+  .stop-btn .dot { width: 9px; height: 9px; border-radius: 50%; background: #fff; animation: amPulse 1.4s ease-in-out infinite; }
+  .app-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 22px; padding-top: 16px; border-top: 1px solid #f0ede5; }
+  .app-foot span { font-size: 12.5px; font-weight: 600; letter-spacing: .04em; color: var(--accent); }
+
+  /* generic three-up grid */
+  .triple { display: grid; grid-template-columns: repeat(3, 1fr); gap: 48px; }
+  .col-title { font-weight: 700; font-size: 21px; letter-spacing: -.02em; margin: 0 0 9px; }
+  .col-text { font-size: 15.5px; line-height: 1.55; color: var(--muted); }
+  .col-text a { color: var(--accent); font-weight: 600; }
+  .col-text .addr { font-family: "IBM Plex Mono", monospace; font-size: 13.5px; }
+
+  /* steps */
+  .steps { max-width: 1080px; margin: 104px auto 0; padding: 0 28px; }
+  .step-n { font-size: 15px; font-weight: 700; color: var(--accent); margin-bottom: 18px; }
+  .gpu-row { display: flex; align-items: center; justify-content: space-between; border: 1px solid var(--line-soft); border-radius: 9px; padding: 9px 12px; font-size: 13.5px; margin-top: 16px; }
+  .gpu-row .nm { font-family: "IBM Plex Mono", monospace; }
+  .gpu-row .on { display: inline-flex; align-items: center; gap: 6px; color: var(--green); font-weight: 600; }
+  .gpu-row .on .d { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+  .pay-row { display: flex; align-items: center; justify-content: space-between; border: 1px solid var(--line-soft); border-radius: 9px; padding: 11px 13px; font-family: "IBM Plex Mono", monospace; font-size: 13px; color: var(--muted); margin-top: 16px; }
+  .pay-row .amt { color: var(--accent); font-weight: 600; }
+
+  /* value props */
+  .props { max-width: 1080px; margin: 120px auto 0; padding: 0 28px; }
+
+  /* about (dark) */
+  .about { max-width: 1080px; margin: 120px auto 0; padding: 0 28px; }
+  .about-inner { background: var(--dark); border-radius: 20px; padding: 56px; color: #fff; }
+  .about-eyebrow { font-size: 12px; letter-spacing: .16em; text-transform: uppercase; color: #7c8088; font-weight: 600; margin-bottom: 20px; }
+  .about-inner h2 { font-weight: 800; font-size: clamp(30px, 5vw, 40px); line-height: 1.1; letter-spacing: -.03em; max-width: 620px; color: #fff; }
+  .about-inner .about-p { font-size: 17px; line-height: 1.6; color: var(--dark-muted); margin-top: 22px; max-width: 640px; text-wrap: pretty; }
+  .about-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 40px; }
+  .about-card { border: 1px solid var(--dark-line); border-radius: 14px; padding: 24px; }
+  .about-card.live { background: var(--dark-2); }
+  .badge { display: inline-flex; align-items: center; gap: 7px; font-size: 11.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+  .badge .d { width: 8px; height: 8px; border-radius: 50%; }
+  .badge.now { color: var(--green-2); }
+  .badge.now .d { background: var(--green-2); animation: amPulse 1.6s ease-in-out infinite; }
+  .badge.soon { color: #6b7077; }
+  .badge.soon .d { background: #4a4a44; }
+  .about-card .ct { font-weight: 700; font-size: 21px; letter-spacing: -.02em; margin: 14px 0 7px; color: #fff; }
+  .about-card .cd { font-size: 14.5px; color: var(--dark-muted); line-height: 1.5; }
+  .waitlist-block { margin-top: 40px; padding-top: 34px; border-top: 1px solid var(--dark-line); }
+  .waitlist-block .wt { font-weight: 700; font-size: 18px; letter-spacing: -.01em; margin-bottom: 4px; }
+  .waitlist-block .ws { font-size: 14.5px; color: var(--dark-muted); margin-bottom: 18px; }
+  .waitlist-form { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .waitlist-form input { border: 1px solid #34342f; background: var(--dark-2); border-radius: 11px; padding: 15px 18px; font-size: 15.5px; color: #fff; width: 300px; max-width: 100%; font-family: inherit; outline: none; transition: border-color .12s; }
+  .waitlist-form input::placeholder { color: #6b7077; }
+  .waitlist-form input:focus { border-color: var(--accent); }
+  .waitlist-form button { border: none; cursor: pointer; background: var(--accent); color: #fff; font-family: inherit; font-weight: 600; font-size: 15.5px; padding: 16px 26px; border-radius: 11px; transition: transform .12s ease, opacity .15s ease; }
+  .waitlist-form button:hover { opacity: .92; }
+  .waitlist-form button:active { transform: translateY(1px); }
+  .waitlist-form button:disabled { cursor: default; opacity: 1; }
+  .waitlist-form .disc { color: #fff; font-weight: 600; font-size: 15px; display: inline-flex; align-items: center; gap: 8px; margin-left: 4px; }
+  .waitlist-form .disc:hover { opacity: .8; }
+  .wl-msg { flex-basis: 100%; font-family: "IBM Plex Mono", monospace; font-size: 13px; color: var(--green-2); margin-top: 2px; }
+  .wl-msg.err { color: #f3a5a5; }
+
+  /* closing cta */
+  .cta { max-width: 880px; margin: 120px auto 0; padding: 0 28px 110px; text-align: center; }
+  .cta h2 { font-weight: 800; font-size: clamp(40px, 8vw, 60px); line-height: 1.0; letter-spacing: -.04em; }
+  .cta p { font-size: clamp(17px, 2.4vw, 19px); color: var(--muted); margin: 22px auto 0; max-width: 420px; }
+  .cta-dl { margin-top: 34px; display: flex; justify-content: center; }
+
+  /* footer */
+  footer.foot { border-top: 1px solid #ededea; max-width: 1080px; margin: 0 auto; padding: 26px 28px; display: flex; align-items: center; justify-content: space-between; color: var(--muted-3); font-size: 14px; gap: 18px; flex-wrap: wrap; }
+  .foot .logo { font-weight: 700; color: var(--muted); display: inline-flex; align-items: center; gap: 9px; }
+  .foot .logo .bolt { width: 24px; height: 24px; border-radius: 7px; }
+  .foot-links { display: flex; align-items: center; gap: 24px; }
+  .foot-links a { color: var(--muted-3); font-size: 14px; }
+  .foot-links a:hover { color: var(--muted); }
+
+  @media (max-width: 760px) {
+    .triple { grid-template-columns: 1fr; gap: 40px; }
+    .about-cards { grid-template-columns: 1fr; }
+    .about-inner { padding: 36px 26px; }
+    .steps { margin-top: 80px; }
+    .props, .about { margin-top: 88px; }
+    .cta { margin-top: 88px; }
+  }
+</style>
+</head>
+<body id="top">
+
+<!-- NAV -->
+<nav class="nav">
+  <a class="logo" href="index.html">
+    <span class="bolt"><svg width="18" height="18" viewBox="0 0 24 24" fill="#fff"><path d="M13 2 L4 14 h6 l-1 8 10-13 h-7 l1-7 z"></path></svg></span>LLMJob
+  </a>
+  <div class="nav-right">
+    <a class="nav-link active" href="miner.html">Miner</a>
+    <a class="nav-link" href="network.html">Network</a>
+    <a class="nav-link" href="calculator.html">Calculator</a>
+    <a class="btn-discord" href="https://discord.gg/3pkrrwUmUB" target="_blank" rel="noopener">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="#fff"><path d="M19.3 5.3A17 17 0 0 0 15 4l-.2.4a13 13 0 0 1 3.7 1.2 12.7 12.7 0 0 0-9-1.6 12 12 0 0 0-2 .4A13 13 0 0 1 9.2 4.4 17 17 0 0 0 4.7 5.3 17.6 17.6 0 0 0 2 17.3a17 17 0 0 0 5.2 2.6l.6-1a11 11 0 0 1-1.8-.9l.4-.3a12.2 12.2 0 0 0 10.4 0l.4.3a11 11 0 0 1-1.8.9l.6 1a17 17 0 0 0 5.2-2.6 17.4 17.4 0 0 0-2.7-12zM9 14.4c-.8 0-1.5-.8-1.5-1.7s.7-1.7 1.5-1.7 1.5.8 1.5 1.7-.6 1.7-1.5 1.7zm6 0c-.8 0-1.5-.8-1.5-1.7s.7-1.7 1.5-1.7 1.5.8 1.5 1.7-.6 1.7-1.5 1.7z"></path></svg>Discord
+    </a>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <h1>Mine Pearl at home.</h1>
+  <p class="lede">Your own mining rig, running on the GPUs you already own.<br>Turn idle graphics cards into PRL — no command line.</p>
+  <div class="hero-cta">
+    <a class="btn-dl" href="https://github.com/super3/llmjob/releases" target="_blank" rel="noopener">
+      <span class="grid-ic"><i></i><i></i><i></i><i></i></span>Download for Windows
+    </a>
+    <a class="btn-ghost" href="calculator.html">Earnings calculator <span class="arr">→</span></a>
+  </div>
+</section>
+
+<!-- APP WINDOW MOCKUP -->
+<section class="mockup">
+  <div class="window">
+    <div class="titlebar">
+      <div class="traffic">
+        <span style="background:#ff5f57"></span>
+        <span style="background:#febc2e"></span>
+        <span style="background:#28c840"></span>
+      </div>
+      <span class="title">LLMJob Miner</span>
+    </div>
+    <div class="app-body">
+      <div class="app-head">
+        <span class="app-brand"><span class="bolt"><svg width="15" height="15" viewBox="0 0 24 24" fill="#fff"><path d="M13 2 L4 14 h6 l-1 8 10-13 h-7 l1-7 z"></path></svg></span>LLMJob</span>
+        <span class="app-settings">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#6b7077" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>Settings
+        </span>
+      </div>
+
+      <div class="field-label">
+        <span class="lbl">Payout Address</span>
+        <span class="meta">Balance: <b class="mono" id="mk-balance">128.407</b><b style="margin-left:3px">PRL</b> <span class="usd" id="mk-balance-usd">≈ $10.53</span></span>
+      </div>
+      <div class="field-box">prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c</div>
+
+      <div class="field-label">
+        <span class="lbl">Total Hashrate</span>
+        <span class="meta">GPU #0 · RTX 5090</span>
+      </div>
+      <div class="chart-card">
+        <div class="chart-val">
+          <span class="num" id="mk-total">354.1</span>
+          <span class="unit">TH/s</span>
+        </div>
+        <svg viewBox="0 0 360 56" width="100%" height="42" preserveAspectRatio="none">
+          <defs><linearGradient id="amFill2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2563eb" stop-opacity="0.18"></stop><stop offset="1" stop-color="#2563eb" stop-opacity="0"></stop></linearGradient></defs>
+          <path id="mk-area" d="" fill="url(#amFill2)"></path>
+          <path id="mk-line" d="" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>
+        </svg>
+        <div class="mk-stats">
+          <div class="mk-stat"><div class="k">Accepted shares</div><div class="v" id="mk-accepted">14,820</div></div>
+          <div class="mk-stat"><div class="k">Uptime</div><div class="v" id="mk-uptime">4h 12m 08s</div></div>
+          <div class="mk-stat"><div class="k">Est. earnings</div><div class="v accent"><span id="mk-estday">$11.25</span><span class="day">/day</span></div></div>
+        </div>
+      </div>
+
+      <div class="stop-btn"><span class="dot"></span>STOP MINING</div>
+
+      <div class="app-foot">
+        <span>VIEW LOGS</span>
+        <span>NEED HELP?</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STEPS -->
+<section class="steps">
+  <div class="triple">
+    <div>
+      <div class="step-n">1</div>
+      <h3 class="col-title">Get a Pearl address</h3>
+      <p class="col-text">Install the <a href="https://wallet.alphapool.tech/" target="_blank" rel="noopener">Pearl wallet</a> and generate your <span class="addr">prl1p…</span> address. It's your account — no sign-up.</p>
+    </div>
+    <div>
+      <div class="step-n">2</div>
+      <h3 class="col-title">Run LLMJob GUI</h3>
+      <p class="col-text">Launch the app, paste your address, and hit Start — it auto-detects every GPU and begins mining.</p>
+      <div class="gpu-row"><span class="nm">RTX 5090</span><span class="on"><span class="d"></span>Online</span></div>
+    </div>
+    <div>
+      <div class="step-n">3</div>
+      <h3 class="col-title">Watch payouts arrive</h3>
+      <p class="col-text">First share in ~10s. PPLNS payouts every 4 hours.</p>
+      <div class="pay-row"><span>Balance</span><span class="amt">+128.407 PRL</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- VALUE PROPS -->
+<section class="props">
+  <div class="triple">
+    <div>
+      <h3 class="col-title">Your hardware</h3>
+      <p class="col-text">It mines on the graphics cards already in your machine — not a rented server somewhere.</p>
+    </div>
+    <div>
+      <h3 class="col-title">Your wallet</h3>
+      <p class="col-text">Payouts go straight to your address. No custody, no account, nothing held by us.</p>
+    </div>
+    <div>
+      <h3 class="col-title">Just 1% dev fee</h3>
+      <p class="col-text">A flat 1% dev fee, 1% pool. You keep 98% of everything you mine — no subscriptions, no surprises.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ABOUT -->
+<section class="about" id="about">
+  <div class="about-inner">
+    <div class="about-eyebrow">Where this is going</div>
+    <h2>Start with Pearl mining. Co-mine LLMs next.</h2>
+    <p class="about-p">Today, LLMJob turns the idle GPU in your PC into PRL through Pearl's proof-of-useful-work — no terminal required. Next, you'll point the same hardware at running large language models, earning by serving AI from home. One app, one wallet, two ways to put your GPU to work.</p>
+
+    <div class="about-cards">
+      <div class="about-card live">
+        <span class="badge now"><span class="d"></span>Live now</span>
+        <div class="ct">Pearl mining</div>
+        <div class="cd">Mine PRL on the GPU you already own. Paste your address, hit Start — it's running today.</div>
+      </div>
+      <div class="about-card">
+        <span class="badge soon"><span class="d"></span>Coming soon</span>
+        <div class="ct">Co-mine LLMs</div>
+        <div class="cd">Point the same rig at running language models — serve AI from home and earn for it.</div>
+      </div>
+    </div>
+
+    <div class="waitlist-block">
+      <div class="wt">Get early access to LLM co-mining.</div>
+      <div class="ws">Join the waitlist — we'll email you when it opens.</div>
+      <form class="waitlist-form" id="waitlist-form" autocomplete="off">
+        <input type="email" name="email" placeholder="you@example.com" required aria-label="Email address" />
+        <button type="submit">Join the waitlist</button>
+        <a class="disc" href="https://discord.gg/3pkrrwUmUB" target="_blank" rel="noopener"><svg width="18" height="18" viewBox="0 0 24 24" fill="#fff"><path d="M19.3 5.3A17 17 0 0 0 15 4l-.2.4a13 13 0 0 1 3.7 1.2 12.7 12.7 0 0 0-9-1.6 12 12 0 0 0-2 .4A13 13 0 0 1 9.2 4.4 17 17 0 0 0 4.7 5.3 17.6 17.6 0 0 0 2 17.3a17 17 0 0 0 5.2 2.6l.6-1a11 11 0 0 1-1.8-.9l.4-.3a12.2 12.2 0 0 0 10.4 0l.4.3a11 11 0 0 1-1.8.9l.6 1a17 17 0 0 0 5.2-2.6 17.4 17.4 0 0 0-2.7-12zM9 14.4c-.8 0-1.5-.8-1.5-1.7s.7-1.7 1.5-1.7 1.5.8 1.5 1.7-.6 1.7-1.5 1.7zm6 0c-.8 0-1.5-.8-1.5-1.7s.7-1.7 1.5-1.7 1.5.8 1.5 1.7-.6 1.7-1.5 1.7z"></path></svg>Or join Discord</a>
+        <p class="wl-msg" hidden></p>
+      </form>
+    </div>
+  </div>
+</section>
+
+<!-- CLOSING CTA -->
+<section class="cta">
+  <h2>Bring Pearl home.</h2>
+  <p>Start with the GPUs you already own.</p>
+  <div class="cta-dl">
+    <a class="btn-dl" href="https://github.com/super3/llmjob/releases" target="_blank" rel="noopener">
+      <span class="grid-ic"><i></i><i></i><i></i><i></i></span>Download for Windows
+    </a>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer class="foot">
+  <a class="logo" href="index.html">
+    <span class="bolt"><svg width="13" height="13" viewBox="0 0 24 24" fill="#fff"><path d="M13 2 L4 14 h6 l-1 8 10-13 h-7 l1-7 z"></path></svg></span>LLMJob
+  </a>
+  <div class="foot-links">
+    <a href="miner.html">Miner</a>
+    <a href="network.html">Network</a>
+    <a href="calculator.html">Calculator</a>
+    <a href="dashboard.html" id="foot-login">Login</a>
+    <a href="https://discord.gg/3pkrrwUmUB" target="_blank" rel="noopener">Discord</a>
+  </div>
+  <span>© 2026 LLMJob</span>
+</footer>
+
+<script>
+  /* ---- Live miner mockup (chart + ticking stats) ---- */
+  (function () {
+    const elTotal = document.getElementById('mk-total');
+    const elBal = document.getElementById('mk-balance');
+    const elBalUsd = document.getElementById('mk-balance-usd');
+    const elAcc = document.getElementById('mk-accepted');
+    const elUp = document.getElementById('mk-uptime');
+    const elEst = document.getElementById('mk-estday');
+    const elLine = document.getElementById('mk-line');
+    const elArea = document.getElementById('mk-area');
+    if (!elTotal || !elLine) return;
+
+    const s = { points: [], total: 354.1, accepted: 14820, rejected: 3, load: 92, power: 318, uptimeSec: 4 * 3600 + 12 * 60 + 8, balance: 128.407 };
+    for (let i = 0; i < 48; i++) s.points.push(344 + Math.sin(i / 5) * 8 + Math.random() * 6);
+
+    const W = 360, H = 56, MIN = 326, MAX = 372;
+    const pad = (n) => String(n).padStart(2, '0');
+
+    function render() {
+      const pts = s.points.length ? s.points : [350];
+      const stepX = W / Math.max(1, pts.length - 1);
+      const toY = (v) => +(H - ((v - MIN) / (MAX - MIN)) * H).toFixed(1);
+      const xy = pts.map((v, i) => [+(i * stepX).toFixed(1), toY(v)]);
+      const linePath = xy.map((p, i) => (i ? 'L' : 'M') + p[0] + ' ' + p[1]).join(' ');
+      const areaPath = 'M0 ' + H + ' ' + xy.map((p) => 'L' + p[0] + ' ' + p[1]).join(' ') + ' L' + W + ' ' + H + ' Z';
+      elLine.setAttribute('d', linePath);
+      elArea.setAttribute('d', areaPath);
+
+      const us = s.uptimeSec, h = Math.floor(us / 3600), m = Math.floor((us % 3600) / 60), sc = us % 60;
+      elTotal.textContent = s.total.toFixed(1);
+      elBal.textContent = s.balance.toFixed(3);
+      elBalUsd.textContent = '≈ $' + (s.balance * 0.082).toFixed(2);
+      elAcc.textContent = s.accepted.toLocaleString();
+      elUp.textContent = h + 'h ' + pad(m) + 'm ' + pad(sc) + 's';
+      elEst.textContent = '$' + (((s.total / 18400) * 7200 * 0.99) * 0.082).toFixed(2);
+    }
+
+    function tick() {
+      const next = Math.max(334, Math.min(368, s.total + (Math.random() - 0.5) * 8));
+      s.points = s.points.concat(next).slice(-48);
+      s.total = next;
+      s.load = Math.max(86, Math.min(97, s.load + (Math.random() - 0.5) * 4));
+      s.power = Math.round(Math.max(300, Math.min(342, s.power + (Math.random() - 0.5) * 8)));
+      s.accepted += Math.random() < 0.82 ? 1 : 0;
+      s.rejected += Math.random() < 0.012 ? 1 : 0;
+      s.uptimeSec += 1;
+      render();
+    }
+
+    render();
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (!reduce) setInterval(tick, 1000);
+  })();
+
+  /* ---- Waitlist (Clerk) ---- */
+  let clerkLoading = null;
+  async function getClerk() {
+    if (!clerkLoading) {
+      clerkLoading = (async () => {
+        // The Clerk script is async — wait briefly for it if needed.
+        for (let i = 0; i < 50 && typeof Clerk === 'undefined'; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        if (typeof Clerk === 'undefined') throw new Error('Clerk failed to load');
+        await Clerk.load();
+        return Clerk;
+      })();
+      clerkLoading.catch(() => { clerkLoading = null; }); // allow retry on failure
+    }
+    return clerkLoading;
+  }
+
+  // Footer "Login": open Clerk's sign-in modal in place (ported from the prior
+  // landing page). If the visitor is already signed in, go straight to the
+  // dashboard; on any failure, fall back to navigating to dashboard.html.
+  const footLogin = document.getElementById('foot-login');
+  if (footLogin) {
+    footLogin.addEventListener('click', async (e) => {
+      e.preventDefault();
+      try {
+        const clerk = await getClerk();
+        if (clerk.user) { window.location.href = 'dashboard.html'; return; }
+        const opts = { afterSignInUrl: 'dashboard.html', afterSignUpUrl: 'dashboard.html' };
+        if (clerk.openSignIn) clerk.openSignIn(opts);
+        else if (clerk.redirectToSignIn) clerk.redirectToSignIn(opts);
+        else window.location.href = 'dashboard.html';
+      } catch (err) {
+        window.location.href = 'dashboard.html';
+      }
+    });
+  }
+
+  document.querySelectorAll('.waitlist-form').forEach((form) => {
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const input = form.querySelector('input[type="email"]');
+      const btn = form.querySelector('button[type="submit"]');
+      const msg = form.querySelector('.wl-msg');
+      btn.disabled = true;
+      msg.hidden = true;
+      msg.classList.remove('err');
+      try {
+        const clerk = await getClerk();
+        await clerk.joinWaitlist({ emailAddress: input.value.trim() });
+        btn.textContent = "You're on the list ✓";
+        input.disabled = true;
+        msg.textContent = "We'll email you when LLM co-mining opens.";
+        msg.hidden = false;
+      } catch (err) {
+        msg.textContent = err?.errors?.[0]?.longMessage || err?.errors?.[0]?.message
+          || 'Something went wrong — please try again.';
+        msg.classList.add('err');
+        msg.hidden = false;
+        btn.disabled = false;
+      }
+    });
+  });
+</script>
+</body>
+</html>
