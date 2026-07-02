@@ -62,7 +62,7 @@
   .stat-ic.blue { background: #eff4ff; }
   .stat-ic.grey { background: #f1efe9; }
   .stat-k { font-size: 12.5px; color: var(--muted-2); font-weight: 500; margin-bottom: 6px; }
-  .stat-v { font-weight: 800; font-size: 30px; letter-spacing: -.03em; }
+  .stat-v { font-weight: 800; font-size: 30px; line-height: 1; letter-spacing: -.03em; }
   .stat-v.accent { color: var(--accent); }
 
   /* table */
@@ -145,7 +145,7 @@
     <span class="stat-ic blue"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12 h3.5 l2.2 6 3.8-13 2.3 9 h5.7"></path></svg></span>
     <div>
       <div class="stat-k">Total hashrate</div>
-      <div class="stat-v" id="net-hr">—</div>
+      <div class="stat-v" id="net-hr">0</div>
     </div>
   </div>
 </section>
@@ -213,7 +213,7 @@
       setText('net-active', online.toLocaleString());
       setText('net-active-h', online.toLocaleString());
       setText('net-workers', workers.toLocaleString());
-      setText('net-hr', online ? (poolTh / 1000).toFixed(2) + ' PH/s' : '—');
+      setText('net-hr', online ? (poolTh / 1000).toFixed(2) + ' PH/s' : '0');
       setText('net-foot', online ? ('Showing ' + online + ' of ' + online + ' miners') : 'Waiting for the first miner to connect…');
     }
 
