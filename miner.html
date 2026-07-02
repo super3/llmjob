@@ -245,7 +245,7 @@
 
       <div class="field-label">
         <span class="lbl">Payout Address</span>
-        <span class="meta">Balance: <b class="mono" id="mk-balance">128.407</b><b style="margin-left:3px">PRL</b> <span class="usd" id="mk-balance-usd">≈ $10.53</span></span>
+        <span class="meta">Balance: <b class="mono" id="mk-balance">128.407</b><b style="margin-left:3px">PRL</b> <span class="usd" id="mk-balance-usd">≈ $60.35</span></span>
       </div>
       <div class="field-box">prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c</div>
 
@@ -266,7 +266,7 @@
         <div class="mk-stats">
           <div class="mk-stat"><div class="k">Accepted shares</div><div class="v" id="mk-accepted">14,820</div></div>
           <div class="mk-stat"><div class="k">Uptime</div><div class="v" id="mk-uptime">4h 12m 08s</div></div>
-          <div class="mk-stat"><div class="k">Est. earnings</div><div class="v accent"><span id="mk-estday">$11.25</span><span class="day">/day</span></div></div>
+          <div class="mk-stat"><div class="k">Est. earnings</div><div class="v accent"><span id="mk-estday">$6.42</span><span class="day">/day</span></div></div>
         </div>
       </div>
 
@@ -430,10 +430,10 @@
       const us = s.uptimeSec, h = Math.floor(us / 3600), m = Math.floor((us % 3600) / 60), sc = us % 60;
       elTotal.textContent = s.total.toFixed(1);
       elBal.textContent = s.balance.toFixed(3);
-      elBalUsd.textContent = '≈ $' + (s.balance * 0.082).toFixed(2);
+      elBalUsd.textContent = '≈ $' + (s.balance * 0.47).toFixed(2);
       elAcc.textContent = s.accepted.toLocaleString();
       elUp.textContent = h + 'h ' + pad(m) + 'm ' + pad(sc) + 's';
-      elEst.textContent = '$' + (((s.total / 18400) * 7200 * 0.99) * 0.082).toFixed(2);
+      elEst.textContent = '$' + (((s.total / 30.79e6) * 1.2e6 * 0.99) * 0.47).toFixed(2);
     }
 
     function tick() {
@@ -505,11 +505,13 @@
       { name: 'H100', th: 700, arch: 'Hopper · 80 GB · datacenter' },
     ];
 
-    const PRICE = 0.082;     // PRL price in USD
-    const NET_PH = 18.4;     // network hashrate in PH/s
-    const NET_TH = NET_PH * 1000;
-    const DAILY_NET_PRL = 7200;
-    const FEE = 0.99;        // keep 99% after the 1% pool fee
+    // Live market data, with fallbacks. AlphaPool prices PRL via SafeTrade and
+    // reads the network hashrate from prlscan; we mirror those and fall back to
+    // these current constants if a request is blocked or offline (e.g. CORS).
+    let PRICE = 0.47;               // PRL/USDT — SafeTrade (fallback)
+    let NET_TH = 30.79e6;           // network hashrate in TH/s (~30.79 EH/s) — prlscan (fallback)
+    const DAILY_NET_PRL = 1.2e6;    // ~2,600 PRL/block x ~480 blocks/day
+    const FEE = 0.99;               // keep 99% after the 1% pool fee
 
     const state = { hashrate: 354, cards: 1, selected: 'RTX 5090' };
 
@@ -520,6 +522,7 @@
     if (!inHash || !chipsEl || !gridEl) return;
 
     const fmt = (n, d) => Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+    const fmtHash = (th) => th >= 1e6 ? (th / 1e6).toFixed(2) + ' EH/s' : th >= 1e3 ? (th / 1e3).toFixed(1) + ' PH/s' : th.toFixed(0) + ' TH/s';
 
     function pick(card) {
       state.hashrate = card.th;
@@ -564,7 +567,7 @@
       document.getElementById('r-usdmonth').textContent = '$' + fmt(usdDay * 30, 0);
       document.getElementById('r-share').textContent = (share * 100).toFixed(3) + '%';
       document.getElementById('r-price').textContent = '$' + PRICE.toFixed(3);
-      document.getElementById('r-net').textContent = NET_PH.toFixed(1) + ' PH/s';
+      document.getElementById('r-net').textContent = fmtHash(NET_TH);
 
       chipsEl.querySelectorAll('.chip').forEach((el) => {
         el.classList.toggle('on', el.dataset.name === state.selected);
@@ -575,6 +578,36 @@
     inCards.addEventListener('input', (e) => { state.cards = e.target.value; render(); });
 
     render();
+
+    // ---- Best-effort live refresh (price + network hashrate) ----
+    // Any failure (offline, CORS, shape change) leaves the fallbacks above in
+    // place, so the estimate is always sane and upgrades to live when reachable.
+    const num = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : null; };
+    function getJson(url) {
+      const c = new AbortController();
+      const t = setTimeout(() => c.abort(), 6000);
+      return fetch(url, { headers: { Accept: 'application/json' }, signal: c.signal })
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null)
+        .then((d) => { clearTimeout(t); return d; });
+    }
+    async function livePrice() {
+      const st = await getJson('https://safe.trade/api/v2/peatio/public/markets/tickers');
+      const s = st && st.prlusdt && st.prlusdt.ticker && num(st.prlusdt.ticker.last);
+      if (s) return s;
+      const cg = await getJson('https://api.coingecko.com/api/v3/simple/price?ids=pearl-2&vs_currencies=usd');
+      return (cg && cg['pearl-2'] && num(cg['pearl-2'].usd)) || null;
+    }
+    (async () => {
+      const [price, net] = await Promise.all([
+        livePrice(),
+        getJson('https://prlscan.com/api/getnetworkhashps'),
+      ]);
+      if (price && price < 1000) PRICE = price;                 // PRL is well under $1
+      const hps = num(net);                                     // prlscan returns H/s
+      if (hps) { const th = hps / 1e12; if (th > 1 && th < 1e12) NET_TH = th; }
+      render();
+    })();
   })();
 </script>
 </body>
