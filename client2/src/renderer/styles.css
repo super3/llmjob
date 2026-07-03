@@ -68,6 +68,14 @@ input.field-box { user-select: text; }
 .engine-status { margin-top: 12px; text-align: center; font-size: 12.5px; color: var(--muted); }
 .engine-status.err { color: #dc2626; }
 
+/* update bar */
+.update-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 20px; padding: 10px 14px; background: #eff4ff; border: 1px solid #dbe6fb; border-radius: 9px; }
+.update-bar.err { background: #fef2f2; border-color: #fca5a5; }
+.update-text { font-size: 12.5px; font-weight: 600; color: var(--accent); }
+.update-bar.err .update-text { color: #dc2626; }
+.update-install { flex: none; border: none; cursor: pointer; background: var(--accent); color: #fff; font-family: inherit; font-weight: 700; font-size: 12px; letter-spacing: .03em; padding: 7px 12px; border-radius: 7px; transition: background .15s; }
+.update-install:hover { background: #1d4ed8; }
+
 /* settings + logs views */
 .view-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .view-head .lbl { font-size: 14px; font-weight: 700; color: var(--ink-2); }

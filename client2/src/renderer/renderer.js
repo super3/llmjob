@@ -29,6 +29,9 @@
     setDifficulty: $('set-difficulty'),
     logTerm: $('log-term'),
     engineStatus: $('engine-status'),
+    updateBar: $('update-bar'),
+    updateText: $('update-text'),
+    updateInstall: $('update-install'),
   };
 
   const state = { mining: false, view: 'miner', address: '' };
@@ -132,6 +135,7 @@
     });
     el.btnStart.addEventListener('click', start);
     el.btnStop.addEventListener('click', stop);
+    el.updateInstall.addEventListener('click', () => { if (api.installUpdate) api.installUpdate(); });
     el.btnSettings.addEventListener('click', () => {
       state.view = state.view === 'settings' ? 'miner' : 'settings';
       renderView();
@@ -193,6 +197,13 @@
         el.engineStatus.classList.add('err');
         el.engineStatus.textContent = 'Engine setup failed — see Logs.';
       }
+    });
+    if (api.onUpdate) api.onUpdate((s) => {
+      if (!s) return;
+      el.updateBar.hidden = !s.show;
+      el.updateText.textContent = s.text;
+      el.updateBar.classList.toggle('err', !!s.error);
+      el.updateInstall.hidden = !s.ready;
     });
     renderView();
     renderMiningState();
