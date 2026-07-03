@@ -1,8 +1,9 @@
 'use strict';
 
 // Electron main process. Thin shell: owns the window, persists settings, and
-// bridges the renderer to the MinerManager (real engine) and Simulator (live
-// preview). All testable logic lives in ../shared and ./minerManager.
+// bridges the renderer to the MinerManager (the real engine). Stats shown to
+// the user come only from the engine's own output — no simulated data. All
+// testable logic lives in ../shared and ./minerManager.
 
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const { spawn, execFile } = require('child_process');
@@ -15,7 +16,7 @@ const { autoUpdater } = require('electron-updater');
 
 const { MinerManager } = require('./minerManager');
 const { EngineManager } = require('./engineManager');
-const { Simulator } = require('../shared/simulator');
+const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const { REGIONS, DEFAULTS, MINER, endpointFor, difficultyForCard } = require('../shared/config');
 const { progressPercent } = require('../shared/engine');
 const { formatUpdate } = require('../shared/updateStatus');
@@ -24,7 +25,7 @@ const format = require('../shared/format');
 
 let win = null;
 let miner = null;
-let sim = null;
+let stats = null;
 let ticker = null;
 
 function settingsPath() {
@@ -50,7 +51,7 @@ function send(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
 }
 
-// Map a raw simulator snapshot to the display fields the renderer expects.
+// Map a stats snapshot to the display fields the renderer expects.
 function statsView(snap) {
   return {
     total: format.formatHashrate(snap.total),
@@ -115,11 +116,13 @@ function extractZip(zipPath, dest) {
 async function startMining(settings) {
   persistSettings(settings);
 
-  // Live preview numbers (the engine itself also reports via logs/events).
-  sim = new Simulator({ uptimeSec: 0 });
-  send('miner:stats', statsView(sim.snapshot()));
+  // Real stats only: the accumulator starts at zero and is filled in from the
+  // engine's parsed output (see the miner 'event' handler below). The ticker
+  // just re-emits the current snapshot each second so uptime advances.
+  stats = initStats(Date.now());
+  send('miner:stats', statsView(snapshot(stats, Date.now())));
   if (ticker) clearInterval(ticker);
-  ticker = setInterval(() => send('miner:stats', statsView(sim.step())), 1000);
+  ticker = setInterval(() => send('miner:stats', statsView(snapshot(stats, Date.now()))), 1000);
 
   const endpoint = settings.endpoint || endpointFor(settings.region || DEFAULTS.region);
   send('miner:log', { level: 'info', line: 'connecting to ' + endpoint + ' · worker ' + (settings.worker || DEFAULTS.worker) });
@@ -149,14 +152,17 @@ async function startMining(settings) {
     } catch (e) {
       binaryPath = undefined;
       send('miner:engine', { phase: 'error', message: e.message });
-      send('miner:log', { level: 'error', line: 'engine setup failed: ' + e.message + ' — showing simulated stats. Manual download: ' + MINER.downloadUrl });
+      send('miner:log', { level: 'error', line: 'engine setup failed: ' + e.message + '. Manual download: ' + MINER.downloadUrl });
     }
   }
 
   // Real alpha-miner engine.
   miner = new MinerManager({ spawn });
   miner.on('log', (l) => send('miner:log', l));
-  miner.on('event', (e) => send('miner:event', e));
+  miner.on('event', (e) => {
+    applyEvent(stats, e);
+    send('miner:event', e);
+  });
   miner.on('error', (err) => send('miner:log', { level: 'error', line: 'engine error: ' + err.message }));
   miner.on('stopped', (code) => send('miner:log', { level: 'info', line: 'engine exited (code ' + code + ')' }));
 
@@ -174,6 +180,7 @@ function stopMining() {
     clearInterval(ticker);
     ticker = null;
   }
+  stats = null;
   if (miner) {
     miner.stop();
     miner = null;
