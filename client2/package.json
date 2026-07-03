@@ -26,11 +26,14 @@
     "files": ["src/**/*", "package.json"],
     "win": {
       "target": "nsis",
+      "icon": "src/assets/icon.ico",
       "artifactName": "LLMJob-Earn-Setup.${ext}"
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "src/assets/icon.ico",
+      "uninstallerIcon": "src/assets/icon.ico"
     },
     "publish": [
       { "provider": "github", "owner": "super3", "repo": "llmjob", "releaseType": "release" }

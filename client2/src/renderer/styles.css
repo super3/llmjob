@@ -11,6 +11,9 @@
   --green: #16a34a;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
+/* The hidden attribute must win over element display rules (e.g. .stop-btn's
+   display:flex), otherwise toggled-off controls stay visible. */
+[hidden] { display: none !important; }
 html, body { height: 100%; }
 body {
   background: var(--bg);
