@@ -20,6 +20,7 @@ const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const { REGIONS, DEFAULTS, MINER, endpointFor, difficultyForCard } = require('../shared/config');
 const { progressPercent } = require('../shared/engine');
 const { formatUpdate } = require('../shared/updateStatus');
+const { describeLaunchError } = require('../shared/engineError');
 const earnings = require('../shared/earnings');
 const format = require('../shared/format');
 
@@ -49,6 +50,14 @@ function persistSettings(s) {
 
 function send(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+}
+
+// Report a miner-engine launch failure to the UI + log, translating the common
+// antivirus-quarantine case into plain guidance instead of a cryptic error.
+function reportLaunchFailure(err, missing) {
+  const d = describeLaunchError({ platform: process.platform, missing: !!missing, err });
+  send('miner:engine', { phase: 'error', message: d.ui });
+  send('miner:log', { level: 'error', line: d.log });
 }
 
 // Map a stats snapshot to the display fields the renderer expects.
@@ -151,7 +160,7 @@ async function startMining(settings) {
       send('miner:log', { level: 'info', line: 'engine ready: ' + binaryPath });
     } catch (e) {
       binaryPath = undefined;
-      send('miner:engine', { phase: 'error', message: e.message });
+      send('miner:engine', { phase: 'error', message: 'Could not download or set up the mining engine — see Logs.' });
       send('miner:log', { level: 'error', line: 'engine setup failed: ' + e.message + '. Manual download: ' + MINER.downloadUrl });
     }
   }
@@ -163,14 +172,18 @@ async function startMining(settings) {
     applyEvent(stats, e);
     send('miner:event', e);
   });
-  miner.on('error', (err) => send('miner:log', { level: 'error', line: 'engine error: ' + err.message }));
+  miner.on('error', (err) => reportLaunchFailure(err, false));
   miner.on('stopped', (code) => send('miner:log', { level: 'info', line: 'engine exited (code ' + code + ')' }));
 
-  if (binaryPath) {
+  if (binaryPath && !fs.existsSync(binaryPath)) {
+    // ensure() handed us a path but the file is already gone — the classic
+    // antivirus-quarantined-it-right-after-download case.
+    reportLaunchFailure(null, true);
+  } else if (binaryPath) {
     try {
       miner.start(Object.assign({}, settings, { platform: process.platform, binaryPath: binaryPath }));
     } catch (e) {
-      send('miner:log', { level: 'error', line: 'failed to launch engine: ' + e.message });
+      reportLaunchFailure(e, false);
     }
   }
 }
