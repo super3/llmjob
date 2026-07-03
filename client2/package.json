@@ -1,6 +1,6 @@
 {
   "name": "llmjob-earn",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "LLMJob Earn — desktop GUI that turns the excess compute on GPUs you already own into crypto (Pearl / PRL) via the AlphaPool alpha-miner. Paste a payout address and start earning, no command line.",
   "main": "src/main/main.js",
   "scripts": {
