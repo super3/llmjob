@@ -16,26 +16,23 @@ function resolveBinary(binaryPath, platform, gpu) {
   return 'alpha-miner';
 }
 
-// Build the alpha-miner argument vector. The pool documents a static difficulty
-// pinned via the Stratum password (`x;d=N`); the user is `<address>.<worker>`.
-// An optional `--backend` is appended for cards that need a forced backend
-// (e.g. A100/L4/L40 use `--backend ampere`).
+// Build the alpha-miner argument vector, matching the engine's documented CLI
+// (github.com/AlphaMine-Tech/alpha-miner): --pool / --address / --worker, with
+// static difficulty pinned via the Stratum password (`x;d=N`). There is no
+// --algo flag — the miner is Pearl-specific — and the pool/address/worker are
+// separate flags (not a combined `<address>.<worker>` user). An optional forced
+// backend is appended for cards that need it (`--force-backend ampere`).
 function buildArgs(settings = {}) {
   const region = settings.region || DEFAULTS.region;
   const endpoint = settings.endpoint || endpointFor(region);
   const worker = settings.worker != null ? settings.worker : DEFAULTS.worker;
   const address = settings.address || '';
   const difficulty = settings.difficulty || DEFAULTS.difficulty;
-  const algo = settings.algo || DEFAULTS.algo;
-  const user = worker ? address + '.' + worker : address;
 
-  const args = [
-    '--algo', algo,
-    '--url', 'stratum+tcp://' + endpoint,
-    '--user', user,
-    '--password', 'x;d=' + difficulty,
-  ];
-  if (settings.backend) args.push('--backend', settings.backend);
+  const args = ['--pool', 'stratum+tcp://' + endpoint, '--address', address];
+  if (worker) args.push('--worker', worker);
+  args.push('--password', 'x;d=' + difficulty);
+  if (settings.backend) args.push('--force-backend', settings.backend);
   return args;
 }
 
