@@ -32,7 +32,7 @@ describe('MinerManager', () => {
     expect(spawn).toHaveBeenCalledTimes(1);
     const [bin, args] = spawn.mock.calls[0];
     expect(bin).toBe('alpha-miner-windows.exe');
-    expect(args).toContain('prl1pabc.rig01');
+    expect(args).toEqual(expect.arrayContaining(['--address', 'prl1pabc', '--worker', 'rig01']));
     expect(started).toHaveBeenCalledWith({ bin, args });
   });
 

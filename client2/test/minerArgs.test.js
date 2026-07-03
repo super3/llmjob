@@ -21,34 +21,35 @@ describe('resolveBinary', () => {
 describe('buildArgs', () => {
   test('uses defaults when called with no settings', () => {
     expect(buildArgs()).toEqual([
-      '--algo', 'pearlhash',
-      '--url', 'stratum+tcp://us2.alphapool.tech:5566',
-      '--user', '.rig01',
+      '--pool', 'stratum+tcp://us2.alphapool.tech:5566',
+      '--address', '',
+      '--worker', 'rig01',
       '--password', 'x;d=524288',
     ]);
   });
 
-  test('honors region, worker, difficulty, algo and backend overrides', () => {
-    expect(buildArgs({ address: 'prl1pabc', region: 'eu1', worker: 'rig9', difficulty: 1000, algo: 'x', backend: 'ampere' })).toEqual([
-      '--algo', 'x',
-      '--url', 'stratum+tcp://eu1.alphapool.tech:5566',
-      '--user', 'prl1pabc.rig9',
+  test('honors region, worker, difficulty and backend overrides', () => {
+    expect(buildArgs({ address: 'prl1pabc', region: 'eu1', worker: 'rig9', difficulty: 1000, backend: 'ampere' })).toEqual([
+      '--pool', 'stratum+tcp://eu1.alphapool.tech:5566',
+      '--address', 'prl1pabc',
+      '--worker', 'rig9',
       '--password', 'x;d=1000',
-      '--backend', 'ampere',
+      '--force-backend', 'ampere',
     ]);
   });
 
-  test('an explicit endpoint wins and an empty worker drops the suffix', () => {
+  test('an explicit endpoint wins and an empty worker drops the --worker flag', () => {
     expect(buildArgs({ address: 'prl1pabc', endpoint: 'custom:1', worker: '' })).toEqual([
-      '--algo', 'pearlhash',
-      '--url', 'stratum+tcp://custom:1',
-      '--user', 'prl1pabc',
+      '--pool', 'stratum+tcp://custom:1',
+      '--address', 'prl1pabc',
       '--password', 'x;d=524288',
     ]);
   });
 
-  test('defaults worker when omitted', () => {
-    expect(buildArgs({ address: 'prl1pabc' })).toContain('prl1pabc.rig01');
+  test('defaults the worker when omitted', () => {
+    const args = buildArgs({ address: 'prl1pabc' });
+    expect(args).toEqual(expect.arrayContaining(['--address', 'prl1pabc', '--worker', 'rig01']));
+    expect(args).not.toContain('--algo');
   });
 });
 
