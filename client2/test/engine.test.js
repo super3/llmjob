@@ -3,7 +3,7 @@
 const path = require('path');
 const {
   DOWNLOAD_BASE, engineBinaryName, engineArchiveName, engineDownloadUrl,
-  isZipUrl, enginePath, progressPercent,
+  isZipUrl, enginePath, bundledEnginePath, progressPercent,
 } = require('../src/shared/engine');
 
 describe('engineBinaryName', () => {
@@ -40,6 +40,19 @@ describe('isZipUrl', () => {
 describe('enginePath', () => {
   test('joins the cache dir and binary name', () => {
     expect(enginePath('/cache', 'win32')).toBe(path.join('/cache', 'alpha-miner-windows.exe'));
+  });
+});
+
+describe('bundledEnginePath', () => {
+  test('resolves under the resources path when packaged', () => {
+    expect(bundledEnginePath('/app/resources', 'win32')).toBe(path.join('/app/resources', 'engine', 'alpha-miner-windows.exe'));
+  });
+  test('honours the gpu variant', () => {
+    expect(bundledEnginePath('/res', 'win32', 'amd')).toBe(path.join('/res', 'engine', 'alpha-miner-amd-windows-fixed.exe'));
+  });
+  test('returns null without a resources path (dev run)', () => {
+    expect(bundledEnginePath(null, 'win32')).toBeNull();
+    expect(bundledEnginePath(undefined, 'win32')).toBeNull();
   });
 });
 

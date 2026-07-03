@@ -3,6 +3,10 @@ dist/
 coverage/
 *.log
 
-# Bundled miner engine binaries (downloaded at runtime / packaged separately)
+# Bundled miner engine binaries (fetched at build time into vendor/engine,
+# never committed — antivirus-flagged and large). The vendor/engine/README.md
+# placeholder keeps the directory so electron-builder's extraResources resolves.
 bin/
 *.exe
+vendor/engine/*
+!vendor/engine/README.md
