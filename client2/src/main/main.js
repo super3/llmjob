@@ -178,6 +178,11 @@ function stopMining() {
   send('miner:stopped');
 }
 
+function appIcon() {
+  const dir = path.join(__dirname, '..', 'assets');
+  return path.join(dir, process.platform === 'win32' ? 'icon.ico' : 'icon.png');
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 620,
@@ -187,6 +192,7 @@ function createWindow() {
     backgroundColor: '#fcfcfb',
     autoHideMenuBar: true,
     title: 'LLMJob Earn',
+    icon: appIcon(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
