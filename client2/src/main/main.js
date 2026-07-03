@@ -11,11 +11,14 @@ const fs = require('fs');
 const http = require('http');
 const https = require('https');
 
+const { autoUpdater } = require('electron-updater');
+
 const { MinerManager } = require('./minerManager');
 const { EngineManager } = require('./engineManager');
 const { Simulator } = require('../shared/simulator');
 const { REGIONS, DEFAULTS, MINER, endpointFor, difficultyForCard } = require('../shared/config');
 const { progressPercent } = require('../shared/engine');
+const { formatUpdate } = require('../shared/updateStatus');
 const earnings = require('../shared/earnings');
 const format = require('../shared/format');
 
@@ -183,6 +186,28 @@ function appIcon() {
   return path.join(dir, process.platform === 'win32' ? 'icon.ico' : 'icon.png');
 }
 
+// Wire electron-updater to the renderer's update bar. autoUpdater pulls from the
+// GitHub Releases feed (see build.publish); it only works in a packaged app, so
+// main.js guards the call with app.isPackaged. Downloads happen automatically;
+// the user chooses when to restart via the 'app:update:install' channel.
+function setupUpdater() {
+  const push = (phase, payload) => send('app:update', formatUpdate(phase, payload));
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.on('checking-for-update', () => push('checking'));
+  autoUpdater.on('update-available', (info) => push('available', info));
+  autoUpdater.on('update-not-available', () => push('none'));
+  autoUpdater.on('download-progress', (p) => push('progress', p));
+  autoUpdater.on('update-downloaded', (info) => push('ready', info));
+  autoUpdater.on('error', (err) => {
+    push('error');
+    send('miner:log', { level: 'error', line: 'update error: ' + (err && err.message ? err.message : err) });
+  });
+  autoUpdater.checkForUpdates().catch((e) => {
+    send('miner:log', { level: 'error', line: 'update check failed: ' + e.message });
+  });
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 620,
@@ -213,9 +238,17 @@ ipcMain.on('miner:start', (_e, settings) => {
 });
 ipcMain.on('miner:stop', () => stopMining());
 ipcMain.on('open-external', (_e, url) => { shell.openExternal(url); });
+ipcMain.on('app:update:install', () => {
+  try {
+    autoUpdater.quitAndInstall();
+  } catch (e) {
+    send('miner:log', { level: 'error', line: 'update install failed: ' + e.message });
+  }
+});
 
 app.whenReady().then(() => {
   createWindow();
+  if (app.isPackaged) setupUpdater();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
