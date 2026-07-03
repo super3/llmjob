@@ -23,6 +23,7 @@
     viewMiner: $('view-miner'),
     viewSettings: $('view-settings'),
     viewLogs: $('view-logs'),
+    deviceLabel: $('device-label'),
     setDevice: $('set-device'),
     setWorker: $('set-worker'),
     setRegion: $('set-region'),
@@ -72,6 +73,7 @@
       el.accepted.textContent = '0';
       el.uptime.textContent = '0m 00s';
       el.estday.textContent = '$0.00';
+      el.deviceLabel.textContent = 'GPU · auto-detect';
       el.line.setAttribute('d', FLAT_LINE);
       el.area.setAttribute('d', FLAT_AREA);
       el.engineStatus.hidden = true;
@@ -85,6 +87,7 @@
     el.accepted.textContent = s.acceptedLabel;
     el.uptime.textContent = s.uptime;
     el.estday.textContent = s.estDay;
+    if (s.gpu) el.deviceLabel.textContent = s.gpu;
     const p = chartPaths(s.points);
     el.line.setAttribute('d', p.line);
     el.area.setAttribute('d', p.area);

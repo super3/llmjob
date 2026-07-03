@@ -70,6 +70,7 @@ function statsView(snap) {
     rejected: snap.rejected,
     load: Math.round(snap.load),
     power: snap.power,
+    gpu: snap.gpu,
     uptime: format.formatUptime(snap.uptimeSec),
     estDay: earnings.estDailyUsdLabel(snap.total),
   };

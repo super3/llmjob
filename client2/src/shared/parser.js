@@ -2,59 +2,56 @@
 
 // Parse a line of `alpha-miner` stdout into a structured event.
 //
-// The exact engine output format is configurable; these patterns cover the
-// conventional Stratum-miner log shapes (and the lines shown in the design
-// mock): connection lines, accepted/rejected shares, and periodic hashrate
-// reports. Unrecognized lines return null so callers can pass them through as
-// raw log text.
+// alpha-miner (github.com/AlphaMine-Tech/alpha-miner) emits structured
+// `key=value` logs. The two we care about:
+//
+//   ...gpu=0:NVIDIA GeForce RTX 4090 component=miner status attempts=100 hits=3
+//      accepted=3 rejected=0 dropped=0 hashrate_th_s=286.86 ... power=449W
+//   ...gpu=0:NVIDIA GeForce RTX 4090 component=pool connected host=us2.alphapool.tech port=5566
+//
+// The periodic `miner status` line carries the authoritative cumulative share
+// counters plus the live hashrate (already in TH/s) and the GPU name. Anything
+// unrecognized returns null so callers pass it through as raw log text.
 
-const UNIT_TO_TH = {
-  'th/s': 1,
-  'gh/s': 1e-3,
-  'mh/s': 1e-6,
-  'kh/s': 1e-9,
-  'h/s': 1e-12,
-};
+// A numeric `key=value` field (value may be a float; trailing units like the W
+// in `power=449W` or the c in `ctemp=71c` are ignored). Returns null if absent.
+function numField(s, key) {
+  const m = String(s).match(new RegExp('\\b' + key + '=([\\d.]+)'));
+  return m ? Number(m[1]) : null;
+}
 
-// Convert a "<number> <unit>" hashrate to TH/s. Unknown units are assumed
-// to already be TH/s.
-function parseHashrateValue(num, unit) {
-  const n = Number(num) || 0;
-  const factor = UNIT_TO_TH[String(unit).toLowerCase()];
-  return n * (factor == null ? 1 : factor);
+// The GPU name from a `gpu=<index>:<name> component=...` field, or null when the
+// engine reports no real device (early lines say `gpu=system`).
+function gpuName(s) {
+  const m = String(s).match(/\bgpu=(?:\d+:)?(.+?)\s+component=/);
+  if (!m) return null;
+  const name = m[1].trim();
+  return name.toLowerCase() === 'system' ? null : name;
 }
 
 function parseLine(line) {
   const s = String(line == null ? '' : line).trim();
   if (!s) return null;
 
-  const conn = s.match(/^connected to (\S+?)(?:[\s·]+worker\s+(\S+))?$/i);
+  // Periodic miner status: hashrate + cumulative accepted/rejected + GPU.
+  if (/\bhashrate_th_s=/.test(s)) {
+    return {
+      type: 'status',
+      hashrate: numField(s, 'hashrate_th_s'),
+      accepted: numField(s, 'accepted'),
+      rejected: numField(s, 'rejected'),
+      power: numField(s, 'power'),
+      gpu: gpuName(s),
+    };
+  }
+
+  // Pool connection.
+  const conn = s.match(/component=pool\s+connected\s+host=(\S+)\s+port=(\d+)/i);
   if (conn) {
-    return { type: 'connected', endpoint: conn[1], worker: conn[2] || null };
-  }
-
-  const share = s.match(/\b(accepted|rejected)\b[^#]*share(?:\s*#?\s*([\d,]+))?/i);
-  if (share) {
-    return {
-      type: 'share',
-      status: share[1].toLowerCase(),
-      index: share[2] ? Number(share[2].replace(/,/g, '')) : null,
-    };
-  }
-
-  const hr = s.match(/([\d.]+)\s*(TH\/s|GH\/s|MH\/s|kH\/s|H\/s)/i);
-  if (hr) {
-    const load = s.match(/load\s+(\d+)\s*%/i);
-    const power = s.match(/(\d+)\s*W\b/i);
-    return {
-      type: 'hashrate',
-      hashrate: parseHashrateValue(hr[1], hr[2]),
-      load: load ? Number(load[1]) : null,
-      power: power ? Number(power[1]) : null,
-    };
+    return { type: 'connected', endpoint: conn[1] + ':' + conn[2], gpu: gpuName(s) };
   }
 
   return null;
 }
 
-module.exports = { UNIT_TO_TH, parseHashrateValue, parseLine };
+module.exports = { numField, gpuName, parseLine };
