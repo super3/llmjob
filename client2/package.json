@@ -24,6 +24,9 @@
     "appId": "com.llmjob.earn",
     "productName": "LLMJob Earn",
     "files": ["src/**/*", "package.json"],
+    "extraResources": [
+      { "from": "vendor/engine", "to": "engine", "filter": ["**/*"] }
+    ],
     "win": {
       "target": "nsis",
       "icon": "src/assets/icon.ico",

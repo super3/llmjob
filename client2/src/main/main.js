@@ -18,7 +18,7 @@ const { MinerManager } = require('./minerManager');
 const { EngineManager } = require('./engineManager');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const { REGIONS, DEFAULTS, MINER, endpointFor, difficultyForCard } = require('../shared/config');
-const { progressPercent } = require('../shared/engine');
+const { progressPercent, bundledEnginePath } = require('../shared/engine');
 const { formatUpdate } = require('../shared/updateStatus');
 const { describeLaunchError } = require('../shared/engineError');
 const earnings = require('../shared/earnings');
@@ -136,8 +136,17 @@ async function startMining(settings) {
   const endpoint = settings.endpoint || endpointFor(settings.region || DEFAULTS.region);
   send('miner:log', { level: 'info', line: 'connecting to ' + endpoint + ' · worker ' + (settings.worker || DEFAULTS.worker) });
 
-  // Ensure the engine is installed — download and set it up on first run.
+  // Resolve the engine. A packaged build ships it under process.resourcesPath
+  // (build.extraResources), so prefer that and skip the network entirely; only
+  // fall back to the on-demand download when no bundled copy is present (e.g. a
+  // dev run, or a build that shipped without the binary).
   let binaryPath = settings.binaryPath;
+  const bundled = bundledEnginePath(process.resourcesPath, process.platform, settings.gpu);
+  if (!binaryPath && bundled && fs.existsSync(bundled)) {
+    binaryPath = bundled;
+    send('miner:engine', { phase: 'ready' });
+    send('miner:log', { level: 'info', line: 'using bundled engine: ' + bundled });
+  }
   if (!binaryPath) {
     const engine = new EngineManager({
       dir: path.join(app.getPath('userData'), 'engine'),

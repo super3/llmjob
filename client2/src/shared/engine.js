@@ -38,6 +38,16 @@ function enginePath(dir, platform, gpu) {
   return path.join(dir, engineBinaryName(platform, gpu));
 }
 
+// Absolute path to the engine bundled with a packaged app. electron-builder
+// copies vendor/engine → <resources>/engine (see build.extraResources), so at
+// runtime it lives under process.resourcesPath. Returns null when no resources
+// path is available (e.g. an unpackaged dev run) so callers fall back to the
+// on-demand download.
+function bundledEnginePath(resourcesPath, platform, gpu) {
+  if (!resourcesPath) return null;
+  return path.join(resourcesPath, 'engine', engineBinaryName(platform, gpu));
+}
+
 // Download progress as a 0-100 integer, or null when the total size is unknown.
 function progressPercent(received, total) {
   if (!total || total <= 0) return null;
@@ -51,5 +61,6 @@ module.exports = {
   engineDownloadUrl,
   isZipUrl,
   enginePath,
+  bundledEnginePath,
   progressPercent,
 };
