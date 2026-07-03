@@ -39,6 +39,28 @@ jobs:
       - name: Test (100% coverage gate)
         run: npm test
 
+      # Stage the miner into vendor/engine so the installer ships it and end
+      # users don't fetch an unsigned exe at runtime. Best-effort: if the
+      # download fails — or the runner's antivirus quarantines the miner before
+      # it can be packaged — the build still succeeds and the app falls back to
+      # the on-demand download (extraResources then ships only the README
+      # placeholder). Making bundling reliable on a Defender-enabled runner is a
+      # separate decision (e.g. a self-hosted runner) and is intentionally not
+      # done here.
+      - name: Bundle mining engine (best-effort)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = "$env:RUNNER_TEMP\engine.zip"
+          Invoke-WebRequest 'https://pearl.alphapool.tech/downloads/AlphaMiner-Pearl-Windows.zip' -OutFile $zip
+          $tmp = "$env:RUNNER_TEMP\engine-x"
+          Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force
+          $exe = Get-ChildItem $tmp -Recurse -Filter *.exe | Select-Object -First 1
+          if (-not $exe) { throw 'no .exe inside engine archive' }
+          Copy-Item $exe.FullName 'vendor/engine/alpha-miner-windows.exe' -Force
+          Write-Host "Bundled engine: $((Get-Item 'vendor/engine/alpha-miner-windows.exe').Length) bytes"
+
       - name: Build Windows installer (publishes on v* tag or manual publish)
         run: npx electron-builder --win --publish ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.publish) && 'always' || 'never' }}
         env:
