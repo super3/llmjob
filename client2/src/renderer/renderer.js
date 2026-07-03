@@ -195,7 +195,7 @@
       } else if (e.phase === 'error') {
         el.engineStatus.hidden = false;
         el.engineStatus.classList.add('err');
-        el.engineStatus.textContent = 'Engine setup failed — see Logs.';
+        el.engineStatus.textContent = e.message || 'Engine setup failed — see Logs.';
       }
     });
     if (api.onUpdate) api.onUpdate((s) => {
