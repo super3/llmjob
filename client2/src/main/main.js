@@ -21,6 +21,7 @@ const { REGIONS, DEFAULTS, MINER, endpointFor, difficultyForCard } = require('..
 const { progressPercent, bundledEnginePath } = require('../shared/engine');
 const { formatUpdate } = require('../shared/updateStatus');
 const { describeLaunchError } = require('../shared/engineError');
+const { pickGpu } = require('../shared/gpu');
 const earnings = require('../shared/earnings');
 const format = require('../shared/format');
 
@@ -216,6 +217,20 @@ function appIcon() {
   return path.join(dir, process.platform === 'win32' ? 'icon.ico' : 'icon.png');
 }
 
+// Detect the machine's GPU for the settings/device label. Uses Windows'
+// Win32_VideoController via PowerShell (already a dependency of extractZip);
+// resolves to a display name or null. Never rejects.
+function detectGpu() {
+  return new Promise((resolve) => {
+    if (process.platform !== 'win32') return resolve(null);
+    execFile('powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command',
+        'Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name'],
+      { timeout: 5000 },
+      (err, stdout) => resolve(err ? null : pickGpu(String(stdout).split(/\r?\n/))));
+  });
+}
+
 // Wire electron-updater to the renderer's update bar. autoUpdater pulls from the
 // GitHub Releases feed (see build.publish); it only works in a packaged app, so
 // main.js guards the call with app.isPackaged. Downloads happen automatically;
@@ -263,6 +278,7 @@ ipcMain.handle('settings:get', () => Object.assign(
 ));
 ipcMain.handle('config:get', () => ({ regions: REGIONS, defaults: DEFAULTS, miner: MINER }));
 ipcMain.handle('miner:difficultyForCard', (_e, name) => difficultyForCard(name));
+ipcMain.handle('gpu:detect', () => detectGpu());
 ipcMain.on('miner:start', (_e, settings) => {
   startMining(settings || {}).catch((e) => send('miner:log', { level: 'error', line: 'start failed: ' + e.message }));
 });
