@@ -64,7 +64,15 @@
   .btn-discord { color: #fff; background: var(--dark); font-size: 15px; font-weight: 600; padding: 9px 17px; border-radius: 8px; display: inline-flex; align-items: center; gap: 8px; transition: transform .12s ease, box-shadow .15s ease; }
   .btn-discord:hover { box-shadow: 0 8px 20px -10px rgba(26,26,23,.6); }
   .btn-discord:active { transform: translateY(1px); }
-  @media (max-width: 720px) { .nav-link { display: none; } }
+  @media (max-width: 720px) {
+    nav.nav { padding: 20px 18px; }
+    .nav-right { gap: 16px; }
+  }
+  @media (max-width: 460px) {
+    .nav-right { gap: 13px; }
+    .btn-discord { padding: 9px 11px; }
+    .btn-discord .dc-txt { display: none; }
+  }
 
   /* shared buttons */
   .btn-dl { color: #fff; background: var(--accent); font-size: 16px; font-weight: 600; padding: 15px 30px; border-radius: 10px; display: inline-flex; align-items: center; gap: 11px; cursor: pointer; border: none; box-shadow: 0 10px 26px -10px rgba(37,99,235,.6); transition: transform .12s ease, box-shadow .15s ease; font-family: inherit; }
@@ -207,7 +215,7 @@
     <a class="nav-link active" href="earn.html">Earn</a>
     <a class="nav-link" href="network.html">Network</a>
     <a class="btn-discord" href="https://discord.gg/JnERcTKjUS" target="_blank" rel="noopener">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="#fff"><path d="M19.3 5.3A17 17 0 0 0 15 4l-.2.4a13 13 0 0 1 3.7 1.2 12.7 12.7 0 0 0-9-1.6 12 12 0 0 0-2 .4A13 13 0 0 1 9.2 4.4 17 17 0 0 0 4.7 5.3 17.6 17.6 0 0 0 2 17.3a17 17 0 0 0 5.2 2.6l.6-1a11 11 0 0 1-1.8-.9l.4-.3a12.2 12.2 0 0 0 10.4 0l.4.3a11 11 0 0 1-1.8.9l.6 1a17 17 0 0 0 5.2-2.6 17.4 17.4 0 0 0-2.7-12zM9 14.4c-.8 0-1.5-.8-1.5-1.7s.7-1.7 1.5-1.7 1.5.8 1.5 1.7-.6 1.7-1.5 1.7zm6 0c-.8 0-1.5-.8-1.5-1.7s.7-1.7 1.5-1.7 1.5.8 1.5 1.7-.6 1.7-1.5 1.7z"></path></svg>Discord
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="#fff"><path d="M19.3 5.3A17 17 0 0 0 15 4l-.2.4a13 13 0 0 1 3.7 1.2 12.7 12.7 0 0 0-9-1.6 12 12 0 0 0-2 .4A13 13 0 0 1 9.2 4.4 17 17 0 0 0 4.7 5.3 17.6 17.6 0 0 0 2 17.3a17 17 0 0 0 5.2 2.6l.6-1a11 11 0 0 1-1.8-.9l.4-.3a12.2 12.2 0 0 0 10.4 0l.4.3a11 11 0 0 1-1.8.9l.6 1a17 17 0 0 0 5.2-2.6 17.4 17.4 0 0 0-2.7-12zM9 14.4c-.8 0-1.5-.8-1.5-1.7s.7-1.7 1.5-1.7 1.5.8 1.5 1.7-.6 1.7-1.5 1.7zm6 0c-.8 0-1.5-.8-1.5-1.7s.7-1.7 1.5-1.7 1.5.8 1.5 1.7-.6 1.7-1.5 1.7z"></path></svg><span class="dc-txt">Discord</span>
     </a>
   </div>
 </nav>
@@ -391,7 +399,6 @@
   <div class="foot-links">
     <a href="earn.html">Earn</a>
     <a href="network.html">Network</a>
-    <a href="#calculator">Calculator</a>
     <a href="dashboard.html" id="foot-login">Login</a>
     <a href="https://discord.gg/JnERcTKjUS" target="_blank" rel="noopener">Discord</a>
   </div>
