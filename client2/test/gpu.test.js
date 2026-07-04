@@ -7,8 +7,20 @@ describe('pickGpu', () => {
     expect(pickGpu(['Microsoft Basic Display Adapter', 'NVIDIA GeForce RTX 4090'])).toBe('NVIDIA GeForce RTX 4090');
   });
 
-  test('returns the first real adapter when several are present', () => {
+  test('returns the first real adapter when several discrete cards are present', () => {
     expect(pickGpu(['NVIDIA GeForce RTX 4090', 'AMD Radeon RX 7900'])).toBe('NVIDIA GeForce RTX 4090');
+  });
+
+  test('prefers a discrete GPU over an integrated one listed first', () => {
+    // The reported field case: an AMD APU enumerates before the RTX 4090.
+    expect(pickGpu(['AMD Radeon(TM) Graphics', 'NVIDIA GeForce RTX 4090'])).toBe('NVIDIA GeForce RTX 4090');
+    expect(pickGpu(['Intel(R) UHD Graphics 630', 'NVIDIA GeForce RTX 3080'])).toBe('NVIDIA GeForce RTX 3080');
+    expect(pickGpu(['AMD Radeon(TM) Vega 8 Graphics', 'AMD Radeon RX 6800 XT'])).toBe('AMD Radeon RX 6800 XT');
+  });
+
+  test('falls back to an integrated GPU when it is the only real adapter', () => {
+    expect(pickGpu(['Microsoft Basic Display Adapter', 'AMD Radeon(TM) Graphics'])).toBe('AMD Radeon(TM) Graphics');
+    expect(pickGpu(['Intel(R) Iris(R) Xe Graphics'])).toBe('Intel(R) Iris(R) Xe Graphics');
   });
 
   test('trims whitespace and ignores blank/nullish entries', () => {
