@@ -95,12 +95,25 @@ describe('MinerService (db)', () => {
     expect(out.miners.find((m) => m.addr === ADDR.c).gpu).toBe('—'); // fallback when no worker reports a gpu
   });
 
-  test('omits miners not seen within the past hour but keeps their rows', async () => {
+  test('omits workers past the online window but keeps their rows until prune', async () => {
     const r = await service.reportMiner({ address: ADDR.a, worker: 'rig01', hashrate: 100 });
-    await setLastSeen(r.id, Date.now() - 70 * 60 * 1000); // 70 min: offline, not yet pruned
+    await setLastSeen(r.id, Date.now() - 10 * 60 * 1000); // 10 min: offline, not yet pruned
     const out = await service.getPublicMiners();
     expect(out.totalOnline).toBe(0);
     expect(await count()).toBe(1);
+  });
+
+  test('does not sum a stale worker into an address (the worker-rename double-count)', async () => {
+    // One rig, renamed rig01 → rig02: the old row lingers but stopped reporting.
+    const stale = await service.reportMiner({ address: ADDR.a, worker: 'rig01', gpu: 'RTX 4090', hashrate: 206 });
+    await service.reportMiner({ address: ADDR.a, worker: 'rig02', gpu: 'RTX 4090', hashrate: 285 });
+    await setLastSeen(stale.id, Date.now() - 10 * 60 * 1000); // rig01 quiet for 10 min
+
+    const out = await service.getPublicMiners();
+    const m = out.miners.find((x) => x.addr === ADDR.a);
+    expect(m.workers).toBe(1);   // only the live worker counts
+    expect(m.hash).toBe(285);    // not 206 + 285 = 491
+    expect(out.totalHashrate).toBe(285);
   });
 
   test('prunes miners not seen within the TTL', async () => {
