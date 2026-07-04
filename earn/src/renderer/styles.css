@@ -115,7 +115,7 @@ select.rv-input { cursor: pointer; }
 /* The logs view is a flex column so the terminal fills the space instead of
    leaving a gap above the footer; lines wrap so there's no horizontal scroll. */
 #view-logs { display: flex; flex-direction: column; }
-.log-term { flex: 1 1 auto; min-height: 0; background: #0d1411; border: 1px solid #1b2922; border-radius: 11px; padding: 14px 16px; font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 12px; line-height: 1.9; overflow-x: hidden; overflow-y: auto; overflow-wrap: anywhere; user-select: text; }
+.log-term { flex: 1 1 0; min-height: 0; background: #0d1411; border: 1px solid #1b2922; border-radius: 11px; padding: 14px 16px; font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 12px; line-height: 1.9; overflow-x: hidden; overflow-y: auto; overflow-wrap: anywhere; user-select: text; }
 .log-term .ln .t { color: #577567; }
 .log-term .ln .m { color: #9fe6bb; }
 .log-term .ln.info .m { color: #cfe9d8; }
