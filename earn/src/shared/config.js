@@ -73,6 +73,14 @@ const LLM = {
   miningReserveMb: 2048,
   // llama-server binary per platform (bundled/downloaded like the miner engine).
   serverBin: { win32: 'llama-server.exe', linux: 'llama-server', darwin: 'llama-server' },
+  // Where to fetch the llama-server build if it isn't bundled. These are release
+  // zips; pin the CUDA/Vulkan asset that matches your target (or ship the binary
+  // via extraResources like the miner and skip the download entirely).
+  serverUrl: {
+    win32: 'https://github.com/ggml-org/llama.cpp/releases/latest/download/llama-bin-win-cuda-x64.zip',
+    linux: 'https://github.com/ggml-org/llama.cpp/releases/latest/download/llama-bin-ubuntu-x64.zip',
+    darwin: 'https://github.com/ggml-org/llama.cpp/releases/latest/download/llama-bin-macos-arm64.zip',
+  },
   // One small model to start: Llama 3.2 1B Instruct, Q4_K_M GGUF. `layers` is the
   // model's transformer-layer count (for --n-gpu-layers) and `vramFullMb` the
   // approximate VRAM for a full GPU offload at ctxSize (weights + KV cache).

@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('llmjob', {
   detectRegion: () => ipcRenderer.invoke('region:detect'),
   getBalance: (address) => ipcRenderer.invoke('balance:get', address),
   getMdlBalance: (address) => ipcRenderer.invoke('balance:getMdl', address),
+  getLlmStatus: () => ipcRenderer.invoke('llm:status'),
+  onLlm: (cb) => ipcRenderer.on('llm:status', (_e, d) => cb(d)),
   startMiner: (settings) => ipcRenderer.send('miner:start', settings),
   stopMiner: () => ipcRenderer.send('miner:stop'),
   openExternal: (url) => ipcRenderer.send('open-external', url),

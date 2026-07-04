@@ -51,6 +51,8 @@
       </div>
     </div>
 
+    <div id="llm-status" class="llm-status" hidden><span class="llm-dot"></span><span id="llm-status-text"></span></div>
+
     <button id="btn-start" class="start-btn" type="button" disabled>START</button>
     <button id="btn-stop" class="stop-btn" type="button" hidden><span class="dot"></span>STOP MINING</button>
     <div id="engine-status" class="engine-status" hidden></div>
@@ -58,6 +60,19 @@
 
   <!-- SETTINGS -->
   <section id="view-settings" hidden>
+    <div class="settings-section">Compute Mode</div>
+    <div class="settings-rows">
+      <div class="settings-row"><span class="rk">GPU use</span>
+        <select id="set-mode" class="rv-input">
+          <option value="mining">⛏️ Mining only</option>
+          <option value="both">⛏️ + 🧠 Mine &amp; LLM</option>
+          <option value="llm">🧠 LLM only</option>
+          <option value="auto">⚡ Auto</option>
+        </select>
+      </div>
+    </div>
+    <p class="settings-note">Run a local LLM alongside mining (both slower), LLM-only, or let the app decide. The LLM serves a local OpenAI endpoint you can call at <b class="mono">127.0.0.1:8080/v1</b>.</p>
+
     <div class="settings-section">Connection</div>
     <div class="settings-rows">
       <div class="settings-row"><span class="rk">Worker name</span><input id="set-worker" class="rv-input" type="text" /></div>
