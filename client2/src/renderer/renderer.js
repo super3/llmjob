@@ -30,6 +30,8 @@
     setWorker: $('set-worker'),
     setRegion: $('set-region'),
     setDifficulty: $('set-difficulty'),
+    setMdl: $('set-mdl'),
+    mdlNote: $('mdl-note'),
     logTerm: $('log-term'),
     engineStatus: $('engine-status'),
     updateBar: $('update-bar'),
@@ -40,7 +42,21 @@
   const state = { mining: false, view: 'miner', address: '', gpu: '' };
 
   const ADDR_RE = /^prl1p[0-9a-z]{20,80}$/i;
+  const MDL_RE = /^mdl1p[0-9a-z]{20,80}$/i;
   const isValid = (a) => ADDR_RE.test(String(a || '').trim());
+  const isValidMdl = (a) => MDL_RE.test(String(a || '').trim());
+
+  const MDL_NOTE = {
+    empty: 'Earn <b>MDL</b> on the exact hashrate already mining Pearl — same shares, no extra power or hardware. Leave blank to mine Pearl only.',
+    on: '<b class="ok">✓ Merge-mining MDL</b> — your Pearl hashrate now also earns MDL, credited by the pool.',
+    bad: '<b class="warn">That doesn\'t look like an mdl1… address.</b> Double-check it, or clear the field to mine Pearl only.',
+  };
+
+  function renderMdlNote() {
+    const v = String(el.setMdl.value || '').trim();
+    const key = !v ? 'empty' : isValidMdl(v) ? 'on' : 'bad';
+    el.mdlNote.innerHTML = MDL_NOTE[key];
+  }
 
   const FLAT_LINE = 'M0 55 L480 55';
   const FLAT_AREA = 'M0 56 L0 55 L480 55 L480 56 Z';
@@ -127,8 +143,10 @@
   }
 
   function currentSettings() {
+    const mdl = String(el.setMdl.value || '').trim();
     return {
       address: state.address.trim(),
+      mdlAddress: isValidMdl(mdl) ? mdl : '',
       worker: el.setWorker.value.trim() || 'rig01',
       region: el.setRegion.value || 'us2',
       difficulty: Number(el.setDifficulty.value) || 524288,
@@ -155,6 +173,7 @@
       el.btnStart.disabled = !isValid(state.address);
       renderBalanceMeta();
     });
+    el.setMdl.addEventListener('input', renderMdlNote);
     el.btnStart.addEventListener('click', start);
     el.btnStop.addEventListener('click', stop);
     el.updateInstall.addEventListener('click', () => { if (api.installUpdate) api.installUpdate(); });
@@ -201,7 +220,9 @@
       el.setWorker.value = s.worker || 'rig01';
       el.setRegion.value = s.region || 'us2';
       el.setDifficulty.value = s.difficulty || 524288;
+      el.setMdl.value = s.mdlAddress || '';
     }
+    renderMdlNote();
     if (api.detectGpu) {
       const gpu = await api.detectGpu();
       if (gpu) {

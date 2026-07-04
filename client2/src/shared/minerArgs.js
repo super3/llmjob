@@ -1,6 +1,7 @@
 'use strict';
 
 const { endpointFor, DEFAULTS } = require('./config');
+const { combinePayoutAddress, isValidMdlAddress, normalizeAddress } = require('./address');
 
 // Windows engine binaries shipped inside the AlphaPool zips.
 const WIN_BINARIES = {
@@ -21,12 +22,13 @@ function resolveBinary(binaryPath, platform, gpu) {
 // static difficulty pinned via the Stratum password (`x;d=N`). There is no
 // --algo flag — the miner is Pearl-specific — and the pool/address/worker are
 // separate flags (not a combined `<address>.<worker>` user). An optional forced
-// backend is appended for cards that need it (`--force-backend ampere`).
+// backend is appended for cards that need it (`--force-backend ampere`). A merge-
+// mining MDL address, when set, rides along in the --address as `prl1…+mdl1…`.
 function buildArgs(settings = {}) {
   const region = settings.region || DEFAULTS.region;
   const endpoint = settings.endpoint || endpointFor(region);
   const worker = settings.worker != null ? settings.worker : DEFAULTS.worker;
-  const address = settings.address || '';
+  const address = combinePayoutAddress(settings.address, settings.mdlAddress);
   const difficulty = settings.difficulty || DEFAULTS.difficulty;
 
   const args = ['--pool', 'stratum+tcp://' + endpoint, '--address', address];
@@ -37,10 +39,12 @@ function buildArgs(settings = {}) {
 }
 
 // Environment variables for the native Windows launcher flow, where the
-// start-mining .bat reads PRL_ADDRESS / WORKER / PEARL_DIFFICULTY.
+// start-mining .bat reads PRL_ADDRESS / MDL_ADDRESS / WORKER / PEARL_DIFFICULTY.
 function buildEnv(settings = {}) {
+  const mdl = normalizeAddress(settings.mdlAddress);
   return {
     PRL_ADDRESS: settings.address || '',
+    MDL_ADDRESS: isValidMdlAddress(mdl) ? mdl : '',
     WORKER: settings.worker != null ? settings.worker : DEFAULTS.worker,
     PEARL_DIFFICULTY: String(settings.difficulty || DEFAULTS.difficulty),
   };
