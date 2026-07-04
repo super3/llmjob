@@ -353,7 +353,7 @@ function createWindow() {
 }
 
 ipcMain.handle('settings:get', () => Object.assign(
-  { region: DEFAULTS.region, worker: DEFAULTS.worker, difficulty: DEFAULTS.difficulty, address: '' },
+  { region: DEFAULTS.region, worker: DEFAULTS.worker, difficulty: DEFAULTS.difficulty, address: '', mdlAddress: '' },
   loadSettings(),
 ));
 ipcMain.handle('config:get', () => ({ regions: REGIONS, defaults: DEFAULTS, miner: MINER }));
