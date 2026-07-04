@@ -348,9 +348,9 @@ function setupUpdater() {
 function createWindow() {
   win = new BrowserWindow({
     width: 620,
-    height: 630,
+    height: 650,
     minWidth: 560,
-    minHeight: 600,
+    minHeight: 620,
     backgroundColor: '#fcfcfb',
     autoHideMenuBar: true,
     title: 'LLMJob Earn',
