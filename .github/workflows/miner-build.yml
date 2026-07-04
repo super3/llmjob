@@ -1,17 +1,17 @@
 name: Earn build (Windows)
 
-# Builds the LLMJob Earn (client2) Windows app. Runs the unit tests, then
+# Builds the LLMJob Earn (earn) Windows app. Runs the unit tests, then
 # produces the NSIS installer on a Windows runner and uploads it as an artifact.
 on:
   push:
     branches: [ main ]
     tags: [ 'v*' ]
   pull_request:
-    paths: [ 'client2/**', '.github/workflows/miner-build.yml' ]
+    paths: [ 'earn/**', '.github/workflows/miner-build.yml' ]
   workflow_dispatch:
     inputs:
       publish:
-        description: 'Publish the installer to a GitHub Release (v<version> from client2/package.json)'
+        description: 'Publish the installer to a GitHub Release (v<version> from earn/package.json)'
         type: boolean
         default: false
 
@@ -25,7 +25,7 @@ jobs:
     runs-on: windows-latest
     defaults:
       run:
-        working-directory: client2
+        working-directory: earn
     steps:
       - uses: actions/checkout@v4
 
@@ -71,6 +71,6 @@ jobs:
         with:
           name: llmjob-earn-windows
           path: |
-            client2/dist/*.exe
-            client2/dist/*.blockmap
+            earn/dist/*.exe
+            earn/dist/*.blockmap
           if-no-files-found: error
