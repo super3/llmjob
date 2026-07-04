@@ -43,11 +43,13 @@ const MINER = {
 };
 
 // Network economics used to estimate earnings. Mirrors the design mock.
+// Network economics for earnings estimates. Mirrors the earn.html calculator
+// (which live-refreshes from prlscan / SafeTrade and falls back to these).
 const ECON = {
-  NET_TH: 18400, // network hashrate (TH/s)
-  DAILY_NET_PRL: 7200, // PRL minted across the network per day
+  NET_TH: 30.79e6, // network hashrate in TH/s (~30.79 EH/s) — prlscan
+  DAILY_NET_PRL: 1.2e6, // ~2,600 PRL/block × ~480 blocks/day
   FEE: 0.99, // share kept after the 1% pool fee
-  PRL_USD: 0.082, // PRL price in USD
+  PRL_USD: 0.47, // PRL price in USD (PRL/USDT — SafeTrade)
 };
 
 // Recommended static difficulty per card class, from the pool's table. Order
