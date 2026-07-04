@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('llmjob', {
   difficultyForCard: (name) => ipcRenderer.invoke('miner:difficultyForCard', name),
   detectGpu: () => ipcRenderer.invoke('gpu:detect'),
   detectRegion: () => ipcRenderer.invoke('region:detect'),
+  getBalance: (address) => ipcRenderer.invoke('balance:get', address),
   startMiner: (settings) => ipcRenderer.send('miner:start', settings),
   stopMiner: () => ipcRenderer.send('miner:stop'),
   openExternal: (url) => ipcRenderer.send('open-external', url),

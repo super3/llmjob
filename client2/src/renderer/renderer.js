@@ -11,6 +11,8 @@
     addrInput: $('addr-input'),
     addrStatic: $('addr-static'),
     balanceMeta: $('balance-meta'),
+    balance: $('balance'),
+    balanceUsd: $('balance-usd'),
     getWallet: $('get-wallet'),
     hashrate: $('hashrate'),
     accepted: $('accepted'),
@@ -40,6 +42,9 @@
   };
 
   const state = { mining: false, view: 'miner', address: '', gpu: '' };
+
+  const BAL_REFRESH_MS = 60000; // re-poll the pool balance once a minute
+  let balDebounce = null;
 
   const ADDR_RE = /^prl1p[0-9a-z]{20,80}$/i;
   const MDL_RE = /^mdl1p[0-9a-z]{20,80}$/i;
@@ -115,6 +120,26 @@
     el.getWallet.hidden = has;
   }
 
+  const fmt3 = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+
+  function resetBalance() {
+    el.balance.textContent = '0.000';
+    el.balanceUsd.textContent = '≈ $0.00';
+  }
+
+  // Pull the pending pool balance for the current payout address and show it.
+  // Best-effort: a null result (offline / unknown address / pool hiccup) simply
+  // leaves the last shown value in place. Guards against a late response landing
+  // after the address has changed.
+  async function refreshBalance() {
+    const addr = state.address.trim();
+    if (!isValid(addr) || !api.getBalance) return;
+    const b = await api.getBalance(addr);
+    if (!b || addr !== state.address.trim()) return;
+    el.balance.textContent = fmt3(b.prl);
+    el.balanceUsd.textContent = b.usd != null ? '≈ $' + b.usd.toFixed(2) : '';
+  }
+
   function applyStats(s) {
     if (!state.mining) return;
     el.hashrate.textContent = s.total;
@@ -172,6 +197,11 @@
       state.address = e.target.value;
       el.btnStart.disabled = !isValid(state.address);
       renderBalanceMeta();
+      // Debounce the balance lookup so we don't hit the pool on every keystroke;
+      // clear a stale balance the moment the address stops being valid.
+      if (balDebounce) clearTimeout(balDebounce);
+      if (isValid(state.address)) balDebounce = setTimeout(refreshBalance, 600);
+      else resetBalance();
     });
     el.setMdl.addEventListener('input', renderMdlNote);
     el.btnStart.addEventListener('click', start);
@@ -265,6 +295,11 @@
     renderView();
     renderMiningState();
     renderBalanceMeta();
+
+    // Show the pending pool balance for a saved address right away, then keep it
+    // fresh (shares get credited as mining continues).
+    refreshBalance();
+    setInterval(refreshBalance, BAL_REFRESH_MS);
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
