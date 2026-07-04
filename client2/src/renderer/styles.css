@@ -29,6 +29,9 @@ body {
 @keyframes mkPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.82); } }
 
 .app { padding: 30px 30px 26px; }
+/* Keep every view the same height as the tallest (miner) view so the footer
+   (View Logs / Need Help) stays in one place when switching views. */
+#view-miner, #view-settings, #view-logs { min-height: 425px; }
 
 /* header */
 .app-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 30px; }
@@ -92,7 +95,7 @@ input.field-box { user-select: text; }
 .device-card { display: flex; align-items: center; gap: 11px; background: #eff4ff; border: 1px solid #dbe6fb; border-radius: 10px; padding: 12px 14px; }
 .device-left { display: flex; align-items: center; gap: 11px; flex: 1; }
 .device-ic { width: 30px; height: 30px; flex: none; border-radius: 7px; background: #dbe6fb; display: inline-flex; align-items: center; justify-content: center; }
-.device-input { flex: 1; border: none; background: transparent; font-size: 14px; font-weight: 600; color: var(--ink); outline: none; user-select: text; }
+.device-input { flex: 1; border: none; background: transparent; font-size: 14px; font-weight: 600; color: var(--ink); outline: none; user-select: text; cursor: default; }
 .settings-rows { border: 1px solid #ebe9e1; border-radius: 10px; overflow: hidden; }
 .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 14px; border-bottom: 1px solid #f0ede5; }
 .settings-row:last-child { border-bottom: none; }

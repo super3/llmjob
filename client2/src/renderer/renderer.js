@@ -222,12 +222,6 @@
         e.preventDefault();
         if (api.openExternal) api.openExternal(a.getAttribute('data-ext'));
       }));
-    el.setDevice.addEventListener('change', async () => {
-      if (api.difficultyForCard) {
-        const d = await api.difficultyForCard(el.setDevice.value);
-        if (d) el.setDifficulty.value = d;
-      }
-    });
   }
 
   async function init() {
@@ -258,7 +252,13 @@
       if (gpu) {
         state.gpu = gpu;
         if (!state.mining) el.deviceLabel.textContent = gpu;
-        if (!el.setDevice.value) el.setDevice.value = gpu;
+        el.setDevice.value = gpu; // read-only display of the auto-detected card
+        // Auto-match the recommended static difficulty to the detected card,
+        // unless the user has saved a non-default value.
+        if (api.difficultyForCard && Number(el.setDifficulty.value) === 524288) {
+          const d = await api.difficultyForCard(gpu);
+          if (d) el.setDifficulty.value = d;
+        }
       }
     }
     // Auto-pick the lowest-latency pool region (unless the user is already
