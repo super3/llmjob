@@ -15,6 +15,9 @@
    display:flex), otherwise toggled-off controls stay visible. */
 [hidden] { display: none !important; }
 html, body { height: 100%; }
+/* Fit the window to content; scroll only if a taller state (update bar, engine
+   error) ever exceeds it, rather than clipping. */
+body { overflow-y: auto; }
 body {
   background: var(--bg);
   color: var(--ink);
@@ -41,10 +44,14 @@ body {
 .field-label .meta b { color: var(--ink); font-weight: 600; }
 .field-label .meta .prl { margin-left: 3px; }
 .field-label .meta .usd { color: var(--muted-2); }
+.get-wallet { font-size: 13px; font-weight: 600; color: var(--accent); cursor: pointer; }
+.get-wallet:hover { text-decoration: underline; }
 
 .field-box { width: 100%; border: 1px solid var(--line); background: var(--field); border-radius: 9px; padding: 13px 14px; font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 13.5px; color: var(--ink-3); margin-bottom: 20px; outline: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .field-box:focus { border-color: var(--accent); }
 input.field-box { user-select: text; }
+/* The read-only address shown while mining stays selectable so it can be copied. */
+#addr-static { user-select: text; cursor: text; }
 
 /* hashrate chart card */
 .chart-card { border: 1px solid var(--line); background: var(--field); border-radius: 9px; padding: 12px 14px 14px; margin-bottom: 20px; }
