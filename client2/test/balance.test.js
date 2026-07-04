@@ -18,19 +18,19 @@ describe('buildBalanceUrl', () => {
 });
 
 describe('parseBalance', () => {
-  test('extracts pending balance, lifetime paid, and USD when priced', () => {
+  test('earned = pending + lifetime paid, with USD priced off that total', () => {
     expect(parseBalance({ balance_prl: 3.0933774, total_paid_prl: 330.64 }, 0.47)).toEqual({
-      prl: 3.0933774, paid: 330.64, usd: 3.0933774 * 0.47,
+      prl: 3.0933774, paid: 330.64, earned: 3.0933774 + 330.64, usd: (3.0933774 + 330.64) * 0.47,
     });
   });
 
   test('omits USD when no price is supplied and defaults missing paid to 0', () => {
-    expect(parseBalance({ balance_prl: 5 })).toEqual({ prl: 5, paid: 0, usd: null });
-    expect(parseBalance({ balance_prl: 5, total_paid_prl: -1 }, 0.47).paid).toBe(0); // bad paid → 0
+    expect(parseBalance({ balance_prl: 5 })).toEqual({ prl: 5, paid: 0, earned: 5, usd: null });
+    expect(parseBalance({ balance_prl: 5, total_paid_prl: -1 }, 0.47).earned).toBe(5); // bad paid → 0, earned = pending
   });
 
   test('treats a zero balance as valid (a real, credited-nothing-yet account)', () => {
-    expect(parseBalance({ balance_prl: 0 }, 0.47)).toEqual({ prl: 0, paid: 0, usd: 0 });
+    expect(parseBalance({ balance_prl: 0 }, 0.47)).toEqual({ prl: 0, paid: 0, earned: 0, usd: 0 });
   });
 
   test('returns null for unusable payloads', () => {

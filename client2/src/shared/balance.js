@@ -14,16 +14,19 @@ function buildBalanceUrl(address, base) {
 }
 
 // Reduce the pool payload to the display fields, or null when it's unusable.
-// priceUsd (optional) converts the pending balance to USD; omit it for PRL-only.
+// `earned` is the balance we show: pending payout (balance_prl) plus lifetime
+// paid (total_paid_prl) — i.e. everything the address has earned. priceUsd
+// (optional) converts that to USD; omit it for PRL-only.
 function parseBalance(json, priceUsd) {
   if (!json || typeof json !== 'object' || Array.isArray(json)) return null;
   const prl = Number(json.balance_prl);
   if (!Number.isFinite(prl) || prl < 0) return null;
   const paidRaw = Number(json.total_paid_prl);
   const paid = Number.isFinite(paidRaw) && paidRaw >= 0 ? paidRaw : 0;
+  const earned = prl + paid;
   const price = Number(priceUsd);
-  const usd = Number.isFinite(price) && price >= 0 ? prl * price : null;
-  return { prl, paid, usd };
+  const usd = Number.isFinite(price) && price >= 0 ? earned * price : null;
+  return { prl, paid, earned, usd };
 }
 
 module.exports = { POOL_BASE, buildBalanceUrl, parseBalance };

@@ -127,16 +127,16 @@
     el.balanceUsd.textContent = '≈ $0.00';
   }
 
-  // Pull the pending pool balance for the current payout address and show it.
-  // Best-effort: a null result (offline / unknown address / pool hiccup) simply
-  // leaves the last shown value in place. Guards against a late response landing
-  // after the address has changed.
+  // Pull the pool balance for the current payout address and show it: total
+  // earned = pending payout + lifetime paid. Best-effort — a null result
+  // (offline / unknown address / pool hiccup) simply leaves the last shown value
+  // in place. Guards against a late response landing after the address changed.
   async function refreshBalance() {
     const addr = state.address.trim();
     if (!isValid(addr) || !api.getBalance) return;
     const b = await api.getBalance(addr);
     if (!b || addr !== state.address.trim()) return;
-    el.balance.textContent = fmt3(b.prl);
+    el.balance.textContent = fmt3(b.earned);
     el.balanceUsd.textContent = b.usd != null ? '≈ $' + b.usd.toFixed(2) : '';
   }
 
