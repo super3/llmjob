@@ -1,4 +1,4 @@
-# LLMJob Earn (`client2`)
+# LLMJob Earn (`earn`)
 
 A desktop GUI that turns the excess compute on GPUs you already own into crypto,
 wrapping the AlphaPool [`alpha-miner`](https://pearl.alphapool.tech/#setup) engine
@@ -43,7 +43,7 @@ difficulty via the password (`x;d=N`), and the regional endpoint
 ## Develop
 
 ```bash
-npm install        # from this client2/ directory
+npm install        # from this earn/ directory
 npm start          # launch the Electron app
 npm test           # jest — 100% coverage gate on shared/* + minerManager
 ```
