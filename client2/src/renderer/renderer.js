@@ -10,6 +10,8 @@
   const el = {
     addrInput: $('addr-input'),
     addrStatic: $('addr-static'),
+    balanceMeta: $('balance-meta'),
+    getWallet: $('get-wallet'),
     hashrate: $('hashrate'),
     accepted: $('accepted'),
     uptime: $('uptime'),
@@ -81,6 +83,14 @@
     el.btnStart.disabled = !isValid(state.address);
   }
 
+  // With no valid payout address, show a "Get Wallet Address" link instead of
+  // the (meaningless) balance line.
+  function renderBalanceMeta() {
+    const has = isValid(state.address);
+    el.balanceMeta.hidden = !has;
+    el.getWallet.hidden = has;
+  }
+
   function applyStats(s) {
     if (!state.mining) return;
     el.hashrate.textContent = s.total;
@@ -135,6 +145,7 @@
     el.addrInput.addEventListener('input', (e) => {
       state.address = e.target.value;
       el.btnStart.disabled = !isValid(state.address);
+      renderBalanceMeta();
     });
     el.btnStart.addEventListener('click', start);
     el.btnStop.addEventListener('click', stop);
@@ -224,6 +235,7 @@
     });
     renderView();
     renderMiningState();
+    renderBalanceMeta();
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

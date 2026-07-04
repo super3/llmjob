@@ -5,7 +5,7 @@
 // the user come only from the engine's own output — no simulated data. All
 // testable logic lives in ../shared and ./minerManager.
 
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, shell } = require('electron');
 const { spawn, execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -319,9 +319,9 @@ function setupUpdater() {
 function createWindow() {
   win = new BrowserWindow({
     width: 620,
-    height: 780,
+    height: 630,
     minWidth: 560,
-    minHeight: 680,
+    minHeight: 600,
     backgroundColor: '#fcfcfb',
     autoHideMenuBar: true,
     title: 'LLMJob Earn',
@@ -333,6 +333,23 @@ function createWindow() {
     },
   });
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+
+  // Right-click cut/copy/paste — Electron has no default context menu, so
+  // pasting a payout address (or copying it) is otherwise mouse-inaccessible.
+  win.webContents.on('context-menu', (_e, params) => {
+    const f = params.editFlags;
+    const items = [];
+    if (params.isEditable || params.selectionText) {
+      items.push(
+        { role: 'cut', enabled: f.canCut },
+        { role: 'copy', enabled: f.canCopy },
+        { role: 'paste', enabled: f.canPaste },
+        { type: 'separator' },
+        { role: 'selectAll' }
+      );
+    }
+    if (items.length && !win.isDestroyed()) Menu.buildFromTemplate(items).popup({ window: win });
+  });
 }
 
 ipcMain.handle('settings:get', () => Object.assign(
