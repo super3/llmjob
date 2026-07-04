@@ -214,6 +214,8 @@
     el.btnLogs.addEventListener('click', () => {
       state.view = state.view === 'logs' ? 'miner' : 'logs';
       renderView();
+      // Jump to the latest line whenever the logs view is opened.
+      if (state.view === 'logs') el.logTerm.scrollTop = el.logTerm.scrollHeight;
     });
     document.querySelectorAll('[data-back]').forEach((b) =>
       b.addEventListener('click', () => { state.view = 'miner'; renderView(); }));
