@@ -13,13 +13,19 @@ Build your own AI infrastructure with spare GPUs and devices. Get OpenAI-compati
 - 🤖 Fully OpenAI-compatible API endpoints  
 - 📊 Real-time cluster monitoring dashboard
 - 🔒 Keep sensitive data on your own infrastructure
+- 💸 Turn idle GPU time into crypto **today** with the LLMJob Earn desktop app
 
-This repository contains two packages:
+This repository contains three packages:
 
 - **Server** (repo root) — the Express API plus the static dashboard pages,
   backed by Postgres and deployed to Railway / GitHub Pages.
 - **Node client** ([`client/`](client)) — the `llmjob-node` worker that runs on
   a machine with a GPU and processes jobs via Ollama.
+- **LLMJob Earn** ([`earn/`](earn)) — an Electron desktop app that turns idle GPU
+  time into crypto by wrapping the AlphaPool miner (Pearl / PRL): paste a payout
+  address, hit **Start**, and earn — no command line. It's the easy on-ramp that
+  gets GPUs onto the network today, ahead of LLM co-mining. See
+  [`earn/README.md`](earn/README.md).
 
 ## Add a node
 
@@ -37,6 +43,21 @@ Prefer the Node.js client? See [`client/README.md`](client/README.md):
 npm install -g llmjob-node
 llmjob-node start
 ```
+
+## Run LLMJob Earn
+
+Download the latest Windows installer from the
+[releases page](https://github.com/super3/llmjob/releases/latest), install, paste
+a Pearl (`prl1p…`) payout address, and hit **Start**. To run it from source:
+
+```bash
+cd earn
+npm install
+npm start                          # launch the Electron app
+```
+
+See [`earn/README.md`](earn/README.md) for the mining engine, merge mining, the
+live balance, and building the installer.
 
 ## Running the server
 
