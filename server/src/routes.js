@@ -4,6 +4,7 @@ const { requireAuth } = require('./middleware/auth');
 const { verifySignature } = require('./middleware/signature');
 const { apiKeyAuth } = require('./middleware/apiKeyAuth');
 const nodeController = require('./controllers/nodeController');
+const minerController = require('./controllers/minerController');
 const apiKeyController = require('./controllers/apiKeyController');
 const logController = require('./controllers/logController');
 const JobController = require('./controllers/jobController');
@@ -33,6 +34,12 @@ router.post('/nodes/join-token/rotate', requireAuth, nodeController.rotateJoinTo
 
 // POST /api/nodes/join - Self-register a node with a join token (install script)
 router.post('/nodes/join', nodeController.joinNode);
+
+// Miners (LLMJob Earn crypto clients) — public, no auth.
+// POST /api/miners/ping - A mining client reports its live status
+router.post('/miners/ping', minerController.pingMiner);
+// GET /api/miners - Online miners grouped by address (network page)
+router.get('/miners', minerController.getPublicMiners);
 
 // API keys (dashboard, Clerk auth)
 // POST /api/keys - Create a new API key (raw secret returned once)

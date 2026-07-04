@@ -1,0 +1,113 @@
+const MinerService = require('../src/services/minerService');
+const { createTestDb } = require('./helpers/pgmem');
+
+const ADDR = {
+  a: 'prl1p' + 'a'.repeat(30),
+  b: 'prl1p' + 'b'.repeat(30),
+  c: 'prl1p' + 'c'.repeat(30),
+};
+
+describe('MinerService helpers', () => {
+  test('minerFingerprint is a stable 12-char hex id', () => {
+    const id = MinerService.minerFingerprint(ADDR.a, 'rig01');
+    expect(id).toMatch(/^[0-9a-f]{12}$/);
+    expect(MinerService.minerFingerprint(ADDR.a, 'rig01')).toBe(id);
+    expect(MinerService.minerFingerprint(ADDR.a, 'rig02')).not.toBe(id);
+  });
+
+  test('isValidAddress accepts prl1p addresses and rejects others', () => {
+    expect(MinerService.isValidAddress(ADDR.a)).toBe(true);
+    expect(MinerService.isValidAddress('prl1pShort')).toBe(false);
+    expect(MinerService.isValidAddress('bc1qwhatever')).toBe(false);
+    expect(MinerService.isValidAddress(null)).toBe(false);
+  });
+
+  test('clampNum coerces to a finite, non-negative, capped number', () => {
+    expect(MinerService.clampNum(12.5)).toBe(12.5);
+    expect(MinerService.clampNum(-3)).toBe(0);
+    expect(MinerService.clampNum('nope')).toBe(0);
+    expect(MinerService.clampNum(50, 10)).toBe(10);
+    expect(MinerService.clampNum(5, 10)).toBe(5);
+  });
+
+  test('formatAgo renders each tier', () => {
+    expect(MinerService.formatAgo(-100)).toBe('just now');
+    expect(MinerService.formatAgo(2000)).toBe('just now');
+    expect(MinerService.formatAgo(12000)).toBe('12s ago');
+    expect(MinerService.formatAgo(90 * 1000)).toBe('1m ago');
+    expect(MinerService.formatAgo(2 * 3600 * 1000)).toBe('2h ago');
+  });
+});
+
+describe('MinerService (db)', () => {
+  let db;
+  let service;
+  beforeEach(async () => {
+    db = await createTestDb();
+    service = new MinerService(db);
+  });
+  afterEach(async () => {
+    if (db.end) await db.end();
+  });
+
+  const setLastSeen = (id, ms) => db.query('UPDATE miners SET last_seen = $1 WHERE id = $2', [ms, id]);
+  const count = async () => (await db.query('SELECT COUNT(*)::int AS n FROM miners', [])).rows[0].n;
+
+  test('rejects an invalid or missing payout address', async () => {
+    expect(await service.reportMiner({ address: 'nope', worker: 'rig01' })).toEqual({ error: 'Invalid payout address' });
+    expect(await service.reportMiner()).toEqual({ error: 'Invalid payout address' }); // no args → default {}
+    expect(await count()).toBe(0);
+  });
+
+  test('inserts a miner and defaults the worker, gpu and region', async () => {
+    const r = await service.reportMiner({ address: ADDR.a, hashrate: 100 });
+    expect(r.success).toBe(true);
+    expect(r.id).toBe(MinerService.minerFingerprint(ADDR.a, 'rig01'));
+    const row = (await db.query('SELECT * FROM miners WHERE id = $1', [r.id])).rows[0];
+    expect(row.worker).toBe('rig01');
+    expect(row.gpu).toBeNull();
+    expect(row.region).toBeNull();
+  });
+
+  test('upserts on repeat and clamps/floors the numbers', async () => {
+    await service.reportMiner({ address: ADDR.a, worker: 'rig01', gpu: 'RTX 4090', region: 'us1', hashrate: 100, accepted: 5 });
+    await service.reportMiner({ address: ADDR.a, worker: 'rig01', gpu: 'RTX 4090', hashrate: 5e6, accepted: 9.9 });
+    expect(await count()).toBe(1);
+    const row = (await db.query('SELECT * FROM miners', [])).rows[0];
+    expect(Number(row.hashrate)).toBe(1e6);   // clamped to MAX_HASHRATE
+    expect(Number(row.accepted)).toBe(9);      // floored
+  });
+
+  test('getPublicMiners groups workers by address, sorts by hashrate, and aggregates', async () => {
+    await service.reportMiner({ address: ADDR.a, worker: 'rig01', gpu: 'NVIDIA GeForce RTX 4090', hashrate: 100, accepted: 5 });
+    await service.reportMiner({ address: ADDR.a, worker: 'rig02', hashrate: 50, accepted: 3 }); // no gpu
+    await service.reportMiner({ address: ADDR.b, worker: 'rig01', gpu: 'NVIDIA GeForce RTX 3090', hashrate: 200, accepted: 10 });
+    await service.reportMiner({ address: ADDR.c, worker: 'rig01', hashrate: 0, accepted: 0 }); // no gpu, zero hashrate
+
+    const out = await service.getPublicMiners();
+    expect(out.totalOnline).toBe(3);
+    expect(out.totalWorkers).toBe(4);
+    expect(out.totalHashrate).toBe(350);
+    expect(out.miners.map((m) => m.addr)).toEqual([ADDR.b, ADDR.a, ADDR.c]); // sorted by hashrate desc
+
+    const a = out.miners.find((m) => m.addr === ADDR.a);
+    expect(a).toMatchObject({ gpu: 'NVIDIA GeForce RTX 4090', hash: 150, workers: 2, accepted: 8, last: 'just now' });
+    expect(out.miners.find((m) => m.addr === ADDR.c).gpu).toBe('—'); // fallback when no worker reports a gpu
+  });
+
+  test('omits miners past the offline threshold but keeps their rows', async () => {
+    const r = await service.reportMiner({ address: ADDR.a, worker: 'rig01', hashrate: 100 });
+    await setLastSeen(r.id, Date.now() - 6 * 60 * 1000); // 6 min: offline, not yet pruned
+    const out = await service.getPublicMiners();
+    expect(out.totalOnline).toBe(0);
+    expect(await count()).toBe(1);
+  });
+
+  test('prunes miners not seen within the TTL', async () => {
+    const r = await service.reportMiner({ address: ADDR.a, worker: 'rig01', hashrate: 100 });
+    await setLastSeen(r.id, Date.now() - 2 * 60 * 60 * 1000); // 2 h: pruned
+    const out = await service.getPublicMiners();
+    expect(out.totalOnline).toBe(0);
+    expect(await count()).toBe(0);
+  });
+});

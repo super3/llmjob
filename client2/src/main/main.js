@@ -18,12 +18,13 @@ const { autoUpdater } = require('electron-updater');
 const { MinerManager } = require('./minerManager');
 const { EngineManager } = require('./engineManager');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
-const { REGIONS, DEFAULTS, MINER, endpointFor, difficultyForCard } = require('../shared/config');
+const { REGIONS, DEFAULTS, MINER, NETWORK, endpointFor, difficultyForCard } = require('../shared/config');
 const { progressPercent, bundledEnginePath } = require('../shared/engine');
 const { formatUpdate } = require('../shared/updateStatus');
 const { describeLaunchError } = require('../shared/engineError');
 const { pickGpu } = require('../shared/gpu');
 const { pickFastestRegion } = require('../shared/region');
+const { buildMinerReport } = require('../shared/minerReport');
 const earnings = require('../shared/earnings');
 const format = require('../shared/format');
 
@@ -31,6 +32,7 @@ let win = null;
 let miner = null;
 let stats = null;
 let ticker = null;
+let reporter = null;
 
 function settingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -53,6 +55,29 @@ function persistSettings(s) {
 
 function send(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+}
+
+// Publish this miner's live status to the network page (best-effort — never
+// throws, timeouts and errors are swallowed so mining is never affected).
+function postMinerReport(payload) {
+  return new Promise((resolve) => {
+    try {
+      const body = JSON.stringify(payload);
+      const u = new URL(NETWORK.reportUrl);
+      const lib = u.protocol === 'http:' ? http : https;
+      const req = lib.request(u, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+        timeout: 8000,
+      }, (res) => { res.resume(); res.on('end', resolve); });
+      req.on('error', () => resolve());
+      req.on('timeout', () => { req.destroy(); resolve(); });
+      req.write(body);
+      req.end();
+    } catch (e) {
+      resolve();
+    }
+  });
 }
 
 // Report a miner-engine launch failure to the UI + log, translating the common
@@ -137,6 +162,12 @@ async function startMining(settings) {
   if (ticker) clearInterval(ticker);
   ticker = setInterval(() => send('miner:stats', statsView(snapshot(stats, Date.now()))), 1000);
 
+  // Publish live status to the network page's board while mining.
+  const report = () => postMinerReport(buildMinerReport(settings, snapshot(stats, Date.now())));
+  report();
+  if (reporter) clearInterval(reporter);
+  reporter = setInterval(report, NETWORK.reportIntervalMs);
+
   const endpoint = settings.endpoint || endpointFor(settings.region || DEFAULTS.region);
   send('miner:log', { level: 'info', line: 'connecting to ' + endpoint + ' · worker ' + (settings.worker || DEFAULTS.worker) });
 
@@ -205,6 +236,10 @@ function stopMining() {
   if (ticker) {
     clearInterval(ticker);
     ticker = null;
+  }
+  if (reporter) {
+    clearInterval(reporter);
+    reporter = null;
   }
   stats = null;
   if (miner) {

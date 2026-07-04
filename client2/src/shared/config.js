@@ -43,6 +43,13 @@ const MINER = {
 };
 
 // Network economics used to estimate earnings. Mirrors the design mock.
+// LLMJob network page: where the app reports its live mining status so it shows
+// up on the public "who's mining now" board, and how often.
+const NETWORK = {
+  reportUrl: 'https://llmjob-production.up.railway.app/api/miners/ping',
+  reportIntervalMs: 60000, // report once a minute while mining
+};
+
 // Network economics for earnings estimates. Mirrors the earn.html calculator
 // (which live-refreshes from prlscan / SafeTrade and falls back to these).
 const ECON = {
@@ -88,6 +95,6 @@ function difficultyForCard(name) {
 }
 
 module.exports = {
-  REGIONS, DEFAULTS, MINER, ECON, DIFFICULTY_BY_CARD,
+  REGIONS, DEFAULTS, MINER, NETWORK, ECON, DIFFICULTY_BY_CARD,
   regionFor, endpointFor, regionLabel, difficultyForCard,
 };

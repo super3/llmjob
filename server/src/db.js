@@ -81,6 +81,19 @@ CREATE TABLE IF NOT EXISTS job_chunks (
   chunk jsonb,
   PRIMARY KEY (job_id, idx)
 );
+
+CREATE TABLE IF NOT EXISTS miners (
+  id text PRIMARY KEY,
+  address text,
+  worker text,
+  gpu text,
+  region text,
+  hashrate double precision,
+  accepted bigint,
+  first_seen bigint,
+  last_seen bigint
+);
+CREATE INDEX IF NOT EXISTS idx_miners_last_seen ON miners (last_seen);
 `;
 
 async function initSchema(db) {
