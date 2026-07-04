@@ -30,7 +30,7 @@
     "win": {
       "target": "nsis",
       "icon": "src/assets/icon.ico",
-      "artifactName": "LLMJob-Earn-Setup.${ext}"
+      "artifactName": "LLMJob-Earn-Setup-${version}.${ext}"
     },
     "nsis": {
       "oneClick": false,
