@@ -60,6 +60,31 @@ const ECON = {
   PRL_USD: 0.47, // PRL price in USD (PRL/USDT — SafeTrade)
 };
 
+// Local LLM inference (llama.cpp `llama-server`), run alongside the miner. It's
+// an OpenAI-compatible HTTP server we spawn like the mining engine; the same
+// endpoint powers both the local API and (later) the job queue.
+const LLM = {
+  host: '127.0.0.1',
+  port: 8080,
+  ctxSize: 4096,
+  parallel: 1,
+  // Keep this much VRAM free for the miner when co-running (the budgeter caps
+  // GPU layers so the model fits in whatever's left).
+  miningReserveMb: 2048,
+  // llama-server binary per platform (bundled/downloaded like the miner engine).
+  serverBin: { win32: 'llama-server.exe', linux: 'llama-server', darwin: 'llama-server' },
+  // One small model to start: Llama 3.2 1B Instruct, Q4_K_M GGUF. `layers` is the
+  // model's transformer-layer count (for --n-gpu-layers) and `vramFullMb` the
+  // approximate VRAM for a full GPU offload at ctxSize (weights + KV cache).
+  model: {
+    name: 'Llama-3.2-1B-Instruct-Q4_K_M',
+    file: 'Llama-3.2-1B-Instruct-Q4_K_M.gguf',
+    url: 'https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf',
+    layers: 16,
+    vramFullMb: 1600,
+  },
+};
+
 // Recommended static difficulty per card class, from the pool's table. Order
 // matters: more specific patterns first.
 const DIFFICULTY_BY_CARD = [
@@ -97,6 +122,6 @@ function difficultyForCard(name) {
 }
 
 module.exports = {
-  REGIONS, DEFAULTS, MINER, NETWORK, ECON, DIFFICULTY_BY_CARD,
+  REGIONS, DEFAULTS, MINER, NETWORK, ECON, LLM, DIFFICULTY_BY_CARD,
   regionFor, endpointFor, regionLabel, difficultyForCard,
 };
