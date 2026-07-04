@@ -120,6 +120,12 @@ select.rv-input { cursor: pointer; }
 .log-term .ln .m { color: #9fe6bb; }
 .log-term .ln.info .m { color: #cfe9d8; }
 .log-term .ln.error .m { color: #f3a5a5; }
+/* Slim, on-theme scrollbar to match the dark terminal instead of the chunky OS one. */
+.log-term { scrollbar-width: thin; scrollbar-color: #2b3f35 transparent; }
+.log-term::-webkit-scrollbar { width: 10px; }
+.log-term::-webkit-scrollbar-track { background: transparent; }
+.log-term::-webkit-scrollbar-thumb { background: #2b3f35; border: 2px solid #0d1411; border-radius: 8px; }
+.log-term::-webkit-scrollbar-thumb:hover { background: #3c5548; }
 
 /* footer */
 .app-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 28px; padding-top: 18px; border-top: 1px solid #f0ede5; }
