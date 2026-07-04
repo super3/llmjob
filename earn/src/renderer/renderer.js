@@ -35,6 +35,9 @@
     mdlNote: $('mdl-note'),
     mdlBalanceMeta: $('mdl-balance-meta'),
     mdlBalance: $('mdl-balance'),
+    setMode: $('set-mode'),
+    llmStatus: $('llm-status'),
+    llmStatusText: $('llm-status-text'),
     logTerm: $('log-term'),
     engineStatus: $('engine-status'),
     appVersion: $('app-version'),
@@ -206,7 +209,21 @@
       worker: el.setWorker.value.trim() || 'rig01',
       region: el.setRegion.value || 'us2',
       difficulty: Number(el.setDifficulty.value) || 524288,
+      mode: el.setMode.value || 'mining',
     };
+  }
+
+  // Local-LLM status line (endpoint + tokens/sec) shown while the LLM engine runs.
+  function renderLlm(s) {
+    const on = !!(s && s.running);
+    el.llmStatus.hidden = !on;
+    if (!on) return;
+    if (s.ready) {
+      const tps = s.tokensPerSec ? ' · ' + Number(s.tokensPerSec).toFixed(1) + ' tok/s' : '';
+      el.llmStatusText.textContent = '🧠 ' + (s.model || 'LLM') + tps + ' · ' + (s.endpoint || '');
+    } else {
+      el.llmStatusText.textContent = '🧠 ' + (s.model || 'LLM') + ' — starting…';
+    }
   }
 
   function start() {
@@ -300,11 +317,14 @@
       el.setRegion.value = s.region || 'us2';
       el.setDifficulty.value = s.difficulty || 524288;
       el.setMdl.value = s.mdlAddress || '';
+      el.setMode.value = s.mode || 'mining';
       // Set when "Update & restart" was clicked while mining — resume after launch.
       resumeMining = !!(s.resumeMining && isValid(state.address));
     }
     renderMdlNote();
     renderMdlBalanceMeta();
+    if (api.onLlm) api.onLlm(renderLlm);
+    if (api.getLlmStatus) api.getLlmStatus().then(renderLlm);
     if (api.detectGpu) {
       const gpu = await api.detectGpu();
       if (gpu) {

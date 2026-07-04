@@ -17,8 +17,12 @@ const { autoUpdater } = require('electron-updater');
 
 const { MinerManager } = require('./minerManager');
 const { EngineManager } = require('./engineManager');
+const { LlmManager } = require('./llmManager');
+const { LlmEngineManager } = require('./llmEngineManager');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
-const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, endpointFor, difficultyForCard } = require('../shared/config');
+const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, LLM, endpointFor, difficultyForCard } = require('../shared/config');
+const { computeGpuLayers } = require('../shared/vram');
+const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
 const { buildBalanceUrl, parseBalance, buildMdlBalanceUrl, parseMdlBalance } = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
 const { progressPercent, bundledEnginePath } = require('../shared/engine');
@@ -35,6 +39,8 @@ let miner = null;
 let stats = null;
 let ticker = null;
 let reporter = null;
+let llm = null;                 // LlmManager instance while the local LLM is up
+let llmStatus = { running: false, ready: false, endpoint: null, tokensPerSec: 0, model: LLM.model.name };
 
 function settingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -460,10 +466,97 @@ function fitWindowToContent() {
     .catch(() => {});
 }
 
+// ── Local LLM (llama.cpp llama-server), run alongside the miner ─────────────
+// Free GPU VRAM in MB via nvidia-smi (NVIDIA drivers required); used to size the
+// model's GPU offload so it co-runs with the miner. Never rejects.
+function detectFreeVram() {
+  return new Promise((resolve) => {
+    execFile('nvidia-smi', ['--query-gpu=memory.free', '--format=csv,noheader,nounits'],
+      { timeout: 5000 },
+      (err, stdout) => {
+        const mb = err ? NaN : parseInt(String(stdout).split(/\r?\n/)[0], 10);
+        resolve(Number.isFinite(mb) ? mb : null);
+      });
+  });
+}
+
+function sendLlmStatus() { send('llm:status', llmStatus); }
+
+// Prefer a bundled llama-server (it ships with its DLLs, like the miner engine);
+// otherwise download it on demand. NOTE: the llama.cpp release is a folder of
+// exe + shared libs — bundling the whole folder is the reliable path; the
+// download fallback needs full-folder extraction to be production-ready.
+async function resolveLlmBinary(dir) {
+  const name = LLM.serverBin[process.platform] || LLM.serverBin.linux;
+  const bundled = process.resourcesPath && path.join(process.resourcesPath, 'llm', name);
+  if (bundled && fs.existsSync(bundled)) return bundled;
+  const engine = new LlmEngineManager({
+    dir, platform: process.platform, serverUrl: LLM.serverUrl[process.platform],
+    fs, download: downloadFile, extract: extractZip, chmod: fs.chmodSync,
+  });
+  return engine.ensureServer();
+}
+
+// Start the local LLM: ensure binary + model, size the GPU offload to leave
+// `reserveMb` free for mining, spawn llama-server, and surface its OpenAI
+// endpoint. Best-effort — failures are logged, never thrown to the UI.
+async function startLlm(reserveMb) {
+  if (llm && llm.isRunning()) return;
+  const dir = path.join(app.getPath('userData'), 'llm');
+  send('miner:log', { level: 'info', line: 'preparing local LLM (' + LLM.model.name + ')…' });
+
+  let binaryPath, modelPath;
+  try {
+    binaryPath = await resolveLlmBinary(dir);
+    const modelEngine = new LlmEngineManager({ dir, platform: process.platform, fs, download: downloadFile });
+    modelPath = await modelEngine.ensureModel();
+  } catch (e) {
+    send('miner:log', { level: 'error', line: 'LLM setup failed: ' + e.message });
+    return;
+  }
+
+  const freeMb = await detectFreeVram();
+  const nGpuLayers = freeMb == null ? LLM.model.layers : computeGpuLayers(freeMb, LLM.model, reserveMb || 0);
+
+  llm = new LlmManager({ spawn });
+  llm.on('log', (l) => send('miner:log', l));
+  llm.on('ready', ({ baseUrl }) => {
+    llmStatus = Object.assign({}, llmStatus, { ready: true, endpoint: baseUrl + '/v1' });
+    send('miner:log', { level: 'info', line: 'local LLM ready — OpenAI endpoint ' + baseUrl + '/v1' });
+    sendLlmStatus();
+  });
+  llm.on('stats', ({ tokensPerSec }) => { llmStatus = Object.assign({}, llmStatus, { tokensPerSec }); sendLlmStatus(); });
+  llm.on('stopped', () => { llmStatus = Object.assign({}, llmStatus, { running: false, ready: false, tokensPerSec: 0 }); sendLlmStatus(); });
+
+  llm.start({ platform: process.platform, binaryPath, modelPath, nGpuLayers });
+  llmStatus = Object.assign({}, llmStatus, { running: true, ready: false, endpoint: llm.baseUrl + '/v1' });
+  send('miner:log', { level: 'info', line: 'local LLM starting on ' + llm.baseUrl + ' — ' + nGpuLayers + ' GPU layers' });
+  sendLlmStatus();
+}
+
+function stopLlm() {
+  if (llm) { llm.stop(); llm = null; }
+  llmStatus = Object.assign({}, llmStatus, { running: false, ready: false, tokensPerSec: 0 });
+  sendLlmStatus();
+}
+
+// Apply the compute mode: run the miner and/or the LLM per the plan.
+function applyPlan(settings) {
+  const plan = resolvePlan(settings.mode || DEFAULT_MODE, { canMine: isValidAddress(settings.address), canLlm: true });
+  if (plan.miner) {
+    startMining(settings).catch((e) => send('miner:log', { level: 'error', line: 'start failed: ' + e.message }));
+  } else {
+    persistSettings(settings); // startMining persists; do it here when the miner is off
+  }
+  if (plan.llm) startLlm(plan.miner ? LLM.miningReserveMb : 0).catch(() => {});
+  else stopLlm();
+}
+
 ipcMain.handle('settings:get', () => Object.assign(
-  { region: DEFAULTS.region, worker: DEFAULTS.worker, difficulty: DEFAULTS.difficulty, address: '', mdlAddress: '' },
+  { region: DEFAULTS.region, worker: DEFAULTS.worker, difficulty: DEFAULTS.difficulty, address: '', mdlAddress: '', mode: DEFAULT_MODE },
   loadSettings(),
 ));
+ipcMain.handle('llm:status', () => llmStatus);
 ipcMain.handle('config:get', () => ({ regions: REGIONS, defaults: DEFAULTS, miner: MINER }));
 ipcMain.handle('miner:difficultyForCard', (_e, name) => difficultyForCard(name));
 ipcMain.handle('gpu:detect', () => detectGpu());
@@ -473,10 +566,8 @@ ipcMain.handle('balance:get', (_e, address) => fetchBalance(address, { priceUsd:
 // addresses on the miner endpoint), so this takes the PRL address.
 ipcMain.handle('balance:getMdl', (_e, address) =>
   fetchBalance(address, { buildUrl: buildMdlBalanceUrl, parse: parseMdlBalance }));
-ipcMain.on('miner:start', (_e, settings) => {
-  startMining(settings || {}).catch((e) => send('miner:log', { level: 'error', line: 'start failed: ' + e.message }));
-});
-ipcMain.on('miner:stop', () => stopMining());
+ipcMain.on('miner:start', (_e, settings) => applyPlan(settings || {}));
+ipcMain.on('miner:stop', () => { stopMining(); stopLlm(); });
 ipcMain.on('open-external', (_e, url) => { shell.openExternal(url); });
 ipcMain.handle('app:version', () => app.getVersion());
 ipcMain.on('app:update:check', () => checkForUpdate());
