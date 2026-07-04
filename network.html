@@ -217,7 +217,25 @@
       setText('net-foot', online ? ('Showing ' + online + ' of ' + online + ' miners') : 'Waiting for the first miner to connect…');
     }
 
+    // The site (GitHub Pages) and the API (Railway) are different origins, so
+    // use the absolute API base in production and the local server in dev — the
+    // same pattern as the dashboard. Miners come back already sorted by hashrate
+    // (see GET /api/miners); any failure just keeps the last render.
+    const API_BASE = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+      ? 'http://localhost:3001' : 'https://llmjob-production.up.railway.app';
+
+    async function load() {
+      try {
+        const res = await fetch(API_BASE + '/api/miners', { headers: { Accept: 'application/json' } });
+        if (!res.ok) return;
+        const data = await res.json();
+        render(Array.isArray(data.miners) ? data.miners : []);
+      } catch (e) { /* offline / API down — keep the current view */ }
+    }
+
     render([]);
+    load();
+    setInterval(load, 15000);
   })();
 </script>
 </body>

@@ -12,6 +12,6 @@ exports.up = (pgm) => {
 
 exports.down = (pgm) => {
   pgm.sql(
-    'DROP TABLE IF EXISTS job_chunks, jobs, node_join_tokens, request_logs, api_keys, nodes CASCADE;'
+    'DROP TABLE IF EXISTS miners, job_chunks, jobs, node_join_tokens, request_logs, api_keys, nodes CASCADE;'
   );
 };
