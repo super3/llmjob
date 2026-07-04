@@ -1,9 +1,10 @@
 const crypto = require('crypto');
 
 // A miner unseen for this long drops off the "online" list; rows unseen for
-// PRUNE_TTL are deleted entirely.
-const OFFLINE_THRESHOLD = 5 * 60 * 1000;   // 5 minutes
-const PRUNE_TTL = 60 * 60 * 1000;          // 1 hour
+// PRUNE_TTL are deleted entirely. Clients check in every ~60s, so the window is
+// generous — show anyone seen within the past hour.
+const OFFLINE_THRESHOLD = 60 * 60 * 1000;  // 1 hour
+const PRUNE_TTL = 90 * 60 * 1000;          // 90 minutes
 const ADDRESS_RE = /^prl1p[0-9a-z]{20,80}$/i;
 const MAX_HASHRATE = 1e6;                  // TH/s sanity clamp
 

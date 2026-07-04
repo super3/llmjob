@@ -95,9 +95,9 @@ describe('MinerService (db)', () => {
     expect(out.miners.find((m) => m.addr === ADDR.c).gpu).toBe('—'); // fallback when no worker reports a gpu
   });
 
-  test('omits miners past the offline threshold but keeps their rows', async () => {
+  test('omits miners not seen within the past hour but keeps their rows', async () => {
     const r = await service.reportMiner({ address: ADDR.a, worker: 'rig01', hashrate: 100 });
-    await setLastSeen(r.id, Date.now() - 6 * 60 * 1000); // 6 min: offline, not yet pruned
+    await setLastSeen(r.id, Date.now() - 70 * 60 * 1000); // 70 min: offline, not yet pruned
     const out = await service.getPublicMiners();
     expect(out.totalOnline).toBe(0);
     expect(await count()).toBe(1);
