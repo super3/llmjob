@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('llmjob', {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   getConfig: () => ipcRenderer.invoke('config:get'),
   difficultyForCard: (name) => ipcRenderer.invoke('miner:difficultyForCard', name),
+  detectGpu: () => ipcRenderer.invoke('gpu:detect'),
+  detectRegion: () => ipcRenderer.invoke('region:detect'),
   startMiner: (settings) => ipcRenderer.send('miner:start', settings),
   stopMiner: () => ipcRenderer.send('miner:stop'),
   openExternal: (url) => ipcRenderer.send('open-external', url),

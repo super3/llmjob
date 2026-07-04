@@ -61,15 +61,15 @@ describe('MinerManager', () => {
     mgr.on('event', (e) => events.push(e));
     mgr.start({ address: 'prl1pabc' });
 
-    child.stdout.emit('data', 'connected to us2.alphapool.tech:5566 · worker rig01\njust noise\n\n');
+    const connected = 'ts level=INFO gpu=0:NVIDIA GeForce RTX 4090 component=pool connected host=us2.alphapool.tech port=5566 tls=false';
+    const status = 'ts level=INFO gpu=0:NVIDIA GeForce RTX 4090 component=miner status attempts=100 accepted=5 rejected=0 hashrate_th_s=286.86 power=449W';
+    child.stdout.emit('data', connected + '\njust noise\n\n' + status + '\n');
 
-    expect(logs.map((l) => l.line)).toEqual([
-      'connected to us2.alphapool.tech:5566 · worker rig01',
-      'just noise',
-    ]);
+    expect(logs.map((l) => l.line)).toEqual([connected, 'just noise', status]);
     expect(logs.every((l) => l.level === 'info')).toBe(true);
     expect(events).toEqual([
-      { type: 'connected', endpoint: 'us2.alphapool.tech:5566', worker: 'rig01' },
+      { type: 'connected', endpoint: 'us2.alphapool.tech:5566', gpu: 'NVIDIA GeForce RTX 4090' },
+      { type: 'status', hashrate: 286.86, accepted: 5, rejected: 0, power: 449, gpu: 'NVIDIA GeForce RTX 4090' },
     ]);
   });
 

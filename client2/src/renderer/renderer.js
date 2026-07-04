@@ -23,6 +23,7 @@
     viewMiner: $('view-miner'),
     viewSettings: $('view-settings'),
     viewLogs: $('view-logs'),
+    deviceLabel: $('device-label'),
     setDevice: $('set-device'),
     setWorker: $('set-worker'),
     setRegion: $('set-region'),
@@ -34,7 +35,7 @@
     updateInstall: $('update-install'),
   };
 
-  const state = { mining: false, view: 'miner', address: '' };
+  const state = { mining: false, view: 'miner', address: '', gpu: '' };
 
   const ADDR_RE = /^prl1p[0-9a-z]{20,80}$/i;
   const isValid = (a) => ADDR_RE.test(String(a || '').trim());
@@ -72,6 +73,7 @@
       el.accepted.textContent = '0';
       el.uptime.textContent = '0m 00s';
       el.estday.textContent = '$0.00';
+      el.deviceLabel.textContent = state.gpu || 'GPU · auto-detect';
       el.line.setAttribute('d', FLAT_LINE);
       el.area.setAttribute('d', FLAT_AREA);
       el.engineStatus.hidden = true;
@@ -85,6 +87,7 @@
     el.accepted.textContent = s.acceptedLabel;
     el.uptime.textContent = s.uptime;
     el.estday.textContent = s.estDay;
+    if (s.gpu) el.deviceLabel.textContent = s.gpu;
     const p = chartPaths(s.points);
     el.line.setAttribute('d', p.line);
     el.area.setAttribute('d', p.area);
@@ -179,6 +182,20 @@
       el.setWorker.value = s.worker || 'rig01';
       el.setRegion.value = s.region || 'us2';
       el.setDifficulty.value = s.difficulty || 524288;
+    }
+    if (api.detectGpu) {
+      const gpu = await api.detectGpu();
+      if (gpu) {
+        state.gpu = gpu;
+        if (!state.mining) el.deviceLabel.textContent = gpu;
+        if (!el.setDevice.value) el.setDevice.value = gpu;
+      }
+    }
+    // Auto-pick the lowest-latency pool region (unless the user is already
+    // mining or has picked a non-default region this session).
+    if (api.detectRegion && !state.mining) {
+      const region = await api.detectRegion();
+      if (region) el.setRegion.value = region;
     }
     if (api.onStats) api.onStats(applyStats);
     if (api.onLog) api.onLog(appendLog);
