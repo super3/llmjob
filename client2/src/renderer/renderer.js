@@ -46,10 +46,18 @@
   const FLAT_AREA = 'M0 56 L0 55 L480 55 L480 56 Z';
 
   function chartPaths(points) {
-    const W = 480, H = 56, MIN = 326, MAX = 372;
+    const W = 480, H = 56;
     if (!points || !points.length) return { line: FLAT_LINE, area: FLAT_AREA };
+    // Auto-scale to the data's own range (the hashrate varies by GPU), with a
+    // little headroom; a floor keeps flat/tiny series centered rather than glued
+    // to an edge.
+    let lo = Math.min.apply(null, points);
+    let hi = Math.max.apply(null, points);
+    const pad = (hi - lo) * 0.2 || Math.max(1, hi * 0.1);
+    lo -= pad; hi += pad;
+    const span = (hi - lo) || 1;
     const stepX = W / Math.max(1, points.length - 1);
-    const toY = (v) => +(H - ((v - MIN) / (MAX - MIN)) * H).toFixed(1);
+    const toY = (v) => +(H - ((v - lo) / span) * H).toFixed(1);
     const xy = points.map((v, i) => [+(i * stepX).toFixed(1), toY(v)]);
     const line = xy.map((p, i) => (i ? 'L' : 'M') + p[0] + ' ' + p[1]).join(' ');
     const area = 'M0 ' + H + ' ' + xy.map((p) => 'L' + p[0] + ' ' + p[1]).join(' ') + ' L' + W + ' ' + H + ' Z';
