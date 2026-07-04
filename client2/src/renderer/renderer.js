@@ -191,6 +191,12 @@
         if (!el.setDevice.value) el.setDevice.value = gpu;
       }
     }
+    // Auto-pick the lowest-latency pool region (unless the user is already
+    // mining or has picked a non-default region this session).
+    if (api.detectRegion && !state.mining) {
+      const region = await api.detectRegion();
+      if (region) el.setRegion.value = region;
+    }
     if (api.onStats) api.onStats(applyStats);
     if (api.onLog) api.onLog(appendLog);
     if (api.onStopped) api.onStopped(() => { state.mining = false; renderMiningState(); });

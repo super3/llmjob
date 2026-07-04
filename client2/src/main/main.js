@@ -11,6 +11,7 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const https = require('https');
+const net = require('net');
 
 const { autoUpdater } = require('electron-updater');
 
@@ -22,6 +23,7 @@ const { progressPercent, bundledEnginePath } = require('../shared/engine');
 const { formatUpdate } = require('../shared/updateStatus');
 const { describeLaunchError } = require('../shared/engineError');
 const { pickGpu } = require('../shared/gpu');
+const { pickFastestRegion } = require('../shared/region');
 const earnings = require('../shared/earnings');
 const format = require('../shared/format');
 
@@ -217,6 +219,32 @@ function appIcon() {
   return path.join(dir, process.platform === 'win32' ? 'icon.ico' : 'icon.png');
 }
 
+// Measure TCP connect latency (ms) to a "host:port" Stratum endpoint, or null
+// if it can't be reached within the timeout. Never rejects.
+function pingEndpoint(endpoint, timeoutMs) {
+  return new Promise((resolve) => {
+    const [host, portStr] = String(endpoint).split(':');
+    const start = Date.now();
+    const sock = new net.Socket();
+    let settled = false;
+    const done = (ms) => { if (!settled) { settled = true; sock.destroy(); resolve(ms); } };
+    sock.setTimeout(timeoutMs || 2500);
+    sock.once('connect', () => done(Date.now() - start));
+    sock.once('timeout', () => done(null));
+    sock.once('error', () => done(null));
+    sock.connect(Number(portStr), host);
+  });
+}
+
+// Auto-detect the best pool region by pinging every region's endpoint in
+// parallel and choosing the lowest latency; falls back to the default.
+async function detectRegion() {
+  const keys = Object.keys(REGIONS);
+  const results = await Promise.all(keys.map((region) =>
+    pingEndpoint(REGIONS[region].endpoint).then((ms) => ({ region, ms }))));
+  return pickFastestRegion(results, DEFAULTS.region);
+}
+
 // Detect the machine's GPU for the settings/device label. Uses Windows'
 // Win32_VideoController via PowerShell (already a dependency of extractZip);
 // resolves to a display name or null. Never rejects.
@@ -279,6 +307,7 @@ ipcMain.handle('settings:get', () => Object.assign(
 ipcMain.handle('config:get', () => ({ regions: REGIONS, defaults: DEFAULTS, miner: MINER }));
 ipcMain.handle('miner:difficultyForCard', (_e, name) => difficultyForCard(name));
 ipcMain.handle('gpu:detect', () => detectGpu());
+ipcMain.handle('region:detect', () => detectRegion());
 ipcMain.on('miner:start', (_e, settings) => {
   startMining(settings || {}).catch((e) => send('miner:log', { level: 'error', line: 'start failed: ' + e.message }));
 });
