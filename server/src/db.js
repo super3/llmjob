@@ -4,6 +4,24 @@ const { Pool } = require('pg');
 // `data` jsonb column (with a few promoted columns for querying); everything
 // else is columnar. Expirations/TTLs are modeled with explicit *_at columns
 // that callers compare against the current time.
+
+// Live status of LLMJob Earn mining clients (public network board). Kept as its
+// own constant so the add-miners migration can apply it to existing databases.
+const MINERS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS miners (
+  id text PRIMARY KEY,
+  address text,
+  worker text,
+  gpu text,
+  region text,
+  hashrate double precision,
+  accepted bigint,
+  first_seen bigint,
+  last_seen bigint
+);
+CREATE INDEX IF NOT EXISTS idx_miners_last_seen ON miners (last_seen);
+`;
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS nodes (
   node_id text PRIMARY KEY,
@@ -82,18 +100,7 @@ CREATE TABLE IF NOT EXISTS job_chunks (
   PRIMARY KEY (job_id, idx)
 );
 
-CREATE TABLE IF NOT EXISTS miners (
-  id text PRIMARY KEY,
-  address text,
-  worker text,
-  gpu text,
-  region text,
-  hashrate double precision,
-  accepted bigint,
-  first_seen bigint,
-  last_seen bigint
-);
-CREATE INDEX IF NOT EXISTS idx_miners_last_seen ON miners (last_seen);
+${MINERS_SCHEMA}
 `;
 
 async function initSchema(db) {
@@ -106,4 +113,4 @@ function createPool() {
   });
 }
 
-module.exports = { createPool, initSchema, SCHEMA };
+module.exports = { createPool, initSchema, SCHEMA, MINERS_SCHEMA };
