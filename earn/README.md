@@ -8,17 +8,32 @@ line. Built with Electron; **Windows** is the shipped target for now.
 > The LLM "co-mining" side of LLMJob comes later — this app is the easy on-ramp
 > that gets GPUs onto the network and earning today.
 
+**Highlights**
+
+- **Live pool balance** — your pending payout plus lifetime paid for the address.
+- **Merge mining** — add an `mdl1p…` address in Settings to also earn ModelOS
+  (MDL) on the very same shares, no extra power or hardware.
+- **Public board** — while mining, the app publishes live status to the network
+  page (your Pearl address only — nothing else is reported).
+- **Zero-config** — auto-detects the discrete GPU and its recommended static
+  difficulty, picks the lowest-latency pool region, and updates itself.
+
 ## How it works
 
 - **`src/shared/`** — pure, fully unit-tested logic (no Electron/DOM):
   - `config.js` — pool endpoints, per-card static difficulty, engine metadata, economics.
-  - `address.js` — `prl1p…` address validation / shortening.
-  - `earnings.js` — PRL/USD per-day estimates.
-  - `format.js` — uptime / hashrate / number formatting.
+  - `address.js` — `prl1p…` / `mdl1p…` validation, shortening, and the merge-mining combined address.
+  - `minerArgs.js` — builds the engine argument vector / launcher env (`--address`, `--worker`, `--password "x;d=N"`, `--force-backend`).
   - `parser.js` — turns `alpha-miner` stdout into structured events (shares, hashrate, connect).
-  - `minerArgs.js` — builds the engine argument vector / launcher env (`--password "x;d=N"`, etc.).
-  - `simulator.js` — a believable live-stats feed for the in-app preview.
+  - `miningStats.js` — accumulates those events into the live stats snapshot.
+  - `earnings.js` — PRL/USD per-day estimates.
+  - `balance.js` — builds the pool balance lookup and parses the pending + paid response.
+  - `minerReport.js` — the payload published to the public network board while mining.
+  - `gpu.js` / `region.js` — pick the discrete GPU and the lowest-latency pool region from what's detected.
   - `engine.js` — engine download URLs, binary names, and progress math.
+  - `engineError.js` — plain-language guidance for launch failures (incl. antivirus quarantine).
+  - `updateStatus.js` — formats the in-app auto-update banner.
+  - `format.js` — uptime / hashrate / number formatting.
 - **`src/main/`** — Electron main process:
   - `minerManager.js` — spawns and supervises the engine (injectable `spawn`, unit-tested).
   - `engineManager.js` — downloads + installs the engine on first run (injected IO, unit-tested).
@@ -27,25 +42,29 @@ line. Built with Electron; **Windows** is the shipped target for now.
 
 ## The mining engine
 
-The app **downloads the engine for you** on first **Start** and caches it under the
-user-data folder (`…/LLMJob Earn/engine/`) — nothing is bundled. On Windows it
+The installer **bundles the engine** — electron-builder `extraResources` ships
+`vendor/engine/` to `<resources>/engine/`, so a normal install runs offline with
+no unsigned download at runtime. If no bundled binary is present (a dev run, or a
+build where antivirus stripped it), the app **downloads it on first Start** and
+caches it under the user-data folder (`…/LLMJob Earn/engine/`): on Windows it
 fetches `AlphaMiner-Pearl-Windows.zip` from the pool's `/downloads/` path and
 extracts `alpha-miner-windows.exe` (via PowerShell `Expand-Archive`, no extra
-dependency); the base URL is overridable. If the download fails (offline, etc.) the
-app falls back to **simulated** stats and links the
-[manual download](https://pearl.alphapool.tech/#setup). You can also point
-`binaryPath` at an engine you installed yourself to skip the download entirely.
+dependency; base URL overridable). If that also fails it surfaces a plain-language
+engine error (with antivirus-quarantine guidance) — the stats shown are always the
+engine's real output, never simulated. Point `binaryPath` at your own build to
+skip the download entirely.
 
-Settings map to the documented knobs: Stratum user `‹address›.‹worker›`, static
-difficulty via the password (`x;d=N`), and the regional endpoint
-(`us1/us2/eu1/eu2/ru1/sg1/in1.alphapool.tech:5566`).
+The app drives `alpha-miner` with its documented CLI: `--address prl1…` (or
+`prl1…+mdl1…` when merge mining), `--worker`, static difficulty via
+`--password "x;d=N"`, an optional `--force-backend` for cards that need it, and
+the regional endpoint (`us1/us2/eu1/eu2/ru1/sg1/in1.alphapool.tech:5566`).
 
 ## Develop
 
 ```bash
 npm install        # from this earn/ directory
 npm start          # launch the Electron app
-npm test           # jest — 100% coverage gate on shared/* + minerManager
+npm test           # jest — 100% coverage gate on shared/* + miner/engineManager
 ```
 
 ## Build (Windows)
