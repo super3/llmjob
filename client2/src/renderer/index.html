@@ -45,7 +45,7 @@
         <span class="num" id="hashrate">0.0</span>
         <span class="unit">TH/s</span>
       </div>
-      <svg viewBox="0 0 480 56" width="100%" height="40" preserveAspectRatio="none">
+      <svg viewBox="0 0 480 56" width="100%" height="60" preserveAspectRatio="none">
         <defs><linearGradient id="mkFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2563eb" stop-opacity="0.18"></stop><stop offset="1" stop-color="#2563eb" stop-opacity="0"></stop></linearGradient></defs>
         <path id="mk-area" d="M0 56 L0 55 L480 55 L480 56 Z" fill="url(#mkFill)"></path>
         <path id="mk-line" d="M0 55 L480 55" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>
@@ -64,13 +64,11 @@
 
   <!-- SETTINGS -->
   <section id="view-settings" hidden>
-    <div class="view-head"><span class="lbl">Settings</span><span class="back" data-back>← Back</span></div>
-
     <div class="settings-section">Mining Device</div>
     <div class="device-card">
       <div class="device-left">
         <span class="device-ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7" width="10" height="10" rx="2"></rect><path d="M10 2v3M14 2v3M10 19v3M14 19v3M2 10h3M2 14h3M19 10h3M19 14h3"></path></svg></span>
-        <input id="set-device" class="device-input" type="text" placeholder="e.g. RTX 5090 (auto)" />
+        <input id="set-device" class="device-input" type="text" readonly placeholder="Detecting GPU…" />
       </div>
     </div>
 
@@ -82,7 +80,6 @@
       </div>
       <div class="settings-row"><span class="rk">Static difficulty</span><input id="set-difficulty" class="rv-input" type="number" min="0" /></div>
     </div>
-    <p class="settings-note">Pin a static difficulty for steady shares from the first second. <a data-ext="https://pearl.alphapool.tech/#setup">Difficulty cheat-sheet →</a></p>
 
     <div class="settings-section">Merge Mining <span class="badge-mdl">MDL</span></div>
     <input id="set-mdl" class="field-box mdl-input" type="text" spellcheck="false" placeholder="Paste your mdl1… address (optional)" />

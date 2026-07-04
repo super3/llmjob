@@ -18,7 +18,9 @@ const { autoUpdater } = require('electron-updater');
 const { MinerManager } = require('./minerManager');
 const { EngineManager } = require('./engineManager');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
-const { REGIONS, DEFAULTS, MINER, NETWORK, endpointFor, difficultyForCard } = require('../shared/config');
+const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, endpointFor, difficultyForCard } = require('../shared/config');
+const { buildBalanceUrl, parseBalance } = require('../shared/balance');
+const { isValidAddress } = require('../shared/address');
 const { progressPercent, bundledEnginePath } = require('../shared/engine');
 const { formatUpdate } = require('../shared/updateStatus');
 const { describeLaunchError } = require('../shared/engineError');
@@ -76,6 +78,33 @@ function postMinerReport(payload) {
       req.end();
     } catch (e) {
       resolve();
+    }
+  });
+}
+
+// Fetch the pool's pending balance for a payout address. Best-effort and never
+// rejects — resolves the parsed { prl, paid, usd } or null (unknown address,
+// offline, non-200, bad JSON). Runs here in the main process so it isn't subject
+// to the renderer's CSP / cross-origin restrictions.
+function fetchBalance(address) {
+  return new Promise((resolve) => {
+    if (!isValidAddress(address)) return resolve(null);
+    try {
+      const u = new URL(buildBalanceUrl(String(address).trim()));
+      const lib = u.protocol === 'http:' ? http : https;
+      const req = lib.get(u, { timeout: 8000 }, (res) => {
+        if (res.statusCode !== 200) { res.resume(); return resolve(null); }
+        let data = '';
+        res.on('data', (c) => { data += c; if (data.length > 4e6) req.destroy(); });
+        res.on('end', () => {
+          try { resolve(parseBalance(JSON.parse(data), ECON.PRL_USD)); }
+          catch (e) { resolve(null); }
+        });
+      });
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => { req.destroy(); resolve(null); });
+    } catch (e) {
+      resolve(null);
     }
   });
 }
@@ -319,11 +348,12 @@ function setupUpdater() {
 function createWindow() {
   win = new BrowserWindow({
     width: 620,
-    height: 630,
+    height: 650,
     minWidth: 560,
-    minHeight: 600,
+    minHeight: 560,
     backgroundColor: '#fcfcfb',
     autoHideMenuBar: true,
+    show: false,
     title: 'LLMJob Earn',
     icon: appIcon(),
     webPreferences: {
@@ -333,6 +363,16 @@ function createWindow() {
     },
   });
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+
+  // Size the window to the rendered content so there's no default scrollbar and
+  // no trailing whitespace, whatever the platform chrome / font metrics / DPI.
+  // Do it before showing (window starts hidden) to avoid a resize flash. The
+  // renderer keeps overflow-y:auto, so a transient taller state (update bar,
+  // engine error) still scrolls rather than clipping.
+  win.webContents.on('did-finish-load', () => {
+    fitWindowToContent().finally(() => { if (win && !win.isDestroyed()) win.show(); });
+  });
+  setTimeout(() => { if (win && !win.isDestroyed() && !win.isVisible()) win.show(); }, 1500);
 
   // Right-click cut/copy/paste — Electron has no default context menu, so
   // pasting a payout address (or copying it) is otherwise mouse-inaccessible.
@@ -352,6 +392,20 @@ function createWindow() {
   });
 }
 
+// Measure the rendered content (.app) and set the window's content area to it,
+// so the miner view fits exactly. Best-effort — resolves regardless of errors.
+function fitWindowToContent() {
+  if (!win || win.isDestroyed()) return Promise.resolve();
+  return win.webContents
+    .executeJavaScript('Math.ceil((document.querySelector(".app") || document.body).getBoundingClientRect().height)')
+    .then((h) => {
+      if (win && !win.isDestroyed() && Number.isFinite(h) && h > 0) {
+        win.setContentSize(win.getContentSize()[0], h);
+      }
+    })
+    .catch(() => {});
+}
+
 ipcMain.handle('settings:get', () => Object.assign(
   { region: DEFAULTS.region, worker: DEFAULTS.worker, difficulty: DEFAULTS.difficulty, address: '', mdlAddress: '' },
   loadSettings(),
@@ -360,6 +414,7 @@ ipcMain.handle('config:get', () => ({ regions: REGIONS, defaults: DEFAULTS, mine
 ipcMain.handle('miner:difficultyForCard', (_e, name) => difficultyForCard(name));
 ipcMain.handle('gpu:detect', () => detectGpu());
 ipcMain.handle('region:detect', () => detectRegion());
+ipcMain.handle('balance:get', (_e, address) => fetchBalance(address));
 ipcMain.on('miner:start', (_e, settings) => {
   startMining(settings || {}).catch((e) => send('miner:log', { level: 'error', line: 'start failed: ' + e.message }));
 });
