@@ -51,19 +51,36 @@ describe('buildArgs', () => {
     expect(args).toEqual(expect.arrayContaining(['--address', 'prl1pabc', '--worker', 'rig01']));
     expect(args).not.toContain('--algo');
   });
+
+  test('merge mining: a valid MDL address rides along in --address as prl…+mdl…', () => {
+    const prl = 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
+    const mdl = 'mdl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
+    const args = buildArgs({ address: prl, mdlAddress: mdl });
+    expect(args).toEqual(expect.arrayContaining(['--address', prl + '+' + mdl]));
+    // A malformed MDL address is dropped so Pearl mining is never broken.
+    const safe = buildArgs({ address: prl, mdlAddress: 'mdl1pshort' });
+    expect(safe).toEqual(expect.arrayContaining(['--address', prl]));
+  });
 });
 
 describe('buildEnv', () => {
   test('maps settings to the launcher environment variables', () => {
     expect(buildEnv({ address: 'prl1pabc', worker: 'rig9', difficulty: 1000 })).toEqual({
       PRL_ADDRESS: 'prl1pabc',
+      MDL_ADDRESS: '',
       WORKER: 'rig9',
       PEARL_DIFFICULTY: '1000',
     });
   });
 
   test('applies defaults and keeps an explicit empty worker', () => {
-    expect(buildEnv()).toEqual({ PRL_ADDRESS: '', WORKER: 'rig01', PEARL_DIFFICULTY: '524288' });
+    expect(buildEnv()).toEqual({ PRL_ADDRESS: '', MDL_ADDRESS: '', WORKER: 'rig01', PEARL_DIFFICULTY: '524288' });
     expect(buildEnv({ worker: '' }).WORKER).toBe('');
+  });
+
+  test('exposes a valid MDL address to the launcher and drops a bad one', () => {
+    const mdl = 'mdl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
+    expect(buildEnv({ address: 'prl1pabc', mdlAddress: mdl }).MDL_ADDRESS).toBe(mdl);
+    expect(buildEnv({ address: 'prl1pabc', mdlAddress: 'nope' }).MDL_ADDRESS).toBe('');
   });
 });
