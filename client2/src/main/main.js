@@ -350,9 +350,10 @@ function createWindow() {
     width: 620,
     height: 650,
     minWidth: 560,
-    minHeight: 620,
+    minHeight: 560,
     backgroundColor: '#fcfcfb',
     autoHideMenuBar: true,
+    show: false,
     title: 'LLMJob Earn',
     icon: appIcon(),
     webPreferences: {
@@ -362,6 +363,16 @@ function createWindow() {
     },
   });
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+
+  // Size the window to the rendered content so there's no default scrollbar and
+  // no trailing whitespace, whatever the platform chrome / font metrics / DPI.
+  // Do it before showing (window starts hidden) to avoid a resize flash. The
+  // renderer keeps overflow-y:auto, so a transient taller state (update bar,
+  // engine error) still scrolls rather than clipping.
+  win.webContents.on('did-finish-load', () => {
+    fitWindowToContent().finally(() => { if (win && !win.isDestroyed()) win.show(); });
+  });
+  setTimeout(() => { if (win && !win.isDestroyed() && !win.isVisible()) win.show(); }, 1500);
 
   // Right-click cut/copy/paste — Electron has no default context menu, so
   // pasting a payout address (or copying it) is otherwise mouse-inaccessible.
@@ -379,6 +390,20 @@ function createWindow() {
     }
     if (items.length && !win.isDestroyed()) Menu.buildFromTemplate(items).popup({ window: win });
   });
+}
+
+// Measure the rendered content (.app) and set the window's content area to it,
+// so the miner view fits exactly. Best-effort — resolves regardless of errors.
+function fitWindowToContent() {
+  if (!win || win.isDestroyed()) return Promise.resolve();
+  return win.webContents
+    .executeJavaScript('Math.ceil((document.querySelector(".app") || document.body).getBoundingClientRect().height)')
+    .then((h) => {
+      if (win && !win.isDestroyed() && Number.isFinite(h) && h > 0) {
+        win.setContentSize(win.getContentSize()[0], h);
+      }
+    })
+    .catch(() => {});
 }
 
 ipcMain.handle('settings:get', () => Object.assign(
