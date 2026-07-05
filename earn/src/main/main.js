@@ -475,7 +475,9 @@ ipcMain.on('app:update:install', () => {
   try {
     // If mining right now, remember to resume automatically after the restart.
     if (stats) persistSettings(Object.assign({}, loadSettings(), { resumeMining: true }));
-    autoUpdater.quitAndInstall();
+    // isSilent=true: install to the existing directory without re-showing the
+    // assisted-installer wizard. isForceRunAfter=true: relaunch the app afterwards.
+    autoUpdater.quitAndInstall(true, true);
   } catch (e) {
     send('miner:log', { level: 'error', line: 'update install failed: ' + e.message });
   }
