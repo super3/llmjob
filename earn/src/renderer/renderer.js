@@ -40,6 +40,7 @@
     updateInstall: $('update-install'),
     appVersion: $('app-version'),
     btnCheckUpdate: $('btn-check-update'),
+    updateStatus: $('update-status'),
   };
 
   const state = { mining: false, view: 'miner', address: '', gpu: '' };
@@ -296,15 +297,20 @@
     });
     if (api.onUpdate) api.onUpdate((s) => {
       if (!s) return;
-      el.updateBar.hidden = !s.show;
+      // Check result shows in the Settings → Software Update section, by the button.
+      el.updateStatus.hidden = !s.show;
+      el.updateStatus.textContent = s.text;
+      el.updateStatus.classList.toggle('err', !!s.error);
+      // The top bar is reserved for the actionable "Restart & update" prompt, so
+      // an update that finished downloading is visible app-wide (even outside Settings).
+      el.updateBar.hidden = !s.ready;
       el.updateText.textContent = s.text;
-      el.updateBar.classList.toggle('err', !!s.error);
       el.updateInstall.hidden = !s.ready;
       // Re-enable the manual "Check for updates" button once the check resolves.
       if (s.phase !== 'checking') { el.btnCheckUpdate.disabled = false; el.btnCheckUpdate.textContent = 'Check for updates'; }
-      // Auto-dismiss the transient "up to date" / dev results after a few seconds.
+      // Auto-dismiss the transient "you're up to date" result after a few seconds.
       if (updateDismiss) { clearTimeout(updateDismiss); updateDismiss = null; }
-      if (s.transient) updateDismiss = setTimeout(() => { el.updateBar.hidden = true; }, 5000);
+      if (s.transient) updateDismiss = setTimeout(() => { el.updateStatus.hidden = true; }, 5000);
     });
     if (api.getVersion) api.getVersion().then((v) => { if (v) el.appVersion.textContent = 'v' + v; });
     renderView();
