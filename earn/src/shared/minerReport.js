@@ -13,6 +13,8 @@ function buildMinerReport(settings, snap) {
     gpu: n.gpu || null,
     hashrate: Number(n.total) || 0,
     accepted: Number(n.accepted) || 0,
+    vramUsedMb: Number(n.vramUsedMb) || 0,
+    vramTotalMb: Number(n.vramTotalMb) || 0,
   };
 }
 

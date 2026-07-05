@@ -69,18 +69,20 @@ describe('MinerService (db)', () => {
     expect(row.region).toBeNull();
   });
 
-  test('upserts on repeat and clamps/floors the numbers', async () => {
+  test('upserts on repeat and clamps/floors the numbers, storing VRAM', async () => {
     await service.reportMiner({ address: ADDR.a, worker: 'rig01', gpu: 'RTX 4090', region: 'us1', hashrate: 100, accepted: 5 });
-    await service.reportMiner({ address: ADDR.a, worker: 'rig01', gpu: 'RTX 4090', hashrate: 5e6, accepted: 9.9 });
+    await service.reportMiner({ address: ADDR.a, worker: 'rig01', gpu: 'RTX 4090', hashrate: 5e6, accepted: 9.9, vramUsedMb: 4096, vramTotalMb: 24564 });
     expect(await count()).toBe(1);
     const row = (await db.query('SELECT * FROM miners', [])).rows[0];
     expect(Number(row.hashrate)).toBe(1e6);   // clamped to MAX_HASHRATE
     expect(Number(row.accepted)).toBe(9);      // floored
+    expect(Number(row.vram_used)).toBe(4096);  // upserted
+    expect(Number(row.vram_total)).toBe(24564);
   });
 
-  test('getPublicMiners groups workers by address, sorts by hashrate, and aggregates', async () => {
-    await service.reportMiner({ address: ADDR.a, worker: 'rig01', gpu: 'NVIDIA GeForce RTX 4090', hashrate: 100, accepted: 5 });
-    await service.reportMiner({ address: ADDR.a, worker: 'rig02', hashrate: 50, accepted: 3 }); // no gpu
+  test('getPublicMiners groups workers by address, sorts by hashrate, and aggregates (incl. VRAM)', async () => {
+    await service.reportMiner({ address: ADDR.a, worker: 'rig01', gpu: 'NVIDIA GeForce RTX 4090', hashrate: 100, accepted: 5, vramUsedMb: 4096, vramTotalMb: 24564 });
+    await service.reportMiner({ address: ADDR.a, worker: 'rig02', hashrate: 50, accepted: 3, vramUsedMb: 3000, vramTotalMb: 24564 }); // no gpu
     await service.reportMiner({ address: ADDR.b, worker: 'rig01', gpu: 'NVIDIA GeForce RTX 3090', hashrate: 200, accepted: 10 });
     await service.reportMiner({ address: ADDR.c, worker: 'rig01', hashrate: 0, accepted: 0 }); // no gpu, zero hashrate
 
@@ -91,7 +93,12 @@ describe('MinerService (db)', () => {
     expect(out.miners.map((m) => m.addr)).toEqual([ADDR.b, ADDR.a, ADDR.c]); // sorted by hashrate desc
 
     const a = out.miners.find((m) => m.addr === ADDR.a);
-    expect(a).toMatchObject({ gpu: 'NVIDIA GeForce RTX 4090', hash: 150, workers: 2, accepted: 8, last: 'just now' });
+    expect(a).toMatchObject({
+      gpu: 'NVIDIA GeForce RTX 4090', hash: 150, workers: 2, accepted: 8, last: 'just now',
+      vramUsedMb: 7096, vramTotalMb: 49128, // summed across the two workers
+    });
+    const b = out.miners.find((m) => m.addr === ADDR.b);
+    expect(b).toMatchObject({ vramUsedMb: 0, vramTotalMb: 0 }); // no VRAM reported → zeros
     expect(out.miners.find((m) => m.addr === ADDR.c).gpu).toBe('—'); // fallback when no worker reports a gpu
   });
 

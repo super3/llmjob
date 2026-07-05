@@ -80,9 +80,10 @@
   .nt-top .ttl { font-weight: 700; font-size: 16px; letter-spacing: -.01em; }
   .nt-top .upd { font-size: 12px; color: #a7abb2; font-family: "IBM Plex Mono", monospace; }
   .nt-scroll { overflow-x: auto; }
-  .nt-cols, .miner-row { display: grid; grid-template-columns: 44px 250px minmax(0, 1fr) 120px 100px; gap: 16px; align-items: center; min-width: 720px; }
+  .nt-cols, .miner-row { display: grid; grid-template-columns: 44px 250px minmax(0, 1fr) 120px 120px 100px; gap: 16px; align-items: center; min-width: 820px; }
   .nt-cols { padding: 11px 22px; border-bottom: 1px solid #efeee8; font-size: 11.5px; color: var(--muted-3); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
-  .nt-cols .r, .mr-hash, .mr-last { text-align: right; }
+  .nt-cols .r, .mr-vram, .mr-hash, .mr-last { text-align: right; }
+  .mr-vram { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: #6b7077; }
   .miner-row { padding: 13px 22px; border-bottom: 1px solid #f4f3ee; }
   .mr-rank { font-family: "IBM Plex Mono", monospace; font-size: 13px; color: var(--muted-3); }
   .mr-addr { display: flex; align-items: center; gap: 10px; min-width: 0; }
@@ -167,7 +168,7 @@
     </div>
     <div class="nt-scroll">
       <div class="nt-cols">
-        <div>#</div><div>Address</div><div>GPU</div><div class="r">Hashrate</div><div class="r">Last seen</div>
+        <div>#</div><div>Address</div><div>GPU</div><div class="r">VRAM</div><div class="r">Hashrate</div><div class="r">Last seen</div>
       </div>
       <div id="miners"></div>
     </div>
@@ -200,6 +201,14 @@
     // Truncate the middle of the payout address for a bit of anonymity.
     function shortAddr(a) { a = String(a); return a.length > 30 ? a.slice(0, 18) + '…' + a.slice(-10) : a; }
     function setText(id, v) { const el = document.getElementById(id); if (el) el.textContent = v; }
+    // VRAM as "used / total GB" (from MB); "—" when total is unknown (non-NVIDIA
+    // rig or an older client that doesn't report it).
+    function fmtVram(usedMb, totalMb) {
+      const t = Number(totalMb) || 0;
+      if (t <= 0) return '—';
+      const gb = (mb) => (Math.round((Math.max(0, Number(mb) || 0) / 1024) * 10) / 10).toString();
+      return gb(usedMb) + ' / ' + gb(t) + ' GB';
+    }
 
     function render(miners) {
       const rows = miners || [];
@@ -213,6 +222,7 @@
               '<div class="mr-rank">' + (i + 1) + '</div>' +
               '<div class="mr-addr"><span class="dot"></span><span class="a">' + esc(shortAddr(m.addr)) + '</span></div>' +
               '<div class="mr-gpu">' + esc(m.gpu) + '</div>' +
+              '<div class="mr-vram">' + fmtVram(m.vramUsedMb, m.vramTotalMb) + '</div>' +
               '<div class="mr-hash">' + Number(m.hash).toFixed(1) + ' TH/s</div>' +
               '<div class="mr-last">' + esc(m.last) + '</div>' +
             '</div>'
