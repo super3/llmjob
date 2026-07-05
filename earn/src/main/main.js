@@ -473,6 +473,8 @@ ipcMain.handle('app:version', () => app.getVersion());
 ipcMain.on('app:update:check', () => checkForUpdate());
 ipcMain.on('app:update:install', () => {
   try {
+    // If mining right now, remember to resume automatically after the restart.
+    if (stats) persistSettings(Object.assign({}, loadSettings(), { resumeMining: true }));
     autoUpdater.quitAndInstall();
   } catch (e) {
     send('miner:log', { level: 'error', line: 'update install failed: ' + e.message });
