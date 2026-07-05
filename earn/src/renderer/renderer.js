@@ -246,6 +246,7 @@
         el.setRegion.appendChild(opt);
       });
     }
+    let resumeMining = false;
     if (api.getSettings) {
       const s = await api.getSettings();
       state.address = s.address || '';
@@ -254,6 +255,8 @@
       el.setRegion.value = s.region || 'us2';
       el.setDifficulty.value = s.difficulty || 524288;
       el.setMdl.value = s.mdlAddress || '';
+      // Set when "Update & restart" was clicked while mining — resume after launch.
+      resumeMining = !!(s.resumeMining && isValid(state.address));
     }
     renderMdlNote();
     if (api.detectGpu) {
@@ -327,6 +330,10 @@
     // fresh (shares get credited as mining continues).
     refreshBalance();
     setInterval(refreshBalance, BAL_REFRESH_MS);
+
+    // Resume mining automatically if we restarted to install an update mid-mine.
+    // start() persists fresh settings (without the flag), so it self-clears.
+    if (resumeMining) start();
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
