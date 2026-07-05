@@ -15,23 +15,33 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Build and deploy are split into separate jobs so that if the deploy step
+  # fails (Pages/Actions API hiccups are common) you can re-run *only* the
+  # deploy job. Re-running a single combined job would upload the
+  # "github-pages" artifact a second time, leaving two artifacts of that name
+  # in the run — which makes actions/deploy-pages abort with
+  # "Multiple artifacts named github-pages were unexpectedly found".
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+
   deploy:
+    needs: build
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        
-      - name: Setup Pages
-        uses: actions/configure-pages@v4
-        
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: '.'
-          
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
