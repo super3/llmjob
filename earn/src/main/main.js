@@ -467,18 +467,6 @@ function fitWindowToContent() {
 }
 
 // ── Local LLM (llama.cpp llama-server), run alongside the miner ─────────────
-// Free GPU VRAM in MB via nvidia-smi (NVIDIA drivers required); used to size the
-// model's GPU offload so it co-runs with the miner. Never rejects.
-function detectFreeVram() {
-  return new Promise((resolve) => {
-    execFile('nvidia-smi', ['--query-gpu=memory.free', '--format=csv,noheader,nounits'],
-      { timeout: 5000 },
-      (err, stdout) => {
-        const mb = err ? NaN : parseInt(String(stdout).split(/\r?\n/)[0], 10);
-        resolve(Number.isFinite(mb) ? mb : null);
-      });
-  });
-}
 
 function sendLlmStatus() { send('llm:status', llmStatus); }
 
@@ -515,8 +503,12 @@ async function startLlm(reserveMb) {
     return;
   }
 
-  const freeMb = await detectFreeVram();
-  const nGpuLayers = freeMb == null ? LLM.model.layers : computeGpuLayers(freeMb, LLM.model, reserveMb || 0);
+  // Size the GPU offload from the free VRAM (total − used, via the shared
+  // detectVram); full offload when VRAM can't be read (non-NVIDIA / no driver).
+  const vram = await detectVram();
+  const nGpuLayers = vram
+    ? computeGpuLayers(vram.totalMb - vram.usedMb, LLM.model, reserveMb || 0)
+    : LLM.model.layers;
 
   llm = new LlmManager({ spawn });
   llm.on('log', (l) => send('miner:log', l));
