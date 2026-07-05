@@ -35,9 +35,6 @@
     mdlNote: $('mdl-note'),
     logTerm: $('log-term'),
     engineStatus: $('engine-status'),
-    updateBar: $('update-bar'),
-    updateText: $('update-text'),
-    updateInstall: $('update-install'),
     appVersion: $('app-version'),
     btnCheckUpdate: $('btn-check-update'),
     updateStatus: $('update-status'),
@@ -48,6 +45,7 @@
   const BAL_REFRESH_MS = 60000; // re-poll the pool balance once a minute
   let balDebounce = null;
   let updateDismiss = null; // timer to auto-hide a transient update message
+  let updateReady = false;  // an update is downloaded — the button installs + restarts
 
   const ADDR_RE = /^prl1p[0-9a-z]{20,80}$/i;
   const MDL_RE = /^mdl1p[0-9a-z]{20,80}$/i;
@@ -209,8 +207,8 @@
     el.setMdl.addEventListener('input', renderMdlNote);
     el.btnStart.addEventListener('click', start);
     el.btnStop.addEventListener('click', stop);
-    el.updateInstall.addEventListener('click', () => { if (api.installUpdate) api.installUpdate(); });
     el.btnCheckUpdate.addEventListener('click', () => {
+      if (updateReady) { if (api.installUpdate) api.installUpdate(); return; }
       if (!api.checkForUpdate) return;
       el.btnCheckUpdate.disabled = true;
       el.btnCheckUpdate.textContent = 'Checking…';
@@ -297,18 +295,25 @@
     });
     if (api.onUpdate) api.onUpdate((s) => {
       if (!s) return;
-      // Check result shows inline next to the button. During 'checking' the
-      // button itself reads "Checking…", so the inline line only shows the result.
+      // Everything lives in the Software Update section (no top bar). The inline
+      // line shows the result/progress; during 'checking' the button reads
+      // "Checking…" so the inline line stays hidden.
       el.updateStatus.hidden = !s.show || s.phase === 'checking';
       el.updateStatus.textContent = s.text;
       el.updateStatus.classList.toggle('err', !!s.error);
-      // The top bar is reserved for the actionable "Restart & update" prompt, so
-      // an update that finished downloading is visible app-wide (even outside Settings).
-      el.updateBar.hidden = !s.ready;
-      el.updateText.textContent = s.text;
-      el.updateInstall.hidden = !s.ready;
-      // Re-enable the manual "Check for updates" button once the check resolves.
-      if (s.phase !== 'checking') { el.btnCheckUpdate.disabled = false; el.btnCheckUpdate.textContent = 'Check for updates'; }
+      // When an update is downloaded, the button becomes the "Update & restart"
+      // action; otherwise (once a check resolves) it's back to "Check for updates".
+      if (s.ready) {
+        updateReady = true;
+        el.btnCheckUpdate.disabled = false;
+        el.btnCheckUpdate.textContent = 'Update & restart';
+        el.btnCheckUpdate.classList.add('ready');
+      } else if (s.phase !== 'checking') {
+        updateReady = false;
+        el.btnCheckUpdate.disabled = false;
+        el.btnCheckUpdate.textContent = 'Check for updates';
+        el.btnCheckUpdate.classList.remove('ready');
+      }
       // Auto-dismiss the transient "you're up to date" result after a few seconds.
       if (updateDismiss) { clearTimeout(updateDismiss); updateDismiss = null; }
       if (s.transient) updateDismiss = setTimeout(() => { el.updateStatus.hidden = true; }, 5000);
