@@ -3,19 +3,21 @@
 const { buildMinerReport } = require('../src/shared/minerReport');
 
 describe('buildMinerReport', () => {
-  test('maps settings + snapshot into the ping payload', () => {
+  test('maps settings + snapshot into the ping payload, including VRAM', () => {
     expect(buildMinerReport(
       { address: '  prl1pabc ', worker: 'rig9', region: 'eu1' },
-      { gpu: 'NVIDIA GeForce RTX 4090', total: 285.8, accepted: 5 }
+      { gpu: 'NVIDIA GeForce RTX 4090', total: 285.8, accepted: 5, vramUsedMb: 4096, vramTotalMb: 24564 }
     )).toEqual({
       address: 'prl1pabc', worker: 'rig9', region: 'eu1',
       gpu: 'NVIDIA GeForce RTX 4090', hashrate: 285.8, accepted: 5,
+      vramUsedMb: 4096, vramTotalMb: 24564,
     });
   });
 
   test('applies defaults when called with nothing', () => {
     expect(buildMinerReport()).toEqual({
       address: '', worker: 'rig01', region: 'us2', gpu: null, hashrate: 0, accepted: 0,
+      vramUsedMb: 0, vramTotalMb: 0,
     });
   });
 

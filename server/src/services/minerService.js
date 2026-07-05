@@ -10,6 +10,7 @@ const OFFLINE_THRESHOLD = 5 * 60 * 1000;   // 5 minutes
 const PRUNE_TTL = 90 * 60 * 1000;          // 90 minutes
 const ADDRESS_RE = /^prl1p[0-9a-z]{20,80}$/i;
 const MAX_HASHRATE = 1e6;                  // TH/s sanity clamp
+const MAX_VRAM_MB = 1e6;                   // VRAM MB sanity clamp (~1 TB)
 
 // Stable per-(address, worker) id.
 function minerFingerprint(address, worker) {
@@ -52,16 +53,19 @@ class MinerService {
     const region = input.region ? String(input.region).slice(0, 16) : null;
     const hashrate = clampNum(input.hashrate, MAX_HASHRATE);
     const accepted = Math.floor(clampNum(input.accepted));
+    const vramUsed = clampNum(input.vramUsedMb, MAX_VRAM_MB);
+    const vramTotal = clampNum(input.vramTotalMb, MAX_VRAM_MB);
     const id = minerFingerprint(address, worker);
     const now = Date.now();
 
     await this.db.query(
-      `INSERT INTO miners (id, address, worker, gpu, region, hashrate, accepted, first_seen, last_seen)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
+      `INSERT INTO miners (id, address, worker, gpu, region, hashrate, accepted, vram_used, vram_total, first_seen, last_seen)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
        ON CONFLICT (id) DO UPDATE SET
          gpu = EXCLUDED.gpu, region = EXCLUDED.region, hashrate = EXCLUDED.hashrate,
-         accepted = EXCLUDED.accepted, last_seen = EXCLUDED.last_seen`,
-      [id, address, worker, gpu, region, hashrate, accepted, now]
+         accepted = EXCLUDED.accepted, vram_used = EXCLUDED.vram_used,
+         vram_total = EXCLUDED.vram_total, last_seen = EXCLUDED.last_seen`,
+      [id, address, worker, gpu, region, hashrate, accepted, vramUsed, vramTotal, now]
     );
     return { success: true, id };
   }
@@ -77,12 +81,14 @@ class MinerService {
     for (const row of r.rows) {
       let g = byAddr.get(row.address);
       if (!g) {
-        g = { addr: row.address, gpu: row.gpu || '—', hash: 0, workers: 0, accepted: 0, lastSeen: 0 };
+        g = { addr: row.address, gpu: row.gpu || '—', hash: 0, workers: 0, accepted: 0, vramUsed: 0, vramTotal: 0, lastSeen: 0 };
         byAddr.set(row.address, g);
       }
       g.hash += Number(row.hashrate) || 0;
       g.workers += 1;
       g.accepted += Number(row.accepted) || 0;
+      g.vramUsed += Number(row.vram_used) || 0;
+      g.vramTotal += Number(row.vram_total) || 0;
       if (row.gpu) g.gpu = row.gpu;
       g.lastSeen = Math.max(g.lastSeen, Number(row.last_seen));
     }
@@ -90,7 +96,9 @@ class MinerService {
     const miners = Array.from(byAddr.values())
       .map((g) => ({
         addr: g.addr, gpu: g.gpu, hash: +g.hash.toFixed(1),
-        workers: g.workers, accepted: g.accepted, last: formatAgo(now - g.lastSeen)
+        workers: g.workers, accepted: g.accepted,
+        vramUsedMb: Math.round(g.vramUsed), vramTotalMb: Math.round(g.vramTotal),
+        last: formatAgo(now - g.lastSeen)
       }))
       .sort((a, b) => b.hash - a.hash);
 

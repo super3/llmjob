@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS miners (
   region text,
   hashrate double precision,
   accepted bigint,
+  vram_used double precision,
+  vram_total double precision,
   first_seen bigint,
   last_seen bigint
 );

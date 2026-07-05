@@ -4,9 +4,9 @@ const MinerService = require('../services/minerService');
 // this is public leaderboard data validated by payout-address format).
 async function pingMiner(req, res) {
   try {
-    const { address, worker, gpu, region, hashrate, accepted } = req.body;
+    const { address, worker, gpu, region, hashrate, accepted, vramUsedMb, vramTotalMb } = req.body;
     const service = new MinerService(req.app.locals.db);
-    const result = await service.reportMiner({ address, worker, gpu, region, hashrate, accepted });
+    const result = await service.reportMiner({ address, worker, gpu, region, hashrate, accepted, vramUsedMb, vramTotalMb });
     if (result.error) {
       return res.status(400).json({ error: result.error });
     }

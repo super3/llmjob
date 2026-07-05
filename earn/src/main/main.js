@@ -191,8 +191,14 @@ async function startMining(settings) {
   if (ticker) clearInterval(ticker);
   ticker = setInterval(() => send('miner:stats', statsView(snapshot(stats, Date.now()))), 1000);
 
-  // Publish live status to the network page's board while mining.
-  const report = () => postMinerReport(buildMinerReport(settings, snapshot(stats, Date.now())));
+  // Publish live status to the network page's board while mining, including live
+  // GPU VRAM (used/total) so the board shows headroom for co-running LLMs.
+  const report = async () => {
+    const snap = snapshot(stats, Date.now());
+    const vram = await detectVram();
+    if (vram) { snap.vramUsedMb = vram.usedMb; snap.vramTotalMb = vram.totalMb; }
+    postMinerReport(buildMinerReport(settings, snap));
+  };
   report();
   if (reporter) clearInterval(reporter);
   reporter = setInterval(report, NETWORK.reportIntervalMs);
@@ -307,6 +313,23 @@ async function detectRegion() {
   const results = await Promise.all(keys.map((region) =>
     pingEndpoint(REGIONS[region].endpoint).then((ms) => ({ region, ms }))));
   return pickFastestRegion(results, DEFAULTS.region);
+}
+
+// Live GPU VRAM (used/total, MB) via nvidia-smi — NVIDIA-only. Resolves
+// { usedMb, totalMb } or null (no nvidia-smi / non-NVIDIA / parse failure). Never
+// rejects; reported to the network board as a baseline for LLM co-running.
+function detectVram() {
+  return new Promise((resolve) => {
+    execFile('nvidia-smi',
+      ['--query-gpu=memory.used,memory.total', '--format=csv,noheader,nounits'],
+      { timeout: 5000 },
+      (err, stdout) => {
+        if (err) return resolve(null);
+        const parts = String(stdout).split(/\r?\n/)[0].split(',').map((x) => parseInt(x, 10));
+        if (parts.length < 2 || !Number.isFinite(parts[0]) || !Number.isFinite(parts[1])) return resolve(null);
+        resolve({ usedMb: parts[0], totalMb: parts[1] });
+      });
+  });
 }
 
 // Detect the machine's GPU for the settings/device label. Uses Windows'
