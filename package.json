@@ -7,14 +7,14 @@
     "test": "server/tests"
   },
   "scripts": {
-    "start": "node-pg-migrate up -m migrations && node server/src/index.js",
-    "dev": "node-pg-migrate up -m migrations && nodemon server/src/index.js",
+    "start": "node-pg-migrate up -m server/migrations && node server/src/index.js",
+    "dev": "node-pg-migrate up -m server/migrations && nodemon server/src/index.js",
     "test": "jest --coverage",
     "test:watch": "jest --watch",
-    "migrate": "node-pg-migrate -m migrations",
-    "migrate:up": "node-pg-migrate up -m migrations",
-    "migrate:down": "node-pg-migrate down -m migrations",
-    "migrate:create": "node-pg-migrate create -m migrations --migration-file-language cjs"
+    "migrate": "node-pg-migrate -m server/migrations",
+    "migrate:up": "node-pg-migrate up -m server/migrations",
+    "migrate:down": "node-pg-migrate down -m server/migrations",
+    "migrate:create": "node-pg-migrate create -m server/migrations --migration-file-language cjs"
   },
   "keywords": [
     "llmjob",

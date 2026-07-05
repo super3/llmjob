@@ -52,7 +52,7 @@ npm run dev
 ### Database migrations
 
 Schema is managed with [node-pg-migrate](https://github.com/salsita/node-pg-migrate).
-Migrations live in `migrations/`; `npm start` / `npm run dev` apply them automatically.
+Migrations live in `server/migrations/`; `npm start` / `npm run dev` apply them automatically.
 
 ```bash
 npm run migrate:up                 # apply pending migrations
