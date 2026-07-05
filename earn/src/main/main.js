@@ -350,20 +350,46 @@ function detectGpu() {
 // GitHub Releases feed (see build.publish); it only works in a packaged app, so
 // main.js guards the call with app.isPackaged. Downloads happen automatically;
 // the user chooses when to restart via the 'app:update:install' channel.
+let manualUpdateCheck = false; // true while a user-initiated check is in flight
+
 function setupUpdater() {
   const push = (phase, payload) => send('app:update', formatUpdate(phase, payload));
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.on('checking-for-update', () => push('checking'));
-  autoUpdater.on('update-available', (info) => push('available', info));
-  autoUpdater.on('update-not-available', () => push('none'));
+  autoUpdater.on('update-available', (info) => { manualUpdateCheck = false; push('available', info); });
+  // A manual check that finds nothing should say so; the automatic startup check
+  // stays silent (no bar) when already current.
+  autoUpdater.on('update-not-available', () => {
+    if (manualUpdateCheck) { manualUpdateCheck = false; push('latest'); }
+    else push('none');
+  });
   autoUpdater.on('download-progress', (p) => push('progress', p));
   autoUpdater.on('update-downloaded', (info) => push('ready', info));
   autoUpdater.on('error', (err) => {
+    manualUpdateCheck = false;
     push('error');
     send('miner:log', { level: 'error', line: 'update error: ' + (err && err.message ? err.message : err) });
   });
   autoUpdater.checkForUpdates().catch((e) => {
+    send('miner:log', { level: 'error', line: 'update check failed: ' + e.message });
+  });
+}
+
+// User-initiated "Check for updates". In a dev/unpackaged run the real updater
+// isn't wired, so walk the UI through checking → up-to-date so the button still
+// gives feedback (the installed app runs a real check below).
+function checkForUpdate() {
+  if (!app.isPackaged) {
+    send('app:update', formatUpdate('checking'));
+    setTimeout(() => send('app:update', formatUpdate('latest')), 700);
+    return;
+  }
+  manualUpdateCheck = true;
+  send('app:update', formatUpdate('checking'));
+  autoUpdater.checkForUpdates().catch((e) => {
+    manualUpdateCheck = false;
+    send('app:update', formatUpdate('error'));
     send('miner:log', { level: 'error', line: 'update check failed: ' + e.message });
   });
 }
@@ -443,6 +469,8 @@ ipcMain.on('miner:start', (_e, settings) => {
 });
 ipcMain.on('miner:stop', () => stopMining());
 ipcMain.on('open-external', (_e, url) => { shell.openExternal(url); });
+ipcMain.handle('app:version', () => app.getVersion());
+ipcMain.on('app:update:check', () => checkForUpdate());
 ipcMain.on('app:update:install', () => {
   try {
     autoUpdater.quitAndInstall();

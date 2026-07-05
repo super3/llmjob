@@ -68,6 +68,12 @@ describe('formatUpdate', () => {
     expect(formatUpdate('none')).toEqual({ phase: 'none', text: '', show: false });
   });
 
+  test('latest is a transient "up to date" message', () => {
+    expect(formatUpdate('latest')).toEqual({
+      phase: 'latest', text: 'You’re on the latest version', show: true, transient: true,
+    });
+  });
+
   test('error flags a fault', () => {
     expect(formatUpdate('error')).toEqual({
       phase: 'error', text: 'Update check failed — see Logs.', show: true, error: true,

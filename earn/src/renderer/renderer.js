@@ -28,7 +28,6 @@
     viewSettings: $('view-settings'),
     viewLogs: $('view-logs'),
     deviceLabel: $('device-label'),
-    setDevice: $('set-device'),
     setWorker: $('set-worker'),
     setRegion: $('set-region'),
     setDifficulty: $('set-difficulty'),
@@ -36,15 +35,17 @@
     mdlNote: $('mdl-note'),
     logTerm: $('log-term'),
     engineStatus: $('engine-status'),
-    updateBar: $('update-bar'),
-    updateText: $('update-text'),
-    updateInstall: $('update-install'),
+    appVersion: $('app-version'),
+    btnCheckUpdate: $('btn-check-update'),
+    updateStatus: $('update-status'),
   };
 
   const state = { mining: false, view: 'miner', address: '', gpu: '' };
 
   const BAL_REFRESH_MS = 60000; // re-poll the pool balance once a minute
   let balDebounce = null;
+  let updateDismiss = null; // timer to auto-hide a transient update message
+  let updateReady = false;  // an update is downloaded — the button installs + restarts
 
   const ADDR_RE = /^prl1p[0-9a-z]{20,80}$/i;
   const MDL_RE = /^mdl1p[0-9a-z]{20,80}$/i;
@@ -206,7 +207,13 @@
     el.setMdl.addEventListener('input', renderMdlNote);
     el.btnStart.addEventListener('click', start);
     el.btnStop.addEventListener('click', stop);
-    el.updateInstall.addEventListener('click', () => { if (api.installUpdate) api.installUpdate(); });
+    el.btnCheckUpdate.addEventListener('click', () => {
+      if (updateReady) { if (api.installUpdate) api.installUpdate(); return; }
+      if (!api.checkForUpdate) return;
+      el.btnCheckUpdate.disabled = true;
+      el.btnCheckUpdate.textContent = 'Checking…';
+      api.checkForUpdate();
+    });
     el.btnSettings.addEventListener('click', () => {
       state.view = state.view === 'settings' ? 'miner' : 'settings';
       renderView();
@@ -253,8 +260,7 @@
       const gpu = await api.detectGpu();
       if (gpu) {
         state.gpu = gpu;
-        if (!state.mining) el.deviceLabel.textContent = gpu;
-        el.setDevice.value = gpu; // read-only display of the auto-detected card
+        if (!state.mining) el.deviceLabel.textContent = gpu; // shown on the main screen
         // Auto-match the recommended static difficulty to the detected card,
         // unless the user has saved a non-default value.
         if (api.difficultyForCard && Number(el.setDifficulty.value) === 524288) {
@@ -289,11 +295,30 @@
     });
     if (api.onUpdate) api.onUpdate((s) => {
       if (!s) return;
-      el.updateBar.hidden = !s.show;
-      el.updateText.textContent = s.text;
-      el.updateBar.classList.toggle('err', !!s.error);
-      el.updateInstall.hidden = !s.ready;
+      // Everything lives in the Software Update section (no top bar). The inline
+      // line shows the result/progress; during 'checking' the button reads
+      // "Checking…" so the inline line stays hidden.
+      el.updateStatus.hidden = !s.show || s.phase === 'checking';
+      el.updateStatus.textContent = s.text;
+      el.updateStatus.classList.toggle('err', !!s.error);
+      // When an update is downloaded, the button becomes the "Update & restart"
+      // action; otherwise (once a check resolves) it's back to "Check for updates".
+      if (s.ready) {
+        updateReady = true;
+        el.btnCheckUpdate.disabled = false;
+        el.btnCheckUpdate.textContent = 'Update & restart';
+        el.btnCheckUpdate.classList.add('ready');
+      } else if (s.phase !== 'checking') {
+        updateReady = false;
+        el.btnCheckUpdate.disabled = false;
+        el.btnCheckUpdate.textContent = 'Check for updates';
+        el.btnCheckUpdate.classList.remove('ready');
+      }
+      // Auto-dismiss the transient "you're up to date" result after a few seconds.
+      if (updateDismiss) { clearTimeout(updateDismiss); updateDismiss = null; }
+      if (s.transient) updateDismiss = setTimeout(() => { el.updateStatus.hidden = true; }, 5000);
     });
+    if (api.getVersion) api.getVersion().then((v) => { if (v) el.appVersion.textContent = 'v' + v; });
     renderView();
     renderMiningState();
     renderBalanceMeta();

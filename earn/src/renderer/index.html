@@ -20,12 +20,6 @@
     </button>
   </div>
 
-  <!-- UPDATE BAR -->
-  <div id="update-bar" class="update-bar" hidden>
-    <span id="update-text" class="update-text"></span>
-    <button id="update-install" class="update-install" type="button" hidden>Restart &amp; update</button>
-  </div>
-
   <!-- MINER (setup / running) -->
   <section id="view-miner">
     <div class="field-label">
@@ -64,14 +58,6 @@
 
   <!-- SETTINGS -->
   <section id="view-settings" hidden>
-    <div class="settings-section">Mining Device</div>
-    <div class="device-card">
-      <div class="device-left">
-        <span class="device-ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7" width="10" height="10" rx="2"></rect><path d="M10 2v3M14 2v3M10 19v3M14 19v3M2 10h3M2 14h3M19 10h3M19 14h3"></path></svg></span>
-        <input id="set-device" class="device-input" type="text" readonly placeholder="Detecting GPU…" />
-      </div>
-    </div>
-
     <div class="settings-section">Connection</div>
     <div class="settings-rows">
       <div class="settings-row"><span class="rk">Worker name</span><input id="set-worker" class="rv-input" type="text" /></div>
@@ -84,6 +70,17 @@
     <div class="settings-section">Merge Mining <span class="badge-mdl">MDL</span></div>
     <input id="set-mdl" class="field-box mdl-input" type="text" spellcheck="false" placeholder="Paste your mdl1… address (optional)" />
     <p id="mdl-note" class="settings-note">Earn <b>MDL</b> on the exact hashrate already mining Pearl — same shares, no extra power or hardware. Leave blank to mine Pearl only.</p>
+
+    <div class="settings-section">Software Update</div>
+    <div class="settings-rows">
+      <div class="settings-row">
+        <span class="rk">Version <b class="mono" id="app-version">—</b></span>
+        <span class="update-actions">
+          <span id="update-status" class="update-status" hidden></span>
+          <button id="btn-check-update" class="update-check-btn" type="button">Check for updates</button>
+        </span>
+      </div>
+    </div>
   </section>
 
   <!-- LOGS -->
