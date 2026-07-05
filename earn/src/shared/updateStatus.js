@@ -12,10 +12,12 @@ function clampPercent(p) {
   return n;
 }
 
-// `phase` is one of: checking | available | progress | ready | none | error.
-// `payload` carries { version } for available/ready and { percent } for progress.
-// Returns { phase, text, show, ready?, error? } — `show` drives the bar's
-// visibility, `ready` reveals the restart button, `error` styles it as a fault.
+// `phase` is one of: checking | available | progress | ready | none | latest |
+// dev | error. `payload` carries { version } for available/ready/latest and
+// { percent } for progress. Returns { phase, text, show, ready?, error?,
+// transient? } — `show` drives the bar's visibility, `ready` reveals the restart
+// button, `error` styles it as a fault, `transient` marks a message the renderer
+// auto-dismisses (the "up to date" / dev results of a manual check).
 function formatUpdate(phase, payload) {
   switch (phase) {
     case 'checking':
@@ -32,6 +34,12 @@ function formatUpdate(phase, payload) {
     }
     case 'none':
       return { phase, text: '', show: false };
+    case 'latest': {
+      const v = payload && payload.version ? ' (v' + payload.version + ')' : '';
+      return { phase, text: 'You’re on the latest version' + v, show: true, transient: true };
+    }
+    case 'dev':
+      return { phase, text: 'Auto-update works in the installed app.', show: true, transient: true };
     case 'error':
       return { phase, text: 'Update check failed — see Logs.', show: true, error: true };
     default:

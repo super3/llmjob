@@ -39,12 +39,15 @@
     updateBar: $('update-bar'),
     updateText: $('update-text'),
     updateInstall: $('update-install'),
+    appVersion: $('app-version'),
+    btnCheckUpdate: $('btn-check-update'),
   };
 
   const state = { mining: false, view: 'miner', address: '', gpu: '' };
 
   const BAL_REFRESH_MS = 60000; // re-poll the pool balance once a minute
   let balDebounce = null;
+  let updateDismiss = null; // timer to auto-hide a transient update message
 
   const ADDR_RE = /^prl1p[0-9a-z]{20,80}$/i;
   const MDL_RE = /^mdl1p[0-9a-z]{20,80}$/i;
@@ -207,6 +210,12 @@
     el.btnStart.addEventListener('click', start);
     el.btnStop.addEventListener('click', stop);
     el.updateInstall.addEventListener('click', () => { if (api.installUpdate) api.installUpdate(); });
+    el.btnCheckUpdate.addEventListener('click', () => {
+      if (!api.checkForUpdate) return;
+      el.btnCheckUpdate.disabled = true;
+      el.btnCheckUpdate.textContent = 'Checking…';
+      api.checkForUpdate();
+    });
     el.btnSettings.addEventListener('click', () => {
       state.view = state.view === 'settings' ? 'miner' : 'settings';
       renderView();
@@ -293,7 +302,13 @@
       el.updateText.textContent = s.text;
       el.updateBar.classList.toggle('err', !!s.error);
       el.updateInstall.hidden = !s.ready;
+      // Re-enable the manual "Check for updates" button once the check resolves.
+      if (s.phase !== 'checking') { el.btnCheckUpdate.disabled = false; el.btnCheckUpdate.textContent = 'Check for updates'; }
+      // Auto-dismiss the transient "up to date" / dev results after a few seconds.
+      if (updateDismiss) { clearTimeout(updateDismiss); updateDismiss = null; }
+      if (s.transient) updateDismiss = setTimeout(() => { el.updateBar.hidden = true; }, 5000);
     });
+    if (api.getVersion) api.getVersion().then((v) => { if (v) el.appVersion.textContent = 'v' + v; });
     renderView();
     renderMiningState();
     renderBalanceMeta();

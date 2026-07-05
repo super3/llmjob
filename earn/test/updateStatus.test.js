@@ -68,6 +68,21 @@ describe('formatUpdate', () => {
     expect(formatUpdate('none')).toEqual({ phase: 'none', text: '', show: false });
   });
 
+  test('latest is a transient "up to date" message, with the version when known', () => {
+    expect(formatUpdate('latest', { version: '0.1.8' })).toEqual({
+      phase: 'latest', text: 'You’re on the latest version (v0.1.8)', show: true, transient: true,
+    });
+    expect(formatUpdate('latest')).toEqual({
+      phase: 'latest', text: 'You’re on the latest version', show: true, transient: true,
+    });
+  });
+
+  test('dev explains auto-update only runs installed', () => {
+    expect(formatUpdate('dev')).toEqual({
+      phase: 'dev', text: 'Auto-update works in the installed app.', show: true, transient: true,
+    });
+  });
+
   test('error flags a fault', () => {
     expect(formatUpdate('error')).toEqual({
       phase: 'error', text: 'Update check failed — see Logs.', show: true, error: true,
