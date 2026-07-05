@@ -3,16 +3,16 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>LLMJob Earn — Pearl (PRL) GUI Miner for Windows</title>
-<meta name="description" content="Free, open-source Pearl (PRL) GUI miner for Windows. No command line — paste your prl1 address and hit Start. Auto-detects GPUs, merge-mines ModelOS (MDL) on the same shares, payouts every 4 hours. LLM co-mining coming soon." />
+<title>LLMJob Earn — Pearl (PRL) GUI Miner for Windows &amp; Linux</title>
+<meta name="description" content="Free, open-source Pearl (PRL) GUI miner for Windows and Linux. No command line — paste your prl1 address and hit Start. Auto-detects GPUs, merge-mines ModelOS (MDL) on the same shares, payouts every 4 hours. LLM co-mining coming soon." />
 
 <!-- Social cards -->
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://llmjob.com/earn.html" />
-<meta property="og:title" content="LLMJob Earn — Pearl (PRL) GUI Miner for Windows" />
+<meta property="og:title" content="LLMJob Earn — Pearl (PRL) GUI Miner for Windows &amp; Linux" />
 <meta property="og:description" content="No command line, no account. Paste your prl1 address, hit Start — auto-detects GPUs and merge-mines PRL + MDL on the same shares." />
 <meta name="twitter:card" content="summary" />
-<meta name="twitter:title" content="LLMJob Earn — Pearl (PRL) GUI Miner for Windows" />
+<meta name="twitter:title" content="LLMJob Earn — Pearl (PRL) GUI Miner for Windows &amp; Linux" />
 <meta name="twitter:description" content="No command line, no account. Paste your prl1 address, hit Start — auto-detects GPUs and merge-mines PRL + MDL on the same shares." />
 
 <script type="application/ld+json">
@@ -20,9 +20,9 @@
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
   "name": "LLMJob Earn",
-  "operatingSystem": "Windows",
+  "operatingSystem": "Windows, Linux",
   "applicationCategory": "UtilitiesApplication",
-  "description": "Open-source GUI miner for Pearl (PRL) on Windows — no command line. Merge-mines ModelOS (MDL) on the same shares.",
+  "description": "Open-source GUI miner for Pearl (PRL) on Windows and Linux — no command line. Merge-mines ModelOS (MDL) on the same shares.",
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
   "downloadUrl": "https://github.com/super3/llmjob/releases/latest",
   "sameAs": "https://github.com/super3/llmjob"
@@ -103,6 +103,20 @@
   .btn-dl:active { transform: translateY(1px); }
   .btn-dl .grid-ic { display: inline-grid; grid-template-columns: 1fr 1fr; gap: 2px; width: 15px; height: 15px; }
   .btn-dl .grid-ic i { background: currentColor; border-radius: 1px; }
+
+  /* download button + platform dropdown */
+  .dl-wrap { position: relative; display: inline-flex; vertical-align: top; }
+  .dl-wrap .btn-dl { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+  .dl-caret { color: #fff; background: var(--accent); border: none; border-left: 1px solid rgba(255,255,255,.28); border-radius: 0 10px 10px 0; padding: 0 13px; display: inline-flex; align-items: center; cursor: pointer; box-shadow: 0 10px 26px -10px rgba(37,99,235,.6); transition: box-shadow .15s ease; font-family: inherit; }
+  .dl-caret:hover { box-shadow: 0 14px 32px -10px rgba(37,99,235,.7); }
+  .dl-caret svg { display: block; transition: transform .15s ease; }
+  .dl-wrap.open .dl-caret svg { transform: rotate(180deg); }
+  .dl-menu { position: absolute; top: calc(100% + 8px); right: 0; min-width: 100%; background: #fff; border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 16px 40px -16px rgba(0,0,0,.28); padding: 6px; z-index: 20; display: none; }
+  .dl-wrap.open .dl-menu { display: block; }
+  .dl-menu a { display: flex; align-items: center; gap: 9px; white-space: nowrap; padding: 10px 14px; border-radius: 7px; color: var(--ink); font-size: 15px; font-weight: 600; text-align: left; }
+  .dl-menu a:hover { background: var(--field); }
+  .dl-menu a .os-ic { width: 15px; height: 15px; flex: 0 0 15px; opacity: .8; }
+  .dl-menu a.is-current { color: var(--accent); }
   .btn-ghost { color: var(--ink); background: #fff; border: 1px solid var(--line); font-size: 16px; font-weight: 600; padding: 14px 26px; border-radius: 10px; display: inline-flex; align-items: center; gap: 9px; transition: border-color .15s ease, background .15s ease; }
   .btn-ghost:hover { border-color: var(--muted-3); background: #fff; }
   .btn-ghost .arr { opacity: .5; }
@@ -255,9 +269,22 @@
   <h1>Earn on your excess compute.</h1>
   <p class="lede">Put the graphics cards you already own to work mining Pearl (PRL).<br>No command line, no account — earning around the clock.</p>
   <div class="hero-cta">
-    <a class="btn-dl" href="https://github.com/super3/llmjob/releases/download/v0.1.11/LLMJob-Earn-Setup-0.1.11.exe" target="_blank" rel="noopener">
-      <span class="grid-ic"><i></i><i></i><i></i><i></i></span>Download for Windows
-    </a>
+    <div class="dl-wrap" data-dl>
+      <a class="btn-dl" data-dl-main href="https://github.com/super3/llmjob/releases/download/v0.1.11/LLMJob-Earn-Setup-0.1.11.exe" target="_blank" rel="noopener">
+        <span class="grid-ic"><i></i><i></i><i></i><i></i></span><span data-dl-label>Download for Windows</span>
+      </a>
+      <button class="dl-caret" type="button" data-dl-toggle aria-label="Choose your platform" aria-haspopup="true" aria-expanded="false">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg>
+      </button>
+      <div class="dl-menu" role="menu">
+        <a role="menuitem" data-dl-os="win" href="https://github.com/super3/llmjob/releases/download/v0.1.11/LLMJob-Earn-Setup-0.1.11.exe" target="_blank" rel="noopener">
+          <svg class="os-ic" viewBox="0 0 24 24" fill="currentColor"><path d="M3 3h8v8H3zM13 3h8v8h-8zM3 13h8v8H3zM13 13h8v8h-8z"></path></svg>Windows
+        </a>
+        <a role="menuitem" data-dl-os="linux" href="https://github.com/super3/llmjob/releases/download/v0.1.11/LLMJob-Earn-0.1.11.AppImage" target="_blank" rel="noopener">
+          <svg class="os-ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c-2.2 0-3.5 1.8-3.5 4.2 0 1.2.1 2 .1 2.8 0 .9-.6 1.6-1.4 2.8-.8 1.1-1.7 2.4-1.7 4 0 .8.3 1.4.8 1.8-.3.4-.5.9-.5 1.4 0 1.5 1.6 2.8 3.6 3.1.7.6 1.6.9 2.5.9s1.8-.3 2.5-.9c2-.3 3.6-1.6 3.6-3.1 0-.5-.2-1-.5-1.4.5-.4.8-1 .8-1.8 0-1.6-.9-2.9-1.7-4-.8-1.2-1.4-1.9-1.4-2.8 0-.8.1-1.6.1-2.8C15.5 3.8 14.2 2 12 2zm-1.4 4.2c.4 0 .7.4.7 1s-.3 1-.7 1-.7-.4-.7-1 .3-1 .7-1zm2.8 0c.4 0 .7.4.7 1s-.3 1-.7 1-.7-.4-.7-1 .3-1 .7-1z"></path></svg>Linux (AppImage)
+        </a>
+      </div>
+    </div>
     <a class="btn-ghost" href="#calculator">Earnings calculator <span class="arr">→</span></a>
   </div>
 </section>
@@ -415,9 +442,22 @@
   <h2>Put your GPUs to work.</h2>
   <p>Start earning on the hardware you already own.</p>
   <div class="cta-dl">
-    <a class="btn-dl" href="https://github.com/super3/llmjob/releases/download/v0.1.11/LLMJob-Earn-Setup-0.1.11.exe" target="_blank" rel="noopener">
-      <span class="grid-ic"><i></i><i></i><i></i><i></i></span>Download for Windows
-    </a>
+    <div class="dl-wrap" data-dl>
+      <a class="btn-dl" data-dl-main href="https://github.com/super3/llmjob/releases/download/v0.1.11/LLMJob-Earn-Setup-0.1.11.exe" target="_blank" rel="noopener">
+        <span class="grid-ic"><i></i><i></i><i></i><i></i></span><span data-dl-label>Download for Windows</span>
+      </a>
+      <button class="dl-caret" type="button" data-dl-toggle aria-label="Choose your platform" aria-haspopup="true" aria-expanded="false">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg>
+      </button>
+      <div class="dl-menu" role="menu">
+        <a role="menuitem" data-dl-os="win" href="https://github.com/super3/llmjob/releases/download/v0.1.11/LLMJob-Earn-Setup-0.1.11.exe" target="_blank" rel="noopener">
+          <svg class="os-ic" viewBox="0 0 24 24" fill="currentColor"><path d="M3 3h8v8H3zM13 3h8v8h-8zM3 13h8v8H3zM13 13h8v8h-8z"></path></svg>Windows
+        </a>
+        <a role="menuitem" data-dl-os="linux" href="https://github.com/super3/llmjob/releases/download/v0.1.11/LLMJob-Earn-0.1.11.AppImage" target="_blank" rel="noopener">
+          <svg class="os-ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c-2.2 0-3.5 1.8-3.5 4.2 0 1.2.1 2 .1 2.8 0 .9-.6 1.6-1.4 2.8-.8 1.1-1.7 2.4-1.7 4 0 .8.3 1.4.8 1.8-.3.4-.5.9-.5 1.4 0 1.5 1.6 2.8 3.6 3.1.7.6 1.6.9 2.5.9s1.8-.3 2.5-.9c2-.3 3.6-1.6 3.6-3.1 0-.5-.2-1-.5-1.4.5-.4.8-1 .8-1.8 0-1.6-.9-2.9-1.7-4-.8-1.2-1.4-1.9-1.4-2.8 0-.8.1-1.6.1-2.8C15.5 3.8 14.2 2 12 2zm-1.4 4.2c.4 0 .7.4.7 1s-.3 1-.7 1-.7-.4-.7-1 .3-1 .7-1zm2.8 0c.4 0 .7.4.7 1s-.3 1-.7 1-.7-.4-.7-1 .3-1 .7-1z"></path></svg>Linux (AppImage)
+        </a>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -436,6 +476,75 @@
 </footer>
 
 <script>
+  /* ---- Download button: auto-detect OS + platform dropdown ---- */
+  (function () {
+    const wraps = document.querySelectorAll('[data-dl]');
+    if (!wraps.length) return;
+
+    const LABELS = { win: 'Download for Windows', linux: 'Download for Linux' };
+
+    // Best guess at the visitor's desktop OS. Only Windows and Linux have
+    // builds, so anything else (macOS, mobile) falls back to Windows — the
+    // dropdown still lets them pick the other. Android's UA also says "linux",
+    // so exclude it explicitly.
+    function detectOS() {
+      const ua = ((navigator.userAgentData && navigator.userAgentData.platform) ||
+        navigator.platform || navigator.userAgent || '').toLowerCase();
+      if (ua.indexOf('android') !== -1) return 'win';
+      if (ua.indexOf('linux') !== -1 || ua.indexOf('cros') !== -1) return 'linux';
+      if (ua.indexOf('win') !== -1) return 'win';
+      return 'win';
+    }
+
+    const os = detectOS();
+
+    wraps.forEach(function (wrap) {
+      const main = wrap.querySelector('[data-dl-main]');
+      const label = wrap.querySelector('[data-dl-label]');
+      const toggle = wrap.querySelector('[data-dl-toggle]');
+      const menu = wrap.querySelector('.dl-menu');
+      const chosen = wrap.querySelector('[data-dl-os="' + os + '"]');
+
+      // Point the primary button at the detected OS's binary.
+      if (chosen && main) main.href = chosen.href;
+      if (label && LABELS[os]) label.textContent = LABELS[os];
+      wrap.querySelectorAll('[data-dl-os]').forEach(function (a) {
+        a.classList.toggle('is-current', a.getAttribute('data-dl-os') === os);
+      });
+
+      function close() { wrap.classList.remove('open'); if (toggle) toggle.setAttribute('aria-expanded', 'false'); }
+      function open() { wrap.classList.add('open'); if (toggle) toggle.setAttribute('aria-expanded', 'true'); }
+
+      if (toggle) {
+        toggle.addEventListener('click', function (e) {
+          e.stopPropagation();
+          if (wrap.classList.contains('open')) close(); else open();
+        });
+      }
+      // A menu pick becomes the new default for the primary button, too.
+      if (menu) {
+        menu.addEventListener('click', function (e) {
+          const a = e.target.closest('[data-dl-os]');
+          if (!a) return;
+          if (main) main.href = a.href;
+          if (label) label.textContent = LABELS[a.getAttribute('data-dl-os')] || label.textContent;
+          wrap.querySelectorAll('[data-dl-os]').forEach(function (x) { x.classList.remove('is-current'); });
+          a.classList.add('is-current');
+          close();
+        });
+      }
+    });
+
+    // Close any open menu on outside click or Escape.
+    document.addEventListener('click', function () {
+      wraps.forEach(function (w) { w.classList.remove('open'); const t = w.querySelector('[data-dl-toggle]'); if (t) t.setAttribute('aria-expanded', 'false'); });
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'Escape') return;
+      wraps.forEach(function (w) { w.classList.remove('open'); const t = w.querySelector('[data-dl-toggle]'); if (t) t.setAttribute('aria-expanded', 'false'); });
+    });
+  })();
+
   /* ---- Live miner mockup (chart + ticking stats) ---- */
   (function () {
     const elTotal = document.getElementById('mk-total');

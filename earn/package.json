@@ -7,7 +7,8 @@
     "start": "electron .",
     "test": "jest",
     "test:watch": "jest --watch",
-    "dist:win": "electron-builder --win"
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux"
   },
   "keywords": ["llmjob", "pearl", "prl", "mining", "alpha-miner", "electron", "gpu"],
   "author": "super3",
@@ -37,6 +38,12 @@
       "allowToChangeInstallationDirectory": true,
       "installerIcon": "src/assets/icon.ico",
       "uninstallerIcon": "src/assets/icon.ico"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "src/assets/icon.png",
+      "category": "Utility",
+      "artifactName": "LLMJob-Earn-${version}.${ext}"
     },
     "publish": [
       { "provider": "github", "owner": "super3", "repo": "llmjob", "releaseType": "release" }
