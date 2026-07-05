@@ -115,6 +115,7 @@
   .chart-card svg { display: block; }
   .mk-stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin-top: 14px; padding-top: 14px; border-top: 1px solid #ebe9e1; }
   .mk-stat .k { font-size: 11.5px; color: var(--muted-2); font-weight: 500; margin-bottom: 4px; }
+  .mk-stat .k .k-short { display: none; }
   .mk-stat .v { font-family: "IBM Plex Mono", monospace; font-size: 17px; font-weight: 600; color: var(--ink-strong); }
   .mk-stat .v.accent { color: var(--accent); }
   .mk-stat .v .day { font-size: 12px; color: #9a9ea6; font-weight: 500; }
@@ -194,6 +195,12 @@
   .foot-links a { color: var(--muted-3); font-size: 14px; }
   .foot-links a:hover { color: var(--muted); }
 
+  /* compact mockup stats on narrow screens: fewer decimals, no seconds, shorter labels */
+  @media (max-width: 520px) {
+    .mk-stat .k .k-full { display: none; }
+    .mk-stat .k .k-short { display: inline; }
+  }
+
   @media (max-width: 760px) {
     .triple { grid-template-columns: 1fr; gap: 40px; }
     .calc { grid-template-columns: 1fr; }
@@ -272,7 +279,7 @@
           <path id="mk-line" d="" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>
         </svg>
         <div class="mk-stats">
-          <div class="mk-stat"><div class="k">Accepted shares</div><div class="v" id="mk-accepted">14,820</div></div>
+          <div class="mk-stat"><div class="k"><span class="k-full">Accepted shares</span><span class="k-short">Shares</span></div><div class="v" id="mk-accepted">14,820</div></div>
           <div class="mk-stat"><div class="k">Uptime</div><div class="v" id="mk-uptime">4h 12m 08s</div></div>
           <div class="mk-stat"><div class="k">Est. earnings</div><div class="v accent"><span id="mk-estday">$6.42</span><span class="day">/day</span></div></div>
         </div>
@@ -423,6 +430,8 @@
 
     const W = 360, H = 56, MIN = 326, MAX = 372;
     const pad = (n) => String(n).padStart(2, '0');
+    // Matches the compact-stats CSS breakpoint above.
+    const mqCompact = window.matchMedia('(max-width: 520px)');
 
     function render() {
       const pts = s.points.length ? s.points : [350];
@@ -435,11 +444,12 @@
       elArea.setAttribute('d', areaPath);
 
       const us = s.uptimeSec, h = Math.floor(us / 3600), m = Math.floor((us % 3600) / 60), sc = us % 60;
+      const compact = mqCompact.matches;
       elTotal.textContent = s.total.toFixed(1);
-      elBal.textContent = s.balance.toFixed(3);
+      elBal.textContent = s.balance.toFixed(compact ? 1 : 3);
       elBalUsd.textContent = '≈ $' + (s.balance * 0.47).toFixed(2);
       elAcc.textContent = s.accepted.toLocaleString();
-      elUp.textContent = h + 'h ' + pad(m) + 'm ' + pad(sc) + 's';
+      elUp.textContent = compact ? h + 'h ' + pad(m) + 'm' : h + 'h ' + pad(m) + 'm ' + pad(sc) + 's';
       elEst.textContent = '$' + (((s.total / 30.79e6) * 1.2e6 * 0.99) * 0.47).toFixed(2);
     }
 
@@ -456,6 +466,7 @@
     }
 
     render();
+    if (mqCompact.addEventListener) mqCompact.addEventListener('change', render);
     const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     if (!reduce) setInterval(tick, 1000);
   })();
