@@ -376,10 +376,15 @@ function setupUpdater() {
   });
 }
 
-// User-initiated "Check for updates". In a dev/unpackaged run the updater isn't
-// wired, so do nothing (hide the bar / reset the button) instead of erroring.
+// User-initiated "Check for updates". In a dev/unpackaged run the real updater
+// isn't wired, so walk the UI through checking → up-to-date so the button still
+// gives feedback (the installed app runs a real check below).
 function checkForUpdate() {
-  if (!app.isPackaged) return send('app:update', formatUpdate('none'));
+  if (!app.isPackaged) {
+    send('app:update', formatUpdate('checking'));
+    setTimeout(() => send('app:update', formatUpdate('latest', { version: app.getVersion() })), 700);
+    return;
+  }
   manualUpdateCheck = true;
   send('app:update', formatUpdate('checking'));
   autoUpdater.checkForUpdates().catch((e) => {

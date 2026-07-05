@@ -28,7 +28,6 @@
     viewSettings: $('view-settings'),
     viewLogs: $('view-logs'),
     deviceLabel: $('device-label'),
-    setDevice: $('set-device'),
     setWorker: $('set-worker'),
     setRegion: $('set-region'),
     setDifficulty: $('set-difficulty'),
@@ -262,8 +261,7 @@
       const gpu = await api.detectGpu();
       if (gpu) {
         state.gpu = gpu;
-        if (!state.mining) el.deviceLabel.textContent = gpu;
-        el.setDevice.value = gpu; // read-only display of the auto-detected card
+        if (!state.mining) el.deviceLabel.textContent = gpu; // shown on the main screen
         // Auto-match the recommended static difficulty to the detected card,
         // unless the user has saved a non-default value.
         if (api.difficultyForCard && Number(el.setDifficulty.value) === 524288) {
