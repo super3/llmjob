@@ -72,4 +72,4 @@ npm run test:watch                 # Run tests in watch mode
 ```
 
 The server requires a `DATABASE_URL` pointing at Postgres; migrations in
-[`migrations/`](migrations) are applied automatically by `npm start` / `npm run dev`.
+[`server/migrations/`](server/migrations) are applied automatically by `npm start` / `npm run dev`.

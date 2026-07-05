@@ -2,7 +2,7 @@
 // Initial schema for the LLMJob backend. The canonical DDL lives in
 // server/src/db.js (SCHEMA) so the same definition is applied both by
 // node-pg-migrate in production and by the in-memory Postgres used in tests.
-const { SCHEMA } = require('../server/src/db');
+const { SCHEMA } = require('../src/db');
 
 exports.shorthands = undefined;
 
