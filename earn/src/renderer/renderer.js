@@ -297,8 +297,9 @@
     });
     if (api.onUpdate) api.onUpdate((s) => {
       if (!s) return;
-      // Check result shows in the Settings → Software Update section, by the button.
-      el.updateStatus.hidden = !s.show;
+      // Check result shows inline next to the button. During 'checking' the
+      // button itself reads "Checking…", so the inline line only shows the result.
+      el.updateStatus.hidden = !s.show || s.phase === 'checking';
       el.updateStatus.textContent = s.text;
       el.updateStatus.classList.toggle('err', !!s.error);
       // The top bar is reserved for the actionable "Restart & update" prompt, so

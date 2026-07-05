@@ -13,8 +13,8 @@ function clampPercent(p) {
 }
 
 // `phase` is one of: checking | available | progress | ready | none | latest |
-// error. `payload` carries { version } for available/ready/latest and { percent }
-// for progress. Returns { phase, text, show, ready?, error?, transient? } —
+// error. `payload` carries { version } for available/ready and { percent } for
+// progress. Returns { phase, text, show, ready?, error?, transient? } —
 // `show` drives the bar's visibility, `ready` reveals the restart button, `error`
 // styles it as a fault, `transient` marks a message the renderer auto-dismisses
 // (the "you're up to date" result of a manual check).
@@ -34,10 +34,8 @@ function formatUpdate(phase, payload) {
     }
     case 'none':
       return { phase, text: '', show: false };
-    case 'latest': {
-      const v = payload && payload.version ? ' (v' + payload.version + ')' : '';
-      return { phase, text: 'You’re on the latest version' + v, show: true, transient: true };
-    }
+    case 'latest':
+      return { phase, text: 'You’re on the latest version', show: true, transient: true };
     case 'error':
       return { phase, text: 'Update check failed — see Logs.', show: true, error: true };
     default:

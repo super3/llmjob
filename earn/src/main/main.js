@@ -361,7 +361,7 @@ function setupUpdater() {
   // A manual check that finds nothing should say so; the automatic startup check
   // stays silent (no bar) when already current.
   autoUpdater.on('update-not-available', () => {
-    if (manualUpdateCheck) { manualUpdateCheck = false; push('latest', { version: app.getVersion() }); }
+    if (manualUpdateCheck) { manualUpdateCheck = false; push('latest'); }
     else push('none');
   });
   autoUpdater.on('download-progress', (p) => push('progress', p));
@@ -382,7 +382,7 @@ function setupUpdater() {
 function checkForUpdate() {
   if (!app.isPackaged) {
     send('app:update', formatUpdate('checking'));
-    setTimeout(() => send('app:update', formatUpdate('latest', { version: app.getVersion() })), 700);
+    setTimeout(() => send('app:update', formatUpdate('latest')), 700);
     return;
   }
   manualUpdateCheck = true;

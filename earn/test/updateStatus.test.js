@@ -68,10 +68,7 @@ describe('formatUpdate', () => {
     expect(formatUpdate('none')).toEqual({ phase: 'none', text: '', show: false });
   });
 
-  test('latest is a transient "up to date" message, with the version when known', () => {
-    expect(formatUpdate('latest', { version: '0.1.8' })).toEqual({
-      phase: 'latest', text: 'You’re on the latest version (v0.1.8)', show: true, transient: true,
-    });
+  test('latest is a transient "up to date" message', () => {
     expect(formatUpdate('latest')).toEqual({
       phase: 'latest', text: 'You’re on the latest version', show: true, transient: true,
     });
