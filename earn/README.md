@@ -25,6 +25,7 @@ rigs can use the [command-line miner](#headless-cli-linux) instead of the GUI.
   - `config.js` — pool endpoints, per-card static difficulty, engine metadata, economics.
   - `address.js` — `prl1p…` / `mdl1p…` validation, shortening, and the merge-mining combined address.
   - `cliArgs.js` — parses/validates the headless CLI flags into the same settings shape the GUI uses.
+  - `selfUpdate.js` — decides, from the running version + GitHub's latest release, whether the CLI binary should self-update.
   - `minerArgs.js` — builds the engine argument vector / launcher env (`--address`, `--worker`, `--password "x;d=N"`, `--force-backend`).
   - `parser.js` — turns `alpha-miner` stdout into structured events (shares, hashrate, connect).
   - `miningStats.js` — accumulates those events into the live stats snapshot.
@@ -41,8 +42,11 @@ rigs can use the [command-line miner](#headless-cli-linux) instead of the GUI.
   - `engineManager.js` — downloads + installs the engine on first run (injected IO, unit-tested).
   - `main.js` / `preload.js` — window, settings persistence, IPC bridge (thin shells).
 - **`src/renderer/`** — the GUI (Setup → Running → Settings → Logs), pure display + IPC.
-- **`src/cli/earn-cli.js`** — headless Linux miner (no Electron); a thin IO shell that
-  reuses the same `shared/*` logic and process supervisor as the GUI.
+- **`src/cli/`** — headless Linux miner (no Electron); thin IO shells that reuse
+  the same `shared/*` logic and process supervisor as the GUI:
+  - `earn-cli.js` — the CLI entry (arg handling, engine resolution, run loop, self-update check).
+  - `selfUpdater.js` — the IO side of self-update (GitHub fetch, download, atomic self-replace, re-exec).
+  - `sea-entry.js` — entry shim for the packaged single-file binary (`scripts/build-cli.mjs`).
 
 ## The mining engine
 
@@ -82,6 +86,33 @@ caches it under `~/.local/share/llmjob-earn/engine/` (override with
 `--engine-dir`, or skip the download entirely with `--binary /path/to/alpha-miner`).
 It streams the engine's real output, prints a periodic hashrate/share summary,
 and shuts the engine down cleanly on Ctrl-C.
+
+### Standalone binary + self-update
+
+CI packages the CLI into a **standalone single-file Linux executable**
+(`llmjob-earn-cli-linux`, built with [Node SEA](https://nodejs.org/api/single-executable-applications.html))
+and attaches it to each GitHub Release, so a headless box can run it with **no
+Node install**:
+
+```bash
+curl -L -o llmjob-earn-cli https://github.com/super3/llmjob/releases/latest/download/llmjob-earn-cli-linux
+chmod +x llmjob-earn-cli
+./llmjob-earn-cli --address prl1pYOUR_ADDRESS
+```
+
+That binary **auto-updates itself**. On start it checks the GitHub "latest
+release", and if a newer version is out it downloads the new binary, atomically
+replaces itself in place, and re-launches with the same arguments before mining
+— so a long-running rig stays current hands-off. Opt out per-run with
+`--no-update`, or update on demand without (re)starting a mine:
+
+```bash
+./llmjob-earn-cli update      # check + self-replace if a newer release exists
+```
+
+Run from source (`node src/cli/earn-cli.js`) it doesn't replace anything — it
+just prints a notice when a newer release is available (update via git/npm).
+`npm run dist:cli` builds the binary locally into `dist/llmjob-earn-cli-linux`.
 
 ```
 Usage: llmjob-earn-cli --address <prl1p…> [options]

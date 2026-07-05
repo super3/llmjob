@@ -40,6 +40,17 @@ describe('parseCliArgs — flags', () => {
     expect(parseCliArgs(['--address', ADDR]).settings.report).toBe(true);
   });
 
+  test('--no-update flips update to false; defaults to true', () => {
+    expect(parseCliArgs(['--address', ADDR]).settings.update).toBe(true);
+    const r = parseCliArgs(['--address', ADDR, '--no-update']);
+    expect(r.update).toBe(false);
+    expect(r.settings.update).toBe(false);
+  });
+
+  test('--help preserves the update flag in the short-circuit result', () => {
+    expect(parseCliArgs(['--help', '--no-update']).update).toBe(false);
+  });
+
   test('--flag=value form', () => {
     const r = parseCliArgs(['--address=' + ADDR, '--worker=rig9']);
     expect(r.settings.address).toBe(ADDR);
@@ -93,6 +104,7 @@ describe('buildSettings — validation', () => {
       binaryPath: '/opt/alpha-miner',
       engineDir: '/tmp/eng',
       report: true,
+      update: true,
     });
   });
 
@@ -163,10 +175,12 @@ describe('buildSettings — validation', () => {
 });
 
 describe('buildSettings — direct', () => {
-  test('collects errors into the provided array', () => {
+  test('collects errors into the provided array; passes through report/update', () => {
     const errors = [];
-    const s = buildSettings({}, errors, true);
+    const s = buildSettings({}, errors, true, false);
     expect(s.address).toBe('');
+    expect(s.report).toBe(true);
+    expect(s.update).toBe(false);
     expect(errors.length).toBeGreaterThan(0);
   });
 });

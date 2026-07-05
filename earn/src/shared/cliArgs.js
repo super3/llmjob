@@ -51,13 +51,14 @@ const USAGE = [
   '  -b, --binary <path>      Use this alpha-miner binary instead of downloading one',
   '      --engine-dir <path>  Where to cache the downloaded engine',
   '      --no-report          Do not publish live status to the public network board',
+  '      --no-update          Do not auto-update the CLI to a newer release on start',
   '  -h, --help               Show this help and exit',
   '  -v, --version            Print the version and exit',
 ].join('\n');
 
 // Fold the collected option map into a validated settings object, appending any
 // validation problems to `errors`.
-function buildSettings(opts, errors, report) {
+function buildSettings(opts, errors, report, update) {
   const address = opts['--address'] != null ? String(opts['--address']).trim() : '';
   if (!address) {
     errors.push('--address is required (your prl1p… payout address)');
@@ -97,7 +98,7 @@ function buildSettings(opts, errors, report) {
   const binaryPath = opts['--binary'] != null ? String(opts['--binary']) : null;
   const engineDir = opts['--engine-dir'] != null ? String(opts['--engine-dir']) : null;
 
-  return { address, mdlAddress, region, worker, gpu, difficulty, backend, binaryPath, engineDir, report };
+  return { address, mdlAddress, region, worker, gpu, difficulty, backend, binaryPath, engineDir, report, update };
 }
 
 // Parse a bare argv (typically process.argv.slice(2)) into:
@@ -111,6 +112,7 @@ function parseCliArgs(argv) {
   let help = false;
   let version = false;
   let report = true;
+  let update = true;
 
   for (let i = 0; i < args.length; i++) {
     let token = String(args[i]);
@@ -128,6 +130,7 @@ function parseCliArgs(argv) {
     if (flag === '--help') { help = true; continue; }
     if (flag === '--version') { version = true; continue; }
     if (flag === '--no-report') { report = false; continue; }
+    if (flag === '--no-update') { update = false; continue; }
 
     if (VALUE_FLAGS.has(flag)) {
       if (value == null) {
@@ -147,11 +150,11 @@ function parseCliArgs(argv) {
   }
 
   if (help || version) {
-    return { help, version, report, errors, settings: null };
+    return { help, version, report, update, errors, settings: null };
   }
 
-  const settings = buildSettings(opts, errors, report);
-  return { help, version, report, errors, settings };
+  const settings = buildSettings(opts, errors, report, update);
+  return { help, version, report, update, errors, settings };
 }
 
 module.exports = { ALIASES, VALUE_FLAGS, USAGE, regionChoices, buildSettings, parseCliArgs };

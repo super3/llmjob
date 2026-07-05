@@ -16,6 +16,8 @@ const http = require('http');
 const https = require('https');
 
 const { parseCliArgs, USAGE } = require('../shared/cliArgs');
+const selfUpdater = require('./selfUpdater');
+const { planUpdate } = require('../shared/selfUpdate');
 const { MinerManager } = require('../main/minerManager');
 const { EngineManager } = require('../main/engineManager');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
@@ -120,7 +122,68 @@ async function resolveEngine(settings) {
   return binaryPath;
 }
 
+// Explicit `llmjob-earn-cli update` — check the latest release and, if this is
+// the packaged binary, replace it in place.
+async function runExplicitUpdate() {
+  log('checking for updates (current v' + pkg.version + ')…');
+  const release = await selfUpdater.fetchLatestRelease();
+  if (!release) { log('could not reach the update server', process.stderr); return 1; }
+
+  const plan = planUpdate({ currentVersion: pkg.version, release, platform: process.platform });
+  if (!plan.updateAvailable) {
+    if (plan.reason === 'up-to-date') log('already up to date (v' + pkg.version + ')');
+    else if (plan.reason === 'asset-missing') log('v' + plan.latestVersion + ' is out but has no Linux CLI binary yet', process.stderr);
+    else if (plan.reason === 'unsupported-platform') log('self-update is only available for the Linux binary', process.stderr);
+    else log('no newer release found', process.stderr);
+    return 0;
+  }
+
+  if (!selfUpdater.isPackaged()) {
+    log('v' + plan.latestVersion + ' is available (you have v' + plan.currentVersion + ').');
+    log('this is running from source — update via git/npm, or download: ' + plan.downloadUrl);
+    return 0;
+  }
+
+  log('updating ' + plan.currentVersion + ' → ' + plan.latestVersion + ' …');
+  try {
+    const exe = await selfUpdater.applyUpdate(plan);
+    log('updated to v' + plan.latestVersion + ' (' + exe + '). Re-run to use it.');
+    return 0;
+  } catch (e) {
+    log('update failed: ' + e.message, process.stderr);
+    return 1;
+  }
+}
+
+// Best-effort auto-update on start. Returns an exit code when it replaced and
+// re-ran the binary (caller should return it), or null to keep mining.
+async function maybeAutoUpdate(argv) {
+  if (process.env[selfUpdater.UPDATED_ENV]) return null; // already the updated child
+  const release = await selfUpdater.fetchLatestRelease();
+  if (!release) return null; // offline — never block mining
+
+  const plan = planUpdate({ currentVersion: pkg.version, release, platform: process.platform });
+  if (!plan.updateAvailable) return null;
+
+  if (!selfUpdater.isPackaged()) {
+    log('a newer release is available: v' + plan.latestVersion + ' (run "llmjob-earn-cli update")');
+    return null;
+  }
+
+  log('updating ' + plan.currentVersion + ' → ' + plan.latestVersion + ' before starting…');
+  try {
+    await selfUpdater.applyUpdate(plan);
+    log('updated to v' + plan.latestVersion + '; restarting');
+    return selfUpdater.reexec(argv);
+  } catch (e) {
+    log('auto-update failed (' + e.message + '); continuing on v' + pkg.version, process.stderr);
+    return null;
+  }
+}
+
 async function run(argv) {
+  if (argv[0] === 'update') return runExplicitUpdate();
+
   const parsed = parseCliArgs(argv);
 
   if (parsed.help) { process.stdout.write(USAGE + '\n'); return 0; }
@@ -133,6 +196,12 @@ async function run(argv) {
   }
 
   const settings = parsed.settings;
+
+  if (settings.update) {
+    const code = await maybeAutoUpdate(argv);
+    if (code != null) return code;
+  }
+
   const endpoint = endpointFor(settings.region);
 
   log('LLMJob Earn CLI v' + pkg.version);

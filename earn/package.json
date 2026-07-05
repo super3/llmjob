@@ -12,7 +12,8 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "dist:win": "electron-builder --win",
-    "dist:linux": "electron-builder --linux"
+    "dist:linux": "electron-builder --linux",
+    "dist:cli": "node scripts/build-cli.mjs"
   },
   "keywords": ["llmjob", "pearl", "prl", "mining", "alpha-miner", "electron", "gpu"],
   "author": "super3",
@@ -23,7 +24,9 @@
   "devDependencies": {
     "electron": "^33.2.0",
     "electron-builder": "^25.1.8",
-    "jest": "^30.0.5"
+    "esbuild": "^0.28.1",
+    "jest": "^30.0.5",
+    "postject": "^1.0.0-alpha.6"
   },
   "build": {
     "appId": "com.llmjob.earn",
