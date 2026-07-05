@@ -77,12 +77,6 @@ describe('formatUpdate', () => {
     });
   });
 
-  test('dev explains auto-update only runs installed', () => {
-    expect(formatUpdate('dev')).toEqual({
-      phase: 'dev', text: 'Auto-update works in the installed app.', show: true, transient: true,
-    });
-  });
-
   test('error flags a fault', () => {
     expect(formatUpdate('error')).toEqual({
       phase: 'error', text: 'Update check failed — see Logs.', show: true, error: true,

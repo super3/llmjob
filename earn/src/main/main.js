@@ -377,9 +377,9 @@ function setupUpdater() {
 }
 
 // User-initiated "Check for updates". In a dev/unpackaged run the updater isn't
-// wired, so report that instead of erroring.
+// wired, so do nothing (hide the bar / reset the button) instead of erroring.
 function checkForUpdate() {
-  if (!app.isPackaged) return send('app:update', formatUpdate('dev'));
+  if (!app.isPackaged) return send('app:update', formatUpdate('none'));
   manualUpdateCheck = true;
   send('app:update', formatUpdate('checking'));
   autoUpdater.checkForUpdates().catch((e) => {
