@@ -1,7 +1,8 @@
-name: Earn build (Windows)
+name: Earn build (Windows + Linux)
 
-# Builds the LLMJob Earn (earn) Windows app. Runs the unit tests, then
-# produces the NSIS installer on a Windows runner and uploads it as an artifact.
+# Builds the LLMJob Earn (earn) desktop app for Windows and Linux. Runs the
+# unit tests, then produces the NSIS installer (Windows) and AppImage (Linux)
+# on their respective runners and uploads them as artifacts.
 on:
   push:
     branches: [ main ]
@@ -11,18 +12,33 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: 'Publish the installer to a GitHub Release (v<version> from earn/package.json)'
+        description: 'Publish the installers to a GitHub Release (v<version> from earn/package.json)'
         type: boolean
         default: false
 
-# A v* tag — or a manual run with "publish" checked — publishes the installer
+# A v* tag — or a manual run with "publish" checked — publishes the installers
 # to a GitHub Release (see the build step).
 permissions:
   contents: write
 
 jobs:
   build:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+            artifact: llmjob-earn-windows
+            dist_path: |
+              earn/dist/*.exe
+              earn/dist/*.blockmap
+          - os: ubuntu-latest
+            platform: linux
+            artifact: llmjob-earn-linux
+            dist_path: |
+              earn/dist/*.AppImage
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: earn
@@ -40,14 +56,15 @@ jobs:
         run: npm test
 
       # Stage the miner into vendor/engine so the installer ships it and end
-      # users don't fetch an unsigned exe at runtime. Best-effort: if the
+      # users don't fetch an unsigned binary at runtime. Best-effort: if the
       # download fails — or the runner's antivirus quarantines the miner before
       # it can be packaged — the build still succeeds and the app falls back to
       # the on-demand download (extraResources then ships only the README
       # placeholder). Making bundling reliable on a Defender-enabled runner is a
       # separate decision (e.g. a self-hosted runner) and is intentionally not
       # done here.
-      - name: Bundle mining engine (best-effort)
+      - name: Bundle mining engine — Windows (best-effort)
+        if: runner.os == 'Windows'
         continue-on-error: true
         shell: pwsh
         run: |
@@ -61,16 +78,27 @@ jobs:
           Copy-Item $exe.FullName 'vendor/engine/alpha-miner-windows.exe' -Force
           Write-Host "Bundled engine: $((Get-Item 'vendor/engine/alpha-miner-windows.exe').Length) bytes"
 
-      - name: Build Windows installer (publishes on v* tag or manual publish)
-        run: npx electron-builder --win --publish ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.publish) && 'always' || 'never' }}
+      # The Linux engine ships as a bare binary (no zip). Drop it at
+      # vendor/engine/alpha-miner — the name bundledEnginePath() looks for on
+      # non-Windows — and mark it executable so the packaged AppImage can run it.
+      - name: Bundle mining engine — Linux (best-effort)
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL 'https://pearl.alphapool.tech/downloads/alpha-miner' -o vendor/engine/alpha-miner
+          chmod +x vendor/engine/alpha-miner
+          echo "Bundled engine: $(stat -c%s vendor/engine/alpha-miner) bytes"
+
+      - name: Build installer (publishes on v* tag or manual publish)
+        run: npx electron-builder --${{ matrix.platform }} --publish ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.publish) && 'always' || 'never' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: llmjob-earn-windows
-          path: |
-            earn/dist/*.exe
-            earn/dist/*.blockmap
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.dist_path }}
           if-no-files-found: error

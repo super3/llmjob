@@ -67,16 +67,19 @@ npm start          # launch the Electron app
 npm test           # jest — 100% coverage gate on shared/* + miner/engineManager
 ```
 
-## Build (Windows)
+## Build (Windows + Linux)
 
 ```bash
-npm run dist:win   # electron-builder --win  → dist/LLMJob-Earn-Setup.exe (NSIS)
+npm run dist:win     # electron-builder --win    → dist/LLMJob-Earn-Setup-<version>.exe (NSIS)
+npm run dist:linux   # electron-builder --linux  → dist/LLMJob-Earn-<version>.AppImage
 ```
 
-Producing the Windows **installer** must happen on Windows (or Linux + Wine).
-CI builds it on `windows-latest` — see
-[`.github/workflows/miner-build.yml`](../.github/workflows/miner-build.yml); the
-installer is uploaded as a build artifact.
+Producing the Windows **installer** must happen on Windows (or Linux + Wine);
+the Linux **AppImage** builds on Linux. CI builds both — Windows on
+`windows-latest` and Linux on `ubuntu-latest` — see
+[`.github/workflows/miner-build.yml`](../.github/workflows/miner-build.yml); each
+build is uploaded as an artifact and, on a `v*` tag, published to the GitHub
+Release.
 
 ---
 
