@@ -65,7 +65,7 @@ skip the download entirely.
 The app drives `alpha-miner` with its documented CLI: `--address prl1…` (or
 `prl1…+mdl1…` when merge mining), `--worker`, static difficulty via
 `--password "x;d=N"`, an optional `--force-backend` for cards that need it, and
-the regional endpoint (`us1/us2/eu1/eu2/ru1/sg1/in1.alphapool.tech:5566`).
+the regional endpoint (`us1/us2/eu1/eu2/ru1/sg1/hk1/in1.alphapool.tech:5566`).
 
 ## Headless CLI (Linux)
 

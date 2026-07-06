@@ -16,6 +16,7 @@ const REGIONS = {
   eu2: { label: 'eu2', flag: '🇪🇺', name: 'Europe', endpoint: 'eu2.alphapool.tech:5566' },
   ru1: { label: 'ru1', flag: '🇷🇺', name: 'Russia · Eurasia', endpoint: 'ru1.alphapool.tech:5566' },
   sg1: { label: 'sg1', flag: '🇸🇬', name: 'Asia · Singapore', endpoint: 'sg1.alphapool.tech:5566' },
+  hk1: { label: 'hk1', flag: '🇭🇰', name: 'Asia · Hong Kong', endpoint: 'hk1.alphapool.tech:5566' },
   in1: { label: 'in1', flag: '🇮🇳', name: 'India', endpoint: 'in1.alphapool.tech:5566' },
 };
 
