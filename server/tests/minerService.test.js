@@ -102,6 +102,30 @@ describe('MinerService (db)', () => {
     expect(out.miners.find((m) => m.addr === ADDR.c).gpu).toBe('—'); // fallback when no worker reports a gpu
   });
 
+  test('an address running different GPUs shows a stable "primary +N" label (not a flip-flopping single card)', async () => {
+    // One address, several rigs/workers: two distinct cards plus a second copy of
+    // one of them. The label must be deterministic regardless of DB row order.
+    await service.reportMiner({ address: ADDR.a, worker: 'w-6000', gpu: 'NVIDIA RTX PRO 6000 Blackwell', hashrate: 300 });
+    await service.reportMiner({ address: ADDR.a, worker: 'w-4090a', gpu: 'NVIDIA GeForce RTX 4090', hashrate: 100 });
+    await service.reportMiner({ address: ADDR.a, worker: 'w-4090b', gpu: 'NVIDIA GeForce RTX 4090', hashrate: 0 }); // same card again; its hashrate folds into the existing entry
+
+    const out = await service.getPublicMiners();
+    const a = out.miners.find((m) => m.addr === ADDR.a);
+    expect(a.workers).toBe(3);
+    expect(a.hash).toBe(400);
+    // Two distinct cards → highest-hashrate one is primary, "+1" flags the rest.
+    expect(a.gpu).toBe('NVIDIA RTX PRO 6000 Blackwell +1');
+  });
+
+  test('gpuLabel: empty → dash, single → name, ties broken by name (order-independent)', () => {
+    const { gpuLabel } = MinerService;
+    expect(gpuLabel(new Map())).toBe('—');
+    expect(gpuLabel(new Map([['RTX 4090', 100]]))).toBe('RTX 4090');
+    // Equal hashrate → alphabetical tie-break, so the label is stable.
+    expect(gpuLabel(new Map([['RTX 4090', 50], ['RTX 3090', 50]]))).toBe('RTX 3090 +1');
+    expect(gpuLabel(new Map([['RTX 3090', 50], ['RTX 4090', 50]]))).toBe('RTX 3090 +1');
+  });
+
   test('omits workers past the online window but keeps their rows until prune', async () => {
     const r = await service.reportMiner({ address: ADDR.a, worker: 'rig01', hashrate: 100 });
     await setLastSeen(r.id, Date.now() - 10 * 60 * 1000); // 10 min: offline, not yet pruned

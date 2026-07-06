@@ -38,6 +38,18 @@ function formatAgo(ms) {
   return Math.floor(m / 60) + 'h ago';
 }
 
+// A stable GPU label for an address that may run several cards. `gpus` maps each
+// card name to its summed hashrate. Picks the highest-hashrate card as the
+// primary (tie-broken by name, so the result never depends on DB row order) and
+// appends "+N" for the rest — instead of letting one arbitrary worker's GPU win
+// and flip-flop between pings on a mixed-GPU address.
+function gpuLabel(gpus) {
+  const names = Array.from(gpus.keys());
+  if (!names.length) return '—';
+  names.sort((a, b) => (gpus.get(b) - gpus.get(a)) || a.localeCompare(b));
+  return names.length === 1 ? names[0] : names[0] + ' +' + (names.length - 1);
+}
+
 class MinerService {
   constructor(db) {
     this.db = db;
@@ -81,7 +93,7 @@ class MinerService {
     for (const row of r.rows) {
       let g = byAddr.get(row.address);
       if (!g) {
-        g = { addr: row.address, gpu: row.gpu || '—', hash: 0, workers: 0, accepted: 0, vramUsed: 0, vramTotal: 0, lastSeen: 0 };
+        g = { addr: row.address, gpus: new Map(), hash: 0, workers: 0, accepted: 0, vramUsed: 0, vramTotal: 0, lastSeen: 0 };
         byAddr.set(row.address, g);
       }
       g.hash += Number(row.hashrate) || 0;
@@ -89,13 +101,13 @@ class MinerService {
       g.accepted += Number(row.accepted) || 0;
       g.vramUsed += Number(row.vram_used) || 0;
       g.vramTotal += Number(row.vram_total) || 0;
-      if (row.gpu) g.gpu = row.gpu;
+      if (row.gpu) g.gpus.set(row.gpu, (g.gpus.get(row.gpu) || 0) + (Number(row.hashrate) || 0));
       g.lastSeen = Math.max(g.lastSeen, Number(row.last_seen));
     }
 
     const miners = Array.from(byAddr.values())
       .map((g) => ({
-        addr: g.addr, gpu: g.gpu, hash: +g.hash.toFixed(1),
+        addr: g.addr, gpu: gpuLabel(g.gpus), hash: +g.hash.toFixed(1),
         workers: g.workers, accepted: g.accepted,
         vramUsedMb: Math.round(g.vramUsed), vramTotalMb: Math.round(g.vramTotal),
         last: formatAgo(now - g.lastSeen)
@@ -115,5 +127,6 @@ MinerService.minerFingerprint = minerFingerprint;
 MinerService.isValidAddress = isValidAddress;
 MinerService.clampNum = clampNum;
 MinerService.formatAgo = formatAgo;
+MinerService.gpuLabel = gpuLabel;
 
 module.exports = MinerService;
