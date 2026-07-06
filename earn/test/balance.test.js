@@ -20,17 +20,26 @@ describe('buildBalanceUrl', () => {
 describe('parseBalance', () => {
   test('earned = pending + lifetime paid, with USD priced off that total', () => {
     expect(parseBalance({ balance_prl: 3.0933774, total_paid_prl: 330.64 }, 0.47)).toEqual({
-      prl: 3.0933774, paid: 330.64, earned: 3.0933774 + 330.64, usd: (3.0933774 + 330.64) * 0.47,
+      pending: 3.0933774, paid: 330.64, earned: 3.0933774 + 330.64, usd: (3.0933774 + 330.64) * 0.47,
     });
   });
 
   test('omits USD when no price is supplied and defaults missing paid to 0', () => {
-    expect(parseBalance({ balance_prl: 5 })).toEqual({ prl: 5, paid: 0, earned: 5, usd: null });
+    expect(parseBalance({ balance_prl: 5 })).toEqual({ pending: 5, paid: 0, earned: 5, usd: null });
     expect(parseBalance({ balance_prl: 5, total_paid_prl: -1 }, 0.47).earned).toBe(5); // bad paid → 0, earned = pending
   });
 
   test('treats a zero balance as valid (a real, credited-nothing-yet account)', () => {
-    expect(parseBalance({ balance_prl: 0 }, 0.47)).toEqual({ prl: 0, paid: 0, earned: 0, usd: 0 });
+    expect(parseBalance({ balance_prl: 0 }, 0.47)).toEqual({ pending: 0, paid: 0, earned: 0, usd: 0 });
+  });
+
+  test('reads the mdl denomination when currency is "mdl"', () => {
+    expect(parseBalance({ balance_mdl: 12.5, total_paid_mdl: 4 }, undefined, 'mdl')).toEqual({
+      pending: 12.5, paid: 4, earned: 16.5, usd: null,
+    });
+    // the prl fields are ignored for an mdl lookup, and vice versa
+    expect(parseBalance({ balance_prl: 9 }, undefined, 'mdl')).toBeNull();
+    expect(parseBalance({ balance_mdl: 9 })).toBeNull();
   });
 
   test('returns null for unusable payloads', () => {
