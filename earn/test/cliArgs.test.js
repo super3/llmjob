@@ -105,7 +105,17 @@ describe('buildSettings — validation', () => {
       engineDir: '/tmp/eng',
       report: true,
       update: true,
+      regionProvided: true,
+      gpuProvided: true,
+      difficultyProvided: true,
     });
+  });
+
+  test('*Provided flags are false when the knobs are omitted (auto-detect eligible)', () => {
+    const s = parseCliArgs(['--address', ADDR]).settings;
+    expect(s.regionProvided).toBe(false);
+    expect(s.gpuProvided).toBe(false);
+    expect(s.difficultyProvided).toBe(false);
   });
 
   test('empty address value triggers the required error', () => {

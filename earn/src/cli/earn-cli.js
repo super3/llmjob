@@ -8,10 +8,11 @@
 // real filesystem / network / child_process around them, exactly like main.js
 // does for the GUI. No window, no DOM — just stdout.
 
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const net = require('net');
 const http = require('http');
 const https = require('https');
 
@@ -21,15 +22,55 @@ const { planUpdate } = require('../shared/selfUpdate');
 const { MinerManager } = require('../main/minerManager');
 const { EngineManager } = require('../main/engineManager');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
-const { NETWORK, MINER, endpointFor, regionLabel } = require('../shared/config');
+const { NETWORK, MINER, REGIONS, DEFAULTS, endpointFor, regionLabel, difficultyForCard } = require('../shared/config');
 const { progressPercent } = require('../shared/engine');
 const { buildMinerReport } = require('../shared/minerReport');
 const { shortenAddress } = require('../shared/address');
+const { pickFastestRegion } = require('../shared/region');
+const { pickGpu } = require('../shared/gpu');
 const format = require('../shared/format');
 const pkg = require('../../package.json');
 
 function log(line, stream) {
   (stream || process.stdout).write('[' + format.formatLogTime(new Date()) + '] ' + line + '\n');
+}
+
+// Measure TCP connect latency (ms) to a "host:port" Stratum endpoint, or null if
+// it can't be reached within the timeout. Never rejects. (Mirrors main.js.)
+function pingEndpoint(endpoint, timeoutMs) {
+  return new Promise((resolve) => {
+    const [host, portStr] = String(endpoint).split(':');
+    const start = Date.now();
+    const sock = new net.Socket();
+    let settled = false;
+    const done = (ms) => { if (!settled) { settled = true; sock.destroy(); resolve(ms); } };
+    sock.setTimeout(timeoutMs || 2500);
+    sock.once('connect', () => done(Date.now() - start));
+    sock.once('timeout', () => done(null));
+    sock.once('error', () => done(null));
+    sock.connect(Number(portStr), host);
+  });
+}
+
+// Auto-detect the lowest-latency pool region by pinging every endpoint in
+// parallel; falls back to the default when nothing is reachable.
+async function detectRegion() {
+  const keys = Object.keys(REGIONS);
+  const results = await Promise.all(keys.map((region) =>
+    pingEndpoint(REGIONS[region].endpoint).then((ms) => ({ region, ms }))));
+  return pickFastestRegion(results, DEFAULTS.region);
+}
+
+// Detect the discrete GPU name via nvidia-smi (Linux/NVIDIA). Resolves the card
+// name or null (no nvidia-smi / non-NVIDIA / parse failure). Never rejects — the
+// engine still auto-detects the real device to mine; this is only for the
+// difficulty table and the status label.
+function detectGpu() {
+  return new Promise((resolve) => {
+    execFile('nvidia-smi', ['--query-gpu=name', '--format=csv,noheader'],
+      { timeout: 5000 },
+      (err, stdout) => resolve(err ? null : pickGpu(String(stdout).split(/\r?\n/))));
+  });
 }
 
 // Stream a URL to a file, following redirects and reporting download progress.
@@ -202,13 +243,25 @@ async function run(argv) {
     if (code != null) return code;
   }
 
+  // Auto-detect the knobs the user didn't pin. Best-effort: any failure falls
+  // back to the defaults already in `settings` and never blocks mining. Explicit
+  // --region / --gpu / --difficulty always win.
+  if (!settings.regionProvided) settings.region = await detectRegion();
+  if (!settings.gpuProvided) {
+    const gpu = await detectGpu();
+    if (gpu) {
+      settings.gpu = gpu;
+      if (!settings.difficultyProvided) settings.difficulty = difficultyForCard(gpu);
+    }
+  }
+
   const endpoint = endpointFor(settings.region);
 
   log('LLMJob Earn CLI v' + pkg.version);
   log('address:    ' + shortenAddress(settings.address) + (settings.mdlAddress ? '  (+MDL ' + shortenAddress(settings.mdlAddress) + ')' : ''));
-  log('pool:       ' + endpoint + '  ' + regionLabel(settings.region));
+  log('pool:       ' + endpoint + '  ' + regionLabel(settings.region) + (settings.regionProvided ? '' : '  (auto)'));
   log('worker:     ' + settings.worker);
-  log('difficulty: ' + settings.difficulty + (settings.gpu ? '  (for ' + settings.gpu + ')' : ''));
+  log('difficulty: ' + settings.difficulty + (settings.gpu ? '  (for ' + settings.gpu + (settings.gpuProvided ? '' : ', auto') + ')' : ''));
 
   let binaryPath;
   try {

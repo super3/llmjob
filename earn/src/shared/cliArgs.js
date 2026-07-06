@@ -43,10 +43,10 @@ const USAGE = [
   '',
   'Options:',
   '  -m, --mdl <mdl1p…>       Also merge-mine ModelOS (MDL) on the same shares',
-  '  -r, --region <id>        Pool region: ' + Object.keys(REGIONS).join('/') + ' (default: ' + DEFAULTS.region + ')',
+  '  -r, --region <id>        Pool region: ' + Object.keys(REGIONS).join('/') + ' (default: auto-detect fastest)',
   '  -w, --worker <name>      Worker/rig name (default: ' + DEFAULTS.worker + ')',
-  '  -d, --difficulty <n>     Static share difficulty (default: from --gpu, else ' + DEFAULTS.difficulty + ')',
-  '  -g, --gpu <card>         GPU name, used to auto-pick a static difficulty',
+  '  -d, --difficulty <n>     Static share difficulty (default: from detected/--gpu card, else ' + DEFAULTS.difficulty + ')',
+  '  -g, --gpu <card>         GPU name for the difficulty table (default: auto-detect via nvidia-smi)',
   '      --backend <name>     Force an engine backend (e.g. ampere)',
   '  -b, --binary <path>      Use this alpha-miner binary instead of downloading one',
   '      --engine-dir <path>  Where to cache the downloaded engine',
@@ -98,7 +98,17 @@ function buildSettings(opts, errors, report, update) {
   const binaryPath = opts['--binary'] != null ? String(opts['--binary']) : null;
   const engineDir = opts['--engine-dir'] != null ? String(opts['--engine-dir']) : null;
 
-  return { address, mdlAddress, region, worker, gpu, difficulty, backend, binaryPath, engineDir, report, update };
+  // Which knobs the user set explicitly. The CLI auto-detects the ones left
+  // unset (fastest region; GPU → static difficulty), so it needs to tell an
+  // explicit `--region us2` from the default.
+  const regionProvided = opts['--region'] != null;
+  const gpuProvided = opts['--gpu'] != null;
+  const difficultyProvided = opts['--difficulty'] != null;
+
+  return {
+    address, mdlAddress, region, worker, gpu, difficulty, backend, binaryPath, engineDir,
+    report, update, regionProvided, gpuProvided, difficultyProvided,
+  };
 }
 
 // Parse a bare argv (typically process.argv.slice(2)) into:

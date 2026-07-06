@@ -74,6 +74,13 @@ engine from the command line — no Electron, no window. It shares all the logic
 with the GUI (engine download, `prl1…`/`mdl1…` addresses, static difficulty,
 merge mining, the public-board report), so behaviour matches the app.
 
+Like the GUI, it **auto-detects** the bits you don't pin: the lowest-latency
+pool region (it TCP-pings every endpoint on start) and the GPU (`nvidia-smi`),
+picking that card's recommended static difficulty from the table. Both are
+best-effort — if the pings all fail it falls back to `us2`, and if there's no
+`nvidia-smi` it falls back to the default difficulty — and an explicit
+`--region`, `--gpu`, or `--difficulty` always overrides the detected value.
+
 ```bash
 # from this earn/ directory
 node src/cli/earn-cli.js --address prl1pYOUR_ADDRESS
@@ -119,14 +126,15 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
 
   -a, --address <prl1p…>   Your Pearl payout address (required)
   -m, --mdl <mdl1p…>       Also merge-mine ModelOS (MDL) on the same shares
-  -r, --region <id>        Pool region: us1/us2/eu1/eu2/ru1/sg1/in1 (default: us2)
+  -r, --region <id>        Pool region: us1/us2/eu1/eu2/ru1/sg1/in1 (default: auto-detect fastest)
   -w, --worker <name>      Worker/rig name (default: rig01)
-  -d, --difficulty <n>     Static share difficulty (default: from --gpu, else 524288)
-  -g, --gpu <card>         GPU name, used to auto-pick a static difficulty
+  -d, --difficulty <n>     Static share difficulty (default: from detected/--gpu card, else 524288)
+  -g, --gpu <card>         GPU name for the difficulty table (default: auto-detect via nvidia-smi)
       --backend <name>     Force an engine backend (e.g. ampere)
   -b, --binary <path>      Use this alpha-miner binary instead of downloading one
       --engine-dir <path>  Where to cache the downloaded engine
       --no-report          Do not publish live status to the public network board
+      --no-update          Do not auto-update the CLI to a newer release on start
   -h, --help / -v, --version
 ```
 
