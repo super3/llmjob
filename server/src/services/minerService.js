@@ -38,18 +38,6 @@ function formatAgo(ms) {
   return Math.floor(m / 60) + 'h ago';
 }
 
-// A stable GPU label for an address that may run several cards. `gpus` maps each
-// card name to its summed hashrate. Picks the highest-hashrate card as the
-// primary (tie-broken by name, so the result never depends on DB row order) and
-// appends "+N" for the rest — instead of letting one arbitrary worker's GPU win
-// and flip-flop between pings on a mixed-GPU address.
-function gpuLabel(gpus) {
-  const names = Array.from(gpus.keys());
-  if (!names.length) return '—';
-  names.sort((a, b) => (gpus.get(b) - gpus.get(a)) || a.localeCompare(b));
-  return names.length === 1 ? names[0] : names[0] + ' +' + (names.length - 1);
-}
-
 class MinerService {
   constructor(db) {
     this.db = db;
@@ -82,43 +70,34 @@ class MinerService {
     return { success: true, id };
   }
 
-  // The network page's view: online miners grouped by payout address (one row
-  // per address; its workers summed), sorted by hashrate. Prunes dead rows.
+  // The network page's view: one row per online worker (i.e. per GPU) — a rig
+  // running two cards on the same payout address shows as two rows, each with
+  // its own GPU, VRAM and last-seen, sharing the address. Sorted by hashrate
+  // (ties broken by address+worker so the order never depends on DB row order).
+  // Prunes dead rows; offline workers are simply excluded.
   async getPublicMiners() {
     const now = Date.now();
     await this.db.query('DELETE FROM miners WHERE last_seen < $1', [now - PRUNE_TTL]);
     const r = await this.db.query('SELECT * FROM miners WHERE last_seen >= $1', [now - OFFLINE_THRESHOLD]);
 
-    const byAddr = new Map();
-    for (const row of r.rows) {
-      let g = byAddr.get(row.address);
-      if (!g) {
-        g = { addr: row.address, gpus: new Map(), hash: 0, workers: 0, accepted: 0, vramUsed: 0, vramTotal: 0, lastSeen: 0 };
-        byAddr.set(row.address, g);
-      }
-      g.hash += Number(row.hashrate) || 0;
-      g.workers += 1;
-      g.accepted += Number(row.accepted) || 0;
-      g.vramUsed += Number(row.vram_used) || 0;
-      g.vramTotal += Number(row.vram_total) || 0;
-      if (row.gpu) g.gpus.set(row.gpu, (g.gpus.get(row.gpu) || 0) + (Number(row.hashrate) || 0));
-      g.lastSeen = Math.max(g.lastSeen, Number(row.last_seen));
-    }
-
-    const miners = Array.from(byAddr.values())
-      .map((g) => ({
-        addr: g.addr, gpu: gpuLabel(g.gpus), hash: +g.hash.toFixed(1),
-        workers: g.workers, accepted: g.accepted,
-        vramUsedMb: Math.round(g.vramUsed), vramTotalMb: Math.round(g.vramTotal),
-        last: formatAgo(now - g.lastSeen)
+    const miners = r.rows
+      .map((row) => ({
+        addr: row.address,
+        worker: row.worker,
+        gpu: row.gpu || '—',
+        hash: +(Number(row.hashrate) || 0).toFixed(1),
+        accepted: Number(row.accepted) || 0,
+        vramUsedMb: Math.round(Number(row.vram_used) || 0),
+        vramTotalMb: Math.round(Number(row.vram_total) || 0),
+        last: formatAgo(now - Number(row.last_seen)),
       }))
-      .sort((a, b) => b.hash - a.hash);
+      .sort((a, b) => (b.hash - a.hash) || (a.addr + '|' + a.worker).localeCompare(b.addr + '|' + b.worker));
 
     return {
       miners,
-      totalOnline: miners.length,
-      totalWorkers: miners.reduce((a, m) => a + m.workers, 0),
-      totalHashrate: +miners.reduce((a, m) => a + m.hash, 0).toFixed(1)
+      totalOnline: new Set(miners.map((m) => m.addr)).size, // distinct payout addresses
+      totalWorkers: miners.length,                           // one entry per online GPU/worker
+      totalHashrate: +miners.reduce((a, m) => a + m.hash, 0).toFixed(1),
     };
   }
 }
@@ -127,6 +106,5 @@ MinerService.minerFingerprint = minerFingerprint;
 MinerService.isValidAddress = isValidAddress;
 MinerService.clampNum = clampNum;
 MinerService.formatAgo = formatAgo;
-MinerService.gpuLabel = gpuLabel;
 
 module.exports = MinerService;

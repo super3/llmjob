@@ -223,12 +223,12 @@
     }
 
     function render(miners) {
-      const rows = miners || [];
-      const online = rows.length;
+      const rows = miners || [];              // one row per online GPU/worker
+      const gpus = rows.length;
+      const addrs = new Set(rows.map((m) => m.addr)).size; // distinct payout addresses
       const poolTh = rows.reduce((a, m) => a + (Number(m.hash) || 0), 0);
-      const workers = rows.reduce((a, m) => a + (Number(m.workers) || 0), 0);
 
-      cont.innerHTML = online
+      cont.innerHTML = gpus
         ? rows.map((m, i) =>
             '<div class="miner-row">' +
               '<div class="mr-rank">' + (i + 1) + '</div>' +
@@ -241,11 +241,11 @@
           ).join('')
         : '<div class="nt-empty">No miners online yet — be the first to connect a rig.</div>';
 
-      setText('net-active', online.toLocaleString());
-      setText('net-active-h', online.toLocaleString());
-      setText('net-workers', workers.toLocaleString());
-      setText('net-hr', online ? (poolTh / 1000).toFixed(2) + ' PH/s' : '0');
-      setText('net-foot', online ? ('Showing ' + online + ' of ' + online + ' miners') : 'Waiting for the first miner to connect…');
+      setText('net-active', addrs.toLocaleString());
+      setText('net-active-h', addrs.toLocaleString());
+      setText('net-workers', gpus.toLocaleString());
+      setText('net-hr', gpus ? (poolTh / 1000).toFixed(2) + ' PH/s' : '0');
+      setText('net-foot', gpus ? ('Showing ' + gpus + ' of ' + gpus + ' GPUs') : 'Waiting for the first miner to connect…');
     }
 
     // The site (GitHub Pages) and the API (Railway) are different origins, so

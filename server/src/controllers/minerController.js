@@ -17,7 +17,7 @@ async function pingMiner(req, res) {
   }
 }
 
-// GET /api/miners — online miners grouped by address for the network page.
+// GET /api/miners — online miners for the network page (one row per worker/GPU).
 async function getPublicMiners(req, res) {
   try {
     const service = new MinerService(req.app.locals.db);

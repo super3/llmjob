@@ -80,50 +80,42 @@ describe('MinerService (db)', () => {
     expect(Number(row.vram_total)).toBe(24564);
   });
 
-  test('getPublicMiners groups workers by address, sorts by hashrate, and aggregates (incl. VRAM)', async () => {
-    await service.reportMiner({ address: ADDR.a, worker: 'rig01', gpu: 'NVIDIA GeForce RTX 4090', hashrate: 100, accepted: 5, vramUsedMb: 4096, vramTotalMb: 24564 });
-    await service.reportMiner({ address: ADDR.a, worker: 'rig02', hashrate: 50, accepted: 3, vramUsedMb: 3000, vramTotalMb: 24564 }); // no gpu
+  test('getPublicMiners returns one row per online worker (its own GPU/VRAM/last), sorted by hashrate', async () => {
+    // ADDR.a runs two different cards on one address → two rows sharing the address.
+    await service.reportMiner({ address: ADDR.a, worker: 'w-6000', gpu: 'NVIDIA RTX PRO 6000 Blackwell', hashrate: 300, accepted: 12, vramUsedMb: 8000, vramTotalMb: 98304 });
+    await service.reportMiner({ address: ADDR.a, worker: 'w-4090', gpu: 'NVIDIA GeForce RTX 4090', hashrate: 100, accepted: 5, vramUsedMb: 4096, vramTotalMb: 24564 });
     await service.reportMiner({ address: ADDR.b, worker: 'rig01', gpu: 'NVIDIA GeForce RTX 3090', hashrate: 200, accepted: 10 });
     await service.reportMiner({ address: ADDR.c, worker: 'rig01', hashrate: 0, accepted: 0 }); // no gpu, zero hashrate
 
     const out = await service.getPublicMiners();
-    expect(out.totalOnline).toBe(3);
-    expect(out.totalWorkers).toBe(4);
-    expect(out.totalHashrate).toBe(350);
-    expect(out.miners.map((m) => m.addr)).toEqual([ADDR.b, ADDR.a, ADDR.c]); // sorted by hashrate desc
+    expect(out.totalWorkers).toBe(4);   // one row per online GPU/worker
+    expect(out.totalOnline).toBe(3);    // distinct payout addresses
+    expect(out.totalHashrate).toBe(600);
 
-    const a = out.miners.find((m) => m.addr === ADDR.a);
-    expect(a).toMatchObject({
-      gpu: 'NVIDIA GeForce RTX 4090', hash: 150, workers: 2, accepted: 8, last: 'just now',
-      vramUsedMb: 7096, vramTotalMb: 49128, // summed across the two workers
+    // Ranked by hashrate desc: 6000(300) > b/3090(200) > a/4090(100) > c(0).
+    expect(out.miners.map((m) => [m.addr, m.gpu])).toEqual([
+      [ADDR.a, 'NVIDIA RTX PRO 6000 Blackwell'],
+      [ADDR.b, 'NVIDIA GeForce RTX 3090'],
+      [ADDR.a, 'NVIDIA GeForce RTX 4090'],
+      [ADDR.c, '—'], // no worker reported a gpu → dash
+    ]);
+
+    // The two ADDR.a rows are distinct GPUs on one address, each its own VRAM.
+    expect(out.miners.find((m) => m.worker === 'w-6000')).toMatchObject({
+      addr: ADDR.a, hash: 300, accepted: 12, vramUsedMb: 8000, vramTotalMb: 98304, last: 'just now',
     });
-    const b = out.miners.find((m) => m.addr === ADDR.b);
-    expect(b).toMatchObject({ vramUsedMb: 0, vramTotalMb: 0 }); // no VRAM reported → zeros
-    expect(out.miners.find((m) => m.addr === ADDR.c).gpu).toBe('—'); // fallback when no worker reports a gpu
+    expect(out.miners.find((m) => m.addr === ADDR.c)).toMatchObject({ vramUsedMb: 0, vramTotalMb: 0 });
   });
 
-  test('an address running different GPUs shows a stable "primary +N" label (not a flip-flopping single card)', async () => {
-    // One address, several rigs/workers: two distinct cards plus a second copy of
-    // one of them. The label must be deterministic regardless of DB row order.
-    await service.reportMiner({ address: ADDR.a, worker: 'w-6000', gpu: 'NVIDIA RTX PRO 6000 Blackwell', hashrate: 300 });
-    await service.reportMiner({ address: ADDR.a, worker: 'w-4090a', gpu: 'NVIDIA GeForce RTX 4090', hashrate: 100 });
-    await service.reportMiner({ address: ADDR.a, worker: 'w-4090b', gpu: 'NVIDIA GeForce RTX 4090', hashrate: 0 }); // same card again; its hashrate folds into the existing entry
+  test('ties in hashrate are ordered deterministically by address+worker (not DB row order)', async () => {
+    await service.reportMiner({ address: ADDR.b, worker: 'rig01', gpu: 'X', hashrate: 50 });
+    await service.reportMiner({ address: ADDR.a, worker: 'rig02', gpu: 'Z', hashrate: 50 });
+    await service.reportMiner({ address: ADDR.a, worker: 'rig01', gpu: 'Y', hashrate: 50 });
 
     const out = await service.getPublicMiners();
-    const a = out.miners.find((m) => m.addr === ADDR.a);
-    expect(a.workers).toBe(3);
-    expect(a.hash).toBe(400);
-    // Two distinct cards → highest-hashrate one is primary, "+1" flags the rest.
-    expect(a.gpu).toBe('NVIDIA RTX PRO 6000 Blackwell +1');
-  });
-
-  test('gpuLabel: empty → dash, single → name, ties broken by name (order-independent)', () => {
-    const { gpuLabel } = MinerService;
-    expect(gpuLabel(new Map())).toBe('—');
-    expect(gpuLabel(new Map([['RTX 4090', 100]]))).toBe('RTX 4090');
-    // Equal hashrate → alphabetical tie-break, so the label is stable.
-    expect(gpuLabel(new Map([['RTX 4090', 50], ['RTX 3090', 50]]))).toBe('RTX 3090 +1');
-    expect(gpuLabel(new Map([['RTX 3090', 50], ['RTX 4090', 50]]))).toBe('RTX 3090 +1');
+    expect(out.miners.map((m) => [m.addr, m.worker])).toEqual([
+      [ADDR.a, 'rig01'], [ADDR.a, 'rig02'], [ADDR.b, 'rig01'],
+    ]);
   });
 
   test('omits workers past the online window but keeps their rows until prune', async () => {
@@ -134,16 +126,15 @@ describe('MinerService (db)', () => {
     expect(await count()).toBe(1);
   });
 
-  test('does not sum a stale worker into an address (the worker-rename double-count)', async () => {
+  test('an offline worker is excluded, so a renamed worker leaves just the live row', async () => {
     // One rig, renamed rig01 → rig02: the old row lingers but stopped reporting.
     const stale = await service.reportMiner({ address: ADDR.a, worker: 'rig01', gpu: 'RTX 4090', hashrate: 206 });
     await service.reportMiner({ address: ADDR.a, worker: 'rig02', gpu: 'RTX 4090', hashrate: 285 });
     await setLastSeen(stale.id, Date.now() - 10 * 60 * 1000); // rig01 quiet for 10 min
 
     const out = await service.getPublicMiners();
-    const m = out.miners.find((x) => x.addr === ADDR.a);
-    expect(m.workers).toBe(1);   // only the live worker counts
-    expect(m.hash).toBe(285);    // not 206 + 285 = 491
+    expect(out.totalWorkers).toBe(1);                       // only the live worker is a row
+    expect(out.miners.map((m) => [m.worker, m.hash])).toEqual([['rig02', 285]]);
     expect(out.totalHashrate).toBe(285);
   });
 
