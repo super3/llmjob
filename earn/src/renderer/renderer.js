@@ -33,6 +33,8 @@
     setDifficulty: $('set-difficulty'),
     setMdl: $('set-mdl'),
     mdlNote: $('mdl-note'),
+    mdlBalanceMeta: $('mdl-balance-meta'),
+    mdlBalance: $('mdl-balance'),
     logTerm: $('log-term'),
     engineStatus: $('engine-status'),
     appVersion: $('app-version'),
@@ -44,6 +46,7 @@
 
   const BAL_REFRESH_MS = 60000; // re-poll the pool balance once a minute
   let balDebounce = null;
+  let mdlBalDebounce = null;
   let updateDismiss = null; // timer to auto-hide a transient update message
   let updateReady = false;  // an update is downloaded — the button installs + restarts
 
@@ -62,6 +65,27 @@
     const v = String(el.setMdl.value || '').trim();
     const key = !v ? 'empty' : isValidMdl(v) ? 'on' : 'bad';
     el.mdlNote.innerHTML = MDL_NOTE[key];
+  }
+
+  // The MDL balance line only makes sense for a well-formed mdl1… address; hide
+  // it otherwise (empty field or a typo).
+  function renderMdlBalanceMeta() {
+    el.mdlBalanceMeta.hidden = !isValidMdl(String(el.setMdl.value || '').trim());
+  }
+
+  function resetMdlBalance() {
+    el.mdlBalance.textContent = '0.000';
+  }
+
+  // Pull the merge-mined MDL balance for the MDL address and show total earned.
+  // Best-effort like the PRL lookup; guards against a stale response landing
+  // after the field changed. There's no MDL/USD price, so no dollar figure.
+  async function refreshMdlBalance() {
+    const mdl = String(el.setMdl.value || '').trim();
+    if (!isValidMdl(mdl) || !api.getMdlBalance) return;
+    const b = await api.getMdlBalance(mdl);
+    if (!b || mdl !== String(el.setMdl.value || '').trim()) return;
+    el.mdlBalance.textContent = fmt3(b.earned);
   }
 
   const FLAT_LINE = 'M0 55 L480 55';
@@ -204,7 +228,15 @@
       if (isValid(state.address)) balDebounce = setTimeout(refreshBalance, 600);
       else resetBalance();
     });
-    el.setMdl.addEventListener('input', renderMdlNote);
+    el.setMdl.addEventListener('input', () => {
+      renderMdlNote();
+      renderMdlBalanceMeta();
+      // Debounce the pool lookup so we don't hit it on every keystroke; clear a
+      // stale balance the moment the address stops being valid.
+      if (mdlBalDebounce) clearTimeout(mdlBalDebounce);
+      if (isValidMdl(String(el.setMdl.value || '').trim())) mdlBalDebounce = setTimeout(refreshMdlBalance, 600);
+      else resetMdlBalance();
+    });
     el.btnStart.addEventListener('click', start);
     el.btnStop.addEventListener('click', stop);
     el.btnCheckUpdate.addEventListener('click', () => {
@@ -259,6 +291,7 @@
       resumeMining = !!(s.resumeMining && isValid(state.address));
     }
     renderMdlNote();
+    renderMdlBalanceMeta();
     if (api.detectGpu) {
       const gpu = await api.detectGpu();
       if (gpu) {
@@ -330,6 +363,10 @@
     // fresh (shares get credited as mining continues).
     refreshBalance();
     setInterval(refreshBalance, BAL_REFRESH_MS);
+
+    // Same for the merge-mined MDL balance, when an MDL address is configured.
+    refreshMdlBalance();
+    setInterval(refreshMdlBalance, BAL_REFRESH_MS);
 
     // Resume mining automatically if we restarted to install an update mid-mine.
     // start() persists fresh settings (without the flag), so it self-clears.

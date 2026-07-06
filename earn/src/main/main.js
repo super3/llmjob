@@ -20,7 +20,7 @@ const { EngineManager } = require('./engineManager');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, endpointFor, difficultyForCard } = require('../shared/config');
 const { buildBalanceUrl, parseBalance } = require('../shared/balance');
-const { isValidAddress } = require('../shared/address');
+const { isValidAddress, isValidMdlAddress } = require('../shared/address');
 const { progressPercent, bundledEnginePath } = require('../shared/engine');
 const { formatUpdate } = require('../shared/updateStatus');
 const { describeLaunchError } = require('../shared/engineError');
@@ -82,13 +82,17 @@ function postMinerReport(payload) {
   });
 }
 
-// Fetch the pool's pending balance for a payout address. Best-effort and never
-// rejects — resolves the parsed { prl, paid, usd } or null (unknown address,
-// offline, non-200, bad JSON). Runs here in the main process so it isn't subject
-// to the renderer's CSP / cross-origin restrictions.
-function fetchBalance(address) {
+// Fetch a pool balance for a payout address. Best-effort and never rejects —
+// resolves the parsed { pending, paid, earned, usd } or null (unknown address,
+// offline, non-200, bad JSON). `opts.validate` guards the address shape,
+// `opts.currency` picks the denomination, and `opts.priceUsd` (optional) adds a
+// USD figure. Runs here in the main process so it isn't subject to the
+// renderer's CSP / cross-origin restrictions.
+function fetchBalance(address, opts) {
+  const o = opts || {};
+  const isValid = o.validate || isValidAddress;
   return new Promise((resolve) => {
-    if (!isValidAddress(address)) return resolve(null);
+    if (!isValid(address)) return resolve(null);
     try {
       const u = new URL(buildBalanceUrl(String(address).trim()));
       const lib = u.protocol === 'http:' ? http : https;
@@ -97,7 +101,7 @@ function fetchBalance(address) {
         let data = '';
         res.on('data', (c) => { data += c; if (data.length > 4e6) req.destroy(); });
         res.on('end', () => {
-          try { resolve(parseBalance(JSON.parse(data), ECON.PRL_USD)); }
+          try { resolve(parseBalance(JSON.parse(data), o.priceUsd, o.currency)); }
           catch (e) { resolve(null); }
         });
       });
@@ -463,7 +467,9 @@ ipcMain.handle('config:get', () => ({ regions: REGIONS, defaults: DEFAULTS, mine
 ipcMain.handle('miner:difficultyForCard', (_e, name) => difficultyForCard(name));
 ipcMain.handle('gpu:detect', () => detectGpu());
 ipcMain.handle('region:detect', () => detectRegion());
-ipcMain.handle('balance:get', (_e, address) => fetchBalance(address));
+ipcMain.handle('balance:get', (_e, address) => fetchBalance(address, { priceUsd: ECON.PRL_USD }));
+ipcMain.handle('balance:getMdl', (_e, address) =>
+  fetchBalance(address, { validate: isValidMdlAddress, currency: 'mdl' }));
 ipcMain.on('miner:start', (_e, settings) => {
   startMining(settings || {}).catch((e) => send('miner:log', { level: 'error', line: 'start failed: ' + e.message }));
 });
