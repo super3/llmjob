@@ -67,6 +67,7 @@ const DIFFICULTY_BY_CARD = [
   { match: /4070|4080/i, difficulty: 262144 },
   { match: /3080|3090|70hx|90hx/i, difficulty: 262144 },
   { match: /3060 ti|3070/i, difficulty: 131072 },
+  { match: /4060|5060/i, difficulty: 131072 },
   { match: /a100/i, difficulty: 131072 },
   { match: /2070|2080|rtx 20|\bt4\b/i, difficulty: 16384 },
   { match: /v100|titan v|cmp [12]\d\d/i, difficulty: 4096 },
