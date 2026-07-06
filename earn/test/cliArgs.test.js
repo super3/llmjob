@@ -108,6 +108,7 @@ describe('buildSettings — validation', () => {
       regionProvided: true,
       gpuProvided: true,
       difficultyProvided: true,
+      workerProvided: true,
     });
   });
 
@@ -116,6 +117,7 @@ describe('buildSettings — validation', () => {
     expect(s.regionProvided).toBe(false);
     expect(s.gpuProvided).toBe(false);
     expect(s.difficultyProvided).toBe(false);
+    expect(s.workerProvided).toBe(false);
   });
 
   test('empty address value triggers the required error', () => {

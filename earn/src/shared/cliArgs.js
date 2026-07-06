@@ -44,7 +44,7 @@ const USAGE = [
   'Options:',
   '  -m, --mdl <mdl1p…>       Also merge-mine ModelOS (MDL) on the same shares',
   '  -r, --region <id>        Pool region: ' + Object.keys(REGIONS).join('/') + ' (default: auto-detect fastest)',
-  '  -w, --worker <name>      Worker/rig name (default: ' + DEFAULTS.worker + ')',
+  '  -w, --worker <name>      Worker/rig name (default: this machine\'s hostname)',
   '  -d, --difficulty <n>     Static share difficulty (default: from detected/--gpu card, else ' + DEFAULTS.difficulty + ')',
   '  -g, --gpu <card>         GPU name for the difficulty table (default: auto-detect via nvidia-smi)',
   '      --backend <name>     Force an engine backend (e.g. ampere)',
@@ -99,15 +99,17 @@ function buildSettings(opts, errors, report, update) {
   const engineDir = opts['--engine-dir'] != null ? String(opts['--engine-dir']) : null;
 
   // Which knobs the user set explicitly. The CLI auto-detects the ones left
-  // unset (fastest region; GPU → static difficulty), so it needs to tell an
-  // explicit `--region us2` from the default.
+  // unset (fastest region; GPU → static difficulty; a per-host worker name), so
+  // it needs to tell an explicit `--region us2` / `--worker rig01` from the
+  // default.
   const regionProvided = opts['--region'] != null;
   const gpuProvided = opts['--gpu'] != null;
   const difficultyProvided = opts['--difficulty'] != null;
+  const workerProvided = opts['--worker'] != null;
 
   return {
     address, mdlAddress, region, worker, gpu, difficulty, backend, binaryPath, engineDir,
-    report, update, regionProvided, gpuProvided, difficultyProvided,
+    report, update, regionProvided, gpuProvided, difficultyProvided, workerProvided,
   };
 }
 

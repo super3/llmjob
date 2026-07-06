@@ -66,6 +66,17 @@ async function detectRegion() {
   return pickFastestRegion(results, DEFAULTS.region);
 }
 
+// Default worker name = this machine's hostname (first DNS label, sanitised to a
+// safe stratum token). Unlike a shared constant like "rig01", this keeps two
+// rigs mining the same payout address as distinct workers on the board instead
+// of colliding into one flip-flopping entry. Falls back to the default constant
+// if the hostname is empty/unusable.
+function defaultWorker() {
+  const host = String(os.hostname() || '').trim().toLowerCase().split('.')[0];
+  const name = host.replace(/[^a-z0-9-]/g, '').replace(/^-+|-+$/g, '').slice(0, 32);
+  return name || DEFAULTS.worker;
+}
+
 // Detect the discrete GPU name via nvidia-smi (Linux/NVIDIA). Resolves the card
 // name or null (no nvidia-smi / non-NVIDIA / parse failure). Never rejects — the
 // engine still auto-detects the real device to mine; this is only for the
@@ -251,6 +262,7 @@ async function run(argv) {
   // Auto-detect the knobs the user didn't pin. Best-effort: any failure falls
   // back to the defaults already in `settings` and never blocks mining. Explicit
   // --region / --gpu / --difficulty always win.
+  if (!settings.workerProvided) settings.worker = defaultWorker();
   if (!settings.regionProvided) settings.region = await detectRegion();
   if (!settings.gpuProvided) {
     const gpu = await detectGpu();
@@ -265,7 +277,7 @@ async function run(argv) {
   log('LLMJob Earn CLI v' + pkg.version);
   log('address:    ' + shortenAddress(settings.address) + (settings.mdlAddress ? '  (+MDL ' + shortenAddress(settings.mdlAddress) + ')' : ''));
   log('pool:       ' + endpoint + '  ' + regionLabel(settings.region) + (settings.regionProvided ? '' : '  (auto)'));
-  log('worker:     ' + settings.worker);
+  log('worker:     ' + settings.worker + (settings.workerProvided ? '' : '  (auto)'));
   log('difficulty: ' + settings.difficulty + (settings.gpu ? '  (for ' + settings.gpu + (settings.gpuProvided ? '' : ', auto') + ')' : ''));
 
   let binaryPath;
