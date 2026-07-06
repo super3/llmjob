@@ -31,8 +31,13 @@ const { pickGpu } = require('../shared/gpu');
 const format = require('../shared/format');
 const pkg = require('../../package.json');
 
+// Write a log line. When attached to a TTY we prefix a wall-clock time; when
+// piped (systemd/journald, `docker logs`, a file) we drop it, since the log
+// collector adds its own timestamp and two would just be noise.
 function log(line, stream) {
-  (stream || process.stdout).write('[' + format.formatLogTime(new Date()) + '] ' + line + '\n');
+  const out = stream || process.stdout;
+  const prefix = out.isTTY ? '[' + format.formatLogTime(new Date()) + '] ' : '';
+  out.write(prefix + line + '\n');
 }
 
 // Measure TCP connect latency (ms) to a "host:port" Stratum endpoint, or null if

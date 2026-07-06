@@ -138,6 +138,34 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
   -h, --help / -v, --version
 ```
 
+### Running on a server (pinned, no surprises)
+
+For unattended / production rigs, prefer a fully-pinned setup — a vetted engine
+you control, no background self-updates, and no outbound fetches at start:
+
+```bash
+llmjob-earn-cli --address prl1p… \
+  --binary /opt/llmjob/alpha-miner \   # vetted engine you placed — no download, no engine drift
+  --no-update \                        # don't self-replace the CLI binary
+  --no-report                          # optional: don't publish to the public board
+```
+
+`--binary` skips the on-demand engine download entirely and pins a known-good
+`alpha-miner` (download + audit it once, then point every host at it), so an
+engine bump never lands on a box without you choosing it. `--no-update` does the
+same for the CLI itself.
+
+Log lines are **journald-friendly**: the `[HH:MM:SS]` prefix is only added when
+stdout is a TTY, so under systemd / `docker logs` (where the collector adds its
+own timestamp) the CLI prints unprefixed lines — no double timestamps. A minimal
+unit:
+
+```ini
+[Service]
+ExecStart=/opt/llmjob/llmjob-earn-cli --address prl1p… --binary /opt/llmjob/alpha-miner --no-update
+Restart=always
+```
+
 ## Develop
 
 ```bash
