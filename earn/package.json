@@ -1,16 +1,29 @@
 {
   "name": "llmjob-earn",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "LLMJob Earn — desktop GUI that turns the excess compute on GPUs you already own into crypto (Pearl / PRL) via the AlphaPool alpha-miner. Paste a payout address and start earning, no command line.",
   "main": "src/main/main.js",
+  "bin": {
+    "llmjob-earn-cli": "src/cli/earn-cli.js"
+  },
   "scripts": {
     "start": "electron .",
+    "start:cli": "node src/cli/earn-cli.js",
     "test": "jest",
     "test:watch": "jest --watch",
     "dist:win": "electron-builder --win",
-    "dist:linux": "electron-builder --linux"
+    "dist:linux": "electron-builder --linux",
+    "dist:cli": "node scripts/build-cli.mjs"
   },
-  "keywords": ["llmjob", "pearl", "prl", "mining", "alpha-miner", "electron", "gpu"],
+  "keywords": [
+    "llmjob",
+    "pearl",
+    "prl",
+    "mining",
+    "alpha-miner",
+    "electron",
+    "gpu"
+  ],
   "author": "super3",
   "license": "MIT",
   "engines": {
@@ -19,14 +32,25 @@
   "devDependencies": {
     "electron": "^33.2.0",
     "electron-builder": "^25.1.8",
-    "jest": "^30.0.5"
+    "esbuild": "^0.28.1",
+    "jest": "^30.0.5",
+    "postject": "^1.0.0-alpha.6"
   },
   "build": {
     "appId": "com.llmjob.earn",
     "productName": "LLMJob Earn",
-    "files": ["src/**/*", "package.json"],
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
     "extraResources": [
-      { "from": "vendor/engine", "to": "engine", "filter": ["**/*"] }
+      {
+        "from": "vendor/engine",
+        "to": "engine",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "win": {
       "target": "nsis",
@@ -46,7 +70,12 @@
       "artifactName": "LLMJob-Earn-${version}.${ext}"
     },
     "publish": [
-      { "provider": "github", "owner": "super3", "repo": "llmjob", "releaseType": "release" }
+      {
+        "provider": "github",
+        "owner": "super3",
+        "repo": "llmjob",
+        "releaseType": "release"
+      }
     ]
   },
   "dependencies": {

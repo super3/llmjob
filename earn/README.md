@@ -3,7 +3,8 @@
 A desktop GUI that turns the excess compute on GPUs you already own into crypto,
 wrapping the AlphaPool [`alpha-miner`](https://pearl.alphapool.tech/#setup) engine
 for Pearl (**PRL**). Paste a payout address, hit **Start**, and earn — no command
-line. Built with Electron; **Windows** is the shipped target for now.
+line. Built with Electron and shipped for **Windows** and **Linux**; headless
+rigs can use the [command-line miner](#headless-cli-linux) instead of the GUI.
 
 > The LLM "co-mining" side of LLMJob comes later — this app is the easy on-ramp
 > that gets GPUs onto the network and earning today.
@@ -23,6 +24,8 @@ line. Built with Electron; **Windows** is the shipped target for now.
 - **`src/shared/`** — pure, fully unit-tested logic (no Electron/DOM):
   - `config.js` — pool endpoints, per-card static difficulty, engine metadata, economics.
   - `address.js` — `prl1p…` / `mdl1p…` validation, shortening, and the merge-mining combined address.
+  - `cliArgs.js` — parses/validates the headless CLI flags into the same settings shape the GUI uses.
+  - `selfUpdate.js` — decides, from the running version + GitHub's latest release, whether the CLI binary should self-update.
   - `minerArgs.js` — builds the engine argument vector / launcher env (`--address`, `--worker`, `--password "x;d=N"`, `--force-backend`).
   - `parser.js` — turns `alpha-miner` stdout into structured events (shares, hashrate, connect).
   - `miningStats.js` — accumulates those events into the live stats snapshot.
@@ -39,6 +42,11 @@ line. Built with Electron; **Windows** is the shipped target for now.
   - `engineManager.js` — downloads + installs the engine on first run (injected IO, unit-tested).
   - `main.js` / `preload.js` — window, settings persistence, IPC bridge (thin shells).
 - **`src/renderer/`** — the GUI (Setup → Running → Settings → Logs), pure display + IPC.
+- **`src/cli/`** — headless Linux miner (no Electron); thin IO shells that reuse
+  the same `shared/*` logic and process supervisor as the GUI:
+  - `earn-cli.js` — the CLI entry (arg handling, engine resolution, run loop, self-update check).
+  - `selfUpdater.js` — the IO side of self-update (GitHub fetch, download, atomic self-replace, re-exec).
+  - `sea-entry.js` — entry shim for the packaged single-file binary (`scripts/build-cli.mjs`).
 
 ## The mining engine
 
@@ -59,11 +67,111 @@ The app drives `alpha-miner` with its documented CLI: `--address prl1…` (or
 `--password "x;d=N"`, an optional `--force-backend` for cards that need it, and
 the regional endpoint (`us1/us2/eu1/eu2/ru1/sg1/in1.alphapool.tech:5566`).
 
+## Headless CLI (Linux)
+
+For rigs and servers with no desktop, `src/cli/earn-cli.js` runs the exact same
+engine from the command line — no Electron, no window. It shares all the logic
+with the GUI (engine download, `prl1…`/`mdl1…` addresses, static difficulty,
+merge mining, the public-board report), so behaviour matches the app.
+
+Like the GUI, it **auto-detects** the bits you don't pin: the lowest-latency
+pool region (it TCP-pings every endpoint on start) and the GPU (`nvidia-smi`),
+picking that card's recommended static difficulty from the table. Both are
+best-effort — if the pings all fail it falls back to `us2`, and if there's no
+`nvidia-smi` it falls back to the default difficulty — and an explicit
+`--region`, `--gpu`, or `--difficulty` always overrides the detected value.
+
+```bash
+# from this earn/ directory
+node src/cli/earn-cli.js --address prl1pYOUR_ADDRESS
+# or, once installed (npm i -g / npx): llmjob-earn-cli --address prl1p…
+npm run start:cli -- --address prl1pYOUR_ADDRESS   # via the package script
+```
+
+On first run it downloads the Linux `alpha-miner` binary from the pool and
+caches it under `~/.local/share/llmjob-earn/engine/` (override with
+`--engine-dir`, or skip the download entirely with `--binary /path/to/alpha-miner`).
+It streams the engine's real output, prints a periodic hashrate/share summary,
+and shuts the engine down cleanly on Ctrl-C.
+
+### Standalone binary + self-update
+
+CI packages the CLI into a **standalone single-file Linux executable**
+(`llmjob-earn-cli-linux`, built with [Node SEA](https://nodejs.org/api/single-executable-applications.html))
+and attaches it to each GitHub Release, so a headless box can run it with **no
+Node install**:
+
+```bash
+curl -L -o llmjob-earn-cli https://github.com/super3/llmjob/releases/latest/download/llmjob-earn-cli-linux
+chmod +x llmjob-earn-cli
+./llmjob-earn-cli --address prl1pYOUR_ADDRESS
+```
+
+That binary **auto-updates itself**. On start it checks the GitHub "latest
+release", and if a newer version is out it downloads the new binary, atomically
+replaces itself in place, and re-launches with the same arguments before mining
+— so a long-running rig stays current hands-off. Opt out per-run with
+`--no-update`, or update on demand without (re)starting a mine:
+
+```bash
+./llmjob-earn-cli update      # check + self-replace if a newer release exists
+```
+
+Run from source (`node src/cli/earn-cli.js`) it doesn't replace anything — it
+just prints a notice when a newer release is available (update via git/npm).
+`npm run dist:cli` builds the binary locally into `dist/llmjob-earn-cli-linux`.
+
+```
+Usage: llmjob-earn-cli --address <prl1p…> [options]
+
+  -a, --address <prl1p…>   Your Pearl payout address (required)
+  -m, --mdl <mdl1p…>       Also merge-mine ModelOS (MDL) on the same shares
+  -r, --region <id>        Pool region: us1/us2/eu1/eu2/ru1/sg1/in1 (default: auto-detect fastest)
+  -w, --worker <name>      Worker/rig name (default: rig01)
+  -d, --difficulty <n>     Static share difficulty (default: from detected/--gpu card, else 524288)
+  -g, --gpu <card>         GPU name for the difficulty table (default: auto-detect via nvidia-smi)
+      --backend <name>     Force an engine backend (e.g. ampere)
+  -b, --binary <path>      Use this alpha-miner binary instead of downloading one
+      --engine-dir <path>  Where to cache the downloaded engine
+      --no-report          Do not publish live status to the public network board
+      --no-update          Do not auto-update the CLI to a newer release on start
+  -h, --help / -v, --version
+```
+
+### Running on a server (pinned, no surprises)
+
+For unattended / production rigs, prefer a fully-pinned setup — a vetted engine
+you control, no background self-updates, and no outbound fetches at start:
+
+```bash
+llmjob-earn-cli --address prl1p… \
+  --binary /opt/llmjob/alpha-miner \   # vetted engine you placed — no download, no engine drift
+  --no-update \                        # don't self-replace the CLI binary
+  --no-report                          # optional: don't publish to the public board
+```
+
+`--binary` skips the on-demand engine download entirely and pins a known-good
+`alpha-miner` (download + audit it once, then point every host at it), so an
+engine bump never lands on a box without you choosing it. `--no-update` does the
+same for the CLI itself.
+
+Log lines are **journald-friendly**: the `[HH:MM:SS]` prefix is only added when
+stdout is a TTY, so under systemd / `docker logs` (where the collector adds its
+own timestamp) the CLI prints unprefixed lines — no double timestamps. A minimal
+unit:
+
+```ini
+[Service]
+ExecStart=/opt/llmjob/llmjob-earn-cli --address prl1p… --binary /opt/llmjob/alpha-miner --no-update
+Restart=always
+```
+
 ## Develop
 
 ```bash
 npm install        # from this earn/ directory
 npm start          # launch the Electron app
+npm run start:cli -- --address prl1p…   # run the headless Linux miner
 npm test           # jest — 100% coverage gate on shared/* + miner/engineManager
 ```
 

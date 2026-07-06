@@ -1,0 +1,104 @@
+'use strict';
+
+// IO shell for the CLI's self-update — the real HTTPS / filesystem / process
+// side of shared/selfUpdate.js. Excluded from the coverage gate like the other
+// shells (main.js, earn-cli.js); the decision logic it wraps is unit-tested.
+
+const https = require('https');
+const fs = require('fs');
+const { spawnSync } = require('child_process');
+const { LATEST_RELEASE_API, parseRelease, planUpdate } = require('../shared/selfUpdate');
+
+// Set on the re-exec'd child so it doesn't check/update again and loop.
+const UPDATED_ENV = 'LLMJOB_EARN_UPDATED';
+
+// GET JSON with a short timeout. Best-effort: resolves the parsed object, or
+// null on any error / non-200 (GitHub requires a User-Agent header).
+function fetchJson(url) {
+  return new Promise((resolve) => {
+    try {
+      const req = https.get(url, {
+        headers: { 'User-Agent': 'llmjob-earn-cli', Accept: 'application/vnd.github+json' },
+        timeout: 8000,
+      }, (res) => {
+        if (res.statusCode !== 200) { res.resume(); return resolve(null); }
+        let data = '';
+        res.on('data', (c) => { data += c; if (data.length > 4e6) req.destroy(); });
+        res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { resolve(null); } });
+      });
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => { req.destroy(); resolve(null); });
+    } catch (e) {
+      resolve(null);
+    }
+  });
+}
+
+// Fetch + parse the latest release, or null if unreachable.
+function fetchLatestRelease() {
+  return fetchJson(LATEST_RELEASE_API).then((j) => (j ? parseRelease(j) : null));
+}
+
+// True when running as the packaged single-file binary (vs `node earn-cli.js`).
+// Only then can we replace ourselves from a release asset.
+function isPackaged() {
+  try {
+    // Node Single Executable Application (how CI packages the binary).
+    return require('node:sea').isSea();
+  } catch (e) {
+    // pkg-built binaries expose process.pkg.
+    return !!process.pkg;
+  }
+}
+
+// Stream a URL to a file, following redirects. Rejects on HTTP error.
+function download(url, dest, redirects) {
+  redirects = redirects || 0;
+  return new Promise((resolve, reject) => {
+    if (redirects > 5) return reject(new Error('too many redirects'));
+    const req = https.get(url, { headers: { 'User-Agent': 'llmjob-earn-cli' } }, (res) => {
+      const code = res.statusCode || 0;
+      if (code >= 300 && code < 400 && res.headers.location) {
+        res.resume();
+        return resolve(download(new URL(res.headers.location, url).toString(), dest, redirects + 1));
+      }
+      if (code !== 200) { res.resume(); return reject(new Error('HTTP ' + code + ' for ' + url)); }
+      const out = fs.createWriteStream(dest);
+      res.pipe(out);
+      out.on('finish', () => out.close(() => resolve(dest)));
+      out.on('error', reject);
+    });
+    req.on('error', reject);
+  });
+}
+
+// Replace the running executable with a freshly downloaded binary. On Linux a
+// running binary can be renamed over (the live process keeps its open inode),
+// so download beside it then atomically rename into place.
+async function applyUpdate(plan, execPath) {
+  const exe = execPath || process.execPath;
+  const tmp = exe + '.new-' + process.pid;
+  await download(plan.downloadUrl, tmp);
+  fs.chmodSync(tmp, 0o755);
+  fs.renameSync(tmp, exe);
+  return exe;
+}
+
+// Re-run the (now updated) binary with the same args, flagged so it won't loop.
+// Returns the child's exit code.
+function reexec(argv) {
+  const env = Object.assign({}, process.env, { [UPDATED_ENV]: '1' });
+  const r = spawnSync(process.execPath, argv, { stdio: 'inherit', env });
+  return r.status == null ? 1 : r.status;
+}
+
+module.exports = {
+  UPDATED_ENV,
+  fetchJson,
+  fetchLatestRelease,
+  isPackaged,
+  download,
+  applyUpdate,
+  reexec,
+  planUpdate,
+};

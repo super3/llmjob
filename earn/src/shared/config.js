@@ -62,7 +62,7 @@ const ECON = {
 // Recommended static difficulty per card class, from the pool's table. Order
 // matters: more specific patterns first.
 const DIFFICULTY_BY_CARD = [
-  { match: /5090|h100|h200|b100|b200/i, difficulty: 1048576 },
+  { match: /5090|h100|h200|b100|b200|pro 6000/i, difficulty: 1048576 }, // incl. RTX PRO 6000 (Blackwell)
   { match: /4090|5080/i, difficulty: 524288 },
   { match: /4070|4080/i, difficulty: 262144 },
   { match: /3080|3090|70hx|90hx/i, difficulty: 262144 },

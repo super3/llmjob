@@ -32,6 +32,7 @@ describe('config', () => {
 
   test('difficultyForCard maps card classes and falls back to the default', () => {
     expect(difficultyForCard('GPU #0 · RTX 5090')).toBe(1048576);
+    expect(difficultyForCard('NVIDIA RTX PRO 6000 Blackwell Workstation Edition')).toBe(1048576);
     expect(difficultyForCard('RTX 4090')).toBe(524288);
     expect(difficultyForCard('RTX 4070')).toBe(262144);
     expect(difficultyForCard('RTX 3090')).toBe(262144);
@@ -41,6 +42,9 @@ describe('config', () => {
     expect(difficultyForCard('V100')).toBe(4096);
     expect(difficultyForCard('something else')).toBe(DEFAULTS.difficulty);
     expect(difficultyForCard(null)).toBe(DEFAULTS.difficulty);
+    // `pro 6000` must not catch the older, slower 6000-class cards.
+    expect(difficultyForCard('NVIDIA RTX A6000')).toBe(DEFAULTS.difficulty);
+    expect(difficultyForCard('Quadro RTX 6000')).toBe(DEFAULTS.difficulty);
   });
 
   test('engine and economics metadata are present', () => {

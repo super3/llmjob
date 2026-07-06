@@ -96,9 +96,36 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Package the headless CLI (src/cli) into a standalone single-file Linux
+      # binary via Node SEA. This is the self-updating artifact: the running
+      # binary pulls a newer copy of itself from the release (src/cli/selfUpdater.js).
+      - name: Package headless CLI binary (Linux)
+        if: runner.os == 'Linux'
+        run: npm run dist:cli
+
+      # Attach the CLI binary to the same GitHub Release electron-builder
+      # published to (v<version> from package.json), so the self-updater can find
+      # it. Only on a v* tag or a manual publish.
+      - name: Publish CLI binary to release (Linux, on v* tag or manual publish)
+        if: runner.os == 'Linux' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          gh release upload "v$VERSION" dist/llmjob-earn-cli-linux --clobber --repo "$GITHUB_REPOSITORY"
+
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.dist_path }}
+          if-no-files-found: error
+
+      - name: Upload CLI binary artifact (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: llmjob-earn-cli-linux
+          path: earn/dist/llmjob-earn-cli-linux
           if-no-files-found: error
