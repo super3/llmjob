@@ -19,8 +19,8 @@ const { MinerManager } = require('./minerManager');
 const { EngineManager } = require('./engineManager');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, endpointFor, difficultyForCard } = require('../shared/config');
-const { buildBalanceUrl, parseBalance } = require('../shared/balance');
-const { isValidAddress, isValidMdlAddress } = require('../shared/address');
+const { buildBalanceUrl, parseBalance, buildMdlBalanceUrl, parseMdlBalance } = require('../shared/balance');
+const { isValidAddress } = require('../shared/address');
 const { progressPercent, bundledEnginePath } = require('../shared/engine');
 const { formatUpdate } = require('../shared/updateStatus');
 const { describeLaunchError } = require('../shared/engineError');
@@ -85,23 +85,24 @@ function postMinerReport(payload) {
 // Fetch a pool balance for a payout address. Best-effort and never rejects —
 // resolves the parsed { pending, paid, earned, usd } or null (unknown address,
 // offline, non-200, bad JSON). `opts.validate` guards the address shape,
-// `opts.currency` picks the denomination, and `opts.priceUsd` (optional) adds a
-// USD figure. Runs here in the main process so it isn't subject to the
-// renderer's CSP / cross-origin restrictions.
+// `opts.buildUrl` / `opts.parse` select the endpoint and payload shape (the
+// merge-mined MDL record lives at a different route), and `opts.priceUsd`
+// (optional) adds a USD figure. Runs here in the main process so it isn't
+// subject to the renderer's CSP / cross-origin restrictions.
 function fetchBalance(address, opts) {
   const o = opts || {};
   const isValid = o.validate || isValidAddress;
   return new Promise((resolve) => {
     if (!isValid(address)) return resolve(null);
     try {
-      const u = new URL(buildBalanceUrl(String(address).trim()));
+      const u = new URL((o.buildUrl || buildBalanceUrl)(String(address).trim()));
       const lib = u.protocol === 'http:' ? http : https;
       const req = lib.get(u, { timeout: 8000 }, (res) => {
         if (res.statusCode !== 200) { res.resume(); return resolve(null); }
         let data = '';
         res.on('data', (c) => { data += c; if (data.length > 4e6) req.destroy(); });
         res.on('end', () => {
-          try { resolve(parseBalance(JSON.parse(data), o.priceUsd, o.currency)); }
+          try { resolve((o.parse || parseBalance)(JSON.parse(data), o.priceUsd, o.currency)); }
           catch (e) { resolve(null); }
         });
       });
@@ -468,8 +469,10 @@ ipcMain.handle('miner:difficultyForCard', (_e, name) => difficultyForCard(name))
 ipcMain.handle('gpu:detect', () => detectGpu());
 ipcMain.handle('region:detect', () => detectRegion());
 ipcMain.handle('balance:get', (_e, address) => fetchBalance(address, { priceUsd: ECON.PRL_USD }));
+// The MDL record is keyed by the PRL payout address (the pool rejects mdl1…
+// addresses on the miner endpoint), so this takes the PRL address.
 ipcMain.handle('balance:getMdl', (_e, address) =>
-  fetchBalance(address, { validate: isValidMdlAddress, currency: 'mdl' }));
+  fetchBalance(address, { buildUrl: buildMdlBalanceUrl, parse: parseMdlBalance }));
 ipcMain.on('miner:start', (_e, settings) => {
   startMining(settings || {}).catch((e) => send('miner:log', { level: 'error', line: 'start failed: ' + e.message }));
 });

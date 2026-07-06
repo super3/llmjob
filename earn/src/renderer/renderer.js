@@ -77,14 +77,20 @@
     el.mdlBalance.textContent = '0.000';
   }
 
-  // Pull the merge-mined MDL balance for the MDL address and show total earned.
+  // Pull the merge-mined MDL total and show it. The pool keys the merge-mining
+  // record by the PRL payout address (its miner endpoint rejects mdl1… lookups)
+  // and echoes back which mdl1… address it pays, so this queries with the
+  // payout address and only shows a balance when the pool's pairing matches the
+  // address in the field — a mismatched entry earns nothing and stays 0.000.
   // Best-effort like the PRL lookup; guards against a stale response landing
-  // after the field changed. There's no MDL/USD price, so no dollar figure.
+  // after either field changed. There's no MDL/USD price, so no dollar figure.
   async function refreshMdlBalance() {
     const mdl = String(el.setMdl.value || '').trim();
-    if (!isValidMdl(mdl) || !api.getMdlBalance) return;
-    const b = await api.getMdlBalance(mdl);
-    if (!b || mdl !== String(el.setMdl.value || '').trim()) return;
+    const addr = state.address.trim();
+    if (!isValidMdl(mdl) || !isValid(addr) || !api.getMdlBalance) return;
+    const b = await api.getMdlBalance(addr);
+    if (!b || mdl !== String(el.setMdl.value || '').trim() || addr !== state.address.trim()) return;
+    if (b.mdlAddress && b.mdlAddress.toLowerCase() !== mdl.toLowerCase()) return;
     el.mdlBalance.textContent = fmt3(b.earned);
   }
 
@@ -223,10 +229,17 @@
       el.btnStart.disabled = !isValid(state.address);
       renderBalanceMeta();
       // Debounce the balance lookup so we don't hit the pool on every keystroke;
-      // clear a stale balance the moment the address stops being valid.
+      // clear a stale balance the moment the address stops being valid. The MDL
+      // lookup is keyed by this payout address too, so refresh it alongside.
       if (balDebounce) clearTimeout(balDebounce);
-      if (isValid(state.address)) balDebounce = setTimeout(refreshBalance, 600);
-      else resetBalance();
+      if (mdlBalDebounce) clearTimeout(mdlBalDebounce);
+      if (isValid(state.address)) {
+        balDebounce = setTimeout(refreshBalance, 600);
+        mdlBalDebounce = setTimeout(refreshMdlBalance, 600);
+      } else {
+        resetBalance();
+        resetMdlBalance();
+      }
     });
     el.setMdl.addEventListener('input', () => {
       renderMdlNote();
