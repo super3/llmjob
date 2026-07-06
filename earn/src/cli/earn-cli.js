@@ -89,6 +89,23 @@ function detectGpu() {
   });
 }
 
+// Live GPU VRAM (used/total, MB) via nvidia-smi — mirrors the GUI (main.js) so
+// the CLI reports VRAM to the public board too. Resolves { usedMb, totalMb } or
+// null (no nvidia-smi / non-NVIDIA / parse failure). Never rejects.
+function detectVram() {
+  return new Promise((resolve) => {
+    execFile('nvidia-smi',
+      ['--query-gpu=memory.used,memory.total', '--format=csv,noheader,nounits'],
+      { timeout: 5000 },
+      (err, stdout) => {
+        if (err) return resolve(null);
+        const parts = String(stdout).split(/\r?\n/)[0].split(',').map((x) => parseInt(x, 10));
+        if (parts.length < 2 || !Number.isFinite(parts[0]) || !Number.isFinite(parts[1])) return resolve(null);
+        resolve({ usedMb: parts[0], totalMb: parts[1] });
+      });
+  });
+}
+
 // Stream a URL to a file, following redirects and reporting download progress.
 // Mirrors the GUI's downloader (main.js) — kept here so the CLI has no runtime
 // dependency on Electron.
@@ -310,7 +327,14 @@ async function run(argv) {
   miner.on('error', (err) => log('engine error: ' + err.message, process.stderr));
 
   if (settings.report) {
-    const report = () => postMinerReport(buildMinerReport(settings, snapshot(stats, Date.now())));
+    // Sample live VRAM (nvidia-smi) and fold it into the snapshot before posting,
+    // just like the GUI — otherwise the board shows 0 GB for a CLI-driven rig.
+    const report = async () => {
+      const snap = snapshot(stats, Date.now());
+      const vram = await detectVram();
+      if (vram) { snap.vramUsedMb = vram.usedMb; snap.vramTotalMb = vram.totalMb; }
+      return postMinerReport(buildMinerReport(settings, snap));
+    };
     report();
     reporter = setInterval(report, NETWORK.reportIntervalMs);
     if (reporter.unref) reporter.unref();
