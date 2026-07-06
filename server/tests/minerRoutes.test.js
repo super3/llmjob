@@ -41,12 +41,13 @@ describe('Miner API', () => {
     expect(res.body.error).toMatch(/address/i);
   });
 
-  test('GET /api/miners returns grouped online miners', async () => {
+  test('GET /api/miners returns online miners, one row per worker/GPU', async () => {
     await request(app).post('/api/miners/ping').send({ address: ADDR, worker: 'rig01', gpu: 'RTX 4090', hashrate: 100 });
     const res = await request(app).get('/api/miners');
     expect(res.status).toBe(200);
     expect(res.body.totalOnline).toBe(1);
-    expect(res.body.miners[0]).toMatchObject({ addr: ADDR, gpu: 'RTX 4090', hash: 100, workers: 1 });
+    expect(res.body.totalWorkers).toBe(1);
+    expect(res.body.miners[0]).toMatchObject({ addr: ADDR, worker: 'rig01', gpu: 'RTX 4090', hash: 100 });
   });
 
   test('POST returns 500 when the db fails', async () => {
