@@ -19,10 +19,11 @@ describe('config', () => {
     expect(endpointFor('???')).toBe(REGIONS.us2.endpoint);
   });
 
-  test('all seven documented endpoints are present on port 5566', () => {
+  test('all eight documented endpoints are present on port 5566', () => {
     const endpoints = Object.values(REGIONS).map((r) => r.endpoint);
-    expect(endpoints).toHaveLength(7);
+    expect(endpoints).toHaveLength(8);
     expect(endpoints.every((e) => e.endsWith('.alphapool.tech:5566'))).toBe(true);
+    expect(endpoints).toContain('hk1.alphapool.tech:5566');
   });
 
   test('regionLabel combines flag and label, with fallback', () => {
