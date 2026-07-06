@@ -32,4 +32,29 @@ function parseBalance(json, priceUsd, currency) {
   return { pending, paid, earned, usd };
 }
 
-module.exports = { POOL_BASE, buildBalanceUrl, parseBalance };
+// Merge-mined MDL lives on the PRL miner's record — GET /api/miner/<prl…>/mdl —
+// not under the mdl1… address (the pool 400s those). The response is
+// { has_mdl, mdl_address, summary: { pending_mdl, total_paid_mdl, … },
+// recent_payouts: […] }.
+function buildMdlBalanceUrl(prlAddress, base) {
+  return buildBalanceUrl(prlAddress, base) + '/mdl';
+}
+
+// Reduce the merge-mining payload to the display fields, or null when the
+// payload is unusable or the address has no MDL pairing. Totals come from
+// `summary` — recent_payouts is a capped window and undercounts lifetime paid.
+// `mdlAddress` echoes the pool's linked mdl1… address so the UI can cross-check
+// it against the address in Settings.
+function parseMdlBalance(json) {
+  if (!json || typeof json !== 'object' || Array.isArray(json)) return null;
+  if (!json.has_mdl) return null;
+  const s = json.summary;
+  if (!s || typeof s !== 'object' || Array.isArray(s)) return null;
+  const pending = Number(s.pending_mdl);
+  if (!Number.isFinite(pending) || pending < 0) return null;
+  const paidRaw = Number(s.total_paid_mdl);
+  const paid = Number.isFinite(paidRaw) && paidRaw >= 0 ? paidRaw : 0;
+  return { pending, paid, earned: pending + paid, usd: null, mdlAddress: String(json.mdl_address || '') };
+}
+
+module.exports = { POOL_BASE, buildBalanceUrl, parseBalance, buildMdlBalanceUrl, parseMdlBalance };
