@@ -81,15 +81,20 @@ const LLM = {
     linux: 'https://github.com/ggml-org/llama.cpp/releases/latest/download/llama-bin-ubuntu-x64.zip',
     darwin: 'https://github.com/ggml-org/llama.cpp/releases/latest/download/llama-bin-macos-arm64.zip',
   },
-  // One small model to start: Llama 3.2 1B Instruct, Q4_K_M GGUF. `layers` is the
-  // model's transformer-layer count (for --n-gpu-layers) and `vramFullMb` the
-  // approximate VRAM for a full GPU offload at ctxSize (weights + KV cache).
+  // A small, capable model to start with: Google Gemma 4 E4B Instruct, Q4_K_M
+  // GGUF (~5 GB). "E4B" = ~4.5B *effective* params via Per-Layer Embeddings, so
+  // it keeps a low VRAM footprint (runs in ~5 GB at 4-bit) while adding 128K
+  // context, tool-calling, and 140+ languages — a good default that co-runs with
+  // mining without hogging the GPU. `layers` is the text model's transformer-layer
+  // count (for --n-gpu-layers; llama.cpp clamps a larger value to what's present)
+  // and `vramFullMb` the approximate VRAM for a full GPU offload at ctxSize
+  // (weights + KV cache).
   model: {
-    name: 'Llama-3.2-1B-Instruct-Q4_K_M',
-    file: 'Llama-3.2-1B-Instruct-Q4_K_M.gguf',
-    url: 'https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf',
-    layers: 16,
-    vramFullMb: 1600,
+    name: 'Gemma-4-E4B-it-Q4_K_M',
+    file: 'gemma-4-E4B-it-Q4_K_M.gguf',
+    url: 'https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf',
+    layers: 42,
+    vramFullMb: 5800,
   },
 };
 

@@ -126,9 +126,10 @@ The CLI runs the same local LLM as the GUI. `--mode` picks how the GPU is used:
 
 When the LLM runs it spawns llama.cpp's `llama-server` and exposes an
 OpenAI-compatible endpoint at `http://127.0.0.1:8080/v1`. The small default model
-(`Llama-3.2-1B-Instruct-Q4_K_M`) is a plain download cached under
-`~/.local/share/llmjob-earn/llm/`; point `--llm-model /path/to/model.gguf` at
-your own to skip it. Because the pool ships `llama-server` as a release **zip**
+(`Gemma-4-E4B-it-Q4_K_M`, ~5 GB — ~4.5B *effective* params, so a low VRAM
+footprint) is a plain download cached under `~/.local/share/llmjob-earn/llm/`;
+point `--llm-model /path/to/model.gguf` at your own to skip it. Because the pool
+ships `llama-server` as a release **zip**
 (and the CLI, like the miner, doesn't extract zips), pass a prebuilt server
 binary with `--llm-binary /path/to/llama-server` on Linux.
 

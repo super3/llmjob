@@ -27,7 +27,7 @@ describe('buildServerArgs', () => {
     const a = buildServerArgs({ modelPath: '/m.gguf' });
     expect(a).toEqual([
       '--model', '/m.gguf', '--host', '127.0.0.1', '--port', '8080',
-      '--ctx-size', '4096', '--n-gpu-layers', '16', '--parallel', '1',
+      '--ctx-size', '4096', '--n-gpu-layers', '42', '--parallel', '1',
     ]);
     expect(a).not.toContain('--flash-attn');
   });
@@ -46,7 +46,7 @@ describe('buildServerArgs', () => {
 
   test('works with no opts (all defaults from config)', () => {
     const a = buildServerArgs();
-    expect(a).toEqual(expect.arrayContaining(['--host', '127.0.0.1', '--n-gpu-layers', '16', '--model', '']));
+    expect(a).toEqual(expect.arrayContaining(['--host', '127.0.0.1', '--n-gpu-layers', '42', '--model', '']));
   });
 });
 
