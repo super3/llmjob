@@ -85,11 +85,11 @@ const HERO_REGIONS = {
   sg: { label: 'sg', flag: '🇸🇬', name: 'Asia · Singapore', endpoint: 'sg.pearl.herominers.com:1200' },
 };
 
-// Supported upstream pools. AlphaPool is the default and the only pool with
-// in-app balance lookups (balance.js talks to its API). The two differ in how
-// the engine identifies the rig: AlphaPool takes a separate --worker flag and
-// pins static difficulty via the stratum password (`x;d=N`); HeroMiners uses
-// the classic `wallet.worker` login suffix and vardiff only.
+// Supported upstream pools. Both have in-app balance lookups (balance.js talks
+// to each pool's API). The two differ in how the engine identifies the rig:
+// AlphaPool takes a separate --worker flag and pins static difficulty via the
+// stratum password (`x;d=N`); HeroMiners uses the classic `wallet.worker`
+// login suffix and vardiff only.
 const DEFAULT_POOL = 'alphapool';
 const POOLS = {
   alphapool: {
@@ -108,7 +108,7 @@ const POOLS = {
     defaultRegion: 'ww',
     workerStyle: 'suffix',
     staticDifficulty: false,
-    balances: false,
+    balances: true,
   },
 };
 

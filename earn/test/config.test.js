@@ -30,7 +30,7 @@ describe('config', () => {
   test('pools: AlphaPool is the default with balances; HeroMiners is vardiff/suffix-style', () => {
     expect(DEFAULT_POOL).toBe('alphapool');
     expect(POOLS.alphapool).toMatchObject({ regions: REGIONS, workerStyle: 'flag', staticDifficulty: true, balances: true });
-    expect(POOLS.herominers).toMatchObject({ workerStyle: 'suffix', staticDifficulty: false, balances: false, defaultRegion: 'ww' });
+    expect(POOLS.herominers).toMatchObject({ workerStyle: 'suffix', staticDifficulty: false, balances: true, defaultRegion: 'ww' });
     const hero = Object.values(POOLS.herominers.regions).map((r) => r.endpoint);
     expect(hero).toHaveLength(5);
     expect(hero.every((e) => e.endsWith('pearl.herominers.com:1200'))).toBe(true);

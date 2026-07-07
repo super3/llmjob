@@ -57,4 +57,43 @@ function parseMdlBalance(json) {
   return { pending, paid, earned: pending + paid, usd: null, mdlAddress: String(json.mdl_address || '') };
 }
 
-module.exports = { POOL_BASE, buildBalanceUrl, parseBalance, buildMdlBalanceUrl, parseMdlBalance };
+// HeroMiners runs a classic cryptonote-nodejs-pool API on both sides of its
+// merged mining: pearl.herominers.com serves PRL and modelos.herominers.com
+// serves MDL, each keyed by its own address. GET /api/stats_address returns
+// { stats: { balance, paid, … } } in atomic units (coinUnits = 1e8 on both
+// pools, verified via /api/stats); unknown addresses return {"error":"Not found"}.
+const HERO_PRL_BASE = 'https://pearl.herominers.com';
+const HERO_MDL_BASE = 'https://modelos.herominers.com';
+const HERO_UNITS = 1e8;
+
+function buildHeroBalanceUrl(address, base) {
+  const a = String(address == null ? '' : address).trim();
+  return (base || HERO_PRL_BASE) + '/api/stats_address?address=' + encodeURIComponent(a) + '&recentBlocksAmount=0&longpoll=false';
+}
+
+function buildHeroMdlBalanceUrl(address, base) {
+  return buildHeroBalanceUrl(address, base || HERO_MDL_BASE);
+}
+
+// Reduce a stats_address payload to the display fields, or null when unusable
+// (incl. the {"error":"Not found"} shape for unknown addresses). Atomic values
+// may arrive as numbers or strings; both divide by HERO_UNITS.
+function parseHeroBalance(json, priceUsd) {
+  if (!json || typeof json !== 'object' || Array.isArray(json)) return null;
+  const s = json.stats;
+  if (!s || typeof s !== 'object' || Array.isArray(s)) return null;
+  const pendingRaw = Number(s.balance);
+  if (!Number.isFinite(pendingRaw) || pendingRaw < 0) return null;
+  const paidRaw = Number(s.paid);
+  const pending = pendingRaw / HERO_UNITS;
+  const paid = Number.isFinite(paidRaw) && paidRaw >= 0 ? paidRaw / HERO_UNITS : 0;
+  const earned = pending + paid;
+  const price = Number(priceUsd);
+  const usd = Number.isFinite(price) && price >= 0 ? earned * price : null;
+  return { pending, paid, earned, usd };
+}
+
+module.exports = {
+  POOL_BASE, buildBalanceUrl, parseBalance, buildMdlBalanceUrl, parseMdlBalance,
+  HERO_PRL_BASE, HERO_MDL_BASE, HERO_UNITS, buildHeroBalanceUrl, buildHeroMdlBalanceUrl, parseHeroBalance,
+};

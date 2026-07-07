@@ -87,14 +87,13 @@
     el.mdlBalanceMeta.hidden = !(isValidMdl(String(el.setMdl.value || '').trim()) && poolBalancesOn());
   }
 
-  // Note under the Connection rows for pools without in-app balance lookups.
+  // Note under the Connection rows for pools that manage difficulty themselves.
   function renderPoolNote() {
     const p = poolsCfg && poolsCfg[currentPool()];
     if (!el.poolNote) return;
-    if (!p || p.balances) { el.poolNote.hidden = true; el.poolNote.textContent = ''; return; }
+    if (!p || p.staticDifficulty !== false) { el.poolNote.hidden = true; el.poolNote.textContent = ''; return; }
     el.poolNote.hidden = false;
-    el.poolNote.textContent = p.label + ' balances aren’t shown in-app yet — track your earnings on the pool’s site. ' +
-      'This pool manages share difficulty automatically (the static difficulty setting doesn’t apply).';
+    el.poolNote.textContent = p.label + ' manages share difficulty automatically — the static difficulty setting doesn’t apply on this pool.';
   }
 
   // Rebuild the region dropdown for a pool and select its default region.
@@ -115,19 +114,20 @@
     el.mdlBalance.textContent = '0.000';
   }
 
-  // Pull the merge-mined MDL total and show it. The pool keys the merge-mining
-  // record by the PRL payout address (its miner endpoint rejects mdl1… lookups)
-  // and echoes back which mdl1… address it pays, so this queries with the
-  // payout address and only shows a balance when the pool's pairing matches the
-  // address in the field — a mismatched entry earns nothing and stays 0.000.
-  // Best-effort like the PRL lookup; guards against a stale response landing
-  // after either field changed. There's no MDL/USD price, so no dollar figure.
+  // Pull the merge-mined MDL total and show it. The main process picks the
+  // right lookup for the pool: AlphaPool keys the merge record by the PRL
+  // payout address and echoes back which mdl1… address it pays (we only show a
+  // balance when that pairing matches the field — a mismatched entry earns
+  // nothing and stays 0.000); HeroMiners' modelOS pool is keyed by the mdl1…
+  // address directly. Best-effort like the PRL lookup; guards against a stale
+  // response landing after a field changed. No MDL/USD price, so no dollars.
   async function refreshMdlBalance() {
     const mdl = String(el.setMdl.value || '').trim();
     const addr = state.address.trim();
+    const pool = currentPool();
     if (!isValidMdl(mdl) || !isValid(addr) || !api.getMdlBalance || !poolBalancesOn()) return;
-    const b = await api.getMdlBalance(addr);
-    if (!b || mdl !== String(el.setMdl.value || '').trim() || addr !== state.address.trim()) return;
+    const b = await api.getMdlBalance(addr, mdl, pool);
+    if (!b || mdl !== String(el.setMdl.value || '').trim() || addr !== state.address.trim() || pool !== currentPool()) return;
     if (b.mdlAddress && b.mdlAddress.toLowerCase() !== mdl.toLowerCase()) return;
     el.mdlBalance.textContent = fmt3(b.earned);
   }
@@ -202,9 +202,10 @@
   // in place. Guards against a late response landing after the address changed.
   async function refreshBalance() {
     const addr = state.address.trim();
+    const pool = currentPool();
     if (!isValid(addr) || !api.getBalance || !poolBalancesOn()) return;
-    const b = await api.getBalance(addr);
-    if (!b || addr !== state.address.trim()) return;
+    const b = await api.getBalance(addr, pool);
+    if (!b || addr !== state.address.trim() || pool !== currentPool()) return;
     el.balance.textContent = fmt3(b.earned);
     el.balanceUsd.textContent = b.usd != null ? '≈ $' + b.usd.toFixed(2) : '';
   }

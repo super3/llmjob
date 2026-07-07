@@ -19,8 +19,11 @@ const { MinerManager } = require('./minerManager');
 const { EngineManager } = require('./engineManager');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const { POOLS, DEFAULT_POOL, DEFAULTS, MINER, NETWORK, ECON, poolFor, regionsFor, poolEndpointFor, difficultyForCard } = require('../shared/config');
-const { buildBalanceUrl, parseBalance, buildMdlBalanceUrl, parseMdlBalance } = require('../shared/balance');
-const { isValidAddress } = require('../shared/address');
+const {
+  buildBalanceUrl, parseBalance, buildMdlBalanceUrl, parseMdlBalance,
+  buildHeroBalanceUrl, buildHeroMdlBalanceUrl, parseHeroBalance,
+} = require('../shared/balance');
+const { isValidAddress, isValidMdlAddress } = require('../shared/address');
 const { progressPercent, bundledEnginePath } = require('../shared/engine');
 const { formatUpdate } = require('../shared/updateStatus');
 const { describeLaunchError } = require('../shared/engineError');
@@ -469,11 +472,19 @@ ipcMain.handle('config:get', () => ({ pools: POOLS, defaultPool: DEFAULT_POOL, r
 ipcMain.handle('miner:difficultyForCard', (_e, name) => difficultyForCard(name));
 ipcMain.handle('gpu:detect', () => detectGpu());
 ipcMain.handle('region:detect', (_e, pool) => detectRegion(pool));
-ipcMain.handle('balance:get', (_e, address) => fetchBalance(address, { priceUsd: ECON.PRL_USD }));
-// The MDL record is keyed by the PRL payout address (the pool rejects mdl1…
-// addresses on the miner endpoint), so this takes the PRL address.
-ipcMain.handle('balance:getMdl', (_e, address) =>
-  fetchBalance(address, { buildUrl: buildMdlBalanceUrl, parse: parseMdlBalance }));
+// Balance lookups are pool-specific. AlphaPool keys everything (incl. the
+// merge-mined MDL record, at /api/miner/<prl…>/mdl) by the PRL payout address;
+// HeroMiners runs a separate stats API per coin, each keyed by its own address.
+ipcMain.handle('balance:get', (_e, address, pool) => (
+  poolFor(pool) === POOLS.herominers
+    ? fetchBalance(address, { buildUrl: buildHeroBalanceUrl, parse: parseHeroBalance, priceUsd: ECON.PRL_USD })
+    : fetchBalance(address, { priceUsd: ECON.PRL_USD })
+));
+ipcMain.handle('balance:getMdl', (_e, prlAddress, mdlAddress, pool) => (
+  poolFor(pool) === POOLS.herominers
+    ? fetchBalance(mdlAddress, { validate: isValidMdlAddress, buildUrl: buildHeroMdlBalanceUrl, parse: parseHeroBalance })
+    : fetchBalance(prlAddress, { buildUrl: buildMdlBalanceUrl, parse: parseMdlBalance })
+));
 ipcMain.on('miner:start', (_e, settings) => {
   startMining(settings || {}).catch((e) => send('miner:log', { level: 'error', line: 'start failed: ' + e.message }));
 });
