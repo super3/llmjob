@@ -74,6 +74,58 @@ const DIFFICULTY_BY_CARD = [
   { match: /v100|titan v|cmp [12]\d\d/i, difficulty: 4096 },
 ];
 
+// HeroMiners' Pearl (PRL) + modelOS (MDL) merged-mining pool. All endpoints are
+// port 1200 (plain TCP and TLS on the same port), per their beginner's guides
+// (herominers.medium.com). Region keys are theirs; 'ww' is the geo-routed host.
+const HERO_REGIONS = {
+  ww: { label: 'auto', flag: '🌍', name: 'Worldwide', endpoint: 'pearl.herominers.com:1200' },
+  us: { label: 'us', flag: '🇺🇸', name: 'N. America', endpoint: 'us.pearl.herominers.com:1200' },
+  de: { label: 'de', flag: '🇩🇪', name: 'Europe · Germany', endpoint: 'de.pearl.herominers.com:1200' },
+  fr: { label: 'fr', flag: '🇫🇷', name: 'Europe · France', endpoint: 'fr.pearl.herominers.com:1200' },
+  sg: { label: 'sg', flag: '🇸🇬', name: 'Asia · Singapore', endpoint: 'sg.pearl.herominers.com:1200' },
+};
+
+// Supported upstream pools. AlphaPool is the default and the only pool with
+// in-app balance lookups (balance.js talks to its API). The two differ in how
+// the engine identifies the rig: AlphaPool takes a separate --worker flag and
+// pins static difficulty via the stratum password (`x;d=N`); HeroMiners uses
+// the classic `wallet.worker` login suffix and vardiff only.
+const DEFAULT_POOL = 'alphapool';
+const POOLS = {
+  alphapool: {
+    label: 'AlphaPool',
+    site: 'https://pearl.alphapool.tech',
+    regions: REGIONS,
+    defaultRegion: 'us2',
+    workerStyle: 'flag',
+    staticDifficulty: true,
+    balances: true,
+  },
+  herominers: {
+    label: 'HeroMiners',
+    site: 'https://pearl.herominers.com',
+    regions: HERO_REGIONS,
+    defaultRegion: 'ww',
+    workerStyle: 'suffix',
+    staticDifficulty: false,
+    balances: false,
+  },
+};
+
+function poolFor(pool) {
+  return POOLS[pool] || POOLS[DEFAULT_POOL];
+}
+
+function regionsFor(pool) {
+  return poolFor(pool).regions;
+}
+
+// Endpoint for a pool + region, falling back to that pool's default region.
+function poolEndpointFor(pool, region) {
+  const p = poolFor(pool);
+  return (p.regions[region] || p.regions[p.defaultRegion]).endpoint;
+}
+
 function regionFor(region) {
   return REGIONS[region] || REGIONS[DEFAULTS.region];
 }
@@ -97,6 +149,7 @@ function difficultyForCard(name) {
 }
 
 module.exports = {
-  REGIONS, DEFAULTS, MINER, NETWORK, ECON, DIFFICULTY_BY_CARD,
+  REGIONS, HERO_REGIONS, POOLS, DEFAULT_POOL, DEFAULTS, MINER, NETWORK, ECON, DIFFICULTY_BY_CARD,
   regionFor, endpointFor, regionLabel, difficultyForCard,
+  poolFor, regionsFor, poolEndpointFor,
 };

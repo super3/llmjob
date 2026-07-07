@@ -61,11 +61,15 @@
     <div class="settings-section">Connection</div>
     <div class="settings-rows">
       <div class="settings-row"><span class="rk">Worker name</span><input id="set-worker" class="rv-input" type="text" /></div>
+      <div class="settings-row"><span class="rk">Pool</span>
+        <select id="set-pool" class="rv-input"></select>
+      </div>
       <div class="settings-row"><span class="rk">Pool region</span>
         <select id="set-region" class="rv-input"></select>
       </div>
       <div class="settings-row"><span class="rk">Static difficulty</span><input id="set-difficulty" class="rv-input" type="number" min="0" /></div>
     </div>
+    <p id="pool-note" class="settings-note" hidden></p>
 
     <div class="settings-section mdl-head">
       <span>Merge Mining <span class="badge-mdl">MDL</span></span>

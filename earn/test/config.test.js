@@ -1,8 +1,9 @@
 'use strict';
 
 const {
-  REGIONS, DEFAULTS, MINER, ECON,
+  REGIONS, POOLS, DEFAULT_POOL, DEFAULTS, MINER, ECON,
   regionFor, endpointFor, regionLabel, difficultyForCard,
+  poolFor, regionsFor, poolEndpointFor,
 } = require('../src/shared/config');
 
 describe('config', () => {
@@ -24,6 +25,29 @@ describe('config', () => {
     expect(endpoints).toHaveLength(8);
     expect(endpoints.every((e) => e.endsWith('.alphapool.tech:5566'))).toBe(true);
     expect(endpoints).toContain('hk1.alphapool.tech:5566');
+  });
+
+  test('pools: AlphaPool is the default with balances; HeroMiners is vardiff/suffix-style', () => {
+    expect(DEFAULT_POOL).toBe('alphapool');
+    expect(POOLS.alphapool).toMatchObject({ regions: REGIONS, workerStyle: 'flag', staticDifficulty: true, balances: true });
+    expect(POOLS.herominers).toMatchObject({ workerStyle: 'suffix', staticDifficulty: false, balances: false, defaultRegion: 'ww' });
+    const hero = Object.values(POOLS.herominers.regions).map((r) => r.endpoint);
+    expect(hero).toHaveLength(5);
+    expect(hero.every((e) => e.endsWith('pearl.herominers.com:1200'))).toBe(true);
+  });
+
+  test('poolFor / regionsFor fall back to the default pool', () => {
+    expect(poolFor('herominers')).toBe(POOLS.herominers);
+    expect(poolFor('nope')).toBe(POOLS.alphapool);
+    expect(regionsFor('herominers')).toBe(POOLS.herominers.regions);
+    expect(regionsFor(undefined)).toBe(REGIONS);
+  });
+
+  test('poolEndpointFor resolves per pool and falls back to the pool default region', () => {
+    expect(poolEndpointFor('alphapool', 'eu1')).toBe('eu1.alphapool.tech:5566');
+    expect(poolEndpointFor('herominers', 'de')).toBe('de.pearl.herominers.com:1200');
+    expect(poolEndpointFor('herominers', 'us2')).toBe('pearl.herominers.com:1200'); // AlphaPool key → ww fallback
+    expect(poolEndpointFor(undefined, undefined)).toBe('us2.alphapool.tech:5566');
   });
 
   test('regionLabel combines flag and label, with fallback', () => {

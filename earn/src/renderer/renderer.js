@@ -29,6 +29,8 @@
     viewLogs: $('view-logs'),
     deviceLabel: $('device-label'),
     setWorker: $('set-worker'),
+    setPool: $('set-pool'),
+    poolNote: $('pool-note'),
     setRegion: $('set-region'),
     setDifficulty: $('set-difficulty'),
     setMdl: $('set-mdl'),
@@ -43,6 +45,18 @@
   };
 
   const state = { mining: false, view: 'miner', address: '', gpu: '' };
+
+  // Pool metadata from config:get. Falls back to an AlphaPool-only shape when
+  // the bridge is unavailable, which preserves the pre-multi-pool behavior.
+  let poolsCfg = null;
+  let defaultPool = 'alphapool';
+
+  const currentPool = () => (el.setPool && el.setPool.value) || defaultPool;
+  // In-app balance lookups only exist for pools that support them (AlphaPool).
+  const poolBalancesOn = () => {
+    const p = poolsCfg && poolsCfg[currentPool()];
+    return p ? !!p.balances : true;
+  };
 
   const BAL_REFRESH_MS = 60000; // re-poll the pool balance once a minute
   let balDebounce = null;
@@ -67,10 +81,34 @@
     el.mdlNote.innerHTML = MDL_NOTE[key];
   }
 
-  // The MDL balance line only makes sense for a well-formed mdl1… address; hide
-  // it otherwise (empty field or a typo).
+  // The MDL balance line only makes sense for a well-formed mdl1… address on a
+  // pool whose balances we can query; hide it otherwise.
   function renderMdlBalanceMeta() {
-    el.mdlBalanceMeta.hidden = !isValidMdl(String(el.setMdl.value || '').trim());
+    el.mdlBalanceMeta.hidden = !(isValidMdl(String(el.setMdl.value || '').trim()) && poolBalancesOn());
+  }
+
+  // Note under the Connection rows for pools without in-app balance lookups.
+  function renderPoolNote() {
+    const p = poolsCfg && poolsCfg[currentPool()];
+    if (!el.poolNote) return;
+    if (!p || p.balances) { el.poolNote.hidden = true; el.poolNote.textContent = ''; return; }
+    el.poolNote.hidden = false;
+    el.poolNote.textContent = p.label + ' balances aren’t shown in-app yet — track your earnings on the pool’s site. ' +
+      'This pool manages share difficulty automatically (the static difficulty setting doesn’t apply).';
+  }
+
+  // Rebuild the region dropdown for a pool and select its default region.
+  function renderRegionOptions(poolKey) {
+    const p = (poolsCfg && poolsCfg[poolKey]) || null;
+    const regions = p ? p.regions : {};
+    el.setRegion.innerHTML = '';
+    Object.keys(regions).forEach((key) => {
+      const opt = document.createElement('option');
+      opt.value = key;
+      opt.textContent = regions[key].flag + ' ' + regions[key].label + ' · ' + regions[key].name;
+      el.setRegion.appendChild(opt);
+    });
+    if (p) el.setRegion.value = p.defaultRegion;
   }
 
   function resetMdlBalance() {
@@ -87,7 +125,7 @@
   async function refreshMdlBalance() {
     const mdl = String(el.setMdl.value || '').trim();
     const addr = state.address.trim();
-    if (!isValidMdl(mdl) || !isValid(addr) || !api.getMdlBalance) return;
+    if (!isValidMdl(mdl) || !isValid(addr) || !api.getMdlBalance || !poolBalancesOn()) return;
     const b = await api.getMdlBalance(addr);
     if (!b || mdl !== String(el.setMdl.value || '').trim() || addr !== state.address.trim()) return;
     if (b.mdlAddress && b.mdlAddress.toLowerCase() !== mdl.toLowerCase()) return;
@@ -147,7 +185,7 @@
   // the (meaningless) balance line.
   function renderBalanceMeta() {
     const has = isValid(state.address);
-    el.balanceMeta.hidden = !has;
+    el.balanceMeta.hidden = !(has && poolBalancesOn());
     el.getWallet.hidden = has;
   }
 
@@ -164,7 +202,7 @@
   // in place. Guards against a late response landing after the address changed.
   async function refreshBalance() {
     const addr = state.address.trim();
-    if (!isValid(addr) || !api.getBalance) return;
+    if (!isValid(addr) || !api.getBalance || !poolBalancesOn()) return;
     const b = await api.getBalance(addr);
     if (!b || addr !== state.address.trim()) return;
     el.balance.textContent = fmt3(b.earned);
@@ -204,6 +242,7 @@
       address: state.address.trim(),
       mdlAddress: isValidMdl(mdl) ? mdl : '',
       worker: el.setWorker.value.trim() || 'rig01',
+      pool: currentPool(),
       region: el.setRegion.value || 'us2',
       difficulty: Number(el.setDifficulty.value) || 524288,
     };
@@ -239,6 +278,23 @@
       } else {
         resetBalance();
         resetMdlBalance();
+      }
+    });
+    el.setPool.addEventListener('change', () => {
+      const pool = currentPool();
+      renderRegionOptions(pool);
+      renderPoolNote();
+      // Balance lookups are pool-specific — hide/clear them off AlphaPool, and
+      // refresh them (plus the best region) for the newly selected pool.
+      renderBalanceMeta();
+      renderMdlBalanceMeta();
+      resetBalance();
+      resetMdlBalance();
+      if (poolBalancesOn()) { refreshBalance(); refreshMdlBalance(); }
+      if (api.detectRegion && !state.mining) {
+        api.detectRegion(pool).then((region) => {
+          if (region && pool === currentPool()) el.setRegion.value = region;
+        });
       }
     });
     el.setMdl.addEventListener('input', () => {
@@ -282,14 +338,21 @@
     wire();
     if (api.getConfig) {
       const config = await api.getConfig();
-      const regions = (config && config.regions) || {};
-      el.setRegion.innerHTML = '';
-      Object.keys(regions).forEach((key) => {
+      // Older main processes expose only `regions`; synthesize a one-pool table
+      // so the rest of the renderer has a single shape to work with.
+      poolsCfg = (config && config.pools) || {
+        alphapool: { label: 'AlphaPool', regions: (config && config.regions) || {}, defaultRegion: 'us2', balances: true },
+      };
+      defaultPool = (config && config.defaultPool) || 'alphapool';
+      el.setPool.innerHTML = '';
+      Object.keys(poolsCfg).forEach((key) => {
         const opt = document.createElement('option');
         opt.value = key;
-        opt.textContent = regions[key].flag + ' ' + regions[key].label + ' · ' + regions[key].name;
-        el.setRegion.appendChild(opt);
+        opt.textContent = poolsCfg[key].label;
+        el.setPool.appendChild(opt);
       });
+      el.setPool.value = defaultPool;
+      renderRegionOptions(defaultPool);
     }
     let resumeMining = false;
     if (api.getSettings) {
@@ -297,7 +360,12 @@
       state.address = s.address || '';
       el.addrInput.value = state.address;
       el.setWorker.value = s.worker || 'rig01';
-      el.setRegion.value = s.region || 'us2';
+      if (poolsCfg && poolsCfg[s.pool]) {
+        el.setPool.value = s.pool;
+        renderRegionOptions(s.pool);
+      }
+      if (s.region) el.setRegion.value = s.region;
+      renderPoolNote();
       el.setDifficulty.value = s.difficulty || 524288;
       el.setMdl.value = s.mdlAddress || '';
       // Set when "Update & restart" was clicked while mining — resume after launch.
@@ -321,7 +389,7 @@
     // Auto-pick the lowest-latency pool region (unless the user is already
     // mining or has picked a non-default region this session).
     if (api.detectRegion && !state.mining) {
-      const region = await api.detectRegion();
+      const region = await api.detectRegion(currentPool());
       if (region) el.setRegion.value = region;
     }
     if (api.onStats) api.onStats(applyStats);

@@ -61,6 +61,40 @@ describe('buildArgs', () => {
     const safe = buildArgs({ address: prl, mdlAddress: 'mdl1pshort' });
     expect(safe).toEqual(expect.arrayContaining(['--address', prl]));
   });
+
+  test('HeroMiners: worker rides in the login as wallet.worker, vardiff password', () => {
+    expect(buildArgs({ pool: 'herominers', address: 'prl1pabc' })).toEqual([
+      '--pool', 'stratum+tcp://pearl.herominers.com:1200',
+      '--address', 'prl1pabc.rig01',
+      '--password', 'x',
+    ]);
+  });
+
+  test('HeroMiners: honors region, merge address, backend; empty worker drops the suffix', () => {
+    const prl = 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
+    const mdl = 'mdl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
+    expect(buildArgs({ pool: 'herominers', address: prl, mdlAddress: mdl, region: 'de', worker: 'rig9', backend: 'ampere' })).toEqual([
+      '--pool', 'stratum+tcp://de.pearl.herominers.com:1200',
+      '--address', prl + '+' + mdl + '.rig9',
+      '--password', 'x',
+      '--force-backend', 'ampere',
+    ]);
+    expect(buildArgs({ pool: 'herominers', address: prl, worker: '' })).toEqual([
+      '--pool', 'stratum+tcp://pearl.herominers.com:1200',
+      '--address', prl,
+      '--password', 'x',
+    ]);
+  });
+
+  test('HeroMiners: an AlphaPool region key falls back to the worldwide endpoint', () => {
+    expect(buildArgs({ pool: 'herominers', address: 'prl1pabc', region: 'us2' })).toEqual(
+      expect.arrayContaining(['--pool', 'stratum+tcp://pearl.herominers.com:1200']));
+  });
+
+  test('an unknown pool falls back to AlphaPool behavior', () => {
+    expect(buildArgs({ pool: 'nope', address: 'prl1pabc' })).toEqual(
+      expect.arrayContaining(['--pool', 'stratum+tcp://us2.alphapool.tech:5566', '--worker', 'rig01']));
+  });
 });
 
 describe('buildEnv', () => {

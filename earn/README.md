@@ -67,6 +67,12 @@ The app drives `alpha-miner` with its documented CLI: `--address prl1…` (or
 `--password "x;d=N"`, an optional `--force-backend` for cards that need it, and
 the regional endpoint (`us1/us2/eu1/eu2/ru1/sg1/hk1/in1.alphapool.tech:5566`).
 
+Settings also offers **HeroMiners** (`pearl.herominers.com:1200` + `us/de/fr/sg`
+regions) as an alternative pool: same engine, but the rig identity follows their
+convention — the worker rides in the login as `wallet.worker` (no `--worker`
+flag) and difficulty is vardiff-managed (plain `x` password). In-app balance
+lookups are AlphaPool-only for now; HeroMiners miners check the pool site.
+
 ## Headless CLI (Linux)
 
 For rigs and servers with no desktop, `src/cli/earn-cli.js` runs the exact same

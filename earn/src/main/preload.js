@@ -8,7 +8,7 @@ contextBridge.exposeInMainWorld('llmjob', {
   getConfig: () => ipcRenderer.invoke('config:get'),
   difficultyForCard: (name) => ipcRenderer.invoke('miner:difficultyForCard', name),
   detectGpu: () => ipcRenderer.invoke('gpu:detect'),
-  detectRegion: () => ipcRenderer.invoke('region:detect'),
+  detectRegion: (pool) => ipcRenderer.invoke('region:detect', pool),
   getBalance: (address) => ipcRenderer.invoke('balance:get', address),
   getMdlBalance: (address) => ipcRenderer.invoke('balance:getMdl', address),
   startMiner: (settings) => ipcRenderer.send('miner:start', settings),

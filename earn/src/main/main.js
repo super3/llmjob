@@ -18,7 +18,7 @@ const { autoUpdater } = require('electron-updater');
 const { MinerManager } = require('./minerManager');
 const { EngineManager } = require('./engineManager');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
-const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, endpointFor, difficultyForCard } = require('../shared/config');
+const { POOLS, DEFAULT_POOL, DEFAULTS, MINER, NETWORK, ECON, poolFor, regionsFor, poolEndpointFor, difficultyForCard } = require('../shared/config');
 const { buildBalanceUrl, parseBalance, buildMdlBalanceUrl, parseMdlBalance } = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
 const { progressPercent, bundledEnginePath } = require('../shared/engine');
@@ -208,8 +208,8 @@ async function startMining(settings) {
   if (reporter) clearInterval(reporter);
   reporter = setInterval(report, NETWORK.reportIntervalMs);
 
-  const endpoint = settings.endpoint || endpointFor(settings.region || DEFAULTS.region);
-  send('miner:log', { level: 'info', line: 'connecting to ' + endpoint + ' · worker ' + (settings.worker || DEFAULTS.worker) });
+  const endpoint = settings.endpoint || poolEndpointFor(settings.pool, settings.region);
+  send('miner:log', { level: 'info', line: 'connecting to ' + poolFor(settings.pool).label + ' ' + endpoint + ' · worker ' + (settings.worker || DEFAULTS.worker) });
 
   // Resolve the engine. A packaged build ships it under process.resourcesPath
   // (build.extraResources), so prefer that and skip the network entirely; only
@@ -311,13 +311,14 @@ function pingEndpoint(endpoint, timeoutMs) {
   });
 }
 
-// Auto-detect the best pool region by pinging every region's endpoint in
-// parallel and choosing the lowest latency; falls back to the default.
-async function detectRegion() {
-  const keys = Object.keys(REGIONS);
+// Auto-detect the best region for a pool by pinging every region's endpoint in
+// parallel and choosing the lowest latency; falls back to the pool's default.
+async function detectRegion(pool) {
+  const regions = regionsFor(pool);
+  const keys = Object.keys(regions);
   const results = await Promise.all(keys.map((region) =>
-    pingEndpoint(REGIONS[region].endpoint).then((ms) => ({ region, ms }))));
-  return pickFastestRegion(results, DEFAULTS.region);
+    pingEndpoint(regions[region].endpoint).then((ms) => ({ region, ms }))));
+  return pickFastestRegion(results, poolFor(pool).defaultRegion);
 }
 
 // Live GPU VRAM (used/total, MB) via nvidia-smi — NVIDIA-only. Resolves
@@ -461,13 +462,13 @@ function fitWindowToContent() {
 }
 
 ipcMain.handle('settings:get', () => Object.assign(
-  { region: DEFAULTS.region, worker: DEFAULTS.worker, difficulty: DEFAULTS.difficulty, address: '', mdlAddress: '' },
+  { pool: DEFAULT_POOL, region: DEFAULTS.region, worker: DEFAULTS.worker, difficulty: DEFAULTS.difficulty, address: '', mdlAddress: '' },
   loadSettings(),
 ));
-ipcMain.handle('config:get', () => ({ regions: REGIONS, defaults: DEFAULTS, miner: MINER }));
+ipcMain.handle('config:get', () => ({ pools: POOLS, defaultPool: DEFAULT_POOL, regions: POOLS[DEFAULT_POOL].regions, defaults: DEFAULTS, miner: MINER }));
 ipcMain.handle('miner:difficultyForCard', (_e, name) => difficultyForCard(name));
 ipcMain.handle('gpu:detect', () => detectGpu());
-ipcMain.handle('region:detect', () => detectRegion());
+ipcMain.handle('region:detect', (_e, pool) => detectRegion(pool));
 ipcMain.handle('balance:get', (_e, address) => fetchBalance(address, { priceUsd: ECON.PRL_USD }));
 // The MDL record is keyed by the PRL payout address (the pool rejects mdl1…
 // addresses on the miner endpoint), so this takes the PRL address.

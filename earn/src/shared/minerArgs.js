@@ -1,6 +1,6 @@
 'use strict';
 
-const { endpointFor, DEFAULTS } = require('./config');
+const { poolFor, poolEndpointFor, DEFAULTS } = require('./config');
 const { combinePayoutAddress, isValidMdlAddress, normalizeAddress } = require('./address');
 
 // Windows engine binaries shipped inside the AlphaPool zips.
@@ -20,20 +20,30 @@ function resolveBinary(binaryPath, platform, gpu) {
 // Build the alpha-miner argument vector, matching the engine's documented CLI
 // (github.com/AlphaMine-Tech/alpha-miner): --pool / --address / --worker, with
 // static difficulty pinned via the Stratum password (`x;d=N`). There is no
-// --algo flag — the miner is Pearl-specific — and the pool/address/worker are
-// separate flags (not a combined `<address>.<worker>` user). An optional forced
-// backend is appended for cards that need it (`--force-backend ampere`). A merge-
-// mining MDL address, when set, rides along in the --address as `prl1…+mdl1…`.
+// --algo flag — the miner is Pearl-specific. An optional forced backend is
+// appended for cards that need it (`--force-backend ampere`). A merge-mining
+// MDL address, when set, rides along in the --address as `prl1…+mdl1…`.
+//
+// The rig identity differs per pool (settings.pool, default AlphaPool):
+// AlphaPool takes the worker as a separate --worker flag and supports static
+// difficulty via the password; HeroMiners expects the classic
+// `wallet.worker` login suffix and runs vardiff only (plain 'x' password).
 function buildArgs(settings = {}) {
-  const region = settings.region || DEFAULTS.region;
-  const endpoint = settings.endpoint || endpointFor(region);
+  const pool = poolFor(settings.pool);
+  const endpoint = settings.endpoint || poolEndpointFor(settings.pool, settings.region);
   const worker = settings.worker != null ? settings.worker : DEFAULTS.worker;
   const address = combinePayoutAddress(settings.address, settings.mdlAddress);
   const difficulty = settings.difficulty || DEFAULTS.difficulty;
 
-  const args = ['--pool', 'stratum+tcp://' + endpoint, '--address', address];
-  if (worker) args.push('--worker', worker);
-  args.push('--password', 'x;d=' + difficulty);
+  const args = ['--pool', 'stratum+tcp://' + endpoint];
+  if (pool.workerStyle === 'suffix') {
+    args.push('--address', worker ? address + '.' + worker : address);
+    args.push('--password', 'x');
+  } else {
+    args.push('--address', address);
+    if (worker) args.push('--worker', worker);
+    args.push('--password', 'x;d=' + difficulty);
+  }
   if (settings.backend) args.push('--force-backend', settings.backend);
   return args;
 }
