@@ -78,9 +78,17 @@ input.field-box { user-select: text; }
 .engine-status { margin-top: 12px; text-align: center; font-size: 12.5px; color: var(--muted); }
 .engine-status.err { color: #dc2626; }
 
-/* local LLM status line */
-.llm-status { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; padding: 9px 13px; background: #f6efff; border: 1px solid #e6d5fb; border-radius: 9px; font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 12px; font-weight: 500; color: #7c3aed; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* local LLM status panel */
+.llm-status { display: flex; flex-direction: column; gap: 8px; margin-bottom: 18px; padding: 9px 13px; background: #f6efff; border: 1px solid #e6d5fb; border-radius: 9px; font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 12px; font-weight: 500; color: #7c3aed; }
+.llm-line { display: flex; align-items: center; gap: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .llm-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: #7c3aed; animation: mkPulse 1.6s ease-in-out infinite; }
+/* server-URL row (shown once the endpoint is ready) */
+.llm-endpoint { display: flex; align-items: center; gap: 8px; padding-top: 8px; border-top: 1px solid #e6d5fb; }
+.llm-endpoint-label { flex: none; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: #9a6ddb; }
+.llm-url { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; color: #6d28d9; }
+.llm-btn { flex: none; padding: 3px 9px; border: 1px solid #d6bef7; border-radius: 6px; background: #fff; color: #7c3aed; font-family: inherit; font-size: 11px; font-weight: 600; cursor: pointer; }
+.llm-btn:hover { background: #efe4fd; }
+.llm-btn:active { transform: translateY(0.5px); }
 
 /* settings + logs views */
 .view-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }

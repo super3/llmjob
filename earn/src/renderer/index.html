@@ -51,7 +51,15 @@
       </div>
     </div>
 
-    <div id="llm-status" class="llm-status" hidden><span class="llm-dot"></span><span id="llm-status-text"></span></div>
+    <div id="llm-status" class="llm-status" hidden>
+      <div class="llm-line"><span class="llm-dot"></span><span id="llm-status-text"></span></div>
+      <div id="llm-endpoint" class="llm-endpoint" hidden>
+        <span class="llm-endpoint-label">OpenAI API</span>
+        <code id="llm-endpoint-url" class="llm-url" title="Click to copy"></code>
+        <button id="llm-copy" class="llm-btn" type="button" title="Copy the API endpoint">Copy</button>
+        <button id="llm-open" class="llm-btn" type="button" title="Open the llama-server web UI in your browser">Open ↗</button>
+      </div>
+    </div>
 
     <button id="btn-start" class="start-btn" type="button" disabled>START</button>
     <button id="btn-stop" class="stop-btn" type="button" hidden><span class="dot"></span>STOP MINING</button>

@@ -5,7 +5,7 @@
 // the user come only from the engine's own output — no simulated data. All
 // testable logic lives in ../shared and ./minerManager.
 
-const { app, BrowserWindow, Menu, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, shell, clipboard } = require('electron');
 const { spawn, execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -40,7 +40,7 @@ let stats = null;
 let ticker = null;
 let reporter = null;
 let llm = null;                 // LlmManager instance while the local LLM is up
-let llmStatus = { running: false, ready: false, endpoint: null, tokensPerSec: 0, model: LLM.model.name };
+let llmStatus = { running: false, ready: false, endpoint: null, webUrl: null, tokensPerSec: 0, model: LLM.model.name };
 
 function settingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -513,7 +513,7 @@ async function startLlm(reserveMb) {
   llm = new LlmManager({ spawn });
   llm.on('log', (l) => send('miner:log', l));
   llm.on('ready', ({ baseUrl }) => {
-    llmStatus = Object.assign({}, llmStatus, { ready: true, endpoint: baseUrl + '/v1' });
+    llmStatus = Object.assign({}, llmStatus, { ready: true, endpoint: baseUrl + '/v1', webUrl: baseUrl });
     send('miner:log', { level: 'info', line: 'local LLM ready — OpenAI endpoint ' + baseUrl + '/v1' });
     sendLlmStatus();
   });
@@ -521,7 +521,7 @@ async function startLlm(reserveMb) {
   llm.on('stopped', () => { llmStatus = Object.assign({}, llmStatus, { running: false, ready: false, tokensPerSec: 0 }); sendLlmStatus(); });
 
   llm.start({ platform: process.platform, binaryPath, modelPath, nGpuLayers });
-  llmStatus = Object.assign({}, llmStatus, { running: true, ready: false, endpoint: llm.baseUrl + '/v1' });
+  llmStatus = Object.assign({}, llmStatus, { running: true, ready: false, endpoint: llm.baseUrl + '/v1', webUrl: llm.baseUrl });
   send('miner:log', { level: 'info', line: 'local LLM starting on ' + llm.baseUrl + ' — ' + nGpuLayers + ' GPU layers' });
   sendLlmStatus();
 }
@@ -561,6 +561,7 @@ ipcMain.handle('balance:getMdl', (_e, address) =>
 ipcMain.on('miner:start', (_e, settings) => applyPlan(settings || {}));
 ipcMain.on('miner:stop', () => { stopMining(); stopLlm(); });
 ipcMain.on('open-external', (_e, url) => { shell.openExternal(url); });
+ipcMain.on('clipboard:write', (_e, text) => { clipboard.writeText(String(text == null ? '' : text)); });
 ipcMain.handle('app:version', () => app.getVersion());
 ipcMain.on('app:update:check', () => checkForUpdate());
 ipcMain.on('app:update:install', () => {

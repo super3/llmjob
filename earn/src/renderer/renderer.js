@@ -38,6 +38,10 @@
     setMode: $('set-mode'),
     llmStatus: $('llm-status'),
     llmStatusText: $('llm-status-text'),
+    llmEndpoint: $('llm-endpoint'),
+    llmEndpointUrl: $('llm-endpoint-url'),
+    llmCopy: $('llm-copy'),
+    llmOpen: $('llm-open'),
     logTerm: $('log-term'),
     engineStatus: $('engine-status'),
     appVersion: $('app-version'),
@@ -45,7 +49,7 @@
     updateStatus: $('update-status'),
   };
 
-  const state = { mining: false, view: 'miner', address: '', gpu: '' };
+  const state = { mining: false, view: 'miner', address: '', gpu: '', llm: { endpoint: null, webUrl: null } };
 
   const BAL_REFRESH_MS = 60000; // re-poll the pool balance once a minute
   let balDebounce = null;
@@ -213,16 +217,29 @@
     };
   }
 
-  // Local-LLM status line (endpoint + tokens/sec) shown while the LLM engine runs.
+  // Local-LLM status line (model + tokens/sec) plus, once ready, the OpenAI API
+  // endpoint with copy / open-in-browser affordances for testing.
   function renderLlm(s) {
     const on = !!(s && s.running);
     el.llmStatus.hidden = !on;
-    if (!on) return;
+    if (!on) {
+      state.llm = { endpoint: null, webUrl: null };
+      if (el.llmEndpoint) el.llmEndpoint.hidden = true;
+      return;
+    }
     if (s.ready) {
       const tps = s.tokensPerSec ? ' · ' + Number(s.tokensPerSec).toFixed(1) + ' tok/s' : '';
-      el.llmStatusText.textContent = '🧠 ' + (s.model || 'LLM') + tps + ' · ' + (s.endpoint || '');
+      el.llmStatusText.textContent = '🧠 ' + (s.model || 'LLM') + ' · ready' + tps;
     } else {
       el.llmStatusText.textContent = '🧠 ' + (s.model || 'LLM') + ' — starting…';
+    }
+    // Show the server URL only once the endpoint is up, so people don't copy a
+    // dead address while the model is still loading.
+    state.llm = { endpoint: s.endpoint || null, webUrl: s.webUrl || null };
+    if (el.llmEndpoint) {
+      const show = !!(s.ready && s.endpoint);
+      el.llmEndpoint.hidden = !show;
+      if (show) el.llmEndpointUrl.textContent = s.endpoint;
     }
   }
 
@@ -286,6 +303,22 @@
       // Jump to the latest line whenever the logs view is opened.
       if (state.view === 'logs') el.logTerm.scrollTop = el.logTerm.scrollHeight;
     });
+    // Copy the OpenAI API endpoint (click the URL or the Copy button); open the
+    // llama-server web UI in the default browser to test the model interactively.
+    const copyEndpoint = () => {
+      if (!state.llm.endpoint) return;
+      if (api.copyText) api.copyText(state.llm.endpoint);
+      const prev = el.llmCopy.textContent;
+      el.llmCopy.textContent = 'Copied';
+      setTimeout(() => { el.llmCopy.textContent = prev; }, 1200);
+    };
+    if (el.llmCopy) el.llmCopy.addEventListener('click', copyEndpoint);
+    if (el.llmEndpointUrl) el.llmEndpointUrl.addEventListener('click', copyEndpoint);
+    if (el.llmOpen) el.llmOpen.addEventListener('click', () => {
+      const url = state.llm.webUrl || state.llm.endpoint;
+      if (url && api.openExternal) api.openExternal(url);
+    });
+
     document.querySelectorAll('[data-back]').forEach((b) =>
       b.addEventListener('click', () => { state.view = 'miner'; renderView(); }));
     document.querySelectorAll('[data-ext]').forEach((a) =>
