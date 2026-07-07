@@ -9,6 +9,7 @@
 
 const { REGIONS, DEFAULTS, difficultyForCard } = require('./config');
 const { isValidAddress, isValidMdlAddress, normalizeAddress } = require('./address');
+const { MODES, DEFAULT_MODE, isValidMode } = require('./llmMode');
 
 // Short flags → their canonical long form.
 const ALIASES = {
@@ -28,6 +29,7 @@ const VALUE_FLAGS = new Set([
   '--address', '--mdl', '--region', '--worker',
   '--difficulty', '--gpu', '--backend', '--binary', '--engine-dir',
   '--stats-file',
+  '--mode', '--llm-binary', '--llm-model',
 ]);
 
 function regionChoices() {
@@ -44,6 +46,14 @@ const USAGE = [
   '',
   'Options:',
   '  -m, --mdl <mdl1p…>       Also merge-mine ModelOS (MDL) on the same shares',
+  '      --mode <mode>        Compute mode: ' + MODES.join('/') + ' (default: ' + DEFAULT_MODE + ').',
+  '                           "both"/"auto" co-run a local LLM alongside mining;',
+  '                           "llm" runs the LLM only (no payout address needed).',
+  '      --llm-binary <path>  Path to a llama-server binary for the local LLM',
+  '                           (required to run the LLM on Linux — release zips',
+  '                           are not auto-extracted by the CLI)',
+  '      --llm-model <path>   Path to a GGUF model file (default: download the',
+  '                           bundled small model on first run)',
   '  -r, --region <id>        Pool region: ' + Object.keys(REGIONS).join('/') + ' (default: auto-detect fastest)',
   '  -w, --worker <name>      Worker/rig name (default: this machine\'s hostname)',
   '  -d, --difficulty <n>     Static share difficulty (default: from detected/--gpu card, else ' + DEFAULTS.difficulty + ')',
@@ -61,9 +71,21 @@ const USAGE = [
 // Fold the collected option map into a validated settings object, appending any
 // validation problems to `errors`.
 function buildSettings(opts, errors, report, update) {
+  // Compute mode (which engines run). Parsed before the address check because
+  // LLM-only doesn't mine, so it needs no payout address.
+  let mode = DEFAULT_MODE;
+  if (opts['--mode'] != null) {
+    mode = String(opts['--mode']).trim();
+    if (!isValidMode(mode)) {
+      errors.push('unknown mode: ' + mode + ' (choices: ' + MODES.join(', ') + ')');
+    }
+  }
+
   const address = opts['--address'] != null ? String(opts['--address']).trim() : '';
   if (!address) {
-    errors.push('--address is required (your prl1p… payout address)');
+    // The address is only required when the mode actually mines. "llm" is
+    // LLM-only, so it can run with no payout address.
+    if (mode !== 'llm') errors.push('--address is required (your prl1p… payout address)');
   } else if (!isValidAddress(address)) {
     errors.push('invalid Pearl address: ' + address);
   }
@@ -100,6 +122,8 @@ function buildSettings(opts, errors, report, update) {
   const binaryPath = opts['--binary'] != null ? String(opts['--binary']) : null;
   const engineDir = opts['--engine-dir'] != null ? String(opts['--engine-dir']) : null;
   const statsFile = opts['--stats-file'] != null ? String(opts['--stats-file']) : null;
+  const llmBinary = opts['--llm-binary'] != null ? String(opts['--llm-binary']) : null;
+  const llmModel = opts['--llm-model'] != null ? String(opts['--llm-model']) : null;
 
   // Which knobs the user set explicitly. The CLI auto-detects the ones left
   // unset (fastest region; GPU → static difficulty; a per-host worker name), so
@@ -109,10 +133,12 @@ function buildSettings(opts, errors, report, update) {
   const gpuProvided = opts['--gpu'] != null;
   const difficultyProvided = opts['--difficulty'] != null;
   const workerProvided = opts['--worker'] != null;
+  const modeProvided = opts['--mode'] != null;
 
   return {
     address, mdlAddress, region, worker, gpu, difficulty, backend, binaryPath, engineDir, statsFile,
-    report, update, regionProvided, gpuProvided, difficultyProvided, workerProvided,
+    mode, llmBinary, llmModel,
+    report, update, regionProvided, gpuProvided, difficultyProvided, workerProvided, modeProvided,
   };
 }
 

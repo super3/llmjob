@@ -6,8 +6,10 @@ for Pearl (**PRL**). Paste a payout address, hit **Start**, and earn — no comm
 line. Built with Electron and shipped for **Windows** and **Linux**; headless
 rigs can use the [command-line miner](#headless-cli-linux) instead of the GUI.
 
-> The LLM "co-mining" side of LLMJob comes later — this app is the easy on-ramp
-> that gets GPUs onto the network and earning today.
+> The LLM "co-mining" side of LLMJob is landing: both clients (GUI and headless
+> CLI) can now run a local llama.cpp `llama-server` alongside — or instead of —
+> mining, exposing an OpenAI-compatible endpoint at `127.0.0.1:8080/v1`. Pick the
+> **Compute Mode** in the GUI's Settings, or `--mode` on the CLI.
 
 **Highlights**
 
@@ -25,6 +27,8 @@ rigs can use the [command-line miner](#headless-cli-linux) instead of the GUI.
   - `config.js` — pool endpoints, per-card static difficulty, engine metadata, economics.
   - `address.js` — `prl1p…` / `mdl1p…` validation, shortening, and the merge-mining combined address.
   - `cliArgs.js` — parses/validates the headless CLI flags into the same settings shape the GUI uses.
+  - `llmMode.js` — the compute-mode policy (mining / both / llm / auto → which engines run), shared by the GUI and the CLI.
+  - `llama.js` / `vram.js` — build the local `llama-server` command line + parse its output, and size the GPU offload (`--n-gpu-layers`) from free VRAM.
   - `selfUpdate.js` — decides, from the running version + GitHub's latest release, whether the CLI binary should self-update.
   - `minerArgs.js` — builds the engine argument vector / launcher env (`--address`, `--worker`, `--password "x;d=N"`, `--force-backend`).
   - `parser.js` — turns `alpha-miner` stdout into structured events (shares, hashrate, connect).
@@ -40,6 +44,7 @@ rigs can use the [command-line miner](#headless-cli-linux) instead of the GUI.
 - **`src/main/`** — Electron main process:
   - `minerManager.js` — spawns and supervises the engine (injectable `spawn`, unit-tested).
   - `engineManager.js` — downloads + installs the engine on first run (injected IO, unit-tested).
+  - `llmManager.js` / `llmEngineManager.js` — spawn/supervise the local `llama-server` and download its binary + GGUF model on demand (same injectable pattern as the miner pair, unit-tested).
   - `main.js` / `preload.js` — window, settings persistence, IPC bridge (thin shells).
 - **`src/renderer/`** — the GUI (Setup → Running → Settings → Logs), pure display + IPC.
 - **`src/cli/`** — headless Linux miner (no Electron); thin IO shells that reuse
@@ -110,6 +115,31 @@ caches it under `~/.local/share/llmjob-earn/engine/` (override with
 It streams the engine's real output, prints a periodic hashrate/share summary,
 and shuts the engine down cleanly on Ctrl-C.
 
+### Local LLM (`--mode`)
+
+The CLI runs the same local LLM as the GUI. `--mode` picks how the GPU is used:
+
+- `mining` (default) — mine only; unchanged from before.
+- `both` / `auto` — mine **and** serve a local LLM (the VRAM budgeter keeps a
+  mining reserve free and offloads only the model layers that fit).
+- `llm` — serve the LLM only, no mining (so no `--address` is required).
+
+When the LLM runs it spawns llama.cpp's `llama-server` and exposes an
+OpenAI-compatible endpoint at `http://127.0.0.1:8080/v1`. The small default model
+(`Llama-3.2-1B-Instruct-Q4_K_M`) is a plain download cached under
+`~/.local/share/llmjob-earn/llm/`; point `--llm-model /path/to/model.gguf` at
+your own to skip it. Because the pool ships `llama-server` as a release **zip**
+(and the CLI, like the miner, doesn't extract zips), pass a prebuilt server
+binary with `--llm-binary /path/to/llama-server` on Linux.
+
+```bash
+# mine and co-run the local LLM
+llmjob-earn-cli --address prl1p… --mode both --llm-binary /opt/llama/llama-server
+
+# LLM only — no mining, no payout address
+llmjob-earn-cli --mode llm --llm-binary /opt/llama/llama-server
+```
+
 ### Standalone binary + self-update
 
 CI packages the CLI into a **standalone single-file Linux executable**
@@ -140,10 +170,13 @@ just prints a notice when a newer release is available (update via git/npm).
 ```
 Usage: llmjob-earn-cli --address <prl1p…> [options]
 
-  -a, --address <prl1p…>   Your Pearl payout address (required)
+  -a, --address <prl1p…>   Your Pearl payout address (required unless --mode llm)
   -m, --mdl <mdl1p…>       Also merge-mine ModelOS (MDL) on the same shares
-  -r, --region <id>        Pool region: us1/us2/eu1/eu2/ru1/sg1/in1 (default: auto-detect fastest)
-  -w, --worker <name>      Worker/rig name (default: rig01)
+      --mode <mode>        Compute mode: mining/both/llm/auto (default: mining)
+      --llm-binary <path>  Path to a llama-server binary (to run the local LLM)
+      --llm-model <path>   Path to a GGUF model file (default: download the small model)
+  -r, --region <id>        Pool region: us1/us2/eu1/eu2/ru1/sg1/hk1/in1 (default: auto-detect fastest)
+  -w, --worker <name>      Worker/rig name (default: this machine's hostname)
   -d, --difficulty <n>     Static share difficulty (default: from detected/--gpu card, else 524288)
   -g, --gpu <card>         GPU name for the difficulty table (default: auto-detect via nvidia-smi)
       --backend <name>     Force an engine backend (e.g. ampere)

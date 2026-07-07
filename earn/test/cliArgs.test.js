@@ -189,6 +189,55 @@ describe('buildSettings — validation', () => {
   });
 });
 
+describe('buildSettings — compute mode / LLM', () => {
+  test('mode defaults to mining, not provided, with null LLM paths', () => {
+    const s = parseCliArgs(['--address', ADDR]).settings;
+    expect(s.mode).toBe('mining');
+    expect(s.modeProvided).toBe(false);
+    expect(s.llmBinary).toBeNull();
+    expect(s.llmModel).toBeNull();
+  });
+
+  test('explicit --mode is parsed and flagged as provided', () => {
+    const s = parseCliArgs(['--address', ADDR, '--mode', 'both']).settings;
+    expect(s.mode).toBe('both');
+    expect(s.modeProvided).toBe(true);
+  });
+
+  test('unknown mode is rejected with choices', () => {
+    const r = parseCliArgs(['--address', ADDR, '--mode', 'turbo']);
+    expect(r.errors).toContain('unknown mode: turbo (choices: mining, both, llm, auto)');
+  });
+
+  test('llm-only mode does not require a payout address', () => {
+    const r = parseCliArgs(['--mode', 'llm']);
+    expect(r.errors).toEqual([]);
+    expect(r.settings.address).toBe('');
+    expect(r.settings.mode).toBe('llm');
+  });
+
+  test('both/auto still require a payout address', () => {
+    expect(parseCliArgs(['--mode', 'both']).errors)
+      .toContain('--address is required (your prl1p… payout address)');
+    expect(parseCliArgs(['--mode', 'auto']).errors)
+      .toContain('--address is required (your prl1p… payout address)');
+  });
+
+  test('an invalid address is still rejected in llm mode', () => {
+    const r = parseCliArgs(['--mode', 'llm', '--address', 'nope123']);
+    expect(r.errors).toContain('invalid Pearl address: nope123');
+  });
+
+  test('--llm-binary and --llm-model are captured', () => {
+    const s = parseCliArgs([
+      '--mode', 'both', '--address', ADDR,
+      '--llm-binary', '/opt/llama-server', '--llm-model', '/models/m.gguf',
+    ]).settings;
+    expect(s.llmBinary).toBe('/opt/llama-server');
+    expect(s.llmModel).toBe('/models/m.gguf');
+  });
+});
+
 describe('buildSettings — direct', () => {
   test('collects errors into the provided array; passes through report/update', () => {
     const errors = [];
