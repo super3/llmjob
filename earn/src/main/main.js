@@ -191,6 +191,22 @@ function extractZip(zipPath, dest) {
   });
 }
 
+// Extract the llama.cpp release zip on Linux/macOS. `unzip -j` drops the whole
+// archive (junking directory structure) into the install dir so `llama-server`
+// lands next to its shared libraries (.so/.dylib); llama.cpp binaries resolve
+// libs from their own directory ($ORIGIN rpath), so co-locating them is what
+// makes the downloaded server run. Needs the `unzip` tool.
+function extractLlamaZipUnix(zipPath, dest) {
+  return new Promise((resolve, reject) => {
+    const dir = path.dirname(dest);
+    execFile('unzip', ['-o', '-j', zipPath, '-d', dir], { timeout: 120000 }, (err) => {
+      if (err) return reject(new Error('could not extract the llama-server archive with `unzip` (' + err.message + ')'));
+      if (!fs.existsSync(dest)) return reject(new Error('llama-server was not found in the downloaded archive'));
+      resolve(dest);
+    });
+  });
+}
+
 async function startMining(settings) {
   persistSettings(settings);
 
@@ -478,9 +494,12 @@ async function resolveLlmBinary(dir) {
   const name = LLM.serverBin[process.platform] || LLM.serverBin.linux;
   const bundled = process.resourcesPath && path.join(process.resourcesPath, 'llm', name);
   if (bundled && fs.existsSync(bundled)) return bundled;
+  // Windows ships the server in a zip we expand with PowerShell; Linux/macOS use
+  // `unzip` and co-locate the binary with its shared libraries.
+  const extract = process.platform === 'win32' ? extractZip : extractLlamaZipUnix;
   const engine = new LlmEngineManager({
     dir, platform: process.platform, serverUrl: LLM.serverUrl[process.platform],
-    fs, download: downloadFile, extract: extractZip, chmod: fs.chmodSync,
+    fs, download: downloadFile, extract, chmod: fs.chmodSync,
   });
   return engine.ensureServer();
 }

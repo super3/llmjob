@@ -179,10 +179,32 @@ function postMinerReport(payload) {
   });
 }
 
-// Zip extraction is Windows-only (the pool ships Linux as a bare binary), so the
-// CLI never needs it — EngineManager only calls extract for a .zip URL.
+// The mining engine ships as a bare Linux binary (no zip), so its EngineManager
+// never needs an extractor — this stays a hard "unsupported" for that path.
 function extractUnsupported() {
   return Promise.reject(new Error('zip extraction is not supported on the Linux CLI'));
+}
+
+// Extract the llama.cpp release zip on Linux. `unzip -j` drops the whole archive
+// (junking directory structure) into the install dir, so `llama-server` lands
+// right next to its shared libraries (.so); llama.cpp binaries resolve libs from
+// their own directory ($ORIGIN rpath), so co-locating them is what makes the
+// downloaded server actually run. Needs the `unzip` tool; if it's missing we say
+// so and point at --llm-binary as the escape hatch.
+function extractLlamaZip(zipPath, dest) {
+  return new Promise((resolve, reject) => {
+    const dir = path.dirname(dest);
+    execFile('unzip', ['-o', '-j', zipPath, '-d', dir], { timeout: 120000 }, (err) => {
+      if (err) {
+        return reject(new Error('could not extract the llama-server archive with `unzip` ('
+          + err.message + ') — install unzip, or pass --llm-binary </path/to/llama-server>'));
+      }
+      if (!fs.existsSync(dest)) {
+        return reject(new Error('llama-server was not found in the downloaded archive'));
+      }
+      resolve(dest);
+    });
+  });
 }
 
 async function resolveEngine(settings) {
@@ -283,9 +305,9 @@ function llmDir(settings) {
 
 // Resolve the llama-server binary for the local LLM. An explicit --llm-binary
 // wins; otherwise fall back to a previously installed one in the cache dir, and
-// only then attempt a download. The pool ships the llama.cpp release as a zip
-// (and the CLI, like the miner, doesn't extract zips), so on Linux the reliable
-// path is --llm-binary — we surface a clear error pointing at it.
+// only then download the llama.cpp release zip and extract it (via unzip). If
+// extraction isn't possible (no `unzip`), we surface a clear error pointing at
+// --llm-binary as the escape hatch.
 async function resolveLlmBinary(settings, dir) {
   if (settings.llmBinary) {
     if (!fs.existsSync(settings.llmBinary)) {
@@ -295,7 +317,7 @@ async function resolveLlmBinary(settings, dir) {
   }
   const engine = new LlmEngineManager({
     dir, platform: process.platform, serverUrl: LLM.serverUrl[process.platform],
-    fs, download: downloadFile, extract: extractUnsupported, chmod: fs.chmodSync,
+    fs, download: downloadFile, extract: extractLlamaZip, chmod: fs.chmodSync,
   });
   if (engine.isServerInstalled()) {
     log('LLM server found: ' + engine.serverBinaryPath());

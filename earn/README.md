@@ -137,10 +137,11 @@ out-of-memory crash; it logs a clear "not enough free VRAM" line and skips the
 LLM (mining, if enabled, carries on). If VRAM can't be read (non-NVIDIA / no
 driver) it proceeds and lets llama.cpp decide.
 
-Because the pool
-ships `llama-server` as a release **zip**
-(and the CLI, like the miner, doesn't extract zips), pass a prebuilt server
-binary with `--llm-binary /path/to/llama-server` on Linux.
+The pool ships `llama-server` as a release **zip**; the CLI downloads and
+extracts it with `unzip` (flattening the archive so the binary sits next to its
+shared libraries), caching it under the same `llm/` dir. If `unzip` isn't
+installed — or you'd rather pin your own build — pass a prebuilt binary with
+`--llm-binary /path/to/llama-server` to skip the download entirely.
 
 ```bash
 # mine and co-run the local LLM
