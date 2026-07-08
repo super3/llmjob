@@ -25,6 +25,7 @@ const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const { NETWORK, MINER, REGIONS, DEFAULTS, endpointFor, regionLabel, difficultyForCard } = require('../shared/config');
 const { progressPercent } = require('../shared/engine');
 const { buildMinerReport } = require('../shared/minerReport');
+const { statsFilePayload } = require('../shared/statsFile');
 const { shortenAddress } = require('../shared/address');
 const { pickFastestRegion } = require('../shared/region');
 const { pickGpu } = require('../shared/gpu');
@@ -340,11 +341,30 @@ async function run(argv) {
     if (reporter.unref) reporter.unref();
   }
 
+  // Write live stats JSON for external consumers (HiveOS h-stats.sh reads this
+  // to feed the dashboard). Atomic write (tmp + rename) so readers never see a
+  // torn file; best-effort — a failed write must never affect mining.
+  let statsWriter = null;
+  if (settings.statsFile) {
+    const writeStats = () => {
+      try {
+        const payload = statsFilePayload(snapshot(stats, Date.now()), { version: pkg.version, nowMs: Date.now() });
+        const tmp = settings.statsFile + '.tmp';
+        fs.writeFileSync(tmp, JSON.stringify(payload));
+        fs.renameSync(tmp, settings.statsFile);
+      } catch (e) { /* best effort */ }
+    };
+    writeStats();
+    statsWriter = setInterval(writeStats, 10000);
+    if (statsWriter.unref) statsWriter.unref();
+  }
+
   const shutdown = () => {
     if (stopping) return;
     stopping = true;
     log('shutting down…');
     if (reporter) clearInterval(reporter);
+    if (statsWriter) clearInterval(statsWriter);
     miner.stop();
   };
   process.on('SIGINT', shutdown);
@@ -353,6 +373,7 @@ async function run(argv) {
   return new Promise((resolve) => {
     miner.on('stopped', (code) => {
       if (reporter) clearInterval(reporter);
+      if (statsWriter) clearInterval(statsWriter);
       log('engine exited (code ' + code + ')');
       resolve(stopping ? 0 : (code || 0));
     });

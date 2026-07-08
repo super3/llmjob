@@ -1,7 +1,7 @@
 {
   "name": "llmjob-earn",
   "version": "0.1.14",
-  "description": "LLMJob Earn — desktop GUI that turns the excess compute on GPUs you already own into crypto (Pearl / PRL) via the AlphaPool alpha-miner. Paste a payout address and start earning, no command line.",
+  "description": "LLMJob Earn \u2014 desktop GUI that turns the excess compute on GPUs you already own into crypto (Pearl / PRL) via the AlphaPool alpha-miner. Paste a payout address and start earning, no command line.",
   "main": "src/main/main.js",
   "bin": {
     "llmjob-earn-cli": "src/cli/earn-cli.js"
@@ -13,7 +13,8 @@
     "test:watch": "jest --watch",
     "dist:win": "electron-builder --win",
     "dist:linux": "electron-builder --linux",
-    "dist:cli": "node scripts/build-cli.mjs"
+    "dist:cli": "node scripts/build-cli.mjs",
+    "dist:hiveos": "node scripts/build-hiveos.mjs"
   },
   "keywords": [
     "llmjob",

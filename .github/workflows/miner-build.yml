@@ -103,17 +103,25 @@ jobs:
         if: runner.os == 'Linux'
         run: npm run dist:cli
 
-      # Attach the CLI binary to the same GitHub Release electron-builder
-      # published to (v<version> from package.json), so the self-updater can find
-      # it. Only on a v* tag or a manual publish.
-      - name: Publish CLI binary to release (Linux, on v* tag or manual publish)
+      # Wrap the CLI binary in the HiveOS custom-miner package (hiveos/ hook
+      # scripts + binary → llmjob-earn-hiveos.tar.gz), the file flight sheets
+      # install from.
+      - name: Package HiveOS custom miner (Linux)
+        if: runner.os == 'Linux'
+        run: npm run dist:hiveos
+
+      # Attach the CLI binary and the HiveOS package to the same GitHub Release
+      # electron-builder published to (v<version> from package.json), so the
+      # self-updater and flight sheets can find them. Only on a v* tag or a
+      # manual publish.
+      - name: Publish CLI + HiveOS package to release (Linux, on v* tag or manual publish)
         if: runner.os == 'Linux' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           VERSION=$(node -p "require('./package.json').version")
-          gh release upload "v$VERSION" dist/llmjob-earn-cli-linux --clobber --repo "$GITHUB_REPOSITORY"
+          gh release upload "v$VERSION" dist/llmjob-earn-cli-linux dist/llmjob-earn-hiveos.tar.gz --clobber --repo "$GITHUB_REPOSITORY"
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
@@ -127,5 +135,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: llmjob-earn-cli-linux
-          path: earn/dist/llmjob-earn-cli-linux
+          path: |
+            earn/dist/llmjob-earn-cli-linux
+            earn/dist/llmjob-earn-hiveos.tar.gz
           if-no-files-found: error
