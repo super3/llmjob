@@ -24,7 +24,8 @@ const { EngineManager } = require('../main/engineManager');
 const { LlmManager } = require('../main/llmManager');
 const { LlmEngineManager } = require('../main/llmEngineManager');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
-const { NETWORK, MINER, LLM, REGIONS, DEFAULTS, endpointFor, regionLabel, difficultyForCard } = require('../shared/config');
+const { NETWORK, MINER, LLM, NODE, REGIONS, DEFAULTS, endpointFor, regionLabel, difficultyForCard } = require('../shared/config');
+const nodeProto = require('../shared/node');
 const { progressPercent } = require('../shared/engine');
 const { buildMinerReport } = require('../shared/minerReport');
 const { statsFilePayload } = require('../shared/statsFile');
@@ -406,8 +407,152 @@ async function startLlm(settings, reserveMb) {
   return llm;
 }
 
+// ── Connect with LLMJob (node pairing + ping) ────────────────────────────────
+// Replaces the old install.sh agent: link this headless box to an account with a
+// pairing token, then ping so it shows online. The Ed25519 secret key is created
+// and kept here; only the public key ever leaves the machine.
+
+function nodeDataDir() { return path.join(os.homedir(), '.local', 'share', 'llmjob-earn'); }
+function nodeConfigPath() { return path.join(nodeDataDir(), 'node.json'); }
+
+function loadNodeConfig() {
+  try { return JSON.parse(fs.readFileSync(nodeConfigPath(), 'utf8')); } catch (e) { return null; }
+}
+
+function saveNodeConfig(node) {
+  fs.mkdirSync(nodeDataDir(), { recursive: true });
+  fs.writeFileSync(nodeConfigPath(), JSON.stringify(node, null, 2), { mode: 0o600 });
+}
+
+// The persisted identity (keypair + id), created on first connect.
+function getOrCreateNodeConfig() {
+  let node = loadNodeConfig();
+  if (!node || !node.publicKey || !node.secretKey) {
+    const kp = nodeProto.generateKeypair();
+    node = {
+      nodeId: nodeProto.fingerprint(kp.publicKey),
+      publicKey: kp.publicKey,
+      secretKey: kp.secretKey,
+      name: null,
+      connected: false,
+      createdAt: new Date().toISOString(),
+    };
+    saveNodeConfig(node);
+  }
+  return node;
+}
+
+// Minimal JSON POST → { status, data, raw }. Never throws for HTTP errors (those
+// come back as a status); rejects only on a transport failure.
+function postJson(url, body, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let u;
+    try { u = new URL(url); } catch (e) { return reject(e); }
+    const lib = u.protocol === 'http:' ? http : https;
+    const payload = JSON.stringify(body);
+    const req = lib.request(u, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+      timeout: timeoutMs || 30000,
+    }, (res) => {
+      let raw = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { raw += c; });
+      res.on('end', () => {
+        let data = null;
+        try { data = raw ? JSON.parse(raw) : null; } catch (e) { /* non-JSON */ }
+        resolve({ status: res.statusCode || 0, data, raw });
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(new Error('request timed out')); });
+    req.write(payload);
+    req.end();
+  });
+}
+
+// Bare-bones flag parse for the `connect` subcommand (--token/-t, --name/-n,
+// --server). Kept local to the shell — the mining run uses shared/cliArgs.
+function parseConnectArgs(argv) {
+  const opts = { token: null, name: null, server: null };
+  for (let i = 0; i < argv.length; i++) {
+    const tok = String(argv[i]);
+    const eq = tok.indexOf('=');
+    const flag = eq !== -1 ? tok.slice(0, eq) : tok;
+    const inline = eq !== -1 ? tok.slice(eq + 1) : null;
+    const value = () => (inline != null ? inline : (i + 1 < argv.length ? argv[++i] : null));
+    if (flag === '--token' || flag === '-t') opts.token = value();
+    else if (flag === '--name' || flag === '-n') opts.name = value();
+    else if (flag === '--server') opts.server = value();
+  }
+  return opts;
+}
+
+async function runConnect(argv) {
+  const opts = parseConnectArgs(argv);
+  const node = getOrCreateNodeConfig();
+  if (opts.server && node.serverUrl !== opts.server) { node.serverUrl = opts.server; saveNodeConfig(node); }
+  const base = node.serverUrl || NODE.serverUrl;
+  const name = (opts.name && opts.name.trim()) || node.name || defaultWorker();
+
+  log('LLMJob node ' + node.nodeId + ' → ' + base);
+
+  if (opts.token) {
+    const joinBody = nodeProto.buildJoinBody({
+      token: String(opts.token).trim(), nodeId: node.nodeId, publicKey: node.publicKey, name,
+    });
+    let res;
+    try {
+      res = await postJson(base + '/api/nodes/join', joinBody, 20000);
+    } catch (e) {
+      log('could not reach ' + base + ': ' + e.message, process.stderr);
+      return 1;
+    }
+    if (res.status !== 200 && res.status !== 201) {
+      log('join failed (HTTP ' + res.status + '): ' + ((res.data && res.data.error) || res.raw || ''), process.stderr);
+      return 1;
+    }
+    node.name = name; node.connected = true; saveNodeConfig(node);
+    log('✓ linked to your account as ' + name);
+  } else if (!node.connected) {
+    log('no pairing token yet — run:  llmjob-earn-cli connect --token <token>', process.stderr);
+    log('copy your token from the dashboard: ' + NODE.dashboardUrl, process.stderr);
+    return 1;
+  } else {
+    log('resuming pings for ' + (node.name || node.nodeId));
+  }
+
+  // Foreground ping loop (like the miner). Best-effort telemetry from nvidia-smi.
+  const pingOnce = async () => {
+    let vram = null, device = null;
+    try { vram = await detectVram(); } catch (e) { /* ignore */ }
+    try { const det = await detectGpu(); device = det && det.name ? det.name : null; } catch (e) { /* ignore */ }
+    const telemetry = nodeProto.buildTelemetry({ device, vram, ready: false, tokensPerSec: 0 });
+    const body = nodeProto.buildPingBody({
+      nodeId: node.nodeId, publicKey: node.publicKey, secretKey: node.secretKey,
+      timestamp: Date.now(), telemetry,
+    });
+    try {
+      const res = await postJson(base + '/api/nodes/ping', body, 15000);
+      log(res.status === 200 ? '✓ ping' : ('✗ ping failed (HTTP ' + res.status + ')'),
+        res.status === 200 ? process.stdout : process.stderr);
+    } catch (e) {
+      log('✗ ping error: ' + e.message, process.stderr);
+    }
+  };
+
+  await pingOnce();
+  const timer = setInterval(pingOnce, NODE.pingIntervalMs);
+  return new Promise((resolve) => {
+    const shutdown = () => { clearInterval(timer); log('stopped pinging'); resolve(0); };
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+  });
+}
+
 async function run(argv) {
   if (argv[0] === 'update') return runExplicitUpdate();
+  if (argv[0] === 'connect') return runConnect(argv.slice(1));
 
   const parsed = parseCliArgs(argv);
 

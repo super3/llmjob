@@ -151,6 +151,25 @@ llmjob-earn-cli --address prl1p… --mode both --llm-binary /opt/llama/llama-ser
 llmjob-earn-cli --mode llm --llm-binary /opt/llama/llama-server
 ```
 
+### Connect to your LLMJob account (`connect`)
+
+Link a headless box to your account so it shows online in your cluster — the
+command-line counterpart to the desktop app's **API → Connect** tab (and the
+replacement for the old `install.sh` agent). Copy your pairing token from the
+dashboard, then:
+
+```bash
+llmjob-earn-cli connect --token <pairing-token> [--name my-rig]
+```
+
+It creates an Ed25519 key under `~/.local/share/llmjob-earn/node.json` (only the
+**public** key ever leaves the machine), self-registers with `POST /api/nodes/join`,
+then pings `POST /api/nodes/ping` every 5 minutes with a signed heartbeat + basic
+telemetry (GPU / VRAM) so the node stays online. It runs in the foreground (like
+the miner) — wrap it in systemd for an unattended rig. Once linked you can re-run
+`llmjob-earn-cli connect` with no token to resume pinging; point `--server` at a
+self-hosted backend if needed.
+
 ### Standalone binary + self-update
 
 CI packages the CLI into a **standalone single-file Linux executable**

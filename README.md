@@ -27,16 +27,19 @@ This repository contains two packages:
 
 ## Add a node
 
-The quickest way to connect a machine is the one-line installer (a pure-shell
-agent — no Node or npm required). Grab your personalized command, which bakes in
-the server URL and join token, from the **Add Node** page in the dashboard:
+Link a machine to your account with **LLMJob Earn**. Grab your pairing token from
+the **Add Node** page in the dashboard, then either:
+
+- **Desktop app** — paste the token into the **API → Connect** tab and hit **Connect**.
+- **Headless CLI** — run the command-line client on a server with no desktop:
 
 ```bash
-curl -fsSL https://llmjob-production.up.railway.app/install.sh/<token> | bash
+llmjob-earn-cli connect --token <pairing-token>
 ```
 
-Running the desktop app instead? **LLMJob Earn** can link the same machine to
-your account from its **API** tab — paste the pairing token and hit **Connect**.
+Either way the machine generates its own key locally (only the public key is
+sent), joins your account, and pings so it shows online. See
+[`earn/README.md`](earn/README.md).
 
 ## Run LLMJob Earn
 
