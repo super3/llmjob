@@ -20,7 +20,8 @@ const { EngineManager } = require('./engineManager');
 const { LlmManager } = require('./llmManager');
 const { LlmEngineManager } = require('./llmEngineManager');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
-const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, LLM, endpointFor, difficultyForCard } = require('../shared/config');
+const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, LLM, NODE, endpointFor, difficultyForCard } = require('../shared/config');
+const nodeProto = require('../shared/node');
 const { computeGpuLayers, requiredVramMb, hasEnoughVram } = require('../shared/vram');
 const { buildChatBody, parseChatStream } = require('../shared/llmChat');
 const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
@@ -614,6 +615,145 @@ function llmChat(messages) {
 
 function cancelChat() { if (chatReq) { chatReq.destroy(); chatReq = null; } }
 
+// ── Connect with LLMJob (node identity + pairing/ping) ───────────────────────
+// The machine keeps an Ed25519 keypair in node.json; only the public key leaves
+// it. "Connect" self-registers with a pairing token (/api/nodes/join); once
+// linked it pings (/api/nodes/ping) with signed telemetry so the node shows
+// online in the user's cluster. All best-effort — failures never touch mining.
+
+let nodePinger = null;
+
+function nodePath() { return path.join(app.getPath('userData'), 'node.json'); }
+
+function loadNode() {
+  try { return JSON.parse(fs.readFileSync(nodePath(), 'utf8')); } catch (e) { return null; }
+}
+
+function saveNode(node) {
+  try { fs.writeFileSync(nodePath(), JSON.stringify(node, null, 2), { mode: 0o600 }); } catch (e) { /* best effort */ }
+}
+
+// The persisted identity (keypair + id), created on first use. Never returns the
+// secret key to the renderer — see nodeStatus().
+function getOrCreateNode() {
+  let node = loadNode();
+  if (!node || !node.publicKey || !node.secretKey) {
+    const kp = nodeProto.generateKeypair();
+    node = {
+      nodeId: nodeProto.fingerprint(kp.publicKey),
+      publicKey: kp.publicKey,
+      secretKey: kp.secretKey,
+      name: null,
+      connected: false,
+      createdAt: new Date().toISOString(),
+    };
+    saveNode(node);
+  }
+  return node;
+}
+
+// Renderer-safe view (no secret key).
+function nodeStatus() {
+  const node = loadNode();
+  return {
+    connected: !!(node && node.connected),
+    nodeId: node ? node.nodeId : null,
+    name: node ? node.name : null,
+  };
+}
+
+function sendNodeStatus() { send('node:status', nodeStatus()); }
+
+// Minimal JSON POST (no axios dependency); resolves { status, data } or rejects.
+function postJson(url, body, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let u;
+    try { u = new URL(url); } catch (e) { return reject(e); }
+    const lib = u.protocol === 'http:' ? http : https;
+    const payload = JSON.stringify(body);
+    const req = lib.request(u, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+      timeout: timeoutMs || 30000,
+    }, (res) => {
+      let raw = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { raw += c; });
+      res.on('end', () => {
+        let data = null;
+        try { data = raw ? JSON.parse(raw) : null; } catch (e) { /* non-JSON */ }
+        resolve({ status: res.statusCode || 0, data });
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(new Error('request timed out')); });
+    req.write(payload);
+    req.end();
+  });
+}
+
+// One signed ping with fresh telemetry. Silent on failure.
+async function pingNode() {
+  const node = loadNode();
+  if (!node || !node.connected) return;
+  let vram = null, device = null;
+  try { vram = await detectVram(); } catch (e) { /* ignore */ }
+  try { device = await detectGpu(); } catch (e) { /* ignore */ }
+  const telemetry = nodeProto.buildTelemetry({
+    model: LLM.model.name, quant: LLM.model.quant, device, vram,
+    tokensPerSec: llmStatus.tokensPerSec, ready: llmStatus.ready,
+  });
+  const body = nodeProto.buildPingBody({
+    nodeId: node.nodeId, publicKey: node.publicKey, secretKey: node.secretKey,
+    timestamp: Date.now(), telemetry,
+  });
+  try { await postJson(NODE.serverUrl + '/api/nodes/ping', body, 15000); } catch (e) { /* offline — try again next tick */ }
+}
+
+function startNodePinger() {
+  stopNodePinger();
+  pingNode();
+  nodePinger = setInterval(pingNode, NODE.pingIntervalMs);
+  if (nodePinger.unref) nodePinger.unref();
+}
+
+function stopNodePinger() {
+  if (nodePinger) { clearInterval(nodePinger); nodePinger = null; }
+}
+
+// Link this machine to an account with a pairing/join token. Returns a
+// renderer-safe result; on success the node is saved connected and starts pinging.
+async function connectNode({ token, name } = {}) {
+  const t = String(token || '').trim();
+  if (!t) return { error: 'Enter your pairing token first.' };
+  const node = getOrCreateNode();
+  const nm = (name && String(name).trim()) || node.name || null;
+  const body = nodeProto.buildJoinBody({ token: t, nodeId: node.nodeId, publicKey: node.publicKey, name: nm });
+
+  let res;
+  try {
+    res = await postJson(NODE.serverUrl + '/api/nodes/join', body, 20000);
+  } catch (e) {
+    return { error: 'Could not reach LLMJob — check your connection.' };
+  }
+  if (res.status !== 200 && res.status !== 201) {
+    return { error: (res.data && res.data.error) || ('Link failed (HTTP ' + res.status + ').') };
+  }
+
+  saveNode(Object.assign({}, node, { connected: true, name: nm, linkedAt: new Date().toISOString() }));
+  startNodePinger();
+  sendNodeStatus();
+  return { success: true, nodeId: node.nodeId, name: nm };
+}
+
+function disconnectNode() {
+  const node = loadNode();
+  if (node) saveNode(Object.assign({}, node, { connected: false }));
+  stopNodePinger();
+  sendNodeStatus();
+  return { ok: true };
+}
+
 // Apply the compute mode: run the miner and/or the LLM per the plan.
 function applyPlan(settings) {
   const plan = resolvePlan(settings.mode || DEFAULT_MODE, { canMine: isValidAddress(settings.address), canLlm: true });
@@ -646,6 +786,10 @@ ipcMain.on('open-external', (_e, url) => { shell.openExternal(url); });
 ipcMain.on('clipboard:write', (_e, text) => { clipboard.writeText(String(text == null ? '' : text)); });
 ipcMain.on('llm:chat', (_e, messages) => llmChat(messages));
 ipcMain.on('llm:chat:cancel', () => cancelChat());
+ipcMain.handle('node:status', () => nodeStatus());
+ipcMain.handle('node:connect', (_e, opts) => connectNode(opts || {}));
+ipcMain.handle('node:disconnect', () => disconnectNode());
+ipcMain.on('node:dashboard', () => shell.openExternal(NODE.dashboardUrl));
 ipcMain.handle('app:version', () => app.getVersion());
 ipcMain.on('app:update:check', () => checkForUpdate());
 ipcMain.on('app:update:install', () => {
@@ -663,6 +807,9 @@ ipcMain.on('app:update:install', () => {
 app.whenReady().then(() => {
   createWindow();
   if (app.isPackaged) setupUpdater();
+  // Resume pinging if this machine is already linked to an account.
+  const node = loadNode();
+  if (node && node.connected) startNodePinger();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

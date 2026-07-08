@@ -123,13 +123,26 @@
   -d '{"messages": [{"role": "user", "content": "Hello!"}]}'</pre>
       <p class="settings-note">Works with any OpenAI SDK — point <b class="mono">base_url</b> at the endpoint.</p>
 
-      <div class="field-label"><span class="lbl">Connect</span><span class="meta">Not linked to an account</span></div>
-      <div class="connect-card">
-        <p>This endpoint only answers on <b>this computer</b>. Connecting your LLMJob account to use it anywhere — other devices, web chat, and one shared cluster API — is coming soon.</p>
+      <div class="field-label"><span class="lbl">Connect</span><span class="meta" id="connect-hint">Not linked to an account</span></div>
+      <!-- Not connected: pairing-token flow -->
+      <div id="connect-form" class="connect-card">
+        <p>This endpoint only answers on <b>this computer</b>. Link your LLMJob account to use it anywhere — other devices, web chat, and one shared cluster API.</p>
+        <input id="connect-token" class="connect-input mono" type="text" spellcheck="false" placeholder="Paste your pairing token" />
+        <div id="connect-error" class="connect-error" hidden></div>
         <div class="connect-actions">
-          <button class="connect-btn" type="button" disabled>Connect with LLMJob</button>
-          <span class="soon-tag">Coming soon</span>
+          <button id="connect-link" class="connect-btn" type="button">Connect</button>
+          <button id="connect-dashboard" class="chip" type="button">Get a token ↗</button>
         </div>
+      </div>
+      <!-- Connected: live-in-cluster card -->
+      <div id="connect-done" class="connected-card" hidden>
+        <div class="connected-head">
+          <span class="llm-dot on"></span>
+          <span class="connected-title" id="connected-title">Connected</span>
+          <span class="connected-spacer"></span>
+          <button id="connect-disconnect" class="chip" type="button">Disconnect</button>
+        </div>
+        <p>This node is live in your cluster — reachable from your other devices, web chat, and your shared API keys as <b class="mono" id="connected-name">this rig</b>.</p>
       </div>
     </div>
     <div id="api-stopped" class="tab-empty" hidden>

@@ -31,6 +31,11 @@
     apiRunning: $('api-running'), apiStopped: $('api-stopped'),
     apiEndpointUrl: $('api-endpoint-url'), apiCopy: $('api-copy'), apiOpen: $('api-open'),
     apiModel: $('api-model'),
+    // connect
+    connectHint: $('connect-hint'), connectForm: $('connect-form'), connectToken: $('connect-token'),
+    connectError: $('connect-error'), connectLink: $('connect-link'), connectDashboard: $('connect-dashboard'),
+    connectDone: $('connect-done'), connectedTitle: $('connected-title'), connectedName: $('connected-name'),
+    connectDisconnect: $('connect-disconnect'),
     // settings
     modeSeg: $('mode-seg'), modeHint: $('mode-hint'),
     setWorker: $('set-worker'), setRegion: $('set-region'), setDifficulty: $('set-difficulty'),
@@ -46,6 +51,7 @@
     address: '', gpu: '', mode: 'mining',
     llm: { running: false, ready: false, endpoint: null, webUrl: null, tps: 0, model: null },
     chat: { messages: [], streaming: false, streamText: '', bubble: null },
+    node: { connected: false, nodeId: null, name: null },
   };
 
   const BAL_REFRESH_MS = 60000; // re-poll the pool balance once a minute
@@ -240,6 +246,50 @@
       state.chat.bubble.classList.add('err');
     }
     endStream();
+  }
+
+  // ── Connect with LLMJob (link this node to an account) ─────────────────────
+  function renderNode(s) {
+    state.node = {
+      connected: !!(s && s.connected),
+      nodeId: (s && s.nodeId) || null,
+      name: (s && s.name) || null,
+    };
+    const on = state.node.connected;
+    const who = state.node.name || state.node.nodeId || '';
+    el.connectForm.hidden = on;
+    el.connectDone.hidden = !on;
+    el.connectHint.textContent = on ? (who ? 'Linked · ' + who : 'Linked') : 'Not linked to an account';
+    if (on) el.connectedName.textContent = state.node.name || state.node.nodeId || 'this rig';
+  }
+
+  function showConnectError(msg) {
+    el.connectError.textContent = msg;
+    el.connectError.hidden = false;
+  }
+
+  async function doConnect() {
+    const token = String(el.connectToken.value || '').trim();
+    el.connectError.hidden = true;
+    if (!token) { showConnectError('Enter your pairing token first.'); return; }
+    if (!api.connectNode) return;
+    el.connectLink.disabled = true;
+    el.connectLink.textContent = 'Connecting…';
+    const res = await api.connectNode({ token, name: el.setWorker.value.trim() || undefined });
+    el.connectLink.disabled = false;
+    el.connectLink.textContent = 'Connect';
+    if (res && res.success) {
+      el.connectToken.value = '';
+      renderNode({ connected: true, nodeId: res.nodeId, name: res.name });
+    } else {
+      showConnectError((res && res.error) || 'Connection failed.');
+    }
+  }
+
+  async function doDisconnect() {
+    if (!api.disconnectNode) return;
+    await api.disconnectNode();
+    renderNode({ connected: false });
   }
 
   // ── Charts / mining stats ──────────────────────────────────────────────────
@@ -462,6 +512,12 @@
       if (url && api.openExternal) api.openExternal(url);
     });
 
+    // Connect with LLMJob (pairing token → link this node; Disconnect to unlink)
+    el.connectLink.addEventListener('click', doConnect);
+    el.connectToken.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doConnect(); } });
+    el.connectDisconnect.addEventListener('click', doDisconnect);
+    el.connectDashboard.addEventListener('click', () => { if (api.openNodeDashboard) api.openNodeDashboard(); });
+
     document.querySelectorAll('[data-ext]').forEach((a) =>
       a.addEventListener('click', (e) => {
         e.preventDefault();
@@ -503,6 +559,8 @@
     if (api.onChatDelta) api.onChatDelta(onChatDelta);
     if (api.onChatDone) api.onChatDone(onChatDone);
     if (api.onChatError) api.onChatError(onChatError);
+    if (api.onNodeStatus) api.onNodeStatus(renderNode);
+    if (api.getNodeStatus) api.getNodeStatus().then(renderNode);
     if (api.detectGpu) {
       const gpu = await api.detectGpu();
       if (gpu) {

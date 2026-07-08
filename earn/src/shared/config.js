@@ -98,7 +98,19 @@ const LLM = {
     layers: 42,
     vramFullMb: 5800,
     minVramMb: 6144, // ~6 GB free required before we put it on the GPU
+    quant: 'Q4_K_M',
   },
+};
+
+// Linking this machine to an LLMJob account ("Connect with LLMJob"). The node
+// self-registers with a pairing/join token (only its public key leaves the box),
+// then pings on an interval so it shows online in the user's cluster. Mirrors the
+// server's /api/nodes/join + /api/nodes/ping contract.
+const NODE = {
+  serverUrl: 'https://llmjob-production.up.railway.app',
+  // Where the user copies their pairing token (sign in, Dashboard → Add node).
+  dashboardUrl: 'https://llmjob-production.up.railway.app/dashboard.html',
+  pingIntervalMs: 5 * 60 * 1000,
 };
 
 // Recommended static difficulty per card class, from the pool's table. Order
@@ -138,6 +150,6 @@ function difficultyForCard(name) {
 }
 
 module.exports = {
-  REGIONS, DEFAULTS, MINER, NETWORK, ECON, LLM, DIFFICULTY_BY_CARD,
+  REGIONS, DEFAULTS, MINER, NETWORK, ECON, LLM, NODE, DIFFICULTY_BY_CARD,
   regionFor, endpointFor, regionLabel, difficultyForCard,
 };

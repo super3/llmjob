@@ -137,10 +137,19 @@ input.field-box { user-select: text; }
 .curl-box { background: #0d1411; border: 1px solid #1b2922; border-radius: 11px; padding: 14px 16px; font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 11.5px; line-height: 1.8; color: #cfe9d8; white-space: pre-wrap; user-select: text; overflow-x: auto; }
 .connect-card { border: 1px solid #dbe6fb; background: #eff4ff; border-radius: 11px; padding: 16px 18px; }
 .connect-card p { font-size: 13px; color: var(--ink-3); line-height: 1.6; }
+.connect-input { width: 100%; margin-top: 12px; border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 10px 12px; font-size: 12.5px; color: var(--ink-3); outline: none; user-select: text; }
+.connect-input:focus { border-color: var(--accent); }
+.connect-error { margin-top: 10px; font-size: 12px; color: #dc2626; font-weight: 600; }
 .connect-actions { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
-.connect-btn { font-family: inherit; font-size: 13px; font-weight: 700; color: #fff; background: var(--accent); border: none; border-radius: 9px; padding: 11px 20px; cursor: pointer; }
+.connect-btn { font-family: inherit; font-size: 13px; font-weight: 700; color: #fff; background: var(--accent); border: none; border-radius: 9px; padding: 11px 20px; cursor: pointer; transition: background .15s; }
+.connect-btn:hover:not(:disabled) { background: #1d4ed8; }
 .connect-btn:disabled { background: #b9c9ef; cursor: not-allowed; }
-.soon-tag { font-size: 11.5px; font-weight: 600; color: var(--muted); background: #fff; border: 1px solid #e3e1d9; border-radius: 7px; padding: 6px 10px; }
+/* connected card */
+.connected-card { border: 1px solid #cdeed6; background: #f2faf4; border-radius: 11px; padding: 16px 18px; }
+.connected-head { display: flex; align-items: center; gap: 9px; }
+.connected-title { font-size: 13.5px; font-weight: 700; color: #166534; }
+.connected-spacer { flex: 1; }
+.connected-card p { font-size: 13px; color: var(--ink-3); line-height: 1.6; margin-top: 10px; }
 
 /* compute-mode segmented control (settings) */
 .seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; background: var(--field); border: 1px solid var(--line); border-radius: 10px; padding: 5px; }

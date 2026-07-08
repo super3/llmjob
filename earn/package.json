@@ -1,7 +1,7 @@
 {
   "name": "llmjob-earn",
   "version": "0.1.15",
-  "description": "LLMJob Earn \u2014 desktop GUI that turns the excess compute on GPUs you already own into crypto (Pearl / PRL) via the AlphaPool alpha-miner. Paste a payout address and start earning, no command line.",
+  "description": "LLMJob Earn — desktop GUI that turns the excess compute on GPUs you already own into crypto (Pearl / PRL) via the AlphaPool alpha-miner. Paste a payout address and start earning, no command line.",
   "main": "src/main/main.js",
   "bin": {
     "llmjob-earn-cli": "src/cli/earn-cli.js"
@@ -80,6 +80,8 @@
     ]
   },
   "dependencies": {
-    "electron-updater": "^6.8.9"
+    "electron-updater": "^6.8.9",
+    "tweetnacl": "^1.0.3",
+    "tweetnacl-util": "^0.15.1"
   }
 }
