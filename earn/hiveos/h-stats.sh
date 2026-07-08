@@ -24,16 +24,22 @@ if [[ -f $LLE_SF ]]; then
     khs=$(jq -r '(.ths // 0) * 1000000000' "$LLE_SF" 2>/dev/null)
     [[ -z $khs || $khs == "null" ]] && khs=0
 
-    stats=$(jq -c --argjson temp "$LLE_TEMP" --argjson fan "$LLE_FAN" '{
-      hs: [((.ths // 0) * 1000000)],
-      hs_units: "mhs",
-      temp: $temp,
-      fan: $fan,
-      uptime: (.uptimeSec // 0),
-      ver: (.ver // "0"),
-      ar: [(.accepted // 0), (.rejected // 0)],
-      algo: "pearlhash"
-    }' "$LLE_SF" 2>/dev/null)
+    # The engine reports one aggregate hashrate for the whole rig; split it
+    # evenly across the GPUs gpu-stats sees so the per-card dashboard rows
+    # line up with the temp/fan arrays instead of piling onto GPU 0.
+    stats=$(jq -c --argjson temp "$LLE_TEMP" --argjson fan "$LLE_FAN" '
+      ([$temp | length, 1] | max) as $n |
+      ((.ths // 0) * 1000000) as $mhs |
+      {
+        hs: ([range(0; $n)] | map($mhs / $n)),
+        hs_units: "mhs",
+        temp: $temp,
+        fan: $fan,
+        uptime: (.uptimeSec // 0),
+        ver: (.ver // "0"),
+        ar: [(.accepted // 0), (.rejected // 0)],
+        algo: "pearlhash"
+      }' "$LLE_SF" 2>/dev/null)
     if [[ -z $stats ]]; then stats="null"; khs=0; fi
   fi
 fi

@@ -28,4 +28,22 @@ function pickGpu(names) {
   return real.find((n) => !INTEGRATED.test(n)) || real[0];
 }
 
-module.exports = { IGNORE, INTEGRATED, pickGpu };
+// Count the GPUs that actually mine: discrete cards when any are present (an
+// iGPU alongside them contributes nothing worth counting), else 1 if only an
+// integrated GPU exists, else 0. Multi-GPU rigs use this to scale the static
+// share difficulty — the pool's table is per card class, so a rig's aggregate
+// hashrate wants roughly per-card × count.
+function countGpus(names) {
+  if (!Array.isArray(names)) return 0;
+  let real = 0;
+  let discrete = 0;
+  for (const raw of names) {
+    const name = String(raw == null ? '' : raw).trim();
+    if (!name || IGNORE.test(name)) continue;
+    real++;
+    if (!INTEGRATED.test(name)) discrete++;
+  }
+  return discrete > 0 ? discrete : (real > 0 ? 1 : 0);
+}
+
+module.exports = { IGNORE, INTEGRATED, pickGpu, countGpus };
