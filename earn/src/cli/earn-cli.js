@@ -25,9 +25,10 @@ const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const { NETWORK, MINER, REGIONS, DEFAULTS, endpointFor, regionLabel, difficultyForCard } = require('../shared/config');
 const { progressPercent } = require('../shared/engine');
 const { buildMinerReport } = require('../shared/minerReport');
+const { statsFilePayload } = require('../shared/statsFile');
 const { shortenAddress } = require('../shared/address');
 const { pickFastestRegion } = require('../shared/region');
-const { pickGpu } = require('../shared/gpu');
+const { pickGpu, countGpus } = require('../shared/gpu');
 const format = require('../shared/format');
 const pkg = require('../../package.json');
 
@@ -81,11 +82,17 @@ function defaultWorker() {
 // name or null (no nvidia-smi / non-NVIDIA / parse failure). Never rejects — the
 // engine still auto-detects the real device to mine; this is only for the
 // difficulty table and the status label.
+// Resolve { name, count } — the representative card plus how many discrete
+// GPUs the rig actually mines with (multi-GPU rigs scale difficulty by count).
 function detectGpu() {
   return new Promise((resolve) => {
     execFile('nvidia-smi', ['--query-gpu=name', '--format=csv,noheader'],
       { timeout: 5000 },
-      (err, stdout) => resolve(err ? null : pickGpu(String(stdout).split(/\r?\n/))));
+      (err, stdout) => {
+        if (err) return resolve(null);
+        const names = String(stdout).split(/\r?\n/);
+        resolve({ name: pickGpu(names), count: countGpus(names) });
+      });
   });
 }
 
@@ -99,9 +106,19 @@ function detectVram() {
       { timeout: 5000 },
       (err, stdout) => {
         if (err) return resolve(null);
-        const parts = String(stdout).split(/\r?\n/)[0].split(',').map((x) => parseInt(x, 10));
-        if (parts.length < 2 || !Number.isFinite(parts[0]) || !Number.isFinite(parts[1])) return resolve(null);
-        resolve({ usedMb: parts[0], totalMb: parts[1] });
+        // Sum across every GPU line so a multi-GPU rig reports the rig's total.
+        let usedMb = 0;
+        let totalMb = 0;
+        let any = false;
+        for (const row of String(stdout).split(/\r?\n/)) {
+          const parts = row.split(',').map((x) => parseInt(x, 10));
+          if (parts.length >= 2 && Number.isFinite(parts[0]) && Number.isFinite(parts[1])) {
+            usedMb += parts[0];
+            totalMb += parts[1];
+            any = true;
+          }
+        }
+        resolve(any ? { usedMb, totalMb } : null);
       });
   });
 }
@@ -282,10 +299,14 @@ async function run(argv) {
   if (!settings.workerProvided) settings.worker = defaultWorker();
   if (!settings.regionProvided) settings.region = await detectRegion();
   if (!settings.gpuProvided) {
-    const gpu = await detectGpu();
-    if (gpu) {
-      settings.gpu = gpu;
-      if (!settings.difficultyProvided) settings.difficulty = difficultyForCard(gpu);
+    const det = await detectGpu();
+    if (det && det.name) {
+      settings.gpu = det.name;
+      settings.gpuCount = det.count > 1 ? det.count : 1;
+      // The pool's difficulty table is per card class; a rig submits its
+      // aggregate hashrate on one connection, so scale by the card count
+      // (8× RTX 3070 wants the ~560 TH/s tier, not the single-card one).
+      if (!settings.difficultyProvided) settings.difficulty = difficultyForCard(det.name) * settings.gpuCount;
     }
   }
 
@@ -295,7 +316,7 @@ async function run(argv) {
   log('address:    ' + shortenAddress(settings.address) + (settings.mdlAddress ? '  (+MDL ' + shortenAddress(settings.mdlAddress) + ')' : ''));
   log('pool:       ' + endpoint + '  ' + regionLabel(settings.region) + (settings.regionProvided ? '' : '  (auto)'));
   log('worker:     ' + settings.worker + (settings.workerProvided ? '' : '  (auto)'));
-  log('difficulty: ' + settings.difficulty + (settings.gpu ? '  (for ' + settings.gpu + (settings.gpuProvided ? '' : ', auto') + ')' : ''));
+  log('difficulty: ' + settings.difficulty + (settings.gpu ? '  (for ' + (settings.gpuCount > 1 ? settings.gpuCount + '× ' : '') + settings.gpu + (settings.gpuProvided ? '' : ', auto') + ')' : ''));
 
   let binaryPath;
   try {
@@ -340,11 +361,30 @@ async function run(argv) {
     if (reporter.unref) reporter.unref();
   }
 
+  // Write live stats JSON for external consumers (HiveOS h-stats.sh reads this
+  // to feed the dashboard). Atomic write (tmp + rename) so readers never see a
+  // torn file; best-effort — a failed write must never affect mining.
+  let statsWriter = null;
+  if (settings.statsFile) {
+    const writeStats = () => {
+      try {
+        const payload = statsFilePayload(snapshot(stats, Date.now()), { version: pkg.version, nowMs: Date.now() });
+        const tmp = settings.statsFile + '.tmp';
+        fs.writeFileSync(tmp, JSON.stringify(payload));
+        fs.renameSync(tmp, settings.statsFile);
+      } catch (e) { /* best effort */ }
+    };
+    writeStats();
+    statsWriter = setInterval(writeStats, 10000);
+    if (statsWriter.unref) statsWriter.unref();
+  }
+
   const shutdown = () => {
     if (stopping) return;
     stopping = true;
     log('shutting down…');
     if (reporter) clearInterval(reporter);
+    if (statsWriter) clearInterval(statsWriter);
     miner.stop();
   };
   process.on('SIGINT', shutdown);
@@ -353,6 +393,7 @@ async function run(argv) {
   return new Promise((resolve) => {
     miner.on('stopped', (code) => {
       if (reporter) clearInterval(reporter);
+      if (statsWriter) clearInterval(statsWriter);
       log('engine exited (code ' + code + ')');
       resolve(stopping ? 0 : (code || 0));
     });

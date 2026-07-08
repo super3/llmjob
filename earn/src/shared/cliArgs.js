@@ -27,6 +27,7 @@ const ALIASES = {
 const VALUE_FLAGS = new Set([
   '--address', '--mdl', '--region', '--worker',
   '--difficulty', '--gpu', '--backend', '--binary', '--engine-dir',
+  '--stats-file',
 ]);
 
 function regionChoices() {
@@ -50,6 +51,7 @@ const USAGE = [
   '      --backend <name>     Force an engine backend (e.g. ampere)',
   '  -b, --binary <path>      Use this alpha-miner binary instead of downloading one',
   '      --engine-dir <path>  Where to cache the downloaded engine',
+  '      --stats-file <path>  Write live stats JSON here every 10s (for HiveOS h-stats etc.)',
   '      --no-report          Do not publish live status to the public network board',
   '      --no-update          Do not auto-update the CLI to a newer release on start',
   '  -h, --help               Show this help and exit',
@@ -97,6 +99,7 @@ function buildSettings(opts, errors, report, update) {
   const backend = opts['--backend'] != null ? String(opts['--backend']).trim() : null;
   const binaryPath = opts['--binary'] != null ? String(opts['--binary']) : null;
   const engineDir = opts['--engine-dir'] != null ? String(opts['--engine-dir']) : null;
+  const statsFile = opts['--stats-file'] != null ? String(opts['--stats-file']) : null;
 
   // Which knobs the user set explicitly. The CLI auto-detects the ones left
   // unset (fastest region; GPU → static difficulty; a per-host worker name), so
@@ -108,7 +111,7 @@ function buildSettings(opts, errors, report, update) {
   const workerProvided = opts['--worker'] != null;
 
   return {
-    address, mdlAddress, region, worker, gpu, difficulty, backend, binaryPath, engineDir,
+    address, mdlAddress, region, worker, gpu, difficulty, backend, binaryPath, engineDir, statsFile,
     report, update, regionProvided, gpuProvided, difficultyProvided, workerProvided,
   };
 }

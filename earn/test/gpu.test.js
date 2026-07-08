@@ -1,6 +1,6 @@
 'use strict';
 
-const { pickGpu } = require('../src/shared/gpu');
+const { pickGpu, countGpus } = require('../src/shared/gpu');
 
 describe('pickGpu', () => {
   test('picks the real GPU and skips the basic display adapter', () => {
@@ -35,5 +35,23 @@ describe('pickGpu', () => {
     expect(pickGpu(null)).toBeNull();
     expect(pickGpu(undefined)).toBeNull();
     expect(pickGpu('NVIDIA')).toBeNull();
+  });
+});
+
+describe('countGpus', () => {
+  test('counts discrete GPUs, ignoring an iGPU riding alongside', () => {
+    expect(countGpus(['Intel UHD Graphics 770', 'NVIDIA GeForce RTX 3070', 'NVIDIA GeForce RTX 3070'])).toBe(2);
+    expect(countGpus(Array(8).fill('NVIDIA GeForce RTX 3070'))).toBe(8);
+  });
+
+  test('an integrated-only machine counts as one miner', () => {
+    expect(countGpus(['Intel UHD Graphics 770'])).toBe(1);
+  });
+
+  test('virtual adapters and junk count as zero', () => {
+    expect(countGpus(['Microsoft Basic Display Adapter', ''])).toBe(0);
+    expect(countGpus([])).toBe(0);
+    expect(countGpus(null)).toBe(0);
+    expect(countGpus([null])).toBe(0);
   });
 });

@@ -67,6 +67,22 @@ The app drives `alpha-miner` with its documented CLI: `--address prl1…` (or
 `--password "x;d=N"`, an optional `--force-backend` for cards that need it, and
 the regional endpoint (`us1/us2/eu1/eu2/ru1/sg1/hk1/in1.alphapool.tech:5566`).
 
+## HiveOS (flight sheet)
+
+The release ships a HiveOS custom-miner package wrapping the headless CLI
+(`hiveos/` + `scripts/build-hiveos.mjs` → `llmjob-earn-hiveos.tar.gz`):
+
+- **Miner** → Custom · **Miner name** → `llmjob-earn`
+- **Installation URL** → `https://github.com/super3/llmjob/releases/latest/download/llmjob-earn-hiveos.tar.gz`
+- **Wallet** → your `prl1p…` address, or `prl1p…+mdl1p…` to merge-mine MDL
+- **Extra config arguments** → any extra CLI flags, e.g. `--region eu1` (optional)
+
+The worker name comes from the rig's HiveOS name, and the dashboard gets live
+hashrate/shares via `h-stats.sh`, which reads the JSON the CLI writes with
+`--stats-file` (10s cadence; a stale file reports zeros rather than lying).
+Self-update is disabled under HiveOS — the agent owns the lifecycle, so updates
+arrive by reinstalling the package URL.
+
 ## Headless CLI (Linux)
 
 For rigs and servers with no desktop, `src/cli/earn-cli.js` runs the exact same

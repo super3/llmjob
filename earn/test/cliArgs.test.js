@@ -91,6 +91,7 @@ describe('buildSettings — validation', () => {
       '-a', ADDR, '-m', MDL, '-r', 'eu1', '-w', 'rig7',
       '-d', '131072', '-g', 'RTX 4090', '--backend', 'ampere',
       '-b', '/opt/alpha-miner', '--engine-dir', '/tmp/eng',
+      '--stats-file', '/run/hive/llmjob-earn-stats.json',
     ]);
     expect(r.errors).toEqual([]);
     expect(r.settings).toMatchObject({
@@ -103,6 +104,7 @@ describe('buildSettings — validation', () => {
       backend: 'ampere',
       binaryPath: '/opt/alpha-miner',
       engineDir: '/tmp/eng',
+      statsFile: '/run/hive/llmjob-earn-stats.json',
       report: true,
       update: true,
       regionProvided: true,
@@ -183,6 +185,7 @@ describe('buildSettings — validation', () => {
     expect(s.backend).toBeNull();
     expect(s.binaryPath).toBeNull();
     expect(s.engineDir).toBeNull();
+    expect(s.statsFile).toBeNull();
   });
 });
 
