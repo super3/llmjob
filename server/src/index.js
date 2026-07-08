@@ -52,7 +52,7 @@ const staticPath = process.env.RAILWAY_ENVIRONMENT
 function serveInstaller(req, res, token) {
   const proto = req.get('x-forwarded-proto') || req.protocol;
   const base = `${proto}://${req.get('host')}`;
-  fs.readFile(path.join(staticPath, 'client', 'install.sh'), 'utf8', (err, script) => {
+  fs.readFile(path.join(staticPath, 'install.sh'), 'utf8', (err, script) => {
     if (err) {
       return res.status(404).send('install.sh not found');
     }

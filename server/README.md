@@ -108,16 +108,16 @@ The app bakes both its own host **and** the join token into `install.sh` when
 serving the per-account `/install.sh/<token>` URL, so the command takes no
 arguments. The token is validated (`[A-Za-z0-9_-]+`) before being injected.
 
-`install.sh` is a pure POSIX-shell script served by the app — no Node, no npm,
-just `curl` and `openssl` (OpenSSL 1.1.1+). It creates an Ed25519 key
-**locally** (only the public key is sent), calls `POST /api/nodes/join` with the
-token to claim the node, then pings on an interval so it shows as online. The
-join token authorizes the claim without an interactive login; rotate it from the
-dashboard to revoke outstanding agents.
+`install.sh` (in the repo root) is a pure POSIX-shell script served by the app —
+no Node, no npm, just `curl` and `openssl` (OpenSSL 1.1.1+). It creates an
+Ed25519 key **locally** (only the public key is sent), calls `POST /api/nodes/join`
+with the token to claim the node, then pings on an interval so it shows as
+online. The join token authorizes the claim without an interactive login; rotate
+it from the dashboard to revoke outstanding agents.
 
-> The full `llmjob-node` client (in `client/`) still provides the heavier
-> worker/Ollama path and a `join` command; `install.sh` is the lightweight,
-> dependency-free path used by the dashboard.
+> The **LLMJob Earn** desktop app (in `earn/`) offers the same pairing from its
+> **API → Connect** tab; `install.sh` is the lightweight, dependency-free path
+> for headless boxes.
 
 ### API key authentication
 

@@ -15,12 +15,10 @@ Build your own AI infrastructure with spare GPUs and devices. Get OpenAI-compati
 - 🔒 Keep sensitive data on your own infrastructure
 - 💸 Turn idle GPU time into crypto **today** with the LLMJob Earn desktop app
 
-This repository contains three packages:
+This repository contains two packages:
 
 - **Server** (repo root) — the Express API plus the static dashboard pages,
   backed by Postgres and deployed to Railway / GitHub Pages.
-- **Node client** ([`client/`](client)) — the `llmjob-node` worker that runs on
-  a machine with a GPU and processes jobs via Ollama.
 - **LLMJob Earn** ([`earn/`](earn)) — an Electron desktop app that turns idle GPU
   time into crypto by wrapping the AlphaPool miner (Pearl / PRL): paste a payout
   address, hit **Start**, and earn — no command line. It's the easy on-ramp that
@@ -37,12 +35,8 @@ the server URL and join token, from the **Add Node** page in the dashboard:
 curl -fsSL https://llmjob-production.up.railway.app/install.sh/<token> | bash
 ```
 
-Prefer the Node.js client? See [`client/README.md`](client/README.md):
-
-```bash
-npm install -g llmjob-node
-llmjob-node start
-```
+Running the desktop app instead? **LLMJob Earn** can link the same machine to
+your account from its **API** tab — paste the pairing token and hit **Connect**.
 
 ## Run LLMJob Earn
 
