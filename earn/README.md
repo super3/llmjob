@@ -128,7 +128,16 @@ When the LLM runs it spawns llama.cpp's `llama-server` and exposes an
 OpenAI-compatible endpoint at `http://127.0.0.1:8080/v1`. The small default model
 (`Gemma-4-E4B-it-Q4_K_M`, ~5 GB — ~4.5B *effective* params, so a low VRAM
 footprint) is a plain download cached under `~/.local/share/llmjob-earn/llm/`;
-point `--llm-model /path/to/model.gguf` at your own to skip it. Because the pool
+point `--llm-model /path/to/model.gguf` at your own to skip it.
+
+**VRAM preflight** — before starting (and before downloading the model), the app
+checks free GPU VRAM via `nvidia-smi` and **won't start the LLM unless at least
+~6 GB is free** (`model.minVramMb`), so it never spawns `llama-server` into an
+out-of-memory crash; it logs a clear "not enough free VRAM" line and skips the
+LLM (mining, if enabled, carries on). If VRAM can't be read (non-NVIDIA / no
+driver) it proceeds and lets llama.cpp decide.
+
+Because the pool
 ships `llama-server` as a release **zip**
 (and the CLI, like the miner, doesn't extract zips), pass a prebuilt server
 binary with `--llm-binary /path/to/llama-server` on Linux.

@@ -31,7 +31,7 @@ const { statsFilePayload } = require('../shared/statsFile');
 const { shortenAddress, isValidAddress } = require('../shared/address');
 const { pickFastestRegion } = require('../shared/region');
 const { pickGpu, countGpus } = require('../shared/gpu');
-const { computeGpuLayers } = require('../shared/vram');
+const { computeGpuLayers, requiredVramMb, hasEnoughVram } = require('../shared/vram');
 const { resolvePlan } = require('../shared/llmMode');
 const format = require('../shared/format');
 const pkg = require('../../package.json');
@@ -343,6 +343,19 @@ async function resolveLlmModel(settings, dir) {
 // (best-effort — a failing LLM never takes the miner down).
 async function startLlm(settings, reserveMb) {
   const dir = llmDir(settings);
+
+  // Preflight the GPU before doing anything expensive (downloading a ~5 GB
+  // model): refuse to start if we can measure VRAM and there isn't enough free
+  // to hold the model — spawning anyway risks an out-of-memory crash. When VRAM
+  // can't be read (non-NVIDIA / no driver) we proceed and let llama.cpp decide.
+  const vram = await detectVram();
+  const freeMb = vram ? vram.totalMb - vram.usedMb : null;
+  if (hasEnoughVram(freeMb, LLM.model) === false) {
+    log('not enough free VRAM for the local LLM: ' + freeMb + ' MB free, need ~'
+      + requiredVramMb(LLM.model) + ' MB for ' + LLM.model.name + ' — skipping the LLM.', process.stderr);
+    return null;
+  }
+
   log('preparing local LLM (' + LLM.model.name + ') …');
 
   let binaryPath, modelPath;
@@ -354,9 +367,8 @@ async function startLlm(settings, reserveMb) {
     return null;
   }
 
-  // Size the GPU offload from free VRAM (total − used); full offload when VRAM
-  // can't be read (non-NVIDIA / no driver), matching the GUI.
-  const vram = await detectVram();
+  // Size the GPU offload from the free VRAM measured above (total − used); full
+  // offload when VRAM can't be read (non-NVIDIA / no driver).
   const nGpuLayers = vram
     ? computeGpuLayers(vram.totalMb - vram.usedMb, LLM.model, reserveMb || 0)
     : LLM.model.layers;

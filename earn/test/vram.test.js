@@ -1,6 +1,6 @@
 'use strict';
 
-const { computeGpuLayers } = require('../src/shared/vram');
+const { computeGpuLayers, requiredVramMb, hasEnoughVram } = require('../src/shared/vram');
 
 const MODEL = { layers: 16, vramFullMb: 1600 }; // perLayer = 100 MB
 
@@ -28,5 +28,37 @@ describe('computeGpuLayers', () => {
 
   test('reserve defaults to 0 when omitted', () => {
     expect(computeGpuLayers(1600, MODEL)).toBe(16); // budget == full
+  });
+});
+
+describe('requiredVramMb', () => {
+  test('prefers an explicit minVramMb floor', () => {
+    expect(requiredVramMb({ minVramMb: 6144, vramFullMb: 5800 })).toBe(6144);
+  });
+  test('falls back to vramFullMb when no explicit floor', () => {
+    expect(requiredVramMb({ vramFullMb: 5800 })).toBe(5800);
+  });
+  test('zero when neither is set or the model is missing', () => {
+    expect(requiredVramMb({})).toBe(0);
+    expect(requiredVramMb(null)).toBe(0);
+  });
+});
+
+describe('hasEnoughVram', () => {
+  const M = { minVramMb: 6144 };
+  test('true when free covers the requirement, incl. the exact boundary', () => {
+    expect(hasEnoughVram(8000, M)).toBe(true);
+    expect(hasEnoughVram(6144, M)).toBe(true);
+  });
+  test('false when free VRAM falls short', () => {
+    expect(hasEnoughVram(6000, M)).toBe(false);
+  });
+  test('null when free VRAM cannot be measured', () => {
+    expect(hasEnoughVram(null, M)).toBeNull();
+    expect(hasEnoughVram('nope', M)).toBeNull();
+  });
+  test('always allowed when the model configures no floor', () => {
+    expect(hasEnoughVram(0, {})).toBe(true);
+    expect(hasEnoughVram(null, {})).toBe(true);
   });
 });

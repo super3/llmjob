@@ -88,13 +88,16 @@ const LLM = {
   // mining without hogging the GPU. `layers` is the text model's transformer-layer
   // count (for --n-gpu-layers; llama.cpp clamps a larger value to what's present)
   // and `vramFullMb` the approximate VRAM for a full GPU offload at ctxSize
-  // (weights + KV cache).
+  // (weights + KV cache). `minVramMb` is the hard floor of free VRAM we require
+  // before starting the model on the GPU — a little above the ~5.8 GB full-offload
+  // estimate so we never spawn llama-server right at the edge and OOM.
   model: {
     name: 'Gemma-4-E4B-it-Q4_K_M',
     file: 'gemma-4-E4B-it-Q4_K_M.gguf',
     url: 'https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf',
     layers: 42,
     vramFullMb: 5800,
+    minVramMb: 6144, // ~6 GB free required before we put it on the GPU
   },
 };
 

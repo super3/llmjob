@@ -21,7 +21,7 @@ const { LlmManager } = require('./llmManager');
 const { LlmEngineManager } = require('./llmEngineManager');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, LLM, endpointFor, difficultyForCard } = require('../shared/config');
-const { computeGpuLayers } = require('../shared/vram');
+const { computeGpuLayers, requiredVramMb, hasEnoughVram } = require('../shared/vram');
 const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
 const { buildBalanceUrl, parseBalance, buildMdlBalanceUrl, parseMdlBalance } = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
@@ -490,6 +490,22 @@ async function resolveLlmBinary(dir) {
 // endpoint. Best-effort — failures are logged, never thrown to the UI.
 async function startLlm(reserveMb) {
   if (llm && llm.isRunning()) return;
+
+  // Preflight the GPU before doing anything expensive: refuse to start if we can
+  // measure VRAM and there isn't enough free to hold the model — spawning anyway
+  // risks an out-of-memory crash. When VRAM can't be read (non-NVIDIA / no
+  // driver) `enough` is null and we proceed, letting llama.cpp decide.
+  const vram = await detectVram();
+  const freeMb = vram ? vram.totalMb - vram.usedMb : null;
+  if (hasEnoughVram(freeMb, LLM.model) === false) {
+    const line = 'not enough free VRAM for the local LLM: ' + freeMb + ' MB free, need ~'
+      + requiredVramMb(LLM.model) + ' MB for ' + LLM.model.name + ' — skipping the LLM.';
+    send('miner:log', { level: 'error', line });
+    llmStatus = Object.assign({}, llmStatus, { running: false, ready: false, error: 'insufficient VRAM' });
+    sendLlmStatus();
+    return;
+  }
+
   const dir = path.join(app.getPath('userData'), 'llm');
   send('miner:log', { level: 'info', line: 'preparing local LLM (' + LLM.model.name + ')…' });
 
@@ -503,9 +519,8 @@ async function startLlm(reserveMb) {
     return;
   }
 
-  // Size the GPU offload from the free VRAM (total − used, via the shared
-  // detectVram); full offload when VRAM can't be read (non-NVIDIA / no driver).
-  const vram = await detectVram();
+  // Size the GPU offload from the free VRAM measured above (total − used); full
+  // offload when VRAM can't be read (non-NVIDIA / no driver).
   const nGpuLayers = vram
     ? computeGpuLayers(vram.totalMb - vram.usedMb, LLM.model, reserveMb || 0)
     : LLM.model.layers;

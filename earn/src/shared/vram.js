@@ -18,4 +18,25 @@ function computeGpuLayers(freeMb, model, reserveMb) {
   return Math.floor((budget / full) * layers); // the fraction of layers that fit
 }
 
-module.exports = { computeGpuLayers };
+// The minimum free VRAM (MB) we require before putting the model on the GPU: an
+// explicit per-model floor (`minVramMb`), else its full-offload estimate. 0 when
+// neither is configured (no floor → always allowed).
+function requiredVramMb(model) {
+  return Number(model && model.minVramMb) || Number(model && model.vramFullMb) || 0;
+}
+
+// Is `freeMb` enough to start the model on the GPU without risking an OOM?
+//   true  — free VRAM is known and covers the requirement
+//   false — free VRAM is known and falls short (caller should not start)
+//   null  — free VRAM can't be measured (no NVIDIA / no driver); caller decides
+// A model with no configured floor always returns true.
+function hasEnoughVram(freeMb, model) {
+  const need = requiredVramMb(model);
+  if (need <= 0) return true;
+  if (freeMb == null) return null;         // not measured (detectVram returned null)
+  const free = Number(freeMb);
+  if (!Number.isFinite(free)) return null; // unparseable → treat as unknown
+  return free >= need;
+}
+
+module.exports = { computeGpuLayers, requiredVramMb, hasEnoughVram };
