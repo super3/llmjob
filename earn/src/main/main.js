@@ -22,6 +22,7 @@ const { LlmEngineManager } = require('./llmEngineManager');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, LLM, endpointFor, difficultyForCard } = require('../shared/config');
 const { computeGpuLayers, requiredVramMb, hasEnoughVram } = require('../shared/vram');
+const { buildChatBody, parseChatStream } = require('../shared/llmChat');
 const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
 const { buildBalanceUrl, parseBalance, buildMdlBalanceUrl, parseMdlBalance } = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
@@ -562,9 +563,56 @@ async function startLlm(reserveMb) {
 
 function stopLlm() {
   if (llm) { llm.stop(); llm = null; }
+  if (chatReq) { chatReq.destroy(); chatReq = null; }
   llmStatus = Object.assign({}, llmStatus, { running: false, ready: false, tokensPerSec: 0 });
   sendLlmStatus();
 }
+
+// ── In-app chat: stream the local llama-server's OpenAI chat completions ──────
+// The renderer can't hit http://127.0.0.1 under its CSP, so main proxies the
+// request and streams token deltas back over IPC (delta → done / error). Only
+// one turn runs at a time; a new turn cancels the previous request.
+let chatReq = null;
+function llmChat(messages) {
+  if (chatReq) { chatReq.destroy(); chatReq = null; }
+  const base = llmStatus.webUrl || ('http://' + LLM.host + ':' + LLM.port);
+  if (!llm || !llmStatus.ready) { send('llm:chat:error', { message: 'the local LLM is not running' }); return; }
+
+  const body = JSON.stringify(buildChatBody(messages, { stream: true }));
+  let url;
+  try { url = new URL(base + '/v1/chat/completions'); } catch (e) { send('llm:chat:error', { message: e.message }); return; }
+
+  const req = http.request(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+  }, (res) => {
+    if (res.statusCode !== 200) {
+      res.resume();
+      send('llm:chat:error', { message: 'llama-server returned HTTP ' + res.statusCode });
+      chatReq = null;
+      return;
+    }
+    let buf = '';
+    let finished = false;
+    const finish = () => { if (!finished) { finished = true; chatReq = null; send('llm:chat:done', {}); } };
+    res.setEncoding('utf8');
+    res.on('data', (c) => {
+      buf += c;
+      const { deltas, done, rest } = parseChatStream(buf);
+      buf = rest;
+      for (const d of deltas) send('llm:chat:delta', { text: d });
+      if (done) { res.destroy(); finish(); }
+    });
+    res.on('end', finish);
+    res.on('error', () => finish());
+  });
+  req.on('error', (e) => { if (chatReq) { chatReq = null; send('llm:chat:error', { message: e.message }); } });
+  req.write(body);
+  req.end();
+  chatReq = req;
+}
+
+function cancelChat() { if (chatReq) { chatReq.destroy(); chatReq = null; } }
 
 // Apply the compute mode: run the miner and/or the LLM per the plan.
 function applyPlan(settings) {
@@ -596,6 +644,8 @@ ipcMain.on('miner:start', (_e, settings) => applyPlan(settings || {}));
 ipcMain.on('miner:stop', () => { stopMining(); stopLlm(); });
 ipcMain.on('open-external', (_e, url) => { shell.openExternal(url); });
 ipcMain.on('clipboard:write', (_e, text) => { clipboard.writeText(String(text == null ? '' : text)); });
+ipcMain.on('llm:chat', (_e, messages) => llmChat(messages));
+ipcMain.on('llm:chat:cancel', () => cancelChat());
 ipcMain.handle('app:version', () => app.getVersion());
 ipcMain.on('app:update:check', () => checkForUpdate());
 ipcMain.on('app:update:install', () => {

@@ -1,55 +1,52 @@
 'use strict';
 
 // Renderer UI for the LLMJob Earn window. Pure display + IPC glue — all
-// computation happens in the main process (../shared modules). Kept thin and
-// out of the coverage gate; the logic it leans on is unit-tested separately.
+// computation (mining, the LLM engine, chat streaming) happens in the main
+// process (../shared + ../main). Kept thin and out of the coverage gate; the
+// logic it leans on is unit-tested separately.
 (function () {
   const $ = (id) => document.getElementById(id);
   const api = window.llmjob || {};
 
   const el = {
-    addrInput: $('addr-input'),
-    addrStatic: $('addr-static'),
-    balanceMeta: $('balance-meta'),
-    balance: $('balance'),
-    balanceUsd: $('balance-usd'),
+    // tabs / views
+    tabMine: $('tab-mine'), tabChat: $('tab-chat'), tabApi: $('tab-api'),
+    btnSettings: $('btn-settings'), btnLogs: $('btn-logs'),
+    viewMine: $('view-mine'), viewChat: $('view-chat'), viewApi: $('view-api'),
+    viewSettings: $('view-settings'), viewLogs: $('view-logs'),
+    // mine
+    addrInput: $('addr-input'), addrStatic: $('addr-static'),
+    balanceMeta: $('balance-meta'), balance: $('balance'), balanceUsd: $('balance-usd'),
     getWallet: $('get-wallet'),
-    hashrate: $('hashrate'),
-    accepted: $('accepted'),
-    uptime: $('uptime'),
-    estday: $('estday'),
-    line: $('mk-line'),
-    area: $('mk-area'),
-    btnStart: $('btn-start'),
-    btnStop: $('btn-stop'),
-    btnSettings: $('btn-settings'),
-    btnLogs: $('btn-logs'),
-    viewMiner: $('view-miner'),
-    viewSettings: $('view-settings'),
-    viewLogs: $('view-logs'),
+    hashrate: $('hashrate'), accepted: $('accepted'), uptime: $('uptime'), estday: $('estday'),
+    line: $('mk-line'), area: $('mk-area'),
     deviceLabel: $('device-label'),
-    setWorker: $('set-worker'),
-    setRegion: $('set-region'),
-    setDifficulty: $('set-difficulty'),
-    setMdl: $('set-mdl'),
-    mdlNote: $('mdl-note'),
-    mdlBalanceMeta: $('mdl-balance-meta'),
-    mdlBalance: $('mdl-balance'),
-    setMode: $('set-mode'),
-    llmStatus: $('llm-status'),
-    llmStatusText: $('llm-status-text'),
-    llmEndpoint: $('llm-endpoint'),
-    llmEndpointUrl: $('llm-endpoint-url'),
-    llmCopy: $('llm-copy'),
-    llmOpen: $('llm-open'),
+    llmModelLabel: $('llm-model-label'), llmRowDot: $('llm-row-dot'), llmRowTps: $('llm-row-tps'),
+    btnStart: $('btn-start'), btnStop: $('btn-stop'), engineStatus: $('engine-status'),
+    // chat
+    chatRunning: $('chat-running'), chatStopped: $('chat-stopped'), chatStoppedModel: $('chat-stopped-model'),
+    chatList: $('chat-list'), chatEmpty: $('chat-empty'), chatSuggestions: $('chat-suggestions'),
+    chatMessages: $('chat-messages'), chatForm: $('chat-form'), chatInput: $('chat-input'), chatSend: $('chat-send'),
+    // api
+    apiRunning: $('api-running'), apiStopped: $('api-stopped'),
+    apiEndpointUrl: $('api-endpoint-url'), apiCopy: $('api-copy'), apiOpen: $('api-open'),
+    apiModel: $('api-model'),
+    // settings
+    modeSeg: $('mode-seg'), modeHint: $('mode-hint'),
+    setWorker: $('set-worker'), setRegion: $('set-region'), setDifficulty: $('set-difficulty'),
+    setMdl: $('set-mdl'), mdlNote: $('mdl-note'), mdlBalanceMeta: $('mdl-balance-meta'), mdlBalance: $('mdl-balance'),
+    appVersion: $('app-version'), btnCheckUpdate: $('btn-check-update'), updateStatus: $('update-status'),
     logTerm: $('log-term'),
-    engineStatus: $('engine-status'),
-    appVersion: $('app-version'),
-    btnCheckUpdate: $('btn-check-update'),
-    updateStatus: $('update-status'),
   };
 
-  const state = { mining: false, view: 'miner', address: '', gpu: '', llm: { endpoint: null, webUrl: null } };
+  const state = {
+    mining: false,       // master process running (miner and/or LLM per mode)
+    view: 'mine',        // mine | chat | api | settings | logs
+    returnTab: 'mine',   // where settings/logs return to
+    address: '', gpu: '', mode: 'mining',
+    llm: { running: false, ready: false, endpoint: null, webUrl: null, tps: 0, model: null },
+    chat: { messages: [], streaming: false, streamText: '', bubble: null },
+  };
 
   const BAL_REFRESH_MS = 60000; // re-poll the pool balance once a minute
   let balDebounce = null;
@@ -62,54 +59,196 @@
   const isValid = (a) => ADDR_RE.test(String(a || '').trim());
   const isValidMdl = (a) => MDL_RE.test(String(a || '').trim());
 
+  const MODE_HINTS = {
+    auto: 'Balances mining and the local LLM from free VRAM.',
+    mining: 'Pearl mining only — the local LLM stays off.',
+    llm: 'Local model only — no mining, no payout address needed.',
+    both: 'Mine and serve — the model takes ~5 GB VRAM, mining keeps the rest.',
+  };
+
+  // Prompt chips shown in the empty chat — the real model answers them.
+  const SUGGESTIONS = [
+    { title: 'Draft release notes', prompt: 'Draft short release notes for the LLMJob Earn desktop app.' },
+    { title: 'Explain PPLNS payouts', prompt: 'Explain PPLNS mining payouts in plain English.' },
+    { title: 'Write a regex', prompt: 'Write a regex that validates a prl1p… payout address.' },
+  ];
+
   const MDL_NOTE = {
     empty: 'Earn <b>MDL</b> on the exact hashrate already mining Pearl — same shares, no extra power or hardware. Leave blank to mine Pearl only.',
     on: '<b class="ok">✓ Merge-mining MDL</b> — your Pearl hashrate now also earns MDL, credited by the pool.',
     bad: '<b class="warn">That doesn\'t look like an mdl1… address.</b> Double-check it, or clear the field to mine Pearl only.',
   };
 
-  function renderMdlNote() {
-    const v = String(el.setMdl.value || '').trim();
-    const key = !v ? 'empty' : isValidMdl(v) ? 'on' : 'bad';
-    el.mdlNote.innerHTML = MDL_NOTE[key];
+  // ── Navigation ─────────────────────────────────────────────────────────────
+  function renderView() {
+    const v = state.view;
+    el.viewMine.hidden = v !== 'mine';
+    el.viewChat.hidden = v !== 'chat';
+    el.viewApi.hidden = v !== 'api';
+    el.viewSettings.hidden = v !== 'settings';
+    el.viewLogs.hidden = v !== 'logs';
+    el.tabMine.classList.toggle('active', v === 'mine');
+    el.tabChat.classList.toggle('active', v === 'chat');
+    el.tabApi.classList.toggle('active', v === 'api');
+    el.btnSettings.classList.toggle('active', v === 'settings');
+    if (v === 'chat' && state.llm.ready) setTimeout(() => el.chatInput.focus(), 0);
+    if (v === 'logs') el.logTerm.scrollTop = el.logTerm.scrollHeight;
   }
 
-  // The MDL balance line only makes sense for a well-formed mdl1… address; hide
-  // it otherwise (empty field or a typo).
-  function renderMdlBalanceMeta() {
-    el.mdlBalanceMeta.hidden = !isValidMdl(String(el.setMdl.value || '').trim());
+  function goTab(tab) {
+    state.view = tab;
+    if (tab === 'mine' || tab === 'chat' || tab === 'api') state.returnTab = tab;
+    renderView();
   }
 
-  function resetMdlBalance() {
-    el.mdlBalance.textContent = '0.000';
+  // ── Compute mode (segmented) ───────────────────────────────────────────────
+  function renderMode() {
+    const btns = el.modeSeg.querySelectorAll('[data-mode]');
+    btns.forEach((b) => b.classList.toggle('active', b.getAttribute('data-mode') === state.mode));
+    el.modeHint.textContent = MODE_HINTS[state.mode] || MODE_HINTS.auto;
   }
 
-  // Pull the merge-mined MDL total and show it. The pool keys the merge-mining
-  // record by the PRL payout address (its miner endpoint rejects mdl1… lookups)
-  // and echoes back which mdl1… address it pays, so this queries with the
-  // payout address and only shows a balance when the pool's pairing matches the
-  // address in the field — a mismatched entry earns nothing and stays 0.000.
-  // Best-effort like the PRL lookup; guards against a stale response landing
-  // after either field changed. There's no MDL/USD price, so no dollar figure.
-  async function refreshMdlBalance() {
-    const mdl = String(el.setMdl.value || '').trim();
-    const addr = state.address.trim();
-    if (!isValidMdl(mdl) || !isValid(addr) || !api.getMdlBalance) return;
-    const b = await api.getMdlBalance(addr);
-    if (!b || mdl !== String(el.setMdl.value || '').trim() || addr !== state.address.trim()) return;
-    if (b.mdlAddress && b.mdlAddress.toLowerCase() !== mdl.toLowerCase()) return;
-    el.mdlBalance.textContent = fmt3(b.earned);
+  function setMode(m) {
+    state.mode = m;
+    renderMode();
+    el.btnStart.disabled = !canStart();
   }
 
+  // START is allowed when we can mine (valid address) or the mode will run the
+  // LLM anyway (llm/both/auto co-run the model even without a payout address).
+  function canStart() {
+    return isValid(state.address) || state.mode !== 'mining';
+  }
+
+  // ── Local LLM (status row + chat/api gating) ───────────────────────────────
+  function renderLlmRow() {
+    const m = state.llm.model || '—';
+    el.llmModelLabel.textContent = m;
+    el.chatStoppedModel.textContent = state.llm.model || 'the local model';
+    el.apiModel.textContent = m;
+    el.llmRowDot.classList.toggle('on', state.llm.ready);
+    el.llmRowTps.textContent = state.llm.ready ? Number(state.llm.tps || 0).toFixed(1) : '0.0';
+  }
+
+  function renderChatGate() {
+    const up = state.llm.ready;
+    el.chatRunning.hidden = !up;
+    el.chatStopped.hidden = up;
+    updateSendEnabled();
+  }
+
+  function renderApiGate() {
+    const up = state.llm.ready;
+    el.apiRunning.hidden = !up;
+    el.apiStopped.hidden = up;
+    if (up && state.llm.endpoint) el.apiEndpointUrl.textContent = state.llm.endpoint;
+  }
+
+  function renderLlm(s) {
+    state.llm = {
+      running: !!(s && s.running),
+      ready: !!(s && s.ready),
+      endpoint: (s && s.endpoint) || null,
+      webUrl: (s && s.webUrl) || null,
+      tps: (s && s.tokensPerSec) || 0,
+      model: (s && s.model) || state.llm.model,
+    };
+    renderLlmRow();
+    renderChatGate();
+    renderApiGate();
+  }
+
+  // ── Chat ───────────────────────────────────────────────────────────────────
+  function initSuggestions() {
+    el.chatSuggestions.innerHTML = '';
+    SUGGESTIONS.forEach((sg) => {
+      const chip = document.createElement('span');
+      chip.className = 'suggest';
+      chip.textContent = sg.title;
+      chip.addEventListener('click', () => sendChat(sg.prompt));
+      el.chatSuggestions.appendChild(chip);
+    });
+  }
+
+  function bolt() {
+    const span = document.createElement('span');
+    span.className = 'msg-bolt';
+    span.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="#fff"><path d="M13 2 L4 14 h6 l-1 8 10-13 h-7 l1-7 z"></path></svg>';
+    return span;
+  }
+
+  function addMsg(role, text) {
+    const row = document.createElement('div');
+    row.className = 'chat-msg ' + role;
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.textContent = text;
+    if (role === 'assistant') row.appendChild(bolt());
+    row.appendChild(bubble);
+    el.chatMessages.appendChild(row);
+    scrollChat();
+    return bubble;
+  }
+
+  function scrollChat() { el.chatList.scrollTop = el.chatList.scrollHeight; }
+
+  function updateSendEnabled() {
+    const ok = !!el.chatInput.value.trim() && !state.chat.streaming && state.llm.ready;
+    el.chatSend.disabled = !ok;
+  }
+
+  function sendChat(text) {
+    const t = String(text || '').trim();
+    if (!t || state.chat.streaming || !state.llm.ready || !api.sendChat) return;
+    el.chatEmpty.hidden = true;
+    addMsg('user', t);
+    state.chat.messages.push({ role: 'user', text: t });
+    state.chat.bubble = addMsg('assistant', '');
+    state.chat.bubble.classList.add('streaming');
+    state.chat.streaming = true;
+    state.chat.streamText = '';
+    el.chatInput.value = '';
+    updateSendEnabled();
+    api.sendChat(state.chat.messages.map((m) => ({ role: m.role, content: m.text })));
+  }
+
+  function onChatDelta(d) {
+    if (!state.chat.streaming || !state.chat.bubble) return;
+    state.chat.streamText += (d && d.text) || '';
+    state.chat.bubble.textContent = state.chat.streamText;
+    scrollChat();
+  }
+
+  function endStream() {
+    if (state.chat.bubble) state.chat.bubble.classList.remove('streaming');
+    state.chat.streaming = false;
+    state.chat.bubble = null;
+    updateSendEnabled();
+    if (state.view === 'chat') el.chatInput.focus();
+  }
+
+  function onChatDone() {
+    if (!state.chat.streaming) return;
+    state.chat.messages.push({ role: 'assistant', text: state.chat.streamText || '' });
+    endStream();
+  }
+
+  function onChatError(d) {
+    if (state.chat.bubble) {
+      const msg = (d && d.message) || 'the chat request failed';
+      state.chat.bubble.textContent = (state.chat.streamText ? state.chat.streamText + '\n\n' : '') + '⚠ ' + msg;
+      state.chat.bubble.classList.add('err');
+    }
+    endStream();
+  }
+
+  // ── Charts / mining stats ──────────────────────────────────────────────────
   const FLAT_LINE = 'M0 55 L480 55';
   const FLAT_AREA = 'M0 56 L0 55 L480 55 L480 56 Z';
 
   function chartPaths(points) {
     const W = 480, H = 56;
     if (!points || !points.length) return { line: FLAT_LINE, area: FLAT_AREA };
-    // Auto-scale to the data's own range (the hashrate varies by GPU), with a
-    // little headroom; a floor keeps flat/tiny series centered rather than glued
-    // to an edge.
     let lo = Math.min.apply(null, points);
     let hi = Math.max.apply(null, points);
     const pad = (hi - lo) * 0.2 || Math.max(1, hi * 0.1);
@@ -121,13 +260,6 @@
     const line = xy.map((p, i) => (i ? 'L' : 'M') + p[0] + ' ' + p[1]).join(' ');
     const area = 'M0 ' + H + ' ' + xy.map((p) => 'L' + p[0] + ' ' + p[1]).join(' ') + ' L' + W + ' ' + H + ' Z';
     return { line, area };
-  }
-
-  function renderView() {
-    el.viewMiner.hidden = state.view !== 'miner';
-    el.viewSettings.hidden = state.view !== 'settings';
-    el.viewLogs.hidden = state.view !== 'logs';
-    el.btnSettings.classList.toggle('active', state.view === 'settings');
   }
 
   function renderMiningState() {
@@ -147,11 +279,9 @@
       el.area.setAttribute('d', FLAT_AREA);
       el.engineStatus.hidden = true;
     }
-    el.btnStart.disabled = !isValid(state.address);
+    el.btnStart.disabled = !canStart();
   }
 
-  // With no valid payout address, show a "Get Wallet Address" link instead of
-  // the (meaningless) balance line.
   function renderBalanceMeta() {
     const has = isValid(state.address);
     el.balanceMeta.hidden = !has;
@@ -165,10 +295,6 @@
     el.balanceUsd.textContent = '≈ $0.00';
   }
 
-  // Pull the pool balance for the current payout address and show it: total
-  // earned = pending payout + lifetime paid. Best-effort — a null result
-  // (offline / unknown address / pool hiccup) simply leaves the last shown value
-  // in place. Guards against a late response landing after the address changed.
   async function refreshBalance() {
     const addr = state.address.trim();
     if (!isValid(addr) || !api.getBalance) return;
@@ -176,6 +302,28 @@
     if (!b || addr !== state.address.trim()) return;
     el.balance.textContent = fmt3(b.earned);
     el.balanceUsd.textContent = b.usd != null ? '≈ $' + b.usd.toFixed(2) : '';
+  }
+
+  function renderMdlNote() {
+    const v = String(el.setMdl.value || '').trim();
+    const key = !v ? 'empty' : isValidMdl(v) ? 'on' : 'bad';
+    el.mdlNote.innerHTML = MDL_NOTE[key];
+  }
+
+  function renderMdlBalanceMeta() {
+    el.mdlBalanceMeta.hidden = !isValidMdl(String(el.setMdl.value || '').trim());
+  }
+
+  function resetMdlBalance() { el.mdlBalance.textContent = '0.000'; }
+
+  async function refreshMdlBalance() {
+    const mdl = String(el.setMdl.value || '').trim();
+    const addr = state.address.trim();
+    if (!isValidMdl(mdl) || !isValid(addr) || !api.getMdlBalance) return;
+    const b = await api.getMdlBalance(addr);
+    if (!b || mdl !== String(el.setMdl.value || '').trim() || addr !== state.address.trim()) return;
+    if (b.mdlAddress && b.mdlAddress.toLowerCase() !== mdl.toLowerCase()) return;
+    el.mdlBalance.textContent = fmt3(b.earned);
   }
 
   function applyStats(s) {
@@ -213,38 +361,12 @@
       worker: el.setWorker.value.trim() || 'rig01',
       region: el.setRegion.value || 'us2',
       difficulty: Number(el.setDifficulty.value) || 524288,
-      mode: el.setMode.value || 'mining',
+      mode: state.mode || 'mining',
     };
   }
 
-  // Local-LLM status line (model + tokens/sec) plus, once ready, the OpenAI API
-  // endpoint with copy / open-in-browser affordances for testing.
-  function renderLlm(s) {
-    const on = !!(s && s.running);
-    el.llmStatus.hidden = !on;
-    if (!on) {
-      state.llm = { endpoint: null, webUrl: null };
-      if (el.llmEndpoint) el.llmEndpoint.hidden = true;
-      return;
-    }
-    if (s.ready) {
-      const tps = s.tokensPerSec ? ' · ' + Number(s.tokensPerSec).toFixed(1) + ' tok/s' : '';
-      el.llmStatusText.textContent = '🧠 ' + (s.model || 'LLM') + ' · ready' + tps;
-    } else {
-      el.llmStatusText.textContent = '🧠 ' + (s.model || 'LLM') + ' — starting…';
-    }
-    // Show the server URL only once the endpoint is up, so people don't copy a
-    // dead address while the model is still loading.
-    state.llm = { endpoint: s.endpoint || null, webUrl: s.webUrl || null };
-    if (el.llmEndpoint) {
-      const show = !!(s.ready && s.endpoint);
-      el.llmEndpoint.hidden = !show;
-      if (show) el.llmEndpointUrl.textContent = s.endpoint;
-    }
-  }
-
   function start() {
-    if (!isValid(state.address)) return;
+    if (!canStart()) return;
     state.mining = true;
     renderMiningState();
     appendLog({ level: 'info', line: 'starting LLMJob Earn…' });
@@ -257,14 +379,20 @@
     if (api.stopMiner) api.stopMiner();
   }
 
+  // START LLM (from the Chat/API tabs): make sure the compute mode actually runs
+  // the model, then start. Mining-only becomes Mining+LLM (or LLM-only with no
+  // payout address); llm/both/auto start as-is.
+  function startLlmIntent() {
+    if (state.llm.ready) return;
+    if (state.mode === 'mining') setMode(isValid(state.address) ? 'both' : 'llm');
+    start();
+  }
+
   function wire() {
     el.addrInput.addEventListener('input', (e) => {
       state.address = e.target.value;
-      el.btnStart.disabled = !isValid(state.address);
+      el.btnStart.disabled = !canStart();
       renderBalanceMeta();
-      // Debounce the balance lookup so we don't hit the pool on every keystroke;
-      // clear a stale balance the moment the address stops being valid. The MDL
-      // lookup is keyed by this payout address too, so refresh it alongside.
       if (balDebounce) clearTimeout(balDebounce);
       if (mdlBalDebounce) clearTimeout(mdlBalDebounce);
       if (isValid(state.address)) {
@@ -278,8 +406,6 @@
     el.setMdl.addEventListener('input', () => {
       renderMdlNote();
       renderMdlBalanceMeta();
-      // Debounce the pool lookup so we don't hit it on every keystroke; clear a
-      // stale balance the moment the address stops being valid.
       if (mdlBalDebounce) clearTimeout(mdlBalDebounce);
       if (isValidMdl(String(el.setMdl.value || '').trim())) mdlBalDebounce = setTimeout(refreshMdlBalance, 600);
       else resetMdlBalance();
@@ -293,34 +419,49 @@
       el.btnCheckUpdate.textContent = 'Checking…';
       api.checkForUpdate();
     });
+
+    // Tabs (brand=Mine, Chat, API, and the Local-LLM row's Open Chat / API chips)
+    document.querySelectorAll('[data-tab]').forEach((t) =>
+      t.addEventListener('click', () => goTab(t.getAttribute('data-tab'))));
+    // Settings gear + Logs toggle back to the last tab
     el.btnSettings.addEventListener('click', () => {
-      state.view = state.view === 'settings' ? 'miner' : 'settings';
+      state.view = state.view === 'settings' ? state.returnTab : 'settings';
       renderView();
     });
     el.btnLogs.addEventListener('click', () => {
-      state.view = state.view === 'logs' ? 'miner' : 'logs';
+      state.view = state.view === 'logs' ? state.returnTab : 'logs';
       renderView();
-      // Jump to the latest line whenever the logs view is opened.
-      if (state.view === 'logs') el.logTerm.scrollTop = el.logTerm.scrollHeight;
     });
-    // Copy the OpenAI API endpoint (click the URL or the Copy button); open the
-    // llama-server web UI in the default browser to test the model interactively.
+    document.querySelectorAll('[data-back]').forEach((b) =>
+      b.addEventListener('click', () => { state.view = state.returnTab; renderView(); }));
+
+    // Compute-mode segmented control
+    el.modeSeg.querySelectorAll('[data-mode]').forEach((b) =>
+      b.addEventListener('click', () => setMode(b.getAttribute('data-mode'))));
+
+    // START LLM buttons (chat/api stopped states)
+    document.querySelectorAll('[data-start-llm]').forEach((b) =>
+      b.addEventListener('click', startLlmIntent));
+
+    // Chat composer
+    el.chatInput.addEventListener('input', updateSendEnabled);
+    el.chatForm.addEventListener('submit', (e) => { e.preventDefault(); sendChat(el.chatInput.value); });
+
+    // API endpoint: copy the /v1 URL, or open the llama-server web UI.
     const copyEndpoint = () => {
       if (!state.llm.endpoint) return;
       if (api.copyText) api.copyText(state.llm.endpoint);
-      const prev = el.llmCopy.textContent;
-      el.llmCopy.textContent = 'Copied';
-      setTimeout(() => { el.llmCopy.textContent = prev; }, 1200);
+      const prev = el.apiCopy.textContent;
+      el.apiCopy.textContent = 'Copied';
+      setTimeout(() => { el.apiCopy.textContent = prev; }, 1200);
     };
-    if (el.llmCopy) el.llmCopy.addEventListener('click', copyEndpoint);
-    if (el.llmEndpointUrl) el.llmEndpointUrl.addEventListener('click', copyEndpoint);
-    if (el.llmOpen) el.llmOpen.addEventListener('click', () => {
+    el.apiCopy.addEventListener('click', copyEndpoint);
+    el.apiEndpointUrl.addEventListener('click', copyEndpoint);
+    el.apiOpen.addEventListener('click', () => {
       const url = state.llm.webUrl || state.llm.endpoint;
       if (url && api.openExternal) api.openExternal(url);
     });
 
-    document.querySelectorAll('[data-back]').forEach((b) =>
-      b.addEventListener('click', () => { state.view = 'miner'; renderView(); }));
     document.querySelectorAll('[data-ext]').forEach((a) =>
       a.addEventListener('click', (e) => {
         e.preventDefault();
@@ -330,6 +471,7 @@
 
   async function init() {
     wire();
+    initSuggestions();
     if (api.getConfig) {
       const config = await api.getConfig();
       const regions = (config && config.regions) || {};
@@ -350,29 +492,28 @@
       el.setRegion.value = s.region || 'us2';
       el.setDifficulty.value = s.difficulty || 524288;
       el.setMdl.value = s.mdlAddress || '';
-      el.setMode.value = s.mode || 'mining';
-      // Set when "Update & restart" was clicked while mining — resume after launch.
+      state.mode = s.mode || 'mining';
       resumeMining = !!(s.resumeMining && isValid(state.address));
     }
+    renderMode();
     renderMdlNote();
     renderMdlBalanceMeta();
     if (api.onLlm) api.onLlm(renderLlm);
     if (api.getLlmStatus) api.getLlmStatus().then(renderLlm);
+    if (api.onChatDelta) api.onChatDelta(onChatDelta);
+    if (api.onChatDone) api.onChatDone(onChatDone);
+    if (api.onChatError) api.onChatError(onChatError);
     if (api.detectGpu) {
       const gpu = await api.detectGpu();
       if (gpu) {
         state.gpu = gpu;
-        if (!state.mining) el.deviceLabel.textContent = gpu; // shown on the main screen
-        // Auto-match the recommended static difficulty to the detected card,
-        // unless the user has saved a non-default value.
+        if (!state.mining) el.deviceLabel.textContent = gpu;
         if (api.difficultyForCard && Number(el.setDifficulty.value) === 524288) {
           const d = await api.difficultyForCard(gpu);
           if (d) el.setDifficulty.value = d;
         }
       }
     }
-    // Auto-pick the lowest-latency pool region (unless the user is already
-    // mining or has picked a non-default region this session).
     if (api.detectRegion && !state.mining) {
       const region = await api.detectRegion();
       if (region) el.setRegion.value = region;
@@ -397,14 +538,9 @@
     });
     if (api.onUpdate) api.onUpdate((s) => {
       if (!s) return;
-      // Everything lives in the Software Update section (no top bar). The inline
-      // line shows the result/progress; during 'checking' the button reads
-      // "Checking…" so the inline line stays hidden.
       el.updateStatus.hidden = !s.show || s.phase === 'checking';
       el.updateStatus.textContent = s.text;
       el.updateStatus.classList.toggle('err', !!s.error);
-      // When an update is downloaded, the button becomes the "Update & restart"
-      // action; otherwise (once a check resolves) it's back to "Check for updates".
       if (s.ready) {
         updateReady = true;
         el.btnCheckUpdate.disabled = false;
@@ -416,7 +552,6 @@
         el.btnCheckUpdate.textContent = 'Check for updates';
         el.btnCheckUpdate.classList.remove('ready');
       }
-      // Auto-dismiss the transient "you're up to date" result after a few seconds.
       if (updateDismiss) { clearTimeout(updateDismiss); updateDismiss = null; }
       if (s.transient) updateDismiss = setTimeout(() => { el.updateStatus.hidden = true; }, 5000);
     });
@@ -424,18 +559,10 @@
     renderView();
     renderMiningState();
     renderBalanceMeta();
-
-    // Show the pending pool balance for a saved address right away, then keep it
-    // fresh (shares get credited as mining continues).
     refreshBalance();
     setInterval(refreshBalance, BAL_REFRESH_MS);
-
-    // Same for the merge-mined MDL balance, when an MDL address is configured.
     refreshMdlBalance();
     setInterval(refreshMdlBalance, BAL_REFRESH_MS);
-
-    // Resume mining automatically if we restarted to install an update mid-mine.
-    // start() persists fresh settings (without the flag), so it self-clears.
     if (resumeMining) start();
   }
 

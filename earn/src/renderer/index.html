@@ -9,19 +9,23 @@
 </head>
 <body>
 <div class="app">
-  <!-- HEADER -->
+  <!-- HEADER: tab bar + settings gear -->
   <div class="app-head">
-    <span class="brand">
+    <span class="brand tab-brand" id="tab-mine" data-tab="mine">
       <span class="bolt"><svg width="15" height="15" viewBox="0 0 24 24" fill="#fff"><path d="M13 2 L4 14 h6 l-1 8 10-13 h-7 l1-7 z"></path></svg></span>LLMJob
     </span>
-    <button id="btn-settings" class="settings-pill" type="button">
+    <nav class="tabs">
+      <span class="tab" id="tab-chat" data-tab="chat">Chat</span>
+      <span class="tab" id="tab-api" data-tab="api">API</span>
+    </nav>
+    <span class="head-spacer"></span>
+    <button id="btn-settings" class="settings-gear" type="button" title="Settings" aria-label="Settings">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-      Settings
     </button>
   </div>
 
-  <!-- MINER (setup / running) -->
-  <section id="view-miner">
+  <!-- ══════════ MINE ══════════ -->
+  <section id="view-mine">
     <div class="field-label">
       <span class="lbl">Payout Address</span>
       <span class="meta" id="balance-meta" hidden>Balance: <b class="mono" id="balance">0.000</b><b class="prl">PRL</b> <span class="usd" id="balance-usd">≈ $0.00</span></span>
@@ -51,14 +55,16 @@
       </div>
     </div>
 
-    <div id="llm-status" class="llm-status" hidden>
-      <div class="llm-line"><span class="llm-dot"></span><span id="llm-status-text"></span></div>
-      <div id="llm-endpoint" class="llm-endpoint" hidden>
-        <span class="llm-endpoint-label">OpenAI API</span>
-        <code id="llm-endpoint-url" class="llm-url" title="Click to copy"></code>
-        <button id="llm-copy" class="llm-btn" type="button" title="Copy the API endpoint">Copy</button>
-        <button id="llm-open" class="llm-btn" type="button" title="Open the llama-server web UI in your browser">Open ↗</button>
-      </div>
+    <div class="field-label">
+      <span class="lbl">Local LLM</span>
+      <span class="meta" id="llm-model-label">—</span>
+    </div>
+    <div class="llm-row">
+      <span class="llm-dot" id="llm-row-dot"></span>
+      <span class="llm-row-tok mono"><b id="llm-row-tps">0.0</b> tok/s</span>
+      <span class="llm-row-spacer"></span>
+      <button class="chip" id="llm-open-chat" type="button" data-tab="chat">Open Chat</button>
+      <button class="chip" id="llm-open-api" type="button" data-tab="api">API</button>
     </div>
 
     <button id="btn-start" class="start-btn" type="button" disabled>START</button>
@@ -66,20 +72,84 @@
     <div id="engine-status" class="engine-status" hidden></div>
   </section>
 
-  <!-- SETTINGS -->
-  <section id="view-settings" hidden>
-    <div class="settings-section">Compute Mode</div>
-    <div class="settings-rows">
-      <div class="settings-row"><span class="rk">GPU use</span>
-        <select id="set-mode" class="rv-input">
-          <option value="mining">⛏️ Mining only</option>
-          <option value="both">⛏️ + 🧠 Mine &amp; LLM</option>
-          <option value="llm">🧠 LLM only</option>
-          <option value="auto">⚡ Auto</option>
-        </select>
+  <!-- ══════════ CHAT ══════════ -->
+  <section id="view-chat" hidden>
+    <div id="chat-running" class="chat-wrap" hidden>
+      <div id="chat-list" class="chat-list">
+        <div id="chat-empty" class="chat-empty">
+          <p>Ask anything — answers run on your GPU.</p>
+          <div id="chat-suggestions" class="chat-suggestions"></div>
+        </div>
+        <div id="chat-messages" class="chat-messages"></div>
+      </div>
+      <form id="chat-form" class="chat-form">
+        <input id="chat-input" class="chat-input" type="text" autocomplete="off" placeholder="Message the local model…" aria-label="Message" />
+        <button id="chat-send" class="chat-send" type="submit" aria-label="Send" disabled>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"></path></svg>
+        </button>
+      </form>
+    </div>
+    <div id="chat-stopped" class="tab-empty" hidden>
+      <span class="empty-bolt"><svg width="22" height="22" viewBox="0 0 24 24" fill="#fff"><path d="M13 2 L4 14 h6 l-1 8 10-13 h-7 l1-7 z"></path></svg></span>
+      <h3>Your local AI isn't running</h3>
+      <p>Start it to chat with <b id="chat-stopped-model">the local model</b> — runs on your GPU, fully private.</p>
+      <button class="start-llm-btn" type="button" data-start-llm>START LLM</button>
+    </div>
+  </section>
+
+  <!-- ══════════ API ══════════ -->
+  <section id="view-api" hidden>
+    <div id="api-running" hidden>
+      <div class="field-label">
+        <span class="lbl">Endpoint</span>
+        <span class="meta">OpenAI-compatible · no key needed</span>
+      </div>
+      <div class="endpoint-row">
+        <span class="llm-dot on"></span>
+        <code id="api-endpoint-url" class="endpoint-url">http://127.0.0.1:8080/v1</code>
+        <button id="api-copy" class="chip" type="button" title="Copy the API endpoint">Copy API</button>
+        <button id="api-open" class="chip" type="button" title="Open the llama-server web UI">Open ↗</button>
+      </div>
+
+      <div class="field-label"><span class="lbl">Model</span></div>
+      <div class="model-row">
+        <span class="mono" id="api-model">—</span>
+        <span class="meta" id="api-model-meta">~5 GB VRAM · 128K ctx</span>
+      </div>
+
+      <div class="field-label"><span class="lbl">Try it</span></div>
+      <pre id="api-curl" class="curl-box">curl http://127.0.0.1:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "Hello!"}]}'</pre>
+      <p class="settings-note">Works with any OpenAI SDK — point <b class="mono">base_url</b> at the endpoint.</p>
+
+      <div class="field-label"><span class="lbl">Connect</span><span class="meta">Not linked to an account</span></div>
+      <div class="connect-card">
+        <p>This endpoint only answers on <b>this computer</b>. Connecting your LLMJob account to use it anywhere — other devices, web chat, and one shared cluster API — is coming soon.</p>
+        <div class="connect-actions">
+          <button class="connect-btn" type="button" disabled>Connect with LLMJob</button>
+          <span class="soon-tag">Coming soon</span>
+        </div>
       </div>
     </div>
-    <p class="settings-note">Run a local LLM alongside mining (both slower), LLM-only, or let the app decide. The LLM serves a local OpenAI endpoint you can call at <b class="mono">127.0.0.1:8080/v1</b>.</p>
+    <div id="api-stopped" class="tab-empty" hidden>
+      <span class="empty-bolt"><svg width="22" height="22" viewBox="0 0 24 24" fill="#fff"><path d="M13 2 L4 14 h6 l-1 8 10-13 h-7 l1-7 z"></path></svg></span>
+      <h3>The endpoint isn't up</h3>
+      <p>Start the LLM to expose a local OpenAI-compatible API at <b class="mono">127.0.0.1:8080/v1</b>.</p>
+      <button class="start-llm-btn" type="button" data-start-llm>START LLM</button>
+    </div>
+  </section>
+
+  <!-- ══════════ SETTINGS ══════════ -->
+  <section id="view-settings" hidden>
+    <div class="settings-section">Compute Mode</div>
+    <div id="mode-seg" class="seg">
+      <button class="seg-btn" type="button" data-mode="auto">Auto</button>
+      <button class="seg-btn" type="button" data-mode="mining">Mining</button>
+      <button class="seg-btn" type="button" data-mode="llm">LLM</button>
+      <button class="seg-btn" type="button" data-mode="both">Mining+LLM</button>
+    </div>
+    <p id="mode-hint" class="settings-note">Balances mining and the local LLM from free VRAM.</p>
 
     <div class="settings-section">Connection</div>
     <div class="settings-rows">
@@ -109,7 +179,7 @@
     </div>
   </section>
 
-  <!-- LOGS -->
+  <!-- ══════════ LOGS ══════════ -->
   <section id="view-logs" hidden>
     <div class="view-head"><span class="lbl">Logs</span><span class="back" data-back>← Back</span></div>
     <div id="log-term" class="log-term"></div>
