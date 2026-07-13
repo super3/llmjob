@@ -170,6 +170,18 @@ the miner) — wrap it in systemd for an unattended rig. Once linked you can re-
 `llmjob-earn-cli connect` with no token to resume pinging; point `--server` at a
 self-hosted backend if needed.
 
+### Serve cluster jobs (proxy LLM through LLMJob)
+
+Once a box is **linked** and running the local LLM (`--mode llm`/`both`, or the
+desktop app with the LLM started), it automatically **serves inference relayed
+through LLMJob** — no inbound networking required. A caller submits a request to
+the server with an API key; the server hands it to an online node; the node polls
+`POST /api/jobs/poll`, runs it against its local `llama-server`, and streams the
+result back in chunks (`POST /api/jobs/:id/chunks` → `…/complete`). Every call is
+**outbound** and signed with the node key, so a GPU behind NAT or a provider
+network is reachable through the shared API without opening a port or exposing
+`127.0.0.1:8080`. Stop serving by stopping the LLM or disconnecting.
+
 ### Standalone binary + self-update
 
 CI packages the CLI into a **standalone single-file Linux executable**

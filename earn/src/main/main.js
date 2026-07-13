@@ -24,6 +24,7 @@ const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, LLM, NODE, endpointFor, difficu
 const nodeProto = require('../shared/node');
 const { computeGpuLayers, requiredVramMb, hasEnoughVram } = require('../shared/vram');
 const { buildChatBody, parseChatStream } = require('../shared/llmChat');
+const { JobWorker } = require('./jobWorker');
 const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
 const { buildBalanceUrl, parseBalance, buildMdlBalanceUrl, parseMdlBalance } = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
@@ -552,9 +553,10 @@ async function startLlm(reserveMb) {
     llmStatus = Object.assign({}, llmStatus, { ready: true, endpoint: baseUrl + '/v1', webUrl: baseUrl });
     send('miner:log', { level: 'info', line: 'local LLM ready — OpenAI endpoint ' + baseUrl + '/v1' });
     sendLlmStatus();
+    syncWorker(); // serve cluster jobs once the model is up, if we're linked
   });
   llm.on('stats', ({ tokensPerSec }) => { llmStatus = Object.assign({}, llmStatus, { tokensPerSec }); sendLlmStatus(); });
-  llm.on('stopped', () => { llmStatus = Object.assign({}, llmStatus, { running: false, ready: false, tokensPerSec: 0 }); sendLlmStatus(); });
+  llm.on('stopped', () => { llmStatus = Object.assign({}, llmStatus, { running: false, ready: false, tokensPerSec: 0 }); sendLlmStatus(); stopWorker(); });
 
   llm.start({ platform: process.platform, binaryPath, modelPath, nGpuLayers });
   llmStatus = Object.assign({}, llmStatus, { running: true, ready: false, endpoint: llm.baseUrl + '/v1', webUrl: llm.baseUrl });
@@ -565,6 +567,7 @@ async function startLlm(reserveMb) {
 function stopLlm() {
   if (llm) { llm.stop(); llm = null; }
   if (chatReq) { chatReq.destroy(); chatReq = null; }
+  stopWorker();
   llmStatus = Object.assign({}, llmStatus, { running: false, ready: false, tokensPerSec: 0 });
   sendLlmStatus();
 }
@@ -702,6 +705,7 @@ async function pingNode() {
   const telemetry = nodeProto.buildTelemetry({
     model: LLM.model.name, quant: LLM.model.quant, device, vram,
     tokensPerSec: llmStatus.tokensPerSec, ready: llmStatus.ready,
+    activeJobs: jobWorker ? jobWorker.activeJobs() : 0,
   });
   const body = nodeProto.buildPingBody({
     nodeId: node.nodeId, publicKey: node.publicKey, secretKey: node.secretKey,
@@ -742,6 +746,7 @@ async function connectNode({ token, name } = {}) {
 
   saveNode(Object.assign({}, node, { connected: true, name: nm, linkedAt: new Date().toISOString() }));
   startNodePinger();
+  syncWorker();
   sendNodeStatus();
   return { success: true, nodeId: node.nodeId, name: nm };
 }
@@ -750,8 +755,76 @@ function disconnectNode() {
   const node = loadNode();
   if (node) saveNode(Object.assign({}, node, { connected: false }));
   stopNodePinger();
+  stopWorker();
   sendNodeStatus();
   return { ok: true };
+}
+
+// ── Cluster job worker: serve inference relayed through LLMJob ────────────────
+// When this node is linked AND the local LLM is up, poll for jobs and run them
+// against the local model, streaming chunks back — all outbound, so callers can
+// use this GPU through the shared API without any inbound networking here.
+
+let jobWorker = null;
+
+// Stream a chat request to the local llama-server, forwarding token deltas.
+// Resolves when the model is done; rejects on any transport/HTTP error.
+function runLocalJob(chatBody, { onDelta }) {
+  return new Promise((resolve, reject) => {
+    const base = llmStatus.webUrl || ('http://' + LLM.host + ':' + LLM.port);
+    let url;
+    try { url = new URL(base + '/v1/chat/completions'); } catch (e) { return reject(e); }
+    const payload = JSON.stringify(chatBody);
+    const req = http.request(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+    }, (res) => {
+      if (res.statusCode !== 200) { res.resume(); return reject(new Error('llama-server HTTP ' + res.statusCode)); }
+      let buf = '';
+      let settled = false;
+      const done = () => { if (!settled) { settled = true; resolve(); } };
+      res.setEncoding('utf8');
+      res.on('data', (c) => {
+        buf += c;
+        const parsed = parseChatStream(buf);
+        buf = parsed.rest;
+        for (const d of parsed.deltas) onDelta(d);
+        if (parsed.done) { res.destroy(); done(); }
+      });
+      res.on('end', done);
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+// Start/stop the worker to match "linked AND model ready". Idempotent — called
+// from connect/disconnect and the LLM ready/stopped transitions.
+function syncWorker() {
+  const node = loadNode();
+  const shouldRun = !!(node && node.connected && llmStatus.ready);
+  if (shouldRun && !jobWorker) {
+    jobWorker = new JobWorker({
+      identity: { nodeId: node.nodeId, publicKey: node.publicKey, secretKey: node.secretKey },
+      serverUrl: node.serverUrl || NODE.serverUrl,
+      post: (url, body) => postJson(url, body, 30000),
+      runJob: runLocalJob,
+    });
+    jobWorker.on('error', () => { /* transient poll failure — keep looping */ });
+    jobWorker.on('job', ({ id }) => send('miner:log', { level: 'info', line: 'cluster job ' + id + ' — running locally' }));
+    jobWorker.on('done', ({ id }) => send('miner:log', { level: 'info', line: 'cluster job ' + id + ' — done' }));
+    jobWorker.on('failed', ({ id, error }) => send('miner:log', { level: 'error', line: 'cluster job ' + id + ' failed: ' + error }));
+    jobWorker.start();
+    send('miner:log', { level: 'info', line: 'serving cluster jobs for the LLMJob network' });
+  } else if (!shouldRun && jobWorker) {
+    stopWorker();
+  }
+}
+
+function stopWorker() {
+  if (jobWorker) { jobWorker.stop(); jobWorker = null; }
 }
 
 // Apply the compute mode: run the miner and/or the LLM per the plan.

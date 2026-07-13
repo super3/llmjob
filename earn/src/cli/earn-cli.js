@@ -33,6 +33,8 @@ const { shortenAddress, isValidAddress } = require('../shared/address');
 const { pickFastestRegion } = require('../shared/region');
 const { pickGpu, countGpus } = require('../shared/gpu');
 const { computeGpuLayers, requiredVramMb, hasEnoughVram } = require('../shared/vram');
+const { parseChatStream } = require('../shared/llmChat');
+const { JobWorker } = require('../main/jobWorker');
 const { resolvePlan } = require('../shared/llmMode');
 const format = require('../shared/format');
 const pkg = require('../../package.json');
@@ -359,6 +361,42 @@ async function resolveLlmModel(settings, dir) {
   return modelPath;
 }
 
+// Serves cluster jobs while the local LLM runs and this box is linked.
+let cliJobWorker = null;
+
+// Stream a chat request to the local llama-server, forwarding token deltas.
+// Resolves when done; rejects on any transport/HTTP error. (Job-worker runJob.)
+function streamLocal(base, chatBody, onDelta) {
+  return new Promise((resolve, reject) => {
+    let url;
+    try { url = new URL(base + '/v1/chat/completions'); } catch (e) { return reject(e); }
+    const payload = JSON.stringify(chatBody);
+    const lib = url.protocol === 'http:' ? http : https;
+    const req = lib.request(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+    }, (res) => {
+      if (res.statusCode !== 200) { res.resume(); return reject(new Error('llama-server HTTP ' + res.statusCode)); }
+      let buf = '';
+      let settled = false;
+      const done = () => { if (!settled) { settled = true; resolve(); } };
+      res.setEncoding('utf8');
+      res.on('data', (c) => {
+        buf += c;
+        const parsed = parseChatStream(buf);
+        buf = parsed.rest;
+        for (const d of parsed.deltas) onDelta(d);
+        if (parsed.done) { res.destroy(); done(); }
+      });
+      res.on('end', done);
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
 // Start the local LLM (llama.cpp llama-server) alongside — or instead of — the
 // miner. Ensures the binary + model, sizes the GPU offload from free VRAM
 // (keeping `reserveMb` free for mining), spawns the server, and logs its
@@ -396,9 +434,27 @@ async function startLlm(settings, reserveMb) {
     ? computeGpuLayers(vram.totalMb - vram.usedMb, LLM.model, reserveMb || 0)
     : LLM.model.layers;
 
+  // If this box is linked to an account, serve cluster jobs once the model is up.
+  const nodeCfg = loadNodeConfig();
+  const canServe = !!(nodeCfg && nodeCfg.connected);
+
   const llm = new LlmManager({ spawn });
   llm.on('log', (l) => log(l.line, l.level === 'error' ? process.stderr : process.stdout));
-  llm.on('ready', ({ baseUrl }) => log('🧠 local LLM ready — OpenAI endpoint ' + baseUrl + '/v1'));
+  llm.on('ready', ({ baseUrl }) => {
+    log('🧠 local LLM ready — OpenAI endpoint ' + baseUrl + '/v1');
+    if (canServe && !cliJobWorker) {
+      cliJobWorker = new JobWorker({
+        identity: { nodeId: nodeCfg.nodeId, publicKey: nodeCfg.publicKey, secretKey: nodeCfg.secretKey },
+        serverUrl: nodeCfg.serverUrl || NODE.serverUrl,
+        post: (url, body) => postJson(url, body, 30000),
+        runJob: (chatBody, { onDelta }) => streamLocal(llm.baseUrl, chatBody, onDelta),
+      });
+      cliJobWorker.on('job', ({ id }) => log('cluster job ' + id + ' — running locally'));
+      cliJobWorker.on('failed', ({ id, error }) => log('cluster job ' + id + ' failed: ' + error, process.stderr));
+      cliJobWorker.start();
+      log('serving cluster jobs for the LLMJob network');
+    }
+  });
   llm.on('stats', ({ tokensPerSec }) => log('🧠 ' + Number(tokensPerSec).toFixed(1) + ' tok/s'));
   llm.on('error', (err) => log('LLM error: ' + err.message, process.stderr));
 
@@ -695,6 +751,7 @@ async function run(argv) {
       log('shutting down…');
       if (reporter) clearInterval(reporter);
       if (statsWriter) clearInterval(statsWriter);
+      if (cliJobWorker) cliJobWorker.stop();
       if (llm) llm.stop();
       if (miner) miner.stop();
       else finish(0); // LLM-only: no miner 'stopped' will resolve us
@@ -706,6 +763,7 @@ async function run(argv) {
       miner.on('stopped', (code) => {
         if (reporter) clearInterval(reporter);
         if (statsWriter) clearInterval(statsWriter);
+        if (cliJobWorker) cliJobWorker.stop();
         if (llm) llm.stop();
         log('engine exited (code ' + code + ')');
         finish(stopping ? 0 : (code || 0));

@@ -4,7 +4,7 @@ const nacl = require('tweetnacl');
 const naclUtil = require('tweetnacl-util');
 const {
   generateKeypair, fingerprint, pingMessage, signMessage,
-  buildJoinBody, buildTelemetry, buildPingBody,
+  buildJoinBody, buildTelemetry, signedBody, buildPingBody,
 } = require('../src/shared/node');
 
 describe('generateKeypair / fingerprint', () => {
@@ -65,6 +65,38 @@ describe('buildTelemetry', () => {
     });
     expect(buildTelemetry({ vram: { totalMb: NaN, usedMb: 5 }, ready: false }).vramTotal).toBeNull();
     expect(buildTelemetry({ vram: { totalMb: 5, usedMb: NaN } }).vramUsed).toBeNull();
+  });
+
+  test('reports activeJobs when serving cluster work', () => {
+    expect(buildTelemetry({ activeJobs: 2 }).activeJobs).toBe(2);
+    expect(buildTelemetry({ activeJobs: 'x' }).activeJobs).toBe(0);
+  });
+});
+
+describe('signedBody', () => {
+  test('signs the challenge and merges call-specific fields', () => {
+    const kp = generateKeypair();
+    const body = signedBody(
+      { nodeId: 'abc123', publicKey: kp.publicKey, secretKey: kp.secretKey, timestamp: 1700000000000 },
+      { chunkIndex: 3, content: 'hi', isFinal: true },
+    );
+    expect(body).toMatchObject({ nodeId: 'abc123', publicKey: kp.publicKey, timestamp: 1700000000000, chunkIndex: 3, content: 'hi', isFinal: true });
+    const ok = nacl.sign.detached.verify(
+      naclUtil.decodeUTF8('abc123:1700000000000'),
+      naclUtil.decodeBase64(body.signature),
+      naclUtil.decodeBase64(kp.publicKey),
+    );
+    expect(ok).toBe(true);
+  });
+
+  test('works with no extra fields', () => {
+    const kp = generateKeypair();
+    expect(signedBody({ nodeId: 'x', publicKey: kp.publicKey, secretKey: kp.secretKey, timestamp: 1 }))
+      .toMatchObject({ nodeId: 'x', timestamp: 1 });
+  });
+
+  test('throws with no args (needs a secret key)', () => {
+    expect(() => signedBody()).toThrow();
   });
 });
 

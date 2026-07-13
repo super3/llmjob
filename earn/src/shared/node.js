@@ -49,10 +49,10 @@ function buildJoinBody({ token, nodeId, publicKey, name } = {}) {
 
 // Map the app's live state into the server's ping telemetry shape. Anything the
 // app can't read right now is sent as null / 0 rather than omitted.
-function buildTelemetry({ model, quant, device, vram, tokensPerSec, ready } = {}) {
+function buildTelemetry({ model, quant, device, vram, tokensPerSec, ready, activeJobs } = {}) {
   return {
     capabilities: ready ? ['chat'] : [],
-    activeJobs: 0,
+    activeJobs: Number(activeJobs) || 0,
     maxConcurrentJobs: 1,
     device: device || null,
     vramTotal: vram && Number.isFinite(vram.totalMb) ? vram.totalMb : null,
@@ -63,17 +63,24 @@ function buildTelemetry({ model, quant, device, vram, tokensPerSec, ready } = {}
   };
 }
 
-// Body for POST /api/nodes/ping — signed challenge + telemetry.
-function buildPingBody({ nodeId, publicKey, secretKey, timestamp, telemetry } = {}) {
+// A signed request body for any node→server call the `verifySignature` middleware
+// guards (ping, job poll/chunks/complete/…): the identity + a detached signature
+// over "<nodeId>:<timestamp>", merged with the call-specific `extra` fields.
+function signedBody({ nodeId, publicKey, secretKey, timestamp } = {}, extra) {
   return Object.assign({
     nodeId,
     publicKey,
     signature: signMessage(pingMessage(nodeId, timestamp), secretKey),
     timestamp,
-  }, telemetry || {});
+  }, extra || {});
+}
+
+// Body for POST /api/nodes/ping — a signed challenge carrying telemetry.
+function buildPingBody({ nodeId, publicKey, secretKey, timestamp, telemetry } = {}) {
+  return signedBody({ nodeId, publicKey, secretKey, timestamp }, telemetry);
 }
 
 module.exports = {
   generateKeypair, fingerprint, pingMessage, signMessage,
-  buildJoinBody, buildTelemetry, buildPingBody,
+  buildJoinBody, buildTelemetry, signedBody, buildPingBody,
 };
