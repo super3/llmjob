@@ -106,13 +106,16 @@
   .mr-addr .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
   .mr-addr .a { font-family: "IBM Plex Mono", monospace; font-size: 13px; color: #3d4148; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mr-gpu { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: #6b7077; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .mr-gpu .gpu-s { display: none; }
+  .mr-gpu .gpu-s, .mr-addr .ad-s { display: none; }
   /* Below ~1040px the GPU column can no longer fit a full "NVIDIA GeForce RTX
      4070 SUPER" — end-ellipsis would hide the model behind the vendor prefix,
-     so swap to the model-only name instead. */
+     so swap to the model-only name (and a shorter address). The shorter text
+     frees real width, so also drop the column sizing reserved for full names —
+     otherwise the table scrolls against fixed slack instead of content. */
   @media (max-width: 1040px) {
-    .mr-gpu .gpu-f { display: none; }
-    .mr-gpu .gpu-s { display: inline; }
+    .mr-gpu .gpu-f, .mr-addr .ad-f { display: none; }
+    .mr-gpu .gpu-s, .mr-addr .ad-s { display: inline; }
+    .nt-cols, .miner-row { grid-template-columns: 32px 170px minmax(110px, 1fr) 110px 95px 85px; gap: 12px; min-width: 706px; }
   }
   .mr-hash { font-family: "IBM Plex Mono", monospace; font-size: 13px; font-weight: 600; color: var(--accent); }
   .mr-last { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--muted-3); }
@@ -223,8 +226,13 @@
     // No live pool data yet. When the network API is ready, fetch the miners
     // (sorted by 1h hashrate) and pass them to render().
     function esc(str) { return String(str).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
-    // Truncate the middle of the payout address for a bit of anonymity.
-    function shortAddr(a) { a = String(a); return a.length > 30 ? a.slice(0, 18) + '…' + a.slice(-10) : a; }
+    // Truncate the middle of the payout address for a bit of anonymity; the
+    // narrow form fits the tighter address column on sub-1040px screens.
+    function shortAddr(a, narrow) {
+      a = String(a);
+      if (narrow) return a.length > 20 ? a.slice(0, 10) + '…' + a.slice(-8) : a;
+      return a.length > 30 ? a.slice(0, 18) + '…' + a.slice(-10) : a;
+    }
     function setText(id, v) { const el = document.getElementById(id); if (el) el.textContent = v; }
     // VRAM as "used / total GB" (from MB); "—" when total is unknown (non-NVIDIA
     // rig or an older client that doesn't report it).
@@ -253,7 +261,7 @@
         ? rows.map((m, i) =>
             '<div class="miner-row">' +
               '<div class="mr-rank">' + (i + 1) + '</div>' +
-              '<div class="mr-addr"><span class="dot"></span><span class="a">' + esc(shortAddr(m.addr)) + '</span></div>' +
+              '<div class="mr-addr"><span class="dot"></span><span class="a"><span class="ad-f">' + esc(shortAddr(m.addr)) + '</span><span class="ad-s">' + esc(shortAddr(m.addr, true)) + '</span></span></div>' +
               '<div class="mr-gpu" title="' + esc(m.gpu) + '"><span class="gpu-f">' + esc(m.gpu) + '</span><span class="gpu-s">' + esc(shortGpu(m.gpu)) + '</span></div>' +
               '<div class="mr-vram">' + fmtVram(m.vramUsedMb, m.vramTotalMb) + '</div>' +
               '<div class="mr-hash">' + Number(m.hash).toFixed(1) + ' TH/s</div>' +
