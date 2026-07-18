@@ -106,6 +106,14 @@
   .mr-addr .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
   .mr-addr .a { font-family: "IBM Plex Mono", monospace; font-size: 13px; color: #3d4148; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mr-gpu { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: #6b7077; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mr-gpu .gpu-s { display: none; }
+  /* Below ~1040px the GPU column can no longer fit a full "NVIDIA GeForce RTX
+     4070 SUPER" — end-ellipsis would hide the model behind the vendor prefix,
+     so swap to the model-only name instead. */
+  @media (max-width: 1040px) {
+    .mr-gpu .gpu-f { display: none; }
+    .mr-gpu .gpu-s { display: inline; }
+  }
   .mr-hash { font-family: "IBM Plex Mono", monospace; font-size: 13px; font-weight: 600; color: var(--accent); }
   .mr-last { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--muted-3); }
   .nt-foot { padding: 14px 22px; text-align: center; font-size: 13px; color: var(--muted-3); border-top: 1px solid #efeee8; }
@@ -226,10 +234,8 @@
       const gb = (mb) => (Math.round((Math.max(0, Number(mb) || 0) / 1024) * 10) / 10).toString();
       return gb(usedMb) + ' / ' + gb(t) + ' GB';
     }
-    // Model-only GPU name ("NVIDIA GeForce RTX 4090" → "RTX 4090"). The vendor
-    // prefix is the least important part and end-ellipsis would hide the model
-    // behind it whenever the column tightens, so it's dropped at every width;
-    // the full name stays available as a hover title.
+    // Model-only GPU name ("NVIDIA GeForce RTX 4090" → "RTX 4090") for smaller
+    // screens, where end-ellipsis would leave nothing but the vendor prefix.
     function shortGpu(g) {
       return String(g).replace(/^\s*(NVIDIA|AMD|Intel)\s+(GeForce\s+|Radeon\s+|Arc\s+)?/i, '') || String(g);
     }
@@ -248,7 +254,7 @@
             '<div class="miner-row">' +
               '<div class="mr-rank">' + (i + 1) + '</div>' +
               '<div class="mr-addr"><span class="dot"></span><span class="a">' + esc(shortAddr(m.addr)) + '</span></div>' +
-              '<div class="mr-gpu" title="' + esc(m.gpu) + '">' + esc(shortGpu(m.gpu)) + '</div>' +
+              '<div class="mr-gpu" title="' + esc(m.gpu) + '"><span class="gpu-f">' + esc(m.gpu) + '</span><span class="gpu-s">' + esc(shortGpu(m.gpu)) + '</span></div>' +
               '<div class="mr-vram">' + fmtVram(m.vramUsedMb, m.vramTotalMb) + '</div>' +
               '<div class="mr-hash">' + Number(m.hash).toFixed(1) + ' TH/s</div>' +
               '<div class="mr-last">' + esc(m.last) + '</div>' +
