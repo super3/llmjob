@@ -118,9 +118,9 @@
   .foot-links a { color: var(--muted-3); font-size: 14px; }
   .foot-links a:hover { color: var(--muted); }
 
-  /* Below ~880px the GPU column sits at its grid-minimum width, so the full
-     name truncates down to just "NVIDIA …" — show the model-only name instead. */
-  @media (max-width: 880px) {
+  /* Below ~960px the GPU column is too narrow for a full "NVIDIA GeForce RTX
+     4090" — hide the vendor prefix so the model, the part that matters, shows. */
+  @media (max-width: 960px) {
     .mr-gpu .gpu-f { display: none; }
     .mr-gpu .gpu-s { display: inline; }
   }
@@ -238,15 +238,15 @@
     }
 
     function render(miners) {
-      const rows = miners || [];              // one row per online GPU/worker
-      const gpus = rows.length;
-      // Every worker drives a single GPU today, so miners == GPUs. Once one
-      // miner can run multiple GPUs, count distinct rigs here instead and the
-      // GPU number can grow past the miner number.
+      const rows = miners || [];              // one row per online worker
+      // One worker == one miner. A worker that hasn't reported a GPU (the API
+      // sends '—') counts as a miner but not as an online GPU. Once one miner
+      // can run multiple GPUs, the GPU number can grow past the miner number.
       const minersOnline = rows.length;
+      const gpusOnline = rows.filter((m) => m.gpu && m.gpu !== '—').length;
       const poolTh = rows.reduce((a, m) => a + (Number(m.hash) || 0), 0);
 
-      cont.innerHTML = gpus
+      cont.innerHTML = minersOnline
         ? rows.map((m, i) =>
             '<div class="miner-row">' +
               '<div class="mr-rank">' + (i + 1) + '</div>' +
@@ -261,9 +261,9 @@
 
       setText('net-active', minersOnline.toLocaleString());
       setText('net-active-h', minersOnline.toLocaleString());
-      setText('net-workers', gpus.toLocaleString());
-      setText('net-hr', gpus ? (poolTh / 1000).toFixed(2) + ' PH/s' : '0');
-      setText('net-foot', gpus ? ('Showing ' + gpus + ' of ' + gpus + ' GPUs') : 'Waiting for the first miner to connect…');
+      setText('net-workers', gpusOnline.toLocaleString());
+      setText('net-hr', minersOnline ? (poolTh / 1000).toFixed(2) + ' PH/s' : '0');
+      setText('net-foot', minersOnline ? ('Showing ' + minersOnline + ' of ' + minersOnline + ' miners') : 'Waiting for the first miner to connect…');
     }
 
     // The site (GitHub Pages) and the API (Railway) are different origins, so
