@@ -94,7 +94,9 @@
   .nt-top .ttl { font-weight: 700; font-size: 16px; letter-spacing: -.01em; }
   .nt-top .upd { font-size: 12px; color: #a7abb2; font-family: "IBM Plex Mono", monospace; }
   .nt-scroll { overflow-x: auto; }
-  .nt-cols, .miner-row { display: grid; grid-template-columns: 44px 250px minmax(0, 1fr) 120px 120px 100px; gap: 16px; align-items: center; min-width: 820px; }
+  /* The GPU track keeps a 120px floor so model names ("RTX 4070 SUPER") stay
+     readable when the table is scrolled at its minimum width on phones. */
+  .nt-cols, .miner-row { display: grid; grid-template-columns: 44px 250px minmax(120px, 1fr) 120px 120px 100px; gap: 16px; align-items: center; min-width: 820px; }
   .nt-cols { padding: 11px 22px; border-bottom: 1px solid #efeee8; font-size: 11.5px; color: var(--muted-3); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
   .nt-cols .r, .mr-vram, .mr-hash, .mr-last { text-align: right; }
   .mr-vram { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: #6b7077; }
