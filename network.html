@@ -82,7 +82,9 @@
   .stat-ic.blue { background: #eff4ff; }
   .stat-ic.grey { background: #f1efe9; }
   .stat-k { font-size: 12.5px; color: var(--muted-2); font-weight: 500; margin-bottom: 6px; }
-  .stat-v { font-weight: 800; font-size: 30px; line-height: 1; letter-spacing: -.03em; }
+  /* Nowrap + viewport-scaled size keeps "1.04 PH/s" on one line while the
+     three cards share a narrow row; back to full size once they stack. */
+  .stat-v { font-weight: 800; font-size: clamp(20px, 2.8vw, 30px); line-height: 1; letter-spacing: -.03em; white-space: nowrap; }
   .stat-v.accent { color: var(--accent); }
 
   /* table */
@@ -92,7 +94,9 @@
   .nt-top .ttl { font-weight: 700; font-size: 16px; letter-spacing: -.01em; }
   .nt-top .upd { font-size: 12px; color: #a7abb2; font-family: "IBM Plex Mono", monospace; }
   .nt-scroll { overflow-x: auto; }
-  .nt-cols, .miner-row { display: grid; grid-template-columns: 44px 250px minmax(0, 1fr) 120px 120px 100px; gap: 16px; align-items: center; min-width: 820px; }
+  /* The GPU track keeps a 120px floor so model names ("RTX 4070 SUPER") stay
+     readable when the table is scrolled at its minimum width on phones. */
+  .nt-cols, .miner-row { display: grid; grid-template-columns: 44px 250px minmax(120px, 1fr) 120px 120px 100px; gap: 16px; align-items: center; min-width: 820px; }
   .nt-cols { padding: 11px 22px; border-bottom: 1px solid #efeee8; font-size: 11.5px; color: var(--muted-3); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
   .nt-cols .r, .mr-vram, .mr-hash, .mr-last { text-align: right; }
   .mr-vram { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: #6b7077; }
@@ -102,6 +106,17 @@
   .mr-addr .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
   .mr-addr .a { font-family: "IBM Plex Mono", monospace; font-size: 13px; color: #3d4148; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mr-gpu { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: #6b7077; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mr-gpu .gpu-s, .mr-addr .ad-s { display: none; }
+  /* Below ~1040px the GPU column can no longer fit a full "NVIDIA GeForce RTX
+     4070 SUPER" — end-ellipsis would hide the model behind the vendor prefix,
+     so swap to the model-only name (and a shorter address). The shorter text
+     frees real width, so also drop the column sizing reserved for full names —
+     otherwise the table scrolls against fixed slack instead of content. */
+  @media (max-width: 1040px) {
+    .mr-gpu .gpu-f, .mr-addr .ad-f { display: none; }
+    .mr-gpu .gpu-s, .mr-addr .ad-s { display: inline; }
+    .nt-cols, .miner-row { grid-template-columns: 32px 170px minmax(110px, 1fr) 110px 95px 85px; gap: 12px; min-width: 706px; }
+  }
   .mr-hash { font-family: "IBM Plex Mono", monospace; font-size: 13px; font-weight: 600; color: var(--accent); }
   .mr-last { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--muted-3); }
   .nt-foot { padding: 14px 22px; text-align: center; font-size: 13px; color: var(--muted-3); border-top: 1px solid #efeee8; }
@@ -117,6 +132,7 @@
 
   @media (max-width: 720px) {
     .net-stats { grid-template-columns: 1fr; }
+    .stat-v { font-size: 30px; }
   }
 </style>
 </head>
@@ -209,9 +225,14 @@
 
     // No live pool data yet. When the network API is ready, fetch the miners
     // (sorted by 1h hashrate) and pass them to render().
-    function esc(str) { return String(str).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
-    // Truncate the middle of the payout address for a bit of anonymity.
-    function shortAddr(a) { a = String(a); return a.length > 30 ? a.slice(0, 18) + '…' + a.slice(-10) : a; }
+    function esc(str) { return String(str).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+    // Truncate the middle of the payout address for a bit of anonymity; the
+    // narrow form fits the tighter address column on sub-1040px screens.
+    function shortAddr(a, narrow) {
+      a = String(a);
+      if (narrow) return a.length > 20 ? a.slice(0, 10) + '…' + a.slice(-8) : a;
+      return a.length > 30 ? a.slice(0, 18) + '…' + a.slice(-10) : a;
+    }
     function setText(id, v) { const el = document.getElementById(id); if (el) el.textContent = v; }
     // VRAM as "used / total GB" (from MB); "—" when total is unknown (non-NVIDIA
     // rig or an older client that doesn't report it).
@@ -221,19 +242,27 @@
       const gb = (mb) => (Math.round((Math.max(0, Number(mb) || 0) / 1024) * 10) / 10).toString();
       return gb(usedMb) + ' / ' + gb(t) + ' GB';
     }
+    // Model-only GPU name ("NVIDIA GeForce RTX 4090" → "RTX 4090") for smaller
+    // screens, where end-ellipsis would leave nothing but the vendor prefix.
+    function shortGpu(g) {
+      return String(g).replace(/^\s*(NVIDIA|AMD|Intel)\s+(GeForce\s+|Radeon\s+|Arc\s+)?/i, '') || String(g);
+    }
 
     function render(miners) {
-      const rows = miners || [];              // one row per online GPU/worker
-      const gpus = rows.length;
-      const addrs = new Set(rows.map((m) => m.addr)).size; // distinct payout addresses
+      const rows = miners || [];              // one row per online worker
+      // One worker == one miner. A worker that hasn't reported a GPU (the API
+      // sends '—') counts as a miner but not as an online GPU. Once one miner
+      // can run multiple GPUs, the GPU number can grow past the miner number.
+      const minersOnline = rows.length;
+      const gpusOnline = rows.filter((m) => m.gpu && m.gpu !== '—').length;
       const poolTh = rows.reduce((a, m) => a + (Number(m.hash) || 0), 0);
 
-      cont.innerHTML = gpus
+      cont.innerHTML = minersOnline
         ? rows.map((m, i) =>
             '<div class="miner-row">' +
               '<div class="mr-rank">' + (i + 1) + '</div>' +
-              '<div class="mr-addr"><span class="dot"></span><span class="a">' + esc(shortAddr(m.addr)) + '</span></div>' +
-              '<div class="mr-gpu">' + esc(m.gpu) + '</div>' +
+              '<div class="mr-addr"><span class="dot"></span><span class="a"><span class="ad-f">' + esc(shortAddr(m.addr)) + '</span><span class="ad-s">' + esc(shortAddr(m.addr, true)) + '</span></span></div>' +
+              '<div class="mr-gpu" title="' + esc(m.gpu) + '"><span class="gpu-f">' + esc(m.gpu) + '</span><span class="gpu-s">' + esc(shortGpu(m.gpu)) + '</span></div>' +
               '<div class="mr-vram">' + fmtVram(m.vramUsedMb, m.vramTotalMb) + '</div>' +
               '<div class="mr-hash">' + Number(m.hash).toFixed(1) + ' TH/s</div>' +
               '<div class="mr-last">' + esc(m.last) + '</div>' +
@@ -241,11 +270,11 @@
           ).join('')
         : '<div class="nt-empty">No miners online yet — be the first to connect a rig.</div>';
 
-      setText('net-active', addrs.toLocaleString());
-      setText('net-active-h', addrs.toLocaleString());
-      setText('net-workers', gpus.toLocaleString());
-      setText('net-hr', gpus ? (poolTh / 1000).toFixed(2) + ' PH/s' : '0');
-      setText('net-foot', gpus ? ('Showing ' + gpus + ' of ' + gpus + ' GPUs') : 'Waiting for the first miner to connect…');
+      setText('net-active', minersOnline.toLocaleString());
+      setText('net-active-h', minersOnline.toLocaleString());
+      setText('net-workers', gpusOnline.toLocaleString());
+      setText('net-hr', minersOnline ? (poolTh / 1000).toFixed(2) + ' PH/s' : '0');
+      setText('net-foot', minersOnline ? ('Showing ' + minersOnline + ' of ' + minersOnline + ' miners') : 'Waiting for the first miner to connect…');
     }
 
     // The site (GitHub Pages) and the API (Railway) are different origins, so
