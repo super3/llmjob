@@ -106,7 +106,6 @@
   .mr-addr .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
   .mr-addr .a { font-family: "IBM Plex Mono", monospace; font-size: 13px; color: #3d4148; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mr-gpu { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: #6b7077; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .mr-gpu .gpu-s { display: none; }
   .mr-hash { font-family: "IBM Plex Mono", monospace; font-size: 13px; font-weight: 600; color: var(--accent); }
   .mr-last { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--muted-3); }
   .nt-foot { padding: 14px 22px; text-align: center; font-size: 13px; color: var(--muted-3); border-top: 1px solid #efeee8; }
@@ -120,12 +119,6 @@
   .foot-links a { color: var(--muted-3); font-size: 14px; }
   .foot-links a:hover { color: var(--muted); }
 
-  /* Below ~960px the GPU column is too narrow for a full "NVIDIA GeForce RTX
-     4090" — hide the vendor prefix so the model, the part that matters, shows. */
-  @media (max-width: 960px) {
-    .mr-gpu .gpu-f { display: none; }
-    .mr-gpu .gpu-s { display: inline; }
-  }
   @media (max-width: 720px) {
     .net-stats { grid-template-columns: 1fr; }
     .stat-v { font-size: 30px; }
@@ -221,7 +214,7 @@
 
     // No live pool data yet. When the network API is ready, fetch the miners
     // (sorted by 1h hashrate) and pass them to render().
-    function esc(str) { return String(str).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
+    function esc(str) { return String(str).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
     // Truncate the middle of the payout address for a bit of anonymity.
     function shortAddr(a) { a = String(a); return a.length > 30 ? a.slice(0, 18) + '…' + a.slice(-10) : a; }
     function setText(id, v) { const el = document.getElementById(id); if (el) el.textContent = v; }
@@ -233,8 +226,10 @@
       const gb = (mb) => (Math.round((Math.max(0, Number(mb) || 0) / 1024) * 10) / 10).toString();
       return gb(usedMb) + ' / ' + gb(t) + ' GB';
     }
-    // Model-only GPU name ("NVIDIA GeForce RTX 4090" → "RTX 4090") for narrow
-    // screens, where end-ellipsis would leave nothing but the vendor prefix.
+    // Model-only GPU name ("NVIDIA GeForce RTX 4090" → "RTX 4090"). The vendor
+    // prefix is the least important part and end-ellipsis would hide the model
+    // behind it whenever the column tightens, so it's dropped at every width;
+    // the full name stays available as a hover title.
     function shortGpu(g) {
       return String(g).replace(/^\s*(NVIDIA|AMD|Intel)\s+(GeForce\s+|Radeon\s+|Arc\s+)?/i, '') || String(g);
     }
@@ -253,7 +248,7 @@
             '<div class="miner-row">' +
               '<div class="mr-rank">' + (i + 1) + '</div>' +
               '<div class="mr-addr"><span class="dot"></span><span class="a">' + esc(shortAddr(m.addr)) + '</span></div>' +
-              '<div class="mr-gpu"><span class="gpu-f">' + esc(m.gpu) + '</span><span class="gpu-s">' + esc(shortGpu(m.gpu)) + '</span></div>' +
+              '<div class="mr-gpu" title="' + esc(m.gpu) + '">' + esc(shortGpu(m.gpu)) + '</div>' +
               '<div class="mr-vram">' + fmtVram(m.vramUsedMb, m.vramTotalMb) + '</div>' +
               '<div class="mr-hash">' + Number(m.hash).toFixed(1) + ' TH/s</div>' +
               '<div class="mr-last">' + esc(m.last) + '</div>' +
