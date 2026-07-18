@@ -82,7 +82,9 @@
   .stat-ic.blue { background: #eff4ff; }
   .stat-ic.grey { background: #f1efe9; }
   .stat-k { font-size: 12.5px; color: var(--muted-2); font-weight: 500; margin-bottom: 6px; }
-  .stat-v { font-weight: 800; font-size: 30px; line-height: 1; letter-spacing: -.03em; }
+  /* Nowrap + viewport-scaled size keeps "1.04 PH/s" on one line while the
+     three cards share a narrow row; back to full size once they stack. */
+  .stat-v { font-weight: 800; font-size: clamp(20px, 2.8vw, 30px); line-height: 1; letter-spacing: -.03em; white-space: nowrap; }
   .stat-v.accent { color: var(--accent); }
 
   /* table */
@@ -102,6 +104,7 @@
   .mr-addr .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
   .mr-addr .a { font-family: "IBM Plex Mono", monospace; font-size: 13px; color: #3d4148; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mr-gpu { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: #6b7077; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mr-gpu .gpu-s { display: none; }
   .mr-hash { font-family: "IBM Plex Mono", monospace; font-size: 13px; font-weight: 600; color: var(--accent); }
   .mr-last { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--muted-3); }
   .nt-foot { padding: 14px 22px; text-align: center; font-size: 13px; color: var(--muted-3); border-top: 1px solid #efeee8; }
@@ -115,8 +118,15 @@
   .foot-links a { color: var(--muted-3); font-size: 14px; }
   .foot-links a:hover { color: var(--muted); }
 
+  /* Below ~880px the GPU column sits at its grid-minimum width, so the full
+     name truncates down to just "NVIDIA …" — show the model-only name instead. */
+  @media (max-width: 880px) {
+    .mr-gpu .gpu-f { display: none; }
+    .mr-gpu .gpu-s { display: inline; }
+  }
   @media (max-width: 720px) {
     .net-stats { grid-template-columns: 1fr; }
+    .stat-v { font-size: 30px; }
   }
 </style>
 </head>
@@ -221,11 +231,19 @@
       const gb = (mb) => (Math.round((Math.max(0, Number(mb) || 0) / 1024) * 10) / 10).toString();
       return gb(usedMb) + ' / ' + gb(t) + ' GB';
     }
+    // Model-only GPU name ("NVIDIA GeForce RTX 4090" → "RTX 4090") for narrow
+    // screens, where end-ellipsis would leave nothing but the vendor prefix.
+    function shortGpu(g) {
+      return String(g).replace(/^\s*(NVIDIA|AMD|Intel)\s+(GeForce\s+|Radeon\s+|Arc\s+)?/i, '') || String(g);
+    }
 
     function render(miners) {
       const rows = miners || [];              // one row per online GPU/worker
       const gpus = rows.length;
-      const addrs = new Set(rows.map((m) => m.addr)).size; // distinct payout addresses
+      // Every worker drives a single GPU today, so miners == GPUs. Once one
+      // miner can run multiple GPUs, count distinct rigs here instead and the
+      // GPU number can grow past the miner number.
+      const minersOnline = rows.length;
       const poolTh = rows.reduce((a, m) => a + (Number(m.hash) || 0), 0);
 
       cont.innerHTML = gpus
@@ -233,7 +251,7 @@
             '<div class="miner-row">' +
               '<div class="mr-rank">' + (i + 1) + '</div>' +
               '<div class="mr-addr"><span class="dot"></span><span class="a">' + esc(shortAddr(m.addr)) + '</span></div>' +
-              '<div class="mr-gpu">' + esc(m.gpu) + '</div>' +
+              '<div class="mr-gpu"><span class="gpu-f">' + esc(m.gpu) + '</span><span class="gpu-s">' + esc(shortGpu(m.gpu)) + '</span></div>' +
               '<div class="mr-vram">' + fmtVram(m.vramUsedMb, m.vramTotalMb) + '</div>' +
               '<div class="mr-hash">' + Number(m.hash).toFixed(1) + ' TH/s</div>' +
               '<div class="mr-last">' + esc(m.last) + '</div>' +
@@ -241,8 +259,8 @@
           ).join('')
         : '<div class="nt-empty">No miners online yet — be the first to connect a rig.</div>';
 
-      setText('net-active', addrs.toLocaleString());
-      setText('net-active-h', addrs.toLocaleString());
+      setText('net-active', minersOnline.toLocaleString());
+      setText('net-active-h', minersOnline.toLocaleString());
       setText('net-workers', gpus.toLocaleString());
       setText('net-hr', gpus ? (poolTh / 1000).toFixed(2) + ' PH/s' : '0');
       setText('net-foot', gpus ? ('Showing ' + gpus + ' of ' + gpus + ' GPUs') : 'Waiting for the first miner to connect…');
