@@ -663,6 +663,7 @@ function nodeStatus() {
     connected: !!(node && node.connected),
     nodeId: node ? node.nodeId : null,
     name: node ? node.name : null,
+    user: node ? (node.user || null) : null,
   };
 }
 
@@ -745,11 +746,12 @@ async function connectNode({ token, name } = {}) {
     return { error: (res.data && res.data.error) || ('Link failed (HTTP ' + res.status + ').') };
   }
 
-  saveNode(Object.assign({}, node, { connected: true, name: nm, linkedAt: new Date().toISOString() }));
+  const user = (res.data && res.data.user) || null; // account handle, if the server resolved one
+  saveNode(Object.assign({}, node, { connected: true, name: nm, user, linkedAt: new Date().toISOString() }));
   startNodePinger();
   syncWorker();
   sendNodeStatus();
-  return { success: true, nodeId: node.nodeId, name: nm };
+  return { success: true, nodeId: node.nodeId, name: nm, user };
 }
 
 function disconnectNode() {

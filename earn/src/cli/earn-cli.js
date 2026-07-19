@@ -568,8 +568,9 @@ async function runConnect(argv) {
       log('join failed (HTTP ' + res.status + '): ' + ((res.data && res.data.error) || res.raw || ''), process.stderr);
       return 1;
     }
-    node.name = name; node.connected = true; saveNodeConfig(node);
-    log('✓ linked to your account as ' + name);
+    const user = (res.data && res.data.user) || null;
+    node.name = name; node.connected = true; node.user = user; saveNodeConfig(node);
+    log('✓ linked' + (user ? ' to ' + user + '’s account' : ' to your account') + ' as ' + name);
   } else if (!node.connected) {
     log('no pairing token yet — run:  llmjob-earn-cli connect --token <token>', process.stderr);
     log('copy your token from the dashboard: ' + NODE.dashboardUrl, process.stderr);

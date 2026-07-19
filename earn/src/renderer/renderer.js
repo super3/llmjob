@@ -257,16 +257,20 @@
       connected: !!(s && s.connected),
       nodeId: (s && s.nodeId) || null,
       name: (s && s.name) || null,
+      user: (s && s.user) || null,
     };
     const on = state.node.connected;
-    const who = state.node.name || state.node.nodeId || 'this rig';
+    // Title/avatar use the account handle when the server resolved one; the
+    // "live as …" line always shows the worker (rig) name.
+    const title = state.node.user || state.node.name || 'Connected';
+    const rig = state.node.name || state.node.nodeId || 'this rig';
     el.connectForm.hidden = on;
     el.connectDone.hidden = !on;
     el.connectHint.textContent = on ? '' : 'Not linked to an account';
     if (on) {
-      el.connectedAvatar.textContent = who.charAt(0).toUpperCase();
-      el.connectedTitle.textContent = state.node.name || 'Connected';
-      el.connectedName.textContent = who;
+      el.connectedAvatar.textContent = title.charAt(0).toUpperCase();
+      el.connectedTitle.textContent = title;
+      el.connectedName.textContent = rig;
     }
   }
 
@@ -287,7 +291,7 @@
     el.connectLink.textContent = 'Connect';
     if (res && res.success) {
       el.connectToken.value = '';
-      renderNode({ connected: true, nodeId: res.nodeId, name: res.name });
+      renderNode({ connected: true, nodeId: res.nodeId, name: res.name, user: res.user });
     } else {
       showConnectError((res && res.error) || 'Connection failed.');
     }
