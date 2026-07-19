@@ -1,5 +1,8 @@
 const LOCK_MS = 10 * 60 * 1000;       // assignment lock lifetime (10 min)
 const HEARTBEAT_STALE_MS = 60 * 1000; // consider a job stalled after 60s silence
+// The model the earn-client fleet actually serves (earn/src/shared/config.js
+// LLM.model.name) — the default a job records must match what runs it.
+const DEFAULT_MODEL = 'Gemma-4-E4B-it-Q4_K_M';
 
 class JobService {
   constructor(db) {
@@ -17,7 +20,7 @@ class JobService {
     const job = {
       id: jobId,
       prompt: jobData.prompt,
-      model: jobData.model || 'llama3.2:3b',
+      model: jobData.model || DEFAULT_MODEL,
       options: jobData.options || {},
       priority: jobData.priority || 0,
       status: 'pending',

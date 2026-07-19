@@ -40,7 +40,7 @@ async function pingNode(req, res) {
   try {
     const { publicKey, nodeId } = req.verifiedNode;
     const { capabilities, activeJobs, maxConcurrentJobs,
-      device, vramTotal, vramUsed, model, quant, tps } = req.body;
+      device, vramTotal, vramUsed, model, quant, tps, name } = req.body;
 
     const nodeService = new NodeService(req.app.locals.db);
     const result = await nodeService.updateNodeStatus(nodeId, publicKey, {
@@ -52,7 +52,8 @@ async function pingNode(req, res) {
       vramUsed,
       model,
       quant,
-      tps
+      tps,
+      name
     });
 
     if (result.error) {

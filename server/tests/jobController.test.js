@@ -119,7 +119,7 @@ describe('JobController', () => {
         jobs: expect.arrayContaining([
           expect.objectContaining({
             prompt: expect.any(String),
-            model: 'llama3.2:3b'
+            model: 'Gemma-4-E4B-it-Q4_K_M'
           })
         ])
       });

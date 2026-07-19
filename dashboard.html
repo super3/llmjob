@@ -364,6 +364,7 @@ function App() {
     finally { setJoinLoading(false); }
   };
   const openAdd = () => { setCopiedCmd(null); setShowAdd(true); if (!joinToken) loadJoinToken(); };
+  const installCliCmd = 'curl -fsSL https://github.com/super3/llmjob/releases/latest/download/llmjob-earn-cli-linux -o /usr/local/bin/llmjob-earn-cli && chmod +x /usr/local/bin/llmjob-earn-cli';
   const installCmd = joinToken ? `llmjob-earn-cli connect --token ${joinToken}` : '';
 
   // create-key modal
@@ -581,7 +582,12 @@ function App() {
               <h3>Add a node</h3>
               <button className="x" onClick={() => setShowAdd(false)}>×</button>
             </div>
-            <p>Link a machine with the <b>LLMJob Earn</b> app. Paste this pairing token into the desktop app's <span className="mono">API → Connect</span> tab, or run it with the headless CLI:</p>
+            <p>Link a machine with the <b>LLMJob Earn</b> app: paste this pairing token into the desktop app's <span className="mono">API → Connect</span> tab. For a headless Linux box, install the CLI first (one line, no Node needed):</p>
+            <div className="cmd">
+              <code>{installCliCmd}</code>
+              <button onClick={() => copyCmd(1, installCliCmd)}>{copiedCmd === 1 ? "copied" : "copy"}</button>
+            </div>
+            <p className="add-step-p" style={{ marginLeft: 0 }}>…then connect it to your account:</p>
             <div className="cmd">
               <code>{joinLoading ? 'Generating your command…' : installCmd}</code>
               <button onClick={() => copyCmd(0, installCmd)} disabled={!joinToken}>{copiedCmd === 0 ? "copied" : "copy"}</button>

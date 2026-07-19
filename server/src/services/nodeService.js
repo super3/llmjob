@@ -62,14 +62,17 @@ class NodeService {
       return { error: 'Public key mismatch' };
     }
 
-    // Keep existing values unless the ping provides a new one.
+    // Keep existing values unless the ping provides a new one. `name` is
+    // stricter — only a non-null name updates, so a sparse keep-alive ping never
+    // clears the stored rig name; a real name lets clients rename via Settings.
     const pick = (val, current) => (val !== undefined ? val : current);
     const capabilities = pick(additionalData.capabilities, node.capabilities);
+    const name = additionalData.name != null ? additionalData.name : node.name;
 
     await this.db.query(
       `UPDATE nodes SET status = 'online', last_seen = $2, capabilities = $3,
          active_jobs = $4, max_concurrent_jobs = $5, device = $6, vram_total = $7,
-         vram_used = $8, model = $9, quant = $10, tps = $11
+         vram_used = $8, model = $9, quant = $10, tps = $11, name = $12
        WHERE node_id = $1`,
       [
         nodeId, Date.now(),
@@ -81,7 +84,8 @@ class NodeService {
         pick(additionalData.vramUsed, node.vram_used),
         pick(additionalData.model, node.model),
         pick(additionalData.quant, node.quant),
-        pick(additionalData.tps, node.tps)
+        pick(additionalData.tps, node.tps),
+        name
       ]
     );
 

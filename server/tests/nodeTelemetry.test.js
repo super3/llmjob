@@ -55,6 +55,22 @@ describe('NodeService dashboard telemetry', () => {
     });
   });
 
+  it('renames the node when a ping carries a name, keeps it when the name is null/omitted', async () => {
+    await service.claimNode('pk-rename', 'old-name', 'user3');
+    const nodeId = NodeService.generateNodeFingerprint('pk-rename');
+
+    // a rename ping (Settings → Worker name changed client-side)
+    await service.updateNodeStatus(nodeId, 'pk-rename', { name: 'new-name' });
+    let nodes = await service.getUserNodes('user3');
+    expect(nodes[0].name).toBe('new-name');
+
+    // sparse keep-alive pings must not clear the stored name
+    await service.updateNodeStatus(nodeId, 'pk-rename', { name: null });
+    await service.updateNodeStatus(nodeId, 'pk-rename', {});
+    nodes = await service.getUserNodes('user3');
+    expect(nodes[0].name).toBe('new-name');
+  });
+
   it('formats days + hours of uptime', async () => {
     const ms = (3 * 24 * 60 + 4 * 60) * 60 * 1000; // 3d 4h
     await seed('ndays', { user_id: 'u-days', claimed_at: Date.now() - ms });

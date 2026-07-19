@@ -22,7 +22,8 @@ describe('JobService', () => {
     it('creates a job with default values', async () => {
       const job = await jobService.createJob({ prompt: 'Test prompt', userId: 'user123' });
       expect(job).toMatchObject({
-        prompt: 'Test prompt', model: 'llama3.2:3b', status: 'pending',
+        // default model = what the earn-client fleet actually serves
+        prompt: 'Test prompt', model: 'Gemma-4-E4B-it-Q4_K_M', status: 'pending',
         userId: 'user123', priority: 0, maxTokens: 1000, temperature: 0.7
       });
       expect(job.id).toMatch(/^job-\d+-[a-z0-9]+$/);
