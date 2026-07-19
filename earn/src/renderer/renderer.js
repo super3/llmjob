@@ -49,7 +49,7 @@
     view: 'mine',        // mine | chat | api | settings | logs
     returnTab: 'mine',   // where settings/logs return to
     address: '', gpu: '', mode: 'mining',
-    llm: { running: false, ready: false, endpoint: null, webUrl: null, tps: 0, model: null, error: null },
+    llm: { ready: false, endpoint: null, webUrl: null, tps: 0, model: null, error: null },
     chat: { messages: [], streaming: false, streamText: '', bubble: null },
     node: { connected: false, nodeId: null, name: null },
   };
@@ -154,7 +154,6 @@
 
   function renderLlm(s) {
     state.llm = {
-      running: !!(s && s.running),
       ready: !!(s && s.ready),
       endpoint: (s && s.endpoint) || null,
       webUrl: (s && s.webUrl) || null,
@@ -165,6 +164,9 @@
     renderLlmHero();
     renderChatGate();
     renderApiGate();
+    // If the model went away mid-reply, unbrick the composer even if the
+    // main-process chat-error event was lost in the shuffle.
+    if (!state.llm.ready && state.chat.streaming) onChatError({ message: 'the local LLM stopped' });
   }
 
   // ── Chat ───────────────────────────────────────────────────────────────────
@@ -199,7 +201,17 @@
     return bubble;
   }
 
-  function scrollChat() { el.chatList.scrollTop = el.chatList.scrollHeight; }
+  // rAF-throttled: at 30–60 tok/s an unthrottled scrollHeight read would force a
+  // synchronous layout pass per token while the GPU is already busy generating.
+  let chatScrollPending = false;
+  function scrollChat() {
+    if (chatScrollPending) return;
+    chatScrollPending = true;
+    requestAnimationFrame(() => {
+      chatScrollPending = false;
+      el.chatList.scrollTop = el.chatList.scrollHeight;
+    });
+  }
 
   function updateSendEnabled() {
     const ok = !!el.chatInput.value.trim() && !state.chat.streaming && state.llm.ready;
@@ -223,8 +235,12 @@
 
   function onChatDelta(d) {
     if (!state.chat.streaming || !state.chat.bubble) return;
-    state.chat.streamText += (d && d.text) || '';
-    state.chat.bubble.textContent = state.chat.streamText;
+    const text = (d && d.text) || '';
+    if (!text) return;
+    state.chat.streamText += text;
+    // Append-only (O(1) per delta) — rewriting textContent with the whole
+    // accumulated reply is O(n) per token and stutters on long answers.
+    state.chat.bubble.appendChild(document.createTextNode(text));
     scrollChat();
   }
 

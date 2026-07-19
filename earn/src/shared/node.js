@@ -48,8 +48,10 @@ function buildJoinBody({ token, nodeId, publicKey, name } = {}) {
 }
 
 // Map the app's live state into the server's ping telemetry shape. Anything the
-// app can't read right now is sent as null / 0 rather than omitted.
-function buildTelemetry({ model, quant, device, vram, tokensPerSec, ready, activeJobs } = {}) {
+// app can't read right now is sent as null / 0 rather than omitted. `name` rides
+// along so renaming the worker propagates on the next ping (the server ignores
+// a null name rather than clobbering the stored one).
+function buildTelemetry({ model, quant, device, vram, tokensPerSec, ready, activeJobs, name } = {}) {
   return {
     capabilities: ready ? ['chat'] : [],
     activeJobs: Number(activeJobs) || 0,
@@ -60,6 +62,7 @@ function buildTelemetry({ model, quant, device, vram, tokensPerSec, ready, activ
     model: model || null,
     quant: quant || null,
     tps: Number(tokensPerSec) || 0,
+    name: name || null,
   };
 }
 

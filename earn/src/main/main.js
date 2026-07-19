@@ -19,11 +19,13 @@ const { MinerManager } = require('./minerManager');
 const { EngineManager } = require('./engineManager');
 const { LlmManager } = require('./llmManager');
 const { LlmEngineManager } = require('./llmEngineManager');
+const { postJson, downloadFile, streamChatCompletion, extractLlamaZip } = require('./io');
+const nodeStore = require('./nodeStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, LLM, NODE, endpointFor, difficultyForCard } = require('../shared/config');
 const nodeProto = require('../shared/node');
 const { computeGpuLayers, requiredVramMb, hasEnoughVram } = require('../shared/vram');
-const { buildChatBody, parseChatStream } = require('../shared/llmChat');
+const { buildChatBody } = require('../shared/llmChat');
 const { JobWorker } = require('./jobWorker');
 const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
 const { buildBalanceUrl, parseBalance, buildMdlBalanceUrl, parseMdlBalance } = require('../shared/balance');
@@ -43,7 +45,7 @@ let stats = null;
 let ticker = null;
 let reporter = null;
 let llm = null;                 // LlmManager instance while the local LLM is up
-let llmStatus = { running: false, ready: false, endpoint: null, webUrl: null, tokensPerSec: 0, model: LLM.model.name };
+let llmStatus = { ready: false, endpoint: null, webUrl: null, tokensPerSec: 0, model: LLM.model.name, error: null };
 
 function settingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -147,34 +149,6 @@ function statsView(snap) {
   };
 }
 
-// Stream a URL to a file, following redirects and reporting download progress.
-function downloadFile(url, dest, onProgress, redirects) {
-  redirects = redirects || 0;
-  return new Promise((resolve, reject) => {
-    if (redirects > 5) return reject(new Error('too many redirects'));
-    const lib = url.startsWith('https') ? https : http;
-    const req = lib.get(url, (res) => {
-      const code = res.statusCode || 0;
-      if (code >= 300 && code < 400 && res.headers.location) {
-        res.resume();
-        return resolve(downloadFile(new URL(res.headers.location, url).toString(), dest, onProgress, redirects + 1));
-      }
-      if (code !== 200) {
-        res.resume();
-        return reject(new Error('HTTP ' + code + ' for ' + url));
-      }
-      const total = parseInt(res.headers['content-length'] || '0', 10);
-      let received = 0;
-      const out = fs.createWriteStream(dest);
-      res.on('data', (c) => { received += c.length; if (onProgress) onProgress(progressPercent(received, total)); });
-      res.pipe(out);
-      out.on('finish', () => out.close(() => resolve(dest)));
-      out.on('error', reject);
-    });
-    req.on('error', reject);
-  });
-}
-
 // Extract the engine .exe from a downloaded zip to `dest`. Windows-only: uses
 // PowerShell's Expand-Archive, so there's no extra runtime dependency.
 function extractZip(zipPath, dest) {
@@ -194,23 +168,14 @@ function extractZip(zipPath, dest) {
   });
 }
 
-// Extract the llama.cpp release zip on Linux/macOS. `unzip -j` drops the whole
-// archive (junking directory structure) into the install dir so `llama-server`
-// lands next to its shared libraries (.so/.dylib); llama.cpp binaries resolve
-// libs from their own directory ($ORIGIN rpath), so co-locating them is what
-// makes the downloaded server run. Needs the `unzip` tool.
-function extractLlamaZipUnix(zipPath, dest) {
-  return new Promise((resolve, reject) => {
-    const dir = path.dirname(dest);
-    execFile('unzip', ['-o', '-j', zipPath, '-d', dir], { timeout: 120000 }, (err) => {
-      if (err) return reject(new Error('could not extract the llama-server archive with `unzip` (' + err.message + ')'));
-      if (!fs.existsSync(dest)) return reject(new Error('llama-server was not found in the downloaded archive'));
-      resolve(dest);
-    });
-  });
-}
-
 async function startMining(settings) {
+  // Already mining (e.g. START LLM flipped the mode to 'both' while the engine
+  // runs): keep the existing miner — reassigning it would orphan an unstoppable
+  // engine process and spawn a second one on the same GPU.
+  if (miner && miner.isRunning()) {
+    persistSettings(settings);
+    return;
+  }
   persistSettings(settings);
 
   // Real stats only: the accumulator starts at zero and is filled in from the
@@ -355,9 +320,20 @@ function detectVram() {
       { timeout: 5000 },
       (err, stdout) => {
         if (err) return resolve(null);
-        const parts = String(stdout).split(/\r?\n/)[0].split(',').map((x) => parseInt(x, 10));
-        if (parts.length < 2 || !Number.isFinite(parts[0]) || !Number.isFinite(parts[1])) return resolve(null);
-        resolve({ usedMb: parts[0], totalMb: parts[1] });
+        // Sum across every GPU line so a multi-GPU rig reports the rig's total
+        // (same as the CLI — the two shells must agree on free-VRAM decisions).
+        let usedMb = 0;
+        let totalMb = 0;
+        let any = false;
+        for (const row of String(stdout).split(/\r?\n/)) {
+          const parts = row.split(',').map((x) => parseInt(x, 10));
+          if (parts.length >= 2 && Number.isFinite(parts[0]) && Number.isFinite(parts[1])) {
+            usedMb += parts[0];
+            totalMb += parts[1];
+            any = true;
+          }
+        }
+        resolve(any ? { usedMb, totalMb } : null);
       });
   });
 }
@@ -499,7 +475,7 @@ async function resolveLlmBinary(dir) {
   if (bundled && fs.existsSync(bundled)) return bundled;
   // Windows ships the server in a zip we expand with PowerShell; Linux/macOS use
   // `unzip` and co-locate the binary with its shared libraries.
-  const extract = process.platform === 'win32' ? extractZip : extractLlamaZipUnix;
+  const extract = process.platform === 'win32' ? extractZip : (zip, dest) => extractLlamaZip(zip, dest);
   const engine = new LlmEngineManager({
     dir, platform: process.platform, serverUrl: LLM.serverUrl[process.platform],
     fs, download: downloadFile, extract, chmod: fs.chmodSync,
@@ -507,11 +483,20 @@ async function resolveLlmBinary(dir) {
   return engine.ensureServer();
 }
 
+// Reset the live-status side of llmStatus and broadcast — the single cleanup
+// used by both user-initiated stops and the process's own exit.
+function resetLlmStatus() {
+  llmStatus = Object.assign({}, llmStatus, { ready: false, tokensPerSec: 0 });
+  sendLlmStatus();
+}
+
 // Start the local LLM: ensure binary + model, size the GPU offload to leave
 // `reserveMb` free for mining, spawn llama-server, and surface its OpenAI
-// endpoint. Best-effort — failures are logged, never thrown to the UI.
+// endpoint. Best-effort — failures are logged, never thrown to the UI. Returns
+// whether the server was actually started (callers use it to reset the UI when
+// an LLM-only session ends up running nothing).
 async function startLlm(reserveMb) {
-  if (llm && llm.isRunning()) return;
+  if (llm && llm.isRunning()) return true;
 
   // Preflight the GPU before doing anything expensive: refuse to start if we can
   // measure VRAM and there isn't enough free to hold the model — spawning anyway
@@ -524,9 +509,9 @@ async function startLlm(reserveMb) {
     const line = 'not enough free VRAM for the local LLM: ' + freeMb + ' MB free, need ~'
       + requiredVramMb(LLM.model) + ' MB for ' + LLM.model.name + ' — skipping the LLM.';
     send('miner:log', { level: 'error', line });
-    llmStatus = Object.assign({}, llmStatus, { running: false, ready: false, error: 'Needs ~' + needGb + ' GB free VRAM' });
+    llmStatus = Object.assign({}, llmStatus, { ready: false, error: 'Needs ~' + needGb + ' GB free VRAM' });
     sendLlmStatus();
-    return;
+    return false;
   }
 
   const dir = path.join(app.getPath('userData'), 'llm');
@@ -539,7 +524,7 @@ async function startLlm(reserveMb) {
     modelPath = await modelEngine.ensureModel();
   } catch (e) {
     send('miner:log', { level: 'error', line: 'LLM setup failed: ' + e.message });
-    return;
+    return false;
   }
 
   // Size the GPU offload from the free VRAM measured above (total − used); full
@@ -557,104 +542,67 @@ async function startLlm(reserveMb) {
     syncWorker(); // serve cluster jobs once the model is up, if we're linked
   });
   llm.on('stats', ({ tokensPerSec }) => { llmStatus = Object.assign({}, llmStatus, { tokensPerSec }); sendLlmStatus(); });
-  llm.on('stopped', () => { llmStatus = Object.assign({}, llmStatus, { running: false, ready: false, tokensPerSec: 0 }); sendLlmStatus(); stopWorker(); });
+  llm.on('stopped', () => {
+    cancelChat('the local LLM stopped');
+    stopWorker();
+    resetLlmStatus();
+    // An LLM-only session ends when llama-server exits (crash/OOM) — tell the
+    // renderer, or the UI keeps showing a running session with nothing running.
+    if (!miner || !miner.isRunning()) send('miner:stopped');
+  });
 
   llm.start({ platform: process.platform, binaryPath, modelPath, nGpuLayers });
-  llmStatus = Object.assign({}, llmStatus, { running: true, ready: false, error: null, endpoint: llm.baseUrl + '/v1', webUrl: llm.baseUrl });
+  llmStatus = Object.assign({}, llmStatus, { ready: false, error: null, endpoint: llm.baseUrl + '/v1', webUrl: llm.baseUrl });
   send('miner:log', { level: 'info', line: 'local LLM starting on ' + llm.baseUrl + ' — ' + nGpuLayers + ' GPU layers' });
   sendLlmStatus();
+  return true;
 }
 
 function stopLlm() {
-  if (llm) { llm.stop(); llm = null; }
-  if (chatReq) { chatReq.destroy(); chatReq = null; }
+  cancelChat('the local LLM was stopped');
   stopWorker();
-  llmStatus = Object.assign({}, llmStatus, { running: false, ready: false, tokensPerSec: 0 });
-  sendLlmStatus();
+  if (llm) { llm.stop(); llm = null; }
+  resetLlmStatus();
 }
 
 // ── In-app chat: stream the local llama-server's OpenAI chat completions ──────
 // The renderer can't hit http://127.0.0.1 under its CSP, so main proxies the
-// request and streams token deltas back over IPC (delta → done / error). Only
-// one turn runs at a time; a new turn cancels the previous request.
-let chatReq = null;
+// request over the shared streamChatCompletion and relays batched deltas via
+// IPC (delta → done / error). Only one turn runs at a time. Cancellation always
+// settles the stream, so the renderer is guaranteed a done/error outcome — no
+// stuck "streaming" state when the LLM is stopped mid-reply.
+let chatStream = null;
+
+function cancelChat(reason) {
+  if (!chatStream) return;
+  const s = chatStream;
+  chatStream = null;
+  s.cancel(reason || 'cancelled');
+}
+
 function llmChat(messages) {
-  if (chatReq) { chatReq.destroy(); chatReq = null; }
+  cancelChat('superseded by a new message');
   const base = llmStatus.webUrl || ('http://' + LLM.host + ':' + LLM.port);
   if (!llm || !llmStatus.ready) { send('llm:chat:error', { message: 'the local LLM is not running' }); return; }
 
-  const body = JSON.stringify(buildChatBody(messages, { stream: true }));
-  let url;
-  try { url = new URL(base + '/v1/chat/completions'); } catch (e) { send('llm:chat:error', { message: e.message }); return; }
-
-  const req = http.request(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-  }, (res) => {
-    if (res.statusCode !== 200) {
-      res.resume();
-      send('llm:chat:error', { message: 'llama-server returned HTTP ' + res.statusCode });
-      chatReq = null;
-      return;
-    }
-    let buf = '';
-    let finished = false;
-    const finish = () => { if (!finished) { finished = true; chatReq = null; send('llm:chat:done', {}); } };
-    res.setEncoding('utf8');
-    res.on('data', (c) => {
-      buf += c;
-      const { deltas, done, rest } = parseChatStream(buf);
-      buf = rest;
-      for (const d of deltas) send('llm:chat:delta', { text: d });
-      if (done) { res.destroy(); finish(); }
-    });
-    res.on('end', finish);
-    res.on('error', () => finish());
-  });
-  req.on('error', (e) => { if (chatReq) { chatReq = null; send('llm:chat:error', { message: e.message }); } });
-  req.write(body);
-  req.end();
-  chatReq = req;
+  const s = streamChatCompletion(base, buildChatBody(messages, { stream: true }),
+    (text) => send('llm:chat:delta', { text }));
+  chatStream = s;
+  s.done.then(
+    () => { if (chatStream === s) chatStream = null; send('llm:chat:done', {}); },
+    (e) => { if (chatStream === s) chatStream = null; send('llm:chat:error', { message: e.message }); },
+  );
 }
-
-function cancelChat() { if (chatReq) { chatReq.destroy(); chatReq = null; } }
 
 // ── Connect with LLMJob (node identity + pairing/ping) ───────────────────────
-// The machine keeps an Ed25519 keypair in node.json; only the public key leaves
-// it. "Connect" self-registers with a pairing token (/api/nodes/join); once
-// linked it pings (/api/nodes/ping) with signed telemetry so the node shows
-// online in the user's cluster. All best-effort — failures never touch mining.
+// The machine's Ed25519 keypair lives in the shared nodeStore (one identity for
+// the GUI AND the CLI); only the public key leaves it. "Connect" self-registers
+// with a pairing token (/api/nodes/join); once linked it pings (/api/nodes/ping)
+// with signed telemetry so the node shows online in the user's cluster. All
+// best-effort — failures never touch mining.
 
 let nodePinger = null;
-
-function nodePath() { return path.join(app.getPath('userData'), 'node.json'); }
-
-function loadNode() {
-  try { return JSON.parse(fs.readFileSync(nodePath(), 'utf8')); } catch (e) { return null; }
-}
-
-function saveNode(node) {
-  try { fs.writeFileSync(nodePath(), JSON.stringify(node, null, 2), { mode: 0o600 }); } catch (e) { /* best effort */ }
-}
-
-// The persisted identity (keypair + id), created on first use. Never returns the
-// secret key to the renderer — see nodeStatus().
-function getOrCreateNode() {
-  let node = loadNode();
-  if (!node || !node.publicKey || !node.secretKey) {
-    const kp = nodeProto.generateKeypair();
-    node = {
-      nodeId: nodeProto.fingerprint(kp.publicKey),
-      publicKey: kp.publicKey,
-      secretKey: kp.secretKey,
-      name: null,
-      connected: false,
-      createdAt: new Date().toISOString(),
-    };
-    saveNode(node);
-  }
-  return node;
-}
+const { loadNode, saveNode, getOrCreateNode } = nodeStore;
 
 // Renderer-safe view (no secret key).
 function nodeStatus() {
@@ -669,51 +617,50 @@ function nodeStatus() {
 
 function sendNodeStatus() { send('node:status', nodeStatus()); }
 
-// Minimal JSON POST (no axios dependency); resolves { status, data } or rejects.
-function postJson(url, body, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    let u;
-    try { u = new URL(url); } catch (e) { return reject(e); }
-    const lib = u.protocol === 'http:' ? http : https;
-    const payload = JSON.stringify(body);
-    const req = lib.request(u, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
-      timeout: timeoutMs || 30000,
-    }, (res) => {
-      let raw = '';
-      res.setEncoding('utf8');
-      res.on('data', (c) => { raw += c; });
-      res.on('end', () => {
-        let data = null;
-        try { data = raw ? JSON.parse(raw) : null; } catch (e) { /* non-JSON */ }
-        resolve({ status: res.statusCode || 0, data });
-      });
-    });
-    req.on('error', reject);
-    req.on('timeout', () => { req.destroy(new Error('request timed out')); });
-    req.write(payload);
-    req.end();
-  });
+// The GPU name is static, so probe it once instead of spawning nvidia-smi /
+// PowerShell on every 5-minute ping for the life of the app.
+let gpuNameProbed = false;
+let cachedGpuName = null;
+async function deviceName() {
+  if (!gpuNameProbed) {
+    gpuNameProbed = true;
+    try { cachedGpuName = await detectGpu(); } catch (e) { cachedGpuName = null; }
+  }
+  return cachedGpuName;
 }
 
-// One signed ping with fresh telemetry. Silent on failure.
+// One signed ping with fresh telemetry. Silent on failure. Carries the node's
+// current name so a Settings rename propagates to the server (see syncNodeName).
 async function pingNode() {
   const node = loadNode();
   if (!node || !node.connected) return;
-  let vram = null, device = null;
+  let vram = null;
   try { vram = await detectVram(); } catch (e) { /* ignore */ }
-  try { device = await detectGpu(); } catch (e) { /* ignore */ }
+  const device = await deviceName();
   const telemetry = nodeProto.buildTelemetry({
     model: LLM.model.name, quant: LLM.model.quant, device, vram,
     tokensPerSec: llmStatus.tokensPerSec, ready: llmStatus.ready,
     activeJobs: jobWorker ? jobWorker.activeJobs() : 0,
+    name: node.name,
   });
   const body = nodeProto.buildPingBody({
     nodeId: node.nodeId, publicKey: node.publicKey, secretKey: node.secretKey,
     timestamp: Date.now(), telemetry,
   });
   try { await postJson(NODE.serverUrl + '/api/nodes/ping', body, 15000); } catch (e) { /* offline — try again next tick */ }
+}
+
+// Keep the linked node's name in step with the Settings worker name: the
+// connected card says "rename in Settings", so a changed worker name updates
+// node.json and is pushed on the next ping (the server picks up non-null names).
+function syncNodeName(settings) {
+  const node = loadNode();
+  const worker = settings && settings.worker && String(settings.worker).trim();
+  if (node && node.connected && worker && worker !== node.name) {
+    saveNode(Object.assign({}, node, { name: worker }));
+    sendNodeStatus();
+    pingNode();
+  }
 }
 
 function startNodePinger() {
@@ -770,37 +717,11 @@ function disconnectNode() {
 
 let jobWorker = null;
 
-// Stream a chat request to the local llama-server, forwarding token deltas.
+// Stream a chat request to the local llama-server, forwarding batched deltas.
 // Resolves when the model is done; rejects on any transport/HTTP error.
 function runLocalJob(chatBody, { onDelta }) {
-  return new Promise((resolve, reject) => {
-    const base = llmStatus.webUrl || ('http://' + LLM.host + ':' + LLM.port);
-    let url;
-    try { url = new URL(base + '/v1/chat/completions'); } catch (e) { return reject(e); }
-    const payload = JSON.stringify(chatBody);
-    const req = http.request(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
-    }, (res) => {
-      if (res.statusCode !== 200) { res.resume(); return reject(new Error('llama-server HTTP ' + res.statusCode)); }
-      let buf = '';
-      let settled = false;
-      const done = () => { if (!settled) { settled = true; resolve(); } };
-      res.setEncoding('utf8');
-      res.on('data', (c) => {
-        buf += c;
-        const parsed = parseChatStream(buf);
-        buf = parsed.rest;
-        for (const d of parsed.deltas) onDelta(d);
-        if (parsed.done) { res.destroy(); done(); }
-      });
-      res.on('end', done);
-      res.on('error', reject);
-    });
-    req.on('error', reject);
-    req.write(payload);
-    req.end();
-  });
+  const base = llmStatus.webUrl || ('http://' + LLM.host + ':' + LLM.port);
+  return streamChatCompletion(base, chatBody, onDelta).done;
 }
 
 // Start/stop the worker to match "linked AND model ready". Idempotent — called
@@ -830,16 +751,25 @@ function stopWorker() {
   if (jobWorker) { jobWorker.stop(); jobWorker = null; }
 }
 
-// Apply the compute mode: run the miner and/or the LLM per the plan.
-function applyPlan(settings) {
+// Apply the compute mode: run the miner and/or the LLM per the plan. When the
+// plan ends up running nothing (LLM-only mode with the VRAM gate refusing, or
+// no engine at all), tell the renderer — otherwise its optimistic "running"
+// state shows STOP for a session in which nothing runs.
+async function applyPlan(settings) {
   const plan = resolvePlan(settings.mode || DEFAULT_MODE, { canMine: isValidAddress(settings.address), canLlm: true });
   if (plan.miner) {
     startMining(settings).catch((e) => send('miner:log', { level: 'error', line: 'start failed: ' + e.message }));
   } else {
     persistSettings(settings); // startMining persists; do it here when the miner is off
   }
-  if (plan.llm) startLlm(plan.miner ? LLM.miningReserveMb : 0).catch(() => {});
-  else stopLlm();
+  syncNodeName(settings);
+  if (plan.llm) {
+    const started = await startLlm(plan.miner ? LLM.miningReserveMb : 0).catch(() => false);
+    if (!started && !plan.miner) send('miner:stopped');
+  } else {
+    stopLlm();
+    if (!plan.miner) send('miner:stopped');
+  }
 }
 
 ipcMain.handle('settings:get', () => Object.assign(
@@ -861,7 +791,6 @@ ipcMain.on('miner:stop', () => { stopMining(); stopLlm(); });
 ipcMain.on('open-external', (_e, url) => { shell.openExternal(url); });
 ipcMain.on('clipboard:write', (_e, text) => { clipboard.writeText(String(text == null ? '' : text)); });
 ipcMain.on('llm:chat', (_e, messages) => llmChat(messages));
-ipcMain.on('llm:chat:cancel', () => cancelChat());
 ipcMain.handle('node:status', () => nodeStatus());
 ipcMain.handle('node:connect', (_e, opts) => connectNode(opts || {}));
 ipcMain.handle('node:disconnect', () => disconnectNode());
@@ -883,6 +812,9 @@ ipcMain.on('app:update:install', () => {
 app.whenReady().then(() => {
   createWindow();
   if (app.isPackaged) setupUpdater();
+  // The identity used to live in Electron's userData dir; move it into the
+  // store shared with the CLI so one machine keeps one nodeId across shells.
+  nodeStore.migrateFrom(path.join(app.getPath('userData'), 'node.json'));
   // Resume pinging if this machine is already linked to an account.
   const node = loadNode();
   if (node && node.connected) startNodePinger();
@@ -893,5 +825,6 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   stopMining();
+  stopLlm(); // never orphan llama-server (it would hold VRAM + port 8080)
   if (process.platform !== 'darwin') app.quit();
 });

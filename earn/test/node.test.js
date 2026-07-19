@@ -54,14 +54,18 @@ describe('buildTelemetry', () => {
     })).toEqual({
       capabilities: ['chat'], activeJobs: 0, maxConcurrentJobs: 1,
       device: 'RTX 5090', vramTotal: 32000, vramUsed: 8000,
-      model: 'Gemma', quant: 'Q4_K_M', tps: 38.4,
+      model: 'Gemma', quant: 'Q4_K_M', tps: 38.4, name: null,
     });
+  });
+
+  test('carries the worker name for renames', () => {
+    expect(buildTelemetry({ name: 'rig01' }).name).toBe('rig01');
   });
 
   test('nulls for missing data and empty capabilities when not ready', () => {
     expect(buildTelemetry()).toEqual({
       capabilities: [], activeJobs: 0, maxConcurrentJobs: 1,
-      device: null, vramTotal: null, vramUsed: null, model: null, quant: null, tps: 0,
+      device: null, vramTotal: null, vramUsed: null, model: null, quant: null, tps: 0, name: null,
     });
     expect(buildTelemetry({ vram: { totalMb: NaN, usedMb: 5 }, ready: false }).vramTotal).toBeNull();
     expect(buildTelemetry({ vram: { totalMb: 5, usedMb: NaN } }).vramUsed).toBeNull();
