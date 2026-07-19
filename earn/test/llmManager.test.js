@@ -56,13 +56,18 @@ describe('LlmManager', () => {
     m.on('log', (l) => logs.push(l.line));
     m.start({ modelPath: '/m.gguf' });
 
-    child.stderr.emit('data', 'loading model\nmain: server is listening on http://127.0.0.1:8080\n');
+    // the pre-load listening line must NOT flip ready — the model is still loading
+    child.stderr.emit('data', 'main: HTTP server is listening, hostname: 127.0.0.1, port: 8080\nloading model\n');
+    expect(m.isReady()).toBe(false);
+    expect(ready).not.toHaveBeenCalled();
+
+    child.stderr.emit('data', 'main: server is listening on http://127.0.0.1:8080 - starting the main loop\n');
     expect(m.isReady()).toBe(true);
     expect(ready).toHaveBeenCalledTimes(1);
     expect(ready).toHaveBeenCalledWith({ baseUrl: 'http://127.0.0.1:8080' });
 
-    // a later listening line must not re-emit ready
-    child.stdout.emit('data', 'server is listening again\n');
+    // a later ready line must not re-emit ready
+    child.stdout.emit('data', 'srv update_slots: all slots are idle\n');
     expect(ready).toHaveBeenCalledTimes(1);
 
     child.stdout.emit('data', 'eval time = 10 ms / 200 tokens ... 162.02 tokens per second\n');

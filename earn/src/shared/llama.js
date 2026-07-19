@@ -35,10 +35,13 @@ function buildServerArgs(opts = {}) {
   return args;
 }
 
-// llama-server prints a listening line once the HTTP server is up and the model
-// is loaded. Used to flip the manager to "ready".
+// Flip the manager to "ready" only on lines llama-server prints AFTER the model
+// has loaded ("model loaded", "server is listening on … - starting the main
+// loop", "all slots are idle"). The earlier "main: HTTP server is listening"
+// line appears BEFORE the multi-GB model loads — while /v1/chat/completions
+// still returns 503 — so it must NOT count as ready.
 function isServerReady(line) {
-  return /server (is )?listening|HTTP server is listening|main: server is listening|all slots are idle/i.test(String(line == null ? '' : line));
+  return /model loaded|starting the main loop|all slots are idle/i.test(String(line == null ? '' : line));
 }
 
 // Best-effort tokens/sec from llama-server's timing lines

@@ -10,6 +10,15 @@ const { jobToChatBody } = require('../shared/jobs');
 // with no inbound networking. All IO is injected — `post` (signed HTTP), `runJob`
 // (drive the local model), `now`, and the scheduler — so it's unit-tested with
 // fakes, no network or GPU. Mirrors the manager pattern used elsewhere.
+//
+// Protocol notes (must match server/src/services/jobService.js):
+// - A heartbeat POST is what flips a job 'assigned'→'running' and renews its
+//   10-minute lock, so one is sent immediately and then every heartbeatMs while
+//   the job runs — without it, long jobs lose their lock and get re-executed.
+// - Every chunk/complete POST's HTTP status is checked: a rejected chunk fails
+//   the job instead of silently completing with missing content.
+// - The final chunk always carries `isFinal` plus generation metrics
+//   (totalTokens / tokensPerSecond / elapsedSeconds / model) for the job record.
 class JobWorker extends EventEmitter {
   constructor(opts = {}) {
     super();
@@ -20,11 +29,15 @@ class JobWorker extends EventEmitter {
     this.now = opts.now || Date.now;
     this.schedule = opts.schedule || ((fn, ms) => { const t = setTimeout(fn, ms); t.unref(); return t; });
     this.cancel = opts.cancel || clearTimeout;
-    this.idleMs = opts.idleMs || 3000;     // poll cadence
-    this.chunkChars = opts.chunkChars || 60; // flush a result chunk every N chars
+    this.idleMs = opts.idleMs || 5000;     // poll cadence right after activity
+    this.maxIdleMs = opts.maxIdleMs || 60000; // backoff ceiling for empty/error polls
+    this.heartbeatMs = opts.heartbeatMs || 30000; // per-job lock renewal cadence
+    this.chunkChars = opts.chunkChars || 60; // flush a result chunk every N chars…
+    this.flushMs = opts.flushMs || 1000;     // …or at least this often while text flows
     this.running = false;
     this.active = 0;
     this._timer = null;
+    this._delay = this.idleMs;
   }
 
   activeJobs() { return this.active; }
@@ -33,9 +46,12 @@ class JobWorker extends EventEmitter {
     return signedBody(Object.assign({}, this.identity, { timestamp: this.now() }), extra);
   }
 
+  _ok(res) { return !!(res && res.status >= 200 && res.status < 300); }
+
   start() {
     if (this.running) return;
     this.running = true;
+    this._delay = this.idleMs;
     this._tick();
   }
 
@@ -45,12 +61,20 @@ class JobWorker extends EventEmitter {
   }
 
   // One poll → run any assigned jobs → schedule the next poll. Never rejects; a
-  // failure is emitted and the loop keeps going.
+  // failure is emitted and the loop keeps going. Empty polls and errors back off
+  // exponentially up to maxIdleMs so an idle fleet (or a down server) isn't
+  // hammered; any assigned job snaps the cadence back to idleMs.
   _tick() {
     if (!this.running) return;
     this.pollOnce()
-      .catch((e) => this.emit('error', e))
-      .then(() => { if (this.running) this._timer = this.schedule(() => this._tick(), this.idleMs); });
+      .then((count) => {
+        this._delay = count > 0 ? this.idleMs : Math.min(this._delay * 2, this.maxIdleMs);
+      })
+      .catch((e) => {
+        this._delay = Math.min(this._delay * 2, this.maxIdleMs);
+        try { this.emit('error', e); } catch (e2) { /* listener-less 'error' must not kill the loop */ }
+      })
+      .then(() => { if (this.running) this._timer = this.schedule(() => this._tick(), this._delay); });
   }
 
   // Ask the server for work and process whatever it assigns. Returns the count.
@@ -67,31 +91,73 @@ class JobWorker extends EventEmitter {
   async processJob(job) {
     this.active++;
     this.emit('job', { id: job.id, active: this.active });
-    const chunksUrl = this.serverUrl + '/api/jobs/' + job.id + '/chunks';
+    const base = this.serverUrl + '/api/jobs/' + job.id;
+    const chatBody = jobToChatBody(job);
+
+    // Keep the server's job lock alive for the whole run: immediately (which
+    // also flips the job to 'running' so callers see streamed partials), then
+    // every heartbeatMs. Best-effort — a missed beat is caught by the next.
+    let hbTimer = null;
+    const beat = () => {
+      this.post(base + '/heartbeat', this._sign({})).catch(() => {});
+      hbTimer = this.schedule(beat, this.heartbeatMs);
+    };
+    beat();
+
     let idx = 0;
     let buf = '';
+    let chunkError = null;
     let chain = Promise.resolve();
-    const enqueueFlush = (isFinal) => {
-      if (!buf) return; // only send chunks that carry content
+    const startedAt = this.now();
+    let tokens = 0;
+    let lastFlushAt = startedAt;
+    const enqueueFlush = (isFinal, metrics) => {
+      if (!buf && !isFinal) return;
       const content = buf;
       const i = idx++;
       buf = '';
-      chain = chain.then(() => this.post(chunksUrl, this._sign({ chunkIndex: i, content, isFinal: !!isFinal })));
+      lastFlushAt = this.now();
+      const body = { chunkIndex: i, content, isFinal: !!isFinal };
+      if (metrics) body.metrics = metrics;
+      chain = chain.then(() => this.post(base + '/chunks', this._sign(body))).then((res) => {
+        if (!this._ok(res) && !chunkError) {
+          chunkError = new Error('chunk ' + i + ' rejected (HTTP ' + ((res && res.status) || 0) + ')');
+        }
+      });
     };
 
     try {
-      await this.runJob(jobToChatBody(job), {
-        onDelta: (text) => { buf += text; if (buf.length >= this.chunkChars) enqueueFlush(false); },
+      await this.runJob(chatBody, {
+        // `count` lets a batching stream report several tokens per callback.
+        onDelta: (text, count) => {
+          buf += text;
+          tokens += Number.isFinite(count) ? count : 1;
+          if (buf.length >= this.chunkChars || this.now() - lastFlushAt >= this.flushMs) enqueueFlush(false);
+        },
       });
-      enqueueFlush(true);
+      const elapsedSeconds = Math.max(0.001, (this.now() - startedAt) / 1000);
+      enqueueFlush(true, {
+        totalTokens: tokens,
+        tokensPerSecond: +(tokens / elapsedSeconds).toFixed(2),
+        elapsedSeconds: +elapsedSeconds.toFixed(3),
+        model: chatBody.model,
+      });
       await chain;
-      await this.post(this.serverUrl + '/api/jobs/' + job.id + '/complete', this._sign({}));
-      this.emit('done', { id: job.id });
+      if (chunkError) throw chunkError;
+      const done = await this.post(base + '/complete', this._sign({}));
+      if (!this._ok(done)) {
+        // The server refused the completion (lock lost, job re-queued/deleted);
+        // don't pretend success, and don't POST /fail — our lock is gone anyway.
+        this.emit('failed', { id: job.id, error: 'complete rejected (HTTP ' + ((done && done.status) || 0) + ')' });
+      } else {
+        this.emit('done', { id: job.id });
+      }
     } catch (e) {
       await chain.catch(() => {});
-      await this.post(this.serverUrl + '/api/jobs/' + job.id + '/fail', this._sign({ error: e.message }));
+      await this.post(base + '/fail', this._sign({ error: e.message })).catch(() => {});
       this.emit('failed', { id: job.id, error: e.message });
     } finally {
+      if (hbTimer) this.cancel(hbTimer);
       this.active--;
     }
   }

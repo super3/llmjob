@@ -51,9 +51,14 @@ describe('buildServerArgs', () => {
 });
 
 describe('isServerReady', () => {
-  test('matches the listening lines, rejects others', () => {
-    expect(isServerReady('main: server is listening on http://127.0.0.1:8080')).toBe(true);
-    expect(isServerReady('all slots are idle')).toBe(true);
+  test('matches only post-model-load lines', () => {
+    expect(isServerReady('main: server is listening on http://127.0.0.1:8080 - starting the main loop')).toBe(true);
+    expect(isServerReady('main: model loaded')).toBe(true);
+    expect(isServerReady('srv  update_slots: all slots are idle')).toBe(true);
+  });
+  test('rejects the pre-load listening line and loading noise', () => {
+    // printed BEFORE the model loads, while /v1/chat/completions still 503s
+    expect(isServerReady('main: HTTP server is listening, hostname: 127.0.0.1, port: 8080, http threads: 15')).toBe(false);
     expect(isServerReady('loading model from /m.gguf')).toBe(false);
     expect(isServerReady(null)).toBe(false);
   });
