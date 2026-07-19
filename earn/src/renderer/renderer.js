@@ -21,7 +21,7 @@
     hashrate: $('hashrate'), accepted: $('accepted'), uptime: $('uptime'), estday: $('estday'),
     line: $('mk-line'), area: $('mk-area'),
     deviceLabel: $('device-label'),
-    llmModelLabel: $('llm-model-label'), llmRowDot: $('llm-row-dot'), llmRowTps: $('llm-row-tps'),
+    mineDot: $('mine-dot'), llmHeroTps: $('llm-hero-tps'), llmHeroDot: $('llm-hero-dot'), llmHeroDetail: $('llm-hero-detail'),
     btnStart: $('btn-start'), btnStop: $('btn-stop'), engineStatus: $('engine-status'),
     // chat
     chatRunning: $('chat-running'), chatStopped: $('chat-stopped'), chatStoppedModel: $('chat-stopped-model'),
@@ -35,7 +35,7 @@
     connectHint: $('connect-hint'), connectForm: $('connect-form'), connectToken: $('connect-token'),
     connectError: $('connect-error'), connectLink: $('connect-link'), connectDashboard: $('connect-dashboard'),
     connectDone: $('connect-done'), connectedTitle: $('connected-title'), connectedName: $('connected-name'),
-    connectDisconnect: $('connect-disconnect'),
+    connectedAvatar: $('connected-avatar'), connectedRename: $('connected-rename'), connectDisconnect: $('connect-disconnect'),
     // settings
     modeSeg: $('mode-seg'), modeHint: $('mode-hint'),
     setWorker: $('set-worker'), setRegion: $('set-region'), setDifficulty: $('set-difficulty'),
@@ -49,7 +49,7 @@
     view: 'mine',        // mine | chat | api | settings | logs
     returnTab: 'mine',   // where settings/logs return to
     address: '', gpu: '', mode: 'mining',
-    llm: { running: false, ready: false, endpoint: null, webUrl: null, tps: 0, model: null },
+    llm: { running: false, ready: false, endpoint: null, webUrl: null, tps: 0, model: null, error: null },
     chat: { messages: [], streaming: false, streamText: '', bubble: null },
     node: { connected: false, nodeId: null, name: null },
   };
@@ -74,9 +74,9 @@
 
   // Prompt chips shown in the empty chat — the real model answers them.
   const SUGGESTIONS = [
-    { title: 'Draft release notes', prompt: 'Draft short release notes for the LLMJob Earn desktop app.' },
-    { title: 'Explain PPLNS payouts', prompt: 'Explain PPLNS mining payouts in plain English.' },
-    { title: 'Write a regex', prompt: 'Write a regex that validates a prl1p… payout address.' },
+    { title: 'What is LLMJob?', prompt: 'What is LLMJob?' },
+    { title: 'Help me write an email', prompt: 'Help me write a short email asking my landlord to fix the heater.' },
+    { title: 'Plan a weekend trip', prompt: 'Plan a cheap 2-day weekend trip near Portland.' },
   ];
 
   const MDL_NOTE = {
@@ -126,14 +126,16 @@
     return isValid(state.address) || state.mode !== 'mining';
   }
 
-  // ── Local LLM (status row + chat/api gating) ───────────────────────────────
-  function renderLlmRow() {
-    const m = state.llm.model || '—';
-    el.llmModelLabel.textContent = m;
+  // ── Local LLM (GPU Activity hero + chat/api gating) ────────────────────────
+  function renderLlmHero() {
+    const err = state.llm.error;
+    const ready = state.llm.ready;
+    el.llmHeroTps.textContent = ready ? Number(state.llm.tps || 0).toFixed(1) : '0.0';
+    el.llmHeroDot.className = 'dot2' + (err ? ' err' : ready ? ' on' : '');
+    el.llmHeroDetail.textContent = err || state.llm.model || 'gemma-4-E4B-it';
+    el.llmHeroDetail.classList.toggle('err', !!err);
     el.chatStoppedModel.textContent = state.llm.model || 'the local model';
-    el.apiModel.textContent = m;
-    el.llmRowDot.classList.toggle('on', state.llm.ready);
-    el.llmRowTps.textContent = state.llm.ready ? Number(state.llm.tps || 0).toFixed(1) : '0.0';
+    el.apiModel.textContent = state.llm.model || '—';
   }
 
   function renderChatGate() {
@@ -158,8 +160,9 @@
       webUrl: (s && s.webUrl) || null,
       tps: (s && s.tokensPerSec) || 0,
       model: (s && s.model) || state.llm.model,
+      error: (s && s.error) || null,
     };
-    renderLlmRow();
+    renderLlmHero();
     renderChatGate();
     renderApiGate();
   }
@@ -256,11 +259,15 @@
       name: (s && s.name) || null,
     };
     const on = state.node.connected;
-    const who = state.node.name || state.node.nodeId || '';
+    const who = state.node.name || state.node.nodeId || 'this rig';
     el.connectForm.hidden = on;
     el.connectDone.hidden = !on;
-    el.connectHint.textContent = on ? (who ? 'Linked · ' + who : 'Linked') : 'Not linked to an account';
-    if (on) el.connectedName.textContent = state.node.name || state.node.nodeId || 'this rig';
+    el.connectHint.textContent = on ? '' : 'Not linked to an account';
+    if (on) {
+      el.connectedAvatar.textContent = who.charAt(0).toUpperCase();
+      el.connectedTitle.textContent = state.node.name || 'Connected';
+      el.connectedName.textContent = who;
+    }
   }
 
   function showConnectError(msg) {
@@ -317,6 +324,7 @@
     el.addrStatic.hidden = !state.mining;
     el.btnStart.hidden = state.mining;
     el.btnStop.hidden = !state.mining;
+    el.mineDot.className = 'dot2' + (state.mining ? ' on' : '');
     if (state.mining) {
       el.addrStatic.textContent = state.address;
     } else {
@@ -517,6 +525,7 @@
     el.connectToken.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doConnect(); } });
     el.connectDisconnect.addEventListener('click', doDisconnect);
     el.connectDashboard.addEventListener('click', () => { if (api.openNodeDashboard) api.openNodeDashboard(); });
+    el.connectedRename.addEventListener('click', () => { state.view = 'settings'; renderView(); });
 
     document.querySelectorAll('[data-ext]').forEach((a) =>
       a.addEventListener('click', (e) => {

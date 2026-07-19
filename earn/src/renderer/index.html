@@ -35,13 +35,19 @@
     <div id="addr-static" class="field-box mono" hidden></div>
 
     <div class="field-label">
-      <span class="lbl">Total Hashrate</span>
+      <span class="lbl">GPU Activity</span>
       <span class="meta" id="device-label">GPU · auto-detect</span>
     </div>
     <div class="chart-card">
-      <div class="chart-val">
-        <span class="num" id="hashrate">0.0</span>
-        <span class="unit">TH/s</span>
+      <div class="hero2">
+        <div class="hero-col">
+          <div class="hero-num"><span class="num" id="hashrate">0.0</span><span class="unit">TH/s</span></div>
+          <div class="hero-sub"><span class="dot2" id="mine-dot"></span><span class="hero-label">Mining</span></div>
+        </div>
+        <div class="hero-col right">
+          <div class="hero-num"><span class="num" id="llm-hero-tps">0.0</span><span class="unit">tok/s</span></div>
+          <div class="hero-sub"><span class="dot2" id="llm-hero-dot"></span><span class="hero-label">LLM</span><span class="hero-detail mono" id="llm-hero-detail">—</span></div>
+        </div>
       </div>
       <svg viewBox="0 0 480 56" width="100%" height="60" preserveAspectRatio="none">
         <defs><linearGradient id="mkFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2563eb" stop-opacity="0.18"></stop><stop offset="1" stop-color="#2563eb" stop-opacity="0"></stop></linearGradient></defs>
@@ -53,18 +59,6 @@
         <div class="mk-stat"><div class="k">Uptime</div><div class="v" id="uptime">0m 00s</div></div>
         <div class="mk-stat"><div class="k">Est. earnings</div><div class="v accent"><span id="estday">$0.00</span><span class="day">/day</span></div></div>
       </div>
-    </div>
-
-    <div class="field-label">
-      <span class="lbl">Local LLM</span>
-      <span class="meta" id="llm-model-label">—</span>
-    </div>
-    <div class="llm-row">
-      <span class="llm-dot" id="llm-row-dot"></span>
-      <span class="llm-row-tok mono"><b id="llm-row-tps">0.0</b> tok/s</span>
-      <span class="llm-row-spacer"></span>
-      <button class="chip" id="llm-open-chat" type="button" data-tab="chat">Open Chat</button>
-      <button class="chip" id="llm-open-api" type="button" data-tab="api">API</button>
     </div>
 
     <button id="btn-start" class="start-btn" type="button" disabled>START</button>
@@ -104,24 +98,19 @@
         <span class="lbl">Endpoint</span>
         <span class="meta">OpenAI-compatible · no key needed</span>
       </div>
-      <div class="endpoint-row">
+      <div class="endpoint-row tight">
         <span class="llm-dot on"></span>
         <code id="api-endpoint-url" class="endpoint-url">http://127.0.0.1:8080/v1</code>
         <button id="api-copy" class="chip" type="button" title="Copy the API endpoint">Copy API</button>
         <button id="api-open" class="chip" type="button" title="Open the llama-server web UI">Open ↗</button>
       </div>
+      <p class="api-note">Works with any OpenAI SDK — point <b class="mono">base_url</b> at the endpoint.</p>
 
       <div class="field-label"><span class="lbl">Model</span></div>
       <div class="model-row">
         <span class="mono" id="api-model">—</span>
         <span class="meta" id="api-model-meta">~5 GB VRAM · 128K ctx</span>
       </div>
-
-      <div class="field-label"><span class="lbl">Try it</span></div>
-      <pre id="api-curl" class="curl-box">curl http://127.0.0.1:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"messages": [{"role": "user", "content": "Hello!"}]}'</pre>
-      <p class="settings-note">Works with any OpenAI SDK — point <b class="mono">base_url</b> at the endpoint.</p>
 
       <div class="field-label"><span class="lbl">Connect</span><span class="meta" id="connect-hint">Not linked to an account</span></div>
       <!-- Not connected: pairing-token flow -->
@@ -136,13 +125,12 @@
       </div>
       <!-- Connected: live-in-cluster card -->
       <div id="connect-done" class="connected-card" hidden>
-        <div class="connected-head">
-          <span class="llm-dot on"></span>
-          <span class="connected-title" id="connected-title">Connected</span>
-          <span class="connected-spacer"></span>
-          <button id="connect-disconnect" class="chip" type="button">Disconnect</button>
+        <span class="connected-avatar" id="connected-avatar">N</span>
+        <div class="connected-info">
+          <div class="connected-title" id="connected-title">Connected</div>
+          <div class="connected-sub">Live in your cluster as <span class="mono" id="connected-name">this rig</span> · <span class="link-inline" id="connected-rename" title="Set the worker name in Settings → Connection">rename in Settings</span></div>
         </div>
-        <p>This node is live in your cluster — reachable from your other devices, web chat, and your shared API keys as <b class="mono" id="connected-name">this rig</b>.</p>
+        <button id="connect-disconnect" class="chip" type="button">Disconnect</button>
       </div>
     </div>
     <div id="api-stopped" class="tab-empty" hidden>

@@ -520,10 +520,11 @@ async function startLlm(reserveMb) {
   const vram = await detectVram();
   const freeMb = vram ? vram.totalMb - vram.usedMb : null;
   if (hasEnoughVram(freeMb, LLM.model) === false) {
+    const needGb = Math.round(requiredVramMb(LLM.model) / 1024);
     const line = 'not enough free VRAM for the local LLM: ' + freeMb + ' MB free, need ~'
       + requiredVramMb(LLM.model) + ' MB for ' + LLM.model.name + ' — skipping the LLM.';
     send('miner:log', { level: 'error', line });
-    llmStatus = Object.assign({}, llmStatus, { running: false, ready: false, error: 'insufficient VRAM' });
+    llmStatus = Object.assign({}, llmStatus, { running: false, ready: false, error: 'Needs ~' + needGb + ' GB free VRAM' });
     sendLlmStatus();
     return;
   }
@@ -559,7 +560,7 @@ async function startLlm(reserveMb) {
   llm.on('stopped', () => { llmStatus = Object.assign({}, llmStatus, { running: false, ready: false, tokensPerSec: 0 }); sendLlmStatus(); stopWorker(); });
 
   llm.start({ platform: process.platform, binaryPath, modelPath, nGpuLayers });
-  llmStatus = Object.assign({}, llmStatus, { running: true, ready: false, endpoint: llm.baseUrl + '/v1', webUrl: llm.baseUrl });
+  llmStatus = Object.assign({}, llmStatus, { running: true, ready: false, error: null, endpoint: llm.baseUrl + '/v1', webUrl: llm.baseUrl });
   send('miner:log', { level: 'info', line: 'local LLM starting on ' + llm.baseUrl + ' — ' + nGpuLayers + ' GPU layers' });
   sendLlmStatus();
 }
