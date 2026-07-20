@@ -221,6 +221,21 @@
   .pcard .pc-th { font-family: "IBM Plex Mono", monospace; font-weight: 600; font-size: 15px; color: var(--accent); white-space: nowrap; }
   .percard-note { font-size: 12px; color: #a3a6aa; margin-top: 18px; }
 
+  /* hiveos flight sheet */
+  .hive-sec { max-width: 1080px; margin: 104px auto 0; padding: 0 28px; }
+  .hive-card { margin-top: 28px; border: 1px solid var(--line-soft); border-radius: 16px; background: #fff; overflow: hidden; }
+  .hive-row { display: grid; grid-template-columns: 190px 1fr; gap: 18px; padding: 15px 20px; border-bottom: 1px solid var(--line-soft); align-items: baseline; }
+  .hive-row:last-child { border-bottom: none; }
+  .hive-row .hk { font-size: 13px; font-weight: 700; color: #2a2e34; }
+  .hive-row .hv { font-size: 14.5px; line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; }
+  .hive-row .hv b { color: var(--ink-strong); font-weight: 600; }
+  .hive-row .hv .mono { font-size: 13px; color: #3d4148; }
+  .hive-note { font-size: 12.5px; color: var(--muted-3); margin-top: 14px; }
+  @media (max-width: 760px) {
+    .hive-sec { margin-top: 80px; }
+    .hive-row { grid-template-columns: 1fr; gap: 4px; }
+  }
+
   /* closing cta */
   .cta { max-width: 880px; margin: 104px auto 0; padding: 0 28px 110px; text-align: center; }
   .cta h2 { font-weight: 800; font-size: clamp(40px, 8vw, 60px); line-height: 1.0; letter-spacing: -.04em; }
@@ -285,6 +300,9 @@
         </a>
         <a role="menuitem" data-dl-os="linux" href="https://github.com/super3/llmjob/releases/download/v0.1.15/LLMJob-Earn-0.1.15.AppImage" target="_blank" rel="noopener">
           <svg class="os-ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c-2.2 0-3.5 1.8-3.5 4.2 0 1.2.1 2 .1 2.8 0 .9-.6 1.6-1.4 2.8-.8 1.1-1.7 2.4-1.7 4 0 .8.3 1.4.8 1.8-.3.4-.5.9-.5 1.4 0 1.5 1.6 2.8 3.6 3.1.7.6 1.6.9 2.5.9s1.8-.3 2.5-.9c2-.3 3.6-1.6 3.6-3.1 0-.5-.2-1-.5-1.4.5-.4.8-1 .8-1.8 0-1.6-.9-2.9-1.7-4-.8-1.2-1.4-1.9-1.4-2.8 0-.8.1-1.6.1-2.8C15.5 3.8 14.2 2 12 2zm-1.4 4.2c.4 0 .7.4.7 1s-.3 1-.7 1-.7-.4-.7-1 .3-1 .7-1zm2.8 0c.4 0 .7.4.7 1s-.3 1-.7 1-.7-.4-.7-1 .3-1 .7-1z"></path></svg>Linux (AppImage)
+        </a>
+        <a role="menuitem" href="#hiveos">
+          <svg class="os-ic" viewBox="0 0 24 24" fill="currentColor"><path d="M3 4h18v4.5H3zM3 9.75h18v4.5H3zM3 15.5h18V20H3zM5 5.5h2v1.5H5zM5 11.25h2v1.5H5zM5 17h2v1.5H5z"></path></svg>HiveOS (flight sheet)
         </a>
       </div>
     </div>
@@ -389,6 +407,22 @@
   </div>
 </section>
 
+<!-- HIVEOS -->
+<section class="wrap hive-sec" id="hiveos">
+  <div class="calc-head">
+    <h2>Running a HiveOS rig?</h2>
+    <p>Point a flight sheet at the custom miner and the whole rig is on the board in one apply — hashrate, shares, temps and fans in your HiveOS dashboard like any native miner.</p>
+  </div>
+  <div class="hive-card">
+    <div class="hive-row"><span class="hk">Miner</span><span class="hv">Custom → <b>llmjob-earn</b></span></div>
+    <div class="hive-row"><span class="hk">Installation URL</span><span class="hv mono">https://github.com/super3/llmjob/releases/latest/download/llmjob-earn-hiveos.tar.gz</span></div>
+    <div class="hive-row"><span class="hk">Wallet template</span><span class="hv">Your <span class="mono">prl1p…</span> address — or <span class="mono">prl1p…+mdl1p…</span> to merge-mine MDL</span></div>
+    <div class="hive-row"><span class="hk">Pool URL / Pass</span><span class="hv">Leave blank — the fastest region is picked automatically</span></div>
+    <div class="hive-row"><span class="hk">Extra config</span><span class="hv">Optional CLI flags, e.g. <span class="mono">--region eu1</span></span></div>
+  </div>
+  <p class="hive-note">Worker name comes from the rig's HiveOS name, and share difficulty auto-scales to the number of cards. Apply the flight sheet and the rig appears on the <a href="network.html" style="color:var(--accent);font-weight:600">network board</a>.</p>
+</section>
+
 <!-- CALCULATOR -->
 <section class="wrap calc-sec" id="calculator">
   <div class="calc-head">
@@ -458,6 +492,9 @@
         </a>
         <a role="menuitem" data-dl-os="linux" href="https://github.com/super3/llmjob/releases/download/v0.1.15/LLMJob-Earn-0.1.15.AppImage" target="_blank" rel="noopener">
           <svg class="os-ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c-2.2 0-3.5 1.8-3.5 4.2 0 1.2.1 2 .1 2.8 0 .9-.6 1.6-1.4 2.8-.8 1.1-1.7 2.4-1.7 4 0 .8.3 1.4.8 1.8-.3.4-.5.9-.5 1.4 0 1.5 1.6 2.8 3.6 3.1.7.6 1.6.9 2.5.9s1.8-.3 2.5-.9c2-.3 3.6-1.6 3.6-3.1 0-.5-.2-1-.5-1.4.5-.4.8-1 .8-1.8 0-1.6-.9-2.9-1.7-4-.8-1.2-1.4-1.9-1.4-2.8 0-.8.1-1.6.1-2.8C15.5 3.8 14.2 2 12 2zm-1.4 4.2c.4 0 .7.4.7 1s-.3 1-.7 1-.7-.4-.7-1 .3-1 .7-1zm2.8 0c.4 0 .7.4.7 1s-.3 1-.7 1-.7-.4-.7-1 .3-1 .7-1z"></path></svg>Linux (AppImage)
+        </a>
+        <a role="menuitem" href="#hiveos">
+          <svg class="os-ic" viewBox="0 0 24 24" fill="currentColor"><path d="M3 4h18v4.5H3zM3 9.75h18v4.5H3zM3 15.5h18V20H3zM5 5.5h2v1.5H5zM5 11.25h2v1.5H5zM5 17h2v1.5H5z"></path></svg>HiveOS (flight sheet)
         </a>
       </div>
     </div>
