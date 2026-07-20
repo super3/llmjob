@@ -64,6 +64,7 @@ class JobController {
         jobs: jobs.map(job => ({
           id: job.id,
           prompt: job.prompt,
+          messages: job.messages, // present for OpenAI-gateway jobs; undefined otherwise
           model: job.model,
           options: job.options,
           maxTokens: job.maxTokens,

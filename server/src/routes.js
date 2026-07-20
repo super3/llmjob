@@ -8,6 +8,7 @@ const minerController = require('./controllers/minerController');
 const apiKeyController = require('./controllers/apiKeyController');
 const logController = require('./controllers/logController');
 const JobController = require('./controllers/jobController');
+const OpenAiController = require('./controllers/openaiController');
 const JobService = require('./services/jobService');
 const NodeService = require('./services/nodeService');
 
@@ -80,7 +81,18 @@ const initJobRoutes = (db) => {
   router.post('/jobs/check-timeouts', (req, res) => jobController.checkTimeouts(req, res));
 };
 
+// OpenAI-compatible gateway. Mounted at the app root (not under /api) so callers
+// point any OpenAI SDK at `https://<host>/v1`. API-key auth; each request becomes
+// an inference job served by an online node. `opts` (poll cadence / timeout) is
+// injectable for tests.
+const initOpenAiRoutes = (app, opts) => {
+  const ctrl = new OpenAiController(opts || {});
+  app.post('/v1/chat/completions', apiKeyAuth, (req, res) => ctrl.chatCompletions(req, res));
+  return ctrl;
+};
+
 // Export router as default for backward compatibility with tests
 module.exports = router;
-// Also export initJobRoutes as a named export
+// Also export the initializers as named exports
 module.exports.initJobRoutes = initJobRoutes;
+module.exports.initOpenAiRoutes = initOpenAiRoutes;
