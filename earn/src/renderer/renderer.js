@@ -49,7 +49,7 @@
     mining: false,       // master process running (miner and/or LLM per mode)
     view: 'mine',        // mine | chat | api | settings | logs
     returnTab: 'mine',   // where settings/logs return to
-    address: '', gpu: '', mode: 'mining',
+    address: '', gpu: '', mode: 'auto',
     llm: { ready: false, endpoint: null, webUrl: null, tps: 0, model: null, error: null },
     chat: { messages: [], streaming: false, streamText: '', bubble: null },
     node: { connected: false, nodeId: null, name: null },
@@ -467,6 +467,23 @@
     start();
   }
 
+  // Keep the OS window sized to the content: a tab switch or a state change
+  // (mining start/stop, LLM coming up) changes the app's height, and without
+  // this the frame keeps its old size — leaving a gap under the footer or
+  // clipping a taller view. Inner scrollers (chat, logs) are bounded, so this
+  // fires on discrete layout changes, not per streamed token.
+  function watchWindowFit() {
+    if (!api.fitWindow || typeof ResizeObserver === 'undefined') return;
+    const appEl = document.querySelector('.app');
+    if (!appEl) return;
+    let t = null;
+    const ro = new ResizeObserver(() => {
+      if (t) clearTimeout(t);
+      t = setTimeout(() => api.fitWindow(), 80);
+    });
+    ro.observe(appEl);
+  }
+
   function wire() {
     el.addrInput.addEventListener('input', (e) => {
       state.address = e.target.value;
@@ -563,6 +580,7 @@
 
   async function init() {
     wire();
+    watchWindowFit();
     initSuggestions();
     if (api.getConfig) {
       const config = await api.getConfig();

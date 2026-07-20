@@ -575,6 +575,7 @@ async function startLlm(reserveMb) {
     send('miner:log', { level: 'info', line: 'local LLM ready — OpenAI endpoint ' + baseUrl + '/v1' });
     sendLlmStatus();
     syncWorker(); // serve cluster jobs once the model is up, if we're linked
+    warmUpLlm(baseUrl); // background generation so tok/s populates without a chat
   });
   llm.on('stats', ({ tokensPerSec }) => { llmStatus = Object.assign({}, llmStatus, { tokensPerSec }); sendLlmStatus(); });
   llm.on('stopped', () => {
@@ -591,6 +592,18 @@ async function startLlm(reserveMb) {
   send('miner:log', { level: 'info', line: 'local LLM starting on ' + llm.baseUrl + ' — ' + nGpuLayers + ' GPU layers' });
   sendLlmStatus();
   return true;
+}
+
+// Fire one tiny generation as soon as the model is ready, so the Mine tab's
+// tokens/sec figure populates on its own — the user shouldn't have to open Chat
+// to see the LLM is alive. Best-effort and discarded; a real request just
+// overwrites the warm-up's tok/s.
+function warmUpLlm(baseUrl) {
+  try {
+    const body = buildChatBody([{ role: 'user', content: 'Say hello.' }], { stream: true });
+    body.max_tokens = 24;
+    streamChatCompletion(baseUrl, body, () => {}).done.catch(() => {});
+  } catch (e) { /* best effort — never blocks startup */ }
 }
 
 function stopLlm() {
@@ -817,7 +830,9 @@ async function applyPlan(settings) {
 }
 
 ipcMain.handle('settings:get', () => Object.assign(
-  { region: DEFAULTS.region, worker: DEFAULTS.worker, difficulty: DEFAULTS.difficulty, address: '', mdlAddress: '', mode: DEFAULT_MODE },
+  // The desktop app defaults to 'auto' (mine + serve the LLM, balanced from free
+  // VRAM) — the headless CLI keeps the mining-only DEFAULT_MODE.
+  { region: DEFAULTS.region, worker: DEFAULTS.worker, difficulty: DEFAULTS.difficulty, address: '', mdlAddress: '', mode: 'auto' },
   loadSettings(),
 ));
 ipcMain.handle('llm:status', () => llmStatus);
@@ -833,6 +848,10 @@ ipcMain.handle('balance:getMdl', (_e, address) =>
 ipcMain.on('miner:start', (_e, settings) => applyPlan(settings || {}));
 ipcMain.on('miner:stop', () => { stopMining(); stopLlm(); });
 ipcMain.on('open-external', (_e, url) => { shell.openExternal(url); });
+// Re-fit the window to its content when the renderer's layout changes (tab
+// switch, mining start/stop, etc.), so the frame never leaves a gap under the
+// footer or clips a taller view.
+ipcMain.on('app:fit', () => { fitWindowToContent(); });
 ipcMain.on('clipboard:write', (_e, text) => { clipboard.writeText(String(text == null ? '' : text)); });
 ipcMain.on('llm:chat', (_e, messages) => llmChat(messages));
 ipcMain.handle('node:status', () => nodeStatus());
