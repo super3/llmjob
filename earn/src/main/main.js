@@ -758,7 +758,16 @@ function stopWorker() {
 async function applyPlan(settings) {
   const plan = resolvePlan(settings.mode || DEFAULT_MODE, { canMine: isValidAddress(settings.address), canLlm: true });
   if (plan.miner) {
-    startMining(settings).catch((e) => send('miner:log', { level: 'error', line: 'start failed: ' + e.message }));
+    // Start mining FIRST and let it come up before the LLM. Two reasons: mining
+    // begins earning immediately instead of waiting on the LLM's setup (which
+    // can be a multi-GB model download), and when co-running, the LLM's GPU-layer
+    // budgeter then sizes its offload to the VRAM mining has actually claimed —
+    // avoiding an out-of-memory race where the LLM grabs VRAM mining needs.
+    try {
+      await startMining(settings);
+    } catch (e) {
+      send('miner:log', { level: 'error', line: 'start failed: ' + e.message });
+    }
   } else {
     persistSettings(settings); // startMining persists; do it here when the miner is off
   }
