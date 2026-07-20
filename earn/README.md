@@ -79,8 +79,10 @@ The release ships a HiveOS custom-miner package wrapping the headless CLI
 
 - **Miner** → Custom · **Miner name** → `llmjob-earn`
 - **Installation URL** → `https://github.com/super3/llmjob/releases/latest/download/llmjob-earn-hiveos.tar.gz`
-- **Wallet** → your `prl1p…` address, or `prl1p…+mdl1p…` to merge-mine MDL
-- **Extra config arguments** → any extra CLI flags, e.g. `--region eu1` (optional)
+- **Wallet** → your `prl1p…` address only (HiveOS caps the wallet field at 90
+  characters, so the combined `prl1p…+mdl1p…` form doesn't fit)
+- **Extra config arguments** → `--mdl mdl1p…` to merge-mine MDL, plus any other
+  CLI flags, e.g. `--region eu1` (optional)
 
 The worker name comes from the rig's HiveOS name, and the dashboard gets live
 hashrate/shares via `h-stats.sh`, which reads the JSON the CLI writes with
