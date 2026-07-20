@@ -149,8 +149,9 @@ function statsView(snap) {
   };
 }
 
-// Extract the engine .exe from a downloaded zip to `dest`. Windows-only: uses
-// PowerShell's Expand-Archive, so there's no extra runtime dependency.
+// Extract a single engine .exe from a downloaded zip to `dest`. Windows-only:
+// uses PowerShell's Expand-Archive, so there's no extra runtime dependency. Used
+// for the miner engine, whose binary is self-contained.
 function extractZip(zipPath, dest) {
   return new Promise((resolve, reject) => {
     const tmp = dest + '.unzip';
@@ -163,6 +164,28 @@ function extractZip(zipPath, dest) {
       + "Remove-Item -LiteralPath '" + tmp + "' -Recurse -Force";
     execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], (err) => {
       if (err) return reject(err);
+      resolve(dest);
+    });
+  });
+}
+
+// Extract a llama.cpp Windows build zip and flatten EVERY file into dest's
+// directory, so llama-server.exe ends up beside all ~30 of its DLLs (a lone
+// .exe can't launch — Windows resolves sibling DLLs from the exe's folder). This
+// mirrors what `unzip -j` does for the Linux/macOS archives. llama.cpp's zip is
+// already flat; the recursive copy also handles a build that nests the binaries.
+function extractLlamaZipWin(zipPath, dest) {
+  return new Promise((resolve, reject) => {
+    const dir = path.dirname(dest);
+    const tmp = path.join(dir, '_llama_unzip');
+    const ps = "$ErrorActionPreference='Stop';"
+      + "if(Test-Path -LiteralPath '" + tmp + "'){Remove-Item -LiteralPath '" + tmp + "' -Recurse -Force};"
+      + "Expand-Archive -LiteralPath '" + zipPath + "' -DestinationPath '" + tmp + "' -Force;"
+      + "Get-ChildItem -Path '" + tmp + "' -Recurse -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination '" + dir + "' -Force };"
+      + "Remove-Item -LiteralPath '" + tmp + "' -Recurse -Force";
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { maxBuffer: 8 * 1024 * 1024 }, (err) => {
+      if (err) return reject(err);
+      if (!fs.existsSync(dest)) return reject(new Error('llama-server was not found in the downloaded archive'));
       resolve(dest);
     });
   });
@@ -473,9 +496,9 @@ async function resolveLlmBinary(dir) {
   const name = LLM.serverBin[process.platform] || LLM.serverBin.linux;
   const bundled = process.resourcesPath && path.join(process.resourcesPath, 'llm', name);
   if (bundled && fs.existsSync(bundled)) return bundled;
-  // Windows ships the server in a zip we expand with PowerShell; Linux/macOS use
-  // `unzip` and co-locate the binary with its shared libraries.
-  const extract = process.platform === 'win32' ? extractZip : (zip, dest) => extractLlamaZip(zip, dest);
+  // The server ships as a folder of DLLs + the .exe, so extraction must keep them
+  // together: Windows flattens the zip with PowerShell, Linux/macOS with `unzip -j`.
+  const extract = process.platform === 'win32' ? extractLlamaZipWin : (zip, dest) => extractLlamaZip(zip, dest);
   const engine = new LlmEngineManager({
     dir, platform: process.platform, serverUrl: LLM.serverUrl[process.platform],
     fs, download: downloadFile, extract, chmod: fs.chmodSync,
