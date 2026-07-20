@@ -9,15 +9,22 @@
 
 const { LLM } = require('./config');
 
-// Turn a server job ({ prompt, model, maxTokens, temperature }) into an
-// OpenAI-compatible /v1/chat/completions body for the local llama-server. The
-// single prompt becomes one user message; only set fields are included so the
-// server's own defaults apply otherwise.
+// Turn a server job into an OpenAI-compatible /v1/chat/completions body for the
+// local llama-server. A job submitted through the OpenAI gateway carries a full
+// `messages` array (multi-turn, system prompts preserved); older/simple jobs
+// carry a single `prompt` that becomes one user message. Only set fields are
+// included so the server's own defaults apply otherwise.
 function jobToChatBody(job) {
   const j = job || {};
+  const messages = Array.isArray(j.messages) && j.messages.length
+    ? j.messages.map((m) => {
+      const mm = m || {};
+      return { role: mm.role || 'user', content: String(mm.content == null ? '' : mm.content) };
+    })
+    : [{ role: 'user', content: String(j.prompt == null ? '' : j.prompt) }];
   const body = {
     model: j.model || LLM.model.name,
-    messages: [{ role: 'user', content: String(j.prompt == null ? '' : j.prompt) }],
+    messages,
     stream: true,
   };
   if (j.temperature != null && Number.isFinite(Number(j.temperature))) body.temperature = Number(j.temperature);

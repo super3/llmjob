@@ -4,7 +4,7 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const { createPool } = require('./db');
 const routes = require('./routes');
-const { initJobRoutes } = require('./routes');
+const { initJobRoutes, initOpenAiRoutes } = require('./routes');
 const NodeService = require('./services/nodeService');
 const JobService = require('./services/jobService');
 
@@ -32,6 +32,10 @@ async function connectDb() {
 
 // Routes
 app.use('/api', routes);
+
+// OpenAI-compatible gateway at the app root (POST /v1/chat/completions). Uses
+// req.app.locals.db per request, so it's safe to register before the DB connects.
+initOpenAiRoutes(app);
 
 // Health check endpoint
 app.get('/health', (req, res) => {

@@ -32,4 +32,32 @@ describe('jobToChatBody', () => {
   test('tolerates no job at all', () => {
     expect(jobToChatBody().messages[0].content).toBe('');
   });
+
+  test('uses a full messages array (multi-turn) over the prompt when present', () => {
+    const b = jobToChatBody({
+      messages: [
+        { role: 'system', content: 'Be terse.' },
+        { role: 'user', content: 'Hi' },
+        { role: 'assistant', content: 'Hey.' },
+        { role: 'user', content: 'Again?' },
+      ],
+      prompt: 'ignored when messages is set',
+    });
+    expect(b.messages).toEqual([
+      { role: 'system', content: 'Be terse.' },
+      { role: 'user', content: 'Hi' },
+      { role: 'assistant', content: 'Hey.' },
+      { role: 'user', content: 'Again?' },
+    ]);
+  });
+
+  test('defaults a message role to user and coerces null content; ignores an empty messages array', () => {
+    const b = jobToChatBody({ messages: [null, { content: null }] });
+    expect(b.messages).toEqual([
+      { role: 'user', content: '' },
+      { role: 'user', content: '' },
+    ]);
+    // Empty array falls back to the single-prompt path.
+    expect(jobToChatBody({ messages: [], prompt: 'fallback' }).messages).toEqual([{ role: 'user', content: 'fallback' }]);
+  });
 });
