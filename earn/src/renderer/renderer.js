@@ -34,6 +34,7 @@
     // connect
     connectHint: $('connect-hint'), connectForm: $('connect-form'), connectToken: $('connect-token'),
     connectError: $('connect-error'), connectLink: $('connect-link'), connectDashboard: $('connect-dashboard'),
+    connectPairToggle: $('connect-pair-toggle'), connectPair: $('connect-pair'),
     connectDone: $('connect-done'), connectedTitle: $('connected-title'), connectedName: $('connected-name'),
     connectedAvatar: $('connected-avatar'), connectedRename: $('connected-rename'), connectDisconnect: $('connect-disconnect'),
     // settings
@@ -75,8 +76,8 @@
   // Prompt chips shown in the empty chat — the real model answers them.
   const SUGGESTIONS = [
     { title: 'What is LLMJob?', prompt: 'What is LLMJob?' },
+    { title: 'What is PPLNS?', prompt: 'What is PPLNS?' },
     { title: 'Help me write an email', prompt: 'Help me write a short email asking my landlord to fix the heater.' },
-    { title: 'Plan a weekend trip', prompt: 'Plan a cheap 2-day weekend trip near Portland.' },
   ];
 
   const MDL_NOTE = {
@@ -301,10 +302,10 @@
     if (!token) { showConnectError('Enter your pairing token first.'); return; }
     if (!api.connectNode) return;
     el.connectLink.disabled = true;
-    el.connectLink.textContent = 'Connecting…';
+    el.connectLink.textContent = 'Linking…';
     const res = await api.connectNode({ token, name: el.setWorker.value.trim() || undefined });
     el.connectLink.disabled = false;
-    el.connectLink.textContent = 'Connect';
+    el.connectLink.textContent = 'Link';
     if (res && res.success) {
       el.connectToken.value = '';
       renderNode({ connected: true, nodeId: res.nodeId, name: res.name, user: res.user });
@@ -544,7 +545,13 @@
     el.connectLink.addEventListener('click', doConnect);
     el.connectToken.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doConnect(); } });
     el.connectDisconnect.addEventListener('click', doDisconnect);
+    // Primary "Connect with LLMJob" opens the dashboard sign-in; "Use a pairing
+    // token" reveals the manual token field (collapsed by default).
     el.connectDashboard.addEventListener('click', () => { if (api.openNodeDashboard) api.openNodeDashboard(); });
+    el.connectPairToggle.addEventListener('click', () => {
+      el.connectPair.hidden = !el.connectPair.hidden;
+      if (!el.connectPair.hidden) el.connectToken.focus();
+    });
     el.connectedRename.addEventListener('click', () => { state.view = 'settings'; renderView(); });
 
     document.querySelectorAll('[data-ext]').forEach((a) =>
