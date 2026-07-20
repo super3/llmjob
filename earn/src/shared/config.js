@@ -73,11 +73,14 @@ const LLM = {
   miningReserveMb: 2048,
   // llama-server binary per platform (bundled/downloaded like the miner engine).
   serverBin: { win32: 'llama-server.exe', linux: 'llama-server', darwin: 'llama-server' },
-  // Where to fetch the llama-server build if it isn't bundled. These are release
-  // zips; pin the CUDA/Vulkan asset that matches your target (or ship the binary
-  // via extraResources like the miner and skip the download entirely).
+  // Where to fetch the llama-server build if it isn't bundled. llama.cpp embeds
+  // the build number in the asset name, so a fixed `latest/download/<name>` 404s
+  // — these are pinned to a specific build. Windows uses the **Vulkan** archive:
+  // a single self-contained zip (no separate CUDA `cudart` package) that runs
+  // GPU-accelerated on NVIDIA/AMD/Intel. (Linux/macOS still point at the old
+  // fixed-name assets and need the same treatment — tracked in #88.)
   serverUrl: {
-    win32: 'https://github.com/ggml-org/llama.cpp/releases/latest/download/llama-bin-win-cuda-x64.zip',
+    win32: 'https://github.com/ggml-org/llama.cpp/releases/download/b9902/llama-b9902-bin-win-vulkan-x64.zip',
     linux: 'https://github.com/ggml-org/llama.cpp/releases/latest/download/llama-bin-ubuntu-x64.zip',
     darwin: 'https://github.com/ggml-org/llama.cpp/releases/latest/download/llama-bin-macos-arm64.zip',
   },
