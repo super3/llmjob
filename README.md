@@ -15,12 +15,10 @@ Build your own AI infrastructure with spare GPUs and devices. Get OpenAI-compati
 - 🔒 Keep sensitive data on your own infrastructure
 - 💸 Turn idle GPU time into crypto **today** with the LLMJob Earn desktop app
 
-This repository contains three packages:
+This repository contains two packages:
 
 - **Server** (repo root) — the Express API plus the static dashboard pages,
   backed by Postgres and deployed to Railway / GitHub Pages.
-- **Node client** ([`client/`](client)) — the `llmjob-node` worker that runs on
-  a machine with a GPU and processes jobs via Ollama.
 - **LLMJob Earn** ([`earn/`](earn)) — an Electron desktop app that turns idle GPU
   time into crypto by wrapping the AlphaPool miner (Pearl / PRL): paste a payout
   address, hit **Start**, and earn — no command line. It's the easy on-ramp that
@@ -29,20 +27,19 @@ This repository contains three packages:
 
 ## Add a node
 
-The quickest way to connect a machine is the one-line installer (a pure-shell
-agent — no Node or npm required). Grab your personalized command, which bakes in
-the server URL and join token, from the **Add Node** page in the dashboard:
+Link a machine to your account with **LLMJob Earn**. Grab your pairing token from
+the **Add Node** page in the dashboard, then either:
+
+- **Desktop app** — paste the token into the **API → Connect** tab and hit **Connect**.
+- **Headless CLI** — run the command-line client on a server with no desktop:
 
 ```bash
-curl -fsSL https://llmjob-production.up.railway.app/install.sh/<token> | bash
+llmjob-earn-cli connect --token <pairing-token>
 ```
 
-Prefer the Node.js client? See [`client/README.md`](client/README.md):
-
-```bash
-npm install -g llmjob-node
-llmjob-node start
-```
+Either way the machine generates its own key locally (only the public key is
+sent), joins your account, and pings so it shows online. See
+[`earn/README.md`](earn/README.md).
 
 ## Run LLMJob Earn
 

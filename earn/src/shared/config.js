@@ -60,6 +60,59 @@ const ECON = {
   PRL_USD: 0.47, // PRL price in USD (PRL/USDT — SafeTrade)
 };
 
+// Local LLM inference (llama.cpp `llama-server`), run alongside the miner. It's
+// an OpenAI-compatible HTTP server we spawn like the mining engine; the same
+// endpoint powers both the local API and (later) the job queue.
+const LLM = {
+  host: '127.0.0.1',
+  port: 8080,
+  ctxSize: 4096,
+  parallel: 1,
+  // Keep this much VRAM free for the miner when co-running (the budgeter caps
+  // GPU layers so the model fits in whatever's left).
+  miningReserveMb: 2048,
+  // llama-server binary per platform (bundled/downloaded like the miner engine).
+  serverBin: { win32: 'llama-server.exe', linux: 'llama-server', darwin: 'llama-server' },
+  // Where to fetch the llama-server build if it isn't bundled. These are release
+  // zips; pin the CUDA/Vulkan asset that matches your target (or ship the binary
+  // via extraResources like the miner and skip the download entirely).
+  serverUrl: {
+    win32: 'https://github.com/ggml-org/llama.cpp/releases/latest/download/llama-bin-win-cuda-x64.zip',
+    linux: 'https://github.com/ggml-org/llama.cpp/releases/latest/download/llama-bin-ubuntu-x64.zip',
+    darwin: 'https://github.com/ggml-org/llama.cpp/releases/latest/download/llama-bin-macos-arm64.zip',
+  },
+  // A small, capable model to start with: Google Gemma 4 E4B Instruct, Q4_K_M
+  // GGUF (~5 GB). "E4B" = ~4.5B *effective* params via Per-Layer Embeddings, so
+  // it keeps a low VRAM footprint (runs in ~5 GB at 4-bit) while adding 128K
+  // context, tool-calling, and 140+ languages — a good default that co-runs with
+  // mining without hogging the GPU. `layers` is the text model's transformer-layer
+  // count (for --n-gpu-layers; llama.cpp clamps a larger value to what's present)
+  // and `vramFullMb` the approximate VRAM for a full GPU offload at ctxSize
+  // (weights + KV cache). `minVramMb` is the hard floor of free VRAM we require
+  // before starting the model on the GPU — a little above the ~5.8 GB full-offload
+  // estimate so we never spawn llama-server right at the edge and OOM.
+  model: {
+    name: 'Gemma-4-E4B-it-Q4_K_M',
+    file: 'gemma-4-E4B-it-Q4_K_M.gguf',
+    url: 'https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf',
+    layers: 42,
+    vramFullMb: 5800,
+    minVramMb: 6144, // ~6 GB free required before we put it on the GPU
+    quant: 'Q4_K_M',
+  },
+};
+
+// Linking this machine to an LLMJob account ("Connect with LLMJob"). The node
+// self-registers with a pairing/join token (only its public key leaves the box),
+// then pings on an interval so it shows online in the user's cluster. Mirrors the
+// server's /api/nodes/join + /api/nodes/ping contract.
+const NODE = {
+  serverUrl: 'https://llmjob-production.up.railway.app',
+  // Where the user copies their pairing token (sign in, Dashboard → Add node).
+  dashboardUrl: 'https://llmjob-production.up.railway.app/dashboard.html',
+  pingIntervalMs: 5 * 60 * 1000,
+};
+
 // Recommended static difficulty per card class, from the pool's table. Order
 // matters: more specific patterns first.
 const DIFFICULTY_BY_CARD = [
@@ -97,6 +150,6 @@ function difficultyForCard(name) {
 }
 
 module.exports = {
-  REGIONS, DEFAULTS, MINER, NETWORK, ECON, DIFFICULTY_BY_CARD,
+  REGIONS, DEFAULTS, MINER, NETWORK, ECON, LLM, NODE, DIFFICULTY_BY_CARD,
   regionFor, endpointFor, regionLabel, difficultyForCard,
 };

@@ -1,6 +1,5 @@
 const express = require('express');
 const path = require('path');
-const fs = require('fs');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const { createPool } = require('./db');
@@ -46,32 +45,6 @@ const staticPath = process.env.RAILWAY_ENVIRONMENT
   ? '/app'
   : path.join(__dirname, '../..');
 
-// Serve the node installer with this host (and optionally the join token) baked
-// in, so the dashboard's "Add node" command is simply:
-//   curl -fsSL <base>/install.sh/<token> | bash
-function serveInstaller(req, res, token) {
-  const proto = req.get('x-forwarded-proto') || req.protocol;
-  const base = `${proto}://${req.get('host')}`;
-  fs.readFile(path.join(staticPath, 'client', 'install.sh'), 'utf8', (err, script) => {
-    if (err) {
-      return res.status(404).send('install.sh not found');
-    }
-    let out = script.replace('https://llmjob-production.up.railway.app', base);
-    if (token) {
-      out = out.replace('TOKEN=""', `TOKEN="${token}"`);
-    }
-    res.type('text/x-shellscript').send(out);
-  });
-}
-
-app.get('/install.sh', (req, res) => serveInstaller(req, res, null));
-app.get('/install.sh/:token', (req, res) => {
-  // Tokens are baked into the shell script, so only allow safe characters.
-  if (!/^[A-Za-z0-9_-]+$/.test(req.params.token)) {
-    return res.status(400).send('invalid token');
-  }
-  serveInstaller(req, res, req.params.token);
-});
 
 app.use(express.static(staticPath));
 

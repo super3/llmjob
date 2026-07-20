@@ -364,7 +364,8 @@ function App() {
     finally { setJoinLoading(false); }
   };
   const openAdd = () => { setCopiedCmd(null); setShowAdd(true); if (!joinToken) loadJoinToken(); };
-  const installCmd = joinToken ? `curl -fsSL ${API_BASE}/install.sh/${joinToken} | bash` : '';
+  const installCliCmd = 'curl -fsSL https://github.com/super3/llmjob/releases/latest/download/llmjob-earn-cli-linux -o /usr/local/bin/llmjob-earn-cli && chmod +x /usr/local/bin/llmjob-earn-cli';
+  const installCmd = joinToken ? `llmjob-earn-cli connect --token ${joinToken}` : '';
 
   // create-key modal
   const [showCreate, setShowCreate] = useState(false);
@@ -581,14 +582,19 @@ function App() {
               <h3>Add a node</h3>
               <button className="x" onClick={() => setShowAdd(false)}>×</button>
             </div>
-            <p>Run this on the machine you want to add (needs <span className="mono">curl</span> and <span className="mono">openssl</span>). It runs a small agent that connects the machine to your account:</p>
+            <p>Link a machine with the <b>LLMJob Earn</b> app: paste this pairing token into the desktop app's <span className="mono">API → Connect</span> tab. For a headless Linux box, install the CLI first (one line, no Node needed):</p>
+            <div className="cmd">
+              <code>{installCliCmd}</code>
+              <button onClick={() => copyCmd(1, installCliCmd)}>{copiedCmd === 1 ? "copied" : "copy"}</button>
+            </div>
+            <p className="add-step-p" style={{ marginLeft: 0 }}>…then connect it to your account:</p>
             <div className="cmd">
               <code>{joinLoading ? 'Generating your command…' : installCmd}</code>
               <button onClick={() => copyCmd(0, installCmd)} disabled={!joinToken}>{copiedCmd === 0 ? "copied" : "copy"}</button>
             </div>
             <p className="add-step-p" style={{ marginLeft: 0 }}>
-              The node generates its own key locally — only its public key is sent.
-              Keep this command private; anyone with it can add a node to your account.
+              The machine generates its own key locally — only its public key is sent.
+              Keep this token private; anyone with it can add a node to your account.
               {' '}<a role="button" tabIndex="0" onClick={rotateToken} style={{ cursor: 'pointer' }}>Regenerate token</a>
             </p>
             <p className="hint">Once it connects, the node shows up here automatically.</p>

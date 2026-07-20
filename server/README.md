@@ -98,26 +98,20 @@ npm run test:watch
 
 ### Node join flow
 
-The dashboard's "Add node" dialog shows a one-line command:
+A machine links to an account with a **join token** (created per user, rotatable
+from the dashboard). The dashboard's "Add node" dialog shows the token and the
+command to run it with the headless CLI:
 
 ```bash
-curl -fsSL <base>/install.sh/<join-token> | bash
+llmjob-earn-cli connect --token <join-token>
 ```
 
-The app bakes both its own host **and** the join token into `install.sh` when
-serving the per-account `/install.sh/<token>` URL, so the command takes no
-arguments. The token is validated (`[A-Za-z0-9_-]+`) before being injected.
-
-`install.sh` is a pure POSIX-shell script served by the app — no Node, no npm,
-just `curl` and `openssl` (OpenSSL 1.1.1+). It creates an Ed25519 key
-**locally** (only the public key is sent), calls `POST /api/nodes/join` with the
-token to claim the node, then pings on an interval so it shows as online. The
-join token authorizes the claim without an interactive login; rotate it from the
-dashboard to revoke outstanding agents.
-
-> The full `llmjob-node` client (in `client/`) still provides the heavier
-> worker/Ollama path and a `join` command; `install.sh` is the lightweight,
-> dependency-free path used by the dashboard.
+The client — the **LLMJob Earn** desktop app (`earn/`, API → Connect tab) or its
+headless CLI (`llmjob-earn-cli connect`) — creates an Ed25519 key **locally**
+(only the public key is sent), calls `POST /api/nodes/join` with the token to
+claim the node, then pings `POST /api/nodes/ping` on an interval so it shows as
+online. The join token authorizes the claim without an interactive login; rotate
+it from the dashboard to revoke outstanding agents.
 
 ### API key authentication
 

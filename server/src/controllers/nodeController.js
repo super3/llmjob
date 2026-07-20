@@ -1,5 +1,17 @@
 const NodeService = require('../services/nodeService');
 const NodeTokenService = require('../services/nodeTokenService');
+const { clerkClient } = require('@clerk/clerk-sdk-node');
+
+// Best-effort display handle (Clerk username) for a user id. Null if it can't be
+// resolved — the node still joins; the client falls back to the worker name.
+async function resolveUsername(userId) {
+  try {
+    const user = await clerkClient.users.getUser(userId);
+    return user.username || null;
+  } catch (e) {
+    return null;
+  }
+}
 
 async function claimNode(req, res) {
   try {
@@ -28,7 +40,7 @@ async function pingNode(req, res) {
   try {
     const { publicKey, nodeId } = req.verifiedNode;
     const { capabilities, activeJobs, maxConcurrentJobs,
-      device, vramTotal, vramUsed, model, quant, tps } = req.body;
+      device, vramTotal, vramUsed, model, quant, tps, name } = req.body;
 
     const nodeService = new NodeService(req.app.locals.db);
     const result = await nodeService.updateNodeStatus(nodeId, publicKey, {
@@ -40,7 +52,8 @@ async function pingNode(req, res) {
       vramUsed,
       model,
       quant,
-      tps
+      tps,
+      name
     });
 
     if (result.error) {
@@ -151,7 +164,8 @@ async function joinNode(req, res) {
       return res.status(400).json({ error: result.error });
     }
 
-    res.status(201).json({ success: true, nodeId: result.nodeId });
+    const user = await resolveUsername(userId);
+    res.status(201).json({ success: true, nodeId: result.nodeId, user });
   } catch (error) {
     console.error('Join node error:', error);
     res.status(500).json({ error: 'Failed to join node' });

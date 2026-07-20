@@ -309,11 +309,34 @@ describe('Dashboard API (keys, logs, usage)', () => {
         .send({ token, publicKey: 'pk-join-1', name: 'rig4090' });
       expect(res.status).toBe(201);
       expect(res.body.success).toBe(true);
+      expect(res.body.user).toBe('testuser'); // account handle resolved from Clerk
 
       const list = await request(app)
         .get('/api/nodes')
         .set('Authorization', `Bearer ${mockToken()}`);
       expect(list.body.nodes.some((n) => n.name === 'rig4090')).toBe(true);
+    });
+
+    it('returns a null handle when the user has no username', async () => {
+      const { clerkClient } = require('@clerk/clerk-sdk-node');
+      clerkClient.users.getUser.mockResolvedValueOnce({ id: 'test_user_123', username: null });
+      const { token } = await new NodeTokenService(db).getOrCreateToken('test_user_123');
+      const res = await request(app)
+        .post('/api/nodes/join')
+        .send({ token, publicKey: 'pk-join-nouser', name: 'rig-nouser' });
+      expect(res.status).toBe(201);
+      expect(res.body.user).toBeNull();
+    });
+
+    it('still joins (null handle) when the handle lookup fails', async () => {
+      const { clerkClient } = require('@clerk/clerk-sdk-node');
+      clerkClient.users.getUser.mockRejectedValueOnce(new Error('clerk down'));
+      const { token } = await new NodeTokenService(db).getOrCreateToken('test_user_123');
+      const res = await request(app)
+        .post('/api/nodes/join')
+        .send({ token, publicKey: 'pk-join-clerkerr', name: 'rig-err' });
+      expect(res.status).toBe(201);
+      expect(res.body.user).toBeNull();
     });
 
     it('defaults the node name when omitted', async () => {

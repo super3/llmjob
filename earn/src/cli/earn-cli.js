@@ -21,14 +21,21 @@ const selfUpdater = require('./selfUpdater');
 const { planUpdate } = require('../shared/selfUpdate');
 const { MinerManager } = require('../main/minerManager');
 const { EngineManager } = require('../main/engineManager');
+const { LlmManager } = require('../main/llmManager');
+const { LlmEngineManager } = require('../main/llmEngineManager');
+const { postJson, downloadFile, streamChatCompletion, extractLlamaZip } = require('../main/io');
+const nodeStore = require('../main/nodeStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
-const { NETWORK, MINER, REGIONS, DEFAULTS, endpointFor, regionLabel, difficultyForCard } = require('../shared/config');
-const { progressPercent } = require('../shared/engine');
+const { NETWORK, MINER, LLM, NODE, REGIONS, DEFAULTS, endpointFor, regionLabel, difficultyForCard } = require('../shared/config');
+const nodeProto = require('../shared/node');
 const { buildMinerReport } = require('../shared/minerReport');
 const { statsFilePayload } = require('../shared/statsFile');
-const { shortenAddress } = require('../shared/address');
+const { shortenAddress, isValidAddress } = require('../shared/address');
 const { pickFastestRegion } = require('../shared/region');
 const { pickGpu, countGpus } = require('../shared/gpu');
+const { computeGpuLayers, requiredVramMb, hasEnoughVram } = require('../shared/vram');
+const { JobWorker } = require('../main/jobWorker');
+const { resolvePlan } = require('../shared/llmMode');
 const format = require('../shared/format');
 const pkg = require('../../package.json');
 
@@ -123,36 +130,6 @@ function detectVram() {
   });
 }
 
-// Stream a URL to a file, following redirects and reporting download progress.
-// Mirrors the GUI's downloader (main.js) — kept here so the CLI has no runtime
-// dependency on Electron.
-function downloadFile(url, dest, onProgress, redirects) {
-  redirects = redirects || 0;
-  return new Promise((resolve, reject) => {
-    if (redirects > 5) return reject(new Error('too many redirects'));
-    const lib = url.startsWith('https') ? https : http;
-    const req = lib.get(url, (res) => {
-      const code = res.statusCode || 0;
-      if (code >= 300 && code < 400 && res.headers.location) {
-        res.resume();
-        return resolve(downloadFile(new URL(res.headers.location, url).toString(), dest, onProgress, redirects + 1));
-      }
-      if (code !== 200) {
-        res.resume();
-        return reject(new Error('HTTP ' + code + ' for ' + url));
-      }
-      const total = parseInt(res.headers['content-length'] || '0', 10);
-      let received = 0;
-      const out = fs.createWriteStream(dest);
-      res.on('data', (c) => { received += c.length; if (onProgress) onProgress(progressPercent(received, total)); });
-      res.pipe(out);
-      out.on('finish', () => out.close(() => resolve(dest)));
-      out.on('error', reject);
-    });
-    req.on('error', reject);
-  });
-}
-
 // Publish live status to the public network board — best-effort, never throws.
 function postMinerReport(payload) {
   return new Promise((resolve) => {
@@ -175,11 +152,15 @@ function postMinerReport(payload) {
   });
 }
 
-// Zip extraction is Windows-only (the pool ships Linux as a bare binary), so the
-// CLI never needs it — EngineManager only calls extract for a .zip URL.
+// The mining engine ships as a bare Linux binary (no zip), so its EngineManager
+// never needs an extractor — this stays a hard "unsupported" for that path.
 function extractUnsupported() {
   return Promise.reject(new Error('zip extraction is not supported on the Linux CLI'));
 }
+
+// llama-server zips extract via the shared io helper; point failures at the
+// CLI's escape hatch.
+const LLM_UNZIP_HINT = 'install unzip, or pass --llm-binary </path/to/llama-server>';
 
 async function resolveEngine(settings) {
   if (settings.binaryPath) {
@@ -272,8 +253,308 @@ async function maybeAutoUpdate(argv) {
   }
 }
 
+// Where the CLI caches the local-LLM binary + model (mirrors the engine dir).
+function llmDir(settings) {
+  return settings.llmDir || path.join(os.homedir(), '.local', 'share', 'llmjob-earn', 'llm');
+}
+
+// Resolve the llama-server binary for the local LLM. An explicit --llm-binary
+// wins; otherwise fall back to a previously installed one in the cache dir, and
+// only then download the llama.cpp release zip and extract it (via unzip). If
+// extraction isn't possible (no `unzip`), we surface a clear error pointing at
+// --llm-binary as the escape hatch.
+async function resolveLlmBinary(settings, dir) {
+  if (settings.llmBinary) {
+    if (!fs.existsSync(settings.llmBinary)) {
+      throw new Error('llama-server binary not found: ' + settings.llmBinary);
+    }
+    return settings.llmBinary;
+  }
+  const engine = new LlmEngineManager({
+    dir, platform: process.platform, serverUrl: LLM.serverUrl[process.platform],
+    fs, download: downloadFile, extract: (zip, dest) => extractLlamaZip(zip, dest, LLM_UNZIP_HINT), chmod: fs.chmodSync,
+  });
+  if (engine.isServerInstalled()) {
+    log('LLM server found: ' + engine.serverBinaryPath());
+    return engine.serverBinaryPath();
+  }
+  log('downloading llama-server from ' + LLM.serverUrl[process.platform] + ' …');
+  try {
+    return await engine.ensureServer((pct) => {
+      if (pct != null) process.stdout.write('\r  downloading… ' + pct + '%   ');
+    });
+  } catch (e) {
+    throw new Error(e.message + ' — pass --llm-binary </path/to/llama-server> instead');
+  } finally {
+    process.stdout.write('\n');
+  }
+}
+
+// Resolve the GGUF model path. An explicit --llm-model wins; otherwise reuse a
+// cached download or fetch the small default model (a plain file, so this works
+// on the CLI without zip extraction).
+async function resolveLlmModel(settings, dir) {
+  if (settings.llmModel) {
+    if (!fs.existsSync(settings.llmModel)) {
+      throw new Error('LLM model not found: ' + settings.llmModel);
+    }
+    return settings.llmModel;
+  }
+  const engine = new LlmEngineManager({ dir, platform: process.platform, fs, download: downloadFile });
+  if (engine.isModelInstalled()) {
+    log('LLM model found: ' + engine.modelPath());
+    return engine.modelPath();
+  }
+  log('downloading LLM model (' + LLM.model.name + ') …');
+  const modelPath = await engine.ensureModel((pct) => {
+    if (pct != null) process.stdout.write('\r  downloading model… ' + pct + '%   ');
+  });
+  process.stdout.write('\n');
+  return modelPath;
+}
+
+// ── Cluster serving state (worker + keep-alive pings while the LLM is up) ────
+// Serving and pinging must live in the SAME process: only /api/nodes/ping
+// updates last_seen server-side, so a worker that polls jobs without pinging
+// gets marked offline (15 min) and eventually deleted — silently starving it.
+let cliJobWorker = null;
+let servePinger = null;
+let serveLlmState = { ready: false, tps: 0 };
+
+// The GPU name is static — probe it once and reuse, instead of spawning
+// nvidia-smi twice per ping forever.
+let cliGpuProbed = false;
+let cliGpuName = null;
+async function cachedDeviceName() {
+  if (!cliGpuProbed) {
+    cliGpuProbed = true;
+    try { const det = await detectGpu(); cliGpuName = det && det.name ? det.name : null; } catch (e) { cliGpuName = null; }
+  }
+  return cliGpuName;
+}
+
+// One signed ping. `telemetry` may be sparse — fields left undefined keep the
+// server's stored values (its pick() only overwrites defined fields).
+async function pingServer(node, base, telemetry, verbose) {
+  const body = nodeProto.buildPingBody({
+    nodeId: node.nodeId, publicKey: node.publicKey, secretKey: node.secretKey,
+    timestamp: Date.now(), telemetry,
+  });
+  try {
+    const res = await postJson(base + '/api/nodes/ping', body, 15000);
+    if (verbose) {
+      log(res.status === 200 ? '✓ ping' : ('✗ ping failed (HTTP ' + res.status + ')'),
+        res.status === 200 ? process.stdout : process.stderr);
+    }
+  } catch (e) {
+    if (verbose) log('✗ ping error: ' + e.message, process.stderr);
+  }
+}
+
+// Sparse telemetry for the standalone `connect` loop: just device + VRAM (+ the
+// node's name so renames propagate). model/capabilities/tps are omitted —
+// sending nulls would wipe what a serving process last reported.
+async function sparseTelemetry(node) {
+  const t = {};
+  try {
+    const vram = await detectVram();
+    if (vram) { t.vramTotal = vram.totalMb; t.vramUsed = vram.usedMb; }
+  } catch (e) { /* ignore */ }
+  const device = await cachedDeviceName();
+  if (device) t.device = device;
+  if (node.name) t.name = node.name;
+  return t;
+}
+
+// Full telemetry for the serving run: live model/readiness/tok-s/active jobs.
+async function fullTelemetry(node) {
+  let vram = null;
+  try { vram = await detectVram(); } catch (e) { /* ignore */ }
+  return nodeProto.buildTelemetry({
+    model: LLM.model.name, quant: LLM.model.quant,
+    device: await cachedDeviceName(), vram,
+    tokensPerSec: serveLlmState.tps, ready: serveLlmState.ready,
+    activeJobs: cliJobWorker ? cliJobWorker.activeJobs() : 0,
+    name: node.name,
+  });
+}
+
+function stopServe() {
+  if (cliJobWorker) { cliJobWorker.stop(); cliJobWorker = null; }
+  if (servePinger) { clearInterval(servePinger); servePinger = null; }
+}
+
+// Start the local LLM (llama.cpp llama-server) alongside — or instead of — the
+// miner. Ensures the binary + model, sizes the GPU offload from free VRAM
+// (keeping `reserveMb` free for mining), spawns the server, and logs its
+// OpenAI-compatible endpoint. Returns the LlmManager, or null if setup failed
+// (best-effort — a failing LLM never takes the miner down).
+async function startLlm(settings, reserveMb) {
+  const dir = llmDir(settings);
+
+  // Preflight the GPU before doing anything expensive (downloading a ~5 GB
+  // model): refuse to start if we can measure VRAM and there isn't enough free
+  // to hold the model — spawning anyway risks an out-of-memory crash. When VRAM
+  // can't be read (non-NVIDIA / no driver) we proceed and let llama.cpp decide.
+  const vram = await detectVram();
+  const freeMb = vram ? vram.totalMb - vram.usedMb : null;
+  if (hasEnoughVram(freeMb, LLM.model) === false) {
+    log('not enough free VRAM for the local LLM: ' + freeMb + ' MB free, need ~'
+      + requiredVramMb(LLM.model) + ' MB for ' + LLM.model.name + ' — skipping the LLM.', process.stderr);
+    return null;
+  }
+
+  log('preparing local LLM (' + LLM.model.name + ') …');
+
+  let binaryPath, modelPath;
+  try {
+    binaryPath = await resolveLlmBinary(settings, dir);
+    modelPath = await resolveLlmModel(settings, dir);
+  } catch (e) {
+    log('LLM setup failed: ' + e.message, process.stderr);
+    return null;
+  }
+
+  // Size the GPU offload from the free VRAM measured above (total − used); full
+  // offload when VRAM can't be read (non-NVIDIA / no driver).
+  const nGpuLayers = vram
+    ? computeGpuLayers(vram.totalMb - vram.usedMb, LLM.model, reserveMb || 0)
+    : LLM.model.layers;
+
+  // If this box is linked to an account, serve cluster jobs once the model is up.
+  const nodeCfg = loadNodeConfig();
+  const canServe = !!(nodeCfg && nodeCfg.connected);
+
+  const llm = new LlmManager({ spawn });
+  llm.on('log', (l) => log(l.line, l.level === 'error' ? process.stderr : process.stdout));
+  llm.on('ready', ({ baseUrl }) => {
+    serveLlmState.ready = true;
+    log('🧠 local LLM ready — OpenAI endpoint ' + baseUrl + '/v1');
+    if (canServe && !cliJobWorker) {
+      const base = nodeCfg.serverUrl || NODE.serverUrl;
+      cliJobWorker = new JobWorker({
+        identity: { nodeId: nodeCfg.nodeId, publicKey: nodeCfg.publicKey, secretKey: nodeCfg.secretKey },
+        serverUrl: base,
+        post: (url, body) => postJson(url, body, 30000),
+        runJob: (chatBody, { onDelta }) => streamChatCompletion(llm.baseUrl, chatBody, onDelta).done,
+      });
+      // The 'error' listener is mandatory: a listener-less EventEmitter 'error'
+      // throws, and one transient poll failure would crash the whole CLI.
+      cliJobWorker.on('error', (e) => log('job poll failed: ' + e.message + ' (retrying)', process.stderr));
+      cliJobWorker.on('job', ({ id }) => log('cluster job ' + id + ' — running locally'));
+      cliJobWorker.on('failed', ({ id, error }) => log('cluster job ' + id + ' failed: ' + error, process.stderr));
+      cliJobWorker.start();
+      // Keep-alive pings ride along with serving so the node stays online on
+      // the dashboard (and never gets pruned) while it works.
+      const pingFull = async () => pingServer(nodeCfg, base, await fullTelemetry(nodeCfg), false);
+      pingFull();
+      servePinger = setInterval(pingFull, NODE.pingIntervalMs);
+      if (servePinger.unref) servePinger.unref();
+      log('serving cluster jobs for the LLMJob network');
+    }
+  });
+  llm.on('stats', ({ tokensPerSec }) => {
+    serveLlmState.tps = Number(tokensPerSec) || 0;
+    log('🧠 ' + Number(tokensPerSec).toFixed(1) + ' tok/s');
+  });
+  llm.on('error', (err) => log('LLM error: ' + err.message, process.stderr));
+
+  llm.start({ platform: process.platform, binaryPath, modelPath, nGpuLayers });
+  log('local LLM starting on ' + llm.baseUrl + ' — ' + nGpuLayers + ' GPU layers');
+  return llm;
+}
+
+// ── Connect with LLMJob (node pairing + ping) ────────────────────────────────
+// Replaces the old install.sh agent: link this headless box to an account with a
+// pairing token, then ping so it shows online. The identity lives in the shared
+// nodeStore — the SAME node.json the GUI uses, so one machine keeps one nodeId
+// across shells. Only the public key ever leaves the machine.
+
+const { loadNode: loadNodeConfig, saveNode: saveNodeConfig, getOrCreateNode: getOrCreateNodeConfig } = nodeStore;
+
+// Flag parse for the `connect` subcommand (--token/-t, --name/-n, --server).
+// Kept local to the shell, but strict like shared/cliArgs: unknown flags and
+// missing values are reported instead of silently ignored (a typo'd --token
+// must not fall through to a misleading "no pairing token yet").
+function parseConnectArgs(argv) {
+  const opts = { token: null, name: null, server: null, errors: [] };
+  for (let i = 0; i < argv.length; i++) {
+    const tok = String(argv[i]);
+    const eq = tok.indexOf('=');
+    const flag = eq !== -1 ? tok.slice(0, eq) : tok;
+    const inline = eq !== -1 ? tok.slice(eq + 1) : null;
+    const value = () => {
+      if (inline != null) return inline;
+      const next = i + 1 < argv.length ? String(argv[i + 1]) : null;
+      if (next == null || next.startsWith('-')) { opts.errors.push('missing value for ' + flag); return null; }
+      i++;
+      return next;
+    };
+    if (flag === '--token' || flag === '-t') opts.token = value();
+    else if (flag === '--name' || flag === '-n') opts.name = value();
+    else if (flag === '--server') opts.server = value();
+    else opts.errors.push('unknown option: ' + tok);
+  }
+  return opts;
+}
+
+async function runConnect(argv) {
+  const opts = parseConnectArgs(argv);
+  if (opts.errors.length) {
+    for (const e of opts.errors) log('error: ' + e, process.stderr);
+    log('usage: llmjob-earn-cli connect --token <pairing-token> [--name <rig>] [--server <url>]', process.stderr);
+    return 1;
+  }
+  const node = getOrCreateNodeConfig();
+  if (opts.server && node.serverUrl !== opts.server) { node.serverUrl = opts.server; saveNodeConfig(node); }
+  const base = node.serverUrl || NODE.serverUrl;
+  const name = (opts.name && opts.name.trim()) || node.name || defaultWorker();
+
+  log('LLMJob node ' + node.nodeId + ' → ' + base);
+
+  if (opts.token) {
+    const joinBody = nodeProto.buildJoinBody({
+      token: String(opts.token).trim(), nodeId: node.nodeId, publicKey: node.publicKey, name,
+    });
+    let res;
+    try {
+      res = await postJson(base + '/api/nodes/join', joinBody, 20000);
+    } catch (e) {
+      log('could not reach ' + base + ': ' + e.message, process.stderr);
+      return 1;
+    }
+    if (res.status !== 200 && res.status !== 201) {
+      log('join failed (HTTP ' + res.status + '): ' + ((res.data && res.data.error) || res.raw || ''), process.stderr);
+      return 1;
+    }
+    const user = (res.data && res.data.user) || null;
+    node.name = name; node.connected = true; node.user = user; saveNodeConfig(node);
+    log('✓ linked' + (user ? ' to ' + user + '’s account' : ' to your account') + ' as ' + name);
+  } else if (!node.connected) {
+    log('no pairing token yet — run:  llmjob-earn-cli connect --token <token>', process.stderr);
+    log('copy your token from the dashboard: ' + NODE.dashboardUrl, process.stderr);
+    return 1;
+  } else {
+    log('resuming pings for ' + (node.name || node.nodeId));
+  }
+
+  // Foreground keep-alive loop. Telemetry is SPARSE (device + VRAM + name only):
+  // this process isn't the one serving inference, so sending model/capabilities/
+  // tps here would overwrite what a serving run last reported with nulls.
+  const pingOnce = async () => pingServer(node, base, await sparseTelemetry(node), true);
+
+  await pingOnce();
+  const timer = setInterval(pingOnce, NODE.pingIntervalMs);
+  return new Promise((resolve) => {
+    const shutdown = () => { clearInterval(timer); log('stopped pinging'); resolve(0); };
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+  });
+}
+
 async function run(argv) {
   if (argv[0] === 'update') return runExplicitUpdate();
+  if (argv[0] === 'connect') return runConnect(argv.slice(1));
 
   const parsed = parseCliArgs(argv);
 
@@ -293,115 +574,166 @@ async function run(argv) {
     if (code != null) return code;
   }
 
-  // Auto-detect the knobs the user didn't pin. Best-effort: any failure falls
-  // back to the defaults already in `settings` and never blocks mining. Explicit
-  // --region / --gpu / --difficulty always win.
-  if (!settings.workerProvided) settings.worker = defaultWorker();
-  if (!settings.regionProvided) settings.region = await detectRegion();
-  if (!settings.gpuProvided) {
-    const det = await detectGpu();
-    if (det && det.name) {
-      settings.gpu = det.name;
-      settings.gpuCount = det.count > 1 ? det.count : 1;
-      // The pool's difficulty table is per card class; a rig submits its
-      // aggregate hashrate on one connection, so scale by the card count
-      // (8× RTX 3070 wants the ~560 TH/s tier, not the single-card one).
-      if (!settings.difficultyProvided) settings.difficulty = difficultyForCard(det.name) * settings.gpuCount;
-    }
-  }
-
-  const endpoint = endpointFor(settings.region);
+  // Decide which engines run from the compute mode (mirrors the GUI): mine,
+  // run a local LLM, or both. `canLlm` is always true on the CLI — the LLM's
+  // own setup (binary/model) fails soft below if it can't start.
+  const plan = resolvePlan(settings.mode, { canMine: isValidAddress(settings.address), canLlm: true });
 
   log('LLMJob Earn CLI v' + pkg.version);
-  log('address:    ' + shortenAddress(settings.address) + (settings.mdlAddress ? '  (+MDL ' + shortenAddress(settings.mdlAddress) + ')' : ''));
-  log('pool:       ' + endpoint + '  ' + regionLabel(settings.region) + (settings.regionProvided ? '' : '  (auto)'));
-  log('worker:     ' + settings.worker + (settings.workerProvided ? '' : '  (auto)'));
-  log('difficulty: ' + settings.difficulty + (settings.gpu ? '  (for ' + (settings.gpuCount > 1 ? settings.gpuCount + '× ' : '') + settings.gpu + (settings.gpuProvided ? '' : ', auto') + ')' : ''));
+  log('mode:       ' + settings.mode + (settings.modeProvided ? '' : '  (default)'));
 
-  let binaryPath;
-  try {
-    binaryPath = await resolveEngine(settings);
-  } catch (e) {
-    log('engine setup failed: ' + e.message, process.stderr);
-    log('manual download: ' + MINER.downloadUrl, process.stderr);
-    return 1;
+  let endpoint = null;
+  if (plan.miner) {
+    // Auto-detect the knobs the user didn't pin. Best-effort: any failure falls
+    // back to the defaults already in `settings` and never blocks mining. Explicit
+    // --region / --gpu / --difficulty always win.
+    if (!settings.workerProvided) settings.worker = defaultWorker();
+    if (!settings.regionProvided) settings.region = await detectRegion();
+    if (!settings.gpuProvided) {
+      const det = await detectGpu();
+      if (det && det.name) {
+        settings.gpu = det.name;
+        settings.gpuCount = det.count > 1 ? det.count : 1;
+        // The pool's difficulty table is per card class; a rig submits its
+        // aggregate hashrate on one connection, so scale by the card count
+        // (8× RTX 3070 wants the ~560 TH/s tier, not the single-card one).
+        if (!settings.difficultyProvided) settings.difficulty = difficultyForCard(det.name) * settings.gpuCount;
+      }
+    }
+
+    endpoint = endpointFor(settings.region);
+    log('address:    ' + shortenAddress(settings.address) + (settings.mdlAddress ? '  (+MDL ' + shortenAddress(settings.mdlAddress) + ')' : ''));
+    log('pool:       ' + endpoint + '  ' + regionLabel(settings.region) + (settings.regionProvided ? '' : '  (auto)'));
+    log('worker:     ' + settings.worker + (settings.workerProvided ? '' : '  (auto)'));
+    log('difficulty: ' + settings.difficulty + (settings.gpu ? '  (for ' + (settings.gpuCount > 1 ? settings.gpuCount + '× ' : '') + settings.gpu + (settings.gpuProvided ? '' : ', auto') + ')' : ''));
   }
 
   const stats = initStats(Date.now());
-  const miner = new MinerManager({ spawn });
+  let miner = null;
   let reporter = null;
+  let statsWriter = null;
+  let llm = null;
+  let binaryPath = null;
   let stopping = false;
 
-  miner.on('started', ({ bin, args }) => {
-    log('starting: ' + bin + ' ' + args.join(' '));
-  });
-  miner.on('log', (l) => log(l.line, l.level === 'error' ? process.stderr : process.stdout));
-  miner.on('event', (evt) => {
-    applyEvent(stats, evt);
-    if (evt.type === 'status') {
-      const snap = snapshot(stats, Date.now());
-      log('⛏  ' + format.formatHashrate(snap.total) + ' TH/s · '
-        + format.formatInt(snap.accepted) + ' accepted · ' + snap.rejected + ' rejected · up '
-        + format.formatUptime(snap.uptimeSec));
+  // ── Miner ────────────────────────────────────────────────────────────────
+  if (plan.miner) {
+    try {
+      binaryPath = await resolveEngine(settings);
+    } catch (e) {
+      log('engine setup failed: ' + e.message, process.stderr);
+      log('manual download: ' + MINER.downloadUrl, process.stderr);
+      return 1;
     }
-  });
-  miner.on('error', (err) => log('engine error: ' + err.message, process.stderr));
 
-  if (settings.report) {
-    // Sample live VRAM (nvidia-smi) and fold it into the snapshot before posting,
-    // just like the GUI — otherwise the board shows 0 GB for a CLI-driven rig.
-    const report = async () => {
-      const snap = snapshot(stats, Date.now());
-      const vram = await detectVram();
-      if (vram) { snap.vramUsedMb = vram.usedMb; snap.vramTotalMb = vram.totalMb; }
-      return postMinerReport(buildMinerReport(settings, snap));
-    };
-    report();
-    reporter = setInterval(report, NETWORK.reportIntervalMs);
-    if (reporter.unref) reporter.unref();
+    miner = new MinerManager({ spawn });
+    miner.on('started', ({ bin, args }) => {
+      log('starting: ' + bin + ' ' + args.join(' '));
+    });
+    miner.on('log', (l) => log(l.line, l.level === 'error' ? process.stderr : process.stdout));
+    miner.on('event', (evt) => {
+      applyEvent(stats, evt);
+      if (evt.type === 'status') {
+        const snap = snapshot(stats, Date.now());
+        log('⛏  ' + format.formatHashrate(snap.total) + ' TH/s · '
+          + format.formatInt(snap.accepted) + ' accepted · ' + snap.rejected + ' rejected · up '
+          + format.formatUptime(snap.uptimeSec));
+      }
+    });
+    miner.on('error', (err) => log('engine error: ' + err.message, process.stderr));
+
+    if (settings.report) {
+      // Sample live VRAM (nvidia-smi) and fold it into the snapshot before posting,
+      // just like the GUI — otherwise the board shows 0 GB for a CLI-driven rig.
+      const report = async () => {
+        const snap = snapshot(stats, Date.now());
+        const vram = await detectVram();
+        if (vram) { snap.vramUsedMb = vram.usedMb; snap.vramTotalMb = vram.totalMb; }
+        return postMinerReport(buildMinerReport(settings, snap));
+      };
+      report();
+      reporter = setInterval(report, NETWORK.reportIntervalMs);
+      if (reporter.unref) reporter.unref();
+    }
+
+    // Write live stats JSON for external consumers (HiveOS h-stats.sh reads this
+    // to feed the dashboard). Atomic write (tmp + rename) so readers never see a
+    // torn file; best-effort — a failed write must never affect mining.
+    if (settings.statsFile) {
+      const writeStats = () => {
+        try {
+          const payload = statsFilePayload(snapshot(stats, Date.now()), { version: pkg.version, nowMs: Date.now() });
+          const tmp = settings.statsFile + '.tmp';
+          fs.writeFileSync(tmp, JSON.stringify(payload));
+          fs.renameSync(tmp, settings.statsFile);
+        } catch (e) { /* best effort */ }
+      };
+      writeStats();
+      statsWriter = setInterval(writeStats, 10000);
+      if (statsWriter.unref) statsWriter.unref();
+    }
   }
 
-  // Write live stats JSON for external consumers (HiveOS h-stats.sh reads this
-  // to feed the dashboard). Atomic write (tmp + rename) so readers never see a
-  // torn file; best-effort — a failed write must never affect mining.
-  let statsWriter = null;
-  if (settings.statsFile) {
-    const writeStats = () => {
-      try {
-        const payload = statsFilePayload(snapshot(stats, Date.now()), { version: pkg.version, nowMs: Date.now() });
-        const tmp = settings.statsFile + '.tmp';
-        fs.writeFileSync(tmp, JSON.stringify(payload));
-        fs.renameSync(tmp, settings.statsFile);
-      } catch (e) { /* best effort */ }
-    };
-    writeStats();
-    statsWriter = setInterval(writeStats, 10000);
-    if (statsWriter.unref) statsWriter.unref();
+  // ── Local LLM ──────────────────────────────────────────────────────────────
+  // Keep a mining reserve free only when co-running with the miner.
+  if (plan.llm) {
+    llm = await startLlm(settings, plan.miner ? LLM.miningReserveMb : 0);
   }
 
-  const shutdown = () => {
-    if (stopping) return;
-    stopping = true;
-    log('shutting down…');
-    if (reporter) clearInterval(reporter);
-    if (statsWriter) clearInterval(statsWriter);
-    miner.stop();
-  };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  // Nothing to run (e.g. the LLM failed to set up and there's no miner): exit
+  // with an error rather than hanging on an idle process.
+  if (!miner && !llm) {
+    log('nothing to run — no miner and the LLM did not start', process.stderr);
+    return 1;
+  }
 
   return new Promise((resolve) => {
-    miner.on('stopped', (code) => {
+    let settled = false;
+    const finish = (code) => { if (!settled) { settled = true; resolve(code); } };
+
+    const shutdown = () => {
+      if (stopping) return;
+      stopping = true;
+      log('shutting down…');
       if (reporter) clearInterval(reporter);
       if (statsWriter) clearInterval(statsWriter);
-      log('engine exited (code ' + code + ')');
-      resolve(stopping ? 0 : (code || 0));
-    });
-    try {
-      miner.start(Object.assign({}, settings, { platform: process.platform, binaryPath }));
-    } catch (e) {
-      log('failed to launch engine: ' + e.message, process.stderr);
-      resolve(1);
+      stopServe();
+      if (llm) llm.stop();
+      if (miner) miner.stop();
+      else finish(0); // LLM-only: no miner 'stopped' will resolve us
+    };
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+
+    // llama-server dying must never be a silent clean exit: without this
+    // listener an LLM-only run drains the event loop and exits 0, so a systemd
+    // Restart=on-failure supervisor never restarts the node.
+    if (llm) {
+      llm.on('stopped', (code) => {
+        serveLlmState = { ready: false, tps: 0 };
+        stopServe();
+        if (stopping) return;
+        log('local LLM exited (code ' + code + ')', process.stderr);
+        if (!miner) finish(code || 1);
+      });
+    }
+
+    if (miner) {
+      miner.on('stopped', (code) => {
+        if (reporter) clearInterval(reporter);
+        if (statsWriter) clearInterval(statsWriter);
+        stopServe();
+        if (llm) llm.stop();
+        log('engine exited (code ' + code + ')');
+        finish(stopping ? 0 : (code || 0));
+      });
+      try {
+        miner.start(Object.assign({}, settings, { platform: process.platform, binaryPath }));
+      } catch (e) {
+        log('failed to launch engine: ' + e.message, process.stderr);
+        if (llm) llm.stop();
+        finish(1);
+      }
     }
   });
 }
