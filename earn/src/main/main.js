@@ -36,6 +36,7 @@ const { describeLaunchError } = require('../shared/engineError');
 const { pickGpu, parseGpuStats } = require('../shared/gpu');
 const { pickFastestRegion } = require('../shared/region');
 const { buildMinerReports } = require('../shared/minerReport');
+const { runtimeCopyPlan } = require('../shared/llmRuntime');
 const earnings = require('../shared/earnings');
 const format = require('../shared/format');
 
@@ -648,6 +649,26 @@ async function startLlm(reserveMb) {
   } catch (e) {
     send('miner:log', { level: 'error', line: 'LLM setup failed: ' + e.message });
     return false;
+  }
+
+  // Make sure the VC++ runtime DLLs sit next to llama-server.exe. llama.cpp's
+  // zips don't include them; on a machine without the redistributable — or one
+  // where it's only reachable via the *user* PATH, which the app relaunched by
+  // the elevated updater doesn't inherit — llama-server dies instantly with
+  // STATUS_DLL_NOT_FOUND before it ever logs a line. The installer bundles the
+  // three DLLs (build.extraResources → <resources>/llm-runtime); co-locating
+  // them beats any PATH because the exe's own dir is searched first.
+  try {
+    const plan = runtimeCopyPlan({
+      platform: process.platform, binDir: path.dirname(binaryPath),
+      resourcesPath: process.resourcesPath, existsFn: fs.existsSync, joinFn: path.join,
+    });
+    plan.forEach((c) => {
+      fs.copyFileSync(c.from, c.to);
+      send('miner:log', { level: 'info', line: 'installed LLM runtime DLL: ' + path.basename(c.to) });
+    });
+  } catch (e) {
+    send('miner:log', { level: 'error', line: 'could not install the LLM runtime DLLs: ' + e.message });
   }
 
   // Size the GPU offload from the free VRAM measured above (total − used); full
