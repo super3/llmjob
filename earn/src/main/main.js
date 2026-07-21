@@ -626,7 +626,7 @@ async function startLlm(reserveMb) {
     : LLM.model.layers;
 
   let becameReady = false;
-  llm = new LlmManager({ spawn });
+  llm = new LlmManager({ spawn, startAttempts: LLM.startAttempts, retryDelayMs: LLM.startRetryMs });
   llm.on('log', (l) => send('miner:log', l));
   llm.on('ready', ({ baseUrl }) => {
     becameReady = true;
