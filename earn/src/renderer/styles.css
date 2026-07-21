@@ -31,9 +31,13 @@ body {
 .app { padding: 30px 30px 26px; }
 /* Keep every view the same height as the tallest view so the footer
    (View Logs / Need Help) stays in one place when switching tabs. */
-#view-mine, #view-chat, #view-api, #view-settings, #view-logs { min-height: 425px; }
+#view-mine, #view-api, #view-settings, #view-logs { min-height: 425px; }
 /* Chat and logs fill the height so their scroller sits above the footer. */
 #view-chat, #view-api, #view-logs { display: flex; flex-direction: column; }
+/* Chat and logs have unbounded content (a growing conversation / log stream).
+   Give them a fixed height so their inner list scrolls internally instead of
+   growing the whole window (which fits its content). */
+#view-chat, #view-logs { height: 470px; }
 
 /* header: tab bar (Mine/Chat/API) + settings gear */
 .app-head { display: flex; align-items: stretch; gap: 22px; margin-bottom: 22px; border-bottom: 1px solid #eceae2; }
