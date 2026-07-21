@@ -799,6 +799,30 @@ function stopWorker() {
   if (jobWorker) { jobWorker.stop(); jobWorker = null; }
 }
 
+// Resolve once the running miner is actually up: its first parsed event (pool
+// connected / hashrate) means CUDA is initialized and VRAM claimed. Also settles
+// on a miner failure (exit/error) so a broken miner never blocks the LLM, and on
+// a hard cap so a slow-to-connect miner doesn't hold it forever.
+function waitForMinerUp(capMs) {
+  return new Promise((resolve) => {
+    if (!miner) return resolve();
+    let done = false;
+    const settle = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      miner.removeListener('event', settle);
+      miner.removeListener('stopped', settle);
+      miner.removeListener('error', settle);
+      resolve();
+    };
+    const timer = setTimeout(settle, capMs || 20000);
+    miner.once('event', settle);
+    miner.once('stopped', settle);
+    miner.once('error', settle);
+  });
+}
+
 // Apply the compute mode: run the miner and/or the LLM per the plan. When the
 // plan ends up running nothing (LLM-only mode with the VRAM gate refusing, or
 // no engine at all), tell the renderer — otherwise its optimistic "running"
@@ -806,16 +830,20 @@ function stopWorker() {
 async function applyPlan(settings) {
   const plan = resolvePlan(settings.mode || DEFAULT_MODE, { canMine: isValidAddress(settings.address), canLlm: true });
   if (plan.miner) {
-    // Start mining FIRST and let it come up before the LLM. Two reasons: mining
-    // begins earning immediately instead of waiting on the LLM's setup (which
-    // can be a multi-GB model download), and when co-running, the LLM's GPU-layer
-    // budgeter then sizes its offload to the VRAM mining has actually claimed —
-    // avoiding an out-of-memory race where the LLM grabs VRAM mining needs.
+    // Start mining FIRST, then — when co-running — actually wait for the miner to
+    // come up before starting the LLM. Spawning the process isn't enough: the LLM
+    // loads its model and warms up in a few seconds, so without this wait it goes
+    // live before the miner has even connected (it *looks* like the LLM started
+    // first), and the LLM's GPU-layer budgeter reads free VRAM before mining has
+    // claimed its share. The miner's first parsed event means CUDA is initialized
+    // and VRAM is allocated; we wait for that (or a failure, or a cap) so mining
+    // is genuinely up and the LLM sizes its offload to what's left.
     try {
       await startMining(settings);
     } catch (e) {
       send('miner:log', { level: 'error', line: 'start failed: ' + e.message });
     }
+    if (plan.llm && miner && miner.isRunning()) await waitForMinerUp();
   } else {
     persistSettings(settings); // startMining persists; do it here when the miner is off
   }
