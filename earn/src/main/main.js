@@ -799,10 +799,11 @@ function stopWorker() {
   if (jobWorker) { jobWorker.stop(); jobWorker = null; }
 }
 
-// Resolve once the running miner is actually up: its first parsed event (pool
-// connected / hashrate) means CUDA is initialized and VRAM claimed. Also settles
-// on a miner failure (exit/error) so a broken miner never blocks the LLM, and on
-// a hard cap so a slow-to-connect miner doesn't hold it forever.
+// Resolve once the running miner is actually mining — i.e. it has reported a
+// non-zero hashrate, which proves the GPU is doing real work (not just connected
+// to the pool). Also settles on a miner failure (exit/error) so a broken miner
+// never blocks the LLM, and on a hard cap so a miner that connects but never
+// produces a share doesn't hold it forever.
 function waitForMinerUp(capMs) {
   return new Promise((resolve) => {
     if (!miner) return resolve();
@@ -811,13 +812,14 @@ function waitForMinerUp(capMs) {
       if (done) return;
       done = true;
       clearTimeout(timer);
-      miner.removeListener('event', settle);
+      miner.removeListener('event', onEvent);
       miner.removeListener('stopped', settle);
       miner.removeListener('error', settle);
       resolve();
     };
-    const timer = setTimeout(settle, capMs || 20000);
-    miner.once('event', settle);
+    const onEvent = (e) => { if (e && e.type === 'status' && Number(e.hashrate) > 0) settle(); };
+    const timer = setTimeout(settle, capMs || 60000);
+    miner.on('event', onEvent);
     miner.once('stopped', settle);
     miner.once('error', settle);
   });
@@ -830,14 +832,13 @@ function waitForMinerUp(capMs) {
 async function applyPlan(settings) {
   const plan = resolvePlan(settings.mode || DEFAULT_MODE, { canMine: isValidAddress(settings.address), canLlm: true });
   if (plan.miner) {
-    // Start mining FIRST, then — when co-running — actually wait for the miner to
-    // come up before starting the LLM. Spawning the process isn't enough: the LLM
-    // loads its model and warms up in a few seconds, so without this wait it goes
-    // live before the miner has even connected (it *looks* like the LLM started
-    // first), and the LLM's GPU-layer budgeter reads free VRAM before mining has
-    // claimed its share. The miner's first parsed event means CUDA is initialized
-    // and VRAM is allocated; we wait for that (or a failure, or a cap) so mining
-    // is genuinely up and the LLM sizes its offload to what's left.
+    // Start mining FIRST, then — when co-running — wait until the miner reports a
+    // non-zero hashrate before starting the LLM. Spawning the process (or even
+    // connecting to the pool) isn't enough proof mining works: the LLM loads its
+    // model and warms up in a few seconds, so without this wait it goes live
+    // first, and its GPU-layer budgeter reads free VRAM before mining has claimed
+    // its share. Waiting for real TH/s confirms the GPU is mining and its VRAM is
+    // allocated, so the LLM then sizes its offload to what's actually left.
     try {
       await startMining(settings);
     } catch (e) {
