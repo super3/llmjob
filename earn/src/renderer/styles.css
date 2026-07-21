@@ -114,6 +114,13 @@ input.field-box { user-select: text; }
 .chat-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; flex: none; }
 .chat-model { font-size: 13px; color: #9a9da1; }
 .chat-list { flex: 1; min-height: 0; overflow-y: auto; border: 1px solid var(--line); background: #fff; border-radius: 9px; padding: 16px; }
+/* Slim, rounded scrollbar tuned to the light chat surface (the 2px #fff border
+   insets the thumb so it floats a little off the edge). */
+.chat-list { scrollbar-width: thin; scrollbar-color: #d6d2c8 transparent; }
+.chat-list::-webkit-scrollbar { width: 10px; }
+.chat-list::-webkit-scrollbar-track { background: transparent; }
+.chat-list::-webkit-scrollbar-thumb { background: #d6d2c8; border: 2px solid #fff; border-radius: 8px; }
+.chat-list::-webkit-scrollbar-thumb:hover { background: #bdb8aa; }
 .chat-empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: var(--muted); }
 .chat-empty p { font-size: 13.5px; }
 .chat-suggestions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 16px; }
