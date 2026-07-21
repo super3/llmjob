@@ -555,10 +555,41 @@ function probeLlmHealth(baseUrl, timeoutMs) {
     let u;
     try { u = new URL(baseUrl + '/health'); } catch (e) { return resolve(false); }
     const lib = u.protocol === 'http:' ? http : https;
-    const req = lib.get(u, (res) => { res.resume(); resolve(res.statusCode === 200); });
+    const req = lib.get(u, (res) => {
+      if (res.statusCode !== 200) { res.resume(); return resolve(false); }
+      // Require llama-server's own health body ({"status":"ok"}), not just any
+      // 200 — otherwise unrelated software on the port (a dev server, NAS UI)
+      // would be adopted as "the LLM" and chat would break against it.
+      let raw = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { raw += c; if (raw.length > 4096) res.destroy(); });
+      res.on('end', () => {
+        try { resolve(JSON.parse(raw).status === 'ok'); } catch (e) { resolve(false); }
+      });
+      res.on('error', () => resolve(false));
+    });
     req.on('error', () => resolve(false));
     req.setTimeout(timeoutMs || 2000, () => req.destroy());
   });
+}
+
+// Find a port llama-server can actually bind, preferring `start` (8080). On
+// Windows a just-killed server's port can stay unavailable for 30s+ while
+// connections tear down — longer than the spawn-retry window — and other
+// software (Tomcat, NAS web UIs, dev servers) may own 8080 outright. Rather
+// than fail on a fixed port, walk forward until a bind succeeds. Everything
+// that consumes the port (chat proxy, API tab, warm-up, cluster worker) reads
+// the resulting baseUrl, so a non-default port is fully transparent.
+function findFreePort(host, start, tries) {
+  const net = require('net');
+  const attempt = (port, left) => new Promise((resolve) => {
+    if (left <= 0) return resolve(start); // give up: fall back to the default
+    const srv = net.createServer();
+    srv.once('error', () => { srv.close(); resolve(attempt(port + 1, left - 1)); });
+    srv.once('listening', () => srv.close(() => resolve(port)));
+    srv.listen(port, host);
+  });
+  return attempt(start, tries || 10);
 }
 
 // Reset the live-status side of llmStatus and broadcast — the single cleanup
@@ -625,6 +656,16 @@ async function startLlm(reserveMb) {
     ? computeGpuLayers(vram.totalMb - vram.usedMb, LLM.model, reserveMb || 0)
     : LLM.model.layers;
 
+  // Bind-check the port up front and walk to a free one if the default is
+  // taken. This is what actually survives the post-update relaunch: the old
+  // server's port can linger unavailable on Windows for longer than the spawn
+  // retries last, and a permanently-occupied 8080 (other software) would never
+  // clear no matter how long we retry.
+  const port = await findFreePort(LLM.host, LLM.port, 10);
+  if (port !== LLM.port) {
+    send('miner:log', { level: 'info', line: 'port ' + LLM.port + ' is busy — using ' + port + ' for the local LLM instead' });
+  }
+
   let becameReady = false;
   llm = new LlmManager({ spawn, startAttempts: LLM.startAttempts, retryDelayMs: LLM.startRetryMs });
   llm.on('log', (l) => send('miner:log', l));
@@ -646,7 +687,7 @@ async function startLlm(reserveMb) {
     // user stop (which stops the miner too). Surface it so the UI shows why the
     // LLM never came up instead of a permanently "starting" state.
     if (!becameReady && miner && miner.isRunning()) {
-      llmStatus = Object.assign({}, llmStatus, { ready: false, error: 'The local LLM stopped before it was ready — port ' + LLM.port + ' may be in use. See Logs.' });
+      llmStatus = Object.assign({}, llmStatus, { ready: false, error: 'The local LLM stopped before it was ready. See Logs.' });
       sendLlmStatus();
     }
     // An LLM-only session ends when llama-server exits (crash/OOM) — tell the
@@ -654,7 +695,7 @@ async function startLlm(reserveMb) {
     if (!miner || !miner.isRunning()) send('miner:stopped');
   });
 
-  llm.start({ platform: process.platform, binaryPath, modelPath, nGpuLayers });
+  llm.start({ platform: process.platform, binaryPath, modelPath, nGpuLayers, port });
   llmStatus = Object.assign({}, llmStatus, { ready: false, error: null, endpoint: llm.baseUrl + '/v1', webUrl: llm.baseUrl });
   send('miner:log', { level: 'info', line: 'local LLM starting on ' + llm.baseUrl + ' — ' + nGpuLayers + ' GPU layers' });
   sendLlmStatus();
