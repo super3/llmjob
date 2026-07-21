@@ -28,11 +28,11 @@ const nodeStore = require('../main/nodeStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const { NETWORK, MINER, LLM, NODE, REGIONS, DEFAULTS, endpointFor, regionLabel, difficultyForCard } = require('../shared/config');
 const nodeProto = require('../shared/node');
-const { buildMinerReport } = require('../shared/minerReport');
+const { buildMinerReports } = require('../shared/minerReport');
 const { statsFilePayload } = require('../shared/statsFile');
 const { shortenAddress, isValidAddress } = require('../shared/address');
 const { pickFastestRegion } = require('../shared/region');
-const { pickGpu, countGpus } = require('../shared/gpu');
+const { pickGpu, countGpus, parseGpuStats } = require('../shared/gpu');
 const { computeGpuLayers, requiredVramMb, hasEnoughVram } = require('../shared/vram');
 const { JobWorker } = require('../main/jobWorker');
 const { resolvePlan } = require('../shared/llmMode');
@@ -127,6 +127,19 @@ function detectVram() {
         }
         resolve(any ? { usedMb, totalMb } : null);
       });
+  });
+}
+
+// Per-card live VRAM (used/total, MB) via nvidia-smi — one entry per GPU so the
+// network board can show each card's own headroom rather than the rig's sum.
+// Resolves [{ index, name, usedMb, totalMb }] (empty on no nvidia-smi / parse
+// failure). Never rejects.
+function detectGpusVram() {
+  return new Promise((resolve) => {
+    execFile('nvidia-smi',
+      ['--query-gpu=index,name,memory.used,memory.total', '--format=csv,noheader,nounits'],
+      { timeout: 5000 },
+      (err, stdout) => resolve(err ? [] : parseGpuStats(stdout)));
   });
 }
 
@@ -643,13 +656,12 @@ async function run(argv) {
     miner.on('error', (err) => log('engine error: ' + err.message, process.stderr));
 
     if (settings.report) {
-      // Sample live VRAM (nvidia-smi) and fold it into the snapshot before posting,
+      // Sample per-card live VRAM (nvidia-smi) and post one board row per GPU,
       // just like the GUI — otherwise the board shows 0 GB for a CLI-driven rig.
       const report = async () => {
         const snap = snapshot(stats, Date.now());
-        const vram = await detectVram();
-        if (vram) { snap.vramUsedMb = vram.usedMb; snap.vramTotalMb = vram.totalMb; }
-        return postMinerReport(buildMinerReport(settings, snap));
+        const gpuVram = await detectGpusVram();
+        return Promise.all(buildMinerReports(settings, snap, gpuVram).map(postMinerReport));
       };
       report();
       reporter = setInterval(report, NETWORK.reportIntervalMs);

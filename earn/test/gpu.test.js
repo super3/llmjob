@@ -1,6 +1,6 @@
 'use strict';
 
-const { pickGpu, countGpus } = require('../src/shared/gpu');
+const { pickGpu, countGpus, parseGpuStats } = require('../src/shared/gpu');
 
 describe('pickGpu', () => {
   test('picks the real GPU and skips the basic display adapter', () => {
@@ -53,5 +53,40 @@ describe('countGpus', () => {
     expect(countGpus([])).toBe(0);
     expect(countGpus(null)).toBe(0);
     expect(countGpus([null])).toBe(0);
+  });
+});
+
+describe('parseGpuStats', () => {
+  test('parses one entry per card from the nvidia-smi CSV', () => {
+    const out = '0, NVIDIA GeForce RTX 4090, 4096, 24564\n1, NVIDIA GeForce RTX 4060 Ti, 2000, 16380\n';
+    expect(parseGpuStats(out)).toEqual([
+      { index: 0, name: 'NVIDIA GeForce RTX 4090', usedMb: 4096, totalMb: 24564 },
+      { index: 1, name: 'NVIDIA GeForce RTX 4060 Ti', usedMb: 2000, totalMb: 16380 },
+    ]);
+  });
+
+  test('reads the numbers positionally so a name that holds extra commas can\'t misalign them', () => {
+    // used/total are always the last two fields; the name is everything between.
+    expect(parseGpuStats('2, GPU, X, 100, 8192')).toEqual([
+      { index: 2, name: 'GPU,X', usedMb: 100, totalMb: 8192 },
+    ]);
+  });
+
+  test('a blank name field becomes null', () => {
+    expect(parseGpuStats('0, , 100, 8192')).toEqual([
+      { index: 0, name: null, usedMb: 100, totalMb: 8192 },
+    ]);
+  });
+
+  test('skips blank lines and rows that do not parse', () => {
+    expect(parseGpuStats('\n0, RTX 4090, 4096, 24564\n\ngarbage\n1, RTX 4090, notanumber, 24564\n')).toEqual([
+      { index: 0, name: 'RTX 4090', usedMb: 4096, totalMb: 24564 },
+    ]);
+  });
+
+  test('returns an empty list for empty or nullish input', () => {
+    expect(parseGpuStats('')).toEqual([]);
+    expect(parseGpuStats(null)).toEqual([]);
+    expect(parseGpuStats(undefined)).toEqual([]);
   });
 });
