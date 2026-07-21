@@ -544,6 +544,23 @@ async function resolveLlmBinary(dir) {
   return engine.ensureServer();
 }
 
+// GET <baseUrl>/health — resolves true when a llama-server is already listening
+// and healthy on our port. Lets startLlm adopt an existing server instead of
+// spawning a second one that would fail to bind 8080 (llama-server exits with
+// "couldn't bind HTTP server socket" and the LLM silently never comes up). This
+// happens right after an "Update & restart", when the outgoing server may still
+// be releasing the port as the relaunched app tries to claim it.
+function probeLlmHealth(baseUrl, timeoutMs) {
+  return new Promise((resolve) => {
+    let u;
+    try { u = new URL(baseUrl + '/health'); } catch (e) { return resolve(false); }
+    const lib = u.protocol === 'http:' ? http : https;
+    const req = lib.get(u, (res) => { res.resume(); resolve(res.statusCode === 200); });
+    req.on('error', () => resolve(false));
+    req.setTimeout(timeoutMs || 2000, () => req.destroy());
+  });
+}
+
 // Reset the live-status side of llmStatus and broadcast — the single cleanup
 // used by both user-initiated stops and the process's own exit.
 function resetLlmStatus() {
@@ -558,6 +575,20 @@ function resetLlmStatus() {
 // an LLM-only session ends up running nothing).
 async function startLlm(reserveMb) {
   if (llm && llm.isRunning()) return true;
+
+  // If a healthy llama-server is already on our port (e.g. one lingering from a
+  // just-restarted session), adopt it instead of spawning a second process that
+  // would fail to bind the port and leave the LLM silently down. Reusing it is
+  // safe — it serves the same model on the same OpenAI endpoint.
+  const targetBase = 'http://' + LLM.host + ':' + LLM.port;
+  if (await probeLlmHealth(targetBase)) {
+    llmStatus = Object.assign({}, llmStatus, { ready: true, error: null, endpoint: targetBase + '/v1', webUrl: targetBase });
+    send('miner:log', { level: 'info', line: 'local LLM already running on ' + targetBase + ' — reusing it' });
+    sendLlmStatus();
+    syncWorker();
+    warmUpLlm(targetBase);
+    return true;
+  }
 
   // Preflight the GPU before doing anything expensive: refuse to start if we can
   // measure VRAM and there isn't enough free to hold the model — spawning anyway
@@ -594,9 +625,11 @@ async function startLlm(reserveMb) {
     ? computeGpuLayers(vram.totalMb - vram.usedMb, LLM.model, reserveMb || 0)
     : LLM.model.layers;
 
+  let becameReady = false;
   llm = new LlmManager({ spawn });
   llm.on('log', (l) => send('miner:log', l));
   llm.on('ready', ({ baseUrl }) => {
+    becameReady = true;
     llmStatus = Object.assign({}, llmStatus, { ready: true, endpoint: baseUrl + '/v1', webUrl: baseUrl });
     send('miner:log', { level: 'info', line: 'local LLM ready — OpenAI endpoint ' + baseUrl + '/v1' });
     sendLlmStatus();
@@ -608,6 +641,14 @@ async function startLlm(reserveMb) {
     cancelChat('the local LLM stopped');
     stopWorker();
     resetLlmStatus();
+    // Exited before ever going ready while mining keeps running — this is the
+    // silent-failure case (typically llama-server couldn't bind port 8080), not a
+    // user stop (which stops the miner too). Surface it so the UI shows why the
+    // LLM never came up instead of a permanently "starting" state.
+    if (!becameReady && miner && miner.isRunning()) {
+      llmStatus = Object.assign({}, llmStatus, { ready: false, error: 'The local LLM stopped before it was ready — port ' + LLM.port + ' may be in use. See Logs.' });
+      sendLlmStatus();
+    }
     // An LLM-only session ends when llama-server exits (crash/OOM) — tell the
     // renderer, or the UI keeps showing a running session with nothing running.
     if (!miner || !miner.isRunning()) send('miner:stopped');
@@ -932,6 +973,14 @@ ipcMain.on('app:update:install', () => {
   try {
     // If mining right now, remember to resume automatically after the restart.
     if (stats) persistSettings(Object.assign({}, loadSettings(), { resumeMining: true }));
+    // Stop the LLM and miner BEFORE relaunching. llama-server binds a fixed port
+    // (8080) and quitAndInstall relaunches immediately; if the outgoing server is
+    // still holding the port, the resumed instance's llama-server can't bind and
+    // the LLM silently fails to start (the miner binds no port, so it's fine —
+    // exactly the "miner came back, LLM didn't" symptom). Killing them here frees
+    // the port and VRAM deterministically before the new instance starts.
+    stopLlm();
+    stopMining();
     // isSilent=true: install to the existing directory without re-showing the
     // assisted-installer wizard. isForceRunAfter=true: relaunch the app afterwards.
     autoUpdater.quitAndInstall(true, true);
