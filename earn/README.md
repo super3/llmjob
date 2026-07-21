@@ -97,6 +97,10 @@ predate the rename):
   update the URL (and rigs re-download automatically) when a new version ships
 - **Wallet** → your `prl1p…` address only (HiveOS caps the wallet field at 90
   characters, so the combined `prl1p…+mdl1p…` form doesn't fit)
+- **Pool URL** → any non-empty placeholder (e.g. `alphapool.tech:5566`) — HiveOS
+  refuses to save the flight sheet without it (`The url field is required`), but
+  the miner ignores it and auto-picks the fastest region (override with
+  `--region` in extra config); leave **Pass** blank
 - **Extra config arguments** → `--mdl mdl1p…` to merge-mine MDL, plus any other
   CLI flags, e.g. `--region eu1` (optional)
 
