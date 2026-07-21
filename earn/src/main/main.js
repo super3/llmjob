@@ -628,12 +628,25 @@ function cancelChat(reason) {
   s.cancel(reason || 'cancelled');
 }
 
+// Grounding for the in-app chat: a small local model has no idea what "LLMJob"
+// or "PPLNS" mean, so prompts like "What is LLMJob?" produce generic guesses.
+// This system message gives it the facts to answer from. In-app chat only — jobs
+// relayed from the cluster (jobWorker) are arbitrary API requests and get none.
+const CHAT_SYSTEM_PROMPT = [
+  "You are the assistant built into LLMJob Earn, running entirely on the user's own GPU via a local server — nothing they type leaves their machine. Use this context when relevant:",
+  '- LLMJob turns the spare power of a GPU the user already owns into money: while the app runs, their GPU mines Pearl (PRL, a cryptocurrency the user is paid in) and can also run you, this local AI model.',
+  '- The mining pool pays with PPLNS ("Pay Per Last N Shares"): when it finds a block, the reward is split across the last N shares miners submitted, so payout reflects sustained contribution rather than luck. Payouts settle about every 4 hours with a 1 PRL minimum.',
+  '- This chat is private — it runs on the user\'s machine, so prompts never leave the computer.',
+  'Answer conversationally and concisely. For anything unrelated to LLMJob, just answer normally.',
+].join('\n');
+
 function llmChat(messages) {
   cancelChat('superseded by a new message');
   const base = llmStatus.webUrl || ('http://' + LLM.host + ':' + LLM.port);
   if (!llm || !llmStatus.ready) { send('llm:chat:error', { message: 'the local LLM is not running' }); return; }
 
-  const s = streamChatCompletion(base, buildChatBody(messages, { stream: true }),
+  const grounded = [{ role: 'system', content: CHAT_SYSTEM_PROMPT }].concat(Array.isArray(messages) ? messages : []);
+  const s = streamChatCompletion(base, buildChatBody(grounded, { stream: true }),
     (text) => send('llm:chat:delta', { text }));
   chatStream = s;
   s.done.then(

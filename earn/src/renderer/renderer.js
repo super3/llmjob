@@ -25,6 +25,7 @@
     btnStart: $('btn-start'), btnStop: $('btn-stop'), engineStatus: $('engine-status'),
     // chat
     chatRunning: $('chat-running'), chatStopped: $('chat-stopped'), chatStoppedModel: $('chat-stopped-model'),
+    chatHead: $('chat-head'), chatModel: $('chat-model'), chatNew: $('chat-new'),
     chatList: $('chat-list'), chatEmpty: $('chat-empty'), chatSuggestions: $('chat-suggestions'),
     chatMessages: $('chat-messages'), chatForm: $('chat-form'), chatInput: $('chat-input'), chatSend: $('chat-send'),
     // api
@@ -219,10 +220,24 @@
     el.chatSend.disabled = !ok;
   }
 
+  // The model + "New chat" header shows once a conversation has started.
+  function newChat() {
+    if (state.chat.streaming) return; // don't wipe a reply mid-stream
+    state.chat.messages = [];
+    state.chat.streamText = '';
+    el.chatMessages.innerHTML = '';
+    el.chatEmpty.hidden = false;
+    el.chatHead.hidden = true;
+    updateSendEnabled();
+    if (state.view === 'chat') el.chatInput.focus();
+  }
+
   function sendChat(text) {
     const t = String(text || '').trim();
     if (!t || state.chat.streaming || !state.llm.ready || !api.sendChat) return;
     el.chatEmpty.hidden = true;
+    el.chatModel.textContent = state.llm.model || 'gemma-4-E4B-it';
+    el.chatHead.hidden = false;
     addMsg('user', t);
     state.chat.messages.push({ role: 'user', text: t });
     state.chat.bubble = addMsg('assistant', '');
@@ -542,6 +557,7 @@
     // Chat composer
     el.chatInput.addEventListener('input', updateSendEnabled);
     el.chatForm.addEventListener('submit', (e) => { e.preventDefault(); sendChat(el.chatInput.value); });
+    el.chatNew.addEventListener('click', newChat);
 
     // API endpoint: copy the /v1 URL, or open the llama-server web UI.
     const copyEndpoint = () => {

@@ -69,6 +69,10 @@
   <!-- ══════════ CHAT ══════════ -->
   <section id="view-chat" hidden>
     <div id="chat-running" class="chat-wrap" hidden>
+      <div id="chat-head" class="chat-head" hidden>
+        <span id="chat-model" class="chat-model mono">gemma-4-E4B-it</span>
+        <button id="chat-new" class="chip" type="button">+ New chat</button>
+      </div>
       <div id="chat-list" class="chat-list">
         <div id="chat-empty" class="chat-empty">
           <p>Ask anything — answers run on your GPU.</p>
@@ -77,7 +81,7 @@
         <div id="chat-messages" class="chat-messages"></div>
       </div>
       <form id="chat-form" class="chat-form">
-        <input id="chat-input" class="chat-input" type="text" autocomplete="off" placeholder="Message the local model…" aria-label="Message" />
+        <input id="chat-input" class="chat-input" type="text" autocomplete="off" placeholder="Send a message…" aria-label="Message" />
         <button id="chat-send" class="chat-send" type="submit" aria-label="Send" disabled>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"></path></svg>
         </button>
