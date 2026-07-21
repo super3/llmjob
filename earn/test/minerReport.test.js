@@ -7,8 +7,8 @@ describe('buildMinerReports', () => {
     const snap = { gpu: 'NVIDIA GeForce RTX 4090', total: 285.8, accepted: 5,
       gpus: [{ index: 0, gpu: 'NVIDIA GeForce RTX 4090', hashrate: 285.8, accepted: 5 }] };
     const vram = [{ index: 0, name: 'NVIDIA GeForce RTX 4090', usedMb: 4096, totalMb: 24564 }];
-    expect(buildMinerReports({ address: '  prl1pabc ', worker: 'rig9', region: 'eu1' }, snap, vram)).toEqual([
-      { address: 'prl1pabc', worker: 'rig9', region: 'eu1',
+    expect(buildMinerReports({ address: '  prl1pabc ', worker: 'rig9', region: 'eu1' }, snap, vram, '0.1.16')).toEqual([
+      { address: 'prl1pabc', worker: 'rig9', region: 'eu1', version: '0.1.16',
         gpu: 'NVIDIA GeForce RTX 4090', hashrate: 285.8, accepted: 5, vramUsedMb: 4096, vramTotalMb: 24564 },
     ]);
   });
@@ -23,9 +23,9 @@ describe('buildMinerReports', () => {
       { index: 1, name: 'RTX 4060 Ti', usedMb: 2000, totalMb: 16380 },
       { index: 0, name: 'RTX 4090', usedMb: 4096, totalMb: 24564 },
     ];
-    expect(buildMinerReports({ address: 'prl1pabc', worker: 'rig01', region: 'us2' }, snap, vram)).toEqual([
-      { address: 'prl1pabc', worker: 'rig01/gpu0', region: 'us2', gpu: 'RTX 4090', hashrate: 200, accepted: 10, vramUsedMb: 4096, vramTotalMb: 24564 },
-      { address: 'prl1pabc', worker: 'rig01/gpu1', region: 'us2', gpu: 'RTX 4060 Ti', hashrate: 100, accepted: 4, vramUsedMb: 2000, vramTotalMb: 16380 },
+    expect(buildMinerReports({ address: 'prl1pabc', worker: 'rig01', region: 'us2' }, snap, vram, '0.1.16')).toEqual([
+      { address: 'prl1pabc', worker: 'rig01/gpu0', region: 'us2', version: '0.1.16', gpu: 'RTX 4090', hashrate: 200, accepted: 10, vramUsedMb: 4096, vramTotalMb: 24564 },
+      { address: 'prl1pabc', worker: 'rig01/gpu1', region: 'us2', version: '0.1.16', gpu: 'RTX 4060 Ti', hashrate: 100, accepted: 4, vramUsedMb: 2000, vramTotalMb: 16380 },
     ]);
   });
 
@@ -125,14 +125,14 @@ describe('buildMinerReports', () => {
       { index: 1, name: 'RTX 4090', usedMb: 2048, totalMb: 24564 },
     ];
     expect(buildMinerReports({ address: 'prl1pabc', worker: 'rig01', region: 'us2' }, snap, vram)).toEqual([
-      { address: 'prl1pabc', worker: 'rig01', region: 'us2',
+      { address: 'prl1pabc', worker: 'rig01', region: 'us2', version: null,
         gpu: 'RTX 4090', hashrate: 100, accepted: 7, vramUsedMb: 6144, vramTotalMb: 49128 },
     ]);
   });
 
   test('applies defaults when called with nothing', () => {
     expect(buildMinerReports()).toEqual([
-      { address: '', worker: 'rig01', region: 'us2', gpu: null, hashrate: 0, accepted: 0, vramUsedMb: 0, vramTotalMb: 0 },
+      { address: '', worker: 'rig01', region: 'us2', version: null, gpu: null, hashrate: 0, accepted: 0, vramUsedMb: 0, vramTotalMb: 0 },
     ]);
   });
 

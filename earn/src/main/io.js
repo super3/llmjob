@@ -129,18 +129,35 @@ function streamChatCompletion(baseUrl, chatBody, onDelta) {
   };
 }
 
-// Extract the llama.cpp release zip on Linux/macOS. `unzip -j` flattens the
-// archive into the install dir so `llama-server` lands next to its shared
-// libraries (.so/.dylib) — llama.cpp resolves libs from the binary's own
-// directory ($ORIGIN rpath), so co-locating them is what makes the downloaded
-// server run. `hint` is appended to the no-unzip error (e.g. the CLI's
-// --llm-binary escape hatch).
+// Extract the llama.cpp release archive on Linux/macOS, flattening it into the
+// install dir so `llama-server` lands next to its shared libraries (.so/.dylib)
+// — llama.cpp resolves libs from the binary's own directory ($ORIGIN rpath), so
+// co-locating them is what makes the downloaded server run. llama.cpp ships
+// Linux/macOS as .tar.gz (a build-named top folder) and Windows as .zip; the
+// download is always named `.zip`, so sniff the magic bytes rather than trust
+// the name: gzip (1f 8b) → `tar --strip-components=1`, otherwise `unzip -j`.
+// `hint` is appended to the extraction error (e.g. the CLI's --llm-binary
+// escape hatch).
 function extractLlamaZip(zipPath, dest, hint) {
   return new Promise((resolve, reject) => {
     const dir = path.dirname(dest);
-    execFile('unzip', ['-o', '-j', zipPath, '-d', dir], { timeout: 120000 }, (err) => {
+    let gzip = false;
+    try {
+      const fd = fs.openSync(zipPath, 'r');
+      const head = Buffer.alloc(2);
+      fs.readSync(fd, head, 0, 2, 0);
+      fs.closeSync(fd);
+      gzip = head[0] === 0x1f && head[1] === 0x8b;
+    } catch (e) {
+      return reject(new Error('could not read the llama-server archive (' + e.message + ')'));
+    }
+    const tool = gzip ? 'tar' : 'unzip';
+    const args = gzip
+      ? ['-xzf', zipPath, '-C', dir, '--strip-components=1'] // strip the build-named top folder
+      : ['-o', '-j', zipPath, '-d', dir];                    // junk paths → flatten
+    execFile(tool, args, { timeout: 120000 }, (err) => {
       if (err) {
-        return reject(new Error('could not extract the llama-server archive with `unzip` ('
+        return reject(new Error('could not extract the llama-server archive with `' + tool + '` ('
           + err.message + ')' + (hint ? ' — ' + hint : '')));
       }
       if (!fs.existsSync(dest)) {

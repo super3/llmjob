@@ -31,6 +31,13 @@ class JobService {
       temperature: jobData.temperature || 0.7
     };
 
+    // A job from the OpenAI gateway carries a full chat `messages` array so the
+    // node can serve multi-turn conversations (the single `prompt` is kept as a
+    // display/fallback). Only stored when provided, to leave simple jobs as-is.
+    if (Array.isArray(jobData.messages) && jobData.messages.length) {
+      job.messages = jobData.messages;
+    }
+
     await this.db.query(
       `INSERT INTO jobs (id, data, status, priority, created_at, updated_at, user_id)
        VALUES ($1, $2, 'pending', $3, $4, $4, $5)`,

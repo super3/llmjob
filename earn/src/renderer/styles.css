@@ -31,9 +31,13 @@ body {
 .app { padding: 30px 30px 26px; }
 /* Keep every view the same height as the tallest view so the footer
    (View Logs / Need Help) stays in one place when switching tabs. */
-#view-mine, #view-chat, #view-api, #view-settings, #view-logs { min-height: 425px; }
+#view-mine, #view-api, #view-settings, #view-logs { min-height: 425px; }
 /* Chat and logs fill the height so their scroller sits above the footer. */
 #view-chat, #view-api, #view-logs { display: flex; flex-direction: column; }
+/* Chat and logs have unbounded content (a growing conversation / log stream).
+   Give them a fixed height so their inner list scrolls internally instead of
+   growing the whole window (which fits its content). */
+#view-chat, #view-logs { height: 470px; }
 
 /* header: tab bar (Mine/Chat/API) + settings gear */
 .app-head { display: flex; align-items: stretch; gap: 22px; margin-bottom: 22px; border-bottom: 1px solid #eceae2; }
@@ -107,7 +111,16 @@ input.field-box { user-select: text; }
 
 /* chat tab */
 .chat-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.chat-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; flex: none; }
+.chat-model { font-size: 13px; color: #9a9da1; }
 .chat-list { flex: 1; min-height: 0; overflow-y: auto; border: 1px solid var(--line); background: #fff; border-radius: 9px; padding: 16px; }
+/* Slim, rounded scrollbar tuned to the light chat surface (the 2px #fff border
+   insets the thumb so it floats a little off the edge). */
+.chat-list { scrollbar-width: thin; scrollbar-color: #d6d2c8 transparent; }
+.chat-list::-webkit-scrollbar { width: 10px; }
+.chat-list::-webkit-scrollbar-track { background: transparent; }
+.chat-list::-webkit-scrollbar-thumb { background: #d6d2c8; border: 2px solid #fff; border-radius: 8px; }
+.chat-list::-webkit-scrollbar-thumb:hover { background: #bdb8aa; }
 .chat-empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: var(--muted); }
 .chat-empty p { font-size: 13.5px; }
 .chat-suggestions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 16px; }
@@ -152,9 +165,20 @@ input.field-box { user-select: text; }
 .connect-input:focus { border-color: var(--accent); }
 .connect-error { margin-top: 10px; font-size: 12px; color: #dc2626; font-weight: 600; }
 .connect-actions { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
-.connect-btn { font-family: inherit; font-size: 13px; font-weight: 700; color: #fff; background: var(--accent); border: none; border-radius: 9px; padding: 11px 20px; cursor: pointer; transition: background .15s; }
+.connect-btn { flex: none; font-family: inherit; font-size: 13px; font-weight: 700; color: #fff; background: var(--accent); border: none; border-radius: 9px; padding: 11px 20px; cursor: pointer; box-shadow: 0 8px 18px -8px rgba(37,99,235,.6); transition: background .15s; }
 .connect-btn:hover:not(:disabled) { background: #1d4ed8; }
-.connect-btn:disabled { background: #b9c9ef; cursor: not-allowed; }
+.connect-btn:disabled { background: #b9c9ef; cursor: not-allowed; box-shadow: none; }
+/* secondary "Use a pairing token" toggle */
+.connect-alt-btn { flex: none; font-family: inherit; font-size: 13px; font-weight: 600; color: #6b7077; background: #fff; border: 1px solid #e3e1d9; border-radius: 9px; padding: 10px 16px; cursor: pointer; transition: color .14s, border-color .14s; }
+.connect-alt-btn:hover { color: var(--accent); border-color: #dbe6fb; }
+/* collapsible pairing-token area */
+.connect-pair { margin-top: 12px; }
+.connect-pair-row { display: flex; align-items: center; gap: 8px; }
+.connect-pair-row .connect-input { flex: 1; min-width: 0; margin-top: 0; border-color: #cfdcf7; }
+.connect-link-btn { flex: none; font-family: inherit; font-size: 12.5px; font-weight: 700; color: #fff; background: var(--accent); border: none; border-radius: 9px; padding: 10px 16px; cursor: pointer; transition: background .15s; }
+.connect-link-btn:hover:not(:disabled) { background: #1d4ed8; }
+.connect-link-btn:disabled { background: #b9c9ef; cursor: not-allowed; }
+.connect-pair-note { font-size: 11.5px; color: var(--muted); margin-top: 8px; line-height: 1.5; }
 /* connected card — avatar · name · rename, with Disconnect */
 .connected-card { display: flex; align-items: center; gap: 12px; border: 1px solid #cdeed6; background: #f2faf4; border-radius: 11px; padding: 12px 14px; }
 .connected-avatar { display: inline-flex; width: 36px; height: 36px; flex: none; border-radius: 50%; background: var(--green); color: #fff; font-weight: 800; font-size: 15px; align-items: center; justify-content: center; }

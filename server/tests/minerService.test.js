@@ -67,22 +67,24 @@ describe('MinerService (db)', () => {
     expect(row.worker).toBe('rig01');
     expect(row.gpu).toBeNull();
     expect(row.region).toBeNull();
+    expect(row.version).toBeNull();  // no version reported → stored null
   });
 
-  test('upserts on repeat and clamps/floors the numbers, storing VRAM', async () => {
-    await service.reportMiner({ address: ADDR.a, worker: 'rig01', gpu: 'RTX 4090', region: 'us1', hashrate: 100, accepted: 5 });
-    await service.reportMiner({ address: ADDR.a, worker: 'rig01', gpu: 'RTX 4090', hashrate: 5e6, accepted: 9.9, vramUsedMb: 4096, vramTotalMb: 24564 });
+  test('upserts on repeat and clamps/floors the numbers, storing VRAM + version', async () => {
+    await service.reportMiner({ address: ADDR.a, worker: 'rig01', gpu: 'RTX 4090', region: 'us1', hashrate: 100, accepted: 5, version: '0.1.15' });
+    await service.reportMiner({ address: ADDR.a, worker: 'rig01', gpu: 'RTX 4090', hashrate: 5e6, accepted: 9.9, vramUsedMb: 4096, vramTotalMb: 24564, version: '0.1.16' });
     expect(await count()).toBe(1);
     const row = (await db.query('SELECT * FROM miners', [])).rows[0];
     expect(Number(row.hashrate)).toBe(1e6);   // clamped to MAX_HASHRATE
     expect(Number(row.accepted)).toBe(9);      // floored
     expect(Number(row.vram_used)).toBe(4096);  // upserted
     expect(Number(row.vram_total)).toBe(24564);
+    expect(row.version).toBe('0.1.16');        // reported version, upserted
   });
 
   test('getPublicMiners returns one row per online worker (its own GPU/VRAM/last), sorted by hashrate', async () => {
     // ADDR.a runs two different cards on one address → two rows sharing the address.
-    await service.reportMiner({ address: ADDR.a, worker: 'w-6000', gpu: 'NVIDIA RTX PRO 6000 Blackwell', hashrate: 300, accepted: 12, vramUsedMb: 8000, vramTotalMb: 98304 });
+    await service.reportMiner({ address: ADDR.a, worker: 'w-6000', gpu: 'NVIDIA RTX PRO 6000 Blackwell', hashrate: 300, accepted: 12, vramUsedMb: 8000, vramTotalMb: 98304, version: '0.1.16' });
     await service.reportMiner({ address: ADDR.a, worker: 'w-4090', gpu: 'NVIDIA GeForce RTX 4090', hashrate: 100, accepted: 5, vramUsedMb: 4096, vramTotalMb: 24564 });
     await service.reportMiner({ address: ADDR.b, worker: 'rig01', gpu: 'NVIDIA GeForce RTX 3090', hashrate: 200, accepted: 10 });
     await service.reportMiner({ address: ADDR.c, worker: 'rig01', hashrate: 0, accepted: 0 }); // no gpu, zero hashrate
@@ -102,9 +104,10 @@ describe('MinerService (db)', () => {
 
     // The two ADDR.a rows are distinct GPUs on one address, each its own VRAM.
     expect(out.miners.find((m) => m.worker === 'w-6000')).toMatchObject({
-      addr: ADDR.a, hash: 300, accepted: 12, vramUsedMb: 8000, vramTotalMb: 98304, last: 'just now',
+      addr: ADDR.a, hash: 300, accepted: 12, vramUsedMb: 8000, vramTotalMb: 98304, version: '0.1.16', last: 'just now',
     });
-    expect(out.miners.find((m) => m.addr === ADDR.c)).toMatchObject({ vramUsedMb: 0, vramTotalMb: 0 });
+    // A worker that reported no version surfaces as null (not undefined).
+    expect(out.miners.find((m) => m.addr === ADDR.c)).toMatchObject({ vramUsedMb: 0, vramTotalMb: 0, version: null });
   });
 
   test('ties in hashrate are ordered deterministically by address+worker (not DB row order)', async () => {

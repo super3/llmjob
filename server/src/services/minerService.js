@@ -55,17 +55,18 @@ class MinerService {
     const accepted = Math.floor(clampNum(input.accepted));
     const vramUsed = clampNum(input.vramUsedMb, MAX_VRAM_MB);
     const vramTotal = clampNum(input.vramTotalMb, MAX_VRAM_MB);
+    const version = input.version ? String(input.version).slice(0, 32) : null;
     const id = minerFingerprint(address, worker);
     const now = Date.now();
 
     await this.db.query(
-      `INSERT INTO miners (id, address, worker, gpu, region, hashrate, accepted, vram_used, vram_total, first_seen, last_seen)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
+      `INSERT INTO miners (id, address, worker, gpu, region, hashrate, accepted, vram_used, vram_total, version, first_seen, last_seen)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
        ON CONFLICT (id) DO UPDATE SET
          gpu = EXCLUDED.gpu, region = EXCLUDED.region, hashrate = EXCLUDED.hashrate,
          accepted = EXCLUDED.accepted, vram_used = EXCLUDED.vram_used,
-         vram_total = EXCLUDED.vram_total, last_seen = EXCLUDED.last_seen`,
-      [id, address, worker, gpu, region, hashrate, accepted, vramUsed, vramTotal, now]
+         vram_total = EXCLUDED.vram_total, version = EXCLUDED.version, last_seen = EXCLUDED.last_seen`,
+      [id, address, worker, gpu, region, hashrate, accepted, vramUsed, vramTotal, version, now]
     );
     return { success: true, id };
   }
@@ -89,6 +90,7 @@ class MinerService {
         accepted: Number(row.accepted) || 0,
         vramUsedMb: Math.round(Number(row.vram_used) || 0),
         vramTotalMb: Math.round(Number(row.vram_total) || 0),
+        version: row.version || null,
         last: formatAgo(now - Number(row.last_seen)),
       }))
       .sort((a, b) => (b.hash - a.hash) || (a.addr + '|' + a.worker).localeCompare(b.addr + '|' + b.worker));

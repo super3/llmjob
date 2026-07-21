@@ -661,7 +661,7 @@ async function run(argv) {
       const report = async () => {
         const snap = snapshot(stats, Date.now());
         const gpuVram = await detectGpusVram();
-        return Promise.all(buildMinerReports(settings, snap, gpuVram).map(postMinerReport));
+        return Promise.all(buildMinerReports(settings, snap, gpuVram, pkg.version).map(postMinerReport));
       };
       report();
       reporter = setInterval(report, NETWORK.reportIntervalMs);

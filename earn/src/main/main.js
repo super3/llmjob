@@ -149,8 +149,9 @@ function statsView(snap) {
   };
 }
 
-// Extract the engine .exe from a downloaded zip to `dest`. Windows-only: uses
-// PowerShell's Expand-Archive, so there's no extra runtime dependency.
+// Extract a single engine .exe from a downloaded zip to `dest`. Windows-only:
+// uses PowerShell's Expand-Archive, so there's no extra runtime dependency. Used
+// for the miner engine, whose binary is self-contained.
 function extractZip(zipPath, dest) {
   return new Promise((resolve, reject) => {
     const tmp = dest + '.unzip';
@@ -163,6 +164,28 @@ function extractZip(zipPath, dest) {
       + "Remove-Item -LiteralPath '" + tmp + "' -Recurse -Force";
     execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], (err) => {
       if (err) return reject(err);
+      resolve(dest);
+    });
+  });
+}
+
+// Extract a llama.cpp Windows build zip and flatten EVERY file into dest's
+// directory, so llama-server.exe ends up beside all ~30 of its DLLs (a lone
+// .exe can't launch — Windows resolves sibling DLLs from the exe's folder). This
+// mirrors what `unzip -j` does for the Linux/macOS archives. llama.cpp's zip is
+// already flat; the recursive copy also handles a build that nests the binaries.
+function extractLlamaZipWin(zipPath, dest) {
+  return new Promise((resolve, reject) => {
+    const dir = path.dirname(dest);
+    const tmp = path.join(dir, '_llama_unzip');
+    const ps = "$ErrorActionPreference='Stop';"
+      + "if(Test-Path -LiteralPath '" + tmp + "'){Remove-Item -LiteralPath '" + tmp + "' -Recurse -Force};"
+      + "Expand-Archive -LiteralPath '" + zipPath + "' -DestinationPath '" + tmp + "' -Force;"
+      + "Get-ChildItem -Path '" + tmp + "' -Recurse -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination '" + dir + "' -Force };"
+      + "Remove-Item -LiteralPath '" + tmp + "' -Recurse -Force";
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { maxBuffer: 8 * 1024 * 1024 }, (err) => {
+      if (err) return reject(err);
+      if (!fs.existsSync(dest)) return reject(new Error('llama-server was not found in the downloaded archive'));
       resolve(dest);
     });
   });
@@ -191,7 +214,7 @@ async function startMining(settings) {
   const report = async () => {
     const snap = snapshot(stats, Date.now());
     const gpuVram = await detectGpusVram();
-    buildMinerReports(settings, snap, gpuVram).forEach(postMinerReport);
+    buildMinerReports(settings, snap, gpuVram, app.getVersion()).forEach(postMinerReport);
   };
   report();
   if (reporter) clearInterval(reporter);
@@ -485,9 +508,9 @@ async function resolveLlmBinary(dir) {
   const name = LLM.serverBin[process.platform] || LLM.serverBin.linux;
   const bundled = process.resourcesPath && path.join(process.resourcesPath, 'llm', name);
   if (bundled && fs.existsSync(bundled)) return bundled;
-  // Windows ships the server in a zip we expand with PowerShell; Linux/macOS use
-  // `unzip` and co-locate the binary with its shared libraries.
-  const extract = process.platform === 'win32' ? extractZip : (zip, dest) => extractLlamaZip(zip, dest);
+  // The server ships as a folder of DLLs + the .exe, so extraction must keep them
+  // together: Windows flattens the zip with PowerShell, Linux/macOS with `unzip -j`.
+  const extract = process.platform === 'win32' ? extractLlamaZipWin : (zip, dest) => extractLlamaZip(zip, dest);
   const engine = new LlmEngineManager({
     dir, platform: process.platform, serverUrl: LLM.serverUrl[process.platform],
     fs, download: downloadFile, extract, chmod: fs.chmodSync,
@@ -552,6 +575,7 @@ async function startLlm(reserveMb) {
     send('miner:log', { level: 'info', line: 'local LLM ready — OpenAI endpoint ' + baseUrl + '/v1' });
     sendLlmStatus();
     syncWorker(); // serve cluster jobs once the model is up, if we're linked
+    warmUpLlm(baseUrl); // background generation so tok/s populates without a chat
   });
   llm.on('stats', ({ tokensPerSec }) => { llmStatus = Object.assign({}, llmStatus, { tokensPerSec }); sendLlmStatus(); });
   llm.on('stopped', () => {
@@ -568,6 +592,18 @@ async function startLlm(reserveMb) {
   send('miner:log', { level: 'info', line: 'local LLM starting on ' + llm.baseUrl + ' — ' + nGpuLayers + ' GPU layers' });
   sendLlmStatus();
   return true;
+}
+
+// Fire one tiny generation as soon as the model is ready, so the Mine tab's
+// tokens/sec figure populates on its own — the user shouldn't have to open Chat
+// to see the LLM is alive. Best-effort and discarded; a real request just
+// overwrites the warm-up's tok/s.
+function warmUpLlm(baseUrl) {
+  try {
+    const body = buildChatBody([{ role: 'user', content: 'Say hello.' }], { stream: true });
+    body.max_tokens = 24;
+    streamChatCompletion(baseUrl, body, () => {}).done.catch(() => {});
+  } catch (e) { /* best effort — never blocks startup */ }
 }
 
 function stopLlm() {
@@ -592,12 +628,25 @@ function cancelChat(reason) {
   s.cancel(reason || 'cancelled');
 }
 
+// Grounding for the in-app chat: a small local model has no idea what "LLMJob"
+// or "PPLNS" mean, so prompts like "What is LLMJob?" produce generic guesses.
+// This system message gives it the facts to answer from. In-app chat only — jobs
+// relayed from the cluster (jobWorker) are arbitrary API requests and get none.
+const CHAT_SYSTEM_PROMPT = [
+  "You are the assistant built into LLMJob Earn, running entirely on the user's own GPU via a local server — nothing they type leaves their machine. Use this context when relevant:",
+  '- LLMJob turns the spare power of a GPU the user already owns into money: while the app runs, their GPU mines Pearl (PRL, a cryptocurrency the user is paid in) and can also run you, this local AI model.',
+  '- The mining pool pays with PPLNS ("Pay Per Last N Shares"): when it finds a block, the reward is split across the last N shares miners submitted, so payout reflects sustained contribution rather than luck. Payouts settle about every 4 hours with a 1 PRL minimum.',
+  '- This chat is private — it runs on the user\'s machine, so prompts never leave the computer.',
+  'Answer conversationally and concisely. For anything unrelated to LLMJob, just answer normally.',
+].join('\n');
+
 function llmChat(messages) {
   cancelChat('superseded by a new message');
   const base = llmStatus.webUrl || ('http://' + LLM.host + ':' + LLM.port);
   if (!llm || !llmStatus.ready) { send('llm:chat:error', { message: 'the local LLM is not running' }); return; }
 
-  const s = streamChatCompletion(base, buildChatBody(messages, { stream: true }),
+  const grounded = [{ role: 'system', content: CHAT_SYSTEM_PROMPT }].concat(Array.isArray(messages) ? messages : []);
+  const s = streamChatCompletion(base, buildChatBody(grounded, { stream: true }),
     (text) => send('llm:chat:delta', { text }));
   chatStream = s;
   s.done.then(
@@ -763,6 +812,32 @@ function stopWorker() {
   if (jobWorker) { jobWorker.stop(); jobWorker = null; }
 }
 
+// Resolve once the running miner is actually mining — i.e. it has reported a
+// non-zero hashrate, which proves the GPU is doing real work (not just connected
+// to the pool). Also settles on a miner failure (exit/error) so a broken miner
+// never blocks the LLM, and on a hard cap so a miner that connects but never
+// produces a share doesn't hold it forever.
+function waitForMinerUp(capMs) {
+  return new Promise((resolve) => {
+    if (!miner) return resolve();
+    let done = false;
+    const settle = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      miner.removeListener('event', onEvent);
+      miner.removeListener('stopped', settle);
+      miner.removeListener('error', settle);
+      resolve();
+    };
+    const onEvent = (e) => { if (e && e.type === 'status' && Number(e.hashrate) > 0) settle(); };
+    const timer = setTimeout(settle, capMs || 60000);
+    miner.on('event', onEvent);
+    miner.once('stopped', settle);
+    miner.once('error', settle);
+  });
+}
+
 // Apply the compute mode: run the miner and/or the LLM per the plan. When the
 // plan ends up running nothing (LLM-only mode with the VRAM gate refusing, or
 // no engine at all), tell the renderer — otherwise its optimistic "running"
@@ -770,7 +845,19 @@ function stopWorker() {
 async function applyPlan(settings) {
   const plan = resolvePlan(settings.mode || DEFAULT_MODE, { canMine: isValidAddress(settings.address), canLlm: true });
   if (plan.miner) {
-    startMining(settings).catch((e) => send('miner:log', { level: 'error', line: 'start failed: ' + e.message }));
+    // Start mining FIRST, then — when co-running — wait until the miner reports a
+    // non-zero hashrate before starting the LLM. Spawning the process (or even
+    // connecting to the pool) isn't enough proof mining works: the LLM loads its
+    // model and warms up in a few seconds, so without this wait it goes live
+    // first, and its GPU-layer budgeter reads free VRAM before mining has claimed
+    // its share. Waiting for real TH/s confirms the GPU is mining and its VRAM is
+    // allocated, so the LLM then sizes its offload to what's actually left.
+    try {
+      await startMining(settings);
+    } catch (e) {
+      send('miner:log', { level: 'error', line: 'start failed: ' + e.message });
+    }
+    if (plan.llm && miner && miner.isRunning()) await waitForMinerUp();
   } else {
     persistSettings(settings); // startMining persists; do it here when the miner is off
   }
@@ -785,7 +872,9 @@ async function applyPlan(settings) {
 }
 
 ipcMain.handle('settings:get', () => Object.assign(
-  { region: DEFAULTS.region, worker: DEFAULTS.worker, difficulty: DEFAULTS.difficulty, address: '', mdlAddress: '', mode: DEFAULT_MODE },
+  // The desktop app defaults to 'auto' (mine + serve the LLM, balanced from free
+  // VRAM) — the headless CLI keeps the mining-only DEFAULT_MODE.
+  { region: DEFAULTS.region, worker: DEFAULTS.worker, difficulty: DEFAULTS.difficulty, address: '', mdlAddress: '', mode: 'auto' },
   loadSettings(),
 ));
 ipcMain.handle('llm:status', () => llmStatus);
@@ -801,6 +890,10 @@ ipcMain.handle('balance:getMdl', (_e, address) =>
 ipcMain.on('miner:start', (_e, settings) => applyPlan(settings || {}));
 ipcMain.on('miner:stop', () => { stopMining(); stopLlm(); });
 ipcMain.on('open-external', (_e, url) => { shell.openExternal(url); });
+// Re-fit the window to its content when the renderer's layout changes (tab
+// switch, mining start/stop, etc.), so the frame never leaves a gap under the
+// footer or clips a taller view.
+ipcMain.on('app:fit', () => { fitWindowToContent(); });
 ipcMain.on('clipboard:write', (_e, text) => { clipboard.writeText(String(text == null ? '' : text)); });
 ipcMain.on('llm:chat', (_e, messages) => llmChat(messages));
 ipcMain.handle('node:status', () => nodeStatus());

@@ -7,6 +7,9 @@
 // Phase 4; for now Auto co-runs when the LLM is available.
 
 const MODES = ['mining', 'both', 'llm', 'auto'];
+// Shared fallback (used by the headless CLI): mining only, so a rig with no
+// flags never surprise-downloads the LLM. The desktop app defaults to 'auto'
+// (see main.js settings:get) since it's interactive.
 const DEFAULT_MODE = 'mining';
 
 function isValidMode(mode) {

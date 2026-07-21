@@ -49,7 +49,7 @@
           <div class="hero-sub"><span class="dot2" id="llm-hero-dot"></span><span class="hero-label">LLM</span><span class="hero-detail mono" id="llm-hero-detail">—</span></div>
         </div>
       </div>
-      <svg viewBox="0 0 480 56" width="100%" height="60" preserveAspectRatio="none">
+      <svg viewBox="0 0 480 56" width="100%" height="84" preserveAspectRatio="none">
         <defs><linearGradient id="mkFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2563eb" stop-opacity="0.18"></stop><stop offset="1" stop-color="#2563eb" stop-opacity="0"></stop></linearGradient></defs>
         <path id="mk-area" d="M0 56 L0 55 L480 55 L480 56 Z" fill="url(#mkFill)"></path>
         <path id="mk-line" d="M0 55 L480 55" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>
@@ -69,6 +69,10 @@
   <!-- ══════════ CHAT ══════════ -->
   <section id="view-chat" hidden>
     <div id="chat-running" class="chat-wrap" hidden>
+      <div id="chat-head" class="chat-head" hidden>
+        <span id="chat-model" class="chat-model mono">gemma-4-E4B-it</span>
+        <button id="chat-new" class="chip" type="button">+ New chat</button>
+      </div>
       <div id="chat-list" class="chat-list">
         <div id="chat-empty" class="chat-empty">
           <p>Ask anything — answers run on your GPU.</p>
@@ -77,7 +81,7 @@
         <div id="chat-messages" class="chat-messages"></div>
       </div>
       <form id="chat-form" class="chat-form">
-        <input id="chat-input" class="chat-input" type="text" autocomplete="off" placeholder="Message the local model…" aria-label="Message" />
+        <input id="chat-input" class="chat-input" type="text" autocomplete="off" placeholder="Send a message…" aria-label="Message" />
         <button id="chat-send" class="chat-send" type="submit" aria-label="Send" disabled>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"></path></svg>
         </button>
@@ -113,14 +117,20 @@
       </div>
 
       <div class="field-label"><span class="lbl">Connect</span><span class="meta" id="connect-hint">Not linked to an account</span></div>
-      <!-- Not connected: pairing-token flow -->
+      <!-- Not connected: connect callout + collapsible pairing-token flow -->
       <div id="connect-form" class="connect-card">
-        <p>This endpoint only answers on <b>this computer</b>. Link your LLMJob account to use it anywhere — other devices, web chat, and one shared cluster API.</p>
-        <input id="connect-token" class="connect-input mono" type="text" spellcheck="false" placeholder="Paste your pairing token" />
-        <div id="connect-error" class="connect-error" hidden></div>
+        <p>This endpoint only answers on <b>this computer</b>. Connect your LLMJob account to use it anywhere — other devices, web chat, and one shared cluster API.</p>
         <div class="connect-actions">
-          <button id="connect-link" class="connect-btn" type="button">Connect</button>
-          <button id="connect-dashboard" class="chip" type="button">Get a token ↗</button>
+          <button id="connect-dashboard" class="connect-btn" type="button">Connect with LLMJob</button>
+          <button id="connect-pair-toggle" class="connect-alt-btn" type="button">Use a pairing token</button>
+        </div>
+        <div id="connect-pair" class="connect-pair" hidden>
+          <div class="connect-pair-row">
+            <input id="connect-token" class="connect-input mono" type="text" spellcheck="false" placeholder="Paste token from the dashboard (lj-join-…)" />
+            <button id="connect-link" class="connect-link-btn" type="button">Link</button>
+          </div>
+          <div id="connect-error" class="connect-error" hidden></div>
+          <p class="connect-pair-note">Dashboard → Add node → copy the pairing token. Links this computer without a browser sign-in.</p>
         </div>
       </div>
       <!-- Connected: live-in-cluster card -->

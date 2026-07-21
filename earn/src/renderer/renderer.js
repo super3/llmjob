@@ -25,6 +25,7 @@
     btnStart: $('btn-start'), btnStop: $('btn-stop'), engineStatus: $('engine-status'),
     // chat
     chatRunning: $('chat-running'), chatStopped: $('chat-stopped'), chatStoppedModel: $('chat-stopped-model'),
+    chatHead: $('chat-head'), chatModel: $('chat-model'), chatNew: $('chat-new'),
     chatList: $('chat-list'), chatEmpty: $('chat-empty'), chatSuggestions: $('chat-suggestions'),
     chatMessages: $('chat-messages'), chatForm: $('chat-form'), chatInput: $('chat-input'), chatSend: $('chat-send'),
     // api
@@ -34,6 +35,7 @@
     // connect
     connectHint: $('connect-hint'), connectForm: $('connect-form'), connectToken: $('connect-token'),
     connectError: $('connect-error'), connectLink: $('connect-link'), connectDashboard: $('connect-dashboard'),
+    connectPairToggle: $('connect-pair-toggle'), connectPair: $('connect-pair'),
     connectDone: $('connect-done'), connectedTitle: $('connected-title'), connectedName: $('connected-name'),
     connectedAvatar: $('connected-avatar'), connectedRename: $('connected-rename'), connectDisconnect: $('connect-disconnect'),
     // settings
@@ -48,7 +50,7 @@
     mining: false,       // master process running (miner and/or LLM per mode)
     view: 'mine',        // mine | chat | api | settings | logs
     returnTab: 'mine',   // where settings/logs return to
-    address: '', gpu: '', mode: 'mining',
+    address: '', gpu: '', mode: 'auto',
     llm: { ready: false, endpoint: null, webUrl: null, tps: 0, model: null, error: null },
     chat: { messages: [], streaming: false, streamText: '', bubble: null },
     node: { connected: false, nodeId: null, name: null },
@@ -75,8 +77,8 @@
   // Prompt chips shown in the empty chat — the real model answers them.
   const SUGGESTIONS = [
     { title: 'What is LLMJob?', prompt: 'What is LLMJob?' },
+    { title: 'What is PPLNS?', prompt: 'What is PPLNS?' },
     { title: 'Help me write an email', prompt: 'Help me write a short email asking my landlord to fix the heater.' },
-    { title: 'Plan a weekend trip', prompt: 'Plan a cheap 2-day weekend trip near Portland.' },
   ];
 
   const MDL_NOTE = {
@@ -218,10 +220,24 @@
     el.chatSend.disabled = !ok;
   }
 
+  // The model + "New chat" header shows once a conversation has started.
+  function newChat() {
+    if (state.chat.streaming) return; // don't wipe a reply mid-stream
+    state.chat.messages = [];
+    state.chat.streamText = '';
+    el.chatMessages.innerHTML = '';
+    el.chatEmpty.hidden = false;
+    el.chatHead.hidden = true;
+    updateSendEnabled();
+    if (state.view === 'chat') el.chatInput.focus();
+  }
+
   function sendChat(text) {
     const t = String(text || '').trim();
     if (!t || state.chat.streaming || !state.llm.ready || !api.sendChat) return;
     el.chatEmpty.hidden = true;
+    el.chatModel.textContent = state.llm.model || 'gemma-4-E4B-it';
+    el.chatHead.hidden = false;
     addMsg('user', t);
     state.chat.messages.push({ role: 'user', text: t });
     state.chat.bubble = addMsg('assistant', '');
@@ -301,10 +317,10 @@
     if (!token) { showConnectError('Enter your pairing token first.'); return; }
     if (!api.connectNode) return;
     el.connectLink.disabled = true;
-    el.connectLink.textContent = 'Connecting…';
+    el.connectLink.textContent = 'Linking…';
     const res = await api.connectNode({ token, name: el.setWorker.value.trim() || undefined });
     el.connectLink.disabled = false;
-    el.connectLink.textContent = 'Connect';
+    el.connectLink.textContent = 'Link';
     if (res && res.success) {
       el.connectToken.value = '';
       renderNode({ connected: true, nodeId: res.nodeId, name: res.name, user: res.user });
@@ -466,6 +482,23 @@
     start();
   }
 
+  // Keep the OS window sized to the content: a tab switch or a state change
+  // (mining start/stop, LLM coming up) changes the app's height, and without
+  // this the frame keeps its old size — leaving a gap under the footer or
+  // clipping a taller view. Inner scrollers (chat, logs) are bounded, so this
+  // fires on discrete layout changes, not per streamed token.
+  function watchWindowFit() {
+    if (!api.fitWindow || typeof ResizeObserver === 'undefined') return;
+    const appEl = document.querySelector('.app');
+    if (!appEl) return;
+    let t = null;
+    const ro = new ResizeObserver(() => {
+      if (t) clearTimeout(t);
+      t = setTimeout(() => api.fitWindow(), 80);
+    });
+    ro.observe(appEl);
+  }
+
   function wire() {
     el.addrInput.addEventListener('input', (e) => {
       state.address = e.target.value;
@@ -524,6 +557,7 @@
     // Chat composer
     el.chatInput.addEventListener('input', updateSendEnabled);
     el.chatForm.addEventListener('submit', (e) => { e.preventDefault(); sendChat(el.chatInput.value); });
+    el.chatNew.addEventListener('click', newChat);
 
     // API endpoint: copy the /v1 URL, or open the llama-server web UI.
     const copyEndpoint = () => {
@@ -544,7 +578,13 @@
     el.connectLink.addEventListener('click', doConnect);
     el.connectToken.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doConnect(); } });
     el.connectDisconnect.addEventListener('click', doDisconnect);
+    // Primary "Connect with LLMJob" opens the dashboard sign-in; "Use a pairing
+    // token" reveals the manual token field (collapsed by default).
     el.connectDashboard.addEventListener('click', () => { if (api.openNodeDashboard) api.openNodeDashboard(); });
+    el.connectPairToggle.addEventListener('click', () => {
+      el.connectPair.hidden = !el.connectPair.hidden;
+      if (!el.connectPair.hidden) el.connectToken.focus();
+    });
     el.connectedRename.addEventListener('click', () => { state.view = 'settings'; renderView(); });
 
     document.querySelectorAll('[data-ext]').forEach((a) =>
@@ -556,6 +596,7 @@
 
   async function init() {
     wire();
+    watchWindowFit();
     initSuggestions();
     if (api.getConfig) {
       const config = await api.getConfig();
