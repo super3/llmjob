@@ -41,7 +41,14 @@ writeFileSync(join(pkgDir, 'h-manifest.conf'), manifest);
 copyFileSync(bin, join(pkgDir, 'llmjob-earn-cli-linux'));
 chmodSync(join(pkgDir, 'llmjob-earn-cli-linux'), 0o755);
 
-const out = join(dist, 'llmjob-earn-hiveos.tar.gz');
+// The tarball name carries the version: HiveOS rigs cache the download and can
+// skip re-fetching a URL whose filename hasn't changed, leaving them stuck on an
+// old build after a release. A per-release filename makes every update a fresh
+// download. The unversioned name is kept as a copy so flight sheets that still
+// point at releases/latest/…/llmjob-earn-hiveos.tar.gz keep installing.
+const out = join(dist, 'llmjob-earn-hiveos-' + version + '.tar.gz');
+const legacy = join(dist, 'llmjob-earn-hiveos.tar.gz');
 execFileSync('tar', ['-czf', out, '-C', stage, 'llmjob-earn']);
+copyFileSync(out, legacy);
 rmSync(stage, { recursive: true, force: true });
-console.log('built ' + out + ' (v' + version + ')');
+console.log('built ' + out + ' (v' + version + ') + legacy ' + legacy);

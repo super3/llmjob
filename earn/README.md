@@ -75,10 +75,16 @@ the regional endpoint (`us1/us2/eu1/eu2/ru1/sg1/hk1/in1.alphapool.tech:5566`).
 ## HiveOS (flight sheet)
 
 The release ships a HiveOS custom-miner package wrapping the headless CLI
-(`hiveos/` + `scripts/build-hiveos.mjs` → `llmjob-earn-hiveos.tar.gz`):
+(`hiveos/` + `scripts/build-hiveos.mjs` → `llmjob-earn-hiveos-<version>.tar.gz`,
+versioned because HiveOS caches the download by filename and can leave rigs
+stuck on an old build when the name never changes; an unversioned
+`llmjob-earn-hiveos.tar.gz` copy is still published for flight sheets that
+predate the rename):
 
 - **Miner** → Custom · **Miner name** → `llmjob-earn`
-- **Installation URL** → `https://github.com/super3/llmjob/releases/latest/download/llmjob-earn-hiveos.tar.gz`
+- **Installation URL** → the versioned tarball from the [latest release](https://github.com/super3/llmjob/releases/latest),
+  e.g. `https://github.com/super3/llmjob/releases/download/v0.1.17/llmjob-earn-hiveos-0.1.17.tar.gz` —
+  update the URL (and rigs re-download automatically) when a new version ships
 - **Wallet** → your `prl1p…` address only (HiveOS caps the wallet field at 90
   characters, so the combined `prl1p…+mdl1p…` form doesn't fit)
 - **Extra config arguments** → `--mdl mdl1p…` to merge-mine MDL, plus any other
