@@ -94,7 +94,8 @@ npm run test:watch
 - `GET /api/nodes/public` - Get all public nodes
 - `POST /api/nodes/ping` - Node status update (node signature required)
 - `POST /api/nodes/join` - Self-register a node with a **join token** (used by the node agent); attaches the node to the token owner's account
-- `POST /api/usage` - Record a completed generation (LLMJob **API key** required); writes a request log entry and bills the key's token usage
+- `POST /v1/chat/completions` - OpenAI-compatible chat completions (LLMJob **API key** required); turns the request into an inference job served by an online node, streams if `stream: true`, and bills the key's token usage
+- `POST /api/usage` - Record a completed generation (LLMJob **API key** required); writes a request log entry and bills the key's token usage. Used by clients that run inference elsewhere and only report usage — the dashboard advertises `/v1/chat/completions` as the endpoint to call
 
 ### Node join flow
 
