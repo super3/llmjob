@@ -8,10 +8,11 @@ const { enginePath, engineDownloadUrl, isZipUrl } = require('../shared/engine');
 // injected so the orchestration is fully unit-testable; main.js wires the real
 // implementations.
 class EngineManager {
-  constructor({ dir, platform, gpu, urlBase, fs, download, extract, chmod } = {}) {
+  constructor({ dir, platform, gpu, version, urlBase, fs, download, extract, chmod } = {}) {
     this.dir = dir;
     this.platform = platform;
     this.gpu = gpu;
+    this.version = version;
     this.urlBase = urlBase;
     this.fs = fs;
     this.download = download;
@@ -20,7 +21,7 @@ class EngineManager {
   }
 
   binaryPath() {
-    return enginePath(this.dir, this.platform, this.gpu);
+    return enginePath(this.dir, this.platform, this.gpu, this.version);
   }
 
   isInstalled() {
@@ -33,7 +34,7 @@ class EngineManager {
     if (this.isInstalled()) return dest;
 
     this.fs.mkdirSync(this.dir, { recursive: true });
-    const url = engineDownloadUrl(this.platform, this.gpu, this.urlBase);
+    const url = engineDownloadUrl(this.platform, this.gpu, this.urlBase, this.version);
 
     if (isZipUrl(url)) {
       const zipPath = path.join(this.dir, 'engine.zip');

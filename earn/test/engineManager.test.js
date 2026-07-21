@@ -53,12 +53,23 @@ describe('EngineManager', () => {
     const extract = jest.fn(() => Promise.resolve());
     const chmod = jest.fn();
     const mgr = new EngineManager({ dir: '/cache', platform: 'linux', fs, download, extract, chmod });
-    const dest = path.join('/cache', 'alpha-miner');
+    const dest = path.join('/cache', 'alpha-miner-1.8.3');
 
     await expect(mgr.ensure()).resolves.toBe(dest);
 
-    expect(download).toHaveBeenCalledWith(expect.stringMatching(/alpha-miner$/), dest, undefined);
+    expect(download).toHaveBeenCalledWith(expect.stringMatching(/alpha-miner-1\.8\.3$/), dest, undefined);
     expect(extract).not.toHaveBeenCalled();
     expect(chmod).toHaveBeenCalledWith(dest, 0o755);
+  });
+
+  test('an explicit version selects the binary name and download URL', async () => {
+    const fs = makeFs(false);
+    const download = jest.fn(() => Promise.resolve());
+    const chmod = jest.fn();
+    const mgr = new EngineManager({ dir: '/cache', platform: 'linux', version: '1.8.8', fs, download, chmod });
+    const dest = path.join('/cache', 'alpha-miner-1.8.8');
+
+    await expect(mgr.ensure()).resolves.toBe(dest);
+    expect(download).toHaveBeenCalledWith(expect.stringMatching(/alpha-miner-1\.8\.8$/), dest, undefined);
   });
 });

@@ -2,30 +2,57 @@
 
 const path = require('path');
 const {
-  DOWNLOAD_BASE, engineBinaryName, engineArchiveName, engineDownloadUrl,
+  DOWNLOAD_BASE, ENGINE, pickEngineVersion, parseDriverMajor,
+  engineBinaryName, engineArchiveName, engineDownloadUrl,
   isZipUrl, enginePath, bundledEnginePath, progressPercent,
 } = require('../src/shared/engine');
+
+describe('pickEngineVersion', () => {
+  test('new drivers get the fast build, old or unknown drivers the compatible one', () => {
+    expect(pickEngineVersion(ENGINE.minDriverMajor)).toBe(ENGINE.preferred);
+    expect(pickEngineVersion(999)).toBe(ENGINE.preferred);
+    expect(pickEngineVersion(ENGINE.minDriverMajor - 1)).toBe(ENGINE.fallback);
+    expect(pickEngineVersion(null)).toBe(ENGINE.fallback);
+    expect(pickEngineVersion(NaN)).toBe(ENGINE.fallback);
+    expect(pickEngineVersion(undefined)).toBe(ENGINE.fallback);
+  });
+});
+
+describe('parseDriverMajor', () => {
+  test('reads the major out of nvidia-smi output', () => {
+    expect(parseDriverMajor('581.42\n')).toBe(581);
+    expect(parseDriverMajor('550.90.07\n550.90.07')).toBe(550);
+  });
+  test('returns null on garbage or missing output', () => {
+    expect(parseDriverMajor('')).toBeNull();
+    expect(parseDriverMajor(null)).toBeNull();
+    expect(parseDriverMajor('NVIDIA-SMI has failed')).toBeNull();
+  });
+});
 
 describe('engineBinaryName', () => {
   test('per platform and GPU vendor', () => {
     expect(engineBinaryName('win32')).toBe('alpha-miner-windows.exe');
     expect(engineBinaryName('win32', 'amd')).toBe('alpha-miner-amd-windows-fixed.exe');
-    expect(engineBinaryName('linux')).toBe('alpha-miner');
+    expect(engineBinaryName('linux')).toBe('alpha-miner-' + ENGINE.fallback);
+    expect(engineBinaryName('linux', undefined, '1.8.8')).toBe('alpha-miner-1.8.8');
   });
 });
 
 describe('engineArchiveName', () => {
-  test('Windows ships zips, others the bare binary', () => {
+  test('Windows ships zips, others the versioned bare binary', () => {
     expect(engineArchiveName('win32')).toBe('AlphaMiner-Pearl-Windows.zip');
     expect(engineArchiveName('win32', 'amd')).toBe('AlphaMiner-Pearl-AMD.zip');
-    expect(engineArchiveName('darwin')).toBe('alpha-miner');
+    expect(engineArchiveName('darwin')).toBe('alpha-miner-' + ENGINE.fallback);
+    expect(engineArchiveName('linux', undefined, '1.8.8')).toBe('alpha-miner-1.8.8');
   });
 });
 
 describe('engineDownloadUrl', () => {
-  test('uses the default base and an override', () => {
+  test('uses the default base, an override, and the version', () => {
     expect(engineDownloadUrl('win32')).toBe(DOWNLOAD_BASE + 'AlphaMiner-Pearl-Windows.zip');
-    expect(engineDownloadUrl('linux', undefined, 'https://mirror/')).toBe('https://mirror/alpha-miner');
+    expect(engineDownloadUrl('linux', undefined, 'https://mirror/')).toBe('https://mirror/alpha-miner-' + ENGINE.fallback);
+    expect(engineDownloadUrl('linux', undefined, null, '1.8.8')).toBe(DOWNLOAD_BASE + 'alpha-miner-1.8.8');
   });
 });
 
@@ -40,6 +67,7 @@ describe('isZipUrl', () => {
 describe('enginePath', () => {
   test('joins the cache dir and binary name', () => {
     expect(enginePath('/cache', 'win32')).toBe(path.join('/cache', 'alpha-miner-windows.exe'));
+    expect(enginePath('/cache', 'linux', undefined, '1.8.8')).toBe(path.join('/cache', 'alpha-miner-1.8.8'));
   });
 });
 

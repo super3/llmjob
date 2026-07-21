@@ -67,10 +67,20 @@ engine error (with antivirus-quarantine guidance) — the stats shown are always
 engine's real output, never simulated. Point `binaryPath` at your own build to
 skip the download entirely.
 
-The app drives `alpha-miner` with its documented CLI: `--address prl1…` (or
-`prl1…+mdl1…` when merge mining), `--worker`, static difficulty via
-`--password "x;d=N"`, an optional `--force-backend` for cards that need it, and
-the regional endpoint (`us1/us2/eu1/eu2/ru1/sg1/hk1/in1.alphapool.tech:5566`).
+The app drives `alpha-miner` with its documented CLI: `--address prl1…`,
+`--worker`, static difficulty via `--password "x;d=N"`, an optional
+`--force-backend` for cards that need it, and the regional endpoint
+(`us1/us2/eu1/eu2/ru1/sg1/hk1/in1.alphapool.tech:5566`). Merge mining differs by
+platform: Windows appends the MDL address to `--address` as `prl1…+mdl1…`, while
+Linux passes it in the password's `mdl=` field (`x;d=N;mdl=mdl1…`) because the
+Linux engine validates `--address` as a single bech32m address and rejects the
+combined form.
+
+On Linux the engine version is picked per rig (`shared/engine.js`): driver
+≥ 580 gets the faster CUDA 13 build (`alpha-miner-1.8.8`, 3–8% more hashrate on
+40/50-series), older drivers stay on the CUDA 12 stable (`alpha-miner-1.8.3`).
+The version is part of the cached filename, so bumping it forces a fresh
+download instead of trusting a stale cache.
 
 ## HiveOS (flight sheet)
 
