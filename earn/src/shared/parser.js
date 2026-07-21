@@ -29,6 +29,15 @@ function gpuName(s) {
   return name.toLowerCase() === 'system' ? null : name;
 }
 
+// The 0-based card index from a `gpu=<index>:<name>` field, or null when the
+// line carries no index (`gpu=system`, or a name-only `gpu=<name>`). Multi-GPU
+// rigs tag every status/pool line with the card it refers to, so this is how a
+// per-card accumulator knows which GPU a hashrate belongs to.
+function gpuIndex(s) {
+  const m = String(s).match(/\bgpu=(\d+):/);
+  return m ? Number(m[1]) : null;
+}
+
 function parseLine(line) {
   const s = String(line == null ? '' : line).trim();
   if (!s) return null;
@@ -37,6 +46,7 @@ function parseLine(line) {
   if (/\bhashrate_th_s=/.test(s)) {
     return {
       type: 'status',
+      gpuIndex: gpuIndex(s),
       hashrate: numField(s, 'hashrate_th_s'),
       accepted: numField(s, 'accepted'),
       rejected: numField(s, 'rejected'),
@@ -48,10 +58,10 @@ function parseLine(line) {
   // Pool connection.
   const conn = s.match(/component=pool\s+connected\s+host=(\S+)\s+port=(\d+)/i);
   if (conn) {
-    return { type: 'connected', endpoint: conn[1] + ':' + conn[2], gpu: gpuName(s) };
+    return { type: 'connected', gpuIndex: gpuIndex(s), endpoint: conn[1] + ':' + conn[2], gpu: gpuName(s) };
   }
 
   return null;
 }
 
-module.exports = { numField, gpuName, parseLine };
+module.exports = { numField, gpuName, gpuIndex, parseLine };

@@ -68,8 +68,8 @@ describe('MinerManager', () => {
     expect(logs.map((l) => l.line)).toEqual([connected, 'just noise', status]);
     expect(logs.every((l) => l.level === 'info')).toBe(true);
     expect(events).toEqual([
-      { type: 'connected', endpoint: 'us2.alphapool.tech:5566', gpu: 'NVIDIA GeForce RTX 4090' },
-      { type: 'status', hashrate: 286.86, accepted: 5, rejected: 0, power: 449, gpu: 'NVIDIA GeForce RTX 4090' },
+      { type: 'connected', gpuIndex: 0, endpoint: 'us2.alphapool.tech:5566', gpu: 'NVIDIA GeForce RTX 4090' },
+      { type: 'status', gpuIndex: 0, hashrate: 286.86, accepted: 5, rejected: 0, power: 449, gpu: 'NVIDIA GeForce RTX 4090' },
     ]);
   });
 

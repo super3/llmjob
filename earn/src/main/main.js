@@ -33,9 +33,9 @@ const { isValidAddress } = require('../shared/address');
 const { progressPercent, bundledEnginePath } = require('../shared/engine');
 const { formatUpdate } = require('../shared/updateStatus');
 const { describeLaunchError } = require('../shared/engineError');
-const { pickGpu } = require('../shared/gpu');
+const { pickGpu, parseGpuStats } = require('../shared/gpu');
 const { pickFastestRegion } = require('../shared/region');
-const { buildMinerReport } = require('../shared/minerReport');
+const { buildMinerReports } = require('../shared/minerReport');
 const earnings = require('../shared/earnings');
 const format = require('../shared/format');
 
@@ -190,9 +190,8 @@ async function startMining(settings) {
   // GPU VRAM (used/total) so the board shows headroom for co-running LLMs.
   const report = async () => {
     const snap = snapshot(stats, Date.now());
-    const vram = await detectVram();
-    if (vram) { snap.vramUsedMb = vram.usedMb; snap.vramTotalMb = vram.totalMb; }
-    postMinerReport(buildMinerReport(settings, snap));
+    const gpuVram = await detectGpusVram();
+    buildMinerReports(settings, snap, gpuVram).forEach(postMinerReport);
   };
   report();
   if (reporter) clearInterval(reporter);
@@ -335,6 +334,19 @@ function detectVram() {
         }
         resolve(any ? { usedMb, totalMb } : null);
       });
+  });
+}
+
+// Per-card live VRAM (used/total, MB) via nvidia-smi — one entry per GPU so the
+// network board reports each card's own headroom instead of the rig's summed
+// total. Resolves [{ index, name, usedMb, totalMb }] (empty on no nvidia-smi /
+// parse failure). Never rejects.
+function detectGpusVram() {
+  return new Promise((resolve) => {
+    execFile('nvidia-smi',
+      ['--query-gpu=index,name,memory.used,memory.total', '--format=csv,noheader,nounits'],
+      { timeout: 5000 },
+      (err, stdout) => resolve(err ? [] : parseGpuStats(stdout)));
   });
 }
 
