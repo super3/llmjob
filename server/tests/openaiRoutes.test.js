@@ -213,6 +213,14 @@ function fakeRes(withFlush = true) {
   if (withFlush) res.flushHeaders = function () { this.headersSent = true; };
   return res;
 }
+// A fake response that can simulate the caller hanging up (a 'close' event).
+function fakeResClosable() {
+  const res = fakeRes();
+  const listeners = [];
+  res.on = (ev, fn) => { if (ev === 'close') listeners.push(fn); };
+  res.emitClose = () => listeners.forEach((fn) => fn());
+  return res;
+}
 function fakeServices(over = {}) {
   return {
     jobService: Object.assign({
@@ -225,6 +233,31 @@ function fakeServices(over = {}) {
 }
 
 describe('OpenAI gateway — controller branches', () => {
+  it('stops the non-streaming poll when the caller hangs up', async () => {
+    const services = fakeServices({ jobService: { getJobResult: async () => ({ status: 'pending' }) } });
+    const ctrl = new OpenAiController({ services, pollMs: 5, timeoutMs: 60000 });
+    const res = fakeResClosable();
+    const p = ctrl.chatCompletions(fakeReq({ messages: [{ role: 'user', content: 'x' }] }), res);
+    await sleep(20);   // let it poll a couple of times against a job that never completes
+    res.emitClose();   // client disconnects
+    await p;           // resolves promptly instead of running to the 60s timeout
+    expect(res.body).toBeNull();      // never sent a completion
+    expect(res.statusCode).toBe(200); // untouched default
+  });
+
+  it('stops a stream when the caller hangs up (no [DONE], no end)', async () => {
+    const services = fakeServices({ jobService: { getJobResult: async () => ({ status: 'running', chunks: [] }) } });
+    const ctrl = new OpenAiController({ services, pollMs: 5, timeoutMs: 60000 });
+    const res = fakeResClosable();
+    const p = ctrl.chatCompletions(fakeReq({ messages: [{ role: 'user', content: 'x' }], stream: true }), res);
+    await sleep(20);
+    res.emitClose();
+    await p;
+    expect(res.writes.some((w) => w.includes('"role":"assistant"'))).toBe(true); // opened the stream
+    expect(res.writes.join('')).not.toContain('[DONE]');                          // bailed before finishing
+    expect(res.ended).toBe(false);
+  });
+
   it('returns 500 (headers not yet sent) when a non-streamed job lookup throws', async () => {
     const services = fakeServices({ jobService: { getJobResult: async () => { throw new Error('boom'); } } });
     const ctrl = new OpenAiController({ services, pollMs: 1, timeoutMs: 50 });

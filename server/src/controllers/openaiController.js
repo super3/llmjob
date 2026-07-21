@@ -50,7 +50,10 @@ class OpenAiController {
       userId: req.apiKey.userId,
     });
 
-    const ctx = { res, svc, job, key: req.apiKey, promptTokens: estimateTokens(joinContent(messages)) };
+    const ctx = { res, svc, job, key: req.apiKey, promptTokens: estimateTokens(joinContent(messages)), aborted: false };
+    // If the caller hangs up mid-request, stop the long-poll instead of querying
+    // the DB and writing to a dead socket until the job finishes or times out.
+    if (res.on) res.on('close', () => { ctx.aborted = true; });
     try {
       if (body.stream === true) await this._streamResult(ctx);
       else await this._jsonResult(ctx);
@@ -68,6 +71,7 @@ class OpenAiController {
     const { res, svc, job } = ctx;
     const started = this.now();
     for (;;) {
+      if (ctx.aborted) return; // caller hung up — stop polling, the socket is gone
       const r = await svc.jobService.getJobResult(job.id);
       if (r.status === 'completed') {
         const out = completionTokens(r);
@@ -111,6 +115,7 @@ class OpenAiController {
     const started = this.now();
     let emitted = 0;
     for (;;) {
+      if (ctx.aborted) return; // caller hung up — stop; skip the [DONE]/end writes
       const r = await svc.jobService.getJobResult(job.id);
       const chunks = r.chunks || [];
       for (; emitted < chunks.length; emitted++) {
