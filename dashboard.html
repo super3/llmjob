@@ -466,7 +466,7 @@ function App() {
     finally { setCreating(false); }
   };
   const copyNewKey = () => { navigator.clipboard && genKey && navigator.clipboard.writeText(genKey).then(() => { setCopiedKey(true); setTimeout(() => setCopiedKey(false), 1500); }); };
-  const copyEndpoint = () => { navigator.clipboard && navigator.clipboard.writeText(`${window.location.origin}/api/usage`).then(() => { setCopiedEndpoint(true); setTimeout(() => setCopiedEndpoint(false), 1500); }); };
+  const copyEndpoint = () => { navigator.clipboard && navigator.clipboard.writeText(`${window.location.origin}/v1/chat/completions`).then(() => { setCopiedEndpoint(true); setTimeout(() => setCopiedEndpoint(false), 1500); }); };
   const closeCreate = () => { setShowCreate(false); setGenKey(null); setNewKeyName(""); setCopiedEndpoint(false); };
   const revoke = async (id) => {
     const res = await authedFetch(`/api/keys/${id}`, { method: 'DELETE' });
@@ -628,9 +628,9 @@ function App() {
                   <code>{genKey}</code>
                   <button onClick={copyNewKey}>{copiedKey ? "copied" : "copy"}</button>
                 </div>
-                <p>Send requests to this endpoint with an <code style={{ fontFamily: '"IBM Plex Mono", monospace', fontSize: 12.5 }}>Authorization: Bearer &lt;key&gt;</code> header:</p>
+                <p>Point any OpenAI SDK at the base URL <code style={{ fontFamily: '"IBM Plex Mono", monospace', fontSize: 12.5 }}>{window.location.origin}/v1</code> with the key as an <code style={{ fontFamily: '"IBM Plex Mono", monospace', fontSize: 12.5 }}>Authorization: Bearer &lt;key&gt;</code> header, or call the endpoint directly:</p>
                 <div className="newkey-box">
-                  <code>POST {window.location.origin}/api/usage</code>
+                  <code>POST {window.location.origin}/v1/chat/completions</code>
                   <button onClick={copyEndpoint}>{copiedEndpoint ? "copied" : "copy"}</button>
                 </div>
                 <div className="modal-actions">
