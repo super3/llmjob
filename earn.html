@@ -464,7 +464,7 @@
         <div class="res-row"><span class="l">PRL price</span><span class="v" id="r-price">—</span></div>
         <div class="res-row"><span class="l">Network hashrate</span><span class="v" id="r-net">—</span></div>
       </div>
-      <p class="disclaimer">Estimated from the network hashrate, current block reward and the 1% pool fee. Mining is probabilistic — real payouts vary with luck and network growth.</p>
+      <p class="disclaimer"><span id="r-live">Loading live network data…</span> Estimated from the network hashrate, current block reward and the 1% pool fee. Mining is probabilistic — real payouts vary with luck and network growth.</p>
     </div>
   </div>
   <div class="percard">
@@ -695,13 +695,18 @@
       { name: 'H100', th: 700, arch: 'Hopper · 80 GB · datacenter' },
     ];
 
-    // Live market data, with fallbacks. AlphaPool prices PRL via SafeTrade and
-    // reads the network hashrate from prlscan; we mirror those and fall back to
-    // these current constants if a request is blocked or offline (e.g. CORS).
-    let PRICE = 0.47;               // PRL/USDT — SafeTrade (fallback)
-    let NET_TH = 30.79e6;           // network hashrate in TH/s (~30.79 EH/s) — prlscan (fallback)
-    const DAILY_NET_PRL = 1.2e6;    // ~2,600 PRL/block x ~480 blocks/day
+    // Live market data from the prlscan API (api.prlscan.com, CORS-open) — the
+    // same source the explorer's own frontend uses: price, a 100-block average
+    // of the network hashrate, and the current block reward + cadence. The
+    // constants below are a July 2026 snapshot used only until the live fetch
+    // lands; if it fails, the page SAYS so (see r-live) instead of passing off
+    // stale numbers as current — overstated earnings cost more trust than a
+    // missing figure.
+    let PRICE = 0.30;               // PRL/USD (snapshot)
+    let NET_TH = 60.6e6;            // network hashrate in TH/s, ~60.6 EH/s (snapshot)
+    let DAILY_NET_PRL = 1.62e6;     // ~2,489 PRL/block × ~650 blocks/day (snapshot)
     const FEE = 0.99;               // keep 99% after the 1% pool fee
+    let live = { price: false, net: false, reward: false };
 
     const state = { hashrate: 354, cards: 1, selected: 'RTX 5090' };
 
@@ -764,14 +769,25 @@
       });
     }
 
+    // Honest data-source note: say whether the numbers are live or a snapshot.
+    function renderLiveNote(done) {
+      const el = document.getElementById('r-live');
+      if (!el) return;
+      if (!done) { el.textContent = 'Loading live network data…'; return; }
+      el.textContent = (live.price && live.net && live.reward)
+        ? 'Live network data.'
+        : 'Live data unavailable right now — figures below use a July 2026 snapshot and may be outdated.';
+    }
+
     inHash.addEventListener('input', (e) => { state.hashrate = e.target.value; state.selected = null; render(); });
     inCards.addEventListener('input', (e) => { state.cards = e.target.value; render(); });
 
     render();
 
-    // ---- Best-effort live refresh (price + network hashrate) ----
-    // Any failure (offline, CORS, shape change) leaves the fallbacks above in
-    // place, so the estimate is always sane and upgrades to live when reachable.
+    // ---- Best-effort live refresh (price, network hashrate, emission) ----
+    // All three come from the prlscan API (the explorer's own backend). Any
+    // failure (offline, endpoint change) keeps the snapshot constants and
+    // renderLiveNote flags it, so stale numbers are never presented as live.
     const num = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : null; };
     function getJson(url) {
       const c = new AbortController();
@@ -782,20 +798,42 @@
         .then((d) => { clearTimeout(t); return d; });
     }
     async function livePrice() {
-      const st = await getJson('https://safe.trade/api/v2/peatio/public/markets/tickers');
-      const s = st && st.prlusdt && st.prlusdt.ticker && num(st.prlusdt.ticker.last);
-      if (s) return s;
+      const m = await getJson('https://api.prlscan.com/v1/market/prl');
+      const p = m && num(m.price_usd);
+      if (p) return p;
       const cg = await getJson('https://api.coingecko.com/api/v3/simple/price?ids=pearl-2&vs_currencies=usd');
       return (cg && cg['pearl-2'] && num(cg['pearl-2'].usd)) || null;
     }
     (async () => {
-      const [price, net] = await Promise.all([
+      const [price, metrics, blocks] = await Promise.all([
         livePrice(),
-        getJson('https://prlscan.com/api/getnetworkhashps'),
+        getJson('https://api.prlscan.com/v1/analytics/block-metrics'),
+        getJson('https://api.prlscan.com/v1/blocks?limit=1'),
       ]);
-      if (price && price < 1000) PRICE = price;                 // PRL is well under $1
-      const hps = num(net);                                     // prlscan returns H/s
-      if (hps) { const th = hps / 1e12; if (th > 1 && th < 1e12) NET_TH = th; }
+
+      if (price && price < 1000) { PRICE = price; live.price = true; } // PRL is well under $1
+
+      // Network hashrate + block cadence: average the explorer's per-block
+      // estimates over its ~100-block window — single-block figures swing wildly.
+      const items = metrics && Array.isArray(metrics.items) ? metrics.items : [];
+      const hps = items.map((i) => num(i && i.estimated_hashrate_hps)).filter(Boolean);
+      const times = items.map((i) => num(i && i.block_time_seconds)).filter(Boolean);
+      if (hps.length >= 10) {
+        const th = hps.reduce((a, b) => a + b, 0) / hps.length / 1e12;
+        if (th > 1 && th < 1e12) { NET_TH = th; live.net = true; }
+      }
+
+      // Daily emission = current block reward × blocks/day at the observed pace.
+      const grains = blocks && Array.isArray(blocks.items) && blocks.items[0]
+        && num(blocks.items[0].reward_grains);
+      if (grains && times.length >= 10) {
+        const rewardPrl = grains / 1e8;
+        const avgSec = times.reduce((a, b) => a + b, 0) / times.length;
+        const daily = rewardPrl * (86400 / avgSec);
+        if (daily > 1e4 && daily < 1e9) { DAILY_NET_PRL = daily; live.reward = true; }
+      }
+
+      renderLiveNote(true);
       render();
     })();
   })();
