@@ -30,7 +30,7 @@ const { JobWorker } = require('./jobWorker');
 const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
 const { buildBalanceUrl, parseBalance, buildMdlBalanceUrl, parseMdlBalance } = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
-const { progressPercent, bundledEnginePath, pickEngineVersion, parseDriverMajor } = require('../shared/engine');
+const { progressPercent, bundledEnginePath, pickEngineVersion, parseDriverMajor, ENGINE } = require('../shared/engine');
 const { formatUpdate } = require('../shared/updateStatus');
 const { describeLaunchError } = require('../shared/engineError');
 const { pickGpu, parseGpuStats } = require('../shared/gpu');
@@ -223,17 +223,26 @@ async function startMining(settings) {
   const endpoint = settings.endpoint || endpointFor(settings.region || DEFAULTS.region);
   send('miner:log', { level: 'info', line: 'connecting to ' + endpoint + ' · worker ' + (settings.worker || DEFAULTS.worker) });
 
-  // Resolve the engine. Off Windows, first pick the build the rig's driver can
-  // run (the 1.8.6+ line is faster but needs NVIDIA driver >= 580); Windows
-  // ignores version. A packaged build may ship the engine under
+  // Resolve the engine. Off Windows, pick the build the rig's driver can run
+  // (the 1.8.6+ line is faster but needs NVIDIA driver >= 580). Windows has a
+  // single pool build, pinned by ENGINE.windows — versioned all the same so a
+  // bump busts the cache. A packaged build may ship the engine under
   // process.resourcesPath (build.extraResources) — prefer that and skip the
   // network entirely; the lookup is version-aware, so a bundle only satisfies
   // the exact build this rig selected. Otherwise download on demand.
   let binaryPath = settings.binaryPath;
   const version = process.platform === 'win32'
-    ? undefined
+    ? ENGINE.windows
     : pickEngineVersion(await detectDriverMajor());
-  const bundled = bundledEnginePath(process.resourcesPath, process.platform, settings.gpu, version);
+  let bundled = bundledEnginePath(process.resourcesPath, process.platform, settings.gpu, version);
+  // The Windows bundling step ships the engine under the legacy unversioned
+  // name (alpha-miner-windows.exe). If the version-aware lookup misses, fall
+  // back to that so a shipped bundle is still used instead of re-downloading;
+  // the on-demand path below stays versioned (cache-busting) either way.
+  if (process.platform === 'win32' && bundled && !fs.existsSync(bundled)) {
+    const legacy = bundledEnginePath(process.resourcesPath, process.platform, settings.gpu);
+    if (fs.existsSync(legacy)) bundled = legacy;
+  }
   if (!binaryPath && bundled && fs.existsSync(bundled)) {
     binaryPath = bundled;
     send('miner:engine', { phase: 'ready' });
