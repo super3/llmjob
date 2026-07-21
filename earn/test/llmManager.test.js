@@ -104,4 +104,86 @@ describe('LlmManager', () => {
     proc.emit('exit', 1); // still wired without stream handlers
     expect(m.isRunning()).toBe(false);
   });
+
+  // Self-heal on a port-bind clash (e.g. an update relaunch overlapping the
+  // previous llama-server on port 8080): an exit before ready is retried.
+  const flush = () => new Promise((r) => setImmediate(r));
+
+  test('retries a spawn that exits before ready, then goes ready without emitting stopped', async () => {
+    const children = [];
+    const spawn = jest.fn(() => { const c = makeChild(); children.push(c); return c; });
+    const m = new LlmManager({ spawn, sleep: () => Promise.resolve(), startAttempts: 3, retryDelayMs: 1 });
+    const stopped = jest.fn();
+    const ready = jest.fn();
+    const logs = [];
+    m.on('stopped', stopped);
+    m.on('ready', ready);
+    m.on('log', (l) => logs.push(l.line));
+
+    m.start({ modelPath: '/m.gguf' });
+    expect(spawn).toHaveBeenCalledTimes(1);
+
+    // first attempt dies before ready → schedules a retry, stays "running"
+    children[0].emit('exit', 1);
+    await flush();
+    expect(spawn).toHaveBeenCalledTimes(2);
+    expect(stopped).not.toHaveBeenCalled();
+    expect(m.isRunning()).toBe(true);
+    expect(logs.some((l) => /retrying \(attempt 1\/3\)/.test(l))).toBe(true);
+
+    // second attempt loads and goes ready
+    children[1].stderr.emit('data', 'srv  llama_server: model loaded\n');
+    expect(ready).toHaveBeenCalledTimes(1);
+    expect(m.isReady()).toBe(true);
+
+    // an exit AFTER it was ready is a real stop — no further retry
+    children[1].emit('exit', 0);
+    await flush();
+    expect(spawn).toHaveBeenCalledTimes(2);
+    expect(stopped).toHaveBeenCalledWith(0);
+  });
+
+  test('gives up after startAttempts spawns and emits stopped', async () => {
+    const children = [];
+    const spawn = jest.fn(() => { const c = makeChild(); children.push(c); return c; });
+    const m = new LlmManager({ spawn, sleep: () => Promise.resolve(), startAttempts: 3, retryDelayMs: 1 });
+    const stopped = jest.fn();
+    m.on('stopped', stopped);
+
+    m.start({});
+    children[0].emit('exit', 1); await flush(); // → retry (spawn 2)
+    children[1].emit('exit', 1); await flush(); // → retry (spawn 3)
+    children[2].emit('exit', 1); await flush(); // exhausted → stopped
+
+    expect(spawn).toHaveBeenCalledTimes(3);
+    expect(stopped).toHaveBeenCalledWith(1);
+    expect(m.isRunning()).toBe(false);
+  });
+
+  test('waits with a real timer between retries when no sleep is injected', async () => {
+    const children = [];
+    const spawn = jest.fn(() => { const c = makeChild(); children.push(c); return c; });
+    const m = new LlmManager({ spawn, startAttempts: 2, retryDelayMs: 5 }); // default sleep
+
+    m.start({});
+    children[0].emit('exit', 1);
+    await new Promise((r) => setTimeout(r, 25)); // let the real 5ms retry delay elapse
+    expect(spawn).toHaveBeenCalledTimes(2);
+  });
+
+  test('stop() during the retry wait cancels the pending re-spawn', async () => {
+    const children = [];
+    let resolveSleep;
+    const spawn = jest.fn(() => { const c = makeChild(); children.push(c); return c; });
+    const m = new LlmManager({ spawn, sleep: () => new Promise((r) => { resolveSleep = r; }), startAttempts: 3, retryDelayMs: 5 });
+
+    m.start({});
+    children[0].emit('exit', 1); // schedules a retry, now waiting on sleep
+    expect(m.stop()).toBe(true);  // proc already gone, but still "running" (retry pending)
+    resolveSleep();
+    await flush();
+
+    expect(spawn).toHaveBeenCalledTimes(1); // retry was cancelled
+    expect(m.isRunning()).toBe(false);
+  });
 });

@@ -68,6 +68,12 @@ const LLM = {
   port: 8080,
   ctxSize: 4096,
   parallel: 1,
+  // Self-heal a llama-server that exits before ready because it couldn't bind the
+  // port yet — the previous server (e.g. from an update relaunch) is still
+  // releasing 8080. Retry the spawn a few times, spaced out, so the LLM comes up
+  // on its own once the port frees instead of silently staying down.
+  startAttempts: 5,
+  startRetryMs: 2000,
   // Keep this much VRAM free for the miner when co-running (the budgeter caps
   // GPU layers so the model fits in whatever's left).
   miningReserveMb: 2048,
