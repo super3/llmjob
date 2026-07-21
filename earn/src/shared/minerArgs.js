@@ -22,18 +22,31 @@ function resolveBinary(binaryPath, platform, gpu) {
 // static difficulty pinned via the Stratum password (`x;d=N`). There is no
 // --algo flag — the miner is Pearl-specific — and the pool/address/worker are
 // separate flags (not a combined `<address>.<worker>` user). An optional forced
-// backend is appended for cards that need it (`--force-backend ampere`). A merge-
-// mining MDL address, when set, rides along in the --address as `prl1…+mdl1…`.
+// backend is appended for cards that need it (`--force-backend ampere`).
+//
+// Merge mining differs by platform. The Windows engine accepts the combined
+// `prl1…+mdl1…` login in --address, but the Linux engine the pool serves by
+// default (1.8.3) bech32m-validates --address as one address and rejects the
+// combined form before ever connecting (usage + exit 2 — a HiveOS crash loop).
+// Off Windows the MDL address therefore rides in the Stratum password's legacy
+// `mdl=` field instead: the engine passes the password through verbatim and the
+// pool parses both forms.
 function buildArgs(settings = {}) {
   const region = settings.region || DEFAULTS.region;
   const endpoint = settings.endpoint || endpointFor(region);
   const worker = settings.worker != null ? settings.worker : DEFAULTS.worker;
-  const address = combinePayoutAddress(settings.address, settings.mdlAddress);
   const difficulty = settings.difficulty || DEFAULTS.difficulty;
+  const combined = settings.platform === 'win32';
+  const address = combined
+    ? combinePayoutAddress(settings.address, settings.mdlAddress)
+    : String(settings.address == null ? '' : settings.address).trim();
+  const mdl = normalizeAddress(settings.mdlAddress);
+  let password = 'x;d=' + difficulty;
+  if (!combined && isValidMdlAddress(mdl)) password += ';mdl=' + mdl;
 
   const args = ['--pool', 'stratum+tcp://' + endpoint, '--address', address];
   if (worker) args.push('--worker', worker);
-  args.push('--password', 'x;d=' + difficulty);
+  args.push('--password', password);
   if (settings.backend) args.push('--force-backend', settings.backend);
   return args;
 }

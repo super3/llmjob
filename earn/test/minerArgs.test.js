@@ -52,14 +52,34 @@ describe('buildArgs', () => {
     expect(args).not.toContain('--algo');
   });
 
-  test('merge mining: a valid MDL address rides along in --address as prl…+mdl…', () => {
+  test('merge mining on Windows: a valid MDL address rides along in --address as prl…+mdl…', () => {
     const prl = 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
     const mdl = 'mdl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
-    const args = buildArgs({ address: prl, mdlAddress: mdl });
+    const args = buildArgs({ platform: 'win32', address: prl, mdlAddress: mdl });
     expect(args).toEqual(expect.arrayContaining(['--address', prl + '+' + mdl]));
+    expect(args).toEqual(expect.arrayContaining(['--password', 'x;d=524288']));
     // A malformed MDL address is dropped so Pearl mining is never broken.
-    const safe = buildArgs({ address: prl, mdlAddress: 'mdl1pshort' });
+    const safe = buildArgs({ platform: 'win32', address: prl, mdlAddress: 'mdl1pshort' });
     expect(safe).toEqual(expect.arrayContaining(['--address', prl]));
+    expect(safe).toEqual(expect.arrayContaining(['--password', 'x;d=524288']));
+  });
+
+  test('merge mining off Windows: the MDL address rides in the password, never --address', () => {
+    const prl = 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
+    const mdl = 'mdl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
+    // The Linux engine rejects a combined --address outright, so the address
+    // must stay bare and the MDL lands in the Stratum password's mdl= field.
+    const args = buildArgs({ platform: 'linux', address: prl, mdlAddress: mdl });
+    expect(args).toEqual(expect.arrayContaining(['--address', prl]));
+    expect(args).toEqual(expect.arrayContaining(['--password', 'x;d=524288;mdl=' + mdl]));
+    // Same when the platform is unknown (tests/dev): default to the strict engine.
+    const bare = buildArgs({ address: prl, mdlAddress: mdl });
+    expect(bare).toEqual(expect.arrayContaining(['--address', prl]));
+    expect(bare).toEqual(expect.arrayContaining(['--password', 'x;d=524288;mdl=' + mdl]));
+    // A malformed MDL address is dropped from the password too.
+    const safe = buildArgs({ platform: 'linux', address: prl, mdlAddress: 'mdl1pshort' });
+    expect(safe).toEqual(expect.arrayContaining(['--address', prl]));
+    expect(safe).toEqual(expect.arrayContaining(['--password', 'x;d=524288']));
   });
 });
 
