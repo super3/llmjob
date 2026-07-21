@@ -27,6 +27,7 @@ const { postJson, downloadFile, streamChatCompletion, extractLlamaZip } = requir
 const nodeStore = require('../main/nodeStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const { NETWORK, MINER, LLM, NODE, REGIONS, DEFAULTS, endpointFor, regionLabel, difficultyForCard } = require('../shared/config');
+const { ENGINE, pickEngineVersion, parseDriverMajor, engineDownloadUrl } = require('../shared/engine');
 const nodeProto = require('../shared/node');
 const { buildMinerReports } = require('../shared/minerReport');
 const { statsFilePayload } = require('../shared/statsFile');
@@ -171,6 +172,16 @@ function extractUnsupported() {
   return Promise.reject(new Error('zip extraction is not supported on the Linux CLI'));
 }
 
+// NVIDIA driver major version via nvidia-smi, or null when it can't be read.
+// Decides which engine build the rig can run (CUDA 13 builds need >= 580).
+function detectDriverMajor() {
+  return new Promise((resolve) => {
+    execFile('nvidia-smi', ['--query-gpu=driver_version', '--format=csv,noheader'],
+      { timeout: 5000 },
+      (err, stdout) => resolve(err ? null : parseDriverMajor(stdout)));
+  });
+}
+
 // llama-server zips extract via the shared io helper; point failures at the
 // CLI's escape hatch.
 const LLM_UNZIP_HINT = 'install unzip, or pass --llm-binary </path/to/llama-server>';
@@ -183,11 +194,21 @@ async function resolveEngine(settings) {
     return settings.binaryPath;
   }
 
+  // Pick the engine build the rig's driver can run: the 1.8.6+ line brings
+  // 3-8% more hashrate on 40/50-series but needs NVIDIA driver >= 580.
+  const driverMajor = await detectDriverMajor();
+  const version = pickEngineVersion(driverMajor);
+  log('engine:     alpha-miner ' + version + (version === ENGINE.preferred
+    ? '' : driverMajor == null
+      ? '  (driver version unknown — using the compatible build)'
+      : '  (driver ' + driverMajor + ' < ' + ENGINE.minDriverMajor + ' — update it for the ~5% faster build)'));
+
   const dir = settings.engineDir || path.join(os.homedir(), '.local', 'share', 'llmjob-earn', 'engine');
   const engine = new EngineManager({
     dir,
     platform: process.platform,
     gpu: settings.gpu,
+    version,
     fs,
     download: downloadFile,
     extract: extractUnsupported,
@@ -197,7 +218,7 @@ async function resolveEngine(settings) {
   if (engine.isInstalled()) {
     log('engine found: ' + engine.binaryPath());
   } else {
-    log('downloading mining engine from ' + MINER.downloadUrl + ' …');
+    log('downloading mining engine from ' + engineDownloadUrl(process.platform, settings.gpu, null, version) + ' …');
   }
   const binaryPath = await engine.ensure((pct) => {
     if (pct != null) process.stdout.write('\r  downloading… ' + pct + '%   ');

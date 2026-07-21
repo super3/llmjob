@@ -30,7 +30,7 @@ const { JobWorker } = require('./jobWorker');
 const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
 const { buildBalanceUrl, parseBalance, buildMdlBalanceUrl, parseMdlBalance } = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
-const { progressPercent, bundledEnginePath } = require('../shared/engine');
+const { progressPercent, bundledEnginePath, pickEngineVersion, parseDriverMajor } = require('../shared/engine');
 const { formatUpdate } = require('../shared/updateStatus');
 const { describeLaunchError } = require('../shared/engineError');
 const { pickGpu, parseGpuStats } = require('../shared/gpu');
@@ -223,12 +223,17 @@ async function startMining(settings) {
   const endpoint = settings.endpoint || endpointFor(settings.region || DEFAULTS.region);
   send('miner:log', { level: 'info', line: 'connecting to ' + endpoint + ' · worker ' + (settings.worker || DEFAULTS.worker) });
 
-  // Resolve the engine. A packaged build ships it under process.resourcesPath
-  // (build.extraResources), so prefer that and skip the network entirely; only
-  // fall back to the on-demand download when no bundled copy is present (e.g. a
-  // dev run, or a build that shipped without the binary).
+  // Resolve the engine. Off Windows, first pick the build the rig's driver can
+  // run (the 1.8.6+ line is faster but needs NVIDIA driver >= 580); Windows
+  // ignores version. A packaged build may ship the engine under
+  // process.resourcesPath (build.extraResources) — prefer that and skip the
+  // network entirely; the lookup is version-aware, so a bundle only satisfies
+  // the exact build this rig selected. Otherwise download on demand.
   let binaryPath = settings.binaryPath;
-  const bundled = bundledEnginePath(process.resourcesPath, process.platform, settings.gpu);
+  const version = process.platform === 'win32'
+    ? undefined
+    : pickEngineVersion(await detectDriverMajor());
+  const bundled = bundledEnginePath(process.resourcesPath, process.platform, settings.gpu, version);
   if (!binaryPath && bundled && fs.existsSync(bundled)) {
     binaryPath = bundled;
     send('miner:engine', { phase: 'ready' });
@@ -239,6 +244,7 @@ async function startMining(settings) {
       dir: path.join(app.getPath('userData'), 'engine'),
       platform: process.platform,
       gpu: settings.gpu,
+      version,
       fs: fs,
       download: downloadFile,
       extract: extractZip,
@@ -370,6 +376,17 @@ function detectGpusVram() {
       ['--query-gpu=index,name,memory.used,memory.total', '--format=csv,noheader,nounits'],
       { timeout: 5000 },
       (err, stdout) => resolve(err ? [] : parseGpuStats(stdout)));
+  });
+}
+
+// NVIDIA driver major version via nvidia-smi, or null when it can't be read.
+// Decides which Linux engine build the rig can run (CUDA 13 builds need
+// >= 580); Windows keeps the pool's unversioned zips and never consults this.
+function detectDriverMajor() {
+  return new Promise((resolve) => {
+    execFile('nvidia-smi', ['--query-gpu=driver_version', '--format=csv,noheader'],
+      { timeout: 5000 },
+      (err, stdout) => resolve(err ? null : parseDriverMajor(stdout)));
   });
 }
 
