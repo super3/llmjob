@@ -21,13 +21,14 @@
 // that keeps every card's real VRAM visible instead of collapsing the rig into
 // one row, at the cost of an even (rather than measured) hashrate split, which is
 // the best that's possible when the engine doesn't break the hashrate out.
-function buildMinerReports(settings, snap, gpuVram) {
+function buildMinerReports(settings, snap, gpuVram, version) {
   const s = settings || {};
   const n = snap || {};
   const base = {
     address: String(s.address || '').trim(),
     worker: String(s.worker || 'rig01').trim() || 'rig01',
     region: s.region || 'us2',
+    version: version != null ? String(version) : null, // earn client version, so the board can see fleet versions
   };
 
   const vram = Array.isArray(gpuVram) ? gpuVram : [];

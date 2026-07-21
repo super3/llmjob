@@ -214,7 +214,7 @@ async function startMining(settings) {
   const report = async () => {
     const snap = snapshot(stats, Date.now());
     const gpuVram = await detectGpusVram();
-    buildMinerReports(settings, snap, gpuVram).forEach(postMinerReport);
+    buildMinerReports(settings, snap, gpuVram, app.getVersion()).forEach(postMinerReport);
   };
   report();
   if (reporter) clearInterval(reporter);
