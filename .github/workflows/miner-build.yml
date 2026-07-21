@@ -104,8 +104,8 @@ jobs:
         run: npm run dist:cli
 
       # Wrap the CLI binary in the HiveOS custom-miner package (hiveos/ hook
-      # scripts + binary → llmjob-earn-hiveos.tar.gz), the file flight sheets
-      # install from.
+      # scripts + binary → llmjob-earn-hiveos-<version>.tar.gz, plus an
+      # unversioned legacy copy), the file flight sheets install from.
       - name: Package HiveOS custom miner (Linux)
         if: runner.os == 'Linux'
         run: npm run dist:hiveos
@@ -121,7 +121,7 @@ jobs:
         run: |
           set -euo pipefail
           VERSION=$(node -p "require('./package.json').version")
-          gh release upload "v$VERSION" dist/llmjob-earn-cli-linux dist/llmjob-earn-hiveos.tar.gz --clobber --repo "$GITHUB_REPOSITORY"
+          gh release upload "v$VERSION" dist/llmjob-earn-cli-linux "dist/llmjob-earn-hiveos-$VERSION.tar.gz" dist/llmjob-earn-hiveos.tar.gz --clobber --repo "$GITHUB_REPOSITORY"
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
@@ -137,5 +137,6 @@ jobs:
           name: llmjob-earn-cli-linux
           path: |
             earn/dist/llmjob-earn-cli-linux
+            earn/dist/llmjob-earn-hiveos-*.tar.gz
             earn/dist/llmjob-earn-hiveos.tar.gz
           if-no-files-found: error
