@@ -138,20 +138,21 @@
   .traffic span { width: 12px; height: 12px; border-radius: 50%; }
   .titlebar .title { position: absolute; left: 0; right: 0; text-align: center; font-size: 13px; font-weight: 600; color: var(--muted-2); pointer-events: none; }
   .app-body { padding: 26px 28px 22px; }
-  .app-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
-  .app-tab .bolt { display: inline-flex; width: 28px; height: 28px; border-radius: 8px; background: var(--ink-strong); align-items: center; justify-content: center; flex: none; }
-  .app-nav { display: flex; align-items: center; gap: 24px; height: 38px; }
-  .app-tab { display: inline-flex; align-items: center; gap: 9px; font-weight: 600; font-size: 15px; color: var(--muted-2); border-bottom: 2px solid transparent; }
-  .app-tab.active { font-weight: 800; font-size: 22px; letter-spacing: -.02em; color: var(--ink-strong); border-bottom-color: var(--accent); }
-  .app-gear { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; background: #fff; border: 1px solid var(--line); color: #6b7077; border-radius: 9px; flex: none; }
+  .app-head { display: flex; align-items: stretch; gap: 22px; border-bottom: 1px solid #eceae2; margin-bottom: 22px; }
+  .app-tab { display: inline-flex; align-items: center; padding: 0 2px; font-size: 14px; font-weight: 500; color: var(--muted-2); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .app-tab.active { gap: 8px; padding: 12px 0; font-weight: 800; font-size: 18px; letter-spacing: -.02em; color: var(--ink-strong); border-bottom-color: var(--accent); }
+  .app-tabs { display: flex; gap: 18px; align-items: stretch; }
+  .app-spacer { flex: 1; }
+  .app-tab .bolt { display: inline-flex; width: 26px; height: 26px; border-radius: 7px; background: var(--ink-strong); align-items: center; justify-content: center; flex: none; }
+  .app-gear { align-self: center; display: grid; place-items: center; width: 36px; height: 36px; background: #fff; border: 1px solid var(--line); color: #6b7077; border-radius: 9px; flex: none; }
   .field-label { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
   .field-label .lbl { font-size: 14px; font-weight: 700; color: #2a2e34; }
   .field-label .meta { font-size: 13px; color: var(--muted-2); }
   .field-label .meta b { color: var(--ink-strong); font-weight: 600; }
   .field-label .meta .usd { color: #9a9ea6; }
   .field-box { width: 100%; border: 1px solid var(--field-line); background: var(--field); border-radius: 9px; padding: 13px 14px; font-family: "IBM Plex Mono", monospace; font-size: 13.5px; color: #3d4148; margin-bottom: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .chart-card { border: 1px solid var(--field-line); background: var(--field); border-radius: 9px; padding: 12px 14px 14px; margin-bottom: 20px; }
-  .chart-top { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 4px; }
+  .chart-card { border: 1px solid var(--field-line); background: var(--field); border-radius: 9px; padding: 16px; margin-bottom: 20px; }
+  .chart-top { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; align-items: start; margin-bottom: 10px; }
   .chart-metric.right { text-align: right; }
   .chart-val { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
   .chart-metric.right .chart-val { justify-content: flex-end; }
@@ -163,6 +164,7 @@
   .chart-tag .model { font-family: "IBM Plex Mono", monospace; font-size: 11px; font-weight: 500; color: var(--muted-3); }
   .chart-card svg { display: block; }
   .mk-stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin-top: 14px; padding-top: 14px; border-top: 1px solid #ebe9e1; }
+  .mk-stats .mk-stat:nth-child(2) { text-align: center; } /* Uptime centered (matches the design mock) */
   .mk-stats .mk-stat:last-child { text-align: right; } /* Est. earnings aligns under the tok/s metric */
   .mk-stat .k { font-size: 11.5px; color: var(--muted-2); font-weight: 500; margin-bottom: 4px; }
   .mk-stat .k .k-short { display: none; }
@@ -336,13 +338,14 @@
     </div>
     <div class="app-body">
       <div class="app-head">
-        <nav class="app-nav">
-          <span class="app-tab active"><span class="bolt"><svg width="15" height="15" viewBox="0 0 24 24" fill="#fff"><path d="M13 2 L4 14 h6 l-1 8 10-13 h-7 l1-7 z"></path></svg></span>LLMJob</span>
+        <span class="app-tab active"><span class="bolt"><svg width="13" height="13" viewBox="0 0 24 24" fill="#fff"><path d="M13 2 L4 14 h6 l-1 8 10-13 h-7 l1-7 z"></path></svg></span>LLMJob</span>
+        <div class="app-tabs">
           <span class="app-tab">Chat</span>
           <span class="app-tab">API</span>
-        </nav>
+        </div>
+        <span class="app-spacer"></span>
         <span class="app-gear" aria-hidden="true">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6b7077" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#6b7077" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
         </span>
       </div>
 
@@ -364,10 +367,10 @@
           </div>
           <div class="chart-metric right">
             <div class="chart-val"><span class="num" id="mk-tok">31.6</span><span class="unit">tok/s</span></div>
-            <div class="chart-tag"><span class="d"></span>LLM <span class="model">Gemma-4-E4B-it-Q4_K_M</span></div>
+            <div class="chart-tag"><span class="d"></span>LLM <span class="model">gemma-4-E4B-it</span></div>
           </div>
         </div>
-        <svg viewBox="0 0 360 56" width="100%" height="42" preserveAspectRatio="none">
+        <svg viewBox="0 0 480 56" width="100%" height="84" preserveAspectRatio="none">
           <defs><linearGradient id="amFill2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2563eb" stop-opacity="0.18"></stop><stop offset="1" stop-color="#2563eb" stop-opacity="0"></stop></linearGradient></defs>
           <path id="mk-area" d="" fill="url(#amFill2)"></path>
           <path id="mk-line" d="" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>
@@ -623,7 +626,7 @@
     const s = { points: [], total: 354.1, accepted: 14820, rejected: 3, load: 92, power: 318, uptimeSec: 4 * 3600 + 12 * 60 + 8, balance: 128.407 };
     for (let i = 0; i < 48; i++) s.points.push(344 + Math.sin(i / 5) * 8 + Math.random() * 6);
 
-    const W = 360, H = 56, MIN = 326, MAX = 372;
+    const W = 480, H = 56, MIN = 326, MAX = 372;
     const pad = (n) => String(n).padStart(2, '0');
     // Matches the compact-stats CSS breakpoint above.
     const mqCompact = window.matchMedia('(max-width: 520px)');
