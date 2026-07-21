@@ -13,12 +13,20 @@ const DOWNLOAD_BASE = 'https://pearl.alphapool.tech/downloads/';
 // preferred build (1.8.6+ line) carries the NoisyGEMM kernel gains — 3-8% more
 // hashrate on 40/50-series — but is compiled against CUDA 13, which needs
 // NVIDIA driver >= 580; older drivers must stay on the last CUDA 12 stable or
-// the engine dies at cudaGetDeviceCount. Windows keeps the pool's unversioned
-// "windows-fixed" zips and ignores all of this.
+// the engine dies at cudaGetDeviceCount.
+//
+// Windows has a single build: the pool ships only one `AlphaMiner-Pearl-Windows.zip`
+// (no per-driver split), currently carrying `alpha-miner-windows-1.8.6.exe`. We
+// still track that version in `windows` and bake it into the cached filename
+// (below) so bumping it here is a cache miss — Windows rigs re-download the pool's
+// newer build instead of running a stale cached .exe forever. Bump `windows` to
+// match the version inside the pool's zip whenever they refresh it (and keep the
+// bundling step in .github/workflows/miner-build.yml in sync — it reads this).
 const ENGINE = {
   preferred: '1.8.8',
   fallback: '1.8.3',
   minDriverMajor: 580,
+  windows: '1.8.6',
 };
 
 // Pick the Linux engine version a rig can actually run from its NVIDIA driver
@@ -38,12 +46,16 @@ function parseDriverMajor(output) {
   return m ? parseInt(m[1], 10) : null;
 }
 
-// The engine executable name once installed. Off Windows the version is baked
-// into the filename so a version bump is a cache miss — rigs re-download
-// instead of running a stale cached binary forever.
+// The engine executable name once installed. The version is baked into the
+// filename so a version bump is a cache miss — rigs re-download instead of
+// running a stale cached binary forever. On NVIDIA Windows the versioned name
+// also matches the .exe inside the pool's zip (alpha-miner-windows-<ver>.exe),
+// so extraction picks it by exact name. Falsy version keeps the legacy
+// unversioned Windows name (AMD, which the pool ships without a version).
 function engineBinaryName(platform, gpu, version) {
   if (platform === 'win32') {
-    return gpu === 'amd' ? 'alpha-miner-amd-windows-fixed.exe' : 'alpha-miner-windows.exe';
+    if (gpu === 'amd') return 'alpha-miner-amd-windows-fixed.exe';
+    return version ? 'alpha-miner-windows-' + version + '.exe' : 'alpha-miner-windows.exe';
   }
   return 'alpha-miner-' + (version || ENGINE.fallback);
 }

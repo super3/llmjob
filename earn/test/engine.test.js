@@ -32,10 +32,20 @@ describe('parseDriverMajor', () => {
 
 describe('engineBinaryName', () => {
   test('per platform and GPU vendor', () => {
-    expect(engineBinaryName('win32')).toBe('alpha-miner-windows.exe');
+    expect(engineBinaryName('win32')).toBe('alpha-miner-windows.exe'); // legacy: no version
+    expect(engineBinaryName('win32', 'nvidia', ENGINE.windows)).toBe('alpha-miner-windows-' + ENGINE.windows + '.exe');
+    expect(engineBinaryName('win32', undefined, '1.8.6')).toBe('alpha-miner-windows-1.8.6.exe');
     expect(engineBinaryName('win32', 'amd')).toBe('alpha-miner-amd-windows-fixed.exe');
+    expect(engineBinaryName('win32', 'amd', '1.8.6')).toBe('alpha-miner-amd-windows-fixed.exe'); // AMD ignores version
     expect(engineBinaryName('linux')).toBe('alpha-miner-' + ENGINE.fallback);
     expect(engineBinaryName('linux', undefined, '1.8.8')).toBe('alpha-miner-1.8.8');
+  });
+});
+
+describe('ENGINE.windows', () => {
+  test('pins the version inside the pool Windows zip', () => {
+    expect(typeof ENGINE.windows).toBe('string');
+    expect(ENGINE.windows).toMatch(/^\d+\.\d+\.\d+$/);
   });
 });
 
