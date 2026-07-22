@@ -39,4 +39,32 @@ function hasEnoughVram(freeMb, model) {
   return free >= need;
 }
 
-module.exports = { computeGpuLayers, requiredVramMb, hasEnoughVram };
+// From per-card VRAM stats ([{ index, usedMb, totalMb }, ...] — e.g. the output
+// of gpu.parseGpuStats), pick the GPU best suited to host the local LLM: the
+// card with the most free VRAM (total − used), ties broken by the lower index.
+// llama-server runs with --split-mode none, so the model lives entirely on ONE
+// card — the preflight and layer sizing must use THAT card's free VRAM, not the
+// rig's summed total. On a multi-GPU miner the sum is huge but unusable (the
+// model can't span cards), and sizing against it would try to cram the model
+// onto device 0 and risk an OOM there. Returns { index, freeMb } for the chosen
+// card, or null when no card parses (caller then treats VRAM as unknown and
+// lets llama.cpp decide, exactly as when nvidia-smi isn't present at all).
+function pickLlmGpu(cards) {
+  if (!Array.isArray(cards)) return null;
+  let best = null;
+  for (const c of cards) {
+    if (!c) continue;
+    const index = Math.floor(Number(c.index));
+    const total = Number(c.totalMb);
+    const used = Number(c.usedMb);
+    if (!Number.isFinite(index) || index < 0) continue;
+    if (!Number.isFinite(total) || !Number.isFinite(used)) continue;
+    const freeMb = Math.max(0, total - used);
+    if (!best || freeMb > best.freeMb || (freeMb === best.freeMb && index < best.index)) {
+      best = { index, freeMb };
+    }
+  }
+  return best;
+}
+
+module.exports = { computeGpuLayers, requiredVramMb, hasEnoughVram, pickLlmGpu };

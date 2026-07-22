@@ -29,7 +29,7 @@ const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE, endpointFor, difficultyForCard } = require('../shared/config');
 const { resolveEconomics } = require('../shared/economics');
 const nodeProto = require('../shared/node');
-const { computeGpuLayers, requiredVramMb, hasEnoughVram } = require('../shared/vram');
+const { computeGpuLayers, requiredVramMb, hasEnoughVram, pickLlmGpu } = require('../shared/vram');
 const { buildChatBody } = require('../shared/llmChat');
 const { JobWorker } = require('./jobWorker');
 const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
@@ -534,8 +534,15 @@ async function startLlm(reserveMb) {
   // measure VRAM and there isn't enough free to hold the model — spawning anyway
   // risks an out-of-memory crash. When VRAM can't be read (non-NVIDIA / no
   // driver) `enough` is null and we proceed, letting llama.cpp decide.
-  const vram = await detectVram();
-  const freeMb = vram ? vram.totalMb - vram.usedMb : null;
+  //
+  // Size against ONE card, not the rig's summed VRAM. llama-server runs
+  // --split-mode none, so the model lives entirely on a single GPU; on a
+  // multi-GPU rig the summed free VRAM is large but the model can only use one
+  // card, and sizing against the sum would try to cram it onto device 0 and OOM
+  // there. pickLlmGpu picks the card with the most free VRAM; we preflight and
+  // size against that card and pin the server to it below (--main-gpu).
+  const gpu = pickLlmGpu(await detectGpusVram());
+  const freeMb = gpu ? gpu.freeMb : null;
   if (hasEnoughVram(freeMb, LLM.model) === false) {
     const needGb = Math.round(requiredVramMb(LLM.model) / 1024);
     const line = 'not enough free VRAM for the local LLM: ' + freeMb + ' MB free, need ~'
@@ -581,8 +588,8 @@ async function startLlm(reserveMb) {
 
   // Size the GPU offload from the free VRAM measured above (total − used); full
   // offload when VRAM can't be read (non-NVIDIA / no driver).
-  const nGpuLayers = vram
-    ? computeGpuLayers(vram.totalMb - vram.usedMb, LLM.model, reserveMb || 0)
+  const nGpuLayers = gpu
+    ? computeGpuLayers(gpu.freeMb, LLM.model, reserveMb || 0)
     : LLM.model.layers;
 
   // Bind-check the port up front and walk to a free one if the default is
@@ -624,9 +631,11 @@ async function startLlm(reserveMb) {
     if (!miner || !miner.isRunning()) send('miner:stopped');
   });
 
-  llm.start({ platform: process.platform, binaryPath, modelPath, nGpuLayers, port });
+  llm.start({ platform: process.platform, binaryPath, modelPath, nGpuLayers, port,
+    mainGpu: gpu ? gpu.index : undefined });
   llmStatus = Object.assign({}, llmStatus, { ready: false, error: null, endpoint: llm.baseUrl + '/v1', webUrl: llm.baseUrl });
-  send('miner:log', { level: 'info', line: 'local LLM starting on ' + llm.baseUrl + ' — ' + nGpuLayers + ' GPU layers' });
+  send('miner:log', { level: 'info', line: 'local LLM starting on ' + llm.baseUrl + ' — ' + nGpuLayers + ' GPU layers'
+    + (gpu ? ' on GPU ' + gpu.index : '') });
   sendLlmStatus();
   return true;
 }

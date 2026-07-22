@@ -38,6 +38,15 @@ function buildServerArgs(opts = {}) {
     // single-GPU machines are unaffected by the flag.
     '--split-mode', 'none',
   ];
+  // Pin the model to a specific GPU when the caller picked one. With
+  // --split-mode none the model loads on a single device; without --main-gpu
+  // that's always device 0, which on a mining rig is busy and may lack the
+  // headroom the model needs. The caller (VRAM budgeter) chooses the card with
+  // the most free VRAM and passes its index here so the server lands there
+  // instead. A non-negative integer only; anything else falls back to device 0.
+  if (Number.isInteger(opts.mainGpu) && opts.mainGpu >= 0) {
+    args.push('--main-gpu', String(opts.mainGpu));
+  }
   if (opts.flashAttn) args.push('--flash-attn');
   return args;
 }
