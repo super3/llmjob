@@ -28,6 +28,33 @@ describe('EngineManager', () => {
     expect(fs.mkdirSync).not.toHaveBeenCalled();
   });
 
+  test('re-asserts the execute bit on a cached binary off Windows', async () => {
+    const fs = makeFs(true);
+    const download = jest.fn();
+    const chmod = jest.fn();
+    const mgr = new EngineManager({ dir: '/cache', platform: 'linux', version: '1.8.8', fs, download, chmod });
+    const dest = path.join('/cache', 'alpha-miner-1.8.8');
+
+    await expect(mgr.ensure()).resolves.toBe(dest);
+    expect(download).not.toHaveBeenCalled();
+    expect(fs.mkdirSync).not.toHaveBeenCalled();
+    // A cached binary that lost its +x (e.g. an interrupted first install)
+    // gets it back here, so the rig stops crash-looping on spawn EACCES.
+    expect(chmod).toHaveBeenCalledWith(dest, 0o755);
+  });
+
+  test('a failing chmod on the cached path is swallowed (best effort)', async () => {
+    const fs = makeFs(true);
+    const chmod = jest.fn(() => { throw new Error('EROFS: read-only file system'); });
+    const mgr = new EngineManager({ dir: '/cache', platform: 'linux', version: '1.8.8', fs, chmod });
+    const dest = path.join('/cache', 'alpha-miner-1.8.8');
+
+    // Must still resolve: a chmod failure on an already-executable binary must
+    // not turn a working rig into a crash.
+    await expect(mgr.ensure()).resolves.toBe(dest);
+    expect(chmod).toHaveBeenCalledWith(dest, 0o755);
+  });
+
   test('downloads and extracts the zip on Windows, no chmod', async () => {
     const fs = makeFs(false);
     const download = jest.fn(() => Promise.resolve());

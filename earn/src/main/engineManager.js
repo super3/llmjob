@@ -31,7 +31,18 @@ class EngineManager {
   // Resolve to the engine path, downloading + installing it if missing.
   async ensure(onProgress) {
     const dest = this.binaryPath();
-    if (this.isInstalled()) return dest;
+    if (this.isInstalled()) {
+      // A cached binary can be present but lack the execute bit: the download
+      // writes it 0o644 and only chmods afterwards, so an interrupted first run
+      // (crash/kill/reboot between the rename and the chmod) — or a binary put
+      // there by any other path — leaves a non-executable file that spawns with
+      // EACCES forever, since this early return used to skip the chmod below.
+      // Re-assert +x here so a stuck rig self-heals on the next start. Best
+      // effort: a chmod failure (read-only dir, foreign owner) must not turn a
+      // rig whose binary is already executable into a crash.
+      this.ensureExecutable(dest);
+      return dest;
+    }
 
     this.fs.mkdirSync(this.dir, { recursive: true });
     const url = engineDownloadUrl(this.platform, this.gpu, this.urlBase, this.version);
@@ -47,6 +58,20 @@ class EngineManager {
 
     if (this.platform !== 'win32') this.chmod(dest, 0o755);
     return dest;
+  }
+
+  // Grant the engine its execute bit (non-Windows only). Best effort by design:
+  // this runs on the already-installed path where the file may sit on a
+  // read-only mount or be owned by another user, and a throw there would break
+  // a rig whose binary is already executable. The fresh-download path keeps its
+  // own strict chmod so a genuine install failure still surfaces.
+  ensureExecutable(dest) {
+    if (this.platform === 'win32') return;
+    try {
+      this.chmod(dest, 0o755);
+    } catch (e) {
+      /* best effort — spawn will report EACCES if it truly isn't executable */
+    }
   }
 }
 
