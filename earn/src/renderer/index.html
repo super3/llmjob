@@ -164,12 +164,19 @@
     <p id="mode-hint" class="settings-note">Balances mining and the local LLM from free VRAM.</p>
 
     <div class="settings-section">Connection</div>
-    <div class="settings-rows">
-      <div class="settings-row"><span class="rk">Worker name</span><input id="set-worker" class="rv-input" type="text" /></div>
-      <div class="settings-row"><span class="rk">Pool region</span>
+    <div class="conn-grid">
+      <div class="conn-field conn-full">
+        <div class="fk">Pool region</div>
         <select id="set-region" class="rv-input"></select>
       </div>
-      <div class="settings-row"><span class="rk">Static difficulty</span><input id="set-difficulty" class="rv-input" type="number" min="0" /></div>
+      <div class="conn-field">
+        <div class="fk">Worker name</div>
+        <input id="set-worker" class="rv-input" type="text" />
+      </div>
+      <div class="conn-field">
+        <div class="fk">Static difficulty</div>
+        <input id="set-difficulty" class="rv-input" type="number" min="0" />
+      </div>
     </div>
 
     <div class="settings-section mdl-head">
