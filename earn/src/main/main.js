@@ -24,6 +24,7 @@ const {
   postMinerReport, findFreePort,
 } = require('./probe');
 const nodeStore = require('./nodeStore');
+const settingsStore = require('../shared/settingsStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE, endpointFor, difficultyForCard } = require('../shared/config');
 const { resolveEconomics } = require('../shared/economics');
@@ -54,24 +55,31 @@ let llmStatus = { ready: false, endpoint: null, webUrl: null, tokensPerSec: 0, m
 function settingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
 }
+const settingsLog = (m) => console.error(m);
 function loadSettings() {
-  try {
-    return JSON.parse(fs.readFileSync(settingsPath(), 'utf8'));
-  } catch (e) {
-    return {};
-  }
+  return settingsStore.readSettings(settingsPath(), { fs, log: settingsLog });
 }
 function persistSettings(s) {
-  try {
-    fs.writeFileSync(settingsPath(), JSON.stringify(s, null, 2));
-  } catch (e) {
-    /* best effort */
-  }
-  return s;
+  return settingsStore.writeSettings(settingsPath(), s, { fs, log: settingsLog });
 }
 
 function send(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+}
+
+// Open a URL in the user's browser, but only http(s). The renderer can hand any
+// string to the 'open-external' channel, and shell.openExternal would otherwise
+// happily launch file:, smb:, or a registered custom-protocol handler. The
+// returned promise is swallowed too, so a bad URL can't become an unhandled
+// rejection.
+function openExternalSafe(url) {
+  try {
+    const u = new URL(String(url));
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
+    Promise.resolve(shell.openExternal(u.href)).catch(() => {});
+  } catch (e) {
+    /* not a valid URL — ignore */
+  }
 }
 
 // Fetch a pool balance for a payout address. Best-effort and never rejects —
@@ -168,6 +176,14 @@ function statsView(snap) {
   };
 }
 
+// Quote a value as a single PowerShell single-quoted literal, doubling any
+// embedded single quote. Interpolating a raw path into a '...' PS string lets a
+// path containing a quote break out of the quoting and inject commands; routing
+// every interpolated value through this closes that.
+function psQuote(value) {
+  return "'" + String(value).replace(/'/g, "''") + "'";
+}
+
 // Extract a single engine .exe from a downloaded zip to `dest`. Windows-only:
 // uses PowerShell's Expand-Archive, so there's no extra runtime dependency. Used
 // for the miner engine, whose binary is self-contained.
@@ -176,11 +192,11 @@ function extractZip(zipPath, dest) {
     const tmp = dest + '.unzip';
     const wanted = path.basename(dest);
     const ps = "$ErrorActionPreference='Stop';"
-      + "Expand-Archive -LiteralPath '" + zipPath + "' -DestinationPath '" + tmp + "' -Force;"
-      + "$e = Get-ChildItem -Path '" + tmp + "' -Recurse -Filter '" + wanted + "' | Select-Object -First 1;"
-      + "if(-not $e){ $e = Get-ChildItem -Path '" + tmp + "' -Recurse -Filter '*.exe' | Select-Object -First 1 }"
-      + "Copy-Item -LiteralPath $e.FullName -Destination '" + dest + "' -Force;"
-      + "Remove-Item -LiteralPath '" + tmp + "' -Recurse -Force";
+      + 'Expand-Archive -LiteralPath ' + psQuote(zipPath) + ' -DestinationPath ' + psQuote(tmp) + ' -Force;'
+      + '$e = Get-ChildItem -Path ' + psQuote(tmp) + ' -Recurse -Filter ' + psQuote(wanted) + ' | Select-Object -First 1;'
+      + 'if(-not $e){ $e = Get-ChildItem -Path ' + psQuote(tmp) + " -Recurse -Filter '*.exe' | Select-Object -First 1 }"
+      + 'Copy-Item -LiteralPath $e.FullName -Destination ' + psQuote(dest) + ' -Force;'
+      + 'Remove-Item -LiteralPath ' + psQuote(tmp) + ' -Recurse -Force';
     execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], (err) => {
       if (err) return reject(err);
       resolve(dest);
@@ -198,10 +214,10 @@ function extractLlamaZipWin(zipPath, dest) {
     const dir = path.dirname(dest);
     const tmp = path.join(dir, '_llama_unzip');
     const ps = "$ErrorActionPreference='Stop';"
-      + "if(Test-Path -LiteralPath '" + tmp + "'){Remove-Item -LiteralPath '" + tmp + "' -Recurse -Force};"
-      + "Expand-Archive -LiteralPath '" + zipPath + "' -DestinationPath '" + tmp + "' -Force;"
-      + "Get-ChildItem -Path '" + tmp + "' -Recurse -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination '" + dir + "' -Force };"
-      + "Remove-Item -LiteralPath '" + tmp + "' -Recurse -Force";
+      + 'if(Test-Path -LiteralPath ' + psQuote(tmp) + '){Remove-Item -LiteralPath ' + psQuote(tmp) + ' -Recurse -Force};'
+      + 'Expand-Archive -LiteralPath ' + psQuote(zipPath) + ' -DestinationPath ' + psQuote(tmp) + ' -Force;'
+      + 'Get-ChildItem -Path ' + psQuote(tmp) + ' -Recurse -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination ' + psQuote(dir) + ' -Force };'
+      + 'Remove-Item -LiteralPath ' + psQuote(tmp) + ' -Recurse -Force';
     execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { maxBuffer: 8 * 1024 * 1024 }, (err) => {
       if (err) return reject(err);
       if (!fs.existsSync(dest)) return reject(new Error('llama-server was not found in the downloaded archive'));
@@ -946,7 +962,7 @@ ipcMain.handle('balance:getMdl', (_e, address) =>
   fetchBalance(address, { buildUrl: buildMdlBalanceUrl, parse: parseMdlBalance }));
 ipcMain.on('miner:start', (_e, settings) => applyPlan(settings || {}));
 ipcMain.on('miner:stop', () => { stopMining(); stopLlm(); });
-ipcMain.on('open-external', (_e, url) => { shell.openExternal(url); });
+ipcMain.on('open-external', (_e, url) => { openExternalSafe(url); });
 // Re-fit the window to its content when the renderer's layout changes (tab
 // switch, mining start/stop, etc.), so the frame never leaves a gap under the
 // footer or clips a taller view.
@@ -956,7 +972,7 @@ ipcMain.on('llm:chat', (_e, messages) => llmChat(messages));
 ipcMain.handle('node:status', () => nodeStatus());
 ipcMain.handle('node:connect', (_e, opts) => connectNode(opts || {}));
 ipcMain.handle('node:disconnect', () => disconnectNode());
-ipcMain.on('node:dashboard', () => shell.openExternal(NODE.dashboardUrl));
+ipcMain.on('node:dashboard', () => openExternalSafe(NODE.dashboardUrl));
 ipcMain.handle('app:version', () => app.getVersion());
 ipcMain.on('app:update:check', () => checkForUpdate());
 ipcMain.on('app:update:install', () => {
