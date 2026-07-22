@@ -23,12 +23,38 @@ describe('LlmEngineManager', () => {
     expect(m.modelPath()).toBe(path.join('/eng', LLM.model.file));
   });
 
-  test('ensureServer returns early when the binary is already installed', async () => {
-    const fs = fsMock(new Set([path.join('/eng', 'llama-server')]));
+  test('ensureServer returns early and re-asserts +x when already installed off Windows', async () => {
+    const dest = path.join('/eng', 'llama-server');
+    const fs = fsMock(new Set([dest]));
     const download = jest.fn();
-    const m = new LlmEngineManager({ dir: '/eng', platform: 'linux', serverUrl: 'http://x/s.zip', fs, download, extract: jest.fn(), chmod: jest.fn() });
-    expect(await m.ensureServer()).toBe(path.join('/eng', 'llama-server'));
+    const chmod = jest.fn();
+    const m = new LlmEngineManager({ dir: '/eng', platform: 'linux', serverUrl: 'http://x/s.zip', fs, download, extract: jest.fn(), chmod });
+    expect(await m.ensureServer()).toBe(dest);
     expect(download).not.toHaveBeenCalled();
+    expect(fs.mkdirSync).not.toHaveBeenCalled();
+    // A cached binary that lost its +x (e.g. an interrupted first install) gets
+    // it back here, so the node stops crash-looping on spawn EACCES.
+    expect(chmod).toHaveBeenCalledWith(dest, 0o755);
+  });
+
+  test('ensureServer does not chmod an already-installed binary on Windows', async () => {
+    const dest = path.join('/eng', 'llama-server.exe');
+    const fs = fsMock(new Set([dest]));
+    const chmod = jest.fn();
+    const m = new LlmEngineManager({ dir: '/eng', platform: 'win32', serverUrl: 'http://x/s.zip', fs, download: jest.fn(), extract: jest.fn(), chmod });
+    expect(await m.ensureServer()).toBe(dest);
+    expect(chmod).not.toHaveBeenCalled();
+  });
+
+  test('ensureServer swallows a failing chmod on the cached path (best effort)', async () => {
+    const dest = path.join('/eng', 'llama-server');
+    const fs = fsMock(new Set([dest]));
+    const chmod = jest.fn(() => { throw new Error('EROFS: read-only file system'); });
+    const m = new LlmEngineManager({ dir: '/eng', platform: 'linux', serverUrl: 'http://x/s.zip', fs, chmod });
+    // Must still resolve: a chmod failure on an already-executable binary must
+    // not turn a working node into a crash.
+    expect(await m.ensureServer()).toBe(dest);
+    expect(chmod).toHaveBeenCalledWith(dest, 0o755);
   });
 
   test('ensureServer downloads + extracts a zip and chmods off-Windows', async () => {
