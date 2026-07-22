@@ -12,6 +12,7 @@ module.exports = {
     'src/shared/**/*.js',
     'src/main/minerManager.js', 'src/main/engineManager.js',
     'src/main/llmManager.js', 'src/main/llmEngineManager.js', 'src/main/jobWorker.js',
+    'src/main/io.js', 'src/main/nodeStore.js',
   ],
   coverageThreshold: {
     global: { branches: 100, functions: 100, lines: 100, statements: 100 },
