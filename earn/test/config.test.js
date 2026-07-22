@@ -50,7 +50,7 @@ describe('config', () => {
 
   test('engine and economics metadata are present', () => {
     expect(MINER).toMatchObject({ engine: 'alpha-miner', pow: 'pearlhash', devFeePct: 0, poolFeePct: 1 });
-    expect(ECON).toMatchObject({ NET_TH: 30.79e6, DAILY_NET_PRL: 1.2e6, FEE: 0.99, PRL_USD: 0.47 });
+    expect(ECON).toMatchObject({ NET_TH: 61e6, DAILY_NET_PRL: 1.62e6, FEE: 0.99, PRL_USD: 0.30 });
     expect(DEFAULTS.difficulty).toBe(524288);
   });
 });

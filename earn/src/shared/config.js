@@ -51,13 +51,24 @@ const NETWORK = {
   reportIntervalMs: 60000, // report once a minute while mining
 };
 
-// Network economics for earnings estimates. Mirrors the earn.html calculator
-// (which live-refreshes from prlscan / SafeTrade and falls back to these).
+// Network economics for earnings estimates. The app live-refreshes these from
+// the prlscan API at runtime (see shared/economics.js + main.js); the constants
+// here are only the offline fallback, so keep them roughly current — a stale
+// fallback silently overstates earnings (a network that doubled makes every
+// estimate ~2x too high). Snapshot: 2026-07 (prlscan).
 const ECON = {
-  NET_TH: 30.79e6, // network hashrate in TH/s (~30.79 EH/s) — prlscan
-  DAILY_NET_PRL: 1.2e6, // ~2,600 PRL/block × ~480 blocks/day
+  NET_TH: 61e6, // network hashrate in TH/s (~61 EH/s) — prlscan
+  DAILY_NET_PRL: 1.62e6, // ~2,489 PRL/block × ~650 blocks/day
   FEE: 0.99, // share kept after the 1% pool fee
-  PRL_USD: 0.47, // PRL price in USD (PRL/USDT — SafeTrade)
+  PRL_USD: 0.30, // PRL price in USD — prlscan (SafeTrade-sourced)
+};
+
+// prlscan API endpoints the app live-refreshes economics from (CORS-open; the
+// explorer's own backend). Mirrors the earn.html calculator's sources.
+const ECON_API = {
+  price: 'https://api.prlscan.com/v1/market/prl',
+  metrics: 'https://api.prlscan.com/v1/analytics/block-metrics',
+  blocks: 'https://api.prlscan.com/v1/blocks?limit=1',
 };
 
 // Local LLM inference (llama.cpp `llama-server`), run alongside the miner. It's
@@ -161,6 +172,6 @@ function difficultyForCard(name) {
 }
 
 module.exports = {
-  REGIONS, DEFAULTS, MINER, NETWORK, ECON, LLM, NODE, DIFFICULTY_BY_CARD,
+  REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE, DIFFICULTY_BY_CARD,
   regionFor, endpointFor, regionLabel, difficultyForCard,
 };

@@ -22,7 +22,8 @@ const { LlmEngineManager } = require('./llmEngineManager');
 const { postJson, downloadFile, streamChatCompletion, extractLlamaZip } = require('./io');
 const nodeStore = require('./nodeStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
-const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, LLM, NODE, endpointFor, difficultyForCard } = require('../shared/config');
+const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE, endpointFor, difficultyForCard } = require('../shared/config');
+const { resolveEconomics } = require('../shared/economics');
 const nodeProto = require('../shared/node');
 const { computeGpuLayers, requiredVramMb, hasEnoughVram } = require('../shared/vram');
 const { buildChatBody } = require('../shared/llmChat');
@@ -126,6 +127,44 @@ function fetchBalance(address, opts) {
   });
 }
 
+// Live network economics for earnings estimates. Starts as the static ECON
+// fallback and is refreshed from the prlscan API so the app's $/day and the
+// balance's USD figure track the real network + price instead of drifting
+// (a stale fallback silently overstates earnings as the network grows).
+let liveEcon = Object.assign({}, ECON, { live: { price: false, net: false, reward: false } });
+
+// GET a JSON URL, resolving the parsed object or null (never rejects). Same
+// best-effort pattern as fetchBalance — a failed refresh just keeps the
+// current econ values.
+function getJson(url) {
+  return new Promise((resolve) => {
+    try {
+      const u = new URL(url);
+      const lib = u.protocol === 'http:' ? http : https;
+      const req = lib.get(u, { timeout: 8000 }, (res) => {
+        if (res.statusCode !== 200) { res.resume(); return resolve(null); }
+        let data = '';
+        res.on('data', (c) => { data += c; if (data.length > 4e6) req.destroy(); });
+        res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { resolve(null); } });
+      });
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => { req.destroy(); resolve(null); });
+    } catch (e) {
+      resolve(null);
+    }
+  });
+}
+
+// Refresh liveEcon from the prlscan API (price, network hashrate, emission).
+// Best-effort: whatever doesn't come back stays on the previous/fallback value.
+async function refreshEconomics() {
+  const [market, metrics, blocks] = await Promise.all([
+    getJson(ECON_API.price), getJson(ECON_API.metrics), getJson(ECON_API.blocks),
+  ]);
+  liveEcon = resolveEconomics({ market, metrics, blocks }, ECON);
+  return liveEcon;
+}
+
 // Report a miner-engine launch failure to the UI + log, translating the common
 // antivirus-quarantine case into plain guidance instead of a cryptic error.
 function reportLaunchFailure(err, missing) {
@@ -146,7 +185,7 @@ function statsView(snap) {
     power: snap.power,
     gpu: snap.gpu,
     uptime: format.formatUptime(snap.uptimeSec),
-    estDay: earnings.estDailyUsdLabel(snap.total),
+    estDay: earnings.estDailyUsdLabel(snap.total, liveEcon),
   };
 }
 
@@ -1018,7 +1057,7 @@ ipcMain.handle('config:get', () => ({ regions: REGIONS, defaults: DEFAULTS, mine
 ipcMain.handle('miner:difficultyForCard', (_e, name) => difficultyForCard(name));
 ipcMain.handle('gpu:detect', () => detectGpu());
 ipcMain.handle('region:detect', () => detectRegion());
-ipcMain.handle('balance:get', (_e, address) => fetchBalance(address, { priceUsd: ECON.PRL_USD }));
+ipcMain.handle('balance:get', (_e, address) => fetchBalance(address, { priceUsd: liveEcon.PRL_USD }));
 // The MDL record is keyed by the PRL payout address (the pool rejects mdl1…
 // addresses on the miner endpoint), so this takes the PRL address.
 ipcMain.handle('balance:getMdl', (_e, address) =>
@@ -1061,6 +1100,11 @@ ipcMain.on('app:update:install', () => {
 app.whenReady().then(() => {
   createWindow();
   if (app.isPackaged) setupUpdater();
+  // Pull live network economics so earnings estimates and the balance's USD
+  // figure reflect the real price + network, not the stale fallback constants.
+  refreshEconomics();
+  const econTimer = setInterval(refreshEconomics, 10 * 60 * 1000);
+  if (econTimer.unref) econTimer.unref();
   // The identity used to live in Electron's userData dir; move it into the
   // store shared with the CLI so one machine keeps one nodeId across shells.
   nodeStore.migrateFrom(path.join(app.getPath('userData'), 'node.json'));
