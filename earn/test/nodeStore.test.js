@@ -5,9 +5,13 @@ jest.mock('os');
 
 const fs = require('fs');
 const os = require('os');
+const path = require('path');
 const store = require('../src/main/nodeStore');
 
-const NODE_PATH = '/home/test/.local/share/llmjob-earn/node.json';
+// Build the expected paths with path.join so they match on every OS — the store
+// uses path.join, which yields backslashes on Windows.
+const STORE_DIR = path.join('/home/test', '.local', 'share', 'llmjob-earn');
+const NODE_PATH = path.join(STORE_DIR, 'node.json');
 
 describe('nodeStore', () => {
   let files;
@@ -48,7 +52,7 @@ describe('nodeStore', () => {
   describe('saveNode', () => {
     it('creates the dir and writes with mode 0600', () => {
       store.saveNode({ nodeId: 'n1' });
-      expect(fs.mkdirSync).toHaveBeenCalledWith('/home/test/.local/share/llmjob-earn', { recursive: true });
+      expect(fs.mkdirSync).toHaveBeenCalledWith(STORE_DIR, { recursive: true });
       const call = fs.writeFileSync.mock.calls[0];
       expect(call[0]).toBe(NODE_PATH);
       expect(JSON.parse(call[1])).toEqual({ nodeId: 'n1' });
