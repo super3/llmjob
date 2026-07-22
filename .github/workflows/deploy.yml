@@ -27,16 +27,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      # Regenerate the root HTML pages from site/ sources so Pages always
-      # serves fresh output (the build has no dependencies — pure Node).
-      - name: Build site
-        run: node scripts/build-site.mjs
-
       - name: Setup Pages
         uses: actions/configure-pages@v5
 

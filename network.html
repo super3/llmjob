@@ -23,7 +23,6 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
-
 <style>
   :root {
     --bg: #fcfcfb;
@@ -282,12 +281,8 @@
     // use the absolute API base in production and the local server in dev — the
     // same pattern as the dashboard. Miners come back already sorted by hashrate
     // (see GET /api/miners); any failure just keeps the last render.
-    // API origin: localhost in dev, same-origin on Railway preview envs, else prod.
-const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
-  ? 'http://localhost:3001'
-  : (window.location.hostname.endsWith('.railway.app')
-      ? window.location.origin
-      : 'https://llmjob-production.up.railway.app');
+    const API_BASE = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+      ? 'http://localhost:3001' : 'https://llmjob-production.up.railway.app';
 
     async function load() {
       try {
