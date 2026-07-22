@@ -29,15 +29,19 @@ body {
 @keyframes mkPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.82); } }
 
 .app { padding: 30px 30px 26px; }
-/* Keep every view the same height as the tallest view so the footer
-   (View Logs / Need Help) stays in one place when switching tabs. */
-#view-mine, #view-api, #view-settings, #view-logs { min-height: 425px; }
+/* Every screen is the SAME height (matching the design mocks), so the window
+   never grows or shrinks when switching tabs and the footer (View Logs / Need
+   Help) stays put. Views with unbounded or overflowing content (chat, logs,
+   settings) scroll internally instead of stretching the frame. */
+#view-mine, #view-chat, #view-api, #view-settings, #view-logs { height: 470px; }
 /* Chat and logs fill the height so their scroller sits above the footer. */
 #view-chat, #view-api, #view-logs { display: flex; flex-direction: column; }
-/* Chat and logs have unbounded content (a growing conversation / log stream).
-   Give them a fixed height so their inner list scrolls internally instead of
-   growing the whole window (which fits its content). */
-#view-chat, #view-logs { height: 470px; }
+/* Settings runs taller than the frame — scroll it inside, styled like chat. */
+#view-settings { overflow-y: auto; scrollbar-width: thin; scrollbar-color: #d6d2c8 transparent; }
+#view-settings::-webkit-scrollbar { width: 10px; }
+#view-settings::-webkit-scrollbar-track { background: transparent; }
+#view-settings::-webkit-scrollbar-thumb { background: #d6d2c8; border: 2px solid var(--bg, #fff); border-radius: 8px; }
+#view-settings::-webkit-scrollbar-thumb:hover { background: #bdb8aa; }
 
 /* header: tab bar (Mine/Chat/API) + settings gear */
 .app-head { display: flex; align-items: stretch; gap: 22px; margin-bottom: 22px; border-bottom: 1px solid #eceae2; }
