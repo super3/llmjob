@@ -6,12 +6,10 @@ const NodeTokenService = require('../src/services/nodeTokenService');
 const NodeService = require('../src/services/nodeService');
 const { createTestDb } = require('./helpers/pgmem');
 
-// Mock Clerk so requireAuth resolves to a fixed user.
+// Mock Clerk so requireAuth resolves to a fixed user. `verifyToken` checks the
+// JWT signature in production; here it decodes the test token to recover `sub`.
 jest.mock('@clerk/clerk-sdk-node', () => ({
   clerkClient: {
-    sessions: {
-      getSession: jest.fn().mockResolvedValue({ userId: 'test_user_123' })
-    },
     users: {
       getUser: jest.fn().mockResolvedValue({
         id: 'test_user_123',
@@ -19,7 +17,11 @@ jest.mock('@clerk/clerk-sdk-node', () => ({
         username: 'testuser'
       })
     }
-  }
+  },
+  verifyToken: jest.fn(async (token) => {
+    const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+    return { sub: payload.sub };
+  })
 }));
 
 const mockToken = () => {

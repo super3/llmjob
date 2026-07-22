@@ -306,18 +306,21 @@ class JobService {
 
   async cleanupOldJobs(maxAge = 86400000) {
     const cutoff = Date.now() - maxAge;
-    const r = await this.db.query(
-      `SELECT id FROM jobs WHERE status IN ('completed', 'failed') AND updated_at < $1`,
+    // Two bulk deletes instead of a SELECT plus a delete-pair per row: first the
+    // chunks belonging to the expiring jobs, then the jobs themselves. The
+    // job-count comes from the second statement's RETURNING.
+    await this.db.query(
+      `DELETE FROM job_chunks WHERE job_id IN (
+         SELECT id FROM jobs WHERE status IN ('completed', 'failed') AND updated_at < $1
+       )`,
       [cutoff]
     );
-    const ids = r.rows.map((row) => row.id);
+    const r = await this.db.query(
+      `DELETE FROM jobs WHERE status IN ('completed', 'failed') AND updated_at < $1 RETURNING id`,
+      [cutoff]
+    );
 
-    for (const id of ids) {
-      await this.db.query('DELETE FROM job_chunks WHERE job_id = $1', [id]);
-      await this.db.query('DELETE FROM jobs WHERE id = $1', [id]);
-    }
-
-    return ids.length;
+    return r.rowCount;
   }
 }
 

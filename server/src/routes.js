@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { requireAuth } = require('./middleware/auth');
+const { requireAdmin } = require('./middleware/admin');
 const { verifySignature } = require('./middleware/signature');
 const { apiKeyAuth } = require('./middleware/apiKeyAuth');
 const nodeController = require('./controllers/nodeController');
@@ -66,7 +67,7 @@ const initJobRoutes = (db) => {
 
   // Job submission and management
   router.post('/jobs', requireAuth, (req, res) => jobController.submitJob(req, res));
-  router.get('/jobs/stats', (req, res) => jobController.getStats(req, res));
+  router.get('/jobs/stats', requireAuth, (req, res) => jobController.getStats(req, res));
   router.get('/jobs/:jobId', (req, res) => jobController.getJob(req, res));
   
   // Node job operations (require signature verification)
@@ -76,9 +77,12 @@ const initJobRoutes = (db) => {
   router.post('/jobs/:jobId/complete', verifySignature, (req, res) => jobController.completeJob(req, res));
   router.post('/jobs/:jobId/fail', verifySignature, (req, res) => jobController.failJob(req, res));
   
-  // Admin operations
-  router.post('/jobs/cleanup', requireAuth, (req, res) => jobController.cleanupJobs(req, res));
-  router.post('/jobs/check-timeouts', (req, res) => jobController.checkTimeouts(req, res));
+  // Admin operations. Cleanup deletes data, so it is gated to admins
+  // (ADMIN_USER_IDS). check-timeouts mutates queue state; the server also runs
+  // it on an internal interval, so the HTTP route just needs to be authenticated
+  // rather than public.
+  router.post('/jobs/cleanup', requireAuth, requireAdmin, (req, res) => jobController.cleanupJobs(req, res));
+  router.post('/jobs/check-timeouts', requireAuth, (req, res) => jobController.checkTimeouts(req, res));
 };
 
 // OpenAI-compatible gateway. Mounted at the app root (not under /api) so callers

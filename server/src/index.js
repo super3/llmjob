@@ -52,11 +52,17 @@ const staticPath = process.env.RAILWAY_ENVIRONMENT
 
 app.use(express.static(staticPath));
 
-// Error handling middleware
+// Error handling middleware. Log the full error server-side, but only echo the
+// message back for explicit client errors (4xx). For anything 500+ (or an
+// unclassified throw) return a generic message so internal details — stack
+// fragments, driver errors, file paths — never leak to the caller.
+// eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(err.status || 500).json({
-    error: err.message || 'Internal server error'
+  console.error(err.stack || err);
+  const status = err.status || 500;
+  const clientError = status >= 400 && status < 500;
+  res.status(status).json({
+    error: clientError && err.message ? err.message : 'Internal server error'
   });
 });
 
