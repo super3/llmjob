@@ -948,22 +948,29 @@ function stopWorker() {
 // produces a share doesn't hold it forever.
 function waitForMinerUp(capMs) {
   return new Promise((resolve) => {
-    if (!miner) return resolve();
+    // Capture the manager we subscribed to: `miner` is a module global that
+    // stopMining() nulls, and the manager's 'stopped' event arrives async after
+    // the kill — so cleanup through the global crashes the main process with
+    // "Cannot read properties of null (reading 'removeListener')" whenever the
+    // miner is stopped during this wait (seen in the field as the Electron
+    // error dialog). Unsubscribe from the captured reference instead.
+    const m = miner;
+    if (!m) return resolve();
     let done = false;
     const settle = () => {
       if (done) return;
       done = true;
       clearTimeout(timer);
-      miner.removeListener('event', onEvent);
-      miner.removeListener('stopped', settle);
-      miner.removeListener('error', settle);
+      m.removeListener('event', onEvent);
+      m.removeListener('stopped', settle);
+      m.removeListener('error', settle);
       resolve();
     };
     const onEvent = (e) => { if (e && e.type === 'status' && Number(e.hashrate) > 0) settle(); };
     const timer = setTimeout(settle, capMs || 60000);
-    miner.on('event', onEvent);
-    miner.once('stopped', settle);
-    miner.once('error', settle);
+    m.on('event', onEvent);
+    m.once('stopped', settle);
+    m.once('error', settle);
   });
 }
 
