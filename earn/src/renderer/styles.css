@@ -28,7 +28,7 @@ body {
 .mono { font-family: 'IBM Plex Mono', ui-monospace, 'Cascadia Code', Consolas, monospace; }
 @keyframes mkPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.82); } }
 
-.app { padding: 30px 30px 26px; }
+.app { padding: 20px 30px 26px; } /* 20px top per the mock — was 30px, which read as extra air above the logo */
 /* Every screen is the SAME height (matching the design mocks), so the window
    never grows or shrinks when switching tabs and the footer (View Logs / Need
    Help) stays put. Views with unbounded or overflowing content (chat, logs,
