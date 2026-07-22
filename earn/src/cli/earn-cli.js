@@ -12,9 +12,6 @@ const { spawn, execFile } = require('child_process');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
-const net = require('net');
-const http = require('http');
-const https = require('https');
 
 const { parseCliArgs, USAGE } = require('../shared/cliArgs');
 const selfUpdater = require('./selfUpdater');
@@ -24,16 +21,18 @@ const { EngineManager } = require('../main/engineManager');
 const { LlmManager } = require('../main/llmManager');
 const { LlmEngineManager } = require('../main/llmEngineManager');
 const { postJson, downloadFile, streamChatCompletion, extractLlamaZip } = require('../main/io');
+const {
+  detectRegion, detectVram, detectGpusVram, detectDriverMajor, postMinerReport, findFreePort,
+} = require('../main/probe');
 const nodeStore = require('../main/nodeStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
-const { NETWORK, MINER, LLM, NODE, REGIONS, DEFAULTS, endpointFor, regionLabel, difficultyForCard } = require('../shared/config');
-const { ENGINE, pickEngineVersion, parseDriverMajor, engineDownloadUrl } = require('../shared/engine');
+const { NETWORK, MINER, LLM, NODE, DEFAULTS, endpointFor, regionLabel, difficultyForCard } = require('../shared/config');
+const { ENGINE, pickEngineVersion, engineDownloadUrl } = require('../shared/engine');
 const nodeProto = require('../shared/node');
 const { buildMinerReports } = require('../shared/minerReport');
 const { statsFilePayload } = require('../shared/statsFile');
 const { shortenAddress, isValidAddress } = require('../shared/address');
-const { pickFastestRegion } = require('../shared/region');
-const { pickGpu, countGpus, parseGpuStats } = require('../shared/gpu');
+const { pickGpu, countGpus } = require('../shared/gpu');
 const { computeGpuLayers, requiredVramMb, hasEnoughVram } = require('../shared/vram');
 const { JobWorker } = require('../main/jobWorker');
 const { resolvePlan } = require('../shared/llmMode');
@@ -47,32 +46,6 @@ function log(line, stream) {
   const out = stream || process.stdout;
   const prefix = out.isTTY ? '[' + format.formatLogTime(new Date()) + '] ' : '';
   out.write(prefix + line + '\n');
-}
-
-// Measure TCP connect latency (ms) to a "host:port" Stratum endpoint, or null if
-// it can't be reached within the timeout. Never rejects. (Mirrors main.js.)
-function pingEndpoint(endpoint, timeoutMs) {
-  return new Promise((resolve) => {
-    const [host, portStr] = String(endpoint).split(':');
-    const start = Date.now();
-    const sock = new net.Socket();
-    let settled = false;
-    const done = (ms) => { if (!settled) { settled = true; sock.destroy(); resolve(ms); } };
-    sock.setTimeout(timeoutMs || 2500);
-    sock.once('connect', () => done(Date.now() - start));
-    sock.once('timeout', () => done(null));
-    sock.once('error', () => done(null));
-    sock.connect(Number(portStr), host);
-  });
-}
-
-// Auto-detect the lowest-latency pool region by pinging every endpoint in
-// parallel; falls back to the default when nothing is reachable.
-async function detectRegion() {
-  const keys = Object.keys(REGIONS);
-  const results = await Promise.all(keys.map((region) =>
-    pingEndpoint(REGIONS[region].endpoint).then((ms) => ({ region, ms }))));
-  return pickFastestRegion(results, DEFAULTS.region);
 }
 
 // Default worker name = this machine's hostname (first DNS label, sanitised to a
@@ -104,82 +77,10 @@ function detectGpu() {
   });
 }
 
-// Live GPU VRAM (used/total, MB) via nvidia-smi — mirrors the GUI (main.js) so
-// the CLI reports VRAM to the public board too. Resolves { usedMb, totalMb } or
-// null (no nvidia-smi / non-NVIDIA / parse failure). Never rejects.
-function detectVram() {
-  return new Promise((resolve) => {
-    execFile('nvidia-smi',
-      ['--query-gpu=memory.used,memory.total', '--format=csv,noheader,nounits'],
-      { timeout: 5000 },
-      (err, stdout) => {
-        if (err) return resolve(null);
-        // Sum across every GPU line so a multi-GPU rig reports the rig's total.
-        let usedMb = 0;
-        let totalMb = 0;
-        let any = false;
-        for (const row of String(stdout).split(/\r?\n/)) {
-          const parts = row.split(',').map((x) => parseInt(x, 10));
-          if (parts.length >= 2 && Number.isFinite(parts[0]) && Number.isFinite(parts[1])) {
-            usedMb += parts[0];
-            totalMb += parts[1];
-            any = true;
-          }
-        }
-        resolve(any ? { usedMb, totalMb } : null);
-      });
-  });
-}
-
-// Per-card live VRAM (used/total, MB) via nvidia-smi — one entry per GPU so the
-// network board can show each card's own headroom rather than the rig's sum.
-// Resolves [{ index, name, usedMb, totalMb }] (empty on no nvidia-smi / parse
-// failure). Never rejects.
-function detectGpusVram() {
-  return new Promise((resolve) => {
-    execFile('nvidia-smi',
-      ['--query-gpu=index,name,memory.used,memory.total', '--format=csv,noheader,nounits'],
-      { timeout: 5000 },
-      (err, stdout) => resolve(err ? [] : parseGpuStats(stdout)));
-  });
-}
-
-// Publish live status to the public network board — best-effort, never throws.
-function postMinerReport(payload) {
-  return new Promise((resolve) => {
-    try {
-      const body = JSON.stringify(payload);
-      const u = new URL(NETWORK.reportUrl);
-      const lib = u.protocol === 'http:' ? http : https;
-      const req = lib.request(u, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-        timeout: 8000,
-      }, (res) => { res.resume(); res.on('end', resolve); });
-      req.on('error', () => resolve());
-      req.on('timeout', () => { req.destroy(); resolve(); });
-      req.write(body);
-      req.end();
-    } catch (e) {
-      resolve();
-    }
-  });
-}
-
 // The mining engine ships as a bare Linux binary (no zip), so its EngineManager
 // never needs an extractor — this stays a hard "unsupported" for that path.
 function extractUnsupported() {
   return Promise.reject(new Error('zip extraction is not supported on the Linux CLI'));
-}
-
-// NVIDIA driver major version via nvidia-smi, or null when it can't be read.
-// Decides which engine build the rig can run (CUDA 13 builds need >= 580).
-function detectDriverMajor() {
-  return new Promise((resolve) => {
-    execFile('nvidia-smi', ['--query-gpu=driver_version', '--format=csv,noheader'],
-      { timeout: 5000 },
-      (err, stdout) => resolve(err ? null : parseDriverMajor(stdout)));
-  });
 }
 
 // llama-server zips extract via the shared io helper; point failures at the
@@ -459,7 +360,18 @@ async function startLlm(settings, reserveMb) {
   const nodeCfg = loadNodeConfig();
   const canServe = !!(nodeCfg && nodeCfg.connected);
 
-  const llm = new LlmManager({ spawn });
+  // Bind-check the port and walk to a free one if the default is taken — the
+  // same self-heal the GUI has. Without it a busy 8080 (a lingering server, or
+  // other software) makes the CLI's LLM fail outright.
+  const port = await findFreePort(LLM.host, LLM.port, 10);
+  if (port !== LLM.port) {
+    log('port ' + LLM.port + ' is busy — using ' + port + ' for the local LLM instead');
+  }
+
+  // Retry an early exit a few times (startAttempts/startRetryMs) instead of
+  // declaring the LLM dead: llama-server exits immediately on a port-bind clash
+  // that clears once the previous server dies. Matches the GUI.
+  const llm = new LlmManager({ spawn, startAttempts: LLM.startAttempts, retryDelayMs: LLM.startRetryMs });
   llm.on('log', (l) => log(l.line, l.level === 'error' ? process.stderr : process.stdout));
   llm.on('ready', ({ baseUrl }) => {
     serveLlmState.ready = true;
@@ -493,7 +405,7 @@ async function startLlm(settings, reserveMb) {
   });
   llm.on('error', (err) => log('LLM error: ' + err.message, process.stderr));
 
-  llm.start({ platform: process.platform, binaryPath, modelPath, nGpuLayers });
+  llm.start({ platform: process.platform, binaryPath, modelPath, nGpuLayers, port });
   log('local LLM starting on ' + llm.baseUrl + ' — ' + nGpuLayers + ' GPU layers');
   return llm;
 }
