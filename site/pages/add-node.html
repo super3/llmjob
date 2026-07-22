@@ -1,3 +1,4 @@
+<!--build {"clerk": true, "fonts": "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"} -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5,24 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Add Node — LLMJob</title>
 
-<!-- Umami Analytics -->
-<script defer src="https://cloud.umami.is/script.js" data-website-id="df101f2e-01ef-46ef-b682-f8c553ae594f"></script>
-
-<!-- Clerk -->
-<script
-    async
-    crossorigin="anonymous"
-    data-clerk-publishable-key="pk_live_Y2xlcmsubGxtam9iLmNvbSQ"
-    src="https://clerk.llmjob.com/npm/@clerk/clerk-js@5/dist/clerk.browser.js"
-    type="text/javascript"
-></script>
-
-<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2222%22 fill=%22%231A1A17%22/><path transform=%22translate(26,26) scale(2)%22 d=%22M13 2 L4 14 h6 l-1 8 10-13 h-7 l1-7 z%22 fill=%22%23FFFFFF%22/></svg>">
-
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-
+{{> head}}
     <style>
       :root {
         --bg: #FBFAF8;
@@ -209,12 +193,7 @@
 
     <script>
         let nodeInfo = null;
-        // API origin: localhost in dev, same-origin on Railway preview envs, else prod.
-const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
-  ? 'http://localhost:3001'
-  : (window.location.hostname.endsWith('.railway.app')
-      ? window.location.origin
-      : 'https://llmjob-production.up.railway.app');
+        {{> api-base}}
 
         // Parse URL parameters
         function parseUrlParams() {

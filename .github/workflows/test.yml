@@ -31,7 +31,10 @@ jobs:
     
     - name: Run linter
       run: npm run lint --if-present
-    
+
+    - name: Check generated site is up to date
+      run: npm run build:site:check
+
     - name: Run tests with coverage
       run: npm test
     

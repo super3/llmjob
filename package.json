@@ -13,6 +13,8 @@
     "test:watch": "jest --watch",
     "lint": "eslint server/src server/tests earn/src earn/test",
     "lint:fix": "eslint --fix server/src server/tests earn/src earn/test",
+    "build:site": "node scripts/build-site.mjs",
+    "build:site:check": "node scripts/build-site.mjs --check",
     "migrate": "node-pg-migrate -m server/migrations",
     "migrate:up": "node-pg-migrate up -m server/migrations",
     "migrate:down": "node-pg-migrate down -m server/migrations",
