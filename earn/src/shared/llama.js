@@ -30,6 +30,13 @@ function buildServerArgs(opts = {}) {
     '--ctx-size', String(opts.ctxSize || LLM.ctxSize),
     '--n-gpu-layers', String(ngl),
     '--parallel', String(opts.parallel || LLM.parallel),
+    // Keep the model on ONE GPU. On multi-GPU rigs the Vulkan backend tries to
+    // split the graph across every device and can trip
+    // GGML_ASSERT(n_inputs < GGML_SCHED_MAX_SPLIT_INPUTS) in ggml-backend.cpp,
+    // crash-looping the server before it ever serves (seen in the field on a
+    // 3060 Ti + 5060 Ti box). Our model is ~5 GB — a single card is plenty, and
+    // single-GPU machines are unaffected by the flag.
+    '--split-mode', 'none',
   ];
   if (opts.flashAttn) args.push('--flash-attn');
   return args;

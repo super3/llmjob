@@ -28,8 +28,14 @@ describe('buildServerArgs', () => {
     expect(a).toEqual([
       '--model', '/m.gguf', '--host', '127.0.0.1', '--port', '8080',
       '--ctx-size', '4096', '--n-gpu-layers', '42', '--parallel', '1',
+      '--split-mode', 'none',
     ]);
     expect(a).not.toContain('--flash-attn');
+  });
+
+  test('always pins the model to one GPU (multi-GPU Vulkan split crashes llama-server)', () => {
+    expect(buildServerArgs()).toEqual(expect.arrayContaining(['--split-mode', 'none']));
+    expect(buildServerArgs({ nGpuLayers: 0 })).toEqual(expect.arrayContaining(['--split-mode', 'none']));
   });
 
   test('honors overrides and appends --flash-attn', () => {
