@@ -1,8 +1,8 @@
 'use strict';
 
 // IO shell for the CLI's self-update — the real HTTPS / filesystem / process
-// side of shared/selfUpdate.js. Excluded from the coverage gate like the other
-// shells (main.js, earn-cli.js); the decision logic it wraps is unit-tested.
+// side of shared/selfUpdate.js (whose decision logic is unit-tested there).
+// Covered by mocking https/fs/child_process/node:sea in selfUpdater.test.js.
 
 const https = require('https');
 const fs = require('fs');

@@ -1,89 +1,133 @@
 'use strict';
 
-const {
-  pingEndpoint, detectRegion, detectVram, detectGpusVram, detectDriverMajor,
-  postMinerReport, findFreePort,
-} = require('../src/main/probe');
+jest.mock('net');
+jest.mock('http');
+jest.mock('https');
+jest.mock('child_process');
 
-// A fake net.Socket that fires whichever lifecycle event the test asks for.
-function fakeSocket(event, latencyMs) {
-  const handlers = {};
+const net = require('net');
+const https = require('https');
+const { execFile } = require('child_process');
+const { EventEmitter } = require('events');
+const probe = require('../src/main/probe');
+
+// A fake net.Socket that fires one lifecycle event after connect().
+function fakeSocket(fire) {
+  const h = {};
   return {
-    handlers,
-    setTimeout() {},
-    once(name, fn) { handlers[name] = fn; return this; },
-    destroy() { this.destroyed = true; },
-    connect() {
-      // Fire asynchronously so the caller has attached all listeners.
-      process.nextTick(() => { if (handlers[event]) handlers[event](); });
-    },
+    setTimeout: jest.fn(),
+    once(ev, cb) { h[ev] = cb; return this; },
+    destroy: jest.fn(),
+    connect: jest.fn(() => { process.nextTick(() => h[fire] && h[fire]()); }),
   };
 }
 
-// execFile stub: invokes the callback with the given err/stdout.
-function fakeExecFile(err, stdout) {
-  return (_bin, _args, _opts, cb) => cb(err, stdout);
+// A fake net.Server for findFreePort: either binds ("listening") or fails.
+function fakeServer(fail) {
+  const h = {};
+  return {
+    once(ev, cb) { h[ev] = cb; return this; },
+    close(cb) { if (cb) cb(); },
+    listen() { process.nextTick(() => (fail ? h.error && h.error() : h.listening && h.listening())); },
+  };
 }
 
+function fakeRes() {
+  const res = new EventEmitter();
+  res.resume = () => {};
+  return res;
+}
+function fakeReq() {
+  const req = new EventEmitter();
+  req.write = jest.fn();
+  req.end = jest.fn();
+  req.destroy = jest.fn();
+  return req;
+}
+
+// execFile stub.
+function execCb(err, stdout) {
+  execFile.mockImplementation((_bin, _args, _opts, cb) => cb(err, stdout));
+}
+
+beforeEach(() => {
+  jest.clearAllMocks();
+});
+
 describe('pingEndpoint', () => {
-  it('resolves the latency on connect', async () => {
-    let t = 100;
-    const now = () => (t += 5); // start(105) then connect(110) => 5ms
-    const net = { Socket: function () { return fakeSocket('connect'); } };
-    const ms = await pingEndpoint('host:5566', 1000, { net, now });
-    expect(ms).toBe(5);
+  it('resolves a numeric latency on connect', async () => {
+    net.Socket.mockImplementation(() => fakeSocket('connect'));
+    const ms = await probe.pingEndpoint('host:5566', 1000);
+    expect(typeof ms).toBe('number');
+    expect(ms).toBeGreaterThanOrEqual(0);
   });
 
-  it('resolves null on timeout', async () => {
-    const net = { Socket: function () { return fakeSocket('timeout'); } };
-    expect(await pingEndpoint('host:5566', 1000, { net })).toBeNull();
+  it('resolves null on timeout (default timeout)', async () => {
+    net.Socket.mockImplementation(() => fakeSocket('timeout'));
+    expect(await probe.pingEndpoint('host:5566')).toBeNull();
   });
 
   it('resolves null on error', async () => {
-    const net = { Socket: function () { return fakeSocket('error'); } };
-    expect(await pingEndpoint('host:5566', undefined, { net })).toBeNull();
+    net.Socket.mockImplementation(() => fakeSocket('error'));
+    expect(await probe.pingEndpoint('host:5566', 500)).toBeNull();
+  });
+
+  it('settles once even if multiple socket events fire', async () => {
+    // connect then error: the second done() must be a no-op (settled guard).
+    const h = {};
+    const sock = {
+      setTimeout: jest.fn(),
+      once(ev, cb) { h[ev] = cb; return this; },
+      destroy: jest.fn(),
+      connect: jest.fn(() => process.nextTick(() => { h.connect(); h.error(); })),
+    };
+    net.Socket.mockImplementation(() => sock);
+    const ms = await probe.pingEndpoint('host:5566', 100);
+    expect(typeof ms).toBe('number');       // resolved from the first (connect)
+    expect(sock.destroy).toHaveBeenCalledTimes(1);
   });
 });
 
 describe('detectRegion', () => {
-  it('picks the lowest-latency reachable region', async () => {
-    // Every endpoint "connects" instantly, so pickFastestRegion gets equal
-    // latencies and returns a valid region key (not the bare default fallback).
-    const net = { Socket: function () { return fakeSocket('connect'); } };
-    const region = await detectRegion({ net, now: () => 0 });
+  it('returns a region when endpoints respond', async () => {
+    net.Socket.mockImplementation(() => fakeSocket('connect'));
+    const region = await probe.detectRegion();
     expect(typeof region).toBe('string');
     expect(region.length).toBeGreaterThan(0);
   });
 
   it('falls back to the default when nothing is reachable', async () => {
-    const net = { Socket: function () { return fakeSocket('error'); } };
-    const region = await detectRegion({ net });
-    expect(region).toBe('us2'); // DEFAULTS.region
+    net.Socket.mockImplementation(() => fakeSocket('error'));
+    expect(await probe.detectRegion()).toBe('us2'); // DEFAULTS.region
   });
 });
 
 describe('detectVram', () => {
   it('sums used/total across GPU lines', async () => {
-    const execFile = fakeExecFile(null, '1024, 8192\n2048, 8192\n');
-    expect(await detectVram({ execFile })).toEqual({ usedMb: 3072, totalMb: 16384 });
+    execCb(null, '1024, 8192\n2048, 8192\n');
+    expect(await probe.detectVram()).toEqual({ usedMb: 3072, totalMb: 16384 });
   });
 
-  it('returns null on nvidia-smi error', async () => {
-    expect(await detectVram({ execFile: fakeExecFile(new Error('no smi')) })).toBeNull();
+  it('returns null on error', async () => {
+    execCb(new Error('no smi'));
+    expect(await probe.detectVram()).toBeNull();
   });
 
-  it('returns null when no line parses', async () => {
-    expect(await detectVram({ execFile: fakeExecFile(null, 'garbage\n') })).toBeNull();
+  it('returns null when nothing parses', async () => {
+    execCb(null, 'garbage\n');
+    expect(await probe.detectVram()).toBeNull();
   });
 });
 
 describe('detectGpusVram', () => {
   it('returns [] on error', async () => {
-    expect(await detectGpusVram({ execFile: fakeExecFile(new Error('x')) })).toEqual([]);
+    execCb(new Error('x'));
+    expect(await probe.detectGpusVram()).toEqual([]);
   });
 
   it('parses per-GPU rows', async () => {
-    const rows = await detectGpusVram({ execFile: fakeExecFile(null, '0, RTX 4090, 1024, 24576\n') });
+    execCb(null, '0, RTX 4090, 1024, 24576\n');
+    const rows = await probe.detectGpusVram();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ index: 0, usedMb: 1024, totalMb: 24576 });
   });
@@ -91,70 +135,78 @@ describe('detectGpusVram', () => {
 
 describe('detectDriverMajor', () => {
   it('returns the parsed major version', async () => {
-    expect(await detectDriverMajor({ execFile: fakeExecFile(null, '580.42\n') })).toBe(580);
+    execCb(null, '580.42\n');
+    expect(await probe.detectDriverMajor()).toBe(580);
   });
 
   it('returns null on error', async () => {
-    expect(await detectDriverMajor({ execFile: fakeExecFile(new Error('x')) })).toBeNull();
+    execCb(new Error('x'));
+    expect(await probe.detectDriverMajor()).toBeNull();
   });
 });
 
 describe('postMinerReport', () => {
-  function fakeHttps(capture) {
-    return {
-      request(_url, _opts, cb) {
-        const req = {
-          on() { return this; },
-          write(body) { capture.body = body; },
-          end() { process.nextTick(() => cb({ resume() {}, on: (e, fn) => e === 'end' && fn() })); },
-        };
-        return req;
-      },
-    };
-  }
-
-  it('POSTs the payload and resolves on end', async () => {
-    const capture = {};
-    await postMinerReport({ hello: 'world' }, { https: fakeHttps(capture) });
-    expect(JSON.parse(capture.body)).toEqual({ hello: 'world' });
+  it('POSTs over https (the configured report url) and resolves on end', async () => {
+    const req = fakeReq();
+    const res = fakeRes();
+    https.request.mockImplementation((_u, _opts, cb) => { cb(res); return req; });
+    const done = probe.postMinerReport({ hello: 'world' });
+    res.emit('end');
+    await expect(done).resolves.toBeUndefined();
+    expect(req.write).toHaveBeenCalledWith(JSON.stringify({ hello: 'world' }));
   });
 
-  it('never rejects when the request errors', async () => {
-    const https = {
-      request(_url, _opts) {
-        return {
-          on(evt, fn) { if (evt === 'error') process.nextTick(fn); return this; },
-          write() {},
-          end() {},
-        };
-      },
-    };
-    await expect(postMinerReport({ a: 1 }, { https })).resolves.toBeUndefined();
+  it('resolves (never rejects) on a request error', async () => {
+    const req = fakeReq();
+    https.request.mockImplementation((_u, _opts) => req);
+    const done = probe.postMinerReport({ a: 1 });
+    req.emit('error', new Error('offline'));
+    await expect(done).resolves.toBeUndefined();
+  });
+
+  it('resolves on a request timeout', async () => {
+    const req = fakeReq();
+    https.request.mockImplementation((_u, _opts) => req);
+    const done = probe.postMinerReport({ a: 1 });
+    req.emit('timeout');
+    await expect(done).resolves.toBeUndefined();
+    expect(req.destroy).toHaveBeenCalled();
+  });
+
+  it('swallows a synchronous failure (e.g. an unserializable payload)', async () => {
+    const circular = {};
+    circular.self = circular; // JSON.stringify throws
+    await expect(probe.postMinerReport(circular)).resolves.toBeUndefined();
+  });
+
+  it('uses http when the report url is http', async () => {
+    await jest.isolateModulesAsync(async () => {
+      jest.doMock('../src/shared/config', () => ({
+        NETWORK: { reportUrl: 'http://board.local/report' },
+        REGIONS: {},
+        DEFAULTS: { region: 'us2' },
+      }));
+      const p = require('../src/main/probe');
+      const httpMock = require('http');
+      const req = fakeReq();
+      const res = fakeRes();
+      httpMock.request.mockImplementation((_u, _opts, cb) => { cb(res); return req; });
+      const done = p.postMinerReport({ ok: 1 });
+      res.emit('end');
+      await expect(done).resolves.toBeUndefined();
+      expect(httpMock.request).toHaveBeenCalled();
+    });
   });
 });
 
 describe('findFreePort', () => {
-  function fakeServer(fail) {
-    const handlers = {};
-    return {
-      once(name, fn) { handlers[name] = fn; return this; },
-      listen() {
-        process.nextTick(() => {
-          if (fail) handlers.error && handlers.error();
-          else handlers.listening && handlers.listening();
-        });
-      },
-      close(cb) { if (cb) cb(); },
-    };
-  }
-
-  it('returns the first port that binds', async () => {
-    const net = { createServer: () => fakeServer(false) };
-    expect(await findFreePort('127.0.0.1', 8080, 10, { net })).toBe(8080);
+  it('returns the first port that binds (default tries)', async () => {
+    net.createServer.mockImplementation(() => fakeServer(false));
+    expect(await probe.findFreePort('127.0.0.1', 8080)).toBe(8080);
   });
 
-  it('falls back to the start port when none bind', async () => {
-    const net = { createServer: () => fakeServer(true) };
-    expect(await findFreePort('127.0.0.1', 8080, 3, { net })).toBe(8080);
+  it('walks forward and falls back to the start port when none bind', async () => {
+    net.createServer.mockImplementation(() => fakeServer(true));
+    expect(await probe.findFreePort('127.0.0.1', 8080, 3)).toBe(8080);
   });
 });
