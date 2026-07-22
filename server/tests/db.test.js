@@ -1,4 +1,4 @@
-const { createPool, initSchema, SCHEMA } = require('../src/db');
+const { createPool, SCHEMA } = require('../src/db');
 const { createTestDb } = require('./helpers/pgmem');
 
 describe('db module', () => {

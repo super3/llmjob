@@ -56,7 +56,6 @@ app.use(express.static(staticPath));
 // message back for explicit client errors (4xx). For anything 500+ (or an
 // unclassified throw) return a generic message so internal details — stack
 // fragments, driver errors, file paths — never leak to the caller.
-// eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
   console.error(err.stack || err);
   const status = err.status || 500;

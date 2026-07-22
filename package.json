@@ -11,6 +11,8 @@
     "dev": "node-pg-migrate up -m server/migrations && nodemon server/src/index.js",
     "test": "jest --coverage",
     "test:watch": "jest --watch",
+    "lint": "eslint server/src server/tests earn/src earn/test",
+    "lint:fix": "eslint --fix server/src server/tests earn/src earn/test",
     "migrate": "node-pg-migrate -m server/migrations",
     "migrate:up": "node-pg-migrate up -m server/migrations",
     "migrate:down": "node-pg-migrate down -m server/migrations",
@@ -42,7 +44,10 @@
     "tweetnacl-util": "^0.15.1"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@types/jest": "^30.0.0",
+    "eslint": "^9.39.5",
+    "globals": "^17.7.0",
     "jest": "^30.0.5",
     "nodemon": "^3.1.10",
     "pg-mem": "^3.0.14",
