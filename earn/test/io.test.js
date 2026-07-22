@@ -116,6 +116,79 @@ describe('postJson', () => {
   });
 });
 
+describe('getJson', () => {
+  it('resolves parsed JSON on 200 (https, with headers)', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    wire(https, [res]);
+    const p = io.getJson('https://host/api', { headers: { 'User-Agent': 'x' }, timeout: 1000 });
+    res.emit('data', '{"ok":true}');
+    res.emit('end');
+    await expect(p).resolves.toEqual({ ok: true });
+    expect(https.get).toHaveBeenCalledWith(
+      expect.any(URL),
+      expect.objectContaining({ timeout: 1000, headers: { 'User-Agent': 'x' } }),
+      expect.any(Function),
+    );
+  });
+
+  it('works over http with the default timeout', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    wire(http, [res]);
+    const p = io.getJson('http://host/api');
+    res.emit('data', '{"n":1}');
+    res.emit('end');
+    await expect(p).resolves.toEqual({ n: 1 });
+    expect(http.get).toHaveBeenCalledWith(
+      expect.any(URL), expect.objectContaining({ timeout: 8000 }), expect.any(Function));
+  });
+
+  it('resolves null on a non-200', async () => {
+    const res = fakeRes({ statusCode: 500 });
+    wire(https, [res]);
+    await expect(io.getJson('https://host/api')).resolves.toBeNull();
+  });
+
+  it('resolves null on unparseable JSON', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    wire(https, [res]);
+    const p = io.getJson('https://host/api');
+    res.emit('data', 'not json');
+    res.emit('end');
+    await expect(p).resolves.toBeNull();
+  });
+
+  it('aborts an oversized body and resolves null', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    const reqs = wire(https, [res]);
+    const p = io.getJson('https://host/api');
+    res.emit('data', 'x'.repeat(4_000_001));
+    res.emit('end');
+    await expect(p).resolves.toBeNull();
+    expect(reqs[0].destroy).toHaveBeenCalled();
+  });
+
+  it('resolves null on an invalid URL', async () => {
+    await expect(io.getJson('::bad::')).resolves.toBeNull();
+  });
+
+  it('resolves null on a request error', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    const reqs = wire(https, [res]);
+    const p = io.getJson('https://host/api');
+    reqs[0].emit('error', new Error('offline'));
+    await expect(p).resolves.toBeNull();
+  });
+
+  it('resolves null on a request timeout', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    const reqs = wire(https, [res]);
+    const p = io.getJson('https://host/api');
+    reqs[0].emit('timeout');
+    await expect(p).resolves.toBeNull();
+    expect(reqs[0].destroy).toHaveBeenCalled();
+  });
+});
+
 describe('downloadFile', () => {
   function fakeWrite() {
     const w = new EventEmitter();

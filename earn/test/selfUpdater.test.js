@@ -57,64 +57,6 @@ beforeEach(() => {
   jest.clearAllMocks();
 });
 
-describe('fetchJson', () => {
-  it('resolves parsed JSON on 200', async () => {
-    const res = fakeRes({ statusCode: 200 });
-    wire([res]);
-    const p = updater.fetchJson('https://api/x');
-    res.emit('data', '{"tag":"v1"}');
-    res.emit('end');
-    await expect(p).resolves.toEqual({ tag: 'v1' });
-  });
-
-  it('resolves null on a non-200', async () => {
-    const res = fakeRes({ statusCode: 404 });
-    wire([res]);
-    await expect(updater.fetchJson('https://api/x')).resolves.toBeNull();
-  });
-
-  it('resolves null on invalid JSON', async () => {
-    const res = fakeRes({ statusCode: 200 });
-    wire([res]);
-    const p = updater.fetchJson('https://api/x');
-    res.emit('data', 'not json');
-    res.emit('end');
-    await expect(p).resolves.toBeNull();
-  });
-
-  it('aborts an oversized body', async () => {
-    const res = fakeRes({ statusCode: 200 });
-    const reqs = wire([res]);
-    const p = updater.fetchJson('https://api/x');
-    res.emit('data', 'x'.repeat(4_000_001));
-    res.emit('end');
-    await expect(p).resolves.toBeNull();
-    expect(reqs[0].destroy).toHaveBeenCalled();
-  });
-
-  it('resolves null on a request error', async () => {
-    const res = fakeRes({ statusCode: 200 });
-    const reqs = wire([res]);
-    const p = updater.fetchJson('https://api/x');
-    reqs[0].emit('error', new Error('offline'));
-    await expect(p).resolves.toBeNull();
-  });
-
-  it('resolves null on a request timeout', async () => {
-    const res = fakeRes({ statusCode: 200 });
-    const reqs = wire([res]);
-    const p = updater.fetchJson('https://api/x');
-    reqs[0].emit('timeout');
-    await expect(p).resolves.toBeNull();
-    expect(reqs[0].destroy).toHaveBeenCalled();
-  });
-
-  it('resolves null when https.get throws synchronously', async () => {
-    https.get.mockImplementation(() => { throw new Error('bad url'); });
-    await expect(updater.fetchJson('::bad::')).resolves.toBeNull();
-  });
-});
-
 describe('fetchLatestRelease', () => {
   it('parses the release when reachable', async () => {
     const res = fakeRes({ statusCode: 200 });

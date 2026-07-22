@@ -18,7 +18,7 @@ const { MinerManager } = require('./minerManager');
 const { EngineManager } = require('./engineManager');
 const { LlmManager } = require('./llmManager');
 const { LlmEngineManager } = require('./llmEngineManager');
-const { postJson, downloadFile, streamChatCompletion, extractLlamaZip } = require('./io');
+const { postJson, getJson, downloadFile, streamChatCompletion, extractLlamaZip } = require('./io');
 const {
   detectRegion, detectVram, detectGpusVram, detectDriverMajor,
   postMinerReport, findFreePort,
@@ -89,29 +89,22 @@ function openExternalSafe(url) {
 // merge-mined MDL record lives at a different route), and `opts.priceUsd`
 // (optional) adds a USD figure. Runs here in the main process so it isn't
 // subject to the renderer's CSP / cross-origin restrictions.
-function fetchBalance(address, opts) {
+async function fetchBalance(address, opts) {
   const o = opts || {};
   const isValid = o.validate || isValidAddress;
-  return new Promise((resolve) => {
-    if (!isValid(address)) return resolve(null);
-    try {
-      const u = new URL((o.buildUrl || buildBalanceUrl)(String(address).trim()));
-      const lib = u.protocol === 'http:' ? http : https;
-      const req = lib.get(u, { timeout: 8000 }, (res) => {
-        if (res.statusCode !== 200) { res.resume(); return resolve(null); }
-        let data = '';
-        res.on('data', (c) => { data += c; if (data.length > 4e6) req.destroy(); });
-        res.on('end', () => {
-          try { resolve((o.parse || parseBalance)(JSON.parse(data), o.priceUsd, o.currency)); }
-          catch (e) { resolve(null); }
-        });
-      });
-      req.on('error', () => resolve(null));
-      req.on('timeout', () => { req.destroy(); resolve(null); });
-    } catch (e) {
-      resolve(null);
-    }
-  });
+  if (!isValid(address)) return null;
+  let json;
+  try {
+    json = await getJson((o.buildUrl || buildBalanceUrl)(String(address).trim()));
+  } catch (e) {
+    return null; // buildUrl threw
+  }
+  if (json == null) return null;
+  try {
+    return (o.parse || parseBalance)(json, o.priceUsd, o.currency);
+  } catch (e) {
+    return null; // parse threw
+  }
 }
 
 // Live network economics for earnings estimates. Starts as the static ECON
@@ -119,28 +112,6 @@ function fetchBalance(address, opts) {
 // balance's USD figure track the real network + price instead of drifting
 // (a stale fallback silently overstates earnings as the network grows).
 let liveEcon = Object.assign({}, ECON, { live: { price: false, net: false, reward: false } });
-
-// GET a JSON URL, resolving the parsed object or null (never rejects). Same
-// best-effort pattern as fetchBalance — a failed refresh just keeps the
-// current econ values.
-function getJson(url) {
-  return new Promise((resolve) => {
-    try {
-      const u = new URL(url);
-      const lib = u.protocol === 'http:' ? http : https;
-      const req = lib.get(u, { timeout: 8000 }, (res) => {
-        if (res.statusCode !== 200) { res.resume(); return resolve(null); }
-        let data = '';
-        res.on('data', (c) => { data += c; if (data.length > 4e6) req.destroy(); });
-        res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { resolve(null); } });
-      });
-      req.on('error', () => resolve(null));
-      req.on('timeout', () => { req.destroy(); resolve(null); });
-    } catch (e) {
-      resolve(null);
-    }
-  });
-}
 
 // Refresh liveEcon from the prlscan API (price, network hashrate, emission).
 // Best-effort: whatever doesn't come back stays on the previous/fallback value.

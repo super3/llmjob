@@ -691,4 +691,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { run, downloadFile, postMinerReport, resolveEngine };
+module.exports = { run };
