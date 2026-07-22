@@ -40,7 +40,18 @@ class LlmEngineManager {
   // Resolve to the server binary path, downloading + installing it if missing.
   async ensureServer(onProgress) {
     const dest = this.serverBinaryPath();
-    if (this.isServerInstalled()) return dest;
+    if (this.isServerInstalled()) {
+      // A cached llama-server can be present but lack the execute bit: the
+      // download writes it 0o644 and only chmods afterwards, so an interrupted
+      // first install (crash/kill/reboot between the rename and the chmod) —
+      // or a binary put there by any other path — leaves a non-executable file
+      // that spawns with EACCES forever, since this early return used to skip
+      // the chmod below. Re-assert +x here so a stuck node self-heals on the
+      // next start. Best effort: a chmod failure (read-only dir, foreign owner)
+      // must not turn a node whose binary is already executable into a crash.
+      this.ensureExecutable(dest);
+      return dest;
+    }
 
     this.fs.mkdirSync(this.dir, { recursive: true });
     if (isZipUrl(this.serverUrl)) {
@@ -54,6 +65,20 @@ class LlmEngineManager {
 
     if (this.platform !== 'win32') this.chmod(dest, 0o755);
     return dest;
+  }
+
+  // Grant the llama-server its execute bit (non-Windows only). Best effort by
+  // design: this runs on the already-installed path where the file may sit on a
+  // read-only mount or be owned by another user, and a throw there would break
+  // a node whose binary is already executable. The fresh-download path keeps its
+  // own strict chmod so a genuine install failure still surfaces.
+  ensureExecutable(dest) {
+    if (this.platform === 'win32') return;
+    try {
+      this.chmod(dest, 0o755);
+    } catch (e) {
+      /* best effort — spawn will report EACCES if it truly isn't executable */
+    }
   }
 
   // Resolve to the GGUF model path, downloading it (a plain file) if missing.
