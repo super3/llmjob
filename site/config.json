@@ -4,5 +4,6 @@
   "clerkSrc": "https://clerk.llmjob.com/npm/@clerk/clerk-js@5/dist/clerk.browser.js",
   "apiBaseProd": "https://llmjob-production.up.railway.app",
   "discordUrl": "https://discord.gg/JnERcTKjUS",
+  "home": "index.html",
   "appVersion": "0.2.10"
 }
