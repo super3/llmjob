@@ -30,6 +30,13 @@ describe('MinerService helpers', () => {
     expect(MinerService.clampNum(5, 10)).toBe(5);
   });
 
+  test('baseWorker strips a /gpuN suffix, leaving the host name', () => {
+    expect(MinerService.baseWorker('rig9/gpu0')).toBe('rig9');
+    expect(MinerService.baseWorker('rig9/gpu12')).toBe('rig9');
+    expect(MinerService.baseWorker('rig01')).toBe('rig01'); // bare worker unchanged
+    expect(MinerService.baseWorker(null)).toBe('');
+  });
+
   test('formatAgo renders each tier', () => {
     expect(MinerService.formatAgo(-100)).toBe('just now');
     expect(MinerService.formatAgo(2000)).toBe('just now');
@@ -108,6 +115,35 @@ describe('MinerService (db)', () => {
     });
     // A worker that reported no version surfaces as null (not undefined).
     expect(out.miners.find((m) => m.addr === ADDR.c)).toMatchObject({ vramUsedMb: 0, vramTotalMb: 0, version: null });
+  });
+
+  test('combines a multi-GPU host (worker/gpuN) into one row that sums its cards', async () => {
+    // One rig, three A4000s on ADDR.a: workers rig9/gpu0..2 → a single host row.
+    await service.reportMiner({ address: ADDR.a, worker: 'rig9/gpu0', gpu: 'NVIDIA RTX A4000', hashrate: 96, accepted: 4, vramUsedMb: 5000, vramTotalMb: 16000, version: '0.2.10' });
+    await service.reportMiner({ address: ADDR.a, worker: 'rig9/gpu1', gpu: 'NVIDIA RTX A4000', hashrate: 96, accepted: 4, vramUsedMb: 5000, vramTotalMb: 16000, version: '0.2.10' }); // ties gpu0's hashrate
+    await service.reportMiner({ address: ADDR.a, worker: 'rig9/gpu2', gpu: 'NVIDIA RTX A4000', hashrate: 95, accepted: 3, vramUsedMb: 4900, vramTotalMb: 16000, version: '0.2.10' });
+    await service.reportMiner({ address: ADDR.b, worker: 'rig01', gpu: 'NVIDIA GeForce RTX 3090', hashrate: 200, accepted: 10 });
+
+    const out = await service.getPublicMiners();
+    expect(out.totalWorkers).toBe(4); // four physical GPUs online
+    expect(out.totalOnline).toBe(2);  // two payout addresses
+    expect(out.totalHashrate).toBe(487);
+
+    // The rig outranks the single 3090 on summed hashrate (287 > 200).
+    const host = out.miners[0];
+    expect(host).toMatchObject({
+      addr: ADDR.a, worker: 'rig9', gpu: 'NVIDIA RTX A4000 × 3', gpus: 3, multi: true,
+      hash: 287, accepted: 11, vramUsedMb: 14900, vramTotalMb: 48000, version: '0.2.10', last: 'just now',
+    });
+    // Cards ranked by hashrate, ties broken by worker: gpu0, gpu1 (both 96), gpu2 (95).
+    expect(host.cards.map((c) => [c.worker, c.hash])).toEqual([
+      ['rig9/gpu0', 96], ['rig9/gpu1', 96], ['rig9/gpu2', 95],
+    ]);
+    expect(host.cards[0]).toMatchObject({ gpu: 'NVIDIA RTX A4000', vramUsedMb: 5000, vramTotalMb: 16000, last: 'just now' });
+
+    // The single-GPU host stays a plain, non-expandable row.
+    expect(out.miners[1]).toMatchObject({ addr: ADDR.b, worker: 'rig01', gpu: 'NVIDIA GeForce RTX 3090', gpus: 1, multi: false });
+    expect(out.miners[1].cards).toHaveLength(1);
   });
 
   test('ties in hashrate are ordered deterministically by address+worker (not DB row order)', async () => {
