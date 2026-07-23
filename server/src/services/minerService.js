@@ -17,12 +17,30 @@ function minerFingerprint(address, worker) {
   return crypto.createHash('sha256').update(address + '|' + worker).digest('hex').slice(0, 12);
 }
 
+// The "/gpuN" suffix a multi-GPU rig appends to its worker, one per card.
+const GPU_SUFFIX = /\/gpu\d+$/i;
+
 // The host's base worker, with a trailing "/gpuN" suffix removed. A multi-GPU
 // rig posts one row per card as "<worker>/gpu<index>" (see earn's minerReport),
 // so rows sharing an (address, baseWorker) are the same physical host and are
 // combined into one board row. A bare worker keeps its name (a host of one card).
 function baseWorker(worker) {
-  return String(worker == null ? '' : worker).replace(/\/gpu\d+$/i, '');
+  return String(worker == null ? '' : worker).replace(GPU_SUFFIX, '');
+}
+
+// Drop a multi-GPU host's legacy rig-level row. Before per-card stats arrive, the
+// client posts one row on the BARE worker with the rig's summed VRAM and whole-rig
+// hashrate; once it switches to per-card "<worker>/gpuN" rows, that bare row
+// lingers in the DB until it ages out. Left in, it groups as a phantom extra card
+// and double-counts the host's VRAM/hashrate. So for any host that has at least
+// one per-card row, discard its bare row. A genuine single-GPU host (only a bare
+// row, no per-card siblings) is untouched.
+function dropHostAggregates(cards) {
+  const perCardHosts = new Set();
+  for (const c of cards) {
+    if (GPU_SUFFIX.test(c.worker)) perCardHosts.add(c.addr + '|' + c.base);
+  }
+  return cards.filter((c) => GPU_SUFFIX.test(c.worker) || !perCardHosts.has(c.addr + '|' + c.base));
 }
 
 // Fold per-card rows into one entry per host (address + base worker): summed
@@ -139,7 +157,9 @@ class MinerService {
     const r = await this.db.query('SELECT * FROM miners WHERE last_seen >= $1', [now - OFFLINE_THRESHOLD]);
 
     // One card per online worker row, then folded into hosts by (address, base).
-    const cards = r.rows.map((row) => ({
+    // Drop each multi-GPU host's stale bare-worker aggregate row first so it
+    // isn't counted as a GPU or double-summed into the host's VRAM/hashrate.
+    const cards = dropHostAggregates(r.rows.map((row) => ({
       addr: row.address,
       worker: row.worker,
       base: baseWorker(row.worker),
@@ -150,7 +170,7 @@ class MinerService {
       vramTotalMb: Math.round(Number(row.vram_total) || 0),
       version: row.version || null,
       lastMs: Number(row.last_seen), // always positive: the WHERE clause filters on last_seen
-    }));
+    })));
 
     return {
       miners: groupHosts(cards, now),
@@ -166,6 +186,7 @@ MinerService.isValidAddress = isValidAddress;
 MinerService.clampNum = clampNum;
 MinerService.formatAgo = formatAgo;
 MinerService.baseWorker = baseWorker;
+MinerService.dropHostAggregates = dropHostAggregates;
 MinerService.groupHosts = groupHosts;
 
 module.exports = MinerService;

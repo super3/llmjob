@@ -36,10 +36,28 @@ function buildMinerReports(settings, snap, gpuVram, version) {
   const cards = Array.isArray(n.gpus) ? n.gpus : [];
   const workerFor = (index, count) => (count > 1 ? base.worker + '/gpu' + index : base.worker);
 
-  // No per-card engine data yet (nothing mined, or an event with no card index):
-  // fall back to a single rig-level row, summing VRAM across whatever cards the
-  // probe saw — the same one-row shape the board showed before per-GPU rows.
+  // One row per physical card (from nvidia-smi), splitting a rig-level total
+  // evenly — used whenever we know the card count but not each card's hashrate.
+  // The distinct "/gpuN" worker is what keeps the cards as separate board rows.
+  const splitRows = (total, accepted, fallbackName) => vram.map((v) => ({
+    ...base,
+    worker: workerFor(v.index, vram.length),
+    gpu: v.name || fallbackName || null,
+    hashrate: total / vram.length,
+    accepted: Math.round(accepted / vram.length),
+    vramUsedMb: Number(v.usedMb) || 0,
+    vramTotalMb: Number(v.totalMb) || 0,
+  }));
+
+  // No per-card engine data yet (startup before the first per-card event, or an
+  // engine build that only logs one aggregate line). For a MULTI-GPU rig, still
+  // post one row per physical card (splitting the rig total evenly) rather than a
+  // single bare-worker aggregate row: the board keys on address+worker, so a
+  // lingering bare-worker row groups as a phantom extra card and double-counts
+  // the host's VRAM. A genuine single-GPU rig (or one with no nvidia-smi) keeps
+  // the single bare row, matching what older clients sent.
   if (!cards.length) {
+    if (vram.length > 1) return splitRows(Number(n.total) || 0, Number(n.accepted) || 0, n.gpu);
     return [{
       ...base,
       gpu: n.gpu || (vram[0] && vram[0].name) || null,
@@ -57,17 +75,7 @@ function buildMinerReports(settings, snap, gpuVram, version) {
   if (vram.length > cards.length) {
     const total = cards.reduce((a, c) => a + (Number(c.hashrate) || 0), 0);
     const accepted = cards.reduce((a, c) => a + (Number(c.accepted) || 0), 0);
-    const engineName = cards[0] && cards[0].gpu;
-    const n2 = vram.length;
-    return vram.map((v) => ({
-      ...base,
-      worker: workerFor(v.index, n2),
-      gpu: v.name || engineName || null,
-      hashrate: total / n2,
-      accepted: Math.round(accepted / n2),
-      vramUsedMb: Number(v.usedMb) || 0,
-      vramTotalMb: Number(v.totalMb) || 0,
-    }));
+    return splitRows(total, accepted, cards[0] && cards[0].gpu);
   }
 
   // Normal path: the engine reports each card, so use its per-card hashrate and

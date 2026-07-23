@@ -146,6 +146,26 @@ describe('MinerService (db)', () => {
     expect(out.miners[1].cards).toHaveLength(1);
   });
 
+  test('drops a multi-GPU host\'s stale bare aggregate row (no phantom card, no doubled VRAM)', async () => {
+    // Two real cards (rig9/gpu0..1) plus a leftover startup aggregate on the bare
+    // worker "rig9": summed VRAM (32000) and zero hashrate. It must not appear as
+    // a third card or double the host's VRAM.
+    await service.reportMiner({ address: ADDR.a, worker: 'rig9/gpu0', gpu: 'NVIDIA RTX A4000', hashrate: 96, accepted: 4, vramUsedMb: 3000, vramTotalMb: 16000, version: '0.2.10' });
+    await service.reportMiner({ address: ADDR.a, worker: 'rig9/gpu1', gpu: 'NVIDIA RTX A4000', hashrate: 95, accepted: 3, vramUsedMb: 3000, vramTotalMb: 16000, version: '0.2.10' });
+    await service.reportMiner({ address: ADDR.a, worker: 'rig9', gpu: 'NVIDIA RTX A4000', hashrate: 0, accepted: 0, vramUsedMb: 100, vramTotalMb: 32000, version: '0.2.10' });
+
+    const out = await service.getPublicMiners();
+    expect(out.totalWorkers).toBe(2);   // the aggregate row is not a GPU
+    const host = out.miners[0];
+    expect(host).toMatchObject({ gpus: 2, gpu: 'NVIDIA RTX A4000 × 2', hash: 191, vramUsedMb: 6000, vramTotalMb: 32000 });
+    expect(host.cards.map((c) => c.worker)).toEqual(['rig9/gpu0', 'rig9/gpu1']); // bare "rig9" gone
+
+    // A genuine single-GPU host (only a bare worker) is untouched.
+    await service.reportMiner({ address: ADDR.b, worker: 'rig01', gpu: 'NVIDIA GeForce RTX 3090', hashrate: 200 });
+    const out2 = await service.getPublicMiners();
+    expect(out2.miners.find((m) => m.addr === ADDR.b)).toMatchObject({ gpus: 1, worker: 'rig01', gpu: 'NVIDIA GeForce RTX 3090' });
+  });
+
   test('ties in hashrate are ordered deterministically by address+worker (not DB row order)', async () => {
     await service.reportMiner({ address: ADDR.b, worker: 'rig01', gpu: 'X', hashrate: 50 });
     await service.reportMiner({ address: ADDR.a, worker: 'rig02', gpu: 'Z', hashrate: 50 });
