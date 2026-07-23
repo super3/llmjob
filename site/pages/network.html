@@ -99,8 +99,19 @@
   .mr-addr { display: flex; align-items: center; gap: 10px; min-width: 0; }
   .mr-addr .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
   .mr-addr .a { font-family: "IBM Plex Mono", monospace; font-size: 13px; color: #3d4148; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .mr-gpu { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: #6b7077; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mr-gpu { display: flex; align-items: center; gap: 6px; min-width: 0; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: #6b7077; }
+  .mr-gpu .gpu-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   .mr-gpu .gpu-s, .mr-addr .ad-s { display: none; }
+  /* A host running several cards is one clickable row; the chevron expands it
+     into a per-card breakdown (the earn client posts each card as worker/gpuN). */
+  .miner-row.is-multi { cursor: pointer; }
+  .miner-row.is-multi:hover { background: #fbfaf7; }
+  .mr-chev { font-size: 10px; color: var(--muted-3); flex: none; }
+  .mr-cards { border-bottom: 1px solid #f4f3ee; padding: 4px 0; }
+  .mr-cards .miner-row { border-bottom: none; padding-top: 8px; padding-bottom: 8px; }
+  .mr-cards .mr-gpu { color: #8a8f98; }
+  .mr-cards .mr-gpu .ci { color: #b4b1a6; flex: none; }
+  .mr-cards .mr-hash { color: #7d9fe0; }
   /* Below ~1040px the GPU column can no longer fit a full "NVIDIA GeForce RTX
      4070 SUPER" — end-ellipsis would hide the model behind the vendor prefix,
      so swap to the model-only name (and a shorter address). The shorter text
@@ -242,34 +253,75 @@
       return String(g).replace(/^\s*(NVIDIA|AMD|Intel)\s+(GeForce\s+|Radeon\s+|Arc\s+)?/i, '') || String(g);
     }
 
-    function render(miners) {
-      const rows = miners || [];              // one row per online worker
-      // One worker == one miner. A worker that hasn't reported a GPU (the API
-      // sends '—') counts as a miner but not as an online GPU. Once one miner
-      // can run multiple GPUs, the GPU number can grow past the miner number.
-      const minersOnline = rows.length;
-      const gpusOnline = rows.filter((m) => m.gpu && m.gpu !== '—').length;
-      const poolTh = rows.reduce((a, m) => a + (Number(m.hash) || 0), 0);
+    // Which multi-GPU hosts are expanded, keyed by address|worker so the state
+    // survives the 15s auto-refresh (re-render) and identical re-fetches.
+    const expanded = {};
+    let lastData = { miners: [], totalOnline: 0, totalWorkers: 0, totalHashrate: 0 };
+    const hostKey = (m) => m.addr + '|' + m.worker;
 
-      cont.innerHTML = minersOnline
-        ? rows.map((m, i) =>
-            '<div class="miner-row">' +
-              '<div class="mr-rank">' + (i + 1) + '</div>' +
-              '<div class="mr-addr"><span class="dot"></span><span class="a"><span class="ad-f">' + esc(shortAddr(m.addr)) + '</span><span class="ad-s">' + esc(shortAddr(m.addr, true)) + '</span></span></div>' +
-              '<div class="mr-gpu" title="' + esc(m.gpu) + '"><span class="gpu-f">' + esc(m.gpu) + '</span><span class="gpu-s">' + esc(shortGpu(m.gpu)) + '</span></div>' +
-              '<div class="mr-vram">' + fmtVram(m.vramUsedMb, m.vramTotalMb) + '</div>' +
-              '<div class="mr-hash">' + Number(m.hash).toFixed(1) + ' TH/s</div>' +
-              '<div class="mr-last">' + esc(m.last) + '</div>' +
-            '</div>'
-          ).join('')
+    // The GPU cell: an ellipsized name plus, for a multi-GPU host, a chevron.
+    function gpuCell(gpu, chev) {
+      return '<div class="mr-gpu" title="' + esc(gpu) + '">' +
+        '<span class="gpu-name"><span class="gpu-f">' + esc(gpu) + '</span><span class="gpu-s">' + esc(shortGpu(gpu)) + '</span></span>' +
+        (chev || '') + '</div>';
+    }
+
+    // A collapsed sub-row for one card of an expanded host (indented: no rank or
+    // address, an index tag before the GPU name).
+    function cardRow(c, j) {
+      return '<div class="miner-row">' +
+        '<div class="mr-rank"></div><div class="mr-addr"></div>' +
+        '<div class="mr-gpu" title="' + esc(c.gpu) + '"><span class="ci">[' + j + ']</span>' +
+          '<span class="gpu-name"><span class="gpu-f">' + esc(c.gpu) + '</span><span class="gpu-s">' + esc(shortGpu(c.gpu)) + '</span></span></div>' +
+        '<div class="mr-vram">' + fmtVram(c.vramUsedMb, c.vramTotalMb) + '</div>' +
+        '<div class="mr-hash">' + Number(c.hash).toFixed(1) + ' TH/s</div>' +
+        '<div class="mr-last"></div>' +
+      '</div>';
+    }
+
+    // Render the host rows (one per machine; a multi-GPU rig is a single row that
+    // sums its cards and expands into them). Stats come straight from the API:
+    // distinct payout addresses, total online GPUs, summed hashrate.
+    function render(data) {
+      if (data) lastData = data;
+      const hosts = lastData.miners || [];
+
+      cont.innerHTML = hosts.length
+        ? hosts.map((m, i) => {
+            const open = m.multi && !!expanded[hostKey(m)];
+            const chev = m.multi ? '<span class="mr-chev">' + (open ? '▾' : '▸') + '</span>' : '';
+            const row =
+              '<div class="miner-row' + (m.multi ? ' is-multi' : '') + '"' + (m.multi ? ' data-host="' + esc(hostKey(m)) + '"' : '') + '>' +
+                '<div class="mr-rank">' + (i + 1) + '</div>' +
+                '<div class="mr-addr"><span class="dot"></span><span class="a"><span class="ad-f">' + esc(shortAddr(m.addr)) + '</span><span class="ad-s">' + esc(shortAddr(m.addr, true)) + '</span></span></div>' +
+                gpuCell(m.gpu, chev) +
+                '<div class="mr-vram">' + fmtVram(m.vramUsedMb, m.vramTotalMb) + '</div>' +
+                '<div class="mr-hash">' + Number(m.hash).toFixed(1) + ' TH/s</div>' +
+                '<div class="mr-last">' + esc(m.last) + '</div>' +
+              '</div>';
+            const cards = open
+              ? '<div class="mr-cards">' + (m.cards || []).map(cardRow).join('') + '</div>'
+              : '';
+            return row + cards;
+          }).join('')
         : '<div class="nt-empty">No miners online yet — be the first to connect a rig.</div>';
 
-      setText('net-active', minersOnline.toLocaleString());
-      setText('net-active-h', minersOnline.toLocaleString());
-      setText('net-workers', gpusOnline.toLocaleString());
-      setText('net-hr', minersOnline ? (poolTh / 1000).toFixed(2) + ' PH/s' : '0');
-      setText('net-foot', minersOnline ? ('Showing ' + minersOnline + ' of ' + minersOnline + ' miners') : 'Waiting for the first miner to connect…');
+      setText('net-active', Number(lastData.totalOnline || 0).toLocaleString());
+      setText('net-active-h', Number(lastData.totalOnline || 0).toLocaleString());
+      setText('net-workers', Number(lastData.totalWorkers || 0).toLocaleString());
+      setText('net-hr', hosts.length ? (Number(lastData.totalHashrate || 0) / 1000).toFixed(2) + ' PH/s' : '0');
+      setText('net-foot', hosts.length ? ('Showing ' + hosts.length + ' of ' + hosts.length + ' miners') : 'Waiting for the first miner to connect…');
     }
+
+    // Toggle a multi-GPU host open/closed on click (event-delegated so it keeps
+    // working across re-renders).
+    cont.addEventListener('click', (e) => {
+      const row = e.target.closest('.miner-row.is-multi[data-host]');
+      if (!row) return;
+      const key = row.getAttribute('data-host');
+      expanded[key] = !expanded[key];
+      render();
+    });
 
     // The site (GitHub Pages) and the API (Railway) are different origins, so
     // use the absolute API base in production and the local server in dev — the
@@ -282,11 +334,11 @@
         const res = await fetch(API_BASE + '/api/miners', { headers: { Accept: 'application/json' } });
         if (!res.ok) return;
         const data = await res.json();
-        render(Array.isArray(data.miners) ? data.miners : []);
+        render(Array.isArray(data.miners) ? data : { miners: [], totalOnline: 0, totalWorkers: 0, totalHashrate: 0 });
       } catch (e) { /* offline / API down — keep the current view */ }
     }
 
-    render([]);
+    render({ miners: [], totalOnline: 0, totalWorkers: 0, totalHashrate: 0 });
     load();
     setInterval(load, 15000);
   })();
