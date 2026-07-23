@@ -151,7 +151,9 @@ class ChatController {
       return done();
     }
     if (!upstream.ok) {
-      send({ error: 'The model backend returned an error.' });
+      const detail = await upstreamErrorMessage(upstream);
+      logUpstreamError(upstream.status, detail);
+      send({ error: 'The model backend returned an error: ' + detail });
       return done();
     }
 
@@ -186,7 +188,9 @@ class ChatController {
       return res.status(502).json(errBody('Upstream request failed.', 'upstream_error'));
     }
     if (!upstream.ok) {
-      return res.status(502).json(errBody('The model backend returned an error.', 'upstream_error'));
+      const detail = await upstreamErrorMessage(upstream);
+      logUpstreamError(upstream.status, detail);
+      return res.status(502).json(errBody('The model backend returned an error: ' + detail, 'upstream_error'));
     }
     const data = await upstream.json();
     const choice = data.choices && data.choices[0];
@@ -360,6 +364,28 @@ async function* parseSSE(body) {
   }
 }
 
+// Pull a human-readable reason out of a failed upstream response. OpenRouter
+// returns `{ "error": { "message": "…" } }`; fall back to the raw body (trimmed)
+// or the bare status. Never contains our API key, so it's safe to relay.
+async function upstreamErrorMessage(resp) {
+  let text = '';
+  try { text = await resp.text(); } catch (e) { return 'HTTP ' + resp.status; }
+  if (text) {
+    try {
+      const j = JSON.parse(text);
+      if (j && j.error && j.error.message) return String(j.error.message);
+    } catch (e) { /* not JSON — fall through to the raw body */ }
+    return text.slice(0, 300);
+  }
+  return 'HTTP ' + resp.status;
+}
+
+// Surface upstream failures in the server logs so they're diagnosable from the
+// deploy console (the browser only sees the sanitized message).
+function logUpstreamError(status, detail) {
+  console.error('[chat] OpenRouter error ' + status + ': ' + detail);
+}
+
 // A rough token count (~4 chars/token) for when the provider omits usage.
 function estimateTokens(text) {
   return Math.ceil(String(text || '').length / 4);
@@ -386,4 +412,5 @@ module.exports = ChatController;
 module.exports.parseSSE = parseSSE;
 module.exports.sanitizeMessages = sanitizeMessages;
 module.exports.estimateTokens = estimateTokens;
+module.exports.upstreamErrorMessage = upstreamErrorMessage;
 module.exports.DEFAULT_MODELS = DEFAULT_MODELS;
