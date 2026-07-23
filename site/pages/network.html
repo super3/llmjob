@@ -70,7 +70,7 @@
   .pg-head p { font-size: clamp(16px, 2.2vw, 18px); line-height: 1.5; color: var(--muted); margin-top: 18px; text-wrap: pretty; }
 
   /* stat cards */
-  .net-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 32px; }
+  .net-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 32px; }
   .stat-card { border: 1px solid var(--line-2); border-radius: 16px; padding: 22px; background: #fff; display: flex; align-items: center; gap: 16px; }
   .stat-ic { width: 48px; height: 48px; flex: none; border-radius: 13px; display: inline-flex; align-items: center; justify-content: center; }
   .stat-ic.blue { background: #eff4ff; }
@@ -135,7 +135,10 @@
   .foot-links a { color: var(--muted-3); font-size: 14px; }
   .foot-links a:hover { color: var(--muted); }
 
-  @media (max-width: 720px) {
+  @media (max-width: 900px) {
+    .net-stats { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 480px) {
     .net-stats { grid-template-columns: 1fr; }
     .stat-v { font-size: 30px; }
   }
@@ -189,6 +192,13 @@
     <div>
       <div class="stat-k">Total hashrate</div>
       <div class="stat-v" id="net-hr">0</div>
+    </div>
+  </div>
+  <div class="stat-card">
+    <span class="stat-ic grey"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="#6b7077" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5 a8.38 8.38 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9 L3 21 l1.9-5.7 a8.5 8.5 0 0 1-.9-3.8 8.38 8.38 0 0 1 8.5-8.5 8.5 8.5 0 0 1 8.5 8.5 z"></path></svg></span>
+    <div>
+      <div class="stat-k">Tokens served</div>
+      <div class="stat-v" id="net-tokens">0</div>
     </div>
   </div>
 </section>
@@ -340,9 +350,29 @@
       } catch (e) { /* offline / API down — keep the current view */ }
     }
 
+    // Compact token counts (12,345,678 → "12.35M") so the stat card stays tidy.
+    function fmtCompact(n) {
+      n = Number(n) || 0;
+      if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+      if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+      if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+      return String(Math.round(n));
+    }
+
+    // Lifetime tokens served by the free web-chat proxy (GET /api/chat/usage).
+    async function loadTokens() {
+      try {
+        const res = await fetch(API_BASE + '/api/chat/usage', { headers: { Accept: 'application/json' } });
+        if (!res.ok) return;
+        const u = await res.json();
+        if (u && u.totals) setText('net-tokens', fmtCompact(u.totals.totalTokens));
+      } catch (e) { /* offline / API down — keep the current view */ }
+    }
+
     render({ miners: [], totalOnline: 0, totalWorkers: 0, totalHashrate: 0 });
     load();
-    setInterval(load, 15000);
+    loadTokens();
+    setInterval(() => { load(); loadTokens(); }, 15000);
   })();
 </script>
 </body>
