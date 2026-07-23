@@ -223,6 +223,13 @@ const nodeProto = require('../src/shared/node');
 const KEYS = nodeProto.generateKeypair();
 const VALID_ADDR = 'prl1p' + 'a'.repeat(30);
 
+// main.js derives these from app.getPath('userData') with path.join, which
+// yields backslashes on Windows — build the expectations the same way so the
+// suite passes on every OS (same lesson as the nodeStore test).
+const path = require('path');
+const SETTINGS_PATH = path.join('/tmp/userData', 'settings.json');
+const NODE_MIGRATE_PATH = path.join('/tmp/userData', 'node.json');
+
 function fakeNode(extra) {
   return Object.assign({
     nodeId: 'abc123',
@@ -367,7 +374,7 @@ describe('app boot and window lifecycle', () => {
     const econ = ctx.interval(10 * 60 * 1000);
     expect(econ).toBeTruthy();
     expect(econ.unref).toHaveBeenCalled();
-    expect(ctx.nodeStore.migrateFrom).toHaveBeenCalledWith('/tmp/userData/node.json');
+    expect(ctx.nodeStore.migrateFrom).toHaveBeenCalledWith(NODE_MIGRATE_PATH);
     // node not connected → no pinger
     expect(ctx.interval(ctx.config.NODE.pingIntervalMs)).toBeUndefined();
   });
@@ -486,7 +493,7 @@ describe('simple ipc handlers', () => {
     const s = await ctx.invoke('settings:get');
     expect(s).toMatchObject({ region: 'us2', worker: 'rig01', mode: 'auto', address: '', mdlAddress: '' });
 
-    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/userData/settings.json');
+    ctx.fs.existsSync.mockImplementation((p) => p === SETTINGS_PATH);
     ctx.fs.readFileSync.mockReturnValue('{"address":"prl1x","mode":"llm"}');
     const s2 = await ctx.invoke('settings:get');
     expect(s2.address).toBe('prl1x');
@@ -495,7 +502,7 @@ describe('simple ipc handlers', () => {
 
   it('settings:get logs and falls back to defaults on a corrupt settings file', async () => {
     const ctx = loadMain();
-    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/userData/settings.json');
+    ctx.fs.existsSync.mockImplementation((p) => p === SETTINGS_PATH);
     ctx.fs.readFileSync.mockReturnValue('not json at all');
     const s = await ctx.invoke('settings:get');
     expect(s.mode).toBe('auto');
@@ -731,7 +738,7 @@ describe('mining', () => {
     await flush();
 
     // settings persisted, initial stats pushed, ticker + reporter registered
-    expect(ctx.fs.writeFileSync).toHaveBeenCalledWith('/tmp/userData/settings.json', expect.any(String));
+    expect(ctx.fs.writeFileSync).toHaveBeenCalledWith(SETTINGS_PATH, expect.any(String));
     expect(ctx.sent('miner:stats').length).toBeGreaterThan(0);
     const ticker = ctx.interval(1000);
     expect(ticker).toBeTruthy();
