@@ -108,26 +108,47 @@ describe('buildMinerReports', () => {
     expect(row).toMatchObject({ gpu: 'RTX 4090', hashrate: 0, accepted: 0, vramUsedMb: 0, vramTotalMb: 0 });
   });
 
-  test('no per-card data and no snapshot gpu → names the row from the first probe entry, summing VRAM incl. zeros', () => {
-    const snap = { total: 0, accepted: 0, gpus: [] };   // no gpu name
+  test('multi-GPU rig with no per-card engine data → one row per physical card, never a bare aggregate', () => {
+    // nvidia-smi sees two cards but the engine hasn't broken out per-card stats
+    // yet. Post per-card /gpuN rows (not one bare-worker summed row that the
+    // board would treat as a phantom card and double-count into the host VRAM).
+    const snap = { total: 0, accepted: 0, gpus: [] };   // no per-card data, no gpu name
     const vram = [
       { index: 0, name: 'RTX 4070', usedMb: 0, totalMb: 0 },
       { index: 1, name: 'RTX 4070', usedMb: 500, totalMb: 12282 },
     ];
-    const [row] = buildMinerReports({ address: 'prl1pabc' }, snap, vram);
-    expect(row).toMatchObject({ gpu: 'RTX 4070', vramUsedMb: 500, vramTotalMb: 12282 });
+    const rows = buildMinerReports({ address: 'prl1pabc' }, snap, vram);
+    expect(rows.map((r) => r.worker)).toEqual(['rig01/gpu0', 'rig01/gpu1']);
+    expect(rows.every((r) => r.gpu === 'RTX 4070' && r.hashrate === 0)).toBe(true);
+    expect(rows[1]).toMatchObject({ vramUsedMb: 500, vramTotalMb: 12282 }); // each card's own VRAM, not summed
   });
 
-  test('no per-card data yet → a single rig-level row with summed VRAM (back-compat)', () => {
+  test('multi-GPU rig, no per-card data, with a rig-level total → split evenly across the cards', () => {
     const snap = { gpu: 'RTX 4090', total: 100, accepted: 7, gpus: [] };
     const vram = [
       { index: 0, name: 'RTX 4090', usedMb: 4096, totalMb: 24564 },
       { index: 1, name: 'RTX 4090', usedMb: 2048, totalMb: 24564 },
     ];
     expect(buildMinerReports({ address: 'prl1pabc', worker: 'rig01', region: 'us2' }, snap, vram)).toEqual([
-      { address: 'prl1pabc', worker: 'rig01', region: 'us2', version: null,
-        gpu: 'RTX 4090', hashrate: 100, accepted: 7, vramUsedMb: 6144, vramTotalMb: 49128 },
+      { address: 'prl1pabc', worker: 'rig01/gpu0', region: 'us2', version: null, gpu: 'RTX 4090', hashrate: 50, accepted: 4, vramUsedMb: 4096, vramTotalMb: 24564 },
+      { address: 'prl1pabc', worker: 'rig01/gpu1', region: 'us2', version: null, gpu: 'RTX 4090', hashrate: 50, accepted: 4, vramUsedMb: 2048, vramTotalMb: 24564 },
     ]);
+  });
+
+  test('single GPU, no per-card data → one bare-worker row named from the snapshot', () => {
+    const snap = { gpu: 'RTX 4090', total: 120, accepted: 3, gpus: [] };
+    const vram = [{ index: 0, name: 'RTX 4090', usedMb: 4096, totalMb: 24564 }];
+    expect(buildMinerReports({ address: 'prl1pabc', worker: 'rig01', region: 'us2' }, snap, vram)).toEqual([
+      { address: 'prl1pabc', worker: 'rig01', region: 'us2', version: null,
+        gpu: 'RTX 4090', hashrate: 120, accepted: 3, vramUsedMb: 4096, vramTotalMb: 24564 },
+    ]);
+  });
+
+  test('single GPU, no snapshot gpu name and zero VRAM → named from the probe, zero VRAM', () => {
+    const snap = { total: 0, accepted: 0, gpus: [] };   // no gpu name, card not warmed up
+    const [row] = buildMinerReports({ address: 'prl1pabc', worker: 'rig01' }, snap,
+      [{ index: 0, name: 'RTX 4070', usedMb: 0, totalMb: 0 }]);
+    expect(row).toMatchObject({ worker: 'rig01', gpu: 'RTX 4070', vramUsedMb: 0, vramTotalMb: 0 });
   });
 
   test('applies defaults when called with nothing', () => {
