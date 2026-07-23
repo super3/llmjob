@@ -25,8 +25,8 @@ const ChatUsageService = require('../services/chatUsageService');
 // Sensible defaults; every one is overridable via env or constructor opts so the
 // founder can retune the free tier without a code change.
 const DEFAULT_MODELS = [
-  { id: 'meta-llama/llama-3.3-70b-instruct', label: 'Llama 3.3 70B' },
-  { id: 'qwen/qwen-2.5-7b-instruct', label: 'Qwen 2.5 7B' }
+  { id: 'qwen/qwen3-32b', label: 'Qwen3 32B' },
+  { id: 'qwen/qwen3-30b-a3b', label: 'Qwen3 30B A3B' }
 ];
 const DEFAULT_FREE_BUDGET = 1000000; // total tokens of free usage before the cap
 const DEFAULT_MAX_TOKENS = 1024;     // per-request completion ceiling
