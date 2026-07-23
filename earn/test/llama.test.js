@@ -54,6 +54,19 @@ describe('buildServerArgs', () => {
     const a = buildServerArgs();
     expect(a).toEqual(expect.arrayContaining(['--host', '127.0.0.1', '--n-gpu-layers', '42', '--model', '']));
   });
+
+  test('pins --main-gpu to a non-negative integer index (incl. device 0)', () => {
+    expect(buildServerArgs({ mainGpu: 0 })).toEqual(expect.arrayContaining(['--main-gpu', '0', '--split-mode', 'none']));
+    expect(buildServerArgs({ mainGpu: 3 })).toEqual(expect.arrayContaining(['--main-gpu', '3']));
+  });
+
+  test('omits --main-gpu for a missing or invalid index (llama falls back to device 0)', () => {
+    expect(buildServerArgs({}).includes('--main-gpu')).toBe(false);
+    expect(buildServerArgs({ mainGpu: -1 }).includes('--main-gpu')).toBe(false);   // negative
+    expect(buildServerArgs({ mainGpu: 1.5 }).includes('--main-gpu')).toBe(false);  // not an integer
+    expect(buildServerArgs({ mainGpu: '2' }).includes('--main-gpu')).toBe(false);  // wrong type
+    expect(buildServerArgs({ mainGpu: null }).includes('--main-gpu')).toBe(false);
+  });
 });
 
 describe('isServerReady', () => {

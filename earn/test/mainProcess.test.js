@@ -1011,7 +1011,10 @@ describe('local LLM', () => {
 
   it('refuses to start the LLM without enough free VRAM (llm-only ends the session)', async () => {
     const ctx = await boot();
-    ctx.probe.detectVram.mockResolvedValue({ totalMb: 8000, usedMb: 4000 });
+    // One card with 4000 MB free — below the model's floor. The LLM sizes
+    // against a single GPU (llama-server --split-mode none), so the per-card
+    // figure is what the preflight uses.
+    ctx.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'gpu', usedMb: 4000, totalMb: 8000 }]);
     ctx.emit('miner:start', { mode: 'llm' });
     await flush();
     expect(ctx.sent('miner:log').map((l) => l.line).join('\n')).toContain('not enough free VRAM for the local LLM: 4000 MB free');
@@ -1022,7 +1025,7 @@ describe('local LLM', () => {
 
   it('a rejection out of startLlm itself is caught and ends an llm-only session', async () => {
     const ctx = await boot({
-      before: (c) => { c.probe.detectVram.mockRejectedValue(new Error('probe exploded')); },
+      before: (c) => { c.probe.detectGpusVram.mockRejectedValue(new Error('probe exploded')); },
     });
     ctx.emit('miner:start', { mode: 'llm' });
     await flush();
@@ -1047,17 +1050,19 @@ describe('local LLM', () => {
       before: (c) => {
         c.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
         c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
-        c.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 2000 });
+        // One roomy card (22 GB free) — the whole model fits, full offload,
+        // pinned to GPU 0 (--main-gpu).
+        c.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
       },
     });
     ctx.emit('miner:start', { mode: 'llm' });
     await flush();
 
     const llm = ctx.LlmManager.instances[0];
-    // free 22000 MB, no reserve → full offload
+    // free 22000 MB, no reserve → full offload, on GPU 0
     expect(llm.start).toHaveBeenCalledWith({
       platform: 'linux', binaryPath: '/tmp/llm/llama-server', modelPath: '/tmp/llm/model.gguf',
-      nGpuLayers: ctx.config.LLM.model.layers, port: 8080,
+      nGpuLayers: ctx.config.LLM.model.layers, port: 8080, mainGpu: 0,
     });
     expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false, endpoint: 'http://127.0.0.1:8080/v1' });
 
@@ -1254,7 +1259,7 @@ describe('llama-server health probe', () => {
   cases.forEach(([name, respond]) => {
     it(`treats ${name} as "no server running"`, async () => {
       const ctx = await boot();
-      ctx.probe.detectVram.mockResolvedValue({ totalMb: 4000, usedMb: 0 });
+      ctx.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'gpu', usedMb: 0, totalMb: 4000 }]);
       wireHealth(ctx, respond);
       ctx.emit('miner:start', { mode: 'llm' });
       await flush();
@@ -1268,7 +1273,7 @@ describe('llama-server health probe', () => {
     const ctx = await boot({
       before: (c) => { c.config.LLM.host = 'bad host'; },
     });
-    ctx.probe.detectVram.mockResolvedValue({ totalMb: 4000, usedMb: 0 });
+    ctx.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'gpu', usedMb: 0, totalMb: 4000 }]);
     ctx.emit('miner:start', { mode: 'llm' });
     await flush();
     expect(ctx.http.get).not.toHaveBeenCalled();

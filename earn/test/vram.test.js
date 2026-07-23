@@ -1,6 +1,6 @@
 'use strict';
 
-const { computeGpuLayers, requiredVramMb, hasEnoughVram } = require('../src/shared/vram');
+const { computeGpuLayers, requiredVramMb, hasEnoughVram, pickLlmGpu } = require('../src/shared/vram');
 
 const MODEL = { layers: 16, vramFullMb: 1600 }; // perLayer = 100 MB
 
@@ -60,5 +60,56 @@ describe('hasEnoughVram', () => {
   test('always allowed when the model configures no floor', () => {
     expect(hasEnoughVram(0, {})).toBe(true);
     expect(hasEnoughVram(null, {})).toBe(true);
+  });
+});
+
+describe('pickLlmGpu', () => {
+  test('null for a non-array or empty input', () => {
+    expect(pickLlmGpu(null)).toBeNull();
+    expect(pickLlmGpu(undefined)).toBeNull();
+    expect(pickLlmGpu('nope')).toBeNull();
+    expect(pickLlmGpu([])).toBeNull();
+  });
+
+  test('picks the card with the most free VRAM (total − used)', () => {
+    const cards = [
+      { index: 0, usedMb: 3000, totalMb: 16000 }, // free 13000
+      { index: 1, usedMb: 1000, totalMb: 16000 }, // free 15000  ← most
+      { index: 2, usedMb: 8000, totalMb: 16000 }, // free 8000
+    ];
+    expect(pickLlmGpu(cards)).toEqual({ index: 1, freeMb: 15000 });
+  });
+
+  test('breaks ties on equal free VRAM by the lower index', () => {
+    const cards = [
+      { index: 2, usedMb: 3000, totalMb: 16000 },
+      { index: 0, usedMb: 3000, totalMb: 16000 }, // same free, lower index ← wins
+      { index: 1, usedMb: 3000, totalMb: 16000 },
+    ];
+    expect(pickLlmGpu(cards)).toEqual({ index: 0, freeMb: 13000 });
+  });
+
+  test('index 0 is a valid pick (not treated as falsy)', () => {
+    expect(pickLlmGpu([{ index: 0, usedMb: 1000, totalMb: 16000 }])).toEqual({ index: 0, freeMb: 15000 });
+  });
+
+  test('skips unparseable cards (null entry, negative/NaN index, NaN used/total)', () => {
+    const cards = [
+      null,                                        // falsy entry
+      { index: -1, usedMb: 0, totalMb: 16000 },    // negative index
+      { index: 'x', usedMb: 0, totalMb: 16000 },   // NaN index
+      { index: 1, usedMb: 'x', totalMb: 16000 },   // NaN used
+      { index: 2, usedMb: 0, totalMb: 'x' },       // NaN total
+      { index: 3, usedMb: 2000, totalMb: 16000 },  // valid → free 14000
+    ];
+    expect(pickLlmGpu(cards)).toEqual({ index: 3, freeMb: 14000 });
+  });
+
+  test('null when every card is unparseable', () => {
+    expect(pickLlmGpu([null, { index: -1, usedMb: 0, totalMb: 8000 }, { index: 0, usedMb: 1, totalMb: 'x' }])).toBeNull();
+  });
+
+  test('clamps negative free VRAM (used > total) to zero', () => {
+    expect(pickLlmGpu([{ index: 0, usedMb: 17000, totalMb: 16000 }])).toEqual({ index: 0, freeMb: 0 });
   });
 });
