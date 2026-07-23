@@ -55,8 +55,9 @@ app.use(express.static(staticPath));
 // Error handling middleware. Log the full error server-side, but only echo the
 // message back for explicit client errors (4xx). For anything 500+ (or an
 // unclassified throw) return a generic message so internal details — stack
-// fragments, driver errors, file paths — never leak to the caller.
-// eslint-disable-next-line no-unused-vars
+// fragments, driver errors, file paths — never leak to the caller. The unused
+// `next` param is required: Express only treats 4-arity functions as error
+// handlers (the lint config allows unused args).
 function errorHandler(err, req, res, next) {
   console.error(err.stack || err);
   const status = err.status || 500;
