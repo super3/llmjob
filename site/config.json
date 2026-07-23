@@ -1,0 +1,8 @@
+{
+  "umamiWebsiteId": "df101f2e-01ef-46ef-b682-f8c553ae594f",
+  "clerkPublishableKey": "pk_live_Y2xlcmsubGxtam9iLmNvbSQ",
+  "clerkSrc": "https://clerk.llmjob.com/npm/@clerk/clerk-js@5/dist/clerk.browser.js",
+  "apiBaseProd": "https://llmjob-production.up.railway.app",
+  "discordUrl": "https://discord.gg/JnERcTKjUS",
+  "appVersion": "0.2.10"
+}
