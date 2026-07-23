@@ -42,13 +42,14 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Serve static files from root directory
-// In production (Railway), files are at /app root
-// In development, files are at project root (two levels up from server/src)
+// Serve the built static site from dist/ (produced by `npm run build:site`,
+// which the start script runs before this). GitHub Pages serves the same dist/
+// output; here it lets the Railway deployment answer for the marketing pages.
+// In production (Railway) the app is at /app; in dev it's the project root
+// (two levels up from server/src).
 const staticPath = process.env.RAILWAY_ENVIRONMENT
-  ? '/app'
-  : path.join(__dirname, '../..');
-
+  ? '/app/dist'
+  : path.join(__dirname, '../..', 'dist');
 
 app.use(express.static(staticPath));
 

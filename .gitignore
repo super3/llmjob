@@ -141,3 +141,6 @@ vite.config.ts.timestamp-*
 # Redis dump files
 dump.rdb
 *.rdb
+
+# Generated static site (built by scripts/build-site.mjs)
+dist/

@@ -31,7 +31,10 @@ jobs:
     
     - name: Run linter
       run: npm run lint --if-present
-    
+
+    - name: Build static site (catches template errors)
+      run: npm run build:site
+
     - name: Run tests with coverage
       run: npm test
     

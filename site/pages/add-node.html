@@ -1,3 +1,4 @@
+<!--build {"clerk": true, "fonts": "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"} -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5,23 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Add Node — LLMJob</title>
 
-    <!-- Umami Analytics -->
-    <script defer src="https://cloud.umami.is/script.js" data-website-id="df101f2e-01ef-46ef-b682-f8c553ae594f"></script>
-
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2222%22 fill=%22%2316160F%22/><path transform=%22translate(26,26) scale(2)%22 d=%22M13 2 4 14h6l-1 8 9-12h-6l1-8z%22 fill=%22%23FBFAF8%22/></svg>">
-
-    <!-- Clerk Authentication -->
-    <script
-        async
-        crossorigin="anonymous"
-        data-clerk-publishable-key="pk_live_Y2xlcmsubGxtam9iLmNvbSQ"
-        src="https://clerk.llmjob.com/npm/@clerk/clerk-js@5/dist/clerk.browser.js"
-        type="text/javascript"
-    ></script>
-
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+{{> head}}
     <style>
       :root {
         --bg: #FBFAF8;
@@ -208,9 +193,7 @@
 
     <script>
         let nodeInfo = null;
-        const API_BASE = window.location.hostname === 'localhost'
-            ? 'http://localhost:3001'
-            : 'https://llmjob-production.up.railway.app';
+        {{> api-base}}
 
         // Parse URL parameters
         function parseUrlParams() {
