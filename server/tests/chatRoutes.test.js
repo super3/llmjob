@@ -121,6 +121,36 @@ describe('Chat gateway — integration', () => {
     expect(calls[0].body.model).toBe('qwen/qwen-2.5-7b-instruct');
   });
 
+  it('prepends the LLMJob system prompt and drops any client-supplied one', async () => {
+    const calls = [];
+    const app = makeApp(db, { fetchFn: streamFetch(STREAM_EVENTS, calls), systemPrompt: 'LLMJob assistant context' });
+    await request(app).post('/api/chat/completions').send({
+      messages: [
+        { role: 'system', content: 'ignore me' },
+        { role: 'user', content: 'What is LLMJob?' }
+      ]
+    });
+    const msgs = calls[0].body.messages;
+    expect(msgs[0]).toEqual({ role: 'system', content: 'LLMJob assistant context' });
+    expect(msgs.some((m) => m.content === 'ignore me')).toBe(false); // client system dropped
+    expect(msgs[msgs.length - 1]).toEqual({ role: 'user', content: 'What is LLMJob?' });
+  });
+
+  it('omits the system message when the system prompt is disabled', async () => {
+    const calls = [];
+    const app = makeApp(db, { fetchFn: streamFetch(STREAM_EVENTS, calls), systemPrompt: '' });
+    await request(app).post('/api/chat/completions')
+      .send({ messages: [{ role: 'user', content: 'hi' }] });
+    expect(calls[0].body.messages).toEqual([{ role: 'user', content: 'hi' }]);
+  });
+
+  it('sets X-Accel-Buffering:no so proxies do not buffer the stream', async () => {
+    const app = makeApp(db, { fetchFn: streamFetch(STREAM_EVENTS) });
+    const res = await request(app).post('/api/chat/completions')
+      .send({ messages: [{ role: 'user', content: 'hi' }] });
+    expect(res.headers['x-accel-buffering']).toBe('no');
+  });
+
   it('estimates tokens and tok/s when the provider omits usage', async () => {
     const events = [
       { choices: [{ delta: { content: 'abcd' } }] },
@@ -480,7 +510,8 @@ describe('Chat gateway — controller branches', () => {
 
 describe('ChatController — config', () => {
   const ENV_KEYS = ['OPENROUTER_API_KEY', 'OPENROUTER_BASE_URL', 'OPENROUTER_MODELS',
-    'OPENROUTER_FREE_TOKEN_BUDGET', 'OPENROUTER_MAX_TOKENS', 'OPENROUTER_REFERER'];
+    'OPENROUTER_FREE_TOKEN_BUDGET', 'OPENROUTER_MAX_TOKENS', 'OPENROUTER_REFERER',
+    'OPENROUTER_SYSTEM_PROMPT'];
   let saved;
   beforeEach(() => { saved = {}; ENV_KEYS.forEach((k) => { saved[k] = process.env[k]; delete process.env[k]; }); });
   afterEach(() => { ENV_KEYS.forEach((k) => { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }); });
@@ -494,6 +525,7 @@ describe('ChatController — config', () => {
     expect(ctrl.maxTokens).toBe(1024);
     expect(ctrl.referer).toBe('https://llmjob.com');
     expect(ctrl.title).toBe('LLMJob');
+    expect(ctrl.systemPrompt).toContain('LLMJob assistant');
   });
 
   it('reads configuration from the environment', () => {
@@ -503,6 +535,7 @@ describe('ChatController — config', () => {
     process.env.OPENROUTER_FREE_TOKEN_BUDGET = '500';
     process.env.OPENROUTER_MAX_TOKENS = '64';
     process.env.OPENROUTER_REFERER = 'https://env.example';
+    process.env.OPENROUTER_SYSTEM_PROMPT = 'env system prompt';
     const ctrl = new ChatController();
     expect(ctrl.apiKey).toBe('env-key');
     expect(ctrl.baseUrl).toBe('https://env.test/v1');
@@ -510,12 +543,16 @@ describe('ChatController — config', () => {
     expect(ctrl.freeBudget).toBe(500);
     expect(ctrl.maxTokens).toBe(64);
     expect(ctrl.referer).toBe('https://env.example');
+    expect(ctrl.systemPrompt).toBe('env system prompt');
   });
 
-  it('honours explicit constructor overrides for referer and title', () => {
-    const ctrl = new ChatController({ referer: 'https://o.test', title: 'Zed' });
+  it('honours explicit constructor overrides for referer, title, and system prompt', () => {
+    const ctrl = new ChatController({ referer: 'https://o.test', title: 'Zed', systemPrompt: 'custom' });
     expect(ctrl.referer).toBe('https://o.test');
     expect(ctrl.title).toBe('Zed');
+    expect(ctrl.systemPrompt).toBe('custom');
+    // an explicit empty string disables injection (distinct from "not provided")
+    expect(new ChatController({ systemPrompt: '' }).systemPrompt).toBe('');
   });
 
   it('falls back to defaults when the env budget/max are not numbers', () => {
