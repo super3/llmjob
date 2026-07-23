@@ -33,6 +33,22 @@ const DEFAULT_MAX_TOKENS = 1024;     // per-request completion ceiling
 const MAX_PROMPT_CHARS = 24000;      // total prompt characters kept per request
 const OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
 
+// Injected as the system message on every request so the model has context about
+// LLMJob (the suggestion prompts — "What is LLMJob?", "What is PPLNS?" — are
+// unanswerable without it). Deliberately factual and hedged: it avoids inventing
+// specific payout numbers. Override with OPENROUTER_SYSTEM_PROMPT.
+const DEFAULT_SYSTEM_PROMPT = [
+  'You are the LLMJob assistant — a concise, friendly AI assistant embedded on llmjob.com.',
+  '',
+  'About LLMJob: LLMJob lets people build their own AI infrastructure from spare GPUs and devices. You pool the graphics power you are not using into one OpenAI-compatible network, so you get private, self-hosted AI without renting cloud servers — it can run entirely on your own hardware.',
+  '',
+  'LLMJob Earn is a desktop app (Windows/Linux) that turns idle GPU time into crypto today: it mines the Pearl (PRL) cryptocurrency via the AlphaPool miner — paste a payout address, hit Start, and earn, with no command line. It is the on-ramp that gets GPUs onto the network, ahead of LLM co-mining. Pools like this typically pay out with PPLNS (Pay Per Last N Shares), which splits each block reward across the last N shares miners submitted, rewarding sustained contribution rather than luck.',
+  '',
+  'This chat itself is free and served through the LLMJob network.',
+  '',
+  'Answer helpfully and concisely. If you are unsure of a specific LLMJob detail (exact payout amounts, schedules, or feature availability), say so rather than inventing specifics, and point people to the Discord or the site.'
+].join('\n');
+
 class ChatController {
   constructor(opts = {}) {
     this.apiKey = opts.apiKey !== undefined ? opts.apiKey : process.env.OPENROUTER_API_KEY;
@@ -46,6 +62,9 @@ class ChatController {
       : numberEnv(process.env.OPENROUTER_MAX_TOKENS, DEFAULT_MAX_TOKENS);
     this.referer = opts.referer || process.env.OPENROUTER_REFERER || 'https://llmjob.com';
     this.title = opts.title || 'LLMJob';
+    this.systemPrompt = opts.systemPrompt !== undefined
+      ? opts.systemPrompt
+      : (process.env.OPENROUTER_SYSTEM_PROMPT || DEFAULT_SYSTEM_PROMPT);
     this.fetchFn = opts.fetchFn || globalThis.fetch;
     this.now = opts.now || (() => Date.now());
     // Services are built per-request from req.app.locals.db so one controller can
@@ -102,12 +121,17 @@ class ChatController {
     if (clean.length === 0) {
       return res.status(400).json(errBody('No usable message content.', 'invalid_request_error'));
     }
+    // Prepend our own system prompt (dropping any client-supplied one) so the
+    // model always has LLMJob context and callers can't override it.
+    const outgoing = this.systemPrompt
+      ? [{ role: 'system', content: this.systemPrompt }, ...clean.filter((m) => m.role !== 'system')]
+      : clean;
 
     const controller = new (globalThis.AbortController)();
     const ctx = {
       res, svc, controller,
-      messages: clean,
-      promptText: clean.map((m) => m.content).join('\n'),
+      messages: outgoing,
+      promptText: outgoing.map((m) => m.content).join('\n'),
       modelId: resolved.id,
       requestedLabel: resolved.label,
       maxTokens: this._resolveMaxTokens(body.max_tokens),
@@ -139,6 +163,7 @@ class ChatController {
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // defeat proxy/edge SSE buffering (Railway/nginx)
     if (res.flushHeaders) res.flushHeaders();
     const send = (obj) => res.write('data: ' + JSON.stringify(obj) + '\n\n');
     const done = () => { res.write('data: [DONE]\n\n'); res.end(); };
