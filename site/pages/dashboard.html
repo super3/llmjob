@@ -167,11 +167,9 @@
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useCallback } = React;
 
-// Talk to the local API in dev, and to the Railway API host in production.
-// The dashboard is also published to GitHub Pages, which has no API, so we
-// only treat the page origin as the API when it's actually the Railway app —
-// otherwise window.location.origin would point /api/* requests at a host that
-// returns 404 for them.
+// Talk to the local API in dev, and to the production Railway API host
+// everywhere else (GitHub Pages and Railway preview URLs have no usable API
+// data of their own).
 {{> api-base}}
 
 const PALETTE = ['var(--accent)', 'var(--violet)', 'var(--amber)', 'var(--online)'];
