@@ -35,6 +35,7 @@
     "electron-builder": "^25.1.8",
     "esbuild": "^0.28.1",
     "jest": "^30.0.5",
+    "jest-environment-jsdom": "^30.4.1",
     "postject": "^1.0.0-alpha.6"
   },
   "build": {
