@@ -1,6 +1,8 @@
-// API origin: localhost in dev, same-origin on Railway preview envs, else prod.
+// API origin: localhost in dev, production everywhere else — including Railway
+// preview URLs. These pages read data that only ever exists in prod (the miner
+// board is fed by clients that report to the prod endpoint; the dashboard shows
+// the user's prod nodes/keys), so a preview must query prod, not its own empty
+// database.
 const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
   ? 'http://localhost:3001'
-  : (window.location.hostname.endsWith('.railway.app')
-      ? window.location.origin
-      : '{{!apiBaseProd}}');
+  : '{{!apiBaseProd}}';
