@@ -3,7 +3,6 @@ module.exports = {
   coverageDirectory: 'coverage',
   collectCoverageFrom: [
     'server/src/**/*.js',
-    '!server/src/index.js', // Exclude main server file from coverage
   ],
   testMatch: [
     '**/server/tests/**/*.test.js'
