@@ -10,6 +10,7 @@ const apiKeyController = require('./controllers/apiKeyController');
 const logController = require('./controllers/logController');
 const JobController = require('./controllers/jobController');
 const OpenAiController = require('./controllers/openaiController');
+const ChatController = require('./controllers/chatController');
 const JobService = require('./services/jobService');
 const NodeService = require('./services/nodeService');
 
@@ -95,8 +96,21 @@ const initOpenAiRoutes = (app, opts) => {
   return ctrl;
 };
 
+// Free public web-chat gateway (chat.html), proxied to OpenRouter. No API key —
+// this is the "open usage" front door, gated by a global free-token budget in
+// the controller rather than per-user auth. Mounted at the app root. `opts`
+// (OpenRouter key/models/budget, fetch) is injectable for tests.
+const initChatRoutes = (app, opts) => {
+  const ctrl = new ChatController(opts || {});
+  app.post('/api/chat/completions', (req, res) => ctrl.chatCompletions(req, res));
+  app.get('/api/chat/models', (req, res) => ctrl.listModels(req, res));
+  app.get('/api/chat/usage', (req, res) => ctrl.usage(req, res));
+  return ctrl;
+};
+
 // Export router as default for backward compatibility with tests
 module.exports = router;
 // Also export the initializers as named exports
 module.exports.initJobRoutes = initJobRoutes;
 module.exports.initOpenAiRoutes = initOpenAiRoutes;
+module.exports.initChatRoutes = initChatRoutes;

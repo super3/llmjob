@@ -25,6 +25,35 @@ CREATE TABLE IF NOT EXISTS miners (
 CREATE INDEX IF NOT EXISTS idx_miners_last_seen ON miners (last_seen);
 `;
 
+// Free public web chat, served through the OpenRouter proxy. We deliberately do
+// NOT store prompts or replies — only per-request performance and token counts,
+// plus a single running-totals row so free usage can be summed and capped. Kept
+// as its own constant so the add-chat-usage migration can apply it to existing
+// databases.
+const CHAT_SCHEMA = `
+CREATE TABLE IF NOT EXISTS chat_requests (
+  id text PRIMARY KEY,
+  ts bigint,
+  model text,
+  in_tokens integer,
+  out_tokens integer,
+  total_tokens integer,
+  speed double precision,
+  latency_ms integer,
+  ttft_ms integer,
+  finish text
+);
+CREATE INDEX IF NOT EXISTS idx_chat_requests_ts ON chat_requests (ts);
+
+CREATE TABLE IF NOT EXISTS chat_usage_totals (
+  id text PRIMARY KEY,
+  requests bigint DEFAULT 0,
+  in_tokens bigint DEFAULT 0,
+  out_tokens bigint DEFAULT 0,
+  total_tokens bigint DEFAULT 0
+);
+`;
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS nodes (
   node_id text PRIMARY KEY,
@@ -104,6 +133,7 @@ CREATE TABLE IF NOT EXISTS job_chunks (
 );
 
 ${MINERS_SCHEMA}
+${CHAT_SCHEMA}
 `;
 
 async function initSchema(db) {
@@ -116,4 +146,4 @@ function createPool() {
   });
 }
 
-module.exports = { createPool, initSchema, SCHEMA, MINERS_SCHEMA };
+module.exports = { createPool, initSchema, SCHEMA, MINERS_SCHEMA, CHAT_SCHEMA };

@@ -97,6 +97,26 @@ npm run test:watch
 - `POST /v1/chat/completions` - OpenAI-compatible chat completions (LLMJob **API key** required); turns the request into an inference job served by an online node, streams if `stream: true`, and bills the key's token usage
 - `POST /api/usage` - Record a completed generation (LLMJob **API key** required); writes a request log entry and bills the key's token usage. Used by clients that run inference elsewhere and only report usage — the dashboard advertises `/v1/chat/completions` as the endpoint to call
 
+#### Free web chat (OpenRouter proxy)
+
+Powers the public **Chat** page (`chat.html`). No auth — this is the "open
+usage" front door, so the OpenRouter API key stays server-side and every request
+is gated by a global free-token budget instead of per-user auth. Prompts are
+**never stored**; only performance (latency, time-to-first-token, tok/s) and
+token counts are recorded, plus a running lifetime total used for the cap and the
+"tokens served" display. Once free chat is proven out this can be repointed at
+the LLMJob node network.
+
+- `POST /api/chat/completions` - Proxy a chat to OpenRouter. Streams a small SSE
+  protocol by default (`data: {"delta":…}`, then `data: {"done":true,"meta":…}`,
+  then `data: [DONE]`); pass `{"stream": false}` for a single JSON body. Returns
+  `402` once the free-token budget is spent and `503` when no OpenRouter key is
+  configured. Only allow-listed models are reachable, and `max_tokens` / prompt
+  length are clamped server-side.
+- `GET /api/chat/models` - The allow-listed models (`{ id, label }`) the Chat UI
+  may offer.
+- `GET /api/chat/usage` - Running token totals plus remaining free budget.
+
 ### Node join flow
 
 A machine links to an account with a **join token** (created per user, rotatable
@@ -148,6 +168,22 @@ Required for production:
 - `CLERK_SECRET_KEY` - From Clerk dashboard  
 - `DATABASE_URL` - Automatically provided by Railway (Postgres plugin)
 - `PORT` - Automatically provided by Railway
+
+Free web chat (OpenRouter proxy) — all optional, with sensible defaults:
+
+- `OPENROUTER_API_KEY` - OpenRouter key for the free Chat page. Without it,
+  `POST /api/chat/completions` returns `503` (the rest of the server is
+  unaffected).
+- `OPENROUTER_MODELS` - JSON array of allow-listed models,
+  e.g. `[{"id":"qwen/qwen3.6-27b","label":"Qwen3.6 27B"}]`. Defaults to a small
+  built-in Qwen list.
+- `OPENROUTER_FREE_TOKEN_BUDGET` - Total tokens of free usage before the endpoint
+  starts returning `402` (default `1000000`; set `0` to disable the cap).
+- `OPENROUTER_MAX_TOKENS` - Per-request completion ceiling (default `1024`).
+- `OPENROUTER_BASE_URL` - Override the OpenRouter base URL (default
+  `https://openrouter.ai/api/v1`).
+- `OPENROUTER_REFERER` - Sent as the `HTTP-Referer` attribution header (default
+  `https://llmjob.com`).
 
 ## Architecture
 
