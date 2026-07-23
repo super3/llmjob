@@ -8,7 +8,13 @@ const { createTestDb } = require('./helpers/pgmem');
 const { initChatRoutes } = require('../src/routes');
 const ChatUsageService = require('../src/services/chatUsageService');
 const ChatController = require('../src/controllers/chatController');
-const { parseSSE, sanitizeMessages, estimateTokens } = ChatController;
+const { parseSSE, sanitizeMessages, estimateTokens, upstreamErrorMessage } = ChatController;
+
+// The controller logs upstream failures via console.error; silence it so the
+// test output stays readable (assertions check the returned payloads instead).
+let errSpy;
+beforeAll(() => { errSpy = jest.spyOn(console, 'error').mockImplementation(() => {}); });
+afterAll(() => { errSpy.mockRestore(); });
 
 const MODELS = [
   { id: 'meta-llama/llama-3.3-70b-instruct', label: 'Llama 3.3 70B' },
@@ -260,6 +266,30 @@ describe('Chat gateway — integration', () => {
       .send({ messages: [{ role: 'user', content: 'x' }], stream: false });
     expect(res.status).toBe(502);
     expect(res.body.error.type).toBe('upstream_error');
+  });
+
+  it('surfaces the upstream error reason in the stream', async () => {
+    const errFetch = async () => ({
+      ok: false, status: 429,
+      text: async () => JSON.stringify({ error: { message: 'Rate limit exceeded' } })
+    });
+    const app = makeApp(db, { fetchFn: errFetch });
+    const res = await request(app).post('/api/chat/completions')
+      .send({ messages: [{ role: 'user', content: 'x' }] });
+    expect(res.text).toContain('Rate limit exceeded');
+    expect(res.text.trim().endsWith('data: [DONE]')).toBe(true);
+  });
+
+  it('surfaces the upstream error reason for non-streaming', async () => {
+    const errFetch = async () => ({
+      ok: false, status: 402,
+      text: async () => JSON.stringify({ error: { message: 'Insufficient credits' } })
+    });
+    const app = makeApp(db, { fetchFn: errFetch });
+    const res = await request(app).post('/api/chat/completions')
+      .send({ messages: [{ role: 'user', content: 'x' }], stream: false });
+    expect(res.status).toBe(502);
+    expect(res.body.error.message).toContain('Insufficient credits');
   });
 
   it('returns 502 when the non-streaming upstream request throws', async () => {
@@ -553,6 +583,21 @@ describe('Chat gateway — pure helpers', () => {
     const out = sanitizeMessages([{ role: 'user', content: big }, { role: 'user', content: 'dropped' }]);
     expect(out).toHaveLength(1);
     expect(out[0].content.length).toBe(24000);
+  });
+
+  it('upstreamErrorMessage extracts a reason from JSON, raw text, or status', async () => {
+    const j = (body) => ({ status: 500, text: async () => body });
+    expect(await upstreamErrorMessage(j(JSON.stringify({ error: { message: 'bad model' } })))).toBe('bad model');
+    expect(await upstreamErrorMessage(j('{"foo":1}'))).toBe('{"foo":1}'); // JSON without error.message → raw body
+    expect(await upstreamErrorMessage(j('plain text boom'))).toBe('plain text boom'); // not JSON
+    expect(await upstreamErrorMessage(j(''))).toBe('HTTP 500'); // empty body → bare status
+    expect(await upstreamErrorMessage({ status: 503, text: async () => { throw new Error('no body'); } })).toBe('HTTP 503');
+  });
+
+  it('upstreamErrorMessage truncates a very long body', async () => {
+    const long = 'z'.repeat(1000);
+    const out = await upstreamErrorMessage({ status: 500, text: async () => long });
+    expect(out.length).toBe(300);
   });
 
   it('parseSSE yields events, tolerates split chunks/comments/garbage, and stops at [DONE]', async () => {
