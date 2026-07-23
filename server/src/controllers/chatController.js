@@ -25,8 +25,8 @@ const ChatUsageService = require('../services/chatUsageService');
 // Sensible defaults; every one is overridable via env or constructor opts so the
 // founder can retune the free tier without a code change.
 const DEFAULT_MODELS = [
-  { id: 'qwen/qwen3-32b', label: 'Qwen3 32B' },
-  { id: 'qwen/qwen3-30b-a3b', label: 'Qwen3 30B A3B' }
+  { id: 'qwen/qwen3.6-27b', label: 'Qwen3.6 27B' },
+  { id: 'qwen/qwen3.6-35b-a3b', label: 'Qwen3.6 35B A3B' }
 ];
 const DEFAULT_FREE_BUDGET = 1000000; // total tokens of free usage before the cap
 const DEFAULT_MAX_TOKENS = 1024;     // per-request completion ceiling
