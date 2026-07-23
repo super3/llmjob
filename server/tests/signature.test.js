@@ -179,8 +179,6 @@ describe('Signature Middleware', () => {
     });
 
     it('should handle unexpected errors', () => {
-      const timestamp = Date.now();
-      
       // Mock an unexpected error by making req.body throw
       Object.defineProperty(req, 'body', {
         get: () => { throw new Error('Unexpected error'); }

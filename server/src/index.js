@@ -52,13 +52,20 @@ const staticPath = process.env.RAILWAY_ENVIRONMENT
 
 app.use(express.static(staticPath));
 
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(err.status || 500).json({
-    error: err.message || 'Internal server error'
+// Error handling middleware. Log the full error server-side, but only echo the
+// message back for explicit client errors (4xx). For anything 500+ (or an
+// unclassified throw) return a generic message so internal details — stack
+// fragments, driver errors, file paths — never leak to the caller.
+// eslint-disable-next-line no-unused-vars
+function errorHandler(err, req, res, next) {
+  console.error(err.stack || err);
+  const status = err.status || 500;
+  const clientError = status >= 400 && status < 500;
+  res.status(status).json({
+    error: clientError && err.message ? err.message : 'Internal server error'
   });
-});
+}
+app.use(errorHandler);
 
 // Start server
 async function startServer() {
@@ -135,6 +142,16 @@ async function startServer() {
   }
 }
 
-startServer();
+// Only boot when run directly (`node server/src/index.js`), not when required
+// by tests — so the suite can exercise the pieces without opening a port or
+// connecting to Postgres.
+/* istanbul ignore if -- @preserve: bootstrap only runs via `node index.js` */
+if (require.main === module) {
+  startServer();
+}
 
 module.exports = app;
+module.exports.app = app;
+module.exports.startServer = startServer;
+module.exports.connectDb = connectDb;
+module.exports.errorHandler = errorHandler;

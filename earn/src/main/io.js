@@ -43,6 +43,30 @@ function postJson(url, body, timeoutMs) {
   });
 }
 
+// Best-effort JSON GET: resolves the parsed object, or null on any error,
+// non-200, timeout, or unparseable body. Never rejects. `opts.headers` and
+// `opts.timeout` (ms, default 8000) tune the request; a 4 MB cap guards against
+// a runaway body. Shared by the app's economics/balance fetches and the CLI
+// self-updater's release check, which each used to keep their own copy.
+function getJson(url, opts = {}) {
+  return new Promise((resolve) => {
+    try {
+      const u = new URL(url);
+      const lib = u.protocol === 'http:' ? http : https;
+      const req = lib.get(u, { timeout: opts.timeout || 8000, headers: opts.headers }, (res) => {
+        if (res.statusCode !== 200) { res.resume(); return resolve(null); }
+        let data = '';
+        res.on('data', (c) => { data += c; if (data.length > 4e6) req.destroy(); });
+        res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { resolve(null); } });
+      });
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => { req.destroy(); resolve(null); });
+    } catch (e) {
+      resolve(null);
+    }
+  });
+}
+
 // Stream a URL to a file, following redirects and reporting download progress.
 // Writes to `<dest>.part` and renames on completion, so an interrupted download
 // (multi-GB GGUFs especially) never leaves a truncated file at the final path
@@ -168,4 +192,4 @@ function extractLlamaZip(zipPath, dest, hint) {
   });
 }
 
-module.exports = { postJson, downloadFile, streamChatCompletion, extractLlamaZip };
+module.exports = { postJson, getJson, downloadFile, streamChatCompletion, extractLlamaZip };

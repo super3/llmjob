@@ -62,13 +62,31 @@ describe('Job routes (handlers executed end-to-end)', () => {
   });
 
   it('handles admin endpoints', async () => {
-    const cleanup = await request(app).post('/api/jobs/cleanup').send({});
-    expect(cleanup.status).toBe(200);
+    // cleanup is admin-gated; the mocked auth user is 'user-routes'.
+    const prev = process.env.ADMIN_USER_IDS;
+    process.env.ADMIN_USER_IDS = 'user-routes';
+    try {
+      const cleanup = await request(app).post('/api/jobs/cleanup').send({});
+      expect(cleanup.status).toBe(200);
 
-    const timeouts = await request(app).post('/api/jobs/check-timeouts').send({});
-    expect(timeouts.status).toBe(200);
+      const timeouts = await request(app).post('/api/jobs/check-timeouts').send({});
+      expect(timeouts.status).toBe(200);
 
-    const stats = await request(app).get('/api/jobs/stats');
-    expect(stats.status).toBe(200);
+      const stats = await request(app).get('/api/jobs/stats');
+      expect(stats.status).toBe(200);
+    } finally {
+      process.env.ADMIN_USER_IDS = prev;
+    }
+  });
+
+  it('rejects cleanup for a non-admin user', async () => {
+    const prev = process.env.ADMIN_USER_IDS;
+    process.env.ADMIN_USER_IDS = 'someone-else';
+    try {
+      const cleanup = await request(app).post('/api/jobs/cleanup').send({});
+      expect(cleanup.status).toBe(403);
+    } finally {
+      process.env.ADMIN_USER_IDS = prev;
+    }
   });
 });

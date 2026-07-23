@@ -18,3 +18,10 @@ Always run tests before starting work and after completing tasks. A task is NOT 
 - Use descriptive commit messages that explain the "why" not just the "what"
 - Never commit or push changes unless explicitly requested
 - This maintains control over what gets pushed to the repository
+
+## Pull Request Rules
+
+- Always keep the PR title and description accurate. Whenever you push a commit
+  to a branch with an open PR, update that PR's title and description so they
+  reflect what's actually on the branch (scope, test counts, notable changes,
+  and anything added, reverted, or rebased).

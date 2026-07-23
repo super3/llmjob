@@ -6,12 +6,11 @@ const routes = require('../src/routes');
 const NodeService = require('../src/services/nodeService');
 const { createTestDb } = require('./helpers/pgmem');
 
-// Mock Clerk
+// Mock Clerk. `verifyToken` checks the JWT signature in production; here it just
+// decodes the (unsigned) test token to recover its `sub`, so authHeader(sub)
+// resolves to that user.
 jest.mock('@clerk/clerk-sdk-node', () => ({
   clerkClient: {
-    sessions: {
-      getSession: jest.fn().mockResolvedValue({ userId: 'test_user_123' })
-    },
     users: {
       getUser: jest.fn().mockResolvedValue({
         id: 'test_user_123',
@@ -19,7 +18,11 @@ jest.mock('@clerk/clerk-sdk-node', () => ({
         username: 'testuser'
       })
     }
-  }
+  },
+  verifyToken: jest.fn(async (token) => {
+    const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+    return { sub: payload.sub };
+  })
 }));
 
 const authHeader = (sub = 'test_user_123') => {
@@ -111,7 +114,6 @@ describe('Node API Endpoints', () => {
         .send({ publicKey: testPublicKey, name: 'Test Node' });
 
       const { clerkClient } = require('@clerk/clerk-sdk-node');
-      clerkClient.sessions.getSession.mockResolvedValueOnce({ userId: 'different_user' });
       clerkClient.users.getUser.mockResolvedValueOnce({
         id: 'different_user',
         emailAddresses: [{ emailAddress: 'other@example.com' }],

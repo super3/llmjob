@@ -31,7 +31,7 @@ const options = {
 for (let i = 0; i < args.length; i += 2) {
   const arg = args[i].replace('--', '');
   const value = args[i + 1];
-  if (options.hasOwnProperty(arg)) {
+  if (Object.prototype.hasOwnProperty.call(options, arg)) {
     options[arg] = isNaN(value) ? value : parseInt(value);
   }
 }

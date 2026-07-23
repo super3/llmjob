@@ -1,16 +1,16 @@
 const { requireAuth } = require('../src/middleware/auth');
-const { clerkClient } = require('@clerk/clerk-sdk-node');
+const { clerkClient, verifyToken } = require('@clerk/clerk-sdk-node');
 
-// Mock Clerk
+// Mock Clerk. `verifyToken` checks the JWT signature against Clerk's JWKS in
+// production; here it is mocked so tests exercise the middleware without a
+// network round-trip.
 jest.mock('@clerk/clerk-sdk-node', () => ({
   clerkClient: {
-    sessions: {
-      getSession: jest.fn()
-    },
     users: {
       getUser: jest.fn()
     }
-  }
+  },
+  verifyToken: jest.fn()
 }));
 
 describe('Auth Middleware', () => {
@@ -30,16 +30,10 @@ describe('Auth Middleware', () => {
   });
 
   describe('requireAuth', () => {
-    it('should authenticate valid token with session ID', async () => {
-      // Create a mock JWT token with session ID
-      const payload = { sid: 'sess_123', sub: 'user_123' };
-      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
-      req.headers.authorization = `Bearer ${mockToken}`;
-      
-      clerkClient.sessions.getSession.mockResolvedValue({
-        userId: 'user_123'
-      });
-      
+    it('should authenticate a token with a valid signature', async () => {
+      req.headers.authorization = 'Bearer valid.jwt.token';
+
+      verifyToken.mockResolvedValue({ sub: 'user_123' });
       clerkClient.users.getUser.mockResolvedValue({
         id: 'user_123',
         emailAddresses: [{ emailAddress: 'test@example.com' }],
@@ -48,6 +42,8 @@ describe('Auth Middleware', () => {
 
       await requireAuth(req, res, next);
 
+      expect(verifyToken).toHaveBeenCalledWith('valid.jwt.token', expect.any(Object));
+      expect(clerkClient.users.getUser).toHaveBeenCalledWith('user_123');
       expect(next).toHaveBeenCalled();
       expect(req.user).toEqual({
         id: 'user_123',
@@ -78,17 +74,13 @@ describe('Auth Middleware', () => {
       expect(next).not.toHaveBeenCalled();
     });
 
-    it('should handle token verification failure', async () => {
-      const payload = { sid: 'sess_invalid' };
-      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
-      req.headers.authorization = `Bearer ${mockToken}`;
-      
-      clerkClient.sessions.getSession.mockRejectedValue(
-        new Error('Invalid token')
-      );
+    it('should reject a token that fails signature verification', async () => {
+      req.headers.authorization = 'Bearer forged.jwt.token';
+      verifyToken.mockRejectedValue(new Error('Invalid signature'));
 
       await requireAuth(req, res, next);
 
+      expect(clerkClient.users.getUser).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(401);
       expect(res.json).toHaveBeenCalledWith({
         error: 'Invalid or expired token'
@@ -97,17 +89,9 @@ describe('Auth Middleware', () => {
     });
 
     it('should handle user fetch failure', async () => {
-      const payload = { sid: 'sess_123', sub: 'user_123' };
-      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
-      req.headers.authorization = `Bearer ${mockToken}`;
-      
-      clerkClient.sessions.getSession.mockResolvedValue({
-        userId: 'user_123'
-      });
-      
-      clerkClient.users.getUser.mockRejectedValue(
-        new Error('User not found')
-      );
+      req.headers.authorization = 'Bearer valid.jwt.token';
+      verifyToken.mockResolvedValue({ sub: 'user_123' });
+      clerkClient.users.getUser.mockRejectedValue(new Error('User not found'));
 
       await requireAuth(req, res, next);
 
@@ -119,9 +103,7 @@ describe('Auth Middleware', () => {
     });
 
     it('should handle unexpected errors', async () => {
-      req.headers.authorization = 'Bearer token';
-      
-      // Mock an unexpected error by making req.headers.authorization throw
+      // Make reading the authorization header throw, tripping the outer catch.
       Object.defineProperty(req.headers, 'authorization', {
         get: () => { throw new Error('Unexpected error'); }
       });
@@ -135,15 +117,9 @@ describe('Auth Middleware', () => {
       expect(next).not.toHaveBeenCalled();
     });
 
-    it('should handle user without email addresses', async () => {
-      const payload = { sid: 'sess_123', sub: 'user_123' };
-      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
-      req.headers.authorization = `Bearer ${mockToken}`;
-      
-      clerkClient.sessions.getSession.mockResolvedValue({
-        userId: 'user_123'
-      });
-      
+    it('should handle a user without email addresses', async () => {
+      req.headers.authorization = 'Bearer valid.jwt.token';
+      verifyToken.mockResolvedValue({ sub: 'user_123' });
       clerkClient.users.getUser.mockResolvedValue({
         id: 'user_123',
         emailAddresses: [],
@@ -158,40 +134,6 @@ describe('Auth Middleware', () => {
         email: undefined,
         username: 'testuser'
       });
-    });
-
-    it('should authenticate token with only user ID (no session)', async () => {
-      const payload = { sub: 'user_123' }; // No sid
-      const mockToken = `header.${Buffer.from(JSON.stringify(payload)).toString('base64')}.signature`;
-      req.headers.authorization = `Bearer ${mockToken}`;
-      
-      clerkClient.users.getUser.mockResolvedValue({
-        id: 'user_123',
-        emailAddresses: [{ emailAddress: 'test@example.com' }],
-        username: 'testuser'
-      });
-
-      await requireAuth(req, res, next);
-
-      expect(next).toHaveBeenCalled();
-      expect(req.user).toEqual({
-        id: 'user_123',
-        email: 'test@example.com',
-        username: 'testuser'
-      });
-      expect(clerkClient.sessions.getSession).not.toHaveBeenCalled();
-    });
-
-    it('should reject token with invalid format', async () => {
-      req.headers.authorization = 'Bearer invalid.token'; // Only 2 parts
-      
-      await requireAuth(req, res, next);
-      
-      expect(res.status).toHaveBeenCalledWith(401);
-      expect(res.json).toHaveBeenCalledWith({
-        error: 'Invalid or expired token'
-      });
-      expect(next).not.toHaveBeenCalled();
     });
   });
 });

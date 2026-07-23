@@ -1,42 +1,24 @@
 'use strict';
 
 // IO shell for the CLI's self-update — the real HTTPS / filesystem / process
-// side of shared/selfUpdate.js. Excluded from the coverage gate like the other
-// shells (main.js, earn-cli.js); the decision logic it wraps is unit-tested.
+// side of shared/selfUpdate.js (whose decision logic is unit-tested there).
+// Covered by mocking https/fs/child_process/node:sea in selfUpdater.test.js.
 
 const https = require('https');
 const fs = require('fs');
 const { spawnSync } = require('child_process');
 const { LATEST_RELEASE_API, parseRelease, planUpdate } = require('../shared/selfUpdate');
+const { getJson } = require('../main/io');
 
 // Set on the re-exec'd child so it doesn't check/update again and loop.
 const UPDATED_ENV = 'LLMJOB_EARN_UPDATED';
 
-// GET JSON with a short timeout. Best-effort: resolves the parsed object, or
-// null on any error / non-200 (GitHub requires a User-Agent header).
-function fetchJson(url) {
-  return new Promise((resolve) => {
-    try {
-      const req = https.get(url, {
-        headers: { 'User-Agent': 'llmjob-earn-cli', Accept: 'application/vnd.github+json' },
-        timeout: 8000,
-      }, (res) => {
-        if (res.statusCode !== 200) { res.resume(); return resolve(null); }
-        let data = '';
-        res.on('data', (c) => { data += c; if (data.length > 4e6) req.destroy(); });
-        res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { resolve(null); } });
-      });
-      req.on('error', () => resolve(null));
-      req.on('timeout', () => { req.destroy(); resolve(null); });
-    } catch (e) {
-      resolve(null);
-    }
-  });
-}
-
-// Fetch + parse the latest release, or null if unreachable.
+// Fetch + parse the latest release, or null if unreachable. GitHub requires a
+// User-Agent header. Uses the shared best-effort JSON GET from io.js.
 function fetchLatestRelease() {
-  return fetchJson(LATEST_RELEASE_API).then((j) => (j ? parseRelease(j) : null));
+  return getJson(LATEST_RELEASE_API, {
+    headers: { 'User-Agent': 'llmjob-earn-cli', Accept: 'application/vnd.github+json' },
+  }).then((j) => (j ? parseRelease(j) : null));
 }
 
 // True when running as the packaged single-file binary (vs `node earn-cli.js`).
@@ -94,7 +76,6 @@ function reexec(argv) {
 
 module.exports = {
   UPDATED_ENV,
-  fetchJson,
   fetchLatestRelease,
   isPackaged,
   download,

@@ -11,7 +11,6 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const https = require('https');
-const net = require('net');
 
 const { autoUpdater } = require('electron-updater');
 
@@ -19,8 +18,13 @@ const { MinerManager } = require('./minerManager');
 const { EngineManager } = require('./engineManager');
 const { LlmManager } = require('./llmManager');
 const { LlmEngineManager } = require('./llmEngineManager');
-const { postJson, downloadFile, streamChatCompletion, extractLlamaZip } = require('./io');
+const { postJson, getJson, downloadFile, streamChatCompletion, extractLlamaZip } = require('./io');
+const {
+  detectRegion, detectVram, detectGpusVram, detectDriverMajor,
+  postMinerReport, findFreePort,
+} = require('./probe');
 const nodeStore = require('./nodeStore');
+const settingsStore = require('../shared/settingsStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE, endpointFor, difficultyForCard } = require('../shared/config');
 const { resolveEconomics } = require('../shared/economics');
@@ -31,11 +35,10 @@ const { JobWorker } = require('./jobWorker');
 const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
 const { buildBalanceUrl, parseBalance, buildMdlBalanceUrl, parseMdlBalance } = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
-const { progressPercent, bundledEnginePath, pickEngineVersion, parseDriverMajor, ENGINE } = require('../shared/engine');
+const { bundledEnginePath, pickEngineVersion, ENGINE } = require('../shared/engine');
 const { formatUpdate } = require('../shared/updateStatus');
 const { describeLaunchError } = require('../shared/engineError');
-const { pickGpu, parseGpuStats } = require('../shared/gpu');
-const { pickFastestRegion } = require('../shared/region');
+const { pickGpu } = require('../shared/gpu');
 const { buildMinerReports } = require('../shared/minerReport');
 const { runtimeCopyPlan } = require('../shared/llmRuntime');
 const earnings = require('../shared/earnings');
@@ -52,47 +55,31 @@ let llmStatus = { ready: false, endpoint: null, webUrl: null, tokensPerSec: 0, m
 function settingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
 }
+const settingsLog = (m) => console.error(m);
 function loadSettings() {
-  try {
-    return JSON.parse(fs.readFileSync(settingsPath(), 'utf8'));
-  } catch (e) {
-    return {};
-  }
+  return settingsStore.readSettings(settingsPath(), { fs, log: settingsLog });
 }
 function persistSettings(s) {
-  try {
-    fs.writeFileSync(settingsPath(), JSON.stringify(s, null, 2));
-  } catch (e) {
-    /* best effort */
-  }
-  return s;
+  return settingsStore.writeSettings(settingsPath(), s, { fs, log: settingsLog });
 }
 
 function send(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
 }
 
-// Publish this miner's live status to the network page (best-effort — never
-// throws, timeouts and errors are swallowed so mining is never affected).
-function postMinerReport(payload) {
-  return new Promise((resolve) => {
-    try {
-      const body = JSON.stringify(payload);
-      const u = new URL(NETWORK.reportUrl);
-      const lib = u.protocol === 'http:' ? http : https;
-      const req = lib.request(u, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-        timeout: 8000,
-      }, (res) => { res.resume(); res.on('end', resolve); });
-      req.on('error', () => resolve());
-      req.on('timeout', () => { req.destroy(); resolve(); });
-      req.write(body);
-      req.end();
-    } catch (e) {
-      resolve();
-    }
-  });
+// Open a URL in the user's browser, but only http(s). The renderer can hand any
+// string to the 'open-external' channel, and shell.openExternal would otherwise
+// happily launch file:, smb:, or a registered custom-protocol handler. The
+// returned promise is swallowed too, so a bad URL can't become an unhandled
+// rejection.
+function openExternalSafe(url) {
+  try {
+    const u = new URL(String(url));
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
+    Promise.resolve(shell.openExternal(u.href)).catch(() => {});
+  } catch (e) {
+    /* not a valid URL — ignore */
+  }
 }
 
 // Fetch a pool balance for a payout address. Best-effort and never rejects —
@@ -102,29 +89,22 @@ function postMinerReport(payload) {
 // merge-mined MDL record lives at a different route), and `opts.priceUsd`
 // (optional) adds a USD figure. Runs here in the main process so it isn't
 // subject to the renderer's CSP / cross-origin restrictions.
-function fetchBalance(address, opts) {
+async function fetchBalance(address, opts) {
   const o = opts || {};
   const isValid = o.validate || isValidAddress;
-  return new Promise((resolve) => {
-    if (!isValid(address)) return resolve(null);
-    try {
-      const u = new URL((o.buildUrl || buildBalanceUrl)(String(address).trim()));
-      const lib = u.protocol === 'http:' ? http : https;
-      const req = lib.get(u, { timeout: 8000 }, (res) => {
-        if (res.statusCode !== 200) { res.resume(); return resolve(null); }
-        let data = '';
-        res.on('data', (c) => { data += c; if (data.length > 4e6) req.destroy(); });
-        res.on('end', () => {
-          try { resolve((o.parse || parseBalance)(JSON.parse(data), o.priceUsd, o.currency)); }
-          catch (e) { resolve(null); }
-        });
-      });
-      req.on('error', () => resolve(null));
-      req.on('timeout', () => { req.destroy(); resolve(null); });
-    } catch (e) {
-      resolve(null);
-    }
-  });
+  if (!isValid(address)) return null;
+  let json;
+  try {
+    json = await getJson((o.buildUrl || buildBalanceUrl)(String(address).trim()));
+  } catch (e) {
+    return null; // buildUrl threw
+  }
+  if (json == null) return null;
+  try {
+    return (o.parse || parseBalance)(json, o.priceUsd, o.currency);
+  } catch (e) {
+    return null; // parse threw
+  }
 }
 
 // Live network economics for earnings estimates. Starts as the static ECON
@@ -132,28 +112,6 @@ function fetchBalance(address, opts) {
 // balance's USD figure track the real network + price instead of drifting
 // (a stale fallback silently overstates earnings as the network grows).
 let liveEcon = Object.assign({}, ECON, { live: { price: false, net: false, reward: false } });
-
-// GET a JSON URL, resolving the parsed object or null (never rejects). Same
-// best-effort pattern as fetchBalance — a failed refresh just keeps the
-// current econ values.
-function getJson(url) {
-  return new Promise((resolve) => {
-    try {
-      const u = new URL(url);
-      const lib = u.protocol === 'http:' ? http : https;
-      const req = lib.get(u, { timeout: 8000 }, (res) => {
-        if (res.statusCode !== 200) { res.resume(); return resolve(null); }
-        let data = '';
-        res.on('data', (c) => { data += c; if (data.length > 4e6) req.destroy(); });
-        res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { resolve(null); } });
-      });
-      req.on('error', () => resolve(null));
-      req.on('timeout', () => { req.destroy(); resolve(null); });
-    } catch (e) {
-      resolve(null);
-    }
-  });
-}
 
 // Refresh liveEcon from the prlscan API (price, network hashrate, emission).
 // Best-effort: whatever doesn't come back stays on the previous/fallback value.
@@ -189,6 +147,14 @@ function statsView(snap) {
   };
 }
 
+// Quote a value as a single PowerShell single-quoted literal, doubling any
+// embedded single quote. Interpolating a raw path into a '...' PS string lets a
+// path containing a quote break out of the quoting and inject commands; routing
+// every interpolated value through this closes that.
+function psQuote(value) {
+  return "'" + String(value).replace(/'/g, "''") + "'";
+}
+
 // Extract a single engine .exe from a downloaded zip to `dest`. Windows-only:
 // uses PowerShell's Expand-Archive, so there's no extra runtime dependency. Used
 // for the miner engine, whose binary is self-contained.
@@ -197,11 +163,11 @@ function extractZip(zipPath, dest) {
     const tmp = dest + '.unzip';
     const wanted = path.basename(dest);
     const ps = "$ErrorActionPreference='Stop';"
-      + "Expand-Archive -LiteralPath '" + zipPath + "' -DestinationPath '" + tmp + "' -Force;"
-      + "$e = Get-ChildItem -Path '" + tmp + "' -Recurse -Filter '" + wanted + "' | Select-Object -First 1;"
-      + "if(-not $e){ $e = Get-ChildItem -Path '" + tmp + "' -Recurse -Filter '*.exe' | Select-Object -First 1 }"
-      + "Copy-Item -LiteralPath $e.FullName -Destination '" + dest + "' -Force;"
-      + "Remove-Item -LiteralPath '" + tmp + "' -Recurse -Force";
+      + 'Expand-Archive -LiteralPath ' + psQuote(zipPath) + ' -DestinationPath ' + psQuote(tmp) + ' -Force;'
+      + '$e = Get-ChildItem -Path ' + psQuote(tmp) + ' -Recurse -Filter ' + psQuote(wanted) + ' | Select-Object -First 1;'
+      + 'if(-not $e){ $e = Get-ChildItem -Path ' + psQuote(tmp) + " -Recurse -Filter '*.exe' | Select-Object -First 1 }"
+      + 'Copy-Item -LiteralPath $e.FullName -Destination ' + psQuote(dest) + ' -Force;'
+      + 'Remove-Item -LiteralPath ' + psQuote(tmp) + ' -Recurse -Force';
     execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], (err) => {
       if (err) return reject(err);
       resolve(dest);
@@ -219,10 +185,10 @@ function extractLlamaZipWin(zipPath, dest) {
     const dir = path.dirname(dest);
     const tmp = path.join(dir, '_llama_unzip');
     const ps = "$ErrorActionPreference='Stop';"
-      + "if(Test-Path -LiteralPath '" + tmp + "'){Remove-Item -LiteralPath '" + tmp + "' -Recurse -Force};"
-      + "Expand-Archive -LiteralPath '" + zipPath + "' -DestinationPath '" + tmp + "' -Force;"
-      + "Get-ChildItem -Path '" + tmp + "' -Recurse -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination '" + dir + "' -Force };"
-      + "Remove-Item -LiteralPath '" + tmp + "' -Recurse -Force";
+      + 'if(Test-Path -LiteralPath ' + psQuote(tmp) + '){Remove-Item -LiteralPath ' + psQuote(tmp) + ' -Recurse -Force};'
+      + 'Expand-Archive -LiteralPath ' + psQuote(zipPath) + ' -DestinationPath ' + psQuote(tmp) + ' -Force;'
+      + 'Get-ChildItem -Path ' + psQuote(tmp) + ' -Recurse -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination ' + psQuote(dir) + ' -Force };'
+      + 'Remove-Item -LiteralPath ' + psQuote(tmp) + ' -Recurse -Force';
     execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { maxBuffer: 8 * 1024 * 1024 }, (err) => {
       if (err) return reject(err);
       if (!fs.existsSync(dest)) return reject(new Error('llama-server was not found in the downloaded archive'));
@@ -359,84 +325,6 @@ function stopMining() {
 function appIcon() {
   const dir = path.join(__dirname, '..', 'assets');
   return path.join(dir, process.platform === 'win32' ? 'icon.ico' : 'icon.png');
-}
-
-// Measure TCP connect latency (ms) to a "host:port" Stratum endpoint, or null
-// if it can't be reached within the timeout. Never rejects.
-function pingEndpoint(endpoint, timeoutMs) {
-  return new Promise((resolve) => {
-    const [host, portStr] = String(endpoint).split(':');
-    const start = Date.now();
-    const sock = new net.Socket();
-    let settled = false;
-    const done = (ms) => { if (!settled) { settled = true; sock.destroy(); resolve(ms); } };
-    sock.setTimeout(timeoutMs || 2500);
-    sock.once('connect', () => done(Date.now() - start));
-    sock.once('timeout', () => done(null));
-    sock.once('error', () => done(null));
-    sock.connect(Number(portStr), host);
-  });
-}
-
-// Auto-detect the best pool region by pinging every region's endpoint in
-// parallel and choosing the lowest latency; falls back to the default.
-async function detectRegion() {
-  const keys = Object.keys(REGIONS);
-  const results = await Promise.all(keys.map((region) =>
-    pingEndpoint(REGIONS[region].endpoint).then((ms) => ({ region, ms }))));
-  return pickFastestRegion(results, DEFAULTS.region);
-}
-
-// Live GPU VRAM (used/total, MB) via nvidia-smi — NVIDIA-only. Resolves
-// { usedMb, totalMb } or null (no nvidia-smi / non-NVIDIA / parse failure). Never
-// rejects; reported to the network board as a baseline for LLM co-running.
-function detectVram() {
-  return new Promise((resolve) => {
-    execFile('nvidia-smi',
-      ['--query-gpu=memory.used,memory.total', '--format=csv,noheader,nounits'],
-      { timeout: 5000 },
-      (err, stdout) => {
-        if (err) return resolve(null);
-        // Sum across every GPU line so a multi-GPU rig reports the rig's total
-        // (same as the CLI — the two shells must agree on free-VRAM decisions).
-        let usedMb = 0;
-        let totalMb = 0;
-        let any = false;
-        for (const row of String(stdout).split(/\r?\n/)) {
-          const parts = row.split(',').map((x) => parseInt(x, 10));
-          if (parts.length >= 2 && Number.isFinite(parts[0]) && Number.isFinite(parts[1])) {
-            usedMb += parts[0];
-            totalMb += parts[1];
-            any = true;
-          }
-        }
-        resolve(any ? { usedMb, totalMb } : null);
-      });
-  });
-}
-
-// Per-card live VRAM (used/total, MB) via nvidia-smi — one entry per GPU so the
-// network board reports each card's own headroom instead of the rig's summed
-// total. Resolves [{ index, name, usedMb, totalMb }] (empty on no nvidia-smi /
-// parse failure). Never rejects.
-function detectGpusVram() {
-  return new Promise((resolve) => {
-    execFile('nvidia-smi',
-      ['--query-gpu=index,name,memory.used,memory.total', '--format=csv,noheader,nounits'],
-      { timeout: 5000 },
-      (err, stdout) => resolve(err ? [] : parseGpuStats(stdout)));
-  });
-}
-
-// NVIDIA driver major version via nvidia-smi, or null when it can't be read.
-// Decides which Linux engine build the rig can run (CUDA 13 builds need
-// >= 580); Windows keeps the pool's unversioned zips and never consults this.
-function detectDriverMajor() {
-  return new Promise((resolve) => {
-    execFile('nvidia-smi', ['--query-gpu=driver_version', '--format=csv,noheader'],
-      { timeout: 5000 },
-      (err, stdout) => resolve(err ? null : parseDriverMajor(stdout)));
-  });
 }
 
 // Detect the machine's GPU for the settings/device label. Uses Windows'
@@ -611,25 +499,6 @@ function probeLlmHealth(baseUrl, timeoutMs) {
     req.on('error', () => resolve(false));
     req.setTimeout(timeoutMs || 2000, () => req.destroy());
   });
-}
-
-// Find a port llama-server can actually bind, preferring `start` (8080). On
-// Windows a just-killed server's port can stay unavailable for 30s+ while
-// connections tear down — longer than the spawn-retry window — and other
-// software (Tomcat, NAS web UIs, dev servers) may own 8080 outright. Rather
-// than fail on a fixed port, walk forward until a bind succeeds. Everything
-// that consumes the port (chat proxy, API tab, warm-up, cluster worker) reads
-// the resulting baseUrl, so a non-default port is fully transparent.
-function findFreePort(host, start, tries) {
-  const net = require('net');
-  const attempt = (port, left) => new Promise((resolve) => {
-    if (left <= 0) return resolve(start); // give up: fall back to the default
-    const srv = net.createServer();
-    srv.once('error', () => { srv.close(); resolve(attempt(port + 1, left - 1)); });
-    srv.once('listening', () => srv.close(() => resolve(port)));
-    srv.listen(port, host);
-  });
-  return attempt(start, tries || 10);
 }
 
 // Reset the live-status side of llmStatus and broadcast — the single cleanup
@@ -1064,7 +933,7 @@ ipcMain.handle('balance:getMdl', (_e, address) =>
   fetchBalance(address, { buildUrl: buildMdlBalanceUrl, parse: parseMdlBalance }));
 ipcMain.on('miner:start', (_e, settings) => applyPlan(settings || {}));
 ipcMain.on('miner:stop', () => { stopMining(); stopLlm(); });
-ipcMain.on('open-external', (_e, url) => { shell.openExternal(url); });
+ipcMain.on('open-external', (_e, url) => { openExternalSafe(url); });
 // Re-fit the window to its content when the renderer's layout changes (tab
 // switch, mining start/stop, etc.), so the frame never leaves a gap under the
 // footer or clips a taller view.
@@ -1074,7 +943,7 @@ ipcMain.on('llm:chat', (_e, messages) => llmChat(messages));
 ipcMain.handle('node:status', () => nodeStatus());
 ipcMain.handle('node:connect', (_e, opts) => connectNode(opts || {}));
 ipcMain.handle('node:disconnect', () => disconnectNode());
-ipcMain.on('node:dashboard', () => shell.openExternal(NODE.dashboardUrl));
+ipcMain.on('node:dashboard', () => openExternalSafe(NODE.dashboardUrl));
 ipcMain.handle('app:version', () => app.getVersion());
 ipcMain.on('app:update:check', () => checkForUpdate());
 ipcMain.on('app:update:install', () => {

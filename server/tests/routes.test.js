@@ -1,3 +1,9 @@
+// The dashboard-facing job routes now require auth; mock it to pass through so
+// the handlers still execute end-to-end here.
+jest.mock('../src/middleware/auth', () => ({
+  requireAuth: (req, res, next) => { req.user = { id: 'user-routes' }; next(); },
+}));
+
 const request = require('supertest');
 const express = require('express');
 const router = require('../src/routes');

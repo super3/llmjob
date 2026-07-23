@@ -38,6 +38,9 @@ jobs:
     - name: Send coverage to Coveralls
       uses: coverallsapp/github-action@v2
       if: matrix.node-version == '22.x'
+      # Non-blocking: coverage is already enforced by `npm test` (100% gate).
+      # A coveralls.io outage must not fail an otherwise-green build.
+      continue-on-error: true
       with:
         github-token: ${{ secrets.GITHUB_TOKEN }}
         path-to-lcov: ./coverage/lcov.info
