@@ -1,3 +1,4 @@
+<!--build {"clerk": false, "fonts": "https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap"} -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -15,14 +16,7 @@
 <meta name="twitter:title" content="LLMJob Chat — Free AI, powered by the network" />
 <meta name="twitter:description" content="Free chat with an open model, gated through the LLMJob endpoint." />
 
-<!-- Umami Analytics -->
-<script defer src="https://cloud.umami.is/script.js" data-website-id="df101f2e-01ef-46ef-b682-f8c553ae594f"></script>
-
-<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2222%22 fill=%22%231A1A17%22/><path transform=%22translate(26,26) scale(2)%22 d=%22M13 2 L4 14 h6 l-1 8 10-13 h-7 l1-7 z%22 fill=%22%23FFFFFF%22/></svg>">
-
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+{{> head}}
 <style>
   :root {
     --bg: #fcfcfb;
@@ -154,13 +148,9 @@
 (function () {
   'use strict';
 
-  // The site (GitHub Pages) and the API (Railway) are different origins, so use
-  // the absolute API base in production and the local server in dev — the same
-  // pattern as network.html / the dashboard.
-  var API_BASE = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
-    ? 'http://localhost:3001' : 'https://llmjob-production.up.railway.app';
+  {{> api-base}}
 
-  var BOLT = '<svg width="21" height="21" viewBox="0 0 24 24" fill="#fff"><path d="M13 2 L4 14 h6 l-1 8 10-13 h-7 l1-7 z"></path></svg>';
+  var BOLT ='<svg width="21" height="21" viewBox="0 0 24 24" fill="#fff"><path d="M13 2 L4 14 h6 l-1 8 10-13 h-7 l1-7 z"></path></svg>';
   var AV = '<svg width="12" height="12" viewBox="0 0 24 24" fill="#fff"><path d="M13 2 L4 14 h6 l-1 8 10-13 h-7 l1-7 z"></path></svg>';
 
   var SUGGESTIONS = [
