@@ -88,12 +88,18 @@
   .nt-top .ttl { font-weight: 700; font-size: 16px; letter-spacing: -.01em; }
   .nt-top .upd { font-size: 12px; color: #a7abb2; font-family: "IBM Plex Mono", monospace; }
   .nt-scroll { overflow-x: auto; }
-  /* The GPU track keeps a 120px floor so model names ("RTX 4070 SUPER") stay
-     readable when the table is scrolled at its minimum width on phones. */
-  .nt-cols, .miner-row { display: grid; grid-template-columns: 44px 230px minmax(120px, 1fr) 128px 120px 118px 96px; gap: 16px; align-items: center; min-width: 900px; }
+  /* VRAM/hashrate carry their unit as a small suffix, so those tracks only have
+     to hold the digits; that plus a shorter address buys the width back for the
+     GPU and LLM names, the two columns that actually need it. The GPU track
+     keeps a floor so model names ("RTX 4070 SUPER") stay readable when the table
+     is scrolled at its minimum width on phones. */
+  .nt-cols, .miner-row { display: grid; grid-template-columns: 44px 160px minmax(170px, 1fr) 140px 112px 96px 82px; gap: 16px; align-items: center; min-width: 900px; }
   .nt-cols { padding: 11px 22px; border-bottom: 1px solid #efeee8; font-size: 11.5px; color: var(--muted-3); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
   .nt-cols .r, .mr-vram, .mr-hash, .mr-last { text-align: right; }
   .mr-vram { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: #6b7077; }
+  /* Unit suffix: small and muted, so the column reads as numbers and the unit
+     costs a fraction of the width a full-size "GB" / "TH/s" would. */
+  .mr-vram .u, .mr-hash .u { font-size: 10px; font-weight: 400; color: var(--muted-3); margin-left: 3px; }
   .miner-row { padding: 13px 22px; border-bottom: 1px solid #f4f3ee; }
   .mr-rank { font-family: "IBM Plex Mono", monospace; font-size: 13px; color: var(--muted-3); }
   .mr-addr { display: flex; align-items: center; gap: 10px; min-width: 0; }
@@ -125,7 +131,7 @@
   @media (max-width: 1040px) {
     .mr-gpu .gpu-f, .mr-addr .ad-f { display: none; }
     .mr-gpu .gpu-s, .mr-addr .ad-s { display: inline; }
-    .nt-cols, .miner-row { grid-template-columns: 32px 150px minmax(110px, 1fr) 104px 100px 95px 82px; gap: 12px; min-width: 780px; }
+    .nt-cols, .miner-row { grid-template-columns: 32px 118px minmax(146px, 1fr) 122px 96px 84px 78px; gap: 12px; min-width: 748px; }
   }
   .mr-hash { font-family: "IBM Plex Mono", monospace; font-size: 13px; font-weight: 600; color: var(--accent); }
   .mr-last { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--muted-3); }
@@ -160,7 +166,7 @@
     <span class="t">Live · <span id="net-active-h">0</span> nodes online</span>
   </div>
   <h1>Who's mining right now.</h1>
-  <p>Every rig running LLMJob Earn against the pool, ranked by live hashrate. Anonymous — each row is a rig, shown only by its Pearl address.</p>
+  <p>Every rig running LLMJob Earn, ranked by live hashrate — one row per rig, shown only by its Pearl address.</p>
 </section>
 
 <!-- STAT CARDS -->
@@ -237,10 +243,13 @@
     function esc(str) { return String(str).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
     // Truncate the middle of the payout address for a bit of anonymity; the
     // narrow form fits the tighter address column on sub-1040px screens.
+    // Trimmed hard from the middle: the leading "prl1p…" plus a few trailing
+    // characters is enough to tell rows apart, and the width saved goes to the
+    // GPU and LLM columns.
     function shortAddr(a, narrow) {
       a = String(a);
-      if (narrow) return a.length > 20 ? a.slice(0, 10) + '…' + a.slice(-8) : a;
-      return a.length > 30 ? a.slice(0, 18) + '…' + a.slice(-10) : a;
+      if (narrow) return a.length > 16 ? a.slice(0, 7) + '…' + a.slice(-4) : a;
+      return a.length > 20 ? a.slice(0, 10) + '…' + a.slice(-6) : a;
     }
     function setText(id, v) { const el = document.getElementById(id); if (el) el.textContent = v; }
     // VRAM as "used / total GB" (from MB); "—" when total is unknown (non-NVIDIA
@@ -249,7 +258,12 @@
       const t = Number(totalMb) || 0;
       if (t <= 0) return '—';
       const gb = (mb) => (Math.round((Math.max(0, Number(mb) || 0) / 1024) * 10) / 10).toString();
-      return gb(usedMb) + ' / ' + gb(t) + ' GB';
+      return gb(usedMb) + ' / ' + gb(t) + '<span class="u">GB</span>';
+    }
+    // Hashrate as a bare number plus a small unit suffix, so the column only has
+    // to be as wide as the digits.
+    function fmtHash(h) {
+      return Number(h).toFixed(1) + '<span class="u">TH/s</span>';
     }
     // Model-only GPU name ("NVIDIA GeForce RTX 4090" → "RTX 4090") for smaller
     // screens, where end-ellipsis would leave nothing but the vendor prefix.
@@ -287,7 +301,7 @@
           '<span class="gpu-name"><span class="gpu-f">' + esc(c.gpu) + '</span><span class="gpu-s">' + esc(shortGpu(c.gpu)) + '</span></span></div>' +
         llmCell(c.llmModel) +
         '<div class="mr-vram">' + fmtVram(c.vramUsedMb, c.vramTotalMb) + '</div>' +
-        '<div class="mr-hash">' + Number(c.hash).toFixed(1) + ' TH/s</div>' +
+        '<div class="mr-hash">' + fmtHash(c.hash) + '</div>' +
         '<div class="mr-last"></div>' +
       '</div>';
     }
@@ -310,7 +324,7 @@
                 gpuCell(m.gpu, chev) +
                 llmCell(m.llmModel) +
                 '<div class="mr-vram">' + fmtVram(m.vramUsedMb, m.vramTotalMb) + '</div>' +
-                '<div class="mr-hash">' + Number(m.hash).toFixed(1) + ' TH/s</div>' +
+                '<div class="mr-hash">' + fmtHash(m.hash) + '</div>' +
                 '<div class="mr-last">' + esc(m.last) + '</div>' +
               '</div>';
             const cards = open
