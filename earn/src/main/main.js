@@ -983,8 +983,10 @@ ipcMain.handle('settings:get', () => Object.assign(
 ));
 ipcMain.handle('llm:status', () => llmStatus);
 // The models the Chat picker offers "via LLMJob" (the proxy path). The local
-// model comes from llm:status; these are served through the gateway.
-ipcMain.handle('chat:models', () => ({ proxy: chatModels }));
+// model comes from llm:status; these are served through the gateway. Refreshed
+// on demand so the picker the renderer builds always matches the list llmChat
+// routes against (findProxyModel), even if the server overrides the allow-list.
+ipcMain.handle('chat:models', async () => ({ proxy: await refreshChatModels() }));
 ipcMain.handle('config:get', () => ({ regions: REGIONS, defaults: DEFAULTS, miner: MINER }));
 ipcMain.handle('miner:difficultyForCard', (_e, name) => difficultyForCard(name));
 ipcMain.handle('gpu:detect', () => detectGpu());
@@ -1037,10 +1039,6 @@ app.whenReady().then(() => {
   refreshEconomics();
   const econTimer = setInterval(refreshEconomics, 10 * 60 * 1000);
   if (econTimer.unref) econTimer.unref();
-  // Pull the gateway's live model allow-list so the Chat picker's "via LLMJob"
-  // options match what the server actually serves (best-effort; keeps the
-  // built-in list on any failure).
-  refreshChatModels();
   // The identity used to live in Electron's userData dir; move it into the
   // store shared with the CLI so one machine keeps one nodeId across shells.
   nodeStore.migrateFrom(path.join(app.getPath('userData'), 'node.json'));

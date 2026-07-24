@@ -184,7 +184,10 @@
   }
 
   function renderChatGate() {
-    const up = chatReady();
+    // Show the conversation whenever we can chat OR one already exists — switching
+    // the picker to an unavailable model (e.g. back to the local one while it's
+    // off) must not hide a live/finished reply behind the "start the LLM" prompt.
+    const up = chatReady() || state.chat.messages.length > 0;
     el.chatRunning.hidden = !up;
     el.chatStopped.hidden = up;
     updateSendEnabled();

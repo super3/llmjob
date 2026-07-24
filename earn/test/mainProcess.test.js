@@ -1416,19 +1416,18 @@ describe('in-app chat', () => {
     expect(localCancel).toHaveBeenCalledWith('the local LLM stopped');
   });
 
-  it('chat:models serves the gateway list, refreshed from the server', async () => {
+  it('chat:models refreshes the gateway list from the server on demand', async () => {
     const ctx = loadMain();
-    // before ready: the built-in allow-list (the two Qwen models)
+    // getJson resolves null by default → the built-in allow-list (the two Qwen models)
     expect((await ctx.invoke('chat:models')).proxy).toEqual([
       { id: 'qwen/qwen3.6-27b', label: 'Qwen3.6 27B' },
       { id: 'qwen/qwen3.6-35b-a3b', label: 'Qwen3.6 35B A3B' },
     ]);
-    // whenReady refreshes it from GET /api/chat/models
-    ctx.io.getJson.mockImplementation((url) => Promise.resolve(
-      String(url).includes('/api/chat/models') ? { models: [{ id: 'x/y', label: 'Zed' }] } : null));
-    ctx.electron._fireReady();
-    await flush();
+    // when the gateway answers, the picker list is refreshed on the next fetch, so
+    // it can't drift from the list llmChat routes against
+    ctx.io.getJson.mockResolvedValue({ models: [{ id: 'x/y', label: 'Zed' }] });
     expect((await ctx.invoke('chat:models')).proxy).toEqual([{ id: 'x/y', label: 'Zed' }]);
+    expect(ctx.io.getJson).toHaveBeenCalledWith(expect.stringContaining('/api/chat/models'));
   });
 });
 

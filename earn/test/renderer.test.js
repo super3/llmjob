@@ -590,6 +590,8 @@ describe('boot with the full bridge', () => {
     msgs = $('chat-messages').querySelectorAll('.chat-msg');
     bubble = msgs[msgs.length - 1].querySelector('.bubble');
     expect(bubble.textContent).toMatch(/the local LLM stopped/);
+    // the conversation stays visible even though the local model can't chat now
+    expect($('chat-running').hidden).toBe(false);
     // new chat wipes the thread (on the chat tab, then off it)
     makeReady(cbs);
     click($('chat-new'));
@@ -640,6 +642,11 @@ describe('boot with the full bridge', () => {
     cbs.llm({ ready: false });
     expect(bubble.textContent).toBe('ho'); // no "local LLM stopped" error injected
     expect($('chat-running').hidden).toBe(false); // gate stays open for the proxy model
+    // switching the picker back to the (off) local model mid-reply must NOT hide
+    // the live conversation behind the "start the LLM" gate
+    sel.value = 'local';
+    sel.dispatchEvent(new window.Event('change', { bubbles: true }));
+    expect($('chat-running').hidden).toBe(false);
     cbs.chatDone(); // the proxy stream finishes on its own
     expect(bubble.classList.contains('streaming')).toBe(false);
   });
