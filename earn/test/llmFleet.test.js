@@ -193,6 +193,39 @@ describe('LlmFleet', () => {
     expect(stops).toHaveLength(0);
   });
 
+  test('adopt() adds a ready instance without spawning, and serves it', async () => {
+    const { fleet, mgrs, workers } = makeFleet();
+    fleet.syncWorkers(true);
+    fleet.adopt('http://127.0.0.1:8080');
+    expect(mgrs).toHaveLength(0);            // nothing spawned
+    expect(fleet.isReady()).toBe(true);
+    expect(fleet.webUrl()).toBe('http://127.0.0.1:8080');
+    expect(fleet.servingIndices()).toEqual([]); // unknown GPU → not tagged
+    expect(workers).toHaveLength(1);         // serving → a worker on the adopted URL
+    expect(workers[0].url).toBe('http://127.0.0.1:8080');
+    fleet.stop();                            // stops cleanly despite no manager
+    expect(workers[0].stopped).toBe(true);
+    expect(fleet.instances).toEqual([]);
+  });
+
+  test('adopt() without serving starts no worker', () => {
+    const { fleet, workers } = makeFleet();
+    fleet.adopt('http://h:1');
+    expect(workers).toHaveLength(0);
+    expect(fleet.isReady()).toBe(true);
+  });
+
+  test('hasSpawned() is true only for a live spawned instance, not an adopted one', async () => {
+    const { fleet, mgrs } = makeFleet();
+    expect(fleet.hasSpawned()).toBe(false);
+    fleet.adopt('http://h:1');
+    expect(fleet.hasSpawned()).toBe(false);      // adopted has no manager
+    await fleet.start([{ index: 0, nGpuLayers: 42 }], {});
+    expect(fleet.hasSpawned()).toBe(true);       // spawned & running
+    mgrs[0].emit('stopped');
+    expect(fleet.hasSpawned()).toBe(false);      // stopped
+  });
+
   test('walks past busy ports using findFreePort', async () => {
     // findFreePort bumps every probe by +5, so instances land on non-adjacent ports.
     const { fleet, mgrs } = makeFleet({ findFreePort: async (h, p) => p + 5 });

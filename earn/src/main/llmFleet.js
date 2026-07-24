@@ -70,6 +70,19 @@ class LlmFleet extends EventEmitter {
     return this.instances.length;
   }
 
+  // Adopt an already-healthy llama-server (e.g. one lingering on our port right
+  // after an "Update & restart") as a ready instance, without spawning a process
+  // — reusing it beats spawning a second server that would double-load the model
+  // and risk an OOM. It has no GPU index (unknown placement), so it never appears
+  // in servingIndices(). Returns the adopted instance.
+  adopt(baseUrl) {
+    const inst = { index: null, port: null, mgr: null, ready: true, stopped: false, baseUrl, worker: null };
+    this.instances.push(inst);
+    this._sawFirstReady = true;
+    if (this._serve) this._ensureWorker(inst);
+    return inst;
+  }
+
   _onReady(inst, baseUrl) {
     inst.ready = true;
     inst.baseUrl = baseUrl;
@@ -123,6 +136,11 @@ class LlmFleet extends EventEmitter {
     const inst = this.instances.find((i) => i.ready);
     return inst ? inst.baseUrl : null;
   }
+
+  // True once at least one *spawned* instance is still running (adopted instances
+  // have no manager). The caller uses this to avoid re-spawning a live fleet
+  // while still allowing the adopt path to re-run after a restart.
+  hasSpawned() { return this.instances.some((i) => i.mgr && !i.stopped); }
 
   isReady() { return this.instances.some((i) => i.ready); }
   readyCount() { return this.instances.filter((i) => i.ready).length; }
