@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS miners (
   vram_used double precision,
   vram_total double precision,
   version text,
+  llm_model text,
   first_seen bigint,
   last_seen bigint
 );

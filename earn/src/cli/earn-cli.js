@@ -612,7 +612,10 @@ async function run(argv) {
       const report = async () => {
         const snap = snapshot(stats, Date.now());
         const gpuVram = await detectGpusVram();
-        return Promise.all(buildMinerReports(settings, snap, gpuVram, pkg.version).map(postMinerReport));
+        // Tag the cards serving the local LLM so the board shows which model each
+        // GPU runs; null when the fleet isn't up (mining only) → blank on the board.
+        const serving = serveFleet ? { model: LLM.model.name, indices: serveFleet.servingIndices() } : null;
+        return Promise.all(buildMinerReports(settings, snap, gpuVram, pkg.version, serving).map(postMinerReport));
       };
       report();
       reporter = setInterval(report, NETWORK.reportIntervalMs);

@@ -1251,6 +1251,37 @@ describe('local LLM', () => {
     expect(ctx.sent('miner:stopped')).toHaveLength(0);
   });
 
+  it('both mode: the board report tags the GPU serving the local LLM', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        c.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
+        c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
+        c.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
+      },
+    });
+    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
+
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'both' });
+    await flush();
+
+    // the miner proves real hashrate → the LLM fleet starts
+    const miner = ctx.MinerManager.instances[0];
+    miner.emit('event', { type: 'status', hashrate: '5' });
+    await flush(30);
+
+    const llm = ctx.LlmManager.instances[0];
+    llm.emit('ready', { baseUrl: llm.baseUrl }); // GPU 0 now serves the model
+    await flush();
+
+    // a board report now tags GPU 0 with the served model
+    ctx.probe.postMinerReport.mockClear();
+    const reporter = ctx.interval(ctx.config.NETWORK.reportIntervalMs);
+    reporter.fn();
+    await flush();
+    const payloads = ctx.probe.postMinerReport.mock.calls.map((c) => c[0]);
+    expect(payloads.some((p) => p.llmModel === ctx.config.LLM.model.name)).toBe(true);
+  });
+
   it('a miner that stops during the co-run wait releases the LLM start', async () => {
     const ctx = await boot();
     ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');

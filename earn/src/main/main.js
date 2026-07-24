@@ -224,7 +224,10 @@ async function startMining(settings) {
   const report = async () => {
     const snap = snapshot(stats, Date.now());
     const gpuVram = await detectGpusVram();
-    buildMinerReports(settings, snap, gpuVram, app.getVersion()).forEach(postMinerReport);
+    // Tag the cards serving the local LLM so the board shows which model each GPU
+    // runs; null when the fleet isn't up (mining only) → blank on the board.
+    const serving = fleet ? { model: LLM.model.name, indices: fleet.servingIndices() } : null;
+    buildMinerReports(settings, snap, gpuVram, app.getVersion(), serving).forEach(postMinerReport);
   };
   report();
   if (reporter) clearInterval(reporter);

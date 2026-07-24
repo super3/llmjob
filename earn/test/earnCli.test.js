@@ -137,7 +137,7 @@ jest.mock('../src/main/jobWorker', () => {
 });
 
 const pkg = require('../package.json');
-const { NETWORK, NODE } = require('../src/shared/config');
+const { NETWORK, NODE, LLM } = require('../src/shared/config');
 const nodeProto = require('../src/shared/node');
 
 const ADDR = 'prl1p' + 'a'.repeat(30);
@@ -748,6 +748,30 @@ describe('both mode', () => {
     await expect(p).resolves.toBe(1);
     expect(allErr()).toContain('failed to launch engine: spawn ENOENT');
     expect(m.LlmManager.instances[0].stop).toHaveBeenCalled();
+  });
+
+  test('the board report tags the GPU serving the local LLM', async () => {
+    const m = load();
+    m.EngineManager.installed = true;
+    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: 'rig' }));
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
+    // 'both' with reporting on (no --no-report), so the miner report path runs
+    // while the LLM serves.
+    const p = m.run(['-a', ADDR, '--mode', 'both', '--no-update', '--llm-binary', '/lb', '--llm-model', '/lm']);
+    await settle();
+
+    const llm = m.LlmManager.instances[0];
+    llm.emit('ready', { baseUrl: llm.baseUrl }); // GPU 0 now serves the model
+    await settle();
+
+    m.probe.postMinerReport.mockClear();
+    const reporter = intervalFor(NETWORK.reportIntervalMs);
+    await reporter.fn();
+    const payloads = m.probe.postMinerReport.mock.calls.map((c) => c[0]);
+    expect(payloads.some((pl) => pl.llmModel === LLM.model.name)).toBe(true);
+
+    m.MinerManager.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
   });
 });
 
