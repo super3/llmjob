@@ -148,9 +148,10 @@ class MinerService {
   // The network page's view: one row per online HOST — a rig running several
   // cards on one payout address (workers "<name>/gpu0", "/gpu1", …) is combined
   // into a single row that sums the cards' hashrate/VRAM and nests them for the
-  // expandable per-card breakdown. `totalOnline` counts distinct payout
-  // addresses and `totalWorkers` counts individual online GPUs (so the stat
-  // cards read "N miners / M GPUs"). Prunes dead rows; offline workers excluded.
+  // expandable per-card breakdown. `totalOnline` counts distinct online nodes
+  // (those host rows — a rig, not a payout address; one address can run several)
+  // and `totalWorkers` counts individual online GPUs (so the stat cards read
+  // "N nodes / M GPUs"). Prunes dead rows; offline workers excluded.
   async getPublicMiners() {
     const now = Date.now();
     await this.db.query('DELETE FROM miners WHERE last_seen < $1', [now - PRUNE_TTL]);
@@ -172,10 +173,11 @@ class MinerService {
       lastMs: Number(row.last_seen), // always positive: the WHERE clause filters on last_seen
     })));
 
+    const hosts = groupHosts(cards, now);
     return {
-      miners: groupHosts(cards, now),
-      totalOnline: new Set(cards.map((c) => c.addr)).size, // distinct payout addresses
-      totalWorkers: cards.length,                           // one entry per online GPU/worker
+      miners: hosts,
+      totalOnline: hosts.length,   // distinct online nodes (rigs), grouped by (address, worker)
+      totalWorkers: cards.length,  // one entry per online GPU/worker
       totalHashrate: +cards.reduce((a, c) => a + c.hash, 0).toFixed(1),
     };
   }

@@ -98,7 +98,7 @@ describe('MinerService (db)', () => {
 
     const out = await service.getPublicMiners();
     expect(out.totalWorkers).toBe(4);   // one row per online GPU/worker
-    expect(out.totalOnline).toBe(3);    // distinct payout addresses
+    expect(out.totalOnline).toBe(4);    // four distinct nodes (a/w-6000, a/w-4090, b/rig01, c/rig01)
     expect(out.totalHashrate).toBe(600);
 
     // Ranked by hashrate desc: 6000(300) > b/3090(200) > a/4090(100) > c(0).
@@ -126,7 +126,7 @@ describe('MinerService (db)', () => {
 
     const out = await service.getPublicMiners();
     expect(out.totalWorkers).toBe(4); // four physical GPUs online
-    expect(out.totalOnline).toBe(2);  // two payout addresses
+    expect(out.totalOnline).toBe(2);  // two nodes: the 3-card rig9 + the single 3090
     expect(out.totalHashrate).toBe(487);
 
     // The rig outranks the single 3090 on summed hashrate (287 > 200).
