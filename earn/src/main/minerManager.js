@@ -21,10 +21,16 @@ class MinerManager extends EventEmitter {
     this.spawn = spawn;
     this.proc = null;
     this.running = false;
+    this.paused = false;
+    this.platform = null;
   }
 
   isRunning() {
     return this.running;
+  }
+
+  isPaused() {
+    return this.paused;
   }
 
   start(settings = {}) {
@@ -36,6 +42,8 @@ class MinerManager extends EventEmitter {
 
     this.proc = proc;
     this.running = true;
+    this.paused = false;
+    this.platform = settings.platform || null;
 
     proc.stdout.on('data', (chunk) => this._onData(chunk));
     proc.stderr.on('data', (chunk) => {
@@ -43,6 +51,7 @@ class MinerManager extends EventEmitter {
     });
     proc.on('exit', (code) => {
       this.running = false;
+      this.paused = false;
       this.proc = null;
       this.emit('stopped', code);
     });
@@ -61,6 +70,34 @@ class MinerManager extends EventEmitter {
       const evt = parseLine(line);
       if (evt) this.emit('event', evt);
     }
+  }
+
+  // Pause mining without unloading anything — freeze the engine process so the
+  // GPU's compute is free for LLM inference (2–4× faster tok/s while a request
+  // runs). SIGSTOP is instant and in-place; SIGCONT (resume) picks up exactly
+  // where it left off, so there's no pool reconnect. POSIX-only: Windows has no
+  // SIGSTOP, so pause is a no-op there and the rig simply co-runs as before.
+  // Returns whether the state actually changed.
+  pause() {
+    if (!this.proc || this.paused || this.platform === 'win32') return false;
+    try {
+      this.proc.kill('SIGSTOP');
+    } catch (e) {
+      return false; // couldn't signal — leave it mining rather than lie
+    }
+    this.paused = true;
+    return true;
+  }
+
+  resume() {
+    if (!this.proc || !this.paused) return false;
+    try {
+      this.proc.kill('SIGCONT');
+    } catch (e) {
+      /* clear the flag anyway: a failed SIGCONT must not strand us "paused" */
+    }
+    this.paused = false;
+    return true;
   }
 
   stop() {

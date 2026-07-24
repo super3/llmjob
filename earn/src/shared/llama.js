@@ -23,6 +23,16 @@ function serverBaseUrl(opts = {}) {
 // config. `--n-gpu-layers 0` runs on CPU.
 function buildServerArgs(opts = {}) {
   const ngl = opts.nGpuLayers != null ? opts.nGpuLayers : LLM.model.layers;
+  // Default to keeping the model on ONE GPU. On multi-GPU rigs the Vulkan
+  // backend tries to split the graph across every device and can trip
+  // GGML_ASSERT(n_inputs < GGML_SCHED_MAX_SPLIT_INPUTS) in ggml-backend.cpp,
+  // crash-looping the server before it ever serves (seen in the field on a
+  // 3060 Ti + 5060 Ti box). A model that fits one card wants 'none'. A model too
+  // big for any single card is instead SHARDED across cards — the caller passes
+  // splitMode 'layer' (pipeline; forgiving of low interconnect bandwidth) or
+  // 'row' (tensor-parallel) plus a `tensorSplit` proportion per physical GPU
+  // (0 excludes a card), so only the chosen cards host the model.
+  const splitMode = opts.splitMode || 'none';
   const args = [
     '--model', opts.modelPath || '',
     '--host', opts.host || LLM.host,
@@ -30,20 +40,18 @@ function buildServerArgs(opts = {}) {
     '--ctx-size', String(opts.ctxSize || LLM.ctxSize),
     '--n-gpu-layers', String(ngl),
     '--parallel', String(opts.parallel || LLM.parallel),
-    // Keep the model on ONE GPU. On multi-GPU rigs the Vulkan backend tries to
-    // split the graph across every device and can trip
-    // GGML_ASSERT(n_inputs < GGML_SCHED_MAX_SPLIT_INPUTS) in ggml-backend.cpp,
-    // crash-looping the server before it ever serves (seen in the field on a
-    // 3060 Ti + 5060 Ti box). Our model is ~5 GB — a single card is plenty, and
-    // single-GPU machines are unaffected by the flag.
-    '--split-mode', 'none',
+    '--split-mode', splitMode,
   ];
-  // Pin the model to a specific GPU when the caller picked one. With
-  // --split-mode none the model loads on a single device; without --main-gpu
-  // that's always device 0, which on a mining rig is busy and may lack the
-  // headroom the model needs. The caller (VRAM budgeter) chooses the card with
-  // the most free VRAM and passes its index here so the server lands there
-  // instead. A non-negative integer only; anything else falls back to device 0.
+  // When sharding, distribute the model across GPUs by proportion. A 0 entry
+  // excludes that physical card (so the rig's other cards stay free to mine).
+  if (splitMode !== 'none' && Array.isArray(opts.tensorSplit) && opts.tensorSplit.length) {
+    args.push('--tensor-split', opts.tensorSplit.join(','));
+  }
+  // Pin the primary GPU when the caller picked one. With --split-mode none the
+  // model loads on a single device; without --main-gpu that's always device 0,
+  // which on a mining rig is busy and may lack the headroom. When sharding it's
+  // the card that holds the non-repeating tensors. A non-negative integer only;
+  // anything else falls back to device 0.
   if (Number.isInteger(opts.mainGpu) && opts.mainGpu >= 0) {
     args.push('--main-gpu', String(opts.mainGpu));
   }

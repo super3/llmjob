@@ -116,4 +116,58 @@ describe('MinerManager', () => {
     expect(mgr.stop()).toBe(true);
     expect(child.kill).toHaveBeenCalledTimes(1);
   });
+
+  test('pause/resume freeze and thaw the engine with SIGSTOP/SIGCONT (POSIX)', () => {
+    const child = makeChild();
+    const mgr = new MinerManager({ spawn: () => child });
+    mgr.start({ address: 'prl1pabc', platform: 'linux' });
+
+    expect(mgr.isPaused()).toBe(false);
+    expect(mgr.pause()).toBe(true);
+    expect(child.kill).toHaveBeenCalledWith('SIGSTOP');
+    expect(mgr.isPaused()).toBe(true);
+    expect(mgr.pause()).toBe(false); // already paused — no double signal
+    expect(child.kill).toHaveBeenCalledTimes(1);
+
+    expect(mgr.resume()).toBe(true);
+    expect(child.kill).toHaveBeenCalledWith('SIGCONT');
+    expect(mgr.isPaused()).toBe(false);
+    expect(mgr.resume()).toBe(false); // already running
+  });
+
+  test('pause is a no-op with nothing running and on Windows (no SIGSTOP)', () => {
+    const idle = new MinerManager({ spawn: () => makeChild() });
+    expect(idle.pause()).toBe(false); // not started
+
+    const child = makeChild();
+    const win = new MinerManager({ spawn: () => child });
+    win.start({ address: 'prl1pabc', platform: 'win32' });
+    expect(win.pause()).toBe(false);
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(win.isPaused()).toBe(false);
+  });
+
+  test('a failing SIGSTOP leaves the miner running; a failing SIGCONT still clears the flag', () => {
+    const child = makeChild();
+    child.kill.mockImplementationOnce(() => { throw new Error('ESRCH'); }); // first SIGSTOP throws
+    const mgr = new MinerManager({ spawn: () => child });
+    mgr.start({ address: 'prl1pabc', platform: 'linux' });
+    expect(mgr.pause()).toBe(false);   // signal failed → not paused
+    expect(mgr.isPaused()).toBe(false);
+
+    expect(mgr.pause()).toBe(true);    // second attempt succeeds
+    child.kill.mockImplementationOnce(() => { throw new Error('ESRCH'); }); // SIGCONT throws
+    expect(mgr.resume()).toBe(true);   // still returns true and clears paused
+    expect(mgr.isPaused()).toBe(false);
+  });
+
+  test('exit clears the paused flag', () => {
+    const child = makeChild();
+    const mgr = new MinerManager({ spawn: () => child });
+    mgr.start({ address: 'prl1pabc', platform: 'linux' });
+    mgr.pause();
+    expect(mgr.isPaused()).toBe(true);
+    child.emit('exit', 0);
+    expect(mgr.isPaused()).toBe(false);
+  });
 });

@@ -157,6 +157,24 @@ describe('JobController', () => {
       expect(res.status).toHaveBeenCalledWith(404);
       expect(res.json).toHaveBeenCalledWith({ error: 'Node not found' });
     });
+
+    it('routes by the served model a node reports', async () => {
+      // extra pending jobs for a model this node does not serve
+      await jobService.createJob({ prompt: 'other', userId: 'u', model: 'qwen/qwen3.6-35b-a3b' });
+      const mine = await jobService.createJob({ prompt: 'mine', userId: 'u', model: 'qwen/qwen3.6-27b' });
+      nodeService.getNode.mockResolvedValue({
+        nodeId: 'node27b', publicKey: 'k', status: 'online', model: 'Qwen3.6-27B-Q4_K_M'
+      });
+
+      req.body = { nodeId: 'node27b', maxJobs: 5 };
+      await jobController.pollJobs(req, res);
+
+      const payload = res.json.mock.calls[0][0];
+      expect(payload.success).toBe(true);
+      // only the 27B job (and the two default-Gemma jobs from beforeEach don't
+      // match either) — the node gets exactly the job it can serve
+      expect(payload.jobs.map((j) => j.id)).toEqual([mine.id]);
+    });
   });
 
   describe('heartbeat', () => {

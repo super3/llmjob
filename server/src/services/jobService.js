@@ -3,6 +3,31 @@ const HEARTBEAT_STALE_MS = 60 * 1000; // consider a job stalled after 60s silenc
 // The model the earn-client fleet actually serves (earn/src/shared/config.js
 // LLM.model.name) — the default a job records must match what runs it.
 const DEFAULT_MODEL = 'Gemma-4-E4B-it-Q4_K_M';
+// How many pending jobs to scan for a model match before giving up on this poll,
+// when routing by model. Keeps a node from locking the whole queue while it looks
+// for work it can serve.
+const ASSIGN_SCAN = 25;
+
+// Canonicalize a model name so the chat-gateway id (e.g. "qwen/qwen3.6-27b") and
+// the node's served GGUF name (e.g. "Qwen3.6-27B-Q4_K_M") compare equal: drop a
+// "vendor/" prefix, drop a trailing GGUF quant (…-Q4_K_M), and strip separators.
+function normalizeModel(name) {
+  let s = String(name == null ? '' : name).toLowerCase().trim();
+  const slash = s.lastIndexOf('/');
+  if (slash >= 0) s = s.slice(slash + 1);       // drop a "vendor/" prefix
+  s = s.replace(/[-_.\s]q\d[a-z0-9_]*$/i, '');   // drop a trailing GGUF quant (…-q4_k_m)
+  return s.replace(/[^a-z0-9]/g, '');            // canonicalize separators
+}
+
+// Can a node serving `nodeModel` run a job that requested `jobModel`? A missing
+// model on either side doesn't block routing (model-agnostic job / a node that
+// hasn't reported its model yet); otherwise the normalized names must match.
+function modelsMatch(jobModel, nodeModel) {
+  const a = normalizeModel(jobModel);
+  const b = normalizeModel(nodeModel);
+  if (!a || !b) return true;
+  return a === b;
+}
 
 class JobService {
   constructor(db) {
@@ -69,18 +94,25 @@ class JobService {
   }
 
   // Claim up to maxJobs pending jobs for a node, locking them in one transaction.
-  async assignJobsToNode(nodeId, maxJobs = 1) {
+  // When `nodeModel` is given, only jobs that node can serve are claimed (see
+  // modelsMatch), so a rig serving Qwen3.6 27B isn't handed a job that asked for
+  // the 35B A3B — it scans a window of the queue for matching work. Omitting
+  // nodeModel keeps the original model-agnostic behavior.
+  async assignJobsToNode(nodeId, maxJobs = 1, nodeModel) {
     const assignedJobs = [];
     const client = await this.db.connect();
     try {
       await client.query('BEGIN');
+      const limit = nodeModel ? Math.max(maxJobs, ASSIGN_SCAN) : maxJobs;
       const pending = await client.query(
         `SELECT id, data FROM jobs WHERE status = 'pending'
          ORDER BY priority DESC, created_at ASC LIMIT $1 FOR UPDATE`,
-        [maxJobs]
+        [limit]
       );
 
       for (const row of pending.rows) {
+        if (assignedJobs.length >= maxJobs) break;
+        if (nodeModel && !modelsMatch(row.data.model, nodeModel)) continue;
         const now = Date.now();
         const job = { ...row.data, status: 'assigned', assignedTo: nodeId, assignedAt: now, updatedAt: now };
         await client.query(
@@ -323,5 +355,8 @@ class JobService {
     return r.rowCount;
   }
 }
+
+JobService.normalizeModel = normalizeModel;
+JobService.modelsMatch = modelsMatch;
 
 module.exports = JobService;

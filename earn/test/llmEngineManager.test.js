@@ -84,6 +84,17 @@ describe('LlmEngineManager', () => {
     expect(chmod).not.toHaveBeenCalled();
   });
 
+  test('serves a selected catalog model (file + url) when one is passed', async () => {
+    const model = { file: 'Qwen3.6-27B-Q4_K_M.gguf', url: 'http://x/Qwen3.6-27B-Q4_K_M.gguf' };
+    const dest = path.join('/eng', model.file);
+    const download = jest.fn().mockResolvedValue();
+    const fs = fsMock();
+    const m = new LlmEngineManager({ dir: '/eng', platform: 'linux', fs, download, model });
+    expect(m.modelPath()).toBe(dest);
+    expect(await m.ensureModel()).toBe(dest);
+    expect(download).toHaveBeenCalledWith(model.url, dest, undefined);
+  });
+
   test('ensureModel returns early when installed, else downloads the GGUF', async () => {
     const modelP = path.join('/eng', LLM.model.file);
 

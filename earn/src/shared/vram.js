@@ -67,4 +67,32 @@ function pickLlmGpu(cards) {
   return best;
 }
 
-module.exports = { computeGpuLayers, requiredVramMb, hasEnoughVram, pickLlmGpu };
+// Choose which catalog model a node should serve from the free VRAM on the card
+// that will host it. Given `freeMb` (one card's free VRAM, from pickLlmGpu) and
+// the ordered `models` catalog (config.LLM.models), return the LARGEST model
+// whose `minVramMb` floor fits — so a 24 GB card serves the 27B while an 8 GB
+// card falls back to the small default. Returns:
+//   - the biggest fitting model when free VRAM is known and something fits
+//   - null when free VRAM is known and not even the smallest model fits
+//   - the `default: true` model (else the smallest) when free VRAM is unknown
+//     (freeMb null / non-finite), matching the "let llama.cpp decide" fallback
+//     used elsewhere when nvidia-smi can't be read
+// Pure so it's unit-tested without a GPU.
+function pickServableModel(freeMb, models) {
+  if (!Array.isArray(models) || !models.length) return null;
+  const floor = (m) => Number(m && m.minVramMb) || 0;
+  const sorted = models.slice().sort((a, b) => floor(a) - floor(b));
+
+  const free = Number(freeMb);
+  if (freeMb == null || !Number.isFinite(free)) {
+    return sorted.find((m) => m && m.default) || sorted[0];
+  }
+
+  let best = null;
+  for (const m of sorted) {
+    if (floor(m) <= free) best = m; // sorted ascending → last fit is the largest
+  }
+  return best;
+}
+
+module.exports = { computeGpuLayers, requiredVramMb, hasEnoughVram, pickLlmGpu, pickServableModel };

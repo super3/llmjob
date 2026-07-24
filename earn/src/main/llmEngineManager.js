@@ -11,7 +11,7 @@ const { isZipUrl } = require('../shared/engine');
 // the platform-specific llama-server download (a zip of releases, or a bare
 // binary); the model URL comes from config.
 class LlmEngineManager {
-  constructor({ dir, platform, serverUrl, fs, download, extract, chmod } = {}) {
+  constructor({ dir, platform, serverUrl, fs, download, extract, chmod, model } = {}) {
     this.dir = dir;
     this.platform = platform;
     this.serverUrl = serverUrl;
@@ -19,6 +19,10 @@ class LlmEngineManager {
     this.download = download;
     this.extract = extract;
     this.chmod = chmod;
+    // Which catalog model to fetch/serve. Defaults to the small model so callers
+    // that don't select one (and the existing tests) keep their behavior; the
+    // VRAM-tiered selection in main.js / earn-cli.js passes the chosen model.
+    this.model = model || LLM.model;
   }
 
   serverBinaryPath() {
@@ -26,7 +30,7 @@ class LlmEngineManager {
   }
 
   modelPath() {
-    return path.join(this.dir, LLM.model.file);
+    return path.join(this.dir, this.model.file);
   }
 
   isServerInstalled() {
@@ -86,7 +90,7 @@ class LlmEngineManager {
     const dest = this.modelPath();
     if (this.isModelInstalled()) return dest;
     this.fs.mkdirSync(this.dir, { recursive: true });
-    await this.download(LLM.model.url, dest, onProgress);
+    await this.download(this.model.url, dest, onProgress);
     return dest;
   }
 }
