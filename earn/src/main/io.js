@@ -13,6 +13,7 @@ const https = require('https');
 const { execFile } = require('child_process');
 const { progressPercent } = require('../shared/engine');
 const { parseChatStream } = require('../shared/llmChat');
+const { proxyChatUrl, parseProxyStream } = require('../shared/llmProxy');
 
 // Minimal JSON POST → { status, data, raw }. Resolves for ANY HTTP status
 // (callers must check `status`); rejects only on transport errors/timeouts.
@@ -153,6 +154,56 @@ function streamChatCompletion(baseUrl, chatBody, onDelta) {
   };
 }
 
+// Stream a chat request "through LLMJob as a proxy": POST it to the web gateway
+// (serverUrl + /api/chat/completions) and relay batched deltas — onDelta(text,
+// count) — exactly like streamChatCompletion does for the local server, so a
+// caller can swap local for proxy without changing how it consumes the stream.
+// The gateway speaks its own small SSE shape ({delta}/{done}/{error}); a gateway
+// `error` frame rejects `done`. Returns { done, cancel } with the same contract:
+// `done` resolves on finish and rejects on transport/HTTP/gateway errors or
+// cancel(reason); cancel always settles `done` before destroying the request.
+function streamProxyChat(serverUrl, chatBody, onDelta) {
+  let settled = false;
+  let resolveDone, rejectDone;
+  const done = new Promise((res, rej) => { resolveDone = res; rejectDone = rej; });
+  const finish = () => { if (!settled) { settled = true; resolveDone(); } };
+  const fail = (err) => { if (!settled) { settled = true; rejectDone(err); } };
+
+  let url;
+  try { url = new URL(proxyChatUrl(serverUrl)); } catch (e) {
+    fail(e);
+    return { done, cancel: () => {} };
+  }
+  const lib = url.protocol === 'http:' ? http : https;
+  const payload = JSON.stringify(chatBody);
+  const req = lib.request(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+  }, (res) => {
+    if (res.statusCode !== 200) { res.resume(); return fail(new Error('LLMJob proxy HTTP ' + res.statusCode)); }
+    let buf = '';
+    res.setEncoding('utf8');
+    res.on('data', (c) => {
+      buf += c;
+      const parsed = parseProxyStream(buf);
+      buf = parsed.rest;
+      if (parsed.deltas.length) onDelta(parsed.deltas.join(''), parsed.deltas.length);
+      if (parsed.error) { res.destroy(); return fail(new Error(parsed.error)); }
+      if (parsed.done) { res.destroy(); finish(); }
+    });
+    res.on('end', finish);
+    res.on('error', fail);
+  });
+  req.on('error', fail);
+  req.write(payload);
+  req.end();
+
+  return {
+    done,
+    cancel: (reason) => { fail(new Error(reason || 'cancelled')); req.destroy(); },
+  };
+}
+
 // Extract the llama.cpp release archive on Linux/macOS, flattening it into the
 // install dir so `llama-server` lands next to its shared libraries (.so/.dylib)
 // — llama.cpp resolves libs from the binary's own directory ($ORIGIN rpath), so
@@ -192,4 +243,4 @@ function extractLlamaZip(zipPath, dest, hint) {
   });
 }
 
-module.exports = { postJson, getJson, downloadFile, streamChatCompletion, extractLlamaZip };
+module.exports = { postJson, getJson, downloadFile, streamChatCompletion, streamProxyChat, extractLlamaZip };

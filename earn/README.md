@@ -10,6 +10,11 @@ rigs can use the [command-line miner](#headless-cli-linux) instead of the GUI.
 > CLI) can now run a local llama.cpp `llama-server` alongside — or instead of —
 > mining, exposing an OpenAI-compatible endpoint at `127.0.0.1:8080/v1`. Pick the
 > **Compute Mode** in the GUI's Settings, or `--mode` on the CLI.
+>
+> The GUI's **Chat** tab has a model picker: your on-device model *or* a model
+> served **through LLMJob as a proxy**. Local answers run on your GPU; a proxy
+> model (e.g. the Qwen3.6 models the web gateway serves) streams from LLMJob, so
+> a box whose GPU can't run it — or with the local LLM off — can still use it.
 
 **Highlights**
 

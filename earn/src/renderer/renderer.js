@@ -26,6 +26,7 @@
     // chat
     chatRunning: $('chat-running'), chatStopped: $('chat-stopped'), chatStoppedModel: $('chat-stopped-model'),
     chatHead: $('chat-head'), chatModel: $('chat-model'), chatNew: $('chat-new'),
+    chatModelSelect: $('chat-model-select'),
     chatList: $('chat-list'), chatEmpty: $('chat-empty'), chatSuggestions: $('chat-suggestions'),
     chatMessages: $('chat-messages'), chatForm: $('chat-form'), chatInput: $('chat-input'), chatSend: $('chat-send'),
     // api
@@ -52,7 +53,8 @@
     returnTab: 'mine',   // where settings/logs return to
     address: '', gpu: '', mode: 'auto',
     llm: { ready: false, endpoint: null, webUrl: null, tps: 0, model: null, error: null },
-    chat: { messages: [], streaming: false, streamText: '', bubble: null },
+    chatModels: [],  // models reachable "via LLMJob" (the proxy path), from getChatModels
+    chat: { messages: [], streaming: false, streamText: '', bubble: null, proxy: false },
     node: { connected: false, nodeId: null, name: null },
   };
 
@@ -140,8 +142,52 @@
     el.apiModel.textContent = state.llm.model || '—';
   }
 
+  // ── Chat model picker (local on-device model + "via LLMJob" proxy models) ────
+  // The picker's first option is always the local model (served on this GPU);
+  // the "via LLMJob" gateway models are appended once. Keep the local option's
+  // label in step with the running model without rebuilding the list, so a
+  // proxy selection is never disturbed by an llm:status update.
+  function renderLocalModel() {
+    const opt = el.chatModelSelect.options[0]; // the always-present 'local' option
+    const name = state.llm.model || 'gemma-4-E4B-it';
+    opt.dataset.name = name;
+    opt.textContent = name + ' · on your GPU';
+  }
+
+  // Append the gateway models (reachable "via LLMJob") to the picker.
+  function addProxyModels(models) {
+    models.forEach((m) => {
+      const o = document.createElement('option');
+      o.value = m.id;
+      o.dataset.name = m.label;
+      o.textContent = m.label + ' · via LLMJob';
+      el.chatModelSelect.appendChild(o);
+    });
+  }
+
+  // The chosen model: { value, name, proxy }. A 'local' value serves on-device;
+  // anything else is a gateway model served through the LLMJob proxy. The picker
+  // always has at least the local option, so a selection always exists.
+  function currentSelection() {
+    const opt = el.chatModelSelect.options[el.chatModelSelect.selectedIndex];
+    return { value: opt.value, name: opt.dataset.name, proxy: opt.value !== 'local' };
+  }
+
+  // Can we chat right now? A proxy model is always reachable (the gateway serves
+  // it, no local LLM needed); the local model needs the on-device server up.
+  function chatReady() {
+    return currentSelection().proxy || state.llm.ready;
+  }
+
+  function onModelChange() {
+    renderChatGate();
+  }
+
   function renderChatGate() {
-    const up = state.llm.ready;
+    // Show the conversation whenever we can chat OR one already exists — switching
+    // the picker to an unavailable model (e.g. back to the local one while it's
+    // off) must not hide a live/finished reply behind the "start the LLM" prompt.
+    const up = chatReady() || state.chat.messages.length > 0;
     el.chatRunning.hidden = !up;
     el.chatStopped.hidden = up;
     updateSendEnabled();
@@ -164,11 +210,13 @@
       error: (s && s.error) || null,
     };
     renderLlmHero();
+    renderLocalModel(); // the local option's label tracks the running model
     renderChatGate();
     renderApiGate();
-    // If the model went away mid-reply, unbrick the composer even if the
-    // main-process chat-error event was lost in the shuffle.
-    if (!state.llm.ready && state.chat.streaming) onChatError({ message: 'the local LLM stopped' });
+    // If the LOCAL model went away mid-reply, unbrick the composer even if the
+    // main-process chat-error event was lost in the shuffle. A proxy reply runs
+    // against the gateway, so a local-LLM stop must not abort it.
+    if (!state.llm.ready && state.chat.streaming && !state.chat.proxy) onChatError({ message: 'the local LLM stopped' });
   }
 
   // ── Chat ───────────────────────────────────────────────────────────────────
@@ -216,7 +264,7 @@
   }
 
   function updateSendEnabled() {
-    const ok = !!el.chatInput.value.trim() && !state.chat.streaming && state.llm.ready;
+    const ok = !!el.chatInput.value.trim() && !state.chat.streaming && chatReady();
     el.chatSend.disabled = !ok;
   }
 
@@ -234,19 +282,24 @@
 
   function sendChat(text) {
     const t = String(text || '').trim();
-    if (!t || state.chat.streaming || !state.llm.ready || !api.sendChat) return;
+    if (!t || state.chat.streaming || !chatReady() || !api.sendChat) return;
+    const sel = currentSelection();
     el.chatEmpty.hidden = true;
-    el.chatModel.textContent = state.llm.model || 'gemma-4-E4B-it';
+    el.chatModel.textContent = sel.name;
     el.chatHead.hidden = false;
     addMsg('user', t);
     state.chat.messages.push({ role: 'user', text: t });
     state.chat.bubble = addMsg('assistant', '');
     state.chat.bubble.classList.add('streaming');
     state.chat.streaming = true;
+    state.chat.proxy = sel.proxy; // a proxy reply survives a local-LLM stop
     state.chat.streamText = '';
     el.chatInput.value = '';
     updateSendEnabled();
-    api.sendChat(state.chat.messages.map((m) => ({ role: m.role, content: m.text })));
+    // A proxy model routes through LLMJob; a local one (model=null) hits the
+    // on-device server.
+    api.sendChat(state.chat.messages.map((m) => ({ role: m.role, content: m.text })),
+      sel.proxy ? sel.value : null);
   }
 
   function onChatDelta(d) {
@@ -558,6 +611,7 @@
     el.chatInput.addEventListener('input', updateSendEnabled);
     el.chatForm.addEventListener('submit', (e) => { e.preventDefault(); sendChat(el.chatInput.value); });
     el.chatNew.addEventListener('click', newChat);
+    el.chatModelSelect.addEventListener('change', onModelChange);
 
     // API endpoint: copy the /v1 URL, or open the llama-server web UI.
     const copyEndpoint = () => {
@@ -626,6 +680,13 @@
     renderMdlBalanceMeta();
     if (api.onLlm) api.onLlm(renderLlm);
     if (api.getLlmStatus) api.getLlmStatus().then(renderLlm);
+    // The models offered "via LLMJob" in the chat picker (the proxy path). main
+    // always answers with { proxy: [...] } (its built-in list at worst).
+    if (api.getChatModels) api.getChatModels().then((m) => {
+      state.chatModels = m.proxy;
+      addProxyModels(m.proxy);
+      renderChatGate();
+    });
     if (api.onChatDelta) api.onChatDelta(onChatDelta);
     if (api.onChatDone) api.onChatDone(onChatDone);
     if (api.onChatError) api.onChatError(onChatError);

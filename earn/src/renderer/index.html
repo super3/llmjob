@@ -68,6 +68,14 @@
 
   <!-- ══════════ CHAT ══════════ -->
   <section id="view-chat" hidden>
+    <!-- Picker lives ABOVE the running/stopped gate so it's always reachable —
+         a box with the local LLM off can still switch to a "via LLMJob" model. -->
+    <div class="chat-modelbar">
+      <span class="chat-modelbar-lbl">Model</span>
+      <select id="chat-model-select" class="chat-modelselect mono" aria-label="Chat model">
+        <option value="local" data-name="gemma-4-E4B-it">gemma-4-E4B-it · on your GPU</option>
+      </select>
+    </div>
     <div id="chat-running" class="chat-wrap" hidden>
       <div id="chat-head" class="chat-head" hidden>
         <span id="chat-model" class="chat-model mono">gemma-4-E4B-it</span>

@@ -71,6 +71,10 @@ function makeFullApi() {
     getBalance: jest.fn().mockResolvedValue({ earned: 1234.5678, usd: 12.3 }),
     getMdlBalance: jest.fn().mockResolvedValue({ earned: 7.7, mdlAddress: MDL }),
     getLlmStatus: jest.fn().mockResolvedValue(null),
+    getChatModels: jest.fn().mockResolvedValue({ proxy: [
+      { id: 'qwen/qwen3.6-27b', label: 'Qwen3.6 27B' },
+      { id: 'qwen/qwen3.6-35b-a3b', label: 'Qwen3.6 35B A3B' },
+    ] }),
     onLlm: jest.fn((cb) => { cbs.llm = cb; }),
     sendChat: jest.fn(),
     onChatDelta: jest.fn((cb) => { cbs.chatDelta = cb; }),
@@ -518,7 +522,8 @@ describe('boot with the full bridge', () => {
     expect($('chat-model').textContent).toBe('gemma-4-E4B-it');
     expect($('chat-head').hidden).toBe(false);
     expect($('chat-empty').hidden).toBe(true);
-    expect(api.sendChat).toHaveBeenCalledWith([{ role: 'user', content: 'hi' }]);
+    // local model → no proxy id passed to main
+    expect(api.sendChat).toHaveBeenCalledWith([{ role: 'user', content: 'hi' }], null);
     expect($('chat-input').value).toBe('');
     expect($('chat-send').disabled).toBe(true);
     let msgs = $('chat-messages').querySelectorAll('.chat-msg');
@@ -585,6 +590,8 @@ describe('boot with the full bridge', () => {
     msgs = $('chat-messages').querySelectorAll('.chat-msg');
     bubble = msgs[msgs.length - 1].querySelector('.bubble');
     expect(bubble.textContent).toMatch(/the local LLM stopped/);
+    // the conversation stays visible even though the local model can't chat now
+    expect($('chat-running').hidden).toBe(false);
     // new chat wipes the thread (on the chat tab, then off it)
     makeReady(cbs);
     click($('chat-new'));
@@ -603,6 +610,45 @@ describe('boot with the full bridge', () => {
     submitChat();
     click($('tab-mine'));
     cbs.chatDone();
+  });
+
+  it('offers gateway models and routes them through the LLMJob proxy', async () => {
+    const { api, cbs } = makeFullApi();
+    await boot({ api });
+    const sel = $('chat-model-select');
+    // local option + the two gateway models, each tagged for the user
+    expect(Array.from(sel.options).map((o) => o.value))
+      .toEqual(['local', 'qwen/qwen3.6-27b', 'qwen/qwen3.6-35b-a3b']);
+    expect(sel.options[1].textContent).toBe('Qwen3.6 27B · via LLMJob');
+    // the picker sits ABOVE the running/stopped gate, so it stays reachable even
+    // when the local LLM is off — the whole point of the proxy path
+    expect($('chat-running').contains(sel)).toBe(false);
+    click($('tab-chat'));
+    // the local LLM is down, so the local model can't chat…
+    expect($('chat-stopped').hidden).toBe(false);
+    // …but choosing a gateway model opens the composer (proxy needs no local LLM)
+    sel.value = 'qwen/qwen3.6-27b';
+    sel.dispatchEvent(new window.Event('change', { bubbles: true }));
+    expect($('chat-running').hidden).toBe(false);
+    expect($('chat-stopped').hidden).toBe(true);
+    setInput($('chat-input'), 'hola');
+    expect($('chat-send').disabled).toBe(false);
+    submitChat();
+    expect(api.sendChat).toHaveBeenCalledWith([{ role: 'user', content: 'hola' }], 'qwen/qwen3.6-27b');
+    expect($('chat-model').textContent).toBe('Qwen3.6 27B');
+    // a local-LLM status change must NOT abort a proxy reply in flight
+    const bubble = $('chat-messages').querySelector('.chat-msg.assistant .bubble');
+    cbs.chatDelta({ text: 'ho' });
+    cbs.llm({ ready: false });
+    expect(bubble.textContent).toBe('ho'); // no "local LLM stopped" error injected
+    expect($('chat-running').hidden).toBe(false); // gate stays open for the proxy model
+    // switching the picker back to the (off) local model mid-reply must NOT hide
+    // the live conversation behind the "start the LLM" gate
+    sel.value = 'local';
+    sel.dispatchEvent(new window.Event('change', { bubbles: true }));
+    expect($('chat-running').hidden).toBe(false);
+    cbs.chatDone(); // the proxy stream finishes on its own
+    expect(bubble.classList.contains('streaming')).toBe(false);
   });
 
   it('promotes the compute mode when starting the LLM from a gate', async () => {
