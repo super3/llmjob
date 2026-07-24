@@ -238,10 +238,32 @@ describe('JobController', () => {
       });
     });
 
-    it('should reject chunk from wrong node', async () => {
+    it('should reject a chunk signed with a key the node did not register', async () => {
+      // The signature is valid for the presented key, but that key is not the
+      // one this nodeId registered — i.e. someone signing as another node.
       nodeService.getNode.mockResolvedValue({
         nodeId: 'wrong-node',
-        publicKey: 'wrong-key'
+        publicKey: 'some-other-nodes-key'
+      });
+
+      req.params = { jobId: job.id };
+      req.body = {
+        nodeId: 'wrong-node',
+        chunkIndex: 0,
+        content: 'Test chunk'
+      };
+
+      await jobController.receiveChunk(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.json).toHaveBeenCalledWith({ error: 'Public key mismatch' });
+    });
+
+    it('should reject chunk from wrong node', async () => {
+      // A properly authenticated node that simply does not hold the job's lock.
+      nodeService.getNode.mockResolvedValue({
+        nodeId: 'wrong-node',
+        publicKey: 'test-public-key'
       });
 
       req.params = { jobId: job.id };
@@ -490,7 +512,7 @@ describe('JobController', () => {
     it('should handle completeJob error when jobService throws', async () => {
       req.params = { jobId: 'job123' };
       req.body = { nodeId: 'node123', finalOutput: 'result' };
-      nodeService.getNode = jest.fn().mockResolvedValue({ id: 'node123', publicKey: 'test-key' });
+      nodeService.getNode = jest.fn().mockResolvedValue({ id: 'node123', publicKey: 'test-public-key' });
       jobService.completeJob = jest.fn().mockRejectedValue(new Error('Database error'));
 
       await jobController.completeJob(req, res);
@@ -503,7 +525,7 @@ describe('JobController', () => {
     it('should handle failJob error when jobService throws', async () => {
       req.params = { jobId: 'job123' };
       req.body = { nodeId: 'node123', error: 'Job failed' };
-      nodeService.getNode = jest.fn().mockResolvedValue({ id: 'node123', publicKey: 'test-key' });
+      nodeService.getNode = jest.fn().mockResolvedValue({ id: 'node123', publicKey: 'test-public-key' });
       jobService.failJob = jest.fn().mockRejectedValue(new Error('Database error'));
 
       await jobController.failJob(req, res);
