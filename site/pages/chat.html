@@ -3,7 +3,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
 <title>LLMJob Chat — Free AI, powered by the network</title>
 <meta name="description" content="Free chat with an open model, gated through the LLMJob endpoint. No sign-up — try it right here." />
 
@@ -546,7 +546,23 @@
   el.convo.addEventListener('change', function (e) { loadConvo(e.target.value); });
   el.model.addEventListener('change', function (e) { state.model = e.target.value; sizeModelSelect(); });
 
+  // ── Keep the composer above the mobile keyboard ──────────────────────────────
+  // The page is pinned to 100dvh, but a software keyboard shrinks the *visual*
+  // viewport without shrinking that layout height — so the bottom composer ends up
+  // hidden behind the keyboard. Drive the body height off visualViewport so the
+  // layout re-fits into the visible area (belt-and-suspenders with the viewport
+  // meta's interactive-widget=resizes-content).
+  function fitViewport() {
+    var vv = window.visualViewport;
+    document.body.style.height = (vv ? vv.height : window.innerHeight) + 'px';
+  }
+  window.addEventListener('resize', fitViewport);
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', fitViewport);
+  window.addEventListener('orientationchange', function () { setTimeout(fitViewport, 250); });
+  el.input.addEventListener('focus', function () { setTimeout(function () { fitViewport(); scrollToBottom(); }, 300); });
+
   // ── Boot ─────────────────────────────────────────────────────────────────────
+  fitViewport();
   renderModelOptions();
   renderConvoOptions();
   render();
