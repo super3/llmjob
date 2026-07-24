@@ -29,7 +29,7 @@ const DEFAULT_MODELS = [
   { id: 'qwen/qwen3.6-35b-a3b', label: 'Qwen3.6 35B A3B' }
 ];
 const DEFAULT_FREE_BUDGET = 1000000; // total tokens of free usage before the cap
-const DEFAULT_MAX_TOKENS = 1024;     // per-request completion ceiling
+const DEFAULT_MAX_TOKENS = 2048;     // per-request completion ceiling
 const MAX_PROMPT_CHARS = 24000;      // total prompt characters kept per request
 const OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
 
@@ -346,7 +346,8 @@ function publicMeta(meta) {
     totalTokens: meta.totalTokens,
     tokensPerSecond: meta.tokensPerSecond,
     latencyMs: meta.latencyMs,
-    ttftMs: meta.ttftMs
+    ttftMs: meta.ttftMs,
+    finish: meta.finish // 'stop' | 'length' — the UI flags a 'length' cutoff
   };
 }
 
