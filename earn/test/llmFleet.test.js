@@ -164,13 +164,13 @@ describe('LlmFleet', () => {
     mgrs[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
     mgrs[1].emit('ready', { baseUrl: 'http://127.0.0.1:8081' });
     const stops = [];
-    fleet.on('stopped', () => stops.push(1));
-    mgrs[0].emit('stopped');        // one card down, the other still serving
+    fleet.on('stopped', (code) => stops.push(code));
+    mgrs[0].emit('stopped', 0);     // one card down, the other still serving
     expect(stops).toHaveLength(0);
     expect(workers[0].stopped).toBe(true); // its worker was torn down
     expect(fleet.readyCount()).toBe(1);
-    mgrs[1].emit('stopped');        // last card down → one fleet 'stopped'
-    expect(stops).toHaveLength(1);
+    mgrs[1].emit('stopped', 7);     // last card down → one fleet 'stopped', its code
+    expect(stops).toEqual([7]);
     // never fires twice
     mgrs[1].emit('stopped');
     expect(stops).toHaveLength(1);

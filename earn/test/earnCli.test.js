@@ -84,7 +84,9 @@ jest.mock('../src/main/llmManager', () => {
       super();
       this.opts = opts;
       this.baseUrl = 'http://127.0.0.1:8080';
-      this.start = jest.fn();
+      // Mirror the real manager: the bound URL follows the port the fleet walked
+      // to, so a busy 8080 lands the worker on the actual serving port.
+      this.start = jest.fn((o) => { this.baseUrl = 'http://127.0.0.1:' + (o && o.port); });
       this.stop = jest.fn();
       LlmManager.instances.push(this);
     }
@@ -577,7 +579,7 @@ describe('local LLM', () => {
     await settle();
 
     expect(allOut()).toContain('mode:       llm');
-    expect(allOut()).toContain('port 8080 is busy — using 9090 for the local LLM instead');
+    expect(allOut()).toContain('local LLM starting on 1 GPU [0]');
     expect(allOut()).toContain('downloading LLM model');
 
     // The binary resolver's engine wires the shared extractor with the CLI hint.
@@ -634,7 +636,7 @@ describe('local LLM', () => {
     await expect(p).resolves.toBe(0);
     expect(jw.stop).toHaveBeenCalled();
     expect(llm.stop).toHaveBeenCalled();
-    llm.emit('stopped', 0); // during shutdown: the `stopping` guard swallows it
+    llm.emit('stopped', 0); // during shutdown: fleet.stop() already suppressed it
     await pinger.fn(); // after stopServe: telemetry reports 0 active jobs
     expect(allErr()).not.toContain('local LLM exited');
   });
@@ -668,6 +670,44 @@ describe('local LLM', () => {
     expect(m.JobWorker.instances.length).toBe(0);
     llm.emit('stopped', 0);
     await expect(p).resolves.toBe(1);
+  });
+
+  test('runs one instance and worker per eligible GPU, summing their active jobs', async () => {
+    const m = load();
+    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: 'rig' }));
+    // Two roomy cards → one llama-server + cluster worker pinned to each.
+    m.probe.detectGpusVram.mockResolvedValue([
+      { index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 },
+      { index: 1, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+    ]);
+    m.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 2000 });
+    m.probe.findFreePort.mockImplementation((h, p) => Promise.resolve(p));
+    const p = m.run(['--mode', 'llm', '--no-update']);
+    await settle();
+
+    // the plural log names every serving card; a manager per card on its own port
+    expect(allOut()).toContain('local LLM starting on 2 GPUs [0, 1]');
+    const [g0, g1] = m.LlmManager.instances;
+    expect(m.LlmManager.instances.length).toBe(2);
+    expect(g0.start).toHaveBeenCalledWith(expect.objectContaining({ port: 8080, mainGpu: 0 }));
+    expect(g1.start).toHaveBeenCalledWith(expect.objectContaining({ port: 8081, mainGpu: 1 }));
+
+    // both cards come up → a cluster worker per card
+    g0.emit('ready', { baseUrl: g0.baseUrl });
+    g1.emit('ready', { baseUrl: g1.baseUrl });
+    await settle();
+    expect(m.JobWorker.instances.length).toBe(2);
+
+    // one keep-alive ping loop for the whole fleet, summing active jobs (2 each)
+    const pinger = intervalFor(NODE.pingIntervalMs);
+    await pinger.fn();
+    expect(m.io.postJson.mock.calls.pop()[1].activeJobs).toBe(4);
+
+    // SIGINT stops every instance and resolves the LLM-only run
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+    expect(g0.stop).toHaveBeenCalled();
+    expect(g1.stop).toHaveBeenCalled();
   });
 });
 

@@ -56,7 +56,7 @@ class LlmFleet extends EventEmitter {
       mgr.on('log', (l) => this.emit('log', l));
       mgr.on('ready', ({ baseUrl }) => this._onReady(inst, baseUrl));
       mgr.on('stats', ({ tokensPerSec }) => this._onStats(tokensPerSec));
-      mgr.on('stopped', () => this._onStopped(inst));
+      mgr.on('stopped', (code) => this._onStopped(inst, code));
       mgr.on('error', (err) => this.emit('error', err));
       mgr.start(Object.assign({}, run, {
         host: this.host,
@@ -100,16 +100,17 @@ class LlmFleet extends EventEmitter {
     this.emit('stats', { tokensPerSec: tps });
   }
 
-  _onStopped(inst) {
+  _onStopped(inst, code) {
     inst.ready = false;
     inst.stopped = true;
     if (inst.worker) { inst.worker.stop(); inst.worker = null; }
     // Surface a single fleet-level 'stopped' once every instance has stopped —
-    // not on each individual card (others may still be serving).
+    // not on each individual card (others may still be serving). Forward the
+    // last card's exit code so the headless CLI can exit with it.
     if (this._stopping || this._downEmitted) return;
     if (this.instances.length && this.instances.every((i) => i.stopped)) {
       this._downEmitted = true;
-      this.emit('stopped');
+      this.emit('stopped', code);
     }
   }
 
