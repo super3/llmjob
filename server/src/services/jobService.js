@@ -1,16 +1,34 @@
+const crypto = require('crypto');
+
 const LOCK_MS = 10 * 60 * 1000;       // assignment lock lifetime (10 min)
 const HEARTBEAT_STALE_MS = 60 * 1000; // consider a job stalled after 60s silence
+// How long a job may sit pending before it is abandoned. Both gateways give up
+// waiting after 120s, so anything older than this has no caller left listening —
+// running it later would burn a node's GPU on a reply nobody receives, and the
+// rows would otherwise accumulate forever (nothing else clears `pending`). The
+// margin over 120s means this can never expire a job someone is still waiting on.
+const PENDING_TTL_MS = 5 * 60 * 1000;
 // The model the earn-client fleet actually serves (earn/src/shared/config.js
 // LLM.model.name) — the default a job records must match what runs it.
 const DEFAULT_MODEL = 'Gemma-4-E4B-it-Q4_K_M';
+
+// A job's routing (inherited from the API key that created it): 'private' may
+// only run on the owner's own nodes; anything else is 'public' (any node).
+function normalizeVisibility(v) {
+  return v === 'private' ? 'private' : 'public';
+}
 
 class JobService {
   constructor(db) {
     this.db = db;
   }
 
+  // Crypto-random suffix, not Math.random(): a job id is a capability-ish handle
+  // (it addresses a conversation), and V8's PRNG state is recoverable from a few
+  // observed outputs, which would make ids predictable rather than merely hard to
+  // guess. The timestamp prefix is kept for sortability/debuggability.
   generateJobId() {
-    return `job-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    return `job-${Date.now()}-${crypto.randomBytes(8).toString('hex')}`;
   }
 
   async createJob(jobData) {
@@ -27,6 +45,7 @@ class JobService {
       createdAt: timestamp,
       updatedAt: timestamp,
       userId: jobData.userId,
+      visibility: normalizeVisibility(jobData.visibility),
       maxTokens: jobData.maxTokens || 1000,
       temperature: jobData.temperature || 0.7
     };
@@ -39,9 +58,9 @@ class JobService {
     }
 
     await this.db.query(
-      `INSERT INTO jobs (id, data, status, priority, created_at, updated_at, user_id)
-       VALUES ($1, $2, 'pending', $3, $4, $4, $5)`,
-      [jobId, JSON.stringify(job), job.priority, timestamp, job.userId]
+      `INSERT INTO jobs (id, data, status, priority, created_at, updated_at, user_id, visibility)
+       VALUES ($1, $2, 'pending', $3, $4, $4, $5, $6)`,
+      [jobId, JSON.stringify(job), job.priority, timestamp, job.userId, job.visibility]
     );
 
     return job;
@@ -69,15 +88,24 @@ class JobService {
   }
 
   // Claim up to maxJobs pending jobs for a node, locking them in one transaction.
+  // A node may only be handed PUBLIC jobs, or PRIVATE jobs owned by the same user
+  // that owns the node — so a private key's requests never reach another user's
+  // hardware. The node's owner is read from the DB (the single source of truth),
+  // not trusted from the caller. A NULL job visibility (pre-feature rows) counts
+  // as public. A node with no owner (unclaimed) can serve only public jobs.
   async assignJobsToNode(nodeId, maxJobs = 1) {
     const assignedJobs = [];
     const client = await this.db.connect();
     try {
       await client.query('BEGIN');
+      const owner = await client.query('SELECT user_id FROM nodes WHERE node_id = $1', [nodeId]);
+      const ownerUserId = owner.rows.length ? owner.rows[0].user_id : null;
       const pending = await client.query(
-        `SELECT id, data FROM jobs WHERE status = 'pending'
+        `SELECT id, data FROM jobs
+         WHERE status = 'pending'
+           AND (visibility IS NULL OR visibility <> 'private' OR user_id = $2)
          ORDER BY priority DESC, created_at ASC LIMIT $1 FOR UPDATE`,
-        [maxJobs]
+        [maxJobs, ownerUserId]
       );
 
       for (const row of pending.rows) {
@@ -203,6 +231,39 @@ class JobService {
       'UPDATE jobs SET lock_node = NULL, lock_expires_at = NULL, heartbeat_at = NULL WHERE id = $1',
       [jobId]
     );
+  }
+
+  // Fail jobs that have sat pending past PENDING_TTL_MS. Nothing else ever
+  // clears `pending`: checkTimeouts only rescues assigned/running jobs, and
+  // cleanupOldJobs only deletes completed/failed ones — so a job queued while no
+  // node was serving would otherwise stay forever, and be run hours later for a
+  // caller that is long gone. Marked 'failed' rather than given a new status so
+  // the existing cleanup sweep collects them and any late reader gets a clear
+  // reason instead of an indefinite wait. Returns the expired job ids.
+  async expireStalePending() {
+    const now = Date.now();
+    const r = await this.db.query(
+      "SELECT id, data FROM jobs WHERE status = 'pending' AND created_at < $1",
+      [now - PENDING_TTL_MS]
+    );
+
+    const expired = [];
+    for (const row of r.rows) {
+      const updated = {
+        ...row.data,
+        status: 'failed',
+        failedAt: now,
+        failureReason: 'expired: no node picked this job up',
+        updatedAt: now
+      };
+      await this.db.query(
+        "UPDATE jobs SET data = $2, status = 'failed', updated_at = $3 WHERE id = $1",
+        [row.id, JSON.stringify(updated), now]
+      );
+      expired.push(row.id);
+    }
+
+    return expired;
   }
 
   // Return assigned/running jobs whose lock expired or heartbeat went stale.

@@ -90,7 +90,7 @@
   .nt-scroll { overflow-x: auto; }
   /* The GPU track keeps a 120px floor so model names ("RTX 4070 SUPER") stay
      readable when the table is scrolled at its minimum width on phones. */
-  .nt-cols, .miner-row { display: grid; grid-template-columns: 44px 250px minmax(120px, 1fr) 120px 120px 100px; gap: 16px; align-items: center; min-width: 820px; }
+  .nt-cols, .miner-row { display: grid; grid-template-columns: 44px 230px minmax(120px, 1fr) 128px 120px 118px 96px; gap: 16px; align-items: center; min-width: 900px; }
   .nt-cols { padding: 11px 22px; border-bottom: 1px solid #efeee8; font-size: 11.5px; color: var(--muted-3); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
   .nt-cols .r, .mr-vram, .mr-hash, .mr-last { text-align: right; }
   .mr-vram { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: #6b7077; }
@@ -102,6 +102,11 @@
   .mr-gpu { display: flex; align-items: center; gap: 6px; min-width: 0; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: #6b7077; }
   .mr-gpu .gpu-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   .mr-gpu .gpu-s, .mr-addr .ad-s { display: none; }
+  /* The "serving LLM" cell: which local model this card runs, or a muted dash
+     when it isn't serving (insufficient VRAM) or the client is too old to report. */
+  .mr-llm { min-width: 0; font-family: "IBM Plex Mono", monospace; font-size: 12px; }
+  .mr-llm .mr-llm-on { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; color: #2f8f6b; }
+  .mr-llm .mr-llm-none { color: #c7c4b8; }
   /* A host running several cards is one clickable row; the chevron expands it
      into a per-card breakdown (the earn client posts each card as worker/gpuN). */
   .miner-row.is-multi { cursor: pointer; }
@@ -120,7 +125,7 @@
   @media (max-width: 1040px) {
     .mr-gpu .gpu-f, .mr-addr .ad-f { display: none; }
     .mr-gpu .gpu-s, .mr-addr .ad-s { display: inline; }
-    .nt-cols, .miner-row { grid-template-columns: 32px 170px minmax(110px, 1fr) 110px 95px 85px; gap: 12px; min-width: 706px; }
+    .nt-cols, .miner-row { grid-template-columns: 32px 150px minmax(110px, 1fr) 104px 100px 95px 82px; gap: 12px; min-width: 780px; }
   }
   .mr-hash { font-family: "IBM Plex Mono", monospace; font-size: 13px; font-weight: 600; color: var(--accent); }
   .mr-last { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--muted-3); }
@@ -199,7 +204,7 @@
     </div>
     <div class="nt-scroll">
       <div class="nt-cols">
-        <div>#</div><div>Address</div><div>GPU</div><div class="r">VRAM</div><div class="r">Hashrate</div><div class="r">Last seen</div>
+        <div>#</div><div>Address</div><div>GPU</div><div>LLM</div><div class="r">VRAM</div><div class="r">Hashrate</div><div class="r">Last seen</div>
       </div>
       <div id="miners"></div>
     </div>
@@ -251,6 +256,14 @@
     function shortGpu(g) {
       return String(g).replace(/^\s*(NVIDIA|AMD|Intel)\s+(GeForce\s+|Radeon\s+|Arc\s+)?/i, '') || String(g);
     }
+    // The "serving LLM" cell: a compact model label ("Gemma-4-E4B-it-Q4_K_M" →
+    // "Gemma 4 E4B", full name on hover), or a muted dash when the card isn't
+    // serving (insufficient VRAM) or the client is too old to report a model.
+    function llmCell(model) {
+      if (!model) return '<div class="mr-llm"><span class="mr-llm-none">—</span></div>';
+      const short = String(model).split(/-it\b/i)[0].replace(/[-_]+/g, ' ').trim() || String(model);
+      return '<div class="mr-llm"><span class="mr-llm-on" title="' + esc(model) + '">' + esc(short) + '</span></div>';
+    }
 
     // Which multi-GPU hosts are expanded, keyed by address|worker so the state
     // survives the 15s auto-refresh (re-render) and identical re-fetches.
@@ -272,6 +285,7 @@
         '<div class="mr-rank"></div><div class="mr-addr"></div>' +
         '<div class="mr-gpu" title="' + esc(c.gpu) + '"><span class="ci">[' + j + ']</span>' +
           '<span class="gpu-name"><span class="gpu-f">' + esc(c.gpu) + '</span><span class="gpu-s">' + esc(shortGpu(c.gpu)) + '</span></span></div>' +
+        llmCell(c.llmModel) +
         '<div class="mr-vram">' + fmtVram(c.vramUsedMb, c.vramTotalMb) + '</div>' +
         '<div class="mr-hash">' + Number(c.hash).toFixed(1) + ' TH/s</div>' +
         '<div class="mr-last"></div>' +
@@ -294,6 +308,7 @@
                 '<div class="mr-rank">' + (i + 1) + '</div>' +
                 '<div class="mr-addr"><span class="dot"></span><span class="a"><span class="ad-f">' + esc(shortAddr(m.addr)) + '</span><span class="ad-s">' + esc(shortAddr(m.addr, true)) + '</span></span></div>' +
                 gpuCell(m.gpu, chev) +
+                llmCell(m.llmModel) +
                 '<div class="mr-vram">' + fmtVram(m.vramUsedMb, m.vramTotalMb) + '</div>' +
                 '<div class="mr-hash">' + Number(m.hash).toFixed(1) + ' TH/s</div>' +
                 '<div class="mr-last">' + esc(m.last) + '</div>' +

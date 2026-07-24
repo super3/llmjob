@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS miners (
   vram_used double precision,
   vram_total double precision,
   version text,
+  llm_model text,
   first_seen bigint,
   last_seen bigint
 );
@@ -85,7 +86,8 @@ CREATE TABLE IF NOT EXISTS api_keys (
   masked text,
   created_at bigint,
   last_used bigint,
-  usage bigint DEFAULT 0
+  usage bigint DEFAULT 0,
+  visibility text DEFAULT 'public'
 );
 CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys (user_id);
 
@@ -118,6 +120,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   created_at bigint,
   updated_at bigint,
   user_id text,
+  visibility text,
   assigned_to text,
   lock_node text,
   lock_expires_at bigint,

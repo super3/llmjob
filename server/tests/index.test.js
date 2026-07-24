@@ -4,6 +4,7 @@
 const mockCheckNodeStatuses = jest.fn();
 const mockCheckTimeouts = jest.fn();
 const mockCleanupOldJobs = jest.fn();
+const mockExpireStalePending = jest.fn();
 
 jest.mock('../src/db', () => {
   const actual = jest.requireActual('../src/db');
@@ -12,7 +13,8 @@ jest.mock('../src/db', () => {
 jest.mock('../src/services/nodeService', () =>
   jest.fn(() => ({ checkNodeStatuses: mockCheckNodeStatuses })));
 jest.mock('../src/services/jobService', () =>
-  jest.fn(() => ({ checkTimeouts: mockCheckTimeouts, cleanupOldJobs: mockCleanupOldJobs })));
+  jest.fn(() => ({ checkTimeouts: mockCheckTimeouts, cleanupOldJobs: mockCleanupOldJobs,
+    expireStalePending: mockExpireStalePending })));
 
 const request = require('supertest');
 const { createPool } = require('../src/db');
@@ -110,10 +112,13 @@ describe('server bootstrap (index.js)', () => {
       await statusCb();
       expect(mockCheckNodeStatuses).toHaveBeenCalled();
 
-      // timeout tick: none returned, some returned, and the error branch
+      // timeout tick: none returned, some returned, and the error branch. The
+      // same tick also expires pending jobs nothing ever picked up.
+      mockExpireStalePending.mockResolvedValue([]);
       mockCheckTimeouts.mockResolvedValueOnce([]);
       await timeoutCb();
       mockCheckTimeouts.mockResolvedValueOnce(['job-1']);
+      mockExpireStalePending.mockResolvedValueOnce(['job-2']);
       await timeoutCb();
       mockCheckTimeouts.mockRejectedValueOnce(new Error('db down'));
       await timeoutCb();

@@ -106,4 +106,39 @@ describe('migrations', () => {
     await apply(pool, mod, 'down');
     await expect(pool.query('SELECT version FROM miners')).rejects.toBeDefined();
   });
+
+  it('add-miner-llm-model adds and drops the llm_model column', async () => {
+    const pool = freshPool();
+    await apply(pool, load(byName('init-schema')), 'up');
+    await pool.query('ALTER TABLE miners DROP COLUMN llm_model');
+
+    const mod = load(byName('add-miner-llm-model'));
+    await apply(pool, mod, 'up');
+    await pool.query("INSERT INTO miners (id, llm_model) VALUES ('m1', 'Gemma-4-E4B-it-Q4_K_M')");
+    expect((await pool.query('SELECT llm_model FROM miners')).rows[0].llm_model).toBe('Gemma-4-E4B-it-Q4_K_M');
+
+    await apply(pool, mod, 'down');
+    await expect(pool.query('SELECT llm_model FROM miners')).rejects.toBeDefined();
+  });
+
+  it('add-key-job-visibility adds and drops the visibility columns', async () => {
+    const pool = freshPool();
+    await apply(pool, load(byName('init-schema')), 'up');
+    await pool.query('ALTER TABLE api_keys DROP COLUMN visibility');
+    await pool.query('ALTER TABLE jobs DROP COLUMN visibility');
+
+    const mod = load(byName('add-key-job-visibility'));
+    await apply(pool, mod, 'up');
+    await pool.query("INSERT INTO api_keys (hash, id, visibility) VALUES ('h1', 'k1', 'private')");
+    await pool.query("INSERT INTO jobs (id, status, visibility) VALUES ('j1', 'pending', 'private')");
+    expect((await pool.query('SELECT visibility FROM api_keys')).rows[0].visibility).toBe('private');
+    expect((await pool.query('SELECT visibility FROM jobs')).rows[0].visibility).toBe('private');
+    // existing api_keys default to public
+    await pool.query("INSERT INTO api_keys (hash, id) VALUES ('h2', 'k2')");
+    expect((await pool.query("SELECT visibility FROM api_keys WHERE id = 'k2'")).rows[0].visibility).toBe('public');
+
+    await apply(pool, mod, 'down');
+    await expect(pool.query('SELECT visibility FROM api_keys')).rejects.toBeDefined();
+    await expect(pool.query('SELECT visibility FROM jobs')).rejects.toBeDefined();
+  });
 });

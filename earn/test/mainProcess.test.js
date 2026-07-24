@@ -1062,9 +1062,9 @@ describe('local LLM', () => {
     // free 22000 MB, no reserve → full offload, on GPU 0
     expect(llm.start).toHaveBeenCalledWith({
       platform: 'linux', binaryPath: '/tmp/llm/llama-server', modelPath: '/tmp/llm/model.gguf',
-      nGpuLayers: ctx.config.LLM.model.layers, port: 8080, mainGpu: 0,
+      host: '127.0.0.1', nGpuLayers: ctx.config.LLM.model.layers, port: 8080, mainGpu: 0,
     });
-    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false, endpoint: 'http://127.0.0.1:8080/v1' });
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false }); // endpoint fills in on ready
 
     llm.emit('log', { level: 'info', line: 'llama says hi' });
     expect(ctx.sent('miner:log').map((l) => l.line)).toContain('llama says hi');
@@ -1115,6 +1115,82 @@ describe('local LLM', () => {
     expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false, tokensPerSec: 0 });
   });
 
+  it('runs one instance and worker per eligible GPU, summing their active jobs', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        c.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
+        c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
+        // Two roomy cards → one llama-server + cluster worker pinned to each.
+        c.probe.detectGpusVram.mockResolvedValue([
+          { index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 },
+          { index: 1, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+        ]);
+        c.probe.findFreePort.mockImplementation((h, p) => Promise.resolve(p));
+      },
+    });
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+
+    // the plural log names every serving card; a manager per card on its own port
+    expect(ctx.sent('miner:log').map((l) => l.line)).toContain('local LLM starting on 2 GPUs [0, 1]');
+    const [g0, g1] = ctx.LlmManager.instances;
+    expect(ctx.LlmManager.instances).toHaveLength(2);
+    expect(g0.start).toHaveBeenCalledWith(expect.objectContaining({ port: 8080, mainGpu: 0 }));
+    expect(g1.start).toHaveBeenCalledWith(expect.objectContaining({ port: 8081, mainGpu: 1 }));
+
+    // both cards come up → a cluster worker per card; chat targets the first ready
+    g0.emit('ready', { baseUrl: g0.baseUrl });
+    g1.emit('ready', { baseUrl: g1.baseUrl });
+    await flush();
+    expect(ctx.JobWorker.instances).toHaveLength(2);
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: true, webUrl: 'http://127.0.0.1:8080' });
+
+    // a transient error on one card is swallowed — the fleet keeps the others up
+    g0.emit('error', new Error('transient blip'));
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: true });
+
+    // a telemetry ping sums active jobs across every worker (each mock reports 1)
+    await ctx.invoke('node:connect', { token: 'tok' });
+    await flush();
+    ctx.io.postJson.mockClear();
+    const pinger = ctx.interval(ctx.config.NODE.pingIntervalMs);
+    pinger.fn();
+    await flush();
+    expect(ctx.io.postJson.mock.calls.pop()[1].activeJobs).toBe(2);
+
+    // disconnecting the node tears every worker down through stopWorker
+    await ctx.invoke('node:disconnect');
+    expect(ctx.JobWorker.instances[0].stop).toHaveBeenCalled();
+    expect(ctx.JobWorker.instances[1].stop).toHaveBeenCalled();
+  });
+
+  it('serves nothing on a card that comes up after the node unlinks', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        c.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
+        c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
+        c.probe.detectGpusVram.mockResolvedValue([
+          { index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 },
+          { index: 1, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+        ]);
+        c.probe.findFreePort.mockImplementation((h, p) => Promise.resolve(p));
+      },
+    });
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    const [g0, g1] = ctx.LlmManager.instances;
+
+    g0.emit('ready', { baseUrl: g0.baseUrl }); // linked → a worker for GPU 0
+    await flush();
+    expect(ctx.JobWorker.instances).toHaveLength(1);
+
+    // the node drops before GPU 1 comes up → makeJobWorker declines, no worker
+    ctx.nodeStore.loadNode.mockReturnValue(null);
+    g1.emit('ready', { baseUrl: g1.baseUrl });
+    await flush();
+    expect(ctx.JobWorker.instances).toHaveLength(1);
+  });
+
   it('llm mode with a second start returns early while the server runs, and STOP stops it', async () => {
     const ctx = await boot({
       before: (c) => { c.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 2000 }); },
@@ -1160,13 +1236,11 @@ describe('local LLM', () => {
     expect(global.clearTimeout).toHaveBeenCalledWith(cap);
     cap.fn();
 
-    // VRAM unknown → full offload; port 8080 busy → moved to 8081
+    // VRAM unknown → full offload; port 8080 busy → the fleet walks to 8081
     const llm = ctx.LlmManager.instances[0];
     expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({
       nGpuLayers: ctx.config.LLM.model.layers, port: 8081,
     }));
-    expect(ctx.sent('miner:log').map((l) => l.line))
-      .toContain('port 8080 is busy — using 8081 for the local LLM instead');
 
     // llama-server dies before ready while mining keeps running
     llm.emit('stopped');
@@ -1175,6 +1249,37 @@ describe('local LLM', () => {
       ready: false, error: 'The local LLM stopped before it was ready. See Logs.',
     });
     expect(ctx.sent('miner:stopped')).toHaveLength(0);
+  });
+
+  it('both mode: the board report tags the GPU serving the local LLM', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        c.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
+        c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
+        c.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
+      },
+    });
+    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
+
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'both' });
+    await flush();
+
+    // the miner proves real hashrate → the LLM fleet starts
+    const miner = ctx.MinerManager.instances[0];
+    miner.emit('event', { type: 'status', hashrate: '5' });
+    await flush(30);
+
+    const llm = ctx.LlmManager.instances[0];
+    llm.emit('ready', { baseUrl: llm.baseUrl }); // GPU 0 now serves the model
+    await flush();
+
+    // a board report now tags GPU 0 with the served model
+    ctx.probe.postMinerReport.mockClear();
+    const reporter = ctx.interval(ctx.config.NETWORK.reportIntervalMs);
+    reporter.fn();
+    await flush();
+    const payloads = ctx.probe.postMinerReport.mock.calls.map((c) => c[0]);
+    expect(payloads.some((p) => p.llmModel === ctx.config.LLM.model.name)).toBe(true);
   });
 
   it('a miner that stops during the co-run wait releases the LLM start', async () => {
