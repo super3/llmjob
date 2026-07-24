@@ -349,15 +349,6 @@ describe('Chat gateway — integration', () => {
         { id: 'llmjob-gemma-4-e4b', label: 'Gemma 4 E4B (LLMJob network)' }
       ]);
     });
-
-    it('omits the network model when it is disabled', async () => {
-      const app = makeApp(db, { networkModel: null });
-      const res = await request(app).get('/api/chat/models');
-      expect(res.body.models).toEqual([
-        { id: 'meta-llama/llama-3.3-70b-instruct', label: 'Llama 3.3 70B' },
-        { id: 'qwen/qwen-2.5-7b-instruct', label: 'Qwen 2.5 7B' }
-      ]);
-    });
   });
 
   describe('GET /api/chat/usage', () => {
@@ -709,10 +700,10 @@ describe('Chat gateway — LLMJob-network model', () => {
     await ctrl.sleep(1); // resolves via setTimeout — exercises the default
   });
 
-  it('is unreachable when the network model is disabled (unknown model → 400)', async () => {
-    const ctrl = new ChatController({ apiKey: 'k', models: MODELS, networkModel: null, services: usageSpy() });
+  it('rejects an unknown model with 400 (the network model is not a catch-all)', async () => {
+    const ctrl = new ChatController({ apiKey: 'k', models: MODELS, services: usageSpy() });
     const res = fakeRes();
-    await ctrl.chatCompletions(fakeReq({ model: NET_ID, messages: [{ role: 'user', content: 'hi' }] }), res);
+    await ctrl.chatCompletions(fakeReq({ model: 'nope/not-a-model', messages: [{ role: 'user', content: 'hi' }] }), res);
     expect(res.statusCode).toBe(400);
     expect(res.body.error.type).toBe('invalid_request_error');
   });
@@ -723,7 +714,7 @@ describe('Chat gateway — LLMJob-network model', () => {
 describe('ChatController — config', () => {
   const ENV_KEYS = ['OPENROUTER_API_KEY', 'OPENROUTER_BASE_URL', 'OPENROUTER_MODELS',
     'OPENROUTER_FREE_TOKEN_BUDGET', 'OPENROUTER_MAX_TOKENS', 'OPENROUTER_REFERER',
-    'OPENROUTER_SYSTEM_PROMPT', 'LLMJOB_NETWORK_CHAT'];
+    'OPENROUTER_SYSTEM_PROMPT'];
   let saved;
   beforeEach(() => { saved = {}; ENV_KEYS.forEach((k) => { saved[k] = process.env[k]; delete process.env[k]; }); });
   afterEach(() => { ENV_KEYS.forEach((k) => { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }); });
@@ -739,11 +730,6 @@ describe('ChatController — config', () => {
     expect(ctrl.referer).toBe('https://llmjob.com');
     expect(ctrl.title).toBe('LLMJob');
     expect(ctrl.systemPrompt).toContain('LLMJob assistant');
-  });
-
-  it('disables the network model when LLMJOB_NETWORK_CHAT is off', () => {
-    process.env.LLMJOB_NETWORK_CHAT = '0';
-    expect(new ChatController().networkModel).toBeNull();
   });
 
   it('reads configuration from the environment', () => {

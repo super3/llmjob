@@ -31,10 +31,10 @@ const DEFAULT_MODELS = [
 ];
 // The one model served by the LLMJob node fleet itself (not OpenRouter): a public
 // chat request for it becomes an inference job that a live node runs on its own
-// GPU. Offered alongside the OpenRouter models and never the default, so it's an
-// explicit opt-in. Disable with LLMJOB_NETWORK_CHAT=0. Its served model id is the
-// fleet default in jobService (JobService fills it in when the job omits `model`).
-const DEFAULT_NETWORK_MODEL = { id: 'llmjob-gemma-4-e4b', label: 'Gemma 4 E4B (LLMJob network)' };
+// GPU. Always offered alongside the OpenRouter models, but never the default —
+// callers opt in by selecting it. Its served model id is the fleet default in
+// jobService (JobService fills it in when the job omits `model`).
+const NETWORK_MODEL = { id: 'llmjob-gemma-4-e4b', label: 'Gemma 4 E4B (LLMJob network)' };
 const DEFAULT_FREE_BUDGET = 1000000; // total tokens of free usage before the cap
 const DEFAULT_MAX_TOKENS = 2048;     // per-request completion ceiling
 const MAX_PROMPT_CHARS = 24000;      // total prompt characters kept per request
@@ -74,11 +74,8 @@ class ChatController {
       : (process.env.OPENROUTER_SYSTEM_PROMPT || DEFAULT_SYSTEM_PROMPT);
     this.fetchFn = opts.fetchFn || globalThis.fetch;
     this.now = opts.now || (() => Date.now());
-    // The LLMJob-network model (job served by a live node). `opts.networkModel:
-    // null` disables it; env LLMJOB_NETWORK_CHAT=0 does the same by default.
-    this.networkModel = opts.networkModel !== undefined
-      ? opts.networkModel
-      : (/^(0|false|off|no)$/i.test(String(process.env.LLMJOB_NETWORK_CHAT || '')) ? null : DEFAULT_NETWORK_MODEL);
+    // The LLMJob-network model (a job served by a live node) is always available.
+    this.networkModel = NETWORK_MODEL;
     this.jobPollMs = opts.jobPollMs || 250;          // how often to check the job for progress
     this.jobTimeoutMs = opts.jobTimeoutMs || 120000; // give up if no node finishes it in time
     this.sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
@@ -94,10 +91,10 @@ class ChatController {
   }
 
   // GET /api/chat/models — the models the Chat UI may offer: the OpenRouter
-  // allow-list plus (unless disabled) the LLMJob-network model at the end.
+  // allow-list plus the LLMJob-network model at the end.
   listModels(req, res) {
     const models = this.models.map((m) => ({ id: m.id, label: m.label }));
-    if (this.networkModel) models.push({ id: this.networkModel.id, label: this.networkModel.label });
+    models.push({ id: this.networkModel.id, label: this.networkModel.label });
     res.json({ models });
   }
 
@@ -453,7 +450,7 @@ class ChatController {
 
   _resolveModel(requested) {
     const nm = this.networkModel;
-    if (nm && requested != null && (String(requested) === nm.id || String(requested) === nm.label)) {
+    if (requested != null && (String(requested) === nm.id || String(requested) === nm.label)) {
       return { id: nm.id, label: nm.label, network: true };
     }
     if (!requested) return this.models[0]; // default is always an OpenRouter model
