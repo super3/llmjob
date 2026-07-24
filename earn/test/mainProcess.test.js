@@ -136,6 +136,10 @@ jest.mock('../src/main/minerManager', () => {
       });
       this.stop = jest.fn(() => { this._running = false; });
       this.isRunning = jest.fn(() => this._running);
+      this._paused = false;
+      this.pause = jest.fn(() => { this._paused = true; return true; });
+      this.resume = jest.fn(() => { this._paused = false; return true; });
+      this.isPaused = jest.fn(() => this._paused);
       MinerManager.instances.push(this);
     }
   }
@@ -1059,10 +1063,12 @@ describe('local LLM', () => {
     await flush();
 
     const llm = ctx.LlmManager.instances[0];
-    // free 22000 MB, no reserve → full offload, on GPU 0
+    // free 22000 MB is below the 27B floor, so the rig serves the small model at
+    // full offload on GPU 0, with its ctx/parallel.
     expect(llm.start).toHaveBeenCalledWith({
       platform: 'linux', binaryPath: '/tmp/llm/llama-server', modelPath: '/tmp/llm/model.gguf',
       host: '127.0.0.1', nGpuLayers: ctx.config.LLM.model.layers, port: 8080, mainGpu: 0,
+      ctxSize: ctx.config.LLM.model.ctxSize, parallel: ctx.config.LLM.model.parallel,
     });
     expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false }); // endpoint fills in on ready
 
@@ -1120,10 +1126,11 @@ describe('local LLM', () => {
       before: (c) => {
         c.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
         c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
-        // Two roomy cards → one llama-server + cluster worker pinned to each.
+        // Two 8 GB cards → each holds the small model (not big enough to shard),
+        // so one llama-server + cluster worker pinned to each.
         c.probe.detectGpusVram.mockResolvedValue([
-          { index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 },
-          { index: 1, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+          { index: 0, name: 'RTX 3070', usedMb: 1000, totalMb: 8000 },
+          { index: 1, name: 'RTX 3070', usedMb: 1000, totalMb: 8000 },
         ]);
         c.probe.findFreePort.mockImplementation((h, p) => Promise.resolve(p));
       },
@@ -1132,7 +1139,8 @@ describe('local LLM', () => {
     await flush();
 
     // the plural log names every serving card; a manager per card on its own port
-    expect(ctx.sent('miner:log').map((l) => l.line)).toContain('local LLM starting on 2 GPUs [0, 1]');
+    expect(ctx.sent('miner:log').map((l) => l.line))
+      .toContain('local LLM (' + ctx.config.LLM.model.name + ') starting on 2 GPUs [0, 1]');
     const [g0, g1] = ctx.LlmManager.instances;
     expect(ctx.LlmManager.instances).toHaveLength(2);
     expect(g0.start).toHaveBeenCalledWith(expect.objectContaining({ port: 8080, mainGpu: 0 }));
@@ -1169,9 +1177,10 @@ describe('local LLM', () => {
       before: (c) => {
         c.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
         c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
+        // Two 8 GB cards → per-card small model (no sharding), a server each.
         c.probe.detectGpusVram.mockResolvedValue([
-          { index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 },
-          { index: 1, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+          { index: 0, name: 'RTX 3070', usedMb: 1000, totalMb: 8000 },
+          { index: 1, name: 'RTX 3070', usedMb: 1000, totalMb: 8000 },
         ]);
         c.probe.findFreePort.mockImplementation((h, p) => Promise.resolve(p));
       },
@@ -1328,6 +1337,78 @@ describe('local LLM', () => {
     // reserve 0 (llm-only), free 22000 → full offload despite the reserve arg branch
     expect(ctx.LlmManager.instances[0].start)
       .toHaveBeenCalledWith(expect.objectContaining({ nGpuLayers: ctx.config.LLM.model.layers }));
+  });
+
+  it('shards a big model across GPUs when no single card fits it', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        // two 16 GB cards, ~14 GB free each: no single card fits the 27B/35B, but
+        // the ~28 GB aggregate does → one sharded llama-server across both.
+        c.probe.detectGpusVram.mockResolvedValue([
+          { index: 0, name: 'RTX A4000', usedMb: 2000, totalMb: 16376 },
+          { index: 1, name: 'RTX A4000', usedMb: 2000, totalMb: 16376 },
+        ]);
+      },
+    });
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+
+    const moe = ctx.config.LLM.models.find((m) => m.id === 'qwen3.6-35b-a3b');
+    expect(ctx.LlmManager.instances).toHaveLength(1); // one sharded instance, not one per card
+    expect(ctx.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+      splitMode: 'layer', tensorSplit: [14376, 14376], mainGpu: 0,
+      nGpuLayers: moe.layers, ctxSize: moe.ctxSize, parallel: moe.parallel,
+    }));
+    expect(ctx.sent('miner:log').map((l) => l.line))
+      .toContain('local LLM (' + moe.name + ') starting on sharded across GPUs 0,1');
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ model: moe.name });
+  });
+
+  it('auto mode pauses mining while a served job/chat runs and resumes when idle', async () => {
+    const path = require('path');
+    const bundledMiner = path.join('/res', 'engine', 'alpha-miner-1.8.8');
+    const ctx = await boot({
+      resourcesPath: '/res',
+      before: (c) => {
+        c.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
+        c.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 3070', usedMb: 1000, totalMb: 8000 }]);
+      },
+    });
+    ctx.fs.existsSync.mockImplementation((p) => p === bundledMiner);
+
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+    await flush();
+    const miner = ctx.MinerManager.instances[0];
+    miner.emit('event', { type: 'status', hashrate: '3.0' }); // release the co-run wait
+    await flush(30);
+
+    const g0 = ctx.LlmManager.instances[0];
+    g0.emit('ready', { baseUrl: g0.baseUrl });
+    await flush();
+    const worker = ctx.JobWorker.instances[0];
+
+    worker.emit('job', { id: 'j1' });
+    expect(miner.pause).toHaveBeenCalledTimes(1);
+    worker.emit('done', { id: 'j1' });
+    expect(miner.resume).not.toHaveBeenCalled();
+    ctx.timers.timeouts.filter((t) => t.ms === 15000).pop().fn();
+    expect(miner.resume).toHaveBeenCalledTimes(1);
+
+    // a failed job also releases the pause
+    worker.emit('job', { id: 'j2' });
+    worker.emit('failed', { id: 'j2', error: 'oom' });
+    ctx.timers.timeouts.filter((t) => t.ms === 15000).pop().fn();
+    expect(miner.resume).toHaveBeenCalledTimes(2);
+
+    // in-app chat pauses too, releasing on the stream's terminal outcome
+    ctx.emit('llm:chat', [{ role: 'user', content: 'hi' }]);
+    await flush();
+    expect(miner.pause).toHaveBeenCalledTimes(3);
+    ctx.timers.timeouts.filter((t) => t.ms === 15000).pop().fn();
+    expect(miner.resume).toHaveBeenCalledTimes(3);
+
+    ctx.emit('miner:stop');
+    expect(miner.stop).toHaveBeenCalled();
   });
 });
 

@@ -30,8 +30,9 @@ const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE, endpointFo
 const { resolveEconomics } = require('../shared/economics');
 const nodeProto = require('../shared/node');
 const { requiredVramMb, pickLlmGpu } = require('../shared/vram');
-const { planLlmInstances } = require('../shared/llmPlan');
+const { planLlmServing } = require('../shared/llmPlan');
 const { LlmFleet } = require('./llmFleet');
+const { ServeController } = require('./serveController');
 const { buildChatBody } = require('../shared/llmChat');
 const { JobWorker } = require('./jobWorker');
 const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
@@ -54,6 +55,11 @@ let reporter = null;
 let fleet = null;               // LlmFleet (one llama-server per eligible GPU) while up
 let llmEverReady = false;       // did any instance reach "ready" this run (vs. dying first)
 let serveLogged = false;        // "serving cluster jobs" logged once per serving run
+let serveController = null;     // demand-driven mining pause (auto mode)
+// The single model the rig is serving (VRAM-tiered, possibly sharded across
+// cards). Drives the served-model status, node telemetry, and the board's LLM
+// column. Defaults to the small model until startLlm picks one.
+let servingModel = LLM.model;
 let llmStatus = { ready: false, endpoint: null, webUrl: null, tokensPerSec: 0, model: LLM.model.name, error: null };
 
 function settingsPath() {
@@ -226,7 +232,7 @@ async function startMining(settings) {
     const gpuVram = await detectGpusVram();
     // Tag the cards serving the local LLM so the board shows which model each GPU
     // runs; null when the fleet isn't up (mining only) → blank on the board.
-    const serving = fleet ? { model: LLM.model.name, indices: fleet.servingIndices() } : null;
+    const serving = fleet ? { model: servingModel.name, indices: fleet.servingIndices() } : null;
     buildMinerReports(settings, snap, gpuVram, app.getVersion(), serving).forEach(postMinerReport);
   };
   report();
@@ -549,28 +555,35 @@ async function startLlm(reserveMb) {
   // means VRAM was measured but nothing fits — refuse, as the single-card path
   // did; when VRAM can't be read the planner returns one unknown-placement
   // instance and lets llama.cpp decide.
+  // Plan what the rig serves: the largest catalog model its VRAM allows, sharded
+  // across cards when a bigger model needs more than one (planLlmServing). One
+  // model per rig keeps telemetry + job routing per-node.
   const cards = await detectGpusVram();
-  const plan = planLlmInstances(cards, LLM.model, reserveMb || 0);
+  const { model, sharded, instances: plan } = planLlmServing(cards, LLM.models, reserveMb || 0);
   if (!plan.length) {
-    // An empty plan means VRAM was measured but no card had room — so at least
-    // one card parsed, and pickLlmGpu (same parse rules) returns it for the error.
+    // An empty plan means VRAM was measured but no card had room for even the
+    // smallest model — so at least one card parsed, and pickLlmGpu (same parse
+    // rules) returns it for the error.
+    const smallest = LLM.models[0];
     const best = pickLlmGpu(cards);
     const freeMb = best.freeMb;
-    const needGb = Math.round(requiredVramMb(LLM.model) / 1024);
+    const needGb = Math.round(requiredVramMb(smallest) / 1024);
     send('miner:log', { level: 'error', line: 'not enough free VRAM for the local LLM: ' + freeMb
-      + ' MB free, need ~' + requiredVramMb(LLM.model) + ' MB for ' + LLM.model.name + ' — skipping the LLM.' });
+      + ' MB free, need ~' + requiredVramMb(smallest) + ' MB for ' + smallest.name + ' — skipping the LLM.' });
     llmStatus = Object.assign({}, llmStatus, { ready: false, error: 'Needs ~' + needGb + ' GB free VRAM' });
     sendLlmStatus();
     return false;
   }
+  servingModel = model;
+  llmStatus = Object.assign({}, llmStatus, { model: model.name });
 
   const dir = path.join(app.getPath('userData'), 'llm');
-  send('miner:log', { level: 'info', line: 'preparing local LLM (' + LLM.model.name + ')…' });
+  send('miner:log', { level: 'info', line: 'preparing local LLM (' + model.name + ')…' });
 
   let binaryPath, modelPath;
   try {
     binaryPath = await resolveLlmBinary(dir);
-    const modelEngine = new LlmEngineManager({ dir, platform: process.platform, fs, download: downloadFile });
+    const modelEngine = new LlmEngineManager({ dir, platform: process.platform, fs, download: downloadFile, model });
     modelPath = await modelEngine.ensureModel();
   } catch (e) {
     send('miner:log', { level: 'error', line: 'LLM setup failed: ' + e.message });
@@ -597,10 +610,13 @@ async function startLlm(reserveMb) {
     send('miner:log', { level: 'error', line: 'could not install the LLM runtime DLLs: ' + e.message });
   }
 
-  const gpus = plan.map((p) => (p.index == null ? 'auto' : p.index)).join(', ');
-  send('miner:log', { level: 'info', line: 'local LLM starting on ' + plan.length + ' GPU'
-    + (plan.length === 1 ? '' : 's') + ' [' + gpus + ']' });
-  await fleet.start(plan, { platform: process.platform, binaryPath, modelPath });
+  const gpus = sharded
+    ? 'sharded across GPUs ' + plan[0].devices.join(',')
+    : plan.length + ' GPU' + (plan.length === 1 ? '' : 's') + ' ['
+      + plan.map((p) => (p.index == null ? 'auto' : p.index)).join(', ') + ']';
+  send('miner:log', { level: 'info', line: 'local LLM (' + model.name + ') starting on ' + gpus });
+  await fleet.start(plan, { platform: process.platform, binaryPath, modelPath,
+    ctxSize: model.ctxSize, parallel: model.parallel });
   llmStatus = Object.assign({}, llmStatus, { ready: false, error: null });
   sendLlmStatus();
   return true;
@@ -635,6 +651,7 @@ function buildFleet() {
   f.on('error', () => { /* transient instance error — the fleet keeps the others */ });
   f.on('stopped', () => {
     cancelChat('the local LLM stopped');
+    stopServeController(); // serving is over → make sure mining is resumed
     resetLlmStatus();
     // Every instance died before any became ready while mining keeps running —
     // the silent-failure case (typically a port-bind/OOM), not a user stop.
@@ -663,9 +680,17 @@ function warmUpLlm(baseUrl) {
 
 function stopLlm() {
   cancelChat('the local LLM was stopped');
+  stopServeController();
   if (fleet) { fleet.stop(); fleet = null; }
   serveLogged = false;
   resetLlmStatus();
+}
+
+// Demand-driven mining pause (auto mode): while serving a request, freeze mining
+// on the GPU so inference runs at full speed, then resume after an idle debounce.
+// Tears down cleanly (resumes mining) when serving stops or the mode changes.
+function stopServeController() {
+  if (serveController) { serveController.stop(); serveController = null; }
 }
 
 // ── In-app chat: stream the local llama-server's OpenAI chat completions ──────
@@ -704,9 +729,13 @@ function llmChat(messages) {
   const s = streamChatCompletion(base, buildChatBody(grounded, { stream: true }),
     (text) => send('llm:chat:delta', { text }));
   chatStream = s;
+  // In-app chat is a request on the serving card too — pause mining while it
+  // streams (auto mode), and release on the terminal outcome.
+  if (serveController) serveController.jobStarted();
+  const endServe = () => { if (serveController) serveController.jobEnded(); };
   s.done.then(
-    () => { if (chatStream === s) chatStream = null; send('llm:chat:done', {}); },
-    (e) => { if (chatStream === s) chatStream = null; send('llm:chat:error', { message: e.message }); },
+    () => { endServe(); if (chatStream === s) chatStream = null; send('llm:chat:done', {}); },
+    (e) => { endServe(); if (chatStream === s) chatStream = null; send('llm:chat:error', { message: e.message }); },
   );
 }
 
@@ -754,7 +783,7 @@ async function pingNode() {
   try { vram = await detectVram(); } catch (e) { /* ignore */ }
   const device = await deviceName();
   const telemetry = nodeProto.buildTelemetry({
-    model: LLM.model.name, quant: LLM.model.quant, device, vram,
+    model: servingModel.name, quant: servingModel.quant, device, vram,
     tokensPerSec: llmStatus.tokensPerSec, ready: llmStatus.ready,
     activeJobs: fleet ? fleet.activeJobs() : 0,
     name: node.name,
@@ -844,9 +873,18 @@ function makeJobWorker(baseUrl) {
     runJob: (chatBody, { onDelta }) => streamChatCompletion(baseUrl, chatBody, onDelta).done,
   });
   w.on('error', () => { /* transient poll failure — keep looping */ });
-  w.on('job', ({ id }) => send('miner:log', { level: 'info', line: 'cluster job ' + id + ' — running locally' }));
-  w.on('done', ({ id }) => send('miner:log', { level: 'info', line: 'cluster job ' + id + ' — done' }));
-  w.on('failed', ({ id, error }) => send('miner:log', { level: 'error', line: 'cluster job ' + id + ' failed: ' + error }));
+  w.on('job', ({ id }) => {
+    send('miner:log', { level: 'info', line: 'cluster job ' + id + ' — running locally' });
+    if (serveController) serveController.jobStarted(); // pause mining while it runs (auto)
+  });
+  w.on('done', ({ id }) => {
+    send('miner:log', { level: 'info', line: 'cluster job ' + id + ' — done' });
+    if (serveController) serveController.jobEnded();
+  });
+  w.on('failed', ({ id, error }) => {
+    send('miner:log', { level: 'error', line: 'cluster job ' + id + ' failed: ' + error });
+    if (serveController) serveController.jobEnded();
+  });
   if (!serveLogged) {
     serveLogged = true;
     send('miner:log', { level: 'info', line: 'serving cluster jobs for the LLMJob network' });
@@ -906,7 +944,8 @@ function waitForMinerUp(capMs) {
 // no engine at all), tell the renderer — otherwise its optimistic "running"
 // state shows STOP for a session in which nothing runs.
 async function applyPlan(settings) {
-  const plan = resolvePlan(settings.mode || DEFAULT_MODE, { canMine: isValidAddress(settings.address), canLlm: true });
+  const mode = settings.mode || DEFAULT_MODE;
+  const plan = resolvePlan(mode, { canMine: isValidAddress(settings.address), canLlm: true });
   if (plan.miner) {
     // Start mining FIRST, then — when co-running — wait until the miner reports a
     // non-zero hashrate before starting the LLM. Spawning the process (or even
@@ -925,6 +964,19 @@ async function applyPlan(settings) {
     persistSettings(settings); // startMining persists; do it here when the miner is off
   }
   syncNodeName(settings);
+  // Auto mode co-runs mining + LLM but pauses mining on the serving card while a
+  // request is in flight (better tok/s), resuming when idle. `both` keeps the old
+  // always-co-run behavior; other modes never serve, so no controller.
+  stopServeController();
+  if (plan.miner && plan.llm && mode === 'auto') {
+    const m = miner; // the miner just (re)started above; pause/resume are safe no-ops if it isn't actually running
+    serveController = new ServeController({
+      pause: () => m.pause(),
+      resume: () => m.resume(),
+      log: (line) => send('miner:log', { level: 'info', line }),
+    });
+    serveController.start();
+  }
   if (plan.llm) {
     const started = await startLlm(plan.miner ? LLM.miningReserveMb : 0).catch(() => false);
     if (!started && !plan.miner) send('miner:stopped');

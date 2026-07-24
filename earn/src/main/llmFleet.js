@@ -63,6 +63,10 @@ class LlmFleet extends EventEmitter {
         port,
         nGpuLayers: e.nGpuLayers,
         mainGpu: e.index == null ? undefined : e.index,
+        // Sharded entries carry a split across cards; per-card entries leave
+        // these undefined, so buildServerArgs keeps --split-mode none.
+        splitMode: e.splitMode,
+        tensorSplit: e.tensorSplit,
       }));
       inst.baseUrl = mgr.baseUrl;
       port += 1; // next instance probes from the following port
