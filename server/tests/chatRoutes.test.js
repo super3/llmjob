@@ -97,7 +97,7 @@ describe('Chat gateway — integration', () => {
     expect(meta).toMatchObject({
       model: 'meta-llama/llama-3.3-70b-instruct',
       promptTokens: 4, completionTokens: 2, totalTokens: 6,
-      tokensPerSecond: 20, ttftMs: 100, latencyMs: 200
+      tokensPerSecond: 20, ttftMs: 100, latencyMs: 200, finish: 'stop'
     });
     expect(res.text.trim().endsWith('data: [DONE]')).toBe(true);
 
@@ -106,7 +106,7 @@ describe('Chat gateway — integration', () => {
     expect(calls[0].init.headers.Authorization).toBe('Bearer test-key');
     expect(calls[0].body).toMatchObject({
       model: 'meta-llama/llama-3.3-70b-instruct', stream: true,
-      stream_options: { include_usage: true }, max_tokens: 1024
+      stream_options: { include_usage: true }, max_tokens: 2048
     });
 
     const totals = await new ChatUsageService(db).getTotals();
@@ -522,7 +522,7 @@ describe('ChatController — config', () => {
     expect(ctrl.baseUrl).toBe('https://openrouter.ai/api/v1');
     expect(ctrl.models).toBe(ChatController.DEFAULT_MODELS);
     expect(ctrl.freeBudget).toBe(1000000);
-    expect(ctrl.maxTokens).toBe(1024);
+    expect(ctrl.maxTokens).toBe(2048);
     expect(ctrl.referer).toBe('https://llmjob.com');
     expect(ctrl.title).toBe('LLMJob');
     expect(ctrl.systemPrompt).toContain('LLMJob assistant');
@@ -560,7 +560,7 @@ describe('ChatController — config', () => {
     process.env.OPENROUTER_MAX_TOKENS = 'plenty';
     const ctrl = new ChatController();
     expect(ctrl.freeBudget).toBe(1000000);
-    expect(ctrl.maxTokens).toBe(1024);
+    expect(ctrl.maxTokens).toBe(2048);
   });
 
   describe('parseModels', () => {

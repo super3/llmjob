@@ -179,7 +179,7 @@ Free web chat (OpenRouter proxy) — all optional, with sensible defaults:
   built-in Qwen list.
 - `OPENROUTER_FREE_TOKEN_BUDGET` - Total tokens of free usage before the endpoint
   starts returning `402` (default `1000000`; set `0` to disable the cap).
-- `OPENROUTER_MAX_TOKENS` - Per-request completion ceiling (default `1024`).
+- `OPENROUTER_MAX_TOKENS` - Per-request completion ceiling (default `2048`).
 - `OPENROUTER_SYSTEM_PROMPT` - System message injected on every chat request so
   the model has LLMJob context (what LLMJob is, PPLNS, etc.). Defaults to a
   built-in prompt; set to an empty string to disable injection.
