@@ -69,11 +69,13 @@ class JobController {
     try {
       const { nodeId, maxJobs } = req.body;
 
-      // Verify node exists and is active
-      if (!(await this._requireNode(req, res))) return;
+      // Verify the node exists and the caller proves it owns the node's key.
+      const node = await this._requireNode(req, res);
+      if (!node) return;
 
-      // Assign jobs to node
-      const jobs = await this.jobService.assignJobsToNode(nodeId, maxJobs || 1);
+      // Assign jobs to node, routed to the model it serves (falls back to
+      // model-agnostic when the node hasn't reported a model yet).
+      const jobs = await this.jobService.assignJobsToNode(nodeId, maxJobs || 1, node.model);
 
       res.json({
         success: true,

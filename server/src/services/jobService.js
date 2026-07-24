@@ -17,6 +17,35 @@ const DEFAULT_MODEL = 'Gemma-4-E4B-it-Q4_K_M';
 // is the real cap, and this default exists so a caller who sends no max_tokens
 // isn't held below it.
 const DEFAULT_MAX_TOKENS = 6400;
+// How many pending jobs to scan for a model match before giving up on this poll,
+// when routing by model. Keeps a node from locking the whole queue while it looks
+// for work it can serve. Trade-off: a matching job that sorts behind ASSIGN_SCAN
+// non-matching jobs (higher priority, or older) is invisible to a capable node
+// until those drain — and if they don't within PENDING_TTL_MS it is expired
+// unserved. Bounded (FIFO + the pending TTL), and rare on a lightly-loaded queue;
+// a fuller fix would filter by model in SQL (a stored normalized model key).
+const ASSIGN_SCAN = 25;
+
+// Canonicalize a model name so the chat-gateway id (e.g. "qwen/qwen3.6-27b") and
+// the node's served GGUF name (e.g. "Qwen3.6-27B-Q4_K_M") compare equal: drop a
+// "vendor/" prefix, drop a trailing GGUF quant (…-Q4_K_M), and strip separators.
+function normalizeModel(name) {
+  let s = String(name == null ? '' : name).toLowerCase().trim();
+  const slash = s.lastIndexOf('/');
+  if (slash >= 0) s = s.slice(slash + 1);       // drop a "vendor/" prefix
+  s = s.replace(/[-_.\s]q\d[a-z0-9_]*$/i, '');   // drop a trailing GGUF quant (…-q4_k_m)
+  return s.replace(/[^a-z0-9]/g, '');            // canonicalize separators
+}
+
+// Can a node serving `nodeModel` run a job that requested `jobModel`? A missing
+// model on either side doesn't block routing (model-agnostic job / a node that
+// hasn't reported its model yet); otherwise the normalized names must match.
+function modelsMatch(jobModel, nodeModel) {
+  const a = normalizeModel(jobModel);
+  const b = normalizeModel(nodeModel);
+  if (!a || !b) return true;
+  return a === b;
+}
 
 // A job's routing (inherited from the API key that created it): 'private' may
 // only run on the owner's own nodes; anything else is 'public' (any node).
@@ -108,7 +137,12 @@ class JobService {
   // hardware. The node's owner is read from the DB (the single source of truth),
   // not trusted from the caller. A NULL job visibility (pre-feature rows) counts
   // as public. A node with no owner (unclaimed) can serve only public jobs.
-  async assignJobsToNode(nodeId, maxJobs = 1) {
+  //
+  // When `nodeModel` is given, only jobs that node can serve are also claimed
+  // (see modelsMatch), so a rig serving Qwen3.6 27B isn't handed a job that asked
+  // for the 35B A3B — it scans a window of the (visibility-filtered) queue for
+  // matching work. Omitting nodeModel keeps the original model-agnostic behavior.
+  async assignJobsToNode(nodeId, maxJobs = 1, nodeModel) {
     const assignedJobs = [];
     const client = await this.db.connect();
     try {
@@ -121,16 +155,27 @@ class JobService {
       // time. SKIP LOCKED lets each poller step over rows another is already taking
       // and grab the next ones, so N nodes fan out to N jobs. The target_node filter
       // pins a job to one node when set (null = any eligible node).
+      //
+      // A model-filtering node selects a WINDOW (ASSIGN_SCAN) rather than just
+      // maxJobs, because the match happens per-row below and the jobs it can serve
+      // may sit behind ones it can't. That interacts with SKIP LOCKED: the window is
+      // locked for the transaction, so a concurrent poller skips those rows instead
+      // of blocking on them and may come back empty even though one matched it. The
+      // locks last only to COMMIT and the poller retries, so this costs a poll
+      // interval, never a job.
+      const limit = nodeModel ? Math.max(maxJobs, ASSIGN_SCAN) : maxJobs;
       const pending = await client.query(
         `SELECT id, data FROM jobs
          WHERE status = 'pending'
            AND (visibility IS NULL OR visibility <> 'private' OR user_id = $2)
            AND (target_node IS NULL OR target_node = $3)
          ORDER BY priority DESC, created_at ASC LIMIT $1 FOR UPDATE SKIP LOCKED`,
-        [maxJobs, ownerUserId, nodeId]
+        [limit, ownerUserId, nodeId]
       );
 
       for (const row of pending.rows) {
+        if (assignedJobs.length >= maxJobs) break;
+        if (nodeModel && !modelsMatch(row.data.model, nodeModel)) continue;
         const now = Date.now();
         const job = { ...row.data, status: 'assigned', assignedTo: nodeId, assignedAt: now, updatedAt: now };
         await client.query(
@@ -409,6 +454,9 @@ class JobService {
     return r.rowCount;
   }
 }
+
+JobService.normalizeModel = normalizeModel;
+JobService.modelsMatch = modelsMatch;
 
 module.exports = JobService;
 module.exports.DEFAULT_MODEL = DEFAULT_MODEL;
