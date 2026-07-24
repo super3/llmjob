@@ -3,6 +3,7 @@ const path = require('path');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const { createPool } = require('./db');
+const { corsOrigin } = require('./corsOptions');
 const routes = require('./routes');
 const { initJobRoutes, initOpenAiRoutes, initChatRoutes } = require('./routes');
 const NodeService = require('./services/nodeService');
@@ -13,8 +14,10 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Middleware
-app.use(cors());
+// Middleware. CORS is restricted to our own origins (llmjob.com + the Railway
+// app + previews); other websites can't call the API — including the free chat
+// proxy — from a browser. Non-browser callers send no Origin and are unaffected.
+app.use(cors({ origin: corsOrigin }));
 app.use(express.json());
 
 // Postgres pool
