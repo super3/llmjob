@@ -400,6 +400,89 @@ describe('streamChatCompletion', () => {
   });
 });
 
+describe('streamProxyChat', () => {
+  it('POSTs to the gateway, batches deltas, resolves on done', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    const reqs = wire(https, [res]);
+    const deltas = [];
+    const { done } = io.streamProxyChat('https://llmjob.example', { model: 'qwen/qwen3.6-27b' },
+      (text) => deltas.push(text));
+    // The request lands on the gateway chat path.
+    expect(https.request).toHaveBeenCalledWith(
+      expect.objectContaining({ href: 'https://llmjob.example/api/chat/completions' }),
+      expect.any(Object), expect.any(Function));
+    res.emit('data', 'data: {"delta":"He"}\n\n');
+    res.emit('data', 'data: {"delta":"llo"}\n\ndata: {"done":true}\n\n');
+    await expect(done).resolves.toBeUndefined();
+    expect(deltas.join('')).toBe('Hello');
+    expect(res.destroy).toHaveBeenCalled();
+    expect(reqs[0].write).toHaveBeenCalledWith(JSON.stringify({ model: 'qwen/qwen3.6-27b' }));
+  });
+
+  it('resolves on a normal stream end (idempotent)', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    wire(http, [res]);
+    const { done } = io.streamProxyChat('http://127.0.0.1:9', {}, () => {});
+    res.emit('end');
+    res.emit('end');
+    await expect(done).resolves.toBeUndefined();
+  });
+
+  it('rejects with the gateway error frame', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    wire(https, [res]);
+    const { done } = io.streamProxyChat('https://llmjob.example', {}, () => {});
+    res.emit('data', 'data: {"error":"quota exhausted"}\n\n');
+    await expect(done).rejects.toThrow('quota exhausted');
+    expect(res.destroy).toHaveBeenCalled();
+  });
+
+  it('rejects on a non-200 from the gateway', async () => {
+    const res = fakeRes({ statusCode: 402 });
+    wire(https, [res]);
+    const { done } = io.streamProxyChat('https://llmjob.example', {}, () => {});
+    await expect(done).rejects.toThrow('LLMJob proxy HTTP 402');
+  });
+
+  it('rejects on a response error, and a later error is a no-op', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    const reqs = wire(https, [res]);
+    const { done } = io.streamProxyChat('https://llmjob.example', {}, () => {});
+    res.emit('error', new Error('stream reset'));
+    reqs[0].emit('error', new Error('later')); // idempotent — fail() guards on `settled`
+    await expect(done).rejects.toThrow('stream reset');
+  });
+
+  it('rejects on a request error', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    const reqs = wire(https, [res]);
+    const { done } = io.streamProxyChat('https://llmjob.example', {}, () => {});
+    reqs[0].emit('error', new Error('connect refused'));
+    await expect(done).rejects.toThrow('connect refused');
+  });
+
+  it('cancel settles done before destroying the request; default reason', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    const reqs = wire(https, [res]);
+    const a = io.streamProxyChat('https://llmjob.example', {}, () => {});
+    a.cancel('user stopped');
+    await expect(a.done).rejects.toThrow('user stopped');
+    expect(reqs[0].destroy).toHaveBeenCalled();
+
+    const res2 = fakeRes({ statusCode: 200 });
+    wire(https, [res2]);
+    const b = io.streamProxyChat('https://llmjob.example', {}, () => {});
+    b.cancel();
+    await expect(b.done).rejects.toThrow('cancelled');
+  });
+
+  it('returns a no-op cancel and rejects on an invalid base URL', async () => {
+    const { done, cancel } = io.streamProxyChat('::bad::', {}, () => {});
+    expect(() => cancel()).not.toThrow();
+    await expect(done).rejects.toBeDefined();
+  });
+});
+
 describe('extractLlamaZip', () => {
   function magic(bytes) {
     fs.openSync.mockReturnValue(7);

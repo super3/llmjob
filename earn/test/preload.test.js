@@ -33,6 +33,7 @@ describe('invoke-based methods', () => {
     ['getBalance', 'balance:get', 'prl1abc'],
     ['getMdlBalance', 'balance:getMdl', 'prl1abc'],
     ['getLlmStatus', 'llm:status'],
+    ['getChatModels', 'chat:models'],
     ['getNodeStatus', 'node:status'],
     ['connectNode', 'node:connect', { token: 't' }],
     ['disconnectNode', 'node:disconnect'],
@@ -50,7 +51,6 @@ describe('invoke-based methods', () => {
 
 describe('send-based methods', () => {
   const cases = [
-    ['sendChat', 'llm:chat', [{ role: 'user', content: 'hi' }]],
     ['openNodeDashboard', 'node:dashboard'],
     ['startMiner', 'miner:start', { address: 'prl1abc' }],
     ['stopMiner', 'miner:stop'],
@@ -67,6 +67,12 @@ describe('send-based methods', () => {
       if (arg === undefined) expect(ipcRenderer.send).toHaveBeenCalledWith(channel);
       else expect(ipcRenderer.send).toHaveBeenCalledWith(channel, arg);
     });
+  });
+
+  it('sendChat wraps the messages + chosen model into one payload', () => {
+    api.sendChat([{ role: 'user', content: 'hi' }], 'qwen/qwen3.6-27b');
+    expect(ipcRenderer.send).toHaveBeenCalledWith('llm:chat',
+      { messages: [{ role: 'user', content: 'hi' }], model: 'qwen/qwen3.6-27b' });
   });
 });
 

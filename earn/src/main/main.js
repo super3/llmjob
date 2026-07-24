@@ -18,7 +18,7 @@ const { MinerManager } = require('./minerManager');
 const { EngineManager } = require('./engineManager');
 const { LlmManager } = require('./llmManager');
 const { LlmEngineManager } = require('./llmEngineManager');
-const { postJson, getJson, downloadFile, streamChatCompletion, extractLlamaZip } = require('./io');
+const { postJson, getJson, downloadFile, streamChatCompletion, streamProxyChat, extractLlamaZip } = require('./io');
 const {
   detectRegion, detectVram, detectGpusVram, detectDriverMajor,
   postMinerReport, findFreePort,
@@ -31,6 +31,9 @@ const { resolveEconomics } = require('../shared/economics');
 const nodeProto = require('../shared/node');
 const { computeGpuLayers, requiredVramMb, hasEnoughVram, pickLlmGpu } = require('../shared/vram');
 const { buildChatBody } = require('../shared/llmChat');
+const {
+  PROXY_MODELS, proxyModelsUrl, parseModelsResponse, findProxyModel, buildProxyChatBody,
+} = require('../shared/llmProxy');
 const { JobWorker } = require('./jobWorker');
 const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
 const { buildBalanceUrl, parseBalance, buildMdlBalanceUrl, parseMdlBalance } = require('../shared/balance');
@@ -615,7 +618,7 @@ async function startLlm(reserveMb) {
   });
   llm.on('stats', ({ tokensPerSec }) => { llmStatus = Object.assign({}, llmStatus, { tokensPerSec }); sendLlmStatus(); });
   llm.on('stopped', () => {
-    cancelChat('the local LLM stopped');
+    cancelLocalChat('the local LLM stopped');
     stopWorker();
     resetLlmStatus();
     // Exited before ever going ready while mining keeps running — this is the
@@ -653,7 +656,7 @@ function warmUpLlm(baseUrl) {
 }
 
 function stopLlm() {
-  cancelChat('the local LLM was stopped');
+  cancelLocalChat('the local LLM was stopped');
   stopWorker();
   if (llm) { llm.stop(); llm = null; }
   resetLlmStatus();
@@ -666,12 +669,20 @@ function stopLlm() {
 // settles the stream, so the renderer is guaranteed a done/error outcome — no
 // stuck "streaming" state when the LLM is stopped mid-reply.
 let chatStream = null;
+let chatStreamProxy = false; // is the active stream a proxy (gateway) chat?
 
 function cancelChat(reason) {
   if (!chatStream) return;
   const s = chatStream;
   chatStream = null;
   s.cancel(reason || 'cancelled');
+}
+
+// Cancel the active chat only when it's the LOCAL model's stream. A proxy chat
+// runs against the gateway, independent of the on-device server, so stopping the
+// local LLM must not abort it.
+function cancelLocalChat(reason) {
+  if (chatStream && !chatStreamProxy) cancelChat(reason);
 }
 
 // Grounding for the in-app chat: a small local model has no idea what "LLMJob"
@@ -686,19 +697,59 @@ const CHAT_SYSTEM_PROMPT = [
   'Answer conversationally and concisely. For anything unrelated to LLMJob, just answer normally.',
 ].join('\n');
 
-function llmChat(messages) {
+// The models reachable "through LLMJob as a proxy" (the web gateway's allow-list).
+// Starts as the built-in list and is refreshed from the server so the picker
+// tracks whatever the gateway actually serves.
+let chatModels = PROXY_MODELS;
+
+// Best-effort refresh of the proxy model list from GET /api/chat/models. getJson
+// never rejects (null on any failure), so a malformed/absent response just keeps
+// the built-in list.
+async function refreshChatModels() {
+  const parsed = parseModelsResponse(await getJson(proxyModelsUrl(NODE.serverUrl)));
+  if (parsed) chatModels = parsed;
+  return chatModels;
+}
+
+// Relay a chat stream's deltas over IPC and settle the shared chatStream slot.
+// Shared by the local and proxy paths so both surface identical delta/done/error
+// events to the renderer. `isProxy` marks a gateway stream so a local-LLM stop
+// leaves it running.
+function relayChatStream(stream, isProxy) {
+  chatStream = stream;
+  chatStreamProxy = !!isProxy;
+  stream.done.then(
+    () => { if (chatStream === stream) chatStream = null; send('llm:chat:done', {}); },
+    (e) => { if (chatStream === stream) chatStream = null; send('llm:chat:error', { message: e.message }); },
+  );
+}
+
+// Run one chat turn from a { messages, model } payload. A `model` that names a
+// gateway model routes the turn "through LLMJob as a proxy" instead of the local
+// llama-server — so a box whose GPU can't run that model (or with the local LLM
+// off) can still use it. No model → the local model.
+function llmChat(payload) {
   cancelChat('superseded by a new message');
+  const p = payload || {};
+  const messages = Array.isArray(p.messages) ? p.messages : [];
+  const modelId = p.model || null;
+  const proxy = modelId ? findProxyModel(modelId, chatModels) : null;
+
+  if (proxy) {
+    // Proxy path: the gateway grounds + serves the model, so we forward the raw
+    // turns (no local system prompt) and need no local llama-server running.
+    relayChatStream(streamProxyChat(NODE.serverUrl,
+      buildProxyChatBody(messages, { model: proxy.id, stream: true }),
+      (text) => send('llm:chat:delta', { text })), true);
+    return;
+  }
+
+  // Local path: stream the on-device llama-server, grounded with LLMJob context.
   const base = llmStatus.webUrl || ('http://' + LLM.host + ':' + LLM.port);
   if (!llm || !llmStatus.ready) { send('llm:chat:error', { message: 'the local LLM is not running' }); return; }
-
-  const grounded = [{ role: 'system', content: CHAT_SYSTEM_PROMPT }].concat(Array.isArray(messages) ? messages : []);
-  const s = streamChatCompletion(base, buildChatBody(grounded, { stream: true }),
-    (text) => send('llm:chat:delta', { text }));
-  chatStream = s;
-  s.done.then(
-    () => { if (chatStream === s) chatStream = null; send('llm:chat:done', {}); },
-    (e) => { if (chatStream === s) chatStream = null; send('llm:chat:error', { message: e.message }); },
-  );
+  const grounded = [{ role: 'system', content: CHAT_SYSTEM_PROMPT }].concat(messages);
+  relayChatStream(streamChatCompletion(base, buildChatBody(grounded, { stream: true }),
+    (text) => send('llm:chat:delta', { text })));
 }
 
 // ── Connect with LLMJob (node identity + pairing/ping) ───────────────────────
@@ -931,6 +982,9 @@ ipcMain.handle('settings:get', () => Object.assign(
   loadSettings(),
 ));
 ipcMain.handle('llm:status', () => llmStatus);
+// The models the Chat picker offers "via LLMJob" (the proxy path). The local
+// model comes from llm:status; these are served through the gateway.
+ipcMain.handle('chat:models', () => ({ proxy: chatModels }));
 ipcMain.handle('config:get', () => ({ regions: REGIONS, defaults: DEFAULTS, miner: MINER }));
 ipcMain.handle('miner:difficultyForCard', (_e, name) => difficultyForCard(name));
 ipcMain.handle('gpu:detect', () => detectGpu());
@@ -983,6 +1037,10 @@ app.whenReady().then(() => {
   refreshEconomics();
   const econTimer = setInterval(refreshEconomics, 10 * 60 * 1000);
   if (econTimer.unref) econTimer.unref();
+  // Pull the gateway's live model allow-list so the Chat picker's "via LLMJob"
+  // options match what the server actually serves (best-effort; keeps the
+  // built-in list on any failure).
+  refreshChatModels();
   // The identity used to live in Electron's userData dir; move it into the
   // store shared with the CLI so one machine keeps one nodeId across shells.
   nodeStore.migrateFrom(path.join(app.getPath('userData'), 'node.json'));

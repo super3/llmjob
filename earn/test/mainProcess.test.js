@@ -103,6 +103,7 @@ jest.mock('../src/main/io', () => ({
   getJson: jest.fn(() => Promise.resolve(null)),
   downloadFile: jest.fn(() => Promise.resolve()),
   streamChatCompletion: jest.fn(() => ({ done: Promise.resolve(), cancel: jest.fn() })),
+  streamProxyChat: jest.fn(() => ({ done: Promise.resolve(), cancel: jest.fn() })),
   extractLlamaZip: jest.fn(() => Promise.resolve('/tmp/llm/llama-server')),
 }));
 
@@ -1294,7 +1295,7 @@ describe('in-app chat', () => {
     const ctx = loadMain();
     ctx.electron._fireReady();
     await flush();
-    ctx.emit('llm:chat', [{ role: 'user', content: 'hi' }]);
+    ctx.emit('llm:chat', { messages: [{ role: 'user', content: 'hi' }] });
     expect(ctx.sent('llm:chat:error')).toEqual([{ message: 'the local LLM is not running' }]);
   });
 
@@ -1309,7 +1310,7 @@ describe('in-app chat', () => {
     await flush();
     ctx.io.streamChatCompletion.mockClear();
 
-    // turn A: null messages still get the grounding system prompt
+    // turn A: null payload still gets the grounding system prompt
     const a = deferred();
     ctx.io.streamChatCompletion.mockReturnValueOnce({ done: a.p, cancel: jest.fn() });
     ctx.emit('llm:chat', null);
@@ -1328,7 +1329,7 @@ describe('in-app chat', () => {
     // turn B fails outright
     const b = deferred();
     ctx.io.streamChatCompletion.mockReturnValueOnce({ done: b.p, cancel: jest.fn() });
-    ctx.emit('llm:chat', [{ role: 'user', content: 'q' }]);
+    ctx.emit('llm:chat', { messages: [{ role: 'user', content: 'q' }] });
     expect(ctx.io.streamChatCompletion.mock.calls[1][1].messages).toHaveLength(2);
     b.reject(new Error('model crashed'));
     await flush();
@@ -1338,11 +1339,11 @@ describe('in-app chat', () => {
     const c = deferred();
     const cancelC = jest.fn();
     ctx.io.streamChatCompletion.mockReturnValueOnce({ done: c.p, cancel: cancelC });
-    ctx.emit('llm:chat', [{ role: 'user', content: 'old' }]);
+    ctx.emit('llm:chat', { messages: [{ role: 'user', content: 'old' }] });
     const d = deferred();
     const cancelD = jest.fn();
     ctx.io.streamChatCompletion.mockReturnValueOnce({ done: d.p, cancel: cancelD });
-    ctx.emit('llm:chat', [{ role: 'user', content: 'new' }]);
+    ctx.emit('llm:chat', { messages: [{ role: 'user', content: 'new' }] });
     expect(cancelC).toHaveBeenCalledWith('superseded by a new message');
     // C's late completion must not clear D's live stream
     c.resolve();
@@ -1355,6 +1356,79 @@ describe('in-app chat', () => {
     d.reject(new Error('stream closed'));
     await flush();
     expect(ctx.sent('llm:chat:error').map((e) => e.message)).toContain('stream closed');
+  });
+
+  it('routes a gateway model through the LLMJob proxy, no local LLM needed', async () => {
+    const ctx = loadMain();
+    ctx.electron._fireReady();
+    await flush();
+    ctx.io.streamProxyChat.mockClear();
+
+    // A { messages, model } turn naming a gateway model → the proxy path. The
+    // local LLM is NOT running, yet this must still stream.
+    const s = deferred();
+    ctx.io.streamProxyChat.mockReturnValueOnce({ done: s.p, cancel: jest.fn() });
+    ctx.emit('llm:chat', { messages: [{ role: 'user', content: 'hi' }], model: 'qwen/qwen3.6-27b' });
+
+    expect(ctx.io.streamChatCompletion).not.toHaveBeenCalled();
+    const [base, body, onDelta] = ctx.io.streamProxyChat.mock.calls[0];
+    expect(base).toBe(ctx.config.NODE.serverUrl);
+    expect(body.model).toBe('qwen/qwen3.6-27b');
+    // forwarded raw — the gateway injects its own grounding, so no local system msg
+    expect(body.messages).toEqual([{ role: 'user', content: 'hi' }]);
+    onDelta('yo');
+    expect(ctx.sent('llm:chat:delta')).toEqual([{ text: 'yo' }]);
+    s.resolve();
+    await flush();
+    expect(ctx.sent('llm:chat:done')).toHaveLength(1);
+
+    // an unknown model id is not a proxy model → falls back to the local path,
+    // which errors because the local LLM is down
+    ctx.emit('llm:chat', { messages: [{ role: 'user', content: 'x' }], model: 'gpt-4' });
+    expect(ctx.sent('llm:chat:error')).toContainEqual({ message: 'the local LLM is not running' });
+  });
+
+  it('keeps a proxy reply alive when the local LLM stops', async () => {
+    const ctx = await boot({
+      before: (c) => { c.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 2000 }); },
+    });
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    const llm = ctx.LlmManager.instances[0];
+    llm.emit('ready', { baseUrl: llm.baseUrl });
+    await flush();
+
+    // A proxy chat is streaming…
+    const cancel = jest.fn();
+    ctx.io.streamProxyChat.mockReturnValueOnce({ done: new Promise(() => {}), cancel });
+    ctx.emit('llm:chat', { messages: [{ role: 'user', content: 'hi' }], model: 'qwen/qwen3.6-27b' });
+    // …when the local llama-server dies, the proxy stream must NOT be cancelled.
+    llm.emit('stopped');
+    expect(cancel).not.toHaveBeenCalled();
+
+    // A local chat, by contrast, IS cancelled on a local-LLM stop.
+    llm.emit('ready', { baseUrl: llm.baseUrl });
+    await flush();
+    const localCancel = jest.fn();
+    ctx.io.streamChatCompletion.mockReturnValueOnce({ done: new Promise(() => {}), cancel: localCancel });
+    ctx.emit('llm:chat', { messages: [{ role: 'user', content: 'hey' }] });
+    llm.emit('stopped');
+    expect(localCancel).toHaveBeenCalledWith('the local LLM stopped');
+  });
+
+  it('chat:models serves the gateway list, refreshed from the server', async () => {
+    const ctx = loadMain();
+    // before ready: the built-in allow-list (the two Qwen models)
+    expect((await ctx.invoke('chat:models')).proxy).toEqual([
+      { id: 'qwen/qwen3.6-27b', label: 'Qwen3.6 27B' },
+      { id: 'qwen/qwen3.6-35b-a3b', label: 'Qwen3.6 35B A3B' },
+    ]);
+    // whenReady refreshes it from GET /api/chat/models
+    ctx.io.getJson.mockImplementation((url) => Promise.resolve(
+      String(url).includes('/api/chat/models') ? { models: [{ id: 'x/y', label: 'Zed' }] } : null));
+    ctx.electron._fireReady();
+    await flush();
+    expect((await ctx.invoke('chat:models')).proxy).toEqual([{ id: 'x/y', label: 'Zed' }]);
   });
 });
 
