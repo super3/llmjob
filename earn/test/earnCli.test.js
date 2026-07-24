@@ -415,7 +415,8 @@ describe('mining', () => {
     // The default mode is 'auto', so a bare run mines AND serves the LLM.
     expect(allOut()).toContain('mode:       auto  (default)');
     expect(allOut()).toContain('preparing local LLM (Gemma-4-E4B-it-Q4_K_M) …');
-    expect(allOut()).toContain('local LLM starting on 1 GPU [auto]');
+    // the start line names the model the rig picked (VRAM-tiered selection)
+    expect(allOut()).toContain('local LLM (' + LLM.model.name + ') starting on 1 GPU [auto]');
     expect(allOut()).toContain('worker:     rig-host  (auto)');
     expect(allOut()).toContain('(+MDL');
     expect(allOut()).toContain('difficulty: 262144  (for 2× NVIDIA GeForce RTX 3070, auto)');
@@ -587,7 +588,7 @@ describe('local LLM', () => {
     await settle();
 
     expect(allOut()).toContain('mode:       llm');
-    expect(allOut()).toContain('local LLM starting on 1 GPU [0]');
+    expect(allOut()).toContain('local LLM (' + LLM.model.name + ') starting on 1 GPU [0]');
     expect(allOut()).toContain('downloading LLM model');
 
     // The binary resolver's engine wires the shared extractor with the CLI hint.
@@ -751,19 +752,21 @@ describe('local LLM', () => {
   test('runs one instance and worker per eligible GPU, summing their active jobs', async () => {
     const m = load();
     m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: 'rig' }));
-    // Two roomy cards → one llama-server + cluster worker pinned to each.
+    // Two 8 GB cards → each holds the small model (not big enough to shard), so
+    // one llama-server + cluster worker pinned to each.
     m.probe.detectGpusVram.mockResolvedValue([
-      { index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 },
-      { index: 1, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+      { index: 0, name: 'RTX 3070', usedMb: 1000, totalMb: 8000 },
+      { index: 1, name: 'RTX 3070', usedMb: 1000, totalMb: 8000 },
     ]);
-    m.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 2000 });
+    m.probe.detectVram.mockResolvedValue({ totalMb: 8000, usedMb: 1000 });
     m.probe.findFreePort.mockImplementation((h, p) => Promise.resolve(p));
     const p = m.run(['--mode', 'llm', '--no-update']);
     await settle();
 
-    // The plural log names every planned card, but they start ONE AT A TIME:
-    // simultaneous multi-GB model loads thrash the page cache (see LlmFleet).
-    expect(allOut()).toContain('local LLM starting on 2 GPUs [0, 1]');
+    // The plural log names every planned card (and the model the rig picked), but
+    // they start ONE AT A TIME: simultaneous multi-GB model loads thrash the page
+    // cache (see LlmFleet).
+    expect(allOut()).toContain('local LLM (' + LLM.model.name + ') starting on 2 GPUs [0, 1]');
     expect(m.LlmManager.instances.length).toBe(1);
     const g0 = m.LlmManager.instances[0];
     expect(g0.start).toHaveBeenCalledWith(expect.objectContaining({ port: 8080, mainGpu: 0 }));
@@ -987,5 +990,31 @@ describe('connect subcommand', () => {
     expect(allOut()).toContain('resuming pings for abc123');
     fire('SIGTERM');
     await expect(p).resolves.toBe(0);
+  });
+});
+
+// ── multi-GPU serving: sharding + auto-mode pause ────────────────────────────
+
+describe('multi-GPU serving', () => {
+  test('shards a big model across GPUs when no single card fits it', async () => {
+    const m = load();
+    // two 16 GB A4000s, ~14 GB free each → shard the ~24 GB model across both
+    m.probe.detectGpusVram.mockResolvedValue([
+      { index: 0, name: 'RTX A4000', usedMb: 2000, totalMb: 16376 },
+      { index: 1, name: 'RTX A4000', usedMb: 2000, totalMb: 16376 },
+    ]);
+    const p = m.run(['--mode', 'llm', '--no-update', '--llm-binary', '/lb', '--llm-model', '/lm']);
+    await settle(6);
+
+    const moe = LLM.models.find((mm) => mm.id === 'qwen3.6-35b-a3b');
+    expect(m.LlmManager.instances.length).toBe(1); // one sharded instance, not one per card
+    expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+      splitMode: 'layer', tensorSplit: [14376, 14376], mainGpu: 0,
+      nGpuLayers: moe.layers, ctxSize: moe.ctxSize, parallel: moe.parallel,
+    }));
+    expect(allOut()).toContain('local LLM (' + moe.name + ') starting on sharded across GPUs 0,1');
+
+    m.LlmManager.instances[0].emit('stopped', 0); // fleet down → llm-only exits non-zero
+    await expect(p).resolves.toBe(1);
   });
 });

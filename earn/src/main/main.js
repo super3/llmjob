@@ -30,7 +30,7 @@ const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE, endpointFo
 const { resolveEconomics } = require('../shared/economics');
 const nodeProto = require('../shared/node');
 const { requiredVramMb, pickLlmGpu } = require('../shared/vram');
-const { planLlmInstances } = require('../shared/llmPlan');
+const { planLlmServing } = require('../shared/llmPlan');
 const { LlmFleet } = require('./llmFleet');
 const { buildChatBody } = require('../shared/llmChat');
 const { JobWorker } = require('./jobWorker');
@@ -55,6 +55,10 @@ let fleet = null;               // LlmFleet (one llama-server per eligible GPU) 
 let llmEverReady = false;       // did any instance reach "ready" this run (vs. dying first)
 let serveLogged = false;        // "serving cluster jobs" logged once per serving run
 let registeredUnlinked = false; // self-registered an unlinked node once this run
+// The single model the rig is serving (VRAM-tiered, possibly sharded across
+// cards). Drives the served-model status, node telemetry, and the board's LLM
+// column. Defaults to the small model until startLlm picks one.
+let servingModel = LLM.model;
 // `note` is a transient "what is it doing right now" line — "Downloading model…
 // 42%", "Starting…" — shown in place of the model name until the LLM is ready.
 // Without it a first run logs "preparing local LLM…" and then goes silent for
@@ -247,10 +251,11 @@ async function startMining(settings) {
     // when this machine polls the cluster — linked or not (syncWorker arms the
     // worker on the fleet, not on the account). Running the model and serving the
     // cluster are the same thing here; a machine with no identity yet reports null.
+    // The model is the tier this rig actually loaded, not the catalog default.
     const identity = loadNode();
     const serving = fleet
       ? {
-        model: LLM.model.name,
+        model: servingModel.name,
         indices: fleet.servingIndices(),
         nodeId: identity ? identity.nodeId : null,
       }
@@ -621,23 +626,30 @@ async function startLlm(reserveMb) {
   // means VRAM was measured but nothing fits — refuse, as the single-card path
   // did; when VRAM can't be read the planner returns one unknown-placement
   // instance and lets llama.cpp decide.
+  // Plan what the rig serves: the largest catalog model its VRAM allows, sharded
+  // across cards when a bigger model needs more than one (planLlmServing). One
+  // model per rig keeps telemetry + job routing per-node.
   const cards = await detectGpusVram();
-  const plan = planLlmInstances(cards, LLM.model, reserveMb || 0);
+  const { model, sharded, instances: plan } = planLlmServing(cards, LLM.models, reserveMb || 0);
   if (!plan.length) {
-    // An empty plan means VRAM was measured but no card had room — so at least
-    // one card parsed, and pickLlmGpu (same parse rules) returns it for the error.
+    // An empty plan means VRAM was measured but no card had room for even the
+    // smallest model — so at least one card parsed, and pickLlmGpu (same parse
+    // rules) returns it for the error.
+    const smallest = LLM.models[0];
     const best = pickLlmGpu(cards);
     const freeMb = best.freeMb;
-    const needGb = Math.round(requiredVramMb(LLM.model) / 1024);
+    const needGb = Math.round(requiredVramMb(smallest) / 1024);
     send('miner:log', { level: 'error', line: 'not enough free VRAM for the local LLM: ' + freeMb
-      + ' MB free, need ~' + requiredVramMb(LLM.model) + ' MB for ' + LLM.model.name + ' — skipping the LLM.' });
+      + ' MB free, need ~' + requiredVramMb(smallest) + ' MB for ' + smallest.name + ' — skipping the LLM.' });
     llmStatus = Object.assign({}, llmStatus, { ready: false, note: null, error: 'Needs ~' + needGb + ' GB free VRAM' });
     sendLlmStatus();
     return false;
   }
+  servingModel = model;
+  llmStatus = Object.assign({}, llmStatus, { model: model.name });
 
   const dir = path.join(app.getPath('userData'), 'llm');
-  send('miner:log', { level: 'info', line: 'preparing local LLM (' + LLM.model.name + ')…' });
+  send('miner:log', { level: 'info', line: 'preparing local LLM (' + model.name + ')…' });
 
   // Both of these are no-ops once cached, but on a first run they fetch ~100 MB
   // of llama-server and a ~5 GB model. Report progress so the wait is legible
@@ -646,8 +658,10 @@ async function startLlm(reserveMb) {
   try {
     setLlmNote('Preparing…');
     binaryPath = await resolveLlmBinary(dir, progressReporter('downloading llama-server…'));
-    const modelEngine = new LlmEngineManager({ dir, platform: process.platform, fs, download: downloadFile });
-    modelPath = await modelEngine.ensureModel(progressReporter('downloading model ' + LLM.model.name + '…'));
+    const modelEngine = new LlmEngineManager({ dir, platform: process.platform, fs, download: downloadFile, model });
+    // Names the tier this rig actually picked, not the catalog default — on a
+    // 24 GB card that's a very different (and much larger) download.
+    modelPath = await modelEngine.ensureModel(progressReporter('downloading model ' + model.name + '…'));
   } catch (e) {
     // Surface the failure on the hero, not only in the log. Clearing the note
     // without setting an error dropped the row straight back to a grey dot and
@@ -681,14 +695,18 @@ async function startLlm(reserveMb) {
     send('miner:log', { level: 'error', line: 'could not install the LLM runtime DLLs: ' + e.message });
   }
 
-  const gpus = plan.map((p) => (p.index == null ? 'auto' : p.index)).join(', ');
-  send('miner:log', { level: 'info', line: 'local LLM starting on ' + plan.length + ' GPU'
-    + (plan.length === 1 ? '' : 's') + ' [' + gpus + ']' });
+  const gpus = sharded
+    ? 'sharded across GPUs ' + plan[0].devices.join(',')
+    : plan.length + ' GPU' + (plan.length === 1 ? '' : 's') + ' ['
+      + plan.map((p) => (p.index == null ? 'auto' : p.index)).join(', ') + ']';
+  send('miner:log', { level: 'info', line: 'local LLM (' + model.name + ') starting on ' + gpus });
   // Loading a multi-GB model off disk takes seconds even when nothing downloads,
   // and until 'ready' fires the hero is otherwise indistinguishable from idle.
+  // Set before start() so the note is on screen for the whole load.
   llmStatus = Object.assign({}, llmStatus, { ready: false, error: null, note: 'Starting…' });
   sendLlmStatus();
-  await fleet.start(plan, { platform: process.platform, binaryPath, modelPath });
+  await fleet.start(plan, { platform: process.platform, binaryPath, modelPath,
+    ctxSize: model.ctxSize, parallel: model.parallel });
   return true;
 }
 
@@ -843,7 +861,7 @@ async function pingNode() {
   try { vram = await detectVram(); } catch (e) { /* ignore */ }
   const device = await deviceName();
   const telemetry = nodeProto.buildTelemetry({
-    model: LLM.model.name, quant: LLM.model.quant, device, vram,
+    model: servingModel.name, quant: servingModel.quant, device, vram,
     tokensPerSec: llmStatus.tokensPerSec, ready: llmStatus.ready,
     activeJobs: fleet ? fleet.activeJobs() : 0,
     name: node.name,

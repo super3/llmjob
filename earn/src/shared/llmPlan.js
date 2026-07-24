@@ -1,6 +1,7 @@
 'use strict';
 
-const { ALL_LAYERS, computeGpuLayers, hasEnoughVram } = require('./vram');
+const { ALL_LAYERS, computeGpuLayers, hasEnoughVram, pickLlmGpu, pickServableModel } = require('./vram');
+const { pickShardPlan } = require('./shard');
 
 // Plan which GPUs each run their OWN local llama-server instance.
 //
@@ -79,4 +80,55 @@ function capInstances(eligible, model, opts) {
   return eligible.slice(0, Math.max(1, cap));
 }
 
-module.exports = { planLlmInstances };
+// Decide what the whole rig should serve, tiering the model to the hardware and
+// sharding when a bigger model needs more than one card. Given the per-card VRAM
+// stats, the model catalog (config.LLM.models) and the mining reserve, returns:
+//   { model, sharded, instances }
+// where `model` is the single model the rig serves (so telemetry + job routing
+// stay per-node), `sharded` says whether it spans cards, and `instances` is the
+// fleet plan:
+//   • sharded  → one entry across the shard's cards
+//                ({ index: mainGpu, nGpuLayers, splitMode:'layer', tensorSplit, devices })
+//   • per-card → one entry per card that holds the model (planLlmInstances)
+//
+// Policy: serve the LARGEST model the rig can. Take the biggest model the best
+// single card fits; if sharding the aggregate unlocks a bigger one (no single
+// card fits it), serve that one sharded instead. `model` is null (empty plan)
+// when even the smallest model won't fit any card — the caller then skips the LLM.
+// `opts` ({ maxInstances }) is forwarded to the per-card planner; a sharded plan
+// is a single instance, so an operator cap can't shrink it below one.
+function planLlmServing(cards, models, reserveMb, opts) {
+  const list = Array.isArray(cards) ? cards : [];
+  const reserve = reserveMb || 0;
+
+  const best = pickLlmGpu(list);
+  const singleModel = pickServableModel(best ? best.freeMb : null, models);
+  const singleFloor = singleModel ? Number(singleModel.minVramMb) : 0;
+
+  // Sharding wins only when it hosts a bigger model than any single card can.
+  const shard = pickShardPlan(list, models, reserve);
+  if (shard && Number(shard.model.minVramMb) > singleFloor) {
+    return {
+      model: shard.model,
+      sharded: true,
+      instances: [{
+        index: shard.mainGpu,
+        freeMb: shard.freeMb,
+        // ALL_LAYERS, not a layer count of our own: llama.cpp clamps an over-large
+        // value to the model's real depth, while a guess that is too low silently
+        // strands the remainder in host RAM — the OOM the all-or-nothing rule
+        // exists to prevent. It applies across the shard set, since --tensor-split
+        // is what places those layers on the chosen cards.
+        nGpuLayers: ALL_LAYERS,
+        splitMode: 'layer',
+        tensorSplit: shard.tensorSplit,
+        devices: shard.devices,
+      }],
+    };
+  }
+
+  if (!singleModel) return { model: null, sharded: false, instances: [] };
+  return { model: singleModel, sharded: false, instances: planLlmInstances(list, singleModel, reserve, opts) };
+}
+
+module.exports = { planLlmInstances, planLlmServing };

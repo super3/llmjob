@@ -34,7 +34,7 @@ const { statsFilePayload } = require('../shared/statsFile');
 const { shortenAddress, isValidAddress } = require('../shared/address');
 const { pickGpu, countGpus } = require('../shared/gpu');
 const { requiredVramMb, pickLlmGpu } = require('../shared/vram');
-const { planLlmInstances } = require('../shared/llmPlan');
+const { planLlmServing } = require('../shared/llmPlan');
 const { LlmFleet } = require('../main/llmFleet');
 const { JobWorker } = require('../main/jobWorker');
 const { resolvePlan } = require('../shared/llmMode');
@@ -230,19 +230,19 @@ async function resolveLlmBinary(settings, dir) {
 // Resolve the GGUF model path. An explicit --llm-model wins; otherwise reuse a
 // cached download or fetch the small default model (a plain file, so this works
 // on the CLI without zip extraction).
-async function resolveLlmModel(settings, dir) {
+async function resolveLlmModel(settings, dir, model) {
   if (settings.llmModel) {
     if (!fs.existsSync(settings.llmModel)) {
       throw new Error('LLM model not found: ' + settings.llmModel);
     }
     return settings.llmModel;
   }
-  const engine = new LlmEngineManager({ dir, platform: process.platform, fs, download: downloadFile });
+  const engine = new LlmEngineManager({ dir, platform: process.platform, fs, download: downloadFile, model });
   if (engine.isModelInstalled()) {
     log('LLM model found: ' + engine.modelPath());
     return engine.modelPath();
   }
-  log('downloading LLM model (' + LLM.model.name + ') …');
+  log('downloading LLM model (' + model.name + ') …');
   const modelPath = await engine.ensureModel((pct) => {
     if (pct != null) process.stdout.write('\r  downloading model… ' + pct + '%   ');
   });
@@ -258,7 +258,9 @@ async function resolveLlmModel(settings, dir) {
 // teardown, plus the single keep-alive ping shared across the whole fleet.
 let serveFleet = null;
 let servePinger = null;
-let serveLlmState = { ready: false, tps: 0 };
+// `model` is the catalog model the rig ended up serving (VRAM-tiered, possibly
+// sharded), so the keep-alive ping + board report the real model/quant.
+let serveLlmState = { ready: false, tps: 0, model: LLM.model };
 // This machine's node id while it is armed to serve cluster jobs — reported on the
 // miner ping so the network board can tell "running the model" from "serving the
 // cluster". Null when not serving (mining only, or --no-serve).
@@ -331,7 +333,7 @@ async function fullTelemetry(node) {
   let vram = null;
   try { vram = await detectVram(); } catch (e) { /* ignore */ }
   return nodeProto.buildTelemetry({
-    model: LLM.model.name, quant: LLM.model.quant,
+    model: serveLlmState.model.name, quant: serveLlmState.model.quant,
     device: await cachedDeviceName(), vram,
     tokensPerSec: serveLlmState.tps, ready: serveLlmState.ready,
     activeJobs: serveFleet ? serveFleet.activeJobs() : 0,
@@ -373,16 +375,17 @@ function makeCliJobWorker(nodeCfg, base, baseUrl) {
 async function startLlm(settings, reserveMb) {
   const dir = llmDir(settings);
 
-  // Plan one llama-server per eligible GPU before doing anything expensive
-  // (downloading a ~5 GB model). Each instance runs --split-mode none and is
-  // pinned to its card (--main-gpu), so the per-card free VRAM is what sizes and
-  // gates it — never the rig's summed total (the model can't span cards, and
-  // sizing against the sum would cram it onto device 0 and OOM). An empty plan
-  // means VRAM was measured but no card had room — refuse. When VRAM can't be
-  // read (non-NVIDIA / no driver) the planner returns one unknown-placement
-  // instance and lets llama.cpp decide.
+  // Plan what the rig serves before doing anything expensive (downloading a
+  // multi-GB model): the largest catalog model its VRAM allows, sharded across
+  // cards when a bigger model needs more than one (planLlmServing). One model per
+  // rig keeps telemetry + job routing per-node. A per-card plan pins each instance
+  // to its card (--main-gpu) and sizes it from that card's free VRAM, never the
+  // rig's summed total; a sharded plan is the one case the model does span cards.
+  // An empty plan means VRAM was measured but no card had room — refuse. When VRAM
+  // can't be read the planner returns one unknown-placement instance and lets
+  // llama.cpp decide.
   const cards = await detectGpusVram();
-  const plan = planLlmInstances(cards, LLM.model, reserveMb || 0, {
+  const { model, sharded, instances: plan } = planLlmServing(cards, LLM.models, reserveMb || 0, {
     maxInstances: settings.llmMaxInstances,
   });
   // Say so when the operator's cap bit — a silently smaller fleet is
@@ -392,21 +395,23 @@ async function startLlm(settings, reserveMb) {
       + ' GPUs — capped by --llm-max-instances ' + settings.llmMaxInstances);
   }
   if (!plan.length) {
-    // An empty plan means at least one card parsed but none fit, so pickLlmGpu
-    // (same parse rules) returns that card for the error message.
+    // An empty plan means at least one card parsed but none fit even the smallest
+    // model, so pickLlmGpu (same parse rules) returns that card for the message.
+    const smallest = LLM.models[0];
     const gpu = pickLlmGpu(cards);
     log('not enough free VRAM on any single GPU for the local LLM: ' + gpu.freeMb
-      + ' MB free on GPU ' + gpu.index + ', need ~' + requiredVramMb(LLM.model)
-      + ' MB for ' + LLM.model.name + ' — skipping the LLM.', process.stderr);
+      + ' MB free on GPU ' + gpu.index + ', need ~' + requiredVramMb(smallest)
+      + ' MB for ' + smallest.name + ' — skipping the LLM.', process.stderr);
     return null;
   }
+  serveLlmState.model = model;
 
-  log('preparing local LLM (' + LLM.model.name + ') …');
+  log('preparing local LLM (' + model.name + ') …');
 
   let binaryPath, modelPath;
   try {
     binaryPath = await resolveLlmBinary(settings, dir);
-    modelPath = await resolveLlmModel(settings, dir);
+    modelPath = await resolveLlmModel(settings, dir, model);
   } catch (e) {
     log('LLM setup failed: ' + e.message, process.stderr);
     return null;
@@ -471,9 +476,13 @@ async function startLlm(settings, reserveMb) {
   fleet.on('error', (err) => log('LLM error: ' + err.message, process.stderr));
 
   fleet.syncWorkers(canServe); // arm serving before instances come up
-  await fleet.start(plan, { platform: process.platform, binaryPath, modelPath });
-  const gpus = plan.map((p) => (p.index == null ? 'auto' : p.index)).join(', ');
-  log('local LLM starting on ' + plan.length + ' GPU' + (plan.length === 1 ? '' : 's') + ' [' + gpus + ']');
+  await fleet.start(plan, { platform: process.platform, binaryPath, modelPath,
+    ctxSize: model.ctxSize, parallel: model.parallel });
+  const gpus = sharded
+    ? 'sharded across GPUs ' + plan[0].devices.join(',')
+    : plan.length + ' GPU' + (plan.length === 1 ? '' : 's') + ' ['
+      + plan.map((p) => (p.index == null ? 'auto' : p.index)).join(', ') + ']';
+  log('local LLM (' + model.name + ') starting on ' + gpus);
   return fleet;
 }
 
@@ -665,9 +674,10 @@ async function run(argv) {
         // GPU runs; null when the fleet isn't up (mining only) → blank on the board.
         // `nodeId` rides along only while this machine is armed to serve cluster
         // jobs — running the model and serving the cluster are different things,
-        // and the board should be able to tell them apart.
+        // and the board should be able to tell them apart. The model is the tier
+        // this rig actually loaded, not the catalog default.
         const serving = serveFleet
-          ? { model: LLM.model.name, indices: serveFleet.servingIndices(), nodeId: serveNodeId }
+          ? { model: serveLlmState.model.name, indices: serveFleet.servingIndices(), nodeId: serveNodeId }
           : null;
         return Promise.all(buildMinerReports(settings, snap, gpuVram, pkg.version, serving).map(postMinerReport));
       };
@@ -732,7 +742,7 @@ async function run(argv) {
     // so reaching here always means the whole fleet died on its own.
     if (llm) {
       llm.on('stopped', (code) => {
-        serveLlmState = { ready: false, tps: 0 };
+        serveLlmState = { ready: false, tps: 0, model: serveLlmState.model };
         stopServe();
         log('local LLM exited (code ' + code + ')', process.stderr);
         if (!miner) finish(code || 1);
