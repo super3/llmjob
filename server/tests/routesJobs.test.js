@@ -45,13 +45,38 @@ describe('Job routes (handlers executed end-to-end)', () => {
     if (db.end) await db.end();
   });
 
+  const SESSION = 'Bearer session-token'; // the mocked requireAuth accepts any non-lj token
+
   it('submits a job and reads it back', async () => {
-    const submit = await request(app).post('/api/jobs').send({ prompt: 'hello', model: 'm' });
+    const submit = await request(app).post('/api/jobs').set('Authorization', SESSION).send({ prompt: 'hello', model: 'm' });
     expect(submit.status).toBe(201);
     const jobId = submit.body.job.id;
 
-    const get = await request(app).get(`/api/jobs/${jobId}`);
+    const get = await request(app).get(`/api/jobs/${jobId}`).set('Authorization', SESSION);
     expect(get.status).toBe(200);
+    expect(get.body.jobId).toBe(jobId);
+  });
+
+  // A job holds the prompt and the model's reply, so reading one must be scoped
+  // to whoever submitted it — otherwise a guessed/leaked id exposes someone
+  // else's conversation, including one a private API key kept on its own nodes.
+  it('will not hand a job to an unauthenticated or non-owning caller', async () => {
+    const submit = await request(app).post('/api/jobs').set('Authorization', SESSION).send({ prompt: 'my secrets' });
+    const jobId = submit.body.job.id;
+
+    const anon = await request(app).get(`/api/jobs/${jobId}`);
+    expect(anon.status).toBe(401);
+    expect(JSON.stringify(anon.body)).not.toContain('my secrets');
+
+    // A different user gets 404, not 403 — a 403 would confirm the id exists.
+    const JobService = require('../src/services/jobService');
+    const theirs = await new JobService(db).createJob({ prompt: 'not yours', userId: 'someone-else' });
+    const cross = await request(app).get(`/api/jobs/${theirs.id}`).set('Authorization', SESSION);
+    expect(cross.status).toBe(404);
+    expect(JSON.stringify(cross.body)).not.toContain('not yours');
+
+    // An unknown id is indistinguishable from someone else's.
+    expect((await request(app).get('/api/jobs/job-nope').set('Authorization', SESSION)).status).toBe(404);
   });
 
   it('handles node-facing job endpoints', async () => {

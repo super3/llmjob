@@ -1,5 +1,13 @@
+const crypto = require('crypto');
+
 const LOCK_MS = 10 * 60 * 1000;       // assignment lock lifetime (10 min)
 const HEARTBEAT_STALE_MS = 60 * 1000; // consider a job stalled after 60s silence
+// How long a job may sit pending before it is abandoned. Both gateways give up
+// waiting after 120s, so anything older than this has no caller left listening —
+// running it later would burn a node's GPU on a reply nobody receives, and the
+// rows would otherwise accumulate forever (nothing else clears `pending`). The
+// margin over 120s means this can never expire a job someone is still waiting on.
+const PENDING_TTL_MS = 5 * 60 * 1000;
 // The model the earn-client fleet actually serves (earn/src/shared/config.js
 // LLM.model.name) — the default a job records must match what runs it.
 const DEFAULT_MODEL = 'Gemma-4-E4B-it-Q4_K_M';
@@ -15,8 +23,12 @@ class JobService {
     this.db = db;
   }
 
+  // Crypto-random suffix, not Math.random(): a job id is a capability-ish handle
+  // (it addresses a conversation), and V8's PRNG state is recoverable from a few
+  // observed outputs, which would make ids predictable rather than merely hard to
+  // guess. The timestamp prefix is kept for sortability/debuggability.
   generateJobId() {
-    return `job-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    return `job-${Date.now()}-${crypto.randomBytes(8).toString('hex')}`;
   }
 
   async createJob(jobData) {
@@ -219,6 +231,39 @@ class JobService {
       'UPDATE jobs SET lock_node = NULL, lock_expires_at = NULL, heartbeat_at = NULL WHERE id = $1',
       [jobId]
     );
+  }
+
+  // Fail jobs that have sat pending past PENDING_TTL_MS. Nothing else ever
+  // clears `pending`: checkTimeouts only rescues assigned/running jobs, and
+  // cleanupOldJobs only deletes completed/failed ones — so a job queued while no
+  // node was serving would otherwise stay forever, and be run hours later for a
+  // caller that is long gone. Marked 'failed' rather than given a new status so
+  // the existing cleanup sweep collects them and any late reader gets a clear
+  // reason instead of an indefinite wait. Returns the expired job ids.
+  async expireStalePending() {
+    const now = Date.now();
+    const r = await this.db.query(
+      "SELECT id, data FROM jobs WHERE status = 'pending' AND created_at < $1",
+      [now - PENDING_TTL_MS]
+    );
+
+    const expired = [];
+    for (const row of r.rows) {
+      const updated = {
+        ...row.data,
+        status: 'failed',
+        failedAt: now,
+        failureReason: 'expired: no node picked this job up',
+        updatedAt: now
+      };
+      await this.db.query(
+        "UPDATE jobs SET data = $2, status = 'failed', updated_at = $3 WHERE id = $1",
+        [row.id, JSON.stringify(updated), now]
+      );
+      expired.push(row.id);
+    }
+
+    return expired;
   }
 
   // Return assigned/running jobs whose lock expired or heartbeat went stale.

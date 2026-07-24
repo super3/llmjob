@@ -4,6 +4,7 @@ const { requireAuth } = require('./middleware/auth');
 const { requireAdmin } = require('./middleware/admin');
 const { verifySignature } = require('./middleware/signature');
 const { apiKeyAuth } = require('./middleware/apiKeyAuth');
+const { anyAuth } = require('./middleware/anyAuth');
 const nodeController = require('./controllers/nodeController');
 const minerController = require('./controllers/minerController');
 const apiKeyController = require('./controllers/apiKeyController');
@@ -71,7 +72,9 @@ const initJobRoutes = (db) => {
   // Job submission and management
   router.post('/jobs', requireAuth, (req, res) => jobController.submitJob(req, res));
   router.get('/jobs/stats', requireAuth, (req, res) => jobController.getStats(req, res));
-  router.get('/jobs/:jobId', (req, res) => jobController.getJob(req, res));
+  // Readable by whoever submitted the job — the dashboard (Clerk session) or an
+  // SDK caller (API key). The handler scopes the result to that user.
+  router.get('/jobs/:jobId', anyAuth, (req, res) => jobController.getJob(req, res));
   
   // Node job operations (require signature verification)
   router.post('/jobs/poll', verifySignature, (req, res) => jobController.pollJobs(req, res));

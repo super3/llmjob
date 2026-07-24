@@ -426,6 +426,28 @@ describe('JobController', () => {
         error: expect.stringContaining('not found')
       });
     });
+
+    it("should 404 (not 403) on another user's job, revealing nothing", async () => {
+      const theirs = await jobService.createJob({ prompt: 'their secret', userId: 'another-user' });
+      req.params = { jobId: theirs.id };
+
+      await jobController.getJob(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect(JSON.stringify(res.json.mock.calls)).not.toContain('their secret');
+    });
+
+    it('should 404 when reading the result throws', async () => {
+      const job = await jobService.createJob({ prompt: 'Test', userId: 'user123' });
+      jobService.getJobResult = jest.fn().mockRejectedValue(new Error('db down'));
+      req.params = { jobId: job.id };
+
+      await jobController.getJob(req, res);
+
+      expect(console.error).toHaveBeenCalledWith('Error getting job:', expect.any(Error));
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect(res.json).toHaveBeenCalledWith({ error: 'db down' });
+    });
   });
 
   describe('getStats', () => {

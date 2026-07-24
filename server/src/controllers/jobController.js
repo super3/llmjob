@@ -187,10 +187,23 @@ class JobController {
     }
   }
 
-  // GET /api/jobs/:jobId - Get job status and results
+  // GET /api/jobs/:jobId - Get status and results for a job you submitted.
+  // Authenticated (Clerk session or API key) and scoped to the submitter: a job
+  // carries the prompt and the model's reply, so anyone who could read an
+  // arbitrary jobId could read other people's conversations — including those a
+  // private API key routed to the owner's own hardware.
   async getJob(req, res) {
     try {
       const { jobId } = req.params;
+
+      const job = await this.jobService.getJob(jobId);
+      // 404 rather than 403 when it isn't yours: a 403 confirms the id exists,
+      // which is exactly the oracle an id-guessing attacker wants. Anonymous
+      // public-chat jobs (userId null) match no caller, so they stay unreadable
+      // over HTTP — the chat gateway reads them in-process instead.
+      if (!job || job.userId !== req.user.id) {
+        return res.status(404).json({ error: `Job ${jobId} not found` });
+      }
 
       const result = await this.jobService.getJobResult(jobId);
 

@@ -133,6 +133,45 @@ describe('JobService', () => {
     });
   });
 
+  describe('expireStalePending', () => {
+    const agePending = (id, ms) => db.query('UPDATE jobs SET created_at = $1 WHERE id = $2', [Date.now() - ms, id]);
+
+    it('fails jobs left pending past the TTL and leaves fresh ones alone', async () => {
+      const stale = await jobService.createJob({ prompt: 'nobody picked me up', userId: 'u' });
+      const fresh = await jobService.createJob({ prompt: 'just queued', userId: 'u' });
+      await agePending(stale.id, 6 * 60 * 1000); // 6 min — past the 5 min TTL
+
+      expect(await jobService.expireStalePending()).toEqual([stale.id]);
+
+      const failed = await jobService.getJobResult(stale.id);
+      expect(failed.status).toBe('failed');
+      expect(failed.error).toMatch(/expired/);
+      expect((await jobService.getJobResult(fresh.id)).status).toBe('pending');
+    });
+
+    it('leaves a job still inside the caller-wait window queued', async () => {
+      const job = await jobService.createJob({ prompt: 'p', userId: 'u' });
+      await agePending(job.id, 90 * 1000); // 90s — a caller may still be waiting
+      expect(await jobService.expireStalePending()).toEqual([]);
+      expect((await jobService.getJobResult(job.id)).status).toBe('pending');
+    });
+
+    it('ignores jobs that are not pending', async () => {
+      const job = await jobService.createJob({ prompt: 'p', userId: 'u' });
+      await jobService.assignJobsToNode('node1', 1); // now 'assigned'
+      await agePending(job.id, 60 * 60 * 1000);
+      expect(await jobService.expireStalePending()).toEqual([]);
+    });
+
+    it('lets the normal cleanup sweep collect what it expired', async () => {
+      const job = await jobService.createJob({ prompt: 'p', userId: 'u' });
+      await agePending(job.id, 6 * 60 * 1000);
+      await jobService.expireStalePending();
+      await ageJob(job.id); // push updated_at past the cleanup cutoff
+      expect(await jobService.cleanupOldJobs()).toBe(1);
+    });
+  });
+
   describe('assignJobsToNode routing (public/private)', () => {
     const addNode = (nodeId, userId) => db.query('INSERT INTO nodes (node_id, user_id) VALUES ($1, $2)', [nodeId, userId]);
 
