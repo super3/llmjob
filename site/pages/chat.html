@@ -3,7 +3,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
 <title>LLMJob Chat — Free AI, powered by the network</title>
 <meta name="description" content="Free chat with an open model, gated through the LLMJob endpoint. No sign-up — try it right here." />
 
@@ -132,11 +132,8 @@
         <form class="box" id="form">
           <textarea id="input" rows="1" placeholder="Send a message…" aria-label="Message"></textarea>
           <div class="composer-bar">
-            <button type="button" class="icon-btn" id="newChat" title="New chat" aria-label="New chat">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>
-            </button>
-            <select class="convo" id="convo" aria-label="Recent chats">
-              <option value="new">Recent chats…</option>
+            <select class="convo" id="convo" aria-label="Chats">
+              <option value="new">New chat</option>
             </select>
             <span class="spacer"></span>
             <select class="model" id="model" aria-label="Model"></select>
@@ -190,7 +187,6 @@
     form: document.getElementById('form'),
     input: document.getElementById('input'),
     send: document.getElementById('send'),
-    newChat: document.getElementById('newChat'),
     convo: document.getElementById('convo'),
     model: document.getElementById('model')
   };
@@ -223,7 +219,7 @@
 
   function renderConvoOptions() {
     var chats = loadChats();
-    var html = '<option value="new">Recent chats…</option>';
+    var html = '<option value="new">New chat</option>';
     for (var i = 0; i < chats.length; i++) {
       var sel = chats[i].id === state.activeId ? ' selected' : '';
       html += '<option value="' + esc(chats[i].id) + '"' + sel + '>' + esc(chats[i].title) + '</option>';
@@ -542,11 +538,26 @@
   el.input.addEventListener('keydown', function (e) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
   });
-  el.newChat.addEventListener('click', newChat);
   el.convo.addEventListener('change', function (e) { loadConvo(e.target.value); });
   el.model.addEventListener('change', function (e) { state.model = e.target.value; sizeModelSelect(); });
 
+  // ── Keep the composer above the mobile keyboard ──────────────────────────────
+  // The page is pinned to 100dvh, but a software keyboard shrinks the *visual*
+  // viewport without shrinking that layout height — so the bottom composer ends up
+  // hidden behind the keyboard. Drive the body height off visualViewport so the
+  // layout re-fits into the visible area (belt-and-suspenders with the viewport
+  // meta's interactive-widget=resizes-content).
+  function fitViewport() {
+    var vv = window.visualViewport;
+    document.body.style.height = (vv ? vv.height : window.innerHeight) + 'px';
+  }
+  window.addEventListener('resize', fitViewport);
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', fitViewport);
+  window.addEventListener('orientationchange', function () { setTimeout(fitViewport, 250); });
+  el.input.addEventListener('focus', function () { setTimeout(function () { fitViewport(); scrollToBottom(); }, 300); });
+
   // ── Boot ─────────────────────────────────────────────────────────────────────
+  fitViewport();
   renderModelOptions();
   renderConvoOptions();
   render();
