@@ -47,6 +47,16 @@ describe('JobService', () => {
       expect(job.prompt).toBe('');
       expect(job.id).toBeDefined();
     });
+
+    it('records the routing visibility (public by default, private when set)', async () => {
+      const pub = await jobService.createJob({ prompt: 'p', userId: 'u' });
+      expect(pub.visibility).toBe('public');
+      const priv = await jobService.createJob({ prompt: 'p', userId: 'u', visibility: 'private' });
+      expect(priv.visibility).toBe('private');
+      // stored on the promoted column so the poller can filter on it
+      const row = (await db.query('SELECT visibility FROM jobs WHERE id = $1', [priv.id])).rows[0];
+      expect(row.visibility).toBe('private');
+    });
   });
 
   describe('getJob', () => {
@@ -120,6 +130,46 @@ describe('JobService', () => {
         return client;
       });
       await expect(jobService.assignJobsToNode('nodeX', 1)).rejects.toThrow('boom');
+    });
+  });
+
+  describe('assignJobsToNode routing (public/private)', () => {
+    const addNode = (nodeId, userId) => db.query('INSERT INTO nodes (node_id, user_id) VALUES ($1, $2)', [nodeId, userId]);
+
+    it("hands a private job only to a node owned by the job's owner", async () => {
+      await addNode('alice-node', 'alice');
+      await addNode('bob-node', 'bob');
+      const job = await jobService.createJob({ prompt: 'secret', userId: 'alice', visibility: 'private' });
+
+      // Bob's node must never be handed Alice's private job.
+      expect(await jobService.assignJobsToNode('bob-node', 5)).toHaveLength(0);
+      // Alice's own node gets it.
+      const mine = await jobService.assignJobsToNode('alice-node', 5);
+      expect(mine.map((j) => j.id)).toEqual([job.id]);
+    });
+
+    it('hands public jobs to any node, regardless of owner', async () => {
+      await addNode('bob-node', 'bob');
+      await jobService.createJob({ prompt: 'open', userId: 'alice', visibility: 'public' });
+      const got = await jobService.assignJobsToNode('bob-node', 5);
+      expect(got).toHaveLength(1);
+      expect(got[0].visibility).toBe('public');
+    });
+
+    it('treats a legacy job with NULL visibility as public', async () => {
+      await addNode('bob-node', 'bob');
+      const job = await jobService.createJob({ prompt: 'p', userId: 'alice' });
+      await db.query('UPDATE jobs SET visibility = NULL WHERE id = $1', [job.id]); // pre-feature row
+      expect(await jobService.assignJobsToNode('bob-node', 5)).toHaveLength(1);
+    });
+
+    it('gives an unclaimed (owner-less) node public jobs but never private ones', async () => {
+      await addNode('orphan', null);
+      await jobService.createJob({ prompt: 'pub', userId: 'alice', visibility: 'public' });
+      await jobService.createJob({ prompt: 'priv', userId: 'alice', visibility: 'private' });
+      const got = await jobService.assignJobsToNode('orphan', 5);
+      expect(got).toHaveLength(1);
+      expect(got[0].visibility).toBe('public');
     });
   });
 

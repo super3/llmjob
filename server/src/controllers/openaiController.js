@@ -48,6 +48,7 @@ class OpenAiController {
       maxTokens: body.max_tokens,
       temperature: body.temperature,
       userId: req.apiKey.userId,
+      visibility: req.apiKey.visibility, // 'private' → only this user's own nodes
     });
 
     const ctx = { res, svc, job, key: req.apiKey, promptTokens: estimateTokens(joinContent(messages)), aborted: false };

@@ -4,6 +4,12 @@ const HEARTBEAT_STALE_MS = 60 * 1000; // consider a job stalled after 60s silenc
 // LLM.model.name) — the default a job records must match what runs it.
 const DEFAULT_MODEL = 'Gemma-4-E4B-it-Q4_K_M';
 
+// A job's routing (inherited from the API key that created it): 'private' may
+// only run on the owner's own nodes; anything else is 'public' (any node).
+function normalizeVisibility(v) {
+  return v === 'private' ? 'private' : 'public';
+}
+
 class JobService {
   constructor(db) {
     this.db = db;
@@ -27,6 +33,7 @@ class JobService {
       createdAt: timestamp,
       updatedAt: timestamp,
       userId: jobData.userId,
+      visibility: normalizeVisibility(jobData.visibility),
       maxTokens: jobData.maxTokens || 1000,
       temperature: jobData.temperature || 0.7
     };
@@ -39,9 +46,9 @@ class JobService {
     }
 
     await this.db.query(
-      `INSERT INTO jobs (id, data, status, priority, created_at, updated_at, user_id)
-       VALUES ($1, $2, 'pending', $3, $4, $4, $5)`,
-      [jobId, JSON.stringify(job), job.priority, timestamp, job.userId]
+      `INSERT INTO jobs (id, data, status, priority, created_at, updated_at, user_id, visibility)
+       VALUES ($1, $2, 'pending', $3, $4, $4, $5, $6)`,
+      [jobId, JSON.stringify(job), job.priority, timestamp, job.userId, job.visibility]
     );
 
     return job;
@@ -69,15 +76,24 @@ class JobService {
   }
 
   // Claim up to maxJobs pending jobs for a node, locking them in one transaction.
+  // A node may only be handed PUBLIC jobs, or PRIVATE jobs owned by the same user
+  // that owns the node — so a private key's requests never reach another user's
+  // hardware. The node's owner is read from the DB (the single source of truth),
+  // not trusted from the caller. A NULL job visibility (pre-feature rows) counts
+  // as public. A node with no owner (unclaimed) can serve only public jobs.
   async assignJobsToNode(nodeId, maxJobs = 1) {
     const assignedJobs = [];
     const client = await this.db.connect();
     try {
       await client.query('BEGIN');
+      const owner = await client.query('SELECT user_id FROM nodes WHERE node_id = $1', [nodeId]);
+      const ownerUserId = owner.rows.length ? owner.rows[0].user_id : null;
       const pending = await client.query(
-        `SELECT id, data FROM jobs WHERE status = 'pending'
+        `SELECT id, data FROM jobs
+         WHERE status = 'pending'
+           AND (visibility IS NULL OR visibility <> 'private' OR user_id = $2)
          ORDER BY priority DESC, created_at ASC LIMIT $1 FOR UPDATE`,
-        [maxJobs]
+        [maxJobs, ownerUserId]
       );
 
       for (const row of pending.rows) {

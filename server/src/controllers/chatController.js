@@ -197,6 +197,7 @@ class ChatController {
       maxTokens: ctx.maxTokens,
       temperature: ctx.temperature != null ? ctx.temperature : undefined,
       userId: null,               // public chat has no account
+      visibility: 'public',       // anyone's free chat runs on any node
     });
   }
 

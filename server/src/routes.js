@@ -49,6 +49,8 @@ router.get('/miners', minerController.getPublicMiners);
 router.post('/keys', requireAuth, apiKeyController.createKey);
 // GET /api/keys - List the user's API keys (redacted)
 router.get('/keys', requireAuth, apiKeyController.listKeys);
+// PUT /api/keys/:id/visibility - toggle a key's request routing (public/private)
+router.put('/keys/:id/visibility', requireAuth, apiKeyController.updateKeyVisibility);
 // DELETE /api/keys/:id - Revoke an API key
 router.delete('/keys/:id', requireAuth, apiKeyController.revokeKey);
 
