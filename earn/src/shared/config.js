@@ -121,8 +121,58 @@ const LLM = {
     vramFullMb: 5800,
     minVramMb: 6144, // ~6 GB free required before we put it on the GPU
     quant: 'Q4_K_M',
+    ctxSize: 4096,
+    parallel: 1,
   },
 };
+
+// The model catalog the node picks from at start-up, sized by the free VRAM on
+// the card that will host it (see shared/vram.js#pickServableModel). Ordered
+// smallest → largest by `minVramMb`; the node serves the LARGEST model whose
+// floor fits the measured free VRAM, so a 24 GB card serves Qwen3.6 27B while an
+// 8 GB card falls back to the small Gemma default. `default: true` marks the
+// safe fallback used when VRAM can't be measured (non-NVIDIA / no driver).
+//
+// The two Qwen3.6 rows are the models the server's chat gateway already
+// allow-lists (qwen/qwen3.6-27b, qwen/qwen3.6-35b-a3b). Their VRAM figures are
+// Q4_K_M estimates (~4.8 bits/weight incl. overhead + KV at ctxSize) and the
+// GGUF URLs are placeholders following the unsloth naming convention — pin the
+// exact repo/quant here once the GGUFs are published, then the sizes are the
+// only thing to re-measure. `kind`/`params` are informational (dense vs MoE with
+// active-parameter count); `minVramMb` is what actually gates placement.
+LLM.models = [
+  Object.assign({ id: 'gemma-4-e4b', kind: 'dense', params: '4.5B-effective', default: true }, LLM.model),
+  {
+    id: 'qwen3.6-27b',
+    name: 'Qwen3.6-27B-Q4_K_M',
+    file: 'Qwen3.6-27B-Q4_K_M.gguf',
+    url: 'https://huggingface.co/unsloth/Qwen3.6-27B-GGUF/resolve/main/Qwen3.6-27B-Q4_K_M.gguf',
+    kind: 'dense',
+    params: '27B',
+    layers: 64,
+    vramFullMb: 20000, // ~16.5 GB weights + KV + compute buffers at 8K ctx
+    minVramMb: 22528,  // ~22 GB free required → a 24 GB card (4090 / 3090 class)
+    quant: 'Q4_K_M',
+    ctxSize: 8192,
+    parallel: 1,
+  },
+  {
+    id: 'qwen3.6-35b-a3b',
+    name: 'Qwen3.6-35B-A3B-Q4_K_M',
+    file: 'Qwen3.6-35B-A3B-Q4_K_M.gguf',
+    url: 'https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-Q4_K_M.gguf',
+    kind: 'moe',
+    params: '35B-total/3B-active',
+    layers: 48,
+    vramFullMb: 23000, // ~21 GB resident experts + KV + compute buffers at 8K ctx
+    minVramMb: 24576,  // ~24 GB free → best on a 32 GB+ card; 24 GB is tight
+    quant: 'Q4_K_M',
+    ctxSize: 8192,
+    // Only ~3B params activate per token, so decode is cheap — batch a couple of
+    // sessions on a card that has the room for it.
+    parallel: 2,
+  },
+];
 
 // Linking this machine to an LLMJob account ("Connect with LLMJob"). The node
 // self-registers with a pairing/join token (only its public key leaves the box),

@@ -106,4 +106,18 @@ describe('migrations', () => {
     await apply(pool, mod, 'down');
     await expect(pool.query('SELECT version FROM miners')).rejects.toBeDefined();
   });
+
+  it('add-miner-llm-model adds and drops the llm_model column', async () => {
+    const pool = freshPool();
+    await apply(pool, load(byName('init-schema')), 'up');
+    await pool.query('ALTER TABLE miners DROP COLUMN llm_model');
+
+    const mod = load(byName('add-miner-llm-model'));
+    await apply(pool, mod, 'up');
+    await pool.query("INSERT INTO miners (id, llm_model) VALUES ('m1', 'Gemma-4-E4B-it-Q4_K_M')");
+    expect((await pool.query('SELECT llm_model FROM miners')).rows[0].llm_model).toBe('Gemma-4-E4B-it-Q4_K_M');
+
+    await apply(pool, mod, 'down');
+    await expect(pool.query('SELECT llm_model FROM miners')).rejects.toBeDefined();
+  });
 });

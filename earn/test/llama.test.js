@@ -67,6 +67,22 @@ describe('buildServerArgs', () => {
     expect(buildServerArgs({ mainGpu: '2' }).includes('--main-gpu')).toBe(false);  // wrong type
     expect(buildServerArgs({ mainGpu: null }).includes('--main-gpu')).toBe(false);
   });
+
+  test('shards across GPUs with --split-mode layer + --tensor-split when asked', () => {
+    const a = buildServerArgs({ modelPath: '/m.gguf', splitMode: 'layer', tensorSplit: [14000, 14000, 0], mainGpu: 0 });
+    expect(a).toEqual(expect.arrayContaining(['--split-mode', 'layer', '--tensor-split', '14000,14000,0', '--main-gpu', '0']));
+    expect(buildServerArgs({ splitMode: 'row', tensorSplit: [0.5, 0.5] }))
+      .toEqual(expect.arrayContaining(['--split-mode', 'row', '--tensor-split', '0.5,0.5']));
+  });
+
+  test('a tensor-split is ignored unless a real split mode is set, and vice-versa', () => {
+    // split none → no --tensor-split even if one is passed (single-GPU default)
+    expect(buildServerArgs({ splitMode: 'none', tensorSplit: [1, 1] }).includes('--tensor-split')).toBe(false);
+    expect(buildServerArgs({ tensorSplit: [1, 1] }).includes('--tensor-split')).toBe(false);
+    // split layer with no/empty tensorSplit → no --tensor-split (llama auto-splits)
+    expect(buildServerArgs({ splitMode: 'layer' }).includes('--tensor-split')).toBe(false);
+    expect(buildServerArgs({ splitMode: 'layer', tensorSplit: [] }).includes('--tensor-split')).toBe(false);
+  });
 });
 
 describe('isServerReady', () => {

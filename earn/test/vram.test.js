@@ -1,6 +1,6 @@
 'use strict';
 
-const { computeGpuLayers, requiredVramMb, hasEnoughVram, pickLlmGpu } = require('../src/shared/vram');
+const { computeGpuLayers, requiredVramMb, hasEnoughVram, pickLlmGpu, pickServableModel } = require('../src/shared/vram');
 
 const MODEL = { layers: 16, vramFullMb: 1600 }; // perLayer = 100 MB
 
@@ -111,5 +111,41 @@ describe('pickLlmGpu', () => {
 
   test('clamps negative free VRAM (used > total) to zero', () => {
     expect(pickLlmGpu([{ index: 0, usedMb: 17000, totalMb: 16000 }])).toEqual({ index: 0, freeMb: 0 });
+  });
+});
+
+describe('pickServableModel', () => {
+  // Deliberately out of order to prove the picker sorts by minVramMb itself.
+  const SMALL = { id: 'small', minVramMb: 6144, default: true };
+  const MID = { id: 'mid', minVramMb: 22528 };
+  const BIG = { id: 'big', minVramMb: 24576 };
+  const CATALOG = [MID, BIG, SMALL];
+
+  test('null for a non-array or empty catalog', () => {
+    expect(pickServableModel(24000, null)).toBeNull();
+    expect(pickServableModel(24000, [])).toBeNull();
+  });
+
+  test('unknown free VRAM returns the default model (then the smallest)', () => {
+    expect(pickServableModel(null, CATALOG)).toBe(SMALL);
+    expect(pickServableModel('nope', CATALOG)).toBe(SMALL);
+    // no explicit default → smallest by floor
+    expect(pickServableModel(null, [BIG, MID])).toBe(MID);
+  });
+
+  test('null when not even the smallest model fits the measured VRAM', () => {
+    expect(pickServableModel(5000, CATALOG)).toBeNull();
+  });
+
+  test('picks the largest model whose floor fits, incl. the exact boundary', () => {
+    expect(pickServableModel(6144, CATALOG)).toBe(SMALL);   // only the small fits
+    expect(pickServableModel(23000, CATALOG)).toBe(MID);    // small + mid fit → mid
+    expect(pickServableModel(24576, CATALOG)).toBe(BIG);    // all fit → big (boundary)
+    expect(pickServableModel(999999, CATALOG)).toBe(BIG);
+  });
+
+  test('treats a missing minVramMb as a zero floor', () => {
+    const FLOORLESS = { id: 'floorless' };
+    expect(pickServableModel(0, [FLOORLESS])).toBe(FLOORLESS);
   });
 });

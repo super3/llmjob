@@ -121,6 +121,52 @@ describe('JobService', () => {
       });
       await expect(jobService.assignJobsToNode('nodeX', 1)).rejects.toThrow('boom');
     });
+
+    it('routes only matching-model jobs to a node that reports a served model', async () => {
+      // gateway ids on the jobs; the node reports its GGUF name
+      await jobService.createJob({ prompt: 'a', userId: 'u', model: 'qwen/qwen3.6-35b-a3b' });
+      const want = await jobService.createJob({ prompt: 'b', userId: 'u', model: 'qwen/qwen3.6-27b' });
+      await jobService.createJob({ prompt: 'c', userId: 'u', model: 'qwen/qwen3.6-35b-a3b' });
+
+      const assigned = await jobService.assignJobsToNode('node27b', 2, 'Qwen3.6-27B-Q4_K_M');
+      expect(assigned).toHaveLength(1);
+      expect(assigned[0].id).toBe(want.id);
+
+      // the 35B jobs are still pending for a node that serves that model
+      const other = await jobService.assignJobsToNode('node35b', 5, 'Qwen3.6-35B-A3B-Q4_K_M');
+      expect(other).toHaveLength(2);
+    });
+
+    it('stops at maxJobs even when more matching jobs are in the scan window', async () => {
+      for (let i = 0; i < 4; i++) {
+        await jobService.createJob({ prompt: 'p' + i, userId: 'u', model: 'qwen/qwen3.6-27b' });
+      }
+      const assigned = await jobService.assignJobsToNode('n', 2, 'Qwen3.6-27B-Q4_K_M');
+      expect(assigned).toHaveLength(2);
+    });
+
+    it('a node with no reported model stays model-agnostic (undefined nodeModel)', async () => {
+      await jobService.createJob({ prompt: 'p', userId: 'u', model: 'qwen/qwen3.6-27b' });
+      expect(await jobService.assignJobsToNode('n', 1, undefined)).toHaveLength(1);
+    });
+  });
+
+  describe('model matching', () => {
+    it('normalizes gateway ids and GGUF names to a comparable key', () => {
+      expect(JobService.normalizeModel('qwen/qwen3.6-27b')).toBe('qwen3627b');
+      expect(JobService.normalizeModel('Qwen3.6-27B-Q4_K_M')).toBe('qwen3627b');
+      expect(JobService.normalizeModel('Qwen3.6-35B-A3B-Q4_K_M')).toBe('qwen3635ba3b');
+      expect(JobService.normalizeModel('Gemma-4-E4B-it-Q4_K_M')).toBe('gemma4e4bit');
+      expect(JobService.normalizeModel(null)).toBe('');
+    });
+
+    it('matches across naming schemes and rejects different models', () => {
+      expect(JobService.modelsMatch('qwen/qwen3.6-27b', 'Qwen3.6-27B-Q4_K_M')).toBe(true);
+      expect(JobService.modelsMatch('qwen/qwen3.6-35b-a3b', 'Qwen3.6-27B-Q4_K_M')).toBe(false);
+      // a missing model on either side never blocks routing
+      expect(JobService.modelsMatch(null, 'Qwen3.6-27B-Q4_K_M')).toBe(true);
+      expect(JobService.modelsMatch('qwen/qwen3.6-27b', '')).toBe(true);
+    });
   });
 
   describe('handleHeartbeat', () => {

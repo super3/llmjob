@@ -53,6 +53,8 @@ jest.mock('../src/main/minerManager', () => {
       this.opts = opts;
       this.start = jest.fn(() => { if (MinerManager.startError) throw MinerManager.startError; });
       this.stop = jest.fn();
+      this.pause = jest.fn(() => true);
+      this.resume = jest.fn(() => true);
       MinerManager.instances.push(this);
     }
   }
@@ -84,7 +86,9 @@ jest.mock('../src/main/llmManager', () => {
       super();
       this.opts = opts;
       this.baseUrl = 'http://127.0.0.1:8080';
-      this.start = jest.fn();
+      // Mirror the real manager: the bound URL follows the port the fleet walked
+      // to, so a busy 8080 lands the worker on the actual serving port.
+      this.start = jest.fn((o) => { this.baseUrl = 'http://127.0.0.1:' + (o && o.port); });
       this.stop = jest.fn();
       LlmManager.instances.push(this);
     }
@@ -135,7 +139,7 @@ jest.mock('../src/main/jobWorker', () => {
 });
 
 const pkg = require('../package.json');
-const { NETWORK, NODE } = require('../src/shared/config');
+const { NETWORK, NODE, LLM } = require('../src/shared/config');
 const nodeProto = require('../src/shared/node');
 
 const ADDR = 'prl1p' + 'a'.repeat(30);
@@ -157,6 +161,7 @@ function makeNode(extra) {
 let out; // strings written to stdout
 let err; // strings written to stderr
 let intervals; // { fn, ms, unref? } handles captured from setInterval
+let timeouts; // { fn, ms, unref } handles captured from setTimeout (serve debounce)
 let intervalUnref; // whether captured handles carry an unref()
 let sigHandlers; // signal name -> [handler]
 let origOutTty;
@@ -166,6 +171,7 @@ const allOut = () => out.join('');
 const allErr = () => err.join('');
 const fire = (sig) => { (sigHandlers[sig] || []).forEach((fn) => fn()); };
 const intervalFor = (ms) => intervals.find((h) => h.ms === ms);
+const timeoutsFor = (ms) => timeouts.filter((h) => h.ms === ms);
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 async function settle(n) { for (let i = 0; i < (n || 4); i++) await tick(); }
 
@@ -218,6 +224,7 @@ beforeEach(() => {
   out = [];
   err = [];
   intervals = [];
+  timeouts = [];
   intervalUnref = true;
   sigHandlers = {};
   origOutTty = process.stdout.isTTY;
@@ -232,6 +239,12 @@ beforeEach(() => {
     return h;
   });
   jest.spyOn(global, 'clearInterval').mockImplementation(() => {});
+  jest.spyOn(global, 'setTimeout').mockImplementation((fn, ms) => {
+    const h = { fn, ms, unref: jest.fn() };
+    timeouts.push(h);
+    return h;
+  });
+  jest.spyOn(global, 'clearTimeout').mockImplementation(() => {});
   jest.spyOn(process, 'on').mockImplementation((ev, fn) => {
     (sigHandlers[ev] = sigHandlers[ev] || []).push(fn);
     return process;
@@ -577,7 +590,7 @@ describe('local LLM', () => {
     await settle();
 
     expect(allOut()).toContain('mode:       llm');
-    expect(allOut()).toContain('port 8080 is busy — using 9090 for the local LLM instead');
+    expect(allOut()).toContain('local LLM (' + LLM.model.name + ') starting on 1 GPU [0]');
     expect(allOut()).toContain('downloading LLM model');
 
     // The binary resolver's engine wires the shared extractor with the CLI hint.
@@ -609,6 +622,7 @@ describe('local LLM', () => {
 
     jw.emit('error', new Error('poll down'));
     jw.emit('job', { id: 'j1' });
+    jw.emit('done', { id: 'j1' }); // llm mode → no serve controller, so this is inert
     jw.emit('failed', { id: 'j1', error: 'nope' });
     expect(allErr()).toContain('job poll failed: poll down (retrying)');
     expect(allOut()).toContain('cluster job j1 — running locally');
@@ -634,7 +648,7 @@ describe('local LLM', () => {
     await expect(p).resolves.toBe(0);
     expect(jw.stop).toHaveBeenCalled();
     expect(llm.stop).toHaveBeenCalled();
-    llm.emit('stopped', 0); // during shutdown: the `stopping` guard swallows it
+    llm.emit('stopped', 0); // during shutdown: fleet.stop() already suppressed it
     await pinger.fn(); // after stopServe: telemetry reports 0 active jobs
     expect(allErr()).not.toContain('local LLM exited');
   });
@@ -668,6 +682,45 @@ describe('local LLM', () => {
     expect(m.JobWorker.instances.length).toBe(0);
     llm.emit('stopped', 0);
     await expect(p).resolves.toBe(1);
+  });
+
+  test('runs one instance and worker per eligible GPU, summing their active jobs', async () => {
+    const m = load();
+    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: 'rig' }));
+    // Two 8 GB cards → each holds the small model (not big enough to shard), so
+    // one llama-server + cluster worker pinned to each.
+    m.probe.detectGpusVram.mockResolvedValue([
+      { index: 0, name: 'RTX 3070', usedMb: 1000, totalMb: 8000 },
+      { index: 1, name: 'RTX 3070', usedMb: 1000, totalMb: 8000 },
+    ]);
+    m.probe.detectVram.mockResolvedValue({ totalMb: 8000, usedMb: 1000 });
+    m.probe.findFreePort.mockImplementation((h, p) => Promise.resolve(p));
+    const p = m.run(['--mode', 'llm', '--no-update']);
+    await settle();
+
+    // the plural log names every serving card; a manager per card on its own port
+    expect(allOut()).toContain('local LLM (' + LLM.model.name + ') starting on 2 GPUs [0, 1]');
+    const [g0, g1] = m.LlmManager.instances;
+    expect(m.LlmManager.instances.length).toBe(2);
+    expect(g0.start).toHaveBeenCalledWith(expect.objectContaining({ port: 8080, mainGpu: 0 }));
+    expect(g1.start).toHaveBeenCalledWith(expect.objectContaining({ port: 8081, mainGpu: 1 }));
+
+    // both cards come up → a cluster worker per card
+    g0.emit('ready', { baseUrl: g0.baseUrl });
+    g1.emit('ready', { baseUrl: g1.baseUrl });
+    await settle();
+    expect(m.JobWorker.instances.length).toBe(2);
+
+    // one keep-alive ping loop for the whole fleet, summing active jobs (2 each)
+    const pinger = intervalFor(NODE.pingIntervalMs);
+    await pinger.fn();
+    expect(m.io.postJson.mock.calls.pop()[1].activeJobs).toBe(4);
+
+    // SIGINT stops every instance and resolves the LLM-only run
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+    expect(g0.stop).toHaveBeenCalled();
+    expect(g1.stop).toHaveBeenCalled();
   });
 });
 
@@ -708,6 +761,30 @@ describe('both mode', () => {
     await expect(p).resolves.toBe(1);
     expect(allErr()).toContain('failed to launch engine: spawn ENOENT');
     expect(m.LlmManager.instances[0].stop).toHaveBeenCalled();
+  });
+
+  test('the board report tags the GPU serving the local LLM', async () => {
+    const m = load();
+    m.EngineManager.installed = true;
+    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: 'rig' }));
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
+    // 'both' with reporting on (no --no-report), so the miner report path runs
+    // while the LLM serves.
+    const p = m.run(['-a', ADDR, '--mode', 'both', '--no-update', '--llm-binary', '/lb', '--llm-model', '/lm']);
+    await settle();
+
+    const llm = m.LlmManager.instances[0];
+    llm.emit('ready', { baseUrl: llm.baseUrl }); // GPU 0 now serves the model
+    await settle();
+
+    m.probe.postMinerReport.mockClear();
+    const reporter = intervalFor(NETWORK.reportIntervalMs);
+    await reporter.fn();
+    const payloads = m.probe.postMinerReport.mock.calls.map((c) => c[0]);
+    expect(payloads.some((pl) => pl.llmModel === LLM.model.name)).toBe(true);
+
+    m.MinerManager.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
   });
 });
 
@@ -822,6 +899,66 @@ describe('connect subcommand', () => {
     await settle();
     expect(allOut()).toContain('resuming pings for abc123');
     fire('SIGTERM');
+    await expect(p).resolves.toBe(0);
+  });
+});
+
+// ── multi-GPU serving: sharding + auto-mode pause ────────────────────────────
+
+describe('multi-GPU serving', () => {
+  test('shards a big model across GPUs when no single card fits it', async () => {
+    const m = load();
+    // two 16 GB A4000s, ~14 GB free each → shard the ~24 GB model across both
+    m.probe.detectGpusVram.mockResolvedValue([
+      { index: 0, name: 'RTX A4000', usedMb: 2000, totalMb: 16376 },
+      { index: 1, name: 'RTX A4000', usedMb: 2000, totalMb: 16376 },
+    ]);
+    const p = m.run(['--mode', 'llm', '--no-update', '--llm-binary', '/lb', '--llm-model', '/lm']);
+    await settle(6);
+
+    const moe = LLM.models.find((mm) => mm.id === 'qwen3.6-35b-a3b');
+    expect(m.LlmManager.instances.length).toBe(1); // one sharded instance, not one per card
+    expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+      splitMode: 'layer', tensorSplit: [14376, 14376], mainGpu: 0,
+      nGpuLayers: moe.layers, ctxSize: moe.ctxSize, parallel: moe.parallel,
+    }));
+    expect(allOut()).toContain('local LLM (' + moe.name + ') starting on sharded across GPUs 0,1');
+
+    m.LlmManager.instances[0].emit('stopped', 0); // fleet down → llm-only exits non-zero
+    await expect(p).resolves.toBe(1);
+  });
+
+  test('auto mode pauses mining on a served job and resumes when idle', async () => {
+    const m = load();
+    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: 'rig' }));
+    m.EngineManager.installed = true;
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 3070', usedMb: 1000, totalMb: 8000 }]);
+    m.probe.findFreePort.mockResolvedValue(8080);
+    const p = m.run(['-a', ADDR, '--mode', 'auto', '--no-update', '--no-report',
+      '--llm-binary', '/lb', '--llm-model', '/lm']);
+    await settle(6);
+
+    const miner = m.MinerManager.instances[0];
+    const g0 = m.LlmManager.instances[0];
+    g0.emit('ready', { baseUrl: 'http://127.0.0.1:8080' }); // linked → a cluster worker
+    await settle();
+    const jw = m.JobWorker.instances[0];
+
+    jw.emit('job', { id: 'j1' });
+    expect(miner.pause).toHaveBeenCalledTimes(1);
+    jw.emit('done', { id: 'j1' });
+    expect(miner.resume).not.toHaveBeenCalled(); // debounced
+    timeoutsFor(15000).pop().fn();
+    expect(miner.resume).toHaveBeenCalledTimes(1);
+
+    // a failed job also releases the pause
+    jw.emit('job', { id: 'j2' });
+    jw.emit('failed', { id: 'j2', error: 'oom' });
+    timeoutsFor(15000).pop().fn();
+    expect(miner.resume).toHaveBeenCalledTimes(2);
+
+    fire('SIGINT');
+    miner.emit('stopped', 0);
     await expect(p).resolves.toBe(0);
   });
 });
