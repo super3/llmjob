@@ -5,7 +5,7 @@
 // one card holds, by splitting it across cards with llama.cpp's
 // --split-mode layer/row + --tensor-split. This is pure planning: it decides
 // WHICH physical cards to use and the per-card proportion; main.js / earn-cli.js
-// pass the result to buildServerArgs and pause mining on exactly those cards.
+// pass the result through the fleet to buildServerArgs.
 //
 // The current client pins the LLM to one GPU (--split-mode none), so this is the
 // net-new path that unlocks the big models on the A4000 / 3070 / 4070 rigs. For

@@ -993,7 +993,7 @@ describe('connect subcommand', () => {
   });
 });
 
-// ── multi-GPU serving: sharding + auto-mode pause ────────────────────────────
+// ── multi-GPU serving: sharding ──────────────────────────────────────────────
 
 describe('multi-GPU serving', () => {
   test('shards a big model across GPUs when no single card fits it', async () => {

@@ -59,6 +59,13 @@ let registeredUnlinked = false; // self-registered an unlinked node once this ru
 // cards). Drives the served-model status, node telemetry, and the board's LLM
 // column. Defaults to the small model until startLlm picks one.
 let servingModel = LLM.model;
+// Reported when we can't determine the served model — specifically when adopting
+// a lingering llama-server whose loaded model we can't verify (a re-plan is
+// unreliable: the running server's own VRAM use skews the reading). Null
+// name/quant → the node advertises no model, so job routing stays model-agnostic
+// (it can serve anything the adopted server loaded) instead of misrouting on a
+// wrong guess, which would withhold matching jobs and misdirect others.
+const UNKNOWN_MODEL = { name: null, quant: null };
 // `note` is a transient "what is it doing right now" line — "Downloading model…
 // 42%", "Starting…" — shown in place of the model name until the LLM is ready.
 // Without it a first run logs "preparing local LLM…" and then goes silent for
@@ -612,7 +619,8 @@ async function startLlm(reserveMb) {
   if (await probeLlmHealth(targetBase)) {
     fleet.adopt(targetBase);
     llmEverReady = true;
-    llmStatus = Object.assign({}, llmStatus, { ready: true, error: null, note: null, endpoint: targetBase + '/v1', webUrl: targetBase });
+    servingModel = UNKNOWN_MODEL; // adopted server: model unverifiable → report none
+    llmStatus = Object.assign({}, llmStatus, { ready: true, error: null, model: null, note: null, endpoint: targetBase + '/v1', webUrl: targetBase });
     send('miner:log', { level: 'info', line: 'local LLM already running on ' + targetBase + ' — reusing it' });
     sendLlmStatus();
     syncWorker();

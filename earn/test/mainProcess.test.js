@@ -1163,7 +1163,9 @@ describe('local LLM', () => {
 
     expect(ctx.LlmManager.instances).toHaveLength(0);
     const status = ctx.sent('llm:status').pop();
-    expect(status).toMatchObject({ ready: true, endpoint: 'http://127.0.0.1:8080/v1', webUrl: 'http://127.0.0.1:8080' });
+    // adopted server: model unverifiable → reported as null (not the default),
+    // so job routing stays model-agnostic instead of misrouting on a wrong guess
+    expect(status).toMatchObject({ ready: true, model: null, endpoint: 'http://127.0.0.1:8080/v1', webUrl: 'http://127.0.0.1:8080' });
     expect(ctx.sent('miner:log').map((l) => l.line).join('\n')).toContain('already running on http://127.0.0.1:8080 — reusing it');
     expect(ctx.sent('miner:stopped')).toHaveLength(0);
 
