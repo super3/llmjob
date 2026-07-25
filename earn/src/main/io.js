@@ -108,15 +108,19 @@ function downloadFile(url, dest, onProgress, redirects) {
 
 // Stream a chat request to the local llama-server's OpenAI endpoint. Deltas are
 // batched per network chunk — onDelta(text, tokenCount) — instead of one call
-// per token. Returns { done, cancel }: `done` resolves when the stream finishes
-// and rejects on transport/HTTP errors or cancel(reason); cancel is safe to call
-// at any point and settles `done` before destroying the request, so callers
-// always observe an outcome (no orphaned in-flight state).
-function streamChatCompletion(baseUrl, chatBody, onDelta) {
+// per token. A thinking model's `reasoning_content` is reported the same way via
+// the optional onReasoning(text, tokenCount), so those tokens are accounted for
+// rather than silently dropped. Returns { done, cancel }: `done` resolves with
+// { finishReason } when the stream finishes and rejects on transport/HTTP errors
+// or cancel(reason); cancel is safe to call at any point and settles `done`
+// before destroying the request, so callers always observe an outcome (no
+// orphaned in-flight state).
+function streamChatCompletion(baseUrl, chatBody, onDelta, onReasoning) {
   let settled = false;
+  let finishReason = null;
   let resolveDone, rejectDone;
   const done = new Promise((res, rej) => { resolveDone = res; rejectDone = rej; });
-  const finish = () => { if (!settled) { settled = true; resolveDone(); } };
+  const finish = () => { if (!settled) { settled = true; resolveDone({ finishReason }); } };
   const fail = (err) => { if (!settled) { settled = true; rejectDone(err); } };
 
   let url;
@@ -138,6 +142,10 @@ function streamChatCompletion(baseUrl, chatBody, onDelta) {
       const parsed = parseChatStream(buf);
       buf = parsed.rest;
       if (parsed.deltas.length) onDelta(parsed.deltas.join(''), parsed.deltas.length);
+      if (parsed.reasoning.length && onReasoning) {
+        onReasoning(parsed.reasoning.join(''), parsed.reasoning.length);
+      }
+      if (parsed.finishReason) finishReason = parsed.finishReason;
       if (parsed.done) { res.destroy(); finish(); }
     });
     res.on('end', finish);

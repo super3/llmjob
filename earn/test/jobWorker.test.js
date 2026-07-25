@@ -62,6 +62,52 @@ describe('pollOnce', () => {
   });
 });
 
+describe('processJob — thinking models', () => {
+  test('counts reasoning tokens, carries the thoughts on the final chunk, and reports finish_reason', async () => {
+    const sch = makeScheduler();
+    let t = 1000;
+    const { post, calls } = makePost(okFor([{ id: 'J1', prompt: 'hi', model: 'M' }]));
+    // The reported bug: max_tokens is spent entirely on reasoning, so the answer
+    // is empty. The tokens were still generated and the run was still truncated.
+    const runJob = (chatBody, { onDelta, onReasoning }) => {
+      onReasoning('thinking hard', 7);
+      onReasoning(' more'); // no count reported → counts as one token
+      t += 1000;
+      return Promise.resolve({ finishReason: 'length' });
+    };
+    const w = new JobWorker({
+      identity: IDENT, serverUrl: 's', post, runJob, now: () => t,
+      schedule: sch.schedule, cancel: sch.cancel,
+    });
+    await w.pollOnce();
+
+    const chunks = calls.filter((c) => c.url === 's/api/jobs/J1/chunks').map((c) => c.body);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].content).toBe('');
+    expect(chunks[0].isFinal).toBe(true);
+    expect(chunks[0].reasoning).toBe('thinking hard more');
+    // Reasoning tokens are real generated tokens — they must not bill as zero.
+    expect(chunks[0].metrics.totalTokens).toBe(8);
+    expect(chunks[0].metrics.finishReason).toBe('length');
+  });
+
+  test('an ordinary model sends no reasoning field and defaults to stop', async () => {
+    const sch = makeScheduler();
+    let t = 1000;
+    const { post, calls } = makePost(okFor([{ id: 'J1', prompt: 'hi', model: 'M' }]));
+    const runJob = (chatBody, { onDelta }) => { onDelta('hey', 1); t += 1000; return Promise.resolve(); };
+    const w = new JobWorker({
+      identity: IDENT, serverUrl: 's', post, runJob, now: () => t,
+      schedule: sch.schedule, cancel: sch.cancel,
+    });
+    await w.pollOnce();
+
+    const final = calls.filter((c) => c.url === 's/api/jobs/J1/chunks').map((c) => c.body).pop();
+    expect(final.reasoning).toBeUndefined();
+    expect(final.metrics.finishReason).toBe('stop');
+  });
+});
+
 describe('processJob — success streaming', () => {
   test('heartbeats immediately + on cadence, streams ordered chunks, final chunk carries metrics, completes', async () => {
     const sch = makeScheduler();
@@ -93,7 +139,7 @@ describe('processJob — success streaming', () => {
       [0, 'abcd', false], [1, 'efgh', false], [2, 'XY', true],
     ]);
     expect(chunks[0].metrics).toBeUndefined();
-    expect(chunks[2].metrics).toEqual({ totalTokens: 5, tokensPerSecond: 2.5, elapsedSeconds: 2, model: 'M' });
+    expect(chunks[2].metrics).toEqual({ totalTokens: 5, tokensPerSecond: 2.5, elapsedSeconds: 2, model: 'M', finishReason: 'stop' });
     expect(calls.some((c) => c.url === 's/api/jobs/J1/complete')).toBe(true);
     expect(events).toEqual(['job:1', 'done:J1']);
     expect(w.activeJobs()).toBe(0);

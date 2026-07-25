@@ -76,12 +76,18 @@ class OpenAiController {
       const r = await svc.jobService.getJobResult(job.id);
       if (r.status === 'completed') {
         const out = completionTokens(r);
+        const message = { role: 'assistant', content: r.result || '' };
+        // Surfaced only when the node ran a thinking model. Clients that don't
+        // know the field ignore it; the ones that do can show why `content` is
+        // short (or empty) when max_tokens ran out mid-thought.
+        const thoughts = reasoningText(r);
+        if (thoughts) message.reasoning_content = thoughts;
         return res.status(200).json({
           id: 'chatcmpl-' + job.id,
           object: 'chat.completion',
           created: Math.floor(this.now() / 1000),
           model: modelName(r, job),
-          choices: [{ index: 0, message: { role: 'assistant', content: r.result || '' }, finish_reason: 'stop' }],
+          choices: [{ index: 0, message, finish_reason: finishReason(r) }],
           usage: { prompt_tokens: ctx.promptTokens, completion_tokens: out, total_tokens: ctx.promptTokens + out },
         });
       }
@@ -123,7 +129,9 @@ class OpenAiController {
         if (chunks[emitted].content) send({ content: chunks[emitted].content });
       }
       if (r.status === 'completed') {
-        send({}, 'stop');
+        const thoughts = reasoningText(r);
+        if (thoughts) send({ reasoning_content: thoughts });
+        send({}, finishReason(r));
         break;
       }
       if (r.status === 'failed') {
@@ -154,7 +162,7 @@ class OpenAiController {
       in: ctx.promptTokens,
       out,
       speed: (r.metrics && r.metrics.tokensPerSecond) || 0,
-      finish: 'stop',
+      finish: finishReason(r),
       key: key.name,
     });
     await svc.apiKeyService.recordUsage(key.hash, ctx.promptTokens + out);
@@ -179,6 +187,23 @@ function joinContent(messages) {
 function modelName(result, job) {
   if (result && result.metrics && result.metrics.model) return result.metrics.model;
   return job.model;
+}
+
+// Why generation stopped, as reported by the node's final metrics. 'length' means
+// max_tokens ran out — the signal a caller needs to tell a truncated answer from a
+// finished one, and the only way an empty `content` from a thinking model reads as
+// anything but a silent failure. Older nodes don't send it; they were always
+// stopping normally, so 'stop' is the right default.
+function finishReason(result) {
+  const reason = result && result.metrics && result.metrics.finishReason;
+  return typeof reason === 'string' && reason ? reason : 'stop';
+}
+
+// The chain of thought a thinking model produced, carried on the final chunk.
+// Empty for ordinary models.
+function reasoningText(result) {
+  const chunks = (result && result.chunks) || [];
+  return chunks.map((c) => (c && c.reasoning) || '').join('');
 }
 
 // completion_tokens from the node's final metrics, falling back to an estimate of

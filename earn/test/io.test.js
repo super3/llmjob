@@ -326,7 +326,7 @@ describe('streamChatCompletion', () => {
 
     res.emit('data', 'data: {"choices":[{"delta":{"content":"He"}}]}\n\n');
     res.emit('data', 'data: {"choices":[{"delta":{"content":"llo"}}]}\n\ndata: [DONE]\n\n');
-    await expect(done).resolves.toBeUndefined();
+    await expect(done).resolves.toEqual({ finishReason: null });
     expect(deltas.join('')).toBe('Hello');
     expect(res.destroy).toHaveBeenCalled();
   });
@@ -337,7 +337,7 @@ describe('streamChatCompletion', () => {
     const { done } = io.streamChatCompletion('https://host', { messages: [] }, () => {});
     res.emit('end');
     res.emit('end'); // idempotent — finish() must guard on `settled`
-    await expect(done).resolves.toBeUndefined();
+    await expect(done).resolves.toEqual({ finishReason: null });
   });
 
   it('ignores chunks that carry no delta', async () => {
@@ -348,8 +348,30 @@ describe('streamChatCompletion', () => {
     // A role-only opening frame has no content delta.
     res.emit('data', 'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n');
     res.emit('data', 'data: [DONE]\n\n');
-    await expect(done).resolves.toBeUndefined();
+    await expect(done).resolves.toEqual({ finishReason: null });
     expect(onDelta).not.toHaveBeenCalled();
+  });
+
+  it('reports reasoning_content and resolves with the finish_reason', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    wire(http, [res]);
+    const onDelta = jest.fn();
+    const onReasoning = jest.fn();
+    const { done } = io.streamChatCompletion('http://127.0.0.1:8080', {}, onDelta, onReasoning);
+
+    res.emit('data', 'data: {"choices":[{"delta":{"reasoning_content":"hm"}}]}\n\n');
+    res.emit('data', 'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\ndata: [DONE]\n\n');
+    await expect(done).resolves.toEqual({ finishReason: 'length' });
+    expect(onReasoning).toHaveBeenCalledWith('hm', 1);
+    expect(onDelta).not.toHaveBeenCalled();
+  });
+
+  it('drops reasoning when the caller supplies no onReasoning', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    wire(http, [res]);
+    const { done } = io.streamChatCompletion('http://127.0.0.1:8080', {}, () => {});
+    res.emit('data', 'data: {"choices":[{"delta":{"reasoning_content":"hm"}}]}\n\ndata: [DONE]\n\n');
+    await expect(done).resolves.toEqual({ finishReason: null });
   });
 
   it('rejects on a non-200 from llama-server', async () => {

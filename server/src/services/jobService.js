@@ -176,6 +176,9 @@ class JobService {
       isFinal: chunkData.isFinal || false,
       timestamp: chunkData.timestamp || Date.now()
     };
+    // Only thinking models send this, and only on the final chunk — keep it off
+    // ordinary chunks rather than storing an empty field on every one.
+    if (chunkData.reasoning) chunk.reasoning = chunkData.reasoning;
 
     await this.db.query(
       `INSERT INTO job_chunks (job_id, idx, chunk) VALUES ($1, $2, $3)
