@@ -106,6 +106,7 @@ class JobWorker extends EventEmitter {
 
     let idx = 0;
     let buf = '';
+    let reasoning = '';
     let chunkError = null;
     let chain = Promise.resolve();
     const startedAt = this.now();
@@ -118,6 +119,10 @@ class JobWorker extends EventEmitter {
       buf = '';
       lastFlushAt = this.now();
       const body = { chunkIndex: i, content, isFinal: !!isFinal };
+      // Reasoning isn't streamed to the caller (it isn't part of the answer), so
+      // it rides on the final chunk — enough for the gateway to report it and to
+      // explain an empty completion.
+      if (isFinal && reasoning) body.reasoning = reasoning;
       if (metrics) body.metrics = metrics;
       chain = chain.then(() => this.post(base + '/chunks', this._sign(body))).then((res) => {
         if (!this._ok(res) && !chunkError) {
@@ -127,12 +132,18 @@ class JobWorker extends EventEmitter {
     };
 
     try {
-      await this.runJob(chatBody, {
+      const outcome = await this.runJob(chatBody, {
         // `count` lets a batching stream report several tokens per callback.
         onDelta: (text, count) => {
           buf += text;
           tokens += Number.isFinite(count) ? count : 1;
           if (buf.length >= this.chunkChars || this.now() - lastFlushAt >= this.flushMs) enqueueFlush(false);
+        },
+        // A thinking model spends real tokens here before it writes a word of
+        // the answer, so they count toward the total the caller is billed for.
+        onReasoning: (text, count) => {
+          reasoning += text;
+          tokens += Number.isFinite(count) ? count : 1;
         },
       });
       const elapsedSeconds = Math.max(0.001, (this.now() - startedAt) / 1000);
@@ -141,6 +152,7 @@ class JobWorker extends EventEmitter {
         tokensPerSecond: +(tokens / elapsedSeconds).toFixed(2),
         elapsedSeconds: +elapsedSeconds.toFixed(3),
         model: chatBody.model,
+        finishReason: (outcome && outcome.finishReason) || 'stop',
       });
       await chain;
       if (chunkError) throw chunkError;

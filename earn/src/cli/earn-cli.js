@@ -332,7 +332,7 @@ function makeCliJobWorker(nodeCfg, base, baseUrl) {
     identity: { nodeId: nodeCfg.nodeId, publicKey: nodeCfg.publicKey, secretKey: nodeCfg.secretKey },
     serverUrl: base,
     post: (url, body) => postJson(url, body, 30000),
-    runJob: (chatBody, { onDelta }) => streamChatCompletion(baseUrl, chatBody, onDelta).done,
+    runJob: (chatBody, { onDelta, onReasoning }) => streamChatCompletion(baseUrl, chatBody, onDelta, onReasoning).done,
   });
   // The 'error' listener is mandatory: a listener-less EventEmitter 'error'
   // throws, and one transient poll failure would crash the whole CLI.

@@ -184,6 +184,17 @@ const colorFor = (s) => {
 const initials = (s) => (s || '?').replace(/[^a-z0-9]/gi, "").slice(0, 2).toUpperCase();
 const nodeColor = (d) => (d && (d.includes("Mac") || d.includes("M2"))) ? "var(--violet)" : "var(--accent)";
 
+// How many recent requests the logs table shows.
+const LOG_LIMIT = 10;
+
+// Nodes report VRAM in MB (a 24GB card pings 24564), so render it in GB the way
+// the network page does rather than labelling the raw megabytes "GB".
+const fmtVramGb = (mb) => {
+  const n = Number(mb);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.round(n / 1024) + 'GB';
+};
+
 const fmtTokens = (n) => {
   if (n == null) return '0';
   if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
@@ -244,7 +255,7 @@ function NodesTable({ nodes, loading }) {
                     <span className="nm mono">{n.name}</span>
                   </span>
                 </td>
-                <td className="mono" style={{ color: "var(--ink-2)" }}>{n.device ? `${n.device}${n.vramTotal != null ? ` · ${n.vramTotal}GB` : ''}` : <span className="dash">—</span>}</td>
+                <td className="mono" style={{ color: "var(--ink-2)" }}>{n.device ? `${n.device}${fmtVramGb(n.vramTotal) ? ` · ${fmtVramGb(n.vramTotal)}` : ''}` : <span className="dash">—</span>}</td>
                 <td><span className={`status ${n.status === "online" ? "on" : "off"}`}><span className={`dot ${n.status === "online" ? "on" : "off"}`}></span> {n.status}</span></td>
                 <td>{n.model
                   ? <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><span className="mono" style={{ color: "var(--ink)" }}>{n.model}</span>{n.quant && <span className="pill q">{n.quant}</span>}</span>
@@ -366,7 +377,7 @@ function App() {
     if (res.ok) setKeys(((await res.json()).keys) || []);
   }, [authedFetch]);
   const loadLogs = useCallback(async () => {
-    const res = await authedFetch('/api/logs');
+    const res = await authedFetch('/api/logs?limit=' + LOG_LIMIT);
     if (res.ok) {
       const d = await res.json();
       setLogs(d.logs || []);
@@ -566,7 +577,7 @@ function App() {
             <div className="logs-head">
               <div>
                 <h2>Logs</h2>
-                <div className="sub">View your request logs and history.</div>
+                <div className="sub">Your {LOG_LIMIT} most recent requests.</div>
               </div>
               <div className="controls">
                 <button className={`ctrl-btn ${refreshing ? 'spin' : ''}`} title="Refresh" onClick={refreshAll} disabled={refreshing}>{I.refresh}</button>

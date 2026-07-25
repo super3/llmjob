@@ -27,7 +27,7 @@ function makeApp(db, opts) {
 
 // Play the node: wait for the gateway's pending job, claim it, stream chunks,
 // complete it. Returns the claimed job (so tests can inspect job.messages).
-async function nodeServe(jobService, chunks, metrics) {
+async function nodeServe(jobService, chunks, metrics, reasoning) {
   let job;
   for (let i = 0; i < 300 && !job; i++) {
     job = (await jobService.assignJobsToNode(NODE_ID, 1))[0];
@@ -39,6 +39,7 @@ async function nodeServe(jobService, chunks, metrics) {
     const isFinal = i === chunks.length - 1;
     await jobService.storeChunk(job.id, NODE_ID, {
       chunkIndex: i, content: chunks[i], isFinal, metrics: isFinal ? metrics : undefined,
+      reasoning: isFinal ? reasoning : undefined, // thinking models attach it to the last chunk
     });
   }
   await jobService.completeJob(job.id, NODE_ID);
@@ -90,6 +91,55 @@ describe('OpenAI gateway — integration', () => {
     expect(res.body.usage.prompt_tokens).toBeGreaterThan(0);
     expect(res.body.usage.total_tokens).toBe(res.body.usage.prompt_tokens + 2);
     expect(job.model).toBe('my-model'); // the requested model rode through to the job
+  });
+
+  it('reports finish_reason "length" and the reasoning when a thinking model runs out of budget', async () => {
+    // The silent-empty-answer bug: max_tokens was spent on the chain of thought,
+    // so `content` is empty. That must read as a truncation, not a clean stop.
+    const [res] = await Promise.all([
+      request(app).post('/v1/chat/completions').set(...auth())
+        .send({ messages: [{ role: 'user', content: 'Say hi' }], max_tokens: 40 }),
+      nodeServe(jobService, [''], { totalTokens: 40, finishReason: 'length' }, 'thinking about it'),
+    ]);
+    expect(res.status).toBe(200);
+    expect(res.body.choices[0].finish_reason).toBe('length');
+    expect(res.body.choices[0].message.content).toBe('');
+    expect(res.body.choices[0].message.reasoning_content).toBe('thinking about it');
+    expect(res.body.usage.completion_tokens).toBe(40); // reasoning tokens still billed
+  });
+
+  it('omits reasoning_content for an ordinary model', async () => {
+    const [res] = await Promise.all([
+      request(app).post('/v1/chat/completions').set(...auth())
+        .send({ messages: [{ role: 'user', content: 'Say hi' }] }),
+      nodeServe(jobService, ['Hi'], { totalTokens: 1 }),
+    ]);
+    expect(res.body.choices[0]).not.toHaveProperty('message.reasoning_content');
+    expect(res.body.choices[0].message.reasoning_content).toBeUndefined();
+    expect(res.body.choices[0].finish_reason).toBe('stop'); // node reported none → default
+  });
+
+  it('streams reasoning_content and the real finish_reason', async () => {
+    const [res] = await Promise.all([
+      request(app).post('/v1/chat/completions').set(...auth())
+        .send({ messages: [{ role: 'user', content: 'Hi' }], stream: true, max_tokens: 40 }),
+      nodeServe(jobService, [''], { totalTokens: 40, finishReason: 'length' }, 'hmm'),
+    ]);
+    expect(res.text).toContain('"delta":{"reasoning_content":"hmm"}');
+    expect(res.text).toContain('"finish_reason":"length"');
+    expect(res.text.trim().endsWith('data: [DONE]')).toBe(true);
+  });
+
+  it('logs the real finish reason against the key', async () => {
+    await Promise.all([
+      request(app).post('/v1/chat/completions').set(...auth())
+        .send({ messages: [{ role: 'user', content: 'Hi' }], max_tokens: 40 }),
+      nodeServe(jobService, ['cut'], { totalTokens: 40, finishReason: 'length' }),
+    ]);
+    await sleep(30); // usage accounting is best-effort/after-response
+    const LogService = require('../src/services/logService');
+    const logs = await new LogService(db).getLogs(userId, 10);
+    expect(logs[0].finish).toBe('length');
   });
 
   it('carries a full multi-turn messages array through to the node', async () => {

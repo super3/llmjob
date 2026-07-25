@@ -841,7 +841,7 @@ function makeJobWorker(baseUrl) {
     identity: { nodeId: node.nodeId, publicKey: node.publicKey, secretKey: node.secretKey },
     serverUrl: node.serverUrl || NODE.serverUrl,
     post: (url, body) => postJson(url, body, 30000),
-    runJob: (chatBody, { onDelta }) => streamChatCompletion(baseUrl, chatBody, onDelta).done,
+    runJob: (chatBody, { onDelta, onReasoning }) => streamChatCompletion(baseUrl, chatBody, onDelta, onReasoning).done,
   });
   w.on('error', () => { /* transient poll failure — keep looping */ });
   w.on('job', ({ id }) => send('miner:log', { level: 'info', line: 'cluster job ' + id + ' — running locally' }));

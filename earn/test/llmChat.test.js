@@ -54,9 +54,47 @@ describe('parseChatStream', () => {
     expect(r.rest).toBe('');
   });
 
+  test('collects reasoning_content separately from content', () => {
+    const r = parseChatStream([
+      'data: {"choices":[{"delta":{"reasoning_content":"think"}}]}',
+      'data: {"choices":[{"delta":{"reasoning_content":"ing"}}]}',
+      frame('answer').trim(),
+      '',
+    ].join('\n'));
+    expect(r.reasoning).toEqual(['think', 'ing']);
+    expect(r.deltas).toEqual(['answer']);
+  });
+
+  test('captures finish_reason, keeping the last one reported', () => {
+    const cut = parseChatStream('data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n');
+    expect(cut.finishReason).toBe('length');
+    // A null finish_reason on every streaming frame but the last must not clobber it.
+    const run = parseChatStream([
+      'data: {"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}',
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+      '',
+    ].join('\n'));
+    expect(run.finishReason).toBe('stop');
+  });
+
+  test('a thinking model that spends its whole budget yields reasoning but no content', () => {
+    // The silent-empty-answer case: max_tokens ran out mid-thought, so there is
+    // reasoning to show and 'length' to report even though content is empty.
+    const r = parseChatStream([
+      'data: {"choices":[{"delta":{"reasoning_content":"still thinking"}}]}',
+      'data: {"choices":[{"delta":{},"finish_reason":"length"}]}',
+      'data: [DONE]',
+      '',
+    ].join('\n'));
+    expect(r.deltas).toEqual([]);
+    expect(r.reasoning).toEqual(['still thinking']);
+    expect(r.finishReason).toBe('length');
+    expect(r.done).toBe(true);
+  });
+
   test('empty / null buffer yields nothing', () => {
-    expect(parseChatStream('')).toEqual({ deltas: [], done: false, rest: '' });
-    expect(parseChatStream(null)).toEqual({ deltas: [], done: false, rest: '' });
+    expect(parseChatStream('')).toEqual({ deltas: [], reasoning: [], finishReason: null, done: false, rest: '' });
+    expect(parseChatStream(null)).toEqual({ deltas: [], reasoning: [], finishReason: null, done: false, rest: '' });
   });
 
   test('a missing-choices object contributes no delta', () => {

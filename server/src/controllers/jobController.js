@@ -119,7 +119,7 @@ class JobController {
   async receiveChunk(req, res) {
     try {
       const { jobId } = req.params;
-      const { nodeId, chunkIndex, content, metrics, isFinal, timestamp } = req.body;
+      const { nodeId, chunkIndex, content, reasoning, metrics, isFinal, timestamp } = req.body;
 
       // Verify node
       if (!(await this._requireNode(req, res))) return;
@@ -128,6 +128,7 @@ class JobController {
       const result = await this.jobService.storeChunk(jobId, nodeId, {
         chunkIndex,
         content,
+        reasoning,
         metrics,
         isFinal,
         timestamp

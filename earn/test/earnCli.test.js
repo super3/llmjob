@@ -606,8 +606,9 @@ describe('local LLM', () => {
     await jw.opts.post('http://u', { a: 1 });
     expect(m.io.postJson).toHaveBeenCalledWith('http://u', { a: 1 }, 30000);
     const onDelta = jest.fn();
-    await jw.opts.runJob({ messages: [] }, { onDelta });
-    expect(m.io.streamChatCompletion).toHaveBeenCalledWith(llm.baseUrl, { messages: [] }, onDelta);
+    const onReasoning = jest.fn();
+    await jw.opts.runJob({ messages: [] }, { onDelta, onReasoning });
+    expect(m.io.streamChatCompletion).toHaveBeenCalledWith(llm.baseUrl, { messages: [] }, onDelta, onReasoning);
 
     jw.emit('error', new Error('poll down'));
     jw.emit('job', { id: 'j1' });
