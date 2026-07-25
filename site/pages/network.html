@@ -110,7 +110,7 @@
   .mr-gpu .gpu-s { display: none; }
   /* The "serving LLM" cell: which local model this card runs, or a muted dash
      when it isn't serving (insufficient VRAM) or the client is too old to report. */
-  .mr-llm { min-width: 0; font-family: "IBM Plex Mono", monospace; font-size: 12px; }
+  .mr-llm { min-width: 0; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; }
   .mr-llm .mr-llm-on { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; color: #6b7077; }
   .mr-llm .mr-llm-none { color: #c7c4b8; }
   /* A host running several cards is one clickable row; the chevron expands it
@@ -122,6 +122,10 @@
   .mr-cards .miner-row { border-bottom: none; padding-top: 8px; padding-bottom: 8px; }
   .mr-cards .mr-gpu { color: #8a8f98; }
   .mr-cards .mr-gpu .ci { color: #b4b1a6; flex: none; }
+  /* The LLM name is a text column like the GPU name beside it, so it takes the
+     same lighter shade in an expanded host's sub-rows — otherwise the two read
+     at different weights once a multi-GPU rig is opened. */
+  .mr-cards .mr-llm .mr-llm-on { color: #8a8f98; }
   .mr-cards .mr-hash { color: #7d9fe0; }
   /* Below ~1040px the GPU column can no longer fit a full "NVIDIA GeForce RTX
      4070 SUPER" — end-ellipsis would hide the model behind the vendor prefix,
