@@ -142,5 +142,5 @@ vite.config.ts.timestamp-*
 dump.rdb
 *.rdb
 
-# Generated static site (built by scripts/build-site.mjs)
+# Generated static site (built by site/build-site.mjs)
 dist/
