@@ -2,6 +2,10 @@ const JobService = require('../services/jobService');
 const LogService = require('../services/logService');
 const ApiKeyService = require('../services/apiKeyService');
 
+// The model the fleet actually serves, for reporting when the node didn't tag its
+// metrics with a model name (older clients). Same source the job default uses.
+const { DEFAULT_MODEL } = JobService;
+
 // OpenAI-compatible chat-completions gateway.
 //
 // POST /v1/chat/completions (authenticated with an `lj-` API key) turns a
@@ -93,7 +97,7 @@ class OpenAiController {
           id: 'chatcmpl-' + job.id,
           object: 'chat.completion',
           created: Math.floor(this.now() / 1000),
-          model: modelName(r, job),
+          model: modelName(r),
           choices: [{ index: 0, message, finish_reason: finishReason(r) }],
           usage: { prompt_tokens: ctx.promptTokens, completion_tokens: out, total_tokens: ctx.promptTokens + out },
         });
@@ -120,7 +124,7 @@ class OpenAiController {
     const id = 'chatcmpl-' + job.id;
     const created = Math.floor(this.now() / 1000);
     const send = (delta, finish) => res.write('data: ' + JSON.stringify({
-      id, object: 'chat.completion.chunk', created, model: modelName(null, job),
+      id, object: 'chat.completion.chunk', created, model: modelName(null),
       choices: [{ index: 0, delta, finish_reason: finish || null }],
     }) + '\n\n');
 
@@ -163,7 +167,7 @@ class OpenAiController {
     if (r.status !== 'completed') return;
     const out = completionTokens(r);
     await svc.logService.recordLog(key.userId, {
-      model: modelName(r, job),
+      model: modelName(r),
       node: r.assignedTo || 'unknown',
       app: 'api',
       in: ctx.promptTokens,
@@ -189,11 +193,14 @@ function joinContent(messages) {
   return messages.map((m) => (m && m.content) || '').join('\n');
 }
 
-// The model to report back: what the node actually ran (final metrics), else the
-// job's model.
-function modelName(result, job) {
+// The model to report back: what the node actually ran (from its final metrics),
+// else the fleet's default. Deliberately NOT the caller's requested model — the
+// node serves its own local model regardless of the `model` field, so echoing the
+// request would report a lie. A caller who sent `model: "llmjob"` (or any alias)
+// was still served Gemma; the log and the response should say so.
+function modelName(result) {
   if (result && result.metrics && result.metrics.model) return result.metrics.model;
-  return job.model;
+  return DEFAULT_MODEL;
 }
 
 // Why generation stopped, as reported by the node's final metrics. 'length' means
