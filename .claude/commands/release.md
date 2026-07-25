@@ -40,9 +40,11 @@ Repo root: `C:\Users\template\Code\llmjob`. Earn tests run from `earn/`, server 
 
 8. **Launch the build on this machine to test.** Stop any old instances (`electron.exe`, `LLMJob Earn.exe`, `llama-server.exe`, `alpha-miner*`), then `cd earn && npm start -- --remote-debugging-port=9223 &`. Wait for the CDP page target, then bring the window to the foreground (PowerShell `SetForegroundWindow`).
 
-   Don't click Start yourself. But **expect the app to resume mining on its own** — with a valid address and `mode: auto` persisted in `%APPDATA%\llmjob-earn\settings.json`, it starts the engine and the LLM at launch. That's the shipped behaviour, so report it rather than fighting it; a user's machine will do the same.
+   Leave it idle — don't click Start unless asked. The app does **not** auto-start: `applyPlan` runs only from the `miner:start` IPC handler, so a freshly launched instance sits at START with `0m 00s` uptime no matter what `settings.json` holds. If you find it mining, someone clicked it; don't record that as the app's own behaviour.
 
-   Then verify the build rather than just reporting that a window appeared. Screenshot it and look at the image — a blank frame is a failed launch. Read the spawned processes' real arguments back off the OS (`(Get-CimInstance Win32_Process -Filter "ProcessId=<PID>").CommandLine`) and confirm `llama-server` carries a real `--main-gpu <index>`; check `curl -s http://127.0.0.1:8080/health`; and once a report lands (~60s), fetch `https://llmjob-production.up.railway.app/api/miners` and confirm the row's `version` is `$NEW`. That last check is the one that proves you launched the build you think you did, rather than a stale artifact.
+   Then verify the build rather than just reporting that a window appeared. Screenshot it and **look at the image** — a blank frame is a failed launch, and the uptime/START-vs-STOP state tells you whether anything is actually running.
+
+   The deeper checks all require the app to be started, so they are gated on the founder actually testing it (or on him saying go ahead): read the spawned processes' real arguments back off the OS (`(Get-CimInstance Win32_Process -Filter "ProcessId=<PID>").CommandLine`) and confirm `llama-server` carries a real `--main-gpu <index>`; check `curl -s http://127.0.0.1:8080/health`; and once a report lands (~60s) fetch `https://llmjob-production.up.railway.app/api/miners` and confirm the row's `version` is `$NEW`. That last one is what proves you launched the build you think you did rather than a stale artifact — but note the client only reports to the board **while mining**, so an idle instance will never produce a row, and its absence means nothing.
 
 ## Phase 2 — publish (after the founder merges)
 
