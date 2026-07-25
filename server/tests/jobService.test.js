@@ -25,7 +25,7 @@ describe('JobService', () => {
         // default model = what the earn-client fleet actually serves
         prompt: 'Test prompt', model: 'Gemma-4-E4B-it-Q4_K_M', status: 'pending',
         // maxTokens default covers a reasoning model's thoughts plus its answer
-        userId: 'user123', priority: 0, maxTokens: 3200, temperature: 0.7
+        userId: 'user123', priority: 0, maxTokens: 6400, temperature: 0.7
       });
       expect(job.id).toMatch(/^job-\d+-[a-z0-9]+$/);
       expect(job.createdAt).toBeDefined();

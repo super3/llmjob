@@ -11,10 +11,12 @@ const PENDING_TTL_MS = 5 * 60 * 1000;
 // The model the earn-client fleet actually serves (earn/src/shared/config.js
 // LLM.model.name) — the default a job records must match what runs it.
 const DEFAULT_MODEL = 'Gemma-4-E4B-it-Q4_K_M';
-// Generation budget for a job that doesn't specify one. Sized against the gateway's
-// 280s timeout: a node serving ~24 tok/s reaches this with room to spare, and it
-// leaves a reasoning model enough headroom to think and still write the answer.
-const DEFAULT_MAX_TOKENS = 3200;
+// Generation budget for a job that doesn't specify one, matched to the node's
+// 6400-token context window (earn/src/shared/config.js LLM.ctxSize). The prompt
+// shares that window, so a reply tops out a little under this — the node's context
+// is the real cap, and this default exists so a caller who sends no max_tokens
+// isn't held below it.
+const DEFAULT_MAX_TOKENS = 6400;
 
 // A job's routing (inherited from the API key that created it): 'private' may
 // only run on the owner's own nodes; anything else is 'public' (any node).

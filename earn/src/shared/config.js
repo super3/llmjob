@@ -77,7 +77,11 @@ const ECON_API = {
 const LLM = {
   host: '127.0.0.1',
   port: 8080,
-  ctxSize: 4096,
+  // Bounds prompt + generation together, so this — not the server's max_tokens —
+  // is what actually caps a reply. At 4096 a reasoning model ran out of context
+  // mid-thought on hard prompts and returned nothing; the model itself supports
+  // 128K, so this was our own conservative floor rather than a limit of Gemma.
+  ctxSize: 6400,
   parallel: 1,
   // Self-heal a llama-server that exits before ready because it couldn't bind the
   // port yet — the previous server (e.g. from an update relaunch) is still
@@ -118,8 +122,11 @@ const LLM = {
     file: 'gemma-4-E4B-it-Q4_K_M.gguf',
     url: 'https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf',
     layers: 42,
-    vramFullMb: 5800,
-    minVramMb: 6144, // ~6 GB free required before we put it on the GPU
+    // Both scale with ctxSize, since the KV cache grows with the context window:
+    // ~5 GB of weights plus a cache that went from ~0.8 GB at 4096 to ~1.3 GB at
+    // 6400. Left stale these would under-book VRAM and OOM a smaller card.
+    vramFullMb: 6300,
+    minVramMb: 6656, // ~6.5 GB free required before we put it on the GPU
     quant: 'Q4_K_M',
   },
 };

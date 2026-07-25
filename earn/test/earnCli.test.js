@@ -729,8 +729,8 @@ describe('both mode', () => {
 
     expect(allOut()).toContain('mode:       both');
     const llm = m.LlmManager.instances[0];
-    // free 7000 − 2048 mining reserve = 4952 of 5800 → partial offload, on GPU 0
-    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({ nGpuLayers: 35, port: 8080, mainGpu: 0 }));
+    // free 7000 − 2048 mining reserve = 4952 of 6300 → partial offload, on GPU 0
+    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({ nGpuLayers: 33, port: 8080, mainGpu: 0 }));
     llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' }); // not connected → no worker
     llm.emit('stopped', 2); // LLM dies; the miner keeps running
     expect(allErr()).toContain('local LLM exited (code 2)');
