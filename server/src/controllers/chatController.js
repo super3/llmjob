@@ -1,5 +1,6 @@
 const ChatUsageService = require('../services/chatUsageService');
 const JobService = require('../services/jobService');
+const ApiKeyService = require('../services/apiKeyService');
 
 // Free public web-chat gateway, backed by OpenRouter.
 //
@@ -87,7 +88,7 @@ class ChatController {
   services(req) {
     if (this._services) return this._services;
     const db = req.app.locals.db;
-    return { chatUsage: new ChatUsageService(db), jobs: new JobService(db) };
+    return { chatUsage: new ChatUsageService(db), jobs: new JobService(db), apiKeys: new ApiKeyService(db) };
   }
 
   // GET /api/chat/models — the models the Chat UI may offer: the OpenRouter
@@ -100,10 +101,17 @@ class ChatController {
 
   // GET /api/chat/usage — running totals + how much free budget remains.
   async usage(req, res) {
-    const totals = await this.services(req).chatUsage.getTotals();
+    const svc = this.services(req);
+    const totals = await svc.chatUsage.getTotals();
+    // `totals` stays web-chat only: it backs the free-usage cap and the "tokens
+    // served free" line on the chat page, both of which would be wrong if paid
+    // API traffic were folded in. The network page's headline number wants
+    // everything the fleet has served, so that combined figure rides alongside.
+    const apiTokens = svc.apiKeys ? await svc.apiKeys.getTotalUsage() : 0;
     const capped = this.freeBudget > 0;
     res.json({
       totals,
+      network: { apiTokens, totalTokens: totals.totalTokens + apiTokens },
       freeBudget: capped ? this.freeBudget : null,
       remaining: capped ? Math.max(0, this.freeBudget - totals.totalTokens) : null,
       exhausted: capped && totals.totalTokens >= this.freeBudget

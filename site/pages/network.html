@@ -378,13 +378,19 @@
       return String(Math.round(n));
     }
 
-    // Lifetime tokens served by the free web-chat proxy (GET /api/chat/usage).
+    // Lifetime tokens the network has served (GET /api/chat/usage): the free
+    // web-chat proxy plus the OpenAI-compatible API gateway. `network.totalTokens`
+    // carries the combined figure; `totals` is chat-only and is the fallback for a
+    // server that predates the combined field.
     async function loadTokens() {
       try {
         const res = await fetch(API_BASE + '/api/chat/usage', { headers: { Accept: 'application/json' } });
         if (!res.ok) return;
         const u = await res.json();
-        if (u && u.totals) setText('net-tokens', fmtCompact(u.totals.totalTokens));
+        const total = (u && u.network && u.network.totalTokens) != null
+          ? u.network.totalTokens
+          : (u && u.totals ? u.totals.totalTokens : null);
+        if (total != null) setText('net-tokens', fmtCompact(total));
       } catch (e) { /* offline / API down — keep the current view */ }
     }
 
