@@ -88,12 +88,12 @@
   .nt-top .ttl { font-weight: 700; font-size: 16px; letter-spacing: -.01em; }
   .nt-top .upd { font-size: 12px; color: #a7abb2; font-family: "IBM Plex Mono", monospace; }
   .nt-scroll { overflow-x: auto; }
-  /* VRAM/hashrate carry their unit as a small suffix, so those tracks only have
-     to hold the digits; that plus a shorter address buys the width back for the
-     GPU and LLM names, the two columns that actually need it. The GPU track
-     keeps a floor so model names ("RTX 4070 SUPER") stay readable when the table
-     is scrolled at its minimum width on phones. */
-  .nt-cols, .miner-row { display: grid; grid-template-columns: 44px 160px minmax(170px, 1fr) 140px 112px 96px 82px; gap: 16px; align-items: center; min-width: 900px; }
+  /* VRAM/hashrate are whole numbers with the unit as a small suffix, so those
+     tracks only have to hold a few digits; that plus a 6…6 address buys the width
+     back for the GPU and LLM names, the two columns that actually need it. The
+     GPU floor fits a full "NVIDIA GeForce RTX 4070 SUPER" even when the table is
+     scrolled at its minimum width on a phone. */
+  .nt-cols, .miner-row { display: grid; grid-template-columns: 44px 124px minmax(256px, 1fr) 136px 86px 76px 82px; gap: 16px; align-items: center; min-width: 900px; }
   .nt-cols { padding: 11px 22px; border-bottom: 1px solid #efeee8; font-size: 11.5px; color: var(--muted-3); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
   .nt-cols .r, .mr-vram, .mr-hash, .mr-last { text-align: right; }
   .mr-vram { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: #6b7077; }
@@ -107,7 +107,7 @@
   .mr-addr .a { font-family: "IBM Plex Mono", monospace; font-size: 13px; color: #3d4148; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mr-gpu { display: flex; align-items: center; gap: 6px; min-width: 0; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: #6b7077; }
   .mr-gpu .gpu-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-  .mr-gpu .gpu-s, .mr-addr .ad-s { display: none; }
+  .mr-gpu .gpu-s { display: none; }
   /* The "serving LLM" cell: which local model this card runs, or a muted dash
      when it isn't serving (insufficient VRAM) or the client is too old to report. */
   .mr-llm { min-width: 0; font-family: "IBM Plex Mono", monospace; font-size: 12px; }
@@ -129,9 +129,9 @@
      frees real width, so also drop the column sizing reserved for full names —
      otherwise the table scrolls against fixed slack instead of content. */
   @media (max-width: 1040px) {
-    .mr-gpu .gpu-f, .mr-addr .ad-f { display: none; }
-    .mr-gpu .gpu-s, .mr-addr .ad-s { display: inline; }
-    .nt-cols, .miner-row { grid-template-columns: 32px 118px minmax(146px, 1fr) 122px 96px 84px 78px; gap: 12px; min-width: 748px; }
+    .mr-gpu .gpu-f { display: none; }
+    .mr-gpu .gpu-s { display: inline; }
+    .nt-cols, .miner-row { grid-template-columns: 32px 118px minmax(178px, 1fr) 120px 78px 72px 78px; gap: 12px; min-width: 748px; }
   }
   .mr-hash { font-family: "IBM Plex Mono", monospace; font-size: 13px; font-weight: 600; color: var(--accent); }
   .mr-last { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--muted-3); }
@@ -243,13 +243,12 @@
     function esc(str) { return String(str).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
     // Truncate the middle of the payout address for a bit of anonymity; the
     // narrow form fits the tighter address column on sub-1040px screens.
-    // Trimmed hard from the middle: the leading "prl1p…" plus a few trailing
-    // characters is enough to tell rows apart, and the width saved goes to the
-    // GPU and LLM columns.
-    function shortAddr(a, narrow) {
+    // First six and last six characters: enough to tell rows apart, and the width
+    // saved goes to the GPU and LLM columns. Same on both breakpoints — it is
+    // already short enough for a phone.
+    function shortAddr(a) {
       a = String(a);
-      if (narrow) return a.length > 16 ? a.slice(0, 7) + '…' + a.slice(-4) : a;
-      return a.length > 20 ? a.slice(0, 10) + '…' + a.slice(-6) : a;
+      return a.length > 13 ? a.slice(0, 6) + '…' + a.slice(-6) : a;
     }
     function setText(id, v) { const el = document.getElementById(id); if (el) el.textContent = v; }
     // VRAM as "used / total GB" (from MB); "—" when total is unknown (non-NVIDIA
@@ -257,13 +256,13 @@
     function fmtVram(usedMb, totalMb) {
       const t = Number(totalMb) || 0;
       if (t <= 0) return '—';
-      const gb = (mb) => (Math.round((Math.max(0, Number(mb) || 0) / 1024) * 10) / 10).toString();
+      const gb = (mb) => Math.round(Math.max(0, Number(mb) || 0) / 1024).toString();
       return gb(usedMb) + ' / ' + gb(t) + '<span class="u">GB</span>';
     }
-    // Hashrate as a bare number plus a small unit suffix, so the column only has
-    // to be as wide as the digits.
+    // Whole numbers with a small unit suffix: the decimal never mattered at these
+    // magnitudes, and dropping it keeps the column as narrow as the digits.
     function fmtHash(h) {
-      return Number(h).toFixed(1) + '<span class="u">TH/s</span>';
+      return Math.round(Number(h) || 0).toString() + '<span class="u">TH/s</span>';
     }
     // Model-only GPU name ("NVIDIA GeForce RTX 4090" → "RTX 4090") for smaller
     // screens, where end-ellipsis would leave nothing but the vendor prefix.
@@ -320,7 +319,7 @@
             const row =
               '<div class="miner-row' + (m.multi ? ' is-multi' : '') + '"' + (m.multi ? ' data-host="' + esc(hostKey(m)) + '"' : '') + '>' +
                 '<div class="mr-rank">' + (i + 1) + '</div>' +
-                '<div class="mr-addr"><span class="dot"></span><span class="a"><span class="ad-f">' + esc(shortAddr(m.addr)) + '</span><span class="ad-s">' + esc(shortAddr(m.addr, true)) + '</span></span></div>' +
+                '<div class="mr-addr"><span class="dot"></span><span class="a">' + esc(shortAddr(m.addr)) + '</span></div>' +
                 gpuCell(m.gpu, chev) +
                 llmCell(m.llmModel) +
                 '<div class="mr-vram">' + fmtVram(m.vramUsedMb, m.vramTotalMb) + '</div>' +
