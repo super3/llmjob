@@ -11,7 +11,7 @@
     "dev": "npm run build:site && node-pg-migrate up -m server/migrations && nodemon server/src/index.js",
     "test": "jest --coverage",
     "test:watch": "jest --watch",
-    "build:site": "node scripts/build-site.mjs",
+    "build:site": "node site/build-site.mjs",
     "lint": "eslint server/src server/tests earn/src earn/test",
     "lint:fix": "eslint --fix server/src server/tests earn/src earn/test",
     "migrate": "node-pg-migrate -m server/migrations",

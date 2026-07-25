@@ -2,7 +2,7 @@
 
 The marketing/dashboard pages (`index.html`, `earn.html`, `network.html`,
 `add-node.html`, `dashboard.html`) are **generated** from the sources here into
-`dist/` by `scripts/build-site.mjs`. `dist/` is git-ignored — nothing generated
+`dist/` by `site/build-site.mjs`. `dist/` is git-ignored — nothing generated
 is committed. Edit the sources in this directory, never a built page.
 
 ## Where the output goes
@@ -14,6 +14,8 @@ is committed. Edit the sources in this directory, never a built page.
 
 ## Layout
 
+- `build-site.mjs` — the builder itself (plain Node, no dependencies). It lives
+  next to the sources it renders; `dist/` is written to the repo root.
 - `pages/` — one source file per page. Each may start with a JSON front-matter
   comment (`<!--build { … } -->`) declaring page variables (`clerk`, `fonts`, …).
 - `partials/` — shared fragments pulled in with `{{> name}}`:

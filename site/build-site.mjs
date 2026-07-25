@@ -26,8 +26,8 @@ import { readFileSync, writeFileSync, readdirSync, mkdirSync, rmSync, cpSync, ex
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const SITE = join(ROOT, 'site');
+const SITE = dirname(fileURLToPath(import.meta.url));
+const ROOT = join(SITE, '..');
 const PARTIALS = join(SITE, 'partials');
 const PAGES = join(SITE, 'pages');
 const STATIC = join(SITE, 'static'); // optional passthrough assets (images, etc.)

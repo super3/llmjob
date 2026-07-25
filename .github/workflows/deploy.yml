@@ -35,7 +35,7 @@ jobs:
       # Render site/ → dist/ (no dependencies — pure Node). Only dist/ is
       # published, so the source tree is no longer served as part of the site.
       - name: Build site
-        run: node scripts/build-site.mjs
+        run: node site/build-site.mjs
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
