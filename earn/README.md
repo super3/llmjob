@@ -85,7 +85,7 @@ download instead of trusting a stale cache.
 ## HiveOS (flight sheet)
 
 The release ships a HiveOS custom-miner package wrapping the headless CLI
-(`hiveos/` + `scripts/build-hiveos.mjs` → `llmjob-earn-hiveos-<version>.tar.gz`,
+(`hiveos/` + `scripts/build-hiveos.mjs` → `llmjob-earn-<version>.tar.gz`,
 versioned because HiveOS caches the download by filename and can leave rigs
 stuck on an old build when the name never changes; an unversioned
 `llmjob-earn-hiveos.tar.gz` copy is still published for flight sheets that
@@ -93,8 +93,16 @@ predate the rename):
 
 - **Miner** → Custom · **Miner name** → `llmjob-earn`
 - **Installation URL** → the versioned tarball from the [latest release](https://github.com/super3/llmjob/releases/latest),
-  e.g. `https://github.com/super3/llmjob/releases/download/v0.1.17/llmjob-earn-hiveos-0.1.17.tar.gz` —
+  i.e. `https://github.com/super3/llmjob/releases/download/v<version>/llmjob-earn-<version>.tar.gz` —
   update the URL (and rigs re-download automatically) when a new version ships
+
+The versioned filename's stem must stay exactly `llmjob-earn`, matching
+`CUSTOM_NAME`. HiveOS splits a `<name>-<version>.tar.gz` install URL to derive
+the miner name and then looks for `<name>/h-manifest.conf` inside the archive,
+so a stem of `llmjob-earn-hiveos` made every install fail with
+`No llmjob-earn-hiveos/h-manifest.conf` while leaving the rig on its previous
+build. Releases v0.1.17–v0.3.0 shipped that broken name; rigs pointed at one of
+those URLs need the flight sheet moved to a `llmjob-earn-<version>.tar.gz` URL.
 - **Wallet** → your `prl1p…` address only (HiveOS caps the wallet field at 90
   characters, so the combined `prl1p…+mdl1p…` form doesn't fit)
 - **Pool URL** → any non-empty placeholder (e.g. `alphapool.tech:5566`) — HiveOS
@@ -107,8 +115,17 @@ predate the rename):
 The worker name comes from the rig's HiveOS name, and the dashboard gets live
 hashrate/shares via `h-stats.sh`, which reads the JSON the CLI writes with
 `--stats-file` (10s cadence; a stale file reports zeros rather than lying).
-Self-update is disabled under HiveOS — the agent owns the lifecycle, so updates
-arrive by reinstalling the package URL.
+Auto-update on start is disabled under HiveOS (`--no-update`) — the agent owns
+the lifecycle, so updates normally arrive by reinstalling the package URL. To
+move a single rig without touching its flight sheet, run the CLI's explicit
+update from Hive Shell; it replaces the binary in place but leaves the wrapper
+scripts (and the `CUSTOM_VERSION` the dashboard displays) as they were:
+
+```
+miner stop
+/hive/miners/custom/llmjob-earn/llmjob-earn-cli-linux update
+miner start
+```
 
 ## Headless CLI (Linux)
 

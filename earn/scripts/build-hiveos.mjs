@@ -21,10 +21,21 @@ if (!existsSync(bin)) {
   process.exit(1);
 }
 
-// Stage <dist>/hiveos-stage/llmjob-earn/ — the directory name inside the tar
-// must match CUSTOM_NAME for the HiveOS installer to place it correctly.
+// The custom-miner name, read from the manifest rather than repeated here: it
+// has to be identical in the staged directory name, the tarball filename and
+// CUSTOM_NAME, and deriving all three from one source keeps them that way.
+const manifestSrc = readFileSync(join(root, 'hiveos', 'h-manifest.conf'), 'utf8');
+const nameMatch = /^CUSTOM_NAME=(.+)$/m.exec(manifestSrc);
+if (!nameMatch) {
+  console.error('hiveos/h-manifest.conf has no CUSTOM_NAME');
+  process.exit(1);
+}
+const name = nameMatch[1].trim();
+
+// Stage <dist>/hiveos-stage/<name>/ — the directory name inside the tar must
+// match CUSTOM_NAME for the HiveOS installer to place it correctly.
 const stage = join(dist, 'hiveos-stage');
-const pkgDir = join(stage, 'llmjob-earn');
+const pkgDir = join(stage, name);
 rmSync(stage, { recursive: true, force: true });
 mkdirSync(pkgDir, { recursive: true });
 
@@ -34,8 +45,7 @@ for (const f of ['h-config.sh', 'h-run.sh', 'h-stats.sh']) {
 }
 
 // Stamp the package version into the manifest.
-const manifest = readFileSync(join(root, 'hiveos', 'h-manifest.conf'), 'utf8')
-  .replace(/^CUSTOM_VERSION=.*$/m, 'CUSTOM_VERSION=' + version);
+const manifest = manifestSrc.replace(/^CUSTOM_VERSION=.*$/m, 'CUSTOM_VERSION=' + version);
 writeFileSync(join(pkgDir, 'h-manifest.conf'), manifest);
 
 copyFileSync(bin, join(pkgDir, 'llmjob-earn-cli-linux'));
@@ -44,11 +54,21 @@ chmodSync(join(pkgDir, 'llmjob-earn-cli-linux'), 0o755);
 // The tarball name carries the version: HiveOS rigs cache the download and can
 // skip re-fetching a URL whose filename hasn't changed, leaving them stuck on an
 // old build after a release. A per-release filename makes every update a fresh
-// download. The unversioned name is kept as a copy so flight sheets that still
-// point at releases/latest/…/llmjob-earn-hiveos.tar.gz keep installing.
-const out = join(dist, 'llmjob-earn-hiveos-' + version + '.tar.gz');
+// download.
+//
+// The stem before that version must be exactly CUSTOM_NAME. HiveOS splits a
+// `<name>-<version>.tar.gz` install URL to derive the miner name, then installs
+// into /hive/miners/custom/<name>/ and reads <name>/h-manifest.conf from the
+// archive. Naming the file llmjob-earn-hiveos-<version>.tar.gz made it derive
+// "llmjob-earn-hiveos", which never matches the llmjob-earn/ directory inside
+// the tar, and every install failed with "No llmjob-earn-hiveos/h-manifest.conf".
+//
+// The unversioned name is kept as a copy so flight sheets that still point at
+// releases/latest/…/llmjob-earn-hiveos.tar.gz keep installing — with no
+// -<version> suffix to split on, HiveOS falls back to the directory in the tar.
+const out = join(dist, name + '-' + version + '.tar.gz');
 const legacy = join(dist, 'llmjob-earn-hiveos.tar.gz');
-execFileSync('tar', ['-czf', out, '-C', stage, 'llmjob-earn']);
+execFileSync('tar', ['-czf', out, '-C', stage, name]);
 copyFileSync(out, legacy);
 rmSync(stage, { recursive: true, force: true });
 console.log('built ' + out + ' (v' + version + ') + legacy ' + legacy);
