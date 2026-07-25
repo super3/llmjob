@@ -21,7 +21,12 @@
 // that keeps every card's real VRAM visible instead of collapsing the rig into
 // one row, at the cost of an even (rather than measured) hashrate split, which is
 // the best that's possible when the engine doesn't break the hashrate out.
-function buildMinerReports(settings, snap, gpuVram, version) {
+// `serving` (optional) tags the cards currently running the local LLM so the
+// network board can show which GPU serves which model: { model, indices } where
+// `indices` are the GPU indices from the fleet's servingIndices(). A card whose
+// index isn't listed (insufficient VRAM), or any row from a client that doesn't
+// pass `serving` at all (older version), reports llmModel null → blank on the board.
+function buildMinerReports(settings, snap, gpuVram, version, serving) {
   const s = settings || {};
   const n = snap || {};
   const base = {
@@ -30,6 +35,13 @@ function buildMinerReports(settings, snap, gpuVram, version) {
     region: s.region || 'us2',
     version: version != null ? String(version) : null, // earn client version, so the board can see fleet versions
   };
+
+  const serveModel = serving && serving.model ? String(serving.model) : null;
+  const serveSet = new Set(
+    serving && Array.isArray(serving.indices) ? serving.indices.map((i) => Number(i)) : []
+  );
+  // The model this card serves, or null when it isn't serving (or nothing is).
+  const llmFor = (index) => (serveModel && serveSet.has(Number(index)) ? serveModel : null);
 
   const vram = Array.isArray(gpuVram) ? gpuVram : [];
   const vramFor = (index) => vram.find((v) => v && Number(v.index) === index) || null;
@@ -47,6 +59,7 @@ function buildMinerReports(settings, snap, gpuVram, version) {
     accepted: Math.round(accepted / vram.length),
     vramUsedMb: Number(v.usedMb) || 0,
     vramTotalMb: Number(v.totalMb) || 0,
+    llmModel: llmFor(v.index),
   }));
 
   // No per-card engine data yet (startup before the first per-card event, or an
@@ -65,6 +78,7 @@ function buildMinerReports(settings, snap, gpuVram, version) {
       accepted: Number(n.accepted) || 0,
       vramUsedMb: vram.reduce((a, v) => a + (Number(v.usedMb) || 0), 0),
       vramTotalMb: vram.reduce((a, v) => a + (Number(v.totalMb) || 0), 0),
+      llmModel: llmFor(vram[0] ? vram[0].index : 0),
     }];
   }
 
@@ -90,6 +104,7 @@ function buildMinerReports(settings, snap, gpuVram, version) {
       accepted: Number(c.accepted) || 0,
       vramUsedMb: v ? Number(v.usedMb) || 0 : 0,
       vramTotalMb: v ? Number(v.totalMb) || 0 : 0,
+      llmModel: llmFor(c.index),
     };
   });
 }

@@ -73,6 +73,9 @@ function groupHosts(cards, now) {
       vramUsedMb: sum((c) => c.vramUsedMb),
       vramTotalMb: sum((c) => c.vramTotalMb),
       version: top.version,
+      // The host's served model: the fleet runs one model across every serving
+      // card, so any card's non-null llmModel is THE model; null if none serve.
+      llmModel: (group.find((c) => c.llmModel) || {}).llmModel || null,
       last: formatAgo(now - group.reduce((a, c) => Math.max(a, c.lastMs), 0)),
       cards: group.map((c) => ({
         worker: c.worker,
@@ -82,6 +85,7 @@ function groupHosts(cards, now) {
         vramUsedMb: c.vramUsedMb,
         vramTotalMb: c.vramTotalMb,
         version: c.version,
+        llmModel: c.llmModel,
         last: formatAgo(now - c.lastMs),
       })),
     });
@@ -130,17 +134,21 @@ class MinerService {
     const vramUsed = clampNum(input.vramUsedMb, MAX_VRAM_MB);
     const vramTotal = clampNum(input.vramTotalMb, MAX_VRAM_MB);
     const version = input.version ? String(input.version).slice(0, 32) : null;
+    // The local LLM this card is serving, if any. A card not serving (insufficient
+    // VRAM) or a client too old to report it stores null → blank on the board.
+    const llmModel = input.llmModel ? String(input.llmModel).slice(0, 64) : null;
     const id = minerFingerprint(address, worker);
     const now = Date.now();
 
     await this.db.query(
-      `INSERT INTO miners (id, address, worker, gpu, region, hashrate, accepted, vram_used, vram_total, version, first_seen, last_seen)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+      `INSERT INTO miners (id, address, worker, gpu, region, hashrate, accepted, vram_used, vram_total, version, llm_model, first_seen, last_seen)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
        ON CONFLICT (id) DO UPDATE SET
          gpu = EXCLUDED.gpu, region = EXCLUDED.region, hashrate = EXCLUDED.hashrate,
          accepted = EXCLUDED.accepted, vram_used = EXCLUDED.vram_used,
-         vram_total = EXCLUDED.vram_total, version = EXCLUDED.version, last_seen = EXCLUDED.last_seen`,
-      [id, address, worker, gpu, region, hashrate, accepted, vramUsed, vramTotal, version, now]
+         vram_total = EXCLUDED.vram_total, version = EXCLUDED.version,
+         llm_model = EXCLUDED.llm_model, last_seen = EXCLUDED.last_seen`,
+      [id, address, worker, gpu, region, hashrate, accepted, vramUsed, vramTotal, version, llmModel, now]
     );
     return { success: true, id };
   }
@@ -170,6 +178,7 @@ class MinerService {
       vramUsedMb: Math.round(Number(row.vram_used) || 0),
       vramTotalMb: Math.round(Number(row.vram_total) || 0),
       version: row.version || null,
+      llmModel: row.llm_model || null,
       lastMs: Number(row.last_seen), // always positive: the WHERE clause filters on last_seen
     })));
 

@@ -339,13 +339,14 @@ describe('Chat gateway — integration', () => {
   });
 
   describe('GET /api/chat/models', () => {
-    it('lists the allow-listed models', async () => {
+    it('lists the allow-listed models plus the LLMJob-network model', async () => {
       const app = makeApp(db, {});
       const res = await request(app).get('/api/chat/models');
       expect(res.status).toBe(200);
       expect(res.body.models).toEqual([
         { id: 'meta-llama/llama-3.3-70b-instruct', label: 'Llama 3.3 70B' },
-        { id: 'qwen/qwen-2.5-7b-instruct', label: 'Qwen 2.5 7B' }
+        { id: 'qwen/qwen-2.5-7b-instruct', label: 'Qwen 2.5 7B' },
+        { id: 'llmjob-gemma-4-e4b', label: 'Gemma 4 E4B (LLMJob network)' }
       ]);
     });
   });
@@ -506,6 +507,208 @@ describe('Chat gateway — controller branches', () => {
   });
 });
 
+// ── LLMJob-network model (served by a live node via the jobs queue) ───────────
+
+// Fake services: a chat-usage recorder plus a jobs service whose getJobResult
+// walks a scripted sequence of job states (running → completed/failed).
+function netServices(results) {
+  let i = 0;
+  const recorded = [];
+  const created = [];
+  return {
+    chatUsage: { getTotals: async () => ({ totalTokens: 0 }), recordUsage: async (e) => { recorded.push(e); }, _recorded: recorded },
+    jobs: {
+      createJob: async (j) => { created.push(j); return { id: 'job-1' }; },
+      getJobResult: async () => results[Math.min(i++, results.length - 1)]
+    },
+    _created: created
+  };
+}
+const NET_ID = 'llmjob-gemma-4-e4b';
+const NET_LABEL = 'Gemma 4 E4B (LLMJob network)';
+
+describe('Chat gateway — LLMJob-network model', () => {
+  it('serves the model as a job, streaming incremental deltas then a final meta', async () => {
+    const services = netServices([
+      { status: 'running', partial: 'Hel', chunks: [] },
+      { status: 'running', partial: 'Hello', chunks: [] },
+      { status: 'completed', result: 'Hello world', metrics: { totalTokens: 3, tokensPerSecond: 30, model: 'Gemma-4-E4B-it-Q4_K_M' } }
+    ]);
+    // No OpenRouter key needed — this path runs on the fleet, not paid API.
+    const ctrl = new ChatController({ apiKey: '', models: MODELS, services, sleep: async () => {}, now: stepClock() });
+    const res = fakeRes();
+    await ctrl.chatCompletions(fakeReq({ model: NET_ID, temperature: 0.5, messages: [{ role: 'user', content: 'hi' }] }), res);
+
+    const out = res.writes.join('');
+    expect(out).toContain('"delta":"Hel"');
+    expect(out).toContain('"delta":"lo"');       // only the new suffix each poll
+    expect(out).toContain('"delta":" world"');
+    expect(out).toContain('"done":true');
+    expect(out).toContain('Gemma-4-E4B-it-Q4_K_M');
+    expect(out).toContain('[DONE]');
+    // The job is anonymous and carries the full (system-grounded) messages array.
+    expect(services._created[0]).toMatchObject({ userId: null, temperature: 0.5 });
+    expect(services._created[0].messages.some((m) => m.role === 'system')).toBe(true);
+    expect(services._created[0].messages[services._created[0].messages.length - 1]).toEqual({ role: 'user', content: 'hi' });
+    // Usage recorded from the node's real metrics.
+    expect(services.chatUsage._recorded).toHaveLength(1);
+    expect(services.chatUsage._recorded[0]).toMatchObject({ outTokens: 3, speed: 30 });
+  });
+
+  it('resolves the network model by its label too', async () => {
+    const services = netServices([{ status: 'completed', result: 'ok', metrics: {} }]);
+    const ctrl = new ChatController({ apiKey: '', models: MODELS, services, sleep: async () => {}, now: stepClock() });
+    const res = fakeRes();
+    await ctrl.chatCompletions(fakeReq({ model: NET_LABEL, messages: [{ role: 'user', content: 'hi' }] }), res);
+    expect(res.writes.join('')).toContain('"done":true');
+  });
+
+  it('falls back to estimates and the requested label when the node reports no metrics', async () => {
+    const services = netServices([{ status: 'completed', result: 'Hello there', metrics: null }]);
+    const ctrl = new ChatController({ apiKey: '', models: MODELS, services, sleep: async () => {}, now: stepClock() });
+    const res = fakeRes();
+    await ctrl.chatCompletions(fakeReq({ model: NET_ID, messages: [{ role: 'user', content: 'hi' }] }), res);
+    const meta = JSON.parse(res.writes.map((w) => w.replace(/^data: /, '')).find((w) => w.includes('"done"'))).meta;
+    expect(meta.model).toBe(NET_LABEL);      // no node model → the requested label
+    expect(meta.completionTokens).toBeGreaterThan(0); // estimated from the result text
+  });
+
+  it('reports a node failure to the stream (falling back when no reason is given)', async () => {
+    const services = netServices([{ status: 'failed' }]); // no error field
+    const ctrl = new ChatController({ apiKey: '', models: MODELS, services, sleep: async () => {}, now: stepClock() });
+    const res = fakeRes();
+    await ctrl.chatCompletions(fakeReq({ model: NET_ID, messages: [{ role: 'user', content: 'hi' }] }), res);
+    expect(res.writes.join('')).toContain('unknown error');
+    expect(res.writes.join('')).toContain('[DONE]');
+    expect(services.chatUsage._recorded).toHaveLength(0);
+  });
+
+  it('streams an empty completion (no result, no metrics) without flushHeaders', async () => {
+    const services = netServices([{ status: 'completed', result: '', metrics: null }]);
+    const ctrl = new ChatController({ apiKey: '', models: MODELS, services, sleep: async () => {}, now: stepClock() });
+    const res = fakeRes(false); // no flushHeaders available
+    await ctrl.chatCompletions(fakeReq({ model: NET_ID, messages: [{ role: 'user', content: 'hi' }] }), res);
+    const out = res.writes.join('');
+    expect(out).toContain('"done":true');
+    expect(out).not.toContain('"delta"'); // nothing to stream
+    const meta = JSON.parse(res.writes.map((w) => w.replace(/^data: /, '')).find((w) => w.includes('"done"'))).meta;
+    expect(meta.completionTokens).toBe(0);
+    expect(meta.tokensPerSecond).toBe(0);
+  });
+
+  it('gives up with a helpful error when no node finishes in time', async () => {
+    const services = netServices([{ status: 'pending' }]);
+    const ctrl = new ChatController({ apiKey: '', models: MODELS, services, sleep: async () => {}, now: stepClock(), jobTimeoutMs: 0 });
+    const res = fakeRes();
+    await ctrl.chatCompletions(fakeReq({ model: NET_ID, messages: [{ role: 'user', content: 'hi' }] }), res);
+    expect(res.writes.join('')).toContain('No node is available');
+  });
+
+  it('stops the network long-poll when the caller hangs up (streaming)', async () => {
+    const res = fakeResClosable();
+    const services = netServices([{ status: 'running', partial: '' }]);
+    services.jobs.getJobResult = async () => { res.emitClose(); return { status: 'running', partial: '' }; };
+    const ctrl = new ChatController({ apiKey: '', models: MODELS, services, sleep: async () => {}, now: stepClock() });
+    await ctrl.chatCompletions(fakeReq({ model: NET_ID, messages: [{ role: 'user', content: 'hi' }] }), res);
+    expect(res.writes.join('')).not.toContain('[DONE]');
+    expect(res.ended).toBe(false);
+  });
+
+  it('serves the network model without streaming (JSON body)', async () => {
+    const services = netServices([
+      { status: 'running', partial: '' },
+      { status: 'completed', result: 'Hi!', metrics: { totalTokens: 1, tokensPerSecond: 12, model: 'Gemma-4-E4B-it-Q4_K_M' } }
+    ]);
+    const ctrl = new ChatController({ apiKey: '', models: MODELS, services, sleep: async () => {}, now: stepClock() });
+    const res = fakeRes();
+    await ctrl.chatCompletions(fakeReq({ model: NET_ID, stream: false, messages: [{ role: 'user', content: 'hi' }] }), res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.message).toEqual({ role: 'assistant', content: 'Hi!' });
+    expect(res.body.usage.completion_tokens).toBe(1);
+    expect(res.body.usage.tokens_per_second).toBe(12);
+    expect(services.chatUsage._recorded).toHaveLength(1);
+  });
+
+  it('returns 502 on a node failure (non-streaming)', async () => {
+    const services = netServices([{ status: 'failed', error: 'boom' }]);
+    const ctrl = new ChatController({ apiKey: '', models: MODELS, services, sleep: async () => {}, now: stepClock() });
+    const res = fakeRes();
+    await ctrl.chatCompletions(fakeReq({ model: NET_ID, stream: false, messages: [{ role: 'user', content: 'hi' }] }), res);
+    expect(res.statusCode).toBe(502);
+    expect(res.body.error.type).toBe('node_error');
+    expect(res.body.error.message).toContain('boom');
+  });
+
+  it('returns an empty assistant message when the node produced no text (non-streaming)', async () => {
+    const services = netServices([{ status: 'completed', result: '', metrics: {} }]);
+    const ctrl = new ChatController({ apiKey: '', models: MODELS, services, sleep: async () => {}, now: stepClock() });
+    const res = fakeRes();
+    await ctrl.chatCompletions(fakeReq({ model: NET_ID, stream: false, messages: [{ role: 'user', content: 'hi' }] }), res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.message.content).toBe('');
+  });
+
+  it('returns 504 on timeout (non-streaming)', async () => {
+    const services = netServices([{ status: 'pending' }]);
+    const ctrl = new ChatController({ apiKey: '', models: MODELS, services, sleep: async () => {}, now: stepClock(), jobTimeoutMs: 0 });
+    const res = fakeRes();
+    await ctrl.chatCompletions(fakeReq({ model: NET_ID, stream: false, messages: [{ role: 'user', content: 'hi' }] }), res);
+    expect(res.statusCode).toBe(504);
+  });
+
+  it('stops the non-streaming long-poll when the caller hangs up', async () => {
+    const res = fakeResClosable();
+    const services = netServices([{ status: 'running' }]);
+    services.jobs.getJobResult = async () => { res.emitClose(); return { status: 'running' }; };
+    const ctrl = new ChatController({ apiKey: '', models: MODELS, services, sleep: async () => {}, now: stepClock() });
+    await ctrl.chatCompletions(fakeReq({ model: NET_ID, stream: false, messages: [{ role: 'user', content: 'hi' }] }), res);
+    expect(res.body).toBeNull();
+    expect(res.ended).toBe(false);
+  });
+
+  it('keeps the single-string prompt from the last user turn (or joins when none)', async () => {
+    const services = netServices([{ status: 'completed', result: 'r', metrics: {} }]);
+    const ctrl = new ChatController({ apiKey: '', models: MODELS, services, sleep: async () => {}, now: stepClock(), systemPrompt: '' });
+    const res = fakeRes();
+    // assistant-only conversation → no user turn → prompt falls back to joined content
+    await ctrl.chatCompletions(fakeReq({ model: NET_ID, messages: [{ role: 'assistant', content: 'prior' }] }), res);
+    expect(services._created[0].prompt).toBe('prior');
+  });
+
+  it('ends the stream when the network long-poll throws after headers are sent', async () => {
+    const services = netServices([{ status: 'running', partial: '' }]);
+    services.jobs.getJobResult = async () => { throw new Error('db gone'); };
+    const ctrl = new ChatController({ apiKey: '', models: MODELS, services, sleep: async () => {}, now: stepClock() });
+    const res = fakeRes(); // flushHeaders marks headers sent inside _streamNetwork
+    await ctrl.chatCompletions(fakeReq({ model: NET_ID, messages: [{ role: 'user', content: 'hi' }] }), res);
+    expect(res.headersSent).toBe(true);
+    expect(res.ended).toBe(true);
+  });
+
+  it('returns 500 when the network path throws before responding (non-streaming)', async () => {
+    const services = netServices([]);
+    services.jobs.createJob = async () => { throw new Error('db gone'); };
+    const ctrl = new ChatController({ apiKey: '', models: MODELS, services, sleep: async () => {}, now: stepClock() });
+    const res = fakeRes();
+    await ctrl.chatCompletions(fakeReq({ model: NET_ID, stream: false, messages: [{ role: 'user', content: 'hi' }] }), res);
+    expect(res.statusCode).toBe(500);
+    expect(res.body.error.type).toBe('api_error');
+  });
+
+  it('uses a real timer for its default poll sleep', async () => {
+    const ctrl = new ChatController({ apiKey: '' }); // default sleep
+    await ctrl.sleep(1); // resolves via setTimeout — exercises the default
+  });
+
+  it('rejects an unknown model with 400 (the network model is not a catch-all)', async () => {
+    const ctrl = new ChatController({ apiKey: 'k', models: MODELS, services: usageSpy() });
+    const res = fakeRes();
+    await ctrl.chatCompletions(fakeReq({ model: 'nope/not-a-model', messages: [{ role: 'user', content: 'hi' }] }), res);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.type).toBe('invalid_request_error');
+  });
+});
+
 // ── Config / pure helpers ─────────────────────────────────────────────────────
 
 describe('ChatController — config', () => {
@@ -520,6 +723,7 @@ describe('ChatController — config', () => {
     const ctrl = new ChatController();
     expect(ctrl.apiKey).toBeUndefined();
     expect(ctrl.baseUrl).toBe('https://openrouter.ai/api/v1');
+    expect(ctrl.networkModel).toEqual({ id: 'llmjob-gemma-4-e4b', label: 'Gemma 4 E4B (LLMJob network)' });
     expect(ctrl.models).toBe(ChatController.DEFAULT_MODELS);
     expect(ctrl.freeBudget).toBe(1000000);
     expect(ctrl.maxTokens).toBe(2048);

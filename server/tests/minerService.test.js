@@ -117,6 +117,26 @@ describe('MinerService (db)', () => {
     expect(out.miners.find((m) => m.addr === ADDR.c)).toMatchObject({ vramUsedMb: 0, vramTotalMb: 0, version: null });
   });
 
+  test('records and surfaces the LLM a card is serving (host + per-card, blank when none)', async () => {
+    // A two-card rig on ADDR.a: gpu0 serves the model, gpu1 has no room (blank).
+    await service.reportMiner({ address: ADDR.a, worker: 'rig9/gpu0', gpu: 'RTX 4090', hashrate: 100, llmModel: 'Gemma-4-E4B-it-Q4_K_M' });
+    await service.reportMiner({ address: ADDR.a, worker: 'rig9/gpu1', gpu: 'RTX 4060', hashrate: 90 });
+    // A single-GPU host that isn't serving → null (older client / no LLM).
+    await service.reportMiner({ address: ADDR.b, worker: 'rig01', gpu: 'RTX 3090', hashrate: 50 });
+
+    // Stored verbatim on the serving card's row.
+    const stored = (await db.query("SELECT llm_model FROM miners WHERE worker = 'rig9/gpu0'", [])).rows[0];
+    expect(stored.llm_model).toBe('Gemma-4-E4B-it-Q4_K_M');
+
+    const out = await service.getPublicMiners();
+    const rig = out.miners.find((m) => m.worker === 'rig9');
+    expect(rig.llmModel).toBe('Gemma-4-E4B-it-Q4_K_M'); // host shows the served model
+    const byWorker = rig.cards.reduce((acc, c) => (Object.assign(acc, { [c.worker]: c.llmModel })), {});
+    expect(byWorker['rig9/gpu0']).toBe('Gemma-4-E4B-it-Q4_K_M');
+    expect(byWorker['rig9/gpu1']).toBeNull();                 // the non-serving card is blank
+    expect(out.miners.find((m) => m.addr === ADDR.b).llmModel).toBeNull(); // non-serving host is blank
+  });
+
   test('combines a multi-GPU host (worker/gpuN) into one row that sums its cards', async () => {
     // One rig, three A4000s on ADDR.a: workers rig9/gpu0..2 → a single host row.
     await service.reportMiner({ address: ADDR.a, worker: 'rig9/gpu0', gpu: 'NVIDIA RTX A4000', hashrate: 96, accepted: 4, vramUsedMb: 5000, vramTotalMb: 16000, version: '0.2.10' });

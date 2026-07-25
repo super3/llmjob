@@ -101,6 +101,9 @@
   .vtoggle .knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .16s; box-shadow: 0 1px 2px rgba(0,0,0,.2); }
   .vtoggle.on .knob { transform: translateX(14px); }
   .vlabel { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; }
+  /* api-key routing toggle (public/private) */
+  .routing { display: inline-flex; align-items: center; gap: 9px; }
+  .routing-label { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--ink-2); }
   .vlabel.pub { color: var(--accent); }
   .vlabel.priv { color: var(--ink-4); }
 
@@ -451,6 +454,14 @@ function App() {
     const res = await authedFetch(`/api/keys/${id}`, { method: 'DELETE' });
     if (res.ok) await loadKeys();
   };
+  // Flip a key's routing between public (any node) and private (only my nodes).
+  // Optimistic: update the row immediately, then reconcile from the server.
+  const setKeyVisibility = async (id, visibility) => {
+    setKeys(ks => ks.map(k => k.id === id ? { ...k, visibility } : k));
+    const res = await authedFetch(`/api/keys/${id}/visibility`, { method: 'PUT', body: JSON.stringify({ visibility }) });
+    await loadKeys();
+    if (!res.ok) console.error('Update key routing failed');
+  };
 
   const onlineCount = nodes.filter(n => n.status === 'online').length;
 
@@ -517,20 +528,33 @@ function App() {
                 <table style={{ minWidth: 860 }}>
                   <thead>
                     <tr>
-                      <th>Name</th><th>Key</th><th>Last used</th><th>Usage</th><th></th>
+                      <th>Name</th><th>Key</th><th>Routing</th><th>Last used</th><th>Usage</th><th></th>
                     </tr>
                   </thead>
                   <tbody>
-                    {keys.map((k) => (
+                    {keys.map((k) => {
+                      const priv = k.visibility === 'private';
+                      return (
                       <tr key={k.id}>
                         <td><span className="kname">{k.name}</span></td>
                         <td><span className="kmask">{k.masked}</span></td>
+                        <td>
+                          <div className="routing">
+                            <button className={`vtoggle ${priv ? "on" : ""}`} role="switch" aria-checked={priv}
+                              onClick={() => setKeyVisibility(k.id, priv ? 'public' : 'private')}
+                              title={priv ? "Private — requests run only on your own nodes" : "Public — requests may run on any node on the network"}>
+                              <span className="knob"></span>
+                            </button>
+                            <span className="routing-label">{priv ? "Private" : "Public"}</span>
+                          </div>
+                        </td>
                         <td style={{ color: "var(--ink-2)" }}>{relTime(k.lastUsed)}</td>
                         <td className="mono" style={{ color: "var(--ink)" }}>{fmtTokens(k.usage)}<span className="unit">tok</span></td>
                         <td className="num"><button className="revoke-btn" onClick={() => revoke(k.id)}>Revoke</button></td>
                       </tr>
-                    ))}
-                    {keys.length === 0 && <tr><td colSpan="5"><div className="empty-state">No API keys yet. Create one to start making requests.</div></td></tr>}
+                      );
+                    })}
+                    {keys.length === 0 && <tr><td colSpan="6"><div className="empty-state">No API keys yet. Create one to start making requests.</div></td></tr>}
                   </tbody>
                 </table>
               </div>

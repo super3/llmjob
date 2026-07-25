@@ -100,6 +100,12 @@ async function startServer() {
         if (timeoutJobs.length > 0) {
           console.log(`Returned ${timeoutJobs.length} timed out jobs to queue`);
         }
+        // …and drop jobs nothing ever picked up, so they neither pile up nor get
+        // run long after their caller gave up waiting.
+        const expired = await jobService.expireStalePending();
+        if (expired.length > 0) {
+          console.log(`Expired ${expired.length} pending jobs no node picked up`);
+        }
       } catch (error) {
         console.error('Error checking job timeouts:', error);
       }

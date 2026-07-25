@@ -77,12 +77,89 @@ describe('Dashboard API (keys, logs, usage)', () => {
       expect(res.status).toBe(400);
     });
 
+    it('defaults new keys to public routing', async () => {
+      const res = await request(app)
+        .post('/api/keys')
+        .set('Authorization', `Bearer ${mockToken()}`)
+        .send({ name: 'laptop' });
+      expect(res.body.visibility).toBe('public');
+    });
+
+    it('accepts an explicit private routing at creation', async () => {
+      const res = await request(app)
+        .post('/api/keys')
+        .set('Authorization', `Bearer ${mockToken()}`)
+        .send({ name: 'laptop', visibility: 'private' });
+      expect(res.status).toBe(201);
+      expect(res.body.visibility).toBe('private');
+    });
+
+    it('rejects an invalid routing value', async () => {
+      const res = await request(app)
+        .post('/api/keys')
+        .set('Authorization', `Bearer ${mockToken()}`)
+        .send({ name: 'laptop', visibility: 'sideways' });
+      expect(res.status).toBe(400);
+    });
+
     it('returns 500 when storage fails', async () => {
       breakDb();
       const res = await request(app)
         .post('/api/keys')
         .set('Authorization', `Bearer ${mockToken()}`)
         .send({ name: 'laptop' });
+      expect(res.status).toBe(500);
+    });
+  });
+
+  describe('PUT /api/keys/:id/visibility', () => {
+    it('toggles an owned key between public and private', async () => {
+      const created = await new ApiKeyService(db).createKey('test_user_123', 'home'); // public by default
+      const res = await request(app)
+        .put(`/api/keys/${created.id}/visibility`)
+        .set('Authorization', `Bearer ${mockToken()}`)
+        .send({ visibility: 'private' });
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ success: true, id: created.id, visibility: 'private' });
+      // reflected in the listing
+      const list = await request(app).get('/api/keys').set('Authorization', `Bearer ${mockToken()}`);
+      expect(list.body.keys[0].visibility).toBe('private');
+    });
+
+    it('rejects an invalid routing value', async () => {
+      const created = await new ApiKeyService(db).createKey('test_user_123', 'home');
+      const res = await request(app)
+        .put(`/api/keys/${created.id}/visibility`)
+        .set('Authorization', `Bearer ${mockToken()}`)
+        .send({ visibility: 'maybe' });
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 404 for an unknown or unowned key', async () => {
+      const res = await request(app)
+        .put('/api/keys/key_missing/visibility')
+        .set('Authorization', `Bearer ${mockToken()}`)
+        .send({ visibility: 'private' });
+      expect(res.status).toBe(404);
+    });
+
+    it('falls back to 400 when the service errors without a status', async () => {
+      jest.spyOn(ApiKeyService.prototype, 'updateKeyVisibility')
+        .mockResolvedValueOnce({ error: 'nope' });
+      const res = await request(app)
+        .put('/api/keys/key_x/visibility')
+        .set('Authorization', `Bearer ${mockToken()}`)
+        .send({ visibility: 'private' });
+      expect(res.status).toBe(400);
+      ApiKeyService.prototype.updateKeyVisibility.mockRestore();
+    });
+
+    it('returns 500 when storage fails', async () => {
+      breakDb();
+      const res = await request(app)
+        .put('/api/keys/key_x/visibility')
+        .set('Authorization', `Bearer ${mockToken()}`)
+        .send({ visibility: 'private' });
       expect(res.status).toBe(500);
     });
   });
