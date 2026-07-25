@@ -411,7 +411,10 @@ describe('mining', () => {
     await settle();
 
     // Auto-detected knobs: region, hostname worker, GPU → scaled difficulty.
-    expect(allOut()).toContain('mode:       mining  (default)');
+    // The default mode is 'auto', so a bare run mines AND serves the LLM.
+    expect(allOut()).toContain('mode:       auto  (default)');
+    expect(allOut()).toContain('preparing local LLM (Gemma-4-E4B-it-Q4_K_M) …');
+    expect(allOut()).toContain('local LLM starting on 1 GPU [auto]');
     expect(allOut()).toContain('worker:     rig-host  (auto)');
     expect(allOut()).toContain('(+MDL');
     expect(allOut()).toContain('difficulty: 262144  (for 2× NVIDIA GeForce RTX 3070, auto)');
@@ -506,9 +509,13 @@ describe('mining', () => {
     m.probe.detectDriverMajor.mockResolvedValue(550);
     m.cp.execFile.mockImplementation((cmd, args, opts, cb) => cb(null, 'NVIDIA GeForce RTX 3070\n'));
     m.fs.writeFileSync.mockImplementation(() => { throw new Error('read-only fs'); });
-    const p = m.run(['-a', ADDR, '-d', '4096', '--no-update', '--stats-file', '/tmp/s2.json']);
+    // --mode mining opts out of the default co-run: the miner runs alone and
+    // nothing LLM-related is prepared, downloaded, or spawned.
+    const p = m.run(['-a', ADDR, '-d', '4096', '--mode', 'mining', '--no-update', '--stats-file', '/tmp/s2.json']);
     await settle();
 
+    expect(allOut()).toContain('mode:       mining');
+    expect(allOut()).not.toContain('preparing local LLM');
     expect(allOut()).toContain('driver 550 < 580');
     expect(allOut()).toContain('difficulty: 4096  (for NVIDIA GeForce RTX 3070, auto)');
     intervalFor(10000).fn(); // must not throw
@@ -522,7 +529,7 @@ describe('mining', () => {
   test('a miner that fails to launch resolves 1', async () => {
     const m = load();
     m.MinerManager.startError = new Error('EACCES');
-    const p = m.run(['-a', ADDR, '--binary', '/bin/eng', '--no-update']);
+    const p = m.run(['-a', ADDR, '--binary', '/bin/eng', '--mode', 'mining', '--no-update']);
     await expect(p).resolves.toBe(1);
     expect(allErr()).toContain('failed to launch engine: EACCES');
   });

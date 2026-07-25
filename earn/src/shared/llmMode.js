@@ -7,10 +7,13 @@
 // Phase 4; for now Auto co-runs when the LLM is available.
 
 const MODES = ['mining', 'both', 'llm', 'auto'];
-// Shared fallback (used by the headless CLI): mining only, so a rig with no
-// flags never surprise-downloads the LLM. The desktop app defaults to 'auto'
-// (see main.js settings:get) since it's interactive.
-const DEFAULT_MODE = 'mining';
+// Shared fallback for BOTH clients: co-run mining and the LLM. Serving
+// inference is the point of the network, and a mining-only default meant every
+// headless rig — HiveOS flight sheets especially, which pass no --mode — mined
+// silently and never served, with nothing in the log to say why. Auto still
+// fails soft: the VRAM preflight skips the LLM on a card with no room, and a
+// failed binary/model setup never takes the miner down.
+const DEFAULT_MODE = 'auto';
 
 function isValidMode(mode) {
   return MODES.indexOf(mode) !== -1;

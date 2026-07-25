@@ -901,13 +901,16 @@ describe('mining', () => {
     expect(ctx.sent('miner:stopped').length).toBe(1);
   });
 
-  it('miner:start with no payload defaults to mining mode with no address → nothing runs', async () => {
+  it('miner:start with no payload defaults to auto → no address so no miner, but the LLM serves', async () => {
     const ctx = await boot();
     ctx.emit('miner:start');
     await flush();
+    // DEFAULT_MODE is 'auto': mining needs a valid payout address and there is
+    // none, but serving inference doesn't — so the LLM comes up on its own and
+    // the session is NOT stopped.
     expect(ctx.MinerManager.instances).toHaveLength(0);
-    expect(ctx.LlmManager.instances).toHaveLength(0);
-    expect(ctx.sent('miner:stopped')).toHaveLength(1);
+    expect(ctx.LlmManager.instances).toHaveLength(1);
+    expect(ctx.sent('miner:stopped')).toHaveLength(0);
   });
 });
 

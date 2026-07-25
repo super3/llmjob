@@ -158,10 +158,14 @@ and shuts the engine down cleanly on Ctrl-C.
 
 The CLI runs the same local LLM as the GUI. `--mode` picks how the GPU is used:
 
-- `mining` (default) — mine only; unchanged from before.
-- `both` / `auto` — mine **and** serve a local LLM (the VRAM budgeter keeps a
-  mining reserve free and offloads only the model layers that fit).
+- `both` / `auto` (default) — mine **and** serve a local LLM (the VRAM budgeter
+  keeps a mining reserve free and offloads only the model layers that fit).
+- `mining` — mine only; never touches the LLM.
 - `llm` — serve the LLM only, no mining (so no `--address` is required).
+
+Because `auto` is the default, a rig started with no `--mode` downloads the
+model (~5 GB, once) and serves inference alongside mining. Pass `--mode mining`
+to opt out and keep the card purely on shares.
 
 When the LLM runs it spawns llama.cpp's `llama-server` and exposes an
 OpenAI-compatible endpoint at `http://127.0.0.1:8080/v1`. The small default model
@@ -253,7 +257,7 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
 
   -a, --address <prl1p…>   Your Pearl payout address (required unless --mode llm)
   -m, --mdl <mdl1p…>       Also merge-mine ModelOS (MDL) on the same shares
-      --mode <mode>        Compute mode: mining/both/llm/auto (default: mining)
+      --mode <mode>        Compute mode: mining/both/llm/auto (default: auto)
       --llm-binary <path>  Path to a llama-server binary (to run the local LLM)
       --llm-model <path>   Path to a GGUF model file (default: download the small model)
   -r, --region <id>        Pool region: us1/us2/eu1/eu2/ru1/sg1/hk1/in1 (default: auto-detect fastest)
