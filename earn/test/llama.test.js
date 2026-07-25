@@ -27,7 +27,7 @@ describe('buildServerArgs', () => {
     const a = buildServerArgs({ modelPath: '/m.gguf' });
     expect(a).toEqual([
       '--model', '/m.gguf', '--host', '127.0.0.1', '--port', '8080',
-      '--ctx-size', '4096', '--n-gpu-layers', '42', '--parallel', '1',
+      '--ctx-size', '6400', '--n-gpu-layers', '42', '--parallel', '1',
       '--split-mode', 'none',
     ]);
     expect(a).not.toContain('--flash-attn');
