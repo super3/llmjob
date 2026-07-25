@@ -94,18 +94,13 @@
   .finish { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--muted); }
   .dash { color: var(--ink-4); }
 
-  /* node mining toggle */
-  .vis-cell { display: inline-flex; align-items: center; gap: 9px; }
+  /* toggle switch (api-key routing) */
   .vtoggle { width: 34px; height: 20px; border-radius: 11px; background: #d8d5cc; border: none; cursor: pointer; position: relative; transition: background .16s; flex: none; padding: 0; }
   .vtoggle.on { background: var(--accent); }
   .vtoggle .knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .16s; box-shadow: 0 1px 2px rgba(0,0,0,.2); }
   .vtoggle.on .knob { transform: translateX(14px); }
-  .vlabel { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; }
-  /* api-key routing toggle (public/private) */
   .routing { display: inline-flex; align-items: center; gap: 9px; }
   .routing-label { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--ink-2); }
-  .vlabel.pub { color: var(--accent); }
-  .vlabel.priv { color: var(--ink-4); }
 
   /* logs head controls */
   .logs-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-top: 44px; }
@@ -195,6 +190,11 @@ const fmtVramGb = (mb) => {
   return Math.round(n / 1024) + 'GB';
 };
 
+// Nodes report the quant baked into the model name (Gemma-4-E4B-it-Q4_K_M) and
+// again in its own field, so drop the suffix and let the quant pill carry it.
+const fmtModel = (model, quant) =>
+  quant && model.endsWith(`-${quant}`) ? model.slice(0, -(quant.length + 1)) : model;
+
 const fmtTokens = (n) => {
   if (n == null) return '0';
   if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
@@ -227,11 +227,6 @@ const I = {
 };
 
 function NodesTable({ nodes, loading }) {
-  // Per-node Mining toggle is a visual control; default to on, then track
-  // local overrides keyed by node id.
-  const [pub, setPub] = useState({});
-  const isPub = (n) => pub[n.nodeId] !== undefined ? pub[n.nodeId] : (n.public !== false);
-  const toggle = (n) => setPub(p => ({ ...p, [n.nodeId]: !isPub(n) }));
   return (
     <div className="card">
       <div className="tscroll">
@@ -239,13 +234,13 @@ function NodesTable({ nodes, loading }) {
           <thead>
             <tr>
               <th>Node</th><th>Device</th><th>Status</th><th>Model</th>
-              <th>Mining</th><th className="num">Uptime</th>
+              <th className="num">Uptime</th>
             </tr>
           </thead>
           <tbody>
-            {loading && <tr className="loading-row"><td colSpan="6">Loading nodes…</td></tr>}
+            {loading && <tr className="loading-row"><td colSpan="5">Loading nodes…</td></tr>}
             {!loading && nodes.length === 0 && (
-              <tr><td colSpan="6"><div className="empty-state">No nodes yet. Click “Add node” to connect one.</div></td></tr>
+              <tr><td colSpan="5"><div className="empty-state">No nodes yet. Click “Add node” to connect one.</div></td></tr>
             )}
             {!loading && nodes.map((n) => (
               <tr key={n.nodeId}>
@@ -258,14 +253,8 @@ function NodesTable({ nodes, loading }) {
                 <td className="mono" style={{ color: "var(--ink-2)" }}>{n.device ? `${n.device}${fmtVramGb(n.vramTotal) ? ` · ${fmtVramGb(n.vramTotal)}` : ''}` : <span className="dash">—</span>}</td>
                 <td><span className={`status ${n.status === "online" ? "on" : "off"}`}><span className={`dot ${n.status === "online" ? "on" : "off"}`}></span> {n.status}</span></td>
                 <td>{n.model
-                  ? <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><span className="mono" style={{ color: "var(--ink)" }}>{n.model}</span>{n.quant && <span className="pill q">{n.quant}</span>}</span>
+                  ? <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><span className="mono" style={{ color: "var(--ink)" }}>{fmtModel(n.model, n.quant)}</span>{n.quant && <span className="pill q">{n.quant}</span>}</span>
                   : <span className="dash mono">idle</span>}</td>
-                <td>
-                  <span className="vis-cell">
-                    <button className={`vtoggle ${isPub(n) ? "on" : ""}`} onClick={() => toggle(n)} role="switch" aria-checked={isPub(n)} title={isPub(n) ? "Mining enabled" : "Mining paused"}><span className="knob"></span></button>
-                    <span className={`vlabel ${isPub(n) ? "pub" : "priv"}`}>{isPub(n) ? "On" : "Off"}</span>
-                  </span>
-                </td>
                 <td className="num mono" style={{ color: "var(--ink-2)" }}>{n.uptime || <span className="dash">—</span>}</td>
               </tr>
             ))}
