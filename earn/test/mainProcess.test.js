@@ -1089,8 +1089,9 @@ describe('local LLM', () => {
     worker.opts.post('https://x/api', { a: 1 });
     expect(ctx.io.postJson).toHaveBeenCalledWith('https://x/api', { a: 1 }, 30000);
     const onDelta = jest.fn();
-    await worker.opts.runJob({ messages: [] }, { onDelta });
-    expect(ctx.io.streamChatCompletion).toHaveBeenLastCalledWith('http://127.0.0.1:8080', { messages: [] }, onDelta);
+    const onReasoning = jest.fn();
+    await worker.opts.runJob({ messages: [] }, { onDelta, onReasoning });
+    expect(ctx.io.streamChatCompletion).toHaveBeenLastCalledWith('http://127.0.0.1:8080', { messages: [] }, onDelta, onReasoning);
 
     llm.emit('stats', { tokensPerSec: 33 });
     expect(ctx.sent('llm:status').pop()).toMatchObject({ tokensPerSec: 33 });
