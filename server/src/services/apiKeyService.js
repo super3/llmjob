@@ -105,6 +105,14 @@ class ApiKeyService {
     return { success: true, usage: Number(r.rows[0].usage) };
   }
 
+  // Lifetime tokens served across every API key, for the network page's public
+  // total. Read from the keys rather than request_logs because that table is
+  // pruned to the most recent entries per user and would undercount.
+  async getTotalUsage() {
+    const r = await this.db.query('SELECT COALESCE(SUM(usage), 0) AS total FROM api_keys');
+    return Number((r.rows[0] && r.rows[0].total) || 0);
+  }
+
   // Revoke a key by its public id. Verifies ownership via the user id.
   async revokeKey(userId, keyId) {
     const r = await this.db.query(

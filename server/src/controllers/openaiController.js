@@ -17,7 +17,14 @@ const ApiKeyService = require('../services/apiKeyService');
 class OpenAiController {
   constructor(opts = {}) {
     this.pollMs = opts.pollMs || 250;          // how often to check the job for progress
-    this.timeoutMs = opts.timeoutMs || 120000; // give up if no node finishes it in time
+    // Give up if no node finishes in time. 280s sits just under Railway's 5-minute
+    // cut for a connection with no bytes flowing, which is what the non-streaming
+    // path looks like while it long-polls. The old 120s was well inside that budget
+    // and was the real cap on generation length: at a node's ~24 tok/s it stopped a
+    // reasoning model at roughly 2,900 tokens, so hard prompts 504'd rather than
+    // finishing. (Streaming keeps bytes moving and could run to Railway's 15-minute
+    // ceiling, but one timeout for both paths keeps the contract simple.)
+    this.timeoutMs = opts.timeoutMs || 280000;
     this.now = opts.now || (() => Date.now());
     this.sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
     // Services are built per-request from req.app.locals.db so one controller

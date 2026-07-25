@@ -7,6 +7,7 @@ const express = require('express');
 const { createTestDb } = require('./helpers/pgmem');
 const { initChatRoutes } = require('../src/routes');
 const ChatUsageService = require('../src/services/chatUsageService');
+const ApiKeyService = require('../src/services/apiKeyService');
 const ChatController = require('../src/controllers/chatController');
 const { parseSSE, sanitizeMessages, estimateTokens, upstreamErrorMessage } = ChatController;
 
@@ -368,6 +369,39 @@ describe('Chat gateway — integration', () => {
       const res = await request(app).get('/api/chat/usage');
       expect(res.body.exhausted).toBe(true);
       expect(res.body.remaining).toBe(0);
+    });
+
+    it('combines API-gateway tokens into the network total, leaving the free cap alone', async () => {
+      await new ChatUsageService(db).recordUsage({ model: 'm', inTokens: 10, outTokens: 20 });
+      const keys = new ApiKeyService(db);
+      const k = await keys.createKey('u1', 'gateway');
+      await keys.recordUsage(ApiKeyService.sha256(k.key), 500);
+
+      const res = await request(makeApp(db, { freeBudget: 100 })).get('/api/chat/usage');
+      expect(res.body.network.apiTokens).toBe(500);
+      expect(res.body.network.totalTokens).toBe(530); // 30 chat + 500 API
+      // The cap and the chat page's "served free" line must not see API traffic,
+      // or paid usage would burn the free budget.
+      expect(res.body.totals.totalTokens).toBe(30);
+      expect(res.body.remaining).toBe(70);
+      expect(res.body.exhausted).toBe(false);
+    });
+
+    it('reports zero API tokens when no keys have been used', async () => {
+      const res = await request(makeApp(db, { freeBudget: 0 })).get('/api/chat/usage');
+      expect(res.body.network).toEqual({ apiTokens: 0, totalTokens: 0 });
+    });
+
+    it('falls back to chat-only totals when no key service is wired up', async () => {
+      // Injected service bundles (tests, and anything constructing the controller
+      // directly) need not carry every service; a missing one must not 500.
+      const ctrl = new ChatController({
+        apiKey: 'k', models: MODELS,
+        services: { chatUsage: { getTotals: async () => ({ totalTokens: 42 }) } }
+      });
+      let body = null;
+      await ctrl.usage({}, { json: (b) => { body = b; } });
+      expect(body.network).toEqual({ apiTokens: 0, totalTokens: 42 });
     });
 
     it('reports no cap when the free budget is disabled', async () => {

@@ -283,6 +283,14 @@ function fakeServices(over = {}) {
 }
 
 describe('OpenAI gateway — controller branches', () => {
+  it('defaults to a timeout that leaves a reasoning model room to finish', () => {
+    // The generation ceiling is this timeout times the node's tokens/sec, so
+    // shortening it silently truncates long answers into 504s. 280s stays under
+    // Railway's 5-minute cut for a connection with no bytes flowing.
+    expect(new OpenAiController().timeoutMs).toBe(280000);
+    expect(new OpenAiController({ timeoutMs: 5000 }).timeoutMs).toBe(5000); // still injectable
+  });
+
   it('stops the non-streaming poll when the caller hangs up', async () => {
     const services = fakeServices({ jobService: { getJobResult: async () => ({ status: 'pending' }) } });
     const ctrl = new OpenAiController({ services, pollMs: 5, timeoutMs: 60000 });
