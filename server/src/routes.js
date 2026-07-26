@@ -18,6 +18,11 @@ const NodeService = require('./services/nodeService');
 // POST /api/nodes/claim - Associate node with logged-in user (requires auth)
 router.post('/nodes/claim', requireAuth, nodeController.claimNode);
 
+// POST /api/nodes/register - Self-register an unclaimed node (signature only,
+// no account). Lets a rig serve public jobs without linking to an account; a
+// later /nodes/join with a token adopts the same row.
+router.post('/nodes/register', verifySignature, nodeController.registerNode);
+
 // POST /api/nodes/ping - Update node status (requires signature verification)
 router.post('/nodes/ping', verifySignature, nodeController.pingNode);
 

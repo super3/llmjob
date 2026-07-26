@@ -663,18 +663,66 @@ describe('local LLM', () => {
     expect(allErr()).toContain('local LLM exited (code 3)');
   });
 
-  test('an unconnected node runs the LLM without serving; clean exit still fails (0 → 1)', async () => {
+  // Serving is the DEFAULT, account or not: an unlinked rig self-registers and
+  // takes public jobs. Linking adds access to private queues, nothing else.
+  test('an unconnected node registers itself and serves public jobs anyway', async () => {
     const m = load();
     m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: false }));
+    m.nodeStore.getOrCreateNode.mockReturnValue(makeNode({ connected: false }));
     m.LlmEngineManager.serverInstalled = true;
     m.LlmEngineManager.modelInstalled = true;
     const p = m.run(['--mode', 'llm', '--no-update']);
     await settle();
     expect(allOut()).toContain('LLM server found: /cache/llama-server');
     expect(allOut()).toContain('LLM model found: /cache/model.gguf');
+
+    // It registered as an unclaimed node before serving.
+    const registerCall = m.io.postJson.mock.calls.find((c) => String(c[0]).endsWith('/api/nodes/register'));
+    expect(registerCall).toBeTruthy();
+    expect(allOut()).toContain('serving public jobs as an unlinked node');
+
     const llm = m.LlmManager.instances[0];
     expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({ nGpuLayers: 42 })); // no VRAM → full offload
     llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    await settle();
+    expect(m.JobWorker.instances.length).toBe(1);
+    llm.emit('stopped', 0);
+    await expect(p).resolves.toBe(1);
+  });
+
+  test('a failed registration is survivable — the model still runs locally', async () => {
+    const m = load();
+    m.nodeStore.loadNode.mockReturnValue(null);
+    m.nodeStore.getOrCreateNode.mockReturnValue(makeNode({ connected: false }));
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    m.io.postJson.mockRejectedValue(new Error('offline'));
+    const p = m.run(['--mode', 'llm', '--no-update']);
+    await settle();
+
+    expect(allErr()).toContain('could not register with the network — running the LLM locally only');
+    const llm = m.LlmManager.instances[0];
+    expect(llm.start).toHaveBeenCalled(); // the LLM came up regardless
+    llm.emit('stopped', 0);
+    await expect(p).resolves.toBe(1);
+  });
+
+  test('--no-serve keeps the model entirely local: no registration, no worker', async () => {
+    const m = load();
+    // No stored identity, and --no-serve must not mint one: an opted-out box
+    // never registers a keypair with the network.
+    m.nodeStore.loadNode.mockReturnValue(null);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    const p = m.run(['--mode', 'llm', '--no-serve', '--no-update']);
+    await settle();
+
+    expect(m.io.postJson.mock.calls.some((c) => String(c[0]).endsWith('/api/nodes/register'))).toBe(false);
+    expect(m.nodeStore.getOrCreateNode).not.toHaveBeenCalled();
+    expect(allOut()).not.toContain('serving public jobs as an unlinked node');
+    const llm = m.LlmManager.instances[0];
+    llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    await settle();
     expect(m.JobWorker.instances.length).toBe(0);
     llm.emit('stopped', 0);
     await expect(p).resolves.toBe(1);

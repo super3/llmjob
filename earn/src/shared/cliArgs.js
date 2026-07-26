@@ -67,6 +67,9 @@ const USAGE = [
   '      --engine-dir <path>  Where to cache the downloaded engine',
   '      --stats-file <path>  Write live stats JSON here every 10s (for HiveOS h-stats etc.)',
   '      --no-report          Do not publish live status to the public network board',
+  '      --no-serve           Do not serve inference jobs for the LLMJob network',
+  '                           (by default a rig serves public jobs even when it is',
+  '                           not linked to an account; linking adds private queues)',
   '      --no-update          Do not auto-update the CLI to a newer release on start',
   '  -h, --help               Show this help and exit',
   '  -v, --version            Print the version and exit',
@@ -74,7 +77,7 @@ const USAGE = [
 
 // Fold the collected option map into a validated settings object, appending any
 // validation problems to `errors`.
-function buildSettings(opts, errors, report, update) {
+function buildSettings(opts, errors, report, update, serve) {
   // Compute mode (which engines run). Parsed before the address check because
   // LLM-only doesn't mine, so it needs no payout address.
   let mode = DEFAULT_MODE;
@@ -152,7 +155,7 @@ function buildSettings(opts, errors, report, update) {
   return {
     address, mdlAddress, region, worker, gpu, difficulty, backend, binaryPath, engineDir, statsFile,
     mode, llmBinary, llmModel, llmMaxInstances,
-    report, update, regionProvided, gpuProvided, difficultyProvided, workerProvided, modeProvided,
+    report, update, serve: serve !== false, regionProvided, gpuProvided, difficultyProvided, workerProvided, modeProvided,
   };
 }
 
@@ -168,6 +171,7 @@ function parseCliArgs(argv) {
   let version = false;
   let report = true;
   let update = true;
+  let serve = true;
 
   for (let i = 0; i < args.length; i++) {
     let token = String(args[i]);
@@ -185,6 +189,7 @@ function parseCliArgs(argv) {
     if (flag === '--help') { help = true; continue; }
     if (flag === '--version') { version = true; continue; }
     if (flag === '--no-report') { report = false; continue; }
+    if (flag === '--no-serve') { serve = false; continue; }
     if (flag === '--no-update') { update = false; continue; }
 
     if (VALUE_FLAGS.has(flag)) {
@@ -205,11 +210,11 @@ function parseCliArgs(argv) {
   }
 
   if (help || version) {
-    return { help, version, report, update, errors, settings: null };
+    return { help, version, report, update, serve, errors, settings: null };
   }
 
-  const settings = buildSettings(opts, errors, report, update);
-  return { help, version, report, update, errors, settings };
+  const settings = buildSettings(opts, errors, report, update, serve);
+  return { help, version, report, update, serve, errors, settings };
 }
 
 module.exports = { ALIASES, VALUE_FLAGS, USAGE, regionChoices, buildSettings, parseCliArgs };

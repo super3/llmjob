@@ -130,6 +130,40 @@ describe('Node API Endpoints', () => {
     });
   });
 
+  describe('POST /api/nodes/register', () => {
+    it('registers an unclaimed node from a signature alone — no token, no session', async () => {
+      const response = await request(app).post('/api/nodes/register').send(signedPing({ name: 'Anon rig' }));
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({ success: true, nodeId: testNodeId, claimed: false });
+
+      // The row exists with no owner, so /jobs/poll will answer it and the queue
+      // will hand it public (non-private) work only.
+      const row = await db.query('SELECT user_id, status FROM nodes WHERE node_id = $1', [testNodeId]);
+      expect(row.rows[0]).toMatchObject({ user_id: null, status: 'online' });
+    });
+
+    it('lets a registered node ping, which it could not do before registering', async () => {
+      expect((await request(app).post('/api/nodes/ping').send(signedPing())).status).toBe(400);
+      await request(app).post('/api/nodes/register').send(signedPing());
+      expect((await request(app).post('/api/nodes/ping').send(signedPing())).status).toBe(200);
+    });
+
+    it('reports an already-claimed node as claimed without reassigning it', async () => {
+      await seedNode({ node_id: testNodeId, public_key: testPublicKey, name: 'Mine', user_id: 'test_user_123', status: 'offline' });
+      const response = await request(app).post('/api/nodes/register').send(signedPing());
+      expect(response.body).toMatchObject({ success: true, claimed: true });
+      const row = await db.query('SELECT user_id FROM nodes WHERE node_id = $1', [testNodeId]);
+      expect(row.rows[0].user_id).toBe('test_user_123');
+    });
+
+    it('still requires a valid signature', async () => {
+      const response = await request(app)
+        .post('/api/nodes/register')
+        .send({ publicKey: testPublicKey, signature: 'invalid_signature', timestamp: Date.now(), nodeId: testNodeId });
+      expect(response.status).toBe(401);
+    });
+  });
+
   describe('POST /api/nodes/ping', () => {
     beforeEach(async () => {
       await seedNode({ node_id: testNodeId, public_key: testPublicKey, name: 'Test Node', user_id: 'test_user_123', status: 'offline' });
@@ -265,6 +299,22 @@ describe('Node API Endpoints', () => {
       const response = await request(app).post('/api/nodes/ping').send(signedPing());
       expect(response.status).toBe(500);
       expect(response.body.error).toBe('Failed to update node status');
+    });
+
+    it('should handle database errors in registerNode', async () => {
+      db.query = jest.fn().mockRejectedValue(new Error('Database error'));
+      const response = await request(app).post('/api/nodes/register').send(signedPing());
+      expect(response.status).toBe(500);
+      expect(response.body.error).toBe('Failed to register node');
+    });
+
+    it('should handle service errors in registerNode', async () => {
+      const spy = jest.spyOn(NodeService.prototype, 'registerNode')
+        .mockResolvedValue({ error: 'nope' });
+      const response = await request(app).post('/api/nodes/register').send(signedPing());
+      expect(response.status).toBe(400);
+      expect(response.body.error).toBe('nope');
+      spy.mockRestore();
     });
 
     it('should handle database errors in getUserNodes', async () => {
