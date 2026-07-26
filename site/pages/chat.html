@@ -495,8 +495,12 @@
         if (!u || !u.totals) return;
         var live = document.getElementById('served');
         if (!live) return;
-        var total = u.totals.totalTokens || 0;
-        if (total > 0) live.textContent = total.toLocaleString() + ' tokens served free so far';
+        // Everything the fleet has served — the free web chat plus the
+        // OpenAI-compatible API gateway — so this matches the network page's
+        // headline instead of showing a smaller chat-only figure beside it.
+        // `totals` is the chat-only fallback for a server predating `network`.
+        var total = (u.network && u.network.totalTokens) || u.totals.totalTokens || 0;
+        if (total > 0) live.textContent = total.toLocaleString() + ' tokens served so far';
       })
       .catch(function () { /* offline — leave it blank */ });
   }

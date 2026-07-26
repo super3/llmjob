@@ -380,8 +380,9 @@ describe('Chat gateway — integration', () => {
       const res = await request(makeApp(db, { freeBudget: 100 })).get('/api/chat/usage');
       expect(res.body.network.apiTokens).toBe(500);
       expect(res.body.network.totalTokens).toBe(530); // 30 chat + 500 API
-      // The cap and the chat page's "served free" line must not see API traffic,
-      // or paid usage would burn the free budget.
+      // The free-usage cap must not see API traffic, or paid usage would burn
+      // the free budget — hence `totals` staying chat-only while the pages show
+      // the combined `network` figure.
       expect(res.body.totals.totalTokens).toBe(30);
       expect(res.body.remaining).toBe(70);
       expect(res.body.exhausted).toBe(false);

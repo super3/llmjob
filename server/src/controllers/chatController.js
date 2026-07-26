@@ -103,10 +103,11 @@ class ChatController {
   async usage(req, res) {
     const svc = this.services(req);
     const totals = await svc.chatUsage.getTotals();
-    // `totals` stays web-chat only: it backs the free-usage cap and the "tokens
-    // served free" line on the chat page, both of which would be wrong if paid
-    // API traffic were folded in. The network page's headline number wants
-    // everything the fleet has served, so that combined figure rides alongside.
+    // `totals` stays web-chat only: it backs the free-usage cap, which would be
+    // wrong if paid API traffic were folded in (paid usage would burn the free
+    // budget). `network` carries chat + API gateway — everything the fleet has
+    // served — and is what both the network page and the chat page display, so
+    // the two headline figures agree.
     const apiTokens = svc.apiKeys ? await svc.apiKeys.getTotalUsage() : 0;
     const capped = this.freeBudget > 0;
     res.json({
