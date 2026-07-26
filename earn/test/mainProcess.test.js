@@ -361,6 +361,8 @@ afterEach(() => {
 
 // ── boot / window lifecycle ──────────────────────────────────────────────────
 
+const { ALL_LAYERS } = require('../src/shared/vram');
+
 describe('app boot and window lifecycle', () => {
   it('creates the window, refreshes economics, and migrates the node store on ready', async () => {
     const ctx = await boot();
@@ -1065,7 +1067,7 @@ describe('local LLM', () => {
     // free 22000 MB, no reserve → full offload, on GPU 0
     expect(llm.start).toHaveBeenCalledWith({
       platform: 'linux', binaryPath: '/tmp/llm/llama-server', modelPath: '/tmp/llm/model.gguf',
-      host: '127.0.0.1', nGpuLayers: ctx.config.LLM.model.layers, port: 8080, mainGpu: 0,
+      host: '127.0.0.1', nGpuLayers: ALL_LAYERS, port: 8080, mainGpu: 0,
     });
     expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false }); // endpoint fills in on ready
 
@@ -1250,7 +1252,7 @@ describe('local LLM', () => {
     // VRAM unknown → full offload; port 8080 busy → the fleet walks to 8081
     const llm = ctx.LlmManager.instances[0];
     expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({
-      nGpuLayers: ctx.config.LLM.model.layers, port: 8081,
+      nGpuLayers: ALL_LAYERS, port: 8081,
     }));
 
     // llama-server dies before ready while mining keeps running
@@ -1338,7 +1340,7 @@ describe('local LLM', () => {
       .toHaveBeenCalledWith(expect.objectContaining({ binaryPath: bundledLlama }));
     // reserve 0 (llm-only), free 22000 → full offload despite the reserve arg branch
     expect(ctx.LlmManager.instances[0].start)
-      .toHaveBeenCalledWith(expect.objectContaining({ nGpuLayers: ctx.config.LLM.model.layers }));
+      .toHaveBeenCalledWith(expect.objectContaining({ nGpuLayers: ALL_LAYERS }));
   });
 });
 

@@ -1,21 +1,30 @@
 'use strict';
 
-// Decide how much of the model to put on the GPU so it fits alongside the miner.
-// llama.cpp's --n-gpu-layers offloads N transformer layers to the GPU (the rest
-// run on the CPU); this picks N from the free VRAM, keeping `reserveMb` free for
-// mining. Pure math so it's unit-tested without a GPU.
+// Decide whether the model goes on a GPU at all. It is ALL-OR-NOTHING: either
+// every layer is offloaded, or the card is not used.
+//
+// There is deliberately no partial offload. Layers llama.cpp keeps on the CPU
+// live in host RAM as anonymous, unreclaimable memory — several GB per instance
+// — and on a mining rig that is exactly the memory there isn't any of. An 8 GB
+// 13-GPU box OOM'd on the second instance and the kernel killed the miner
+// (HiveOS scores it as the preferred victim), crash-looping the whole client. A
+// card that can't hold the whole model is worth skipping, not half-using.
+//
+// Returns the offload count to pass as --n-gpu-layers, or 0 to skip the card.
+// The count is deliberately larger than any real layer count: llama.cpp clamps
+// it to what the model actually has, which is safer than our own guess at the
+// layer count (a guess that is too LOW silently leaves the remainder on the CPU
+// — the very thing this function exists to prevent).
+const ALL_LAYERS = 999;
 
-// Returns 0..model.layers. 0 = CPU-only (nothing fit); model.layers = full offload.
 function computeGpuLayers(freeMb, model, reserveMb) {
-  const layers = Math.floor(Number(model && model.layers)) || 0;
   const full = Number(model && model.vramFullMb) || 0;
   const free = Number(freeMb);
-  if (layers <= 0 || full <= 0 || !Number.isFinite(free)) return 0;
+  if (full <= 0 || !Number.isFinite(free)) return 0;
 
   const budget = free - (Number(reserveMb) || 0);
-  if (budget <= 0) return 0;          // no room after the mining reserve
-  if (budget >= full) return layers;  // everything fits on the GPU
-  return Math.floor((budget / full) * layers); // the fraction of layers that fit
+  if (budget < full) return 0;  // the whole model doesn't fit → don't use this card
+  return ALL_LAYERS;
 }
 
 // The minimum free VRAM (MB) we require before putting the model on the GPU: an
@@ -67,4 +76,4 @@ function pickLlmGpu(cards) {
   return best;
 }
 
-module.exports = { computeGpuLayers, requiredVramMb, hasEnoughVram, pickLlmGpu };
+module.exports = { ALL_LAYERS, computeGpuLayers, requiredVramMb, hasEnoughVram, pickLlmGpu };

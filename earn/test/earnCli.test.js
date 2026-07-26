@@ -139,6 +139,7 @@ jest.mock('../src/main/jobWorker', () => {
 const pkg = require('../package.json');
 const { NETWORK, NODE, LLM } = require('../src/shared/config');
 const nodeProto = require('../src/shared/node');
+const { ALL_LAYERS } = require('../src/shared/vram');
 
 const ADDR = 'prl1p' + 'a'.repeat(30);
 const MDL = 'mdl1p' + 'b'.repeat(30);
@@ -596,7 +597,7 @@ describe('local LLM', () => {
 
     const llm = m.LlmManager.instances[0];
     expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({
-      binaryPath: '/cache/llama-server', modelPath: '/cache/model.gguf', nGpuLayers: 42, port: 9090, mainGpu: 0,
+      binaryPath: '/cache/llama-server', modelPath: '/cache/model.gguf', nGpuLayers: ALL_LAYERS, port: 9090, mainGpu: 0,
     }));
     llm.emit('log', { line: 'srv up', level: 'info' });
     llm.emit('log', { line: 'srv err', level: 'error' });
@@ -682,7 +683,7 @@ describe('local LLM', () => {
     expect(allOut()).toContain('serving public jobs as an unlinked node');
 
     const llm = m.LlmManager.instances[0];
-    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({ nGpuLayers: 42 })); // no VRAM → full offload
+    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({ nGpuLayers: ALL_LAYERS })); // no VRAM → full offload
     llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
     await settle();
     expect(m.JobWorker.instances.length).toBe(1);
@@ -801,16 +802,16 @@ describe('both mode', () => {
   test('co-runs; an LLM death does not stop mining; the miner exit code wins', async () => {
     const m = load();
     m.EngineManager.installed = true;
-    // One card, 7000 MB free (8000 − 1000). Sized per-card (--split-mode none)
-    // and pinned to that GPU via --main-gpu.
-    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 1000, totalMb: 8000 }]);
+    // One card with 15000 MB free (16000 − 1000): room for the whole model even
+    // after the 2048 MB mining reserve. Pinned to that GPU via --main-gpu.
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 1000, totalMb: 16000 }]);
     const p = m.run(argvBoth);
     await settle();
 
     expect(allOut()).toContain('mode:       both');
     const llm = m.LlmManager.instances[0];
-    // free 7000 − 2048 mining reserve = 4952 of 6300 → partial offload, on GPU 0
-    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({ nGpuLayers: 33, port: 8080, mainGpu: 0 }));
+    // Offload is all-or-nothing, so an eligible card always gets ALL_LAYERS.
+    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({ nGpuLayers: ALL_LAYERS, port: 8080, mainGpu: 0 }));
     llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' }); // not connected → no worker
     llm.emit('stopped', 2); // LLM dies; the miner keeps running
     expect(allErr()).toContain('local LLM exited (code 2)');
@@ -819,6 +820,24 @@ describe('both mode', () => {
     miner.emit('stopped', 7);
     expect(llm.stop).toHaveBeenCalled();
     await expect(p).resolves.toBe(7);
+  });
+
+  // Half a model on the GPU means the other half in host RAM, which OOM'd an
+  // 8 GB rig and got the miner killed. Such a card is skipped; mining continues.
+  test('a card that can only hold part of the model is skipped, and mining carries on', async () => {
+    const m = load();
+    m.EngineManager.installed = true;
+    // 7000 MB free − 2048 reserve = 4952, short of the model's 6300.
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 1000, totalMb: 8000 }]);
+    const p = m.run(argvBoth);
+    await settle();
+
+    expect(m.LlmManager.instances.length).toBe(0);
+    expect(allErr()).toContain('not enough free VRAM');
+    const miner = m.MinerManager.instances[0];
+    expect(miner.start).toHaveBeenCalled();
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
   });
 
   test('a miner that fails to launch also stops the LLM', async () => {

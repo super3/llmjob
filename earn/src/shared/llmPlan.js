@@ -1,6 +1,6 @@
 'use strict';
 
-const { computeGpuLayers, hasEnoughVram } = require('./vram');
+const { ALL_LAYERS, computeGpuLayers, hasEnoughVram } = require('./vram');
 
 // Plan which GPUs each run their OWN local llama-server instance.
 //
@@ -50,7 +50,7 @@ function planLlmInstances(cards, model, reserveMb, opts) {
     const freeMb = Math.max(0, total - used);
     if (hasEnoughVram(freeMb, model) !== true) continue; // card can't hold the model
     const nGpuLayers = computeGpuLayers(freeMb, model, reserveMb || 0);
-    if (nGpuLayers <= 0) continue; // no layers fit after the mining reserve
+    if (nGpuLayers <= 0) continue; // the whole model doesn't fit after the reserve
     eligible.push({ index, freeMb, nGpuLayers });
   }
 
@@ -64,8 +64,7 @@ function planLlmInstances(cards, model, reserveMb, opts) {
 
   // No card could be measured (non-NVIDIA / no driver) → one instance, unknown
   // placement, full offload; let llama.cpp decide, as the single-card path did.
-  const layers = Math.floor(Number(model && model.layers)) || 0;
-  return [{ index: null, freeMb: null, nGpuLayers: layers }];
+  return [{ index: null, freeMb: null, nGpuLayers: ALL_LAYERS }];
 }
 
 // Truncate a VRAM-eligible list to the operator's cap, if they set one. At least

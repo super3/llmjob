@@ -1,17 +1,21 @@
 'use strict';
 
-const { computeGpuLayers, requiredVramMb, hasEnoughVram, pickLlmGpu } = require('../src/shared/vram');
+const { ALL_LAYERS, computeGpuLayers, requiredVramMb, hasEnoughVram, pickLlmGpu } = require('../src/shared/vram');
 
 const MODEL = { layers: 16, vramFullMb: 1600 }; // perLayer = 100 MB
 
 describe('computeGpuLayers', () => {
+  // All-or-nothing by design: a partial offload leaves the remaining layers in
+  // host RAM as unreclaimable memory, which OOM'd an 8 GB 13-GPU rig and got the
+  // miner killed. A card that can't hold the whole model is skipped instead.
   test('full offload when the budget covers the whole model', () => {
-    expect(computeGpuLayers(24000, MODEL, 2048)).toBe(16); // lots free
-    expect(computeGpuLayers(3648, MODEL, 2048)).toBe(16);  // budget exactly 1600
+    expect(computeGpuLayers(24000, MODEL, 2048)).toBe(ALL_LAYERS); // lots free
+    expect(computeGpuLayers(3648, MODEL, 2048)).toBe(ALL_LAYERS);  // budget exactly 1600
   });
 
-  test('partial offload — only the layers that fit', () => {
-    expect(computeGpuLayers(2848, MODEL, 2048)).toBe(8); // budget 800 → 8 layers
+  test('zero — never a partial offload — when only part of the model would fit', () => {
+    expect(computeGpuLayers(2848, MODEL, 2048)).toBe(0); // budget 800 of 1600 needed
+    expect(computeGpuLayers(3647, MODEL, 2048)).toBe(0); // one MB short still means no
   });
 
   test('zero when nothing fits after the mining reserve', () => {
@@ -20,14 +24,19 @@ describe('computeGpuLayers', () => {
   });
 
   test('zero for an invalid model or non-numeric free VRAM', () => {
-    expect(computeGpuLayers(24000, { layers: 0, vramFullMb: 1600 }, 0)).toBe(0);
-    expect(computeGpuLayers(24000, { layers: 16, vramFullMb: 0 }, 0)).toBe(0);
+    expect(computeGpuLayers(24000, { vramFullMb: 0 }, 0)).toBe(0);
     expect(computeGpuLayers('nope', MODEL, 0)).toBe(0);
     expect(computeGpuLayers(24000, null, 0)).toBe(0);
   });
 
   test('reserve defaults to 0 when omitted', () => {
-    expect(computeGpuLayers(1600, MODEL)).toBe(16); // budget == full
+    expect(computeGpuLayers(1600, MODEL)).toBe(ALL_LAYERS); // budget == full
+  });
+
+  // The count we pass is deliberately bigger than any real model: llama.cpp
+  // clamps it, which beats guessing a layer count that could come in too low.
+  test('ALL_LAYERS is larger than any plausible layer count', () => {
+    expect(ALL_LAYERS).toBeGreaterThan(200);
   });
 });
 
