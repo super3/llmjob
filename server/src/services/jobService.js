@@ -140,8 +140,8 @@ class JobService {
   //
   // When `nodeModel` is given, only jobs that node can serve are also claimed
   // (see modelsMatch), so a rig serving Qwen3.6 27B isn't handed a job that asked
-  // for the 35B A3B — it scans a window of the (visibility-filtered) queue for
-  // matching work. Omitting nodeModel keeps the original model-agnostic behavior.
+  // for a model it doesn't have — it scans a window of the (visibility-filtered)
+  // queue for matching work. Omitting nodeModel keeps the model-agnostic behavior.
   async assignJobsToNode(nodeId, maxJobs = 1, nodeModel) {
     const assignedJobs = [];
     const client = await this.db.connect();

@@ -152,17 +152,20 @@ describe('JobService', () => {
     });
 
     it('routes only matching-model jobs to a node that reports a served model', async () => {
-      // gateway ids on the jobs; the node reports its GGUF name
-      await jobService.createJob({ prompt: 'a', userId: 'u', model: 'qwen/qwen3.6-35b-a3b' });
+      // The real fleet is two-tier: small cards serve the Gemma default, 24 GB
+      // cards serve the Qwen 27B. A public-chat job omits `model` and gets the
+      // default GGUF name; a gateway job carries the vendor id. Each node reports
+      // its own GGUF name, so both spellings have to route.
+      await jobService.createJob({ prompt: 'a', userId: 'u' }); // → the Gemma default
       const want = await jobService.createJob({ prompt: 'b', userId: 'u', model: 'qwen/qwen3.6-27b' });
-      await jobService.createJob({ prompt: 'c', userId: 'u', model: 'qwen/qwen3.6-35b-a3b' });
+      await jobService.createJob({ prompt: 'c', userId: 'u' });
 
       const assigned = await jobService.assignJobsToNode('node27b', 2, 'Qwen3.6-27B-Q4_K_M');
       expect(assigned).toHaveLength(1);
       expect(assigned[0].id).toBe(want.id);
 
-      // the 35B jobs are still pending for a node that serves that model
-      const other = await jobService.assignJobsToNode('node35b', 5, 'Qwen3.6-35B-A3B-Q4_K_M');
+      // the Gemma jobs are still pending for a node that serves that model
+      const other = await jobService.assignJobsToNode('nodeGemma', 5, 'Gemma-4-E4B-it-Q4_K_M');
       expect(other).toHaveLength(2);
     });
 
@@ -184,14 +187,13 @@ describe('JobService', () => {
     it('normalizes gateway ids and GGUF names to a comparable key', () => {
       expect(JobService.normalizeModel('qwen/qwen3.6-27b')).toBe('qwen3627b');
       expect(JobService.normalizeModel('Qwen3.6-27B-Q4_K_M')).toBe('qwen3627b');
-      expect(JobService.normalizeModel('Qwen3.6-35B-A3B-Q4_K_M')).toBe('qwen3635ba3b');
       expect(JobService.normalizeModel('Gemma-4-E4B-it-Q4_K_M')).toBe('gemma4e4bit');
       expect(JobService.normalizeModel(null)).toBe('');
     });
 
     it('matches across naming schemes and rejects different models', () => {
       expect(JobService.modelsMatch('qwen/qwen3.6-27b', 'Qwen3.6-27B-Q4_K_M')).toBe(true);
-      expect(JobService.modelsMatch('qwen/qwen3.6-35b-a3b', 'Qwen3.6-27B-Q4_K_M')).toBe(false);
+      expect(JobService.modelsMatch('Gemma-4-E4B-it-Q4_K_M', 'Qwen3.6-27B-Q4_K_M')).toBe(false);
       // a missing model on either side never blocks routing
       expect(JobService.modelsMatch(null, 'Qwen3.6-27B-Q4_K_M')).toBe(true);
       expect(JobService.modelsMatch('qwen/qwen3.6-27b', '')).toBe(true);

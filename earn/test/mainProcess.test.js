@@ -1596,8 +1596,8 @@ describe('local LLM', () => {
   it('shards a big model across GPUs when no single card fits it', async () => {
     const ctx = await boot({
       before: (c) => {
-        // two 16 GB cards, ~14 GB free each: no single card fits the 27B/35B, but
-        // the ~28 GB aggregate does → one sharded llama-server across both.
+        // two 16 GB cards, ~14 GB free each: no single card fits the 27B, but the
+        // ~28 GB aggregate does → one sharded llama-server across both.
         c.probe.detectGpusVram.mockResolvedValue([
           { index: 0, name: 'RTX A4000', usedMb: 2000, totalMb: 16376 },
           { index: 1, name: 'RTX A4000', usedMb: 2000, totalMb: 16376 },
@@ -1607,15 +1607,15 @@ describe('local LLM', () => {
     ctx.emit('miner:start', { mode: 'llm' });
     await flush();
 
-    const moe = ctx.config.LLM.models.find((m) => m.id === 'qwen3.6-35b-a3b');
+    const qwen = ctx.config.LLM.models.find((m) => m.id === 'qwen3.6-27b');
     expect(ctx.LlmManager.instances).toHaveLength(1); // one sharded instance, not one per card
     expect(ctx.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
       splitMode: 'layer', tensorSplit: [14376, 14376], mainGpu: 0,
-      nGpuLayers: moe.layers, ctxSize: moe.ctxSize, parallel: moe.parallel,
+      nGpuLayers: qwen.layers, ctxSize: qwen.ctxSize, parallel: qwen.parallel,
     }));
     expect(ctx.sent('miner:log').map((l) => l.line))
-      .toContain('local LLM (' + moe.name + ') starting on sharded across GPUs 0,1');
-    expect(ctx.sent('llm:status').pop()).toMatchObject({ model: moe.name });
+      .toContain('local LLM (' + qwen.name + ') starting on sharded across GPUs 0,1');
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ model: qwen.name });
   });
 });
 

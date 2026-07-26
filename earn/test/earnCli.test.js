@@ -742,7 +742,9 @@ describe('local LLM', () => {
     await settle();
 
     expect(allOut()).toContain('serving on 2 of 3 GPUs — capped by --llm-max-instances 2');
-    expect(allOut()).toContain('local LLM starting on 2 GPUs [0, 1]');
+    // 23 GB free per card clears the Qwen 27B floor, so that's what the rig serves
+    const qwen = LLM.models.find((mm) => mm.id === 'qwen3.6-27b');
+    expect(allOut()).toContain('local LLM (' + qwen.name + ') starting on 2 GPUs [0, 1]');
 
     fire('SIGINT');
     m.LlmManager.instances[0].emit('stopped', 0);
@@ -998,7 +1000,7 @@ describe('connect subcommand', () => {
 describe('multi-GPU serving', () => {
   test('shards a big model across GPUs when no single card fits it', async () => {
     const m = load();
-    // two 16 GB A4000s, ~14 GB free each → shard the ~24 GB model across both
+    // two 16 GB A4000s, ~14 GB free each → shard the ~22 GB 27B across both
     m.probe.detectGpusVram.mockResolvedValue([
       { index: 0, name: 'RTX A4000', usedMb: 2000, totalMb: 16376 },
       { index: 1, name: 'RTX A4000', usedMb: 2000, totalMb: 16376 },
@@ -1006,13 +1008,13 @@ describe('multi-GPU serving', () => {
     const p = m.run(['--mode', 'llm', '--no-update', '--llm-binary', '/lb', '--llm-model', '/lm']);
     await settle(6);
 
-    const moe = LLM.models.find((mm) => mm.id === 'qwen3.6-35b-a3b');
+    const qwen = LLM.models.find((mm) => mm.id === 'qwen3.6-27b');
     expect(m.LlmManager.instances.length).toBe(1); // one sharded instance, not one per card
     expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
       splitMode: 'layer', tensorSplit: [14376, 14376], mainGpu: 0,
-      nGpuLayers: moe.layers, ctxSize: moe.ctxSize, parallel: moe.parallel,
+      nGpuLayers: qwen.layers, ctxSize: qwen.ctxSize, parallel: qwen.parallel,
     }));
-    expect(allOut()).toContain('local LLM (' + moe.name + ') starting on sharded across GPUs 0,1');
+    expect(allOut()).toContain('local LLM (' + qwen.name + ') starting on sharded across GPUs 0,1');
 
     m.LlmManager.instances[0].emit('stopped', 0); // fleet down → llm-only exits non-zero
     await expect(p).resolves.toBe(1);

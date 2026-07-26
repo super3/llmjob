@@ -48,9 +48,9 @@ describe('config', () => {
     expect(difficultyForCard('Quadro RTX 6000')).toBe(DEFAULTS.difficulty);
   });
 
-  test('LLM.models is a VRAM-ordered catalog incl. the two Qwen3.6 gateway models', () => {
+  test('LLM.models is a VRAM-ordered catalog incl. the Qwen3.6 27B gateway model', () => {
     const ids = LLM.models.map((m) => m.id);
-    expect(ids).toEqual(['gemma-4-e4b', 'qwen3.6-27b', 'qwen3.6-35b-a3b']);
+    expect(ids).toEqual(['gemma-4-e4b', 'qwen3.6-27b']);
     // ordered ascending by minVramMb so the picker's "largest that fits" is stable
     const floors = LLM.models.map((m) => m.minVramMb);
     expect(floors).toEqual([...floors].sort((a, b) => a - b));
@@ -66,10 +66,12 @@ describe('config', () => {
         ctxSize: expect.any(Number), parallel: expect.any(Number),
       });
     }
-    // the MoE row is the 35B A3B, batched a little (cheap ~3B-active decode)
-    const moe = LLM.models.find((m) => m.id === 'qwen3.6-35b-a3b');
-    expect(moe).toMatchObject({ kind: 'moe', parallel: 2 });
-    expect(LLM.model).toMatchObject({ ctxSize: 4096, parallel: 1 });
+    // the Qwen row is the dense 27B, sized for a 24 GB card
+    const qwen = LLM.models.find((m) => m.id === 'qwen3.6-27b');
+    expect(qwen).toMatchObject({ kind: 'dense', params: '27B', minVramMb: 22528 });
+    // the default entry's serving knobs match the fleet-level context window —
+    // a smaller per-model ctxSize would silently shrink it
+    expect(LLM.model).toMatchObject({ ctxSize: LLM.ctxSize, parallel: 1 });
   });
 
   test('engine and economics metadata are present', () => {

@@ -128,7 +128,11 @@ const LLM = {
     vramFullMb: 6300,
     minVramMb: 6656, // ~6.5 GB free required before we put it on the GPU
     quant: 'Q4_K_M',
-    ctxSize: 4096,
+    // Per-model serving knobs (the catalog picks one model per rig and passes
+    // these to llama-server). Kept in step with the fleet-level LLM.ctxSize above,
+    // which the VRAM figures are sized for — a smaller value here would silently
+    // shrink the default model's context window.
+    ctxSize: 6400,
     parallel: 1,
   },
 };
@@ -139,14 +143,14 @@ const LLM = {
 // floor fits the measured free VRAM, so a 24 GB card serves Qwen3.6 27B while an
 // 8 GB card falls back to the small Gemma default. `default: true` marks the
 // safe fallback used when VRAM can't be measured (non-NVIDIA / no driver).
+// Adding a model is a one-row change here — nothing else keys off the list.
 //
-// The two Qwen3.6 rows are the models the server's chat gateway already
-// allow-lists (qwen/qwen3.6-27b, qwen/qwen3.6-35b-a3b). Their VRAM figures are
-// Q4_K_M estimates (~4.8 bits/weight incl. overhead + KV at ctxSize) and the
-// GGUF URLs are placeholders following the unsloth naming convention — pin the
-// exact repo/quant here once the GGUFs are published, then the sizes are the
-// only thing to re-measure. `kind`/`params` are informational (dense vs MoE with
-// active-parameter count); `minVramMb` is what actually gates placement.
+// The Qwen3.6 row is a model the server's chat gateway already allow-lists
+// (qwen/qwen3.6-27b). Its VRAM figures are Q4_K_M estimates (~4.8 bits/weight
+// incl. overhead + KV at ctxSize) and the GGUF URL is a placeholder following the
+// unsloth naming convention — pin the exact repo/quant here once the GGUF is
+// published, then the sizes are the only thing to re-measure. `kind`/`params` are
+// informational; `minVramMb` is what actually gates placement.
 LLM.models = [
   Object.assign({ id: 'gemma-4-e4b', kind: 'dense', params: '4.5B-effective', default: true }, LLM.model),
   {
@@ -162,22 +166,6 @@ LLM.models = [
     quant: 'Q4_K_M',
     ctxSize: 8192,
     parallel: 1,
-  },
-  {
-    id: 'qwen3.6-35b-a3b',
-    name: 'Qwen3.6-35B-A3B-Q4_K_M',
-    file: 'Qwen3.6-35B-A3B-Q4_K_M.gguf',
-    url: 'https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-Q4_K_M.gguf',
-    kind: 'moe',
-    params: '35B-total/3B-active',
-    layers: 48,
-    vramFullMb: 23000, // ~21 GB resident experts + KV + compute buffers at 8K ctx
-    minVramMb: 24576,  // ~24 GB free → best on a 32 GB+ card; 24 GB is tight
-    quant: 'Q4_K_M',
-    ctxSize: 8192,
-    // Only ~3B params activate per token, so decode is cheap — batch a couple of
-    // sessions on a card that has the room for it.
-    parallel: 2,
   },
 ];
 

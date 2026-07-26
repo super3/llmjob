@@ -159,8 +159,9 @@ describe('JobController', () => {
     });
 
     it('routes by the served model a node reports', async () => {
-      // extra pending jobs for a model this node does not serve
-      await jobService.createJob({ prompt: 'other', userId: 'u', model: 'qwen/qwen3.6-35b-a3b' });
+      // an extra pending job for a model this node does not serve (the small
+      // default that Gemma-tier nodes run)
+      await jobService.createJob({ prompt: 'other', userId: 'u' });
       const mine = await jobService.createJob({ prompt: 'mine', userId: 'u', model: 'qwen/qwen3.6-27b' });
       nodeService.getNode.mockResolvedValue({
         nodeId: 'node27b', publicKey: 'test-public-key', status: 'online', model: 'Qwen3.6-27B-Q4_K_M'
