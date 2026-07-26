@@ -74,4 +74,26 @@ describe('planLlmInstances', () => {
     ], { layers: 10, vramFullMb: 1000 }, 0);
     expect(plan.map((p) => p.index)).toEqual([0, 1]);
   });
+
+  // --llm-max-instances: an operator ceiling on top of VRAM eligibility. Note
+  // this caps the FLEET SIZE only — the loading stampede is handled by starting
+  // instances one at a time (LlmFleet), not by planning fewer of them.
+  test('maxInstances truncates to the lowest GPU indices', () => {
+    const cards = [
+      { index: 0, usedMb: 1000, totalMb: 24000 },
+      { index: 1, usedMb: 1000, totalMb: 24000 },
+      { index: 2, usedMb: 1000, totalMb: 24000 },
+    ];
+    expect(planLlmInstances(cards, MODEL, 0, { maxInstances: 2 }).map((p) => p.index)).toEqual([0, 1]);
+    // A cap at or above the eligible count changes nothing.
+    expect(planLlmInstances(cards, MODEL, 0, { maxInstances: 3 }).map((p) => p.index)).toEqual([0, 1, 2]);
+    expect(planLlmInstances(cards, MODEL, 0, { maxInstances: 9 }).map((p) => p.index)).toEqual([0, 1, 2]);
+    // Zero/garbage still serves one card: serving from one beats serving none.
+    expect(planLlmInstances(cards, MODEL, 0, { maxInstances: 0 }).map((p) => p.index)).toEqual([0]);
+    expect(planLlmInstances(cards, MODEL, 0, { maxInstances: 'lots' }).map((p) => p.index)).toEqual([0, 1, 2]);
+    // No cap set — null must NOT be read as 0 (Number(null) === 0 would shrink
+    // every default fleet to a single card).
+    expect(planLlmInstances(cards, MODEL, 0, { maxInstances: null }).map((p) => p.index)).toEqual([0, 1, 2]);
+    expect(planLlmInstances(cards, MODEL, 0, {}).map((p) => p.index)).toEqual([0, 1, 2]);
+  });
 });

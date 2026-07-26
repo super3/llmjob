@@ -272,6 +272,23 @@ async function cachedDeviceName() {
   return cliGpuName;
 }
 
+// Register this box as an unclaimed node so the server will answer its job
+// polls. Signed like a ping (the server derives the nodeId from the public key
+// and never trusts the body's). Resolves true on success; never throws — an
+// unreachable server must not stop the local model from running.
+async function registerNode(node, base) {
+  const body = nodeProto.buildPingBody({
+    nodeId: node.nodeId, publicKey: node.publicKey, secretKey: node.secretKey,
+    timestamp: Date.now(), telemetry: { name: node.name || undefined },
+  });
+  try {
+    const res = await postJson(base + '/api/nodes/register', body, 15000);
+    return res.status === 200;
+  } catch (e) {
+    return false;
+  }
+}
+
 // One signed ping. `telemetry` may be sparse — fields left undefined keep the
 // server's stored values (its pick() only overwrites defined fields).
 async function pingServer(node, base, telemetry, verbose) {
@@ -360,7 +377,15 @@ async function startLlm(settings, reserveMb) {
   // read (non-NVIDIA / no driver) the planner returns one unknown-placement
   // instance and lets llama.cpp decide.
   const cards = await detectGpusVram();
-  const plan = planLlmInstances(cards, LLM.model, reserveMb || 0);
+  const plan = planLlmInstances(cards, LLM.model, reserveMb || 0, {
+    maxInstances: settings.llmMaxInstances,
+  });
+  // Say so when the operator's cap bit — a silently smaller fleet is
+  // indistinguishable from "this rig only had one card with room".
+  if (plan.length && plan.length < cards.length && settings.llmMaxInstances != null) {
+    log('serving on ' + plan.length + ' of ' + cards.length
+      + ' GPUs — capped by --llm-max-instances ' + settings.llmMaxInstances);
+  }
   if (!plan.length) {
     // An empty plan means at least one card parsed but none fit, so pickLlmGpu
     // (same parse rules) returns that card for the error message.
@@ -382,10 +407,27 @@ async function startLlm(settings, reserveMb) {
     return null;
   }
 
-  // If this box is linked to an account, serve cluster jobs once a model is up.
-  const nodeCfg = loadNodeConfig();
-  const canServe = !!(nodeCfg && nodeCfg.connected);
+  // Serve cluster jobs once a model is up — by DEFAULT, account or not. A rig
+  // that can run the model is useful to the network whether or not anyone has
+  // linked it, so an unlinked box self-registers (signature only) and takes
+  // public work. The server hands an unclaimed node non-private jobs only, so
+  // "unlinked" costs it access to private queues, nothing else. --no-serve opts
+  // out entirely and keeps the model purely local.
+  // Reuse the stored identity when there is one (it carries the node's name and
+  // server URL); only mint a keypair when serving and none exists yet.
+  const nodeCfg = loadNodeConfig() || (settings.serve ? getOrCreateNodeConfig() : null);
+  const canServe = !!(settings.serve && nodeCfg);
   const base = (nodeCfg && nodeCfg.serverUrl) || NODE.serverUrl;
+
+  // An unclaimed node needs a row server-side before /jobs/poll will answer it.
+  // Best-effort: a failure here just means no jobs arrive, and the local model
+  // still runs.
+  if (canServe && !nodeCfg.connected) {
+    const registered = await registerNode(nodeCfg, base);
+    log(registered
+      ? 'serving public jobs as an unlinked node (' + nodeCfg.nodeId + ') — run "connect" to attach it to your account'
+      : 'could not register with the network — running the LLM locally only', registered ? process.stdout : process.stderr);
+  }
 
   // One fleet spawns a llama-server per plan entry, walking to a free port per
   // instance (the same busy-port self-heal the GUI has) and building a cluster

@@ -47,6 +47,51 @@ describe('NodeService', () => {
     });
   });
 
+  describe('registerNode', () => {
+    it('creates an unclaimed, online node with no owner', async () => {
+      const res = await service.registerNode('key1', 'Rig');
+      expect(res).toMatchObject({ success: true, claimed: false });
+      const node = await service.getNode(res.nodeId);
+      expect(node).toMatchObject({ name: 'Rig', userId: null, status: 'online', isPublic: false });
+    });
+
+    it('derives the same nodeId as a claim of the same key, and names it when none is given', async () => {
+      const res = await service.registerNode('key1');
+      expect(res.nodeId).toBe(NodeService.generateNodeFingerprint('key1'));
+      expect((await service.getNode(res.nodeId)).name).toBe(`Node-${res.nodeId}`);
+    });
+
+    it('is idempotent — re-registering just marks it online again', async () => {
+      const { nodeId } = await service.registerNode('key1', 'Rig');
+      await setLastSeen(nodeId, 1);
+      const again = await service.registerNode('key1', 'Rig');
+      expect(again).toMatchObject({ success: true, nodeId, claimed: false });
+      expect((await service.getNode(nodeId)).lastSeen).toBeGreaterThan(1);
+    });
+
+    it('never steals an already-claimed node from its owner', async () => {
+      const { nodeId } = await service.claimNode('key1', 'Mine', 'user1');
+      const res = await service.registerNode('key1', 'Not yours');
+      expect(res).toMatchObject({ success: true, nodeId, claimed: true });
+      const node = await service.getNode(nodeId);
+      expect(node.userId).toBe('user1');
+      expect(node.name).toBe('Mine'); // name is not clobbered either
+    });
+
+    it('an unclaimed node can be adopted later by a join/claim, keeping its id', async () => {
+      const { nodeId } = await service.registerNode('key1', 'Anon rig');
+      const claimed = await service.claimNode('key1', 'My rig', 'user1');
+      expect(claimed.nodeId).toBe(nodeId); // same identity, now owned
+      expect((await service.getNode(nodeId)).userId).toBe('user1');
+    });
+
+    it('lets an unclaimed node ping (it exists now), unlike an unregistered one', async () => {
+      const { nodeId } = await service.registerNode('key1', 'Rig');
+      const ping = await service.updateNodeStatus(nodeId, 'key1', { tps: 12 });
+      expect(ping).toMatchObject({ success: true, status: 'online' });
+    });
+  });
+
   describe('updateNodeStatus', () => {
     it('errors when the node was never claimed', async () => {
       const res = await service.updateNodeStatus('nope', 'key', {});

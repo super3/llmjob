@@ -36,6 +36,29 @@ async function claimNode(req, res) {
   }
 }
 
+// POST /api/nodes/register - Self-register an UNCLAIMED node (no account, no
+// join token). Signature-verified, so the caller proves it holds the key; the
+// nodeId is derived from that public key server-side rather than trusted from
+// the body. An unclaimed node is only ever assigned non-private jobs.
+async function registerNode(req, res) {
+  try {
+    const { publicKey } = req.verifiedNode;
+    const { name } = req.body;
+
+    const nodeService = new NodeService(req.app.locals.db);
+    const result = await nodeService.registerNode(publicKey, name);
+
+    if (result.error) {
+      return res.status(400).json({ error: result.error });
+    }
+
+    res.json(result);
+  } catch (error) {
+    console.error('Register node error:', error);
+    res.status(500).json({ error: 'Failed to register node' });
+  }
+}
+
 async function pingNode(req, res) {
   try {
     const { publicKey, nodeId } = req.verifiedNode;
@@ -174,6 +197,7 @@ async function joinNode(req, res) {
 
 module.exports = {
   claimNode,
+  registerNode,
   pingNode,
   getUserNodes,
   getPublicNodes,

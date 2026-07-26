@@ -663,21 +663,88 @@ describe('local LLM', () => {
     expect(allErr()).toContain('local LLM exited (code 3)');
   });
 
-  test('an unconnected node runs the LLM without serving; clean exit still fails (0 → 1)', async () => {
+  // Serving is the DEFAULT, account or not: an unlinked rig self-registers and
+  // takes public jobs. Linking adds access to private queues, nothing else.
+  test('an unconnected node registers itself and serves public jobs anyway', async () => {
     const m = load();
     m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: false }));
+    m.nodeStore.getOrCreateNode.mockReturnValue(makeNode({ connected: false }));
     m.LlmEngineManager.serverInstalled = true;
     m.LlmEngineManager.modelInstalled = true;
     const p = m.run(['--mode', 'llm', '--no-update']);
     await settle();
     expect(allOut()).toContain('LLM server found: /cache/llama-server');
     expect(allOut()).toContain('LLM model found: /cache/model.gguf');
+
+    // It registered as an unclaimed node before serving.
+    const registerCall = m.io.postJson.mock.calls.find((c) => String(c[0]).endsWith('/api/nodes/register'));
+    expect(registerCall).toBeTruthy();
+    expect(allOut()).toContain('serving public jobs as an unlinked node');
+
     const llm = m.LlmManager.instances[0];
     expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({ nGpuLayers: 42 })); // no VRAM → full offload
     llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    await settle();
+    expect(m.JobWorker.instances.length).toBe(1);
+    llm.emit('stopped', 0);
+    await expect(p).resolves.toBe(1);
+  });
+
+  test('a failed registration is survivable — the model still runs locally', async () => {
+    const m = load();
+    m.nodeStore.loadNode.mockReturnValue(null);
+    m.nodeStore.getOrCreateNode.mockReturnValue(makeNode({ connected: false }));
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    m.io.postJson.mockRejectedValue(new Error('offline'));
+    const p = m.run(['--mode', 'llm', '--no-update']);
+    await settle();
+
+    expect(allErr()).toContain('could not register with the network — running the LLM locally only');
+    const llm = m.LlmManager.instances[0];
+    expect(llm.start).toHaveBeenCalled(); // the LLM came up regardless
+    llm.emit('stopped', 0);
+    await expect(p).resolves.toBe(1);
+  });
+
+  test('--no-serve keeps the model entirely local: no registration, no worker', async () => {
+    const m = load();
+    // No stored identity, and --no-serve must not mint one: an opted-out box
+    // never registers a keypair with the network.
+    m.nodeStore.loadNode.mockReturnValue(null);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    const p = m.run(['--mode', 'llm', '--no-serve', '--no-update']);
+    await settle();
+
+    expect(m.io.postJson.mock.calls.some((c) => String(c[0]).endsWith('/api/nodes/register'))).toBe(false);
+    expect(m.nodeStore.getOrCreateNode).not.toHaveBeenCalled();
+    expect(allOut()).not.toContain('serving public jobs as an unlinked node');
+    const llm = m.LlmManager.instances[0];
+    llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    await settle();
     expect(m.JobWorker.instances.length).toBe(0);
     llm.emit('stopped', 0);
     await expect(p).resolves.toBe(1);
+  });
+
+  test('--llm-max-instances caps the fleet and says so', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([
+      { index: 0, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+      { index: 1, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+      { index: 2, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+    ]);
+    m.probe.findFreePort.mockImplementation((h, p) => Promise.resolve(p));
+    const p = m.run(['--mode', 'llm', '--llm-max-instances', '2', '--no-update']);
+    await settle();
+
+    expect(allOut()).toContain('serving on 2 of 3 GPUs — capped by --llm-max-instances 2');
+    expect(allOut()).toContain('local LLM starting on 2 GPUs [0, 1]');
+
+    fire('SIGINT');
+    m.LlmManager.instances[0].emit('stopped', 0);
+    await p;
   });
 
   test('runs one instance and worker per eligible GPU, summing their active jobs', async () => {
@@ -693,15 +760,21 @@ describe('local LLM', () => {
     const p = m.run(['--mode', 'llm', '--no-update']);
     await settle();
 
-    // the plural log names every serving card; a manager per card on its own port
+    // The plural log names every planned card, but they start ONE AT A TIME:
+    // simultaneous multi-GB model loads thrash the page cache (see LlmFleet).
     expect(allOut()).toContain('local LLM starting on 2 GPUs [0, 1]');
-    const [g0, g1] = m.LlmManager.instances;
-    expect(m.LlmManager.instances.length).toBe(2);
+    expect(m.LlmManager.instances.length).toBe(1);
+    const g0 = m.LlmManager.instances[0];
     expect(g0.start).toHaveBeenCalledWith(expect.objectContaining({ port: 8080, mainGpu: 0 }));
+
+    // card 0 ready → card 1 is spawned on the next port
+    g0.emit('ready', { baseUrl: g0.baseUrl });
+    await settle();
+    expect(m.LlmManager.instances.length).toBe(2);
+    const g1 = m.LlmManager.instances[1];
     expect(g1.start).toHaveBeenCalledWith(expect.objectContaining({ port: 8081, mainGpu: 1 }));
 
-    // both cards come up → a cluster worker per card
-    g0.emit('ready', { baseUrl: g0.baseUrl });
+    // both cards up → a cluster worker per card
     g1.emit('ready', { baseUrl: g1.baseUrl });
     await settle();
     expect(m.JobWorker.instances.length).toBe(2);

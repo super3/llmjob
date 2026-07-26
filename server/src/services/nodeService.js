@@ -52,6 +52,43 @@ class NodeService {
     return { success: true, nodeId, message: 'Node claimed successfully' };
   }
 
+  // Self-register a node with NO account behind it. The caller has already
+  // proven it holds the secret key for `publicKey` (verifySignature), which is
+  // all an unclaimed node needs: assignJobsToNode reads the row's user_id, and a
+  // NULL owner can only ever be handed jobs that aren't private
+  // (visibility <> 'private'), so an anonymous machine sees public work only.
+  //
+  // This is what lets a rig contribute without linking to an account. Previously
+  // a node row existed only after a join token or a Clerk claim, so an unlinked
+  // box ran the model purely for itself — ping said "claim the node first" and
+  // /jobs/poll 404'd.
+  //
+  // Idempotent, and it NEVER touches user_id: re-registering an already-claimed
+  // node just marks it online, so a claimed rig can't be silently orphaned by
+  // anyone who learns its public key (they'd need its secret key to get here at
+  // all, but the invariant is worth keeping explicit).
+  async registerNode(publicKey, name) {
+    const nodeId = generateNodeFingerprint(publicKey);
+    const now = Date.now();
+
+    const existing = await this.db.query('SELECT user_id FROM nodes WHERE node_id = $1', [nodeId]);
+    if (existing.rows.length > 0) {
+      await this.db.query(
+        "UPDATE nodes SET status = 'online', last_seen = $2 WHERE node_id = $1",
+        [nodeId, now]
+      );
+      return { success: true, nodeId, claimed: !!existing.rows[0].user_id };
+    }
+
+    await this.db.query(
+      `INSERT INTO nodes (node_id, public_key, name, user_id, status, is_public, last_seen)
+       VALUES ($1, $2, $3, NULL, 'online', false, $4)
+       ON CONFLICT (node_id) DO NOTHING`,
+      [nodeId, publicKey, name || `Node-${nodeId}`, now]
+    );
+    return { success: true, nodeId, claimed: false };
+  }
+
   async updateNodeStatus(nodeId, publicKey, additionalData = {}) {
     const r = await this.db.query('SELECT * FROM nodes WHERE node_id = $1', [nodeId]);
     if (r.rows.length === 0) {

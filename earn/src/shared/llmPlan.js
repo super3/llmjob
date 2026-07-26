@@ -21,7 +21,20 @@ const { computeGpuLayers, hasEnoughVram } = require('./vram');
 //   • no card measurable at all   → a single unknown-placement entry
 //                                   ({ index: null, full offload }) so llama.cpp
 //                                   decides, exactly as when nvidia-smi is absent
-function planLlmInstances(cards, model, reserveMb) {
+// opts: { maxInstances } — an explicit operator ceiling (--llm-max-instances),
+// optional. The list is truncated keeping the lowest GPU indices (already
+// sorted, so the choice is stable and predictable).
+//
+// Note on host RAM: loading is what costs memory, not running. llama-server
+// streams the GGUF through the page cache into VRAM and the weights live on the
+// card, so a loaded instance's host footprint is small — many instances can
+// coexist on a modest box. What breaks is loading them ALL AT ONCE: N processes
+// each streaming the same multi-GB file evict each other's pages and can crawl
+// indefinitely (seen on a 13-GPU rig with 8 GB of RAM: every server alive,
+// answering 503, not one byte in VRAM). The fix is serialised startup in
+// LlmFleet, not a smaller fleet — so this planner deliberately does NOT cap by
+// memory.
+function planLlmInstances(cards, model, reserveMb, opts) {
   const list = Array.isArray(cards) ? cards : [];
   const eligible = [];
   let anyParsed = false;
@@ -43,7 +56,7 @@ function planLlmInstances(cards, model, reserveMb) {
 
   if (eligible.length) {
     eligible.sort((a, b) => a.index - b.index);
-    return eligible;
+    return capInstances(eligible, model, opts || {});
   }
 
   // Some cards were measured but none had room → serve nothing.
@@ -53,6 +66,18 @@ function planLlmInstances(cards, model, reserveMb) {
   // placement, full offload; let llama.cpp decide, as the single-card path did.
   const layers = Math.floor(Number(model && model.layers)) || 0;
   return [{ index: null, freeMb: null, nGpuLayers: layers }];
+}
+
+// Truncate a VRAM-eligible list to the operator's cap, if they set one. At least
+// one instance always survives: if a card can hold the model, serving from one
+// card beats serving from none.
+function capInstances(eligible, model, opts) {
+  // No cap set at all — note null/undefined must short-circuit BEFORE Number(),
+  // since Number(null) is 0 and would silently shrink the fleet to one.
+  if (opts.maxInstances == null) return eligible;
+  const cap = Math.floor(Number(opts.maxInstances));
+  if (!Number.isFinite(cap) || cap >= eligible.length) return eligible;
+  return eligible.slice(0, Math.max(1, cap));
 }
 
 module.exports = { planLlmInstances };

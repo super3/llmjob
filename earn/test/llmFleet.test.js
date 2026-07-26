@@ -27,12 +27,19 @@ function makeFleet(over = {}) {
     basePort: 8080,
     makeManager: () => { const m = new FakeMgr(); mgrs.push(m); return m; },
     findFreePort: async (h, p) => p,
+    // Instances start one at a time, each waiting for its predecessor to settle
+    // (see LlmFleet.start). Tests that don't drive 'ready' rely on this short
+    // settle timeout to let the rest of the fleet come up.
+    startSettleMs: 1,
     makeWorker: (url, index) => { const w = new FakeWorker(url, index); workers.push(w); return w; },
   }, over);
   const fleet = new LlmFleet(opts);
   fleet.on('error', () => {}); // keep EventEmitter from throwing in tests
   return { fleet, mgrs, workers };
 }
+
+// Let the background drain spawn the remaining instances.
+const drain = () => new Promise((r) => setTimeout(r, 25));
 
 describe('LlmFleet', () => {
   test('start() launches one manager per plan entry on distinct ports', async () => {
@@ -42,10 +49,50 @@ describe('LlmFleet', () => {
       { binaryPath: 'b', modelPath: 'm', platform: 'linux' }
     );
     expect(n).toBe(2);
+    await drain();
     expect(mgrs).toHaveLength(2);
     expect(mgrs[0].startOpts).toMatchObject({ host: '127.0.0.1', port: 8080, nGpuLayers: 42, mainGpu: 0, binaryPath: 'b', modelPath: 'm', platform: 'linux' });
     expect(mgrs[1].startOpts).toMatchObject({ port: 8081, nGpuLayers: 40, mainGpu: 1 });
     expect(fleet.instances[0].baseUrl).toBe('http://127.0.0.1:8080');
+  });
+
+  // The whole point of serialised startup: N servers each streaming a multi-GB
+  // model at once thrash the page cache and can livelock (a 13-GPU rig with
+  // 8 GB RAM never got a byte into VRAM). Each instance waits for the one
+  // before it, so the first load warms the cache for the rest.
+  test('start() spawns one instance at a time, waiting for each to become ready', async () => {
+    const { fleet, mgrs } = makeFleet({ startSettleMs: 60000 }); // no timeout escape
+    const n = await fleet.start(
+      [{ index: 0, nGpuLayers: 42 }, { index: 1, nGpuLayers: 42 }, { index: 2, nGpuLayers: 42 }], {}
+    );
+
+    // Returns the PLANNED count immediately, but only card 0 is loading.
+    expect(n).toBe(3);
+    await drain();
+    expect(mgrs).toHaveLength(1);
+
+    // Card 0 ready → card 1 starts, and still no card 2.
+    mgrs[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    await drain();
+    expect(mgrs).toHaveLength(2);
+
+    // A dead instance also releases the queue — one bad card can't strand the rest.
+    mgrs[1].emit('stopped', 1);
+    await drain();
+    expect(mgrs).toHaveLength(3);
+    expect(mgrs[2].startOpts).toMatchObject({ port: 8082, mainGpu: 2 });
+  });
+
+  test('stop() mid-startup cancels the instances that have not spawned yet', async () => {
+    const { fleet, mgrs } = makeFleet({ startSettleMs: 60000 });
+    await fleet.start([{ index: 0 }, { index: 1 }, { index: 2 }], {});
+    await drain();
+    expect(mgrs).toHaveLength(1);
+
+    fleet.stop();
+    await drain();
+    expect(mgrs).toHaveLength(1); // nothing further spawned
+    expect(mgrs[0].stopped).toBe(true);
   });
 
   test('start() with a non-array or empty plan launches nothing', async () => {
@@ -66,6 +113,7 @@ describe('LlmFleet', () => {
   test('emits ready per instance and first-ready exactly once', async () => {
     const { fleet, mgrs } = makeFleet();
     await fleet.start([{ index: 0, nGpuLayers: 42 }, { index: 1, nGpuLayers: 42 }], {});
+    await drain();
     const ready = []; const firsts = [];
     fleet.on('ready', (e) => ready.push(e));
     fleet.on('first-ready', (e) => firsts.push(e));
@@ -82,6 +130,7 @@ describe('LlmFleet', () => {
   test('serving starts one worker per ready instance; activeJobs sums them', async () => {
     const { fleet, mgrs, workers } = makeFleet();
     await fleet.start([{ index: 0, nGpuLayers: 42 }, { index: 1, nGpuLayers: 42 }], {});
+    await drain();
     fleet.syncWorkers(true);             // enabled, but nothing ready yet
     expect(workers).toHaveLength(0);
     mgrs[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' }); // → worker for gpu0
@@ -160,6 +209,7 @@ describe('LlmFleet', () => {
   test('emits fleet "stopped" only once all instances have stopped', async () => {
     const { fleet, mgrs, workers } = makeFleet();
     await fleet.start([{ index: 0, nGpuLayers: 42 }, { index: 1, nGpuLayers: 42 }], {});
+    await drain();
     fleet.syncWorkers(true);
     mgrs[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
     mgrs[1].emit('ready', { baseUrl: 'http://127.0.0.1:8081' });
@@ -179,6 +229,7 @@ describe('LlmFleet', () => {
   test('stop() tears down every worker and manager and goes quiet', async () => {
     const { fleet, mgrs, workers } = makeFleet();
     await fleet.start([{ index: 0, nGpuLayers: 42 }, { index: 1, nGpuLayers: 42 }], {});
+    await drain();
     fleet.syncWorkers(true);
     mgrs[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
     mgrs[1].emit('ready', { baseUrl: 'http://127.0.0.1:8081' });
@@ -230,6 +281,7 @@ describe('LlmFleet', () => {
     // findFreePort bumps every probe by +5, so instances land on non-adjacent ports.
     const { fleet, mgrs } = makeFleet({ findFreePort: async (h, p) => p + 5 });
     await fleet.start([{ index: 0, nGpuLayers: 42 }, { index: 1, nGpuLayers: 42 }], {});
+    await drain();
     expect(mgrs[0].startOpts.port).toBe(8085);
     expect(mgrs[1].startOpts.port).toBe(8091); // 8086 probed → +5
   });
