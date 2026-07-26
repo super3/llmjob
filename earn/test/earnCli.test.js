@@ -680,6 +680,25 @@ describe('local LLM', () => {
     await expect(p).resolves.toBe(1);
   });
 
+  test('--llm-max-instances caps the fleet and says so', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([
+      { index: 0, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+      { index: 1, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+      { index: 2, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+    ]);
+    m.probe.findFreePort.mockImplementation((h, p) => Promise.resolve(p));
+    const p = m.run(['--mode', 'llm', '--llm-max-instances', '2', '--no-update']);
+    await settle();
+
+    expect(allOut()).toContain('serving on 2 of 3 GPUs — capped by --llm-max-instances 2');
+    expect(allOut()).toContain('local LLM starting on 2 GPUs [0, 1]');
+
+    fire('SIGINT');
+    m.LlmManager.instances[0].emit('stopped', 0);
+    await p;
+  });
+
   test('runs one instance and worker per eligible GPU, summing their active jobs', async () => {
     const m = load();
     m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: 'rig' }));
@@ -693,15 +712,21 @@ describe('local LLM', () => {
     const p = m.run(['--mode', 'llm', '--no-update']);
     await settle();
 
-    // the plural log names every serving card; a manager per card on its own port
+    // The plural log names every planned card, but they start ONE AT A TIME:
+    // simultaneous multi-GB model loads thrash the page cache (see LlmFleet).
     expect(allOut()).toContain('local LLM starting on 2 GPUs [0, 1]');
-    const [g0, g1] = m.LlmManager.instances;
-    expect(m.LlmManager.instances.length).toBe(2);
+    expect(m.LlmManager.instances.length).toBe(1);
+    const g0 = m.LlmManager.instances[0];
     expect(g0.start).toHaveBeenCalledWith(expect.objectContaining({ port: 8080, mainGpu: 0 }));
+
+    // card 0 ready → card 1 is spawned on the next port
+    g0.emit('ready', { baseUrl: g0.baseUrl });
+    await settle();
+    expect(m.LlmManager.instances.length).toBe(2);
+    const g1 = m.LlmManager.instances[1];
     expect(g1.start).toHaveBeenCalledWith(expect.objectContaining({ port: 8081, mainGpu: 1 }));
 
-    // both cards come up → a cluster worker per card
-    g0.emit('ready', { baseUrl: g0.baseUrl });
+    // both cards up → a cluster worker per card
     g1.emit('ready', { baseUrl: g1.baseUrl });
     await settle();
     expect(m.JobWorker.instances.length).toBe(2);

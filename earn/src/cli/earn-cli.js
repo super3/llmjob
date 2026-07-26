@@ -360,7 +360,15 @@ async function startLlm(settings, reserveMb) {
   // read (non-NVIDIA / no driver) the planner returns one unknown-placement
   // instance and lets llama.cpp decide.
   const cards = await detectGpusVram();
-  const plan = planLlmInstances(cards, LLM.model, reserveMb || 0);
+  const plan = planLlmInstances(cards, LLM.model, reserveMb || 0, {
+    maxInstances: settings.llmMaxInstances,
+  });
+  // Say so when the operator's cap bit — a silently smaller fleet is
+  // indistinguishable from "this rig only had one card with room".
+  if (plan.length && plan.length < cards.length && settings.llmMaxInstances != null) {
+    log('serving on ' + plan.length + ' of ' + cards.length
+      + ' GPUs — capped by --llm-max-instances ' + settings.llmMaxInstances);
+  }
   if (!plan.length) {
     // An empty plan means at least one card parsed but none fit, so pickLlmGpu
     // (same parse rules) returns that card for the error message.

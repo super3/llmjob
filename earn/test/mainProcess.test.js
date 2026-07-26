@@ -1135,15 +1135,20 @@ describe('local LLM', () => {
     ctx.emit('miner:start', { mode: 'llm' });
     await flush();
 
-    // the plural log names every serving card; a manager per card on its own port
+    // The plural log names every planned card, but they start ONE AT A TIME:
+    // simultaneous multi-GB model loads thrash the page cache (see LlmFleet).
     expect(ctx.sent('miner:log').map((l) => l.line)).toContain('local LLM starting on 2 GPUs [0, 1]');
-    const [g0, g1] = ctx.LlmManager.instances;
-    expect(ctx.LlmManager.instances).toHaveLength(2);
+    expect(ctx.LlmManager.instances).toHaveLength(1);
+    const g0 = ctx.LlmManager.instances[0];
     expect(g0.start).toHaveBeenCalledWith(expect.objectContaining({ port: 8080, mainGpu: 0 }));
+
+    // card 0 ready → card 1 spawns on the next port; chat targets the first ready
+    g0.emit('ready', { baseUrl: g0.baseUrl });
+    await flush();
+    expect(ctx.LlmManager.instances).toHaveLength(2);
+    const g1 = ctx.LlmManager.instances[1];
     expect(g1.start).toHaveBeenCalledWith(expect.objectContaining({ port: 8081, mainGpu: 1 }));
 
-    // both cards come up → a cluster worker per card; chat targets the first ready
-    g0.emit('ready', { baseUrl: g0.baseUrl });
     g1.emit('ready', { baseUrl: g1.baseUrl });
     await flush();
     expect(ctx.JobWorker.instances).toHaveLength(2);
@@ -1182,7 +1187,8 @@ describe('local LLM', () => {
     });
     ctx.emit('miner:start', { mode: 'llm' });
     await flush();
-    const [g0, g1] = ctx.LlmManager.instances;
+    // Instances start one at a time, so only GPU 0 exists until it settles.
+    const g0 = ctx.LlmManager.instances[0];
 
     g0.emit('ready', { baseUrl: g0.baseUrl }); // linked → a worker for GPU 0
     await flush();
@@ -1190,6 +1196,7 @@ describe('local LLM', () => {
 
     // the node drops before GPU 1 comes up → makeJobWorker declines, no worker
     ctx.nodeStore.loadNode.mockReturnValue(null);
+    const g1 = ctx.LlmManager.instances[1];
     g1.emit('ready', { baseUrl: g1.baseUrl });
     await flush();
     expect(ctx.JobWorker.instances).toHaveLength(1);

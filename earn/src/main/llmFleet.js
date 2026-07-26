@@ -34,40 +34,79 @@ class LlmFleet extends EventEmitter {
     this.makeWorker = opts.makeWorker || (() => null);
     this.host = opts.host;
     this.basePort = opts.basePort;
+    // How long one instance gets to load before the next is started anyway.
+    this.startSettleMs = opts.startSettleMs || 600000;
     this.instances = []; // { index, port, mgr, ready, stopped, baseUrl, worker }
     this._serve = false;
     this._lastTps = 0;
     this._sawFirstReady = false;
     this._stopping = false;
     this._downEmitted = false;
+    this._pending = [];   // plan entries not yet spawned (serialised startup)
+    this._run = null;
+    this._nextPort = null;
   }
 
   // Spawn one llama-server per plan entry ([{ index, nGpuLayers }, …]). `run`
   // carries the shared spawn bits (binaryPath, modelPath, platform). Returns the
   // number of instances launched.
+  //
+  // Instances start ONE AT A TIME: each is given until it reports ready (or
+  // dies) before the next is spawned. Loading is the expensive part — every
+  // server streams the whole multi-GB GGUF off disk to reach its card — and
+  // starting N of them at once makes N processes fight over the page cache,
+  // evicting each other's pages until throughput collapses. A 13-GPU rig with
+  // 8 GB of RAM sat there with all 13 alive, answering 503, and not a byte in
+  // VRAM. Serialised, the first load warms the cache and the rest read from it,
+  // so the fleet comes up steadily instead of livelocking. Once loaded the
+  // weights live in VRAM, so the instances coexist happily — it was only ever
+  // the simultaneous loads that hurt.
+  // Resolves once the FIRST instance is spawned, returning how many are planned.
+  // The rest follow in the background, so the caller isn't blocked for minutes
+  // (the headless CLI starts mining right after this returns — a blocking fleet
+  // would hold the miner hostage while the models load).
   async start(plan, run = {}) {
     const entries = Array.isArray(plan) ? plan : [];
-    let port = this.basePort;
-    for (const e of entries) {
-      port = await this.findFreePort(this.host, port, 10);
-      const mgr = this.makeManager();
-      const inst = { index: e.index, port, mgr, ready: false, stopped: false, baseUrl: null, worker: null };
-      this.instances.push(inst);
-      mgr.on('log', (l) => this.emit('log', l));
-      mgr.on('ready', ({ baseUrl }) => this._onReady(inst, baseUrl));
-      mgr.on('stats', ({ tokensPerSec }) => this._onStats(tokensPerSec));
-      mgr.on('stopped', (code) => this._onStopped(inst, code));
-      mgr.on('error', (err) => this.emit('error', err));
-      mgr.start(Object.assign({}, run, {
-        host: this.host,
-        port,
-        nGpuLayers: e.nGpuLayers,
-        mainGpu: e.index == null ? undefined : e.index,
-      }));
-      inst.baseUrl = mgr.baseUrl;
-      port += 1; // next instance probes from the following port
+    if (!entries.length) return 0;
+    this._pending = entries.slice();
+    this._run = run;
+    this._nextPort = this.basePort;
+    await this._startNext();
+    // Background: each subsequent instance waits for its predecessor to settle.
+    // Errors here are already surfaced per-instance via 'error'/'log'.
+    this._draining = this._drain().catch(() => {});
+    return entries.length;
+  }
+
+  async _drain() {
+    while (this._pending.length && !this._stopping) {
+      await this._waitSettled(this.instances[this.instances.length - 1]);
+      if (this._stopping) return;
+      await this._startNext();
     }
-    return this.instances.length;
+  }
+
+  async _startNext() {
+    const e = this._pending.shift();
+    if (!e) return null;
+    const port = await this.findFreePort(this.host, this._nextPort, 10);
+    this._nextPort = port + 1; // the next instance probes from the following port
+    const mgr = this.makeManager();
+    const inst = { index: e.index, port, mgr, ready: false, stopped: false, baseUrl: null, worker: null };
+    this.instances.push(inst);
+    mgr.on('log', (l) => this.emit('log', l));
+    mgr.on('ready', ({ baseUrl }) => this._onReady(inst, baseUrl));
+    mgr.on('stats', ({ tokensPerSec }) => this._onStats(tokensPerSec));
+    mgr.on('stopped', (code) => this._onStopped(inst, code));
+    mgr.on('error', (err) => this.emit('error', err));
+    mgr.start(Object.assign({}, this._run, {
+      host: this.host,
+      port,
+      nGpuLayers: e.nGpuLayers,
+      mainGpu: e.index == null ? undefined : e.index,
+    }));
+    inst.baseUrl = mgr.baseUrl;
+    return inst;
   }
 
   // Adopt an already-healthy llama-server (e.g. one lingering on our port right
@@ -83,9 +122,31 @@ class LlmFleet extends EventEmitter {
     return inst;
   }
 
+  // Resolve when `inst` has either become ready or stopped for good, or when
+  // startSettleMs elapses. The timeout matters: a server that neither loads nor
+  // exits must not strand the rest of the fleet forever, so a slow card delays
+  // its successors rather than blocking them.
+  _waitSettled(inst) {
+    if (!inst || inst.ready || inst.stopped) return Promise.resolve();
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        inst._settle = null;
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(finish, this.startSettleMs);
+      if (timer.unref) timer.unref();
+      inst._settle = finish;
+    });
+  }
+
   _onReady(inst, baseUrl) {
     inst.ready = true;
     inst.baseUrl = baseUrl;
+    if (inst._settle) inst._settle();
     if (this._serve) this._ensureWorker(inst);
     this.emit('ready', { baseUrl, index: inst.index });
     if (!this._sawFirstReady) {
@@ -103,6 +164,7 @@ class LlmFleet extends EventEmitter {
   _onStopped(inst, code) {
     inst.ready = false;
     inst.stopped = true;
+    if (inst._settle) inst._settle();
     if (inst.worker) { inst.worker.stop(); inst.worker = null; }
     // Surface a single fleet-level 'stopped' once every instance has stopped —
     // not on each individual card (others may still be serving). Forward the
@@ -161,7 +223,9 @@ class LlmFleet extends EventEmitter {
 
   stop() {
     this._stopping = true;
+    this._pending = []; // nothing further should spawn
     for (const inst of this.instances) {
+      if (inst._settle) inst._settle(); // unblock a serialised start mid-flight
       if (inst.worker) { inst.worker.stop(); inst.worker = null; }
       if (inst.mgr) inst.mgr.stop();
     }

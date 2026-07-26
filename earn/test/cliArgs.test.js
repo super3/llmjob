@@ -204,6 +204,16 @@ describe('buildSettings — compute mode / LLM', () => {
     expect(s.modeProvided).toBe(true);
   });
 
+  test('--llm-max-instances is parsed, and rejected when not a positive integer', () => {
+    expect(parseCliArgs(['--address', ADDR, '--llm-max-instances', '2']).settings.llmMaxInstances).toBe(2);
+    // Unset means "no operator opinion" — the planner then uses every eligible card.
+    expect(parseCliArgs(['--address', ADDR]).settings.llmMaxInstances).toBeNull();
+    expect(parseCliArgs(['--address', ADDR, '--llm-max-instances', '0']).errors)
+      .toContain('invalid --llm-max-instances: 0 (must be a positive integer)');
+    expect(parseCliArgs(['--address', ADDR, '--llm-max-instances', 'two']).errors)
+      .toContain('invalid --llm-max-instances: two (must be a positive integer)');
+  });
+
   test('unknown mode is rejected with choices', () => {
     const r = parseCliArgs(['--address', ADDR, '--mode', 'turbo']);
     expect(r.errors).toContain('unknown mode: turbo (choices: mining, both, llm, auto)');

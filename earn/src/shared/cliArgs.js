@@ -29,7 +29,7 @@ const VALUE_FLAGS = new Set([
   '--address', '--mdl', '--region', '--worker',
   '--difficulty', '--gpu', '--backend', '--binary', '--engine-dir',
   '--stats-file',
-  '--mode', '--llm-binary', '--llm-model',
+  '--mode', '--llm-binary', '--llm-model', '--llm-max-instances',
 ]);
 
 function regionChoices() {
@@ -56,6 +56,8 @@ const USAGE = [
   '                           — use this to skip that or point at your own build.',
   '      --llm-model <path>   Path to a GGUF model file (default: download the',
   '                           bundled small model on first run)',
+  '      --llm-max-instances <n>  Cap how many llama-servers run (default: one per',
+  '                           eligible GPU, itself capped by free system RAM)',
   '  -r, --region <id>        Pool region: ' + Object.keys(REGIONS).join('/') + ' (default: auto-detect fastest)',
   '  -w, --worker <name>      Worker/rig name (default: this machine\'s hostname)',
   '  -d, --difficulty <n>     Static share difficulty (default: from detected/--gpu card, else ' + DEFAULTS.difficulty + ')',
@@ -127,6 +129,16 @@ function buildSettings(opts, errors, report, update) {
   const llmBinary = opts['--llm-binary'] != null ? String(opts['--llm-binary']) : null;
   const llmModel = opts['--llm-model'] != null ? String(opts['--llm-model']) : null;
 
+  // An explicit ceiling on concurrent llama-servers. Null means "no operator
+  // opinion" — the planner then caps by eligible GPUs and free RAM on its own.
+  let llmMaxInstances = null;
+  if (opts['--llm-max-instances'] != null) {
+    llmMaxInstances = Number(opts['--llm-max-instances']);
+    if (!Number.isInteger(llmMaxInstances) || llmMaxInstances < 1) {
+      errors.push('invalid --llm-max-instances: ' + opts['--llm-max-instances'] + ' (must be a positive integer)');
+    }
+  }
+
   // Which knobs the user set explicitly. The CLI auto-detects the ones left
   // unset (fastest region; GPU → static difficulty; a per-host worker name), so
   // it needs to tell an explicit `--region us2` / `--worker rig01` from the
@@ -139,7 +151,7 @@ function buildSettings(opts, errors, report, update) {
 
   return {
     address, mdlAddress, region, worker, gpu, difficulty, backend, binaryPath, engineDir, statsFile,
-    mode, llmBinary, llmModel,
+    mode, llmBinary, llmModel, llmMaxInstances,
     report, update, regionProvided, gpuProvided, difficultyProvided, workerProvided, modeProvided,
   };
 }
