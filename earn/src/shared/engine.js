@@ -76,6 +76,26 @@ function isZipUrl(url) {
   return /\.zip$/i.test(String(url));
 }
 
+// Does this URL point at an ARCHIVE that must be extracted, rather than a bare
+// binary we can save straight to its final path? llama.cpp ships Windows as a
+// .zip but Linux/macOS as a .tar.gz, and gating extraction on isZipUrl alone
+// meant the tarball was saved AS `llama-server` and chmod +x — a gzip file with
+// the execute bit, which execvp rejects (ENOEXEC) and /bin/sh then tries to
+// parse ("Syntax error: word unexpected"). Every non-Windows rig hit this.
+function isArchiveUrl(url) {
+  return /\.(zip|tar\.gz|tgz)$/i.test(String(url));
+}
+
+// The magic bytes of the archive formats we download. A cached file starting
+// with one of these is an un-extracted archive sitting where the binary belongs
+// (see isArchiveUrl) — install left it there, so it must not be trusted as the
+// binary. gzip = 1f 8b, zip = "PK\x03\x04".
+function looksLikeArchive(head) {
+  const b = Buffer.isBuffer(head) ? head : Buffer.alloc(0);
+  if (b.length >= 2 && b[0] === 0x1f && b[1] === 0x8b) return true;
+  return b.length >= 4 && b[0] === 0x50 && b[1] === 0x4b && b[2] === 0x03 && b[3] === 0x04;
+}
+
 // Absolute path to the installed engine inside a cache directory.
 function enginePath(dir, platform, gpu, version) {
   return path.join(dir, engineBinaryName(platform, gpu, version));
@@ -107,6 +127,8 @@ module.exports = {
   engineArchiveName,
   engineDownloadUrl,
   isZipUrl,
+  isArchiveUrl,
+  looksLikeArchive,
   enginePath,
   bundledEnginePath,
   progressPercent,

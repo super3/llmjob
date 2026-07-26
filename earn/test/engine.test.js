@@ -4,7 +4,7 @@ const path = require('path');
 const {
   DOWNLOAD_BASE, ENGINE, pickEngineVersion, parseDriverMajor,
   engineBinaryName, engineArchiveName, engineDownloadUrl,
-  isZipUrl, enginePath, bundledEnginePath, progressPercent,
+  isZipUrl, isArchiveUrl, looksLikeArchive, enginePath, bundledEnginePath, progressPercent,
 } = require('../src/shared/engine');
 
 describe('pickEngineVersion', () => {
@@ -71,6 +71,32 @@ describe('isZipUrl', () => {
     expect(isZipUrl('https://x/AlphaMiner-Pearl-Windows.zip')).toBe(true);
     expect(isZipUrl('https://x/alpha-miner')).toBe(false);
     expect(isZipUrl(null)).toBe(false);
+  });
+});
+
+describe('isArchiveUrl', () => {
+  test('covers every archive we download, not just .zip', () => {
+    // The llama.cpp assets: Windows .zip, Linux/macOS .tar.gz — all must extract.
+    expect(isArchiveUrl('https://x/llama-b9902-bin-win-vulkan-x64.zip')).toBe(true);
+    expect(isArchiveUrl('https://x/llama-b9902-bin-ubuntu-vulkan-x64.tar.gz')).toBe(true);
+    expect(isArchiveUrl('https://x/llama-macos-arm64.tgz')).toBe(true);
+    expect(isArchiveUrl('https://x/LLAMA.TAR.GZ')).toBe(true);
+    // A bare binary is saved straight to its path, never extracted.
+    expect(isArchiveUrl('https://x/llama-server')).toBe(false);
+    expect(isArchiveUrl('https://x/llama-server.exe')).toBe(false);
+    expect(isArchiveUrl(null)).toBe(false);
+  });
+});
+
+describe('looksLikeArchive', () => {
+  test('recognises gzip and zip magic, rejects an ELF or a short read', () => {
+    expect(looksLikeArchive(Buffer.from([0x1f, 0x8b, 0x08, 0x00]))).toBe(true);
+    expect(looksLikeArchive(Buffer.from([0x50, 0x4b, 0x03, 0x04]))).toBe(true);
+    expect(looksLikeArchive(Buffer.from([0x7f, 0x45, 0x4c, 0x46]))).toBe(false); // \x7fELF
+    expect(looksLikeArchive(Buffer.from([0x50, 0x4b, 0x05, 0x06]))).toBe(false); // empty-zip EOCD
+    expect(looksLikeArchive(Buffer.from([0x1f]))).toBe(false);
+    expect(looksLikeArchive(Buffer.alloc(0))).toBe(false);
+    expect(looksLikeArchive(null)).toBe(false);
   });
 });
 

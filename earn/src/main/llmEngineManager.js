@@ -3,7 +3,14 @@
 const path = require('path');
 const { LLM } = require('../shared/config');
 const { resolveServerBinary } = require('../shared/llama');
-const { isZipUrl } = require('../shared/engine');
+const { isArchiveUrl, looksLikeArchive } = require('../shared/engine');
+
+// Where an archive lands before it's extracted. One fixed name for every format:
+// extractLlamaZip picks tar-vs-unzip from the file's MAGIC BYTES, not its
+// extension, so nothing downstream needs the suffix. It deliberately does not
+// start with the binary's own name — the archive must never be mistaken for,
+// or overwrite, `llama-server` itself.
+const ARCHIVE_TMP = 'llama-download.archive';
 
 // Ensures the llama.cpp `llama-server` binary and the GGUF model are present,
 // downloading them on demand. Like EngineManager, all IO (fs, download, extract,
@@ -29,8 +36,35 @@ class LlmEngineManager {
     return path.join(this.dir, LLM.model.file);
   }
 
+  // Installed means "a usable binary is there" — not merely "a file is there".
+  // A file whose first bytes are gzip/zip magic is an un-extracted archive left
+  // by the install bug that saved the .tar.gz as `llama-server`: it exists, it's
+  // executable, and it can never run (ENOEXEC). Treat that as NOT installed so
+  // ensureServer re-downloads and extracts properly, the same self-heal spirit
+  // as the missing-execute-bit fix below. An unreadable file is treated as
+  // installed — the old behaviour — so a permissions quirk can't force an
+  // endless re-download.
   isServerInstalled() {
-    return this.fs.existsSync(this.serverBinaryPath());
+    const dest = this.serverBinaryPath();
+    if (!this.fs.existsSync(dest)) return false;
+    return !this.isArchiveFile(dest);
+  }
+
+  // Read the first bytes of `file` and report whether they're archive magic.
+  // False when the file can't be read — see isServerInstalled.
+  isArchiveFile(file) {
+    try {
+      const fd = this.fs.openSync(file, 'r');
+      try {
+        const head = Buffer.alloc(4);
+        const read = this.fs.readSync(fd, head, 0, 4, 0);
+        return looksLikeArchive(head.subarray(0, read));
+      } finally {
+        this.fs.closeSync(fd);
+      }
+    } catch (e) {
+      return false;
+    }
   }
 
   isModelInstalled() {
@@ -54,11 +88,11 @@ class LlmEngineManager {
     }
 
     this.fs.mkdirSync(this.dir, { recursive: true });
-    if (isZipUrl(this.serverUrl)) {
-      const zipPath = path.join(this.dir, 'llama-server.zip');
-      await this.download(this.serverUrl, zipPath, onProgress);
-      await this.extract(zipPath, dest);
-      this.fs.unlinkSync(zipPath);
+    if (isArchiveUrl(this.serverUrl)) {
+      const archivePath = path.join(this.dir, ARCHIVE_TMP);
+      await this.download(this.serverUrl, archivePath, onProgress);
+      await this.extract(archivePath, dest);
+      this.fs.unlinkSync(archivePath);
     } else {
       await this.download(this.serverUrl, dest, onProgress);
     }
