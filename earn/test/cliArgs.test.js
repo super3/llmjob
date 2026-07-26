@@ -190,9 +190,9 @@ describe('buildSettings — validation', () => {
 });
 
 describe('buildSettings — compute mode / LLM', () => {
-  test('mode defaults to mining, not provided, with null LLM paths', () => {
+  test('mode defaults to auto, not provided, with null LLM paths', () => {
     const s = parseCliArgs(['--address', ADDR]).settings;
-    expect(s.mode).toBe('mining');
+    expect(s.mode).toBe('auto');
     expect(s.modeProvided).toBe(false);
     expect(s.llmBinary).toBeNull();
     expect(s.llmModel).toBeNull();

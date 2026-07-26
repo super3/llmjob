@@ -935,9 +935,9 @@ async function applyPlan(settings) {
 }
 
 ipcMain.handle('settings:get', () => Object.assign(
-  // The desktop app defaults to 'auto' (mine + serve the LLM, balanced from free
-  // VRAM) — the headless CLI keeps the mining-only DEFAULT_MODE.
-  { region: DEFAULTS.region, worker: DEFAULTS.worker, difficulty: DEFAULTS.difficulty, address: '', mdlAddress: '', mode: 'auto' },
+  // Both clients default to the shared DEFAULT_MODE ('auto': mine + serve the
+  // LLM, balanced from free VRAM).
+  { region: DEFAULTS.region, worker: DEFAULTS.worker, difficulty: DEFAULTS.difficulty, address: '', mdlAddress: '', mode: DEFAULT_MODE },
   loadSettings(),
 ));
 ipcMain.handle('llm:status', () => llmStatus);

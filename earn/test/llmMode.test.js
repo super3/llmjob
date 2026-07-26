@@ -3,9 +3,12 @@
 const { MODES, DEFAULT_MODE, isValidMode, resolvePlan } = require('../src/shared/llmMode');
 
 describe('llmMode', () => {
-  test('exposes the modes and a mining default', () => {
+  test('exposes the modes and an auto (co-run) default', () => {
     expect(MODES).toEqual(['mining', 'both', 'llm', 'auto']);
-    expect(DEFAULT_MODE).toBe('mining');
+    expect(DEFAULT_MODE).toBe('auto');
+    // The default must actually serve inference — a mining-only default left
+    // headless rigs (HiveOS flight sheets pass no --mode) silently not serving.
+    expect(resolvePlan(DEFAULT_MODE, { canMine: true, canLlm: true })).toEqual({ miner: true, llm: true });
   });
 
   test('isValidMode', () => {
