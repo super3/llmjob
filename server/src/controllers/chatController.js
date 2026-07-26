@@ -35,7 +35,7 @@ const DEFAULT_MODELS = [
 // GPU. Always offered alongside the OpenRouter models, but never the default —
 // callers opt in by selecting it. Its served model id is the fleet default in
 // jobService (JobService fills it in when the job omits `model`).
-const NETWORK_MODEL = { id: 'llmjob-gemma-4-e4b', label: 'Gemma 4 E4B (LLMJob network)' };
+const NETWORK_MODEL = { id: 'llmjob-gemma-4-e4b', label: 'Gemma 4 E4B' };
 const DEFAULT_FREE_BUDGET = 1000000; // total tokens of free usage before the cap
 const DEFAULT_MAX_TOKENS = 2048;     // per-request completion ceiling
 const MAX_PROMPT_CHARS = 24000;      // total prompt characters kept per request

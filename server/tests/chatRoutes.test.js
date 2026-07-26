@@ -347,7 +347,7 @@ describe('Chat gateway — integration', () => {
       expect(res.body.models).toEqual([
         { id: 'meta-llama/llama-3.3-70b-instruct', label: 'Llama 3.3 70B' },
         { id: 'qwen/qwen-2.5-7b-instruct', label: 'Qwen 2.5 7B' },
-        { id: 'llmjob-gemma-4-e4b', label: 'Gemma 4 E4B (LLMJob network)' }
+        { id: 'llmjob-gemma-4-e4b', label: 'Gemma 4 E4B' }
       ]);
     });
   });
@@ -559,7 +559,7 @@ function netServices(results) {
   };
 }
 const NET_ID = 'llmjob-gemma-4-e4b';
-const NET_LABEL = 'Gemma 4 E4B (LLMJob network)';
+const NET_LABEL = 'Gemma 4 E4B';
 
 describe('Chat gateway — LLMJob-network model', () => {
   it('serves the model as a job, streaming incremental deltas then a final meta', async () => {
@@ -757,7 +757,7 @@ describe('ChatController — config', () => {
     const ctrl = new ChatController();
     expect(ctrl.apiKey).toBeUndefined();
     expect(ctrl.baseUrl).toBe('https://openrouter.ai/api/v1');
-    expect(ctrl.networkModel).toEqual({ id: 'llmjob-gemma-4-e4b', label: 'Gemma 4 E4B (LLMJob network)' });
+    expect(ctrl.networkModel).toEqual({ id: 'llmjob-gemma-4-e4b', label: 'Gemma 4 E4B' });
     expect(ctrl.models).toBe(ChatController.DEFAULT_MODELS);
     expect(ctrl.freeBudget).toBe(1000000);
     expect(ctrl.maxTokens).toBe(2048);
