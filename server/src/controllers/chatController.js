@@ -35,7 +35,13 @@ const DEFAULT_MODELS = [
 // GPU. Always offered alongside the OpenRouter models, but never the default —
 // callers opt in by selecting it. Its served model id is the fleet default in
 // jobService (JobService fills it in when the job omits `model`).
-const NETWORK_MODEL = { id: 'llmjob-gemma-4-e4b', label: 'Gemma 4 E4B' };
+//
+// The "(LLMJob network)" suffix is load-bearing now that the fleet serves a 27B:
+// DEFAULT_MODELS lists an OpenRouter `Qwen3.6 27B` too, and _resolveModel matches
+// the network label before the OpenRouter ones — an identical label would silently
+// route OpenRouter's 27B to the node fleet. It names the one thing the two entries
+// don't share, which is exactly what the reader is choosing between.
+const NETWORK_MODEL = { id: 'llmjob-qwen3.6-27b', label: 'Qwen3.6 27B (LLMJob network)' };
 const DEFAULT_FREE_BUDGET = 1000000; // total tokens of free usage before the cap
 const DEFAULT_MAX_TOKENS = 2048;     // per-request completion ceiling
 const MAX_PROMPT_CHARS = 24000;      // total prompt characters kept per request

@@ -347,7 +347,7 @@ describe('Chat gateway — integration', () => {
       expect(res.body.models).toEqual([
         { id: 'meta-llama/llama-3.3-70b-instruct', label: 'Llama 3.3 70B' },
         { id: 'qwen/qwen-2.5-7b-instruct', label: 'Qwen 2.5 7B' },
-        { id: 'llmjob-gemma-4-e4b', label: 'Gemma 4 E4B' }
+        { id: 'llmjob-qwen3.6-27b', label: 'Qwen3.6 27B (LLMJob network)' }
       ]);
     });
   });
@@ -559,15 +559,15 @@ function netServices(results) {
     _created: created
   };
 }
-const NET_ID = 'llmjob-gemma-4-e4b';
-const NET_LABEL = 'Gemma 4 E4B';
+const NET_ID = 'llmjob-qwen3.6-27b';
+const NET_LABEL = 'Qwen3.6 27B (LLMJob network)';
 
 describe('Chat gateway — LLMJob-network model', () => {
   it('serves the model as a job, streaming incremental deltas then a final meta', async () => {
     const services = netServices([
       { status: 'running', partial: 'Hel', chunks: [] },
       { status: 'running', partial: 'Hello', chunks: [] },
-      { status: 'completed', result: 'Hello world', metrics: { totalTokens: 3, tokensPerSecond: 30, model: 'Gemma-4-E4B-it-Q4_K_M' } }
+      { status: 'completed', result: 'Hello world', metrics: { totalTokens: 3, tokensPerSecond: 30, model: 'Qwen3.6-27B-Q4_K_M' } }
     ]);
     // No OpenRouter key needed — this path runs on the fleet, not paid API.
     const ctrl = new ChatController({ apiKey: '', models: MODELS, services, sleep: async () => {}, now: stepClock() });
@@ -579,7 +579,7 @@ describe('Chat gateway — LLMJob-network model', () => {
     expect(out).toContain('"delta":"lo"');       // only the new suffix each poll
     expect(out).toContain('"delta":" world"');
     expect(out).toContain('"done":true');
-    expect(out).toContain('Gemma-4-E4B-it-Q4_K_M');
+    expect(out).toContain('Qwen3.6-27B-Q4_K_M');
     expect(out).toContain('[DONE]');
     // The job is anonymous and carries the full (system-grounded) messages array.
     expect(services._created[0]).toMatchObject({ userId: null, temperature: 0.5 });
@@ -652,7 +652,7 @@ describe('Chat gateway — LLMJob-network model', () => {
   it('serves the network model without streaming (JSON body)', async () => {
     const services = netServices([
       { status: 'running', partial: '' },
-      { status: 'completed', result: 'Hi!', metrics: { totalTokens: 1, tokensPerSecond: 12, model: 'Gemma-4-E4B-it-Q4_K_M' } }
+      { status: 'completed', result: 'Hi!', metrics: { totalTokens: 1, tokensPerSecond: 12, model: 'Qwen3.6-27B-Q4_K_M' } }
     ]);
     const ctrl = new ChatController({ apiKey: '', models: MODELS, services, sleep: async () => {}, now: stepClock() });
     const res = fakeRes();
@@ -758,7 +758,7 @@ describe('ChatController — config', () => {
     const ctrl = new ChatController();
     expect(ctrl.apiKey).toBeUndefined();
     expect(ctrl.baseUrl).toBe('https://openrouter.ai/api/v1');
-    expect(ctrl.networkModel).toEqual({ id: 'llmjob-gemma-4-e4b', label: 'Gemma 4 E4B' });
+    expect(ctrl.networkModel).toEqual({ id: 'llmjob-qwen3.6-27b', label: 'Qwen3.6 27B (LLMJob network)' });
     expect(ctrl.models).toBe(ChatController.DEFAULT_MODELS);
     expect(ctrl.freeBudget).toBe(1000000);
     expect(ctrl.maxTokens).toBe(2048);

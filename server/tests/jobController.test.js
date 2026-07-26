@@ -119,7 +119,7 @@ describe('JobController', () => {
         jobs: expect.arrayContaining([
           expect.objectContaining({
             prompt: expect.any(String),
-            model: 'Gemma-4-E4B-it-Q4_K_M'
+            model: 'Qwen3.6-27B-Q4_K_M'
           })
         ])
       });
@@ -159,22 +159,20 @@ describe('JobController', () => {
     });
 
     it('routes by the served model a node reports', async () => {
-      // an extra pending job for a model this node does not serve (the small
-      // default that Gemma-tier nodes run)
-      await jobService.createJob({ prompt: 'other', userId: 'u' });
-      const mine = await jobService.createJob({ prompt: 'mine', userId: 'u', model: 'qwen/qwen3.6-27b' });
+      // The two beforeEach jobs name no model, so they take the network default
+      // (the Qwen 27B); this one asks for the Gemma tier. A Gemma-serving node
+      // must be handed exactly that one and none of the 27B work.
+      const gemma = await jobService.createJob({ prompt: 'gemma', userId: 'u', model: 'Gemma-4-E4B-it-Q4_K_M' });
       nodeService.getNode.mockResolvedValue({
-        nodeId: 'node27b', publicKey: 'test-public-key', status: 'online', model: 'Qwen3.6-27B-Q4_K_M'
+        nodeId: 'nodeGemma', publicKey: 'test-public-key', status: 'online', model: 'Gemma-4-E4B-it-Q4_K_M'
       });
 
-      req.body = { nodeId: 'node27b', maxJobs: 5 };
+      req.body = { nodeId: 'nodeGemma', maxJobs: 5 };
       await jobController.pollJobs(req, res);
 
       const payload = res.json.mock.calls[0][0];
       expect(payload.success).toBe(true);
-      // only the 27B job (and the two default-Gemma jobs from beforeEach don't
-      // match either) — the node gets exactly the job it can serve
-      expect(payload.jobs.map((j) => j.id)).toEqual([mine.id]);
+      expect(payload.jobs.map((j) => j.id)).toEqual([gemma.id]);
     });
   });
 

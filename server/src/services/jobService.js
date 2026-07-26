@@ -8,9 +8,12 @@ const HEARTBEAT_STALE_MS = 60 * 1000; // consider a job stalled after 60s silenc
 // rows would otherwise accumulate forever (nothing else clears `pending`). The
 // margin over 120s means this can never expire a job someone is still waiting on.
 const PENDING_TTL_MS = 5 * 60 * 1000;
-// The model the earn-client fleet actually serves (earn/src/shared/config.js
-// LLM.model.name) — the default a job records must match what runs it.
-const DEFAULT_MODEL = 'Gemma-4-E4B-it-Q4_K_M';
+// The model a job records when the caller names none. It must match what a node
+// reports serving, since assignJobsToNode routes on that name (see modelsMatch):
+// this is the network's headline model, and only nodes serving it pick up default
+// traffic. Nodes too small for it serve the Gemma tier
+// (earn/src/shared/config.js LLM.models) and take jobs that ask for Gemma by name.
+const DEFAULT_MODEL = 'Qwen3.6-27B-Q4_K_M';
 // Generation budget for a job that doesn't specify one, matched to the node's
 // 6400-token context window (earn/src/shared/config.js LLM.ctxSize). The prompt
 // shares that window, so a reply tops out a little under this — the node's context

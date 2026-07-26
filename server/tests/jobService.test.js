@@ -22,8 +22,8 @@ describe('JobService', () => {
     it('creates a job with default values', async () => {
       const job = await jobService.createJob({ prompt: 'Test prompt', userId: 'user123' });
       expect(job).toMatchObject({
-        // default model = what the earn-client fleet actually serves
-        prompt: 'Test prompt', model: 'Gemma-4-E4B-it-Q4_K_M', status: 'pending',
+        // default model = the network's headline model, which 24 GB nodes serve
+        prompt: 'Test prompt', model: 'Qwen3.6-27B-Q4_K_M', status: 'pending',
         // maxTokens default covers a reasoning model's thoughts plus its answer
         userId: 'user123', priority: 0, maxTokens: 6400, temperature: 0.7
       });
@@ -152,13 +152,12 @@ describe('JobService', () => {
     });
 
     it('routes only matching-model jobs to a node that reports a served model', async () => {
-      // The real fleet is two-tier: small cards serve the Gemma default, 24 GB
-      // cards serve the Qwen 27B. A public-chat job omits `model` and gets the
-      // default GGUF name; a gateway job carries the vendor id. Each node reports
-      // its own GGUF name, so both spellings have to route.
-      await jobService.createJob({ prompt: 'a', userId: 'u' }); // → the Gemma default
+      // The real fleet is two-tier: 24 GB cards serve the Qwen 27B (the network
+      // default), smaller cards serve the Gemma tier. A gateway job carries the
+      // vendor id while a node reports its GGUF name, so both spellings must route.
+      await jobService.createJob({ prompt: 'a', userId: 'u', model: 'Gemma-4-E4B-it-Q4_K_M' });
       const want = await jobService.createJob({ prompt: 'b', userId: 'u', model: 'qwen/qwen3.6-27b' });
-      await jobService.createJob({ prompt: 'c', userId: 'u' });
+      await jobService.createJob({ prompt: 'c', userId: 'u', model: 'Gemma-4-E4B-it-Q4_K_M' });
 
       const assigned = await jobService.assignJobsToNode('node27b', 2, 'Qwen3.6-27B-Q4_K_M');
       expect(assigned).toHaveLength(1);
@@ -167,6 +166,15 @@ describe('JobService', () => {
       // the Gemma jobs are still pending for a node that serves that model
       const other = await jobService.assignJobsToNode('nodeGemma', 5, 'Gemma-4-E4B-it-Q4_K_M');
       expect(other).toHaveLength(2);
+    });
+
+    it('hands a default (no-model) job to a node serving the network default', async () => {
+      // A caller that names no model gets DEFAULT_MODEL, so only 27B-tier nodes
+      // pick it up — a Gemma-tier node must not be handed it.
+      const job = await jobService.createJob({ prompt: 'p', userId: 'u' });
+      expect(await jobService.assignJobsToNode('nodeGemma', 1, 'Gemma-4-E4B-it-Q4_K_M')).toHaveLength(0);
+      const assigned = await jobService.assignJobsToNode('node27b', 1, 'Qwen3.6-27B-Q4_K_M');
+      expect(assigned.map((j) => j.id)).toEqual([job.id]);
     });
 
     it('stops at maxJobs even when more matching jobs are in the scan window', async () => {
