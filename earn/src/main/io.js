@@ -67,11 +67,21 @@ function getJson(url, opts = {}) {
   });
 }
 
+// Serial number for scratch download paths — see `part` in downloadFile.
+let partSeq = 0;
+
 // Stream a URL to a file, following redirects and reporting download progress.
-// Writes to `<dest>.part` and renames on completion, so an interrupted download
-// (multi-GB GGUFs especially) never leaves a truncated file at the final path
-// that an existsSync "is it installed?" check would wrongly accept. A 60s idle
-// socket timeout stops a stalled connection from hanging setup forever.
+// Writes to a scratch `<dest>.<pid>.<n>.part` and renames on completion, so an
+// interrupted download (multi-GB GGUFs especially) never leaves a truncated file
+// at the final path that an existsSync "is it installed?" check would wrongly
+// accept. A 60s idle socket timeout stops a stalled connection from hanging
+// setup forever.
+//
+// The scratch name is unique per call, not a fixed `<dest>.part`: two downloads
+// of the same dest raced on that one path, and whichever finished first renamed
+// it out from under the others, which then died on `ENOENT … rename
+// llama-download.archive.part`. Uniqueness makes concurrent attempts merely
+// redundant (last writer wins the rename) instead of failing.
 function downloadFile(url, dest, onProgress, redirects) {
   redirects = redirects || 0;
   return new Promise((resolve, reject) => {
@@ -89,7 +99,7 @@ function downloadFile(url, dest, onProgress, redirects) {
       }
       const total = parseInt(res.headers['content-length'] || '0', 10);
       let received = 0;
-      const part = dest + '.part';
+      const part = dest + '.' + process.pid + '.' + (partSeq = (partSeq + 1) % 1e6) + '.part';
       const out = fs.createWriteStream(part);
       const fail = (err) => { out.destroy(); fs.unlink(part, () => {}); reject(err); };
       res.on('data', (c) => { received += c.length; if (onProgress) onProgress(progressPercent(received, total)); });
@@ -166,8 +176,9 @@ function streamChatCompletion(baseUrl, chatBody, onDelta, onReasoning) {
 // — llama.cpp resolves libs from the binary's own directory ($ORIGIN rpath), so
 // co-locating them is what makes the downloaded server run. llama.cpp ships
 // Linux/macOS as .tar.gz (a build-named top folder) and Windows as .zip; the
-// download is always named `.zip`, so sniff the magic bytes rather than trust
-// the name: gzip (1f 8b) → `tar --strip-components=1`, otherwise `unzip -j`.
+// download always lands at one format-neutral name (llmEngineManager's
+// ARCHIVE_TMP), so sniff the magic bytes rather than trust the name: gzip
+// (1f 8b) → `tar --strip-components=1`, otherwise `unzip -j`.
 // `hint` is appended to the extraction error (e.g. the CLI's --llm-binary
 // escape hatch).
 function extractLlamaZip(zipPath, dest, hint) {

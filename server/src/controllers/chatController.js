@@ -35,7 +35,7 @@ const DEFAULT_MODELS = [
 // GPU. Always offered alongside the OpenRouter models, but never the default —
 // callers opt in by selecting it. Its served model id is the fleet default in
 // jobService (JobService fills it in when the job omits `model`).
-const NETWORK_MODEL = { id: 'llmjob-gemma-4-e4b', label: 'Gemma 4 E4B (LLMJob network)' };
+const NETWORK_MODEL = { id: 'llmjob-gemma-4-e4b', label: 'Gemma 4 E4B' };
 const DEFAULT_FREE_BUDGET = 1000000; // total tokens of free usage before the cap
 const DEFAULT_MAX_TOKENS = 2048;     // per-request completion ceiling
 const MAX_PROMPT_CHARS = 24000;      // total prompt characters kept per request
@@ -103,10 +103,11 @@ class ChatController {
   async usage(req, res) {
     const svc = this.services(req);
     const totals = await svc.chatUsage.getTotals();
-    // `totals` stays web-chat only: it backs the free-usage cap and the "tokens
-    // served free" line on the chat page, both of which would be wrong if paid
-    // API traffic were folded in. The network page's headline number wants
-    // everything the fleet has served, so that combined figure rides alongside.
+    // `totals` stays web-chat only: it backs the free-usage cap, which would be
+    // wrong if paid API traffic were folded in (paid usage would burn the free
+    // budget). `network` carries chat + API gateway — everything the fleet has
+    // served — and is what both the network page and the chat page display, so
+    // the two headline figures agree.
     const apiTokens = svc.apiKeys ? await svc.apiKeys.getTotalUsage() : 0;
     const capped = this.freeBudget > 0;
     res.json({

@@ -1,5 +1,7 @@
 'use strict';
 
+const { ALL_LAYERS } = require('../src/shared/vram');
+
 const {
   resolveServerBinary, serverBaseUrl, buildServerArgs, isServerReady, parseTokensPerSec,
 } = require('../src/shared/llama');
@@ -23,11 +25,11 @@ describe('serverBaseUrl', () => {
 });
 
 describe('buildServerArgs', () => {
-  test('defaults --n-gpu-layers to the model layers and host/port/ctx from config', () => {
+  test('defaults --n-gpu-layers to ALL_LAYERS (llama.cpp clamps) and host/port/ctx from config', () => {
     const a = buildServerArgs({ modelPath: '/m.gguf' });
     expect(a).toEqual([
       '--model', '/m.gguf', '--host', '127.0.0.1', '--port', '8080',
-      '--ctx-size', '6400', '--n-gpu-layers', '42', '--parallel', '1',
+      '--ctx-size', '6400', '--n-gpu-layers', String(ALL_LAYERS), '--parallel', '1',
       '--split-mode', 'none',
     ]);
     expect(a).not.toContain('--flash-attn');
@@ -52,7 +54,7 @@ describe('buildServerArgs', () => {
 
   test('works with no opts (all defaults from config)', () => {
     const a = buildServerArgs();
-    expect(a).toEqual(expect.arrayContaining(['--host', '127.0.0.1', '--n-gpu-layers', '42', '--model', '']));
+    expect(a).toEqual(expect.arrayContaining(['--host', '127.0.0.1', '--n-gpu-layers', String(ALL_LAYERS), '--model', '']));
   });
 
   test('pins --main-gpu to a non-negative integer index (incl. device 0)', () => {

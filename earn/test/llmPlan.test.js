@@ -1,20 +1,21 @@
 'use strict';
 
 const { planLlmInstances } = require('../src/shared/llmPlan');
+const { ALL_LAYERS } = require('../src/shared/vram');
 
 // A model with a 6 GB floor, 42 layers, ~5.8 GB full offload — like the shipped
 // Gemma-4-E4B config.
 const MODEL = { layers: 42, vramFullMb: 5800, minVramMb: 6144 };
 
 describe('planLlmInstances', () => {
-  test('one entry per eligible card, sorted by index, with sized layers', () => {
+  test('one entry per eligible card, sorted by index, each fully offloaded', () => {
     const plan = planLlmInstances([
       { index: 1, usedMb: 1000, totalMb: 24000 }, // 23 GB free → full offload
       { index: 0, usedMb: 500, totalMb: 12000 },  // 11.5 GB free → full offload
     ], MODEL, 0);
     expect(plan.map((p) => p.index)).toEqual([0, 1]); // sorted
-    expect(plan.every((p) => p.nGpuLayers === MODEL.layers)).toBe(true);
-    expect(plan[0]).toEqual({ index: 0, freeMb: 11500, nGpuLayers: 42 });
+    expect(plan.every((p) => p.nGpuLayers === ALL_LAYERS)).toBe(true);
+    expect(plan[0]).toEqual({ index: 0, freeMb: 11500, nGpuLayers: ALL_LAYERS });
   });
 
   test('skips cards without enough free VRAM for the model', () => {
@@ -25,11 +26,11 @@ describe('planLlmInstances', () => {
     expect(plan.map((p) => p.index)).toEqual([1]);
   });
 
-  test('honours the mining reserve when sizing layers', () => {
+  test('honours the mining reserve when deciding a card can hold the model', () => {
     // 8 GB free, reserve 2 GB → 6 GB budget ≈ full offload still fits the 5.8 GB model.
     const plan = planLlmInstances([{ index: 0, usedMb: 16000, totalMb: 24000 }], MODEL, 2048);
     expect(plan).toHaveLength(1);
-    expect(plan[0].nGpuLayers).toBe(42);
+    expect(plan[0].nGpuLayers).toBe(ALL_LAYERS);
   });
 
   test('drops a card when the reserve leaves no room for any layer', () => {
@@ -48,12 +49,13 @@ describe('planLlmInstances', () => {
   });
 
   test('falls back to one unknown-placement instance when no card is measurable', () => {
-    expect(planLlmInstances(null, MODEL, 0)).toEqual([{ index: null, freeMb: null, nGpuLayers: 42 }]);
-    expect(planLlmInstances([], MODEL, 0)).toEqual([{ index: null, freeMb: null, nGpuLayers: 42 }]);
+    expect(planLlmInstances(null, MODEL, 0)).toEqual([{ index: null, freeMb: null, nGpuLayers: ALL_LAYERS }]);
+    expect(planLlmInstances([], MODEL, 0)).toEqual([{ index: null, freeMb: null, nGpuLayers: ALL_LAYERS }]);
     // entries present but unparseable (no numeric VRAM) → still "unmeasured"
-    expect(planLlmInstances([{ index: 0 }, null], MODEL, 0)).toEqual([{ index: null, freeMb: null, nGpuLayers: 42 }]);
-    // a model without a layer count falls back to 0 layers (CPU) in that path
-    expect(planLlmInstances(null, {}, 0)).toEqual([{ index: null, freeMb: null, nGpuLayers: 0 }]);
+    expect(planLlmInstances([{ index: 0 }, null], MODEL, 0)).toEqual([{ index: null, freeMb: null, nGpuLayers: ALL_LAYERS }]);
+    // Unmeasurable VRAM still means full offload — llama.cpp decides placement,
+    // and we never ask for a partial one.
+    expect(planLlmInstances(null, {}, 0)).toEqual([{ index: null, freeMb: null, nGpuLayers: ALL_LAYERS }]);
   });
 
   test('ignores malformed card entries', () => {

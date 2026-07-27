@@ -1,6 +1,7 @@
 'use strict';
 
 const { LLM } = require('./config');
+const { ALL_LAYERS } = require('./vram');
 
 // Pure helpers for the local llama.cpp `llama-server` (OpenAI-compatible). The
 // process spawn/supervision lives in main/llmManager.js; this module just builds
@@ -19,10 +20,15 @@ function serverBaseUrl(opts = {}) {
 }
 
 // Build the llama-server argument vector. `modelPath` and `nGpuLayers` are the
-// per-run bits (the VRAM budgeter picks nGpuLayers); host/port/ctx default from
-// config. `--n-gpu-layers 0` runs on CPU.
+// per-run bits (the VRAM budgeter picks nGpuLayers, which is all-or-nothing —
+// see shared/vram.computeGpuLayers); host/port/ctx default from config.
+//
+// The default is ALL_LAYERS rather than a layer count of our own: llama.cpp
+// clamps an over-large value to what the model really has, whereas a hardcoded
+// guess that's too low silently leaves the remainder on the CPU, where the
+// weights sit in host RAM and OOM a small-RAM rig.
 function buildServerArgs(opts = {}) {
-  const ngl = opts.nGpuLayers != null ? opts.nGpuLayers : LLM.model.layers;
+  const ngl = opts.nGpuLayers != null ? opts.nGpuLayers : ALL_LAYERS;
   const args = [
     '--model', opts.modelPath || '',
     '--host', opts.host || LLM.host,
