@@ -211,9 +211,37 @@ describe('downloadFile', () => {
     out.emit('finish');
 
     await expect(p).resolves.toBe('/tmp/f.bin');
-    expect(fs.createWriteStream).toHaveBeenCalledWith('/tmp/f.bin.part');
-    expect(fs.renameSync).toHaveBeenCalledWith('/tmp/f.bin.part', '/tmp/f.bin');
+    // The scratch path is unique per call (see the .part race test below), so
+    // assert its shape rather than a fixed name — and that the rename lands on
+    // the same file that was written.
+    const part = fs.createWriteStream.mock.calls.pop()[0];
+    expect(part).toMatch(/^\/tmp\/f\.bin\.\d+\.\d+\.part$/);
+    expect(fs.renameSync).toHaveBeenCalledWith(part, '/tmp/f.bin');
     expect(progress[progress.length - 1]).toBe(100);
+  });
+
+  // Two downloads of the same dest used to share one `<dest>.part`: whichever
+  // finished first renamed it away and the rest died on `ENOENT … rename`. That
+  // is exactly what the Windows client hit when a user clicked START LLM through
+  // a failing setup. Concurrent calls must not collide on the scratch path.
+  it('gives every in-flight download its own .part scratch file', async () => {
+    const [r1, r2] = [fakeRes({ statusCode: 200, headers: {} }), fakeRes({ statusCode: 200, headers: {} })];
+    wire(https, [r1, r2]);
+    const [o1, o2] = [fakeWrite(), fakeWrite()];
+    fs.createWriteStream.mockReturnValueOnce(o1).mockReturnValueOnce(o2);
+    fs.renameSync.mockImplementation(() => {});
+
+    const p1 = io.downloadFile('https://host/a', '/tmp/llama-download.archive');
+    const p2 = io.downloadFile('https://host/a', '/tmp/llama-download.archive');
+    o1.emit('finish');
+    o2.emit('finish');
+    await Promise.all([p1, p2]);
+
+    const [first, second] = fs.createWriteStream.mock.calls.map((c) => c[0]);
+    expect(first).not.toBe(second);
+    // Both still land at the real destination — last writer wins, nobody errors.
+    expect(fs.renameSync).toHaveBeenCalledWith(first, '/tmp/llama-download.archive');
+    expect(fs.renameSync).toHaveBeenCalledWith(second, '/tmp/llama-download.archive');
   });
 
   it('works over http and without an onProgress callback', async () => {
@@ -270,7 +298,7 @@ describe('downloadFile', () => {
     res.emit('error', new Error('reset'));
     await expect(p).rejects.toThrow('reset');
     expect(out.destroy).toHaveBeenCalled();
-    expect(fs.unlink).toHaveBeenCalledWith('/tmp/f.part', expect.any(Function));
+    expect(fs.unlink).toHaveBeenCalledWith(fs.createWriteStream.mock.calls.pop()[0], expect.any(Function));
   });
 
   it('rejects on a write-stream error', async () => {

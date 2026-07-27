@@ -901,6 +901,43 @@ describe('mining', () => {
     expect(ctx.sent('miner:stopped').length).toBe(1);
   });
 
+  // The Windows log that motivated this: 27 `miner:start` events in 11 minutes
+  // (the Chat tab's START LLM fires one on every click while the LLM isn't
+  // ready), each launching its own download+extract, all racing on the same
+  // scratch files. Repeated identical starts must collapse into one run.
+  it('coalesces a burst of identical miner:start events into a single run', async () => {
+    const ctx = await boot();
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    ctx.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 1000 });
+
+    for (let i = 0; i < 5; i++) ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+
+    const prepping = ctx.sent('miner:log').filter((l) => l.line.startsWith('preparing local LLM'));
+    expect(prepping).toHaveLength(1);
+    expect(ctx.LlmManager.instances).toHaveLength(1);
+  });
+
+  // …but a start that actually changes the plan must not be swallowed by the
+  // one in flight. This is the START LLM button while mining-only is running.
+  it('replays a mid-run start whose settings differ, so mining → both still serves', async () => {
+    const ctx = await boot({ before: (c) => { c.EngineManager.behavior.installed = true; } });
+    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    ctx.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 1000 });
+
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'both' });
+    await flush();
+
+    // The replay ran with mode 'both': the already-running miner is kept and the
+    // LLM half now waits on proof of hashrate, which mining-only never would.
+    expect(ctx.MinerManager.instances).toHaveLength(1);
+    ctx.MinerManager.instances[0].emit('event', { type: 'status', hashrate: '2.5' });
+    await flush(30);
+    expect(ctx.LlmManager.instances).toHaveLength(1);
+  });
+
   it('miner:start with no payload defaults to auto → no address so no miner, but the LLM serves', async () => {
     const ctx = await boot();
     ctx.emit('miner:start');
@@ -959,6 +996,26 @@ describe('zip extraction helpers', () => {
       .rejects.toThrow('llama-server was not found in the downloaded archive');
     ctx.cp.execFile.mockImplementation((...args) => args[args.length - 1](new Error('ps broke')));
     await expect(extract('/tmp/llm/l.zip', '/tmp/llm/llama-server.exe')).rejects.toThrow('ps broke');
+  });
+
+  // Regression: the download lands at llmEngineManager's format-neutral
+  // ARCHIVE_TMP ('llama-download.archive'). Expand-Archive validates by
+  // extension and takes only '.zip', so it refused every Windows install with
+  // "'.archive' is not a supported archive file format" and the local LLM could
+  // never start. Unzip by content, not by name.
+  it('extractLlamaZipWin unzips a file whose name is not .zip', async () => {
+    const { ctx, extract } = await llamaWinExtract();
+    ctx.cp.execFile.mockImplementation((...args) => args[args.length - 1](null));
+    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/llm/llama-server.exe');
+    const archive = '/tmp/llm/llama-download.archive';
+    await expect(extract(archive, '/tmp/llm/llama-server.exe')).resolves.toBe('/tmp/llm/llama-server.exe');
+
+    const ps = ctx.cp.execFile.mock.calls.pop()[1].pop();
+    expect(ps).not.toContain('Expand-Archive');
+    expect(ps).toContain("[System.IO.Compression.ZipFile]::ExtractToDirectory('" + archive + "',");
+    // Add-Type is required on Windows PowerShell 5.1 and throws on 7, where the
+    // type is already loaded — so it must be swallowed, not fatal.
+    expect(ps).toContain('try{Add-Type -AssemblyName System.IO.Compression.FileSystem}catch{}');
   });
 
   it('the non-Windows llama extractor delegates to io.extractLlamaZip', async () => {
