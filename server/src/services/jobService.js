@@ -399,3 +399,4 @@ class JobService {
 }
 
 module.exports = JobService;
+module.exports.DEFAULT_MODEL = DEFAULT_MODEL;

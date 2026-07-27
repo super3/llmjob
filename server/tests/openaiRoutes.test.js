@@ -13,6 +13,7 @@ const JobService = require('../src/services/jobService');
 const ApiKeyService = require('../src/services/apiKeyService');
 const OpenAiController = require('../src/controllers/openaiController');
 const { lastUserText, estimateTokens, modelName, completionTokens } = OpenAiController;
+const { DEFAULT_MODEL } = JobService;
 
 const NODE_ID = 'node-openai-test';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -155,6 +156,29 @@ describe('OpenAI gateway — integration', () => {
     ]);
     expect(job.messages).toEqual(messages); // whole conversation reached the node
     expect(job.prompt).toBe('Bye?');        // last user turn kept as the display prompt
+  });
+
+  it('never echoes the caller-requested model; reports what the fleet ran', async () => {
+    // A caller can send any `model` string, but the node serves its own local
+    // model regardless — so the response must report the real one, not "llmjob".
+    const [res] = await Promise.all([
+      request(app).post('/v1/chat/completions').set(...auth())
+        .send({ model: 'llmjob', messages: [{ role: 'user', content: 'Hi' }] }),
+      nodeServe(jobService, ['hi'], { totalTokens: 1, model: 'Gemma-4-E4B-it-Q4_K_M' }),
+    ]);
+    expect(res.body.model).toBe('Gemma-4-E4B-it-Q4_K_M');
+    expect(res.body.model).not.toBe('llmjob');
+  });
+
+  it('reports the fleet default when the node tags no model in its metrics', async () => {
+    // Older nodes omit metrics.model; the fallback is the fleet default, still
+    // not the caller's requested string.
+    const [res] = await Promise.all([
+      request(app).post('/v1/chat/completions').set(...auth())
+        .send({ model: 'llmjob', messages: [{ role: 'user', content: 'Hi' }] }),
+      nodeServe(jobService, ['hi'], { totalTokens: 1 }), // no model in metrics
+    ]);
+    expect(res.body.model).toBe(DEFAULT_MODEL);
   });
 
   it('streams chat.completion.chunk SSE events ending with [DONE]', async () => {
@@ -353,8 +377,8 @@ describe('OpenAI gateway — controller branches', () => {
     const res = fakeRes(false); // no flushHeaders
     await ctrl.chatCompletions(fakeReq({ messages: [{ role: 'user', content: 'x' }], stream: true }), res);
     expect(res.ended).toBe(true);
-    // model falls back to the job's model; usage falls back to an estimate; node 'unknown'
-    expect(recorded[0]).toMatchObject({ model: 'default', node: 'unknown', speed: 0 });
+    // model falls back to the fleet default (not the request); usage estimated; node 'unknown'
+    expect(recorded[0]).toMatchObject({ model: DEFAULT_MODEL, node: 'unknown', speed: 0 });
     expect(recorded[0].out).toBe(Math.ceil('hello world'.length / 4));
   });
 
@@ -405,10 +429,12 @@ describe('OpenAI gateway — pure helpers', () => {
     expect(lastUserText([{ role: 'system' }])).toBe('');                    // no content anywhere
   });
 
-  it('modelName prefers the node-reported model, else the job model', () => {
-    expect(modelName({ metrics: { model: 'X' } }, { model: 'Y' })).toBe('X');
-    expect(modelName({ metrics: {} }, { model: 'Y' })).toBe('Y');
-    expect(modelName(null, { model: 'Y' })).toBe('Y');
+  it('modelName reports the node-run model, else the fleet default — never the request', () => {
+    // The caller's requested model never picks what runs, so it must never be
+    // echoed: a node that tagged its metrics wins, otherwise the fleet default.
+    expect(modelName({ metrics: { model: 'X' } })).toBe('X');
+    expect(modelName({ metrics: {} })).toBe(DEFAULT_MODEL);
+    expect(modelName(null)).toBe(DEFAULT_MODEL);
   });
 
   it('completionTokens uses reported tokens, else estimates the result', () => {
