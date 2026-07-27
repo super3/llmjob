@@ -54,7 +54,13 @@ let reporter = null;
 let fleet = null;               // LlmFleet (one llama-server per eligible GPU) while up
 let llmEverReady = false;       // did any instance reach "ready" this run (vs. dying first)
 let serveLogged = false;        // "serving cluster jobs" logged once per serving run
-let llmStatus = { ready: false, endpoint: null, webUrl: null, tokensPerSec: 0, model: LLM.model.name, error: null };
+// `note` is a transient "what is it doing right now" line — "Downloading model…
+// 42%", "Starting…" — shown in place of the model name until the LLM is ready.
+// Without it a first run logs "preparing local LLM…" and then goes silent for
+// however long a ~5 GB model takes, which reads as a hang: a user on a 2-GPU rig
+// hit START seventeen times over ninety seconds while the download was in fact
+// progressing normally.
+let llmStatus = { ready: false, endpoint: null, webUrl: null, tokensPerSec: 0, model: LLM.model.name, error: null, note: null };
 
 function settingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -475,7 +481,7 @@ function sendLlmStatus() { send('llm:status', llmStatus); }
 // otherwise download it on demand. NOTE: the llama.cpp release is a folder of
 // exe + shared libs — bundling the whole folder is the reliable path; the
 // download fallback needs full-folder extraction to be production-ready.
-async function resolveLlmBinary(dir) {
+async function resolveLlmBinary(dir, onProgress) {
   const name = LLM.serverBin[process.platform] || LLM.serverBin.linux;
   const bundled = process.resourcesPath && path.join(process.resourcesPath, 'llm', name);
   if (bundled && fs.existsSync(bundled)) return bundled;
@@ -486,7 +492,7 @@ async function resolveLlmBinary(dir) {
     dir, platform: process.platform, serverUrl: LLM.serverUrl[process.platform],
     fs, download: downloadFile, extract, chmod: fs.chmodSync,
   });
-  return engine.ensureServer();
+  return engine.ensureServer(onProgress);
 }
 
 // GET <baseUrl>/health — resolves true when a llama-server is already listening
@@ -521,8 +527,38 @@ function probeLlmHealth(baseUrl, timeoutMs) {
 // Reset the live-status side of llmStatus and broadcast — the single cleanup
 // used by both user-initiated stops and the process's own exit.
 function resetLlmStatus() {
-  llmStatus = Object.assign({}, llmStatus, { ready: false, tokensPerSec: 0 });
+  llmStatus = Object.assign({}, llmStatus, { ready: false, tokensPerSec: 0, note: null });
   sendLlmStatus();
+}
+
+// Set (or clear) the transient stage line and push it to the renderer.
+function setLlmNote(note) {
+  llmStatus = Object.assign({}, llmStatus, { note: note || null });
+  sendLlmStatus();
+}
+
+// A download-progress callback that reports to both the hero line and the log.
+// downloadFile fires onProgress for every chunk, which at a few hundred chunks a
+// second would flood the IPC and bury the log — so emit only on a 5-point move,
+// or every 2s for a slow link, plus the final 100%.
+function progressReporter(label, now) {
+  const clock = now || Date.now;
+  let lastPct = -1;
+  let lastAt = 0;
+  return (pct) => {
+    // progressPercent returns null when the server sends no content-length, and
+    // Number(null) is 0 — so null must be rejected explicitly or a sizeless
+    // download would sit at a permanent, wrong "0%".
+    const p = Math.floor(Number(pct));
+    if (pct == null || !Number.isFinite(p) || p < 0) return;
+    const at = clock();
+    if (p !== 100 && p - lastPct < 5 && at - lastAt < 2000) return;
+    if (p === lastPct) return;
+    lastPct = p;
+    lastAt = at;
+    setLlmNote(label + ' ' + p + '%');
+    send('miner:log', { level: 'info', line: label + ' ' + p + '%' });
+  };
 }
 
 // Start the local LLM: ensure binary + model, size the GPU offload to leave
@@ -545,7 +581,7 @@ async function startLlm(reserveMb) {
   if (await probeLlmHealth(targetBase)) {
     fleet.adopt(targetBase);
     llmEverReady = true;
-    llmStatus = Object.assign({}, llmStatus, { ready: true, error: null, endpoint: targetBase + '/v1', webUrl: targetBase });
+    llmStatus = Object.assign({}, llmStatus, { ready: true, error: null, note: null, endpoint: targetBase + '/v1', webUrl: targetBase });
     send('miner:log', { level: 'info', line: 'local LLM already running on ' + targetBase + ' — reusing it' });
     sendLlmStatus();
     syncWorker();
@@ -569,7 +605,7 @@ async function startLlm(reserveMb) {
     const needGb = Math.round(requiredVramMb(LLM.model) / 1024);
     send('miner:log', { level: 'error', line: 'not enough free VRAM for the local LLM: ' + freeMb
       + ' MB free, need ~' + requiredVramMb(LLM.model) + ' MB for ' + LLM.model.name + ' — skipping the LLM.' });
-    llmStatus = Object.assign({}, llmStatus, { ready: false, error: 'Needs ~' + needGb + ' GB free VRAM' });
+    llmStatus = Object.assign({}, llmStatus, { ready: false, note: null, error: 'Needs ~' + needGb + ' GB free VRAM' });
     sendLlmStatus();
     return false;
   }
@@ -577,12 +613,17 @@ async function startLlm(reserveMb) {
   const dir = path.join(app.getPath('userData'), 'llm');
   send('miner:log', { level: 'info', line: 'preparing local LLM (' + LLM.model.name + ')…' });
 
+  // Both of these are no-ops once cached, but on a first run they fetch ~100 MB
+  // of llama-server and a ~5 GB model. Report progress so the wait is legible
+  // instead of looking like a stall.
   let binaryPath, modelPath;
   try {
-    binaryPath = await resolveLlmBinary(dir);
+    setLlmNote('Preparing…');
+    binaryPath = await resolveLlmBinary(dir, progressReporter('downloading llama-server…'));
     const modelEngine = new LlmEngineManager({ dir, platform: process.platform, fs, download: downloadFile });
-    modelPath = await modelEngine.ensureModel();
+    modelPath = await modelEngine.ensureModel(progressReporter('downloading model ' + LLM.model.name + '…'));
   } catch (e) {
+    setLlmNote(null);
     send('miner:log', { level: 'error', line: 'LLM setup failed: ' + e.message });
     return false;
   }
@@ -610,9 +651,11 @@ async function startLlm(reserveMb) {
   const gpus = plan.map((p) => (p.index == null ? 'auto' : p.index)).join(', ');
   send('miner:log', { level: 'info', line: 'local LLM starting on ' + plan.length + ' GPU'
     + (plan.length === 1 ? '' : 's') + ' [' + gpus + ']' });
-  await fleet.start(plan, { platform: process.platform, binaryPath, modelPath });
-  llmStatus = Object.assign({}, llmStatus, { ready: false, error: null });
+  // Loading a multi-GB model off disk takes seconds even when nothing downloads,
+  // and until 'ready' fires the hero is otherwise indistinguishable from idle.
+  llmStatus = Object.assign({}, llmStatus, { ready: false, error: null, note: 'Starting…' });
   sendLlmStatus();
+  await fleet.start(plan, { platform: process.platform, binaryPath, modelPath });
   return true;
 }
 
@@ -636,7 +679,7 @@ function buildFleet() {
     // webUrl() is the first ready instance's base URL — non-null here, since this
     // instance was just marked ready before the event fired.
     const web = f.webUrl();
-    llmStatus = Object.assign({}, llmStatus, { ready: true, endpoint: web + '/v1', webUrl: web });
+    llmStatus = Object.assign({}, llmStatus, { ready: true, endpoint: web + '/v1', webUrl: web, note: null });
     send('miner:log', { level: 'info', line: 'local LLM ready — OpenAI endpoint ' + baseUrl + '/v1' });
     sendLlmStatus();
     syncWorker(); // serve cluster jobs once a model is up, if we're linked

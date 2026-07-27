@@ -471,6 +471,31 @@ describe('boot with the full bridge', () => {
     expect(api.getMdlBalance).not.toHaveBeenCalled();
   });
 
+  // A first run downloads a ~5 GB model; the hero has to say so. Otherwise it
+  // shows the model name and a grey dot the whole time, which looks identical to
+  // "nothing is happening" and gets users clicking START over and over.
+  it('shows the download/startup note on the hero until the LLM is ready', async () => {
+    const { api, cbs } = makeFullApi();
+    await boot({ api });
+
+    cbs.llm({ note: 'downloading model gemma… 42%' });
+    expect($('llm-hero-detail').textContent).toBe('downloading model gemma… 42%');
+    expect($('llm-hero-dot').className).toBe('dot2 busy');
+
+    cbs.llm({ note: 'Starting…' });
+    expect($('llm-hero-detail').textContent).toBe('Starting…');
+
+    // A real error outranks the note — the note is only ever "still working".
+    cbs.llm({ note: 'Starting…', error: 'Needs ~7 GB free VRAM' });
+    expect($('llm-hero-detail').textContent).toBe('Needs ~7 GB free VRAM');
+    expect($('llm-hero-dot').className).toBe('dot2 err');
+
+    // …and so does being ready, so a stale note can't linger over a live model.
+    makeReady(cbs, { note: 'Starting…' });
+    expect($('llm-hero-detail').textContent).toBe('gemma');
+    expect($('llm-hero-dot').className).toBe('dot2 on');
+  });
+
   it('renders llm status transitions on the hero and gates', async () => {
     const { api, cbs } = makeFullApi();
     await boot({ api });

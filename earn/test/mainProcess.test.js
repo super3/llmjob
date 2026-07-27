@@ -190,8 +190,8 @@ jest.mock('../src/main/llmEngineManager', () => {
       this.opts = opts;
       LlmEngineManager.instances.push(this);
     }
-    ensureServer() { return LlmEngineManager.behavior.ensureServer(); }
-    ensureModel() { return LlmEngineManager.behavior.ensureModel(); }
+    ensureServer(onProgress) { return LlmEngineManager.behavior.ensureServer(onProgress); }
+    ensureModel(onProgress) { return LlmEngineManager.behavior.ensureModel(onProgress); }
   }
   LlmEngineManager.instances = [];
   LlmEngineManager.behavior = {
@@ -918,6 +918,86 @@ describe('mining', () => {
     const prepping = ctx.sent('miner:log').filter((l) => l.line.startsWith('preparing local LLM'));
     expect(prepping).toHaveLength(1);
     expect(ctx.LlmManager.instances).toHaveLength(1);
+  });
+
+  // A first run downloads ~100 MB of llama-server and a ~5 GB model. Before this,
+  // the GUI logged "preparing local LLM…" and then said nothing for however long
+  // that took, which reads as a hang — a user on a 2-GPU rig hit START seventeen
+  // times in ninety seconds while the download was progressing fine. Progress has
+  // to reach both the log and the hero line.
+  it('reports model download progress to the log and the LLM hero', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        c.LlmEngineManager.behavior.ensureModel = (onProgress) => {
+          onProgress(0);
+          onProgress(42);
+          return Promise.resolve('/tmp/llm/model.gguf');
+        };
+      },
+    });
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    ctx.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 1000 });
+
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+
+    const lines = ctx.sent('miner:log').map((l) => l.line);
+    expect(lines).toContain('downloading model ' + ctx.config.LLM.model.name + '… 0%');
+    expect(lines).toContain('downloading model ' + ctx.config.LLM.model.name + '… 42%');
+    const notes = ctx.sent('llm:status').map((s) => s.note).filter(Boolean);
+    expect(notes).toContain('downloading model ' + ctx.config.LLM.model.name + '… 42%');
+    // The model is loading off disk by now — the hero must not fall back to
+    // looking idle between the download finishing and 'ready' firing.
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false, note: 'Starting…' });
+  });
+
+  // downloadFile fires onProgress per chunk. Emitting every one would flood the
+  // IPC and bury the log, so sub-5% moves inside 2s are dropped — but 100% is
+  // never dropped, or the last thing shown is a stale "…95%". A repeated 100 is
+  // still only reported once: on a slow link the 2s timer expires while the
+  // percent hasn't moved, and re-logging the same number looks like a stutter.
+  it('throttles progress chatter but always emits 100% exactly once', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        c.LlmEngineManager.behavior.ensureServer = (onProgress) => {
+          [0, 1, 2, 3, 4, 99, 100, 100].forEach(onProgress);
+          return Promise.resolve('/tmp/llm/llama-server');
+        };
+      },
+    });
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    ctx.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 1000 });
+
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+
+    const pcts = ctx.sent('miner:log')
+      .map((l) => l.line)
+      .filter((l) => l.startsWith('downloading llama-server…'))
+      .map((l) => l.replace(/\D+/g, ''));
+    expect(pcts).toEqual(['0', '99', '100']); // 1–4 collapsed into the 0% report
+  });
+
+  // A garbage percent (a server with no content-length makes progressPercent
+  // return null) must not paint "null%" over the hero.
+  it('ignores a non-numeric progress value', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        c.LlmEngineManager.behavior.ensureModel = (onProgress) => {
+          onProgress(null);
+          onProgress(undefined);
+          onProgress(-1);
+          return Promise.resolve('/tmp/llm/model.gguf');
+        };
+      },
+    });
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    ctx.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 1000 });
+
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+
+    expect(ctx.sent('miner:log').filter((l) => l.line.startsWith('downloading model'))).toHaveLength(0);
   });
 
   // …but a start that actually changes the plan must not be swallowed by the

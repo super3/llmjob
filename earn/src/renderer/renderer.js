@@ -51,7 +51,7 @@
     view: 'mine',        // mine | chat | api | settings | logs
     returnTab: 'mine',   // where settings/logs return to
     address: '', gpu: '', mode: 'auto',
-    llm: { ready: false, endpoint: null, webUrl: null, tps: 0, model: null, error: null },
+    llm: { ready: false, endpoint: null, webUrl: null, tps: 0, model: null, error: null, note: null },
     chat: { messages: [], streaming: false, streamText: '', bubble: null },
     node: { connected: false, nodeId: null, name: null },
   };
@@ -129,12 +129,18 @@
   }
 
   // ── Local LLM (GPU Activity hero + chat/api gating) ────────────────────────
+  // Detail line priority: a real error, then the transient stage note
+  // ("downloading model … 42%", "Starting…"), then the model name. The note is
+  // what tells a first-run user that a multi-GB download is moving rather than
+  // stuck — without it the hero shows the model name and a grey dot the whole
+  // time, which is indistinguishable from nothing happening.
   function renderLlmHero() {
     const err = state.llm.error;
     const ready = state.llm.ready;
+    const note = !ready && !err ? state.llm.note : null;
     el.llmHeroTps.textContent = ready ? Number(state.llm.tps || 0).toFixed(1) : '0.0';
-    el.llmHeroDot.className = 'dot2' + (err ? ' err' : ready ? ' on' : '');
-    el.llmHeroDetail.textContent = err || state.llm.model || 'gemma-4-E4B-it';
+    el.llmHeroDot.className = 'dot2' + (err ? ' err' : ready ? ' on' : note ? ' busy' : '');
+    el.llmHeroDetail.textContent = err || note || state.llm.model || 'gemma-4-E4B-it';
     el.llmHeroDetail.classList.toggle('err', !!err);
     el.chatStoppedModel.textContent = state.llm.model || 'the local model';
     el.apiModel.textContent = state.llm.model || '—';
@@ -162,6 +168,7 @@
       tps: (s && s.tokensPerSec) || 0,
       model: (s && s.model) || state.llm.model,
       error: (s && s.error) || null,
+      note: (s && s.note) || null,
     };
     renderLlmHero();
     renderChatGate();

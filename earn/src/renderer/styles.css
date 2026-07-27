@@ -105,6 +105,9 @@ input.field-box { user-select: text; }
 .hero-detail.err { color: #dc2626; }
 .dot2 { width: 7px; height: 7px; flex: none; border-radius: 50%; background: #c2bfb4; }
 .dot2.on { background: var(--green); animation: mkPulse 1.6s ease-in-out infinite; }
+/* Working on it — downloading or loading the model. Pulses like .on so the row
+   reads as "busy", but amber rather than green: not ready yet, not an error. */
+.dot2.busy { background: #d97706; animation: mkPulse 1.6s ease-in-out infinite; }
 .dot2.err { background: #dc2626; }
 
 /* status dot (api endpoint) + shared chip button */
