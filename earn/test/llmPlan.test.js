@@ -115,7 +115,7 @@ describe('planLlmServing', () => {
     expect(r.model).toBe(BIG);
     expect(r.sharded).toBe(true);
     expect(r.instances).toEqual([{
-      index: 0, freeMb: 28000, nGpuLayers: BIG.layers,
+      index: 0, freeMb: 28000, nGpuLayers: ALL_LAYERS,
       splitMode: 'layer', tensorSplit: [14000, 14000], devices: [0, 1],
     }]);
   });
@@ -143,7 +143,7 @@ describe('planLlmServing', () => {
     const r = planLlmServing(null, CAT, 0);
     expect(r.model).toBe(SMALL);
     expect(r.sharded).toBe(false);
-    expect(r.instances).toEqual([{ index: null, freeMb: null, nGpuLayers: SMALL.layers }]);
+    expect(r.instances).toEqual([{ index: null, freeMb: null, nGpuLayers: ALL_LAYERS }]);
   });
 
   test('prefers per-card over an equal-size shard (the mining reserve tips it)', () => {

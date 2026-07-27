@@ -1611,7 +1611,7 @@ describe('local LLM', () => {
     expect(ctx.LlmManager.instances).toHaveLength(1); // one sharded instance, not one per card
     expect(ctx.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
       splitMode: 'layer', tensorSplit: [14376, 14376], mainGpu: 0,
-      nGpuLayers: qwen.layers, ctxSize: qwen.ctxSize, parallel: qwen.parallel,
+      nGpuLayers: ALL_LAYERS, ctxSize: qwen.ctxSize, parallel: qwen.parallel,
     }));
     expect(ctx.sent('miner:log').map((l) => l.line))
       .toContain('local LLM (' + qwen.name + ') starting on sharded across GPUs 0,1');
