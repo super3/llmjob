@@ -73,6 +73,71 @@ describe('MinerManager', () => {
     ]);
   });
 
+  // A 'data' chunk is a slice of the pipe, not a line. Splitting each chunk on
+  // its own turned every straddling status line into two fragments in the log
+  // (`…power=44` then `9W`) and parseLine saw neither as an event.
+  test('a status line split across two chunks is emitted once, whole', () => {
+    const child = makeChild();
+    const mgr = new MinerManager({ spawn: () => child });
+    const logs = [];
+    const events = [];
+    mgr.on('log', (l) => logs.push(l));
+    mgr.on('event', (e) => events.push(e));
+    mgr.start({ address: 'prl1pabc' });
+
+    const status = 'ts level=INFO gpu=0:NVIDIA GeForce RTX 4090 component=miner status attempts=100 accepted=5 rejected=0 hashrate_th_s=286.86 power=449W';
+    const cut = status.length - 2; // splits mid-"449W", as the real log did
+    child.stdout.emit('data', status.slice(0, cut));
+    expect(logs).toEqual([]); // nothing emitted until the line is complete
+    child.stdout.emit('data', status.slice(cut) + '\n');
+
+    expect(logs.map((l) => l.line)).toEqual([status]);
+    expect(events).toEqual([
+      { type: 'status', gpuIndex: 0, hashrate: 286.86, accepted: 5, rejected: 0, power: 449, gpu: 'NVIDIA GeForce RTX 4090' },
+    ]);
+  });
+
+  test('a trailing partial line is flushed when the child exits', () => {
+    const child = makeChild();
+    const mgr = new MinerManager({ spawn: () => child });
+    const logs = [];
+    mgr.on('log', (l) => logs.push(l));
+    mgr.start({ address: 'prl1pabc' });
+
+    child.stdout.emit('data', 'died mid-sentence');
+    child.emit('exit', 1);
+    expect(logs.map((l) => l.line)).toEqual(['died mid-sentence']);
+
+    // A restart must not inherit the previous run's leftovers.
+    mgr.start({ address: 'prl1pabc' });
+    expect(mgr.stdoutBuf).toBe('');
+  });
+
+  test('a runaway line with no newline is flushed at the cap', () => {
+    const child = makeChild();
+    const mgr = new MinerManager({ spawn: () => child });
+    const logs = [];
+    mgr.on('log', (l) => logs.push(l));
+    mgr.start({ address: 'prl1pabc' });
+
+    child.stdout.emit('data', 'x'.repeat(64 * 1024 + 1));
+    expect(logs).toHaveLength(1);
+    expect(logs[0].line).toHaveLength(64 * 1024 + 1);
+    expect(mgr.stdoutBuf).toBe(''); // buffer released, next chunk starts fresh
+  });
+
+  test('an exit with nothing buffered emits no stray log line', () => {
+    const child = makeChild();
+    const mgr = new MinerManager({ spawn: () => child });
+    const logs = [];
+    mgr.on('log', (l) => logs.push(l));
+    mgr.start({ address: 'prl1pabc' });
+
+    child.stdout.emit('data', 'complete\n');
+    child.emit('exit', 0);
+    expect(logs.map((l) => l.line)).toEqual(['complete']);
+  });
+
   test('stderr is emitted as error-level log', () => {
     const child = makeChild();
     const mgr = new MinerManager({ spawn: () => child });

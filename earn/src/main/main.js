@@ -184,13 +184,23 @@ function extractZip(zipPath, dest) {
 // .exe can't launch — Windows resolves sibling DLLs from the exe's folder). This
 // mirrors what `unzip -j` does for the Linux/macOS archives. llama.cpp's zip is
 // already flat; the recursive copy also handles a build that nests the binaries.
+//
+// Unzips via .NET's ZipFile rather than PowerShell's Expand-Archive, which
+// validates by FILE EXTENSION and accepts only `.zip`. The download lands at a
+// deliberately format-neutral name (llmEngineManager's ARCHIVE_TMP,
+// `llama-download.archive`, sniffed by magic bytes on POSIX), so Expand-Archive
+// refused every Windows install with "'.archive' is not a supported archive file
+// format" and the local LLM could never start. ZipFile reads the file, not its
+// name. Add-Type is needed on Windows PowerShell 5.1 and absent-but-harmless on
+// 7, hence the swallow.
 function extractLlamaZipWin(zipPath, dest) {
   return new Promise((resolve, reject) => {
     const dir = path.dirname(dest);
     const tmp = path.join(dir, '_llama_unzip');
     const ps = "$ErrorActionPreference='Stop';"
+      + 'try{Add-Type -AssemblyName System.IO.Compression.FileSystem}catch{};'
       + 'if(Test-Path -LiteralPath ' + psQuote(tmp) + '){Remove-Item -LiteralPath ' + psQuote(tmp) + ' -Recurse -Force};'
-      + 'Expand-Archive -LiteralPath ' + psQuote(zipPath) + ' -DestinationPath ' + psQuote(tmp) + ' -Force;'
+      + '[System.IO.Compression.ZipFile]::ExtractToDirectory(' + psQuote(zipPath) + ',' + psQuote(tmp) + ');'
       + 'Get-ChildItem -Path ' + psQuote(tmp) + ' -Recurse -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination ' + psQuote(dir) + ' -Force };'
       + 'Remove-Item -LiteralPath ' + psQuote(tmp) + ' -Recurse -Force';
     execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { maxBuffer: 8 * 1024 * 1024 }, (err) => {
@@ -905,7 +915,7 @@ function waitForMinerUp(capMs) {
 // plan ends up running nothing (LLM-only mode with the VRAM gate refusing, or
 // no engine at all), tell the renderer — otherwise its optimistic "running"
 // state shows STOP for a session in which nothing runs.
-async function applyPlan(settings) {
+async function runPlan(settings) {
   const plan = resolvePlan(settings.mode || DEFAULT_MODE, { canMine: isValidAddress(settings.address), canLlm: true });
   if (plan.miner) {
     // Start mining FIRST, then — when co-running — wait until the miner reports a
@@ -932,6 +942,36 @@ async function applyPlan(settings) {
     stopLlm();
     if (!plan.miner) send('miner:stopped');
   }
+}
+
+// Single-flight wrapper around runPlan. `miner:start` is a plain IPC event with
+// no re-entry guard, and the Chat tab's START LLM button fires it on every click
+// while the LLM isn't ready — so a user clicking through a failing LLM setup
+// launched a fresh download+extract each time, all racing on the same scratch
+// files. Concurrent calls now collapse into the run already in flight.
+//
+// Settings that arrived mid-run are replayed once afterwards ONLY if they differ
+// from the run in flight: a click that flips mining → both (START LLM while the
+// miner runs) genuinely changes the plan and swallowing it would leave the LLM
+// off, while a repeated click with the same settings has nothing left to do.
+let planRun = null;
+let planActive = null;
+let planQueued = null;
+
+function applyPlan(settings) {
+  if (planRun) {
+    if (JSON.stringify(settings) !== planActive) planQueued = settings;
+    return planRun;
+  }
+  planActive = JSON.stringify(settings);
+  planRun = runPlan(settings).finally(() => {
+    planRun = null;
+    planActive = null;
+    const next = planQueued;
+    planQueued = null;
+    if (next) applyPlan(next);
+  });
+  return planRun;
 }
 
 ipcMain.handle('settings:get', () => Object.assign(
