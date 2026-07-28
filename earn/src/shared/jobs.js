@@ -14,7 +14,7 @@ const { LLM } = require('./config');
 // `messages` array (multi-turn, system prompts preserved); older/simple jobs
 // carry a single `prompt` that becomes one user message. Only set fields are
 // included so the server's own defaults apply otherwise.
-function jobToChatBody(job) {
+function jobToChatBody(job, servedModel) {
   const j = job || {};
   const messages = Array.isArray(j.messages) && j.messages.length
     ? j.messages.map((m) => {
@@ -28,7 +28,13 @@ function jobToChatBody(job) {
     // string would otherwise reach the final metrics (metrics.model = chatBody.model)
     // and be reported back as the model that ran. A mismatched name can also make a
     // stricter llama-server reject the request outright.
-    model: LLM.model.name,
+    //
+    // `servedModel` is what this node actually loaded, which is NOT always the
+    // catalog default: VRAM tiering means a 24 GB card serves the big model while a
+    // small card serves the default (shared/vram.js#pickServableModel). Falling back
+    // to LLM.model.name keeps single-model callers working, but a tiered node must
+    // pass its own name or it would misreport the very thing this line protects.
+    model: servedModel || LLM.model.name,
     messages,
     stream: true,
   };

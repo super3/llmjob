@@ -980,6 +980,7 @@ function makeJobWorker(baseUrl) {
     serverUrl: node.serverUrl || NODE.serverUrl,
     post: (url, body) => postJson(url, body, 30000),
     runJob: (chatBody, { onDelta, onReasoning }) => streamChatCompletion(baseUrl, chatBody, onDelta, onReasoning).done,
+    servedModel: servingModel.name, // the tier this rig actually loaded, not the catalog default
   });
   w.on('error', () => { /* transient poll failure — keep looping */ });
   w.on('job', ({ id }) => send('miner:log', { level: 'info', line: 'cluster job ' + id + ' — running locally' }));

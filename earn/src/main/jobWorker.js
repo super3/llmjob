@@ -26,6 +26,10 @@ class JobWorker extends EventEmitter {
     this.serverUrl = opts.serverUrl;
     this.post = opts.post;                 // (url, body) -> Promise<{ status, data }>
     this.runJob = opts.runJob;             // (chatBody, { onDelta }) -> Promise (rejects on error)
+    // The model this worker's llama-server actually loaded. VRAM tiering means it
+    // isn't always the catalog default, and it's what gets reported as the model
+    // that ran; unset falls back to the default (see shared/jobs.js#jobToChatBody).
+    this.servedModel = opts.servedModel || null;
     this.now = opts.now || Date.now;
     this.schedule = opts.schedule || ((fn, ms) => { const t = setTimeout(fn, ms); t.unref(); return t; });
     this.cancel = opts.cancel || clearTimeout;
@@ -92,7 +96,7 @@ class JobWorker extends EventEmitter {
     this.active++;
     this.emit('job', { id: job.id, active: this.active });
     const base = this.serverUrl + '/api/jobs/' + job.id;
-    const chatBody = jobToChatBody(job);
+    const chatBody = jobToChatBody(job, this.servedModel);
 
     // Keep the server's job lock alive for the whole run: immediately (which
     // also flips the job to 'running' so callers see streamed partials), then

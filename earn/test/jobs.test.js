@@ -24,6 +24,16 @@ describe('jobToChatBody', () => {
     });
   });
 
+  test('reports the tier this node loaded, overriding both the job and the default', () => {
+    // VRAM tiering: a 24 GB card serves the big model while the catalog default is
+    // the small one. The node must name what it actually loaded — llama-server can
+    // reject a mismatched name, and it comes back as metrics.model, the "model that
+    // ran". The job's own 'gpt-4' still loses.
+    const b = jobToChatBody({ prompt: 'hi', model: 'gpt-4' }, 'Qwen3.6-27B-Q4_K_M');
+    expect(b.model).toBe('Qwen3.6-27B-Q4_K_M');
+    expect(b.model).not.toBe(LLM.model.name);
+  });
+
   test('drops non-finite temperature/maxTokens and coerces a missing prompt', () => {
     const b = jobToChatBody({ temperature: 'x', maxTokens: null });
     expect(b.messages[0].content).toBe('');

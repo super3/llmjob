@@ -357,6 +357,7 @@ function makeCliJobWorker(nodeCfg, base, baseUrl) {
     serverUrl: base,
     post: (url, body) => postJson(url, body, 30000),
     runJob: (chatBody, { onDelta, onReasoning }) => streamChatCompletion(baseUrl, chatBody, onDelta, onReasoning).done,
+    servedModel: serveLlmState.model.name, // the tier this rig actually loaded, not the catalog default
   });
   // The 'error' listener is mandatory: a listener-less EventEmitter 'error'
   // throws, and one transient poll failure would crash the whole CLI.
