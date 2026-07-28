@@ -12,9 +12,11 @@ describe('jobToChatBody', () => {
     });
   });
 
-  test('honors model + temperature + maxTokens when set', () => {
-    expect(jobToChatBody({ prompt: 'hi', model: 'm', temperature: 0.2, maxTokens: 128 })).toEqual({
-      model: 'm',
+  test('honors temperature + maxTokens, but ignores the job model for the node default', () => {
+    // The node always serves its own loaded model; a job's requested model must not
+    // reach llama-server (it would come back as metrics.model — the model that "ran").
+    expect(jobToChatBody({ prompt: 'hi', model: 'gpt-4', temperature: 0.2, maxTokens: 128 })).toEqual({
+      model: LLM.model.name,
       messages: [{ role: 'user', content: 'hi' }],
       stream: true,
       temperature: 0.2,
