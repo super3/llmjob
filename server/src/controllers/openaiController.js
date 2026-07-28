@@ -59,15 +59,15 @@ class OpenAiController {
     return h ? h[TARGET_NODE_HEADER] : undefined;
   }
 
-  // Report which node served the request and how fast, as response headers — so a
-  // caller testing a node sees the verdict without a second job-status lookup.
-  // Non-streaming only: a stream flushes headers before any node has the job.
-  _setServedHeaders(res, result) {
+  // Report which node served the request as a response header — so a caller
+  // testing a node confirms it actually served, without a second job-status
+  // lookup. Non-streaming only: a stream flushes headers before any node has the
+  // job. (Throughput is deliberately not reported: the node-side tok/s is measured
+  // over the whole job including model load, so it isn't a consistent metric yet.)
+  _setServedByHeader(res, result) {
     if (!res.setHeader) return;
     const node = result && result.assignedTo;
-    const tps = result && result.metrics && result.metrics.tokensPerSecond;
     if (node) res.setHeader('X-LLMJob-Served-By', String(node));
-    if (Number.isFinite(tps)) res.setHeader('X-LLMJob-Tokens-Per-Second', String(tps));
   }
 
   // POST /v1/chat/completions
@@ -141,7 +141,7 @@ class OpenAiController {
         // short (or empty) when max_tokens ran out mid-thought.
         const thoughts = reasoningText(r);
         if (thoughts) message.reasoning_content = thoughts;
-        this._setServedHeaders(res, r);
+        this._setServedByHeader(res, r);
         return res.status(200).json({
           id: 'chatcmpl-' + job.id,
           object: 'chat.completion',

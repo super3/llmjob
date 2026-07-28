@@ -194,14 +194,14 @@ describe('OpenAI gateway — integration', () => {
     expect(res.body.model).toBe(DEFAULT_MODEL);
   });
 
-  it('reports the serving node and throughput as response headers', async () => {
+  it('reports the serving node as a response header', async () => {
     const [res] = await Promise.all([
       request(app).post('/v1/chat/completions').set(...auth())
         .send({ messages: [{ role: 'user', content: 'Hi' }] }),
-      nodeServe(jobService, ['hi'], { totalTokens: 3, tokensPerSecond: 42 }),
+      nodeServe(jobService, ['hi'], { totalTokens: 3 }),
     ]);
     expect(res.headers['x-llmjob-served-by']).toBe(NODE_ID);
-    expect(res.headers['x-llmjob-tokens-per-second']).toBe('42');
+    expect(res.headers['x-llmjob-tokens-per-second']).toBeUndefined(); // throughput intentionally not reported
   });
 
   it('pins a request to a targeted online node and records it on the job', async () => {
@@ -210,7 +210,7 @@ describe('OpenAI gateway — integration', () => {
       request(app).post('/v1/chat/completions').set(...auth())
         .set('X-LLMJob-Node', NODE_ID)
         .send({ messages: [{ role: 'user', content: 'Hi' }] }),
-      nodeServe(jobService, ['ok'], { totalTokens: 1, tokensPerSecond: 10 }),
+      nodeServe(jobService, ['ok'], { totalTokens: 1 }),
     ]);
     expect(res.status).toBe(200);
     expect(job.targetNode).toBe(NODE_ID);        // pinned on the job record
@@ -371,13 +371,13 @@ function fakeServices(over = {}) {
 }
 
 describe('OpenAI gateway — controller branches', () => {
-  it('_setServedHeaders no-ops without setHeader, and skips absent node/tps', () => {
+  it('_setServedByHeader no-ops without setHeader, and skips an absent node', () => {
     const ctrl = new OpenAiController();
     // A res that can't take headers (or a non-final poll result) must not throw.
-    expect(() => ctrl._setServedHeaders({}, { assignedTo: 'n', metrics: { tokensPerSecond: 9 } })).not.toThrow();
-    // A completed result missing assignedTo/tps sets neither header.
+    expect(() => ctrl._setServedByHeader({}, { assignedTo: 'n' })).not.toThrow();
+    // A completed result missing assignedTo sets no header.
     const headers = {};
-    ctrl._setServedHeaders({ setHeader: (k, v) => { headers[k] = v; } }, { status: 'completed' });
+    ctrl._setServedByHeader({ setHeader: (k, v) => { headers[k] = v; } }, { status: 'completed' });
     expect(headers).toEqual({});
   });
 
