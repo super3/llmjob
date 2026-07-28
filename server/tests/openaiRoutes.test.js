@@ -59,12 +59,12 @@ async function nodeFail(jobService, reason) {
 
 // Put a node row in the table so the gateway's target-node liveness check can see
 // it. `stale` pushes last_seen past the offline threshold (node exists but offline).
-async function seedNode(db, nodeId, { stale = false } = {}) {
+async function seedNode(db, nodeId, { stale = false, model = null } = {}) {
   const lastSeen = stale ? Date.now() - 20 * 60 * 1000 : Date.now();
   await db.query(
-    `INSERT INTO nodes (node_id, public_key, name, user_id, status, is_public, last_seen, claimed_at)
-     VALUES ($1, $1, $1, 'user-openai', 'online', false, $2, $2)`,
-    [nodeId, lastSeen]
+    `INSERT INTO nodes (node_id, public_key, name, user_id, status, is_public, last_seen, claimed_at, model)
+     VALUES ($1, $1, $1, 'user-openai', 'online', false, $2, $2, $3)`,
+    [nodeId, lastSeen, model]
   );
 }
 
@@ -225,6 +225,33 @@ describe('OpenAI gateway — integration', () => {
     expect(res.status).toBe(404);
     expect(res.body.error.type).toBe('target_node_error');
     expect(res.body.error.message).toMatch(/is offline/);
+  });
+
+  it('fast-fails with 404 when the targeted node serves a different model', async () => {
+    // Online is not enough: assignment also filters on the served model, so a
+    // Gemma-tier node would never be handed this (fleet-default) job and the
+    // caller would otherwise long-poll to the timeout.
+    await seedNode(db, 'small-node', { model: 'Gemma-4-E4B-it-Q4_K_M' });
+    const res = await request(app).post('/v1/chat/completions').set(...auth())
+      .set('X-LLMJob-Node', 'small-node')
+      .send({ messages: [{ role: 'user', content: 'Hi' }] });
+    expect(res.status).toBe(404);
+    expect(res.body.error.type).toBe('target_node_error');
+    expect(res.body.error.message).toMatch(/serves Gemma-4-E4B-it-Q4_K_M/);
+  });
+
+  it('targets a node that serves the fleet default, matching on the vendor id too', async () => {
+    // The node reports its GGUF name while the job carries the fleet default —
+    // modelsMatch bridges the two spellings, so this must NOT fast-fail.
+    await seedNode(db, NODE_ID, { model: 'qwen/qwen3.6-27b' });
+    const [res, job] = await Promise.all([
+      request(app).post('/v1/chat/completions').set(...auth())
+        .set('X-LLMJob-Node', NODE_ID)
+        .send({ messages: [{ role: 'user', content: 'Hi' }] }),
+      nodeServe(jobService, ['ok'], { totalTokens: 1 }),
+    ]);
+    expect(res.status).toBe(200);
+    expect(job.targetNode).toBe(NODE_ID);
   });
 
   it('fast-fails with 404 when the targeted node is unknown', async () => {

@@ -93,6 +93,14 @@ class OpenAiController {
         const why = status.exists ? 'is offline' : 'is not a known node';
         return res.status(404).json(errorBody(`Target node ${targetNode} ${why}.`, 'target_node_error'));
       }
+      // Online is necessary but not sufficient: assignment also filters on the
+      // served model, so a node on a different tier would never be handed this job
+      // and the caller would long-poll to the timeout — the slow answer this
+      // feature exists to avoid. Say so immediately instead.
+      if (!JobService.modelsMatch(DEFAULT_MODEL, status.model)) {
+        return res.status(404).json(errorBody(
+          `Target node ${targetNode} serves ${status.model}, not ${DEFAULT_MODEL}.`, 'target_node_error'));
+      }
     }
 
     const job = await svc.jobService.createJob({

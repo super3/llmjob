@@ -20,17 +20,17 @@ describe('NodeService', () => {
   describe('getNodeStatus', () => {
     it('reports a freshly claimed node as existing and online', async () => {
       const { nodeId } = await service.claimNode('key1', 'Rig', 'user1');
-      expect(await service.getNodeStatus(nodeId)).toEqual({ exists: true, online: true });
+      expect(await service.getNodeStatus(nodeId)).toEqual({ exists: true, online: true, model: null });
     });
 
     it('reports a node past the offline threshold as existing but offline', async () => {
       const { nodeId } = await service.claimNode('key1', 'Rig', 'user1');
       await setLastSeen(nodeId, Date.now() - 20 * 60 * 1000); // 20 min ago (> 15 min)
-      expect(await service.getNodeStatus(nodeId)).toEqual({ exists: true, online: false });
+      expect(await service.getNodeStatus(nodeId)).toEqual({ exists: true, online: false, model: null });
     });
 
     it('reports an unknown node id as neither existing nor online', async () => {
-      expect(await service.getNodeStatus('nope')).toEqual({ exists: false, online: false });
+      expect(await service.getNodeStatus('nope')).toEqual({ exists: false, online: false, model: null });
     });
   });
 

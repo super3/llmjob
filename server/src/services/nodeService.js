@@ -158,11 +158,14 @@ class NodeService {
   // full timeout). `online` means the node is registered and has pinged within the
   // offline threshold. Unknown ids come back { exists: false, online: false }.
   async getNodeStatus(nodeId) {
-    const r = await this.db.query('SELECT status, last_seen FROM nodes WHERE node_id = $1', [nodeId]);
-    if (!r.rows.length) return { exists: false, online: false };
+    const r = await this.db.query('SELECT status, last_seen, model FROM nodes WHERE node_id = $1', [nodeId]);
+    if (!r.rows.length) return { exists: false, online: false, model: null };
     const node = r.rows[0];
     const online = node.status === 'online' && (Date.now() - num(node.last_seen)) <= OFFLINE_THRESHOLD;
-    return { exists: true, online };
+    // The model this node reports serving (null when it hasn't reported one).
+    // Callers targeting a node need it to tell "will not serve this" apart from
+    // "is offline", since assignment also filters on the model.
+    return { exists: true, online, model: node.model || null };
   }
 
   async getPublicNodes() {
