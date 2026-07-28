@@ -23,7 +23,12 @@ function jobToChatBody(job) {
     })
     : [{ role: 'user', content: String(j.prompt == null ? '' : j.prompt) }];
   const body = {
-    model: j.model || LLM.model.name,
+    // Always the node's own loaded model, never the job's requested model: this
+    // node serves one local model regardless of what was asked, and the request
+    // string would otherwise reach the final metrics (metrics.model = chatBody.model)
+    // and be reported back as the model that ran. A mismatched name can also make a
+    // stricter llama-server reject the request outright.
+    model: LLM.model.name,
     messages,
     stream: true,
   };

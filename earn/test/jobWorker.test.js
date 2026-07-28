@@ -1,6 +1,7 @@
 'use strict';
 
 const { JobWorker } = require('../src/main/jobWorker');
+const { LLM } = require('../src/shared/config');
 const nacl = require('tweetnacl');
 const naclUtil = require('tweetnacl-util');
 
@@ -139,7 +140,9 @@ describe('processJob — success streaming', () => {
       [0, 'abcd', false], [1, 'efgh', false], [2, 'XY', true],
     ]);
     expect(chunks[0].metrics).toBeUndefined();
-    expect(chunks[2].metrics).toEqual({ totalTokens: 5, tokensPerSecond: 2.5, elapsedSeconds: 2, model: 'M', finishReason: 'stop' });
+    // metrics.model is the node's loaded model (jobToChatBody ignores the job's
+    // requested 'M'), so a requested model can't be echoed back as what ran.
+    expect(chunks[2].metrics).toEqual({ totalTokens: 5, tokensPerSecond: 2.5, elapsedSeconds: 2, model: LLM.model.name, finishReason: 'stop' });
     expect(calls.some((c) => c.url === 's/api/jobs/J1/complete')).toBe(true);
     expect(events).toEqual(['job:1', 'done:J1']);
     expect(w.activeJobs()).toBe(0);

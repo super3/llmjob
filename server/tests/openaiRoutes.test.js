@@ -91,7 +91,9 @@ describe('OpenAI gateway — integration', () => {
     expect(res.body.usage.completion_tokens).toBe(2);
     expect(res.body.usage.prompt_tokens).toBeGreaterThan(0);
     expect(res.body.usage.total_tokens).toBe(res.body.usage.prompt_tokens + 2);
-    expect(job.model).toBe('my-model'); // the requested model rode through to the job
+    // The requested model must NOT ride through to the job: the node ignores it and
+    // would otherwise echo it back via metrics.model as the model that ran.
+    expect(job.model).toBe('Gemma-4-E4B-it-Q4_K_M'); // the fleet default, not 'my-model'
   });
 
   it('reports finish_reason "length" and the reasoning when a thinking model runs out of budget', async () => {

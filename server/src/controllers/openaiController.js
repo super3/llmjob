@@ -55,7 +55,11 @@ class OpenAiController {
     const job = await svc.jobService.createJob({
       prompt: lastUserText(messages),   // display/fallback for nodes that read prompt
       messages,
-      model: body.model || undefined,   // jobService fills the fleet default
+      // Intentionally NOT body.model: the node serves its own local model no matter
+      // what the caller asks for, and a passed model rides through to the node's
+      // reported metrics.model and back out as the "model that ran" — which is how
+      // a request for "gpt-4"/"llmjob" got echoed as if the fleet ran it. Dropping
+      // it here lets jobService fill the real fleet default end to end.
       maxTokens: body.max_tokens,
       temperature: body.temperature,
       userId: req.apiKey.userId,
