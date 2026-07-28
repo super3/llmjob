@@ -57,6 +57,17 @@ async function nodeFail(jobService, reason) {
   await jobService.failJob(job.id, NODE_ID, reason);
 }
 
+// Put a node row in the table so the gateway's target-node liveness check can see
+// it. `stale` pushes last_seen past the offline threshold (node exists but offline).
+async function seedNode(db, nodeId, { stale = false } = {}) {
+  const lastSeen = stale ? Date.now() - 20 * 60 * 1000 : Date.now();
+  await db.query(
+    `INSERT INTO nodes (node_id, public_key, name, user_id, status, is_public, last_seen, claimed_at)
+     VALUES ($1, $1, $1, 'user-openai', 'online', false, $2, $2)`,
+    [nodeId, lastSeen]
+  );
+}
+
 describe('OpenAI gateway — integration', () => {
   let db, app, jobService, rawKey, userId;
 
@@ -181,6 +192,57 @@ describe('OpenAI gateway — integration', () => {
       nodeServe(jobService, ['hi'], { totalTokens: 1 }), // no model in metrics
     ]);
     expect(res.body.model).toBe(DEFAULT_MODEL);
+  });
+
+  it('reports the serving node and throughput as response headers', async () => {
+    const [res] = await Promise.all([
+      request(app).post('/v1/chat/completions').set(...auth())
+        .send({ messages: [{ role: 'user', content: 'Hi' }] }),
+      nodeServe(jobService, ['hi'], { totalTokens: 3, tokensPerSecond: 42 }),
+    ]);
+    expect(res.headers['x-llmjob-served-by']).toBe(NODE_ID);
+    expect(res.headers['x-llmjob-tokens-per-second']).toBe('42');
+  });
+
+  it('pins a request to a targeted online node and records it on the job', async () => {
+    await seedNode(db, NODE_ID); // online
+    const [res, job] = await Promise.all([
+      request(app).post('/v1/chat/completions').set(...auth())
+        .set('X-LLMJob-Node', NODE_ID)
+        .send({ messages: [{ role: 'user', content: 'Hi' }] }),
+      nodeServe(jobService, ['ok'], { totalTokens: 1, tokensPerSecond: 10 }),
+    ]);
+    expect(res.status).toBe(200);
+    expect(job.targetNode).toBe(NODE_ID);        // pinned on the job record
+    expect(res.headers['x-llmjob-served-by']).toBe(NODE_ID);
+  });
+
+  it('fast-fails with 404 when the targeted node is offline', async () => {
+    await seedNode(db, 'sleepy-node', { stale: true });
+    const res = await request(app).post('/v1/chat/completions').set(...auth())
+      .set('X-LLMJob-Node', 'sleepy-node')
+      .send({ messages: [{ role: 'user', content: 'Hi' }] });
+    expect(res.status).toBe(404);
+    expect(res.body.error.type).toBe('target_node_error');
+    expect(res.body.error.message).toMatch(/is offline/);
+  });
+
+  it('fast-fails with 404 when the targeted node is unknown', async () => {
+    const res = await request(app).post('/v1/chat/completions').set(...auth())
+      .set('X-LLMJob-Node', 'ghost')
+      .send({ messages: [{ role: 'user', content: 'Hi' }] });
+    expect(res.status).toBe(404);
+    expect(res.body.error.message).toMatch(/is not a known node/);
+  });
+
+  it('ignores a blank target header (whitespace) and serves normally', async () => {
+    const [res] = await Promise.all([
+      request(app).post('/v1/chat/completions').set(...auth())
+        .set('X-LLMJob-Node', '   ')
+        .send({ messages: [{ role: 'user', content: 'Hi' }] }),
+      nodeServe(jobService, ['hi'], { totalTokens: 1 }),
+    ]);
+    expect(res.status).toBe(200); // no node row seeded, but blank target means no targeting
   });
 
   it('streams chat.completion.chunk SSE events ending with [DONE]', async () => {
@@ -309,6 +371,16 @@ function fakeServices(over = {}) {
 }
 
 describe('OpenAI gateway — controller branches', () => {
+  it('_setServedHeaders no-ops without setHeader, and skips absent node/tps', () => {
+    const ctrl = new OpenAiController();
+    // A res that can't take headers (or a non-final poll result) must not throw.
+    expect(() => ctrl._setServedHeaders({}, { assignedTo: 'n', metrics: { tokensPerSecond: 9 } })).not.toThrow();
+    // A completed result missing assignedTo/tps sets neither header.
+    const headers = {};
+    ctrl._setServedHeaders({ setHeader: (k, v) => { headers[k] = v; } }, { status: 'completed' });
+    expect(headers).toEqual({});
+  });
+
   it('defaults to a timeout that leaves a reasoning model room to finish', () => {
     // The generation ceiling is this timeout times the node's tokens/sec, so
     // shortening it silently truncates long answers into 504s. 280s stays under

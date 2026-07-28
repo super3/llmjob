@@ -52,6 +52,11 @@ class JobService {
       updatedAt: timestamp,
       userId: jobData.userId,
       visibility: normalizeVisibility(jobData.visibility),
+      // Optional: pin this job to one specific node (health/perf testing). null
+      // means any eligible node may serve it. Only narrows the candidate set — the
+      // visibility filter still applies, so it can never route to a node the caller
+      // wouldn't otherwise be allowed to use.
+      targetNode: jobData.targetNode || null,
       // A caller who sends no max_tokens gets this. 1000 was sized when the whole
       // budget went to the answer; a reasoning model can spend that much thinking
       // and return an empty completion, so the default has to cover the thoughts
@@ -68,9 +73,9 @@ class JobService {
     }
 
     await this.db.query(
-      `INSERT INTO jobs (id, data, status, priority, created_at, updated_at, user_id, visibility)
-       VALUES ($1, $2, 'pending', $3, $4, $4, $5, $6)`,
-      [jobId, JSON.stringify(job), job.priority, timestamp, job.userId, job.visibility]
+      `INSERT INTO jobs (id, data, status, priority, created_at, updated_at, user_id, visibility, target_node)
+       VALUES ($1, $2, 'pending', $3, $4, $4, $5, $6, $7)`,
+      [jobId, JSON.stringify(job), job.priority, timestamp, job.userId, job.visibility, job.targetNode]
     );
 
     return job;
@@ -110,12 +115,19 @@ class JobService {
       await client.query('BEGIN');
       const owner = await client.query('SELECT user_id FROM nodes WHERE node_id = $1', [nodeId]);
       const ownerUserId = owner.rows.length ? owner.rows[0].user_id : null;
+      // SKIP LOCKED, not a plain FOR UPDATE: without it, two nodes polling at once
+      // both try to lock the same top-priority rows, so the second BLOCKS until the
+      // first commits — serializing the whole fleet through one assignment at a
+      // time. SKIP LOCKED lets each poller step over rows another is already taking
+      // and grab the next ones, so N nodes fan out to N jobs. The target_node filter
+      // pins a job to one node when set (null = any eligible node).
       const pending = await client.query(
         `SELECT id, data FROM jobs
          WHERE status = 'pending'
            AND (visibility IS NULL OR visibility <> 'private' OR user_id = $2)
-         ORDER BY priority DESC, created_at ASC LIMIT $1 FOR UPDATE`,
-        [maxJobs, ownerUserId]
+           AND (target_node IS NULL OR target_node = $3)
+         ORDER BY priority DESC, created_at ASC LIMIT $1 FOR UPDATE SKIP LOCKED`,
+        [maxJobs, ownerUserId, nodeId]
       );
 
       for (const row of pending.rows) {

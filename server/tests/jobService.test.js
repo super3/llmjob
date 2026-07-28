@@ -117,6 +117,24 @@ describe('JobService', () => {
       expect(await jobService.assignJobsToNode('node2', 1)).toHaveLength(0);
     });
 
+    it('pins a targeted job to its node and hides it from every other node', async () => {
+      const job = await jobService.createJob({ prompt: 'test node A', userId: 'u', targetNode: 'nodeA' });
+      expect(job.targetNode).toBe('nodeA');
+      // The wrong node never sees it...
+      expect(await jobService.assignJobsToNode('nodeB', 1)).toHaveLength(0);
+      // ...and it's still pending, waiting for its node.
+      expect((await jobService.getJobResult(job.id)).status).toBe('pending');
+      // The targeted node gets it.
+      const got = await jobService.assignJobsToNode('nodeA', 1);
+      expect(got.map((j) => j.id)).toEqual([job.id]);
+    });
+
+    it('leaves an untargeted job assignable by any node (target_node null)', async () => {
+      const job = await jobService.createJob({ prompt: 'anyone', userId: 'u' });
+      expect(job.targetNode).toBeNull();
+      expect((await jobService.assignJobsToNode('whoever', 1)).map((j) => j.id)).toEqual([job.id]);
+    });
+
     it('rolls back and rethrows on a query error mid-transaction', async () => {
       await jobService.createJob({ prompt: 'p', userId: 'u' });
       const real = db.connect.bind(db);

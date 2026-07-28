@@ -17,6 +17,23 @@ describe('NodeService', () => {
   const setLastSeen = (nodeId, ms) =>
     db.query('UPDATE nodes SET last_seen = $1 WHERE node_id = $2', [ms, nodeId]);
 
+  describe('getNodeStatus', () => {
+    it('reports a freshly claimed node as existing and online', async () => {
+      const { nodeId } = await service.claimNode('key1', 'Rig', 'user1');
+      expect(await service.getNodeStatus(nodeId)).toEqual({ exists: true, online: true });
+    });
+
+    it('reports a node past the offline threshold as existing but offline', async () => {
+      const { nodeId } = await service.claimNode('key1', 'Rig', 'user1');
+      await setLastSeen(nodeId, Date.now() - 20 * 60 * 1000); // 20 min ago (> 15 min)
+      expect(await service.getNodeStatus(nodeId)).toEqual({ exists: true, online: false });
+    });
+
+    it('reports an unknown node id as neither existing nor online', async () => {
+      expect(await service.getNodeStatus('nope')).toEqual({ exists: false, online: false });
+    });
+  });
+
   describe('generateNodeFingerprint', () => {
     it('is a 6-char hex prefix of the key hash', () => {
       expect(NodeService.generateNodeFingerprint('somekey')).toMatch(/^[0-9a-f]{6}$/);
