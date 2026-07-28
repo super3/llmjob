@@ -121,6 +121,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   updated_at bigint,
   user_id text,
   visibility text,
+  target_node text,
   assigned_to text,
   lock_node text,
   lock_expires_at bigint,

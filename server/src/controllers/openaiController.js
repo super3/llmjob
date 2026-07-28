@@ -1,6 +1,12 @@
 const JobService = require('../services/jobService');
 const LogService = require('../services/logService');
 const ApiKeyService = require('../services/apiKeyService');
+const NodeService = require('../services/nodeService');
+
+// Header a caller sets to pin a request to one specific node (health/perf testing).
+// Lowercase — Express lowercases header names. Kept OpenAI-SDK friendly: passable
+// via the stock client's default/extra headers, no body-schema changes.
+const TARGET_NODE_HEADER = 'x-llmjob-node';
 
 // The model the fleet actually serves, for reporting when the node didn't tag its
 // metrics with a model name (older clients). Same source the job default uses.
@@ -40,7 +46,28 @@ class OpenAiController {
   services(req) {
     if (this._services) return this._services;
     const db = req.app.locals.db;
-    return { jobService: new JobService(db), logService: new LogService(db), apiKeyService: new ApiKeyService(db) };
+    return {
+      jobService: new JobService(db), logService: new LogService(db),
+      apiKeyService: new ApiKeyService(db), nodeService: new NodeService(db),
+    };
+  }
+
+  // The requested target node, from the X-LLMJob-Node header (Express lowercases
+  // header keys). Absent → undefined → no targeting.
+  _headerTarget(req) {
+    const h = req && req.headers;
+    return h ? h[TARGET_NODE_HEADER] : undefined;
+  }
+
+  // Report which node served the request as a response header — so a caller
+  // testing a node confirms it actually served, without a second job-status
+  // lookup. Non-streaming only: a stream flushes headers before any node has the
+  // job. (Throughput is deliberately not reported: the node-side tok/s is measured
+  // over the whole job including model load, so it isn't a consistent metric yet.)
+  _setServedByHeader(res, result) {
+    if (!res.setHeader) return;
+    const node = result && result.assignedTo;
+    if (node) res.setHeader('X-LLMJob-Served-By', String(node));
   }
 
   // POST /v1/chat/completions
@@ -52,6 +79,22 @@ class OpenAiController {
     }
 
     const svc = this.services(req);
+
+    // Optional node targeting (X-LLMJob-Node): pin the request to one node so a
+    // caller can test whether that node serves and how fast. Fast-fail if it's
+    // offline/unknown rather than long-polling to the timeout — the point of the
+    // feature is a quick verdict. It only narrows: a targeted job still passes the
+    // normal visibility filter at assignment, so this can't reach a node the key
+    // isn't already allowed to use.
+    const targetNode = (this._headerTarget(req) || '').trim() || null;
+    if (targetNode) {
+      const status = await svc.nodeService.getNodeStatus(targetNode);
+      if (!status.online) {
+        const why = status.exists ? 'is offline' : 'is not a known node';
+        return res.status(404).json(errorBody(`Target node ${targetNode} ${why}.`, 'target_node_error'));
+      }
+    }
+
     const job = await svc.jobService.createJob({
       prompt: lastUserText(messages),   // display/fallback for nodes that read prompt
       messages,
@@ -64,6 +107,7 @@ class OpenAiController {
       temperature: body.temperature,
       userId: req.apiKey.userId,
       visibility: req.apiKey.visibility, // 'private' → only this user's own nodes
+      targetNode,                        // null unless X-LLMJob-Node was set
     });
 
     const ctx = { res, svc, job, key: req.apiKey, promptTokens: estimateTokens(joinContent(messages)), aborted: false };
@@ -97,6 +141,7 @@ class OpenAiController {
         // short (or empty) when max_tokens ran out mid-thought.
         const thoughts = reasoningText(r);
         if (thoughts) message.reasoning_content = thoughts;
+        this._setServedByHeader(res, r);
         return res.status(200).json({
           id: 'chatcmpl-' + job.id,
           object: 'chat.completion',

@@ -153,6 +153,18 @@ class NodeService {
     });
   }
 
+  // One node's existence + liveness, for the gateway to fast-fail a request that
+  // targets a node which can't possibly serve it (rather than long-polling to the
+  // full timeout). `online` means the node is registered and has pinged within the
+  // offline threshold. Unknown ids come back { exists: false, online: false }.
+  async getNodeStatus(nodeId) {
+    const r = await this.db.query('SELECT status, last_seen FROM nodes WHERE node_id = $1', [nodeId]);
+    if (!r.rows.length) return { exists: false, online: false };
+    const node = r.rows[0];
+    const online = node.status === 'online' && (Date.now() - num(node.last_seen)) <= OFFLINE_THRESHOLD;
+    return { exists: true, online };
+  }
+
   async getPublicNodes() {
     const r = await this.db.query('SELECT * FROM nodes', []);
     const now = Date.now();
