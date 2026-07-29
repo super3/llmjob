@@ -287,30 +287,148 @@ describe('downloadFile', () => {
     await expect(io.downloadFile('https://host/f', '/tmp/f')).rejects.toThrow('HTTP 0');
   });
 
-  it('rejects and cleans up the .part on a response error', async () => {
-    const res = fakeRes({ statusCode: 200, headers: {} });
-    wire(https, [res]);
-    const out = fakeWrite();
-    fs.createWriteStream.mockReturnValue(out);
+  // A dropped connection is retried, resuming from what is on disk. These tests
+  // drive every attempt to exhaustion; `advance` walks the backoff (2s, 4s, 6s)
+  // and each attempt's response is served synchronously by `wire`.
+  const ATTEMPTS = 4;
+  const advance = async (attempt) => {
+    await Promise.resolve();
+    jest.advanceTimersByTime(2000 * attempt);
+    await Promise.resolve();
+  };
+
+  it('retries a dropped response and gives up only after the last attempt', async () => {
+    jest.useFakeTimers();
+    const resList = Array.from({ length: ATTEMPTS }, () => fakeRes({ statusCode: 200, headers: {} }));
+    wire(https, resList);
+    const outs = resList.map(() => fakeWrite());
+    let i = 0;
+    fs.createWriteStream.mockImplementation(() => outs[i++]);
+    fs.statSync.mockReturnValue({ size: 0 });
     fs.unlink.mockImplementation((p, cb) => cb && cb());
 
     const p = io.downloadFile('https://host/f', '/tmp/f');
-    res.emit('error', new Error('reset'));
-    await expect(p).rejects.toThrow('reset');
-    expect(out.destroy).toHaveBeenCalled();
-    expect(fs.unlink).toHaveBeenCalledWith(fs.createWriteStream.mock.calls.pop()[0], expect.any(Function));
+    const settled = p.then(() => null, (e) => e);
+    for (let a = 1; a <= ATTEMPTS; a++) {
+      resList[a - 1].emit('error', new Error('aborted'));
+      await advance(a);
+    }
+
+    expect((await settled).message).toMatch('aborted');
+    expect(https.get).toHaveBeenCalledTimes(ATTEMPTS);
+    expect(outs[0].destroy).toHaveBeenCalled();
+    // The scratch file survives the retries and is only removed at the end.
+    expect(fs.unlink).toHaveBeenCalledTimes(1);
+    jest.useRealTimers();
   });
 
-  it('rejects on a write-stream error', async () => {
-    const res = fakeRes({ statusCode: 200, headers: {} });
-    wire(https, [res]);
-    const out = fakeWrite();
-    fs.createWriteStream.mockReturnValue(out);
+  it('retries a write-stream error too', async () => {
+    jest.useFakeTimers();
+    const resList = Array.from({ length: ATTEMPTS }, () => fakeRes({ statusCode: 200, headers: {} }));
+    wire(https, resList);
+    const outs = resList.map(() => fakeWrite());
+    let i = 0;
+    fs.createWriteStream.mockImplementation(() => outs[i++]);
+    fs.statSync.mockReturnValue({ size: 0 });
     fs.unlink.mockImplementation((p, cb) => cb && cb());
 
     const p = io.downloadFile('https://host/f', '/tmp/f');
-    out.emit('error', new Error('disk full'));
-    await expect(p).rejects.toThrow('disk full');
+    const settled = p.then(() => null, (e) => e);
+    for (let a = 1; a <= ATTEMPTS; a++) {
+      outs[a - 1].emit('error', new Error('disk full'));
+      await advance(a);
+    }
+
+    expect((await settled).message).toMatch('disk full');
+    jest.useRealTimers();
+  });
+
+  // The point of the retry: a 4.6 GB model that dies part-way continues from
+  // where it stopped. Restarting at zero on a link that drops every few minutes
+  // never converges.
+  it('resumes from the bytes already on disk with a Range request', async () => {
+    jest.useFakeTimers();
+    const r1 = fakeRes({ statusCode: 200, headers: { 'content-length': '1000' } });
+    const r2 = fakeRes({ statusCode: 206, headers: { 'content-length': '400' } });
+    wire(https, [r1, r2]);
+    const [o1, o2] = [fakeWrite(), fakeWrite()];
+    fs.createWriteStream.mockReturnValueOnce(o1).mockReturnValueOnce(o2);
+    fs.statSync.mockReturnValue({ size: 600 }); // 600 of 1000 landed before the drop
+    fs.renameSync.mockImplementation(() => {});
+    const progress = [];
+
+    const p = io.downloadFile('https://host/f', '/tmp/f', (pct) => progress.push(pct));
+    r1.emit('data', Buffer.alloc(600));
+    r1.emit('error', new Error('aborted'));
+    await advance(1);
+
+    expect(https.get.mock.calls[1][1]).toMatchObject({ headers: { Range: 'bytes=600-' } });
+    expect(fs.createWriteStream.mock.calls[1][1]).toMatchObject({ flags: 'a' }); // append, don't truncate
+    // Both attempts write the SAME scratch file — that is what makes it a resume.
+    expect(fs.createWriteStream.mock.calls[1][0]).toBe(fs.createWriteStream.mock.calls[0][0]);
+
+    r2.emit('data', Buffer.alloc(400));
+    o2.emit('finish');
+    await expect(p).resolves.toBe('/tmp/f');
+    // A 206's content-length is the REMAINDER, so the total must count the bytes
+    // already held — otherwise the bar would finish at 40%.
+    expect(progress[progress.length - 1]).toBe(100);
+    jest.useRealTimers();
+  });
+
+  // Not every server honours Range. One that ignores it replies 200 with the
+  // whole body, which must overwrite the scratch file rather than append a
+  // second copy onto the bytes already there.
+  it('starts the scratch file over when a resumed request is answered 200', async () => {
+    jest.useFakeTimers();
+    const r1 = fakeRes({ statusCode: 200, headers: { 'content-length': '1000' } });
+    const r2 = fakeRes({ statusCode: 200, headers: { 'content-length': '1000' } });
+    wire(https, [r1, r2]);
+    const [o1, o2] = [fakeWrite(), fakeWrite()];
+    fs.createWriteStream.mockReturnValueOnce(o1).mockReturnValueOnce(o2);
+    fs.statSync.mockReturnValue({ size: 600 });
+    fs.renameSync.mockImplementation(() => {});
+    const progress = [];
+
+    const p = io.downloadFile('https://host/f', '/tmp/f', (pct) => progress.push(pct));
+    r1.emit('error', new Error('aborted'));
+    await advance(1);
+
+    expect(fs.createWriteStream.mock.calls[1][1]).toBeUndefined(); // truncating open
+    r2.emit('data', Buffer.alloc(1000));
+    o2.emit('finish');
+    await expect(p).resolves.toBe('/tmp/f');
+    expect(progress[progress.length - 1]).toBe(100);
+    jest.useRealTimers();
+  });
+
+  // statSync throwing (the scratch file never got created) must not wedge the
+  // retry — it just resumes from zero.
+  // statSync throwing (the scratch file never got created) must not wedge the
+  // retry — it just resumes from zero. This one also runs with a setTimeout
+  // whose handle has no unref(), the shape a non-Node host returns, to prove the
+  // retry timer is scheduled either way.
+  it('resumes from zero when the scratch file cannot be measured', async () => {
+    jest.useFakeTimers();
+    const realSetTimeout = global.setTimeout;
+    global.setTimeout = (fn, ms) => { realSetTimeout(fn, ms); return {}; };
+    const r1 = fakeRes({ statusCode: 200, headers: {} });
+    const r2 = fakeRes({ statusCode: 200, headers: { 'content-length': '10' } });
+    wire(https, [r1, r2]);
+    const [o1, o2] = [fakeWrite(), fakeWrite()];
+    fs.createWriteStream.mockReturnValueOnce(o1).mockReturnValueOnce(o2);
+    fs.statSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    fs.renameSync.mockImplementation(() => {});
+
+    const p = io.downloadFile('https://host/f', '/tmp/f');
+    r1.emit('error', new Error('aborted'));
+    await advance(1);
+
+    expect(https.get.mock.calls[1][1]).toEqual({}); // no Range header
+    o2.emit('finish');
+    await expect(p).resolves.toBe('/tmp/f');
+    global.setTimeout = realSetTimeout;
+    jest.useRealTimers();
   });
 
   it('rejects when the final rename fails', async () => {
@@ -325,22 +443,40 @@ describe('downloadFile', () => {
     await expect(p).rejects.toThrow('rename EXDEV');
   });
 
-  it('rejects when the socket stalls', async () => {
-    const res = fakeRes({ statusCode: 200, headers: {} });
-    const reqs = wire(https, [res]);
-    fs.createWriteStream.mockReturnValue(fakeWrite());
+  it('retries a stalled socket and surfaces it once attempts run out', async () => {
+    jest.useFakeTimers();
+    const resList = Array.from({ length: ATTEMPTS }, () => fakeRes({ statusCode: 200, headers: {} }));
+    const reqs = wire(https, resList);
+    fs.createWriteStream.mockImplementation(() => fakeWrite());
+    fs.statSync.mockReturnValue({ size: 0 });
+    fs.unlink.mockImplementation((p, cb) => cb && cb());
+
     const p = io.downloadFile('https://host/f', '/tmp/f');
-    reqs[0]._timeoutCb(); // fire the setTimeout handler
-    await expect(p).rejects.toThrow('download stalled');
+    const settled = p.then(() => null, (e) => e);
+    for (let a = 1; a <= ATTEMPTS; a++) {
+      reqs[a - 1]._timeoutCb(); // fire the idle-socket handler
+      await advance(a);
+    }
+    expect((await settled).message).toMatch('download stalled');
+    jest.useRealTimers();
   });
 
-  it('rejects on a request error', async () => {
-    const res = fakeRes({ statusCode: 200, headers: {} });
-    const reqs = wire(https, [res]);
-    fs.createWriteStream.mockReturnValue(fakeWrite());
+  it('retries a request error and surfaces it once attempts run out', async () => {
+    jest.useFakeTimers();
+    const resList = Array.from({ length: ATTEMPTS }, () => fakeRes({ statusCode: 200, headers: {} }));
+    const reqs = wire(https, resList);
+    fs.createWriteStream.mockImplementation(() => fakeWrite());
+    fs.statSync.mockReturnValue({ size: 0 });
+    fs.unlink.mockImplementation((p, cb) => cb && cb());
+
     const p = io.downloadFile('https://host/f', '/tmp/f');
-    reqs[0].emit('error', new Error('ECONNRESET'));
-    await expect(p).rejects.toThrow('ECONNRESET');
+    const settled = p.then(() => null, (e) => e);
+    for (let a = 1; a <= ATTEMPTS; a++) {
+      reqs[a - 1].emit('error', new Error('ECONNRESET'));
+      await advance(a);
+    }
+    expect((await settled).message).toMatch('ECONNRESET');
+    jest.useRealTimers();
   });
 });
 
