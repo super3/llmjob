@@ -1184,6 +1184,11 @@ describe('local LLM', () => {
       await flush();
       expect(ctx.sent('miner:log').map((l) => l.line)).toContain('LLM setup failed: ' + step + ' failed');
       expect(ctx.sent('miner:stopped')).toHaveLength(1);
+      // …and the hero says so. Clearing the note without an error dropped the
+      // row back to a grey dot and the model name, which is what "idle" looks
+      // like — a download that died at 57% after twenty minutes appeared to
+      // have simply never started.
+      expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false, note: null, error: 'Setup failed — see Logs' });
     });
   });
 

@@ -623,7 +623,14 @@ async function startLlm(reserveMb) {
     const modelEngine = new LlmEngineManager({ dir, platform: process.platform, fs, download: downloadFile });
     modelPath = await modelEngine.ensureModel(progressReporter('downloading model ' + LLM.model.name + '…'));
   } catch (e) {
-    setLlmNote(null);
+    // Surface the failure on the hero, not only in the log. Clearing the note
+    // without setting an error dropped the row straight back to a grey dot and
+    // the model name — identical to "not started yet" — so a download that died
+    // at 57% after twenty minutes looked exactly like nothing having happened,
+    // with the reason buried in the Logs tab. Same reasoning as the note itself:
+    // the failing path deserves the legibility the working path just got.
+    llmStatus = Object.assign({}, llmStatus, { ready: false, note: null, error: 'Setup failed — see Logs' });
+    sendLlmStatus();
     send('miner:log', { level: 'error', line: 'LLM setup failed: ' + e.message });
     return false;
   }

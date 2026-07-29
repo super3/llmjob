@@ -82,26 +82,67 @@ let partSeq = 0;
 // it out from under the others, which then died on `ENOENT … rename
 // llama-download.archive.part`. Uniqueness makes concurrent attempts merely
 // redundant (last writer wins the rename) instead of failing.
+// A dropped connection part-way through a multi-GB download used to throw the
+// whole transfer away. Retry a few times, resuming from what already landed on
+// disk via a Range request, so a 4.6 GB model that dies at 57% continues from
+// 57% instead of restarting at zero — on a link that drops every few minutes,
+// restarting never converges. Attempts are per call, and the scratch file is
+// removed once they are exhausted: a partial left between runs could belong to a
+// different URL, and validating that is not worth the complexity.
+const DOWNLOAD_ATTEMPTS = 4;
+const DOWNLOAD_RETRY_MS = 2000;
+
 function downloadFile(url, dest, onProgress, redirects) {
-  redirects = redirects || 0;
+  const part = dest + '.' + process.pid + '.' + (partSeq = (partSeq + 1) % 1e6) + '.part';
+  return downloadAttempt(url, dest, part, onProgress, redirects || 0, 0, 1);
+}
+
+// One HTTP attempt for `url` into `part`, resuming at byte `resumeFrom`. On a
+// transport failure it waits and re-enters itself with whatever is on disk,
+// until DOWNLOAD_ATTEMPTS is reached.
+function downloadAttempt(url, dest, part, onProgress, redirects, resumeFrom, attempt) {
   return new Promise((resolve, reject) => {
     if (redirects > 5) return reject(new Error('too many redirects'));
+
+    // Give up for good, or wait and resume. The byte count comes from the file
+    // on disk rather than from what we counted: the write stream may be holding
+    // buffered chunks that never landed, and resuming past them would corrupt
+    // the file with a gap.
+    const retryOrFail = (err) => {
+      if (attempt >= DOWNLOAD_ATTEMPTS) { fs.unlink(part, () => {}); return reject(err); }
+      let have = 0;
+      try { have = fs.statSync(part).size; } catch (e) { have = 0; }
+      const timer = setTimeout(() => {
+        downloadAttempt(url, dest, part, onProgress, redirects, have, attempt + 1).then(resolve, reject);
+      }, DOWNLOAD_RETRY_MS * attempt);
+      if (timer.unref) timer.unref();
+    };
+
     const lib = url.startsWith('https') ? https : http;
-    const req = lib.get(url, (res) => {
+    const opts = resumeFrom > 0 ? { headers: { Range: 'bytes=' + resumeFrom + '-' } } : {};
+    const req = lib.get(url, opts, (res) => {
       const code = res.statusCode || 0;
       if (code >= 300 && code < 400 && res.headers.location) {
         res.resume();
-        return resolve(downloadFile(new URL(res.headers.location, url).toString(), dest, onProgress, redirects + 1));
+        const next = new URL(res.headers.location, url).toString();
+        return resolve(downloadAttempt(next, dest, part, onProgress, redirects + 1, resumeFrom, attempt));
       }
-      if (code !== 200) {
+      // A server that ignores Range answers 200 with the whole body again, so
+      // start the scratch file over rather than appending a second copy onto the
+      // bytes we already have.
+      const restart = resumeFrom > 0 && code === 200;
+      if (restart) resumeFrom = 0;
+      if (code !== 200 && code !== 206) {
         res.resume();
         return reject(new Error('HTTP ' + code + ' for ' + url));
       }
-      const total = parseInt(res.headers['content-length'] || '0', 10);
-      let received = 0;
-      const part = dest + '.' + process.pid + '.' + (partSeq = (partSeq + 1) % 1e6) + '.part';
-      const out = fs.createWriteStream(part);
-      const fail = (err) => { out.destroy(); fs.unlink(part, () => {}); reject(err); };
+      // On a 206 content-length is the size of the REMAINDER, so the real total
+      // is what we already hold plus what is coming.
+      const len = parseInt(res.headers['content-length'] || '0', 10);
+      const total = resumeFrom > 0 && len ? resumeFrom + len : len;
+      let received = resumeFrom;
+      const out = fs.createWriteStream(part, resumeFrom > 0 ? { flags: 'a' } : undefined);
+      const fail = (err) => { out.destroy(); retryOrFail(err); };
       res.on('data', (c) => { received += c.length; if (onProgress) onProgress(progressPercent(received, total)); });
       res.on('error', fail);
       res.pipe(out);
@@ -112,7 +153,7 @@ function downloadFile(url, dest, onProgress, redirects) {
       out.on('error', fail);
     });
     req.setTimeout(60000, () => req.destroy(new Error('download stalled (no data for 60s)')));
-    req.on('error', reject);
+    req.on('error', retryOrFail);
   });
 }
 
