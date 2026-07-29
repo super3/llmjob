@@ -12,9 +12,9 @@ const MinerService = require('../services/minerService');
 // reads it back off GET /api/miners.
 async function pingMiner(req, res) {
   try {
-    const { address, worker, gpu, region, hashrate, accepted, vramUsedMb, vramTotalMb, version, llmModel } = req.body;
+    const { address, worker, gpu, region, hashrate, accepted, vramUsedMb, vramTotalMb, version, llmModel, nodeId } = req.body;
     const service = new MinerService(req.app.locals.db);
-    const result = await service.reportMiner({ address, worker, gpu, region, hashrate, accepted, vramUsedMb, vramTotalMb, version, llmModel });
+    const result = await service.reportMiner({ address, worker, gpu, region, hashrate, accepted, vramUsedMb, vramTotalMb, version, llmModel, nodeId });
     if (result.error) {
       return res.status(400).json({ error: result.error });
     }

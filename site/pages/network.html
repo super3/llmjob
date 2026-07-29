@@ -113,6 +113,11 @@
   .mr-llm { min-width: 0; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; }
   .mr-llm .mr-llm-on { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; color: #6b7077; }
   .mr-llm .mr-llm-none { color: #c7c4b8; }
+  /* Node chip: this host actually serves cluster jobs (it reported a node id),
+     as opposed to merely running a model locally. */
+  .mr-node { display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px;
+    font-size: 10.5px; letter-spacing: .02em; color: #2f6f4f; background: #e8f5ee;
+    border: 1px solid #cfe8db; vertical-align: 1px; }
   /* A host running several cards is one clickable row; the chevron expands it
      into a per-card breakdown (the earn client posts each card as worker/gpuN). */
   .miner-row.is-multi { cursor: pointer; }
@@ -276,10 +281,16 @@
     // The "serving LLM" cell: a compact model label ("Gemma-4-E4B-it-Q4_K_M" →
     // "Gemma 4 E4B", full name on hover), or a muted dash when the card isn't
     // serving (insufficient VRAM) or the client is too old to report a model.
-    function llmCell(model) {
+    // `nodeId` (present only while the host actually polls the cluster for jobs)
+    // adds a node chip after the model. Running a model and serving the network
+    // are different things — without the chip a row is only advertising locally.
+    function llmCell(model, nodeId) {
       if (!model) return '<div class="mr-llm"><span class="mr-llm-none">—</span></div>';
       const short = String(model).split(/-it\b/i)[0].replace(/[-_]+/g, ' ').trim() || String(model);
-      return '<div class="mr-llm"><span class="mr-llm-on" title="' + esc(model) + '">' + esc(short) + '</span></div>';
+      const chip = nodeId
+        ? '<span class="mr-node" title="Serving cluster jobs as node ' + esc(nodeId) + '">' + esc(nodeId) + '</span>'
+        : '';
+      return '<div class="mr-llm"><span class="mr-llm-on" title="' + esc(model) + '">' + esc(short) + '</span>' + chip + '</div>';
     }
 
     // Which multi-GPU hosts are expanded, keyed by address|worker so the state
@@ -325,7 +336,7 @@
                 '<div class="mr-rank">' + (i + 1) + '</div>' +
                 '<div class="mr-addr"><span class="dot"></span><span class="a">' + esc(shortAddr(m.addr)) + '</span></div>' +
                 gpuCell(m.gpu, chev) +
-                llmCell(m.llmModel) +
+                llmCell(m.llmModel, m.nodeId) +
                 '<div class="mr-vram">' + fmtVram(m.vramUsedMb, m.vramTotalMb) + '</div>' +
                 '<div class="mr-hash">' + fmtHash(m.hash) + '</div>' +
                 '<div class="mr-last">' + esc(m.last) + '</div>' +

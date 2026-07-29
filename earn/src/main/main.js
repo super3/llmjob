@@ -242,7 +242,17 @@ async function startMining(settings) {
     const gpuVram = await detectGpusVram();
     // Tag the cards serving the local LLM so the board shows which model each GPU
     // runs; null when the fleet isn't up (mining only) → blank on the board.
-    const serving = fleet ? { model: LLM.model.name, indices: fleet.servingIndices() } : null;
+    // `nodeId` rides along only when this machine is linked and therefore actually
+    // polls the cluster for jobs (the same condition syncWorker() arms the worker
+    // on) — running the model and serving the cluster are different things.
+    const linked = loadNode();
+    const serving = fleet
+      ? {
+        model: LLM.model.name,
+        indices: fleet.servingIndices(),
+        nodeId: linked && linked.connected ? linked.nodeId : null,
+      }
+      : null;
     buildMinerReports(settings, snap, gpuVram, app.getVersion(), serving).forEach(postMinerReport);
   };
   report();

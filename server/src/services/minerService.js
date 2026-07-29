@@ -76,6 +76,10 @@ function groupHosts(cards, now) {
       // The host's served model: the fleet runs one model across every serving
       // card, so any card's non-null llmModel is THE model; null if none serve.
       llmModel: (group.find((c) => c.llmModel) || {}).llmModel || null,
+      // The node id is the machine's, so every card of a host reports the same one
+      // — take whichever card has it. Null means this host runs the model (or just
+      // mines) without serving the cluster.
+      nodeId: (group.find((c) => c.nodeId) || {}).nodeId || null,
       last: formatAgo(now - group.reduce((a, c) => Math.max(a, c.lastMs), 0)),
       cards: group.map((c) => ({
         worker: c.worker,
@@ -137,18 +141,25 @@ class MinerService {
     // The local LLM this card is serving, if any. A card not serving (insufficient
     // VRAM) or a client too old to report it stores null → blank on the board.
     const llmModel = input.llmModel ? String(input.llmModel).slice(0, 64) : null;
+    // The machine's node id, sent only while it is armed to serve cluster jobs.
+    // Null (client too old, or running the model without serving) means the board
+    // shows the row as advertising a model rather than serving the network. This
+    // is self-reported on an unauthenticated ping, so it's a display hint only —
+    // nothing routes or authorizes on it.
+    const nodeId = input.nodeId ? String(input.nodeId).slice(0, 64) : null;
     const id = minerFingerprint(address, worker);
     const now = Date.now();
 
     await this.db.query(
-      `INSERT INTO miners (id, address, worker, gpu, region, hashrate, accepted, vram_used, vram_total, version, llm_model, first_seen, last_seen)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
+      `INSERT INTO miners (id, address, worker, gpu, region, hashrate, accepted, vram_used, vram_total, version, llm_model, node_id, first_seen, last_seen)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
        ON CONFLICT (id) DO UPDATE SET
          gpu = EXCLUDED.gpu, region = EXCLUDED.region, hashrate = EXCLUDED.hashrate,
          accepted = EXCLUDED.accepted, vram_used = EXCLUDED.vram_used,
          vram_total = EXCLUDED.vram_total, version = EXCLUDED.version,
-         llm_model = EXCLUDED.llm_model, last_seen = EXCLUDED.last_seen`,
-      [id, address, worker, gpu, region, hashrate, accepted, vramUsed, vramTotal, version, llmModel, now]
+         llm_model = EXCLUDED.llm_model, node_id = EXCLUDED.node_id,
+         last_seen = EXCLUDED.last_seen`,
+      [id, address, worker, gpu, region, hashrate, accepted, vramUsed, vramTotal, version, llmModel, nodeId, now]
     );
     return { success: true, id };
   }
@@ -179,6 +190,7 @@ class MinerService {
       vramTotalMb: Math.round(Number(row.vram_total) || 0),
       version: row.version || null,
       llmModel: row.llm_model || null,
+      nodeId: row.node_id || null, // set only while the host serves cluster jobs
       lastMs: Number(row.last_seen), // always positive: the WHERE clause filters on last_seen
     })));
 

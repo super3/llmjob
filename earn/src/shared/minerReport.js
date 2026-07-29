@@ -22,10 +22,18 @@
 // one row, at the cost of an even (rather than measured) hashrate split, which is
 // the best that's possible when the engine doesn't break the hashrate out.
 // `serving` (optional) tags the cards currently running the local LLM so the
-// network board can show which GPU serves which model: { model, indices } where
-// `indices` are the GPU indices from the fleet's servingIndices(). A card whose
-// index isn't listed (insufficient VRAM), or any row from a client that doesn't
-// pass `serving` at all (older version), reports llmModel null → blank on the board.
+// network board can show which GPU serves which model: { model, indices, nodeId }
+// where `indices` are the GPU indices from the fleet's servingIndices(). A card
+// whose index isn't listed (insufficient VRAM), or any row from a client that
+// doesn't pass `serving` at all (older version), reports llmModel null → blank on
+// the board.
+//
+// `serving.nodeId` is the machine's node id, and is only set when this machine is
+// a linked node whose job worker is armed — i.e. when it actually polls the
+// cluster for work. That's a different thing from running the model: a rig can
+// have the LLM loaded (llmModel set) and still serve nobody, which is exactly the
+// case the board couldn't previously show. It's rig-level, not per-card, so it
+// rides on every row of a multi-GPU host.
 function buildMinerReports(settings, snap, gpuVram, version, serving) {
   const s = settings || {};
   const n = snap || {};
@@ -34,6 +42,7 @@ function buildMinerReports(settings, snap, gpuVram, version, serving) {
     worker: String(s.worker || 'rig01').trim() || 'rig01',
     region: s.region || 'us2',
     version: version != null ? String(version) : null, // earn client version, so the board can see fleet versions
+    nodeId: serving && serving.nodeId ? String(serving.nodeId) : null,
   };
 
   const serveModel = serving && serving.model ? String(serving.model) : null;

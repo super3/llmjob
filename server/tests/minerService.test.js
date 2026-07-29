@@ -137,6 +137,23 @@ describe('MinerService (db)', () => {
     expect(out.miners.find((m) => m.addr === ADDR.b).llmModel).toBeNull(); // non-serving host is blank
   });
 
+  test('marks a host that serves cluster jobs with its node id, blank when it only runs a model', async () => {
+    // Serving the cluster: the client sends its node id alongside the model.
+    await service.reportMiner({ address: ADDR.a, worker: 'rig9/gpu0', gpu: 'RTX 4090', hashrate: 100, llmModel: 'Gemma-4-E4B-it-Q4_K_M', nodeId: '5840fc' });
+    await service.reportMiner({ address: ADDR.a, worker: 'rig9/gpu1', gpu: 'RTX 4090', hashrate: 90, llmModel: 'Gemma-4-E4B-it-Q4_K_M', nodeId: '5840fc' });
+    // Running the model but NOT serving (unlinked, or a client too old to send it).
+    await service.reportMiner({ address: ADDR.b, worker: 'rig01', gpu: 'RTX 3090', hashrate: 50, llmModel: 'Gemma-4-E4B-it-Q4_K_M' });
+
+    const stored = (await db.query("SELECT node_id FROM miners WHERE worker = 'rig9/gpu0'", [])).rows[0];
+    expect(stored.node_id).toBe('5840fc');
+
+    const out = await service.getPublicMiners();
+    // The node id is the machine's, so the host row carries it once.
+    expect(out.miners.find((m) => m.worker === 'rig9').nodeId).toBe('5840fc');
+    // Advertising a model is not the same as serving — this host stays unmarked.
+    expect(out.miners.find((m) => m.addr === ADDR.b).nodeId).toBeNull();
+  });
+
   test('combines a multi-GPU host (worker/gpuN) into one row that sums its cards', async () => {
     // One rig, three A4000s on ADDR.a: workers rig9/gpu0..2 → a single host row.
     await service.reportMiner({ address: ADDR.a, worker: 'rig9/gpu0', gpu: 'NVIDIA RTX A4000', hashrate: 96, accepted: 4, vramUsedMb: 5000, vramTotalMb: 16000, version: '0.2.10' });

@@ -1462,6 +1462,37 @@ describe('local LLM', () => {
     await flush();
     const payloads = ctx.probe.postMinerReport.mock.calls.map((c) => c[0]);
     expect(payloads.some((p) => p.llmModel === ctx.config.LLM.model.name)).toBe(true);
+    // Linked, so the rows also carry the node id — the board's "serving the
+    // cluster" marker, as opposed to merely running the model.
+    expect(payloads.some((p) => p.nodeId === 'abc123')).toBe(true);
+  });
+
+  it('board report omits the node id when the LLM runs unlinked (model, but not serving)', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        // Not connected: the job worker is never armed, so this host runs the model
+        // for itself and must not be marked as serving the cluster.
+        c.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: false }));
+        c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode({ connected: false }));
+        c.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
+      },
+    });
+    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
+
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'both' });
+    await flush();
+    ctx.MinerManager.instances[0].emit('event', { type: 'status', hashrate: '5' });
+    await flush(30);
+    const llm = ctx.LlmManager.instances[0];
+    llm.emit('ready', { baseUrl: llm.baseUrl });
+    await flush();
+
+    ctx.probe.postMinerReport.mockClear();
+    ctx.interval(ctx.config.NETWORK.reportIntervalMs).fn();
+    await flush();
+    const payloads = ctx.probe.postMinerReport.mock.calls.map((c) => c[0]);
+    expect(payloads.length).toBeGreaterThan(0);
+    expect(payloads.every((p) => p.nodeId === null)).toBe(true);
   });
 
   it('a miner that stops during the co-run wait releases the LLM start', async () => {
