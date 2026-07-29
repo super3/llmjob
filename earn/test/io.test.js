@@ -343,90 +343,38 @@ describe('downloadFile', () => {
     jest.useRealTimers();
   });
 
-  // The point of the retry: a 4.6 GB model that dies part-way continues from
-  // where it stopped. Restarting at zero on a link that drops every few minutes
-  // never converges.
-  it('resumes from the bytes already on disk with a Range request', async () => {
+  // A retry succeeds and, crucially, starts the scratch file CLEAN. Resuming
+  // from a partial was tried and removed: the model is only ever validated with
+  // existsSync, so a resume that got the offset wrong would leave a corrupt
+  // multi-GB GGUF at the final path that every later start accepts.
+  it('retries from a clean scratch file rather than resuming a partial', async () => {
     jest.useFakeTimers();
-    const r1 = fakeRes({ statusCode: 200, headers: { 'content-length': '1000' } });
-    const r2 = fakeRes({ statusCode: 206, headers: { 'content-length': '400' } });
-    wire(https, [r1, r2]);
-    const [o1, o2] = [fakeWrite(), fakeWrite()];
-    fs.createWriteStream.mockReturnValueOnce(o1).mockReturnValueOnce(o2);
-    fs.statSync.mockReturnValue({ size: 600 }); // 600 of 1000 landed before the drop
-    fs.renameSync.mockImplementation(() => {});
-    const progress = [];
-
-    const p = io.downloadFile('https://host/f', '/tmp/f', (pct) => progress.push(pct));
-    r1.emit('data', Buffer.alloc(600));
-    r1.emit('error', new Error('aborted'));
-    await advance(1);
-
-    expect(https.get.mock.calls[1][1]).toMatchObject({ headers: { Range: 'bytes=600-' } });
-    expect(fs.createWriteStream.mock.calls[1][1]).toMatchObject({ flags: 'a' }); // append, don't truncate
-    // Both attempts write the SAME scratch file — that is what makes it a resume.
-    expect(fs.createWriteStream.mock.calls[1][0]).toBe(fs.createWriteStream.mock.calls[0][0]);
-
-    r2.emit('data', Buffer.alloc(400));
-    o2.emit('finish');
-    await expect(p).resolves.toBe('/tmp/f');
-    // A 206's content-length is the REMAINDER, so the total must count the bytes
-    // already held — otherwise the bar would finish at 40%.
-    expect(progress[progress.length - 1]).toBe(100);
-    jest.useRealTimers();
-  });
-
-  // Not every server honours Range. One that ignores it replies 200 with the
-  // whole body, which must overwrite the scratch file rather than append a
-  // second copy onto the bytes already there.
-  it('starts the scratch file over when a resumed request is answered 200', async () => {
-    jest.useFakeTimers();
+    const realSetTimeout = global.setTimeout;
+    global.setTimeout = (fn, ms) => { realSetTimeout(fn, ms); return {}; }; // handle without unref()
     const r1 = fakeRes({ statusCode: 200, headers: { 'content-length': '1000' } });
     const r2 = fakeRes({ statusCode: 200, headers: { 'content-length': '1000' } });
     wire(https, [r1, r2]);
     const [o1, o2] = [fakeWrite(), fakeWrite()];
     fs.createWriteStream.mockReturnValueOnce(o1).mockReturnValueOnce(o2);
-    fs.statSync.mockReturnValue({ size: 600 });
     fs.renameSync.mockImplementation(() => {});
     const progress = [];
 
     const p = io.downloadFile('https://host/f', '/tmp/f', (pct) => progress.push(pct));
+    r1.emit('data', Buffer.alloc(600)); // 600 of 1000 before the drop…
     r1.emit('error', new Error('aborted'));
     await advance(1);
 
-    expect(fs.createWriteStream.mock.calls[1][1]).toBeUndefined(); // truncating open
+    // …and the second attempt asks for the whole file again, into a truncating
+    // open of the same scratch path.
+    expect(typeof https.get.mock.calls[1][1]).toBe('function'); // callback, not an options object → no Range header
+    expect(fs.createWriteStream.mock.calls[1][1]).toBeUndefined(); // truncating, not { flags: 'a' }
+    expect(fs.createWriteStream.mock.calls[1][0]).toBe(fs.createWriteStream.mock.calls[0][0]);
+    expect(fs.statSync).not.toHaveBeenCalled(); // nothing measures the partial any more
+
     r2.emit('data', Buffer.alloc(1000));
     o2.emit('finish');
     await expect(p).resolves.toBe('/tmp/f');
     expect(progress[progress.length - 1]).toBe(100);
-    jest.useRealTimers();
-  });
-
-  // statSync throwing (the scratch file never got created) must not wedge the
-  // retry — it just resumes from zero.
-  // statSync throwing (the scratch file never got created) must not wedge the
-  // retry — it just resumes from zero. This one also runs with a setTimeout
-  // whose handle has no unref(), the shape a non-Node host returns, to prove the
-  // retry timer is scheduled either way.
-  it('resumes from zero when the scratch file cannot be measured', async () => {
-    jest.useFakeTimers();
-    const realSetTimeout = global.setTimeout;
-    global.setTimeout = (fn, ms) => { realSetTimeout(fn, ms); return {}; };
-    const r1 = fakeRes({ statusCode: 200, headers: {} });
-    const r2 = fakeRes({ statusCode: 200, headers: { 'content-length': '10' } });
-    wire(https, [r1, r2]);
-    const [o1, o2] = [fakeWrite(), fakeWrite()];
-    fs.createWriteStream.mockReturnValueOnce(o1).mockReturnValueOnce(o2);
-    fs.statSync.mockImplementation(() => { throw new Error('ENOENT'); });
-    fs.renameSync.mockImplementation(() => {});
-
-    const p = io.downloadFile('https://host/f', '/tmp/f');
-    r1.emit('error', new Error('aborted'));
-    await advance(1);
-
-    expect(https.get.mock.calls[1][1]).toEqual({}); // no Range header
-    o2.emit('finish');
-    await expect(p).resolves.toBe('/tmp/f');
     global.setTimeout = realSetTimeout;
     jest.useRealTimers();
   });

@@ -82,66 +82,60 @@ let partSeq = 0;
 // it out from under the others, which then died on `ENOENT … rename
 // llama-download.archive.part`. Uniqueness makes concurrent attempts merely
 // redundant (last writer wins the rename) instead of failing.
-// A dropped connection part-way through a multi-GB download used to throw the
-// whole transfer away. Retry a few times, resuming from what already landed on
-// disk via a Range request, so a 4.6 GB model that dies at 57% continues from
-// 57% instead of restarting at zero — on a link that drops every few minutes,
-// restarting never converges. Attempts are per call, and the scratch file is
-// removed once they are exhausted: a partial left between runs could belong to a
-// different URL, and validating that is not worth the complexity.
+// A dropped connection is retried a few times with a backoff, and every attempt
+// starts the scratch file from scratch.
+//
+// Resuming from the bytes already on disk (a Range request, appending to the
+// partial) is the obvious optimisation and was deliberately removed: the model
+// is only ever validated with existsSync, so a resume that got the offset wrong
+// would leave a corrupt multi-GB GGUF at the final path that every later start
+// accepts, failing to load with an opaque error until someone manually deletes
+// a file they don't know about. Getting it right needs Content-Range validation
+// (a server may answer 206 from an offset other than the one asked for), care
+// around bytes still buffered in the write stream when it is destroyed, and a
+// size or checksum check before the rename. None of that is worth carrying to
+// avoid re-downloading on the minority of transfers that drop — especially now
+// that a stalled setup is visible on the hero rather than silent, so a user can
+// see what happened and retry deliberately.
 const DOWNLOAD_ATTEMPTS = 4;
 const DOWNLOAD_RETRY_MS = 2000;
 
 function downloadFile(url, dest, onProgress, redirects) {
   const part = dest + '.' + process.pid + '.' + (partSeq = (partSeq + 1) % 1e6) + '.part';
-  return downloadAttempt(url, dest, part, onProgress, redirects || 0, 0, 1);
+  return downloadAttempt(url, dest, part, onProgress, redirects || 0, 1);
 }
 
-// One HTTP attempt for `url` into `part`, resuming at byte `resumeFrom`. On a
-// transport failure it waits and re-enters itself with whatever is on disk,
-// until DOWNLOAD_ATTEMPTS is reached.
-function downloadAttempt(url, dest, part, onProgress, redirects, resumeFrom, attempt) {
+// One HTTP attempt for `url` into `part`. On a transport failure it waits and
+// re-enters itself, until DOWNLOAD_ATTEMPTS is reached.
+function downloadAttempt(url, dest, part, onProgress, redirects, attempt) {
   return new Promise((resolve, reject) => {
     if (redirects > 5) return reject(new Error('too many redirects'));
 
-    // Give up for good, or wait and resume. The byte count comes from the file
-    // on disk rather than from what we counted: the write stream may be holding
-    // buffered chunks that never landed, and resuming past them would corrupt
-    // the file with a gap.
     const retryOrFail = (err) => {
       if (attempt >= DOWNLOAD_ATTEMPTS) { fs.unlink(part, () => {}); return reject(err); }
-      let have = 0;
-      try { have = fs.statSync(part).size; } catch (e) { have = 0; }
       const timer = setTimeout(() => {
-        downloadAttempt(url, dest, part, onProgress, redirects, have, attempt + 1).then(resolve, reject);
+        downloadAttempt(url, dest, part, onProgress, redirects, attempt + 1).then(resolve, reject);
       }, DOWNLOAD_RETRY_MS * attempt);
       if (timer.unref) timer.unref();
     };
 
     const lib = url.startsWith('https') ? https : http;
-    const opts = resumeFrom > 0 ? { headers: { Range: 'bytes=' + resumeFrom + '-' } } : {};
-    const req = lib.get(url, opts, (res) => {
+    const req = lib.get(url, (res) => {
       const code = res.statusCode || 0;
       if (code >= 300 && code < 400 && res.headers.location) {
         res.resume();
         const next = new URL(res.headers.location, url).toString();
-        return resolve(downloadAttempt(next, dest, part, onProgress, redirects + 1, resumeFrom, attempt));
+        return resolve(downloadAttempt(next, dest, part, onProgress, redirects + 1, attempt));
       }
-      // A server that ignores Range answers 200 with the whole body again, so
-      // start the scratch file over rather than appending a second copy onto the
-      // bytes we already have.
-      const restart = resumeFrom > 0 && code === 200;
-      if (restart) resumeFrom = 0;
-      if (code !== 200 && code !== 206) {
+      if (code !== 200) {
         res.resume();
         return reject(new Error('HTTP ' + code + ' for ' + url));
       }
-      // On a 206 content-length is the size of the REMAINDER, so the real total
-      // is what we already hold plus what is coming.
-      const len = parseInt(res.headers['content-length'] || '0', 10);
-      const total = resumeFrom > 0 && len ? resumeFrom + len : len;
-      let received = resumeFrom;
-      const out = fs.createWriteStream(part, resumeFrom > 0 ? { flags: 'a' } : undefined);
+      const total = parseInt(res.headers['content-length'] || '0', 10);
+      let received = 0;
+      // Truncating open: a retry overwrites whatever the failed attempt left,
+      // so no attempt ever reasons about partial state.
+      const out = fs.createWriteStream(part);
       const fail = (err) => { out.destroy(); retryOrFail(err); };
       res.on('data', (c) => { received += c.length; if (onProgress) onProgress(progressPercent(received, total)); });
       res.on('error', fail);
