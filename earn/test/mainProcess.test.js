@@ -562,6 +562,33 @@ describe('simple ipc handlers', () => {
     expect(open).toHaveBeenCalledTimes(3);
   });
 
+  // The other half of the resize loop. setContentSize round-trips the width back
+  // through getContentSize, and on a DPI-scaled display that is not lossless —
+  // so re-applying a size that was already correct still nudged the frame and
+  // triggered the next fit. A fit that would change nothing must touch nothing.
+  it('app:fit leaves the window alone when it already fits', async () => {
+    const ctx = await boot();
+    const w = ctx.win(); // getContentSize() → [620, 650]
+    w.setContentSize.mockClear();
+
+    w.webContents.executeJavaScript.mockResolvedValueOnce(650); // exactly right
+    ctx.emit('app:fit');
+    await flush();
+    w.webContents.executeJavaScript.mockResolvedValueOnce(649); // within tolerance
+    ctx.emit('app:fit');
+    await flush();
+    w.webContents.executeJavaScript.mockResolvedValueOnce(652);
+    ctx.emit('app:fit');
+    await flush();
+    expect(w.setContentSize).not.toHaveBeenCalled();
+
+    // …but a real mismatch still resizes, keeping the frame on the content.
+    w.webContents.executeJavaScript.mockResolvedValueOnce(500);
+    ctx.emit('app:fit');
+    await flush();
+    expect(w.setContentSize).toHaveBeenCalledWith(620, 500);
+  });
+
   it('app:fit is a no-op before the window exists and measures it after', async () => {
     const ctx = loadMain();
     ctx.emit('app:fit'); // no window yet — early return

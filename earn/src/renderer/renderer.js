@@ -494,12 +494,24 @@
   // this the frame keeps its old size — leaving a gap under the footer or
   // clipping a taller view. Inner scrollers (chat, logs) are bounded, so this
   // fires on discrete layout changes, not per streamed token.
+  //
+  // Fires on HEIGHT changes only. A ResizeObserver reports width too, and the
+  // fit never touches width — so reacting to it made this self-sustaining:
+  // resizing the frame nudges .app's width (a scrollbar appearing, or DIP
+  // rounding on a scaled display), which read as a fresh layout change and
+  // asked for another fit, which nudged it again. The window resized
+  // continuously on startup until a minimize/restore settled it, and any manual
+  // resize started it off once more.
   function watchWindowFit() {
     if (!api.fitWindow || typeof ResizeObserver === 'undefined') return;
     const appEl = document.querySelector('.app');
     if (!appEl) return;
     let t = null;
+    let lastH = null;
     const ro = new ResizeObserver(() => {
+      const h = Math.ceil(appEl.getBoundingClientRect().height);
+      if (h === lastH) return;
+      lastH = h;
       if (t) clearTimeout(t);
       t = setTimeout(() => api.fitWindow(), 80);
     });
