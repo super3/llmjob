@@ -143,10 +143,16 @@ class MinerService {
     const llmModel = input.llmModel ? String(input.llmModel).slice(0, 64) : null;
     // The machine's node id, sent only while it is armed to serve cluster jobs.
     // Null (client too old, or running the model without serving) means the board
-    // shows the row as advertising a model rather than serving the network. This
-    // is self-reported on an unauthenticated ping, so it's a display hint only —
-    // nothing routes or authorizes on it.
-    const nodeId = input.nodeId ? String(input.nodeId).slice(0, 64) : null;
+    // shows the row as advertising a model rather than serving the network.
+    //
+    // Shape-validated, not merely length-clamped: this ping is unauthenticated, and
+    // the value is rendered into a chip on the public board. A real node id is
+    // sha256(publicKey) truncated to 6 hex chars — both nodeService's
+    // generateNodeFingerprint and the client's node.fingerprint() produce exactly
+    // that — so anything else is junk and stored as null rather than painted onto
+    // the board. It remains a display hint only: nothing routes or authorizes on it.
+    const rawNodeId = input.nodeId == null ? '' : String(input.nodeId).trim();
+    const nodeId = /^[0-9a-f]{6}$/.test(rawNodeId) ? rawNodeId : null;
     const id = minerFingerprint(address, worker);
     const now = Date.now();
 
