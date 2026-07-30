@@ -459,16 +459,30 @@ function createWindow() {
   });
 }
 
+// How far the frame may sit from the measured content before it is worth
+// resizing. A pixel or two is invisible; chasing it is not, because the resize
+// itself perturbs the layout (see below).
+const FIT_TOLERANCE_PX = 2;
+
 // Measure the rendered content (.app) and set the window's content area to it,
 // so the miner view fits exactly. Best-effort — resolves regardless of errors.
+//
+// Only resizes when the frame is actually wrong. Re-applying a size that is
+// already correct is not free: setContentSize round-trips the width back
+// through getContentSize, and on a DPI-scaled display that round trip is not
+// lossless, so a "no-op" fit still nudged the frame by a pixel. The renderer's
+// ResizeObserver saw .app change and asked for another fit, which nudged it
+// again — the window resized continuously on startup until a minimize/restore
+// settled it, and any manual resize set it going again.
 function fitWindowToContent() {
   if (!win || win.isDestroyed()) return Promise.resolve();
   return win.webContents
     .executeJavaScript('Math.ceil((document.querySelector(".app") || document.body).getBoundingClientRect().height)')
     .then((h) => {
-      if (win && !win.isDestroyed() && Number.isFinite(h) && h > 0) {
-        win.setContentSize(win.getContentSize()[0], h);
-      }
+      if (!win || win.isDestroyed() || !Number.isFinite(h) || h <= 0) return;
+      const [width, current] = win.getContentSize();
+      if (Math.abs(current - h) <= FIT_TOLERANCE_PX) return;
+      win.setContentSize(width, h);
     })
     .catch(() => {});
 }

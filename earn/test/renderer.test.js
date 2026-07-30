@@ -787,11 +787,40 @@ describe('boot with the full bridge', () => {
   it('debounces window refits through the resize observer', async () => {
     const { api } = makeFullApi();
     await boot({ api, resizeObserver: ROStub });
-    expect(ROStub.observed).toBe(document.querySelector('.app'));
+    const appEl = document.querySelector('.app');
+    expect(ROStub.observed).toBe(appEl);
+    let height = 0;
+    appEl.getBoundingClientRect = () => ({ height });
+
+    height = 500;
     ROStub.cb();
     jest.advanceTimersByTime(40);
-    ROStub.cb(); // resets the pending debounce
+    height = 600;
+    ROStub.cb(); // a further height change resets the pending debounce
+    jest.advanceTimersByTime(40);
+    expect(api.fitWindow).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(40);
+    expect(api.fitWindow).toHaveBeenCalledTimes(1);
+  });
+
+  // The reported bug: "the window keeps resizing automatically… it also starts
+  // again as soon as I try to resize it manually". A ResizeObserver reports
+  // width as well as height, and the fit only ever changes height — so a frame
+  // resize that nudged .app's width (scrollbar, or DIP rounding on a scaled
+  // display) asked for another fit, which nudged it again, forever.
+  it('ignores width-only resizes so a fit cannot retrigger itself', async () => {
+    const { api } = makeFullApi();
+    await boot({ api, resizeObserver: ROStub });
+    const appEl = document.querySelector('.app');
+    appEl.getBoundingClientRect = () => ({ height: 500 }); // height never changes
+
+    ROStub.cb(); // first observation: the height is new, so one fit is right
     jest.advanceTimersByTime(80);
+    expect(api.fitWindow).toHaveBeenCalledTimes(1);
+
+    ROStub.cb(); // the fit perturbed the width — must not schedule another
+    ROStub.cb();
+    jest.advanceTimersByTime(500);
     expect(api.fitWindow).toHaveBeenCalledTimes(1);
   });
 });
