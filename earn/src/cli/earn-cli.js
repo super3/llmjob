@@ -33,7 +33,7 @@ const { buildMinerReports } = require('../shared/minerReport');
 const { statsFilePayload } = require('../shared/statsFile');
 const { shortenAddress, isValidAddress } = require('../shared/address');
 const { pickGpu, countGpus } = require('../shared/gpu');
-const { requiredVramMb, pickLlmGpu } = require('../shared/vram');
+const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
 const { planLlmInstances } = require('../shared/llmPlan');
 const { LlmFleet } = require('../main/llmFleet');
 const { JobWorker } = require('../main/jobWorker');
@@ -395,8 +395,10 @@ async function startLlm(settings, reserveMb) {
     // An empty plan means at least one card parsed but none fit, so pickLlmGpu
     // (same parse rules) returns that card for the error message.
     const gpu = pickLlmGpu(cards);
+    // Quote the binding constraint (model + mining reserve when co-running), not
+    // just the preflight floor — the floor understates what was actually enforced.
     log('not enough free VRAM on any single GPU for the local LLM: ' + gpu.freeMb
-      + ' MB free on GPU ' + gpu.index + ', need ~' + requiredVramMb(LLM.model)
+      + ' MB free on GPU ' + gpu.index + ', need ~' + requiredFreeMb(LLM.model, reserveMb || 0)
       + ' MB for ' + LLM.model.name + ' — skipping the LLM.', process.stderr);
     return null;
   }

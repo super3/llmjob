@@ -827,8 +827,9 @@ describe('both mode', () => {
   test('a card that can only hold part of the model is skipped, and mining carries on', async () => {
     const m = load();
     m.EngineManager.installed = true;
-    // 7000 MB free − 2048 reserve = 4952, short of the model's 6300.
-    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 1000, totalMb: 8000 }]);
+    // 5000 MB free minus the 2048 reserve = 2952, short of the model's 3800. It
+    // clears the preflight floor, so the all-or-nothing offload gate is what skips it.
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 1000, totalMb: 6000 }]);
     const p = m.run(argvBoth);
     await settle();
 
