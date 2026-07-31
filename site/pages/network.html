@@ -115,14 +115,13 @@
   .mr-llm .mr-llm-none { color: #c7c4b8; }
   /* Node chip: this host actually serves cluster jobs (it reported a node id),
      as opposed to merely running a model locally. */
-  /* Bounded on purpose: the LLM column is a fixed 136px grid track, so an
-     unexpected value must ellipsize inside the chip rather than paint across the
-     VRAM/hashrate cells. The server only stores well-formed 6-hex ids, this is
-     the second line of defence. */
-  .mr-node { display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px;
-    font-size: 10.5px; letter-spacing: .02em; color: #2f6f4f; background: #e8f5ee;
-    border: 1px solid #cfe8db; vertical-align: 1px;
-    max-width: 68px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* "This host serves cluster jobs." Deliberately a fixed-size dot rather than the
+     node id as text: the LLM column is a fixed 136px track, and any inline text
+     long enough to wrap makes that row taller than every other one. The id is in
+     the dot's tooltip. Green to read as "live", distinct from the blue online dot
+     in the address column. */
+  .mr-serving { display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: #16a34a; margin-right: 7px; vertical-align: 1px; flex: none; }
   /* A host running several cards is one clickable row; the chevron expands it
      into a per-card breakdown (the earn client posts each card as worker/gpuN). */
   .miner-row.is-multi { cursor: pointer; }
@@ -295,12 +294,16 @@
       // fleet still warming up — reports a nodeId while servingIndices() is still
       // empty, so llmModel is null. Building the chip before the no-model return
       // keeps those hosts marked instead of showing them as plain miners.
-      const chip = nodeId
-        ? '<span class="mr-node" title="Serving cluster jobs as node ' + esc(nodeId) + '">' + esc(nodeId) + '</span>'
+      // A dot, not a text badge: the LLM column is a fixed track, and a node id
+      // rendered inline wrapped onto a second line and made those rows taller than
+      // the rest. The dot costs ~10px and never wraps; the id itself lives in the
+      // tooltip, which is where you'd grab it to target the host anyway.
+      const dot = nodeId
+        ? '<span class="mr-serving" title="Serving cluster jobs as node ' + esc(nodeId) + '"></span>'
         : '';
-      if (!model) return '<div class="mr-llm"><span class="mr-llm-none">—</span>' + chip + '</div>';
+      if (!model) return '<div class="mr-llm">' + dot + '<span class="mr-llm-none">—</span></div>';
       const short = String(model).split(/-it\b/i)[0].replace(/[-_]+/g, ' ').trim() || String(model);
-      return '<div class="mr-llm"><span class="mr-llm-on" title="' + esc(model) + '">' + esc(short) + '</span>' + chip + '</div>';
+      return '<div class="mr-llm">' + dot + '<span class="mr-llm-on" title="' + esc(model) + '">' + esc(short) + '</span></div>';
     }
 
     // Which multi-GPU hosts are expanded, keyed by address|worker so the state
