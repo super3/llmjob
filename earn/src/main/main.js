@@ -29,7 +29,7 @@ const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE, endpointFor, difficultyForCard } = require('../shared/config');
 const { resolveEconomics } = require('../shared/economics');
 const nodeProto = require('../shared/node');
-const { requiredVramMb, pickLlmGpu } = require('../shared/vram');
+const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
 const { planLlmInstances } = require('../shared/llmPlan');
 const { LlmFleet } = require('./llmFleet');
 const { buildChatBody } = require('../shared/llmChat');
@@ -628,9 +628,14 @@ async function startLlm(reserveMb) {
     // one card parsed, and pickLlmGpu (same parse rules) returns it for the error.
     const best = pickLlmGpu(cards);
     const freeMb = best.freeMb;
-    const needGb = Math.round(requiredVramMb(LLM.model) / 1024);
+    // Quote the constraint that actually refused the card, not just the preflight
+    // floor: when co-running, the offload budget (model + mining reserve) is the
+    // larger of the two, and reporting the floor told users they needed less than
+    // they did — then refused them anyway.
+    const needMb = requiredFreeMb(LLM.model, reserveMb);
+    const needGb = Math.round(needMb / 1024);
     send('miner:log', { level: 'error', line: 'not enough free VRAM for the local LLM: ' + freeMb
-      + ' MB free, need ~' + requiredVramMb(LLM.model) + ' MB for ' + LLM.model.name + ' — skipping the LLM.' });
+      + ' MB free, need ~' + needMb + ' MB for ' + LLM.model.name + ' — skipping the LLM.' });
     llmStatus = Object.assign({}, llmStatus, { ready: false, note: null, error: 'Needs ~' + needGb + ' GB free VRAM' });
     sendLlmStatus();
     return false;

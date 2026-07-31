@@ -1,6 +1,6 @@
 'use strict';
 
-const { ALL_LAYERS, computeGpuLayers, requiredVramMb, hasEnoughVram, pickLlmGpu } = require('../src/shared/vram');
+const { ALL_LAYERS, computeGpuLayers, requiredVramMb, requiredFreeMb, hasEnoughVram, pickLlmGpu } = require('../src/shared/vram');
 
 const MODEL = { layers: 16, vramFullMb: 1600 }; // perLayer = 100 MB
 
@@ -120,5 +120,33 @@ describe('pickLlmGpu', () => {
 
   test('clamps negative free VRAM (used > total) to zero', () => {
     expect(pickLlmGpu([{ index: 0, usedMb: 17000, totalMb: 16000 }])).toEqual({ index: 0, freeMb: 0 });
+  });
+});
+
+describe('requiredFreeMb', () => {
+  // What a refusal should quote: the gate that actually blocked the card. When
+  // co-running that is the offload budget (model + reserve), which exceeds the
+  // preflight floor — reporting the floor told a user they needed less than they
+  // did and refused them anyway.
+  test('co-running: the model plus the mining reserve outranks the floor', () => {
+    expect(requiredFreeMb({ vramFullMb: 3800, minVramMb: 4352 }, 2048)).toBe(5848);
+  });
+
+  test('llm-only: with no reserve the floor is the binding constraint', () => {
+    expect(requiredFreeMb({ vramFullMb: 3800, minVramMb: 4352 }, 0)).toBe(4352);
+    expect(requiredFreeMb({ vramFullMb: 3800, minVramMb: 4352 })).toBe(4352);
+  });
+
+  test('falls back to the full-offload figure when no floor is configured', () => {
+    expect(requiredFreeMb({ vramFullMb: 3800 }, 512)).toBe(4312);
+  });
+
+  test('a model with neither figure needs nothing but the reserve', () => {
+    expect(requiredFreeMb({}, 2048)).toBe(2048);
+    expect(requiredFreeMb(null, 0)).toBe(0);
+  });
+
+  test('ignores an unparseable reserve', () => {
+    expect(requiredFreeMb({ vramFullMb: 3800, minVramMb: 4352 }, 'x')).toBe(4352);
   });
 });

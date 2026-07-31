@@ -486,8 +486,8 @@ describe('boot with the full bridge', () => {
     expect($('llm-hero-detail').textContent).toBe('Starting…');
 
     // A real error outranks the note — the note is only ever "still working".
-    cbs.llm({ note: 'Starting…', error: 'Needs ~7 GB free VRAM' });
-    expect($('llm-hero-detail').textContent).toBe('Needs ~7 GB free VRAM');
+    cbs.llm({ note: 'Starting…', error: 'Needs ~4 GB free VRAM' });
+    expect($('llm-hero-detail').textContent).toBe('Needs ~4 GB free VRAM');
     expect($('llm-hero-dot').className).toBe('dot2 err');
 
     // …and so does being ready, so a stale note can't linger over a live model.

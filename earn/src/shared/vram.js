@@ -34,6 +34,18 @@ function requiredVramMb(model) {
   return Number(model && model.minVramMb) || Number(model && model.vramFullMb) || 0;
 }
 
+// The free VRAM a card actually needs before the model will run on it, which is
+// what a refusal should quote. There are TWO gates — the preflight floor
+// (requiredVramMb) and the all-or-nothing offload budget once the mining reserve
+// is set aside (computeGpuLayers) — and when co-running the second is the larger
+// one. Reporting only the floor understated the requirement by the whole reserve:
+// a rig with 7 GB free was told it needed 6.5 GB and refused anyway. Kept beside
+// the gates so the number shown cannot drift from the number enforced.
+function requiredFreeMb(model, reserveMb) {
+  const full = Number(model && model.vramFullMb) || 0;
+  return Math.max(requiredVramMb(model), full + (Number(reserveMb) || 0));
+}
+
 // Is `freeMb` enough to start the model on the GPU without risking an OOM?
 //   true  — free VRAM is known and covers the requirement
 //   false — free VRAM is known and falls short (caller should not start)
@@ -76,4 +88,4 @@ function pickLlmGpu(cards) {
   return best;
 }
 
-module.exports = { ALL_LAYERS, computeGpuLayers, requiredVramMb, hasEnoughVram, pickLlmGpu };
+module.exports = { ALL_LAYERS, computeGpuLayers, requiredVramMb, requiredFreeMb, hasEnoughVram, pickLlmGpu };

@@ -1195,7 +1195,7 @@ describe('local LLM', () => {
     ctx.emit('miner:start', { mode: 'llm' });
     await flush();
     expect(ctx.sent('miner:log').map((l) => l.line).join('\n')).toContain('not enough free VRAM for the local LLM: 4000 MB free');
-    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false, error: 'Needs ~7 GB free VRAM' });
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false, error: 'Needs ~4 GB free VRAM' });
     expect(ctx.sent('miner:stopped')).toHaveLength(1);
     expect(ctx.LlmManager.instances).toHaveLength(0);
   });

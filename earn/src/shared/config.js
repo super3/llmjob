@@ -113,20 +113,31 @@ const LLM = {
   // context, tool-calling, and 140+ languages — a good default that co-runs with
   // mining without hogging the GPU. `layers` is the text model's transformer-layer
   // count (for --n-gpu-layers; llama.cpp clamps a larger value to what's present)
-  // and `vramFullMb` the approximate VRAM for a full GPU offload at ctxSize
-  // (weights + KV cache). `minVramMb` is the hard floor of free VRAM we require
-  // before starting the model on the GPU — a little above the ~5.8 GB full-offload
-  // estimate so we never spawn llama-server right at the edge and OOM.
+  // and `vramFullMb` the VRAM for a full GPU offload at ctxSize (weights + KV
+  // cache). `minVramMb` is the hard floor of free VRAM we require before
+  // starting the model on the GPU — above the full-offload figure so we never
+  // spawn llama-server right at the edge and OOM.
   model: {
     name: 'Gemma-4-E4B-it-Q4_K_M',
     file: 'gemma-4-E4B-it-Q4_K_M.gguf',
     url: 'https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf',
     layers: 42,
-    // Both scale with ctxSize, since the KV cache grows with the context window:
-    // ~5 GB of weights plus a cache that went from ~0.8 GB at 4096 to ~1.3 GB at
-    // 6400. Left stale these would under-book VRAM and OOM a smaller card.
-    vramFullMb: 6300,
-    minVramMb: 6656, // ~6.5 GB free required before we put it on the GPU
+    // MEASURED, not estimated. On a 4090 running the shipped command line
+    // (--n-gpu-layers 999 --ctx-size 6400 --split-mode none) llama-server holds
+    // 3308 MB of dedicated VRAM, flat — sampled through a 700-token generation,
+    // because llama.cpp allocates the KV cache up front, so steady state is also
+    // peak. Nothing lands in shared/host memory.
+    //
+    // The old 6300/6656 were guessed from the 4.6 GiB file size and were nearly
+    // 2x reality: E4B keeps its Per-Layer Embeddings in host RAM, so VRAM sits
+    // well under the weight file. That over-booking locked out a 16 GB card with
+    // 6.7 GB free — the model would have fitted twice over.
+    //
+    // 3800 is the measurement plus ~15% headroom for driver/fragmentation
+    // variance; minVramMb stays above it so we still never spawn right at the
+    // edge. Re-measure if ctxSize or the model changes: both move the KV cache.
+    vramFullMb: 3800,
+    minVramMb: 4352, // ~4.25 GB free required before we put it on the GPU
     quant: 'Q4_K_M',
   },
 };
