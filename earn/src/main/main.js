@@ -54,6 +54,7 @@ let reporter = null;
 let fleet = null;               // LlmFleet (one llama-server per eligible GPU) while up
 let llmEverReady = false;       // did any instance reach "ready" this run (vs. dying first)
 let serveLogged = false;        // "serving cluster jobs" logged once per serving run
+let registeredUnlinked = false; // self-registered an unlinked node once this run
 // `note` is a transient "what is it doing right now" line — "Downloading model…
 // 42%", "Starting…" — shown in place of the model name until the LLM is ready.
 // Without it a first run logs "preparing local LLM…" and then goes silent for
@@ -242,15 +243,16 @@ async function startMining(settings) {
     const gpuVram = await detectGpusVram();
     // Tag the cards serving the local LLM so the board shows which model each GPU
     // runs; null when the fleet isn't up (mining only) → blank on the board.
-    // `nodeId` rides along only when this machine is linked and therefore actually
-    // polls the cluster for jobs (the same condition syncWorker() arms the worker
-    // on) — running the model and serving the cluster are different things.
-    const linked = loadNode();
+    // `nodeId` rides along whenever the fleet is up, because that is now exactly
+    // when this machine polls the cluster — linked or not (syncWorker arms the
+    // worker on the fleet, not on the account). Running the model and serving the
+    // cluster are the same thing here; a machine with no identity yet reports null.
+    const identity = loadNode();
     const serving = fleet
       ? {
         model: LLM.model.name,
         indices: fleet.servingIndices(),
-        nodeId: linked && linked.connected ? linked.nodeId : null,
+        nodeId: identity ? identity.nodeId : null,
       }
       : null;
     buildMinerReports(settings, snap, gpuVram, app.getVersion(), serving).forEach(postMinerReport);
@@ -833,7 +835,10 @@ async function deviceName() {
 // current name so a Settings rename propagates to the server (see syncNodeName).
 async function pingNode() {
   const node = loadNode();
-  if (!node || !node.connected) return;
+  // Linked machines always ping. An unlinked one pings only while it is actually
+  // serving (the fleet is up), so a machine that merely once had an identity
+  // doesn't advertise itself as an online node while doing nothing.
+  if (!node || !(node.connected || fleet)) return;
   let vram = null;
   try { vram = await detectVram(); } catch (e) { /* ignore */ }
   const device = await deviceName();
@@ -915,12 +920,35 @@ function disconnectNode() {
 // against the local model, streaming chunks back — all outbound, so callers can
 // use this GPU through the shared API without any inbound networking here.
 
+// Register an unclaimed node server-side so /jobs/poll will answer it. Signature
+// only — no account. Best-effort: a failure just means no jobs arrive and the
+// local model still runs. Mirrors the CLI's registerNode.
+async function registerNode(node) {
+  try {
+    // Signing is inside the try on purpose: a corrupt or truncated node.json makes
+    // buildPingBody throw on the base64 secret key, and that must degrade to
+    // "no jobs arrive" rather than take down the app.
+    const body = nodeProto.buildPingBody({
+      nodeId: node.nodeId, publicKey: node.publicKey, secretKey: node.secretKey,
+      timestamp: Date.now(), telemetry: { name: node.name || undefined },
+    });
+    const res = await postJson((node.serverUrl || NODE.serverUrl) + '/api/nodes/register', body, 15000);
+    return res.status === 200;
+  } catch (e) {
+    return false;
+  }
+}
+
 // Build a cluster job-worker for the ready LLM instance at `baseUrl` — one per
-// serving GPU, each running jobs against its own llama-server. Returns null when
-// this node isn't linked, so the fleet serves nothing.
+// serving GPU, each running jobs against its own llama-server. A rig that can run
+// the model is useful to the network whether or not anyone linked it, so an
+// unlinked box serves public work too (the server hands an unclaimed node
+// non-private jobs only, so "unlinked" costs it access to private queues and
+// nothing else) — matching the headless CLI's default.
 function makeJobWorker(baseUrl) {
-  const node = loadNode();
-  if (!(node && node.connected)) return null;
+  // Reached only via the fleet after syncWorker() armed it, which already bailed
+  // if no identity could be minted — so `node` is always present here.
+  const node = getOrCreateNode();
   const w = new JobWorker({
     identity: { nodeId: node.nodeId, publicKey: node.publicKey, secretKey: node.secretKey },
     serverUrl: node.serverUrl || NODE.serverUrl,
@@ -938,13 +966,25 @@ function makeJobWorker(baseUrl) {
   return w;
 }
 
-// Start/stop cluster serving across every ready instance to match "linked AND a
-// model ready". Idempotent — called from connect/disconnect and LLM ready.
+// Start cluster serving across every ready instance once a model is up — account
+// or not. Idempotent, called from connect/disconnect and LLM ready. An unlinked
+// machine mints an identity and self-registers so the server will answer its
+// polls; a linked one is already registered and just keeps serving. Pinging
+// starts either way, so the node shows online and can be targeted for testing.
 function syncWorker() {
   if (!fleet) return;
-  const node = loadNode();
-  fleet.syncWorkers(!!(node && node.connected));
-  if (!(node && node.connected)) serveLogged = false;
+  const node = getOrCreateNode();
+  if (!node) return; // no identity and none could be minted — serve nothing
+  if (!node.connected && !registeredUnlinked) {
+    registeredUnlinked = true; // once per run — a retry every LLM-ready is noise
+    registerNode(node).then((ok) => {
+      send('miner:log', ok
+        ? { level: 'info', line: 'serving public jobs as an unlinked node (' + node.nodeId + ') — connect it to your account for private jobs' }
+        : { level: 'error', line: 'could not register with the network — running the LLM locally only' });
+    });
+  }
+  fleet.syncWorkers(true);
+  startNodePinger();
 }
 
 function stopWorker() {
