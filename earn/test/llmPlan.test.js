@@ -109,50 +109,45 @@ describe('planLlmServing', () => {
   const CAT = [SMALL, MID, BIG];
   const card = (index, usedMb, totalMb) => ({ index, usedMb, totalMb });
 
-  test('shards the biggest model across cards when no single card fits it', () => {
-    // two 16 GB cards, 14 GB free each → aggregate fits BIG; no single card does
-    const r = planLlmServing([card(0, 2000, 16000), card(1, 2000, 16000)], CAT, 0);
-    expect(r.model).toBe(BIG);
-    expect(r.sharded).toBe(true);
-    expect(r.instances).toEqual([{
-      index: 0, freeMb: 28000, nGpuLayers: ALL_LAYERS,
-      splitMode: 'layer', tensorSplit: [14000, 14000], devices: [0, 1],
-    }]);
-  });
-
-  test('serves the single best model per-card when sharding buys nothing', () => {
-    // two 8 GB cards → each holds SMALL, aggregate doesn't unlock a bigger model
+  test('serves the best model every card can hold, one instance per card', () => {
+    // two 8 GB cards → each holds SMALL, so each runs its own instance
     const r = planLlmServing([card(0, 1000, 8000), card(1, 1000, 8000)], CAT, 0);
     expect(r.model).toBe(SMALL);
-    expect(r.sharded).toBe(false);
     expect(r.instances.map((i) => i.index)).toEqual([0, 1]);
   });
 
-  test('a single big card serves its best model (no shard possible)', () => {
+  test('a single big card serves its best model', () => {
     const r = planLlmServing([card(0, 1000, 24000)], CAT, 0); // 23 GB free → MID
     expect(r.model).toBe(MID);
-    expect(r.sharded).toBe(false);
     expect(r.instances).toHaveLength(1);
   });
 
+  test('the rig ceiling is its BEST card, never the sum of its cards', () => {
+    // Two 16 GB cards, 14 GB free each. In aggregate that clears BIG's 24 GB floor,
+    // but a model never spans cards, so the rig is judged on one card: 14 GB holds
+    // SMALL and nothing larger.
+    const r = planLlmServing([card(0, 2000, 16000), card(1, 2000, 16000)], CAT, 0);
+    expect(r.model).toBe(SMALL);
+    expect(r.instances.map((i) => i.index)).toEqual([0, 1]);
+  });
+
   test('empty plan when even the smallest model will not fit any card', () => {
-    expect(planLlmServing([card(0, 1000, 5000)], CAT, 0)).toEqual({ model: null, sharded: false, instances: [] });
+    expect(planLlmServing([card(0, 1000, 5000)], CAT, 0)).toEqual({ model: null, instances: [] });
   });
 
   test('unmeasurable VRAM → the default model, one unknown-placement instance', () => {
     const r = planLlmServing(null, CAT, 0);
     expect(r.model).toBe(SMALL);
-    expect(r.sharded).toBe(false);
     expect(r.instances).toEqual([{ index: null, freeMb: null, nGpuLayers: ALL_LAYERS }]);
   });
 
-  test('prefers per-card over an equal-size shard (the mining reserve tips it)', () => {
-    // 25 GB free (no reserve) fits BIG on each card, but the 2 GB reserve drops
-    // each below BIG's floor, so pickShardPlan offers a BIG shard — same model as
-    // the per-card pick, so the rig keeps the two independent per-card instances.
-    const r = planLlmServing([card(0, 2000, 27000), card(1, 2000, 27000)], CAT, 2048);
+  test('the mining reserve can drop a card below the model it clears on paper', () => {
+    // 24000 MB free clears BIG's 24000 floor, so BIG is selected — but the 2048 MB
+    // mining reserve leaves 21952, under BIG's 22000 full-offload size. All-or-
+    // nothing means the card is skipped rather than partially loaded, so the model
+    // is chosen and the plan is still empty.
+    const r = planLlmServing([card(0, 2000, 26000), card(1, 2000, 26000)], CAT, 2048);
     expect(r.model).toBe(BIG);
-    expect(r.sharded).toBe(false);
-    expect(r.instances.map((i) => i.index)).toEqual([0, 1]);
+    expect(r.instances).toEqual([]);
   });
 });

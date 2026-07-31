@@ -1309,7 +1309,7 @@ describe('local LLM', () => {
       before: (c) => {
         c.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
         c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
-        // Two 8 GB cards → each holds the small model (not big enough to shard),
+        // Two 8 GB cards → each holds the small model,
         // so one llama-server + cluster worker pinned to each.
         c.probe.detectGpusVram.mockResolvedValue([
           { index: 0, name: 'RTX 3070', usedMb: 1000, totalMb: 8000 },
@@ -1366,7 +1366,7 @@ describe('local LLM', () => {
       before: (c) => {
         c.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
         c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
-        // Two 8 GB cards → per-card small model (no sharding), a server each.
+        // Two 8 GB cards → per-card small model, a server each.
         c.probe.detectGpusVram.mockResolvedValue([
           { index: 0, name: 'RTX 3070', usedMb: 1000, totalMb: 8000 },
           { index: 1, name: 'RTX 3070', usedMb: 1000, totalMb: 8000 },
@@ -1593,11 +1593,12 @@ describe('local LLM', () => {
       .toHaveBeenCalledWith(expect.objectContaining({ nGpuLayers: ALL_LAYERS }));
   });
 
-  it('shards a big model across GPUs when no single card fits it', async () => {
+  it('cards too small for the 27B each serve the tier they can hold', async () => {
     const ctx = await boot({
       before: (c) => {
-        // two 16 GB cards, ~14 GB free each: no single card fits the 27B, but the
-        // ~28 GB aggregate does → one sharded llama-server across both.
+        // Two 16 GB cards, ~14 GB free each. Their ~28 GB aggregate would cover the
+        // 27B, but a model never spans cards, so each card independently serves the
+        // largest tier IT holds — the Gemma default — as its own llama-server.
         c.probe.detectGpusVram.mockResolvedValue([
           { index: 0, name: 'RTX A4000', usedMb: 2000, totalMb: 16376 },
           { index: 1, name: 'RTX A4000', usedMb: 2000, totalMb: 16376 },
@@ -1607,15 +1608,20 @@ describe('local LLM', () => {
     ctx.emit('miner:start', { mode: 'llm' });
     await flush();
 
-    const qwen = ctx.config.LLM.models.find((m) => m.id === 'qwen3.6-27b');
-    expect(ctx.LlmManager.instances).toHaveLength(1); // one sharded instance, not one per card
-    expect(ctx.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
-      splitMode: 'layer', tensorSplit: [14376, 14376], mainGpu: 0,
-      nGpuLayers: ALL_LAYERS, ctxSize: qwen.ctxSize, parallel: qwen.parallel,
-    }));
+    const gemma = ctx.config.LLM.models.find((m) => m.default);
+    // The plan covers both cards, but instances start one at a time (see LlmFleet).
     expect(ctx.sent('miner:log').map((l) => l.line))
-      .toContain('local LLM (' + qwen.name + ') starting on sharded across GPUs 0,1');
-    expect(ctx.sent('llm:status').pop()).toMatchObject({ model: qwen.name });
+      .toContain('local LLM (' + gemma.name + ') starting on 2 GPUs [0, 1]');
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ model: gemma.name });
+    const g0 = ctx.LlmManager.instances[0];
+    expect(g0.start).toHaveBeenCalledWith(expect.objectContaining({
+      mainGpu: 0, nGpuLayers: ALL_LAYERS, ctxSize: gemma.ctxSize, parallel: gemma.parallel,
+    }));
+
+    g0.emit('ready', { baseUrl: g0.baseUrl });
+    await flush();
+    expect(ctx.LlmManager.instances).toHaveLength(2); // one per card, not one across both
+    expect(ctx.LlmManager.instances[1].start).toHaveBeenCalledWith(expect.objectContaining({ mainGpu: 1 }));
   });
 });
 

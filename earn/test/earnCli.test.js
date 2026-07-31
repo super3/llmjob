@@ -754,7 +754,7 @@ describe('local LLM', () => {
   test('runs one instance and worker per eligible GPU, summing their active jobs', async () => {
     const m = load();
     m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: 'rig' }));
-    // Two 8 GB cards → each holds the small model (not big enough to shard), so
+    // Two 8 GB cards → each holds the small model, so
     // one llama-server + cluster worker pinned to each.
     m.probe.detectGpusVram.mockResolvedValue([
       { index: 0, name: 'RTX 3070', usedMb: 1000, totalMb: 8000 },
@@ -995,12 +995,14 @@ describe('connect subcommand', () => {
   });
 });
 
-// ── multi-GPU serving: sharding ──────────────────────────────────────────────
+// ── multi-GPU serving: one instance per card, tiered to the card ─────────────
 
 describe('multi-GPU serving', () => {
-  test('shards a big model across GPUs when no single card fits it', async () => {
+  test('cards too small for the 27B each serve the tier they can hold', async () => {
     const m = load();
-    // two 16 GB A4000s, ~14 GB free each → shard the ~22 GB 27B across both
+    // Two 16 GB A4000s, ~14 GB free each. Their 28 GB aggregate would cover the
+    // 27B, but a model never spans cards, so each card independently serves the
+    // largest tier IT holds — the Gemma default.
     m.probe.detectGpusVram.mockResolvedValue([
       { index: 0, name: 'RTX A4000', usedMb: 2000, totalMb: 16376 },
       { index: 1, name: 'RTX A4000', usedMb: 2000, totalMb: 16376 },
@@ -1008,15 +1010,26 @@ describe('multi-GPU serving', () => {
     const p = m.run(['--mode', 'llm', '--no-update', '--llm-binary', '/lb', '--llm-model', '/lm']);
     await settle(6);
 
-    const qwen = LLM.models.find((mm) => mm.id === 'qwen3.6-27b');
-    expect(m.LlmManager.instances.length).toBe(1); // one sharded instance, not one per card
-    expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
-      splitMode: 'layer', tensorSplit: [14376, 14376], mainGpu: 0,
-      nGpuLayers: ALL_LAYERS, ctxSize: qwen.ctxSize, parallel: qwen.parallel,
+    const gemma = LLM.models.find((mm) => mm.default);
+    // The plan covers both cards, but instances start one at a time (see LlmFleet).
+    expect(allOut()).toContain('local LLM (' + gemma.name + ') starting on 2 GPUs [0, 1]');
+    const g0 = m.LlmManager.instances[0];
+    expect(g0.start).toHaveBeenCalledWith(expect.objectContaining({
+      mainGpu: 0, nGpuLayers: ALL_LAYERS, ctxSize: gemma.ctxSize, parallel: gemma.parallel,
     }));
-    expect(allOut()).toContain('local LLM (' + qwen.name + ') starting on sharded across GPUs 0,1');
 
-    m.LlmManager.instances[0].emit('stopped', 0); // fleet down → llm-only exits non-zero
-    await expect(p).resolves.toBe(1);
+    g0.emit('ready', { baseUrl: g0.baseUrl });
+    await settle();
+    expect(m.LlmManager.instances.length).toBe(2); // one per card, not one across both
+    const g1 = m.LlmManager.instances[1];
+    expect(g1.start).toHaveBeenCalledWith(expect.objectContaining({ mainGpu: 1 }));
+
+    // SIGINT stops both instances and resolves the LLM-only run
+    g1.emit('ready', { baseUrl: g1.baseUrl });
+    await settle();
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+    expect(g0.stop).toHaveBeenCalled();
+    expect(g1.stop).toHaveBeenCalled();
   });
 });

@@ -92,7 +92,7 @@ class LlmFleet extends EventEmitter {
     const port = await this.findFreePort(this.host, this._nextPort, 10);
     this._nextPort = port + 1; // the next instance probes from the following port
     const mgr = this.makeManager();
-    const inst = { index: e.index, devices: e.devices, port, mgr, ready: false, stopped: false, baseUrl: null, worker: null };
+    const inst = { index: e.index, port, mgr, ready: false, stopped: false, baseUrl: null, worker: null };
     this.instances.push(inst);
     mgr.on('log', (l) => this.emit('log', l));
     mgr.on('ready', ({ baseUrl }) => this._onReady(inst, baseUrl));
@@ -104,10 +104,6 @@ class LlmFleet extends EventEmitter {
       port,
       nGpuLayers: e.nGpuLayers,
       mainGpu: e.index == null ? undefined : e.index,
-      // Sharded entries carry a split across cards; per-card entries leave these
-      // undefined, so buildServerArgs keeps --split-mode none.
-      splitMode: e.splitMode,
-      tensorSplit: e.tensorSplit,
     }));
     inst.baseUrl = mgr.baseUrl;
     return inst;
@@ -219,16 +215,13 @@ class LlmFleet extends EventEmitter {
   }
 
   // GPU indices currently serving the model (ready instances). Drives the miner
-  // board's "serving LLM" column. A sharded instance spans several cards, so it
-  // contributes all of its `devices`; a per-card instance contributes its single
-  // index; a null index (unmeasured single instance, or an adopted server) is
-  // dropped — we only tag cards we can actually attribute.
+  // board's "serving LLM" column. Each instance contributes its single index; a
+  // null index (unmeasured single instance, or an adopted server) is dropped —
+  // we only tag cards we can actually attribute.
   servingIndices() {
     const out = [];
     for (const i of this.instances) {
-      if (!i.ready) continue;
-      if (Array.isArray(i.devices) && i.devices.length) out.push(...i.devices);
-      else if (i.index != null) out.push(i.index);
+      if (i.ready && i.index != null) out.push(i.index);
     }
     return out;
   }

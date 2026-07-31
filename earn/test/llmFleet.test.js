@@ -95,20 +95,6 @@ describe('LlmFleet', () => {
     expect(mgrs[0].stopped).toBe(true);
   });
 
-  test('a sharded instance passes the split through and tags every shard card', async () => {
-    const { fleet, mgrs } = makeFleet();
-    await fleet.start(
-      [{ index: 0, nGpuLayers: 48, splitMode: 'layer', tensorSplit: [14000, 14000], devices: [0, 1] }],
-      { binaryPath: 'b', modelPath: 'm' }
-    );
-    await drain();
-    expect(mgrs).toHaveLength(1); // one server spans both cards, not one per card
-    expect(mgrs[0].startOpts).toMatchObject({ mainGpu: 0, splitMode: 'layer', tensorSplit: [14000, 14000] });
-    mgrs[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
-    // the board tags BOTH shard cards, not just the main GPU
-    expect(fleet.servingIndices()).toEqual([0, 1]);
-  });
-
   test('start() with a non-array or empty plan launches nothing', async () => {
     const { fleet, mgrs } = makeFleet();
     expect(await fleet.start(undefined, {})).toBe(0);

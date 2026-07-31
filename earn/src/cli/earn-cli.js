@@ -258,8 +258,8 @@ async function resolveLlmModel(settings, dir, model) {
 // teardown, plus the single keep-alive ping shared across the whole fleet.
 let serveFleet = null;
 let servePinger = null;
-// `model` is the catalog model the rig ended up serving (VRAM-tiered, possibly
-// sharded), so the keep-alive ping + board report the real model/quant.
+// `model` is the catalog model the rig ended up serving (VRAM-tiered to its best
+// card), so the keep-alive ping + board report the real model/quant.
 let serveLlmState = { ready: false, tps: 0, model: LLM.model };
 // This machine's node id while it is armed to serve cluster jobs — reported on the
 // miner ping so the network board can tell "running the model" from "serving the
@@ -377,16 +377,15 @@ async function startLlm(settings, reserveMb) {
   const dir = llmDir(settings);
 
   // Plan what the rig serves before doing anything expensive (downloading a
-  // multi-GB model): the largest catalog model its VRAM allows, sharded across
-  // cards when a bigger model needs more than one (planLlmServing). One model per
-  // rig keeps telemetry + job routing per-node. A per-card plan pins each instance
-  // to its card (--main-gpu) and sizes it from that card's free VRAM, never the
-  // rig's summed total; a sharded plan is the one case the model does span cards.
+  // multi-GB model): the largest catalog model its best card can hold
+  // (planLlmServing). One model per rig keeps telemetry + job routing per-node.
+  // The plan pins each instance to its card (--main-gpu) and sizes it from that
+  // card's free VRAM, never the rig's summed total — the model never spans cards.
   // An empty plan means VRAM was measured but no card had room — refuse. When VRAM
   // can't be read the planner returns one unknown-placement instance and lets
   // llama.cpp decide.
   const cards = await detectGpusVram();
-  const { model, sharded, instances: plan } = planLlmServing(cards, LLM.models, reserveMb || 0, {
+  const { model, instances: plan } = planLlmServing(cards, LLM.models, reserveMb || 0, {
     maxInstances: settings.llmMaxInstances,
   });
   // Say so when the operator's cap bit — a silently smaller fleet is
@@ -479,10 +478,8 @@ async function startLlm(settings, reserveMb) {
   fleet.syncWorkers(canServe); // arm serving before instances come up
   await fleet.start(plan, { platform: process.platform, binaryPath, modelPath,
     ctxSize: model.ctxSize, parallel: model.parallel });
-  const gpus = sharded
-    ? 'sharded across GPUs ' + plan[0].devices.join(',')
-    : plan.length + ' GPU' + (plan.length === 1 ? '' : 's') + ' ['
-      + plan.map((p) => (p.index == null ? 'auto' : p.index)).join(', ') + ']';
+  const gpus = plan.length + ' GPU' + (plan.length === 1 ? '' : 's') + ' ['
+    + plan.map((p) => (p.index == null ? 'auto' : p.index)).join(', ') + ']';
   log('local LLM (' + model.name + ') starting on ' + gpus);
   return fleet;
 }

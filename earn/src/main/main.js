@@ -55,9 +55,9 @@ let fleet = null;               // LlmFleet (one llama-server per eligible GPU) 
 let llmEverReady = false;       // did any instance reach "ready" this run (vs. dying first)
 let serveLogged = false;        // "serving cluster jobs" logged once per serving run
 let registeredUnlinked = false; // self-registered an unlinked node once this run
-// The single model the rig is serving (VRAM-tiered, possibly sharded across
-// cards). Drives the served-model status, node telemetry, and the board's LLM
-// column. Defaults to the small model until startLlm picks one.
+// The single model the rig is serving (VRAM-tiered to its best card). Drives the
+// served-model status, node telemetry, and the board's LLM column. Defaults to
+// the small model until startLlm picks one.
 let servingModel = LLM.model;
 // Reported when we can't determine the served model — specifically when adopting
 // a lingering llama-server whose loaded model we can't verify (a re-plan is
@@ -634,11 +634,11 @@ async function startLlm(reserveMb) {
   // means VRAM was measured but nothing fits — refuse, as the single-card path
   // did; when VRAM can't be read the planner returns one unknown-placement
   // instance and lets llama.cpp decide.
-  // Plan what the rig serves: the largest catalog model its VRAM allows, sharded
-  // across cards when a bigger model needs more than one (planLlmServing). One
-  // model per rig keeps telemetry + job routing per-node.
+  // Plan what the rig serves: the largest catalog model its best card can hold
+  // (planLlmServing), then one instance per card with room for it. One model per
+  // rig keeps telemetry + job routing per-node.
   const cards = await detectGpusVram();
-  const { model, sharded, instances: plan } = planLlmServing(cards, LLM.models, reserveMb || 0);
+  const { model, instances: plan } = planLlmServing(cards, LLM.models, reserveMb || 0);
   if (!plan.length) {
     // An empty plan means VRAM was measured but no card had room for even the
     // smallest model — so at least one card parsed, and pickLlmGpu (same parse
@@ -703,10 +703,8 @@ async function startLlm(reserveMb) {
     send('miner:log', { level: 'error', line: 'could not install the LLM runtime DLLs: ' + e.message });
   }
 
-  const gpus = sharded
-    ? 'sharded across GPUs ' + plan[0].devices.join(',')
-    : plan.length + ' GPU' + (plan.length === 1 ? '' : 's') + ' ['
-      + plan.map((p) => (p.index == null ? 'auto' : p.index)).join(', ') + ']';
+  const gpus = plan.length + ' GPU' + (plan.length === 1 ? '' : 's') + ' ['
+    + plan.map((p) => (p.index == null ? 'auto' : p.index)).join(', ') + ']';
   send('miner:log', { level: 'info', line: 'local LLM (' + model.name + ') starting on ' + gpus });
   // Loading a multi-GB model off disk takes seconds even when nothing downloads,
   // and until 'ready' fires the hero is otherwise indistinguishable from idle.
