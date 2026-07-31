@@ -49,7 +49,7 @@ Repo root: `C:\Users\template\Code\llmjob`. Earn tests run from `earn/`, server 
 ## Phase 2 — publish (after the founder merges)
 
 9. **Arm the auto-tag poll now** (background) so publishing fires the moment he merges — don't wait for him to say "merged". Poll `gh pr view <N> --json state,mergeCommit` every 30s; on `MERGED`:
-   - Read the merged version **robustly** — `node -e "JSON.parse(require('child_process').execSync('git show <sha>:earn/package.json').toString()).version"`. (A prior poll used `readFileSync(0)` from a pipe, which returned empty and falsely bailed.)
+   - Read the merged version **robustly** — `node -p "JSON.parse(require('child_process').execSync('git show <sha>:earn/package.json').toString()).version"`. Note `-p`, not `-e`: **`node -e` evaluates without printing**, so it returns an empty string, the "could not read the version" guard fires, and the poll hands the job back on every single release. That is exactly what happened on v0.3.7 and v0.3.8 — the guard was right to refuse a version it could not read, but it could never read one. Whatever form you use, check it actually prints before trusting it; an earlier attempt used `readFileSync(0)` from a pipe and failed the same silent way.
    - If it isn't `$NEW`, stop and report — never tag an unverified version.
    - Otherwise `git tag v$NEW <mergeCommit> && git push origin v$NEW` (the `v` prefix is required). The `v*` tag triggers `.github/workflows/miner-build.yml`, which builds and publishes the installers.
    - If the poll dies on a flaky read, just tag manually — the merge + version are what matter.
