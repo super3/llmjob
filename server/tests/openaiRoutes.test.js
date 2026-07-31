@@ -12,7 +12,7 @@ const { initOpenAiRoutes } = require('../src/routes');
 const JobService = require('../src/services/jobService');
 const ApiKeyService = require('../src/services/apiKeyService');
 const OpenAiController = require('../src/controllers/openaiController');
-const { lastUserText, estimateTokens, modelName, completionTokens } = OpenAiController;
+const { lastUserText, estimateTokens, modelName, completionTokens, timeoutBody } = OpenAiController;
 const { DEFAULT_MODEL } = JobService;
 
 const NODE_ID = 'node-openai-test';
@@ -322,6 +322,12 @@ describe('OpenAI gateway — integration', () => {
       .send({ messages: [{ role: 'user', content: 'nobody home' }] });
     expect(res.status).toBe(504);
     expect(res.body.error.type).toBe('timeout_error');
+    // Diagnosable: the job id to look it up by, and proof no node ever had it.
+    expect(res.body.error.job_id).toEqual(expect.any(String));
+    expect(res.body.error.served_by).toBeNull();
+    expect(res.body.error.job_status).toBe('pending');
+    expect(res.body.error.message).toContain('No node picked the job up');
+    expect(res.headers['x-llmjob-served-by']).toBeUndefined(); // nobody to name
   });
 
   it('writes a timeout_error event then [DONE] when a streamed job times out', async () => {
@@ -330,6 +336,8 @@ describe('OpenAI gateway — integration', () => {
       .send({ messages: [{ role: 'user', content: 'nobody' }], stream: true });
     expect(res.status).toBe(200);
     expect(res.text).toContain('"type":"timeout_error"');
+    expect(res.text).toContain('"served_by":null');   // headers are long gone; it rides in the body
+    expect(res.text).toContain('"job_status":"pending"');
     expect(res.text.trim().endsWith('data: [DONE]')).toBe(true);
   });
 });
@@ -387,6 +395,47 @@ describe('OpenAI gateway — controller branches', () => {
     // Railway's 5-minute cut for a connection with no bytes flowing.
     expect(new OpenAiController().timeoutMs).toBe(280000);
     expect(new OpenAiController({ timeoutMs: 5000 }).timeoutMs).toBe(5000); // still injectable
+  });
+
+  it('names the node that had the job when a non-streamed request times out', async () => {
+    // The hard case to debug: a node claimed the job and went quiet. Without the
+    // node id this looks identical to an empty fleet.
+    const services = fakeServices({
+      jobService: { getJobResult: async () => ({ status: 'assigned', assignedTo: 'n5' }) },
+    });
+    const ctrl = new OpenAiController({ services, pollMs: 1, timeoutMs: 20 });
+    const res = fakeRes();
+    await ctrl.chatCompletions(fakeReq({ messages: [{ role: 'user', content: 'x' }] }), res);
+    expect(res.statusCode).toBe(504);
+    expect(res.body.error.message).toContain('Node n5 took the job but produced no output');
+    expect(res.body.error.served_by).toBe('n5');
+    expect(res.body.error.job_status).toBe('assigned');
+    expect(res.body.error.job_id).toBe('job-1');
+    expect(res.headers['X-LLMJob-Served-By']).toBe('n5');
+  });
+
+  it('reports partial progress when a streamed request times out mid-generation', async () => {
+    const services = fakeServices({
+      jobService: { getJobResult: async () => ({ status: 'running', assignedTo: 'n7', chunks: [{ content: 'part' }] }) },
+    });
+    const ctrl = new OpenAiController({ services, pollMs: 1, timeoutMs: 20 });
+    const res = fakeRes();
+    await ctrl.chatCompletions(fakeReq({ messages: [{ role: 'user', content: 'x' }], stream: true }), res);
+    const out = res.writes.join('');
+    expect(out).toContain('Node n7 was still generating');
+    expect(out).toContain('1 chunk(s) streamed');
+    expect(out).toContain('"served_by":"n7"');
+    expect(out).toContain('[DONE]');
+  });
+
+  it('timeoutBody defaults a result-less timeout to pending', () => {
+    // Defensive: every caller passes a poll result, but a missing one must still
+    // produce a well-formed error rather than throw inside the 504 path.
+    const body = timeoutBody('job-9', null, 280000);
+    expect(body.error).toEqual({
+      message: 'No node picked the job up within 280s. Is a node online and serving?',
+      type: 'timeout_error', code: null, job_id: 'job-9', served_by: null, job_status: 'pending',
+    });
   });
 
   it('stops the non-streaming poll when the caller hangs up', async () => {
