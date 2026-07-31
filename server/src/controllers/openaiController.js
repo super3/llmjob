@@ -155,7 +155,10 @@ class OpenAiController {
         return res.status(502).json(errorBody('The node failed to run the job: ' + (r.error || 'unknown error'), 'node_error'));
       }
       if (this.now() - started > this.timeoutMs) {
-        return res.status(504).json(errorBody('No node produced a result before the timeout. Is a node online and serving?', 'timeout_error'));
+        // Same header as a success, so a caller reads "who served this" the same
+        // way whether the job finished or ran out the clock.
+        this._setServedByHeader(res, r);
+        return res.status(504).json(timeoutBody(job.id, r, this.timeoutMs));
       }
       await this.sleep(this.pollMs);
     }
@@ -199,7 +202,9 @@ class OpenAiController {
         break;
       }
       if (this.now() - started > this.timeoutMs) {
-        res.write('data: ' + JSON.stringify(errorBody('No node produced a result before the timeout.', 'timeout_error')) + '\n\n');
+        // A stream flushed its headers long before this, so the diagnostics can
+        // only ride in the event body.
+        res.write('data: ' + JSON.stringify(timeoutBody(job.id, r, this.timeoutMs)) + '\n\n');
         break;
       }
       await this.sleep(this.pollMs);
@@ -286,8 +291,42 @@ function errorBody(message, type) {
   return { error: { message, type, code: null } };
 }
 
+// A 504 that says what actually went wrong. "No node produced a result before
+// the timeout" is the same sentence whether the fleet was empty, a node claimed
+// the job and never spoke again, or a node was mid-generation when the clock ran
+// out — three very different problems. The job's last known state tells them
+// apart, so carry it: the id to look the job up by, the node that had it, and
+// where it got to. Without these a timed-out request is unattributable — a
+// benchmark run can report which node served every success and nothing at all
+// about its failures.
+//
+// The extra fields hang off the standard OpenAI `error` object, so a strict SDK
+// still parses it as an ordinary error and only clients that look find them.
+function timeoutBody(jobId, result, timeoutMs) {
+  const secs = Math.round(timeoutMs / 1000);
+  const node = (result && result.assignedTo) || null;
+  const status = (result && result.status) || 'pending';
+  const chunks = ((result && result.chunks) || []).length;
+
+  let message;
+  if (!node) {
+    message = `No node picked the job up within ${secs}s. Is a node online and serving?`;
+  } else if (chunks > 0) {
+    message = `Node ${node} was still generating after ${secs}s (${chunks} chunk(s) streamed).`;
+  } else {
+    message = `Node ${node} took the job but produced no output within ${secs}s.`;
+  }
+
+  const body = errorBody(message, 'timeout_error');
+  body.error.job_id = jobId;
+  body.error.served_by = node;
+  body.error.job_status = status;
+  return body;
+}
+
 module.exports = OpenAiController;
 module.exports.lastUserText = lastUserText;
 module.exports.estimateTokens = estimateTokens;
 module.exports.modelName = modelName;
 module.exports.completionTokens = completionTokens;
+module.exports.timeoutBody = timeoutBody;
