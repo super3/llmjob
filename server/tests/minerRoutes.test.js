@@ -72,6 +72,24 @@ describe('Miner API', () => {
     expect(res.body.miners[0].llmModel).toBeNull();
   });
 
+  // Same whitelist hazard as llmModel above: nodeId is what separates "serving the
+  // cluster" from "running a model", so assert it survives the whole round trip.
+  test('POST /api/miners/ping stores the serving node id and GET returns it', async () => {
+    await request(app).post('/api/miners/ping')
+      .send({ address: ADDR, worker: 'rig01', gpu: 'RTX 4090', hashrate: 100, llmModel: 'Gemma-4-E4B-it-Q4_K_M', nodeId: '5840fc' });
+    const res = await request(app).get('/api/miners');
+    expect(res.body.miners[0].nodeId).toBe('5840fc');
+  });
+
+  // A host running the model without serving (or a client too old to send it)
+  // stays unmarked rather than failing the ping.
+  test('POST /api/miners/ping without a nodeId leaves it null', async () => {
+    await request(app).post('/api/miners/ping')
+      .send({ address: ADDR, worker: 'rig01', gpu: 'RTX 4090', hashrate: 100, llmModel: 'Gemma-4-E4B-it-Q4_K_M' });
+    const res = await request(app).get('/api/miners');
+    expect(res.body.miners[0].nodeId).toBeNull();
+  });
+
   test('POST returns 500 when the db fails', async () => {
     const res = await request(makeApp(brokenDb)).post('/api/miners/ping').send({ address: ADDR });
     expect(res.status).toBe(500);

@@ -259,6 +259,10 @@ async function resolveLlmModel(settings, dir) {
 let serveFleet = null;
 let servePinger = null;
 let serveLlmState = { ready: false, tps: 0 };
+// This machine's node id while it is armed to serve cluster jobs — reported on the
+// miner ping so the network board can tell "running the model" from "serving the
+// cluster". Null when not serving (mining only, or --no-serve).
+let serveNodeId = null;
 
 // The GPU name is static — probe it once and reuse, instead of spawning
 // nvidia-smi twice per ping forever.
@@ -338,6 +342,7 @@ async function fullTelemetry(node) {
 function stopServe() {
   if (serveFleet) { serveFleet.syncWorkers(false); serveFleet = null; }
   if (servePinger) { clearInterval(servePinger); servePinger = null; }
+  serveNodeId = null;
 }
 
 // Build a cluster job-worker for the ready LLM instance at `baseUrl` — one per
@@ -417,6 +422,8 @@ async function startLlm(settings, reserveMb) {
   // server URL); only mint a keypair when serving and none exists yet.
   const nodeCfg = loadNodeConfig() || (settings.serve ? getOrCreateNodeConfig() : null);
   const canServe = !!(settings.serve && nodeCfg);
+  // Publish the node id on the miner ping only while actually armed to serve.
+  serveNodeId = canServe ? nodeCfg.nodeId : null;
   const base = (nodeCfg && nodeCfg.serverUrl) || NODE.serverUrl;
 
   // An unclaimed node needs a row server-side before /jobs/poll will answer it.
@@ -656,7 +663,12 @@ async function run(argv) {
         const gpuVram = await detectGpusVram();
         // Tag the cards serving the local LLM so the board shows which model each
         // GPU runs; null when the fleet isn't up (mining only) → blank on the board.
-        const serving = serveFleet ? { model: LLM.model.name, indices: serveFleet.servingIndices() } : null;
+        // `nodeId` rides along only while this machine is armed to serve cluster
+        // jobs — running the model and serving the cluster are different things,
+        // and the board should be able to tell them apart.
+        const serving = serveFleet
+          ? { model: LLM.model.name, indices: serveFleet.servingIndices(), nodeId: serveNodeId }
+          : null;
         return Promise.all(buildMinerReports(settings, snap, gpuVram, pkg.version, serving).map(postMinerReport));
       };
       report();

@@ -9,7 +9,7 @@ describe('buildMinerReports', () => {
     const vram = [{ index: 0, name: 'NVIDIA GeForce RTX 4090', usedMb: 4096, totalMb: 24564 }];
     expect(buildMinerReports({ address: '  prl1pabc ', worker: 'rig9', region: 'eu1' }, snap, vram, '0.1.16')).toEqual([
       { address: 'prl1pabc', worker: 'rig9', region: 'eu1', version: '0.1.16',
-        gpu: 'NVIDIA GeForce RTX 4090', hashrate: 285.8, accepted: 5, vramUsedMb: 4096, vramTotalMb: 24564, llmModel: null },
+        gpu: 'NVIDIA GeForce RTX 4090', hashrate: 285.8, accepted: 5, vramUsedMb: 4096, vramTotalMb: 24564, llmModel: null, nodeId: null },
     ]);
   });
 
@@ -24,8 +24,8 @@ describe('buildMinerReports', () => {
       { index: 0, name: 'RTX 4090', usedMb: 4096, totalMb: 24564 },
     ];
     expect(buildMinerReports({ address: 'prl1pabc', worker: 'rig01', region: 'us2' }, snap, vram, '0.1.16')).toEqual([
-      { address: 'prl1pabc', worker: 'rig01/gpu0', region: 'us2', version: '0.1.16', gpu: 'RTX 4090', hashrate: 200, accepted: 10, vramUsedMb: 4096, vramTotalMb: 24564, llmModel: null },
-      { address: 'prl1pabc', worker: 'rig01/gpu1', region: 'us2', version: '0.1.16', gpu: 'RTX 4060 Ti', hashrate: 100, accepted: 4, vramUsedMb: 2000, vramTotalMb: 16380, llmModel: null },
+      { address: 'prl1pabc', worker: 'rig01/gpu0', region: 'us2', version: '0.1.16', gpu: 'RTX 4090', hashrate: 200, accepted: 10, vramUsedMb: 4096, vramTotalMb: 24564, llmModel: null, nodeId: null },
+      { address: 'prl1pabc', worker: 'rig01/gpu1', region: 'us2', version: '0.1.16', gpu: 'RTX 4060 Ti', hashrate: 100, accepted: 4, vramUsedMb: 2000, vramTotalMb: 16380, llmModel: null, nodeId: null },
     ]);
   });
 
@@ -130,8 +130,8 @@ describe('buildMinerReports', () => {
       { index: 1, name: 'RTX 4090', usedMb: 2048, totalMb: 24564 },
     ];
     expect(buildMinerReports({ address: 'prl1pabc', worker: 'rig01', region: 'us2' }, snap, vram)).toEqual([
-      { address: 'prl1pabc', worker: 'rig01/gpu0', region: 'us2', version: null, gpu: 'RTX 4090', hashrate: 50, accepted: 4, vramUsedMb: 4096, vramTotalMb: 24564, llmModel: null },
-      { address: 'prl1pabc', worker: 'rig01/gpu1', region: 'us2', version: null, gpu: 'RTX 4090', hashrate: 50, accepted: 4, vramUsedMb: 2048, vramTotalMb: 24564, llmModel: null },
+      { address: 'prl1pabc', worker: 'rig01/gpu0', region: 'us2', version: null, gpu: 'RTX 4090', hashrate: 50, accepted: 4, vramUsedMb: 4096, vramTotalMb: 24564, llmModel: null, nodeId: null },
+      { address: 'prl1pabc', worker: 'rig01/gpu1', region: 'us2', version: null, gpu: 'RTX 4090', hashrate: 50, accepted: 4, vramUsedMb: 2048, vramTotalMb: 24564, llmModel: null, nodeId: null },
     ]);
   });
 
@@ -140,7 +140,7 @@ describe('buildMinerReports', () => {
     const vram = [{ index: 0, name: 'RTX 4090', usedMb: 4096, totalMb: 24564 }];
     expect(buildMinerReports({ address: 'prl1pabc', worker: 'rig01', region: 'us2' }, snap, vram)).toEqual([
       { address: 'prl1pabc', worker: 'rig01', region: 'us2', version: null,
-        gpu: 'RTX 4090', hashrate: 120, accepted: 3, vramUsedMb: 4096, vramTotalMb: 24564, llmModel: null },
+        gpu: 'RTX 4090', hashrate: 120, accepted: 3, vramUsedMb: 4096, vramTotalMb: 24564, llmModel: null, nodeId: null },
     ]);
   });
 
@@ -153,7 +153,7 @@ describe('buildMinerReports', () => {
 
   test('applies defaults when called with nothing', () => {
     expect(buildMinerReports()).toEqual([
-      { address: '', worker: 'rig01', region: 'us2', version: null, gpu: null, hashrate: 0, accepted: 0, vramUsedMb: 0, vramTotalMb: 0, llmModel: null },
+      { address: '', worker: 'rig01', region: 'us2', version: null, gpu: null, hashrate: 0, accepted: 0, vramUsedMb: 0, vramTotalMb: 0, llmModel: null, nodeId: null },
     ]);
   });
 
@@ -171,6 +171,30 @@ describe('buildMinerReports', () => {
     const serving = { model: 'Gemma-4-E4B-it-Q4_K_M', indices: [0] };
     const rows = buildMinerReports({ address: 'prl1pabc', worker: 'rig01' }, snap, vram, '0.2.0', serving);
     expect(rows.map((r) => r.llmModel)).toEqual(['Gemma-4-E4B-it-Q4_K_M', null]);
+  });
+
+  test('reports the node id on every row while serving the cluster, null when only running the model', () => {
+    // Running a model and serving the cluster are different things: the board can
+    // only tell them apart because an armed node sends its id. It's machine-level,
+    // so every card row of the rig carries the same one.
+    const snap = { gpus: [
+      { index: 0, gpu: 'RTX 4090', hashrate: 200, accepted: 10 },
+      { index: 1, gpu: 'RTX 4060', hashrate: 100, accepted: 4 },
+    ] };
+    const vram = [
+      { index: 0, name: 'RTX 4090', usedMb: 4096, totalMb: 24564 },
+      { index: 1, name: 'RTX 4060', usedMb: 2000, totalMb: 8192 },
+    ];
+    const model = 'Gemma-4-E4B-it-Q4_K_M';
+    const settings = { address: 'prl1pabc', worker: 'rig01' };
+
+    // Armed to serve → the id rides on both rows, even the card not running the model.
+    const serving = buildMinerReports(settings, snap, vram, '0.2.0', { model, indices: [0], nodeId: '5840fc' });
+    expect(serving.map((r) => r.nodeId)).toEqual(['5840fc', '5840fc']);
+
+    // Model loaded but not linked/armed → no id, so the board shows it as advertising only.
+    const local = buildMinerReports(settings, snap, vram, '0.2.0', { model, indices: [0], nodeId: null });
+    expect(local.map((r) => r.nodeId)).toEqual([null, null]);
   });
 
   test('serving tags flow through the split-rows and single-row paths', () => {

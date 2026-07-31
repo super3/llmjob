@@ -120,7 +120,12 @@ jest.mock('../src/main/nodeStore', () => ({
   loadNode: jest.fn(() => null),
   saveNode: jest.fn(),
   migrateFrom: jest.fn(),
-  getOrCreateNode: jest.fn(),
+  // Serving no longer requires an account, so the app mints an identity whenever
+  // a model is up. Default to an unlinked one — tests that care about the linked
+  // path override it (and fakeNode() builds the same shape).
+  getOrCreateNode: jest.fn(() => ({
+    nodeId: 'abc123', publicKey: 'pk-test', secretKey: 'sk-test', name: null, connected: false,
+  })),
 }));
 
 jest.mock('../src/main/minerManager', () => {
@@ -1144,7 +1149,10 @@ describe('local LLM', () => {
   it('adopts an already-healthy llama-server instead of spawning a second one', async () => {
     const ctx = await boot({
       before: (c) => {
+        // getOrCreateNode returns the stored node when there is one, so both mocks
+        // must agree — the worker signs and posts against this node's serverUrl.
         c.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true, serverUrl: 'https://custom.example' }));
+        c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode({ connected: true, serverUrl: 'https://custom.example' }));
         // the warm-up request fails — best-effort, must be swallowed
         c.io.streamChatCompletion.mockReturnValueOnce({ done: Promise.reject(new Error('warmup')), cancel: jest.fn() });
       },
@@ -1275,11 +1283,13 @@ describe('local LLM', () => {
     await flush();
     expect(worker.activeJobs).toHaveBeenCalled();
 
-    // unlinking makes the next worker sync stop it (linked AND ready no longer holds)
+    // Unlinking no longer stops serving: a machine that can run the model is
+    // useful to the network account or not, so it keeps taking PUBLIC jobs (it
+    // self-registers). Only losing the model stops the worker.
     ctx.nodeStore.loadNode.mockReturnValue(null);
     await ctx.invoke('node:connect', { token: 'tok' });
     await flush();
-    expect(worker.stop).toHaveBeenCalled();
+    expect(worker.stop).not.toHaveBeenCalled();
     ctx.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
 
     // llama-server exits after ready in an llm-only session → session over
@@ -1344,7 +1354,7 @@ describe('local LLM', () => {
     expect(ctx.JobWorker.instances[1].stop).toHaveBeenCalled();
   });
 
-  it('serves nothing on a card that comes up after the node unlinks', async () => {
+  it('still serves on a card that comes up after the node unlinks (public jobs need no account)', async () => {
     const ctx = await boot({
       before: (c) => {
         c.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
@@ -1365,12 +1375,13 @@ describe('local LLM', () => {
     await flush();
     expect(ctx.JobWorker.instances).toHaveLength(1);
 
-    // the node drops before GPU 1 comes up → makeJobWorker declines, no worker
+    // The node drops before GPU 1 comes up. Serving no longer depends on the
+    // account, so that card still gets a worker and takes public jobs.
     ctx.nodeStore.loadNode.mockReturnValue(null);
     const g1 = ctx.LlmManager.instances[1];
     g1.emit('ready', { baseUrl: g1.baseUrl });
     await flush();
-    expect(ctx.JobWorker.instances).toHaveLength(1);
+    expect(ctx.JobWorker.instances).toHaveLength(2);
   });
 
   it('llm mode with a second start returns early while the server runs, and STOP stops it', async () => {
@@ -1462,6 +1473,68 @@ describe('local LLM', () => {
     await flush();
     const payloads = ctx.probe.postMinerReport.mock.calls.map((c) => c[0]);
     expect(payloads.some((p) => p.llmModel === ctx.config.LLM.model.name)).toBe(true);
+    // Linked, so the rows also carry the node id — the board's "serving the
+    // cluster" marker, as opposed to merely running the model.
+    expect(payloads.some((p) => p.nodeId === 'abc123')).toBe(true);
+  });
+
+  it('degrades to local-only when no node identity can be minted', async () => {
+    // getOrCreateNode never returns null in production, but a read-only or full
+    // disk could break identity persistence. The model must still run locally:
+    // no worker, no crash, and the board row reports no node id.
+    const ctx = await boot({
+      before: (c) => {
+        c.nodeStore.loadNode.mockReturnValue(null);
+        c.nodeStore.getOrCreateNode.mockReturnValue(null);
+        c.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
+      },
+    });
+    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'both' });
+    await flush();
+    ctx.MinerManager.instances[0].emit('event', { type: 'status', hashrate: '5' });
+    await flush(30);
+    const llm = ctx.LlmManager.instances[0];
+    llm.emit('ready', { baseUrl: llm.baseUrl });
+    await flush();
+
+    expect(ctx.JobWorker.instances).toHaveLength(0); // serving declined, app alive
+    ctx.probe.postMinerReport.mockClear();
+    ctx.interval(ctx.config.NETWORK.reportIntervalMs).fn();
+    await flush();
+    const payloads = ctx.probe.postMinerReport.mock.calls.map((c) => c[0]);
+    expect(payloads.length).toBeGreaterThan(0);
+    expect(payloads.every((p) => p.nodeId === null)).toBe(true);
+  });
+
+  it('board report carries the node id for an UNLINKED host, which now serves public jobs', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        // Unlinked but serving: the worker is armed on the fleet, not the account,
+        // so this host takes public jobs and the board must mark it as serving.
+        c.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: false }));
+        c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode({ connected: false }));
+        c.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
+      },
+    });
+    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
+
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'both' });
+    await flush();
+    ctx.MinerManager.instances[0].emit('event', { type: 'status', hashrate: '5' });
+    await flush(30);
+    const llm = ctx.LlmManager.instances[0];
+    llm.emit('ready', { baseUrl: llm.baseUrl });
+    await flush();
+
+    ctx.probe.postMinerReport.mockClear();
+    ctx.interval(ctx.config.NETWORK.reportIntervalMs).fn();
+    await flush();
+    const payloads = ctx.probe.postMinerReport.mock.calls.map((c) => c[0]);
+    expect(payloads.length).toBeGreaterThan(0);
+    expect(payloads.every((p) => p.nodeId === 'abc123')).toBe(true);
+    // And it announced itself as serving without an account.
+    expect(ctx.sent('miner:log').map((l) => l.line).join('\n')).toContain('unlinked node');
   });
 
   it('a miner that stops during the co-run wait releases the LLM start', async () => {
