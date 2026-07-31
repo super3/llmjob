@@ -1,14 +1,14 @@
 'use strict';
 
-// IO shell for the CLI's self-update — the real HTTPS / filesystem / process
-// side of shared/selfUpdate.js (whose decision logic is unit-tested there).
-// Covered by mocking https/fs/child_process/node:sea in selfUpdater.test.js.
+// IO shell for the CLI's self-update — the real filesystem / process side of
+// shared/selfUpdate.js (whose decision logic is unit-tested there). The HTTP
+// side is delegated to io.js (getJson + downloadFile) so there's one hardened
+// download path, not two.
 
-const https = require('https');
 const fs = require('fs');
 const { spawnSync } = require('child_process');
 const { LATEST_RELEASE_API, parseRelease, planUpdate } = require('../shared/selfUpdate');
-const { getJson } = require('../main/io');
+const { getJson, downloadFile } = require('../main/io');
 
 // Set on the re-exec'd child so it doesn't check/update again and loop.
 const UPDATED_ENV = 'LLMJOB_EARN_UPDATED';
@@ -33,34 +33,20 @@ function isPackaged() {
   }
 }
 
-// Stream a URL to a file, following redirects. Rejects on HTTP error.
-function download(url, dest, redirects) {
-  redirects = redirects || 0;
-  return new Promise((resolve, reject) => {
-    if (redirects > 5) return reject(new Error('too many redirects'));
-    const req = https.get(url, { headers: { 'User-Agent': 'llmjob-earn-cli' } }, (res) => {
-      const code = res.statusCode || 0;
-      if (code >= 300 && code < 400 && res.headers.location) {
-        res.resume();
-        return resolve(download(new URL(res.headers.location, url).toString(), dest, redirects + 1));
-      }
-      if (code !== 200) { res.resume(); return reject(new Error('HTTP ' + code + ' for ' + url)); }
-      const out = fs.createWriteStream(dest);
-      res.pipe(out);
-      out.on('finish', () => out.close(() => resolve(dest)));
-      out.on('error', reject);
-    });
-    req.on('error', reject);
-  });
-}
-
 // Replace the running executable with a freshly downloaded binary. On Linux a
 // running binary can be renamed over (the live process keeps its open inode),
 // so download beside it then atomically rename into place.
+//
+// Reuses io.downloadFile rather than a second, weaker copy: the CLI's old inline
+// download had no response-error handler (a dropped connection mid-body became an
+// uncaught exception that killed the process instead of falling back to "continue
+// on the current version"), no stall timeout (a hung socket blocked mining
+// forever, since auto-update runs before mining starts), and left its temp file
+// behind on failure. io.downloadFile has all three (plus retry with backoff).
 async function applyUpdate(plan, execPath) {
   const exe = execPath || process.execPath;
   const tmp = exe + '.new-' + process.pid;
-  await download(plan.downloadUrl, tmp);
+  await downloadFile(plan.downloadUrl, tmp);
   fs.chmodSync(tmp, 0o755);
   fs.renameSync(tmp, exe);
   return exe;
@@ -78,7 +64,6 @@ module.exports = {
   UPDATED_ENV,
   fetchLatestRelease,
   isPackaged,
-  download,
   applyUpdate,
   reexec,
   planUpdate,

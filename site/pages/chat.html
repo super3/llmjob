@@ -178,7 +178,10 @@
     models: FALLBACK_MODELS.slice(),
     model: FALLBACK_MODELS[0].id,
     streaming: false,
-    streamText: ''
+    streamText: '',
+    streamGen: 0,      // bumped whenever a stream starts or is abandoned; a pump
+                       // whose captured gen no longer matches must not touch state
+    streamCtrl: null   // AbortController for the in-flight fetch, if supported
   };
 
   var el = {
@@ -367,7 +370,21 @@
     stream();
   }
 
+  // Abandon the in-flight stream (if any): invalidate its generation so any
+  // already-scheduled pump callbacks no-op, and abort the fetch so it stops
+  // pulling bytes. Called before switching conversations — otherwise the old
+  // reply would keep streaming and land in whatever conversation is now active.
+  function abortStream() {
+    state.streamGen++;
+    if (state.streamCtrl) { try { state.streamCtrl.abort(); } catch (e) { /* ignore */ } state.streamCtrl = null; }
+    state.streaming = false;
+    state.streamText = '';
+  }
+
   function stream() {
+    var gen = ++state.streamGen; // this stream owns this generation
+    var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    state.streamCtrl = ctrl;
     state.streaming = true;
     state.streamText = '';
     render();
@@ -380,22 +397,31 @@
     fetch(API_BASE + '/api/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      signal: ctrl ? ctrl.signal : undefined
     }).then(function (resp) {
+      if (gen !== state.streamGen) return; // superseded by a chat switch — drop it
       if (!resp.ok) {
         return resp.json().catch(function () { return null; }).then(function (body) {
+          if (gen !== state.streamGen) return;
           var m = (body && body.error && body.error.message) || 'The chat service is unavailable right now.';
           finishWithError(m);
         });
       }
-      return readStream(resp);
+      return readStream(resp, gen);
     }).catch(function () {
+      // An abort (chat switch) rejects the fetch too; only surface a real failure
+      // for the stream that's still current.
+      if (gen !== state.streamGen) return;
       finishWithError('Could not reach the chat service. Check your connection and try again.');
     });
   }
 
   // Read our small SSE protocol: {delta}, {done,meta}, {error}, then [DONE].
-  function readStream(resp) {
+  // `gen` is this stream's generation; if the user switches conversations mid
+  // stream, state.streamGen moves on and every callback below becomes a no-op so
+  // nothing is written into the wrong conversation.
+  function readStream(resp, gen) {
     var reader = resp.body.getReader();
     var decoder = new TextDecoder();
     var buf = '';
@@ -404,6 +430,7 @@
 
     function pump() {
       return reader.read().then(function (r) {
+        if (gen !== state.streamGen) return; // switched away — stop pumping
         if (r.done) return done();
         buf += decoder.decode(r.value, { stream: true });
         var idx;
@@ -424,6 +451,7 @@
     }
 
     function done() {
+      if (gen !== state.streamGen) return; // superseded — don't write into the wrong convo
       if (errored) { finishWithError(errored); return; }
       finishAssistant(state.streamText, meta);
     }
@@ -461,10 +489,9 @@
 
   // ── Conversation controls ────────────────────────────────────────────────────
   function newChat() {
+    abortStream(); // drop any in-flight reply so it can't land in the new chat
     state.activeId = 'new';
     state.messages = [];
-    state.streaming = false;
-    state.streamText = '';
     el.input.value = '';
     autoGrow();
     renderConvoOptions();
@@ -477,10 +504,9 @@
     var chats = loadChats();
     var c = chats.find(function (x) { return x.id === id; });
     if (!c) { newChat(); return; }
+    abortStream(); // drop any in-flight reply so it can't land in the loaded chat
     state.activeId = id;
     state.messages = (c.messages || []).slice();
-    state.streaming = false;
-    state.streamText = '';
     render();
     renderConvoOptions();
   }

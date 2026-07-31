@@ -326,6 +326,31 @@ describe('downloadFile', () => {
     jest.useRealTimers();
   });
 
+  it('retries once when a single stall errors both the response and the request', async () => {
+    // req.destroy(err) from the stall timeout surfaces 'error' on both the request
+    // and the response; that must not fork two retry chains onto the same .part.
+    jest.useFakeTimers();
+    const r1 = fakeRes({ statusCode: 200, headers: {} });
+    const r2 = fakeRes({ statusCode: 200, headers: {} });
+    const reqs = wire(https, [r1, r2]);
+    const [o1, o2] = [fakeWrite(), fakeWrite()];
+    fs.createWriteStream.mockReturnValueOnce(o1).mockReturnValueOnce(o2);
+    fs.renameSync.mockImplementation(() => {});
+
+    const p = io.downloadFile('https://host/f', '/tmp/f');
+    // The stall fires both error events for the SAME attempt.
+    r1.emit('error', new Error('stalled'));    // response path → out.destroy + retryOrFail
+    reqs[0].emit('error', new Error('stalled')); // request path → retryOrFail again (must be ignored)
+    await advance(1);
+
+    // Exactly one retry: a second GET, not two.
+    expect(https.get).toHaveBeenCalledTimes(2);
+    r2.emit('data', Buffer.from('x'));
+    o2.emit('finish');
+    await expect(p).resolves.toBe('/tmp/f');
+    jest.useRealTimers();
+  });
+
   it('retries a write-stream error too', async () => {
     jest.useFakeTimers();
     const resList = Array.from({ length: ATTEMPTS }, () => fakeRes({ statusCode: 200, headers: {} }));

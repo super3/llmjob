@@ -1,6 +1,10 @@
 const ChatUsageService = require('../services/chatUsageService');
 const JobService = require('../services/jobService');
 const ApiKeyService = require('../services/apiKeyService');
+const {
+  estimateTokens, errorBody, lastUserText, nodeFailMessage,
+  writeSsePreamble, pollJobResult,
+} = require('./gatewayShared');
 
 // Free public web-chat gateway, backed by OpenRouter.
 //
@@ -124,16 +128,16 @@ class ChatController {
     const body = req.body || {};
     const messages = body.messages;
     if (!Array.isArray(messages) || messages.length === 0) {
-      return res.status(400).json(errBody('`messages` must be a non-empty array', 'invalid_request_error'));
+      return res.status(400).json(errorBody('`messages` must be a non-empty array', 'invalid_request_error'));
     }
     const resolved = this._resolveModel(body.model);
     if (!resolved) {
-      return res.status(400).json(errBody('Unknown model.', 'invalid_request_error'));
+      return res.status(400).json(errorBody('Unknown model.', 'invalid_request_error'));
     }
 
     const clean = sanitizeMessages(messages);
     if (clean.length === 0) {
-      return res.status(400).json(errBody('No usable message content.', 'invalid_request_error'));
+      return res.status(400).json(errorBody('No usable message content.', 'invalid_request_error'));
     }
     // Prepend our own system prompt (dropping any client-supplied one) so the
     // model always has LLMJob context and callers can't override it.
@@ -169,7 +173,7 @@ class ChatController {
         if (body.stream === false) await this._jsonNetwork(ctx);
         else await this._streamNetwork(ctx);
       } catch (err) {
-        if (!res.headersSent) res.status(500).json(errBody('Gateway error: ' + err.message, 'api_error'));
+        if (!res.headersSent) res.status(500).json(errorBody('Gateway error: ' + err.message, 'api_error'));
         else { try { res.end(); } catch (e) { /* ignore */ } }
       }
       return;
@@ -177,11 +181,11 @@ class ChatController {
 
     // OpenRouter path — needs the API key and is gated by the free-usage cap.
     if (!this.apiKey) {
-      return res.status(503).json(errBody('Chat is not configured yet.', 'not_configured'));
+      return res.status(503).json(errorBody('Chat is not configured yet.', 'not_configured'));
     }
     const totals = await svc.chatUsage.getTotals();
     if (this.freeBudget > 0 && totals.totalTokens >= this.freeBudget) {
-      return res.status(402).json(errBody(
+      return res.status(402).json(errorBody(
         'Free chat has reached its usage cap for now — switch to the LLMJob network model.',
         'quota_exhausted'));
     }
@@ -191,7 +195,7 @@ class ChatController {
       if (body.stream === false) await this._jsonProxy(ctx);
       else await this._streamProxy(ctx);
     } catch (err) {
-      if (!res.headersSent) res.status(500).json(errBody('Gateway error: ' + err.message, 'api_error'));
+      if (!res.headersSent) res.status(500).json(errorBody('Gateway error: ' + err.message, 'api_error'));
       else { try { res.end(); } catch (e) { /* ignore */ } }
     }
   }
@@ -214,21 +218,21 @@ class ChatController {
   // job result until a node completes it (or it fails / times out).
   async _streamNetwork(ctx) {
     const { res, svc } = ctx;
-    res.status(200);
-    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    if (res.flushHeaders) res.flushHeaders();
+    writeSsePreamble(res);
     const send = (obj) => res.write('data: ' + JSON.stringify(obj) + '\n\n');
     const done = () => { res.write('data: [DONE]\n\n'); res.end(); };
 
     const job = await this._createNetworkJob(ctx);
-    const started = this.now();
     let sent = 0; // chars already streamed to the client
-    for (;;) {
-      if (ctx.aborted) return; // socket gone — stop polling
-      const r = await svc.jobs.getJobResult(job.id);
+    for await (const r of pollJobResult({
+      jobService: svc.jobs, jobId: job.id,
+      now: this.now, sleep: this.sleep, pollMs: this.jobPollMs, timeoutMs: this.jobTimeoutMs,
+      isAborted: () => ctx.aborted, // socket gone — stop polling
+    })) {
+      if (r.status === 'timeout') {
+        send({ error: 'No node is available to serve this model right now. Please try again shortly.' });
+        return done();
+      }
       const text = r.status === 'completed' ? (r.result || '') : (r.partial || '');
       if (text.length > sent) {
         if (!ctx.firstTokenAt) ctx.firstTokenAt = this.now();
@@ -246,11 +250,6 @@ class ChatController {
         send({ error: nodeFailMessage(r) });
         return done();
       }
-      if (this.now() - started > this.jobTimeoutMs) {
-        send({ error: 'No node is available to serve this model right now. Please try again shortly.' });
-        return done();
-      }
-      await this.sleep(this.jobPollMs);
     }
   }
 
@@ -258,10 +257,17 @@ class ChatController {
   async _jsonNetwork(ctx) {
     const { res, svc } = ctx;
     const job = await this._createNetworkJob(ctx);
-    const started = this.now();
-    for (;;) {
-      if (ctx.aborted) return; // socket gone — stop polling
-      const r = await svc.jobs.getJobResult(job.id);
+    for await (const r of pollJobResult({
+      jobService: svc.jobs, jobId: job.id,
+      now: this.now, sleep: this.sleep, pollMs: this.jobPollMs, timeoutMs: this.jobTimeoutMs,
+      isAborted: () => ctx.aborted, // socket gone — stop polling
+    })) {
+      if (r.status === 'timeout') {
+        return res.status(504).json(errorBody('No node is available to serve this model right now.', 'timeout_error'));
+      }
+      if (r.status === 'failed') {
+        return res.status(502).json(errorBody(nodeFailMessage(r), 'node_error'));
+      }
       if (r.status === 'completed') {
         ctx.text = r.result || '';
         const meta = this._networkMeta(ctx, r);
@@ -278,13 +284,6 @@ class ChatController {
           finish_reason: meta.finish
         });
       }
-      if (r.status === 'failed') {
-        return res.status(502).json(errBody(nodeFailMessage(r), 'node_error'));
-      }
-      if (this.now() - started > this.jobTimeoutMs) {
-        return res.status(504).json(errBody('No node is available to serve this model right now.', 'timeout_error'));
-      }
-      await this.sleep(this.jobPollMs);
     }
   }
 
@@ -314,12 +313,7 @@ class ChatController {
   // Stream the upstream generation to the client as our small SSE protocol.
   async _streamProxy(ctx) {
     const { res } = ctx;
-    res.status(200);
-    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no'); // defeat proxy/edge SSE buffering (Railway/nginx)
-    if (res.flushHeaders) res.flushHeaders();
+    writeSsePreamble(res);
     const send = (obj) => res.write('data: ' + JSON.stringify(obj) + '\n\n');
     const done = () => { res.write('data: [DONE]\n\n'); res.end(); };
 
@@ -337,23 +331,35 @@ class ChatController {
       return done();
     }
 
-    for await (const obj of parseSSE(upstream.body)) {
-      if (ctx.aborted) return; // socket gone — skip meta/[DONE]
-      const delta = deltaContent(obj);
-      if (delta) {
-        if (!ctx.firstTokenAt) ctx.firstTokenAt = this.now();
-        ctx.text += delta;
-        send({ delta });
+    let meta = null;
+    try {
+      for await (const obj of parseSSE(upstream.body)) {
+        if (ctx.aborted) return; // socket gone — skip meta/[DONE]
+        const delta = deltaContent(obj);
+        if (delta) {
+          if (!ctx.firstTokenAt) ctx.firstTokenAt = this.now();
+          ctx.text += delta;
+          send({ delta });
+        }
+        if (obj.usage) ctx.usage = obj.usage;
+        if (obj.model) ctx.model = obj.model;
+        const fr = obj.choices && obj.choices[0] && obj.choices[0].finish_reason;
+        if (fr) ctx.finish = fr;
       }
-      if (obj.usage) ctx.usage = obj.usage;
-      if (obj.model) ctx.model = obj.model;
-      const fr = obj.choices && obj.choices[0] && obj.choices[0].finish_reason;
-      if (fr) ctx.finish = fr;
+    } finally {
+      // Bill whatever OpenRouter already streamed — even if the caller hung up or
+      // the upstream aborted mid-stream. Recording only after a clean finish let an
+      // anonymous caller read most of a stream, drop the socket before the final
+      // event, and pay nothing: OpenRouter had already generated (and billed us
+      // for) those tokens, but the free-usage cap that gates this endpoint never
+      // saw them, so the budget never tripped. Computed once here (not again for
+      // the meta below) so the perf clock is only sampled once, and `_record` is
+      // best-effort and runs at most once per request.
+      meta = this._computeUsage(ctx);
+      await this._record(ctx, meta);
     }
     if (ctx.aborted) return;
 
-    const meta = this._computeUsage(ctx);
-    await this._record(ctx, meta);
     send({ done: true, meta: publicMeta(meta) });
     done();
   }
@@ -365,12 +371,12 @@ class ChatController {
     try {
       upstream = await this._callUpstream(ctx, false);
     } catch (err) {
-      return res.status(502).json(errBody('Upstream request failed.', 'upstream_error'));
+      return res.status(502).json(errorBody('Upstream request failed.', 'upstream_error'));
     }
     if (!upstream.ok) {
       const detail = await upstreamErrorMessage(upstream);
       logUpstreamError(upstream.status, detail);
-      return res.status(502).json(errBody('The model backend returned an error: ' + detail, 'upstream_error'));
+      return res.status(502).json(errorBody('The model backend returned an error: ' + detail, 'upstream_error'));
     }
     const data = await upstream.json();
     const choice = data.choices && data.choices[0];
@@ -512,11 +518,20 @@ function publicMeta(meta) {
 
 // Clamp the conversation to allowed roles and a total character budget so a
 // single request can't run up an unbounded prompt cost. Empty turns are dropped.
+//
+// The budget is spent newest-first: we walk from the last message backward and
+// stop once it's exhausted, so the most recent turns — including the question the
+// user just asked, which the chat page always sends LAST — are the ones kept.
+// (Walking front-to-back instead spent the budget on the oldest turns and silently
+// dropped the current question in a long conversation, leaving the model to
+// "answer" stale context with a 200 and no error.) The kept turns are returned in
+// their original chronological order.
 function sanitizeMessages(messages) {
   const allowed = new Set(['system', 'user', 'assistant']);
   const out = [];
   let budget = MAX_PROMPT_CHARS;
-  for (const m of messages) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
     if (!m || typeof m !== 'object') continue;
     const role = allowed.has(m.role) ? m.role : 'user';
     let content = m.content == null ? '' : String(m.content);
@@ -526,7 +541,7 @@ function sanitizeMessages(messages) {
     out.push({ role, content });
     if (budget <= 0) break;
   }
-  return out;
+  return out.reverse();
 }
 
 // Iterate an OpenAI-style SSE body, yielding each parsed JSON event. Tolerates
@@ -571,27 +586,6 @@ function logUpstreamError(status, detail) {
   console.error('[chat] OpenRouter error ' + status + ': ' + detail);
 }
 
-// The single-string prompt kept on the job record as a fallback for nodes that
-// read `prompt` rather than the `messages` array: the last user turn, or the whole
-// (already-sanitized) conversation joined when there's no user turn.
-function lastUserText(messages) {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'user') return messages[i].content;
-  }
-  return messages.map((m) => m.content).join('\n');
-}
-
-// A node-failure message for either response path (one place, so the empty-reason
-// fallback is covered once).
-function nodeFailMessage(r) {
-  return 'The node failed to run the job: ' + (r.error || 'unknown error');
-}
-
-// A rough token count (~4 chars/token) for when the provider omits usage.
-function estimateTokens(text) {
-  return Math.ceil(String(text || '').length / 4);
-}
-
 function int(v, fallback) {
   return Number.isFinite(v) ? Math.round(v) : fallback;
 }
@@ -603,10 +597,6 @@ function round1(v) {
 function numberEnv(v, fallback) {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
-}
-
-function errBody(message, type) {
-  return { error: { message, type, code: null } };
 }
 
 module.exports = ChatController;

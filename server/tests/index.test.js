@@ -107,10 +107,13 @@ describe('server bootstrap (index.js)', () => {
 
       const [statusCb, timeoutCb, cleanupCb] = intervals;
 
-      // node-status tick
-      mockCheckNodeStatuses.mockResolvedValue();
+      // node-status tick: the happy path and the error branch (a transient DB
+      // failure here must be swallowed, not crash the process).
+      mockCheckNodeStatuses.mockResolvedValueOnce();
       await statusCb();
       expect(mockCheckNodeStatuses).toHaveBeenCalled();
+      mockCheckNodeStatuses.mockRejectedValueOnce(new Error('status db down'));
+      await statusCb();
 
       // timeout tick: none returned, some returned, and the error branch. The
       // same tick also expires pending jobs nothing ever picked up.

@@ -31,11 +31,22 @@ class NodeService {
   async claimNode(publicKey, name, userId) {
     const nodeId = generateNodeFingerprint(publicKey);
 
-    const existing = await this.db.query('SELECT user_id FROM nodes WHERE node_id = $1', [nodeId]);
+    const existing = await this.db.query('SELECT user_id, public_key FROM nodes WHERE node_id = $1', [nodeId]);
     if (existing.rows.length > 0) {
       const owner = existing.rows[0].user_id;
       if (owner && owner !== userId) {
         return { error: 'Node already claimed by another user' };
+      }
+      // The nodeId is a fingerprint of the public key, so an existing row under
+      // this id with a DIFFERENT key means a fingerprint collision — a genuine
+      // clash, or an attacker who ground out a key colliding with a real node's
+      // id to hijack it. Refuse rather than let the upsert overwrite the
+      // registered key: doing so would lock the real machine out (its signed
+      // pings would stop matching) and hand the fingerprint to the caller. A
+      // legitimate re-claim always presents the same key, so it's unaffected.
+      const existingKey = existing.rows[0].public_key;
+      if (existingKey && existingKey !== publicKey) {
+        return { error: 'Node key mismatch' };
       }
     }
 

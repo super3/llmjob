@@ -823,6 +823,45 @@ describe('mining', () => {
     expect(ctx.sent('miner:stopped').length).toBeGreaterThan(0);
   });
 
+  it('does not spawn the miner when STOP arrives while the engine is still downloading', async () => {
+    const ctx = await boot();
+    // Make engine.ensure hang so the start is in flight when STOP lands.
+    let resolveEnsure;
+    ctx.EngineManager.behavior.installed = false;
+    ctx.EngineManager.behavior.ensure = () => new Promise((res) => { resolveEnsure = res; });
+    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
+
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    expect(ctx.MinerManager.instances).toHaveLength(0); // still downloading, nothing spawned
+
+    ctx.emit('miner:stop');          // user stops mid-download
+    resolveEnsure('/tmp/engine/alpha-miner'); // download completes AFTER the stop
+    await flush();
+
+    // The stop wins: no miner is spawned behind a UI that says it's stopped.
+    expect(ctx.MinerManager.instances).toHaveLength(0);
+    expect(ctx.sent('miner:stopped').length).toBeGreaterThan(0);
+  });
+
+  it('does not start the LLM when STOP arrives during the miner hashrate wait', async () => {
+    const ctx = await boot();
+    const BIN = '/tmp/engine/alpha-miner';
+    ctx.fs.existsSync.mockImplementation((p) => p === BIN);
+
+    // mode 'both' → start the miner, then wait for a non-zero hashrate before the LLM.
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'both' });
+    await flush();
+    const miner = ctx.MinerManager.instances[0];
+    expect(miner.start).toHaveBeenCalled(); // miner running, runPlan now awaiting waitForMinerUp
+
+    ctx.emit('miner:stop'); // stop during the wait → miner torn down, epoch bumped
+    await flush();
+
+    // The LLM fleet must not come up for a stopped session.
+    expect(ctx.LlmManager.instances).toHaveLength(0);
+  });
+
   it('uses a custom endpoint/worker/binary and keeps the running miner on re-start', async () => {
     const ctx = await boot();
     ctx.fs.existsSync.mockImplementation((p) => p === '/custom/bin');

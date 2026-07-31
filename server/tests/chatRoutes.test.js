@@ -455,7 +455,7 @@ function hookedBody(events, onYield) {
 }
 
 describe('Chat gateway — controller branches', () => {
-  it('stops a stream mid-flight when the caller hangs up (no meta, no [DONE])', async () => {
+  it('stops a stream mid-flight when the caller hangs up (no meta, no [DONE]) but still bills what streamed', async () => {
     const services = usageSpy();
     const events = [{ choices: [{ delta: { content: 'a' } }] }, { choices: [{ delta: { content: 'b' } }] }];
     const res = fakeResClosable();
@@ -466,18 +466,23 @@ describe('Chat gateway — controller branches', () => {
     expect(res.writes.join('')).not.toContain('[DONE]');
     expect(res.writes.join('')).not.toContain('"done":true');
     expect(res.ended).toBe(false);
-    expect(services.chatUsage._recorded).toHaveLength(0);
+    // The abort must NOT skip usage accounting: OpenRouter already generated (and
+    // billed us for) the streamed tokens, so the free-budget cap has to see them —
+    // otherwise a caller who drops the socket before the final event drains the
+    // budget for free.
+    expect(services.chatUsage._recorded).toHaveLength(1);
+    expect(services.chatUsage._recorded[0].outTokens).toBeGreaterThan(0);
   });
 
-  it('stops after the last chunk when the hang-up lands as the stream ends', async () => {
+  it('bills what streamed when the hang-up lands as the stream ends', async () => {
     const services = usageSpy();
     const events = [{ choices: [{ delta: { content: 'a' } }] }];
     const res = fakeResClosable();
     const fetchFn = async () => ({ ok: true, status: 200, body: hookedBody(events, () => res.emitClose()) });
     const ctrl = new ChatController({ apiKey: 'k', models: MODELS, services, fetchFn });
     await ctrl.chatCompletions(fakeReq({ messages: [{ role: 'user', content: 'x' }] }), res);
-    expect(res.writes.join('')).not.toContain('"done":true');
-    expect(services.chatUsage._recorded).toHaveLength(0);
+    expect(res.writes.join('')).not.toContain('"done":true'); // aborted → no final meta
+    expect(services.chatUsage._recorded).toHaveLength(1);      // …but usage still recorded
   });
 
   it('ends the stream (headers already sent) when reading the body throws', async () => {
@@ -854,11 +859,21 @@ describe('Chat gateway — pure helpers', () => {
     ]);
   });
 
-  it('sanitizeMessages truncates at the character budget and stops', () => {
+  it('sanitizeMessages keeps the newest turns and trims/drops the oldest', () => {
     const big = 'a'.repeat(30000);
-    const out = sanitizeMessages([{ role: 'user', content: big }, { role: 'user', content: 'dropped' }]);
-    expect(out).toHaveLength(1);
-    expect(out[0].content.length).toBe(24000);
+    // The current question is the LAST message; it must survive even when an earlier
+    // turn already exceeds the budget. (The old front-to-back trim dropped it and
+    // left the model answering stale context.)
+    const out = sanitizeMessages([{ role: 'user', content: big }, { role: 'user', content: 'current question' }]);
+    expect(out[out.length - 1]).toEqual({ role: 'user', content: 'current question' });
+    const total = out.reduce((n, m) => n + m.content.length, 0);
+    expect(total).toBeLessThanOrEqual(24000);
+  });
+
+  it('sanitizeMessages drops the oldest turn when the newest already fills the budget', () => {
+    const big = 'b'.repeat(24000);
+    const out = sanitizeMessages([{ role: 'user', content: 'old' }, { role: 'user', content: big }]);
+    expect(out).toEqual([{ role: 'user', content: big }]); // newest fills the budget → oldest dropped entirely
   });
 
   it('upstreamErrorMessage extracts a reason from JSON, raw text, or status', async () => {

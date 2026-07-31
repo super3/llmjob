@@ -53,6 +53,11 @@ let miner = null;
 let stats = null;
 let ticker = null;
 let reporter = null;
+// Bumped on every stop. A start is async (the engine can download for minutes),
+// during which the user may press STOP; the in-flight start captures this epoch
+// and, if it has since changed, aborts instead of spawning a headless miner or
+// starting the LLM after the user already stopped.
+let miningEpoch = 0;
 let fleet = null;               // LlmFleet (one llama-server per eligible GPU) while up
 let llmEverReady = false;       // did any instance reach "ready" this run (vs. dying first)
 let serveLogged = false;        // "serving cluster jobs" logged once per serving run
@@ -228,6 +233,9 @@ async function startMining(settings) {
     persistSettings(settings);
     return;
   }
+  // Snapshot the stop epoch: engine setup below can await a multi-minute download,
+  // and if the user presses STOP during it we must not spawn the engine afterward.
+  const epoch = miningEpoch;
   persistSettings(settings);
 
   // Real stats only: the accumulator starts at zero and is filled in from the
@@ -337,6 +345,11 @@ async function startMining(settings) {
     }
   }
 
+  // STOP arrived while the engine was being resolved/downloaded: stopMining() has
+  // already torn down the ticker/reporter/stats and told the UI we stopped, so
+  // spawning now would mine headless behind a UI that says it's off. Abort.
+  if (epoch !== miningEpoch) return;
+
   // Real alpha-miner engine.
   miner = new MinerManager({ spawn });
   miner.on('log', (l) => send('miner:log', l));
@@ -361,6 +374,9 @@ async function startMining(settings) {
 }
 
 function stopMining() {
+  // Cancel any start still in flight (see miningEpoch) so it doesn't spawn or
+  // start the LLM after this stop.
+  miningEpoch++;
   if (ticker) {
     clearInterval(ticker);
     ticker = null;
@@ -1055,6 +1071,7 @@ function waitForMinerUp(capMs) {
 // no engine at all), tell the renderer — otherwise its optimistic "running"
 // state shows STOP for a session in which nothing runs.
 async function runPlan(settings) {
+  const epoch = miningEpoch;
   const plan = resolvePlan(settings.mode || DEFAULT_MODE, { canMine: isValidAddress(settings.address), canLlm: true });
   if (plan.miner) {
     // Start mining FIRST, then — when co-running — wait until the miner reports a
@@ -1073,6 +1090,9 @@ async function runPlan(settings) {
   } else {
     persistSettings(settings); // startMining persists; do it here when the miner is off
   }
+  // STOP arrived during miner setup or the hashrate wait: don't bring the LLM up
+  // (or re-touch node state) for a session the user has already stopped.
+  if (epoch !== miningEpoch) return;
   syncNodeName(settings);
   if (plan.llm) {
     const started = await startLlm(plan.miner ? LLM.miningReserveMb : 0).catch(() => false);
