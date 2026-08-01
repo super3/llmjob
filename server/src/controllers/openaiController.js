@@ -152,7 +152,8 @@ class OpenAiController {
         });
       }
       if (r.status === 'failed') {
-        return res.status(502).json(errorBody('The node failed to run the job: ' + (r.error || 'unknown error'), 'node_error'));
+        this._setServedByHeader(res, r);
+        return res.status(502).json(nodeErrorBody(job.id, r));
       }
       if (this.now() - started > this.timeoutMs) {
         // Same header as a success, so a caller reads "who served this" the same
@@ -198,7 +199,7 @@ class OpenAiController {
         break;
       }
       if (r.status === 'failed') {
-        res.write('data: ' + JSON.stringify(errorBody('The node failed to run the job: ' + (r.error || 'unknown error'), 'node_error')) + '\n\n');
+        res.write('data: ' + JSON.stringify(nodeErrorBody(job.id, r)) + '\n\n');
         break;
       }
       if (this.now() - started > this.timeoutMs) {
@@ -302,6 +303,21 @@ function errorBody(message, type) {
 //
 // The extra fields hang off the standard OpenAI `error` object, so a strict SDK
 // still parses it as an ordinary error and only clients that look find them.
+// The 502 twin of timeoutBody. #165 gave timeouts a node id and left this path
+// alone, which showed up on the very next benchmark run: six 504s named the node
+// that had them while four 502s came back anonymous, so the failures we could
+// investigate were decided by which branch happened to fire.
+function nodeErrorBody(jobId, result) {
+  const reason = (result && result.error) || 'unknown error';
+  const node = (result && result.assignedTo) || null;
+  const who = node ? `Node ${node}` : 'The node';
+  const body = errorBody(`${who} failed to run the job: ${reason}`, 'node_error');
+  body.error.job_id = jobId;
+  body.error.served_by = node;
+  body.error.job_status = 'failed';
+  return body;
+}
+
 function timeoutBody(jobId, result, timeoutMs) {
   const secs = Math.round(timeoutMs / 1000);
   const node = (result && result.assignedTo) || null;
@@ -330,3 +346,4 @@ module.exports.estimateTokens = estimateTokens;
 module.exports.modelName = modelName;
 module.exports.completionTokens = completionTokens;
 module.exports.timeoutBody = timeoutBody;
+module.exports.nodeErrorBody = nodeErrorBody;

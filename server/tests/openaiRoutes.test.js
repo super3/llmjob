@@ -303,6 +303,12 @@ describe('OpenAI gateway — integration', () => {
     expect(res.status).toBe(502);
     expect(res.body.error.type).toBe('node_error');
     expect(res.body.error.message).toContain('model crashed');
+    // Same diagnostics a 504 carries — a failure is attributable either way.
+    expect(res.body.error.message).toContain(`Node ${NODE_ID}`);
+    expect(res.body.error.served_by).toBe(NODE_ID);
+    expect(res.body.error.job_status).toBe('failed');
+    expect(res.body.error.job_id).toEqual(expect.any(String));
+    expect(res.headers['x-llmjob-served-by']).toBe(NODE_ID);
   });
 
   it('writes a node_error event then [DONE] when a streamed job fails', async () => {
@@ -313,6 +319,8 @@ describe('OpenAI gateway — integration', () => {
     ]);
     expect(res.status).toBe(200);
     expect(res.text).toContain('"type":"node_error"');
+    expect(res.text).toContain(`"served_by":"${NODE_ID}"`); // headers are long gone
+    expect(res.text).toContain('"job_status":"failed"');
     expect(res.text.trim().endsWith('data: [DONE]')).toBe(true);
   });
 
@@ -521,7 +529,9 @@ describe('OpenAI gateway — controller branches', () => {
     const jsonRes = fakeRes();
     await new OpenAiController({ services, pollMs: 1 }).chatCompletions(fakeReq({ messages: [{ role: 'user', content: 'x' }] }), jsonRes);
     expect(jsonRes.statusCode).toBe(502);
-    expect(jsonRes.body.error.message).toContain('unknown error');
+    expect(jsonRes.body.error.message).toBe('The node failed to run the job: unknown error');
+    expect(jsonRes.body.error.served_by).toBeNull(); // failed before anyone claimed it
+    expect(jsonRes.headers['X-LLMJob-Served-By']).toBeUndefined();
 
     const streamRes = fakeRes();
     await new OpenAiController({ services, pollMs: 1 }).chatCompletions(fakeReq({ messages: [{ role: 'user', content: 'x' }], stream: true }), streamRes);
