@@ -23,6 +23,7 @@ const {
   detectRegion, detectVram, detectGpusVram, detectDriverMajor,
   postMinerReport, findFreePort,
 } = require('./probe');
+const probe = require('./probe');
 const nodeStore = require('./nodeStore');
 const settingsStore = require('../shared/settingsStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
@@ -42,7 +43,6 @@ const {
 } = require('../shared/engine');
 const { formatUpdate } = require('../shared/updateStatus');
 const { describeLaunchError, describeSetupError } = require('../shared/engineError');
-const { pickGpu } = require('../shared/gpu');
 const { buildMinerReports } = require('../shared/minerReport');
 const { runtimeCopyPlan } = require('../shared/llmRuntime');
 const earnings = require('../shared/earnings');
@@ -401,15 +401,13 @@ function appIcon() {
 // Detect the machine's GPU for the settings/device label. Uses Windows'
 // Win32_VideoController via PowerShell (already a dependency of extractZip);
 // resolves to a display name or null. Never rejects.
-function detectGpu() {
-  return new Promise((resolve) => {
-    if (process.platform !== 'win32') return resolve(null);
-    execFile('powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-Command',
-        'Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name'],
-      { timeout: 5000 },
-      (err, stdout) => resolve(err ? null : pickGpu(String(stdout).split(/\r?\n/))));
-  });
+// Delegates to the shared probe (nvidia-smi, then WMI on Windows) rather than
+// keeping a Windows-only copy here — that copy returned null on Linux, so the
+// shipped AppImage showed no device and never applied the per-card difficulty.
+// The renderer's IPC contract is a plain name string, so unwrap it here.
+async function detectGpu() {
+  const info = await probe.detectGpuInfo();
+  return info ? info.name : null;
 }
 
 // Wire electron-updater to the renderer's update bar. autoUpdater pulls from the
@@ -1203,8 +1201,25 @@ app.whenReady().then(() => {
   });
 });
 
-app.on('window-all-closed', () => {
+// Kill the children we spawned. Idempotent — both quit paths below call it, and
+// on the common path both of them fire.
+function shutdownChildren() {
   stopMining();
   stopLlm(); // never orphan llama-server (it would hold VRAM + port 8080)
+}
+
+app.on('window-all-closed', () => {
+  shutdownChildren();
   if (process.platform !== 'darwin') app.quit();
+});
+
+// The other way out, and until now the LEAKING one. Electron does not emit
+// 'window-all-closed' when the quit was started programmatically — which is what
+// the default menu's Quit role and Ctrl/Cmd+Q do. So the most ordinary way to
+// close the app skipped the only cleanup hook and left llama-server and the
+// alpha-miner running: the user's GPU stayed pinned by processes they could no
+// longer see, and the next launch found port 8080 already held (the same
+// symptom the update path documents at 'app:update:install').
+app.on('before-quit', () => {
+  shutdownChildren();
 });

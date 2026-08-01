@@ -97,6 +97,32 @@ describe('JobController', () => {
       await jobService.createJob({ prompt: 'Test 2', userId: 'user123' });
     });
 
+    // maxJobs lands in a SQL LIMIT and node enrollment is open to the internet,
+    // so an unclamped value let one anonymous node lock the entire public queue
+    // — a fleet-wide DoS and a way to be handed every caller's prompts.
+    it('clamps an absurd maxJobs to the per-poll ceiling', async () => {
+      nodeService.getNode.mockResolvedValue({ nodeId: 'node123', publicKey: 'test-public-key', status: 'online' });
+      const spy = jest.spyOn(jobService, 'assignJobsToNode');
+
+      req.body = { nodeId: 'node123', maxJobs: 100000 };
+      await jobController.pollJobs(req, res);
+
+      expect(spy).toHaveBeenCalledWith('node123', JobController.MAX_JOBS_PER_POLL);
+    });
+
+    it('coerces a missing, junk or non-positive maxJobs to 1', () => {
+      const { clampMaxJobs, MAX_JOBS_PER_POLL } = JobController;
+      expect(clampMaxJobs(undefined)).toBe(1);
+      expect(clampMaxJobs(null)).toBe(1);
+      expect(clampMaxJobs('abc')).toBe(1);
+      expect(clampMaxJobs(0)).toBe(1);
+      expect(clampMaxJobs(-9)).toBe(1);
+      expect(clampMaxJobs(Infinity)).toBe(1);
+      expect(clampMaxJobs(3)).toBe(3);
+      expect(clampMaxJobs(2.9)).toBe(2);
+      expect(clampMaxJobs(MAX_JOBS_PER_POLL + 1)).toBe(MAX_JOBS_PER_POLL);
+    });
+
     it('should assign jobs to valid node', async () => {
       nodeService.getNode.mockResolvedValue({
         nodeId: 'node123',

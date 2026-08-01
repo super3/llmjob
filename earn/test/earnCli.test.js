@@ -24,6 +24,8 @@ jest.mock('../src/main/probe', () => ({
   detectDriverMajor: jest.fn(),
   postMinerReport: jest.fn(),
   findFreePort: jest.fn(),
+  // Shared with the GUI now — one detection path for both shells.
+  detectGpuInfo: jest.fn(),
 }));
 jest.mock('../src/main/io', () => ({
   postJson: jest.fn(),
@@ -184,6 +186,7 @@ function applyDefaults(m) {
   m.probe.detectDriverMajor.mockResolvedValue(600);
   m.probe.postMinerReport.mockResolvedValue(undefined);
   m.probe.findFreePort.mockResolvedValue(8080);
+  m.probe.detectGpuInfo.mockResolvedValue(null); // no identifiable GPU by default
   m.io.postJson.mockResolvedValue({ status: 200, data: {} });
   m.io.downloadFile.mockResolvedValue(undefined);
   m.io.streamChatCompletion.mockReturnValue({ done: Promise.resolve('') });
@@ -408,8 +411,7 @@ describe('mining', () => {
   test('full auto-detected run: download engine, report, stats file, SIGINT shutdown', async () => {
     intervalUnref = false; // cover the interval handles without unref()
     const m = load();
-    m.cp.execFile.mockImplementation((cmd, args, opts, cb) =>
-      cb(null, 'NVIDIA GeForce RTX 3070\nNVIDIA GeForce RTX 3070\n'));
+    m.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 3070', count: 2 });
     const p = m.run(['--address', ADDR, '--mdl', MDL, '--no-update',
       '--stats-file', '/tmp/s.json', '--engine-dir', '/ed']);
     await settle();
@@ -532,7 +534,7 @@ describe('mining', () => {
   test('old driver picks the fallback build; single GPU; stats write failures stay silent', async () => {
     const m = load();
     m.probe.detectDriverMajor.mockResolvedValue(550);
-    m.cp.execFile.mockImplementation((cmd, args, opts, cb) => cb(null, 'NVIDIA GeForce RTX 3070\n'));
+    m.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 3070', count: 1 });
     m.fs.writeFileSync.mockImplementation(() => { throw new Error('read-only fs'); });
     // --mode mining opts out of the default co-run: the miner runs alone and
     // nothing LLM-related is prepared, downloaded, or spawned.
@@ -606,7 +608,7 @@ describe('local LLM', () => {
     m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
     m.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 2000 });
     m.probe.findFreePort.mockResolvedValue(9090);
-    m.cp.execFile.mockImplementation((cmd, args, opts, cb) => cb(null, 'NVIDIA GeForce RTX 4090\n'));
+    m.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 4090', count: 1 });
     const p = m.run(['--mode', 'llm', '--no-update']);
     await settle();
 
@@ -925,7 +927,7 @@ describe('connect subcommand', () => {
     m.nodeStore.getOrCreateNode.mockReturnValue(node);
     m.io.postJson.mockResolvedValueOnce({ status: 200, data: { user: 'bob' } });
     m.probe.detectVram.mockResolvedValue({ totalMb: 100, usedMb: 10 });
-    m.cp.execFile.mockImplementation((cmd, args, opts, cb) => cb(null, 'NVIDIA GeForce RTX 4090\n'));
+    m.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 4090', count: 1 });
 
     const p = m.run(['connect', '--token=tok123', '--name', 'MyRig', '--server', 'https://srv.example']);
     await settle();
@@ -946,6 +948,28 @@ describe('connect subcommand', () => {
     fire('SIGINT');
     await expect(p).resolves.toBe(0);
     expect(allOut()).toContain('stopped pinging');
+  });
+
+  // The GPU name is only a display/difficulty hint, so a probe that blows up must
+  // degrade to "unknown device" rather than take the ping (or the run) down.
+  test('a GPU probe that rejects leaves the ping device null', async () => {
+    const m = load();
+    const node = makeNode();
+    m.nodeStore.getOrCreateNode.mockReturnValue(node);
+    m.io.postJson.mockResolvedValueOnce({ status: 200, data: { user: 'bob' } });
+    m.probe.detectVram.mockResolvedValue({ totalMb: 100, usedMb: 10 });
+    m.probe.detectGpuInfo.mockRejectedValue(new Error('nvidia-smi exploded'));
+
+    const p = m.run(['connect', '--token=tok123', '--server', 'https://srv.example']);
+    await settle();
+
+    // Telemetry omits the field entirely rather than carrying a bad name.
+    const pings = m.io.postJson.mock.calls.slice(1).map((c) => c[1]);
+    expect(pings.length).toBeGreaterThan(0);
+    for (const body of pings) expect(body.device == null).toBe(true);
+
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
   });
 
   test('a 201 join without a user links "your account" under the hostname worker name', async () => {

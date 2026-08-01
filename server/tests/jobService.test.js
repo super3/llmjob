@@ -15,7 +15,7 @@ describe('JobService', () => {
   });
 
   const expireLock = (id) => db.query('UPDATE jobs SET lock_expires_at = $1 WHERE id = $2', [Date.now() - 1, id]);
-  const staleHeartbeat = (id) => db.query('UPDATE jobs SET heartbeat_at = $1 WHERE id = $2', [Date.now() - 120000, id]);
+  const staleHeartbeat = (id) => db.query('UPDATE jobs SET heartbeat_at = $1 WHERE id = $2', [Date.now() - 300000, id]);
   const ageJob = (id) => db.query('UPDATE jobs SET updated_at = 1000 WHERE id = $1', [id]);
 
   describe('createJob', () => {
@@ -29,6 +29,18 @@ describe('JobService', () => {
       });
       expect(job.id).toMatch(/^job-\d+-[a-z0-9]+$/);
       expect(job.createdAt).toBeDefined();
+    });
+
+    // `||` swallowed these: temperature 0 is THE deterministic setting and was
+    // silently served as 0.7, and max_tokens 0 became the full default budget.
+    it('preserves an explicit temperature of 0 instead of coalescing it', async () => {
+      const job = await jobService.createJob({ prompt: 'p', userId: 'u', temperature: 0 });
+      expect(job.temperature).toBe(0);
+    });
+
+    it('preserves an explicit maxTokens of 0', async () => {
+      const job = await jobService.createJob({ prompt: 'p', userId: 'u', maxTokens: 0 });
+      expect(job.maxTokens).toBe(0);
     });
 
     it('creates a job with custom values', async () => {
@@ -398,6 +410,19 @@ describe('JobService', () => {
   });
 
   describe('checkTimeouts', () => {
+    // main's purge keeps a requeue from CORRUPTING the answer; this keeps the
+    // requeue from firing in the first place. The node beats every 30s, so at the
+    // old 60s threshold a single dropped POST threw away a generation that was
+    // still running and going to finish.
+    it('leaves a job alone when only one heartbeat has been missed', async () => {
+      const job = await jobService.createJob({ prompt: 'Test', userId: 'u' });
+      await jobService.assignJobsToNode('nodeA', 1);
+      await jobService.handleHeartbeat(job.id, 'nodeA');
+      await db.query('UPDATE jobs SET heartbeat_at = $1 WHERE id = $2', [Date.now() - 65000, job.id]);
+
+      expect(await jobService.checkTimeouts()).not.toContain(job.id);
+    });
+
     it('returns a job whose lock expired', async () => {
       const job = await jobService.createJob({ prompt: 'Test', userId: 'u' });
       await jobService.assignJobsToNode('node123', 1);

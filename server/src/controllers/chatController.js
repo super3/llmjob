@@ -292,7 +292,12 @@ class ChatController {
   _networkMeta(ctx, r) {
     const end = this.now();
     const m = r.metrics || {};
-    const completionTokens = Number.isFinite(m.totalTokens) ? m.totalTokens : estimateTokens(ctx.text);
+    // The node's own count, but bounded by what it actually produced. `metrics`
+    // comes straight off the node's chunk POST, and any anonymous machine can
+    // enroll and serve public chat jobs — so an unbounded value here goes into
+    // chat_usage_totals and can push the global free-token budget past its cap in
+    // ONE request, 402-ing the public chat permanently.
+    const completionTokens = boundedTokens(m.totalTokens, ctx.text);
     const promptTokens = estimateTokens(ctx.promptText);
     const genMs = Math.max(0, end - (ctx.firstTokenAt || ctx.start));
     const tokensPerSecond = (Number.isFinite(m.tokensPerSecond) && m.tokensPerSecond > 0)
@@ -599,9 +604,27 @@ function numberEnv(v, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+// How far a node's self-reported completion count may exceed our estimate of the
+// text it returned. Generous — tokenizers differ, and a thinking model's hidden
+// reasoning tokens are billed but never delivered — while still bounding an
+// arbitrary claim to something proportional to real work.
+const TOKEN_REPORT_SLACK = 8;
+
+// Reconcile a node-reported token count against the text actually delivered.
+// Reported values are used when plausible (more accurate than a character
+// estimate) and clamped when they aren't; non-finite or negative reports fall
+// back to the estimate entirely.
+function boundedTokens(reported, text) {
+  const est = estimateTokens(text);
+  const ceiling = Math.max(est * TOKEN_REPORT_SLACK, 1000);
+  if (!Number.isFinite(reported) || reported < 0) return est;
+  return Math.min(reported, ceiling);
+}
+
 module.exports = ChatController;
 module.exports.parseSSE = parseSSE;
 module.exports.sanitizeMessages = sanitizeMessages;
 module.exports.estimateTokens = estimateTokens;
+module.exports.boundedTokens = boundedTokens;
 module.exports.upstreamErrorMessage = upstreamErrorMessage;
 module.exports.DEFAULT_MODELS = DEFAULT_MODELS;

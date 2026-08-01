@@ -210,3 +210,71 @@ describe('findFreePort', () => {
     expect(await probe.findFreePort('127.0.0.1', 8080, 3)).toBe(8080);
   });
 });
+
+describe('detectGpuInfo', () => {
+  // Both shells used to carry their own copy of this and had drifted into
+  // different detection METHODS — the GUI asked Windows' WMI and returned null
+  // everywhere else, so the shipped Linux AppImage had no device name and never
+  // applied the per-card difficulty. One implementation, nvidia-smi first.
+  const withPlatform = (value, fn) => {
+    const original = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value, configurable: true });
+    return Promise.resolve(fn()).finally(() => Object.defineProperty(process, 'platform', original));
+  };
+
+  it('reads the card name and count from nvidia-smi', async () => {
+    execCb(null, 'NVIDIA GeForce RTX 3070\nNVIDIA GeForce RTX 3070\n');
+    expect(await probe.detectGpuInfo()).toEqual({ name: 'NVIDIA GeForce RTX 3070', count: 2 });
+    expect(execFile).toHaveBeenCalledWith('nvidia-smi', expect.any(Array), { timeout: 5000 }, expect.any(Function));
+  });
+
+  // The regression that mattered: on Linux this used to be an unconditional null.
+  it('works on Linux, where the old GUI copy always returned null', async () => {
+    await withPlatform('linux', async () => {
+      execCb(null, 'NVIDIA GeForce RTX 4090\n');
+      expect(await probe.detectGpuInfo()).toEqual({ name: 'NVIDIA GeForce RTX 4090', count: 1 });
+    });
+  });
+
+  it('gives up on a non-Windows box with no nvidia-smi', async () => {
+    await withPlatform('linux', async () => {
+      execCb(new Error('ENOENT'));
+      expect(await probe.detectGpuInfo()).toBeNull();
+    });
+  });
+
+  it('falls back to WMI on Windows so a non-NVIDIA card still gets a name', async () => {
+    await withPlatform('win32', async () => {
+      execFile.mockImplementation((bin, _args, _opts, cb) => (bin === 'nvidia-smi'
+        ? cb(new Error('not installed'))
+        : cb(null, 'Intel(R) UHD Graphics\r\nAMD Radeon RX 7900 XTX\r\n')));
+      expect(await probe.detectGpuInfo()).toEqual({ name: 'AMD Radeon RX 7900 XTX', count: 1 });
+      expect(execFile).toHaveBeenCalledWith('powershell.exe', expect.any(Array), { timeout: 5000 }, expect.any(Function));
+    });
+  });
+
+  it('returns null when the Windows fallback also fails', async () => {
+    await withPlatform('win32', async () => {
+      execFile.mockImplementation((_bin, _args, _opts, cb) => cb(new Error('nope')));
+      expect(await probe.detectGpuInfo()).toBeNull();
+    });
+  });
+
+  it('returns null when WMI answers but names nothing usable', async () => {
+    await withPlatform('win32', async () => {
+      execFile.mockImplementation((bin, _args, _opts, cb) => (bin === 'nvidia-smi'
+        ? cb(new Error('not installed'))
+        : cb(null, '\r\n\r\n')));
+      expect(await probe.detectGpuInfo()).toBeNull();
+    });
+  });
+
+  // nvidia-smi can exit 0 yet print nothing useful; that must fall through to the
+  // platform fallback rather than reporting a nameless GPU.
+  it('falls through when nvidia-smi succeeds but names nothing', async () => {
+    await withPlatform('linux', async () => {
+      execCb(null, '\n\n');
+      expect(await probe.detectGpuInfo()).toBeNull();
+    });
+  });
+});

@@ -1,3 +1,16 @@
+// The most jobs one poll may claim. A node runs them one at a time
+// (jobWorker.processJob awaits each), so a large batch buys nothing but holds
+// locks the rest of the fleet could be working.
+const MAX_JOBS_PER_POLL = 10;
+
+// Coerce a node-supplied maxJobs into [1, MAX_JOBS_PER_POLL]. Anything absent,
+// non-numeric, negative or fractional falls back to 1.
+function clampMaxJobs(v) {
+  const n = Math.floor(Number(v));
+  if (!Number.isFinite(n) || n < 1) return 1;
+  return Math.min(n, MAX_JOBS_PER_POLL);
+}
+
 class JobController {
   constructor(jobService, nodeService) {
     this.jobService = jobService;
@@ -72,8 +85,13 @@ class JobController {
       // Verify node exists and is active
       if (!(await this._requireNode(req, res))) return;
 
-      // Assign jobs to node
-      const jobs = await this.jobService.assignJobsToNode(nodeId, maxJobs || 1);
+      // Assign jobs to node. maxJobs is clamped, not trusted: it lands in a SQL
+      // LIMIT, and node enrollment is open to the internet (/api/nodes/register
+      // accepts any self-minted keypair). Unclamped, one anonymous node polling
+      // with maxJobs: 100000 locks every pending public job for the full LOCK_MS
+      // — which is both a fleet-wide denial of service and a way to be handed
+      // every other caller's prompts.
+      const jobs = await this.jobService.assignJobsToNode(nodeId, clampMaxJobs(maxJobs));
 
       res.json({
         success: true,
@@ -267,3 +285,5 @@ class JobController {
 }
 
 module.exports = JobController;
+module.exports.MAX_JOBS_PER_POLL = MAX_JOBS_PER_POLL;
+module.exports.clampMaxJobs = clampMaxJobs;

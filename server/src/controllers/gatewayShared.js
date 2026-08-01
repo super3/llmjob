@@ -76,6 +76,46 @@ async function* pollJobResult({ jobService, jobId, now, sleep, pollMs, timeoutMs
   }
 }
 
+// Total prompt characters accepted per request, across all messages.
+const MAX_PROMPT_CHARS = 24000;
+
+// Trim a message list to `maxChars`, oldest-first, preserving order. Entries that
+// aren't objects, or whose content is empty after coercion, are dropped;
+// unexpected roles are mapped onto 'user'.
+//
+// This lives here for the same reason the SSE preamble does: only the web-chat
+// gateway ever clamped its input. The /v1 gateway passed the caller's messages
+// straight through, so a single API key could hand a node an unbounded prompt.
+function clampMessages(messages, maxChars) {
+  const allowed = new Set(['system', 'user', 'assistant']);
+  const out = [];
+  let budget = maxChars == null ? MAX_PROMPT_CHARS : maxChars;
+  for (const m of messages || []) {
+    if (!m || typeof m !== 'object') continue;
+    const role = allowed.has(m.role) ? m.role : 'user';
+    let content = m.content == null ? '' : String(m.content);
+    if (!content) continue;
+    if (content.length > budget) content = content.slice(0, budget);
+    budget -= content.length;
+    out.push({ role, content });
+    if (budget <= 0) break;
+  }
+  return out;
+}
+
+// Resolve a caller-supplied max_tokens against a ceiling. The other half of the
+// same gap: /v1 forwarded `max_tokens` verbatim, so a key could ask for millions
+// and hold a node's GPU for as long as it took to refuse.
+//
+// `0` and negatives are not "unset" here — a completion budget of zero produces
+// nothing — so they fall back to the ceiling. Deliberately NOT the same rule as
+// jobService's temperature handling, where 0 is meaningful and must survive.
+function resolveMaxTokens(v, ceiling) {
+  const n = Number(v);
+  if (Number.isFinite(n) && n > 0) return Math.min(Math.floor(n), ceiling);
+  return ceiling;
+}
+
 module.exports = {
   estimateTokens,
   errorBody,
@@ -84,4 +124,7 @@ module.exports = {
   nodeFailMessage,
   writeSsePreamble,
   pollJobResult,
+  clampMessages,
+  resolveMaxTokens,
+  MAX_PROMPT_CHARS,
 };

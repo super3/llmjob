@@ -8,7 +8,7 @@
 // real filesystem / network / child_process around them, exactly like main.js
 // does for the GUI. No window, no DOM — just stdout.
 
-const { spawn, execFile } = require('child_process');
+const { spawn } = require('child_process');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -24,6 +24,7 @@ const { postJson, downloadFile, streamChatCompletion, extractLlamaZip } = requir
 const {
   detectRegion, detectVram, detectGpusVram, detectDriverMajor, postMinerReport, findFreePort,
 } = require('../main/probe');
+const probe = require('../main/probe');
 const nodeStore = require('../main/nodeStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const { NETWORK, MINER, LLM, NODE, DEFAULTS, endpointFor, regionLabel, difficultyForCard } = require('../shared/config');
@@ -33,7 +34,6 @@ const nodeProto = require('../shared/node');
 const { buildMinerReports } = require('../shared/minerReport');
 const { statsFilePayload } = require('../shared/statsFile');
 const { shortenAddress, isValidAddress } = require('../shared/address');
-const { pickGpu, countGpus } = require('../shared/gpu');
 const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
 const { planLlmInstances } = require('../shared/llmPlan');
 const { LlmFleet } = require('../main/llmFleet');
@@ -68,16 +68,10 @@ function defaultWorker() {
 // difficulty table and the status label.
 // Resolve { name, count } — the representative card plus how many discrete
 // GPUs the rig actually mines with (multi-GPU rigs scale difficulty by count).
+// Delegates to the shared probe so the GUI and the CLI detect the same way —
+// they had drifted into two different methods, and the GUI's was Windows-only.
 function detectGpu() {
-  return new Promise((resolve) => {
-    execFile('nvidia-smi', ['--query-gpu=name', '--format=csv,noheader'],
-      { timeout: 5000 },
-      (err, stdout) => {
-        if (err) return resolve(null);
-        const names = String(stdout).split(/\r?\n/);
-        resolve({ name: pickGpu(names), count: countGpus(names) });
-      });
-  });
+  return probe.detectGpuInfo();
 }
 
 // The mining engine ships as a bare Linux binary (no zip), so its EngineManager

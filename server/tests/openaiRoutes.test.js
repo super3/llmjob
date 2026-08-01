@@ -294,6 +294,37 @@ describe('OpenAI gateway — integration', () => {
     expect(c.status).toBe(400);
   });
 
+  // A non-empty array whose entries all clamp away must not become a job — the
+  // gateway clamps prompts now, so this branch is reachable.
+  it('rejects messages that survive the array check but hold no usable content (400)', async () => {
+    const res = await request(app).post('/v1/chat/completions').set(...auth())
+      .send({ messages: [{ role: 'user', content: '' }, null, 'nope'] });
+    expect(res.status).toBe(400);
+    expect(res.body.error.message).toBe('No usable message content.');
+  });
+
+  // max_tokens rode through unbounded before, so one key could ask for millions
+  // of tokens and hold a node's GPU for as long as it took.
+  it('clamps an oversized max_tokens onto the job', async () => {
+    const jobs = [];
+    const clampApp = makeApp(db, {
+      services: {
+        jobService: {
+          createJob: async (j) => { jobs.push(j); return { id: 'job-clamp' }; },
+          getJobResult: async () => ({ status: 'completed', result: 'ok', chunks: [] }),
+        },
+        logService: { recordLog: async () => {} },
+        apiKeyService: { recordUsage: async () => {} },
+        nodeService: { getNodeStatus: async () => ({ exists: true, online: true }) },
+      },
+    });
+    await request(clampApp).post('/v1/chat/completions').set(...auth())
+      .send({ messages: [{ role: 'user', content: 'hi' }], max_tokens: 999999 });
+
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].maxTokens).toBe(6400);
+  });
+
   it('returns 502 when the node fails the job (non-streaming)', async () => {
     const [res] = await Promise.all([
       request(app).post('/v1/chat/completions').set(...auth())

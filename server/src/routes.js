@@ -5,6 +5,7 @@ const { requireAdmin } = require('./middleware/admin');
 const { verifySignature } = require('./middleware/signature');
 const { apiKeyAuth } = require('./middleware/apiKeyAuth');
 const { anyAuth } = require('./middleware/anyAuth');
+const { rateLimit } = require('./middleware/rateLimit');
 const nodeController = require('./controllers/nodeController');
 const minerController = require('./controllers/minerController');
 const apiKeyController = require('./controllers/apiKeyController');
@@ -15,8 +16,17 @@ const ChatController = require('./controllers/chatController');
 const JobService = require('./services/jobService');
 const NodeService = require('./services/nodeService');
 
-// POST /api/nodes/claim - Associate node with logged-in user (requires auth)
-router.post('/nodes/claim', requireAuth, nodeController.claimNode);
+// POST /api/nodes/claim - Associate a node with the logged-in user. Requires
+// BOTH the Clerk session (who is claiming) and a node signature (proof the
+// caller actually holds that node's secret key).
+//
+// The signature is not belt-and-braces. Without it this route took a raw
+// publicKey from the body, so anyone could get a signed-in user to bind
+// attacker-controlled hardware to their account — and a node in your account is
+// eligible for your `private` jobs, i.e. exactly the prompts you asked to keep
+// on your own machines. /nodes/register has always proved possession; this now
+// matches it.
+router.post('/nodes/claim', requireAuth, verifySignature, nodeController.claimNode);
 
 // POST /api/nodes/register - Self-register an unclaimed node (signature only,
 // no account). Lets a rig serve public jobs without linking to an account; a
@@ -89,11 +99,13 @@ const initJobRoutes = (db) => {
   router.post('/jobs/:jobId/fail', verifySignature, (req, res) => jobController.failJob(req, res));
   
   // Admin operations. Cleanup deletes data, so it is gated to admins
-  // (ADMIN_USER_IDS). check-timeouts mutates queue state; the server also runs
-  // it on an internal interval, so the HTTP route just needs to be authenticated
-  // rather than public.
+  // (ADMIN_USER_IDS). check-timeouts is gated the same way: it requeues every
+  // user's in-flight work and returns their job ids, so behind plain requireAuth
+  // any free account could repeatedly abandon the whole fleet's running jobs.
+  // The server still runs it on an internal interval — the route is only a
+  // manual override.
   router.post('/jobs/cleanup', requireAuth, requireAdmin, (req, res) => jobController.cleanupJobs(req, res));
-  router.post('/jobs/check-timeouts', requireAuth, (req, res) => jobController.checkTimeouts(req, res));
+  router.post('/jobs/check-timeouts', requireAuth, requireAdmin, (req, res) => jobController.checkTimeouts(req, res));
 };
 
 // OpenAI-compatible gateway. Mounted at the app root (not under /api) so callers
@@ -101,8 +113,13 @@ const initJobRoutes = (db) => {
 // an inference job served by an online node. `opts` (poll cadence / timeout) is
 // injectable for tests.
 const initOpenAiRoutes = (app, opts) => {
-  const ctrl = new OpenAiController(opts || {});
-  app.post('/v1/chat/completions', apiKeyAuth, (req, res) => ctrl.chatCompletions(req, res));
+  const o = opts || {};
+  const ctrl = new OpenAiController(o);
+  // Ahead of apiKeyAuth so an unauthenticated flood is rejected before it costs
+  // a DB round-trip. A real SDK caller stays well under this; it only bites a
+  // loop. `limiter` is injectable so tests can drive the window deterministically.
+  const limit = o.limiter || rateLimit({ windowMs: 60000, max: 120 });
+  app.post('/v1/chat/completions', limit, apiKeyAuth, (req, res) => ctrl.chatCompletions(req, res));
   return ctrl;
 };
 
@@ -111,8 +128,13 @@ const initOpenAiRoutes = (app, opts) => {
 // the controller rather than per-user auth. Mounted at the app root. `opts`
 // (OpenRouter key/models/budget, fetch) is injectable for tests.
 const initChatRoutes = (app, opts) => {
-  const ctrl = new ChatController(opts || {});
-  app.post('/api/chat/completions', (req, res) => ctrl.chatCompletions(req, res));
+  const o = opts || {};
+  const ctrl = new ChatController(o);
+  // The tightest limit on the server: this route is fully unauthenticated and
+  // every call either spends OpenRouter credit or occupies a node's GPU. 10/min
+  // is generous for a human typing in chat.html and useless for a drain loop.
+  const limit = o.limiter || rateLimit({ windowMs: 60000, max: 10 });
+  app.post('/api/chat/completions', limit, (req, res) => ctrl.chatCompletions(req, res));
   app.get('/api/chat/models', (req, res) => ctrl.listModels(req, res));
   app.get('/api/chat/usage', (req, res) => ctrl.usage(req, res));
   return ctrl;
