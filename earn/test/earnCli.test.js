@@ -142,6 +142,7 @@ const pkg = require('../package.json');
 const { NETWORK, NODE, LLM } = require('../src/shared/config');
 const nodeProto = require('../src/shared/node');
 const { ALL_LAYERS } = require('../src/shared/vram');
+const engine = require('../src/shared/engine');
 
 const ADDR = 'prl1p' + 'a'.repeat(30);
 const MDL = 'mdl1p' + 'b'.repeat(30);
@@ -502,8 +503,12 @@ describe('mining', () => {
     await expect(m.run(['-a', ADDR, '--engine-dir', '/rig/engine', '--no-update'])).resolves.toBe(1);
     expect(allErr()).toContain('unable to verify the first certificate');
     expect(allErr()).toMatch(/proxy, VPN or antivirus/);
-    expect(allErr()).toContain('Manual install: download https://pearl.alphapool.tech/downloads/alpha-miner-1.8.8');
-    expect(allErr()).toContain('save it as /rig/engine/alpha-miner');
+    // Both halves are platform-shaped (a zip and an .exe on Windows), and the
+    // point is that they match what THIS rig's cache is waiting for — so derive
+    // them the way the code does rather than pinning the Linux names.
+    expect(allErr()).toContain('Manual install: download '
+      + engine.engineDownloadUrl(process.platform, undefined, null, engine.ENGINE.preferred));
+    expect(allErr()).toContain('save it as ' + engine.manualEnginePath('/rig/engine', process.platform));
   });
 
   test('unknown driver picks the compatible build; no-report; hostname fallback', async () => {
