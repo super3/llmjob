@@ -113,6 +113,10 @@ jest.mock('../src/main/probe', () => ({
   detectDriverMajor: jest.fn(() => Promise.resolve(600)),
   postMinerReport: jest.fn(() => Promise.resolve()),
   findFreePort: jest.fn(() => Promise.resolve(8080)),
+  // GPU detection moved into probe so the GUI and the CLI share one
+  // implementation — the GUI's own copy was Windows-only, which left the Linux
+  // AppImage with no device name and no per-card difficulty.
+  detectGpuInfo: jest.fn(() => Promise.resolve(null)),
 }));
 
 jest.mock('../src/main/nodeStore', () => ({
@@ -490,6 +494,29 @@ describe('app boot and window lifecycle', () => {
     ctx.electron._appEvents['window-all-closed']();
     expect(ctx.electron.app.quit).not.toHaveBeenCalled();
   });
+
+  // The leak this closes: Electron does NOT emit 'window-all-closed' when the
+  // quit was started programmatically, which is exactly what the menu's Quit role
+  // and Ctrl/Cmd+Q do. Without a before-quit hook the most ordinary way to close
+  // the app skipped the only cleanup path and left llama-server and the miner
+  // running — the user's GPU stayed pinned and port 8080 stayed bound.
+  it('before-quit stops the miner even when window-all-closed never fires', async () => {
+    const ctx = await boot();
+    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    const miner = ctx.MinerManager.instances[ctx.MinerManager.instances.length - 1];
+
+    expect(ctx.electron._appEvents['before-quit']).toBeInstanceOf(Function);
+    ctx.electron._appEvents['before-quit']();
+
+    expect(miner.stop).toHaveBeenCalled();
+  });
+
+  it('before-quit is safe to run with nothing started', () => {
+    const ctx = loadMain();
+    expect(() => ctx.electron._appEvents['before-quit']()).not.toThrow();
+  });
 });
 
 // ── simple ipc handlers ──────────────────────────────────────────────────────
@@ -528,18 +555,17 @@ describe('simple ipc handlers', () => {
     expect(ctx.probe.detectRegion).toHaveBeenCalled();
   });
 
-  it('gpu:detect resolves null off Windows without probing', async () => {
-    const ctx = loadMain();
-    expect(await ctx.invoke('gpu:detect')).toBeNull();
-    expect(ctx.cp.execFile).not.toHaveBeenCalled();
-  });
-
-  it('gpu:detect parses the PowerShell output on Windows and nulls on error', async () => {
-    const ctx = loadMain({ platform: 'win32' });
-    ctx.cp.execFile.mockImplementation((...args) => args[args.length - 1](null, 'Intel(R) UHD Graphics\r\nNVIDIA GeForce RTX 4090\r\n'));
+  // Detection itself now lives in probe (and is tested there); main only unwraps
+  // it to the plain name string the renderer's IPC contract expects. What matters
+  // here is that it is NOT platform-gated any more — the old copy short-circuited
+  // to null on anything but win32, which is why the Linux AppImage showed no
+  // device name and never applied the per-card difficulty.
+  it('gpu:detect returns the probed card name, on every platform', async () => {
+    const ctx = loadMain({ platform: 'linux' });
+    ctx.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 4090', count: 2 });
     expect(await ctx.invoke('gpu:detect')).toBe('NVIDIA GeForce RTX 4090');
-    expect(ctx.cp.execFile).toHaveBeenCalledWith('powershell.exe', expect.any(Array), { timeout: 5000 }, expect.any(Function));
-    ctx.cp.execFile.mockImplementation((...args) => args[args.length - 1](new Error('no powershell')));
+
+    ctx.probe.detectGpuInfo.mockResolvedValue(null);
     expect(await ctx.invoke('gpu:detect')).toBeNull();
   });
 

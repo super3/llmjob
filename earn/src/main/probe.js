@@ -14,7 +14,7 @@ const { execFile } = require('child_process');
 
 const { REGIONS, DEFAULTS, NETWORK } = require('../shared/config');
 const { pickFastestRegion } = require('../shared/region');
-const { parseGpuStats } = require('../shared/gpu');
+const { parseGpuStats, pickGpu, countGpus } = require('../shared/gpu');
 const { parseDriverMajor } = require('../shared/engine');
 
 // Measure TCP connect latency (ms) to a "host:port" Stratum endpoint, or null
@@ -130,6 +130,44 @@ function findFreePort(host, start, tries) {
   return attempt(start, tries || 10);
 }
 
+// The machine's GPU, as { name, count } — the representative card plus how many
+// discrete GPUs the rig has. Resolves null when nothing can be identified.
+//
+// This is the last of the nvidia-smi wrappers to move here, and the reason it
+// mattered: both shells had their own copy and they had diverged into DIFFERENT
+// DETECTION METHODS. The GUI's copy asked Windows' Win32_VideoController via
+// PowerShell and returned null on every other platform, so on the shipped Linux
+// AppImage the device label was blank and the per-card difficulty lookup never
+// ran — a Linux rig silently mined at the default difficulty. The CLI's copy
+// used nvidia-smi and worked there. Now both get the union: nvidia-smi first
+// (NVIDIA on any platform, which is what a mining rig runs), then WMI on Windows
+// so a non-NVIDIA card still gets a name.
+function detectGpuInfo() {
+  return new Promise((resolve) => {
+    execFile('nvidia-smi', ['--query-gpu=name', '--format=csv,noheader'],
+      { timeout: 5000 },
+      (err, stdout) => {
+        if (!err) {
+          const names = String(stdout).split(/\r?\n/);
+          const name = pickGpu(names);
+          if (name) return resolve({ name, count: countGpus(names) });
+        }
+        // No nvidia-smi (not installed, not on PATH, or no NVIDIA card).
+        if (process.platform !== 'win32') return resolve(null);
+        execFile('powershell.exe',
+          ['-NoProfile', '-NonInteractive', '-Command',
+            'Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name'],
+          { timeout: 5000 },
+          (e2, out2) => {
+            if (e2) return resolve(null);
+            const names = String(out2).split(/\r?\n/);
+            const name = pickGpu(names);
+            resolve(name ? { name, count: countGpus(names) } : null);
+          });
+      });
+  });
+}
+
 module.exports = {
   pingEndpoint,
   detectRegion,
@@ -138,4 +176,5 @@ module.exports = {
   detectDriverMajor,
   postMinerReport,
   findFreePort,
+  detectGpuInfo,
 };

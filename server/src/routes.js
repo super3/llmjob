@@ -15,8 +15,17 @@ const ChatController = require('./controllers/chatController');
 const JobService = require('./services/jobService');
 const NodeService = require('./services/nodeService');
 
-// POST /api/nodes/claim - Associate node with logged-in user (requires auth)
-router.post('/nodes/claim', requireAuth, nodeController.claimNode);
+// POST /api/nodes/claim - Associate a node with the logged-in user. Requires
+// BOTH the Clerk session (who is claiming) and a node signature (proof the
+// caller actually holds that node's secret key).
+//
+// The signature is not belt-and-braces. Without it this route took a raw
+// publicKey from the body, so anyone could get a signed-in user to bind
+// attacker-controlled hardware to their account — and a node in your account is
+// eligible for your `private` jobs, i.e. exactly the prompts you asked to keep
+// on your own machines. /nodes/register has always proved possession; this now
+// matches it.
+router.post('/nodes/claim', requireAuth, verifySignature, nodeController.claimNode);
 
 // POST /api/nodes/register - Self-register an unclaimed node (signature only,
 // no account). Lets a rig serve public jobs without linking to an account; a
@@ -89,11 +98,13 @@ const initJobRoutes = (db) => {
   router.post('/jobs/:jobId/fail', verifySignature, (req, res) => jobController.failJob(req, res));
   
   // Admin operations. Cleanup deletes data, so it is gated to admins
-  // (ADMIN_USER_IDS). check-timeouts mutates queue state; the server also runs
-  // it on an internal interval, so the HTTP route just needs to be authenticated
-  // rather than public.
+  // (ADMIN_USER_IDS). check-timeouts is gated the same way: it requeues every
+  // user's in-flight work and returns their job ids, so behind plain requireAuth
+  // any free account could repeatedly abandon the whole fleet's running jobs.
+  // The server still runs it on an internal interval — the route is only a
+  // manual override.
   router.post('/jobs/cleanup', requireAuth, requireAdmin, (req, res) => jobController.cleanupJobs(req, res));
-  router.post('/jobs/check-timeouts', requireAuth, (req, res) => jobController.checkTimeouts(req, res));
+  router.post('/jobs/check-timeouts', requireAuth, requireAdmin, (req, res) => jobController.checkTimeouts(req, res));
 };
 
 // OpenAI-compatible gateway. Mounted at the app root (not under /api) so callers

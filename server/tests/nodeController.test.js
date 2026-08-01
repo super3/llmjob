@@ -80,7 +80,7 @@ describe('Node API Endpoints', () => {
       const response = await request(app)
         .post('/api/nodes/claim')
         .set('Authorization', authHeader())
-        .send({ publicKey: testPublicKey, name: 'Test Node' });
+        .send(signedPing({ name: 'Test Node' }));
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
@@ -91,27 +91,56 @@ describe('Node API Endpoints', () => {
     it('should reject claim without auth token', async () => {
       const response = await request(app)
         .post('/api/nodes/claim')
-        .send({ publicKey: testPublicKey, name: 'Test Node' });
+        .send(signedPing({ name: 'Test Node' }));
 
       expect(response.status).toBe(401);
       expect(response.body.error).toBe('No authorization token provided');
+    });
+
+    // The whole point of requiring verifySignature here: a session alone must not
+    // be able to bind a key the caller doesn't hold. This is the request a
+    // crafted add-node link used to make on a victim's behalf.
+    it('rejects a claim that carries a public key but no proof of possession', async () => {
+      const response = await request(app)
+        .post('/api/nodes/claim')
+        .set('Authorization', authHeader())
+        .send({ publicKey: testPublicKey, name: 'Test Node' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toBe('Missing required fields');
+    });
+
+    it("rejects a claim signed with a different key than the one presented", async () => {
+      const attacker = nacl.sign.keyPair();
+      const timestamp = Date.now();
+      const message = `${testNodeId}:${timestamp}`;
+      const signature = naclUtil.encodeBase64(
+        nacl.sign.detached(naclUtil.decodeUTF8(message), attacker.secretKey)
+      );
+      const response = await request(app)
+        .post('/api/nodes/claim')
+        .set('Authorization', authHeader())
+        .send({ publicKey: testPublicKey, signature, timestamp, nodeId: testNodeId, name: 'Test Node' });
+
+      expect(response.status).toBe(401);
+      expect(response.body.error).toBe('Invalid signature');
     });
 
     it('should reject claim with missing fields', async () => {
       const response = await request(app)
         .post('/api/nodes/claim')
         .set('Authorization', authHeader())
-        .send({ publicKey: testPublicKey });
+        .send(signedPing({ name: undefined }));
 
       expect(response.status).toBe(400);
-      expect(response.body.error).toBe('Public key and name are required');
+      expect(response.body.error).toBe('Name is required');
     });
 
     it('should prevent claiming already claimed node', async () => {
       await request(app)
         .post('/api/nodes/claim')
         .set('Authorization', authHeader())
-        .send({ publicKey: testPublicKey, name: 'Test Node' });
+        .send(signedPing({ name: 'Test Node' }));
 
       const { clerkClient } = require('@clerk/clerk-sdk-node');
       clerkClient.users.getUser.mockResolvedValueOnce({
@@ -123,7 +152,7 @@ describe('Node API Endpoints', () => {
       const response = await request(app)
         .post('/api/nodes/claim')
         .set('Authorization', authHeader('different_user'))
-        .send({ publicKey: testPublicKey, name: 'Test Node' });
+        .send(signedPing({ name: 'Test Node' }));
 
       expect(response.status).toBe(400);
       expect(response.body.error).toBe('Node already claimed by another user');
@@ -288,7 +317,7 @@ describe('Node API Endpoints', () => {
       const response = await request(app)
         .post('/api/nodes/claim')
         .set('Authorization', authHeader())
-        .send({ publicKey: testPublicKey, name: 'Test Node' });
+        .send(signedPing({ name: 'Test Node' }));
       expect(response.status).toBe(500);
       expect(response.body.error).toBe('Failed to claim node');
     });

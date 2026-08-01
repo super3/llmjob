@@ -1,7 +1,13 @@
 const crypto = require('crypto');
 
 const LOCK_MS = 10 * 60 * 1000;       // assignment lock lifetime (10 min)
-const HEARTBEAT_STALE_MS = 60 * 1000; // consider a job stalled after 60s silence
+// Consider a job stalled after this much silence. The node beats every 30s
+// (earn/src/main/jobWorker.js heartbeatMs), so this must leave room for more than
+// one lost POST. At 60s a SINGLE dropped beat requeued a job that was still
+// generating — the chunk purge below keeps that from corrupting the answer, but
+// it still throws away a generation that was going to finish. Four missed beats
+// is a real outage, not a blip.
+const HEARTBEAT_STALE_MS = 120 * 1000;
 // How long a job may sit pending before it is abandoned. Both gateways give up
 // waiting after 120s, so anything older than this has no caller left listening —
 // running it later would burn a node's GPU on a reply nobody receives, and the
@@ -61,8 +67,12 @@ class JobService {
       // budget went to the answer; a reasoning model can spend that much thinking
       // and return an empty completion, so the default has to cover the thoughts
       // plus the answer.
-      maxTokens: jobData.maxTokens || DEFAULT_MAX_TOKENS,
-      temperature: jobData.temperature || 0.7
+      // `!= null`, not `||`: `max_tokens: 0` and especially `temperature: 0` are
+      // meaningful OpenAI values — 0 is THE setting for deterministic output, and
+      // coalescing it to 0.7 silently served a random sample to every caller that
+      // asked for a repeatable one.
+      maxTokens: jobData.maxTokens != null ? jobData.maxTokens : DEFAULT_MAX_TOKENS,
+      temperature: jobData.temperature != null ? jobData.temperature : 0.7
     };
 
     // A job from the OpenAI gateway carries a full chat `messages` array so the

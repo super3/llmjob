@@ -4,7 +4,7 @@
 // module stands on its own.
 const {
   estimateTokens, errorBody, joinContent, lastUserText, nodeFailMessage,
-  writeSsePreamble, pollJobResult,
+  writeSsePreamble, pollJobResult, clampMessages, resolveMaxTokens, MAX_PROMPT_CHARS,
 } = require('../src/controllers/gatewayShared');
 
 describe('gatewayShared — pure helpers', () => {
@@ -125,5 +125,57 @@ describe('gatewayShared — pollJobResult', () => {
     }));
     // First iteration polls + yields 'running', then the next top-of-loop abort check ends it.
     expect(out).toEqual([{ status: 'running' }]);
+  });
+});
+
+// The other half of the drift these helpers exist to fix: only the web-chat
+// gateway ever clamped its input, so /v1 accepted an unbounded prompt and an
+// unbounded max_tokens — one API key could hand a node work it would never
+// finish.
+describe('clampMessages', () => {
+  it('keeps well-formed messages unchanged', () => {
+    const msgs = [{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'yo' }];
+    expect(clampMessages(msgs, 100)).toEqual(msgs);
+  });
+
+  it('maps an unknown role onto user', () => {
+    expect(clampMessages([{ role: 'tool', content: 'x' }], 100))
+      .toEqual([{ role: 'user', content: 'x' }]);
+  });
+
+  it('drops non-objects and empty content', () => {
+    const msgs = ['nope', null, { role: 'user', content: '' }, { role: 'user', content: null }, { role: 'user', content: 'keep' }];
+    expect(clampMessages(msgs, 100)).toEqual([{ role: 'user', content: 'keep' }]);
+  });
+
+  it('truncates at the character budget and stops consuming', () => {
+    const msgs = [{ role: 'user', content: 'abcdef' }, { role: 'user', content: 'ignored' }];
+    expect(clampMessages(msgs, 4)).toEqual([{ role: 'user', content: 'abcd' }]);
+  });
+
+  it('defaults to MAX_PROMPT_CHARS when no budget is given', () => {
+    const out = clampMessages([{ role: 'user', content: 'x'.repeat(MAX_PROMPT_CHARS + 500) }]);
+    expect(out[0].content).toHaveLength(MAX_PROMPT_CHARS);
+  });
+
+  it('treats a missing list as empty', () => {
+    expect(clampMessages(undefined, 10)).toEqual([]);
+  });
+});
+
+describe('resolveMaxTokens', () => {
+  it('clamps a caller value to the ceiling and floors it', () => {
+    expect(resolveMaxTokens(999999, 6400)).toBe(6400);
+    expect(resolveMaxTokens(10.9, 6400)).toBe(10);
+  });
+
+  // Unlike temperature, 0 is not a meaningful completion budget — it would
+  // produce nothing — so it falls back rather than being preserved.
+  it('falls back to the ceiling for 0, negatives and junk', () => {
+    expect(resolveMaxTokens(0, 6400)).toBe(6400);
+    expect(resolveMaxTokens(-5, 6400)).toBe(6400);
+    expect(resolveMaxTokens('abc', 6400)).toBe(6400);
+    expect(resolveMaxTokens(undefined, 6400)).toBe(6400);
+    expect(resolveMaxTokens(Infinity, 6400)).toBe(6400);
   });
 });

@@ -13,13 +13,19 @@ async function resolveUsername(userId) {
   }
 }
 
+// POST /api/nodes/claim - Bind a node to the signed-in user's account.
+// The public key comes from req.verifiedNode (verifySignature), NOT from the
+// body: the caller must hold the matching secret key. Taking it from the body
+// let a crafted link make a victim's own browser graft an attacker's machine
+// into their account, after which the victim's private jobs routed to it.
 async function claimNode(req, res) {
   try {
-    const { publicKey, name } = req.body;
+    const { publicKey } = req.verifiedNode;
+    const { name } = req.body;
     const userId = req.user.id;
 
-    if (!publicKey || !name) {
-      return res.status(400).json({ error: 'Public key and name are required' });
+    if (!name) {
+      return res.status(400).json({ error: 'Name is required' });
     }
 
     const nodeService = new NodeService(req.app.locals.db);

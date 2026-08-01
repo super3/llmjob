@@ -61,17 +61,42 @@ describe('Routes', () => {
       expect(response.body.stats).toHaveProperty('failed');
     });
 
-    it('should handle check-timeouts endpoint', async () => {
-      initJobRoutes(db);
-      app.use('/api', router);
+    // check-timeouts requeues every user's in-flight jobs, so it is admin-only.
+    it('should handle check-timeouts endpoint for an admin', async () => {
+      const prev = process.env.ADMIN_USER_IDS;
+      process.env.ADMIN_USER_IDS = 'user-routes';
+      try {
+        initJobRoutes(db);
+        app.use('/api', router);
 
-      const response = await request(app)
-        .post('/api/jobs/check-timeouts')
-        .expect(200);
+        const response = await request(app)
+          .post('/api/jobs/check-timeouts')
+          .expect(200);
 
-      expect(response.body).toHaveProperty('success', true);
-      expect(response.body).toHaveProperty('timeoutJobs');
-      expect(Array.isArray(response.body.timeoutJobs)).toBe(true);
+        expect(response.body).toHaveProperty('success', true);
+        expect(response.body).toHaveProperty('timeoutJobs');
+        expect(Array.isArray(response.body.timeoutJobs)).toBe(true);
+      } finally {
+        if (prev === undefined) delete process.env.ADMIN_USER_IDS;
+        else process.env.ADMIN_USER_IDS = prev;
+      }
+    });
+
+    it('refuses check-timeouts for a signed-in non-admin', async () => {
+      const prev = process.env.ADMIN_USER_IDS;
+      delete process.env.ADMIN_USER_IDS;
+      try {
+        initJobRoutes(db);
+        app.use('/api', router);
+
+        const response = await request(app)
+          .post('/api/jobs/check-timeouts')
+          .expect(403);
+
+        expect(response.body.error).toBe('Admin access required');
+      } finally {
+        if (prev !== undefined) process.env.ADMIN_USER_IDS = prev;
+      }
     });
   });
 });

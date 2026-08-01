@@ -285,4 +285,152 @@ describe('LlmFleet', () => {
     expect(mgrs[0].startOpts.port).toBe(8085);
     expect(mgrs[1].startOpts.port).toBe(8091); // 8086 probed → +5
   });
+  // ── lifecycle across start/stop cycles ─────────────────────────────────────
+  // A fleet object outlives a single run: main.js builds one and reuses it. The
+  // run-scoped flags therefore have to be reset by start(), and two of them were
+  // not — each producing a distinct user-visible failure.
+
+  test('a fleet restarted after stop() brings up EVERY instance again', async () => {
+    // `_stopping` used to survive the stop, so _drain() returned immediately on
+    // the next run and only the first GPU of a multi-GPU rig ever came up.
+    const { fleet, mgrs } = makeFleet();
+    await fleet.start([{ index: 0, nGpuLayers: 42 }, { index: 1, nGpuLayers: 42 }], {});
+    await drain();
+    expect(mgrs).toHaveLength(2);
+
+    fleet.stop();
+    await fleet.start([{ index: 0, nGpuLayers: 42 }, { index: 1, nGpuLayers: 42 }], {});
+    await drain();
+    expect(mgrs).toHaveLength(4); // two more, not one
+  });
+
+  test("a fleet that died on its own can emit 'stopped' again on the next run", async () => {
+    // `_downEmitted` used to survive, so the second run could never report going
+    // down — the UI kept showing "LLM ready" with no llama-server running.
+    const { fleet, mgrs } = makeFleet();
+    const downs = [];
+    fleet.on('stopped', () => downs.push(1));
+
+    await fleet.start([{ index: 0, nGpuLayers: 42 }], {});
+    mgrs[0].emit('stopped', 1);
+    expect(downs).toHaveLength(1);
+
+    await fleet.start([{ index: 0, nGpuLayers: 42 }], {});
+    mgrs[1].emit('stopped', 1);
+    expect(downs).toHaveLength(2);
+  });
+
+  test('a stop() landing during the port probe never spawns an untracked server', async () => {
+    // findFreePort is where _startNext yields. Stopping inside that window used
+    // to let the continuation spawn a llama-server AFTER stop() had already
+    // drained the instance list — so nothing held a handle to it, it survived
+    // the stop holding VRAM, and it kept the port the next start needed.
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const { fleet, mgrs } = makeFleet({
+      findFreePort: async (h, p) => { await gate; return p; },
+    });
+
+    const starting = fleet.start([{ index: 0, nGpuLayers: 42 }], {});
+    fleet.stop();      // lands while the probe is in flight
+    release();
+    await starting;
+    await drain();
+
+    expect(mgrs).toHaveLength(0);          // no manager was ever constructed
+    expect(fleet.instances).toHaveLength(0);
+  });
+
+  test('start() with an empty or non-array plan is a no-op', async () => {
+    const { fleet, mgrs } = makeFleet();
+    expect(await fleet.start([])).toBe(0);          // no run opts at all
+    expect(await fleet.start(undefined, {})).toBe(0);
+    expect(mgrs).toHaveLength(0);
+  });
+
+  test('_startNext() with nothing pending returns null instead of spawning', async () => {
+    const { fleet, mgrs } = makeFleet();
+    expect(await fleet._startNext()).toBeNull();
+    expect(mgrs).toHaveLength(0);
+  });
+
+  test('constructs with no options at all', () => {
+    const fleet = new LlmFleet();
+    expect(fleet.instances).toEqual([]);
+    expect(fleet.makeWorker('http://h:1', 0)).toBeNull(); // default factory
+  });
+
+  test('activeJobs() sums live workers and ignores instances without one', async () => {
+    const { fleet, mgrs, workers } = makeFleet();
+    await fleet.start([{ index: 0, nGpuLayers: 42 }, { index: 1, nGpuLayers: 42 }], {});
+    await drain();
+    fleet.syncWorkers(true);
+    mgrs[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    mgrs[1].emit('ready', { baseUrl: 'http://127.0.0.1:8081' });
+
+    workers[0]._active = 2;
+    workers[1]._active = 3;
+    expect(fleet.activeJobs()).toBe(5);
+
+    workers[1]._active = NaN; // a worker reporting junk counts as zero
+    expect(fleet.activeJobs()).toBe(2);
+  });
+
+  test('_waitSettled resolves immediately for an instance that is already settled', async () => {
+    const { fleet } = makeFleet();
+    await expect(fleet._waitSettled(null)).resolves.toBeUndefined();
+    await expect(fleet._waitSettled({ ready: true })).resolves.toBeUndefined();
+    await expect(fleet._waitSettled({ stopped: true })).resolves.toBeUndefined();
+  });
+
+  test('_waitSettled settles once, whether by the instance or by the timeout', async () => {
+    const { fleet, mgrs } = makeFleet({ startSettleMs: 5 });
+    await fleet.start([{ index: 0, nGpuLayers: 42 }], {});
+    const inst = fleet.instances[0];
+
+    // Settled by the instance: the explicit settle wins and clears the timer,
+    // and a second call is a no-op (the `done` guard).
+    const waited = fleet._waitSettled(inst);
+    const settle = inst._settle;
+    settle();
+    settle();
+    await expect(waited).resolves.toBeUndefined();
+
+    // Settled by the timeout: nothing calls _settle, so the timer fires. This is
+    // the path that keeps one slow card from blocking the rest of the rig.
+    const inst2 = { ready: false, stopped: false };
+    await expect(fleet._waitSettled(inst2)).resolves.toBeUndefined();
+    expect(inst2._settle).toBeNull();
+
+    mgrs[0].emit('stopped');
+  });
+  test("the settle timer is unref'd when the runtime provides it, and tolerated when not", async () => {
+    // Node's timers carry unref(); a stubbed/edge runtime may not. Neither shape
+    // may keep the CLI process alive, so both must be accepted.
+    const real = global.setTimeout;
+    // A handle with no unref() at all — `delete t.unref` wouldn't do it, since
+    // unref lives on Timeout.prototype.
+    global.setTimeout = (fn, ms) => { real(fn, ms); return {}; };
+    try {
+      const { fleet } = makeFleet({ startSettleMs: 1 });
+      await expect(fleet._waitSettled({ ready: false, stopped: false })).resolves.toBeUndefined();
+    } finally {
+      global.setTimeout = real;
+    }
+  });
+
+  test('a background drain that blows up is swallowed, not left unhandled', async () => {
+    // start() fires _drain() without awaiting it; an unhandled rejection there
+    // would be fatal in Node, so the .catch is load-bearing.
+    let calls = 0;
+    const { fleet } = makeFleet({
+      findFreePort: async (h, p) => {
+        calls += 1;
+        if (calls > 1) throw new Error('no free port');
+        return p;
+      },
+    });
+    await fleet.start([{ index: 0, nGpuLayers: 42 }, { index: 1, nGpuLayers: 42 }], {});
+    await expect(fleet._draining).resolves.toBeUndefined();
+  });
 });

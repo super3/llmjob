@@ -4,8 +4,14 @@ const ApiKeyService = require('../services/apiKeyService');
 const NodeService = require('../services/nodeService');
 const {
   estimateTokens, errorBody, joinContent, lastUserText,
-  writeSsePreamble, pollJobResult,
+  writeSsePreamble, pollJobResult, clampMessages, resolveMaxTokens, MAX_PROMPT_CHARS,
 } = require('./gatewayShared');
+
+// Per-request completion ceiling for this gateway. The web-chat gateway has
+// always clamped max_tokens; here it rode through unbounded, so a single key
+// could ask for millions of tokens and hold a node's GPU for as long as it took.
+// Sized to the node's context window (earn/src/shared/config.js LLM.ctxSize).
+const MAX_COMPLETION_TOKENS = 6400;
 
 // Header a caller sets to pin a request to one specific node (health/perf testing).
 // Lowercase — Express lowercases header names. Kept OpenAI-SDK friendly: passable
@@ -99,22 +105,30 @@ class OpenAiController {
       }
     }
 
+    // Bound the request before it becomes a job. Prompt size and completion
+    // budget are both caller-controlled and both cost a node's GPU time; the
+    // web-chat gateway has always clamped them and this one didn't.
+    const clean = clampMessages(messages, MAX_PROMPT_CHARS);
+    if (clean.length === 0) {
+      return res.status(400).json(errorBody('No usable message content.', 'invalid_request_error'));
+    }
+
     const job = await svc.jobService.createJob({
-      prompt: lastUserText(messages),   // display/fallback for nodes that read prompt
-      messages,
+      prompt: lastUserText(clean),      // display/fallback for nodes that read prompt
+      messages: clean,
       // Intentionally NOT body.model: the node serves its own local model no matter
       // what the caller asks for, and a passed model rides through to the node's
       // reported metrics.model and back out as the "model that ran" — which is how
       // a request for "gpt-4"/"llmjob" got echoed as if the fleet ran it. Dropping
       // it here lets jobService fill the real fleet default end to end.
-      maxTokens: body.max_tokens,
+      maxTokens: resolveMaxTokens(body.max_tokens, MAX_COMPLETION_TOKENS),
       temperature: body.temperature,
       userId: req.apiKey.userId,
       visibility: req.apiKey.visibility, // 'private' → only this user's own nodes
       targetNode,                        // null unless X-LLMJob-Node was set
     });
 
-    const ctx = { res, svc, job, key: req.apiKey, promptTokens: estimateTokens(joinContent(messages)), aborted: false };
+    const ctx = { res, svc, job, key: req.apiKey, promptTokens: estimateTokens(joinContent(clean)), aborted: false };
     // If the caller hangs up mid-request, stop the long-poll instead of querying
     // the DB and writing to a dead socket until the job finishes or times out.
     if (res.on) res.on('close', () => { ctx.aborted = true; });
@@ -179,8 +193,13 @@ class OpenAiController {
 
     const id = 'chatcmpl-' + job.id;
     const created = Math.floor(this.now() / 1000);
+    // `model` is resolved per write, not captured once: the node's real model only
+    // becomes known when its first metrics arrive, and hardcoding modelName(null)
+    // meant every streamed chunk reported the fleet default even after the node
+    // had said what it actually ran.
+    let served = null;
     const send = (delta, finish) => res.write('data: ' + JSON.stringify({
-      id, object: 'chat.completion.chunk', created, model: modelName(null),
+      id, object: 'chat.completion.chunk', created, model: modelName(served),
       choices: [{ index: 0, delta, finish_reason: finish || null }],
     }) + '\n\n');
 
@@ -198,6 +217,7 @@ class OpenAiController {
         res.write('data: ' + JSON.stringify(timeoutBody(job.id, r.last, this.timeoutMs)) + '\n\n');
         break;
       }
+      served = r; // once the node reports metrics, chunks name the real model
       const chunks = r.chunks || [];
       for (; emitted < chunks.length; emitted++) {
         if (chunks[emitted].content) send({ content: chunks[emitted].content });

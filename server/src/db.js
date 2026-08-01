@@ -146,9 +146,19 @@ async function initSchema(db) {
 }
 
 function createPool() {
-  return new Pool({
+  const pool = new Pool({
     connectionString: process.env.DATABASE_URL || 'postgres://localhost:5432/llmjob'
   });
+  // REQUIRED, not optional hygiene: pg emits 'error' on the Pool when a client
+  // sitting IDLE in it drops — a Postgres restart, a failover, an idle-timeout
+  // kill by the provider. That is routine on a hosted database. An 'error' event
+  // with no listener is rethrown by EventEmitter as an uncaught exception, so a
+  // one-second database blip took the entire API process down. Logging it is
+  // enough: pg discards the dead client and the next query checks out a fresh one.
+  pool.on('error', (err) => {
+    console.error('Postgres pool error (idle client):', err.message);
+  });
+  return pool;
 }
 
 module.exports = { createPool, initSchema, SCHEMA, MINERS_SCHEMA, CHAT_SCHEMA };

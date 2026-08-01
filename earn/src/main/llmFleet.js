@@ -68,6 +68,16 @@ class LlmFleet extends EventEmitter {
   async start(plan, run = {}) {
     const entries = Array.isArray(plan) ? plan : [];
     if (!entries.length) return 0;
+    // Reset the RUN-scoped flags. They are not constructor-scoped: a fleet is
+    // reused across start/stop cycles, and leaving them set broke the second run
+    // two ways. `_stopping` stayed true after a stop(), so _drain() returned
+    // immediately and only the first GPU of a multi-GPU rig ever came up. And
+    // `_downEmitted` stayed true after the fleet had died on its own, so the
+    // next run could never emit 'stopped' again — the UI kept showing
+    // "LLM ready" with no llama-server running.
+    this._stopping = false;
+    this._downEmitted = false;
+    this._sawFirstReady = false;
     this._pending = entries.slice();
     this._run = run;
     this._nextPort = this.basePort;
@@ -90,6 +100,12 @@ class LlmFleet extends EventEmitter {
     const e = this._pending.shift();
     if (!e) return null;
     const port = await this.findFreePort(this.host, this._nextPort, 10);
+    // stop() may have landed while we were probing for a port. If it did, the
+    // instance list has already been drained and every manager stopped, so
+    // spawning now would put a llama-server on the machine that NOTHING holds a
+    // handle to — it survives the stop, keeps the model in VRAM and keeps the
+    // port bound, and the next start can't bind.
+    if (this._stopping) return null;
     this._nextPort = port + 1; // the next instance probes from the following port
     const mgr = this.makeManager();
     const inst = { index: e.index, port, mgr, ready: false, stopped: false, baseUrl: null, worker: null };
