@@ -19,13 +19,6 @@ const PORT = process.env.PORT || 3001;
 // proxy — from a browser. Non-browser callers send no Origin and are unaffected.
 app.use(cors({ origin: corsOrigin }));
 app.use(express.json());
-// Railway terminates TLS and forwards, so the client address only reaches us in
-// X-Forwarded-For. Express exposes it as req.ip only once this is set — without
-// it every request appears to come from the proxy and the per-client rate limits
-// on the chat/OpenAI gateways would collapse into one shared bucket. `1` = trust
-// exactly one hop (the platform's proxy), so a client can't spoof its own IP by
-// sending its own X-Forwarded-For.
-app.set('trust proxy', 1);
 
 // Postgres pool
 let db;

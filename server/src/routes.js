@@ -5,7 +5,6 @@ const { requireAdmin } = require('./middleware/admin');
 const { verifySignature } = require('./middleware/signature');
 const { apiKeyAuth } = require('./middleware/apiKeyAuth');
 const { anyAuth } = require('./middleware/anyAuth');
-const { rateLimit } = require('./middleware/rateLimit');
 const nodeController = require('./controllers/nodeController');
 const minerController = require('./controllers/minerController');
 const apiKeyController = require('./controllers/apiKeyController');
@@ -113,13 +112,8 @@ const initJobRoutes = (db) => {
 // an inference job served by an online node. `opts` (poll cadence / timeout) is
 // injectable for tests.
 const initOpenAiRoutes = (app, opts) => {
-  const o = opts || {};
-  const ctrl = new OpenAiController(o);
-  // Ahead of apiKeyAuth so an unauthenticated flood is rejected before it costs
-  // a DB round-trip. A real SDK caller stays well under this; it only bites a
-  // loop. `limiter` is injectable so tests can drive the window deterministically.
-  const limit = o.limiter || rateLimit({ windowMs: 60000, max: 120 });
-  app.post('/v1/chat/completions', limit, apiKeyAuth, (req, res) => ctrl.chatCompletions(req, res));
+  const ctrl = new OpenAiController(opts || {});
+  app.post('/v1/chat/completions', apiKeyAuth, (req, res) => ctrl.chatCompletions(req, res));
   return ctrl;
 };
 
@@ -128,13 +122,8 @@ const initOpenAiRoutes = (app, opts) => {
 // the controller rather than per-user auth. Mounted at the app root. `opts`
 // (OpenRouter key/models/budget, fetch) is injectable for tests.
 const initChatRoutes = (app, opts) => {
-  const o = opts || {};
-  const ctrl = new ChatController(o);
-  // The tightest limit on the server: this route is fully unauthenticated and
-  // every call either spends OpenRouter credit or occupies a node's GPU. 10/min
-  // is generous for a human typing in chat.html and useless for a drain loop.
-  const limit = o.limiter || rateLimit({ windowMs: 60000, max: 10 });
-  app.post('/api/chat/completions', limit, (req, res) => ctrl.chatCompletions(req, res));
+  const ctrl = new ChatController(opts || {});
+  app.post('/api/chat/completions', (req, res) => ctrl.chatCompletions(req, res));
   app.get('/api/chat/models', (req, res) => ctrl.listModels(req, res));
   app.get('/api/chat/usage', (req, res) => ctrl.usage(req, res));
   return ctrl;
