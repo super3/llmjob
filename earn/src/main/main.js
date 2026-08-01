@@ -355,7 +355,6 @@ async function startMining(settings) {
   miner.on('log', (l) => send('miner:log', l));
   miner.on('event', (e) => {
     applyEvent(stats, e);
-    send('miner:event', e);
   });
   miner.on('error', (err) => reportLaunchFailure(err, false));
   miner.on('stopped', (code) => send('miner:log', { level: 'info', line: 'engine exited (code ' + code + ')' }));

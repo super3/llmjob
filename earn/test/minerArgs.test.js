@@ -1,6 +1,6 @@
 'use strict';
 
-const { resolveBinary, buildArgs, buildEnv } = require('../src/shared/minerArgs');
+const { resolveBinary, buildArgs } = require('../src/shared/minerArgs');
 
 describe('resolveBinary', () => {
   test('prefers a configured binary path', () => {
@@ -83,24 +83,3 @@ describe('buildArgs', () => {
   });
 });
 
-describe('buildEnv', () => {
-  test('maps settings to the launcher environment variables', () => {
-    expect(buildEnv({ address: 'prl1pabc', worker: 'rig9', difficulty: 1000 })).toEqual({
-      PRL_ADDRESS: 'prl1pabc',
-      MDL_ADDRESS: '',
-      WORKER: 'rig9',
-      PEARL_DIFFICULTY: '1000',
-    });
-  });
-
-  test('applies defaults and keeps an explicit empty worker', () => {
-    expect(buildEnv()).toEqual({ PRL_ADDRESS: '', MDL_ADDRESS: '', WORKER: 'rig01', PEARL_DIFFICULTY: '524288' });
-    expect(buildEnv({ worker: '' }).WORKER).toBe('');
-  });
-
-  test('exposes a valid MDL address to the launcher and drops a bad one', () => {
-    const mdl = 'mdl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
-    expect(buildEnv({ address: 'prl1pabc', mdlAddress: mdl }).MDL_ADDRESS).toBe(mdl);
-    expect(buildEnv({ address: 'prl1pabc', mdlAddress: 'nope' }).MDL_ADDRESS).toBe('');
-  });
-});

@@ -53,14 +53,4 @@ function buildArgs(settings = {}) {
 
 // Environment variables for the native Windows launcher flow, where the
 // start-mining .bat reads PRL_ADDRESS / MDL_ADDRESS / WORKER / PEARL_DIFFICULTY.
-function buildEnv(settings = {}) {
-  const mdl = normalizeAddress(settings.mdlAddress);
-  return {
-    PRL_ADDRESS: settings.address || '',
-    MDL_ADDRESS: isValidMdlAddress(mdl) ? mdl : '',
-    WORKER: settings.worker != null ? settings.worker : DEFAULTS.worker,
-    PEARL_DIFFICULTY: String(settings.difficulty || DEFAULTS.difficulty),
-  };
-}
-
-module.exports = { WIN_BINARIES, resolveBinary, buildArgs, buildEnv };
+module.exports = { WIN_BINARIES, resolveBinary, buildArgs };

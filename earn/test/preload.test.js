@@ -80,7 +80,6 @@ describe('event subscriptions', () => {
     ['onNodeStatus', 'node:status', true],
     ['onStats', 'miner:stats', true],
     ['onLog', 'miner:log', true],
-    ['onEvent', 'miner:event', true],
     ['onEngine', 'miner:engine', true],
     ['onStopped', 'miner:stopped', false],
     ['onUpdate', 'app:update', true],

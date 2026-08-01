@@ -476,7 +476,10 @@
     state.messages.push({ role: 'assistant', text: text || '', meta: metaLine(meta) });
     render();
     persistActive();
-    refreshServed();
+    // No refreshServed() here: #served lives only inside emptyStateHtml(), and
+    // render() above has just replaced the container with the message list — so
+    // the element is gone and the call could only ever return immediately. The
+    // counter is refreshed on the paths that actually restore the empty state.
   }
 
   function finishWithError(message) {

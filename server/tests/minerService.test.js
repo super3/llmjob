@@ -279,3 +279,30 @@ describe('MinerService (db)', () => {
     expect(await count()).toBe(0);
   });
 });
+
+// The server validated case-insensitively but never lowercased, and
+// minerFingerprint keys the row on whatever it was handed — so one miner posting
+// mixed case landed as two board rows with its hashrate split.
+describe('address normalization', () => {
+  it('treats case variants of one address as the same miner', async () => {
+    const db = await createTestDb();
+    const svc = new MinerService(db);
+    const lower = 'prl1p' + 'a'.repeat(30);
+    const upper = lower.toUpperCase();
+
+    await svc.reportMiner({ address: lower, worker: 'rig1', hashrate: 10 });
+    await svc.reportMiner({ address: upper, worker: 'rig1', hashrate: 20 });
+
+    const { miners } = await svc.getPublicMiners();
+    expect(miners).toHaveLength(1);            // one row, not two
+    expect(miners[0].addr).toBe(lower);        // stored normalized
+    expect(miners[0].hash).toBe(20);           // the second report updated the first
+    if (db.end) await db.end();
+  });
+
+  it('normalizeAddress trims and lowercases', () => {
+    expect(MinerService.normalizeAddress('  PRL1PAbC  ')).toBe('prl1pabc');
+    expect(MinerService.normalizeAddress(null)).toBe('');
+    expect(MinerService.normalizeAddress(undefined)).toBe('');
+  });
+});

@@ -111,17 +111,15 @@ const LLM = {
   // GGUF (~5 GB). "E4B" = ~4.5B *effective* params via Per-Layer Embeddings, so
   // it keeps a low VRAM footprint (runs in ~5 GB at 4-bit) while adding 128K
   // context, tool-calling, and 140+ languages — a good default that co-runs with
-  // mining without hogging the GPU. `layers` is the text model's transformer-layer
-  // count (for --n-gpu-layers; llama.cpp clamps a larger value to what's present)
-  // and `vramFullMb` the VRAM for a full GPU offload at ctxSize (weights + KV
-  // cache). `minVramMb` is the hard floor of free VRAM we require before
+  // mining without hogging the GPU. `vramFullMb` is the VRAM for a full GPU
+  // offload at ctxSize (weights + KV cache). `minVramMb` is the hard floor of
+  // free VRAM we require before
   // starting the model on the GPU — above the full-offload figure so we never
   // spawn llama-server right at the edge and OOM.
   model: {
     name: 'Gemma-4-E4B-it-Q4_K_M',
     file: 'gemma-4-E4B-it-Q4_K_M.gguf',
     url: 'https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf',
-    layers: 42,
     // MEASURED, not estimated. On a 4090 running the shipped command line
     // (--n-gpu-layers 999 --ctx-size 6400 --split-mode none) llama-server holds
     // 3308 MB of dedicated VRAM, flat — sampled through a 700-token generation,

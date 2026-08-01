@@ -9,9 +9,18 @@ function verifySignature(req, res, next) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
     
-    // Check timestamp is within 5 minutes
+    // Check timestamp is within 5 minutes.
+    //
+    // Coerce FIRST and reject non-numbers explicitly. `Math.abs(now - "abc")` is
+    // NaN, and `NaN > window` is false — so a non-numeric timestamp sailed through
+    // the freshness check entirely, letting a node mint a signature that never
+    // expires. The comparison has to be reachable to be a check.
+    const ts = Number(timestamp);
+    if (!Number.isFinite(ts)) {
+      return res.status(400).json({ error: 'Invalid timestamp' });
+    }
     const now = Date.now();
-    const timeDiff = Math.abs(now - timestamp);
+    const timeDiff = Math.abs(now - ts);
     if (timeDiff > 5 * 60 * 1000) { // 5 minutes
       return res.status(401).json({ error: 'Timestamp too old or too far in future' });
     }

@@ -176,28 +176,40 @@ class NodeService {
     return { exists: true, online };
   }
 
+  // The public board's view: the public nodes themselves, plus a count of every
+  // online node (public or not) for the headline figure.
+  //
+  // Both halves are computed in SQL. This backs an unauthenticated endpoint, and
+  // the previous `SELECT * FROM nodes` read every column of every row — including
+  // every user's private nodes and their public keys — on each request, then
+  // threw most of it away in JS.
   async getPublicNodes() {
-    const r = await this.db.query('SELECT * FROM nodes', []);
     const now = Date.now();
-    const nodes = [];
-    let totalOnline = 0;
+    const cutoff = now - OFFLINE_THRESHOLD;
 
-    for (const node of r.rows) {
-      const isOnline = (now - num(node.last_seen)) <= OFFLINE_THRESHOLD;
-      if (isOnline && node.status === 'online') {
-        totalOnline++;
-      }
-      if (node.is_public) {
-        nodes.push({
-          nodeId: node.node_id,
-          name: node.name,
-          status: isOnline ? node.status : 'offline',
-          lastSeen: num(node.last_seen)
-        });
-      }
-    }
+    const [listed, online] = await Promise.all([
+      this.db.query(
+        `SELECT node_id, name, status, last_seen FROM nodes
+         WHERE is_public = true ORDER BY seq`,
+        []
+      ),
+      this.db.query(
+        "SELECT count(*)::int AS c FROM nodes WHERE status = 'online' AND last_seen >= $1",
+        [cutoff]
+      ),
+    ]);
 
-    return { nodes, totalOnline };
+    const nodes = listed.rows.map((node) => {
+      const lastSeen = num(node.last_seen);
+      return {
+        nodeId: node.node_id,
+        name: node.name,
+        status: (now - lastSeen) <= OFFLINE_THRESHOLD ? node.status : 'offline',
+        lastSeen,
+      };
+    });
+
+    return { nodes, totalOnline: (online.rows[0] && online.rows[0].c) || 0 };
   }
 
   async updateNodeVisibility(nodeId, userId, isPublic) {
@@ -222,7 +234,16 @@ class NodeService {
   // Prune nodes that haven't pinged within NODE_TTL_MS and log a status summary.
   async checkNodeStatuses() {
     const now = Date.now();
-    await this.db.query('DELETE FROM nodes WHERE last_seen < $1', [now - NODE_TTL_MS]);
+    // Prune UNCLAIMED rows only. A claimed node carries state the user set and
+    // cannot recreate by waiting: its name, its is_public flag, and the user_id
+    // that makes it eligible for that user's `private` jobs. Deleting it because
+    // the rig was off for a week silently downgraded the owner to public-only
+    // routing until they noticed and re-claimed. An unclaimed row has nothing
+    // worth keeping — it re-registers itself on the next ping.
+    await this.db.query(
+      'DELETE FROM nodes WHERE last_seen < $1 AND user_id IS NULL',
+      [now - NODE_TTL_MS]
+    );
 
     const r = await this.db.query('SELECT last_seen FROM nodes', []);
     let onlineCount = 0;

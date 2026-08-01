@@ -20,7 +20,7 @@ const TARGET_NODE_HEADER = 'x-llmjob-node';
 
 // The model the fleet actually serves, for reporting when the node didn't tag its
 // metrics with a model name (older clients). Same source the job default uses.
-const { DEFAULT_MODEL } = JobService;
+const { DEFAULT_MODEL, GATEWAY_TIMEOUT_MS } = JobService;
 
 // OpenAI-compatible chat-completions gateway.
 //
@@ -44,7 +44,7 @@ class OpenAiController {
     // reasoning model at roughly 2,900 tokens, so hard prompts 504'd rather than
     // finishing. (Streaming keeps bytes moving and could run to Railway's 15-minute
     // ceiling, but one timeout for both paths keeps the contract simple.)
-    this.timeoutMs = opts.timeoutMs || 280000;
+    this.timeoutMs = opts.timeoutMs || GATEWAY_TIMEOUT_MS;
     this.now = opts.now || (() => Date.now());
     this.sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
     // Services are built per-request from req.app.locals.db so one controller

@@ -43,6 +43,22 @@ describe('JobService', () => {
       expect(job.maxTokens).toBe(0);
     });
 
+    // assignJobsToNode orders the GLOBAL queue by priority DESC and every in-repo
+    // producer writes 0, so an unbounded caller value was a starvation lever.
+    it('clamps a caller-supplied priority into range', async () => {
+      const { MAX_PRIORITY, clampPriority } = JobService;
+      const huge = await jobService.createJob({ prompt: 'p', userId: 'u', priority: 2147483647 });
+      expect(huge.priority).toBe(MAX_PRIORITY);
+
+      expect(clampPriority(undefined)).toBe(0);
+      expect(clampPriority('abc')).toBe(0);
+      expect(clampPriority(-5)).toBe(0);
+      expect(clampPriority(Infinity)).toBe(0);
+      expect(clampPriority(3)).toBe(3);
+      expect(clampPriority(3.9)).toBe(3);
+      expect(clampPriority(MAX_PRIORITY + 1)).toBe(MAX_PRIORITY);
+    });
+
     it('creates a job with custom values', async () => {
       const job = await jobService.createJob({
         prompt: 'p', userId: 'user123', priority: 10, model: 'llama3.2:7b',

@@ -21,7 +21,6 @@ CREATE TABLE IF NOT EXISTS miners (
   version text,
   llm_model text,
   node_id text,
-  first_seen bigint,
   last_seen bigint
 );
 CREATE INDEX IF NOT EXISTS idx_miners_last_seen ON miners (last_seen);
@@ -129,6 +128,12 @@ CREATE TABLE IF NOT EXISTS jobs (
   heartbeat_at bigint
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status);
+-- The poll query filters status and then sorts by (priority DESC, created_at ASC)
+-- to pick the next job; with only idx_jobs_status that sort ran over the whole
+-- pending set on every poll, from every node, forever.
+CREATE INDEX IF NOT EXISTS idx_jobs_pending_order ON jobs (status, priority DESC, created_at);
+-- The hourly cleanup sweep and the pending-TTL sweep both scan by status+time.
+CREATE INDEX IF NOT EXISTS idx_jobs_status_updated ON jobs (status, updated_at);
 
 CREATE TABLE IF NOT EXISTS job_chunks (
   job_id text,

@@ -21,12 +21,4 @@ function estDailyUsdLabel(ths, econ = ECON) {
   return '$' + estDailyUsd(ths, econ).toFixed(2);
 }
 
-function prlToUsd(prl, econ = ECON) {
-  return (Number(prl) || 0) * econ.PRL_USD;
-}
-
-function prlToUsdLabel(prl, econ = ECON) {
-  return '$' + prlToUsd(prl, econ).toFixed(2);
-}
-
-module.exports = { estDailyPrl, estDailyUsd, estDailyUsdLabel, prlToUsd, prlToUsdLabel };
+module.exports = { estDailyPrl, estDailyUsd, estDailyUsdLabel };

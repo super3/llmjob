@@ -629,8 +629,12 @@
       });
     }
     let resumeMining = false;
+    // Whether the user has an explicitly saved region. Auto-detect must not
+    // overwrite one (see below), so remember it while the settings are in scope.
+    let savedRegion = null;
     if (api.getSettings) {
       const s = await api.getSettings();
+      savedRegion = s.region || null;
       state.address = s.address || '';
       el.addrInput.value = state.address;
       el.setWorker.value = s.worker || 'rig01';
@@ -661,7 +665,10 @@
         }
       }
     }
-    if (api.detectRegion && !state.mining) {
+    // Auto-detect only fills a BLANK region. Overwriting unconditionally threw
+    // away a deliberate choice on every launch: a user who picked eu1 because us2
+    // was flaky for them silently got us2 back the next time they opened the app.
+    if (api.detectRegion && !state.mining && !savedRegion) {
       const region = await api.detectRegion();
       if (region) el.setRegion.value = region;
     }

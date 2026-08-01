@@ -401,8 +401,8 @@
       <p class="col-text">Payouts go straight to your address. No custody, no account, nothing held by us.</p>
     </div>
     <div>
-      <h3 class="col-title">Just 1% dev fee</h3>
-      <p class="col-text">A flat 1% dev fee, 1% pool. You keep 98% of everything you mine — no subscriptions, no surprises.</p>
+      <h3 class="col-title">Just a 1% fee</h3>
+      <p class="col-text">A flat 1% pool fee, no dev fee. You keep 99% of everything you mine — no subscriptions, no surprises.</p>
     </div>
   </div>
 </section>
@@ -518,6 +518,26 @@
 </footer>
 
 <script>
+    // ── Network economics ────────────────────────────────────────────────────
+    // ONE set of figures for the whole page. The animated app mockup and the
+    // earnings calculator below used to carry separate copies, and they had
+    // drifted ~2.3x apart (30.79e6 / 1.2e6 / $0.47 vs 60.6e6 / 1.62e6 / $0.30) —
+    // so the same GPU showed two different $/day depending which part of the page
+    // you looked at, and only the calculator's copy was refreshed from the API,
+    // so the gap widened over time.
+    //
+    // Live market data comes from the prlscan API (api.prlscan.com, CORS-open) —
+    // the same source the explorer's own frontend uses: price, a 100-block
+    // average of the network hashrate, and the current block reward + cadence.
+    // These are a July 2026 snapshot used only until the live fetch lands; if it
+    // fails, the page SAYS so (see r-live) rather than passing off stale numbers
+    // as current — overstated earnings cost more trust than a missing figure.
+    let PRICE = 0.30;               // PRL/USD (snapshot)
+    let NET_TH = 60.6e6;            // network hashrate in TH/s, ~60.6 EH/s (snapshot)
+    let DAILY_NET_PRL = 1.62e6;     // ~2,489 PRL/block × ~650 blocks/day (snapshot)
+    // Keep 99% after the 1% pool fee. config.js is the source of truth
+    // (devFeePct 0 + poolFeePct 1); this mirrors it.
+    const FEE = 0.99;
   /* ---- Download button: auto-detect OS + platform dropdown ---- */
   (function () {
     const wraps = document.querySelectorAll('[data-dl]');
@@ -621,10 +641,10 @@
       const compact = mqCompact.matches;
       elTotal.textContent = s.total.toFixed(1);
       elBal.textContent = s.balance.toFixed(compact ? 1 : 3);
-      elBalUsd.textContent = '≈ $' + (s.balance * 0.47).toFixed(2);
+      elBalUsd.textContent = '≈ $' + (s.balance * PRICE).toFixed(2);
       elAcc.textContent = s.accepted.toLocaleString();
       elUp.textContent = compact ? h + 'h ' + pad(m) + 'm' : h + 'h ' + pad(m) + 'm ' + pad(sc) + 's';
-      elEst.textContent = '$' + (((s.total / 30.79e6) * 1.2e6 * 0.99) * 0.47).toFixed(2);
+      elEst.textContent = '$' + (((s.total / NET_TH) * DAILY_NET_PRL * FEE) * PRICE).toFixed(2);
     }
 
     function tick() {
@@ -697,17 +717,6 @@
       { name: 'H100', th: 700, arch: 'Hopper · 80 GB · datacenter' },
     ];
 
-    // Live market data from the prlscan API (api.prlscan.com, CORS-open) — the
-    // same source the explorer's own frontend uses: price, a 100-block average
-    // of the network hashrate, and the current block reward + cadence. The
-    // constants below are a July 2026 snapshot used only until the live fetch
-    // lands; if it fails, the page SAYS so (see r-live) instead of passing off
-    // stale numbers as current — overstated earnings cost more trust than a
-    // missing figure.
-    let PRICE = 0.30;               // PRL/USD (snapshot)
-    let NET_TH = 60.6e6;            // network hashrate in TH/s, ~60.6 EH/s (snapshot)
-    let DAILY_NET_PRL = 1.62e6;     // ~2,489 PRL/block × ~650 blocks/day (snapshot)
-    const FEE = 0.99;               // keep 99% after the 1% pool fee
     let live = { price: false, net: false, reward: false };
 
     const state = { hashrate: 354, cards: 1, selected: 'RTX 5090' };

@@ -8,12 +8,17 @@ const LOCK_MS = 10 * 60 * 1000;       // assignment lock lifetime (10 min)
 // it still throws away a generation that was going to finish. Four missed beats
 // is a real outage, not a blip.
 const HEARTBEAT_STALE_MS = 120 * 1000;
-// How long a job may sit pending before it is abandoned. Both gateways give up
-// waiting after 120s, so anything older than this has no caller left listening —
-// running it later would burn a node's GPU on a reply nobody receives, and the
-// rows would otherwise accumulate forever (nothing else clears `pending`). The
-// margin over 120s means this can never expire a job someone is still waiting on.
-const PENDING_TTL_MS = 5 * 60 * 1000;
+// The longest any gateway will wait for a node to pick a job up. Exported so the
+// gateways derive their timeout from it rather than restating it: this value
+// lived in three places and had already drifted (OpenAI 280s, web chat 120s)
+// while the comment here still asserted both gave up at 120s.
+const GATEWAY_TIMEOUT_MS = 280 * 1000;
+// How long a job may sit pending before it is abandoned. Past this, no caller is
+// left listening — running it later would burn a node's GPU on a reply nobody
+// receives, and the rows would otherwise accumulate forever (nothing else clears
+// `pending`). Kept a minute clear of the longest gateway wait so it can never
+// expire a job someone is still waiting on.
+const PENDING_TTL_MS = GATEWAY_TIMEOUT_MS + 60 * 1000;
 // The model the earn-client fleet actually serves (earn/src/shared/config.js
 // LLM.model.name) — the default a job records must match what runs it.
 const DEFAULT_MODEL = 'Gemma-4-E4B-it-Q4_K_M';
@@ -23,6 +28,18 @@ const DEFAULT_MODEL = 'Gemma-4-E4B-it-Q4_K_M';
 // is the real cap, and this default exists so a caller who sends no max_tokens
 // isn't held below it.
 const DEFAULT_MAX_TOKENS = 6400;
+
+// Caller-supplied priority, bounded. assignJobsToNode orders the GLOBAL pending
+// queue by priority DESC, and every in-repo producer writes 0 — so an unbounded
+// value from POST /api/jobs let one account jump ahead of all paid API and public
+// chat traffic indefinitely. A small range keeps the knob useful for genuine
+// ordering without letting it become a starvation lever.
+const MAX_PRIORITY = 10;
+function clampPriority(v) {
+  const n = Math.floor(Number(v));
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.min(n, MAX_PRIORITY);
+}
 
 // A job's routing (inherited from the API key that created it): 'private' may
 // only run on the owner's own nodes; anything else is 'public' (any node).
@@ -52,7 +69,7 @@ class JobService {
       prompt: jobData.prompt,
       model: jobData.model || DEFAULT_MODEL,
       options: jobData.options || {},
-      priority: jobData.priority || 0,
+      priority: clampPriority(jobData.priority),
       status: 'pending',
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -63,10 +80,9 @@ class JobService {
       // visibility filter still applies, so it can never route to a node the caller
       // wouldn't otherwise be allowed to use.
       targetNode: jobData.targetNode || null,
-      // A caller who sends no max_tokens gets this. 1000 was sized when the whole
-      // budget went to the answer; a reasoning model can spend that much thinking
-      // and return an empty completion, so the default has to cover the thoughts
-      // plus the answer.
+      // A caller who sends no max_tokens gets the default, which covers a
+      // reasoning model's thoughts plus its answer.
+      //
       // `!= null`, not `||`: `max_tokens: 0` and especially `temperature: 0` are
       // meaningful OpenAI values — 0 is THE setting for deterministic output, and
       // coalescing it to 0.7 silently served a random sample to every caller that
@@ -439,3 +455,6 @@ class JobService {
 
 module.exports = JobService;
 module.exports.DEFAULT_MODEL = DEFAULT_MODEL;
+module.exports.GATEWAY_TIMEOUT_MS = GATEWAY_TIMEOUT_MS;
+module.exports.MAX_PRIORITY = MAX_PRIORITY;
+module.exports.clampPriority = clampPriority;

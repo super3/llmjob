@@ -253,7 +253,14 @@
 
     // No live pool data yet. When the network API is ready, fetch the miners
     // (sorted by 1h hashrate) and pass them to render().
-    function esc(str) { return String(str).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+    // Escapes the single quote too. chat.html's copy always did; this one didn't,
+    // and two escapers with different character sets is how the weaker one ends up
+    // interpolated into a single-quoted attribute one day.
+    function esc(str) {
+      return String(str == null ? '' : str).replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      }[c]));
+    }
     // Truncate the middle of the payout address for a bit of anonymity; the
     // narrow form fits the tighter address column on sub-1040px screens.
     // First six and last six characters: enough to tell rows apart, and the width

@@ -168,8 +168,11 @@ describe('boot with the full bridge', () => {
     const opts = Array.from($('set-region').options).map((o) => o.value);
     expect(opts).toEqual(['us2', 'eu1']);
     expect($('set-region').options[0].textContent).toBe('US US · Dallas');
-    // detectRegion overrode the saved region, difficultyForCard the default diff
-    expect($('set-region').value).toBe('eu1');
+    // The SAVED region wins: auto-detect must not overwrite a deliberate choice.
+    // (Detection returns 'eu1'; the fixture has 'us2' saved.) difficultyForCard
+    // still fills the default difficulty, which the fixture leaves at the default.
+    expect($('set-region').value).toBe('us2');
+    expect(api.detectRegion).not.toHaveBeenCalled();
     expect($('set-difficulty').value).toBe('2048');
     expect(api.difficultyForCard).toHaveBeenCalledWith('RTX 4090');
     expect($('device-label').textContent).toBe('RTX 4090');
@@ -287,7 +290,7 @@ describe('boot with the full bridge', () => {
     click(document.querySelector('[data-mode="auto"]'));
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenCalledWith({
-      address: ADDR, mdlAddress: MDL, worker: 'w1', region: 'eu1', difficulty: 2048, mode: 'auto',
+      address: ADDR, mdlAddress: MDL, worker: 'w1', region: 'us2', difficulty: 2048, mode: 'auto',
     });
     expect($('addr-static').hidden).toBe(false);
     expect($('addr-static').textContent).toBe(ADDR);

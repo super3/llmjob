@@ -170,14 +170,6 @@ const { useState, useEffect, useCallback } = React;
 // data of their own).
 {{> api-base}}
 
-const PALETTE = ['var(--accent)', 'var(--violet)', 'var(--amber)', 'var(--online)'];
-const colorFor = (s) => {
-  let h = 0;
-  for (let i = 0; i < (s || '').length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
-  return PALETTE[h % PALETTE.length];
-};
-const initials = (s) => (s || '?').replace(/[^a-z0-9]/gi, "").slice(0, 2).toUpperCase();
-const nodeColor = (d) => (d && (d.includes("Mac") || d.includes("M2"))) ? "var(--violet)" : "var(--accent)";
 
 // How many recent requests the logs table shows.
 const LOG_LIMIT = 10;
@@ -197,8 +189,12 @@ const fmtModel = (model, quant) =>
 
 const fmtTokens = (n) => {
   if (n == null) return '0';
+  // Matches network.html's formatter — billions first (a value >= 1e9 is also
+  // >= 1e6, so the wider tier has to be tested first), and an uppercase K, so the
+  // same token total reads the same on both pages.
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
   if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
   return String(n);
 };
 const relTime = (ts) => {

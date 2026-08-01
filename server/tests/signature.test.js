@@ -193,4 +193,51 @@ describe('Signature Middleware', () => {
       expect(next).not.toHaveBeenCalled();
     });
   });
+  // Math.abs(now - "abc") is NaN, and `NaN > window` is false — so before this a
+  // non-numeric timestamp skipped the freshness check entirely, letting a node
+  // mint a signature that never expired.
+  describe('timestamp coercion', () => {
+    const sign = (timestamp) => {
+      const message = `${testNodeId}:${timestamp}`;
+      return naclUtil.encodeBase64(
+        nacl.sign.detached(naclUtil.decodeUTF8(message), testKeypair.secretKey)
+      );
+    };
+
+    it('rejects a non-numeric timestamp instead of skipping the freshness check', () => {
+      req.body = {
+        publicKey: testPublicKey, signature: sign('not-a-number'),
+        timestamp: 'not-a-number', nodeId: testNodeId,
+      };
+      verifySignature(req, res, next);
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({ error: 'Invalid timestamp' });
+      expect(next).not.toHaveBeenCalled();
+    });
+
+    it('rejects non-finite timestamps', () => {
+      for (const bad of [Infinity, -Infinity]) {
+        jest.clearAllMocks();
+        req.body = {
+          publicKey: testPublicKey, signature: sign(bad),
+          timestamp: bad, nodeId: testNodeId,
+        };
+        verifySignature(req, res, next);
+        expect(res.status).toHaveBeenCalledWith(400);
+        expect(next).not.toHaveBeenCalled();
+      }
+    });
+
+    // JSON has no integer type distinction, so a client sending the timestamp as
+    // a string is plausible and must still work — coercion, not rejection.
+    it('accepts a fresh numeric-string timestamp', () => {
+      const ts = Date.now();
+      req.body = {
+        publicKey: testPublicKey, signature: sign(String(ts)),
+        timestamp: String(ts), nodeId: testNodeId,
+      };
+      verifySignature(req, res, next);
+      expect(next).toHaveBeenCalled();
+    });
+  });
 });

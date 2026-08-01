@@ -610,16 +610,21 @@ async function run(argv) {
     // --region / --gpu / --difficulty always win.
     if (!settings.workerProvided) settings.worker = defaultWorker();
     if (!settings.regionProvided) settings.region = await detectRegion();
-    if (!settings.gpuProvided) {
-      const det = await detectGpu();
-      if (det && det.name) {
-        settings.gpu = det.name;
-        settings.gpuCount = det.count > 1 ? det.count : 1;
-        // The pool's difficulty table is per card class; a rig submits its
-        // aggregate hashrate on one connection, so scale by the card count
-        // (8× RTX 3070 wants the ~560 TH/s tier, not the single-card one).
-        if (!settings.difficultyProvided) settings.difficulty = difficultyForCard(det.name) * settings.gpuCount;
-      }
+    // Probe regardless of --gpu. Naming the card and counting the cards are two
+    // different questions, and folding them into one `if` meant that passing
+    // --gpu (to name it) also skipped the COUNT — so an N-card rig fell back to
+    // gpuCount 1 and submitted at 1/N the difficulty its hashrate warranted.
+    const det = await detectGpu();
+    if (!settings.gpuProvided && det && det.name) settings.gpu = det.name;
+    // Always set, so downstream reads don't need a fallback: 1 when detection
+    // found nothing or found a single card.
+    settings.gpuCount = det && det.count > 1 ? det.count : 1;
+    // The pool's difficulty table is per card class; a rig submits its aggregate
+    // hashrate on one connection, so scale by the card count (8× RTX 3070 wants
+    // the ~560 TH/s tier, not the single-card one). Uses whichever card name we
+    // ended up with — the detected one or the one the user pinned.
+    if (!settings.difficultyProvided && settings.gpu) {
+      settings.difficulty = difficultyForCard(settings.gpu) * settings.gpuCount;
     }
 
     endpoint = endpointFor(settings.region);

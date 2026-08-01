@@ -826,8 +826,11 @@ describe('mining', () => {
     // engine events flow through to the renderer + the stats accumulator
     miner.emit('log', { level: 'info', line: 'share accepted' });
     expect(logs()).toContain('share accepted');
+    // The raw 'miner:event' IPC channel is gone — nothing in the renderer ever
+    // subscribed to it, and the same data already reaches the UI folded into the
+    // stats snapshot below.
     miner.emit('event', { type: 'status', hashrate: 12, accepted: 4 });
-    expect(ctx.sent('miner:event')).toContainEqual({ type: 'status', hashrate: 12, accepted: 4 });
+    expect(ctx.sent('miner:event')).toEqual([]);
     ticker.fn();
     const after = ctx.sent('miner:stats');
     expect(after[after.length - 1].accepted).toBe(4);

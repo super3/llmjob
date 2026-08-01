@@ -29,7 +29,6 @@ contextBridge.exposeInMainWorld('llmjob', {
   fitWindow: () => ipcRenderer.send('app:fit'),
   onStats: (cb) => ipcRenderer.on('miner:stats', (_e, d) => cb(d)),
   onLog: (cb) => ipcRenderer.on('miner:log', (_e, d) => cb(d)),
-  onEvent: (cb) => ipcRenderer.on('miner:event', (_e, d) => cb(d)),
   onEngine: (cb) => ipcRenderer.on('miner:engine', (_e, d) => cb(d)),
   onStopped: (cb) => ipcRenderer.on('miner:stopped', () => cb()),
   onUpdate: (cb) => ipcRenderer.on('app:update', (_e, d) => cb(d)),

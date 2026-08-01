@@ -279,16 +279,73 @@ describe('downloadFile', () => {
     await expect(io.downloadFile('https://host/f', '/tmp/f', null, 6)).rejects.toThrow('too many redirects');
   });
 
-  it('rejects on a non-200, non-redirect status', async () => {
-    const res = fakeRes({ statusCode: 404, headers: {} });
-    wire(https, [res]);
-    await expect(io.downloadFile('https://host/f', '/tmp/f')).rejects.toThrow('HTTP 404');
+  // A non-200 now goes through the retry path rather than failing setup on the
+  // first response: on a multi-GB transfer a CDN 502/503 is at least as likely as
+  // a dropped socket, and a dropped socket already got four attempts. It still
+  // gives up — after exhausting them, with the status in the message.
+  it('retries a non-200, non-redirect status and reports it after the last attempt', async () => {
+    jest.useFakeTimers();
+    const resList = Array.from({ length: 4 }, () => fakeRes({ statusCode: 503, headers: {} }));
+    wire(https, resList);
+    fs.unlink.mockImplementation((p, cb) => cb && cb());
+
+    const p = io.downloadFile('https://host/f', '/tmp/f');
+    const settled = p.then(() => null, (e) => e);
+    for (let a = 1; a <= 4; a++) {
+      await Promise.resolve();
+      jest.advanceTimersByTime(2000 * a);
+      await Promise.resolve();
+    }
+
+    expect((await settled).message).toMatch('HTTP 503');
+    expect(https.get).toHaveBeenCalledTimes(4);
+    jest.useRealTimers();
   });
 
   it('treats a missing status code as HTTP 0', async () => {
-    const res = fakeRes({ statusCode: 0, headers: {} });
-    wire(https, [res]);
-    await expect(io.downloadFile('https://host/f', '/tmp/f')).rejects.toThrow('HTTP 0');
+    jest.useFakeTimers();
+    const resList = Array.from({ length: 4 }, () => fakeRes({ statusCode: 0, headers: {} }));
+    wire(https, resList);
+    fs.unlink.mockImplementation((p, cb) => cb && cb());
+
+    const p = io.downloadFile('https://host/f', '/tmp/f');
+    const settled = p.then(() => null, (e) => e);
+    for (let a = 1; a <= 4; a++) {
+      await Promise.resolve();
+      jest.advanceTimersByTime(2000 * a);
+      await Promise.resolve();
+    }
+
+    expect((await settled).message).toMatch('HTTP 0');
+    jest.useRealTimers();
+  });
+
+  // The artifacts here get executed or loaded as a model, and installation is
+  // later checked with existsSync alone — so a transfer that ends "cleanly" but
+  // short must never be renamed into place.
+  it('rejects a truncated download instead of renaming it into place', async () => {
+    jest.useFakeTimers();
+    const resList = Array.from({ length: 4 }, () =>
+      fakeRes({ statusCode: 200, headers: { 'content-length': '100' } }));
+    wire(https, resList);
+    const outs = resList.map(() => fakeWrite());
+    let i = 0;
+    fs.createWriteStream.mockImplementation(() => outs[i++]);
+    fs.unlink.mockImplementation((p, cb) => cb && cb());
+
+    const p = io.downloadFile('https://host/f', '/tmp/f');
+    const settled = p.then(() => null, (e) => e);
+    for (let a = 1; a <= 4; a++) {
+      resList[a - 1].emit('data', Buffer.alloc(40));   // 40 of the promised 100
+      outs[a - 1].emit('finish');
+      await Promise.resolve();
+      jest.advanceTimersByTime(2000 * a);
+      await Promise.resolve();
+    }
+
+    expect((await settled).message).toMatch('download truncated: got 40 of 100 bytes');
+    expect(fs.renameSync).not.toHaveBeenCalled();
+    jest.useRealTimers();
   });
 
   // A dropped connection is retried, resuming from what is on disk. These tests
@@ -845,8 +902,25 @@ describe('downloadFile trust recovery', () => {
   });
 
   it('leaves other failures to the existing retry path', async () => {
-    wireGets([(req, cb) => { cb(fakeRes({ statusCode: 404, headers: {} })); }]);
-    await expect(io.downloadFile('https://host/f.bin', '/tmp/f.bin')).rejects.toThrow('HTTP 404');
+    // Still the point of this test: a non-TLS failure must not engage the
+    // trust-recovery probe. A 404 now walks the ordinary retry path (a transient
+    // 5xx deserves the same patience a dropped socket already got), so drive the
+    // backoff to exhaustion and assert it lands as an HTTP error, untouched by tls.
+    jest.useFakeTimers();
+    wireGets(Array.from({ length: 4 }, () => (req, cb) => {
+      cb(fakeRes({ statusCode: 404, headers: {} }));
+    }));
+    fs.unlink.mockImplementation((p, cb) => cb && cb());
+
+    const settled = io.downloadFile('https://host/f.bin', '/tmp/f.bin').then(() => null, (e) => e);
+    for (let a = 1; a <= 4; a++) {
+      await Promise.resolve();
+      jest.advanceTimersByTime(2000 * a);
+      await Promise.resolve();
+    }
+
+    expect((await settled).message).toMatch('HTTP 404');
     expect(tls.connect).not.toHaveBeenCalled();
+    jest.useRealTimers();
   });
 });

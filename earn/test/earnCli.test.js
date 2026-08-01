@@ -531,6 +531,40 @@ describe('mining', () => {
     await expect(p).resolves.toBe(0);
   });
 
+  // Naming the card (--gpu) and counting the cards are different questions.
+  // Folding them into one `if` meant --gpu also skipped the COUNT, so an N-card
+  // rig fell back to gpuCount 1 and mined at 1/N the difficulty its hashrate
+  // warranted.
+  test('--gpu still scales difficulty by the detected card count', async () => {
+    const m = load();
+    m.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 3070', count: 8 });
+
+    const p = m.run(['-a', ADDR, '--gpu', 'NVIDIA GeForce RTX 3070', '--mode', 'mining', '--no-update']);
+    await settle();
+
+    // The shipped table puts the 3070 at 131072; × 8 cards.
+    expect(allOut()).toContain('difficulty: 1048576');
+    expect(allOut()).toContain('8× NVIDIA GeForce RTX 3070');
+
+    fire('SIGTERM');
+    m.MinerManager.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('an explicit --difficulty still wins over the scaled value', async () => {
+    const m = load();
+    m.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 3070', count: 8 });
+
+    const p = m.run(['-a', ADDR, '-d', '1234', '--mode', 'mining', '--no-update']);
+    await settle();
+
+    expect(allOut()).toContain('difficulty: 1234');
+
+    fire('SIGTERM');
+    m.MinerManager.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
   test('old driver picks the fallback build; single GPU; stats write failures stay silent', async () => {
     const m = load();
     m.probe.detectDriverMajor.mockResolvedValue(550);
