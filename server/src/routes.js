@@ -41,6 +41,9 @@ router.get('/nodes', requireAuth, nodeController.getUserNodes);
 // GET /api/nodes/public - Return all public nodes (no auth required)
 router.get('/nodes/public', nodeController.getPublicNodes);
 
+// GET /api/nodes/serving - The serving fleet + measured speeds (no auth)
+router.get('/nodes/serving', nodeController.getServingNodes);
+
 // PUT /api/nodes/:id/visibility - Toggle node between public/private
 router.put('/nodes/:id/visibility', requireAuth, nodeController.updateNodeVisibility);
 

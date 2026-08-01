@@ -3,6 +3,16 @@ const crypto = require('crypto');
 const NODE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // prune nodes not seen in a week
 const OFFLINE_THRESHOLD = 15 * 60 * 1000;    // mark offline after 15 minutes
 
+// Weight on a new speed sample. Low enough that one unlucky job (a node that
+// picked up mining mid-generation) doesn't swing the number that decides what
+// work it gets, high enough to follow a real hardware change within a handful of
+// jobs rather than a day.
+const SPEED_ALPHA = 0.3;
+// A measurement older than this is treated as unknown: a node that has been idle
+// this long may have swapped cards, changed models, or started co-running the
+// miner, and the stale figure would gate it on evidence that no longer holds.
+const SPEED_STALE_MS = 6 * 60 * 60 * 1000;
+
 // Generate a short fingerprint from a public key.
 function generateNodeFingerprint(publicKey) {
   const hash = crypto.createHash('sha256').update(publicKey).digest('hex');
@@ -176,6 +186,83 @@ class NodeService {
     return { exists: true, online };
   }
 
+  // Fold one server-measured generation into the node's running speed.
+  //
+  // `tokens` is the node's own count of what it produced — that part it can be
+  // trusted on, since undercounting only makes it look slower. `elapsedMs` is the
+  // server's clock, which is the half that matters: a node can claim any tok/s it
+  // likes on its ping, but it can't make the gateway's stopwatch run slower.
+  //
+  // `replace` overwrites instead of blending, for the first benchmark of a cold
+  // node — that run includes model load and KV warm-up and can read many times
+  // slower than steady state, so blending it in would defame a fast node for the
+  // next several jobs.
+  async recordSpeedSample(nodeId, tokens, elapsedMs, opts = {}) {
+    const t = Number(tokens);
+    const ms = Number(elapsedMs);
+    if (!nodeId || !Number.isFinite(t) || t <= 0 || !Number.isFinite(ms) || ms <= 0) return null;
+
+    const rate = t / (ms / 1000);
+    const r = await this.db.query('SELECT measured_tps, speed_samples FROM nodes WHERE node_id = $1', [nodeId]);
+    if (!r.rows.length) return null;
+
+    const prev = num(r.rows[0].measured_tps);
+    const samples = Number(r.rows[0].speed_samples) || 0;
+    const next = (opts.replace || prev == null) ? rate : prev * (1 - SPEED_ALPHA) + rate * SPEED_ALPHA;
+
+    await this.db.query(
+      'UPDATE nodes SET measured_tps = $2, speed_samples = $3, speed_at = $4 WHERE node_id = $1',
+      [nodeId, next, samples + 1, Date.now()]
+    );
+    return { nodeId, tps: next, samples: samples + 1 };
+  }
+
+  // What we know about a node's speed right now. `stale` is what callers act on:
+  // a measurement past SPEED_STALE_MS describes hardware that may no longer be
+  // there, so it neither gates the node nor counts as "measured".
+  async getSpeed(nodeId) {
+    const r = await this.db.query(
+      'SELECT measured_tps, speed_samples, speed_at FROM nodes WHERE node_id = $1', [nodeId]
+    );
+    if (!r.rows.length) return null;
+    const row = r.rows[0];
+    const at = num(row.speed_at);
+    const tps = num(row.measured_tps);
+    const stale = at == null || (Date.now() - at) > SPEED_STALE_MS;
+    return { tps, samples: Number(row.speed_samples) || 0, at, stale, known: tps != null && !stale };
+  }
+
+  // Every node currently serving the fleet, with what we measured it at.
+  //
+  // This is the only way to enumerate the serving fleet: getPublicNodes() lists
+  // nodes a user flagged public (usually none), and the miner board only shows
+  // machines that are mining — so a node that serves jobs without mining appears
+  // in neither, and the fleet could only be counted by probing node ids we
+  // happened to have seen before.
+  async listServingNodes() {
+    const r = await this.db.query(
+      'SELECT node_id, name, device, model, measured_tps, speed_samples, speed_at, last_seen FROM nodes WHERE last_seen >= $1 ORDER BY measured_tps DESC NULLS LAST',
+      [Date.now() - OFFLINE_THRESHOLD]
+    );
+    const now = Date.now();
+    return r.rows.map((row) => {
+      const at = num(row.speed_at);
+      const tps = num(row.measured_tps);
+      const stale = at == null || (now - at) > SPEED_STALE_MS;
+      return {
+        nodeId: row.node_id,
+        name: row.name || null,
+        device: row.device || null,
+        model: row.model || null,
+        tps: tps == null ? null : Math.round(tps * 10) / 10,
+        samples: Number(row.speed_samples) || 0,
+        measuredAt: at,
+        stale,
+        lastSeen: num(row.last_seen),
+      };
+    });
+  }
+
   async getPublicNodes() {
     const r = await this.db.query('SELECT * FROM nodes', []);
     const now = Date.now();
@@ -272,5 +359,7 @@ class NodeService {
 }
 
 NodeService.generateNodeFingerprint = generateNodeFingerprint;
+NodeService.SPEED_STALE_MS = SPEED_STALE_MS;
+NodeService.SPEED_ALPHA = SPEED_ALPHA;
 
 module.exports = NodeService;

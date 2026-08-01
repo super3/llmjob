@@ -353,6 +353,29 @@ describe('Node API Endpoints', () => {
       expect(response.body.error).toBe('Failed to get nodes');
     });
 
+    // GET /api/nodes/serving — the only endpoint that enumerates the fleet that
+    // actually serves jobs, and the source for the network page's speed dots.
+    it('lists the serving fleet with measured speeds', async () => {
+      const svc = new NodeService(db);
+      const { nodeId } = await svc.claimNode('pk-serving', 'rig-serving', 'user-serving');
+      await svc.recordSpeedSample(nodeId, 400, 10000); // 40 tok/s
+
+      const response = await request(app).get('/api/nodes/serving');
+      expect(response.status).toBe(200);
+      expect(response.body.total).toBe(response.body.nodes.length);
+      const node = response.body.nodes.find((n) => n.nodeId === nodeId);
+      expect(node).toMatchObject({ tps: 40, stale: false, samples: 1 });
+    });
+
+    it('should handle database errors in getServingNodes', async () => {
+      const spy = jest.spyOn(NodeService.prototype, 'listServingNodes')
+        .mockRejectedValue(new Error('Database error'));
+      const response = await request(app).get('/api/nodes/serving');
+      expect(response.status).toBe(500);
+      expect(response.body.error).toBe('Failed to get serving nodes');
+      spy.mockRestore();
+    });
+
     it('should handle database errors in getPublicNodes', async () => {
       db.query = jest.fn().mockRejectedValue(new Error('Database error'));
       const response = await request(app).get('/api/nodes/public');

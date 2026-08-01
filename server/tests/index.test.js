@@ -5,6 +5,7 @@ const mockCheckNodeStatuses = jest.fn();
 const mockCheckTimeouts = jest.fn();
 const mockCleanupOldJobs = jest.fn();
 const mockExpireStalePending = jest.fn();
+const mockBenchmarkSweep = jest.fn();
 
 jest.mock('../src/db', () => {
   const actual = jest.requireActual('../src/db');
@@ -15,6 +16,8 @@ jest.mock('../src/services/nodeService', () =>
 jest.mock('../src/services/jobService', () =>
   jest.fn(() => ({ checkTimeouts: mockCheckTimeouts, cleanupOldJobs: mockCleanupOldJobs,
     expireStalePending: mockExpireStalePending })));
+jest.mock('../src/services/benchmarkService', () =>
+  jest.fn(() => ({ sweep: mockBenchmarkSweep })));
 
 const request = require('supertest');
 const { createPool } = require('../src/db');
@@ -103,9 +106,9 @@ describe('server bootstrap (index.js)', () => {
       expect(index.app.listen).toHaveBeenCalled();
       expect(signals.SIGTERM).toBeInstanceOf(Function);
       expect(signals.SIGINT).toBeInstanceOf(Function);
-      expect(intervals).toHaveLength(3);
+      expect(intervals).toHaveLength(4);
 
-      const [statusCb, timeoutCb, cleanupCb] = intervals;
+      const [statusCb, timeoutCb, benchmarkCb, cleanupCb] = intervals;
 
       // node-status tick: the happy path and the error branch (a transient DB
       // failure here must be swallowed, not crash the process).
@@ -125,6 +128,14 @@ describe('server bootstrap (index.js)', () => {
       await timeoutCb();
       mockCheckTimeouts.mockRejectedValueOnce(new Error('db down'));
       await timeoutCb();
+
+      // benchmark tick: nothing due, some queued, and the error branch
+      mockBenchmarkSweep.mockResolvedValueOnce([]);
+      await benchmarkCb();
+      mockBenchmarkSweep.mockResolvedValueOnce(['abc123']);
+      await benchmarkCb();
+      mockBenchmarkSweep.mockRejectedValueOnce(new Error('benchmark failed'));
+      await benchmarkCb();
 
       // cleanup tick: nothing, some, and the error branch
       mockCleanupOldJobs.mockResolvedValueOnce(0);
