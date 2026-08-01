@@ -88,9 +88,17 @@ async function startServer() {
     const jobService = new JobService(db);
     const nodeService = new NodeService(db);
 
-    // Check node statuses every minute
+    // Check node statuses every minute. Wrapped in try/catch like the sibling
+    // sweeps below: the callback is async, so a rejected DB query here (a
+    // connection reset, a deploy blip) would otherwise become an unhandled
+    // rejection — which, on Node >= 22, terminates the whole process, taking the
+    // API down over a momentary hiccup.
     const statusInterval = setInterval(async () => {
-      await nodeService.checkNodeStatuses();
+      try {
+        await nodeService.checkNodeStatuses();
+      } catch (error) {
+        console.error('Error checking node statuses:', error);
+      }
     }, 60000);
 
     // Check for timed out jobs every 30 seconds

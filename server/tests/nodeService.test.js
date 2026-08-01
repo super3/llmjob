@@ -62,6 +62,25 @@ describe('NodeService', () => {
       const res = await service.claimNode('key1', 'Mine', 'user2');
       expect(res).toEqual({ error: 'Node already claimed by another user' });
     });
+
+    it('refuses to overwrite a node registered under a different key (collision takeover)', async () => {
+      // Simulate the attack: a victim node already occupies this fingerprint with
+      // its own key; the attacker presents a different key that grinds to the same
+      // id. The claim must not overwrite the victim's registered key.
+      const attackerKey = 'attacker-key';
+      const nodeId = NodeService.generateNodeFingerprint(attackerKey);
+      await db.query(
+        `INSERT INTO nodes (node_id, public_key, name, user_id, status, is_public, last_seen, claimed_at)
+         VALUES ($1, $2, 'victim', NULL, 'online', false, $3, $3)`,
+        [nodeId, 'victim-key', Date.now()]
+      );
+
+      const res = await service.claimNode(attackerKey, 'pwned', 'attacker');
+      expect(res).toEqual({ error: 'Node key mismatch' });
+      const node = await service.getNode(nodeId);
+      expect(node.publicKey).toBe('victim-key'); // untouched
+      expect(node.userId).toBeNull();            // not hijacked
+    });
   });
 
   describe('registerNode', () => {

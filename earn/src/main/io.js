@@ -244,7 +244,16 @@ function downloadAttempt(url, dest, part, onProgress, redirects, attempt, ca) {
   return new Promise((resolve, reject) => {
     if (redirects > 5) return reject(new Error('too many redirects'));
 
+    // One outcome per attempt. A stalled transfer calls req.destroy(err), which
+    // surfaces 'error' on BOTH the request and the in-flight response — firing
+    // retryOrFail twice for a single stall. Unguarded, each fork started its own
+    // retry chain, and the two chains truncated and renamed the SAME .part file
+    // concurrently: one could install a zero-holed/interleaved model that later
+    // runs accept (they only check the file exists). Retry at most once here.
+    let retried = false;
     const retryOrFail = (err) => {
+      if (retried) return;
+      retried = true;
       // Remember where it failed so the recovery pass probes the host that
       // actually rejected us, which after a redirect isn't the one we asked for.
       err.url = url;

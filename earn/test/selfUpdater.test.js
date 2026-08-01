@@ -29,6 +29,7 @@ function fakeRes({ statusCode = 200, headers = {} } = {}) {
 function fakeReq() {
   const req = new EventEmitter();
   req.destroy = jest.fn();
+  req.setTimeout = jest.fn(); // io.downloadFile arms a stall timeout on the request
   return req;
 }
 function fakeWrite() {
@@ -99,75 +100,29 @@ describe('isPackaged', () => {
   });
 });
 
-describe('download', () => {
-  it('streams a 200 body to the destination', async () => {
-    const res = fakeRes({ statusCode: 200 });
-    wire([res]);
-    const out = fakeWrite();
-    fs.createWriteStream.mockReturnValue(out);
-    const p = updater.download('https://host/bin', '/tmp/bin');
-    res.emit('data', Buffer.from('x'));
-    out.emit('finish');
-    await expect(p).resolves.toBe('/tmp/bin');
-    expect(fs.createWriteStream).toHaveBeenCalledWith('/tmp/bin');
-  });
-
-  it('follows a redirect', async () => {
-    const redirect = fakeRes({ statusCode: 302, headers: { location: 'https://host/final' } });
-    const ok = fakeRes({ statusCode: 200 });
-    wire([redirect, ok]);
-    const out = fakeWrite();
-    fs.createWriteStream.mockReturnValue(out);
-    const p = updater.download('https://host/bin', '/tmp/bin');
-    out.emit('finish');
-    await expect(p).resolves.toBe('/tmp/bin');
-  });
-
-  it('rejects after too many redirects', async () => {
-    await expect(updater.download('https://host/bin', '/tmp/bin', 6)).rejects.toThrow('too many redirects');
-  });
-
-  it('rejects on a non-200 (missing status treated as 0)', async () => {
-    const res = fakeRes({ statusCode: 0, headers: {} });
-    wire([res]);
-    await expect(updater.download('https://host/bin', '/tmp/bin')).rejects.toThrow('HTTP 0');
-  });
-
-  it('rejects on a write error', async () => {
-    const res = fakeRes({ statusCode: 200 });
-    wire([res]);
-    const out = fakeWrite();
-    fs.createWriteStream.mockReturnValue(out);
-    const p = updater.download('https://host/bin', '/tmp/bin');
-    out.emit('error', new Error('disk full'));
-    await expect(p).rejects.toThrow('disk full');
-  });
-
-  it('rejects on a request error', async () => {
-    const res = fakeRes({ statusCode: 200 });
-    const reqs = wire([res]);
-    fs.createWriteStream.mockReturnValue(fakeWrite());
-    const p = updater.download('https://host/bin', '/tmp/bin');
-    reqs[0].emit('error', new Error('ECONNRESET'));
-    await expect(p).rejects.toThrow('ECONNRESET');
-  });
-});
-
 describe('applyUpdate', () => {
+  // applyUpdate now delegates the transfer to io.downloadFile, which streams to a
+  // unique <tmp>.<pid>.<seq>.part scratch path and renames it onto <tmp>, then
+  // applyUpdate chmods <tmp> and renames it over the exe.
   it('downloads to a temp file, chmods, and renames over the exe', async () => {
     const res = fakeRes({ statusCode: 200 });
     wire([res]);
     const out = fakeWrite();
     fs.createWriteStream.mockReturnValue(out);
-    fs.chmodSync.mockImplementation(() => {});
     fs.renameSync.mockImplementation(() => {});
+    fs.chmodSync.mockImplementation(() => {});
 
     const p = updater.applyUpdate({ downloadUrl: 'https://host/bin' }, '/opt/earn');
-    out.emit('finish');
+    res.emit('data', Buffer.from('x'));
+    out.emit('finish'); // io.downloadFile: finish → close → rename(part → tmp) → resolve(tmp)
     await expect(p).resolves.toBe('/opt/earn');
 
-    const tmp = fs.chmodSync.mock.calls[0][0];
-    expect(tmp).toBe('/opt/earn.new-' + process.pid);
+    const tmp = '/opt/earn.new-' + process.pid;
+    // The scratch file was written under a unique .part name derived from tmp…
+    const part = fs.createWriteStream.mock.calls[0][0];
+    expect(part).toMatch(new RegExp('^' + tmp.replace(/[.]/g, '\\.') + '\\.\\d+\\.\\d+\\.part$'));
+    // …renamed onto tmp by io.downloadFile, then tmp chmod'd and renamed over the exe.
+    expect(fs.renameSync).toHaveBeenCalledWith(part, tmp);
     expect(fs.chmodSync).toHaveBeenCalledWith(tmp, 0o755);
     expect(fs.renameSync).toHaveBeenCalledWith(tmp, '/opt/earn');
   });
@@ -176,12 +131,10 @@ describe('applyUpdate', () => {
     const res = fakeRes({ statusCode: 200 });
     wire([res]);
     fs.createWriteStream.mockReturnValue(fakeWrite());
-    fs.chmodSync.mockImplementation(() => {});
     fs.renameSync.mockImplementation(() => {});
+    fs.chmodSync.mockImplementation(() => {});
 
     const p = updater.applyUpdate({ downloadUrl: 'https://host/bin' });
-    fs.createWriteStream.mock.results; // no-op; finish below
-    // The write stream created above emits finish:
     const out = fs.createWriteStream.mock.results[0].value;
     out.emit('finish');
     await expect(p).resolves.toBe(process.execPath);

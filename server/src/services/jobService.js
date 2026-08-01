@@ -281,11 +281,15 @@ class JobService {
         failureReason: 'expired: no node picked this job up',
         updatedAt: now
       };
-      await this.db.query(
-        "UPDATE jobs SET data = $2, status = 'failed', updated_at = $3 WHERE id = $1",
+      // Guard on the current status: if a node claimed this job between the SELECT
+      // above and this UPDATE, it is no longer pending, and stomping it to 'failed'
+      // would orphan a job the node is actively running (status 'failed' while
+      // lock_node is still set). Only count the ones we actually expired.
+      const res = await this.db.query(
+        "UPDATE jobs SET data = $2, status = 'failed', updated_at = $3 WHERE id = $1 AND status = 'pending'",
         [row.id, JSON.stringify(updated), now]
       );
-      expired.push(row.id);
+      if (res.rowCount) expired.push(row.id);
     }
 
     return expired;
@@ -315,12 +319,25 @@ class JobService {
           timeoutReason: lockExpired ? 'lock_expired' : 'heartbeat_timeout',
           updatedAt: now
         };
-        await this.db.query(
+        // Guard on the current status: if the node completed or failed the job
+        // between the SELECT above and this UPDATE, don't clobber that terminal
+        // state back to 'pending' — that would drop the result and re-run work the
+        // caller already got (or is about to).
+        const res = await this.db.query(
           `UPDATE jobs SET data = $2, status = 'pending', assigned_to = NULL, updated_at = $3,
-             lock_node = NULL, lock_expires_at = NULL, heartbeat_at = NULL WHERE id = $1`,
+             lock_node = NULL, lock_expires_at = NULL, heartbeat_at = NULL
+           WHERE id = $1 AND status IN ('assigned', 'running')`,
           [job.id, JSON.stringify(updated), now]
         );
-        timeoutJobs.push(job.id);
+        if (res.rowCount) {
+          // Clear the previous attempt's streamed chunks. A re-run starts again at
+          // chunk index 0 and storeChunk upserts by (job_id, idx), while
+          // completeJob assembles EVERY chunk row by index — so leaving the old
+          // rows would splice a dead attempt's trailing output onto the new
+          // result. Nothing else clears them until the job is deleted.
+          await this.db.query('DELETE FROM job_chunks WHERE job_id = $1', [job.id]);
+          timeoutJobs.push(job.id);
+        }
       }
     }
 

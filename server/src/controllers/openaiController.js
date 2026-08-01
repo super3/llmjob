@@ -2,6 +2,10 @@ const JobService = require('../services/jobService');
 const LogService = require('../services/logService');
 const ApiKeyService = require('../services/apiKeyService');
 const NodeService = require('../services/nodeService');
+const {
+  estimateTokens, errorBody, joinContent, lastUserText,
+  writeSsePreamble, pollJobResult,
+} = require('./gatewayShared');
 
 // Header a caller sets to pin a request to one specific node (health/perf testing).
 // Lowercase — Express lowercases header names. Kept OpenAI-SDK friendly: passable
@@ -129,10 +133,23 @@ class OpenAiController {
   // Poll the job until it finishes, then return one OpenAI chat.completion.
   async _jsonResult(ctx) {
     const { res, svc, job } = ctx;
-    const started = this.now();
-    for (;;) {
-      if (ctx.aborted) return; // caller hung up — stop polling, the socket is gone
-      const r = await svc.jobService.getJobResult(job.id);
+    for await (const r of pollJobResult({
+      jobService: svc.jobService, jobId: job.id,
+      now: this.now, sleep: this.sleep, pollMs: this.pollMs, timeoutMs: this.timeoutMs,
+      isAborted: () => ctx.aborted, // caller hung up — stop polling, the socket is gone
+    })) {
+      if (r.status === 'timeout') {
+        // Same header as a success, so a caller reads "who served this" the same
+        // way whether the job finished or ran out the clock.
+        this._setServedByHeader(res, r.last);
+        return res.status(504).json(timeoutBody(job.id, r.last, this.timeoutMs));
+      }
+      if (r.status === 'failed') {
+        // Same diagnostics (node id, job id) a 504 carries, so a failed job is as
+        // attributable as a timed-out one.
+        this._setServedByHeader(res, r);
+        return res.status(502).json(nodeErrorBody(job.id, r));
+      }
       if (r.status === 'completed') {
         const out = completionTokens(r);
         const message = { role: 'assistant', content: r.result || '' };
@@ -151,28 +168,14 @@ class OpenAiController {
           usage: { prompt_tokens: ctx.promptTokens, completion_tokens: out, total_tokens: ctx.promptTokens + out },
         });
       }
-      if (r.status === 'failed') {
-        this._setServedByHeader(res, r);
-        return res.status(502).json(nodeErrorBody(job.id, r));
-      }
-      if (this.now() - started > this.timeoutMs) {
-        // Same header as a success, so a caller reads "who served this" the same
-        // way whether the job finished or ran out the clock.
-        this._setServedByHeader(res, r);
-        return res.status(504).json(timeoutBody(job.id, r, this.timeoutMs));
-      }
-      await this.sleep(this.pollMs);
+      // pending/assigned/running: keep polling until terminal, timeout, or abort.
     }
   }
 
   // Stream the job's chunks as OpenAI chat.completion.chunk SSE events.
   async _streamResult(ctx) {
     const { res, svc, job } = ctx;
-    res.status(200);
-    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('Connection', 'keep-alive');
-    if (res.flushHeaders) res.flushHeaders();
+    writeSsePreamble(res);
 
     const id = 'chatcmpl-' + job.id;
     const created = Math.floor(this.now() / 1000);
@@ -183,11 +186,18 @@ class OpenAiController {
 
     send({ role: 'assistant' }); // OpenAI opens with the role
 
-    const started = this.now();
     let emitted = 0;
-    for (;;) {
-      if (ctx.aborted) return; // caller hung up — stop; skip the [DONE]/end writes
-      const r = await svc.jobService.getJobResult(job.id);
+    for await (const r of pollJobResult({
+      jobService: svc.jobService, jobId: job.id,
+      now: this.now, sleep: this.sleep, pollMs: this.pollMs, timeoutMs: this.timeoutMs,
+      isAborted: () => ctx.aborted,
+    })) {
+      if (r.status === 'timeout') {
+        // A stream flushed its headers long before this, so the diagnostics can
+        // only ride in the event body.
+        res.write('data: ' + JSON.stringify(timeoutBody(job.id, r.last, this.timeoutMs)) + '\n\n');
+        break;
+      }
       const chunks = r.chunks || [];
       for (; emitted < chunks.length; emitted++) {
         if (chunks[emitted].content) send({ content: chunks[emitted].content });
@@ -202,14 +212,8 @@ class OpenAiController {
         res.write('data: ' + JSON.stringify(nodeErrorBody(job.id, r)) + '\n\n');
         break;
       }
-      if (this.now() - started > this.timeoutMs) {
-        // A stream flushed its headers long before this, so the diagnostics can
-        // only ride in the event body.
-        res.write('data: ' + JSON.stringify(timeoutBody(job.id, r, this.timeoutMs)) + '\n\n');
-        break;
-      }
-      await this.sleep(this.pollMs);
     }
+    if (ctx.aborted) return; // caller hung up — skip the [DONE]/end writes
     res.write('data: [DONE]\n\n');
     res.end();
   }
@@ -233,19 +237,6 @@ class OpenAiController {
     });
     await svc.apiKeyService.recordUsage(key.hash, ctx.promptTokens + out);
   }
-}
-
-// The last user message's text — the single-string prompt kept on the job record.
-function lastUserText(messages) {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m && m.role === 'user' && m.content != null) return String(m.content);
-  }
-  return String(joinContent(messages)); // no user turn: fall back to all content
-}
-
-function joinContent(messages) {
-  return messages.map((m) => (m && m.content) || '').join('\n');
 }
 
 // The model to report back: what the node actually ran (from its final metrics),
@@ -280,16 +271,6 @@ function reasoningText(result) {
 function completionTokens(result) {
   if (result.metrics && Number.isFinite(result.metrics.totalTokens)) return result.metrics.totalTokens;
   return estimateTokens(result.result || '');
-}
-
-// A rough token count (~4 chars/token) — good enough for usage display/billing of
-// prompt tokens, which the node doesn't measure.
-function estimateTokens(text) {
-  return Math.ceil(String(text || '').length / 4);
-}
-
-function errorBody(message, type) {
-  return { error: { message, type, code: null } };
 }
 
 // A 504 that says what actually went wrong. "No node produced a result before

@@ -182,6 +182,20 @@ describe('JobService', () => {
       expect(await jobService.expireStalePending()).toEqual([]);
     });
 
+    it('does not fail a job that got claimed between the SELECT and the UPDATE', async () => {
+      // Simulate the race: the SELECT sees a stale pending job, but a node claims
+      // it before the guarded UPDATE runs, so 0 rows match and nothing is expired.
+      const fakeDb = {
+        query: async (sql) => {
+          if (/SELECT id, data FROM jobs WHERE status = 'pending'/.test(sql)) {
+            return { rows: [{ id: 'j1', data: { id: 'j1' } }] };
+          }
+          return { rows: [], rowCount: 0 }; // the guarded UPDATE matches nothing
+        }
+      };
+      expect(await new JobService(fakeDb).expireStalePending()).toEqual([]);
+    });
+
     it('lets the normal cleanup sweep collect what it expired', async () => {
       const job = await jobService.createJob({ prompt: 'p', userId: 'u' });
       await agePending(job.id, 6 * 60 * 1000);
@@ -420,6 +434,43 @@ describe('JobService', () => {
 
     it('returns an empty array when there are no in-flight jobs', async () => {
       expect(await jobService.checkTimeouts()).toEqual([]);
+    });
+
+    it('clears the timed-out attempt\'s chunks so a shorter re-run is not corrupted', async () => {
+      // The corruption vector: a timed-out attempt streamed two chunks; the re-run
+      // streams only one. If the old chunks survive, completeJob assembles both
+      // attempts and returns spliced garbage.
+      const job = await jobService.createJob({ prompt: 'p', userId: 'u' });
+      await jobService.assignJobsToNode('nodeA', 1);
+      await jobService.storeChunk(job.id, 'nodeA', { chunkIndex: 0, content: 'Hello ' });
+      await jobService.storeChunk(job.id, 'nodeA', { chunkIndex: 1, content: 'world!' });
+      await expireLock(job.id);
+
+      expect(await jobService.checkTimeouts()).toContain(job.id); // back to pending
+
+      // A second node picks it up and produces a shorter answer.
+      await jobService.assignJobsToNode('nodeB', 1);
+      await jobService.storeChunk(job.id, 'nodeB', { chunkIndex: 0, content: 'Hi' });
+      const completed = await jobService.completeJob(job.id, 'nodeB');
+      expect(completed.result).toBe('Hi'); // not 'Hiworld!' — the stale chunk is gone
+    });
+
+    it('does not requeue or clear chunks when the job left assigned/running before the UPDATE', async () => {
+      // Simulate the race: the SELECT sees a running job, but by the time the
+      // guarded UPDATE runs the node has completed it, so 0 rows match.
+      const calls = [];
+      const fakeDb = {
+        query: async (sql) => {
+          calls.push(sql);
+          if (/SELECT id, data, status/.test(sql)) {
+            return { rows: [{ id: 'j1', data: { id: 'j1' }, status: 'running', lock_expires_at: 1, heartbeat_at: null }] };
+          }
+          return { rows: [], rowCount: 0 }; // the guarded UPDATE matches nothing
+        }
+      };
+      const svc = new JobService(fakeDb);
+      expect(await svc.checkTimeouts()).toEqual([]);
+      expect(calls.some((s) => /DELETE FROM job_chunks/.test(s))).toBe(false);
     });
   });
 
