@@ -219,6 +219,12 @@ class OpenAiController {
       }
       served = r; // once the node reports metrics, chunks name the real model
       const chunks = r.chunks || [];
+      // A shrinking chunk list means the job was requeued and its abandoned
+      // attempt's partials were dropped, so the retry is rebuilding from idx 0.
+      // Rewind with it — holding the old high-water mark would skip everything
+      // the retry produces until it grew past the dead attempt's length, which
+      // reads to the caller as a stream that silently stops mid-answer.
+      if (chunks.length < emitted) emitted = 0;
       for (; emitted < chunks.length; emitted++) {
         if (chunks[emitted].content) send({ content: chunks[emitted].content });
       }

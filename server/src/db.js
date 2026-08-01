@@ -125,6 +125,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   target_node text,
   assigned_to text,
   lock_node text,
+  lock_token text,
   lock_expires_at bigint,
   heartbeat_at bigint
 );

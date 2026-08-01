@@ -234,6 +234,11 @@ class ChatController {
         return done();
       }
       const text = r.status === 'completed' ? (r.result || '') : (r.partial || '');
+      // Shrinking partial = the job was requeued and the abandoned attempt's
+      // chunks were dropped, so the retry is rebuilding from the start. Rewind
+      // with it, or the old cursor would swallow the retry's output until it
+      // passed the dead attempt's length and the reply would look truncated.
+      if (text.length < sent) sent = 0;
       if (text.length > sent) {
         if (!ctx.firstTokenAt) ctx.firstTokenAt = this.now();
         send({ delta: text.slice(sent) });
