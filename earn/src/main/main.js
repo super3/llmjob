@@ -288,6 +288,14 @@ async function startMining(settings) {
   }
   if (!binaryPath && bundled && fs.existsSync(bundled)) {
     binaryPath = bundled;
+    // Re-assert the execute bit rather than trust every packaging step between
+    // the build's chmod and this disk. Best effort: inside a mounted AppImage
+    // the resources are read-only and this simply fails, which is fine — the
+    // mode is then whatever squashfs recorded, and spawn reports EACCES if that
+    // turns out not to be executable.
+    if (process.platform !== 'win32') {
+      try { fs.chmodSync(bundled, 0o755); } catch (e) { /* read-only bundle */ }
+    }
     send('miner:engine', { phase: 'ready' });
     send('miner:log', { level: 'info', line: 'using bundled engine: ' + bundled });
   }

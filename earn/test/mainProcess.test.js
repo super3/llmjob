@@ -932,6 +932,26 @@ describe('mining', () => {
       .toHaveBeenCalledWith(expect.objectContaining({ binaryPath: legacy }));
   });
 
+  // The Linux AppImage now ships both engine builds (see the bundling step in
+  // .github/workflows/miner-build.yml), and one spawned straight out of the
+  // bundle has to be executable — so the mode is re-asserted rather than
+  // trusted. Inside the read-only AppImage mount the chmod fails, and that must
+  // not stop a rig whose binary squashfs already recorded as executable.
+  it('re-asserts +x on a bundled Linux engine and survives a read-only bundle', async () => {
+    const bundled = require('path').join('/res', 'engine', 'alpha-miner-1.8.8');
+    const ctx = await boot({ resourcesPath: '/res' });
+    ctx.fs.existsSync.mockImplementation((p) => p === bundled);
+    ctx.fs.chmodSync.mockImplementation(() => { throw new Error('EROFS: read-only file system'); });
+
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+
+    expect(ctx.fs.chmodSync).toHaveBeenCalledWith(bundled, 0o755);
+    expect(ctx.sent('miner:log').map((l) => l.line)).toContain('using bundled engine: ' + bundled);
+    expect(ctx.MinerManager.instances[0].start)
+      .toHaveBeenCalledWith(expect.objectContaining({ binaryPath: bundled }));
+  });
+
   it('falls through to the download when neither Windows bundle exists', async () => {
     const ctx = await boot({ platform: 'win32', resourcesPath: '/res' });
     ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
