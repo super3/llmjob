@@ -864,6 +864,31 @@ describe('mining', () => {
     expect(global.clearInterval).toHaveBeenCalledWith(reporter);
   });
 
+  // The reported failure: Node rejected the pool's certificate chain, and the
+  // log's manual-download hint named a URL but no destination, so the user's
+  // hand-downloaded engine sat in ~/Downloads and the next start failed the
+  // same way.
+  it('names the cause and the exact file to save when the certificate check fails', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        c.EngineManager.behavior.ensure = () => Promise.reject(Object.assign(
+          new Error('unable to verify the first certificate'),
+          { code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' },
+        ));
+      },
+    });
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+
+    expect(ctx.sent('miner:engine')).toContainEqual({
+      phase: 'error', message: 'The mining engine download failed an HTTPS certificate check — see Logs.',
+    });
+    const log = ctx.sent('miner:log').map((l) => l.line).join('\n');
+    expect(log).toMatch(/proxy, VPN or antivirus/);
+    expect(log).toContain('ca-certificates');
+    expect(log).toMatch(/Manual install: download \S*alpha-miner-1\.8\.\d and save it as \S*engine.alpha-miner,/);
+  });
+
   it('logs "engine found" when the engine is already installed', async () => {
     const ctx = await boot({
       before: (c) => { c.EngineManager.behavior.installed = true; },
@@ -905,6 +930,26 @@ describe('mining', () => {
     expect(ctx.EngineManager.instances).toHaveLength(0);
     expect(ctx.MinerManager.instances[0].start)
       .toHaveBeenCalledWith(expect.objectContaining({ binaryPath: legacy }));
+  });
+
+  // The Linux AppImage now ships both engine builds (see the bundling step in
+  // .github/workflows/miner-build.yml), and one spawned straight out of the
+  // bundle has to be executable — so the mode is re-asserted rather than
+  // trusted. Inside the read-only AppImage mount the chmod fails, and that must
+  // not stop a rig whose binary squashfs already recorded as executable.
+  it('re-asserts +x on a bundled Linux engine and survives a read-only bundle', async () => {
+    const bundled = require('path').join('/res', 'engine', 'alpha-miner-1.8.8');
+    const ctx = await boot({ resourcesPath: '/res' });
+    ctx.fs.existsSync.mockImplementation((p) => p === bundled);
+    ctx.fs.chmodSync.mockImplementation(() => { throw new Error('EROFS: read-only file system'); });
+
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+
+    expect(ctx.fs.chmodSync).toHaveBeenCalledWith(bundled, 0o755);
+    expect(ctx.sent('miner:log').map((l) => l.line)).toContain('using bundled engine: ' + bundled);
+    expect(ctx.MinerManager.instances[0].start)
+      .toHaveBeenCalledWith(expect.objectContaining({ binaryPath: bundled }));
   });
 
   it('falls through to the download when neither Windows bundle exists', async () => {

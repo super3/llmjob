@@ -40,4 +40,66 @@ function describeLaunchError(opts = {}) {
   };
 }
 
-module.exports = { AV_CODES, isLikelyAntivirusBlock, describeLaunchError };
+// ── Engine setup (download/install) failures ────────────────────────────────
+//
+// The other failure users report is the engine never getting installed at all,
+// and the dominant cause there is HTTPS trust: Node/Electron ships its own
+// compiled-in root list and, unlike a browser, does no AIA chasing, so a rig
+// dies with "unable to verify the first certificate" on a download the same
+// machine fetches fine in Chrome. Two setups produce it — a server that sends
+// its leaf without the intermediate, and a proxy/VPN/antivirus re-signing TLS
+// with a private root that lives in the OS store Node never reads.
+const TLS_TRUST_CODES = /UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT|SELF_SIGNED_CERT_IN_CHAIN|DEPTH_ZERO_SELF_SIGNED_CERT|CERT_UNTRUSTED/i;
+// Some layers hand the failure on as a plain Error with the OpenSSL reason in
+// the text and no code, so match the wording too.
+const TLS_TRUST_TEXT = /unable to verify the first certificate|self[- ]signed certificate|unable to get (local )?issuer certificate/i;
+
+// True when a download failed because the certificate chain could not be
+// verified — i.e. a missing trust anchor, which retrying with more anchors can
+// genuinely fix. Deliberately excludes expiry and hostname mismatches: those
+// are real rejections that no extra CA should paper over.
+function isTlsTrustError(err) {
+  if (!err) return false;
+  const code = String(err.code || err.errno || '');
+  return TLS_TRUST_CODES.test(code) || TLS_TRUST_TEXT.test(String(err.message || ''));
+}
+
+// Returns { tls, ui, log } for a failed engine install.
+//
+// `downloadUrl` is the exact artifact THIS rig needs (driver-picked build, not
+// the generic link) and `manualPath` the exact file it has to be saved as. Both
+// matter: the first user to hit this downloaded the engine by hand, left it in
+// ~/Downloads under the pool's unversioned name, and got the identical failure
+// on the next start — the old hint printed a bare URL and never said where the
+// file had to end up.
+function describeSetupError({ err, downloadUrl, manualPath } = {}) {
+  const detail = (err && err.message) ? err.message : String(err || 'unknown error');
+  const manual = downloadUrl
+    ? ' Manual install: download ' + downloadUrl
+      + (manualPath ? ' and save it as ' + manualPath : '') + ', then start again.'
+    : '';
+  if (isTlsTrustError(err)) {
+    return {
+      tls: true,
+      ui: 'The mining engine download failed an HTTPS certificate check — see Logs.',
+      log: 'engine setup failed: ' + detail
+        + ' — the pool download could not be verified over HTTPS, which usually means a proxy, VPN or'
+        + ' antivirus is intercepting TLS, or the system CA store is out of date'
+        + ' (Ubuntu/Debian: sudo apt install --reinstall ca-certificates).'
+        + manual,
+    };
+  }
+  return {
+    tls: false,
+    ui: 'Could not download or set up the mining engine — see Logs.',
+    log: 'engine setup failed: ' + detail + '.' + manual,
+  };
+}
+
+module.exports = {
+  AV_CODES,
+  isLikelyAntivirusBlock,
+  describeLaunchError,
+  isTlsTrustError,
+  describeSetupError,
+};

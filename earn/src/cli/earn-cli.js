@@ -27,7 +27,8 @@ const {
 const nodeStore = require('../main/nodeStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const { NETWORK, MINER, LLM, NODE, DEFAULTS, endpointFor, regionLabel, difficultyForCard } = require('../shared/config');
-const { ENGINE, pickEngineVersion, engineDownloadUrl } = require('../shared/engine');
+const { ENGINE, pickEngineVersion, engineDownloadUrl, manualEnginePath } = require('../shared/engine');
+const { describeSetupError } = require('../shared/engineError');
 const nodeProto = require('../shared/node');
 const { buildMinerReports } = require('../shared/minerReport');
 const { statsFilePayload } = require('../shared/statsFile');
@@ -107,6 +108,7 @@ async function resolveEngine(settings) {
       : '  (driver ' + driverMajor + ' < ' + ENGINE.minDriverMajor + ' — update it for the ~5% faster build)'));
 
   const dir = settings.engineDir || path.join(os.homedir(), '.local', 'share', 'llmjob-earn', 'engine');
+  const url = engineDownloadUrl(process.platform, settings.gpu, null, version);
   const engine = new EngineManager({
     dir,
     platform: process.platform,
@@ -121,11 +123,21 @@ async function resolveEngine(settings) {
   if (engine.isInstalled()) {
     log('engine found: ' + engine.binaryPath());
   } else {
-    log('downloading mining engine from ' + engineDownloadUrl(process.platform, settings.gpu, null, version) + ' …');
+    log('downloading mining engine from ' + url + ' …');
   }
-  const binaryPath = await engine.ensure((pct) => {
-    if (pct != null) process.stdout.write('\r  downloading… ' + pct + '%   ');
-  });
+  let binaryPath;
+  try {
+    binaryPath = await engine.ensure((pct) => {
+      if (pct != null) process.stdout.write('\r  downloading… ' + pct + '%   ');
+    });
+  } catch (e) {
+    // Carry the two things the failure message needs — which artifact this rig
+    // wants and where it has to be saved — out to the reporting site, which has
+    // neither the driver-picked version nor the engine dir.
+    e.downloadUrl = url;
+    e.manualPath = manualEnginePath(dir, process.platform);
+    throw e;
+  }
   process.stdout.write('\n');
   log('engine ready: ' + binaryPath);
   return binaryPath;
@@ -636,8 +648,11 @@ async function run(argv) {
     try {
       binaryPath = await resolveEngine(settings);
     } catch (e) {
-      log('engine setup failed: ' + e.message, process.stderr);
-      log('manual download: ' + MINER.downloadUrl, process.stderr);
+      log(describeSetupError({
+        err: e,
+        downloadUrl: e.downloadUrl || MINER.downloadUrl,
+        manualPath: e.manualPath,
+      }).log, process.stderr);
       return 1;
     }
 

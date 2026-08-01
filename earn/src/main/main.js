@@ -37,9 +37,11 @@ const { JobWorker } = require('./jobWorker');
 const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
 const { buildBalanceUrl, parseBalance, buildMdlBalanceUrl, parseMdlBalance } = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
-const { bundledEnginePath, pickEngineVersion, ENGINE } = require('../shared/engine');
+const {
+  bundledEnginePath, pickEngineVersion, engineDownloadUrl, manualEnginePath, ENGINE,
+} = require('../shared/engine');
 const { formatUpdate } = require('../shared/updateStatus');
-const { describeLaunchError } = require('../shared/engineError');
+const { describeLaunchError, describeSetupError } = require('../shared/engineError');
 const { pickGpu } = require('../shared/gpu');
 const { buildMinerReports } = require('../shared/minerReport');
 const { runtimeCopyPlan } = require('../shared/llmRuntime');
@@ -286,12 +288,21 @@ async function startMining(settings) {
   }
   if (!binaryPath && bundled && fs.existsSync(bundled)) {
     binaryPath = bundled;
+    // Re-assert the execute bit rather than trust every packaging step between
+    // the build's chmod and this disk. Best effort: inside a mounted AppImage
+    // the resources are read-only and this simply fails, which is fine — the
+    // mode is then whatever squashfs recorded, and spawn reports EACCES if that
+    // turns out not to be executable.
+    if (process.platform !== 'win32') {
+      try { fs.chmodSync(bundled, 0o755); } catch (e) { /* read-only bundle */ }
+    }
     send('miner:engine', { phase: 'ready' });
     send('miner:log', { level: 'info', line: 'using bundled engine: ' + bundled });
   }
   if (!binaryPath) {
+    const engineDir = path.join(app.getPath('userData'), 'engine');
     const engine = new EngineManager({
-      dir: path.join(app.getPath('userData'), 'engine'),
+      dir: engineDir,
       platform: process.platform,
       gpu: settings.gpu,
       version,
@@ -300,20 +311,29 @@ async function startMining(settings) {
       extract: extractZip,
       chmod: fs.chmodSync,
     });
+    // The URL this rig actually needs — the driver-picked build, not the pool's
+    // generic link. A manual-install hint that names a different artifact than
+    // the one the cache is waiting for sends users in circles.
+    const url = engineDownloadUrl(process.platform, settings.gpu, null, version);
     try {
       if (engine.isInstalled()) {
         send('miner:log', { level: 'info', line: 'engine found: ' + engine.binaryPath() });
       } else {
         send('miner:engine', { phase: 'downloading' });
-        send('miner:log', { level: 'info', line: 'downloading mining engine from ' + MINER.downloadUrl + ' …' });
+        send('miner:log', { level: 'info', line: 'downloading mining engine from ' + url + ' …' });
       }
       binaryPath = await engine.ensure();
       send('miner:engine', { phase: 'ready' });
       send('miner:log', { level: 'info', line: 'engine ready: ' + binaryPath });
     } catch (e) {
       binaryPath = undefined;
-      send('miner:engine', { phase: 'error', message: 'Could not download or set up the mining engine — see Logs.' });
-      send('miner:log', { level: 'error', line: 'engine setup failed: ' + e.message + '. Manual download: ' + MINER.downloadUrl });
+      const d = describeSetupError({
+        err: e,
+        downloadUrl: url,
+        manualPath: manualEnginePath(engineDir, process.platform),
+      });
+      send('miner:engine', { phase: 'error', message: d.ui });
+      send('miner:log', { level: 'error', line: d.log });
     }
   }
 

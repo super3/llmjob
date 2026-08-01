@@ -10,8 +10,10 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const https = require('https');
+const tls = require('tls');
 const { execFile } = require('child_process');
 const { progressPercent } = require('../shared/engine');
+const { isTlsTrustError } = require('../shared/engineError');
 const { parseChatStream } = require('../shared/llmChat');
 
 // Minimal JSON POST → { status, data, raw }. Resolves for ANY HTTP status
@@ -67,6 +69,125 @@ function getJson(url, opts = {}) {
   });
 }
 
+// ── HTTPS trust recovery ────────────────────────────────────────────────────
+//
+// Node verifies against its own compiled-in Mozilla root list and, unlike every
+// browser, never chases the AIA pointer to fetch a missing intermediate. So two
+// ordinary rig setups fail a download that the same machine fetches fine in
+// Chrome, both surfacing as `unable to verify the first certificate`:
+//
+//   • the server presents its leaf without the intermediate, leaving the caller
+//     to find it (a server misconfiguration browsers paper over), and
+//   • a proxy, VPN or antivirus TLS-scanner re-signs the connection with a
+//     private root that is installed in the OS trust store — which Node ignores.
+//
+// Both are fixable without weakening anything: retry with the OS trust store and
+// with the certificate the server itself points at added to the anchors. The
+// retry still verifies in full, so a fetched intermediate only helps if it
+// chains to a root the machine already trusts; nothing here can make an
+// untrusted chain pass. Disabling rejectUnauthorized would "fix" the same
+// symptom by accepting any MITM handing us a binary we then execute — never do
+// that here.
+
+// Where distributions keep the OS trust store. Read as text and appended to
+// Node's own roots; a path that doesn't exist on this distro is simply skipped.
+const SYSTEM_CA_FILES = [
+  '/etc/ssl/certs/ca-certificates.crt', // Debian / Ubuntu
+  '/etc/pki/tls/certs/ca-bundle.crt',   // RHEL / Fedora
+  '/etc/ssl/ca-bundle.pem',             // SUSE
+  '/etc/ssl/cert.pem',                  // Alpine, macOS OpenSSL builds
+];
+
+const CERT_FETCH_TIMEOUT_MS = 10000;
+const CERT_MAX_BYTES = 65536; // a certificate is a couple of KB; more is junk
+
+function systemCaCerts() {
+  const files = SYSTEM_CA_FILES.slice();
+  if (process.env.NODE_EXTRA_CA_CERTS) files.unshift(process.env.NODE_EXTRA_CA_CERTS);
+  const out = [];
+  for (const f of files) {
+    try { out.push(fs.readFileSync(f, 'utf8')); } catch (e) { /* not on this system */ }
+  }
+  return out;
+}
+
+// The CA-Issuers URL advertised by the top-most certificate the server actually
+// presented, or null. The probe handshake runs unverified on purpose: it sends
+// no request and trusts no response, it only READS the offered chain so we know
+// which issuer to go and fetch. Whatever it yields is a candidate that the real,
+// fully verified download must still validate against a trusted root.
+function peerIssuerUrl(url) {
+  return new Promise((resolve) => {
+    let u;
+    try { u = new URL(url); } catch (e) { return resolve(null); }
+    const done = (v) => { socket.destroy(); resolve(v); };
+    const socket = tls.connect({
+      host: u.hostname,
+      port: u.port || 443,
+      servername: u.hostname,
+      rejectUnauthorized: false,
+      timeout: CERT_FETCH_TIMEOUT_MS,
+    }, () => {
+      let cert = socket.getPeerCertificate(true);
+      // Walk to the end of the presented chain — the certificate whose issuer is
+      // the one the rig is missing. Bounded so a server looping its own chain
+      // back on itself can't spin here.
+      for (let i = 0; i < 8 && cert && cert.issuerCertificate && cert.issuerCertificate !== cert; i++) {
+        cert = cert.issuerCertificate;
+      }
+      const uris = (cert && cert.infoAccess && cert.infoAccess['CA Issuers - URI']) || [];
+      done(uris[0] || null);
+    });
+    socket.on('error', () => done(null));
+    socket.on('timeout', () => done(null));
+  });
+}
+
+// Fetch a certificate from an AIA CA-Issuers URL (published as raw DER, though
+// PEM is accepted). Never rejects — a null just means no recovery from here.
+function fetchCert(url) {
+  return new Promise((resolve) => {
+    let lib;
+    try { lib = new URL(url).protocol === 'https:' ? https : http; } catch (e) { return resolve(null); }
+    const req = lib.get(url, { timeout: CERT_FETCH_TIMEOUT_MS }, (res) => {
+      if (res.statusCode !== 200) { res.resume(); return resolve(null); }
+      const chunks = [];
+      let len = 0;
+      res.on('data', (c) => {
+        len += c.length;
+        if (len > CERT_MAX_BYTES) { req.destroy(); return resolve(null); }
+        chunks.push(c);
+      });
+      res.on('end', () => resolve(certToPem(Buffer.concat(chunks))));
+      res.on('error', () => resolve(null));
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+  });
+}
+
+function certToPem(buf) {
+  if (!buf.length) return null;
+  const text = buf.toString('utf8');
+  if (text.includes('-----BEGIN CERTIFICATE-----')) return text;
+  return '-----BEGIN CERTIFICATE-----\n'
+    + buf.toString('base64').match(/.{1,64}/g).join('\n')
+    + '\n-----END CERTIFICATE-----\n';
+}
+
+// Node's roots plus everything we could scrape together for `url`, or null when
+// there is nothing new to add (retrying with the same anchors would just fail
+// again).
+async function trustRecoveryCa(url) {
+  const extra = systemCaCerts();
+  const issuerUrl = await peerIssuerUrl(url);
+  if (issuerUrl) {
+    const pem = await fetchCert(issuerUrl);
+    if (pem) extra.push(pem);
+  }
+  return extra.length ? tls.rootCertificates.concat(extra) : null;
+}
+
 // Serial number for scratch download paths — see `part` in downloadFile.
 let partSeq = 0;
 
@@ -102,30 +223,50 @@ const DOWNLOAD_RETRY_MS = 2000;
 
 function downloadFile(url, dest, onProgress, redirects) {
   const part = dest + '.' + process.pid + '.' + (partSeq = (partSeq + 1) % 1e6) + '.part';
-  return downloadAttempt(url, dest, part, onProgress, redirects || 0, 1);
+  return downloadAttempt(url, dest, part, onProgress, redirects || 0, 1, null)
+    .catch(async (err) => {
+      // Certificate chain we couldn't verify: gather more trust anchors (OS
+      // store + the issuer the server points at) and try once more, still fully
+      // verified. Anything else — and a second failure — is the caller's.
+      if (!isTlsTrustError(err)) throw err;
+      // err.url is where the handshake actually failed, which after a redirect
+      // is not the URL we asked for.
+      const ca = await trustRecoveryCa(err.url);
+      if (!ca) throw err;
+      return downloadAttempt(url, dest, part, onProgress, redirects || 0, 1, ca);
+    });
 }
 
 // One HTTP attempt for `url` into `part`. On a transport failure it waits and
-// re-enters itself, until DOWNLOAD_ATTEMPTS is reached.
-function downloadAttempt(url, dest, part, onProgress, redirects, attempt) {
+// re-enters itself, until DOWNLOAD_ATTEMPTS is reached. `ca` overrides the trust
+// anchors (see downloadFile's recovery pass); null means Node's defaults.
+function downloadAttempt(url, dest, part, onProgress, redirects, attempt, ca) {
   return new Promise((resolve, reject) => {
     if (redirects > 5) return reject(new Error('too many redirects'));
 
     const retryOrFail = (err) => {
-      if (attempt >= DOWNLOAD_ATTEMPTS) { fs.unlink(part, () => {}); return reject(err); }
+      // Remember where it failed so the recovery pass probes the host that
+      // actually rejected us, which after a redirect isn't the one we asked for.
+      err.url = url;
+      // A trust failure is deterministic — three more identical handshakes only
+      // delay the recovery pass by the backoff.
+      if (attempt >= DOWNLOAD_ATTEMPTS || isTlsTrustError(err)) {
+        fs.unlink(part, () => {});
+        return reject(err);
+      }
       const timer = setTimeout(() => {
-        downloadAttempt(url, dest, part, onProgress, redirects, attempt + 1).then(resolve, reject);
+        downloadAttempt(url, dest, part, onProgress, redirects, attempt + 1, ca).then(resolve, reject);
       }, DOWNLOAD_RETRY_MS * attempt);
       if (timer.unref) timer.unref();
     };
 
     const lib = url.startsWith('https') ? https : http;
-    const req = lib.get(url, (res) => {
+    const onResponse = (res) => {
       const code = res.statusCode || 0;
       if (code >= 300 && code < 400 && res.headers.location) {
         res.resume();
         const next = new URL(res.headers.location, url).toString();
-        return resolve(downloadAttempt(next, dest, part, onProgress, redirects + 1, attempt));
+        return resolve(downloadAttempt(next, dest, part, onProgress, redirects + 1, attempt, ca));
       }
       if (code !== 200) {
         res.resume();
@@ -145,7 +286,8 @@ function downloadAttempt(url, dest, part, onProgress, redirects, attempt) {
         resolve(dest);
       }));
       out.on('error', fail);
-    });
+    };
+    const req = ca ? lib.get(url, { ca }, onResponse) : lib.get(url, onResponse);
     req.setTimeout(60000, () => req.destroy(new Error('download stalled (no data for 60s)')));
     req.on('error', retryOrFail);
   });
@@ -246,4 +388,11 @@ function extractLlamaZip(zipPath, dest, hint) {
   });
 }
 
-module.exports = { postJson, getJson, downloadFile, streamChatCompletion, extractLlamaZip };
+module.exports = {
+  postJson,
+  getJson,
+  downloadFile,
+  trustRecoveryCa,
+  streamChatCompletion,
+  extractLlamaZip,
+};

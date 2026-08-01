@@ -4,10 +4,14 @@ jest.mock('http');
 jest.mock('https');
 jest.mock('fs');
 jest.mock('child_process');
+// Hand-written: the automock would drop rootCertificates, which the recovery
+// pass concatenates onto.
+jest.mock('tls', () => ({ rootCertificates: ['ROOT'], connect: jest.fn() }));
 
 const http = require('http');
 const https = require('https');
 const fs = require('fs');
+const tls = require('tls');
 const { execFile } = require('child_process');
 const { EventEmitter } = require('events');
 const io = require('../src/main/io');
@@ -586,5 +590,238 @@ describe('extractLlamaZip', () => {
     execFile.mockImplementation((tool, args, opts, cb) => cb(null));
     fs.existsSync.mockReturnValue(false);
     await expect(io.extractLlamaZip('/tmp/a.zip', '/opt/x')).rejects.toThrow('was not found in the downloaded archive');
+  });
+});
+
+// ── HTTPS trust recovery ────────────────────────────────────────────────────
+// The rig that prompted this printed `engine setup failed: unable to verify the
+// first certificate` and never got an engine. Node trusts only its compiled-in
+// roots and never chases the AIA pointer, so a server that omits its
+// intermediate — or a proxy/antivirus re-signing TLS with a root the OS trusts
+// but Node can't see — kills a download the same machine makes fine in a
+// browser. Recovery re-tries with more anchors; it never stops verifying.
+describe('trustRecoveryCa', () => {
+  const AIA = 'http://ca.example/issuer.cer';
+
+  function fakeSocket() {
+    const s = new EventEmitter();
+    s.getPeerCertificate = jest.fn(() => ({}));
+    s.destroy = jest.fn();
+    return s;
+  }
+
+  // tls.connect calls back only once the handshake lands, i.e. after the caller
+  // has the socket in hand — mirror that or the callback sees no socket.
+  function wireTls(setup) {
+    tls.connect.mockImplementation((opts, cb) => {
+      const s = fakeSocket();
+      setImmediate(() => setup(s, cb, opts));
+      return s;
+    });
+  }
+
+  // The certificate chain the server presented, leaf first.
+  function wireChain(leaf) {
+    wireTls((s, cb) => { s.getPeerCertificate.mockReturnValue(leaf); cb(); });
+  }
+
+  function certWithAia(uri) {
+    return { infoAccess: { 'CA Issuers - URI': [uri] } };
+  }
+
+  // One response for the AIA fetch.
+  function wireCertFetch(lib, drive) {
+    lib.get = jest.fn((url, opts, cb) => {
+      const req = fakeReq();
+      setImmediate(() => drive(req, cb, url));
+      return req;
+    });
+  }
+
+  beforeEach(() => {
+    // No OS trust store unless a test puts one there.
+    fs.readFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    tls.connect.mockReset();
+    wireTls((s) => s.emit('error', new Error('handshake failed')));
+    delete process.env.NODE_EXTRA_CA_CERTS;
+  });
+
+  it('adds the OS trust store, which Node otherwise ignores', async () => {
+    // Exactly the corporate-proxy / antivirus-TLS-scanner case: the root is
+    // installed system-wide, so the user's browser is happy and Node is not.
+    fs.readFileSync.mockImplementation((p) => {
+      if (p !== '/etc/ssl/certs/ca-certificates.crt') throw new Error('ENOENT');
+      return 'UBUNTU-BUNDLE';
+    });
+    await expect(io.trustRecoveryCa('https://host/f.bin')).resolves.toEqual(['ROOT', 'UBUNTU-BUNDLE']);
+  });
+
+  it('honours NODE_EXTRA_CA_CERTS', async () => {
+    process.env.NODE_EXTRA_CA_CERTS = '/opt/corp.pem';
+    fs.readFileSync.mockImplementation((p) => {
+      if (p !== '/opt/corp.pem') throw new Error('ENOENT');
+      return 'CORP';
+    });
+    await expect(io.trustRecoveryCa('https://host/f.bin')).resolves.toEqual(['ROOT', 'CORP']);
+  });
+
+  it('is null when there is nothing new to trust — retrying would just fail again', async () => {
+    await expect(io.trustRecoveryCa('https://host/f.bin')).resolves.toBeNull();
+  });
+
+  it('fetches the intermediate the server points at and PEM-wraps the DER', async () => {
+    wireChain(certWithAia(AIA));
+    wireCertFetch(http, (req, cb) => {
+      const res = fakeRes({ statusCode: 200 });
+      cb(res);
+      res.emit('data', Buffer.from('DERBYTES'));
+      res.emit('end');
+    });
+
+    const ca = await io.trustRecoveryCa('https://host/f.bin');
+    expect(ca).toHaveLength(2);
+    expect(ca[1]).toBe('-----BEGIN CERTIFICATE-----\n'
+      + Buffer.from('DERBYTES').toString('base64') + '\n-----END CERTIFICATE-----\n');
+    // The probe must not have been pointed anywhere but the failing host.
+    expect(tls.connect.mock.calls[0][0]).toMatchObject({ host: 'host', port: 443, servername: 'host' });
+  });
+
+  it('walks to the top of the presented chain and takes its issuer pointer', async () => {
+    // The leaf's own AIA is not the missing link — the certificate at the end of
+    // what the server actually sent is.
+    const root = certWithAia(AIA);
+    root.issuerCertificate = root; // self-signed: the walk stops here
+    wireChain({ infoAccess: { 'CA Issuers - URI': ['http://ca.example/leaf.cer'] }, issuerCertificate: root });
+    wireCertFetch(http, (req, cb) => {
+      const res = fakeRes({ statusCode: 200 });
+      cb(res);
+      res.emit('data', Buffer.from('X'));
+      res.emit('end');
+    });
+
+    await io.trustRecoveryCa('https://host/f.bin');
+    expect(http.get.mock.calls[0][0]).toBe(AIA);
+  });
+
+  it('does not spin on a chain that loops back on itself', async () => {
+    const a = {};
+    const b = { issuerCertificate: a };
+    a.issuerCertificate = b;
+    wireChain(a);
+    await expect(io.trustRecoveryCa('https://host/f.bin')).resolves.toBeNull();
+  });
+
+  it('passes a PEM body straight through and uses https for an https AIA URL', async () => {
+    wireChain(certWithAia('https://ca.example/issuer.pem'));
+    wireCertFetch(https, (req, cb) => {
+      const res = fakeRes({ statusCode: 200 });
+      cb(res);
+      res.emit('data', Buffer.from('-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----\n'));
+      res.emit('end');
+    });
+    const ca = await io.trustRecoveryCa('https://host/f.bin');
+    expect(ca[1]).toContain('abc');
+  });
+
+  it.each([
+    ['a certificate with no AIA extension at all', {}],
+    ['an AIA extension with no CA-Issuers entry', { infoAccess: {} }],
+    ['an empty CA-Issuers list', { infoAccess: { 'CA Issuers - URI': [] } }],
+    ['no peer certificate', null],
+  ])('gives up quietly on %s', async (_label, leaf) => {
+    wireChain(leaf);
+    await expect(io.trustRecoveryCa('https://host/f.bin')).resolves.toBeNull();
+  });
+
+  it('gives up quietly when the probe handshake times out', async () => {
+    wireTls((s) => s.emit('timeout'));
+    await expect(io.trustRecoveryCa('https://host/f.bin')).resolves.toBeNull();
+  });
+
+  it('gives up quietly on an unparseable URL', async () => {
+    await expect(io.trustRecoveryCa('not a url')).resolves.toBeNull();
+    expect(tls.connect).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a non-200 from the CA', (req, cb) => { cb(fakeRes({ statusCode: 404 })); }],
+    ['an empty body', (req, cb) => { const r = fakeRes({ statusCode: 200 }); cb(r); r.emit('end'); }],
+    ['a transport error', (req) => { req.emit('error', new Error('reset')); }],
+    ['a timeout', (req) => { req.emit('timeout'); }],
+    ['a stream error', (req, cb) => { const r = fakeRes({ statusCode: 200 }); cb(r); r.emit('error', new Error('boom')); }],
+    ['an absurdly large body', (req, cb) => {
+      const r = fakeRes({ statusCode: 200 });
+      cb(r);
+      r.emit('data', Buffer.alloc(70000));
+    }],
+    ['an unparseable AIA URL', null],
+  ])('gives up quietly on %s', async (label, drive) => {
+    wireChain(certWithAia(drive ? AIA : '::not a url::'));
+    if (drive) wireCertFetch(http, drive);
+    await expect(io.trustRecoveryCa('https://host/f.bin')).resolves.toBeNull();
+  });
+});
+
+describe('downloadFile trust recovery', () => {
+  const TLS_ERR = () => Object.assign(new Error('unable to verify the first certificate'),
+    { code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' });
+
+  // Drive each https.get call with its own handler.
+  function wireGets(handlers) {
+    let i = 0;
+    https.get = jest.fn((url, a, b) => {
+      const cb = typeof a === 'function' ? a : b;
+      const req = fakeReq();
+      const h = handlers[Math.min(i, handlers.length - 1)];
+      i++;
+      h(req, cb);
+      return req;
+    });
+  }
+
+  beforeEach(() => {
+    fs.readFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    tls.connect.mockReset();
+    tls.connect.mockImplementation(() => {
+      const s = new EventEmitter();
+      s.destroy = jest.fn();
+      setImmediate(() => s.emit('error', new Error('no probe')));
+      return s;
+    });
+  });
+
+  it('retries once with the recovered anchors and still verifies', async () => {
+    fs.readFileSync.mockImplementation((p) => {
+      if (p !== '/etc/ssl/certs/ca-certificates.crt') throw new Error('ENOENT');
+      return 'UBUNTU-BUNDLE';
+    });
+    const out = new EventEmitter();
+    out.close = (cb) => cb();
+    out.destroy = jest.fn();
+    fs.createWriteStream.mockReturnValue(out);
+    fs.renameSync.mockImplementation(() => {});
+    wireGets([
+      (req) => setImmediate(() => req.emit('error', TLS_ERR())),
+      (req, cb) => { cb(fakeRes({ statusCode: 200, headers: {} })); setImmediate(() => out.emit('finish')); },
+    ]);
+
+    await expect(io.downloadFile('https://host/f.bin', '/tmp/f.bin')).resolves.toBe('/tmp/f.bin');
+    // Two calls, not five: a trust failure is deterministic, so the four-attempt
+    // backoff is skipped in favour of going straight to recovery.
+    expect(https.get).toHaveBeenCalledTimes(2);
+    expect(https.get.mock.calls[1][1]).toEqual({ ca: ['ROOT', 'UBUNTU-BUNDLE'] });
+  });
+
+  it('reports the certificate failure when there is nothing left to try', async () => {
+    wireGets([(req) => setImmediate(() => req.emit('error', TLS_ERR()))]);
+    await expect(io.downloadFile('https://host/f.bin', '/tmp/f.bin'))
+      .rejects.toThrow('unable to verify the first certificate');
+    expect(https.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves other failures to the existing retry path', async () => {
+    wireGets([(req, cb) => { cb(fakeRes({ statusCode: 404, headers: {} })); }]);
+    await expect(io.downloadFile('https://host/f.bin', '/tmp/f.bin')).rejects.toThrow('HTTP 404');
+    expect(tls.connect).not.toHaveBeenCalled();
   });
 });

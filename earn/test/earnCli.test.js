@@ -67,6 +67,7 @@ jest.mock('../src/main/engineManager', () => {
       this.isInstalled = jest.fn(() => EngineManager.installed);
       this.binaryPath = jest.fn(() => '/cache/alpha-miner');
       this.ensure = jest.fn(async (onPct) => {
+        if (EngineManager.ensureError) throw EngineManager.ensureError;
         if (onPct) { onPct(50); onPct(null); }
         return '/cache/alpha-miner';
       });
@@ -75,6 +76,7 @@ jest.mock('../src/main/engineManager', () => {
   }
   EngineManager.instances = [];
   EngineManager.installed = false;
+  EngineManager.ensureError = null;
   return { EngineManager };
 });
 jest.mock('../src/main/llmManager', () => {
@@ -140,6 +142,7 @@ const pkg = require('../package.json');
 const { NETWORK, NODE, LLM } = require('../src/shared/config');
 const nodeProto = require('../src/shared/node');
 const { ALL_LAYERS } = require('../src/shared/vram');
+const engine = require('../src/shared/engine');
 
 const ADDR = 'prl1p' + 'a'.repeat(30);
 const MDL = 'mdl1p' + 'b'.repeat(30);
@@ -484,7 +487,28 @@ describe('mining', () => {
     m.fs.existsSync.mockReturnValue(false);
     await expect(m.run(['-a', ADDR, '--binary', '/nope', '--no-update'])).resolves.toBe(1);
     expect(allErr()).toContain('engine setup failed: engine binary not found: /nope');
-    expect(allErr()).toContain('manual download:');
+    expect(allErr()).toContain('Manual install: download https://pearl.alphapool.tech/downloads/alpha-miner');
+  });
+
+  // The rig in the bug report died here: Node rejected the pool's certificate
+  // chain, the log offered a bare URL, and the user's hand-downloaded engine sat
+  // in ~/Downloads doing nothing. The message has to name the exact build this
+  // rig picked and the exact path it must be saved as.
+  test('a certificate failure explains itself and names the file to save', async () => {
+    const m = load();
+    m.EngineManager.ensureError = Object.assign(
+      new Error('unable to verify the first certificate'),
+      { code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' },
+    );
+    await expect(m.run(['-a', ADDR, '--engine-dir', '/rig/engine', '--no-update'])).resolves.toBe(1);
+    expect(allErr()).toContain('unable to verify the first certificate');
+    expect(allErr()).toMatch(/proxy, VPN or antivirus/);
+    // Both halves are platform-shaped (a zip and an .exe on Windows), and the
+    // point is that they match what THIS rig's cache is waiting for — so derive
+    // them the way the code does rather than pinning the Linux names.
+    expect(allErr()).toContain('Manual install: download '
+      + engine.engineDownloadUrl(process.platform, undefined, null, engine.ENGINE.preferred));
+    expect(allErr()).toContain('save it as ' + engine.manualEnginePath('/rig/engine', process.platform));
   });
 
   test('unknown driver picks the compatible build; no-report; hostname fallback', async () => {
