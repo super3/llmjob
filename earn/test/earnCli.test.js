@@ -67,6 +67,7 @@ jest.mock('../src/main/engineManager', () => {
       this.isInstalled = jest.fn(() => EngineManager.installed);
       this.binaryPath = jest.fn(() => '/cache/alpha-miner');
       this.ensure = jest.fn(async (onPct) => {
+        if (EngineManager.ensureError) throw EngineManager.ensureError;
         if (onPct) { onPct(50); onPct(null); }
         return '/cache/alpha-miner';
       });
@@ -75,6 +76,7 @@ jest.mock('../src/main/engineManager', () => {
   }
   EngineManager.instances = [];
   EngineManager.installed = false;
+  EngineManager.ensureError = null;
   return { EngineManager };
 });
 jest.mock('../src/main/llmManager', () => {
@@ -484,7 +486,24 @@ describe('mining', () => {
     m.fs.existsSync.mockReturnValue(false);
     await expect(m.run(['-a', ADDR, '--binary', '/nope', '--no-update'])).resolves.toBe(1);
     expect(allErr()).toContain('engine setup failed: engine binary not found: /nope');
-    expect(allErr()).toContain('manual download:');
+    expect(allErr()).toContain('Manual install: download https://pearl.alphapool.tech/downloads/alpha-miner');
+  });
+
+  // The rig in the bug report died here: Node rejected the pool's certificate
+  // chain, the log offered a bare URL, and the user's hand-downloaded engine sat
+  // in ~/Downloads doing nothing. The message has to name the exact build this
+  // rig picked and the exact path it must be saved as.
+  test('a certificate failure explains itself and names the file to save', async () => {
+    const m = load();
+    m.EngineManager.ensureError = Object.assign(
+      new Error('unable to verify the first certificate'),
+      { code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' },
+    );
+    await expect(m.run(['-a', ADDR, '--engine-dir', '/rig/engine', '--no-update'])).resolves.toBe(1);
+    expect(allErr()).toContain('unable to verify the first certificate');
+    expect(allErr()).toMatch(/proxy, VPN or antivirus/);
+    expect(allErr()).toContain('Manual install: download https://pearl.alphapool.tech/downloads/alpha-miner-1.8.8');
+    expect(allErr()).toContain('save it as /rig/engine/alpha-miner');
   });
 
   test('unknown driver picks the compatible build; no-report; hostname fallback', async () => {

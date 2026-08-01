@@ -101,6 +101,20 @@ function enginePath(dir, platform, gpu, version) {
   return path.join(dir, engineBinaryName(platform, gpu, version));
 }
 
+// The name a hand-downloaded engine lands under. The pool's documented link is
+// the unversioned /downloads/alpha-miner, so a browser saves exactly this — and
+// a user who fetches it because the in-app download failed (blocked HTTPS
+// interception, offline rig) drops that file into the engine dir. It is NOT the
+// versioned cache name, so nothing picks it up on its own; EngineManager looks
+// for it explicitly and installs it (see adoptManualDownload).
+function manualEngineName(platform) {
+  return platform === 'win32' ? 'alpha-miner.exe' : 'alpha-miner';
+}
+
+function manualEnginePath(dir, platform) {
+  return path.join(dir, manualEngineName(platform));
+}
+
 // Absolute path to the engine bundled with a packaged app. electron-builder
 // copies vendor/engine → <resources>/engine (see build.extraResources), so at
 // runtime it lives under process.resourcesPath. Returns null when no resources
@@ -130,6 +144,8 @@ module.exports = {
   isArchiveUrl,
   looksLikeArchive,
   enginePath,
+  manualEngineName,
+  manualEnginePath,
   bundledEnginePath,
   progressPercent,
 };

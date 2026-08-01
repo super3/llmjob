@@ -864,6 +864,31 @@ describe('mining', () => {
     expect(global.clearInterval).toHaveBeenCalledWith(reporter);
   });
 
+  // The reported failure: Node rejected the pool's certificate chain, and the
+  // log's manual-download hint named a URL but no destination, so the user's
+  // hand-downloaded engine sat in ~/Downloads and the next start failed the
+  // same way.
+  it('names the cause and the exact file to save when the certificate check fails', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        c.EngineManager.behavior.ensure = () => Promise.reject(Object.assign(
+          new Error('unable to verify the first certificate'),
+          { code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' },
+        ));
+      },
+    });
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+
+    expect(ctx.sent('miner:engine')).toContainEqual({
+      phase: 'error', message: 'The mining engine download failed an HTTPS certificate check — see Logs.',
+    });
+    const log = ctx.sent('miner:log').map((l) => l.line).join('\n');
+    expect(log).toMatch(/proxy, VPN or antivirus/);
+    expect(log).toContain('ca-certificates');
+    expect(log).toMatch(/Manual install: download \S*alpha-miner-1\.8\.\d and save it as \S*engine.alpha-miner,/);
+  });
+
   it('logs "engine found" when the engine is already installed', async () => {
     const ctx = await boot({
       before: (c) => { c.EngineManager.behavior.installed = true; },

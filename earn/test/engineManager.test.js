@@ -100,3 +100,59 @@ describe('EngineManager', () => {
     expect(download).toHaveBeenCalledWith(expect.stringMatching(/alpha-miner-1\.8\.8$/), dest, undefined);
   });
 });
+
+// A user whose download fails fetches the engine in a browser — which saves it
+// under the pool's own name, never the versioned one the cache looks for. The
+// app used to ignore that file and re-run the download that just failed, so
+// "I downloaded it manually" changed nothing.
+describe('EngineManager manual install', () => {
+  function makeFsAt(present) {
+    return {
+      existsSync: jest.fn((p) => p === present),
+      mkdirSync: jest.fn(),
+      unlinkSync: jest.fn(),
+      renameSync: jest.fn(),
+    };
+  }
+
+  test('adopts a hand-downloaded alpha-miner instead of hitting the network', async () => {
+    const manual = path.join('/cache', 'alpha-miner');
+    const fs = makeFsAt(manual);
+    const download = jest.fn();
+    const chmod = jest.fn();
+    const mgr = new EngineManager({ dir: '/cache', platform: 'linux', version: '1.8.8', fs, download, chmod });
+    const dest = path.join('/cache', 'alpha-miner-1.8.8');
+
+    await expect(mgr.ensure()).resolves.toBe(dest);
+    expect(download).not.toHaveBeenCalled();
+    expect(fs.renameSync).toHaveBeenCalledWith(manual, dest);
+    // Renaming leaves it 0o644 like any browser download would.
+    expect(chmod).toHaveBeenCalledWith(dest, 0o755);
+  });
+
+  test('extracts a hand-downloaded Windows zip and leaves the user\'s file alone', async () => {
+    const zip = path.join('/cache', 'AlphaMiner-Pearl-Windows.zip');
+    const fs = makeFsAt(zip);
+    const download = jest.fn();
+    const extract = jest.fn(() => Promise.resolve());
+    const mgr = new EngineManager({ dir: '/cache', platform: 'win32', version: '1.8.6', fs, download, extract });
+    const dest = path.join('/cache', 'alpha-miner-windows-1.8.6.exe');
+
+    await expect(mgr.ensure()).resolves.toBe(dest);
+    expect(download).not.toHaveBeenCalled();
+    expect(extract).toHaveBeenCalledWith(zip, dest);
+    expect(fs.unlinkSync).not.toHaveBeenCalled();
+  });
+
+  test('an empty engine dir still downloads', async () => {
+    const fs = makeFsAt('/nothing/matches');
+    const download = jest.fn(() => Promise.resolve());
+    const mgr = new EngineManager({
+      dir: '/cache', platform: 'linux', version: '1.8.8', fs, download, chmod: jest.fn(),
+    });
+
+    await expect(mgr.ensure()).resolves.toBe(path.join('/cache', 'alpha-miner-1.8.8'));
+    expect(download).toHaveBeenCalled();
+    expect(fs.renameSync).not.toHaveBeenCalled();
+  });
+});

@@ -1,7 +1,9 @@
 'use strict';
 
 const path = require('path');
-const { enginePath, engineDownloadUrl, isZipUrl } = require('../shared/engine');
+const {
+  enginePath, engineDownloadUrl, engineArchiveName, isZipUrl, manualEnginePath,
+} = require('../shared/engine');
 
 // Ensures the alpha-miner engine is present, downloading and installing it on
 // demand. All IO (filesystem, network download, zip extraction, chmod) is
@@ -45,19 +47,49 @@ class EngineManager {
     }
 
     this.fs.mkdirSync(this.dir, { recursive: true });
-    const url = engineDownloadUrl(this.platform, this.gpu, this.urlBase, this.version);
 
-    if (isZipUrl(url)) {
-      const zipPath = path.join(this.dir, 'engine.zip');
-      await this.download(url, zipPath, onProgress);
-      await this.extract(zipPath, dest);
-      this.fs.unlinkSync(zipPath);
-    } else {
-      await this.download(url, dest, onProgress);
+    // A file the user downloaded by hand counts as installed — checked before we
+    // go anywhere near the network, so a rig whose HTTPS is broken can be fixed
+    // with a browser.
+    if (!(await this.adoptManualDownload(dest))) {
+      const url = engineDownloadUrl(this.platform, this.gpu, this.urlBase, this.version);
+
+      if (isZipUrl(url)) {
+        const zipPath = path.join(this.dir, 'engine.zip');
+        await this.download(url, zipPath, onProgress);
+        await this.extract(zipPath, dest);
+        this.fs.unlinkSync(zipPath);
+      } else {
+        await this.download(url, dest, onProgress);
+      }
     }
 
     if (this.platform !== 'win32') this.chmod(dest, 0o755);
     return dest;
+  }
+
+  // Install a hand-downloaded engine sitting in the engine dir, if there is one.
+  // Returns whether it adopted something.
+  //
+  // Users hit by a failed download fetch the engine in a browser, which saves it
+  // under the pool's own name — the unversioned `alpha-miner`, or the Windows
+  // zip — never the versioned name the cache looks for. Without this the app
+  // ignores the file, retries the download that already failed, and the user
+  // reasonably reports that downloading it manually "changed nothing". The
+  // archive is extracted (leaving the user's zip alone); a bare binary is
+  // renamed into place, which is the install.
+  async adoptManualDownload(dest) {
+    const candidates = [
+      manualEnginePath(this.dir, this.platform),
+      path.join(this.dir, engineArchiveName(this.platform, this.gpu, this.version)),
+    ];
+    for (const src of candidates) {
+      if (src === dest || !this.fs.existsSync(src)) continue;
+      if (isZipUrl(src)) await this.extract(src, dest);
+      else this.fs.renameSync(src, dest);
+      return true;
+    }
+    return false;
   }
 
   // Grant the engine its execute bit (non-Windows only). Best effort by design:

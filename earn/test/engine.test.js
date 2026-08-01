@@ -5,6 +5,7 @@ const {
   DOWNLOAD_BASE, ENGINE, pickEngineVersion, parseDriverMajor,
   engineBinaryName, engineArchiveName, engineDownloadUrl,
   isZipUrl, isArchiveUrl, looksLikeArchive, enginePath, bundledEnginePath, progressPercent,
+  manualEngineName, manualEnginePath,
 } = require('../src/shared/engine');
 
 describe('pickEngineVersion', () => {
@@ -104,6 +105,17 @@ describe('enginePath', () => {
   test('joins the cache dir and binary name', () => {
     expect(enginePath('/cache', 'win32')).toBe(path.join('/cache', 'alpha-miner-windows.exe'));
     expect(enginePath('/cache', 'linux', undefined, '1.8.8')).toBe(path.join('/cache', 'alpha-miner-1.8.8'));
+  });
+});
+
+describe('manualEnginePath', () => {
+  test('is the pool\'s own download name, not the versioned cache name', () => {
+    // A browser saving /downloads/alpha-miner writes exactly this, so a user
+    // rescuing a failed download drops the file here.
+    expect(manualEnginePath('/cache', 'linux')).toBe(path.join('/cache', 'alpha-miner'));
+    expect(manualEnginePath('/cache', 'win32')).toBe(path.join('/cache', 'alpha-miner.exe'));
+    expect(manualEngineName('linux')).toBe('alpha-miner');
+    expect(manualEnginePath('/cache', 'linux')).not.toBe(enginePath('/cache', 'linux', undefined, '1.8.8'));
   });
 });
 
