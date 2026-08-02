@@ -110,6 +110,54 @@ describe('JobController', () => {
       expect(spy).toHaveBeenCalledWith('node123', JobController.MAX_JOBS_PER_POLL);
     });
 
+    // The fence is only as good as its plumbing: the token has to reach the node
+    // on /poll and be forwarded back on every write. All five of those hops are
+    // one-liners that would revert silently — the service-level tests still pass
+    // because they call the service directly, bypassing the controller.
+    it('hands the assignment\'s lockToken to the node', async () => {
+      nodeService.getNode.mockResolvedValue({ nodeId: 'node123', publicKey: 'test-public-key', status: 'online' });
+      req.body = { nodeId: 'node123', maxJobs: 1 };
+      await jobController.pollJobs(req, res);
+
+      const [payload] = res.json.mock.calls[0];
+      expect(payload.jobs).toHaveLength(1);
+      expect(payload.jobs[0].lockToken).toMatch(/^[0-9a-f]{32}$/);
+    });
+
+    it('forwards the lockToken to the service on every write', async () => {
+      nodeService.getNode.mockResolvedValue({ nodeId: 'node123', publicKey: 'test-public-key', status: 'online' });
+      req.body = { nodeId: 'node123', maxJobs: 1 };
+      await jobController.pollJobs(req, res);
+      const { id, lockToken } = res.json.mock.calls[0][0].jobs[0];
+
+      const beat = jest.spyOn(jobService, 'handleHeartbeat');
+      const chunk = jest.spyOn(jobService, 'storeChunk');
+      const done = jest.spyOn(jobService, 'completeJob');
+      const fail = jest.spyOn(jobService, 'failJob');
+
+      req.params = { jobId: id };
+      req.body = { nodeId: 'node123', lockToken };
+      await jobController.heartbeat(req, res);
+      expect(beat).toHaveBeenCalledWith(id, 'node123', lockToken);
+
+      req.body = { nodeId: 'node123', lockToken, chunkIndex: 0, content: 'x' };
+      await jobController.receiveChunk(req, res);
+      expect(chunk).toHaveBeenCalledWith(id, 'node123', expect.any(Object), lockToken);
+
+      req.body = { nodeId: 'node123', lockToken };
+      await jobController.completeJob(req, res);
+      expect(done).toHaveBeenCalledWith(id, 'node123', lockToken);
+
+      // failJob takes the reason before the token — an easy argument to shift.
+      const other = await jobService.createJob({ prompt: 'p2', userId: 'user123' });
+      const [assigned] = await jobService.assignJobsToNode('node123', 1);
+      req.params = { jobId: assigned.id };
+      req.body = { nodeId: 'node123', lockToken: assigned.lockToken, error: 'boom' };
+      await jobController.failJob(req, res);
+      expect(fail).toHaveBeenCalledWith(assigned.id, 'node123', 'boom', assigned.lockToken);
+      expect(other.id).toBeDefined();
+    });
+
     it('coerces a missing, junk or non-positive maxJobs to 1', () => {
       const { clampMaxJobs, MAX_JOBS_PER_POLL } = JobController;
       expect(clampMaxJobs(undefined)).toBe(1);

@@ -252,6 +252,41 @@ describe('LlmFleet', () => {
     expect(stops).toEqual([3]);
   });
 
+  // The queue is shifted BEFORE the async port probe, so there is a window where
+  // the entry is off `_pending` but its instance does not exist yet. Judging the
+  // fleet on `_pending` alone reopened the same premature-'stopped' bug a few
+  // milliseconds later.
+  test('does not emit "stopped" while a successor is still probing for a port', async () => {
+    let release;
+    const { fleet, mgrs } = makeFleet({
+      findFreePort: (h, p) => (mgrs.length === 1 ? new Promise((r) => { release = () => r(p); }) : Promise.resolve(p)),
+    });
+    await fleet.start([{ index: 0, nGpuLayers: 42 }, { index: 1, nGpuLayers: 42 }], {});
+    const stops = [];
+    fleet.on('stopped', (code) => stops.push(code));
+
+    mgrs[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' }); // frees the drain
+    await new Promise((r) => setImmediate(r));
+    expect(fleet._pending).toEqual([]);        // shifted…
+    expect(fleet.instances).toHaveLength(1);   // …but GPU1 is not an instance yet
+
+    mgrs[0].emit('stopped', 1);                // GPU0 dies inside that window
+    expect(stops).toHaveLength(0);
+
+    release();
+    await drain();
+    expect(mgrs).toHaveLength(2);              // GPU1 still spawns
+  });
+
+  // The first spawn is awaited by start(), so its failure rejects — and would
+  // strand the rest of the plan in _pending, gagging 'stopped' forever.
+  test('a first spawn that throws abandons the queue before rethrowing', async () => {
+    const { fleet } = makeFleet({ findFreePort: () => Promise.reject(new Error('probe failed')) });
+    await expect(fleet.start([{ index: 0 }, { index: 1 }, { index: 2 }], {})).rejects.toThrow('probe failed');
+    expect(fleet._pending).toEqual([]);
+    expect(fleet._spawning).toBe(false);
+  });
+
   test('a single-GPU fleet still reports down immediately (nothing was queued)', async () => {
     const { fleet, mgrs } = makeFleet();
     await fleet.start([{ index: 0, nGpuLayers: 42 }], {});

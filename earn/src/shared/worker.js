@@ -22,18 +22,32 @@
 // the CLI had this and the GUI didn't, which is exactly how the two drifted.
 
 const os = require('os');
+const crypto = require('crypto');
 const { DEFAULTS } = require('./config');
 
 // This machine's hostname reduced to a safe stratum token: first DNS label,
 // lowercased, non [a-z0-9-] stripped, trimmed of leading/trailing dashes and
-// capped at 32 chars. Falls back to the shared constant when the hostname is
-// missing or reduces to nothing (a hostname of "!!!" and an unset one are both
-// unusable), so the result is always a valid worker name.
+// capped at 32 chars.
+//
+// When that leaves nothing usable, derive a stable token from the hostname
+// instead of falling back to the shared constant. Stripping to ASCII erases a
+// non-Latin hostname entirely — "Домашний-ПК" and "Рабочий-ПК" both reduce to
+// "" — so the constant would put every such machine back on one name and
+// recreate the collision this function exists to prevent, for exactly the users
+// least likely to notice. The hash is over the original hostname, so it is
+// stable across runs and distinct per machine.
+//
+// Only the unusable branch changed: a hostname that already sanitises to a
+// real token keeps producing the same worker name it always has, so nobody's
+// established board row is renamed. A genuinely empty hostname still yields the
+// shared default — there is nothing there to tell two machines apart with.
 function defaultWorker(hostname) {
   const raw = hostname != null ? hostname : os.hostname();
   const host = String(raw || '').trim().toLowerCase().split('.')[0];
   const name = host.replace(/[^a-z0-9-]/g, '').replace(/^-+|-+$/g, '').slice(0, 32);
-  return name || DEFAULTS.worker;
+  if (name.length >= 2) return name;
+  if (!host) return DEFAULTS.worker;
+  return 'rig-' + crypto.createHash('sha256').update(host).digest('hex').slice(0, 6);
 }
 
 module.exports = { defaultWorker };

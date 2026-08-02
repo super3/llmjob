@@ -34,13 +34,37 @@ describe('defaultWorker', () => {
     expect(defaultWorker('a'.repeat(64))).toBe('a'.repeat(32));
   });
 
-  test('falls back to the shared default when the hostname is unusable', () => {
-    // Both an unset hostname and one that sanitises to nothing must still yield a
-    // valid worker name — an empty one would be rejected by the pool.
+  test('falls back to the shared default only when there is no hostname at all', () => {
+    // Nothing to tell two machines apart with, so the shared constant is honest.
     expect(defaultWorker('')).toBe(DEFAULTS.worker);
-    expect(defaultWorker('!!!')).toBe(DEFAULTS.worker);
-    expect(defaultWorker('---')).toBe(DEFAULTS.worker);
+    expect(defaultWorker('   ')).toBe(DEFAULTS.worker);
     expect(defaultWorker(null)).toBe(defaultWorker()); // null → read the real hostname
+  });
+
+  // Stripping to ASCII erases a non-Latin hostname entirely. Returning the shared
+  // constant there would put every such machine back on one name and recreate the
+  // collision this function exists to prevent — for the users least likely to
+  // notice, since the app never shows them the worker name it chose.
+  test('derives a distinct token when sanitising leaves nothing usable', () => {
+    const a = defaultWorker('Домашний-ПК');
+    const b = defaultWorker('Рабочий-ПК');
+    expect(a).toMatch(/^rig-[0-9a-f]{6}$/);
+    expect(b).toMatch(/^rig-[0-9a-f]{6}$/);
+    expect(a).not.toBe(b);
+    expect(a).not.toBe(DEFAULTS.worker);
+  });
+
+  test('that token is stable for the same machine across runs', () => {
+    expect(defaultWorker('Рабочий-ПК')).toBe(defaultWorker('Рабочий-ПК'));
+  });
+
+  test('distinguishes hostnames that sanitise down to the same single character', () => {
+    expect(defaultWorker('工作站-1')).not.toBe(defaultWorker('服务器-1'));
+  });
+
+  test('a hostname that already sanitises cleanly is unchanged (nobody is renamed)', () => {
+    expect(defaultWorker('DESKTOP-A1B2C3')).toBe('desktop-a1b2c3');
+    expect(defaultWorker('rig9')).toBe('rig9');
   });
 
   test('two different hostnames give two different workers', () => {

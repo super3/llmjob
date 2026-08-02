@@ -1556,6 +1556,18 @@ describe('local LLM', () => {
       ready: false, error: 'The local LLM stopped before it was ready. See Logs.',
     });
     expect(ctx.sent('miner:stopped')).toHaveLength(0);
+
+    // …and once an instance DOES come up, that error must not outlive it. On a
+    // multi-GPU rig the next card follows the dead one, so this is the ordinary
+    // case, not an edge one. The renderer ranks error above ready in both the
+    // hero dot and its label, and nothing else clears it while a fleet runs —
+    // startLlm's pre-spawn reset only fires on a fresh start — so a stale error
+    // left the app permanently red while the model answered normally.
+    llm.emit('ready', { baseUrl: 'http://127.0.0.1:8081' });
+    await flush();
+    const recovered = ctx.sent('llm:status').pop();
+    expect(recovered).toMatchObject({ ready: true, endpoint: 'http://127.0.0.1:8081/v1' });
+    expect(recovered.error).toBeNull();
   });
 
   it('both mode: the board report tags the GPU serving the local LLM', async () => {
