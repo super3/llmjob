@@ -228,6 +228,7 @@ jest.mock('../src/main/jobWorker', () => {
 
 const { EventEmitter } = require('events');
 const nodeProto = require('../src/shared/node');
+const { defaultWorker } = require('../src/shared/worker');
 
 const KEYS = nodeProto.generateKeypair();
 const VALID_ADDR = 'prl1p' + 'a'.repeat(30);
@@ -525,7 +526,10 @@ describe('simple ipc handlers', () => {
   it('settings:get merges saved settings over the desktop defaults', async () => {
     const ctx = loadMain();
     const s = await ctx.invoke('settings:get');
-    expect(s).toMatchObject({ region: 'us2', worker: 'rig01', mode: 'auto', address: '', mdlAddress: '' });
+    // worker defaults to this machine's hostname, not the shared 'rig01' constant,
+    // so two rigs on one payout address don't collide into one board identity.
+    expect(s).toMatchObject({ region: 'us2', worker: defaultWorker(), mode: 'auto', address: '', mdlAddress: '' });
+    expect(s.worker).toMatch(/^[a-z0-9-]{1,32}$/);
 
     ctx.fs.existsSync.mockImplementation((p) => p === SETTINGS_PATH);
     ctx.fs.readFileSync.mockReturnValue('{"address":"prl1x","mode":"llm"}');

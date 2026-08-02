@@ -84,8 +84,19 @@ class LlmFleet extends EventEmitter {
     await this._startNext();
     // Background: each subsequent instance waits for its predecessor to settle.
     // Errors here are already surfaced per-instance via 'error'/'log'.
-    this._draining = this._drain().catch(() => {});
+    this._draining = this._drain().catch(() => this._abandonPending());
     return entries.length;
+  }
+
+  // A drain that threw (findFreePort exhausting its tries, say) leaves entries
+  // stranded in `_pending`. Since the down-check refuses to declare the fleet
+  // dead while cards are queued, those stranded entries would suppress
+  // 'stopped' forever and leave the UI on "Starting…" with nothing running.
+  // Drop them and re-run the check so a fleet whose spawned instances have all
+  // died can still report it.
+  _abandonPending() {
+    this._pending = [];
+    this._maybeEmitDown(1);
   }
 
   async _drain() {
@@ -185,7 +196,21 @@ class LlmFleet extends EventEmitter {
     // Surface a single fleet-level 'stopped' once every instance has stopped —
     // not on each individual card (others may still be serving). Forward the
     // last card's exit code so the headless CLI can exit with it.
-    if (this._stopping || this._downEmitted) return;
+    //
+    // `_pending` is part of the test, not just `instances`: startup is
+    // SERIALISED, so on a multi-GPU rig `instances` holds only the cards spawned
+    // so far while the rest wait their turn. Without it, the first card dying
+    // before it loads made every() trivially true and declared the whole fleet
+    // down — the GUI ended the session and the CLI exited — moments before
+    // _drain spawned the next card, which then loaded fine and served cluster
+    // jobs with the UI insisting nothing was running. A card still queued means
+    // the fleet has not had its chance yet.
+    this._maybeEmitDown(code);
+  }
+
+  // Emit the one fleet-level 'stopped', if the fleet really is down.
+  _maybeEmitDown(code) {
+    if (this._stopping || this._downEmitted || this._pending.length) return;
     if (this.instances.length && this.instances.every((i) => i.stopped)) {
       this._downEmitted = true;
       this.emit('stopped', code);

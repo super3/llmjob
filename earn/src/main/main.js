@@ -28,6 +28,7 @@ const nodeStore = require('./nodeStore');
 const settingsStore = require('../shared/settingsStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE, endpointFor, difficultyForCard } = require('../shared/config');
+const { defaultWorker } = require('../shared/worker');
 const { resolveEconomics } = require('../shared/economics');
 const nodeProto = require('../shared/node');
 const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
@@ -354,7 +355,7 @@ async function startMining(settings) {
   miner = new MinerManager({ spawn });
   miner.on('log', (l) => send('miner:log', l));
   miner.on('event', (e) => {
-    applyEvent(stats, e);
+    applyEvent(stats, e, Date.now()); // stamped, so a card that goes silent ages out
     send('miner:event', e);
   });
   miner.on('error', (err) => reportLaunchFailure(err, false));
@@ -751,7 +752,12 @@ function buildFleet() {
     // webUrl() is the first ready instance's base URL — non-null here, since this
     // instance was just marked ready before the event fired.
     const web = f.webUrl();
-    llmStatus = Object.assign({}, llmStatus, { ready: true, endpoint: web + '/v1', webUrl: web, note: null });
+    // `error: null` alongside ready, matching the adopt path: a model that is up
+    // and answering must not still be wearing an error. The renderer ranks error
+    // above ready in both the hero dot and its label, so a stale one outranks the
+    // truth — and nothing else clears it once the fleet is running, since
+    // startLlm's pre-spawn reset only runs on a fresh start.
+    llmStatus = Object.assign({}, llmStatus, { ready: true, error: null, endpoint: web + '/v1', webUrl: web, note: null });
     send('miner:log', { level: 'info', line: 'local LLM ready — OpenAI endpoint ' + baseUrl + '/v1' });
     sendLlmStatus();
     syncWorker(); // serve cluster jobs once a model is up, if we're linked
@@ -1134,7 +1140,12 @@ function applyPlan(settings) {
 ipcMain.handle('settings:get', () => Object.assign(
   // Both clients default to the shared DEFAULT_MODE ('auto': mine + serve the
   // LLM, balanced from free VRAM).
-  { region: DEFAULTS.region, worker: DEFAULTS.worker, difficulty: DEFAULTS.difficulty, address: '', mdlAddress: '', mode: DEFAULT_MODE },
+  // worker defaults to this machine's hostname, not the shared "rig01" constant:
+  // two rigs on one payout address under the same name collide into a single
+  // board identity (and if either is multi-GPU, the other's row is dropped
+  // outright). Only fills a FRESH install — loadSettings() below wins, so an
+  // existing worker name is never rewritten out from under someone's board row.
+  { region: DEFAULTS.region, worker: defaultWorker(), difficulty: DEFAULTS.difficulty, address: '', mdlAddress: '', mode: DEFAULT_MODE },
   loadSettings(),
 ));
 ipcMain.handle('llm:status', () => llmStatus);

@@ -27,7 +27,8 @@ const {
 const probe = require('../main/probe');
 const nodeStore = require('../main/nodeStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
-const { NETWORK, MINER, LLM, NODE, DEFAULTS, endpointFor, regionLabel, difficultyForCard } = require('../shared/config');
+const { NETWORK, MINER, LLM, NODE, endpointFor, regionLabel, difficultyForCard } = require('../shared/config');
+const { defaultWorker } = require('../shared/worker');
 const { ENGINE, pickEngineVersion, engineDownloadUrl, manualEnginePath } = require('../shared/engine');
 const { describeSetupError } = require('../shared/engineError');
 const nodeProto = require('../shared/node');
@@ -49,17 +50,6 @@ function log(line, stream) {
   const out = stream || process.stdout;
   const prefix = out.isTTY ? '[' + format.formatLogTime(new Date()) + '] ' : '';
   out.write(prefix + line + '\n');
-}
-
-// Default worker name = this machine's hostname (first DNS label, sanitised to a
-// safe stratum token). Unlike a shared constant like "rig01", this keeps two
-// rigs mining the same payout address as distinct workers on the board instead
-// of colliding into one flip-flopping entry. Falls back to the default constant
-// if the hostname is empty/unusable.
-function defaultWorker() {
-  const host = String(os.hostname() || '').trim().toLowerCase().split('.')[0];
-  const name = host.replace(/[^a-z0-9-]/g, '').replace(/^-+|-+$/g, '').slice(0, 32);
-  return name || DEFAULTS.worker;
 }
 
 // Detect the discrete GPU name via nvidia-smi (Linux/NVIDIA). Resolves the card
@@ -661,7 +651,7 @@ async function run(argv) {
     });
     miner.on('log', (l) => log(l.line, l.level === 'error' ? process.stderr : process.stdout));
     miner.on('event', (evt) => {
-      applyEvent(stats, evt);
+      applyEvent(stats, evt, Date.now()); // stamped, so a card that goes silent ages out
       if (evt.type === 'status') {
         const snap = snapshot(stats, Date.now());
         log('⛏  ' + format.formatHashrate(snap.total) + ' TH/s · '
