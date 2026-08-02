@@ -221,9 +221,15 @@ class OpenAiController {
       const chunks = r.chunks || [];
       // A shrinking chunk list means the job was requeued and its abandoned
       // attempt's partials were dropped, so the retry is rebuilding from idx 0.
-      // Rewind with it — holding the old high-water mark would skip everything
-      // the retry produces until it grew past the dead attempt's length, which
-      // reads to the caller as a stream that silently stops mid-answer.
+      //
+      // Rewinding replays: the caller has already received the dead attempt's
+      // text and now receives the retry's in full, so a requeue mid-stream shows
+      // up as a restarted answer. That is the deliberate trade. SSE has no way to
+      // retract what was already written, and the alternative — holding the old
+      // high-water mark — skips everything the retry produces until it grows past
+      // the dead attempt's length, so the caller watches the answer stop
+      // mid-sentence and never resume. A visible restart is recoverable; silent
+      // truncation is not, and it corrupts the non-streaming result too.
       if (chunks.length < emitted) emitted = 0;
       for (; emitted < chunks.length; emitted++) {
         if (chunks[emitted].content) send({ content: chunks[emitted].content });

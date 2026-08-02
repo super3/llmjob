@@ -245,6 +245,30 @@ describe('buildMinerReports', () => {
     expect(row.worker).toBe('rig01');
   });
 
+  // Posting a 0 TH/s row refreshes last_seen every cycle, pinning a dead rig to
+  // the board as permanently "online at zero" — the same never-ages-off failure
+  // the staleness handling exists to end.
+  test('reports nothing once every card has gone silent, so the rig ages off', () => {
+    const snap = { total: 0, accepted: 0, gpuSlots: 2, gpus: [] }; // heard from 2, both dead
+    const rows = buildMinerReports({ address: 'prl1pabc', worker: 'rig01' }, snap, [
+      { index: 0, name: 'RTX 3080', usedMb: 7000, totalMb: 12288 },
+      { index: 1, name: 'RTX 3060', usedMb: 5000, totalMb: 10240 },
+    ], '0.2.0');
+    expect(rows).toEqual([]);
+  });
+
+  test('still reports at startup, before any card has been heard from', () => {
+    // slots === 0 is "nothing yet", not "everything died" — the rig must appear
+    // on the board while it spins up rather than staying invisible.
+    const snap = { total: 0, accepted: 0, gpuSlots: 0, gpus: [] };
+    const rows = buildMinerReports({ address: 'prl1pabc', worker: 'rig01' }, snap, [
+      { index: 0, name: 'RTX 3080', usedMb: 7000, totalMb: 12288 },
+      { index: 1, name: 'RTX 3060', usedMb: 5000, totalMb: 10240 },
+    ], '0.2.0');
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.worker)).toEqual(['rig01/gpu0', 'rig01/gpu1']);
+  });
+
   // A hung card keeps enumerating in nvidia-smi — a driver hang is far commoner
   // than a card leaving the bus. Gating the split-fallback on the LIVE card count
   // fired it for a rig whose per-card data was perfectly good: the dead card came

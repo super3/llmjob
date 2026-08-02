@@ -79,6 +79,18 @@ function buildMinerReports(settings, snap, gpuVram, version, serving) {
     llmModel: llmFor(v.index),
   }));
 
+  // Every card this session ever heard from has gone silent — the engine is
+  // wedged, disconnected, or reset. Report NOTHING and let the rig's board rows
+  // age out of the online list, which is what "not mining" should look like.
+  // Posting a 0 TH/s row instead would refresh last_seen on every cycle and pin
+  // the rig to the board as permanently online at zero, which is the same
+  // never-ages-off failure the per-card staleness handling exists to end.
+  //
+  // `slots` is what separates this from STARTUP — where nothing has reported yet
+  // (slots === 0) and a row SHOULD be posted, so a rig appears on the board while
+  // it spins up rather than staying invisible until its first share.
+  if (!cards.length && slots > 0) return [];
+
   // No per-card engine data yet (startup before the first per-card event, or an
   // engine build that only logs one aggregate line). For a MULTI-GPU rig, still
   // post one row per physical card (splitting the rig total evenly) rather than a
