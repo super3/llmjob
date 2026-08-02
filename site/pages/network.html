@@ -122,6 +122,12 @@
      in the address column. */
   .mr-serving { display: inline-block; width: 6px; height: 6px; border-radius: 50%;
     background: #16a34a; margin-right: 7px; vertical-align: 1px; flex: none; }
+  /* Amber: the node serves, but we measured it too slow to be handed a
+     full-length job, so assignment only offers it shorter work. Not a fault
+     state — it earns on what it can finish instead of timing out on what it
+     can't. Grey: online but not measured yet (a benchmark is queued). */
+  .mr-serving.is-limited { background: #d97706; }
+  .mr-serving.is-unknown { background: transparent; box-shadow: inset 0 0 0 1.5px var(--muted-3); }
   /* A host running several cards is one clickable row; the chevron expands it
      into a per-card breakdown (the earn client posts each card as worker/gpuN). */
   .miner-row.is-multi { cursor: pointer; }
@@ -282,6 +288,18 @@
     function shortGpu(g) {
       return String(g).replace(/^\s*(NVIDIA|AMD|Intel)\s+(GeForce\s+|Radeon\s+|Arc\s+)?/i, '') || String(g);
     }
+    // Measured generation speed per node id, from GET /api/nodes/serving. Empty
+    // until that first load resolves, which just means every dot starts hollow.
+    let speeds = {};
+    // Below this a node can't produce a TYPICAL reply (2048 tokens — the observed
+    // mean completion is 2563) inside the gateway's budget (280s × the 0.8 safety
+    // margin assignment uses), so it is only offered shorter jobs. Keyed on the
+    // typical length rather than the 6400 ceiling for the same reason assignment
+    // is: almost every request carries the ceiling, so gating on it would paint
+    // amber on nodes that serve real traffic perfectly well. Mirrors jobService's
+    // admissionLimit — keep the two in step.
+    const FULL_JOB_TPS = 2048 / (280 * 0.8);
+
     // The "serving LLM" cell: a compact model label ("Gemma-4-E4B-it-Q4_K_M" →
     // "Gemma 4 E4B", full name on hover), or a muted dash when the card isn't
     // serving (insufficient VRAM) or the client is too old to report a model.
@@ -298,8 +316,18 @@
       // rendered inline wrapped onto a second line and made those rows taller than
       // the rest. The dot costs ~10px and never wraps; the id itself lives in the
       // tooltip, which is where you'd grab it to target the host anyway.
+      // Colour carries the node's measured speed (GET /api/nodes/serving): green
+      // takes any job, amber is capped to shorter ones, hollow means we haven't
+      // measured it yet. The number itself goes in the tooltip for the same
+      // reason the node id does — this column is a fixed track and text here
+      // wraps the row.
+      const speed = speeds[nodeId];
+      const cls = !speed || speed.tps == null ? ' is-unknown' : (speed.tps < FULL_JOB_TPS ? ' is-limited' : '');
+      const detail = !speed || speed.tps == null
+        ? ' · speed not measured yet'
+        : ' · ' + speed.tps + ' tok/s' + (speed.tps < FULL_JOB_TPS ? ' (short jobs only)' : '');
       const dot = nodeId
-        ? '<span class="mr-serving" title="Serving cluster jobs as node ' + esc(nodeId) + '"></span>'
+        ? '<span class="mr-serving' + cls + '" title="Serving cluster jobs as node ' + esc(nodeId) + esc(detail) + '"></span>'
         : '';
       if (!model) return '<div class="mr-llm">' + dot + '<span class="mr-llm-none">—</span></div>';
       const short = String(model).split(/-it\b/i)[0].replace(/[-_]+/g, ' ').trim() || String(model);
@@ -393,6 +421,24 @@
       } catch (e) { /* offline / API down — keep the current view */ }
     }
 
+    // Per-node measured speed (GET /api/nodes/serving) — the only endpoint that
+    // enumerates the nodes actually serving jobs. Drives the serving dot's colour;
+    // the rate itself stays in the tooltip rather than the stat cards, which are
+    // about the mining board.
+    async function loadSpeeds() {
+      try {
+        const res = await fetch(API_BASE + '/api/nodes/serving', { headers: { Accept: 'application/json' } });
+        if (!res.ok) return;
+        const data = await res.json();
+        const next = {};
+        for (const n of (data.nodes || [])) {
+          next[n.nodeId] = { tps: n.stale ? null : n.tps };
+        }
+        speeds = next;
+        render();
+      } catch (e) { /* offline / API down — keep the current view */ }
+    }
+
     // Compact token counts (12,345,678 → "12.35M") so the stat card stays tidy.
     function fmtCompact(n) {
       n = Number(n) || 0;
@@ -421,7 +467,8 @@
     render({ miners: [], totalOnline: 0, totalWorkers: 0, totalHashrate: 0 });
     load();
     loadTokens();
-    setInterval(() => { load(); loadTokens(); }, 15000);
+    loadSpeeds();
+    setInterval(() => { load(); loadTokens(); loadSpeeds(); }, 15000);
   })();
 </script>
 </body>

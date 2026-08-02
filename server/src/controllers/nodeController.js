@@ -120,6 +120,21 @@ async function getPublicNodes(req, res) {
   }
 }
 
+// The serving fleet and how fast each node generates. Public and unauthenticated
+// because it's what the network page paints: until now nothing enumerated the
+// nodes actually serving jobs — getPublicNodes only lists ones a user flagged
+// public, and the miner board only shows machines that are mining.
+async function getServingNodes(req, res) {
+  try {
+    const nodeService = new NodeService(req.app.locals.db);
+    const nodes = await nodeService.listServingNodes();
+    res.json({ nodes, total: nodes.length });
+  } catch (error) {
+    console.error('Get serving nodes error:', error);
+    res.status(500).json({ error: 'Failed to get serving nodes' });
+  }
+}
+
 async function updateNodeVisibility(req, res) {
   try {
     const { id: nodeId } = req.params;
@@ -207,6 +222,7 @@ module.exports = {
   pingNode,
   getUserNodes,
   getPublicNodes,
+  getServingNodes,
   updateNodeVisibility,
   getJoinToken,
   rotateJoinToken,

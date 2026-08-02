@@ -43,16 +43,52 @@ describe('JobService', () => {
       expect(job.maxTokens).toBe(0);
     });
 
+    // POST /api/jobs hands maxTokens straight from the request body, and it is now
+    // written to an int4 column — an oversized value surfaced as a 500 from
+    // Postgres rather than a 400. (pg-mem doesn't enforce int4 range, so only the
+    // clamp itself can be asserted here.)
+    it('clamps a caller-supplied maxTokens to what a node can run', async () => {
+      const { clampMaxTokens, DEFAULT_MAX_TOKENS } = JobService;
+      expect(clampMaxTokens(2147483647)).toBe(DEFAULT_MAX_TOKENS);
+      expect(clampMaxTokens(Number.MAX_SAFE_INTEGER)).toBe(DEFAULT_MAX_TOKENS);
+      expect(clampMaxTokens(-5)).toBe(DEFAULT_MAX_TOKENS);
+      expect(clampMaxTokens('abc')).toBe(DEFAULT_MAX_TOKENS);
+      expect(clampMaxTokens(Infinity)).toBe(DEFAULT_MAX_TOKENS);
+      expect(clampMaxTokens(undefined)).toBe(DEFAULT_MAX_TOKENS);
+      expect(clampMaxTokens(0)).toBe(0);      // meaningful, kept
+      expect(clampMaxTokens(512.9)).toBe(512);
+      const job = await jobService.createJob({ prompt: 'p', userId: 'u', maxTokens: 2147483647 });
+      expect(job.maxTokens).toBe(DEFAULT_MAX_TOKENS);
+    });
+
+    // Unknown speed means no limit, not zero capacity — otherwise a node with a
+    // rejected sample would be gated out of everything it could actually serve.
+    it('tokenCapacity and admissionLimit report unknown rather than zero', async () => {
+      const { tokenCapacity, admissionLimit, TYPICAL_TOKENS } = JobService;
+      expect(tokenCapacity(null)).toBeNull();
+      expect(tokenCapacity(0)).toBeNull();
+      expect(admissionLimit(null)).toBeNull();
+      // Fast enough for a typical reply → ungated entirely.
+      expect(admissionLimit(TYPICAL_TOKENS / 224 + 1)).toBeNull();
+      // Too slow for one → held to what it can finish.
+      expect(admissionLimit(5)).toBe(tokenCapacity(5));
+    });
+
     // assignJobsToNode orders the GLOBAL queue by priority DESC and every in-repo
     // producer writes 0, so an unbounded caller value was a starvation lever.
     it('clamps a caller-supplied priority into range', async () => {
-      const { MAX_PRIORITY, clampPriority } = JobService;
+      const { MAX_PRIORITY, MIN_PRIORITY, clampPriority } = JobService;
       const huge = await jobService.createJob({ prompt: 'p', userId: 'u', priority: 2147483647 });
       expect(huge.priority).toBe(MAX_PRIORITY);
 
       expect(clampPriority(undefined)).toBe(0);
       expect(clampPriority('abc')).toBe(0);
-      expect(clampPriority(-5)).toBe(0);
+      // The floor is below zero on purpose: a negative priority can only yield to
+      // other traffic, never jump it, and the benchmark sweeper relies on it to
+      // stay behind real requests.
+      expect(clampPriority(-5)).toBe(MIN_PRIORITY);
+      expect(clampPriority(MIN_PRIORITY)).toBe(MIN_PRIORITY);
+      expect(clampPriority(0)).toBe(0);
       expect(clampPriority(Infinity)).toBe(0);
       expect(clampPriority(3)).toBe(3);
       expect(clampPriority(3.9)).toBe(3);
@@ -358,6 +394,246 @@ describe('JobService', () => {
       await jobService.assignJobsToNode('node123', 1);
       await expect(jobService.failJob(job.id, 'wrong-node', 'err'))
         .rejects.toThrow('Node does not hold lock for this job');
+    });
+  });
+
+  // Admission control: a node is only offered work it can finish inside the
+  // gateway's budget at the speed we measured it at. This is what stops a slow
+  // card taking a job it has no chance of completing — the failure mode that put
+  // 6 of 6 timeouts on the two slowest nodes of a 198-question benchmark run.
+  describe('assignJobsToNode capacity gating', () => {
+    // capacity = tps × 280s × 0.8. The gate only engages below TYPICAL_TOKENS of
+    // capacity, i.e. under 2048/224 = 9.14 tok/s.
+    const addNode = (nodeId, tps, samples = 3) => db.query(
+      `INSERT INTO nodes (node_id, measured_tps, speed_samples, speed_at) VALUES ($1, $2, $3, $4)`,
+      [nodeId, tps, samples, Date.now()]
+    );
+
+    it('skips a job the node is too slow to finish, and takes one it can', async () => {
+      await addNode('slow', 5); // 1120 tokens of capacity
+      const big = await jobService.createJob({ prompt: 'long', maxTokens: 6400, userId: 'u' });
+      const small = await jobService.createJob({ prompt: 'short', maxTokens: 1000, userId: 'u' });
+
+      const got = await jobService.assignJobsToNode('slow', 5);
+      expect(got.map((j) => j.id)).toEqual([small.id]);
+      // The oversized job is left pending for a node that can actually serve it.
+      expect(got.map((j) => j.id)).not.toContain(big.id);
+    });
+
+    // The bug this rule replaced: max_tokens is a ceiling and almost every request
+    // carries the 6400 default, so gating on it demanded 28.6 tok/s of everything
+    // and cut the fleet's slower half out of ALL traffic — the blanket floor the
+    // per-job design exists to avoid.
+    it('serves default-sized jobs to a node that keeps up with typical traffic', async () => {
+      await addNode('modest', 18); // 4032 capacity: under the 6400 ceiling, over typical
+      await jobService.createJob({ prompt: 'default', userId: 'u' }); // no maxTokens → 6400
+      expect(await jobService.assignJobsToNode('modest', 5)).toHaveLength(1);
+    });
+
+    it('gives a fast node everything', async () => {
+      await addNode('fast', 45); // 10080 tokens of capacity
+      await jobService.createJob({ prompt: 'long', maxTokens: 6400, userId: 'u' });
+      await jobService.createJob({ prompt: 'short', maxTokens: 1000, userId: 'u' });
+      expect(await jobService.assignJobsToNode('fast', 5)).toHaveLength(2);
+    });
+
+    it('does not gate a node on a single sample', async () => {
+      // One unlucky generation must not be able to withhold work — the node needs
+      // to keep serving to earn a second reading and argue with the first.
+      await addNode('onesample', 5, 1);
+      await jobService.createJob({ prompt: 'long', maxTokens: 6400, userId: 'u' });
+      expect(await jobService.assignJobsToNode('onesample', 5)).toHaveLength(1);
+    });
+
+    it('serves an unmeasured node permissively', async () => {
+      await db.query('INSERT INTO nodes (node_id) VALUES ($1)', ['cold']);
+      await jobService.createJob({ prompt: 'long', maxTokens: 6400, userId: 'u' });
+      // The whole fleet is unmeasured the moment this ships; gating on absent data
+      // would stall it until the benchmark sweeper caught up.
+      expect(await jobService.assignJobsToNode('cold', 5)).toHaveLength(1);
+    });
+
+    it('ignores a stale measurement rather than gating on it', async () => {
+      await addNode('rusty', 1); // slow enough to gate everything…
+      await db.query('UPDATE nodes SET speed_at = $1 WHERE node_id = $2', [Date.now() - 7 * 60 * 60 * 1000, 'rusty']);
+      await jobService.createJob({ prompt: 'long', maxTokens: 6400, userId: 'u' });
+      // …but the figure describes hardware that may not be there any more.
+      expect(await jobService.assignJobsToNode('rusty', 5)).toHaveLength(1);
+    });
+
+    it('serves permissively when the stored speed is zero or missing', async () => {
+      // A fresh timestamp with no usable rate (a node whose only sample was
+      // rejected) must read as "unknown", not as "capacity zero" — otherwise it
+      // would be gated out of every job and could never earn a better number.
+      await db.query('INSERT INTO nodes (node_id, measured_tps, speed_at) VALUES ($1, NULL, $2)', ['blank', Date.now()]);
+      await db.query('INSERT INTO nodes (node_id, measured_tps, speed_at) VALUES ($1, 0, $2)', ['zero', Date.now()]);
+      await jobService.createJob({ prompt: 'long', maxTokens: 6400, userId: 'u' });
+      expect(await jobService.assignJobsToNode('blank', 5)).toHaveLength(1);
+      await jobService.createJob({ prompt: 'long', maxTokens: 6400, userId: 'u' });
+      expect(await jobService.assignJobsToNode('zero', 5)).toHaveLength(1);
+    });
+
+    it('lets a targeted job through regardless of capacity', async () => {
+      await addNode('slow', 5);
+      // This is how a benchmark reaches a node in the first place — and a caller
+      // who names a node has said what they want.
+      await jobService.createJob({ prompt: 'bench', maxTokens: 6400, targetNode: 'slow', userId: 'u' });
+      expect(await jobService.assignJobsToNode('slow', 5)).toHaveLength(1);
+    });
+
+    it('serves a job with no recorded budget', async () => {
+      await addNode('slow', 5);
+      await jobService.createJob({ prompt: 'legacy', userId: 'u' });
+      await db.query('UPDATE jobs SET max_tokens = NULL', []); // a row from before the column existed
+      expect(await jobService.assignJobsToNode('slow', 5)).toHaveLength(1);
+    });
+  });
+
+  // Every completed job doubles as a speed measurement, so most nodes never need
+  // a synthetic benchmark.
+  describe('speed sampling on completion', () => {
+    const finish = async (nodeId, metrics, backdateTo) => {
+      const job = await jobService.createJob({ prompt: 'x', userId: 'u' });
+      await jobService.assignJobsToNode(nodeId, 1);
+      await jobService.handleHeartbeat(job.id, nodeId);
+      if (backdateTo) {
+        const d = await jobService.getJob(job.id);
+        await db.query('UPDATE jobs SET data = $2 WHERE id = $1',
+          [job.id, JSON.stringify({ ...d, assignedAt: backdateTo, startedAt: backdateTo })]);
+      }
+      await jobService.storeChunk(job.id, nodeId, { chunkIndex: 0, content: 'hi', isFinal: true, metrics });
+      await jobService.completeJob(job.id, nodeId);
+      return job;
+    };
+
+    it('records the node speed from the server clock, not the node\'s claim', async () => {
+      const nodes = { recordSpeedSample: jest.fn() };
+      jobService = new JobService(db, nodes);
+      // Backdate the assignment so the interval is a known, non-trivial value
+      // instead of the handful of milliseconds the test itself takes.
+      const startedAt = Date.now() - 20000;
+      await finish('n1', { totalTokens: 300, tokensPerSecond: 999 }, startedAt);
+
+      expect(nodes.recordSpeedSample).toHaveBeenCalledTimes(1);
+      const [nodeId, tokens, elapsedMs] = nodes.recordSpeedSample.mock.calls[0];
+      expect(nodeId).toBe('n1');
+      expect(tokens).toBe(300);           // the node's token count is fine to trust
+      // Pinned to the interval the server actually observed. `toBeGreaterThan(0)`
+      // was satisfied by any constant, so replacing the subtraction outright —
+      // recording every node at exactly `tokens` tok/s — passed the whole suite.
+      expect(elapsedMs).toBeGreaterThanOrEqual(20000);
+      expect(elapsedMs).toBeLessThan(21000);
+    });
+
+    it('flags a cold node\'s benchmark so its result replaces rather than blends', async () => {
+      const nodes = { recordSpeedSample: jest.fn() };
+      jobService = new JobService(db, nodes);
+      const job = await jobService.createJob({
+        prompt: 'bench', userId: 'u', targetNode: 'n2', benchmark: true, benchmarkWarmup: true,
+      });
+      await jobService.assignJobsToNode('n2', 1);
+      await jobService.handleHeartbeat(job.id, 'n2');
+      await jobService.storeChunk(job.id, 'n2', { chunkIndex: 0, content: 'x', isFinal: true, metrics: { totalTokens: 50 } });
+      await jobService.completeJob(job.id, 'n2');
+
+      expect(nodes.recordSpeedSample).toHaveBeenCalledWith('n2', 50, expect.any(Number), { replace: true });
+    });
+
+    it('ignores the node-supplied start time, which the node could delay to look fast', async () => {
+      // startedAt is stamped by the node's first heartbeat, so the node picks it.
+      // A later start means a shorter measured interval, so simply withholding the
+      // first beat reports a faster rate — here 20s of work would read as 5s, and
+      // this number decides which jobs the node is offered.
+      const nodes = { recordSpeedSample: jest.fn() };
+      jobService = new JobService(db, nodes);
+      const job = await jobService.createJob({ prompt: 'x', userId: 'u' });
+      const [a] = await jobService.assignJobsToNode('n9', 1);
+      await jobService.handleHeartbeat(job.id, 'n9', a.lockToken);
+
+      const now = Date.now();
+      const data = await jobService.getJob(job.id);
+      await db.query('UPDATE jobs SET data = $2 WHERE id = $1',
+        [job.id, JSON.stringify({ ...data, assignedAt: now - 20000, startedAt: now - 5000 })]);
+      await jobService.storeChunk(job.id, 'n9',
+        { chunkIndex: 0, content: 'x', isFinal: true, metrics: { totalTokens: 300 } }, a.lockToken);
+      await jobService.completeJob(job.id, 'n9', a.lockToken);
+
+      const [, , elapsedMs] = nodes.recordSpeedSample.mock.calls[0];
+      expect(elapsedMs).toBeGreaterThanOrEqual(20000); // the server's assignment stamp
+      expect(elapsedMs).toBeLessThan(21000);
+    });
+
+    it('measures only the attempt that finished, not a requeued job\'s first try', async () => {
+      // checkTimeouts requeues by spreading the old data, and handleHeartbeat keeps
+      // `startedAt || now` — so after a requeue startedAt still points at the FIRST
+      // attempt. Charging that dead time to whoever finishes the re-run measured a
+      // node that generated instantly at 6.7 tok/s, which the EWMA then drags
+      // toward the amber line and cuts off from full-length jobs.
+      const nodes = { recordSpeedSample: jest.fn() };
+      jobService = new JobService(db, nodes);
+      const job = await jobService.createJob({ prompt: 'x', userId: 'u' });
+
+      const [a] = await jobService.assignJobsToNode('nodeA', 1);
+      await jobService.handleHeartbeat(job.id, 'nodeA', a.lockToken);
+      // Node A started 150s ago and went silent.
+      const long = Date.now() - 150000;
+      const data = await jobService.getJob(job.id);
+      await db.query('UPDATE jobs SET data = $2, heartbeat_at = $3 WHERE id = $1',
+        [job.id, JSON.stringify({ ...data, startedAt: long, assignedAt: long }), long]);
+      expect(await jobService.checkTimeouts()).toEqual([job.id]);
+
+      const [b] = await jobService.assignJobsToNode('nodeB', 1);
+      await jobService.handleHeartbeat(job.id, 'nodeB', b.lockToken);
+      await jobService.storeChunk(job.id, 'nodeB',
+        { chunkIndex: 0, content: 'hi', isFinal: true, metrics: { totalTokens: 1000 } }, b.lockToken);
+      await jobService.completeJob(job.id, 'nodeB', b.lockToken);
+
+      const [nodeId, tokens, elapsedMs] = nodes.recordSpeedSample.mock.calls[0];
+      expect(nodeId).toBe('nodeB');
+      expect(tokens).toBe(1000);
+      // Node B's own possession only — seconds, not the 150s+ since node A began.
+      expect(elapsedMs).toBeLessThan(10000);
+    });
+
+    it('skips the sample when the node reported no usable metrics', async () => {
+      const nodes = { recordSpeedSample: jest.fn() };
+      jobService = new JobService(db, nodes);
+      await finish('n3', undefined);              // no final metrics at all
+      await finish('n3', { tokensPerSecond: 20 }); // metrics without a token count
+      expect(nodes.recordSpeedSample).not.toHaveBeenCalled();
+    });
+
+    it('skips the sample when the job carries no usable start time', async () => {
+      // Defensive: assignJobsToNode always stamps assignedAt, but a row that lost
+      // it (a hand-edited job, a future code path) would otherwise be measured
+      // from epoch 0 — an elapsed of 56 years, recorded as a near-zero rate that
+      // gates the node out of everything.
+      const nodes = { recordSpeedSample: jest.fn() };
+      jobService = new JobService(db, nodes);
+      const job = await jobService.createJob({ prompt: 'x', userId: 'u' });
+      const [a] = await jobService.assignJobsToNode('n5', 1);
+      await jobService.handleHeartbeat(job.id, 'n5', a.lockToken);
+      const data = await jobService.getJob(job.id);
+      delete data.assignedAt;
+      delete data.startedAt;
+      await db.query('UPDATE jobs SET data = $2 WHERE id = $1', [job.id, JSON.stringify(data)]);
+      await jobService.storeChunk(job.id, 'n5',
+        { chunkIndex: 0, content: 'x', isFinal: true, metrics: { totalTokens: 10 } }, a.lockToken);
+      await jobService.completeJob(job.id, 'n5', a.lockToken);
+
+      expect(nodes.recordSpeedSample).not.toHaveBeenCalled();
+    });
+
+    it('never fails a completed job over a speed sample', async () => {
+      const spy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const nodes = { recordSpeedSample: jest.fn().mockRejectedValue(new Error('nodes table down')) };
+      jobService = new JobService(db, nodes);
+
+      const job = await finish('n4', { totalTokens: 100 });
+      // The caller's completion is what matters; the measurement is a bonus.
+      expect((await jobService.getJob(job.id)).status).toBe('completed');
+      expect(spy).toHaveBeenCalledWith('Failed to record node speed:', 'nodes table down');
+      spy.mockRestore();
     });
   });
 

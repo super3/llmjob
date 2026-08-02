@@ -75,7 +75,15 @@ CREATE TABLE IF NOT EXISTS nodes (
   vram_used double precision,
   model text,
   quant text,
-  tps double precision
+  tps double precision,
+  -- Server-measured generation speed, deliberately separate from the tps column
+  -- above: that one is whatever the node reports on its ping, and a number that
+  -- decides which jobs a node is offered (and eventually what it earns) can't be
+  -- self-reported. These are computed at the server from the tokens a job
+  -- produced over the wall time the server itself observed.
+  measured_tps double precision,
+  speed_samples integer DEFAULT 0,
+  speed_at bigint
 );
 CREATE INDEX IF NOT EXISTS idx_nodes_user ON nodes (user_id);
 
@@ -123,6 +131,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   user_id text,
   visibility text,
   target_node text,
+  -- Promoted out of the data column so assignment can filter on it: a node is only offered
+  -- work it can finish inside the gateway's budget at its measured speed.
+  max_tokens integer,
   assigned_to text,
   lock_node text,
   lock_token text,

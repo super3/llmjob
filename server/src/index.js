@@ -8,6 +8,7 @@ const routes = require('./routes');
 const { initJobRoutes, initOpenAiRoutes, initChatRoutes } = require('./routes');
 const NodeService = require('./services/nodeService');
 const JobService = require('./services/jobService');
+const BenchmarkService = require('./services/benchmarkService');
 
 dotenv.config();
 
@@ -119,6 +120,23 @@ async function startServer() {
       }
     }, 30000);
 
+    // Measure any node we can't currently vouch for — never benchmarked, or
+    // benchmarked too long ago to trust. Runs every 5 minutes rather than
+    // continuously because it only ever has work right after a node joins or a
+    // measurement ages out; nodes carrying real traffic re-measure themselves on
+    // every completed job and never appear here.
+    const benchmarkService = new BenchmarkService(db);
+    const benchmarkInterval = setInterval(async () => {
+      try {
+        const queued = await benchmarkService.sweep();
+        if (queued.length > 0) {
+          console.log(`Queued speed benchmarks for ${queued.length} node(s): ${queued.join(', ')}`);
+        }
+      } catch (error) {
+        console.error('Error queueing node benchmarks:', error);
+      }
+    }, 300000);
+
     // Clean up old jobs every hour
     const cleanupInterval = setInterval(async () => {
       try {
@@ -142,6 +160,7 @@ async function startServer() {
       clearInterval(statusInterval);
       clearInterval(timeoutInterval);
       clearInterval(cleanupInterval);
+      clearInterval(benchmarkInterval);
 
       server.close(async () => {
         console.log('HTTP server closed');

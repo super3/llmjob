@@ -277,6 +277,131 @@ describe('NodeService', () => {
     });
   });
 
+  // Server-measured generation speed: the number assignment gates on, and what
+  // the network page paints. Deliberately not the `tps` a node reports on its
+  // ping — see nodeService for why a self-reported figure can't decide who gets
+  // work.
+  describe('speed measurement', () => {
+    const seed = async (id) => (await service.claimNode('pk-' + id, id, 'u1')).nodeId;
+
+    it('sets the first sample outright, then blends later ones', async () => {
+      const id = await seed('a');
+
+      // 400 tokens in 10s = 40 tok/s. Nothing to blend with, so it lands as-is.
+      expect((await service.recordSpeedSample(id, 400, 10000)).tps).toBeCloseTo(40, 5);
+
+      // A slower run moves the number toward it, not onto it: one unlucky job (a
+      // node that picked mining back up mid-generation) must not swing what work
+      // the node is offered.
+      const second = await service.recordSpeedSample(id, 200, 10000); // 20 tok/s
+      expect(second.tps).toBeCloseTo(40 * 0.7 + 20 * 0.3, 5);
+      expect(second.samples).toBe(2);
+    });
+
+    it('replaces rather than blends when told to (a cold node\'s warm-up run)', async () => {
+      const id = await seed('b');
+      await service.recordSpeedSample(id, 100, 10000); // 10 tok/s — model still loading
+      // The real measurement must not be dragged down by the warm-up figure.
+      const after = await service.recordSpeedSample(id, 400, 10000, { replace: true });
+      expect(after.tps).toBeCloseTo(40, 5);
+    });
+
+    it('ignores nonsense samples and unknown nodes', async () => {
+      const id = await seed('c');
+      expect(await service.recordSpeedSample(id, 0, 10000)).toBeNull();
+      expect(await service.recordSpeedSample(id, 400, 0)).toBeNull();
+      expect(await service.recordSpeedSample(id, 'x', 10000)).toBeNull();
+      expect(await service.recordSpeedSample(id, 400, 'y')).toBeNull();
+      expect(await service.recordSpeedSample('', 400, 10000)).toBeNull();
+      expect(await service.recordSpeedSample('ghost', 400, 10000)).toBeNull();
+      expect((await service.getSpeed(id)).tps).toBeNull(); // nothing was written
+    });
+
+    it('discards a reply too short to measure', async () => {
+      const id = await seed('g');
+      // 40 tokens in 5s reads as 8 tok/s on a card that really runs at 40: the
+      // wall time is mostly prompt prefill and two HTTP round trips. That single
+      // reading used to set the node's speed outright and gate it out of all
+      // traffic, so a reply this small is not a measurement.
+      expect(await service.recordSpeedSample(id, 40, 5000)).toBeNull();
+      expect((await service.getSpeed(id)).tps).toBeNull();
+
+      expect(await service.recordSpeedSample(id, NodeService.MIN_SAMPLE_TOKENS, 5000)).not.toBeNull();
+    });
+
+    it('discards a sample claiming an impossible rate', async () => {
+      const id = await seed('f');
+      await service.recordSpeedSample(id, 400, 10000); // 40 tok/s, real
+      // totalTokens comes from the node's own metrics, and the rate now decides
+      // which jobs it is offered — so over-reporting is a way to attract longer
+      // work than the hardware can finish. Dropped, not clamped: a clamped value
+      // would still drag the average up to the ceiling.
+      expect(await service.recordSpeedSample(id, 10_000_000, 1000)).toBeNull();
+      const after = await service.getSpeed(id);
+      expect(after.tps).toBeCloseTo(40, 5);
+      expect(after.samples).toBe(1); // the lie never counted
+
+      // Right at the ceiling still counts — the guard is for the absurd, not the fast.
+      expect(await service.recordSpeedSample(id, NodeService.MAX_SAMPLE_TPS, 1000)).not.toBeNull();
+    });
+
+    it('reports an unmeasured node as unknown, not as slow', async () => {
+      const id = await seed('d');
+      const speed = await service.getSpeed(id);
+      expect(speed).toEqual({ tps: null, samples: 0, at: null, stale: true, known: false });
+      expect(await service.getSpeed('ghost')).toBeNull();
+    });
+
+    it('treats an old measurement as stale', async () => {
+      const id = await seed('e');
+      await service.recordSpeedSample(id, 400, 10000);
+      expect((await service.getSpeed(id)).known).toBe(true);
+
+      // The node may have swapped cards or started co-running the miner since.
+      await db.query('UPDATE nodes SET speed_at = $1 WHERE node_id = $2',
+        [Date.now() - NodeService.SPEED_STALE_MS - 1000, id]);
+      const speed = await service.getSpeed(id);
+      expect(speed.stale).toBe(true);
+      expect(speed.known).toBe(false); // so it neither gates the node nor counts as measured
+    });
+  });
+
+  describe('listServingNodes', () => {
+    it('lists online nodes with their measured speed, fastest first', async () => {
+      const slow = (await service.claimNode('pk-slow', 'slow', 'u1')).nodeId;
+      const fast = (await service.claimNode('pk-fast', 'fast', 'u1')).nodeId;
+      const cold = (await service.claimNode('pk-cold', 'cold', 'u1')).nodeId;
+      await service.recordSpeedSample(slow, 200, 10000); // 20 tok/s
+      await service.recordSpeedSample(fast, 450, 10000); // 45 tok/s
+
+      const nodes = await service.listServingNodes();
+      expect(nodes.map((n) => n.nodeId)).toEqual([fast, slow, cold]); // NULLS LAST
+      expect(nodes[0].tps).toBe(45);
+      expect(nodes[0].stale).toBe(false);
+      expect(nodes[2].tps).toBeNull();   // never measured
+      expect(nodes[2].stale).toBe(true);
+      // Node id, speed and freshness only. This endpoint is unauthenticated and
+      // covers nodes that never opted into being public, so the owner-set name and
+      // the free-text device string stay out of it — the page reads neither.
+      expect(Object.keys(nodes[0]).sort()).toEqual(['lastSeen', 'measuredAt', 'nodeId', 'samples', 'stale', 'tps']);
+    });
+
+    it('leaves out nodes that have gone offline', async () => {
+      const id = (await service.claimNode('pk-gone', 'gone', 'u1')).nodeId;
+      await setLastSeen(id, Date.now() - 60 * 60 * 1000);
+      expect(await service.listServingNodes()).toEqual([]);
+    });
+
+    it('lists a node that carries no metadata at all', async () => {
+      await db.query(
+        "INSERT INTO nodes (node_id, public_key, status, last_seen) VALUES ('bare', 'k', 'online', $1)",
+        [Date.now()]
+      );
+      const [node] = await service.listServingNodes();
+      expect(node).toMatchObject({ nodeId: 'bare', tps: null, samples: 0, stale: true });
+    });
+  });
+
   describe('getNode', () => {
     it('returns null for an unknown node', async () => {
       expect(await service.getNode('nope')).toBeNull();
