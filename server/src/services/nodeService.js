@@ -12,6 +12,14 @@ const SPEED_ALPHA = 0.3;
 // this long may have swapped cards, changed models, or started co-running the
 // miner, and the stale figure would gate it on evidence that no longer holds.
 const SPEED_STALE_MS = 6 * 60 * 60 * 1000;
+// Discard a sample claiming more than this. The token count comes from the node's
+// own final-chunk metrics, and the rate now decides which jobs it is offered — so
+// over-reporting tokens is a way to attract longer work than the hardware can
+// actually finish. No single GPU serving this model comes near 1000 tok/s (the
+// fastest card measured 45), so anything above it is a broken client or a lying
+// one; either way it is not a measurement. Bogus samples are dropped rather than
+// clamped, so they don't pull the average up to the ceiling either.
+const MAX_SAMPLE_TPS = 1000;
 
 // Generate a short fingerprint from a public key.
 function generateNodeFingerprint(publicKey) {
@@ -203,6 +211,8 @@ class NodeService {
     if (!nodeId || !Number.isFinite(t) || t <= 0 || !Number.isFinite(ms) || ms <= 0) return null;
 
     const rate = t / (ms / 1000);
+    if (rate > MAX_SAMPLE_TPS) return null;
+
     const r = await this.db.query('SELECT measured_tps, speed_samples FROM nodes WHERE node_id = $1', [nodeId]);
     if (!r.rows.length) return null;
 
@@ -361,5 +371,6 @@ class NodeService {
 NodeService.generateNodeFingerprint = generateNodeFingerprint;
 NodeService.SPEED_STALE_MS = SPEED_STALE_MS;
 NodeService.SPEED_ALPHA = SPEED_ALPHA;
+NodeService.MAX_SAMPLE_TPS = MAX_SAMPLE_TPS;
 
 module.exports = NodeService;

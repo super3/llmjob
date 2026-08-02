@@ -317,6 +317,22 @@ describe('NodeService', () => {
       expect((await service.getSpeed(id)).tps).toBeNull(); // nothing was written
     });
 
+    it('discards a sample claiming an impossible rate', async () => {
+      const id = await seed('f');
+      await service.recordSpeedSample(id, 400, 10000); // 40 tok/s, real
+      // totalTokens comes from the node's own metrics, and the rate now decides
+      // which jobs it is offered — so over-reporting is a way to attract longer
+      // work than the hardware can finish. Dropped, not clamped: a clamped value
+      // would still drag the average up to the ceiling.
+      expect(await service.recordSpeedSample(id, 10_000_000, 1000)).toBeNull();
+      const after = await service.getSpeed(id);
+      expect(after.tps).toBeCloseTo(40, 5);
+      expect(after.samples).toBe(1); // the lie never counted
+
+      // Right at the ceiling still counts — the guard is for the absurd, not the fast.
+      expect(await service.recordSpeedSample(id, NodeService.MAX_SAMPLE_TPS, 1000)).not.toBeNull();
+    });
+
     it('reports an unmeasured node as unknown, not as slow', async () => {
       const id = await seed('d');
       const speed = await service.getSpeed(id);

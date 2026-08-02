@@ -58,6 +58,13 @@ function clampPriority(v) {
   return Math.min(Math.max(n, MIN_PRIORITY), MAX_PRIORITY);
 }
 
+// A stored epoch-ms timestamp as a number, or 0 for anything unusable — so a
+// caller can Math.max() over several without NaN swallowing the result.
+function toMs(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 // A job's routing (inherited from the API key that created it): 'private' may
 // only run on the owner's own nodes; anything else is 'public' (any node).
 function normalizeVisibility(v) {
@@ -355,11 +362,21 @@ class JobService {
   // failing a completed job over.
   async _recordSpeed(nodeId, row, chunks, completedAt) {
     try {
+      const data = row.data;
       const final = chunks.find((c) => c && c.isFinal && c.metrics);
       const tokens = final ? Number(final.metrics.totalTokens) : NaN;
-      const startedAt = Number(row && row.data && (row.data.startedAt || row.data.assignedAt));
-      if (!Number.isFinite(tokens) || !Number.isFinite(startedAt)) return;
-      await this.nodes.recordSpeedSample(nodeId, tokens, completedAt - startedAt, {
+      // The LATER of the two, not startedAt first. checkTimeouts requeues a job by
+      // spreading its old data, and handleHeartbeat keeps `startedAt: startedAt ||
+      // now` — so after a requeue `startedAt` still points at the FIRST attempt,
+      // minutes before this node ever saw the job. Charging that dead time to
+      // whoever finishes the re-run measured a node that generated 1000 tokens
+      // instantly at 6.7 tok/s, which the EWMA then drags toward the amber line.
+      // `assignedAt` is rewritten by assignJobsToNode on every assignment, so it
+      // always bounds the current attempt; on a normal run the heartbeat's
+      // startedAt is later and stays the more precise start of generation.
+      const begun = Math.max(toMs(data.assignedAt), toMs(data.startedAt));
+      if (!Number.isFinite(tokens) || !(begun > 0)) return;
+      await this.nodes.recordSpeedSample(nodeId, tokens, completedAt - begun, {
         // A benchmark of a node we've never measured replaces rather than blends:
         // its first run carries model load and KV warm-up, so it reads far slower
         // than the node really is.

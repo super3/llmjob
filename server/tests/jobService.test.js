@@ -477,11 +477,64 @@ describe('JobService', () => {
       expect(nodes.recordSpeedSample).toHaveBeenCalledWith('n2', 50, expect.any(Number), { replace: true });
     });
 
+    it('measures only the attempt that finished, not a requeued job\'s first try', async () => {
+      // checkTimeouts requeues by spreading the old data, and handleHeartbeat keeps
+      // `startedAt || now` — so after a requeue startedAt still points at the FIRST
+      // attempt. Charging that dead time to whoever finishes the re-run measured a
+      // node that generated instantly at 6.7 tok/s, which the EWMA then drags
+      // toward the amber line and cuts off from full-length jobs.
+      const nodes = { recordSpeedSample: jest.fn() };
+      jobService = new JobService(db, nodes);
+      const job = await jobService.createJob({ prompt: 'x', userId: 'u' });
+
+      const [a] = await jobService.assignJobsToNode('nodeA', 1);
+      await jobService.handleHeartbeat(job.id, 'nodeA', a.lockToken);
+      // Node A started 150s ago and went silent.
+      const long = Date.now() - 150000;
+      const data = await jobService.getJob(job.id);
+      await db.query('UPDATE jobs SET data = $2, heartbeat_at = $3 WHERE id = $1',
+        [job.id, JSON.stringify({ ...data, startedAt: long, assignedAt: long }), long]);
+      expect(await jobService.checkTimeouts()).toEqual([job.id]);
+
+      const [b] = await jobService.assignJobsToNode('nodeB', 1);
+      await jobService.handleHeartbeat(job.id, 'nodeB', b.lockToken);
+      await jobService.storeChunk(job.id, 'nodeB',
+        { chunkIndex: 0, content: 'hi', isFinal: true, metrics: { totalTokens: 1000 } }, b.lockToken);
+      await jobService.completeJob(job.id, 'nodeB', b.lockToken);
+
+      const [nodeId, tokens, elapsedMs] = nodes.recordSpeedSample.mock.calls[0];
+      expect(nodeId).toBe('nodeB');
+      expect(tokens).toBe(1000);
+      // Node B's own possession only — seconds, not the 150s+ since node A began.
+      expect(elapsedMs).toBeLessThan(10000);
+    });
+
     it('skips the sample when the node reported no usable metrics', async () => {
       const nodes = { recordSpeedSample: jest.fn() };
       jobService = new JobService(db, nodes);
       await finish('n3', undefined);              // no final metrics at all
       await finish('n3', { tokensPerSecond: 20 }); // metrics without a token count
+      expect(nodes.recordSpeedSample).not.toHaveBeenCalled();
+    });
+
+    it('skips the sample when the job carries no usable start time', async () => {
+      // Defensive: assignJobsToNode always stamps assignedAt, but a row that lost
+      // it (a hand-edited job, a future code path) would otherwise be measured
+      // from epoch 0 — an elapsed of 56 years, recorded as a near-zero rate that
+      // gates the node out of everything.
+      const nodes = { recordSpeedSample: jest.fn() };
+      jobService = new JobService(db, nodes);
+      const job = await jobService.createJob({ prompt: 'x', userId: 'u' });
+      const [a] = await jobService.assignJobsToNode('n5', 1);
+      await jobService.handleHeartbeat(job.id, 'n5', a.lockToken);
+      const data = await jobService.getJob(job.id);
+      delete data.assignedAt;
+      delete data.startedAt;
+      await db.query('UPDATE jobs SET data = $2 WHERE id = $1', [job.id, JSON.stringify(data)]);
+      await jobService.storeChunk(job.id, 'n5',
+        { chunkIndex: 0, content: 'x', isFinal: true, metrics: { totalTokens: 10 } }, a.lockToken);
+      await jobService.completeJob(job.id, 'n5', a.lockToken);
+
       expect(nodes.recordSpeedSample).not.toHaveBeenCalled();
     });
 
