@@ -54,7 +54,12 @@
     .nav-right { gap: 16px; }
   }
   @media (max-width: 460px) {
-    .nav-right { gap: 13px; }
+    /* Compact nav: four links plus the Discord button no longer fit a 360px
+       phone at full size, so shrink the whole bar rather than drop a link. */
+    .nav-right { gap: 9px; }
+    .nav-link { font-size: 14px; }
+    .logo { font-size: 18px; gap: 9px; }
+    .logo .bolt { width: 32px; height: 32px; border-radius: 9px; }
     .btn-discord { padding: 9px 11px; }
     .btn-discord .dc-txt { display: none; }
   }

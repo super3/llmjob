@@ -111,7 +111,9 @@ describe('Chat gateway — integration', () => {
     });
 
     const totals = await new ChatUsageService(db).getTotals();
-    expect(totals).toEqual({ requests: 1, inTokens: 4, outTokens: 2, totalTokens: 6 });
+    // apiTotalTokens stays 0: web-chat traffic is not billed to an API key, so
+    // there is nothing for the public totals to subtract back out.
+    expect(totals).toEqual({ requests: 1, inTokens: 4, outTokens: 2, totalTokens: 6, apiTotalTokens: 0 });
   });
 
   it('picks a model by its friendly label and passes the id upstream', async () => {
@@ -386,6 +388,26 @@ describe('Chat gateway — integration', () => {
       expect(res.body.totals.totalTokens).toBe(30);
       expect(res.body.remaining).toBe(70);
       expect(res.body.exhausted).toBe(false);
+    });
+
+    it('counts hosted-model API traffic once, and against the free cap', async () => {
+      // A hosted generation served for an API key is recorded twice on purpose:
+      // in the OpenRouter totals (it is our credit being spent, so the cap must
+      // see it) and against the key (so the owner's dashboard is complete). The
+      // public "tokens served" figure must not double it.
+      const usage = new ChatUsageService(db);
+      await usage.recordUsage({ model: 'm', inTokens: 10, outTokens: 20 });          // web chat
+      await usage.recordUsage({ model: 'm', inTokens: 4, outTokens: 6, viaApiKey: true }); // hosted via /v1
+      const keys = new ApiKeyService(db);
+      const k = await keys.createKey('u1', 'gateway');
+      await keys.recordUsage(ApiKeyService.sha256(k.key), 10 + 500); // the same 10, plus node-served work
+
+      const res = await request(makeApp(db, { freeBudget: 100 })).get('/api/chat/usage');
+      expect(res.body.network.apiTokens).toBe(510);
+      expect(res.body.network.totalTokens).toBe(540); // 30 chat + 10 hosted + 500 node — each once
+      // The hosted tokens DO burn the free budget: same pot of OpenRouter credit.
+      expect(res.body.totals.totalTokens).toBe(40);
+      expect(res.body.remaining).toBe(60);
     });
 
     it('reports zero API tokens when no keys have been used', async () => {

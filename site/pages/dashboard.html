@@ -519,7 +519,7 @@ function App() {
             <div className="sec-title">
               <div>
                 <h2>API</h2>
-                <div className="sub">Create a key to get your endpoint and start making requests.</div>
+                <div className="sub">Create a key to get your endpoint and start making requests — see the <a href="api.html" style={{ color: "var(--accent)" }}>API docs</a>.</div>
               </div>
               <button className="btn-add" onClick={openCreate}>{I.plus} New key</button>
             </div>
@@ -636,6 +636,10 @@ function App() {
                   <code>POST {API_BASE}/v1/chat/completions</code>
                   <button onClick={copyEndpoint}>{copiedEndpoint ? "copied" : "copy"}</button>
                 </div>
+                <p className="hint">
+                  Full reference — models, streaming, limits and errors — in the{' '}
+                  <a href="api.html" style={{ color: "var(--accent)", textDecoration: "underline", textUnderlineOffset: 2 }}>API docs</a>.
+                </p>
                 <div className="modal-actions">
                   <button className="btn-sm primary" onClick={closeCreate}>Done</button>
                 </div>

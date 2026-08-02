@@ -111,12 +111,17 @@ const initJobRoutes = (db) => {
 };
 
 // OpenAI-compatible gateway. Mounted at the app root (not under /api) so callers
-// point any OpenAI SDK at `https://<host>/v1`. API-key auth; each request becomes
-// an inference job served by an online node. `opts` (poll cadence / timeout) is
-// injectable for tests.
+// point any OpenAI SDK at `https://<host>/v1`. API-key auth; a request becomes an
+// inference job served by an online node, or — when it names one of the hosted
+// models and the key is public — is proxied to OpenRouter. `opts` (poll cadence /
+// timeout / OpenRouter config) is injectable for tests.
+//
+// /v1/models is authenticated too: which models a caller may name depends on
+// whether their key routes publicly or only to their own nodes.
 const initOpenAiRoutes = (app, opts) => {
   const ctrl = new OpenAiController(opts || {});
   app.post('/v1/chat/completions', apiKeyAuth, (req, res) => ctrl.chatCompletions(req, res));
+  app.get('/v1/models', apiKeyAuth, (req, res) => ctrl.listModels(req, res));
   return ctrl;
 };
 
