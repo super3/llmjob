@@ -58,7 +58,17 @@ describe('ChatUsageService', () => {
       await service.recordUsage({ model: 'a', inTokens: 10, outTokens: 5 });
       await service.recordUsage({ model: 'b', inTokens: 3, outTokens: 7 });
       const totals = await service.getTotals();
-      expect(totals).toEqual({ requests: 2, inTokens: 13, outTokens: 12, totalTokens: 25 });
+      expect(totals).toEqual({ requests: 2, inTokens: 13, outTokens: 12, totalTokens: 25, apiTotalTokens: 0 });
+    });
+
+    it('tallies API-gateway generations separately as well as into the totals', async () => {
+      // Hosted-model traffic served for an API key is OpenRouter spend like any
+      // other — it counts against the free cap — but it is billed to the key too,
+      // so it is tracked on its own for the pages that add both sums together.
+      await service.recordUsage({ model: 'a', inTokens: 10, outTokens: 5 });
+      await service.recordUsage({ model: 'b', inTokens: 3, outTokens: 7, viaApiKey: true });
+      const totals = await service.getTotals();
+      expect(totals).toEqual({ requests: 2, inTokens: 13, outTokens: 12, totalTokens: 25, apiTotalTokens: 10 });
     });
 
     it('trims perf rows beyond the cap but keeps lifetime totals intact', async () => {
@@ -78,7 +88,8 @@ describe('ChatUsageService', () => {
 
   describe('getTotals', () => {
     it('returns zeroes before any usage is recorded', async () => {
-      expect(await service.getTotals()).toEqual({ requests: 0, inTokens: 0, outTokens: 0, totalTokens: 0 });
+      expect(await service.getTotals())
+        .toEqual({ requests: 0, inTokens: 0, outTokens: 0, totalTokens: 0, apiTotalTokens: 0 });
     });
   });
 

@@ -52,7 +52,8 @@ CREATE TABLE IF NOT EXISTS chat_usage_totals (
   requests bigint DEFAULT 0,
   in_tokens bigint DEFAULT 0,
   out_tokens bigint DEFAULT 0,
-  total_tokens bigint DEFAULT 0
+  total_tokens bigint DEFAULT 0,
+  api_total_tokens bigint DEFAULT 0
 );
 `;
 
