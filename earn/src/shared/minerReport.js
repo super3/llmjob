@@ -103,7 +103,18 @@ function buildMinerReports(settings, snap, gpuVram, version, serving) {
   // nvidia-smi sees more cards. Enumerate the physical cards so none are hidden
   // and each shows its own VRAM; split the engine's reported total hashrate/
   // shares evenly, since per-card values aren't available in this shape.
-  if (vram.length > cards.length) {
+  //
+  // Gated on `slots`, NOT the live card count. A card that hangs keeps
+  // enumerating in nvidia-smi — a driver hang is far commoner than a card
+  // physically leaving the bus — so once the engine stops reporting it, a live
+  // count would sit below vram.length and fire this net for a rig whose per-card
+  // data is perfectly good. That resurrected the dead card at an invented
+  // hashrate AND halved the survivor's real one (101 TH/s on one card became two
+  // rows of 50.5), which is worse than the stale reading this staleness handling
+  // exists to remove. `slots` counts cards the session has actually heard from,
+  // so a card we KNOW died no longer looks like one the engine forgot to
+  // mention — and a genuine aggregate-only engine still trips the net.
+  if (vram.length > slots) {
     const total = cards.reduce((a, c) => a + (Number(c.hashrate) || 0), 0);
     const accepted = cards.reduce((a, c) => a + (Number(c.accepted) || 0), 0);
     return splitRows(total, accepted, cards[0] && cards[0].gpu);

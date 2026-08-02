@@ -245,6 +245,37 @@ describe('buildMinerReports', () => {
     expect(row.worker).toBe('rig01');
   });
 
+  // A hung card keeps enumerating in nvidia-smi — a driver hang is far commoner
+  // than a card leaving the bus. Gating the split-fallback on the LIVE card count
+  // fired it for a rig whose per-card data was perfectly good: the dead card came
+  // back at an invented hashrate and the survivor's real rate was halved.
+  test('a hung card that still enumerates does not trip the split fallback', () => {
+    const snap = {
+      total: 101, accepted: 500, gpuSlots: 2,          // two slots seen, gpu1 died
+      gpus: [{ index: 0, gpu: 'RTX 3080', hashrate: 101, accepted: 500 }],
+    };
+    const rows = buildMinerReports({ address: 'prl1pabc', worker: 'rig01' }, snap, [
+      { index: 0, name: 'RTX 3080', usedMb: 7000, totalMb: 12288 },
+      { index: 1, name: 'RTX 3060', usedMb: 5000, totalMb: 10240 }, // hung, still listed
+    ], '0.2.0');
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ worker: 'rig01/gpu0', hashrate: 101, accepted: 500 });
+    expect(rows.some((r) => r.gpu === 'RTX 3060')).toBe(false); // not resurrected
+  });
+
+  // …but a genuinely aggregate-only engine must still trip it, or a multi-GPU rig
+  // collapses to one row and the other cards' VRAM is invisible.
+  test('an engine reporting one aggregate line still splits across physical cards', () => {
+    const snap = { total: 300, accepted: 900, gpuSlots: 1, gpus: [{ index: 0, gpu: 'RIG', hashrate: 300, accepted: 900 }] };
+    const rows = buildMinerReports({ address: 'prl1pabc', worker: 'rig01' }, snap,
+      [0, 1, 2].map((i) => ({ index: i, name: 'C' + i, usedMb: 1000, totalMb: 12288 })), '0.2.0');
+
+    expect(rows.map((r) => r.worker)).toEqual(['rig01/gpu0', 'rig01/gpu1', 'rig01/gpu2']);
+    expect(rows.map((r) => r.hashrate)).toEqual([100, 100, 100]);
+    expect(rows.map((r) => r.gpu)).toEqual(['C0', 'C1', 'C2']); // each card's own VRAM/name
+  });
+
   test('a snapshot with no gpuSlots (older shape) names off the live card count', () => {
     const snap = { total: 128, gpus: [{ index: 0, gpu: 'A', hashrate: 101 }, { index: 1, gpu: 'B', hashrate: 27 }] };
     const rows = buildMinerReports({ address: 'prl1pabc', worker: 'rig01' }, snap, [], '0.2.0');
