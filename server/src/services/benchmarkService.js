@@ -21,11 +21,16 @@ const NodeService = require('./nodeService');
 // answer's length doesn't depend on what the model happens to know.
 const BENCH_PROMPT =
   'Write a single paragraph of about 120 words explaining what a GPU does, in plain language.';
-// Enough generation for a stable rate (a very short reply is mostly prefill and
-// measures the wrong thing), small enough that even a slow node finishes well
-// inside the gateway budget and the benchmark never becomes the timeout it exists
-// to prevent.
-const BENCH_MAX_TOKENS = 256;
+// Enough generation for a stable rate, and sized against the work we actually
+// measure against. End-to-end tok/s divides by wall time that includes prefill
+// and pickup, so a short reply amortizes that fixed cost over few tokens and
+// reads slower than the same node serving a real request — which biases nodes
+// toward the "too slow for a full job" side of the line for no reason. At 256
+// that bias was large; 1024 puts it within a few percent of a typical 2.5k-token
+// request. Still small enough that the slowest node in the fleet (~18 tok/s)
+// finishes in under a minute, so the benchmark never becomes the timeout it
+// exists to prevent.
+const BENCH_MAX_TOKENS = 1024;
 // Benchmarks run at negative priority so they always queue behind real traffic —
 // measuring the fleet must never delay serving it.
 const BENCH_PRIORITY = -1;
