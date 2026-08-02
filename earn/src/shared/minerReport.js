@@ -56,14 +56,6 @@ function buildMinerReports(settings, snap, gpuVram, version, serving) {
   const vramFor = (index) => vram.find((v) => v && Number(v.index) === index) || null;
   const cards = Array.isArray(n.gpus) ? n.gpus : [];
   const workerFor = (index, count) => (count > 1 ? base.worker + '/gpu' + index : base.worker);
-  // How many card slots this rig has, for NAMING only. A multi-GPU rig that
-  // loses a card must keep posting the survivor as "<worker>/gpu0", not revert
-  // to the bare "<worker>": the server drops a bare row whenever per-card
-  // siblings exist (they linger for the 5-minute offline window), so a renamed
-  // survivor is discarded on arrival and the board keeps showing the stale
-  // two-card snapshot instead of the one live card. `gpuSlots` counts every card
-  // the session has seen, so the name a rig starts with is the name it keeps.
-  const slots = Math.max(cards.length, Number(n.gpuSlots) || 0);
 
   // One row per physical card (from nvidia-smi), splitting a rig-level total
   // evenly — used whenever we know the card count but not each card's hashrate.
@@ -78,18 +70,6 @@ function buildMinerReports(settings, snap, gpuVram, version, serving) {
     vramTotalMb: Number(v.totalMb) || 0,
     llmModel: llmFor(v.index),
   }));
-
-  // Every card this session ever heard from has gone silent — the engine is
-  // wedged, disconnected, or reset. Report NOTHING and let the rig's board rows
-  // age out of the online list, which is what "not mining" should look like.
-  // Posting a 0 TH/s row instead would refresh last_seen on every cycle and pin
-  // the rig to the board as permanently online at zero, which is the same
-  // never-ages-off failure the per-card staleness handling exists to end.
-  //
-  // `slots` is what separates this from STARTUP — where nothing has reported yet
-  // (slots === 0) and a row SHOULD be posted, so a rig appears on the board while
-  // it spins up rather than staying invisible until its first share.
-  if (!cards.length && slots > 0) return [];
 
   // No per-card engine data yet (startup before the first per-card event, or an
   // engine build that only logs one aggregate line). For a MULTI-GPU rig, still
@@ -115,18 +95,7 @@ function buildMinerReports(settings, snap, gpuVram, version, serving) {
   // nvidia-smi sees more cards. Enumerate the physical cards so none are hidden
   // and each shows its own VRAM; split the engine's reported total hashrate/
   // shares evenly, since per-card values aren't available in this shape.
-  //
-  // Gated on `slots`, NOT the live card count. A card that hangs keeps
-  // enumerating in nvidia-smi — a driver hang is far commoner than a card
-  // physically leaving the bus — so once the engine stops reporting it, a live
-  // count would sit below vram.length and fire this net for a rig whose per-card
-  // data is perfectly good. That resurrected the dead card at an invented
-  // hashrate AND halved the survivor's real one (101 TH/s on one card became two
-  // rows of 50.5), which is worse than the stale reading this staleness handling
-  // exists to remove. `slots` counts cards the session has actually heard from,
-  // so a card we KNOW died no longer looks like one the engine forgot to
-  // mention — and a genuine aggregate-only engine still trips the net.
-  if (vram.length > slots) {
+  if (vram.length > cards.length) {
     const total = cards.reduce((a, c) => a + (Number(c.hashrate) || 0), 0);
     const accepted = cards.reduce((a, c) => a + (Number(c.accepted) || 0), 0);
     return splitRows(total, accepted, cards[0] && cards[0].gpu);
@@ -138,7 +107,7 @@ function buildMinerReports(settings, snap, gpuVram, version, serving) {
     const v = vramFor(c.index);
     return {
       ...base,
-      worker: workerFor(c.index, slots),
+      worker: workerFor(c.index, cards.length),
       gpu: c.gpu || (v && v.name) || null,
       hashrate: Number(c.hashrate) || 0,
       accepted: Number(c.accepted) || 0,

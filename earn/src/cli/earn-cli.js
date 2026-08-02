@@ -651,7 +651,7 @@ async function run(argv) {
     });
     miner.on('log', (l) => log(l.line, l.level === 'error' ? process.stderr : process.stdout));
     miner.on('event', (evt) => {
-      applyEvent(stats, evt, Date.now()); // stamped, so a card that goes silent ages out
+      applyEvent(stats, evt);
       if (evt.type === 'status') {
         const snap = snapshot(stats, Date.now());
         log('⛏  ' + format.formatHashrate(snap.total) + ' TH/s · '

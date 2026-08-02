@@ -355,7 +355,7 @@ async function startMining(settings) {
   miner = new MinerManager({ spawn });
   miner.on('log', (l) => send('miner:log', l));
   miner.on('event', (e) => {
-    applyEvent(stats, e, Date.now()); // stamped, so a card that goes silent ages out
+    applyEvent(stats, e);
     send('miner:event', e);
   });
   miner.on('error', (err) => reportLaunchFailure(err, false));

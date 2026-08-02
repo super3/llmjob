@@ -25,8 +25,7 @@ describe('applyEvent', () => {
   test('a status event fills the card bucket and appends the rig total as a point', () => {
     const s = initStats(0);
     applyEvent(s, { type: 'status', gpuIndex: 0, hashrate: 286.86, accepted: 5, rejected: 1, power: 449, gpu: 'NVIDIA GeForce RTX 4090' });
-    // `at` stays null with no clock passed — an unstamped card never ages out.
-    expect(s.gpus[0]).toEqual({ index: 0, hashrate: 286.86, accepted: 5, rejected: 1, power: 449, gpu: 'NVIDIA GeForce RTX 4090', at: null });
+    expect(s.gpus[0]).toEqual({ index: 0, hashrate: 286.86, accepted: 5, rejected: 1, power: 449, gpu: 'NVIDIA GeForce RTX 4090' });
     expect(s.points).toEqual([286.86]);
   });
 
@@ -58,7 +57,7 @@ describe('applyEvent', () => {
     const s = initStats(0);
     applyEvent(s, { type: 'status', gpuIndex: 0, hashrate: 9, accepted: 3, rejected: 2, power: 100, gpu: 'keep' });
     applyEvent(s, { type: 'status', gpuIndex: 0 });
-    expect(s.gpus[0]).toEqual({ index: 0, hashrate: 9, accepted: 3, rejected: 2, power: 100, gpu: 'keep', at: null });
+    expect(s.gpus[0]).toEqual({ index: 0, hashrate: 9, accepted: 3, rejected: 2, power: 100, gpu: 'keep' });
   });
 
   test('caps the chart point buffer at MAX_POINTS', () => {
@@ -95,7 +94,6 @@ describe('snapshot', () => {
     applyEvent(s, { type: 'status', gpuIndex: 0, hashrate: 3.2, accepted: 4, rejected: 0, power: 300, gpu: 'RTX 4090' });
     expect(snapshot(s, 6000)).toEqual({
       total: 3.2, points: [3.2], accepted: 4, rejected: 0, load: 0, power: 300, gpu: 'RTX 4090',
-      gpuSlots: 1,
       gpus: [{ index: 0, gpu: 'RTX 4090', hashrate: 3.2, accepted: 4, rejected: 0, power: 300 }],
       uptimeSec: 5,
     });
@@ -117,8 +115,7 @@ describe('snapshot', () => {
 
   test('reads zeros and a null gpu before any card reports', () => {
     expect(snapshot(initStats(0), 0)).toEqual({
-      total: 0, points: [], accepted: 0, rejected: 0, load: 0, power: 0, gpu: null,
-      gpuSlots: 0, gpus: [], uptimeSec: 0,
+      total: 0, points: [], accepted: 0, rejected: 0, load: 0, power: 0, gpu: null, gpus: [], uptimeSec: 0,
     });
   });
 
@@ -142,110 +139,5 @@ describe('snapshot', () => {
   test('clamps uptime to 0 and treats a missing clock as 0', () => {
     const s = initStats(5000);
     expect(snapshot(s).uptimeSec).toBe(0);
-  });
-});
-
-// A bucket holds a card's LAST reading and was never removed, so a card that
-// died mid-session stayed frozen in the totals — and the once-a-minute board
-// report kept re-posting it with a fresh timestamp, so the server's offline
-// sweep never aged the row out. It inflated the rig, the address and the
-// network total indefinitely.
-describe('stale cards age out', () => {
-  const status = (i, hash, gpu) => ({ type: 'status', gpuIndex: i, hashrate: hash, accepted: 1, gpu });
-
-  test('drops a card the engine has stopped mentioning, and its hashrate with it', () => {
-    const s = initStats(0);
-    applyEvent(s, status(0, 101, 'RTX 3080'), 1000);
-    applyEvent(s, status(1, 27, 'RTX 3060'), 1000);
-    expect(snapshot(s, 1000).total).toBe(128);
-    expect(snapshot(s, 1000).gpus).toHaveLength(2);
-
-    // GPU1 goes silent; GPU0 keeps reporting for ten more minutes.
-    for (let t = 2000; t <= 600000; t += 5000) applyEvent(s, status(0, 101, 'RTX 3080'), t);
-
-    const snap = snapshot(s, 600000);
-    expect(snap.gpus.map((g) => g.index)).toEqual([0]);
-    expect(snap.total).toBe(101);            // not 128
-    expect(snap.gpu).toBe('RTX 3080');
-  });
-
-  test('keeps a card that is merely between status lines', () => {
-    const s = initStats(0);
-    applyEvent(s, status(0, 101, 'A'), 1000);
-    applyEvent(s, status(1, 27, 'B'), 1000);
-    // Well inside the window — a quiet minute is not a dead card.
-    expect(snapshot(s, 1000 + 60000).total).toBe(128);
-    expect(snapshot(s, 1000 + 179000).gpus).toHaveLength(2);
-  });
-
-  test('drops every card when the whole engine goes silent', () => {
-    const s = initStats(0);
-    applyEvent(s, status(0, 101, 'A'), 1000);
-    applyEvent(s, status(1, 27, 'B'), 1000);
-    const snap = snapshot(s, 1000 + 10 * 60 * 1000);
-    expect(snap.gpus).toEqual([]);
-    expect(snap.total).toBe(0);
-    expect(snap.gpu).toBeNull();
-  });
-
-  test('a card that comes back is counted again', () => {
-    const s = initStats(0);
-    applyEvent(s, status(0, 101, 'A'), 1000);
-    applyEvent(s, status(1, 27, 'B'), 1000);
-    // GPU0 keeps reporting throughout; only GPU1 falls silent and ages out.
-    for (let t = 2000; t <= 600000; t += 5000) applyEvent(s, status(0, 101, 'A'), t);
-    expect(snapshot(s, 600000).gpus).toHaveLength(1);
-    applyEvent(s, status(1, 30, 'B'), 600000);        // …then GPU1 reappears
-    const snap = snapshot(s, 600000);
-    expect(snap.gpus.map((g) => g.index)).toEqual([0, 1]);
-    expect(snap.total).toBe(131);
-  });
-
-  test('the sparkline stops counting a dead card too', () => {
-    const s = initStats(0);
-    applyEvent(s, status(0, 101, 'A'), 1000);
-    applyEvent(s, status(1, 27, 'B'), 1000);
-    expect(s.points[s.points.length - 1]).toBe(128);
-    applyEvent(s, status(0, 101, 'A'), 600000); // GPU1 long silent by now
-    expect(s.points[s.points.length - 1]).toBe(101);
-  });
-
-  // Hashrate is an instantaneous rate and must drop with the card. Shares are
-  // cumulative facts that were really earned — a counter that runs backwards on
-  // a system that pays per share reads as lost money, not a lost fan.
-  test('share counters do NOT drop when a card ages out', () => {
-    const s = initStats(0);
-    applyEvent(s, { type: 'status', gpuIndex: 0, hashrate: 101, accepted: 500, rejected: 4, gpu: 'A' }, 1000);
-    applyEvent(s, { type: 'status', gpuIndex: 1, hashrate: 27, accepted: 300, rejected: 2, gpu: 'B' }, 1000);
-    expect(snapshot(s, 1000).accepted).toBe(800);
-
-    for (let t = 2000; t <= 600000; t += 5000) {
-      applyEvent(s, { type: 'status', gpuIndex: 0, hashrate: 101, accepted: 500, rejected: 4, gpu: 'A' }, t);
-    }
-    const snap = snapshot(s, 600000);
-    expect(snap.accepted).toBe(800);   // the dead card's shares were still earned
-    expect(snap.rejected).toBe(6);
-    expect(snap.total).toBe(101);      // …but its hashrate is gone
-    expect(snap.power).toBe(0);
-  });
-
-  test('reports how many card slots the session has seen, dead ones included', () => {
-    const s = initStats(0);
-    applyEvent(s, { type: 'status', gpuIndex: 0, hashrate: 101, gpu: 'A' }, 1000);
-    applyEvent(s, { type: 'status', gpuIndex: 1, hashrate: 27, gpu: 'B' }, 1000);
-    expect(snapshot(s, 1000).gpuSlots).toBe(2);
-    // Still 2 after one ages out — the rig has two slots, one of them is dead.
-    for (let t = 2000; t <= 600000; t += 5000) applyEvent(s, { type: 'status', gpuIndex: 0, hashrate: 101, gpu: 'A' }, t);
-    const snap = snapshot(s, 600000);
-    expect(snap.gpus).toHaveLength(1);
-    expect(snap.gpuSlots).toBe(2);
-  });
-
-  test('without a clock nothing ages out (unstamped callers keep the old behaviour)', () => {
-    const s = initStats(0);
-    applyEvent(s, status(0, 101, 'A'));
-    applyEvent(s, status(1, 27, 'B'));
-    // Silence we cannot date is not evidence the card is gone.
-    expect(snapshot(s, 10 * 60 * 1000).total).toBe(128);
   });
 });
