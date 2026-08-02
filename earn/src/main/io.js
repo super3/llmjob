@@ -279,7 +279,11 @@ function downloadAttempt(url, dest, part, onProgress, redirects, attempt, ca) {
       }
       if (code !== 200) {
         res.resume();
-        return reject(new Error('HTTP ' + code + ' for ' + url));
+        // Through retryOrFail, not straight to reject: a CDN 502/503 is at least
+        // as common as a dropped socket on a multi-GB transfer, and a socket drop
+        // already gets four attempts. Failing setup on the first transient 5xx
+        // while patiently retrying a reset was backwards.
+        return retryOrFail(new Error('HTTP ' + code + ' for ' + url));
       }
       const total = parseInt(res.headers['content-length'] || '0', 10);
       let received = 0;
@@ -291,6 +295,18 @@ function downloadAttempt(url, dest, part, onProgress, redirects, attempt, ca) {
       res.on('error', fail);
       res.pipe(out);
       out.on('finish', () => out.close(() => {
+        // Size check before the rename. These files are executed (the miner, the
+        // llama-server binary) or loaded as a model, and installation is later
+        // tested with existsSync alone — so a truncated transfer that still ends
+        // "cleanly" would park a corrupt artifact at the final path and every
+        // subsequent start would accept it. Cheap, and it catches the common case
+        // the removed resume logic was feared for.
+        if (total > 0 && received !== total) {
+          fs.unlink(part, () => {});
+          return retryOrFail(new Error(
+            'download truncated: got ' + received + ' of ' + total + ' bytes'
+          ));
+        }
         try { fs.renameSync(part, dest); } catch (e) { return reject(e); }
         resolve(dest);
       }));

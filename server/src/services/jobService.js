@@ -24,6 +24,18 @@ const DEFAULT_MODEL = 'Gemma-4-E4B-it-Q4_K_M';
 // isn't held below it.
 const DEFAULT_MAX_TOKENS = 6400;
 
+// Caller-supplied priority, bounded. assignJobsToNode orders the GLOBAL pending
+// queue by priority DESC, and every in-repo producer writes 0 — so an unbounded
+// value from POST /api/jobs let one account jump ahead of all paid API and public
+// chat traffic indefinitely. A small range keeps the knob useful for genuine
+// ordering without letting it become a starvation lever.
+const MAX_PRIORITY = 10;
+function clampPriority(v) {
+  const n = Math.floor(Number(v));
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.min(n, MAX_PRIORITY);
+}
+
 // A job's routing (inherited from the API key that created it): 'private' may
 // only run on the owner's own nodes; anything else is 'public' (any node).
 function normalizeVisibility(v) {
@@ -52,7 +64,7 @@ class JobService {
       prompt: jobData.prompt,
       model: jobData.model || DEFAULT_MODEL,
       options: jobData.options || {},
-      priority: jobData.priority || 0,
+      priority: clampPriority(jobData.priority),
       status: 'pending',
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -439,3 +451,5 @@ class JobService {
 
 module.exports = JobService;
 module.exports.DEFAULT_MODEL = DEFAULT_MODEL;
+module.exports.MAX_PRIORITY = MAX_PRIORITY;
+module.exports.clampPriority = clampPriority;

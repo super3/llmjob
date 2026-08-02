@@ -99,8 +99,17 @@ function groupHosts(cards, now) {
   return hosts;
 }
 
+// Normalize at the boundary, then test — the same order earn/src/shared/address.js
+// uses. The server accepted mixed case (the /i flag) but never lowercased, and
+// minerFingerprint keys the row on the address it was handed, so one miner posting
+// `PRL1P…` and `prl1p…` landed as TWO board rows with its hashrate split between
+// them.
+function normalizeAddress(address) {
+  return String(address == null ? '' : address).trim().toLowerCase();
+}
+
 function isValidAddress(address) {
-  return ADDRESS_RE.test(String(address == null ? '' : address).trim());
+  return ADDRESS_RE.test(normalizeAddress(address));
 }
 
 // Coerce to a finite, non-negative number, optionally capped at `max`.
@@ -127,7 +136,9 @@ class MinerService {
 
   // Upsert a mining client's live status (no auth — public leaderboard data).
   async reportMiner(input = {}) {
-    const address = String(input.address == null ? '' : input.address).trim();
+    // Normalized before it is used as fingerprint input, so case can't fork a
+    // miner's row.
+    const address = normalizeAddress(input.address);
     if (!isValidAddress(address)) return { error: 'Invalid payout address' };
 
     const worker = (String(input.worker == null ? '' : input.worker).trim() || 'rig01').slice(0, 64);
@@ -212,6 +223,7 @@ class MinerService {
 
 MinerService.minerFingerprint = minerFingerprint;
 MinerService.isValidAddress = isValidAddress;
+MinerService.normalizeAddress = normalizeAddress;
 MinerService.clampNum = clampNum;
 MinerService.formatAgo = formatAgo;
 MinerService.baseWorker = baseWorker;
