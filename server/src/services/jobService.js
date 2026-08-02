@@ -44,11 +44,18 @@ function tokenCapacity(tps) {
 // value from POST /api/jobs let one account jump ahead of all paid API and public
 // chat traffic indefinitely. A small range keeps the knob useful for genuine
 // ordering without letting it become a starvation lever.
+//
+// The floor sits below zero rather than at it, because this lever only cuts one
+// way: a value under 0 can only ever YIELD to other traffic, so it starves
+// nobody. The benchmark sweeper needs exactly that — measuring the fleet must
+// never delay serving it — and with a floor of 0 its -1 was silently promoted to
+// ordinary priority, putting benchmarks level with paying requests.
 const MAX_PRIORITY = 10;
+const MIN_PRIORITY = -1;
 function clampPriority(v) {
   const n = Math.floor(Number(v));
-  if (!Number.isFinite(n) || n < 0) return 0;
-  return Math.min(n, MAX_PRIORITY);
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(Math.max(n, MIN_PRIORITY), MAX_PRIORITY);
 }
 
 // A job's routing (inherited from the API key that created it): 'private' may
@@ -554,4 +561,5 @@ class JobService {
 module.exports = JobService;
 module.exports.DEFAULT_MODEL = DEFAULT_MODEL;
 module.exports.MAX_PRIORITY = MAX_PRIORITY;
+module.exports.MIN_PRIORITY = MIN_PRIORITY;
 module.exports.clampPriority = clampPriority;

@@ -46,13 +46,18 @@ describe('JobService', () => {
     // assignJobsToNode orders the GLOBAL queue by priority DESC and every in-repo
     // producer writes 0, so an unbounded caller value was a starvation lever.
     it('clamps a caller-supplied priority into range', async () => {
-      const { MAX_PRIORITY, clampPriority } = JobService;
+      const { MAX_PRIORITY, MIN_PRIORITY, clampPriority } = JobService;
       const huge = await jobService.createJob({ prompt: 'p', userId: 'u', priority: 2147483647 });
       expect(huge.priority).toBe(MAX_PRIORITY);
 
       expect(clampPriority(undefined)).toBe(0);
       expect(clampPriority('abc')).toBe(0);
-      expect(clampPriority(-5)).toBe(0);
+      // The floor is below zero on purpose: a negative priority can only yield to
+      // other traffic, never jump it, and the benchmark sweeper relies on it to
+      // stay behind real requests.
+      expect(clampPriority(-5)).toBe(MIN_PRIORITY);
+      expect(clampPriority(MIN_PRIORITY)).toBe(MIN_PRIORITY);
+      expect(clampPriority(0)).toBe(0);
       expect(clampPriority(Infinity)).toBe(0);
       expect(clampPriority(3)).toBe(3);
       expect(clampPriority(3.9)).toBe(3);
