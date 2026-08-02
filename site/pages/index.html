@@ -112,7 +112,7 @@
   footer.foot { border-top: 1px solid #ededea; max-width: 1080px; margin: 0 auto; padding: 26px 28px; display: flex; align-items: center; justify-content: space-between; color: var(--muted-3); font-size: 14px; gap: 18px; flex-wrap: wrap; }
   .foot .logo { font-weight: 700; color: var(--muted); display: inline-flex; align-items: center; gap: 9px; font-size: 16px; }
   .foot .logo .bolt { width: 24px; height: 24px; border-radius: 7px; }
-  .foot-links { display: flex; align-items: center; gap: 24px; }
+  .foot-links { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 24px; }
   .foot-links a { color: var(--muted-3); font-size: 14px; }
   .foot-links a:hover { color: var(--muted); }
 
@@ -128,7 +128,12 @@
     .nav-right { gap: 16px; }
   }
   @media (max-width: 460px) {
-    .nav-right { gap: 13px; }
+    /* Compact nav: four links plus the Discord button no longer fit a 360px
+       phone at full size, so shrink the whole bar rather than drop a link. */
+    .nav-right { gap: 9px; }
+    .nav-link { font-size: 14px; }
+    .logo { font-size: 18px; gap: 9px; }
+    .logo .bolt { width: 32px; height: 32px; border-radius: 9px; }
     .btn-discord { padding: 9px 11px; }
     .btn-discord .dc-txt { display: none; }
   }
@@ -173,7 +178,7 @@
     <div>
       <div class="step-n">3</div>
       <h3 class="col-title">Get your API key</h3>
-      <p class="col-text">Create a key and start making requests — <a href="earn.html">fully OpenAI-compatible.</a></p>
+      <p class="col-text">Create a key and start making requests — <a href="api.html">fully OpenAI-compatible.</a></p>
       <div class="mini-row"><span class="nm">API key</span><span class="key">lj-v1-••••••••</span></div>
     </div>
   </div>
@@ -224,6 +229,7 @@
     <a href="chat.html">Chat</a>
     <a href="earn.html">Earn</a>
     <a href="network.html">Network</a>
+    <a href="api.html">API</a>
     <a href="dashboard.html" id="foot-login">Login</a>
     <a href="https://discord.gg/JnERcTKjUS" target="_blank" rel="noopener">Discord</a>
   </div>
