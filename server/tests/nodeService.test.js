@@ -380,7 +380,10 @@ describe('NodeService', () => {
       expect(nodes[0].stale).toBe(false);
       expect(nodes[2].tps).toBeNull();   // never measured
       expect(nodes[2].stale).toBe(true);
-      expect(nodes[0].name).toBe('fast');
+      // Node id, speed and freshness only. This endpoint is unauthenticated and
+      // covers nodes that never opted into being public, so the owner-set name and
+      // the free-text device string stay out of it — the page reads neither.
+      expect(Object.keys(nodes[0]).sort()).toEqual(['lastSeen', 'measuredAt', 'nodeId', 'samples', 'stale', 'tps']);
     });
 
     it('leaves out nodes that have gone offline', async () => {
@@ -389,13 +392,13 @@ describe('NodeService', () => {
       expect(await service.listServingNodes()).toEqual([]);
     });
 
-    it('reports a node with no name as null rather than empty', async () => {
+    it('lists a node that carries no metadata at all', async () => {
       await db.query(
         "INSERT INTO nodes (node_id, public_key, status, last_seen) VALUES ('bare', 'k', 'online', $1)",
         [Date.now()]
       );
       const [node] = await service.listServingNodes();
-      expect(node).toMatchObject({ nodeId: 'bare', name: null, device: null, model: null });
+      expect(node).toMatchObject({ nodeId: 'bare', tps: null, samples: 0, stale: true });
     });
   });
 

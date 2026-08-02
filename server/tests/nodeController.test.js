@@ -365,6 +365,8 @@ describe('Node API Endpoints', () => {
       expect(response.body.total).toBe(response.body.nodes.length);
       const node = response.body.nodes.find((n) => n.nodeId === nodeId);
       expect(node).toMatchObject({ tps: 40, stale: false, samples: 1 });
+      expect(node.name).toBeUndefined();   // unauthenticated: no owner-set strings
+      expect(node.device).toBeUndefined();
     });
 
     it('should handle database errors in getServingNodes', async () => {

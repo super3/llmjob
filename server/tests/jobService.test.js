@@ -539,6 +539,30 @@ describe('JobService', () => {
       expect(nodes.recordSpeedSample).toHaveBeenCalledWith('n2', 50, expect.any(Number), { replace: true });
     });
 
+    it('ignores the node-supplied start time, which the node could delay to look fast', async () => {
+      // startedAt is stamped by the node's first heartbeat, so the node picks it.
+      // A later start means a shorter measured interval, so simply withholding the
+      // first beat reports a faster rate — here 20s of work would read as 5s, and
+      // this number decides which jobs the node is offered.
+      const nodes = { recordSpeedSample: jest.fn() };
+      jobService = new JobService(db, nodes);
+      const job = await jobService.createJob({ prompt: 'x', userId: 'u' });
+      const [a] = await jobService.assignJobsToNode('n9', 1);
+      await jobService.handleHeartbeat(job.id, 'n9', a.lockToken);
+
+      const now = Date.now();
+      const data = await jobService.getJob(job.id);
+      await db.query('UPDATE jobs SET data = $2 WHERE id = $1',
+        [job.id, JSON.stringify({ ...data, assignedAt: now - 20000, startedAt: now - 5000 })]);
+      await jobService.storeChunk(job.id, 'n9',
+        { chunkIndex: 0, content: 'x', isFinal: true, metrics: { totalTokens: 300 } }, a.lockToken);
+      await jobService.completeJob(job.id, 'n9', a.lockToken);
+
+      const [, , elapsedMs] = nodes.recordSpeedSample.mock.calls[0];
+      expect(elapsedMs).toBeGreaterThanOrEqual(20000); // the server's assignment stamp
+      expect(elapsedMs).toBeLessThan(21000);
+    });
+
     it('measures only the attempt that finished, not a requeued job\'s first try', async () => {
       // checkTimeouts requeues by spreading the old data, and handleHeartbeat keeps
       // `startedAt || now` — so after a requeue startedAt still points at the FIRST

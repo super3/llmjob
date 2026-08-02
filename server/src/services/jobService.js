@@ -411,16 +411,25 @@ class JobService {
       const data = row.data;
       const final = chunks.find((c) => c && c.isFinal && c.metrics);
       const tokens = final ? Number(final.metrics.totalTokens) : NaN;
-      // The LATER of the two, not startedAt first. checkTimeouts requeues a job by
-      // spreading its old data, and handleHeartbeat keeps `startedAt: startedAt ||
-      // now` — so after a requeue `startedAt` still points at the FIRST attempt,
-      // minutes before this node ever saw the job. Charging that dead time to
+      // assignedAt only, and both halves of that matter.
+      //
+      // Not startedAt: that is stamped by the node's first heartbeat, so the node
+      // chooses it. Since a later start means a shorter measured interval, a node
+      // that simply delays its first beat by a minute reports a materially faster
+      // rate — on a 138s job, 18 tok/s becomes 31. This number decides which jobs
+      // a node is offered, so it cannot have an input the node controls.
+      //
+      // And assignedAt specifically because assignJobsToNode rewrites it on every
+      // assignment. checkTimeouts requeues by spreading the old data and
+      // handleHeartbeat keeps `startedAt || now`, so after a requeue startedAt
+      // still points at the FIRST attempt — charging a dead node's silence to
       // whoever finishes the re-run measured a node that generated 1000 tokens
-      // instantly at 6.7 tok/s, which the EWMA then drags toward the amber line.
-      // `assignedAt` is rewritten by assignJobsToNode on every assignment, so it
-      // always bounds the current attempt; on a normal run the heartbeat's
-      // startedAt is later and stays the more precise start of generation.
-      const begun = Math.max(toMs(data.assignedAt), toMs(data.startedAt));
+      // instantly at 6.7 tok/s.
+      //
+      // The cost is that the poll-to-first-token gap counts as generation time.
+      // That is a second or two, it errs toward reporting a node as slower than it
+      // is, and it is the server's own clock end to end.
+      const begun = toMs(data.assignedAt);
       if (!Number.isFinite(tokens) || !(begun > 0)) return;
       await this.nodes.recordSpeedSample(nodeId, tokens, completedAt - begun, {
         // A benchmark of a node we've never measured replaces rather than blends:

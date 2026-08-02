@@ -259,8 +259,14 @@ class NodeService {
   // in neither, and the fleet could only be counted by probing node ids we
   // happened to have seen before.
   async listServingNodes() {
+    // Deliberately narrow: node id, speed and freshness only. `name` is set by the
+    // node's owner and `device` is a free-text GPU string, and this endpoint is
+    // unauthenticated and covers nodes that never opted into being public — the
+    // is_public flag governs getPublicNodes, not this. The network page reads
+    // nodeId/tps/stale and nothing else, so publishing more would be exposure
+    // without a consumer.
     const r = await this.db.query(
-      'SELECT node_id, name, device, model, measured_tps, speed_samples, speed_at, last_seen FROM nodes WHERE last_seen >= $1 ORDER BY measured_tps DESC NULLS LAST',
+      'SELECT node_id, measured_tps, speed_samples, speed_at, last_seen FROM nodes WHERE last_seen >= $1 ORDER BY measured_tps DESC NULLS LAST',
       [Date.now() - OFFLINE_THRESHOLD]
     );
     const now = Date.now();
@@ -270,9 +276,6 @@ class NodeService {
       const stale = at == null || (now - at) > SPEED_STALE_MS;
       return {
         nodeId: row.node_id,
-        name: row.name || null,
-        device: row.device || null,
-        model: row.model || null,
         tps: tps == null ? null : Math.round(tps * 10) / 10,
         samples: Number(row.speed_samples) || 0,
         measuredAt: at,
