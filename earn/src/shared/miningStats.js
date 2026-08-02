@@ -109,14 +109,24 @@ function snapshot(stats, nowMs) {
   // not keep contributing its last-known hashrate to the rig total or keep being
   // posted to the board as an online GPU.
   const cards = liveCards(stats, nowMs);
+  const every = Object.keys(stats.gpus).map((k) => stats.gpus[k]);
   const named = cards.find((g) => g.gpu);
   return {
     total: cards.reduce((a, g) => a + (Number(g.hashrate) || 0), 0),
     points: stats.points.slice(),
-    accepted: cards.reduce((a, g) => a + (Number(g.accepted) || 0), 0),
-    rejected: cards.reduce((a, g) => a + (Number(g.rejected) || 0), 0),
+    // Shares are CUMULATIVE facts, not an instantaneous rate: they were really
+    // earned and paid for. Summed across every card the session has seen, dead
+    // ones included — dropping a stale card's contribution would make the
+    // session's share counter visibly run BACKWARDS in the app, which on a
+    // system that pays out per share reads as lost money rather than a lost fan.
+    accepted: every.reduce((a, g) => a + (Number(g.accepted) || 0), 0),
+    rejected: every.reduce((a, g) => a + (Number(g.rejected) || 0), 0),
     load: stats.load,
     power: cards.reduce((a, g) => a + (Number(g.power) || 0), 0),
+    // How many card slots this session has EVER seen. Naming (worker/gpuN) keys
+    // off this rather than the live count, so a rig that loses a card keeps
+    // reporting the survivor under its established name — see minerReport.
+    gpuSlots: every.length,
     gpu: named ? named.gpu : null,   // representative name (lowest-index card)
     gpus: cards.map((g) => ({
       index: g.index,

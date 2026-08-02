@@ -56,6 +56,14 @@ function buildMinerReports(settings, snap, gpuVram, version, serving) {
   const vramFor = (index) => vram.find((v) => v && Number(v.index) === index) || null;
   const cards = Array.isArray(n.gpus) ? n.gpus : [];
   const workerFor = (index, count) => (count > 1 ? base.worker + '/gpu' + index : base.worker);
+  // How many card slots this rig has, for NAMING only. A multi-GPU rig that
+  // loses a card must keep posting the survivor as "<worker>/gpu0", not revert
+  // to the bare "<worker>": the server drops a bare row whenever per-card
+  // siblings exist (they linger for the 5-minute offline window), so a renamed
+  // survivor is discarded on arrival and the board keeps showing the stale
+  // two-card snapshot instead of the one live card. `gpuSlots` counts every card
+  // the session has seen, so the name a rig starts with is the name it keeps.
+  const slots = Math.max(cards.length, Number(n.gpuSlots) || 0);
 
   // One row per physical card (from nvidia-smi), splitting a rig-level total
   // evenly — used whenever we know the card count but not each card's hashrate.
@@ -107,7 +115,7 @@ function buildMinerReports(settings, snap, gpuVram, version, serving) {
     const v = vramFor(c.index);
     return {
       ...base,
-      worker: workerFor(c.index, cards.length),
+      worker: workerFor(c.index, slots),
       gpu: c.gpu || (v && v.name) || null,
       hashrate: Number(c.hashrate) || 0,
       accepted: Number(c.accepted) || 0,

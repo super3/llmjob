@@ -220,4 +220,34 @@ describe('buildMinerReports', () => {
     const [row] = buildMinerReports({ worker: '   ' }, { total: 'x', accepted: null, gpus: [] });
     expect(row).toMatchObject({ worker: 'rig01', hashrate: 0, accepted: 0 });
   });
+
+  // A rig that loses a card must keep the name it started with. Reverting the
+  // survivor to the bare worker gets it DISCARDED by the server, which drops a
+  // bare row whenever per-card siblings exist — and those siblings linger for the
+  // whole 5-minute offline window, so the board would keep showing the stale
+  // two-card snapshot while hiding the one card that is actually alive.
+  test('a rig that loses a card keeps posting the survivor as /gpuN', () => {
+    const snap = {
+      total: 101, accepted: 800, gpuSlots: 2,   // two slots seen, one still live
+      gpus: [{ index: 0, gpu: 'RTX 3080', hashrate: 101, accepted: 500 }],
+    };
+    const rows = buildMinerReports({ address: 'prl1pabc', worker: 'rig01' }, snap,
+      [{ index: 0, name: 'RTX 3080', usedMb: 7000, totalMb: 12288 }], '0.2.0');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].worker).toBe('rig01/gpu0');   // NOT the bare 'rig01'
+    expect(rows[0].hashrate).toBe(101);
+  });
+
+  test('a genuine single-GPU rig still uses the bare worker name', () => {
+    const snap = { total: 101, gpuSlots: 1, gpus: [{ index: 0, gpu: 'RTX 3080', hashrate: 101 }] };
+    const [row] = buildMinerReports({ address: 'prl1pabc', worker: 'rig01' }, snap,
+      [{ index: 0, name: 'RTX 3080', usedMb: 7000, totalMb: 12288 }], '0.2.0');
+    expect(row.worker).toBe('rig01');
+  });
+
+  test('a snapshot with no gpuSlots (older shape) names off the live card count', () => {
+    const snap = { total: 128, gpus: [{ index: 0, gpu: 'A', hashrate: 101 }, { index: 1, gpu: 'B', hashrate: 27 }] };
+    const rows = buildMinerReports({ address: 'prl1pabc', worker: 'rig01' }, snap, [], '0.2.0');
+    expect(rows.map((r) => r.worker)).toEqual(['rig01/gpu0', 'rig01/gpu1']);
+  });
 });
