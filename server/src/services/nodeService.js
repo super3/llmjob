@@ -20,6 +20,13 @@ const SPEED_STALE_MS = 6 * 60 * 60 * 1000;
 // one; either way it is not a measurement. Bogus samples are dropped rather than
 // clamped, so they don't pull the average up to the ceiling either.
 const MAX_SAMPLE_TPS = 1000;
+// And discard one that is too short to mean anything. Below this many tokens the
+// wall time is mostly prompt prefill and two HTTP round trips: a 40-token reply
+// from a card that really runs at 40 tok/s measures ~8, and that single reading
+// was enough to gate the node out of all traffic. It is the same bias that made
+// the synthetic benchmark 1024 tokens rather than 256 — here it is simply not a
+// measurement, so it is dropped rather than blended in.
+const MIN_SAMPLE_TOKENS = 128;
 
 // Generate a short fingerprint from a public key.
 function generateNodeFingerprint(publicKey) {
@@ -210,6 +217,8 @@ class NodeService {
     const ms = Number(elapsedMs);
     if (!nodeId || !Number.isFinite(t) || t <= 0 || !Number.isFinite(ms) || ms <= 0) return null;
 
+    if (t < MIN_SAMPLE_TOKENS) return null;
+
     const rate = t / (ms / 1000);
     if (rate > MAX_SAMPLE_TPS) return null;
 
@@ -372,5 +381,6 @@ NodeService.generateNodeFingerprint = generateNodeFingerprint;
 NodeService.SPEED_STALE_MS = SPEED_STALE_MS;
 NodeService.SPEED_ALPHA = SPEED_ALPHA;
 NodeService.MAX_SAMPLE_TPS = MAX_SAMPLE_TPS;
+NodeService.MIN_SAMPLE_TOKENS = MIN_SAMPLE_TOKENS;
 
 module.exports = NodeService;

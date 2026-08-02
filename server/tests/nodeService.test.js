@@ -309,12 +309,24 @@ describe('NodeService', () => {
     it('ignores nonsense samples and unknown nodes', async () => {
       const id = await seed('c');
       expect(await service.recordSpeedSample(id, 0, 10000)).toBeNull();
-      expect(await service.recordSpeedSample(id, 100, 0)).toBeNull();
+      expect(await service.recordSpeedSample(id, 400, 0)).toBeNull();
       expect(await service.recordSpeedSample(id, 'x', 10000)).toBeNull();
-      expect(await service.recordSpeedSample(id, 100, 'y')).toBeNull();
-      expect(await service.recordSpeedSample('', 100, 10000)).toBeNull();
-      expect(await service.recordSpeedSample('ghost', 100, 10000)).toBeNull();
+      expect(await service.recordSpeedSample(id, 400, 'y')).toBeNull();
+      expect(await service.recordSpeedSample('', 400, 10000)).toBeNull();
+      expect(await service.recordSpeedSample('ghost', 400, 10000)).toBeNull();
       expect((await service.getSpeed(id)).tps).toBeNull(); // nothing was written
+    });
+
+    it('discards a reply too short to measure', async () => {
+      const id = await seed('g');
+      // 40 tokens in 5s reads as 8 tok/s on a card that really runs at 40: the
+      // wall time is mostly prompt prefill and two HTTP round trips. That single
+      // reading used to set the node's speed outright and gate it out of all
+      // traffic, so a reply this small is not a measurement.
+      expect(await service.recordSpeedSample(id, 40, 5000)).toBeNull();
+      expect((await service.getSpeed(id)).tps).toBeNull();
+
+      expect(await service.recordSpeedSample(id, NodeService.MIN_SAMPLE_TOKENS, 5000)).not.toBeNull();
     });
 
     it('discards a sample claiming an impossible rate', async () => {

@@ -32,12 +32,39 @@ const DEFAULT_MAX_TOKENS = 6400;
 const SERVE_BUDGET_MS = 280 * 1000;
 const SERVE_MARGIN = 0.8;
 
+// What a request actually generates, as opposed to what it is allowed to.
+// `max_tokens` is a ceiling, and almost nobody sets it: the gateway fills in its
+// 6400 ceiling for every caller who omits the field, and jobs created directly
+// default to the same. Gating on that number therefore demanded 6400/224 = 28.6
+// tok/s of EVERY default request and silently cut the fleet's slower half out of
+// all traffic — reproducing the blanket floor this design exists to avoid, since
+// a node measured at 18 tok/s serves the observed mean completion (2563 tokens
+// across a 198-question run) in 142s, well inside the budget.
+//
+// So a node that can produce a typical reply in time is never withheld work. Only
+// one that cannot even manage that is held to what it can finish.
+const TYPICAL_TOKENS = 2048;
+
 // The largest job a node running at `tps` should be offered. Null (unknown speed)
 // means no limit — see assignJobsToNode for why unmeasured nodes stay permissive.
 function tokenCapacity(tps) {
   if (tps == null || !(tps > 0)) return null;
   return Math.floor(tps * (SERVE_BUDGET_MS * SERVE_MARGIN) / 1000);
 }
+
+// The ceiling to filter the queue by, or null to offer the node everything.
+// Above TYPICAL_TOKENS of capacity there is nothing to protect against: the node
+// keeps up with real traffic, and the long tail that might still overrun is
+// better handled by the timeout than by removing the node from the pool.
+function admissionLimit(tps) {
+  const capacity = tokenCapacity(tps);
+  return capacity != null && capacity < TYPICAL_TOKENS ? capacity : null;
+}
+
+// One sample is never enough to withhold work on. Two means a single unlucky
+// generation can't gate a node by itself, and a node is always served while it
+// earns its second.
+const MIN_SAMPLES_TO_GATE = 2;
 
 // Caller-supplied priority, bounded. assignJobsToNode orders the GLOBAL pending
 // queue by priority DESC, and every in-repo producer writes 0 — so an unbounded
@@ -56,6 +83,18 @@ function clampPriority(v) {
   const n = Math.floor(Number(v));
   if (!Number.isFinite(n)) return 0;
   return Math.min(Math.max(n, MIN_PRIORITY), MAX_PRIORITY);
+}
+
+// A caller-supplied generation budget, bounded to what a node can actually run
+// (its context window) and to what the promoted int4 column can hold.
+// 0 is preserved rather than treated as absent: it is a meaningful OpenAI value
+// and main's own test pins it. Only a missing, unparseable or negative budget
+// falls back to the default.
+function clampMaxTokens(v) {
+  if (v == null) return DEFAULT_MAX_TOKENS;
+  const n = Math.floor(Number(v));
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_MAX_TOKENS;
+  return Math.min(n, DEFAULT_MAX_TOKENS);
 }
 
 // A stored epoch-ms timestamp as a number, or 0 for anything unusable — so a
@@ -115,7 +154,10 @@ class JobService {
       // meaningful OpenAI values — 0 is THE setting for deterministic output, and
       // coalescing it to 0.7 silently served a random sample to every caller that
       // asked for a repeatable one.
-      maxTokens: jobData.maxTokens != null ? jobData.maxTokens : DEFAULT_MAX_TOKENS,
+      // Clamped, not merely defaulted: POST /api/jobs hands this straight from the
+      // request body, and it is now written to an integer column — an oversized
+      // value used to surface as a 500 from Postgres rather than a 400.
+      maxTokens: clampMaxTokens(jobData.maxTokens),
       temperature: jobData.temperature != null ? jobData.temperature : 0.7
     };
 
@@ -176,7 +218,7 @@ class JobService {
     try {
       await client.query('BEGIN');
       const owner = await client.query(
-        'SELECT user_id, measured_tps, speed_at FROM nodes WHERE node_id = $1', [nodeId]
+        'SELECT user_id, measured_tps, speed_at, speed_samples FROM nodes WHERE node_id = $1', [nodeId]
       );
       const ownerUserId = owner.rows.length ? owner.rows[0].user_id : null;
 
@@ -185,20 +227,24 @@ class JobService {
       // slow card accepting a 6400-token job it has no chance of completing, then
       // burning ten minutes of GPU on a reply the caller already gave up on.
       //
-      // Deliberately per-job rather than a per-node on/off switch: measured
-      // against the full 6400 default, an 18 tok/s node looks unusable, but the
-      // average request only needs ~9 tok/s. A blanket floor would have cut two
-      // of seven nodes from the last benchmark run to prevent 3% of requests
-      // failing. This keeps them, and gives them the work they can actually do.
+      // Deliberately per-job rather than a per-node on/off switch, and keyed on
+      // TYPICAL_TOKENS rather than on the request's ceiling — see admissionLimit.
+      // A node that keeps up with real traffic is never withheld work; only one
+      // that cannot manage even a typical reply is held to what it can finish.
       //
-      // An unmeasured node has no limit rather than no work: the whole fleet is
-      // unmeasured the moment this ships, and a stricter rule would stall it
-      // until the benchmark sweeper caught up. Targeted jobs bypass the check
-      // too — that's how the benchmark reaches a node in the first place, and a
-      // caller who names a node has said what they want.
+      // Three ways out of the gate, all deliberate. An unmeasured node has no
+      // limit rather than no work: the whole fleet is unmeasured the moment this
+      // ships, and a stricter rule would stall it until the sweeper caught up. A
+      // node with a single sample is likewise ungated — one unlucky generation
+      // must not be able to gate a node by itself, and it needs to keep serving
+      // to earn its second. And targeted jobs bypass the check entirely, which is
+      // how a benchmark reaches a node at all.
       const speedAt = owner.rows.length ? Number(owner.rows[0].speed_at) : NaN;
       const fresh = Number.isFinite(speedAt) && (Date.now() - speedAt) <= SPEED_STALE_MS;
-      const capacity = fresh ? tokenCapacity(Number(owner.rows[0].measured_tps)) : null;
+      const samples = owner.rows.length ? Number(owner.rows[0].speed_samples) || 0 : 0;
+      const capacity = fresh && samples >= MIN_SAMPLES_TO_GATE
+        ? admissionLimit(Number(owner.rows[0].measured_tps))
+        : null;
       // SKIP LOCKED, not a plain FOR UPDATE: without it, two nodes polling at once
       // both try to lock the same top-priority rows, so the second BLOCKS until the
       // first commits — serializing the whole fleet through one assignment at a
@@ -579,4 +625,10 @@ module.exports = JobService;
 module.exports.DEFAULT_MODEL = DEFAULT_MODEL;
 module.exports.MAX_PRIORITY = MAX_PRIORITY;
 module.exports.MIN_PRIORITY = MIN_PRIORITY;
+module.exports.TYPICAL_TOKENS = TYPICAL_TOKENS;
+module.exports.MIN_SAMPLES_TO_GATE = MIN_SAMPLES_TO_GATE;
+module.exports.admissionLimit = admissionLimit;
+module.exports.tokenCapacity = tokenCapacity;
+module.exports.DEFAULT_MAX_TOKENS = DEFAULT_MAX_TOKENS;
+module.exports.clampMaxTokens = clampMaxTokens;
 module.exports.clampPriority = clampPriority;

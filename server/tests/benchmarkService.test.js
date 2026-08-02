@@ -84,6 +84,26 @@ describe('BenchmarkService', () => {
     expect(await svc.sweep()).toEqual(['cold01']);
   });
 
+  it('re-measures a node that admission control has gated', async () => {
+    // The safety net, and previously a no-op in exactly the case it exists for: a
+    // gated node gets no jobs, so it earns no passive samples, so speed_at freezes
+    // at the reading that gated it — recent, therefore never "stale". The node
+    // stayed dark for a full six hours on one measurement.
+    await seedNode(db, 'gated1', { tps: 4, samples: 3, speedAt: Date.now() - 31 * 60 * 1000 });
+    expect(await svc.sweep()).toEqual(['gated1']);
+  });
+
+  it('leaves a gated node alone until the recheck window passes', async () => {
+    await seedNode(db, 'gated2', { tps: 4, samples: 3, speedAt: Date.now() });
+    expect(await svc.sweep()).toEqual([]);
+  });
+
+  it('does not re-measure a healthy node just because it is idle', async () => {
+    // Above the gate it still serves real traffic, so it measures itself.
+    await seedNode(db, 'ok1', { tps: 40, samples: 9, speedAt: Date.now() - 31 * 60 * 1000 });
+    expect(await svc.sweep()).toEqual([]);
+  });
+
   it('caps how many it queues per sweep', async () => {
     for (const id of ['n1', 'n2', 'n3', 'n4']) await seedNode(db, id);
     const capped = new BenchmarkService(db, { jobs, maxPerSweep: 2 });

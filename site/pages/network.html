@@ -291,10 +291,14 @@
     // Measured generation speed per node id, from GET /api/nodes/serving. Empty
     // until that first load resolves, which just means every dot starts hollow.
     let speeds = {};
-    // Below this a node can't produce the default 6400-token reply inside the
-    // gateway's budget (280s × the 0.8 safety margin assignment uses), so it is
-    // only offered shorter jobs. Mirrors jobService's tokenCapacity — keep in step.
-    const FULL_JOB_TPS = 6400 / (280 * 0.8);
+    // Below this a node can't produce a TYPICAL reply (2048 tokens — the observed
+    // mean completion is 2563) inside the gateway's budget (280s × the 0.8 safety
+    // margin assignment uses), so it is only offered shorter jobs. Keyed on the
+    // typical length rather than the 6400 ceiling for the same reason assignment
+    // is: almost every request carries the ceiling, so gating on it would paint
+    // amber on nodes that serve real traffic perfectly well. Mirrors jobService's
+    // admissionLimit — keep the two in step.
+    const FULL_JOB_TPS = 2048 / (280 * 0.8);
 
     // The "serving LLM" cell: a compact model label ("Gemma-4-E4B-it-Q4_K_M" →
     // "Gemma 4 E4B", full name on hover), or a muted dash when the card isn't
