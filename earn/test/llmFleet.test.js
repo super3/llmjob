@@ -226,6 +226,92 @@ describe('LlmFleet', () => {
     expect(stops).toHaveLength(1);
   });
 
+  // Startup is serialised, so `instances` holds only the cards spawned so far.
+  // Judging "is the fleet down?" on those alone declared death while the rest of
+  // the plan was still queued — the GUI ended the session (and the CLI exited)
+  // moments before the next card came up and started serving.
+  test('does not emit "stopped" while a planned card is still queued', async () => {
+    const { fleet, mgrs } = makeFleet();
+    await fleet.start([{ index: 0, nGpuLayers: 42 }, { index: 1, nGpuLayers: 42 }], {});
+    const stops = [];
+    fleet.on('stopped', (code) => stops.push(code));
+
+    // Only GPU0 has spawned; GPU1 is still waiting its turn.
+    expect(mgrs).toHaveLength(1);
+    mgrs[0].emit('stopped', 1);          // GPU0 dies before it ever loads
+    expect(stops).toHaveLength(0);       // …the fleet has NOT had its chance yet
+
+    await drain();
+    expect(mgrs).toHaveLength(2);        // GPU1 spawned as planned
+    mgrs[1].emit('ready', { baseUrl: 'http://127.0.0.1:8081' });
+    expect(fleet.isReady()).toBe(true);  // and is serving
+    expect(fleet.servingIndices()).toEqual([1]);
+    expect(stops).toHaveLength(0);
+
+    mgrs[1].emit('stopped', 3);          // now the last card is gone → really down
+    expect(stops).toEqual([3]);
+  });
+
+  // The queue is shifted BEFORE the async port probe, so there is a window where
+  // the entry is off `_pending` but its instance does not exist yet. Judging the
+  // fleet on `_pending` alone reopened the same premature-'stopped' bug a few
+  // milliseconds later.
+  test('does not emit "stopped" while a successor is still probing for a port', async () => {
+    let release;
+    const { fleet, mgrs } = makeFleet({
+      findFreePort: (h, p) => (mgrs.length === 1 ? new Promise((r) => { release = () => r(p); }) : Promise.resolve(p)),
+    });
+    await fleet.start([{ index: 0, nGpuLayers: 42 }, { index: 1, nGpuLayers: 42 }], {});
+    const stops = [];
+    fleet.on('stopped', (code) => stops.push(code));
+
+    mgrs[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' }); // frees the drain
+    await new Promise((r) => setImmediate(r));
+    expect(fleet._pending).toEqual([]);        // shifted…
+    expect(fleet.instances).toHaveLength(1);   // …but GPU1 is not an instance yet
+
+    mgrs[0].emit('stopped', 1);                // GPU0 dies inside that window
+    expect(stops).toHaveLength(0);
+
+    release();
+    await drain();
+    expect(mgrs).toHaveLength(2);              // GPU1 still spawns
+  });
+
+  // The first spawn is awaited by start(), so its failure rejects — and would
+  // strand the rest of the plan in _pending, gagging 'stopped' forever.
+  test('a first spawn that throws abandons the queue before rethrowing', async () => {
+    const { fleet } = makeFleet({ findFreePort: () => Promise.reject(new Error('probe failed')) });
+    await expect(fleet.start([{ index: 0 }, { index: 1 }, { index: 2 }], {})).rejects.toThrow('probe failed');
+    expect(fleet._pending).toEqual([]);
+    expect(fleet._spawning).toBe(false);
+  });
+
+  test('a single-GPU fleet still reports down immediately (nothing was queued)', async () => {
+    const { fleet, mgrs } = makeFleet();
+    await fleet.start([{ index: 0, nGpuLayers: 42 }], {});
+    const stops = [];
+    fleet.on('stopped', (code) => stops.push(code));
+    mgrs[0].emit('stopped', 1);
+    expect(stops).toEqual([1]);
+  });
+
+  // The queue guard must not become a way to never report down: a drain that
+  // throws would otherwise strand entries in _pending and gag 'stopped' forever.
+  test('a failed drain abandons the queue so the fleet can still report down', async () => {
+    let calls = 0;
+    const { fleet, mgrs } = makeFleet({
+      findFreePort: async (h, p) => { if (++calls > 1) throw new Error('no free port'); return p; },
+    });
+    await fleet.start([{ index: 0, nGpuLayers: 42 }, { index: 1, nGpuLayers: 42 }], {});
+    const stops = [];
+    fleet.on('stopped', (code) => stops.push(code));
+    mgrs[0].emit('stopped', 1);   // the only spawned card dies
+    await drain();                // GPU1's spawn throws; the queue is abandoned
+    expect(fleet._pending).toEqual([]);
+    expect(stops).toEqual([1]);   // and the fleet reports down rather than hanging
+  });
+
   test('stop() tears down every worker and manager and goes quiet', async () => {
     const { fleet, mgrs, workers } = makeFleet();
     await fleet.start([{ index: 0, nGpuLayers: 42 }, { index: 1, nGpuLayers: 42 }], {});

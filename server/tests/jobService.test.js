@@ -513,6 +513,83 @@ describe('JobService', () => {
       expect(await svc.checkTimeouts()).toEqual([]);
       expect(calls.some((s) => /DELETE FROM job_chunks/.test(s))).toBe(false);
     });
+
+    it('clears the lock token when it requeues a job', async () => {
+      const job = await jobService.createJob({ prompt: 'p', userId: 'u' });
+      await jobService.assignJobsToNode('nodeA', 1);
+      await staleHeartbeat(job.id);
+      await jobService.checkTimeouts();
+      const r = await db.query('SELECT lock_token FROM jobs WHERE id = $1', [job.id]);
+      expect(r.rows[0].lock_token).toBeNull();
+    });
+  });
+
+  // One machine runs a job worker per GPU that can hold the model, and the GUI
+  // and CLI share a single node.json — so every worker on a rig signs as the
+  // same node id. The lock therefore has to fence the ATTEMPT, not the machine.
+  describe('lock token fencing', () => {
+    it('issues a distinct lock token with each assignment', async () => {
+      await jobService.createJob({ prompt: 'a', userId: 'u' });
+      await jobService.createJob({ prompt: 'b', userId: 'u' });
+      const assigned = await jobService.assignJobsToNode('nodeA', 2);
+      expect(assigned).toHaveLength(2);
+      for (const j of assigned) expect(j.lockToken).toMatch(/^[0-9a-f]{32}$/);
+      expect(assigned[0].lockToken).not.toBe(assigned[1].lockToken);
+    });
+
+    it('rejects a superseded attempt from the SAME node id', async () => {
+      const job = await jobService.createJob({ prompt: 'p', userId: 'u' });
+      const [first] = await jobService.assignJobsToNode('rig', 1);
+
+      // Worker 1 stalls, the job is requeued, and a sibling worker on the SAME
+      // rig picks it up — the node id is identical, only the token differs.
+      await staleHeartbeat(job.id);
+      await jobService.checkTimeouts();
+      const [second] = await jobService.assignJobsToNode('rig', 1);
+      expect(second.lockToken).not.toBe(first.lockToken);
+
+      const stale = /Stale job lock/;
+      await expect(jobService.storeChunk(job.id, 'rig', { chunkIndex: 0, content: 'x' }, first.lockToken)).rejects.toThrow(stale);
+      await expect(jobService.handleHeartbeat(job.id, 'rig', first.lockToken)).rejects.toThrow(stale);
+      await expect(jobService.completeJob(job.id, 'rig', first.lockToken)).rejects.toThrow(stale);
+      await expect(jobService.failJob(job.id, 'rig', 'boom', first.lockToken)).rejects.toThrow(stale);
+
+      // The live attempt is untouched by its sibling's late writes.
+      expect((await jobService.getJob(job.id)).status).toBe('assigned');
+      await jobService.storeChunk(job.id, 'rig', { chunkIndex: 0, content: 'good' }, second.lockToken);
+      expect((await jobService.completeJob(job.id, 'rig', second.lockToken)).result).toBe('good');
+    });
+
+    it('accepts the holder\'s own token', async () => {
+      const job = await jobService.createJob({ prompt: 'p', userId: 'u' });
+      const [a] = await jobService.assignJobsToNode('rig', 1);
+      await expect(jobService.handleHeartbeat(job.id, 'rig', a.lockToken)).resolves.toEqual({ success: true });
+      await expect(jobService.completeJob(job.id, 'rig', a.lockToken)).resolves.toMatchObject({ status: 'completed' });
+    });
+
+    // Grandfather clause: a client too old to echo the token still works, so a
+    // deploy doesn't strand jobs already in flight or un-updated rigs.
+    it('accepts a caller that presents no token', async () => {
+      const job = await jobService.createJob({ prompt: 'p', userId: 'u' });
+      await jobService.assignJobsToNode('rig', 1);
+      await jobService.storeChunk(job.id, 'rig', { chunkIndex: 0, content: 'old client' });
+      expect((await jobService.completeJob(job.id, 'rig')).result).toBe('old client');
+    });
+
+    it('accepts a token when the row has none (job assigned before the upgrade)', async () => {
+      const job = await jobService.createJob({ prompt: 'p', userId: 'u' });
+      await jobService.assignJobsToNode('rig', 1);
+      await db.query('UPDATE jobs SET lock_token = NULL WHERE id = $1', [job.id]);
+      await expect(jobService.completeJob(job.id, 'rig', 'some-token')).resolves.toMatchObject({ status: 'completed' });
+    });
+
+    it('clears the lock token when a job completes', async () => {
+      const job = await jobService.createJob({ prompt: 'p', userId: 'u' });
+      const [a] = await jobService.assignJobsToNode('rig', 1);
+      await jobService.completeJob(job.id, 'rig', a.lockToken);
+      const r = await db.query('SELECT lock_token FROM jobs WHERE id = $1', [job.id]);
+      expect(r.rows[0].lock_token).toBeNull();
+    });
   });
 
   describe('cleanupOldJobs', () => {

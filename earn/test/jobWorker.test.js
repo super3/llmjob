@@ -213,6 +213,56 @@ describe('processJob — success streaming', () => {
   });
 });
 
+// Every worker on a rig signs as the same node id (one per GPU that fits the
+// model, and the GUI and CLI share one node.json), so the node id alone can't
+// tell the server which ATTEMPT is writing. The per-assignment token does.
+describe('processJob — lock token fencing', () => {
+  test('echoes the assignment\'s lockToken on heartbeat, chunks, complete', async () => {
+    const sch = makeScheduler();
+    const { post, calls } = makePost(okFor([{ id: 'J1', prompt: 'hi', model: 'M', lockToken: 'tok-abc' }]));
+    const runJob = (b, { onDelta }) => { onDelta('hello', 1); return Promise.resolve({}); };
+    const w = new JobWorker({
+      identity: IDENT, serverUrl: 's', post, runJob, now: () => 1000,
+      schedule: sch.schedule, cancel: sch.cancel,
+    });
+    await w.pollOnce();
+
+    const forJob = calls.filter((c) => c.url.startsWith('s/api/jobs/J1/'));
+    expect(forJob.length).toBeGreaterThan(0);
+    for (const c of forJob) expect(c.body.lockToken).toBe('tok-abc');
+    // The poll itself carries no token — there's no assignment to fence yet.
+    expect(calls.find((c) => c.url.endsWith('/poll')).body.lockToken).toBeUndefined();
+  });
+
+  test('echoes it on /fail too', async () => {
+    const sch = makeScheduler();
+    const { post, calls } = makePost(okFor([{ id: 'J2', prompt: 'hi', model: 'M', lockToken: 'tok-xyz' }]));
+    const runJob = () => Promise.reject(new Error('engine died'));
+    const w = new JobWorker({
+      identity: IDENT, serverUrl: 's', post, runJob, now: () => 1000,
+      schedule: sch.schedule, cancel: sch.cancel,
+    });
+    await w.pollOnce();
+
+    const fail = calls.find((c) => c.url === 's/api/jobs/J2/fail');
+    expect(fail.body).toMatchObject({ lockToken: 'tok-xyz', error: 'engine died' });
+  });
+
+  // A server too old to issue tokens must keep working unchanged.
+  test('omits the field entirely when the server issues no token', async () => {
+    const sch = makeScheduler();
+    const { post, calls } = makePost(okFor([{ id: 'J3', prompt: 'hi', model: 'M' }]));
+    const runJob = (b, { onDelta }) => { onDelta('hi', 1); return Promise.resolve({}); };
+    const w = new JobWorker({
+      identity: IDENT, serverUrl: 's', post, runJob, now: () => 1000,
+      schedule: sch.schedule, cancel: sch.cancel,
+    });
+    await w.pollOnce();
+
+    for (const c of calls) expect('lockToken' in c.body).toBe(false);
+  });
+});
+
 describe('processJob — failure paths', () => {
   test('a rejected (non-2xx) chunk fails the job instead of completing', async () => {
     const { post, calls } = makePost((url) => {

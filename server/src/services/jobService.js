@@ -154,13 +154,21 @@ class JobService {
 
       for (const row of pending.rows) {
         const now = Date.now();
+        // Fence this attempt. `lock_node` identifies the machine, and one machine
+        // deliberately runs several workers under a single node id (one per GPU
+        // that fits the model, plus a shared GUI/CLI identity), so the node id
+        // alone cannot tell one attempt from another — see _assertLock.
+        const lockToken = crypto.randomBytes(16).toString('hex');
         const job = { ...row.data, status: 'assigned', assignedTo: nodeId, assignedAt: now, updatedAt: now };
         await client.query(
           `UPDATE jobs SET data = $2, status = 'assigned', assigned_to = $3, updated_at = $4,
-             lock_node = $3, lock_expires_at = $5 WHERE id = $1`,
-          [job.id, JSON.stringify(job), nodeId, now, now + LOCK_MS]
+             lock_node = $3, lock_token = $6, lock_expires_at = $5 WHERE id = $1`,
+          [job.id, JSON.stringify(job), nodeId, now, now + LOCK_MS, lockToken]
         );
-        assignedJobs.push(job);
+        // Handed to the node (and only to the node) so it can present it back on
+        // every write for this job. Kept off the stored `data` blob, which is
+        // readable by the job's submitter via GET /api/jobs/:id.
+        assignedJobs.push({ ...job, lockToken });
       }
 
       await client.query('COMMIT');
@@ -174,10 +182,26 @@ class JobService {
     return assignedJobs;
   }
 
-  // Verify the node holds a live lock on the job; returns the row or throws.
-  async _assertLock(jobId, nodeId) {
+  // Verify the caller holds a live lock on the job; returns the row or throws.
+  //
+  // The node id proves which MACHINE is calling, never which attempt. One machine
+  // runs a job worker per GPU that can hold the model, and the GUI and CLI share a
+  // single node.json — so every worker on a rig signs as the same node. Without a
+  // second factor, a worker whose job was requeued for a stale heartbeat could
+  // still post chunks, /complete or /fail against the sibling that had since
+  // picked the job up, killing a job that was running correctly.
+  //
+  // `lockToken` is that second factor: minted per assignment, cleared on release
+  // and on requeue, so a stale attempt presents a token that no longer matches.
+  //
+  // A caller that presents no token is accepted when the row has one, which is
+  // what lets jobs assigned before this deploy — and clients not yet updated —
+  // finish normally. Those callers are no worse off than before; an updated
+  // client on both sides of a requeue is fully fenced. The grandfather clause can
+  // be dropped once the fleet has rolled over.
+  async _assertLock(jobId, nodeId, lockToken) {
     const r = await this.db.query(
-      'SELECT data, status, lock_node, lock_expires_at FROM jobs WHERE id = $1',
+      'SELECT data, status, lock_node, lock_token, lock_expires_at FROM jobs WHERE id = $1',
       [jobId]
     );
     const row = r.rows[0];
@@ -186,11 +210,14 @@ class JobService {
     if (!held || row.lock_node !== nodeId) {
       throw new Error('Node does not hold lock for this job');
     }
+    if (lockToken != null && row.lock_token != null && row.lock_token !== lockToken) {
+      throw new Error('Stale job lock: this attempt was superseded');
+    }
     return row;
   }
 
-  async handleHeartbeat(jobId, nodeId) {
-    const row = await this._assertLock(jobId, nodeId);
+  async handleHeartbeat(jobId, nodeId, lockToken) {
+    const row = await this._assertLock(jobId, nodeId, lockToken);
     const now = Date.now();
 
     if (row.status === 'assigned') {
@@ -210,8 +237,8 @@ class JobService {
     return { success: true };
   }
 
-  async storeChunk(jobId, nodeId, chunkData) {
-    await this._assertLock(jobId, nodeId);
+  async storeChunk(jobId, nodeId, chunkData, lockToken) {
+    await this._assertLock(jobId, nodeId, lockToken);
 
     const chunk = {
       index: chunkData.chunkIndex,
@@ -245,8 +272,8 @@ class JobService {
     return r.rows.map((row) => row.chunk);
   }
 
-  async completeJob(jobId, nodeId) {
-    await this._assertLock(jobId, nodeId);
+  async completeJob(jobId, nodeId, lockToken) {
+    await this._assertLock(jobId, nodeId, lockToken);
 
     const chunks = await this._getChunks(jobId);
     const assembledContent = chunks.map((c) => c.content).join('');
@@ -261,8 +288,8 @@ class JobService {
     return job;
   }
 
-  async failJob(jobId, nodeId, reason) {
-    await this._assertLock(jobId, nodeId);
+  async failJob(jobId, nodeId, reason, lockToken) {
+    await this._assertLock(jobId, nodeId, lockToken);
 
     const job = await this.updateJobStatus(jobId, 'failed', {
       failedAt: Date.now(),
@@ -275,7 +302,7 @@ class JobService {
 
   async _releaseLock(jobId) {
     await this.db.query(
-      'UPDATE jobs SET lock_node = NULL, lock_expires_at = NULL, heartbeat_at = NULL WHERE id = $1',
+      'UPDATE jobs SET lock_node = NULL, lock_token = NULL, lock_expires_at = NULL, heartbeat_at = NULL WHERE id = $1',
       [jobId]
     );
   }
@@ -347,7 +374,7 @@ class JobService {
         // caller already got (or is about to).
         const res = await this.db.query(
           `UPDATE jobs SET data = $2, status = 'pending', assigned_to = NULL, updated_at = $3,
-             lock_node = NULL, lock_expires_at = NULL, heartbeat_at = NULL
+             lock_node = NULL, lock_token = NULL, lock_expires_at = NULL, heartbeat_at = NULL
            WHERE id = $1 AND status IN ('assigned', 'running')`,
           [job.id, JSON.stringify(updated), now]
         );

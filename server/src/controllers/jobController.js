@@ -102,7 +102,10 @@ class JobController {
           model: job.model,
           options: job.options,
           maxTokens: job.maxTokens,
-          temperature: job.temperature
+          temperature: job.temperature,
+          // Fences this attempt against a sibling worker on the same node id —
+          // the node echoes it on every write for this job. See _assertLock.
+          lockToken: job.lockToken
         }))
       });
     } catch (error) {
@@ -115,13 +118,13 @@ class JobController {
   async heartbeat(req, res) {
     try {
       const { jobId } = req.params;
-      const { nodeId } = req.body;
+      const { nodeId, lockToken } = req.body;
 
       // Verify node
       if (!(await this._requireNode(req, res))) return;
 
       // Handle heartbeat
-      await this.jobService.handleHeartbeat(jobId, nodeId);
+      await this.jobService.handleHeartbeat(jobId, nodeId, lockToken);
 
       res.json({
         success: true,
@@ -137,7 +140,7 @@ class JobController {
   async receiveChunk(req, res) {
     try {
       const { jobId } = req.params;
-      const { nodeId, chunkIndex, content, reasoning, metrics, isFinal, timestamp } = req.body;
+      const { nodeId, lockToken, chunkIndex, content, reasoning, metrics, isFinal, timestamp } = req.body;
 
       // Verify node
       if (!(await this._requireNode(req, res))) return;
@@ -150,7 +153,7 @@ class JobController {
         metrics,
         isFinal,
         timestamp
-      });
+      }, lockToken);
 
       res.json({
         success: true,
@@ -166,13 +169,13 @@ class JobController {
   async completeJob(req, res) {
     try {
       const { jobId } = req.params;
-      const { nodeId } = req.body;
+      const { nodeId, lockToken } = req.body;
 
       // Verify node
       if (!(await this._requireNode(req, res))) return;
 
       // Complete job
-      const job = await this.jobService.completeJob(jobId, nodeId);
+      const job = await this.jobService.completeJob(jobId, nodeId, lockToken);
 
       res.json({
         success: true,
@@ -188,13 +191,13 @@ class JobController {
   async failJob(req, res) {
     try {
       const { jobId } = req.params;
-      const { nodeId, error: failureReason } = req.body;
+      const { nodeId, lockToken, error: failureReason } = req.body;
 
       // Verify node
       if (!(await this._requireNode(req, res))) return;
 
       // Fail job
-      const job = await this.jobService.failJob(jobId, nodeId, failureReason);
+      const job = await this.jobService.failJob(jobId, nodeId, failureReason, lockToken);
 
       res.json({
         success: true,

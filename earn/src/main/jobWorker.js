@@ -93,13 +93,20 @@ class JobWorker extends EventEmitter {
     this.emit('job', { id: job.id, active: this.active });
     const base = this.serverUrl + '/api/jobs/' + job.id;
     const chatBody = jobToChatBody(job);
+    // Fences this attempt. Every worker on a rig signs as the same node id (one
+    // per GPU that fits the model, and the GUI and CLI share one node.json), so
+    // the server cannot tell our writes from a sibling's on the node id alone.
+    // Echoing the token the assignment came with lets it reject us — and not the
+    // sibling — if this job was requeued and picked up elsewhere while we ran.
+    // Undefined against a server too old to issue one, which omits it entirely.
+    const lock = job.lockToken ? { lockToken: job.lockToken } : {};
 
     // Keep the server's job lock alive for the whole run: immediately (which
     // also flips the job to 'running' so callers see streamed partials), then
     // every heartbeatMs. Best-effort — a missed beat is caught by the next.
     let hbTimer = null;
     const beat = () => {
-      this.post(base + '/heartbeat', this._sign({})).catch(() => {});
+      this.post(base + '/heartbeat', this._sign({ ...lock })).catch(() => {});
       hbTimer = this.schedule(beat, this.heartbeatMs);
     };
     beat();
@@ -118,7 +125,7 @@ class JobWorker extends EventEmitter {
       const i = idx++;
       buf = '';
       lastFlushAt = this.now();
-      const body = { chunkIndex: i, content, isFinal: !!isFinal };
+      const body = { ...lock, chunkIndex: i, content, isFinal: !!isFinal };
       // Reasoning isn't streamed to the caller (it isn't part of the answer), so
       // it rides on the final chunk — enough for the gateway to report it and to
       // explain an empty completion.
@@ -156,7 +163,7 @@ class JobWorker extends EventEmitter {
       });
       await chain;
       if (chunkError) throw chunkError;
-      const done = await this.post(base + '/complete', this._sign({}));
+      const done = await this.post(base + '/complete', this._sign({ ...lock }));
       if (!this._ok(done)) {
         // The server refused the completion (lock lost, job re-queued/deleted);
         // don't pretend success, and don't POST /fail — our lock is gone anyway.
@@ -166,7 +173,7 @@ class JobWorker extends EventEmitter {
       }
     } catch (e) {
       await chain.catch(() => {});
-      await this.post(base + '/fail', this._sign({ error: e.message })).catch(() => {});
+      await this.post(base + '/fail', this._sign({ ...lock, error: e.message })).catch(() => {});
       this.emit('failed', { id: job.id, error: e.message });
     } finally {
       if (hbTimer) this.cancel(hbTimer);

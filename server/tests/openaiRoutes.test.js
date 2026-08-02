@@ -453,6 +453,31 @@ describe('OpenAI gateway — controller branches', () => {
     expect(res.headers['X-LLMJob-Served-By']).toBe('n5');
   });
 
+  // checkTimeouts deletes an abandoned attempt's chunks when it requeues a job,
+  // so the list a stream is walking can shrink. Holding the old high-water mark
+  // would skip everything the retry produces until it grew past the dead
+  // attempt's length — the caller would watch the answer stop mid-sentence.
+  it('rewinds the stream cursor when a requeue drops the previous attempt\'s chunks', async () => {
+    const pages = [
+      { status: 'running', chunks: [{ content: 'A0 ' }, { content: 'A1 ' }, { content: 'A2 ' }] },
+      { status: 'running', chunks: [] },                                  // requeued: chunks cleared
+      { status: 'running', chunks: [{ content: 'B0 ' }] },                // retry rebuilds from idx 0
+      { status: 'completed', chunks: [{ content: 'B0 ' }, { content: 'B1 ' }], result: 'B0 B1 ', assignedTo: 'n1' },
+    ];
+    let i = 0;
+    const services = fakeServices({
+      jobService: { getJobResult: async () => pages[Math.min(i++, pages.length - 1)] },
+    });
+    const ctrl = new OpenAiController({ services, pollMs: 1, timeoutMs: 5000 });
+    const res = fakeRes();
+    await ctrl.chatCompletions(fakeReq({ messages: [{ role: 'user', content: 'x' }], stream: true }), res);
+    const out = res.writes.join('');
+    // The retry's output reaches the caller instead of being swallowed.
+    expect(out).toContain('B0 ');
+    expect(out).toContain('B1 ');
+    expect(out).toContain('[DONE]');
+  });
+
   it('reports partial progress when a streamed request times out mid-generation', async () => {
     const services = fakeServices({
       jobService: { getJobResult: async () => ({ status: 'running', assignedTo: 'n7', chunks: [{ content: 'part' }] }) },

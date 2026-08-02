@@ -568,6 +568,29 @@ const NET_ID = 'llmjob-gemma-4-e4b';
 const NET_LABEL = 'Gemma 4 E4B';
 
 describe('Chat gateway — LLMJob-network model', () => {
+  // A requeue clears the abandoned attempt's chunks, so `partial` can shrink.
+  // The char cursor has to rewind with it, or every delta the retry produces is
+  // swallowed until it passes the dead attempt's length and the reply reads as
+  // if it stopped mid-sentence.
+  it('rewinds the delta cursor when a requeue shortens the partial', async () => {
+    const services = netServices([
+      { status: 'running', partial: 'first attempt text' },
+      { status: 'running', partial: '' },            // requeued: chunks dropped
+      { status: 'running', partial: 'retry' },       // second attempt, from scratch
+      { status: 'completed', result: 'retry done', metrics: { totalTokens: 2 } }
+    ]);
+    const ctrl = new ChatController({ apiKey: '', models: MODELS, services, sleep: async () => {}, now: stepClock() });
+    const res = fakeRes();
+    await ctrl.chatCompletions(fakeReq({ model: NET_ID, messages: [{ role: 'user', content: 'hi' }] }), res);
+
+    const out = res.writes.join('');
+    expect(out).toContain('"delta":"first attempt text"');
+    expect(out).toContain('"delta":"retry"');   // not swallowed by the old cursor
+    expect(out).toContain('"delta":" done"');
+    expect(out).toContain('"done":true');
+    expect(out).toContain('[DONE]');
+  });
+
   it('serves the model as a job, streaming incremental deltas then a final meta', async () => {
     const services = netServices([
       { status: 'running', partial: 'Hel', chunks: [] },

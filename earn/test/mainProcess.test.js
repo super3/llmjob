@@ -228,6 +228,7 @@ jest.mock('../src/main/jobWorker', () => {
 
 const { EventEmitter } = require('events');
 const nodeProto = require('../src/shared/node');
+const { defaultWorker } = require('../src/shared/worker');
 
 const KEYS = nodeProto.generateKeypair();
 const VALID_ADDR = 'prl1p' + 'a'.repeat(30);
@@ -525,7 +526,10 @@ describe('simple ipc handlers', () => {
   it('settings:get merges saved settings over the desktop defaults', async () => {
     const ctx = loadMain();
     const s = await ctx.invoke('settings:get');
-    expect(s).toMatchObject({ region: 'us2', worker: 'rig01', mode: 'auto', address: '', mdlAddress: '' });
+    // worker defaults to this machine's hostname, not the shared 'rig01' constant,
+    // so two rigs on one payout address don't collide into one board identity.
+    expect(s).toMatchObject({ region: 'us2', worker: defaultWorker(), mode: 'auto', address: '', mdlAddress: '' });
+    expect(s.worker).toMatch(/^[a-z0-9-]{1,32}$/);
 
     ctx.fs.existsSync.mockImplementation((p) => p === SETTINGS_PATH);
     ctx.fs.readFileSync.mockReturnValue('{"address":"prl1x","mode":"llm"}');
@@ -1552,6 +1556,18 @@ describe('local LLM', () => {
       ready: false, error: 'The local LLM stopped before it was ready. See Logs.',
     });
     expect(ctx.sent('miner:stopped')).toHaveLength(0);
+
+    // …and once an instance DOES come up, that error must not outlive it. On a
+    // multi-GPU rig the next card follows the dead one, so this is the ordinary
+    // case, not an edge one. The renderer ranks error above ready in both the
+    // hero dot and its label, and nothing else clears it while a fleet runs —
+    // startLlm's pre-spawn reset only fires on a fresh start — so a stale error
+    // left the app permanently red while the model answered normally.
+    llm.emit('ready', { baseUrl: 'http://127.0.0.1:8081' });
+    await flush();
+    const recovered = ctx.sent('llm:status').pop();
+    expect(recovered).toMatchObject({ ready: true, endpoint: 'http://127.0.0.1:8081/v1' });
+    expect(recovered.error).toBeNull();
   });
 
   it('both mode: the board report tags the GPU serving the local LLM', async () => {
