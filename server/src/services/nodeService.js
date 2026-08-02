@@ -222,7 +222,16 @@ class NodeService {
   // Prune nodes that haven't pinged within NODE_TTL_MS and log a status summary.
   async checkNodeStatuses() {
     const now = Date.now();
-    await this.db.query('DELETE FROM nodes WHERE last_seen < $1', [now - NODE_TTL_MS]);
+    // Prune UNCLAIMED rows only. A claimed node carries state the user set and
+    // cannot recreate by waiting: its name, its is_public flag, and the user_id
+    // that makes it eligible for that user's `private` jobs. Deleting it because
+    // the rig was off for a week silently downgraded the owner to public-only
+    // routing until they noticed and re-claimed. An unclaimed row has nothing
+    // worth keeping — it re-registers itself on the next ping.
+    await this.db.query(
+      'DELETE FROM nodes WHERE last_seen < $1 AND user_id IS NULL',
+      [now - NODE_TTL_MS]
+    );
 
     const r = await this.db.query('SELECT last_seen FROM nodes', []);
     let onlineCount = 0;

@@ -242,19 +242,30 @@ describe('NodeService', () => {
   });
 
   describe('checkNodeStatuses', () => {
-    it('prunes week-old nodes and logs an online/offline summary', async () => {
+    // A CLAIMED node carries state its owner set and cannot recreate by waiting —
+    // the name, is_public, and the user_id that makes it eligible for that user's
+    // `private` jobs. Pruning it because the rig was off for a week silently
+    // downgraded the owner to public-only routing. Only unclaimed rows are pruned;
+    // those re-register themselves on the next ping.
+    it('prunes week-old UNCLAIMED nodes and keeps claimed ones', async () => {
       const spy = jest.spyOn(console, 'log').mockImplementation(() => {});
       const fresh = await service.claimNode('fresh', 'fresh', 'u');
       const stale = await service.claimNode('stale', 'stale', 'u');
-      const old = await service.claimNode('old', 'old', 'u');
+      const oldClaimed = await service.claimNode('oldclaimed', 'oldclaimed', 'u');
+      const oldAnon = await service.registerNode('oldanon', 'oldanon');
       await setLastSeen(stale.nodeId, Date.now() - 20 * 60 * 1000);
-      await setLastSeen(old.nodeId, Date.now() - 8 * 24 * 60 * 60 * 1000);
+      await setLastSeen(oldClaimed.nodeId, Date.now() - 8 * 24 * 60 * 60 * 1000);
+      await setLastSeen(oldAnon.nodeId, Date.now() - 8 * 24 * 60 * 60 * 1000);
 
       await service.checkNodeStatuses();
 
-      expect(await service.getNode(old.nodeId)).toBeNull();
+      // The unclaimed one is gone; the claimed one survives with its owner intact.
+      expect(await service.getNode(oldAnon.nodeId)).toBeNull();
+      const kept = await service.getNode(oldClaimed.nodeId);
+      expect(kept).not.toBeNull();
+      expect(kept.userId).toBe('u');
       expect(await service.getNode(fresh.nodeId)).not.toBeNull();
-      expect(spy).toHaveBeenCalledWith('Node status check: 1 online, 1 offline');
+      expect(spy).toHaveBeenCalledWith('Node status check: 1 online, 2 offline');
       spy.mockRestore();
     });
 
