@@ -519,4 +519,46 @@ describe('LlmFleet', () => {
     await fleet.start([{ index: 0, nGpuLayers: 42 }, { index: 1, nGpuLayers: 42 }], {});
     await expect(fleet._draining).resolves.toBeUndefined();
   });
+
+  test('takes a crashed instance out of service, then puts it back when it recovers', async () => {
+    // A crash is not a fleet stop: the manager is restarting it. But while it is
+    // down the instance must stop polling for cluster jobs and drop off
+    // servingIndices(), or the node advertises a model that isn't listening and
+    // fails every job it claims — which is exactly what the field showed.
+    const { fleet, mgrs, workers } = makeFleet();
+    const down = jest.fn();
+    fleet.on('crashed', down);
+
+    await fleet.start([{ index: 0 }], { modelPath: '/m.gguf' });
+    fleet.syncWorkers(true);
+    await drain();
+    mgrs[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    expect(fleet.servingIndices()).toEqual([0]);
+    expect(fleet.isReady()).toBe(true);
+    expect(workers.length).toBe(1);
+
+    mgrs[0].emit('crashed', { code: 139, restartInMs: 3000, attempt: 1 });
+    expect(fleet.servingIndices()).toEqual([]);   // not offered to the cluster
+    expect(fleet.isReady()).toBe(false);
+    expect(workers[0].stopped).toBe(true);
+    expect(down).toHaveBeenCalledWith(expect.objectContaining({ code: 139, index: 0 }));
+
+    mgrs[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' }); // restart landed
+    expect(fleet.servingIndices()).toEqual([0]);
+    expect(fleet.isReady()).toBe(true);
+  });
+
+  test('a crash with no worker attached is still taken out of service', () => {
+    // Not serving cluster jobs (or crashed between ready and the worker being
+    // wired): there is nothing to stop, and the instance must still stop counting
+    // as ready.
+    const { fleet, mgrs } = makeFleet();
+    return fleet.start([{ index: 0 }], { modelPath: '/m.gguf' }).then(() => {
+      mgrs[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+      expect(fleet.isReady()).toBe(true);
+      mgrs[0].emit('crashed', { code: 1, restartInMs: 3000, attempt: 1 });
+      expect(fleet.isReady()).toBe(false);
+      expect(fleet.servingIndices()).toEqual([]);
+    });
+  });
 });

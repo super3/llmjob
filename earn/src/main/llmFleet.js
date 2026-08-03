@@ -151,6 +151,7 @@ class LlmFleet extends EventEmitter {
     mgr.on('log', (l) => this.emit('log', l));
     mgr.on('ready', ({ baseUrl }) => this._onReady(inst, baseUrl));
     mgr.on('stats', ({ tokensPerSec }) => this._onStats(tokensPerSec));
+    mgr.on('crashed', (info) => this._onCrashed(inst, info));
     mgr.on('stopped', (code) => this._onStopped(inst, code));
     mgr.on('error', (err) => this.emit('error', err));
     mgr.start(Object.assign({}, this._run, {
@@ -207,6 +208,17 @@ class LlmFleet extends EventEmitter {
       this._sawFirstReady = true;
       this.emit('first-ready', { baseUrl });
     }
+  }
+
+  // llama-server died but the manager is restarting it. Take the instance out of
+  // service without declaring the fleet down: its worker must stop polling for
+  // cluster jobs (it would fail every one it claimed), and servingIndices() must
+  // stop listing the card, so the board shows what is actually being served.
+  // _onReady puts both back when the restart lands.
+  _onCrashed(inst, info) {
+    inst.ready = false;
+    if (inst.worker) { inst.worker.stop(); inst.worker = null; }
+    this.emit('crashed', Object.assign({ index: inst.index }, info));
   }
 
   _onStats(tokensPerSec) {
