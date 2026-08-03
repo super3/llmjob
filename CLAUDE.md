@@ -29,3 +29,10 @@ Always run tests before starting work and after completing tasks. A task is NOT 
   right alongside the PR URL. The preview URL is deterministic from the PR
   number: `https://llmjob-llmjob-pr-<PR-number>.up.railway.app` (append a page
   path like `/chat.html` or `/network.html` when pointing at a specific page).
+- One conversation, one PR. Don't widen a PR's scope on your own — if you spot
+  something adjacent, say so and ask. But once it's asked for, it belongs on the
+  branch that's already open, not on a new one. Follow-up work in the same
+  conversation goes into the same open PR: push to that branch and update the
+  title and description, rather than spinning up a second PR for what is really
+  one piece of work. "Don't expand scope silently" is about asking first, not
+  about splitting the answer across PRs.

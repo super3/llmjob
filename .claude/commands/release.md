@@ -14,6 +14,12 @@ export PATH="$HOME/AppData/Local/nodejs:$HOME/AppData/Local/gh/bin:$PATH"
 ```
 Repo root: `C:\Users\template\Code\llmjob`. Earn tests run from `earn/`, server tests from the repo root. `npm test` and `npm --prefix earn test` work from the Bash tool; if the `.bin/jest` shim fails under node, fall back to `node node_modules/jest/bin/jest.js`.
 
+Both toolchain directories are portable, hand-extracted installs, and those PATH entries persist in the user environment even when the directories are gone — so "command not found" does **not** mean the PATH is wrong; check whether the directory actually exists. Rebuild by extracting the official zips (`nodejs.org/dist/vX/node-vX-win-x64.zip`, `github.com/cli/cli/releases/.../gh_X_windows_amd64.zip`) into those exact paths.
+
+Install **Node 22**, not the newest LTS. CI (`test.yml`, `miner-build.yml`, `deploy.yml`) pins 22, and both `package.json` files declare `engines.node >= 22`. Node 24 also ships npm 11, which **blocks package install scripts by default** and silently skips native postinstalls.
+
+`gh` may not be authenticated — check `gh auth status` before Phase 2 rather than at the point you need it. `gh auth login` needs a browser and cannot run non-interactively, so ask the founder to run it; **don't** try to read the token back out of Git Credential Manager, which is blocked by the permission classifier and should stay that way. `git push` works regardless, since Credential Manager already holds a credential — so tagging and publishing never depend on `gh` auth, only the PR edit and the merge poll do.
+
 `eslint` has been missing from the installed `node_modules` before, so `npm run lint` dies with "not recognized" while the suites pass. It's a declared devDependency — `npm install --no-save eslint@^9 @eslint/js@^9 globals@^17` fixes it without touching `package.json`.
 
 ## Phase 1 — rebase, draft PR, launch (do this now)
@@ -24,8 +30,9 @@ Repo root: `C:\Users\template\Code\llmjob`. Earn tests run from `earn/`, server 
 
 3. **Create the release branch:** `git checkout -b release/v$NEW` off the up-to-date main.
 
-4. **Bump versions — two files, both required:**
+4. **Bump versions — three files:**
    - `earn/package.json` → `"version": "$NEW"` (the app and its installers).
+   - `earn/package-lock.json` → the **two** `version` fields near the top (the root object and `packages[""]`). Running `npm install` in `earn/` syncs them for you; editing both by hand is fine when npm isn't available. Don't skip it: v0.3.9 bumped the lock and v0.3.8 didn't, so the lock has silently disagreed with the manifest before.
    - `site/config.json` → `"appVersion": "$NEW"` (the site's download links).
 
    Then verify by building rather than by grepping the source: `npm run build:site`, and confirm `dist/earn.html` carries six `v$NEW` download URLs (4× `.exe`, 2× `.AppImage`) with no previous version anywhere in the file.
@@ -33,6 +40,14 @@ Repo root: `C:\Users\template\Code\llmjob`. Earn tests run from `earn/`, server 
    Do **not** go looking for literal version strings in the page to hand-edit — there are none. The links live in `site/pages/earn.html` (moved out of the repo root) and are templated as `{{!appVersion}}`, so the build substitutes the single `site/config.json` value into all six URLs. This replaced an earlier hand-edited arrangement that went stale twice, lagging at v0.2.7 through two releases; the templating fixes that structurally. If you find yourself editing six URLs by hand, you are on a stale checkout.
 
 5. **Run tests — must be green.** If a suite errors on a missing module (e.g. `jest-environment-jsdom`), the local `node_modules` is stale: run `npm install` in `earn/` then retry. Earn and server suites must both pass at the 100% coverage gate before proceeding.
+
+   But not every missing-module error is stale `node_modules`. If jest names a file that demonstrably exists on disk —
+
+   ```
+   Validation Error: Module ./server/tests/setup.js in the setupFilesAfterEnv option was not found.
+   ```
+
+   — check the C runtime before you touch the repo. Jest 30's default resolver is the native `unrs-resolver`, which cannot `dlopen` without the MSVC runtime, and it fails by reporting a *missing setup file* rather than a missing DLL. `npm ci`, reinstalling, and changing Node version all leave it broken, and plain `node`/`fs` resolves the same path fine, so everything points at the repo instead of the box. Confirm with `node -e "require('unrs-resolver')"`. The fix needs no admin: copy `vcruntime140.dll`, `vcruntime140_1.dll` and `msvcp140.dll` from `earn/vendor/llm-runtime/` — the repo already vendors them, for exactly this reason, for `llama-server` — into `$HOME/AppData/Local/nodejs`, which is on PATH and survives `npm ci`.
 
 6. **Commit & push:** commit `Release v$NEW`, `git push -u origin release/v$NEW`. End the commit body with the standard `Co-Authored-By:` trailer naming the model you are actually running (e.g. `Claude Opus 5 <noreply@anthropic.com>`) — don't copy a model version out of this file, it goes stale.
 
@@ -56,6 +71,19 @@ Repo root: `C:\Users\template\Code\llmjob`. Earn tests run from `earn/`, server 
    - **If arming the poll is denied by the permission classifier**, don't try to route around it. Say plainly that publishing is not armed, finish and report Phase 1, and tag manually once the founder says he's merged (or once he grants the permission and you re-arm). A release that publishes itself through a worked-around denial is worse than one that waits for a word.
 
 10. **Confirm the publish.** Watch the tag's `miner-build.yml` run to completion, then verify the GitHub Release `v$NEW` is published (not a draft) with the Windows `.exe` + blockmap, Linux `.AppImage`, CLI, HiveOS packages, and `latest.yml` / `latest-linux.yml`. Report the release URL. Existing installs auto-update via `latest.yml`.
+
+11. **Write the release notes — the body is empty until you do.** The release is created by `electron-builder --publish always` (`miner-build.yml`), which publishes it with a **blank body**, titled just `$NEW`. Nothing in the workflow ever writes notes, so the changelog is empty unless you fill it in. Every release through v0.3.9 shipped that way. This is the last step of the release, not an optional extra.
+
+    - Build the notes from `git log --oneline --no-merges vPREV..v$NEW`, grouped into the same buckets as the PR body — but write them for **someone running a rig**, not as raw commit titles. "Accepted shares and worker names stay stable when a card ages out" beats "Keep shares and worker names stable when a card ages out"; a bare `git log` dump is not release notes.
+    - Lead with the install/update line: existing installs auto-update via `latest.yml`, new installs want the `LLMJob-Earn-Setup-$NEW.exe` / `LLMJob-Earn-$NEW.AppImage` names.
+    - Close with the compare link: `https://github.com/super3/llmjob/compare/vPREV...v$NEW`.
+    - Apply it and fix the bare-number title at the same time:
+      ```bash
+      gh release edit v$NEW --title "LLMJob Earn v$NEW" --notes-file <file>
+      ```
+    - Verify it took — `gh release view v$NEW --json name,isDraft,body` — rather than trusting the command's exit code.
+
+    If you'd rather fix this at the source, it needs a workflow step after the Linux publish that runs `gh release edit` (with `--generate-notes`, or from a checked-in changelog). That's a separate PR off `main` — don't fold a `.github/workflows/` change into the release commit.
 
 ## Notes
 
