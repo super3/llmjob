@@ -1,7 +1,8 @@
 # Static site sources
 
 The marketing/dashboard pages (`index.html`, `chat.html`, `earn.html`,
-`network.html`, `api.html`, `add-node.html`, `dashboard.html`) are
+`network.html`, `docs.html`, `terms.html`, `privacy.html`, `add-node.html`,
+`dashboard.html`) are
 **generated** from the sources here into
 `dist/` by `site/build-site.mjs`. `dist/` is git-ignored — nothing generated
 is committed. Edit the sources in this directory, never a built page.
