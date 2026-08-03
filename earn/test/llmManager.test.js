@@ -136,10 +136,104 @@ describe('LlmManager', () => {
     expect(ready).toHaveBeenCalledTimes(1);
     expect(m.isReady()).toBe(true);
 
-    // an exit AFTER it was ready is a real stop — no further retry
+    // An exit AFTER it was ready is a crash, not a stop: llama-server dying
+    // mid-serve used to be permanent, which took nodes out of the cluster for
+    // hours while the miner kept running and the machine still looked healthy.
     children[1].emit('exit', 0);
     await flush();
+    expect(spawn).toHaveBeenCalledTimes(3);
+    expect(stopped).not.toHaveBeenCalled();
+    expect(m.isRunning()).toBe(true);
+  });
+
+  test('restarts a crash after it was serving, and says so', async () => {
+    const children = [];
+    const spawn = jest.fn(() => { const c = makeChild(); children.push(c); return c; });
+    const m = new LlmManager({ spawn, sleep: () => Promise.resolve(), retryDelayMs: 1 });
+    const stopped = jest.fn();
+    const crashed = jest.fn();
+    const logs = [];
+    m.on('stopped', stopped);
+    m.on('crashed', crashed);
+    m.on('log', (l) => logs.push(l.line));
+
+    m.start({ modelPath: '/m.gguf' });
+    children[0].stderr.emit('data', 'srv  llama_server: model loaded\n');
+    expect(m.isReady()).toBe(true);
+
+    children[0].emit('exit', 139); // segfault mid-generation
+    await flush();
+
     expect(spawn).toHaveBeenCalledTimes(2);
+    expect(stopped).not.toHaveBeenCalled();
+    // The fleet needs this to pull the instance out of service while it is down,
+    // or it keeps advertising a model that isn't listening and fails every job.
+    expect(crashed).toHaveBeenCalledWith(expect.objectContaining({ code: 139, attempt: 1 }));
+    expect(m.isReady()).toBe(false);
+    expect(logs.some((l) => /crashed \(code 139\) after serving/.test(l))).toBe(true);
+  });
+
+  test('gives up after crashRestarts consecutive crashes', async () => {
+    const children = [];
+    const spawn = jest.fn(() => { const c = makeChild(); children.push(c); return c; });
+    const m = new LlmManager({ spawn, sleep: () => Promise.resolve(), retryDelayMs: 1, crashRestarts: 2 });
+    const stopped = jest.fn();
+    m.on('stopped', stopped);
+
+    m.start({ modelPath: '/m.gguf' });
+    // Ready then dies, three times over: a model that cannot stay up must end as
+    // a stopped LLM the user can see, not an endless respawn on their GPU.
+    for (let i = 0; i < 3; i++) {
+      children[i].stderr.emit('data', 'srv  llama_server: model loaded\n');
+      children[i].emit('exit', 1);
+      await flush();
+    }
+    expect(spawn).toHaveBeenCalledTimes(3); // initial + 2 restarts, then no more
+    expect(stopped).toHaveBeenCalledWith(1);
+    expect(m.isRunning()).toBe(false);
+  });
+
+  test('forgives earlier crashes once an instance has stayed up', async () => {
+    const children = [];
+    const spawn = jest.fn(() => { const c = makeChild(); children.push(c); return c; });
+    let now = 1000;
+    const m = new LlmManager({
+      spawn, sleep: () => Promise.resolve(), retryDelayMs: 1,
+      crashRestarts: 1, crashSettleMs: 60000, now: () => now,
+    });
+    const stopped = jest.fn();
+    m.on('stopped', stopped);
+
+    m.start({ modelPath: '/m.gguf' });
+    children[0].stderr.emit('data', 'srv  llama_server: model loaded\n');
+    children[0].emit('exit', 1);          // crash 1 of a budget of 1
+    await flush();
+    expect(spawn).toHaveBeenCalledTimes(2);
+
+    children[1].stderr.emit('data', 'srv  llama_server: model loaded\n');
+    now += 10 * 60 * 1000;                 // served ten minutes — a recovery
+    children[1].emit('exit', 1);
+    await flush();
+    // Without the reset a node that crashes once a day would exhaust its budget
+    // and stay down for good.
+    expect(spawn).toHaveBeenCalledTimes(3);
+    expect(stopped).not.toHaveBeenCalled();
+  });
+
+  test('a user stop after ready does not restart', async () => {
+    const children = [];
+    const spawn = jest.fn(() => { const c = makeChild(); children.push(c); return c; });
+    const m = new LlmManager({ spawn, sleep: () => Promise.resolve(), retryDelayMs: 1 });
+    const stopped = jest.fn();
+    m.on('stopped', stopped);
+
+    m.start({ modelPath: '/m.gguf' });
+    children[0].stderr.emit('data', 'srv  llama_server: model loaded\n');
+    m.stop();                    // sets _stopping — this is intentional
+    children[0].emit('exit', 0);
+    await flush();
+
+    expect(spawn).toHaveBeenCalledTimes(1);
     expect(stopped).toHaveBeenCalledWith(0);
   });
 
