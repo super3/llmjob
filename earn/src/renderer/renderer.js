@@ -99,6 +99,10 @@
     el.tabChat.classList.toggle('active', v === 'chat');
     el.tabApi.classList.toggle('active', v === 'api');
     el.btnSettings.classList.toggle('active', v === 'settings');
+    // The footer link is the way out of the logs view as well as the way in, so
+    // it has to say which. Driven from renderView, not the click handler, so
+    // ← Back and the tabs relabel it too.
+    el.btnLogs.textContent = v === 'logs' ? 'CLOSE LOGS' : 'VIEW LOGS';
     if (v === 'chat' && state.llm.ready) setTimeout(() => el.chatInput.focus(), 0);
     if (v === 'logs') el.logTerm.scrollTop = el.logTerm.scrollHeight;
   }
