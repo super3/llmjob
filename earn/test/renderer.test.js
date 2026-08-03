@@ -211,14 +211,19 @@ describe('boot with the full bridge', () => {
     expect($('view-settings').hidden).toBe(false);
     click($('btn-settings'));
     expect($('view-api').hidden).toBe(false);
-    // logs toggle + back link
+    // logs toggle + back link — the footer link relabels, since it is also the
+    // way out of the logs view
+    expect($('btn-logs').textContent).toBe('VIEW LOGS');
     click($('btn-logs'));
     expect($('view-logs').hidden).toBe(false);
+    expect($('btn-logs').textContent).toBe('CLOSE LOGS');
     click($('btn-logs'));
     expect($('view-api').hidden).toBe(false);
+    expect($('btn-logs').textContent).toBe('VIEW LOGS');
     click($('btn-logs'));
     click(document.querySelector('[data-back]'));
     expect($('view-api').hidden).toBe(false);
+    expect($('btn-logs').textContent).toBe('VIEW LOGS'); // ← Back relabels too
     // unknown data-tab hides every view
     click($('ghost-tab'));
     expect($('view-mine').hidden).toBe(true);
