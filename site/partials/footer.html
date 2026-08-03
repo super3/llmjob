@@ -1,0 +1,43 @@
+<!-- The shared site footer. Needs the footer-style partial included in the page's <head>.
+
+     Links are grouped into columns rather than run together in one line: eight
+     links abreast crowded the bar and wrapped badly on a phone. Column headings
+     are plain divs, not headings, so the footer can't disturb a page's outline.
+
+     The Dashboard link keeps id="foot-login" because index.html and earn.html
+     attach a Clerk sign-in handler to it. On pages without that handler it
+     simply follows its href, which is the same destination. -->
+<footer class="foot">
+  <div class="foot-inner">
+    <div class="foot-brand">
+      <a class="logo" href="index.html">
+        <span class="bolt"><svg width="13" height="13" viewBox="0 0 24 24" fill="#fff"><path d="M13 2 L4 14 h6 l-1 8 10-13 h-7 l1-7 z"></path></svg></span>LLMJob
+      </a>
+      <p class="foot-tag">Your own AI, running on the hardware you already own.</p>
+    </div>
+
+    <div class="foot-col">
+      <div class="foot-h">Product</div>
+      <a href="chat.html">Chat</a>
+      <a href="earn.html">Earn</a>
+      <a href="network.html">Network</a>
+    </div>
+
+    <div class="foot-col">
+      <div class="foot-h">Developers</div>
+      <a href="docs.html">Docs</a>
+      <a href="dashboard.html" id="foot-login">Dashboard</a>
+    </div>
+
+    <div class="foot-col">
+      <div class="foot-h">Company</div>
+      <a href="{{discordUrl}}" target="_blank" rel="noopener">Discord</a>
+      <a href="terms.html">Terms</a>
+      <a href="privacy.html">Privacy</a>
+    </div>
+  </div>
+
+  <div class="foot-bottom">
+    <span>© 2026 LLMJob</span>
+  </div>
+</footer>
