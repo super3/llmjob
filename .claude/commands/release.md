@@ -57,6 +57,19 @@ Repo root: `C:\Users\template\Code\llmjob`. Earn tests run from `earn/`, server 
 
 10. **Confirm the publish.** Watch the tag's `miner-build.yml` run to completion, then verify the GitHub Release `v$NEW` is published (not a draft) with the Windows `.exe` + blockmap, Linux `.AppImage`, CLI, HiveOS packages, and `latest.yml` / `latest-linux.yml`. Report the release URL. Existing installs auto-update via `latest.yml`.
 
+11. **Write the release notes — the body is empty until you do.** The release is created by `electron-builder --publish always` (`miner-build.yml`), which publishes it with a **blank body**, titled just `$NEW`. Nothing in the workflow ever writes notes, so the changelog is empty unless you fill it in. Every release through v0.3.9 shipped that way. This is the last step of the release, not an optional extra.
+
+    - Build the notes from `git log --oneline --no-merges vPREV..v$NEW`, grouped into the same buckets as the PR body — but write them for **someone running a rig**, not as raw commit titles. "Accepted shares and worker names stay stable when a card ages out" beats "Keep shares and worker names stable when a card ages out"; a bare `git log` dump is not release notes.
+    - Lead with the install/update line: existing installs auto-update via `latest.yml`, new installs want the `LLMJob-Earn-Setup-$NEW.exe` / `LLMJob-Earn-$NEW.AppImage` names.
+    - Close with the compare link: `https://github.com/super3/llmjob/compare/vPREV...v$NEW`.
+    - Apply it and fix the bare-number title at the same time:
+      ```bash
+      gh release edit v$NEW --title "LLMJob Earn v$NEW" --notes-file <file>
+      ```
+    - Verify it took — `gh release view v$NEW --json name,isDraft,body` — rather than trusting the command's exit code.
+
+    If you'd rather fix this at the source, it needs a workflow step after the Linux publish that runs `gh release edit` (with `--generate-notes`, or from a checked-in changelog). That's a separate PR off `main` — don't fold a `.github/workflows/` change into the release commit.
+
 ## Notes
 
 - Only the founder merges; you never merge the release PR yourself.
