@@ -1,0 +1,36 @@
+<!-- Styles for the shared site footer partial. Included from <head> after
+     the page's own <style>, the same way legal-style is.
+
+     Colours fall back to literals so a page that doesn't define the full palette
+     still renders correctly (network.html has no --line-soft, for instance).
+     A page that needs breathing room above the footer sets --foot-gap in :root
+     rather than redefining the rule. -->
+<style>
+  footer.foot { border-top: 1px solid #ededea; max-width: 1080px; margin: var(--foot-gap, 0) auto 0; padding: 40px 28px 26px; color: var(--muted-3, #9a9da1); font-size: 14px; }
+
+  /* Tier one: who we are, and the places you'd actually navigate to. */
+  .foot-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 26px 40px; flex-wrap: wrap; }
+  .foot-brand .logo { font-weight: 700; font-size: 16px; color: var(--muted, #5b5e62); display: inline-flex; align-items: center; gap: 9px; }
+  .foot-brand .logo .bolt { width: 24px; height: 24px; border-radius: 7px; background: var(--dark, #1a1a17); display: inline-flex; align-items: center; justify-content: center; flex: none; }
+  .foot-tag { margin-top: 11px; font-size: 13.5px; line-height: 1.55; color: var(--muted-3, #9a9da1); max-width: 24em; }
+
+  .foot-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 26px; padding-top: 3px; }
+  .foot-nav a { color: var(--muted, #5b5e62); font-size: 14.5px; transition: color .14s; }
+  .foot-nav a:hover { color: var(--ink, #0e0f10); }
+
+  /* Tier two: the small print, set quieter than the tier above it. */
+  .foot-bottom { margin-top: 30px; padding-top: 18px; border-top: 1px solid var(--line-soft, #ebeae5); display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; font-size: 13.5px; color: var(--muted-3, #9a9da1); }
+  .foot-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0 9px; }
+  .foot-meta a { color: var(--muted-3, #9a9da1); font-size: 13.5px; transition: color .14s; }
+  .foot-meta a:hover { color: var(--muted, #5b5e62); }
+  .foot-meta .sep { color: var(--line, #e3e1d9); user-select: none; }
+
+  @media (max-width: 700px) {
+    footer.foot { padding: 32px 18px 24px; }
+    /* Stack the brand above the links rather than letting five links wrap
+       raggedly beside it. */
+    .foot-top { flex-direction: column; gap: 22px; }
+    .foot-nav { gap: 10px 22px; }
+    .foot-bottom { flex-direction: column; align-items: flex-start; gap: 10px; }
+  }
+</style>

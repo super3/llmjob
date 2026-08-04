@@ -1,0 +1,41 @@
+<!-- The shared site footer. Needs the footer-style partial included in the page's <head>.
+
+     Deliberately has no column headings. Eight links in one row was crowded, but
+     grouping them under Product / Developers / Company was worse: Chat, Earn and
+     Network are one product seen from different sides, not three products, and
+     "Company" was a junk drawer holding a chat invite and a legal page. Splitting
+     into two tiers — the places you'd actually navigate to, then the small print —
+     fixes the crowding without inventing a taxonomy that isn't true.
+
+     The Dashboard link keeps id="foot-login" because index.html and earn.html
+     attach a Clerk sign-in handler to it. On pages without that handler it
+     simply follows its href, which is the same destination. -->
+<footer class="foot">
+  <div class="foot-top">
+    <div class="foot-brand">
+      <a class="logo" href="index.html">
+        <span class="bolt"><svg width="13" height="13" viewBox="0 0 24 24" fill="#fff"><path d="M13 2 L4 14 h6 l-1 8 10-13 h-7 l1-7 z"></path></svg></span>LLMJob
+      </a>
+      <p class="foot-tag">Your own AI, running on the hardware you already own.</p>
+    </div>
+
+    <nav class="foot-nav" aria-label="Site">
+      <a href="chat.html">Chat</a>
+      <a href="earn.html">Earn</a>
+      <a href="network.html">Network</a>
+      <a href="docs.html">Docs</a>
+      <a href="dashboard.html" id="foot-login">Dashboard</a>
+    </nav>
+  </div>
+
+  <div class="foot-bottom">
+    <span>© 2026 LLMJob</span>
+    <nav class="foot-meta" aria-label="Legal and community">
+      <a href="{{discordUrl}}" target="_blank" rel="noopener">Discord</a>
+      <span class="sep" aria-hidden="true">·</span>
+      <a href="terms.html">Terms</a>
+      <span class="sep" aria-hidden="true">·</span>
+      <a href="privacy.html">Privacy</a>
+    </nav>
+  </div>
+</footer>

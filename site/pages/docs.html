@@ -1,0 +1,635 @@
+<!--build {"navDocs": true, "fonts": "https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap"} -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>LLMJob — Docs</title>
+<meta name="description" content="Use your LLMJob API key with any OpenAI-compatible client: base URL, authentication, models, streaming, and error reference." />
+
+{{> head}}
+<style>
+  :root {
+    --bg: #fcfcfb;
+    --ink: #0e0f10;
+    --ink-strong: #16160F;
+    --muted: #5b5e62;
+    --muted-2: #8a8f98;
+    --muted-3: #9a9da1;
+    --line: #e3e1d9;
+    --line-soft: #ebeae5;
+    --field: #faf9f6;
+    --accent: #2563eb;
+    --accent-soft: #eff4ff;
+    --accent-line: #dbe6fb;
+    --green: #16a34a;
+    --amber: #d9920a;
+    --danger: #b4442f;
+    --dark: #1a1a17;
+    --dark-line: #2c2c28;
+    font-synthesis-weight: none;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body { background: var(--bg); color: var(--ink); font-family: "Schibsted Grotesk", sans-serif; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  ::selection { background: #d7f3df; }
+  .mono { font-family: "IBM Plex Mono", monospace; }
+  a { color: inherit; text-decoration: none; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+
+  /* nav (shared partial) */
+  nav.nav { max-width: 1080px; margin: 0 auto; padding: 26px 28px; display: flex; align-items: center; justify-content: space-between; }
+  .logo { font-weight: 700; font-size: 21px; letter-spacing: -.02em; display: inline-flex; align-items: center; gap: 11px; color: var(--ink); }
+  .logo .bolt { display: inline-flex; width: 38px; height: 38px; border-radius: 11px; background: var(--dark); align-items: center; justify-content: center; flex: none; }
+  .nav-right { display: flex; align-items: center; gap: 26px; }
+  .nav-link { font-size: 15px; font-weight: 500; color: var(--ink); transition: opacity .15s; }
+  .nav-link:hover { opacity: .65; }
+  .nav-link.active { color: var(--accent); font-weight: 600; }
+  .btn-discord { color: #fff; background: var(--dark); font-size: 15px; font-weight: 600; padding: 9px 17px; border-radius: 8px; display: inline-flex; align-items: center; gap: 8px; transition: transform .12s ease, box-shadow .15s ease; }
+  .btn-discord:hover { box-shadow: 0 8px 20px -10px rgba(26,26,23,.6); }
+  .btn-discord:active { transform: translateY(1px); }
+
+  /* layout */
+  .shell { max-width: 1080px; margin: 0 auto; padding: 0 28px 110px; display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 44px; align-items: start; }
+  /* Grid items default to min-width:auto, which lets a wide code block or table
+     push the whole page sideways instead of scrolling inside its own box. */
+  .shell > main { min-width: 0; }
+  aside.toc { position: sticky; top: 34px; margin-top: 84px; }
+  .toc .eb { font-family: "IBM Plex Mono", monospace; font-size: 11px; letter-spacing: .13em; text-transform: uppercase; color: var(--muted-3); margin-bottom: 14px; }
+  .toc a { display: block; font-size: 14.5px; color: var(--muted); padding: 6px 0 6px 13px; border-left: 2px solid var(--line-soft); transition: color .14s, border-color .14s; }
+  .toc a:hover { color: var(--ink); border-left-color: var(--muted-3); }
+
+  /* hero */
+  .hero { padding: 70px 0 8px; }
+  .hero .eb { font-family: "IBM Plex Mono", monospace; font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted-3); }
+  .hero h1 { font-weight: 800; font-size: clamp(38px, 6vw, 54px); line-height: 1.04; letter-spacing: -.04em; margin-top: 13px; }
+  .hero .lede { font-size: 18.5px; line-height: 1.55; color: var(--muted); max-width: 34em; margin-top: 18px; }
+  .hero .lede a { color: var(--accent); font-weight: 600; }
+
+  /* sections */
+  section.doc { padding-top: 62px; scroll-margin-top: 24px; }
+  section.doc h2 { font-size: 27px; font-weight: 800; letter-spacing: -.03em; }
+  section.doc h3 { font-size: 17px; font-weight: 700; letter-spacing: -.01em; margin-top: 34px; }
+  section.doc p { font-size: 16px; color: var(--muted); margin-top: 14px; max-width: 40em; }
+  section.doc p a, section.doc li a { color: var(--accent); font-weight: 500; }
+  section.doc ul { margin: 14px 0 0 20px; }
+  section.doc li { font-size: 16px; color: var(--muted); margin-top: 8px; }
+  section.doc li strong, section.doc p strong { color: var(--ink); font-weight: 600; }
+  /* Inline code wraps only when it has to: a full base URL is wider than a phone
+     and would otherwise push the whole page sideways. */
+  code.ic { font-family: "IBM Plex Mono", monospace; font-size: .88em; background: var(--field); border: 1px solid var(--line-soft); border-radius: 5px; padding: 1px 5px; color: var(--ink-strong); overflow-wrap: break-word; }
+
+  /* code blocks */
+  .code { position: relative; margin-top: 18px; background: var(--dark); border-radius: 12px; overflow: hidden; }
+  .code-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--dark-line); }
+  .code-head .lang { font-family: "IBM Plex Mono", monospace; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: #8a8878; }
+  .code-head button { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: #A6A498; background: transparent; border: 1px solid #3A3A2E; border-radius: 6px; padding: 4px 10px; cursor: pointer; transition: color .14s, border-color .14s; }
+  .code-head button:hover { color: #ECEAE1; border-color: #5A5A48; }
+  .code pre { margin: 0; padding: 15px 16px; overflow-x: auto; }
+  .code code { font-family: "IBM Plex Mono", monospace; font-size: 12.6px; line-height: 1.65; color: #EDEAE0; white-space: pre; }
+
+  /* tabs */
+  .tabs { display: flex; gap: 6px; margin-top: 22px; flex-wrap: wrap; }
+  .tab { font-family: inherit; font-size: 13.5px; font-weight: 600; color: var(--muted); background: transparent; border: 1px solid var(--line); border-radius: 8px; padding: 7px 14px; cursor: pointer; transition: color .14s, background .14s, border-color .14s; }
+  .tab:hover { color: var(--ink); }
+  .tab.on { color: #fff; background: var(--dark); border-color: var(--dark); }
+  .pane[hidden] { display: none; }
+
+  /* tables */
+  .twrap { margin-top: 18px; border: 1px solid var(--line); border-radius: 12px; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; min-width: 560px; }
+  thead th { text-align: left; font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--muted-3); font-weight: 600; padding: 11px 16px; background: var(--field); border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
+  tbody td { padding: 13px 16px; border-bottom: 1px solid var(--line-soft); font-size: 14.5px; color: var(--muted); vertical-align: top; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody td:first-child { color: var(--ink); }
+  td .m { font-family: "IBM Plex Mono", monospace; font-size: 13px; color: var(--ink-strong); }
+  td .req { font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--accent); margin-left: 7px; }
+
+  /* callouts */
+  .note { display: flex; gap: 11px; border: 1px solid var(--accent-line); background: var(--accent-soft); border-radius: 11px; padding: 14px 16px; margin-top: 22px; font-size: 15px; color: var(--muted); max-width: 44em; }
+  .note svg { flex: none; color: var(--accent); margin-top: 2px; }
+  .note b { color: var(--ink); font-weight: 600; }
+  .note.warn { border-color: #f0e0c2; background: #fdf8ee; }
+  .note.warn svg { color: var(--amber); }
+
+  /* pills */
+  .pill { display: inline-flex; align-items: center; gap: 6px; font-family: "IBM Plex Mono", monospace; font-size: 11px; border-radius: 5px; padding: 2px 7px; white-space: nowrap; }
+  .pill.pub { color: var(--accent); background: var(--accent-soft); border: 1px solid var(--accent-line); }
+  .pill.any { color: var(--green); background: #eefaf1; border: 1px solid #cdead6; }
+  .status { font-family: "IBM Plex Mono", monospace; font-size: 13px; font-weight: 600; color: var(--danger); }
+
+  @media (max-width: 980px) {
+    .shell { grid-template-columns: minmax(0, 1fr); gap: 0; }
+    aside.toc { display: none; }
+  }
+  @media (max-width: 720px) {
+    nav.nav { padding: 20px 18px; }
+    .nav-right { gap: 15px; }
+    .shell { padding: 0 18px 80px; }
+  }
+  @media (max-width: 460px) {
+    /* Compact nav: four links plus the Discord button no longer fit a 360px
+       phone at full size, so shrink the whole bar rather than drop a link. */
+    .nav-right { gap: 9px; }
+    .nav-link { font-size: 14px; }
+    .logo { font-size: 18px; gap: 9px; }
+    .logo .bolt { width: 32px; height: 32px; border-radius: 9px; }
+    .btn-discord { padding: 9px 11px; }
+    .btn-discord .dc-txt { display: none; }
+  }
+</style>
+{{> footer-style}}
+</head>
+<body id="top">
+
+{{> nav}}
+
+<div class="shell">
+  <aside class="toc">
+    <div class="eb">On this page</div>
+    <a href="#start">Quickstart</a>
+    <a href="#key">Your API key</a>
+    <a href="#models">Models</a>
+    <a href="#routing">Public &amp; private keys</a>
+    <a href="#completions">Chat completions</a>
+    <a href="#streaming">Streaming</a>
+    <a href="#list-models">Listing models</a>
+    <a href="#limits">Limits</a>
+    <a href="#errors">Errors</a>
+  </aside>
+
+  <main>
+    <div class="hero">
+      <div class="eb">Documentation</div>
+      <h1>One key, any OpenAI client.</h1>
+      <p class="lede">LLMJob speaks the OpenAI chat-completions protocol. Point any SDK you already
+        use at our base URL, pass your key as a bearer token, and your requests run on the GPUs in
+        your own cluster — or on our shared hosted models while you get your nodes online.</p>
+    </div>
+
+    <!-- QUICKSTART -->
+    <section class="doc" id="start">
+      <h2>Quickstart</h2>
+      <p>Create a key on the <a href="dashboard.html">dashboard</a>, then make a request. The base
+        URL is <code class="ic">{{apiBaseProd}}/v1</code>.</p>
+
+      <div class="tabs" role="tablist" data-tabs="qs">
+        <button class="tab on" data-pane="qs-curl" role="tab">curl</button>
+        <button class="tab" data-pane="qs-py" role="tab">Python</button>
+        <button class="tab" data-pane="qs-js" role="tab">Node.js</button>
+      </div>
+
+      <div class="pane" id="qs-curl">
+        <div class="code">
+          <div class="code-head"><span class="lang">bash</span><button class="copy">copy</button></div>
+<pre><code>curl {{apiBaseProd}}/v1/chat/completions \
+  -H "Authorization: Bearer $LLMJOB_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      { "role": "user", "content": "Explain PPLNS in two sentences." }
+    ]
+  }'</code></pre>
+        </div>
+      </div>
+
+      <div class="pane" id="qs-py" hidden>
+        <div class="code">
+          <div class="code-head"><span class="lang">python</span><button class="copy">copy</button></div>
+<pre><code>import os
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="{{apiBaseProd}}/v1",
+    api_key=os.environ["LLMJOB_API_KEY"],
+)
+
+resp = client.chat.completions.create(
+    model="qwen/qwen3.6-27b",
+    messages=[
+        {"role": "user", "content": "Explain PPLNS in two sentences."}
+    ],
+)
+
+print(resp.choices[0].message.content)</code></pre>
+        </div>
+      </div>
+
+      <div class="pane" id="qs-js" hidden>
+        <div class="code">
+          <div class="code-head"><span class="lang">javascript</span><button class="copy">copy</button></div>
+<pre><code>import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "{{apiBaseProd}}/v1",
+  apiKey: process.env.LLMJOB_API_KEY,
+});
+
+const resp = await client.chat.completions.create({
+  model: "qwen/qwen3.6-27b",
+  messages: [
+    { role: "user", content: "Explain PPLNS in two sentences." },
+  ],
+});
+
+console.log(resp.choices[0].message.content);</code></pre>
+        </div>
+      </div>
+
+      <p>The response is an ordinary OpenAI <code class="ic">chat.completion</code> object:</p>
+      <div class="code">
+        <div class="code-head"><span class="lang">json</span><button class="copy">copy</button></div>
+<pre><code>{
+  "id": "chatcmpl-8f1c…",
+  "object": "chat.completion",
+  "created": 1775001600,
+  "model": "qwen/qwen3.6-27b",
+  "choices": [
+    {
+      "index": 0,
+      "message": { "role": "assistant", "content": "PPLNS pays…" },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": { "prompt_tokens": 12, "completion_tokens": 48, "total_tokens": 60 }
+}</code></pre>
+      </div>
+    </section>
+
+    <!-- KEY -->
+    <section class="doc" id="key">
+      <h2>Your API key</h2>
+      <p>Keys are created on the <a href="dashboard.html">dashboard</a> under <b>API</b>. They look
+        like <code class="ic">lj-live-…</code> and are shown <b>once</b>, at creation — we only ever
+        store a hash, so a lost key has to be revoked and replaced rather than recovered.</p>
+      <p>Send it as a bearer token on every request:</p>
+      <div class="code">
+        <div class="code-head"><span class="lang">http</span><button class="copy">copy</button></div>
+<pre><code>Authorization: Bearer lj-live-7c2f4a91b8e3d05f6a1c9e2b4d7f8031</code></pre>
+      </div>
+      <p>Most OpenAI SDKs take this as the <code class="ic">api_key</code> argument and set the
+        header for you — there is nothing LLMJob-specific to install.</p>
+      <div class="note warn">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+        <span>Keep keys server-side. A key in browser or mobile code can be read by anyone who
+          opens the page, and it spends your cluster's time. Revoke a leaked key from the dashboard —
+          it stops working immediately.</span>
+      </div>
+      <p>Every request is logged against the key that made it: model, node, tokens in and out,
+        speed, and finish reason all show up under <b>Logs</b> on the dashboard.</p>
+    </section>
+
+    <!-- MODELS -->
+    <section class="doc" id="models">
+      <h2>Models</h2>
+      <p>Two kinds of model sit behind the same endpoint, chosen by the <code class="ic">model</code>
+        field in your request.</p>
+
+      <div class="twrap">
+        <table>
+          <thead>
+            <tr><th>Model</th><th>Runs on</th><th>Available to</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="m">qwen/qwen3.6-27b</span></td>
+              <td>LLMJob's hosted backend</td>
+              <td><span class="pill pub">public keys</span></td>
+            </tr>
+            <tr>
+              <td><span class="m">qwen/qwen3.6-35b-a3b</span></td>
+              <td>LLMJob's hosted backend</td>
+              <td><span class="pill pub">public keys</span></td>
+            </tr>
+            <tr>
+              <td><span class="m">Gemma-4-E4B-it-Q4_K_M</span></td>
+              <td>The node network — a GPU running LLMJob Earn</td>
+              <td><span class="pill any">any key</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>The two Qwen models are the ones the free <a href="chat.html">Chat</a> page serves. They are
+        available through the API so you can build against a working endpoint today, before your own
+        nodes are up. They draw on a shared free allowance — see <a href="#limits">Limits</a>.</p>
+
+      <p><b>Anything else falls through to the node network.</b> Omit <code class="ic">model</code>
+        entirely, or send <code class="ic">gpt-4</code>, or send whatever string your framework
+        hard-codes: the request becomes an inference job and the next available node in your cluster
+        runs it against the model it has loaded. The <code class="ic">model</code> field of the
+        response always names what actually ran, never what you asked for.</p>
+
+      <div class="note">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg>
+        <span>Call <a href="#list-models">GET /v1/models</a> with your key to see exactly which
+          models that key can reach.</span>
+      </div>
+    </section>
+
+    <!-- ROUTING -->
+    <section class="doc" id="routing">
+      <h2>Public &amp; private keys</h2>
+      <p>Every key carries a routing setting, toggled on the dashboard:</p>
+      <ul>
+        <li><b>Public</b> — requests may be served by any node on the network, and may use the
+          hosted models above. This is the default.</li>
+        <li><b>Private</b> — requests only ever run on nodes in <em>your</em> account. Nothing leaves
+          your hardware, which also means the hosted models are off-limits: asking for one returns
+          <span class="status">403</span> rather than quietly sending your prompt elsewhere.</li>
+      </ul>
+      <p>Flip a key to private when the prompts matter more than the throughput, and keep a separate
+        public key for hosted-model work.</p>
+    </section>
+
+    <!-- COMPLETIONS -->
+    <section class="doc" id="completions">
+      <h2>Chat completions</h2>
+      <p><code class="ic">POST /v1/chat/completions</code></p>
+
+      <h3>Request body</h3>
+      <div class="twrap">
+        <table>
+          <thead>
+            <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="m">messages</span><span class="req">required</span></td>
+              <td>array</td>
+              <td>The conversation, as <span class="m">{role, content}</span> objects. Roles are
+                <span class="m">system</span>, <span class="m">user</span> and
+                <span class="m">assistant</span>; anything else is treated as a user turn.</td>
+            </tr>
+            <tr>
+              <td><span class="m">model</span></td>
+              <td>string</td>
+              <td>A hosted model id, or anything else to use the node network. Defaults to the
+                network.</td>
+            </tr>
+            <tr>
+              <td><span class="m">stream</span></td>
+              <td>boolean</td>
+              <td><span class="m">true</span> streams the answer back as server-sent events.
+                Defaults to <span class="m">false</span>.</td>
+            </tr>
+            <tr>
+              <td><span class="m">max_tokens</span></td>
+              <td>integer</td>
+              <td>Completion ceiling, clamped to the server limit. See
+                <a href="#limits">Limits</a>.</td>
+            </tr>
+            <tr>
+              <td><span class="m">temperature</span></td>
+              <td>number</td>
+              <td>Passed through to the model.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Response</h3>
+      <p>A standard <code class="ic">chat.completion</code>. Two details are worth knowing:</p>
+      <ul>
+        <li><span class="m">finish_reason</span> is <span class="m">"length"</span> when the
+          completion budget ran out. On a reasoning model that is the difference between a short
+          answer and a truncated one.</li>
+        <li><span class="m">message.reasoning_content</span> appears when the model produced a chain
+          of thought. It explains an empty <span class="m">content</span> — the budget was spent
+          thinking. Clients that don't know the field ignore it.</li>
+      </ul>
+
+      <h3>Headers</h3>
+      <div class="twrap">
+        <table>
+          <thead>
+            <tr><th>Header</th><th>Direction</th><th>Description</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="m">X-LLMJob-Node</span></td>
+              <td>request</td>
+              <td>Pin the request to one node id, to check that it serves and how fast. Fails fast
+                with <span class="status">404</span> if that node is offline or unknown, and with
+                <span class="status">400</span> if you also asked for a hosted model (no node runs
+                those). Most OpenAI SDKs let you add default headers.</td>
+            </tr>
+            <tr>
+              <td><span class="m">X-LLMJob-Served-By</span></td>
+              <td>response</td>
+              <td>Which node served the request — or <span class="m">openrouter</span> for a hosted
+                model. Non-streaming responses only: a stream sends its headers before any node has
+                the job.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- STREAMING -->
+    <section class="doc" id="streaming">
+      <h2>Streaming</h2>
+      <p>Set <code class="ic">"stream": true</code> to receive
+        <code class="ic">chat.completion.chunk</code> events over SSE, terminated by
+        <code class="ic">data: [DONE]</code> — the same shape and the same terminator whichever
+        backend served you.</p>
+
+      <div class="tabs" role="tablist" data-tabs="st">
+        <button class="tab on" data-pane="st-curl" role="tab">curl</button>
+        <button class="tab" data-pane="st-py" role="tab">Python</button>
+      </div>
+
+      <div class="pane" id="st-curl">
+        <div class="code">
+          <div class="code-head"><span class="lang">bash</span><button class="copy">copy</button></div>
+<pre><code>curl -N {{apiBaseProd}}/v1/chat/completions \
+  -H "Authorization: Bearer $LLMJOB_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "stream": true,
+    "messages": [{ "role": "user", "content": "Count to five." }]
+  }'
+
+data: {"id":"chatcmpl-8f1c…","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+data: {"id":"chatcmpl-8f1c…","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"One"},"finish_reason":null}]}
+data: {"id":"chatcmpl-8f1c…","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+data: [DONE]</code></pre>
+        </div>
+      </div>
+
+      <div class="pane" id="st-py" hidden>
+        <div class="code">
+          <div class="code-head"><span class="lang">python</span><button class="copy">copy</button></div>
+<pre><code>stream = client.chat.completions.create(
+    model="qwen/qwen3.6-27b",
+    messages=[{"role": "user", "content": "Count to five."}],
+    stream=True,
+)
+
+for chunk in stream:
+    delta = chunk.choices[0].delta.content
+    if delta:
+        print(delta, end="", flush=True)</code></pre>
+        </div>
+      </div>
+
+      <div class="note">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg>
+        <span>If a node drops a job mid-answer, the network hands it to another node and the reply
+          <b>restarts from the beginning</b>. SSE can't retract text already sent, and a visible
+          restart beats an answer that stops mid-sentence and never resumes.</span>
+      </div>
+    </section>
+
+    <!-- LIST MODELS -->
+    <section class="doc" id="list-models">
+      <h2>Listing models</h2>
+      <p><code class="ic">GET /v1/models</code> returns the models your key can reach, in OpenAI's
+        list shape. A private key sees only the network model, because that is all it may use.</p>
+      <div class="code">
+        <div class="code-head"><span class="lang">bash</span><button class="copy">copy</button></div>
+<pre><code>curl {{apiBaseProd}}/v1/models \
+  -H "Authorization: Bearer $LLMJOB_API_KEY"
+
+{
+  "object": "list",
+  "data": [
+    { "id": "qwen/qwen3.6-27b",      "object": "model", "owned_by": "llmjob-hosted"  },
+    { "id": "qwen/qwen3.6-35b-a3b",  "object": "model", "owned_by": "llmjob-hosted"  },
+    { "id": "Gemma-4-E4B-it-Q4_K_M", "object": "model", "owned_by": "llmjob-network" }
+  ]
+}</code></pre>
+      </div>
+      <p>Treat it as a guide rather than a whitelist: an unlisted model id is not an error, it just
+        goes to the node network.</p>
+    </section>
+
+    <!-- LIMITS -->
+    <section class="doc" id="limits">
+      <h2>Limits</h2>
+      <div class="twrap">
+        <table>
+          <thead>
+            <tr><th>Limit</th><th>Network models</th><th>Hosted models</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Prompt size</td>
+              <td>24,000 characters</td>
+              <td>24,000 characters</td>
+            </tr>
+            <tr>
+              <td>Completion (<span class="m">max_tokens</span>)</td>
+              <td>6,400</td>
+              <td>2,048</td>
+            </tr>
+            <tr>
+              <td>Request timeout</td>
+              <td>280 seconds</td>
+              <td>Upstream</td>
+            </tr>
+            <tr>
+              <td>Cost</td>
+              <td>Your own hardware</td>
+              <td>Shared free allowance</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Prompts over the character budget are trimmed rather than rejected, and an oversized
+        <code class="ic">max_tokens</code> is clamped to the ceiling — your request still runs.</p>
+      <p>The hosted models draw on one shared, capped allowance across everybody's API traffic and
+        the free web chat. Once it is spent they return <span class="status">402</span> until it is
+        topped up; the node network is unaffected, so a request with no
+        <code class="ic">model</code> keeps working.</p>
+    </section>
+
+    <!-- ERRORS -->
+    <section class="doc" id="errors">
+      <h2>Errors</h2>
+      <p>Errors use the standard OpenAI envelope, so any SDK will parse them:</p>
+      <div class="code">
+        <div class="code-head"><span class="lang">json</span><button class="copy">copy</button></div>
+<pre><code>{
+  "error": {
+    "message": "Node rig-02 took the job but produced no output within 280s.",
+    "type": "timeout_error",
+    "code": null,
+    "job_id": "job_4b1e…",
+    "served_by": "rig-02",
+    "job_status": "assigned"
+  }
+}</code></pre>
+      </div>
+      <p>Failures from the node network carry three extra fields —
+        <code class="ic">job_id</code>, <code class="ic">served_by</code> and
+        <code class="ic">job_status</code> — so a timeout or a node error is attributable instead of
+        anonymous. Strict clients ignore them; yours can log them.</p>
+
+      <div class="twrap">
+        <table>
+          <thead>
+            <tr><th>Status</th><th>Type</th><th>What happened</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><span class="status">400</span></td><td><span class="m">invalid_request_error</span></td>
+              <td>No usable <span class="m">messages</span>, or a hosted model pinned to a node.</td></tr>
+            <tr><td><span class="status">401</span></td><td>—</td>
+              <td>Missing, malformed or revoked API key.</td></tr>
+            <tr><td><span class="status">402</span></td><td><span class="m">quota_exhausted</span></td>
+              <td>The hosted models' free allowance is spent. Use the node network.</td></tr>
+            <tr><td><span class="status">403</span></td><td><span class="m">permission_error</span></td>
+              <td>A private key asked for a hosted model. Switch the key to public, or drop the
+                <span class="m">model</span> field.</td></tr>
+            <tr><td><span class="status">404</span></td><td><span class="m">target_node_error</span></td>
+              <td>The node named in <span class="m">X-LLMJob-Node</span> is offline or unknown.</td></tr>
+            <tr><td><span class="status">502</span></td><td><span class="m">node_error</span> / <span class="m">upstream_error</span></td>
+              <td>The node failed the job, or the hosted backend returned an error.</td></tr>
+            <tr><td><span class="status">503</span></td><td><span class="m">not_configured</span></td>
+              <td>Hosted models aren't configured on this deployment.</td></tr>
+            <tr><td><span class="status">504</span></td><td><span class="m">timeout_error</span></td>
+              <td>No node finished the job in time. The message says whether the fleet was empty, a
+                node went quiet, or generation was still running.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>A <span class="status">504</span> with no <code class="ic">served_by</code> means nothing
+        picked the job up: check that a node is online and serving on your
+        <a href="dashboard.html">dashboard</a>. Still stuck? Ask in
+        <a href="{{discordUrl}}" target="_blank" rel="noopener">Discord</a>.</p>
+    </section>
+  </main>
+</div>
+
+{{> footer}}
+
+<script>
+  // Copy buttons: grab the sibling <code> text, with a brief confirmation.
+  document.querySelectorAll('.code .copy').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var code = btn.closest('.code').querySelector('code');
+      if (!code || !navigator.clipboard) return;
+      navigator.clipboard.writeText(code.textContent).then(function () {
+        btn.textContent = 'copied';
+        setTimeout(function () { btn.textContent = 'copy'; }, 1500);
+      });
+    });
+  });
+
+  // Language tabs: one visible pane per group.
+  document.querySelectorAll('[data-tabs]').forEach(function (group) {
+    var tabs = Array.prototype.slice.call(group.querySelectorAll('.tab'));
+    tabs.forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        tabs.forEach(function (t) {
+          t.classList.toggle('on', t === tab);
+          var pane = document.getElementById(t.dataset.pane);
+          if (pane) pane.hidden = t !== tab;
+        });
+      });
+    });
+  });
+</script>
+</body>
+</html>
