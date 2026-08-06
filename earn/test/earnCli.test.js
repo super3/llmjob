@@ -424,7 +424,7 @@ describe('mining', () => {
     expect(allOut()).toContain('worker:     rig-host  (auto)');
     expect(allOut()).toContain('(+MDL');
     expect(allOut()).toContain('difficulty: 262144  (for 2× NVIDIA GeForce RTX 3070, auto)');
-    expect(allOut()).toContain('engine:     alpha-miner 1.8.8');
+    expect(allOut()).toContain('engine:     alpha-miner ' + engine.ENGINE.preferred);
     expect(allOut()).toContain('downloading mining engine from');
     expect(allOut()).toContain('downloading… 50%');
 

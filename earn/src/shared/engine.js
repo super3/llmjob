@@ -15,15 +15,33 @@ const DOWNLOAD_BASE = 'https://pearl.alphapool.tech/downloads/';
 // NVIDIA driver >= 580; older drivers must stay on the last CUDA 12 stable or
 // the engine dies at cudaGetDeviceCount.
 //
+// `preferred` is 1.9.1, which upstream marks REQUIRED for the Pearl
+// rank-penalty softfork (mainnet block 96,251, passed 2026-08-06). Two caveats
+// that are not ours to fix:
+//
+//   • `fallback` stays on 1.8.3 and is therefore NOT softfork-compliant. Every
+//     upstream release note is silent on CUDA/driver requirements — the
+//     driver >= 580 split above is our own inference — so there is no way to
+//     tell whether 1.9.1 runs on a pre-580 driver. Moving it blind would
+//     crash-loop exactly the rigs the fallback exists to protect, which is
+//     worse than mining non-compliant. Needs an answer from the pool.
+//
+//   • `windows` stays on 1.8.6 because THERE IS NO WINDOWS 1.9.1. Upstream
+//     shipped 1.9.1 for HiveOS, Linux and Docker only, and the pool's
+//     `AlphaMiner-Pearl-Windows.zip` still contains `alpha-miner-windows-1.8.6.exe`
+//     (verified by downloading and listing it: exe dated 2026-07-01, zip
+//     touched 2026-07-24). Bumping this without a build behind it would point
+//     every Windows rig at a filename that does not exist inside the zip.
+//
 // Windows has a single build: the pool ships only one `AlphaMiner-Pearl-Windows.zip`
-// (no per-driver split), currently carrying `alpha-miner-windows-1.8.6.exe`. We
-// still track that version in `windows` and bake it into the cached filename
-// (below) so bumping it here is a cache miss — Windows rigs re-download the pool's
-// newer build instead of running a stale cached .exe forever. Bump `windows` to
-// match the version inside the pool's zip whenever they refresh it (and keep the
-// bundling step in .github/workflows/miner-build.yml in sync — it reads this).
+// (no per-driver split). We still track that version in `windows` and bake it
+// into the cached filename (below) so bumping it here is a cache miss — Windows
+// rigs re-download the pool's newer build instead of running a stale cached .exe
+// forever. Bump `windows` to match the version inside the pool's zip whenever
+// they refresh it (and keep the bundling step in
+// .github/workflows/miner-build.yml in sync — it reads this).
 const ENGINE = {
-  preferred: '1.8.8',
+  preferred: '1.9.1',
   fallback: '1.8.3',
   minDriverMajor: 580,
   windows: '1.8.6',

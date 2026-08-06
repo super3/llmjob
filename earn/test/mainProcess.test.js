@@ -955,7 +955,9 @@ describe('mining', () => {
     const log = ctx.sent('miner:log').map((l) => l.line).join('\n');
     expect(log).toMatch(/proxy, VPN or antivirus/);
     expect(log).toContain('ca-certificates');
-    expect(log).toMatch(/Manual install: download \S*alpha-miner-1\.8\.\d and save it as \S*engine.alpha-miner,/);
+    // Version-agnostic on purpose: this asserts the guidance names a download URL
+    // and the exact file to save it as, not which engine build is pinned today.
+    expect(log).toMatch(/Manual install: download \S*alpha-miner-[\d.]+ and save it as \S*engine.alpha-miner,/);
   });
 
   it('logs "engine found" when the engine is already installed', async () => {
@@ -1007,7 +1009,7 @@ describe('mining', () => {
   // trusted. Inside the read-only AppImage mount the chmod fails, and that must
   // not stop a rig whose binary squashfs already recorded as executable.
   it('re-asserts +x on a bundled Linux engine and survives a read-only bundle', async () => {
-    const bundled = require('path').join('/res', 'engine', 'alpha-miner-1.8.8');
+    const bundled = require('path').join('/res', 'engine', 'alpha-miner-' + require('../src/shared/engine').ENGINE.preferred);
     const ctx = await boot({ resourcesPath: '/res' });
     ctx.fs.existsSync.mockImplementation((p) => p === bundled);
     ctx.fs.chmodSync.mockImplementation(() => { throw new Error('EROFS: read-only file system'); });
@@ -1515,7 +1517,7 @@ describe('local LLM', () => {
 
   it('co-runs mining and the LLM: waits for real hashrate, then flags a pre-ready LLM exit', async () => {
     const path = require('path');
-    const bundledMiner = path.join('/res', 'engine', 'alpha-miner-1.8.8');
+    const bundledMiner = path.join('/res', 'engine', 'alpha-miner-' + require('../src/shared/engine').ENGINE.preferred);
     const ctx = await boot({
       resourcesPath: '/res',
       before: (c) => { c.probe.findFreePort.mockResolvedValue(8081); },
