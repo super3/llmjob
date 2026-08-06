@@ -161,6 +161,7 @@ function statsView(snap) {
     load: Math.round(snap.load),
     power: snap.power,
     gpu: snap.gpu,
+    temp: snap.temp,
     uptime: format.formatUptime(snap.uptimeSec),
     estDay: earnings.estDailyUsdLabel(snap.total, liveEcon),
   };

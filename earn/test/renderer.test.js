@@ -305,11 +305,16 @@ describe('boot with the full bridge', () => {
     expect($('accepted').textContent).toBe('34');
     expect($('uptime').textContent).toBe('5m 00s');
     expect($('estday').textContent).toBe('$0.42');
-    expect($('device-label').textContent).toBe('gpu-live');
+    expect($('device-label').textContent).toBe('gpu-live'); // no temp reported yet → bare name
     expect($('mk-line').getAttribute('d')).toMatch(/^M0 .* L480 /);
-    // single point (flat-span pad fallback), no gpu
+    // Once the engine reports a core temperature it rides alongside the name, so
+    // a rig that keeps crashing can be checked for heat without nvidia-smi.
+    cbs.stats({ total: '1.2', acceptedLabel: '34', uptime: '5m 00s', estDay: '$0.42', gpu: 'gpu-live', temp: 86.4, points: [1, 2, 3] });
+    expect($('device-label').textContent).toBe('gpu-live (86°C)');
+    // single point (flat-span pad fallback), no gpu — the label keeps whatever it
+    // last showed, temperature included, rather than reverting.
     cbs.stats({ total: '1', acceptedLabel: '1', uptime: '1m', estDay: '$1', points: [5] });
-    expect($('device-label').textContent).toBe('gpu-live');
+    expect($('device-label').textContent).toBe('gpu-live (86°C)');
     expect($('mk-line').getAttribute('d')).toMatch(/^M0 /);
     // empty + missing points → flat line
     cbs.stats({ total: '1', acceptedLabel: '1', uptime: '1m', estDay: '$1', points: [] });

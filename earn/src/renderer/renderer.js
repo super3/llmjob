@@ -431,13 +431,24 @@
     el.mdlBalance.textContent = fmt3(b.earned);
   }
 
+  // "NVIDIA GeForce RTX 4090 (86°C)". The engine reports a core temperature on
+  // every status line, so it rides next to the GPU name while mining — a rig that
+  // keeps crashing can be checked for heat without leaving the app for
+  // nvidia-smi. On a multi-GPU rig this is the HOTTEST card (see miningStats),
+  // since an average would hide one cooking card behind several cool ones.
+  // Falls back to the bare name before the engine has reported a temperature.
+  function deviceText(gpu, temp) {
+    const t = Math.round(Number(temp) || 0);
+    return t > 0 ? gpu + ' (' + t + '°C)' : gpu;
+  }
+
   function applyStats(s) {
     if (!state.mining) return;
     el.hashrate.textContent = s.total;
     el.accepted.textContent = s.acceptedLabel;
     el.uptime.textContent = s.uptime;
     el.estday.textContent = s.estDay;
-    if (s.gpu) el.deviceLabel.textContent = s.gpu;
+    if (s.gpu) el.deviceLabel.textContent = deviceText(s.gpu, s.temp);
     const p = chartPaths(s.points);
     el.line.setAttribute('d', p.line);
     el.area.setAttribute('d', p.area);
