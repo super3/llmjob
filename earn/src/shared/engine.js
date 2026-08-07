@@ -15,23 +15,29 @@ const DOWNLOAD_BASE = 'https://pearl.alphapool.tech/downloads/';
 // NVIDIA driver >= 580; older drivers must stay on the last CUDA 12 stable or
 // the engine dies at cudaGetDeviceCount.
 //
-// `preferred` is 1.9.1, which upstream marks REQUIRED for the Pearl
-// rank-penalty softfork (mainnet block 96,251, passed 2026-08-06). Two caveats
-// that are not ours to fix:
+// `preferred` is 1.9.1b, the emergency rank-128 hotfix. Plain 1.9.1 was the
+// softfork-required build (mainnet block 96,251, passed 2026-08-06) but
+// mis-selected its backend and produced rank-256/512/1024 work after the fork,
+// so upstream withdrew it behind the launcher described in PACKAGED below.
+// Never pin plain 1.9.1: it installs cleanly and mines invalid work.
+//
+// Two gaps that are not ours to fix:
 //
 //   • `fallback` stays on 1.8.3 and is therefore NOT softfork-compliant. Every
 //     upstream release note is silent on CUDA/driver requirements — the
 //     driver >= 580 split above is our own inference — so there is no way to
-//     tell whether 1.9.1 runs on a pre-580 driver. Moving it blind would
-//     crash-loop exactly the rigs the fallback exists to protect, which is
-//     worse than mining non-compliant. Needs an answer from the pool.
+//     tell whether the 1.9.x line runs on a pre-580 driver. Moving it blind
+//     would crash-loop exactly the rigs the fallback exists to protect, which
+//     is worse than mining non-compliant. Needs an answer from the pool.
 //
-//   • `windows` stays on 1.8.6 because THERE IS NO WINDOWS 1.9.1. Upstream
-//     shipped 1.9.1 for HiveOS, Linux and Docker only, and the pool's
-//     `AlphaMiner-Pearl-Windows.zip` still contains `alpha-miner-windows-1.8.6.exe`
-//     (verified by downloading and listing it: exe dated 2026-07-01, zip
-//     touched 2026-07-24). Bumping this without a build behind it would point
-//     every Windows rig at a filename that does not exist inside the zip.
+//   • `windows` stays on 1.8.6 — the newest Windows build that exists. Upstream
+//     shipped the whole 1.9.x line for HiveOS, Linux and Docker only, and the
+//     pool's `AlphaMiner-Pearl-Windows.zip` still contains
+//     `alpha-miner-windows-1.8.6.exe` (verified by downloading and listing it:
+//     exe dated 2026-07-01, zip touched 2026-07-24). The 1.9.1b package cannot
+//     substitute — its launcher is a /bin/sh script. Bumping this without a
+//     build behind it would point every Windows rig at a filename that is not
+//     inside the zip.
 //
 // Windows has a single build: the pool ships only one `AlphaMiner-Pearl-Windows.zip`
 // (no per-driver split). We still track that version in `windows` and bake it
@@ -41,11 +47,77 @@ const DOWNLOAD_BASE = 'https://pearl.alphapool.tech/downloads/';
 // they refresh it (and keep the bundling step in
 // .github/workflows/miner-build.yml in sync — it reads this).
 const ENGINE = {
-  preferred: '1.9.1',
+  preferred: '1.9.1b',
   fallback: '1.8.3',
   minDriverMajor: 580,
   windows: '1.8.6',
 };
+
+// Versions that ship as a PACKAGE — a tarball holding a launcher plus a hidden
+// core — instead of the bare binary the pool serves for everything else. Three
+// properties of 1.9.1b break the bare-binary assumptions in this file:
+//
+//   • it is published ONLY on GitHub releases. The pool's /downloads/ has no
+//     copy under any name (checked alpha-miner-1.9.1b, alpha-miner-1.9.1.02 and
+//     both tarball names — all 404), so `url` is absolute rather than built from
+//     DOWNLOAD_BASE;
+//   • the archive expands to a DIRECTORY and the launcher resolves its core as a
+//     sibling, so the pair must stay together — the engine path is
+//     `<dir>/<launcher>`, not a flat versioned filename;
+//   • the tarball ships the core mode 644 while the launcher requires `-x`, so
+//     install must chmod BOTH or every start dies with "core missing or not
+//     executable".
+//
+// The launcher also rejects rank/geometry/backend overrides and appends
+// `--gemm native` itself — see minerArgs, which stops sending --force-backend
+// for a packaged engine rather than letting it fail closed with exit 2.
+const PACKAGED = {
+  '1.9.1b': {
+    url: 'https://github.com/AlphaMine-Tech/alpha-miner/releases/download/v1.9.1.02/alpha-miner-1.9.1b-ubuntu-amd64.tar.gz',
+    archive: 'alpha-miner-1.9.1b-ubuntu-amd64.tar.gz',
+    dir: 'alpha-miner-1.9.1b',
+    launcher: 'alpha-miner',
+    core: '.alpha-miner-core',
+  },
+};
+
+// The package descriptor for `version`, or null when it is a plain binary.
+// Windows never matches: these are Linux tarballs whose launcher is a /bin/sh
+// script, and upstream has shipped no Windows build of the 1.9.x line.
+function enginePackage(platform, version) {
+  if (platform === 'win32') return null;
+  return PACKAGED[version] || null;
+}
+
+// Decide whether a --force-backend override survives for this engine.
+//
+// A packaged launcher rejects rank/geometry/backend overrides and exits 2 —
+// it selects the backend itself and appends `--gemm native`. Passing the
+// override through would turn a working rig into one that refuses to start,
+// so strip it and explain, rather than fail closed. Returns the backend to
+// use (null when dropped) and calls `log` with the reason when it drops one.
+// Platform and version are parameters so this is testable without faking
+// process.platform.
+function backendForEngine(backend, platform, version, log) {
+  if (backend && enginePackage(platform, version)) {
+    if (log) log('note: --backend ' + backend + ' is ignored on alpha-miner ' + version
+      + ' — its launcher selects the backend itself and rejects overrides');
+    return null;
+  }
+  return backend || null;
+}
+
+// Where a hand-downloaded engine has to go, as the two fields describeSetupError
+// understands. A bare binary is SAVED AS the pool's own filename; a package is
+// EXTRACTED into the engine dir. Telling someone to save a tarball as the
+// launcher is advice that cannot work, and the manual-install hint exists
+// precisely for users whose download failed — so getting this wrong sends them
+// in circles. Platform is a parameter so both branches are testable directly.
+function manualInstallHint(platform, version, dir) {
+  return enginePackage(platform, version)
+    ? { manualPath: null, extractDir: dir }
+    : { manualPath: manualEnginePath(dir, platform), extractDir: null };
+}
 
 // Pick the Linux engine version a rig can actually run from its NVIDIA driver
 // major version. Unknown driver (no nvidia-smi / unparseable) → fallback: an
@@ -71,6 +143,8 @@ function parseDriverMajor(output) {
 // so extraction picks it by exact name. Falsy version keeps the legacy
 // unversioned Windows name (AMD, which the pool ships without a version).
 function engineBinaryName(platform, gpu, version) {
+  const pkg = enginePackage(platform, version);
+  if (pkg) return pkg.dir + '/' + pkg.launcher; // the launcher, beside its core
   if (platform === 'win32') {
     if (gpu === 'amd') return 'alpha-miner-amd-windows-fixed.exe';
     return version ? 'alpha-miner-windows-' + version + '.exe' : 'alpha-miner-windows.exe';
@@ -80,6 +154,8 @@ function engineBinaryName(platform, gpu, version) {
 
 // The downloadable artifact name (a zip on Windows, the bare binary otherwise).
 function engineArchiveName(platform, gpu, version) {
+  const pkg = enginePackage(platform, version);
+  if (pkg) return pkg.archive;
   if (platform === 'win32') {
     return gpu === 'amd' ? 'AlphaMiner-Pearl-AMD.zip' : 'AlphaMiner-Pearl-Windows.zip';
   }
@@ -87,6 +163,8 @@ function engineArchiveName(platform, gpu, version) {
 }
 
 function engineDownloadUrl(platform, gpu, base, version) {
+  const pkg = enginePackage(platform, version);
+  if (pkg) return pkg.url; // absolute: GitHub releases, not the pool
   return (base || DOWNLOAD_BASE) + engineArchiveName(platform, gpu, version);
 }
 
@@ -117,6 +195,18 @@ function looksLikeArchive(head) {
 // Absolute path to the installed engine inside a cache directory.
 function enginePath(dir, platform, gpu, version) {
   return path.join(dir, engineBinaryName(platform, gpu, version));
+}
+
+// Every file an install of `version` must have present to count as installed.
+// A bare binary is only itself; a package is the launcher AND its hidden core.
+// Checking the launcher alone would call a half-extracted package installed —
+// the extract is interruptible and the core is the larger half — and then every
+// start dies with "core missing or not executable" with nothing to re-trigger
+// the download, because the launcher is right where it belongs.
+function engineFiles(dir, platform, gpu, version) {
+  const pkg = enginePackage(platform, version);
+  const bin = enginePath(dir, platform, gpu, version);
+  return pkg ? [bin, path.join(dir, pkg.dir, pkg.core)] : [bin];
 }
 
 // The name a hand-downloaded engine lands under. The pool's documented link is
@@ -153,6 +243,9 @@ function progressPercent(received, total) {
 module.exports = {
   DOWNLOAD_BASE,
   ENGINE,
+  enginePackage,
+  backendForEngine,
+  manualInstallHint,
   pickEngineVersion,
   parseDriverMajor,
   engineBinaryName,
@@ -162,6 +255,7 @@ module.exports = {
   isArchiveUrl,
   looksLikeArchive,
   enginePath,
+  engineFiles,
   manualEngineName,
   manualEnginePath,
   bundledEnginePath,

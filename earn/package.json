@@ -50,7 +50,8 @@
         "from": "vendor/engine",
         "to": "engine",
         "filter": [
-          "**/*"
+          "**/*",
+          "**/.*"
         ]
       },
       {

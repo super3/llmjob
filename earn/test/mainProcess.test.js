@@ -956,8 +956,11 @@ describe('mining', () => {
     expect(log).toMatch(/proxy, VPN or antivirus/);
     expect(log).toContain('ca-certificates');
     // Version-agnostic on purpose: this asserts the guidance names a download URL
-    // and the exact file to save it as, not which engine build is pinned today.
-    expect(log).toMatch(/Manual install: download \S*alpha-miner-[\d.]+ and save it as \S*engine.alpha-miner,/);
+    // and where the file has to go, not which engine build is pinned today. A
+    // PACKAGED engine (1.9.1b) is a tarball, so the advice is "extract it into
+    // <engine dir>" — telling anyone to save a tarball AS the launcher is advice
+    // that cannot work.
+    expect(log).toMatch(/Manual install: download \S+ and extract it into \S*engine,/);
   });
 
   it('logs "engine found" when the engine is already installed', async () => {
@@ -1009,7 +1012,10 @@ describe('mining', () => {
   // trusted. Inside the read-only AppImage mount the chmod fails, and that must
   // not stop a rig whose binary squashfs already recorded as executable.
   it('re-asserts +x on a bundled Linux engine and survives a read-only bundle', async () => {
-    const bundled = require('path').join('/res', 'engine', 'alpha-miner-' + require('../src/shared/engine').ENGINE.preferred);
+    const eng = require('../src/shared/engine');
+    // Derived, not spelled out: a packaged engine lives at <dir>/<launcher>, not a
+    // flat versioned filename, and bundledEnginePath is what knows the difference.
+    const bundled = eng.bundledEnginePath('/res', 'linux', undefined, eng.ENGINE.preferred);
     const ctx = await boot({ resourcesPath: '/res' });
     ctx.fs.existsSync.mockImplementation((p) => p === bundled);
     ctx.fs.chmodSync.mockImplementation(() => { throw new Error('EROFS: read-only file system'); });
@@ -1516,8 +1522,10 @@ describe('local LLM', () => {
   });
 
   it('co-runs mining and the LLM: waits for real hashrate, then flags a pre-ready LLM exit', async () => {
-    const path = require('path');
-    const bundledMiner = path.join('/res', 'engine', 'alpha-miner-' + require('../src/shared/engine').ENGINE.preferred);
+    // The preferred Linux engine is now a PACKAGE, so the bundled path is a
+    // launcher inside a directory — ask engine.js rather than hardcoding a name.
+    const { bundledEnginePath, ENGINE } = require('../src/shared/engine');
+    const bundledMiner = bundledEnginePath('/res', 'linux', undefined, ENGINE.preferred);
     const ctx = await boot({
       resourcesPath: '/res',
       before: (c) => { c.probe.findFreePort.mockResolvedValue(8081); },

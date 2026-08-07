@@ -92,17 +92,45 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          # Versions come from the app itself, so bumping ENGINE in
-          # src/shared/engine.js is picked up here with no workflow edit.
-          versions=$(node -p "const {ENGINE}=require('./src/shared/engine'); [ENGINE.preferred, ENGINE.fallback].join(' ')")
-          for v in $versions; do
-            out="vendor/engine/alpha-miner-$v"
-            curl -fsSL --retry 3 --retry-delay 2 -o "$out" "https://pearl.alphapool.tech/downloads/alpha-miner-$v"
-            # The packaged binary is spawned straight out of the read-only
-            # AppImage mount, so it has to carry +x through squashfs.
-            chmod +x "$out"
-            echo "Bundled engine $v: $(stat -c%s "$out") bytes"
-          done
+          # Versions AND their download URLs come from the app itself, so bumping
+          # ENGINE in src/shared/engine.js is picked up here with no workflow
+          # edit. The URL has to come from the module too now: a packaged version
+          # (1.9.1b) lives on GitHub releases, not the pool, so hardcoding the
+          # /downloads/ path here would silently 404 for it.
+          node -e '
+            const e = require("./src/shared/engine");
+            for (const v of [e.ENGINE.preferred, e.ENGINE.fallback]) {
+              const pkg = e.enginePackage("linux", v);
+              process.stdout.write([
+                v,
+                e.engineDownloadUrl("linux", null, null, v),
+                pkg ? pkg.dir + "/" + pkg.launcher : "",
+                pkg ? pkg.dir + "/" + pkg.core : "",
+              ].join("\t") + "\n");
+            }
+          ' > "$RUNNER_TEMP/engines.tsv"
+          while IFS=$'\t' read -r v url launcher core; do
+            if [ -n "$launcher" ]; then
+              # Packaged: a tarball whose top folder holds the launcher beside its
+              # hidden core. Both need +x — the launcher refuses to start if the
+              # core is not executable — and the AppImage's squashfs preserves the
+              # mode set here. Assert both landed: a launcher bundled WITHOUT its
+              # core is worse than no bundle at all, because bundledEnginePath
+              # only looks for the launcher and would skip the runtime download.
+              curl -fsSL --retry 3 --retry-delay 2 -o "$RUNNER_TEMP/engine-pkg.tar.gz" "$url"
+              tar -xzf "$RUNNER_TEMP/engine-pkg.tar.gz" -C vendor/engine
+              chmod +x "vendor/engine/$launcher" "vendor/engine/$core"
+              test -x "vendor/engine/$launcher" && test -x "vendor/engine/$core"
+              echo "Bundled packaged engine $v -> vendor/engine/$launcher (+ core)"
+            else
+              out="vendor/engine/alpha-miner-$v"
+              curl -fsSL --retry 3 --retry-delay 2 -o "$out" "$url"
+              # The packaged binary is spawned straight out of the read-only
+              # AppImage mount, so it has to carry +x through squashfs.
+              chmod +x "$out"
+              echo "Bundled engine $v: $(stat -c%s "$out") bytes"
+            fi
+          done < "$RUNNER_TEMP/engines.tsv"
 
       - name: Build installer (publishes on v* tag or manual publish)
         run: npx electron-builder --${{ matrix.platform }} --publish ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.publish) && 'always' || 'never' }}

@@ -18,7 +18,7 @@ const { MinerManager } = require('./minerManager');
 const { EngineManager } = require('./engineManager');
 const { LlmManager } = require('./llmManager');
 const { LlmEngineManager } = require('./llmEngineManager');
-const { postJson, getJson, downloadFile, streamChatCompletion, extractLlamaZip } = require('./io');
+const { postJson, getJson, downloadFile, streamChatCompletion, extractLlamaZip, extractEnginePackage } = require('./io');
 const {
   detectRegion, detectVram, detectGpusVram, detectDriverMajor,
   postMinerReport, findFreePort,
@@ -40,7 +40,7 @@ const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
 const { buildBalanceUrl, parseBalance, buildMdlBalanceUrl, parseMdlBalance } = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
 const {
-  bundledEnginePath, pickEngineVersion, engineDownloadUrl, manualEnginePath, ENGINE,
+  bundledEnginePath, pickEngineVersion, engineDownloadUrl, manualInstallHint, ENGINE,
 } = require('../shared/engine');
 const { formatUpdate } = require('../shared/updateStatus');
 const { describeLaunchError, describeSetupError } = require('../shared/engineError');
@@ -319,6 +319,7 @@ async function startMining(settings) {
       fs: fs,
       download: downloadFile,
       extract: extractZip,
+      extractPackage: extractEnginePackage,
       chmod: fs.chmodSync,
     });
     // The URL this rig actually needs — the driver-picked build, not the pool's
@@ -337,11 +338,13 @@ async function startMining(settings) {
       send('miner:log', { level: 'info', line: 'engine ready: ' + binaryPath });
     } catch (e) {
       binaryPath = undefined;
-      const d = describeSetupError({
-        err: e,
-        downloadUrl: url,
-        manualPath: manualEnginePath(engineDir, process.platform),
-      });
+      // manualInstallHint picks "save it as <file>" for a bare binary vs
+      // "extract it into <dir>" for a package — a tarball cannot be saved as
+      // the launcher, so the advice has to differ.
+      const d = describeSetupError(Object.assign(
+        { err: e, downloadUrl: url },
+        manualInstallHint(process.platform, version, engineDir),
+      ));
       send('miner:engine', { phase: 'error', message: d.ui });
       send('miner:log', { level: 'error', line: d.log });
     }

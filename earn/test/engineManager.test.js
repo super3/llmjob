@@ -156,3 +156,68 @@ describe('EngineManager manual install', () => {
     expect(fs.renameSync).not.toHaveBeenCalled();
   });
 });
+
+describe('EngineManager — packaged engine (launcher + core)', () => {
+  // 1.9.1b installs as a TREE, not a file. Two things must happen that the
+  // bare-binary path never needed: the tarball is extracted whole, and BOTH the
+  // launcher and its core are made executable. The tarball ships the core mode
+  // 644 while the launcher checks -x on it, so chmodding only the launcher
+  // leaves every start failing with "core missing or not executable".
+  const { ENGINE, enginePackage } = require('../src/shared/engine');
+  const V = ENGINE.preferred;
+  const pkg = enginePackage('linux', V);
+
+  function make(installed) {
+    const fsStub = makeFs(installed);
+    const download = jest.fn(() => Promise.resolve());
+    const extractPackage = jest.fn(() => Promise.resolve());
+    const chmod = jest.fn();
+    const mgr = new EngineManager({
+      dir: '/cache', platform: 'linux', version: V,
+      fs: fsStub, download, extractPackage, chmod,
+    });
+    return { mgr, fsStub, download, extractPackage, chmod };
+  }
+
+  test('downloads the tarball, extracts it, and chmods launcher AND core', async () => {
+    const { mgr, fsStub, download, extractPackage, chmod } = make(false);
+    const dest = await mgr.ensure();
+
+    expect(dest).toBe(path.join('/cache', pkg.dir, pkg.launcher));
+    // fetched from the descriptor URL into the engine dir
+    expect(download).toHaveBeenCalledWith(expect.stringContaining('github.com'), path.join('/cache', pkg.archive), undefined);
+    expect(extractPackage).toHaveBeenCalledWith(path.join('/cache', pkg.archive), '/cache');
+    expect(chmod).toHaveBeenCalledWith(dest, 0o755);
+    expect(chmod).toHaveBeenCalledWith(path.join('/cache', pkg.dir, pkg.core), 0o755);
+    // the scratch tarball does not linger
+    expect(fsStub.unlinkSync).toHaveBeenCalledWith(path.join('/cache', pkg.archive));
+  });
+
+  test('a tarball that cannot be removed is not fatal', async () => {
+    const { mgr, fsStub, chmod } = make(false);
+    fsStub.unlinkSync.mockImplementation(() => { throw new Error('EBUSY'); });
+    await expect(mgr.ensure()).resolves.toContain(pkg.launcher);
+    expect(chmod).toHaveBeenCalledTimes(2);
+  });
+
+  test('an already-installed package re-asserts +x on the core too', async () => {
+    const { mgr, chmod } = make(true);
+    await mgr.ensure();
+    expect(chmod).toHaveBeenCalledWith(path.join('/cache', pkg.dir, pkg.launcher), 0o755);
+    expect(chmod).toHaveBeenCalledWith(path.join('/cache', pkg.dir, pkg.core), 0o755);
+  });
+
+  test('a launcher without its core is not installed — it re-downloads', async () => {
+    // An interrupted extract leaves the launcher looking perfectly installed
+    // while the larger half is missing. Trusting it would strand the rig on
+    // "core missing or not executable" with nothing left to re-trigger the
+    // download, so the core has to count as part of being installed.
+    const { mgr, fsStub, download, extractPackage } = make(false);
+    fsStub.existsSync.mockImplementation((p) => p === path.join('/cache', pkg.dir, pkg.launcher));
+
+    expect(mgr.isInstalled()).toBe(false);
+    await mgr.ensure();
+    expect(download).toHaveBeenCalled();
+    expect(extractPackage).toHaveBeenCalled();
+  });
+});

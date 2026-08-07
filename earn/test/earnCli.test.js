@@ -33,6 +33,7 @@ jest.mock('../src/main/io', () => ({
   downloadFile: jest.fn(),
   streamChatCompletion: jest.fn(),
   extractLlamaZip: jest.fn(),
+  extractEnginePackage: jest.fn(),
 }));
 jest.mock('../src/main/nodeStore', () => ({
   loadNode: jest.fn(),

@@ -924,3 +924,23 @@ describe('downloadFile trust recovery', () => {
     jest.useRealTimers();
   });
 });
+
+describe('extractEnginePackage', () => {
+  // Deliberately NOT flattened like the llama.cpp archives: the packaged engine
+  // is a launcher plus a hidden core that it resolves as a sibling, so the
+  // archive keeps its own top folder and both land together.
+  test('untars into the engine dir, keeping the archive top folder', async () => {
+    execFile.mockImplementation((cmd, args, opts, cb) => cb(null));
+    await expect(io.extractEnginePackage('/cache/pkg.tar.gz', '/cache')).resolves.toBe('/cache');
+    const [cmd, args] = execFile.mock.calls.pop();
+    expect(cmd).toBe('tar');
+    expect(args).toEqual(['-xzf', '/cache/pkg.tar.gz', '-C', '/cache']);
+    expect(args).not.toContain('--strip-components=1');
+  });
+
+  test('surfaces a tar failure with the tool named', async () => {
+    execFile.mockImplementation((cmd, args, opts, cb) => cb(new Error('tar: not found')));
+    await expect(io.extractEnginePackage('/cache/pkg.tar.gz', '/cache'))
+      .rejects.toThrow(/could not extract the engine package with .tar./);
+  });
+});

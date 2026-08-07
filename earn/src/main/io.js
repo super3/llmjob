@@ -413,10 +413,28 @@ function extractLlamaZip(zipPath, dest, hint) {
   });
 }
 
+// Extract a packaged engine tarball into `destDir`, keeping the archive's own
+// top-level folder. That folder is exactly the `dir` in the package descriptor
+// (alpha-miner-1.9.1b/), so the launcher and its hidden core land together at
+// the path enginePath() resolves to — deliberately NOT flattened like the
+// llama.cpp archives, because the launcher finds its core as a sibling and
+// splitting them breaks every start.
+function extractEnginePackage(archivePath, destDir) {
+  return new Promise((resolve, reject) => {
+    execFile('tar', ['-xzf', archivePath, '-C', destDir], { timeout: 180000 }, (err) => {
+      if (err) {
+        return reject(new Error('could not extract the engine package with `tar` (' + err.message + ')'));
+      }
+      resolve(destDir);
+    });
+  });
+}
+
 module.exports = {
   postJson,
   getJson,
   downloadFile,
+  extractEnginePackage,
   trustRecoveryCa,
   streamChatCompletion,
   extractLlamaZip,
