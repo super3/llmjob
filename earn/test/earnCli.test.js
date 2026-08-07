@@ -511,7 +511,21 @@ describe('mining', () => {
     // them the way the code does rather than pinning the Linux names.
     expect(allErr()).toContain('Manual install: download '
       + engine.engineDownloadUrl(process.platform, undefined, null, engine.ENGINE.preferred));
-    expect(allErr()).toContain('save it as ' + engine.manualEnginePath('/rig/engine', process.platform));
+
+    // The invariant, and the reason manualInstallHint exists: whatever the
+    // platform serves, a TARBALL is never described as something to save under
+    // the launcher's name. That advice cannot work — the file is an archive
+    // holding the launcher plus its core — and this message is only ever read by
+    // someone whose download already failed, so getting it wrong sends them in
+    // circles. Windows takes the other arm (no 1.9.x build exists for it, so it
+    // still gets a bare binary); both arms are unit-tested directly in
+    // engine.test.js.
+    if (/\.tar\.gz/.test(allErr())) {
+      expect(allErr()).toContain('extract it into /rig/engine');
+      expect(allErr()).not.toContain('save it as');
+    } else {
+      expect(allErr()).toContain('save it as ' + engine.manualEnginePath('/rig/engine', process.platform));
+    }
   });
 
   test('unknown driver picks the compatible build; no-report; hostname fallback', async () => {
