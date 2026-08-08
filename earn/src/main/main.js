@@ -20,7 +20,7 @@ const { LlmManager } = require('./llmManager');
 const { LlmEngineManager } = require('./llmEngineManager');
 const { postJson, getJson, downloadFile, streamChatCompletion, extractLlamaZip, extractEnginePackage } = require('./io');
 const {
-  detectRegion, detectVram, detectGpusVram, detectDriverMajor,
+  detectRegion, detectVram, detectGpusVram, detectDriverMajor, detectComputeCaps,
   postMinerReport, findFreePort,
 } = require('./probe');
 const probe = require('./probe');
@@ -40,7 +40,8 @@ const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
 const { buildBalanceUrl, parseBalance, buildMdlBalanceUrl, parseMdlBalance } = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
 const {
-  bundledEnginePath, pickEngineVersion, engineDownloadUrl, manualInstallHint, ENGINE,
+  bundledEnginePath, pickEngineVersion, pickWindowsEngineVersion, windowsEngineNote,
+  engineDownloadUrl, manualInstallHint, enginePackage,
 } = require('../shared/engine');
 const { formatUpdate } = require('../shared/updateStatus');
 const { describeLaunchError, describeSetupError } = require('../shared/engineError');
@@ -276,23 +277,40 @@ async function startMining(settings) {
   const endpoint = settings.endpoint || endpointFor(settings.region || DEFAULTS.region);
   send('miner:log', { level: 'info', line: 'connecting to ' + endpoint + ' · worker ' + (settings.worker || DEFAULTS.worker) });
 
-  // Resolve the engine. Off Windows, pick the build the rig's driver can run
-  // (the 1.8.6+ line is faster but needs NVIDIA driver >= 580). Windows has a
-  // single pool build, pinned by ENGINE.windows — versioned all the same so a
-  // bump busts the cache. A packaged build may ship the engine under
-  // process.resourcesPath (build.extraResources) — prefer that and skip the
-  // network entirely; the lookup is version-aware, so a bundle only satisfies
-  // the exact build this rig selected. Otherwise download on demand.
+  // Resolve the engine. Each platform picks the newest build its hardware can
+  // actually run — off Windows from the driver version (the 1.8.6+ line is
+  // faster but needs NVIDIA driver >= 580), on Windows from the GPU's compute
+  // capability (below). Either way the version is baked into the cached
+  // filename, so a bump busts the cache. A packaged build may ship the engine
+  // under process.resourcesPath (build.extraResources) — prefer that and skip
+  // the network entirely; the lookup is version-aware, so a bundle only
+  // satisfies the exact build this rig selected. Otherwise download on demand.
   let binaryPath = settings.binaryPath;
-  const version = process.platform === 'win32'
-    ? ENGINE.windows
-    : pickEngineVersion(await detectDriverMajor());
+  // Windows picks from the rig's compute capability rather than the driver: the
+  // 1.9.1b Windows package runs only on uniform CC 8.6/8.9 and fails closed on
+  // everything else, so a rig that does not qualify stays on 1.8.6 and is told
+  // why (see windowsEngineNote — it is mining work the fork no longer credits).
+  let version;
+  if (process.platform === 'win32') {
+    const caps = await detectComputeCaps();
+    version = pickWindowsEngineVersion(caps);
+    const note = windowsEngineNote(caps);
+    if (note) send('miner:log', { level: 'warn', line: note });
+  } else {
+    version = pickEngineVersion(await detectDriverMajor());
+  }
   let bundled = bundledEnginePath(process.resourcesPath, process.platform, settings.gpu, version);
   // The Windows bundling step ships the engine under the legacy unversioned
   // name (alpha-miner-windows.exe). If the version-aware lookup misses, fall
   // back to that so a shipped bundle is still used instead of re-downloading;
   // the on-demand path below stays versioned (cache-busting) either way.
-  if (process.platform === 'win32' && bundled && !fs.existsSync(bundled)) {
+  //
+  // NOT for a packaged version, though: that bundled .exe is the old 1.8.6
+  // build, so taking it when the rig qualified for 1.9.1b would silently
+  // downgrade a compliant rig to one mining work the fork no longer credits —
+  // the exact failure this release exists to fix.
+  if (process.platform === 'win32' && bundled && !fs.existsSync(bundled)
+      && !enginePackage(process.platform, version)) {
     const legacy = bundledEnginePath(process.resourcesPath, process.platform, settings.gpu);
     if (fs.existsSync(legacy)) bundled = legacy;
   }

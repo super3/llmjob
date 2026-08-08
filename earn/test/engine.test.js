@@ -6,6 +6,7 @@ const {
   engineBinaryName, engineArchiveName, engineDownloadUrl,
   isZipUrl, isArchiveUrl, looksLikeArchive, enginePath, engineFiles, bundledEnginePath, progressPercent,
   manualEngineName, manualEnginePath, enginePackage, backendForEngine, manualInstallHint,
+  parseComputeCaps, pickWindowsEngineVersion, windowsEngineNote,
 } = require('../src/shared/engine');
 
 describe('pickEngineVersion', () => {
@@ -172,9 +173,25 @@ describe('packaged engines (1.9.1b launcher + core)', () => {
     expect(engineDownloadUrl('linux', undefined, 'https://mirror.example/', V).startsWith('https://github.com/')).toBe(true);
   });
 
-  test('Windows never resolves a package — the 1.9.x line has no Windows build', () => {
-    expect(enginePackage('win32', V)).toBeNull();
+  test('Windows has its own package — same version, different artifact', () => {
+    // Upstream added a Windows build to the same release tag after the Linux
+    // one. It is a .zip of two .exe files, not a .tar.gz of a shell launcher
+    // beside a hidden core, so the descriptor cannot be shared.
+    const linux = enginePackage('linux', V);
+    const win = enginePackage('win32', V);
+    expect(win).toBeTruthy();
+    expect(win.archive).toBe('AlphaMiner-Windows-1.9.1.02.zip');
+    expect(win.launcher).toBe('alpha-miner.exe');
+    expect(win.core).toBe('alpha-miner-core.exe');
+    expect(win.url).not.toBe(linux.url);
+    expect(engineBinaryName('win32', 'nvidia', V)).toBe('AlphaMiner-Windows-1.9.1.02/alpha-miner.exe');
+  });
+
+  test('the Windows fallback is still a bare .exe from the pool', () => {
+    expect(enginePackage('win32', ENGINE.windows)).toBeNull();
     expect(engineBinaryName('win32', 'nvidia', ENGINE.windows)).toBe('alpha-miner-windows-1.8.6.exe');
+    expect(engineDownloadUrl('win32', 'nvidia', null, ENGINE.windows))
+      .toBe(DOWNLOAD_BASE + 'AlphaMiner-Pearl-Windows.zip');
   });
 
   test('the bare-binary fallback is untouched', () => {
@@ -204,16 +221,72 @@ describe('backendForEngine', () => {
   });
 });
 
+describe('parseComputeCaps', () => {
+  test('one entry per card, junk dropped', () => {
+    expect(parseComputeCaps('8.9\n')).toEqual(['8.9']);
+    expect(parseComputeCaps('8.6\r\n8.6\r\n')).toEqual(['8.6', '8.6']);
+    expect(parseComputeCaps('')).toEqual([]);
+    expect(parseComputeCaps(null)).toEqual([]);
+    expect(parseComputeCaps('NVIDIA-SMI has failed')).toEqual([]);
+    expect(parseComputeCaps('[N/A]')).toEqual([]);
+  });
+});
+
+describe('pickWindowsEngineVersion', () => {
+  // The 1.9.1b Windows package fails closed on anything but a uniform CC 8.6 or
+  // 8.9 rig, so this gate is the difference between mining and not starting at
+  // all. Verified against the real launcher on a 4090: `--list-devices` reports
+  // `cc=8.9 backend=ada` and runs.
+  test('uniform 30- or 40-series gets the compliant hotfix', () => {
+    expect(pickWindowsEngineVersion(['8.6'])).toBe(ENGINE.windowsPreferred);
+    expect(pickWindowsEngineVersion(['8.9'])).toBe(ENGINE.windowsPreferred);
+    expect(pickWindowsEngineVersion(['8.9', '8.9', '8.9'])).toBe(ENGINE.windowsPreferred);
+  });
+
+  test('mixed, newer and older rigs stay on the fallback the launcher will run', () => {
+    expect(pickWindowsEngineVersion(['8.6', '8.9'])).toBe(ENGINE.windows); // mixed: fails closed
+    expect(pickWindowsEngineVersion(['12.0'])).toBe(ENGINE.windows);       // RTX 50-series
+    expect(pickWindowsEngineVersion(['7.5'])).toBe(ENGINE.windows);        // Turing
+  });
+
+  test('unknown capabilities fall back rather than guess', () => {
+    expect(pickWindowsEngineVersion([])).toBe(ENGINE.windows);
+    expect(pickWindowsEngineVersion(null)).toBe(ENGINE.windows);
+    expect(pickWindowsEngineVersion(undefined)).toBe(ENGINE.windows);
+  });
+});
+
+describe('windowsEngineNote', () => {
+  test('says nothing when the rig qualified', () => {
+    expect(windowsEngineNote(['8.9'])).toBe('');
+  });
+
+  test('names the reason, and admits the fallback is not compliant', () => {
+    // A rig left behind cannot tell from the outside whether this is our choice
+    // or upstream's limit, and it is mining work the fork no longer credits.
+    expect(windowsEngineNote(['12.0'])).toContain('compute capability 12.0 is not supported');
+    expect(windowsEngineNote(['8.6', '8.9'])).toContain('mixed GPU generations (8.6, 8.9)');
+    expect(windowsEngineNote([])).toContain('compute capability could not be read');
+    expect(windowsEngineNote(null)).toContain('compute capability could not be read');
+    for (const caps of [['12.0'], ['8.6', '8.9'], [], null]) {
+      expect(windowsEngineNote(caps)).toContain('not rank-128 compliant');
+      expect(windowsEngineNote(caps)).toContain('1.9.2');
+    }
+  });
+});
+
 describe('engineFiles', () => {
   test('a bare binary is only itself; a package is the launcher AND its core', () => {
     expect(engineFiles('/cache', 'linux', undefined, ENGINE.fallback))
       .toEqual([enginePath('/cache', 'linux', undefined, ENGINE.fallback)]);
 
-    const pkg = enginePackage('linux', ENGINE.preferred);
-    expect(engineFiles('/cache', 'linux', undefined, ENGINE.preferred)).toEqual([
-      path.join('/cache', pkg.dir, pkg.launcher),
-      path.join('/cache', pkg.dir, pkg.core),
-    ]);
+    for (const platform of ['linux', 'win32']) {
+      const pkg = enginePackage(platform, '1.9.1b');
+      expect(engineFiles('/cache', platform, undefined, '1.9.1b')).toEqual([
+        path.join('/cache', pkg.dir, pkg.launcher),
+        path.join('/cache', pkg.dir, pkg.core),
+      ]);
+    }
   });
 });
 

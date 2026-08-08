@@ -207,6 +207,27 @@ describe('EngineManager — packaged engine (launcher + core)', () => {
     expect(chmod).toHaveBeenCalledWith(path.join('/cache', pkg.dir, pkg.core), 0o755);
   });
 
+  test('the Windows package installs without chmod — there is no execute bit', async () => {
+    // Same descriptor shape, different artifact: a .zip of two .exe files. A
+    // chmod here is at best a no-op and at worst a throw that fails an
+    // otherwise perfect install.
+    const winPkg = enginePackage('win32', V);
+    const fsStub = makeFs(false);
+    const download = jest.fn(() => Promise.resolve());
+    const extractPackage = jest.fn(() => Promise.resolve());
+    const chmod = jest.fn();
+    const mgr = new EngineManager({
+      dir: '/cache', platform: 'win32', version: V,
+      fs: fsStub, download, extractPackage, chmod,
+    });
+
+    const dest = await mgr.ensure();
+    expect(dest).toBe(path.join('/cache', winPkg.dir, winPkg.launcher));
+    expect(download).toHaveBeenCalledWith(expect.stringContaining('AlphaMiner-Windows'), path.join('/cache', winPkg.archive), undefined);
+    expect(extractPackage).toHaveBeenCalledWith(path.join('/cache', winPkg.archive), '/cache');
+    expect(chmod).not.toHaveBeenCalled();
+  });
+
   test('a launcher without its core is not installed — it re-downloads', async () => {
     // An interrupted extract leaves the launcher looking perfectly installed
     // while the larger half is missing. Trusting it would strand the rig on

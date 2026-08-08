@@ -65,8 +65,13 @@ class EngineManager {
       await this.download(engineDownloadUrl(this.platform, this.gpu, this.urlBase, this.version), archivePath, onProgress);
       await this.extractPackage(archivePath, this.dir);
       try { this.fs.unlinkSync(archivePath); } catch (e) { /* leftover archive is harmless */ }
-      this.chmod(dest, 0o755);
-      this.chmod(path.join(this.dir, pkg.dir, pkg.core), 0o755);
+      // Windows has no execute bit to grant — its package is a pair of .exe
+      // files — and chmodding them is at best a no-op, at worst a throw that
+      // fails an otherwise perfect install.
+      if (this.platform !== 'win32') {
+        this.chmod(dest, 0o755);
+        this.chmod(path.join(this.dir, pkg.dir, pkg.core), 0o755);
+      }
       return dest;
     }
 

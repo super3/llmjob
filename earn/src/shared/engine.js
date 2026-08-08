@@ -30,27 +30,33 @@ const DOWNLOAD_BASE = 'https://pearl.alphapool.tech/downloads/';
 //     would crash-loop exactly the rigs the fallback exists to protect, which
 //     is worse than mining non-compliant. Needs an answer from the pool.
 //
-//   • `windows` stays on 1.8.6 — the newest Windows build that exists. Upstream
-//     shipped the whole 1.9.x line for HiveOS, Linux and Docker only, and the
-//     pool's `AlphaMiner-Pearl-Windows.zip` still contains
-//     `alpha-miner-windows-1.8.6.exe` (verified by downloading and listing it:
-//     exe dated 2026-07-01, zip touched 2026-07-24). The 1.9.1b package cannot
-//     substitute — its launcher is a /bin/sh script. Bumping this without a
-//     build behind it would point every Windows rig at a filename that is not
-//     inside the zip.
+//   • `windows` — the Windows FALLBACK — stays on 1.8.6 and is likewise not
+//     softfork-compliant. See windowsPreferred below: upstream's Windows hotfix
+//     runs on only two GPU generations, and 1.8.6 is all that is left for the
+//     rest. Bumping it is a cache miss by design (the version is baked into the
+//     cached filename), so Windows rigs re-download the pool's newer build
+//     instead of running a stale cached .exe forever. Keep the bundling step in
+//     .github/workflows/miner-build.yml in sync — it reads this.
 //
-// Windows has a single build: the pool ships only one `AlphaMiner-Pearl-Windows.zip`
-// (no per-driver split). We still track that version in `windows` and bake it
-// into the cached filename (below) so bumping it here is a cache miss — Windows
-// rigs re-download the pool's newer build instead of running a stale cached .exe
-// forever. Bump `windows` to match the version inside the pool's zip whenever
-// they refresh it (and keep the bundling step in
-// .github/workflows/miner-build.yml in sync — it reads this).
+// `windowsPreferred` is the 1.9.1b Windows package, added to the same upstream
+// release on 2026-08-07 (the release originally shipped Linux/HiveOS/Docker
+// only). Unlike the Linux build it is NOT a drop-in for every rig: the package
+// fails closed on anything but a uniform RTX 30-series (CC 8.6) or uniform RTX
+// 40-series (CC 8.9) system, and explicitly rejects RTX 50-series/Blackwell and
+// mixed 8.6/8.9 rigs. So Windows picks its engine from the rig's compute
+// capability the way Linux picks from the driver version — see
+// pickWindowsEngineVersion. Upstream calls it "an emergency Windows bridge
+// while the genuine-source Alpha Miner 1.9.2 release is being completed"; 1.9.2
+// is what finally makes non-8.6/8.9 Windows rigs compliant.
 const ENGINE = {
   preferred: '1.9.1b',
   fallback: '1.8.3',
   minDriverMajor: 580,
   windows: '1.8.6',
+  windowsPreferred: '1.9.1b',
+  // The only compute capabilities the Windows package will run on, verbatim
+  // from its README. Uniform only — a rig mixing 8.6 and 8.9 fails closed too.
+  windowsComputeCaps: ['8.6', '8.9'],
 };
 
 // Versions that ship as a PACKAGE — a tarball holding a launcher plus a hidden
@@ -69,24 +75,45 @@ const ENGINE = {
 //     executable".
 //
 // The launcher also rejects rank/geometry/backend overrides and appends
-// `--gemm native` itself — see minerArgs, which stops sending --force-backend
-// for a packaged engine rather than letting it fail closed with exit 2.
+// `--gemm native` itself — verified against the real Windows launcher, which
+// answers `--force-backend` with "ERROR: forbidden backend option in user
+// arguments" and exit 2. See backendForEngine, which strips the override rather
+// than letting a working rig fail closed.
+//
+// Keyed by platform because the same version ships as two different artifacts:
+// a .tar.gz holding a /bin/sh launcher beside a hidden core on Linux, and a
+// .zip holding an .exe pair on Windows.
 const PACKAGED = {
-  '1.9.1b': {
-    url: 'https://github.com/AlphaMine-Tech/alpha-miner/releases/download/v1.9.1.02/alpha-miner-1.9.1b-ubuntu-amd64.tar.gz',
-    archive: 'alpha-miner-1.9.1b-ubuntu-amd64.tar.gz',
-    dir: 'alpha-miner-1.9.1b',
-    launcher: 'alpha-miner',
-    core: '.alpha-miner-core',
+  linux: {
+    '1.9.1b': {
+      url: 'https://github.com/AlphaMine-Tech/alpha-miner/releases/download/v1.9.1.02/alpha-miner-1.9.1b-ubuntu-amd64.tar.gz',
+      archive: 'alpha-miner-1.9.1b-ubuntu-amd64.tar.gz',
+      dir: 'alpha-miner-1.9.1b',
+      launcher: 'alpha-miner',
+      core: '.alpha-miner-core',
+    },
+  },
+  win32: {
+    // Same release tag, different artifact. The Windows core is a plain sibling
+    // .exe rather than a hidden file, and neither half needs a chmod — but the
+    // launcher still verifies the core's SHA-256 and refuses to run without it,
+    // so the pair travels together exactly as on Linux.
+    '1.9.1b': {
+      url: 'https://github.com/AlphaMine-Tech/alpha-miner/releases/download/v1.9.1.02/AlphaMiner-Windows-1.9.1.02.zip',
+      archive: 'AlphaMiner-Windows-1.9.1.02.zip',
+      dir: 'AlphaMiner-Windows-1.9.1.02',
+      launcher: 'alpha-miner.exe',
+      core: 'alpha-miner-core.exe',
+    },
   },
 };
 
-// The package descriptor for `version`, or null when it is a plain binary.
-// Windows never matches: these are Linux tarballs whose launcher is a /bin/sh
-// script, and upstream has shipped no Windows build of the 1.9.x line.
+// The package descriptor for `version` on `platform`, or null when that pairing
+// is a plain binary. Everything that is not Windows reads the Linux table — the
+// app ships for those two, and a bare binary is the safe answer anywhere else.
 function enginePackage(platform, version) {
-  if (platform === 'win32') return null;
-  return PACKAGED[version] || null;
+  const table = PACKAGED[platform === 'win32' ? 'win32' : 'linux'];
+  return table[version] || null;
 }
 
 // Decide whether a --force-backend override survives for this engine.
@@ -127,6 +154,55 @@ function pickEngineVersion(driverMajor) {
   return Number.isFinite(driverMajor) && driverMajor >= ENGINE.minDriverMajor
     ? ENGINE.preferred
     : ENGINE.fallback;
+}
+
+// Parse `nvidia-smi --query-gpu=compute_cap` output ("8.9\n8.9" → ['8.9','8.9'])
+// into one entry per card. Returns [] when there is nothing to read, which
+// pickWindowsEngineVersion treats as "unknown" rather than "supported".
+function parseComputeCaps(output) {
+  return String(output == null ? '' : output)
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => /^\d+\.\d+$/.test(l));
+}
+
+// Pick the Windows engine from the rig's CUDA compute capabilities.
+//
+// The 1.9.1b Windows package fails closed on anything but a UNIFORM CC 8.6
+// (RTX 30-series) or UNIFORM CC 8.9 (RTX 40-series) system — mixed 8.6/8.9,
+// RTX 50-series/Blackwell and everything older are refused by the launcher
+// itself. So a rig that does not qualify gets 1.8.6, which still runs but is
+// NOT softfork-compliant: there is simply no compliant Windows build for it
+// until upstream's 1.9.2. Shipping a version the launcher rejects would take
+// those rigs from earning nothing to mining nothing, which is strictly worse.
+//
+// Unknown capabilities (no nvidia-smi, AMD, unparseable) fall back for the same
+// reason the driver check does: guessing wrong costs the rig every share.
+function pickWindowsEngineVersion(caps) {
+  const list = Array.isArray(caps) ? caps.map(String) : [];
+  const uniform = list.length > 0 && list.every((c) => c === list[0]);
+  return uniform && ENGINE.windowsComputeCaps.includes(list[0])
+    ? ENGINE.windowsPreferred
+    : ENGINE.windows;
+}
+
+// Why a Windows rig got the build it got, as a log line — '' when it qualified
+// for the hotfix and there is nothing to explain. A rig left on 1.8.6 is mining
+// work the rank-128 fork no longer credits, and it cannot tell from the outside
+// whether that is our choice or upstream's limit, so say which and say what
+// unblocks it.
+function windowsEngineNote(caps) {
+  if (pickWindowsEngineVersion(caps) === ENGINE.windowsPreferred) return '';
+  const list = Array.isArray(caps) ? caps.map(String) : [];
+  const why = list.length === 0
+    ? 'GPU compute capability could not be read'
+    : list.every((c) => c === list[0])
+      ? 'compute capability ' + list[0] + ' is not supported by it'
+      : 'mixed GPU generations (' + list.join(', ') + ') are not supported by it';
+  return 'note: the ' + ENGINE.windowsPreferred + ' Windows build only runs on uniform CC '
+    + ENGINE.windowsComputeCaps.join(' / ') + ' rigs and ' + why
+    + ' — falling back to ' + ENGINE.windows + ', which still mines but is not'
+    + ' rank-128 compliant. Upstream 1.9.2 is meant to cover the rest.';
 }
 
 // Parse the driver major version out of `nvidia-smi --query-gpu=driver_version`
@@ -247,6 +323,9 @@ module.exports = {
   backendForEngine,
   manualInstallHint,
   pickEngineVersion,
+  parseComputeCaps,
+  pickWindowsEngineVersion,
+  windowsEngineNote,
   parseDriverMajor,
   engineBinaryName,
   engineArchiveName,
