@@ -29,10 +29,25 @@ Always run tests before starting work and after completing tasks. A task is NOT 
   right alongside the PR URL. The preview URL is deterministic from the PR
   number: `https://llmjob-llmjob-pr-<PR-number>.up.railway.app` (append a page
   path like `/chat.html` or `/network.html` when pointing at a specific page).
-- One conversation, one PR. Don't widen a PR's scope on your own — if you spot
-  something adjacent, say so and ask. But once it's asked for, it belongs on the
-  branch that's already open, not on a new one. Follow-up work in the same
-  conversation goes into the same open PR: push to that branch and update the
-  title and description, rather than spinning up a second PR for what is really
-  one piece of work. "Don't expand scope silently" is about asking first, not
-  about splitting the answer across PRs.
+- One conversation, one PR. Everything the founder asks for during a
+  conversation goes on the branch that is already open — **including work that
+  is unrelated to what the PR started as**. If nothing is open yet, the first
+  piece of work opens the PR and everything after it joins that PR. Push to that
+  branch and update the title and description to describe what it now contains.
+
+  Don't widen a PR's scope on your own: if you *spot* something adjacent, say so
+  and ask. But once it has been asked for, it belongs on the open branch.
+
+  This holds even when the new work is obviously a different concern.
+  "These are unrelated, so they're cleaner as separate PRs" is the reasoning
+  that keeps producing the wrong answer, and it is not a judgment call to make
+  here. If you genuinely believe something has to ship separately, **ask first
+  and wait for an answer** — do not open the second PR and explain afterwards.
+
+  Release PRs are not an exception. A `release/vX.Y.Z` branch is still the open
+  branch: a fix asked for while it is open goes onto it and ships in that
+  release. Whether the release should go out without that extra work is the
+  founder's call, not a reason to start a new branch.
+
+  Start a second branch only when there is no open PR, or when the founder says
+  to.

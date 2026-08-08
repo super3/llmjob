@@ -20,7 +20,7 @@ const { MinerManager } = require('../main/minerManager');
 const { EngineManager } = require('../main/engineManager');
 const { LlmManager } = require('../main/llmManager');
 const { LlmEngineManager } = require('../main/llmEngineManager');
-const { postJson, downloadFile, streamChatCompletion, extractLlamaZip } = require('../main/io');
+const { postJson, downloadFile, streamChatCompletion, extractLlamaZip, extractEnginePackage } = require('../main/io');
 const {
   detectRegion, detectVram, detectGpusVram, detectDriverMajor, postMinerReport, findFreePort,
 } = require('../main/probe');
@@ -29,7 +29,7 @@ const nodeStore = require('../main/nodeStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const { NETWORK, MINER, LLM, NODE, endpointFor, regionLabel, difficultyForCard } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
-const { ENGINE, pickEngineVersion, engineDownloadUrl, manualEnginePath } = require('../shared/engine');
+const { ENGINE, pickEngineVersion, engineDownloadUrl, backendForEngine, manualInstallHint } = require('../shared/engine');
 const { describeSetupError } = require('../shared/engineError');
 const nodeProto = require('../shared/node');
 const { buildMinerReports } = require('../shared/minerReport');
@@ -64,8 +64,9 @@ function detectGpu() {
   return probe.detectGpuInfo();
 }
 
-// The mining engine ships as a bare Linux binary (no zip), so its EngineManager
-// never needs an extractor — this stays a hard "unsupported" for that path.
+// The pool's bare Linux binaries need no extractor, and there is no Linux ZIP —
+// so this stays a hard "unsupported". Packaged engines (1.9.1b's tarball) go
+// through extractPackage instead, which is wired to the real tar helper.
 function extractUnsupported() {
   return Promise.reject(new Error('zip extraction is not supported on the Linux CLI'));
 }
@@ -91,6 +92,11 @@ async function resolveEngine(settings) {
       ? '  (driver version unknown — using the compatible build)'
       : '  (driver ' + driverMajor + ' < ' + ENGINE.minDriverMajor + ' — update it for the ~5% faster build)'));
 
+  // A packaged launcher rejects --force-backend (exit 2) and picks the backend
+  // itself. backendForEngine strips the override and logs why, rather than
+  // letting a working rig turn into one that refuses to start.
+  settings.backend = backendForEngine(settings.backend, process.platform, version, log);
+
   const dir = settings.engineDir || path.join(os.homedir(), '.local', 'share', 'llmjob-earn', 'engine');
   const url = engineDownloadUrl(process.platform, settings.gpu, null, version);
   const engine = new EngineManager({
@@ -101,6 +107,7 @@ async function resolveEngine(settings) {
     fs,
     download: downloadFile,
     extract: extractUnsupported,
+    extractPackage: extractEnginePackage,
     chmod: fs.chmodSync,
   });
 
@@ -119,7 +126,9 @@ async function resolveEngine(settings) {
     // wants and where it has to be saved — out to the reporting site, which has
     // neither the driver-picked version nor the engine dir.
     e.downloadUrl = url;
-    e.manualPath = manualEnginePath(dir, process.platform);
+    // A packaged engine is unpacked, not renamed into place — manualInstallHint
+    // picks "save it as <file>" vs "extract it into <dir>" for us.
+    Object.assign(e, manualInstallHint(process.platform, version, dir));
     throw e;
   }
   process.stdout.write('\n');
@@ -641,6 +650,7 @@ async function run(argv) {
         err: e,
         downloadUrl: e.downloadUrl || MINER.downloadUrl,
         manualPath: e.manualPath,
+        extractDir: e.extractDir,
       }).log, process.stderr);
       return 1;
     }

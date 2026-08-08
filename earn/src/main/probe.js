@@ -15,7 +15,7 @@ const { execFile } = require('child_process');
 const { REGIONS, DEFAULTS, NETWORK } = require('../shared/config');
 const { pickFastestRegion } = require('../shared/region');
 const { parseGpuStats, pickGpu, countGpus } = require('../shared/gpu');
-const { parseDriverMajor } = require('../shared/engine');
+const { parseDriverMajor, parseComputeCaps } = require('../shared/engine');
 
 // Measure TCP connect latency (ms) to a "host:port" Stratum endpoint, or null
 // if it can't be reached within the timeout. Never rejects.
@@ -89,6 +89,17 @@ function detectDriverMajor() {
     execFile('nvidia-smi', ['--query-gpu=driver_version', '--format=csv,noheader'],
       { timeout: 5000 },
       (err, stdout) => resolve(err ? null : parseDriverMajor(stdout)));
+  });
+}
+
+// CUDA compute capability per card via nvidia-smi (["8.9"], ["8.6","8.6"], …),
+// or [] when it can't be read. Decides which Windows engine the rig can run:
+// the 1.9.1b Windows package only accepts uniform CC 8.6 or 8.9.
+function detectComputeCaps() {
+  return new Promise((resolve) => {
+    execFile('nvidia-smi', ['--query-gpu=compute_cap', '--format=csv,noheader'],
+      { timeout: 5000 },
+      (err, stdout) => resolve(err ? [] : parseComputeCaps(stdout)));
   });
 }
 
@@ -174,6 +185,7 @@ module.exports = {
   detectVram,
   detectGpusVram,
   detectDriverMajor,
+  detectComputeCaps,
   postMinerReport,
   findFreePort,
   detectGpuInfo,

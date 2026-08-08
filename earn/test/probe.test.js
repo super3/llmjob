@@ -145,6 +145,20 @@ describe('detectDriverMajor', () => {
   });
 });
 
+describe('detectComputeCaps', () => {
+  // The Windows rank-128 hotfix runs on uniform CC 8.6/8.9 rigs only, so this
+  // is what decides whether a Windows rig gets a compliant engine at all.
+  it('returns one capability per card', async () => {
+    execCb(null, '8.9\n8.9\n');
+    expect(await probe.detectComputeCaps()).toEqual(['8.9', '8.9']);
+  });
+
+  it('returns [] when nvidia-smi is missing or fails', async () => {
+    execCb(new Error('not found'));
+    expect(await probe.detectComputeCaps()).toEqual([]);
+  });
+});
+
 describe('postMinerReport', () => {
   it('POSTs over https (the configured report url) and resolves on end', async () => {
     const req = fakeReq();

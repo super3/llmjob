@@ -72,11 +72,17 @@ function isTlsTrustError(err) {
 // ~/Downloads under the pool's unversioned name, and got the identical failure
 // on the next start — the old hint printed a bare URL and never said where the
 // file had to end up.
-function describeSetupError({ err, downloadUrl, manualPath } = {}) {
+// `extractDir` replaces `manualPath` for a PACKAGED engine (1.9.1b): its
+// download is a tarball holding a launcher plus its core, so "save it as
+// .../alpha-miner" is advice that cannot work — the user has to unpack it. Tell
+// them that instead, or the manual-install escape hatch sends them in circles.
+function describeSetupError({ err, downloadUrl, manualPath, extractDir } = {}) {
   const detail = (err && err.message) ? err.message : String(err || 'unknown error');
+  const where = extractDir
+    ? ' and extract it into ' + extractDir
+    : (manualPath ? ' and save it as ' + manualPath : '');
   const manual = downloadUrl
-    ? ' Manual install: download ' + downloadUrl
-      + (manualPath ? ' and save it as ' + manualPath : '') + ', then start again.'
+    ? ' Manual install: download ' + downloadUrl + where + ', then start again.'
     : '';
   if (isTlsTrustError(err)) {
     return {

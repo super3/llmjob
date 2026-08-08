@@ -413,10 +413,44 @@ function extractLlamaZip(zipPath, dest, hint) {
   });
 }
 
+// Extract a packaged engine archive into `destDir`, keeping the archive's own
+// top-level folder. That folder is exactly the `dir` in the package descriptor
+// (alpha-miner-1.9.1b/, AlphaMiner-Windows-1.9.1.02/), so the launcher and its
+// core land together at the path enginePath() resolves to — deliberately NOT
+// flattened like the llama.cpp archives, because the launcher finds its core as
+// a sibling and splitting them breaks every start.
+//
+// The same version ships as a .tar.gz on Linux and a .zip on Windows, so sniff
+// the magic bytes rather than trust the name: gzip (1f 8b) → `tar -xzf`,
+// otherwise `tar -xf`, which reads zips too (Windows ships bsdtar as tar.exe,
+// verified 3.7.7). Deliberately not `unzip` — it is standard on Linux, which is
+// the one platform that never sees a zip here.
+function extractEnginePackage(archivePath, destDir) {
+  return new Promise((resolve, reject) => {
+    let gzip = false;
+    try {
+      const fd = fs.openSync(archivePath, 'r');
+      const head = Buffer.alloc(2);
+      fs.readSync(fd, head, 0, 2, 0);
+      fs.closeSync(fd);
+      gzip = head[0] === 0x1f && head[1] === 0x8b;
+    } catch (e) {
+      return reject(new Error('could not read the engine package (' + e.message + ')'));
+    }
+    execFile('tar', [gzip ? '-xzf' : '-xf', archivePath, '-C', destDir], { timeout: 180000 }, (err) => {
+      if (err) {
+        return reject(new Error('could not extract the engine package with `tar` (' + err.message + ')'));
+      }
+      resolve(destDir);
+    });
+  });
+}
+
 module.exports = {
   postJson,
   getJson,
   downloadFile,
+  extractEnginePackage,
   trustRecoveryCa,
   streamChatCompletion,
   extractLlamaZip,

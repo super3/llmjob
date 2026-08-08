@@ -33,6 +33,7 @@ jest.mock('../src/main/io', () => ({
   downloadFile: jest.fn(),
   streamChatCompletion: jest.fn(),
   extractLlamaZip: jest.fn(),
+  extractEnginePackage: jest.fn(),
 }));
 jest.mock('../src/main/nodeStore', () => ({
   loadNode: jest.fn(),
@@ -424,7 +425,7 @@ describe('mining', () => {
     expect(allOut()).toContain('worker:     rig-host  (auto)');
     expect(allOut()).toContain('(+MDL');
     expect(allOut()).toContain('difficulty: 262144  (for 2× NVIDIA GeForce RTX 3070, auto)');
-    expect(allOut()).toContain('engine:     alpha-miner 1.8.8');
+    expect(allOut()).toContain('engine:     alpha-miner ' + engine.ENGINE.preferred);
     expect(allOut()).toContain('downloading mining engine from');
     expect(allOut()).toContain('downloading… 50%');
 
@@ -510,7 +511,20 @@ describe('mining', () => {
     // them the way the code does rather than pinning the Linux names.
     expect(allErr()).toContain('Manual install: download '
       + engine.engineDownloadUrl(process.platform, undefined, null, engine.ENGINE.preferred));
-    expect(allErr()).toContain('save it as ' + engine.manualEnginePath('/rig/engine', process.platform));
+
+    // The invariant, and the reason manualInstallHint exists: whatever the
+    // platform serves, an ARCHIVE is never described as something to save under
+    // the launcher's name. That advice cannot work — the file holds the launcher
+    // plus its core — and this message is only ever read by someone whose
+    // download already failed, so getting it wrong sends them in circles. The
+    // other arm belongs to the bare-binary builds; both are unit-tested directly
+    // in engine.test.js.
+    if (/\.(tar\.gz|zip)/.test(allErr())) {
+      expect(allErr()).toContain('extract it into /rig/engine');
+      expect(allErr()).not.toContain('save it as');
+    } else {
+      expect(allErr()).toContain('save it as ' + engine.manualEnginePath('/rig/engine', process.platform));
+    }
   });
 
   test('unknown driver picks the compatible build; no-report; hostname fallback', async () => {

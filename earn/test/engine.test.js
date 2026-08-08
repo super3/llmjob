@@ -4,8 +4,9 @@ const path = require('path');
 const {
   DOWNLOAD_BASE, ENGINE, pickEngineVersion, parseDriverMajor,
   engineBinaryName, engineArchiveName, engineDownloadUrl,
-  isZipUrl, isArchiveUrl, looksLikeArchive, enginePath, bundledEnginePath, progressPercent,
-  manualEngineName, manualEnginePath,
+  isZipUrl, isArchiveUrl, looksLikeArchive, enginePath, engineFiles, bundledEnginePath, progressPercent,
+  manualEngineName, manualEnginePath, enginePackage, backendForEngine, manualInstallHint,
+  parseComputeCaps, pickWindowsEngineVersion, windowsEngineNote,
 } = require('../src/shared/engine');
 
 describe('pickEngineVersion', () => {
@@ -140,5 +141,168 @@ describe('progressPercent', () => {
     expect(progressPercent(50, 100)).toBe(50);
     expect(progressPercent(200, 100)).toBe(100);
     expect(progressPercent(-5, 100)).toBe(0);
+  });
+});
+
+describe('packaged engines (1.9.1b launcher + core)', () => {
+  // 1.9.1b ships as a tarball holding a /bin/sh launcher beside a hidden core,
+  // published only on GitHub releases. Every bare-binary assumption has to bend
+  // for it: the path is a directory, the URL is absolute, the archive is a .tar.gz.
+  const V = ENGINE.preferred;
+
+  test('preferred is the packaged hotfix, never plain 1.9.1', () => {
+    expect(V).toBe('1.9.1b');
+    expect(enginePackage('linux', V)).toBeTruthy();
+  });
+
+  test('the binary path is the launcher inside the package dir', () => {
+    expect(engineBinaryName('linux', undefined, V)).toBe('alpha-miner-1.9.1b/alpha-miner');
+    expect(enginePath('/cache', 'linux', undefined, V))
+      .toBe(path.join('/cache', 'alpha-miner-1.9.1b', 'alpha-miner'));
+  });
+
+  test('the download URL is absolute — GitHub releases, not the pool', () => {
+    const url = engineDownloadUrl('linux', undefined, null, V);
+    expect(url.startsWith('https://github.com/AlphaMine-Tech/')).toBe(true);
+    expect(url).not.toContain(DOWNLOAD_BASE);
+    expect(isArchiveUrl(url)).toBe(true);
+    expect(engineArchiveName('linux', undefined, V)).toBe('alpha-miner-1.9.1b-ubuntu-amd64.tar.gz');
+  });
+
+  test('a custom base cannot redirect a packaged engine', () => {
+    expect(engineDownloadUrl('linux', undefined, 'https://mirror.example/', V).startsWith('https://github.com/')).toBe(true);
+  });
+
+  test('Windows has its own package — same version, different artifact', () => {
+    // Upstream added a Windows build to the same release tag after the Linux
+    // one. It is a .zip of two .exe files, not a .tar.gz of a shell launcher
+    // beside a hidden core, so the descriptor cannot be shared.
+    const linux = enginePackage('linux', V);
+    const win = enginePackage('win32', V);
+    expect(win).toBeTruthy();
+    expect(win.archive).toBe('AlphaMiner-Windows-1.9.1.02.zip');
+    expect(win.launcher).toBe('alpha-miner.exe');
+    expect(win.core).toBe('alpha-miner-core.exe');
+    expect(win.url).not.toBe(linux.url);
+    expect(engineBinaryName('win32', 'nvidia', V)).toBe('AlphaMiner-Windows-1.9.1.02/alpha-miner.exe');
+  });
+
+  test('the Windows fallback is still a bare .exe from the pool', () => {
+    expect(enginePackage('win32', ENGINE.windows)).toBeNull();
+    expect(engineBinaryName('win32', 'nvidia', ENGINE.windows)).toBe('alpha-miner-windows-1.8.6.exe');
+    expect(engineDownloadUrl('win32', 'nvidia', null, ENGINE.windows))
+      .toBe(DOWNLOAD_BASE + 'AlphaMiner-Pearl-Windows.zip');
+  });
+
+  test('the bare-binary fallback is untouched', () => {
+    expect(enginePackage('linux', ENGINE.fallback)).toBeNull();
+    expect(engineDownloadUrl('linux', undefined, null, ENGINE.fallback))
+      .toBe(DOWNLOAD_BASE + 'alpha-miner-' + ENGINE.fallback);
+  });
+});
+
+describe('backendForEngine', () => {
+  // The packaged launcher exits 2 on --force-backend and selects the backend
+  // itself. Dropping the override beats letting a working rig refuse to start.
+  test('drops the override on a packaged engine and says why', () => {
+    const lines = [];
+    expect(backendForEngine('ampere', 'linux', ENGINE.preferred, (l) => lines.push(l))).toBeNull();
+    expect(lines.join('')).toContain('--backend ampere is ignored on alpha-miner ' + ENGINE.preferred);
+  });
+
+  test('keeps it for a bare-binary engine', () => {
+    expect(backendForEngine('ampere', 'linux', ENGINE.fallback, () => {})).toBe('ampere');
+    expect(backendForEngine('ampere', 'win32', ENGINE.windows, () => {})).toBe('ampere');
+  });
+
+  test('no override set stays null, and logging is optional', () => {
+    expect(backendForEngine(null, 'linux', ENGINE.preferred, () => {})).toBeNull();
+    expect(backendForEngine('ampere', 'linux', ENGINE.preferred)).toBeNull(); // no log fn
+  });
+});
+
+describe('parseComputeCaps', () => {
+  test('one entry per card, junk dropped', () => {
+    expect(parseComputeCaps('8.9\n')).toEqual(['8.9']);
+    expect(parseComputeCaps('8.6\r\n8.6\r\n')).toEqual(['8.6', '8.6']);
+    expect(parseComputeCaps('')).toEqual([]);
+    expect(parseComputeCaps(null)).toEqual([]);
+    expect(parseComputeCaps('NVIDIA-SMI has failed')).toEqual([]);
+    expect(parseComputeCaps('[N/A]')).toEqual([]);
+  });
+});
+
+describe('pickWindowsEngineVersion', () => {
+  // The 1.9.1b Windows package fails closed on anything but a uniform CC 8.6 or
+  // 8.9 rig, so this gate is the difference between mining and not starting at
+  // all. Verified against the real launcher on a 4090: `--list-devices` reports
+  // `cc=8.9 backend=ada` and runs.
+  test('uniform 30- or 40-series gets the compliant hotfix', () => {
+    expect(pickWindowsEngineVersion(['8.6'])).toBe(ENGINE.windowsPreferred);
+    expect(pickWindowsEngineVersion(['8.9'])).toBe(ENGINE.windowsPreferred);
+    expect(pickWindowsEngineVersion(['8.9', '8.9', '8.9'])).toBe(ENGINE.windowsPreferred);
+  });
+
+  test('mixed, newer and older rigs stay on the fallback the launcher will run', () => {
+    expect(pickWindowsEngineVersion(['8.6', '8.9'])).toBe(ENGINE.windows); // mixed: fails closed
+    expect(pickWindowsEngineVersion(['12.0'])).toBe(ENGINE.windows);       // RTX 50-series
+    expect(pickWindowsEngineVersion(['7.5'])).toBe(ENGINE.windows);        // Turing
+  });
+
+  test('unknown capabilities fall back rather than guess', () => {
+    expect(pickWindowsEngineVersion([])).toBe(ENGINE.windows);
+    expect(pickWindowsEngineVersion(null)).toBe(ENGINE.windows);
+    expect(pickWindowsEngineVersion(undefined)).toBe(ENGINE.windows);
+  });
+});
+
+describe('windowsEngineNote', () => {
+  test('says nothing when the rig qualified', () => {
+    expect(windowsEngineNote(['8.9'])).toBe('');
+  });
+
+  test('names the reason, and admits the fallback is not compliant', () => {
+    // A rig left behind cannot tell from the outside whether this is our choice
+    // or upstream's limit, and it is mining work the fork no longer credits.
+    expect(windowsEngineNote(['12.0'])).toContain('compute capability 12.0 is not supported');
+    expect(windowsEngineNote(['8.6', '8.9'])).toContain('mixed GPU generations (8.6, 8.9)');
+    expect(windowsEngineNote([])).toContain('compute capability could not be read');
+    expect(windowsEngineNote(null)).toContain('compute capability could not be read');
+    for (const caps of [['12.0'], ['8.6', '8.9'], [], null]) {
+      expect(windowsEngineNote(caps)).toContain('not rank-128 compliant');
+      expect(windowsEngineNote(caps)).toContain('1.9.2');
+    }
+  });
+});
+
+describe('engineFiles', () => {
+  test('a bare binary is only itself; a package is the launcher AND its core', () => {
+    expect(engineFiles('/cache', 'linux', undefined, ENGINE.fallback))
+      .toEqual([enginePath('/cache', 'linux', undefined, ENGINE.fallback)]);
+
+    for (const platform of ['linux', 'win32']) {
+      const pkg = enginePackage(platform, '1.9.1b');
+      expect(engineFiles('/cache', platform, undefined, '1.9.1b')).toEqual([
+        path.join('/cache', pkg.dir, pkg.launcher),
+        path.join('/cache', pkg.dir, pkg.core),
+      ]);
+    }
+  });
+});
+
+describe('manualInstallHint', () => {
+  // The manual-install hint is what a user sees when the in-app download failed,
+  // so it has to describe an action that can actually work: a tarball saved as
+  // the launcher name is not an engine.
+  test('a packaged engine is extracted into the engine dir, not saved as a file', () => {
+    expect(manualInstallHint('linux', ENGINE.preferred, '/cache'))
+      .toEqual({ manualPath: null, extractDir: '/cache' });
+  });
+
+  test('a bare binary is saved as the pool\'s own download name', () => {
+    expect(manualInstallHint('linux', ENGINE.fallback, '/cache'))
+      .toEqual({ manualPath: manualEnginePath('/cache', 'linux'), extractDir: null });
+    expect(manualInstallHint('win32', ENGINE.windows, '/cache'))
+      .toEqual({ manualPath: manualEnginePath('/cache', 'win32'), extractDir: null });
   });
 });

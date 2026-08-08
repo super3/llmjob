@@ -24,8 +24,8 @@ describe('applyEvent', () => {
 
   test('a status event fills the card bucket and appends the rig total as a point', () => {
     const s = initStats(0);
-    applyEvent(s, { type: 'status', gpuIndex: 0, hashrate: 286.86, accepted: 5, rejected: 1, power: 449, gpu: 'NVIDIA GeForce RTX 4090' });
-    expect(s.gpus[0]).toEqual({ index: 0, hashrate: 286.86, accepted: 5, rejected: 1, power: 449, gpu: 'NVIDIA GeForce RTX 4090' });
+    applyEvent(s, { type: 'status', gpuIndex: 0, hashrate: 286.86, accepted: 5, rejected: 1, power: 449, temp: 71, gpu: 'NVIDIA GeForce RTX 4090' });
+    expect(s.gpus[0]).toEqual({ index: 0, hashrate: 286.86, accepted: 5, rejected: 1, power: 449, temp: 71, gpu: 'NVIDIA GeForce RTX 4090' });
     expect(s.points).toEqual([286.86]);
   });
 
@@ -57,7 +57,7 @@ describe('applyEvent', () => {
     const s = initStats(0);
     applyEvent(s, { type: 'status', gpuIndex: 0, hashrate: 9, accepted: 3, rejected: 2, power: 100, gpu: 'keep' });
     applyEvent(s, { type: 'status', gpuIndex: 0 });
-    expect(s.gpus[0]).toEqual({ index: 0, hashrate: 9, accepted: 3, rejected: 2, power: 100, gpu: 'keep' });
+    expect(s.gpus[0]).toEqual({ index: 0, hashrate: 9, accepted: 3, rejected: 2, power: 100, temp: 0, gpu: 'keep' });
   });
 
   test('caps the chart point buffer at MAX_POINTS', () => {
@@ -91,18 +91,18 @@ describe('applyEvent', () => {
 describe('snapshot', () => {
   test('projects a single card into the renderer shape with a one-card breakdown', () => {
     const s = initStats(1000);
-    applyEvent(s, { type: 'status', gpuIndex: 0, hashrate: 3.2, accepted: 4, rejected: 0, power: 300, gpu: 'RTX 4090' });
+    applyEvent(s, { type: 'status', gpuIndex: 0, hashrate: 3.2, accepted: 4, rejected: 0, power: 300, temp: 64, gpu: 'RTX 4090' });
     expect(snapshot(s, 6000)).toEqual({
-      total: 3.2, points: [3.2], accepted: 4, rejected: 0, load: 0, power: 300, gpu: 'RTX 4090',
-      gpus: [{ index: 0, gpu: 'RTX 4090', hashrate: 3.2, accepted: 4, rejected: 0, power: 300 }],
+      total: 3.2, points: [3.2], accepted: 4, rejected: 0, load: 0, power: 300, temp: 64, gpu: 'RTX 4090',
+      gpus: [{ index: 0, gpu: 'RTX 4090', hashrate: 3.2, accepted: 4, rejected: 0, power: 300, temp: 64 }],
       uptimeSec: 5,
     });
   });
 
   test('aggregates rig-level figures across cards and lists them by index', () => {
     const s = initStats(0);
-    applyEvent(s, { type: 'status', gpuIndex: 1, hashrate: 4, accepted: 1, rejected: 0, power: 160, gpu: 'RTX 4060 Ti' });
-    applyEvent(s, { type: 'status', gpuIndex: 0, hashrate: 10, accepted: 3, rejected: 1, power: 300, gpu: 'RTX 4090' });
+    applyEvent(s, { type: 'status', gpuIndex: 1, hashrate: 4, accepted: 1, rejected: 0, power: 160, temp: 88, gpu: 'RTX 4060 Ti' });
+    applyEvent(s, { type: 'status', gpuIndex: 0, hashrate: 10, accepted: 3, rejected: 1, power: 300, temp: 62, gpu: 'RTX 4090' });
     const snap = snapshot(s, 0);
     expect(snap.total).toBe(14);
     expect(snap.accepted).toBe(4);
@@ -110,12 +110,12 @@ describe('snapshot', () => {
     expect(snap.power).toBe(460);
     expect(snap.gpu).toBe('RTX 4090');   // representative = lowest-index card
     expect(snap.gpus.map((g) => g.index)).toEqual([0, 1]);
-    expect(snap.gpus[1]).toEqual({ index: 1, gpu: 'RTX 4060 Ti', hashrate: 4, accepted: 1, rejected: 0, power: 160 });
+    expect(snap.gpus[1]).toEqual({ index: 1, gpu: 'RTX 4060 Ti', hashrate: 4, accepted: 1, rejected: 0, power: 160, temp: 88 });
   });
 
   test('reads zeros and a null gpu before any card reports', () => {
     expect(snapshot(initStats(0), 0)).toEqual({
-      total: 0, points: [], accepted: 0, rejected: 0, load: 0, power: 0, gpu: null, gpus: [], uptimeSec: 0,
+      total: 0, points: [], accepted: 0, rejected: 0, load: 0, power: 0, temp: 0, gpu: null, gpus: [], uptimeSec: 0,
     });
   });
 
@@ -125,7 +125,7 @@ describe('snapshot', () => {
     const snap = snapshot(s, 0);
     expect(snap.gpu).toBeNull();
     expect(snap.total).toBe(0);
-    expect(snap.gpus).toEqual([{ index: 0, gpu: null, hashrate: 0, accepted: 0, rejected: 0, power: 0 }]);
+    expect(snap.gpus).toEqual([{ index: 0, gpu: null, hashrate: 0, accepted: 0, rejected: 0, power: 0, temp: 0 }]);
   });
 
   test('returns a copy of points, not the live array', () => {

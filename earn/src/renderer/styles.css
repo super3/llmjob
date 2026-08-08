@@ -76,6 +76,11 @@ input.field-box { user-select: text; }
 .chart-card { border: 1px solid var(--line); background: var(--field); border-radius: 9px; padding: 16px 16px 16px; margin-bottom: 26px; }
 .chart-card svg { display: block; }
 .mk-stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin-top: 18px; padding-top: 18px; border-top: 1px solid #ebe9e1; }
+/* Per the design mock the three stats anchor to their own edges — left, centre,
+   right — rather than all hugging the left of their grid cell. Aligning the cell
+   (not just the value) keeps each label sitting over its own number. */
+.mk-stat:nth-child(2) { text-align: center; }
+.mk-stat:nth-child(3) { text-align: right; }
 .mk-stat .k { font-size: 11.5px; color: var(--muted); font-weight: 500; margin-bottom: 4px; }
 .mk-stat .v { font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 17px; font-weight: 600; color: var(--ink); }
 .mk-stat .v.accent { color: var(--accent); }

@@ -27,7 +27,7 @@ function initStats(startMs) {
 function bucketFor(stats, index) {
   const idx = Number.isFinite(index) ? index : 0;
   if (!stats.gpus[idx]) {
-    stats.gpus[idx] = { index: idx, hashrate: 0, accepted: 0, rejected: 0, power: 0, gpu: null };
+    stats.gpus[idx] = { index: idx, hashrate: 0, accepted: 0, rejected: 0, power: 0, temp: 0, gpu: null };
   }
   return stats.gpus[idx];
 }
@@ -51,6 +51,7 @@ function applyEvent(stats, evt) {
     if (evt.accepted != null) g.accepted = evt.accepted;
     if (evt.rejected != null) g.rejected = evt.rejected;
     if (evt.power != null) g.power = evt.power;
+    if (evt.temp != null) g.temp = evt.temp;
     if (evt.gpu) g.gpu = evt.gpu;
     // The sparkline charts the rig's *total* hashrate, so push the sum across
     // cards after folding this update — not the single card's value.
@@ -77,6 +78,10 @@ function snapshot(stats, nowMs) {
     rejected: cards.reduce((a, g) => a + (Number(g.rejected) || 0), 0),
     load: stats.load,
     power: cards.reduce((a, g) => a + (Number(g.power) || 0), 0),
+    // The hottest card, not a sum or an average: this exists to answer "is
+    // anything running too hot", and a mean would hide one cooking card behind
+    // several cool ones. 0 when the engine has not reported a temperature yet.
+    temp: cards.reduce((a, g) => Math.max(a, Number(g.temp) || 0), 0),
     gpu: named ? named.gpu : null,   // representative name (lowest-index card)
     gpus: cards.map((g) => ({
       index: g.index,
@@ -85,6 +90,7 @@ function snapshot(stats, nowMs) {
       accepted: Number(g.accepted) || 0,
       rejected: Number(g.rejected) || 0,
       power: Number(g.power) || 0,
+      temp: Number(g.temp) || 0,
     })),
     uptimeSec: Math.max(0, Math.floor(((nowMs || 0) - stats.startMs) / 1000)),
   };
