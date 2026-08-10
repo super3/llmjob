@@ -111,6 +111,10 @@ jest.mock('../src/main/probe', () => ({
   detectVram: jest.fn(() => Promise.resolve(null)),
   detectGpusVram: jest.fn(() => Promise.resolve([])),
   detectDriverMajor: jest.fn(() => Promise.resolve(600)),
+  // Empty by default: an unknown compute capability is what keeps Windows on the
+  // 1.8.6 fallback, which is the shape most of these tests were written against.
+  // The tests that care about the 1.9.1b Windows package set it explicitly.
+  detectComputeCaps: jest.fn(() => Promise.resolve([])),
   postMinerReport: jest.fn(() => Promise.resolve()),
   findFreePort: jest.fn(() => Promise.resolve(8080)),
   // GPU detection moved into probe so the GUI and the CLI share one
@@ -955,7 +959,12 @@ describe('mining', () => {
     const log = ctx.sent('miner:log').map((l) => l.line).join('\n');
     expect(log).toMatch(/proxy, VPN or antivirus/);
     expect(log).toContain('ca-certificates');
-    expect(log).toMatch(/Manual install: download \S*alpha-miner-1\.8\.\d and save it as \S*engine.alpha-miner,/);
+    // Version-agnostic on purpose: this asserts the guidance names a download URL
+    // and where the file has to go, not which engine build is pinned today. A
+    // PACKAGED engine (1.9.1b) is a tarball, so the advice is "extract it into
+    // <engine dir>" — telling anyone to save a tarball AS the launcher is advice
+    // that cannot work.
+    expect(log).toMatch(/Manual install: download \S+ and extract it into \S*engine,/);
   });
 
   it('logs "engine found" when the engine is already installed', async () => {
@@ -1007,7 +1016,10 @@ describe('mining', () => {
   // trusted. Inside the read-only AppImage mount the chmod fails, and that must
   // not stop a rig whose binary squashfs already recorded as executable.
   it('re-asserts +x on a bundled Linux engine and survives a read-only bundle', async () => {
-    const bundled = require('path').join('/res', 'engine', 'alpha-miner-1.8.8');
+    const eng = require('../src/shared/engine');
+    // Derived, not spelled out: a packaged engine lives at <dir>/<launcher>, not a
+    // flat versioned filename, and bundledEnginePath is what knows the difference.
+    const bundled = eng.bundledEnginePath('/res', 'linux', undefined, eng.ENGINE.preferred);
     const ctx = await boot({ resourcesPath: '/res' });
     ctx.fs.existsSync.mockImplementation((p) => p === bundled);
     ctx.fs.chmodSync.mockImplementation(() => { throw new Error('EROFS: read-only file system'); });
@@ -1029,6 +1041,49 @@ describe('mining', () => {
     expect(ctx.EngineManager.instances).toHaveLength(1);
     // Windows pins the single pool build (ENGINE.windows)
     expect(ctx.EngineManager.instances[0].opts.version).toBe(require('../src/shared/engine').ENGINE.windows);
+  });
+
+  // A Windows rig that QUALIFIES for the rank-128 hotfix must not be quietly
+  // handed the bundled 1.8.6 .exe instead. The legacy-name fallback exists for
+  // when the selected version has no bundle, and taking it here would downgrade
+  // a compliant rig back to mining work the fork no longer credits — the exact
+  // failure this release exists to fix.
+  it('a CC 8.9 Windows rig gets the hotfix, never the bundled legacy build', async () => {
+    const eng = require('../src/shared/engine');
+    const legacy = require('path').join('/res', 'engine', 'alpha-miner-windows.exe');
+    const ctx = await boot({
+      platform: 'win32',
+      resourcesPath: '/res',
+      before: (c) => { c.probe.detectComputeCaps.mockResolvedValue(['8.9', '8.9']); },
+    });
+    ctx.fs.existsSync.mockImplementation((p) => p === legacy);
+
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+
+    expect(ctx.sent('miner:log').map((l) => l.line))
+      .not.toContain('using bundled engine: ' + legacy);
+    expect(ctx.EngineManager.instances).toHaveLength(1);
+    expect(ctx.EngineManager.instances[0].opts.version).toBe(eng.ENGINE.windowsPreferred);
+    // …and a qualifying rig has nothing to be warned about.
+    expect(ctx.sent('miner:log').filter((l) => l.level === 'warn')).toHaveLength(0);
+  });
+
+  it('warns a Windows rig the hotfix will not run on, and keeps it mining', async () => {
+    const ctx = await boot({
+      platform: 'win32',
+      before: (c) => { c.probe.detectComputeCaps.mockResolvedValue(['12.0']); }, // RTX 50-series
+    });
+    ctx.fs.existsSync.mockReturnValue(false);
+
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+
+    const warn = ctx.sent('miner:log').filter((l) => l.level === 'warn').map((l) => l.line);
+    expect(warn.join('')).toContain('compute capability 12.0 is not supported');
+    expect(warn.join('')).toContain('not rank-128 compliant');
+    expect(ctx.EngineManager.instances[0].opts.version)
+      .toBe(require('../src/shared/engine').ENGINE.windows);
   });
 
   it('logs a start failure when the driver probe throws mid-start', async () => {
@@ -1514,8 +1569,10 @@ describe('local LLM', () => {
   });
 
   it('co-runs mining and the LLM: waits for real hashrate, then flags a pre-ready LLM exit', async () => {
-    const path = require('path');
-    const bundledMiner = path.join('/res', 'engine', 'alpha-miner-1.8.8');
+    // The preferred Linux engine is now a PACKAGE, so the bundled path is a
+    // launcher inside a directory — ask engine.js rather than hardcoding a name.
+    const { bundledEnginePath, ENGINE } = require('../src/shared/engine');
+    const bundledMiner = bundledEnginePath('/res', 'linux', undefined, ENGINE.preferred);
     const ctx = await boot({
       resourcesPath: '/res',
       before: (c) => { c.probe.findFreePort.mockResolvedValue(8081); },

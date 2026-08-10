@@ -924,3 +924,50 @@ describe('downloadFile trust recovery', () => {
     jest.useRealTimers();
   });
 });
+
+describe('extractEnginePackage', () => {
+  function magic(bytes) {
+    fs.openSync.mockReturnValue(7);
+    fs.readSync.mockImplementation((fd, buf) => { buf[0] = bytes[0]; buf[1] = bytes[1]; return 2; });
+    fs.closeSync.mockImplementation(() => {});
+  }
+
+  // Deliberately NOT flattened like the llama.cpp archives: the packaged engine
+  // is a launcher plus a core that it resolves as a sibling, so the archive
+  // keeps its own top folder and both land together.
+  test('untars a gzip package into the engine dir, keeping the top folder', async () => {
+    magic([0x1f, 0x8b]);
+    execFile.mockImplementation((cmd, args, opts, cb) => cb(null));
+    await expect(io.extractEnginePackage('/cache/pkg.tar.gz', '/cache')).resolves.toBe('/cache');
+    const [cmd, args] = execFile.mock.calls.pop();
+    expect(cmd).toBe('tar');
+    expect(args).toEqual(['-xzf', '/cache/pkg.tar.gz', '-C', '/cache']);
+    expect(args).not.toContain('--strip-components=1');
+  });
+
+  // The same engine version ships as a .tar.gz on Linux and a .zip on Windows.
+  // bsdtar (shipped as Windows' own tar.exe, verified 3.7.7) reads both, so the
+  // format is sniffed rather than assumed — and NOT handed to `unzip`, which is
+  // standard on the one platform that never sees a zip here.
+  test('reads a zip package with the same tool, without -z', async () => {
+    magic([0x50, 0x4b]); // "PK"
+    execFile.mockImplementation((cmd, args, opts, cb) => cb(null));
+    await expect(io.extractEnginePackage('/cache/pkg.zip', '/cache')).resolves.toBe('/cache');
+    const [cmd, args] = execFile.mock.calls.pop();
+    expect(cmd).toBe('tar');
+    expect(args).toEqual(['-xf', '/cache/pkg.zip', '-C', '/cache']);
+  });
+
+  test('rejects when the package cannot be read', async () => {
+    fs.openSync.mockImplementation(() => { throw new Error('EACCES'); });
+    await expect(io.extractEnginePackage('/cache/pkg.tar.gz', '/cache'))
+      .rejects.toThrow('could not read the engine package');
+  });
+
+  test('surfaces a tar failure with the tool named', async () => {
+    magic([0x1f, 0x8b]);
+    execFile.mockImplementation((cmd, args, opts, cb) => cb(new Error('tar: not found')));
+    await expect(io.extractEnginePackage('/cache/pkg.tar.gz', '/cache'))
+      .rejects.toThrow(/could not extract the engine package with .tar./);
+  });
+});

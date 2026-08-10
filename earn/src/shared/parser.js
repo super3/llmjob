@@ -51,6 +51,10 @@ function parseLine(line) {
       accepted: numField(s, 'accepted'),
       rejected: numField(s, 'rejected'),
       power: numField(s, 'power'),
+      // Core temperature (`ctemp=86c` — numField drops the trailing c). Surfaced
+      // beside the GPU name so a rig that keeps crashing can be checked for heat
+      // without leaving the app for nvidia-smi.
+      temp: numField(s, 'ctemp'),
       gpu: gpuName(s),
     };
   }

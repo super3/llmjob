@@ -2,7 +2,8 @@
 
 const path = require('path');
 const {
-  enginePath, engineDownloadUrl, engineArchiveName, isZipUrl, manualEnginePath,
+  enginePath, engineFiles, engineDownloadUrl, engineArchiveName, isZipUrl, manualEnginePath,
+  enginePackage,
 } = require('../shared/engine');
 
 // Ensures the alpha-miner engine is present, downloading and installing it on
@@ -10,7 +11,7 @@ const {
 // injected so the orchestration is fully unit-testable; main.js wires the real
 // implementations.
 class EngineManager {
-  constructor({ dir, platform, gpu, version, urlBase, fs, download, extract, chmod } = {}) {
+  constructor({ dir, platform, gpu, version, urlBase, fs, download, extract, extractPackage, chmod } = {}) {
     this.dir = dir;
     this.platform = platform;
     this.gpu = gpu;
@@ -19,6 +20,7 @@ class EngineManager {
     this.fs = fs;
     this.download = download;
     this.extract = extract;
+    this.extractPackage = extractPackage;
     this.chmod = chmod;
   }
 
@@ -26,8 +28,12 @@ class EngineManager {
     return enginePath(this.dir, this.platform, this.gpu, this.version);
   }
 
+  // A packaged engine counts as installed only when its core is there too — see
+  // engineFiles. An interrupted extract leaves the launcher looking perfectly
+  // installed, and nothing else would ever re-download it.
   isInstalled() {
-    return this.fs.existsSync(this.binaryPath());
+    return engineFiles(this.dir, this.platform, this.gpu, this.version)
+      .every((p) => this.fs.existsSync(p));
   }
 
   // Resolve to the engine path, downloading + installing it if missing.
@@ -47,6 +53,27 @@ class EngineManager {
     }
 
     this.fs.mkdirSync(this.dir, { recursive: true });
+
+    // A packaged engine (1.9.1b's launcher + core tarball) installs as a tree,
+    // not a file: extract it whole and make BOTH halves executable. The tarball
+    // ships the core mode 644 while the launcher requires -x on it, so chmodding
+    // only the launcher — the single-binary assumption everywhere else — leaves
+    // every start failing with "core missing or not executable".
+    const pkg = enginePackage(this.platform, this.version);
+    if (pkg) {
+      const archivePath = path.join(this.dir, pkg.archive);
+      await this.download(engineDownloadUrl(this.platform, this.gpu, this.urlBase, this.version), archivePath, onProgress);
+      await this.extractPackage(archivePath, this.dir);
+      try { this.fs.unlinkSync(archivePath); } catch (e) { /* leftover archive is harmless */ }
+      // Windows has no execute bit to grant — its package is a pair of .exe
+      // files — and chmodding them is at best a no-op, at worst a throw that
+      // fails an otherwise perfect install.
+      if (this.platform !== 'win32') {
+        this.chmod(dest, 0o755);
+        this.chmod(path.join(this.dir, pkg.dir, pkg.core), 0o755);
+      }
+      return dest;
+    }
 
     // A file the user downloaded by hand counts as installed — checked before we
     // go anywhere near the network, so a rig whose HTTPS is broken can be fixed
@@ -101,6 +128,11 @@ class EngineManager {
     if (this.platform === 'win32') return;
     try {
       this.chmod(dest, 0o755);
+      // A packaged engine needs its core executable too — the launcher checks
+      // -x on it and refuses to start otherwise, so a half-chmodded cache would
+      // never self-heal without this.
+      const pkg = enginePackage(this.platform, this.version);
+      if (pkg) this.chmod(path.join(this.dir, pkg.dir, pkg.core), 0o755);
     } catch (e) {
       /* best effort — spawn will report EACCES if it truly isn't executable */
     }

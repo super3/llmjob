@@ -53,6 +53,7 @@ describe('parseLine', () => {
       accepted: 5,
       rejected: 1,
       power: 449,
+      temp: 71,
       gpu: 'NVIDIA GeForce RTX 4090',
     });
   });
