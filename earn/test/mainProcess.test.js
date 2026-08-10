@@ -1069,6 +1069,54 @@ describe('mining', () => {
     expect(ctx.sent('miner:log').filter((l) => l.level === 'warn')).toHaveLength(0);
   });
 
+  // 0.3.12 shipped the hotfix to every qualifying Windows rig and none of them
+  // could start it: upstream's launcher mangles its own core path when that path
+  // contains a space, and the cache is "%APPDATA%\LLMJob Earn\engine". A rig
+  // that cannot mine at all is strictly worse than one mining non-compliant, so
+  // the version is downgraded instead.
+  it('downgrades a qualifying Windows rig when the engine dir has a space', async () => {
+    const eng = require('../src/shared/engine');
+    const ctx = await boot({
+      platform: 'win32',
+      before: (c) => {
+        c.probe.detectComputeCaps.mockResolvedValue(['8.9']);
+        c.electron.app.getPath.mockReturnValue('/tmp/LLMJob Earn');
+      },
+    });
+    ctx.fs.existsSync.mockReturnValue(false);
+
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+
+    expect(ctx.EngineManager.instances[0].opts.version).toBe(eng.ENGINE.windows);
+    const warns = ctx.sent('miner:log').filter((l) => l.level === 'warn').map((l) => l.line);
+    expect(warns.join('\n')).toContain('cannot start from a path containing a space');
+  });
+
+  // The same bug, reached the other way: a space-free cache keeps the hotfix
+  // selected, but the bundle sitting in "C:\Program Files\LLMJob Earn" still
+  // cannot run. Spawning it would fail on every start, so it is skipped and the
+  // rig downloads into the path that works.
+  it('skips a bundled package whose own path has a space', async () => {
+    const eng = require('../src/shared/engine');
+    const pkg = eng.enginePackage('win32', eng.ENGINE.windowsPreferred);
+    const bundled = require('path').join('/res dir', 'engine', pkg.dir, pkg.launcher);
+    const ctx = await boot({
+      platform: 'win32',
+      resourcesPath: '/res dir',
+      before: (c) => { c.probe.detectComputeCaps.mockResolvedValue(['8.6']); },
+    });
+    ctx.fs.existsSync.mockImplementation((p) => p === bundled);
+
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+
+    expect(ctx.sent('miner:log').map((l) => l.line))
+      .not.toContain('using bundled engine: ' + bundled);
+    expect(ctx.EngineManager.instances).toHaveLength(1);
+    expect(ctx.EngineManager.instances[0].opts.version).toBe(eng.ENGINE.windowsPreferred);
+  });
+
   it('warns a Windows rig the hotfix will not run on, and keeps it mining', async () => {
     const ctx = await boot({
       platform: 'win32',

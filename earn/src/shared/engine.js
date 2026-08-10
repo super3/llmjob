@@ -205,6 +205,54 @@ function windowsEngineNote(caps) {
     + ' rank-128 compliant. Upstream 1.9.2 is meant to cover the rest.';
 }
 
+// Can the packaged launcher for `version` actually start from `target`?
+//
+// The 1.9.1.02 Windows launcher resolves its core correctly and passes that
+// path as the application name, but builds the child's command line by
+// concatenating the same path UNQUOTED. Windows splits it on spaces, so the
+// core reads the tail of our install path as its first argument and refuses:
+//
+//   C:\Program Files\LLMJob Earn\…\alpha-miner-core.exe --pool …
+//   → ERROR: unknown argument: Files\LLMJob Earn\…\alpha-miner-core.exe
+//
+// Verified against the real 1.9.1.02 binaries: an identical argument vector
+// runs from a space-free directory and dies from a spaced one, and the
+// launcher's string table contains no quote character anywhere. Nothing we pass
+// can work around it — the path it mangles is one it builds itself, after our
+// arguments are already quoted.
+//
+// Windows-only: the Linux package ships a /bin/sh launcher that execs
+// `"$CORE" "$@"`, correctly quoted, so a spaced path is fine there.
+//
+// This matters because BOTH of our Windows locations contain a space — the
+// product is "LLMJob Earn", so the installer defaults to
+// `C:\Program Files\LLMJob Earn` and the cache is `%APPDATA%\LLMJob Earn\engine`
+// — which is why 0.3.12 could not start on any rig that qualified for the
+// hotfix. Callers downgrade to ENGINE.windows rather than ship a launcher that
+// cannot run at all; see spacedLauncherNote.
+function packagedLauncherRuns(platform, version, target) {
+  if (platform !== 'win32') return true;
+  if (!enginePackage(platform, version)) return true; // bare binary: unaffected
+  return !/\s/.test(String(target == null ? '' : target));
+}
+
+// Why a rig that qualified for the hotfix is not getting it after all — '' when
+// the launcher can run from `target`. Distinct from windowsEngineNote, which
+// explains the hardware gate; this one is about where the engine landed.
+//
+// Deliberately does NOT tell the user to reinstall somewhere space-free: the
+// download cache lives under %APPDATA%\LLMJob Earn regardless of install
+// directory, so moving the app would not win the hotfix back and the advice
+// would send them in circles.
+function spacedLauncherNote(platform, version, target) {
+  if (packagedLauncherRuns(platform, version, target)) return '';
+  return 'note: the ' + version + ' Windows launcher cannot start from a path containing'
+    + ' a space (' + target + ') — it loses its own core path there and exits before'
+    + ' mining. Falling back to ' + ENGINE.windows + ', which still mines but is not'
+    + ' rank-128 compliant. This is a bug in upstream\'s launcher; their 1.9.2 release'
+    + ' is meant to fix it.';
+}
+
 // Parse the driver major version out of `nvidia-smi --query-gpu=driver_version`
 // output ("581.42\n581.42" → 581). Returns null when it can't.
 function parseDriverMajor(output) {
@@ -326,6 +374,8 @@ module.exports = {
   parseComputeCaps,
   pickWindowsEngineVersion,
   windowsEngineNote,
+  packagedLauncherRuns,
+  spacedLauncherNote,
   parseDriverMajor,
   engineBinaryName,
   engineArchiveName,

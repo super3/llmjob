@@ -7,6 +7,7 @@ const {
   isZipUrl, isArchiveUrl, looksLikeArchive, enginePath, engineFiles, bundledEnginePath, progressPercent,
   manualEngineName, manualEnginePath, enginePackage, backendForEngine, manualInstallHint,
   parseComputeCaps, pickWindowsEngineVersion, windowsEngineNote,
+  packagedLauncherRuns, spacedLauncherNote,
 } = require('../src/shared/engine');
 
 describe('pickEngineVersion', () => {
@@ -272,6 +273,44 @@ describe('windowsEngineNote', () => {
       expect(windowsEngineNote(caps)).toContain('not rank-128 compliant');
       expect(windowsEngineNote(caps)).toContain('1.9.2');
     }
+  });
+});
+
+describe('packagedLauncherRuns / spacedLauncherNote', () => {
+  // Upstream's 1.9.1.02 Windows launcher passes its core the right application
+  // name but an unquoted command line, so Windows splits the core's own path on
+  // spaces and the core rejects the tail as an argument:
+  //   C:\Program Files\LLMJob Earn\…\alpha-miner-core.exe --pool …
+  //   → ERROR: unknown argument: Files\LLMJob Earn\…\alpha-miner-core.exe
+  // Both our Windows locations contain a space, which is what broke 0.3.12.
+  const PKG = ENGINE.windowsPreferred;
+
+  test('a Windows package cannot run from a spaced path', () => {
+    expect(packagedLauncherRuns('win32', PKG, 'C:\\Program Files\\LLMJob Earn\\resources\\engine')).toBe(false);
+    expect(packagedLauncherRuns('win32', PKG, 'C:\\Users\\me\\AppData\\Roaming\\LLMJob Earn\\engine')).toBe(false);
+  });
+
+  test('and runs fine from one without', () => {
+    expect(packagedLauncherRuns('win32', PKG, 'C:\\LLMJobEarn\\engine')).toBe(true);
+    expect(packagedLauncherRuns('win32', PKG, null)).toBe(true); // nothing to judge
+  });
+
+  test('bare binaries and non-Windows platforms are unaffected', () => {
+    // The Linux package ships a /bin/sh launcher that execs "$CORE" "$@" —
+    // correctly quoted — so a spaced path is only a Windows problem.
+    expect(packagedLauncherRuns('linux', ENGINE.preferred, '/home/a b/engine')).toBe(true);
+    expect(packagedLauncherRuns('win32', ENGINE.windows, 'C:\\Program Files\\LLMJob Earn')).toBe(true);
+  });
+
+  test('the note explains the downgrade without advising a pointless reinstall', () => {
+    expect(spacedLauncherNote('win32', PKG, 'C:\\LLMJobEarn\\engine')).toBe('');
+    const note = spacedLauncherNote('win32', PKG, 'C:\\Program Files\\LLMJob Earn\\engine');
+    expect(note).toContain('cannot start from a path containing a space');
+    expect(note).toContain(ENGINE.windows);
+    expect(note).toContain('not rank-128 compliant');
+    expect(note).toContain('1.9.2');
+    // Moving the app would not help — the cache stays under %APPDATA%\LLMJob Earn.
+    expect(note).not.toMatch(/reinstall/i);
   });
 });
 
