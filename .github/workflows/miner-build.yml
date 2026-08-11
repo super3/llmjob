@@ -176,6 +176,46 @@ jobs:
           VERSION=$(node -p "require('./package.json').version")
           gh release upload "v$VERSION" dist/llmjob-earn-cli-linux "dist/llmjob-earn-$VERSION.tar.gz" dist/llmjob-earn-hiveos.tar.gz --clobber --repo "$GITHUB_REPOSITORY"
 
+      # electron-builder publishes the release with a BLANK body and a bare
+      # "<version>" title, and nothing downstream ever wrote one — every release
+      # through v0.3.13 shipped with an empty changelog that had to be filled in
+      # by hand afterwards, and several never were. Generate it here instead,
+      # from GitHub's own generate-notes endpoint (the same thing the "Generate
+      # release notes" button produces: merged PRs since the previous release,
+      # plus the compare link).
+      #
+      # Runs on the Linux job only, so the two matrix jobs cannot race to write
+      # the same body. The release already exists by this point — the build step
+      # above published to it — so a missing release here is a real failure and
+      # is left to fail the job rather than be swallowed.
+      #
+      # Guarded on the body being empty: a re-run of this workflow (or a manual
+      # publish over an existing tag) must not clobber notes someone wrote by
+      # hand. In that case only the title is corrected, which is idempotent.
+      - name: Write release notes (Linux, on v* tag or manual publish)
+        if: runner.os == 'Linux' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="v$VERSION"
+
+          existing=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""')
+          if [ -n "$(printf '%s' "$existing" | tr -d '[:space:]')" ]; then
+            echo "$TAG already has a release body — leaving it alone, fixing the title only."
+            gh release edit "$TAG" --title "LLMJob Earn $VERSION" --repo "$GITHUB_REPOSITORY"
+          else
+            gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+              -f tag_name="$TAG" --jq '.body' > "$RUNNER_TEMP/notes.md"
+            gh release edit "$TAG" --title "LLMJob Earn $VERSION" \
+              --notes-file "$RUNNER_TEMP/notes.md" --repo "$GITHUB_REPOSITORY"
+          fi
+
+          # Verify it took, rather than trusting the exit codes above.
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json name,isDraft,body \
+            --jq '"title=\(.name) draft=\(.isDraft) body=\(.body | length) chars"'
+
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
