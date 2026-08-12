@@ -44,7 +44,7 @@ const {
   engineDownloadUrl, manualInstallHint, enginePackage,
   packagedLauncherRuns, spacedLauncherNote, ENGINE,
 } = require('../shared/engine');
-const { formatUpdate } = require('../shared/updateStatus');
+const { formatUpdate, describeUpdateError } = require('../shared/updateStatus');
 const { describeLaunchError, describeSetupError } = require('../shared/engineError');
 const { buildMinerReports } = require('../shared/minerReport');
 const { runtimeCopyPlan } = require('../shared/llmRuntime');
@@ -457,6 +457,7 @@ async function detectGpu() {
 // main.js guards the call with app.isPackaged. Downloads happen automatically;
 // the user chooses when to restart via the 'app:update:install' channel.
 let manualUpdateCheck = false; // true while a user-initiated check is in flight
+let updateTimer = null; // periodic re-check, so startup is not the only chance
 
 function setupUpdater() {
   const push = (phase, payload) => send('app:update', formatUpdate(phase, payload));
@@ -475,11 +476,19 @@ function setupUpdater() {
   autoUpdater.on('error', (err) => {
     manualUpdateCheck = false;
     push('error');
-    send('miner:log', { level: 'error', line: 'update error: ' + (err && err.message ? err.message : err) });
+    send('miner:log', { level: 'error', line: 'update check failed: ' + describeUpdateError(err) });
   });
-  autoUpdater.checkForUpdates().catch((e) => {
-    send('miner:log', { level: 'error', line: 'update check failed: ' + e.message });
-  });
+  // checkForUpdates() emits 'error' and THEN rethrows (AppUpdater.js), so the
+  // handler above has already logged by the time the promise rejects. Logging
+  // here too printed every network blip twice in the user's log.
+  const check = () => autoUpdater.checkForUpdates().catch(() => {});
+  check();
+  // Re-check on a timer. The startup check used to be the only one for the
+  // life of the process, so a rig that launched while GitHub's releases feed
+  // was down never looked again — it would sit on a broken build until someone
+  // restarted it, which is the opposite of what auto-update is for.
+  updateTimer = setInterval(check, NETWORK.updateCheckIntervalMs);
+  if (updateTimer.unref) updateTimer.unref();
 }
 
 // User-initiated "Check for updates". In a dev/unpackaged run the real updater
@@ -493,11 +502,10 @@ function checkForUpdate() {
   }
   manualUpdateCheck = true;
   send('app:update', formatUpdate('checking'));
-  autoUpdater.checkForUpdates().catch((e) => {
-    manualUpdateCheck = false;
-    send('app:update', formatUpdate('error'));
-    send('miner:log', { level: 'error', line: 'update check failed: ' + e.message });
-  });
+  // Same as the startup check: the 'error' handler in setupUpdater has already
+  // reset the flag, pushed the error state and logged the reason by the time
+  // this rejects.
+  autoUpdater.checkForUpdates().catch(() => {});
 }
 
 function createWindow() {

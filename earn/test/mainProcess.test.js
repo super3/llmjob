@@ -752,8 +752,25 @@ describe('updater', () => {
     const phases = ctx.sent('app:update').map((u) => u.phase);
     expect(phases).toEqual(['checking', 'available', 'none', 'progress', 'ready', 'error', 'error']);
     const logs = ctx.sent('miner:log').map((l) => l.line);
-    expect(logs).toContain('update error: feed broke');
-    expect(logs).toContain('update error: plain string failure');
+    expect(logs).toContain('update check failed: feed broke');
+    expect(logs).toContain('update check failed: plain string failure');
+  });
+
+  // A rig that launched while GitHub's releases feed was down used to never
+  // check again for the life of the process — it would sit on a broken build
+  // until someone restarted it. Observed in the wild as a five-second 503
+  // window on releases.atom.
+  it('re-checks for updates on a timer, not just at startup', async () => {
+    const ctx = await boot({ isPackaged: true });
+    expect(ctx.updater.checkForUpdates).toHaveBeenCalledTimes(1);
+
+    ctx.interval(ctx.config.NETWORK.updateCheckIntervalMs).fn();
+    expect(ctx.updater.checkForUpdates).toHaveBeenCalledTimes(2);
+  });
+
+  it('and arms that timer on a runtime whose handles have no unref', async () => {
+    const ctx = await boot({ isPackaged: true, unref: false });
+    expect(ctx.interval(ctx.config.NETWORK.updateCheckIntervalMs)).toBeTruthy();
   });
 
   it('a packaged manual check reports "latest" when nothing is found', async () => {
@@ -765,20 +782,31 @@ describe('updater', () => {
     expect(phases).toEqual(['checking', 'latest']);
   });
 
-  it('logs failures of both the startup and manual update checks', async () => {
+  // electron-updater emits 'error' and then rethrows, so a failed check used to
+  // be logged twice — once by the event handler, once by the promise catch —
+  // and every network blip printed a duplicate pair in the user's log.
+  it('logs a failed check once, not once per code path', async () => {
     const ctx = await boot({
       isPackaged: true,
-      before: (c) => c.updater.checkForUpdates.mockRejectedValue(new Error('rate limited')),
+      before: (c) => c.updater.checkForUpdates.mockImplementation(() => {
+        // what the real updater does: emit, then reject with the same error
+        const err = new Error('rate limited');
+        if (c.updater._events.error) c.updater._events.error(err);
+        return Promise.reject(err);
+      }),
     });
-    expect(ctx.sent('miner:log').map((l) => l.line))
-      .toContain('update check failed: rate limited');
+    await flush();
+    const failures = ctx.sent('miner:log').map((l) => l.line)
+      .filter((l) => l.startsWith('update check failed:'));
+    expect(failures).toEqual(['update check failed: rate limited']);
 
     ctx.emit('app:update:check');
     await flush();
-    expect(ctx.sent('app:update').map((u) => u.phase)).toEqual(['checking', 'error']);
+    expect(ctx.sent('app:update').map((u) => u.phase))
+      .toEqual(['error', 'checking', 'error']);
     // the failed manual check reset the flag: the next silent result is 'none'
     ctx.updater._events['update-not-available']();
-    expect(ctx.sent('app:update').map((u) => u.phase)).toEqual(['checking', 'error', 'none']);
+    expect(ctx.sent('app:update').map((u) => u.phase).slice(-1)).toEqual(['none']);
   });
 
   it('app:update:install stops engines and relaunches; failures are logged', async () => {

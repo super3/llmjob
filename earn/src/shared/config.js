@@ -49,6 +49,13 @@ const MINER = {
 const NETWORK = {
   reportUrl: 'https://llmjob-production.up.railway.app/api/miners/ping',
   reportIntervalMs: 60000, // report once a minute while mining
+  // How often to re-check for an app update after the one at startup. That
+  // startup check used to be the only one, so a rig that launched while the
+  // GitHub releases feed was unavailable — a real 503 window was observed in
+  // the wild — never looked again until someone restarted it, and would sit on
+  // a broken build indefinitely. Six hours is frequent enough that a hotfix
+  // lands the same day without polling GitHub for no reason.
+  updateCheckIntervalMs: 6 * 60 * 60 * 1000,
 };
 
 // Network economics for earnings estimates. The app live-refreshes these from
