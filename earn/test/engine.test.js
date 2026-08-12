@@ -7,7 +7,7 @@ const {
   isZipUrl, isArchiveUrl, looksLikeArchive, enginePath, engineFiles, bundledEnginePath, progressPercent,
   manualEngineName, manualEnginePath, enginePackage, backendForEngine, manualInstallHint,
   parseComputeCaps, pickWindowsEngineVersion, windowsEngineNote,
-  packagedLauncherRuns, spacedLauncherNote,
+  packagedLauncherRuns, spacedLauncherNote, engineInstallDir,
 } = require('../src/shared/engine');
 
 describe('pickEngineVersion', () => {
@@ -238,16 +238,21 @@ describe('pickWindowsEngineVersion', () => {
   // 8.9 rig, so this gate is the difference between mining and not starting at
   // all. Verified against the real launcher on a 4090: `--list-devices` reports
   // `cc=8.9 backend=ada` and runs.
-  test('uniform 30- or 40-series gets the compliant hotfix', () => {
+  test('uniform 30-, 40- or 50-series gets the compliant hotfix', () => {
     expect(pickWindowsEngineVersion(['8.6'])).toBe(ENGINE.windowsPreferred);
     expect(pickWindowsEngineVersion(['8.9'])).toBe(ENGINE.windowsPreferred);
     expect(pickWindowsEngineVersion(['8.9', '8.9', '8.9'])).toBe(ENGINE.windowsPreferred);
+    // Blackwell. The README says it is unsupported; the binaries disagree and
+    // they are what runs — the launcher's refusal message allows CC 12.0 and
+    // the core ships sm_120 kernels. Believing the README held every 50-series
+    // rig on 1.8.6, mining rank-256 work that earns no credit after the fork.
+    expect(pickWindowsEngineVersion(['12.0'])).toBe(ENGINE.windowsPreferred);
   });
 
-  test('mixed, newer and older rigs stay on the fallback the launcher will run', () => {
-    expect(pickWindowsEngineVersion(['8.6', '8.9'])).toBe(ENGINE.windows); // mixed: fails closed
-    expect(pickWindowsEngineVersion(['12.0'])).toBe(ENGINE.windows);       // RTX 50-series
-    expect(pickWindowsEngineVersion(['7.5'])).toBe(ENGINE.windows);        // Turing
+  test('mixed and older rigs stay on the fallback the launcher will run', () => {
+    expect(pickWindowsEngineVersion(['8.6', '8.9'])).toBe(ENGINE.windows);  // mixed: fails closed
+    expect(pickWindowsEngineVersion(['8.9', '12.0'])).toBe(ENGINE.windows); // mixed, both supported
+    expect(pickWindowsEngineVersion(['7.5'])).toBe(ENGINE.windows);         // Turing
   });
 
   test('unknown capabilities fall back rather than guess', () => {
@@ -262,14 +267,18 @@ describe('windowsEngineNote', () => {
     expect(windowsEngineNote(['8.9'])).toBe('');
   });
 
+  test('says nothing to a Blackwell rig either — it qualifies now', () => {
+    expect(windowsEngineNote(['12.0'])).toBe('');
+  });
+
   test('names the reason, and admits the fallback is not compliant', () => {
     // A rig left behind cannot tell from the outside whether this is our choice
     // or upstream's limit, and it is mining work the fork no longer credits.
-    expect(windowsEngineNote(['12.0'])).toContain('compute capability 12.0 is not supported');
+    expect(windowsEngineNote(['7.5'])).toContain('compute capability 7.5 is not supported');
     expect(windowsEngineNote(['8.6', '8.9'])).toContain('mixed GPU generations (8.6, 8.9)');
     expect(windowsEngineNote([])).toContain('compute capability could not be read');
     expect(windowsEngineNote(null)).toContain('compute capability could not be read');
-    for (const caps of [['12.0'], ['8.6', '8.9'], [], null]) {
+    for (const caps of [['7.5'], ['8.6', '8.9'], [], null]) {
       expect(windowsEngineNote(caps)).toContain('not rank-128 compliant');
       expect(windowsEngineNote(caps)).toContain('1.9.2');
     }
@@ -311,6 +320,74 @@ describe('packagedLauncherRuns / spacedLauncherNote', () => {
     expect(note).toContain('1.9.2');
     // Moving the app would not help — the cache stays under %APPDATA%\LLMJob Earn.
     expect(note).not.toMatch(/reinstall/i);
+  });
+});
+
+describe('engineInstallDir', () => {
+  const WIN_DEFAULT = 'C:\\Users\\me\\AppData\\Roaming\\LLMJob Earn\\engine';
+  const PKG = ENGINE.windowsPreferred;
+  const ok = () => {};
+  const nope = () => { throw new Error('EPERM'); };
+
+  test('leaves the default alone when the launcher can already run from it', () => {
+    // Space-free Windows path, a bare-binary version, and non-Windows: all fine.
+    expect(engineInstallDir({
+      platform: 'win32', version: PKG, defaultDir: 'C:\\earn\\engine', env: {}, ensureDir: nope,
+    })).toBe('C:\\earn\\engine');
+    expect(engineInstallDir({
+      platform: 'win32', version: ENGINE.windows, defaultDir: WIN_DEFAULT, env: {}, ensureDir: nope,
+    })).toBe(WIN_DEFAULT);
+    expect(engineInstallDir({
+      platform: 'linux', version: ENGINE.preferred, defaultDir: '/home/a b/engine', env: {}, ensureDir: nope,
+    })).toBe('/home/a b/engine');
+  });
+
+  test('relocates a spaced Windows install to ProgramData', () => {
+    const calls = [];
+    expect(engineInstallDir({
+      platform: 'win32',
+      version: PKG,
+      defaultDir: WIN_DEFAULT,
+      env: { ProgramData: 'C:\\ProgramData', LOCALAPPDATA: 'C:\\Users\\me\\AppData\\Local' },
+      ensureDir: (d) => calls.push(d),
+    })).toBe(path.join('C:\\ProgramData', 'llmjob-earn', 'engine'));
+    // and it actually tried to create it, rather than assuming
+    expect(calls).toEqual([path.join('C:\\ProgramData', 'llmjob-earn', 'engine')]);
+  });
+
+  test('falls through to the next base when one cannot be written', () => {
+    const local = 'C:\\Users\\me\\AppData\\Local';
+    const tried = [];
+    const dir = engineInstallDir({
+      platform: 'win32',
+      version: PKG,
+      defaultDir: WIN_DEFAULT,
+      env: { ProgramData: 'C:\\ProgramData', LOCALAPPDATA: local },
+      ensureDir: (d) => { tried.push(d); if (d.includes('ProgramData')) throw new Error('EPERM'); },
+    });
+    expect(dir).toBe(path.join(local, 'llmjob-earn', 'engine'));
+    expect(tried).toHaveLength(2);
+  });
+
+  test('skips a candidate base that is itself spaced', () => {
+    // A username with a space makes LOCALAPPDATA useless for this; ProgramData
+    // is first precisely because it never contains one.
+    expect(engineInstallDir({
+      platform: 'win32',
+      version: PKG,
+      defaultDir: WIN_DEFAULT,
+      env: { LOCALAPPDATA: 'C:\\Users\\Ada Lovelace\\AppData\\Local', SystemDrive: 'D:' },
+      ensureDir: ok,
+    })).toBe(path.join('D:\\', 'llmjob-earn', 'engine'));
+  });
+
+  test('gives up and returns the default when nothing is writable', () => {
+    // The caller then downgrades to a build that runs from a spaced path.
+    // No env at all: every base is missing bar the SystemDrive default, which
+    // this machine refuses too.
+    expect(engineInstallDir({
+      platform: 'win32', version: PKG, defaultDir: WIN_DEFAULT, ensureDir: nope,
+    })).toBe(WIN_DEFAULT);
   });
 });
 

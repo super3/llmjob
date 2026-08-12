@@ -43,4 +43,28 @@ function formatUpdate(phase, payload) {
   }
 }
 
-module.exports = { formatUpdate, clampPercent };
+// A one-line description of why an update check failed, for the user's log.
+//
+// electron-updater glues the ENTIRE response into err.message — for a 503 that
+// means the HTML body and every response header, Set-Cookie values included.
+// Logged verbatim it is unreadable, and it travels wherever someone pastes
+// their log for support. Reduce it to the part that identifies the failure.
+//
+// Handles the shapes seen in the wild:
+//   503 "method: GET url: https://…/releases.atom … Data: <html>… Headers: {…}
+//   net::ERR_HTTP2_SERVER_REFUSED_STREAM
+function describeUpdateError(err) {
+  const raw = String((err && err.message) || err || '').trim();
+  if (!raw) return 'unknown error';
+  const status = raw.match(/^(\d{3})\b/);
+  if (status) {
+    const url = raw.match(/url:\s*(\S+)/);
+    return 'HTTP ' + status[1] + (url ? ' from ' + url[1] : '');
+  }
+  // Anything else: the first line only, capped. Long single-line messages do
+  // exist (a stack glued onto the text), so the cap is not redundant.
+  const first = raw.split('\n')[0].trim();
+  return first.length > 200 ? first.slice(0, 199) + '…' : first;
+}
+
+module.exports = { formatUpdate, clampPercent, describeUpdateError };

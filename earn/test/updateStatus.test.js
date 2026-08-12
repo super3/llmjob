@@ -1,6 +1,51 @@
 'use strict';
 
-const { formatUpdate, clampPercent } = require('../src/shared/updateStatus');
+const { formatUpdate, clampPercent, describeUpdateError } = require('../src/shared/updateStatus');
+
+describe('describeUpdateError', () => {
+  // Verbatim from a user's log: electron-updater glues the whole response into
+  // err.message — the 503's HTML body and every header, Set-Cookie included.
+  const REAL_503 = '503 "method: GET url: https://github.com/super3/llmjob/releases.atom\n\n'
+    + ' Data:\n <html><body><h1>503 Service Unavailable</h1>\nNo server is available to handle'
+    + ' this request.\n</body></html>\n\n " Headers: { "cache-control": "no-cache",'
+    + ' "set-cookie": [ "_gh_sess=fOk7Qwq0dNT%2BI2Yo0gKJ23Ck8j; path=/; HttpOnly" ] }';
+
+  test('reduces a full HTTP response to the status and URL', () => {
+    expect(describeUpdateError(new Error(REAL_503)))
+      .toBe('HTTP 503 from https://github.com/super3/llmjob/releases.atom');
+  });
+
+  test('and never carries the body or the cookies through', () => {
+    const out = describeUpdateError(new Error(REAL_503));
+    expect(out).not.toMatch(/_gh_sess|<html>|set-cookie/i);
+    expect(out.length).toBeLessThan(120);
+  });
+
+  test('a status with no URL still reads cleanly', () => {
+    expect(describeUpdateError(new Error('429 rate limited'))).toBe('HTTP 429');
+  });
+
+  test('short messages pass through — including a bare string', () => {
+    expect(describeUpdateError(new Error('net::ERR_HTTP2_SERVER_REFUSED_STREAM')))
+      .toBe('net::ERR_HTTP2_SERVER_REFUSED_STREAM');
+    expect(describeUpdateError('plain string failure')).toBe('plain string failure');
+  });
+
+  test('a long single-line message is capped', () => {
+    const out = describeUpdateError(new Error('x'.repeat(500)));
+    expect(out).toHaveLength(200);
+    expect(out.endsWith('…')).toBe(true);
+  });
+
+  test('multi-line non-status messages keep only the first line', () => {
+    expect(describeUpdateError(new Error('boom\n  at foo\n  at bar'))).toBe('boom');
+  });
+
+  test('nothing useful still says something', () => {
+    expect(describeUpdateError(null)).toBe('unknown error');
+    expect(describeUpdateError(new Error('   '))).toBe('unknown error');
+  });
+});
 
 describe('clampPercent', () => {
   test('rounds a normal value', () => {

@@ -42,9 +42,9 @@ const { isValidAddress } = require('../shared/address');
 const {
   bundledEnginePath, pickEngineVersion, pickWindowsEngineVersion, windowsEngineNote,
   engineDownloadUrl, manualInstallHint, enginePackage,
-  packagedLauncherRuns, spacedLauncherNote, ENGINE,
+  packagedLauncherRuns, spacedLauncherNote, engineInstallDir, ENGINE,
 } = require('../shared/engine');
-const { formatUpdate } = require('../shared/updateStatus');
+const { formatUpdate, describeUpdateError } = require('../shared/updateStatus');
 const { describeLaunchError, describeSetupError } = require('../shared/engineError');
 const { buildMinerReports } = require('../shared/minerReport');
 const { runtimeCopyPlan } = require('../shared/llmRuntime');
@@ -292,27 +292,32 @@ async function startMining(settings) {
   // everything else, so a rig that does not qualify stays on 1.8.6 and is told
   // why (see windowsEngineNote — it is mining work the fork no longer credits).
   let version;
-  // Hoisted above the version choice: on Windows the engine's own install path
-  // decides whether the packaged build can run at all (see below), so the
-  // destination has to be known before the version is settled.
-  const engineDir = path.join(app.getPath('userData'), 'engine');
   if (process.platform === 'win32') {
     const caps = await detectComputeCaps();
     version = pickWindowsEngineVersion(caps);
     const note = windowsEngineNote(caps);
     if (note) send('miner:log', { level: 'warn', line: note });
-    // The hardware may qualify and the launcher still not start: upstream's
-    // 1.9.1b launcher mangles its own core path when that path contains a
-    // space, and our cache lives under "%APPDATA%\LLMJob Earn". Downgrade to
-    // the build that does run rather than hand the rig one that cannot — a
-    // non-compliant miner still earns something, a dead one earns nothing.
-    const spaced = spacedLauncherNote(process.platform, version, engineDir);
-    if (spaced) {
-      version = ENGINE.windows;
-      send('miner:log', { level: 'warn', line: spaced });
-    }
   } else {
     version = pickEngineVersion(await detectDriverMajor());
+  }
+  // Where the engine gets installed. Not simply userData: upstream's packaged
+  // Windows launcher mangles its own core path when that path contains a space,
+  // and "%APPDATA%\LLMJob Earn\engine" always does — so a qualifying rig gets
+  // the engine put somewhere space-free instead (ProgramData and friends).
+  const engineDir = engineInstallDir({
+    platform: process.platform,
+    version,
+    defaultDir: path.join(app.getPath('userData'), 'engine'),
+    env: process.env,
+    ensureDir: (d) => fs.mkdirSync(d, { recursive: true }),
+  });
+  // Nowhere space-free was writable, so the launcher still cannot start. Take
+  // the build that runs over the one that exits on every start: a rig mining
+  // uncredited work earns something, a dead one earns nothing.
+  const spaced = spacedLauncherNote(process.platform, version, engineDir);
+  if (spaced) {
+    version = ENGINE.windows;
+    send('miner:log', { level: 'warn', line: spaced });
   }
   let bundled = bundledEnginePath(process.resourcesPath, process.platform, settings.gpu, version);
   // The Windows bundling step ships the engine under the legacy unversioned
@@ -457,6 +462,7 @@ async function detectGpu() {
 // main.js guards the call with app.isPackaged. Downloads happen automatically;
 // the user chooses when to restart via the 'app:update:install' channel.
 let manualUpdateCheck = false; // true while a user-initiated check is in flight
+let updateTimer = null; // periodic re-check, so startup is not the only chance
 
 function setupUpdater() {
   const push = (phase, payload) => send('app:update', formatUpdate(phase, payload));
@@ -475,11 +481,19 @@ function setupUpdater() {
   autoUpdater.on('error', (err) => {
     manualUpdateCheck = false;
     push('error');
-    send('miner:log', { level: 'error', line: 'update error: ' + (err && err.message ? err.message : err) });
+    send('miner:log', { level: 'error', line: 'update check failed: ' + describeUpdateError(err) });
   });
-  autoUpdater.checkForUpdates().catch((e) => {
-    send('miner:log', { level: 'error', line: 'update check failed: ' + e.message });
-  });
+  // checkForUpdates() emits 'error' and THEN rethrows (AppUpdater.js), so the
+  // handler above has already logged by the time the promise rejects. Logging
+  // here too printed every network blip twice in the user's log.
+  const check = () => autoUpdater.checkForUpdates().catch(() => {});
+  check();
+  // Re-check on a timer. The startup check used to be the only one for the
+  // life of the process, so a rig that launched while GitHub's releases feed
+  // was down never looked again — it would sit on a broken build until someone
+  // restarted it, which is the opposite of what auto-update is for.
+  updateTimer = setInterval(check, NETWORK.updateCheckIntervalMs);
+  if (updateTimer.unref) updateTimer.unref();
 }
 
 // User-initiated "Check for updates". In a dev/unpackaged run the real updater
@@ -493,11 +507,10 @@ function checkForUpdate() {
   }
   manualUpdateCheck = true;
   send('app:update', formatUpdate('checking'));
-  autoUpdater.checkForUpdates().catch((e) => {
-    manualUpdateCheck = false;
-    send('app:update', formatUpdate('error'));
-    send('miner:log', { level: 'error', line: 'update check failed: ' + e.message });
-  });
+  // Same as the startup check: the 'error' handler in setupUpdater has already
+  // reset the flag, pushed the error state and logged the reason by the time
+  // this rejects.
+  autoUpdater.checkForUpdates().catch(() => {});
 }
 
 function createWindow() {
