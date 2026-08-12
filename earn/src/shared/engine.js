@@ -54,9 +54,26 @@ const ENGINE = {
   minDriverMajor: 580,
   windows: '1.8.6',
   windowsPreferred: '1.9.1b',
-  // The only compute capabilities the Windows package will run on, verbatim
-  // from its README. Uniform only — a rig mixing 8.6 and 8.9 fails closed too.
-  windowsComputeCaps: ['8.6', '8.9'],
+  // The compute capabilities the Windows package will run on. Uniform only —
+  // a rig mixing generations fails closed even when both are supported.
+  //
+  // NOT from the README, which says "Blackwell / RTX 50-series is NOT supported
+  // by this Windows release" and is simply wrong. The shipped binaries say
+  // otherwise, and they are what runs:
+  //
+  //   • the launcher's own refusal message reads "emergency Windows support is
+  //     limited to uniform CC 8.6, CC 8.9, or CC 12.0 systems" — 12.0 is on the
+  //     allow-list it enforces;
+  //   • the core carries compiled Blackwell kernels (-arch sm_120 / sm_120a,
+  //     pearl_blackwell / pearl_blackwell_native_impl / _native_exact) and
+  //     offers blackwell, blackwell-native, blackwell-b200 and blackwell-b300
+  //     backends.
+  //
+  // Trusting the README cost every RTX 50-series rig its rank-128 credit: they
+  // were held on 1.8.6, which mines at rank 256 and is not credited after the
+  // softfork. Reported by a user with a 5080 whose shares were being accepted
+  // and paid nothing.
+  windowsComputeCaps: ['8.6', '8.9', '12.0'],
 };
 
 // Versions that ship as a PACKAGE — a tarball holding a launcher plus a hidden
@@ -253,6 +270,40 @@ function spacedLauncherNote(platform, version, target) {
     + ' is meant to fix it.';
 }
 
+// Where to install the engine, given that a packaged Windows launcher cannot
+// start from a path containing a space (see packagedLauncherRuns).
+//
+// Our default is "%APPDATA%\LLMJob Earn\engine", which ALWAYS has one because
+// the product name does. Rather than give up the compliant build for that
+// reason alone, look for a space-free base we can genuinely write to and
+// install there instead. ProgramData leads: it is machine-wide and, unlike
+// LOCALAPPDATA, never embeds the user's name — which may carry a space of its
+// own and put us right back where we started.
+//
+// `ensureDir` is injected and actually called, rather than inferring
+// writability from the path. A locked-down machine that refuses ProgramData
+// falls through to the next candidate and finally back to the default, where
+// the caller's spacedLauncherNote downgrades to a build that runs. Guessing
+// here would trade a visible failure for a silent one.
+//
+// Off Windows, and for the bare-binary versions, the default is always right —
+// packagedLauncherRuns says so and nothing moves.
+function engineInstallDir({ platform, version, defaultDir, env, ensureDir }) {
+  if (packagedLauncherRuns(platform, version, defaultDir)) return defaultDir;
+  const e = env || {};
+  const bases = [e.ProgramData, e.LOCALAPPDATA, (e.SystemDrive || 'C:') + '\\'];
+  for (const base of bases) {
+    if (!base) continue;
+    const dir = path.join(base, 'llmjob-earn', 'engine');
+    if (!packagedLauncherRuns(platform, version, dir)) continue; // this one is spaced too
+    try {
+      ensureDir(dir);
+      return dir;
+    } catch (err) { /* not writable here — try the next base */ }
+  }
+  return defaultDir;
+}
+
 // Parse the driver major version out of `nvidia-smi --query-gpu=driver_version`
 // output ("581.42\n581.42" → 581). Returns null when it can't.
 function parseDriverMajor(output) {
@@ -376,6 +427,7 @@ module.exports = {
   windowsEngineNote,
   packagedLauncherRuns,
   spacedLauncherNote,
+  engineInstallDir,
   parseDriverMajor,
   engineBinaryName,
   engineArchiveName,

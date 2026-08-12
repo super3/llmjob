@@ -1097,28 +1097,63 @@ describe('mining', () => {
     expect(ctx.sent('miner:log').filter((l) => l.level === 'warn')).toHaveLength(0);
   });
 
-  // 0.3.12 shipped the hotfix to every qualifying Windows rig and none of them
-  // could start it: upstream's launcher mangles its own core path when that path
-  // contains a space, and the cache is "%APPDATA%\LLMJob Earn\engine". A rig
-  // that cannot mine at all is strictly worse than one mining non-compliant, so
-  // the version is downgraded instead.
-  it('downgrades a qualifying Windows rig when the engine dir has a space', async () => {
+  // Upstream's launcher mangles its own core path when that path contains a
+  // space, and the cache is "%APPDATA%\LLMJob Earn\engine" — always spaced.
+  // Rather than give up the compliant build, put the engine somewhere
+  // space-free so a qualifying rig keeps it.
+  it('installs the engine outside the spaced userData dir so the hotfix runs', async () => {
     const eng = require('../src/shared/engine');
-    const ctx = await boot({
-      platform: 'win32',
-      before: (c) => {
-        c.probe.detectComputeCaps.mockResolvedValue(['8.9']);
-        c.electron.app.getPath.mockReturnValue('/tmp/LLMJob Earn');
-      },
-    });
-    ctx.fs.existsSync.mockReturnValue(false);
+    const prev = process.env.ProgramData;
+    process.env.ProgramData = 'C:\\ProgramData';
+    try {
+      const ctx = await boot({
+        platform: 'win32',
+        before: (c) => {
+          c.probe.detectComputeCaps.mockResolvedValue(['12.0']); // RTX 50-series
+          c.electron.app.getPath.mockReturnValue('/tmp/LLMJob Earn');
+        },
+      });
+      ctx.fs.existsSync.mockReturnValue(false);
 
-    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
-    await flush();
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
 
-    expect(ctx.EngineManager.instances[0].opts.version).toBe(eng.ENGINE.windows);
-    const warns = ctx.sent('miner:log').filter((l) => l.level === 'warn').map((l) => l.line);
-    expect(warns.join('\n')).toContain('cannot start from a path containing a space');
+      const opts = ctx.EngineManager.instances[0].opts;
+      expect(opts.dir).toBe(require('path').join('C:\\ProgramData', 'llmjob-earn', 'engine'));
+      expect(opts.version).toBe(eng.ENGINE.windowsPreferred);
+      expect(ctx.sent('miner:log').filter((l) => l.level === 'warn')).toHaveLength(0);
+    } finally {
+      if (prev === undefined) delete process.env.ProgramData; else process.env.ProgramData = prev;
+    }
+  });
+
+  // …but a locked-down box where nothing space-free can be created still has to
+  // mine. A rig that cannot start earns nothing; one on 1.8.6 earns uncredited
+  // work, which is worse than compliant and better than dead.
+  it('downgrades when nowhere space-free is writable', async () => {
+    const eng = require('../src/shared/engine');
+    const saved = ['ProgramData', 'LOCALAPPDATA', 'SystemDrive'].map((k) => [k, process.env[k]]);
+    for (const [k] of saved) delete process.env[k];
+    try {
+      const ctx = await boot({
+        platform: 'win32',
+        before: (c) => {
+          c.probe.detectComputeCaps.mockResolvedValue(['8.9']);
+          c.electron.app.getPath.mockReturnValue('/tmp/LLMJob Earn');
+          c.fs.mkdirSync.mockImplementation(() => { throw new Error('EPERM'); });
+        },
+      });
+      ctx.fs.existsSync.mockReturnValue(false);
+
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+
+      expect(ctx.EngineManager.instances[0].opts.version).toBe(eng.ENGINE.windows);
+      const warns = ctx.sent('miner:log').filter((l) => l.level === 'warn').map((l) => l.line);
+      expect(warns.join('\n')).toContain('cannot start from a path containing a space');
+    } finally {
+      for (const [k, v] of saved) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    }
   });
 
   // The same bug, reached the other way: a space-free cache keeps the hotfix
@@ -1148,7 +1183,7 @@ describe('mining', () => {
   it('warns a Windows rig the hotfix will not run on, and keeps it mining', async () => {
     const ctx = await boot({
       platform: 'win32',
-      before: (c) => { c.probe.detectComputeCaps.mockResolvedValue(['12.0']); }, // RTX 50-series
+      before: (c) => { c.probe.detectComputeCaps.mockResolvedValue(['7.5']); }, // Turing
     });
     ctx.fs.existsSync.mockReturnValue(false);
 
@@ -1156,7 +1191,7 @@ describe('mining', () => {
     await flush();
 
     const warn = ctx.sent('miner:log').filter((l) => l.level === 'warn').map((l) => l.line);
-    expect(warn.join('')).toContain('compute capability 12.0 is not supported');
+    expect(warn.join('')).toContain('compute capability 7.5 is not supported');
     expect(warn.join('')).toContain('not rank-128 compliant');
     expect(ctx.EngineManager.instances[0].opts.version)
       .toBe(require('../src/shared/engine').ENGINE.windows);

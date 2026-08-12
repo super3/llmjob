@@ -42,7 +42,7 @@ const { isValidAddress } = require('../shared/address');
 const {
   bundledEnginePath, pickEngineVersion, pickWindowsEngineVersion, windowsEngineNote,
   engineDownloadUrl, manualInstallHint, enginePackage,
-  packagedLauncherRuns, spacedLauncherNote, ENGINE,
+  packagedLauncherRuns, spacedLauncherNote, engineInstallDir, ENGINE,
 } = require('../shared/engine');
 const { formatUpdate, describeUpdateError } = require('../shared/updateStatus');
 const { describeLaunchError, describeSetupError } = require('../shared/engineError');
@@ -292,27 +292,32 @@ async function startMining(settings) {
   // everything else, so a rig that does not qualify stays on 1.8.6 and is told
   // why (see windowsEngineNote — it is mining work the fork no longer credits).
   let version;
-  // Hoisted above the version choice: on Windows the engine's own install path
-  // decides whether the packaged build can run at all (see below), so the
-  // destination has to be known before the version is settled.
-  const engineDir = path.join(app.getPath('userData'), 'engine');
   if (process.platform === 'win32') {
     const caps = await detectComputeCaps();
     version = pickWindowsEngineVersion(caps);
     const note = windowsEngineNote(caps);
     if (note) send('miner:log', { level: 'warn', line: note });
-    // The hardware may qualify and the launcher still not start: upstream's
-    // 1.9.1b launcher mangles its own core path when that path contains a
-    // space, and our cache lives under "%APPDATA%\LLMJob Earn". Downgrade to
-    // the build that does run rather than hand the rig one that cannot — a
-    // non-compliant miner still earns something, a dead one earns nothing.
-    const spaced = spacedLauncherNote(process.platform, version, engineDir);
-    if (spaced) {
-      version = ENGINE.windows;
-      send('miner:log', { level: 'warn', line: spaced });
-    }
   } else {
     version = pickEngineVersion(await detectDriverMajor());
+  }
+  // Where the engine gets installed. Not simply userData: upstream's packaged
+  // Windows launcher mangles its own core path when that path contains a space,
+  // and "%APPDATA%\LLMJob Earn\engine" always does — so a qualifying rig gets
+  // the engine put somewhere space-free instead (ProgramData and friends).
+  const engineDir = engineInstallDir({
+    platform: process.platform,
+    version,
+    defaultDir: path.join(app.getPath('userData'), 'engine'),
+    env: process.env,
+    ensureDir: (d) => fs.mkdirSync(d, { recursive: true }),
+  });
+  // Nowhere space-free was writable, so the launcher still cannot start. Take
+  // the build that runs over the one that exits on every start: a rig mining
+  // uncredited work earns something, a dead one earns nothing.
+  const spaced = spacedLauncherNote(process.platform, version, engineDir);
+  if (spaced) {
+    version = ENGINE.windows;
+    send('miner:log', { level: 'warn', line: spaced });
   }
   let bundled = bundledEnginePath(process.resourcesPath, process.platform, settings.gpu, version);
   // The Windows bundling step ships the engine under the legacy unversioned
