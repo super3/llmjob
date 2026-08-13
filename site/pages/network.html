@@ -317,15 +317,32 @@
       // the rest. The dot costs ~10px and never wraps; the id itself lives in the
       // tooltip, which is where you'd grab it to target the host anyway.
       // Colour carries the node's measured speed (GET /api/nodes/serving): green
-      // takes any job, amber is capped to shorter ones, hollow means we haven't
-      // measured it yet. The number itself goes in the tooltip for the same
-      // reason the node id does — this column is a fixed track and text here
-      // wraps the row.
-      const speed = speeds[nodeId];
+      // takes any job, amber is capped to shorter ones, hollow means we can't
+      // currently vouch for it. The number itself goes in the tooltip for the
+      // same reason the node id does — this column is a fixed track and text
+      // here wraps the row.
+      //
+      // A measurement alone is NOT enough to paint the dot green, because the two
+      // halves of this row have different clocks. `model` comes from the miner
+      // ping and is live to within a minute, so it goes null the moment
+      // llama-server dies; the measurement stays valid for six hours
+      // (SPEED_STALE_MS). A node that lost its LLM therefore kept a green dot
+      // next to an em-dash for the rest of that window — the dot answering "we
+      // measured this recently and it was fast" while the reader takes it to mean
+      // "this is serving right now". Requiring the live signal too makes the two
+      // halves of the cell agree: no model, no colour.
+      //
+      // The dot itself still appears (see above): a host serving from an adopted
+      // llama-server reports a nodeId before it reports a model, and dropping the
+      // dot would show it as a plain miner. Hollow says "serving, unconfirmed",
+      // which is exactly right for both that case and a node whose LLM just died.
+      const speed = model ? speeds[nodeId] : null;
       const cls = !speed || speed.tps == null ? ' is-unknown' : (speed.tps < FULL_JOB_TPS ? ' is-limited' : '');
-      const detail = !speed || speed.tps == null
-        ? ' · speed not measured yet'
-        : ' · ' + speed.tps + ' tok/s' + (speed.tps < FULL_JOB_TPS ? ' (short jobs only)' : '');
+      const detail = !model
+        ? ' · no model loaded'
+        : (!speed || speed.tps == null
+          ? ' · speed not measured yet'
+          : ' · ' + speed.tps + ' tok/s' + (speed.tps < FULL_JOB_TPS ? ' (short jobs only)' : ''));
       const dot = nodeId
         ? '<span class="mr-serving' + cls + '" title="Serving cluster jobs as node ' + esc(nodeId) + esc(detail) + '"></span>'
         : '';
