@@ -242,3 +242,61 @@ describe('EngineManager — packaged engine (launcher + core)', () => {
     expect(extractPackage).toHaveBeenCalled();
   });
 });
+
+describe('EngineManager — injected engine spec (SRBMiner)', () => {
+  // SRBMiner is installed through the same package path as the alpha-miner
+  // tarball — its archive also expands to a directory holding the executable —
+  // but it supplies its own paths and URL rather than going near the version
+  // tables in engine.js. Nothing here participates in the CC gate or the
+  // packaged-launcher space check, which is the point of injecting a spec.
+  const { srbEngineSpec, srbBinaryPath, srbArchiveName, srbDownloadUrl } = require('../src/shared/srbminer');
+
+  function make(platform, installed) {
+    const fsStub = makeFs(installed);
+    const download = jest.fn(() => Promise.resolve());
+    const extractPackage = jest.fn(() => Promise.resolve());
+    const chmod = jest.fn();
+    const mgr = new EngineManager({
+      dir: '/cache', platform, spec: srbEngineSpec(platform),
+      fs: fsStub, download, extractPackage, chmod,
+    });
+    return { mgr, fsStub, download, extractPackage, chmod };
+  }
+
+  test('resolves its binary and installed-state from the spec', () => {
+    const { mgr, fsStub } = make('linux', true);
+    expect(mgr.binaryPath()).toBe(srbBinaryPath('/cache', 'linux'));
+    expect(mgr.isInstalled()).toBe(true);
+    expect(fsStub.existsSync).toHaveBeenCalledWith(srbBinaryPath('/cache', 'linux'));
+  });
+
+  test('downloads and extracts the spec archive, chmodding just the one binary', async () => {
+    const { mgr, fsStub, download, extractPackage, chmod } = make('linux', false);
+    const dest = await mgr.ensure();
+
+    expect(dest).toBe(srbBinaryPath('/cache', 'linux'));
+    expect(download).toHaveBeenCalledWith(
+      srbDownloadUrl('linux'), path.join('/cache', srbArchiveName('linux')), undefined);
+    expect(extractPackage).toHaveBeenCalledWith(path.join('/cache', srbArchiveName('linux')), '/cache');
+    // Unlike the alpha-miner package there is no hidden sibling core, so
+    // exactly one chmod — a stray second would mean the spec leaked a path.
+    expect(chmod).toHaveBeenCalledTimes(1);
+    expect(chmod).toHaveBeenCalledWith(dest, 0o755);
+    expect(fsStub.unlinkSync).toHaveBeenCalledWith(path.join('/cache', srbArchiveName('linux')));
+  });
+
+  test('an already-installed copy re-asserts +x and nothing else', async () => {
+    const { mgr, chmod, download } = make('linux', true);
+    await mgr.ensure();
+    expect(download).not.toHaveBeenCalled();
+    expect(chmod).toHaveBeenCalledTimes(1);
+  });
+
+  test('on Windows it installs with no chmod at all', async () => {
+    const { mgr, chmod, extractPackage } = make('win32', false);
+    const dest = await mgr.ensure();
+    expect(dest).toBe(srbBinaryPath('/cache', 'win32'));
+    expect(extractPackage).toHaveBeenCalled();
+    expect(chmod).not.toHaveBeenCalled();
+  });
+});

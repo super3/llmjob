@@ -6,17 +6,25 @@ const {
   enginePackage,
 } = require('../shared/engine');
 
-// Ensures the alpha-miner engine is present, downloading and installing it on
+// Ensures the mining engine is present, downloading and installing it on
 // demand. All IO (filesystem, network download, zip extraction, chmod) is
 // injected so the orchestration is fully unit-testable; main.js wires the real
 // implementations.
+//
+// `spec` selects a non-alpha-miner engine (SRBMiner — see srbEngineSpec). It
+// supplies its own paths, URL and archive name, and is always installed by the
+// package path since its archive expands to a directory. Without one the
+// manager reads the alpha-miner tables in engine.js exactly as before, so the
+// version/CC/packaged-launcher logic stays where it belongs and SRBMiner never
+// touches it.
 class EngineManager {
-  constructor({ dir, platform, gpu, version, urlBase, fs, download, extract, extractPackage, chmod } = {}) {
+  constructor({ dir, platform, gpu, version, urlBase, spec, fs, download, extract, extractPackage, chmod } = {}) {
     this.dir = dir;
     this.platform = platform;
     this.gpu = gpu;
     this.version = version;
     this.urlBase = urlBase;
+    this.spec = spec || null;
     this.fs = fs;
     this.download = download;
     this.extract = extract;
@@ -25,6 +33,7 @@ class EngineManager {
   }
 
   binaryPath() {
+    if (this.spec) return this.spec.binaryPath(this.dir);
     return enginePath(this.dir, this.platform, this.gpu, this.version);
   }
 
@@ -32,8 +41,10 @@ class EngineManager {
   // engineFiles. An interrupted extract leaves the launcher looking perfectly
   // installed, and nothing else would ever re-download it.
   isInstalled() {
-    return engineFiles(this.dir, this.platform, this.gpu, this.version)
-      .every((p) => this.fs.existsSync(p));
+    const files = this.spec
+      ? this.spec.files(this.dir)
+      : engineFiles(this.dir, this.platform, this.gpu, this.version);
+    return files.every((p) => this.fs.existsSync(p));
   }
 
   // Resolve to the engine path, downloading + installing it if missing.
@@ -60,17 +71,21 @@ class EngineManager {
     // only the launcher — the single-binary assumption everywhere else — leaves
     // every start failing with "core missing or not executable".
     const pkg = enginePackage(this.platform, this.version);
-    if (pkg) {
-      const archivePath = path.join(this.dir, pkg.archive);
-      await this.download(engineDownloadUrl(this.platform, this.gpu, this.urlBase, this.version), archivePath, onProgress);
+    if (this.spec || pkg) {
+      const archiveName = this.spec ? this.spec.archive() : pkg.archive;
+      const url = this.spec
+        ? this.spec.url()
+        : engineDownloadUrl(this.platform, this.gpu, this.urlBase, this.version);
+      const archivePath = path.join(this.dir, archiveName);
+      await this.download(url, archivePath, onProgress);
       await this.extractPackage(archivePath, this.dir);
       try { this.fs.unlinkSync(archivePath); } catch (e) { /* leftover archive is harmless */ }
-      // Windows has no execute bit to grant — its package is a pair of .exe
-      // files — and chmodding them is at best a no-op, at worst a throw that
-      // fails an otherwise perfect install.
+      // Windows has no execute bit to grant — its package is .exe files — and
+      // chmodding them is at best a no-op, at worst a throw that fails an
+      // otherwise perfect install.
       if (this.platform !== 'win32') {
         this.chmod(dest, 0o755);
-        this.chmod(path.join(this.dir, pkg.dir, pkg.core), 0o755);
+        for (const extra of this.packageExtras()) this.chmod(extra, 0o755);
       }
       return dest;
     }
@@ -131,11 +146,19 @@ class EngineManager {
       // A packaged engine needs its core executable too — the launcher checks
       // -x on it and refuses to start otherwise, so a half-chmodded cache would
       // never self-heal without this.
-      const pkg = enginePackage(this.platform, this.version);
-      if (pkg) this.chmod(path.join(this.dir, pkg.dir, pkg.core), 0o755);
+      for (const extra of this.packageExtras()) this.chmod(extra, 0o755);
     } catch (e) {
       /* best effort — spawn will report EACCES if it truly isn't executable */
     }
+  }
+
+  // Files besides the executable itself that must carry +x. The alpha-miner
+  // package hides a sibling core the launcher verifies; SRBMiner ships a lone
+  // binary and returns nothing.
+  packageExtras() {
+    if (this.spec) return this.spec.extraExecutables(this.dir);
+    const pkg = enginePackage(this.platform, this.version);
+    return pkg ? [path.join(this.dir, pkg.dir, pkg.core)] : [];
   }
 }
 

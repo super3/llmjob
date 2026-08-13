@@ -182,3 +182,25 @@ describe('MinerManager', () => {
     expect(child.kill).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('MinerManager — injected launch plan (SRBMiner)', () => {
+  // A second engine needs a different executable and a different argument
+  // vector, but the same supervision: stderr routing, exit codes, the
+  // partial-line buffer. Injecting the plan keeps all of that in one place
+  // instead of forking the manager per engine.
+  test('spawns what the plan says, not the alpha-miner resolution', () => {
+    const child = makeChild();
+    const spawn = jest.fn(() => child);
+    const planFor = jest.fn(() => ({ bin: '/cache/SRBMiner-MULTI', args: ['--algorithm', 'pearlhash'] }));
+    const mgr = new MinerManager({ spawn, planFor });
+    const started = jest.fn();
+    mgr.on('started', started);
+
+    expect(mgr.start({ address: 'prl1abc', platform: 'linux' })).toBe(true);
+
+    expect(planFor).toHaveBeenCalledWith({ address: 'prl1abc', platform: 'linux' });
+    expect(spawn).toHaveBeenCalledWith('/cache/SRBMiner-MULTI', ['--algorithm', 'pearlhash']);
+    expect(started).toHaveBeenCalledWith({ bin: '/cache/SRBMiner-MULTI', args: ['--algorithm', 'pearlhash'] });
+    expect(mgr.isRunning()).toBe(true);
+  });
+});

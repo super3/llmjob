@@ -191,9 +191,31 @@ function srbStatusEvents(json, toTh) {
   return events;
 }
 
+// An EngineManager install spec for SRBMiner.
+//
+// Its archive has the same shape as the alpha-miner 1.9.1b package — expands to
+// a directory holding the executable — so EngineManager's package path already
+// does the right thing. Injecting a spec rather than teaching engine.js about
+// SRBMiner keeps the two engines' version tables from bleeding into each other:
+// nothing here participates in pickWindowsEngineVersion, the CC gate, or the
+// packaged-launcher space check, none of which apply to SRBMiner.
+//
+// `extraExecutables` is empty because, unlike the alpha-miner package, there is
+// no hidden sibling core to chmod — just the one binary.
+function srbEngineSpec(platform) {
+  return {
+    binaryPath: (dir) => srbBinaryPath(dir, platform),
+    files: (dir) => srbFiles(dir, platform),
+    url: () => srbDownloadUrl(platform),
+    archive: () => srbArchiveName(platform),
+    extraExecutables: () => [],
+  };
+}
+
 module.exports = {
   SRB,
   PLAIN_STRATUM_PORT,
+  srbEngineSpec,
   HASHRATE_TO_TH,
   srbArchiveName,
   srbDirName,

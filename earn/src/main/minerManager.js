@@ -20,9 +20,16 @@ const MAX_LINE_BYTES = 64 * 1024;
 //   stopped  exitCode
 //   error    Error
 class MinerManager extends EventEmitter {
-  constructor({ spawn } = {}) {
+  // `planFor` selects a non-alpha-miner engine: given the settings it returns
+  // { bin, args } and the manager spawns that instead. SRBMiner needs a
+  // different executable and a different argument vector (see srbArgs), and
+  // routing it through here keeps process supervision — restart, stderr,
+  // exit codes, the partial-line buffer — in one place rather than forked per
+  // engine. Without one the alpha-miner resolution below is used unchanged.
+  constructor({ spawn, planFor } = {}) {
     super();
     this.spawn = spawn;
+    this.planFor = planFor || null;
     this.proc = null;
     this.running = false;
     this.stdoutBuf = '';
@@ -35,8 +42,11 @@ class MinerManager extends EventEmitter {
   start(settings = {}) {
     if (this.running) return false;
 
-    const bin = resolveBinary(settings.binaryPath, settings.platform);
-    const args = buildArgs(settings);
+    const plan = this.planFor
+      ? this.planFor(settings)
+      : { bin: resolveBinary(settings.binaryPath, settings.platform), args: buildArgs(settings) };
+    const bin = plan.bin;
+    const args = plan.args;
     const proc = this.spawn(bin, args);
 
     this.proc = proc;
