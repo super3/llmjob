@@ -38,7 +38,7 @@
   @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
 
   /* nav */
-  nav.nav { max-width: 1080px; margin: 0 auto; padding: 26px 28px; display: flex; align-items: center; justify-content: space-between; }
+  nav.nav { max-width: 1080px; margin: 0 auto; padding: 26px 28px; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
   .logo { font-weight: 700; font-size: 21px; letter-spacing: -.02em; display: inline-flex; align-items: center; gap: 11px; color: var(--ink); }
   .logo .bolt { display: inline-flex; width: 38px; height: 38px; border-radius: 11px; background: var(--dark); align-items: center; justify-content: center; flex: none; }
   .nav-right { display: flex; align-items: center; gap: 26px; }
@@ -120,8 +120,9 @@
     .nav-right { gap: 16px; }
   }
   @media (max-width: 460px) {
-    /* Compact nav: four links plus the Discord button no longer fit a 360px
-       phone at full size, so shrink the whole bar rather than drop a link. */
+    nav.nav { gap: 10px; }
+/* Compact nav: the links plus the Discord button don't fit a small phone at
+       full size, so shrink the whole bar rather than drop one. */
     .nav-right { gap: 9px; }
     .nav-link { font-size: 14px; }
     .logo { font-size: 18px; gap: 9px; }
