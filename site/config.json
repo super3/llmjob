@@ -5,5 +5,6 @@
   "apiBaseProd": "https://llmjob-production.up.railway.app",
   "discordUrl": "https://discord.gg/JnERcTKjUS",
   "home": "index.html",
-  "appVersion": "0.3.16"
+  "appVersion": "0.3.16",
+  "srbFeePct": 2
 }
