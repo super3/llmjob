@@ -514,6 +514,12 @@ describe('app boot and window lifecycle', () => {
   // and Ctrl/Cmd+Q do. Without a before-quit hook the most ordinary way to close
   // the app skipped the only cleanup path and left llama-server and the miner
   // running — the user's GPU stayed pinned and port 8080 stayed bound.
+  // 15s, not jest's default 5s: this one loads main.js, boots it and drains 15
+  // rounds of the microtask queue, and on a degraded Windows runner that ran
+  // past 5s and failed. It did exactly that during the v0.3.15 publish — the
+  // Windows job died here, so the installer and latest.yml never uploaded and
+  // the release shipped Mac + Linux only. Nothing here is slow by design, so
+  // the headroom costs nothing on a healthy runner.
   it('before-quit stops the miner even when window-all-closed never fires', async () => {
     const ctx = await boot();
     ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
@@ -525,7 +531,7 @@ describe('app boot and window lifecycle', () => {
     ctx.electron._appEvents['before-quit']();
 
     expect(miner.stop).toHaveBeenCalled();
-  });
+  }, 15000);
 
   it('before-quit is safe to run with nothing started', () => {
     const ctx = loadMain();

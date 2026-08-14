@@ -71,4 +71,30 @@ function parseGpuStats(out) {
   return list;
 }
 
-module.exports = { IGNORE, INTEGRATED, pickGpu, countGpus, parseGpuStats };
+// Parse `system_profiler SPDisplaysDataType -json` into { name, count }, or
+// null when nothing usable is in there.
+//
+// This is the Mac's answer to nvidia-smi. macOS has neither that nor WMI, so
+// without it the device label sat at "GPU · auto-detect" on the one platform
+// where the GPU is the only thing the app uses at all.
+//
+// Each entry carries the GPU under `sppci_model` ("Apple M3 Max"), with `_name`
+// as the older/alternate key — both are read because the pairing has moved
+// between macOS versions and a missed rename would silently cost the label.
+// The names then go through the same pickGpu/countGpus the other platforms use,
+// which matters on an Intel Mac with both an iGPU and a discrete card: the
+// discrete one wins there exactly as it does on Windows.
+function parseMacGpu(out) {
+  let json;
+  try {
+    json = JSON.parse(String(out == null ? '' : out));
+  } catch (e) {
+    return null; // not JSON (an error string, an empty read, a future format)
+  }
+  const list = json && Array.isArray(json.SPDisplaysDataType) ? json.SPDisplaysDataType : [];
+  const names = list.map((d) => (d && (d.sppci_model || d._name)) || '');
+  const name = pickGpu(names);
+  return name ? { name, count: countGpus(names) } : null;
+}
+
+module.exports = { IGNORE, INTEGRATED, pickGpu, countGpus, parseGpuStats, parseMacGpu };

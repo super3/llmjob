@@ -274,6 +274,64 @@ describe('detectGpuInfo', () => {
     });
   });
 
+  // macOS has neither nvidia-smi nor WMI, so before this it fell straight to
+  // null and the device label read "GPU · auto-detect" — on the one platform
+  // where that GPU is the only thing the app uses.
+  const MAC_JSON = JSON.stringify({
+    SPDisplaysDataType: [{ _name: 'Apple M3 Max', sppci_model: 'Apple M3 Max', sppci_cores: '40' }],
+  });
+
+  it('names the GPU on macOS via system_profiler', async () => {
+    await withPlatform('darwin', async () => {
+      execFile.mockImplementation((bin, _args, _opts, cb) => (bin === 'nvidia-smi'
+        ? cb(new Error('ENOENT'))
+        : cb(null, MAC_JSON)));
+      expect(await probe.detectGpuInfo()).toEqual({ name: 'Apple M3 Max', count: 1 });
+      expect(execFile).toHaveBeenCalledWith('system_profiler',
+        ['SPDisplaysDataType', '-json'], { timeout: 10000 }, expect.any(Function));
+    });
+  });
+
+  // If Apple reshapes that JSON, the CPU brand string still names the same SoC
+  // on Apple silicon — the same answer by another route, not a guess.
+  it('falls back to the CPU brand string when system_profiler cannot be parsed', async () => {
+    await withPlatform('darwin', async () => {
+      execFile.mockImplementation((bin, _args, _opts, cb) => {
+        if (bin === 'nvidia-smi') return cb(new Error('ENOENT'));
+        if (bin === 'system_profiler') return cb(null, 'not json at all');
+        return cb(null, 'Apple M4 Pro\n');
+      });
+      expect(await probe.detectGpuInfo()).toEqual({ name: 'Apple M4 Pro', count: 1 });
+      expect(execFile).toHaveBeenCalledWith('sysctl',
+        ['-n', 'machdep.cpu.brand_string'], { timeout: 5000 }, expect.any(Function));
+    });
+  });
+
+  it('falls back the same way when system_profiler itself fails', async () => {
+    await withPlatform('darwin', async () => {
+      execFile.mockImplementation((bin, _args, _opts, cb) => (bin === 'sysctl'
+        ? cb(null, 'Apple M1\n')
+        : cb(new Error('nope'))));
+      expect(await probe.detectGpuInfo()).toEqual({ name: 'Apple M1', count: 1 });
+    });
+  });
+
+  it('returns null on macOS when both probes fail', async () => {
+    await withPlatform('darwin', async () => {
+      execFile.mockImplementation((_bin, _args, _opts, cb) => cb(new Error('nope')));
+      expect(await probe.detectGpuInfo()).toBeNull();
+    });
+  });
+
+  it('returns null on macOS when sysctl answers with nothing usable', async () => {
+    await withPlatform('darwin', async () => {
+      execFile.mockImplementation((bin, _args, _opts, cb) => (bin === 'sysctl'
+        ? cb(null, '   \n')
+        : cb(new Error('nope'))));
+      expect(await probe.detectGpuInfo()).toBeNull();
+    });
+  });
+
   it('returns null when WMI answers but names nothing usable', async () => {
     await withPlatform('win32', async () => {
       execFile.mockImplementation((bin, _args, _opts, cb) => (bin === 'nvidia-smi'

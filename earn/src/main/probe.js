@@ -14,7 +14,7 @@ const { execFile } = require('child_process');
 
 const { REGIONS, DEFAULTS, NETWORK } = require('../shared/config');
 const { pickFastestRegion } = require('../shared/region');
-const { parseGpuStats, pickGpu, countGpus } = require('../shared/gpu');
+const { parseGpuStats, pickGpu, countGpus, parseMacGpu } = require('../shared/gpu');
 const { parseDriverMajor, parseComputeCaps } = require('../shared/engine');
 
 // Measure TCP connect latency (ms) to a "host:port" Stratum endpoint, or null
@@ -153,6 +153,29 @@ function findFreePort(host, start, tries) {
 // used nvidia-smi and worked there. Now both get the union: nvidia-smi first
 // (NVIDIA on any platform, which is what a mining rig runs), then WMI on Windows
 // so a non-NVIDIA card still gets a name.
+// The Mac's GPU as { name, count } — "Apple M3 Max" — or null. Never rejects.
+//
+// system_profiler is the canonical source (it is what About This Mac reads),
+// and it is the only one that gets an Intel Mac's discrete card right. It is
+// also slow and its JSON has been reshaped between macOS versions, so a failure
+// falls back to the CPU brand string rather than giving up: on Apple silicon
+// the SoC name IS the GPU name, so that fallback is the same answer by another
+// route, not a guess. Only when both fail does the label stay unknown.
+function detectMacGpuInfo() {
+  return new Promise((resolve) => {
+    execFile('system_profiler', ['SPDisplaysDataType', '-json'], { timeout: 10000 },
+      (err, stdout) => {
+        const info = err ? null : parseMacGpu(stdout);
+        if (info) return resolve(info);
+        execFile('sysctl', ['-n', 'machdep.cpu.brand_string'], { timeout: 5000 },
+          (e2, out2) => {
+            const name = e2 ? null : pickGpu([out2]);
+            resolve(name ? { name, count: 1 } : null);
+          });
+      });
+  });
+}
+
 function detectGpuInfo() {
   return new Promise((resolve) => {
     execFile('nvidia-smi', ['--query-gpu=name', '--format=csv,noheader'],
@@ -164,6 +187,10 @@ function detectGpuInfo() {
           if (name) return resolve({ name, count: countGpus(names) });
         }
         // No nvidia-smi (not installed, not on PATH, or no NVIDIA card).
+        // macOS has no nvidia-smi and no WMI either, so it needs its own probe —
+        // otherwise the Mac build, whose whole job is running the model on that
+        // GPU, reports no device at all.
+        if (process.platform === 'darwin') return resolve(detectMacGpuInfo());
         if (process.platform !== 'win32') return resolve(null);
         execFile('powershell.exe',
           ['-NoProfile', '-NonInteractive', '-Command',
