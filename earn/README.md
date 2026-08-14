@@ -101,9 +101,16 @@ non-Windows path in `shared/engine.js` would otherwise resolve to. Concretely:
   [serving cluster jobs](#serve-cluster-jobs-proxy-llm-through-llmjob) all work
   exactly as they do on a Windows or Linux box.
 
-`llama-server` comes from llama.cpp's macOS release, picked per architecture
-(Apple silicon gets the arm64 build, Intel Macs the x64 one) — Metal
-acceleration is built into both, so there is no separate GPU runtime to install.
+The Mac build is **Apple silicon only**. Intel Macs are not shipped: the app's
+one job there is running the model, and an Intel Mac has no Metal GPU worth
+running it on. `llama-server` comes from llama.cpp's macOS arm64 release, so
+Metal acceleration is built in and there is no separate GPU runtime to install.
+(`shared/config.js` still maps `darwin-x64` to the Intel llama-server build, for
+running from source on an Intel Mac with `npm start` — there is just no
+installer for it.)
+
+The GPU shows up by name — "Apple M3 Max" — read from `system_profiler`, since
+macOS has neither `nvidia-smi` nor WMI to ask.
 
 **First launch.** The DMG is **ad-hoc signed, not notarized** — there is no Apple
 Developer ID behind this project, and CI signs the bundle itself
@@ -357,13 +364,12 @@ npm test           # jest — 100% coverage gate on shared/* + miner/engineManag
 ```bash
 npm run dist:win     # electron-builder --win    → dist/LLMJob-Earn-Setup-<version>.exe (NSIS)
 npm run dist:linux   # electron-builder --linux  → dist/LLMJob-Earn-<version>.AppImage
-npm run dist:mac     # electron-builder --mac    → dist/LLMJob-Earn-<version>-{arm64,x64}.dmg
+npm run dist:mac     # electron-builder --mac    → dist/LLMJob-Earn-<version>-arm64.dmg
 ```
 
 Producing the Windows **installer** must happen on Windows (or Linux + Wine);
-the Linux **AppImage** builds on Linux; the macOS **DMGs** build on macOS (both
-architectures from one arm64 host — electron-builder fetches whichever Electron
-binary each target needs). CI builds all three — `windows-latest`,
+the Linux **AppImage** builds on Linux; the macOS **DMG** builds on macOS
+(Apple silicon only). CI builds all three — `windows-latest`,
 `ubuntu-latest` and `macos-latest` — see
 [`.github/workflows/miner-build.yml`](../.github/workflows/miner-build.yml); each
 build is uploaded as an artifact and, on a `v*` tag, published to the GitHub

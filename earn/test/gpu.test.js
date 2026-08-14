@@ -1,6 +1,6 @@
 'use strict';
 
-const { pickGpu, countGpus, parseGpuStats } = require('../src/shared/gpu');
+const { pickGpu, countGpus, parseGpuStats, parseMacGpu } = require('../src/shared/gpu');
 
 describe('pickGpu', () => {
   test('picks the real GPU and skips the basic display adapter', () => {
@@ -88,5 +88,41 @@ describe('parseGpuStats', () => {
     expect(parseGpuStats('')).toEqual([]);
     expect(parseGpuStats(null)).toEqual([]);
     expect(parseGpuStats(undefined)).toEqual([]);
+  });
+});
+
+describe('parseMacGpu', () => {
+  const wrap = (entries) => JSON.stringify({ SPDisplaysDataType: entries });
+
+  test('reads the chip name off an Apple silicon Mac', () => {
+    expect(parseMacGpu(wrap([{ _name: 'Apple M3 Max', sppci_model: 'Apple M3 Max', sppci_cores: '40' }])))
+      .toEqual({ name: 'Apple M3 Max', count: 1 });
+  });
+
+  // The two keys have swapped roles between macOS versions, so both are read —
+  // a missed rename would silently cost the label.
+  test('accepts an entry carrying only the older _name key', () => {
+    expect(parseMacGpu(wrap([{ _name: 'Apple M1 Pro' }]))).toEqual({ name: 'Apple M1 Pro', count: 1 });
+  });
+
+  // Same rule as Windows: an Intel Mac listing its iGPU first must still report
+  // the discrete card, which is the one that would run anything.
+  test('prefers the discrete card on a dual-GPU Intel Mac', () => {
+    expect(parseMacGpu(wrap([
+      { sppci_model: 'Intel UHD Graphics 630' },
+      { sppci_model: 'AMD Radeon Pro 5500M' },
+    ]))).toEqual({ name: 'AMD Radeon Pro 5500M', count: 1 });
+  });
+
+  test('returns null for anything unusable', () => {
+    expect(parseMacGpu('not json')).toBeNull();
+    expect(parseMacGpu('')).toBeNull();
+    expect(parseMacGpu(null)).toBeNull();
+    expect(parseMacGpu(undefined)).toBeNull();
+    expect(parseMacGpu(wrap([]))).toBeNull();
+    expect(parseMacGpu(wrap([{}]))).toBeNull();
+    expect(parseMacGpu(JSON.stringify({ SPDisplaysDataType: 'nope' }))).toBeNull();
+    expect(parseMacGpu(JSON.stringify({}))).toBeNull();
+    expect(parseMacGpu('null')).toBeNull();
   });
 });
