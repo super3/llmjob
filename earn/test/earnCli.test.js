@@ -224,7 +224,28 @@ function load() {
   return m;
 }
 
+// The CLI is shipped for Linux, but `node src/cli/earn-cli.js` runs anywhere —
+// so the macOS gate (no alpha-miner exists for it) and the arch-aware
+// llama-server download both need process.platform / process.arch pinned.
+//
+// Every test starts pinned to linux, and that is not tidiness: process.platform
+// now decides whether the CLI mines at all, so a suite that inherited the host's
+// platform passed on Linux and Windows and failed 18 tests on the macOS runner
+// (which was, correctly, refusing to mine). mainProcess.test.js has always
+// pinned for the same reason. Same lesson as the path-separator expectations
+// elsewhere in this suite: build the conditions the same way on every OS.
+const REAL_PLATFORM = Object.getOwnPropertyDescriptor(process, 'platform');
+const REAL_ARCH = Object.getOwnPropertyDescriptor(process, 'arch');
+function setPlatform(p) {
+  Object.defineProperty(process, 'platform', { value: p, configurable: true });
+}
+function setArch(a) {
+  Object.defineProperty(process, 'arch', { value: a, configurable: true });
+}
+
 beforeEach(() => {
+  setPlatform('linux'); // a mining-capable platform, whatever the host is
+  setArch('x64');
   out = [];
   err = [];
   intervals = [];
@@ -253,6 +274,8 @@ afterEach(() => {
   process.stdout.isTTY = origOutTty;
   process.stderr.isTTY = origErrTty;
   delete process.env.LLMJOB_EARN_UPDATED;
+  Object.defineProperty(process, 'platform', REAL_PLATFORM);
+  Object.defineProperty(process, 'arch', REAL_ARCH);
 });
 
 // ── help / version / bad args ────────────────────────────────────────────────
@@ -645,6 +668,50 @@ describe('local LLM', () => {
     await expect(m.run(['--mode', 'llm', '--no-update'])).resolves.toBe(1);
     expect(allOut()).toContain('downloading llama-server from');
     expect(allErr()).toContain('unzip not found — pass --llm-binary </path/to/llama-server> instead');
+  });
+
+  // macOS has no alpha-miner build. Left ungated, resolveEngine would download
+  // the pool's LINUX binary (every non-Windows path in shared/engine.js resolves
+  // to it), chmod +x it, and hand execvp a Mach-O-less ELF.
+  test('macOS refuses to mine rather than fetch the Linux engine, and still serves the LLM', async () => {
+    setPlatform('darwin');
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([]);
+    const p = m.run(['-a', ADDR, '--mode', 'auto', '--no-update', '--no-report']);
+    await settle();
+
+    expect(m.EngineManager.instances).toHaveLength(0);
+    expect(m.MinerManager.instances).toHaveLength(0);
+    expect(m.io.downloadFile).not.toHaveBeenCalled();
+    expect(allErr()).toContain('mining is not available on macOS');
+    // …and the model still comes up, so the box is useful to the cluster.
+    expect(m.LlmManager.instances).toHaveLength(1);
+
+    fire('SIGINT');
+    m.LlmManager.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('macOS with --mode mining has nothing to run and exits 1', async () => {
+    setPlatform('darwin');
+    const m = load();
+    await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update'])).resolves.toBe(1);
+    expect(allErr()).toContain('Switch the compute mode to LLM');
+    expect(allErr()).toContain('nothing to run — no miner and the LLM did not start');
+    expect(m.EngineManager.instances).toHaveLength(0);
+  });
+
+  test('macOS downloads the llama-server build for its own architecture', async () => {
+    for (const [arch, key] of [['arm64', 'darwin'], ['x64', 'darwin-x64']]) {
+      setPlatform('darwin');
+      setArch(arch);
+      const m = load();
+      m.LlmEngineManager.serverError = new Error('stop here');
+      await expect(m.run(['--mode', 'llm', '--no-update'])).resolves.toBe(1);
+      expect(m.LlmEngineManager.instances[0].opts.serverUrl).toBe(LLM.serverUrl[key]);
+      expect(allOut()).toContain('downloading llama-server from ' + LLM.serverUrl[key]);
+      out = [];
+    }
   });
 
   test('serves cluster jobs when connected: worker, pings, telemetry, SIGINT shutdown', async () => {

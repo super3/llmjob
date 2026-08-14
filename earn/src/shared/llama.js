@@ -15,6 +15,16 @@ function resolveServerBinary(binaryPath, platform) {
   return LLM.serverBin[platform] || LLM.serverBin.linux;
 }
 
+// Which llama-server archive this machine downloads. Most platforms publish a
+// single build, but macOS ships separate Apple-silicon (arm64) and Intel (x64)
+// archives, so an arch-qualified key ("darwin-x64") wins over the bare platform
+// key when config has one. Handing an Intel Mac the arm64 build would install a
+// binary the kernel refuses to exec, and the LLM is the whole point of the Mac
+// build. Unknown platforms fall back to Linux, mirroring resolveServerBinary.
+function resolveServerUrl(platform, arch) {
+  return LLM.serverUrl[platform + '-' + arch] || LLM.serverUrl[platform] || LLM.serverUrl.linux;
+}
+
 function serverBaseUrl(opts = {}) {
   return 'http://' + (opts.host || LLM.host) + ':' + (opts.port || LLM.port);
 }
@@ -74,5 +84,5 @@ function parseTokensPerSec(line) {
 }
 
 module.exports = {
-  resolveServerBinary, serverBaseUrl, buildServerArgs, isServerReady, parseTokensPerSec,
+  resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, isServerReady, parseTokensPerSec,
 };

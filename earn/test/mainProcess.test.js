@@ -285,6 +285,13 @@ function setPlatform(p) {
   Object.defineProperty(process, 'platform', { value: p, configurable: true });
 }
 
+// The llama-server download is arch-aware on macOS (arm64 vs Intel), so the
+// suite has to be able to pin process.arch the same way it pins the platform.
+const REAL_ARCH = Object.getOwnPropertyDescriptor(process, 'arch');
+function setArch(a) {
+  Object.defineProperty(process, 'arch', { value: a, configurable: true });
+}
+
 async function flush(rounds = 15) {
   for (let i = 0; i < rounds; i++) await new Promise((r) => setImmediate(r));
 }
@@ -294,6 +301,7 @@ function loadMain(opts = {}) {
   jest.resetModules();
   installTimers(opts.unref !== false);
   setPlatform(opts.platform || 'linux');
+  if (opts.arch) setArch(opts.arch);
   if (opts.resourcesPath) process.resourcesPath = opts.resourcesPath;
   else delete process.resourcesPath;
 
@@ -371,6 +379,7 @@ afterEach(() => {
   Object.assign(global, REAL_TIMERS);
   delete process.resourcesPath;
   Object.defineProperty(process, 'platform', REAL_PLATFORM);
+  Object.defineProperty(process, 'arch', REAL_ARCH);
 });
 
 // ── boot / window lifecycle ──────────────────────────────────────────────────
@@ -555,6 +564,7 @@ describe('simple ipc handlers', () => {
     const ctx = loadMain();
     expect(await ctx.invoke('config:get')).toEqual({
       regions: ctx.config.REGIONS, defaults: ctx.config.DEFAULTS, miner: ctx.config.MINER,
+      platform: { minerSupported: true },
     });
     expect(await ctx.invoke('llm:status')).toMatchObject({ ready: false, model: ctx.config.LLM.model.name });
     expect(await ctx.invoke('app:version')).toBe('0.0.0-test');
@@ -819,6 +829,84 @@ describe('updater', () => {
     ctx.updater.quitAndInstall.mockImplementationOnce(() => { throw new Error('locked'); });
     ctx.emit('app:update:install');
     expect(ctx.sent('miner:log').map((l) => l.line)).toContain('update install failed: locked');
+  });
+});
+
+// ── macOS ────────────────────────────────────────────────────────────────────
+// The Mac build serves the local LLM and never mines: AlphaPool has no Darwin
+// engine. The gate has to be explicit, because every non-Windows path in
+// shared/engine.js resolves to the LINUX artifact — an ungated Mac would
+// download an ELF binary, chmod it, and spawn something the kernel refuses.
+
+describe('macOS', () => {
+  it('tells the renderer it cannot mine, so the UI stops offering the mining modes', async () => {
+    const ctx = loadMain({ platform: 'darwin' });
+    expect(await ctx.invoke('config:get')).toMatchObject({ platform: { minerSupported: false } });
+  });
+
+  it('auto: serves the LLM, never resolves or spawns a mining engine, and says why', async () => {
+    const ctx = await boot({ platform: 'darwin' });
+    ctx.emit('miner:start', { mode: 'auto', address: VALID_ADDR });
+    await flush();
+
+    // No engine resolution at all — not a failed download, not a spawn.
+    expect(ctx.EngineManager.instances).toHaveLength(0);
+    expect(ctx.MinerManager.instances).toHaveLength(0);
+    expect(ctx.io.downloadFile).not.toHaveBeenCalled();
+    // …but the model does come up, which is the whole point of the Mac build.
+    expect(ctx.LlmManager.instances).toHaveLength(1);
+
+    const logs = ctx.sent('miner:log');
+    const note = logs.find((l) => /mining is not available on macOS/.test(l.line));
+    expect(note).toMatchObject({ level: 'warn' });
+    expect(note.line).toMatch(/local LLM runs as usual/);
+  });
+
+  it('mining-only: runs nothing, ends the session, and points at the LLM mode', async () => {
+    const ctx = await boot({ platform: 'darwin' });
+    ctx.emit('miner:start', { mode: 'mining', address: VALID_ADDR });
+    await flush();
+
+    expect(ctx.EngineManager.instances).toHaveLength(0);
+    expect(ctx.MinerManager.instances).toHaveLength(0);
+    expect(ctx.LlmManager.instances).toHaveLength(0);
+    // The renderer's optimistic "running" state must be undone, or it shows STOP
+    // for a session in which nothing is running.
+    expect(ctx.sent('miner:stopped')).toHaveLength(1);
+    expect(ctx.sent('miner:log').map((l) => l.line).join('\n'))
+      .toMatch(/Switch the compute mode to LLM/);
+  });
+
+  it('downloads the llama-server build matching the Mac architecture', async () => {
+    for (const [arch, key] of [['arm64', 'darwin'], ['x64', 'darwin-x64']]) {
+      const ctx = await boot({ platform: 'darwin', arch });
+      ctx.emit('miner:start', { mode: 'llm' });
+      await flush();
+      expect(ctx.LlmEngineManager.instances[0].opts.serverUrl).toBe(ctx.config.LLM.serverUrl[key]);
+    }
+  });
+
+  // Squirrel.Mac verifies the update bundle's signature against the running
+  // app's, and this build carries only an ad-hoc one — so wiring the updater
+  // would buy a periodic download that always ends in an error bar.
+  it('never wires the auto-updater, even packaged', async () => {
+    const ctx = await boot({ platform: 'darwin', isPackaged: true });
+    expect(ctx.updater.checkForUpdates).not.toHaveBeenCalled();
+    expect(ctx.updater.on).not.toHaveBeenCalled();
+    expect(ctx.interval(ctx.config.NETWORK.updateCheckIntervalMs)).toBeUndefined();
+  });
+
+  it('"check for updates" opens the Releases page instead of running a check that cannot install', async () => {
+    const ctx = await boot({ platform: 'darwin', isPackaged: true });
+    ctx.emit('app:update:check');
+    await flush();
+
+    expect(ctx.sent('app:update')).toEqual([expect.objectContaining({ phase: 'manual' })]);
+    expect(ctx.electron.shell.openExternal)
+      .toHaveBeenCalledWith(ctx.config.NETWORK.releasesUrl);
+    expect(ctx.updater.checkForUpdates).not.toHaveBeenCalled();
+    expect(ctx.sent('miner:log').map((l) => l.line).join('\n'))
+      .toContain('in-app updates are unavailable on macOS — opening ' + ctx.config.NETWORK.releasesUrl);
   });
 });
 

@@ -119,6 +119,18 @@ describe('formatUpdate', () => {
     });
   });
 
+  // macOS: the ad-hoc-signed build has no in-app update path, so "Check for
+  // updates" opens the Releases page and the bar confirms it. Deliberately not
+  // an `error` — nothing failed — and transient, like `latest`.
+  test('manual explains the macOS path without flagging a fault', () => {
+    expect(formatUpdate('manual')).toEqual({
+      phase: 'manual',
+      text: 'Updates are manual on macOS — opening the Releases page',
+      show: true,
+      transient: true,
+    });
+  });
+
   test('error flags a fault', () => {
     expect(formatUpdate('error')).toEqual({
       phase: 'error', text: 'Update check failed — see Logs.', show: true, error: true,

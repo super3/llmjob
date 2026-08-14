@@ -268,6 +268,53 @@ describe('boot with the full bridge', () => {
     expect($('btn-start').disabled).toBe(false);
   });
 
+  // macOS: main.js reports minerSupported:false on config:get, because there is
+  // no alpha-miner build for it. Leaving "Mining" and "Mining+LLM" on screen
+  // would arm a START that runs nothing at all.
+  it('drops the mining modes when the platform has no engine', async () => {
+    const { api } = makeFullApi();
+    api.getConfig.mockResolvedValue({ regions: {}, platform: { minerSupported: false } });
+    await boot({ api });
+
+    expect(document.querySelector('[data-mode="mining"]').hidden).toBe(true);
+    expect(document.querySelector('[data-mode="both"]').hidden).toBe(true);
+    // 'auto' and 'llm' survive: both degrade correctly to LLM-only, and 'auto'
+    // is what a fresh install lands on.
+    expect(document.querySelector('[data-mode="auto"]').hidden).toBe(false);
+    expect(document.querySelector('[data-mode="llm"]').hidden).toBe(false);
+    expect($('mode-hint').textContent).toMatch(/Runs the local LLM on this Mac/);
+    // START is never blocked there — no mode left needs a payout address.
+    setInput($('addr-input'), '');
+    expect($('btn-start').disabled).toBe(false);
+
+    // Picking LLM explicitly still reads normally.
+    click(document.querySelector('[data-mode="llm"]'));
+    expect($('mode-hint').textContent).toMatch(/Local model only/);
+  });
+
+  // A settings file written on a Windows/Linux rig (or by an older build) can
+  // carry mode:'both'. Without the correction the segment would light nothing
+  // and START would arm a plan whose mining half is refused anyway.
+  it('rewrites a saved mining mode to auto on a platform that cannot mine', async () => {
+    const { api } = makeFullApi();
+    api.getConfig.mockResolvedValue({ regions: {}, platform: { minerSupported: false } });
+    api.getSettings.mockResolvedValue({ address: ADDR, mode: 'both' });
+    await boot({ api });
+
+    expect(document.querySelector('[data-mode="auto"]').classList.contains('active')).toBe(true);
+    click($('btn-start'));
+    expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ mode: 'auto' }));
+  });
+
+  it('keeps every mode where mining works, including when config omits the platform', async () => {
+    const { api } = makeFullApi();
+    api.getConfig.mockResolvedValue({ regions: {}, platform: { minerSupported: true } });
+    api.getSettings.mockResolvedValue({ address: ADDR, mode: 'both' });
+    await boot({ api });
+    expect(document.querySelector('[data-mode="mining"]').hidden).toBe(false);
+    expect(document.querySelector('[data-mode="both"]').classList.contains('active')).toBe(true);
+  });
+
   it('starts and stops mining, renders stats, logs and engine phases', async () => {
     const { api, cbs } = makeFullApi();
     await boot({

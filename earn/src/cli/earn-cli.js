@@ -40,6 +40,8 @@ const { planLlmInstances } = require('../shared/llmPlan');
 const { LlmFleet } = require('../main/llmFleet');
 const { JobWorker } = require('../main/jobWorker');
 const { resolvePlan } = require('../shared/llmMode');
+const { minerSupported, minerUnsupportedNote } = require('../shared/platform');
+const { resolveServerUrl } = require('../shared/llama');
 const format = require('../shared/format');
 const pkg = require('../../package.json');
 
@@ -212,15 +214,16 @@ async function resolveLlmBinary(settings, dir) {
     }
     return settings.llmBinary;
   }
+  const serverUrl = resolveServerUrl(process.platform, process.arch);
   const engine = new LlmEngineManager({
-    dir, platform: process.platform, serverUrl: LLM.serverUrl[process.platform],
+    dir, platform: process.platform, serverUrl,
     fs, download: downloadFile, extract: (zip, dest) => extractLlamaZip(zip, dest, LLM_UNZIP_HINT), chmod: fs.chmodSync,
   });
   if (engine.isServerInstalled()) {
     log('LLM server found: ' + engine.serverBinaryPath());
     return engine.serverBinaryPath();
   }
-  log('downloading llama-server from ' + LLM.serverUrl[process.platform] + ' …');
+  log('downloading llama-server from ' + serverUrl + ' …');
   try {
     return await engine.ensureServer((pct) => {
       if (pct != null) process.stdout.write('\r  downloading… ' + pct + '%   ');
@@ -596,11 +599,19 @@ async function run(argv) {
 
   // Decide which engines run from the compute mode (mirrors the GUI): mine,
   // run a local LLM, or both. `canLlm` is always true on the CLI — the LLM's
-  // own setup (binary/model) fails soft below if it can't start.
-  const plan = resolvePlan(settings.mode, { canMine: isValidAddress(settings.address), canLlm: true });
+  // own setup (binary/model) fails soft below if it can't start. `canMine` also
+  // asks the platform: macOS has no alpha-miner build, and without the gate the
+  // engine resolver would download the Linux binary and spawn something the
+  // kernel refuses to exec (see shared/platform).
+  const plan = resolvePlan(settings.mode, {
+    canMine: isValidAddress(settings.address) && minerSupported(process.platform),
+    canLlm: true,
+  });
 
   log('LLMJob Earn CLI v' + pkg.version);
   log('mode:       ' + settings.mode + (settings.modeProvided ? '' : '  (default)'));
+  const platformNote = minerUnsupportedNote(process.platform, settings.mode);
+  if (platformNote) log(platformNote, process.stderr);
 
   let endpoint = null;
   if (plan.miner) {

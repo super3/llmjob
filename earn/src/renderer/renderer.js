@@ -51,6 +51,7 @@
     view: 'mine',        // mine | chat | api | settings | logs
     returnTab: 'mine',   // where settings/logs return to
     address: '', gpu: '', mode: 'auto',
+    canMine: true,       // false on macOS — no alpha-miner build exists for it
     llm: { ready: false, endpoint: null, webUrl: null, tps: 0, model: null, error: null, note: null },
     chat: { messages: [], streaming: false, streamText: '', bubble: null },
     node: { connected: false, nodeId: null, name: null },
@@ -73,6 +74,15 @@
     llm: 'Local model only — no mining, no payout address needed.',
     both: 'Mine and serve — the model takes ~5 GB VRAM, mining keeps the rest.',
   };
+
+  // The modes that need a mining engine. On a platform without one (macOS —
+  // AlphaPool builds alpha-miner for Windows and Linux only) they are removed
+  // from the segmented control rather than left to disappoint: picking "Mining"
+  // there would arm a START that runs nothing at all. 'auto' stays, because it
+  // degrades correctly on its own — main.js refuses the miner and the local LLM
+  // still comes up — and it is the default a fresh install lands on.
+  const MINING_MODES = ['mining', 'both'];
+  const NO_MINER_HINT = 'Runs the local LLM on this Mac. Mining needs an NVIDIA GPU on Windows or Linux.';
 
   // Prompt chips shown in the empty chat — the real model answers them.
   const SUGGESTIONS = [
@@ -117,7 +127,27 @@
   function renderMode() {
     const btns = el.modeSeg.querySelectorAll('[data-mode]');
     btns.forEach((b) => b.classList.toggle('active', b.getAttribute('data-mode') === state.mode));
-    el.modeHint.textContent = MODE_HINTS[state.mode] || MODE_HINTS.auto;
+    el.modeHint.textContent = !state.canMine && state.mode === 'auto'
+      ? NO_MINER_HINT
+      : (MODE_HINTS[state.mode] || MODE_HINTS.auto);
+  }
+
+  // Apply what the main process says this OS can do: on a platform with no
+  // mining engine, drop the mining modes from the segmented control.
+  function applyPlatform(p) {
+    state.canMine = !(p && p.minerSupported === false);
+    if (state.canMine) return;
+    el.modeSeg.querySelectorAll('[data-mode]').forEach((b) => {
+      if (MINING_MODES.indexOf(b.getAttribute('data-mode')) !== -1) b.hidden = true;
+    });
+  }
+
+  // The saved mode, corrected for this platform. A settings file carrying
+  // 'mining' or 'both' — written on another machine, or by a build from before
+  // this one — must not select a button that is no longer on screen, leaving the
+  // segment with nothing lit and START arming a run that does nothing.
+  function usableMode(mode) {
+    return !state.canMine && MINING_MODES.indexOf(mode) !== -1 ? 'auto' : mode;
   }
 
   function setMode(m) {
@@ -634,6 +664,8 @@
     initSuggestions();
     if (api.getConfig) {
       const config = await api.getConfig();
+      // Before the saved settings are applied — usableMode() below depends on it.
+      applyPlatform(config && config.platform);
       const regions = (config && config.regions) || {};
       el.setRegion.innerHTML = '';
       Object.keys(regions).forEach((key) => {
@@ -652,7 +684,7 @@
       el.setRegion.value = s.region || 'us2';
       el.setDifficulty.value = s.difficulty || 524288;
       el.setMdl.value = s.mdlAddress || '';
-      state.mode = s.mode || 'mining';
+      state.mode = usableMode(s.mode || 'mining');
       resumeMining = !!(s.resumeMining && isValid(state.address));
     }
     renderMode();
