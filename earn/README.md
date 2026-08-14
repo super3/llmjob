@@ -3,8 +3,9 @@
 A desktop GUI that turns the excess compute on GPUs you already own into crypto,
 wrapping the AlphaPool [`alpha-miner`](https://pearl.alphapool.tech/#setup) engine
 for Pearl (**PRL**). Paste a payout address, hit **Start**, and earn — no command
-line. Built with Electron and shipped for **Windows** and **Linux**; headless
-rigs can use the [command-line miner](#headless-cli-linux) instead of the GUI.
+line. Built with Electron and shipped for **Windows**, **Linux** and
+**[macOS](#macos-llm-only)** (LLM only — see below); headless rigs can use the
+[command-line miner](#headless-cli-linux) instead of the GUI.
 
 > The LLM "co-mining" side of LLMJob is landing: both clients (GUI and headless
 > CLI) can now run a local llama.cpp `llama-server` alongside — or instead of —
@@ -28,6 +29,7 @@ rigs can use the [command-line miner](#headless-cli-linux) instead of the GUI.
   - `address.js` — `prl1p…` / `mdl1p…` validation, shortening, and the merge-mining combined address.
   - `cliArgs.js` — parses/validates the headless CLI flags into the same settings shape the GUI uses.
   - `llmMode.js` — the compute-mode policy (mining / both / llm / auto → which engines run), shared by the GUI and the CLI.
+  - `platform.js` — what each OS can do: whether a mining engine exists for it (no on macOS) and whether electron-updater can install there.
   - `llama.js` / `vram.js` — build the local `llama-server` command line + parse its output, and size the GPU offload (`--n-gpu-layers`) from free VRAM.
   - `selfUpdate.js` — decides, from the running version + GitHub's latest release, whether the CLI binary should self-update.
   - `minerArgs.js` — builds the engine argument vector / launcher env (`--address`, `--worker`, `--password "x;d=N"`, `--force-backend`).
@@ -81,6 +83,47 @@ On Linux the engine version is picked per rig (`shared/engine.js`): driver
 40/50-series), older drivers stay on the CUDA 12 stable (`alpha-miner-1.8.3`).
 The version is part of the cached filename, so bumping it forces a fresh
 download instead of trusting a stale cache.
+
+## macOS (LLM only)
+
+The Mac build runs **the local LLM and nothing else**. AlphaPool builds
+`alpha-miner` for Windows and Linux only — there is no macOS binary at any
+version, and no CUDA GPU to run one on — so the app refuses the miner up front
+(`src/shared/platform.js`) rather than downloading the Linux ELF that every
+non-Windows path in `shared/engine.js` would otherwise resolve to. Concretely:
+
+- **Settings → Compute Mode** offers only **Auto** and **LLM**; the two mining
+  modes are removed rather than left to arm a **START** that runs nothing.
+- **Auto** is the default and does the right thing — the model comes up, the
+  mining half is skipped, and the Logs tab says so.
+- Everything downstream of the model is unchanged: the Chat tab, the
+  OpenAI-compatible endpoint at `127.0.0.1:8080/v1`, and
+  [serving cluster jobs](#serve-cluster-jobs-proxy-llm-through-llmjob) all work
+  exactly as they do on a Windows or Linux box.
+
+`llama-server` comes from llama.cpp's macOS release, picked per architecture
+(Apple silicon gets the arm64 build, Intel Macs the x64 one) — Metal
+acceleration is built into both, so there is no separate GPU runtime to install.
+
+**First launch.** The DMG is **ad-hoc signed, not notarized** — there is no Apple
+Developer ID behind this project, and CI signs the bundle itself
+(`scripts/mac-adhoc-sign.mjs`) only because Apple silicon refuses to execute a
+binary with no signature at all. macOS will therefore block the first open:
+
+> "LLMJob Earn" can't be opened because Apple cannot check it for malicious software.
+
+Allow it once in **System Settings → Privacy & Security → Open Anyway**, or from
+a terminal:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/LLMJob Earn.app"
+```
+
+For the same reason the app **does not auto-update on macOS**: Squirrel.Mac only
+installs an update whose signature matches the running app's, which an ad-hoc
+signature cannot satisfy. "Check for updates" opens the
+[Releases page](https://github.com/super3/llmjob/releases/latest) instead, and
+you install the new DMG over the old app.
 
 ## HiveOS (flight sheet)
 
@@ -309,19 +352,32 @@ npm run start:cli -- --address prl1p…   # run the headless Linux miner
 npm test           # jest — 100% coverage gate on shared/* + miner/engineManager
 ```
 
-## Build (Windows + Linux)
+## Build (Windows + Linux + macOS)
 
 ```bash
 npm run dist:win     # electron-builder --win    → dist/LLMJob-Earn-Setup-<version>.exe (NSIS)
 npm run dist:linux   # electron-builder --linux  → dist/LLMJob-Earn-<version>.AppImage
+npm run dist:mac     # electron-builder --mac    → dist/LLMJob-Earn-<version>-{arm64,x64}.dmg
 ```
 
 Producing the Windows **installer** must happen on Windows (or Linux + Wine);
-the Linux **AppImage** builds on Linux. CI builds both — Windows on
-`windows-latest` and Linux on `ubuntu-latest` — see
+the Linux **AppImage** builds on Linux; the macOS **DMGs** build on macOS (both
+architectures from one arm64 host — electron-builder fetches whichever Electron
+binary each target needs). CI builds all three — `windows-latest`,
+`ubuntu-latest` and `macos-latest` — see
 [`.github/workflows/miner-build.yml`](../.github/workflows/miner-build.yml); each
 build is uploaded as an artifact and, on a `v*` tag, published to the GitHub
 Release.
+
+The mining engine is bundled into the Windows and Linux builds only
+(`build.win.extraResources` / `build.linux.extraResources`); the Mac build ships
+neither it nor the Windows VC++ runtime DLLs, since it cannot mine. The macOS app
+is ad-hoc signed in an `afterPack` hook — see
+[macOS (LLM only)](#macos-llm-only) for why, and what it means on first launch.
+
+`src/assets/icon.png` (1024×1024, the source electron-builder converts into the
+macOS `.icns` and the Linux icon set) is generated by
+`node scripts/build-icon.mjs`; Windows keeps its own `icon.ico`.
 
 ---
 

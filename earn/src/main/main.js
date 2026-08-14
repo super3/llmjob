@@ -37,6 +37,8 @@ const { LlmFleet } = require('./llmFleet');
 const { buildChatBody } = require('../shared/llmChat');
 const { JobWorker } = require('./jobWorker');
 const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
+const { minerSupported, minerUnsupportedNote, autoUpdateSupported } = require('../shared/platform');
+const { resolveServerUrl } = require('../shared/llama');
 const { buildBalanceUrl, parseBalance, buildMdlBalanceUrl, parseMdlBalance } = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
 const {
@@ -500,6 +502,16 @@ function setupUpdater() {
 // isn't wired, so walk the UI through checking → up-to-date so the button still
 // gives feedback (the installed app runs a real check below).
 function checkForUpdate() {
+  // macOS: there is no in-app update to check for (the build is ad-hoc signed,
+  // so Squirrel.Mac would refuse to install whatever it downloaded — see
+  // shared/platform.autoUpdateSupported). Say so and open the Releases page,
+  // which is the actual next step, rather than run a check that can only fail.
+  if (!autoUpdateSupported(process.platform)) {
+    send('app:update', formatUpdate('manual'));
+    send('miner:log', { level: 'info', line: 'in-app updates are unavailable on macOS — opening ' + NETWORK.releasesUrl });
+    openExternalSafe(NETWORK.releasesUrl);
+    return;
+  }
   if (!app.isPackaged) {
     send('app:update', formatUpdate('checking'));
     setTimeout(() => send('app:update', formatUpdate('latest')), 700);
@@ -600,11 +612,15 @@ async function resolveLlmBinary(dir, onProgress) {
   const name = LLM.serverBin[process.platform] || LLM.serverBin.linux;
   const bundled = process.resourcesPath && path.join(process.resourcesPath, 'llm', name);
   if (bundled && fs.existsSync(bundled)) return bundled;
-  // The server ships as a folder of DLLs + the .exe, so extraction must keep them
-  // together: Windows flattens the zip with PowerShell, Linux/macOS with `unzip -j`.
+  // The server ships as a folder of shared libraries + the binary, so extraction
+  // must keep them together: Windows flattens the zip with PowerShell; elsewhere
+  // extractLlamaZip sniffs the archive (tar.gz on Linux/macOS, so `tar
+  // --strip-components=1`) and flattens it the same way. macOS needs exactly
+  // that: llama-server's only LC_RPATH is `@loader_path`, so it finds its
+  // dylibs — including libggml-metal — beside itself and nowhere else.
   const extract = process.platform === 'win32' ? extractLlamaZipWin : (zip, dest) => extractLlamaZip(zip, dest);
   const engine = new LlmEngineManager({
-    dir, platform: process.platform, serverUrl: LLM.serverUrl[process.platform],
+    dir, platform: process.platform, serverUrl: resolveServerUrl(process.platform, process.arch),
     fs, download: downloadFile, extract, chmod: fs.chmodSync,
   });
   return engine.ensureServer(onProgress);
@@ -1130,7 +1146,18 @@ function waitForMinerUp(capMs) {
 // state shows STOP for a session in which nothing runs.
 async function runPlan(settings) {
   const epoch = miningEpoch;
-  const plan = resolvePlan(settings.mode || DEFAULT_MODE, { canMine: isValidAddress(settings.address), canLlm: true });
+  const mode = settings.mode || DEFAULT_MODE;
+  // macOS can serve the local LLM but has no mining engine to run, so the miner
+  // is refused up front rather than left to fail on a Linux binary it would have
+  // downloaded first (see shared/platform). The note explains the gap; without
+  // it an 'auto' Mac start silently serves inference only, and a 'mining' one
+  // runs nothing at all with no reason on screen.
+  const note = minerUnsupportedNote(process.platform, mode);
+  if (note) send('miner:log', { level: 'warn', line: note });
+  const plan = resolvePlan(mode, {
+    canMine: isValidAddress(settings.address) && minerSupported(process.platform),
+    canLlm: true,
+  });
   if (plan.miner) {
     // Start mining FIRST, then — when co-running — wait until the miner reports a
     // non-zero hashrate before starting the LLM. Spawning the process (or even
@@ -1203,7 +1230,15 @@ ipcMain.handle('settings:get', () => Object.assign(
   loadSettings(),
 ));
 ipcMain.handle('llm:status', () => llmStatus);
-ipcMain.handle('config:get', () => ({ regions: REGIONS, defaults: DEFAULTS, miner: MINER }));
+// `platform` rides along on the config the renderer already fetches at startup,
+// so the UI can stop offering what this OS can't do (the mining compute modes on
+// macOS) without a second round trip or a new preload method.
+ipcMain.handle('config:get', () => ({
+  regions: REGIONS,
+  defaults: DEFAULTS,
+  miner: MINER,
+  platform: { minerSupported: minerSupported(process.platform) },
+}));
 ipcMain.handle('miner:difficultyForCard', (_e, name) => difficultyForCard(name));
 ipcMain.handle('gpu:detect', () => detectGpu());
 ipcMain.handle('region:detect', () => detectRegion());
@@ -1249,7 +1284,11 @@ ipcMain.on('app:update:install', () => {
 
 app.whenReady().then(() => {
   createWindow();
-  if (app.isPackaged) setupUpdater();
+  // Not on macOS: Squirrel.Mac checks the downloaded bundle's signature against
+  // the running app's, and this build carries only an ad-hoc one, so wiring the
+  // updater there buys a periodic download that always ends in an error bar the
+  // user can do nothing about. checkForUpdate() sends them to Releases instead.
+  if (app.isPackaged && autoUpdateSupported(process.platform)) setupUpdater();
   // Pull live network economics so earnings estimates and the balance's USD
   // figure reflect the real price + network, not the stale fallback constants.
   refreshEconomics();

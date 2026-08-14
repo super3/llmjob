@@ -2,8 +2,10 @@
 
 const { ALL_LAYERS } = require('../src/shared/vram');
 
+const { LLM } = require('../src/shared/config');
+
 const {
-  resolveServerBinary, serverBaseUrl, buildServerArgs, isServerReady, parseTokensPerSec,
+  resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, isServerReady, parseTokensPerSec,
 } = require('../src/shared/llama');
 
 describe('resolveServerBinary', () => {
@@ -14,6 +16,33 @@ describe('resolveServerBinary', () => {
     expect(resolveServerBinary(null, 'win32')).toBe('llama-server.exe');
     expect(resolveServerBinary(null, 'linux')).toBe('llama-server');
     expect(resolveServerBinary(undefined, 'sunos')).toBe('llama-server');
+  });
+});
+
+describe('resolveServerUrl', () => {
+  test('platforms with one build ignore the arch', () => {
+    expect(resolveServerUrl('win32', 'x64')).toBe(LLM.serverUrl.win32);
+    expect(resolveServerUrl('win32', 'arm64')).toBe(LLM.serverUrl.win32);
+    expect(resolveServerUrl('linux', 'x64')).toBe(LLM.serverUrl.linux);
+  });
+
+  // llama.cpp ships macOS as two archives. Handing an Intel Mac the arm64 build
+  // installs a binary the kernel refuses to exec — and on macOS the LLM is the
+  // only thing the app can run at all.
+  test('macOS picks per architecture', () => {
+    expect(resolveServerUrl('darwin', 'arm64')).toBe(LLM.serverUrl.darwin);
+    expect(resolveServerUrl('darwin', 'x64')).toBe(LLM.serverUrl['darwin-x64']);
+    expect(LLM.serverUrl['darwin-x64']).not.toBe(LLM.serverUrl.darwin);
+    expect(LLM.serverUrl.darwin).toMatch(/macos-arm64\.tar\.gz$/);
+    expect(LLM.serverUrl['darwin-x64']).toMatch(/macos-x64\.tar\.gz$/);
+  });
+
+  test('an unrecognised arch falls back to the platform build', () => {
+    expect(resolveServerUrl('darwin', 'ppc')).toBe(LLM.serverUrl.darwin);
+  });
+
+  test('an unknown platform falls back to linux, like resolveServerBinary', () => {
+    expect(resolveServerUrl('sunos', 'x64')).toBe(LLM.serverUrl.linux);
   });
 });
 

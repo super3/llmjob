@@ -13,6 +13,7 @@
     "test:watch": "jest --watch",
     "dist:win": "electron-builder --win",
     "dist:linux": "electron-builder --linux",
+    "dist:mac": "electron-builder --mac",
     "dist:cli": "node scripts/build-cli.mjs",
     "dist:hiveos": "node scripts/build-hiveos.mjs"
   },
@@ -45,27 +46,27 @@
       "src/**/*",
       "package.json"
     ],
-    "extraResources": [
-      {
-        "from": "vendor/engine",
-        "to": "engine",
-        "filter": [
-          "**/*",
-          "**/.*"
-        ]
-      },
-      {
-        "from": "vendor/llm-runtime",
-        "to": "llm-runtime",
-        "filter": [
-          "**/*.dll"
-        ]
-      }
-    ],
     "win": {
       "target": "nsis",
       "icon": "src/assets/icon.ico",
-      "artifactName": "LLMJob-Earn-Setup-${version}.${ext}"
+      "artifactName": "LLMJob-Earn-Setup-${version}.${ext}",
+      "extraResources": [
+        {
+          "from": "vendor/engine",
+          "to": "engine",
+          "filter": [
+            "**/*",
+            "**/.*"
+          ]
+        },
+        {
+          "from": "vendor/llm-runtime",
+          "to": "llm-runtime",
+          "filter": [
+            "**/*.dll"
+          ]
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,
@@ -77,7 +78,40 @@
       "target": "AppImage",
       "icon": "src/assets/icon.png",
       "category": "Utility",
-      "artifactName": "LLMJob-Earn-${version}.${ext}"
+      "artifactName": "LLMJob-Earn-${version}.${ext}",
+      "extraResources": [
+        {
+          "from": "vendor/engine",
+          "to": "engine",
+          "filter": [
+            "**/*",
+            "**/.*"
+          ]
+        },
+        {
+          "from": "vendor/llm-runtime",
+          "to": "llm-runtime",
+          "filter": [
+            "**/*.dll"
+          ]
+        }
+      ]
+    },
+    "afterPack": "./scripts/mac-adhoc-sign.mjs",
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "icon": "src/assets/icon.png",
+      "category": "public.app-category.utilities",
+      "artifactName": "LLMJob-Earn-${version}-${arch}.${ext}",
+      "identity": null
     },
     "publish": [
       {

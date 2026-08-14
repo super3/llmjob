@@ -1,8 +1,9 @@
-name: Earn build (Windows + Linux)
+name: Earn build (Windows + Linux + macOS)
 
-# Builds the LLMJob Earn (earn) desktop app for Windows and Linux. Runs the
-# unit tests, then produces the NSIS installer (Windows) and AppImage (Linux)
-# on their respective runners and uploads them as artifacts.
+# Builds the LLMJob Earn (earn) desktop app for Windows, Linux and macOS. Runs
+# the unit tests, then produces the NSIS installer (Windows), the AppImage
+# (Linux) and the DMGs (macOS, one per architecture) on their respective runners
+# and uploads them as artifacts.
 on:
   push:
     branches: [ main ]
@@ -38,6 +39,20 @@ jobs:
             artifact: llmjob-earn-linux
             dist_path: |
               earn/dist/*.AppImage
+          # macOS runs the local LLM (llama.cpp ships a Metal build) but never
+          # mines — AlphaPool has no Darwin engine, so the app refuses the miner
+          # up front (src/shared/platform.js) and the engine-bundling steps below
+          # are Windows/Linux-only. Both architectures are built from the same
+          # arm64 runner: electron-builder fetches whichever Electron binary each
+          # target needs, and the app is ad-hoc signed in an afterPack hook
+          # (earn/scripts/mac-adhoc-sign.mjs) because Apple silicon will not exec
+          # an unsigned binary and electron-builder does not sign without a
+          # keychain identity.
+          - os: macos-latest
+            platform: mac
+            artifact: llmjob-earn-macos
+            dist_path: |
+              earn/dist/*.dmg
     runs-on: ${{ matrix.os }}
     defaults:
       run:

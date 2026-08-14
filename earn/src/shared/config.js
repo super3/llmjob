@@ -56,6 +56,12 @@ const NETWORK = {
   // a broken build indefinitely. Six hours is frequent enough that a hotfix
   // lands the same day without polling GitHub for no reason.
   updateCheckIntervalMs: 6 * 60 * 60 * 1000,
+  // Where a user goes to update by hand. Only macOS needs it — the Mac build is
+  // ad-hoc signed, so Squirrel.Mac cannot install an update over it and the app
+  // does not wire the updater there at all (see shared/platform.autoUpdateSupported).
+  // Sending them to the releases page beats a "Check for updates" button that
+  // can only ever fail.
+  releasesUrl: 'https://github.com/super3/llmjob/releases/latest',
 };
 
 // Network economics for earnings estimates. The app live-refreshes these from
@@ -106,13 +112,23 @@ const LLM = {
   // — these are pinned to a specific build (old releases keep their assets, so
   // the pins stay resolvable). Windows/Linux use the **Vulkan** archive: a single
   // self-contained bundle (no separate CUDA `cudart` package) that runs
-  // GPU-accelerated on NVIDIA/AMD/Intel. macOS uses the arm64 build (Metal is
-  // built in). Windows ships a .zip; Linux/macOS ship .tar.gz — the extractor
-  // (io.extractLlamaZip) sniffs the archive type and flattens either into place.
+  // GPU-accelerated on NVIDIA/AMD/Intel. macOS uses the Metal builds, which are
+  // built per architecture. Windows ships a .zip; Linux/macOS ship .tar.gz — the
+  // extractor (io.extractLlamaZip) sniffs the archive type and flattens either
+  // into place, which is exactly what the macOS archives need: one top folder
+  // holding llama-server beside its dylibs, and the binary's only LC_RPATH is
+  // `@loader_path`, so the flattened layout is the layout it expects.
+  //
+  // Keys are `<platform>` with an optional `<platform>-<arch>` override that
+  // wins when present (see llama.resolveServerUrl). Only macOS needs one today:
+  // Apple silicon and Intel Macs get different archives, and handing an Intel
+  // Mac the arm64 build yields a binary the kernel refuses to exec — the LLM's
+  // one job on the platform where mining can't run at all.
   serverUrl: {
     win32: 'https://github.com/ggml-org/llama.cpp/releases/download/b9902/llama-b9902-bin-win-vulkan-x64.zip',
     linux: 'https://github.com/ggml-org/llama.cpp/releases/download/b9902/llama-b9902-bin-ubuntu-vulkan-x64.tar.gz',
     darwin: 'https://github.com/ggml-org/llama.cpp/releases/download/b9902/llama-b9902-bin-macos-arm64.tar.gz',
+    'darwin-x64': 'https://github.com/ggml-org/llama.cpp/releases/download/b9902/llama-b9902-bin-macos-x64.tar.gz',
   },
   // A small, capable model to start with: Google Gemma 4 E4B Instruct, Q4_K_M
   // GGUF (~5 GB). "E4B" = ~4.5B *effective* params via Per-Layer Embeddings, so
