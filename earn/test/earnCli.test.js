@@ -227,6 +227,13 @@ function load() {
 // The CLI is shipped for Linux, but `node src/cli/earn-cli.js` runs anywhere —
 // so the macOS gate (no alpha-miner exists for it) and the arch-aware
 // llama-server download both need process.platform / process.arch pinned.
+//
+// Every test starts pinned to linux, and that is not tidiness: process.platform
+// now decides whether the CLI mines at all, so a suite that inherited the host's
+// platform passed on Linux and Windows and failed 18 tests on the macOS runner
+// (which was, correctly, refusing to mine). mainProcess.test.js has always
+// pinned for the same reason. Same lesson as the path-separator expectations
+// elsewhere in this suite: build the conditions the same way on every OS.
 const REAL_PLATFORM = Object.getOwnPropertyDescriptor(process, 'platform');
 const REAL_ARCH = Object.getOwnPropertyDescriptor(process, 'arch');
 function setPlatform(p) {
@@ -237,6 +244,8 @@ function setArch(a) {
 }
 
 beforeEach(() => {
+  setPlatform('linux'); // a mining-capable platform, whatever the host is
+  setArch('x64');
   out = [];
   err = [];
   intervals = [];
