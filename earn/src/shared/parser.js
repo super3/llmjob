@@ -38,8 +38,50 @@ function gpuIndex(s) {
   return m ? Number(m[1]) : null;
 }
 
+// alpha-miner 1.9.4 stopped emitting key=value logs and renders a live stats
+// table instead, one row per card:
+//
+//    #0  RTX 5090   308.17 TH/s   70C   46%   281W   1.098   2902   13801   3   0   0
+//
+// (hashrate, temp, fan, power, efficiency, core clock, mem clock, then the
+// cumulative accepted / rejected / ignored counters). The `Total` row carries no
+// `#N` and is skipped, so a multi-GPU rig still accumulates per card.
+//
+// Parsed by locating the hashrate token and reading outwards rather than by
+// matching the full column layout: a rig that reports no fan or clock would
+// otherwise fail the whole row and silently show zero — the exact failure this
+// replaces.
+const ANSI = /\[[0-9;]*m/g; // eslint-disable-line no-control-regex
+const HASHRATE = /([\d.]+)\s*([KMGTPE]?)H\/s/i;
+const UNIT_TH = { '': 1e-12, K: 1e-9, M: 1e-6, G: 1e-3, T: 1, P: 1e3, E: 1e6 };
+
+function parseStatsRow(s) {
+  const head = s.match(/^#(\d+)\s+(.+)$/);
+  if (!head) return null;
+  const rest = head[2];
+  const hr = rest.match(HASHRATE);
+  if (!hr) return null;
+
+  const tail = rest.slice(hr.index + hr[0].length);
+  const counters = tail.trim().split(/\s+/).filter((t) => /^\d+$/.test(t)).slice(-3);
+  const temp = tail.match(/(\d+)\s*C\b/);
+  const power = tail.match(/(\d+)\s*W\b/);
+  const name = rest.slice(0, hr.index).trim();
+
+  return {
+    type: 'status',
+    gpuIndex: Number(head[1]),
+    hashrate: Number(hr[1]) * UNIT_TH[hr[2].toUpperCase()],
+    accepted: counters.length === 3 ? Number(counters[0]) : null,
+    rejected: counters.length === 3 ? Number(counters[1]) : null,
+    power: power ? Number(power[1]) : null,
+    temp: temp ? Number(temp[1]) : null,
+    gpu: name || null,
+  };
+}
+
 function parseLine(line) {
-  const s = String(line == null ? '' : line).trim();
+  const s = String(line == null ? '' : line).replace(ANSI, '').trim();
   if (!s) return null;
 
   // Periodic miner status: hashrate + cumulative accepted/rejected + GPU.
@@ -63,6 +105,15 @@ function parseLine(line) {
   const conn = s.match(/component=pool\s+connected\s+host=(\S+)\s+port=(\d+)/i);
   if (conn) {
     return { type: 'connected', gpuIndex: gpuIndex(s), endpoint: conn[1] + ':' + conn[2], gpu: gpuName(s) };
+  }
+
+  // 1.9.4's stats table and its plainer connection line.
+  const row = parseStatsRow(s);
+  if (row) return row;
+
+  const conn194 = s.match(/\[stratum\]\s+connected to\s+(\S+?):(\d+)/i);
+  if (conn194) {
+    return { type: 'connected', gpuIndex: null, endpoint: conn194[1] + ':' + conn194[2], gpu: null };
   }
 
   return null;
