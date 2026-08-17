@@ -1018,8 +1018,14 @@ describe('extractEnginePackage', () => {
     setPlatform('linux');
     magic([0x50, 0x4b]);
     execFile.mockImplementation((cmd, args, opts, cb) => cb(null));
-    await io.extractEnginePackage('D:\\dl\\pkg.zip', '/cache');
-    expect(execFile.mock.calls.pop()[1]).toEqual(['-xf', 'D:\\dl\\pkg.zip']);
+    // "Another drive" has to be computed, not hardcoded: on Windows a bare
+    // /cache resolves against the cwd's OWN drive, and the GitHub runner builds
+    // on D: while a dev box is usually C:. Naming one literally makes this a
+    // same-drive relative path on exactly one of them.
+    const other = process.cwd().toUpperCase().startsWith('D:') ? 'E:' : 'D:';
+    const far = other + '\\dl\\pkg.zip';
+    await io.extractEnginePackage(far, '/cache');
+    expect(execFile.mock.calls.pop()[1]).toEqual(['-xf', far]);
   });
 
   test('rejects when the package cannot be read', async () => {
