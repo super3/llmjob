@@ -29,7 +29,7 @@ const nodeStore = require('../main/nodeStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const { NETWORK, MINER, LLM, NODE, endpointFor, regionLabel, difficultyForCard } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
-const { ENGINE, pickEngineVersion, engineDownloadUrl, backendForEngine, manualInstallHint } = require('../shared/engine');
+const { ENGINE, engineVersionFor, driverTooOld, engineDownloadUrl, backendForEngine, manualInstallHint } = require('../shared/engine');
 const { describeSetupError } = require('../shared/engineError');
 const nodeProto = require('../shared/node');
 const { buildMinerReports } = require('../shared/minerReport');
@@ -85,14 +85,18 @@ async function resolveEngine(settings) {
     return settings.binaryPath;
   }
 
-  // Pick the engine build the rig's driver can run: the 1.8.6+ line brings
-  // 3-8% more hashrate on 40/50-series but needs NVIDIA driver >= 580.
+  // One build per platform now — see ENGINE. The driver check no longer selects
+  // anything, but it is still worth saying out loud BEFORE a HiveOS rig spends
+  // half a gigabyte of bandwidth on an engine its driver will refuse to run.
   const driverMajor = await detectDriverMajor();
-  const version = pickEngineVersion(driverMajor);
-  log('engine:     alpha-miner ' + version + (version === ENGINE.preferred
-    ? '' : driverMajor == null
-      ? '  (driver version unknown — using the compatible build)'
-      : '  (driver ' + driverMajor + ' < ' + ENGINE.minDriverMajor + ' — update it for the ~5% faster build)'));
+  const version = engineVersionFor(process.platform);
+  log('engine:     alpha-miner ' + version);
+  if (driverTooOld(driverMajor)) {
+    log('WARNING:    NVIDIA driver ' + driverMajor + ' is older than R' + ENGINE.minDriverMajor
+      + ' (CUDA 13). alpha-miner ' + version + ' will exit at startup with a driver notice —'
+      + ' update the driver. There is no older build to fall back to: a pre-fork engine'
+      + ' mines work the network no longer credits.');
+  }
 
   // A packaged launcher rejects --force-backend (exit 2) and picks the backend
   // itself. backendForEngine strips the override and logs why, rather than

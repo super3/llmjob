@@ -117,59 +117,20 @@ jobs:
           Copy-Item $exe.FullName "vendor/engine/$($meta.name)" -Force
           Write-Host "Bundled engine $($meta.v): $((Get-Item "vendor/engine/$($meta.name)").Length) bytes"
 
-      # Same for Linux, with BOTH builds staged rather than one: the engine is
-      # chosen per rig at run time from the NVIDIA driver (>= 580 gets the faster
-      # CUDA 13 line, older drivers the CUDA 12 stable), so baking in a single
-      # binary would defeat that choice — which is why this used to bundle
-      # nothing at all. bundledEnginePath is version-aware, so a rig picks
-      # whichever of the two matches its driver and only falls back to the
-      # download when neither does (an AppImage older than a version bump).
-      # Shipping the engine also means a rig whose HTTPS is intercepted by a
-      # proxy or antivirus still mines instead of dying on a certificate error.
-      - name: Bundle mining engines — Linux (best-effort)
-        if: runner.os == 'Linux'
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          # Versions AND their download URLs come from the app itself, so bumping
-          # ENGINE in src/shared/engine.js is picked up here with no workflow
-          # edit. The URL has to come from the module too now: a packaged version
-          # (1.9.1b) lives on GitHub releases, not the pool, so hardcoding the
-          # /downloads/ path here would silently 404 for it.
-          node -e '
-            const e = require("./src/shared/engine");
-            for (const v of [e.ENGINE.preferred, e.ENGINE.fallback]) {
-              const pkg = e.enginePackage("linux", v);
-              process.stdout.write([
-                v,
-                e.engineDownloadUrl("linux", null, null, v),
-                pkg ? pkg.dir + "/" + pkg.launcher : "",
-                pkg ? pkg.dir + "/" + pkg.core : "",
-              ].join("\t") + "\n");
-            }
-          ' > "$RUNNER_TEMP/engines.tsv"
-          while IFS=$'\t' read -r v url launcher core; do
-            if [ -n "$launcher" ]; then
-              # Packaged: a tarball whose top folder holds the launcher beside its
-              # hidden core. Both need +x — the launcher refuses to start if the
-              # core is not executable — and the AppImage's squashfs preserves the
-              # mode set here. Assert both landed: a launcher bundled WITHOUT its
-              # core is worse than no bundle at all, because bundledEnginePath
-              # only looks for the launcher and would skip the runtime download.
-              curl -fsSL --retry 3 --retry-delay 2 -o "$RUNNER_TEMP/engine-pkg.tar.gz" "$url"
-              tar -xzf "$RUNNER_TEMP/engine-pkg.tar.gz" -C vendor/engine
-              chmod +x "vendor/engine/$launcher" "vendor/engine/$core"
-              test -x "vendor/engine/$launcher" && test -x "vendor/engine/$core"
-              echo "Bundled packaged engine $v -> vendor/engine/$launcher (+ core)"
-            else
-              out="vendor/engine/alpha-miner-$v"
-              curl -fsSL --retry 3 --retry-delay 2 -o "$out" "$url"
-              # The packaged binary is spawned straight out of the read-only
-              # AppImage mount, so it has to carry +x through squashfs.
-              chmod +x "$out"
-              echo "Bundled engine $v: $(stat -c%s "$out") bytes"
-            fi
-          done < "$RUNNER_TEMP/engines.tsv"
+      # Linux is deliberately NOT bundled. The 1.9.4 Linux engine is a ~530 MB
+      # makeself bundle (it carries the CUDA runtime plus a core per
+      # architecture), and putting that inside the AppImage would roughly
+      # sextuple a download every user takes, to save a download only first-run
+      # rigs take. Windows stays bundled because its equivalent is 14 MB.
+      #
+      # The 4 MB `-rtx3040` HiveOS bundle is not a way out: it is the same engine
+      # with the Blackwell sm120 core removed, so it cannot mine on a 50-series
+      # card — upstream says so, and listing the tarball confirms it ships only
+      # the ampere-sm86 and ada-sm89 cores.
+      #
+      # The cost of not bundling is that a Linux rig behind an HTTPS-intercepting
+      # proxy cannot self-install; that rig gets the manual-install hint, which
+      # for a self-extracting build is "save it here", no extraction needed.
 
       - name: Build installer (publishes on v* tag or manual publish)
         run: npx electron-builder --${{ matrix.platform }} --publish ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.publish) && 'always' || 'never' }}

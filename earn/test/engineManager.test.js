@@ -79,12 +79,12 @@ describe('EngineManager', () => {
     const download = jest.fn(() => Promise.resolve());
     const extract = jest.fn(() => Promise.resolve());
     const chmod = jest.fn();
-    const mgr = new EngineManager({ dir: '/cache', platform: 'linux', fs, download, extract, chmod });
-    const dest = path.join('/cache', 'alpha-miner-1.8.3');
+    const mgr = new EngineManager({ dir: '/cache', platform: 'linux', version: '1.8.8', fs, download, extract, chmod });
+    const dest = path.join('/cache', 'alpha-miner-1.8.8');
 
     await expect(mgr.ensure()).resolves.toBe(dest);
 
-    expect(download).toHaveBeenCalledWith(expect.stringMatching(/alpha-miner-1\.8\.3$/), dest, undefined);
+    expect(download).toHaveBeenCalledWith(expect.stringMatching(/alpha-miner-1\.8\.8$/), dest, undefined);
     expect(extract).not.toHaveBeenCalled();
     expect(chmod).toHaveBeenCalledWith(dest, 0o755);
   });
@@ -157,54 +157,53 @@ describe('EngineManager manual install', () => {
   });
 });
 
-describe('EngineManager — packaged engine (launcher + core)', () => {
-  // 1.9.1b installs as a TREE, not a file. Two things must happen that the
-  // bare-binary path never needed: the tarball is extracted whole, and BOTH the
-  // launcher and its core are made executable. The tarball ships the core mode
-  // 644 while the launcher checks -x on it, so chmodding only the launcher
-  // leaves every start failing with "core missing or not executable".
+describe('EngineManager — described engines', () => {
+  // Linux 1.9.4 is a makeself self-extracting bundle. It must be saved straight
+  // to its final path and chmod +x'd — never handed to the extractor, which
+  // would fail on a file that is not an archive, and never routed through the
+  // bare-binary path, whose manual-download adoption looks for other names.
   const { ENGINE, enginePackage } = require('../src/shared/engine');
-  const V = ENGINE.preferred;
+  const V = ENGINE.linux;
   const pkg = enginePackage('linux', V);
 
   function make(installed) {
     const fsStub = makeFs(installed);
     const download = jest.fn(() => Promise.resolve());
     const extractPackage = jest.fn(() => Promise.resolve());
+    const extract = jest.fn(() => Promise.resolve());
     const chmod = jest.fn();
     const mgr = new EngineManager({
       dir: '/cache', platform: 'linux', version: V,
-      fs: fsStub, download, extractPackage, chmod,
+      fs: fsStub, download, extract, extractPackage, chmod,
     });
-    return { mgr, fsStub, download, extractPackage, chmod };
+    return { mgr, fsStub, download, extract, extractPackage, chmod };
   }
 
-  test('downloads the tarball, extracts it, and chmods launcher AND core', async () => {
-    const { mgr, fsStub, download, extractPackage, chmod } = make(false);
+  test('saves the self-extracting bundle in place and makes it executable', async () => {
+    const { mgr, download, extract, extractPackage, chmod } = make(false);
     const dest = await mgr.ensure();
 
-    expect(dest).toBe(path.join('/cache', pkg.dir, pkg.launcher));
-    // fetched from the descriptor URL into the engine dir
-    expect(download).toHaveBeenCalledWith(expect.stringContaining('github.com'), path.join('/cache', pkg.archive), undefined);
-    expect(extractPackage).toHaveBeenCalledWith(path.join('/cache', pkg.archive), '/cache');
+    expect(dest).toBe(path.join('/cache', pkg.launcher));
+    expect(download).toHaveBeenCalledWith(
+      expect.stringContaining('alphaminer-1.9.4-linux.run'), dest, undefined);
     expect(chmod).toHaveBeenCalledWith(dest, 0o755);
-    expect(chmod).toHaveBeenCalledWith(path.join('/cache', pkg.dir, pkg.core), 0o755);
-    // the scratch tarball does not linger
-    expect(fsStub.unlinkSync).toHaveBeenCalledWith(path.join('/cache', pkg.archive));
+    // Nothing unpacks it — it unpacks itself at each start.
+    expect(extractPackage).not.toHaveBeenCalled();
+    expect(extract).not.toHaveBeenCalled();
   });
 
-  test('a tarball that cannot be removed is not fatal', async () => {
-    const { mgr, fsStub, chmod } = make(false);
-    fsStub.unlinkSync.mockImplementation(() => { throw new Error('EBUSY'); });
-    await expect(mgr.ensure()).resolves.toContain(pkg.launcher);
-    expect(chmod).toHaveBeenCalledTimes(2);
+  test('reports download progress for a half-gigabyte download', async () => {
+    const { mgr, download } = make(false);
+    const onProgress = jest.fn();
+    await mgr.ensure(onProgress);
+    expect(download).toHaveBeenCalledWith(expect.any(String), expect.any(String), onProgress);
   });
 
-  test('an already-installed package re-asserts +x on the core too', async () => {
-    const { mgr, chmod } = make(true);
-    await mgr.ensure();
-    expect(chmod).toHaveBeenCalledWith(path.join('/cache', pkg.dir, pkg.launcher), 0o755);
-    expect(chmod).toHaveBeenCalledWith(path.join('/cache', pkg.dir, pkg.core), 0o755);
+  test('an already-installed bundle re-asserts +x and skips the network', async () => {
+    const { mgr, download, chmod } = make(true);
+    const dest = await mgr.ensure();
+    expect(download).not.toHaveBeenCalled();
+    expect(chmod).toHaveBeenCalledWith(dest, 0o755);
   });
 
   // Windows runs its own version on its own shape: 1.9.4 is a FLAT package —
@@ -235,17 +234,4 @@ describe('EngineManager — packaged engine (launcher + core)', () => {
     expect(chmod).not.toHaveBeenCalled();
   });
 
-  test('a launcher without its core is not installed — it re-downloads', async () => {
-    // An interrupted extract leaves the launcher looking perfectly installed
-    // while the larger half is missing. Trusting it would strand the rig on
-    // "core missing or not executable" with nothing left to re-trigger the
-    // download, so the core has to count as part of being installed.
-    const { mgr, fsStub, download, extractPackage } = make(false);
-    fsStub.existsSync.mockImplementation((p) => p === path.join('/cache', pkg.dir, pkg.launcher));
-
-    expect(mgr.isInstalled()).toBe(false);
-    await mgr.ensure();
-    expect(download).toHaveBeenCalled();
-    expect(extractPackage).toHaveBeenCalled();
-  });
 });
