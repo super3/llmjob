@@ -30,50 +30,26 @@ const DOWNLOAD_BASE = 'https://pearl.alphapool.tech/downloads/';
 //     would crash-loop exactly the rigs the fallback exists to protect, which
 //     is worse than mining non-compliant. Needs an answer from the pool.
 //
-//   • `windows` — the Windows FALLBACK — stays on 1.8.6 and is likewise not
-//     softfork-compliant. See windowsPreferred below: upstream's Windows hotfix
-//     runs on only two GPU generations, and 1.8.6 is all that is left for the
-//     rest. Bumping it is a cache miss by design (the version is baked into the
-//     cached filename), so Windows rigs re-download the pool's newer build
-//     instead of running a stale cached .exe forever. Keep the bundling step in
+//   • `windows` is 1.9.4 and there is no Windows fallback any more. Upstream
+//     ships one exe with automatic dispatch for RTX 30/40/50 (driver R580+),
+//     so the compute-capability gate 1.9.1b needed is gone along with the 1.8.6
+//     fallback it selected. Bumping `windows` is still a cache miss by design
+//     (the version is baked into the cached name), so rigs re-download rather
+//     than run a stale .exe for ever. Keep the bundling step in
 //     .github/workflows/miner-build.yml in sync — it reads this.
-//
-// `windowsPreferred` is the 1.9.1b Windows package, added to the same upstream
-// release on 2026-08-07 (the release originally shipped Linux/HiveOS/Docker
-// only). Unlike the Linux build it is NOT a drop-in for every rig: the package
-// fails closed on anything but a uniform RTX 30-series (CC 8.6) or uniform RTX
-// 40-series (CC 8.9) system, and explicitly rejects RTX 50-series/Blackwell and
-// mixed 8.6/8.9 rigs. So Windows picks its engine from the rig's compute
-// capability the way Linux picks from the driver version — see
-// pickWindowsEngineVersion. Upstream calls it "an emergency Windows bridge
-// while the genuine-source Alpha Miner 1.9.2 release is being completed"; 1.9.2
-// is what finally makes non-8.6/8.9 Windows rigs compliant.
 const ENGINE = {
   preferred: '1.9.1b',
   fallback: '1.8.3',
   minDriverMajor: 580,
-  windows: '1.8.6',
-  windowsPreferred: '1.9.1b',
-  // The compute capabilities the Windows package will run on. Uniform only —
-  // a rig mixing generations fails closed even when both are supported.
-  //
-  // NOT from the README, which says "Blackwell / RTX 50-series is NOT supported
-  // by this Windows release" and is simply wrong. The shipped binaries say
-  // otherwise, and they are what runs:
-  //
-  //   • the launcher's own refusal message reads "emergency Windows support is
-  //     limited to uniform CC 8.6, CC 8.9, or CC 12.0 systems" — 12.0 is on the
-  //     allow-list it enforces;
-  //   • the core carries compiled Blackwell kernels (-arch sm_120 / sm_120a,
-  //     pearl_blackwell / pearl_blackwell_native_impl / _native_exact) and
-  //     offers blackwell, blackwell-native, blackwell-b200 and blackwell-b300
-  //     backends.
-  //
-  // Trusting the README cost every RTX 50-series rig its rank-128 credit: they
-  // were held on 1.8.6, which mines at rank 256 and is not credited after the
-  // softfork. Reported by a user with a 5080 whose shares were being accepted
-  // and paid nothing.
-  windowsComputeCaps: ['8.6', '8.9', '12.0'],
+  // Windows is now a SINGLE build. 1.9.4 is "one exe, automatic dispatch" for
+  // RTX 30/40/50 (driver R580+), which retires the whole compute-capability
+  // gate that 1.9.1b needed: there is no generation left for a fallback to
+  // serve. 1.8.6 is deliberately NOT kept as one — it mines rank-256 work that
+  // the fork does not credit, so falling back to it burns power for nothing and
+  // looks like success. A rig that cannot run 1.9.4 now fails loudly with
+  // upstream's own driver/architecture message, which is actionable ("update to
+  // R580+"); silently mining for free is not.
+  windows: '1.9.4',
 };
 
 // Versions that ship as a PACKAGE — a tarball holding a launcher plus a hidden
@@ -111,16 +87,33 @@ const PACKAGED = {
     },
   },
   win32: {
-    // Same release tag, different artifact. The Windows core is a plain sibling
-    // .exe rather than a hidden file, and neither half needs a chmod — but the
-    // launcher still verifies the core's SHA-256 and refuses to run without it,
-    // so the pair travels together exactly as on Linux.
-    '1.9.1b': {
-      url: 'https://github.com/AlphaMine-Tech/alpha-miner/releases/download/v1.9.1.02/AlphaMiner-Windows-1.9.1.02.zip',
-      archive: 'AlphaMiner-Windows-1.9.1.02.zip',
-      dir: 'AlphaMiner-Windows-1.9.1.02',
-      launcher: 'alpha-miner.exe',
-      core: 'alpha-miner-core.exe',
+    // 1.9.4 — the mandatory rank-128 build. Unlike 1.9.1b this is a FLAT,
+    // pool-hosted zip holding ONE self-contained exe (plus a reference
+    // start-mining.bat we ignore), so there is no `dir` and no `core`, and the
+    // URL is built from DOWNLOAD_BASE rather than pointing at GitHub.
+    //
+    // Every one of those claims was checked against the real artifact rather
+    // than the setup page, which is wrong in two places:
+    //
+    //   • the page still describes "the guarded alpha-miner.exe launcher checks
+    //     the exact core", which was the 1.9.1b shape. 1.9.4 verifies an
+    //     EMBEDDED core — the zip has exactly two entries and no sibling core;
+    //   • the page's PowerShell example passes `--host HOST --port PORT`, but
+    //     the miner's own --help documents `--host <endpoint>` as "endpoint:PORT"
+    //     and defaults to us2.alphapool.tech:5566. Both forms parse (verified
+    //     against the binary), so we send the documented combined one.
+    //
+    // The exe also runs happily from a path containing a space, so the
+    // ProgramData relocation that 1.9.1b needed does not apply — see
+    // packagedLauncherRuns, which now keys on the presence of a separate core.
+    '1.9.4': {
+      archive: 'alphaminer-1.9.4-win-033f7027b.zip',
+      launcher: 'AlphaMiner-Windows-1.9.4-033f7027.exe',
+      // Published on the setup page; matched the download byte for byte.
+      sha256: 'bdaafa7806ffd742c43221babbb9018ee8237816759dc224dd4d50cb8376bd73',
+      // Selects the 1.9.4 argument shape in minerArgs: --host <host:port>,
+      // the payout address INSIDE --worker as <address>.<rig>, and --gpu <id>.
+      cli: 'worker-address',
     },
   },
 };
@@ -173,137 +166,6 @@ function pickEngineVersion(driverMajor) {
     : ENGINE.fallback;
 }
 
-// Parse `nvidia-smi --query-gpu=compute_cap` output ("8.9\n8.9" → ['8.9','8.9'])
-// into one entry per card. Returns [] when there is nothing to read, which
-// pickWindowsEngineVersion treats as "unknown" rather than "supported".
-function parseComputeCaps(output) {
-  return String(output == null ? '' : output)
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => /^\d+\.\d+$/.test(l));
-}
-
-// Pick the Windows engine from the rig's CUDA compute capabilities.
-//
-// The 1.9.1b Windows package fails closed on anything but a UNIFORM CC 8.6
-// (RTX 30-series) or UNIFORM CC 8.9 (RTX 40-series) system — mixed 8.6/8.9,
-// RTX 50-series/Blackwell and everything older are refused by the launcher
-// itself. So a rig that does not qualify gets 1.8.6, which still runs but is
-// NOT softfork-compliant: there is simply no compliant Windows build for it
-// until upstream's 1.9.2. Shipping a version the launcher rejects would take
-// those rigs from earning nothing to mining nothing, which is strictly worse.
-//
-// Unknown capabilities (no nvidia-smi, AMD, unparseable) fall back for the same
-// reason the driver check does: guessing wrong costs the rig every share.
-function pickWindowsEngineVersion(caps) {
-  const list = Array.isArray(caps) ? caps.map(String) : [];
-  const uniform = list.length > 0 && list.every((c) => c === list[0]);
-  return uniform && ENGINE.windowsComputeCaps.includes(list[0])
-    ? ENGINE.windowsPreferred
-    : ENGINE.windows;
-}
-
-// Why a Windows rig got the build it got, as a log line — '' when it qualified
-// for the hotfix and there is nothing to explain. A rig left on 1.8.6 is mining
-// work the rank-128 fork no longer credits, and it cannot tell from the outside
-// whether that is our choice or upstream's limit, so say which and say what
-// unblocks it.
-function windowsEngineNote(caps) {
-  if (pickWindowsEngineVersion(caps) === ENGINE.windowsPreferred) return '';
-  const list = Array.isArray(caps) ? caps.map(String) : [];
-  const why = list.length === 0
-    ? 'GPU compute capability could not be read'
-    : list.every((c) => c === list[0])
-      ? 'compute capability ' + list[0] + ' is not supported by it'
-      : 'mixed GPU generations (' + list.join(', ') + ') are not supported by it';
-  return 'note: the ' + ENGINE.windowsPreferred + ' Windows build only runs on uniform CC '
-    + ENGINE.windowsComputeCaps.join(' / ') + ' rigs and ' + why
-    + ' — falling back to ' + ENGINE.windows + ', which still mines but is not'
-    + ' rank-128 compliant. Upstream 1.9.2 is meant to cover the rest.';
-}
-
-// Can the packaged launcher for `version` actually start from `target`?
-//
-// The 1.9.1.02 Windows launcher resolves its core correctly and passes that
-// path as the application name, but builds the child's command line by
-// concatenating the same path UNQUOTED. Windows splits it on spaces, so the
-// core reads the tail of our install path as its first argument and refuses:
-//
-//   C:\Program Files\LLMJob Earn\…\alpha-miner-core.exe --pool …
-//   → ERROR: unknown argument: Files\LLMJob Earn\…\alpha-miner-core.exe
-//
-// Verified against the real 1.9.1.02 binaries: an identical argument vector
-// runs from a space-free directory and dies from a spaced one, and the
-// launcher's string table contains no quote character anywhere. Nothing we pass
-// can work around it — the path it mangles is one it builds itself, after our
-// arguments are already quoted.
-//
-// Windows-only: the Linux package ships a /bin/sh launcher that execs
-// `"$CORE" "$@"`, correctly quoted, so a spaced path is fine there.
-//
-// This matters because BOTH of our Windows locations contain a space — the
-// product is "LLMJob Earn", so the installer defaults to
-// `C:\Program Files\LLMJob Earn` and the cache is `%APPDATA%\LLMJob Earn\engine`
-// — which is why 0.3.12 could not start on any rig that qualified for the
-// hotfix. Callers downgrade to ENGINE.windows rather than ship a launcher that
-// cannot run at all; see spacedLauncherNote.
-function packagedLauncherRuns(platform, version, target) {
-  if (platform !== 'win32') return true;
-  if (!enginePackage(platform, version)) return true; // bare binary: unaffected
-  return !/\s/.test(String(target == null ? '' : target));
-}
-
-// Why a rig that qualified for the hotfix is not getting it after all — '' when
-// the launcher can run from `target`. Distinct from windowsEngineNote, which
-// explains the hardware gate; this one is about where the engine landed.
-//
-// Deliberately does NOT tell the user to reinstall somewhere space-free: the
-// download cache lives under %APPDATA%\LLMJob Earn regardless of install
-// directory, so moving the app would not win the hotfix back and the advice
-// would send them in circles.
-function spacedLauncherNote(platform, version, target) {
-  if (packagedLauncherRuns(platform, version, target)) return '';
-  return 'note: the ' + version + ' Windows launcher cannot start from a path containing'
-    + ' a space (' + target + ') — it loses its own core path there and exits before'
-    + ' mining. Falling back to ' + ENGINE.windows + ', which still mines but is not'
-    + ' rank-128 compliant. This is a bug in upstream\'s launcher; their 1.9.2 release'
-    + ' is meant to fix it.';
-}
-
-// Where to install the engine, given that a packaged Windows launcher cannot
-// start from a path containing a space (see packagedLauncherRuns).
-//
-// Our default is "%APPDATA%\LLMJob Earn\engine", which ALWAYS has one because
-// the product name does. Rather than give up the compliant build for that
-// reason alone, look for a space-free base we can genuinely write to and
-// install there instead. ProgramData leads: it is machine-wide and, unlike
-// LOCALAPPDATA, never embeds the user's name — which may carry a space of its
-// own and put us right back where we started.
-//
-// `ensureDir` is injected and actually called, rather than inferring
-// writability from the path. A locked-down machine that refuses ProgramData
-// falls through to the next candidate and finally back to the default, where
-// the caller's spacedLauncherNote downgrades to a build that runs. Guessing
-// here would trade a visible failure for a silent one.
-//
-// Off Windows, and for the bare-binary versions, the default is always right —
-// packagedLauncherRuns says so and nothing moves.
-function engineInstallDir({ platform, version, defaultDir, env, ensureDir }) {
-  if (packagedLauncherRuns(platform, version, defaultDir)) return defaultDir;
-  const e = env || {};
-  const bases = [e.ProgramData, e.LOCALAPPDATA, (e.SystemDrive || 'C:') + '\\'];
-  for (const base of bases) {
-    if (!base) continue;
-    const dir = path.join(base, 'llmjob-earn', 'engine');
-    if (!packagedLauncherRuns(platform, version, dir)) continue; // this one is spaced too
-    try {
-      ensureDir(dir);
-      return dir;
-    } catch (err) { /* not writable here — try the next base */ }
-  }
-  return defaultDir;
-}
-
 // Parse the driver major version out of `nvidia-smi --query-gpu=driver_version`
 // output ("581.42\n581.42" → 581). Returns null when it can't.
 function parseDriverMajor(output) {
@@ -319,7 +181,9 @@ function parseDriverMajor(output) {
 // unversioned Windows name (AMD, which the pool ships without a version).
 function engineBinaryName(platform, gpu, version) {
   const pkg = enginePackage(platform, version);
-  if (pkg) return pkg.dir + '/' + pkg.launcher; // the launcher, beside its core
+  // A flat package (no `dir`) is one self-contained exe at the top of the
+  // archive; only the launcher+core shape nests.
+  if (pkg) return pkg.dir ? pkg.dir + '/' + pkg.launcher : pkg.launcher;
   if (platform === 'win32') {
     if (gpu === 'amd') return 'alpha-miner-amd-windows-fixed.exe';
     return version ? 'alpha-miner-windows-' + version + '.exe' : 'alpha-miner-windows.exe';
@@ -339,7 +203,9 @@ function engineArchiveName(platform, gpu, version) {
 
 function engineDownloadUrl(platform, gpu, base, version) {
   const pkg = enginePackage(platform, version);
-  if (pkg) return pkg.url; // absolute: GitHub releases, not the pool
+  // Absolute only when upstream publishes it outside the pool (GitHub);
+  // otherwise it is a normal /downloads/ artifact.
+  if (pkg) return pkg.url || (base || DOWNLOAD_BASE) + pkg.archive;
   return (base || DOWNLOAD_BASE) + engineArchiveName(platform, gpu, version);
 }
 
@@ -381,7 +247,7 @@ function enginePath(dir, platform, gpu, version) {
 function engineFiles(dir, platform, gpu, version) {
   const pkg = enginePackage(platform, version);
   const bin = enginePath(dir, platform, gpu, version);
-  return pkg ? [bin, path.join(dir, pkg.dir, pkg.core)] : [bin];
+  return pkg && pkg.core ? [bin, path.join(dir, pkg.dir, pkg.core)] : [bin];
 }
 
 // The name a hand-downloaded engine lands under. The pool's documented link is
@@ -422,12 +288,6 @@ module.exports = {
   backendForEngine,
   manualInstallHint,
   pickEngineVersion,
-  parseComputeCaps,
-  pickWindowsEngineVersion,
-  windowsEngineNote,
-  packagedLauncherRuns,
-  spacedLauncherNote,
-  engineInstallDir,
   parseDriverMajor,
   engineBinaryName,
   engineArchiveName,

@@ -104,3 +104,35 @@ describe('buildEnv', () => {
     expect(buildEnv({ address: 'prl1pabc', mdlAddress: 'nope' }).MDL_ADDRESS).toBe('');
   });
 });
+
+// The rank-128 CLI (alpha-miner 1.9.4 on Windows). Selected by the engine
+// descriptor's `cli` field, not a version comparison, so these also pin the
+// dispatch: an engine that does not declare it keeps the 1.8.x vector.
+describe('buildArgs on the worker-address CLI', () => {
+  const PRL = 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
+  const MDL = 'mdl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
+  const win = { platform: 'win32', engineVersion: '1.9.4' };
+
+  test('carries the payout address inside --worker and pins the card', () => {
+    expect(buildArgs(Object.assign({ address: PRL, worker: 'rig9', difficulty: 1000, gpuIndex: 2 }, win)))
+      .toEqual(['--host', 'us2.alphapool.tech:5566', '--worker', PRL + '.rig9', '--password', 'x;d=1000', '--gpu', '2']);
+  });
+
+  // Merge mining has to survive the move: the combined login is what the pool
+  // splits, and it rides in --worker now that there is no --address at all.
+  test('merges the MDL address into the login and defaults the GPU index', () => {
+    const args = buildArgs(Object.assign({ address: PRL, mdlAddress: MDL, worker: 'rig01' }, win));
+    expect(args).toContain(PRL + '+' + MDL + '.rig01');
+    expect(args.slice(-2)).toEqual(['--gpu', '0']);
+    expect(args).not.toContain('--address');
+  });
+
+  test('sends a bare address when the worker is blank', () => {
+    expect(buildArgs(Object.assign({ address: PRL, worker: '' }, win))).toContain(PRL);
+  });
+
+  // The guard that keeps every pre-fork engine on its own vector.
+  test('leaves a legacy engine on the --pool/--address vector', () => {
+    expect(buildArgs({ address: PRL, platform: 'win32', engineVersion: '1.8.6' })[0]).toBe('--pool');
+  });
+});

@@ -207,23 +207,30 @@ describe('EngineManager — packaged engine (launcher + core)', () => {
     expect(chmod).toHaveBeenCalledWith(path.join('/cache', pkg.dir, pkg.core), 0o755);
   });
 
-  test('the Windows package installs without chmod — there is no execute bit', async () => {
-    // Same descriptor shape, different artifact: a .zip of two .exe files. A
-    // chmod here is at best a no-op and at worst a throw that fails an
-    // otherwise perfect install.
-    const winPkg = enginePackage('win32', V);
+  // Windows runs its own version on its own shape: 1.9.4 is a FLAT package —
+  // one self-contained .exe at the root of the zip, no `dir`, no core half. It
+  // still installs through the package path (download the archive, extract the
+  // tree) but must land at the zip root, and there is no execute bit on Windows
+  // to grant — a chmod there is at best a no-op, at worst a throw that fails an
+  // otherwise perfect install.
+  test('the flat Windows package installs at the zip root, without chmod', async () => {
+    const WIN = ENGINE.windows;
+    const winPkg = enginePackage('win32', WIN);
+    expect(winPkg.dir).toBeUndefined();
+    expect(winPkg.core).toBeUndefined();
+
     const fsStub = makeFs(false);
     const download = jest.fn(() => Promise.resolve());
     const extractPackage = jest.fn(() => Promise.resolve());
     const chmod = jest.fn();
     const mgr = new EngineManager({
-      dir: '/cache', platform: 'win32', version: V,
+      dir: '/cache', platform: 'win32', version: WIN,
       fs: fsStub, download, extractPackage, chmod,
     });
 
     const dest = await mgr.ensure();
-    expect(dest).toBe(path.join('/cache', winPkg.dir, winPkg.launcher));
-    expect(download).toHaveBeenCalledWith(expect.stringContaining('AlphaMiner-Windows'), path.join('/cache', winPkg.archive), undefined);
+    expect(dest).toBe(path.join('/cache', winPkg.launcher));
+    expect(download).toHaveBeenCalledWith(expect.stringContaining(winPkg.archive), path.join('/cache', winPkg.archive), undefined);
     expect(extractPackage).toHaveBeenCalledWith(path.join('/cache', winPkg.archive), '/cache');
     expect(chmod).not.toHaveBeenCalled();
   });

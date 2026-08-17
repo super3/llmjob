@@ -1120,16 +1120,36 @@ describe('mining', () => {
     expect(ctx.sent('miner:log').map((l) => l.line)).toContain('failed to launch engine: bad exe');
   });
 
-  it('prefers the versioned bundled engine and falls back to the legacy Windows name', async () => {
+  // A stale legacy bundle must NOT be resurrected. Windows now runs a packaged
+  // 1.9.4, and the only thing that could still be sitting under the old
+  // unversioned name is an 1.8.6 build — which mines rank-256 work the fork does
+  // not credit. Taking it would look like success and pay nothing, so the rig
+  // downloads the real engine instead.
+  it('ignores a legacy bundled Windows exe and fetches the packaged engine', async () => {
     const legacy = require('path').join('/res', 'engine', 'alpha-miner-windows.exe');
     const ctx = await boot({ platform: 'win32', resourcesPath: '/res' });
     ctx.fs.existsSync.mockImplementation((p) => p === legacy);
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
     await flush();
-    expect(ctx.sent('miner:log').map((l) => l.line)).toContain('using bundled engine: ' + legacy);
+    expect(ctx.sent('miner:log').map((l) => l.line)).not.toContain('using bundled engine: ' + legacy);
+    expect(ctx.EngineManager.instances).toHaveLength(1);
+  });
+
+  // The installer ships the engine too (see the Windows bundling step in
+  // .github/workflows/miner-build.yml), so a fresh rig mines without waiting on
+  // a download. Windows has no execute bit, so unlike the Linux bundle there is
+  // no chmod to re-assert — calling one would be a no-op at best.
+  it('spawns a bundled Windows engine as-is, with no chmod', async () => {
+    const eng = require('../src/shared/engine');
+    const bundled = eng.bundledEnginePath('/res', 'win32', undefined, eng.ENGINE.windows);
+    const ctx = await boot({ platform: 'win32', resourcesPath: '/res' });
+    ctx.fs.existsSync.mockImplementation((p) => p === bundled);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
     expect(ctx.EngineManager.instances).toHaveLength(0);
+    expect(ctx.fs.chmodSync).not.toHaveBeenCalled();
     expect(ctx.MinerManager.instances[0].start)
-      .toHaveBeenCalledWith(expect.objectContaining({ binaryPath: legacy }));
+      .toHaveBeenCalledWith(expect.objectContaining({ binaryPath: bundled }));
   });
 
   // The Linux AppImage now ships both engine builds (see the bundling step in
@@ -1170,127 +1190,17 @@ describe('mining', () => {
   // when the selected version has no bundle, and taking it here would downgrade
   // a compliant rig back to mining work the fork no longer credits — the exact
   // failure this release exists to fix.
-  it('a CC 8.9 Windows rig gets the hotfix, never the bundled legacy build', async () => {
-    const eng = require('../src/shared/engine');
-    const legacy = require('path').join('/res', 'engine', 'alpha-miner-windows.exe');
-    const ctx = await boot({
-      platform: 'win32',
-      resourcesPath: '/res',
-      before: (c) => { c.probe.detectComputeCaps.mockResolvedValue(['8.9', '8.9']); },
-    });
-    ctx.fs.existsSync.mockImplementation((p) => p === legacy);
-
-    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
-    await flush();
-
-    expect(ctx.sent('miner:log').map((l) => l.line))
-      .not.toContain('using bundled engine: ' + legacy);
-    expect(ctx.EngineManager.instances).toHaveLength(1);
-    expect(ctx.EngineManager.instances[0].opts.version).toBe(eng.ENGINE.windowsPreferred);
-    // …and a qualifying rig has nothing to be warned about.
-    expect(ctx.sent('miner:log').filter((l) => l.level === 'warn')).toHaveLength(0);
-  });
-
   // Upstream's launcher mangles its own core path when that path contains a
   // space, and the cache is "%APPDATA%\LLMJob Earn\engine" — always spaced.
   // Rather than give up the compliant build, put the engine somewhere
   // space-free so a qualifying rig keeps it.
-  it('installs the engine outside the spaced userData dir so the hotfix runs', async () => {
-    const eng = require('../src/shared/engine');
-    const prev = process.env.ProgramData;
-    process.env.ProgramData = 'C:\\ProgramData';
-    try {
-      const ctx = await boot({
-        platform: 'win32',
-        before: (c) => {
-          c.probe.detectComputeCaps.mockResolvedValue(['12.0']); // RTX 50-series
-          c.electron.app.getPath.mockReturnValue('/tmp/LLMJob Earn');
-        },
-      });
-      ctx.fs.existsSync.mockReturnValue(false);
-
-      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
-      await flush();
-
-      const opts = ctx.EngineManager.instances[0].opts;
-      expect(opts.dir).toBe(require('path').join('C:\\ProgramData', 'llmjob-earn', 'engine'));
-      expect(opts.version).toBe(eng.ENGINE.windowsPreferred);
-      expect(ctx.sent('miner:log').filter((l) => l.level === 'warn')).toHaveLength(0);
-    } finally {
-      if (prev === undefined) delete process.env.ProgramData; else process.env.ProgramData = prev;
-    }
-  });
-
   // …but a locked-down box where nothing space-free can be created still has to
   // mine. A rig that cannot start earns nothing; one on 1.8.6 earns uncredited
   // work, which is worse than compliant and better than dead.
-  it('downgrades when nowhere space-free is writable', async () => {
-    const eng = require('../src/shared/engine');
-    const saved = ['ProgramData', 'LOCALAPPDATA', 'SystemDrive'].map((k) => [k, process.env[k]]);
-    for (const [k] of saved) delete process.env[k];
-    try {
-      const ctx = await boot({
-        platform: 'win32',
-        before: (c) => {
-          c.probe.detectComputeCaps.mockResolvedValue(['8.9']);
-          c.electron.app.getPath.mockReturnValue('/tmp/LLMJob Earn');
-          c.fs.mkdirSync.mockImplementation(() => { throw new Error('EPERM'); });
-        },
-      });
-      ctx.fs.existsSync.mockReturnValue(false);
-
-      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
-      await flush();
-
-      expect(ctx.EngineManager.instances[0].opts.version).toBe(eng.ENGINE.windows);
-      const warns = ctx.sent('miner:log').filter((l) => l.level === 'warn').map((l) => l.line);
-      expect(warns.join('\n')).toContain('cannot start from a path containing a space');
-    } finally {
-      for (const [k, v] of saved) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
-    }
-  });
-
   // The same bug, reached the other way: a space-free cache keeps the hotfix
   // selected, but the bundle sitting in "C:\Program Files\LLMJob Earn" still
   // cannot run. Spawning it would fail on every start, so it is skipped and the
   // rig downloads into the path that works.
-  it('skips a bundled package whose own path has a space', async () => {
-    const eng = require('../src/shared/engine');
-    const pkg = eng.enginePackage('win32', eng.ENGINE.windowsPreferred);
-    const bundled = require('path').join('/res dir', 'engine', pkg.dir, pkg.launcher);
-    const ctx = await boot({
-      platform: 'win32',
-      resourcesPath: '/res dir',
-      before: (c) => { c.probe.detectComputeCaps.mockResolvedValue(['8.6']); },
-    });
-    ctx.fs.existsSync.mockImplementation((p) => p === bundled);
-
-    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
-    await flush();
-
-    expect(ctx.sent('miner:log').map((l) => l.line))
-      .not.toContain('using bundled engine: ' + bundled);
-    expect(ctx.EngineManager.instances).toHaveLength(1);
-    expect(ctx.EngineManager.instances[0].opts.version).toBe(eng.ENGINE.windowsPreferred);
-  });
-
-  it('warns a Windows rig the hotfix will not run on, and keeps it mining', async () => {
-    const ctx = await boot({
-      platform: 'win32',
-      before: (c) => { c.probe.detectComputeCaps.mockResolvedValue(['7.5']); }, // Turing
-    });
-    ctx.fs.existsSync.mockReturnValue(false);
-
-    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
-    await flush();
-
-    const warn = ctx.sent('miner:log').filter((l) => l.level === 'warn').map((l) => l.line);
-    expect(warn.join('')).toContain('compute capability 7.5 is not supported');
-    expect(warn.join('')).toContain('not rank-128 compliant');
-    expect(ctx.EngineManager.instances[0].opts.version)
-      .toBe(require('../src/shared/engine').ENGINE.windows);
-  });
-
   it('logs a start failure when the driver probe throws mid-start', async () => {
     const ctx = await boot({
       before: (c) => { c.probe.detectDriverMajor.mockRejectedValue(new Error('nvidia-smi missing')); },
