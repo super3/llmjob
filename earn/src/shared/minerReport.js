@@ -52,6 +52,20 @@ function buildMinerReports(settings, snap, gpuVram, version, serving) {
   // The model this card serves, or null when it isn't serving (or nothing is).
   const llmFor = (index) => (serveModel && serveSet.has(Number(index)) ? serveModel : null);
 
+  // ONE rule for the card name, everywhere below: nvidia-smi first, the engine's
+  // own label only as a fallback.
+  //
+  // The two sources used to be indistinguishable — alpha-miner 1.8.x logged
+  // `gpu=0:NVIDIA GeForce RTX 4090`, the exact nvidia-smi string — so the three
+  // row-building paths here disagreed about precedence for a long time without
+  // anyone noticing. 1.9.4 renders a stats table whose name column is an
+  // abbreviated label ("RTX 5090"), which made that latent disagreement visible:
+  // the same rig reported "RTX 5090" as a single card and "NVIDIA GeForce RTX
+  // 5090" once it had two, purely because different branches picked differently.
+  //
+  // nvidia-smi is the canonical device name, so it wins; the engine's label is
+  // kept as the fallback because a rig without nvidia-smi (a slim container) has
+  // nothing else to offer.
   const vram = Array.isArray(gpuVram) ? gpuVram : [];
   const vramFor = (index) => vram.find((v) => v && Number(v.index) === index) || null;
   const cards = Array.isArray(n.gpus) ? n.gpus : [];
@@ -82,7 +96,7 @@ function buildMinerReports(settings, snap, gpuVram, version, serving) {
     if (vram.length > 1) return splitRows(Number(n.total) || 0, Number(n.accepted) || 0, n.gpu);
     return [{
       ...base,
-      gpu: n.gpu || (vram[0] && vram[0].name) || null,
+      gpu: (vram[0] && vram[0].name) || n.gpu || null,
       hashrate: Number(n.total) || 0,
       accepted: Number(n.accepted) || 0,
       vramUsedMb: vram.reduce((a, v) => a + (Number(v.usedMb) || 0), 0),
@@ -108,7 +122,7 @@ function buildMinerReports(settings, snap, gpuVram, version, serving) {
     return {
       ...base,
       worker: workerFor(c.index, cards.length),
-      gpu: c.gpu || (v && v.name) || null,
+      gpu: (v && v.name) || c.gpu || null,
       hashrate: Number(c.hashrate) || 0,
       accepted: Number(c.accepted) || 0,
       vramUsedMb: v ? Number(v.usedMb) || 0 : 0,
