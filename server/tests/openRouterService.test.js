@@ -32,10 +32,14 @@ describe('OpenRouterService — configuration', () => {
     expect(or.title).toBe('LLMJob');
   });
 
-  it('ships the two Qwen models the Chat page offers', () => {
+  it('ships the Qwen models the Chat page offers, cheapest first', () => {
     // The whole point of the hosted path: the same models, reachable both ways.
     expect(OpenRouterService.DEFAULT_MODELS.map((m) => m.id))
-      .toEqual(['qwen/qwen3.6-27b', 'qwen/qwen3.6-35b-a3b']);
+      .toEqual(['qwen/qwen3.6-27b', 'qwen/qwen3.6-35b-a3b', 'qwen/qwen3.8-27b']);
+    // models[0] is the web chat's default. 3.8 costs roughly three times the
+    // A3B's output, and the free budget is shared with the API gateway, so it
+    // must not drift to the front of this list without that being a decision.
+    expect(OpenRouterService.DEFAULT_MODELS[0].id).toBe('qwen/qwen3.6-27b');
   });
 
   it('reads configuration from the environment', () => {

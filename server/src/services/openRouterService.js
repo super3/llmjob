@@ -25,7 +25,8 @@ const { estimateTokens, int, round1 } = require('../controllers/gatewayShared');
 // founder can retune the free tier without a code change.
 const DEFAULT_MODELS = [
   { id: 'qwen/qwen3.6-27b', label: 'Qwen3.6 27B' },
-  { id: 'qwen/qwen3.6-35b-a3b', label: 'Qwen3.6 35B A3B' }
+  { id: 'qwen/qwen3.6-35b-a3b', label: 'Qwen3.6 35B A3B' },
+  { id: 'qwen/qwen3.8-27b', label: 'Qwen3.8 27B' }
 ];
 const DEFAULT_FREE_BUDGET = 1000000; // total tokens of free usage before the cap
 const DEFAULT_MAX_TOKENS = 2048;     // per-request completion ceiling
