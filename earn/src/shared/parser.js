@@ -116,6 +116,17 @@ function parseLine(line) {
     return { type: 'connected', gpuIndex: null, endpoint: conn194[1] + ':' + conn194[2], gpu: null };
   }
 
+  // A failed connection attempt, and whether the name even resolved. The engine
+  // retries every 5s and prints an identical line each time, which is how a rig
+  // produces eight lines of "DNS lookup failed: No such host is known" that say
+  // nothing about WHICH host, or that name resolution is the actual problem
+  // rather than the pool being down. Reported from the field exactly that way.
+  const failed = s.match(/\[stratum\]\s+connect failed:\s*(.+)$/i);
+  if (failed) {
+    const reason = failed[1].trim();
+    return { type: 'connect-failed', reason, dns: /dns|no such host|name (or service )?not known|getaddrinfo/i.test(reason) };
+  }
+
   return null;
 }
 

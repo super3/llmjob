@@ -1,6 +1,6 @@
 'use strict';
 
-const { endpointFor, DEFAULTS } = require('./config');
+const { resolveEndpoint, DEFAULTS } = require('./config');
 const { combinePayoutAddress, isValidMdlAddress, normalizeAddress } = require('./address');
 const { enginePackage } = require('./engine');
 
@@ -62,8 +62,10 @@ function buildWorkerAddressArgs(settings, endpoint, worker, difficulty) {
 // `mdl=` field instead: the engine passes the password through verbatim and the
 // pool parses both forms.
 function buildArgs(settings = {}) {
-  const region = settings.region || DEFAULTS.region;
-  const endpoint = settings.endpoint || endpointFor(region);
+  // resolveEndpoint, not a raw read: an override pasted in the old
+  // `stratum+tcp://host:port` form would otherwise reach --host verbatim and the
+  // engine would try to resolve the scheme as part of the hostname.
+  const endpoint = resolveEndpoint(settings);
   const worker = settings.worker != null ? settings.worker : DEFAULTS.worker;
   const difficulty = settings.difficulty || DEFAULTS.difficulty;
 

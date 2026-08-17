@@ -2,7 +2,7 @@
 
 const {
   REGIONS, DEFAULTS, MINER, ECON,
-  regionFor, endpointFor, regionLabel, difficultyForCard,
+  regionFor, endpointFor, normalizeEndpoint, resolveEndpoint, regionLabel, difficultyForCard,
 } = require('../src/shared/config');
 
 describe('config', () => {
@@ -52,5 +52,33 @@ describe('config', () => {
     expect(MINER).toMatchObject({ engine: 'alpha-miner', pow: 'pearlhash', devFeePct: 0, poolFeePct: 1 });
     expect(ECON).toMatchObject({ NET_TH: 61e6, DAILY_NET_PRL: 1.62e6, FEE: 0.99, PRL_USD: 0.30 });
     expect(DEFAULTS.difficulty).toBe(524288);
+  });
+});
+
+// A hand-written endpoint override reaches the engine's --host directly, and
+// alpha-miner 1.9.4 wants a bare host:port. Every older doc — and our own
+// pre-1.9.4 vector — wrote it as `stratum+tcp://host:port`, so that form gets
+// pasted in; passing it through made the engine resolve the scheme as part of
+// the hostname and loop on "DNS lookup failed: No such host is known".
+describe('normalizeEndpoint / resolveEndpoint', () => {
+  test('strips a scheme, trailing slash and surrounding space', () => {
+    expect(normalizeEndpoint('stratum+tcp://us1.alphapool.tech:5566')).toBe('us1.alphapool.tech:5566');
+    expect(normalizeEndpoint('  us1.alphapool.tech:5566  ')).toBe('us1.alphapool.tech:5566');
+    expect(normalizeEndpoint('tcp://eu1.alphapool.tech:5566')).toBe('eu1.alphapool.tech:5566');
+    expect(normalizeEndpoint('us1.alphapool.tech:5566/')).toBe('us1.alphapool.tech:5566');
+  });
+
+  test('nothing usable becomes null, so the caller can fall back', () => {
+    for (const v of ['', '   ', null, undefined]) expect(normalizeEndpoint(v)).toBeNull();
+  });
+
+  test('resolveEndpoint prefers a cleaned override, else the region', () => {
+    expect(resolveEndpoint({ endpoint: 'stratum+tcp://us1.alphapool.tech:5566', region: 'eu1' }))
+      .toBe('us1.alphapool.tech:5566');
+    // A blank override must not win — that would point the miner at nothing.
+    expect(resolveEndpoint({ endpoint: '   ', region: 'eu1' })).toBe(REGIONS.eu1.endpoint);
+    expect(resolveEndpoint({ region: 'eu1' })).toBe(REGIONS.eu1.endpoint);
+    expect(resolveEndpoint({})).toBe(REGIONS[DEFAULTS.region].endpoint);
+    expect(resolveEndpoint()).toBe(REGIONS[DEFAULTS.region].endpoint);
   });
 });

@@ -136,3 +136,26 @@ describe('buildArgs on the worker-address CLI', () => {
     expect(buildArgs({ address: PRL, platform: 'win32', engineVersion: '1.8.6' })[0]).toBe('--pool');
   });
 });
+
+// The field report this came from: an endpoint override pasted in the old
+// `stratum+tcp://` form reached --host verbatim, so the engine tried to resolve
+// the scheme as part of the hostname and looped on 'No such host is known'.
+test('an endpoint override keeps its scheme out of --host', () => {
+  const eng = require('../src/shared/engine');
+  const args = buildArgs({
+    address: 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c', worker: 'rig01',
+    platform: 'win32', engineVersion: eng.ENGINE.windows,
+    endpoint: 'stratum+tcp://us1.alphapool.tech:5566',
+  });
+  expect(args[args.indexOf('--host') + 1]).toBe('us1.alphapool.tech:5566');
+});
+
+// The legacy vector builds its own stratum+tcp:// prefix, so a cleaned endpoint
+// must not leave it with a doubled scheme.
+test('the legacy --pool vector still gets exactly one scheme', () => {
+  const args = buildArgs({
+    address: 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c', platform: 'linux',
+    engineVersion: '1.8.8', endpoint: 'stratum+tcp://us1.alphapool.tech:5566',
+  });
+  expect(args[args.indexOf('--pool') + 1]).toBe('stratum+tcp://us1.alphapool.tech:5566');
+});

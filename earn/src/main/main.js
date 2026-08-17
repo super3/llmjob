@@ -27,7 +27,7 @@ const probe = require('./probe');
 const nodeStore = require('./nodeStore');
 const settingsStore = require('../shared/settingsStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
-const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE, endpointFor, difficultyForCard } = require('../shared/config');
+const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE, resolveEndpoint, difficultyForCard } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
 const { resolveEconomics } = require('../shared/economics');
 const nodeProto = require('../shared/node');
@@ -277,7 +277,7 @@ async function startMining(settings) {
   if (reporter) clearInterval(reporter);
   reporter = setInterval(report, NETWORK.reportIntervalMs);
 
-  const endpoint = settings.endpoint || endpointFor(settings.region || DEFAULTS.region);
+  const endpoint = resolveEndpoint(settings);
   send('miner:log', { level: 'info', line: 'connecting to ' + endpoint + ' · worker ' + (settings.worker || DEFAULTS.worker) });
 
   // Resolve the engine. Each platform picks the newest build its hardware can
@@ -372,8 +372,21 @@ async function startMining(settings) {
   // Real alpha-miner engine.
   miner = new MinerManager({ spawn });
   miner.on('log', (l) => send('miner:log', l));
+  // Said once, not on every 5s retry. The engine's own line repeats verbatim and
+  // names neither the host it tried nor the fact that the name never resolved,
+  // so a rig that cannot do DNS looks identical to a pool that is down — which
+  // is how a user ends up staring at eight lines of "No such host is known".
+  let dnsHinted = false;
   miner.on('event', (e) => {
     applyEvent(stats, e);
+    if (e.type === 'connect-failed' && e.dns && !dnsHinted) {
+      dnsHinted = true;
+      send('miner:log', {
+        level: 'warn',
+        line: 'cannot resolve ' + endpoint + ' — name resolution is failing on this machine, not the pool'
+          + ' refusing the connection. Check DNS/VPN/firewall, or pick another region in Settings.',
+      });
+    }
     send('miner:event', e);
   });
   miner.on('error', (err) => reportLaunchFailure(err, false));

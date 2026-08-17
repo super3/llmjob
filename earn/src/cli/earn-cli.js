@@ -27,7 +27,7 @@ const {
 const probe = require('../main/probe');
 const nodeStore = require('../main/nodeStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
-const { NETWORK, MINER, LLM, NODE, endpointFor, regionLabel, difficultyForCard } = require('../shared/config');
+const { NETWORK, MINER, LLM, NODE, resolveEndpoint, regionLabel, difficultyForCard } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
 const { ENGINE, engineVersionFor, driverTooOld, engineDownloadUrl, backendForEngine, manualInstallHint } = require('../shared/engine');
 const { describeSetupError } = require('../shared/engineError');
@@ -641,7 +641,7 @@ async function run(argv) {
       settings.difficulty = difficultyForCard(settings.gpu) * settings.gpuCount;
     }
 
-    endpoint = endpointFor(settings.region);
+    endpoint = resolveEndpoint(settings);
     log('address:    ' + shortenAddress(settings.address) + (settings.mdlAddress ? '  (+MDL ' + shortenAddress(settings.mdlAddress) + ')' : ''));
     log('pool:       ' + endpoint + '  ' + regionLabel(settings.region) + (settings.regionProvided ? '' : '  (auto)'));
     log('worker:     ' + settings.worker + (settings.workerProvided ? '' : '  (auto)'));

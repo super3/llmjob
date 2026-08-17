@@ -143,3 +143,28 @@ describe('parseLine on the 1.9.4 stats table', () => {
     });
   });
 });
+
+// The engine retries every 5s and reprints the same line, naming neither the
+// host it tried nor whether the name resolved — which is how a field report
+// arrived as eight identical "No such host is known" lines. Classifying it lets
+// the app say the useful thing once.
+describe('parseLine on 1.9.4 connection failures', () => {
+  test('flags a DNS failure however the platform words it', () => {
+    for (const reason of [
+      'DNS lookup failed: No such host is known.',
+      'getaddrinfo ENOTFOUND us1.alphapool.tech',
+      'Name or service not known',
+    ]) {
+      expect(parseLine('[stratum] connect failed: ' + reason)).toEqual({
+        type: 'connect-failed', reason, dns: true,
+      });
+    }
+  });
+
+  // A refused connection is the pool's problem, not the rig's resolver, and must
+  // not be reported as a DNS fault.
+  test('a non-DNS failure is carried through unflagged', () => {
+    expect(parseLine('[stratum] connect failed: connection refused'))
+      .toEqual({ type: 'connect-failed', reason: 'connection refused', dns: false });
+  });
+});

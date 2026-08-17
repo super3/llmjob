@@ -1225,6 +1225,34 @@ describe('mining', () => {
       .not.toContain('older than R580');
   });
 
+  // A rig whose resolver is broken looks exactly like a pool that is down: the
+  // engine reprints one opaque line every 5s. Say the useful thing — which host,
+  // and that it is name resolution — ONCE, so the hint does not become the same
+  // spam it exists to explain.
+  it('explains a DNS failure once, naming the endpoint, and not for other failures', async () => {
+    const ctx = await boot();
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining', region: 'us1' });
+    await flush();
+    const miner = ctx.MinerManager.instances[0];
+
+    const dnsLine = '[stratum] connect failed: DNS lookup failed: No such host is known.';
+    for (let i = 0; i < 3; i++) {
+      miner.emit('event', { type: 'connect-failed', reason: dnsLine, dns: true });
+    }
+    await flush();
+
+    const hints = ctx.sent('miner:log').map((l) => l.line)
+      .filter((l) => l.includes('name resolution is failing'));
+    expect(hints).toHaveLength(1);
+    expect(hints[0]).toContain('cannot resolve us1.alphapool.tech:5566');
+
+    // A refused connection is the pool's problem — do not blame the resolver.
+    miner.emit('event', { type: 'connect-failed', reason: 'connection refused', dns: false });
+    await flush();
+    expect(ctx.sent('miner:log').map((l) => l.line)
+      .filter((l) => l.includes('name resolution is failing'))).toHaveLength(1);
+  });
+
   it('logs a start failure when the driver probe throws mid-start', async () => {
     const ctx = await boot({
       before: (c) => { c.probe.detectDriverMajor.mockRejectedValue(new Error('nvidia-smi missing')); },
