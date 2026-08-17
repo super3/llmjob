@@ -220,4 +220,47 @@ describe('buildMinerReports', () => {
     const [row] = buildMinerReports({ worker: '   ' }, { total: 'x', accepted: null, gpus: [] });
     expect(row).toMatchObject({ worker: 'rig01', hashrate: 0, accepted: 0 });
   });
+
+  // alpha-miner 1.9.4 renders a stats table whose name column is abbreviated
+  // ("RTX 5090"), where 1.8.x logged nvidia-smi's exact string. nvidia-smi is
+  // the canonical device name, so it wins in EVERY row-building path — this rig
+  // must not be labelled one way as a single card and another way as two, which
+  // is exactly what happened when the paths disagreed.
+  describe('the card name always prefers nvidia-smi over the engine label', () => {
+    const SHORT = 'RTX 5090';
+    const FULL = 'NVIDIA GeForce RTX 5090';
+    const settings = { address: 'prl1pabc', worker: 'rig01', region: 'us1' };
+    const vram = (n) => Array.from({ length: n }, (_, i) => (
+      { index: i, name: FULL, usedMb: 1000, totalMb: 32607 }));
+
+    test('aggregate-only snapshot on a single card', () => {
+      const snap = { gpu: SHORT, total: 310, accepted: 3, gpus: [] };
+      expect(buildMinerReports(settings, snap, vram(1)).map((r) => r.gpu)).toEqual([FULL]);
+    });
+
+    test('per-card snapshot', () => {
+      const snap = { gpu: SHORT, total: 310, accepted: 3,
+        gpus: [{ index: 0, gpu: SHORT, hashrate: 310, accepted: 3 }] };
+      expect(buildMinerReports(settings, snap, vram(1)).map((r) => r.gpu)).toEqual([FULL]);
+    });
+
+    test('the split-rows path, both ways in', () => {
+      // multi-GPU rig with no per-card engine data
+      const aggregate = { gpu: SHORT, total: 620, accepted: 6, gpus: [] };
+      expect(buildMinerReports(settings, aggregate, vram(2)).map((r) => r.gpu)).toEqual([FULL, FULL]);
+      // engine under-enumerated the cards
+      const under = { gpu: SHORT, total: 620, accepted: 6,
+        gpus: [{ index: 0, gpu: SHORT, hashrate: 620, accepted: 6 }] };
+      expect(buildMinerReports(settings, under, vram(2)).map((r) => r.gpu)).toEqual([FULL, FULL]);
+    });
+
+    // The engine's label is still worth keeping: a slim container without
+    // nvidia-smi has nothing else to name the card with.
+    test('falls back to the engine label when nvidia-smi is absent', () => {
+      const snap = { gpu: SHORT, total: 310, accepted: 3,
+        gpus: [{ index: 0, gpu: SHORT, hashrate: 310, accepted: 3 }] };
+      expect(buildMinerReports(settings, snap, []).map((r) => r.gpu)).toEqual([SHORT]);
+      expect(buildMinerReports(settings, { gpu: SHORT, total: 310, gpus: [] }, []).map((r) => r.gpu)).toEqual([SHORT]);
+    });
+  });
 });
