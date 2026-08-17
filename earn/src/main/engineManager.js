@@ -54,24 +54,31 @@ class EngineManager {
 
     this.fs.mkdirSync(this.dir, { recursive: true });
 
-    // A packaged engine (1.9.1b's launcher + core tarball) installs as a tree,
-    // not a file: extract it whole and make BOTH halves executable. The tarball
-    // ships the core mode 644 while the launcher requires -x on it, so chmodding
-    // only the launcher — the single-binary assumption everywhere else — leaves
-    // every start failing with "core missing or not executable".
+    // A described engine installs from its descriptor rather than by convention.
+    // Two shapes today: an archive to unpack (Windows' zip), and a self-
+    // extracting bundle to save as-is (Linux's makeself .run).
     const pkg = enginePackage(this.platform, this.version);
+    // A self-extracting bundle (Linux 1.9.4's makeself .run) is downloaded to
+    // its final path and made executable — there is nothing to unpack, it
+    // unpacks itself at each start. Handing it to tar would fail, and treating
+    // it like a bare binary is exactly right.
     if (pkg) {
-      const archivePath = path.join(this.dir, pkg.archive);
-      await this.download(engineDownloadUrl(this.platform, this.gpu, this.urlBase, this.version), archivePath, onProgress);
-      await this.extractPackage(archivePath, this.dir);
-      try { this.fs.unlinkSync(archivePath); } catch (e) { /* leftover archive is harmless */ }
-      // Windows has no execute bit to grant — its package is a pair of .exe
-      // files — and chmodding them is at best a no-op, at worst a throw that
-      // fails an otherwise perfect install.
-      if (this.platform !== 'win32') {
-        this.chmod(dest, 0o755);
-        this.chmod(path.join(this.dir, pkg.dir, pkg.core), 0o755);
+      const url = engineDownloadUrl(this.platform, this.gpu, this.urlBase, this.version);
+      if (pkg.selfExtracting) {
+        // Nothing to unpack — it unpacks itself into a temp dir at each start.
+        // Handing it to the extractor would fail on a file that is not an
+        // archive, so it is saved straight to its final path.
+        await this.download(url, dest, onProgress);
+      } else {
+        const archivePath = path.join(this.dir, pkg.archive);
+        await this.download(url, archivePath, onProgress);
+        await this.extractPackage(archivePath, this.dir);
+        try { this.fs.unlinkSync(archivePath); } catch (e) { /* leftover archive is harmless */ }
       }
+      // One rule for every described engine, whatever its shape: Windows has no
+      // execute bit to grant, and chmodding there is at best a no-op, at worst a
+      // throw that fails an otherwise perfect install.
+      if (this.platform !== 'win32') this.chmod(dest, 0o755);
       return dest;
     }
 
@@ -128,11 +135,6 @@ class EngineManager {
     if (this.platform === 'win32') return;
     try {
       this.chmod(dest, 0o755);
-      // A packaged engine needs its core executable too — the launcher checks
-      // -x on it and refuses to start otherwise, so a half-chmodded cache would
-      // never self-heal without this.
-      const pkg = enginePackage(this.platform, this.version);
-      if (pkg) this.chmod(path.join(this.dir, pkg.dir, pkg.core), 0o755);
     } catch (e) {
       /* best effort — spawn will report EACCES if it truly isn't executable */
     }

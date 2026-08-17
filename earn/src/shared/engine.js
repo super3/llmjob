@@ -9,81 +9,78 @@ const path = require('path');
 
 const DOWNLOAD_BASE = 'https://pearl.alphapool.tech/downloads/';
 
-// Linux engine versions, both hosted by the pool under /downloads/. The
-// preferred build (1.8.6+ line) carries the NoisyGEMM kernel gains — 3-8% more
-// hashrate on 40/50-series — but is compiled against CUDA 13, which needs
-// NVIDIA driver >= 580; older drivers must stay on the last CUDA 12 stable or
-// the engine dies at cudaGetDeviceCount.
+// One engine version per platform, both 1.9.4, both requiring NVIDIA driver
+// R580+ (CUDA 13) — upstream's own stated requirement now, not our inference.
+// On an older driver the miner exits at startup with a driver notice.
 //
-// `preferred` is 1.9.1b, the emergency rank-128 hotfix. Plain 1.9.1 was the
-// softfork-required build (mainnet block 96,251, passed 2026-08-06) but
-// mis-selected its backend and produced rank-256/512/1024 work after the fork,
-// so upstream withdrew it behind the launcher described in PACKAGED below.
-// Never pin plain 1.9.1: it installs cleanly and mines invalid work.
+// There is no `fallback` on either platform any more. It used to be 1.8.3 on
+// Linux, kept because upstream's release notes were silent on driver
+// requirements and moving blind risked crash-looping the very rigs it
+// protected. That reasoning has expired twice over: the pool now documents
+// R580+ explicitly, and post-fork a fallback mines rank-256 work that is no
+// longer credited. Falling back would burn power for nothing while looking
+// like success — worse than failing loudly with a message that names the fix
+// ("update to R580+").
 //
-// Two gaps that are not ours to fix:
-//
-//   • `fallback` stays on 1.8.3 and is therefore NOT softfork-compliant. Every
-//     upstream release note is silent on CUDA/driver requirements — the
-//     driver >= 580 split above is our own inference — so there is no way to
-//     tell whether the 1.9.x line runs on a pre-580 driver. Moving it blind
-//     would crash-loop exactly the rigs the fallback exists to protect, which
-//     is worse than mining non-compliant. Needs an answer from the pool.
-//
-//   • `windows` is 1.9.4 and there is no Windows fallback any more. Upstream
-//     ships one exe with automatic dispatch for RTX 30/40/50 (driver R580+),
-//     so the compute-capability gate 1.9.1b needed is gone along with the 1.8.6
-//     fallback it selected. Bumping `windows` is still a cache miss by design
-//     (the version is baked into the cached name), so rigs re-download rather
-//     than run a stale .exe for ever. Keep the bundling step in
-//     .github/workflows/miner-build.yml in sync — it reads this.
+// Bumping either version is a cache miss by design (the version is baked into
+// the cached filename), so rigs re-download rather than run a stale binary for
+// ever. Keep the bundling step in .github/workflows/miner-build.yml in sync —
+// it reads this.
 const ENGINE = {
-  preferred: '1.9.1b',
-  fallback: '1.8.3',
   minDriverMajor: 580,
-  // Windows is now a SINGLE build. 1.9.4 is "one exe, automatic dispatch" for
-  // RTX 30/40/50 (driver R580+), which retires the whole compute-capability
-  // gate that 1.9.1b needed: there is no generation left for a fallback to
-  // serve. 1.8.6 is deliberately NOT kept as one — it mines rank-256 work that
-  // the fork does not credit, so falling back to it burns power for nothing and
-  // looks like success. A rig that cannot run 1.9.4 now fails loudly with
-  // upstream's own driver/architecture message, which is actionable ("update to
-  // R580+"); silently mining for free is not.
+  // Windows: one exe with automatic RTX 30/40/50 dispatch, ~4.3 MB zipped.
   windows: '1.9.4',
+  // Linux: one self-extracting makeself bundle, ~530 MB, same dispatch. See
+  // PACKAGED.linux for why the size is load-bearing.
+  linux: '1.9.4',
 };
 
-// Versions that ship as a PACKAGE — a tarball holding a launcher plus a hidden
-// core — instead of the bare binary the pool serves for everything else. Three
-// properties of 1.9.1b break the bare-binary assumptions in this file:
+// Engine descriptors: versions that ship as something other than the bare
+// binary the pool used to serve. A descriptor owns the whole artifact story for
+// one platform+version — what to download, what it installs as, how to verify
+// it, and which CLI it speaks — so adding a build is a table entry rather than
+// a new branch in five functions.
 //
-//   • it is published ONLY on GitHub releases. The pool's /downloads/ has no
-//     copy under any name (checked alpha-miner-1.9.1b, alpha-miner-1.9.1.02 and
-//     both tarball names — all 404), so `url` is absolute rather than built from
-//     DOWNLOAD_BASE;
-//   • the archive expands to a DIRECTORY and the launcher resolves its core as a
-//     sibling, so the pair must stay together — the engine path is
-//     `<dir>/<launcher>`, not a flat versioned filename;
-//   • the tarball ships the core mode 644 while the launcher requires `-x`, so
-//     install must chmod BOTH or every start dies with "core missing or not
-//     executable".
+// Keyed by platform because 1.9.4 ships as two quite different artifacts: a
+// ~4.3 MB .zip holding one self-contained .exe on Windows, and a ~530 MB
+// makeself .run on Linux. Neither is the old launcher-plus-hidden-core shape
+// that 1.9.1b used, so the `dir`/`core` handling that shape needed is gone with
+// it — an unreachable branch is a liability, and git remembers how it worked.
 //
-// The launcher also rejects rank/geometry/backend overrides and appends
-// `--gemm native` itself — verified against the real Windows launcher, which
-// answers `--force-backend` with "ERROR: forbidden backend option in user
-// arguments" and exit 2. See backendForEngine, which strips the override rather
-// than letting a working rig fail closed.
-//
-// Keyed by platform because the same version ships as two different artifacts:
-// a .tar.gz holding a /bin/sh launcher beside a hidden core on Linux, and a
-// .zip holding an .exe pair on Windows.
+// A 1.9.x engine also rejects rank/geometry/backend overrides and picks its own
+// backend — verified against the real Windows binary, which answers
+// `--force-backend` with "ERROR: forbidden backend option in user arguments"
+// and exit 2, and which the pool documents as "rank, geometry, and backend are
+// fixed to the AlphaPool mainnet rank-128 profile". See backendForEngine, which
+// strips the override rather than letting a working rig fail closed.
 const PACKAGED = {
   linux: {
-    '1.9.1b': {
-      url: 'https://github.com/AlphaMine-Tech/alpha-miner/releases/download/v1.9.1.02/alpha-miner-1.9.1b-ubuntu-amd64.tar.gz',
-      archive: 'alpha-miner-1.9.1b-ubuntu-amd64.tar.gz',
-      dir: 'alpha-miner-1.9.1b',
-      launcher: 'alpha-miner',
-      core: '.alpha-miner-core',
+    // 1.9.4 is a THIRD shape again: a makeself self-extracting bundle (.run,
+    // Content-Type application/x-makeself) that is downloaded, chmod +x'd and
+    // spawned directly. It is neither a bare binary nor an archive we unpack —
+    // it unpacks itself into a temp dir at each start — so `selfExtracting`
+    // tells EngineManager to skip extraction entirely and save it straight to
+    // its final path. Args pass through makeself to the miner untouched, which
+    // is how upstream's own documented command line works.
+    //
+    // It is ~530 MB because it carries the CUDA runtime plus a core per
+    // architecture. That size is load-bearing: it is why the Linux engine is
+    // NOT bundled into the AppImage (see .github/workflows/miner-build.yml).
+    // The 4 MB `-rtx3040` HiveOS bundle is the same engine minus the Blackwell
+    // sm120 core — verified by listing it — which is exactly why upstream says
+    // not to put it on a 50-series card, and why we do not use it to dodge the
+    // download.
+    '1.9.4': {
+      archive: 'alphaminer-1.9.4-linux.run',
+      launcher: 'alphaminer-1.9.4-linux.run',
+      sha256: 'e3dbba681c1f027b80c845f0747e35baae91dbb2ae7464dcc435e41498627f4e',
+      selfExtracting: true,
+      // Same 1.9.4 CLI as Windows: --host <host:port>, the payout address
+      // INSIDE --worker as <address>.<rig>, --gpu <id>. Upstream's HiveOS
+      // flight sheet says the same thing in its own vocabulary — the wallet
+      // template is `%WAL%.%WORKER_NAME%`, with "REQUIRED — the address travels
+      // inside the worker field".
+      cli: 'worker-address',
     },
   },
   win32: {
@@ -104,8 +101,8 @@ const PACKAGED = {
     //     against the binary), so we send the documented combined one.
     //
     // The exe also runs happily from a path containing a space, so the
-    // ProgramData relocation that 1.9.1b needed does not apply — see
-    // packagedLauncherRuns, which now keys on the presence of a separate core.
+    // ProgramData relocation 1.9.1b needed is gone along with the check that
+    // decided it.
     '1.9.4': {
       archive: 'alphaminer-1.9.4-win-033f7027b.zip',
       launcher: 'AlphaMiner-Windows-1.9.4-033f7027.exe',
@@ -151,19 +148,30 @@ function backendForEngine(backend, platform, version, log) {
 // precisely for users whose download failed — so getting this wrong sends them
 // in circles. Platform is a parameter so both branches are testable directly.
 function manualInstallHint(platform, version, dir) {
-  return enginePackage(platform, version)
-    ? { manualPath: null, extractDir: dir }
-    : { manualPath: manualEnginePath(dir, platform), extractDir: null };
+  const pkg = enginePackage(platform, version);
+  // A self-extracting bundle is saved, not extracted — and it is saved under
+  // the very name the browser downloads it as, which is also the name the cache
+  // looks for, so a hand-downloaded .run dropped in the engine dir is picked up
+  // with no rename at all.
+  if (pkg && pkg.selfExtracting) return { manualPath: path.join(dir, pkg.launcher), extractDir: null };
+  if (pkg) return { manualPath: null, extractDir: dir };
+  return { manualPath: manualEnginePath(dir, platform), extractDir: null };
 }
 
-// Pick the Linux engine version a rig can actually run from its NVIDIA driver
-// major version. Unknown driver (no nvidia-smi / unparseable) → fallback: an
-// old-driver rig that got the preferred build would crash-loop, while a new-
-// driver rig on the fallback merely mines a few percent slower.
-function pickEngineVersion(driverMajor) {
-  return Number.isFinite(driverMajor) && driverMajor >= ENGINE.minDriverMajor
-    ? ENGINE.preferred
-    : ENGINE.fallback;
+// The engine version for a platform. One build each now, so this is a lookup
+// rather than the driver-based choice it used to be — see ENGINE for why the
+// fallback went away.
+function engineVersionFor(platform) {
+  return platform === 'win32' ? ENGINE.windows : ENGINE.linux;
+}
+
+// Is this rig's driver too old for the engine? Used only to warn: there is no
+// older build left to fall back to, and the miner refuses to start on its own
+// with a message that names the fix. An UNKNOWN driver (no nvidia-smi, or
+// unparseable output) is deliberately not treated as too old — we would be
+// guessing, and the guess would scare a perfectly healthy rig.
+function driverTooOld(driverMajor) {
+  return Number.isFinite(driverMajor) && driverMajor < ENGINE.minDriverMajor;
 }
 
 // Parse the driver major version out of `nvidia-smi --query-gpu=driver_version`
@@ -181,14 +189,12 @@ function parseDriverMajor(output) {
 // unversioned Windows name (AMD, which the pool ships without a version).
 function engineBinaryName(platform, gpu, version) {
   const pkg = enginePackage(platform, version);
-  // A flat package (no `dir`) is one self-contained exe at the top of the
-  // archive; only the launcher+core shape nests.
-  if (pkg) return pkg.dir ? pkg.dir + '/' + pkg.launcher : pkg.launcher;
+  if (pkg) return pkg.launcher;
   if (platform === 'win32') {
     if (gpu === 'amd') return 'alpha-miner-amd-windows-fixed.exe';
     return version ? 'alpha-miner-windows-' + version + '.exe' : 'alpha-miner-windows.exe';
   }
-  return 'alpha-miner-' + (version || ENGINE.fallback);
+  return 'alpha-miner-' + (version || ENGINE.linux);
 }
 
 // The downloadable artifact name (a zip on Windows, the bare binary otherwise).
@@ -198,7 +204,7 @@ function engineArchiveName(platform, gpu, version) {
   if (platform === 'win32') {
     return gpu === 'amd' ? 'AlphaMiner-Pearl-AMD.zip' : 'AlphaMiner-Pearl-Windows.zip';
   }
-  return 'alpha-miner-' + (version || ENGINE.fallback);
+  return 'alpha-miner-' + (version || ENGINE.linux);
 }
 
 function engineDownloadUrl(platform, gpu, base, version) {
@@ -245,9 +251,7 @@ function enginePath(dir, platform, gpu, version) {
 // start dies with "core missing or not executable" with nothing to re-trigger
 // the download, because the launcher is right where it belongs.
 function engineFiles(dir, platform, gpu, version) {
-  const pkg = enginePackage(platform, version);
-  const bin = enginePath(dir, platform, gpu, version);
-  return pkg && pkg.core ? [bin, path.join(dir, pkg.dir, pkg.core)] : [bin];
+  return [enginePath(dir, platform, gpu, version)];
 }
 
 // The name a hand-downloaded engine lands under. The pool's documented link is
@@ -287,7 +291,8 @@ module.exports = {
   enginePackage,
   backendForEngine,
   manualInstallHint,
-  pickEngineVersion,
+  engineVersionFor,
+  driverTooOld,
   parseDriverMajor,
   engineBinaryName,
   engineArchiveName,

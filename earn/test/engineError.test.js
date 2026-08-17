@@ -88,6 +88,22 @@ describe('describeSetupError', () => {
   const URL = 'https://pearl.alphapool.tech/downloads/alpha-miner-1.8.3';
   const PATH = '/home/u/.config/LLMJob Earn/engine/alpha-miner';
 
+  // The three shapes the manual-install hint can take, because the advice has to
+  // match the artifact: an archive is extracted, a bare binary or a
+  // self-extracting bundle is saved under a name, and with neither known we say
+  // only where to download from rather than inventing a destination.
+  test('the manual route describes the artifact it actually is', () => {
+    const extract = describeSetupError({ err: new Error('boom'), downloadUrl: URL, extractDir: '/eng' });
+    expect(extract.log).toContain('download ' + URL + ' and extract it into /eng,');
+    expect(extract.log).not.toContain('save it as');
+
+    const save = describeSetupError({ err: new Error('boom'), downloadUrl: URL, manualPath: PATH });
+    expect(save.log).toContain('download ' + URL + ' and save it as ' + PATH + ',');
+
+    const bare = describeSetupError({ err: new Error('boom'), downloadUrl: URL });
+    expect(bare.log).toContain('Manual install: download ' + URL + ', then start again.');
+  });
+
   test('certificate failure: explains the cause and both fixes', () => {
     const d = describeSetupError({
       err: new Error('unable to verify the first certificate'),

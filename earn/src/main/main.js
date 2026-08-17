@@ -42,7 +42,7 @@ const { resolveServerUrl } = require('../shared/llama');
 const { buildBalanceUrl, parseBalance, buildMdlBalanceUrl, parseMdlBalance } = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
 const {
-  bundledEnginePath, pickEngineVersion,
+  bundledEnginePath, engineVersionFor, driverTooOld,
   engineDownloadUrl, manualInstallHint,
   ENGINE,
 } = require('../shared/engine');
@@ -289,15 +289,19 @@ async function startMining(settings) {
   // the network entirely; the lookup is version-aware, so a bundle only
   // satisfies the exact build this rig selected. Otherwise download on demand.
   let binaryPath = settings.binaryPath;
-  // Windows has one build now (ENGINE.windows = 1.9.4): upstream dispatches
-  // RTX 30/40/50 inside a single exe, so there is no compute-capability gate
-  // and no fallback to choose between. A rig it will not run on gets the
-  // miner's own driver/architecture refusal, which names the fix.
-  let version;
-  if (process.platform === 'win32') {
-    version = ENGINE.windows;
-  } else {
-    version = pickEngineVersion(await detectDriverMajor());
+  // One build per platform now (both 1.9.4): upstream dispatches RTX 30/40/50
+  // inside a single artifact, so there is no compute-capability gate and no
+  // fallback to choose between. A rig it will not run on gets the miner's own
+  // driver/architecture refusal, which names the fix — so the driver check is
+  // now only a heads-up, sent before the download rather than after a rig has
+  // pulled half a gigabyte it cannot use.
+  const version = engineVersionFor(process.platform);
+  if (driverTooOld(await detectDriverMajor())) {
+    send('miner:log', {
+      level: 'warn',
+      line: 'NVIDIA driver is older than R' + ENGINE.minDriverMajor + ' (CUDA 13); alpha-miner '
+        + version + ' will refuse to start. Update the driver to mine.',
+    });
   }
   // 1.9.4 runs from any path, including one with a space, so the engine
   // simply lives beside the rest of our data.

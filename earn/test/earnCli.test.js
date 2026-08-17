@@ -448,7 +448,7 @@ describe('mining', () => {
     expect(allOut()).toContain('worker:     rig-host  (auto)');
     expect(allOut()).toContain('(+MDL');
     expect(allOut()).toContain('difficulty: 262144  (for 2× NVIDIA GeForce RTX 3070, auto)');
-    expect(allOut()).toContain('engine:     alpha-miner ' + engine.ENGINE.preferred);
+    expect(allOut()).toContain('engine:     alpha-miner ' + engine.ENGINE.linux);
     expect(allOut()).toContain('downloading mining engine from');
     expect(allOut()).toContain('downloading… 50%');
 
@@ -533,24 +533,26 @@ describe('mining', () => {
     // point is that they match what THIS rig's cache is waiting for — so derive
     // them the way the code does rather than pinning the Linux names.
     expect(allErr()).toContain('Manual install: download '
-      + engine.engineDownloadUrl(process.platform, undefined, null, engine.ENGINE.preferred));
+      + engine.engineDownloadUrl(process.platform, undefined, null, engine.ENGINE.linux));
 
-    // The invariant, and the reason manualInstallHint exists: whatever the
-    // platform serves, an ARCHIVE is never described as something to save under
-    // the launcher's name. That advice cannot work — the file holds the launcher
-    // plus its core — and this message is only ever read by someone whose
-    // download already failed, so getting it wrong sends them in circles. The
-    // other arm belongs to the bare-binary builds; both are unit-tested directly
-    // in engine.test.js.
-    if (/\.(tar\.gz|zip)/.test(allErr())) {
+    // The invariant, and the reason manualInstallHint exists: the advice has to
+    // match the artifact. An ARCHIVE is never described as something to save
+    // under the launcher's name, and a self-extracting bundle is never described
+    // as something to extract. This message is only ever read by someone whose
+    // download already failed, so getting it wrong sends them in circles.
+    // Derived from the descriptor rather than pinned, so it stays honest on
+    // whichever platform the suite runs.
+    const hint = engine.manualInstallHint(process.platform, engine.ENGINE.linux, '/rig/engine');
+    if (hint.extractDir) {
       expect(allErr()).toContain('extract it into /rig/engine');
       expect(allErr()).not.toContain('save it as');
     } else {
-      expect(allErr()).toContain('save it as ' + engine.manualEnginePath('/rig/engine', process.platform));
+      expect(allErr()).toContain('save it as ' + hint.manualPath);
+      expect(allErr()).not.toContain('extract it into');
     }
   });
 
-  test('unknown driver picks the compatible build; no-report; hostname fallback', async () => {
+  test('an unreadable driver version is not treated as too old; no-report; hostname fallback', async () => {
     const m = load();
     m.os.hostname.mockReturnValue('');
     m.probe.detectDriverMajor.mockResolvedValue(null);
@@ -558,7 +560,8 @@ describe('mining', () => {
     const p = m.run(['-a', ADDR, '--no-update', '--no-report']);
     await settle();
 
-    expect(allOut()).toContain('driver version unknown — using the compatible build');
+    // Unknown driver must NOT warn: guessing would scare a healthy rig.
+    expect(allOut()).not.toContain('WARNING:    NVIDIA driver');
     expect(allOut()).toContain('engine found: /cache/alpha-miner');
     expect(allOut()).toContain('worker:     rig01  (auto)'); // unusable hostname → default
     expect(intervalFor(NETWORK.reportIntervalMs)).toBeUndefined();
@@ -602,7 +605,7 @@ describe('mining', () => {
     await expect(p).resolves.toBe(0);
   });
 
-  test('old driver picks the fallback build; single GPU; stats write failures stay silent', async () => {
+  test('an old driver warns instead of silently downgrading; single GPU; stats write failures stay silent', async () => {
     const m = load();
     m.probe.detectDriverMajor.mockResolvedValue(550);
     m.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 3070', count: 1 });
@@ -614,7 +617,8 @@ describe('mining', () => {
 
     expect(allOut()).toContain('mode:       mining');
     expect(allOut()).not.toContain('preparing local LLM');
-    expect(allOut()).toContain('driver 550 < 580');
+    expect(allOut()).toContain('NVIDIA driver 550 is older than R580');
+    expect(allOut()).toContain('no older build to fall back to');
     expect(allOut()).toContain('difficulty: 4096  (for NVIDIA GeForce RTX 3070, auto)');
     intervalFor(10000).fn(); // must not throw
     expect(m.fs.renameSync).not.toHaveBeenCalled();

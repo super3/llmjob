@@ -1083,10 +1083,12 @@ describe('mining', () => {
     expect(log).toContain('ca-certificates');
     // Version-agnostic on purpose: this asserts the guidance names a download URL
     // and where the file has to go, not which engine build is pinned today. A
-    // PACKAGED engine (1.9.1b) is a tarball, so the advice is "extract it into
-    // <engine dir>" — telling anyone to save a tarball AS the launcher is advice
-    // that cannot work.
-    expect(log).toMatch(/Manual install: download \S+ and extract it into \S*engine,/);
+    // The Linux engine is a self-extracting .run, so the advice is "save it as"
+    // — and it downloads under the very name the cache looks for, so there is no
+    // rename to get wrong either. Telling anyone to extract it would be advice
+    // that cannot work, which is the whole point of manualInstallHint.
+    expect(log).toMatch(/Manual install: download \S+ and save it as \S+\.run,/);
+    expect(log).not.toContain('extract it into');
   });
 
   it('logs "engine found" when the engine is already installed', async () => {
@@ -1161,7 +1163,7 @@ describe('mining', () => {
     const eng = require('../src/shared/engine');
     // Derived, not spelled out: a packaged engine lives at <dir>/<launcher>, not a
     // flat versioned filename, and bundledEnginePath is what knows the difference.
-    const bundled = eng.bundledEnginePath('/res', 'linux', undefined, eng.ENGINE.preferred);
+    const bundled = eng.bundledEnginePath('/res', 'linux', undefined, eng.ENGINE.linux);
     const ctx = await boot({ resourcesPath: '/res' });
     ctx.fs.existsSync.mockImplementation((p) => p === bundled);
     ctx.fs.chmodSync.mockImplementation(() => { throw new Error('EROFS: read-only file system'); });
@@ -1201,6 +1203,28 @@ describe('mining', () => {
   // selected, but the bundle sitting in "C:\Program Files\LLMJob Earn" still
   // cannot run. Spawning it would fail on every start, so it is skipped and the
   // rig downloads into the path that works.
+  // There is no older build left to fall back to, so an out-of-date driver gets
+  // a warning rather than a silent downgrade — and it is sent BEFORE the
+  // download, so a rig does not spend half a gigabyte on an engine its driver
+  // will refuse to run. An unreadable driver version stays quiet: guessing would
+  // scare a perfectly healthy rig.
+  it('warns about a pre-R580 driver, and stays quiet when it cannot read one', async () => {
+    const old = await boot({ before: (c) => { c.probe.detectDriverMajor.mockResolvedValue(550); } });
+    old.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    expect(old.sent('miner:log').map((l) => l.line).join('\n'))
+      .toContain('NVIDIA driver is older than R580');
+    // It is a warning, not a refusal: the rig still starts and lets the miner
+    // deliver upstream's own driver message.
+    expect(old.MinerManager.instances).toHaveLength(1);
+
+    const unknown = await boot({ before: (c) => { c.probe.detectDriverMajor.mockResolvedValue(null); } });
+    unknown.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    expect(unknown.sent('miner:log').map((l) => l.line).join('\n'))
+      .not.toContain('older than R580');
+  });
+
   it('logs a start failure when the driver probe throws mid-start', async () => {
     const ctx = await boot({
       before: (c) => { c.probe.detectDriverMajor.mockRejectedValue(new Error('nvidia-smi missing')); },
@@ -1687,7 +1711,7 @@ describe('local LLM', () => {
     // The preferred Linux engine is now a PACKAGE, so the bundled path is a
     // launcher inside a directory — ask engine.js rather than hardcoding a name.
     const { bundledEnginePath, ENGINE } = require('../src/shared/engine');
-    const bundledMiner = bundledEnginePath('/res', 'linux', undefined, ENGINE.preferred);
+    const bundledMiner = bundledEnginePath('/res', 'linux', undefined, ENGINE.linux);
     const ctx = await boot({
       resourcesPath: '/res',
       before: (c) => { c.probe.findFreePort.mockResolvedValue(8081); },
