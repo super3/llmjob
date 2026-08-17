@@ -6,9 +6,7 @@ const {
   engineBinaryName, engineArchiveName, engineDownloadUrl,
   isZipUrl, isArchiveUrl, looksLikeArchive, enginePath, engineFiles, bundledEnginePath, progressPercent,
   manualEngineName, manualEnginePath, enginePackage, backendForEngine, manualInstallHint,
-  parseComputeCaps, pickWindowsEngineVersion, windowsEngineNote,
-  packagedLauncherRuns, spacedLauncherNote, engineInstallDir,
-} = require('../src/shared/engine');
+  } = require('../src/shared/engine');
 
 describe('pickEngineVersion', () => {
   test('new drivers get the fast build, old or unknown drivers the compatible one', () => {
@@ -36,7 +34,9 @@ describe('parseDriverMajor', () => {
 describe('engineBinaryName', () => {
   test('per platform and GPU vendor', () => {
     expect(engineBinaryName('win32')).toBe('alpha-miner-windows.exe'); // legacy: no version
-    expect(engineBinaryName('win32', 'nvidia', ENGINE.windows)).toBe('alpha-miner-windows-' + ENGINE.windows + '.exe');
+    // ENGINE.windows is a PACKAGE now, so it resolves to the exe inside the zip
+    // rather than our own alpha-miner-windows-<ver>.exe convention.
+    expect(engineBinaryName('win32', 'nvidia', ENGINE.windows)).toBe('AlphaMiner-Windows-1.9.4-033f7027.exe');
     expect(engineBinaryName('win32', undefined, '1.8.6')).toBe('alpha-miner-windows-1.8.6.exe');
     expect(engineBinaryName('win32', 'amd')).toBe('alpha-miner-amd-windows-fixed.exe');
     expect(engineBinaryName('win32', 'amd', '1.8.6')).toBe('alpha-miner-amd-windows-fixed.exe'); // AMD ignores version
@@ -174,25 +174,21 @@ describe('packaged engines (1.9.1b launcher + core)', () => {
     expect(engineDownloadUrl('linux', undefined, 'https://mirror.example/', V).startsWith('https://github.com/')).toBe(true);
   });
 
-  test('Windows has its own package — same version, different artifact', () => {
-    // Upstream added a Windows build to the same release tag after the Linux
-    // one. It is a .zip of two .exe files, not a .tar.gz of a shell launcher
-    // beside a hidden core, so the descriptor cannot be shared.
-    const linux = enginePackage('linux', V);
-    const win = enginePackage('win32', V);
+  // Windows has no bare-binary fallback any more: 1.9.4 is the only build, and
+  // it is a FLAT package — one self-contained exe, hosted by the pool rather
+  // than GitHub, so the URL is built from DOWNLOAD_BASE and there is no core.
+  test('the Windows engine is a flat, pool-hosted package', () => {
+    const win = enginePackage('win32', ENGINE.windows);
     expect(win).toBeTruthy();
-    expect(win.archive).toBe('AlphaMiner-Windows-1.9.1.02.zip');
-    expect(win.launcher).toBe('alpha-miner.exe');
-    expect(win.core).toBe('alpha-miner-core.exe');
-    expect(win.url).not.toBe(linux.url);
-    expect(engineBinaryName('win32', 'nvidia', V)).toBe('AlphaMiner-Windows-1.9.1.02/alpha-miner.exe');
-  });
-
-  test('the Windows fallback is still a bare .exe from the pool', () => {
-    expect(enginePackage('win32', ENGINE.windows)).toBeNull();
-    expect(engineBinaryName('win32', 'nvidia', ENGINE.windows)).toBe('alpha-miner-windows-1.8.6.exe');
+    expect(win.dir).toBeUndefined();
+    expect(win.core).toBeUndefined();
+    expect(win.cli).toBe('worker-address');
+    expect(engineBinaryName('win32', 'nvidia', ENGINE.windows)).toBe(win.launcher);
     expect(engineDownloadUrl('win32', 'nvidia', null, ENGINE.windows))
-      .toBe(DOWNLOAD_BASE + 'AlphaMiner-Pearl-Windows.zip');
+      .toBe(DOWNLOAD_BASE + 'alphaminer-1.9.4-win-033f7027b.zip');
+    // a flat package installs as exactly one file
+    expect(engineFiles('/cache', 'win32', 'nvidia', ENGINE.windows))
+      .toEqual([enginePath('/cache', 'win32', 'nvidia', ENGINE.windows)]);
   });
 
   test('the bare-binary fallback is untouched', () => {
@@ -213,7 +209,7 @@ describe('backendForEngine', () => {
 
   test('keeps it for a bare-binary engine', () => {
     expect(backendForEngine('ampere', 'linux', ENGINE.fallback, () => {})).toBe('ampere');
-    expect(backendForEngine('ampere', 'win32', ENGINE.windows, () => {})).toBe('ampere');
+    expect(backendForEngine('ampere', 'win32', '1.8.6', () => {})).toBe('ampere'); // legacy bare exe
   });
 
   test('no override set stays null, and logging is optional', () => {
@@ -222,187 +218,17 @@ describe('backendForEngine', () => {
   });
 });
 
-describe('parseComputeCaps', () => {
-  test('one entry per card, junk dropped', () => {
-    expect(parseComputeCaps('8.9\n')).toEqual(['8.9']);
-    expect(parseComputeCaps('8.6\r\n8.6\r\n')).toEqual(['8.6', '8.6']);
-    expect(parseComputeCaps('')).toEqual([]);
-    expect(parseComputeCaps(null)).toEqual([]);
-    expect(parseComputeCaps('NVIDIA-SMI has failed')).toEqual([]);
-    expect(parseComputeCaps('[N/A]')).toEqual([]);
-  });
-});
-
-describe('pickWindowsEngineVersion', () => {
-  // The 1.9.1b Windows package fails closed on anything but a uniform CC 8.6 or
-  // 8.9 rig, so this gate is the difference between mining and not starting at
-  // all. Verified against the real launcher on a 4090: `--list-devices` reports
-  // `cc=8.9 backend=ada` and runs.
-  test('uniform 30-, 40- or 50-series gets the compliant hotfix', () => {
-    expect(pickWindowsEngineVersion(['8.6'])).toBe(ENGINE.windowsPreferred);
-    expect(pickWindowsEngineVersion(['8.9'])).toBe(ENGINE.windowsPreferred);
-    expect(pickWindowsEngineVersion(['8.9', '8.9', '8.9'])).toBe(ENGINE.windowsPreferred);
-    // Blackwell. The README says it is unsupported; the binaries disagree and
-    // they are what runs — the launcher's refusal message allows CC 12.0 and
-    // the core ships sm_120 kernels. Believing the README held every 50-series
-    // rig on 1.8.6, mining rank-256 work that earns no credit after the fork.
-    expect(pickWindowsEngineVersion(['12.0'])).toBe(ENGINE.windowsPreferred);
-  });
-
-  test('mixed and older rigs stay on the fallback the launcher will run', () => {
-    expect(pickWindowsEngineVersion(['8.6', '8.9'])).toBe(ENGINE.windows);  // mixed: fails closed
-    expect(pickWindowsEngineVersion(['8.9', '12.0'])).toBe(ENGINE.windows); // mixed, both supported
-    expect(pickWindowsEngineVersion(['7.5'])).toBe(ENGINE.windows);         // Turing
-  });
-
-  test('unknown capabilities fall back rather than guess', () => {
-    expect(pickWindowsEngineVersion([])).toBe(ENGINE.windows);
-    expect(pickWindowsEngineVersion(null)).toBe(ENGINE.windows);
-    expect(pickWindowsEngineVersion(undefined)).toBe(ENGINE.windows);
-  });
-});
-
-describe('windowsEngineNote', () => {
-  test('says nothing when the rig qualified', () => {
-    expect(windowsEngineNote(['8.9'])).toBe('');
-  });
-
-  test('says nothing to a Blackwell rig either — it qualifies now', () => {
-    expect(windowsEngineNote(['12.0'])).toBe('');
-  });
-
-  test('names the reason, and admits the fallback is not compliant', () => {
-    // A rig left behind cannot tell from the outside whether this is our choice
-    // or upstream's limit, and it is mining work the fork no longer credits.
-    expect(windowsEngineNote(['7.5'])).toContain('compute capability 7.5 is not supported');
-    expect(windowsEngineNote(['8.6', '8.9'])).toContain('mixed GPU generations (8.6, 8.9)');
-    expect(windowsEngineNote([])).toContain('compute capability could not be read');
-    expect(windowsEngineNote(null)).toContain('compute capability could not be read');
-    for (const caps of [['7.5'], ['8.6', '8.9'], [], null]) {
-      expect(windowsEngineNote(caps)).toContain('not rank-128 compliant');
-      expect(windowsEngineNote(caps)).toContain('1.9.2');
-    }
-  });
-});
-
-describe('packagedLauncherRuns / spacedLauncherNote', () => {
-  // Upstream's 1.9.1.02 Windows launcher passes its core the right application
-  // name but an unquoted command line, so Windows splits the core's own path on
-  // spaces and the core rejects the tail as an argument:
-  //   C:\Program Files\LLMJob Earn\…\alpha-miner-core.exe --pool …
-  //   → ERROR: unknown argument: Files\LLMJob Earn\…\alpha-miner-core.exe
-  // Both our Windows locations contain a space, which is what broke 0.3.12.
-  const PKG = ENGINE.windowsPreferred;
-
-  test('a Windows package cannot run from a spaced path', () => {
-    expect(packagedLauncherRuns('win32', PKG, 'C:\\Program Files\\LLMJob Earn\\resources\\engine')).toBe(false);
-    expect(packagedLauncherRuns('win32', PKG, 'C:\\Users\\me\\AppData\\Roaming\\LLMJob Earn\\engine')).toBe(false);
-  });
-
-  test('and runs fine from one without', () => {
-    expect(packagedLauncherRuns('win32', PKG, 'C:\\LLMJobEarn\\engine')).toBe(true);
-    expect(packagedLauncherRuns('win32', PKG, null)).toBe(true); // nothing to judge
-  });
-
-  test('bare binaries and non-Windows platforms are unaffected', () => {
-    // The Linux package ships a /bin/sh launcher that execs "$CORE" "$@" —
-    // correctly quoted — so a spaced path is only a Windows problem.
-    expect(packagedLauncherRuns('linux', ENGINE.preferred, '/home/a b/engine')).toBe(true);
-    expect(packagedLauncherRuns('win32', ENGINE.windows, 'C:\\Program Files\\LLMJob Earn')).toBe(true);
-  });
-
-  test('the note explains the downgrade without advising a pointless reinstall', () => {
-    expect(spacedLauncherNote('win32', PKG, 'C:\\LLMJobEarn\\engine')).toBe('');
-    const note = spacedLauncherNote('win32', PKG, 'C:\\Program Files\\LLMJob Earn\\engine');
-    expect(note).toContain('cannot start from a path containing a space');
-    expect(note).toContain(ENGINE.windows);
-    expect(note).toContain('not rank-128 compliant');
-    expect(note).toContain('1.9.2');
-    // Moving the app would not help — the cache stays under %APPDATA%\LLMJob Earn.
-    expect(note).not.toMatch(/reinstall/i);
-  });
-});
-
-describe('engineInstallDir', () => {
-  const WIN_DEFAULT = 'C:\\Users\\me\\AppData\\Roaming\\LLMJob Earn\\engine';
-  const PKG = ENGINE.windowsPreferred;
-  const ok = () => {};
-  const nope = () => { throw new Error('EPERM'); };
-
-  test('leaves the default alone when the launcher can already run from it', () => {
-    // Space-free Windows path, a bare-binary version, and non-Windows: all fine.
-    expect(engineInstallDir({
-      platform: 'win32', version: PKG, defaultDir: 'C:\\earn\\engine', env: {}, ensureDir: nope,
-    })).toBe('C:\\earn\\engine');
-    expect(engineInstallDir({
-      platform: 'win32', version: ENGINE.windows, defaultDir: WIN_DEFAULT, env: {}, ensureDir: nope,
-    })).toBe(WIN_DEFAULT);
-    expect(engineInstallDir({
-      platform: 'linux', version: ENGINE.preferred, defaultDir: '/home/a b/engine', env: {}, ensureDir: nope,
-    })).toBe('/home/a b/engine');
-  });
-
-  test('relocates a spaced Windows install to ProgramData', () => {
-    const calls = [];
-    expect(engineInstallDir({
-      platform: 'win32',
-      version: PKG,
-      defaultDir: WIN_DEFAULT,
-      env: { ProgramData: 'C:\\ProgramData', LOCALAPPDATA: 'C:\\Users\\me\\AppData\\Local' },
-      ensureDir: (d) => calls.push(d),
-    })).toBe(path.join('C:\\ProgramData', 'llmjob-earn', 'engine'));
-    // and it actually tried to create it, rather than assuming
-    expect(calls).toEqual([path.join('C:\\ProgramData', 'llmjob-earn', 'engine')]);
-  });
-
-  test('falls through to the next base when one cannot be written', () => {
-    const local = 'C:\\Users\\me\\AppData\\Local';
-    const tried = [];
-    const dir = engineInstallDir({
-      platform: 'win32',
-      version: PKG,
-      defaultDir: WIN_DEFAULT,
-      env: { ProgramData: 'C:\\ProgramData', LOCALAPPDATA: local },
-      ensureDir: (d) => { tried.push(d); if (d.includes('ProgramData')) throw new Error('EPERM'); },
-    });
-    expect(dir).toBe(path.join(local, 'llmjob-earn', 'engine'));
-    expect(tried).toHaveLength(2);
-  });
-
-  test('skips a candidate base that is itself spaced', () => {
-    // A username with a space makes LOCALAPPDATA useless for this; ProgramData
-    // is first precisely because it never contains one.
-    expect(engineInstallDir({
-      platform: 'win32',
-      version: PKG,
-      defaultDir: WIN_DEFAULT,
-      env: { LOCALAPPDATA: 'C:\\Users\\Ada Lovelace\\AppData\\Local', SystemDrive: 'D:' },
-      ensureDir: ok,
-    })).toBe(path.join('D:\\', 'llmjob-earn', 'engine'));
-  });
-
-  test('gives up and returns the default when nothing is writable', () => {
-    // The caller then downgrades to a build that runs from a spaced path.
-    // No env at all: every base is missing bar the SystemDrive default, which
-    // this machine refuses too.
-    expect(engineInstallDir({
-      platform: 'win32', version: PKG, defaultDir: WIN_DEFAULT, ensureDir: nope,
-    })).toBe(WIN_DEFAULT);
-  });
-});
-
 describe('engineFiles', () => {
   test('a bare binary is only itself; a package is the launcher AND its core', () => {
     expect(engineFiles('/cache', 'linux', undefined, ENGINE.fallback))
       .toEqual([enginePath('/cache', 'linux', undefined, ENGINE.fallback)]);
 
-    for (const platform of ['linux', 'win32']) {
-      const pkg = enginePackage(platform, '1.9.1b');
-      expect(engineFiles('/cache', platform, undefined, '1.9.1b')).toEqual([
-        path.join('/cache', pkg.dir, pkg.launcher),
-        path.join('/cache', pkg.dir, pkg.core),
-      ]);
-    }
+    // Only Linux still ships the launcher+core shape; Windows 1.9.4 is flat.
+    const pkg = enginePackage('linux', '1.9.1b');
+    expect(engineFiles('/cache', 'linux', undefined, '1.9.1b')).toEqual([
+      path.join('/cache', pkg.dir, pkg.launcher),
+      path.join('/cache', pkg.dir, pkg.core),
+    ]);
   });
 });
 
@@ -418,7 +244,7 @@ describe('manualInstallHint', () => {
   test('a bare binary is saved as the pool\'s own download name', () => {
     expect(manualInstallHint('linux', ENGINE.fallback, '/cache'))
       .toEqual({ manualPath: manualEnginePath('/cache', 'linux'), extractDir: null });
-    expect(manualInstallHint('win32', ENGINE.windows, '/cache'))
+    expect(manualInstallHint('win32', '1.8.6', '/cache'))
       .toEqual({ manualPath: manualEnginePath('/cache', 'win32'), extractDir: null });
   });
 });

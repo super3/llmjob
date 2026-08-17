@@ -75,3 +75,71 @@ describe('parseLine', () => {
     expect(parseLine(undefined)).toBeNull();
   });
 });
+
+// alpha-miner 1.9.4 dropped the key=value logs entirely and renders a live
+// stats table. The rig still mined perfectly with the old parser — it just
+// reported 0.0 TH/s and $0.00/day in the UI, which is why these are pinned
+// against output captured from a real 5090 rather than invented.
+describe('parseLine on the 1.9.4 stats table', () => {
+  const ROW = ' #0  RTX 5090            313.95 TH/s   71C   44%     575W   0.546    2437    13801      2   0   0';
+
+  test('reads hashrate, counters, power and temp from a device row', () => {
+    expect(parseLine(ROW)).toEqual({
+      type: 'status',
+      gpuIndex: 0,
+      hashrate: 313.95,
+      accepted: 2,
+      rejected: 0,
+      power: 575,
+      temp: 71,
+      gpu: 'RTX 5090',
+    });
+  });
+
+  // The table's own Total line carries no #N, so a multi-GPU rig accumulates
+  // per card instead of double-counting the summary.
+  test('ignores the Total row and the table rules', () => {
+    expect(parseLine('     Total               313.95 TH/s                 575W   0.546          2   0   0')).toBeNull();
+    expect(parseLine('────────────────────────────────')).toBeNull();
+  });
+
+  test('tracks the second card on a multi-GPU rig', () => {
+    const r = parseLine(' #1  RTX 4090            286.86 TH/s   86C   61%     449W   0.638    2100    10501     41   2   0');
+    expect(r.gpuIndex).toBe(1);
+    expect(r.accepted).toBe(41);
+    expect(r.rejected).toBe(2);
+    expect(r.temp).toBe(86);
+  });
+
+  test('normalises non-terabyte hashrate units', () => {
+    expect(parseLine('#0 A  500 GH/s 1 0 0').hashrate).toBeCloseTo(0.5, 6);
+    expect(parseLine('#0 A  2000000 H/s 1 0 0').hashrate).toBeCloseTo(2e-6, 12);
+  });
+
+  // A row missing its fan/clock/counter columns must still yield the hashrate
+  // rather than failing the whole line — the strict-layout version of this
+  // parser is what silently showed zero.
+  test('survives a row with columns missing', () => {
+    expect(parseLine('#0  RTX 5090  120.5 TH/s')).toEqual({
+      type: 'status', gpuIndex: 0, hashrate: 120.5,
+      accepted: null, rejected: null, power: null, temp: null, gpu: 'RTX 5090',
+    });
+  });
+
+  test('returns null for a #N line with no hashrate, and nulls an empty name', () => {
+    expect(parseLine('#0  starting up')).toBeNull();
+    expect(parseLine('#0 42.0 TH/s 1 0 0').gpu).toBeNull();
+  });
+
+  test('strips ANSI colour before matching', () => {
+    const r = parseLine('\u001b[32m #0  RTX 5090  313.95 TH/s   71C   575W  2 0 0\u001b[0m');
+    expect(r.hashrate).toBe(313.95);
+    expect(r.gpu).toBe('RTX 5090');
+  });
+
+  test('reads the plainer 1.9.4 connection line', () => {
+    expect(parseLine('[stratum] connected to us1.alphapool.tech:5566')).toEqual({
+      type: 'connected', gpuIndex: null, endpoint: 'us1.alphapool.tech:5566', gpu: null,
+    });
+  });
+});

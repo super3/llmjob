@@ -20,7 +20,7 @@ const { LlmManager } = require('./llmManager');
 const { LlmEngineManager } = require('./llmEngineManager');
 const { postJson, getJson, downloadFile, streamChatCompletion, extractLlamaZip, extractEnginePackage } = require('./io');
 const {
-  detectRegion, detectVram, detectGpusVram, detectDriverMajor, detectComputeCaps,
+  detectRegion, detectVram, detectGpusVram, detectDriverMajor,
   postMinerReport, findFreePort,
 } = require('./probe');
 const probe = require('./probe');
@@ -42,9 +42,9 @@ const { resolveServerUrl } = require('../shared/llama');
 const { buildBalanceUrl, parseBalance, buildMdlBalanceUrl, parseMdlBalance } = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
 const {
-  bundledEnginePath, pickEngineVersion, pickWindowsEngineVersion, windowsEngineNote,
-  engineDownloadUrl, manualInstallHint, enginePackage,
-  packagedLauncherRuns, spacedLauncherNote, engineInstallDir, ENGINE,
+  bundledEnginePath, pickEngineVersion,
+  engineDownloadUrl, manualInstallHint,
+  ENGINE,
 } = require('../shared/engine');
 const { formatUpdate, describeUpdateError } = require('../shared/updateStatus');
 const { describeLaunchError, describeSetupError } = require('../shared/engineError');
@@ -289,58 +289,24 @@ async function startMining(settings) {
   // the network entirely; the lookup is version-aware, so a bundle only
   // satisfies the exact build this rig selected. Otherwise download on demand.
   let binaryPath = settings.binaryPath;
-  // Windows picks from the rig's compute capability rather than the driver: the
-  // 1.9.1b Windows package runs only on uniform CC 8.6/8.9 and fails closed on
-  // everything else, so a rig that does not qualify stays on 1.8.6 and is told
-  // why (see windowsEngineNote — it is mining work the fork no longer credits).
+  // Windows has one build now (ENGINE.windows = 1.9.4): upstream dispatches
+  // RTX 30/40/50 inside a single exe, so there is no compute-capability gate
+  // and no fallback to choose between. A rig it will not run on gets the
+  // miner's own driver/architecture refusal, which names the fix.
   let version;
   if (process.platform === 'win32') {
-    const caps = await detectComputeCaps();
-    version = pickWindowsEngineVersion(caps);
-    const note = windowsEngineNote(caps);
-    if (note) send('miner:log', { level: 'warn', line: note });
+    version = ENGINE.windows;
   } else {
     version = pickEngineVersion(await detectDriverMajor());
   }
-  // Where the engine gets installed. Not simply userData: upstream's packaged
-  // Windows launcher mangles its own core path when that path contains a space,
-  // and "%APPDATA%\LLMJob Earn\engine" always does — so a qualifying rig gets
-  // the engine put somewhere space-free instead (ProgramData and friends).
-  const engineDir = engineInstallDir({
-    platform: process.platform,
-    version,
-    defaultDir: path.join(app.getPath('userData'), 'engine'),
-    env: process.env,
-    ensureDir: (d) => fs.mkdirSync(d, { recursive: true }),
-  });
-  // Nowhere space-free was writable, so the launcher still cannot start. Take
-  // the build that runs over the one that exits on every start: a rig mining
-  // uncredited work earns something, a dead one earns nothing.
-  const spaced = spacedLauncherNote(process.platform, version, engineDir);
-  if (spaced) {
-    version = ENGINE.windows;
-    send('miner:log', { level: 'warn', line: spaced });
-  }
+  // 1.9.4 runs from any path, including one with a space, so the engine
+  // simply lives beside the rest of our data.
+  const engineDir = path.join(app.getPath('userData'), 'engine');
   let bundled = bundledEnginePath(process.resourcesPath, process.platform, settings.gpu, version);
-  // The Windows bundling step ships the engine under the legacy unversioned
-  // name (alpha-miner-windows.exe). If the version-aware lookup misses, fall
-  // back to that so a shipped bundle is still used instead of re-downloading;
-  // the on-demand path below stays versioned (cache-busting) either way.
-  //
-  // NOT for a packaged version, though: that bundled .exe is the old 1.8.6
-  // build, so taking it when the rig qualified for 1.9.1b would silently
-  // downgrade a compliant rig to one mining work the fork no longer credits —
-  // the exact failure this release exists to fix.
-  if (process.platform === 'win32' && bundled && !fs.existsSync(bundled)
-      && !enginePackage(process.platform, version)) {
-    const legacy = bundledEnginePath(process.resourcesPath, process.platform, settings.gpu);
-    if (fs.existsSync(legacy)) bundled = legacy;
-  }
-  // A bundled package is subject to the same launcher bug as a downloaded one,
-  // and the installer's default home ("C:\Program Files\LLMJob Earn") always has
-  // a space. Skipping it here sends the rig down the download path instead of
-  // spawning something that exits on every start.
-  if (bundled && !packagedLauncherRuns(process.platform, version, bundled)) bundled = null;
+  // No legacy-name fallback any more. Windows runs a packaged 1.9.4, so the
+  // only thing that could sit under the old unversioned name is an 1.8.6
+  // build — which mines rank-256 work the fork does not credit. Downloading
+  // the real engine beats silently spawning one that earns nothing.
   if (!binaryPath && bundled && fs.existsSync(bundled)) {
     binaryPath = bundled;
     // Re-assert the execute bit rather than trust every packaging step between
@@ -415,7 +381,9 @@ async function startMining(settings) {
     reportLaunchFailure(null, true);
   } else if (binaryPath) {
     try {
-      miner.start(Object.assign({}, settings, { platform: process.platform, binaryPath: binaryPath }));
+      // engineVersion selects the argument shape: 1.9.4 takes --host/--worker
+      // <address>.<rig>/--gpu, nothing like the 1.8.x --pool/--address vector.
+      miner.start(Object.assign({}, settings, { platform: process.platform, binaryPath: binaryPath, engineVersion: version }));
     } catch (e) {
       reportLaunchFailure(e, false);
     }

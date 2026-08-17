@@ -78,31 +78,44 @@ jobs:
       # placeholder). Making bundling reliable on a Defender-enabled runner is a
       # separate decision (e.g. a self-hosted runner) and is intentionally not
       # done here.
-      # Only the 1.8.6 fallback is staged. The 1.9.1b package used to be staged
-      # beside it, but its launcher cannot start from a path containing a space
-      # and the installer's home is "C:\Program Files\LLMJob Earn" — so that
-      # bundle could never run on a real install (see packagedLauncherRuns in
-      # src/shared/engine.js), and shipping it only added ~22 MB of launcher +
-      # core to every installer for a binary the app now declines to use.
-      # Versions and URLs come from src/shared/engine.js so a bump needs no
-      # workflow edit.
-      - name: Bundle mining engines — Windows (best-effort)
+      # Windows is a single build since the fork: 1.9.4 is one self-contained exe
+      # with automatic dispatch across RTX 30/40/50, so there is no
+      # compute-capability gate and no second bundle to stage. The 1.8.6 fallback
+      # that used to be staged here under the legacy unversioned name is
+      # deliberately gone — it mines rank-256 work the fork no longer credits, so
+      # shipping it would hand a fresh rig an engine that looks healthy and earns
+      # nothing. A rig with no bundle downloads the real engine instead.
+      #
+      # Version, URL, filename and checksum all come from src/shared/engine.js so
+      # a bump needs no workflow edit.
+      - name: Bundle mining engine — Windows (best-effort)
         if: runner.os == 'Windows'
         continue-on-error: true
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          # The 1.8.6 fallback, under the legacy unversioned name main.js
-          # looks for when the selected version has no bundle.
-          $zip = "$env:RUNNER_TEMP\engine.zip"
-          Invoke-WebRequest 'https://pearl.alphapool.tech/downloads/AlphaMiner-Pearl-Windows.zip' -OutFile $zip
-          $tmp = "$env:RUNNER_TEMP\engine-x"
+          $meta = node -p "const e=require('./src/shared/engine');const v=e.ENGINE.windows;const p=e.enginePackage('win32',v);JSON.stringify({v:v,url:e.engineDownloadUrl('win32',null,null,v),name:e.engineBinaryName('win32',null,v),sha:p.sha256})" | ConvertFrom-Json
+
+          $zip = "$env:RUNNER_TEMP/engine.zip"
+          Invoke-WebRequest $meta.url -OutFile $zip
+
+          # The installer ships an unsigned third-party miner, so verify it is the
+          # artifact the descriptor names before it reaches a user. A mismatch
+          # fails this step, which (being best-effort) drops back to the on-demand
+          # download rather than shipping something unrecognised.
+          $got = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($got -ne $meta.sha) { throw "engine sha256 mismatch: got $got, want $($meta.sha)" }
+
+          $tmp = "$env:RUNNER_TEMP/engine-x"
           Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force
-          $exe = Get-ChildItem $tmp -Recurse -Filter *.exe | Select-Object -First 1
-          if (-not $exe) { throw 'no .exe inside engine archive' }
-          Copy-Item $exe.FullName 'vendor/engine/alpha-miner-windows.exe' -Force
-          Write-Host "Bundled engine: $((Get-Item 'vendor/engine/alpha-miner-windows.exe').Length) bytes"
+
+          # Staged under the descriptor's own versioned name, which is exactly what
+          # bundledEnginePath looks for — a differently-named copy is invisible.
+          $exe = Get-ChildItem $tmp -Recurse -Filter $meta.name | Select-Object -First 1
+          if (-not $exe) { throw "no $($meta.name) inside engine archive" }
+          Copy-Item $exe.FullName "vendor/engine/$($meta.name)" -Force
+          Write-Host "Bundled engine $($meta.v): $((Get-Item "vendor/engine/$($meta.name)").Length) bytes"
 
       # Same for Linux, with BOTH builds staged rather than one: the engine is
       # chosen per rig at run time from the NVIDIA driver (>= 580 gets the faster

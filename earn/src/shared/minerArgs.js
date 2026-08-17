@@ -2,6 +2,7 @@
 
 const { endpointFor, DEFAULTS } = require('./config');
 const { combinePayoutAddress, isValidMdlAddress, normalizeAddress } = require('./address');
+const { enginePackage } = require('./engine');
 
 // Windows engine binaries shipped inside the AlphaPool zips.
 const WIN_BINARIES = {
@@ -15,6 +16,35 @@ function resolveBinary(binaryPath, platform, gpu) {
   if (binaryPath) return binaryPath;
   if (platform === 'win32') return WIN_BINARIES[gpu] || WIN_BINARIES.nvidia;
   return 'alpha-miner';
+}
+
+// The alpha-miner 1.9.4 CLI, which shares almost nothing with the 1.8.x one.
+// Verified against the shipped binary's own --help and the start-mining.bat
+// inside its zip, not the setup page (which is wrong about --host):
+//
+//   --host <endpoint:PORT>   one argument; --help documents it as "endpoint:PORT"
+//                            and defaults to us2.alphapool.tech:5566. The page's
+//                            split `--host H --port P` also parses, but the
+//                            combined form is the documented one and our
+//                            endpointFor() already yields host:port.
+//   --worker <addr>.<rig>    THERE IS NO --address. The payout address travels
+//                            inside the worker field — the same thing the HiveOS
+//                            template (%WAL%.%WORKER_NAME%) encodes, and what
+//                            upstream flags as REQUIRED. Merge-mining rides
+//                            there too: `prl1…+mdl1….rig01` is echoed back
+//                            intact by the miner, so the combined payout form
+//                            survives.
+//   --password x;d=N         static difficulty as before.
+//   --gpu <id>               one process per card; index defaults to 0.
+//
+// No backend override: "Rank, geometry, and backend are fixed to the AlphaPool
+// mainnet rank-128 profile" — passing one is what backendForEngine strips.
+function buildWorkerAddressArgs(settings, endpoint, worker, difficulty) {
+  const address = combinePayoutAddress(settings.address, settings.mdlAddress);
+  const login = worker ? address + '.' + worker : address;
+  const password = 'x;d=' + difficulty;
+  const gpu = settings.gpuIndex == null ? 0 : settings.gpuIndex;
+  return ['--host', endpoint, '--worker', login, '--password', password, '--gpu', String(gpu)];
 }
 
 // Build the alpha-miner argument vector, matching the engine's documented CLI
@@ -36,6 +66,14 @@ function buildArgs(settings = {}) {
   const endpoint = settings.endpoint || endpointFor(region);
   const worker = settings.worker != null ? settings.worker : DEFAULTS.worker;
   const difficulty = settings.difficulty || DEFAULTS.difficulty;
+
+  // Engines that use the rank-128 CLI take a completely different vector. Keyed
+  // off the engine descriptor rather than a version comparison so a future build
+  // opts in by declaring `cli`, not by being newer than a magic string.
+  const pkg = enginePackage(settings.platform, settings.engineVersion);
+  if (pkg && pkg.cli === 'worker-address') {
+    return buildWorkerAddressArgs(settings, endpoint, worker, difficulty);
+  }
   const combined = settings.platform === 'win32';
   const address = combined
     ? combinePayoutAddress(settings.address, settings.mdlAddress)

@@ -422,9 +422,26 @@ function extractLlamaZip(zipPath, dest, hint) {
 //
 // The same version ships as a .tar.gz on Linux and a .zip on Windows, so sniff
 // the magic bytes rather than trust the name: gzip (1f 8b) → `tar -xzf`,
-// otherwise `tar -xf`, which reads zips too (Windows ships bsdtar as tar.exe,
-// verified 3.7.7). Deliberately not `unzip` — it is standard on Linux, which is
-// the one platform that never sees a zip here.
+// otherwise `tar -xf`. Deliberately not `unzip` — it is standard on Linux,
+// which is the one platform that never sees a zip here.
+//
+// Reading a zip with `tar` is a *bsdtar* capability, and on Windows plain `tar`
+// is not reliably bsdtar: Git for Windows puts GNU tar ahead of it on PATH on
+// plenty of dev and mining boxes. GNU tar fails such a zip twice over — it
+// reads `C:\...` as an rsync-style <host>:<path> and tries to open a network
+// connection ("tar: Cannot connect to C: resolve failed"), and even given a
+// clean relative path it answers "this does not look like a tar archive",
+// because it cannot read zips at all. Both were observed on a real rig, not
+// hypothesised. So resolve bsdtar by absolute path instead of trusting PATH
+// order.
+function windowsBsdTar() {
+  const sys = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
+  try {
+    if (fs.existsSync(sys)) return sys;
+  } catch (e) { /* fall through to PATH */ }
+  return 'tar';
+}
+
 function extractEnginePackage(archivePath, destDir) {
   return new Promise((resolve, reject) => {
     let gzip = false;
@@ -437,7 +454,14 @@ function extractEnginePackage(archivePath, destDir) {
     } catch (e) {
       return reject(new Error('could not read the engine package (' + e.message + ')'));
     }
-    execFile('tar', [gzip ? '-xzf' : '-xf', archivePath, '-C', destDir], { timeout: 180000 }, (err) => {
+    // Belt and braces for the fallback case, where PATH may still hand us GNU
+    // tar: run from destDir with a RELATIVE archive path so no drive letter
+    // reaches argv. Falls back to the absolute path only if the archive sits on
+    // another drive, where no relative path exists — nothing our callers do.
+    const rel = path.relative(destDir, archivePath);
+    const local = rel && !rel.includes(':') ? rel : archivePath;
+    const tar = process.platform === 'win32' ? windowsBsdTar() : 'tar';
+    execFile(tar, [gzip ? '-xzf' : '-xf', local], { cwd: destDir, timeout: 180000 }, (err) => {
       if (err) {
         return reject(new Error('could not extract the engine package with `tar` (' + err.message + ')'));
       }
