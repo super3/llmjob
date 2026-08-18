@@ -19,12 +19,17 @@ const PENDING_TTL_MS = 5 * 60 * 1000;
 // The model the earn-client fleet actually serves (earn/src/shared/config.js
 // LLM.model.name) — the default a job records must match what runs it.
 const DEFAULT_MODEL = 'Gemma-4-E4B-it-Q4_K_M';
-// Generation budget for a job that doesn't specify one, matched to the node's
-// 6400-token context window (earn/src/shared/config.js LLM.ctxSize). The prompt
-// shares that window, so a reply tops out a little under this — the node's context
-// is the real cap, and this default exists so a caller who sends no max_tokens
-// isn't held below it.
+// Generation budget for a job that doesn't specify one. Deliberately NOT the
+// node's context window any more: the two used to be the same 6400 and one
+// constant played both roles, so raising the window would have raised what every
+// caller silently asks for. Ordinary traffic keeps the budget it already had.
 const DEFAULT_MAX_TOKENS = 6400;
+// The hard ceiling a caller may raise max_tokens to, matched to the node's
+// context window (earn/src/shared/config.js LLM.ctxSize). The prompt shares that
+// window, so a reply tops out a little under this. Callers that need room —
+// reasoning benchmarks, mainly — opt in by sending max_tokens explicitly; a
+// 6400-token cap made AIME unmeasurable, cutting 26% of samples off mid-working.
+const MAX_TOKENS_CEILING = 32768;
 // How long a node actually has to finish a job, for admission control. The
 // gateway gives up at 280s; a node is only offered work it can finish in 80% of
 // that at its measured speed, so a sample that's a little optimistic (or a
@@ -94,7 +99,7 @@ function clampMaxTokens(v) {
   if (v == null) return DEFAULT_MAX_TOKENS;
   const n = Math.floor(Number(v));
   if (!Number.isFinite(n) || n < 0) return DEFAULT_MAX_TOKENS;
-  return Math.min(n, DEFAULT_MAX_TOKENS);
+  return Math.min(n, MAX_TOKENS_CEILING);
 }
 
 // A stored epoch-ms timestamp as a number, or 0 for anything unusable — so a
@@ -224,7 +229,7 @@ class JobService {
 
       // Admission control. A node is only offered a job it can finish inside the
       // gateway's budget at the speed we measured it at — which is what stops a
-      // slow card accepting a 6400-token job it has no chance of completing, then
+      // slow card accepting an oversized job it has no chance of completing, then
       // burning ten minutes of GPU on a reply the caller already gave up on.
       //
       // Deliberately per-job rather than a per-node on/off switch, and keyed on
@@ -639,5 +644,6 @@ module.exports.MIN_SAMPLES_TO_GATE = MIN_SAMPLES_TO_GATE;
 module.exports.admissionLimit = admissionLimit;
 module.exports.tokenCapacity = tokenCapacity;
 module.exports.DEFAULT_MAX_TOKENS = DEFAULT_MAX_TOKENS;
+module.exports.MAX_TOKENS_CEILING = MAX_TOKENS_CEILING;
 module.exports.clampMaxTokens = clampMaxTokens;
 module.exports.clampPriority = clampPriority;

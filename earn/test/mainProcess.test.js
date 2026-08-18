@@ -1521,7 +1521,11 @@ describe('local LLM', () => {
     ctx.emit('miner:start', { mode: 'llm' });
     await flush();
     expect(ctx.sent('miner:log').map((l) => l.line).join('\n')).toContain('not enough free VRAM for the local LLM: 4000 MB free');
-    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false, error: 'Needs ~4 GB free VRAM' });
+    // Derived from the model's floor rather than pinned: the message quotes
+    // minVramMb, which moves whenever ctxSize does (a bigger window is a bigger
+    // KV cache), and a literal here just breaks on every such change.
+    const needGb = Math.round(ctx.config.LLM.model.minVramMb / 1024);
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false, error: `Needs ~${needGb} GB free VRAM` });
     expect(ctx.sent('miner:stopped')).toHaveLength(1);
     expect(ctx.LlmManager.instances).toHaveLength(0);
   });

@@ -94,7 +94,18 @@ const LLM = {
   // is what actually caps a reply. At 4096 a reasoning model ran out of context
   // mid-thought on hard prompts and returned nothing; the model itself supports
   // 128K, so this was our own conservative floor rather than a limit of Gemma.
-  ctxSize: 6400,
+  //
+  // 6400 turned out to be the same floor one step up. On AIME 2025 it cut 26% of
+  // samples off mid-working — six problems truncated on more than half their
+  // samples and scored 1/45 between them, against 52/87 on the problems that
+  // always fit. Reasoning benchmarks are normally run at 32768, and asking the
+  // model to recover a cut-off answer does not work: it fabricates one (returned
+  // 0 against a gold of 62), so the window is the only lever.
+  //
+  // The 280s serving budget still caps what any single request can actually
+  // produce — at fleet speeds that is roughly 8-14k tokens — so this is headroom
+  // rather than a licence to generate 32k.
+  ctxSize: 32768,
   parallel: 1,
   // Self-heal a llama-server that exits before ready because it couldn't bind the
   // port yet — the previous server (e.g. from an update relaunch) is still
@@ -156,11 +167,23 @@ const LLM = {
     // well under the weight file. That over-booking locked out a 16 GB card with
     // 6.7 GB free — the model would have fitted twice over.
     //
-    // 3800 is the measurement plus ~15% headroom for driver/fragmentation
-    // variance; minVramMb stays above it so we still never spawn right at the
-    // edge. Re-measure if ctxSize or the model changes: both move the KV cache.
-    vramFullMb: 3800,
-    minVramMb: 4352, // ~4.25 GB free required before we put it on the GPU
+    // ESTIMATED for ctxSize 32768, and that is the weak part of this change —
+    // the 3308 MB above was measured on a 4090 at ctxSize 6400 and nobody has
+    // yet run llama-server at 32768 to read the real figure.
+    //
+    // The estimate: llama.cpp allocates the KV cache up front and it scales with
+    // context, so 5.12x the window grows only the cache, not the weights. Taking
+    // the pessimistic split of that 3308 (weights ~2300, cache ~1000) puts the
+    // cache near 5100 MB and the total near 7400. 7680 is that plus headroom.
+    //
+    // Deliberately pessimistic, because the two failure modes are not
+    // symmetric: over-booking keeps a node out of the pool, while under-booking
+    // OOMs llama-server and crash-loops it. Gemma's alternating local/global
+    // attention may well make the real cache far cheaper than linear — which is
+    // exactly why this needs measuring rather than trusting. Re-measure at
+    // 32768 and bring these numbers down if it comes in under.
+    vramFullMb: 7680,
+    minVramMb: 8704, // ~8.5 GB free required before we put it on the GPU
     quant: 'Q4_K_M',
   },
 };
