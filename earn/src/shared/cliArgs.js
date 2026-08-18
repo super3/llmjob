@@ -8,12 +8,16 @@
 // real IO (download, spawn, network reporting) around it.
 
 const { REGIONS, DEFAULTS, difficultyForCard } = require('./config');
-const { isValidAddress } = require('./address');
+const { isValidAddress, isValidMdlAddress, normalizeAddress } = require('./address');
 const { MODES, DEFAULT_MODE, isValidMode } = require('./llmMode');
 
 // Short flags → their canonical long form.
+// --mdl / -m are deliberately absent from USAGE: merge mining is retired from
+// the UI and undocumented, but still parsed so an existing HiveOS flight sheet
+// carrying it keeps mining instead of dying on 'unknown option'.
 const ALIASES = {
   '-a': '--address',
+  '-m': '--mdl',
   '-r': '--region',
   '-w': '--worker',
   '-d': '--difficulty',
@@ -25,7 +29,7 @@ const ALIASES = {
 
 // Options that consume a following value.
 const VALUE_FLAGS = new Set([
-  '--address', '--region', '--worker',
+  '--address', '--mdl', '--region', '--worker',
   '--difficulty', '--gpu', '--backend', '--binary', '--engine-dir',
   '--stats-file',
   '--mode', '--llm-binary', '--llm-model', '--llm-max-instances',
@@ -95,6 +99,12 @@ function buildSettings(opts, errors, report, update, serve) {
     errors.push('invalid Pearl address: ' + address);
   }
 
+  let mdlAddress = null;
+  if (opts['--mdl'] != null) {
+    const m = normalizeAddress(opts['--mdl']);
+    if (isValidMdlAddress(m)) mdlAddress = m;
+    else errors.push('invalid MDL address: ' + opts['--mdl']);
+  }
 
   let region = DEFAULTS.region;
   if (opts['--region'] != null) {
@@ -145,7 +155,7 @@ function buildSettings(opts, errors, report, update, serve) {
   const modeProvided = opts['--mode'] != null;
 
   return {
-    address, region, worker, gpu, difficulty, backend, binaryPath, engineDir, statsFile,
+    address, mdlAddress, region, worker, gpu, difficulty, backend, binaryPath, engineDir, statsFile,
     mode, llmBinary, llmModel, llmMaxInstances,
     report, update, serve: serve !== false, regionProvided, gpuProvided, difficultyProvided, workerProvided, modeProvided,
   };

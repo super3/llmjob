@@ -148,6 +148,7 @@ const { ALL_LAYERS } = require('../src/shared/vram');
 const engine = require('../src/shared/engine');
 
 const ADDR = 'prl1p' + 'a'.repeat(30);
+const MDL = 'mdl1p' + 'b'.repeat(30);
 const KEYS = nodeProto.generateKeypair();
 
 function makeNode(extra) {
@@ -435,7 +436,7 @@ describe('mining', () => {
     intervalUnref = false; // cover the interval handles without unref()
     const m = load();
     m.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 3070', count: 2 });
-    const p = m.run(['--address', ADDR, '--no-update',
+    const p = m.run(['--address', ADDR, '--mdl', MDL, '--no-update',
       '--stats-file', '/tmp/s.json', '--engine-dir', '/ed']);
     await settle();
 
@@ -445,6 +446,7 @@ describe('mining', () => {
     expect(allOut()).toContain('preparing local LLM (Gemma-4-E4B-it-Q4_K_M) …');
     expect(allOut()).toContain('local LLM starting on 1 GPU [auto]');
     expect(allOut()).toContain('worker:     rig-host  (auto)');
+    expect(allOut()).toContain('(+MDL');
     expect(allOut()).toContain('difficulty: 262144  (for 2× NVIDIA GeForce RTX 3070, auto)');
     expect(allOut()).toContain('engine:     alpha-miner ' + engine.ENGINE.linux);
     expect(allOut()).toContain('downloading mining engine from');

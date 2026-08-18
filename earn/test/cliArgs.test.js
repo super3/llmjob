@@ -4,6 +4,7 @@ const { parseCliArgs, buildSettings, regionChoices, USAGE, VALUE_FLAGS } = requi
 const { DEFAULTS } = require('../src/shared/config');
 
 const ADDR = 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
+const MDL = 'mdl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
 
 describe('parseCliArgs — flags', () => {
   test('non-array argv is treated as empty (address required)', () => {
@@ -87,7 +88,7 @@ describe('parseCliArgs — flags', () => {
 describe('buildSettings — validation', () => {
   test('a full valid command parses cleanly', () => {
     const r = parseCliArgs([
-      '-a', ADDR, '-r', 'eu1', '-w', 'rig7',
+      '-a', ADDR, '-m', MDL, '-r', 'eu1', '-w', 'rig7',
       '-d', '131072', '-g', 'RTX 4090', '--backend', 'ampere',
       '-b', '/opt/alpha-miner', '--engine-dir', '/tmp/eng',
       '--stats-file', '/run/hive/llmjob-earn-stats.json',
@@ -95,6 +96,7 @@ describe('buildSettings — validation', () => {
     expect(r.errors).toEqual([]);
     expect(r.settings).toMatchObject({
       address: ADDR,
+      mdlAddress: MDL,
       region: 'eu1',
       worker: 'rig7',
       difficulty: 131072,
@@ -128,6 +130,16 @@ describe('buildSettings — validation', () => {
   test('invalid Pearl address is rejected', () => {
     const r = parseCliArgs(['--address', 'nope123']);
     expect(r.errors).toContain('invalid Pearl address: nope123');
+  });
+
+  test('invalid MDL address is rejected but Pearl still parses', () => {
+    const r = parseCliArgs(['--address', ADDR, '--mdl', 'mdl1pbad']);
+    expect(r.errors).toContain('invalid MDL address: mdl1pbad');
+    expect(r.settings.mdlAddress).toBeNull();
+  });
+
+  test('no MDL leaves mdlAddress null', () => {
+    expect(parseCliArgs(['--address', ADDR]).settings.mdlAddress).toBeNull();
   });
 
   test('unknown region is rejected with choices', () => {

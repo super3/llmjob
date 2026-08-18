@@ -1212,7 +1212,7 @@ ipcMain.handle('settings:get', () => Object.assign(
   // board identity (and if either is multi-GPU, the other's row is dropped
   // outright). Only fills a FRESH install — loadSettings() below wins, so an
   // existing worker name is never rewritten out from under someone's board row.
-  { region: DEFAULTS.region, worker: defaultWorker(), difficulty: DEFAULTS.difficulty, address: '', mode: DEFAULT_MODE },
+  { region: DEFAULTS.region, worker: defaultWorker(), difficulty: DEFAULTS.difficulty, address: '', mdlAddress: '', mode: DEFAULT_MODE },
   loadSettings(),
 ));
 ipcMain.handle('llm:status', () => llmStatus);

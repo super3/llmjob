@@ -642,7 +642,7 @@ async function run(argv) {
     }
 
     endpoint = resolveEndpoint(settings);
-    log('address:    ' + shortenAddress(settings.address));
+    log('address:    ' + shortenAddress(settings.address) + (settings.mdlAddress ? '  (+MDL ' + shortenAddress(settings.mdlAddress) + ')' : ''));
     log('pool:       ' + endpoint + '  ' + regionLabel(settings.region) + (settings.regionProvided ? '' : '  (auto)'));
     log('worker:     ' + settings.worker + (settings.workerProvided ? '' : '  (auto)'));
     log('difficulty: ' + settings.difficulty + (settings.gpu ? '  (for ' + (settings.gpuCount > 1 ? settings.gpuCount + '× ' : '') + settings.gpu + (settings.gpuProvided ? '' : ', auto') + ')' : ''));

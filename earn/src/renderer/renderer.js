@@ -49,7 +49,7 @@
     mining: false,       // master process running (miner and/or LLM per mode)
     view: 'mine',        // mine | chat | api | settings | logs
     returnTab: 'mine',   // where settings/logs return to
-    address: '', gpu: '', mode: 'auto',
+    address: '', gpu: '', mode: 'auto', mdlAddress: '',
     canMine: true,       // false on macOS — no alpha-miner build exists for it
     llm: { ready: false, endpoint: null, webUrl: null, tps: 0, model: null, error: null, note: null },
     chat: { messages: [], streaming: false, streamText: '', bubble: null },
@@ -479,6 +479,12 @@
     el.logTerm.scrollTop = el.logTerm.scrollHeight;
   }
 
+  // mdlAddress is carried through untouched, never shown. Merge mining is
+  // retired from the UI, but an address someone already configured keeps
+  // earning — and settings are persisted FROM this object, so omitting the key
+  // would silently erase their address on the next Start and end the earnings
+  // we are deliberately preserving. There is no way to set one any more; this
+  // only round-trips what is already there.
   function currentSettings() {
     return {
       address: state.address.trim(),
@@ -486,6 +492,7 @@
       region: el.setRegion.value || 'us2',
       difficulty: Number(el.setDifficulty.value) || 524288,
       mode: state.mode || 'mining',
+      mdlAddress: state.mdlAddress || '',
     };
   }
 
@@ -645,6 +652,7 @@
       const s = await api.getSettings();
       state.address = s.address || '';
       el.addrInput.value = state.address;
+      state.mdlAddress = s.mdlAddress || '';
       el.setWorker.value = s.worker || 'rig01';
       el.setRegion.value = s.region || 'us2';
       el.setDifficulty.value = s.difficulty || 524288;

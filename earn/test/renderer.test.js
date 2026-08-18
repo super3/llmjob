@@ -231,6 +231,26 @@ describe('boot with the full bridge', () => {
     expect($('view-mine').hidden).toBe(false);
   });
 
+  // Merge mining is gone from the UI but an address someone already configured
+  // keeps earning. Settings are persisted FROM currentSettings(), so the value
+  // has to survive a round trip it is never shown in — otherwise the first
+  // Start quietly erases it and ends the earnings we kept it for.
+  it('carries a stored MDL address through invisibly, with nothing to set it', async () => {
+    const { api } = makeFullApi();
+    const MDL = 'mdl1p' + 'b'.repeat(30);
+    api.getSettings = jest.fn().mockResolvedValue({
+      address: ADDR, worker: 'w1', region: 'eu1', difficulty: 2048,
+      mode: 'auto', mdlAddress: MDL, resumeMining: false,
+    });
+    await boot({ api });
+
+    // nothing in the UI exposes or edits it
+    expect($('set-mdl')).toBeNull();
+
+    click($('btn-start'));
+    expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ mdlAddress: MDL }));
+  });
+
   it('switches compute modes and falls back on unknown ones', async () => {
     const { api } = makeFullApi();
     await boot({
@@ -332,7 +352,7 @@ describe('boot with the full bridge', () => {
     click(document.querySelector('[data-mode="auto"]'));
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenCalledWith({
-      address: ADDR, worker: 'w1', region: 'eu1', difficulty: 2048, mode: 'auto',
+      address: ADDR, worker: 'w1', region: 'eu1', difficulty: 2048, mode: 'auto', mdlAddress: '',
     });
     expect($('addr-static').hidden).toBe(false);
     expect($('addr-static').textContent).toBe(ADDR);
@@ -399,7 +419,7 @@ describe('boot with the full bridge', () => {
     click($('mode-empty'));
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenLastCalledWith({
-      address: ADDR, worker: 'rig01', region: 'us2', difficulty: 524288, mode: 'mining',
+      address: ADDR, worker: 'rig01', region: 'us2', difficulty: 524288, mode: 'mining', mdlAddress: '',
     });
     // manual stop
     click($('btn-stop'));
