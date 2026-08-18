@@ -292,6 +292,22 @@ describe('boot with the full bridge', () => {
     expect(() => click($('update-bar-btn'))).not.toThrow();
   });
 
+  // Wording is deliberately ours, not the v2 mock's. The mock says "Restart &
+  // update" on the banner and HIDE LOGS on the toggle; we ship "Update &
+  // restart" and CLOSE LOGS, both chosen after the mock was exported. Pinned so
+  // a later mock sync does not quietly flip them back.
+  it('keeps our wording over the mock on the update banner and the logs toggle', async () => {
+    const { api, cbs } = makeFullApi();
+    await boot({ api });
+    expect($('update-bar-btn').textContent).toBe('Update & restart');
+
+    cbs.update({ show: true, ready: true, version: '9.9.9', text: 'Update ready' });
+    expect($('btn-check-update').textContent).toBe('Update & restart');
+
+    click($('btn-logs'));
+    expect($('btn-logs').textContent).toBe('CLOSE LOGS');
+  });
+
   it('switches compute modes and falls back on unknown ones', async () => {
     const { api } = makeFullApi();
     await boot({
