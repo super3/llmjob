@@ -26,6 +26,7 @@
     // chat
     chatRunning: $('chat-running'), chatStopped: $('chat-stopped'), chatStoppedModel: $('chat-stopped-model'),
     chatHead: $('chat-head'), chatModel: $('chat-model'), chatNew: $('chat-new'),
+    updateBar: $('update-bar'), updateBarText: $('update-bar-text'), updateBarBtn: $('update-bar-btn'),
     chatList: $('chat-list'), chatEmpty: $('chat-empty'), chatSuggestions: $('chat-suggestions'),
     chatMessages: $('chat-messages'), chatForm: $('chat-form'), chatInput: $('chat-input'), chatSend: $('chat-send'),
     // api
@@ -68,7 +69,6 @@
     auto: 'Balances mining and the local LLM from free VRAM.',
     mining: 'Pearl mining only — the local LLM stays off.',
     llm: 'Local model only — no mining, no payout address needed.',
-    both: 'Mine and serve — the model takes ~5 GB VRAM, mining keeps the rest.',
   };
 
   // The modes that need a mining engine. On a platform without one (macOS —
@@ -77,7 +77,7 @@
   // there would arm a START that runs nothing at all. 'auto' stays, because it
   // degrades correctly on its own — main.js refuses the miner and the local LLM
   // still comes up — and it is the default a fresh install lands on.
-  const MINING_MODES = ['mining', 'both'];
+  const MINING_MODES = ['mining'];
   const NO_MINER_HINT = 'Runs the local LLM on this Mac. Mining needs an NVIDIA GPU on Windows or Linux.';
 
   // Prompt chips shown in the empty chat — the real model answers them.
@@ -137,7 +137,11 @@
   // 'mining' or 'both' — written on another machine, or by a build from before
   // this one — must not select a button that is no longer on screen, leaving the
   // segment with nothing lit and START arming a run that does nothing.
+  // 'both' ("Mining+LLM") was retired: it resolved to exactly what 'auto' does.
+  // Mapping it keeps a rig that stored it on the same plan — an unrecognised
+  // mode would fall through to mining-only and silently drop the LLM.
   function usableMode(mode) {
+    if (mode === 'both') mode = 'auto';
     return !state.canMine && MINING_MODES.indexOf(mode) !== -1 ? 'auto' : mode;
   }
 
@@ -148,7 +152,7 @@
   }
 
   // START is allowed when we can mine (valid address) or the mode will run the
-  // LLM anyway (llm/both/auto co-run the model even without a payout address).
+  // LLM anyway (llm/auto co-run the model even without a payout address).
   function canStart() {
     return isValid(state.address) || state.mode !== 'mining';
   }
@@ -511,11 +515,11 @@
   }
 
   // START LLM (from the Chat/API tabs): make sure the compute mode actually runs
-  // the model, then start. Mining-only becomes Mining+LLM (or LLM-only with no
-  // payout address); llm/both/auto start as-is.
+  // the model, then start. Mining-only becomes Auto (or LLM-only with no
+  // payout address); llm/auto start as-is.
   function startLlmIntent() {
     if (state.llm.ready) return;
-    if (state.mode === 'mining') setMode(isValid(state.address) ? 'both' : 'llm');
+    if (state.mode === 'mining') setMode(isValid(state.address) ? 'auto' : 'llm');
     start();
   }
 
@@ -559,6 +563,7 @@
     });
     el.btnStart.addEventListener('click', start);
     el.btnStop.addEventListener('click', stop);
+    el.updateBarBtn.addEventListener('click', () => { if (api.installUpdate) api.installUpdate(); });
     el.btnCheckUpdate.addEventListener('click', () => {
       if (updateReady) { if (api.installUpdate) api.installUpdate(); return; }
       if (!api.checkForUpdate) return;
@@ -717,11 +722,17 @@
         el.btnCheckUpdate.disabled = false;
         el.btnCheckUpdate.textContent = 'Update & restart';
         el.btnCheckUpdate.classList.add('ready');
+        // Announce it on the Mine view too: Settings is the one screen nobody
+        // opens, so a downloaded update could sit there unnoticed.
+        el.updateBarText.textContent = 'Update downloaded'
+          + (s.version ? ' (v' + s.version + ')' : '') + ' — restart to apply.';
+        el.updateBar.hidden = false;
       } else if (s.phase !== 'checking') {
         updateReady = false;
         el.btnCheckUpdate.disabled = false;
         el.btnCheckUpdate.textContent = 'Check for updates';
         el.btnCheckUpdate.classList.remove('ready');
+        el.updateBar.hidden = true;
       }
       if (updateDismiss) { clearTimeout(updateDismiss); updateDismiss = null; }
       if (s.transient) updateDismiss = setTimeout(() => { el.updateStatus.hidden = true; }, 5000);

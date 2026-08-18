@@ -26,6 +26,10 @@
 
   <!-- ══════════ MINE ══════════ -->
   <section id="view-mine">
+      <div id="update-bar" class="update-bar" hidden>
+        <span id="update-bar-text">Update downloaded — restart to apply.</span>
+        <button id="update-bar-btn" class="update-bar-btn" type="button">Restart &amp; update</button>
+      </div>
     <div class="field-label">
       <span class="lbl">Payout Address</span>
       <span class="meta" id="balance-meta" hidden>Balance: <b class="mono" id="balance">0.000</b><b class="prl">PRL</b> <span class="usd" id="balance-usd">≈ $0.00</span></span>
@@ -159,7 +163,6 @@
       <button class="seg-btn" type="button" data-mode="auto">Auto</button>
       <button class="seg-btn" type="button" data-mode="mining">Mining</button>
       <button class="seg-btn" type="button" data-mode="llm">LLM</button>
-      <button class="seg-btn" type="button" data-mode="both">Mining+LLM</button>
     </div>
     <p id="mode-hint" class="settings-note">Balances mining and the local LLM from free VRAM.</p>
 

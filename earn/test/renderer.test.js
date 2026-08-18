@@ -251,6 +251,47 @@ describe('boot with the full bridge', () => {
     expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ mdlAddress: MDL }));
   });
 
+  // A downloaded update used to be announced only inside Settings — the one
+  // screen a user has no reason to open — so a rig could sit on a stale build
+  // with the fix already on disk. The banner rides the same state, and its
+  // button does exactly what the ready Settings button does.
+  it('announces a downloaded update on the Mine view and installs from it', async () => {
+    const { api, cbs } = makeFullApi();
+    await boot({ api });
+    expect($('update-bar').hidden).toBe(true);
+
+    cbs.update({ show: true, ready: true, version: '9.9.9', text: 'Update ready' });
+    expect($('update-bar').hidden).toBe(false);
+    expect($('update-bar-text').textContent).toBe('Update downloaded (v9.9.9) — restart to apply.');
+
+    click($('update-bar-btn'));
+    expect(api.installUpdate).toHaveBeenCalled();
+
+    // a later non-ready state takes it away again
+    cbs.update({ show: true, phase: 'idle', text: 'Up to date' });
+    expect($('update-bar').hidden).toBe(true);
+  });
+
+  // Version is optional in the payload; the banner must not read "(vundefined)".
+  it('omits the version when the update payload has none', async () => {
+    const { api, cbs } = makeFullApi();
+    await boot({ api });
+    cbs.update({ show: true, ready: true, text: 'Update ready' });
+    expect($('update-bar-text').textContent).toBe('Update downloaded — restart to apply.');
+  });
+
+  // The banner button is wired even on a bridge that cannot install (an older
+  // preload, or a platform with no updater); clicking it must be a no-op rather
+  // than a TypeError that takes the renderer down.
+  it('the update banner button is inert when the bridge cannot install', async () => {
+    const { api, cbs } = makeFullApi();
+    delete api.installUpdate;
+    await boot({ api });
+    cbs.update({ show: true, ready: true, version: '9.9.9', text: 'Update ready' });
+    expect($('update-bar').hidden).toBe(false);
+    expect(() => click($('update-bar-btn'))).not.toThrow();
+  });
+
   it('switches compute modes and falls back on unknown ones', async () => {
     const { api } = makeFullApi();
     await boot({
@@ -267,7 +308,6 @@ describe('boot with the full bridge', () => {
     expect(document.querySelector('[data-mode="mining"]').classList.contains('active')).toBe(true);
     click(document.querySelector('[data-mode="llm"]'));
     expect($('mode-hint').textContent).toMatch(/Local model only/);
-    click(document.querySelector('[data-mode="both"]'));
     click(document.querySelector('[data-mode="auto"]'));
     expect($('mode-hint').textContent).toMatch(/Balances mining/);
     // unknown mode → default hint
@@ -287,10 +327,15 @@ describe('boot with the full bridge', () => {
   it('drops the mining modes when the platform has no engine', async () => {
     const { api } = makeFullApi();
     api.getConfig.mockResolvedValue({ regions: {}, platform: { minerSupported: false } });
+    // Stored 'mining' on a box that cannot mine: the button is hidden, so leaving
+    // the mode selected would light nothing and arm a run that does nothing.
+    api.getSettings.mockResolvedValue({ address: ADDR, mode: 'mining' });
     await boot({ api });
+    expect(document.querySelector('[data-mode="auto"]').classList.contains('active')).toBe(true);
 
     expect(document.querySelector('[data-mode="mining"]').hidden).toBe(true);
-    expect(document.querySelector('[data-mode="both"]').hidden).toBe(true);
+    // Mining+LLM is not hidden — it no longer exists.
+    expect(document.querySelector('[data-mode="both"]')).toBeNull();
     // 'auto' and 'llm' survive: both degrade correctly to LLM-only, and 'auto'
     // is what a fresh install lands on.
     expect(document.querySelector('[data-mode="auto"]').hidden).toBe(false);
@@ -325,7 +370,9 @@ describe('boot with the full bridge', () => {
     api.getSettings.mockResolvedValue({ address: ADDR, mode: 'both' });
     await boot({ api });
     expect(document.querySelector('[data-mode="mining"]').hidden).toBe(false);
-    expect(document.querySelector('[data-mode="both"]').classList.contains('active')).toBe(true);
+    // A rig that stored the retired 'both' lands on auto — the same plan, and a
+    // button that actually exists to show as selected.
+    expect(document.querySelector('[data-mode="auto"]').classList.contains('active')).toBe(true);
   });
 
   it('starts and stops mining, renders stats, logs and engine phases', async () => {
@@ -636,10 +683,10 @@ describe('boot with the full bridge', () => {
     expect(api.startMiner).toHaveBeenCalledTimes(1);
     expect(api.startMiner.mock.calls[0][0].mode).toBe('auto');
     click($('btn-stop'));
-    // mining-only + valid address → both
+    // mining-only + valid address → auto (was 'both', which meant the same)
     click(document.querySelector('[data-mode="mining"]'));
     click(startLlm);
-    expect(api.startMiner.mock.calls[1][0].mode).toBe('both');
+    expect(api.startMiner.mock.calls[1][0].mode).toBe('auto');
     click($('btn-stop'));
     // mining-only + no address → llm-only
     setInput($('addr-input'), '');

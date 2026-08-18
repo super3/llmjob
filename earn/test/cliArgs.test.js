@@ -216,7 +216,7 @@ describe('buildSettings — compute mode / LLM', () => {
 
   test('unknown mode is rejected with choices', () => {
     const r = parseCliArgs(['--address', ADDR, '--mode', 'turbo']);
-    expect(r.errors).toContain('unknown mode: turbo (choices: mining, both, llm, auto)');
+    expect(r.errors).toContain('unknown mode: turbo (choices: mining, llm, auto)');
   });
 
   test('llm-only mode does not require a payout address', () => {
