@@ -181,6 +181,21 @@ jobs:
       # Guarded on the body being empty: a re-run of this workflow (or a manual
       # publish over an existing tag) must not clobber notes someone wrote by
       # hand. In that case only the title is corrected, which is idempotent.
+      # Release notes come from the release PR's own body, with GitHub's
+      # generated PR list appended under it.
+      #
+      # This step used to publish ONLY the generated list, which by construction
+      # is "## What's Changed" plus one bullet per merged PR — for a release
+      # branch that reads "Release v0.3.17" and tells a user nothing about the
+      # bug that made their rig mine zero. Meanwhile a real changelog already
+      # existed and went unread: the release PR body, written and reviewed before
+      # the merge. So publish that, and keep the generated list as the index it
+      # is good at being.
+      #
+      # It replaced hand-written notes because those got skipped — v0.3.12 and
+      # v0.3.13 shipped with completely blank bodies — so the fallbacks matter
+      # more than the happy path: no PR number, an empty PR body, or a failed
+      # lookup all still yield the generated list rather than nothing.
       - name: Write release notes (Linux, on v* tag or manual publish)
         if: runner.os == 'Linux' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish)
         env:
@@ -195,10 +210,33 @@ jobs:
             echo "$TAG already has a release body — leaving it alone, fixing the title only."
             gh release edit "$TAG" --title "LLMJob Earn $VERSION" --repo "$GITHUB_REPOSITORY"
           else
+            NOTES="$RUNNER_TEMP/notes.md"
+            : > "$NOTES"
+
+            # The tagged commit is the merge (or squash) of the release PR, so its
+            # subject carries the number: "Merge pull request #196 from …" or the
+            # squash form "Title (#196)". Either way, take the first #N.
+            SUBJECT=$(git log -1 --format=%s HEAD || true)
+            PR=$(printf '%s' "$SUBJECT" | grep -oE '#[0-9]+' | head -1 | tr -d '#' || true)
+            if [ -n "${PR:-}" ]; then
+              echo "release notes: reading PR #$PR"
+              if gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""' \
+                   > "$RUNNER_TEMP/pr-body.md" 2>/dev/null \
+                 && [ -n "$(tr -d '[:space:]' < "$RUNNER_TEMP/pr-body.md")" ]; then
+                cat "$RUNNER_TEMP/pr-body.md" >> "$NOTES"
+                printf '\n\n---\n\n' >> "$NOTES"
+              else
+                echo "PR #$PR had no usable body — generated notes only."
+              fi
+            else
+              echo "no PR number in '$SUBJECT' — generated notes only."
+            fi
+
             gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
-              -f tag_name="$TAG" --jq '.body' > "$RUNNER_TEMP/notes.md"
+              -f tag_name="$TAG" --jq '.body' >> "$NOTES"
+
             gh release edit "$TAG" --title "LLMJob Earn $VERSION" \
-              --notes-file "$RUNNER_TEMP/notes.md" --repo "$GITHUB_REPOSITORY"
+              --notes-file "$NOTES" --repo "$GITHUB_REPOSITORY"
           fi
 
           # Verify it took, rather than trusting the exit codes above.
