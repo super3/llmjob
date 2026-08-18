@@ -211,7 +211,10 @@ input.field-box { user-select: text; }
 .view-head .lbl { font-size: 14px; font-weight: 700; color: var(--ink-2); }
 .back { font-size: 12.5px; font-weight: 600; color: var(--accent); cursor: pointer; }
 .settings-section { font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: #a7abb2; margin: 14px 0 8px; }
-.settings-section:first-of-type { margin-top: 0; }
+.settings-section:first-of-type { margin: 0 0 7px; }
+/* Connection sits below the mode hint, and the mock gives it more air than the
+   section-to-section default. */
+.settings-note + .settings-section { margin-top: 20px; }
 /* The Settings view-head supplies its own spacing; keep the first section tight
    under it (the view-head div steals :first-of-type from .settings-section). */
 #view-settings .view-head + .settings-section { margin-top: 0; }
@@ -225,8 +228,10 @@ input.field-box { user-select: text; }
 .settings-row .rk { font-size: 13.5px; color: var(--ink-3); font-weight: 500; }
 /* Connection: 2-column grid with small labels above each input (per the mock)
    — Pool region spans the full row; Worker name + Static difficulty share it. */
-.conn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
-.conn-field.conn-full { grid-column: 1 / -1; }
+/* One column (v2 mock): Pool region, Worker name and Static difficulty each
+   take a full-width row. They used to sit worker|difficulty side by side, which
+   squeezed a 7-digit difficulty into half the width. */
+.conn-grid { display: grid; grid-template-columns: 1fr; gap: 10px 12px; }
 .conn-field .fk { font-size: 12px; color: var(--muted-2, #8a8f98); font-weight: 500; margin-bottom: 5px; }
 .conn-grid .rv-input { width: 100%; box-sizing: border-box; padding: 8px 11px; }
 .rv-input { font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 13px; color: var(--ink-3); background: var(--field); border: 1px solid var(--line); border-radius: 7px; padding: 6px 11px; outline: none; user-select: text; }
