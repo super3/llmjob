@@ -11,6 +11,8 @@ const { createTestDb } = require('./helpers/pgmem');
 const { initOpenAiRoutes } = require('../src/routes');
 const JobService = require('../src/services/jobService');
 const ApiKeyService = require('../src/services/apiKeyService');
+const ChatUsageService = require('../src/services/chatUsageService');
+const LogService = require('../src/services/logService');
 const OpenAiController = require('../src/controllers/openaiController');
 const { lastUserText, estimateTokens, modelName, completionTokens, timeoutBody } = OpenAiController;
 const { DEFAULT_MODEL } = JobService;
@@ -18,12 +20,60 @@ const { DEFAULT_MODEL } = JobService;
 const NODE_ID = 'node-openai-test';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// The hosted (OpenRouter-proxied) models a public key may name. Fixed here so the
+// suite doesn't depend on the deployment's OPENROUTER_MODELS.
+const HOSTED = [{ id: 'qwen/qwen3.8-27b', label: 'Qwen3.8 27B' }];
+const enc = new TextEncoder();
+
+// An SSE body: an async-iterable of encoded `data:` lines, like fetch().body.
+function sseBody(events) {
+  return (async function* () {
+    for (const e of events) {
+      const line = e === '[DONE]' ? 'data: [DONE]\n\n' : 'data: ' + JSON.stringify(e) + '\n\n';
+      yield enc.encode(line);
+    }
+  })();
+}
+// Fake fetches standing in for OpenRouter; each records the parsed request so
+// tests can assert on what we asked upstream for.
+function streamFetch(events, calls = []) {
+  return async (url, init) => {
+    calls.push({ url, init, body: JSON.parse(init.body) });
+    return { ok: true, status: 200, body: sseBody(events) };
+  };
+}
+function jsonFetch(obj, calls = []) {
+  return async (url, init) => {
+    calls.push({ url, init, body: JSON.parse(init.body) });
+    return { ok: true, status: 200, json: async () => obj };
+  };
+}
+function notOkFetch(status = 429, message = 'Rate limit exceeded') {
+  return async () => ({ ok: false, status, text: async () => JSON.stringify({ error: { message } }) });
+}
+function throwFetch() {
+  return async () => { throw new Error('network down'); };
+}
+
 function makeApp(db, opts) {
   const app = express();
   app.use(express.json());
   app.locals.db = db;
   initOpenAiRoutes(app, Object.assign({ pollMs: 5, timeoutMs: 1500 }, opts));
   return app;
+}
+
+// Upstream failures are logged via console.error; silence it so the test output
+// stays readable (assertions check the returned payloads instead).
+let errSpy;
+beforeAll(() => { errSpy = jest.spyOn(console, 'error').mockImplementation(() => {}); });
+afterAll(() => { errSpy.mockRestore(); });
+
+// An app whose hosted-model backend is a fake OpenRouter.
+function makeHostedApp(db, openRouter, opts) {
+  return makeApp(db, Object.assign({
+    openRouter: Object.assign({ apiKey: 'or-test-key', baseUrl: 'https://or.test/v1', models: HOSTED }, openRouter),
+  }, opts));
 }
 
 // Play the node: wait for the gateway's pending job, claim it, stream chunks,
@@ -381,6 +431,293 @@ describe('OpenAI gateway — integration', () => {
   });
 });
 
+// ── Hosted models: the OpenRouter-proxied models a public key may name ────────
+//
+// These are the same models the free Chat page offers. Serving them here puts
+// real API traffic on them ahead of the node network running them itself, so the
+// rules that bound our OpenRouter spend — the allow-list, the token ceilings and
+// the shared free budget — all have to hold on this path too.
+
+describe('OpenAI gateway — hosted models', () => {
+  let db, keys, publicKey, privateKey;
+  const USER = 'user-openai';
+
+  beforeEach(async () => {
+    db = await createTestDb();
+    keys = new ApiKeyService(db);
+    publicKey = (await keys.createKey(USER, 'public-key', 'public')).key;
+    privateKey = (await keys.createKey(USER, 'private-key', 'private')).key;
+  });
+
+  afterEach(async () => {
+    await sleep(25); // let best-effort usage writes land before the pool closes
+    if (db.end) await db.end();
+  });
+
+  const auth = (k) => ['Authorization', 'Bearer ' + k];
+
+  const JSON_REPLY = {
+    choices: [{ message: { role: 'assistant', content: 'Hi there' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 3, completion_tokens: 5, total_tokens: 8 },
+    model: 'qwen/qwen3.8-27b',
+  };
+
+  it('serves a hosted model to a public key as an OpenAI chat.completion', async () => {
+    const calls = [];
+    const app = makeHostedApp(db, { fetchFn: jsonFetch(JSON_REPLY, calls) });
+    const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'Say hi' }], temperature: 0.4 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.object).toBe('chat.completion');
+    expect(res.body.id).toMatch(/^chatcmpl-/);
+    expect(res.body.model).toBe('qwen/qwen3.8-27b');
+    expect(res.body.choices[0]).toMatchObject({
+      index: 0, message: { role: 'assistant', content: 'Hi there' }, finish_reason: 'stop',
+    });
+    expect(res.body.usage).toEqual({ prompt_tokens: 3, completion_tokens: 5, total_tokens: 8 });
+    // No node ran this, and the served-by header says exactly that rather than
+    // leaving a benchmark run to guess.
+    expect(res.headers['x-llmjob-served-by']).toBe('openrouter');
+    // Upstream call: the allow-listed id, our ceiling, the caller's temperature.
+    expect(calls[0].url).toBe('https://or.test/v1/chat/completions');
+    expect(calls[0].init.headers.Authorization).toBe('Bearer or-test-key');
+    expect(calls[0].body).toMatchObject({
+      model: 'qwen/qwen3.8-27b', stream: false, usage: { include: true }, max_tokens: 2048, temperature: 0.4,
+    });
+  });
+
+  it('matches a hosted model by its friendly label too', async () => {
+    const calls = [];
+    const app = makeHostedApp(db, { fetchFn: jsonFetch(JSON_REPLY, calls) });
+    const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
+      .send({ model: 'Qwen3.8 27B', messages: [{ role: 'user', content: 'hi' }] });
+    expect(res.status).toBe(200);
+    expect(calls[0].body.model).toBe('qwen/qwen3.8-27b'); // the id, not the label
+    expect(calls[0].body).not.toHaveProperty('temperature'); // none sent → none forwarded
+  });
+
+  it('surfaces a thinking model\'s reasoning alongside an empty answer', async () => {
+    const app = makeHostedApp(db, {
+      fetchFn: jsonFetch({
+        choices: [{ message: { role: 'assistant', content: '', reasoning: 'weighing it up' }, finish_reason: 'length' }],
+        usage: { prompt_tokens: 2, completion_tokens: 40, total_tokens: 42 },
+        model: 'qwen/qwen3.8-27b',
+      }),
+    });
+    const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }], max_tokens: 40 });
+    expect(res.body.choices[0].message.content).toBe('');
+    expect(res.body.choices[0].message.reasoning_content).toBe('weighing it up');
+    expect(res.body.choices[0].finish_reason).toBe('length');
+  });
+
+  it('clamps an oversized max_tokens to the hosted ceiling', async () => {
+    const calls = [];
+    const app = makeHostedApp(db, { fetchFn: jsonFetch(JSON_REPLY, calls), maxTokens: 256 });
+    await request(app).post('/v1/chat/completions').set(...auth(publicKey))
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }], max_tokens: 999999 });
+    expect(calls[0].body.max_tokens).toBe(256);
+  });
+
+  it('falls back to the requested id when the provider names no model', async () => {
+    const app = makeHostedApp(db, { fetchFn: jsonFetch({}) });
+    const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }] });
+    expect(res.status).toBe(200);
+    expect(res.body.model).toBe('qwen/qwen3.8-27b');
+    expect(res.body.choices[0].message.content).toBe('');
+    expect(res.body.choices[0].message).not.toHaveProperty('reasoning_content');
+    expect(res.body.choices[0].finish_reason).toBe('stop');
+    expect(res.body.usage.completion_tokens).toBe(0); // nothing generated, nothing reported
+  });
+
+  it('streams a hosted model as chat.completion.chunk events ending with [DONE]', async () => {
+    const calls = [];
+    const app = makeHostedApp(db, {
+      fetchFn: streamFetch([
+        { choices: [{ delta: { role: 'assistant' } }] },
+        { choices: [{ delta: { content: 'Hel' } }] },
+        { choices: [{ delta: { reasoning: 'hmm' } }], model: 'qwen/qwen3.8-27b' },
+        { choices: [{ delta: { content: 'lo' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+        { usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 } }, // usage-only chunk
+        '[DONE]',
+      ], calls),
+    });
+    const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }], stream: true });
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toMatch(/text\/event-stream/);
+    expect(res.text).toContain('"delta":{"role":"assistant"}');
+    expect(res.text).toContain('"delta":{"content":"Hel"}');
+    expect(res.text).toContain('"delta":{"reasoning_content":"hmm"}');
+    expect(res.text).toContain('"finish_reason":"stop"');
+    expect(res.text).toContain('"object":"chat.completion.chunk"');
+    expect(res.text).toContain('"model":"qwen/qwen3.8-27b"');
+    expect(res.text.trim().endsWith('data: [DONE]')).toBe(true);
+    expect(calls[0].body).toMatchObject({ stream: true, stream_options: { include_usage: true } });
+
+    // The upstream's own usage numbers are what get billed, not our estimate.
+    const totals = await new ChatUsageService(db).getTotals();
+    expect(totals.totalTokens).toBe(6);
+  });
+
+  it('records a hosted generation against the key, its logs, and the OpenRouter budget', async () => {
+    const app = makeHostedApp(db, { fetchFn: jsonFetch(JSON_REPLY) });
+    await request(app).post('/v1/chat/completions').set(...auth(publicKey))
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }] });
+    await sleep(20);
+
+    // It is OpenRouter spend, so it counts against the shared free cap…
+    const totals = await new ChatUsageService(db).getTotals();
+    expect(totals.totalTokens).toBe(8);
+    // …and it is billed to the key, so the slice is tallied separately for the
+    // public totals to subtract back out.
+    expect(totals.apiTotalTokens).toBe(8);
+    const key = (await keys.listKeys(USER)).find((k) => k.name === 'public-key');
+    expect(key.usage).toBe(8);
+    // The dashboard shows it like any other request, attributed to openrouter.
+    const logs = await new LogService(db).getLogs(USER);
+    expect(logs[0]).toMatchObject({
+      model: 'qwen/qwen3.8-27b', node: 'openrouter', app: 'api', in: 3, out: 5, key: 'public-key',
+    });
+  });
+
+  it('refuses a hosted model for a private key (403)', async () => {
+    // "Private" promises the request never leaves the owner's own machines.
+    // A hosted model would break that quietly, so say so and name the fix.
+    const app = makeHostedApp(db, { fetchFn: jsonFetch(JSON_REPLY) });
+    const res = await request(app).post('/v1/chat/completions').set(...auth(privateKey))
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }] });
+    expect(res.status).toBe(403);
+    expect(res.body.error.type).toBe('permission_error');
+    expect(res.body.error.message).toMatch(/private/);
+    expect(res.body.error.message).toMatch(/public/);
+  });
+
+  it('refuses to pin a hosted model to a node (400)', async () => {
+    const app = makeHostedApp(db, { fetchFn: jsonFetch(JSON_REPLY) });
+    const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
+      .set('X-LLMJob-Node', 'node-7')
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }] });
+    expect(res.status).toBe(400);
+    expect(res.body.error.type).toBe('invalid_request_error');
+    expect(res.body.error.message).toContain('node-7');
+  });
+
+  it('returns 503 when no OpenRouter key is configured', async () => {
+    const app = makeHostedApp(db, { apiKey: '', fetchFn: jsonFetch(JSON_REPLY) });
+    const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }] });
+    expect(res.status).toBe(503);
+    expect(res.body.error.type).toBe('not_configured');
+  });
+
+  it('returns 402 once the shared free budget is spent', async () => {
+    // Web-chat traffic alone can exhaust it: one pot of credit, one cap.
+    await new ChatUsageService(db).recordUsage({ model: 'm', inTokens: 60, outTokens: 60 });
+    const app = makeHostedApp(db, { fetchFn: jsonFetch(JSON_REPLY), freeBudget: 100 });
+    const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }] });
+    expect(res.status).toBe(402);
+    expect(res.body.error.type).toBe('quota_exhausted');
+  });
+
+  it('serves without a cap when the free budget is disabled', async () => {
+    await new ChatUsageService(db).recordUsage({ model: 'm', inTokens: 60, outTokens: 60 });
+    const app = makeHostedApp(db, { fetchFn: jsonFetch(JSON_REPLY), freeBudget: 0 });
+    const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }] });
+    expect(res.status).toBe(200);
+  });
+
+  it('leaves an unrecognised model on the node network', async () => {
+    // Every caller that has ever sent `model: "gpt-4"` (or nothing at all) must
+    // keep reaching the fleet — the hosted models are opt-in by exact name.
+    const jobService = new JobService(db);
+    const app = makeHostedApp(db, { fetchFn: throwFetch() }); // upstream would blow up if used
+    const [res] = await Promise.all([
+      request(app).post('/v1/chat/completions').set(...auth(publicKey))
+        .send({ model: 'gpt-4', messages: [{ role: 'user', content: 'hi' }] }),
+      nodeServe(jobService, ['served by a node'], { totalTokens: 3 }),
+    ]);
+    expect(res.status).toBe(200);
+    expect(res.body.model).toBe(DEFAULT_MODEL);
+    expect(res.body.choices[0].message.content).toBe('served by a node');
+  });
+
+  it('returns 502 when the hosted upstream errors, and logs nothing', async () => {
+    const app = makeHostedApp(db, { fetchFn: notOkFetch(429, 'Rate limit exceeded') });
+    const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }] });
+    expect(res.status).toBe(502);
+    expect(res.body.error.type).toBe('upstream_error');
+    expect(res.body.error.message).toContain('Rate limit exceeded');
+    // A failed generation bought nothing, so it must not touch the budget.
+    expect((await new ChatUsageService(db).getTotals()).requests).toBe(0);
+  });
+
+  it('returns 502 when the hosted upstream request throws', async () => {
+    const app = makeHostedApp(db, { fetchFn: throwFetch() });
+    const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }] });
+    expect(res.status).toBe(502);
+    expect(res.body.error.type).toBe('upstream_error');
+  });
+
+  it('writes an upstream_error event then [DONE] when a streamed hosted request fails', async () => {
+    const app = makeHostedApp(db, { fetchFn: notOkFetch(402, 'Insufficient credits') });
+    const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }], stream: true });
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('Insufficient credits');
+    expect(res.text).toContain('"type":"upstream_error"');
+    expect(res.text.trim().endsWith('data: [DONE]')).toBe(true);
+  });
+
+  it('writes an upstream_error event then [DONE] when a streamed hosted request throws', async () => {
+    const app = makeHostedApp(db, { fetchFn: throwFetch() });
+    const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }], stream: true });
+    expect(res.text).toContain('Upstream request failed');
+    expect(res.text.trim().endsWith('data: [DONE]')).toBe(true);
+  });
+
+  describe('GET /v1/models', () => {
+    it('lists the hosted models plus the network model for a public key', async () => {
+      const app = makeHostedApp(db, { fetchFn: jsonFetch(JSON_REPLY) });
+      const res = await request(app).get('/v1/models').set(...auth(publicKey));
+      expect(res.status).toBe(200);
+      expect(res.body.object).toBe('list');
+      expect(res.body.data.map((m) => m.id)).toEqual(['qwen/qwen3.8-27b', DEFAULT_MODEL]);
+      expect(res.body.data[0]).toMatchObject({ object: 'model', owned_by: 'llmjob-hosted' });
+      expect(res.body.data[1]).toMatchObject({ object: 'model', owned_by: 'llmjob-network' });
+      expect(typeof res.body.data[0].created).toBe('number');
+    });
+
+    it('lists only the network model for a private key', async () => {
+      // A private key's requests never leave its owner's nodes, so advertising
+      // the hosted models would only earn it a 403 on the next call.
+      const app = makeHostedApp(db, { fetchFn: jsonFetch(JSON_REPLY) });
+      const res = await request(app).get('/v1/models').set(...auth(privateKey));
+      expect(res.body.data.map((m) => m.id)).toEqual([DEFAULT_MODEL]);
+    });
+
+    it('lists only the network model when OpenRouter is not configured', async () => {
+      const app = makeHostedApp(db, { apiKey: '' });
+      const res = await request(app).get('/v1/models').set(...auth(publicKey));
+      expect(res.body.data.map((m) => m.id)).toEqual([DEFAULT_MODEL]);
+    });
+
+    it('rejects a request with no API key (401)', async () => {
+      const res = await request(makeHostedApp(db, {})).get('/v1/models');
+      expect(res.status).toBe(401);
+    });
+  });
+});
+
 // ── Unit tests: controller error/edge branches with injected fakes ────────────
 
 function fakeReq(body) {
@@ -414,8 +751,29 @@ function fakeServices(over = {}) {
     }, over.jobService),
     logService: Object.assign({ recordLog: async () => {} }, over.logService),
     apiKeyService: Object.assign({ recordUsage: async () => {} }, over.apiKeyService),
+    chatUsage: Object.assign({
+      getTotals: async () => ({ totalTokens: 0 }), recordUsage: async () => {},
+    }, over.chatUsage),
   };
 }
+// A controller whose hosted backend is a fake OpenRouter, with fake services.
+function hostedCtrl(openRouter, over) {
+  return new OpenAiController({
+    services: fakeServices(over),
+    openRouter: Object.assign({ apiKey: 'or-k', models: HOSTED }, openRouter),
+  });
+}
+// A stream body that fires `onYield(i)` right after emitting item i.
+function hookedBody(events, onYield) {
+  return (async function* () {
+    for (let i = 0; i < events.length; i++) {
+      yield enc.encode('data: ' + JSON.stringify(events[i]) + '\n\n');
+      onYield(i);
+    }
+  })();
+}
+const hostedReq = (over = {}) => fakeReq(Object.assign(
+  { model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }] }, over));
 
 describe('OpenAI gateway — controller branches', () => {
   it('_setServedByHeader no-ops without setHeader, and skips an absent node', () => {
@@ -607,6 +965,69 @@ describe('OpenAI gateway — controller branches', () => {
     const app = express();
     const ctrl = initOpenAiRoutes(app);
     expect(ctrl).toBeInstanceOf(OpenAiController);
+  });
+
+  it('stops a hosted stream when the caller hangs up, but still bills what streamed', async () => {
+    // OpenRouter generated (and charged us for) whatever it already sent, so the
+    // shared budget has to see those tokens even though nobody read them.
+    const recorded = [];
+    const res = fakeResClosable();
+    const ctrl = hostedCtrl({
+      fetchFn: async () => ({
+        ok: true,
+        status: 200,
+        body: hookedBody([
+          { choices: [{ delta: { content: 'Hel' } }] },
+          { choices: [{ delta: { content: 'lo' } }] },
+        ], (i) => { if (i === 0) res.emitClose(); }),
+      }),
+    }, { chatUsage: { recordUsage: async (e) => { recorded.push(e); } } });
+
+    await ctrl.chatCompletions(hostedReq({ stream: true }), res);
+    const out = res.writes.join('');
+    expect(out).toContain('"content":"Hel"');
+    expect(out).not.toContain('"content":"lo"'); // stopped as soon as the socket went
+    expect(out).not.toContain('[DONE]');         // …and no terminator into a dead socket
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].viaApiKey).toBe(true);
+  });
+
+  it('returns 500 (headers not yet sent) when a hosted JSON body cannot be read', async () => {
+    // `fakeRes` has no .on(), which also covers a response that can't report a
+    // hang-up at all.
+    const ctrl = hostedCtrl({
+      fetchFn: async () => ({ ok: true, status: 200, json: async () => { throw new Error('bad json'); } }),
+    });
+    const res = fakeRes();
+    await ctrl.chatCompletions(hostedReq(), res);
+    expect(res.statusCode).toBe(500);
+    expect(res.body.error.type).toBe('api_error');
+    expect(res.body.error.message).toContain('bad json');
+  });
+
+  it('ends a hosted stream (headers already sent) when reading the body throws', async () => {
+    // An upstream body that dies on its first read, after we have already
+    // committed a 200 and the SSE preamble.
+    const deadBody = { [Symbol.asyncIterator]: () => ({ next: async () => { throw new Error('stream blew up'); } }) };
+    const ctrl = hostedCtrl({
+      fetchFn: async () => ({ ok: true, status: 200, body: deadBody }),
+    });
+    const res = fakeRes();
+    await ctrl.chatCompletions(hostedReq({ stream: true }), res);
+    expect(res.ended).toBe(true);
+    expect(res.writes.join('')).not.toContain('[DONE]');
+  });
+
+  it('swallows a failure while recording hosted usage', async () => {
+    // Accounting is best-effort: a bookkeeping error must never turn a served
+    // answer into a 500.
+    const ctrl = hostedCtrl(
+      { fetchFn: async () => ({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: 'ok' } }] }) }) },
+      { chatUsage: { recordUsage: async () => { throw new Error('totals down'); } } });
+    const res = fakeRes();
+    await ctrl.chatCompletions(hostedReq(), res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.choices[0].message.content).toBe('ok');
   });
 });
 

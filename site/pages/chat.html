@@ -40,7 +40,7 @@
   @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
 
   /* nav */
-  nav.nav { max-width: 1080px; width: 100%; box-sizing: border-box; margin: 0 auto; padding: 26px 28px; display: flex; align-items: center; justify-content: space-between; flex: none; }
+  nav.nav { max-width: 1080px; width: 100%; box-sizing: border-box; margin: 0 auto; padding: 26px 28px; display: flex; align-items: center; justify-content: space-between; gap: 18px; flex: none; }
   .logo { font-weight: 700; font-size: 21px; letter-spacing: -.02em; display: inline-flex; align-items: center; gap: 11px; color: var(--ink); }
   .logo .bolt { display: inline-flex; width: 38px; height: 38px; border-radius: 11px; background: var(--dark); align-items: center; justify-content: center; flex: none; }
   .nav-right { display: flex; align-items: center; gap: 26px; }
@@ -51,7 +51,9 @@
   .btn-discord:hover { box-shadow: 0 8px 20px -10px rgba(26,26,23,.6); }
   .btn-discord:active { transform: translateY(1px); }
   @media (max-width: 720px) { nav.nav { padding: 20px 18px; } .nav-right { gap: 16px; } }
-  @media (max-width: 460px) { .nav-right { gap: 13px; } .btn-discord { padding: 9px 11px; } .btn-discord .dc-txt { display: none; } }
+  /* Compact nav: the links plus the Discord button don't fit a small phone at
+     full size, so shrink the whole bar rather than drop one. */
+  @media (max-width: 460px) { nav.nav { gap: 10px; } .nav-right { gap: 9px; } .nav-link { font-size: 14px; } .logo { font-size: 18px; gap: 9px; } .logo .bolt { width: 32px; height: 32px; border-radius: 9px; } .btn-discord { padding: 9px 11px; } .btn-discord .dc-txt { display: none; } }
 
   /* chat shell */
   .chat-wrap { max-width: 1080px; width: 100%; box-sizing: border-box; margin: 6px auto 0; padding: 0 28px; flex: 1; display: flex; flex-direction: column; min-height: 0; }
@@ -165,8 +167,7 @@
 
   // Fallback model list if /api/chat/models can't be reached.
   var FALLBACK_MODELS = [
-    { id: 'qwen/qwen3.6-27b', label: 'Qwen3.6 27B' },
-    { id: 'qwen/qwen3.6-35b-a3b', label: 'Qwen3.6 35B A3B' }
+    { id: 'qwen/qwen3.8-27b', label: 'Qwen3.8 27B' }
   ];
 
   var LS_KEY = 'llmjob_chats';

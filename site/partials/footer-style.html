@@ -1,0 +1,40 @@
+<!-- Styles for the shared site footer partial, matching the v2 handoff mock.
+     Included from <head> after the page's own <style>, the same way legal-style is.
+
+     Every value here comes from the mock's inline styles. The mock hard-codes
+     its colours; they are expressed as the site's palette variables instead,
+     with the mock's exact hex as the fallback — all five pages that carry a
+     footer define these to precisely those values, so the render is identical
+     either way, and a page without the full palette still looks right.
+
+     One deliberate deviation: the mock sets the footer to max-width 1136px while
+     its own nav is 1080px, which would sit the footer logo 28px left of the nav
+     logo above it. Every other container on this site is 1080px, so the footer
+     matches them and the two logos line up.
+
+     A page that needs breathing room above the footer sets --foot-gap in :root
+     rather than redefining the rule. -->
+<style>
+  footer.foot { border-top: 1px solid #ededea; max-width: 1080px; width: 100%; box-sizing: border-box; margin: var(--foot-gap, 0) auto 0; padding: 56px 28px 46px; color: var(--muted-2, #8a8f98); font-size: 14px; }
+  .foot-inner { display: flex; align-items: flex-start; justify-content: space-between; gap: 44px 56px; flex-wrap: wrap; }
+
+  .foot-brand { flex: 1 1 280px; min-width: 230px; }
+  .foot-brand .logo { font-weight: 700; font-size: 18px; letter-spacing: -0.02em; color: var(--ink, #0e0f10); display: inline-flex; align-items: center; gap: 10px; }
+  .foot-brand .logo .bolt { display: inline-flex; width: 28px; height: 28px; border-radius: 8px; background: var(--dark, #1a1a17); align-items: center; justify-content: center; flex: none; }
+  .foot-tag { margin: 14px 0 0; font-size: 14px; line-height: 1.6; color: var(--muted-2, #8a8f98); max-width: 23em; }
+  .foot-copy { margin: 22px 0 0; font-size: 13.5px; color: var(--muted-3, #9a9da1); }
+
+  .foot-cols { display: flex; flex-wrap: wrap; gap: 36px 56px; }
+  .foot-col { display: flex; flex-direction: column; gap: 12px; min-width: 104px; }
+  .foot-h { font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted, #5b5e62); margin-bottom: 5px; }
+  .foot-col a { color: var(--muted, #5b5e62); font-size: 14.5px; transition: color .14s; }
+  .foot-col a:hover { color: var(--ink, #0e0f10); }
+
+  @media (max-width: 700px) {
+    footer.foot { padding: 40px 18px 34px; }
+    /* Stack the brand above the columns; the columns keep their own row and
+       wrap two-up rather than compressing to a single file. */
+    .foot-inner { gap: 32px; }
+    .foot-cols { gap: 28px 44px; }
+  }
+</style>

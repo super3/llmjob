@@ -66,7 +66,7 @@
   .wrap { width: 100%; max-width: 1080px; margin: 0 auto; padding: 0 28px; }
 
   /* nav */
-  nav.nav { max-width: 1080px; margin: 0 auto; padding: 26px 28px; display: flex; align-items: center; justify-content: space-between; }
+  nav.nav { max-width: 1080px; margin: 0 auto; padding: 26px 28px; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
   .logo { font-weight: 700; font-size: 21px; letter-spacing: -.02em; display: inline-flex; align-items: center; gap: 11px; color: var(--ink); }
   .logo .bolt { display: inline-flex; width: 38px; height: 38px; border-radius: 11px; background: var(--dark); align-items: center; justify-content: center; flex: none; }
   .nav-right { display: flex; align-items: center; gap: 26px; }
@@ -81,7 +81,13 @@
     .nav-right { gap: 16px; }
   }
   @media (max-width: 460px) {
-    .nav-right { gap: 13px; }
+    nav.nav { gap: 10px; }
+/* Compact nav: the links plus the Discord button don't fit a small phone at
+       full size, so shrink the whole bar rather than drop one. */
+    .nav-right { gap: 9px; }
+    .nav-link { font-size: 14px; }
+    .logo { font-size: 18px; gap: 9px; }
+    .logo .bolt { width: 32px; height: 32px; border-radius: 9px; }
     .btn-discord { padding: 9px 11px; }
     .btn-discord .dc-txt { display: none; }
   }
@@ -240,14 +246,6 @@
   .cta p { font-size: clamp(17px, 2.4vw, 19px); color: var(--muted); margin: 22px auto 0; max-width: 420px; }
   .cta-dl { margin-top: 34px; display: flex; justify-content: center; }
 
-  /* footer */
-  footer.foot { border-top: 1px solid #ededea; max-width: 1080px; margin: 0 auto; padding: 26px 28px; display: flex; align-items: center; justify-content: space-between; color: var(--muted-3); font-size: 14px; gap: 18px; flex-wrap: wrap; }
-  .foot .logo { font-weight: 700; color: var(--muted); display: inline-flex; align-items: center; gap: 9px; }
-  .foot .logo .bolt { width: 24px; height: 24px; border-radius: 7px; }
-  .foot-links { display: flex; align-items: center; gap: 24px; }
-  .foot-links a { color: var(--muted-3); font-size: 14px; }
-  .foot-links a:hover { color: var(--muted); }
-
   /* compact mockup stats on narrow screens: fewer decimals, no seconds, shorter labels */
   @media (max-width: 520px) {
     .mk-stat .k .k-full { display: none; }
@@ -266,6 +264,7 @@
     .cta { margin-top: 80px; }
   }
 </style>
+{{> footer-style}}
 </head>
 <body id="top">
 
@@ -509,19 +508,7 @@
 </section>
 
 <!-- FOOTER -->
-<footer class="foot">
-  <a class="logo" href="index.html">
-    <span class="bolt"><svg width="13" height="13" viewBox="0 0 24 24" fill="#fff"><path d="M13 2 L4 14 h6 l-1 8 10-13 h-7 l1-7 z"></path></svg></span>LLMJob
-  </a>
-  <div class="foot-links">
-    <a href="chat.html">Chat</a>
-    <a href="earn.html">Earn</a>
-    <a href="network.html">Network</a>
-    <a href="dashboard.html" id="foot-login">Login</a>
-    <a href="https://discord.gg/JnERcTKjUS" target="_blank" rel="noopener">Discord</a>
-  </div>
-  <span>© 2026 LLMJob</span>
-</footer>
+{{> footer}}
 
 <script>
   /* ---- Download button: auto-detect OS + platform dropdown ---- */

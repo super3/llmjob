@@ -51,3 +51,30 @@ Always run tests before starting work and after completing tasks. A task is NOT 
 
   Start a second branch only when there is no open PR, or when the founder says
   to.
+
+### When a preview deploy is wedged by its own history
+
+The one narrow exception to the rule above, and it is not the "these are
+unrelated" reasoning that rule forbids — no work is being split here. The same
+branch and the same commits move to a new PR number because the old PR's
+environment is unusable.
+
+Close the PR and open a new one **from the same branch**. The preview environment
+is keyed by PR number, so a new PR provisions a clean one — including a fresh
+database. Do not try to repair it in code.
+
+This is the fix whenever a PR's preview keeps failing on state an *earlier deploy
+of that same PR* wrote, which large changes hit most often. The usual trigger is
+a migration renamed or renumbered during a rebase: `node-pg-migrate` compares the
+database's applied-migration list positionally against the files on disk and
+refuses to run when they diverge, so the preview fails forever on a migration
+name only that environment ever recorded. GitHub Actions stays green throughout,
+which is the tell — CI builds from the tree, the preview carries state.
+
+Never resolve it by renaming the migration back to match the stale row, or by
+adding `--no-check-order` to `npm start`. Both trade a broken preview for a
+broken production deploy or a disabled safeguard; the ordering check is what
+stops a migration from being skipped in production.
+
+In the replacement PR, say that it supersedes the closed one and link them, so
+the review history stays followable.

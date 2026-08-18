@@ -1,0 +1,340 @@
+<!--build {"fonts": "https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap"} -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>LLMJob — Privacy Policy</title>
+<meta name="description" content="What LLMJob collects, what it deliberately doesn't, where your prompts go, and how long anything is kept." />
+
+{{> head}}
+{{> legal-style}}
+{{> footer-style}}
+</head>
+<body id="top">
+
+{{> nav}}
+
+<main class="legal">
+  <div class="legal-head">
+    <div class="eb">Legal</div>
+    <h1>Privacy Policy</h1>
+    <p class="updated">Last updated 13 August 2026</p>
+  </div>
+
+
+  <p class="lede">LLMJob runs on hardware that belongs to people rather than to us, so where your
+    prompts go is a real question with a specific answer. This policy gives it, along with what we
+    store, what we deliberately don't, and how long anything lasts.</p>
+
+  <nav class="legal-toc" aria-label="Contents">
+    <a href="#short">The short version</a>
+    <a href="#collect">1. What we collect</a>
+    <a href="#prompts">2. Your prompts and what comes back</a>
+    <a href="#routing">3. Where your prompts run</a>
+    <a href="#public">4. What is public</a>
+    <a href="#dont">5. What we don't collect</a>
+    <a href="#processors">6. Third parties</a>
+    <a href="#retention">7. How long we keep things</a>
+    <a href="#security">8. Security</a>
+    <a href="#rights">9. Your choices and rights</a>
+    <a href="#children">10. Children</a>
+    <a href="#transfers">11. International transfers</a>
+    <a href="#changes">12. Changes</a>
+    <a href="#contact">13. Contact</a>
+  </nav>
+
+  <section id="short">
+    <h2>The short version</h2>
+    <ul>
+      <li>We <b>never</b> use your prompts or outputs to train models, and we never sell data.</li>
+      <li>The free chat and the hosted models record <b>no prompt or reply text at all</b> — only
+        token counts and speed, with nothing attached that identifies you.</li>
+      <li>Requests served by the <b>node network</b> are different: the prompt and the reply are
+        stored for up to <b>24 hours</b> so a node can pick the job up and you can read the answer
+        back, and they pass through the hardware of whoever serves them. Section 2 explains this
+        properly — it is the most important thing on this page.</li>
+      <li>We don't log IP addresses, and your email address never reaches our database.</li>
+      <li>A <b>private</b> API key confines your prompts to machines in your own account.</li>
+    </ul>
+  </section>
+
+  <section id="collect">
+    <h2>1. What we collect</h2>
+
+    <h3>Account</h3>
+    <p>Sign-in is handled by our authentication provider, which holds your email address and
+      credentials. Our own database stores only the opaque account identifier it issues — your
+      email, name and username are never written to it. Everything we keep about you hangs off that
+      identifier.</p>
+
+    <h3>API keys</h3>
+    <p>For each key we store a one-way hash of the secret, the label you gave it, when it was
+      created, when it was last used, a lifetime token counter and its public/private routing
+      setting. We do not store the key itself and cannot recover it — we show it once and keep only
+      enough of it (the first and last few characters) to display a recognisable fragment.</p>
+
+    <h3>Request logs</h3>
+    <p>Each API request writes one row: time, model, which node served it, tokens in and out,
+      generation speed, why generation stopped, and the label of the key used. These are what the
+      dashboard's Logs table shows you. <b>They contain no prompt or reply text.</b></p>
+
+    <h3>Nodes</h3>
+    <p>When a machine joins we store its public key and derived node id, a name, the account it
+      belongs to (if any), whether it is public, when it was last seen, and what it reports about
+      itself: GPU description, VRAM, the model it has loaded, and measured generation speed. This is
+      hardware and availability information, not content.</p>
+    <p>Two things worth knowing here. A machine running the local model <b>registers itself with the
+      network by default</b>, without an account and without a separate action from you, so that it
+      can be offered work — its node name defaults to a label derived from the machine's hostname.
+      And if your node serves a job for someone else, the text your GPU generates is sent back
+      through us so it can be delivered to whoever asked for it.</p>
+
+    <h3>LLMJob Earn</h3>
+    <p>While mining, the app reports once a minute per graphics card: your <b>payout address</b>, a
+      worker name, the pool region, GPU model, hashrate, accepted shares, VRAM used and total, the
+      app version, and — if the machine is also serving as a node — its node id and the model it is
+      serving. This is what the public network board displays.</p>
+    <p><b>The worker name defaults to your computer's hostname</b> (lower-cased and stripped of
+      punctuation), so if your machine is called something like <code class="ic">alex-desktop</code>
+      that is what appears on a public page next to your payout address. Change it in the app's
+      settings if you would rather it didn't.</p>
+    <p>What the app deliberately does <em>not</em> send: rejected shares, GPU power draw, GPU load,
+      uptime, and your merge-mining address (which goes only to the pool).</p>
+
+    <h3>What the desktop app keeps to itself</h3>
+    <p>Some things never leave your machine, by design:</p>
+    <ul>
+      <li><b>Anything you type into the app's own Chat tab.</b> It talks to a model server bound to
+        your local loopback address, and there is no second destination.</li>
+      <li><b>The downloaded model weights</b>, which are only ever read.</li>
+      <li><b>Your node's private key</b>, stored with owner-only permissions and used solely to sign
+        the machine's own requests. Only the public half is ever sent — which is why claiming a node
+        requires proof from the machine itself.</li>
+      <li><b>Mining and engine logs</b>, which are shown in the app and written locally. There is no
+        remote logging endpoint.</li>
+    </ul>
+    <p>The app also handles no cryptocurrency private keys at all: a payout address is just a string
+      to it. Nothing signs transactions, and there is no wallet or seed phrase anywhere in it.</p>
+
+    <h3>Website analytics</h3>
+    <p>We use a privacy-focused analytics service that records page views without cookies and
+      without building a profile of you across sites.</p>
+  </section>
+
+  <section id="prompts">
+    <h2>2. Your prompts and what comes back</h2>
+    <p>This depends entirely on which backend serves the request, and the difference is material.
+      We would rather state it precisely than give you a comfortable summary that isn't true of
+      every path.</p>
+
+    <div class="twrap">
+      <table>
+        <thead>
+          <tr><th>Served by</th><th>Is your text stored?</th><th>Who can see it</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Hosted models<br><span class="m">the free chat's default</span></td>
+            <td><b>No.</b> We record only token counts, speed and latency — there is no field
+              anywhere in our database that could hold the text, and nothing ties those numbers to
+              you.</td>
+            <td>Us: nobody. The upstream model provider receives the prompt in order to answer it
+              and applies its own policy.</td>
+          </tr>
+          <tr>
+            <td>The node network<br><span class="m">the API's default, and the chat's network
+              model</span></td>
+            <td><b>Yes, temporarily.</b> The prompt, the full conversation and the generated reply
+              are held while the job runs and are deleted within 24 hours of it finishing.</td>
+            <td>The operator of the node that serves it, whose machine runs the model locally on
+              the text. Plus us, in the database, for that window.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>Storing the job is what makes the network work: a request has to sit somewhere until a node
+      collects it, stream its answer back in pieces, and survive being handed to another node if
+      the first one drops out. It is deleted on a sweep that runs every hour, once the job has been
+      finished or failed for 24 hours.</p>
+
+    <p>Nobody can read back a conversation that isn't theirs. A job is only readable by the account
+      that submitted it, and free-chat jobs have no account attached, so they are not readable over
+      the API by anyone at all.</p>
+
+    <div class="note">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg>
+      <span>We do not use anything you send, or anything a model returns to you, to train or
+        fine-tune models — ours or anyone else's.</span>
+    </div>
+  </section>
+
+  <section id="routing">
+    <h2>3. Where your prompts run</h2>
+    <p>Every API key is either public or private, and that setting decides which machines may see
+      your prompts:</p>
+    <ul>
+      <li><b>Private</b> — the request is only ever offered to nodes in your own account. This is
+        enforced when work is handed out, using the node's owner as recorded in our database rather
+        than anything the caller claims. A private key is also refused the hosted models outright,
+        with an error, rather than being quietly sent to a third party.</li>
+      <li><b>Public</b> — the request may be served by <b>any node on the network</b>. Machines can
+        join and serve public work without an account, so the operator may be someone you cannot
+        identify, in a country you did not choose. Their machine processes your prompt in order to
+        answer it.</li>
+    </ul>
+    <p>The free chat is public by nature. Treat both public routes as you would any public service:
+      don't send secrets, credentials, or other people's personal data through them. If the content
+      matters, use a private key and your own nodes.</p>
+  </section>
+
+  <section id="public">
+    <h2>4. What is public</h2>
+    <p>The <a href="network.html">network page</a> shows live contributions, and the information
+      behind it is public by design. That includes mining payout addresses, worker names, GPU
+      models, hashrates, VRAM, regions and client versions — and, for nodes whose owner marked them
+      public, the node's name and the model it serves.</p>
+    <p>Two consequences worth being explicit about. A payout address is a permanent, publicly
+      searchable identifier on its blockchain, so anything shown beside it is linked to it in
+      public and stays linked. And because the worker name defaults to your hostname, the default
+      behaviour publishes your machine's name unless you change it.</p>
+    <p>Aggregate totals — tokens served across the network — are published as sums only, with no
+      per-user or per-key breakdown.</p>
+  </section>
+
+  <section id="dont">
+    <h2>5. What we don't collect</h2>
+    <p>Stated as specifics rather than reassurance, because each is verifiable in our source code,
+      which is public:</p>
+    <ul>
+      <li><b>No IP address logging.</b> Our application records no IP address, no geolocation, no
+        User-Agent and no referrer, and has no database column for any of them. The region shown for
+        a miner is one the operator selects, not one we infer. The honest caveat: any server that
+        answers your browser — our host, the analytics service, the font and script CDNs, the
+        mining pool — necessarily sees your IP address in order to reply, and keeps its own logs.
+        We mean that <em>we</em> don't store one, not that none exists anywhere.</li>
+      <li><b>No device telemetry from the desktop app.</b> It collects no operating system version,
+        username, file paths, MAC address, installed-software inventory or crash-analytics stream,
+        and ships no analytics SDK.</li>
+      <li><b>No cookies of our own</b>, and no cross-site tracking or advertising pixels. Our
+        authentication provider sets what it needs to keep you signed in.</li>
+      <li><b>No email addresses in our database.</b> They stay with the authentication provider.</li>
+      <li><b>No prompt or reply text for hosted-model traffic</b>, as described above.</li>
+      <li><b>No sale of personal information</b>, and no sharing of it for advertising.</li>
+    </ul>
+  </section>
+
+  <section id="processors">
+    <h2>6. Third parties</h2>
+    <p>Services that receive data in the course of running LLMJob:</p>
+    <div class="twrap">
+      <table>
+        <thead>
+          <tr><th>Service</th><th>What it does</th><th>What reaches it</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Clerk</td><td>Accounts and sign-in</td><td>Your email, credentials and session. Loaded only on pages that need sign-in</td></tr>
+          <tr><td>OpenRouter</td><td>Serves the hosted models</td><td>The conversation for those requests, under its own policy. The call is made by our server, so your IP address and account identity are not passed on</td></tr>
+          <tr><td>Railway</td><td>Hosting and database</td><td>Everything in section 1, plus its own connection logs</td></tr>
+          <tr><td>Umami</td><td>Website analytics</td><td>Cookieless page-view data — path, referrer, screen size and language</td></tr>
+          <tr><td>AlphaPool</td><td>Mining pool for LLMJob Earn</td><td>Your payout address, worker name, shares and hashrate, plus your rig's IP address. The app also briefly contacts every pool region to find the fastest, and looks up your balance by address</td></tr>
+          <tr><td>Google Fonts, unpkg</td><td>Serve fonts and scripts to your browser</td><td>Your IP address, unavoidably, as with any asset your browser fetches</td></tr>
+          <tr><td>GitHub</td><td>Source code, app downloads, update checks, and the inference runtime the app fetches</td><td>Your IP address and which file you asked for</td></tr>
+          <tr><td>Hugging Face</td><td>Hosts the model weights the desktop app downloads on first run</td><td>Your IP address and which model file you asked for</td></tr>
+          <tr><td>CoinGecko, PRLScan</td><td>Price and blockchain data for the Earn page and app</td><td>Your IP address; we send them no information about you</td></tr>
+          <tr><td>Discord</td><td>Community chat</td><td>Nothing unless you click through — it is a plain link, not an embed</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Node operators are not our processors. When a public job runs on someone's machine, that
+      person's hardware receives your prompt because that is how the network answers it.</p>
+  </section>
+
+  <section id="retention">
+    <h2>7. How long we keep things</h2>
+    <div class="twrap">
+      <table>
+        <thead><tr><th>Data</th><th>Kept for</th></tr></thead>
+        <tbody>
+          <tr><td>Prompts and replies (node network)</td><td>Until 24 hours after the job finishes, then deleted automatically</td></tr>
+          <tr><td>Prompts and replies (hosted models)</td><td>Never stored</td></tr>
+          <tr><td>Your request logs</td><td>The most recent 200 requests per account</td></tr>
+          <tr><td>Anonymous chat performance rows</td><td>The most recent 200 across the whole service</td></tr>
+          <tr><td>Aggregate token totals</td><td>Indefinitely — sums only, not linked to anyone</td></tr>
+          <tr><td>API keys</td><td>Until you revoke them</td></tr>
+          <tr><td>Miner rows</td><td>Removed after about 90 minutes without a report</td></tr>
+          <tr><td>Nodes</td><td>Unclaimed nodes are removed after 7 days idle; nodes linked to an account are kept until removed on request</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="security">
+    <h2>8. Security</h2>
+    <p>Traffic is encrypted in transit. API keys are stored only as hashes. Nodes authenticate with
+      a key pair generated on the machine, whose private half never leaves it — which is why
+      claiming a node requires proof from the node itself rather than a claim from a web page.
+      Access to a job is scoped to the account that created it.</p>
+    <p>Your node join token is a credential: anyone holding it can attach a machine to your account,
+      which would make it eligible for your private jobs. Keep it secret, and rotate it from the
+      dashboard if you think it has been exposed.</p>
+    <p>No system is perfectly secure, and we can't promise otherwise. If you find a vulnerability,
+      please tell us privately at <a href="mailto:help@llmjob.com">help@llmjob.com</a> before
+      disclosing it.</p>
+  </section>
+
+  <section id="rights">
+    <h2>9. Your choices and rights</h2>
+    <p>Some controls are immediate and in your hands:</p>
+    <ul>
+      <li>Revoke an API key from the dashboard — it stops working at once.</li>
+      <li>Switch a key to private to stop its prompts leaving your own machines.</li>
+      <li>Make a node private, or disconnect it.</li>
+      <li>Change the worker name in the app before you start, so your hostname isn't published.</li>
+      <li>Stop mining to stop reporting to the public board; the row ages off by itself.</li>
+      <li>Use the free chat without an account at all.</li>
+    </ul>
+    <p>Depending on where you live you may also have rights to access, correct, export, restrict or
+      delete personal data, and to object to processing or complain to a regulator. Ask us at
+      <a href="mailto:help@llmjob.com">help@llmjob.com</a> and we will respond within the time your
+      law requires.</p>
+    <p>Being straight with you about one limitation: we do not yet have a self-service "delete my
+      account and everything in it" button, so an erasure request is handled by hand today. It gets
+      done, it just isn't instant.</p>
+  </section>
+
+  <section id="children">
+    <h2>10. Children</h2>
+    <p>LLMJob is not intended for children under 13, and we do not knowingly collect their personal
+      data. If you believe a child has given us information, contact us and we will delete it.</p>
+  </section>
+
+  <section id="transfers">
+    <h2>11. International transfers</h2>
+    <p>Our providers operate internationally, so data may be processed outside the country you live
+      in. Beyond that, the node network is distributed by design: a public request may be served by
+      a machine anywhere in the world. If that matters for your data, use a private key and nodes
+      you control.</p>
+  </section>
+
+  <section id="changes">
+    <h2>12. Changes</h2>
+    <p>We will update this policy as LLMJob changes, and the date at the top will change with it.
+      For material changes we will make a reasonable effort to give notice in the product or the
+      Discord before they take effect.</p>
+  </section>
+
+  <section id="contact">
+    <h2>13. Contact</h2>
+    <p>LLMJob is operated by LowerPropTax, LLC, 1155 Mount Vernon
+      Hwy NE #800, Atlanta, GA 30338, USA. Privacy questions:
+      <a href="mailto:help@llmjob.com">help@llmjob.com</a>, or ask in
+      <a href="{{discordUrl}}" target="_blank" rel="noopener">Discord</a>.</p>
+    <p class="pair">See also the <a href="terms.html">Terms of Service</a>.</p>
+  </section>
+</main>
+
+{{> footer}}
+</body>
+</html>

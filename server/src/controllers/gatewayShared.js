@@ -13,6 +13,17 @@ function estimateTokens(text) {
   return Math.ceil(String(text || '').length / 4);
 }
 
+// A reported integer, or `fallback` when the provider omitted it (or sent
+// something non-numeric).
+function int(v, fallback) {
+  return Number.isFinite(v) ? Math.round(v) : fallback;
+}
+
+// One decimal place — the precision we report tok/s at.
+function round1(v) {
+  return Math.round(v * 10) / 10;
+}
+
 // The OpenAI-style error envelope both gateways return.
 function errorBody(message, type) {
   return { error: { message, type, code: null } };
@@ -118,6 +129,8 @@ function resolveMaxTokens(v, ceiling) {
 
 module.exports = {
   estimateTokens,
+  int,
+  round1,
   errorBody,
   joinContent,
   lastUserText,
