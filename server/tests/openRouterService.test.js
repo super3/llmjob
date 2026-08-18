@@ -7,9 +7,11 @@
 const OpenRouterService = require('../src/services/openRouterService');
 const { deltaContent, deltaReasoning, usageMeta } = OpenRouterService;
 
+// Two entries, though we ship one: OPENROUTER_MODELS can widen the allow-list
+// without a deploy, so lookup has to hold at any length, not just at one.
 const MODELS = [
-  { id: 'qwen/qwen3.6-27b', label: 'Qwen3.6 27B' },
-  { id: 'qwen/qwen3.6-35b-a3b', label: 'Qwen3.6 35B A3B' },
+  { id: 'qwen/qwen3.8-27b', label: 'Qwen3.8 27B' },
+  { id: 'vendor/second-model', label: 'Second Model' },
 ];
 
 describe('OpenRouterService — configuration', () => {
@@ -32,14 +34,14 @@ describe('OpenRouterService — configuration', () => {
     expect(or.title).toBe('LLMJob');
   });
 
-  it('ships the Qwen models the Chat page offers, cheapest first', () => {
-    // The whole point of the hosted path: the same models, reachable both ways.
-    expect(OpenRouterService.DEFAULT_MODELS.map((m) => m.id))
-      .toEqual(['qwen/qwen3.6-27b', 'qwen/qwen3.6-35b-a3b', 'qwen/qwen3.8-27b']);
-    // models[0] is the web chat's default. 3.8 costs roughly three times the
-    // A3B's output, and the free budget is shared with the API gateway, so it
-    // must not drift to the front of this list without that being a decision.
-    expect(OpenRouterService.DEFAULT_MODELS[0].id).toBe('qwen/qwen3.6-27b');
+  it('ships exactly one hosted model, the one the Chat page offers', () => {
+    // The whole point of the hosted path: the same model, reachable both ways.
+    expect(OpenRouterService.DEFAULT_MODELS.map((m) => m.id)).toEqual(['qwen/qwen3.8-27b']);
+    // Length is the assertion that matters. Every hosted model bills against
+    // one shared free budget, so a second one added here doesn't add capacity —
+    // it halves how long the first one lasts. Adding one should be a decision,
+    // not a drive-by, and OPENROUTER_MODELS covers the case where it isn't.
+    expect(OpenRouterService.DEFAULT_MODELS).toHaveLength(1);
   });
 
   it('reads configuration from the environment', () => {
@@ -63,8 +65,8 @@ describe('OpenRouterService — allow-list and ceilings', () => {
   const or = new OpenRouterService({ apiKey: 'k', models: MODELS });
 
   it('resolves a model by id or by friendly label', () => {
-    expect(or.resolveModel('qwen/qwen3.6-35b-a3b')).toBe(MODELS[1]);
-    expect(or.resolveModel('Qwen3.6 27B')).toBe(MODELS[0]);
+    expect(or.resolveModel('vendor/second-model')).toBe(MODELS[1]);
+    expect(or.resolveModel('Qwen3.8 27B')).toBe(MODELS[0]);
   });
 
   it('refuses anything not on the allow-list, including no model at all', () => {
@@ -147,9 +149,9 @@ describe('OpenRouterService — stream and usage helpers', () => {
   it('reports no speed when nothing was generated, and names the requested model', () => {
     const meta = usageMeta({
       promptText: 'abcd', text: '', start: 0, firstTokenAt: 0,
-      model: null, requestedLabel: 'qwen/qwen3.6-27b', usage: null, finish: 'stop',
+      model: null, requestedLabel: 'qwen/qwen3.8-27b', usage: null, finish: 'stop',
     }, 500);
-    expect(meta.model).toBe('qwen/qwen3.6-27b');
+    expect(meta.model).toBe('qwen/qwen3.8-27b');
     expect(meta.tokensPerSecond).toBe(0);
     expect(meta.ttftMs).toBe(0);
   });
