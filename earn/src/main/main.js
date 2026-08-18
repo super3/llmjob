@@ -39,7 +39,7 @@ const { JobWorker } = require('./jobWorker');
 const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote, autoUpdateSupported } = require('../shared/platform');
 const { resolveServerUrl } = require('../shared/llama');
-const { buildBalanceUrl, parseBalance, buildMdlBalanceUrl, parseMdlBalance } = require('../shared/balance');
+const { buildBalanceUrl, parseBalance } = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
 const {
   bundledEnginePath, engineVersionFor, driverTooOld,
@@ -107,24 +107,24 @@ function openExternalSafe(url) {
 
 // Fetch a pool balance for a payout address. Best-effort and never rejects —
 // resolves the parsed { pending, paid, earned, usd } or null (unknown address,
-// offline, non-200, bad JSON). `opts.validate` guards the address shape,
-// `opts.buildUrl` / `opts.parse` select the endpoint and payload shape (the
-// merge-mined MDL record lives at a different route), and `opts.priceUsd`
-// (optional) adds a USD figure. Runs here in the main process so it isn't
-// subject to the renderer's CSP / cross-origin restrictions.
-async function fetchBalance(address, opts) {
-  const o = opts || {};
-  const isValid = o.validate || isValidAddress;
-  if (!isValid(address)) return null;
+// offline, non-200, bad JSON). `priceUsd` (optional) adds a USD figure. Runs
+// here in the main process so it isn't subject to the renderer's CSP /
+// cross-origin restrictions.
+//
+// This used to take buildUrl/parse/validate overrides so the merge-mined MDL
+// record could be read from its own route with its own payload shape. MDL is
+// gone, so the indirection is gone with it — one address kind, one route.
+async function fetchBalance(address, priceUsd) {
+  if (!isValidAddress(address)) return null;
   let json;
   try {
-    json = await getJson((o.buildUrl || buildBalanceUrl)(String(address).trim()));
+    json = await getJson(buildBalanceUrl(String(address).trim()));
   } catch (e) {
     return null; // buildUrl threw
   }
   if (json == null) return null;
   try {
-    return (o.parse || parseBalance)(json, o.priceUsd, o.currency);
+    return parseBalance(json, priceUsd);
   } catch (e) {
     return null; // parse threw
   }
@@ -1228,11 +1228,7 @@ ipcMain.handle('config:get', () => ({
 ipcMain.handle('miner:difficultyForCard', (_e, name) => difficultyForCard(name));
 ipcMain.handle('gpu:detect', () => detectGpu());
 ipcMain.handle('region:detect', () => detectRegion());
-ipcMain.handle('balance:get', (_e, address) => fetchBalance(address, { priceUsd: liveEcon.PRL_USD }));
-// The MDL record is keyed by the PRL payout address (the pool rejects mdl1…
-// addresses on the miner endpoint), so this takes the PRL address.
-ipcMain.handle('balance:getMdl', (_e, address) =>
-  fetchBalance(address, { buildUrl: buildMdlBalanceUrl, parse: parseMdlBalance }));
+ipcMain.handle('balance:get', (_e, address) => fetchBalance(address, liveEcon.PRL_USD));
 ipcMain.on('miner:start', (_e, settings) => applyPlan(settings || {}));
 ipcMain.on('miner:stop', () => { stopMining(); stopLlm(); });
 ipcMain.on('open-external', (_e, url) => { openExternalSafe(url); });

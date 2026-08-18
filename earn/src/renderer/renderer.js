@@ -26,6 +26,7 @@
     // chat
     chatRunning: $('chat-running'), chatStopped: $('chat-stopped'), chatStoppedModel: $('chat-stopped-model'),
     chatHead: $('chat-head'), chatModel: $('chat-model'), chatNew: $('chat-new'),
+    updateBar: $('update-bar'), updateBarText: $('update-bar-text'), updateBarBtn: $('update-bar-btn'),
     chatList: $('chat-list'), chatEmpty: $('chat-empty'), chatSuggestions: $('chat-suggestions'),
     chatMessages: $('chat-messages'), chatForm: $('chat-form'), chatInput: $('chat-input'), chatSend: $('chat-send'),
     // api
@@ -41,7 +42,6 @@
     // settings
     modeSeg: $('mode-seg'), modeHint: $('mode-hint'),
     setWorker: $('set-worker'), setRegion: $('set-region'), setDifficulty: $('set-difficulty'),
-    setMdl: $('set-mdl'), mdlNote: $('mdl-note'), mdlBalanceMeta: $('mdl-balance-meta'), mdlBalance: $('mdl-balance'),
     appVersion: $('app-version'), btnCheckUpdate: $('btn-check-update'), updateStatus: $('update-status'),
     logTerm: $('log-term'),
   };
@@ -50,7 +50,7 @@
     mining: false,       // master process running (miner and/or LLM per mode)
     view: 'mine',        // mine | chat | api | settings | logs
     returnTab: 'mine',   // where settings/logs return to
-    address: '', gpu: '', mode: 'auto',
+    address: '', gpu: '', mode: 'auto', mdlAddress: '',
     canMine: true,       // false on macOS — no alpha-miner build exists for it
     llm: { ready: false, endpoint: null, webUrl: null, tps: 0, model: null, error: null, note: null },
     chat: { messages: [], streaming: false, streamText: '', bubble: null },
@@ -59,20 +59,16 @@
 
   const BAL_REFRESH_MS = 60000; // re-poll the pool balance once a minute
   let balDebounce = null;
-  let mdlBalDebounce = null;
   let updateDismiss = null; // timer to auto-hide a transient update message
   let updateReady = false;  // an update is downloaded — the button installs + restarts
 
   const ADDR_RE = /^prl1p[0-9a-z]{20,80}$/i;
-  const MDL_RE = /^mdl1p[0-9a-z]{20,80}$/i;
   const isValid = (a) => ADDR_RE.test(String(a || '').trim());
-  const isValidMdl = (a) => MDL_RE.test(String(a || '').trim());
 
   const MODE_HINTS = {
     auto: 'Balances mining and the local LLM from free VRAM.',
     mining: 'Pearl mining only — the local LLM stays off.',
     llm: 'Local model only — no mining, no payout address needed.',
-    both: 'Mine and serve — the model takes ~5 GB VRAM, mining keeps the rest.',
   };
 
   // The modes that need a mining engine. On a platform without one (macOS —
@@ -81,7 +77,7 @@
   // there would arm a START that runs nothing at all. 'auto' stays, because it
   // degrades correctly on its own — main.js refuses the miner and the local LLM
   // still comes up — and it is the default a fresh install lands on.
-  const MINING_MODES = ['mining', 'both'];
+  const MINING_MODES = ['mining'];
   const NO_MINER_HINT = 'Runs the local LLM on this Mac. Mining needs an NVIDIA GPU on Windows or Linux.';
 
   // Prompt chips shown in the empty chat — the real model answers them.
@@ -91,11 +87,6 @@
     { title: 'Help me write an email', prompt: 'Help me write a short email asking my landlord to fix the heater.' },
   ];
 
-  const MDL_NOTE = {
-    empty: 'Earn <b>MDL</b> on the exact hashrate already mining Pearl — same shares, no extra power or hardware. Leave blank to mine Pearl only.',
-    on: '<b class="ok">✓ Merge-mining MDL</b> — your Pearl hashrate now also earns MDL, credited by the pool.',
-    bad: '<b class="warn">That doesn\'t look like an mdl1… address.</b> Double-check it, or clear the field to mine Pearl only.',
-  };
 
   // ── Navigation ─────────────────────────────────────────────────────────────
   function renderView() {
@@ -146,7 +137,11 @@
   // 'mining' or 'both' — written on another machine, or by a build from before
   // this one — must not select a button that is no longer on screen, leaving the
   // segment with nothing lit and START arming a run that does nothing.
+  // 'both' ("Mining+LLM") was retired: it resolved to exactly what 'auto' does.
+  // Mapping it keeps a rig that stored it on the same plan — an unrecognised
+  // mode would fall through to mining-only and silently drop the LLM.
   function usableMode(mode) {
+    if (mode === 'both') mode = 'auto';
     return !state.canMine && MINING_MODES.indexOf(mode) !== -1 ? 'auto' : mode;
   }
 
@@ -157,7 +152,7 @@
   }
 
   // START is allowed when we can mine (valid address) or the mode will run the
-  // LLM anyway (llm/both/auto co-run the model even without a payout address).
+  // LLM anyway (llm/auto co-run the model even without a payout address).
   function canStart() {
     return isValid(state.address) || state.mode !== 'mining';
   }
@@ -439,27 +434,6 @@
     el.balanceUsd.textContent = b.usd != null ? '≈ $' + b.usd.toFixed(2) : '';
   }
 
-  function renderMdlNote() {
-    const v = String(el.setMdl.value || '').trim();
-    const key = !v ? 'empty' : isValidMdl(v) ? 'on' : 'bad';
-    el.mdlNote.innerHTML = MDL_NOTE[key];
-  }
-
-  function renderMdlBalanceMeta() {
-    el.mdlBalanceMeta.hidden = !isValidMdl(String(el.setMdl.value || '').trim());
-  }
-
-  function resetMdlBalance() { el.mdlBalance.textContent = '0.000'; }
-
-  async function refreshMdlBalance() {
-    const mdl = String(el.setMdl.value || '').trim();
-    const addr = state.address.trim();
-    if (!isValidMdl(mdl) || !isValid(addr) || !api.getMdlBalance) return;
-    const b = await api.getMdlBalance(addr);
-    if (!b || mdl !== String(el.setMdl.value || '').trim() || addr !== state.address.trim()) return;
-    if (b.mdlAddress && b.mdlAddress.toLowerCase() !== mdl.toLowerCase()) return;
-    el.mdlBalance.textContent = fmt3(b.earned);
-  }
 
   // "NVIDIA GeForce RTX 4090 (86°C)". The engine reports a core temperature on
   // every status line, so it rides next to the GPU name while mining — a rig that
@@ -509,15 +483,20 @@
     el.logTerm.scrollTop = el.logTerm.scrollHeight;
   }
 
+  // mdlAddress is carried through untouched, never shown. Merge mining is
+  // retired from the UI, but an address someone already configured keeps
+  // earning — and settings are persisted FROM this object, so omitting the key
+  // would silently erase their address on the next Start and end the earnings
+  // we are deliberately preserving. There is no way to set one any more; this
+  // only round-trips what is already there.
   function currentSettings() {
-    const mdl = String(el.setMdl.value || '').trim();
     return {
       address: state.address.trim(),
-      mdlAddress: isValidMdl(mdl) ? mdl : '',
       worker: el.setWorker.value.trim() || 'rig01',
       region: el.setRegion.value || 'us2',
       difficulty: Number(el.setDifficulty.value) || 524288,
       mode: state.mode || 'mining',
+      mdlAddress: state.mdlAddress || '',
     };
   }
 
@@ -536,11 +515,11 @@
   }
 
   // START LLM (from the Chat/API tabs): make sure the compute mode actually runs
-  // the model, then start. Mining-only becomes Mining+LLM (or LLM-only with no
-  // payout address); llm/both/auto start as-is.
+  // the model, then start. Mining-only becomes Auto (or LLM-only with no
+  // payout address); llm/auto start as-is.
   function startLlmIntent() {
     if (state.llm.ready) return;
-    if (state.mode === 'mining') setMode(isValid(state.address) ? 'both' : 'llm');
+    if (state.mode === 'mining') setMode(isValid(state.address) ? 'auto' : 'llm');
     start();
   }
 
@@ -579,24 +558,12 @@
       el.btnStart.disabled = !canStart();
       renderBalanceMeta();
       if (balDebounce) clearTimeout(balDebounce);
-      if (mdlBalDebounce) clearTimeout(mdlBalDebounce);
-      if (isValid(state.address)) {
-        balDebounce = setTimeout(refreshBalance, 600);
-        mdlBalDebounce = setTimeout(refreshMdlBalance, 600);
-      } else {
-        resetBalance();
-        resetMdlBalance();
-      }
-    });
-    el.setMdl.addEventListener('input', () => {
-      renderMdlNote();
-      renderMdlBalanceMeta();
-      if (mdlBalDebounce) clearTimeout(mdlBalDebounce);
-      if (isValidMdl(String(el.setMdl.value || '').trim())) mdlBalDebounce = setTimeout(refreshMdlBalance, 600);
-      else resetMdlBalance();
+      if (isValid(state.address)) balDebounce = setTimeout(refreshBalance, 600);
+      else resetBalance();
     });
     el.btnStart.addEventListener('click', start);
     el.btnStop.addEventListener('click', stop);
+    el.updateBarBtn.addEventListener('click', () => { if (api.installUpdate) api.installUpdate(); });
     el.btnCheckUpdate.addEventListener('click', () => {
       if (updateReady) { if (api.installUpdate) api.installUpdate(); return; }
       if (!api.checkForUpdate) return;
@@ -690,16 +657,21 @@
       const s = await api.getSettings();
       state.address = s.address || '';
       el.addrInput.value = state.address;
+      state.mdlAddress = s.mdlAddress || '';
       el.setWorker.value = s.worker || 'rig01';
       el.setRegion.value = s.region || 'us2';
       el.setDifficulty.value = s.difficulty || 524288;
-      el.setMdl.value = s.mdlAddress || '';
-      state.mode = usableMode(s.mode || 'mining');
+      // 'auto' to match shared/llmMode's DEFAULT_MODE, which is what main sends
+      // for a fresh install. This fallback only fires on a FALSY stored mode —
+      // a hand-edited or half-written settings.json holding null or "" — and it
+      // used to land on 'mining', which switches the LLM off with no error
+      // anywhere. That is indistinguishable from "the LLM is broken", so it must
+      // not be the quiet default. A missing key already falls through to main's
+      // default; this covers the value being present but empty.
+      state.mode = usableMode(s.mode || 'auto');
       resumeMining = !!(s.resumeMining && isValid(state.address));
     }
     renderMode();
-    renderMdlNote();
-    renderMdlBalanceMeta();
     if (api.onLlm) api.onLlm(renderLlm);
     if (api.getLlmStatus) api.getLlmStatus().then(renderLlm);
     if (api.onChatDelta) api.onChatDelta(onChatDelta);
@@ -750,11 +722,17 @@
         el.btnCheckUpdate.disabled = false;
         el.btnCheckUpdate.textContent = 'Update & restart';
         el.btnCheckUpdate.classList.add('ready');
+        // Announce it on the Mine view too: Settings is the one screen nobody
+        // opens, so a downloaded update could sit there unnoticed.
+        el.updateBarText.textContent = 'Update downloaded'
+          + (s.version ? ' (v' + s.version + ')' : '') + ' — restart to apply.';
+        el.updateBar.hidden = false;
       } else if (s.phase !== 'checking') {
         updateReady = false;
         el.btnCheckUpdate.disabled = false;
         el.btnCheckUpdate.textContent = 'Check for updates';
         el.btnCheckUpdate.classList.remove('ready');
+        el.updateBar.hidden = true;
       }
       if (updateDismiss) { clearTimeout(updateDismiss); updateDismiss = null; }
       if (s.transient) updateDismiss = setTimeout(() => { el.updateStatus.hidden = true; }, 5000);
@@ -765,8 +743,6 @@
     renderBalanceMeta();
     refreshBalance();
     setInterval(refreshBalance, BAL_REFRESH_MS);
-    refreshMdlBalance();
-    setInterval(refreshMdlBalance, BAL_REFRESH_MS);
     if (resumeMining) start();
   }
 

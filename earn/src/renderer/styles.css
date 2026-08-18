@@ -201,7 +201,7 @@ input.field-box { user-select: text; }
 .link-inline:hover { text-decoration: underline; }
 
 /* compute-mode segmented control (settings) */
-.seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; background: var(--field); border: 1px solid var(--line); border-radius: 10px; padding: 5px; }
+.seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; background: var(--field); border: 1px solid var(--line); border-radius: 10px; padding: 5px; }
 .seg-btn { border: none; border-radius: 7px; padding: 7px 0; font-family: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; background: transparent; color: var(--muted); transition: background .14s, color .14s; }
 .seg-btn:hover { color: var(--ink-3); }
 .seg-btn.active { background: #fff; color: var(--accent); box-shadow: 0 1px 4px rgba(20,20,15,.10); }
@@ -211,7 +211,10 @@ input.field-box { user-select: text; }
 .view-head .lbl { font-size: 14px; font-weight: 700; color: var(--ink-2); }
 .back { font-size: 12.5px; font-weight: 600; color: var(--accent); cursor: pointer; }
 .settings-section { font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: #a7abb2; margin: 14px 0 8px; }
-.settings-section:first-of-type { margin-top: 0; }
+.settings-section:first-of-type { margin: 0 0 7px; }
+/* Connection sits below the mode hint, and the mock gives it more air than the
+   section-to-section default. */
+.settings-note + .settings-section { margin-top: 20px; }
 /* The Settings view-head supplies its own spacing; keep the first section tight
    under it (the view-head div steals :first-of-type from .settings-section). */
 #view-settings .view-head + .settings-section { margin-top: 0; }
@@ -225,8 +228,10 @@ input.field-box { user-select: text; }
 .settings-row .rk { font-size: 13.5px; color: var(--ink-3); font-weight: 500; }
 /* Connection: 2-column grid with small labels above each input (per the mock)
    — Pool region spans the full row; Worker name + Static difficulty share it. */
-.conn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
-.conn-field.conn-full { grid-column: 1 / -1; }
+/* One column (v2 mock): Pool region, Worker name and Static difficulty each
+   take a full-width row. They used to sit worker|difficulty side by side, which
+   squeezed a 7-digit difficulty into half the width. */
+.conn-grid { display: grid; grid-template-columns: 1fr; gap: 10px 12px; }
 .conn-field .fk { font-size: 12px; color: var(--muted-2, #8a8f98); font-weight: 500; margin-bottom: 5px; }
 .conn-grid .rv-input { width: 100%; box-sizing: border-box; padding: 8px 11px; }
 .rv-input { font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 13px; color: var(--ink-3); background: var(--field); border: 1px solid var(--line); border-radius: 7px; padding: 6px 11px; outline: none; user-select: text; }
@@ -247,28 +252,38 @@ select.rv-input { cursor: pointer; }
 .settings-note .warn { color: #dc2626; font-weight: 600; }
 
 /* merge mining */
-.badge-mdl { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 5px; background: #f3e8ff; color: #7c3aed; font-size: 9.5px; font-weight: 700; letter-spacing: .04em; vertical-align: middle; }
-.mdl-input { margin-bottom: 0; padding: 10px 14px; }
-.mdl-head { display: flex; align-items: baseline; justify-content: space-between; }
-.mdl-head .meta { font-size: 13px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--muted); }
-.mdl-head .meta b { color: var(--ink); font-weight: 600; }
-.mdl-head .meta .prl { margin-left: 3px; }
 
 /* The logs view is a flex column so the terminal fills the space instead of
-   leaving a gap above the footer; lines wrap so there's no horizontal scroll. */
+   leaving a gap above the footer.
+   Lines do NOT wrap (v2 mock): a wrapped line reflows the miner's own stats
+   table — box-drawing rules and aligned columns — into nonsense, and a wrapped
+   engine error is harder to read than one you scroll to. Sideways scrolling is
+   the deliberate trade. The mock's fixed 220px height is an artifact of its
+   620x680 window frame; ours flexes so the terminal grows with a resized
+   window. */
 #view-logs { display: flex; flex-direction: column; }
-.log-term { flex: 1 1 0; min-height: 0; background: #0d1411; border: 1px solid #1b2922; border-radius: 11px; padding: 14px 16px; font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 12px; line-height: 1.9; overflow-x: hidden; overflow-y: auto; overflow-wrap: anywhere; user-select: text; }
-.log-term .ln .t { color: #577567; }
+.log-term { flex: 1 1 0; min-height: 0; background: #0d1411; border: 1px solid #1b2922; border-radius: 11px; padding: 14px 16px; font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 12px; line-height: 2.1; overflow-x: auto; overflow-y: auto; white-space: nowrap; user-select: text; }
+.log-term .ln .t { color: #5c6f63; }
 .log-term .ln .m { color: #9fe6bb; }
 .log-term .ln.info .m { color: #cfe9d8; }
 .log-term .ln.error .m { color: #f3a5a5; }
 /* Slim, on-theme scrollbar to match the dark terminal instead of the chunky OS one. */
-.log-term { scrollbar-width: thin; scrollbar-color: #2b3f35 transparent; }
-.log-term::-webkit-scrollbar { width: 10px; }
+.log-term { scrollbar-width: thin; scrollbar-color: #2a3b32 transparent; }
+.log-term::-webkit-scrollbar { width: 10px; height: 10px; }
 .log-term::-webkit-scrollbar-track { background: transparent; }
-.log-term::-webkit-scrollbar-thumb { background: #2b3f35; border: 2px solid #0d1411; border-radius: 8px; }
+.log-term::-webkit-scrollbar-thumb { background: #2a3b32; border: 2px solid #0d1411; border-radius: 8px; }
 .log-term::-webkit-scrollbar-thumb:hover { background: #3c5548; }
 
 /* footer */
 .app-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 28px; padding-top: 18px; border-top: 1px solid #f0ede5; }
 .foot-link { font-size: 12.5px; font-weight: 600; letter-spacing: .04em; color: var(--accent); cursor: pointer; }
+
+/* Update banner on the Mine view (v2 mock). A downloaded update used to be
+   announced only inside Settings, which is the one screen a user has no reason
+   to open — so a rig could sit on a stale build indefinitely with the fix
+   already on disk. Same state as the Settings button, surfaced where people
+   actually look. */
+.update-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 16px; padding: 10px 14px; background: #eff4ff; border: 1px solid #dbe6fb; border-radius: 9px; }
+.update-bar span { font-size: 12.5px; font-weight: 600; color: var(--accent); }
+.update-bar-btn { flex: none; border: none; cursor: pointer; background: var(--accent); color: #fff; font-family: inherit; font-weight: 700; font-size: 12px; letter-spacing: .03em; padding: 7px 12px; border-radius: 7px; transition: background .15s; }
+.update-bar-btn:hover { background: #1d4ed8; }

@@ -6,7 +6,11 @@
 // plan (start/stop miner + llama-server). Auto's demand-driven smarts land in
 // Phase 4; for now Auto co-runs when the LLM is available.
 
-const MODES = ['mining', 'both', 'llm', 'auto'];
+// Three modes (v2 mocks). There used to be a fourth, 'both' / "Mining+LLM",
+// which resolved to EXACTLY what 'auto' resolves to — the same plan under a
+// second name, offered as if it were a different choice. See normalizeMode for
+// what happens to a rig that still has it stored.
+const MODES = ['mining', 'llm', 'auto'];
 // Shared fallback for BOTH clients: co-run mining and the LLM. Serving
 // inference is the point of the network, and a mining-only default meant every
 // headless rig — HiveOS flight sheets especially, which pass no --mode — mined
@@ -15,8 +19,17 @@ const MODES = ['mining', 'both', 'llm', 'auto'];
 // failed binary/model setup never takes the miner down.
 const DEFAULT_MODE = 'auto';
 
+// Legacy modes → the mode that means the same thing today. 'both' behaved
+// identically to 'auto', so this migration cannot change what a rig does — but
+// leaving it out would: an unrecognised mode falls through resolvePlan's default
+// to mining-only, silently switching the LLM off for everyone who had picked
+// Mining+LLM, with nothing in the log to explain it.
+function normalizeMode(mode) {
+  return mode === 'both' ? 'auto' : mode;
+}
+
 function isValidMode(mode) {
-  return MODES.indexOf(mode) !== -1;
+  return MODES.indexOf(normalizeMode(mode)) !== -1;
 }
 
 // ctx: { canMine: bool (valid payout address), canLlm: bool (LLM enabled/ready) }
@@ -24,10 +37,9 @@ function isValidMode(mode) {
 function resolvePlan(mode, ctx = {}) {
   const canMine = !!ctx.canMine;
   const canLlm = !!ctx.canLlm;
-  switch (mode) {
+  switch (normalizeMode(mode)) {
     case 'llm':
       return { miner: false, llm: canLlm };
-    case 'both':
     case 'auto': // Phase 2: co-run whenever the LLM is available (Phase 4 makes this demand-driven)
       return { miner: canMine, llm: canLlm };
     case 'mining':
@@ -36,4 +48,4 @@ function resolvePlan(mode, ctx = {}) {
   }
 }
 
-module.exports = { MODES, DEFAULT_MODE, isValidMode, resolvePlan };
+module.exports = { MODES, DEFAULT_MODE, isValidMode, normalizeMode, resolvePlan };

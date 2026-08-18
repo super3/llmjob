@@ -547,7 +547,7 @@ describe('simple ipc handlers', () => {
     const s = await ctx.invoke('settings:get');
     // worker defaults to this machine's hostname, not the shared 'rig01' constant,
     // so two rigs on one payout address don't collide into one board identity.
-    expect(s).toMatchObject({ region: 'us2', worker: defaultWorker(), mode: 'auto', address: '', mdlAddress: '' });
+    expect(s).toMatchObject({ region: 'us2', worker: defaultWorker(), mode: 'auto', address: '' });
     expect(s.worker).toMatch(/^[a-z0-9-]{1,32}$/);
 
     ctx.fs.existsSync.mockImplementation((p) => p === SETTINGS_PATH);
@@ -706,16 +706,6 @@ describe('balance handlers', () => {
     // a payload whose property access throws exercises the parse catch
     ctx.io.getJson.mockResolvedValueOnce({ get balance_prl() { throw new Error('boom'); } });
     expect(await ctx.invoke('balance:get', VALID_ADDR)).toBeNull();
-  });
-
-  it('balance:getMdl uses the merge-mining route and parser', async () => {
-    const ctx = loadMain();
-    ctx.io.getJson.mockResolvedValueOnce({
-      has_mdl: true, mdl_address: 'mdl1pxyz', summary: { pending_mdl: 2, total_paid_mdl: 3 },
-    });
-    const b = await ctx.invoke('balance:getMdl', VALID_ADDR);
-    expect(b).toEqual({ pending: 2, paid: 3, earned: 5, usd: null, mdlAddress: 'mdl1pxyz' });
-    expect(ctx.io.getJson).toHaveBeenCalledWith(expect.stringContaining('/mdl'));
   });
 
   it('live economics feed the balance USD conversion', async () => {

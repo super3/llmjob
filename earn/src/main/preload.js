@@ -10,7 +10,6 @@ contextBridge.exposeInMainWorld('llmjob', {
   detectGpu: () => ipcRenderer.invoke('gpu:detect'),
   detectRegion: () => ipcRenderer.invoke('region:detect'),
   getBalance: (address) => ipcRenderer.invoke('balance:get', address),
-  getMdlBalance: (address) => ipcRenderer.invoke('balance:getMdl', address),
   getLlmStatus: () => ipcRenderer.invoke('llm:status'),
   onLlm: (cb) => ipcRenderer.on('llm:status', (_e, d) => cb(d)),
   sendChat: (messages) => ipcRenderer.send('llm:chat', messages),

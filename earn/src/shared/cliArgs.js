@@ -12,6 +12,9 @@ const { isValidAddress, isValidMdlAddress, normalizeAddress } = require('./addre
 const { MODES, DEFAULT_MODE, isValidMode } = require('./llmMode');
 
 // Short flags → their canonical long form.
+// --mdl / -m are deliberately absent from USAGE: merge mining is retired from
+// the UI and undocumented, but still parsed so an existing HiveOS flight sheet
+// carrying it keeps mining instead of dying on 'unknown option'.
 const ALIASES = {
   '-a': '--address',
   '-m': '--mdl',
@@ -47,7 +50,6 @@ const USAGE = [
   '  -a, --address <prl1p…>   Your Pearl payout address',
   '',
   'Options:',
-  '  -m, --mdl <mdl1p…>       Also merge-mine ModelOS (MDL) on the same shares',
   '      --mode <mode>        Compute mode: ' + MODES.join('/') + ' (default: ' + DEFAULT_MODE + ').',
   '                           "both"/"auto" co-run a local LLM alongside mining;',
   '                           "llm" runs the LLM only (no payout address needed).',

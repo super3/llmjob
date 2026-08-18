@@ -144,13 +144,23 @@
   .mr-cards .mr-hash { color: #7d9fe0; }
   /* Below ~1040px the GPU column can no longer fit a full "NVIDIA GeForce RTX
      4070 SUPER" — end-ellipsis would hide the model behind the vendor prefix,
-     so swap to the model-only name (and a shorter address). The shorter text
-     frees real width, so also drop the column sizing reserved for full names —
-     otherwise the table scrolls against fixed slack instead of content. */
+     so swap to the model-only name. The shorter text frees real width, so also
+     drop the column sizing reserved for full names — otherwise the table scrolls
+     against fixed slack instead of content.
+
+     The address track is sized FROM the address, not guessed: shortAddr renders
+     6…6 = 13 monospace chars at 13px (0.6em advance ≈ 101.4px), plus the 7px
+     status dot and the 10px flex gap = 118.4px minimum. It sat at 118px, which
+     is why the board quietly end-ellipsed an already-shortened address into
+     "prl1px…ncrx…" on phones — losing the tail characters that make a row
+     identifiable, and only there, which is why it survived a month unnoticed.
+     130px leaves ~1.5 characters of slack so a monospace fallback with wider
+     metrics cannot re-break it. If shortAddr ever gets longer, this grows with
+     it. */
   @media (max-width: 1040px) {
     .mr-gpu .gpu-f { display: none; }
     .mr-gpu .gpu-s { display: inline; }
-    .nt-cols, .miner-row { grid-template-columns: 32px 118px minmax(178px, 1fr) 120px 78px 72px 78px; gap: 12px; min-width: 748px; }
+    .nt-cols, .miner-row { grid-template-columns: 32px 130px minmax(178px, 1fr) 120px 78px 72px 78px; gap: 12px; min-width: 760px; }
   }
   .mr-hash { font-family: "IBM Plex Mono", monospace; font-size: 13px; font-weight: 600; color: var(--accent); }
   .mr-last { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--muted-3); }
