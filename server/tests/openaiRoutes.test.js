@@ -22,7 +22,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // The hosted (OpenRouter-proxied) models a public key may name. Fixed here so the
 // suite doesn't depend on the deployment's OPENROUTER_MODELS.
-const HOSTED = [{ id: 'qwen/qwen3.6-27b', label: 'Qwen3.6 27B' }];
+const HOSTED = [{ id: 'qwen/qwen3.8-27b', label: 'Qwen3.8 27B' }];
 const enc = new TextEncoder();
 
 // An SSE body: an async-iterable of encoded `data:` lines, like fetch().body.
@@ -459,19 +459,19 @@ describe('OpenAI gateway — hosted models', () => {
   const JSON_REPLY = {
     choices: [{ message: { role: 'assistant', content: 'Hi there' }, finish_reason: 'stop' }],
     usage: { prompt_tokens: 3, completion_tokens: 5, total_tokens: 8 },
-    model: 'qwen/qwen3.6-27b',
+    model: 'qwen/qwen3.8-27b',
   };
 
   it('serves a hosted model to a public key as an OpenAI chat.completion', async () => {
     const calls = [];
     const app = makeHostedApp(db, { fetchFn: jsonFetch(JSON_REPLY, calls) });
     const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
-      .send({ model: 'qwen/qwen3.6-27b', messages: [{ role: 'user', content: 'Say hi' }], temperature: 0.4 });
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'Say hi' }], temperature: 0.4 });
 
     expect(res.status).toBe(200);
     expect(res.body.object).toBe('chat.completion');
     expect(res.body.id).toMatch(/^chatcmpl-/);
-    expect(res.body.model).toBe('qwen/qwen3.6-27b');
+    expect(res.body.model).toBe('qwen/qwen3.8-27b');
     expect(res.body.choices[0]).toMatchObject({
       index: 0, message: { role: 'assistant', content: 'Hi there' }, finish_reason: 'stop',
     });
@@ -483,7 +483,7 @@ describe('OpenAI gateway — hosted models', () => {
     expect(calls[0].url).toBe('https://or.test/v1/chat/completions');
     expect(calls[0].init.headers.Authorization).toBe('Bearer or-test-key');
     expect(calls[0].body).toMatchObject({
-      model: 'qwen/qwen3.6-27b', stream: false, usage: { include: true }, max_tokens: 2048, temperature: 0.4,
+      model: 'qwen/qwen3.8-27b', stream: false, usage: { include: true }, max_tokens: 2048, temperature: 0.4,
     });
   });
 
@@ -491,9 +491,9 @@ describe('OpenAI gateway — hosted models', () => {
     const calls = [];
     const app = makeHostedApp(db, { fetchFn: jsonFetch(JSON_REPLY, calls) });
     const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
-      .send({ model: 'Qwen3.6 27B', messages: [{ role: 'user', content: 'hi' }] });
+      .send({ model: 'Qwen3.8 27B', messages: [{ role: 'user', content: 'hi' }] });
     expect(res.status).toBe(200);
-    expect(calls[0].body.model).toBe('qwen/qwen3.6-27b'); // the id, not the label
+    expect(calls[0].body.model).toBe('qwen/qwen3.8-27b'); // the id, not the label
     expect(calls[0].body).not.toHaveProperty('temperature'); // none sent → none forwarded
   });
 
@@ -502,11 +502,11 @@ describe('OpenAI gateway — hosted models', () => {
       fetchFn: jsonFetch({
         choices: [{ message: { role: 'assistant', content: '', reasoning: 'weighing it up' }, finish_reason: 'length' }],
         usage: { prompt_tokens: 2, completion_tokens: 40, total_tokens: 42 },
-        model: 'qwen/qwen3.6-27b',
+        model: 'qwen/qwen3.8-27b',
       }),
     });
     const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
-      .send({ model: 'qwen/qwen3.6-27b', messages: [{ role: 'user', content: 'hi' }], max_tokens: 40 });
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }], max_tokens: 40 });
     expect(res.body.choices[0].message.content).toBe('');
     expect(res.body.choices[0].message.reasoning_content).toBe('weighing it up');
     expect(res.body.choices[0].finish_reason).toBe('length');
@@ -516,16 +516,16 @@ describe('OpenAI gateway — hosted models', () => {
     const calls = [];
     const app = makeHostedApp(db, { fetchFn: jsonFetch(JSON_REPLY, calls), maxTokens: 256 });
     await request(app).post('/v1/chat/completions').set(...auth(publicKey))
-      .send({ model: 'qwen/qwen3.6-27b', messages: [{ role: 'user', content: 'hi' }], max_tokens: 999999 });
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }], max_tokens: 999999 });
     expect(calls[0].body.max_tokens).toBe(256);
   });
 
   it('falls back to the requested id when the provider names no model', async () => {
     const app = makeHostedApp(db, { fetchFn: jsonFetch({}) });
     const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
-      .send({ model: 'qwen/qwen3.6-27b', messages: [{ role: 'user', content: 'hi' }] });
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }] });
     expect(res.status).toBe(200);
-    expect(res.body.model).toBe('qwen/qwen3.6-27b');
+    expect(res.body.model).toBe('qwen/qwen3.8-27b');
     expect(res.body.choices[0].message.content).toBe('');
     expect(res.body.choices[0].message).not.toHaveProperty('reasoning_content');
     expect(res.body.choices[0].finish_reason).toBe('stop');
@@ -538,7 +538,7 @@ describe('OpenAI gateway — hosted models', () => {
       fetchFn: streamFetch([
         { choices: [{ delta: { role: 'assistant' } }] },
         { choices: [{ delta: { content: 'Hel' } }] },
-        { choices: [{ delta: { reasoning: 'hmm' } }], model: 'qwen/qwen3.6-27b' },
+        { choices: [{ delta: { reasoning: 'hmm' } }], model: 'qwen/qwen3.8-27b' },
         { choices: [{ delta: { content: 'lo' } }] },
         { choices: [{ delta: {}, finish_reason: 'stop' }] },
         { usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 } }, // usage-only chunk
@@ -546,7 +546,7 @@ describe('OpenAI gateway — hosted models', () => {
       ], calls),
     });
     const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
-      .send({ model: 'qwen/qwen3.6-27b', messages: [{ role: 'user', content: 'hi' }], stream: true });
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }], stream: true });
 
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toMatch(/text\/event-stream/);
@@ -555,7 +555,7 @@ describe('OpenAI gateway — hosted models', () => {
     expect(res.text).toContain('"delta":{"reasoning_content":"hmm"}');
     expect(res.text).toContain('"finish_reason":"stop"');
     expect(res.text).toContain('"object":"chat.completion.chunk"');
-    expect(res.text).toContain('"model":"qwen/qwen3.6-27b"');
+    expect(res.text).toContain('"model":"qwen/qwen3.8-27b"');
     expect(res.text.trim().endsWith('data: [DONE]')).toBe(true);
     expect(calls[0].body).toMatchObject({ stream: true, stream_options: { include_usage: true } });
 
@@ -567,7 +567,7 @@ describe('OpenAI gateway — hosted models', () => {
   it('records a hosted generation against the key, its logs, and the OpenRouter budget', async () => {
     const app = makeHostedApp(db, { fetchFn: jsonFetch(JSON_REPLY) });
     await request(app).post('/v1/chat/completions').set(...auth(publicKey))
-      .send({ model: 'qwen/qwen3.6-27b', messages: [{ role: 'user', content: 'hi' }] });
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }] });
     await sleep(20);
 
     // It is OpenRouter spend, so it counts against the shared free cap…
@@ -581,7 +581,7 @@ describe('OpenAI gateway — hosted models', () => {
     // The dashboard shows it like any other request, attributed to openrouter.
     const logs = await new LogService(db).getLogs(USER);
     expect(logs[0]).toMatchObject({
-      model: 'qwen/qwen3.6-27b', node: 'openrouter', app: 'api', in: 3, out: 5, key: 'public-key',
+      model: 'qwen/qwen3.8-27b', node: 'openrouter', app: 'api', in: 3, out: 5, key: 'public-key',
     });
   });
 
@@ -590,7 +590,7 @@ describe('OpenAI gateway — hosted models', () => {
     // A hosted model would break that quietly, so say so and name the fix.
     const app = makeHostedApp(db, { fetchFn: jsonFetch(JSON_REPLY) });
     const res = await request(app).post('/v1/chat/completions').set(...auth(privateKey))
-      .send({ model: 'qwen/qwen3.6-27b', messages: [{ role: 'user', content: 'hi' }] });
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }] });
     expect(res.status).toBe(403);
     expect(res.body.error.type).toBe('permission_error');
     expect(res.body.error.message).toMatch(/private/);
@@ -601,7 +601,7 @@ describe('OpenAI gateway — hosted models', () => {
     const app = makeHostedApp(db, { fetchFn: jsonFetch(JSON_REPLY) });
     const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
       .set('X-LLMJob-Node', 'node-7')
-      .send({ model: 'qwen/qwen3.6-27b', messages: [{ role: 'user', content: 'hi' }] });
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }] });
     expect(res.status).toBe(400);
     expect(res.body.error.type).toBe('invalid_request_error');
     expect(res.body.error.message).toContain('node-7');
@@ -610,7 +610,7 @@ describe('OpenAI gateway — hosted models', () => {
   it('returns 503 when no OpenRouter key is configured', async () => {
     const app = makeHostedApp(db, { apiKey: '', fetchFn: jsonFetch(JSON_REPLY) });
     const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
-      .send({ model: 'qwen/qwen3.6-27b', messages: [{ role: 'user', content: 'hi' }] });
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }] });
     expect(res.status).toBe(503);
     expect(res.body.error.type).toBe('not_configured');
   });
@@ -620,7 +620,7 @@ describe('OpenAI gateway — hosted models', () => {
     await new ChatUsageService(db).recordUsage({ model: 'm', inTokens: 60, outTokens: 60 });
     const app = makeHostedApp(db, { fetchFn: jsonFetch(JSON_REPLY), freeBudget: 100 });
     const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
-      .send({ model: 'qwen/qwen3.6-27b', messages: [{ role: 'user', content: 'hi' }] });
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }] });
     expect(res.status).toBe(402);
     expect(res.body.error.type).toBe('quota_exhausted');
   });
@@ -629,7 +629,7 @@ describe('OpenAI gateway — hosted models', () => {
     await new ChatUsageService(db).recordUsage({ model: 'm', inTokens: 60, outTokens: 60 });
     const app = makeHostedApp(db, { fetchFn: jsonFetch(JSON_REPLY), freeBudget: 0 });
     const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
-      .send({ model: 'qwen/qwen3.6-27b', messages: [{ role: 'user', content: 'hi' }] });
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }] });
     expect(res.status).toBe(200);
   });
 
@@ -651,7 +651,7 @@ describe('OpenAI gateway — hosted models', () => {
   it('returns 502 when the hosted upstream errors, and logs nothing', async () => {
     const app = makeHostedApp(db, { fetchFn: notOkFetch(429, 'Rate limit exceeded') });
     const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
-      .send({ model: 'qwen/qwen3.6-27b', messages: [{ role: 'user', content: 'hi' }] });
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }] });
     expect(res.status).toBe(502);
     expect(res.body.error.type).toBe('upstream_error');
     expect(res.body.error.message).toContain('Rate limit exceeded');
@@ -662,7 +662,7 @@ describe('OpenAI gateway — hosted models', () => {
   it('returns 502 when the hosted upstream request throws', async () => {
     const app = makeHostedApp(db, { fetchFn: throwFetch() });
     const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
-      .send({ model: 'qwen/qwen3.6-27b', messages: [{ role: 'user', content: 'hi' }] });
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }] });
     expect(res.status).toBe(502);
     expect(res.body.error.type).toBe('upstream_error');
   });
@@ -670,7 +670,7 @@ describe('OpenAI gateway — hosted models', () => {
   it('writes an upstream_error event then [DONE] when a streamed hosted request fails', async () => {
     const app = makeHostedApp(db, { fetchFn: notOkFetch(402, 'Insufficient credits') });
     const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
-      .send({ model: 'qwen/qwen3.6-27b', messages: [{ role: 'user', content: 'hi' }], stream: true });
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }], stream: true });
     expect(res.status).toBe(200);
     expect(res.text).toContain('Insufficient credits');
     expect(res.text).toContain('"type":"upstream_error"');
@@ -680,7 +680,7 @@ describe('OpenAI gateway — hosted models', () => {
   it('writes an upstream_error event then [DONE] when a streamed hosted request throws', async () => {
     const app = makeHostedApp(db, { fetchFn: throwFetch() });
     const res = await request(app).post('/v1/chat/completions').set(...auth(publicKey))
-      .send({ model: 'qwen/qwen3.6-27b', messages: [{ role: 'user', content: 'hi' }], stream: true });
+      .send({ model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }], stream: true });
     expect(res.text).toContain('Upstream request failed');
     expect(res.text.trim().endsWith('data: [DONE]')).toBe(true);
   });
@@ -691,7 +691,7 @@ describe('OpenAI gateway — hosted models', () => {
       const res = await request(app).get('/v1/models').set(...auth(publicKey));
       expect(res.status).toBe(200);
       expect(res.body.object).toBe('list');
-      expect(res.body.data.map((m) => m.id)).toEqual(['qwen/qwen3.6-27b', DEFAULT_MODEL]);
+      expect(res.body.data.map((m) => m.id)).toEqual(['qwen/qwen3.8-27b', DEFAULT_MODEL]);
       expect(res.body.data[0]).toMatchObject({ object: 'model', owned_by: 'llmjob-hosted' });
       expect(res.body.data[1]).toMatchObject({ object: 'model', owned_by: 'llmjob-network' });
       expect(typeof res.body.data[0].created).toBe('number');
@@ -773,7 +773,7 @@ function hookedBody(events, onYield) {
   })();
 }
 const hostedReq = (over = {}) => fakeReq(Object.assign(
-  { model: 'qwen/qwen3.6-27b', messages: [{ role: 'user', content: 'hi' }] }, over));
+  { model: 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'hi' }] }, over));
 
 describe('OpenAI gateway — controller branches', () => {
   it('_setServedByHeader no-ops without setHeader, and skips an absent node', () => {

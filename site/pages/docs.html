@@ -206,7 +206,7 @@ client = OpenAI(
 )
 
 resp = client.chat.completions.create(
-    model="qwen/qwen3.6-27b",
+    model="qwen/qwen3.8-27b",
     messages=[
         {"role": "user", "content": "Explain PPLNS in two sentences."}
     ],
@@ -227,7 +227,7 @@ const client = new OpenAI({
 });
 
 const resp = await client.chat.completions.create({
-  model: "qwen/qwen3.6-27b",
+  model: "qwen/qwen3.8-27b",
   messages: [
     { role: "user", content: "Explain PPLNS in two sentences." },
   ],
@@ -244,7 +244,7 @@ console.log(resp.choices[0].message.content);</code></pre>
   "id": "chatcmpl-8f1c…",
   "object": "chat.completion",
   "created": 1775001600,
-  "model": "qwen/qwen3.6-27b",
+  "model": "qwen/qwen3.8-27b",
   "choices": [
     {
       "index": 0,
@@ -293,16 +293,6 @@ console.log(resp.choices[0].message.content);</code></pre>
           </thead>
           <tbody>
             <tr>
-              <td><span class="m">qwen/qwen3.6-27b</span></td>
-              <td>LLMJob's hosted backend</td>
-              <td><span class="pill pub">public keys</span></td>
-            </tr>
-            <tr>
-              <td><span class="m">qwen/qwen3.6-35b-a3b</span></td>
-              <td>LLMJob's hosted backend</td>
-              <td><span class="pill pub">public keys</span></td>
-            </tr>
-            <tr>
               <td><span class="m">qwen/qwen3.8-27b</span></td>
               <td>LLMJob's hosted backend</td>
               <td><span class="pill pub">public keys</span></td>
@@ -316,9 +306,14 @@ console.log(resp.choices[0].message.content);</code></pre>
         </table>
       </div>
 
-      <p>The two Qwen models are the ones the free <a href="chat.html">Chat</a> page serves. They are
-        available through the API so you can build against a working endpoint today, before your own
-        nodes are up. They draw on a shared free allowance — see <a href="#limits">Limits</a>.</p>
+      <p>The Qwen model is the one the free <a href="chat.html">Chat</a> page serves. It is available
+        through the API so you can build against a working endpoint today, before your own nodes are
+        up. It draws on a shared free allowance — see <a href="#limits">Limits</a>.</p>
+
+      <p>The split is a hardware one. Gemma-4-E4B is small enough to load on the range of consumer
+        GPUs that actually run LLMJob Earn, which is what makes it the network model. A 27B model is
+        not, so Qwen is hosted rather than mined — a node serving it would have nothing left to earn
+        with.</p>
 
       <p><b>Anything else falls through to the node network.</b> Omit <code class="ic">model</code>
         entirely, or send <code class="ic">gpt-4</code>, or send whatever string your framework
@@ -467,7 +462,7 @@ data: [DONE]</code></pre>
         <div class="code">
           <div class="code-head"><span class="lang">python</span><button class="copy">copy</button></div>
 <pre><code>stream = client.chat.completions.create(
-    model="qwen/qwen3.6-27b",
+    model="qwen/qwen3.8-27b",
     messages=[{"role": "user", "content": "Count to five."}],
     stream=True,
 )
@@ -500,8 +495,6 @@ for chunk in stream:
 {
   "object": "list",
   "data": [
-    { "id": "qwen/qwen3.6-27b",      "object": "model", "owned_by": "llmjob-hosted"  },
-    { "id": "qwen/qwen3.6-35b-a3b",  "object": "model", "owned_by": "llmjob-hosted"  },
     { "id": "qwen/qwen3.8-27b",      "object": "model", "owned_by": "llmjob-hosted"  },
     { "id": "Gemma-4-E4B-it-Q4_K_M", "object": "model", "owned_by": "llmjob-network" }
   ]

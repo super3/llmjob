@@ -23,9 +23,13 @@ const { estimateTokens, int, round1 } = require('../controllers/gatewayShared');
 
 // Sensible defaults; every one is overridable via env or constructor opts so the
 // founder can retune the free tier without a code change.
+//
+// Exactly one hosted model, deliberately. Every hosted model bills against the
+// same `freeBudget`, so offering several doesn't add capacity — it only adds
+// ways to drain one pot, plus a row to keep honest in the docs. Qwen3.8 is the
+// pick because it's the newest and the closest to what a caller trying the API
+// actually wants. Callers who want a menu can still set OPENROUTER_MODELS.
 const DEFAULT_MODELS = [
-  { id: 'qwen/qwen3.6-27b', label: 'Qwen3.6 27B' },
-  { id: 'qwen/qwen3.6-35b-a3b', label: 'Qwen3.6 35B A3B' },
   { id: 'qwen/qwen3.8-27b', label: 'Qwen3.8 27B' }
 ];
 const DEFAULT_FREE_BUDGET = 1000000; // total tokens of free usage before the cap
