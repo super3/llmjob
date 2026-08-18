@@ -1,7 +1,6 @@
 'use strict';
 
 const { resolveEndpoint, splitEndpoint, DEFAULTS } = require('./config');
-const { combinePayoutAddress, isValidMdlAddress, normalizeAddress } = require('./address');
 const { enginePackage } = require('./engine');
 
 // Windows engine binaries shipped inside the AlphaPool zips.
@@ -41,17 +40,14 @@ function resolveBinary(binaryPath, platform, gpu) {
 //   --worker <addr>.<rig>    THERE IS NO --address. The payout address travels
 //                            inside the worker field — the same thing the HiveOS
 //                            template (%WAL%.%WORKER_NAME%) encodes, and what
-//                            upstream flags as REQUIRED. Merge-mining rides
-//                            there too: `prl1…+mdl1….rig01` is echoed back
-//                            intact by the miner, so the combined payout form
-//                            survives.
+//                            upstream flags as REQUIRED.
 //   --password x;d=N         static difficulty as before.
 //   --gpu <id>               one process per card; index defaults to 0.
 //
 // No backend override: "Rank, geometry, and backend are fixed to the AlphaPool
 // mainnet rank-128 profile" — passing one is what backendForEngine strips.
 function buildWorkerAddressArgs(settings, endpoint, worker, difficulty) {
-  const address = combinePayoutAddress(settings.address, settings.mdlAddress);
+  const address = String(settings.address == null ? '' : settings.address).trim();
   const login = worker ? address + '.' + worker : address;
   const password = 'x;d=' + difficulty;
   const gpu = settings.gpuIndex == null ? 0 : settings.gpuIndex;
@@ -69,14 +65,6 @@ function buildWorkerAddressArgs(settings, endpoint, worker, difficulty) {
 // --algo flag — the miner is Pearl-specific — and the pool/address/worker are
 // separate flags (not a combined `<address>.<worker>` user). An optional forced
 // backend is appended for cards that need it (`--force-backend ampere`).
-//
-// Merge mining differs by platform. The Windows engine accepts the combined
-// `prl1…+mdl1…` login in --address, but the Linux engine the pool serves by
-// default (1.8.3) bech32m-validates --address as one address and rejects the
-// combined form before ever connecting (usage + exit 2 — a HiveOS crash loop).
-// Off Windows the MDL address therefore rides in the Stratum password's legacy
-// `mdl=` field instead: the engine passes the password through verbatim and the
-// pool parses both forms.
 function buildArgs(settings = {}) {
   // resolveEndpoint, not a raw read: an override pasted in the old
   // `stratum+tcp://host:port` form would otherwise reach --host verbatim and the
@@ -92,13 +80,8 @@ function buildArgs(settings = {}) {
   if (pkg && pkg.cli === 'worker-address') {
     return buildWorkerAddressArgs(settings, endpoint, worker, difficulty);
   }
-  const combined = settings.platform === 'win32';
-  const address = combined
-    ? combinePayoutAddress(settings.address, settings.mdlAddress)
-    : String(settings.address == null ? '' : settings.address).trim();
-  const mdl = normalizeAddress(settings.mdlAddress);
-  let password = 'x;d=' + difficulty;
-  if (!combined && isValidMdlAddress(mdl)) password += ';mdl=' + mdl;
+  const address = String(settings.address == null ? '' : settings.address).trim();
+  const password = 'x;d=' + difficulty;
 
   const args = ['--pool', 'stratum+tcp://' + endpoint, '--address', address];
   if (worker) args.push('--worker', worker);
@@ -108,12 +91,10 @@ function buildArgs(settings = {}) {
 }
 
 // Environment variables for the native Windows launcher flow, where the
-// start-mining .bat reads PRL_ADDRESS / MDL_ADDRESS / WORKER / PEARL_DIFFICULTY.
+// start-mining .bat reads PRL_ADDRESS / WORKER / PEARL_DIFFICULTY.
 function buildEnv(settings = {}) {
-  const mdl = normalizeAddress(settings.mdlAddress);
   return {
     PRL_ADDRESS: settings.address || '',
-    MDL_ADDRESS: isValidMdlAddress(mdl) ? mdl : '',
     WORKER: settings.worker != null ? settings.worker : DEFAULTS.worker,
     PEARL_DIFFICULTY: String(settings.difficulty || DEFAULTS.difficulty),
   };

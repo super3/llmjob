@@ -41,7 +41,6 @@
     // settings
     modeSeg: $('mode-seg'), modeHint: $('mode-hint'),
     setWorker: $('set-worker'), setRegion: $('set-region'), setDifficulty: $('set-difficulty'),
-    setMdl: $('set-mdl'), mdlNote: $('mdl-note'), mdlBalanceMeta: $('mdl-balance-meta'), mdlBalance: $('mdl-balance'),
     appVersion: $('app-version'), btnCheckUpdate: $('btn-check-update'), updateStatus: $('update-status'),
     logTerm: $('log-term'),
   };
@@ -59,14 +58,11 @@
 
   const BAL_REFRESH_MS = 60000; // re-poll the pool balance once a minute
   let balDebounce = null;
-  let mdlBalDebounce = null;
   let updateDismiss = null; // timer to auto-hide a transient update message
   let updateReady = false;  // an update is downloaded — the button installs + restarts
 
   const ADDR_RE = /^prl1p[0-9a-z]{20,80}$/i;
-  const MDL_RE = /^mdl1p[0-9a-z]{20,80}$/i;
   const isValid = (a) => ADDR_RE.test(String(a || '').trim());
-  const isValidMdl = (a) => MDL_RE.test(String(a || '').trim());
 
   const MODE_HINTS = {
     auto: 'Balances mining and the local LLM from free VRAM.',
@@ -91,11 +87,6 @@
     { title: 'Help me write an email', prompt: 'Help me write a short email asking my landlord to fix the heater.' },
   ];
 
-  const MDL_NOTE = {
-    empty: 'Earn <b>MDL</b> on the exact hashrate already mining Pearl — same shares, no extra power or hardware. Leave blank to mine Pearl only.',
-    on: '<b class="ok">✓ Merge-mining MDL</b> — your Pearl hashrate now also earns MDL, credited by the pool.',
-    bad: '<b class="warn">That doesn\'t look like an mdl1… address.</b> Double-check it, or clear the field to mine Pearl only.',
-  };
 
   // ── Navigation ─────────────────────────────────────────────────────────────
   function renderView() {
@@ -439,27 +430,6 @@
     el.balanceUsd.textContent = b.usd != null ? '≈ $' + b.usd.toFixed(2) : '';
   }
 
-  function renderMdlNote() {
-    const v = String(el.setMdl.value || '').trim();
-    const key = !v ? 'empty' : isValidMdl(v) ? 'on' : 'bad';
-    el.mdlNote.innerHTML = MDL_NOTE[key];
-  }
-
-  function renderMdlBalanceMeta() {
-    el.mdlBalanceMeta.hidden = !isValidMdl(String(el.setMdl.value || '').trim());
-  }
-
-  function resetMdlBalance() { el.mdlBalance.textContent = '0.000'; }
-
-  async function refreshMdlBalance() {
-    const mdl = String(el.setMdl.value || '').trim();
-    const addr = state.address.trim();
-    if (!isValidMdl(mdl) || !isValid(addr) || !api.getMdlBalance) return;
-    const b = await api.getMdlBalance(addr);
-    if (!b || mdl !== String(el.setMdl.value || '').trim() || addr !== state.address.trim()) return;
-    if (b.mdlAddress && b.mdlAddress.toLowerCase() !== mdl.toLowerCase()) return;
-    el.mdlBalance.textContent = fmt3(b.earned);
-  }
 
   // "NVIDIA GeForce RTX 4090 (86°C)". The engine reports a core temperature on
   // every status line, so it rides next to the GPU name while mining — a rig that
@@ -510,10 +480,8 @@
   }
 
   function currentSettings() {
-    const mdl = String(el.setMdl.value || '').trim();
     return {
       address: state.address.trim(),
-      mdlAddress: isValidMdl(mdl) ? mdl : '',
       worker: el.setWorker.value.trim() || 'rig01',
       region: el.setRegion.value || 'us2',
       difficulty: Number(el.setDifficulty.value) || 524288,
@@ -579,21 +547,8 @@
       el.btnStart.disabled = !canStart();
       renderBalanceMeta();
       if (balDebounce) clearTimeout(balDebounce);
-      if (mdlBalDebounce) clearTimeout(mdlBalDebounce);
-      if (isValid(state.address)) {
-        balDebounce = setTimeout(refreshBalance, 600);
-        mdlBalDebounce = setTimeout(refreshMdlBalance, 600);
-      } else {
-        resetBalance();
-        resetMdlBalance();
-      }
-    });
-    el.setMdl.addEventListener('input', () => {
-      renderMdlNote();
-      renderMdlBalanceMeta();
-      if (mdlBalDebounce) clearTimeout(mdlBalDebounce);
-      if (isValidMdl(String(el.setMdl.value || '').trim())) mdlBalDebounce = setTimeout(refreshMdlBalance, 600);
-      else resetMdlBalance();
+      if (isValid(state.address)) balDebounce = setTimeout(refreshBalance, 600);
+      else resetBalance();
     });
     el.btnStart.addEventListener('click', start);
     el.btnStop.addEventListener('click', stop);
@@ -693,7 +648,6 @@
       el.setWorker.value = s.worker || 'rig01';
       el.setRegion.value = s.region || 'us2';
       el.setDifficulty.value = s.difficulty || 524288;
-      el.setMdl.value = s.mdlAddress || '';
       // 'auto' to match shared/llmMode's DEFAULT_MODE, which is what main sends
       // for a fresh install. This fallback only fires on a FALSY stored mode —
       // a hand-edited or half-written settings.json holding null or "" — and it
@@ -705,8 +659,6 @@
       resumeMining = !!(s.resumeMining && isValid(state.address));
     }
     renderMode();
-    renderMdlNote();
-    renderMdlBalanceMeta();
     if (api.onLlm) api.onLlm(renderLlm);
     if (api.getLlmStatus) api.getLlmStatus().then(renderLlm);
     if (api.onChatDelta) api.onChatDelta(onChatDelta);
@@ -772,8 +724,6 @@
     renderBalanceMeta();
     refreshBalance();
     setInterval(refreshBalance, BAL_REFRESH_MS);
-    refreshMdlBalance();
-    setInterval(refreshMdlBalance, BAL_REFRESH_MS);
     if (resumeMining) start();
   }
 

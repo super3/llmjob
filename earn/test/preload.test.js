@@ -31,7 +31,6 @@ describe('invoke-based methods', () => {
     ['detectGpu', 'gpu:detect'],
     ['detectRegion', 'region:detect'],
     ['getBalance', 'balance:get', 'prl1abc'],
-    ['getMdlBalance', 'balance:getMdl', 'prl1abc'],
     ['getLlmStatus', 'llm:status'],
     ['getNodeStatus', 'node:status'],
     ['connectNode', 'node:connect', { token: 't' }],

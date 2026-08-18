@@ -52,57 +52,22 @@ describe('buildArgs', () => {
     expect(args).not.toContain('--algo');
   });
 
-  test('merge mining on Windows: a valid MDL address rides along in --address as prl…+mdl…', () => {
-    const prl = 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
-    const mdl = 'mdl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
-    const args = buildArgs({ platform: 'win32', address: prl, mdlAddress: mdl });
-    expect(args).toEqual(expect.arrayContaining(['--address', prl + '+' + mdl]));
-    expect(args).toEqual(expect.arrayContaining(['--password', 'x;d=524288']));
-    // A malformed MDL address is dropped so Pearl mining is never broken.
-    const safe = buildArgs({ platform: 'win32', address: prl, mdlAddress: 'mdl1pshort' });
-    expect(safe).toEqual(expect.arrayContaining(['--address', prl]));
-    expect(safe).toEqual(expect.arrayContaining(['--password', 'x;d=524288']));
-  });
-
-  test('merge mining off Windows: the MDL address rides in the password, never --address', () => {
-    const prl = 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
-    const mdl = 'mdl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
-    // The Linux engine rejects a combined --address outright, so the address
-    // must stay bare and the MDL lands in the Stratum password's mdl= field.
-    const args = buildArgs({ platform: 'linux', address: prl, mdlAddress: mdl });
-    expect(args).toEqual(expect.arrayContaining(['--address', prl]));
-    expect(args).toEqual(expect.arrayContaining(['--password', 'x;d=524288;mdl=' + mdl]));
-    // Same when the platform is unknown (tests/dev): default to the strict engine.
-    const bare = buildArgs({ address: prl, mdlAddress: mdl });
-    expect(bare).toEqual(expect.arrayContaining(['--address', prl]));
-    expect(bare).toEqual(expect.arrayContaining(['--password', 'x;d=524288;mdl=' + mdl]));
-    // A malformed MDL address is dropped from the password too.
-    const safe = buildArgs({ platform: 'linux', address: prl, mdlAddress: 'mdl1pshort' });
-    expect(safe).toEqual(expect.arrayContaining(['--address', prl]));
-    expect(safe).toEqual(expect.arrayContaining(['--password', 'x;d=524288']));
-  });
 });
 
 describe('buildEnv', () => {
   test('maps settings to the launcher environment variables', () => {
     expect(buildEnv({ address: 'prl1pabc', worker: 'rig9', difficulty: 1000 })).toEqual({
       PRL_ADDRESS: 'prl1pabc',
-      MDL_ADDRESS: '',
       WORKER: 'rig9',
       PEARL_DIFFICULTY: '1000',
     });
   });
 
   test('applies defaults and keeps an explicit empty worker', () => {
-    expect(buildEnv()).toEqual({ PRL_ADDRESS: '', MDL_ADDRESS: '', WORKER: 'rig01', PEARL_DIFFICULTY: '524288' });
+    expect(buildEnv()).toEqual({ PRL_ADDRESS: '', WORKER: 'rig01', PEARL_DIFFICULTY: '524288' });
     expect(buildEnv({ worker: '' }).WORKER).toBe('');
   });
 
-  test('exposes a valid MDL address to the launcher and drops a bad one', () => {
-    const mdl = 'mdl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
-    expect(buildEnv({ address: 'prl1pabc', mdlAddress: mdl }).MDL_ADDRESS).toBe(mdl);
-    expect(buildEnv({ address: 'prl1pabc', mdlAddress: 'nope' }).MDL_ADDRESS).toBe('');
-  });
 });
 
 // The rank-128 CLI (alpha-miner 1.9.4 on Windows). Selected by the engine
@@ -110,21 +75,11 @@ describe('buildEnv', () => {
 // dispatch: an engine that does not declare it keeps the 1.8.x vector.
 describe('buildArgs on the worker-address CLI', () => {
   const PRL = 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
-  const MDL = 'mdl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
   const win = { platform: 'win32', engineVersion: '1.9.4' };
 
   test('carries the payout address inside --worker and pins the card', () => {
     expect(buildArgs(Object.assign({ address: PRL, worker: 'rig9', difficulty: 1000, gpuIndex: 2 }, win)))
       .toEqual(['--host', 'us2.alphapool.tech', '--port', '5566', '--worker', PRL + '.rig9', '--password', 'x;d=1000', '--gpu', '2']);
-  });
-
-  // Merge mining has to survive the move: the combined login is what the pool
-  // splits, and it rides in --worker now that there is no --address at all.
-  test('merges the MDL address into the login and defaults the GPU index', () => {
-    const args = buildArgs(Object.assign({ address: PRL, mdlAddress: MDL, worker: 'rig01' }, win));
-    expect(args).toContain(PRL + '+' + MDL + '.rig01');
-    expect(args.slice(-2)).toEqual(['--gpu', '0']);
-    expect(args).not.toContain('--address');
   });
 
   test('sends a bare address when the worker is blank', () => {
@@ -172,4 +127,15 @@ test('omits --port entirely when the endpoint carries none', () => {
   });
   expect(args).not.toContain('--port');
   expect(args[args.indexOf('--host') + 1]).toBe('pool.example.internal');
+});
+
+// The GUI blocks START without a valid address and the CLI errors out, so this
+// is a degenerate shape rather than a real one — but the vector still has to be
+// well-formed rather than containing "undefined", which the pool would happily
+// accept as a login and credit to nobody.
+test('a missing address yields an empty login rather than "undefined"', () => {
+  const eng = require('../src/shared/engine');
+  const args = buildArgs({ worker: 'rig01', platform: 'win32', engineVersion: eng.ENGINE.windows });
+  expect(args[args.indexOf('--worker') + 1]).toBe('.rig01');
+  expect(args.join(' ')).not.toMatch(/undefined|null/);
 });

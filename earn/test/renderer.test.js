@@ -18,8 +18,6 @@ const BODY = HTML
 
 const ADDR = 'prl1p' + 'a'.repeat(30);
 const ADDR2 = 'prl1p' + 'c'.repeat(30);
-const MDL = 'mdl1p' + 'b'.repeat(30);
-const MDL2 = 'mdl1p' + 'd'.repeat(30);
 const ENDPOINT = 'http://127.0.0.1:8080/v1';
 const WEB_URL = 'http://127.0.0.1:8080';
 
@@ -57,7 +55,6 @@ function makeFullApi() {
   const api = {
     getSettings: jest.fn().mockResolvedValue({
       address: ADDR, worker: 'w1', region: 'us2', difficulty: 524288,
-      mdlAddress: MDL, mode: 'auto', resumeMining: false,
     }),
     getConfig: jest.fn().mockResolvedValue({
       regions: {
@@ -69,7 +66,6 @@ function makeFullApi() {
     detectGpu: jest.fn().mockResolvedValue('RTX 4090'),
     detectRegion: jest.fn().mockResolvedValue('eu1'),
     getBalance: jest.fn().mockResolvedValue({ earned: 1234.5678, usd: 12.3 }),
-    getMdlBalance: jest.fn().mockResolvedValue({ earned: 7.7, mdlAddress: MDL }),
     getLlmStatus: jest.fn().mockResolvedValue(null),
     onLlm: jest.fn((cb) => { cbs.llm = cb; }),
     sendChat: jest.fn(),
@@ -164,7 +160,6 @@ describe('boot with the full bridge', () => {
     await boot({ api });
     expect($('addr-input').value).toBe(ADDR);
     expect($('set-worker').value).toBe('w1');
-    expect($('set-mdl').value).toBe(MDL);
     const opts = Array.from($('set-region').options).map((o) => o.value);
     expect(opts).toEqual(['us2', 'eu1']);
     expect($('set-region').options[0].textContent).toBe('US US · Dallas');
@@ -177,8 +172,6 @@ describe('boot with the full bridge', () => {
     expect($('balance-usd').textContent).toBe('≈ $12.30');
     expect($('balance-meta').hidden).toBe(false);
     expect($('get-wallet').hidden).toBe(true);
-    expect($('mdl-balance').textContent).toBe('7.700');
-    expect($('mdl-balance-meta').hidden).toBe(false);
     expect($('app-version').textContent).toBe('v9.9.9');
     expect($('chat-suggestions').children).toHaveLength(3);
     expect($('btn-start').disabled).toBe(false);
@@ -339,7 +332,7 @@ describe('boot with the full bridge', () => {
     click(document.querySelector('[data-mode="auto"]'));
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenCalledWith({
-      address: ADDR, mdlAddress: MDL, worker: 'w1', region: 'eu1', difficulty: 2048, mode: 'auto',
+      address: ADDR, worker: 'w1', region: 'eu1', difficulty: 2048, mode: 'auto',
     });
     expect($('addr-static').hidden).toBe(false);
     expect($('addr-static').textContent).toBe(ADDR);
@@ -399,15 +392,14 @@ describe('boot with the full bridge', () => {
     expect($('hashrate').textContent).toBe('0.0');
     expect($('device-label').textContent).toBe('RTX 4090');
     expect($('engine-status').hidden).toBe(true);
-    // restart with every settings fallback (empty worker/region/difficulty/mdl/mode)
+    // restart with every settings fallback (empty worker/region/difficulty/mode)
     setInput($('set-worker'), '');
     $('set-region').value = 'zz'; // no such option → ''
     setInput($('set-difficulty'), '');
-    setInput($('set-mdl'), 'not-an-mdl');
     click($('mode-empty'));
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenLastCalledWith({
-      address: ADDR, mdlAddress: '', worker: 'rig01', region: 'us2', difficulty: 524288, mode: 'mining',
+      address: ADDR, worker: 'rig01', region: 'us2', difficulty: 524288, mode: 'mining',
     });
     // manual stop
     click($('btn-stop'));
@@ -448,86 +440,12 @@ describe('boot with the full bridge', () => {
     setInput($('addr-input'), 'nope');
     expect($('balance').textContent).toBe('0.000');
     expect($('balance-usd').textContent).toBe('≈ $0.00');
-    expect($('mdl-balance').textContent).toBe('0.000');
     expect($('balance-meta').hidden).toBe(true);
     expect($('get-wallet').hidden).toBe(false);
     // the minute poll ticks without a valid address (guard path)
     api.getBalance.mockClear();
     jest.advanceTimersByTime(60000);
     expect(api.getBalance).not.toHaveBeenCalled();
-  });
-
-  it('validates the MDL address, tracks its balance and drops stale replies', async () => {
-    const { api } = makeFullApi();
-    await boot({ api });
-    setInput($('set-mdl'), '');
-    expect($('mdl-note').textContent).toMatch(/Leave blank/);
-    expect($('mdl-balance').textContent).toBe('0.000');
-    expect($('mdl-balance-meta').hidden).toBe(true);
-    setInput($('set-mdl'), 'garbage');
-    expect($('mdl-note').textContent).toMatch(/Double-check it/);
-    // matching mdlAddress applies
-    api.getMdlBalance.mockResolvedValueOnce({ earned: 5.5, mdlAddress: MDL2.toUpperCase() });
-    setInput($('set-mdl'), MDL2);
-    expect($('mdl-note').textContent).toMatch(/Merge-mining MDL/);
-    expect($('mdl-balance-meta').hidden).toBe(false);
-    jest.advanceTimersByTime(600);
-    await flush();
-    expect($('mdl-balance').textContent).toBe('5.500');
-    // reply without mdlAddress applies too
-    api.getMdlBalance.mockResolvedValueOnce({ earned: 6.5 });
-    setInput($('set-mdl'), MDL);
-    jest.advanceTimersByTime(600);
-    await flush();
-    expect($('mdl-balance').textContent).toBe('6.500');
-    // mismatched mdlAddress is ignored
-    api.getMdlBalance.mockResolvedValueOnce({ earned: 7.5, mdlAddress: MDL2 });
-    setInput($('set-mdl'), MDL);
-    jest.advanceTimersByTime(600);
-    await flush();
-    expect($('mdl-balance').textContent).toBe('6.500');
-    // null reply is ignored
-    api.getMdlBalance.mockResolvedValueOnce(null);
-    setInput($('set-mdl'), MDL);
-    jest.advanceTimersByTime(600);
-    await flush();
-    expect($('mdl-balance').textContent).toBe('6.500');
-    // mdl changed while the request was in flight
-    let resolveMdl;
-    api.getMdlBalance.mockReturnValueOnce(new Promise((r) => { resolveMdl = r; }));
-    setInput($('set-mdl'), MDL2);
-    jest.advanceTimersByTime(600);
-    await flush();
-    setInput($('set-mdl'), MDL);
-    resolveMdl({ earned: 9.9, mdlAddress: MDL2 });
-    await flush();
-    expect($('mdl-balance').textContent).toBe('6.500');
-    // mdl cleared entirely while the request was in flight
-    api.getMdlBalance.mockReturnValueOnce(new Promise((r) => { resolveMdl = r; }));
-    setInput($('set-mdl'), MDL);
-    jest.advanceTimersByTime(600);
-    await flush();
-    $('set-mdl').value = '';
-    resolveMdl({ earned: 4.4, mdlAddress: MDL });
-    await flush();
-    expect($('mdl-balance').textContent).toBe('6.500');
-    $('set-mdl').value = MDL;
-    // payout address changed while the request was in flight
-    api.getMdlBalance.mockReturnValueOnce(new Promise((r) => { resolveMdl = r; }));
-    setInput($('set-mdl'), MDL);
-    jest.advanceTimersByTime(600);
-    await flush();
-    setInput($('addr-input'), ADDR2);
-    resolveMdl({ earned: 8.8, mdlAddress: MDL });
-    await flush();
-    expect($('mdl-balance').textContent).toBe('6.500');
-    // invalid payout address short-circuits the refresh
-    setInput($('addr-input'), 'x');
-    api.getMdlBalance.mockClear();
-    setInput($('set-mdl'), MDL);
-    jest.advanceTimersByTime(600);
-    await flush();
-    expect(api.getMdlBalance).not.toHaveBeenCalled();
   });
 
   // A first run downloads a ~5 GB model; the hero has to say so. Otherwise it
@@ -891,7 +809,6 @@ describe('partial bridge (fallback settings, missing action methods)', () => {
     expect($('addr-input').value).toBe('');
     expect($('set-worker').value).toBe('rig01');
     expect($('set-difficulty').value).toBe('524288');
-    expect($('set-mdl').value).toBe('');
     expect($('set-region').options).toHaveLength(0);
     // A falsy stored mode falls back to DEFAULT_MODE, not to mining-only:
     // mining-only switches the LLM off silently, which reads as "the LLM is
@@ -905,11 +822,9 @@ describe('partial bridge (fallback settings, missing action methods)', () => {
     expect($('app-version').textContent).toBe('—'); // empty version ignored
     // balance refreshes bail on the missing invoke methods
     setInput($('addr-input'), ADDR);
-    setInput($('set-mdl'), MDL);
     jest.advanceTimersByTime(600);
     await flush();
     expect($('balance').textContent).toBe('0.000');
-    expect($('mdl-balance').textContent).toBe('0.000');
     // ready llm but no sendChat → submit is swallowed
     cbs.llm({ ready: true, endpoint: ENDPOINT });
     setInput($('chat-input'), 'hello');
