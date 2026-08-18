@@ -893,8 +893,14 @@ describe('partial bridge (fallback settings, missing action methods)', () => {
     expect($('set-difficulty').value).toBe('524288');
     expect($('set-mdl').value).toBe('');
     expect($('set-region').options).toHaveLength(0);
-    expect($('mode-hint').textContent).toMatch(/mining only/i); // s.mode → 'mining'
-    expect($('btn-start').disabled).toBe(true);
+    // A falsy stored mode falls back to DEFAULT_MODE, not to mining-only:
+    // mining-only switches the LLM off silently, which reads as "the LLM is
+    // broken" with nothing in the logs to say otherwise.
+    expect($('mode-hint').textContent).toMatch(/Balances mining/);
+    // START is live even with no payout address, because auto can serve the LLM
+    // on its own. A real fresh install behaves the same way, since main sends
+    // DEFAULT_MODE; only the old mining-only fallback made it look disabled.
+    expect($('btn-start').disabled).toBe(false);
     expect($('device-label').textContent).toBe('GpuB');
     expect($('app-version').textContent).toBe('—'); // empty version ignored
     // balance refreshes bail on the missing invoke methods

@@ -694,7 +694,14 @@
       el.setRegion.value = s.region || 'us2';
       el.setDifficulty.value = s.difficulty || 524288;
       el.setMdl.value = s.mdlAddress || '';
-      state.mode = usableMode(s.mode || 'mining');
+      // 'auto' to match shared/llmMode's DEFAULT_MODE, which is what main sends
+      // for a fresh install. This fallback only fires on a FALSY stored mode —
+      // a hand-edited or half-written settings.json holding null or "" — and it
+      // used to land on 'mining', which switches the LLM off with no error
+      // anywhere. That is indistinguishable from "the LLM is broken", so it must
+      // not be the quiet default. A missing key already falls through to main's
+      // default; this covers the value being present but empty.
+      state.mode = usableMode(s.mode || 'auto');
       resumeMining = !!(s.resumeMining && isValid(state.address));
     }
     renderMode();
