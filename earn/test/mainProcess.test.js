@@ -1242,15 +1242,15 @@ describe('mining', () => {
     await flush();
 
     const hints = ctx.sent('miner:log').map((l) => l.line)
-      .filter((l) => l.includes('name resolution is failing'));
+      .filter((l) => l.includes('could not resolve'));
     expect(hints).toHaveLength(1);
-    expect(hints[0]).toContain('cannot resolve us1.alphapool.tech:5566');
+    expect(hints[0]).toContain('could not resolve us1.alphapool.tech:5566');
 
     // A refused connection is the pool's problem — do not blame the resolver.
     miner.emit('event', { type: 'connect-failed', reason: 'connection refused', dns: false });
     await flush();
     expect(ctx.sent('miner:log').map((l) => l.line)
-      .filter((l) => l.includes('name resolution is failing'))).toHaveLength(1);
+      .filter((l) => l.includes('could not resolve'))).toHaveLength(1);
   });
 
   it('logs a start failure when the driver probe throws mid-start', async () => {

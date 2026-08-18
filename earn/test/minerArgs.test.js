@@ -115,7 +115,7 @@ describe('buildArgs on the worker-address CLI', () => {
 
   test('carries the payout address inside --worker and pins the card', () => {
     expect(buildArgs(Object.assign({ address: PRL, worker: 'rig9', difficulty: 1000, gpuIndex: 2 }, win)))
-      .toEqual(['--host', 'us2.alphapool.tech:5566', '--worker', PRL + '.rig9', '--password', 'x;d=1000', '--gpu', '2']);
+      .toEqual(['--host', 'us2.alphapool.tech', '--port', '5566', '--worker', PRL + '.rig9', '--password', 'x;d=1000', '--gpu', '2']);
   });
 
   // Merge mining has to survive the move: the combined login is what the pool
@@ -147,7 +147,8 @@ test('an endpoint override keeps its scheme out of --host', () => {
     platform: 'win32', engineVersion: eng.ENGINE.windows,
     endpoint: 'stratum+tcp://us1.alphapool.tech:5566',
   });
-  expect(args[args.indexOf('--host') + 1]).toBe('us1.alphapool.tech:5566');
+  expect(args[args.indexOf('--host') + 1]).toBe('us1.alphapool.tech');
+  expect(args[args.indexOf('--port') + 1]).toBe('5566');
 });
 
 // The legacy vector builds its own stratum+tcp:// prefix, so a cleaned endpoint
@@ -158,4 +159,17 @@ test('the legacy --pool vector still gets exactly one scheme', () => {
     engineVersion: '1.8.8', endpoint: 'stratum+tcp://us1.alphapool.tech:5566',
   });
   expect(args[args.indexOf('--pool') + 1]).toBe('stratum+tcp://us1.alphapool.tech:5566');
+});
+
+// A portless endpoint must not gain an invented port: the engine has its own
+// default, and guessing one is how the doubled-port bug happened in reverse.
+test('omits --port entirely when the endpoint carries none', () => {
+  const eng = require('../src/shared/engine');
+  const args = buildArgs({
+    address: 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c', worker: 'rig01',
+    platform: 'win32', engineVersion: eng.ENGINE.windows,
+    endpoint: 'pool.example.internal',
+  });
+  expect(args).not.toContain('--port');
+  expect(args[args.indexOf('--host') + 1]).toBe('pool.example.internal');
 });

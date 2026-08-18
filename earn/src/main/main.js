@@ -383,8 +383,9 @@ async function startMining(settings) {
       dnsHinted = true;
       send('miner:log', {
         level: 'warn',
-        line: 'cannot resolve ' + endpoint + ' — name resolution is failing on this machine, not the pool'
-          + ' refusing the connection. Check DNS/VPN/firewall, or pick another region in Settings.',
+        line: 'the engine could not resolve ' + endpoint + ' — nothing is wrong with the GPU.'
+          + ' Check DNS/VPN/firewall, or pick another region in Settings. If the host in the'
+          + ' engine banner above does not match that exactly, send us this log.',
       });
     }
     send('miner:event', e);

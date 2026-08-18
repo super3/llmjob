@@ -2,7 +2,7 @@
 
 const {
   REGIONS, DEFAULTS, MINER, ECON,
-  regionFor, endpointFor, normalizeEndpoint, resolveEndpoint, regionLabel, difficultyForCard,
+  regionFor, endpointFor, normalizeEndpoint, resolveEndpoint, splitEndpoint, regionLabel, difficultyForCard,
 } = require('../src/shared/config');
 
 describe('config', () => {
@@ -80,5 +80,22 @@ describe('normalizeEndpoint / resolveEndpoint', () => {
     expect(resolveEndpoint({ region: 'eu1' })).toBe(REGIONS.eu1.endpoint);
     expect(resolveEndpoint({})).toBe(REGIONS[DEFAULTS.region].endpoint);
     expect(resolveEndpoint()).toBe(REGIONS[DEFAULTS.region].endpoint);
+  });
+  // The split form is the whole point: a build that reads --host as host-only
+  // and appends its own default port turned a combined `host:5566` into
+  // `us2.alphapool.tech:5566:5566` and then failed DNS on it. Two field reports.
+  test('splits host from port so a port can never be doubled', () => {
+    expect(splitEndpoint('us2.alphapool.tech:5566')).toEqual({ host: 'us2.alphapool.tech', port: 5566 });
+    expect(splitEndpoint('stratum+tcp://us1.alphapool.tech:5566'))
+      .toEqual({ host: 'us1.alphapool.tech', port: 5566 });
+  });
+
+  // No port means no port — the engine keeps its own default rather than us
+  // inventing one, and nothing usable stays null so callers can fall back.
+  test('leaves a portless host alone and nulls an empty endpoint', () => {
+    expect(splitEndpoint('us2.alphapool.tech')).toEqual({ host: 'us2.alphapool.tech', port: null });
+    for (const v of ['', '   ', null, undefined]) {
+      expect(splitEndpoint(v)).toEqual({ host: null, port: null });
+    }
   });
 });

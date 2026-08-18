@@ -218,6 +218,16 @@ function normalizeEndpoint(endpoint) {
   return bare || null;
 }
 
+// Split a `host:port` endpoint into its parts. Returns port null when there
+// is none, so callers can decide the default rather than inventing one here.
+// Rightmost colon wins, which keeps a bracketed IPv6 literal intact.
+function splitEndpoint(endpoint) {
+  const bare = normalizeEndpoint(endpoint);
+  if (!bare) return { host: null, port: null };
+  const m = bare.match(/^(.*):(\d+)$/);
+  return m ? { host: m[1], port: Number(m[2]) } : { host: bare, port: null };
+}
+
 // The endpoint to mine against: a normalised override if there is one, else the
 // region's. One function so the argument vector and the "connecting to …" log
 // line can never disagree about where the rig is actually pointed.
@@ -242,5 +252,5 @@ function difficultyForCard(name) {
 
 module.exports = {
   REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE, DIFFICULTY_BY_CARD,
-  regionFor, endpointFor, normalizeEndpoint, resolveEndpoint, regionLabel, difficultyForCard,
+  regionFor, endpointFor, normalizeEndpoint, resolveEndpoint, splitEndpoint, regionLabel, difficultyForCard,
 };
