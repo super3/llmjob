@@ -478,7 +478,17 @@
     el.accepted.textContent = s.acceptedLabel;
     el.uptime.textContent = s.uptime;
     el.estday.textContent = s.estDay;
-    if (s.gpu) el.deviceLabel.textContent = deviceText(s.gpu, s.temp);
+    // nvidia-smi's name wins over the engine's, exactly as the miner report does
+    // (see shared/minerReport). alpha-miner 1.9.4's stats table abbreviates the
+    // card ("RTX 5090"), so taking the snapshot's name here made the app
+    // contradict the board about the same GPU — full name while idle, short name
+    // the moment mining started. The engine's label stays as the fallback for a
+    // rig with no nvidia-smi.
+    //
+    // Still gated on the engine reporting a card, not on having a name to show:
+    // a frame that mentions no GPU leaves the label alone, so the temperature
+    // does not flicker off between updates.
+    if (s.gpu) el.deviceLabel.textContent = deviceText(state.gpu || s.gpu, s.temp);
     const p = chartPaths(s.points);
     el.line.setAttribute('d', p.line);
     el.area.setAttribute('d', p.area);

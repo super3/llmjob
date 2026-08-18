@@ -198,6 +198,44 @@ function endpointFor(region) {
   return regionFor(region).endpoint;
 }
 
+// Normalise a hand-supplied endpoint override into the bare `host:port` the
+// engine's --host wants.
+//
+// alpha-miner 1.9.4 takes a bare endpoint, but every older doc — and our own
+// pre-1.9.4 argument vector — wrote it as `stratum+tcp://host:port`, because
+// that is what the old --pool flag took. Pasting that form into an endpoint
+// override used to be harmless; now it is handed to --host verbatim, the engine
+// tries to resolve the literal string `stratum+tcp://host`, and the rig loops on
+// "DNS lookup failed: No such host is known" with nothing naming the cause.
+// Reported from the field, which is the only reason we know the shape of it.
+//
+// Deliberately forgiving rather than clever: strip any scheme and surrounding
+// whitespace, and hand back null for something empty so the caller falls back to
+// the region default instead of spawning a miner pointed at nothing.
+function normalizeEndpoint(endpoint) {
+  const raw = String(endpoint == null ? '' : endpoint).trim();
+  const bare = raw.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/\/+$/, '').trim();
+  return bare || null;
+}
+
+// Split a `host:port` endpoint into its parts. Returns port null when there
+// is none, so callers can decide the default rather than inventing one here.
+// Rightmost colon wins, which keeps a bracketed IPv6 literal intact.
+function splitEndpoint(endpoint) {
+  const bare = normalizeEndpoint(endpoint);
+  if (!bare) return { host: null, port: null };
+  const m = bare.match(/^(.*):(\d+)$/);
+  return m ? { host: m[1], port: Number(m[2]) } : { host: bare, port: null };
+}
+
+// The endpoint to mine against: a normalised override if there is one, else the
+// region's. One function so the argument vector and the "connecting to …" log
+// line can never disagree about where the rig is actually pointed.
+function resolveEndpoint(settings) {
+  const s = settings || {};
+  return normalizeEndpoint(s.endpoint) || endpointFor(s.region || DEFAULTS.region);
+}
+
 function regionLabel(region) {
   const r = regionFor(region);
   return r.flag + ' ' + r.label;
@@ -214,5 +252,5 @@ function difficultyForCard(name) {
 
 module.exports = {
   REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE, DIFFICULTY_BY_CARD,
-  regionFor, endpointFor, regionLabel, difficultyForCard,
+  regionFor, endpointFor, normalizeEndpoint, resolveEndpoint, splitEndpoint, regionLabel, difficultyForCard,
 };

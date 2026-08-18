@@ -1,6 +1,6 @@
 'use strict';
 
-const { endpointFor, DEFAULTS } = require('./config');
+const { resolveEndpoint, splitEndpoint, DEFAULTS } = require('./config');
 const { combinePayoutAddress, isValidMdlAddress, normalizeAddress } = require('./address');
 const { enginePackage } = require('./engine');
 
@@ -19,14 +19,25 @@ function resolveBinary(binaryPath, platform, gpu) {
 }
 
 // The alpha-miner 1.9.4 CLI, which shares almost nothing with the 1.8.x one.
-// Verified against the shipped binary's own --help and the start-mining.bat
-// inside its zip, not the setup page (which is wrong about --host):
 //
-//   --host <endpoint:PORT>   one argument; --help documents it as "endpoint:PORT"
-//                            and defaults to us2.alphapool.tech:5566. The page's
-//                            split `--host H --port P` also parses, but the
-//                            combined form is the documented one and our
-//                            endpointFor() already yields host:port.
+//   --host <host> --port <port>  SPLIT, deliberately. `--help` documents a single
+//                            `--host <endpoint>` as "endpoint:PORT", and the
+//                            build we test against accepts that combined form —
+//                            but not every 1.9.4 build in the field does. A user
+//                            on a build that reads --host as host-ONLY and
+//                            appends its default port turned our
+//                            `--host us2.alphapool.tech:5566` into
+//                            `pool us2.alphapool.tech:5566:5566`, then looped on
+//                            "DNS lookup failed: No such host is known" because
+//                            it was resolving `us2.alphapool.tech:5566` as a
+//                            hostname. Two field reports, same signature.
+//
+//                            The split form is what the pool documents for BOTH
+//                            Linux and Windows, is accepted by the build we test
+//                            (verified: connects and mines), and CANNOT produce a
+//                            doubled port on either kind of build. `--port` is
+//                            undocumented in --help but parsed — checked against
+//                            the real binary, not the setup page.
 //   --worker <addr>.<rig>    THERE IS NO --address. The payout address travels
 //                            inside the worker field — the same thing the HiveOS
 //                            template (%WAL%.%WORKER_NAME%) encodes, and what
@@ -44,7 +55,12 @@ function buildWorkerAddressArgs(settings, endpoint, worker, difficulty) {
   const login = worker ? address + '.' + worker : address;
   const password = 'x;d=' + difficulty;
   const gpu = settings.gpuIndex == null ? 0 : settings.gpuIndex;
-  return ['--host', endpoint, '--worker', login, '--password', password, '--gpu', String(gpu)];
+  // Port omitted only when the endpoint carries none, leaving the engine its own
+  // default rather than us inventing one.
+  const { host, port } = splitEndpoint(endpoint);
+  const args = ['--host', host];
+  if (port) args.push('--port', String(port));
+  return args.concat(['--worker', login, '--password', password, '--gpu', String(gpu)]);
 }
 
 // Build the alpha-miner argument vector, matching the engine's documented CLI
@@ -62,8 +78,10 @@ function buildWorkerAddressArgs(settings, endpoint, worker, difficulty) {
 // `mdl=` field instead: the engine passes the password through verbatim and the
 // pool parses both forms.
 function buildArgs(settings = {}) {
-  const region = settings.region || DEFAULTS.region;
-  const endpoint = settings.endpoint || endpointFor(region);
+  // resolveEndpoint, not a raw read: an override pasted in the old
+  // `stratum+tcp://host:port` form would otherwise reach --host verbatim and the
+  // engine would try to resolve the scheme as part of the hostname.
+  const endpoint = resolveEndpoint(settings);
   const worker = settings.worker != null ? settings.worker : DEFAULTS.worker;
   const difficulty = settings.difficulty || DEFAULTS.difficulty;
 
