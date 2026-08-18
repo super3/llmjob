@@ -352,16 +352,18 @@ describe('boot with the full bridge', () => {
     expect($('accepted').textContent).toBe('34');
     expect($('uptime').textContent).toBe('5m 00s');
     expect($('estday').textContent).toBe('$0.42');
-    expect($('device-label').textContent).toBe('gpu-live'); // no temp reported yet → bare name
+    // nvidia-smi's name wins over the engine's abbreviated one, so the app and
+    // the network board never disagree about the same card.
+    expect($('device-label').textContent).toBe('RTX 4090'); // no temp reported yet → bare name
     expect($('mk-line').getAttribute('d')).toMatch(/^M0 .* L480 /);
     // Once the engine reports a core temperature it rides alongside the name, so
     // a rig that keeps crashing can be checked for heat without nvidia-smi.
     cbs.stats({ total: '1.2', acceptedLabel: '34', uptime: '5m 00s', estDay: '$0.42', gpu: 'gpu-live', temp: 86.4, points: [1, 2, 3] });
-    expect($('device-label').textContent).toBe('gpu-live (86°C)');
+    expect($('device-label').textContent).toBe('RTX 4090 (86°C)');
     // single point (flat-span pad fallback), no gpu — the label keeps whatever it
     // last showed, temperature included, rather than reverting.
     cbs.stats({ total: '1', acceptedLabel: '1', uptime: '1m', estDay: '$1', points: [5] });
-    expect($('device-label').textContent).toBe('gpu-live (86°C)');
+    expect($('device-label').textContent).toBe('RTX 4090 (86°C)');
     expect($('mk-line').getAttribute('d')).toMatch(/^M0 /);
     // empty + missing points → flat line
     cbs.stats({ total: '1', acceptedLabel: '1', uptime: '1m', estDay: '$1', points: [] });
@@ -986,6 +988,21 @@ describe('deferred init and window-fit guards', () => {
     } finally {
       delete document.readyState;
     }
+  });
+
+  // A rig with no nvidia-smi has only the engine's label to go on, so it must
+  // still get a name rather than an empty device row — the same fallback the
+  // miner report keeps.
+  it('falls back to the engine label when the GPU probe finds nothing', async () => {
+    const { api, cbs } = makeFullApi();
+    api.detectGpu = jest.fn().mockResolvedValue('');
+    await boot({ api });
+    expect($('device-label').textContent).toBe('GPU · auto-detect');
+
+    setInput($('addr-input'), ADDR);
+    click($('btn-start'));
+    cbs.stats({ total: '1.2', acceptedLabel: '3', uptime: '1m 00s', estDay: '$0.10', gpu: 'RTX 5090', temp: 71, points: [1, 2, 3] });
+    expect($('device-label').textContent).toBe('RTX 5090 (71°C)');
   });
 
   it('skips the resize observer when the app root is missing', async () => {
