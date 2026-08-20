@@ -110,12 +110,17 @@ jobs:
           $tmp = "$env:RUNNER_TEMP/engine-x"
           Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force
 
-          # Staged under the descriptor's own versioned name, which is exactly what
-          # bundledEnginePath looks for — a differently-named copy is invisible.
-          $exe = Get-ChildItem $tmp -Recurse -Filter $meta.name | Select-Object -First 1
-          if (-not $exe) { throw "no $($meta.name) inside engine archive" }
-          Copy-Item $exe.FullName "vendor/engine/$($meta.name)" -Force
-          Write-Host "Bundled engine $($meta.v): $((Get-Item "vendor/engine/$($meta.name)").Length) bytes"
+          # `launcher` may be a RELATIVE PATH, not just a filename: 1.9.4's zip
+          # was flat but 1.9.5's holds a folder. Search by basename, stage at the
+          # full relative path — that is what bundledEnginePath looks for, and a
+          # differently-placed copy is invisible to it.
+          $leaf = Split-Path $meta.name -Leaf
+          $exe = Get-ChildItem $tmp -Recurse -Filter $leaf | Select-Object -First 1
+          if (-not $exe) { throw "no $leaf inside engine archive" }
+          $dest = Join-Path 'vendor/engine' $meta.name
+          New-Item -ItemType Directory -Force -Path (Split-Path $dest -Parent) | Out-Null
+          Copy-Item $exe.FullName $dest -Force
+          Write-Host "Bundled engine $($meta.v): $((Get-Item $dest).Length) bytes at $($meta.name)"
 
       # Linux is deliberately NOT bundled. The 1.9.4 Linux engine is a ~530 MB
       # makeself bundle (it carries the CUDA runtime plus a core per
