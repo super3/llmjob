@@ -9,12 +9,15 @@ const {
   } = require('../src/shared/engine');
 
 describe('engineVersionFor / driverTooOld', () => {
-  test('one build per platform, both 1.9.4', () => {
+  test('Windows holds at 1.9.4 while Linux takes the 1.9.5.2 hotfix', () => {
     expect(engineVersionFor('win32')).toBe(ENGINE.windows);
     expect(engineVersionFor('linux')).toBe(ENGINE.linux);
     expect(engineVersionFor('freebsd')).toBe(ENGINE.linux);
+    // 1.9.5 is not taken on Windows: Defender flags it Wacatac.H!ml and blocks
+    // execution. See PACKAGED.win32.
     expect(ENGINE.windows).toBe('1.9.4');
-    expect(ENGINE.linux).toBe('1.9.4');
+    // Linux takes the hotfix; the platforms are no longer on the same build.
+    expect(ENGINE.linux).toBe('1.9.5.2');
   });
 
   // There is nothing left to fall back TO, so this only decides whether to warn.
@@ -77,7 +80,7 @@ describe('engineArchiveName', () => {
   test('Windows ships zips, others the versioned bare binary', () => {
     expect(engineArchiveName('win32')).toBe('AlphaMiner-Pearl-Windows.zip');
     // A described engine names its own artifact, whatever the convention says.
-    expect(engineArchiveName('linux', undefined, ENGINE.linux)).toBe('alphaminer-1.9.4-linux.run');
+    expect(engineArchiveName('linux', undefined, ENGINE.linux)).toBe('AlphaMiner-Linux-1.9.5.2.run');
     expect(engineArchiveName('win32', 'nvidia', ENGINE.windows)).toBe('alphaminer-1.9.4-win-033f7027b.zip');
     expect(engineArchiveName('win32', 'amd')).toBe('AlphaMiner-Pearl-AMD.zip');
     expect(engineArchiveName('darwin')).toBe('alpha-miner-' + ENGINE.linux);
@@ -169,43 +172,50 @@ describe('progressPercent', () => {
   });
 });
 
-describe('engine descriptors (1.9.4, one shape per platform)', () => {
-  // Linux 1.9.4 is a makeself self-extracting bundle: downloaded, chmod +x'd and
-  // spawned directly. Nothing unpacks it — it unpacks itself at each start — so
-  // it must NOT be routed through the archive path.
-  test('Linux is a pool-hosted self-extracting bundle, saved not unpacked', () => {
+describe('engine descriptors (one shape per platform)', () => {
+  // Linux runs 1.9.5.2, the rank-128 hotfix — NOT the 1.9.5 the release
+  // announcement links. A hotfix of that name is the 1.9.1 failure: installs
+  // cleanly, mines work the fork does not credit.
+  test('Linux pins the hotfix, as a self-extracting bundle saved not unpacked', () => {
     const V = ENGINE.linux;
+    expect(V).toBe('1.9.5.2');
     const pkg = enginePackage('linux', V);
     expect(pkg.selfExtracting).toBe(true);
     expect(pkg.cli).toBe('worker-address');
-    expect(pkg.sha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(engineBinaryName('linux', undefined, V)).toBe('alphaminer-1.9.4-linux.run');
+    expect(engineBinaryName('linux', undefined, V)).toBe('AlphaMiner-Linux-1.9.5.2.run');
     expect(engineDownloadUrl('linux', undefined, null, V))
-      .toBe(DOWNLOAD_BASE + 'alphaminer-1.9.4-linux.run');
+      .toBe(DOWNLOAD_BASE + 'AlphaMiner-Linux-1.9.5.2.run');
     // Crucially not an archive: isArchiveUrl gates extraction elsewhere.
     expect(isArchiveUrl(engineDownloadUrl('linux', undefined, null, V))).toBe(false);
-    // It installs as exactly one file, under the same name it downloads as.
     expect(engineFiles('/cache', 'linux', undefined, V))
-      .toEqual([path.join('/cache', 'alphaminer-1.9.4-linux.run')]);
+      .toEqual([path.join('/cache', 'AlphaMiner-Linux-1.9.5.2.run')]);
   });
 
-  // Windows 1.9.4 is a FLAT zip — one self-contained exe, hosted by the pool.
+  // Windows 1.9.5's zip holds a FOLDER where 1.9.4's was flat, so the launcher
+  // is a relative path and the installed binary nests one level down.
   test('Windows is a flat, pool-hosted archive', () => {
     const win = enginePackage('win32', ENGINE.windows);
+    // 1.9.5 is not taken on Windows: Defender flags it Wacatac.H!ml and blocks
+    // execution. See PACKAGED.win32.
+    expect(ENGINE.windows).toBe('1.9.4');
     expect(win.selfExtracting).toBeUndefined();
     expect(win.cli).toBe('worker-address');
-    expect(engineBinaryName('win32', 'nvidia', ENGINE.windows)).toBe(win.launcher);
+    expect(win.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(engineBinaryName('win32', 'nvidia', ENGINE.windows))
+      .toBe('AlphaMiner-Windows-1.9.4-033f7027.exe');
+    expect(enginePath('/cache', 'win32', 'nvidia', ENGINE.windows))
+      .toBe(path.join('/cache', 'AlphaMiner-Windows-1.9.4-033f7027.exe'));
     expect(engineDownloadUrl('win32', 'nvidia', null, ENGINE.windows))
       .toBe(DOWNLOAD_BASE + 'alphaminer-1.9.4-win-033f7027b.zip');
     expect(engineFiles('/cache', 'win32', 'nvidia', ENGINE.windows))
       .toEqual([enginePath('/cache', 'win32', 'nvidia', ENGINE.windows)]);
   });
 
-  // Both artifacts now live under the pool's /downloads/, so a mirror override
-  // reaches them — unlike 1.9.1b, which was pinned to a GitHub release URL.
+  // Both artifacts live under the pool's /downloads/, so a mirror override
+  // reaches them.
   test('a custom base redirects both platforms', () => {
     expect(engineDownloadUrl('linux', undefined, 'https://mirror.example/', ENGINE.linux))
-      .toBe('https://mirror.example/alphaminer-1.9.4-linux.run');
+      .toBe('https://mirror.example/AlphaMiner-Linux-1.9.5.2.run');
     expect(engineDownloadUrl('win32', 'nvidia', 'https://mirror.example/', ENGINE.windows))
       .toBe('https://mirror.example/alphaminer-1.9.4-win-033f7027b.zip');
   });
@@ -256,7 +266,7 @@ describe('manualInstallHint', () => {
   // drops it in and it is simply there — no rename, no extraction step.
   test('a self-extracting bundle is saved under its own name', () => {
     expect(manualInstallHint('linux', ENGINE.linux, '/cache'))
-      .toEqual({ manualPath: path.join('/cache', 'alphaminer-1.9.4-linux.run'), extractDir: null });
+      .toEqual({ manualPath: path.join('/cache', 'AlphaMiner-Linux-1.9.5.2.run'), extractDir: null });
   });
 
   test('a bare binary is saved as the pool\'s own download name', () => {

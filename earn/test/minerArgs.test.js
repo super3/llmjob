@@ -105,13 +105,13 @@ describe('buildEnv', () => {
   });
 });
 
-// The rank-128 CLI (alpha-miner 1.9.4 on Windows). Selected by the engine
+// The rank-128 CLI (alpha-miner 1.9.x on Windows). Selected by the engine
 // descriptor's `cli` field, not a version comparison, so these also pin the
 // dispatch: an engine that does not declare it keeps the 1.8.x vector.
 describe('buildArgs on the worker-address CLI', () => {
   const PRL = 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
   const MDL = 'mdl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
-  const win = { platform: 'win32', engineVersion: '1.9.4' };
+  const win = { platform: 'win32', engineVersion: require('../src/shared/engine').ENGINE.windows };
 
   test('carries the payout address inside --worker and pins the card', () => {
     expect(buildArgs(Object.assign({ address: PRL, worker: 'rig9', difficulty: 1000, gpuIndex: 2 }, win)))

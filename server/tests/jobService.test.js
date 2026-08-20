@@ -48,9 +48,18 @@ describe('JobService', () => {
     // Postgres rather than a 400. (pg-mem doesn't enforce int4 range, so only the
     // clamp itself can be asserted here.)
     it('clamps a caller-supplied maxTokens to what a node can run', async () => {
-      const { clampMaxTokens, DEFAULT_MAX_TOKENS } = JobService;
-      expect(clampMaxTokens(2147483647)).toBe(DEFAULT_MAX_TOKENS);
-      expect(clampMaxTokens(Number.MAX_SAFE_INTEGER)).toBe(DEFAULT_MAX_TOKENS);
+      const { clampMaxTokens, DEFAULT_MAX_TOKENS, MAX_TOKENS_CEILING } = JobService;
+      // An oversized ask is cut to the node's context window, NOT to the default:
+      // the two are different numbers now, so that a caller who wants room can
+      // have it while one who says nothing keeps the budget traffic always had.
+      expect(clampMaxTokens(2147483647)).toBe(MAX_TOKENS_CEILING);
+      expect(clampMaxTokens(Number.MAX_SAFE_INTEGER)).toBe(MAX_TOKENS_CEILING);
+      expect(MAX_TOKENS_CEILING).toBeGreaterThan(DEFAULT_MAX_TOKENS);
+      // A budget between the two is honoured as asked — this is the whole point
+      // of the split, and would still pass if the ceiling were wired to DEFAULT.
+      expect(clampMaxTokens(DEFAULT_MAX_TOKENS + 1)).toBe(DEFAULT_MAX_TOKENS + 1);
+      expect(clampMaxTokens(16384)).toBe(16384);
+      // Absent or unusable still falls back to the default, not the ceiling.
       expect(clampMaxTokens(-5)).toBe(DEFAULT_MAX_TOKENS);
       expect(clampMaxTokens('abc')).toBe(DEFAULT_MAX_TOKENS);
       expect(clampMaxTokens(Infinity)).toBe(DEFAULT_MAX_TOKENS);
@@ -58,7 +67,7 @@ describe('JobService', () => {
       expect(clampMaxTokens(0)).toBe(0);      // meaningful, kept
       expect(clampMaxTokens(512.9)).toBe(512);
       const job = await jobService.createJob({ prompt: 'p', userId: 'u', maxTokens: 2147483647 });
-      expect(job.maxTokens).toBe(DEFAULT_MAX_TOKENS);
+      expect(job.maxTokens).toBe(MAX_TOKENS_CEILING);
     });
 
     // Unknown speed means no limit, not zero capacity — otherwise a node with a

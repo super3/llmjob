@@ -58,7 +58,9 @@ describe('buildServerArgs', () => {
     const a = buildServerArgs({ modelPath: '/m.gguf' });
     expect(a).toEqual([
       '--model', '/m.gguf', '--host', '127.0.0.1', '--port', '8080',
-      '--ctx-size', '6400', '--n-gpu-layers', String(ALL_LAYERS), '--parallel', '1',
+      // From config, not a literal: the test says "ctx from config" and pinning
+      // the number here just means editing it in two places whenever it moves.
+      '--ctx-size', String(LLM.ctxSize), '--n-gpu-layers', String(ALL_LAYERS), '--parallel', '1',
       '--split-mode', 'none',
     ]);
     expect(a).not.toContain('--flash-attn');

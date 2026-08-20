@@ -158,7 +158,7 @@ describe('EngineManager manual install', () => {
 });
 
 describe('EngineManager — described engines', () => {
-  // Linux 1.9.4 is a makeself self-extracting bundle. It must be saved straight
+  // The Linux engine is a makeself self-extracting bundle. It must be saved straight
   // to its final path and chmod +x'd — never handed to the extractor, which
   // would fail on a file that is not an archive, and never routed through the
   // bare-binary path, whose manual-download adoption looks for other names.
@@ -185,7 +185,7 @@ describe('EngineManager — described engines', () => {
 
     expect(dest).toBe(path.join('/cache', pkg.launcher));
     expect(download).toHaveBeenCalledWith(
-      expect.stringContaining('alphaminer-1.9.4-linux.run'), dest, undefined);
+      expect.stringContaining(pkg.archive), dest, undefined);
     expect(chmod).toHaveBeenCalledWith(dest, 0o755);
     // Nothing unpacks it — it unpacks itself at each start.
     expect(extractPackage).not.toHaveBeenCalled();
@@ -206,7 +206,7 @@ describe('EngineManager — described engines', () => {
     expect(chmod).toHaveBeenCalledWith(dest, 0o755);
   });
 
-  // Windows runs its own version on its own shape: 1.9.4 is a FLAT package —
+  // Windows runs its own version on its own shape — see the descriptor:
   // one self-contained .exe at the root of the zip, no `dir`, no core half. It
   // still installs through the package path (download the archive, extract the
   // tree) but must land at the zip root, and there is no execute bit on Windows

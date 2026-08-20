@@ -28,11 +28,14 @@ const DOWNLOAD_BASE = 'https://pearl.alphapool.tech/downloads/';
 // it reads this.
 const ENGINE = {
   minDriverMajor: 580,
-  // Windows: one exe with automatic RTX 30/40/50 dispatch, ~4.3 MB zipped.
+  // Windows: held at 1.9.4 — see PACKAGED.win32 for why 1.9.5 is not taken.
   windows: '1.9.4',
-  // Linux: one self-extracting makeself bundle, ~530 MB, same dispatch. See
-  // PACKAGED.linux for why the size is load-bearing.
-  linux: '1.9.4',
+  // Linux: 1.9.5.2, NOT the 1.9.5 the release announcement links. Upstream
+  // followed 1.9.5 with a "rank-128 hotfix" for Linux and HiveOS while the
+  // Windows update stayed pending, which is the same failure 1.9.1 had — an
+  // engine that installs cleanly and mines work the fork does not credit. Take
+  // the hotfix on the platform that has one.
+  linux: '1.9.5.2',
 };
 
 // Engine descriptors: versions that ship as something other than the bare
@@ -55,61 +58,58 @@ const ENGINE = {
 // strips the override rather than letting a working rig fail closed.
 const PACKAGED = {
   linux: {
-    // 1.9.4 is a THIRD shape again: a makeself self-extracting bundle (.run,
-    // Content-Type application/x-makeself) that is downloaded, chmod +x'd and
-    // spawned directly. It is neither a bare binary nor an archive we unpack —
-    // it unpacks itself into a temp dir at each start — so `selfExtracting`
-    // tells EngineManager to skip extraction entirely and save it straight to
-    // its final path. Args pass through makeself to the miner untouched, which
-    // is how upstream's own documented command line works.
+    // 1.9.5.2 — upstream's rank-128 hotfix for Linux/HiveOS. Plain 1.9.5 is
+    // deliberately NOT pinned here even though the release announcement links
+    // it: the pool's own page says "Alpha Miner 1.9.5.2 rank-128 hotfix is out
+    // for Linux and HiveOS; the Windows native update is pending", and a
+    // rank-128 hotfix is exactly the 1.9.1 failure — mines happily, earns
+    // nothing.
     //
-    // It is ~530 MB because it carries the CUDA runtime plus a core per
-    // architecture. That size is load-bearing: it is why the Linux engine is
-    // NOT bundled into the AppImage (see .github/workflows/miner-build.yml).
-    // The 4 MB `-rtx3040` HiveOS bundle is the same engine minus the Blackwell
-    // sm120 core — verified by listing it — which is exactly why upstream says
-    // not to put it on a 50-series card, and why we do not use it to dodge the
-    // download.
-    '1.9.4': {
-      archive: 'alphaminer-1.9.4-linux.run',
-      launcher: 'alphaminer-1.9.4-linux.run',
-      sha256: 'e3dbba681c1f027b80c845f0747e35baae91dbb2ae7464dcc435e41498627f4e',
+    // Note the two Linux .run files upstream serves are NOT interchangeable:
+    // alpha-miner-1.9.5-linux.run is 5.4 MB and AlphaMiner-Linux-1.9.5.2.run is
+    // 554 MB. The big one is the self-contained bundle (CUDA runtime plus a core
+    // per architecture) that matches the 1.9.4 shape we already handle.
+    //
+    // No sha256: upstream published one for 1.9.4 but not for this build, and an
+    // invented checksum is worse than none.
+    '1.9.5.2': {
+      archive: 'AlphaMiner-Linux-1.9.5.2.run',
+      launcher: 'AlphaMiner-Linux-1.9.5.2.run',
       selfExtracting: true,
-      // Same 1.9.4 CLI as Windows: --host <host:port>, the payout address
-      // INSIDE --worker as <address>.<rig>, --gpu <id>. Upstream's HiveOS
-      // flight sheet says the same thing in its own vocabulary — the wallet
-      // template is `%WAL%.%WORKER_NAME%`, with "REQUIRED — the address travels
-      // inside the worker field".
       cli: 'worker-address',
     },
   },
   win32: {
-    // 1.9.4 — the mandatory rank-128 build. Unlike 1.9.1b this is a FLAT,
-    // pool-hosted zip holding ONE self-contained exe (plus a reference
-    // start-mining.bat we ignore), so there is no `dir` and no `core`, and the
-    // URL is built from DOWNLOAD_BASE rather than pointing at GitHub.
+    // Windows stays on 1.9.4 — 1.9.5 is NOT taken, deliberately.
     //
-    // Every one of those claims was checked against the real artifact rather
-    // than the setup page, which is wrong in two places:
+    // Windows Defender classifies the 1.9.5 exe as Trojan:Win32/Wacatac.H!ml
+    // (severity 5) and both deletes it on download and refuses to execute a copy
+    // that survives: "the file contains a virus or potentially unwanted
+    // software". Observed on this rig — the app downloaded it, extracted it, and
+    // reported "blocked or removed by antivirus" three seconds later, while the
+    // 1.9.4 exe beside it was untouched. A benchmark run 40 minutes earlier had
+    // worked, so a cloud signature landed mid-session; it is not a stale local
+    // definition.
     //
-    //   • the page still describes "the guarded alpha-miner.exe launcher checks
-    //     the exact core", which was the 1.9.1b shape. 1.9.4 verifies an
-    //     EMBEDDED core — the zip has exactly two entries and no sibling core;
-    //   • the page's PowerShell example passes `--host HOST --port PORT`, but
-    //     the miner's own --help documents `--host <endpoint>` as "endpoint:PORT"
-    //     and defaults to us2.alphapool.tech:5566. Both forms parse (verified
-    //     against the binary), so we send the documented combined one.
+    // !ml is a heuristic and miners are routinely false-positived, so this will
+    // probably be reclassified. Until it is, shipping 1.9.5 would hand every
+    // Defender user an engine that cannot start.
     //
-    // The exe also runs happily from a path containing a space, so the
-    // ProgramData relocation 1.9.1b needed is gone along with the check that
-    // decided it.
+    // The upside forgone is small. The release announcement claims ~30% and
+    // ~357 TH/s on a 5090; measured back to back on this 5090, same pool, same
+    // difficulty, 1.9.5 gave ~286 TH/s against 1.9.4's ~282 — about 1.6%.
+    // Upstream also lists the Windows native update as still pending, so 1.9.5
+    // is not even the build they intend Windows to land on.
+    //
+    // Linux is bumped regardless: its 1.9.5.2 is a rank-128 hotfix, which is a
+    // correctness fix rather than a speed one.
     '1.9.4': {
       archive: 'alphaminer-1.9.4-win-033f7027b.zip',
       launcher: 'AlphaMiner-Windows-1.9.4-033f7027.exe',
       // Published on the setup page; matched the download byte for byte.
       sha256: 'bdaafa7806ffd742c43221babbb9018ee8237816759dc224dd4d50cb8376bd73',
-      // Selects the 1.9.4 argument shape in minerArgs: --host <host:port>,
-      // the payout address INSIDE --worker as <address>.<rig>, and --gpu <id>.
+      // Selects the 1.9.x argument shape in minerArgs: --host <host> --port
+      // <port>, the payout address INSIDE --worker as <address>.<rig>, --gpu.
       cli: 'worker-address',
     },
   },
