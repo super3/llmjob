@@ -322,7 +322,7 @@ describe('OpenAI gateway — integration', () => {
       .send({ messages: [{ role: 'user', content: 'hi' }], max_tokens: 999999 });
 
     expect(jobs).toHaveLength(1);
-    expect(jobs[0].maxTokens).toBe(6400);
+    expect(jobs[0].maxTokens).toBe(32768);
   });
 
   it('returns 502 when the node fails the job (non-streaming)', async () => {

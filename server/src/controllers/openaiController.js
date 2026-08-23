@@ -11,7 +11,10 @@ const {
 // always clamped max_tokens; here it rode through unbounded, so a single key
 // could ask for millions of tokens and hold a node's GPU for as long as it took.
 // Sized to the node's context window (earn/src/shared/config.js LLM.ctxSize).
-const MAX_COMPLETION_TOKENS = 6400;
+// Still a real bound, just a larger one: what a caller can actually be served is
+// governed by the 280s timeout regardless, which at fleet speeds lands well
+// under this — the ceiling stops the unbounded ask, the budget stops the rest.
+const MAX_COMPLETION_TOKENS = 32768;
 
 // Header a caller sets to pin a request to one specific node (health/perf testing).
 // Lowercase — Express lowercases header names. Kept OpenAI-SDK friendly: passable

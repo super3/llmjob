@@ -94,7 +94,18 @@ const LLM = {
   // is what actually caps a reply. At 4096 a reasoning model ran out of context
   // mid-thought on hard prompts and returned nothing; the model itself supports
   // 128K, so this was our own conservative floor rather than a limit of Gemma.
-  ctxSize: 6400,
+  //
+  // 6400 turned out to be the same floor one step up. On AIME 2025 it cut 26% of
+  // samples off mid-working — six problems truncated on more than half their
+  // samples and scored 1/45 between them, against 52/87 on the problems that
+  // always fit. Reasoning benchmarks are normally run at 32768, and asking the
+  // model to recover a cut-off answer does not work: it fabricates one (returned
+  // 0 against a gold of 62), so the window is the only lever.
+  //
+  // The 280s serving budget still caps what any single request can actually
+  // produce — at fleet speeds that is roughly 8-14k tokens — so this is headroom
+  // rather than a licence to generate 32k.
+  ctxSize: 32768,
   parallel: 1,
   // Self-heal a llama-server that exits before ready because it couldn't bind the
   // port yet — the previous server (e.g. from an update relaunch) is still
@@ -156,11 +167,35 @@ const LLM = {
     // well under the weight file. That over-booking locked out a 16 GB card with
     // 6.7 GB free — the model would have fitted twice over.
     //
-    // 3800 is the measurement plus ~15% headroom for driver/fragmentation
-    // variance; minVramMb stays above it so we still never spawn right at the
-    // edge. Re-measure if ctxSize or the model changes: both move the KV cache.
-    vramFullMb: 3800,
-    minVramMb: 4352, // ~4.25 GB free required before we put it on the GPU
+    // MEASURED at ctxSize 32768, on a 5090 running the shipped command line
+    // (--n-gpu-layers 999 --ctx-size 32768 --split-mode none): llama-server
+    // holds 3719 MB of dedicated VRAM. Confirmed GPU-resident rather than
+    // silently offloaded — 123 tok/s, and the server log reports
+    // n_ctx_slot = 32768. llama.cpp allocates the KV cache up front, so steady
+    // state is also peak.
+    //
+    // The same card at ctxSize 6400 holds 3227 MB, which is within 2.5% of the
+    // 3308 measured on a 4090 — so the two rigs agree and the delta below is a
+    // like-for-like reading of the context change, not a hardware difference.
+    //
+    // THE WHOLE 5.12x CONTEXT INCREASE COSTS 492 MB.
+    //
+    // This replaces an estimate that assumed the cache scales linearly and put
+    // the total near 7400. It does not scale linearly: Gemma's alternating
+    // local/global attention gives most layers a small sliding window, so only a
+    // few hold full-context KV. The estimate was deliberately pessimistic on the
+    // grounds that over-booking merely idles a node while under-booking
+    // crash-loops it — sound reasoning, wrong by ~2x, and it would have put the
+    // floor at 9728 MB of free VRAM for a model that needs 3.7 GB, excluding a
+    // 5060 Ti and making a 4070 borderline for no reason.
+    //
+    // 4096 is the measured figure plus ~10% headroom; 4608 keeps roughly the old
+    // ratio between the floor and the full-offload figure. Note the pre-32768
+    // value (3800) already covered the real 32768 usage, with 81 MB to spare —
+    // the context window barely moves VRAM at all. Re-measure if ctxSize or the
+    // model changes: both move the KV cache.
+    vramFullMb: 4096,
+    minVramMb: 4608, // ~4.5 GB free required before we put it on the GPU
     quant: 'Q4_K_M',
   },
 };
