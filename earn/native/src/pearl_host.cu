@@ -145,10 +145,11 @@ struct Ctx {
   uint32_t *dCols = nullptr;
   int32_t *dD = nullptr;          // [chunks][m][cols_count] partial dot products
   uint32_t *dJackpot = nullptr;   // [batch][16]
-  uint8_t *dHashes = nullptr;     // [batch][32]
-  int *dFlags = nullptr;          // [batch]
+  uint8_t *dHashes = nullptr;     // [PEARL_MAX_HITS][32] — hits only
+  uint32_t *dHitCount = nullptr;  // one counter per batch
+  uint32_t *dHitIndex = nullptr;  // [PEARL_MAX_HITS]
   uint32_t colBatch = 1;          // column offsets per launch
-  std::vector<int> hFlags;
+  std::vector<uint32_t> hHitIndex;
   uint32_t batch = 0;
   uint32_t *dJobKey = nullptr;
   uint32_t *dASeed = nullptr;
@@ -314,7 +315,7 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   ctx->colBatch = profile->col_batch ? profile->col_batch : 1u;
   if (ctx->colBatch > profile->n) ctx->colBatch = profile->n;
   ctx->batch = ctx->colBatch * profile->m;
-  ctx->hFlags.resize(ctx->batch);
+  ctx->hHitIndex.resize(PEARL_MAX_HITS);
   // Every distinct partial computed once per batch instead of four times.
   // One int32 per (column group, chunk, row): the producer XORs the eight
   // columns together before storing, which is exact because the tile fold is
@@ -326,10 +327,11 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   CUDA_OK(cudaMalloc(&ctx->dJackpot,
                      (size_t)ctx->batch * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)),
           "allocating the transcripts");
-  CUDA_OK(cudaMalloc(&ctx->dHashes, (size_t)ctx->batch * PEARL_HASH_BYTES),
+  CUDA_OK(cudaMalloc(&ctx->dHashes, (size_t)PEARL_MAX_HITS * PEARL_HASH_BYTES),
           "allocating the batch hashes");
-  CUDA_OK(cudaMalloc(&ctx->dFlags, (size_t)ctx->batch * sizeof(int)),
-          "allocating the batch verdicts");
+  CUDA_OK(cudaMalloc(&ctx->dHitCount, sizeof(uint32_t)), "allocating the hit counter");
+  CUDA_OK(cudaMalloc(&ctx->dHitIndex, (size_t)PEARL_MAX_HITS * sizeof(uint32_t)),
+          "allocating the hit list");
   CUDA_OK(cudaMalloc(&ctx->dJobKey, 8 * sizeof(uint32_t)), "allocating job_key");
   CUDA_OK(cudaMalloc(&ctx->dASeed, 8 * sizeof(uint32_t)), "allocating a_seed");
   CUDA_OK(cudaMalloc(&ctx->dBSeed, 8 * sizeof(uint32_t)), "allocating b_seed");
@@ -369,7 +371,7 @@ extern "C" void pearl_host_destroy(void *handle) {
   cudaFree(ctx->dBoundA); cudaFree(ctx->dBoundB);
   cudaFree(ctx->dRows); cudaFree(ctx->dCols);
   cudaFree(ctx->dD);
-  cudaFree(ctx->dHashes); cudaFree(ctx->dFlags);
+  cudaFree(ctx->dHashes); cudaFree(ctx->dHitCount); cudaFree(ctx->dHitIndex);
   cudaFree(ctx->dCvs); cudaFree(ctx->dSeedBuf);
   cudaFree(ctx->dHashA); cudaFree(ctx->dHashB);
   cudaFree(ctx->dJackpot); cudaFree(ctx->dJobKey);
@@ -547,17 +549,23 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
       ctx->profile.n, k, rank, chunks, col_off, col_groups, ctx->dD);
 
   if (prof) cudaEventRecord(ev[1]);
-  pearl_gemm_fold<<<(regions + warps_per_block - 1) / warps_per_block, threads>>>(
+  const uint32_t regions_per_block = warps_per_block * PEARL_REGIONS_PER_WARP;
+  pearl_gemm_fold<<<(regions + regions_per_block - 1) / regions_per_block, threads>>>(
       ctx->dD, ctx->dRows, PEARL_ROWS_COUNT, PEARL_COLS_COUNT, ctx->profile.m,
       chunks, nonce_base, ctx->dJackpot);
 
   if (prof) cudaEventRecord(ev[2]);
+  cudaMemsetAsync(ctx->dHitCount, 0, sizeof(uint32_t));
   pearl_finalize_many<<<(regions + 255) / 256, 256>>>(
-      ctx->dASeed, ctx->dJackpot, regions, ctx->dTarget, ctx->dHashes, ctx->dFlags);
+      ctx->dASeed, ctx->dJackpot, regions, ctx->dTarget, ctx->dHashes,
+      ctx->dHitCount, ctx->dHitIndex);
 
   if (prof) cudaEventRecord(ev[3]);
-  cudaMemcpy(ctx->hFlags.data(), ctx->dFlags, (size_t)regions * sizeof(int),
-             cudaMemcpyDeviceToHost);
+  // Four bytes back instead of one int per region. Reading a flag per region
+  // was a 1.6 MiB synchronising copy every batch — 18% of the time, spent
+  // almost entirely confirming that nothing was found.
+  uint32_t hits = 0;
+  cudaMemcpy(&hits, ctx->dHitCount, sizeof(uint32_t), cudaMemcpyDeviceToHost);
   if (prof) {
     cudaEventRecord(ev[4]);
     cudaEventSynchronize(ev[4]);
@@ -590,16 +598,25 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   }
   if (attempts) *attempts = regions;
 
-  for (uint32_t i = 0; i < regions; i++) {
-    if (!ctx->hFlags[i]) continue;
-    cudaMemcpy(out->jackpot_hash, ctx->dHashes + (size_t)i * PEARL_HASH_BYTES,
+  if (hits > 0) {
+    const uint32_t n_hits = hits < PEARL_MAX_HITS ? hits : PEARL_MAX_HITS;
+    cudaMemcpy(ctx->hHitIndex.data(), ctx->dHitIndex, (size_t)n_hits * sizeof(uint32_t),
+               cudaMemcpyDeviceToHost);
+    // The kernel appends with an atomic, so the list is in an arbitrary order.
+    // Take the LOWEST region index, which is what a sequential scan would have
+    // returned — otherwise which share gets submitted varies run to run.
+    uint32_t best = 0;
+    for (uint32_t i = 1; i < n_hits; i++) {
+      if (ctx->hHitIndex[i] < ctx->hHitIndex[best]) best = i;
+    }
+    cudaMemcpy(out->jackpot_hash, ctx->dHashes + (size_t)best * PEARL_HASH_BYTES,
                PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
     memcpy(out->a_seed, ctx->aSeed, PEARL_HASH_BYTES);
     memcpy(out->b_seed, ctx->bSeed, PEARL_HASH_BYTES);
-    out->nonce = nonce_base + i;
+    out->nonce = nonce_base + ctx->hHitIndex[best];
     out->proof.assign(PEARL_JACKPOT_BUCKETS * 4, 0);
     cudaMemcpy(out->proof.data(),
-               ctx->dJackpot + (size_t)i * PEARL_JACKPOT_BUCKETS,
+               ctx->dJackpot + (size_t)ctx->hHitIndex[best] * PEARL_JACKPOT_BUCKETS,
                PEARL_JACKPOT_BUCKETS * 4, cudaMemcpyDeviceToHost);
     out->found = true;
     return true;

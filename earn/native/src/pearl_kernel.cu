@@ -688,19 +688,25 @@ extern "C" __global__ void pearl_gemm_fold(
   const uint32_t lane = threadIdx.x & 31u;
   const uint32_t warp = threadIdx.x >> 5;
   const uint32_t warps_per_block = blockDim.x >> 5;
-  // Index WITHIN the batch. region_base is a multiple of m, so the row offset is
-  // the same either way, but the column group is a property of the position in
-  // this batch and must come from the local index.
-  const uint64_t slot = (uint64_t)blockIdx.x * warps_per_block + warp;
+
+  // PEARL_REGIONS_PER_WARP regions share a warp, each using rows_count lanes.
+  //
+  // The producer already XORed each row's columns together, so a region needs
+  // only rows_count values combined — four at the mandated tile. Giving each
+  // region a whole warp left 28 of 32 lanes idle, and measured per-stage timing
+  // put this kernel at 42% of the batch, the largest single share. Packing
+  // eight regions per warp fills it.
+  (void)cols_count;
+  const uint32_t sub = lane / rows_count;   // which region within the warp
+  const uint32_t ri = lane % rows_count;    // which row of that region's tile
+  const bool active = sub < PEARL_REGIONS_PER_WARP;
+
+  const uint64_t slot =
+      ((uint64_t)blockIdx.x * warps_per_block + warp) * PEARL_REGIONS_PER_WARP
+      + (active ? sub : 0u);
   const uint32_t cg = (uint32_t)(slot / m);
   const uint32_t row_off = (uint32_t)(slot % m);
-
-  // One lane per ROW of the tile now, not per cell: the producer already XORed
-  // each row's columns together, so there are rows_count values to combine
-  // rather than rows_count*cols_count.
-  (void)cols_count;
-  const bool active = lane < rows_count;
-  const uint32_t r = (rows_pattern[active ? lane : 0u] + row_off) % m;
+  const uint32_t r = (rows_pattern[ri] + row_off) % m;
 
   uint32_t jackpot[PEARL_JACKPOT_BUCKETS];
 #pragma unroll
@@ -711,15 +717,18 @@ extern "C" __global__ void pearl_gemm_fold(
     const int32_t v =
         active ? D[((size_t)cg * chunks + chunk) * m + r] : 0;
     uint32_t x = (uint32_t)v;
+    // Reduce only within each region's own lanes, not across the whole warp.
 #pragma unroll
-    for (int sft = 16; sft > 0; sft >>= 1) x ^= __shfl_xor_sync(0xffffffffu, x, sft);
-    if (lane == 0) {
+    for (uint32_t sft = 1; sft < PEARL_ROWS_COUNT; sft <<= 1) {
+      x ^= __shfl_xor_sync(0xffffffffu, x, sft);
+    }
+    if (ri == 0) {
       const uint32_t l = chunk % PEARL_JACKPOT_BUCKETS;
       jackpot[l] = pearl_rotl13(jackpot[l]) ^ x;
     }
   }
 
-  if (lane == 0) {
+  if (ri == 0 && active) {
     uint32_t *out = jackpot_out + (size_t)slot * PEARL_JACKPOT_BUCKETS;
 #pragma unroll
     for (int i = 0; i < PEARL_JACKPOT_BUCKETS; i++) out[i] = jackpot[i];
@@ -734,7 +743,8 @@ extern "C" __global__ void pearl_finalize_many(const uint32_t *a_seed,
                                                uint32_t count,
                                                const uint8_t *target_be,
                                                uint8_t *hashes_out,
-                                               int *flags_out) {
+                                               uint32_t *hit_count,
+                                               uint32_t *hit_index) {
   uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= count) return;
   const uint32_t *j = jackpots + (size_t)idx * PEARL_JACKPOT_BUCKETS;
@@ -751,9 +761,18 @@ extern "C" __global__ void pearl_finalize_many(const uint32_t *a_seed,
   for (int i = 0; i < 8; i++) key[i] = a_seed[i];
   uint8_t h[PEARL_HASH_BYTES];
   blake3_keyed(key, transcript, sizeof(transcript), h);
+  // Write ONLY on a hit. Storing every region's 32-byte hash unconditionally
+  // was 12.6 MiB a batch at the mainnet geometry, spent almost entirely on
+  // hashes that miss, and it forced the host to read a per-region flag array
+  // back across the bus to find the one that did not.
+  if (!pearl_meets_target(h, target_be)) return;
+  const uint32_t slot = atomicAdd(hit_count, 1u);
+  if (slot >= PEARL_MAX_HITS) return;
+  hit_index[slot] = idx;
 #pragma unroll
-  for (int i = 0; i < PEARL_HASH_BYTES; i++) hashes_out[(size_t)idx * PEARL_HASH_BYTES + i] = h[i];
-  flags_out[idx] = pearl_meets_target(h, target_be);
+  for (int i = 0; i < PEARL_HASH_BYTES; i++) {
+    hashes_out[(size_t)slot * PEARL_HASH_BYTES + i] = h[i];
+  }
 }
 
 // Hash the 64-byte transcript under a_seed and test it against the target. The

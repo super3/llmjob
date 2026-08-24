@@ -108,6 +108,16 @@ typedef struct PearlProfile {
 // re-reading the slice per column group, which is correct but slower.
 #define PEARL_MAX_A_QUADS 8
 
+// How many regions share one warp in the fold. The producer collapses each
+// row's columns, so a region needs only PEARL_ROWS_COUNT lanes; giving it a
+// whole warp left 28 of 32 idle.
+#define PEARL_REGIONS_PER_WARP (32 / PEARL_ROWS_COUNT)
+
+// How many hits one batch can report. The search returns on the first one, so
+// this only has to be large enough that a pathologically easy target does not
+// silently lose hits it would never have submitted anyway.
+#define PEARL_MAX_HITS 64
+
 #define PEARL_SEED_SALTED 0u
 #define PEARL_SEED_LEGACY 1u
 
