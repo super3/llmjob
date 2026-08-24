@@ -46,12 +46,14 @@ extern "C" __global__ void pearl_hash_operands(const uint32_t *job_key,
                                                uint32_t len, uint8_t *out);
 extern "C" __global__ void pearl_precompute_xy(const int8_t *X, const int8_t *Y,
                                                int32_t *out, uint32_t rows,
-                                               uint32_t k, uint32_t rank);
+                                               uint32_t k, uint32_t rank,
+                                               uint32_t chunks);
 extern "C" __global__ void pearl_precompute_r(const int8_t *EAR, const int8_t *EBR,
-                                              int32_t *R, uint32_t k, uint32_t rank);
+                                              int32_t *R, uint32_t k, uint32_t rank,
+                                              uint32_t chunks);
 extern "C" __global__ void pearl_precompute_fold_s(const int8_t *EAL, const int32_t *R,
                                                    int32_t *P, uint32_t rows,
-                                                   uint32_t rank);
+                                                   uint32_t rank, uint32_t chunks);
 extern "C" __global__ void pearl_gemm_fold(
     const int8_t *A, const int8_t *B, const int32_t *T, const int32_t *Q,
     const int8_t *EAL, const int8_t *EBL, const uint32_t *rows_pattern,
@@ -217,8 +219,12 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   // The correction precomputes are [rows, rank] rather than [rows, k], so they
   // cost rank/k of what materialising the operands did — at mainnet 32 MiB in
   // place of 2 GiB.
+  // One correction per (row, chunk, j): the fold sums each chunk separately into
+  // its own transcript lane, so the corrections are chunk-local too.
+  const size_t nchunks = (profile->k + rank - 1) / rank;
   const size_t precomputeBytes =
-      ((size_t)profile->m * rank + (size_t)profile->n * rank + rank * rank) * sizeof(int32_t);
+      ((size_t)profile->m * rank * nchunks + (size_t)profile->n * rank * nchunks
+       + rank * rank * nchunks) * sizeof(int32_t);
   const size_t need = aBytes + bBytes + precomputeBytes + noiseBytes + (1u << 20);
 
   // Check the budget BEFORE allocating, so an 8 GB card gets a sentence it can
@@ -239,9 +245,9 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
 
   CUDA_OK(cudaMalloc(&ctx->dA, aBytes), "allocating A");
   CUDA_OK(cudaMalloc(&ctx->dB, bBytes), "allocating B");
-  CUDA_OK(cudaMalloc(&ctx->dT, (size_t)profile->m * rank * sizeof(int32_t)), "allocating T");
-  CUDA_OK(cudaMalloc(&ctx->dQ, (size_t)profile->n * rank * sizeof(int32_t)), "allocating Q");
-  CUDA_OK(cudaMalloc(&ctx->dR, rank * rank * sizeof(int32_t)), "allocating R");
+  CUDA_OK(cudaMalloc(&ctx->dT, (size_t)profile->m * rank * nchunks * sizeof(int32_t)), "allocating T");
+  CUDA_OK(cudaMalloc(&ctx->dQ, (size_t)profile->n * rank * nchunks * sizeof(int32_t)), "allocating Q");
+  CUDA_OK(cudaMalloc(&ctx->dR, rank * rank * nchunks * sizeof(int32_t)), "allocating R");
   CUDA_OK(cudaMalloc(&ctx->dEAL, (size_t)profile->m * rank), "allocating E_AL");
   CUDA_OK(cudaMalloc(&ctx->dEAR, rank * k), "allocating E_AR");
   CUDA_OK(cudaMalloc(&ctx->dEBL, (size_t)profile->n * rank), "allocating E_BL");
@@ -372,15 +378,16 @@ extern "C" void pearl_host_set_job(void *handle, const uint8_t *header,
   // The three low-rank corrections, once per job. P and S both contract with
   // E_BL[c], so S is folded straight into P and the fold does one rank-length
   // dot rather than two.
-  pearl_precompute_xy<<<blocks((size_t)ctx->profile.m * rank), threads>>>(
-      ctx->dA, ctx->dEBR, ctx->dT, ctx->profile.m, k, rank);
-  pearl_precompute_xy<<<blocks((size_t)ctx->profile.n * rank), threads>>>(
-      ctx->dB, ctx->dEAR, ctx->dQ, ctx->profile.n, k, rank);
-  pearl_precompute_r<<<blocks((size_t)rank * rank), threads>>>(
-      ctx->dEAR, ctx->dEBR, ctx->dR, k, rank);
+  const uint32_t nchunks = (k + rank - 1) / rank;
+  pearl_precompute_xy<<<blocks((size_t)ctx->profile.m * rank * nchunks), threads>>>(
+      ctx->dA, ctx->dEBR, ctx->dT, ctx->profile.m, k, rank, nchunks);
+  pearl_precompute_xy<<<blocks((size_t)ctx->profile.n * rank * nchunks), threads>>>(
+      ctx->dB, ctx->dEAR, ctx->dQ, ctx->profile.n, k, rank, nchunks);
+  pearl_precompute_r<<<blocks((size_t)rank * rank * nchunks), threads>>>(
+      ctx->dEAR, ctx->dEBR, ctx->dR, k, rank, nchunks);
   cudaDeviceSynchronize();
-  pearl_precompute_fold_s<<<blocks((size_t)ctx->profile.m * rank), threads>>>(
-      ctx->dEAL, ctx->dR, ctx->dT, ctx->profile.m, rank);
+  pearl_precompute_fold_s<<<blocks((size_t)ctx->profile.m * rank * nchunks), threads>>>(
+      ctx->dEAL, ctx->dR, ctx->dT, ctx->profile.m, rank, nchunks);
 
   cudaMemcpy(ctx->dTarget, target, PEARL_HASH_BYTES, cudaMemcpyHostToDevice);
   cudaMemcpy(ctx->aSeed, ctx->dASeed, PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);

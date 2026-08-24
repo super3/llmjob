@@ -336,71 +336,87 @@ extern "C" __global__ void pearl_hash_operands(const uint32_t *job_key,
 }
 
 
+
 // ---------------------------------------------------------------------------
 // Per-job precomputes for the int8 decomposition.
 //
-// The fold used to read a materialised int32 A', costing 4 bytes per element
-// and pinning the kernel at the L2 ceiling. Expanding the product instead keeps
-// the raw int7 operands and pushes the noise into rank-length corrections:
+// CHUNK-LOCAL, and that is the whole subtlety. The fold accumulates a separate
+// partial sum for each rank-sized chunk of k, and each lands in a different
+// transcript lane — so every correction term has to be restricted to the same
+// t-range as the chunk it belongs to. Summing over all of k instead produces a
+// perfectly plausible transcript that matches nothing.
 //
-//   acc(r,c) = Sum_t A[r,t]*B[c,t]              <- int8 x int8, dominant term
-//            + Sum_j E_BL[c,j]*(P[r,j]+S[r,j])
-//            + Sum_j E_AL[r,j]*Q[c,j]
+//   acc(r,c,chunk) = Sum_{t in chunk} A[r,t]*B[c,t]        <- int8, dominant
+//                  + Sum_j E_BL[c,j]*(P+S)[r,chunk,j]
+//                  + Sum_j E_AL[r,j]*Q[c,chunk,j]
 //
-//   P = A * E_BR^T             [m, rank]
-//   Q = B * E_AR^T             [n, rank]
-//   S = E_AL * (E_AR * E_BR^T) [m, rank]
+//   P[r,chunk,j]  = Sum_{t in chunk} A[r,t]*E_BR[j,t]
+//   Q[c,chunk,j]  = Sum_{t in chunk} B[c,t]*E_AR[j,t]
+//   R[chunk,j,j'] = Sum_{t in chunk} E_AR[j,t]*E_BR[j',t]
+//   S[r,chunk,j'] = Sum_j E_AL[r,j]*R[chunk,j,j']
 //
-// Each costs m*k*rank once per job — about 1e9 ops, tens of microseconds — in
-// exchange for taking 4 bytes per element out of the inner loop for ever.
+// Laid out so the rank values for one (row, chunk) are contiguous, which is the
+// order the fold reads them in.
 // ---------------------------------------------------------------------------
 
-// G = X * Y^T, X being [rows, k] int8 and Y [rank, k] int8. Serves both
-// P (X=A, Y=E_BR) and Q (X=B, Y=E_AR). One thread per output element.
+// P or Q: G[row, chunk, j] = Sum over the chunk of X[row,t] * Y[j,t].
 extern "C" __global__ void pearl_precompute_xy(const int8_t *__restrict__ X,
                                                const int8_t *__restrict__ Y,
                                                int32_t *__restrict__ out,
                                                uint32_t rows, uint32_t k,
-                                               uint32_t rank) {
+                                               uint32_t rank, uint32_t chunks) {
   uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx >= (uint64_t)rows * rank) return;
-  const uint32_t r = (uint32_t)(idx / rank);
+  const uint64_t total = (uint64_t)rows * chunks * rank;
+  if (idx >= total) return;
   const uint32_t j = (uint32_t)(idx % rank);
+  const uint32_t chunk = (uint32_t)((idx / rank) % chunks);
+  const uint32_t r = (uint32_t)(idx / ((uint64_t)rank * chunks));
+  const uint32_t k0 = chunk * rank;
+  const uint32_t lim = (k0 + rank <= k) ? (k0 + rank) : k;
   const int8_t *xr = X + (size_t)r * k;
   const int8_t *yj = Y + (size_t)j * k;
   int32_t acc = 0;
-  for (uint32_t t = 0; t < k; t++) acc += (int32_t)xr[t] * (int32_t)yj[t];
+  for (uint32_t t = k0; t < lim; t++) acc += (int32_t)xr[t] * (int32_t)yj[t];
   out[idx] = acc;
 }
 
-// R = E_AR * E_BR^T, [rank, rank] int32. Small, and feeds S.
+// R[chunk, j, j'] = Sum over the chunk of E_AR[j,t] * E_BR[j',t].
 extern "C" __global__ void pearl_precompute_r(const int8_t *__restrict__ EAR,
                                               const int8_t *__restrict__ EBR,
                                               int32_t *__restrict__ R,
-                                              uint32_t k, uint32_t rank) {
-  uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx >= rank * rank) return;
-  const uint32_t a = idx / rank, b = idx % rank;
+                                              uint32_t k, uint32_t rank,
+                                              uint32_t chunks) {
+  uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= (uint64_t)chunks * rank * rank) return;
+  const uint32_t b = (uint32_t)(idx % rank);
+  const uint32_t a = (uint32_t)((idx / rank) % rank);
+  const uint32_t chunk = (uint32_t)(idx / ((uint64_t)rank * rank));
+  const uint32_t k0 = chunk * rank;
+  const uint32_t lim = (k0 + rank <= k) ? (k0 + rank) : k;
   const int8_t *ea = EAR + (size_t)a * k;
   const int8_t *eb = EBR + (size_t)b * k;
   int32_t acc = 0;
-  for (uint32_t t = 0; t < k; t++) acc += (int32_t)ea[t] * (int32_t)eb[t];
+  for (uint32_t t = k0; t < lim; t++) acc += (int32_t)ea[t] * (int32_t)eb[t];
   R[idx] = acc;
 }
 
-// T = P + E_AL * R, folded in place into P. Both corrections that contract with
-// E_BL[c] are summed here so the fold does ONE rank-length dot, not two.
+// T = P + E_AL * R, folded in place. Both terms that contract with E_BL[c] are
+// summed here so the fold does one rank-length dot per chunk instead of two.
 extern "C" __global__ void pearl_precompute_fold_s(const int8_t *__restrict__ EAL,
                                                    const int32_t *__restrict__ R,
                                                    int32_t *__restrict__ P,
-                                                   uint32_t rows, uint32_t rank) {
+                                                   uint32_t rows, uint32_t rank,
+                                                   uint32_t chunks) {
   uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx >= (uint64_t)rows * rank) return;
-  const uint32_t r = (uint32_t)(idx / rank);
+  const uint64_t total = (uint64_t)rows * chunks * rank;
+  if (idx >= total) return;
   const uint32_t jp = (uint32_t)(idx % rank);
+  const uint32_t chunk = (uint32_t)((idx / rank) % chunks);
+  const uint32_t r = (uint32_t)(idx / ((uint64_t)rank * chunks));
   const int8_t *el = EAL + (size_t)r * rank;
+  const int32_t *Rc = R + (size_t)chunk * rank * rank;
   int32_t acc = 0;
-  for (uint32_t j = 0; j < rank; j++) acc += (int32_t)el[j] * R[(size_t)j * rank + jp];
+  for (uint32_t j = 0; j < rank; j++) acc += (int32_t)el[j] * Rc[(size_t)j * rank + jp];
   P[idx] += acc;
 }
 
@@ -435,8 +451,6 @@ extern "C" __global__ void pearl_gemm_fold(
 
   const int8_t *__restrict__ arow = A + (size_t)r * k;
   const int8_t *__restrict__ bcol = B + (size_t)c * k;
-  const int32_t *__restrict__ Trow = T + (size_t)r * rank;
-  const int32_t *__restrict__ Qcol = Q + (size_t)c * rank;
   const int8_t *__restrict__ elr = EAL + (size_t)r * rank;
   const int8_t *__restrict__ ebc = EBL + (size_t)c * rank;
 
@@ -466,6 +480,8 @@ extern "C" __global__ void pearl_gemm_fold(
       // The noise corrections. Each chunk contracts its own rank-slice of the
       // precomputes, so summing j over the chunk's slice reproduces exactly what
       // the materialised operand used to contribute for these k values.
+      const int32_t *Trow = T + ((size_t)r * chunks + chunk) * rank;
+      const int32_t *Qcol = Q + ((size_t)c * chunks + chunk) * rank;
 #pragma unroll 4
       for (uint32_t j = 0; j < rank; j++) {
         acc += (int32_t)ebc[j] * Trow[j];
