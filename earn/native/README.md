@@ -36,8 +36,9 @@ retain and no licence to comply with beyond ISC attribution.
 | GEMM + jackpot transcript fold | written — **scalar/dp4a reference path** |
 | `pearl_host.cu` (device memory + pipeline driver) | written |
 | JS reference oracle + known-answer vectors | **done** — BLAKE3 validated against the official vectors |
-| CI compile + link gate (Windows + Linux) | **done** — `.github/workflows/native-core.yml` |
+| CI compile + link gate | **done and GREEN on Linux** — produces `pearl_core.node` |
 | Tensor-core (`mma.sync` int8) mainloop | **not written** — this is the performance work |
+| Windows CI build | **blocked upstream** — the CUDA installer fails on the runner, not our code |
 | Benchmarked on a GPU | **no** — no GPU on any runner; needs a real box |
 
 The kernels are written to be *bit-exact with the reference first, fast second*.
@@ -81,9 +82,22 @@ nvcc -lib cuda-build/pearl_kernel.o cuda-build/pearl_host.o -o cuda-build/pearl_
 npx node-gyp rebuild
 ```
 
-`.github/workflows/native-core.yml` does exactly this for sm_86/89/120 on both
-platforms, so a green run means it compiles and links even though nothing there
-can execute it.
+`.github/workflows/native-core.yml` does exactly this for sm_86/89/120, and it
+is green on Linux: the workflow produces a real `pearl_core.node`. So the core
+compiles and links today, even though nothing on a runner can execute it.
+
+It earned that on the way. Bringing the gate up caught, in order: an
+`Unsupported gpu architecture` (sm_120 needs CUDA 12.8, not 12.6); device code
+calling host-only helpers out of `pearl_config.h`; a `Napi::BigInt::ToWords`
+overload that does not exist; an `EmitError` that was never called, meaning a
+CUDA fault mid-search would have looked exactly like bad luck; the CUDA archive
+being deleted by `node-gyp rebuild`'s clean phase; and a missing `-fPIC`. Every
+one of those is invisible to code review and would otherwise have surfaced on
+somebody's GPU box.
+
+The Windows job is currently non-blocking: the CUDA installer itself fails on
+the Server 2025 runner (exit `0xE0E1E1D9`) before reaching any of our source.
+The compile-and-link signal is platform independent, so Linux is the gate.
 
 `CUDA_PATH` is picked up automatically; override the arch for other cards
 (`sm_86` Ampere, `sm_89` Ada, `sm_120` Blackwell).
