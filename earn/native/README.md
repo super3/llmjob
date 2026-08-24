@@ -38,8 +38,9 @@ retain and no licence to comply with beyond ISC attribution.
 | JS reference oracle + known-answer vectors | **done** — BLAKE3 validated against the official vectors |
 | CI compile + link gate | **done and GREEN on Linux** — produces `pearl_core.node` |
 | Tensor-core (`mma.sync` int8) mainloop | **not written** — this is the performance work |
-| Windows CI build | **blocked upstream** — the CUDA installer fails on the runner, not our code |
-| Benchmarked on a GPU | **no** — no GPU on any runner; needs a real box |
+| Windows CI build | **done** — per-OS CUDA packages + MSVC on PATH |
+| **Runs on a real GPU** | **yes** — CI artifact executed on an RTX 4090 |
+| Mainnet-profile run / real pool share | **no** — see below |
 
 The kernels are written to be *bit-exact with the reference first, fast second*.
 A fast core that disagrees with the spec mines nothing, so correctness is
@@ -62,6 +63,32 @@ Those vectors pin OUR semantics and make the JS and CUDA sides provably agree.
 They do not by themselves prove agreement with the Pearl network; that needs a
 share accepted by a real pool. What they buy is that when a rejection happens,
 it points at the protocol rather than at arithmetic.
+
+## What running it on hardware found
+
+The dev box cannot build this, but it has an RTX 4090 — so CI builds the addon
+and the GPU box downloads the artifact and runs it. That loop found three bugs
+that no amount of review would have, because each one produced a miner that
+looked healthy:
+
+1. **The search was not searching.** `pearl_gemm_fold` had no region parameter,
+   so every attempt recomputed an identical transcript. The GPU sat at 76-79%
+   utilisation, kernels launched, hashrate was reported — and 65536 "attempts"
+   against a target that accepts half of all hashes produced zero hits, because
+   there was only ever one distinct value.
+
+2. **A share threw away the rest of its batch.** The search returns on the first
+   hit, but the loop advanced the nonce by the whole batch regardless. With
+   `BATCH` a multiple of `m`, `row_off` was pinned at zero for ever and the
+   space collapsed to 64 distinct column offsets: 116177 hits, 64 unique hashes.
+
+3. **`a_seed == b_seed`.** The commitment stage was a stub that copied
+   `job_key` into both seeds. Implementing it properly exposed a second layer:
+   the device BLAKE3 handled only a single chunk, so it gave the wrong digest for
+   any operand over 1024 bytes — which is all of them.
+
+After all three: 128616 attempts, **128616 distinct hashes**, seeds correctly
+distinct.
 
 ## Building
 
