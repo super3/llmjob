@@ -28,6 +28,10 @@ module.exports = {
     // applied to.
     'src/main/llmFleet.js',
     'src/main/io.js', 'src/main/nodeStore.js', 'src/main/probe.js', 'src/main/preload.js',
+    // Our own Pearl miner: the protocol/lifecycle half. The CUDA core it
+    // drives lives in earn/native and is not measurable here — which is
+    // exactly why the JS side is held to the full gate.
+    'src/main/pearlMiner.js', 'src/main/pearlCore.js',
     'src/main/main.js', 'src/renderer/renderer.js',
     'src/cli/selfUpdater.js', 'src/cli/sea-entry.js', 'src/cli/earn-cli.js',
   ],
