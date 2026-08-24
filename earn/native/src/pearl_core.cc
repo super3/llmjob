@@ -119,6 +119,10 @@ PearlCore::PearlCore(const Napi::CallbackInfo &info)
     // JS without a rebuild -- it trades VRAM for amortised launch overhead and
     // the sweet spot is card-dependent.
     profile.col_batch = u32("colBatch", profile.col_batch);
+    // Diagnostic: which way round the jackpot hash is read when compared to the
+    // target. The reference says little-endian; shares are being rejected
+    // regardless of margin, which is what the other choice would look like.
+    profile.hash_big_endian = u32("hashBigEndian", profile.hash_big_endian);
   }
 
   profile_ = profile;

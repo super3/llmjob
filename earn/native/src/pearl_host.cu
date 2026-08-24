@@ -82,7 +82,8 @@ extern "C" __global__ void pearl_finalize_many(const uint32_t *a_seed,
                                                const uint8_t *target_be,
                                                uint8_t *hashes_out,
                                                uint32_t *hit_count,
-                                               uint32_t *hit_index);
+                                               uint32_t *hit_index,
+                                               int hash_big_endian);
 extern "C" __global__ void pearl_blake3_chunk_cvs(const uint32_t *key,
                                                   const uint8_t *data,
                                                   uint64_t chunks,
@@ -647,7 +648,7 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   cudaMemsetAsync(ctx->dHitCount, 0, sizeof(uint32_t));
   pearl_finalize_many<<<(regions + 255) / 256, 256>>>(
       ctx->dASeed, ctx->dJackpot, regions, ctx->dTarget, ctx->dHashes,
-      ctx->dHitCount, ctx->dHitIndex);
+      ctx->dHitCount, ctx->dHitIndex, (int)ctx->profile.hash_big_endian);
 
   if (prof) cudaEventRecord(ev[3]);
   // Four bytes back instead of one int per region. Reading a flag per region

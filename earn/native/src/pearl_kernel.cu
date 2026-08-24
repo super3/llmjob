@@ -898,7 +898,8 @@ extern "C" __global__ void pearl_finalize_many(const uint32_t *a_seed,
                                                const uint8_t *target_be,
                                                uint8_t *hashes_out,
                                                uint32_t *hit_count,
-                                               uint32_t *hit_index) {
+                                               uint32_t *hit_index,
+                                               int hash_big_endian) {
   uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= count) return;
   const uint32_t *j = jackpots + (size_t)idx * PEARL_JACKPOT_BUCKETS;
@@ -919,7 +920,7 @@ extern "C" __global__ void pearl_finalize_many(const uint32_t *a_seed,
   // was 12.6 MiB a batch at the mainnet geometry, spent almost entirely on
   // hashes that miss, and it forced the host to read a per-region flag array
   // back across the bus to find the one that did not.
-  if (!pearl_meets_target(h, target_be)) return;
+  if (!pearl_meets_target_mode(h, target_be, hash_big_endian)) return;
   const uint32_t slot = atomicAdd(hit_count, 1u);
   if (slot >= PEARL_MAX_HITS) return;
   hit_index[slot] = idx;

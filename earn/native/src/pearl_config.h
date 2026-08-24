@@ -111,6 +111,9 @@ typedef struct PearlProfile {
   //
   // Costs col_batch * chunks * m * cols * 4 bytes of partial table.
   uint32_t col_batch;
+  // 0 = read the jackpot hash little-endian, as the reference does; 1 = big.
+  // A diagnostic for the share rejections, not a protocol choice.
+  uint32_t hash_big_endian;
 } PearlProfile;
 
 // A tile offset is only VALID if it has the pattern's own bits clear.
@@ -205,7 +208,7 @@ static const uint8_t PEARL_SEED_SALT_B[32] = {
 // each chunk lands in its own lane and the rotation never wraps.
 static const PearlProfile PEARL_MAINNET_PROFILE = {2048u, 128u, 0u,
                                                    32768u, 32768u,
-                                                   PEARL_SEED_SALTED, 512u};
+                                                   PEARL_SEED_SALTED, 512u, 0u};
 
 // Serialize the 52-byte mining configuration, matching the reference's
 // MiningConfiguration::to_bytes byte for byte:
@@ -255,14 +258,33 @@ PEARL_HD static inline uint32_t pearl_rotl13(uint32_t x) {
 // target. Both endiannesses are load-bearing and opposite: the hash is read
 // least-significant-byte-first, the pool's target most-significant-first.
 // Returns non-zero when the hash is a share.
-PEARL_HD static inline int pearl_meets_target(const uint8_t *hash_le, const uint8_t *target_be) {
+// Does the jackpot hash meet the bound?
+//
+// The reference reads the hash LITTLE-endian --
+// U256::from_little_endian(hash_jackpot) -- and the pool sends its target as a
+// big-endian hex string, so the default walks the hash from its last byte and
+// the target from its first.
+//
+// hash_big_endian exists because that pairing is not producing accepted shares.
+// A hash 36x inside the computed bound was still rejected, which is what it
+// would look like if the pool read the hash the other way round: its value
+// would be effectively random with respect to ours, so no margin would ever
+// help. Selectable so the two can be told apart against a live pool, which is
+// the only place the question can be settled.
+PEARL_HD static inline int pearl_meets_target_mode(const uint8_t *hash_le,
+                                                   const uint8_t *target_be,
+                                                   int hash_big_endian) {
   for (int i = 0; i < PEARL_HASH_BYTES; i++) {
-    uint8_t h = hash_le[PEARL_HASH_BYTES - 1 - i];  // walk hash high→low
-    uint8_t t = target_be[i];                       // target is already high→low
+    uint8_t h = hash_big_endian ? hash_le[i] : hash_le[PEARL_HASH_BYTES - 1 - i];
+    uint8_t t = target_be[i];
     if (h < t) return 1;
     if (h > t) return 0;
   }
   return 1;  // exactly equal counts as a share
+}
+
+PEARL_HD static inline int pearl_meets_target(const uint8_t *hash_le, const uint8_t *target_be) {
+  return pearl_meets_target_mode(hash_le, target_be, 0);
 }
 
 #endif  // PEARL_CONFIG_H
