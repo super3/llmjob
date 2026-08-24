@@ -167,6 +167,12 @@ typedef struct PearlProfile {
 // so a 16-row block is exactly four consecutive row offsets.
 #define PEARL_WMMA_ROWS 16
 
+// How many 16-wide k-steps of A a warp holds in registers at once. 8 covers
+// rank 128. Each fragment is only two registers a lane, so holding the whole
+// rank-slice costs about sixteen -- cheap next to re-reading A once per column
+// group, which is where the tensor-core version's time went at first.
+#define PEARL_MAX_K_FRAGS 8
+
 #define PEARL_SEED_SALTED 0u
 #define PEARL_SEED_LEGACY 1u
 

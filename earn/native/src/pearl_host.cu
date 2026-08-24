@@ -614,10 +614,10 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
                        (ctx->profile.m % PEARL_WMMA_ROWS == 0) &&
                        (k % 16 == 0) && !getenv("PEARL_NO_WMMA");
   if (useWmma) {
-    // One WARP per (column group, chunk, row block of 16).
-    const uint64_t warpsNeeded = (uint64_t)chunks
-                                 * (ctx->profile.m / PEARL_WMMA_ROWS)
-                                 * col_groups;
+    // One WARP per (chunk, row block of 16); the column groups are a loop
+    // inside, so each warp loads its A fragments once and reuses them.
+    const uint64_t warpsNeeded =
+        (uint64_t)chunks * (ctx->profile.m / PEARL_WMMA_ROWS);
     const uint32_t warpsPerBlock = threads / 32;
     const unsigned blocks =
         (unsigned)((warpsNeeded + warpsPerBlock - 1) / warpsPerBlock);
