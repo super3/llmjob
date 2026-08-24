@@ -35,7 +35,10 @@
 // Regions searched per launch. One CUDA block each, so this is also the grid
 // width — big enough to fill every SM on a large card, small enough that a job
 // switch is picked up promptly.
-#define PEARL_BATCH_REGIONS 4096
+// Regions per launch. Also the width of the partials pass, which runs one thread
+// per (chunk, row): at m = 4096 that is 65536 threads against the 196608 a 4090
+// holds resident, so a third of the machine. Sized to fill it instead.
+#define PEARL_BATCH_REGIONS 16384
 
 // The difficulty adjustment factor: tile_size * dot_product_length.
 //

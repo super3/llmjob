@@ -187,7 +187,7 @@ Napi::Value PearlCore::On(const Napi::CallbackInfo &info) {
 void PearlCore::SearchLoop() {
   // Must match PEARL_BATCH_REGIONS: the fold launches one CUDA block per region
   // and the host sizes its batch scratch to this.
-  const uint32_t BATCH = 4096u;
+  const uint32_t BATCH = PEARL_BATCH_REGIONS;
   uint64_t nonce = 0;
   while (running_) {
     std::string job_id;

@@ -406,39 +406,17 @@ extern "C" __global__ void pearl_partials(const int32_t *__restrict__ Aprime,
                                           uint32_t n, uint32_t k, uint32_t rank,
                                           uint32_t chunks, uint32_t col_off,
                                           int32_t *__restrict__ D) {
-  // One thread per (chunk, row), producing all of that row's columns, with the
-  // eight column slices staged in shared memory.
+  // One thread per (chunk, row), producing ALL of that row's columns.
   //
-  // A is the streaming operand — 33 MiB a batch — so it is held in registers and
-  // read once, rather than re-read per column. B is the opposite: a batch has
-  // only eight distinct column slices and EVERY thread walks all eight, so they
-  // are staged once per block into 4 KiB of shared memory. That removes eight
-  // global loads from every iteration of the inner loop, and since c and t are
-  // loop indices the reads are uniform across the warp, so they broadcast out of
-  // shared with no bank conflict to design around.
-  extern __shared__ int32_t sB[];
-
-  const uint64_t first = (uint64_t)blockIdx.x * blockDim.x;
-  const uint64_t idx = first + threadIdx.x;
+  // A thread per (chunk, row, col) reads the row's k-slice once per column —
+  // eight times over, and the A side is the streaming operand: 33 MiB a batch
+  // read eight times is 268 MiB. Holding the row in registers and accumulating
+  // eight columns against it reads it once.
+  //
+  // The B side is the opposite: only eight distinct column slices exist per
+  // batch and every thread wants them, so they stay resident in cache.
+  uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
   const uint64_t total = (uint64_t)chunks * m;
-
-  // Staging is only valid when the whole block sits inside one chunk, which is
-  // the case whenever the block size divides m. Otherwise fall back to global.
-  const uint32_t chunk_first = (uint32_t)(first / m);
-  const uint32_t chunk_last = (uint32_t)((first + blockDim.x - 1) / m);
-  const bool staged = (chunk_first == chunk_last);
-
-  const uint32_t k0s = chunk_first * rank;
-  const uint32_t lims = (k0s + rank <= k) ? rank : (k - k0s);
-  if (staged) {
-    for (uint32_t i = threadIdx.x; i < cols_count * rank; i += blockDim.x) {
-      const uint32_t c = i / rank, t = i % rank;
-      const uint32_t cc = (cols_pattern[c] + col_off) % n;
-      sB[i] = (t < lims) ? Bprime[(size_t)cc * k + k0s + t] : 0;
-    }
-    __syncthreads();
-  }
-
   if (idx >= total) return;
 
   const uint32_t r = (uint32_t)(idx % m);
@@ -451,8 +429,8 @@ extern "C" __global__ void pearl_partials(const int32_t *__restrict__ Aprime,
   const int32_t *bc[PEARL_COLS_COUNT];
 #pragma unroll
   for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) {
-    bc[c] = staged ? (sB + (size_t)c * rank)
-                   : (Bprime + (size_t)((cols_pattern[c] + col_off) % n) * k + k0);
+    const uint32_t cc = (cols_pattern[c] + col_off) % n;
+    bc[c] = Bprime + (size_t)cc * k + k0;
   }
 
   int32_t acc[PEARL_COLS_COUNT];
@@ -460,7 +438,7 @@ extern "C" __global__ void pearl_partials(const int32_t *__restrict__ Aprime,
   for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) acc[c] = 0;
 
   // Four A elements per iteration, each reused across all eight columns: 32
-  // multiply-accumulates for one vector load of A.
+  // multiply-accumulates for one vector load of A and eight of B.
   uint32_t t = 0;
   if ((lim & 3u) == 0u) {
     const uint32_t quads = lim >> 2;
@@ -469,8 +447,8 @@ extern "C" __global__ void pearl_partials(const int32_t *__restrict__ Aprime,
       const int4 av = a4[q];
 #pragma unroll
       for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) {
-        const int32_t *b = bc[c] + (q << 2);
-        acc[c] += av.x * b[0] + av.y * b[1] + av.z * b[2] + av.w * b[3];
+        const int4 bv = reinterpret_cast<const int4 *>(bc[c])[q];
+        acc[c] += av.x * bv.x + av.y * bv.y + av.z * bv.z + av.w * bv.w;
       }
     }
     t = lim;
