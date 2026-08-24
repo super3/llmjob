@@ -2,122 +2,83 @@
 
 const path = require('path');
 
-// Where and how to fetch the AlphaPool `alpha-miner` engine. We never bundle the
-// binary — the app downloads it for the user on first start and caches it. The
-// pool ships Windows builds as zips (containing the .exe) and the bare binary
-// elsewhere; URLs follow the documented /downloads/ path and are overridable.
-
-const DOWNLOAD_BASE = 'https://pearl.alphapool.tech/downloads/';
-
-// One engine version per platform, both 1.9.4, both requiring NVIDIA driver
-// R580+ (CUDA 13) — upstream's own stated requirement now, not our inference.
-// On an older driver the miner exits at startup with a driver notice.
+// Where and how to fetch the PeakMiner engine. We never bundle the binary — the
+// app downloads it for the user on first start and caches it. Upstream publishes
+// one artifact per platform on its GitHub releases: a zip holding a single
+// self-contained `peakminer.exe` on Windows, and a bare versioned binary on
+// Linux. URLs are overridable so a hand-hosted mirror drops in without a code
+// change.
 //
-// There is no `fallback` on either platform any more. It used to be 1.8.3 on
-// Linux, kept because upstream's release notes were silent on driver
-// requirements and moving blind risked crash-looping the very rigs it
-// protected. That reasoning has expired twice over: the pool now documents
-// R580+ explicitly, and post-fork a fallback mines rank-256 work that is no
-// longer credited. Falling back would burn power for nothing while looking
-// like success — worse than failing loudly with a message that names the fix
-// ("update to R580+").
+// NOT BUNDLED, AND NOT ALLOWED TO BE. PeakMiner's licence is explicit —
+// "proprietary, all rights reserved; no reverse engineering / redistribution" —
+// so staging it into vendor/engine and shipping it inside our installer would be
+// redistribution. Fetching it to the user's own machine from upstream's own URL
+// is not, which is why the Windows bundling step in
+// .github/workflows/miner-build.yml is deleted rather than merely disabled.
+
+const DOWNLOAD_BASE = 'https://github.com/peakminer/peakminer/releases/download/';
+
+// One engine version per platform, the same build on both.
 //
-// Bumping either version is a cache miss by design (the version is baked into
-// the cached filename), so rigs re-download rather than run a stale binary for
-// ever. Keep the bundling step in .github/workflows/miner-build.yml in sync —
-// it reads this.
+// `minDriverMajor` is deliberately null. alpha-miner carried 580 because
+// AlphaPool documented R580+/CUDA 13 as a hard requirement and the app warned
+// below it. PeakMiner publishes no such number: it embeds its own CUDA runtime
+// and auto-selects a kernel profile by compute capability across
+// volta/turing/ampere/ada/blackwell/h100/b200 plus a portable fallback, so the
+// floor is far lower and we have no measured value for it. Inventing one would
+// warn users off drivers that work, so driverTooOld answers false until somebody
+// establishes a real threshold.
+//
+// Bumping a version is a cache miss by design (the version is baked into the
+// cached filename), so rigs re-download rather than run a stale binary for ever.
 const ENGINE = {
-  minDriverMajor: 580,
-  // Windows: one exe with automatic RTX 30/40/50 dispatch, ~4.3 MB zipped.
-  windows: '1.9.4',
-  // Linux: one self-extracting makeself bundle, ~530 MB, same dispatch. See
-  // PACKAGED.linux for why the size is load-bearing.
-  linux: '1.9.4',
+  minDriverMajor: null,
+  windows: '2.11.0',
+  linux: '2.11.0',
 };
 
-// Engine descriptors: versions that ship as something other than the bare
-// binary the pool used to serve. A descriptor owns the whole artifact story for
-// one platform+version — what to download, what it installs as, how to verify
-// it, and which CLI it speaks — so adding a build is a table entry rather than
-// a new branch in five functions.
-//
-// Keyed by platform because 1.9.4 ships as two quite different artifacts: a
-// ~4.3 MB .zip holding one self-contained .exe on Windows, and a ~530 MB
-// makeself .run on Linux. Neither is the old launcher-plus-hidden-core shape
-// that 1.9.1b used, so the `dir`/`core` handling that shape needed is gone with
-// it — an unreachable branch is a liability, and git remembers how it worked.
-//
-// A 1.9.x engine also rejects rank/geometry/backend overrides and picks its own
-// backend — verified against the real Windows binary, which answers
-// `--force-backend` with "ERROR: forbidden backend option in user arguments"
-// and exit 2, and which the pool documents as "rank, geometry, and backend are
-// fixed to the AlphaPool mainnet rank-128 profile". See backendForEngine, which
-// strips the override rather than letting a working rig fail closed.
+// Engine descriptors. A descriptor owns the whole artifact story for one
+// platform+version — what to download, what it installs as, how to verify it,
+// and which CLI it speaks — so adding a build is a table entry rather than a new
+// branch in five functions.
 const PACKAGED = {
   linux: {
-    // 1.9.4 is a THIRD shape again: a makeself self-extracting bundle (.run,
-    // Content-Type application/x-makeself) that is downloaded, chmod +x'd and
-    // spawned directly. It is neither a bare binary nor an archive we unpack —
-    // it unpacks itself into a temp dir at each start — so `selfExtracting`
-    // tells EngineManager to skip extraction entirely and save it straight to
-    // its final path. Args pass through makeself to the miner untouched, which
-    // is how upstream's own documented command line works.
-    //
-    // It is ~530 MB because it carries the CUDA runtime plus a core per
-    // architecture. That size is load-bearing: it is why the Linux engine is
-    // NOT bundled into the AppImage (see .github/workflows/miner-build.yml).
-    // The 4 MB `-rtx3040` HiveOS bundle is the same engine minus the Blackwell
-    // sm120 core — verified by listing it — which is exactly why upstream says
-    // not to put it on a 50-series card, and why we do not use it to dodge the
-    // download.
-    '1.9.4': {
-      archive: 'alphaminer-1.9.4-linux.run',
-      launcher: 'alphaminer-1.9.4-linux.run',
-      sha256: 'e3dbba681c1f027b80c845f0747e35baae91dbb2ae7464dcc435e41498627f4e',
-      selfExtracting: true,
-      // Same 1.9.4 CLI as Windows: --host <host:port>, the payout address
-      // INSIDE --worker as <address>.<rig>, --gpu <id>. Upstream's HiveOS
-      // flight sheet says the same thing in its own vocabulary — the wallet
-      // template is `%WAL%.%WORKER_NAME%`, with "REQUIRED — the address travels
-      // inside the worker field".
-      cli: 'worker-address',
+    // A bare, already-versioned binary — no archive at all. `saveAsIs` tells
+    // EngineManager to download it straight to its final path and chmod +x,
+    // skipping extraction: handing a plain ELF to tar fails, and routing it
+    // through the legacy bare-binary path would look for the wrong filenames.
+    '2.11.0': {
+      archive: 'peakminer-2.11.0-linux-x86_64',
+      launcher: 'peakminer-2.11.0-linux-x86_64',
+      sha256: '24f415716f456554a0c39ad09a6fc4c2fe52ec61ee1e346449dad6ea39de8c90',
+      saveAsIs: true,
+      cli: 'peakminer',
     },
   },
   win32: {
-    // 1.9.4 — the mandatory rank-128 build. Unlike 1.9.1b this is a FLAT,
-    // pool-hosted zip holding ONE self-contained exe (plus a reference
-    // start-mining.bat we ignore), so there is no `dir` and no `core`, and the
-    // URL is built from DOWNLOAD_BASE rather than pointing at GitHub.
+    // A flat zip holding one self-contained exe (plus reference .bat files and a
+    // README we ignore). No DLLs: the CUDA runtime and GPU kernels are embedded.
     //
-    // Every one of those claims was checked against the real artifact rather
-    // than the setup page, which is wrong in two places:
-    //
-    //   • the page still describes "the guarded alpha-miner.exe launcher checks
-    //     the exact core", which was the 1.9.1b shape. 1.9.4 verifies an
-    //     EMBEDDED core — the zip has exactly two entries and no sibling core;
-    //   • the page's PowerShell example passes `--host HOST --port PORT`, but
-    //     the miner's own --help documents `--host <endpoint>` as "endpoint:PORT"
-    //     and defaults to us2.alphapool.tech:5566. Both forms parse (verified
-    //     against the binary), so we send the documented combined one.
-    //
-    // The exe also runs happily from a path containing a space, so the
-    // ProgramData relocation 1.9.1b needed is gone along with the check that
-    // decided it.
-    '1.9.4': {
-      archive: 'alphaminer-1.9.4-win-033f7027b.zip',
-      launcher: 'AlphaMiner-Windows-1.9.4-033f7027.exe',
-      // Published on the setup page; matched the download byte for byte.
-      sha256: 'bdaafa7806ffd742c43221babbb9018ee8237816759dc224dd4d50cb8376bd73',
-      // Selects the 1.9.4 argument shape in minerArgs: --host <host:port>,
-      // the payout address INSIDE --worker as <address>.<rig>, and --gpu <id>.
-      cli: 'worker-address',
+    // `archiveLauncher` is the name INSIDE the zip and `launcher` is what it is
+    // installed as. They differ on purpose. Upstream ships an unversioned
+    // `peakminer.exe`, and installing under that name would defeat the whole
+    // cache-miss-on-bump rule — 2.12.0 would find 2.11.0's exe sitting at the
+    // expected path and never download the new one. EngineManager renames after
+    // extracting so the cached name carries the version.
+    '2.11.0': {
+      archive: 'peakminer-2.11.0-windows-x86_64.zip',
+      archiveLauncher: 'peakminer.exe',
+      launcher: 'peakminer-2.11.0.exe',
+      // The release asset digest; matched the download byte for byte.
+      sha256: 'ff7fcff77a458179089c05196e80e2830651e469039f06362641e8867f61f723',
+      cli: 'peakminer',
     },
   },
 };
 
 // The package descriptor for `version` on `platform`, or null when that pairing
-// is a plain binary. Everything that is not Windows reads the Linux table — the
-// app ships for those two, and a bare binary is the safe answer anywhere else.
+// is unknown. Everything that is not Windows reads the Linux table — the app
+// ships for those two.
 function enginePackage(platform, version) {
   const table = PACKAGED[platform === 'win32' ? 'win32' : 'linux'];
   return table[version] || null;
@@ -125,53 +86,52 @@ function enginePackage(platform, version) {
 
 // Decide whether a --force-backend override survives for this engine.
 //
-// A packaged launcher rejects rank/geometry/backend overrides and exits 2 —
-// it selects the backend itself and appends `--gemm native`. Passing the
-// override through would turn a working rig into one that refuses to start,
-// so strip it and explain, rather than fail closed. Returns the backend to
-// use (null when dropped) and calls `log` with the reason when it drops one.
-// Platform and version are parameters so this is testable without faking
-// process.platform.
+// PeakMiner picks its kernel profile from the card's compute capability and
+// exposes no backend override at all, so passing one would be an unknown
+// argument and an immediate exit. Strip it and explain, rather than fail closed.
+// Returns the backend to use (null when dropped) and calls `log` with the reason
+// when it drops one.
 function backendForEngine(backend, platform, version, log) {
   if (backend && enginePackage(platform, version)) {
-    if (log) log('note: --backend ' + backend + ' is ignored on alpha-miner ' + version
-      + ' — its launcher selects the backend itself and rejects overrides');
+    if (log) log('note: --backend ' + backend + ' is ignored on peakminer ' + version
+      + ' — it selects a kernel profile by compute capability and takes no backend option');
     return null;
   }
   return backend || null;
 }
 
 // Where a hand-downloaded engine has to go, as the two fields describeSetupError
-// understands. A bare binary is SAVED AS the pool's own filename; a package is
-// EXTRACTED into the engine dir. Telling someone to save a tarball as the
-// launcher is advice that cannot work, and the manual-install hint exists
-// precisely for users whose download failed — so getting this wrong sends them
-// in circles. Platform is a parameter so both branches are testable directly.
+// understands. A bare binary is SAVED AS upstream's own filename; an archive is
+// EXTRACTED into the engine dir. Telling someone to save a zip as the launcher
+// is advice that cannot work, and the manual-install hint exists precisely for
+// users whose download failed — including, now, users whose antivirus ate it.
 function manualInstallHint(platform, version, dir) {
   const pkg = enginePackage(platform, version);
-  // A self-extracting bundle is saved, not extracted — and it is saved under
-  // the very name the browser downloads it as, which is also the name the cache
-  // looks for, so a hand-downloaded .run dropped in the engine dir is picked up
-  // with no rename at all.
-  if (pkg && pkg.selfExtracting) return { manualPath: path.join(dir, pkg.launcher), extractDir: null };
+  // The Linux binary is saved, not extracted, and under the very name a browser
+  // downloads it as — which is also the name the cache looks for, so a
+  // hand-downloaded file dropped in the engine dir is picked up with no rename.
+  if (pkg && pkg.saveAsIs) return { manualPath: path.join(dir, pkg.launcher), extractDir: null };
   if (pkg) return { manualPath: null, extractDir: dir };
   return { manualPath: manualEnginePath(dir, platform), extractDir: null };
 }
 
-// The engine version for a platform. One build each now, so this is a lookup
-// rather than the driver-based choice it used to be — see ENGINE for why the
-// fallback went away.
+// The engine version for a platform.
 function engineVersionFor(platform) {
   return platform === 'win32' ? ENGINE.windows : ENGINE.linux;
 }
 
-// Is this rig's driver too old for the engine? Used only to warn: there is no
-// older build left to fall back to, and the miner refuses to start on its own
-// with a message that names the fix. An UNKNOWN driver (no nvidia-smi, or
-// unparseable output) is deliberately not treated as too old — we would be
-// guessing, and the guess would scare a perfectly healthy rig.
-function driverTooOld(driverMajor) {
-  return Number.isFinite(driverMajor) && driverMajor < ENGINE.minDriverMajor;
+// Is this rig's driver too old for the engine? Used only to warn. Answers false
+// whenever no floor is configured (see ENGINE.minDriverMajor) — a warning we
+// cannot substantiate is worse than none. An UNKNOWN driver (no nvidia-smi, or
+// unparseable output) is likewise never treated as too old.
+//
+// The floor is a parameter, defaulting to the configured one, so the comparison
+// stays exercisable while ENGINE.minDriverMajor is null — otherwise the moment
+// somebody sets a real threshold they would be switching on a branch no test had
+// ever run.
+function driverTooOld(driverMajor, minMajor = ENGINE.minDriverMajor) {
+  if (!Number.isFinite(minMajor)) return false;
+  return Number.isFinite(driverMajor) && driverMajor < minMajor;
 }
 
 // Parse the driver major version out of `nvidia-smi --query-gpu=driver_version`
@@ -183,36 +143,35 @@ function parseDriverMajor(output) {
 
 // The engine executable name once installed. The version is baked into the
 // filename so a version bump is a cache miss — rigs re-download instead of
-// running a stale cached binary forever. On NVIDIA Windows the versioned name
-// also matches the .exe inside the pool's zip (alpha-miner-windows-<ver>.exe),
-// so extraction picks it by exact name. Falsy version keeps the legacy
-// unversioned Windows name (AMD, which the pool ships without a version).
+// running a stale cached binary for ever.
 function engineBinaryName(platform, gpu, version) {
   const pkg = enginePackage(platform, version);
   if (pkg) return pkg.launcher;
-  if (platform === 'win32') {
-    if (gpu === 'amd') return 'alpha-miner-amd-windows-fixed.exe';
-    return version ? 'alpha-miner-windows-' + version + '.exe' : 'alpha-miner-windows.exe';
-  }
-  return 'alpha-miner-' + (version || ENGINE.linux);
+  return platform === 'win32'
+    ? 'peakminer-' + (version || ENGINE.windows) + '.exe'
+    : 'peakminer-' + (version || ENGINE.linux);
+}
+
+// The name of the launcher INSIDE the downloaded archive, which is only
+// sometimes the name it installs as — see PACKAGED.win32.archiveLauncher.
+// Null when the artifact is not an archive, or installs under its own name.
+function engineArchiveLauncher(platform, version) {
+  const pkg = enginePackage(platform, version);
+  return (pkg && pkg.archiveLauncher) || null;
 }
 
 // The downloadable artifact name (a zip on Windows, the bare binary otherwise).
 function engineArchiveName(platform, gpu, version) {
   const pkg = enginePackage(platform, version);
   if (pkg) return pkg.archive;
-  if (platform === 'win32') {
-    return gpu === 'amd' ? 'AlphaMiner-Pearl-AMD.zip' : 'AlphaMiner-Pearl-Windows.zip';
-  }
-  return 'alpha-miner-' + (version || ENGINE.linux);
+  return engineBinaryName(platform, gpu, version);
 }
 
+// Release assets live under a per-version tag directory, so the base alone is
+// not enough — the tag is part of the path.
 function engineDownloadUrl(platform, gpu, base, version) {
-  const pkg = enginePackage(platform, version);
-  // Absolute only when upstream publishes it outside the pool (GitHub);
-  // otherwise it is a normal /downloads/ artifact.
-  if (pkg) return pkg.url || (base || DOWNLOAD_BASE) + pkg.archive;
-  return (base || DOWNLOAD_BASE) + engineArchiveName(platform, gpu, version);
+  const v = version || engineVersionFor(platform);
+  return (base || DOWNLOAD_BASE) + 'v' + v + '/' + engineArchiveName(platform, gpu, version);
 }
 
 function isZipUrl(url) {
@@ -245,35 +204,31 @@ function enginePath(dir, platform, gpu, version) {
 }
 
 // Every file an install of `version` must have present to count as installed.
-// A bare binary is only itself; a package is the launcher AND its hidden core.
-// Checking the launcher alone would call a half-extracted package installed —
-// the extract is interruptible and the core is the larger half — and then every
-// start dies with "core missing or not executable" with nothing to re-trigger
-// the download, because the launcher is right where it belongs.
+// One self-contained executable on both platforms — PeakMiner carries its CUDA
+// runtime and kernels inside the binary, so there is no second half to check.
 function engineFiles(dir, platform, gpu, version) {
   return [enginePath(dir, platform, gpu, version)];
 }
 
-// The name a hand-downloaded engine lands under. The pool's documented link is
-// the unversioned /downloads/alpha-miner, so a browser saves exactly this — and
-// a user who fetches it because the in-app download failed (blocked HTTPS
-// interception, offline rig) drops that file into the engine dir. It is NOT the
+// The name a hand-downloaded engine lands under when a user fetches it in a
+// browser because the in-app download failed — blocked HTTPS interception, an
+// offline rig, or an antivirus that deleted it in flight. It is NOT the
 // versioned cache name, so nothing picks it up on its own; EngineManager looks
 // for it explicitly and installs it (see adoptManualDownload).
 function manualEngineName(platform) {
-  return platform === 'win32' ? 'alpha-miner.exe' : 'alpha-miner';
+  return platform === 'win32' ? 'peakminer.exe' : 'peakminer';
 }
 
 function manualEnginePath(dir, platform) {
   return path.join(dir, manualEngineName(platform));
 }
 
-// Absolute path to the engine bundled with a packaged app. electron-builder
-// copies vendor/engine → <resources>/engine (see build.extraResources), so at
-// runtime it lives under process.resourcesPath. Returns null when no resources
-// path is available (e.g. an unpackaged dev run) so callers fall back to the
-// on-demand download. Off Windows the lookup is version-aware, so a bundle can
-// only ever satisfy the exact build the rig's driver selected.
+// Absolute path to an engine bundled with a packaged app, if one is ever staged
+// there again. Nothing stages it today and nothing may: PeakMiner's licence
+// forbids redistribution, so the bundling step is gone from CI. The lookup stays
+// because it is the seam a differently-licensed engine would slot into, and
+// because it already fails soft — a missing bundle falls back to the on-demand
+// download rather than erroring.
 function bundledEnginePath(resourcesPath, platform, gpu, version) {
   if (!resourcesPath) return null;
   return path.join(resourcesPath, 'engine', engineBinaryName(platform, gpu, version));
@@ -295,6 +250,7 @@ module.exports = {
   driverTooOld,
   parseDriverMajor,
   engineBinaryName,
+  engineArchiveLauncher,
   engineArchiveName,
   engineDownloadUrl,
   isZipUrl,

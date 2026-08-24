@@ -2,13 +2,32 @@
 
 const path = require('path');
 const { EngineManager } = require('../src/main/engineManager');
+const { ENGINE, enginePackage, engineBinaryName } = require('../src/shared/engine');
+
+const WIN = ENGINE.windows;
+const LIN = ENGINE.linux;
+const winPkg = enginePackage('win32', WIN);
+const linPkg = enginePackage('linux', LIN);
 
 function makeFs(installed) {
   return {
     existsSync: jest.fn(() => installed),
     mkdirSync: jest.fn(),
     unlinkSync: jest.fn(),
+    renameSync: jest.fn(),
   };
+}
+
+function make(platform, version, installed, over = {}) {
+  const fs = makeFs(installed);
+  const download = jest.fn(() => Promise.resolve());
+  const extract = jest.fn(() => Promise.resolve());
+  const extractPackage = jest.fn(() => Promise.resolve());
+  const chmod = jest.fn();
+  const mgr = new EngineManager({
+    dir: '/cache', platform, version, fs, download, extract, extractPackage, chmod, ...over,
+  });
+  return { mgr, fs: over.fs || fs, download, extract, extractPackage, chmod, ...over };
 }
 
 describe('EngineManager', () => {
@@ -16,96 +35,119 @@ describe('EngineManager', () => {
     expect(new EngineManager()).toBeInstanceOf(EngineManager);
   });
 
-  test('ensure returns the cached path without downloading when installed', async () => {
-    const fs = makeFs(true);
-    const download = jest.fn();
-    const mgr = new EngineManager({ dir: '/cache', platform: 'win32', fs, download });
-    const dest = path.join('/cache', 'alpha-miner-windows.exe');
+  test('binaryPath is the versioned cache name', () => {
+    const { mgr } = make('win32', WIN, false);
+    expect(mgr.binaryPath()).toBe(path.join('/cache', engineBinaryName('win32', null, WIN)));
+  });
+});
 
-    await expect(mgr.ensure()).resolves.toBe(dest);
+describe('EngineManager — already installed', () => {
+  test('returns the cached path without downloading', async () => {
+    const { mgr, fs, download } = make('win32', WIN, true);
+    await expect(mgr.ensure()).resolves.toBe(path.join('/cache', winPkg.launcher));
     expect(mgr.isInstalled()).toBe(true);
     expect(download).not.toHaveBeenCalled();
     expect(fs.mkdirSync).not.toHaveBeenCalled();
   });
 
-  test('re-asserts the execute bit on a cached binary off Windows', async () => {
-    const fs = makeFs(true);
-    const download = jest.fn();
-    const chmod = jest.fn();
-    const mgr = new EngineManager({ dir: '/cache', platform: 'linux', version: '1.8.8', fs, download, chmod });
-    const dest = path.join('/cache', 'alpha-miner-1.8.8');
-
+  // A cached binary can be present but lack +x: the download writes 0o644 and
+  // chmods afterwards, so a crash in between leaves a file that spawns EACCES
+  // forever with nothing to re-trigger the install.
+  test('re-asserts the execute bit off Windows', async () => {
+    const { mgr, chmod } = make('linux', LIN, true);
+    const dest = path.join('/cache', linPkg.launcher);
     await expect(mgr.ensure()).resolves.toBe(dest);
-    expect(download).not.toHaveBeenCalled();
-    expect(fs.mkdirSync).not.toHaveBeenCalled();
-    // A cached binary that lost its +x (e.g. an interrupted first install)
-    // gets it back here, so the rig stops crash-looping on spawn EACCES.
     expect(chmod).toHaveBeenCalledWith(dest, 0o755);
   });
 
-  test('a failing chmod on the cached path is swallowed (best effort)', async () => {
-    const fs = makeFs(true);
+  test('never chmods on Windows', async () => {
+    const { mgr, chmod } = make('win32', WIN, true);
+    await mgr.ensure();
+    expect(chmod).not.toHaveBeenCalled();
+  });
+
+  // A chmod failure on an already-executable binary must not turn a working rig
+  // into a crash.
+  test('a failing chmod on the cached path is swallowed', async () => {
     const chmod = jest.fn(() => { throw new Error('EROFS: read-only file system'); });
-    const mgr = new EngineManager({ dir: '/cache', platform: 'linux', version: '1.8.8', fs, chmod });
-    const dest = path.join('/cache', 'alpha-miner-1.8.8');
-
-    // Must still resolve: a chmod failure on an already-executable binary must
-    // not turn a working rig into a crash.
-    await expect(mgr.ensure()).resolves.toBe(dest);
-    expect(chmod).toHaveBeenCalledWith(dest, 0o755);
+    const { mgr } = make('linux', LIN, true, { chmod });
+    await expect(mgr.ensure()).resolves.toBe(path.join('/cache', linPkg.launcher));
+    expect(chmod).toHaveBeenCalled();
   });
+});
 
-  test('downloads and extracts the zip on Windows, no chmod', async () => {
-    const fs = makeFs(false);
-    const download = jest.fn(() => Promise.resolve());
-    const extract = jest.fn(() => Promise.resolve());
-    const chmod = jest.fn();
+describe('EngineManager — Windows zip install', () => {
+  test('downloads, unpacks, drops the archive and renames the launcher', async () => {
+    const { mgr, fs, download, extractPackage, chmod } = make('win32', WIN, false);
+    const dest = path.join('/cache', winPkg.launcher);
+    const archive = path.join('/cache', winPkg.archive);
     const onProgress = jest.fn();
-    const mgr = new EngineManager({ dir: '/cache', platform: 'win32', fs, download, extract, chmod });
-    const dest = path.join('/cache', 'alpha-miner-windows.exe');
-    const zipPath = path.join('/cache', 'engine.zip');
 
     await expect(mgr.ensure(onProgress)).resolves.toBe(dest);
 
     expect(fs.mkdirSync).toHaveBeenCalledWith('/cache', { recursive: true });
-    expect(download).toHaveBeenCalledWith(expect.stringMatching(/AlphaMiner-Pearl-Windows\.zip$/), zipPath, onProgress);
-    expect(extract).toHaveBeenCalledWith(zipPath, dest);
-    expect(fs.unlinkSync).toHaveBeenCalledWith(zipPath);
+    expect(download).toHaveBeenCalledWith(expect.stringContaining(winPkg.archive), archive, onProgress);
+    expect(extractPackage).toHaveBeenCalledWith(archive, '/cache');
+    expect(fs.unlinkSync).toHaveBeenCalledWith(archive);
+    // Windows has no execute bit to grant; a chmod there is at best a no-op and
+    // at worst a throw that fails an otherwise perfect install.
     expect(chmod).not.toHaveBeenCalled();
   });
 
-  test('downloads the bare binary and chmods it off Windows', async () => {
-    const fs = makeFs(false);
-    const download = jest.fn(() => Promise.resolve());
-    const extract = jest.fn(() => Promise.resolve());
-    const chmod = jest.fn();
-    const mgr = new EngineManager({ dir: '/cache', platform: 'linux', version: '1.8.8', fs, download, extract, chmod });
-    const dest = path.join('/cache', 'alpha-miner-1.8.8');
-
-    await expect(mgr.ensure()).resolves.toBe(dest);
-
-    expect(download).toHaveBeenCalledWith(expect.stringMatching(/alpha-miner-1\.8\.8$/), dest, undefined);
-    expect(extract).not.toHaveBeenCalled();
-    expect(chmod).toHaveBeenCalledWith(dest, 0o755);
+  // Upstream's zip holds an unversioned peakminer.exe. Left at that name, the
+  // NEXT release would find it sitting at the expected path and never download —
+  // a silent, permanent pin to whatever version installed first.
+  test('the unversioned exe is renamed so a version bump is still a cache miss', async () => {
+    const { mgr, fs } = make('win32', WIN, false);
+    await mgr.ensure();
+    expect(fs.renameSync).toHaveBeenCalledWith(
+      path.join('/cache', winPkg.archiveLauncher),
+      path.join('/cache', winPkg.launcher),
+    );
   });
 
-  test('an explicit version selects the binary name and download URL', async () => {
+  test('a leftover archive that will not delete is not fatal', async () => {
     const fs = makeFs(false);
-    const download = jest.fn(() => Promise.resolve());
-    const chmod = jest.fn();
-    const mgr = new EngineManager({ dir: '/cache', platform: 'linux', version: '1.8.8', fs, download, chmod });
-    const dest = path.join('/cache', 'alpha-miner-1.8.8');
+    fs.unlinkSync = jest.fn(() => { throw new Error('EBUSY'); });
+    const { mgr } = make('win32', WIN, false, { fs });
+    await expect(mgr.ensure()).resolves.toBe(path.join('/cache', winPkg.launcher));
+  });
+});
+
+describe('EngineManager — Linux bare binary install', () => {
+  // Not an archive: handing a plain ELF to the extractor would fail, so it is
+  // saved straight to its final path and made executable.
+  test('saves it in place and makes it executable', async () => {
+    const { mgr, download, extract, extractPackage, chmod } = make('linux', LIN, false);
+    const dest = path.join('/cache', linPkg.launcher);
 
     await expect(mgr.ensure()).resolves.toBe(dest);
-    expect(download).toHaveBeenCalledWith(expect.stringMatching(/alpha-miner-1\.8\.8$/), dest, undefined);
+    expect(download).toHaveBeenCalledWith(expect.stringContaining(linPkg.archive), dest, undefined);
+    expect(chmod).toHaveBeenCalledWith(dest, 0o755);
+    expect(extract).not.toHaveBeenCalled();
+    expect(extractPackage).not.toHaveBeenCalled();
+  });
+
+  test('reports download progress', async () => {
+    const { mgr, download } = make('linux', LIN, false);
+    const onProgress = jest.fn();
+    await mgr.ensure(onProgress);
+    expect(download).toHaveBeenCalledWith(expect.any(String), expect.any(String), onProgress);
+  });
+
+  test('nothing is renamed — the published name is already versioned', async () => {
+    const { mgr, fs } = make('linux', LIN, false);
+    await mgr.ensure();
+    expect(fs.renameSync).not.toHaveBeenCalled();
   });
 });
 
 // A user whose download fails fetches the engine in a browser — which saves it
-// under the pool's own name, never the versioned one the cache looks for. The
-// app used to ignore that file and re-run the download that just failed, so
-// "I downloaded it manually" changed nothing.
-describe('EngineManager manual install', () => {
+// under upstream's own name, never the versioned one the cache looks for. The
+// app used to ignore that file and re-run the download that just failed, so "I
+// downloaded it manually" changed nothing. With an antivirus in the picture this
+// path matters more, not less.
+describe('EngineManager — manual install (undescribed version)', () => {
   function makeFsAt(present) {
     return {
       existsSync: jest.fn((p) => p === present),
@@ -115,123 +157,46 @@ describe('EngineManager manual install', () => {
     };
   }
 
-  test('adopts a hand-downloaded alpha-miner instead of hitting the network', async () => {
-    const manual = path.join('/cache', 'alpha-miner');
+  test('adopts a hand-downloaded binary instead of hitting the network', async () => {
+    const manual = path.join('/cache', 'peakminer');
     const fs = makeFsAt(manual);
-    const download = jest.fn();
-    const chmod = jest.fn();
-    const mgr = new EngineManager({ dir: '/cache', platform: 'linux', version: '1.8.8', fs, download, chmod });
-    const dest = path.join('/cache', 'alpha-miner-1.8.8');
+    const { mgr, download, chmod } = make('linux', '9.9.9', false, { fs });
+    const dest = path.join('/cache', 'peakminer-9.9.9');
 
     await expect(mgr.ensure()).resolves.toBe(dest);
     expect(download).not.toHaveBeenCalled();
     expect(fs.renameSync).toHaveBeenCalledWith(manual, dest);
-    // Renaming leaves it 0o644 like any browser download would.
+    // Renaming leaves it 0o644, like any browser download.
     expect(chmod).toHaveBeenCalledWith(dest, 0o755);
   });
 
-  test('extracts a hand-downloaded Windows zip and leaves the user\'s file alone', async () => {
-    const zip = path.join('/cache', 'AlphaMiner-Pearl-Windows.zip');
-    const fs = makeFsAt(zip);
-    const download = jest.fn();
-    const extract = jest.fn(() => Promise.resolve());
-    const mgr = new EngineManager({ dir: '/cache', platform: 'win32', version: '1.8.6', fs, download, extract });
-    const dest = path.join('/cache', 'alpha-miner-windows-1.8.6.exe');
+  // The second adoption candidate is the destination itself for an undescribed
+  // version, so the loop must skip it rather than rename a file onto itself.
+  test('a file already at the destination counts as installed, not as adoptable', async () => {
+    const dest = path.join('/cache', 'peakminer-9.9.9.exe');
+    const fs = makeFsAt(dest);
+    const { mgr, download } = make('win32', '9.9.9', false, { fs });
 
     await expect(mgr.ensure()).resolves.toBe(dest);
     expect(download).not.toHaveBeenCalled();
-    expect(extract).toHaveBeenCalledWith(zip, dest);
-    expect(fs.unlinkSync).not.toHaveBeenCalled();
+    expect(fs.renameSync).not.toHaveBeenCalled();
+  });
+
+  test('a hand-downloaded exe under the manual name is renamed into place', async () => {
+    const manual = path.join('/cache', 'peakminer.exe');
+    const fs = makeFsAt(manual);
+    const { mgr, download } = make('win32', '9.9.9', false, { fs });
+
+    await mgr.ensure();
+    expect(download).not.toHaveBeenCalled();
+    expect(fs.renameSync).toHaveBeenCalledWith(manual, path.join('/cache', 'peakminer-9.9.9.exe'));
   });
 
   test('an empty engine dir still downloads', async () => {
     const fs = makeFsAt('/nothing/matches');
-    const download = jest.fn(() => Promise.resolve());
-    const mgr = new EngineManager({
-      dir: '/cache', platform: 'linux', version: '1.8.8', fs, download, chmod: jest.fn(),
-    });
-
-    await expect(mgr.ensure()).resolves.toBe(path.join('/cache', 'alpha-miner-1.8.8'));
+    const { mgr, download } = make('linux', '9.9.9', false, { fs });
+    await expect(mgr.ensure()).resolves.toBe(path.join('/cache', 'peakminer-9.9.9'));
     expect(download).toHaveBeenCalled();
     expect(fs.renameSync).not.toHaveBeenCalled();
   });
-});
-
-describe('EngineManager — described engines', () => {
-  // Linux 1.9.4 is a makeself self-extracting bundle. It must be saved straight
-  // to its final path and chmod +x'd — never handed to the extractor, which
-  // would fail on a file that is not an archive, and never routed through the
-  // bare-binary path, whose manual-download adoption looks for other names.
-  const { ENGINE, enginePackage } = require('../src/shared/engine');
-  const V = ENGINE.linux;
-  const pkg = enginePackage('linux', V);
-
-  function make(installed) {
-    const fsStub = makeFs(installed);
-    const download = jest.fn(() => Promise.resolve());
-    const extractPackage = jest.fn(() => Promise.resolve());
-    const extract = jest.fn(() => Promise.resolve());
-    const chmod = jest.fn();
-    const mgr = new EngineManager({
-      dir: '/cache', platform: 'linux', version: V,
-      fs: fsStub, download, extract, extractPackage, chmod,
-    });
-    return { mgr, fsStub, download, extract, extractPackage, chmod };
-  }
-
-  test('saves the self-extracting bundle in place and makes it executable', async () => {
-    const { mgr, download, extract, extractPackage, chmod } = make(false);
-    const dest = await mgr.ensure();
-
-    expect(dest).toBe(path.join('/cache', pkg.launcher));
-    expect(download).toHaveBeenCalledWith(
-      expect.stringContaining('alphaminer-1.9.4-linux.run'), dest, undefined);
-    expect(chmod).toHaveBeenCalledWith(dest, 0o755);
-    // Nothing unpacks it — it unpacks itself at each start.
-    expect(extractPackage).not.toHaveBeenCalled();
-    expect(extract).not.toHaveBeenCalled();
-  });
-
-  test('reports download progress for a half-gigabyte download', async () => {
-    const { mgr, download } = make(false);
-    const onProgress = jest.fn();
-    await mgr.ensure(onProgress);
-    expect(download).toHaveBeenCalledWith(expect.any(String), expect.any(String), onProgress);
-  });
-
-  test('an already-installed bundle re-asserts +x and skips the network', async () => {
-    const { mgr, download, chmod } = make(true);
-    const dest = await mgr.ensure();
-    expect(download).not.toHaveBeenCalled();
-    expect(chmod).toHaveBeenCalledWith(dest, 0o755);
-  });
-
-  // Windows runs its own version on its own shape: 1.9.4 is a FLAT package —
-  // one self-contained .exe at the root of the zip, no `dir`, no core half. It
-  // still installs through the package path (download the archive, extract the
-  // tree) but must land at the zip root, and there is no execute bit on Windows
-  // to grant — a chmod there is at best a no-op, at worst a throw that fails an
-  // otherwise perfect install.
-  test('the flat Windows package installs at the zip root, without chmod', async () => {
-    const WIN = ENGINE.windows;
-    const winPkg = enginePackage('win32', WIN);
-    expect(winPkg.dir).toBeUndefined();
-    expect(winPkg.core).toBeUndefined();
-
-    const fsStub = makeFs(false);
-    const download = jest.fn(() => Promise.resolve());
-    const extractPackage = jest.fn(() => Promise.resolve());
-    const chmod = jest.fn();
-    const mgr = new EngineManager({
-      dir: '/cache', platform: 'win32', version: WIN,
-      fs: fsStub, download, extractPackage, chmod,
-    });
-
-    const dest = await mgr.ensure();
-    expect(dest).toBe(path.join('/cache', winPkg.launcher));
-    expect(download).toHaveBeenCalledWith(expect.stringContaining(winPkg.archive), path.join('/cache', winPkg.archive), undefined);
-    expect(extractPackage).toHaveBeenCalledWith(path.join('/cache', winPkg.archive), '/cache');
-    expect(chmod).not.toHaveBeenCalled();
-  });
-
 });

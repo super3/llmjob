@@ -15,15 +15,29 @@ describe('config', () => {
   });
 
   test('endpointFor returns the region endpoint and falls back', () => {
-    expect(endpointFor('sg1')).toBe('sg1.alphapool.tech:5566');
+    expect(endpointFor('sg1')).toBe('sg.pearl.herominers.com:1200');
     expect(endpointFor('???')).toBe(REGIONS.us2.endpoint);
   });
 
-  test('all eight documented endpoints are present on port 5566', () => {
+  // Every one of these was resolved and TCP-connected on :1200 before being
+  // offered. The pool advertises `in`, `mx` and `kz` regions that have no pearl
+  // subdomain at all, and `ru` resolves but refuses the connection, so none of
+  // the four are listed — shipping an endpoint nobody checked is what produced
+  // the field reports of "No such host is known".
+  test('every endpoint is a verified HeroMiners host on port 1200', () => {
     const endpoints = Object.values(REGIONS).map((r) => r.endpoint);
     expect(endpoints).toHaveLength(8);
-    expect(endpoints.every((e) => e.endsWith('.alphapool.tech:5566'))).toBe(true);
-    expect(endpoints).toContain('hk1.alphapool.tech:5566');
+    expect(endpoints.every((e) => e.endsWith('.pearl.herominers.com:1200'))).toBe(true);
+    expect(endpoints).toContain('hk.pearl.herominers.com:1200');
+  });
+
+  // regionFor falls back for an unknown key, so a rig that stored one of the
+  // retired regions lands on the default instead of failing to start.
+  test('the retired ru1/in1 regions degrade to the default', () => {
+    expect(REGIONS.ru1).toBeUndefined();
+    expect(REGIONS.in1).toBeUndefined();
+    expect(endpointFor('ru1')).toBe(REGIONS[DEFAULTS.region].endpoint);
+    expect(endpointFor('in1')).toBe(REGIONS[DEFAULTS.region].endpoint);
   });
 
   test('regionLabel combines flag and label, with fallback', () => {
@@ -49,8 +63,14 @@ describe('config', () => {
   });
 
   test('engine and economics metadata are present', () => {
-    expect(MINER).toMatchObject({ engine: 'alpha-miner', pow: 'pearlhash', devFeePct: 0, poolFeePct: 1 });
-    expect(ECON).toMatchObject({ NET_TH: 61e6, DAILY_NET_PRL: 1.62e6, FEE: 0.99, PRL_USD: 0.30 });
+    expect(MINER).toMatchObject({
+      engine: 'peakminer', pool: 'HeroMiners', pow: 'pearlhash', devFeePct: 2, poolFeePct: 0,
+    });
+    // 0.98 = the 2% PeakMiner dev fee. HeroMiners itself takes nothing, so the
+    // pool half of the old 0.99 is gone and the engine half replaces it. Tied
+    // together here so the two can never drift apart unnoticed.
+    expect(ECON).toMatchObject({ NET_TH: 61e6, DAILY_NET_PRL: 1.62e6, FEE: 0.98, PRL_USD: 0.30 });
+    expect(MINER.poolFeePct + MINER.devFeePct).toBeCloseTo((1 - ECON.FEE) * 100, 6);
     expect(DEFAULTS.difficulty).toBe(524288);
   });
 });

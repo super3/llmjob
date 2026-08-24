@@ -51,7 +51,7 @@
     view: 'mine',        // mine | chat | api | settings | logs
     returnTab: 'mine',   // where settings/logs return to
     address: '', gpu: '', mode: 'auto', mdlAddress: '',
-    canMine: true,       // false on macOS — no alpha-miner build exists for it
+    canMine: true,       // false on macOS — no peakminer build exists for it
     llm: { ready: false, endpoint: null, webUrl: null, tps: 0, model: null, error: null, note: null },
     chat: { messages: [], streaming: false, streamText: '', bubble: null },
     node: { connected: false, nodeId: null, name: null },
@@ -72,7 +72,7 @@
   };
 
   // The modes that need a mining engine. On a platform without one (macOS —
-  // AlphaPool builds alpha-miner for Windows and Linux only) they are removed
+  // PeakMiner ships Windows and Linux builds only) they are removed
   // from the segmented control rather than left to disappoint: picking "Mining"
   // there would arm a START that runs nothing at all. 'auto' stays, because it
   // degrades correctly on its own — main.js refuses the miner and the local LLM

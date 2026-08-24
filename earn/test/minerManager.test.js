@@ -31,8 +31,8 @@ describe('MinerManager', () => {
     expect(mgr.isRunning()).toBe(true);
     expect(spawn).toHaveBeenCalledTimes(1);
     const [bin, args] = spawn.mock.calls[0];
-    expect(bin).toBe('alpha-miner-windows.exe');
-    expect(args).toEqual(expect.arrayContaining(['--address', 'prl1pabc', '--worker', 'rig01']));
+    expect(bin).toBe('peakminer.exe');
+    expect(args).toEqual(expect.arrayContaining(['-c', 'pearl', '-u', 'prl1pabc', '-w', 'rig01']));
     expect(started).toHaveBeenCalledWith({ bin, args });
   });
 
@@ -41,7 +41,7 @@ describe('MinerManager', () => {
     const spawn = jest.fn(() => child);
     const mgr = new MinerManager({ spawn });
     expect(mgr.start()).toBe(true);
-    expect(spawn.mock.calls[0][0]).toBe('alpha-miner'); // non-Windows default binary
+    expect(spawn.mock.calls[0][0]).toBe('peakminer'); // non-Windows default binary
   });
 
   test('start is a no-op while already running', () => {
@@ -52,7 +52,9 @@ describe('MinerManager', () => {
     expect(spawn).toHaveBeenCalledTimes(1);
   });
 
-  test('stdout is split into log lines and parsed events', () => {
+  // PeakMiner writes everything to stderr and leaves stdout empty, so the event
+  // stream has to come off stderr. Both are wired to the same buffer.
+  test('stderr is split into log lines and parsed events', () => {
     const child = makeChild();
     const mgr = new MinerManager({ spawn: () => child });
     const logs = [];
@@ -61,15 +63,15 @@ describe('MinerManager', () => {
     mgr.on('event', (e) => events.push(e));
     mgr.start({ address: 'prl1pabc' });
 
-    const connected = 'ts level=INFO gpu=0:NVIDIA GeForce RTX 4090 component=pool connected host=us2.alphapool.tech port=5566 tls=false';
-    const status = 'ts level=INFO gpu=0:NVIDIA GeForce RTX 4090 component=miner status attempts=100 accepted=5 rejected=0 hashrate_th_s=286.86 power=449W';
-    child.stdout.emit('data', connected + '\njust noise\n\n' + status + '\n');
+    const connected = '2026-08-23 23:38:40  INFO connected us.pearl.herominers.com:1200  diff —  ping 1059ms';
+    const status = '  0  RTX 4090  296.5 TH/s       3 / 0      78°C   48%   449W  660.4 GH/W  10251MHz   2340MHz';
+    child.stderr.emit('data', connected + '\njust noise\n\n' + status + '\n');
 
     expect(logs.map((l) => l.line)).toEqual([connected, 'just noise', status]);
     expect(logs.every((l) => l.level === 'info')).toBe(true);
     expect(events).toEqual([
-      { type: 'connected', gpuIndex: 0, endpoint: 'us2.alphapool.tech:5566', gpu: 'NVIDIA GeForce RTX 4090' },
-      { type: 'status', gpuIndex: 0, hashrate: 286.86, accepted: 5, rejected: 0, power: 449, temp: null, gpu: 'NVIDIA GeForce RTX 4090' },
+      { type: 'connected', gpuIndex: null, endpoint: 'us.pearl.herominers.com:1200', gpu: null },
+      { type: 'status', gpuIndex: 0, hashrate: 296.5, accepted: 3, rejected: 0, power: 449, temp: 78, gpu: 'RTX 4090' },
     ]);
   });
 
@@ -85,15 +87,15 @@ describe('MinerManager', () => {
     mgr.on('event', (e) => events.push(e));
     mgr.start({ address: 'prl1pabc' });
 
-    const status = 'ts level=INFO gpu=0:NVIDIA GeForce RTX 4090 component=miner status attempts=100 accepted=5 rejected=0 hashrate_th_s=286.86 power=449W';
-    const cut = status.length - 2; // splits mid-"449W", as the real log did
-    child.stdout.emit('data', status.slice(0, cut));
+    const status = '  0  RTX 4090  296.5 TH/s       3 / 0      78°C   48%   449W  660.4 GH/W  10251MHz   2340MHz';
+    const cut = status.length - 6; // splits mid-clock, as the real log did
+    child.stderr.emit('data', status.slice(0, cut));
     expect(logs).toEqual([]); // nothing emitted until the line is complete
-    child.stdout.emit('data', status.slice(cut) + '\n');
+    child.stderr.emit('data', status.slice(cut) + '\n');
 
     expect(logs.map((l) => l.line)).toEqual([status]);
     expect(events).toEqual([
-      { type: 'status', gpuIndex: 0, hashrate: 286.86, accepted: 5, rejected: 0, power: 449, temp: null, gpu: 'NVIDIA GeForce RTX 4090' },
+      { type: 'status', gpuIndex: 0, hashrate: 296.5, accepted: 3, rejected: 0, power: 449, temp: 78, gpu: 'RTX 4090' },
     ]);
   });
 
@@ -104,13 +106,13 @@ describe('MinerManager', () => {
     mgr.on('log', (l) => logs.push(l));
     mgr.start({ address: 'prl1pabc' });
 
-    child.stdout.emit('data', 'died mid-sentence');
+    child.stderr.emit('data', 'died mid-sentence');
     child.emit('exit', 1);
     expect(logs.map((l) => l.line)).toEqual(['died mid-sentence']);
 
     // A restart must not inherit the previous run's leftovers.
     mgr.start({ address: 'prl1pabc' });
-    expect(mgr.stdoutBuf).toBe('');
+    expect(mgr.lineBuf).toBe('');
   });
 
   test('a runaway line with no newline is flushed at the cap', () => {
@@ -120,10 +122,10 @@ describe('MinerManager', () => {
     mgr.on('log', (l) => logs.push(l));
     mgr.start({ address: 'prl1pabc' });
 
-    child.stdout.emit('data', 'x'.repeat(64 * 1024 + 1));
+    child.stderr.emit('data', 'x'.repeat(64 * 1024 + 1));
     expect(logs).toHaveLength(1);
     expect(logs[0].line).toHaveLength(64 * 1024 + 1);
-    expect(mgr.stdoutBuf).toBe(''); // buffer released, next chunk starts fresh
+    expect(mgr.lineBuf).toBe(''); // buffer released, next chunk starts fresh
   });
 
   test('an exit with nothing buffered emits no stray log line', () => {
@@ -133,20 +135,27 @@ describe('MinerManager', () => {
     mgr.on('log', (l) => logs.push(l));
     mgr.start({ address: 'prl1pabc' });
 
-    child.stdout.emit('data', 'complete\n');
+    child.stderr.emit('data', 'complete\n');
     child.emit('exit', 0);
     expect(logs.map((l) => l.line)).toEqual(['complete']);
   });
 
-  test('stderr is emitted as error-level log', () => {
+  // Level comes from the line, not the pipe: everything arrives on stderr, so
+  // marking the whole stream 'error' would paint the entire log red.
+  test('severity is read from the line, not the stream', () => {
     const child = makeChild();
     const mgr = new MinerManager({ spawn: () => child });
     const logs = [];
     mgr.on('log', (l) => logs.push(l));
     mgr.start({ address: 'prl1pabc' });
 
-    child.stderr.emit('data', '  boom  ');
-    expect(logs).toContainEqual({ level: 'error', line: 'boom' });
+    child.stderr.emit('data', '2026-08-23 23:39:42 ERROR failed to connect to h:1: boom\nroutine progress\n');
+    expect(logs[0].level).toBe('error');
+    expect(logs[1]).toEqual({ level: 'info', line: 'routine progress' });
+
+    // stdout is still read, in case a future engine ever uses it.
+    child.stdout.emit('data', 'from stdout\n');
+    expect(logs[2]).toEqual({ level: 'info', line: 'from stdout' });
   });
 
   test('child error is surfaced', () => {

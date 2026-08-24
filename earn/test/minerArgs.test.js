@@ -1,175 +1,113 @@
 'use strict';
 
-const { resolveBinary, buildArgs, buildEnv } = require('../src/shared/minerArgs');
+const { STATUS_INTERVAL_SECS, resolveBinary, buildArgs } = require('../src/shared/minerArgs');
+const { DEFAULTS, endpointFor } = require('../src/shared/config');
+
+const ADDR = 'prl1px5ervx6ftaegmdhqa5ajemh20j2uw7l9jt5j5s97rljp72yt3s8qncrxud';
+const MDL = 'mdl1pl80mdy0culfn3g7jl3paa5ccnc8gkkfmkc6t2x0q6rmvd9dpu5wsk0v3z8';
+
+// Read the value that follows a flag, so assertions do not depend on argument
+// order and a reordering does not silently pass while the vector changed.
+function val(args, flag) {
+  const i = args.indexOf(flag);
+  return i === -1 ? undefined : args[i + 1];
+}
 
 describe('resolveBinary', () => {
-  test('prefers a configured binary path', () => {
-    expect(resolveBinary('/opt/alpha-miner', 'win32')).toBe('/opt/alpha-miner');
+  test('an explicit path always wins', () => {
+    expect(resolveBinary('/opt/peakminer', 'linux')).toBe('/opt/peakminer');
+    expect(resolveBinary('C:\\pm.exe', 'win32')).toBe('C:\\pm.exe');
   });
 
-  test('uses the right Windows engine per GPU vendor', () => {
-    expect(resolveBinary(null, 'win32')).toBe('alpha-miner-windows.exe');
-    expect(resolveBinary(null, 'win32', 'amd')).toBe('alpha-miner-amd-windows-fixed.exe');
-  });
-
-  test('uses the bare name off Windows', () => {
-    expect(resolveBinary('', 'linux')).toBe('alpha-miner');
-    expect(resolveBinary(undefined, 'darwin')).toBe('alpha-miner');
+  test('falls back to the platform default', () => {
+    expect(resolveBinary(null, 'win32')).toBe('peakminer.exe');
+    expect(resolveBinary(null, 'linux')).toBe('peakminer');
+    expect(resolveBinary(undefined, undefined)).toBe('peakminer');
   });
 });
 
 describe('buildArgs', () => {
-  test('uses defaults when called with no settings', () => {
-    expect(buildArgs()).toEqual([
-      '--pool', 'stratum+tcp://us2.alphapool.tech:5566',
-      '--address', '',
-      '--worker', 'rig01',
-      '--password', 'x;d=524288',
-    ]);
+  test('builds the documented PeakMiner vector', () => {
+    const args = buildArgs({ address: ADDR, worker: 'rig01', region: 'us1', difficulty: 524288 });
+    expect(val(args, '-c')).toBe('pearl');
+    expect(val(args, '-o')).toBe('stratum+tcp://us.pearl.herominers.com:1200');
+    expect(val(args, '-u')).toBe(ADDR);
+    expect(val(args, '-w')).toBe('rig01');
+    expect(val(args, '-p')).toBe('x;d=524288');
+    expect(val(args, '-d')).toBe('0');
   });
 
-  test('honors region, worker, difficulty and backend overrides', () => {
-    expect(buildArgs({ address: 'prl1pabc', region: 'eu1', worker: 'rig9', difficulty: 1000, backend: 'ampere' })).toEqual([
-      '--pool', 'stratum+tcp://eu1.alphapool.tech:5566',
-      '--address', 'prl1pabc',
-      '--worker', 'rig9',
-      '--password', 'x;d=1000',
-      '--force-backend', 'ampere',
-    ]);
+  // Upstream's default status interval is 60s, which would leave the dashboard
+  // blank for a minute after every start.
+  test('asks for a status table often enough to drive a live UI', () => {
+    expect(STATUS_INTERVAL_SECS).toBeLessThanOrEqual(15);
+    expect(val(buildArgs({ address: ADDR }), '-i')).toBe(String(STATUS_INTERVAL_SECS));
   });
 
-  test('an explicit endpoint wins and an empty worker drops the --worker flag', () => {
-    expect(buildArgs({ address: 'prl1pabc', endpoint: 'custom:1', worker: '' })).toEqual([
-      '--pool', 'stratum+tcp://custom:1',
-      '--address', 'prl1pabc',
-      '--password', 'x;d=524288',
-    ]);
+  // Tips are prose printed under the table; upstream documents this flag for
+  // log scrapers specifically.
+  test('suppresses the usage tips that would otherwise land in the log', () => {
+    expect(buildArgs({ address: ADDR })).toContain('--no-tips');
   });
 
-  test('defaults the worker when omitted', () => {
-    const args = buildArgs({ address: 'prl1pabc' });
-    expect(args).toEqual(expect.arrayContaining(['--address', 'prl1pabc', '--worker', 'rig01']));
-    expect(args).not.toContain('--algo');
+  // The API defaults to ON, listening on 127.0.0.1:4068. We read the log, so a
+  // listening socket the user never asked for is pure liability — and two rigs
+  // on one box would collide on the port.
+  test('disables the HTTP stats API', () => {
+    expect(val(buildArgs({ address: ADDR }), '-a')).toBe('0');
   });
 
-  test('merge mining on Windows: a valid MDL address rides along in --address as prl…+mdl…', () => {
-    const prl = 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
-    const mdl = 'mdl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
-    const args = buildArgs({ platform: 'win32', address: prl, mdlAddress: mdl });
-    expect(args).toEqual(expect.arrayContaining(['--address', prl + '+' + mdl]));
-    expect(args).toEqual(expect.arrayContaining(['--password', 'x;d=524288']));
-    // A malformed MDL address is dropped so Pearl mining is never broken.
-    const safe = buildArgs({ platform: 'win32', address: prl, mdlAddress: 'mdl1pshort' });
-    expect(safe).toEqual(expect.arrayContaining(['--address', prl]));
-    expect(safe).toEqual(expect.arrayContaining(['--password', 'x;d=524288']));
+  test('defaults worker, difficulty and region when unset', () => {
+    const args = buildArgs({ address: ADDR });
+    expect(val(args, '-w')).toBe(DEFAULTS.worker);
+    expect(val(args, '-p')).toBe('x;d=' + DEFAULTS.difficulty);
+    expect(val(args, '-o')).toBe('stratum+tcp://' + endpointFor(DEFAULTS.region));
   });
 
-  test('merge mining off Windows: the MDL address rides in the password, never --address', () => {
-    const prl = 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
-    const mdl = 'mdl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
-    // The Linux engine rejects a combined --address outright, so the address
-    // must stay bare and the MDL lands in the Stratum password's mdl= field.
-    const args = buildArgs({ platform: 'linux', address: prl, mdlAddress: mdl });
-    expect(args).toEqual(expect.arrayContaining(['--address', prl]));
-    expect(args).toEqual(expect.arrayContaining(['--password', 'x;d=524288;mdl=' + mdl]));
-    // Same when the platform is unknown (tests/dev): default to the strict engine.
-    const bare = buildArgs({ address: prl, mdlAddress: mdl });
-    expect(bare).toEqual(expect.arrayContaining(['--address', prl]));
-    expect(bare).toEqual(expect.arrayContaining(['--password', 'x;d=524288;mdl=' + mdl]));
-    // A malformed MDL address is dropped from the password too.
-    const safe = buildArgs({ platform: 'linux', address: prl, mdlAddress: 'mdl1pshort' });
-    expect(safe).toEqual(expect.arrayContaining(['--address', prl]));
-    expect(safe).toEqual(expect.arrayContaining(['--password', 'x;d=524288']));
-  });
-});
-
-describe('buildEnv', () => {
-  test('maps settings to the launcher environment variables', () => {
-    expect(buildEnv({ address: 'prl1pabc', worker: 'rig9', difficulty: 1000 })).toEqual({
-      PRL_ADDRESS: 'prl1pabc',
-      MDL_ADDRESS: '',
-      WORKER: 'rig9',
-      PEARL_DIFFICULTY: '1000',
-    });
+  test('an empty worker is omitted rather than sent blank', () => {
+    expect(buildArgs({ address: ADDR, worker: '' })).not.toContain('-w');
   });
 
-  test('applies defaults and keeps an explicit empty worker', () => {
-    expect(buildEnv()).toEqual({ PRL_ADDRESS: '', MDL_ADDRESS: '', WORKER: 'rig01', PEARL_DIFFICULTY: '524288' });
-    expect(buildEnv({ worker: '' }).WORKER).toBe('');
+  test('selects the requested card', () => {
+    expect(val(buildArgs({ address: ADDR, gpuIndex: 2 }), '-d')).toBe('2');
+    expect(val(buildArgs({ address: ADDR, gpuIndex: 0 }), '-d')).toBe('0');
   });
 
-  test('exposes a valid MDL address to the launcher and drops a bad one', () => {
-    const mdl = 'mdl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
-    expect(buildEnv({ address: 'prl1pabc', mdlAddress: mdl }).MDL_ADDRESS).toBe(mdl);
-    expect(buildEnv({ address: 'prl1pabc', mdlAddress: 'nope' }).MDL_ADDRESS).toBe('');
-  });
-});
-
-// The rank-128 CLI (alpha-miner 1.9.4 on Windows). Selected by the engine
-// descriptor's `cli` field, not a version comparison, so these also pin the
-// dispatch: an engine that does not declare it keeps the 1.8.x vector.
-describe('buildArgs on the worker-address CLI', () => {
-  const PRL = 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
-  const MDL = 'mdl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
-  const win = { platform: 'win32', engineVersion: '1.9.4' };
-
-  test('carries the payout address inside --worker and pins the card', () => {
-    expect(buildArgs(Object.assign({ address: PRL, worker: 'rig9', difficulty: 1000, gpuIndex: 2 }, win)))
-      .toEqual(['--host', 'us2.alphapool.tech', '--port', '5566', '--worker', PRL + '.rig9', '--password', 'x;d=1000', '--gpu', '2']);
+  // HeroMiners documents its merge-mining login as PRL+MDL.WORKER, which is
+  // exactly what combinePayoutAddress produces — and -u is sent verbatim, so it
+  // survives intact.
+  test('carries a merge-mining address through unchanged', () => {
+    expect(val(buildArgs({ address: ADDR, mdlAddress: MDL }), '-u')).toBe(ADDR + '+' + MDL);
   });
 
-  // Merge mining has to survive the move: the combined login is what the pool
-  // splits, and it rides in --worker now that there is no --address at all.
-  test('merges the MDL address into the login and defaults the GPU index', () => {
-    const args = buildArgs(Object.assign({ address: PRL, mdlAddress: MDL, worker: 'rig01' }, win));
-    expect(args).toContain(PRL + '+' + MDL + '.rig01');
-    expect(args.slice(-2)).toEqual(['--gpu', '0']);
-    expect(args).not.toContain('--address');
+  test('a malformed MDL address is dropped rather than sent', () => {
+    expect(val(buildArgs({ address: ADDR, mdlAddress: 'not-an-address' }), '-u')).toBe(ADDR);
   });
 
-  test('sends a bare address when the worker is blank', () => {
-    expect(buildArgs(Object.assign({ address: PRL, worker: '' }, win))).toContain(PRL);
+  // A user pasting `stratum+tcp://host:port` into the endpoint override must not
+  // produce `stratum+tcp://stratum+tcp://host:port`, which is the shape that
+  // made the previous engine try to resolve the scheme as part of the hostname.
+  test('normalises a scheme already present in an endpoint override', () => {
+    const args = buildArgs({ address: ADDR, endpoint: 'stratum+tcp://pool.example:1200' });
+    expect(val(args, '-o')).toBe('stratum+tcp://pool.example:1200');
   });
 
-  // The guard that keeps every pre-fork engine on its own vector.
-  test('leaves a legacy engine on the --pool/--address vector', () => {
-    expect(buildArgs({ address: PRL, platform: 'win32', engineVersion: '1.8.6' })[0]).toBe('--pool');
+  test('an endpoint override beats the region', () => {
+    const args = buildArgs({ address: ADDR, region: 'us1', endpoint: 'pool.example:9999' });
+    expect(val(args, '-o')).toBe('stratum+tcp://pool.example:9999');
   });
-});
 
-// The field report this came from: an endpoint override pasted in the old
-// `stratum+tcp://` form reached --host verbatim, so the engine tried to resolve
-// the scheme as part of the hostname and looped on 'No such host is known'.
-test('an endpoint override keeps its scheme out of --host', () => {
-  const eng = require('../src/shared/engine');
-  const args = buildArgs({
-    address: 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c', worker: 'rig01',
-    platform: 'win32', engineVersion: eng.ENGINE.windows,
-    endpoint: 'stratum+tcp://us1.alphapool.tech:5566',
+  // There is exactly one URL argument and no port flag, so the doubled-port
+  // failure that produced "pool us2.alphapool.tech:5566:5566" cannot recur.
+  test('never emits a separate port argument', () => {
+    const args = buildArgs({ address: ADDR, region: 'us1' });
+    expect(args).not.toContain('--port');
+    expect(args.filter((a) => a === '-o')).toHaveLength(1);
   });
-  expect(args[args.indexOf('--host') + 1]).toBe('us1.alphapool.tech');
-  expect(args[args.indexOf('--port') + 1]).toBe('5566');
-});
 
-// The legacy vector builds its own stratum+tcp:// prefix, so a cleaned endpoint
-// must not leave it with a doubled scheme.
-test('the legacy --pool vector still gets exactly one scheme', () => {
-  const args = buildArgs({
-    address: 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c', platform: 'linux',
-    engineVersion: '1.8.8', endpoint: 'stratum+tcp://us1.alphapool.tech:5566',
+  test('tolerates being called with nothing at all', () => {
+    const args = buildArgs();
+    expect(val(args, '-c')).toBe('pearl');
+    expect(val(args, '-u')).toBe('');
   });
-  expect(args[args.indexOf('--pool') + 1]).toBe('stratum+tcp://us1.alphapool.tech:5566');
-});
-
-// A portless endpoint must not gain an invented port: the engine has its own
-// default, and guessing one is how the doubled-port bug happened in reverse.
-test('omits --port entirely when the endpoint carries none', () => {
-  const eng = require('../src/shared/engine');
-  const args = buildArgs({
-    address: 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c', worker: 'rig01',
-    platform: 'win32', engineVersion: eng.ENGINE.windows,
-    endpoint: 'pool.example.internal',
-  });
-  expect(args).not.toContain('--port');
-  expect(args[args.indexOf('--host') + 1]).toBe('pool.example.internal');
 });

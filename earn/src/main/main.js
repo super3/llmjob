@@ -42,9 +42,8 @@ const { resolveServerUrl } = require('../shared/llama');
 const { buildBalanceUrl, parseBalance } = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
 const {
-  bundledEnginePath, engineVersionFor, driverTooOld,
+  bundledEnginePath, engineVersionFor,
   engineDownloadUrl, manualInstallHint,
-  ENGINE,
 } = require('../shared/engine');
 const { formatUpdate, describeUpdateError } = require('../shared/updateStatus');
 const { describeLaunchError, describeSetupError } = require('../shared/engineError');
@@ -179,25 +178,14 @@ function psQuote(value) {
   return "'" + String(value).replace(/'/g, "''") + "'";
 }
 
-// Extract a single engine .exe from a downloaded zip to `dest`. Windows-only:
-// uses PowerShell's Expand-Archive, so there's no extra runtime dependency. Used
-// for the miner engine, whose binary is self-contained.
-function extractZip(zipPath, dest) {
-  return new Promise((resolve, reject) => {
-    const tmp = dest + '.unzip';
-    const wanted = path.basename(dest);
-    const ps = "$ErrorActionPreference='Stop';"
-      + 'Expand-Archive -LiteralPath ' + psQuote(zipPath) + ' -DestinationPath ' + psQuote(tmp) + ' -Force;'
-      + '$e = Get-ChildItem -Path ' + psQuote(tmp) + ' -Recurse -Filter ' + psQuote(wanted) + ' | Select-Object -First 1;'
-      + 'if(-not $e){ $e = Get-ChildItem -Path ' + psQuote(tmp) + " -Recurse -Filter '*.exe' | Select-Object -First 1 }"
-      + 'Copy-Item -LiteralPath $e.FullName -Destination ' + psQuote(dest) + ' -Force;'
-      + 'Remove-Item -LiteralPath ' + psQuote(tmp) + ' -Recurse -Force';
-    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], (err) => {
-      if (err) return reject(err);
-      resolve(dest);
-    });
-  });
-}
+// There used to be an extractZip() here — a PowerShell Expand-Archive that
+// pulled a single named .exe out of the engine zip and copied it to the cache
+// name. Nothing calls it now: the engine's own archive shape is handled by
+// extractEnginePackage (which unpacks the whole tree, because the launcher is
+// renamed afterwards), and the only other zip we touch is llama.cpp's, which has
+// its own extractor. It is deleted rather than kept "just in case" — an
+// uncalled PowerShell invocation that interpolates paths is a liability, not an
+// asset, and git remembers how it worked.
 
 // Extract a llama.cpp Windows build zip and flatten EVERY file into dest's
 // directory, so llama-server.exe ends up beside all ~30 of its DLLs (a lone
@@ -296,13 +284,25 @@ async function startMining(settings) {
   // now only a heads-up, sent before the download rather than after a rig has
   // pulled half a gigabyte it cannot use.
   const version = engineVersionFor(process.platform);
-  if (driverTooOld(await detectDriverMajor())) {
-    send('miner:log', {
-      level: 'warn',
-      line: 'NVIDIA driver is older than R' + ENGINE.minDriverMajor + ' (CUDA 13); alpha-miner '
-        + version + ' will refuse to start. Update the driver to mine.',
-    });
-  }
+
+  // The driver version is recorded, not judged. There used to be a warning here
+  // for anything below R580, which AlphaPool documented as alpha-miner's hard
+  // floor. PeakMiner publishes no equivalent — it embeds its own CUDA runtime
+  // and selects a kernel profile by compute capability — so ENGINE.minDriverMajor
+  // is null, driverTooOld answers false for everyone, and inventing a threshold
+  // would only scare people off drivers that work.
+  //
+  // Logging it anyway is worth the line: "which driver?" is the first question
+  // on any engine-won't-start report, and this puts the answer in the log the
+  // user already sends us. driverTooOld() stays wired (and tested, with an
+  // injectable floor) so restoring the warning is a one-line change the day
+  // somebody measures a real one.
+  const driverMajor = await detectDriverMajor();
+  send('miner:log', {
+    level: 'info',
+    line: 'engine: peakminer ' + version
+      + ' · NVIDIA driver ' + (driverMajor == null ? 'unknown' : 'R' + driverMajor),
+  });
   // 1.9.4 runs from any path, including one with a space, so the engine
   // simply lives beside the rest of our data.
   const engineDir = path.join(app.getPath('userData'), 'engine');
@@ -332,7 +332,6 @@ async function startMining(settings) {
       version,
       fs: fs,
       download: downloadFile,
-      extract: extractZip,
       extractPackage: extractEnginePackage,
       chmod: fs.chmodSync,
     });
@@ -369,7 +368,7 @@ async function startMining(settings) {
   // spawning now would mine headless behind a UI that says it's off. Abort.
   if (epoch !== miningEpoch) return;
 
-  // Real alpha-miner engine.
+  // Real peakminer engine.
   miner = new MinerManager({ spawn });
   miner.on('log', (l) => send('miner:log', l));
   // Said once, not on every 5s retry. The engine's own line repeats verbatim and

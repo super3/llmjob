@@ -2,16 +2,16 @@
 
 const path = require('path');
 const {
-  enginePath, engineFiles, engineDownloadUrl, engineArchiveName, isZipUrl, manualEnginePath,
-  enginePackage,
+  enginePath, engineFiles, engineDownloadUrl, engineArchiveName, engineArchiveLauncher,
+  manualEnginePath, enginePackage,
 } = require('../shared/engine');
 
-// Ensures the alpha-miner engine is present, downloading and installing it on
+// Ensures the PeakMiner engine is present, downloading and installing it on
 // demand. All IO (filesystem, network download, zip extraction, chmod) is
 // injected so the orchestration is fully unit-testable; main.js wires the real
 // implementations.
 class EngineManager {
-  constructor({ dir, platform, gpu, version, urlBase, fs, download, extract, extractPackage, chmod } = {}) {
+  constructor({ dir, platform, gpu, version, urlBase, fs, download, extractPackage, chmod } = {}) {
     this.dir = dir;
     this.platform = platform;
     this.gpu = gpu;
@@ -19,7 +19,6 @@ class EngineManager {
     this.urlBase = urlBase;
     this.fs = fs;
     this.download = download;
-    this.extract = extract;
     this.extractPackage = extractPackage;
     this.chmod = chmod;
   }
@@ -55,25 +54,33 @@ class EngineManager {
     this.fs.mkdirSync(this.dir, { recursive: true });
 
     // A described engine installs from its descriptor rather than by convention.
-    // Two shapes today: an archive to unpack (Windows' zip), and a self-
-    // extracting bundle to save as-is (Linux's makeself .run).
+    // Two shapes today: an archive to unpack (Windows' zip), and a bare binary
+    // to save as-is (the Linux build, which upstream publishes unarchived).
     const pkg = enginePackage(this.platform, this.version);
-    // A self-extracting bundle (Linux 1.9.4's makeself .run) is downloaded to
-    // its final path and made executable — there is nothing to unpack, it
-    // unpacks itself at each start. Handing it to tar would fail, and treating
-    // it like a bare binary is exactly right.
     if (pkg) {
       const url = engineDownloadUrl(this.platform, this.gpu, this.urlBase, this.version);
-      if (pkg.selfExtracting) {
-        // Nothing to unpack — it unpacks itself into a temp dir at each start.
-        // Handing it to the extractor would fail on a file that is not an
-        // archive, so it is saved straight to its final path.
+      if (pkg.saveAsIs) {
+        // Nothing to unpack. Handing a plain ELF to the extractor would fail on
+        // a file that is not an archive, so it goes straight to its final path.
         await this.download(url, dest, onProgress);
       } else {
         const archivePath = path.join(this.dir, pkg.archive);
         await this.download(url, archivePath, onProgress);
         await this.extractPackage(archivePath, this.dir);
         try { this.fs.unlinkSync(archivePath); } catch (e) { /* leftover archive is harmless */ }
+
+        // The archive's own launcher name is not the name we cache it under:
+        // upstream ships an unversioned `peakminer.exe`, and leaving it there
+        // would make every future version bump a cache HIT — the next release
+        // would find this exe at the expected path and never download. Rename it
+        // so the cached name carries the version.
+        //
+        // Unconditional, with no null guard and no same-name guard: every
+        // archive descriptor MUST declare an archiveLauncher that differs from
+        // its launcher, and engine.test.js asserts both invariants directly.
+        // Runtime checks here would be branches that can only ever be dead.
+        this.fs.renameSync(
+          path.join(this.dir, engineArchiveLauncher(this.platform, this.version)), dest);
       }
       // One rule for every described engine, whatever its shape: Windows has no
       // execute bit to grant, and chmodding there is at best a no-op, at worst a
@@ -86,16 +93,11 @@ class EngineManager {
     // go anywhere near the network, so a rig whose HTTPS is broken can be fixed
     // with a browser.
     if (!(await this.adoptManualDownload(dest))) {
-      const url = engineDownloadUrl(this.platform, this.gpu, this.urlBase, this.version);
-
-      if (isZipUrl(url)) {
-        const zipPath = path.join(this.dir, 'engine.zip');
-        await this.download(url, zipPath, onProgress);
-        await this.extract(zipPath, dest);
-        this.fs.unlinkSync(zipPath);
-      } else {
-        await this.download(url, dest, onProgress);
-      }
+      // No archive handling here. This branch runs only for a version no
+      // descriptor claims, and every artifact named that way is a plain binary —
+      // all the archive shapes live in PACKAGED and return above.
+      await this.download(
+        engineDownloadUrl(this.platform, this.gpu, this.urlBase, this.version), dest, onProgress);
     }
 
     if (this.platform !== 'win32') this.chmod(dest, 0o755);
@@ -106,12 +108,12 @@ class EngineManager {
   // Returns whether it adopted something.
   //
   // Users hit by a failed download fetch the engine in a browser, which saves it
-  // under the pool's own name — the unversioned `alpha-miner`, or the Windows
-  // zip — never the versioned name the cache looks for. Without this the app
-  // ignores the file, retries the download that already failed, and the user
-  // reasonably reports that downloading it manually "changed nothing". The
-  // archive is extracted (leaving the user's zip alone); a bare binary is
-  // renamed into place, which is the install.
+  // under upstream's own name — the unversioned `peakminer` — never the
+  // versioned name the cache looks for. Without this the app ignores the file,
+  // retries the download that already failed, and the user reasonably reports
+  // that downloading it manually "changed nothing". Renaming it into place IS
+  // the install. This path matters more now that an antivirus is a realistic
+  // reason for the in-app download to fail, not just a broken proxy.
   async adoptManualDownload(dest) {
     const candidates = [
       manualEnginePath(this.dir, this.platform),
@@ -119,8 +121,7 @@ class EngineManager {
     ];
     for (const src of candidates) {
       if (src === dest || !this.fs.existsSync(src)) continue;
-      if (isZipUrl(src)) await this.extract(src, dest);
-      else this.fs.renameSync(src, dest);
+      this.fs.renameSync(src, dest);
       return true;
     }
     return false;

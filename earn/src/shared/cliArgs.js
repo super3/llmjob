@@ -65,7 +65,7 @@ const USAGE = [
   '  -d, --difficulty <n>     Static share difficulty (default: from detected/--gpu card, else ' + DEFAULTS.difficulty + ')',
   '  -g, --gpu <card>         GPU name for the difficulty table (default: auto-detect via nvidia-smi)',
   '      --backend <name>     Force an engine backend (e.g. ampere)',
-  '  -b, --binary <path>      Use this alpha-miner binary instead of downloading one',
+  '  -b, --binary <path>      Use this peakminer binary instead of downloading one',
   '      --engine-dir <path>  Where to cache the downloaded engine',
   '      --stats-file <path>  Write live stats JSON here every 10s (for HiveOS h-stats etc.)',
   '      --no-report          Do not publish live status to the public network board',

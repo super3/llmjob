@@ -2,44 +2,75 @@
 
 // Static configuration for the LLMJob Earn desktop wrapper.
 //
-// The app wraps the AlphaPool `alpha-miner` engine for Pearl (PRL). All values
-// below come from the AlphaPool setup page (pearl.alphapool.tech/#setup):
-// Stratum endpoints, the per-card static-difficulty table, the engine binaries,
-// and the network economics used for earnings estimates. The binary path is
-// configurable so a downloaded alpha-miner build drops in without code changes.
+// The app wraps the PeakMiner engine (peakminer.org) and mines Pearl (PRL) on
+// HeroMiners. Pool and engine moved together in one change because they had to:
+// AlphaPool had gone 12 days without a block — at 18.7 PH/s of a 25.3 EH/s
+// network that is the expected rate, not bad luck — and `alpha-miner` speaks
+// only AlphaPool's Stratum dialect. Pointed at HeroMiners, PearlHash, Kryptex or
+// LuckyPool it opens the TCP connection and then sits on "waiting for first
+// job..." for ever. Checked against all four before concluding it.
+//
+// HeroMiners was picked over the three larger pools on fee and terms: 0% pool
+// fee, PROP, no registration — the login IS the payout address — 1 PRL minimum,
+// hourly payments, and ~24 blocks a day at 13.8% of the network with luck
+// running at -0.002 sigma. PearlHash is the failover if that changes: bigger,
+// but 1% and no MDL merge mining.
 
 // Stratum pool endpoints (host:port). Pick the closest for lowest share latency.
+//
+// Every host below was resolved AND TCP-connected on port 1200 before being
+// listed, which is not ceremony. HeroMiners' own latency table advertises `in`,
+// `mx` and `kz` regions that have no `*.pearl.herominers.com` record at all, and
+// `ru` resolves but refuses the connection. Shipping an endpoint nobody checked
+// is exactly what produced the field reports of "DNS lookup failed: No such host
+// is known", so the four that failed are simply not offered.
+//
+// `ru1` and `in1` are gone with them. That is safe rather than breaking:
+// regionFor() falls back to the default for an unknown key, so a rig that stored
+// either one lands on us2 instead of failing to start.
 const REGIONS = {
-  us1: { label: 'us1', flag: '🇺🇸', name: 'N. America · East', endpoint: 'us1.alphapool.tech:5566' },
-  us2: { label: 'us2', flag: '🇺🇸', name: 'N. America · West', endpoint: 'us2.alphapool.tech:5566' },
-  eu1: { label: 'eu1', flag: '🇪🇺', name: 'Europe', endpoint: 'eu1.alphapool.tech:5566' },
-  eu2: { label: 'eu2', flag: '🇪🇺', name: 'Europe', endpoint: 'eu2.alphapool.tech:5566' },
-  ru1: { label: 'ru1', flag: '🇷🇺', name: 'Russia · Eurasia', endpoint: 'ru1.alphapool.tech:5566' },
-  sg1: { label: 'sg1', flag: '🇸🇬', name: 'Asia · Singapore', endpoint: 'sg1.alphapool.tech:5566' },
-  hk1: { label: 'hk1', flag: '🇭🇰', name: 'Asia · Hong Kong', endpoint: 'hk1.alphapool.tech:5566' },
-  in1: { label: 'in1', flag: '🇮🇳', name: 'India', endpoint: 'in1.alphapool.tech:5566' },
+  us1: { label: 'us1', flag: '🇺🇸', name: 'N. America · East', endpoint: 'us.pearl.herominers.com:1200' },
+  us2: { label: 'us2', flag: '🇺🇸', name: 'N. America · West', endpoint: 'us2.pearl.herominers.com:1200' },
+  ca1: { label: 'ca1', flag: '🇨🇦', name: 'Canada', endpoint: 'ca.pearl.herominers.com:1200' },
+  br1: { label: 'br1', flag: '🇧🇷', name: 'South America', endpoint: 'br.pearl.herominers.com:1200' },
+  eu1: { label: 'eu1', flag: '🇩🇪', name: 'Europe · Central', endpoint: 'de.pearl.herominers.com:1200' },
+  eu2: { label: 'eu2', flag: '🇫🇷', name: 'Europe · West', endpoint: 'fr.pearl.herominers.com:1200' },
+  sg1: { label: 'sg1', flag: '🇸🇬', name: 'Asia · Singapore', endpoint: 'sg.pearl.herominers.com:1200' },
+  hk1: { label: 'hk1', flag: '🇭🇰', name: 'Asia · Hong Kong', endpoint: 'hk.pearl.herominers.com:1200' },
 };
 
 const DEFAULTS = {
   region: 'us2',
   worker: 'rig01',
+  // Static difficulty, still sent as the Stratum password (`x;d=N`). HeroMiners
+  // ignores it — its own config reports fixedDiffEnabled:false and it vardiffs
+  // instead (it moved this 4090 to 9.01 PH within seconds) — so the setting is
+  // inert there and kept only because an endpoint override can point at a pool
+  // that does honour it. Do not surface it as if it were doing something.
   difficulty: 524288, // RTX 4090 / 5080 class — a safe general default
   algo: 'pearlhash',
   powerLimit: 318,
 };
 
 // Engine / pool metadata.
+//
+// devFeePct goes 0 -> 2 and that is not something to bury: PeakMiner takes a 2%
+// dev fee where alpha-miner took none. It is still the better deal, measured
+// rather than assumed — on the same RTX 4090, PeakMiner ran 296-303 TH/s against
+// alpha-miner's 271.5 TH/s, so ~9% more work for a 2% cut and the rig nets
+// ahead. poolFeePct goes 1 -> 0 because HeroMiners charges nothing at all.
 const MINER = {
-  engine: 'alpha-miner',
-  downloadUrl: 'https://pearl.alphapool.tech/downloads/alpha-miner',
-  windowsZipNvidia: 'AlphaMiner-Pearl-Windows.zip', // contains alpha-miner-windows.exe
-  windowsZipAmd: 'AlphaMiner-Pearl-AMD.zip', // contains alpha-miner-amd-windows-fixed.exe
-  dockerImage: 'alphaminetech/pearl-miner:1.7.9',
+  engine: 'peakminer',
+  pool: 'HeroMiners',
+  poolUrl: 'https://pearl.herominers.com',
+  downloadUrl: 'https://github.com/peakminer/peakminer/releases',
   pow: 'pearlhash',
-  devFeePct: 0,
-  poolFeePct: 1,
-  payoutScheme: 'PPLNS',
-  payoutIntervalHours: 4,
+  devFeePct: 2,
+  poolFeePct: 0,
+  payoutScheme: 'PROP',
+  // HeroMiners pays hourly (paymentsInterval 3600 in its own /api/stats config),
+  // not on the 4-hour cycle AlphaPool ran.
+  payoutIntervalHours: 1,
   minPayoutPrl: 1,
 };
 
@@ -72,7 +103,11 @@ const NETWORK = {
 const ECON = {
   NET_TH: 61e6, // network hashrate in TH/s (~61 EH/s) — prlscan
   DAILY_NET_PRL: 1.62e6, // ~2,489 PRL/block × ~650 blocks/day
-  FEE: 0.99, // share kept after the 1% pool fee
+  // Share of the block reward a rig actually keeps. It used to be 0.99 — 1% to
+  // AlphaPool, nothing to alpha-miner. The split has inverted: HeroMiners takes
+  // 0% and PeakMiner takes a 2% dev fee, so the number that survives to the user
+  // is 0.98. Same field, different owner; see MINER.devFeePct / poolFeePct.
+  FEE: 0.98,
   PRL_USD: 0.30, // PRL price in USD — prlscan (SafeTrade-sourced)
 };
 

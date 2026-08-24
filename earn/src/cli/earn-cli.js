@@ -29,7 +29,7 @@ const nodeStore = require('../main/nodeStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const { NETWORK, MINER, LLM, NODE, resolveEndpoint, regionLabel, difficultyForCard } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
-const { ENGINE, engineVersionFor, driverTooOld, engineDownloadUrl, backendForEngine, manualInstallHint } = require('../shared/engine');
+const { engineVersionFor, engineDownloadUrl, backendForEngine, manualInstallHint } = require('../shared/engine');
 const { describeSetupError } = require('../shared/engineError');
 const nodeProto = require('../shared/node');
 const { buildMinerReports } = require('../shared/minerReport');
@@ -85,18 +85,18 @@ async function resolveEngine(settings) {
     return settings.binaryPath;
   }
 
-  // One build per platform now — see ENGINE. The driver check no longer selects
-  // anything, but it is still worth saying out loud BEFORE a HiveOS rig spends
-  // half a gigabyte of bandwidth on an engine its driver will refuse to run.
+  // One build per platform — see ENGINE. The driver version is reported, not
+  // judged: PeakMiner publishes no minimum (it embeds its own CUDA runtime and
+  // picks a kernel profile by compute capability), so ENGINE.minDriverMajor is
+  // null and there is no threshold to warn against that we would not have
+  // invented. It is still worth printing — "which driver?" is the first question
+  // on any engine-won't-start report, and a HiveOS rig's console output is
+  // usually all we get. See shared/engine.js driverTooOld() for the warning this
+  // replaces, which is a small change to restore once a real floor is measured.
   const driverMajor = await detectDriverMajor();
   const version = engineVersionFor(process.platform);
-  log('engine:     alpha-miner ' + version);
-  if (driverTooOld(driverMajor)) {
-    log('WARNING:    NVIDIA driver ' + driverMajor + ' is older than R' + ENGINE.minDriverMajor
-      + ' (CUDA 13). alpha-miner ' + version + ' will exit at startup with a driver notice —'
-      + ' update the driver. There is no older build to fall back to: a pre-fork engine'
-      + ' mines work the network no longer credits.');
-  }
+  log('engine:     peakminer ' + version
+    + '  ·  NVIDIA driver ' + (driverMajor == null ? 'unknown' : 'R' + driverMajor));
 
   // A packaged launcher rejects --force-backend (exit 2) and picks the backend
   // itself. backendForEngine strips the override and logs why, rather than
@@ -604,7 +604,7 @@ async function run(argv) {
   // Decide which engines run from the compute mode (mirrors the GUI): mine,
   // run a local LLM, or both. `canLlm` is always true on the CLI — the LLM's
   // own setup (binary/model) fails soft below if it can't start. `canMine` also
-  // asks the platform: macOS has no alpha-miner build, and without the gate the
+  // asks the platform: macOS has no peakminer build, and without the gate the
   // engine resolver would download the Linux binary and spawn something the
   // kernel refuses to exec (see shared/platform).
   const plan = resolvePlan(settings.mode, {

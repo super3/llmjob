@@ -448,7 +448,7 @@ describe('mining', () => {
     expect(allOut()).toContain('worker:     rig-host  (auto)');
     expect(allOut()).toContain('(+MDL');
     expect(allOut()).toContain('difficulty: 262144  (for 2× NVIDIA GeForce RTX 3070, auto)');
-    expect(allOut()).toContain('engine:     alpha-miner ' + engine.ENGINE.linux);
+    expect(allOut()).toContain('engine:     peakminer ' + engine.ENGINE.linux);
     expect(allOut()).toContain('downloading mining engine from');
     expect(allOut()).toContain('downloading… 50%');
 
@@ -513,7 +513,7 @@ describe('mining', () => {
     m.fs.existsSync.mockReturnValue(false);
     await expect(m.run(['-a', ADDR, '--binary', '/nope', '--no-update'])).resolves.toBe(1);
     expect(allErr()).toContain('engine setup failed: engine binary not found: /nope');
-    expect(allErr()).toContain('Manual install: download https://pearl.alphapool.tech/downloads/alpha-miner');
+    expect(allErr()).toContain('Manual install: download https://github.com/peakminer/peakminer/releases');
   });
 
   // The rig in the bug report died here: Node rejected the pool's certificate
@@ -605,7 +605,7 @@ describe('mining', () => {
     await expect(p).resolves.toBe(0);
   });
 
-  test('an old driver warns instead of silently downgrading; single GPU; stats write failures stay silent', async () => {
+  test('an unverifiable driver floor warns about nothing; single GPU; stats write failures stay silent', async () => {
     const m = load();
     m.probe.detectDriverMajor.mockResolvedValue(550);
     m.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 3070', count: 1 });
@@ -617,8 +617,12 @@ describe('mining', () => {
 
     expect(allOut()).toContain('mode:       mining');
     expect(allOut()).not.toContain('preparing local LLM');
-    expect(allOut()).toContain('NVIDIA driver 550 is older than R580');
-    expect(allOut()).toContain('no older build to fall back to');
+    // PeakMiner publishes no minimum driver, so ENGINE.minDriverMajor is null
+    // and driverTooOld answers false for everything. A rig on R550 gets no
+    // warning, because we have no basis for one — inventing a floor would scare
+    // people off drivers that work. Restore the assertion the day somebody
+    // measures a real threshold.
+    expect(allOut()).not.toContain('is older than R');
     expect(allOut()).toContain('difficulty: 4096  (for NVIDIA GeForce RTX 3070, auto)');
     intervalFor(10000).fn(); // must not throw
     expect(m.fs.renameSync).not.toHaveBeenCalled();

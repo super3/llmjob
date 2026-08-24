@@ -70,67 +70,25 @@ jobs:
       - name: Test (100% coverage gate)
         run: npm test
 
-      # Stage the miner into vendor/engine so the installer ships it and end
-      # users don't fetch an unsigned binary at runtime. Best-effort: if the
-      # download fails — or the runner's antivirus quarantines the miner before
-      # it can be packaged — the build still succeeds and the app falls back to
-      # the on-demand download (extraResources then ships only the README
-      # placeholder). Making bundling reliable on a Defender-enabled runner is a
-      # separate decision (e.g. a self-hosted runner) and is intentionally not
-      # done here.
-      # Windows is a single build since the fork: 1.9.4 is one self-contained exe
-      # with automatic dispatch across RTX 30/40/50, so there is no
-      # compute-capability gate and no second bundle to stage. The 1.8.6 fallback
-      # that used to be staged here under the legacy unversioned name is
-      # deliberately gone — it mines rank-256 work the fork no longer credits, so
-      # shipping it would hand a fresh rig an engine that looks healthy and earns
-      # nothing. A rig with no bundle downloads the real engine instead.
+      # NO ENGINE IS BUNDLED, ON EITHER PLATFORM, AND NONE MAY BE.
       #
-      # Version, URL, filename and checksum all come from src/shared/engine.js so
-      # a bump needs no workflow edit.
-      - name: Bundle mining engine — Windows (best-effort)
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          $meta = node -p "const e=require('./src/shared/engine');const v=e.ENGINE.windows;const p=e.enginePackage('win32',v);JSON.stringify({v:v,url:e.engineDownloadUrl('win32',null,null,v),name:e.engineBinaryName('win32',null,v),sha:p.sha256})" | ConvertFrom-Json
-
-          $zip = "$env:RUNNER_TEMP/engine.zip"
-          Invoke-WebRequest $meta.url -OutFile $zip
-
-          # The installer ships an unsigned third-party miner, so verify it is the
-          # artifact the descriptor names before it reaches a user. A mismatch
-          # fails this step, which (being best-effort) drops back to the on-demand
-          # download rather than shipping something unrecognised.
-          $got = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
-          if ($got -ne $meta.sha) { throw "engine sha256 mismatch: got $got, want $($meta.sha)" }
-
-          $tmp = "$env:RUNNER_TEMP/engine-x"
-          Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force
-
-          # Staged under the descriptor's own versioned name, which is exactly what
-          # bundledEnginePath looks for — a differently-named copy is invisible.
-          $exe = Get-ChildItem $tmp -Recurse -Filter $meta.name | Select-Object -First 1
-          if (-not $exe) { throw "no $($meta.name) inside engine archive" }
-          Copy-Item $exe.FullName "vendor/engine/$($meta.name)" -Force
-          Write-Host "Bundled engine $($meta.v): $((Get-Item "vendor/engine/$($meta.name)").Length) bytes"
-
-      # Linux is deliberately NOT bundled. The 1.9.4 Linux engine is a ~530 MB
-      # makeself bundle (it carries the CUDA runtime plus a core per
-      # architecture), and putting that inside the AppImage would roughly
-      # sextuple a download every user takes, to save a download only first-run
-      # rigs take. Windows stays bundled because its equivalent is 14 MB.
+      # There used to be a best-effort step here that downloaded the Windows
+      # engine, checksummed it and staged it into vendor/engine so the installer
+      # shipped it. It is deleted rather than disabled because the reason is no
+      # longer "it is awkward on a Defender-enabled runner" but "we are not
+      # allowed to". PeakMiner's licence is explicit — "proprietary, all rights
+      # reserved; no reverse engineering / redistribution" — and putting its
+      # binary inside our installer is redistribution. Having the user's own
+      # machine fetch it from upstream's own release URL is not.
       #
-      # The 4 MB `-rtx3040` HiveOS bundle is not a way out: it is the same engine
-      # with the Blackwell sm120 core removed, so it cannot mine on a 50-series
-      # card — upstream says so, and listing the tarball confirms it ships only
-      # the ampere-sm86 and ada-sm89 cores.
+      # So every rig installs the engine on first start, on both platforms. The
+      # cost is that a rig behind an HTTPS-intercepting proxy cannot self-install
+      # and gets the manual-install hint instead (see shared/engineError.js).
       #
-      # The cost of not bundling is that a Linux rig behind an HTTPS-intercepting
-      # proxy cannot self-install; that rig gets the manual-install hint, which
-      # for a self-extracting build is "save it here", no extraction needed.
+      # This also retires the old Linux-specific reason for not bundling: the
+      # 530 MB makeself alpha-miner bundle is gone, and PeakMiner's Linux build
+      # is a 21.5 MB bare binary that would have fitted in the AppImage easily.
+      # The licence, not the size, is what settles it now.
 
       - name: Build installer (publishes on v* tag or manual publish)
         run: npx electron-builder --${{ matrix.platform }} --publish ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.publish) && 'always' || 'never' }}

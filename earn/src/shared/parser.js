@@ -1,70 +1,62 @@
 'use strict';
 
-// Parse a line of `alpha-miner` stdout into a structured event.
+// Parse a line of PeakMiner output into a structured event.
 //
-// alpha-miner (github.com/AlphaMine-Tech/alpha-miner) emits structured
-// `key=value` logs. The two we care about:
+// Every shape below was captured from a real 2.11.0 run against
+// us.pearl.herominers.com:1200 on an RTX 4090, not read off a docs page. That
+// distinction has cost us before: the alpha-miner 1.9.4 parser was written to a
+// format the binary had already stopped emitting, and the dashboard showed zeros
+// while the rig mined perfectly.
 //
-//   ...gpu=0:NVIDIA GeForce RTX 4090 component=miner status attempts=100 hits=3
-//      accepted=3 rejected=0 dropped=0 hashrate_th_s=286.86 ... power=449W
-//   ...gpu=0:NVIDIA GeForce RTX 4090 component=pool connected host=us2.alphapool.tech port=5566
+// The lines that matter:
 //
-// The periodic `miner status` line carries the authoritative cumulative share
-// counters plus the live hashrate (already in TH/s) and the GPU name. Anything
-// unrecognized returns null so callers pass it through as raw log text.
+//   2026-08-23 23:38:40  INFO connected us.pearl.herominers.com:1200  diff —  ping 1059ms
+//   2026-08-23 23:30:25 accepted   GPU 0  lat 82ms  diff 9.01 PH  effort 50%
+//   2026-08-23 23:39:42 ERROR failed to connect to no-such-pool.invalid:1200: No such host is known. (os error 11001)
+//
+// plus the periodic status table, one row per card:
+//
+//     0  RTX 4090  296.5 TH/s       3 / 0      78°C   48%   449W  660.4 GH/W  10251MHz   2340MHz
+//
+// (index, name, hashrate, accepted/invalid, temp, fan, power, efficiency, then
+// the two clocks). The `Total` row carries no index and is skipped, so a
+// multi-GPU rig still accumulates per card.
+//
+// Anything unrecognised returns null so callers pass it through as raw log text.
 
-// A numeric `key=value` field (value may be a float; trailing units like the W
-// in `power=449W` or the c in `ctemp=71c` are ignored). Returns null if absent.
-function numField(s, key) {
-  const m = String(s).match(new RegExp('\\b' + key + '=([\\d.]+)'));
-  return m ? Number(m[1]) : null;
-}
+// The ESC is optional because the two halves of a colour sequence can be split
+// across stdio chunks, and because the previous engine's parser matched only the
+// bracket form — leaving a bare 0x1b at the head of the line, which then defeats
+// the timestamp match and silently drops the event. Consume both.
+// Built with RegExp rather than a regex literal so the escape byte is spelled
+// out as an escape sequence instead of embedded raw: a literal 0x1b in source
+// is invisible in a diff and trivially lost in an edit.
+const ANSI = new RegExp('\\u001b?\\[[0-9;]*m', 'g'); // eslint-disable-line no-control-regex
 
-// The GPU name from a `gpu=<index>:<name> component=...` field, or null when the
-// engine reports no real device (early lines say `gpu=system`).
-function gpuName(s) {
-  const m = String(s).match(/\bgpu=(?:\d+:)?(.+?)\s+component=/);
-  if (!m) return null;
-  const name = m[1].trim();
-  return name.toLowerCase() === 'system' ? null : name;
-}
+// A leading `YYYY-MM-DD HH:MM:SS` stamp, which every log line carries and no
+// status-table row does. Stripping it first means the row matcher never has to
+// worry about a date that happens to start with digits.
+const STAMP = /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+/;
 
-// The 0-based card index from a `gpu=<index>:<name>` field, or null when the
-// line carries no index (`gpu=system`, or a name-only `gpu=<name>`). Multi-GPU
-// rigs tag every status/pool line with the card it refers to, so this is how a
-// per-card accumulator knows which GPU a hashrate belongs to.
-function gpuIndex(s) {
-  const m = String(s).match(/\bgpu=(\d+):/);
-  return m ? Number(m[1]) : null;
-}
-
-// alpha-miner 1.9.4 stopped emitting key=value logs and renders a live stats
-// table instead, one row per card:
-//
-//    #0  RTX 5090   308.17 TH/s   70C   46%   281W   1.098   2902   13801   3   0   0
-//
-// (hashrate, temp, fan, power, efficiency, core clock, mem clock, then the
-// cumulative accepted / rejected / ignored counters). The `Total` row carries no
-// `#N` and is skipped, so a multi-GPU rig still accumulates per card.
-//
-// Parsed by locating the hashrate token and reading outwards rather than by
-// matching the full column layout: a rig that reports no fan or clock would
-// otherwise fail the whole row and silently show zero — the exact failure this
-// replaces.
-const ANSI = /\[[0-9;]*m/g; // eslint-disable-line no-control-regex
 const HASHRATE = /([\d.]+)\s*([KMGTPE]?)H\/s/i;
 const UNIT_TH = { '': 1e-12, K: 1e-9, M: 1e-6, G: 1e-3, T: 1, P: 1e3, E: 1e6 };
 
+// One row of the status table. Anchored on the hashrate token and read outwards
+// rather than matched as a fixed column layout: a rig that reports no fan or no
+// clocks would otherwise fail the whole row and silently show zero — the exact
+// failure this style of parsing replaced.
 function parseStatsRow(s) {
-  const head = s.match(/^#(\d+)\s+(.+)$/);
+  const head = s.match(/^(\d+)\s+(\S.*)$/);
   if (!head) return null;
   const rest = head[2];
   const hr = rest.match(HASHRATE);
   if (!hr) return null;
 
   const tail = rest.slice(hr.index + hr[0].length);
-  const counters = tail.trim().split(/\s+/).filter((t) => /^\d+$/.test(t)).slice(-3);
-  const temp = tail.match(/(\d+)\s*C\b/);
+  // Shares are printed as `ok / inv`, so take the first such pair rather than
+  // the trailing bare integers — the clock columns are bare integers too.
+  const shares = tail.match(/(\d+)\s*\/\s*(\d+)/);
+  const temp = tail.match(/(\d+)\s*°?C\b/);
   const power = tail.match(/(\d+)\s*W\b/);
   const name = rest.slice(0, hr.index).trim();
 
@@ -72,8 +64,8 @@ function parseStatsRow(s) {
     type: 'status',
     gpuIndex: Number(head[1]),
     hashrate: Number(hr[1]) * UNIT_TH[hr[2].toUpperCase()],
-    accepted: counters.length === 3 ? Number(counters[0]) : null,
-    rejected: counters.length === 3 ? Number(counters[1]) : null,
+    accepted: shares ? Number(shares[1]) : null,
+    rejected: shares ? Number(shares[2]) : null,
     power: power ? Number(power[1]) : null,
     temp: temp ? Number(temp[1]) : null,
     gpu: name || null,
@@ -81,53 +73,48 @@ function parseStatsRow(s) {
 }
 
 function parseLine(line) {
-  const s = String(line == null ? '' : line).replace(ANSI, '').trim();
-  if (!s) return null;
+  const raw = String(line == null ? '' : line).replace(ANSI, '').trim();
+  if (!raw) return null;
+  const s = raw.replace(STAMP, '');
 
-  // Periodic miner status: hashrate + cumulative accepted/rejected + GPU.
-  if (/\bhashrate_th_s=/.test(s)) {
+  // Pool connection. The trailing `diff — ping 1059ms` is deliberately not read
+  // for difficulty: at connect time the pool has not assigned one yet and the
+  // field is a literal em dash, so there is nothing there to believe.
+  const conn = s.match(/^INFO\s+connected\s+(\S+?):(\d+)/i);
+  if (conn) {
+    return { type: 'connected', gpuIndex: null, endpoint: conn[1] + ':' + conn[2], gpu: null };
+  }
+
+  // A single accepted share, which is what makes the UI's counter move between
+  // status tables. PeakMiner prints this per share with no `INFO` prefix.
+  const share = s.match(/^accepted\s+GPU\s+(\d+)/i);
+  if (share) {
+    return { type: 'share', gpuIndex: Number(share[1]), accepted: true };
+  }
+
+  // A failed connection attempt, and whether the name even resolved. The miner
+  // retries with a backoff and prints an identical line each time, which is how
+  // a rig produces eight lines of "No such host is known" that never say WHICH
+  // host or that name resolution is the actual problem. Reported from the field
+  // in exactly that shape, so the `dns` flag exists to let the UI say so.
+  // Greedy on the endpoint, not lazy: the endpoint is `host:port` and the reason
+  // follows a second colon, so a lazy match stops at the first one and reports
+  // the host as `no-such-pool.invalid` with the port glued onto the front of the
+  // reason ("1200: No such host is known").
+  const failed = s.match(/^ERROR\s+failed to connect to\s+(\S+):\s*(.+)$/i);
+  if (failed) {
+    const reason = failed[2].trim();
     return {
-      type: 'status',
-      gpuIndex: gpuIndex(s),
-      hashrate: numField(s, 'hashrate_th_s'),
-      accepted: numField(s, 'accepted'),
-      rejected: numField(s, 'rejected'),
-      power: numField(s, 'power'),
-      // Core temperature (`ctemp=86c` — numField drops the trailing c). Surfaced
-      // beside the GPU name so a rig that keeps crashing can be checked for heat
-      // without leaving the app for nvidia-smi.
-      temp: numField(s, 'ctemp'),
-      gpu: gpuName(s),
+      type: 'connect-failed',
+      endpoint: failed[1],
+      reason,
+      dns: /no such host|dns|name (or service )?not known|getaddrinfo|os error 11001/i.test(reason),
     };
   }
 
-  // Pool connection.
-  const conn = s.match(/component=pool\s+connected\s+host=(\S+)\s+port=(\d+)/i);
-  if (conn) {
-    return { type: 'connected', gpuIndex: gpuIndex(s), endpoint: conn[1] + ':' + conn[2], gpu: gpuName(s) };
-  }
-
-  // 1.9.4's stats table and its plainer connection line.
-  const row = parseStatsRow(s);
-  if (row) return row;
-
-  const conn194 = s.match(/\[stratum\]\s+connected to\s+(\S+?):(\d+)/i);
-  if (conn194) {
-    return { type: 'connected', gpuIndex: null, endpoint: conn194[1] + ':' + conn194[2], gpu: null };
-  }
-
-  // A failed connection attempt, and whether the name even resolved. The engine
-  // retries every 5s and prints an identical line each time, which is how a rig
-  // produces eight lines of "DNS lookup failed: No such host is known" that say
-  // nothing about WHICH host, or that name resolution is the actual problem
-  // rather than the pool being down. Reported from the field exactly that way.
-  const failed = s.match(/\[stratum\]\s+connect failed:\s*(.+)$/i);
-  if (failed) {
-    const reason = failed[1].trim();
-    return { type: 'connect-failed', reason, dns: /dns|no such host|name (or service )?not known|getaddrinfo/i.test(reason) };
-  }
-
-  return null;
+  // The status table. Checked last because its rows are the least distinctive
+  // thing here — a bare index followed by free text.
+  return parseStatsRow(s);
 }
 
-module.exports = { numField, gpuName, gpuIndex, parseLine };
+module.exports = { parseStatsRow, parseLine };

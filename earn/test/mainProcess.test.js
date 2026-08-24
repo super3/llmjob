@@ -690,10 +690,11 @@ describe('simple ipc handlers', () => {
 describe('balance handlers', () => {
   it('balance:get returns the parsed balance with a USD figure', async () => {
     const ctx = loadMain();
-    ctx.io.getJson.mockResolvedValueOnce({ balance_prl: 5, total_paid_prl: 10 });
+    // Atomic units on the wire (coinUnits 1e8), PRL out.
+    ctx.io.getJson.mockResolvedValueOnce({ stats: { balance: 5 * 1e8, paid: 10 * 1e8 } });
     const b = await ctx.invoke('balance:get', VALID_ADDR);
     expect(b).toEqual({ pending: 5, paid: 10, earned: 15, usd: 15 * ctx.config.ECON.PRL_USD });
-    expect(ctx.io.getJson).toHaveBeenCalledWith(expect.stringContaining('/api/miner/' + VALID_ADDR));
+    expect(ctx.io.getJson).toHaveBeenCalledWith(expect.stringContaining('/api/stats_address?address=' + VALID_ADDR));
   });
 
   it('balance:get is null for invalid addresses, fetch failures, empty and throwing payloads', async () => {
@@ -704,7 +705,7 @@ describe('balance handlers', () => {
     ctx.io.getJson.mockResolvedValueOnce(null);
     expect(await ctx.invoke('balance:get', VALID_ADDR)).toBeNull();
     // a payload whose property access throws exercises the parse catch
-    ctx.io.getJson.mockResolvedValueOnce({ get balance_prl() { throw new Error('boom'); } });
+    ctx.io.getJson.mockResolvedValueOnce({ get stats() { throw new Error('boom'); } });
     expect(await ctx.invoke('balance:get', VALID_ADDR)).toBeNull();
   });
 
@@ -722,7 +723,7 @@ describe('balance handlers', () => {
     });
     ctx.electron._fireReady();
     await flush();
-    ctx.io.getJson.mockResolvedValueOnce({ balance_prl: 10, total_paid_prl: 0 });
+    ctx.io.getJson.mockResolvedValueOnce({ stats: { balance: 10 * 1e8, paid: 0 } });
     const b = await ctx.invoke('balance:get', VALID_ADDR);
     expect(b.usd).toBe(5);
   });
@@ -934,7 +935,7 @@ describe('mining', () => {
     expect(ctx.probe.detectGpusVram.mock.calls.length).toBeGreaterThanOrEqual(2);
 
     const logs = () => ctx.sent('miner:log').map((l) => l.line);
-    expect(logs()).toContain('connecting to us2.alphapool.tech:5566 · worker rig01');
+    expect(logs()).toContain('connecting to us2.pearl.herominers.com:1200 · worker rig01');
     expect(ctx.sent('miner:engine').map((e) => e.phase)).toEqual(['downloading', 'ready']);
     expect(logs()).toContain('engine ready: ' + BIN);
 
@@ -1073,11 +1074,11 @@ describe('mining', () => {
     expect(log).toContain('ca-certificates');
     // Version-agnostic on purpose: this asserts the guidance names a download URL
     // and where the file has to go, not which engine build is pinned today. A
-    // The Linux engine is a self-extracting .run, so the advice is "save it as"
+    // The Linux engine is a bare binary, so the advice is "save it as"
     // — and it downloads under the very name the cache looks for, so there is no
     // rename to get wrong either. Telling anyone to extract it would be advice
     // that cannot work, which is the whole point of manualInstallHint.
-    expect(log).toMatch(/Manual install: download \S+ and save it as \S+\.run,/);
+    expect(log).toMatch(/Manual install: download \S+ and save it as \S+linux-x86_64,/);
     expect(log).not.toContain('extract it into');
   });
 
@@ -1193,26 +1194,26 @@ describe('mining', () => {
   // selected, but the bundle sitting in "C:\Program Files\LLMJob Earn" still
   // cannot run. Spawning it would fail on every start, so it is skipped and the
   // rig downloads into the path that works.
-  // There is no older build left to fall back to, so an out-of-date driver gets
-  // a warning rather than a silent downgrade — and it is sent BEFORE the
-  // download, so a rig does not spend half a gigabyte on an engine its driver
-  // will refuse to run. An unreadable driver version stays quiet: guessing would
-  // scare a perfectly healthy rig.
-  it('warns about a pre-R580 driver, and stays quiet when it cannot read one', async () => {
+  // PeakMiner publishes no minimum driver — it embeds its own CUDA runtime and
+  // picks a kernel profile by compute capability — so ENGINE.minDriverMajor is
+  // null and this warning fires for nobody. Asserted as silence rather than
+  // deleted, so that configuring a real floor one day makes this test fail
+  // loudly instead of the warning quietly reappearing with no coverage.
+  it('stays quiet about the driver while no floor is established', async () => {
     const old = await boot({ before: (c) => { c.probe.detectDriverMajor.mockResolvedValue(550); } });
     old.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
     await flush();
     expect(old.sent('miner:log').map((l) => l.line).join('\n'))
-      .toContain('NVIDIA driver is older than R580');
-    // It is a warning, not a refusal: the rig still starts and lets the miner
-    // deliver upstream's own driver message.
+      .not.toContain('is older than R');
+    // The rig starts regardless, and lets the miner deliver upstream's own
+    // driver message if the driver really is too old.
     expect(old.MinerManager.instances).toHaveLength(1);
 
     const unknown = await boot({ before: (c) => { c.probe.detectDriverMajor.mockResolvedValue(null); } });
     unknown.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
     await flush();
     expect(unknown.sent('miner:log').map((l) => l.line).join('\n'))
-      .not.toContain('older than R580');
+      .not.toContain('is older than R');
   });
 
   // A rig whose resolver is broken looks exactly like a pool that is down: the
@@ -1234,7 +1235,7 @@ describe('mining', () => {
     const hints = ctx.sent('miner:log').map((l) => l.line)
       .filter((l) => l.includes('could not resolve'));
     expect(hints).toHaveLength(1);
-    expect(hints[0]).toContain('could not resolve us1.alphapool.tech:5566');
+    expect(hints[0]).toContain('could not resolve us.pearl.herominers.com:1200');
 
     // A refused connection is the pool's problem — do not blame the resolver.
     miner.emit('event', { type: 'connect-failed', reason: 'connection refused', dns: false });
@@ -1394,26 +1395,18 @@ describe('mining', () => {
 // ── zip extraction helpers (passed into the engine managers) ─────────────────
 
 describe('zip extraction helpers', () => {
-  async function minerExtract() {
+  // The miner's EngineManager is no longer handed an `extract` at all. Its
+  // Windows artifact goes through extractEnginePackage (whole tree, launcher
+  // renamed afterwards) and its Linux one is a bare binary, so the old
+  // single-file extractZip had no remaining caller and was deleted with its
+  // tests. This asserts the wiring stays gone rather than silently returning.
+  it('the miner engine is wired without a single-file zip extractor', async () => {
     const ctx = await boot();
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
     await flush();
-    return { ctx, extract: ctx.EngineManager.instances[0].opts.extract };
-  }
-
-  it('extractZip resolves the destination via PowerShell and quotes quotes', async () => {
-    const { ctx, extract } = await minerExtract();
-    ctx.cp.execFile.mockImplementation((...args) => args[args.length - 1](null));
-    await expect(extract("/tmp/o'brien.zip", '/tmp/dest.exe')).resolves.toBe('/tmp/dest.exe');
-    const [bin, args] = ctx.cp.execFile.mock.calls.pop();
-    expect(bin).toBe('powershell.exe');
-    expect(args[args.length - 1]).toContain("'/tmp/o''brien.zip'");
-  });
-
-  it('extractZip rejects when PowerShell fails', async () => {
-    const { ctx, extract } = await minerExtract();
-    ctx.cp.execFile.mockImplementation((...args) => args[args.length - 1](new Error('expand failed')));
-    await expect(extract('/tmp/a.zip', '/tmp/dest.exe')).rejects.toThrow('expand failed');
+    const opts = ctx.EngineManager.instances[0].opts;
+    expect(opts.extract).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(opts, 'extractPackage')).toBe(true);
   });
 
   async function llamaWinExtract() {

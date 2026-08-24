@@ -4,14 +4,14 @@ const { estDailyPrl, estDailyUsd, estDailyUsdLabel, prlToUsd, prlToUsdLabel } = 
 
 describe('earnings', () => {
   test('estDailyPrl scales with hashrate and handles bad input', () => {
-    expect(estDailyPrl(354)).toBeCloseTo(9.3073, 3);
+    expect(estDailyPrl(354)).toBeCloseTo(9.2133, 3);
     expect(estDailyPrl(0)).toBe(0);
     expect(estDailyPrl('not a number')).toBe(0);
   });
 
   test('estDailyUsd and label', () => {
-    expect(estDailyUsd(354)).toBeCloseTo(2.7922, 3);
-    expect(estDailyUsdLabel(354)).toBe('$2.79');
+    expect(estDailyUsd(354)).toBeCloseTo(2.7640, 3);
+    expect(estDailyUsdLabel(354)).toBe('$2.76');
     expect(estDailyUsdLabel(0)).toBe('$0.00');
   });
 
