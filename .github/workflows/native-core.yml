@@ -58,13 +58,29 @@ jobs:
 
       # A GPU-less runner still installs the compiler and headers; only the
       # runtime components are needed to build.
-      - name: Install the CUDA toolkit
+      # The sub-package names are NOT the same on the two platforms, which is
+      # what made the Windows job fail for four runs with exit 0xE0E1E1D9. The
+      # action passes them straight to the installer, and the log showed it
+      # invoking `cuda_installer.exe -s nvcc_12.8 cudart_12.8 cudart-dev_12.8
+      # nvrtc-dev_12.8`. Those hyphenated `-dev` components are LINUX naming;
+      # Windows ships headers inside `cudart` and has no `-dev` split, so the
+      # installer rejects the argument list and exits non-zero before installing
+      # anything. Hence two steps rather than one shared list.
+      - name: Install the CUDA toolkit (Windows)
+        if: runner.os == 'Windows'
         uses: Jimver/cuda-toolkit@v0.2.36
-        id: cuda
         with:
-          # 12.8 is the first toolkit that knows sm_120 (Blackwell). It needs
-          # action v0.2.36+: older tags carry a version table that predates it and
-          # answer 'Version not available'.
+          # 12.8 is the first toolkit that knows sm_120 (Blackwell), and needs
+          # action v0.2.36+ — older tags carry a version table that predates it
+          # and answer "Version not available".
+          cuda: '12.8.1'
+          method: 'network'
+          sub-packages: '["nvcc", "cudart", "nvrtc"]'
+
+      - name: Install the CUDA toolkit (Linux)
+        if: runner.os == 'Linux'
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
           cuda: '12.8.1'
           method: 'network'
           sub-packages: '["nvcc", "cudart", "cudart-dev", "nvrtc", "nvrtc-dev"]'
