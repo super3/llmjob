@@ -79,26 +79,29 @@ jobs:
         working-directory: earn/native
         shell: bash
         run: |
-          mkdir -p build
+          mkdir -p cuda-build
           nvcc -O3 -std=c++17 \
             -gencode arch=compute_86,code=sm_86 \
             -gencode arch=compute_89,code=sm_89 \
             -gencode arch=compute_120,code=sm_120 \
-            -c src/pearl_kernel.cu -o build/pearl_kernel.o
+            -c src/pearl_kernel.cu -o cuda-build/pearl_kernel.o
           nvcc -O3 -std=c++17 \
             -gencode arch=compute_86,code=sm_86 \
             -gencode arch=compute_89,code=sm_89 \
             -gencode arch=compute_120,code=sm_120 \
-            -c src/pearl_host.cu -o build/pearl_host.o
+            -c src/pearl_host.cu -o cuda-build/pearl_host.o
 
+      # Deliberately NOT build/: the next step runs `node-gyp rebuild`, whose
+      # clean phase deletes that directory — which is what produced
+      # "cannot find -lpearl_cuda" at link time.
       - name: Archive the CUDA objects into a library
         working-directory: earn/native
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            nvcc -lib build/pearl_kernel.o build/pearl_host.o -o build/pearl_cuda.lib
+            nvcc -lib cuda-build/pearl_kernel.o cuda-build/pearl_host.o -o cuda-build/pearl_cuda.lib
           else
-            ar rcs build/libpearl_cuda.a build/pearl_kernel.o build/pearl_host.o
+            ar rcs cuda-build/libpearl_cuda.a cuda-build/pearl_kernel.o cuda-build/pearl_host.o
           fi
 
       # The real prize: this LINKS, so a drift between pearl_core.cc's extern "C"

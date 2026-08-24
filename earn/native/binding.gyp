@@ -15,12 +15,12 @@
       "cflags_cc!": [ "-fno-exceptions" ],
       "conditions": [
         ["OS=='win'", {
-          "libraries": [ "<(cuda_root)/lib/x64/cudart.lib", "<(module_root_dir)/build/pearl_cuda.lib" ],
+          "libraries": [ "<(cuda_root)/lib/x64/cudart.lib", "<(module_root_dir)/cuda-build/pearl_cuda.lib" ],
           "include_dirs": [ "<(cuda_root)/include" ],
           "msvs_settings": { "VCCLCompilerTool": { "ExceptionHandling": 1 } }
         }],
         ["OS=='linux'", {
-          "libraries": [ "-L<(cuda_root)/lib64", "-lcudart", "-L<(module_root_dir)/build", "-lpearl_cuda" ],
+          "libraries": [ "-L<(cuda_root)/lib64", "-lcudart", "-L<(module_root_dir)/cuda-build", "-lpearl_cuda" ],
           "include_dirs": [ "<(cuda_root)/include" ]
         }]
       ]
