@@ -23,10 +23,13 @@ describe('PROFILE', () => {
     expect(PROFILE.k / PROFILE.rank).toBe(JACKPOT_BUCKETS);
   });
 
-  test('the tile is the reference 4x8, with its exact index sets', () => {
-    expect(PROFILE.rows).toEqual([0, 8, 64, 72]);
-    expect(PROFILE.cols).toEqual([0, 1, 8, 9, 32, 33, 40, 41]);
-    expect(PROFILE.rows.length * PROFILE.cols.length).toBe(32);
+  // Contiguous, which is what the reference miner actually opens blocks with
+  // (its fixtures use A rows [192,193,194,195] and consecutive B columns), not
+  // the strided set MiningConfiguration carries as a default.
+  test('the tile is a contiguous 4x16 block', () => {
+    expect(PROFILE.rows).toEqual([0, 1, 2, 3]);
+    expect(PROFILE.cols).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(PROFILE.rows.length * PROFILE.cols.length).toBe(64);
   });
 
   // m and n are the miner's own workload dimensions and are NOT protocol.
@@ -48,9 +51,11 @@ describe('periodic patterns', () => {
   });
 
   // The exact six-byte encodings the reference produces for these defaults.
+  // A contiguous run is a single (stride 1, length N) dimension, so the factor
+  // byte is 0 and the length byte is N-1.
   test('encode to the reference bytes', () => {
-    expect(patternToBytes(patternFromList(PROFILE.rows)).toString('hex')).toBe('070103010000');
-    expect(patternToBytes(patternFromList(PROFILE.cols)).toString('hex')).toBe('000103010101');
+    expect(patternToBytes(patternFromList(PROFILE.rows)).toString('hex')).toBe('000300000000');
+    expect(patternToBytes(patternFromList(PROFILE.cols)).toString('hex')).toBe('000f00000000');
   });
 
   test('a non-periodic index list is refused rather than mis-encoded', () => {
@@ -67,8 +72,8 @@ describe('buildConfig52', () => {
     expect(b.readUInt32LE(0)).toBe(2048);
     expect(b.readUInt16LE(4)).toBe(128);
     expect(b.readUInt16LE(6)).toBe(0);
-    expect(b.slice(8, 14).toString('hex')).toBe('070103010000');
-    expect(b.slice(14, 20).toString('hex')).toBe('000103010101');
+    expect(b.slice(8, 14).toString('hex')).toBe('000300000000');
+    expect(b.slice(14, 20).toString('hex')).toBe('000f00000000');
   });
 
   test('the MoE trailer is zero for a standard job', () => {
@@ -153,8 +158,8 @@ describe('difficultyAdjustmentFactor', () => {
   // costs, so a hashrate is MACs per second, not attempts per second. Reporting
   // attempts as hashes under-reported this miner by 65536x at mainnet.
   test('is tile size times dot product length', () => {
-    expect(difficultyAdjustmentFactor()).toBe(4 * 8 * 2048);
-    expect(difficultyAdjustmentFactor()).toBe(65536);
+    expect(difficultyAdjustmentFactor()).toBe(4 * 16 * 2048);
+    expect(difficultyAdjustmentFactor()).toBe(131072);
   });
 
   // The sanity check that identified the unit in the first place: a competing
@@ -164,22 +169,22 @@ describe('difficultyAdjustmentFactor', () => {
   test("makes a competitor quoted hashrate physically plausible", () => {
     const attemptsPerSec = 2.96e14 / difficultyAdjustmentFactor();
     expect(attemptsPerSec).toBeLessThan(1e10);
-    expect(attemptsPerSec).toBeGreaterThan(1e9);
+    expect(attemptsPerSec).toBeGreaterThan(1e8);
   });
 
   test('defaults to the mainnet profile when given none', () => {
-    expect(difficultyAdjustmentFactor(undefined)).toBe(65536);
-    expect(difficultyAdjustmentFactor(null)).toBe(65536);
+    expect(difficultyAdjustmentFactor(undefined)).toBe(131072);
+    expect(difficultyAdjustmentFactor(null)).toBe(131072);
   });
 
   // The tile patterns default when a profile omits them, exactly as buildConfig52
   // does — they are protocol constants rather than per-profile knobs.
   test('defaults the tile patterns when a profile omits them', () => {
-    expect(difficultyAdjustmentFactor({ k: 2048 })).toBe(65536);
+    expect(difficultyAdjustmentFactor({ k: 2048 })).toBe(131072);
   });
 
   test('scales with k and with the tile', () => {
-    expect(difficultyAdjustmentFactor({ ...PROFILE, k: 4096 })).toBe(4 * 8 * 4096);
+    expect(difficultyAdjustmentFactor({ ...PROFILE, k: 4096 })).toBe(4 * 16 * 4096);
     expect(difficultyAdjustmentFactor({ k: 256, rows: [0, 8], cols: [0, 1] })).toBe(2 * 2 * 256);
   });
 });
@@ -191,43 +196,43 @@ describe('the share bound', () => {
   // exactly why they are easy to conflate -- they diverge as soon as rank moves.
   test('the penalized factor divides out the rank and re-multiplies by the base', () => {
     expect(PENALTY_BASE_RANK).toBe(128);
-    expect(penalizedAdjustmentFactor()).toBe(65536);
+    expect(penalizedAdjustmentFactor()).toBe(131072);
     expect(penalizedAdjustmentFactor()).toBe(difficultyAdjustmentFactor());
     // At rank 256 they part company: consensus still scales by tile*k, but a
     // miner scales by tile*(k/rank)*128.
     const p = { ...PROFILE, rank: 256, k: 4096 };
-    expect(penalizedAdjustmentFactor(p)).toBe(32 * 16 * 128);
-    expect(difficultyAdjustmentFactor(p)).toBe(32 * 4096);
+    expect(penalizedAdjustmentFactor(p)).toBe(64 * 16 * 128);
+    expect(difficultyAdjustmentFactor(p)).toBe(64 * 4096);
     expect(penalizedAdjustmentFactor(p)).not.toBe(difficultyAdjustmentFactor(p));
   });
 
   test('defaults to the mainnet profile', () => {
-    expect(penalizedAdjustmentFactor(undefined)).toBe(65536);
-    expect(penalizedAdjustmentFactor(null)).toBe(65536);
+    expect(penalizedAdjustmentFactor(undefined)).toBe(131072);
+    expect(penalizedAdjustmentFactor(null)).toBe(131072);
   });
 
   // The tile patterns are protocol constants rather than per-profile knobs, so
   // a profile that omits them still gets the right factor -- same as
   // buildConfig52 and difficultyAdjustmentFactor.
   test('defaults the tile patterns when a profile omits them', () => {
-    expect(penalizedAdjustmentFactor({ k: 2048, rank: 128 })).toBe(65536);
+    expect(penalizedAdjustmentFactor({ k: 2048, rank: 128 })).toBe(131072);
   });
 
   // The bound is the pool's target made easier in proportion to the work one
   // attempt costs. Comparing against the raw target instead makes every share
   // 65536x rarer than the pool intends -- which looks exactly like being slow.
   test('scales the target by the penalized factor', () => {
-    expect(shareBound(1n)).toBe(65536n);
-    expect(shareBound(1000n)).toBe(65536000n);
+    expect(shareBound(1n)).toBe(131072n);
+    expect(shareBound(1000n)).toBe(131072000n);
     expect(shareBound(BigInt('0x' + '00'.repeat(6) + '07fff8' + '00'.repeat(23))))
-      .toBe(BigInt('0x' + '00'.repeat(6) + '07fff8' + '00'.repeat(23)) * 65536n);
+      .toBe(BigInt('0x' + '00'.repeat(6) + '07fff8' + '00'.repeat(23)) * 131072n);
   });
 
   // Refuse rather than saturate: a bound of U256::MAX is met by every hash.
   test('returns null when the product will not fit 256 bits', () => {
     expect(shareBound((1n << 256n) - 1n)).toBeNull();
     expect(shareBound(1n << 250n)).toBeNull();
-    expect(shareBound((1n << 240n) - 1n)).not.toBeNull();
+    expect(shareBound((1n << 239n) - 1n)).not.toBeNull();
   });
 
   test('a null target has no bound', () => {
@@ -260,8 +265,8 @@ describe('valid tile offsets', () => {
   // The masks are the OR of each pattern's own values, and the patterns are
   // exactly the subsets of those bits.
   test('the mask is the pattern bits', () => {
-    expect(ROWS_MASK).toBe(72); // bits 3 and 6
-    expect(COLS_MASK).toBe(41); // bits 0, 3 and 5
+    expect(ROWS_MASK).toBe(3); // bits 0 and 1
+    expect(COLS_MASK).toBe(15); // bits 0 to 3
     for (const r of PROFILE.rows) expect(r & ~ROWS_MASK).toBe(0);
     for (const c of PROFILE.cols) expect(c & ~COLS_MASK).toBe(0);
   });
@@ -271,8 +276,8 @@ describe('valid tile offsets', () => {
   // "offset N is not valid for pattern" and the work is lost.
   test('the bit test agrees with the reference rule everywhere', () => {
     for (let o = 0; o < 4096; o++) {
-      expect(offsetIsValid(o, ROWS_MASK)).toBe(referenceIsValid(o, [[8, 2], [64, 2]]));
-      expect(offsetIsValid(o, COLS_MASK)).toBe(referenceIsValid(o, [[1, 2], [8, 2], [32, 2]]));
+      expect(offsetIsValid(o, ROWS_MASK)).toBe(referenceIsValid(o, [[1, 4]]));
+      expect(offsetIsValid(o, COLS_MASK)).toBe(referenceIsValid(o, [[1, 16]]));
     }
   });
 
@@ -301,8 +306,10 @@ describe('valid tile offsets', () => {
     const t = regionToTile(0, { ...PROFILE, m: 4096, n: 4096 });
     expect(t.rows).toEqual(PROFILE.rows);
     expect(t.cols).toEqual(PROFILE.cols);
+    // The next valid row offset is 4, not 1: a valid offset has the pattern's
+    // bits clear, and the contiguous tile occupies bits 0 and 1.
     const t2 = regionToTile(1, { ...PROFILE, m: 4096, n: 4096 });
-    expect(t2.rows).toEqual([1, 9, 65, 73]);
+    expect(t2.rows).toEqual([4, 5, 6, 7]);
   });
 
   // Tiles partitioning the grid is what makes the search non-redundant: no two

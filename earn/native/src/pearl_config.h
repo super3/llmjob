@@ -103,9 +103,6 @@ typedef struct PearlProfile {
   uint32_t col_batch;
 } PearlProfile;
 
-// How many 16-byte groups of an A row slice a thread can hold in registers.
-// 8 covers rank 128, the mandated profile. A rank needing more falls back to
-// re-reading the slice per column group, which is correct but slower.
 // A tile offset is only VALID if it has the pattern's own bits clear.
 //
 // The verifier rebuilds the pattern from the row indices in a submitted proof
@@ -115,40 +112,18 @@ typedef struct PearlProfile {
 //
 //     (offset & mask) == 0
 //
-// where the mask is the OR of the pattern's own values -- rows {0,8,64,72} are
-// the subsets of bits {3,6}, and columns {0,1,8,9,32,33,40,41} the subsets of
-// bits {0,3,5}. Verified against a transcription of offset_is_valid in the JS
-// tests rather than taken on trust.
+// where the mask is the OR of the pattern's own values -- rows {0,1,2,3} are
+// the subsets of bits {0,1}, and columns {0..15} the subsets of bits {0..3}, so
+// a valid offset is a multiple of 4 down and of 16 across. Verified against a
+// transcription of offset_is_valid in the JS tests rather than taken on trust.
 //
 // This matters twice over. A share at an invalid offset is unverifiable and
 // gets rejected with "offset N is not valid for pattern", so 31 of every 32
-// regions searched were unsubmittable. And because the pattern bits are clear
+// regions searched were unsubmittable (63 of 64 with the contiguous tile). And because the pattern bits are clear
 // in a valid offset, a tile row is a bitwise OR rather than an addition, and
 // valid tiles PARTITION the grid instead of overlapping.
-#define PEARL_ROWS_MASK 72u   // bits 3 and 6
-#define PEARL_COLS_MASK 41u   // bits 0, 3 and 5
-
-// A tile offset is only VALID if it has the pattern's own bits clear.
-//
-// The verifier rebuilds the pattern from the row indices in a submitted proof
-// and then checks the offset with PeriodicPattern::offset_is_valid, which
-// reduces the offset modulo each (stride, length) dimension in turn and
-// requires it to stay below the stride. For these patterns that is exactly
-//
-//     (offset & mask) == 0
-//
-// where the mask is the OR of the pattern's own values -- rows {0,8,64,72} are
-// the subsets of bits {3,6}, and columns {0,1,8,9,32,33,40,41} the subsets of
-// bits {0,3,5}. Verified against a transcription of offset_is_valid in the JS
-// tests rather than taken on trust.
-//
-// This matters twice over. A share at an invalid offset is unverifiable and
-// gets rejected with "offset N is not valid for pattern", so 31 of every 32
-// regions searched were unsubmittable. And because the pattern bits are clear
-// in a valid offset, a tile row is a bitwise OR rather than an addition, and
-// valid tiles PARTITION the grid instead of overlapping.
-#define PEARL_ROWS_MASK 72u   // bits 3 and 6
-#define PEARL_COLS_MASK 41u   // bits 0, 3 and 5
+#define PEARL_ROWS_MASK 3u    // bits 0 and 1
+#define PEARL_COLS_MASK 15u   // bits 0 to 3
 
 // How many rows of A one thread carries.
 //
@@ -162,6 +137,9 @@ typedef struct PearlProfile {
 // occupancy for arithmetic intensity.
 #define PEARL_ROWS_PER_THREAD 2
 
+// How many 16-byte groups of an A row slice a thread can hold in registers.
+// 8 covers rank 128, the mandated profile. A rank needing more falls back to
+// re-reading the slice per column group, which is correct but slower.
 #define PEARL_MAX_A_QUADS 8
 
 // How many regions share one warp in the fold. The producer collapses each

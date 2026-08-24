@@ -39,8 +39,28 @@
 // This replaced a guess. The tile was previously derived as "row i = i*8, columns
 // in pairs at stride 8", which produced a 2x64 tile — the real default is 4x8,
 // and the index sets are not a simple stride at all.
-const ROWS_PATTERN = [0, 8, 64, 72];
-const COLS_PATTERN = [0, 1, 8, 9, 32, 33, 40, 41];
+// The tile is CONTIGUOUS: four consecutive rows by sixteen consecutive columns.
+//
+// This is what the reference miner actually mines. Its own test fixtures open a
+// block with
+//
+//   A_row_indices    = [192, 193, 194, 195]
+//   B_column_indices = [96, 97, 98, ...]
+//
+// not the strided {0,8,64,72} x {0,1,8,9,32,33,40,41} that MiningConfiguration
+// carries as a DEFAULT. Both are legal -- the pattern is self-describing in
+// config52, and the miner chooses it -- but contiguous is better in every way
+// that matters here: the sixteen B columns are one contiguous run of the
+// operand rather than sixteen scattered rows, the Merkle proof covers
+// consecutive chunks and so needs fewer siblings, and a 4x16 tile is the shape
+// an int8 tensor-core mma maps onto directly.
+//
+// The offset rule is unchanged in form: rows {0,1,2,3} are the subsets of bits
+// {0,1} and columns {0..15} the subsets of bits {0,1,2,3}, so a valid offset is
+// still one with the pattern's own bits clear -- a multiple of 4 down and of 16
+// across. Re-checked against a transcription of offset_is_valid.
+const ROWS_PATTERN = [0, 1, 2, 3];
+const COLS_PATTERN = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
 // Expand a pattern's (stride, length) dimensions into its index list, exactly as
 // PeriodicPattern::to_list does: start from [0] and, for each dimension, replace
