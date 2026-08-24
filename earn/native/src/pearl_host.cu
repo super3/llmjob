@@ -49,7 +49,13 @@ extern "C" __global__ void pearl_gemm_fold(
     const int8_t *E_BL, const int8_t *E_BR, const uint32_t *rows_pattern,
     const uint32_t *cols_pattern, uint32_t rows_count, uint32_t cols_count,
     uint32_t m, uint32_t n, uint32_t k, uint32_t rank, uint32_t chunks,
-    uint64_t region, uint32_t *jackpot_out);
+    uint64_t region_base, uint32_t *jackpot_out);
+extern "C" __global__ void pearl_finalize_many(const uint32_t *a_seed,
+                                               const uint32_t *jackpots,
+                                               uint32_t count,
+                                               const uint8_t *target_be,
+                                               uint8_t *hashes_out,
+                                               int *flags_out);
 extern "C" __global__ void pearl_blake3_chunk_cvs(const uint32_t *key,
                                                   const uint8_t *data,
                                                   uint64_t chunks,
@@ -95,7 +101,11 @@ struct Ctx {
 
   uint32_t *dRows = nullptr;
   uint32_t *dCols = nullptr;
-  uint32_t *dJackpot = nullptr;
+  uint32_t *dJackpot = nullptr;   // [batch][16]
+  uint8_t *dHashes = nullptr;     // [batch][32]
+  int *dFlags = nullptr;          // [batch]
+  std::vector<int> hFlags;
+  uint32_t batch = 0;
   uint32_t *dJobKey = nullptr;
   uint32_t *dASeed = nullptr;
   uint32_t *dBSeed = nullptr;
@@ -214,8 +224,17 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   CUDA_OK(cudaMalloc(&ctx->dEAR, rank * k), "allocating E_AR");
   CUDA_OK(cudaMalloc(&ctx->dEBL, (size_t)profile->n * rank), "allocating E_BL");
   CUDA_OK(cudaMalloc(&ctx->dEBR, rank * k), "allocating E_BR");
-  CUDA_OK(cudaMalloc(&ctx->dJackpot, PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)),
-          "allocating the transcript");
+  // One transcript, hash and verdict per region in a batch, so a batch is two
+  // kernel launches and ONE copy back rather than 4096 round trips.
+  ctx->batch = PEARL_BATCH_REGIONS;
+  ctx->hFlags.resize(ctx->batch);
+  CUDA_OK(cudaMalloc(&ctx->dJackpot,
+                     (size_t)ctx->batch * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)),
+          "allocating the transcripts");
+  CUDA_OK(cudaMalloc(&ctx->dHashes, (size_t)ctx->batch * PEARL_HASH_BYTES),
+          "allocating the batch hashes");
+  CUDA_OK(cudaMalloc(&ctx->dFlags, (size_t)ctx->batch * sizeof(int)),
+          "allocating the batch verdicts");
   CUDA_OK(cudaMalloc(&ctx->dJobKey, 8 * sizeof(uint32_t)), "allocating job_key");
   CUDA_OK(cudaMalloc(&ctx->dASeed, 8 * sizeof(uint32_t)), "allocating a_seed");
   CUDA_OK(cudaMalloc(&ctx->dBSeed, 8 * sizeof(uint32_t)), "allocating b_seed");
@@ -250,6 +269,7 @@ extern "C" void pearl_host_destroy(void *handle) {
   cudaFree(ctx->dEAL); cudaFree(ctx->dEAR);
   cudaFree(ctx->dEBL); cudaFree(ctx->dEBR);
   cudaFree(ctx->dRows); cudaFree(ctx->dCols);
+  cudaFree(ctx->dHashes); cudaFree(ctx->dFlags);
   cudaFree(ctx->dCvs); cudaFree(ctx->dSeedBuf);
   cudaFree(ctx->dHashA); cudaFree(ctx->dHashB);
   cudaFree(ctx->dJackpot); cudaFree(ctx->dJobKey);
@@ -344,50 +364,48 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   const uint32_t k = ctx->profile.k;
   const uint32_t rank = ctx->profile.rank;
   const uint32_t chunks = (k + rank - 1) / rank;
+  const uint32_t regions = batch < ctx->batch ? batch : ctx->batch;
   const int threads = 128;
-  const size_t smem = threads * sizeof(uint32_t);
 
-  for (uint32_t i = 0; i < batch; i++) {
-    // nonce_base + i IS the search variable — see the kernel. Passing a constant
-    // here makes every attempt identical and the miner a very expensive way to
-    // compute one number.
-    pearl_gemm_fold<<<1, threads, smem>>>(
-        ctx->dA, ctx->dB, ctx->dEAL, ctx->dEAR, ctx->dEBL, ctx->dEBR,
-        ctx->dRows, ctx->dCols, ctx->profile.rows_count, ctx->profile.cols_count,
-        ctx->profile.m, ctx->profile.n, k, rank, chunks, nonce_base + i,
-        ctx->dJackpot);
+  // Shared memory holds the reconstructed rows and columns for one chunk, plus
+  // the XOR reduction scratch. At the mainnet profile that is
+  // (2 + 64) * 128 * 4 + 128 * 4 = 34 KiB, inside the 48 KiB default.
+  const size_t smem =
+      ((size_t)ctx->profile.rows_count + ctx->profile.cols_count) * rank * sizeof(int32_t) +
+      (size_t)threads * sizeof(uint32_t);
 
-    int isShare = 0;
-    pearl_finalize<<<1, 1>>>(ctx->dASeed, ctx->dJackpot, ctx->dTarget, ctx->dHash,
-                             ctx->dIsShare);
-    cudaMemcpy(&isShare, ctx->dIsShare, sizeof(int), cudaMemcpyDeviceToHost);
+  pearl_gemm_fold<<<regions, threads, smem>>>(
+      ctx->dA, ctx->dB, ctx->dEAL, ctx->dEAR, ctx->dEBL, ctx->dEBR,
+      ctx->dRows, ctx->dCols, ctx->profile.rows_count, ctx->profile.cols_count,
+      ctx->profile.m, ctx->profile.n, k, rank, chunks, nonce_base, ctx->dJackpot);
 
-    // Check once per region rather than per kernel: a launch failure here means
-    // the device is gone (driver reset, ECC fault, another process took the
-    // card), and continuing would report a healthy zero-hit search for ever.
-    cudaError_t e = cudaGetLastError();
-    if (e != cudaSuccess) {
-      if (err && err_len) snprintf(err, err_len, "CUDA error during search: %s",
-                                   cudaGetErrorString(e));
-      return false;
-    }
+  pearl_finalize_many<<<(regions + 255) / 256, 256>>>(
+      ctx->dASeed, ctx->dJackpot, regions, ctx->dTarget, ctx->dHashes, ctx->dFlags);
 
-    if (attempts) (*attempts)++;
-    if (isShare) {
-      cudaMemcpy(out->jackpot_hash, ctx->dHash, PEARL_HASH_BYTES,
-                 cudaMemcpyDeviceToHost);
-      memcpy(out->a_seed, ctx->aSeed, PEARL_HASH_BYTES);
-      memcpy(out->b_seed, ctx->bSeed, PEARL_HASH_BYTES);
-      out->nonce = nonce_base + i;
-      // The plain proof the pool verifies. Its exact container is pool-specific
-      // and is assembled on the JS side (stratum.serializeProof), so what
-      // travels here is the transcript the pool needs to recompute the hash.
-      out->proof.assign(PEARL_JACKPOT_BUCKETS * 4, 0);
-      cudaMemcpy(out->proof.data(), ctx->dJackpot, PEARL_JACKPOT_BUCKETS * 4,
-                 cudaMemcpyDeviceToHost);
-      out->found = true;
-      return true;
-    }
+  cudaMemcpy(ctx->hFlags.data(), ctx->dFlags, (size_t)regions * sizeof(int),
+             cudaMemcpyDeviceToHost);
+
+  cudaError_t e = cudaGetLastError();
+  if (e != cudaSuccess) {
+    if (err && err_len)
+      snprintf(err, err_len, "CUDA error during search: %s", cudaGetErrorString(e));
+    return false;
+  }
+  if (attempts) *attempts = regions;
+
+  for (uint32_t i = 0; i < regions; i++) {
+    if (!ctx->hFlags[i]) continue;
+    cudaMemcpy(out->jackpot_hash, ctx->dHashes + (size_t)i * PEARL_HASH_BYTES,
+               PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
+    memcpy(out->a_seed, ctx->aSeed, PEARL_HASH_BYTES);
+    memcpy(out->b_seed, ctx->bSeed, PEARL_HASH_BYTES);
+    out->nonce = nonce_base + i;
+    out->proof.assign(PEARL_JACKPOT_BUCKETS * 4, 0);
+    cudaMemcpy(out->proof.data(),
+               ctx->dJackpot + (size_t)i * PEARL_JACKPOT_BUCKETS,
+               PEARL_JACKPOT_BUCKETS * 4, cudaMemcpyDeviceToHost);
+    out->found = true;
+    return true;
   }
   out->found = false;
   return false;

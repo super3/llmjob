@@ -32,6 +32,11 @@
 #define PEARL_JACKPOT_BUCKETS 16
 #define PEARL_ROTL_BITS 13
 
+// Regions searched per launch. One CUDA block each, so this is also the grid
+// width — big enough to fill every SM on a large card, small enough that a job
+// switch is picked up promptly.
+#define PEARL_BATCH_REGIONS 4096
+
 // The mandated mainnet profile. rank=128 is the post-softfork value; mining any
 // other rank produces work the network does not credit.
 typedef struct PearlProfile {

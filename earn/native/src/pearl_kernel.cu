@@ -340,35 +340,40 @@ extern "C" __global__ void pearl_hash_operands(const uint32_t *job_key,
 //
 //   jackpot[tid] = rotl13(jackpot[tid]) ^ xor(tile),  tid = chunk % 16
 //
-// One block per candidate nonce; each thread owns a slice of the tile and the
-// lanes are reduced in shared memory. This is the scalar/dp4a formulation —
-// correct and auditable. The tensor-core specialisation replaces only the inner
-// accumulation below (mma.sync m16n8k32 int8 with the fold applied in the
-// mainloop epilogue), leaving the transcript semantics identical.
+// ONE BLOCK PER REGION. The first version ran <<<1, threads>>> and searched one
+// region per launch, which used a single SM of the 128 on a 4090 and never
+// finished a batch at the mainnet profile — 90 s of 100% utilisation and not one
+// completed attempt. Regions are independent, so they are the natural axis to
+// parallelise over: blockIdx.x IS the region offset from region_base, and each
+// block writes its own transcript to jackpot_out[blockIdx.x].
+//
+// THE OPERANDS ARE RECONSTRUCTED ONCE, NOT PER CELL. The noised values are
+//   A'[r,kk] = A[r,kk] + Σ_j E_AL[r,j]·E_AR[j,kk]
+//   B'[c,kk] = B[c,kk] + Σ_j E_BL[c,j]·E_BR[j,kk]
+// and the naive loop recomputed A'[r,kk] once for every column sharing that row
+// — 64 times over, for a rank-length dot product each time. Hoisting both into
+// shared memory turns (rows·cols·rank·2rank) into ((rows+cols)·rank² + cells·rank).
+//
+// This is still the scalar path. The tensor-core mainloop replaces only the
+// accumulation below; the transcript semantics are what the parity vectors pin.
 extern "C" __global__ void pearl_gemm_fold(
-    const int8_t *__restrict__ A,     // [m, k] row-major, quantised
-    const int8_t *__restrict__ B,     // [n, k] row-major (Bᵀ), quantised
-    const int8_t *__restrict__ E_AL,  // [m, rank]
-    const int8_t *__restrict__ E_AR,  // [rank, k]
-    const int8_t *__restrict__ E_BL,  // [n, rank]
-    const int8_t *__restrict__ E_BR,  // [rank, k]
+    const int8_t *__restrict__ A, const int8_t *__restrict__ B,
+    const int8_t *__restrict__ E_AL, const int8_t *__restrict__ E_AR,
+    const int8_t *__restrict__ E_BL, const int8_t *__restrict__ E_BR,
     const uint32_t *__restrict__ rows_pattern,
     const uint32_t *__restrict__ cols_pattern, uint32_t rows_count,
     uint32_t cols_count, uint32_t m, uint32_t n, uint32_t k, uint32_t rank,
-    uint32_t chunks, uint64_t region, uint32_t *__restrict__ jackpot_out) {
-  extern __shared__ uint32_t smem[];  // [blockDim.x] partial XORs
+    uint32_t chunks, uint64_t region_base, uint32_t *__restrict__ jackpot_out) {
+  extern __shared__ int32_t smem[];
+  int32_t *a_vals = smem;                                  // rows_count * rank
+  int32_t *b_vals = a_vals + (size_t)rows_count * rank;    // cols_count * rank
+  uint32_t *red = (uint32_t *)(b_vals + (size_t)cols_count * rank);  // blockDim.x
 
   const uint32_t tid = threadIdx.x;
-  const uint32_t tile_cells = rows_count * cols_count;
-
-  // WHERE THE SEARCH ACTUALLY HAPPENS. The tile pattern is fixed by the
-  // profile, so what varies between attempts is WHERE in the output that tile
-  // is read from. Without this offset every launch recomputes an identical
-  // transcript and the miner is not searching at all — it grinds the GPU at
-  // full utilisation producing one value over and over. That is exactly what
-  // the first on-device run did: 65536 "attempts", one distinct result.
+  const uint64_t region = region_base + blockIdx.x;
   const uint32_t row_off = (uint32_t)(region % m);
   const uint32_t col_off = (uint32_t)((region / m) % n);
+  const uint32_t tile_cells = rows_count * cols_count;
 
   uint32_t jackpot[PEARL_JACKPOT_BUCKETS];
 #pragma unroll
@@ -376,48 +381,94 @@ extern "C" __global__ void pearl_gemm_fold(
 
   for (uint32_t chunk = 0; chunk < chunks; chunk++) {
     const uint32_t k0 = chunk * rank;
-    uint32_t partial = 0u;
 
-    // Each thread walks a strided share of the tile's cells.
-    for (uint32_t cell = tid; cell < tile_cells; cell += blockDim.x) {
-      const uint32_t r = (rows_pattern[cell / cols_count] + row_off) % m;
-      const uint32_t c = (cols_pattern[cell % cols_count] + col_off) % n;
-
-      int32_t acc = 0;
-      for (uint32_t kk = k0; kk < k0 + rank && kk < k; kk++) {
-        // Noised operands, reconstructed on the fly:
-        //   A'[r,kk] = A[r,kk] + Σ_j E_AL[r,j]·E_AR[j,kk]
-        //   B'[c,kk] = B[c,kk] + Σ_j E_BL[c,j]·E_BR[j,kk]
-        int32_t a = A[(size_t)r * k + kk];
-        int32_t b = B[(size_t)c * k + kk];
-        for (uint32_t j = 0; j < rank; j++) {
+    // Reconstruct the noised rows once for the whole chunk.
+    for (uint32_t idx = tid; idx < rows_count * rank; idx += blockDim.x) {
+      const uint32_t ri = idx / rank;
+      const uint32_t kk = k0 + (idx % rank);
+      int32_t a = 0;
+      if (kk < k) {
+        const uint32_t r = (rows_pattern[ri] + row_off) % m;
+        a = A[(size_t)r * k + kk];
+        for (uint32_t j = 0; j < rank; j++)
           a += (int32_t)E_AL[(size_t)r * rank + j] * (int32_t)E_AR[(size_t)j * k + kk];
-          b += (int32_t)E_BL[(size_t)c * rank + j] * (int32_t)E_BR[(size_t)j * k + kk];
-        }
-        acc += a * b;
       }
+      a_vals[idx] = a;
+    }
+    // …and the noised columns.
+    for (uint32_t idx = tid; idx < cols_count * rank; idx += blockDim.x) {
+      const uint32_t ci = idx / rank;
+      const uint32_t kk = k0 + (idx % rank);
+      int32_t b = 0;
+      if (kk < k) {
+        const uint32_t c = (cols_pattern[ci] + col_off) % n;
+        b = B[(size_t)c * k + kk];
+        for (uint32_t j = 0; j < rank; j++)
+          b += (int32_t)E_BL[(size_t)c * rank + j] * (int32_t)E_BR[(size_t)j * k + kk];
+      }
+      b_vals[idx] = b;
+    }
+    __syncthreads();
+
+    // Now the tile itself is a plain dot product per cell.
+    uint32_t partial = 0u;
+    for (uint32_t cell = tid; cell < tile_cells; cell += blockDim.x) {
+      const uint32_t ri = cell / cols_count;
+      const uint32_t ci = cell % cols_count;
+      int32_t acc = 0;
+      for (uint32_t t = 0; t < rank; t++)
+        acc += a_vals[ri * rank + t] * b_vals[ci * rank + t];
       partial ^= (uint32_t)acc;
     }
 
-    // Reduce the tile XOR across the block.
-    smem[tid] = partial;
+    red[tid] = partial;
     __syncthreads();
     for (uint32_t s = blockDim.x / 2; s > 0; s >>= 1) {
-      if (tid < s) smem[tid] ^= smem[tid + s];
+      if (tid < s) red[tid] ^= red[tid + s];
       __syncthreads();
     }
-
     if (tid == 0) {
       const uint32_t lane = chunk % PEARL_JACKPOT_BUCKETS;
-      jackpot[lane] = pearl_rotl13(jackpot[lane]) ^ smem[0];
+      jackpot[lane] = pearl_rotl13(jackpot[lane]) ^ red[0];
     }
     __syncthreads();
   }
 
   if (tid == 0) {
+    uint32_t *out = jackpot_out + (size_t)blockIdx.x * PEARL_JACKPOT_BUCKETS;
 #pragma unroll
-    for (int i = 0; i < PEARL_JACKPOT_BUCKETS; i++) jackpot_out[i] = jackpot[i];
+    for (int i = 0; i < PEARL_JACKPOT_BUCKETS; i++) out[i] = jackpot[i];
   }
+}
+
+// Hash and target-test a whole batch of transcripts, one thread per region.
+// Sequentialising this over 4096 regions with a device-to-host copy each time
+// was most of what made the old search slow even before the single-block fold.
+extern "C" __global__ void pearl_finalize_many(const uint32_t *a_seed,
+                                               const uint32_t *jackpots,
+                                               uint32_t count,
+                                               const uint8_t *target_be,
+                                               uint8_t *hashes_out,
+                                               int *flags_out) {
+  uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= count) return;
+  const uint32_t *j = jackpots + (size_t)idx * PEARL_JACKPOT_BUCKETS;
+  uint8_t transcript[PEARL_JACKPOT_BUCKETS * 4];
+#pragma unroll
+  for (int i = 0; i < PEARL_JACKPOT_BUCKETS; i++) {
+    transcript[i * 4 + 0] = (uint8_t)(j[i]);
+    transcript[i * 4 + 1] = (uint8_t)(j[i] >> 8);
+    transcript[i * 4 + 2] = (uint8_t)(j[i] >> 16);
+    transcript[i * 4 + 3] = (uint8_t)(j[i] >> 24);
+  }
+  uint32_t key[8];
+#pragma unroll
+  for (int i = 0; i < 8; i++) key[i] = a_seed[i];
+  uint8_t h[PEARL_HASH_BYTES];
+  blake3_keyed(key, transcript, sizeof(transcript), h);
+#pragma unroll
+  for (int i = 0; i < PEARL_HASH_BYTES; i++) hashes_out[(size_t)idx * PEARL_HASH_BYTES + i] = h[i];
+  flags_out[idx] = pearl_meets_target(h, target_be);
 }
 
 // Hash the 64-byte transcript under a_seed and test it against the target. The
