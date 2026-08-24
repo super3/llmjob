@@ -137,8 +137,8 @@ static const uint8_t PEARL_SEED_SALT_B[32] = {
 // mandated rank, and k/rank = 16 chunks is exactly the transcript lane count, so
 // each chunk lands in its own lane and the rotation never wraps.
 static const PearlProfile PEARL_MAINNET_PROFILE = {2048u, 128u, 0u,
-                                                   6144u, 6144u,
-                                                   PEARL_SEED_SALTED, 32u};
+                                                   12288u, 12288u,
+                                                   PEARL_SEED_SALTED, 512u};
 
 // Serialize the 52-byte mining configuration, matching the reference's
 // MiningConfiguration::to_bytes byte for byte:

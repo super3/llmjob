@@ -2,7 +2,7 @@
 
 const { hash, keyedHash } = require('../src/shared/miner/blake3');
 const {
-  PROFILE, SEED_SALT_A, SEED_SALT_B, bindMessage,
+  PROFILE, SEED_SALT_A, SEED_SALT_B, bindMessage, seedDerivationCode,
 } = require('../src/shared/miner/pearlhash');
 const ref = require('../src/shared/miner/reference');
 
@@ -125,6 +125,24 @@ describe('deriveSeeds', () => {
 describe('the mainnet profile', () => {
   test('defaults to the cert-v3 derivation', () => {
     expect(PROFILE.seedDerivation).toBe('salted');
+  });
+
+  // The addon takes the derivation as a NUMBER. It used to be handed the
+  // string through Uint32Value(), which renders any non-numeric text as 0 --
+  // and 0 is salted, so asking for legacy would have been silently ignored and
+  // the wrong derivation mined with no symptom but rejected shares.
+  test('the numeric code the addon reads agrees with the string', () => {
+    expect(seedDerivationCode()).toBe(0);
+    expect(seedDerivationCode({ ...PROFILE, seedDerivation: 'legacy' })).toBe(1);
+    expect(PROFILE.seedDerivationCode).toBe(seedDerivationCode(PROFILE));
+  });
+
+  // m and n are bound into the seeds by cert-v3, so the JS profile and the core
+  // must agree on them or every seed differs.
+  test('carries the measured workload dimensions and batch width', () => {
+    expect(PROFILE.m).toBe(12288);
+    expect(PROFILE.n).toBe(12288);
+    expect(PROFILE.colBatch).toBeGreaterThan(0);
   });
 
   // rank must be a power of two AND a multiple of the BLAKE3 digest size: the

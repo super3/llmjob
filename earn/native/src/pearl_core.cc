@@ -106,7 +106,10 @@ PearlCore::PearlCore(const Napi::CallbackInfo &info)
     // 0 = cert-v3 salted, 1 = legacy. Exposed so the derivation can be
     // flipped from JS for a diagnostic run rather than needing a rebuild —
     // it is the one thing here that only a live pool can confirm.
-    profile.seed_derivation = u32("seedDerivation", profile.seed_derivation);
+    // seedDerivationCode, NOT seedDerivation: the latter is a STRING in JS and
+    // Uint32Value() renders any non-numeric text as 0. That is the value for
+    // salted, so a caller asking for legacy would have been silently ignored.
+    profile.seed_derivation = u32("seedDerivationCode", profile.seed_derivation);
     // Column offsets per launch. Exposed so the batch width can be swept from
     // JS without a rebuild -- it trades VRAM for amortised launch overhead and
     // the sweet spot is card-dependent.

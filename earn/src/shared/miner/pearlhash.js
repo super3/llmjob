@@ -134,12 +134,21 @@ const PROFILE = {
   // they never enter job_key — they only size the operands we allocate and bound
   // the tile offset. Bigger m*n means more candidate offsets per commitment,
   // which is the whole amortisation story.
-  // Measured sweet spot on an RTX 4090: big enough to keep the GPU busy, small
-  // enough that the operands stay near L2. 1024->0.91, 4096->2.95, 6144->3.61,
-  // 8192->1.93 TH/s, so the curve peaks here and falls away sharply once the
-  // working set stops fitting.
-  m: 6144,
-  n: 6144,
+  // Measured on an RTX 4090 with a working instrument. The old numbers here
+  // came from a hashrate that was not a rate and a miner that stalled a few
+  // seconds into every measurement, so they described nothing.
+  //
+  // At col_batch 512: 6144 -> 63.1, 8192 -> 73.2, 12288 -> 74.6, and 16384/24576
+  // are within noise of that. The curve plateaus rather than peaking, so this
+  // takes the knee instead of the largest value that fits — the extra VRAM buys
+  // nothing.
+  m: 12288,
+  n: 12288,
+
+  // Column offsets per launch. Not protocol: it trades VRAM for amortised
+  // launch overhead. 32 -> 55.4, 64 -> 58.3, 256 -> 60.8, 512 -> 63.1,
+  // 1024 -> 64.4 TH/s at m=6144, so this is well past the knee.
+  colBatch: 512,
   // Which seed derivation binds the operand roots. 'salted' is cert-v3:
   //   hash_a' = blake3(hash_a ‖ pad32(m), key=SEED_SALT_A)
   //   hash_b' = blake3(hash_b ‖ pad32(n), key=SEED_SALT_B)
@@ -155,7 +164,20 @@ const PROFILE = {
   // accepts the share. If shares are rejected with everything else verified,
   // this flag is the first thing to flip.
   seedDerivation: 'salted',
+
+  // The same choice as a number, because that is what the addon reads. Keeping
+  // the string as the source of truth and mapping it here is deliberate: the
+  // addon used to read the STRING through Uint32Value(), which yields 0 for any
+  // non-numeric text. That happened to be the value for 'salted', so setting
+  // 'legacy' would have been silently ignored and mined the wrong derivation.
+  seedDerivationCode: 0,
 };
+
+// 0 = cert-v3 salted, 1 = legacy. The addon takes the number.
+function seedDerivationCode(profile) {
+  const p = profile || PROFILE;
+  return p.seedDerivation === 'legacy' ? 1 : 0;
+}
 
 // The difficulty adjustment factor: tile size x dot product length.
 //
@@ -310,7 +332,7 @@ function rankMatches(jobRank, profile) {
 module.exports = {
   PROFILE, ROWS_PATTERN, COLS_PATTERN,
   SEED_SALT_A, SEED_SALT_B, bindMessage,
-  PENALTY_BASE_RANK, penalizedAdjustmentFactor, shareBound,
+  PENALTY_BASE_RANK, penalizedAdjustmentFactor, shareBound, seedDerivationCode,
   patternToList, patternFromList, patternToBytes, difficultyAdjustmentFactor,
   CONFIG_BYTES,
   JACKPOT_BUCKETS,
