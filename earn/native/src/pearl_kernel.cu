@@ -50,6 +50,7 @@ __constant__ uint8_t BLAKE3_MSG_PERM[16] = {2, 6, 3, 10, 7, 0, 4, 13,
 
 #define CHUNK_START (1u << 0)
 #define CHUNK_END (1u << 1)
+#define PARENT (1u << 2)
 #define ROOT (1u << 3)
 #define KEYED_HASH (1u << 4)
 
