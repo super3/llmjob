@@ -134,8 +134,12 @@ const PROFILE = {
   // they never enter job_key — they only size the operands we allocate and bound
   // the tile offset. Bigger m*n means more candidate offsets per commitment,
   // which is the whole amortisation story.
-  m: 4096,
-  n: 4096,
+  // Measured sweet spot on an RTX 4090: big enough to keep the GPU busy, small
+  // enough that the operands stay near L2. 1024->0.91, 4096->2.95, 6144->3.61,
+  // 8192->1.93 TH/s, so the curve peaks here and falls away sharply once the
+  // working set stops fitting.
+  m: 6144,
+  n: 6144,
 };
 
 // The difficulty adjustment factor: tile size x dot product length.

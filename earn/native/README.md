@@ -73,9 +73,9 @@ Measured on an RTX 4090, at the real mainnet geometry:
 
 | | |
 |---|---|
-| Hashrate (MACs/sec, the unit the network uses) | **0.93 TH/s** |
+| Hashrate (MACs/sec, the unit the network uses) | **3.61 TH/s** |
 | PeakMiner on the same card | **296 TH/s** |
-| Factor short | **~316x** |
+| Factor short | **~82x** |
 | Remaining work | int8 decomposition, then tensor cores — see OPTIMIZATION.md |
 
 The end-to-end path is real: our JS host authorises against

@@ -28,6 +28,44 @@ tensor-core peak**: an ordinary well-tuned GEMM.
 | Materialise the noised operands once per job, not per attempt | 0.001 → **0.53 TH/s** |
 | One warp per region, `__shfl_xor_sync` instead of block reduction | 0.53 → **0.74 TH/s** |
 | `int4` vectorised operand loads | 0.74 → **0.93 TH/s** |
+| **Split into a partials GEMM + a gather** (removes a 4x redundancy) | 0.93 → **2.08 TH/s** |
+| Reuse each A row across all eight columns | 2.08 → **2.92 TH/s** |
+| Tune m to the cache/parallelism sweet spot (6144) | 2.92 → **3.61 TH/s** |
+
+### The 4x redundancy, which none of the memory experiments could have found
+
+A region folds 32 cells, each a dot product of
+`A'[rows_pattern[i] + row_off]` against `B'[cols_pattern[j] + col_off]`. Across a
+batch `row_off` sweeps every row, so **row R is reached by four different
+regions** — once per `rows_pattern` element — and the fold recomputed its dot
+product every time:
+
+| | |
+|---|---|
+| MACs per batch, as written | 268,435,456 |
+| distinct dot products | 67,108,864 |
+
+`pearl_partials` now computes each distinct partial once into `D[chunk][r][c]`
+and the fold gathers from it. D is 2 MiB, L2-resident. Beyond the arithmetic
+saving this changes the *shape* of the work: D is a dense `[m x 8]` GEMM with a
+k-reduction, which is what `mma.sync` wants — the per-warp tile fold never was,
+which is why every attempt to speed that fold up kept failing.
+
+### m is a tunable, and the curve is sharp
+
+`m` and `n` are the miner's own choice, not protocol. Measured:
+
+| m=n | operands | hashrate |
+|---|---|---|
+| 1024 | 16 MiB | 0.91 TH/s |
+| 2048 | 32 MiB | 1.78 TH/s |
+| 4096 | 64 MiB | 2.95 TH/s |
+| **6144** | **96 MiB** | **3.61 TH/s** |
+| 8192 | 128 MiB | 1.93 TH/s |
+| 16384 | 256 MiB | 1.63 TH/s |
+
+Rising while extra rows buy parallelism, collapsing once the working set stops
+fitting near L2.
 
 ## What did not — and what each ruled out
 
@@ -35,6 +73,8 @@ tensor-core peak**: an ordinary well-tuned GEMM.
 |---|---|---|
 | int8 decomposition + `dp4a` | 0.93 → 0.37 | See below — structural |
 | Shared-memory staging of the tile | 0.93 → 0.41 | Not bandwidth: L1 already serves these reads |
+| Shared-memory staging of B in the partials pass | 2.92 → 2.85 | Same again: 4 KiB, warp-uniform, already broadcast by L1 |
+| Batch/partials width 16384 to fill the GPU | — | Not occupancy: the larger working set costs more than the warps gain |
 | Staging with padded stride (no bank conflicts) | 0.93 → 0.42 | Confirms the above; padding was not the issue |
 | Four independent accumulators | 0.93 → 0.93 | Not the dependency chain — nvcc already split it |
 | 16 warps/block instead of 8 | 0.93 → 0.94 | Not occupancy |
@@ -67,17 +107,27 @@ own transcript lane.
 
 ## Where that leaves it
 
-**0.93 TH/s, ~316x short.** Five hypotheses tested, five eliminated. The
-remaining gap is not a tuning problem in this kernel: bandwidth, latency,
-occupancy and launch overhead have all been measured and excluded, which points
-at the loop *structure* rather than its constants.
+**3.61 TH/s, ~82x short**, from 0.93 when the memory experiments ran out. The
+structural change was worth more than every constant-factor attempt combined,
+which is the lesson: the eliminations were correct, but they were eliminating
+explanations for the wrong kernel.
 
-A competitive miner almost certainly does not fold one tile per warp at all. It
-computes large contiguous GEMM tiles with `mma.sync` and harvests many
-transcripts from each result, so the operand loads amortise across hundreds of
-attempts instead of tens. That is a different kernel, not a faster version of
-this one, and it needs int8 operands — which the decomposition above cannot
-supply for a chunk-wise fold.
+The partials GEMM now runs at roughly 9e11 MACs/s against an int32 ceiling near
+4e13 on this card — about 2%. So there is still a large factor available inside
+the current int32 formulation, before tensor cores enter the picture at all.
+
+### An unresolved correctness question, recorded rather than buried
+
+The mining configuration names its arithmetic `Int7xInt7ToInt32`: int7 inputs,
+int32 output. Our operands are the *noised* values, which reach ~5e5 and are
+therefore int32 inputs, and the products overflow int32 and wrap. Our JS oracle
+wraps identically, so parity holds — but parity only proves the two
+implementations agree, not that either matches the network.
+
+If the protocol really multiplies int7 by int7, the noise must be applied
+somewhere other than straight onto the operand, and this core computes the wrong
+function no matter how fast it gets. Settling that needs a share accepted by a
+real pool, or the reference's own GEMM traced end to end.
 
 ## What would unblock further work
 
