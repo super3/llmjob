@@ -89,6 +89,18 @@ typedef struct PearlProfile {
   // self-consistent miner and differ only in whether a pool accepts the share,
   // so this is the first flag to flip if everything else verifies.
   uint32_t seed_derivation;
+  // How many column offsets one launch covers.
+  //
+  // A batch used to be a single column offset, i.e. m regions. That made the
+  // search launch-bound rather than compute-bound: measured on a 4090, a batch
+  // cost a flat 134-213us whether it carried 1024 regions or 8192, because
+  // three kernel launches and a synchronising copy dominated whatever work was
+  // inside them. Widening the batch amortises that fixed cost, and it also
+  // gives the partials kernel far better arithmetic intensity, since each A row
+  // it reads is now used against col_batch*8 columns instead of 8.
+  //
+  // Costs col_batch * chunks * m * cols * 4 bytes of partial table.
+  uint32_t col_batch;
 } PearlProfile;
 
 #define PEARL_SEED_SALTED 0u
@@ -111,7 +123,7 @@ static const uint8_t PEARL_SEED_SALT_B[32] = {
 // each chunk lands in its own lane and the rotation never wraps.
 static const PearlProfile PEARL_MAINNET_PROFILE = {2048u, 128u, 0u,
                                                    6144u, 6144u,
-                                                   PEARL_SEED_SALTED};
+                                                   PEARL_SEED_SALTED, 32u};
 
 // Serialize the 52-byte mining configuration, matching the reference's
 // MiningConfiguration::to_bytes byte for byte:

@@ -61,7 +61,8 @@ extern "C" __global__ void pearl_partials(const int8_t *Aprime, const int8_t *Bp
                                           const uint32_t *cols_pattern,
                                           uint32_t cols_count, uint32_t m, uint32_t n,
                                           uint32_t k, uint32_t rank, uint32_t chunks,
-                                          uint32_t col_off, int32_t *D);
+                                          uint32_t col_off, uint32_t col_groups,
+                                          int32_t *D);
 extern "C" __global__ void pearl_gemm_fold(
     const int32_t *D, const uint32_t *rows_pattern, uint32_t rows_count,
     uint32_t cols_count, uint32_t m, uint32_t chunks, uint64_t region_base,
@@ -143,6 +144,7 @@ struct Ctx {
   uint32_t *dJackpot = nullptr;   // [batch][16]
   uint8_t *dHashes = nullptr;     // [batch][32]
   int *dFlags = nullptr;          // [batch]
+  uint32_t colBatch = 1;          // column offsets per launch
   std::vector<int> hFlags;
   uint32_t batch = 0;
   uint32_t *dJobKey = nullptr;
@@ -241,7 +243,18 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   // int32 while the noise was (wrongly) reconstructed at full rank, which cost
   // 2 GiB at mainnet on top of the 1 GiB of sources.
   const size_t primeBytes = aBytes + bBytes;
-  const size_t need = aBytes + bBytes + primeBytes + noiseBytes + (1u << 20);
+  // The partial-product table scales with the column-batch width, so it is a
+  // real line item rather than a rounding error: 100 MiB at col_batch 32 and the
+  // mainnet geometry. Counted here so an undersized card is told before any
+  // allocation rather than aborting inside a kernel.
+  const size_t colBatch = profile->col_batch ? profile->col_batch : 1u;
+  const size_t partialBytes = colBatch * ((profile->k + rank - 1) / rank)
+                              * profile->m * PEARL_COLS_COUNT * sizeof(int32_t);
+  const size_t batchBytes = colBatch * profile->m
+                            * (PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)
+                               + PEARL_HASH_BYTES + sizeof(int));
+  const size_t need = aBytes + bBytes + primeBytes + noiseBytes + partialBytes
+                      + batchBytes + (1u << 20);
 
   // Check the budget BEFORE allocating, so an 8 GB card gets a sentence it can
   // act on instead of an out-of-memory abort three kernels deep.
@@ -288,14 +301,21 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   CUDA_OK(cudaMalloc(&ctx->dBoundB, PEARL_HASH_BYTES), "allocating the bound B root");
   cudaMemcpy(ctx->dSaltA, PEARL_SEED_SALT_A, 32, cudaMemcpyHostToDevice);
   cudaMemcpy(ctx->dSaltB, PEARL_SEED_SALT_B, 32, cudaMemcpyHostToDevice);
-  // One transcript, hash and verdict per region in a batch, so a batch is two
-  // kernel launches and ONE copy back rather than 4096 round trips.
-  ctx->batch = PEARL_BATCH_REGIONS;
+  // A batch is col_batch column offsets by m row offsets. Widening it past a
+  // single column offset is what took the search from launch-bound to
+  // compute-bound: the fixed per-batch cost (three launches and a synchronising
+  // copy) was flat at 134-213us regardless of the work inside it.
+  //
+  // Clamped so a silly profile cannot ask for a partial table larger than the
+  // card, and to at least 1 so the batch is never empty.
+  ctx->colBatch = profile->col_batch ? profile->col_batch : 1u;
+  if (ctx->colBatch > profile->n) ctx->colBatch = profile->n;
+  ctx->batch = ctx->colBatch * profile->m;
   ctx->hFlags.resize(ctx->batch);
   // Every distinct partial computed once per batch instead of four times.
   CUDA_OK(cudaMalloc(&ctx->dD,
-                     (size_t)((profile->k + rank - 1) / rank) * profile->m
-                         * PEARL_COLS_COUNT * sizeof(int32_t)),
+                     (size_t)ctx->colBatch * ((profile->k + rank - 1) / rank)
+                         * profile->m * PEARL_COLS_COUNT * sizeof(int32_t)),
           "allocating the partial-product table");
   CUDA_OK(cudaMalloc(&ctx->dJackpot,
                      (size_t)ctx->batch * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)),
@@ -481,8 +501,11 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   // Clamped to m so one launch shares a single col_off: D is built for exactly
   // the columns that batch touches. nonce_base stays a multiple of m because the
   // caller advances by the attempt count we report back.
-  uint32_t regions = batch < ctx->batch ? batch : ctx->batch;
-  if (regions > ctx->profile.m) regions = ctx->profile.m;
+  // The caller's batch hint is advisory; the real width is the context's, since
+  // the partial table was allocated for exactly that many column groups.
+  (void)batch;
+  const uint32_t regions = ctx->batch;
+  const uint32_t col_groups = ctx->colBatch;
   const int threads = 256;
   const int warps_per_block = threads / 32;
   const uint32_t col_off =
@@ -493,10 +516,10 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   // One thread per (chunk, row) — each already produces ALL of that row's
   // columns, so multiplying by the column count launched eight times the
   // threads the kernel indexes and seven eighths of them returned immediately.
-  const uint64_t npart = (uint64_t)chunks * ctx->profile.m;
+  const uint64_t npart = (uint64_t)chunks * ctx->profile.m * col_groups;
   pearl_partials<<<(unsigned)((npart + threads - 1) / threads), threads>>>(
       ctx->dAp, ctx->dBp, ctx->dCols, PEARL_COLS_COUNT, ctx->profile.m,
-      ctx->profile.n, k, rank, chunks, col_off, ctx->dD);
+      ctx->profile.n, k, rank, chunks, col_off, col_groups, ctx->dD);
 
   pearl_gemm_fold<<<(regions + warps_per_block - 1) / warps_per_block, threads>>>(
       ctx->dD, ctx->dRows, PEARL_ROWS_COUNT, PEARL_COLS_COUNT, ctx->profile.m,

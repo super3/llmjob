@@ -564,8 +564,10 @@ extern "C" __global__ void pearl_partials(const int8_t *__restrict__ Aprime,
                                           uint32_t cols_count, uint32_t m,
                                           uint32_t n, uint32_t k, uint32_t rank,
                                           uint32_t chunks, uint32_t col_off,
+                                          uint32_t col_groups,
                                           int32_t *__restrict__ D) {
-  // One thread per (chunk, row), producing ALL of that row's columns.
+  // One thread per (column group, chunk, row), producing ALL of that row's
+  // columns for its group.
   //
   // A thread per (chunk, row, col) reads the row's k-slice once per column —
   // eight times over, and the A side is the streaming operand: 33 MiB a batch
@@ -575,11 +577,14 @@ extern "C" __global__ void pearl_partials(const int8_t *__restrict__ Aprime,
   // The B side is the opposite: only eight distinct column slices exist per
   // batch and every thread wants them, so they stay resident in cache.
   uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-  const uint64_t total = (uint64_t)chunks * m;
+  const uint64_t per_group = (uint64_t)chunks * m;
+  const uint64_t total = per_group * col_groups;
   if (idx >= total) return;
 
-  const uint32_t r = (uint32_t)(idx % m);
-  const uint32_t chunk = (uint32_t)(idx / m);
+  const uint32_t cg = (uint32_t)(idx / per_group);
+  const uint64_t within = idx - (uint64_t)cg * per_group;
+  const uint32_t r = (uint32_t)(within % m);
+  const uint32_t chunk = (uint32_t)(within / m);
   const uint32_t k0 = chunk * rank;
   const uint32_t lim = (k0 + rank <= k) ? rank : (k - k0);
 
@@ -588,7 +593,7 @@ extern "C" __global__ void pearl_partials(const int8_t *__restrict__ Aprime,
   const int8_t *bc[PEARL_COLS_COUNT];
 #pragma unroll
   for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) {
-    const uint32_t cc = (cols_pattern[c] + col_off) % n;
+    const uint32_t cc = (cols_pattern[c] + col_off + cg) % n;
     bc[c] = Bprime + (size_t)cc * k + k0;
   }
 
@@ -628,7 +633,7 @@ extern "C" __global__ void pearl_partials(const int8_t *__restrict__ Aprime,
     for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) acc[c] += a * bc[c][t];
   }
 
-  int32_t *out = D + ((size_t)chunk * m + r) * cols_count;
+  int32_t *out = D + (((size_t)cg * chunks + chunk) * m + r) * cols_count;
 #pragma unroll
   for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) out[c] = acc[c];
 }
@@ -643,8 +648,12 @@ extern "C" __global__ void pearl_gemm_fold(
   const uint32_t lane = threadIdx.x & 31u;
   const uint32_t warp = threadIdx.x >> 5;
   const uint32_t warps_per_block = blockDim.x >> 5;
-  const uint64_t region = region_base + (uint64_t)blockIdx.x * warps_per_block + warp;
-  const uint32_t row_off = (uint32_t)(region % m);
+  // Index WITHIN the batch. region_base is a multiple of m, so the row offset is
+  // the same either way, but the column group is a property of the position in
+  // this batch and must come from the local index.
+  const uint64_t slot = (uint64_t)blockIdx.x * warps_per_block + warp;
+  const uint32_t cg = (uint32_t)(slot / m);
+  const uint32_t row_off = (uint32_t)(slot % m);
 
   const uint32_t tile_cells = rows_count * cols_count;
   const bool active = lane < tile_cells;
@@ -659,7 +668,7 @@ extern "C" __global__ void pearl_gemm_fold(
   for (uint32_t chunk = 0; chunk < chunks; chunk++) {
     // Lanes sharing a row read cols_count contiguous ints — one transaction.
     const int32_t v =
-        active ? D[((size_t)chunk * m + r) * cols_count + ci] : 0;
+        active ? D[(((size_t)cg * chunks + chunk) * m + r) * cols_count + ci] : 0;
     uint32_t x = (uint32_t)v;
 #pragma unroll
     for (int sft = 16; sft > 0; sft >>= 1) x ^= __shfl_xor_sync(0xffffffffu, x, sft);
@@ -670,8 +679,7 @@ extern "C" __global__ void pearl_gemm_fold(
   }
 
   if (lane == 0) {
-    uint32_t *out = jackpot_out
-        + ((size_t)blockIdx.x * warps_per_block + warp) * PEARL_JACKPOT_BUCKETS;
+    uint32_t *out = jackpot_out + (size_t)slot * PEARL_JACKPOT_BUCKETS;
 #pragma unroll
     for (int i = 0; i < PEARL_JACKPOT_BUCKETS; i++) out[i] = jackpot[i];
   }

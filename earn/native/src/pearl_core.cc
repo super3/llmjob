@@ -107,6 +107,10 @@ PearlCore::PearlCore(const Napi::CallbackInfo &info)
     // flipped from JS for a diagnostic run rather than needing a rebuild —
     // it is the one thing here that only a live pool can confirm.
     profile.seed_derivation = u32("seedDerivation", profile.seed_derivation);
+    // Column offsets per launch. Exposed so the batch width can be swept from
+    // JS without a rebuild -- it trades VRAM for amortised launch overhead and
+    // the sweet spot is card-dependent.
+    profile.col_batch = u32("colBatch", profile.col_batch);
   }
 
   profile_ = profile;
