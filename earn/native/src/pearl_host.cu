@@ -490,7 +490,10 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
 
   // Stage one: every distinct partial dot product, once. Stage two: the fold,
   // which is now a gather over them.
-  const uint64_t npart = (uint64_t)chunks * ctx->profile.m * PEARL_COLS_COUNT;
+  // One thread per (chunk, row) — each already produces ALL of that row's
+  // columns, so multiplying by the column count launched eight times the
+  // threads the kernel indexes and seven eighths of them returned immediately.
+  const uint64_t npart = (uint64_t)chunks * ctx->profile.m;
   pearl_partials<<<(unsigned)((npart + threads - 1) / threads), threads>>>(
       ctx->dAp, ctx->dBp, ctx->dCols, PEARL_COLS_COUNT, ctx->profile.m,
       ctx->profile.n, k, rank, chunks, col_off, ctx->dD);

@@ -19,6 +19,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <chrono>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -70,6 +71,10 @@ class PearlCore : public Napi::ObjectWrap<PearlCore> {
   void EmitError(const std::string &msg);
 
   PearlProfile profile_ = PEARL_MAINNET_PROFILE;
+  // Hashrate averaging window. The emitted value is a RATE, so it needs both a
+  // work accumulator and a start time.
+  std::chrono::steady_clock::time_point win_start_{};
+  double win_work_ = 0.0;
   void *ctx_ = nullptr;
   std::thread worker_;
   std::atomic<bool> running_{false};
@@ -189,6 +194,8 @@ Napi::Value PearlCore::On(const Napi::CallbackInfo &info) {
 // the pool replaces jobs every few seconds and grinding a stale one earns
 // nothing.
 void PearlCore::SearchLoop() {
+  win_start_ = std::chrono::steady_clock::now();
+  win_work_ = 0.0;
   // Must match PEARL_BATCH_REGIONS: the fold launches one CUDA block per region
   // and the host sizes its batch scratch to this.
   const uint32_t BATCH = PEARL_BATCH_REGIONS;
@@ -227,7 +234,21 @@ void PearlCore::SearchLoop() {
     // attempts * DAF = multiply-accumulates, which is the unit the network and
     // every other miner reports in. Dividing raw attempts by 1e12 treated one
     // attempt as one hash and under-reported by 65536x at the mainnet profile.
-    if (attempts > 0) EmitHashrate((double)attempts * PEARL_DAF(profile_) / 1e12);
+    //
+    // And then DIVIDE BY TIME. This emitted work-per-batch for a while, which is
+    // not a rate at all: it read as a constant to the last digit no matter how
+    // fast the card ran, and any number taken from it was meaningless. Averaged
+    // over a short window so a single slow batch does not spike it.
+    if (attempts > 0) {
+      const auto now = std::chrono::steady_clock::now();
+      win_work_ += (double)attempts * PEARL_DAF(profile_);
+      const double win = std::chrono::duration<double>(now - win_start_).count();
+      if (win >= 0.5) {
+        EmitHashrate(win_work_ / win / 1e12);
+        win_work_ = 0.0;
+        win_start_ = now;
+      }
+    }
     if (found) EmitHit(r, job_id);
   }
 }
