@@ -47,7 +47,8 @@ void pearl_host_set_job(void *ctx, const uint8_t *header, const uint8_t *target)
 // found; returns false when the batch is exhausted with no hit. `attempts`
 // receives the number of nonces tried, for the hashrate figure.
 bool pearl_host_search(void *ctx, uint64_t nonce_base, uint32_t batch,
-                       PearlSearchResult *out, uint64_t *attempts);
+                       PearlSearchResult *out, uint64_t *attempts, char *err,
+                       size_t err_len);
 }
 
 namespace {
@@ -127,12 +128,14 @@ Napi::Value PearlCore::SetJob(const Napi::CallbackInfo &info) {
   }
 
   // The target arrives as a BigInt; render it to 32 big-endian bytes, which is
-  // what the device comparison expects.
+  // what the device comparison expects. ToWords takes (sign_bit, word_count,
+  // words) — little-endian 64-bit words, so word 0 is the LEAST significant and
+  // the byte loop below reverses that into big-endian.
   uint8_t target[PEARL_HASH_BYTES] = {0};
-  bool lossless = false;
+  int sign_bit = 0;
   uint64_t words[4] = {0, 0, 0, 0};
   size_t word_count = 4;
-  job.Get("target").As<Napi::BigInt>().ToWords(&lossless, nullptr, &word_count, words);
+  job.Get("target").As<Napi::BigInt>().ToWords(&sign_bit, &word_count, words);
   for (size_t w = 0; w < 4; w++) {
     for (int b = 0; b < 8; b++) {
       size_t idx = PEARL_HASH_BYTES - 1 - (w * 8 + b);
@@ -189,7 +192,16 @@ void PearlCore::SearchLoop() {
     }
     PearlSearchResult r;
     uint64_t attempts = 0;
-    bool found = pearl_host_search(ctx_, nonce, BATCH, &r, &attempts);
+    char err[256] = {0};
+    bool found = pearl_host_search(ctx_, nonce, BATCH, &r, &attempts, err, sizeof(err));
+    // A CUDA fault mid-search used to vanish here: the loop simply produced no
+    // hits and no hashrate, which looks exactly like bad luck. Surface it and
+    // stop, rather than spinning on a dead device for ever.
+    if (err[0]) {
+      EmitError(err);
+      running_ = false;
+      return;
+    }
     nonce += BATCH;
     if (attempts > 0) EmitHashrate((double)attempts / 1e12);
     if (found) EmitHit(r, job_id);

@@ -258,7 +258,8 @@ extern "C" void pearl_host_set_job(void *handle, const uint8_t *header,
 
 extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
                                   uint32_t batch, PearlSearchResult *out,
-                                  uint64_t *attempts) {
+                                  uint64_t *attempts, char *err,
+                                  size_t err_len) {
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (attempts) *attempts = 0;
   if (!ctx || !ctx->haveJob || !out) return false;
@@ -279,6 +280,16 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
     pearl_finalize<<<1, 1>>>(ctx->dASeed, ctx->dJackpot, ctx->dTarget, ctx->dHash,
                              ctx->dIsShare);
     cudaMemcpy(&isShare, ctx->dIsShare, sizeof(int), cudaMemcpyDeviceToHost);
+
+    // Check once per region rather than per kernel: a launch failure here means
+    // the device is gone (driver reset, ECC fault, another process took the
+    // card), and continuing would report a healthy zero-hit search for ever.
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) {
+      if (err && err_len) snprintf(err, err_len, "CUDA error during search: %s",
+                                   cudaGetErrorString(e));
+      return false;
+    }
 
     if (attempts) (*attempts)++;
     if (isShare) {
