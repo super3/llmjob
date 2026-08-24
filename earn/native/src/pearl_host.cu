@@ -271,10 +271,14 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   const size_t smem = threads * sizeof(uint32_t);
 
   for (uint32_t i = 0; i < batch; i++) {
+    // nonce_base + i IS the search variable — see the kernel. Passing a constant
+    // here makes every attempt identical and the miner a very expensive way to
+    // compute one number.
     pearl_gemm_fold<<<1, threads, smem>>>(
         ctx->dA, ctx->dB, ctx->dEAL, ctx->dEAR, ctx->dEBL, ctx->dEBR,
         ctx->dRows, ctx->dCols, ctx->profile.rows_count, ctx->profile.cols_count,
-        k, rank, chunks, ctx->dJackpot);
+        ctx->profile.m, ctx->profile.n, k, rank, chunks, nonce_base + i,
+        ctx->dJackpot);
 
     int isShare = 0;
     pearl_finalize<<<1, 1>>>(ctx->dASeed, ctx->dJackpot, ctx->dTarget, ctx->dHash,

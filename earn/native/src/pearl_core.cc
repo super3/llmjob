@@ -181,7 +181,11 @@ Napi::Value PearlCore::On(const Napi::CallbackInfo &info) {
 // the pool replaces jobs every few seconds and grinding a stale one earns
 // nothing.
 void PearlCore::SearchLoop() {
-  const uint32_t BATCH = 1u << 16;
+  // Measured on a 4090: 65536 regions took ~15 s, so a batch that size makes the
+  // miner deaf to a job switch for fifteen seconds and reports hashrate four
+  // times a minute. The pool replaces jobs every few seconds; grinding a stale
+  // one earns nothing.
+  const uint32_t BATCH = 1u << 12;
   uint64_t nonce = 0;
   while (running_) {
     std::string job_id;

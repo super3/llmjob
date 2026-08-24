@@ -227,12 +227,21 @@ extern "C" __global__ void pearl_gemm_fold(
     const int8_t *__restrict__ E_BR,  // [rank, k]
     const uint32_t *__restrict__ rows_pattern,
     const uint32_t *__restrict__ cols_pattern, uint32_t rows_count,
-    uint32_t cols_count, uint32_t k, uint32_t rank, uint32_t chunks,
-    uint32_t *__restrict__ jackpot_out) {
+    uint32_t cols_count, uint32_t m, uint32_t n, uint32_t k, uint32_t rank,
+    uint32_t chunks, uint64_t region, uint32_t *__restrict__ jackpot_out) {
   extern __shared__ uint32_t smem[];  // [blockDim.x] partial XORs
 
   const uint32_t tid = threadIdx.x;
   const uint32_t tile_cells = rows_count * cols_count;
+
+  // WHERE THE SEARCH ACTUALLY HAPPENS. The tile pattern is fixed by the
+  // profile, so what varies between attempts is WHERE in the output that tile
+  // is read from. Without this offset every launch recomputes an identical
+  // transcript and the miner is not searching at all — it grinds the GPU at
+  // full utilisation producing one value over and over. That is exactly what
+  // the first on-device run did: 65536 "attempts", one distinct result.
+  const uint32_t row_off = (uint32_t)(region % m);
+  const uint32_t col_off = (uint32_t)((region / m) % n);
 
   uint32_t jackpot[PEARL_JACKPOT_BUCKETS];
 #pragma unroll
@@ -244,8 +253,8 @@ extern "C" __global__ void pearl_gemm_fold(
 
     // Each thread walks a strided share of the tile's cells.
     for (uint32_t cell = tid; cell < tile_cells; cell += blockDim.x) {
-      const uint32_t r = rows_pattern[cell / cols_count];
-      const uint32_t c = cols_pattern[cell % cols_count];
+      const uint32_t r = (rows_pattern[cell / cols_count] + row_off) % m;
+      const uint32_t c = (cols_pattern[cell % cols_count] + col_off) % n;
 
       int32_t acc = 0;
       for (uint32_t kk = k0; kk < k0 + rank && kk < k; kk++) {
