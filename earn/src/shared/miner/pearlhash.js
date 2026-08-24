@@ -262,6 +262,57 @@ function shareBound(target, profile) {
   return t * factor;
 }
 
+// A tile offset is VALID only if it has the pattern's own bits clear.
+//
+// The verifier rebuilds the pattern from a submitted proof's row indices and
+// checks the offset with PeriodicPattern::offset_is_valid, which reduces the
+// offset modulo each (stride, length) dimension and requires it to stay below
+// the stride. For these patterns that reduces exactly to (offset & mask) == 0,
+// where mask is the OR of the pattern's own values.
+//
+// Searching invalid offsets is not merely wasteful, it is unusable: the share
+// comes back as "offset N is not valid for pattern". Only 1 in 32 regions
+// qualifies, and the valid tiles PARTITION the grid rather than overlapping.
+const ROWS_MASK = ROWS_PATTERN.reduce((a, b) => a | b, 0);
+const COLS_MASK = COLS_PATTERN.reduce((a, b) => a | b, 0);
+
+function offsetIsValid(offset, mask) {
+  return (offset & mask) === 0;
+}
+
+// The i-th offset with (offset & mask) == 0: deposit i's bits into the
+// positions the mask leaves free.
+function expandOffset(i, mask) {
+  let out = 0;
+  let bit = 1;
+  let rest = i;
+  while (rest) {
+    if (!(mask & bit)) {
+      if (rest & 1) out |= bit;
+      rest >>>= 1;
+    }
+    bit <<= 1;
+  }
+  return out >>> 0;
+}
+
+// A region index -> the tile it names. Row and column offsets are enumerated
+// over VALID offsets only, so this is dense in the submittable space.
+function regionToTile(region, profile) {
+  const p = profile || PROFILE;
+  const rowsValid = p.m / (p.rows || ROWS_PATTERN).length;
+  const colsValid = p.n / (p.cols || COLS_PATTERN).length;
+  const rowOff = expandOffset(region % rowsValid, ROWS_MASK);
+  const colOff = expandOffset(Math.floor(region / rowsValid) % colsValid, COLS_MASK);
+  return {
+    rowOff,
+    colOff,
+    // The pattern's bits are clear in a valid offset, so this is an OR.
+    rows: (p.rows || ROWS_PATTERN).map((r) => rowOff | r),
+    cols: (p.cols || COLS_PATTERN).map((c) => colOff | c),
+  };
+}
+
 const CONFIG_BYTES = 52;
 const JACKPOT_BUCKETS = 16;
 const ROTL_BITS = 13;
@@ -340,6 +391,7 @@ module.exports = {
   PROFILE, ROWS_PATTERN, COLS_PATTERN,
   SEED_SALT_A, SEED_SALT_B, bindMessage,
   PENALTY_BASE_RANK, penalizedAdjustmentFactor, shareBound, seedDerivationCode,
+  ROWS_MASK, COLS_MASK, offsetIsValid, expandOffset, regionToTile,
   patternToList, patternFromList, patternToBytes, difficultyAdjustmentFactor,
   CONFIG_BYTES,
   JACKPOT_BUCKETS,

@@ -152,7 +152,9 @@ struct Ctx {
   uint8_t *dHashes = nullptr;     // [PEARL_MAX_HITS][32] — hits only
   uint32_t *dHitCount = nullptr;  // one counter per batch
   uint32_t *dHitIndex = nullptr;  // [PEARL_MAX_HITS]
-  uint32_t colBatch = 1;          // column offsets per launch
+  uint32_t colBatch = 1;          // valid column offsets per launch
+  uint32_t rowsValid = 1;         // count of valid row offsets
+  uint32_t colsValid = 1;         // count of valid column offsets
   std::vector<uint32_t> hHitIndex;
   uint32_t batch = 0;
   uint32_t *dJobKey = nullptr;
@@ -341,9 +343,14 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   //
   // Clamped so a silly profile cannot ask for a partial table larger than the
   // card, and to at least 1 so the batch is never empty.
+  // Only offsets with the pattern's bits clear are valid, so there are
+  // m/PEARL_ROWS_COUNT of them down the rows and n/PEARL_COLS_COUNT across the
+  // columns. Searching the other 31/32 produced hashes no pool would take.
+  ctx->rowsValid = profile->m / PEARL_ROWS_COUNT;
+  ctx->colsValid = profile->n / PEARL_COLS_COUNT;
   ctx->colBatch = profile->col_batch ? profile->col_batch : 1u;
-  if (ctx->colBatch > profile->n) ctx->colBatch = profile->n;
-  ctx->batch = ctx->colBatch * profile->m;
+  if (ctx->colBatch > ctx->colsValid) ctx->colBatch = ctx->colsValid;
+  ctx->batch = ctx->colBatch * ctx->rowsValid;
   ctx->hHitIndex.resize(PEARL_MAX_HITS);
   // Every distinct partial computed once per batch instead of four times.
   // One int32 per (column group, chunk, row): the producer XORs the eight
@@ -565,8 +572,9 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   const uint32_t col_groups = ctx->colBatch;
   const int threads = 256;
   const int warps_per_block = threads / 32;
+  // A valid-offset INDEX; the kernel expands it into an actual offset.
   const uint32_t col_off =
-      (uint32_t)((nonce_base / ctx->profile.m) % ctx->profile.n);
+      (uint32_t)((nonce_base / ctx->rowsValid) % ctx->colsValid);
 
   // Per-stage timing, enabled by setting PEARL_PROFILE. Two rounds of reasoning
   // about which stage dominated were wrong -- the A-reuse and BLAKE3 register
@@ -600,7 +608,7 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   if (prof) cudaEventRecord(ev[1]);
   const uint32_t regions_per_block = warps_per_block * PEARL_REGIONS_PER_WARP;
   pearl_gemm_fold<<<(regions + regions_per_block - 1) / regions_per_block, threads>>>(
-      ctx->dD, ctx->dRows, PEARL_ROWS_COUNT, PEARL_COLS_COUNT, ctx->profile.m,
+      ctx->dD, ctx->dRows, PEARL_ROWS_COUNT, PEARL_COLS_COUNT, ctx->rowsValid,
       chunks, nonce_base, ctx->dJackpot);
 
   if (prof) cudaEventRecord(ev[2]);

@@ -215,7 +215,9 @@ void PearlCore::SearchLoop() {
   // A region is (row offset, column offset), so one choice of operands offers
   // exactly m*n of them. Past that the search repeats itself, so the operands
   // are re-drawn under a fresh salt and the region index starts over.
-  const uint64_t span = (uint64_t)profile_.m * (uint64_t)profile_.n;
+  // Valid offsets only: m/rows_count down, n/cols_count across.
+  const uint64_t span = ((uint64_t)profile_.m / PEARL_ROWS_COUNT)
+                        * ((uint64_t)profile_.n / PEARL_COLS_COUNT);
   uint64_t salt = 0;
   while (running_) {
     std::string job_id;

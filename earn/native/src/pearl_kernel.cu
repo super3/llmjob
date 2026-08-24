@@ -653,10 +653,14 @@ extern "C" __global__ void pearl_partials(const int8_t *__restrict__ Aprime,
   for (uint32_t cg = 0; cg < col_groups; cg++) {
     // Only eight distinct column slices exist per group and every thread in the
     // block wants the same ones, so they stay resident in cache.
+    // col_off is a valid-offset INDEX here, not an offset. Expanding it gives
+    // an offset with the column pattern's bits clear, so the tile column is a
+    // bitwise OR and needs no modulo.
+    const uint32_t coff = pearl_expand_offset(col_off + cg, PEARL_COLS_MASK);
     const int8_t *bc[PEARL_COLS_COUNT];
 #pragma unroll
     for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) {
-      const uint32_t cc = (cols_pattern[c] + col_off + cg) % n;
+      const uint32_t cc = coff | cols_pattern[c];
       bc[c] = Bprime + (size_t)cc * k + k0;
     }
 
@@ -730,9 +734,10 @@ extern "C" __global__ void pearl_gemm_fold(
   const uint64_t slot =
       ((uint64_t)blockIdx.x * warps_per_block + warp) * PEARL_REGIONS_PER_WARP
       + (active ? sub : 0u);
+  // m here is the number of VALID row offsets, not the row count.
   const uint32_t cg = (uint32_t)(slot / m);
-  const uint32_t row_off = (uint32_t)(slot % m);
-  const uint32_t r = (rows_pattern[ri] + row_off) % m;
+  const uint32_t row_off = pearl_expand_offset((uint32_t)(slot % m), PEARL_ROWS_MASK);
+  const uint32_t r = row_off | rows_pattern[ri];
 
   uint32_t jackpot[PEARL_JACKPOT_BUCKETS];
 #pragma unroll
