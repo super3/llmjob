@@ -68,8 +68,8 @@ extern "C" __global__ void pearl_partials(const int8_t *Aprime, const int8_t *Bp
                                           int32_t *D);
 extern "C" __global__ void pearl_gemm_fold(
     const int32_t *D, const uint32_t *rows_pattern, uint32_t rows_count,
-    uint32_t cols_count, uint32_t m, uint32_t chunks, uint64_t region_base,
-    uint32_t *jackpot_out);
+    uint32_t cols_count, uint32_t m, uint32_t rows_valid, uint32_t chunks,
+    uint64_t region_base, uint32_t *jackpot_out);
 extern "C" __global__ void pearl_finalize_many(const uint32_t *a_seed,
                                                const uint32_t *jackpots,
                                                uint32_t count,
@@ -608,8 +608,8 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   if (prof) cudaEventRecord(ev[1]);
   const uint32_t regions_per_block = warps_per_block * PEARL_REGIONS_PER_WARP;
   pearl_gemm_fold<<<(regions + regions_per_block - 1) / regions_per_block, threads>>>(
-      ctx->dD, ctx->dRows, PEARL_ROWS_COUNT, PEARL_COLS_COUNT, ctx->rowsValid,
-      chunks, nonce_base, ctx->dJackpot);
+      ctx->dD, ctx->dRows, PEARL_ROWS_COUNT, PEARL_COLS_COUNT, ctx->profile.m,
+      ctx->rowsValid, chunks, nonce_base, ctx->dJackpot);
 
   if (prof) cudaEventRecord(ev[2]);
   cudaMemsetAsync(ctx->dHitCount, 0, sizeof(uint32_t));

@@ -713,8 +713,8 @@ extern "C" __global__ void pearl_partials(const int8_t *__restrict__ Aprime,
 extern "C" __global__ void pearl_gemm_fold(
     const int32_t *__restrict__ D,
     const uint32_t *__restrict__ rows_pattern, uint32_t rows_count,
-    uint32_t cols_count, uint32_t m, uint32_t chunks, uint64_t region_base,
-    uint32_t *__restrict__ jackpot_out) {
+    uint32_t cols_count, uint32_t m, uint32_t rows_valid, uint32_t chunks,
+    uint64_t region_base, uint32_t *__restrict__ jackpot_out) {
   const uint32_t lane = threadIdx.x & 31u;
   const uint32_t warp = threadIdx.x >> 5;
   const uint32_t warps_per_block = blockDim.x >> 5;
@@ -734,9 +734,12 @@ extern "C" __global__ void pearl_gemm_fold(
   const uint64_t slot =
       ((uint64_t)blockIdx.x * warps_per_block + warp) * PEARL_REGIONS_PER_WARP
       + (active ? sub : 0u);
-  // m here is the number of VALID row offsets, not the row count.
-  const uint32_t cg = (uint32_t)(slot / m);
-  const uint32_t row_off = pearl_expand_offset((uint32_t)(slot % m), PEARL_ROWS_MASK);
+  // rows_valid decomposes the region index; m stays the STRIDE of the partial
+  // table, which is indexed by the actual row. Conflating the two is silent:
+  // the fold reads the wrong partials and every hash differs.
+  const uint32_t cg = (uint32_t)(slot / rows_valid);
+  const uint32_t row_off =
+      pearl_expand_offset((uint32_t)(slot % rows_valid), PEARL_ROWS_MASK);
   const uint32_t r = row_off | rows_pattern[ri];
 
   uint32_t jackpot[PEARL_JACKPOT_BUCKETS];
