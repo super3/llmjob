@@ -206,7 +206,18 @@ void PearlCore::SearchLoop() {
       running_ = false;
       return;
     }
-    nonce += BATCH;
+    // Advance by what was actually consumed, NOT by the batch size. The search
+    // returns the moment it finds a share, so a batch that hits at index 0 has
+    // tried exactly one region — and skipping ahead a whole batch throws away
+    // the other 4095 unexamined.
+    //
+    // Measured on a 4090 before this fix: with a permissive target every batch
+    // hit immediately, so every reported nonce was a multiple of BATCH. BATCH
+    // being a multiple of m then pinned row_off at 0 for ever and the entire
+    // search collapsed to the 64 distinct column offsets. Against a real target
+    // batches rarely hit and attempts == BATCH, so this changes nothing there
+    // except that found work is no longer discarded.
+    nonce += (attempts > 0 ? attempts : BATCH);
     if (attempts > 0) EmitHashrate((double)attempts / 1e12);
     if (found) EmitHit(r, job_id);
   }
