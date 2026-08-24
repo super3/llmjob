@@ -48,7 +48,8 @@ extern "C" __global__ void pearl_gemm_fold(
     const int8_t *A, const int8_t *B, const int8_t *E_AL, const int8_t *E_AR,
     const int8_t *E_BL, const int8_t *E_BR, const uint32_t *rows_pattern,
     const uint32_t *cols_pattern, uint32_t rows_count, uint32_t cols_count,
-    uint32_t k, uint32_t rank, uint32_t chunks, uint32_t *jackpot_out);
+    uint32_t m, uint32_t n, uint32_t k, uint32_t rank, uint32_t chunks,
+    uint64_t region, uint32_t *jackpot_out);
 extern "C" __global__ void pearl_finalize(const uint32_t *a_seed,
                                           const uint32_t *jackpot,
                                           const uint8_t *target_be,
