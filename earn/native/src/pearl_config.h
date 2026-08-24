@@ -180,7 +180,7 @@ typedef struct PearlProfile {
 // warps re-reads the same sixteen columns for every column group. That fits in
 // L2, but it still wants roughly 2.9 TB/s of L2 bandwidth, which is where the
 // tensor-core kernel was actually stuck.
-#define PEARL_WMMA_ROW_TILES 4
+#define PEARL_WMMA_ROW_TILES 8
 
 #define PEARL_SEED_SALTED 0u
 #define PEARL_SEED_LEGACY 1u
