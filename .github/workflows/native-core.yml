@@ -54,10 +54,13 @@ jobs:
       # A GPU-less runner still installs the compiler and headers; only the
       # runtime components are needed to build.
       - name: Install the CUDA toolkit
-        uses: Jimver/cuda-toolkit@v0.2.19
+        uses: Jimver/cuda-toolkit@v0.2.36
         id: cuda
         with:
-          cuda: '12.8.0'
+          # 12.8 is the first toolkit that knows sm_120 (Blackwell). It needs
+          # action v0.2.36+: older tags carry a version table that predates it and
+          # answer 'Version not available'.
+          cuda: '12.8.1'
           method: 'network'
           sub-packages: '["nvcc", "cudart", "cudart-dev", "nvrtc", "nvrtc-dev"]'
 
