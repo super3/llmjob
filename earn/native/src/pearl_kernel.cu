@@ -433,8 +433,28 @@ extern "C" __global__ void pearl_gemm_fold(
     int32_t acc = 0;
     if (active) {
       const uint32_t lim = (k0 + rank <= k) ? rank : (k - k0);
+      // Vectorised loads. The kernel is memory bound, not compute bound: two
+      // int32 loads per multiply-accumulate is ~5.9 TB/s at the rate this runs,
+      // which is the 4090's L2 ceiling. int4 fetches four elements per
+      // instruction and quarters the request count.
+      //
+      // k0 is a multiple of rank (128) and the buffers come from cudaMalloc, so
+      // both pointers are 16-byte aligned whenever lim is a multiple of 4. The
+      // scalar tail covers any profile where it is not.
+      uint32_t t = 0;
+      if ((lim & 3u) == 0u) {
+        const int4 *a4 = reinterpret_cast<const int4 *>(arow + k0);
+        const int4 *b4 = reinterpret_cast<const int4 *>(bcol + k0);
+        const uint32_t quads = lim >> 2;
 #pragma unroll 4
-      for (uint32_t t = 0; t < lim; t++) acc += arow[k0 + t] * bcol[k0 + t];
+        for (uint32_t q = 0; q < quads; q++) {
+          const int4 av = a4[q];
+          const int4 bv = b4[q];
+          acc += av.x * bv.x + av.y * bv.y + av.z * bv.z + av.w * bv.w;
+        }
+        t = lim;
+      }
+      for (; t < lim; t++) acc += arow[k0 + t] * bcol[k0 + t];
     }
     // Warp-wide XOR. Inactive lanes contribute zero, which is the XOR identity.
     uint32_t x = (uint32_t)acc;
