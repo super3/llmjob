@@ -150,6 +150,18 @@ typedef struct PearlProfile {
 #define PEARL_ROWS_MASK 72u   // bits 3 and 6
 #define PEARL_COLS_MASK 41u   // bits 0, 3 and 5
 
+// How many rows of A one thread carries.
+//
+// The partials kernel is 86% of a batch and runs at about an eighth of the
+// card's __dp4a peak, because it issues one 16-byte load of B for every four
+// multiply-accumulate instructions. Carrying several rows against the same
+// eight B columns multiplies that ratio directly: at two rows it is eight
+// __dp4a per load, at four it is sixteen.
+//
+// The cost is registers -- each row holds a whole k-slice, so this trades
+// occupancy for arithmetic intensity.
+#define PEARL_ROWS_PER_THREAD 2
+
 #define PEARL_MAX_A_QUADS 8
 
 // How many regions share one warp in the fold. The producer collapses each
