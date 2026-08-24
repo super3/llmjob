@@ -103,6 +103,11 @@ typedef struct PearlProfile {
   uint32_t col_batch;
 } PearlProfile;
 
+// How many 16-byte groups of an A row slice a thread can hold in registers.
+// 8 covers rank 128, the mandated profile. A rank needing more falls back to
+// re-reading the slice per column group, which is correct but slower.
+#define PEARL_MAX_A_QUADS 8
+
 #define PEARL_SEED_SALTED 0u
 #define PEARL_SEED_LEGACY 1u
 

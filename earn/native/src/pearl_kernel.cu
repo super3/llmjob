@@ -577,78 +577,91 @@ extern "C" __global__ void pearl_partials(const int8_t *__restrict__ Aprime,
   // The B side is the opposite: only eight distinct column slices exist per
   // batch and every thread wants them, so they stay resident in cache.
   uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-  const uint64_t per_group = (uint64_t)chunks * m;
-  const uint64_t total = per_group * col_groups;
+  const uint64_t total = (uint64_t)chunks * m;
   if (idx >= total) return;
 
-  const uint32_t cg = (uint32_t)(idx / per_group);
-  const uint64_t within = idx - (uint64_t)cg * per_group;
-  const uint32_t r = (uint32_t)(within % m);
-  const uint32_t chunk = (uint32_t)(within / m);
+  const uint32_t r = (uint32_t)(idx % m);
+  const uint32_t chunk = (uint32_t)(idx / m);
   const uint32_t k0 = chunk * rank;
   const uint32_t lim = (k0 + rank <= k) ? rank : (k - k0);
 
   const int8_t *__restrict__ ar = Aprime + (size_t)r * k + k0;
 
-  const int8_t *bc[PEARL_COLS_COUNT];
+  // Hold this row's k-slice in REGISTERS and reuse it across every column
+  // group. It used to be re-read once per group, which at 64 groups over a
+  // 12.6 MiB operand is about 805 MiB of traffic per batch on a card with
+  // roughly 1 TB/s — where the time went once the fold stopped dominating.
+  //
+  // The loops below are bounded by the compile-time PEARL_MAX_A_QUADS and
+  // break on the runtime count, rather than being bounded by the runtime count
+  // directly. That matters: a runtime bound makes `av` dynamically indexed, and
+  // nvcc then spills the whole array to local memory, which is exactly the
+  // traffic this is trying to avoid.
+  const uint32_t quads = lim >> 4;
+  const bool vectorised = ((lim & 15u) == 0u) && quads <= PEARL_MAX_A_QUADS;
+
+  int4 av[PEARL_MAX_A_QUADS];
+  if (vectorised) {
+    const int4 *a4 = reinterpret_cast<const int4 *>(ar);
 #pragma unroll
-  for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) {
-    const uint32_t cc = (cols_pattern[c] + col_off + cg) % n;
-    bc[c] = Bprime + (size_t)cc * k + k0;
+    for (uint32_t q = 0; q < PEARL_MAX_A_QUADS; q++) {
+      if (q >= quads) break;
+      av[q] = a4[q];
+    }
   }
 
-  int32_t acc[PEARL_COLS_COUNT];
+  for (uint32_t cg = 0; cg < col_groups; cg++) {
+    // Only eight distinct column slices exist per group and every thread in the
+    // block wants the same ones, so they stay resident in cache.
+    const int8_t *bc[PEARL_COLS_COUNT];
 #pragma unroll
-  for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) acc[c] = 0;
+    for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) {
+      const uint32_t cc = (cols_pattern[c] + col_off + cg) % n;
+      bc[c] = Bprime + (size_t)cc * k + k0;
+    }
 
-  // Sixteen A elements per iteration, each reused across all eight columns: one
-  // 16-byte load of A and eight of B feed 128 multiply-accumulates, issued as
-  // __dp4a (four int8 MACs per instruction).
-  //
-  // The int8 operands are what make this possible. The k-slices start at
-  // r*k + chunk*rank, and both k and rank are multiples of 16 at every profile
-  // the host accepts, so the int4 loads are aligned.
-  uint32_t t = 0;
-  if ((lim & 15u) == 0u) {
-    const uint32_t quads = lim >> 4;
-    const int4 *a4 = reinterpret_cast<const int4 *>(ar);
-    for (uint32_t q = 0; q < quads; q++) {
-      const int4 av = a4[q];
-      const int32_t *aw = reinterpret_cast<const int32_t *>(&av);
+    int32_t acc[PEARL_COLS_COUNT];
 #pragma unroll
-      for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) {
-        const int4 bv = reinterpret_cast<const int4 *>(bc[c])[q];
-        const int32_t *bw = reinterpret_cast<const int32_t *>(&bv);
-        int32_t s = acc[c];
+    for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) acc[c] = 0;
+
+    if (vectorised) {
+      // One 16-byte load of B per column feeds 16 multiply-accumulates against
+      // the A slice already in registers, issued as __dp4a (four int8 MACs
+      // each). The int8 operands are what make this possible at all.
 #pragma unroll
-        for (int w = 0; w < 4; w++) s = __dp4a(aw[w], bw[w], s);
-        acc[c] = s;
+      for (uint32_t q = 0; q < PEARL_MAX_A_QUADS; q++) {
+        if (q >= quads) break;
+        const int32_t *aw = reinterpret_cast<const int32_t *>(&av[q]);
+#pragma unroll
+        for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) {
+          const int4 bv = reinterpret_cast<const int4 *>(bc[c])[q];
+          const int32_t *bw = reinterpret_cast<const int32_t *>(&bv);
+          int32_t s = acc[c];
+#pragma unroll
+          for (int w = 0; w < 4; w++) s = __dp4a(aw[w], bw[w], s);
+          acc[c] = s;
+        }
+      }
+    } else {
+      for (uint32_t t = 0; t < lim; t++) {
+        const int32_t a = (int32_t)ar[t];
+#pragma unroll
+        for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) acc[c] += a * bc[c][t];
       }
     }
-    t = lim;
-  }
-  for (; t < lim; t++) {
-    const int32_t a = (int32_t)ar[t];
-#pragma unroll
-    for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) acc[c] += a * bc[c][t];
-  }
 
-  // XOR the eight columns together HERE rather than storing them.
-  //
-  // The transcript folds a tile by XOR, and XOR is associative and commutative:
-  //
-  //   tile_xor = XOR over (ri, ci) of C[r_ri][c_ci]
-  //            = XOR over ri of ( XOR over ci of C[r_ri][c_ci] )
-  //
-  // Every column of a given row is in the tile, so the inner XOR depends only
-  // on the row -- which means it can be collapsed at the producer. That makes
-  // the partial table eight times smaller and, more to the point, cuts the
-  // fold's memory traffic by eight: it was reading about 805 MiB per batch at
-  // roughly 400 GB/s, which is where a 4090 starts to run out of bandwidth.
-  uint32_t x = 0u;
+    // XOR the eight columns together HERE rather than storing them. The
+    // transcript folds a tile by XOR, and XOR is associative and commutative:
+    //
+    //   tile_xor = XOR over ri of ( XOR over ci of C[r_ri][c_ci] )
+    //
+    // Every column of a row is in the tile, so the inner XOR depends only on
+    // the row and can be collapsed at the producer.
+    uint32_t x = 0u;
 #pragma unroll
-  for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) x ^= (uint32_t)acc[c];
-  D[((size_t)cg * chunks + chunk) * m + r] = (int32_t)x;
+    for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) x ^= (uint32_t)acc[c];
+    D[((size_t)cg * chunks + chunk) * m + r] = (int32_t)x;
+  }
 }
 
 // The fold is now a gather. Every product it needs is already in D, so a region

@@ -519,7 +519,10 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   // One thread per (chunk, row) — each already produces ALL of that row's
   // columns, so multiplying by the column count launched eight times the
   // threads the kernel indexes and seven eighths of them returned immediately.
-  const uint64_t npart = (uint64_t)chunks * ctx->profile.m * col_groups;
+  // One thread per (chunk, row): the column groups are a loop INSIDE the
+  // kernel now, so the A slice each thread loads is reused across all of them
+  // instead of being re-read once per group.
+  const uint64_t npart = (uint64_t)chunks * ctx->profile.m;
   pearl_partials<<<(unsigned)((npart + threads - 1) / threads), threads>>>(
       ctx->dAp, ctx->dBp, ctx->dCols, PEARL_COLS_COUNT, ctx->profile.m,
       ctx->profile.n, k, rank, chunks, col_off, col_groups, ctx->dD);
