@@ -37,6 +37,19 @@
 // switch is picked up promptly.
 #define PEARL_BATCH_REGIONS 4096
 
+// The difficulty adjustment factor: tile_size * dot_product_length.
+//
+// The protocol scales the jackpot bound "in proportion to the work one attempt
+// costs", so a reported hashrate is NOT attempts per second — it is
+// multiply-accumulates per second, which is why competing miners quote hundreds
+// of TH/s on a card that could never perform 1e14 BLAKE3 hashes. One attempt
+// over a 4x8 tile with k = 2048 costs 32 * 2048 = 65536 MACs, and counts for
+// exactly that much difficulty.
+//
+// Reporting attempts as though they were hashes under-reported this miner by
+// four and a half orders of magnitude.
+#define PEARL_DAF(profile) ((double)(PEARL_ROWS_COUNT * PEARL_COLS_COUNT) * (double)(profile).k)
+
 // The mandated mainnet profile. rank=128 is the post-softfork value; mining any
 // other rank produces work the network does not credit.
 // The tile index sets. These are the reference implementation's own defaults —

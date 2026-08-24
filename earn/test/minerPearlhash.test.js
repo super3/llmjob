@@ -3,7 +3,7 @@
 const {
   PROFILE, CONFIG_BYTES, JACKPOT_BUCKETS, ROTL_BITS,
   buildConfig52, leBytesToBigInt, meetsTarget, rotl13, rankMatches,
-  patternToList, patternFromList, patternToBytes,
+  patternToList, patternFromList, patternToBytes, difficultyAdjustmentFactor,
 } = require('../src/shared/miner/pearlhash');
 
 describe('PROFILE', () => {
@@ -143,6 +143,31 @@ describe('rankMatches', () => {
     expect(rankMatches(512)).toBe(false);
     expect(rankMatches(128, { rank: 256 })).toBe(false);
     expect(rankMatches(256, { rank: 256 })).toBe(true);
+  });
+});
+
+describe('difficultyAdjustmentFactor', () => {
+  // The protocol scales the jackpot bound in proportion to the work one attempt
+  // costs, so a hashrate is MACs per second, not attempts per second. Reporting
+  // attempts as hashes under-reported this miner by 65536x at mainnet.
+  test('is tile size times dot product length', () => {
+    expect(difficultyAdjustmentFactor()).toBe(4 * 8 * 2048);
+    expect(difficultyAdjustmentFactor()).toBe(65536);
+  });
+
+  // The sanity check that identified the unit in the first place: a competing
+  // miner's 296 TH/s is ~45% of an RTX 4090's int8 tensor-core peak, which is a
+  // plausible GEMM efficiency. As attempts per second it would have required
+  // 3e14 BLAKE3 hashes a second, which no GPU can do.
+  test("makes a competitor quoted hashrate physically plausible", () => {
+    const attemptsPerSec = 2.96e14 / difficultyAdjustmentFactor();
+    expect(attemptsPerSec).toBeLessThan(1e10);
+    expect(attemptsPerSec).toBeGreaterThan(1e9);
+  });
+
+  test('scales with k and with the tile', () => {
+    expect(difficultyAdjustmentFactor({ ...PROFILE, k: 4096 })).toBe(4 * 8 * 4096);
+    expect(difficultyAdjustmentFactor({ k: 256, rows: [0, 8], cols: [0, 1] })).toBe(2 * 2 * 256);
   });
 });
 

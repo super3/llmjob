@@ -69,6 +69,7 @@ class PearlCore : public Napi::ObjectWrap<PearlCore> {
   void EmitHashrate(double th_per_sec);
   void EmitError(const std::string &msg);
 
+  PearlProfile profile_ = PEARL_MAINNET_PROFILE;
   void *ctx_ = nullptr;
   std::thread worker_;
   std::atomic<bool> running_{false};
@@ -99,6 +100,7 @@ PearlCore::PearlCore(const Napi::CallbackInfo &info)
     profile.n = u32("n", profile.n);
   }
 
+  profile_ = profile;
   char err[256] = {0};
   ctx_ = pearl_host_create(&profile, err, sizeof(err));
   if (!ctx_) {
@@ -218,7 +220,10 @@ void PearlCore::SearchLoop() {
     // batches rarely hit and attempts == BATCH, so this changes nothing there
     // except that found work is no longer discarded.
     nonce += (attempts > 0 ? attempts : BATCH);
-    if (attempts > 0) EmitHashrate((double)attempts / 1e12);
+    // attempts * DAF = multiply-accumulates, which is the unit the network and
+    // every other miner reports in. Dividing raw attempts by 1e12 treated one
+    // attempt as one hash and under-reported by 65536x at the mainnet profile.
+    if (attempts > 0) EmitHashrate((double)attempts * PEARL_DAF(profile_) / 1e12);
     if (found) EmitHit(r, job_id);
   }
 }

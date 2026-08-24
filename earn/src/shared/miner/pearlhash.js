@@ -138,6 +138,19 @@ const PROFILE = {
   n: 4096,
 };
 
+// The difficulty adjustment factor: tile size x dot product length.
+//
+// The protocol scales the jackpot bound in proportion to the work one attempt
+// costs, so a hashrate is multiply-accumulates per second, not attempts per
+// second. That is why competing miners quote hundreds of TH/s on a card that
+// could not perform 1e14 BLAKE3 hashes a second: 296 TH/s of MACs is about 45%
+// of an RTX 4090's int8 tensor-core peak, which is exactly what a well-tuned
+// GEMM achieves.
+function difficultyAdjustmentFactor(profile) {
+  const p = profile || PROFILE;
+  return (p.rows || ROWS_PATTERN).length * (p.cols || COLS_PATTERN).length * p.k;
+}
+
 const CONFIG_BYTES = 52;
 const JACKPOT_BUCKETS = 16;
 const ROTL_BITS = 13;
@@ -214,7 +227,7 @@ function rankMatches(jobRank, profile) {
 
 module.exports = {
   PROFILE, ROWS_PATTERN, COLS_PATTERN,
-  patternToList, patternFromList, patternToBytes,
+  patternToList, patternFromList, patternToBytes, difficultyAdjustmentFactor,
   CONFIG_BYTES,
   JACKPOT_BUCKETS,
   ROTL_BITS,
