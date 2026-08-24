@@ -2,11 +2,11 @@
 
 const { hash, keyedHash } = require('../src/shared/miner/blake3');
 const {
-  buildConfig52, ROWS_PATTERN, COLS_PATTERN, JACKPOT_BUCKETS,
+  buildConfig52, JACKPOT_BUCKETS, regionToTile,
   SEED_SALT_A, SEED_SALT_B, bindMessage,
 } = require('../src/shared/miner/pearlhash');
 const {
-  SEED_LABEL_A, SEED_LABEL_B, getRandomHash,
+  SEED_LABEL_A, SEED_LABEL_B,
   generateUniformRandomMatrix, generatePermutationMatrix, satInt8,
 } = require('../src/shared/miner/noise');
 
@@ -14,206 +14,174 @@ const {
 // real RTX 4090. The JS below recomputes the whole device pipeline and must
 // reproduce them exactly.
 //
-// The profile is deliberately small in m/n/k so the oracle finishes in
-// milliseconds, but STRUCTURALLY identical to mainnet: k/rank = 16 chunks (one
-// per transcript lane) and the real 4x8 tile patterns.
+// The profile is deliberately small so the oracle runs in milliseconds, but
+// STRUCTURALLY it is the real thing: k/rank = 16 chunks (one per transcript
+// lane), the contiguous 4x16 tile, valid offsets only, and the operand salt.
 //
 // This is the check that closes the loop. The JS rests on a BLAKE3 that passes
 // the official published vectors, so agreement means the GPU computes what we
 // believe. Every bug this project hit was silent -- a search that did not vary,
 // a collapsed nonce space, identical seeds, a single-chunk tree hash, a config
-// block wrong in every field, a job_key hashed keyed instead of unkeyed, and a
-// noise construction that reconstructed a sparse selector as a dense factor.
-// None of them produced an error message. A frozen parity vector is what makes
-// the next one loud.
+// block wrong in every field, a job_key hashed keyed instead of unkeyed, a
+// sparse noise selector reconstructed as a dense factor, a partial table strided
+// by the wrong row count, and a tile pattern that disagreed between the header
+// and the oracle. None produced an error message; this is what makes the next
+// one loud.
 //
-// rank is 32, not 16: the reference requires it to be a power of two AND a
-// multiple of the BLAKE3 digest size, because the dense noise factor is
-// generated one 32-byte digest at a time.
-const PROFILE = { k: 512, rank: 32, mmaType: 0, m: 128, n: 128 };
+// The vectors span several SALTS on purpose. The operands are re-drawn whenever
+// the region space is exhausted, and that mechanism is as capable of silent
+// breakage as anything else here.
+const PROFILE = { k: 512, rank: 32, mmaType: 0, m: 512, n: 512 };
+const { m, n, k, rank } = PROFILE;
 
-// Captured 2026-08-24 from a CI-built core on an RTX 4090, driver 560.94,
-// after the noise and seed corrections.
 const DEVICE = {
-  aSeed: '9971330c53c0358910e12f43e85603e07ffaf8703cf9c6948f87f576488e8a68',
-  bSeed: 'a1755737e834c0c2cb383c18f37a59d5cbfc34f60cb839e7098acc9964c066bc',
-  regions: {
-    0: '01bb140ae6bdcbf7557e935a9947a7a955cfc99b01ade7df63c9c1bcd214bd19',
-    4096: 'da04ea1350e5c9c087b70adc0cbb1d4cd0ce79f638b01198369cf4be48912316',
-    8192: '452b0a1e4086e31daf925e5563c1c591c2693dc94ad5efb58791f31f0ba89801',
-    12288: '08a341a3804c2a3cf541a2954e9aa2e7cc401c4539cad59dfc8aead3c1b8ef38',
-  },
+  aSeed: 'f7e0c24c564783f940f1e682ea74727c8b7e50e4c26199e15ce42593b454c390',
+  bSeed: 'e2ddeef931319829e2a34ce7dd25c1a8688f7e78d8c9897a9d2fdbf013fcbda6',
+  // salt, region -> jackpot hash
+  regions: [
+    [0, 1, 'dde091fcd4a90ecdd4a8a8a25fcce748fe531536126440c88a712f0bad558100'],
+    [0, 2090, 'da17102b4feabb27c0c5effa84e52e6d04db70f458b3452da10f0bc706aa4800'],
+    [1, 53, '8950a06d37a34afbf86c30e34e5ee04b0df7b455cd446a5a071428f8edeefc00'],
+    [1, 2049, '64642ca785059873cbbeca813bfe632db95a10646790d14a4483e62fd096b103'],
+    [2, 19, 'd5ff456ef990e155761afa5eb34284ee464e120f759cb72279afda0d915d2a03'],
+  ],
 };
 
 const HEADER = Buffer.alloc(76, 1);
 const rotl13 = (x) => (((x << 13) | (x >>> 19)) >>> 0);
-const raw = (i8) => Buffer.from(i8.buffer, i8.byteOffset, i8.byteLength);
+const idx = (len) => Array.from({ length: len }, (_, i) => i);
+const jobKey = hash(Buffer.concat([HEADER, buildConfig52(PROFILE)]));
 
 // The miner's own operands. Contents are our choice; the int7 RANGE is not,
 // because the noise adds another int7 and the sum must stay inside int8.
-// One digest per 32 bytes, exactly as pearl_gen_operand does it.
-function genOperand(key, label, total) {
-  const out = new Int8Array(total);
+//
+// The salt sits at bytes 8..15 of the RNG message. At salt 0 that leaves the
+// message byte-identical to the unsalted version, which is why introducing it
+// did not disturb the earlier vectors.
+function genOperand(label, total, salt) {
+  const out = Buffer.alloc(total);
   for (let base = 0; base < total; base += 32) {
-    const h = getRandomHash(base / 32, label, key, 0);
-    for (let i = 0; i < 32 && base + i < total; i++) {
-      out[base + i] = (h[i] % 127) - 63;
-    }
+    const msg = Buffer.alloc(64);
+    msg.writeUInt32LE((base / 32 + 1) >>> 0, 0);
+    msg.writeBigUInt64LE(BigInt(salt), 8);
+    label.copy(msg, 32);
+    const h = keyedHash(jobKey, msg);
+    for (let i = 0; i < 32 && base + i < total; i++) out[base + i] = ((h[i] % 127) - 63) & 0xff;
   }
   return out;
 }
 
-let CACHE = null;
-function derive() {
-  if (CACHE) return CACHE;
-  const { m, n, k, rank } = PROFILE;
+const s8 = (b) => (b > 127 ? b - 256 : b);
+const cache = new Map();
 
-  // job_key is UNKEYED. A zero KEY is a different function and gives a
-  // different digest -- the bug this test now pins.
-  const jobKey = hash(Buffer.concat([HEADER, buildConfig52(PROFILE)]));
+function forSalt(salt) {
+  if (cache.has(salt)) return cache.get(salt);
+  const A = genOperand(SEED_LABEL_A, m * k, salt);
+  const B = genOperand(SEED_LABEL_B, n * k, salt);
 
-  const A = genOperand(jobKey, SEED_LABEL_A, m * k);
-  const B = genOperand(jobKey, SEED_LABEL_B, n * k);
-
-  // The commitments are keyed BLAKE3 TREES over 1024-byte chunks, not one long
-  // chain. blake3.js implements the real thing and is checked against the
-  // official vectors, so this is where that pays off.
-  const hashA = keyedHash(jobKey, raw(A));
-  const hashB = keyedHash(jobKey, raw(B));
-
-  // cert-v3: salt each root with its dimension before the chain. This is the
-  // only thing that commits m and n.
-  const boundA = keyedHash(SEED_SALT_A, bindMessage(hashA, m));
-  const boundB = keyedHash(SEED_SALT_B, bindMessage(hashB, n));
-
+  // cert-v3: salt each operand root with its dimension before the seed chain.
+  // This is the only thing that commits m and n, which config52 does not carry.
+  const boundA = keyedHash(SEED_SALT_A, bindMessage(keyedHash(jobKey, A), m));
+  const boundB = keyedHash(SEED_SALT_B, bindMessage(keyedHash(jobKey, B), n));
   const bSeed = hash(Buffer.concat([jobKey, boundB]));
   const aSeed = hash(Buffer.concat([bSeed, boundA]));
 
-  // The whole operand is noised, so a row's index is its position.
-  const rowsAll = Array.from({ length: m }, (_, i) => i);
-  const colsAll = Array.from({ length: n }, (_, i) => i);
-  const eAL = generateUniformRandomMatrix(SEED_LABEL_A, aSeed, rowsAll, rank);
-  const eBR = generateUniformRandomMatrix(SEED_LABEL_B, bSeed, colsAll, rank);
+  const eAL = generateUniformRandomMatrix(SEED_LABEL_A, aSeed, idx(m), rank);
+  const eBR = generateUniformRandomMatrix(SEED_LABEL_B, bSeed, idx(n), rank);
   const permA = generatePermutationMatrix(SEED_LABEL_A, aSeed, k, rank);
   const permB = generatePermutationMatrix(SEED_LABEL_B, bSeed, k, rank);
 
-  // Two lookups and a subtract per element, then saturate to int8.
+  // Two lookups and a subtract, then saturate: E_AR and E_BL are sparse +-1
+  // selectors, not dense factors.
   const noise = (dense, perm, kk) => dense[perm[kk * 2]] - dense[perm[kk * 2 + 1]];
   const Ap = new Int8Array(m * k);
   const Bp = new Int8Array(n * k);
   for (let r = 0; r < m; r++) {
-    for (let kk = 0; kk < k; kk++) {
-      Ap[r * k + kk] = satInt8(A[r * k + kk] + noise(eAL[r], permA, kk));
-    }
+    for (let kk = 0; kk < k; kk++) Ap[r * k + kk] = satInt8(s8(A[r * k + kk]) + noise(eAL[r], permA, kk));
   }
   for (let c = 0; c < n; c++) {
-    for (let kk = 0; kk < k; kk++) {
-      Bp[c * k + kk] = satInt8(B[c * k + kk] + noise(eBR[c], permB, kk));
-    }
+    for (let kk = 0; kk < k; kk++) Bp[c * k + kk] = satInt8(s8(B[c * k + kk]) + noise(eBR[c], permB, kk));
   }
 
-  CACHE = { jobKey, aSeed, bSeed, Ap, Bp };
-  return CACHE;
+  const v = { aSeed, bSeed, Ap, Bp };
+  cache.set(salt, v);
+  return v;
 }
 
-function foldRegion(region) {
-  const { m, n, k, rank } = PROFILE;
-  const d = derive();
-  const rowOff = region % m;
-  const colOff = Math.floor(region / m) % n;
+function foldRegion(region, salt) {
+  const { aSeed, Ap, Bp } = forSalt(salt);
+  const tile = regionToTile(region, PROFILE);
   const chunks = Math.ceil(k / rank);
-  const jackpot = new Uint32Array(JACKPOT_BUCKETS);
-
+  const j = new Uint32Array(JACKPOT_BUCKETS);
   for (let chunk = 0; chunk < chunks; chunk++) {
     const k0 = chunk * rank;
     let tileXor = 0;
-    for (const r0 of ROWS_PATTERN) {
-      for (const c0 of COLS_PATTERN) {
-        const r = (r0 + rowOff) % m;
-        const c = (c0 + colOff) % n;
+    for (const r of tile.rows) {
+      for (const c of tile.cols) {
         let acc = 0;
-        for (let t = 0; t < rank; t++) {
-          const kk = k0 + t;
-          if (kk >= k) continue;
-          acc = (acc + d.Ap[r * k + kk] * d.Bp[c * k + kk]) | 0;
-        }
+        for (let t = 0; t < rank; t++) acc = (acc + Ap[r * k + k0 + t] * Bp[c * k + k0 + t]) | 0;
         tileXor = (tileXor ^ acc) >>> 0;
       }
     }
-    jackpot[chunk % JACKPOT_BUCKETS] = rotl13(jackpot[chunk % JACKPOT_BUCKETS]) ^ tileXor;
+    j[chunk % JACKPOT_BUCKETS] = rotl13(j[chunk % JACKPOT_BUCKETS]) ^ tileXor;
   }
-  const transcript = Buffer.alloc(64);
-  for (let i = 0; i < JACKPOT_BUCKETS; i++) transcript.writeUInt32LE(jackpot[i] >>> 0, i * 4);
-  return { transcript, jackpotHash: keyedHash(d.aSeed, transcript) };
+  const t = Buffer.alloc(64);
+  for (let i = 0; i < JACKPOT_BUCKETS; i++) t.writeUInt32LE(j[i] >>> 0, i * 4);
+  return { transcript: t, jackpotHash: keyedHash(aSeed, t) };
 }
 
-const CAPTURED = DEVICE.aSeed !== '__PENDING__';
-const whenCaptured = CAPTURED ? describe : describe.skip;
-
-whenCaptured('CUDA core parity — seeds', () => {
-  // Matching 32-byte seeds means job_key (unkeyed, over the corrected config52),
-  // both synthesised operands, the keyed BLAKE3 TREE over each, and the cert-v3
-  // root binding all agree with the device.
+describe('CUDA core parity — seeds', () => {
+  // Matching 32-byte seeds means job_key (unkeyed, over the contiguous-tile
+  // config52), both synthesised operands, the keyed BLAKE3 TREE over each, and
+  // the cert-v3 root binding all agree with the device.
   test('the device derives the same b_seed and a_seed', () => {
-    const d = derive();
-    expect(d.bSeed.toString('hex')).toBe(DEVICE.bSeed);
-    expect(d.aSeed.toString('hex')).toBe(DEVICE.aSeed);
+    const s = forSalt(0);
+    expect(s.bSeed.toString('hex')).toBe(DEVICE.bSeed);
+    expect(s.aSeed.toString('hex')).toBe(DEVICE.aSeed);
   });
 
+  // b_seed is derived first and feeds a_seed, so swapping them is silent.
   test('the two seeds are distinct', () => {
-    const d = derive();
-    expect(d.aSeed).not.toEqual(d.bSeed);
+    const s = forSalt(0);
+    expect(s.aSeed).not.toEqual(s.bSeed);
+  });
+
+  // Re-drawing the operands must actually change the job, or the search has
+  // nowhere to go and re-mines what it already tried.
+  test('a new operand draw changes the seeds', () => {
+    expect(forSalt(1).aSeed).not.toEqual(forSalt(0).aSeed);
   });
 });
 
-whenCaptured('CUDA core parity — the fold', () => {
-  for (const region of Object.keys(DEVICE.regions).map(Number)) {
-    test('region ' + region + ' matches the device hash', () => {
-      expect(foldRegion(region).jackpotHash.toString('hex')).toBe(DEVICE.regions[region]);
+describe('CUDA core parity — the fold', () => {
+  for (const [salt, region, want] of DEVICE.regions) {
+    test('salt ' + salt + ' region ' + region + ' matches the device', () => {
+      expect(foldRegion(region, salt).jackpotHash.toString('hex')).toBe(want);
     });
   }
 
   // The bug that made the miner grind at 76% GPU and find nothing.
   test('distinct regions produce distinct hashes', () => {
-    const hs = Object.keys(DEVICE.regions).map(Number)
-      .map((r) => foldRegion(r).jackpotHash.toString('hex'));
+    const hs = DEVICE.regions.map(([s, r]) => foldRegion(r, s).jackpotHash.toString('hex'));
     expect(new Set(hs).size).toBe(hs.length);
   });
 });
 
-// These hold with or without a device capture: they are properties of the
-// pipeline, not of any particular card.
 describe('the mirrored pipeline', () => {
   test('every transcript lane is written exactly once', () => {
     // k/rank = 16 chunks against 16 lanes, so the rotation never wraps.
-    expect(PROFILE.k / PROFILE.rank).toBe(JACKPOT_BUCKETS);
-    const t = foldRegion(0).transcript;
-    for (let i = 0; i < JACKPOT_BUCKETS; i++) {
-      expect(t.readUInt32LE(i * 4)).not.toBe(0);
-    }
+    expect(k / rank).toBe(JACKPOT_BUCKETS);
+    const t = foldRegion(1, 0).transcript;
+    for (let i = 0; i < JACKPOT_BUCKETS; i++) expect(t.readUInt32LE(i * 4)).not.toBe(0);
   });
 
-  test('distinct regions fold to distinct transcripts', () => {
-    const hs = [0, 4096, 8192, 12288]
-      .map((r) => foldRegion(r).jackpotHash.toString('hex'));
-    expect(new Set(hs).size).toBe(hs.length);
-  });
-
-  // The noised operands must stay int7-ish: saturation should be a guard rail
-  // that essentially never fires, not the main effect. If it fires often, the
-  // operand has collapsed towards a sign pattern and the work is not useful.
+  // Saturation should be a guard rail that essentially never fires. If it fired
+  // often the operand would have collapsed towards a sign pattern and the work
+  // would no longer be useful.
   test('saturation is rare, so the operands are not clipped to signs', () => {
-    const d = derive();
+    const { Ap } = forSalt(0);
     let clipped = 0;
-    for (let i = 0; i < d.Ap.length; i++) {
-      if (d.Ap[i] === 127 || d.Ap[i] === -128) clipped++;
-    }
-    expect(clipped / d.Ap.length).toBeLessThan(0.02);
-  });
-
-  test('the seeds are distinct and the operands are noised', () => {
-    const d = derive();
-    expect(d.aSeed).not.toEqual(d.bSeed);
-    expect(Array.from(d.Ap.slice(0, 64))).not.toEqual(Array.from(d.Bp.slice(0, 64)));
+    for (let i = 0; i < Ap.length; i++) if (Ap[i] === 127 || Ap[i] === -128) clipped++;
+    expect(clipped / Ap.length).toBeLessThan(0.02);
   });
 });

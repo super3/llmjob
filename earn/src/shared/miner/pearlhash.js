@@ -158,19 +158,18 @@ const PROFILE = {
   // came from a hashrate that was not a rate and a miner that stalled a few
   // seconds into every measurement, so they described nothing.
   //
-  // At col_batch 512: 6144 -> 63.1, 8192 -> 73.2, 12288 -> 74.6, 16384 -> 74.4.
-  // The curve plateaus rather than peaking.
+  // Measured on a 4090 with the tensor-core partials kernel, at col_batch 512:
+  // 16384 -> 62.2, 32768 -> 65.7 TH/s, and 65536 is within noise of that. The
+  // curve plateaus rather than peaking, so this takes the knee.
   //
-  // MUST be a power of two, and this is not merely a tuning preference. The
-  // operand commitment is a BLAKE3 Merkle tree over 1024-byte chunks, and the
-  // device folds it as a balanced pairwise reduction. That is only the right
-  // tree when the chunk count is a power of two; BLAKE3's real layout is
-  // left-heavy, splitting at the largest power of two below the total. A value
-  // like 12288 (3 * 4096) gives 24576 chunks, a wrong root, wrong seeds, and a
-  // share no pool will accept — with nothing to show for it, because the small
-  // parity profile uses a power-of-two m and passes regardless.
-  m: 16384,
-  n: 16384,
+  // MUST be a power of two, and not merely as a tuning preference. The operand
+  // commitment is a BLAKE3 Merkle tree over 1024-byte chunks and the device
+  // folds it as a balanced pairwise reduction, which is only the right tree at
+  // a power-of-two chunk count -- BLAKE3's real layout is left-heavy. A value
+  // like 12288 (3 * 4096) gives a wrong root, wrong seeds, and shares no pool
+  // will accept, and the small parity profile cannot catch it.
+  m: 32768,
+  n: 32768,
 
   // Column offsets per launch. Not protocol: it trades VRAM for amortised
   // launch overhead. 32 -> 55.4, 64 -> 58.3, 256 -> 60.8, 512 -> 63.1,
