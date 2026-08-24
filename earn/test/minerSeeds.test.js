@@ -140,9 +140,24 @@ describe('the mainnet profile', () => {
   // m and n are bound into the seeds by cert-v3, so the JS profile and the core
   // must agree on them or every seed differs.
   test('carries the measured workload dimensions and batch width', () => {
-    expect(PROFILE.m).toBe(12288);
-    expect(PROFILE.n).toBe(12288);
     expect(PROFILE.colBatch).toBeGreaterThan(0);
+    expect(PROFILE.m).toBeGreaterThan(Math.max(...PROFILE.rows));
+    expect(PROFILE.n).toBeGreaterThan(Math.max(...PROFILE.cols));
+  });
+
+  // The operand commitment is a BLAKE3 Merkle tree over 1024-byte chunks, and
+  // the device folds it as a BALANCED pairwise reduction -- which is only the
+  // right tree when the chunk count is a power of two. BLAKE3's real layout is
+  // left-heavy. A non-power-of-two m (12288 was shipped briefly) gives a wrong
+  // root, wrong seeds, and shares no pool will accept, and the small parity
+  // profile cannot catch it because its own m is a power of two.
+  test('the operand chunk counts are powers of two', () => {
+    const aChunks = (PROFILE.m * PROFILE.k) / 1024;
+    const bChunks = (PROFILE.n * PROFILE.k) / 1024;
+    expect(Number.isInteger(aChunks)).toBe(true);
+    expect(Number.isInteger(bChunks)).toBe(true);
+    expect(aChunks & (aChunks - 1)).toBe(0);
+    expect(bChunks & (bChunks - 1)).toBe(0);
   });
 
   // rank must be a power of two AND a multiple of the BLAKE3 digest size: the

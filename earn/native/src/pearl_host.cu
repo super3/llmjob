@@ -242,6 +242,26 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
     return nullptr;
   }
 
+  // The commitment folds the chunk tree as a balanced pairwise reduction, which
+  // is only BLAKE3's tree when the chunk count is a power of two. Refuse
+  // anything else rather than computing a wrong root in silence — that produces
+  // wrong seeds and a share no pool accepts, with no symptom to follow.
+  {
+    const uint64_t aChunks = (uint64_t)profile->m * profile->k / 1024u;
+    const uint64_t bChunks = (uint64_t)profile->n * profile->k / 1024u;
+    const bool aOk = aChunks && (aChunks & (aChunks - 1)) == 0;
+    const bool bOk = bChunks && (bChunks & (bChunks - 1)) == 0;
+    if (!aOk || !bOk) {
+      if (err && err_len) {
+        snprintf(err, err_len,
+                 "m*k/1024 and n*k/1024 must each be a power of two (got %llu "
+                 "and %llu): the commitment tree fold assumes it",
+                 (unsigned long long)aChunks, (unsigned long long)bChunks);
+      }
+      return nullptr;
+    }
+  }
+
   const size_t k = profile->k;
   const size_t rank = profile->rank;
   const size_t aBytes = (size_t)profile->m * k;
