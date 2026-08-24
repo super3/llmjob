@@ -406,43 +406,62 @@ extern "C" __global__ void pearl_partials(const int32_t *__restrict__ Aprime,
                                           uint32_t n, uint32_t k, uint32_t rank,
                                           uint32_t chunks, uint32_t col_off,
                                           int32_t *__restrict__ D) {
+  // One thread per (chunk, row), producing ALL of that row's columns.
+  //
+  // A thread per (chunk, row, col) reads the row's k-slice once per column —
+  // eight times over, and the A side is the streaming operand: 33 MiB a batch
+  // read eight times is 268 MiB. Holding the row in registers and accumulating
+  // eight columns against it reads it once.
+  //
+  // The B side is the opposite: only eight distinct column slices exist per
+  // batch and every thread wants them, so they stay resident in cache.
   uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-  const uint64_t total = (uint64_t)chunks * m * cols_count;
+  const uint64_t total = (uint64_t)chunks * m;
   if (idx >= total) return;
 
-  const uint32_t c = (uint32_t)(idx % cols_count);
-  const uint32_t r = (uint32_t)((idx / cols_count) % m);
-  const uint32_t chunk = (uint32_t)(idx / ((uint64_t)cols_count * m));
-
+  const uint32_t r = (uint32_t)(idx % m);
+  const uint32_t chunk = (uint32_t)(idx / m);
   const uint32_t k0 = chunk * rank;
   const uint32_t lim = (k0 + rank <= k) ? rank : (k - k0);
-  const uint32_t cc = (cols_pattern[c] + col_off) % n;
 
   const int32_t *__restrict__ ar = Aprime + (size_t)r * k + k0;
-  const int32_t *__restrict__ bc = Bprime + (size_t)cc * k + k0;
 
-  // Threads sharing (chunk, r) differ only in c, so the A slice is reused
-  // cols_count ways straight out of cache.
-  int32_t s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+  const int32_t *bc[PEARL_COLS_COUNT];
+#pragma unroll
+  for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) {
+    const uint32_t cc = (cols_pattern[c] + col_off) % n;
+    bc[c] = Bprime + (size_t)cc * k + k0;
+  }
+
+  int32_t acc[PEARL_COLS_COUNT];
+#pragma unroll
+  for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) acc[c] = 0;
+
+  // Four A elements per iteration, each reused across all eight columns: 32
+  // multiply-accumulates for one vector load of A and eight of B.
   uint32_t t = 0;
   if ((lim & 3u) == 0u) {
-    const int4 *a4 = reinterpret_cast<const int4 *>(ar);
-    const int4 *b4 = reinterpret_cast<const int4 *>(bc);
     const uint32_t quads = lim >> 2;
-#pragma unroll 4
+    const int4 *a4 = reinterpret_cast<const int4 *>(ar);
     for (uint32_t q = 0; q < quads; q++) {
       const int4 av = a4[q];
-      const int4 bv = b4[q];
-      s0 += av.x * bv.x;
-      s1 += av.y * bv.y;
-      s2 += av.z * bv.z;
-      s3 += av.w * bv.w;
+#pragma unroll
+      for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) {
+        const int4 bv = reinterpret_cast<const int4 *>(bc[c])[q];
+        acc[c] += av.x * bv.x + av.y * bv.y + av.z * bv.z + av.w * bv.w;
+      }
     }
     t = lim;
   }
-  for (; t < lim; t++) s0 += ar[t] * bc[t];
+  for (; t < lim; t++) {
+    const int32_t a = ar[t];
+#pragma unroll
+    for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) acc[c] += a * bc[c][t];
+  }
 
-  D[idx] = (s0 + s1) + (s2 + s3);
+  int32_t *out = D + ((size_t)chunk * m + r) * cols_count;
+#pragma unroll
+  for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) out[c] = acc[c];
 }
 
 // The fold is now a gather. Every product it needs is already in D, so a region
