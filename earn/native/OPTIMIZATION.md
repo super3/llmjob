@@ -38,7 +38,7 @@ The operands are int32 because the noised value
 `A'[r,t] = A[r,t] + Σ_j E_AL[r,j]·E_AR[j,t]` reaches ~5e5 and does not fit int8.
 That is the thing to remove.
 
-## The decomposition that fixes it
+## The decomposition that does NOT fix it (measured)
 
 Never materialise `A'`. Expand the product and keep the raw int7 operands:
 
