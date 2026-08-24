@@ -390,16 +390,39 @@ extern "C" __global__ void pearl_gemm_fold(
     const uint32_t *__restrict__ cols_pattern, uint32_t rows_count,
     uint32_t cols_count, uint32_t m, uint32_t n, uint32_t k, uint32_t rank,
     uint32_t chunks, uint64_t region_base, uint32_t *__restrict__ jackpot_out) {
-  extern __shared__ int32_t smem[];
-  int32_t *a_vals = smem;                                  // rows_count * rank
-  int32_t *b_vals = a_vals + (size_t)rows_count * rank;    // cols_count * rank
-  uint32_t *red = (uint32_t *)(b_vals + (size_t)cols_count * rank);  // blockDim.x
+  // ONE WARP PER REGION, ONE LANE PER TILE CELL.
+  //
+  // The tile is rows_count * cols_count = 4 * 8 = 32 cells, which is exactly a
+  // warp. That makes the whole per-chunk reduction a shuffle: no __syncthreads,
+  // no shared memory, no barrier at all.
+  //
+  // The previous block-per-region version staged operands into shared memory and
+  // ran a log-depth reduction, costing ~9 barriers per chunk and ~144 per region
+  // to protect just 4096 multiply-accumulates. Measured on a 4090 it sat at
+  // 530 GH/s — 0.66% of the card's scalar int32 peak — and was flat across every
+  // m/n from 512 to 8192, which is the signature of synchronisation overhead
+  // rather than a memory bound.
+  //
+  // Lanes in a warp share only 4 distinct A rows and 8 distinct B columns, so the
+  // loads coalesce and hit cache without needing an explicit staging pass.
+  const uint32_t lane = threadIdx.x & 31u;
+  const uint32_t warp = threadIdx.x >> 5;
+  const uint32_t warps_per_block = blockDim.x >> 5;
+  const uint64_t region = region_base + (uint64_t)blockIdx.x * warps_per_block + warp;
 
-  const uint32_t tid = threadIdx.x;
-  const uint64_t region = region_base + blockIdx.x;
   const uint32_t row_off = (uint32_t)(region % m);
   const uint32_t col_off = (uint32_t)((region / m) % n);
+
+  // Cell assignment. Guarded so a profile whose tile is not exactly 32 cells
+  // parks the surplus lanes rather than reading out of bounds.
   const uint32_t tile_cells = rows_count * cols_count;
+  const bool active = lane < tile_cells;
+  const uint32_t ri = active ? lane / cols_count : 0u;
+  const uint32_t ci = active ? lane % cols_count : 0u;
+  const uint32_t r = (rows_pattern[ri] + row_off) % m;
+  const uint32_t c = (cols_pattern[ci] + col_off) % n;
+  const int32_t *__restrict__ arow = Aprime + (size_t)r * k;
+  const int32_t *__restrict__ bcol = Bprime + (size_t)c * k;
 
   uint32_t jackpot[PEARL_JACKPOT_BUCKETS];
 #pragma unroll
@@ -407,47 +430,25 @@ extern "C" __global__ void pearl_gemm_fold(
 
   for (uint32_t chunk = 0; chunk < chunks; chunk++) {
     const uint32_t k0 = chunk * rank;
-
-    // Stage this chunk's rows and columns from the materialised operands. Each
-    // row slice is shared by cols_count cells and each column by rows_count, so
-    // staging once and reading from shared beats re-reading global per cell.
-    for (uint32_t idx = tid; idx < rows_count * rank; idx += blockDim.x) {
-      const uint32_t kk = k0 + (idx % rank);
-      const uint32_t r = (rows_pattern[idx / rank] + row_off) % m;
-      a_vals[idx] = (kk < k) ? Aprime[(size_t)r * k + kk] : 0;
+    int32_t acc = 0;
+    if (active) {
+      const uint32_t lim = (k0 + rank <= k) ? rank : (k - k0);
+#pragma unroll 4
+      for (uint32_t t = 0; t < lim; t++) acc += arow[k0 + t] * bcol[k0 + t];
     }
-    for (uint32_t idx = tid; idx < cols_count * rank; idx += blockDim.x) {
-      const uint32_t kk = k0 + (idx % rank);
-      const uint32_t c = (cols_pattern[idx / rank] + col_off) % n;
-      b_vals[idx] = (kk < k) ? Bprime[(size_t)c * k + kk] : 0;
+    // Warp-wide XOR. Inactive lanes contribute zero, which is the XOR identity.
+    uint32_t x = (uint32_t)acc;
+#pragma unroll
+    for (int s = 16; s > 0; s >>= 1) x ^= __shfl_xor_sync(0xffffffffu, x, s);
+    if (lane == 0) {
+      const uint32_t l = chunk % PEARL_JACKPOT_BUCKETS;
+      jackpot[l] = pearl_rotl13(jackpot[l]) ^ x;
     }
-    __syncthreads();
-
-    uint32_t partial = 0u;
-    for (uint32_t cell = tid; cell < tile_cells; cell += blockDim.x) {
-      const uint32_t ri = cell / cols_count;
-      const uint32_t ci = cell % cols_count;
-      int32_t acc = 0;
-      for (uint32_t t = 0; t < rank; t++)
-        acc += a_vals[ri * rank + t] * b_vals[ci * rank + t];
-      partial ^= (uint32_t)acc;
-    }
-
-    red[tid] = partial;
-    __syncthreads();
-    for (uint32_t s = blockDim.x / 2; s > 0; s >>= 1) {
-      if (tid < s) red[tid] ^= red[tid + s];
-      __syncthreads();
-    }
-    if (tid == 0) {
-      const uint32_t lane = chunk % PEARL_JACKPOT_BUCKETS;
-      jackpot[lane] = pearl_rotl13(jackpot[lane]) ^ red[0];
-    }
-    __syncthreads();
   }
 
-  if (tid == 0) {
-    uint32_t *out = jackpot_out + (size_t)blockIdx.x * PEARL_JACKPOT_BUCKETS;
+  if (lane == 0) {
+    uint32_t *out = jackpot_out
+        + ((size_t)blockIdx.x * warps_per_block + warp) * PEARL_JACKPOT_BUCKETS;
 #pragma unroll
     for (int i = 0; i < PEARL_JACKPOT_BUCKETS; i++) out[i] = jackpot[i];
   }

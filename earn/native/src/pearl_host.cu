@@ -386,16 +386,13 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   const uint32_t rank = ctx->profile.rank;
   const uint32_t chunks = (k + rank - 1) / rank;
   const uint32_t regions = batch < ctx->batch ? batch : ctx->batch;
-  const int threads = 128;
+  const int threads = 256;  // 8 warps, so 8 regions in flight per block
 
-  // Shared memory holds the reconstructed rows and columns for one chunk, plus
-  // the XOR reduction scratch. At the mainnet profile that is
-  // (2 + 64) * 128 * 4 + 128 * 4 = 34 KiB, inside the 48 KiB default.
-  const size_t smem =
-      ((size_t)PEARL_ROWS_COUNT + PEARL_COLS_COUNT) * rank * sizeof(int32_t) +
-      (size_t)threads * sizeof(uint32_t);
+  // One warp per region now, so the grid is regions/warps-per-block and there is
+  // no shared memory at all — the per-chunk reduction is a shuffle.
+  const int warps_per_block = threads / 32;
 
-  pearl_gemm_fold<<<regions, threads, smem>>>(
+  pearl_gemm_fold<<<(regions + warps_per_block - 1) / warps_per_block, threads>>>(
       ctx->dAp, ctx->dBp,
       ctx->dRows, ctx->dCols, PEARL_ROWS_COUNT, PEARL_COLS_COUNT,
       ctx->profile.m, ctx->profile.n, k, rank, chunks, nonce_base, ctx->dJackpot);
