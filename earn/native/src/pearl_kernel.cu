@@ -469,7 +469,7 @@ extern "C" __global__ void pearl_gen_perm(const uint32_t *seed,
 // One hash per 32 output bytes rather than one per byte.
 extern "C" __global__ void pearl_gen_operand(const uint32_t *key,
                                              const uint8_t *label, int8_t *out,
-                                             uint64_t total) {
+                                             uint64_t total, uint64_t salt) {
   const uint64_t blk = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
   const uint64_t base = blk * 32u;
   if (base >= total) return;
@@ -477,12 +477,38 @@ extern "C" __global__ void pearl_gen_operand(const uint32_t *key,
   uint32_t kbuf[8];
 #pragma unroll
   for (int i = 0; i < 8; i++) kbuf[i] = key[i];
-  uint8_t lab[32];
+
+  // The SALT is what gives the search somewhere to go.
+  //
+  // The Pearl header has no nonce -- it is version, prev_block, merkle_root,
+  // timestamp, nbits and nothing else, which is why the type is called
+  // IncompleteBlockHeader. The miner's free variable is its own choice of A and
+  // B: different operands commit to different roots, which seed different
+  // noise, which is a completely fresh space of regions to fold.
+  //
+  // Without it the operands were a function of job_key alone, so one pool job
+  // offered exactly m*n distinct regions -- 151M, which this miner exhausts in
+  // 0.133 seconds. Everything after that re-mined identical regions at full
+  // reported hashrate. Expected time to a share was about 20 hours rather than
+  // the four minutes the rate implies.
+  //
+  // Salt 0 leaves the message byte-identical to the unsalted version, so the
+  // frozen parity vectors still describe it.
+  uint8_t msg[64];
 #pragma unroll
-  for (int i = 0; i < 32; i++) lab[i] = label[i];
+  for (int i = 0; i < 32; i++) msg[i] = 0;
+  const uint32_t v = (uint32_t)blk + 1u;
+  msg[0] = (uint8_t)(v);
+  msg[1] = (uint8_t)(v >> 8);
+  msg[2] = (uint8_t)(v >> 16);
+  msg[3] = (uint8_t)(v >> 24);
+#pragma unroll
+  for (int i = 0; i < 8; i++) msg[8 + i] = (uint8_t)(salt >> (i * 8));
+#pragma unroll
+  for (int i = 0; i < 32; i++) msg[32 + i] = label[i];
 
   uint8_t h[32];
-  pearl_random_hash(kbuf, lab, (uint32_t)blk, 0, h);
+  blake3_keyed(kbuf, msg, 64, h);
 #pragma unroll
   for (int i = 0; i < 32; i++) {
     if (base + (uint64_t)i < total)

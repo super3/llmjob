@@ -44,6 +44,8 @@ void *pearl_host_create(const PearlProfile *profile, char *err, size_t err_len);
 void pearl_host_destroy(void *ctx);
 // Load a job. header is 76 bytes, target is 32 big-endian bytes.
 void pearl_host_set_job(void *ctx, const uint8_t *header, const uint8_t *target);
+// Re-draw the operands under a new salt. One salt is worth m*n regions.
+void pearl_host_reseed(void *ctx, uint64_t salt);
 // Search one batch of nonces. Returns true and fills `out` when a share is
 // found; returns false when the batch is exhausted with no hit. `attempts`
 // receives the number of nonces tried, for the hashrate figure.
@@ -207,6 +209,11 @@ void PearlCore::SearchLoop() {
   // and the host sizes its batch scratch to this.
   const uint32_t BATCH = PEARL_BATCH_REGIONS;
   uint64_t nonce = 0;
+  // A region is (row offset, column offset), so one choice of operands offers
+  // exactly m*n of them. Past that the search repeats itself, so the operands
+  // are re-drawn under a fresh salt and the region index starts over.
+  const uint64_t span = (uint64_t)profile_.m * (uint64_t)profile_.n;
+  uint64_t salt = 0;
   while (running_) {
     std::string job_id;
     {
@@ -238,6 +245,13 @@ void PearlCore::SearchLoop() {
     // batches rarely hit and attempts == BATCH, so this changes nothing there
     // except that found work is no longer discarded.
     nonce += (attempts > 0 ? attempts : BATCH);
+    if (nonce >= span) {
+      std::lock_guard<std::mutex> lock(job_mu_);
+      if (have_job_) {
+        pearl_host_reseed(ctx_, ++salt);
+        nonce = 0;
+      }
+    }
     // attempts * DAF = multiply-accumulates, which is the unit the network and
     // every other miner reports in. Dividing raw attempts by 1e12 treated one
     // attempt as one hash and under-reported by 65536x at the mainnet profile.

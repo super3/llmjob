@@ -51,7 +51,7 @@ extern "C" __global__ void pearl_gen_perm(const uint32_t *seed,
                                           uint32_t k, uint32_t rank);
 extern "C" __global__ void pearl_gen_operand(const uint32_t *key,
                                              const uint8_t *label, int8_t *out,
-                                             uint64_t total);
+                                             uint64_t total, uint64_t salt);
 extern "C" __global__ void pearl_hash_operands(const uint32_t *job_key,
                                                const uint8_t *padded,
                                                uint32_t len, uint8_t *out);
@@ -167,6 +167,10 @@ struct Ctx {
   uint8_t aSeed[PEARL_HASH_BYTES] = {0};
   uint8_t bSeed[PEARL_HASH_BYTES] = {0};
   bool haveJob = false;
+  // The job is kept so the operands can be re-drawn under a new salt without
+  // the caller having to hand the header back.
+  uint8_t header[PEARL_HEADER_BYTES] = {0};
+  uint8_t target[PEARL_HASH_BYTES] = {0};
 };
 
 // The row/column patterns the tile folds over. Derived from the counts plus the
@@ -381,10 +385,29 @@ extern "C" void pearl_host_destroy(void *handle) {
   delete ctx;
 }
 
+extern "C" void pearl_host_reseed(void *handle, uint64_t salt);
+
 extern "C" void pearl_host_set_job(void *handle, const uint8_t *header,
                                    const uint8_t *target) {
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (!ctx) return;
+  memcpy(ctx->header, header, PEARL_HEADER_BYTES);
+  memcpy(ctx->target, target, PEARL_HASH_BYTES);
+  pearl_host_reseed(handle, 0);
+}
+
+// Re-draw the operands under a new salt and rebuild everything downstream of
+// them: the commitments, the seeds, the noise, and the noised operands.
+//
+// This is the outer loop of the search. One salt yields m*n regions and nothing
+// more, because the region index is just (row offset, column offset) -- so the
+// miner must periodically pick new operands or it re-mines what it has already
+// tried, at full reported hashrate and with no chance of a share.
+extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
+  Ctx *ctx = static_cast<Ctx *>(handle);
+  if (!ctx) return;
+  const uint8_t *header = ctx->header;
+  const uint8_t *target = ctx->target;
 
   // job_key = blake3(header76 ‖ config52). Computed on-device so there is one
   // BLAKE3 implementation in the binary rather than two that can disagree.
@@ -423,9 +446,9 @@ extern "C" void pearl_host_set_job(void *handle, const uint8_t *header,
   // Keyed by job_key rather than by a commitment seed, so these streams cannot
   // collide with the noise streams even though they share the labels.
   pearl_gen_operand<<<blocks(aLen / 32 + 1), threads>>>(
-      ctx->dJobKey, ctx->dLabelA, ctx->dA, aLen);
+      ctx->dJobKey, ctx->dLabelA, ctx->dA, aLen, salt);
   pearl_gen_operand<<<blocks(bLen / 32 + 1), threads>>>(
-      ctx->dJobKey, ctx->dLabelB, ctx->dB, bLen);
+      ctx->dJobKey, ctx->dLabelB, ctx->dB, bLen, salt);
 
   // hash_a and hash_b: keyed BLAKE3 over the WHOLE operands. These are Merkle
   // trees over 1024-byte chunks, not one long chain — hashing them as a single
