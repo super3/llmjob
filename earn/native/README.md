@@ -73,10 +73,10 @@ Measured on an RTX 4090, at the real mainnet geometry:
 
 | | |
 |---|---|
-| Regions searched | **48.8 KH/s** |
+| Hashrate (MACs/sec, the unit the network uses) | **0.93 TH/s** |
 | PeakMiner on the same card | **296 TH/s** |
-| Factor short | **~6 × 10⁹** |
-| Expected time to one share | **~5,900 years** |
+| Factor short | **~317x** |
+| Remaining work | int8 decomposition, then tensor cores — see OPTIMIZATION.md |
 
 The end-to-end path is real: our JS host authorises against
 `us.pearl.herominers.com:1200`, receives live jobs, hands them to this core, and
