@@ -40,7 +40,10 @@ retain and no licence to comply with beyond ISC attribution.
 | Tensor-core (`mma.sync` int8) mainloop | **not written** — this is the performance work |
 | Windows CI build | **done** — per-OS CUDA packages + MSVC on PATH |
 | **Runs on a real GPU** | **yes** — CI artifact executed on an RTX 4090 |
-| Mainnet-profile run / real pool share | **no** — see below |
+| **Runs at the mainnet profile** | **yes** — m=n=131072, k=4096, rank=128 |
+| **End-to-end against a live pool** | **yes** — authorised by HeroMiners, jobs mined |
+| Tensor-core (`mma.sync` int8) mainloop | **not written** — and it is the whole ballgame, see below |
+| A share accepted by a real pool | **no** — ~6e9 short on hashrate |
 
 The kernels are written to be *bit-exact with the reference first, fast second*.
 A fast core that disagrees with the spec mines nothing, so correctness is
@@ -63,6 +66,34 @@ Those vectors pin OUR semantics and make the JS and CUDA sides provably agree.
 They do not by themselves prove agreement with the Pearl network; that needs a
 share accepted by a real pool. What they buy is that when a rejection happens,
 it points at the protocol rather than at arithmetic.
+
+## Where it actually stands
+
+Measured on an RTX 4090, at the real mainnet geometry:
+
+| | |
+|---|---|
+| Regions searched | **48.8 KH/s** |
+| PeakMiner on the same card | **296 TH/s** |
+| Factor short | **~6 × 10⁹** |
+| Expected time to one share | **~5,900 years** |
+
+The end-to-end path is real: our JS host authorises against
+`us.pearl.herominers.com:1200`, receives live jobs, hands them to this core, and
+the core mines them on the GPU with no errors and no rejects. What it does not do
+is find a share, and no amount of tuning this kernel will change that.
+
+**Why the gap is structural, not a matter of optimisation.** This core
+reconstructs the noised operands per region — an O(rank²) cost paid ~50,000 times
+a second. A competitive miner does the opposite: one enormous GEMM over the full
+m×n output on tensor cores, then harvests millions of candidate transcripts from
+that single result. The work per transcript collapses. That is the six orders of
+magnitude, and it is a restructure of the mainloop rather than a faster version
+of this one.
+
+So: the algorithm is right, the plumbing is right, and the arithmetic is proven
+against an externally-validated oracle. The performance work is untouched and is
+specialist CUDA — realistically weeks, not hours.
 
 ## What running it on hardware found
 
@@ -87,8 +118,16 @@ looked healthy:
    the device BLAKE3 handled only a single chunk, so it gave the wrong digest for
    any operand over 1024 bytes — which is all of them.
 
-After all three: 128616 attempts, **128616 distinct hashes**, seeds correctly
-distinct.
+4. **One block, one SM.** `pearl_gemm_fold` launched `<<<1, 128>>>` and searched
+   one region per launch, using a single SM of the 128 on a 4090. At the mainnet
+   profile it could not finish one batch in 90 seconds. Regions are independent,
+   so one block per region plus reconstructing the operands once per chunk rather
+   than once per cell took it from under 45 regions/sec to 48,800.
+
+After the first three: 128616 attempts, **128616 distinct hashes**, seeds
+correctly distinct. After the fourth, mainnet runs at all — and parity with the
+JS oracle still holds bit-for-bit across every region checked, which is the point
+of freezing those vectors.
 
 ## Building
 
