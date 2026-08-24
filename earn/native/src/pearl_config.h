@@ -153,7 +153,7 @@ typedef struct PearlProfile {
 // How many 16-byte groups of an A row slice a thread can hold in registers.
 // 8 covers rank 128, the mandated profile. A rank needing more falls back to
 // re-reading the slice per column group, which is correct but slower.
-#define PEARL_MAX_A_QUADS 8
+#define PEARL_MAX_A_QUADS 16
 
 // How many regions share one warp in the fold. The producer collapses each
 // row's columns, so a region needs only PEARL_ROWS_COUNT lanes; giving it a
@@ -174,7 +174,7 @@ typedef struct PearlProfile {
 // rank 128. Each fragment is only two registers a lane, so holding the whole
 // rank-slice costs about sixteen -- cheap next to re-reading A once per column
 // group, which is where the tensor-core version's time went at first.
-#define PEARL_MAX_K_FRAGS 8
+#define PEARL_MAX_K_FRAGS 16
 
 // How many 16-row blocks one warp covers. Each B fragment loaded serves all of
 // them, so this divides B traffic directly.
@@ -186,7 +186,7 @@ typedef struct PearlProfile {
 // Measured on a 4090 at m=n=32768: four row blocks 65.7 TH/s, eight 60.8.
 // Eight halves B traffic again but needs twice the fragments and accumulators
 // in registers, and the register pressure costs more than the traffic saves.
-#define PEARL_WMMA_ROW_TILES 4
+#define PEARL_WMMA_ROW_TILES 2
 
 #define PEARL_SEED_SALTED 0u
 #define PEARL_SEED_LEGACY 1u
@@ -206,7 +206,7 @@ static const uint8_t PEARL_SEED_SALT_B[32] = {
 // k = 16 * rank is the smallest common dimension the protocol allows at the
 // mandated rank, and k/rank = 16 chunks is exactly the transcript lane count, so
 // each chunk lands in its own lane and the rotation never wraps.
-static const PearlProfile PEARL_MAINNET_PROFILE = {2048u, 128u, 0u,
+static const PearlProfile PEARL_MAINNET_PROFILE = {4096u, 256u, 0u,
                                                    32768u, 32768u,
                                                    PEARL_SEED_SALTED, 512u, 0u};
 

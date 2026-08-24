@@ -145,8 +145,8 @@ function minStridePad(shape) {
 // k = 4096 gave 32 chunks and wrapped each lane twice.
 const PROFILE = {
   // Hashed into config52 — protocol-mandated, must match the network exactly.
-  k: 2048,
-  rank: 128,
+  k: 4096,
+  rank: 256,
   mmaType: 0, // Int7xInt7ToInt32
   rows: ROWS_PATTERN,
   cols: COLS_PATTERN,
