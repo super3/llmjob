@@ -90,11 +90,13 @@ PearlCore::PearlCore(const Napi::CallbackInfo &info)
     auto u32 = [&](const char *k, uint32_t d) -> uint32_t {
       return o.Has(k) ? o.Get(k).As<Napi::Number>().Uint32Value() : d;
     };
-    profile.m = u32("m", profile.m);
-    profile.n = u32("n", profile.n);
+    // k/rank/mmaType are protocol and go into config52; m/n are the miner's own
+    // workload dimensions and are deliberately NOT hashed.
     profile.k = u32("k", profile.k);
     profile.rank = (uint16_t)u32("rank", profile.rank);
-    profile.hash_tile = (uint16_t)u32("hashTile", profile.hash_tile);
+    profile.mma_type = (uint16_t)u32("mmaType", profile.mma_type);
+    profile.m = u32("m", profile.m);
+    profile.n = u32("n", profile.n);
   }
 
   char err[256] = {0};

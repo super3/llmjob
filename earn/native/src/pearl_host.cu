@@ -134,15 +134,13 @@ struct Ctx {
 // The row/column patterns the tile folds over. Derived from the counts plus the
 // fixed stride, exactly as the reference does, so the host and the config block
 // cannot disagree about what they mean.
-void build_patterns(const PearlProfile &p, std::vector<uint32_t> *rows,
+void build_patterns(const PearlProfile &, std::vector<uint32_t> *rows,
                     std::vector<uint32_t> *cols) {
-  rows->clear();
-  for (uint32_t i = 0; i < p.rows_count; i++) rows->push_back(i * 8);
-  cols->clear();
-  for (uint32_t base = 0; cols->size() < p.cols_count; base += 8) {
-    cols->push_back(base);
-    if (cols->size() < p.cols_count) cols->push_back(base + 1);
-  }
+  // Straight from the reference's defaults. This used to DERIVE the indices from
+  // counts plus an assumed stride, which produced a 2x64 tile of the wrong
+  // indices entirely.
+  rows->assign(PEARL_ROWS_PATTERN, PEARL_ROWS_PATTERN + PEARL_ROWS_COUNT);
+  cols->assign(PEARL_COLS_PATTERN, PEARL_COLS_PATTERN + PEARL_COLS_COUNT);
 }
 
 // Keyed BLAKE3 over a whole operand: hash each 1024-byte chunk into a leaf CV,
@@ -394,12 +392,12 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   // the XOR reduction scratch. At the mainnet profile that is
   // (2 + 64) * 128 * 4 + 128 * 4 = 34 KiB, inside the 48 KiB default.
   const size_t smem =
-      ((size_t)ctx->profile.rows_count + ctx->profile.cols_count) * rank * sizeof(int32_t) +
+      ((size_t)PEARL_ROWS_COUNT + PEARL_COLS_COUNT) * rank * sizeof(int32_t) +
       (size_t)threads * sizeof(uint32_t);
 
   pearl_gemm_fold<<<regions, threads, smem>>>(
       ctx->dAp, ctx->dBp,
-      ctx->dRows, ctx->dCols, ctx->profile.rows_count, ctx->profile.cols_count,
+      ctx->dRows, ctx->dCols, PEARL_ROWS_COUNT, PEARL_COLS_COUNT,
       ctx->profile.m, ctx->profile.n, k, rank, chunks, nonce_base, ctx->dJackpot);
 
   pearl_finalize_many<<<(regions + 255) / 256, 256>>>(

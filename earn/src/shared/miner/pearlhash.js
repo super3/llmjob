@@ -31,21 +31,111 @@
 // the numbers baked into config52 and handed to the core; a job whose params
 // disagree is mined at the wrong geometry and earns nothing, so the host asserts
 // the pool's rank against PROFILE.rank before it starts a search.
+// A periodic index pattern, the shape the protocol uses to describe which rows
+// of A and columns of B form the jackpot tile. Three (stride, length) dimensions,
+// serialised to SIX bytes as (factor-1, length-1) per dimension, where factor is
+// the stride divided by the running product of the previous dimensions.
+//
+// This replaced a guess. The tile was previously derived as "row i = i*8, columns
+// in pairs at stride 8", which produced a 2x64 tile — the real default is 4x8,
+// and the index sets are not a simple stride at all.
+const ROWS_PATTERN = [0, 8, 64, 72];
+const COLS_PATTERN = [0, 1, 8, 9, 32, 33, 40, 41];
+
+// Expand a pattern's (stride, length) dimensions into its index list, exactly as
+// PeriodicPattern::to_list does: start from [0] and, for each dimension, replace
+// the set with {r + i*stride} for i in 0..length.
+function patternToList(shape) {
+  let res = [0];
+  for (const [stride, length] of shape) {
+    const next = [];
+    for (let i = 0; i < length; i++) for (const r of res) next.push(r + i * stride);
+    res = next;
+  }
+  return res;
+}
+
+// Recover the (stride, length) dimensions from an index list — the inverse of
+// patternToList, matching PeriodicPattern::from_list. Dimensions come out
+// smallest-stride first, which is the order to_bytes expects.
+function patternFromList(list) {
+  let p = list.slice();
+  const shape = [];
+  while (p.length > 1) {
+    let found = false;
+    for (let period = 1; period < p.length; period++) {
+      if (p.length % period) continue;
+      const stride = p[period];
+      let periodic = true;
+      for (let i = 0; i + period < p.length; i++) {
+        if (p[i] + stride !== p[i + period]) { periodic = false; break; }
+      }
+      if (!periodic) continue;
+      shape.unshift([stride, p.length / period]);
+      p = p.slice(0, period);
+      found = true;
+      break;
+    }
+    if (!found) throw new Error('index pattern is not periodic: ' + list.join(','));
+  }
+  return shape;
+}
+
+// Six bytes: (factor-1, length-1) per dimension, factor = stride / running
+// product. The unused third dimension is padded as (min_stride, 1) so its factor
+// is 1 — the protocol rejects any other encoding as non-canonical.
+function patternToBytes(shape) {
+  const out = Buffer.alloc(6);
+  let minStride = 1;
+  const dims = shape.slice();
+  while (dims.length < 3) dims.push([minStridePad(shape), 1]);
+  for (let i = 0; i < 3; i++) {
+    const [stride, length] = dims[i];
+    const factor = Math.floor(stride / minStride);
+    out[2 * i] = factor - 1;
+    out[2 * i + 1] = length - 1;
+    minStride = stride * length;
+  }
+  return out;
+}
+
+// The stride the padding dimension must carry so its factor comes out as 1.
+function minStridePad(shape) {
+  let s = 1;
+  for (const [stride, length] of shape) s = stride * length;
+  return s;
+}
+
+// The mandated mainnet profile, taken from the reference implementation's own
+// defaults rather than inferred:
+//
+//   rank = 128        the rank-penalty floor; below it blocks are penalised,
+//                     above it costs more work for no extra credit
+//   k    = 16 * rank  the smallest common dimension the sanity checks allow
+//   tile = 4 x 8      rows_pattern x cols_pattern
+//
+// Note what is NOT here: m and n. The matmul's outer dimensions are not part of
+// the mining configuration at all — the miner chooses them, because the work is
+// meant to be a real workload. They therefore never enter job_key, and the
+// search is over the tile OFFSET (t_rows, t_cols) within whatever output the
+// miner computed.
+//
+// k / rank = 16 chunks, which is exactly the number of transcript lanes — so
+// every chunk lands in its own lane and the rotation never wraps. The earlier
+// k = 4096 gave 32 chunks and wrapped each lane twice.
 const PROFILE = {
-  m: 131072,
-  n: 131072,
-  k: 4096,
+  // Hashed into config52 — protocol-mandated, must match the network exactly.
+  k: 2048,
   rank: 128,
-  hashTile: 16,
-  rows: [0, 8],
-  cols: (() => {
-    // The default column pattern: pairs (i, i+1) at every 8th position across 64
-    // columns — [0,1,8,9,16,17,…,248,249]. Written out rather than hard-coded so
-    // the shape is legible and a profile change is a one-line edit.
-    const out = [];
-    for (let base = 0; base < 256; base += 8) { out.push(base, base + 1); }
-    return out;
-  })(),
+  mmaType: 0, // Int7xInt7ToInt32
+  rows: ROWS_PATTERN,
+  cols: COLS_PATTERN,
+  // NOT hashed. The outer dimensions are the miner's own choice of workload, so
+  // they never enter job_key — they only size the operands we allocate and bound
+  // the tile offset. Bigger m*n means more candidate offsets per commitment,
+  // which is the whole amortisation story.
+  m: 4096,
+  n: 4096,
 };
 
 const CONFIG_BYTES = 52;
@@ -58,20 +148,26 @@ const ROTL_BITS = 13;
 // downstream hash, so it is the single source of truth the core is generated
 // from (native/src/pearl_config.h mirrors these offsets — kept in sync by the
 // round-trip test, not by hand).
+// The 52-byte mining configuration, hashed with the 76-byte header to derive
+// job_key. Layout is the reference's MiningConfiguration::to_bytes, byte for
+// byte:
+//
+//   common_dim u32 (4) | rank u16 (2) | mma_type u16 (2)
+//   rows_pattern   (6) | cols_pattern (6) | MoE trailer (32)
+//
+// Getting any of this wrong changes job_key and therefore every hash downstream,
+// with no error anywhere — which is exactly what the first version did: it
+// packed m, n, k, rank, hashTile and two pattern COUNTS, none of which the
+// protocol carries.
 function buildConfig52(profile) {
   const p = profile || PROFILE;
   const b = Buffer.alloc(CONFIG_BYTES);
-  b.writeUInt32LE(p.m >>> 0, 0);
-  b.writeUInt32LE(p.n >>> 0, 4);
-  b.writeUInt32LE(p.k >>> 0, 8);
-  b.writeUInt16LE(p.rank & 0xffff, 12);
-  b.writeUInt16LE(p.hashTile & 0xffff, 14);
-  // rows/cols counts (the patterns themselves are derived by the core from these
-  // counts plus the fixed stride, exactly as the reference does).
-  b.writeUInt16LE(p.rows.length & 0xffff, 16);
-  b.writeUInt16LE(p.cols.length & 0xffff, 18);
-  // bytes 20..51 are reserved zero in the current profile; the core reads the
-  // same width so the job_key matches.
+  b.writeUInt32LE(p.k >>> 0, 0);
+  b.writeUInt16LE(p.rank & 0xffff, 4);
+  b.writeUInt16LE((p.mmaType || 0) & 0xffff, 6);
+  patternToBytes(patternFromList(p.rows)).copy(b, 8);
+  patternToBytes(patternFromList(p.cols)).copy(b, 14);
+  // Bytes 20..51 are the MoE trailer, zero for a standard (non-GROUPED_GEMM) job.
   return b;
 }
 
@@ -115,7 +211,8 @@ function rankMatches(jobRank, profile) {
 }
 
 module.exports = {
-  PROFILE,
+  PROFILE, ROWS_PATTERN, COLS_PATTERN,
+  patternToList, patternFromList, patternToBytes,
   CONFIG_BYTES,
   JACKPOT_BUCKETS,
   ROTL_BITS,

@@ -39,34 +39,56 @@
 
 // The mandated mainnet profile. rank=128 is the post-softfork value; mining any
 // other rank produces work the network does not credit.
+// The tile index sets. These are the reference implementation's own defaults —
+// a 4 x 8 tile whose indices are NOT a simple stride, which is what an earlier
+// guess assumed.
+#define PEARL_ROWS_COUNT 4
+#define PEARL_COLS_COUNT 8
+static const uint32_t PEARL_ROWS_PATTERN[PEARL_ROWS_COUNT] = {0, 8, 64, 72};
+static const uint32_t PEARL_COLS_PATTERN[PEARL_COLS_COUNT] = {0, 1, 8, 9, 32, 33, 40, 41};
+
+// The six-byte periodic encoding of each pattern: (factor-1, length-1) per
+// dimension. Precomputed rather than derived at runtime — the derivation is
+// exercised on the JS side, and the values are asserted equal by
+// test/nativeConfig.test.js so the two cannot drift.
+static const uint8_t PEARL_ROWS_PATTERN_BYTES[6] = {7, 1, 3, 1, 0, 0};
+static const uint8_t PEARL_COLS_PATTERN_BYTES[6] = {0, 1, 3, 1, 1, 1};
+
 typedef struct PearlProfile {
-  uint32_t m;          // offset 0
-  uint32_t n;          // offset 4
-  uint32_t k;          // offset 8
-  uint16_t rank;       // offset 12
-  uint16_t hash_tile;  // offset 14
-  uint16_t rows_count; // offset 16
-  uint16_t cols_count; // offset 18
-  // bytes 20..51 reserved zero
+  // Hashed into config52 — protocol-mandated.
+  uint32_t k;          // common dimension; the sanity checks require k >= 16*rank
+  uint16_t rank;       // 128, the rank-penalty floor
+  uint16_t mma_type;   // 0 = Int7xInt7ToInt32
+  // NOT hashed: the miner's own choice of workload dimensions. They size the
+  // operands and bound the tile offset, and never enter job_key.
+  uint32_t m;
+  uint32_t n;
 } PearlProfile;
 
-static const PearlProfile PEARL_MAINNET_PROFILE = {
-    131072u, 131072u, 4096u, 128u, 16u, 2u, 64u};
+// k = 16 * rank is the smallest common dimension the protocol allows at the
+// mandated rank, and k/rank = 16 chunks is exactly the transcript lane count, so
+// each chunk lands in its own lane and the rotation never wraps.
+static const PearlProfile PEARL_MAINNET_PROFILE = {2048u, 128u, 0u, 4096u, 4096u};
 
-// Serialize a profile into the 52-byte config block, little-endian, matching
-// buildConfig52(). `out` must have room for PEARL_CONFIG_BYTES.
+// Serialize the 52-byte mining configuration, matching the reference's
+// MiningConfiguration::to_bytes byte for byte:
+//
+//   common_dim u32 (4) | rank u16 (2) | mma_type u16 (2)
+//   rows_pattern   (6) | cols_pattern (6) | MoE trailer (32)
+//
+// Note m and n are absent: they are the miner's choice, not protocol. An earlier
+// version packed them here along with a hash_tile and two pattern COUNTS, none of
+// which the protocol carries — which changed job_key and so every hash after it,
+// silently. `out` must have room for PEARL_CONFIG_BYTES.
 PEARL_HD static inline void pearl_write_config52(const PearlProfile *p, uint8_t *out) {
   for (int i = 0; i < PEARL_CONFIG_BYTES; i++) out[i] = 0;
-  out[0] = (uint8_t)(p->m); out[1] = (uint8_t)(p->m >> 8);
-  out[2] = (uint8_t)(p->m >> 16); out[3] = (uint8_t)(p->m >> 24);
-  out[4] = (uint8_t)(p->n); out[5] = (uint8_t)(p->n >> 8);
-  out[6] = (uint8_t)(p->n >> 16); out[7] = (uint8_t)(p->n >> 24);
-  out[8] = (uint8_t)(p->k); out[9] = (uint8_t)(p->k >> 8);
-  out[10] = (uint8_t)(p->k >> 16); out[11] = (uint8_t)(p->k >> 24);
-  out[12] = (uint8_t)(p->rank); out[13] = (uint8_t)(p->rank >> 8);
-  out[14] = (uint8_t)(p->hash_tile); out[15] = (uint8_t)(p->hash_tile >> 8);
-  out[16] = (uint8_t)(p->rows_count); out[17] = (uint8_t)(p->rows_count >> 8);
-  out[18] = (uint8_t)(p->cols_count); out[19] = (uint8_t)(p->cols_count >> 8);
+  out[0] = (uint8_t)(p->k); out[1] = (uint8_t)(p->k >> 8);
+  out[2] = (uint8_t)(p->k >> 16); out[3] = (uint8_t)(p->k >> 24);
+  out[4] = (uint8_t)(p->rank); out[5] = (uint8_t)(p->rank >> 8);
+  out[6] = (uint8_t)(p->mma_type); out[7] = (uint8_t)(p->mma_type >> 8);
+  for (int i = 0; i < 6; i++) out[8 + i] = PEARL_ROWS_PATTERN_BYTES[i];
+  for (int i = 0; i < 6; i++) out[14 + i] = PEARL_COLS_PATTERN_BYTES[i];
+  // Bytes 20..51 are the MoE trailer, zero for a standard job.
 }
 
 // rotl on a 32-bit lane — the transcript fold's mixing step. Mirrors rotl13().
