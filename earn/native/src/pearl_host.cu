@@ -35,6 +35,9 @@
 
 #include <vector>
 
+#include <cstdlib>
+#include <cstdio>
+
 #include "pearl_config.h"
 
 // Declared in pearl_kernel.cu.
@@ -514,6 +517,22 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   const uint32_t col_off =
       (uint32_t)((nonce_base / ctx->profile.m) % ctx->profile.n);
 
+  // Per-stage timing, enabled by setting PEARL_PROFILE. Two rounds of reasoning
+  // about which stage dominated were wrong -- the A-reuse and BLAKE3 register
+  // fixes were both correct and both changed almost nothing -- so this measures
+  // rather than infers. cudaEvent timing serialises the stages, so the totals
+  // are only meaningful relative to each other.
+  static const bool prof = getenv("PEARL_PROFILE") != nullptr;
+  static cudaEvent_t ev[5];
+  static bool ev_ready = false;
+  static double acc[4] = {0, 0, 0, 0};
+  static uint64_t acc_n = 0;
+  if (prof && !ev_ready) {
+    for (int i = 0; i < 5; i++) cudaEventCreate(&ev[i]);
+    ev_ready = true;
+  }
+  if (prof) cudaEventRecord(ev[0]);
+
   // Stage one: every distinct partial dot product, once. Stage two: the fold,
   // which is now a gather over them.
   // One thread per (chunk, row) — each already produces ALL of that row's
@@ -527,15 +546,41 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
       ctx->dAp, ctx->dBp, ctx->dCols, PEARL_COLS_COUNT, ctx->profile.m,
       ctx->profile.n, k, rank, chunks, col_off, col_groups, ctx->dD);
 
+  if (prof) cudaEventRecord(ev[1]);
   pearl_gemm_fold<<<(regions + warps_per_block - 1) / warps_per_block, threads>>>(
       ctx->dD, ctx->dRows, PEARL_ROWS_COUNT, PEARL_COLS_COUNT, ctx->profile.m,
       chunks, nonce_base, ctx->dJackpot);
 
+  if (prof) cudaEventRecord(ev[2]);
   pearl_finalize_many<<<(regions + 255) / 256, 256>>>(
       ctx->dASeed, ctx->dJackpot, regions, ctx->dTarget, ctx->dHashes, ctx->dFlags);
 
+  if (prof) cudaEventRecord(ev[3]);
   cudaMemcpy(ctx->hFlags.data(), ctx->dFlags, (size_t)regions * sizeof(int),
              cudaMemcpyDeviceToHost);
+  if (prof) {
+    cudaEventRecord(ev[4]);
+    cudaEventSynchronize(ev[4]);
+    float ms = 0.0f;
+    cudaEventElapsedTime(&ms, ev[0], ev[1]); acc[0] += ms;
+    cudaEventElapsedTime(&ms, ev[1], ev[2]); acc[1] += ms;
+    cudaEventElapsedTime(&ms, ev[2], ev[3]); acc[2] += ms;
+    cudaEventElapsedTime(&ms, ev[3], ev[4]); acc[3] += ms;
+    if (++acc_n % 200 == 0) {
+      const double tot = acc[0] + acc[1] + acc[2] + acc[3];
+      fprintf(stderr,
+              "[pearl] over %llu batches: partials %.2fms (%.0f%%)  fold %.2fms "
+              "(%.0f%%)  finalize %.2fms (%.0f%%)  copy %.2fms (%.0f%%)  "
+              "total %.2fms/batch\n",
+              (unsigned long long)acc_n,
+              acc[0] / acc_n, 100.0 * acc[0] / tot,
+              acc[1] / acc_n, 100.0 * acc[1] / tot,
+              acc[2] / acc_n, 100.0 * acc[2] / tot,
+              acc[3] / acc_n, 100.0 * acc[3] / tot,
+              tot / acc_n);
+      fflush(stderr);
+    }
+  }
 
   cudaError_t e = cudaGetLastError();
   if (e != cudaSuccess) {
