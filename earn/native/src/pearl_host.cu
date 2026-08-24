@@ -386,17 +386,16 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   const uint32_t rank = ctx->profile.rank;
   const uint32_t chunks = (k + rank - 1) / rank;
   const uint32_t regions = batch < ctx->batch ? batch : ctx->batch;
-  const int threads = 128;  // 4 warps; more would exceed the shared-memory budget
+  // 16 warps a block. The kernel uses no shared memory, so occupancy is bounded
+  // by registers alone, and more warps in flight is the cheapest remaining way to
+  // hide the load latency that staging failed to remove.
+  const int threads = 512;
 
   // One warp per region now, so the grid is regions/warps-per-block and there is
   // no shared memory at all — the per-chunk reduction is a shuffle.
   const int warps_per_block = threads / 32;
-  // Padded stride: rank+1 words per slice, so a warp reading one element from
-  // each slice hits 32 distinct shared-memory banks instead of one.
-  const size_t smem = (size_t)warps_per_block * (PEARL_ROWS_COUNT + PEARL_COLS_COUNT)
-                      * (ctx->profile.rank + 1) * sizeof(int32_t);
 
-  pearl_gemm_fold<<<(regions + warps_per_block - 1) / warps_per_block, threads, smem>>>(
+  pearl_gemm_fold<<<(regions + warps_per_block - 1) / warps_per_block, threads>>>(
       ctx->dAp, ctx->dBp,
       ctx->dRows, ctx->dCols, PEARL_ROWS_COUNT, PEARL_COLS_COUNT,
       ctx->profile.m, ctx->profile.n, k, rank, chunks, nonce_base, ctx->dJackpot);
