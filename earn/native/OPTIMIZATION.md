@@ -3,6 +3,31 @@
 Measured on an RTX 4090, mainnet geometry (k=2048, rank=128, 4x8 tile), against
 the frozen parity vectors after every change.
 
+## Every number below this line was measured with a broken instrument
+
+Read the table as a record of what was TRIED, not of what it achieved. Two
+independent faults made the figures meaningless, and both are now fixed:
+
+1. **The hashrate was never a rate.** `EmitHashrate` was passed
+   `attempts * DAF / 1e12` with no division by elapsed time, so it reported
+   work-per-batch. It came out identical to the last digit across four thousand
+   samples no matter how fast the card ran.
+
+2. **The miner stalled after about five seconds.** That same per-batch emission
+   was a `BlockingCall` several hundred times a second, and the worker thread
+   eventually blocked inside it and never returned -- GPU to 0%, no hits, no
+   error. So most of every measurement window was spent doing nothing. The same
+   binary read 0.07 TMAC/s over 40 seconds and 1.27 TMAC/s over 12.
+
+The current figure, measured with a working instrument on a miner that does not
+stall, is **5.35 TH/s** (81.6M regions/s) at the mainnet geometry -- **55x short**
+of the 296 TH/s target.
+
+The lesson is the one this project keeps relearning: an unvalidated instrument
+is worse than no instrument, because it produces numbers confident enough to
+optimise against. The parity vectors exist precisely because correctness had the
+same problem, and they are what caught the noise construction being wrong.
+
 ## The unit, because it caused a five-order-of-magnitude misreading
 
 Hashrate is **multiply-accumulates per second, not attempts per second**. The
