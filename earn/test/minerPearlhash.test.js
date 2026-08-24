@@ -5,6 +5,7 @@ const {
   buildConfig52, leBytesToBigInt, meetsTarget, rotl13, rankMatches,
   patternToList, patternFromList, patternToBytes, difficultyAdjustmentFactor,
   PENALTY_BASE_RANK, penalizedAdjustmentFactor, shareBound,
+  ROWS_MASK, COLS_MASK, offsetIsValid, expandOffset, regionToTile,
 } = require('../src/shared/miner/pearlhash');
 
 describe('PROFILE', () => {
@@ -238,6 +239,99 @@ describe('the share bound', () => {
   // by it would be a divide-by-nothing, so it is refused outright.
   test('a degenerate profile yields no bound', () => {
     expect(shareBound(1n, { ...PROFILE, k: 64, rank: 128 })).toBeNull();
+  });
+});
+
+
+describe('valid tile offsets', () => {
+  // A transcription of PeriodicPattern::offset_is_valid from the reference:
+  // reduce the offset modulo each (stride, length) dimension, largest stride
+  // first, and require it to stay below the stride.
+  function referenceIsValid(offset, shape) {
+    let o = offset;
+    for (let i = shape.length - 1; i >= 0; i--) {
+      const [stride, length] = shape[i];
+      o %= stride * length;
+      if (o >= stride) return false;
+    }
+    return true;
+  }
+
+  // The masks are the OR of each pattern's own values, and the patterns are
+  // exactly the subsets of those bits.
+  test('the mask is the pattern bits', () => {
+    expect(ROWS_MASK).toBe(72); // bits 3 and 6
+    expect(COLS_MASK).toBe(41); // bits 0, 3 and 5
+    for (const r of PROFILE.rows) expect(r & ~ROWS_MASK).toBe(0);
+    for (const c of PROFILE.cols) expect(c & ~COLS_MASK).toBe(0);
+  });
+
+  // The whole reason the search enumerates offsets the way it does. Getting
+  // this wrong is not slow, it is unusable: the pool rejects the share with
+  // "offset N is not valid for pattern" and the work is lost.
+  test('the bit test agrees with the reference rule everywhere', () => {
+    for (let o = 0; o < 4096; o++) {
+      expect(offsetIsValid(o, ROWS_MASK)).toBe(referenceIsValid(o, [[8, 2], [64, 2]]));
+      expect(offsetIsValid(o, COLS_MASK)).toBe(referenceIsValid(o, [[1, 2], [8, 2], [32, 2]]));
+    }
+  });
+
+  test('expansion enumerates exactly the valid offsets, in order', () => {
+    for (const mask of [ROWS_MASK, COLS_MASK]) {
+      const enumerated = [];
+      for (let i = 0; i < 64; i++) enumerated.push(expandOffset(i, mask));
+      const brute = [];
+      for (let o = 0; brute.length < 64; o++) if (offsetIsValid(o, mask)) brute.push(o);
+      expect(enumerated).toEqual(brute);
+    }
+  });
+
+  // One offset in rows_count down and one in cols_count across, so one region
+  // in 32 is submittable -- and the valid tiles partition the grid.
+  test('valid offsets are one in the pattern length', () => {
+    let rows = 0;
+    for (let o = 0; o < 1024; o++) if (offsetIsValid(o, ROWS_MASK)) rows++;
+    expect(rows).toBe(1024 / PROFILE.rows.length);
+    let cols = 0;
+    for (let o = 0; o < 1024; o++) if (offsetIsValid(o, COLS_MASK)) cols++;
+    expect(cols).toBe(1024 / PROFILE.cols.length);
+  });
+
+  test('a tile is the offset OR-ed with the pattern', () => {
+    const t = regionToTile(0, { ...PROFILE, m: 4096, n: 4096 });
+    expect(t.rows).toEqual(PROFILE.rows);
+    expect(t.cols).toEqual(PROFILE.cols);
+    const t2 = regionToTile(1, { ...PROFILE, m: 4096, n: 4096 });
+    expect(t2.rows).toEqual([1, 9, 65, 73]);
+  });
+
+  // Tiles partitioning the grid is what makes the search non-redundant: no two
+  // regions share a cell, so no work is ever repeated.
+  test('distinct regions touch disjoint cells', () => {
+    const seen = new Set();
+    const p = { ...PROFILE, m: 256, n: 256 };
+    for (let region = 0; region < 200; region++) {
+      const t = regionToTile(region, p);
+      for (const r of t.rows) {
+        for (const c of t.cols) {
+          const cell = r * 1024 + c;
+          expect(seen.has(cell)).toBe(false);
+          seen.add(cell);
+        }
+      }
+    }
+  });
+
+  test('defaults to the mainnet profile', () => {
+    expect(regionToTile(0).rows).toEqual(PROFILE.rows);
+  });
+
+  // The tile patterns are protocol constants, so a profile that omits them
+  // still names the right tile.
+  test('defaults the tile patterns when a profile omits them', () => {
+    const t = regionToTile(3, { m: 4096, n: 4096 });
+    expect(t.rows).toEqual(PROFILE.rows.map((r) => t.rowOff | r));
+    expect(t.cols).toEqual(PROFILE.cols.map((c) => t.colOff | c));
   });
 });
 

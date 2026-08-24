@@ -92,8 +92,11 @@ function buildLayers(key, data) {
     }
     layers.push(next);
   }
+  // The loop above runs while the top layer has more than two nodes, and a
+  // multi-chunk operand always starts with at least two, so it exits at exactly
+  // two. The final merge is therefore unconditional.
   const last = layers[layers.length - 1];
-  if (last.length === 2) layers.push([parentCV(key, last[0], last[1], true)]);
+  layers.push([parentCV(key, last[0], last[1], true)]);
   return layers;
 }
 
