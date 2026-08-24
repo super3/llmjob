@@ -34,32 +34,54 @@ retain and no licence to comply with beyond ISC attribution.
 | BLAKE3 device compression, keyed hashing | written |
 | Low-rank noise generation | written |
 | GEMM + jackpot transcript fold | written — **scalar/dp4a reference path** |
+| `pearl_host.cu` (device memory + pipeline driver) | written |
+| JS reference oracle + known-answer vectors | **done** — BLAKE3 validated against the official vectors |
+| CI compile + link gate (Windows + Linux) | **done** — `.github/workflows/native-core.yml` |
 | Tensor-core (`mma.sync` int8) mainloop | **not written** — this is the performance work |
-| `pearl_host.cu` (device memory + pipeline driver) | **not written** |
-| Compiled + benchmarked | **no** — see below |
+| Benchmarked on a GPU | **no** — no GPU on any runner; needs a real box |
 
 The kernels are written to be *bit-exact with the reference first, fast second*.
 A fast core that disagrees with the spec mines nothing, so correctness is
 cross-checked against the JS reference before any tensor-core work begins.
 
-**Nothing here has been compiled.** The development box has no CUDA toolkit and
-no MSVC, so this ships as reviewed source with the build wired up, not as a
-verified binary. Expect real work to finish `pearl_host.cu`, get the
-known-answer tests passing on hardware, then specialise the mainloop.
+**Nothing here has been compiled on the development box** — it has no CUDA
+toolkit and no MSVC, and the account is not an administrator, so there is no way
+to install one. CI covers the gap: `native-core.yml` compiles AND links the
+addon on Windows and Linux runners, which is what catches a drift between
+`pearl_core.cc`'s `extern "C"` declarations and `pearl_host.cu`'s definitions —
+that failure is a link error, invisible to code review.
+
+What CI cannot do is run it: the runners have no GPU. Device semantics are
+pinned instead by the JS reference oracle (`src/shared/miner/reference.js`) and
+its frozen known-answer vectors, whose BLAKE3 foundation is validated against
+the official published BLAKE3 test vectors — so the arithmetic is checked
+against evidence outside this repo, not merely against itself.
+
+Those vectors pin OUR semantics and make the JS and CUDA sides provably agree.
+They do not by themselves prove agreement with the Pearl network; that needs a
+share accepted by a real pool. What they buy is that when a rejection happens,
+it points at the protocol rather than at arithmetic.
 
 ## Building
 
 Requires the CUDA Toolkit 12.x and a host compiler (MSVC on Windows, gcc on
-Linux).
+Linux). On Windows `nvcc` **hard-requires** MSVC's `cl.exe` as its host
+compiler — there is no way around that, which is why this cannot be built on a
+box without Visual Studio.
 
 ```bash
 # 1. Compile the CUDA half into a static library
 nvcc -O3 -std=c++17 -arch=sm_89 -c src/pearl_kernel.cu -o build/pearl_kernel.o
-nvcc -lib build/pearl_kernel.o -o build/pearl_cuda.lib      # .a on Linux
+nvcc -O3 -std=c++17 -arch=sm_89 -c src/pearl_host.cu   -o build/pearl_host.o
+nvcc -lib build/pearl_kernel.o build/pearl_host.o -o build/pearl_cuda.lib  # .a on Linux
 
 # 2. Build the N-API addon around it
 npx node-gyp rebuild
 ```
+
+`.github/workflows/native-core.yml` does exactly this for sm_86/89/120 on both
+platforms, so a green run means it compiles and links even though nothing there
+can execute it.
 
 `CUDA_PATH` is picked up automatically; override the arch for other cards
 (`sm_86` Ampere, `sm_89` Ada, `sm_120` Blackwell).

@@ -1,0 +1,113 @@
+# Compile the Pearl CUDA core.
+#
+# The runners have NO GPU, so this cannot mine and cannot run a known-answer
+# check on device. What it CAN do is prove the core compiles and links on both
+# target platforms — which is worth a workflow on its own, because the core is
+# developed on a machine with no CUDA toolkit and no MSVC, and would otherwise
+# accumulate syntax, type and signature errors that nobody sees until somebody
+# with a GPU box tries to build it.
+#
+# In particular this catches the class of error that bit us before the host file
+# existed: pearl_core.cc declares four extern "C" entry points, and if
+# pearl_host.cu drifts from those declarations the addon compiles fine and fails
+# at LINK time. A compile-only job finds that; reading the diff does not.
+#
+# The device-side semantics are checked separately and without a GPU, by the JS
+# reference and its known-answer vectors (test/minerReference.test.js), whose
+# BLAKE3 foundation is validated against the official published vectors.
+
+name: native core
+
+on:
+  push:
+    paths:
+      - 'earn/native/**'
+      - '.github/workflows/native-core.yml'
+  pull_request:
+    paths:
+      - 'earn/native/**'
+      - '.github/workflows/native-core.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # A GPU-less runner still installs the compiler and headers; only the
+      # runtime components are needed to build.
+      - name: Install the CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.19
+        id: cuda
+        with:
+          cuda: '12.6.0'
+          method: 'network'
+          sub-packages: '["nvcc", "cudart", "cudart-dev", "nvrtc", "nvrtc-dev"]'
+
+      - name: Report the toolchain
+        run: |
+          nvcc --version
+          node --version
+
+      - name: Install node-addon-api
+        working-directory: earn/native
+        run: npm install --no-save node-addon-api node-gyp
+
+      # Compile the CUDA half into a static library. sm_86/89/120 covers Ampere,
+      # Ada and Blackwell — the cards the app actually targets.
+      - name: Compile the CUDA kernels
+        working-directory: earn/native
+        shell: bash
+        run: |
+          mkdir -p build
+          nvcc -O3 -std=c++17 \
+            -gencode arch=compute_86,code=sm_86 \
+            -gencode arch=compute_89,code=sm_89 \
+            -gencode arch=compute_120,code=sm_120 \
+            -c src/pearl_kernel.cu -o build/pearl_kernel.o
+          nvcc -O3 -std=c++17 \
+            -gencode arch=compute_86,code=sm_86 \
+            -gencode arch=compute_89,code=sm_89 \
+            -gencode arch=compute_120,code=sm_120 \
+            -c src/pearl_host.cu -o build/pearl_host.o
+
+      - name: Archive the CUDA objects into a library
+        working-directory: earn/native
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            nvcc -lib build/pearl_kernel.o build/pearl_host.o -o build/pearl_cuda.lib
+          else
+            ar rcs build/libpearl_cuda.a build/pearl_kernel.o build/pearl_host.o
+          fi
+
+      # The real prize: this LINKS, so a drift between pearl_core.cc's extern "C"
+      # declarations and pearl_host.cu's definitions fails the build here rather
+      # than on somebody's GPU box.
+      - name: Build the N-API addon
+        working-directory: earn/native
+        run: npx node-gyp rebuild
+
+      - name: Confirm the addon was produced
+        working-directory: earn/native
+        shell: bash
+        run: |
+          test -f build/Release/pearl_core.node
+          echo "built: $(ls -l build/Release/pearl_core.node)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pearl-core-${{ matrix.os }}
+          path: earn/native/build/Release/pearl_core.node
+          if-no-files-found: error
