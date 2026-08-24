@@ -386,18 +386,13 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   const uint32_t rank = ctx->profile.rank;
   const uint32_t chunks = (k + rank - 1) / rank;
   const uint32_t regions = batch < ctx->batch ? batch : ctx->batch;
-  const int threads = 128;  // 4 warps; more would exceed the shared-memory budget
+  const int threads = 256;  // 8 warps, so 8 regions in flight per block
 
   // One warp per region now, so the grid is regions/warps-per-block and there is
   // no shared memory at all — the per-chunk reduction is a shuffle.
   const int warps_per_block = threads / 32;
-  // Each warp stages its own 4 rows + 8 columns for one chunk. At rank 128 that
-  // is 6 KiB a warp, so 4 warps sit at 24 KiB — inside the 48 KiB default and
-  // leaving room for the occupancy the scheduler wants.
-  const size_t smem = (size_t)warps_per_block * (PEARL_ROWS_COUNT + PEARL_COLS_COUNT)
-                      * ctx->profile.rank * sizeof(int32_t);
 
-  pearl_gemm_fold<<<(regions + warps_per_block - 1) / warps_per_block, threads, smem>>>(
+  pearl_gemm_fold<<<(regions + warps_per_block - 1) / warps_per_block, threads>>>(
       ctx->dAp, ctx->dBp,
       ctx->dRows, ctx->dCols, PEARL_ROWS_COUNT, PEARL_COLS_COUNT,
       ctx->profile.m, ctx->profile.n, k, rank, chunks, nonce_base, ctx->dJackpot);
