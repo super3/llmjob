@@ -656,11 +656,12 @@ extern "C" __global__ void pearl_partials(const int8_t *__restrict__ Aprime,
     // col_off is a valid-offset INDEX; expanding it gives an offset with the
     // column pattern's bits clear, so the tile column is a bitwise OR.
     const uint32_t coff = pearl_expand_offset(col_off + cg, PEARL_COLS_MASK);
-    const int8_t *bc[PEARL_COLS_COUNT];
-#pragma unroll
-    for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) {
-      bc[c] = Bprime + (size_t)(coff | cols_pattern[c]) * k + k0;
-    }
+    // The tile's columns are CONTIGUOUS, so they need one base pointer and a
+    // stride rather than an array of sixteen. That array cost thirty-two
+    // registers a thread, which at sixteen columns was enough to halve
+    // occupancy and with it the achieved throughput.
+    (void)cols_pattern;
+    const int8_t *__restrict__ bbase = Bprime + (size_t)coff * k + k0;
 
     int32_t acc[PEARL_ROWS_PER_THREAD][PEARL_COLS_COUNT];
 #pragma unroll
@@ -678,7 +679,7 @@ extern "C" __global__ void pearl_partials(const int8_t *__restrict__ Aprime,
         if (q >= quads) break;
 #pragma unroll
         for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) {
-          const int4 bv = reinterpret_cast<const int4 *>(bc[c])[q];
+          const int4 bv = reinterpret_cast<const int4 *>(bbase + (size_t)c * k)[q];
           const int32_t *bw = reinterpret_cast<const int32_t *>(&bv);
 #pragma unroll
           for (uint32_t rr = 0; rr < PEARL_ROWS_PER_THREAD; rr++) {
@@ -696,7 +697,7 @@ extern "C" __global__ void pearl_partials(const int8_t *__restrict__ Aprime,
         for (uint32_t rr = 0; rr < PEARL_ROWS_PER_THREAD; rr++) {
           const int32_t a = (int32_t)Aprime[(size_t)(r0 + rr) * k + k0 + t];
 #pragma unroll
-          for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) acc[rr][c] += a * bc[c][t];
+          for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) acc[rr][c] += a * bbase[(size_t)c * k + t];
         }
       }
     }
