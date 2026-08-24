@@ -60,6 +60,12 @@ extern "C" __global__ void pearl_materialize(const int8_t *base,
                                              const uint32_t *perm, int8_t *out,
                                              uint32_t rows, uint32_t k,
                                              uint32_t rank);
+extern "C" __global__ void pearl_partials_wmma(const int8_t *Aprime,
+                                               const int8_t *Bprime, uint32_t m,
+                                               uint32_t n, uint32_t k,
+                                               uint32_t rank, uint32_t chunks,
+                                               uint32_t col_off,
+                                               uint32_t col_groups, int32_t *D);
 extern "C" __global__ void pearl_partials(const int8_t *Aprime, const int8_t *Bprime,
                                           const uint32_t *cols_pattern,
                                           uint32_t cols_count, uint32_t m, uint32_t n,
@@ -600,13 +606,34 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   // One thread per (chunk, row): the column groups are a loop INSIDE the
   // kernel now, so the A slice each thread loads is reused across all of them
   // instead of being re-read once per group.
-  // One thread per (chunk, row BLOCK): each carries PEARL_ROWS_PER_THREAD
-  // rows, so one B load feeds that many times as many multiply-accumulates.
-  const uint64_t npart =
-      (uint64_t)chunks * (ctx->profile.m / PEARL_ROWS_PER_THREAD);
-  pearl_partials<<<(unsigned)((npart + threads - 1) / threads), threads>>>(
-      ctx->dAp, ctx->dBp, ctx->dCols, PEARL_COLS_COUNT, ctx->profile.m,
-      ctx->profile.n, k, rank, chunks, col_off, col_groups, ctx->dD);
+  // The tensor-core path needs the WMMA int8 shape to divide everything: a
+  // sixteen-wide contiguous column tile, a rank that is a multiple of 16, and a
+  // row count that is a multiple of 16. Otherwise fall back to dp4a, which has
+  // no such constraints.
+  const bool useWmma = (PEARL_COLS_COUNT == 16) && (rank % 16 == 0) &&
+                       (ctx->profile.m % PEARL_WMMA_ROWS == 0) &&
+                       (k % 16 == 0) && !getenv("PEARL_NO_WMMA");
+  if (useWmma) {
+    // One WARP per (column group, chunk, row block of 16).
+    const uint64_t warpsNeeded = (uint64_t)chunks
+                                 * (ctx->profile.m / PEARL_WMMA_ROWS)
+                                 * col_groups;
+    const uint32_t warpsPerBlock = threads / 32;
+    const unsigned blocks =
+        (unsigned)((warpsNeeded + warpsPerBlock - 1) / warpsPerBlock);
+    const size_t smem = (size_t)warpsPerBlock * 16 * 16 * sizeof(int32_t);
+    pearl_partials_wmma<<<blocks, threads, smem>>>(
+        ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
+        col_off, col_groups, ctx->dD);
+  } else {
+    // One thread per (chunk, row BLOCK): each carries PEARL_ROWS_PER_THREAD
+    // rows, so one B load feeds that many times as many multiply-accumulates.
+    const uint64_t npart =
+        (uint64_t)chunks * (ctx->profile.m / PEARL_ROWS_PER_THREAD);
+    pearl_partials<<<(unsigned)((npart + threads - 1) / threads), threads>>>(
+        ctx->dAp, ctx->dBp, ctx->dCols, PEARL_COLS_COUNT, ctx->profile.m,
+        ctx->profile.n, k, rank, chunks, col_off, col_groups, ctx->dD);
+  }
 
   if (prof) cudaEventRecord(ev[1]);
   const uint32_t regions_per_block = warps_per_block * PEARL_REGIONS_PER_WARP;

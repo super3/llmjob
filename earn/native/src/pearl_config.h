@@ -162,6 +162,11 @@ typedef struct PearlProfile {
 // silently lose hits it would never have submitted anyway.
 #define PEARL_MAX_HITS 64
 
+// Rows of A one warp covers in the tensor-core partials kernel. The WMMA int8
+// shape is 16x16x16, and valid row offsets are multiples of PEARL_ROWS_COUNT,
+// so a 16-row block is exactly four consecutive row offsets.
+#define PEARL_WMMA_ROWS 16
+
 #define PEARL_SEED_SALTED 0u
 #define PEARL_SEED_LEGACY 1u
 

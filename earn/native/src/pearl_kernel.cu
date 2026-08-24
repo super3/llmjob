@@ -30,6 +30,8 @@
 #include <cuda_runtime.h>
 #include <stdint.h>
 
+#include <mma.h>
+
 #include "pearl_config.h"
 
 namespace {
@@ -716,6 +718,79 @@ extern "C" __global__ void pearl_partials(const int8_t *__restrict__ Aprime,
       for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) x ^= (uint32_t)acc[rr][c];
       D[((size_t)cg * chunks + chunk) * m + (r0 + rr)] = (int32_t)x;
     }
+  }
+}
+
+// The same partials, on the int8 TENSOR CORES.
+//
+// The dp4a kernel tops out around an eighth of that instruction's own peak, and
+// dp4a's peak is itself about half what the int8 tensor cores can do. Since
+// valid tiles partition the grid there is no reuse left to exploit, so the
+// reported hashrate IS the multiply-accumulate rate -- and closing the gap to a
+// competitive miner means going to the tensor cores.
+//
+// The contiguous tile is what makes this clean. WMMA's int8 shape is 16x16x16,
+// and:
+//
+//   - the tile's sixteen columns are consecutive, so they are exactly one B
+//     fragment rather than sixteen scattered rows;
+//   - valid row offsets are multiples of four, so a sixteen-row block is
+//     precisely four consecutive row offsets and nothing is wasted;
+//   - A is row-major [m][k] and B is [n][k], which for the product means A is
+//     row_major with leading dimension k and B is COL_MAJOR with the same
+//     leading dimension -- no staging or transpose needed.
+//
+// One warp computes a 16x16 block of C for one chunk and one column group.
+extern "C" __global__ void pearl_partials_wmma(
+    const int8_t *__restrict__ Aprime, const int8_t *__restrict__ Bprime,
+    uint32_t m, uint32_t n, uint32_t k, uint32_t rank, uint32_t chunks,
+    uint32_t col_off, uint32_t col_groups, int32_t *__restrict__ D) {
+  using namespace nvcuda;
+
+  const uint32_t warp = threadIdx.x >> 5;
+  const uint32_t warps_per_block = blockDim.x >> 5;
+  const uint32_t row_blocks = m / PEARL_WMMA_ROWS;
+
+  const uint64_t slot = (uint64_t)blockIdx.x * warps_per_block + warp;
+  const uint64_t total = (uint64_t)chunks * row_blocks * col_groups;
+  if (slot >= total) return;
+
+  const uint32_t cg = (uint32_t)(slot / ((uint64_t)chunks * row_blocks));
+  const uint64_t rest = slot - (uint64_t)cg * chunks * row_blocks;
+  const uint32_t rb = (uint32_t)(rest % row_blocks);
+  const uint32_t chunk = (uint32_t)(rest / row_blocks);
+
+  const uint32_t r0 = rb * PEARL_WMMA_ROWS;
+  const uint32_t k0 = chunk * rank;
+  const uint32_t c0 = pearl_expand_offset(col_off + cg, PEARL_COLS_MASK);
+
+  wmma::fragment<wmma::matrix_a, 16, 16, 16, int8_t, wmma::row_major> aF;
+  wmma::fragment<wmma::matrix_b, 16, 16, 16, int8_t, wmma::col_major> bF;
+  wmma::fragment<wmma::accumulator, 16, 16, 16, int32_t> cF;
+  wmma::fill_fragment(cF, 0);
+
+  for (uint32_t t = 0; t < rank; t += 16) {
+    wmma::load_matrix_sync(aF, Aprime + (size_t)r0 * k + k0 + t, k);
+    wmma::load_matrix_sync(bF, Bprime + (size_t)c0 * k + k0 + t, k);
+    wmma::mma_sync(cF, aF, bF, cF);
+  }
+
+  // The fragment's per-lane layout is opaque, so the block goes through shared
+  // memory before the per-row XOR.
+  extern __shared__ int32_t smem[];
+  int32_t *tile = smem + (size_t)warp * 16 * 16;
+  wmma::store_matrix_sync(tile, cF, 16, wmma::mem_row_major);
+  __syncwarp();
+
+  // Sixteen lanes, one row each: XOR that row's sixteen columns and store. This
+  // is the same collapse the dp4a kernel does at the producer, and exact for the
+  // same reason -- the tile fold is an XOR over every column of a row.
+  const uint32_t lane = threadIdx.x & 31u;
+  if (lane < PEARL_WMMA_ROWS) {
+    uint32_t x = 0u;
+#pragma unroll
+    for (int c = 0; c < 16; c++) x ^= (uint32_t)tile[lane * 16 + c];
+    D[((size_t)cg * chunks + chunk) * m + (r0 + lane)] = (int32_t)x;
   }
 }
 
