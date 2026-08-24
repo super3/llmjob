@@ -50,6 +50,17 @@ extern "C" __global__ void pearl_gemm_fold(
     const uint32_t *cols_pattern, uint32_t rows_count, uint32_t cols_count,
     uint32_t m, uint32_t n, uint32_t k, uint32_t rank, uint32_t chunks,
     uint64_t region, uint32_t *jackpot_out);
+extern "C" __global__ void pearl_blake3_chunk_cvs(const uint32_t *key,
+                                                  const uint8_t *data,
+                                                  uint64_t chunks,
+                                                  uint32_t *cvs_out);
+extern "C" __global__ void pearl_blake3_parent_layer(const uint32_t *key,
+                                                     const uint32_t *in_cvs,
+                                                     uint64_t pairs,
+                                                     uint32_t is_root,
+                                                     uint32_t *out_cvs);
+extern "C" __global__ void pearl_blake3_short(const uint8_t *in, uint32_t len,
+                                              uint8_t *out);
 extern "C" __global__ void pearl_finalize(const uint32_t *a_seed,
                                           const uint32_t *jackpot,
                                           const uint8_t *target_be,
@@ -88,6 +99,11 @@ struct Ctx {
   uint32_t *dJobKey = nullptr;
   uint32_t *dASeed = nullptr;
   uint32_t *dBSeed = nullptr;
+  uint32_t *dCvs = nullptr;      // BLAKE3 tree scratch (leaf CVs, reduced in place)
+  uint8_t *dSeedBuf = nullptr;   // 64-byte concat for b_seed / a_seed
+  uint8_t *dHashA = nullptr;
+  uint8_t *dHashB = nullptr;
+  uint64_t cvCapacity = 0;
   uint8_t *dTarget = nullptr;
   uint8_t *dHash = nullptr;
   int *dIsShare = nullptr;
@@ -109,6 +125,35 @@ void build_patterns(const PearlProfile &p, std::vector<uint32_t> *rows,
     cols->push_back(base);
     if (cols->size() < p.cols_count) cols->push_back(base + 1);
   }
+}
+
+// Keyed BLAKE3 over a whole operand: hash each 1024-byte chunk into a leaf CV,
+// then fold pairs until one root remains. The final fold carries ROOT and its
+// output IS the digest.
+//
+// Chunk counts are powers of two here (m*k with power-of-two m and k), so the
+// tree is balanced and the fold is exact. A non-power-of-two operand would need
+// BLAKE3's left-heavy layout, which this deliberately does not pretend to do.
+void operand_commitment(Ctx *ctx, const uint8_t *data, size_t len,
+                        uint8_t *out32) {
+  const uint64_t chunks = len / 1024;
+  const int threads = 256;
+  if (chunks <= 1) {
+    // One chunk or less: the chunk's own final compression carries ROOT.
+    pearl_hash_operands<<<1, 1>>>(ctx->dJobKey, data, (uint32_t)len, out32);
+    return;
+  }
+  pearl_blake3_chunk_cvs<<<(unsigned)((chunks + threads - 1) / threads), threads>>>(
+      ctx->dJobKey, data, chunks, ctx->dCvs);
+  uint64_t count = chunks;
+  while (count > 1) {
+    const uint64_t pairs = count / 2;
+    const uint32_t isRoot = (pairs == 1) ? 1u : 0u;
+    pearl_blake3_parent_layer<<<(unsigned)((pairs + threads - 1) / threads), threads>>>(
+        ctx->dJobKey, ctx->dCvs, pairs, isRoot, ctx->dCvs);
+    count = pairs;
+  }
+  cudaMemcpy(out32, ctx->dCvs, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
 }
 
 bool fail(char *err, size_t err_len, const char *msg) {
@@ -174,6 +219,14 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   CUDA_OK(cudaMalloc(&ctx->dJobKey, 8 * sizeof(uint32_t)), "allocating job_key");
   CUDA_OK(cudaMalloc(&ctx->dASeed, 8 * sizeof(uint32_t)), "allocating a_seed");
   CUDA_OK(cudaMalloc(&ctx->dBSeed, 8 * sizeof(uint32_t)), "allocating b_seed");
+  // Leaf CVs for the larger of the two operands: 8 words per 1024-byte chunk.
+  ctx->cvCapacity = (aBytes > bBytes ? aBytes : bBytes) / 1024;
+  if (ctx->cvCapacity < 1) ctx->cvCapacity = 1;
+  CUDA_OK(cudaMalloc(&ctx->dCvs, ctx->cvCapacity * 8 * sizeof(uint32_t)),
+          "allocating the BLAKE3 tree scratch");
+  CUDA_OK(cudaMalloc(&ctx->dSeedBuf, 64), "allocating the seed buffer");
+  CUDA_OK(cudaMalloc(&ctx->dHashA, PEARL_HASH_BYTES), "allocating hash_a");
+  CUDA_OK(cudaMalloc(&ctx->dHashB, PEARL_HASH_BYTES), "allocating hash_b");
   CUDA_OK(cudaMalloc(&ctx->dTarget, PEARL_HASH_BYTES), "allocating the target");
   CUDA_OK(cudaMalloc(&ctx->dHash, PEARL_HASH_BYTES), "allocating the hash");
   CUDA_OK(cudaMalloc(&ctx->dIsShare, sizeof(int)), "allocating the share flag");
@@ -197,6 +250,8 @@ extern "C" void pearl_host_destroy(void *handle) {
   cudaFree(ctx->dEAL); cudaFree(ctx->dEAR);
   cudaFree(ctx->dEBL); cudaFree(ctx->dEBR);
   cudaFree(ctx->dRows); cudaFree(ctx->dCols);
+  cudaFree(ctx->dCvs); cudaFree(ctx->dSeedBuf);
+  cudaFree(ctx->dHashA); cudaFree(ctx->dHashB);
   cudaFree(ctx->dJackpot); cudaFree(ctx->dJobKey);
   cudaFree(ctx->dASeed); cudaFree(ctx->dBSeed);
   cudaFree(ctx->dTarget); cudaFree(ctx->dHash); cudaFree(ctx->dIsShare);
@@ -225,6 +280,9 @@ extern "C" void pearl_host_set_job(void *handle, const uint8_t *header,
                                 reinterpret_cast<uint8_t *>(ctx->dJobKey));
   cudaFree(dSeedInput);
 
+  const size_t aLen = (size_t)ctx->profile.m * ctx->profile.k;
+  const size_t bLen = (size_t)ctx->profile.n * ctx->profile.k;
+
   // Operands and the noise factors, regenerated for this job's key.
   const uint32_t rank = ctx->profile.rank;
   const uint32_t k = ctx->profile.k;
@@ -236,10 +294,28 @@ extern "C" void pearl_host_set_job(void *handle, const uint8_t *header,
   pearl_gen_noise<<<blocks((size_t)ctx->profile.n * k), threads>>>(
       ctx->dJobKey, ctx->dB, ctx->profile.n, k, 1ull << 40);
 
-  // The two seeds, then the four noise factors keyed by them. b_seed is derived
-  // first and feeds a_seed — the order is not symmetric.
-  cudaMemcpy(ctx->dBSeed, ctx->dJobKey, 8 * sizeof(uint32_t), cudaMemcpyDeviceToDevice);
-  cudaMemcpy(ctx->dASeed, ctx->dJobKey, 8 * sizeof(uint32_t), cudaMemcpyDeviceToDevice);
+  // hash_a and hash_b: keyed BLAKE3 over the WHOLE operands. These are Merkle
+  // trees over 1024-byte chunks, not one long chain — hashing them as a single
+  // chunk (which this did until the device run showed a_seed == b_seed) gives the
+  // wrong digest for anything over 1024 bytes and so the wrong seeds.
+  cudaDeviceSynchronize();
+  operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dA), aLen, ctx->dHashA);
+  operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dB), bLen, ctx->dHashB);
+
+  // b_seed = blake3(job_key ‖ hash_b), then a_seed = blake3(b_seed ‖ hash_a).
+  // The order is NOT symmetric: b_seed is derived first and feeds a_seed.
+  cudaMemcpy(ctx->dSeedBuf, ctx->dJobKey, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
+  cudaMemcpy(ctx->dSeedBuf + PEARL_HASH_BYTES, ctx->dHashB, PEARL_HASH_BYTES,
+             cudaMemcpyDeviceToDevice);
+  pearl_blake3_short<<<1, 1>>>(ctx->dSeedBuf, 64,
+                               reinterpret_cast<uint8_t *>(ctx->dBSeed));
+
+  cudaMemcpy(ctx->dSeedBuf, ctx->dBSeed, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
+  cudaMemcpy(ctx->dSeedBuf + PEARL_HASH_BYTES, ctx->dHashA, PEARL_HASH_BYTES,
+             cudaMemcpyDeviceToDevice);
+  pearl_blake3_short<<<1, 1>>>(ctx->dSeedBuf, 64,
+                               reinterpret_cast<uint8_t *>(ctx->dASeed));
+  cudaDeviceSynchronize();
 
   pearl_gen_noise<<<blocks((size_t)ctx->profile.m * rank), threads>>>(
       ctx->dBSeed, ctx->dEAL, ctx->profile.m, rank, 0);

@@ -176,6 +176,132 @@ __device__ __forceinline__ int8_t noise_draw(const uint32_t key[8],
 
 }  // namespace
 
+
+// ---------------------------------------------------------------------------
+// BLAKE3 over inputs LARGER than one chunk.
+//
+// The operand commitments hash all of A and all of Bt — 64 KiB on the test
+// profile, 512 MiB at mainnet — and BLAKE3 is a Merkle tree over 1024-byte
+// chunks, not one long chain. Hashing them as a single chunk (which is what the
+// first version of this file did) silently produces the wrong digest for any
+// input over 1024 bytes, and therefore the wrong seeds, and therefore a
+// transcript no pool will ever accept.
+//
+// Chunk counts here are always powers of two (m*k with power-of-two m and k), so
+// the tree is perfectly balanced and the reduction is a clean pairwise fold. The
+// host asserts that rather than assuming it.
+// ---------------------------------------------------------------------------
+
+// The chaining value of one complete 1024-byte chunk at index `counter`.
+__device__ void blake3_chunk_cv(const uint32_t key[8], const uint8_t *in,
+                                uint32_t len, uint64_t counter,
+                                uint32_t base_flags, uint32_t out_cv[8]) {
+  uint32_t cv[8];
+#pragma unroll
+  for (int i = 0; i < 8; i++) cv[i] = key[i];
+
+  uint32_t block[16];
+  uint32_t offset = 0;
+  uint32_t start = CHUNK_START;
+  uint32_t out16[16];
+
+  while (offset + 64 < len) {
+#pragma unroll
+    for (int i = 0; i < 16; i++) {
+      uint32_t j = offset + i * 4;
+      block[i] = (uint32_t)in[j] | ((uint32_t)in[j + 1] << 8) |
+                 ((uint32_t)in[j + 2] << 16) | ((uint32_t)in[j + 3] << 24);
+    }
+    blake3_compress(cv, block, counter, 64, base_flags | start, out16);
+#pragma unroll
+    for (int i = 0; i < 8; i++) cv[i] = out16[i];
+    start = 0;
+    offset += 64;
+  }
+
+  uint8_t tail[64];
+  uint32_t rem = len - offset;
+#pragma unroll
+  for (int i = 0; i < 64; i++) tail[i] = (i < rem) ? in[offset + i] : 0;
+#pragma unroll
+  for (int i = 0; i < 16; i++) {
+    block[i] = (uint32_t)tail[i * 4] | ((uint32_t)tail[i * 4 + 1] << 8) |
+               ((uint32_t)tail[i * 4 + 2] << 16) |
+               ((uint32_t)tail[i * 4 + 3] << 24);
+  }
+  blake3_compress(cv, block, counter, rem, base_flags | start | CHUNK_END, out16);
+#pragma unroll
+  for (int i = 0; i < 8; i++) out_cv[i] = out16[i];
+}
+
+// One thread per 1024-byte chunk: the leaf layer of the tree.
+extern "C" __global__ void pearl_blake3_chunk_cvs(const uint32_t *key,
+                                                  const uint8_t *data,
+                                                  uint64_t chunks,
+                                                  uint32_t *cvs_out) {
+  uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= chunks) return;
+  uint32_t key_l[8];
+#pragma unroll
+  for (int i = 0; i < 8; i++) key_l[i] = key[i];
+  uint32_t cv[8];
+  blake3_chunk_cv(key_l, data + idx * 1024, 1024, idx, KEYED_HASH, cv);
+#pragma unroll
+  for (int i = 0; i < 8; i++) cvs_out[idx * 8 + i] = cv[i];
+}
+
+// One pairwise parent layer. When `is_root` the single remaining compression
+// carries ROOT and its first 8 words ARE the digest.
+extern "C" __global__ void pearl_blake3_parent_layer(const uint32_t *key,
+                                                     const uint32_t *in_cvs,
+                                                     uint64_t pairs,
+                                                     uint32_t is_root,
+                                                     uint32_t *out_cvs) {
+  uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= pairs) return;
+  uint32_t key_l[8], block[16], out16[16];
+#pragma unroll
+  for (int i = 0; i < 8; i++) key_l[i] = key[i];
+#pragma unroll
+  for (int i = 0; i < 8; i++) {
+    block[i] = in_cvs[idx * 16 + i];
+    block[i + 8] = in_cvs[idx * 16 + 8 + i];
+  }
+  uint32_t flags = PARENT | KEYED_HASH | (is_root ? ROOT : 0u);
+  blake3_compress(key_l, block, 0, 64, flags, out16);
+#pragma unroll
+  for (int i = 0; i < 8; i++) out_cvs[idx * 8 + i] = out16[i];
+}
+
+// Unkeyed BLAKE3 over a short (<= 64 byte) input — used for b_seed and a_seed,
+// which hash a 64-byte concatenation.
+extern "C" __global__ void pearl_blake3_short(const uint8_t *in, uint32_t len,
+                                              uint8_t *out) {
+  if (blockIdx.x != 0 || threadIdx.x != 0) return;
+  uint32_t cv[8];
+#pragma unroll
+  for (int i = 0; i < 8; i++) cv[i] = BLAKE3_IV[i];
+  uint8_t tail[64];
+#pragma unroll
+  for (int i = 0; i < 64; i++) tail[i] = (i < len) ? in[i] : 0;
+  uint32_t block[16], out16[16];
+#pragma unroll
+  for (int i = 0; i < 16; i++) {
+    block[i] = (uint32_t)tail[i * 4] | ((uint32_t)tail[i * 4 + 1] << 8) |
+               ((uint32_t)tail[i * 4 + 2] << 16) |
+               ((uint32_t)tail[i * 4 + 3] << 24);
+  }
+  blake3_compress(cv, block, 0, len, CHUNK_START | CHUNK_END | ROOT, out16);
+#pragma unroll
+  for (int i = 0; i < 8; i++) {
+    out[i * 4 + 0] = (uint8_t)(out16[i]);
+    out[i * 4 + 1] = (uint8_t)(out16[i] >> 8);
+    out[i * 4 + 2] = (uint8_t)(out16[i] >> 16);
+    out[i * 4 + 3] = (uint8_t)(out16[i] >> 24);
+  }
+}
+
+
 // ---------------------------------------------------------------------------
 // Kernels
 // ---------------------------------------------------------------------------
