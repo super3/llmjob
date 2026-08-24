@@ -336,75 +336,88 @@ extern "C" __global__ void pearl_hash_operands(const uint32_t *job_key,
 }
 
 
-// Materialise a noised operand once per job:
-//   A'[r,kk] = A[r,kk] + Σ_j E_AL[r,j]·E_AR[j,kk]
-// One thread per (r,kk). This is the O(rank²) work the fold used to redo for
-// every region — hoisting it here turns it from a per-attempt cost into a
-// per-job cost, which is the single biggest lever in the whole pipeline: the
-// fold then reads a precomputed int32 and does a plain dot product.
+// ---------------------------------------------------------------------------
+// Per-job precomputes for the int8 decomposition.
 //
-// The result is int32, not int8: A is int7 and each of the rank noise products
-// is up to 63·63, so a rank-128 sum reaches ~5·10⁵ — far outside int8 but well
-// inside int32. Storing int8 here would silently truncate every value.
-extern "C" __global__ void pearl_materialize(const int8_t *__restrict__ base,
-                                             const int8_t *__restrict__ EL,
-                                             const int8_t *__restrict__ ER,
-                                             int32_t *__restrict__ out,
-                                             uint32_t rows, uint32_t k,
-                                             uint32_t rank) {
+// The fold used to read a materialised int32 A', costing 4 bytes per element
+// and pinning the kernel at the L2 ceiling. Expanding the product instead keeps
+// the raw int7 operands and pushes the noise into rank-length corrections:
+//
+//   acc(r,c) = Sum_t A[r,t]*B[c,t]              <- int8 x int8, dominant term
+//            + Sum_j E_BL[c,j]*(P[r,j]+S[r,j])
+//            + Sum_j E_AL[r,j]*Q[c,j]
+//
+//   P = A * E_BR^T             [m, rank]
+//   Q = B * E_AR^T             [n, rank]
+//   S = E_AL * (E_AR * E_BR^T) [m, rank]
+//
+// Each costs m*k*rank once per job — about 1e9 ops, tens of microseconds — in
+// exchange for taking 4 bytes per element out of the inner loop for ever.
+// ---------------------------------------------------------------------------
+
+// G = X * Y^T, X being [rows, k] int8 and Y [rank, k] int8. Serves both
+// P (X=A, Y=E_BR) and Q (X=B, Y=E_AR). One thread per output element.
+extern "C" __global__ void pearl_precompute_xy(const int8_t *__restrict__ X,
+                                               const int8_t *__restrict__ Y,
+                                               int32_t *__restrict__ out,
+                                               uint32_t rows, uint32_t k,
+                                               uint32_t rank) {
   uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx >= (uint64_t)rows * k) return;
-  const uint32_t r = (uint32_t)(idx / k);
-  const uint32_t kk = (uint32_t)(idx % k);
-  int32_t v = base[idx];
-  for (uint32_t j = 0; j < rank; j++)
-    v += (int32_t)EL[(size_t)r * rank + j] * (int32_t)ER[(size_t)j * k + kk];
-  out[idx] = v;
+  if (idx >= (uint64_t)rows * rank) return;
+  const uint32_t r = (uint32_t)(idx / rank);
+  const uint32_t j = (uint32_t)(idx % rank);
+  const int8_t *xr = X + (size_t)r * k;
+  const int8_t *yj = Y + (size_t)j * k;
+  int32_t acc = 0;
+  for (uint32_t t = 0; t < k; t++) acc += (int32_t)xr[t] * (int32_t)yj[t];
+  out[idx] = acc;
 }
 
-// The heart of the PoW: accumulate C in `rank`-sized chunks and fold the
-// mandated sub-tile of each chunk into the 16-lane jackpot transcript.
-//
-//   jackpot[tid] = rotl13(jackpot[tid]) ^ xor(tile),  tid = chunk % 16
-//
-// ONE BLOCK PER REGION. The first version ran <<<1, threads>>> and searched one
-// region per launch, which used a single SM of the 128 on a 4090 and never
-// finished a batch at the mainnet profile — 90 s of 100% utilisation and not one
-// completed attempt. Regions are independent, so they are the natural axis to
-// parallelise over: blockIdx.x IS the region offset from region_base, and each
-// block writes its own transcript to jackpot_out[blockIdx.x].
-//
-// THE OPERANDS ARE RECONSTRUCTED ONCE, NOT PER CELL. The noised values are
-//   A'[r,kk] = A[r,kk] + Σ_j E_AL[r,j]·E_AR[j,kk]
-//   B'[c,kk] = B[c,kk] + Σ_j E_BL[c,j]·E_BR[j,kk]
-// and the naive loop recomputed A'[r,kk] once for every column sharing that row
-// — 64 times over, for a rank-length dot product each time. Hoisting both into
-// shared memory turns (rows·cols·rank·2rank) into ((rows+cols)·rank² + cells·rank).
-//
-// This is still the scalar path. The tensor-core mainloop replaces only the
-// accumulation below; the transcript semantics are what the parity vectors pin.
+// R = E_AR * E_BR^T, [rank, rank] int32. Small, and feeds S.
+extern "C" __global__ void pearl_precompute_r(const int8_t *__restrict__ EAR,
+                                              const int8_t *__restrict__ EBR,
+                                              int32_t *__restrict__ R,
+                                              uint32_t k, uint32_t rank) {
+  uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= rank * rank) return;
+  const uint32_t a = idx / rank, b = idx % rank;
+  const int8_t *ea = EAR + (size_t)a * k;
+  const int8_t *eb = EBR + (size_t)b * k;
+  int32_t acc = 0;
+  for (uint32_t t = 0; t < k; t++) acc += (int32_t)ea[t] * (int32_t)eb[t];
+  R[idx] = acc;
+}
+
+// T = P + E_AL * R, folded in place into P. Both corrections that contract with
+// E_BL[c] are summed here so the fold does ONE rank-length dot, not two.
+extern "C" __global__ void pearl_precompute_fold_s(const int8_t *__restrict__ EAL,
+                                                   const int32_t *__restrict__ R,
+                                                   int32_t *__restrict__ P,
+                                                   uint32_t rows, uint32_t rank) {
+  uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= (uint64_t)rows * rank) return;
+  const uint32_t r = (uint32_t)(idx / rank);
+  const uint32_t jp = (uint32_t)(idx % rank);
+  const int8_t *el = EAL + (size_t)r * rank;
+  int32_t acc = 0;
+  for (uint32_t j = 0; j < rank; j++) acc += (int32_t)el[j] * R[(size_t)j * rank + jp];
+  P[idx] += acc;
+}
+
 extern "C" __global__ void pearl_gemm_fold(
-    const int32_t *__restrict__ Aprime,   // [m, k] noised, materialised
-    const int32_t *__restrict__ Bprime,   // [n, k] noised, materialised
+    const int8_t *__restrict__ A,      // [m, k] raw int7
+    const int8_t *__restrict__ B,      // [n, k] raw int7
+    const int32_t *__restrict__ T,     // [m, rank]  P + S, contracts with E_BL[c]
+    const int32_t *__restrict__ Q,     // [n, rank]  contracts with E_AL[r]
+    const int8_t *__restrict__ EAL,    // [m, rank]
+    const int8_t *__restrict__ EBL,    // [n, rank]
     const uint32_t *__restrict__ rows_pattern,
     const uint32_t *__restrict__ cols_pattern, uint32_t rows_count,
     uint32_t cols_count, uint32_t m, uint32_t n, uint32_t k, uint32_t rank,
     uint32_t chunks, uint64_t region_base, uint32_t *__restrict__ jackpot_out) {
-  // ONE WARP PER REGION, ONE LANE PER TILE CELL.
-  //
-  // The tile is rows_count * cols_count = 4 * 8 = 32 cells, which is exactly a
-  // warp. That makes the whole per-chunk reduction a shuffle: no __syncthreads,
-  // no shared memory, no barrier at all.
-  //
-  // The previous block-per-region version staged operands into shared memory and
-  // ran a log-depth reduction, costing ~9 barriers per chunk and ~144 per region
-  // to protect just 4096 multiply-accumulates. Measured on a 4090 it sat at
-  // 530 GH/s — 0.66% of the card's scalar int32 peak — and was flat across every
-  // m/n from 512 to 8192, which is the signature of synchronisation overhead
-  // rather than a memory bound.
-  //
-  // Lanes in a warp share only 4 distinct A rows and 8 distinct B columns, so the
-  // loads coalesce and hit cache without needing an explicit staging pass.
+  // One warp per region, one lane per tile cell. The operands are int8 now,
+  // which is what lets dp4a do four multiply-accumulates per instruction and
+  // quarters the load traffic that had this kernel pinned at the L2 ceiling.
   const uint32_t lane = threadIdx.x & 31u;
   const uint32_t warp = threadIdx.x >> 5;
   const uint32_t warps_per_block = blockDim.x >> 5;
@@ -413,16 +426,19 @@ extern "C" __global__ void pearl_gemm_fold(
   const uint32_t row_off = (uint32_t)(region % m);
   const uint32_t col_off = (uint32_t)((region / m) % n);
 
-  // Cell assignment. Guarded so a profile whose tile is not exactly 32 cells
-  // parks the surplus lanes rather than reading out of bounds.
   const uint32_t tile_cells = rows_count * cols_count;
   const bool active = lane < tile_cells;
   const uint32_t ri = active ? lane / cols_count : 0u;
   const uint32_t ci = active ? lane % cols_count : 0u;
   const uint32_t r = (rows_pattern[ri] + row_off) % m;
   const uint32_t c = (cols_pattern[ci] + col_off) % n;
-  const int32_t *__restrict__ arow = Aprime + (size_t)r * k;
-  const int32_t *__restrict__ bcol = Bprime + (size_t)c * k;
+
+  const int8_t *__restrict__ arow = A + (size_t)r * k;
+  const int8_t *__restrict__ bcol = B + (size_t)c * k;
+  const int32_t *__restrict__ Trow = T + (size_t)r * rank;
+  const int32_t *__restrict__ Qcol = Q + (size_t)c * rank;
+  const int8_t *__restrict__ elr = EAL + (size_t)r * rank;
+  const int8_t *__restrict__ ebc = EBL + (size_t)c * rank;
 
   uint32_t jackpot[PEARL_JACKPOT_BUCKETS];
 #pragma unroll
@@ -433,33 +449,29 @@ extern "C" __global__ void pearl_gemm_fold(
     int32_t acc = 0;
     if (active) {
       const uint32_t lim = (k0 + rank <= k) ? rank : (k - k0);
-      // Vectorised loads. The kernel is memory bound, not compute bound: two
-      // int32 loads per multiply-accumulate is ~5.9 TB/s at the rate this runs,
-      // which is the 4090's L2 ceiling. int4 fetches four elements per
-      // instruction and quarters the request count.
-      //
-      // k0 is a multiple of rank (128) and the buffers come from cudaMalloc, so
-      // both pointers are 16-byte aligned whenever lim is a multiple of 4. The
-      // scalar tail covers any profile where it is not.
       uint32_t t = 0;
       if ((lim & 3u) == 0u) {
-        const int4 *a4 = reinterpret_cast<const int4 *>(arow + k0);
-        const int4 *b4 = reinterpret_cast<const int4 *>(bcol + k0);
         const uint32_t quads = lim >> 2;
-#pragma unroll 4
-        for (uint32_t q = 0; q < quads; q++) {
-          const int4 av = a4[q];
-          const int4 bv = b4[q];
-          acc += av.x * bv.x + av.y * bv.y + av.z * bv.z + av.w * bv.w;
-        }
+        const uint32_t *a4 = reinterpret_cast<const uint32_t *>(arow + k0);
+        const uint32_t *b4 = reinterpret_cast<const uint32_t *>(bcol + k0);
+#pragma unroll 8
+        for (uint32_t q = 0; q < quads; q++) acc = __dp4a(a4[q], b4[q], acc);
         t = lim;
       }
-      for (; t < lim; t++) acc += arow[k0 + t] * bcol[k0 + t];
+      for (; t < lim; t++) acc += (int32_t)arow[k0 + t] * (int32_t)bcol[k0 + t];
+
+      // The noise corrections. Each chunk contracts its own rank-slice of the
+      // precomputes, so summing j over the chunk's slice reproduces exactly what
+      // the materialised operand used to contribute for these k values.
+#pragma unroll 4
+      for (uint32_t j = 0; j < rank; j++) {
+        acc += (int32_t)ebc[j] * Trow[j];
+        acc += (int32_t)elr[j] * Qcol[j];
+      }
     }
-    // Warp-wide XOR. Inactive lanes contribute zero, which is the XOR identity.
     uint32_t x = (uint32_t)acc;
 #pragma unroll
-    for (int s = 16; s > 0; s >>= 1) x ^= __shfl_xor_sync(0xffffffffu, x, s);
+    for (int sft = 16; sft > 0; sft >>= 1) x ^= __shfl_xor_sync(0xffffffffu, x, sft);
     if (lane == 0) {
       const uint32_t l = chunk % PEARL_JACKPOT_BUCKETS;
       jackpot[l] = pearl_rotl13(jackpot[l]) ^ x;
