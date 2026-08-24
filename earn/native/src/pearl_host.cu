@@ -610,14 +610,16 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   // sixteen-wide contiguous column tile, a rank that is a multiple of 16, and a
   // row count that is a multiple of 16. Otherwise fall back to dp4a, which has
   // no such constraints.
+  const uint32_t wmmaRowsPerWarp = PEARL_WMMA_ROWS * PEARL_WMMA_ROW_TILES;
   const bool useWmma = (PEARL_COLS_COUNT == 16) && (rank % 16 == 0) &&
-                       (ctx->profile.m % PEARL_WMMA_ROWS == 0) &&
+                       (ctx->profile.m % wmmaRowsPerWarp == 0) &&
                        (k % 16 == 0) && !getenv("PEARL_NO_WMMA");
   if (useWmma) {
-    // One WARP per (chunk, row block of 16); the column groups are a loop
-    // inside, so each warp loads its A fragments once and reuses them.
+    // One WARP per (chunk, group of PEARL_WMMA_ROW_TILES row blocks); the
+    // column groups are a loop inside, so each warp loads its A fragments once
+    // and every B fragment it loads feeds all of its row blocks.
     const uint64_t warpsNeeded =
-        (uint64_t)chunks * (ctx->profile.m / PEARL_WMMA_ROWS);
+        (uint64_t)chunks * (ctx->profile.m / wmmaRowsPerWarp);
     const uint32_t warpsPerBlock = threads / 32;
     const unsigned blocks =
         (unsigned)((warpsNeeded + warpsPerBlock - 1) / warpsPerBlock);

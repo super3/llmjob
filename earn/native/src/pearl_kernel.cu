@@ -749,7 +749,8 @@ extern "C" __global__ void pearl_partials_wmma(
 
   const uint32_t warp = threadIdx.x >> 5;
   const uint32_t warps_per_block = blockDim.x >> 5;
-  const uint32_t row_blocks = m / PEARL_WMMA_ROWS;
+  const uint32_t rows_per_warp = PEARL_WMMA_ROWS * PEARL_WMMA_ROW_TILES;
+  const uint32_t row_blocks = m / rows_per_warp;
 
   const uint64_t slot = (uint64_t)blockIdx.x * warps_per_block + warp;
   const uint64_t total = (uint64_t)chunks * row_blocks;
@@ -757,27 +758,31 @@ extern "C" __global__ void pearl_partials_wmma(
 
   const uint32_t rb = (uint32_t)(slot % row_blocks);
   const uint32_t chunk = (uint32_t)(slot / row_blocks);
-  const uint32_t r0 = rb * PEARL_WMMA_ROWS;
+  const uint32_t r0 = rb * rows_per_warp;
   const uint32_t k0 = chunk * rank;
   const uint32_t kfrags = rank / 16;
 
-  // Hold this row block's whole k-slice of A in REGISTERS and reuse it across
-  // every column group.
+  // Hold this warp's whole k-slice of A in REGISTERS, for every row block it
+  // covers, and reuse it across every column group.
   //
-  // The first version reloaded A per group. At 512 groups over a 33 MiB operand
-  // that is about 17 GB of traffic a batch on a card with roughly 1 TB/s, which
-  // is why moving to tensor cores changed almost nothing: the kernel was never
-  // short of arithmetic, it was short of bandwidth. B does not need the same
-  // treatment -- every row block reads the same B for a given chunk and group,
-  // so it stays in cache.
+  // Two separate savings, and they were found in that order. Hoisting A out of
+  // the column-group loop stopped it being re-read 256 times -- about 17 GB a
+  // batch. Covering PEARL_WMMA_ROW_TILES row blocks per warp then divides the B
+  // side the same way, since one B fragment feeds all of them.
   //
-  // Bounded by the compile-time PEARL_MAX_K_FRAGS and broken on the runtime
-  // count, so the array stays register-resident rather than spilling.
-  wmma::fragment<wmma::matrix_a, 16, 16, 16, int8_t, wmma::row_major> aF[PEARL_MAX_K_FRAGS];
+  // Bounded by compile-time constants and broken on the runtime count, so the
+  // fragment arrays stay in registers instead of spilling to local memory.
+  wmma::fragment<wmma::matrix_a, 16, 16, 16, int8_t, wmma::row_major>
+      aF[PEARL_WMMA_ROW_TILES][PEARL_MAX_K_FRAGS];
 #pragma unroll
-  for (uint32_t t = 0; t < PEARL_MAX_K_FRAGS; t++) {
-    if (t >= kfrags) break;
-    wmma::load_matrix_sync(aF[t], Aprime + (size_t)r0 * k + k0 + t * 16, k);
+  for (uint32_t ti = 0; ti < PEARL_WMMA_ROW_TILES; ti++) {
+#pragma unroll
+    for (uint32_t t = 0; t < PEARL_MAX_K_FRAGS; t++) {
+      if (t >= kfrags) break;
+      wmma::load_matrix_sync(
+          aF[ti][t],
+          Aprime + (size_t)(r0 + ti * PEARL_WMMA_ROWS) * k + k0 + t * 16, k);
+    }
   }
 
   extern __shared__ int32_t smem[];
@@ -787,32 +792,39 @@ extern "C" __global__ void pearl_partials_wmma(
   for (uint32_t cg = 0; cg < col_groups; cg++) {
     const uint32_t c0 = pearl_expand_offset(col_off + cg, PEARL_COLS_MASK);
 
-    wmma::fragment<wmma::matrix_b, 16, 16, 16, int8_t, wmma::col_major> bF;
-    wmma::fragment<wmma::accumulator, 16, 16, 16, int32_t> cF;
-    wmma::fill_fragment(cF, 0);
+    wmma::fragment<wmma::accumulator, 16, 16, 16, int32_t> cF[PEARL_WMMA_ROW_TILES];
+#pragma unroll
+    for (uint32_t ti = 0; ti < PEARL_WMMA_ROW_TILES; ti++) wmma::fill_fragment(cF[ti], 0);
 
 #pragma unroll
     for (uint32_t t = 0; t < PEARL_MAX_K_FRAGS; t++) {
       if (t >= kfrags) break;
+      wmma::fragment<wmma::matrix_b, 16, 16, 16, int8_t, wmma::col_major> bF;
       wmma::load_matrix_sync(bF, Bprime + (size_t)c0 * k + k0 + t * 16, k);
-      wmma::mma_sync(cF, aF[t], bF, cF);
-    }
-
-    // The fragment's per-lane layout is opaque, so the block goes through
-    // shared memory before the per-row XOR.
-    wmma::store_matrix_sync(tile, cF, 16, wmma::mem_row_major);
-    __syncwarp();
-
-    // Sixteen lanes, one row each. Same collapse the dp4a kernel does at the
-    // producer, exact for the same reason: the tile fold is an XOR over every
-    // column of a row.
-    if (lane < PEARL_WMMA_ROWS) {
-      uint32_t x = 0u;
 #pragma unroll
-      for (int c = 0; c < 16; c++) x ^= (uint32_t)tile[lane * 16 + c];
-      D[((size_t)cg * chunks + chunk) * m + (r0 + lane)] = (int32_t)x;
+      for (uint32_t ti = 0; ti < PEARL_WMMA_ROW_TILES; ti++) {
+        wmma::mma_sync(cF[ti], aF[ti][t], bF, cF[ti]);
+      }
     }
-    __syncwarp();
+
+    // One shared 16x16 buffer per warp, reused per row block, so the shared
+    // footprint does not grow with PEARL_WMMA_ROW_TILES.
+#pragma unroll
+    for (uint32_t ti = 0; ti < PEARL_WMMA_ROW_TILES; ti++) {
+      __syncwarp();
+      wmma::store_matrix_sync(tile, cF[ti], 16, wmma::mem_row_major);
+      __syncwarp();
+      // Sixteen lanes, one row each. Same collapse the dp4a kernel does at the
+      // producer, exact for the same reason: the tile fold is an XOR over every
+      // column of a row.
+      if (lane < PEARL_WMMA_ROWS) {
+        uint32_t x = 0u;
+#pragma unroll
+        for (int c = 0; c < 16; c++) x ^= (uint32_t)tile[lane * 16 + c];
+        D[((size_t)cg * chunks + chunk) * m
+          + (r0 + ti * PEARL_WMMA_ROWS + lane)] = (int32_t)x;
+      }
+    }
   }
 }
 

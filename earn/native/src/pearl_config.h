@@ -173,6 +173,15 @@ typedef struct PearlProfile {
 // group, which is where the tensor-core version's time went at first.
 #define PEARL_MAX_K_FRAGS 8
 
+// How many 16-row blocks one warp covers. Each B fragment loaded serves all of
+// them, so this divides B traffic directly.
+//
+// With one block, B was about 34 GB a batch: every one of the m/16 row-block
+// warps re-reads the same sixteen columns for every column group. That fits in
+// L2, but it still wants roughly 2.9 TB/s of L2 bandwidth, which is where the
+// tensor-core kernel was actually stuck.
+#define PEARL_WMMA_ROW_TILES 4
+
 #define PEARL_SEED_SALTED 0u
 #define PEARL_SEED_LEGACY 1u
 
