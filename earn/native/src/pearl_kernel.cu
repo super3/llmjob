@@ -452,8 +452,11 @@ extern "C" __global__ void pearl_gemm_fold(
       uint32_t t = 0;
       if ((lim & 3u) == 0u) {
         const uint32_t quads = lim >> 2;
-        const uint32_t *a4 = reinterpret_cast<const uint32_t *>(arow + k0);
-        const uint32_t *b4 = reinterpret_cast<const uint32_t *>(bcol + k0);
+        // Signed view: the operands are int7, so this must be the signed dp4a.
+        // Passing unsigned words makes the overload ambiguous and, worse, would
+        // treat negative operands as large positives.
+        const int *a4 = reinterpret_cast<const int *>(arow + k0);
+        const int *b4 = reinterpret_cast<const int *>(bcol + k0);
 #pragma unroll 8
         for (uint32_t q = 0; q < quads; q++) acc = __dp4a(a4[q], b4[q], acc);
         t = lim;
