@@ -754,12 +754,10 @@ extern "C" __global__ void pearl_partials_wmma(
 
   const uint64_t slot = (uint64_t)blockIdx.x * warps_per_block + warp;
   const uint64_t total = (uint64_t)chunks * row_blocks;
-  // NOT an early return: every warp has to reach the __syncthreads() below,
-  // because B is staged cooperatively by the whole block.
-  const bool activeWarp = slot < total;
+  if (slot >= total) return;
 
-  const uint32_t rb = activeWarp ? (uint32_t)(slot % row_blocks) : 0u;
-  const uint32_t chunk = activeWarp ? (uint32_t)(slot / row_blocks) : 0u;
+  const uint32_t rb = (uint32_t)(slot % row_blocks);
+  const uint32_t chunk = (uint32_t)(slot / row_blocks);
   const uint32_t r0 = rb * rows_per_warp;
   const uint32_t k0 = chunk * rank;
   const uint32_t kfrags = rank / 16;
@@ -767,58 +765,32 @@ extern "C" __global__ void pearl_partials_wmma(
   // Hold this warp's whole k-slice of A in REGISTERS, for every row block it
   // covers, and reuse it across every column group.
   //
-  // Three separate savings, found in this order. Hoisting A out of the
-  // column-group loop stopped it being re-read once per group -- about 17 GB a
-  // batch. Covering PEARL_WMMA_ROW_TILES row blocks per warp divided the B side
-  // the same way. Staging B in shared memory (below) divides it again by the
-  // warps per block.
+  // Two separate savings, and they were found in that order. Hoisting A out of
+  // the column-group loop stopped it being re-read 256 times -- about 17 GB a
+  // batch. Covering PEARL_WMMA_ROW_TILES row blocks per warp then divides the B
+  // side the same way, since one B fragment feeds all of them.
   //
   // Bounded by compile-time constants and broken on the runtime count, so the
   // fragment arrays stay in registers instead of spilling to local memory.
   wmma::fragment<wmma::matrix_a, 16, 16, 16, int8_t, wmma::row_major>
       aF[PEARL_WMMA_ROW_TILES][PEARL_MAX_K_FRAGS];
-  if (activeWarp) {
 #pragma unroll
-    for (uint32_t ti = 0; ti < PEARL_WMMA_ROW_TILES; ti++) {
+  for (uint32_t ti = 0; ti < PEARL_WMMA_ROW_TILES; ti++) {
 #pragma unroll
-      for (uint32_t t = 0; t < PEARL_MAX_K_FRAGS; t++) {
-        if (t >= kfrags) break;
-        wmma::load_matrix_sync(
-            aF[ti][t],
-            Aprime + (size_t)(r0 + ti * PEARL_WMMA_ROWS) * k + k0 + t * 16, k);
-      }
+    for (uint32_t t = 0; t < PEARL_MAX_K_FRAGS; t++) {
+      if (t >= kfrags) break;
+      wmma::load_matrix_sync(
+          aF[ti][t],
+          Aprime + (size_t)(r0 + ti * PEARL_WMMA_ROWS) * k + k0 + t * 16, k);
     }
   }
 
-  // Shared layout: the staged B tiles first, then one 16x16 int32 scratch per
-  // warp for unpacking accumulators.
-  extern __shared__ int8_t smem_raw[];
-  int8_t *sB = smem_raw;
-  int32_t *tile = reinterpret_cast<int32_t *>(
-                      smem_raw + PEARL_MAX_K_FRAGS * 256)
-                  + (size_t)warp * 16 * 16;
+  extern __shared__ int32_t smem[];
+  int32_t *tile = smem + (size_t)warp * 16 * 16;
   const uint32_t lane = threadIdx.x & 31u;
 
   for (uint32_t cg = 0; cg < col_groups; cg++) {
-    // Every warp in this block has the same chunk and walks the same column
-    // groups, so they all want IDENTICAL B. Loading it once per block instead
-    // of once per warp divides that traffic by the warps per block -- and B was
-    // the kernel's largest remaining read.
-    //
-    // Compacting (kk, c) to c*16 + kk keeps it column-major with a leading
-    // dimension of 16, which is the same layout load_matrix_sync expects from
-    // global with a leading dimension of k.
     const uint32_t c0 = pearl_expand_offset(col_off + cg, PEARL_COLS_MASK);
-    __syncthreads();
-    for (uint32_t idx = threadIdx.x; idx < kfrags * 256u; idx += blockDim.x) {
-      const uint32_t t = idx >> 8;
-      const uint32_t c = (idx & 255u) >> 4;
-      const uint32_t kk = idx & 15u;
-      sB[idx] = Bprime[(size_t)(c0 + c) * k + k0 + t * 16 + kk];
-    }
-    __syncthreads();
-
-    if (!activeWarp) continue;
 
     wmma::fragment<wmma::accumulator, 16, 16, 16, int32_t> cF[PEARL_WMMA_ROW_TILES];
 #pragma unroll
@@ -828,7 +800,7 @@ extern "C" __global__ void pearl_partials_wmma(
     for (uint32_t t = 0; t < PEARL_MAX_K_FRAGS; t++) {
       if (t >= kfrags) break;
       wmma::fragment<wmma::matrix_b, 16, 16, 16, int8_t, wmma::col_major> bF;
-      wmma::load_matrix_sync(bF, sB + t * 256, 16);
+      wmma::load_matrix_sync(bF, Bprime + (size_t)c0 * k + k0 + t * 16, k);
 #pragma unroll
       for (uint32_t ti = 0; ti < PEARL_WMMA_ROW_TILES; ti++) {
         wmma::mma_sync(cF[ti], aF[ti][t], bF, cF[ti]);
