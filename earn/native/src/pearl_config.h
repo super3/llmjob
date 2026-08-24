@@ -14,6 +14,18 @@
 
 #include <stdint.h>
 
+// The helpers below are called from BOTH sides: pearl_host.cu/pearl_kernel.cu
+// run them on the device, and pearl_core.cc (compiled by the plain C++ host
+// compiler, which has never heard of __device__) runs them on the host. Marking
+// them for both under nvcc and leaving them bare otherwise is what lets one
+// header serve both — without this the kernels fail to compile with "calling a
+// __host__ function from a __global__ function is not allowed".
+#ifdef __CUDACC__
+#define PEARL_HD __host__ __device__
+#else
+#define PEARL_HD
+#endif
+
 #define PEARL_CONFIG_BYTES 52
 #define PEARL_HEADER_BYTES 76
 #define PEARL_HASH_BYTES 32
@@ -38,7 +50,7 @@ static const PearlProfile PEARL_MAINNET_PROFILE = {
 
 // Serialize a profile into the 52-byte config block, little-endian, matching
 // buildConfig52(). `out` must have room for PEARL_CONFIG_BYTES.
-static inline void pearl_write_config52(const PearlProfile *p, uint8_t *out) {
+PEARL_HD static inline void pearl_write_config52(const PearlProfile *p, uint8_t *out) {
   for (int i = 0; i < PEARL_CONFIG_BYTES; i++) out[i] = 0;
   out[0] = (uint8_t)(p->m); out[1] = (uint8_t)(p->m >> 8);
   out[2] = (uint8_t)(p->m >> 16); out[3] = (uint8_t)(p->m >> 24);
@@ -53,7 +65,7 @@ static inline void pearl_write_config52(const PearlProfile *p, uint8_t *out) {
 }
 
 // rotl on a 32-bit lane — the transcript fold's mixing step. Mirrors rotl13().
-static inline uint32_t pearl_rotl13(uint32_t x) {
+PEARL_HD static inline uint32_t pearl_rotl13(uint32_t x) {
   return (x << PEARL_ROTL_BITS) | (x >> (32 - PEARL_ROTL_BITS));
 }
 
@@ -61,7 +73,7 @@ static inline uint32_t pearl_rotl13(uint32_t x) {
 // target. Both endiannesses are load-bearing and opposite: the hash is read
 // least-significant-byte-first, the pool's target most-significant-first.
 // Returns non-zero when the hash is a share.
-static inline int pearl_meets_target(const uint8_t *hash_le, const uint8_t *target_be) {
+PEARL_HD static inline int pearl_meets_target(const uint8_t *hash_le, const uint8_t *target_be) {
   for (int i = 0; i < PEARL_HASH_BYTES; i++) {
     uint8_t h = hash_le[PEARL_HASH_BYTES - 1 - i];  // walk hash high→low
     uint8_t t = target_be[i];                       // target is already high→low
