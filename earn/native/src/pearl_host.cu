@@ -249,7 +249,7 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   // allocation rather than aborting inside a kernel.
   const size_t colBatch = profile->col_batch ? profile->col_batch : 1u;
   const size_t partialBytes = colBatch * ((profile->k + rank - 1) / rank)
-                              * profile->m * PEARL_COLS_COUNT * sizeof(int32_t);
+                              * profile->m * sizeof(int32_t);
   const size_t batchBytes = colBatch * profile->m
                             * (PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)
                                + PEARL_HASH_BYTES + sizeof(int));
@@ -313,9 +313,12 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   ctx->batch = ctx->colBatch * profile->m;
   ctx->hFlags.resize(ctx->batch);
   // Every distinct partial computed once per batch instead of four times.
+  // One int32 per (column group, chunk, row): the producer XORs the eight
+  // columns together before storing, which is exact because the tile fold is
+  // itself an XOR over every column of each row.
   CUDA_OK(cudaMalloc(&ctx->dD,
                      (size_t)ctx->colBatch * ((profile->k + rank - 1) / rank)
-                         * profile->m * PEARL_COLS_COUNT * sizeof(int32_t)),
+                         * profile->m * sizeof(int32_t)),
           "allocating the partial-product table");
   CUDA_OK(cudaMalloc(&ctx->dJackpot,
                      (size_t)ctx->batch * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)),

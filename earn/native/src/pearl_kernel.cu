@@ -633,9 +633,22 @@ extern "C" __global__ void pearl_partials(const int8_t *__restrict__ Aprime,
     for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) acc[c] += a * bc[c][t];
   }
 
-  int32_t *out = D + (((size_t)cg * chunks + chunk) * m + r) * cols_count;
+  // XOR the eight columns together HERE rather than storing them.
+  //
+  // The transcript folds a tile by XOR, and XOR is associative and commutative:
+  //
+  //   tile_xor = XOR over (ri, ci) of C[r_ri][c_ci]
+  //            = XOR over ri of ( XOR over ci of C[r_ri][c_ci] )
+  //
+  // Every column of a given row is in the tile, so the inner XOR depends only
+  // on the row -- which means it can be collapsed at the producer. That makes
+  // the partial table eight times smaller and, more to the point, cuts the
+  // fold's memory traffic by eight: it was reading about 805 MiB per batch at
+  // roughly 400 GB/s, which is where a 4090 starts to run out of bandwidth.
+  uint32_t x = 0u;
 #pragma unroll
-  for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) out[c] = acc[c];
+  for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) x ^= (uint32_t)acc[c];
+  D[((size_t)cg * chunks + chunk) * m + r] = (int32_t)x;
 }
 
 // The fold is now a gather. Every product it needs is already in D, so a region
@@ -655,11 +668,12 @@ extern "C" __global__ void pearl_gemm_fold(
   const uint32_t cg = (uint32_t)(slot / m);
   const uint32_t row_off = (uint32_t)(slot % m);
 
-  const uint32_t tile_cells = rows_count * cols_count;
-  const bool active = lane < tile_cells;
-  const uint32_t ri = active ? lane / cols_count : 0u;
-  const uint32_t ci = active ? lane % cols_count : 0u;
-  const uint32_t r = (rows_pattern[ri] + row_off) % m;
+  // One lane per ROW of the tile now, not per cell: the producer already XORed
+  // each row's columns together, so there are rows_count values to combine
+  // rather than rows_count*cols_count.
+  (void)cols_count;
+  const bool active = lane < rows_count;
+  const uint32_t r = (rows_pattern[active ? lane : 0u] + row_off) % m;
 
   uint32_t jackpot[PEARL_JACKPOT_BUCKETS];
 #pragma unroll
@@ -668,7 +682,7 @@ extern "C" __global__ void pearl_gemm_fold(
   for (uint32_t chunk = 0; chunk < chunks; chunk++) {
     // Lanes sharing a row read cols_count contiguous ints — one transaction.
     const int32_t v =
-        active ? D[(((size_t)cg * chunks + chunk) * m + r) * cols_count + ci] : 0;
+        active ? D[((size_t)cg * chunks + chunk) * m + r] : 0;
     uint32_t x = (uint32_t)v;
 #pragma unroll
     for (int sft = 16; sft > 0; sft >>= 1) x ^= __shfl_xor_sync(0xffffffffu, x, sft);
