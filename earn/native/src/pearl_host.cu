@@ -75,7 +75,8 @@ extern "C" __global__ void pearl_finalize_many(const uint32_t *a_seed,
                                                uint32_t count,
                                                const uint8_t *target_be,
                                                uint8_t *hashes_out,
-                                               int *flags_out);
+                                               uint32_t *hit_count,
+                                               uint32_t *hit_index);
 extern "C" __global__ void pearl_blake3_chunk_cvs(const uint32_t *key,
                                                   const uint8_t *data,
                                                   uint64_t chunks,
