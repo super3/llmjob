@@ -80,7 +80,9 @@ static const PearlProfile PEARL_MAINNET_PROFILE = {2048u, 128u, 0u, 4096u, 4096u
 // version packed them here along with a hash_tile and two pattern COUNTS, none of
 // which the protocol carries — which changed job_key and so every hash after it,
 // silently. `out` must have room for PEARL_CONFIG_BYTES.
-PEARL_HD static inline void pearl_write_config52(const PearlProfile *p, uint8_t *out) {
+// Host only: it reads file-scope constant arrays, which device code cannot see,
+// and the only caller is pearl_host_set_job on the host side.
+static inline void pearl_write_config52(const PearlProfile *p, uint8_t *out) {
   for (int i = 0; i < PEARL_CONFIG_BYTES; i++) out[i] = 0;
   out[0] = (uint8_t)(p->k); out[1] = (uint8_t)(p->k >> 8);
   out[2] = (uint8_t)(p->k >> 16); out[3] = (uint8_t)(p->k >> 24);
