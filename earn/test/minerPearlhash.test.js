@@ -165,6 +165,17 @@ describe('difficultyAdjustmentFactor', () => {
     expect(attemptsPerSec).toBeGreaterThan(1e9);
   });
 
+  test('defaults to the mainnet profile when given none', () => {
+    expect(difficultyAdjustmentFactor(undefined)).toBe(65536);
+    expect(difficultyAdjustmentFactor(null)).toBe(65536);
+  });
+
+  // The tile patterns default when a profile omits them, exactly as buildConfig52
+  // does — they are protocol constants rather than per-profile knobs.
+  test('defaults the tile patterns when a profile omits them', () => {
+    expect(difficultyAdjustmentFactor({ k: 2048 })).toBe(65536);
+  });
+
   test('scales with k and with the tile', () => {
     expect(difficultyAdjustmentFactor({ ...PROFILE, k: 4096 })).toBe(4 * 8 * 4096);
     expect(difficultyAdjustmentFactor({ k: 256, rows: [0, 8], cols: [0, 1] })).toBe(2 * 2 * 256);
