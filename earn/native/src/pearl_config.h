@@ -145,7 +145,7 @@ typedef struct PearlProfile {
 //
 // The cost is registers -- each row holds a whole k-slice, so this trades
 // occupancy for arithmetic intensity.
-#define PEARL_ROWS_PER_THREAD 2
+#define PEARL_ROWS_PER_THREAD 1
 
 // How many 16-byte groups of an A row slice a thread can hold in registers.
 // 8 covers rank 128, the mandated profile. A rank needing more falls back to
