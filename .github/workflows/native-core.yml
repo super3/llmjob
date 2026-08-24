@@ -85,6 +85,16 @@ jobs:
           method: 'network'
           sub-packages: '["nvcc", "cudart", "cudart-dev", "nvrtc", "nvrtc-dev"]'
 
+      # nvcc on Windows does not compile anything itself — it drives MSVC's
+      # cl.exe as the host compiler and fails with "Cannot find compiler
+      # 'cl.exe' in PATH" without it. MSVC is installed on the runner but is not
+      # on PATH until its environment is sourced, and the bash shell the compile
+      # step uses certainly does not have it. This is the same hard dependency
+      # that makes the core unbuildable on the dev box.
+      - name: Put MSVC on PATH (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Report the toolchain
         run: |
           nvcc --version
