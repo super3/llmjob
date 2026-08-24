@@ -335,6 +335,33 @@ extern "C" __global__ void pearl_hash_operands(const uint32_t *job_key,
   blake3_keyed(key, padded, len, out);
 }
 
+
+// Materialise a noised operand once per job:
+//   A'[r,kk] = A[r,kk] + Σ_j E_AL[r,j]·E_AR[j,kk]
+// One thread per (r,kk). This is the O(rank²) work the fold used to redo for
+// every region — hoisting it here turns it from a per-attempt cost into a
+// per-job cost, which is the single biggest lever in the whole pipeline: the
+// fold then reads a precomputed int32 and does a plain dot product.
+//
+// The result is int32, not int8: A is int7 and each of the rank noise products
+// is up to 63·63, so a rank-128 sum reaches ~5·10⁵ — far outside int8 but well
+// inside int32. Storing int8 here would silently truncate every value.
+extern "C" __global__ void pearl_materialize(const int8_t *__restrict__ base,
+                                             const int8_t *__restrict__ EL,
+                                             const int8_t *__restrict__ ER,
+                                             int32_t *__restrict__ out,
+                                             uint32_t rows, uint32_t k,
+                                             uint32_t rank) {
+  uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= (uint64_t)rows * k) return;
+  const uint32_t r = (uint32_t)(idx / k);
+  const uint32_t kk = (uint32_t)(idx % k);
+  int32_t v = base[idx];
+  for (uint32_t j = 0; j < rank; j++)
+    v += (int32_t)EL[(size_t)r * rank + j] * (int32_t)ER[(size_t)j * k + kk];
+  out[idx] = v;
+}
+
 // The heart of the PoW: accumulate C in `rank`-sized chunks and fold the
 // mandated sub-tile of each chunk into the 16-lane jackpot transcript.
 //
@@ -357,9 +384,8 @@ extern "C" __global__ void pearl_hash_operands(const uint32_t *job_key,
 // This is still the scalar path. The tensor-core mainloop replaces only the
 // accumulation below; the transcript semantics are what the parity vectors pin.
 extern "C" __global__ void pearl_gemm_fold(
-    const int8_t *__restrict__ A, const int8_t *__restrict__ B,
-    const int8_t *__restrict__ E_AL, const int8_t *__restrict__ E_AR,
-    const int8_t *__restrict__ E_BL, const int8_t *__restrict__ E_BR,
+    const int32_t *__restrict__ Aprime,   // [m, k] noised, materialised
+    const int32_t *__restrict__ Bprime,   // [n, k] noised, materialised
     const uint32_t *__restrict__ rows_pattern,
     const uint32_t *__restrict__ cols_pattern, uint32_t rows_count,
     uint32_t cols_count, uint32_t m, uint32_t n, uint32_t k, uint32_t rank,
@@ -382,35 +408,21 @@ extern "C" __global__ void pearl_gemm_fold(
   for (uint32_t chunk = 0; chunk < chunks; chunk++) {
     const uint32_t k0 = chunk * rank;
 
-    // Reconstruct the noised rows once for the whole chunk.
+    // Stage this chunk's rows and columns from the materialised operands. Each
+    // row slice is shared by cols_count cells and each column by rows_count, so
+    // staging once and reading from shared beats re-reading global per cell.
     for (uint32_t idx = tid; idx < rows_count * rank; idx += blockDim.x) {
-      const uint32_t ri = idx / rank;
       const uint32_t kk = k0 + (idx % rank);
-      int32_t a = 0;
-      if (kk < k) {
-        const uint32_t r = (rows_pattern[ri] + row_off) % m;
-        a = A[(size_t)r * k + kk];
-        for (uint32_t j = 0; j < rank; j++)
-          a += (int32_t)E_AL[(size_t)r * rank + j] * (int32_t)E_AR[(size_t)j * k + kk];
-      }
-      a_vals[idx] = a;
+      const uint32_t r = (rows_pattern[idx / rank] + row_off) % m;
+      a_vals[idx] = (kk < k) ? Aprime[(size_t)r * k + kk] : 0;
     }
-    // …and the noised columns.
     for (uint32_t idx = tid; idx < cols_count * rank; idx += blockDim.x) {
-      const uint32_t ci = idx / rank;
       const uint32_t kk = k0 + (idx % rank);
-      int32_t b = 0;
-      if (kk < k) {
-        const uint32_t c = (cols_pattern[ci] + col_off) % n;
-        b = B[(size_t)c * k + kk];
-        for (uint32_t j = 0; j < rank; j++)
-          b += (int32_t)E_BL[(size_t)c * rank + j] * (int32_t)E_BR[(size_t)j * k + kk];
-      }
-      b_vals[idx] = b;
+      const uint32_t c = (cols_pattern[idx / rank] + col_off) % n;
+      b_vals[idx] = (kk < k) ? Bprime[(size_t)c * k + kk] : 0;
     }
     __syncthreads();
 
-    // Now the tile itself is a plain dot product per cell.
     uint32_t partial = 0u;
     for (uint32_t cell = tid; cell < tile_cells; cell += blockDim.x) {
       const uint32_t ri = cell / cols_count;

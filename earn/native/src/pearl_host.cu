@@ -44,9 +44,12 @@ extern "C" __global__ void pearl_gen_noise(const uint32_t *seed, int8_t *out,
 extern "C" __global__ void pearl_hash_operands(const uint32_t *job_key,
                                                const uint8_t *padded,
                                                uint32_t len, uint8_t *out);
+extern "C" __global__ void pearl_materialize(const int8_t *base, const int8_t *EL,
+                                             const int8_t *ER, int32_t *out,
+                                             uint32_t rows, uint32_t k,
+                                             uint32_t rank);
 extern "C" __global__ void pearl_gemm_fold(
-    const int8_t *A, const int8_t *B, const int8_t *E_AL, const int8_t *E_AR,
-    const int8_t *E_BL, const int8_t *E_BR, const uint32_t *rows_pattern,
+    const int32_t *Aprime, const int32_t *Bprime, const uint32_t *rows_pattern,
     const uint32_t *cols_pattern, uint32_t rows_count, uint32_t cols_count,
     uint32_t m, uint32_t n, uint32_t k, uint32_t rank, uint32_t chunks,
     uint64_t region_base, uint32_t *jackpot_out);
@@ -94,6 +97,11 @@ struct Ctx {
   int8_t *dB = nullptr;   // [n, k]  (Bᵀ, row-major)
 
   // Low-rank noise factors. Small next to the operands.
+  // The noised operands, computed once per job. int32 because a rank-128 sum of
+  // int7 products reaches ~5e5 — int8 here would truncate every value.
+  int32_t *dAp = nullptr; // [m, k]
+  int32_t *dBp = nullptr; // [n, k]
+
   int8_t *dEAL = nullptr; // [m, rank]
   int8_t *dEAR = nullptr; // [rank, k]
   int8_t *dEBL = nullptr; // [n, rank]
@@ -200,7 +208,11 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   const size_t bBytes = (size_t)profile->n * k;
   const size_t noiseBytes =
       (size_t)profile->m * rank + rank * k + (size_t)profile->n * rank + rank * k;
-  const size_t need = aBytes + bBytes + noiseBytes + (1u << 20);
+  // The materialised operands are int32 and dominate the budget: at mainnet
+  // that is 2 GiB on top of the 1 GiB of int8 sources. Checked up front so an
+  // undersized card gets a sentence rather than an abort inside a kernel.
+  const size_t primeBytes = (aBytes + bBytes) * sizeof(int32_t);
+  const size_t need = aBytes + bBytes + primeBytes + noiseBytes + (1u << 20);
 
   // Check the budget BEFORE allocating, so an 8 GB card gets a sentence it can
   // act on instead of an out-of-memory abort three kernels deep.
@@ -220,6 +232,8 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
 
   CUDA_OK(cudaMalloc(&ctx->dA, aBytes), "allocating A");
   CUDA_OK(cudaMalloc(&ctx->dB, bBytes), "allocating B");
+  CUDA_OK(cudaMalloc(&ctx->dAp, aBytes * sizeof(int32_t)), "allocating the noised A");
+  CUDA_OK(cudaMalloc(&ctx->dBp, bBytes * sizeof(int32_t)), "allocating the noised B");
   CUDA_OK(cudaMalloc(&ctx->dEAL, (size_t)profile->m * rank), "allocating E_AL");
   CUDA_OK(cudaMalloc(&ctx->dEAR, rank * k), "allocating E_AR");
   CUDA_OK(cudaMalloc(&ctx->dEBL, (size_t)profile->n * rank), "allocating E_BL");
@@ -266,6 +280,7 @@ extern "C" void pearl_host_destroy(void *handle) {
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (!ctx) return;
   cudaFree(ctx->dA); cudaFree(ctx->dB);
+  cudaFree(ctx->dAp); cudaFree(ctx->dBp);
   cudaFree(ctx->dEAL); cudaFree(ctx->dEAR);
   cudaFree(ctx->dEBL); cudaFree(ctx->dEBR);
   cudaFree(ctx->dRows); cudaFree(ctx->dCols);
@@ -346,6 +361,14 @@ extern "C" void pearl_host_set_job(void *handle, const uint8_t *header,
   pearl_gen_noise<<<blocks((size_t)rank * k), threads>>>(
       ctx->dASeed, ctx->dEBR, rank, k, 1ull << 20);
 
+  // Fold the noise into the operands ONCE, now that the factors exist. Every
+  // region afterwards reads a finished value instead of rebuilding a rank-length
+  // dot product per element per attempt.
+  pearl_materialize<<<blocks(aLen), threads>>>(ctx->dA, ctx->dEAL, ctx->dEAR,
+                                               ctx->dAp, ctx->profile.m, k, rank);
+  pearl_materialize<<<blocks(bLen), threads>>>(ctx->dB, ctx->dEBL, ctx->dEBR,
+                                               ctx->dBp, ctx->profile.n, k, rank);
+
   cudaMemcpy(ctx->dTarget, target, PEARL_HASH_BYTES, cudaMemcpyHostToDevice);
   cudaMemcpy(ctx->aSeed, ctx->dASeed, PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
   cudaMemcpy(ctx->bSeed, ctx->dBSeed, PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
@@ -375,7 +398,7 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
       (size_t)threads * sizeof(uint32_t);
 
   pearl_gemm_fold<<<regions, threads, smem>>>(
-      ctx->dA, ctx->dB, ctx->dEAL, ctx->dEAR, ctx->dEBL, ctx->dEBR,
+      ctx->dAp, ctx->dBp,
       ctx->dRows, ctx->dCols, ctx->profile.rows_count, ctx->profile.cols_count,
       ctx->profile.m, ctx->profile.n, k, rank, chunks, nonce_base, ctx->dJackpot);
 
