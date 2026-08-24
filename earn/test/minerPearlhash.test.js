@@ -3,49 +3,80 @@
 const {
   PROFILE, CONFIG_BYTES, JACKPOT_BUCKETS, ROTL_BITS,
   buildConfig52, leBytesToBigInt, meetsTarget, rotl13, rankMatches,
+  patternToList, patternFromList, patternToBytes,
 } = require('../src/shared/miner/pearlhash');
 
 describe('PROFILE', () => {
-  // The softfork mandates rank 128; anything else is uncredited work.
-  test('is the mandated rank-128 mainnet geometry', () => {
-    expect(PROFILE.rank).toBe(128);
-    expect(PROFILE.m).toBe(131072);
-    expect(PROFILE.n).toBe(131072);
-    expect(PROFILE.k).toBe(4096);
-    expect(PROFILE.hashTile).toBe(16);
+  // Taken from the reference implementation's own defaults, not inferred.
+  test('is the mandated protocol geometry', () => {
+    expect(PROFILE.rank).toBe(128);          // the rank-penalty floor
+    expect(PROFILE.k).toBe(16 * PROFILE.rank); // smallest k the sanity checks allow
+    expect(PROFILE.k).toBe(2048);
+    expect(PROFILE.mmaType).toBe(0);         // Int7xInt7ToInt32
   });
 
-  test('the default column pattern is the (i, i+1)-per-8 shape, 64 wide', () => {
-    expect(PROFILE.cols).toHaveLength(64);
-    expect(PROFILE.cols.slice(0, 6)).toEqual([0, 1, 8, 9, 16, 17]);
-    expect(PROFILE.cols[PROFILE.cols.length - 1]).toBe(249);
-    expect(PROFILE.rows).toEqual([0, 8]);
+  // k/rank chunks map one-to-one onto the transcript lanes, so every lane is
+  // written exactly once and the rotation never wraps.
+  test('the chunk count equals the lane count', () => {
+    expect(PROFILE.k / PROFILE.rank).toBe(JACKPOT_BUCKETS);
+  });
+
+  test('the tile is the reference 4x8, with its exact index sets', () => {
+    expect(PROFILE.rows).toEqual([0, 8, 64, 72]);
+    expect(PROFILE.cols).toEqual([0, 1, 8, 9, 32, 33, 40, 41]);
+    expect(PROFILE.rows.length * PROFILE.cols.length).toBe(32);
+  });
+
+  // m and n are the miner's own workload dimensions and are NOT protocol.
+  test('carries m and n, which are not part of the configuration', () => {
+    expect(PROFILE.m).toBeGreaterThan(Math.max(...PROFILE.rows));
+    expect(PROFILE.n).toBeGreaterThan(Math.max(...PROFILE.cols));
+    expect(buildConfig52(PROFILE))
+      .toEqual(buildConfig52({ ...PROFILE, m: 131072, n: 65536 }));
+  });
+});
+
+describe('periodic patterns', () => {
+  // Three (stride, length) dimensions, serialised as (factor-1, length-1).
+  test('round-trip through the shape representation', () => {
+    expect(patternToList(patternFromList(PROFILE.rows)).sort((a, b) => a - b))
+      .toEqual(PROFILE.rows);
+    expect(patternToList(patternFromList(PROFILE.cols)).sort((a, b) => a - b))
+      .toEqual(PROFILE.cols);
+  });
+
+  // The exact six-byte encodings the reference produces for these defaults.
+  test('encode to the reference bytes', () => {
+    expect(patternToBytes(patternFromList(PROFILE.rows)).toString('hex')).toBe('070103010000');
+    expect(patternToBytes(patternFromList(PROFILE.cols)).toString('hex')).toBe('000103010101');
+  });
+
+  test('a non-periodic index list is refused rather than mis-encoded', () => {
+    expect(() => patternFromList([0, 1, 5])).toThrow(/not periodic/);
   });
 });
 
 describe('buildConfig52', () => {
-  test('is exactly 52 bytes with the geometry in little-endian', () => {
+  // Layout is MiningConfiguration::to_bytes: common_dim u32 | rank u16 |
+  // mma_type u16 | rows(6) | cols(6) | MoE trailer(32).
+  test('matches the reference layout field for field', () => {
     const b = buildConfig52();
     expect(b).toHaveLength(CONFIG_BYTES);
-    expect(b.readUInt32LE(0)).toBe(131072);
-    expect(b.readUInt32LE(4)).toBe(131072);
-    expect(b.readUInt32LE(8)).toBe(4096);
-    expect(b.readUInt16LE(12)).toBe(128);
-    expect(b.readUInt16LE(14)).toBe(16);
-    expect(b.readUInt16LE(16)).toBe(2);   // rows count
-    expect(b.readUInt16LE(18)).toBe(64);  // cols count
-  });
-
-  test('the reserved tail is zeroed so the job_key is deterministic', () => {
-    expect(buildConfig52().slice(20).equals(Buffer.alloc(CONFIG_BYTES - 20))).toBe(true);
-  });
-
-  test('honours a custom profile', () => {
-    const b = buildConfig52({ m: 2048, n: 2048, k: 1024, rank: 256, hashTile: 16, rows: [0], cols: [0, 1, 2] });
     expect(b.readUInt32LE(0)).toBe(2048);
-    expect(b.readUInt16LE(12)).toBe(256);
-    expect(b.readUInt16LE(16)).toBe(1);
-    expect(b.readUInt16LE(18)).toBe(3);
+    expect(b.readUInt16LE(4)).toBe(128);
+    expect(b.readUInt16LE(6)).toBe(0);
+    expect(b.slice(8, 14).toString('hex')).toBe('070103010000');
+    expect(b.slice(14, 20).toString('hex')).toBe('000103010101');
+  });
+
+  test('the MoE trailer is zero for a standard job', () => {
+    expect(buildConfig52().slice(20).every((x) => x === 0)).toBe(true);
+  });
+
+  test('honours a custom k and rank', () => {
+    const b = buildConfig52({ k: 4096, rank: 256, mmaType: 0 });
+    expect(b.readUInt32LE(0)).toBe(4096);
+    expect(b.readUInt16LE(4)).toBe(256);
   });
 });
 

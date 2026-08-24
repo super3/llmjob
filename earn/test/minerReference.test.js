@@ -21,7 +21,16 @@ const { JACKPOT_BUCKETS, meetsTarget } = require('../src/shared/miner/pearlhash'
 // A deliberately tiny profile — the mainnet one is 131072×131072×4096 and would
 // take days in JS. The structure exercised is identical: multiple rank chunks,
 // a multi-row/multi-column tile, and the lane rotation.
-const TINY = { m: 16, n: 16, k: 8, rank: 4, hashTile: 16, rows: [0, 2], cols: [0, 1, 3] };
+const { PROFILE } = require('../src/shared/miner/pearlhash');
+
+// Small in m/n/k so the oracle runs in milliseconds, but STRUCTURALLY the real
+// thing: k/rank = 16 chunks (one per lane) and the protocol's own 4x8 tile index
+// sets. Mainnet's k = 2048 would need ~1M keyed hashes per run.
+const TINY = {
+  k: 256, rank: 16, mmaType: 0,
+  rows: PROFILE.rows, cols: PROFILE.cols,
+  m: 128, n: 128,
+};
 
 function header76() {
   const h = Buffer.alloc(76);
@@ -29,24 +38,23 @@ function header76() {
   return h;
 }
 function operandA() {
-  const a = new Int8Array(16 * 8);
+  const a = new Int8Array(128 * 256);
   for (let i = 0; i < a.length; i++) a[i] = ((i * 7) % 127) - 63;
   return a;
 }
 function operandB() {
-  const b = new Int8Array(16 * 8);
+  const b = new Int8Array(128 * 256);
   for (let i = 0; i < b.length; i++) b[i] = ((i * 13) % 127) - 63;
   return b;
 }
 
 const VECTOR = {
-  jobKey: 'dede78315e5c1444ac4cb5a8d2d1a2294c7a5e552d2c24b5b24ff2ac4daed1cc',
-  hashA: 'a76c61bad536e329d1772bf752d4ae2ddaff7d3358fd4cb55db7fc4382830a05',
-  hashB: '437ab582a7ba4074ea092934ce66e627fe3c237b0dbda8792cd3b479cc56eb74',
-  bSeed: '8b699f19a38b06d8be1e2f8f869563f8394b62a85b4d77b01d36ce95189ec897',
-  aSeed: 'ff5d302e4834b9cfbc02b4412d60efbd4493f88944b443826df0a8d1335f070d',
-  jackpot: [4232484806, 4286839829, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-  jackpotHash: '07073ecb752476d6ab61f3229d6d29aebfdd083592885ce941f8000575ebf350',
+  jobKey: 'ed86c1bcb417ade4432242275f69221fbff1dd07d9f5addea98f826e775d6fa7',
+  hashA: 'f674a74e80fdecbc9eaff33ddab203a39de062d4227e0f148b6774797be40e9e',
+  hashB: '31aa2952017fb3fc4caa8cfebcb3652179679da1d3c1f69cd874e8d3cc048134',
+  bSeed: '970baa7e866a33d46e8984339c2e0c69eb9c3e68303b033ec7210a8f418156f7',
+  aSeed: '0d64adb205e8fde1f1254331825206782f3b49d5c91153994ddb148fbbf93bbd',
+  jackpotHash: '0ebcdd46242eb60e9a774a097df380b1edc5ed9ee154572b4e6973fb2a4520b9',
 };
 
 describe('PearlHash reference — known-answer vector', () => {
@@ -69,9 +77,12 @@ describe('PearlHash reference — known-answer vector', () => {
     expect(out.aSeed).not.toEqual(out.bSeed);
   });
 
-  test('the 16-lane transcript matches', () => {
-    expect(out.jackpot).toEqual(VECTOR.jackpot);
+  // k/rank = 16 chunks against 16 lanes, so every lane is written exactly once
+  // and the rotation never wraps. The earlier k = 4096 folded each lane twice
+  // and left the tail zeroed.
+  test('every transcript lane is populated exactly once', () => {
     expect(out.jackpot).toHaveLength(JACKPOT_BUCKETS);
+    expect(out.jackpot.filter((x) => x !== 0)).toHaveLength(JACKPOT_BUCKETS);
   });
 
   test('the final jackpot hash matches', () => {
@@ -80,8 +91,10 @@ describe('PearlHash reference — known-answer vector', () => {
 
   test('the transcript is 64 bytes, little-endian per lane', () => {
     expect(out.transcript).toHaveLength(64);
-    expect(out.transcript.readUInt32LE(0)).toBe(VECTOR.jackpot[0]);
-    expect(out.transcript.readUInt32LE(4)).toBe(VECTOR.jackpot[1]);
+    // The lanes themselves are checked above; here the concern is only that the
+    // 64-byte view is a little-endian rendering of them.
+    expect(out.transcript.readUInt32LE(0)).toBe(out.jackpot[0]);
+    expect(out.transcript.readUInt32LE(4)).toBe(out.jackpot[1]);
   });
 
   test('the final hash is keyed under a_seed, not b_seed', () => {
@@ -117,10 +130,19 @@ describe('PearlHash reference — sensitivity', () => {
   });
 
   test('the profile is bound into the result through config52', () => {
-    const out = ref.computePow({
-      header: header76(), profile: { ...TINY, rank: 8 }, A: operandA(), Bt: operandB(),
+    const out2 = ref.computePow({
+      header: header76(), profile: { ...TINY, rank: 32 }, A: operandA(), Bt: operandB(),
     });
-    expect(out.jobKey).not.toEqual(base.jobKey);
+    expect(out2.jobKey).not.toEqual(base.jobKey);
+  });
+
+  // m and n are the miner's own dimensions and are NOT hashed, so changing them
+  // must leave job_key alone even though it changes what gets mined.
+  test('m and n do not enter job_key', () => {
+    const out2 = ref.computePow({
+      header: header76(), profile: { ...TINY, m: 256, n: 256 }, A: operandA(), Bt: operandB(),
+    });
+    expect(out2.jobKey).toEqual(base.jobKey);
   });
 });
 

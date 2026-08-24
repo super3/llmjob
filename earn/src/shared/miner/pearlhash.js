@@ -165,8 +165,10 @@ function buildConfig52(profile) {
   b.writeUInt32LE(p.k >>> 0, 0);
   b.writeUInt16LE(p.rank & 0xffff, 4);
   b.writeUInt16LE((p.mmaType || 0) & 0xffff, 6);
-  patternToBytes(patternFromList(p.rows)).copy(b, 8);
-  patternToBytes(patternFromList(p.cols)).copy(b, 14);
+  // The tile patterns are protocol constants, not per-profile knobs — the device
+  // hardcodes them too, so a profile that omits them still gets the right bytes.
+  patternToBytes(patternFromList(p.rows || ROWS_PATTERN)).copy(b, 8);
+  patternToBytes(patternFromList(p.cols || COLS_PATTERN)).copy(b, 14);
   // Bytes 20..51 are the MoE trailer, zero for a standard (non-GROUPED_GEMM) job.
   return b;
 }
