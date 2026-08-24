@@ -446,13 +446,25 @@ extern "C" __global__ void pearl_gemm_fold(
         const int4 *a4 = reinterpret_cast<const int4 *>(arow + k0);
         const int4 *b4 = reinterpret_cast<const int4 *>(bcol + k0);
         const uint32_t quads = lim >> 2;
+        // Four independent accumulators. Folding every product into a single
+        // running total makes the loop a serial chain of IMADs, each waiting on
+        // the previous, and at roughly four cycles of latency that is what paces
+        // the whole kernel — bandwidth was ruled out by the staging experiment
+        // and launch overhead by the batch timing. Integer addition is
+        // associative, so splitting the chain is exact rather than approximate.
+        int32_t s0 = 0, s1 = 0, s2 = 0, s3 = 0;
 #pragma unroll 4
         for (uint32_t q = 0; q < quads; q++) {
           const int4 av = a4[q];
           const int4 bv = b4[q];
-          acc += av.x * bv.x + av.y * bv.y + av.z * bv.z + av.w * bv.w;
+          s0 += av.x * bv.x;
+          s1 += av.y * bv.y;
+          s2 += av.z * bv.z;
+          s3 += av.w * bv.w;
         }
+        acc += (s0 + s1) + (s2 + s3);
         t = lim;
+
       }
       for (; t < lim; t++) acc += arow[k0 + t] * bcol[k0 + t];
     }
