@@ -79,12 +79,39 @@ typedef struct PearlProfile {
   // operands and bound the tile offset, and never enter job_key.
   uint32_t m;
   uint32_t n;
+  // Which seed derivation binds the operand roots.
+  //   0 = cert-v3 salted: hash_a' = blake3(hash_a ‖ pad32(m), key=SEED_SALT_A)
+  //   1 = legacy: the raw roots
+  // Salted is the default because it is the ONLY thing that commits m and n —
+  // they are the miner's own choice and deliberately absent from config52.
+  //
+  // Not confirmed against the live network. Both derivations give a perfectly
+  // self-consistent miner and differ only in whether a pool accepts the share,
+  // so this is the first flag to flip if everything else verifies.
+  uint32_t seed_derivation;
 } PearlProfile;
+
+#define PEARL_SEED_SALTED 0u
+#define PEARL_SEED_LEGACY 1u
+
+// blake3("pearl/cert-v3/noise-seed/A") and .../B. Hardcoded in the reference so
+// consensus does not depend on runtime string hashing; both are re-derived from
+// their strings in the JS tests.
+static const uint8_t PEARL_SEED_SALT_A[32] = {
+    0x82, 0x49, 0x40, 0x6c, 0xa0, 0xed, 0x15, 0x16, 0x96, 0x16, 0xf6,
+    0x92, 0xfc, 0xf0, 0x76, 0xf8, 0x92, 0xdb, 0xdb, 0x2a, 0x70, 0x23,
+    0xb8, 0x52, 0xf0, 0xd4, 0x77, 0x19, 0xc3, 0x90, 0x01, 0x7b};
+static const uint8_t PEARL_SEED_SALT_B[32] = {
+    0x11, 0x30, 0x06, 0x32, 0xec, 0x63, 0x01, 0xca, 0x2b, 0xe2, 0xaf,
+    0x71, 0x8b, 0x3f, 0x4d, 0x4f, 0x1a, 0xe9, 0xc6, 0x39, 0x88, 0xe8,
+    0xcc, 0x04, 0x48, 0x44, 0x30, 0x1d, 0x71, 0xb8, 0x9a, 0xa9};
 
 // k = 16 * rank is the smallest common dimension the protocol allows at the
 // mandated rank, and k/rank = 16 chunks is exactly the transcript lane count, so
 // each chunk lands in its own lane and the rotation never wraps.
-static const PearlProfile PEARL_MAINNET_PROFILE = {2048u, 128u, 0u, 6144u, 6144u};
+static const PearlProfile PEARL_MAINNET_PROFILE = {2048u, 128u, 0u,
+                                                   6144u, 6144u,
+                                                   PEARL_SEED_SALTED};
 
 // Serialize the 52-byte mining configuration, matching the reference's
 // MiningConfiguration::to_bytes byte for byte:

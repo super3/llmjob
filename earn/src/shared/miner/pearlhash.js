@@ -140,6 +140,21 @@ const PROFILE = {
   // working set stops fitting.
   m: 6144,
   n: 6144,
+  // Which seed derivation binds the operand roots. 'salted' is cert-v3:
+  //   hash_a' = blake3(hash_a ‖ pad32(m), key=SEED_SALT_A)
+  //   hash_b' = blake3(hash_b ‖ pad32(n), key=SEED_SALT_B)
+  // 'legacy' uses the raw roots.
+  //
+  // Salted is the default because it is the only thing that commits m and n.
+  // They are the miner's own choice and deliberately absent from config52, so
+  // under 'legacy' nothing in the chain pins them at all — which is precisely
+  // the hole cert-v3 was introduced to close.
+  //
+  // NOT yet confirmed against the live network: both derivations produce a
+  // perfectly self-consistent miner and they differ only in whether a pool
+  // accepts the share. If shares are rejected with everything else verified,
+  // this flag is the first thing to flip.
+  seedDerivation: 'salted',
 };
 
 // The difficulty adjustment factor: tile size x dot product length.
@@ -153,6 +168,25 @@ const PROFILE = {
 function difficultyAdjustmentFactor(profile) {
   const p = profile || PROFILE;
   return (p.rows || ROWS_PATTERN).length * (p.cols || COLS_PATTERN).length * p.k;
+}
+
+// Domain-separation salts for the cert-v3 seed derivation. Hardcoded in the
+// reference so consensus does not depend on runtime string hashing; both are
+// re-derived from their strings in the tests, which doubles as an outside check
+// on our BLAKE3.
+//   SEED_SALT_A = blake3("pearl/cert-v3/noise-seed/A")
+//   SEED_SALT_B = blake3("pearl/cert-v3/noise-seed/B")
+const SEED_SALT_A = Buffer.from(
+  '8249406ca0ed15169616f692fcf076f892dbdb2a7023b852f0d47719c390017b', 'hex');
+const SEED_SALT_B = Buffer.from(
+  '11300632ec6301ca2be2af718b3f4d4f1ae9c63988e8cc044844301d71b89aa9', 'hex');
+
+// The 64-byte message the salt is applied to: root ‖ dim(u32 LE) ‖ 28 zeros.
+function bindMessage(root, dim) {
+  const msg = Buffer.alloc(64);
+  Buffer.from(root).copy(msg, 0);
+  msg.writeUInt32LE(dim >>> 0, 32);
+  return msg;
 }
 
 const CONFIG_BYTES = 52;
@@ -231,6 +265,7 @@ function rankMatches(jobRank, profile) {
 
 module.exports = {
   PROFILE, ROWS_PATTERN, COLS_PATTERN,
+  SEED_SALT_A, SEED_SALT_B, bindMessage,
   patternToList, patternFromList, patternToBytes, difficultyAdjustmentFactor,
   CONFIG_BYTES,
   JACKPOT_BUCKETS,

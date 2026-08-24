@@ -98,6 +98,10 @@ PearlCore::PearlCore(const Napi::CallbackInfo &info)
     profile.mma_type = (uint16_t)u32("mmaType", profile.mma_type);
     profile.m = u32("m", profile.m);
     profile.n = u32("n", profile.n);
+    // 0 = cert-v3 salted, 1 = legacy. Exposed so the derivation can be
+    // flipped from JS for a diagnostic run rather than needing a rebuild —
+    // it is the one thing here that only a live pool can confirm.
+    profile.seed_derivation = u32("seedDerivation", profile.seed_derivation);
   }
 
   profile_ = profile;

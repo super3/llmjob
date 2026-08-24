@@ -5,6 +5,7 @@ const path = require('path');
 const {
   PROFILE, CONFIG_BYTES, JACKPOT_BUCKETS, ROTL_BITS, buildConfig52,
   patternFromList, patternToBytes,
+  SEED_SALT_A, SEED_SALT_B,
 } = require('../src/shared/miner/pearlhash');
 
 // The CUDA core and the JS reference must agree byte for byte. config52 is
@@ -43,6 +44,19 @@ function initialiserNumbers(name) {
   if (open < 0 || close < 0) return null;
   const nums = HEADER.slice(open + 1, close).split(/[^0-9]+/).filter(Boolean);
   return nums ? nums.map(Number) : null;
+}
+
+
+// The salts are written as 0xNN, which the decimal reader above would shred
+// into pairs of digits. Parsed separately rather than by loosening that one.
+function initialiserBytes(name) {
+  const at = HEADER.indexOf(name);
+  if (at < 0) return null;
+  const open = HEADER.indexOf('{', at);
+  const close = HEADER.indexOf('}', open);
+  if (open < 0 || close < 0) return null;
+  return (HEADER.slice(open + 1, close).match(/0x[0-9a-fA-F]{2}/g) || [])
+    .map((h) => parseInt(h, 16));
 }
 
 describe('native/JS config agreement', () => {
@@ -103,6 +117,36 @@ describe('native/JS config agreement', () => {
   test('the native target comparison reverses the hash, not the target', () => {
     expect(HEADER).toContain('hash_le[PEARL_HASH_BYTES - 1 - i]');
     expect(HEADER).toContain('target_be[i]');
+  });
+
+  // The cert-v3 salts are duplicated as C byte arrays. They are consensus
+  // constants, so a drift means the device derives different seeds than the
+  // oracle and every share is rejected with nothing to point at.
+  test('the cert-v3 salts match the JS constants', () => {
+    expect(Buffer.from(initialiserBytes('PEARL_SEED_SALT_A'))).toEqual(SEED_SALT_A);
+    expect(Buffer.from(initialiserBytes('PEARL_SEED_SALT_B'))).toEqual(SEED_SALT_B);
+  });
+
+  // Both sides must default to the same derivation, or they disagree on every
+  // seed while each stays internally consistent.
+  test('both sides default to the cert-v3 derivation', () => {
+    expect(defineOf('PEARL_SEED_SALTED')).toBe(0);
+    expect(defineOf('PEARL_SEED_LEGACY')).toBe(1);
+    expect(PROFILE.seedDerivation).toBe('salted');
+    // The field is written as the macro, not as a literal, so the decimal
+    // reader cannot see it — assert on the initialiser text instead.
+    const at = HEADER.indexOf('PEARL_MAINNET_PROFILE');
+    const init = HEADER.slice(at, HEADER.indexOf('}', at));
+    expect(init).toContain('PEARL_SEED_SALTED');
+  });
+
+  // job_key is UNKEYED. Hashing it keyed with a zero key is a different
+  // function, and was what made the device and the oracle disagree silently.
+  test('the device derives job_key with the unkeyed kernel', () => {
+    const host = fs.readFileSync(
+      path.join(__dirname, '..', 'native', 'src', 'pearl_host.cu'), 'utf8');
+    expect(host).toContain('pearl_blake3_unkeyed<<<1, 1>>>(dSeedInput');
+    expect(host).not.toContain('zeroKey');
   });
 
   test('equality counts as a share on both sides', () => {

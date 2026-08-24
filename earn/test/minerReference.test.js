@@ -26,8 +26,13 @@ const { PROFILE } = require('../src/shared/miner/pearlhash');
 // Small in m/n/k so the oracle runs in milliseconds, but STRUCTURALLY the real
 // thing: k/rank = 16 chunks (one per lane) and the protocol's own 4x8 tile index
 // sets. Mainnet's k = 2048 would need ~1M keyed hashes per run.
+//
+// rank is 32, not 16. The reference asserts that rank is a power of two AND a
+// multiple of BLAKE3_DIGEST_SIZE, because the dense factor is generated one
+// 32-byte digest at a time. A rank of 16 is not a geometry the protocol admits,
+// and on the device it makes the per-row digest count round to zero.
 const TINY = {
-  k: 256, rank: 16, mmaType: 0,
+  k: 512, rank: 32, mmaType: 0,
   rows: PROFILE.rows, cols: PROFILE.cols,
   m: 128, n: 128,
 };
@@ -37,24 +42,26 @@ function header76() {
   for (let i = 0; i < 76; i++) h[i] = i;
   return h;
 }
+// int7 operands. The range matters: the noise adds another int7, and the sum has
+// to stay inside int8 for the Int7xInt7ToInt32 MMA.
 function operandA() {
-  const a = new Int8Array(128 * 256);
+  const a = new Int8Array(128 * 512);
   for (let i = 0; i < a.length; i++) a[i] = ((i * 7) % 127) - 63;
   return a;
 }
 function operandB() {
-  const b = new Int8Array(128 * 256);
+  const b = new Int8Array(128 * 512);
   for (let i = 0; i < b.length; i++) b[i] = ((i * 13) % 127) - 63;
   return b;
 }
 
 const VECTOR = {
-  jobKey: 'ed86c1bcb417ade4432242275f69221fbff1dd07d9f5addea98f826e775d6fa7',
-  hashA: 'f674a74e80fdecbc9eaff33ddab203a39de062d4227e0f148b6774797be40e9e',
-  hashB: '31aa2952017fb3fc4caa8cfebcb3652179679da1d3c1f69cd874e8d3cc048134',
-  bSeed: '970baa7e866a33d46e8984339c2e0c69eb9c3e68303b033ec7210a8f418156f7',
-  aSeed: '0d64adb205e8fde1f1254331825206782f3b49d5c91153994ddb148fbbf93bbd',
-  jackpotHash: '0ebcdd46242eb60e9a774a097df380b1edc5ed9ee154572b4e6973fb2a4520b9',
+  jobKey: '1763b0a2bbe33951b819000e5e6f80098355521908a9c1979ef25b1ff284ae53',
+  hashA: 'b96bdd9300c5749ca09a0964a94a59672f14f8eaaf7f85d3f968cde7f01089b5',
+  hashB: 'f60830c2d7c1765c6e8d095ca27f0125b97ae7ad1d6073b2b13d02c304c57588',
+  bSeed: 'e65a483f85c996264691845e344a1472d77292cc99fa8fc25124bd902597b0d5',
+  aSeed: '1e3b37f45d5c728e370464121b3d1af4fe70d05ef7d2b8f7e14c0c751d14a608',
+  jackpotHash: '98e74e200409d22d34cc489073a05ee583602aaeaafabf5f9774cd694f3c0dbc',
 };
 
 describe('PearlHash reference — known-answer vector', () => {
@@ -131,7 +138,7 @@ describe('PearlHash reference — sensitivity', () => {
 
   test('the profile is bound into the result through config52', () => {
     const out2 = ref.computePow({
-      header: header76(), profile: { ...TINY, rank: 32 }, A: operandA(), Bt: operandB(),
+      header: header76(), profile: { ...TINY, rank: 64 }, A: operandA(), Bt: operandB(),
     });
     expect(out2.jobKey).not.toEqual(base.jobKey);
   });
@@ -156,32 +163,6 @@ describe('PearlHash reference — pieces', () => {
     const p = ref.pad1024(Buffer.from([1, 2, 3]));
     expect(p.slice(0, 3)).toEqual(Buffer.from([1, 2, 3]));
     expect(p.slice(3).every((b) => b === 0)).toBe(true);
-  });
-
-  // The int7 range keeps products inside int32 without saturating, which is why
-  // the reference uses Int7xInt7ToInt32 rather than full int8.
-  test('noise draws land in the int7 range and vary with the index', () => {
-    const seed = Buffer.alloc(32, 7);
-    const seen = new Set();
-    for (let i = 0; i < 200; i++) {
-      const v = ref.noiseDraw(seed, i);
-      expect(v).toBeGreaterThanOrEqual(-63);
-      expect(v).toBeLessThanOrEqual(63);
-      seen.add(v);
-    }
-    expect(seen.size).toBeGreaterThan(20); // not a constant
-  });
-
-  test('noise draws depend on the seed', () => {
-    const a = ref.noiseDraw(Buffer.alloc(32, 1), 0);
-    const b = ref.noiseDraw(Buffer.alloc(32, 2), 0);
-    // Overwhelmingly likely to differ; if they ever collide the next index will not.
-    expect([a, ref.noiseDraw(Buffer.alloc(32, 1), 1)])
-      .not.toEqual([b, ref.noiseDraw(Buffer.alloc(32, 2), 1)]);
-  });
-
-  test('noiseFactor fills rows × rank', () => {
-    expect(ref.noiseFactor(Buffer.alloc(32, 3), 4, 5, 0)).toHaveLength(20);
   });
 
   test('rotl13 matches the fold definition', () => {

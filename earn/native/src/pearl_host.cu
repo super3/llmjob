@@ -38,17 +38,26 @@
 #include "pearl_config.h"
 
 // Declared in pearl_kernel.cu.
-extern "C" __global__ void pearl_gen_noise(const uint32_t *seed, int8_t *out,
-                                           uint32_t rows, uint32_t rank,
-                                           uint64_t index_base);
+extern "C" __global__ void pearl_gen_dense(const uint32_t *seed,
+                                           const uint8_t *label,
+                                           const uint32_t *row_indices,
+                                           int8_t *out, uint32_t num_rows,
+                                           uint32_t rank);
+extern "C" __global__ void pearl_gen_perm(const uint32_t *seed,
+                                          const uint8_t *label, uint32_t *out,
+                                          uint32_t k, uint32_t rank);
+extern "C" __global__ void pearl_gen_operand(const uint32_t *key,
+                                             const uint8_t *label, int8_t *out,
+                                             uint64_t total);
 extern "C" __global__ void pearl_hash_operands(const uint32_t *job_key,
                                                const uint8_t *padded,
                                                uint32_t len, uint8_t *out);
-extern "C" __global__ void pearl_materialize(const int8_t *base, const int8_t *EL,
-                                             const int8_t *ER, int32_t *out,
+extern "C" __global__ void pearl_materialize(const int8_t *base,
+                                             const int8_t *dense,
+                                             const uint32_t *perm, int8_t *out,
                                              uint32_t rows, uint32_t k,
                                              uint32_t rank);
-extern "C" __global__ void pearl_partials(const int32_t *Aprime, const int32_t *Bprime,
+extern "C" __global__ void pearl_partials(const int8_t *Aprime, const int8_t *Bprime,
                                           const uint32_t *cols_pattern,
                                           uint32_t cols_count, uint32_t m, uint32_t n,
                                           uint32_t k, uint32_t rank, uint32_t chunks,
@@ -72,8 +81,11 @@ extern "C" __global__ void pearl_blake3_parent_layer(const uint32_t *key,
                                                      uint64_t pairs,
                                                      uint32_t is_root,
                                                      uint32_t *out_cvs);
-extern "C" __global__ void pearl_blake3_short(const uint8_t *in, uint32_t len,
-                                              uint8_t *out);
+extern "C" __global__ void pearl_blake3_unkeyed(const uint8_t *in, uint32_t len,
+                                                uint8_t *out);
+extern "C" __global__ void pearl_bind_root(const uint8_t *salt,
+                                           const uint8_t *root, uint32_t dim,
+                                           uint8_t *out);
 extern "C" __global__ void pearl_finalize(const uint32_t *a_seed,
                                           const uint32_t *jackpot,
                                           const uint8_t *target_be,
@@ -100,16 +112,30 @@ struct Ctx {
   int8_t *dA = nullptr;   // [m, k]
   int8_t *dB = nullptr;   // [n, k]  (Bᵀ, row-major)
 
-  // Low-rank noise factors. Small next to the operands.
-  // The noised operands, computed once per job. int32 because a rank-128 sum of
-  // int7 products reaches ~5e5 — int8 here would truncate every value.
-  int32_t *dAp = nullptr; // [m, k]
-  int32_t *dBp = nullptr; // [n, k]
+  // The noised operands, computed once per commitment. int8, matching the
+  // reference's saturating convert-down: operand and noise are both int7, so the
+  // sum fits, and an int8 operand is what lets the fold use __dp4a at all.
+  int8_t *dAp = nullptr; // [m, k]
+  int8_t *dBp = nullptr; // [n, k]
 
-  int8_t *dEAL = nullptr; // [m, rank]
-  int8_t *dEAR = nullptr; // [rank, k]
-  int8_t *dEBL = nullptr; // [n, rank]
-  int8_t *dEBR = nullptr; // [rank, k]
+  // The noise factors. Only two of the four are dense — E_AR and E_BL are sparse
+  // +-1 selectors, stored as one (p0, p1) index pair per k, and they depend only
+  // on the seeds rather than on the tile offset.
+  int8_t *dEAL = nullptr;    // dense  [m, rank]
+  int8_t *dEBR = nullptr;    // dense  [n, rank]
+  uint32_t *dPermA = nullptr; // sparse [k, 2]
+  uint32_t *dPermB = nullptr; // sparse [k, 2]
+
+  // The two 32-byte seed labels, "A_tensor" and "B_tensor", zero-padded. They go
+  // into the RNG message while the commitment seed is the key.
+  uint8_t *dLabelA = nullptr;
+  uint8_t *dLabelB = nullptr;
+
+  // The cert-v3 domain-separation salts, and the bound roots they produce.
+  uint8_t *dSaltA = nullptr;
+  uint8_t *dSaltB = nullptr;
+  uint8_t *dBoundA = nullptr;
+  uint8_t *dBoundB = nullptr;
 
   uint32_t *dRows = nullptr;
   uint32_t *dCols = nullptr;
@@ -209,12 +235,12 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   const size_t rank = profile->rank;
   const size_t aBytes = (size_t)profile->m * k;
   const size_t bBytes = (size_t)profile->n * k;
-  const size_t noiseBytes =
-      (size_t)profile->m * rank + rank * k + (size_t)profile->n * rank + rank * k;
-  // The materialised operands are int32 and dominate the budget: at mainnet
-  // that is 2 GiB on top of the 1 GiB of int8 sources. Checked up front so an
-  // undersized card gets a sentence rather than an abort inside a kernel.
-  const size_t primeBytes = (aBytes + bBytes) * sizeof(int32_t);
+  const size_t noiseBytes = (size_t)profile->m * rank + (size_t)profile->n * rank
+                            + 2 * k * 2 * sizeof(uint32_t) + 64;
+  // The materialised operands are int8, the same size as the sources. They were
+  // int32 while the noise was (wrongly) reconstructed at full rank, which cost
+  // 2 GiB at mainnet on top of the 1 GiB of sources.
+  const size_t primeBytes = aBytes + bBytes;
   const size_t need = aBytes + bBytes + primeBytes + noiseBytes + (1u << 20);
 
   // Check the budget BEFORE allocating, so an 8 GB card gets a sentence it can
@@ -235,12 +261,33 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
 
   CUDA_OK(cudaMalloc(&ctx->dA, aBytes), "allocating A");
   CUDA_OK(cudaMalloc(&ctx->dB, bBytes), "allocating B");
-  CUDA_OK(cudaMalloc(&ctx->dAp, aBytes * sizeof(int32_t)), "allocating the noised A");
-  CUDA_OK(cudaMalloc(&ctx->dBp, bBytes * sizeof(int32_t)), "allocating the noised B");
+  CUDA_OK(cudaMalloc(&ctx->dAp, aBytes), "allocating the noised A");
+  CUDA_OK(cudaMalloc(&ctx->dBp, bBytes), "allocating the noised B");
   CUDA_OK(cudaMalloc(&ctx->dEAL, (size_t)profile->m * rank), "allocating E_AL");
-  CUDA_OK(cudaMalloc(&ctx->dEAR, rank * k), "allocating E_AR");
-  CUDA_OK(cudaMalloc(&ctx->dEBL, (size_t)profile->n * rank), "allocating E_BL");
-  CUDA_OK(cudaMalloc(&ctx->dEBR, rank * k), "allocating E_BR");
+  CUDA_OK(cudaMalloc(&ctx->dEBR, (size_t)profile->n * rank), "allocating E_BR");
+  CUDA_OK(cudaMalloc(&ctx->dPermA, k * 2 * sizeof(uint32_t)), "allocating E_AR");
+  CUDA_OK(cudaMalloc(&ctx->dPermB, k * 2 * sizeof(uint32_t)), "allocating E_BL");
+
+  // The seed labels are fixed ASCII, so they are uploaded once here rather than
+  // rebuilt per job.
+  CUDA_OK(cudaMalloc(&ctx->dLabelA, 32), "allocating the A label");
+  CUDA_OK(cudaMalloc(&ctx->dLabelB, 32), "allocating the B label");
+  {
+    uint8_t lab[32];
+    memset(lab, 0, 32);
+    memcpy(lab, "A_tensor", 8);
+    cudaMemcpy(ctx->dLabelA, lab, 32, cudaMemcpyHostToDevice);
+    memset(lab, 0, 32);
+    memcpy(lab, "B_tensor", 8);
+    cudaMemcpy(ctx->dLabelB, lab, 32, cudaMemcpyHostToDevice);
+  }
+
+  CUDA_OK(cudaMalloc(&ctx->dSaltA, 32), "allocating the A salt");
+  CUDA_OK(cudaMalloc(&ctx->dSaltB, 32), "allocating the B salt");
+  CUDA_OK(cudaMalloc(&ctx->dBoundA, PEARL_HASH_BYTES), "allocating the bound A root");
+  CUDA_OK(cudaMalloc(&ctx->dBoundB, PEARL_HASH_BYTES), "allocating the bound B root");
+  cudaMemcpy(ctx->dSaltA, PEARL_SEED_SALT_A, 32, cudaMemcpyHostToDevice);
+  cudaMemcpy(ctx->dSaltB, PEARL_SEED_SALT_B, 32, cudaMemcpyHostToDevice);
   // One transcript, hash and verdict per region in a batch, so a batch is two
   // kernel launches and ONE copy back rather than 4096 round trips.
   ctx->batch = PEARL_BATCH_REGIONS;
@@ -289,8 +336,11 @@ extern "C" void pearl_host_destroy(void *handle) {
   if (!ctx) return;
   cudaFree(ctx->dA); cudaFree(ctx->dB);
   cudaFree(ctx->dAp); cudaFree(ctx->dBp);
-  cudaFree(ctx->dEAL); cudaFree(ctx->dEAR);
-  cudaFree(ctx->dEBL); cudaFree(ctx->dEBR);
+  cudaFree(ctx->dEAL); cudaFree(ctx->dEBR);
+  cudaFree(ctx->dPermA); cudaFree(ctx->dPermB);
+  cudaFree(ctx->dLabelA); cudaFree(ctx->dLabelB);
+  cudaFree(ctx->dSaltA); cudaFree(ctx->dSaltB);
+  cudaFree(ctx->dBoundA); cudaFree(ctx->dBoundB);
   cudaFree(ctx->dRows); cudaFree(ctx->dCols);
   cudaFree(ctx->dD);
   cudaFree(ctx->dHashes); cudaFree(ctx->dFlags);
@@ -317,11 +367,15 @@ extern "C" void pearl_host_set_job(void *handle, const uint8_t *header,
   cudaMalloc(&dSeedInput, sizeof(seedInput));
   cudaMemcpy(dSeedInput, seedInput, sizeof(seedInput), cudaMemcpyHostToDevice);
 
-  // An all-zero key gives the unkeyed derivation the spec uses for job_key.
-  uint32_t zeroKey[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-  cudaMemcpy(ctx->dJobKey, zeroKey, sizeof(zeroKey), cudaMemcpyHostToDevice);
-  pearl_hash_operands<<<1, 1>>>(ctx->dJobKey, dSeedInput, sizeof(seedInput),
-                                reinterpret_cast<uint8_t *>(ctx->dJobKey));
+  // job_key = blake3(header76 ‖ config52), UNKEYED.
+  //
+  // This used to hash it KEYED with an all-zero key, under the belief that a
+  // zero key is the same as no key. It is not: keyed mode seeds the chaining
+  // value from the key and sets KEYED_HASH, so the two produce different
+  // digests. The device and the oracle therefore derived different job keys —
+  // and, both being internally consistent, nothing anywhere said so.
+  pearl_blake3_unkeyed<<<1, 1>>>(dSeedInput, sizeof(seedInput),
+                                 reinterpret_cast<uint8_t *>(ctx->dJobKey));
   cudaFree(dSeedInput);
 
   const size_t aLen = (size_t)ctx->profile.m * ctx->profile.k;
@@ -333,10 +387,16 @@ extern "C" void pearl_host_set_job(void *handle, const uint8_t *header,
   const int threads = 256;
   auto blocks = [&](size_t n) { return (unsigned)((n + threads - 1) / threads); };
 
-  pearl_gen_noise<<<blocks((size_t)ctx->profile.m * k), threads>>>(
-      ctx->dJobKey, ctx->dA, ctx->profile.m, k, 0);
-  pearl_gen_noise<<<blocks((size_t)ctx->profile.n * k), threads>>>(
-      ctx->dJobKey, ctx->dB, ctx->profile.n, k, 1ull << 40);
+  // The operands are the miner's own workload, so their contents are our choice
+  // — but their RANGE is not. They must be int7: the noise adds another int7 and
+  // the sum has to stay inside int8 for the Int7xInt7ToInt32 MMA.
+  //
+  // Keyed by job_key rather than by a commitment seed, so these streams cannot
+  // collide with the noise streams even though they share the labels.
+  pearl_gen_operand<<<blocks(aLen / 32 + 1), threads>>>(
+      ctx->dJobKey, ctx->dLabelA, ctx->dA, aLen);
+  pearl_gen_operand<<<blocks(bLen / 32 + 1), threads>>>(
+      ctx->dJobKey, ctx->dLabelB, ctx->dB, bLen);
 
   // hash_a and hash_b: keyed BLAKE3 over the WHOLE operands. These are Merkle
   // trees over 1024-byte chunks, not one long chain — hashing them as a single
@@ -346,36 +406,58 @@ extern "C" void pearl_host_set_job(void *handle, const uint8_t *header,
   operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dA), aLen, ctx->dHashA);
   operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dB), bLen, ctx->dHashB);
 
+  // Bind the roots before they enter the chain. Under cert-v3 each root is
+  // re-hashed with its dimension under a domain-separation salt, which is what
+  // commits m and n; legacy passes the raw roots straight through.
+  if (ctx->profile.seed_derivation == PEARL_SEED_LEGACY) {
+    cudaMemcpy(ctx->dBoundA, ctx->dHashA, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
+    cudaMemcpy(ctx->dBoundB, ctx->dHashB, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
+  } else {
+    pearl_bind_root<<<1, 1>>>(ctx->dSaltA, ctx->dHashA, ctx->profile.m, ctx->dBoundA);
+    pearl_bind_root<<<1, 1>>>(ctx->dSaltB, ctx->dHashB, ctx->profile.n, ctx->dBoundB);
+    cudaDeviceSynchronize();
+  }
+
   // b_seed = blake3(job_key ‖ hash_b), then a_seed = blake3(b_seed ‖ hash_a).
   // The order is NOT symmetric: b_seed is derived first and feeds a_seed.
   cudaMemcpy(ctx->dSeedBuf, ctx->dJobKey, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
-  cudaMemcpy(ctx->dSeedBuf + PEARL_HASH_BYTES, ctx->dHashB, PEARL_HASH_BYTES,
+  cudaMemcpy(ctx->dSeedBuf + PEARL_HASH_BYTES, ctx->dBoundB, PEARL_HASH_BYTES,
              cudaMemcpyDeviceToDevice);
-  pearl_blake3_short<<<1, 1>>>(ctx->dSeedBuf, 64,
+  pearl_blake3_unkeyed<<<1, 1>>>(ctx->dSeedBuf, 64,
                                reinterpret_cast<uint8_t *>(ctx->dBSeed));
 
   cudaMemcpy(ctx->dSeedBuf, ctx->dBSeed, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
-  cudaMemcpy(ctx->dSeedBuf + PEARL_HASH_BYTES, ctx->dHashA, PEARL_HASH_BYTES,
+  cudaMemcpy(ctx->dSeedBuf + PEARL_HASH_BYTES, ctx->dBoundA, PEARL_HASH_BYTES,
              cudaMemcpyDeviceToDevice);
-  pearl_blake3_short<<<1, 1>>>(ctx->dSeedBuf, 64,
+  pearl_blake3_unkeyed<<<1, 1>>>(ctx->dSeedBuf, 64,
                                reinterpret_cast<uint8_t *>(ctx->dASeed));
   cudaDeviceSynchronize();
 
-  pearl_gen_noise<<<blocks((size_t)ctx->profile.m * rank), threads>>>(
-      ctx->dBSeed, ctx->dEAL, ctx->profile.m, rank, 0);
-  pearl_gen_noise<<<blocks((size_t)rank * k), threads>>>(
-      ctx->dBSeed, ctx->dEAR, rank, k, 1ull << 20);
-  pearl_gen_noise<<<blocks((size_t)ctx->profile.n * rank), threads>>>(
-      ctx->dASeed, ctx->dEBL, ctx->profile.n, rank, 0);
-  pearl_gen_noise<<<blocks((size_t)rank * k), threads>>>(
-      ctx->dASeed, ctx->dEBR, rank, k, 1ull << 20);
+  // The A side is keyed by a_seed and the B side by b_seed. Obvious as written,
+  // but the reference destructures its tuple as
+  //   let (b_noise_seed, a_noise_seed) = commitment_hash;
+  // i.e. b first, so it is easy to end up with these swapped — silently, and
+  // with no symptom other than shares that are never accepted.
+  //
+  // row_indices is null here because the whole operand is noised, so a row's
+  // index IS its position. The parameter exists for the verifier's path, which
+  // only ever wants the handful of rows in one tile.
+  pearl_gen_dense<<<blocks((size_t)ctx->profile.m * (rank / 32)), threads>>>(
+      ctx->dASeed, ctx->dLabelA, nullptr, ctx->dEAL, ctx->profile.m, rank);
+  pearl_gen_dense<<<blocks((size_t)ctx->profile.n * (rank / 32)), threads>>>(
+      ctx->dBSeed, ctx->dLabelB, nullptr, ctx->dEBR, ctx->profile.n, rank);
+  pearl_gen_perm<<<blocks((k + 7) / 8), threads>>>(ctx->dASeed, ctx->dLabelA,
+                                                   ctx->dPermA, k, rank);
+  pearl_gen_perm<<<blocks((k + 7) / 8), threads>>>(ctx->dBSeed, ctx->dLabelB,
+                                                   ctx->dPermB, k, rank);
 
-  // Fold the noise into the operands ONCE, now that the factors exist. Every
-  // region afterwards reads a finished value instead of rebuilding a rank-length
-  // dot product per element per attempt.
-  pearl_materialize<<<blocks(aLen), threads>>>(ctx->dA, ctx->dEAL, ctx->dEAR,
+  // Fold the noise into the operands ONCE. Each element costs two lookups and a
+  // subtract, because E_AR and E_BL are sparse +-1 selectors rather than dense
+  // factors — the version that reconstructed at full rank did rank times this
+  // much work and computed the wrong thing.
+  pearl_materialize<<<blocks(aLen), threads>>>(ctx->dA, ctx->dEAL, ctx->dPermA,
                                                ctx->dAp, ctx->profile.m, k, rank);
-  pearl_materialize<<<blocks(bLen), threads>>>(ctx->dB, ctx->dEBL, ctx->dEBR,
+  pearl_materialize<<<blocks(bLen), threads>>>(ctx->dB, ctx->dEBR, ctx->dPermB,
                                                ctx->dBp, ctx->profile.n, k, rank);
 
   cudaMemcpy(ctx->dTarget, target, PEARL_HASH_BYTES, cudaMemcpyHostToDevice);

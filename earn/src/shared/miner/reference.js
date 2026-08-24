@@ -1,7 +1,11 @@
 'use strict';
 
 const { keyedHash, hash } = require('./blake3');
-const { buildConfig52, JACKPOT_BUCKETS, ROTL_BITS, leBytesToBigInt } = require('./pearlhash');
+const {
+  buildConfig52, JACKPOT_BUCKETS, ROTL_BITS, leBytesToBigInt,
+  SEED_SALT_A, SEED_SALT_B, bindMessage,
+} = require('./pearlhash');
+const { computeNoiseForIndices, satInt8 } = require('./noise');
 
 // A complete, executable PearlHash in JavaScript.
 //
@@ -14,14 +18,11 @@ const { buildConfig52, JACKPOT_BUCKETS, ROTL_BITS, leBytesToBigInt } = require('
 // known-answer vectors generated from it.
 //
 // Built on ./blake3, which is validated against the official BLAKE3 vectors, so
-// the foundation is externally verified rather than self-consistent.
-//
-// SCOPE, STATED HONESTLY: these vectors pin OUR implementation's semantics —
-// they make the JS and CUDA sides provably agree, and they catch any future edit
-// to either. They do NOT by themselves prove agreement with the Pearl network;
-// that needs a share accepted by a real pool, which needs the core compiled on a
-// GPU box. What they buy is that when that day comes, a rejection points at the
-// protocol rather than at arithmetic.
+// the foundation is externally verified rather than self-consistent. The noise
+// construction in ./noise is a direct port of the reference implementation's
+// pearl_noise.rs rather than an inference from prose — an earlier version of
+// this file guessed at it and got a structure that was internally consistent and
+// completely wrong.
 
 // Derive the per-job key: blake3(header76 ‖ config52), unkeyed.
 function jobKey(header, profile) {
@@ -38,38 +39,39 @@ function pad1024(bytes) {
   return out;
 }
 
+// Bind the operand roots before they enter the seed chain.
+//
+// Under cert-v3 ('salted') each root is re-hashed under a domain-separation salt
+// together with its dimension, which is what commits m and n — they are the
+// miner's own choice and are deliberately absent from config52, so nothing else
+// in the chain pins them. 'legacy' passes the raw roots straight through.
+function bindRoots(hashA, hashB, m, n, mode) {
+  if (mode === 'legacy') return { hashA, hashB };
+  return {
+    hashA: keyedHash(SEED_SALT_A, bindMessage(hashA, m)),
+    hashB: keyedHash(SEED_SALT_B, bindMessage(hashB, n)),
+  };
+}
+
 // The operand commitments and the two seeds derived from them.
 //   hash_a = blake3(pad1024(A), key=job_key)
 //   hash_b = blake3(pad1024(Bᵀ), key=job_key)
+//   (hash_a, hash_b) = bind_roots(...)          [cert-v3 only]
 //   b_seed = blake3(job_key ‖ hash_b)
 //   a_seed = blake3(b_seed ‖ hash_a)
 // The ORDER matters and is not symmetric: b_seed is derived first and then feeds
-// a_seed, so swapping the two silently produces a different transcript.
-function deriveSeeds(key, A, Bt) {
-  const hashA = keyedHash(key, pad1024(A));
-  const hashB = keyedHash(key, pad1024(Bt));
+// a_seed, so swapping the two silently produces a different transcript. Both
+// hashes here are UNKEYED — the reference passes None as the key, and keying
+// them with a zero key (which is a different function in BLAKE3, not the same
+// one) is a mistake with no visible symptom.
+function deriveSeeds(key, A, Bt, profile) {
+  const p = profile || {};
+  const rawA = keyedHash(key, pad1024(A));
+  const rawB = keyedHash(key, pad1024(Bt));
+  const { hashA, hashB } = bindRoots(rawA, rawB, p.m, p.n, p.seedDerivation);
   const bSeed = hash(Buffer.concat([key, hashB]));
   const aSeed = hash(Buffer.concat([bSeed, hashA]));
-  return { hashA, hashB, bSeed, aSeed };
-}
-
-// One int7 noise draw: keyed BLAKE3 over the little-endian index, mapped into
-// [-63, 63]. Mirrors noise_draw() in pearl_kernel.cu exactly — the range is
-// chosen so products stay inside int32 without saturating.
-function noiseDraw(seed, index) {
-  const idx = Buffer.alloc(8);
-  idx.writeBigUInt64LE(BigInt(index));
-  const h = keyedHash(seed, idx);
-  return (h[0] % 127) - 63;
-}
-
-// A low-rank noise factor, [rows × rank], drawn from a seed. E_A = E_AL·E_AR and
-// E_B = E_BL·E_BR are each built from two of these, which is what lets the GPU
-// regenerate noise on the fly instead of storing a dense matrix.
-function noiseFactor(seed, rows, rank, indexBase) {
-  const out = new Int8Array(rows * rank);
-  for (let i = 0; i < rows * rank; i++) out[i] = noiseDraw(seed, indexBase + i);
-  return out;
+  return { hashA: rawA, hashB: rawB, boundA: hashA, boundB: hashB, bSeed, aSeed };
 }
 
 // Rotate a 32-bit lane left by 13 — the transcript fold's mixing step.
@@ -77,35 +79,44 @@ function rotl13(x) {
   return (((x << ROTL_BITS) | (x >>> (32 - ROTL_BITS))) >>> 0);
 }
 
-// The heart of it: accumulate C in `rank`-sized chunks and fold the mandated
-// sub-tile of each chunk into a 16-lane transcript.
+// Accumulate C in `rank`-sized chunks and fold the mandated sub-tile of each
+// chunk into a 16-lane transcript.
 //
 //   jackpot[chunk % 16] = rotl13(jackpot[chunk % 16]) ^ xor(tile)
 //
-// The noised operands are reconstructed on the fly:
-//   A'[r,kk] = A[r,kk] + Σ_j E_AL[r,j]·E_AR[j,kk]
-//   B'[c,kk] = B[c,kk] + Σ_j E_BL[c,j]·E_BR[j,kk]
+// The operands are noised first and saturated to int8, which is what the
+// reference's noising kernel hands to the main GEMM:
+//
+//   A'[r,kk] = sat_i8(A[r,kk] + noiseA[r,kk])
+//   B'[c,kk] = sat_i8(B[c,kk] + noiseB[c,kk])
+//
+// Both are int7-ranged, so the product is well inside int32 and the accumulator
+// is a real accumulator rather than a wraparound artefact.
 function foldTranscript(opts) {
-  const { A, Bt, EAL, EAR, EBL, EBR, rows, cols, k, rank } = opts;
+  const { A, Bt, noiseA, noiseB, rows, cols, k, rank } = opts;
   const chunks = Math.ceil(k / rank);
   const jackpot = new Uint32Array(JACKPOT_BUCKETS);
 
+  // Materialise the noised tile rows and columns once.
+  const Ap = rows.map((r, ri) => {
+    const out = new Int8Array(k);
+    for (let kk = 0; kk < k; kk++) out[kk] = satInt8(A[r * k + kk] + noiseA[ri][kk]);
+    return out;
+  });
+  const Bp = cols.map((c, ci) => {
+    const out = new Int8Array(k);
+    for (let kk = 0; kk < k; kk++) out[kk] = satInt8(Bt[c * k + kk] + noiseB[ci][kk]);
+    return out;
+  });
+
   for (let chunk = 0; chunk < chunks; chunk++) {
     const k0 = chunk * rank;
+    const kEnd = Math.min(k0 + rank, k);
     let tileXor = 0;
-    for (const r of rows) {
-      for (const c of cols) {
+    for (let ri = 0; ri < rows.length; ri++) {
+      for (let ci = 0; ci < cols.length; ci++) {
         let acc = 0;
-        for (let kk = k0; kk < k0 + rank && kk < k; kk++) {
-          let a = A[r * k + kk];
-          let b = Bt[c * k + kk];
-          for (let j = 0; j < rank; j++) {
-            a += EAL[r * rank + j] * EAR[j * k + kk];
-            b += EBL[c * rank + j] * EBR[j * k + kk];
-          }
-          // Wrap to int32 exactly as the device accumulator does.
-          acc = (acc + Math.imul(a, b)) | 0;
-        }
+        for (let kk = k0; kk < kEnd; kk++) acc = (acc + Ap[ri][kk] * Bp[ci][kk]) | 0;
         tileXor = (tileXor ^ acc) >>> 0;
       }
     }
@@ -128,17 +139,14 @@ function transcriptBytes(jackpot) {
 function computePow(opts) {
   const { header, profile, A, Bt } = opts;
   const key = jobKey(header, profile);
-  const { hashA, hashB, bSeed, aSeed } = deriveSeeds(key, A, Bt);
+  const { hashA, hashB, bSeed, aSeed } = deriveSeeds(key, A, Bt, profile);
 
   const { k, rank, rows, cols } = profile;
-  const mRows = Math.max(...rows) + 1;
-  const nCols = Math.max(...cols) + 1;
-  const EAL = noiseFactor(bSeed, mRows, rank, 0);
-  const EAR = noiseFactor(bSeed, rank, k, 1 << 20);
-  const EBL = noiseFactor(aSeed, nCols, rank, 0);
-  const EBR = noiseFactor(aSeed, rank, k, 1 << 20);
+  const { noiseA, noiseB } = computeNoiseForIndices({
+    k, rank, aSeed, bSeed, rowIndices: rows, colIndices: cols,
+  });
 
-  const jackpot = foldTranscript({ A, Bt, EAL, EAR, EBL, EBR, rows, cols, k, rank });
+  const jackpot = foldTranscript({ A, Bt, noiseA, noiseB, rows, cols, k, rank });
   const transcript = transcriptBytes(jackpot);
   const jackpotHash = keyedHash(aSeed, transcript);
 
@@ -150,6 +158,6 @@ function computePow(opts) {
 }
 
 module.exports = {
-  jobKey, pad1024, deriveSeeds, noiseDraw, noiseFactor,
+  jobKey, pad1024, deriveSeeds, bindRoots,
   rotl13, foldTranscript, transcriptBytes, computePow,
 };

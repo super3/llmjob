@@ -20,7 +20,9 @@
 //   1. job_key = blake3(header76 ‖ config52)                       [host]
 //   2. hash_a/hash_b = keyed blake3 over the padded operands       [pearl_hash_operands]
 //   3. b_seed, a_seed derived from those                           [host]
-//   4. E_A = E_AL·E_AR, E_B = E_BL·E_BR   (low-rank noise, rank r) [pearl_gen_noise]
+//   4. E_A = E_AL·E_AR, E_B = E_BL·E_BR   (E_AR/E_BL are sparse ±1 selectors,
+//      so this is two lookups per element, not a rank-length dot product)
+//                                                    [pearl_gen_dense/_perm]
 //   5. C accumulated in rank chunks; per chunk fold the sub-tile   [pearl_gemm_fold]
 //        jackpot[tid] = rotl13(jackpot[tid]) ^ xor(tile), tid = chunk % 16
 //   6. jackpot_hash = blake3(transcript64, key=a_seed); share iff <= target
@@ -113,11 +115,18 @@ __device__ void blake3_compress(const uint32_t cv[8], const uint32_t block[16],
 // Keyed BLAKE3 over an input of at most one 1024-byte chunk, producing 32 bytes.
 // This covers every hash the PoW takes: the padded operand blocks and the
 // 64-byte transcript.
-__device__ void blake3_keyed(const uint32_t key[8], const uint8_t *input,
-                             uint32_t len, uint8_t out[32]) {
+// BLAKE3 over at most one 1024-byte chunk, parameterised by its starting
+// chaining value and base flags. Keyed mode seeds the CV from the key and sets
+// KEYED_HASH; unkeyed mode starts from the IV with no extra flag. They are
+// DIFFERENT FUNCTIONS — hashing data with a zero KEY does not give the unkeyed
+// digest. That is exactly the bug that had the device deriving a different
+// job_key from the oracle while both stayed perfectly self-consistent.
+__device__ void blake3_one_chunk(const uint32_t cv_init[8], uint32_t base_flags,
+                                 const uint8_t *input, uint32_t len,
+                                 uint8_t out[32]) {
   uint32_t cv[8];
 #pragma unroll
-  for (int i = 0; i < 8; i++) cv[i] = key[i];
+  for (int i = 0; i < 8; i++) cv[i] = cv_init[i];
 
   uint32_t block[16];
   uint32_t offset = 0;
@@ -131,7 +140,7 @@ __device__ void blake3_keyed(const uint32_t key[8], const uint8_t *input,
                  ((uint32_t)input[j + 2] << 16) | ((uint32_t)input[j + 3] << 24);
     }
     uint32_t out16[16];
-    blake3_compress(cv, block, 0, 64, KEYED_HASH | flags_start, out16);
+    blake3_compress(cv, block, 0, 64, base_flags | flags_start, out16);
 #pragma unroll
     for (int i = 0; i < 8; i++) cv[i] = out16[i];
     flags_start = 0;
@@ -150,7 +159,7 @@ __device__ void blake3_keyed(const uint32_t key[8], const uint8_t *input,
                ((uint32_t)tail[i * 4 + 3] << 24);
   }
   uint32_t out16[16];
-  blake3_compress(cv, block, 0, rem, KEYED_HASH | flags_start | CHUNK_END | ROOT,
+  blake3_compress(cv, block, 0, rem, base_flags | flags_start | CHUNK_END | ROOT,
                   out16);
 #pragma unroll
   for (int i = 0; i < 8; i++) {
@@ -161,18 +170,42 @@ __device__ void blake3_keyed(const uint32_t key[8], const uint8_t *input,
   }
 }
 
-// A keyed-BLAKE3 stream used as the noise RNG: successive 32-byte blocks keyed
-// by the seed and indexed by a counter, expanded to int8 draws.
-__device__ __forceinline__ int8_t noise_draw(const uint32_t key[8],
-                                             uint64_t index) {
-  uint8_t buf[8];
+// Keyed BLAKE3 over at most one chunk: the padded operand blocks, the 64-byte
+// transcript, and the cert-v3 root binding.
+__device__ __forceinline__ void blake3_keyed(const uint32_t key[8],
+                                             const uint8_t *input, uint32_t len,
+                                             uint8_t out[32]) {
+  blake3_one_chunk(key, KEYED_HASH, input, len, out);
+}
+
+// The noise RNG, ported from the reference's get_random_hash(). The message is
+// 64 bytes laid out as
+//
+//   [ 8 int32 slots | 32-byte seed LABEL ]
+//
+// with slot `prepend` holding (1 + index), and the commitment-derived seed used
+// as the BLAKE3 KEY. Note which value plays which role: the reference names its
+// parameters the other way round (`seed` is the label, `key` is the commitment
+// hash), and transposing them is silent and fatal.
+//
+// The +1 on the index exists so that entry 0 of the dense and sparse streams
+// cannot coincide; the two streams are otherwise separated only by which slot
+// the index lands in (0 for dense, 1 for sparse).
+__device__ __forceinline__ void pearl_random_hash(const uint32_t key[8],
+                                                  const uint8_t label[32],
+                                                  uint32_t index, int prepend,
+                                                  uint8_t out[32]) {
+  uint8_t msg[64];
 #pragma unroll
-  for (int i = 0; i < 8; i++) buf[i] = (uint8_t)(index >> (i * 8));
-  uint8_t h[32];
-  blake3_keyed(key, buf, 8, h);
-  // int7 range, matching the reference's Int7xInt7ToInt32 MMA type: values in
-  // [-63, 63] so products stay inside int32 without saturation.
-  return (int8_t)((int32_t)(h[0] % 127) - 63);
+  for (int i = 0; i < 32; i++) msg[i] = 0;
+  const uint32_t v = index + 1u;
+  msg[prepend * 4 + 0] = (uint8_t)(v);
+  msg[prepend * 4 + 1] = (uint8_t)(v >> 8);
+  msg[prepend * 4 + 2] = (uint8_t)(v >> 16);
+  msg[prepend * 4 + 3] = (uint8_t)(v >> 24);
+#pragma unroll
+  for (int i = 0; i < 32; i++) msg[32 + i] = label[i];
+  blake3_keyed(key, msg, 64, out);
 }
 
 }  // namespace
@@ -276,30 +309,45 @@ extern "C" __global__ void pearl_blake3_parent_layer(const uint32_t *key,
 
 // Unkeyed BLAKE3 over a short (<= 64 byte) input — used for b_seed and a_seed,
 // which hash a 64-byte concatenation.
-extern "C" __global__ void pearl_blake3_short(const uint8_t *in, uint32_t len,
-                                              uint8_t *out) {
+// Unkeyed BLAKE3 over at most one chunk. This is what job_key and both seed
+// links use: the reference passes None as the key, NOT a zero key.
+//
+// The version this replaces handled only 64 bytes, which silently truncated
+// job_key's 128-byte input (header76 ‖ config52) to its first block — and hashed
+// it keyed with zeros besides.
+extern "C" __global__ void pearl_blake3_unkeyed(const uint8_t *in, uint32_t len,
+                                                uint8_t *out) {
   if (blockIdx.x != 0 || threadIdx.x != 0) return;
-  uint32_t cv[8];
+  blake3_one_chunk(BLAKE3_IV, 0, in, len, out);
+}
+
+// cert-v3 root binding: blake3(root ‖ dim_le32 ‖ 28 zeros, key=salt).
+//
+// This is what commits m and n. They are the miner's own choice and are
+// deliberately absent from config52, so without this nothing anywhere in the
+// chain pins the dimensions the work was actually done at.
+extern "C" __global__ void pearl_bind_root(const uint8_t *salt,
+                                           const uint8_t *root, uint32_t dim,
+                                           uint8_t *out) {
+  if (blockIdx.x != 0 || threadIdx.x != 0) return;
+  uint8_t msg[64];
 #pragma unroll
-  for (int i = 0; i < 8; i++) cv[i] = BLAKE3_IV[i];
-  uint8_t tail[64];
+  for (int i = 0; i < 64; i++) msg[i] = 0;
 #pragma unroll
-  for (int i = 0; i < 64; i++) tail[i] = (i < len) ? in[i] : 0;
-  uint32_t block[16], out16[16];
-#pragma unroll
-  for (int i = 0; i < 16; i++) {
-    block[i] = (uint32_t)tail[i * 4] | ((uint32_t)tail[i * 4 + 1] << 8) |
-               ((uint32_t)tail[i * 4 + 2] << 16) |
-               ((uint32_t)tail[i * 4 + 3] << 24);
-  }
-  blake3_compress(cv, block, 0, len, CHUNK_START | CHUNK_END | ROOT, out16);
+  for (int i = 0; i < 32; i++) msg[i] = root[i];
+  msg[32] = (uint8_t)(dim);
+  msg[33] = (uint8_t)(dim >> 8);
+  msg[34] = (uint8_t)(dim >> 16);
+  msg[35] = (uint8_t)(dim >> 24);
+
+  uint32_t key[8];
 #pragma unroll
   for (int i = 0; i < 8; i++) {
-    out[i * 4 + 0] = (uint8_t)(out16[i]);
-    out[i * 4 + 1] = (uint8_t)(out16[i] >> 8);
-    out[i * 4 + 2] = (uint8_t)(out16[i] >> 16);
-    out[i * 4 + 3] = (uint8_t)(out16[i] >> 24);
+    key[i] = (uint32_t)salt[i * 4] | ((uint32_t)salt[i * 4 + 1] << 8) |
+             ((uint32_t)salt[i * 4 + 2] << 16) |
+             ((uint32_t)salt[i * 4 + 3] << 24);
   }
+  blake3_keyed(key, msg, 64, out);
 }
 
 
@@ -307,20 +355,125 @@ extern "C" __global__ void pearl_blake3_short(const uint8_t *in, uint32_t len,
 // Kernels
 // ---------------------------------------------------------------------------
 
-// Generate one low-rank noise factor: E[rows, rank] drawn from keyed BLAKE3.
-// E_A = E_AL·E_AR and E_B = E_BL·E_BR are each built from two of these, which is
-// what makes the noise cheap to regenerate on the fly instead of storing a full
-// dense matrix.
-extern "C" __global__ void pearl_gen_noise(const uint32_t *seed, int8_t *out,
-                                           uint32_t rows, uint32_t rank,
-                                           uint64_t index_base) {
-  uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-  uint32_t total = rows * rank;
-  if (idx >= total) return;
+// The noise is a product of two factors, and they are NOT both dense. This is
+// the single most important structural fact in the whole core:
+//
+//   E_AL, E_BR   dense,  (rows x rank), values in [-32, 32)
+//   E_AR, E_BL   SPARSE, (k x rank), each row exactly one +1 and one -1
+//
+// So the noise for one element is a DIFFERENCE OF TWO LOOKUPS,
+//
+//   noise[r][kk] = dense[r][p0(kk)] - dense[r][p1(kk)]
+//
+// not a rank-length dot product. An earlier version of this file treated both
+// factors as dense and reconstructed at full rank — internally consistent,
+// `rank` times too expensive, and producing a transcript no pool would accept.
+//
+// Both are int7-ranged (a difference of two [-32, 32) draws is at most 63), so
+// adding the noise to an int7 operand still lands inside int8. That is exactly
+// what the configuration's Int7xInt7ToInt32 name is telling us.
+
+// Dense factor: `rank` values per requested row, (byte & 63) - 32.
+// One thread per 32-byte digest. The byte stream is GLOBAL and indexed by
+// row*rank, so a row's draw is tied to its absolute index — which is what makes
+// the tile offset change the noise instead of every offset seeing one draw.
+extern "C" __global__ void pearl_gen_dense(const uint32_t *seed,
+                                           const uint8_t *label,
+                                           const uint32_t *row_indices,
+                                           int8_t *out, uint32_t num_rows,
+                                           uint32_t rank) {
+  const uint32_t blocks_per_row = rank >> 5;  // rank is a multiple of 32
+  const uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= num_rows * blocks_per_row) return;
+  const uint32_t ri = idx / blocks_per_row;
+  const uint32_t blk = idx % blocks_per_row;
+
   uint32_t key[8];
 #pragma unroll
   for (int i = 0; i < 8; i++) key[i] = seed[i];
-  out[idx] = noise_draw(key, index_base + idx);
+  uint8_t lab[32];
+#pragma unroll
+  for (int i = 0; i < 32; i++) lab[i] = label[i];
+
+  uint8_t h[32];
+  // A null row_indices means "the whole operand", where a row's index IS its
+  // position. The parameter exists for the verifier's path, which only ever
+  // wants the handful of rows in one tile.
+  const uint32_t row = row_indices ? row_indices[ri] : ri;
+  pearl_random_hash(key, lab, ((row * rank) >> 5) + blk, 0, h);
+
+  int8_t *dst = out + (size_t)ri * rank + (blk << 5);
+#pragma unroll
+  for (int i = 0; i < 32; i++) dst[i] = (int8_t)((int32_t)(h[i] & 63) - 32);
+}
+
+// Sparse factor: k rows, each a (+1 at p0, -1 at p1) pair, written as two u32.
+// One thread per digest, which covers eight rows.
+//
+// p1 = p0 ^ (1 + mulhi(rank-1, u)) is always distinct from p0 and always inside
+// [0, rank): mulhi(rank-1, u) <= rank-2, so the xor operand is in [1, rank-1]
+// and rank is a power of two.
+//
+// This factor does NOT depend on the tile offset — only on the job seeds — so
+// the host generates it once per commitment and every attempt reuses it.
+extern "C" __global__ void pearl_gen_perm(const uint32_t *seed,
+                                          const uint8_t *label,
+                                          uint32_t *out, uint32_t k,
+                                          uint32_t rank) {
+  const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= (k + 7u) / 8u) return;
+
+  uint32_t key[8];
+#pragma unroll
+  for (int i2 = 0; i2 < 8; i2++) key[i2] = seed[i2];
+  uint8_t lab[32];
+#pragma unroll
+  for (int i2 = 0; i2 < 32; i2++) lab[i2] = label[i2];
+
+  uint8_t h[32];
+  pearl_random_hash(key, lab, i, 1, h);
+
+  const uint32_t mask = rank - 1u;
+#pragma unroll
+  for (int j = 0; j < 8; j++) {
+    const uint32_t row = i * 8u + (uint32_t)j;
+    if (row >= k) break;
+    const uint32_t u = (uint32_t)h[j * 4] | ((uint32_t)h[j * 4 + 1] << 8) |
+                       ((uint32_t)h[j * 4 + 2] << 16) |
+                       ((uint32_t)h[j * 4 + 3] << 24);
+    const uint32_t p0 = u & mask;
+    out[row * 2u] = p0;
+    out[row * 2u + 1u] = p0 ^ (1u + __umulhi(rank - 1u, u));
+  }
+}
+
+// Synthesise the miner's own operands. m and n are the miner's choice of
+// workload and are not protocol, so the CONTENTS here are arbitrary — but the
+// RANGE is not. Values must be int7 ([-63, 63]), because the noise adds another
+// int7 and the sum has to stay inside int8 for the Int7xInt7ToInt32 MMA.
+//
+// One hash per 32 output bytes rather than one per byte.
+extern "C" __global__ void pearl_gen_operand(const uint32_t *key,
+                                             const uint8_t *label, int8_t *out,
+                                             uint64_t total) {
+  const uint64_t blk = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+  const uint64_t base = blk * 32u;
+  if (base >= total) return;
+
+  uint32_t kbuf[8];
+#pragma unroll
+  for (int i = 0; i < 8; i++) kbuf[i] = key[i];
+  uint8_t lab[32];
+#pragma unroll
+  for (int i = 0; i < 32; i++) lab[i] = label[i];
+
+  uint8_t h[32];
+  pearl_random_hash(kbuf, lab, (uint32_t)blk, 0, h);
+#pragma unroll
+  for (int i = 0; i < 32; i++) {
+    if (base + (uint64_t)i < total)
+      out[base + i] = (int8_t)((int32_t)(h[i] % 127) - 63);
+  }
 }
 
 // Keyed hash of a padded operand block — hash_a / hash_b. One block per launch;
@@ -336,30 +489,36 @@ extern "C" __global__ void pearl_hash_operands(const uint32_t *job_key,
 }
 
 
-// Materialise a noised operand once per job:
-//   A'[r,kk] = A[r,kk] + Σ_j E_AL[r,j]·E_AR[j,kk]
-// One thread per (r,kk). This is the O(rank²) work the fold used to redo for
-// every region — hoisting it here turns it from a per-attempt cost into a
-// per-job cost, which is the single biggest lever in the whole pipeline: the
-// fold then reads a precomputed int32 and does a plain dot product.
+// Materialise a noised operand once per commitment:
+//   A'[r,kk] = sat_i8( A[r,kk] + dense[r][p0(kk)] - dense[r][p1(kk)] )
+// One thread per (r,kk), two lookups and a subtract each.
 //
-// The result is int32, not int8: A is int7 and each of the rank noise products
-// is up to 63·63, so a rank-128 sum reaches ~5·10⁵ — far outside int8 but well
-// inside int32. Storing int8 here would silently truncate every value.
+// The output is int8, matching the reference, which converts its noised operand
+// back down before the main GEMM:
+//
+//   pearl::convert_type_out(tCrApEA, tCrApEA_int8);   // pearl_noisingA_kernel.h
+//
+// That is a cutlass::NumericArrayConverter<int8_t, int32_t, 4>, i.e. a
+// saturating cvt.pack.sat.s8.s32. It clamps rather than wrapping, but with int7
+// operands and int7 noise the sum is already inside int8, so the clamp is a
+// guard rail rather than the main effect.
+//
+// int8 output is also what makes the fold's __dp4a path (and, later, the int8
+// tensor cores) usable at all — an int32 operand rules both out.
 extern "C" __global__ void pearl_materialize(const int8_t *__restrict__ base,
-                                             const int8_t *__restrict__ EL,
-                                             const int8_t *__restrict__ ER,
-                                             int32_t *__restrict__ out,
+                                             const int8_t *__restrict__ dense,
+                                             const uint32_t *__restrict__ perm,
+                                             int8_t *__restrict__ out,
                                              uint32_t rows, uint32_t k,
                                              uint32_t rank) {
   uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= (uint64_t)rows * k) return;
   const uint32_t r = (uint32_t)(idx / k);
   const uint32_t kk = (uint32_t)(idx % k);
-  int32_t v = base[idx];
-  for (uint32_t j = 0; j < rank; j++)
-    v += (int32_t)EL[(size_t)r * rank + j] * (int32_t)ER[(size_t)j * k + kk];
-  out[idx] = v;
+  const int8_t *__restrict__ row = dense + (size_t)r * rank;
+  const int32_t v = (int32_t)base[idx] + (int32_t)row[perm[kk * 2u]] -
+                    (int32_t)row[perm[kk * 2u + 1u]];
+  out[idx] = (int8_t)(v < -128 ? -128 : (v > 127 ? 127 : v));
 }
 
 // The heart of the PoW: accumulate C in `rank`-sized chunks and fold the
@@ -399,8 +558,8 @@ extern "C" __global__ void pearl_materialize(const int8_t *__restrict__ base,
 // A batch shares one col_off (regions are launched m at a time from a multiple
 // of m), so D only needs the 8 columns that batch touches: chunks*m*8 int32,
 // 2 MiB at the mainnet geometry, comfortably L2-resident.
-extern "C" __global__ void pearl_partials(const int32_t *__restrict__ Aprime,
-                                          const int32_t *__restrict__ Bprime,
+extern "C" __global__ void pearl_partials(const int8_t *__restrict__ Aprime,
+                                          const int8_t *__restrict__ Bprime,
                                           const uint32_t *__restrict__ cols_pattern,
                                           uint32_t cols_count, uint32_t m,
                                           uint32_t n, uint32_t k, uint32_t rank,
@@ -424,9 +583,9 @@ extern "C" __global__ void pearl_partials(const int32_t *__restrict__ Aprime,
   const uint32_t k0 = chunk * rank;
   const uint32_t lim = (k0 + rank <= k) ? rank : (k - k0);
 
-  const int32_t *__restrict__ ar = Aprime + (size_t)r * k + k0;
+  const int8_t *__restrict__ ar = Aprime + (size_t)r * k + k0;
 
-  const int32_t *bc[PEARL_COLS_COUNT];
+  const int8_t *bc[PEARL_COLS_COUNT];
 #pragma unroll
   for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) {
     const uint32_t cc = (cols_pattern[c] + col_off) % n;
@@ -437,24 +596,34 @@ extern "C" __global__ void pearl_partials(const int32_t *__restrict__ Aprime,
 #pragma unroll
   for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) acc[c] = 0;
 
-  // Four A elements per iteration, each reused across all eight columns: 32
-  // multiply-accumulates for one vector load of A and eight of B.
+  // Sixteen A elements per iteration, each reused across all eight columns: one
+  // 16-byte load of A and eight of B feed 128 multiply-accumulates, issued as
+  // __dp4a (four int8 MACs per instruction).
+  //
+  // The int8 operands are what make this possible. The k-slices start at
+  // r*k + chunk*rank, and both k and rank are multiples of 16 at every profile
+  // the host accepts, so the int4 loads are aligned.
   uint32_t t = 0;
-  if ((lim & 3u) == 0u) {
-    const uint32_t quads = lim >> 2;
+  if ((lim & 15u) == 0u) {
+    const uint32_t quads = lim >> 4;
     const int4 *a4 = reinterpret_cast<const int4 *>(ar);
     for (uint32_t q = 0; q < quads; q++) {
       const int4 av = a4[q];
+      const int32_t *aw = reinterpret_cast<const int32_t *>(&av);
 #pragma unroll
       for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) {
         const int4 bv = reinterpret_cast<const int4 *>(bc[c])[q];
-        acc[c] += av.x * bv.x + av.y * bv.y + av.z * bv.z + av.w * bv.w;
+        const int32_t *bw = reinterpret_cast<const int32_t *>(&bv);
+        int32_t s = acc[c];
+#pragma unroll
+        for (int w = 0; w < 4; w++) s = __dp4a(aw[w], bw[w], s);
+        acc[c] = s;
       }
     }
     t = lim;
   }
   for (; t < lim; t++) {
-    const int32_t a = ar[t];
+    const int32_t a = (int32_t)ar[t];
 #pragma unroll
     for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) acc[c] += a * bc[c][t];
   }
