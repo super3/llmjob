@@ -4,7 +4,7 @@ const { EventEmitter } = require('events');
 const {
   buildAuthorize, buildSubmit, encode, parseMessage,
 } = require('../shared/miner/stratum');
-const { PROFILE, meetsTarget, rankMatches } = require('../shared/miner/pearlhash');
+const { PROFILE, meetsTarget, rankMatches, shareBound } = require('../shared/miner/pearlhash');
 const { combinePayoutAddress } = require('../shared/address');
 
 // The host for our own Pearl miner: it owns the pool socket and the job/lifecycle
@@ -185,7 +185,18 @@ class PearlMiner extends EventEmitter {
     this.emit('job', { jobId: job.jobId, height: job.height });
     // No null guard: start() only reaches here with a live core (a createCore
     // that throws OR returns falsy both land in its catch and abort the start).
-    this.core.setJob({ header: job.header, target: job.target, jobId: job.jobId });
+    // The core compares against the SCALED bound, not the pool's raw target.
+    // The protocol makes the bound easier in proportion to the work one attempt
+    // costs — that is the same factor that makes a hashrate here count
+    // multiply-accumulates rather than attempts. Comparing against the raw
+    // target makes shares 65536x rarer than the pool intends, which is
+    // indistinguishable from simply being slow.
+    const bound = shareBound(job.target, PROFILE);
+    if (bound == null) {
+      this.emit('log', { level: 'error', line: 'pool target is too easy to scale for this profile; ignoring the job' });
+      return;
+    }
+    this.core.setJob({ header: job.header, target: bound, jobId: job.jobId });
   }
 
   _wireCore(core, wallet, worker) {
@@ -201,7 +212,7 @@ class PearlMiner extends EventEmitter {
   _onHit(hit, wallet, worker) {
     const job = this.job;
     if (!job || hit.jobId !== job.jobId) return;
-    if (!meetsTarget(hit.jackpotHash, job.target)) {
+    if (!meetsTarget(hit.jackpotHash, shareBound(job.target, PROFILE))) {
       this.emit('log', { level: 'info', line: 'dropping a hit that no longer meets target (vardiff moved)' });
       return;
     }

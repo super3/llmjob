@@ -3,6 +3,7 @@
 const { EventEmitter } = require('events');
 const { PearlMiner, RECONNECT_MS } = require('../src/main/pearlMiner');
 const { encode } = require('../src/shared/miner/stratum');
+const { shareBound, PROFILE } = require('../src/shared/miner/pearlhash');
 
 const ADDR = 'prl1px5ervx6ftaegmdhqa5ajemh20j2uw7l9jt5j5s97rljp72yt3s8qncrxud';
 const MDL = 'mdl1pl80mdy0culfn3g7jl3paa5ccnc8gkkfmkc6t2x0q6rmvd9dpu5wsk0v3z8';
@@ -147,7 +148,12 @@ describe('PearlMiner — protocol', () => {
     const arg = core.setJob.mock.calls[0][0];
     expect(arg.jobId).toBe('00000000_2097152');
     expect(arg.header).toHaveLength(76);
-    expect(arg.target).toBe(BigInt('0x' + TARGET));
+    // The core gets the SCALED bound, not the pool's raw target: the protocol
+    // makes the bound easier in proportion to the work one attempt costs. Passing
+    // the raw target makes shares 65536x rarer than the pool intends, which reads
+    // as bad luck rather than as a bug.
+    expect(arg.target).toBe(shareBound(BigInt('0x' + TARGET), PROFILE));
+    expect(arg.target).toBe(BigInt('0x' + TARGET) * 65536n);
   });
 
   // Lines arrive as pipe slices, not messages; a job split across two chunks

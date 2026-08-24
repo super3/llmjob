@@ -189,6 +189,50 @@ function bindMessage(root, dim) {
   return msg;
 }
 
+// The rank the penalty is measured against. Mining below it is refused
+// outright; mining above it costs more work for no extra credit.
+const PENALTY_BASE_RANK = 128;
+
+// The factor a MINER must scale a share target by.
+//
+//   penalized_adjustment_factor = tile_size * (k / rank) * PENALTY_BASE_RANK
+//
+// This is not the same quantity as difficultyAdjustmentFactor, even though both
+// come to 65536 at the mandated rank-128 profile and so are easy to conflate.
+// The consensus path scales by tile*k; a miner scaling a SHARE target scales by
+// this, which divides out the rank and re-multiplies by the base. They diverge
+// the moment rank != 128, and the reference is explicit that this is the one a
+// miner wants (see penalized_target_bound in sanity_checks.rs).
+function penalizedAdjustmentFactor(profile) {
+  const p = profile || PROFILE;
+  const tile = (p.rows || ROWS_PATTERN).length * (p.cols || COLS_PATTERN).length;
+  return tile * Math.floor(p.k / p.rank) * PENALTY_BASE_RANK;
+}
+
+// The bound a jackpot hash is actually compared against:
+//
+//   int_le(jackpot_hash) <= target * penalized_adjustment_factor
+//
+// The bound is made EASIER in proportion to the work one attempt costs, which
+// is the whole reason a hashrate here counts multiply-accumulates rather than
+// attempts. Comparing against the raw target instead — which this miner did —
+// makes every share 65536x rarer than the pool intends, so a correct miner at a
+// realistic pool difficulty simply never finds one. It looks exactly like being
+// slow, and at a target of 2^203 it works out to one share per 3.5 years.
+//
+// Returns null rather than saturating when the product will not fit: the
+// reference deliberately refuses here, because handing back U256::MAX would give
+// a bound that EVERY hash satisfies and flood the pool with junk.
+function shareBound(target, profile) {
+  if (target == null) return null;
+  const factor = BigInt(penalizedAdjustmentFactor(profile));
+  if (factor <= 0n) return null;
+  const t = BigInt(target);
+  const max = (1n << 256n) - 1n;
+  if (t > max / factor) return null;
+  return t * factor;
+}
+
 const CONFIG_BYTES = 52;
 const JACKPOT_BUCKETS = 16;
 const ROTL_BITS = 13;
@@ -266,6 +310,7 @@ function rankMatches(jobRank, profile) {
 module.exports = {
   PROFILE, ROWS_PATTERN, COLS_PATTERN,
   SEED_SALT_A, SEED_SALT_B, bindMessage,
+  PENALTY_BASE_RANK, penalizedAdjustmentFactor, shareBound,
   patternToList, patternFromList, patternToBytes, difficultyAdjustmentFactor,
   CONFIG_BYTES,
   JACKPOT_BUCKETS,
