@@ -280,13 +280,24 @@ void PearlCore::EmitHit(const PearlSearchResult &r, const std::string &job_id) {
   });
 }
 
+// Telemetry must never be able to stall the search. Emitting one of these per
+// batch -- several hundred a second -- wedged the worker thread inside
+// BlockingCall after a few thousand calls: the GPU went to 0% and the miner
+// simply stopped, with no error and no hits, looking exactly like bad luck.
+//
+// Two changes stop that. The caller now windows these to about two a second,
+// and this is a NON-blocking call: if the queue is backed up the sample is
+// dropped. A missing hashrate sample costs nothing; a blocked miner costs
+// everything.
 void PearlCore::EmitHashrate(double th) {
   if (!on_hashrate_) return;
   double *v = new double(th);
-  on_hashrate_.BlockingCall(v, [](Napi::Env env, Napi::Function cb, double *d) {
-    cb.Call({Napi::Number::New(env, *d)});
-    delete d;
-  });
+  napi_status st =
+      on_hashrate_.NonBlockingCall(v, [](Napi::Env env, Napi::Function cb, double *d) {
+        cb.Call({Napi::Number::New(env, *d)});
+        delete d;
+      });
+  if (st != napi_ok) delete v;  // dropped: free what the callback would have
 }
 
 void PearlCore::EmitError(const std::string &msg) {
