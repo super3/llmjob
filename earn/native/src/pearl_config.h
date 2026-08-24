@@ -58,17 +58,27 @@
 // The tile index sets. These are the reference implementation's own defaults —
 // a 4 x 8 tile whose indices are NOT a simple stride, which is what an earlier
 // guess assumed.
+// The tile is CONTIGUOUS: four consecutive rows by sixteen consecutive columns,
+// which is what the reference miner actually opens blocks with. Its fixtures
+// use A rows [192,193,194,195] and consecutive B columns -- not the strided set
+// MiningConfiguration carries as a DEFAULT. Both are legal, since the pattern is
+// self-describing in config52 and the miner picks it, but contiguous gives one
+// unbroken run of B, a Merkle proof over consecutive chunks, and the shape an
+// int8 tensor-core mma maps onto directly.
 #define PEARL_ROWS_COUNT 4
-#define PEARL_COLS_COUNT 8
-static const uint32_t PEARL_ROWS_PATTERN[PEARL_ROWS_COUNT] = {0, 8, 64, 72};
-static const uint32_t PEARL_COLS_PATTERN[PEARL_COLS_COUNT] = {0, 1, 8, 9, 32, 33, 40, 41};
+#define PEARL_COLS_COUNT 16
+static const uint32_t PEARL_ROWS_PATTERN[PEARL_ROWS_COUNT] = {0, 1, 2, 3};
+static const uint32_t PEARL_COLS_PATTERN[PEARL_COLS_COUNT] = {0, 1, 2,  3,  4,  5,  6,  7,
+                                                              8, 9, 10, 11, 12, 13, 14, 15};
 
 // The six-byte periodic encoding of each pattern: (factor-1, length-1) per
 // dimension. Precomputed rather than derived at runtime — the derivation is
 // exercised on the JS side, and the values are asserted equal by
 // test/nativeConfig.test.js so the two cannot drift.
-static const uint8_t PEARL_ROWS_PATTERN_BYTES[6] = {7, 1, 3, 1, 0, 0};
-static const uint8_t PEARL_COLS_PATTERN_BYTES[6] = {0, 1, 3, 1, 1, 1};
+// A contiguous run is a single (stride 1, length N) dimension: factor byte 0,
+// length byte N-1.
+static const uint8_t PEARL_ROWS_PATTERN_BYTES[6] = {0, 3, 0, 0, 0, 0};
+static const uint8_t PEARL_COLS_PATTERN_BYTES[6] = {0, 15, 0, 0, 0, 0};
 
 typedef struct PearlProfile {
   // Hashed into config52 — protocol-mandated.
