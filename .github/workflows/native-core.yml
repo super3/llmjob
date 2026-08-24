@@ -80,12 +80,17 @@ jobs:
         shell: bash
         run: |
           mkdir -p cuda-build
-          nvcc -O3 -std=c++17 \
+          # The addon is a shared object, so on Linux everything linked into it
+          # must be position-independent — without this ld rejects the archive
+          # with "relocation R_X86_64_PC32 ... can not be used when making a
+          # shared object". MSVC has no equivalent flag and needs none.
+          if [ "$RUNNER_OS" = "Linux" ]; then FPIC="-Xcompiler -fPIC"; else FPIC=""; fi
+          nvcc -O3 -std=c++17 $FPIC \
             -gencode arch=compute_86,code=sm_86 \
             -gencode arch=compute_89,code=sm_89 \
             -gencode arch=compute_120,code=sm_120 \
             -c src/pearl_kernel.cu -o cuda-build/pearl_kernel.o
-          nvcc -O3 -std=c++17 \
+          nvcc -O3 -std=c++17 $FPIC \
             -gencode arch=compute_86,code=sm_86 \
             -gencode arch=compute_89,code=sm_89 \
             -gencode arch=compute_120,code=sm_120 \

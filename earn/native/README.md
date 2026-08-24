@@ -72,6 +72,7 @@ box without Visual Studio.
 ```bash
 # 1. Compile the CUDA half into a static library
 mkdir -p cuda-build   # NOT build/ — node-gyp rebuild cleans that directory
+# On Linux add -Xcompiler -fPIC: the addon is a shared object.
 nvcc -O3 -std=c++17 -arch=sm_89 -c src/pearl_kernel.cu -o cuda-build/pearl_kernel.o
 nvcc -O3 -std=c++17 -arch=sm_89 -c src/pearl_host.cu   -o cuda-build/pearl_host.o
 nvcc -lib cuda-build/pearl_kernel.o cuda-build/pearl_host.o -o cuda-build/pearl_cuda.lib  # .a on Linux
