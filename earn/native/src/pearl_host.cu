@@ -623,7 +623,9 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
     const uint32_t warpsPerBlock = threads / 32;
     const unsigned blocks =
         (unsigned)((warpsNeeded + warpsPerBlock - 1) / warpsPerBlock);
-    const size_t smem = (size_t)warpsPerBlock * 16 * 16 * sizeof(int32_t);
+    // Staged B tiles, then one 16x16 int32 unpack buffer per warp.
+    const size_t smem = (size_t)PEARL_MAX_K_FRAGS * 256
+                        + (size_t)warpsPerBlock * 16 * 16 * sizeof(int32_t);
     pearl_partials_wmma<<<blocks, threads, smem>>>(
         ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
         col_off, col_groups, ctx->dD);
