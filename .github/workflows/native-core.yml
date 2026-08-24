@@ -116,12 +116,12 @@ jobs:
           # with "relocation R_X86_64_PC32 ... can not be used when making a
           # shared object". MSVC has no equivalent flag and needs none.
           if [ "$RUNNER_OS" = "Linux" ]; then FPIC="-Xcompiler -fPIC"; else FPIC=""; fi
-          nvcc -O3 -std=c++17 $FPIC \
+          nvcc -O3 -std=c++17 -cudart static $FPIC \
             -gencode arch=compute_86,code=sm_86 \
             -gencode arch=compute_89,code=sm_89 \
             -gencode arch=compute_120,code=sm_120 \
             -c src/pearl_kernel.cu -o cuda-build/pearl_kernel.o
-          nvcc -O3 -std=c++17 $FPIC \
+          nvcc -O3 -std=c++17 -cudart static $FPIC \
             -gencode arch=compute_86,code=sm_86 \
             -gencode arch=compute_89,code=sm_89 \
             -gencode arch=compute_120,code=sm_120 \
@@ -135,7 +135,7 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            nvcc -lib cuda-build/pearl_kernel.o cuda-build/pearl_host.o -o cuda-build/pearl_cuda.lib
+            nvcc -lib -cudart static cuda-build/pearl_kernel.o cuda-build/pearl_host.o -o cuda-build/pearl_cuda.lib
           else
             ar rcs cuda-build/libpearl_cuda.a cuda-build/pearl_kernel.o cuda-build/pearl_host.o
           fi
