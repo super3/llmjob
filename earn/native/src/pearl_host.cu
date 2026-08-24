@@ -104,6 +104,9 @@ struct PearlSearchResult {
   uint8_t a_seed[PEARL_HASH_BYTES];
   uint8_t b_seed[PEARL_HASH_BYTES];
   uint64_t nonce;
+  // Which operand draw this came from. The proof a pool needs is over the
+  // operand data, so a share is unprovable without it.
+  uint64_t salt;
   std::vector<uint8_t> proof;
   bool found;
 };
@@ -171,6 +174,7 @@ struct Ctx {
   // the caller having to hand the header back.
   uint8_t header[PEARL_HEADER_BYTES] = {0};
   uint8_t target[PEARL_HASH_BYTES] = {0};
+  uint64_t salt = 0;
 };
 
 // The row/column patterns the tile folds over. Derived from the counts plus the
@@ -426,6 +430,7 @@ extern "C" void pearl_host_set_job(void *handle, const uint8_t *header,
 extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (!ctx) return;
+  ctx->salt = salt;
   const uint8_t *header = ctx->header;
   const uint8_t *target = ctx->target;
 
@@ -658,6 +663,7 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
     memcpy(out->a_seed, ctx->aSeed, PEARL_HASH_BYTES);
     memcpy(out->b_seed, ctx->bSeed, PEARL_HASH_BYTES);
     out->nonce = nonce_base + ctx->hHitIndex[best];
+    out->salt = ctx->salt;
     out->proof.assign(PEARL_JACKPOT_BUCKETS * 4, 0);
     cudaMemcpy(out->proof.data(),
                ctx->dJackpot + (size_t)ctx->hHitIndex[best] * PEARL_JACKPOT_BUCKETS,

@@ -33,6 +33,9 @@ struct PearlSearchResult {
   uint8_t a_seed[PEARL_HASH_BYTES];
   uint8_t b_seed[PEARL_HASH_BYTES];
   uint64_t nonce;
+  // Which operand draw this came from. The proof a pool needs is over the
+  // operand data, so a share is unprovable without it.
+  uint64_t salt;
   std::vector<uint8_t> proof;
   bool found;
 };
@@ -283,6 +286,9 @@ void PearlCore::EmitHit(const PearlSearchResult &r, const std::string &job_id) {
     Napi::Object o = Napi::Object::New(env);
     o.Set("jobId", Napi::String::New(env, *jid));
     o.Set("nonce", Napi::Number::New(env, (double)res->nonce));
+    // The salt identifies the operand draw, which the host needs to rebuild the
+    // Merkle proof the pool verifies the share with.
+    o.Set("salt", Napi::Number::New(env, (double)res->salt));
     o.Set("jackpotHash",
           Napi::Buffer<uint8_t>::Copy(env, res->jackpot_hash, PEARL_HASH_BYTES));
     // Seeds travel as hex, which is what the Stratum submit expects.
