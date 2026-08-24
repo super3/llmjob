@@ -48,11 +48,15 @@ extern "C" __global__ void pearl_materialize(const int8_t *base, const int8_t *E
                                              const int8_t *ER, int32_t *out,
                                              uint32_t rows, uint32_t k,
                                              uint32_t rank);
+extern "C" __global__ void pearl_partials(const int32_t *Aprime, const int32_t *Bprime,
+                                          const uint32_t *cols_pattern,
+                                          uint32_t cols_count, uint32_t m, uint32_t n,
+                                          uint32_t k, uint32_t rank, uint32_t chunks,
+                                          uint32_t col_off, int32_t *D);
 extern "C" __global__ void pearl_gemm_fold(
-    const int32_t *Aprime, const int32_t *Bprime, const uint32_t *rows_pattern,
-    const uint32_t *cols_pattern, uint32_t rows_count, uint32_t cols_count,
-    uint32_t m, uint32_t n, uint32_t k, uint32_t rank, uint32_t chunks,
-    uint64_t region_base, uint32_t *jackpot_out);
+    const int32_t *D, const uint32_t *rows_pattern, uint32_t rows_count,
+    uint32_t cols_count, uint32_t m, uint32_t chunks, uint64_t region_base,
+    uint32_t *jackpot_out);
 extern "C" __global__ void pearl_finalize_many(const uint32_t *a_seed,
                                                const uint32_t *jackpots,
                                                uint32_t count,
@@ -109,6 +113,7 @@ struct Ctx {
 
   uint32_t *dRows = nullptr;
   uint32_t *dCols = nullptr;
+  int32_t *dD = nullptr;          // [chunks][m][cols_count] partial dot products
   uint32_t *dJackpot = nullptr;   // [batch][16]
   uint8_t *dHashes = nullptr;     // [batch][32]
   int *dFlags = nullptr;          // [batch]
@@ -240,6 +245,11 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   // kernel launches and ONE copy back rather than 4096 round trips.
   ctx->batch = PEARL_BATCH_REGIONS;
   ctx->hFlags.resize(ctx->batch);
+  // Every distinct partial computed once per batch instead of four times.
+  CUDA_OK(cudaMalloc(&ctx->dD,
+                     (size_t)((profile->k + rank - 1) / rank) * profile->m
+                         * PEARL_COLS_COUNT * sizeof(int32_t)),
+          "allocating the partial-product table");
   CUDA_OK(cudaMalloc(&ctx->dJackpot,
                      (size_t)ctx->batch * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)),
           "allocating the transcripts");
@@ -282,6 +292,7 @@ extern "C" void pearl_host_destroy(void *handle) {
   cudaFree(ctx->dEAL); cudaFree(ctx->dEAR);
   cudaFree(ctx->dEBL); cudaFree(ctx->dEBR);
   cudaFree(ctx->dRows); cudaFree(ctx->dCols);
+  cudaFree(ctx->dD);
   cudaFree(ctx->dHashes); cudaFree(ctx->dFlags);
   cudaFree(ctx->dCvs); cudaFree(ctx->dSeedBuf);
   cudaFree(ctx->dHashA); cudaFree(ctx->dHashB);
@@ -385,20 +396,26 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   const uint32_t k = ctx->profile.k;
   const uint32_t rank = ctx->profile.rank;
   const uint32_t chunks = (k + rank - 1) / rank;
-  const uint32_t regions = batch < ctx->batch ? batch : ctx->batch;
-  // 16 warps a block. The kernel uses no shared memory, so occupancy is bounded
-  // by registers alone, and more warps in flight is the cheapest remaining way to
-  // hide the load latency that staging failed to remove.
-  const int threads = 512;
-
-  // One warp per region now, so the grid is regions/warps-per-block and there is
-  // no shared memory at all — the per-chunk reduction is a shuffle.
+  // Clamped to m so one launch shares a single col_off: D is built for exactly
+  // the columns that batch touches. nonce_base stays a multiple of m because the
+  // caller advances by the attempt count we report back.
+  uint32_t regions = batch < ctx->batch ? batch : ctx->batch;
+  if (regions > ctx->profile.m) regions = ctx->profile.m;
+  const int threads = 256;
   const int warps_per_block = threads / 32;
+  const uint32_t col_off =
+      (uint32_t)((nonce_base / ctx->profile.m) % ctx->profile.n);
+
+  // Stage one: every distinct partial dot product, once. Stage two: the fold,
+  // which is now a gather over them.
+  const uint64_t npart = (uint64_t)chunks * ctx->profile.m * PEARL_COLS_COUNT;
+  pearl_partials<<<(unsigned)((npart + threads - 1) / threads), threads>>>(
+      ctx->dAp, ctx->dBp, ctx->dCols, PEARL_COLS_COUNT, ctx->profile.m,
+      ctx->profile.n, k, rank, chunks, col_off, ctx->dD);
 
   pearl_gemm_fold<<<(regions + warps_per_block - 1) / warps_per_block, threads>>>(
-      ctx->dAp, ctx->dBp,
-      ctx->dRows, ctx->dCols, PEARL_ROWS_COUNT, PEARL_COLS_COUNT,
-      ctx->profile.m, ctx->profile.n, k, rank, chunks, nonce_base, ctx->dJackpot);
+      ctx->dD, ctx->dRows, PEARL_ROWS_COUNT, PEARL_COLS_COUNT, ctx->profile.m,
+      chunks, nonce_base, ctx->dJackpot);
 
   pearl_finalize_many<<<(regions + 255) / 256, 256>>>(
       ctx->dASeed, ctx->dJackpot, regions, ctx->dTarget, ctx->dHashes, ctx->dFlags);
