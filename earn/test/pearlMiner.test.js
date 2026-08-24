@@ -156,6 +156,17 @@ describe('PearlMiner — protocol', () => {
     expect(arg.target).toBe(BigInt('0x' + TARGET) * 65536n);
   });
 
+  // A target so easy that scaling it by the adjustment factor would not fit 256
+  // bits. The reference refuses rather than saturating, because a saturated
+  // bound is satisfied by EVERY hash and would flood the pool with junk. So the
+  // job is dropped with a reason rather than mined at a bound that means nothing.
+  test('a job whose target cannot be scaled is refused, not saturated', () => {
+    const { sock, core, events } = running();
+    sock.emit('data', jobLine({ target: 'ff'.repeat(32) }));
+    expect(core.setJob).not.toHaveBeenCalled();
+    expect(events.log.some((l) => /too easy to scale/.test(l.line))).toBe(true);
+  });
+
   // Lines arrive as pipe slices, not messages; a job split across two chunks
   // must still be delivered exactly once and whole.
   test('a message split across two chunks is handled once', () => {

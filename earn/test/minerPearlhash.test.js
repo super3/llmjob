@@ -4,6 +4,7 @@ const {
   PROFILE, CONFIG_BYTES, JACKPOT_BUCKETS, ROTL_BITS,
   buildConfig52, leBytesToBigInt, meetsTarget, rotl13, rankMatches,
   patternToList, patternFromList, patternToBytes, difficultyAdjustmentFactor,
+  PENALTY_BASE_RANK, penalizedAdjustmentFactor, shareBound,
 } = require('../src/shared/miner/pearlhash');
 
 describe('PROFILE', () => {
@@ -179,6 +180,64 @@ describe('difficultyAdjustmentFactor', () => {
   test('scales with k and with the tile', () => {
     expect(difficultyAdjustmentFactor({ ...PROFILE, k: 4096 })).toBe(4 * 8 * 4096);
     expect(difficultyAdjustmentFactor({ k: 256, rows: [0, 8], cols: [0, 1] })).toBe(2 * 2 * 256);
+  });
+});
+
+
+describe('the share bound', () => {
+  // A miner scaling a SHARE target uses the rank-penalized factor, not the
+  // consensus one. Both are 65536 at the mandated rank-128 profile, which is
+  // exactly why they are easy to conflate -- they diverge as soon as rank moves.
+  test('the penalized factor divides out the rank and re-multiplies by the base', () => {
+    expect(PENALTY_BASE_RANK).toBe(128);
+    expect(penalizedAdjustmentFactor()).toBe(65536);
+    expect(penalizedAdjustmentFactor()).toBe(difficultyAdjustmentFactor());
+    // At rank 256 they part company: consensus still scales by tile*k, but a
+    // miner scales by tile*(k/rank)*128.
+    const p = { ...PROFILE, rank: 256, k: 4096 };
+    expect(penalizedAdjustmentFactor(p)).toBe(32 * 16 * 128);
+    expect(difficultyAdjustmentFactor(p)).toBe(32 * 4096);
+    expect(penalizedAdjustmentFactor(p)).not.toBe(difficultyAdjustmentFactor(p));
+  });
+
+  test('defaults to the mainnet profile', () => {
+    expect(penalizedAdjustmentFactor(undefined)).toBe(65536);
+    expect(penalizedAdjustmentFactor(null)).toBe(65536);
+  });
+
+  // The tile patterns are protocol constants rather than per-profile knobs, so
+  // a profile that omits them still gets the right factor -- same as
+  // buildConfig52 and difficultyAdjustmentFactor.
+  test('defaults the tile patterns when a profile omits them', () => {
+    expect(penalizedAdjustmentFactor({ k: 2048, rank: 128 })).toBe(65536);
+  });
+
+  // The bound is the pool's target made easier in proportion to the work one
+  // attempt costs. Comparing against the raw target instead makes every share
+  // 65536x rarer than the pool intends -- which looks exactly like being slow.
+  test('scales the target by the penalized factor', () => {
+    expect(shareBound(1n)).toBe(65536n);
+    expect(shareBound(1000n)).toBe(65536000n);
+    expect(shareBound(BigInt('0x' + '00'.repeat(6) + '07fff8' + '00'.repeat(23))))
+      .toBe(BigInt('0x' + '00'.repeat(6) + '07fff8' + '00'.repeat(23)) * 65536n);
+  });
+
+  // Refuse rather than saturate: a bound of U256::MAX is met by every hash.
+  test('returns null when the product will not fit 256 bits', () => {
+    expect(shareBound((1n << 256n) - 1n)).toBeNull();
+    expect(shareBound(1n << 250n)).toBeNull();
+    expect(shareBound((1n << 240n) - 1n)).not.toBeNull();
+  });
+
+  test('a null target has no bound', () => {
+    expect(shareBound(null)).toBeNull();
+    expect(shareBound(undefined)).toBeNull();
+  });
+
+  // A degenerate profile whose k is below its rank gives a zero factor. Scaling
+  // by it would be a divide-by-nothing, so it is refused outright.
+  test('a degenerate profile yields no bound', () => {
+    expect(shareBound(1n, { ...PROFILE, k: 64, rank: 128 })).toBeNull();
   });
 });
 
