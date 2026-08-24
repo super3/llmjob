@@ -47,8 +47,13 @@ __constant__ uint32_t BLAKE3_IV[8] = {0x6A09E667u, 0xBB67AE85u, 0x3C6EF372u,
                                       0xA54FF53Au, 0x510E527Fu, 0x9B05688Cu,
                                       0x1F83D9ABu, 0x5BE0CD19u};
 
-__constant__ uint8_t BLAKE3_MSG_PERM[16] = {2, 6, 3, 10, 7, 0, 4, 13,
-                                            1, 11, 12, 5, 9, 14, 15, 8};
+// The BLAKE3 message permutation is applied below with LITERAL indices rather
+// than read from an array. It used to live in __constant__ memory and be
+// applied as m[BLAKE3_MSG_PERM[i]], which is a runtime index into a local
+// array — so nvcc placed the whole 16-word message block in LOCAL memory and
+// every one of the ~112 accesses per compression became a memory round trip.
+// The permutation, for reference:
+//   {2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8}
 
 #define CHUNK_START (1u << 0)
 #define CHUNK_END (1u << 1)
@@ -88,6 +93,11 @@ __device__ void blake3_compress(const uint32_t cv[8], const uint32_t block[16],
 #pragma unroll
   for (int i = 0; i < 16; i++) m[i] = block[i];
 
+  // Fully unrolled, so every index into s and m is a compile-time constant and
+  // both stay in registers. A rolled loop here costs far more than the seven
+  // copies of the round: the arrays spill, and the hash is the fixed per-region
+  // cost that dominates the search.
+#pragma unroll
   for (int round = 0; round < 7; round++) {
     g(s, 0, 4, 8, 12, m[0], m[1]);
     g(s, 1, 5, 9, 13, m[2], m[3]);
@@ -98,11 +108,15 @@ __device__ void blake3_compress(const uint32_t cv[8], const uint32_t block[16],
     g(s, 2, 7, 8, 13, m[12], m[13]);
     g(s, 3, 4, 9, 14, m[14], m[15]);
     if (round < 6) {
-      uint32_t t[16];
-#pragma unroll
-      for (int i = 0; i < 16; i++) t[i] = m[BLAKE3_MSG_PERM[i]];
-#pragma unroll
-      for (int i = 0; i < 16; i++) m[i] = t[i];
+      // Literal indices only — see the note by the permutation above.
+      const uint32_t p0 = m[2], p1 = m[6], p2 = m[3], p3 = m[10];
+      const uint32_t p4 = m[7], p5 = m[0], p6 = m[4], p7 = m[13];
+      const uint32_t p8 = m[1], p9 = m[11], p10 = m[12], p11 = m[5];
+      const uint32_t p12 = m[9], p13 = m[14], p14 = m[15], p15 = m[8];
+      m[0] = p0; m[1] = p1; m[2] = p2; m[3] = p3;
+      m[4] = p4; m[5] = p5; m[6] = p6; m[7] = p7;
+      m[8] = p8; m[9] = p9; m[10] = p10; m[11] = p11;
+      m[12] = p12; m[13] = p13; m[14] = p14; m[15] = p15;
     }
   }
 #pragma unroll
