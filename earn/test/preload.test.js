@@ -27,7 +27,6 @@ describe('invoke-based methods', () => {
   const cases = [
     ['getSettings', 'settings:get'],
     ['getConfig', 'config:get'],
-    ['difficultyForCard', 'miner:difficultyForCard', 'RTX 4090'],
     ['detectGpu', 'gpu:detect'],
     ['detectRegion', 'region:detect'],
     ['getBalance', 'balance:get', 'prl1abc'],

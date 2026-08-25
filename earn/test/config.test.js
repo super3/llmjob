@@ -2,7 +2,7 @@
 
 const {
   REGIONS, DEFAULTS, MINER, ECON,
-  regionFor, endpointFor, normalizeEndpoint, resolveEndpoint, splitEndpoint, regionLabel, difficultyForCard,
+  regionFor, endpointFor, normalizeEndpoint, resolveEndpoint, splitEndpoint, regionLabel,
 } = require('../src/shared/config');
 
 describe('config', () => {
@@ -36,27 +36,9 @@ describe('config', () => {
     expect(regionLabel('xx')).toBe('🇺🇸 us');
   });
 
-  test('difficultyForCard maps card classes and falls back to the default', () => {
-    expect(difficultyForCard('GPU #0 · RTX 5090')).toBe(1048576);
-    expect(difficultyForCard('NVIDIA RTX PRO 6000 Blackwell Workstation Edition')).toBe(1048576);
-    expect(difficultyForCard('RTX 4090')).toBe(524288);
-    expect(difficultyForCard('RTX 4070')).toBe(262144);
-    expect(difficultyForCard('RTX 3090')).toBe(262144);
-    expect(difficultyForCard('RTX 3070')).toBe(131072);
-    expect(difficultyForCard('A100')).toBe(131072);
-    expect(difficultyForCard('RTX 2080')).toBe(16384);
-    expect(difficultyForCard('V100')).toBe(4096);
-    expect(difficultyForCard('something else')).toBe(DEFAULTS.difficulty);
-    expect(difficultyForCard(null)).toBe(DEFAULTS.difficulty);
-    // `pro 6000` must not catch the older, slower 6000-class cards.
-    expect(difficultyForCard('NVIDIA RTX A6000')).toBe(DEFAULTS.difficulty);
-    expect(difficultyForCard('Quadro RTX 6000')).toBe(DEFAULTS.difficulty);
-  });
-
   test('engine and economics metadata are present', () => {
     expect(MINER).toMatchObject({ engine: 'llmjob-pearl', pool: 'HeroMiners', pow: 'pearlhash', devFeePct: 0, poolFeePct: 0 });
     expect(ECON).toMatchObject({ NET_TH: 61e6, DAILY_NET_PRL: 1.62e6, FEE: 0.99, PRL_USD: 0.30 });
-    expect(DEFAULTS.difficulty).toBe(524288);
   });
 });
 

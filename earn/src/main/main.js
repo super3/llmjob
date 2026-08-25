@@ -28,7 +28,7 @@ const probe = require('./probe');
 const nodeStore = require('./nodeStore');
 const settingsStore = require('../shared/settingsStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
-const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE, resolveEndpoint, difficultyForCard } = require('../shared/config');
+const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE, resolveEndpoint } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
 const { resolveEconomics } = require('../shared/economics');
 const nodeProto = require('../shared/node');
@@ -339,7 +339,7 @@ function appIcon() {
 // resolves to a display name or null. Never rejects.
 // Delegates to the shared probe (nvidia-smi, then WMI on Windows) rather than
 // keeping a Windows-only copy here — that copy returned null on Linux, so the
-// shipped AppImage showed no device and never applied the per-card difficulty.
+// shipped AppImage showed no device at all.
 // The renderer's IPC contract is a plain name string, so unwrap it here.
 async function detectGpu() {
   const info = await probe.detectGpuInfo();
@@ -1113,7 +1113,7 @@ ipcMain.handle('settings:get', () => Object.assign(
   // board identity (and if either is multi-GPU, the other's row is dropped
   // outright). Only fills a FRESH install — loadSettings() below wins, so an
   // existing worker name is never rewritten out from under someone's board row.
-  { region: DEFAULTS.region, worker: defaultWorker(), difficulty: DEFAULTS.difficulty, address: '', mdlAddress: '', mode: DEFAULT_MODE },
+  { region: DEFAULTS.region, worker: defaultWorker(), address: '', mdlAddress: '', mode: DEFAULT_MODE },
   loadSettings(),
 ));
 ipcMain.handle('llm:status', () => llmStatus);
@@ -1126,7 +1126,6 @@ ipcMain.handle('config:get', () => ({
   miner: MINER,
   platform: { minerSupported: minerSupported(process.platform) },
 }));
-ipcMain.handle('miner:difficultyForCard', (_e, name) => difficultyForCard(name));
 ipcMain.handle('gpu:detect', () => detectGpu());
 ipcMain.handle('region:detect', () => detectRegion());
 ipcMain.handle('balance:get', (_e, address) => fetchBalance(address, liveEcon.PRL_USD));

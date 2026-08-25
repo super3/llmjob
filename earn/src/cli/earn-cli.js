@@ -28,7 +28,7 @@ const {
 const probe = require('../main/probe');
 const nodeStore = require('../main/nodeStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
-const { NETWORK, MINER, LLM, NODE, resolveEndpoint, regionLabel, difficultyForCard } = require('../shared/config');
+const { NETWORK, MINER, LLM, NODE, resolveEndpoint, regionLabel } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
 const nodeProto = require('../shared/node');
 const { buildMinerReports } = require('../shared/minerReport');
@@ -56,9 +56,9 @@ function log(line, stream) {
 // Detect the discrete GPU name via nvidia-smi (Linux/NVIDIA). Resolves the card
 // name or null (no nvidia-smi / non-NVIDIA / parse failure). Never rejects — the
 // engine still auto-detects the real device to mine; this is only for the
-// difficulty table and the status label.
+// status label.
 // Resolve { name, count } — the representative card plus how many discrete
-// GPUs the rig actually mines with (multi-GPU rigs scale difficulty by count).
+// GPUs the rig actually mines with.
 // Delegates to the shared probe so the GUI and the CLI detect the same way —
 // they had drifted into two different methods, and the GUI's was Windows-only.
 function detectGpu() {
@@ -548,31 +548,26 @@ async function run(argv) {
   if (plan.miner) {
     // Auto-detect the knobs the user didn't pin. Best-effort: any failure falls
     // back to the defaults already in `settings` and never blocks mining. Explicit
-    // --region / --gpu / --difficulty always win.
+    // --region / --gpu always win.
     if (!settings.workerProvided) settings.worker = defaultWorker();
     if (!settings.regionProvided) settings.region = await detectRegion();
     // Probe regardless of --gpu. Naming the card and counting the cards are two
     // different questions, and folding them into one `if` meant that passing
     // --gpu (to name it) also skipped the COUNT — so an N-card rig fell back to
-    // gpuCount 1 and submitted at 1/N the difficulty its hashrate warranted.
+    // gpuCount 1 and reported one card on a board row for N.
     const det = await detectGpu();
     if (!settings.gpuProvided && det && det.name) settings.gpu = det.name;
     // Always set, so downstream reads don't need a fallback: 1 when detection
     // found nothing or found a single card.
     settings.gpuCount = det && det.count > 1 ? det.count : 1;
-    // The pool's difficulty table is per card class; a rig submits its aggregate
-    // hashrate on one connection, so scale by the card count (8× RTX 3070 wants
-    // the ~560 TH/s tier, not the single-card one). Uses whichever card name we
-    // ended up with — the detected one or the one the user pinned.
-    if (!settings.difficultyProvided && settings.gpu) {
-      settings.difficulty = difficultyForCard(settings.gpu) * settings.gpuCount;
-    }
-
     endpoint = resolveEndpoint(settings);
     log('address:    ' + shortenAddress(settings.address) + (settings.mdlAddress ? '  (+MDL ' + shortenAddress(settings.mdlAddress) + ')' : ''));
     log('pool:       ' + endpoint + '  ' + regionLabel(settings.region) + (settings.regionProvided ? '' : '  (auto)'));
     log('worker:     ' + settings.worker + (settings.workerProvided ? '' : '  (auto)'));
-    log('difficulty: ' + settings.difficulty + (settings.gpu ? '  (for ' + (settings.gpuCount > 1 ? settings.gpuCount + '× ' : '') + settings.gpu + (settings.gpuProvided ? '' : ', auto') + ')' : ''));
+    if (settings.gpu) {
+      log('gpu:        ' + (settings.gpuCount > 1 ? settings.gpuCount + '× ' : '') + settings.gpu
+        + (settings.gpuProvided ? '' : '  (auto)'));
+    }
   }
 
   const stats = initStats(Date.now());

@@ -438,14 +438,14 @@ describe('mining', () => {
       '--stats-file', '/tmp/s.json']);
     await settle();
 
-    // Auto-detected knobs: region, hostname worker, GPU → scaled difficulty.
+    // Auto-detected knobs: region, hostname worker, GPU name.
     // The default mode is 'auto', so a bare run mines AND serves the LLM.
     expect(allOut()).toContain('mode:       auto  (default)');
     expect(allOut()).toContain('preparing local LLM (Gemma-4-E4B-it-Q4_K_M) …');
     expect(allOut()).toContain('local LLM starting on 1 GPU [auto]');
     expect(allOut()).toContain('worker:     rig-host  (auto)');
     expect(allOut()).toContain('(+MDL');
-    expect(allOut()).toContain('difficulty: 262144  (for 2× NVIDIA GeForce RTX 3070, auto)');
+    expect(allOut()).toContain('gpu:        2× NVIDIA GeForce RTX 3070  (auto)');
 
     const miner = m.PearlEngine.instances[0];
     expect(miner.start).toHaveBeenCalledWith(expect.objectContaining({
@@ -469,8 +469,14 @@ describe('mining', () => {
     expect(m.fs.writeFileSync).toHaveBeenCalledWith('/tmp/s.json.tmp', expect.any(String));
     expect(m.fs.renameSync).toHaveBeenCalledWith('/tmp/s.json.tmp', '/tmp/s.json');
 
+    // mode auto: the LLM comes up once the miner proves real hashrate, so by
+    // here BOTH are running and shutdown has to stop both.
+    await settle();
+    expect(m.LlmManager.instances.length).toBeGreaterThan(0);
+
     fire('SIGINT');
     fire('SIGINT'); // second signal hits the `stopping` guard
+    expect(m.LlmManager.instances[0].stop).toHaveBeenCalled();
     expect(miner.stop).toHaveBeenCalled();
     miner.emit('stopped', 0);
     miner.emit('stopped', 0); // second emit hits the `settled` guard
@@ -482,7 +488,7 @@ describe('mining', () => {
   test('explicit knobs, TTY prefix, engine exit code passthrough', async () => {
     process.stdout.isTTY = true;
     const m = load();
-    const p = m.run(['-a', ADDR, '-r', 'de', '-w', 'rig9', '-g', 'RTX 4090', '-d', '1024',
+    const p = m.run(['-a', ADDR, '-r', 'de', '-w', 'rig9', '-g', 'RTX 4090',
       '--no-update']);
     await settle();
 
@@ -490,46 +496,12 @@ describe('mining', () => {
     expect(m.cp.execFile).not.toHaveBeenCalled();
     expect(/\[\d{2}:\d{2}:\d{2}\] /.test(allOut())).toBe(true);
     expect(allOut()).toContain('worker:     rig9');
-    expect(allOut()).toContain('difficulty: 1024  (for RTX 4090)');
+    expect(allOut()).toContain('gpu:        RTX 4090');
 
     const miner = m.PearlEngine.instances[0];
     expect(miner.start).toHaveBeenCalledWith(expect.objectContaining({ endpoint: 'de.pearl.herominers.com:1200' }));
     miner.emit('stopped', 5); // engine died on its own → exit code passes through
     await expect(p).resolves.toBe(5);
-  });
-
-  // Naming the card (--gpu) and counting the cards are different questions.
-  // Folding them into one `if` meant --gpu also skipped the COUNT, so an N-card
-  // rig fell back to gpuCount 1 and mined at 1/N the difficulty its hashrate
-  // warranted.
-  test('--gpu still scales difficulty by the detected card count', async () => {
-    const m = load();
-    m.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 3070', count: 8 });
-
-    const p = m.run(['-a', ADDR, '--gpu', 'NVIDIA GeForce RTX 3070', '--mode', 'mining', '--no-update']);
-    await settle();
-
-    // The shipped table puts the 3070 at 131072; × 8 cards.
-    expect(allOut()).toContain('difficulty: 1048576');
-    expect(allOut()).toContain('8× NVIDIA GeForce RTX 3070');
-
-    fire('SIGTERM');
-    m.PearlEngine.instances[0].emit('stopped', 0);
-    await expect(p).resolves.toBe(0);
-  });
-
-  test('an explicit --difficulty still wins over the scaled value', async () => {
-    const m = load();
-    m.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 3070', count: 8 });
-
-    const p = m.run(['-a', ADDR, '-d', '1234', '--mode', 'mining', '--no-update']);
-    await settle();
-
-    expect(allOut()).toContain('difficulty: 1234');
-
-    fire('SIGTERM');
-    m.PearlEngine.instances[0].emit('stopped', 0);
-    await expect(p).resolves.toBe(0);
   });
 
   // net.connect takes the PORT first and PearlMiner hands over host first, so
@@ -558,7 +530,12 @@ describe('mining', () => {
     await settle();
     m.PearlEngine.instances[0].emit('event', { type: 'status', hashrate: 1, accepted: 1 });
     m.fs.writeFileSync.mockImplementation(() => { throw new Error('read-only /tmp'); });
-    jest.advanceTimersByTime ? null : null;
+    intervalFor(10000).fn(); // must not throw
+
+    // Shut down by SIGNAL with mining ONLY: the shutdown path has to cope with
+    // no LLM to stop, which is a different branch from the co-run case.
+    fire('SIGTERM');
+    expect(m.PearlEngine.instances[0].stop).toHaveBeenCalled();
     m.PearlEngine.instances[0].emit('stopped', 0);
     await expect(p).resolves.toBe(0);
     expect(allErr()).not.toContain('read-only /tmp');
@@ -979,7 +956,7 @@ describe('connect subcommand', () => {
     expect(allOut()).toContain('stopped pinging');
   });
 
-  // The GPU name is only a display/difficulty hint, so a probe that blows up must
+  // The GPU name is only a display hint, so a probe that blows up must
   // degrade to "unknown device" rather than take the ping (or the run) down.
   test('a GPU probe that rejects leaves the ping device null', async () => {
     const m = load();

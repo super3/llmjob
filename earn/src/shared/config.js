@@ -34,7 +34,6 @@ const REGIONS = {
 const DEFAULTS = {
   region: 'us',
   worker: 'rig01',
-  difficulty: 524288, // RTX 4090 / 5080 class — a safe general default
   algo: 'pearlhash',
   powerLimit: 318,
 };
@@ -230,19 +229,6 @@ const NODE = {
   pingIntervalMs: 5 * 60 * 1000,
 };
 
-// Recommended static difficulty per card class, from the pool's table. Order
-// matters: more specific patterns first.
-const DIFFICULTY_BY_CARD = [
-  { match: /5090|h100|h200|b100|b200|pro 6000/i, difficulty: 1048576 }, // incl. RTX PRO 6000 (Blackwell)
-  { match: /4090|5080/i, difficulty: 524288 },
-  { match: /4070|4080/i, difficulty: 262144 },
-  { match: /3080|3090|70hx|90hx/i, difficulty: 262144 },
-  { match: /3060 ti|3070/i, difficulty: 131072 },
-  { match: /4060|5060/i, difficulty: 131072 },
-  { match: /a100/i, difficulty: 131072 },
-  { match: /2070|2080|rtx 20|\bt4\b/i, difficulty: 16384 },
-  { match: /v100|titan v|cmp [12]\d\d/i, difficulty: 4096 },
-];
 
 function regionFor(region) {
   return REGIONS[region] || REGIONS[DEFAULTS.region];
@@ -295,16 +281,8 @@ function regionLabel(region) {
   return r.flag + ' ' + r.label;
 }
 
-// Suggested static difficulty for a GPU name; falls back to the default.
-function difficultyForCard(name) {
-  const s = String(name == null ? '' : name);
-  for (const row of DIFFICULTY_BY_CARD) {
-    if (row.match.test(s)) return row.difficulty;
-  }
-  return DEFAULTS.difficulty;
-}
 
 module.exports = {
-  REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE, DIFFICULTY_BY_CARD,
-  regionFor, endpointFor, normalizeEndpoint, resolveEndpoint, splitEndpoint, regionLabel, difficultyForCard,
+  REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE,
+  regionFor, endpointFor, normalizeEndpoint, resolveEndpoint, splitEndpoint, regionLabel,
 };

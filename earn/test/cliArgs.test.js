@@ -89,7 +89,7 @@ describe('buildSettings — validation', () => {
   test('a full valid command parses cleanly', () => {
     const r = parseCliArgs([
       '-a', ADDR, '-m', MDL, '-r', 'de', '-w', 'rig7',
-      '-d', '131072', '-g', 'RTX 4090',
+      '-g', 'RTX 4090',
       '--stats-file', '/run/hive/llmjob-earn-stats.json',
     ]);
     expect(r.errors).toEqual([]);
@@ -98,14 +98,12 @@ describe('buildSettings — validation', () => {
       mdlAddress: MDL,
       region: 'de',
       worker: 'rig7',
-      difficulty: 131072,
       gpu: 'RTX 4090',
       statsFile: '/run/hive/llmjob-earn-stats.json',
       report: true,
       update: true,
       regionProvided: true,
       gpuProvided: true,
-      difficultyProvided: true,
       workerProvided: true,
     });
   });
@@ -114,7 +112,6 @@ describe('buildSettings — validation', () => {
     const s = parseCliArgs(['--address', ADDR]).settings;
     expect(s.regionProvided).toBe(false);
     expect(s.gpuProvided).toBe(false);
-    expect(s.difficultyProvided).toBe(false);
     expect(s.workerProvided).toBe(false);
   });
 
@@ -151,29 +148,6 @@ describe('buildSettings — validation', () => {
     expect(parseCliArgs(['--address', ADDR]).settings.worker).toBe(DEFAULTS.worker);
   });
 
-  test('explicit difficulty wins', () => {
-    expect(parseCliArgs(['--address', ADDR, '-d', '262144']).settings.difficulty).toBe(262144);
-  });
-
-  test('non-integer difficulty is rejected', () => {
-    const r = parseCliArgs(['--address', ADDR, '--difficulty=abc']);
-    expect(r.errors).toContain('invalid difficulty: abc (must be a positive integer)');
-  });
-
-  test('zero/negative difficulty is rejected', () => {
-    const r = parseCliArgs(['--address', ADDR, '--difficulty=0']);
-    expect(r.errors).toContain('invalid difficulty: 0 (must be a positive integer)');
-  });
-
-  test('difficulty is inferred from --gpu when not given', () => {
-    // 3070 maps to 131072 in the per-card table (distinct from the default).
-    const r = parseCliArgs(['--address', ADDR, '--gpu', 'RTX 3070']);
-    expect(r.settings.difficulty).toBe(131072);
-  });
-
-  test('difficulty falls back to the default without gpu or flag', () => {
-    expect(parseCliArgs(['--address', ADDR]).settings.difficulty).toBe(DEFAULTS.difficulty);
-  });
 
   test('gpu is null when omitted', () => {
     const s = parseCliArgs(['--address', ADDR]).settings;

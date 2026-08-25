@@ -119,7 +119,7 @@ jest.mock('../src/main/probe', () => ({
   findFreePort: jest.fn(() => Promise.resolve(8080)),
   // GPU detection moved into probe so the GUI and the CLI share one
   // implementation — the GUI's own copy was Windows-only, which left the Linux
-  // AppImage with no device name and no per-card difficulty.
+  // AppImage with no device name.
   detectGpuInfo: jest.fn(() => Promise.resolve(null)),
 }));
 
@@ -554,7 +554,7 @@ describe('simple ipc handlers', () => {
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Could not read settings'));
   });
 
-  it('config:get, llm:status, app:version, difficultyForCard and region:detect answer directly', async () => {
+  it('config:get, llm:status, app:version and region:detect answer directly', async () => {
     const ctx = loadMain();
     expect(await ctx.invoke('config:get')).toEqual({
       regions: ctx.config.REGIONS, defaults: ctx.config.DEFAULTS, miner: ctx.config.MINER,
@@ -562,7 +562,6 @@ describe('simple ipc handlers', () => {
     });
     expect(await ctx.invoke('llm:status')).toMatchObject({ ready: false, model: ctx.config.LLM.model.name });
     expect(await ctx.invoke('app:version')).toBe('0.0.0-test');
-    expect(await ctx.invoke('miner:difficultyForCard', 'RTX 4090')).toBe(524288);
     expect(await ctx.invoke('region:detect')).toBe('us1');
     expect(ctx.probe.detectRegion).toHaveBeenCalled();
   });
@@ -571,7 +570,7 @@ describe('simple ipc handlers', () => {
   // it to the plain name string the renderer's IPC contract expects. What matters
   // here is that it is NOT platform-gated any more — the old copy short-circuited
   // to null on anything but win32, which is why the Linux AppImage showed no
-  // device name and never applied the per-card difficulty.
+  // device name at all.
   it('gpu:detect returns the probed card name, on every platform', async () => {
     const ctx = loadMain({ platform: 'linux' });
     ctx.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 4090', count: 2 });

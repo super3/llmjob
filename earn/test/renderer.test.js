@@ -54,7 +54,7 @@ function makeFullApi() {
   const cbs = {};
   const api = {
     getSettings: jest.fn().mockResolvedValue({
-      address: ADDR, worker: 'w1', region: 'us2', difficulty: 524288,
+      address: ADDR, worker: 'w1', region: 'us2',
     }),
     getConfig: jest.fn().mockResolvedValue({
       regions: {
@@ -62,7 +62,6 @@ function makeFullApi() {
         eu1: { flag: 'EU', label: 'EU', name: 'Falkenstein' },
       },
     }),
-    difficultyForCard: jest.fn().mockResolvedValue(2048),
     detectGpu: jest.fn().mockResolvedValue('RTX 4090'),
     detectRegion: jest.fn().mockResolvedValue('eu1'),
     getBalance: jest.fn().mockResolvedValue({ earned: 1234.5678, usd: 12.3 }),
@@ -163,10 +162,7 @@ describe('boot with the full bridge', () => {
     const opts = Array.from($('set-region').options).map((o) => o.value);
     expect(opts).toEqual(['us2', 'eu1']);
     expect($('set-region').options[0].textContent).toBe('US US · Dallas');
-    // detectRegion overrode the saved region, difficultyForCard the default diff
     expect($('set-region').value).toBe('eu1');
-    expect($('set-difficulty').value).toBe('2048');
-    expect(api.difficultyForCard).toHaveBeenCalledWith('RTX 4090');
     expect($('device-label').textContent).toBe('RTX 4090');
     expect($('balance').textContent).toBe('1,234.568');
     expect($('balance-usd').textContent).toBe('≈ $12.30');
@@ -239,7 +235,7 @@ describe('boot with the full bridge', () => {
     const { api } = makeFullApi();
     const MDL = 'mdl1p' + 'b'.repeat(30);
     api.getSettings = jest.fn().mockResolvedValue({
-      address: ADDR, worker: 'w1', region: 'eu1', difficulty: 2048,
+      address: ADDR, worker: 'w1', region: 'eu1',
       mode: 'auto', mdlAddress: MDL, resumeMining: false,
     });
     await boot({ api });
@@ -415,7 +411,7 @@ describe('boot with the full bridge', () => {
     click(document.querySelector('[data-mode="auto"]'));
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenCalledWith({
-      address: ADDR, worker: 'w1', region: 'eu1', difficulty: 2048, mode: 'auto', mdlAddress: '',
+      address: ADDR, worker: 'w1', region: 'eu1', mode: 'auto', mdlAddress: '',
     });
     expect($('addr-static').hidden).toBe(false);
     expect($('addr-static').textContent).toBe(ADDR);
@@ -475,14 +471,13 @@ describe('boot with the full bridge', () => {
     expect($('hashrate').textContent).toBe('0.0');
     expect($('device-label').textContent).toBe('RTX 4090');
     expect($('engine-status').hidden).toBe(true);
-    // restart with every settings fallback (empty worker/region/difficulty/mode)
+    // restart with every settings fallback (empty worker/region/mode)
     setInput($('set-worker'), '');
     $('set-region').value = 'zz'; // no such option → ''
-    setInput($('set-difficulty'), '');
     click($('mode-empty'));
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenLastCalledWith({
-      address: ADDR, worker: 'rig01', region: 'us2', difficulty: 524288, mode: 'mining', mdlAddress: '',
+      address: ADDR, worker: 'rig01', region: 'us2', mode: 'mining', mdlAddress: '',
     });
     // manual stop
     click($('btn-stop'));
@@ -891,7 +886,6 @@ describe('partial bridge (fallback settings, missing action methods)', () => {
     await boot({ api });
     expect($('addr-input').value).toBe('');
     expect($('set-worker').value).toBe('rig01');
-    expect($('set-difficulty').value).toBe('524288');
     expect($('set-region').options).toHaveLength(0);
     // A falsy stored mode falls back to DEFAULT_MODE, not to mining-only:
     // mining-only switches the LLM off silently, which reads as "the LLM is
@@ -1027,7 +1021,6 @@ describe('init interleavings', () => {
     const { api } = makeFullApi();
     let resolveGpu;
     api.detectGpu = jest.fn(() => new Promise((r) => { resolveGpu = r; }));
-    api.difficultyForCard = jest.fn().mockResolvedValue(0);
     loadRenderer({ api });
     await flush(); // init parked awaiting detectGpu
     click($('btn-start')); // user starts mining mid-init
@@ -1037,8 +1030,6 @@ describe('init interleavings', () => {
     // mining → the label and region are left alone
     expect($('device-label').textContent).toBe('GPU · auto-detect');
     expect(api.detectRegion).not.toHaveBeenCalled();
-    // difficultyForCard returned a falsy value → keep the stored one
-    expect($('set-difficulty').value).toBe('524288');
   });
 
   it('resumes mining from saved settings', async () => {

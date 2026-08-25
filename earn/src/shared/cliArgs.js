@@ -3,11 +3,11 @@
 // Pure argument parsing for the headless Linux CLI miner (src/cli/earn-cli.js).
 // Turns a bare argv array into a validated settings object — the same shape the
 // GUI's main process hands to MinerManager (address / worker / region /
-// difficulty), so the two share the same settings shape. Kept
+// region, worker, GPU), so the two share the same settings shape. Kept
 // pure and dependency-free so it's fully unit-tested; the CLI shell wires the
 // real IO (download, spawn, network reporting) around it.
 
-const { REGIONS, DEFAULTS, difficultyForCard } = require('./config');
+const { REGIONS, DEFAULTS } = require('./config');
 const { isValidAddress, isValidMdlAddress, normalizeAddress } = require('./address');
 const { MODES, DEFAULT_MODE, isValidMode } = require('./llmMode');
 
@@ -20,7 +20,6 @@ const ALIASES = {
   '-m': '--mdl',
   '-r': '--region',
   '-w': '--worker',
-  '-d': '--difficulty',
   '-g': '--gpu',
 
   '-h': '--help',
@@ -30,7 +29,7 @@ const ALIASES = {
 // Options that consume a following value.
 const VALUE_FLAGS = new Set([
   '--address', '--mdl', '--region', '--worker',
-  '--difficulty', '--gpu',
+  '--gpu',
   '--stats-file',
   '--mode', '--llm-binary', '--llm-model', '--llm-max-instances',
 ]);
@@ -62,8 +61,7 @@ const USAGE = [
   '                           eligible GPU, itself capped by free system RAM)',
   '  -r, --region <id>        Pool region: ' + Object.keys(REGIONS).join('/') + ' (default: auto-detect fastest)',
   '  -w, --worker <name>      Worker/rig name (default: this machine\'s hostname)',
-  '  -d, --difficulty <n>     Static share difficulty (default: from detected/--gpu card, else ' + DEFAULTS.difficulty + ')',
-  '  -g, --gpu <card>         GPU name for the difficulty table (default: auto-detect via nvidia-smi)',
+  '  -g, --gpu <card>         GPU name to report on the board (default: auto-detect via nvidia-smi)',
 
   '      --stats-file <path>  Write live stats JSON here every 10s (for HiveOS h-stats etc.)',
   '      --no-report          Do not publish live status to the public network board',
@@ -115,15 +113,6 @@ function buildSettings(opts, errors, report, update, serve) {
   const worker = opts['--worker'] != null ? String(opts['--worker']).trim() : DEFAULTS.worker;
   const gpu = opts['--gpu'] != null ? String(opts['--gpu']).trim() : null;
 
-  let difficulty;
-  if (opts['--difficulty'] != null) {
-    difficulty = Number(opts['--difficulty']);
-    if (!Number.isInteger(difficulty) || difficulty <= 0) {
-      errors.push('invalid difficulty: ' + opts['--difficulty'] + ' (must be a positive integer)');
-    }
-  } else {
-    difficulty = gpu ? difficultyForCard(gpu) : DEFAULTS.difficulty;
-  }
 
 
   const statsFile = opts['--stats-file'] != null ? String(opts['--stats-file']) : null;
@@ -141,19 +130,18 @@ function buildSettings(opts, errors, report, update, serve) {
   }
 
   // Which knobs the user set explicitly. The CLI auto-detects the ones left
-  // unset (fastest region; GPU → static difficulty; a per-host worker name), so
+  // unset (fastest region; a per-host worker name), so
   // it needs to tell an explicit `--region us2` / `--worker rig01` from the
   // default.
   const regionProvided = opts['--region'] != null;
   const gpuProvided = opts['--gpu'] != null;
-  const difficultyProvided = opts['--difficulty'] != null;
   const workerProvided = opts['--worker'] != null;
   const modeProvided = opts['--mode'] != null;
 
   return {
-    address, mdlAddress, region, worker, gpu, difficulty, statsFile,
+    address, mdlAddress, region, worker, gpu, statsFile,
     mode, llmBinary, llmModel, llmMaxInstances,
-    report, update, serve: serve !== false, regionProvided, gpuProvided, difficultyProvided, workerProvided, modeProvided,
+    report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,
   };
 }
 
