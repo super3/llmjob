@@ -32,6 +32,34 @@ if (-not (Test-Path $vcvars)) { throw "vcvars64.bat not found under $vsPath" }
 Write-Host "MSVC: $vsPath" -ForegroundColor DarkGray
 Write-Host "CUDA: $($cudaRoot.FullName)" -ForegroundColor DarkGray
 
+# binding.gyp resolves the CUDA libraries through CUDA_PATH and falls back to a
+# Linux path when it is unset, so on Windows the build gets all the way to LINK
+# and then fails with "cannot open input file
+# '\usr\local\cuda\lib\x64\cudart_static.lib'". The installer sets the
+# variable machine-wide, but a shell that was already open will not have it.
+$env:CUDA_PATH = $cudaRoot.FullName
+
+# node-gyp needs Python, and a user-scope install is not on PATH by default.
+#
+# Deliberately NOT "if (Get-Command python)": Windows ships an App Execution
+# Alias stub called python.exe that resolves, runs, and then tells you to visit
+# the Microsoft Store. Probing for the command finds the stub, concludes Python
+# is present, and leaves node-gyp to fail later with "find Python - executable
+# path is \"\"". So find a REAL interpreter and point node-gyp straight at it.
+$py = Get-ChildItem "$env:LOCALAPPDATA\Programs\Python" -Filter python.exe -Recurse -ErrorAction SilentlyContinue |
+      Where-Object { $_.Length -gt 100kb } | Select-Object -First 1
+if (-not $py) {
+    $cmd = Get-Command python.exe -ErrorAction SilentlyContinue |
+           Where-Object { $_.Source -notlike "*WindowsApps*" } | Select-Object -First 1
+    if ($cmd) { $py = Get-Item $cmd.Source }
+}
+if (-not $py) {
+    throw "node-gyp needs Python and none was found. Install it without administrator rights: winget install --id Python.Python.3.12 --scope user"
+}
+$env:PATH = (Split-Path $py.FullName) + ";" + $env:PATH
+$env:npm_config_python = $py.FullName
+Write-Host "Python: $($py.FullName)" -ForegroundColor DarkGray
+
 & cmd /c "`"$vcvars`" >nul 2>&1 && set" | ForEach-Object {
     if ($_ -match '^([^=]+)=(.*)$') { Set-Item -Path ("Env:" + $matches[1]) -Value $matches[2] }
 }
