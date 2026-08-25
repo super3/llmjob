@@ -51,12 +51,12 @@ void pearl_host_set_job(void *ctx, const uint8_t *header, const uint8_t *target)
 void pearl_host_reseed(void *ctx, uint64_t salt);
 // Share-proof accessors: the operand chunks a tile touched, and the sibling
 // digests that authenticate them. Both already exist on the device.
-bool pearl_host_leaf_chunks(void *ctx, int isA, const uint32_t *leaf_indices,
-                            uint32_t count, uint8_t *out);
-bool pearl_host_tree_nodes(void *ctx, int isA, uint32_t level,
-                           const uint32_t *indices, uint32_t count,
-                           uint8_t *out);
-uint32_t pearl_host_tree_levels(void *ctx, int isA);
+uint32_t pearl_host_proof_counts(void *ctx, int isA, int what);
+bool pearl_host_proof_leaf_indices(void *ctx, int isA, uint32_t *out);
+bool pearl_host_proof_leaves(void *ctx, int isA, uint8_t *out);
+bool pearl_host_proof_siblings(void *ctx, int isA, uint8_t *out);
+bool pearl_host_proof_root(void *ctx, int isA, uint8_t *out);
+uint64_t pearl_host_total_leaves(void *ctx, int isA);
 // Search one batch of nonces. Returns true and fills `out` when a share is
 // found; returns false when the batch is exhausted with no hit. `attempts`
 // receives the number of nonces tried, for the hashrate figure.
@@ -75,9 +75,7 @@ class PearlCore : public Napi::ObjectWrap<PearlCore> {
 
  private:
   Napi::Value SetJob(const Napi::CallbackInfo &info);
-  Napi::Value LeafChunks(const Napi::CallbackInfo &info);
-  Napi::Value TreeNodes(const Napi::CallbackInfo &info);
-  Napi::Value TreeLevels(const Napi::CallbackInfo &info);
+  Napi::Value Proof(const Napi::CallbackInfo &info);
   Napi::Value Stop(const Napi::CallbackInfo &info);
   Napi::Value On(const Napi::CallbackInfo &info);
 
@@ -353,76 +351,52 @@ void PearlCore::EmitError(const std::string &msg) {
   });
 }
 
-// Read a JS array of indices into a vector.
-static std::vector<uint32_t> indexList(const Napi::Value &v) {
-  std::vector<uint32_t> out;
-  if (!v.IsArray()) return out;
-  Napi::Array a = v.As<Napi::Array>();
-  out.reserve(a.Length());
-  for (uint32_t i = 0; i < a.Length(); i++) {
-    out.push_back(a.Get(i).As<Napi::Number>().Uint32Value());
-  }
-  return out;
-}
-
-// leafChunks(isA, [leafIndex, ...]) -> Buffer of count * 1024 bytes.
+// proof(isA) -> { leafIndices, leafData, siblings, root, totalLeaves }
 //
-// The operand data a share proof has to carry. Copying it out beats
-// regenerating the operand in JS by orders of magnitude, and regenerating it
-// was taking 21 seconds a share at the mainnet geometry -- long enough for the
-// job to rotate underneath the proof.
-Napi::Value PearlCore::LeafChunks(const Napi::CallbackInfo &info) {
-  Napi::Env env = info.Env();
-  if (info.Length() < 2) {
-    Napi::TypeError::New(env, "leafChunks(isA, indices)").ThrowAsJavaScriptException();
-    return env.Undefined();
-  }
-  const int isA = info[0].ToBoolean().Value() ? 1 : 0;
-  const std::vector<uint32_t> idx = indexList(info[1]);
-  if (idx.empty()) return Napi::Buffer<uint8_t>::New(env, 0);
-
-  Napi::Buffer<uint8_t> out = Napi::Buffer<uint8_t>::New(env, idx.size() * 1024);
-  if (!pearl_host_leaf_chunks(ctx_, isA, idx.data(), (uint32_t)idx.size(), out.Data())) {
-    Napi::Error::New(env, "leafChunks: index out of range").ThrowAsJavaScriptException();
-    return env.Undefined();
-  }
-  return out;
-}
-
-// treeNodes(isA, level, [index, ...]) -> Buffer of count * 32 bytes.
-Napi::Value PearlCore::TreeNodes(const Napi::CallbackInfo &info) {
-  Napi::Env env = info.Env();
-  if (info.Length() < 3) {
-    Napi::TypeError::New(env, "treeNodes(isA, level, indices)").ThrowAsJavaScriptException();
-    return env.Undefined();
-  }
-  const int isA = info[0].ToBoolean().Value() ? 1 : 0;
-  const uint32_t level = info[1].As<Napi::Number>().Uint32Value();
-  const std::vector<uint32_t> idx = indexList(info[2]);
-  if (idx.empty()) return Napi::Buffer<uint8_t>::New(env, 0);
-
-  Napi::Buffer<uint8_t> out =
-      Napi::Buffer<uint8_t>::New(env, idx.size() * PEARL_HASH_BYTES);
-  if (!pearl_host_tree_nodes(ctx_, isA, level, idx.data(), (uint32_t)idx.size(), out.Data())) {
-    Napi::Error::New(env, "treeNodes: bad level or index").ThrowAsJavaScriptException();
-    return env.Undefined();
-  }
-  return out;
-}
-
-Napi::Value PearlCore::TreeLevels(const Napi::CallbackInfo &info) {
+// Serves the snapshot captured when the hit was found, NOT the live tree. The
+// operands are re-drawn every few tens of milliseconds, so anything fetched
+// afterwards belongs to a different draw -- which showed up as proofs that
+// referenced levels that no longer existed, and proofs that simply did not
+// verify.
+Napi::Value PearlCore::Proof(const Napi::CallbackInfo &info) {
   Napi::Env env = info.Env();
   const int isA = info.Length() > 0 && info[0].ToBoolean().Value() ? 1 : 0;
-  return Napi::Number::New(env, pearl_host_tree_levels(ctx_, isA));
+
+  const uint32_t nLeaves = pearl_host_proof_counts(ctx_, isA, 0);
+  const uint32_t nSibs = pearl_host_proof_counts(ctx_, isA, 1);
+  if (nLeaves == 0) return env.Null();
+
+  std::vector<uint32_t> idx(nLeaves);
+  if (!pearl_host_proof_leaf_indices(ctx_, isA, idx.data())) return env.Null();
+
+  Napi::Array indices = Napi::Array::New(env, nLeaves);
+  for (uint32_t i = 0; i < nLeaves; i++) indices.Set(i, Napi::Number::New(env, idx[i]));
+
+  Napi::Buffer<uint8_t> leaves = Napi::Buffer<uint8_t>::New(env, (size_t)nLeaves * 1024);
+  if (!pearl_host_proof_leaves(ctx_, isA, leaves.Data())) return env.Null();
+
+  Napi::Buffer<uint8_t> sibs =
+      Napi::Buffer<uint8_t>::New(env, (size_t)nSibs * PEARL_HASH_BYTES);
+  if (nSibs && !pearl_host_proof_siblings(ctx_, isA, sibs.Data())) return env.Null();
+
+  Napi::Buffer<uint8_t> root = Napi::Buffer<uint8_t>::New(env, PEARL_HASH_BYTES);
+  if (!pearl_host_proof_root(ctx_, isA, root.Data())) return env.Null();
+
+  Napi::Object out = Napi::Object::New(env);
+  out.Set("leafIndices", indices);
+  out.Set("leafData", leaves);
+  out.Set("siblings", sibs);
+  out.Set("root", root);
+  out.Set("totalLeaves",
+          Napi::Number::New(env, (double)pearl_host_total_leaves(ctx_, isA)));
+  return out;
 }
 
 Napi::Object PearlCore::Init(Napi::Env env, Napi::Object exports) {
   Napi::Function func =
       DefineClass(env, "PearlCore",
                   {InstanceMethod("setJob", &PearlCore::SetJob),
-                   InstanceMethod("leafChunks", &PearlCore::LeafChunks),
-                   InstanceMethod("treeNodes", &PearlCore::TreeNodes),
-                   InstanceMethod("treeLevels", &PearlCore::TreeLevels),
+                   InstanceMethod("proof", &PearlCore::Proof),
                    InstanceMethod("stop", &PearlCore::Stop),
                    InstanceMethod("on", &PearlCore::On)});
   exports.Set("PearlCore", func);

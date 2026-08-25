@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <set>
 #include <vector>
 
 #include <cstdlib>
@@ -183,6 +184,18 @@ struct Ctx {
   uint32_t *dTreeB = nullptr;
   std::vector<uint64_t> layerOffA;  // node offset of each level
   std::vector<uint64_t> layerOffB;
+
+  // The proof for the most recent hit, captured AT HIT TIME.
+  //
+  // The operands are re-drawn every time the region space is exhausted, which
+  // at this geometry is every few tens of milliseconds. Fetching the proof
+  // afterwards therefore reads a DIFFERENT draw's tree than the one the hit was
+  // found under -- sometimes a level that no longer exists, sometimes a proof
+  // that simply does not verify. Both were observed before this existed.
+  std::vector<uint8_t> snapLeavesA, snapLeavesB;
+  std::vector<uint8_t> snapSibsA, snapSibsB;
+  std::vector<uint32_t> snapLeafIdxA, snapLeafIdxB;
+  bool snapValid = false;
   uint8_t *dSeedBuf = nullptr;   // 64-byte concat for b_seed / a_seed
   uint8_t *dHashA = nullptr;
   uint8_t *dHashB = nullptr;
@@ -252,6 +265,71 @@ void operand_commitment(Ctx *ctx, const uint8_t *data, size_t len,
     count = pairs;
   }
   cudaMemcpy(out32, dst + base * 8, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
+}
+
+// Which 1024-byte chunks hold these matrix rows. A row of k bytes can straddle
+// a boundary, so this is a range per row.
+void leafIndicesForRows(const uint32_t *rows, uint32_t nrows, uint32_t k,
+                        std::vector<uint32_t> *out) {
+  std::set<uint32_t> s;
+  for (uint32_t i = 0; i < nrows; i++) {
+    const uint64_t first = (uint64_t)rows[i] * k / 1024;
+    const uint64_t last = ((uint64_t)(rows[i] + 1) * k - 1) / 1024;
+    for (uint64_t j = first; j <= last; j++) s.insert((uint32_t)j);
+  }
+  out->assign(s.begin(), s.end());
+}
+
+// Capture one side's proof while the tree still belongs to the hit.
+//
+// The sibling order must match the verifier's exactly: level by level, visiting
+// the live set in ascending index order, emitting a sibling only when it is not
+// itself live.
+void snapshotProof(Ctx *ctx, bool isA, const uint32_t *rows, uint32_t nrows,
+                   std::vector<uint32_t> *leafIdx, std::vector<uint8_t> *leaves,
+                   std::vector<uint8_t> *sibs) {
+  const uint32_t k = ctx->profile.k;
+  const int8_t *operand = isA ? ctx->dA : ctx->dB;
+  const uint32_t *tree = isA ? ctx->dTreeA : ctx->dTreeB;
+  const std::vector<uint64_t> &offs = isA ? ctx->layerOffA : ctx->layerOffB;
+  const uint64_t totalLeaves =
+      (uint64_t)(isA ? ctx->profile.m : ctx->profile.n) * k / 1024;
+
+  leafIndicesForRows(rows, nrows, k, leafIdx);
+
+  leaves->resize(leafIdx->size() * 1024);
+  for (size_t i = 0; i < leafIdx->size(); i++) {
+    cudaMemcpy(leaves->data() + i * 1024,
+               operand + (uint64_t)(*leafIdx)[i] * 1024, 1024,
+               cudaMemcpyDeviceToHost);
+  }
+
+  sibs->clear();
+  std::vector<uint32_t> current = *leafIdx;
+  uint64_t levelLen = totalLeaves;
+  uint32_t level = 0;
+  while (levelLen > 1 && !current.empty() && level + 1 < offs.size()) {
+    const std::set<uint32_t> live(current.begin(), current.end());
+    for (uint32_t i : current) {
+      uint32_t want;
+      if (i % 2 == 1) {
+        if (live.count(i - 1)) continue;
+        want = i - 1;
+      } else {
+        if (live.count(i + 1) || (uint64_t)i + 1 >= levelLen) continue;
+        want = i + 1;
+      }
+      uint8_t node[PEARL_HASH_BYTES];
+      cudaMemcpy(node, tree + (offs[level] + want) * 8, PEARL_HASH_BYTES,
+                 cudaMemcpyDeviceToHost);
+      sibs->insert(sibs->end(), node, node + PEARL_HASH_BYTES);
+    }
+    std::set<uint32_t> next;
+    for (uint32_t i : current) next.insert(i / 2);
+    current.assign(next.begin(), next.end());
+    levelLen = (levelLen + 1) / 2;
+    level++;
+  }
 }
 
 bool fail(char *err, size_t err_len, const char *msg) {
@@ -744,6 +822,32 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
     memcpy(out->b_seed, ctx->bSeed, PEARL_HASH_BYTES);
     out->nonce = nonce_base + ctx->hHitIndex[best];
     out->salt = ctx->salt;
+
+    // Capture the proof NOW, while the operands and tree still belong to this
+    // hit. A few tens of milliseconds later they will have been re-drawn.
+    {
+      // The GLOBAL region index, not the batch-local one. Both give the same
+      // row offset, because nonce_base is a multiple of rowsValid -- but the
+      // COLUMN offset is (region / rowsValid) % colsValid, and the local index
+      // drops the batch base entirely. The columns in the snapshot then belong
+      // to a different tile than the row indices the proof declares, which the
+      // pool reports as "Failed to extract strip".
+      const uint64_t region = out->nonce;
+      const uint32_t rowIdx = (uint32_t)(region % ctx->rowsValid);
+      const uint32_t colIdx = (uint32_t)((region / ctx->rowsValid) % ctx->colsValid);
+      const uint32_t rowOff = pearl_expand_offset(rowIdx, PEARL_ROWS_MASK);
+      const uint32_t colOff = pearl_expand_offset(colIdx, PEARL_COLS_MASK);
+
+      uint32_t rows[PEARL_ROWS_COUNT], cols[PEARL_COLS_COUNT];
+      for (int i = 0; i < PEARL_ROWS_COUNT; i++) rows[i] = rowOff | PEARL_ROWS_PATTERN[i];
+      for (int i = 0; i < PEARL_COLS_COUNT; i++) cols[i] = colOff | PEARL_COLS_PATTERN[i];
+
+      snapshotProof(ctx, true, rows, PEARL_ROWS_COUNT, &ctx->snapLeafIdxA,
+                    &ctx->snapLeavesA, &ctx->snapSibsA);
+      snapshotProof(ctx, false, cols, PEARL_COLS_COUNT, &ctx->snapLeafIdxB,
+                    &ctx->snapLeavesB, &ctx->snapSibsB);
+      ctx->snapValid = true;
+    }
     out->proof.assign(PEARL_JACKPOT_BUCKETS * 4, 0);
     cudaMemcpy(out->proof.data(),
                ctx->dJackpot + (size_t)ctx->hHitIndex[best] * PEARL_JACKPOT_BUCKETS,
@@ -765,7 +869,58 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
 // rebuilding the tree, which is thousands of times more work.
 // ---------------------------------------------------------------------------
 
-// Copy whole 1024-byte leaf chunks out of an operand.
+// Read back the proof captured for the most recent hit. These serve the
+// SNAPSHOT, not the live tree: by the time the host asks, the operands have
+// almost certainly been re-drawn.
+extern "C" uint32_t pearl_host_proof_counts(void *handle, int isA, int what) {
+  Ctx *ctx = static_cast<Ctx *>(handle);
+  if (!ctx || !ctx->snapValid) return 0;
+  const std::vector<uint32_t> &idx = isA ? ctx->snapLeafIdxA : ctx->snapLeafIdxB;
+  const std::vector<uint8_t> &sibs = isA ? ctx->snapSibsA : ctx->snapSibsB;
+  if (what == 0) return (uint32_t)idx.size();                       // leaves
+  if (what == 1) return (uint32_t)(sibs.size() / PEARL_HASH_BYTES);  // siblings
+  return 0;
+}
+
+extern "C" bool pearl_host_proof_leaf_indices(void *handle, int isA, uint32_t *out) {
+  Ctx *ctx = static_cast<Ctx *>(handle);
+  if (!ctx || !ctx->snapValid || !out) return false;
+  const std::vector<uint32_t> &idx = isA ? ctx->snapLeafIdxA : ctx->snapLeafIdxB;
+  memcpy(out, idx.data(), idx.size() * sizeof(uint32_t));
+  return true;
+}
+
+extern "C" bool pearl_host_proof_leaves(void *handle, int isA, uint8_t *out) {
+  Ctx *ctx = static_cast<Ctx *>(handle);
+  if (!ctx || !ctx->snapValid || !out) return false;
+  const std::vector<uint8_t> &v = isA ? ctx->snapLeavesA : ctx->snapLeavesB;
+  memcpy(out, v.data(), v.size());
+  return true;
+}
+
+extern "C" bool pearl_host_proof_siblings(void *handle, int isA, uint8_t *out) {
+  Ctx *ctx = static_cast<Ctx *>(handle);
+  if (!ctx || !ctx->snapValid || !out) return false;
+  const std::vector<uint8_t> &v = isA ? ctx->snapSibsA : ctx->snapSibsB;
+  memcpy(out, v.data(), v.size());
+  return true;
+}
+
+extern "C" bool pearl_host_proof_root(void *handle, int isA, uint8_t *out) {
+  Ctx *ctx = static_cast<Ctx *>(handle);
+  if (!ctx || !out) return false;
+  cudaMemcpy(out, isA ? ctx->dHashA : ctx->dHashB, PEARL_HASH_BYTES,
+             cudaMemcpyDeviceToHost);
+  return true;
+}
+
+extern "C" uint64_t pearl_host_total_leaves(void *handle, int isA) {
+  Ctx *ctx = static_cast<Ctx *>(handle);
+  if (!ctx) return 0;
+  return (uint64_t)(isA ? ctx->profile.m : ctx->profile.n) * ctx->profile.k / 1024;
+}
+
+// Copy whole 1024-byte leaf chunks out of an operand.// Copy whole 1024-byte leaf chunks out of an operand.
 extern "C" bool pearl_host_leaf_chunks(void *handle, int isA,
                                        const uint32_t *leaf_indices,
                                        uint32_t count, uint8_t *out) {
