@@ -109,14 +109,29 @@ function foldTranscript(opts) {
     return out;
   });
 
+  // The tile accumulator is CUMULATIVE across chunks. It is declared here, not
+  // inside the loop, exactly as the reference does:
+  //
+  //   let mut jackpot_tile = vec![vec![0; tile_w]; tile_h];   // outside
+  //   for ll in (rank..=k).step_by(rank) {
+  //       ... jackpot_tile[u][v] += a_noised[..][l] * b_noised_t[..][l];
+  //       let xored_tile = jackpot_tile.iter().flatten().fold(0u32, |a, &x| a ^ x as u32);
+  //
+  // So the value XORed at chunk c is the dot product over ALL of k up to that
+  // point, not that chunk's slice. Resetting per chunk -- which this did --
+  // computes a completely different function, and the only symptom is that no
+  // pool ever accepts a share.
+  const tile = new Int32Array(rows.length * cols.length);
+
   for (let chunk = 0; chunk < chunks; chunk++) {
     const k0 = chunk * rank;
     const kEnd = Math.min(k0 + rank, k);
     let tileXor = 0;
     for (let ri = 0; ri < rows.length; ri++) {
       for (let ci = 0; ci < cols.length; ci++) {
-        let acc = 0;
+        let acc = tile[ri * cols.length + ci];
         for (let kk = k0; kk < kEnd; kk++) acc = (acc + Ap[ri][kk] * Bp[ci][kk]) | 0;
+        tile[ri * cols.length + ci] = acc;
         tileXor = (tileXor ^ acc) >>> 0;
       }
     }

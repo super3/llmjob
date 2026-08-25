@@ -61,12 +61,10 @@ extern "C" __global__ void pearl_materialize(const int8_t *base,
                                              const uint32_t *perm, int8_t *out,
                                              uint32_t rows, uint32_t k,
                                              uint32_t rank);
-extern "C" __global__ void pearl_partials_wmma(const int8_t *Aprime,
-                                               const int8_t *Bprime, uint32_t m,
-                                               uint32_t n, uint32_t k,
-                                               uint32_t rank, uint32_t chunks,
-                                               uint32_t col_off,
-                                               uint32_t col_groups, int32_t *D);
+extern "C" __global__ void pearl_tile_fold_wmma(
+    const int8_t *Aprime, const int8_t *Bprime, uint32_t m, uint32_t n,
+    uint32_t k, uint32_t rank, uint32_t chunks, uint32_t col_off,
+    uint32_t rows_valid, uint32_t col_groups, uint32_t *jackpot_out);
 extern "C" __global__ void pearl_partials(const int8_t *Aprime, const int8_t *Bprime,
                                           const uint32_t *cols_pattern,
                                           uint32_t cols_count, uint32_t m, uint32_t n,
@@ -107,6 +105,20 @@ extern "C" __global__ void pearl_finalize(const uint32_t *a_seed,
 // Mirrors the struct pearl_core.cc declares. Kept in this one header-free form
 // deliberately: the two files must agree on the layout, and a shared header that
 // pulled in <napi.h> would drag Node headers into nvcc.
+// One side of a share proof, carried WITH the hit.
+//
+// A single shared snapshot on the context was not enough: the search keeps
+// running after a hit, and a later hit overwrote the buffer before the host had
+// read the earlier one. The same leaf range would verify for one region and
+// fail for the next. The proof has to travel with the result it belongs to.
+struct PearlProofSide {
+  std::vector<uint32_t> leaf_indices;
+  std::vector<uint8_t> leaves;    // leaf_indices.size() * 1024
+  std::vector<uint8_t> siblings;  // n * 32
+  uint8_t root[PEARL_HASH_BYTES];
+  uint64_t total_leaves;
+};
+
 struct PearlSearchResult {
   uint8_t jackpot_hash[PEARL_HASH_BYTES];
   uint8_t a_seed[PEARL_HASH_BYTES];
@@ -116,6 +128,10 @@ struct PearlSearchResult {
   // operand data, so a share is unprovable without it.
   uint64_t salt;
   std::vector<uint8_t> proof;
+  // The share proof for this hit, captured while the operands still belong
+  // to it.
+  PearlProofSide proof_a;
+  PearlProofSide proof_bt;
   bool found;
 };
 
@@ -706,102 +722,31 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   const uint32_t col_off =
       (uint32_t)((nonce_base / ctx->rowsValid) % ctx->colsValid);
 
-  // Per-stage timing, enabled by setting PEARL_PROFILE. Two rounds of reasoning
-  // about which stage dominated were wrong -- the A-reuse and BLAKE3 register
-  // fixes were both correct and both changed almost nothing -- so this measures
-  // rather than infers. cudaEvent timing serialises the stages, so the totals
-  // are only meaningful relative to each other.
-  static const bool prof = getenv("PEARL_PROFILE") != nullptr;
-  static cudaEvent_t ev[5];
-  static bool ev_ready = false;
-  static double acc[4] = {0, 0, 0, 0};
-  static uint64_t acc_n = 0;
-  if (prof && !ev_ready) {
-    for (int i = 0; i < 5; i++) cudaEventCreate(&ev[i]);
-    ev_ready = true;
-  }
-  if (prof) cudaEventRecord(ev[0]);
+  // One fused launch: the tile fold keeps its accumulator across chunks, so
+  // there are no reusable partials to stage and no second pass.
+  const uint32_t warpsPerBlock = threads / 32;
+  const uint32_t regionsPerWarp = PEARL_WMMA_ROW_TILES * (PEARL_WMMA_ROWS / PEARL_ROWS_COUNT);
+  const uint64_t warpsNeeded = (uint64_t)(ctx->rowsValid / regionsPerWarp)
+                               * (col_groups / PEARL_WMMA_COL_BLK);
+  const unsigned blocks =
+      (unsigned)((warpsNeeded + warpsPerBlock - 1) / warpsPerBlock);
+  const size_t smem = (size_t)warpsPerBlock * 256 * sizeof(uint32_t)
+                      + (size_t)warpsPerBlock * regionsPerWarp * PEARL_WMMA_COL_BLK
+                            * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t);
+  pearl_tile_fold_wmma<<<blocks, threads, smem>>>(
+      ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
+      col_off, ctx->rowsValid, col_groups, ctx->dJackpot);
 
-  // Stage one: every distinct partial dot product, once. Stage two: the fold,
-  // which is now a gather over them.
-  // One thread per (chunk, row) — each already produces ALL of that row's
-  // columns, so multiplying by the column count launched eight times the
-  // threads the kernel indexes and seven eighths of them returned immediately.
-  // One thread per (chunk, row): the column groups are a loop INSIDE the
-  // kernel now, so the A slice each thread loads is reused across all of them
-  // instead of being re-read once per group.
-  // The tensor-core path needs the WMMA int8 shape to divide everything: a
-  // sixteen-wide contiguous column tile, a rank that is a multiple of 16, and a
-  // row count that is a multiple of 16. Otherwise fall back to dp4a, which has
-  // no such constraints.
-  const uint32_t wmmaRowsPerWarp = PEARL_WMMA_ROWS * PEARL_WMMA_ROW_TILES;
-  const bool useWmma = (PEARL_COLS_COUNT == 16) && (rank % 16 == 0) &&
-                       (ctx->profile.m % wmmaRowsPerWarp == 0) &&
-                       (k % 16 == 0) && !getenv("PEARL_NO_WMMA");
-  if (useWmma) {
-    // One WARP per (chunk, group of PEARL_WMMA_ROW_TILES row blocks); the
-    // column groups are a loop inside, so each warp loads its A fragments once
-    // and every B fragment it loads feeds all of its row blocks.
-    const uint64_t warpsNeeded =
-        (uint64_t)chunks * (ctx->profile.m / wmmaRowsPerWarp);
-    const uint32_t warpsPerBlock = threads / 32;
-    const unsigned blocks =
-        (unsigned)((warpsNeeded + warpsPerBlock - 1) / warpsPerBlock);
-    const size_t smem = (size_t)warpsPerBlock * 16 * 16 * sizeof(int32_t);
-    pearl_partials_wmma<<<blocks, threads, smem>>>(
-        ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
-        col_off, col_groups, ctx->dD);
-  } else {
-    // One thread per (chunk, row BLOCK): each carries PEARL_ROWS_PER_THREAD
-    // rows, so one B load feeds that many times as many multiply-accumulates.
-    const uint64_t npart =
-        (uint64_t)chunks * (ctx->profile.m / PEARL_ROWS_PER_THREAD);
-    pearl_partials<<<(unsigned)((npart + threads - 1) / threads), threads>>>(
-        ctx->dAp, ctx->dBp, ctx->dCols, PEARL_COLS_COUNT, ctx->profile.m,
-        ctx->profile.n, k, rank, chunks, col_off, col_groups, ctx->dD);
-  }
-
-  if (prof) cudaEventRecord(ev[1]);
-  const uint32_t regions_per_block = warps_per_block * PEARL_REGIONS_PER_WARP;
-  pearl_gemm_fold<<<(regions + regions_per_block - 1) / regions_per_block, threads>>>(
-      ctx->dD, ctx->dRows, PEARL_ROWS_COUNT, PEARL_COLS_COUNT, ctx->profile.m,
-      ctx->rowsValid, chunks, nonce_base, ctx->dJackpot);
-
-  if (prof) cudaEventRecord(ev[2]);
+  // Hash every transcript and test it against the bound. finalize writes only
+  // on a hit and appends to a compact list, so the readback below is four bytes
+  // rather than one flag per region.
   cudaMemsetAsync(ctx->dHitCount, 0, sizeof(uint32_t));
   pearl_finalize_many<<<(regions + 255) / 256, 256>>>(
       ctx->dASeed, ctx->dJackpot, regions, ctx->dTarget, ctx->dHashes,
       ctx->dHitCount, ctx->dHitIndex, (int)ctx->profile.hash_big_endian);
 
-  if (prof) cudaEventRecord(ev[3]);
-  // Four bytes back instead of one int per region. Reading a flag per region
-  // was a 1.6 MiB synchronising copy every batch — 18% of the time, spent
-  // almost entirely confirming that nothing was found.
   uint32_t hits = 0;
   cudaMemcpy(&hits, ctx->dHitCount, sizeof(uint32_t), cudaMemcpyDeviceToHost);
-  if (prof) {
-    cudaEventRecord(ev[4]);
-    cudaEventSynchronize(ev[4]);
-    float ms = 0.0f;
-    cudaEventElapsedTime(&ms, ev[0], ev[1]); acc[0] += ms;
-    cudaEventElapsedTime(&ms, ev[1], ev[2]); acc[1] += ms;
-    cudaEventElapsedTime(&ms, ev[2], ev[3]); acc[2] += ms;
-    cudaEventElapsedTime(&ms, ev[3], ev[4]); acc[3] += ms;
-    if (++acc_n % 200 == 0) {
-      const double tot = acc[0] + acc[1] + acc[2] + acc[3];
-      fprintf(stderr,
-              "[pearl] over %llu batches: partials %.2fms (%.0f%%)  fold %.2fms "
-              "(%.0f%%)  finalize %.2fms (%.0f%%)  copy %.2fms (%.0f%%)  "
-              "total %.2fms/batch\n",
-              (unsigned long long)acc_n,
-              acc[0] / acc_n, 100.0 * acc[0] / tot,
-              acc[1] / acc_n, 100.0 * acc[1] / tot,
-              acc[2] / acc_n, 100.0 * acc[2] / tot,
-              acc[3] / acc_n, 100.0 * acc[3] / tot,
-              tot / acc_n);
-      fflush(stderr);
-    }
-  }
 
   cudaError_t e = cudaGetLastError();
   if (e != cudaSuccess) {
@@ -848,11 +793,14 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
       for (int i = 0; i < PEARL_ROWS_COUNT; i++) rows[i] = rowOff | PEARL_ROWS_PATTERN[i];
       for (int i = 0; i < PEARL_COLS_COUNT; i++) cols[i] = colOff | PEARL_COLS_PATTERN[i];
 
-      snapshotProof(ctx, true, rows, PEARL_ROWS_COUNT, &ctx->snapLeafIdxA,
-                    &ctx->snapLeavesA, &ctx->snapSibsA);
-      snapshotProof(ctx, false, cols, PEARL_COLS_COUNT, &ctx->snapLeafIdxB,
-                    &ctx->snapLeavesB, &ctx->snapSibsB);
-      ctx->snapValid = true;
+      snapshotProof(ctx, true, rows, PEARL_ROWS_COUNT, &out->proof_a.leaf_indices,
+                    &out->proof_a.leaves, &out->proof_a.siblings);
+      snapshotProof(ctx, false, cols, PEARL_COLS_COUNT, &out->proof_bt.leaf_indices,
+                    &out->proof_bt.leaves, &out->proof_bt.siblings);
+      cudaMemcpy(out->proof_a.root, ctx->dHashA, PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
+      cudaMemcpy(out->proof_bt.root, ctx->dHashB, PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
+      out->proof_a.total_leaves = (uint64_t)ctx->profile.m * ctx->profile.k / 1024;
+      out->proof_bt.total_leaves = (uint64_t)ctx->profile.n * ctx->profile.k / 1024;
     }
     out->proof.assign(PEARL_JACKPOT_BUCKETS * 4, 0);
     cudaMemcpy(out->proof.data(),
@@ -874,57 +822,6 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
 // commitment tree -- so the host copies out the handful it needs instead of
 // rebuilding the tree, which is thousands of times more work.
 // ---------------------------------------------------------------------------
-
-// Read back the proof captured for the most recent hit. These serve the
-// SNAPSHOT, not the live tree: by the time the host asks, the operands have
-// almost certainly been re-drawn.
-extern "C" uint32_t pearl_host_proof_counts(void *handle, int isA, int what) {
-  Ctx *ctx = static_cast<Ctx *>(handle);
-  if (!ctx || !ctx->snapValid) return 0;
-  const std::vector<uint32_t> &idx = isA ? ctx->snapLeafIdxA : ctx->snapLeafIdxB;
-  const std::vector<uint8_t> &sibs = isA ? ctx->snapSibsA : ctx->snapSibsB;
-  if (what == 0) return (uint32_t)idx.size();                       // leaves
-  if (what == 1) return (uint32_t)(sibs.size() / PEARL_HASH_BYTES);  // siblings
-  return 0;
-}
-
-extern "C" bool pearl_host_proof_leaf_indices(void *handle, int isA, uint32_t *out) {
-  Ctx *ctx = static_cast<Ctx *>(handle);
-  if (!ctx || !ctx->snapValid || !out) return false;
-  const std::vector<uint32_t> &idx = isA ? ctx->snapLeafIdxA : ctx->snapLeafIdxB;
-  memcpy(out, idx.data(), idx.size() * sizeof(uint32_t));
-  return true;
-}
-
-extern "C" bool pearl_host_proof_leaves(void *handle, int isA, uint8_t *out) {
-  Ctx *ctx = static_cast<Ctx *>(handle);
-  if (!ctx || !ctx->snapValid || !out) return false;
-  const std::vector<uint8_t> &v = isA ? ctx->snapLeavesA : ctx->snapLeavesB;
-  memcpy(out, v.data(), v.size());
-  return true;
-}
-
-extern "C" bool pearl_host_proof_siblings(void *handle, int isA, uint8_t *out) {
-  Ctx *ctx = static_cast<Ctx *>(handle);
-  if (!ctx || !ctx->snapValid || !out) return false;
-  const std::vector<uint8_t> &v = isA ? ctx->snapSibsA : ctx->snapSibsB;
-  memcpy(out, v.data(), v.size());
-  return true;
-}
-
-extern "C" bool pearl_host_proof_root(void *handle, int isA, uint8_t *out) {
-  Ctx *ctx = static_cast<Ctx *>(handle);
-  if (!ctx || !out) return false;
-  cudaMemcpy(out, isA ? ctx->dHashA : ctx->dHashB, PEARL_HASH_BYTES,
-             cudaMemcpyDeviceToHost);
-  return true;
-}
-
-extern "C" uint64_t pearl_host_total_leaves(void *handle, int isA) {
-  Ctx *ctx = static_cast<Ctx *>(handle);
-  if (!ctx) return 0;
-  return (uint64_t)(isA ? ctx->profile.m : ctx->profile.n) * ctx->profile.k / 1024;
-}
 
 // Copy whole 1024-byte leaf chunks out of an operand.// Copy whole 1024-byte leaf chunks out of an operand.
 extern "C" bool pearl_host_leaf_chunks(void *handle, int isA,

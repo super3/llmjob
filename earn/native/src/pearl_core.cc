@@ -28,6 +28,20 @@
 
 // Declared in pearl_host.cu — the host-side driver that owns device memory and
 // runs the kernel pipeline for one job.
+// One side of a share proof, carried WITH the hit.
+//
+// A single shared snapshot on the context was not enough: the search keeps
+// running after a hit, and a later hit overwrote the buffer before the host had
+// read the earlier one. The same leaf range would verify for one region and
+// fail for the next. The proof has to travel with the result it belongs to.
+struct PearlProofSide {
+  std::vector<uint32_t> leaf_indices;
+  std::vector<uint8_t> leaves;    // leaf_indices.size() * 1024
+  std::vector<uint8_t> siblings;  // n * 32
+  uint8_t root[PEARL_HASH_BYTES];
+  uint64_t total_leaves;
+};
+
 struct PearlSearchResult {
   uint8_t jackpot_hash[PEARL_HASH_BYTES];
   uint8_t a_seed[PEARL_HASH_BYTES];
@@ -37,6 +51,10 @@ struct PearlSearchResult {
   // operand data, so a share is unprovable without it.
   uint64_t salt;
   std::vector<uint8_t> proof;
+  // The share proof for this hit, captured while the operands still belong
+  // to it.
+  PearlProofSide proof_a;
+  PearlProofSide proof_bt;
   bool found;
 };
 
@@ -51,12 +69,6 @@ void pearl_host_set_job(void *ctx, const uint8_t *header, const uint8_t *target)
 void pearl_host_reseed(void *ctx, uint64_t salt);
 // Share-proof accessors: the operand chunks a tile touched, and the sibling
 // digests that authenticate them. Both already exist on the device.
-uint32_t pearl_host_proof_counts(void *ctx, int isA, int what);
-bool pearl_host_proof_leaf_indices(void *ctx, int isA, uint32_t *out);
-bool pearl_host_proof_leaves(void *ctx, int isA, uint8_t *out);
-bool pearl_host_proof_siblings(void *ctx, int isA, uint8_t *out);
-bool pearl_host_proof_root(void *ctx, int isA, uint8_t *out);
-uint64_t pearl_host_total_leaves(void *ctx, int isA);
 // Search one batch of nonces. Returns true and fills `out` when a share is
 // found; returns false when the batch is exhausted with no hit. `attempts`
 // receives the number of nonces tried, for the hashrate figure.
@@ -75,7 +87,6 @@ class PearlCore : public Napi::ObjectWrap<PearlCore> {
 
  private:
   Napi::Value SetJob(const Napi::CallbackInfo &info);
-  Napi::Value Proof(const Napi::CallbackInfo &info);
   Napi::Value Stop(const Napi::CallbackInfo &info);
   Napi::Value On(const Napi::CallbackInfo &info);
 
@@ -316,6 +327,24 @@ void PearlCore::EmitHit(const PearlSearchResult &r, const std::string &job_id) {
     o.Set("aSeed", Napi::String::New(env, to_hex(res->a_seed)));
     o.Set("bSeed", Napi::String::New(env, to_hex(res->b_seed)));
     o.Set("proof", Napi::Buffer<uint8_t>::Copy(env, res->proof.data(), res->proof.size()));
+
+    // The share proof, carried with this hit rather than read back later --
+    // the search does not stop, and a later hit would overwrite a shared one.
+    auto side = [&](const PearlProofSide &p) {
+      Napi::Object s = Napi::Object::New(env);
+      Napi::Array idx = Napi::Array::New(env, p.leaf_indices.size());
+      for (size_t i = 0; i < p.leaf_indices.size(); i++) {
+        idx.Set((uint32_t)i, Napi::Number::New(env, p.leaf_indices[i]));
+      }
+      s.Set("leafIndices", idx);
+      s.Set("leafData", Napi::Buffer<uint8_t>::Copy(env, p.leaves.data(), p.leaves.size()));
+      s.Set("siblings", Napi::Buffer<uint8_t>::Copy(env, p.siblings.data(), p.siblings.size()));
+      s.Set("root", Napi::Buffer<uint8_t>::Copy(env, p.root, PEARL_HASH_BYTES));
+      s.Set("totalLeaves", Napi::Number::New(env, (double)p.total_leaves));
+      return s;
+    };
+    o.Set("proofA", side(res->proof_a));
+    o.Set("proofBt", side(res->proof_bt));
     cb.Call({o});
     delete jid;
     delete res;
@@ -351,52 +380,10 @@ void PearlCore::EmitError(const std::string &msg) {
   });
 }
 
-// proof(isA) -> { leafIndices, leafData, siblings, root, totalLeaves }
-//
-// Serves the snapshot captured when the hit was found, NOT the live tree. The
-// operands are re-drawn every few tens of milliseconds, so anything fetched
-// afterwards belongs to a different draw -- which showed up as proofs that
-// referenced levels that no longer existed, and proofs that simply did not
-// verify.
-Napi::Value PearlCore::Proof(const Napi::CallbackInfo &info) {
-  Napi::Env env = info.Env();
-  const int isA = info.Length() > 0 && info[0].ToBoolean().Value() ? 1 : 0;
-
-  const uint32_t nLeaves = pearl_host_proof_counts(ctx_, isA, 0);
-  const uint32_t nSibs = pearl_host_proof_counts(ctx_, isA, 1);
-  if (nLeaves == 0) return env.Null();
-
-  std::vector<uint32_t> idx(nLeaves);
-  if (!pearl_host_proof_leaf_indices(ctx_, isA, idx.data())) return env.Null();
-
-  Napi::Array indices = Napi::Array::New(env, nLeaves);
-  for (uint32_t i = 0; i < nLeaves; i++) indices.Set(i, Napi::Number::New(env, idx[i]));
-
-  Napi::Buffer<uint8_t> leaves = Napi::Buffer<uint8_t>::New(env, (size_t)nLeaves * 1024);
-  if (!pearl_host_proof_leaves(ctx_, isA, leaves.Data())) return env.Null();
-
-  Napi::Buffer<uint8_t> sibs =
-      Napi::Buffer<uint8_t>::New(env, (size_t)nSibs * PEARL_HASH_BYTES);
-  if (nSibs && !pearl_host_proof_siblings(ctx_, isA, sibs.Data())) return env.Null();
-
-  Napi::Buffer<uint8_t> root = Napi::Buffer<uint8_t>::New(env, PEARL_HASH_BYTES);
-  if (!pearl_host_proof_root(ctx_, isA, root.Data())) return env.Null();
-
-  Napi::Object out = Napi::Object::New(env);
-  out.Set("leafIndices", indices);
-  out.Set("leafData", leaves);
-  out.Set("siblings", sibs);
-  out.Set("root", root);
-  out.Set("totalLeaves",
-          Napi::Number::New(env, (double)pearl_host_total_leaves(ctx_, isA)));
-  return out;
-}
-
 Napi::Object PearlCore::Init(Napi::Env env, Napi::Object exports) {
   Napi::Function func =
       DefineClass(env, "PearlCore",
                   {InstanceMethod("setJob", &PearlCore::SetJob),
-                   InstanceMethod("proof", &PearlCore::Proof),
                    InstanceMethod("stop", &PearlCore::Stop),
                    InstanceMethod("on", &PearlCore::On)});
   exports.Set("PearlCore", func);

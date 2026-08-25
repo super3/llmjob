@@ -741,90 +741,153 @@ extern "C" __global__ void pearl_partials(const int8_t *__restrict__ Aprime,
 //     leading dimension -- no staging or transpose needed.
 //
 // One warp computes a 16x16 block of C for one chunk and one column group.
-extern "C" __global__ void pearl_partials_wmma(
+// The tile fold, on the int8 tensor cores, with the accumulator kept ACROSS
+// chunks -- which is what the protocol actually specifies.
+//
+// From the reference miner (zk-pow/src/ffi/mine.rs):
+//
+//   let mut jackpot_tile = vec![vec![0; tile_w]; tile_h];   // OUTSIDE the loop
+//   for ll in (rank..=k).step_by(rank) {
+//       ... jackpot_tile[u][v] += a_noised[..][l] * b_noised_t[..][l];
+//       let xored_tile = jackpot_tile.iter().flatten().fold(0u32, |a, &x| a ^ x as u32);
+//       jackpot[tid] = jackpot[tid].rotate_left(LROT_PER_TILE) ^ xored_tile;
+//   }
+//
+// jackpot_tile is declared outside the chunk loop and never reset, so the value
+// XORed at chunk c is the dot product over ALL of k up to that point. This code
+// used to reset per chunk, which computes a different function entirely -- and
+// the only symptom is that no pool ever accepts a share.
+//
+// That also kills the two-stage split. A cumulative tile cannot be decomposed
+// into reusable per-chunk partials (XOR of running sums is not a running XOR),
+// so the fold fuses into the GEMM and the partial table disappears. Nothing is
+// lost by that: valid tiles partition the grid, so there was no sharing between
+// regions to exploit in the first place.
+//
+// One warp covers PEARL_WMMA_ROW_TILES 16-row blocks against one column group.
+// A 16-row block is four consecutive row offsets, so a warp carries
+// 4*PEARL_WMMA_ROW_TILES regions and emits a transcript for each.
+extern "C" __global__ void pearl_tile_fold_wmma(
     const int8_t *__restrict__ Aprime, const int8_t *__restrict__ Bprime,
     uint32_t m, uint32_t n, uint32_t k, uint32_t rank, uint32_t chunks,
-    uint32_t col_off, uint32_t col_groups, int32_t *__restrict__ D) {
+    uint32_t col_off, uint32_t rows_valid, uint32_t col_groups,
+    uint32_t *__restrict__ jackpot_out) {
   using namespace nvcuda;
 
   const uint32_t warp = threadIdx.x >> 5;
   const uint32_t warps_per_block = blockDim.x >> 5;
-  const uint32_t rows_per_warp = PEARL_WMMA_ROWS * PEARL_WMMA_ROW_TILES;
-  const uint32_t row_blocks = m / rows_per_warp;
+  const uint32_t lane = threadIdx.x & 31u;
+
+  const uint32_t regions_per_warp = PEARL_WMMA_ROW_TILES * (PEARL_WMMA_ROWS / PEARL_ROWS_COUNT);
+  const uint32_t row_blocks = rows_valid / regions_per_warp;
 
   const uint64_t slot = (uint64_t)blockIdx.x * warps_per_block + warp;
-  const uint64_t total = (uint64_t)chunks * row_blocks;
-  if (slot >= total) return;
+  // Each warp now carries PEARL_WMMA_COL_BLK column groups, so there are that
+  // many times fewer of them. Counting the old way let surplus warps compute a
+  // column-group block past the end and write outside the transcript buffer.
+  if (slot >= (uint64_t)row_blocks * (col_groups / PEARL_WMMA_COL_BLK)) return;
 
   const uint32_t rb = (uint32_t)(slot % row_blocks);
-  const uint32_t chunk = (uint32_t)(slot / row_blocks);
-  const uint32_t r0 = rb * rows_per_warp;
-  const uint32_t k0 = chunk * rank;
+  const uint32_t cgb = (uint32_t)(slot / row_blocks);        // column-group BLOCK
+  const uint32_t r0idx = rb * regions_per_warp;              // first row-offset index
+  const uint32_t cg0 = cgb * PEARL_WMMA_COL_BLK;
   const uint32_t kfrags = rank / 16;
 
-  // Hold this warp's whole k-slice of A in REGISTERS, for every row block it
-  // covers, and reuse it across every column group.
-  //
-  // Two separate savings, and they were found in that order. Hoisting A out of
-  // the column-group loop stopped it being re-read 256 times -- about 17 GB a
-  // batch. Covering PEARL_WMMA_ROW_TILES row blocks per warp then divides the B
-  // side the same way, since one B fragment feeds all of them.
-  //
-  // Bounded by compile-time constants and broken on the runtime count, so the
-  // fragment arrays stay in registers instead of spilling to local memory.
-  wmma::fragment<wmma::matrix_a, 16, 16, 16, int8_t, wmma::row_major>
-      aF[PEARL_WMMA_ROW_TILES][PEARL_MAX_K_FRAGS];
+  // One expanded column offset per group this warp carries.
+  uint32_t c0s[PEARL_WMMA_COL_BLK];
+#pragma unroll
+  for (uint32_t cb = 0; cb < PEARL_WMMA_COL_BLK; cb++) {
+    c0s[cb] = pearl_expand_offset(col_off + cg0 + cb, PEARL_COLS_MASK);
+  }
+
+  // Shared: one 16x16 int32 unpack buffer per warp, then this warp's
+  // transcripts.
+  extern __shared__ uint32_t smem_u32[];
+  uint32_t *tile = smem_u32 + (size_t)warp * 256;
+  // Stride by the FULL per-warp transcript block: regions times column groups.
+  // Omitting the column-group factor made neighbouring warps share storage.
+  uint32_t *jp = smem_u32 + (size_t)warps_per_block * 256
+                 + (size_t)warp * regions_per_warp * PEARL_WMMA_COL_BLK
+                       * PEARL_JACKPOT_BUCKETS;
+
+  for (uint32_t i = lane; i < regions_per_warp * PEARL_WMMA_COL_BLK * PEARL_JACKPOT_BUCKETS; i += 32) jp[i] = 0u;
+  __syncwarp();
+
+  // The accumulators live across the whole of k, not one chunk -- one per
+  // (row block, column group) pair this warp carries.
+  wmma::fragment<wmma::accumulator, 16, 16, 16, int32_t> cF[PEARL_WMMA_ROW_TILES][PEARL_WMMA_COL_BLK];
 #pragma unroll
   for (uint32_t ti = 0; ti < PEARL_WMMA_ROW_TILES; ti++) {
 #pragma unroll
-    for (uint32_t t = 0; t < PEARL_MAX_K_FRAGS; t++) {
-      if (t >= kfrags) break;
-      wmma::load_matrix_sync(
-          aF[ti][t],
-          Aprime + (size_t)(r0 + ti * PEARL_WMMA_ROWS) * k + k0 + t * 16, k);
+    for (uint32_t cb = 0; cb < PEARL_WMMA_COL_BLK; cb++) wmma::fill_fragment(cF[ti][cb], 0);
+  }
+
+  for (uint32_t chunk = 0; chunk < chunks; chunk++) {
+    const uint32_t k0 = chunk * rank;
+    for (uint32_t t = 0; t < kfrags; t++) {
+      // Load each A fragment ONCE and drive it against every column group this
+      // warp carries. That is the whole point of the blocking.
+      wmma::fragment<wmma::matrix_a, 16, 16, 16, int8_t, wmma::row_major> aF[PEARL_WMMA_ROW_TILES];
+#pragma unroll
+      for (uint32_t ti = 0; ti < PEARL_WMMA_ROW_TILES; ti++) {
+        wmma::load_matrix_sync(
+            aF[ti], Aprime + (size_t)(r0idx * PEARL_ROWS_COUNT + ti * PEARL_WMMA_ROWS) * k
+                        + k0 + t * 16, k);
+      }
+#pragma unroll
+      for (uint32_t cb = 0; cb < PEARL_WMMA_COL_BLK; cb++) {
+        wmma::fragment<wmma::matrix_b, 16, 16, 16, int8_t, wmma::col_major> bF;
+        wmma::load_matrix_sync(bF, Bprime + (size_t)c0s[cb] * k + k0 + t * 16, k);
+#pragma unroll
+        for (uint32_t ti = 0; ti < PEARL_WMMA_ROW_TILES; ti++) {
+          wmma::mma_sync(cF[ti][cb], aF[ti], bF, cF[ti][cb]);
+        }
+      }
+    }
+
+    // Chunk boundary: XOR the RUNNING tile and fold it into each region's lane.
+    const uint32_t bucket = chunk % PEARL_JACKPOT_BUCKETS;
+#pragma unroll
+    for (uint32_t ti = 0; ti < PEARL_WMMA_ROW_TILES; ti++) {
+#pragma unroll
+    for (uint32_t cb = 0; cb < PEARL_WMMA_COL_BLK; cb++) {
+      __syncwarp();
+      wmma::store_matrix_sync(reinterpret_cast<int32_t *>(tile), cF[ti][cb], 16,
+                              wmma::mem_row_major);
+      __syncwarp();
+      // Each 16-row block holds PEARL_WMMA_ROWS/PEARL_ROWS_COUNT regions, one
+      // per group of PEARL_ROWS_COUNT consecutive rows.
+#pragma unroll
+      for (uint32_t j = 0; j < PEARL_WMMA_ROWS / PEARL_ROWS_COUNT; j++) {
+        uint32_t x = 0u;
+        if (lane < 16) {
+#pragma unroll
+          for (uint32_t rr = 0; rr < PEARL_ROWS_COUNT; rr++) {
+            x ^= tile[(j * PEARL_ROWS_COUNT + rr) * 16 + lane];
+          }
+        }
+#pragma unroll
+        for (uint32_t sft = 8; sft > 0; sft >>= 1) x ^= __shfl_xor_sync(0xffffffffu, x, sft);
+        if (lane == 0) {
+          const uint32_t reg = ti * (PEARL_WMMA_ROWS / PEARL_ROWS_COUNT) + j;
+          uint32_t *slotjp = jp + (cb * regions_per_warp + reg) * PEARL_JACKPOT_BUCKETS;
+          slotjp[bucket] = pearl_rotl13(slotjp[bucket]) ^ x;
+        }
+      }
+    }
     }
   }
 
-  extern __shared__ int32_t smem[];
-  int32_t *tile = smem + (size_t)warp * 16 * 16;
-  const uint32_t lane = threadIdx.x & 31u;
-
-  for (uint32_t cg = 0; cg < col_groups; cg++) {
-    const uint32_t c0 = pearl_expand_offset(col_off + cg, PEARL_COLS_MASK);
-
-    wmma::fragment<wmma::accumulator, 16, 16, 16, int32_t> cF[PEARL_WMMA_ROW_TILES];
-#pragma unroll
-    for (uint32_t ti = 0; ti < PEARL_WMMA_ROW_TILES; ti++) wmma::fill_fragment(cF[ti], 0);
-
-#pragma unroll
-    for (uint32_t t = 0; t < PEARL_MAX_K_FRAGS; t++) {
-      if (t >= kfrags) break;
-      wmma::fragment<wmma::matrix_b, 16, 16, 16, int8_t, wmma::col_major> bF;
-      wmma::load_matrix_sync(bF, Bprime + (size_t)c0 * k + k0 + t * 16, k);
-#pragma unroll
-      for (uint32_t ti = 0; ti < PEARL_WMMA_ROW_TILES; ti++) {
-        wmma::mma_sync(cF[ti], aF[ti][t], bF, cF[ti]);
-      }
-    }
-
-    // One shared 16x16 buffer per warp, reused per row block, so the shared
-    // footprint does not grow with PEARL_WMMA_ROW_TILES.
-#pragma unroll
-    for (uint32_t ti = 0; ti < PEARL_WMMA_ROW_TILES; ti++) {
-      __syncwarp();
-      wmma::store_matrix_sync(tile, cF[ti], 16, wmma::mem_row_major);
-      __syncwarp();
-      // Sixteen lanes, one row each. Same collapse the dp4a kernel does at the
-      // producer, exact for the same reason: the tile fold is an XOR over every
-      // column of a row.
-      if (lane < PEARL_WMMA_ROWS) {
-        uint32_t x = 0u;
-#pragma unroll
-        for (int c = 0; c < 16; c++) x ^= (uint32_t)tile[lane * 16 + c];
-        D[((size_t)cg * chunks + chunk) * m
-          + (r0 + ti * PEARL_WMMA_ROWS + lane)] = (int32_t)x;
-      }
-    }
+  // Emit one transcript per region.
+  __syncwarp();
+  const uint32_t total_jp = regions_per_warp * PEARL_WMMA_COL_BLK * PEARL_JACKPOT_BUCKETS;
+  for (uint32_t i = lane; i < total_jp; i += 32) {
+    const uint32_t cb = i / (regions_per_warp * PEARL_JACKPOT_BUCKETS);
+    const uint32_t rest = i % (regions_per_warp * PEARL_JACKPOT_BUCKETS);
+    const uint32_t reg = rest / PEARL_JACKPOT_BUCKETS;
+    const uint32_t b = rest % PEARL_JACKPOT_BUCKETS;
+    const uint64_t region = (uint64_t)(cg0 + cb) * rows_valid + r0idx + reg;
+    jackpot_out[region * PEARL_JACKPOT_BUCKETS + b] = jp[i];
   }
 }
 

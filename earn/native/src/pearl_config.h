@@ -186,7 +186,17 @@ typedef struct PearlProfile {
 // Measured on a 4090 at m=n=32768: four row blocks 65.7 TH/s, eight 60.8.
 // Eight halves B traffic again but needs twice the fragments and accumulators
 // in registers, and the register pressure costs more than the traffic saves.
+// Row blocks and column groups one warp carries at once.
+//
+// The tile accumulator is cumulative over the whole of k, so it cannot be
+// reused between column groups -- a warp needs ROW_TILES*COL_BLK accumulators
+// live for the entire k loop. That is the whole tradeoff: more of them means
+// A and B are each read fewer times, at the cost of registers.
+//
+// With one column group per warp, A was re-read once per group: about 33 GB a
+// batch, which put the fused kernel at 4.7 TH/s.
 #define PEARL_WMMA_ROW_TILES 2
+#define PEARL_WMMA_COL_BLK 4
 
 #define PEARL_SEED_SALTED 0u
 #define PEARL_SEED_LEGACY 1u
