@@ -807,6 +807,23 @@ __device__ __forceinline__ void pearl_cp_async_wait() {
 // Everything else had already been ruled out by measurement: cutting traffic
 // 21% changed nothing, more resident blocks was worse, and pinning the shared
 // loads to a fixed address changed nothing.
+// One instruction moves a whole fragment, where four 32-bit shared loads used
+// to. A PTX census of the inner loop found 24 loads against 16 mma: the tensor
+// cores were spending more issue slots being fed than multiplying.
+//
+// ldmatrix reads four 8x8 blocks of 16-bit elements, each lane handing it the
+// address of one row, and hands back the four registers in exactly the order
+// mma.m16n8k32 wants them. The operands here are int8, but ldmatrix only moves
+// bytes -- .b16 is simply the granularity at which it addresses them.
+__device__ __forceinline__ void pearl_ldmatrix_x4(uint32_t &r0, uint32_t &r1,
+                                                  uint32_t &r2, uint32_t &r3,
+                                                  const void *p) {
+  const uint32_t a = static_cast<uint32_t>(__cvta_generic_to_shared(p));
+  asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];"
+               : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3)
+               : "r"(a));
+}
+
 __device__ __forceinline__ void pearl_mma_m16n8k32(
     int32_t &c0, int32_t &c1, int32_t &c2, int32_t &c3,
     uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3,
@@ -934,6 +951,16 @@ extern "C" __global__ void pearl_tile_fold_wmma(
   const bool one_pass = chunks <= PEARL_JACKPOT_BUCKETS;
   const uint32_t g = lane >> 2;
   const uint32_t tid4 = (lane & 3u) * 4u;
+
+  // Which row and which half of the 32 bytes this lane hands to ldmatrix. The
+  // four blocks arrive in register order r0..r3, so the operand decides which
+  // of the two lane bits walks the rows and which walks the k halves: for A the
+  // second block is the next EIGHT ROWS (a1 is row g+8), for B it is the next
+  // SIXTEEN BYTES of k (b1 is k+16).
+  const uint32_t alrow = (lane & 7u) + ((lane >> 3) & 1u) * 8u;
+  const uint32_t albyte = ((lane >> 4) & 1u) * 16u;
+  const uint32_t blcol = (lane & 7u) + ((lane >> 4) & 1u) * 8u;
+  const uint32_t blbyte = ((lane >> 3) & 1u) * 16u;
   const uint32_t MB = PEARL_WMMA_ROW_TILES;
   const uint32_t NB = PEARL_WMMA_COL_BLK * 2;
   int32_t acc[PEARL_WMMA_ROW_TILES][PEARL_WMMA_COL_BLK * 2][4];
@@ -946,6 +973,41 @@ extern "C" __global__ void pearl_tile_fold_wmma(
     }
   }
 
+  // WHERE each staged int4 comes from and goes to is fixed for the whole
+  // kernel; only the k offset moves. The addresses used to be rebuilt every
+  // chunk, and a PTX census of the inner loop found what that cost: an integer
+  // div and a mod (neither is a single instruction), an offset expansion and a
+  // 64-bit multiply, per int4, per chunk. Computing them once turns the whole
+  // stage into a pointer add and a cp.async.
+  //
+  // Byte offsets rather than pointers, because a uint32 offset is one register
+  // and a pointer is two. The largest is c * k, and c < n while k is the row
+  // length, so it is bounded by the operand size -- 64 MB at the mandated
+  // geometry, far inside 32 bits.
+  const uint32_t quads = rank / 16;                     // int4 per row or column
+  const uint32_t btotal = sb_cols * quads;
+  const uint32_t atotal = sa_rows * quads;
+  uint32_t bsrc[PEARL_STAGE_SLOTS], bdst[PEARL_STAGE_SLOTS];
+  uint32_t asrc[PEARL_STAGE_SLOTS], adst[PEARL_STAGE_SLOTS];
+#pragma unroll
+  for (uint32_t j = 0; j < PEARL_STAGE_SLOTS; j++) {
+    const uint32_t i = threadIdx.x + j * blockDim.x;
+    if (i < btotal) {
+      const uint32_t col = i / quads;
+      const uint32_t q = i % quads;
+      const uint32_t c = pearl_expand_offset(col_off + cg0_block + (col >> 4), PEARL_COLS_MASK)
+                         + (col & 15u);
+      bsrc[j] = c * k + q * 16u;
+      bdst[j] = col * PEARL_SB_STRIDE + q * 16u;
+    }
+    if (i < atotal) {
+      const uint32_t row = i / quads;
+      const uint32_t q = i % quads;
+      asrc[j] = (row_base + row) * k + q * 16u;
+      adst[j] = row * PEARL_SB_STRIDE + q * 16u;
+    }
+  }
+
   for (uint32_t chunk = 0; chunk < chunks; chunk++) {
     const uint32_t k0 = chunk * rank;
 
@@ -955,9 +1017,15 @@ extern "C" __global__ void pearl_tile_fold_wmma(
     // overwriting it while a slow one is still reading the old one.
     __syncthreads();
     {
-      const uint32_t quads = rank / 16;                 // int4 per row or column
-      const uint32_t btotal = sb_cols * quads;
-      for (uint32_t i = threadIdx.x; i < btotal; i += blockDim.x) {
+#pragma unroll
+      for (uint32_t j = 0; j < PEARL_STAGE_SLOTS; j++) {
+        const uint32_t i = threadIdx.x + j * blockDim.x;
+        if (i < btotal) pearl_cp_async16(sB + bdst[j], Bprime + bsrc[j] + k0);
+        if (i < atotal) pearl_cp_async16(sA + adst[j], Aprime + asrc[j] + k0);
+      }
+      // Only a geometry that needs more slots than were precomputed gets here.
+      for (uint32_t i = threadIdx.x + PEARL_STAGE_SLOTS * blockDim.x; i < btotal;
+           i += blockDim.x) {
         const uint32_t col = i / quads;
         const uint32_t q = i % quads;
         const uint32_t c = pearl_expand_offset(col_off + cg0_block + (col >> 4), PEARL_COLS_MASK)
@@ -965,8 +1033,8 @@ extern "C" __global__ void pearl_tile_fold_wmma(
         pearl_cp_async16(sB + (size_t)col * PEARL_SB_STRIDE + q * 16,
                          Bprime + (size_t)c * k + k0 + q * 16);
       }
-      const uint32_t atotal = sa_rows * quads;
-      for (uint32_t i = threadIdx.x; i < atotal; i += blockDim.x) {
+      for (uint32_t i = threadIdx.x + PEARL_STAGE_SLOTS * blockDim.x; i < atotal;
+           i += blockDim.x) {
         const uint32_t row = i / quads;
         const uint32_t q = i % quads;
         pearl_cp_async16(sA + (size_t)row * PEARL_SB_STRIDE + q * 16,
@@ -982,31 +1050,38 @@ extern "C" __global__ void pearl_tile_fold_wmma(
     for (uint32_t t = 0; t < ksteps; t++) {
       const uint32_t kt = t * 32;
 
-      // A: rows g and g+8 of each 16-row block, four bytes of k per register.
+      // A: the whole 16x32 fragment of each row block in one instruction.
       uint32_t af[PEARL_WMMA_ROW_TILES][4];
 #pragma unroll
       for (uint32_t mb = 0; mb < MB; mb++) {
         const int8_t *rp = sA
-            + (size_t)(wr * regions_per_warp * PEARL_ROWS_COUNT + mb * 16 + g) * PEARL_SB_STRIDE
-            + kt;
-        af[mb][0] = *(const uint32_t *)(rp + tid4);
-        af[mb][1] = *(const uint32_t *)(rp + (size_t)8 * PEARL_SB_STRIDE + tid4);
-        af[mb][2] = *(const uint32_t *)(rp + 16 + tid4);
-        af[mb][3] = *(const uint32_t *)(rp + (size_t)8 * PEARL_SB_STRIDE + 16 + tid4);
+            + (size_t)(wr * regions_per_warp * PEARL_ROWS_COUNT + mb * 16 + alrow)
+                  * PEARL_SB_STRIDE
+            + kt + albyte;
+        pearl_ldmatrix_x4(af[mb][0], af[mb][1], af[mb][2], af[mb][3], rp);
       }
 
-      // B is already transposed in shared -- sB[col] is k-contiguous -- so a
-      // column of the fragment is two 4-byte reads.
+      // B is already transposed in shared -- sB[col] is k-contiguous -- so one
+      // ldmatrix covers TWO eight-column fragments, and they are consumed
+      // before the next pair is fetched. Holding all sixteen B registers at
+      // once would have cost more than the loads it saved.
 #pragma unroll
-      for (uint32_t nb = 0; nb < NB; nb++) {
+      for (uint32_t nb = 0; nb < NB; nb += 2) {
         const int8_t *cp = sB
-            + (size_t)(wc * PEARL_WMMA_COL_BLK * 16 + nb * 8 + g) * PEARL_SB_STRIDE + kt;
-        const uint32_t b0 = *(const uint32_t *)(cp + tid4);
-        const uint32_t b1 = *(const uint32_t *)(cp + 16 + tid4);
+            + (size_t)(wc * PEARL_WMMA_COL_BLK * 16 + nb * 8 + blcol) * PEARL_SB_STRIDE
+            + kt + blbyte;
+        uint32_t b0, b1, b2, b3;
+        pearl_ldmatrix_x4(b0, b1, b2, b3, cp);
 #pragma unroll
         for (uint32_t mb = 0; mb < MB; mb++) {
           pearl_mma_m16n8k32(acc[mb][nb][0], acc[mb][nb][1], acc[mb][nb][2], acc[mb][nb][3],
                              af[mb][0], af[mb][1], af[mb][2], af[mb][3], b0, b1);
+        }
+#pragma unroll
+        for (uint32_t mb = 0; mb < MB; mb++) {
+          pearl_mma_m16n8k32(acc[mb][nb + 1][0], acc[mb][nb + 1][1], acc[mb][nb + 1][2],
+                             acc[mb][nb + 1][3],
+                             af[mb][0], af[mb][1], af[mb][2], af[mb][3], b2, b3);
         }
       }
     }
@@ -1023,9 +1098,13 @@ extern "C" __global__ void pearl_tile_fold_wmma(
       for (uint32_t cb = 0; cb < PEARL_WMMA_COL_BLK; cb++) {
         const int32_t *l = acc[mb][cb * 2];
         const int32_t *r = acc[mb][cb * 2 + 1];
-        uint32_t x = pearl_xor3((uint32_t)l[0], (uint32_t)l[1], (uint32_t)l[2]);
-        x ^= pearl_xor3((uint32_t)l[3], (uint32_t)r[0], (uint32_t)r[1]);
-        x ^= pearl_xor3((uint32_t)r[2], (uint32_t)r[3], 0u);
+        // Eight values, three inputs to a gate: each xor3 retires two of them, so
+        // four ops is the floor. Feeding t0 into the third gate rather than a
+        // zero is what reaches it -- the old shape spent a gate on a constant.
+        const uint32_t t0 = pearl_xor3((uint32_t)l[0], (uint32_t)l[1], (uint32_t)l[2]);
+        const uint32_t t1 = pearl_xor3((uint32_t)l[3], (uint32_t)r[0], (uint32_t)r[1]);
+        const uint32_t t2 = pearl_xor3((uint32_t)r[2], (uint32_t)r[3], t0);
+        uint32_t x = t1 ^ t2;
         x = pearl_warp_xor(x);
         if (lane == 0) {
           uint32_t *slotjp = jp + (cb * regions_per_warp + mb) * PEARL_JACKPOT_BUCKETS;

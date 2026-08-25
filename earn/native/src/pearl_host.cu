@@ -171,7 +171,6 @@ struct Ctx {
 
   uint32_t *dRows = nullptr;
   uint32_t *dCols = nullptr;
-  int32_t *dD = nullptr;          // [chunks][m][cols_count] partial dot products
   uint32_t *dJackpot = nullptr;   // [batch][16]
   uint8_t *dHashes = nullptr;     // [PEARL_MAX_HITS][32] — hits only
   uint32_t *dHitCount = nullptr;  // one counter per batch
@@ -406,17 +405,26 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   // int32 while the noise was (wrongly) reconstructed at full rank, which cost
   // 2 GiB at mainnet on top of the 1 GiB of sources.
   const size_t primeBytes = aBytes + bBytes;
-  // The partial-product table scales with the column-batch width, so it is a
-  // real line item rather than a rounding error: 100 MiB at col_batch 32 and the
-  // mainnet geometry. Counted here so an undersized card is told before any
-  // allocation rather than aborting inside a kernel.
+  // What a batch really costs: one transcript per REGION, and regions are
+  // row OFFSETS by column offsets, not rows by columns. Two stale terms lived
+  // here and together overstated it by about 25x:
+  //
+  //   - profile->m instead of m/PEARL_ROWS_COUNT, which is the number of valid
+  //     row offsets and therefore the batch's real height;
+  //   - a 32-byte hash and a flag PER REGION, from when finalize wrote every
+  //     region's hash and the host read back a flag array. It writes only on a
+  //     hit now, into a fixed PEARL_MAX_HITS list.
+  //
+  // The consequence was not cosmetic: this check refused geometries the miner
+  // runs fine on, which is what kept the search pinned to the smaller operand
+  // draw and paid the redraw cost four times more often than it had to.
   const size_t colBatch = profile->col_batch ? profile->col_batch : 1u;
-  const size_t partialBytes = colBatch * ((profile->k + rank - 1) / rank)
-                              * profile->m * sizeof(int32_t);
-  const size_t batchBytes = colBatch * profile->m
-                            * (PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)
-                               + PEARL_HASH_BYTES + sizeof(int));
-  const size_t need = aBytes + bBytes + primeBytes + noiseBytes + partialBytes
+  const size_t rowsValid = profile->m / PEARL_ROWS_COUNT;
+  const size_t colsValid = profile->n / PEARL_COLS_COUNT;
+  const size_t batchCols = colBatch > colsValid ? colsValid : colBatch;
+  const size_t batchBytes = batchCols * rowsValid * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)
+                            + (size_t)PEARL_MAX_HITS * (PEARL_HASH_BYTES + sizeof(uint32_t));
+  const size_t need = aBytes + bBytes + primeBytes + noiseBytes
                       + batchBytes + (1u << 20);
 
   // Check the budget BEFORE allocating, so an 8 GB card gets a sentence it can
@@ -469,8 +477,6 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   // compute-bound: the fixed per-batch cost (three launches and a synchronising
   // copy) was flat at 134-213us regardless of the work inside it.
   //
-  // Clamped so a silly profile cannot ask for a partial table larger than the
-  // card, and to at least 1 so the batch is never empty.
   // Only offsets with the pattern's bits clear are valid, so there are
   // m/PEARL_ROWS_COUNT of them down the rows and n/PEARL_COLS_COUNT across the
   // columns. Searching the other 31/32 produced hashes no pool would take.
@@ -480,14 +486,13 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   if (ctx->colBatch > ctx->colsValid) ctx->colBatch = ctx->colsValid;
   ctx->batch = ctx->colBatch * ctx->rowsValid;
   ctx->hHitIndex.resize(PEARL_MAX_HITS);
-  // Every distinct partial computed once per batch instead of four times.
-  // One int32 per (column group, chunk, row): the producer XORs the eight
-  // columns together before storing, which is exact because the tile fold is
-  // itself an XOR over every column of each row.
-  CUDA_OK(cudaMalloc(&ctx->dD,
-                     (size_t)ctx->colBatch * ((profile->k + rank - 1) / rank)
-                         * profile->m * sizeof(int32_t)),
-          "allocating the partial-product table");
+  // No partial-product table any more. The fold was two passes once -- compute
+  // every partial dot product into a table, then gather it -- and the fused
+  // tile fold replaced both, because a CUMULATIVE accumulator cannot be
+  // decomposed into reusable partials. The allocation outlived its only
+  // consumer and was still sized from col_batch, so raising col_batch to 2048
+  // silently reserved GIGABYTES that nothing ever read, and the pre-flight VRAM
+  // check refused geometries the miner would have run fine.
   CUDA_OK(cudaMalloc(&ctx->dJackpot,
                      (size_t)ctx->batch * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)),
           "allocating the transcripts");
@@ -543,7 +548,7 @@ extern "C" void pearl_host_destroy(void *handle) {
   cudaFree(ctx->dSaltA); cudaFree(ctx->dSaltB);
   cudaFree(ctx->dBoundA); cudaFree(ctx->dBoundB);
   cudaFree(ctx->dRows); cudaFree(ctx->dCols);
-  cudaFree(ctx->dD);
+
   cudaFree(ctx->dHashes); cudaFree(ctx->dHitCount); cudaFree(ctx->dHitIndex);
   cudaFree(ctx->dTreeA); cudaFree(ctx->dTreeB);
   cudaFree(ctx->dCvs); cudaFree(ctx->dSeedBuf);

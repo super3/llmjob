@@ -240,6 +240,13 @@ static_assert(PEARL_COLS_COUNT == (1u << pearl_popcount_ce(PEARL_COLS_MASK)),
 // elements of int8, and the stride is padded past 128 so that the 16 columns of
 // a fragment do not all land on the same shared-memory banks. wmma requires a
 // 16-byte-aligned leading dimension for integer types, which 144 satisfies.
+// How many int4 of each operand one thread stages per chunk, which is also how
+// many staging addresses it precomputes. ceil(max(sb_cols, sa_rows) * quads /
+// threads): at the mandated geometry 128 columns (and 128 rows) x 8 int4 over
+// 256 threads = 4. A geometry needing more still works -- the surplus falls
+// through to a tail loop -- it just pays the arithmetic per chunk again.
+#define PEARL_STAGE_SLOTS 4
+
 #define PEARL_SB_STRIDE 144
 
 // How many of a block's warps sit along the ROW dimension. The rest go across
