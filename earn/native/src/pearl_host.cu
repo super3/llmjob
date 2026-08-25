@@ -168,6 +168,21 @@ struct Ctx {
   uint32_t *dASeed = nullptr;
   uint32_t *dBSeed = nullptr;
   uint32_t *dCvs = nullptr;      // BLAKE3 tree scratch (leaf CVs, reduced in place)
+
+  // The commitment TREE, kept rather than reduced away.
+  //
+  // A share has to be proved against the operand data the tile touched, and
+  // that proof needs sibling digests from every level. The device already
+  // computes all of them to get the root; discarding them forced the host to
+  // rebuild the whole tree in JS, which at m=32768, k=4096 took 21 seconds a
+  // share -- long enough that the job could rotate underneath it.
+  //
+  // Layers are stored end to end: level 0 (the leaves) first, then each parent
+  // level. About 2*leaves nodes in total, 8 MiB at the mainnet geometry.
+  uint32_t *dTreeA = nullptr;
+  uint32_t *dTreeB = nullptr;
+  std::vector<uint64_t> layerOffA;  // node offset of each level
+  std::vector<uint64_t> layerOffB;
   uint8_t *dSeedBuf = nullptr;   // 64-byte concat for b_seed / a_seed
   uint8_t *dHashA = nullptr;
   uint8_t *dHashB = nullptr;
@@ -206,25 +221,37 @@ void build_patterns(const PearlProfile &, std::vector<uint32_t> *rows,
 // tree is balanced and the fold is exact. A non-power-of-two operand would need
 // BLAKE3's left-heavy layout, which this deliberately does not pretend to do.
 void operand_commitment(Ctx *ctx, const uint8_t *data, size_t len,
-                        uint8_t *out32) {
+                        uint8_t *out32, uint32_t *tree,
+                        std::vector<uint64_t> *offsets) {
   const uint64_t chunks = len / 1024;
   const int threads = 256;
+  if (offsets) offsets->clear();
   if (chunks <= 1) {
     // One chunk or less: the chunk's own final compression carries ROOT.
     pearl_hash_operands<<<1, 1>>>(ctx->dJobKey, data, (uint32_t)len, out32);
     return;
   }
+
+  // Each level is written to its own place rather than reduced in place, so the
+  // sibling digests a share proof needs are still there afterwards.
+  uint32_t *dst = tree ? tree : ctx->dCvs;
+  uint64_t base = 0;
+  if (offsets) offsets->push_back(0);
   pearl_blake3_chunk_cvs<<<(unsigned)((chunks + threads - 1) / threads), threads>>>(
-      ctx->dJobKey, data, chunks, ctx->dCvs);
+      ctx->dJobKey, data, chunks, dst);
+
   uint64_t count = chunks;
   while (count > 1) {
     const uint64_t pairs = count / 2;
     const uint32_t isRoot = (pairs == 1) ? 1u : 0u;
+    const uint64_t next = tree ? base + count : 0;
     pearl_blake3_parent_layer<<<(unsigned)((pairs + threads - 1) / threads), threads>>>(
-        ctx->dJobKey, ctx->dCvs, pairs, isRoot, ctx->dCvs);
+        ctx->dJobKey, dst + base * 8, pairs, isRoot, dst + next * 8);
+    if (offsets) offsets->push_back(next);
+    base = next;
     count = pairs;
   }
-  cudaMemcpy(out32, ctx->dCvs, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
+  cudaMemcpy(out32, dst + base * 8, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
 }
 
 bool fail(char *err, size_t err_len, const char *msg) {
@@ -383,6 +410,15 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   if (ctx->cvCapacity < 1) ctx->cvCapacity = 1;
   CUDA_OK(cudaMalloc(&ctx->dCvs, ctx->cvCapacity * 8 * sizeof(uint32_t)),
           "allocating the BLAKE3 tree scratch");
+  // The kept commitment trees. Levels sum to just under 2*leaves nodes.
+  {
+    const uint64_t aLeaves = (uint64_t)profile->m * profile->k / 1024;
+    const uint64_t bLeaves = (uint64_t)profile->n * profile->k / 1024;
+    CUDA_OK(cudaMalloc(&ctx->dTreeA, 2 * aLeaves * 8 * sizeof(uint32_t)),
+            "allocating the A commitment tree");
+    CUDA_OK(cudaMalloc(&ctx->dTreeB, 2 * bLeaves * 8 * sizeof(uint32_t)),
+            "allocating the B commitment tree");
+  }
   CUDA_OK(cudaMalloc(&ctx->dSeedBuf, 64), "allocating the seed buffer");
   CUDA_OK(cudaMalloc(&ctx->dHashA, PEARL_HASH_BYTES), "allocating hash_a");
   CUDA_OK(cudaMalloc(&ctx->dHashB, PEARL_HASH_BYTES), "allocating hash_b");
@@ -415,6 +451,7 @@ extern "C" void pearl_host_destroy(void *handle) {
   cudaFree(ctx->dRows); cudaFree(ctx->dCols);
   cudaFree(ctx->dD);
   cudaFree(ctx->dHashes); cudaFree(ctx->dHitCount); cudaFree(ctx->dHitIndex);
+  cudaFree(ctx->dTreeA); cudaFree(ctx->dTreeB);
   cudaFree(ctx->dCvs); cudaFree(ctx->dSeedBuf);
   cudaFree(ctx->dHashA); cudaFree(ctx->dHashB);
   cudaFree(ctx->dJackpot); cudaFree(ctx->dJobKey);
@@ -494,8 +531,10 @@ extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
   // chunk (which this did until the device run showed a_seed == b_seed) gives the
   // wrong digest for anything over 1024 bytes and so the wrong seeds.
   cudaDeviceSynchronize();
-  operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dA), aLen, ctx->dHashA);
-  operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dB), bLen, ctx->dHashB);
+  operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dA), aLen,
+                     ctx->dHashA, ctx->dTreeA, &ctx->layerOffA);
+  operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dB), bLen,
+                     ctx->dHashB, ctx->dTreeB, &ctx->layerOffB);
 
   // Bind the roots before they enter the chain. Under cert-v3 each root is
   // re-hashed with its dimension under a domain-separation salt, which is what
@@ -714,4 +753,56 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   }
   out->found = false;
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// Share-proof accessors.
+//
+// A submitted share carries the 1024-byte operand chunks its tile touched plus
+// the sibling digests that authenticate them against the committed root. Both
+// already exist on the device -- the chunks in the operand, the digests in the
+// commitment tree -- so the host copies out the handful it needs instead of
+// rebuilding the tree, which is thousands of times more work.
+// ---------------------------------------------------------------------------
+
+// Copy whole 1024-byte leaf chunks out of an operand.
+extern "C" bool pearl_host_leaf_chunks(void *handle, int isA,
+                                       const uint32_t *leaf_indices,
+                                       uint32_t count, uint8_t *out) {
+  Ctx *ctx = static_cast<Ctx *>(handle);
+  if (!ctx || !leaf_indices || !out) return false;
+  const int8_t *src = isA ? ctx->dA : ctx->dB;
+  const uint64_t bytes = isA ? (uint64_t)ctx->profile.m * ctx->profile.k
+                             : (uint64_t)ctx->profile.n * ctx->profile.k;
+  for (uint32_t i = 0; i < count; i++) {
+    const uint64_t off = (uint64_t)leaf_indices[i] * 1024;
+    if (off + 1024 > bytes) return false;
+    cudaMemcpy(out + (size_t)i * 1024, src + off, 1024, cudaMemcpyDeviceToHost);
+  }
+  return true;
+}
+
+// Copy 32-byte nodes out of one level of a commitment tree.
+extern "C" bool pearl_host_tree_nodes(void *handle, int isA, uint32_t level,
+                                      const uint32_t *indices, uint32_t count,
+                                      uint8_t *out) {
+  Ctx *ctx = static_cast<Ctx *>(handle);
+  if (!ctx || !indices || !out) return false;
+  const std::vector<uint64_t> &offs = isA ? ctx->layerOffA : ctx->layerOffB;
+  const uint32_t *tree = isA ? ctx->dTreeA : ctx->dTreeB;
+  if (!tree || level >= offs.size()) return false;
+  const uint64_t base = offs[level];
+  for (uint32_t i = 0; i < count; i++) {
+    cudaMemcpy(out + (size_t)i * PEARL_HASH_BYTES,
+               tree + (base + indices[i]) * 8, PEARL_HASH_BYTES,
+               cudaMemcpyDeviceToHost);
+  }
+  return true;
+}
+
+// How many levels the tree has, so the host knows where to stop walking.
+extern "C" uint32_t pearl_host_tree_levels(void *handle, int isA) {
+  Ctx *ctx = static_cast<Ctx *>(handle);
+  if (!ctx) return 0;
+  return (uint32_t)(isA ? ctx->layerOffA.size() : ctx->layerOffB.size());
 }
