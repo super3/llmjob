@@ -28,7 +28,7 @@ const {
 const probe = require('../main/probe');
 const nodeStore = require('../main/nodeStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
-const { NETWORK, MINER, LLM, NODE, resolveEndpoint, regionLabel } = require('../shared/config');
+const { NETWORK, LLM, NODE, resolveEndpoint, regionLabel } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
 const nodeProto = require('../shared/node');
 const { buildMinerReports } = require('../shared/minerReport');

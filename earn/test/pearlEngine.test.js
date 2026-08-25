@@ -122,7 +122,7 @@ describe('PearlEngine — the events the UI actually reads', () => {
   // The UI's counters are cumulative for the session; PearlMiner reports one
   // verdict per share as it lands.
   test('share verdicts accumulate rather than replace', () => {
-    const { e, core, events } = started();
+    const { e, events } = started();
     e.miner.emit('share', { jobId: 'j1', accepted: true });
     e.miner.emit('share', { jobId: 'j1', accepted: true });
     e.miner.emit('rejected', { jobId: 'j1', reason: 'nope' });
