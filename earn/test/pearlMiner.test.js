@@ -194,20 +194,20 @@ describe('PearlMiner — protocol', () => {
     sock.emit('data', jobLine({ rank: 512 }));
     expect(core.setJob).not.toHaveBeenCalled();
     expect(events.job).toHaveLength(0);
-    expect(events.log.some((l) => l.level === 'error' && /rank 512 is not the credited 128/.test(l.line))).toBe(true);
+    expect(events.log.some((l) => l.level === 'error' && /rank 512 is not the credited 256/.test(l.line))).toBe(true);
   });
 
   test('a job at the credited rank is mined', () => {
     const { sock, core } = running();
-    sock.emit('data', jobLine({ rank: 128 }));
+    sock.emit('data', jobLine({ rank: 256 }));
     expect(core.setJob).toHaveBeenCalledTimes(1);
   });
 
   test('a custom profile changes which rank is credited', () => {
     const b = boot();
-    b.m.start({ ...settings, profile: { rank: 256 } });
+    b.m.start({ ...settings, profile: { rank: 128 } });
     b.sock.emit('connect');
-    b.sock.emit('data', jobLine({ rank: 256 }));
+    b.sock.emit('data', jobLine({ rank: 128 }));
     expect(b.core.setJob).toHaveBeenCalledTimes(1);
   });
 

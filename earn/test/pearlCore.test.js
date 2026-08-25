@@ -68,16 +68,26 @@ describe('loadCore', () => {
 
 describe('loadCore — real defaults', () => {
   // Called with no options at all it uses the real require and the real build
-  // paths. On any machine without a compiled core — this dev box, and CI — that
-  // is a clean null, which is exactly the state the host explains to the user.
-  test('probes the real paths and finds nothing when unbuilt', () => {
-    expect(loadCore()).toBeNull();
+  // paths, so the answer depends on whether this machine happens to have a
+  // compiled core. It used to assert a flat null, which was true of CI and of
+  // the dev box until the dev box got a local toolchain -- at which point the
+  // test failed for a reason that had nothing to do with the code.
+  //
+  // What actually matters is the contract: probing never throws, and either
+  // finds nothing or finds something usable.
+  test('probes the real paths without throwing', () => {
+    const core = loadCore();
+    if (core === null) return;                    // unbuilt: the common case
+    expect(typeof core).toBe('object');
+    expect(core.createCore || core.PearlCore).toBeTruthy();
   });
 });
 
 describe('coreFactory', () => {
-  test('is null with no options when the core is unbuilt', () => {
-    expect(coreFactory()).toBeNull();
+  test('with no options it is null, or a usable factory when built', () => {
+    const f = coreFactory();
+    if (f === null) return;
+    expect(typeof f).toBe('function');
   });
 
   test('returns a factory that builds cores from the addon', () => {

@@ -10,10 +10,15 @@ const {
 
 describe('PROFILE', () => {
   // Taken from the reference implementation's own defaults, not inferred.
-  test('is the mandated protocol geometry', () => {
-    expect(PROFILE.rank).toBe(128);          // the rank-penalty floor
-    expect(PROFILE.k).toBe(16 * PROFILE.rank); // smallest k the sanity checks allow
-    expect(PROFILE.k).toBe(2048);
+  // rank 256 and k 4096 are what an in-the-wild miner actually mines --
+  // lpminer's own help text gives them as its mining defaults. 128 and 2048 are
+  // the FLOOR the sanity checks allow, which is not the same thing, and is what
+  // this profile used to carry.
+  test('is the geometry a working miner uses', () => {
+    expect(PROFILE.rank).toBe(256);
+    expect(PROFILE.rank).toBeGreaterThanOrEqual(PENALTY_BASE_RANK);
+    expect(PROFILE.k).toBe(16 * PROFILE.rank); // the sanity checks require k >= 16r
+    expect(PROFILE.k).toBe(4096);
     expect(PROFILE.mmaType).toBe(0);         // Int7xInt7ToInt32
   });
 
@@ -69,8 +74,8 @@ describe('buildConfig52', () => {
   test('matches the reference layout field for field', () => {
     const b = buildConfig52();
     expect(b).toHaveLength(CONFIG_BYTES);
-    expect(b.readUInt32LE(0)).toBe(2048);
-    expect(b.readUInt16LE(4)).toBe(128);
+    expect(b.readUInt32LE(0)).toBe(4096);
+    expect(b.readUInt16LE(4)).toBe(256);
     expect(b.readUInt16LE(6)).toBe(0);
     expect(b.slice(8, 14).toString('hex')).toBe('000300000000');
     expect(b.slice(14, 20).toString('hex')).toBe('000f00000000');
@@ -144,12 +149,12 @@ describe('rotl13', () => {
 
 describe('rankMatches', () => {
   test('accepts the profile rank and an unstated one, refuses a mismatch', () => {
-    expect(rankMatches(128)).toBe(true);
+    expect(rankMatches(256)).toBe(true);
     expect(rankMatches(null)).toBe(true);       // pool did not state a rank
-    expect(rankMatches(256)).toBe(false);       // the pre-fork rank — uncredited
+    expect(rankMatches(128)).toBe(false);       // below what we mine — uncredited
     expect(rankMatches(512)).toBe(false);
-    expect(rankMatches(128, { rank: 256 })).toBe(false);
-    expect(rankMatches(256, { rank: 256 })).toBe(true);
+    expect(rankMatches(256, { rank: 128 })).toBe(false);
+    expect(rankMatches(128, { rank: 128 })).toBe(true);
   });
 });
 
@@ -158,8 +163,8 @@ describe('difficultyAdjustmentFactor', () => {
   // costs, so a hashrate is MACs per second, not attempts per second. Reporting
   // attempts as hashes under-reported this miner by 65536x at mainnet.
   test('is tile size times dot product length', () => {
-    expect(difficultyAdjustmentFactor()).toBe(4 * 16 * 2048);
-    expect(difficultyAdjustmentFactor()).toBe(131072);
+    expect(difficultyAdjustmentFactor()).toBe(4 * 16 * 4096);
+    expect(difficultyAdjustmentFactor()).toBe(262144);
   });
 
   // The sanity check that identified the unit in the first place: a competing
@@ -173,18 +178,18 @@ describe('difficultyAdjustmentFactor', () => {
   });
 
   test('defaults to the mainnet profile when given none', () => {
-    expect(difficultyAdjustmentFactor(undefined)).toBe(131072);
-    expect(difficultyAdjustmentFactor(null)).toBe(131072);
+    expect(difficultyAdjustmentFactor(undefined)).toBe(262144);
+    expect(difficultyAdjustmentFactor(null)).toBe(262144);
   });
 
   // The tile patterns default when a profile omits them, exactly as buildConfig52
   // does — they are protocol constants rather than per-profile knobs.
   test('defaults the tile patterns when a profile omits them', () => {
-    expect(difficultyAdjustmentFactor({ k: 2048 })).toBe(131072);
+    expect(difficultyAdjustmentFactor({ k: 4096 })).toBe(262144);
   });
 
   test('scales with k and with the tile', () => {
-    expect(difficultyAdjustmentFactor({ ...PROFILE, k: 4096 })).toBe(4 * 16 * 4096);
+    expect(difficultyAdjustmentFactor({ ...PROFILE, k: 8192 })).toBe(4 * 16 * 8192);
     expect(difficultyAdjustmentFactor({ k: 256, rows: [0, 8], cols: [0, 1] })).toBe(2 * 2 * 256);
   });
 });
@@ -196,26 +201,29 @@ describe('the share bound', () => {
   // exactly why they are easy to conflate -- they diverge as soon as rank moves.
   test('the penalized factor divides out the rank and re-multiplies by the base', () => {
     expect(PENALTY_BASE_RANK).toBe(128);
-    expect(penalizedAdjustmentFactor()).toBe(131072);
-    expect(penalizedAdjustmentFactor()).toBe(difficultyAdjustmentFactor());
-    // At rank 256 they part company: consensus still scales by tile*k, but a
-    // miner scales by tile*(k/rank)*128.
-    const p = { ...PROFILE, rank: 256, k: 4096 };
-    expect(penalizedAdjustmentFactor(p)).toBe(64 * 16 * 128);
-    expect(difficultyAdjustmentFactor(p)).toBe(64 * 4096);
-    expect(penalizedAdjustmentFactor(p)).not.toBe(difficultyAdjustmentFactor(p));
+    // At the mined geometry these two part company, which is what finally made
+    // them distinguishable: consensus scales by tile*k, a miner scales by
+    // tile*(k/rank)*PENALTY_BASE_RANK. At rank 128 with k=2048 both come to the
+    // same number and no experiment could tell them apart.
+    expect(penalizedAdjustmentFactor()).toBe(64 * 16 * 128);
+    expect(difficultyAdjustmentFactor()).toBe(64 * 4096);
+    expect(penalizedAdjustmentFactor()).not.toBe(difficultyAdjustmentFactor());
+    // They coincide at the floor geometry.
+    const floorP = { ...PROFILE, rank: 128, k: 2048 };
+    expect(penalizedAdjustmentFactor(floorP)).toBe(difficultyAdjustmentFactor(floorP));
   });
 
   test('defaults to the mainnet profile', () => {
     expect(penalizedAdjustmentFactor(undefined)).toBe(131072);
     expect(penalizedAdjustmentFactor(null)).toBe(131072);
+    expect(penalizedAdjustmentFactor({ k: 4096, rank: 256 })).toBe(131072);
   });
 
   // The tile patterns are protocol constants rather than per-profile knobs, so
   // a profile that omits them still gets the right factor -- same as
   // buildConfig52 and difficultyAdjustmentFactor.
   test('defaults the tile patterns when a profile omits them', () => {
-    expect(penalizedAdjustmentFactor({ k: 2048, rank: 128 })).toBe(131072);
+    expect(penalizedAdjustmentFactor({ k: 4096, rank: 256 })).toBe(131072);
   });
 
   // The bound is the pool's target made easier in proportion to the work one
