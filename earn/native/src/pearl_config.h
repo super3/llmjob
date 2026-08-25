@@ -80,10 +80,10 @@
 // as legal as the strided 4x8 set MiningConfiguration carries as a DEFAULT.
 #define PEARL_ROWS_COUNT 16
 #define PEARL_COLS_COUNT 16
-static const uint32_t PEARL_ROWS_PATTERN[PEARL_ROWS_COUNT] = {0, 1, 2,  3,  4,  5,  6,  7,
-                                                              8, 9, 10, 11, 12, 13, 14, 15};
-static const uint32_t PEARL_COLS_PATTERN[PEARL_COLS_COUNT] = {0, 1, 2,  3,  4,  5,  6,  7,
-                                                              8, 9, 10, 11, 12, 13, 14, 15};
+static constexpr uint32_t PEARL_ROWS_PATTERN[PEARL_ROWS_COUNT] = {0, 1, 2,  3,  4,  5,  6,  7,
+                                                                  8, 9, 10, 11, 12, 13, 14, 15};
+static constexpr uint32_t PEARL_COLS_PATTERN[PEARL_COLS_COUNT] = {0, 1, 2,  3,  4,  5,  6,  7,
+                                                                  8, 9, 10, 11, 12, 13, 14, 15};
 
 // The six-byte periodic encoding of each pattern: (factor-1, length-1) per
 // dimension. Precomputed rather than derived at runtime — the derivation is
@@ -149,8 +149,35 @@ typedef struct PearlProfile {
 // regions searched were unsubmittable (63 of 64 with the contiguous tile). And because the pattern bits are clear
 // in a valid offset, a tile row is a bitwise OR rather than an addition, and
 // valid tiles PARTITION the grid instead of overlapping.
-#define PEARL_ROWS_MASK 3u    // bits 0 and 1
-#define PEARL_COLS_MASK 15u   // bits 0 to 3
+// DERIVED, not written down. These were hand-maintained constants, and when
+// the tile went from 4 rows to 16 the rows mask stayed at 3. Nothing failed:
+// the fold was right, the hash was right, the Merkle proof verified against its
+// own root -- but the proof described the wrong ROWS, because the row offset was
+// expanded against a stale mask. The pool answered "Failed to extract strip",
+// which is the verifier asking for bytes [row*k, row*k+k) that the submitted
+// leaves do not cover. A constant that must agree with a table should be
+// computed from that table.
+PEARL_HD constexpr uint32_t pearl_pattern_mask(const uint32_t *p, uint32_t n) {
+  uint32_t m = 0u;
+  for (uint32_t i = 0; i < n; i++) m |= p[i];
+  return m;
+}
+PEARL_HD constexpr uint32_t pearl_popcount_ce(uint32_t x) {
+  uint32_t c = 0u;
+  for (; x; x >>= 1) c += (x & 1u);
+  return c;
+}
+
+#define PEARL_ROWS_MASK (pearl_pattern_mask(PEARL_ROWS_PATTERN, PEARL_ROWS_COUNT))
+#define PEARL_COLS_MASK (pearl_pattern_mask(PEARL_COLS_PATTERN, PEARL_COLS_COUNT))
+
+// offset_is_valid((off & mask) == 0) only PARTITIONS the grid when the pattern
+// is exactly the set of subsets of its own mask bits. Otherwise tiles overlap
+// or leave gaps, and the search silently repeats or skips work.
+static_assert(PEARL_ROWS_COUNT == (1u << pearl_popcount_ce(PEARL_ROWS_MASK)),
+              "rows pattern must be every subset of its mask bits");
+static_assert(PEARL_COLS_COUNT == (1u << pearl_popcount_ce(PEARL_COLS_MASK)),
+              "cols pattern must be every subset of its mask bits");
 
 // How many rows of A one thread carries.
 //

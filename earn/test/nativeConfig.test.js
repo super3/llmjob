@@ -21,6 +21,14 @@ const {
 
 const HEADER = fs.readFileSync(path.join(__dirname, '..', 'native', 'src', 'pearl_config.h'), 'utf8');
 
+// The offset masks are DERIVED on both sides now rather than written down.
+// They were hand-maintained constants, and when the tile grew from 4 rows to 16
+// the native rows mask stayed at 3 while the JS one followed the pattern. Every
+// hash still agreed; only the row indices in the proof were wrong, which no
+// hash check can see. The native side computes its mask with a constexpr fold
+// over its own pattern, so the two cannot drift again -- this asserts they
+// start from the same pattern.
+//
 // Read a #define's integer value. Deliberately no regex: this file is written
 // through shell heredocs that mangle backslash escapes, and a silently broken
 // pattern here would make every assertion below vacuously pass on null.

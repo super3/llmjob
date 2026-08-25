@@ -318,6 +318,32 @@ describe('PearlMiner — shares', () => {
     expect(sock.written).toHaveLength(0);
   });
 
+  // A proof over the WRONG rows is internally consistent -- the leaves hash to
+  // the root, because they are real leaves of the same tree -- so hashing alone
+  // cannot catch it. The verifier reads each claimed row as bytes
+  // [row*k, row*k+k) out of the leaves it was given, and answers "Failed to
+  // extract strip" when they are not there.
+  //
+  // This is not a hypothetical. The device expanded the tile's row offset
+  // against a hand-written mask that still said 4 rows after the tile grew to
+  // 16, so it snapshotted rows a quarter of the way up the matrix. The fold was
+  // right, the hash was right, the proof verified, and the pool rejected every
+  // share.
+  test('a proof describing the wrong rows is dropped', () => {
+    const { core, sock, events } = withJob();
+    const hit = goodHit();
+    const jobKey = hash(Buffer.concat([Buffer.from(HEADER, 'hex'), buildConfig52(TINY)]));
+    const A = keyedHash(Buffer.alloc(32, 7), Buffer.alloc(64), TINY.m * TINY.k);
+    // Rows 16..31 rather than the 0..15 that region 0 names. Same tree, same
+    // root, a perfectly valid Merkle proof -- of the wrong thing.
+    const wrongRows = TINY.rows ? TINY.rows.map((r) => r + 16)
+      : Array.from({ length: 16 }, (_, i) => i + 16);
+    hit.proofA = proofSide(A, wrongRows, TINY.k, jobKey);
+    core.emit('hit', hit);
+    expect(sock.written).toHaveLength(0);
+    expect(events.log.some((l) => /does not verify locally/.test(l.line))).toBe(true);
+  });
+
   test('the pool verdict is matched back to the job that produced it', () => {
     const { core, sock, events } = withJob();
     core.emit('hit', goodHit());

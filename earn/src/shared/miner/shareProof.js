@@ -15,7 +15,7 @@
 // it, and produces the base64 `plain_proof` field.
 
 const { regionToTile, PROFILE } = require('./pearlhash');
-const { verifyProof } = require('./merkle');
+const { verifyProof, leafIndicesFromRows } = require('./merkle');
 const { encodePlainProof } = require('./plainProof');
 
 const CHUNK_LEN = 1024;
@@ -60,6 +60,21 @@ function buildShareProof(hit, jobKey, profile) {
   if (!verifyProof(jobKey, a) || !verifyProof(jobKey, bt)) return null;
 
   const { rows, cols } = regionToTile(hit.nonce, p);
+
+  // The leaves must be the ones these rows actually live in. verifyProof
+  // cannot check that: it shows only that the leaves hash to the root, which
+  // is equally true of the WRONG leaves under the same tree.
+  //
+  // The verifier reads each claimed row as bytes [row*k, row*k+k) out of the
+  // leaves we supply, and answers "Failed to extract strip" when they are not
+  // covered. That is what a stale row mask on the device produced: the fold was
+  // right, the hash was right, the proof verified against its own root, and the
+  // rows it described were a quarter of the way up the matrix.
+  if (!sameIndices(a.leafIndices, leafIndicesFromRows(rows, p.k))
+      || !sameIndices(bt.leafIndices, leafIndicesFromRows(cols, p.k))) {
+    return null;
+  }
+
   return encodePlainProof({
     m: p.m,
     n: p.n,
@@ -70,4 +85,8 @@ function buildShareProof(hit, jobKey, profile) {
   });
 }
 
-module.exports = { CHUNK_LEN, DIGEST_LEN, unpackSide, buildShareProof };
+function sameIndices(a, b) {
+  return a.length === b.length && a.every((x, i) => x === b[i]);
+}
+
+module.exports = { CHUNK_LEN, DIGEST_LEN, unpackSide, buildShareProof, sameIndices };
