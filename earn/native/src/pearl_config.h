@@ -247,6 +247,25 @@ static_assert(PEARL_COLS_COUNT == (1u << pearl_popcount_ce(PEARL_COLS_MASK)),
 // through to a tail loop -- it just pays the arithmetic per chunk again.
 #define PEARL_STAGE_SLOTS 4
 
+// How many row-block groups a wave of blocks walks before moving across.
+//
+// The blocks resident at any moment decide what has to be in L2. Numbering them
+// so that consecutive blocks walk DOWN the rows means the ~256 blocks resident
+// on a 4090 span every row of A and a single column group of B: A is re-read
+// from memory once per column group, which for the mandated geometry is 256
+// times, or 16 GB a sweep against a 64 MB operand.
+//
+// Grouping them into a square instead -- 16 row groups by however many column
+// groups the wave covers -- means a wave touches 16*128 rows and 16*128
+// columns, a quarter of a megabyte an operand, which stays in L2. The work is
+// identical; only the order changes.
+#define PEARL_BLOCK_GROUP 16
+
+// Transcript registers per lane: a warp's regions times buckets, over 32 lanes.
+#define PEARL_JACKPOT_REGS \
+  ((PEARL_WMMA_ROW_TILES * (PEARL_WMMA_ROWS / PEARL_ROWS_COUNT) * PEARL_WMMA_COL_BLK \
+    * PEARL_JACKPOT_BUCKETS + 31u) / 32u)
+
 #define PEARL_SB_STRIDE 144
 
 // How many of a block's warps sit along the ROW dimension. The rest go across

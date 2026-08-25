@@ -778,10 +778,29 @@ extern "C" __global__ void pearl_partials(const int8_t *__restrict__ Aprime,
 // deleting the whole chunk readout gains under a third.
 //
 // Ampere and later only; older parts keep the register round trip.
+// Two staging policies, because the two operands are reused differently.
+//
+// Both blocks resident on an SM carry the SAME row group -- consecutive
+// blocks vary the row group fastest, and an SM gets blocks a grid-width
+// apart -- so A is read twice per SM and B once. Shared leaves about 28 KB
+// of the 128 KB pool as L1, and a chunk of A is 16 KB: it fits, and pays for
+// itself on the second read. A chunk of B is another 16 KB per block, which
+// does not fit alongside it and would evict A on the way past.
+//
+// So A goes through L1 (.ca) and B streams past it (.cg).
+__device__ __forceinline__ void pearl_cp_async16_ca(void *smem, const void *gmem) {
+#if __CUDA_ARCH__ >= 800
+  const uint32_t addr = (uint32_t)__cvta_generic_to_shared(smem);
+  asm volatile("cp.async.ca.shared.global [%0], [%1], 16;" ::"r"(addr), "l"(gmem));
+#else
+  *(int4 *)smem = *(const int4 *)gmem;
+#endif
+}
+
 __device__ __forceinline__ void pearl_cp_async16(void *smem, const void *gmem) {
 #if __CUDA_ARCH__ >= 800
   const uint32_t addr = (uint32_t)__cvta_generic_to_shared(smem);
-  asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(addr), "l"(gmem));
+  asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::"r"(addr), "l"(gmem));
 #else
   *(int4 *)smem = *(const int4 *)gmem;
 #endif
@@ -876,8 +895,26 @@ extern "C" __global__ void pearl_tile_fold_wmma(
   const uint32_t wr = warp % PEARL_WARP_ROWS;                // row slot in the block
   const uint32_t wc = warp / PEARL_WARP_ROWS;                // column slot
   const uint32_t row_block_groups = row_blocks / PEARL_WARP_ROWS;
-  const uint32_t rbg = (uint32_t)(blockIdx.x % row_block_groups);
-  const uint32_t cbg = (uint32_t)(blockIdx.x / row_block_groups);
+
+  // Walk the grid in squares rather than in columns. See PEARL_BLOCK_GROUP: the
+  // straight row-major numbering had every resident block sharing one column
+  // group of B and between them covering all of A, so A came from memory again
+  // for every column group. A band is PEARL_BLOCK_GROUP row groups deep and the
+  // full width of the grid; blocks fill a band's rows before stepping across,
+  // so the blocks in flight form a square and both operands stay in L2.
+  //
+  // Still a bijection, which is what matters: every block lands on exactly one
+  // (row group, column group), and the last band is allowed to be short.
+  const uint32_t col_block_groups = (uint32_t)(gridDim.x) / row_block_groups;
+  const uint32_t band_blocks = PEARL_BLOCK_GROUP * col_block_groups;
+  const uint32_t band = (uint32_t)blockIdx.x / band_blocks;
+  const uint32_t in_band = (uint32_t)blockIdx.x % band_blocks;
+  const uint32_t band_first = band * PEARL_BLOCK_GROUP;
+  const uint32_t band_rows = row_block_groups - band_first < PEARL_BLOCK_GROUP
+                                 ? row_block_groups - band_first
+                                 : PEARL_BLOCK_GROUP;
+  const uint32_t rbg = band_first + in_band % band_rows;
+  const uint32_t cbg = in_band / band_rows;
 
   const uint32_t rb = rbg * PEARL_WARP_ROWS + wr;
   const uint32_t cgb = cbg * warp_cols + wc;                 // column-group BLOCK
@@ -1021,7 +1058,7 @@ extern "C" __global__ void pearl_tile_fold_wmma(
       for (uint32_t j = 0; j < PEARL_STAGE_SLOTS; j++) {
         const uint32_t i = threadIdx.x + j * blockDim.x;
         if (i < btotal) pearl_cp_async16(sB + bdst[j], Bprime + bsrc[j] + k0);
-        if (i < atotal) pearl_cp_async16(sA + adst[j], Aprime + asrc[j] + k0);
+        if (i < atotal) pearl_cp_async16_ca(sA + adst[j], Aprime + asrc[j] + k0);
       }
       // Only a geometry that needs more slots than were precomputed gets here.
       for (uint32_t i = threadIdx.x + PEARL_STAGE_SLOTS * blockDim.x; i < btotal;
