@@ -61,7 +61,7 @@ const VECTOR = {
   hashB: 'fd92a6ebb7d5c0e0f1aaf5289acfc741567403b14354cb02e9855adcb873bad1',
   bSeed: '5a9212d24feb66f6effc0770fffe926d629dbfa75d4b8e7da10c174827214afb',
   aSeed: '7b4cef96a1e9fe63f26ff618685ac6f6f608333fb2f8c812575ece1bff71b77f',
-  jackpotHash: '573aa803823bcdd100f9444fbc2e1195f3a618d722c30a41e167af673a92636c',
+  jackpotHash: '73b1674844b1e0584b0d8e22ea40e3aaa8a324f7265a46df7fc2ddb870a3d068',
 };
 
 describe('PearlHash reference — known-answer vector', () => {

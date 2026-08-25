@@ -39,11 +39,11 @@ const DEVICE = {
   bSeed: 'e2ddeef931319829e2a34ce7dd25c1a8688f7e78d8c9897a9d2fdbf013fcbda6',
   // salt, region -> jackpot hash
   regions: [
-    [0, 1, 'dde091fcd4a90ecdd4a8a8a25fcce748fe531536126440c88a712f0bad558100'],
-    [0, 2090, 'da17102b4feabb27c0c5effa84e52e6d04db70f458b3452da10f0bc706aa4800'],
-    [1, 53, '8950a06d37a34afbf86c30e34e5ee04b0df7b455cd446a5a071428f8edeefc00'],
-    [1, 2049, '64642ca785059873cbbeca813bfe632db95a10646790d14a4483e62fd096b103'],
-    [2, 19, 'd5ff456ef990e155761afa5eb34284ee464e120f759cb72279afda0d915d2a03'],
+    [0, 93, 'a7c93598b4f31830ca885a113291c8bcc7f29ed96197e6b300cd47c830785100'],
+    [0, 2052, '711a66a671f29ab1f9803aadcac029067239b3fc8654d86e3d62c5d25c24aa00'],
+    [1, 52, '0c6f755cb17278811e3522a7e4bef33214a39525fa91acf4a9480458a9cb3203'],
+    [1, 2092, '1cb4841be72f20646ce1d677db5d25076ed310d8408f20c449fe883e0fd6ee00'],
+    [2, 79, 'f6615d40358a80b6095859badf9e0a00bede1054fa3ac63847a56b2a9f5a4e02'],
   ],
 };
 
@@ -113,14 +113,21 @@ function foldRegion(region, salt) {
   const tile = regionToTile(region, PROFILE);
   const chunks = Math.ceil(k / rank);
   const j = new Uint32Array(JACKPOT_BUCKETS);
+  // CUMULATIVE across chunks. The reference declares jackpot_tile outside the
+  // chunk loop and never resets it, so the value XORed at chunk c is the dot
+  // product over all of k up to that point. Resetting per chunk hashes a
+  // different function, and the only symptom is that no pool accepts a share.
+  const acc = new Int32Array(tile.rows.length * tile.cols.length);
   for (let chunk = 0; chunk < chunks; chunk++) {
     const k0 = chunk * rank;
     let tileXor = 0;
-    for (const r of tile.rows) {
-      for (const c of tile.cols) {
-        let acc = 0;
-        for (let t = 0; t < rank; t++) acc = (acc + Ap[r * k + k0 + t] * Bp[c * k + k0 + t]) | 0;
-        tileXor = (tileXor ^ acc) >>> 0;
+    for (let ri = 0; ri < tile.rows.length; ri++) {
+      for (let ci = 0; ci < tile.cols.length; ci++) {
+        const r = tile.rows[ri], c = tile.cols[ci];
+        let v = acc[ri * tile.cols.length + ci];
+        for (let t = 0; t < rank; t++) v = (v + Ap[r * k + k0 + t] * Bp[c * k + k0 + t]) | 0;
+        acc[ri * tile.cols.length + ci] = v;
+        tileXor = (tileXor ^ v) >>> 0;
       }
     }
     j[chunk % JACKPOT_BUCKETS] = rotl13(j[chunk % JACKPOT_BUCKETS]) ^ tileXor;
@@ -171,7 +178,7 @@ describe('the mirrored pipeline', () => {
   test('every transcript lane is written exactly once', () => {
     // k/rank = 16 chunks against 16 lanes, so the rotation never wraps.
     expect(k / rank).toBe(JACKPOT_BUCKETS);
-    const t = foldRegion(1, 0).transcript;
+    const t = foldRegion(93, 0).transcript;
     for (let i = 0; i < JACKPOT_BUCKETS; i++) expect(t.readUInt32LE(i * 4)).not.toBe(0);
   });
 
