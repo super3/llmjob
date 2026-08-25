@@ -157,6 +157,39 @@ jest.mock('../src/main/minerManager', () => {
   return { MinerManager };
 });
 
+// Our own Pearl core, selected with engine: 'pearl'. It shares MinerManager's
+// surface exactly, which is the point of PearlEngine -- so the assertions here
+// are about main.js CHOOSING it and skipping alpha-miner's whole download /
+// version / driver path, not about the miner itself.
+jest.mock('../src/main/pearlEngine', () => {
+  const { EventEmitter } = require('events');
+  class PearlEngine extends EventEmitter {
+    constructor(opts) {
+      super();
+      this.opts = opts;
+      this._running = false;
+      this.start = jest.fn((settings) => {
+        this.settings = settings;
+        if (PearlEngine.startError) throw PearlEngine.startError;
+        this._running = true;
+      });
+      this.stop = jest.fn(() => { this._running = false; });
+      this.isRunning = jest.fn(() => this._running);
+      PearlEngine.instances.push(this);
+    }
+  }
+  PearlEngine.instances = [];
+  PearlEngine.startError = null;
+  return { PearlEngine };
+});
+
+jest.mock('../src/main/pearlCore', () => ({
+  loadCore: jest.fn(() => null),
+  coreFactory: jest.fn(() => null),
+}));
+
+jest.mock('net', () => ({ connect: jest.fn(() => ({ on: jest.fn(), write: jest.fn(), destroy: jest.fn() })) }));
+
 jest.mock('../src/main/engineManager', () => {
   class EngineManager {
     constructor(opts) {
@@ -315,6 +348,7 @@ function loadMain(opts = {}) {
   ctx.probe = require('../src/main/probe');
   ctx.nodeStore = require('../src/main/nodeStore');
   ctx.MinerManager = require('../src/main/minerManager').MinerManager;
+  ctx.PearlEngine = require('../src/main/pearlEngine').PearlEngine;
   ctx.EngineManager = require('../src/main/engineManager').EngineManager;
   ctx.LlmManager = require('../src/main/llmManager').LlmManager;
   ctx.LlmEngineManager = require('../src/main/llmEngineManager').LlmEngineManager;
@@ -2184,5 +2218,66 @@ describe('node linking', () => {
     ctx.emit('miner:start', { address: 'bad', mode: 'mining', worker: 'zzz' });
     await flush();
     expect(ctx.nodeStore.saveNode).not.toHaveBeenCalled();
+  });
+});
+
+describe('engine selection', () => {
+  // Choosing our own core has to skip everything alpha-miner needs: there is no
+  // binary to download, no version to resolve and no driver floor, because the
+  // miner is this process and the GPU work is a linked addon. If main.js fell
+  // through to the alpha path it would download half a gigabyte nobody uses.
+  test("engine 'pearl' starts our core and never touches alpha-miner", async () => {
+    const ctx = await boot();
+    ctx.PearlEngine.instances.length = 0;
+    ctx.MinerManager.instances.length = 0;
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining', engine: 'pearl' });
+    await flush();
+    expect(ctx.PearlEngine.instances).toHaveLength(1);
+    expect(ctx.MinerManager.instances).toHaveLength(0);
+    const e = ctx.PearlEngine.instances[0];
+    expect(e.start).toHaveBeenCalled();
+    // The endpoint is resolved by main.js from the region, the same way the
+    // alpha path resolves it — the engine is not asked to do it again.
+    expect(typeof e.settings.endpoint).toBe('string');
+    expect(e.settings.endpoint.length).toBeGreaterThan(0);
+  });
+
+  // net.connect takes the PORT first and PearlMiner hands over host first, so
+  // the adapter flips them. Backwards, this fails to connect with an error that
+  // names neither side.
+  test('the injected connect passes host and port to net in the right order', async () => {
+    const ctx = await boot();
+    // AFTER boot: it resets the module registry, so a handle taken earlier
+    // belongs to a mock instance main.js never saw.
+    const net = require('net');
+    ctx.PearlEngine.instances.length = 0;
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining', engine: 'pearl' });
+    await flush();
+    net.connect.mockClear();
+    ctx.PearlEngine.instances[0].opts.connect('pool.example', 1200);
+    expect(net.connect).toHaveBeenCalledWith(1200, 'pool.example');
+  });
+
+  test('the default engine is still alpha-miner', async () => {
+    const ctx = await boot();
+    ctx.PearlEngine.instances.length = 0;
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    expect(ctx.PearlEngine.instances).toHaveLength(0);
+  });
+
+  // A throwing start is reported like any other launch failure rather than
+  // taking the main process down.
+  test('a failed pearl start is reported, not thrown', async () => {
+    const ctx = await boot();
+    ctx.PearlEngine.instances.length = 0;
+    ctx.PearlEngine.startError = new Error('no core');
+    try {
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining', engine: 'pearl' });
+      await flush();
+      expect(ctx.PearlEngine.instances).toHaveLength(1);
+    } finally {
+      ctx.PearlEngine.startError = null;
+    }
   });
 });

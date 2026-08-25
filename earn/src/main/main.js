@@ -14,7 +14,10 @@ const https = require('https');
 
 const { autoUpdater } = require('electron-updater');
 
+const net = require('net');
 const { MinerManager } = require('./minerManager');
+const { PearlEngine } = require('./pearlEngine');
+const { coreFactory } = require('./pearlCore');
 const { EngineManager } = require('./engineManager');
 const { LlmManager } = require('./llmManager');
 const { LlmEngineManager } = require('./llmEngineManager');
@@ -280,6 +283,28 @@ async function startMining(settings) {
   const endpoint = resolveEndpoint(settings);
   send('miner:log', { level: 'info', line: 'connecting to ' + endpoint + ' · worker ' + (settings.worker || DEFAULTS.worker) });
 
+  // Our own Pearl core, when it is the selected engine. Nothing below applies
+  // to it: there is no binary to download, no version to select and no
+  // alpha-miner driver floor, because the miner is this process and the GPU
+  // work is a linked N-API addon.
+  //
+  // coreFactory returns null when pearl_core.node is not present, which is the
+  // expected state on a machine without a CUDA build. PearlEngine then stops
+  // cleanly and says so rather than opening a pool socket it could never feed.
+  if (String(settings.engine || '') === 'pearl') {
+    miner = new PearlEngine({
+      connect: (host, port) => net.connect(port, host),
+      createCore: coreFactory({ resourcesPath: process.resourcesPath }),
+    });
+    wireMinerEvents(miner, endpoint);
+    try {
+      miner.start(Object.assign({}, settings, { endpoint }));
+    } catch (e) {
+      reportLaunchFailure(e, false);
+    }
+    return;
+  }
+
   // Resolve the engine. Each platform picks the newest build its hardware can
   // actually run — off Windows from the driver version (the 1.8.6+ line is
   // faster but needs NVIDIA driver >= 580), on Windows from the GPU's compute
@@ -371,6 +396,26 @@ async function startMining(settings) {
 
   // Real alpha-miner engine.
   miner = new MinerManager({ spawn });
+  wireMinerEvents(miner, endpoint);
+
+  if (binaryPath && !fs.existsSync(binaryPath)) {
+    // ensure() handed us a path but the file is already gone — the classic
+    // antivirus-quarantined-it-right-after-download case.
+    reportLaunchFailure(null, true);
+  } else if (binaryPath) {
+    try {
+      // engineVersion selects the argument shape: 1.9.4 takes --host/--worker
+      // <address>.<rig>/--gpu, nothing like the 1.8.x --pool/--address vector.
+      miner.start(Object.assign({}, settings, { platform: process.platform, binaryPath: binaryPath, engineVersion: version }));
+    } catch (e) {
+      reportLaunchFailure(e, false);
+    }
+  }
+}
+
+// Event wiring shared by both engines. PearlEngine exists precisely so that
+// this, and everything downstream of it, does not care which one is running.
+function wireMinerEvents(miner, endpoint) {
   miner.on('log', (l) => send('miner:log', l));
   // Said once, not on every 5s retry. The engine's own line repeats verbatim and
   // names neither the host it tried nor the fact that the name never resolved,
@@ -392,20 +437,6 @@ async function startMining(settings) {
   });
   miner.on('error', (err) => reportLaunchFailure(err, false));
   miner.on('stopped', (code) => send('miner:log', { level: 'info', line: 'engine exited (code ' + code + ')' }));
-
-  if (binaryPath && !fs.existsSync(binaryPath)) {
-    // ensure() handed us a path but the file is already gone — the classic
-    // antivirus-quarantined-it-right-after-download case.
-    reportLaunchFailure(null, true);
-  } else if (binaryPath) {
-    try {
-      // engineVersion selects the argument shape: 1.9.4 takes --host/--worker
-      // <address>.<rig>/--gpu, nothing like the 1.8.x --pool/--address vector.
-      miner.start(Object.assign({}, settings, { platform: process.platform, binaryPath: binaryPath, engineVersion: version }));
-    } catch (e) {
-      reportLaunchFailure(e, false);
-    }
-  }
 }
 
 function stopMining() {

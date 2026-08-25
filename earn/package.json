@@ -65,6 +65,13 @@
           "filter": [
             "**/*.dll"
           ]
+        },
+        {
+          "from": "vendor/native",
+          "to": "native",
+          "filter": [
+            "**/*.node"
+          ]
         }
       ]
     },
@@ -93,6 +100,13 @@
           "to": "llm-runtime",
           "filter": [
             "**/*.dll"
+          ]
+        },
+        {
+          "from": "vendor/native",
+          "to": "native",
+          "filter": [
+            "**/*.node"
           ]
         }
       ]
