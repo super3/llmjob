@@ -767,6 +767,34 @@ extern "C" __global__ void pearl_partials(const int8_t *__restrict__ Aprime,
 // One warp covers PEARL_WMMA_ROW_TILES 16-row blocks against one column group.
 // A 16-row block is four consecutive row offsets, so a warp carries
 // 4*PEARL_WMMA_ROW_TILES regions and emits a transcript for each.
+// A 16-byte global->shared copy that does not pass through registers.
+//
+// The plain form, *(int4 *)dst = *(const int4 *)src, loads into a register and
+// stores it out again: it holds a register for the whole latency of the load
+// and cannot retire until the data arrives. cp.async hands the copy to the
+// memory pipeline and lets the thread carry on, which matters here because
+// staging is what this kernel spends most of its time on -- deleting the two
+// copy loops (results wrong, ceiling only) more than triples the rate, while
+// deleting the whole chunk readout gains under a third.
+//
+// Ampere and later only; older parts keep the register round trip.
+__device__ __forceinline__ void pearl_cp_async16(void *smem, const void *gmem) {
+#if __CUDA_ARCH__ >= 800
+  const uint32_t addr = (uint32_t)__cvta_generic_to_shared(smem);
+  asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(addr), "l"(gmem));
+#else
+  *(int4 *)smem = *(const int4 *)gmem;
+#endif
+}
+
+// Wait for every copy this thread issued to have landed.
+__device__ __forceinline__ void pearl_cp_async_wait() {
+#if __CUDA_ARCH__ >= 800
+  asm volatile("cp.async.commit_group;\n" ::);
+  asm volatile("cp.async.wait_group 0;\n" ::);
+#endif
+}
+
 // XOR of three words in one instruction. 0x96 is the lop3 truth table for
 // a ^ b ^ c. ptxas often finds this itself, but the fold's reduction tree is
 // hot enough to be worth stating outright.
@@ -891,16 +919,17 @@ extern "C" __global__ void pearl_tile_fold_wmma(
         const uint32_t q = i % quads;
         const uint32_t c = pearl_expand_offset(col_off + cg0 + (col >> 4), PEARL_COLS_MASK)
                            + (col & 15u);
-        const int4 *src = (const int4 *)(Bprime + (size_t)c * k + k0 + q * 16);
-        *(int4 *)(sB + (size_t)col * PEARL_SB_STRIDE + q * 16) = *src;
+        pearl_cp_async16(sB + (size_t)col * PEARL_SB_STRIDE + q * 16,
+                         Bprime + (size_t)c * k + k0 + q * 16);
       }
       const uint32_t atotal = sa_rows * quads;
       for (uint32_t i = threadIdx.x; i < atotal; i += blockDim.x) {
         const uint32_t row = i / quads;
         const uint32_t q = i % quads;
-        const int4 *src = (const int4 *)(Aprime + (size_t)(row_base + row) * k + k0 + q * 16);
-        *(int4 *)(sA + (size_t)row * PEARL_SB_STRIDE + q * 16) = *src;
+        pearl_cp_async16(sA + (size_t)row * PEARL_SB_STRIDE + q * 16,
+                         Aprime + (size_t)(row_base + row) * k + k0 + q * 16);
       }
+      pearl_cp_async_wait();
     }
     __syncthreads();
 
