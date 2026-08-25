@@ -56,12 +56,12 @@ function operandB() {
 }
 
 const VECTOR = {
-  jobKey: '493ce04e1cf06d00df87a2b2d3eea2624284dff2134c83c557d3c20b01c6aeb1',
-  hashA: '4bb1af08c057387a8673074c0c519f75db61d478bb6ccdfa093be7ce14fe3288',
-  hashB: 'fd92a6ebb7d5c0e0f1aaf5289acfc741567403b14354cb02e9855adcb873bad1',
-  bSeed: '5a9212d24feb66f6effc0770fffe926d629dbfa75d4b8e7da10c174827214afb',
-  aSeed: '7b4cef96a1e9fe63f26ff618685ac6f6f608333fb2f8c812575ece1bff71b77f',
-  jackpotHash: '73b1674844b1e0584b0d8e22ea40e3aaa8a324f7265a46df7fc2ddb870a3d068',
+  jobKey: '6067f255c955f1cf849b2fc5107f4c769b94a705b59e6b792eb689a791038a78',
+  hashA: '9d3b42c623c95c41b7e1d0a634674f7e440a5424f2eb3f8b326e96ca06b6cdc2',
+  hashB: 'b6b10c4b8c8173c2a05f2f5a6a8a2d6c34dd42889f4c248fd0446f8580c907af',
+  bSeed: 'fc11a3328fe77830e289334a057e0c9857cd752e10c156a6544a501752c9949a',
+  aSeed: '53de1c85b1a1b09a40c72eba188edf85865007d251f8db80de17471db73e7687',
+  jackpotHash: 'f6b96ebcb7c3cf11000d9386143d60c155c470d8c53688cee8d6a428ff33fae6',
 };
 
 describe('PearlHash reference — known-answer vector', () => {

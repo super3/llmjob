@@ -742,10 +742,20 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
                warpsPerBlock, (unsigned long long)rowBlocks);
     return false;
   }
-  const size_t smem = (size_t)warpsPerBlock * 256 * sizeof(uint32_t)
-                      + (size_t)warpsPerBlock * regionsPerWarp * PEARL_WMMA_COL_BLK
-                            * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)
-                      + (size_t)PEARL_WMMA_COL_BLK * 16 * PEARL_SB_STRIDE;
+  const size_t smem = (size_t)warpsPerBlock * regionsPerWarp * PEARL_WMMA_COL_BLK
+                          * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)
+                      + (size_t)PEARL_WMMA_COL_BLK * 16 * PEARL_SB_STRIDE
+                      + (size_t)warpsPerBlock * regionsPerWarp * PEARL_ROWS_COUNT
+                            * PEARL_SB_STRIDE;
+  // Staging both operands puts this past the 48 KB a block gets by default.
+  // Ada allows 99 KB per block, but only when asked; without this the launch
+  // fails with an invalid-configuration error rather than running slowly.
+  static bool smemOptedIn = false;
+  if (!smemOptedIn) {
+    cudaFuncSetAttribute(reinterpret_cast<const void *>(pearl_tile_fold_wmma),
+                         cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
+    smemOptedIn = true;
+  }
   pearl_tile_fold_wmma<<<blocks, threads, smem>>>(
       ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
       col_off, ctx->rowsValid, col_groups, ctx->dJackpot);

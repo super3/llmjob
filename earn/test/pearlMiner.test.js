@@ -160,7 +160,7 @@ describe('PearlMiner — protocol', () => {
     // the raw target makes shares 65536x rarer than the pool intends, which reads
     // as bad luck rather than as a bug.
     expect(arg.target).toBe(shareBound(BigInt('0x' + TARGET), PROFILE));
-    expect(arg.target).toBe(BigInt('0x' + TARGET) * 131072n);
+    expect(arg.target).toBe(BigInt('0x' + TARGET) * 524288n);
   });
 
   // A target so easy that scaling it by the adjustment factor would not fit 256

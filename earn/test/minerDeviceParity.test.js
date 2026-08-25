@@ -35,15 +35,15 @@ const PROFILE = { k: 512, rank: 32, mmaType: 0, m: 512, n: 512 };
 const { m, n, k, rank } = PROFILE;
 
 const DEVICE = {
-  aSeed: 'f7e0c24c564783f940f1e682ea74727c8b7e50e4c26199e15ce42593b454c390',
-  bSeed: 'e2ddeef931319829e2a34ce7dd25c1a8688f7e78d8c9897a9d2fdbf013fcbda6',
+  aSeed: 'ff6556a61358e74b7adb65f03b81bac8868d330c7a8d386a1460d7d7f57dc024',
+  bSeed: 'edb3483789036d710f24aa23a16be7a471def174b90a748783bceaab724614e7',
   // salt, region -> jackpot hash
   regions: [
-    [0, 93, 'a7c93598b4f31830ca885a113291c8bcc7f29ed96197e6b300cd47c830785100'],
-    [0, 2052, '711a66a671f29ab1f9803aadcac029067239b3fc8654d86e3d62c5d25c24aa00'],
-    [1, 52, '0c6f755cb17278811e3522a7e4bef33214a39525fa91acf4a9480458a9cb3203'],
-    [1, 2092, '1cb4841be72f20646ce1d677db5d25076ed310d8408f20c449fe883e0fd6ee00'],
-    [2, 79, 'f6615d40358a80b6095859badf9e0a00bede1054fa3ac63847a56b2a9f5a4e02'],
+    [0, 3, '0f826edbfe51e32eac38f100d578d7b7da6858a959338b5b691b2edbff313503'],
+    [0, 629, 'd502d7e96219fff91e953c6d92c69004885d43879062329ec2b8e9b398cc5302'],
+    [1, 9, '16b9a97be6b5d62a0d432620b86f208f2b90e6a363ba4449c964d7fc98be7e02'],
+    [1, 637, '4eadf6ff2b144561ed5e4b2cbd51bdfefab8b630e931db0a54650c7fc6e02e02'],
+    [2, 57, '91d7162abf7a4e028a49f1e32dc1ff761d2f998ad2205743b8697802c527cc02'],
   ],
 };
 
@@ -178,7 +178,7 @@ describe('the mirrored pipeline', () => {
   test('every transcript lane is written exactly once', () => {
     // k/rank = 16 chunks against 16 lanes, so the rotation never wraps.
     expect(k / rank).toBe(JACKPOT_BUCKETS);
-    const t = foldRegion(93, 0).transcript;
+    const t = foldRegion(3, 0).transcript;
     for (let i = 0; i < JACKPOT_BUCKETS; i++) expect(t.readUInt32LE(i * 4)).not.toBe(0);
   });
 

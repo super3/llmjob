@@ -55,19 +55,33 @@
 
 // The mandated mainnet profile. rank=128 is the post-softfork value; mining any
 // other rank produces work the network does not credit.
-// The tile index sets. These are the reference implementation's own defaults —
-// a 4 x 8 tile whose indices are NOT a simple stride, which is what an earlier
-// guess assumed.
-// The tile is CONTIGUOUS: four consecutive rows by sixteen consecutive columns,
-// which is what the reference miner actually opens blocks with. Its fixtures
-// use A rows [192,193,194,195] and consecutive B columns -- not the strided set
-// MiningConfiguration carries as a DEFAULT. Both are legal, since the pattern is
-// self-describing in config52 and the miner picks it, but contiguous gives one
-// unbroken run of B, a Merkle proof over consecutive chunks, and the shape an
-// int8 tensor-core mma maps onto directly.
-#define PEARL_ROWS_COUNT 4
+// The tile is 16 CONSECUTIVE ROWS by 16 CONSECUTIVE COLUMNS.
+//
+// Tile size is free. It cancels out of the share rate exactly:
+//   shares/s = regions/s * bound/2^256
+//            = (MACs/s / (tile*k)) * (target * tile * (k/rank) * 128) / 2^256
+// leaves MACs/s * 128 / (rank * difficulty). So the tile is chosen purely for
+// what it costs to READ OUT, and 16x16 is the shape that costs nothing.
+//
+// A 16x16 tile is exactly one int8 wmma accumulator fragment. The XOR over the
+// tile is then the XOR over every lane's registers followed by one warp
+// reduction -- no shared memory, no barriers, and no need to know which element
+// sits in which register, because XOR does not care about order.
+//
+// The previous 4x16 tile was a QUARTER of a fragment, so the fold had to spill
+// each accumulator to shared memory and gather four rows back out, twice per
+// fragment per chunk. Measured on a 4090: deleting the readout entirely took
+// the kernel from 57 to 185 TH/s, so that gather was two thirds of all runtime.
+//
+// h*w = 256 is the largest the sanity checks allow, and both dimensions are
+// divisible by TILE_H = 2.
+//
+// The pattern is self-describing in config52 and the miner picks it, so this is
+// as legal as the strided 4x8 set MiningConfiguration carries as a DEFAULT.
+#define PEARL_ROWS_COUNT 16
 #define PEARL_COLS_COUNT 16
-static const uint32_t PEARL_ROWS_PATTERN[PEARL_ROWS_COUNT] = {0, 1, 2, 3};
+static const uint32_t PEARL_ROWS_PATTERN[PEARL_ROWS_COUNT] = {0, 1, 2,  3,  4,  5,  6,  7,
+                                                              8, 9, 10, 11, 12, 13, 14, 15};
 static const uint32_t PEARL_COLS_PATTERN[PEARL_COLS_COUNT] = {0, 1, 2,  3,  4,  5,  6,  7,
                                                               8, 9, 10, 11, 12, 13, 14, 15};
 
@@ -77,7 +91,7 @@ static const uint32_t PEARL_COLS_PATTERN[PEARL_COLS_COUNT] = {0, 1, 2,  3,  4,  
 // test/nativeConfig.test.js so the two cannot drift.
 // A contiguous run is a single (stride 1, length N) dimension: factor byte 0,
 // length byte N-1.
-static const uint8_t PEARL_ROWS_PATTERN_BYTES[6] = {0, 3, 0, 0, 0, 0};
+static const uint8_t PEARL_ROWS_PATTERN_BYTES[6] = {0, 15, 0, 0, 0, 0};
 static const uint8_t PEARL_COLS_PATTERN_BYTES[6] = {0, 15, 0, 0, 0, 0};
 
 typedef struct PearlProfile {

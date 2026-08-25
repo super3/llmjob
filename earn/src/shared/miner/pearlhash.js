@@ -59,7 +59,27 @@
 // {0,1} and columns {0..15} the subsets of bits {0,1,2,3}, so a valid offset is
 // still one with the pattern's own bits clear -- a multiple of 4 down and of 16
 // across. Re-checked against a transcription of offset_is_valid.
-const ROWS_PATTERN = [0, 1, 2, 3];
+// The tile is 16 CONSECUTIVE ROWS by 16 CONSECUTIVE COLUMNS.
+//
+// Tile size is free. It cancels out of the share rate exactly:
+//   shares/s = regions/s * bound/2^256
+//            = (MACs/s / (tile*k)) * (target * tile * (k/rank) * 128) / 2^256
+// leaves MACs/s * 128 / (rank * difficulty). So the tile is chosen purely for
+// what it costs to READ OUT, and 16x16 is the shape that costs nothing.
+//
+// A 16x16 tile is exactly one int8 wmma accumulator fragment. The XOR over the
+// tile is then the XOR over every lane's registers followed by one warp
+// reduction -- no shared memory, no barriers, and no need to know which element
+// sits in which register, because XOR does not care about order.
+//
+// The previous 4x16 tile was a QUARTER of a fragment, so the fold had to spill
+// each accumulator to shared memory and gather four rows back out, twice per
+// fragment per chunk. Measured on a 4090: deleting the readout entirely took
+// the kernel from 57 to 185 TH/s, so that gather was two thirds of all runtime.
+//
+// h*w = 256 is the largest the sanity checks allow, and both dimensions are
+// divisible by TILE_H = 2.
+const ROWS_PATTERN = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 const COLS_PATTERN = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
 // Expand a pattern's (stride, length) dimensions into its index list, exactly as
