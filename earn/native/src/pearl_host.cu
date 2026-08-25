@@ -730,9 +730,22 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
                                * (col_groups / PEARL_WMMA_COL_BLK);
   const unsigned blocks =
       (unsigned)((warpsNeeded + warpsPerBlock - 1) / warpsPerBlock);
+  // The staged B block is shared by every warp in the CTA, which is only sound
+  // while a CTA's warps all sit in the same column-group block. Consecutive
+  // slots differ in the row block first, so that holds exactly when the warp
+  // count divides the row-block count.
+  const uint64_t rowBlocks = ctx->rowsValid / regionsPerWarp;
+  if (rowBlocks % warpsPerBlock != 0) {
+    if (err && err_len)
+      snprintf(err, err_len,
+               "warps per block (%u) must divide the row-block count (%llu)",
+               warpsPerBlock, (unsigned long long)rowBlocks);
+    return false;
+  }
   const size_t smem = (size_t)warpsPerBlock * 256 * sizeof(uint32_t)
                       + (size_t)warpsPerBlock * regionsPerWarp * PEARL_WMMA_COL_BLK
-                            * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t);
+                            * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)
+                      + (size_t)PEARL_WMMA_COL_BLK * 16 * PEARL_SB_STRIDE;
   pearl_tile_fold_wmma<<<blocks, threads, smem>>>(
       ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
       col_off, ctx->rowsValid, col_groups, ctx->dJackpot);

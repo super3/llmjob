@@ -195,6 +195,12 @@ typedef struct PearlProfile {
 //
 // With one column group per warp, A was re-read once per group: about 33 GB a
 // batch, which put the fused kernel at 4.7 TH/s.
+// Bytes of shared memory one staged B column occupies. The chunk is rank
+// elements of int8, and the stride is padded past 128 so that the 16 columns of
+// a fragment do not all land on the same shared-memory banks. wmma requires a
+// 16-byte-aligned leading dimension for integer types, which 144 satisfies.
+#define PEARL_SB_STRIDE 144
+
 #define PEARL_WMMA_ROW_TILES 2
 #define PEARL_WMMA_COL_BLK 4
 

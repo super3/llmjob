@@ -785,23 +785,26 @@ extern "C" __global__ void pearl_tile_fold_wmma(
   // Each warp now carries PEARL_WMMA_COL_BLK column groups, so there are that
   // many times fewer of them. Counting the old way let surplus warps compute a
   // column-group block past the end and write outside the transcript buffer.
-  if (slot >= (uint64_t)row_blocks * (col_groups / PEARL_WMMA_COL_BLK)) return;
+  //
+  // A surplus warp may NOT simply return: staging B is a block-wide cooperative
+  // load, and a __syncthreads() some warps never reach hangs the launch.
+  const bool active = slot < (uint64_t)row_blocks * (col_groups / PEARL_WMMA_COL_BLK);
 
   const uint32_t rb = (uint32_t)(slot % row_blocks);
   const uint32_t cgb = (uint32_t)(slot / row_blocks);        // column-group BLOCK
   const uint32_t r0idx = rb * regions_per_warp;              // first row-offset index
-  const uint32_t cg0 = cgb * PEARL_WMMA_COL_BLK;
   const uint32_t kfrags = rank / 16;
 
-  // One expanded column offset per group this warp carries.
-  uint32_t c0s[PEARL_WMMA_COL_BLK];
-#pragma unroll
-  for (uint32_t cb = 0; cb < PEARL_WMMA_COL_BLK; cb++) {
-    c0s[cb] = pearl_expand_offset(col_off + cg0 + cb, PEARL_COLS_MASK);
-  }
+  // The column-group block for the WHOLE CTA, taken from warp 0's slot rather
+  // than each warp's own. Every warp in the block shares it -- consecutive
+  // slots differ only in the row block -- and the host guarantees that by
+  // refusing to stage unless row_blocks divides evenly by the warp count. It
+  // has to come from blockIdx, because a surplus warp's own cgb is past the end.
+  const uint32_t cg0 = (uint32_t)(((uint64_t)blockIdx.x * warps_per_block) / row_blocks)
+                       * PEARL_WMMA_COL_BLK;
 
-  // Shared: one 16x16 int32 unpack buffer per warp, then this warp's
-  // transcripts.
+  // Shared: one 16x16 int32 unpack buffer per warp, this warp's transcripts,
+  // then the staged B columns shared by the whole block.
   extern __shared__ uint32_t smem_u32[];
   uint32_t *tile = smem_u32 + (size_t)warp * 256;
   // Stride by the FULL per-warp transcript block: regions times column groups.
@@ -810,7 +813,19 @@ extern "C" __global__ void pearl_tile_fold_wmma(
                  + (size_t)warp * regions_per_warp * PEARL_WMMA_COL_BLK
                        * PEARL_JACKPOT_BUCKETS;
 
-  for (uint32_t i = lane; i < regions_per_warp * PEARL_WMMA_COL_BLK * PEARL_JACKPOT_BUCKETS; i += 32) jp[i] = 0u;
+  // B for this block, one chunk at a time. Every warp in the block wants the
+  // same PEARL_WMMA_COL_BLK*16 columns, so reading them once here instead of
+  // once per warp divides B's share of the traffic by the warp count. B is the
+  // dominant term: a warp covers only PEARL_WMMA_ROW_TILES*16 rows, so B gets
+  // re-read far more often than A does.
+  int8_t *sB = (int8_t *)(smem_u32 + (size_t)warps_per_block * 256
+                          + (size_t)warps_per_block * regions_per_warp
+                                * PEARL_WMMA_COL_BLK * PEARL_JACKPOT_BUCKETS);
+  const uint32_t sb_cols = PEARL_WMMA_COL_BLK * 16;
+
+  if (active) {
+    for (uint32_t i = lane; i < regions_per_warp * PEARL_WMMA_COL_BLK * PEARL_JACKPOT_BUCKETS; i += 32) jp[i] = 0u;
+  }
   __syncwarp();
 
   // The accumulators live across the whole of k, not one chunk -- one per
@@ -824,6 +839,27 @@ extern "C" __global__ void pearl_tile_fold_wmma(
 
   for (uint32_t chunk = 0; chunk < chunks; chunk++) {
     const uint32_t k0 = chunk * rank;
+
+    // Cooperative block-wide load of this chunk's B columns, as int4 so each
+    // thread moves 16 bytes at a time. The two barriers are both required: the
+    // first publishes the new chunk, the second keeps a fast warp from
+    // overwriting it while a slow one is still reading the old one.
+    __syncthreads();
+    {
+      const uint32_t quads = rank / 16;                 // int4 per column
+      const uint32_t total = sb_cols * quads;
+      for (uint32_t i = threadIdx.x; i < total; i += blockDim.x) {
+        const uint32_t col = i / quads;
+        const uint32_t q = i % quads;
+        const uint32_t c = pearl_expand_offset(col_off + cg0 + (col >> 4), PEARL_COLS_MASK)
+                           + (col & 15u);
+        const int4 *src = (const int4 *)(Bprime + (size_t)c * k + k0 + q * 16);
+        *(int4 *)(sB + (size_t)col * PEARL_SB_STRIDE + q * 16) = *src;
+      }
+    }
+    __syncthreads();
+
+    if (!active) continue;
     for (uint32_t t = 0; t < kfrags; t++) {
       // Load each A fragment ONCE and drive it against every column group this
       // warp carries. That is the whole point of the blocking.
@@ -837,7 +873,8 @@ extern "C" __global__ void pearl_tile_fold_wmma(
 #pragma unroll
       for (uint32_t cb = 0; cb < PEARL_WMMA_COL_BLK; cb++) {
         wmma::fragment<wmma::matrix_b, 16, 16, 16, int8_t, wmma::col_major> bF;
-        wmma::load_matrix_sync(bF, Bprime + (size_t)c0s[cb] * k + k0 + t * 16, k);
+        wmma::load_matrix_sync(bF, sB + (size_t)(cb * 16) * PEARL_SB_STRIDE + t * 16,
+                               PEARL_SB_STRIDE);
 #pragma unroll
         for (uint32_t ti = 0; ti < PEARL_WMMA_ROW_TILES; ti++) {
           wmma::mma_sync(cF[ti][cb], aF[ti], bF, cF[ti][cb]);
@@ -879,6 +916,7 @@ extern "C" __global__ void pearl_tile_fold_wmma(
   }
 
   // Emit one transcript per region.
+  if (!active) return;
   __syncwarp();
   const uint32_t total_jp = regions_per_warp * PEARL_WMMA_COL_BLK * PEARL_JACKPOT_BUCKETS;
   for (uint32_t i = lane; i < total_jp; i += 32) {
