@@ -240,7 +240,47 @@ static_assert(PEARL_COLS_COUNT == (1u << pearl_popcount_ce(PEARL_COLS_MASK)),
 // elements of int8, and the stride is padded past 128 so that the 16 columns of
 // a fragment do not all land on the same shared-memory banks. wmma requires a
 // 16-byte-aligned leading dimension for integer types, which 144 satisfies.
+// How many int4 of each operand one thread stages per chunk, which is also how
+// many staging addresses it precomputes. ceil(max(sb_cols, sa_rows) * quads /
+// threads): at the mandated geometry 128 columns (and 128 rows) x 8 int4 over
+// 256 threads = 4. A geometry needing more still works -- the surplus falls
+// through to a tail loop -- it just pays the arithmetic per chunk again.
+#define PEARL_STAGE_SLOTS 4
+
+// How many row-block groups a wave of blocks walks before moving across.
+//
+// The blocks resident at any moment decide what has to be in L2. Numbering them
+// so that consecutive blocks walk DOWN the rows means the ~256 blocks resident
+// on a 4090 span every row of A and a single column group of B: A is re-read
+// from memory once per column group, which for the mandated geometry is 256
+// times, or 16 GB a sweep against a 64 MB operand.
+//
+// Grouping them into a square instead -- 32 row groups by however many column
+// groups the wave covers -- means a wave touches 32*128 rows and 8*128
+// columns, a quarter of a megabyte an operand, which stays in L2. The work is
+// identical; only the order changes.
+#define PEARL_BLOCK_GROUP 32
+
+// Transcript registers per lane: a warp's regions times buckets, over 32 lanes.
+#define PEARL_JACKPOT_REGS \
+  ((PEARL_WMMA_ROW_TILES * (PEARL_WMMA_ROWS / PEARL_ROWS_COUNT) * PEARL_WMMA_COL_BLK \
+    * PEARL_JACKPOT_BUCKETS + 31u) / 32u)
+
 #define PEARL_SB_STRIDE 144
+
+// How many of a block's warps sit along the ROW dimension. The rest go across
+// the columns, so a block covers
+//   PEARL_WARP_ROWS * PEARL_WMMA_ROW_TILES * 16   rows
+//   (warps/PEARL_WARP_ROWS) * PEARL_WMMA_COL_BLK * 16 columns.
+//
+// This decides arithmetic intensity, which is what the kernel is actually
+// limited by. A sweep reads A once per column-block and B once per row-block:
+//   traffic = m*k*(n/bN) + n*k*(m/bM)
+// so for a fixed number of warps the tile wants to be SQUARE. Laying all eight
+// warps along the rows made a 256x64 block, which re-read A 512 times a sweep
+// for 43 GB; 4x2 makes it 128x128 and 34 GB for exactly the same registers,
+// shared memory and occupancy.
+#define PEARL_WARP_ROWS 4
 
 #define PEARL_WMMA_ROW_TILES 2
 #define PEARL_WMMA_COL_BLK 4
@@ -264,8 +304,8 @@ static const uint8_t PEARL_SEED_SALT_B[32] = {
 // mandated rank, and k/rank = 16 chunks is exactly the transcript lane count, so
 // each chunk lands in its own lane and the rotation never wraps.
 static const PearlProfile PEARL_MAINNET_PROFILE = {2048u, 128u, 0u,
-                                                   32768u, 32768u,
-                                                   PEARL_SEED_SALTED, 512u, 0u};
+                                                   131072u, 131072u,
+                                                   PEARL_SEED_SALTED, 2048u, 0u};
 
 // Serialize the 52-byte mining configuration, matching the reference's
 // MiningConfiguration::to_bytes byte for byte:

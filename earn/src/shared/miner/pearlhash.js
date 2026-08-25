@@ -194,9 +194,20 @@ const PROFILE = {
   // came from a hashrate that was not a rate and a miner that stalled a few
   // seconds into every measurement, so they described nothing.
   //
-  // Measured on a 4090 with the tensor-core partials kernel, at col_batch 512:
-  // 16384 -> 62.2, 32768 -> 65.7 TH/s, and 65536 is within noise of that. The
-  // curve plateaus rather than peaking, so this takes the knee.
+  // What this trades is L2 residency against how often the operands must be
+  // redrawn: one draw yields (m/16)*(n/16) regions and not one more, so doubling
+  // m and n quarters the number of redraws.
+  //
+  // The knee used to sit at 32768 because a redraw cost 4.4 ms, more than half
+  // of it generating operands a byte at a time. With that fixed the curve moved:
+  // measured at col_batch 4096, 16384 -> 155.3, 32768 -> 171.8, 65536 -> 183.3,
+  // 131072 -> 190.1, 262144 -> 191.7 TH/s. It is still climbing past here, and
+  // what stops it is VRAM: this size measures 2.5 GB in use against 0.4 GB at
+  // 32768, and 262144 would be about five. The card also has a language model
+  // on it, so the last 1% is not worth doubling the footprint for.
+  //
+  // Both operands no longer fit in the 4090's 72 MB L2 at this size, which the
+  // measurement says costs less than the redraws it saves.
   //
   // MUST be a power of two, and not merely as a tuning preference. The operand
   // commitment is a BLAKE3 Merkle tree over 1024-byte chunks and the device
@@ -204,13 +215,19 @@ const PROFILE = {
   // a power-of-two chunk count -- BLAKE3's real layout is left-heavy. A value
   // like 12288 (3 * 4096) gives a wrong root, wrong seeds, and shares no pool
   // will accept, and the small parity profile cannot catch it.
-  m: 32768,
-  n: 32768,
+  m: 131072,
+  n: 131072,
 
   // Column offsets per launch. Not protocol: it trades VRAM for amortised
-  // launch overhead. 32 -> 55.4, 64 -> 58.3, 256 -> 60.8, 512 -> 63.1,
-  // 1024 -> 64.4 TH/s at m=6144, so this is well past the knee.
-  colBatch: 512,
+  // launch overhead, and the host clamps it to the number of valid column
+  // offsets, so 2048 means ONE launch covers a whole operand draw.
+  //
+  // Re-measured at the current geometry: 256 -> 111.2, 512 -> 112.1,
+  // 1024 -> 112.7, 2048 -> 113.3 TH/s, and VRAM does not move (the jackpot
+  // buffer is sized from the clamped context width, not from this hint).
+  // The older figures here were taken at m=6144 and no longer describe
+  // anything this profile does.
+  colBatch: 2048,
   // Which seed derivation binds the operand roots. 'salted' is cert-v3:
   //   hash_a' = blake3(hash_a ‖ pad32(m), key=SEED_SALT_A)
   //   hash_b' = blake3(hash_b ‖ pad32(n), key=SEED_SALT_B)
