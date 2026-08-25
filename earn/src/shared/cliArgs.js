@@ -3,7 +3,7 @@
 // Pure argument parsing for the headless Linux CLI miner (src/cli/earn-cli.js).
 // Turns a bare argv array into a validated settings object — the same shape the
 // GUI's main process hands to MinerManager (address / worker / region /
-// difficulty / backend), so the two share buildArgs, EngineManager, etc. Kept
+// difficulty), so the two share the same settings shape. Kept
 // pure and dependency-free so it's fully unit-tested; the CLI shell wires the
 // real IO (download, spawn, network reporting) around it.
 
@@ -22,7 +22,7 @@ const ALIASES = {
   '-w': '--worker',
   '-d': '--difficulty',
   '-g': '--gpu',
-  '-b': '--binary',
+
   '-h': '--help',
   '-v': '--version',
 };
@@ -30,7 +30,7 @@ const ALIASES = {
 // Options that consume a following value.
 const VALUE_FLAGS = new Set([
   '--address', '--mdl', '--region', '--worker',
-  '--difficulty', '--gpu', '--backend', '--binary', '--engine-dir',
+  '--difficulty', '--gpu',
   '--stats-file',
   '--mode', '--llm-binary', '--llm-model', '--llm-max-instances',
 ]);
@@ -64,9 +64,7 @@ const USAGE = [
   '  -w, --worker <name>      Worker/rig name (default: this machine\'s hostname)',
   '  -d, --difficulty <n>     Static share difficulty (default: from detected/--gpu card, else ' + DEFAULTS.difficulty + ')',
   '  -g, --gpu <card>         GPU name for the difficulty table (default: auto-detect via nvidia-smi)',
-  '      --backend <name>     Force an engine backend (e.g. ampere)',
-  '  -b, --binary <path>      Use this alpha-miner binary instead of downloading one',
-  '      --engine-dir <path>  Where to cache the downloaded engine',
+
   '      --stats-file <path>  Write live stats JSON here every 10s (for HiveOS h-stats etc.)',
   '      --no-report          Do not publish live status to the public network board',
   '      --no-serve           Do not serve inference jobs for the LLMJob network',
@@ -127,9 +125,7 @@ function buildSettings(opts, errors, report, update, serve) {
     difficulty = gpu ? difficultyForCard(gpu) : DEFAULTS.difficulty;
   }
 
-  const backend = opts['--backend'] != null ? String(opts['--backend']).trim() : null;
-  const binaryPath = opts['--binary'] != null ? String(opts['--binary']) : null;
-  const engineDir = opts['--engine-dir'] != null ? String(opts['--engine-dir']) : null;
+
   const statsFile = opts['--stats-file'] != null ? String(opts['--stats-file']) : null;
   const llmBinary = opts['--llm-binary'] != null ? String(opts['--llm-binary']) : null;
   const llmModel = opts['--llm-model'] != null ? String(opts['--llm-model']) : null;
@@ -155,7 +151,7 @@ function buildSettings(opts, errors, report, update, serve) {
   const modeProvided = opts['--mode'] != null;
 
   return {
-    address, mdlAddress, region, worker, gpu, difficulty, backend, binaryPath, engineDir, statsFile,
+    address, mdlAddress, region, worker, gpu, difficulty, statsFile,
     mode, llmBinary, llmModel, llmMaxInstances,
     report, update, serve: serve !== false, regionProvided, gpuProvided, difficultyProvided, workerProvided, modeProvided,
   };

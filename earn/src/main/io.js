@@ -12,8 +12,26 @@ const http = require('http');
 const https = require('https');
 const tls = require('tls');
 const { execFile } = require('child_process');
-const { progressPercent } = require('../shared/engine');
-const { isTlsTrustError } = require('../shared/engineError');
+// Percentage of a download, or null when the server sent no length. Lived in
+// shared/engine until alpha-miner was removed; it was never about the engine.
+function progressPercent(received, total) {
+  if (!total || total <= 0) return null;
+  return Math.max(0, Math.min(100, Math.round((received / total) * 100)));
+}
+
+// A certificate chain that could not be verified — a missing trust anchor,
+// which retrying with more anchors can genuinely fix. Deliberately excludes
+// expiry and hostname mismatches: those are real rejections that no extra CA
+// should paper over. Some layers hand the failure on as a plain Error with the
+// OpenSSL reason in the text and no code, so the wording is matched too.
+const TLS_TRUST_CODES = /UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT|SELF_SIGNED_CERT_IN_CHAIN|DEPTH_ZERO_SELF_SIGNED_CERT|CERT_UNTRUSTED/i;
+const TLS_TRUST_TEXT = /unable to verify the first certificate|self[- ]signed certificate|unable to get (local )?issuer certificate/i;
+
+function isTlsTrustError(err) {
+  if (!err) return false;
+  const code = String(err.code || err.errno || '');
+  return TLS_TRUST_CODES.test(code) || TLS_TRUST_TEXT.test(String(err.message || ''));
+}
 const { parseChatStream } = require('../shared/llmChat');
 
 // Minimal JSON POST → { status, data, raw }. Resolves for ANY HTTP status
@@ -471,6 +489,8 @@ function extractEnginePackage(archivePath, destDir) {
 }
 
 module.exports = {
+  progressPercent,
+  isTlsTrustError,
   postJson,
   getJson,
   downloadFile,

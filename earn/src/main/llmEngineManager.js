@@ -3,7 +3,21 @@
 const path = require('path');
 const { LLM } = require('../shared/config');
 const { resolveServerBinary } = require('../shared/llama');
-const { isArchiveUrl, looksLikeArchive } = require('../shared/engine');
+// Archive detection for downloaded llama-server builds. These lived in
+// shared/engine until alpha-miner was removed; they were never engine-specific.
+function isArchiveUrl(url) {
+  return /\.(zip|tar\.gz|tgz)$/i.test(String(url));
+}
+
+// The magic bytes of the archive formats we download. A cached file starting
+// with one of these is an un-extracted archive sitting where the binary
+// belongs -- install left it there, so it must not be trusted as the binary.
+// gzip = 1f 8b, zip = "PK\x03\x04".
+function looksLikeArchive(head) {
+  const b = Buffer.isBuffer(head) ? head : Buffer.alloc(0);
+  if (b.length >= 2 && b[0] === 0x1f && b[1] === 0x8b) return true;
+  return b.length >= 4 && b[0] === 0x50 && b[1] === 0x4b && b[2] === 0x03 && b[3] === 0x04;
+}
 
 // Where an archive lands before it's extracted. One fixed name for every format:
 // extractLlamaZip picks tar-vs-unzip from the file's MAGIC BYTES, not its
@@ -125,4 +139,4 @@ class LlmEngineManager {
   }
 }
 
-module.exports = { LlmEngineManager };
+module.exports = { LlmEngineManager, isArchiveUrl, looksLikeArchive };

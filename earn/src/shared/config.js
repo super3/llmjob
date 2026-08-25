@@ -2,26 +2,37 @@
 
 // Static configuration for the LLMJob Earn desktop wrapper.
 //
-// The app wraps the AlphaPool `alpha-miner` engine for Pearl (PRL). All values
-// below come from the AlphaPool setup page (pearl.alphapool.tech/#setup):
-// Stratum endpoints, the per-card static-difficulty table, the engine binaries,
-// and the network economics used for earnings estimates. The binary path is
-// configurable so a downloaded alpha-miner build drops in without code changes.
+// The app mines Pearl (PRL) with our own CUDA core — see src/main/pearlMiner.js
+// and earn/native. There is no external engine to download, no vendored binary
+// and no dev fee.
+//
+// The pool is HeroMiners. AlphaPool was dropped along with alpha-miner: it gates
+// its stratum behind a GPU-solved challenge and then DICTATES the mining
+// geometry (M/N=131072, K=4096, a 2x64 tile), which is shaped for Hopper's
+// wgmma and awkward on everything else. HeroMiners sends a header and a target
+// and lets the miner choose its own geometry, which is what the protocol
+// actually allows — the verifier reconstructs the tile pattern from the row
+// indices in the submitted proof.
 
 // Stratum pool endpoints (host:port). Pick the closest for lowest share latency.
+// Every one of these was checked to resolve and accept a connection on 1200.
 const REGIONS = {
-  us1: { label: 'us1', flag: '🇺🇸', name: 'N. America · East', endpoint: 'us1.alphapool.tech:5566' },
-  us2: { label: 'us2', flag: '🇺🇸', name: 'N. America · West', endpoint: 'us2.alphapool.tech:5566' },
-  eu1: { label: 'eu1', flag: '🇪🇺', name: 'Europe', endpoint: 'eu1.alphapool.tech:5566' },
-  eu2: { label: 'eu2', flag: '🇪🇺', name: 'Europe', endpoint: 'eu2.alphapool.tech:5566' },
-  ru1: { label: 'ru1', flag: '🇷🇺', name: 'Russia · Eurasia', endpoint: 'ru1.alphapool.tech:5566' },
-  sg1: { label: 'sg1', flag: '🇸🇬', name: 'Asia · Singapore', endpoint: 'sg1.alphapool.tech:5566' },
-  hk1: { label: 'hk1', flag: '🇭🇰', name: 'Asia · Hong Kong', endpoint: 'hk1.alphapool.tech:5566' },
-  in1: { label: 'in1', flag: '🇮🇳', name: 'India', endpoint: 'in1.alphapool.tech:5566' },
+  us: { label: 'us', flag: '🇺🇸', name: 'N. America · East', endpoint: 'us.pearl.herominers.com:1200' },
+  us2: { label: 'us2', flag: '🇺🇸', name: 'N. America · West', endpoint: 'us2.pearl.herominers.com:1200' },
+  ca: { label: 'ca', flag: '🇨🇦', name: 'N. America · Canada', endpoint: 'ca.pearl.herominers.com:1200' },
+  br: { label: 'br', flag: '🇧🇷', name: 'S. America · Brazil', endpoint: 'br.pearl.herominers.com:1200' },
+  de: { label: 'de', flag: '🇩🇪', name: 'Europe · Germany', endpoint: 'de.pearl.herominers.com:1200' },
+  fi: { label: 'fi', flag: '🇫🇮', name: 'Europe · Finland', endpoint: 'fi.pearl.herominers.com:1200' },
+  fr: { label: 'fr', flag: '🇫🇷', name: 'Europe · France', endpoint: 'fr.pearl.herominers.com:1200' },
+  tr: { label: 'tr', flag: '🇹🇷', name: 'Europe · Turkey', endpoint: 'tr.pearl.herominers.com:1200' },
+  sg: { label: 'sg', flag: '🇸🇬', name: 'Asia · Singapore', endpoint: 'sg.pearl.herominers.com:1200' },
+  hk: { label: 'hk', flag: '🇭🇰', name: 'Asia · Hong Kong', endpoint: 'hk.pearl.herominers.com:1200' },
+  kr: { label: 'kr', flag: '🇰🇷', name: 'Asia · Korea', endpoint: 'kr.pearl.herominers.com:1200' },
+  au: { label: 'au', flag: '🇦🇺', name: 'Oceania · Australia', endpoint: 'au.pearl.herominers.com:1200' },
 };
 
 const DEFAULTS = {
-  region: 'us2',
+  region: 'us',
   worker: 'rig01',
   difficulty: 524288, // RTX 4090 / 5080 class — a safe general default
   algo: 'pearlhash',
@@ -29,17 +40,25 @@ const DEFAULTS = {
 };
 
 // Engine / pool metadata.
+//
+// There is nothing to download any more: the engine is our own CUDA core,
+// linked into this process as an N-API addon (earn/native), so no URL, no zip
+// and no Docker image. The dev fee is zero and there is no dev-address code
+// path — this is our own implementation written against the ISC-licensed
+// reference, not a derivative of any fee-bearing miner.
+//
+// The pool terms are HeroMiners' own, read from
+// https://pearl.herominers.com/api/stats rather than transcribed from a setup
+// page: fee 0, paymentsInterval 3600s, minPaymentThreshold 1e8 against
+// coinUnits 1e8 (so 1 PRL), rewardScheme "prop".
 const MINER = {
-  engine: 'alpha-miner',
-  downloadUrl: 'https://pearl.alphapool.tech/downloads/alpha-miner',
-  windowsZipNvidia: 'AlphaMiner-Pearl-Windows.zip', // contains alpha-miner-windows.exe
-  windowsZipAmd: 'AlphaMiner-Pearl-AMD.zip', // contains alpha-miner-amd-windows-fixed.exe
-  dockerImage: 'alphaminetech/pearl-miner:1.7.9',
+  engine: 'llmjob-pearl',
+  pool: 'HeroMiners',
   pow: 'pearlhash',
   devFeePct: 0,
-  poolFeePct: 1,
-  payoutScheme: 'PPLNS',
-  payoutIntervalHours: 4,
+  poolFeePct: 0,
+  payoutScheme: 'PROP',
+  payoutIntervalHours: 1,
   minPayoutPrl: 1,
 };
 

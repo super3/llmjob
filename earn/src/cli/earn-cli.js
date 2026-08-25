@@ -16,21 +16,20 @@ const fs = require('fs');
 const { parseCliArgs, USAGE } = require('../shared/cliArgs');
 const selfUpdater = require('./selfUpdater');
 const { planUpdate } = require('../shared/selfUpdate');
-const { MinerManager } = require('../main/minerManager');
-const { EngineManager } = require('../main/engineManager');
+const net = require('net');
+const { PearlEngine } = require('../main/pearlEngine');
+const { coreFactory } = require('../main/pearlCore');
 const { LlmManager } = require('../main/llmManager');
 const { LlmEngineManager } = require('../main/llmEngineManager');
-const { postJson, downloadFile, streamChatCompletion, extractLlamaZip, extractEnginePackage } = require('../main/io');
+const { postJson, downloadFile, streamChatCompletion, extractLlamaZip } = require('../main/io');
 const {
-  detectRegion, detectVram, detectGpusVram, detectDriverMajor, postMinerReport, findFreePort,
+  detectRegion, detectVram, detectGpusVram, postMinerReport, findFreePort,
 } = require('../main/probe');
 const probe = require('../main/probe');
 const nodeStore = require('../main/nodeStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const { NETWORK, MINER, LLM, NODE, resolveEndpoint, regionLabel, difficultyForCard } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
-const { ENGINE, engineVersionFor, driverTooOld, engineDownloadUrl, backendForEngine, manualInstallHint } = require('../shared/engine');
-const { describeSetupError } = require('../shared/engineError');
 const nodeProto = require('../shared/node');
 const { buildMinerReports } = require('../shared/minerReport');
 const { statsFilePayload } = require('../shared/statsFile');
@@ -66,81 +65,9 @@ function detectGpu() {
   return probe.detectGpuInfo();
 }
 
-// The pool's bare Linux binaries need no extractor, and there is no Linux ZIP —
-// so this stays a hard "unsupported". Packaged engines (1.9.1b's tarball) go
-// through extractPackage instead, which is wired to the real tar helper.
-function extractUnsupported() {
-  return Promise.reject(new Error('zip extraction is not supported on the Linux CLI'));
-}
-
 // llama-server zips extract via the shared io helper; point failures at the
 // CLI's escape hatch.
 const LLM_UNZIP_HINT = 'install unzip, or pass --llm-binary </path/to/llama-server>';
-
-async function resolveEngine(settings) {
-  if (settings.binaryPath) {
-    if (!fs.existsSync(settings.binaryPath)) {
-      throw new Error('engine binary not found: ' + settings.binaryPath);
-    }
-    return settings.binaryPath;
-  }
-
-  // One build per platform now — see ENGINE. The driver check no longer selects
-  // anything, but it is still worth saying out loud BEFORE a HiveOS rig spends
-  // half a gigabyte of bandwidth on an engine its driver will refuse to run.
-  const driverMajor = await detectDriverMajor();
-  const version = engineVersionFor(process.platform);
-  log('engine:     alpha-miner ' + version);
-  if (driverTooOld(driverMajor)) {
-    log('WARNING:    NVIDIA driver ' + driverMajor + ' is older than R' + ENGINE.minDriverMajor
-      + ' (CUDA 13). alpha-miner ' + version + ' will exit at startup with a driver notice —'
-      + ' update the driver. There is no older build to fall back to: a pre-fork engine'
-      + ' mines work the network no longer credits.');
-  }
-
-  // A packaged launcher rejects --force-backend (exit 2) and picks the backend
-  // itself. backendForEngine strips the override and logs why, rather than
-  // letting a working rig turn into one that refuses to start.
-  settings.backend = backendForEngine(settings.backend, process.platform, version, log);
-
-  const dir = settings.engineDir || path.join(os.homedir(), '.local', 'share', 'llmjob-earn', 'engine');
-  const url = engineDownloadUrl(process.platform, settings.gpu, null, version);
-  const engine = new EngineManager({
-    dir,
-    platform: process.platform,
-    gpu: settings.gpu,
-    version,
-    fs,
-    download: downloadFile,
-    extract: extractUnsupported,
-    extractPackage: extractEnginePackage,
-    chmod: fs.chmodSync,
-  });
-
-  if (engine.isInstalled()) {
-    log('engine found: ' + engine.binaryPath());
-  } else {
-    log('downloading mining engine from ' + url + ' …');
-  }
-  let binaryPath;
-  try {
-    binaryPath = await engine.ensure((pct) => {
-      if (pct != null) process.stdout.write('\r  downloading… ' + pct + '%   ');
-    });
-  } catch (e) {
-    // Carry the two things the failure message needs — which artifact this rig
-    // wants and where it has to be saved — out to the reporting site, which has
-    // neither the driver-picked version nor the engine dir.
-    e.downloadUrl = url;
-    // A packaged engine is unpacked, not renamed into place — manualInstallHint
-    // picks "save it as <file>" vs "extract it into <dir>" for us.
-    Object.assign(e, manualInstallHint(process.platform, version, dir));
-    throw e;
-  }
-  process.stdout.write('\n');
-  log('engine ready: ' + binaryPath);
-  return binaryPath;
-}
 
 // Explicit `llmjob-earn-cli update` — check the latest release and, if this is
 // the packaged binary, replace it in place.
@@ -653,26 +580,17 @@ async function run(argv) {
   let reporter = null;
   let statsWriter = null;
   let llm = null;
-  let binaryPath = null;
   let stopping = false;
 
   // ── Miner ────────────────────────────────────────────────────────────────
   if (plan.miner) {
-    try {
-      binaryPath = await resolveEngine(settings);
-    } catch (e) {
-      log(describeSetupError({
-        err: e,
-        downloadUrl: e.downloadUrl || MINER.downloadUrl,
-        manualPath: e.manualPath,
-        extractDir: e.extractDir,
-      }).log, process.stderr);
-      return 1;
-    }
-
-    miner = new MinerManager({ spawn });
-    miner.on('started', ({ bin, args }) => {
-      log('starting: ' + bin + ' ' + args.join(' '));
+    // No engine to resolve: the GPU work is a linked N-API addon, so there is
+    // nothing to download, no version to pick and no driver gate to clear
+    // before we know whether this rig can mine. coreFactory returns null when
+    // pearl_core.node is absent, and PearlEngine says so and stops.
+    miner = new PearlEngine({
+      connect: (host, port) => net.connect(port, host),
+      createCore: coreFactory({ resourcesPath: process.resourcesPath }),
     });
     miner.on('log', (l) => log(l.line, l.level === 'error' ? process.stderr : process.stdout));
     miner.on('event', (evt) => {
@@ -780,7 +698,7 @@ async function run(argv) {
         finish(stopping ? 0 : (code || 0));
       });
       try {
-        miner.start(Object.assign({}, settings, { platform: process.platform, binaryPath }));
+        miner.start(Object.assign({}, settings, { endpoint: resolveEndpoint(settings) }));
       } catch (e) {
         log('failed to launch engine: ' + e.message, process.stderr);
         if (llm) llm.stop();

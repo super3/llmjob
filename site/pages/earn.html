@@ -375,7 +375,7 @@
     <div>
       <div class="step-n">1</div>
       <h3 class="col-title">Get a payout address</h3>
-      <p class="col-text">Open the <a href="https://wallet.alphapool.tech/" target="_blank" rel="noopener">Pearl web wallet</a> and generate your <span class="addr">prl1p…</span> address. It's your account — no sign-up.</p>
+      <p class="col-text">Get the <a href="https://github.com/pearl-research-labs/pearl/releases" target="_blank" rel="noopener">Pearl desktop wallet</a> and generate your <span class="addr">prl1p…</span> address. It's your account — no sign-up.</p>
     </div>
     <div>
       <div class="step-n">2</div>
@@ -386,7 +386,7 @@
     <div>
       <div class="step-n">3</div>
       <h3 class="col-title">Watch payouts arrive</h3>
-      <p class="col-text">First share in ~10s. PPLNS payouts every 4 hours.</p>
+      <p class="col-text">First share in ~10s. Proportional payouts every hour, 1 PRL minimum.</p>
       <div class="pay-row"><span>Balance</span><span class="amt">+128.407 PRL</span></div>
     </div>
   </div>
@@ -420,7 +420,7 @@
     <div class="hive-row"><span class="hk">Miner</span><span class="hv">Custom → <b>llmjob-earn</b></span></div>
     <div class="hive-row"><span class="hk">Installation URL</span><span class="hv mono">https://github.com/super3/llmjob/releases/latest/download/llmjob-earn-hiveos.tar.gz</span></div>
     <div class="hive-row"><span class="hk">Wallet template</span><span class="hv">Your <span class="mono">prl1p…</span> address</span></div>
-    <div class="hive-row"><span class="hk">Pool URL</span><span class="hv">Put any placeholder, e.g. <span class="mono">alphapool.tech:5566</span> — HiveOS won't save the flight sheet without it, but the miner ignores it and auto-picks the fastest region. Pass: leave blank.</span></div>
+    <div class="hive-row"><span class="hk">Pool URL</span><span class="hv">Put any placeholder, e.g. <span class="mono">pearl.herominers.com:1200</span> — HiveOS won't save the flight sheet without it, but the miner ignores it and auto-picks the fastest region. Pass: leave blank.</span></div>
     <div class="hive-row"><span class="hk">Extra config</span><span class="hv">Add <span class="mono">--mode mining</span> to skip the local LLM — optional.</span></div>
   </div>
   <p class="hive-note">Worker name comes from the rig's HiveOS name, and share difficulty auto-scales to the number of cards. Apply the flight sheet and the rig appears on the <a href="network.html" style="color:var(--accent);font-weight:600">network board</a>.</p>
@@ -468,7 +468,7 @@
         <div class="res-row"><span class="l">PRL price</span><span class="v" id="r-price">—</span></div>
         <div class="res-row"><span class="l">Network hashrate</span><span class="v" id="r-net">—</span></div>
       </div>
-      <p class="disclaimer"><span id="r-live">Loading live network data…</span> Estimated from the network hashrate, current block reward and the 1% pool fee. Mining is probabilistic — real payouts vary with luck and network growth.</p>
+      <p class="disclaimer"><span id="r-live">Loading live network data…</span> Estimated from the network hashrate and the current block reward. The pool takes no fee and neither do we. Mining is probabilistic — real payouts vary with luck and network growth.</p>
     </div>
   </div>
   <div class="percard">
@@ -725,7 +725,7 @@
     let PRICE = 0.30;               // PRL/USD (snapshot)
     let NET_TH = 60.6e6;            // network hashrate in TH/s, ~60.6 EH/s (snapshot)
     let DAILY_NET_PRL = 1.62e6;     // ~2,489 PRL/block × ~650 blocks/day (snapshot)
-    const FEE = 0.99;               // keep 99% after the 1% pool fee
+    const FEE = 1;                  // HeroMiners charges no pool fee, and our miner has no dev fee
     let live = { price: false, net: false, reward: false };
 
     const state = { hashrate: 354, cards: 1, selected: 'RTX 5090' };

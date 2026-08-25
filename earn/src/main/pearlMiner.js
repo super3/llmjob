@@ -112,7 +112,16 @@ class PearlMiner extends EventEmitter {
       sock.write(encode(buildAuthorize(wallet, worker)));
     });
     sock.on('data', (chunk) => this._onData(chunk, wallet, worker));
-    sock.on('error', (err) => this.emit('log', { level: 'error', line: 'pool socket error: ' + err.message }));
+    sock.on('error', (err) => {
+      this.emit('log', { level: 'error', line: 'pool socket error: ' + err.message });
+      // Structured, because a name that never resolves and a pool that is down
+      // look identical in the log line above. The host says so once, naming the
+      // host it tried — a rig that cannot do DNS otherwise just looks broken.
+      this.emit('connect-failed', {
+        reason: err.message,
+        dns: /ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(String(err.message)),
+      });
+    });
     sock.on('close', () => this._onClose(host, port, wallet, worker));
   }
 

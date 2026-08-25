@@ -88,22 +88,18 @@ describe('parseCliArgs — flags', () => {
 describe('buildSettings — validation', () => {
   test('a full valid command parses cleanly', () => {
     const r = parseCliArgs([
-      '-a', ADDR, '-m', MDL, '-r', 'eu1', '-w', 'rig7',
-      '-d', '131072', '-g', 'RTX 4090', '--backend', 'ampere',
-      '-b', '/opt/alpha-miner', '--engine-dir', '/tmp/eng',
+      '-a', ADDR, '-m', MDL, '-r', 'de', '-w', 'rig7',
+      '-d', '131072', '-g', 'RTX 4090',
       '--stats-file', '/run/hive/llmjob-earn-stats.json',
     ]);
     expect(r.errors).toEqual([]);
     expect(r.settings).toMatchObject({
       address: ADDR,
       mdlAddress: MDL,
-      region: 'eu1',
+      region: 'de',
       worker: 'rig7',
       difficulty: 131072,
       gpu: 'RTX 4090',
-      backend: 'ampere',
-      binaryPath: '/opt/alpha-miner',
-      engineDir: '/tmp/eng',
       statsFile: '/run/hive/llmjob-earn-stats.json',
       report: true,
       update: true,
@@ -179,12 +175,9 @@ describe('buildSettings — validation', () => {
     expect(parseCliArgs(['--address', ADDR]).settings.difficulty).toBe(DEFAULTS.difficulty);
   });
 
-  test('gpu is null when omitted; backend/binary/engineDir null when omitted', () => {
+  test('gpu is null when omitted', () => {
     const s = parseCliArgs(['--address', ADDR]).settings;
     expect(s.gpu).toBeNull();
-    expect(s.backend).toBeNull();
-    expect(s.binaryPath).toBeNull();
-    expect(s.engineDir).toBeNull();
     expect(s.statsFile).toBeNull();
   });
 });

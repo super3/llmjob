@@ -70,6 +70,10 @@ class PearlEngine extends EventEmitter {
       });
     });
 
+    // Forwarded as a parsed event because that is the shape main.js's DNS hint
+    // reads, and a name that does not resolve is worth saying plainly.
+    m.on('connect-failed', (e) => this.emit('event', Object.assign({ type: 'connect-failed' }, e)));
+
     m.on('share', () => { this.accepted++; this._status(); });
     m.on('rejected', () => { this.rejected++; this._status(); });
 

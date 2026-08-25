@@ -15,7 +15,13 @@ const { execFile } = require('child_process');
 const { REGIONS, DEFAULTS, NETWORK } = require('../shared/config');
 const { pickFastestRegion } = require('../shared/region');
 const { parseGpuStats, pickGpu, countGpus, parseMacGpu } = require('../shared/gpu');
-const { parseDriverMajor } = require('../shared/engine');
+// Major version out of an nvidia-smi driver string. Lived in shared/engine
+// until alpha-miner was removed; the driver version is a property of the
+// machine, not of any engine.
+function parseDriverMajor(output) {
+  const m = String(output == null ? '' : output).match(/(\d+)\.\d+/);
+  return m ? parseInt(m[1], 10) : null;
+}
 
 // Measure TCP connect latency (ms) to a "host:port" Stratum endpoint, or null
 // if it can't be reached within the timeout. Never rejects.
@@ -196,6 +202,7 @@ function detectGpuInfo() {
 }
 
 module.exports = {
+  parseDriverMajor,
   pingEndpoint,
   detectRegion,
   detectVram,

@@ -48,40 +48,32 @@ jest.mock('../src/cli/selfUpdater', () => ({
   reexec: jest.fn(),
 }));
 jest.mock('../src/shared/selfUpdate', () => ({ planUpdate: jest.fn() }));
-jest.mock('../src/main/minerManager', () => {
+// One engine now: our own core, in-process. There is nothing to download and
+// nothing to spawn, so the CLI's engine mocks are just this.
+jest.mock('../src/main/pearlEngine', () => {
   const { EventEmitter } = require('events');
-  class MinerManager extends EventEmitter {
+  class PearlEngine extends EventEmitter {
     constructor(opts) {
       super();
       this.opts = opts;
-      this.start = jest.fn(() => { if (MinerManager.startError) throw MinerManager.startError; });
-      this.stop = jest.fn();
-      MinerManager.instances.push(this);
-    }
-  }
-  MinerManager.instances = [];
-  MinerManager.startError = null;
-  return { MinerManager };
-});
-jest.mock('../src/main/engineManager', () => {
-  class EngineManager {
-    constructor(opts) {
-      this.opts = opts;
-      this.isInstalled = jest.fn(() => EngineManager.installed);
-      this.binaryPath = jest.fn(() => '/cache/alpha-miner');
-      this.ensure = jest.fn(async (onPct) => {
-        if (EngineManager.ensureError) throw EngineManager.ensureError;
-        if (onPct) { onPct(50); onPct(null); }
-        return '/cache/alpha-miner';
+      this.start = jest.fn((settings) => {
+        this.settings = settings;
+        if (PearlEngine.startError) throw PearlEngine.startError;
       });
-      EngineManager.instances.push(this);
+      this.stop = jest.fn();
+      this.isRunning = jest.fn(() => true);
+      PearlEngine.instances.push(this);
     }
   }
-  EngineManager.instances = [];
-  EngineManager.installed = false;
-  EngineManager.ensureError = null;
-  return { EngineManager };
+  PearlEngine.instances = [];
+  PearlEngine.startError = null;
+  return { PearlEngine };
 });
+jest.mock('../src/main/pearlCore', () => ({
+  loadCore: jest.fn(() => null),
+  coreFactory: jest.fn(() => null),
+}));
+jest.mock('net', () => ({ connect: jest.fn(() => ({ on: jest.fn(), write: jest.fn(), destroy: jest.fn() })) }));
 jest.mock('../src/main/llmManager', () => {
   const { EventEmitter } = require('events');
   class LlmManager extends EventEmitter {
@@ -145,7 +137,6 @@ const pkg = require('../package.json');
 const { NETWORK, NODE, LLM } = require('../src/shared/config');
 const nodeProto = require('../src/shared/node');
 const { ALL_LAYERS } = require('../src/shared/vram');
-const engine = require('../src/shared/engine');
 
 const ADDR = 'prl1p' + 'a'.repeat(30);
 const MDL = 'mdl1p' + 'b'.repeat(30);
@@ -181,7 +172,7 @@ async function settle(n) { for (let i = 0; i < (n || 4); i++) await tick(); }
 function applyDefaults(m) {
   m.cp.execFile.mockImplementation((cmd, args, opts, cb) => cb(new Error('no nvidia-smi')));
   m.fs.existsSync.mockReturnValue(true);
-  m.probe.detectRegion.mockResolvedValue('us1');
+  m.probe.detectRegion.mockResolvedValue('us');
   m.probe.detectVram.mockResolvedValue(null);
   m.probe.detectGpusVram.mockResolvedValue([]);
   m.probe.detectDriverMajor.mockResolvedValue(600);
@@ -213,8 +204,8 @@ function load() {
     m.nodeStore = require('../src/main/nodeStore');
     m.selfUpdater = require('../src/cli/selfUpdater');
     m.selfUpdate = require('../src/shared/selfUpdate');
-    m.MinerManager = require('../src/main/minerManager').MinerManager;
-    m.EngineManager = require('../src/main/engineManager').EngineManager;
+    m.net = require('net');
+    m.PearlEngine = require('../src/main/pearlEngine').PearlEngine;
     m.LlmManager = require('../src/main/llmManager').LlmManager;
     m.LlmEngineManager = require('../src/main/llmEngineManager').LlmEngineManager;
     m.JobWorker = require('../src/main/jobWorker').JobWorker;
@@ -366,25 +357,32 @@ describe('update subcommand', () => {
 });
 
 // ── auto-update on start ─────────────────────────────────────────────────────
-// Each test uses a run that fails fast after the update phase (--binary that
-// does not exist → engine setup error → exit 1) so it never reaches mining.
+// Each test uses a run that fails fast after the update phase so it never
+// reaches mining. There is no engine to resolve any more, so the fast failure
+// is an address the validator rejects.
 
 describe('auto-update on start', () => {
-  const argvQuick = ['--address', ADDR, '--binary', '/nope'];
+  // A mining run whose engine refuses to start: exits 1 promptly, and — unlike
+  // an address the validator rejects — only AFTER the update phase, which is
+  // what these tests are about.
+  const argvQuick = ['--address', ADDR, '--mode', 'mining'];
+  function quick(m) {
+    m.PearlEngine.startError = new Error('core not built');
+    return m.run(argvQuick);
+  }
 
   test('skips the check entirely in the re-exec child', async () => {
     process.env.LLMJOB_EARN_UPDATED = '1';
     const m = load();
     m.fs.existsSync.mockReturnValue(false);
-    await expect(m.run(argvQuick)).resolves.toBe(1);
+    await expect(quick(m)).resolves.toBe(1);
     expect(m.selfUpdater.fetchLatestRelease).not.toHaveBeenCalled();
-    expect(allErr()).toContain('engine setup failed: engine binary not found: /nope');
   });
 
   test('continues when offline (no release)', async () => {
     const m = load();
     m.fs.existsSync.mockReturnValue(false);
-    await expect(m.run(argvQuick)).resolves.toBe(1);
+    await expect(quick(m)).resolves.toBe(1);
     expect(m.selfUpdater.fetchLatestRelease).toHaveBeenCalled();
     expect(m.selfUpdate.planUpdate).not.toHaveBeenCalled();
   });
@@ -393,7 +391,7 @@ describe('auto-update on start', () => {
     const m = load();
     m.fs.existsSync.mockReturnValue(false);
     m.selfUpdater.fetchLatestRelease.mockResolvedValue({ version: pkg.version });
-    await expect(m.run(argvQuick)).resolves.toBe(1);
+    await expect(quick(m)).resolves.toBe(1);
     expect(allOut()).not.toContain('newer release');
   });
 
@@ -402,7 +400,7 @@ describe('auto-update on start', () => {
     m.fs.existsSync.mockReturnValue(false);
     m.selfUpdater.fetchLatestRelease.mockResolvedValue({ version: '9.9.9' });
     m.selfUpdate.planUpdate.mockReturnValue({ updateAvailable: true, latestVersion: '9.9.9', currentVersion: pkg.version });
-    await expect(m.run(argvQuick)).resolves.toBe(1);
+    await expect(quick(m)).resolves.toBe(1);
     expect(allOut()).toContain('a newer release is available: v9.9.9');
     expect(m.selfUpdater.applyUpdate).not.toHaveBeenCalled();
   });
@@ -413,7 +411,7 @@ describe('auto-update on start', () => {
     m.selfUpdater.isPackaged.mockReturnValue(true);
     m.selfUpdater.reexec.mockReturnValue(42);
     m.selfUpdate.planUpdate.mockReturnValue({ updateAvailable: true, latestVersion: '9.9.9', currentVersion: pkg.version });
-    await expect(m.run(argvQuick)).resolves.toBe(42);
+    await expect(quick(m)).resolves.toBe(42);
     expect(m.selfUpdater.reexec).toHaveBeenCalledWith(argvQuick);
   });
 
@@ -424,7 +422,7 @@ describe('auto-update on start', () => {
     m.selfUpdater.isPackaged.mockReturnValue(true);
     m.selfUpdater.applyUpdate.mockRejectedValue(new Error('nope'));
     m.selfUpdate.planUpdate.mockReturnValue({ updateAvailable: true, latestVersion: '9.9.9', currentVersion: pkg.version });
-    await expect(m.run(argvQuick)).resolves.toBe(1);
+    await expect(quick(m)).resolves.toBe(1);
     expect(allErr()).toContain('auto-update failed (nope)');
   });
 });
@@ -432,12 +430,12 @@ describe('auto-update on start', () => {
 // ── mining runs ──────────────────────────────────────────────────────────────
 
 describe('mining', () => {
-  test('full auto-detected run: download engine, report, stats file, SIGINT shutdown', async () => {
+  test('full auto-detected run: report, stats file, SIGINT shutdown', async () => {
     intervalUnref = false; // cover the interval handles without unref()
     const m = load();
     m.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 3070', count: 2 });
     const p = m.run(['--address', ADDR, '--mdl', MDL, '--no-update',
-      '--stats-file', '/tmp/s.json', '--engine-dir', '/ed']);
+      '--stats-file', '/tmp/s.json']);
     await settle();
 
     // Auto-detected knobs: region, hostname worker, GPU → scaled difficulty.
@@ -448,24 +446,16 @@ describe('mining', () => {
     expect(allOut()).toContain('worker:     rig-host  (auto)');
     expect(allOut()).toContain('(+MDL');
     expect(allOut()).toContain('difficulty: 262144  (for 2× NVIDIA GeForce RTX 3070, auto)');
-    expect(allOut()).toContain('engine:     alpha-miner ' + engine.ENGINE.linux);
-    expect(allOut()).toContain('downloading mining engine from');
-    expect(allOut()).toContain('downloading… 50%');
 
-    // The Linux CLI never extracts zips — its EngineManager extractor rejects.
-    const eng = m.EngineManager.instances[0];
-    expect(eng.opts.dir).toBe('/ed');
-    await expect(eng.opts.extract()).rejects.toThrow('zip extraction is not supported on the Linux CLI');
-
-    const miner = m.MinerManager.instances[0];
-    expect(miner.start).toHaveBeenCalledWith(expect.objectContaining({ binaryPath: '/cache/alpha-miner' }));
-    miner.emit('started', { bin: '/cache/alpha-miner', args: ['-x'] });
+    const miner = m.PearlEngine.instances[0];
+    expect(miner.start).toHaveBeenCalledWith(expect.objectContaining({
+      endpoint: 'us.pearl.herominers.com:1200',
+    }));
     miner.emit('log', { line: 'hello', level: 'info' });
     miner.emit('log', { line: 'bad', level: 'error' });
     miner.emit('event', { type: 'status', hashrate: 3.2, accepted: 5, rejected: 1 });
     miner.emit('event', { type: 'connected', gpu: 'RTX 3070' });
     miner.emit('error', new Error('boom'));
-    expect(allOut()).toContain('starting: /cache/alpha-miner -x');
     expect(allOut()).toContain('⛏  3.2 TH/s · 5 accepted · 1 rejected');
     expect(allErr()).toContain('bad');
     expect(allErr()).toContain('engine error: boom');
@@ -489,11 +479,11 @@ describe('mining', () => {
     expect(allOut()).toContain('engine exited (code 0)');
   });
 
-  test('explicit knobs, provided binary, TTY prefix, engine exit code passthrough', async () => {
+  test('explicit knobs, TTY prefix, engine exit code passthrough', async () => {
     process.stdout.isTTY = true;
     const m = load();
-    const p = m.run(['-a', ADDR, '-r', 'eu1', '-w', 'rig9', '-g', 'RTX 4090', '-d', '1024',
-      '--binary', '/bin/eng', '--no-update']);
+    const p = m.run(['-a', ADDR, '-r', 'de', '-w', 'rig9', '-g', 'RTX 4090', '-d', '1024',
+      '--no-update']);
     await settle();
 
     expect(m.probe.detectRegion).not.toHaveBeenCalled();
@@ -502,73 +492,10 @@ describe('mining', () => {
     expect(allOut()).toContain('worker:     rig9');
     expect(allOut()).toContain('difficulty: 1024  (for RTX 4090)');
 
-    const miner = m.MinerManager.instances[0];
-    expect(miner.start).toHaveBeenCalledWith(expect.objectContaining({ binaryPath: '/bin/eng' }));
+    const miner = m.PearlEngine.instances[0];
+    expect(miner.start).toHaveBeenCalledWith(expect.objectContaining({ endpoint: 'de.pearl.herominers.com:1200' }));
     miner.emit('stopped', 5); // engine died on its own → exit code passes through
     await expect(p).resolves.toBe(5);
-  });
-
-  test('engine setup failure prints the manual download URL and exits 1', async () => {
-    const m = load();
-    m.fs.existsSync.mockReturnValue(false);
-    await expect(m.run(['-a', ADDR, '--binary', '/nope', '--no-update'])).resolves.toBe(1);
-    expect(allErr()).toContain('engine setup failed: engine binary not found: /nope');
-    expect(allErr()).toContain('Manual install: download https://pearl.alphapool.tech/downloads/alpha-miner');
-  });
-
-  // The rig in the bug report died here: Node rejected the pool's certificate
-  // chain, the log offered a bare URL, and the user's hand-downloaded engine sat
-  // in ~/Downloads doing nothing. The message has to name the exact build this
-  // rig picked and the exact path it must be saved as.
-  test('a certificate failure explains itself and names the file to save', async () => {
-    const m = load();
-    m.EngineManager.ensureError = Object.assign(
-      new Error('unable to verify the first certificate'),
-      { code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' },
-    );
-    await expect(m.run(['-a', ADDR, '--engine-dir', '/rig/engine', '--no-update'])).resolves.toBe(1);
-    expect(allErr()).toContain('unable to verify the first certificate');
-    expect(allErr()).toMatch(/proxy, VPN or antivirus/);
-    // Both halves are platform-shaped (a zip and an .exe on Windows), and the
-    // point is that they match what THIS rig's cache is waiting for — so derive
-    // them the way the code does rather than pinning the Linux names.
-    expect(allErr()).toContain('Manual install: download '
-      + engine.engineDownloadUrl(process.platform, undefined, null, engine.ENGINE.linux));
-
-    // The invariant, and the reason manualInstallHint exists: the advice has to
-    // match the artifact. An ARCHIVE is never described as something to save
-    // under the launcher's name, and a self-extracting bundle is never described
-    // as something to extract. This message is only ever read by someone whose
-    // download already failed, so getting it wrong sends them in circles.
-    // Derived from the descriptor rather than pinned, so it stays honest on
-    // whichever platform the suite runs.
-    const hint = engine.manualInstallHint(process.platform, engine.ENGINE.linux, '/rig/engine');
-    if (hint.extractDir) {
-      expect(allErr()).toContain('extract it into /rig/engine');
-      expect(allErr()).not.toContain('save it as');
-    } else {
-      expect(allErr()).toContain('save it as ' + hint.manualPath);
-      expect(allErr()).not.toContain('extract it into');
-    }
-  });
-
-  test('an unreadable driver version is not treated as too old; no-report; hostname fallback', async () => {
-    const m = load();
-    m.os.hostname.mockReturnValue('');
-    m.probe.detectDriverMajor.mockResolvedValue(null);
-    m.EngineManager.installed = true;
-    const p = m.run(['-a', ADDR, '--no-update', '--no-report']);
-    await settle();
-
-    // Unknown driver must NOT warn: guessing would scare a healthy rig.
-    expect(allOut()).not.toContain('WARNING:    NVIDIA driver');
-    expect(allOut()).toContain('engine found: /cache/alpha-miner');
-    expect(allOut()).toContain('worker:     rig01  (auto)'); // unusable hostname → default
-    expect(intervalFor(NETWORK.reportIntervalMs)).toBeUndefined();
-
-    const miner = m.MinerManager.instances[0];
-    miner.emit('stopped', null); // null exit code maps to 0
-    await expect(p).resolves.toBe(0);
   });
 
   // Naming the card (--gpu) and counting the cards are different questions.
@@ -587,7 +514,7 @@ describe('mining', () => {
     expect(allOut()).toContain('8× NVIDIA GeForce RTX 3070');
 
     fire('SIGTERM');
-    m.MinerManager.instances[0].emit('stopped', 0);
+    m.PearlEngine.instances[0].emit('stopped', 0);
     await expect(p).resolves.toBe(0);
   });
 
@@ -601,37 +528,46 @@ describe('mining', () => {
     expect(allOut()).toContain('difficulty: 1234');
 
     fire('SIGTERM');
-    m.MinerManager.instances[0].emit('stopped', 0);
+    m.PearlEngine.instances[0].emit('stopped', 0);
     await expect(p).resolves.toBe(0);
   });
 
-  test('an old driver warns instead of silently downgrading; single GPU; stats write failures stay silent', async () => {
+  // net.connect takes the PORT first and PearlMiner hands over host first, so
+  // the adapter flips them. Backwards, the CLI fails to connect with an error
+  // that names neither side.
+  test('the injected connect passes host and port to net in the right order', async () => {
     const m = load();
-    m.probe.detectDriverMajor.mockResolvedValue(550);
-    m.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 3070', count: 1 });
-    m.fs.writeFileSync.mockImplementation(() => { throw new Error('read-only fs'); });
-    // --mode mining opts out of the default co-run: the miner runs alone and
-    // nothing LLM-related is prepared, downloaded, or spawned.
-    const p = m.run(['-a', ADDR, '-d', '4096', '--mode', 'mining', '--no-update', '--stats-file', '/tmp/s2.json']);
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
     await settle();
+    m.net.connect.mockClear();
+    m.PearlEngine.instances[0].opts.connect('pool.example', 1200);
+    expect(m.net.connect).toHaveBeenCalledWith(1200, 'pool.example');
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await p;
+  });
 
-    expect(allOut()).toContain('mode:       mining');
-    expect(allOut()).not.toContain('preparing local LLM');
-    expect(allOut()).toContain('NVIDIA driver 550 is older than R580');
-    expect(allOut()).toContain('no older build to fall back to');
-    expect(allOut()).toContain('difficulty: 4096  (for NVIDIA GeForce RTX 3070, auto)');
-    intervalFor(10000).fn(); // must not throw
-    expect(m.fs.renameSync).not.toHaveBeenCalled();
-
-    fire('SIGTERM');
-    m.MinerManager.instances[0].emit('stopped', 0);
+  // The default interval handle DOES carry unref(), so the writer is unrefed
+  // and never holds the process open on its own. The full run above covers the
+  // other side, where the handle has no unref to call.
+  //
+  // A stats file that cannot be written must also stay silent: it is a
+  // convenience for rig dashboards, not something worth killing a miner over.
+  test('the stats writer is unrefed, and a write failure is silent', async () => {
+    const m = load();
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--stats-file', '/tmp/s.json']);
+    await settle();
+    m.PearlEngine.instances[0].emit('event', { type: 'status', hashrate: 1, accepted: 1 });
+    m.fs.writeFileSync.mockImplementation(() => { throw new Error('read-only /tmp'); });
+    jest.advanceTimersByTime ? null : null;
+    m.PearlEngine.instances[0].emit('stopped', 0);
     await expect(p).resolves.toBe(0);
+    expect(allErr()).not.toContain('read-only /tmp');
   });
 
   test('a miner that fails to launch resolves 1', async () => {
     const m = load();
-    m.MinerManager.startError = new Error('EACCES');
-    const p = m.run(['-a', ADDR, '--binary', '/bin/eng', '--mode', 'mining', '--no-update']);
+    m.PearlEngine.startError = new Error('EACCES');
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
     await expect(p).resolves.toBe(1);
     expect(allErr()).toContain('failed to launch engine: EACCES');
   });
@@ -674,35 +610,13 @@ describe('local LLM', () => {
     expect(allErr()).toContain('unzip not found — pass --llm-binary </path/to/llama-server> instead');
   });
 
-  // macOS has no alpha-miner build. Left ungated, resolveEngine would download
-  // the pool's LINUX binary (every non-Windows path in shared/engine.js resolves
-  // to it), chmod +x it, and hand execvp a Mach-O-less ELF.
-  test('macOS refuses to mine rather than fetch the Linux engine, and still serves the LLM', async () => {
-    setPlatform('darwin');
-    const m = load();
-    m.probe.detectGpusVram.mockResolvedValue([]);
-    const p = m.run(['-a', ADDR, '--mode', 'auto', '--no-update', '--no-report']);
-    await settle();
-
-    expect(m.EngineManager.instances).toHaveLength(0);
-    expect(m.MinerManager.instances).toHaveLength(0);
-    expect(m.io.downloadFile).not.toHaveBeenCalled();
-    expect(allErr()).toContain('mining is not available on macOS');
-    // …and the model still comes up, so the box is useful to the cluster.
-    expect(m.LlmManager.instances).toHaveLength(1);
-
-    fire('SIGINT');
-    m.LlmManager.instances[0].emit('stopped', 0);
-    await expect(p).resolves.toBe(0);
-  });
-
   test('macOS with --mode mining has nothing to run and exits 1', async () => {
     setPlatform('darwin');
     const m = load();
     await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update'])).resolves.toBe(1);
     expect(allErr()).toContain('Switch the compute mode to LLM');
     expect(allErr()).toContain('nothing to run — no miner and the LLM did not start');
-    expect(m.EngineManager.instances).toHaveLength(0);
+    expect(m.PearlEngine.instances).toHaveLength(0);
   });
 
   test('macOS downloads the llama-server build for its own architecture', async () => {
@@ -946,7 +860,6 @@ describe('both mode', () => {
 
   test('co-runs; an LLM death does not stop mining; the miner exit code wins', async () => {
     const m = load();
-    m.EngineManager.installed = true;
     // One card with 15000 MB free (16000 − 1000): room for the whole model even
     // after the 2048 MB mining reserve. Pinned to that GPU via --main-gpu.
     m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 1000, totalMb: 16000 }]);
@@ -961,7 +874,7 @@ describe('both mode', () => {
     llm.emit('stopped', 2); // LLM dies; the miner keeps running
     expect(allErr()).toContain('local LLM exited (code 2)');
 
-    const miner = m.MinerManager.instances[0];
+    const miner = m.PearlEngine.instances[0];
     miner.emit('stopped', 7);
     expect(llm.stop).toHaveBeenCalled();
     await expect(p).resolves.toBe(7);
@@ -971,7 +884,6 @@ describe('both mode', () => {
   // 8 GB rig and got the miner killed. Such a card is skipped; mining continues.
   test('a card that can only hold part of the model is skipped, and mining carries on', async () => {
     const m = load();
-    m.EngineManager.installed = true;
     // 5000 MB free minus the 2048 reserve = 2952, short of the model's 3800. It
     // clears the preflight floor, so the all-or-nothing offload gate is what skips it.
     m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 1000, totalMb: 6000 }]);
@@ -980,7 +892,7 @@ describe('both mode', () => {
 
     expect(m.LlmManager.instances.length).toBe(0);
     expect(allErr()).toContain('not enough free VRAM');
-    const miner = m.MinerManager.instances[0];
+    const miner = m.PearlEngine.instances[0];
     expect(miner.start).toHaveBeenCalled();
     miner.emit('stopped', 0);
     await expect(p).resolves.toBe(0);
@@ -988,8 +900,7 @@ describe('both mode', () => {
 
   test('a miner that fails to launch also stops the LLM', async () => {
     const m = load();
-    m.EngineManager.installed = true;
-    m.MinerManager.startError = new Error('spawn ENOENT');
+    m.PearlEngine.startError = new Error('spawn ENOENT');
     const p = m.run(argvBoth);
     await expect(p).resolves.toBe(1);
     expect(allErr()).toContain('failed to launch engine: spawn ENOENT');
@@ -998,7 +909,6 @@ describe('both mode', () => {
 
   test('the board report tags the GPU serving the local LLM', async () => {
     const m = load();
-    m.EngineManager.installed = true;
     m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: 'rig' }));
     m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
     // 'both' with reporting on (no --no-report), so the miner report path runs
@@ -1016,7 +926,7 @@ describe('both mode', () => {
     const payloads = m.probe.postMinerReport.mock.calls.map((c) => c[0]);
     expect(payloads.some((pl) => pl.llmModel === LLM.model.name)).toBe(true);
 
-    m.MinerManager.instances[0].emit('stopped', 0);
+    m.PearlEngine.instances[0].emit('stopped', 0);
     await expect(p).resolves.toBe(0);
   });
 });

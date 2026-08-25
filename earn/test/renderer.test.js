@@ -735,7 +735,7 @@ describe('boot with the full bridge', () => {
     expect(api.openExternal).toHaveBeenLastCalledWith(ENDPOINT);
     // external links go through the bridge
     click($('get-wallet'));
-    expect(api.openExternal).toHaveBeenLastCalledWith('https://wallet.alphapool.tech/');
+    expect(api.openExternal).toHaveBeenLastCalledWith('https://github.com/pearl-research-labs/pearl/releases');
   });
 
   it('links and unlinks the node with pairing tokens', async () => {
