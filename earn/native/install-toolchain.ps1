@@ -68,4 +68,19 @@ if (Test-Path $vswhere) {
     else { Write-Host "MSVC:  build tools present but no C++ compiler component" -ForegroundColor Red }
 } else { Write-Host "MSVC:  NOT FOUND" -ForegroundColor Red }
 
+
+Write-Host "`n=== 3/3  Allow profiling without administrator ===" -ForegroundColor Cyan
+Write-Host "NVIDIA restricts GPU performance counters to administrators by default,"
+Write-Host "so Nsight Compute fails with ERR_NVGPUCTRPERM when run from a normal"
+Write-Host "shell. This clears that restriction. It needs a reboot to take effect.`n"
+
+$key = "HKLM:\SYSTEM\CurrentControlSet\Services\nvlddmkm\Global\NVTweak"
+try {
+    if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
+    Set-ItemProperty -Path $key -Name "RmProfilingAdminOnly" -Value 0 -Type DWord
+    Write-Host "Profiling permission granted. Reboot for it to take effect." -ForegroundColor Green
+} catch {
+    Write-Host "Could not set the profiling permission: $_" -ForegroundColor Yellow
+    Write-Host "Nsight Compute still works if launched from an admin terminal." -ForegroundColor Yellow
+}
 Write-Host "`nClose this admin window. Back in the normal session, I'll take it from here." -ForegroundColor Cyan
