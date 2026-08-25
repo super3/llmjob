@@ -201,9 +201,10 @@ const PROFILE = {
   // The knee used to sit at 32768 because a redraw cost 4.4 ms, more than half
   // of it generating operands a byte at a time. With that fixed the curve moved:
   // measured at col_batch 4096, 16384 -> 155.3, 32768 -> 171.8, 65536 -> 183.3,
-  // 131072 -> 187.5, 262144 -> 189.3 TH/s. It is still climbing past here, but
-  // the transcript buffer scales with (m/16)*col_batch and this already asks
-  // about a gigabyte of VRAM; the card also has a language model on it.
+  // 131072 -> 190.1, 262144 -> 191.7 TH/s. It is still climbing past here, and
+  // what stops it is VRAM: this size measures 2.5 GB in use against 0.4 GB at
+  // 32768, and 262144 would be about five. The card also has a language model
+  // on it, so the last 1% is not worth doubling the footprint for.
   //
   // Both operands no longer fit in the 4090's 72 MB L2 at this size, which the
   // measurement says costs less than the redraws it saves.
@@ -214,8 +215,8 @@ const PROFILE = {
   // a power-of-two chunk count -- BLAKE3's real layout is left-heavy. A value
   // like 12288 (3 * 4096) gives a wrong root, wrong seeds, and shares no pool
   // will accept, and the small parity profile cannot catch it.
-  m: 65536,
-  n: 65536,
+  m: 131072,
+  n: 131072,
 
   // Column offsets per launch. Not protocol: it trades VRAM for amortised
   // launch overhead, and the host clamps it to the number of valid column
