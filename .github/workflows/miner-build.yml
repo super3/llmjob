@@ -85,18 +85,20 @@ jobs:
           workflow_conclusion: success
           name: pearl-core-${{ runner.os == 'Windows' && 'windows-2022' || 'ubuntu-latest' }}
           path: earn/vendor/native
-          if_no_artifact_found: warn
+          # An installer without the core is an app that starts, reports the
+          # Pearl core is not built, and mines nothing. There is no second
+          # engine to fall back to, so this is a hard failure rather than a
+          # warning nobody reads on the way to a release.
+          if_no_artifact_found: fail
 
-      - name: Report what was staged
+      - name: Verify the core is really there
         if: runner.os == 'Windows' || runner.os == 'Linux'
         shell: bash
         working-directory: earn
         run: |
-          if [ -f vendor/native/pearl_core.node ]; then
-            echo "staged core: $(ls -l vendor/native/pearl_core.node)"
-          else
-            echo "::warning::no pearl_core.node staged — this build cannot mine"
-          fi
+          test -f vendor/native/pearl_core.node \
+            || { echo "::error::no pearl_core.node staged — this build cannot mine"; exit 1; }
+          echo "staged core: $(ls -l vendor/native/pearl_core.node)"
 
       - name: Build installer (publishes on v* tag or manual publish)
         run: npx electron-builder --${{ matrix.platform }} --publish ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.publish) && 'always' || 'never' }}
