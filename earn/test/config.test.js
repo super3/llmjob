@@ -3,6 +3,7 @@
 const {
   REGIONS, DEFAULTS, MINER, ECON,
   regionFor, endpointFor, normalizeEndpoint, resolveEndpoint, splitEndpoint, regionLabel,
+  migrateRegion, LEGACY_REGIONS,
 } = require('../src/shared/config');
 
 describe('config', () => {
@@ -83,6 +84,53 @@ describe('normalizeEndpoint / resolveEndpoint', () => {
     expect(splitEndpoint('us2.pearl.herominers.com')).toEqual({ host: 'us2.pearl.herominers.com', port: null });
     for (const v of ['', '   ', null, undefined]) {
       expect(splitEndpoint(v)).toEqual({ host: null, port: null });
+    }
+  });
+});
+
+// ── legacy region migration ─────────────────────────────────────────────────
+
+describe('migrateRegion', () => {
+  // Every 0.3.x install has an AlphaPool region in its settings file and none of
+  // them exist now. Handing one to the Settings <select> leaves it BLANK rather
+  // than erroring, and the renderer's own fallback then rewrote the choice —
+  // so an upgrading rig changed continent without being told.
+  test('every legacy id maps to a region that exists', () => {
+    for (const [old, now] of Object.entries(LEGACY_REGIONS)) {
+      expect(REGIONS[now]).toBeDefined();
+      expect(migrateRegion(old)).toBe(now);
+    }
+  });
+
+  // Mapped to the NEAREST live endpoint, not all onto the default: someone who
+  // chose Singapore should still be mining in Singapore afterwards.
+  test('keeps the user near where they chose', () => {
+    expect(migrateRegion('sg1')).toBe('sg');
+    expect(migrateRegion('hk1')).toBe('hk');
+    expect(migrateRegion('in1')).toBe('sg');  // India -> the closest that answers
+    expect(migrateRegion('eu1')).toBe('de');
+    expect(migrateRegion('us1')).toBe('us');
+  });
+
+  // us2 exists on both pools, so it must NOT be translated.
+  test('leaves an id that still exists alone', () => {
+    for (const id of Object.keys(REGIONS)) expect(migrateRegion(id)).toBe(id);
+    expect(migrateRegion('us2')).toBe('us2');
+    expect(LEGACY_REGIONS.us2).toBeUndefined();
+  });
+
+  test('anything unrecognised becomes the default', () => {
+    for (const v of ['junk', '', '   ', null, undefined, 0]) {
+      expect(migrateRegion(v)).toBe(DEFAULTS.region);
+    }
+  });
+
+  // A migrated id has to survive the rest of the pipeline, or the miner still
+  // connects somewhere the user did not pick.
+  test('a migrated id resolves to a real endpoint', () => {
+    for (const old of Object.keys(LEGACY_REGIONS)) {
+      const endpoint = resolveEndpoint({ region: migrateRegion(old) });
+      expect(endpoint).toMatch(/\.pearl\.herominers\.com:1200$/);
     }
   });
 });

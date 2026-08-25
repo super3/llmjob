@@ -61,6 +61,10 @@ function makeFullApi() {
         us2: { flag: 'US', label: 'US', name: 'Dallas' },
         eu1: { flag: 'EU', label: 'EU', name: 'Falkenstein' },
       },
+      // main always sends these. The region fallback reads defaults.region
+      // rather than carrying its own copy of the default, which is what used to
+      // pin it to a pool-specific id.
+      defaults: { region: 'us2' },
     }),
     detectGpu: jest.fn().mockResolvedValue('RTX 4090'),
     detectRegion: jest.fn().mockResolvedValue('eu1'),
@@ -473,7 +477,7 @@ describe('boot with the full bridge', () => {
     expect($('engine-status').hidden).toBe(true);
     // restart with every settings fallback (empty worker/region/mode)
     setInput($('set-worker'), '');
-    $('set-region').value = 'zz'; // no such option → ''
+    $('set-region').value = 'zz'; // no such option → '' → falls back to defaults.region
     click($('mode-empty'));
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenLastCalledWith({

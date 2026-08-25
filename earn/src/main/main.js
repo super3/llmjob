@@ -28,7 +28,9 @@ const probe = require('./probe');
 const nodeStore = require('./nodeStore');
 const settingsStore = require('../shared/settingsStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
-const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE, resolveEndpoint } = require('../shared/config');
+const {
+  REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE, resolveEndpoint, migrateRegion,
+} = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
 const { resolveEconomics } = require('../shared/economics');
 const nodeProto = require('../shared/node');
@@ -77,6 +79,14 @@ const settingsLog = (m) => console.error(m);
 function loadSettings() {
   return settingsStore.readSettings(settingsPath(), { fs, log: settingsLog });
 }
+// Translate a saved AlphaPool region onto a live one. Not a write: the renderer
+// hands the migrated id straight back when the user next saves, so the file
+// heals itself without a startup rewrite that would touch a settings file we
+// might have failed to read properly.
+function withLiveRegion(s) {
+  return Object.assign({}, s, { region: migrateRegion(s.region) });
+}
+
 function persistSettings(s) {
   return settingsStore.writeSettings(settingsPath(), s, { fs, log: settingsLog });
 }
@@ -1105,7 +1115,9 @@ function applyPlan(settings) {
   return planRun;
 }
 
-ipcMain.handle('settings:get', () => Object.assign(
+// The renderer gets a region that EXISTS. A saved AlphaPool id would otherwise
+// reach a <select> with no matching option, which blanks it silently.
+ipcMain.handle('settings:get', () => withLiveRegion(Object.assign(
   // Both clients default to the shared DEFAULT_MODE ('auto': mine + serve the
   // LLM, balanced from free VRAM).
   // worker defaults to this machine's hostname, not the shared "rig01" constant:
@@ -1115,7 +1127,7 @@ ipcMain.handle('settings:get', () => Object.assign(
   // existing worker name is never rewritten out from under someone's board row.
   { region: DEFAULTS.region, worker: defaultWorker(), address: '', mdlAddress: '', mode: DEFAULT_MODE },
   loadSettings(),
-));
+)));
 ipcMain.handle('llm:status', () => llmStatus);
 // `platform` rides along on the config the renderer already fetches at startup,
 // so the UI can stop offering what this OS can't do (the mining compute modes on

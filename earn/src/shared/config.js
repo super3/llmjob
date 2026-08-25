@@ -276,6 +276,37 @@ function resolveEndpoint(settings) {
   return normalizeEndpoint(s.endpoint) || endpointFor(s.region || DEFAULTS.region);
 }
 
+// Where a saved AlphaPool region should land now that the pool is HeroMiners.
+//
+// Every 0.3.x install has one of these in its settings file, and none of them
+// exist any more. Without a mapping the Settings dropdown is handed a value
+// with no matching <option>, which leaves a <select> BLANK rather than
+// erroring — and the renderer's own fallback then quietly rewrote the choice to
+// whatever the default was. An upgrading rig would move continent without being
+// told.
+//
+// Mapped to the nearest live endpoint rather than all to the default: someone
+// who picked Singapore should stay in Singapore. 'us2' is deliberately absent
+// because HeroMiners has a us2 as well, so it needs no translation.
+const LEGACY_REGIONS = {
+  us1: 'us',   // N. America East
+  eu1: 'de',   // Europe -> Germany
+  eu2: 'fi',   // the second European choice -> Finland
+  ru1: 'fi',   // Eurasia: HeroMiners' ru resolves but refused connections
+  sg1: 'sg',
+  hk1: 'hk',
+  in1: 'sg',   // India -> Singapore, the closest that answers
+};
+
+// A live region id for whatever was saved: unchanged when it still exists,
+// translated when it is a known AlphaPool id, else the default.
+function migrateRegion(region) {
+  const id = String(region == null ? '' : region).trim();
+  if (Object.prototype.hasOwnProperty.call(REGIONS, id)) return id;
+  if (Object.prototype.hasOwnProperty.call(LEGACY_REGIONS, id)) return LEGACY_REGIONS[id];
+  return DEFAULTS.region;
+}
+
 function regionLabel(region) {
   const r = regionFor(region);
   return r.flag + ' ' + r.label;
@@ -283,6 +314,7 @@ function regionLabel(region) {
 
 
 module.exports = {
-  REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE,
+  REGIONS, LEGACY_REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE,
   regionFor, endpointFor, normalizeEndpoint, resolveEndpoint, splitEndpoint, regionLabel,
+  migrateRegion,
 };
