@@ -255,11 +255,11 @@ static_assert(PEARL_COLS_COUNT == (1u << pearl_popcount_ce(PEARL_COLS_MASK)),
 // from memory once per column group, which for the mandated geometry is 256
 // times, or 16 GB a sweep against a 64 MB operand.
 //
-// Grouping them into a square instead -- 16 row groups by however many column
-// groups the wave covers -- means a wave touches 16*128 rows and 16*128
+// Grouping them into a square instead -- 32 row groups by however many column
+// groups the wave covers -- means a wave touches 32*128 rows and 8*128
 // columns, a quarter of a megabyte an operand, which stays in L2. The work is
 // identical; only the order changes.
-#define PEARL_BLOCK_GROUP 16
+#define PEARL_BLOCK_GROUP 32
 
 // Transcript registers per lane: a warp's regions times buckets, over 32 lanes.
 #define PEARL_JACKPOT_REGS \

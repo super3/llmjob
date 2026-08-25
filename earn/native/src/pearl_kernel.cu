@@ -592,8 +592,16 @@ extern "C" __global__ void pearl_materialize(const int8_t *__restrict__ base,
                                              uint32_t rank) {
   uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= (uint64_t)rows * k) return;
-  const uint32_t r = (uint32_t)(idx / k);
-  const uint32_t kk = (uint32_t)(idx % k);
+  // One thread per BYTE of the operand, so this pair of 64-bit divisions ran
+  // 268 million times a redraw. k is the row length and a power of two at every
+  // supported geometry -- it has to be, because the commitment is a Merkle tree
+  // over a power-of-two chunk count -- so the pair is a shift and a mask. The
+  // general form is kept for the odd geometry the verifier path can hand this.
+  const bool kpow2 = (k & (k - 1u)) == 0u;
+  const uint32_t r = kpow2 ? (uint32_t)(idx >> (31 - __clz((int)k)))
+                           : (uint32_t)(idx / k);
+  const uint32_t kk = kpow2 ? (uint32_t)(idx & (uint64_t)(k - 1u))
+                            : (uint32_t)(idx % k);
   const int8_t *__restrict__ row = dense + (size_t)r * rank;
   const int32_t v = (int32_t)base[idx] + (int32_t)row[perm[kk * 2u]] -
                     (int32_t)row[perm[kk * 2u + 1u]];
