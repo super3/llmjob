@@ -1,0 +1,161 @@
+# Compile the Pearl CUDA core.
+#
+# The runners have no GPU, so nothing here mines. What this workflow is for is
+# producing a BINARY: the dev box has an RTX 4090 and a current driver but no
+# CUDA toolkit and no MSVC, and cannot install either (not an administrator).
+# The runners have exactly what it lacks. So CI compiles and links the addon,
+# uploads it, and the GPU box downloads that artifact and runs it — which is how
+# device-side behaviour gets verified at all.
+#
+# It also catches what code review cannot: pearl_core.cc declares four extern "C"
+# entry points, and if pearl_host.cu drifts from them the addon compiles cleanly
+# and fails at LINK time.
+#
+# In particular this catches the class of error that bit us before the host file
+# existed: pearl_core.cc declares four extern "C" entry points, and if
+# pearl_host.cu drifts from those declarations the addon compiles fine and fails
+# at LINK time. A compile-only job finds that; reading the diff does not.
+#
+# The device-side semantics are checked separately and without a GPU, by the JS
+# reference and its known-answer vectors (test/minerReference.test.js), whose
+# BLAKE3 foundation is validated against the official published vectors.
+
+name: native core
+
+on:
+  push:
+    paths:
+      - 'earn/native/**'
+      - '.github/workflows/native-core.yml'
+  pull_request:
+    paths:
+      - 'earn/native/**'
+      - '.github/workflows/native-core.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-2022]
+    # Pinned to windows-2022. windows-latest now points at Server 2025, where
+    # the CUDA installer dies with exit 0xE0E1E1D9 before reaching any of our
+    # source. The Windows artifact is the one that MATTERS most here: it is the
+    # build that can actually be run, on the RTX 4090 in the dev box, which is
+    # the only GPU anywhere in this pipeline. Non-blocking only until the
+    # install is proven.
+    continue-on-error: ${{ matrix.os == 'windows-2022' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # A GPU-less runner still installs the compiler and headers; only the
+      # runtime components are needed to build.
+      # The sub-package names are NOT the same on the two platforms, which is
+      # what made the Windows job fail for four runs with exit 0xE0E1E1D9. The
+      # action passes them straight to the installer, and the log showed it
+      # invoking `cuda_installer.exe -s nvcc_12.8 cudart_12.8 cudart-dev_12.8
+      # nvrtc-dev_12.8`. Those hyphenated `-dev` components are LINUX naming;
+      # Windows ships headers inside `cudart` and has no `-dev` split, so the
+      # installer rejects the argument list and exits non-zero before installing
+      # anything. Hence two steps rather than one shared list.
+      - name: Install the CUDA toolkit (Windows)
+        if: runner.os == 'Windows'
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          # 12.8 is the first toolkit that knows sm_120 (Blackwell), and needs
+          # action v0.2.36+ — older tags carry a version table that predates it
+          # and answer "Version not available".
+          cuda: '12.8.1'
+          method: 'network'
+          sub-packages: '["nvcc", "cudart", "nvrtc"]'
+
+      - name: Install the CUDA toolkit (Linux)
+        if: runner.os == 'Linux'
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: '12.8.1'
+          method: 'network'
+          sub-packages: '["nvcc", "cudart", "cudart-dev", "nvrtc", "nvrtc-dev"]'
+
+      # nvcc on Windows does not compile anything itself — it drives MSVC's
+      # cl.exe as the host compiler and fails with "Cannot find compiler
+      # 'cl.exe' in PATH" without it. MSVC is installed on the runner but is not
+      # on PATH until its environment is sourced, and the bash shell the compile
+      # step uses certainly does not have it. This is the same hard dependency
+      # that makes the core unbuildable on the dev box.
+      - name: Put MSVC on PATH (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Report the toolchain
+        run: |
+          nvcc --version
+          node --version
+
+      - name: Install node-addon-api
+        working-directory: earn/native
+        run: npm install --no-save node-addon-api node-gyp
+
+      # Compile the CUDA half into a static library. sm_86/89/120 covers Ampere,
+      # Ada and Blackwell — the cards the app actually targets.
+      - name: Compile the CUDA kernels
+        working-directory: earn/native
+        shell: bash
+        run: |
+          mkdir -p cuda-build
+          # The addon is a shared object, so on Linux everything linked into it
+          # must be position-independent — without this ld rejects the archive
+          # with "relocation R_X86_64_PC32 ... can not be used when making a
+          # shared object". MSVC has no equivalent flag and needs none.
+          if [ "$RUNNER_OS" = "Linux" ]; then FPIC="-Xcompiler -fPIC"; else FPIC=""; fi
+          nvcc -O3 -std=c++17 -cudart static $FPIC \
+            -gencode arch=compute_86,code=sm_86 \
+            -gencode arch=compute_89,code=sm_89 \
+            -gencode arch=compute_120,code=sm_120 \
+            -c src/pearl_kernel.cu -o cuda-build/pearl_kernel.o
+          nvcc -O3 -std=c++17 -cudart static $FPIC \
+            -gencode arch=compute_86,code=sm_86 \
+            -gencode arch=compute_89,code=sm_89 \
+            -gencode arch=compute_120,code=sm_120 \
+            -c src/pearl_host.cu -o cuda-build/pearl_host.o
+
+      # Deliberately NOT build/: the next step runs `node-gyp rebuild`, whose
+      # clean phase deletes that directory — which is what produced
+      # "cannot find -lpearl_cuda" at link time.
+      - name: Archive the CUDA objects into a library
+        working-directory: earn/native
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            nvcc -lib -cudart static cuda-build/pearl_kernel.o cuda-build/pearl_host.o -o cuda-build/pearl_cuda.lib
+          else
+            ar rcs cuda-build/libpearl_cuda.a cuda-build/pearl_kernel.o cuda-build/pearl_host.o
+          fi
+
+      # The real prize: this LINKS, so a drift between pearl_core.cc's extern "C"
+      # declarations and pearl_host.cu's definitions fails the build here rather
+      # than on somebody's GPU box.
+      - name: Build the N-API addon
+        working-directory: earn/native
+        run: npx node-gyp rebuild
+
+      - name: Confirm the addon was produced
+        working-directory: earn/native
+        shell: bash
+        run: |
+          test -f build/Release/pearl_core.node
+          echo "built: $(ls -l build/Release/pearl_core.node)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pearl-core-${{ matrix.os }}
+          path: earn/native/build/Release/pearl_core.node
+          if-no-files-found: error

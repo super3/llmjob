@@ -1,7 +1,7 @@
 {
   "name": "llmjob-earn",
-  "version": "0.3.19",
-  "description": "LLMJob Earn — desktop GUI that turns the excess compute on GPUs you already own into crypto (Pearl / PRL) via the AlphaPool alpha-miner. Paste a payout address and start earning, no command line.",
+  "version": "0.4.0",
+  "description": "LLMJob Earn — desktop GUI that turns the excess compute on GPUs you already own into crypto (Pearl / PRL) with our own CUDA miner. Paste a payout address and start earning, no command line.",
   "main": "src/main/main.js",
   "bin": {
     "llmjob-earn-cli": "src/cli/earn-cli.js"
@@ -22,7 +22,6 @@
     "pearl",
     "prl",
     "mining",
-    "alpha-miner",
     "electron",
     "gpu"
   ],
@@ -52,18 +51,17 @@
       "artifactName": "LLMJob-Earn-Setup-${version}.${ext}",
       "extraResources": [
         {
-          "from": "vendor/engine",
-          "to": "engine",
-          "filter": [
-            "**/*",
-            "**/.*"
-          ]
-        },
-        {
           "from": "vendor/llm-runtime",
           "to": "llm-runtime",
           "filter": [
             "**/*.dll"
+          ]
+        },
+        {
+          "from": "vendor/native",
+          "to": "native",
+          "filter": [
+            "**/*.node"
           ]
         }
       ]
@@ -81,18 +79,17 @@
       "artifactName": "LLMJob-Earn-${version}.${ext}",
       "extraResources": [
         {
-          "from": "vendor/engine",
-          "to": "engine",
-          "filter": [
-            "**/*",
-            "**/.*"
-          ]
-        },
-        {
           "from": "vendor/llm-runtime",
           "to": "llm-runtime",
           "filter": [
             "**/*.dll"
+          ]
+        },
+        {
+          "from": "vendor/native",
+          "to": "native",
+          "filter": [
+            "**/*.node"
           ]
         }
       ]

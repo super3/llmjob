@@ -2,44 +2,62 @@
 
 // Static configuration for the LLMJob Earn desktop wrapper.
 //
-// The app wraps the AlphaPool `alpha-miner` engine for Pearl (PRL). All values
-// below come from the AlphaPool setup page (pearl.alphapool.tech/#setup):
-// Stratum endpoints, the per-card static-difficulty table, the engine binaries,
-// and the network economics used for earnings estimates. The binary path is
-// configurable so a downloaded alpha-miner build drops in without code changes.
+// The app mines Pearl (PRL) with our own CUDA core — see src/main/pearlMiner.js
+// and earn/native. There is no external engine to download, no vendored binary
+// and no dev fee.
+//
+// The pool is HeroMiners. AlphaPool was dropped along with alpha-miner: it gates
+// its stratum behind a GPU-solved challenge and then DICTATES the mining
+// geometry (M/N=131072, K=4096, a 2x64 tile), which is shaped for Hopper's
+// wgmma and awkward on everything else. HeroMiners sends a header and a target
+// and lets the miner choose its own geometry, which is what the protocol
+// actually allows — the verifier reconstructs the tile pattern from the row
+// indices in the submitted proof.
 
 // Stratum pool endpoints (host:port). Pick the closest for lowest share latency.
+// Every one of these was checked to resolve and accept a connection on 1200.
 const REGIONS = {
-  us1: { label: 'us1', flag: '🇺🇸', name: 'N. America · East', endpoint: 'us1.alphapool.tech:5566' },
-  us2: { label: 'us2', flag: '🇺🇸', name: 'N. America · West', endpoint: 'us2.alphapool.tech:5566' },
-  eu1: { label: 'eu1', flag: '🇪🇺', name: 'Europe', endpoint: 'eu1.alphapool.tech:5566' },
-  eu2: { label: 'eu2', flag: '🇪🇺', name: 'Europe', endpoint: 'eu2.alphapool.tech:5566' },
-  ru1: { label: 'ru1', flag: '🇷🇺', name: 'Russia · Eurasia', endpoint: 'ru1.alphapool.tech:5566' },
-  sg1: { label: 'sg1', flag: '🇸🇬', name: 'Asia · Singapore', endpoint: 'sg1.alphapool.tech:5566' },
-  hk1: { label: 'hk1', flag: '🇭🇰', name: 'Asia · Hong Kong', endpoint: 'hk1.alphapool.tech:5566' },
-  in1: { label: 'in1', flag: '🇮🇳', name: 'India', endpoint: 'in1.alphapool.tech:5566' },
+  us: { label: 'us', flag: '🇺🇸', name: 'N. America · East', endpoint: 'us.pearl.herominers.com:1200' },
+  us2: { label: 'us2', flag: '🇺🇸', name: 'N. America · West', endpoint: 'us2.pearl.herominers.com:1200' },
+  ca: { label: 'ca', flag: '🇨🇦', name: 'N. America · Canada', endpoint: 'ca.pearl.herominers.com:1200' },
+  br: { label: 'br', flag: '🇧🇷', name: 'S. America · Brazil', endpoint: 'br.pearl.herominers.com:1200' },
+  de: { label: 'de', flag: '🇩🇪', name: 'Europe · Germany', endpoint: 'de.pearl.herominers.com:1200' },
+  fi: { label: 'fi', flag: '🇫🇮', name: 'Europe · Finland', endpoint: 'fi.pearl.herominers.com:1200' },
+  fr: { label: 'fr', flag: '🇫🇷', name: 'Europe · France', endpoint: 'fr.pearl.herominers.com:1200' },
+  tr: { label: 'tr', flag: '🇹🇷', name: 'Europe · Turkey', endpoint: 'tr.pearl.herominers.com:1200' },
+  sg: { label: 'sg', flag: '🇸🇬', name: 'Asia · Singapore', endpoint: 'sg.pearl.herominers.com:1200' },
+  hk: { label: 'hk', flag: '🇭🇰', name: 'Asia · Hong Kong', endpoint: 'hk.pearl.herominers.com:1200' },
+  kr: { label: 'kr', flag: '🇰🇷', name: 'Asia · Korea', endpoint: 'kr.pearl.herominers.com:1200' },
+  au: { label: 'au', flag: '🇦🇺', name: 'Oceania · Australia', endpoint: 'au.pearl.herominers.com:1200' },
 };
 
 const DEFAULTS = {
-  region: 'us2',
+  region: 'us',
   worker: 'rig01',
-  difficulty: 524288, // RTX 4090 / 5080 class — a safe general default
   algo: 'pearlhash',
   powerLimit: 318,
 };
 
 // Engine / pool metadata.
+//
+// There is nothing to download any more: the engine is our own CUDA core,
+// linked into this process as an N-API addon (earn/native), so no URL, no zip
+// and no Docker image. The dev fee is zero and there is no dev-address code
+// path — this is our own implementation written against the ISC-licensed
+// reference, not a derivative of any fee-bearing miner.
+//
+// The pool terms are HeroMiners' own, read from
+// https://pearl.herominers.com/api/stats rather than transcribed from a setup
+// page: fee 0, paymentsInterval 3600s, minPaymentThreshold 1e8 against
+// coinUnits 1e8 (so 1 PRL), rewardScheme "prop".
 const MINER = {
-  engine: 'alpha-miner',
-  downloadUrl: 'https://pearl.alphapool.tech/downloads/alpha-miner',
-  windowsZipNvidia: 'AlphaMiner-Pearl-Windows.zip', // contains alpha-miner-windows.exe
-  windowsZipAmd: 'AlphaMiner-Pearl-AMD.zip', // contains alpha-miner-amd-windows-fixed.exe
-  dockerImage: 'alphaminetech/pearl-miner:1.7.9',
+  engine: 'llmjob-pearl',
+  pool: 'HeroMiners',
   pow: 'pearlhash',
   devFeePct: 0,
-  poolFeePct: 1,
-  payoutScheme: 'PPLNS',
-  payoutIntervalHours: 4,
+  poolFeePct: 0,
+  payoutScheme: 'PROP',
+  payoutIntervalHours: 1,
   minPayoutPrl: 1,
 };
 
@@ -211,19 +229,6 @@ const NODE = {
   pingIntervalMs: 5 * 60 * 1000,
 };
 
-// Recommended static difficulty per card class, from the pool's table. Order
-// matters: more specific patterns first.
-const DIFFICULTY_BY_CARD = [
-  { match: /5090|h100|h200|b100|b200|pro 6000/i, difficulty: 1048576 }, // incl. RTX PRO 6000 (Blackwell)
-  { match: /4090|5080/i, difficulty: 524288 },
-  { match: /4070|4080/i, difficulty: 262144 },
-  { match: /3080|3090|70hx|90hx/i, difficulty: 262144 },
-  { match: /3060 ti|3070/i, difficulty: 131072 },
-  { match: /4060|5060/i, difficulty: 131072 },
-  { match: /a100/i, difficulty: 131072 },
-  { match: /2070|2080|rtx 20|\bt4\b/i, difficulty: 16384 },
-  { match: /v100|titan v|cmp [12]\d\d/i, difficulty: 4096 },
-];
 
 function regionFor(region) {
   return REGIONS[region] || REGIONS[DEFAULTS.region];
@@ -271,21 +276,45 @@ function resolveEndpoint(settings) {
   return normalizeEndpoint(s.endpoint) || endpointFor(s.region || DEFAULTS.region);
 }
 
+// Where a saved AlphaPool region should land now that the pool is HeroMiners.
+//
+// Every 0.3.x install has one of these in its settings file, and none of them
+// exist any more. Without a mapping the Settings dropdown is handed a value
+// with no matching <option>, which leaves a <select> BLANK rather than
+// erroring — and the renderer's own fallback then quietly rewrote the choice to
+// whatever the default was. An upgrading rig would move continent without being
+// told.
+//
+// Mapped to the nearest live endpoint rather than all to the default: someone
+// who picked Singapore should stay in Singapore. 'us2' is deliberately absent
+// because HeroMiners has a us2 as well, so it needs no translation.
+const LEGACY_REGIONS = {
+  us1: 'us',   // N. America East
+  eu1: 'de',   // Europe -> Germany
+  eu2: 'fi',   // the second European choice -> Finland
+  ru1: 'fi',   // Eurasia: HeroMiners' ru resolves but refused connections
+  sg1: 'sg',
+  hk1: 'hk',
+  in1: 'sg',   // India -> Singapore, the closest that answers
+};
+
+// A live region id for whatever was saved: unchanged when it still exists,
+// translated when it is a known AlphaPool id, else the default.
+function migrateRegion(region) {
+  const id = String(region == null ? '' : region).trim();
+  if (Object.prototype.hasOwnProperty.call(REGIONS, id)) return id;
+  if (Object.prototype.hasOwnProperty.call(LEGACY_REGIONS, id)) return LEGACY_REGIONS[id];
+  return DEFAULTS.region;
+}
+
 function regionLabel(region) {
   const r = regionFor(region);
   return r.flag + ' ' + r.label;
 }
 
-// Suggested static difficulty for a GPU name; falls back to the default.
-function difficultyForCard(name) {
-  const s = String(name == null ? '' : name);
-  for (const row of DIFFICULTY_BY_CARD) {
-    if (row.match.test(s)) return row.difficulty;
-  }
-  return DEFAULTS.difficulty;
-}
 
 module.exports = {
-  REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE, DIFFICULTY_BY_CARD,
-  regionFor, endpointFor, normalizeEndpoint, resolveEndpoint, splitEndpoint, regionLabel, difficultyForCard,
+  REGIONS, LEGACY_REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE,
+  regionFor, endpointFor, normalizeEndpoint, resolveEndpoint, splitEndpoint, regionLabel,
+  migrateRegion,
 };

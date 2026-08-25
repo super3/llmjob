@@ -30,9 +30,8 @@ function pickGpu(names) {
 
 // Count the GPUs that actually mine: discrete cards when any are present (an
 // iGPU alongside them contributes nothing worth counting), else 1 if only an
-// integrated GPU exists, else 0. Multi-GPU rigs use this to scale the static
-// share difficulty — the pool's table is per card class, so a rig's aggregate
-// hashrate wants roughly per-card × count.
+// integrated GPU exists, else 0. Multi-GPU rigs report the count on their
+// board row, so one entry represents the whole rig rather than a single card.
 function countGpus(names) {
   if (!Array.isArray(names)) return 0;
   let real = 0;

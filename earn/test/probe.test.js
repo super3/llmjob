@@ -98,7 +98,7 @@ describe('detectRegion', () => {
 
   it('falls back to the default when nothing is reachable', async () => {
     net.Socket.mockImplementation(() => fakeSocket('error'));
-    expect(await probe.detectRegion()).toBe('us2'); // DEFAULTS.region
+    expect(await probe.detectRegion()).toBe('us'); // DEFAULTS.region
   });
 });
 
@@ -184,7 +184,7 @@ describe('postMinerReport', () => {
       jest.doMock('../src/shared/config', () => ({
         NETWORK: { reportUrl: 'http://board.local/report' },
         REGIONS: {},
-        DEFAULTS: { region: 'us2' },
+        DEFAULTS: { region: 'us' },
       }));
       const p = require('../src/main/probe');
       const httpMock = require('http');

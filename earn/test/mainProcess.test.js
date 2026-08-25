@@ -119,7 +119,7 @@ jest.mock('../src/main/probe', () => ({
   findFreePort: jest.fn(() => Promise.resolve(8080)),
   // GPU detection moved into probe so the GUI and the CLI share one
   // implementation — the GUI's own copy was Windows-only, which left the Linux
-  // AppImage with no device name and no per-card difficulty.
+  // AppImage with no device name.
   detectGpuInfo: jest.fn(() => Promise.resolve(null)),
 }));
 
@@ -136,45 +136,34 @@ jest.mock('../src/main/nodeStore', () => ({
   })),
 }));
 
-jest.mock('../src/main/minerManager', () => {
+jest.mock('../src/main/pearlEngine', () => {
   const { EventEmitter } = require('events');
-  class MinerManager extends EventEmitter {
+  class PearlEngine extends EventEmitter {
     constructor(opts) {
       super();
       this.opts = opts;
       this._running = false;
-      this.start = jest.fn(() => {
-        if (MinerManager.startError) throw MinerManager.startError;
+      this.start = jest.fn((settings) => {
+        this.settings = settings;
+        if (PearlEngine.startError) throw PearlEngine.startError;
         this._running = true;
       });
       this.stop = jest.fn(() => { this._running = false; });
       this.isRunning = jest.fn(() => this._running);
-      MinerManager.instances.push(this);
+      PearlEngine.instances.push(this);
     }
   }
-  MinerManager.instances = [];
-  MinerManager.startError = null;
-  return { MinerManager };
+  PearlEngine.instances = [];
+  PearlEngine.startError = null;
+  return { PearlEngine };
 });
 
-jest.mock('../src/main/engineManager', () => {
-  class EngineManager {
-    constructor(opts) {
-      this.opts = opts;
-      EngineManager.instances.push(this);
-    }
-    isInstalled() { return EngineManager.behavior.installed; }
-    binaryPath() { return EngineManager.behavior.binPath; }
-    ensure() { return EngineManager.behavior.ensure(); }
-  }
-  EngineManager.instances = [];
-  EngineManager.behavior = {
-    installed: false,
-    binPath: '/tmp/engine/alpha-miner',
-    ensure: () => Promise.resolve('/tmp/engine/alpha-miner'),
-  };
-  return { EngineManager };
-});
+jest.mock('../src/main/pearlCore', () => ({
+  loadCore: jest.fn(() => null),
+  coreFactory: jest.fn(() => null),
+}));
+
+jest.mock('net', () => ({ connect: jest.fn(() => ({ on: jest.fn(), write: jest.fn(), destroy: jest.fn() })) }));
 
 jest.mock('../src/main/llmManager', () => {
   const { EventEmitter } = require('events');
@@ -314,8 +303,7 @@ function loadMain(opts = {}) {
   ctx.io = require('../src/main/io');
   ctx.probe = require('../src/main/probe');
   ctx.nodeStore = require('../src/main/nodeStore');
-  ctx.MinerManager = require('../src/main/minerManager').MinerManager;
-  ctx.EngineManager = require('../src/main/engineManager').EngineManager;
+  ctx.PearlEngine = require('../src/main/pearlEngine').PearlEngine;
   ctx.LlmManager = require('../src/main/llmManager').LlmManager;
   ctx.LlmEngineManager = require('../src/main/llmEngineManager').LlmEngineManager;
   ctx.JobWorker = require('../src/main/jobWorker').JobWorker;
@@ -525,7 +513,7 @@ describe('app boot and window lifecycle', () => {
     ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
     await flush();
-    const miner = ctx.MinerManager.instances[ctx.MinerManager.instances.length - 1];
+    const miner = ctx.PearlEngine.instances[ctx.PearlEngine.instances.length - 1];
 
     expect(ctx.electron._appEvents['before-quit']).toBeInstanceOf(Function);
     ctx.electron._appEvents['before-quit']();
@@ -547,7 +535,7 @@ describe('simple ipc handlers', () => {
     const s = await ctx.invoke('settings:get');
     // worker defaults to this machine's hostname, not the shared 'rig01' constant,
     // so two rigs on one payout address don't collide into one board identity.
-    expect(s).toMatchObject({ region: 'us2', worker: defaultWorker(), mode: 'auto', address: '' });
+    expect(s).toMatchObject({ region: 'us', worker: defaultWorker(), mode: 'auto', address: '' });
     expect(s.worker).toMatch(/^[a-z0-9-]{1,32}$/);
 
     ctx.fs.existsSync.mockImplementation((p) => p === SETTINGS_PATH);
@@ -566,7 +554,7 @@ describe('simple ipc handlers', () => {
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Could not read settings'));
   });
 
-  it('config:get, llm:status, app:version, difficultyForCard and region:detect answer directly', async () => {
+  it('config:get, llm:status, app:version and region:detect answer directly', async () => {
     const ctx = loadMain();
     expect(await ctx.invoke('config:get')).toEqual({
       regions: ctx.config.REGIONS, defaults: ctx.config.DEFAULTS, miner: ctx.config.MINER,
@@ -574,7 +562,6 @@ describe('simple ipc handlers', () => {
     });
     expect(await ctx.invoke('llm:status')).toMatchObject({ ready: false, model: ctx.config.LLM.model.name });
     expect(await ctx.invoke('app:version')).toBe('0.0.0-test');
-    expect(await ctx.invoke('miner:difficultyForCard', 'RTX 4090')).toBe(524288);
     expect(await ctx.invoke('region:detect')).toBe('us1');
     expect(ctx.probe.detectRegion).toHaveBeenCalled();
   });
@@ -583,7 +570,7 @@ describe('simple ipc handlers', () => {
   // it to the plain name string the renderer's IPC contract expects. What matters
   // here is that it is NOT platform-gated any more — the old copy short-circuited
   // to null on anything but win32, which is why the Linux AppImage showed no
-  // device name and never applied the per-card difficulty.
+  // device name at all.
   it('gpu:detect returns the probed card name, on every platform', async () => {
     const ctx = loadMain({ platform: 'linux' });
     ctx.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 4090', count: 2 });
@@ -690,10 +677,14 @@ describe('simple ipc handlers', () => {
 describe('balance handlers', () => {
   it('balance:get returns the parsed balance with a USD figure', async () => {
     const ctx = loadMain();
-    ctx.io.getJson.mockResolvedValueOnce({ balance_prl: 5, total_paid_prl: 10 });
+    ctx.io.getJson.mockResolvedValueOnce({
+      stats: { balance: String(5 * 1e8) },
+      payments: [{ amount: 10 * 1e8 }],
+    });
     const b = await ctx.invoke('balance:get', VALID_ADDR);
     expect(b).toEqual({ pending: 5, paid: 10, earned: 15, usd: 15 * ctx.config.ECON.PRL_USD });
-    expect(ctx.io.getJson).toHaveBeenCalledWith(expect.stringContaining('/api/miner/' + VALID_ADDR));
+    expect(ctx.io.getJson).toHaveBeenCalledWith(
+      expect.stringContaining('/api/stats_address?address=' + VALID_ADDR));
   });
 
   it('balance:get is null for invalid addresses, fetch failures, empty and throwing payloads', async () => {
@@ -704,7 +695,7 @@ describe('balance handlers', () => {
     ctx.io.getJson.mockResolvedValueOnce(null);
     expect(await ctx.invoke('balance:get', VALID_ADDR)).toBeNull();
     // a payload whose property access throws exercises the parse catch
-    ctx.io.getJson.mockResolvedValueOnce({ get balance_prl() { throw new Error('boom'); } });
+    ctx.io.getJson.mockResolvedValueOnce({ get stats() { throw new Error('boom'); } });
     expect(await ctx.invoke('balance:get', VALID_ADDR)).toBeNull();
   });
 
@@ -722,7 +713,7 @@ describe('balance handlers', () => {
     });
     ctx.electron._fireReady();
     await flush();
-    ctx.io.getJson.mockResolvedValueOnce({ balance_prl: 10, total_paid_prl: 0 });
+    ctx.io.getJson.mockResolvedValueOnce({ stats: { balance: String(10 * 1e8) } });
     const b = await ctx.invoke('balance:get', VALID_ADDR);
     expect(b.usd).toBe(5);
   });
@@ -846,8 +837,7 @@ describe('macOS', () => {
     await flush();
 
     // No engine resolution at all — not a failed download, not a spawn.
-    expect(ctx.EngineManager.instances).toHaveLength(0);
-    expect(ctx.MinerManager.instances).toHaveLength(0);
+    expect(ctx.PearlEngine.instances).toHaveLength(0);
     expect(ctx.io.downloadFile).not.toHaveBeenCalled();
     // …but the model does come up, which is the whole point of the Mac build.
     expect(ctx.LlmManager.instances).toHaveLength(1);
@@ -863,8 +853,7 @@ describe('macOS', () => {
     ctx.emit('miner:start', { mode: 'mining', address: VALID_ADDR });
     await flush();
 
-    expect(ctx.EngineManager.instances).toHaveLength(0);
-    expect(ctx.MinerManager.instances).toHaveLength(0);
+    expect(ctx.PearlEngine.instances).toHaveLength(0);
     expect(ctx.LlmManager.instances).toHaveLength(0);
     // The renderer's optimistic "running" state must be undone, or it shows STOP
     // for a session in which nothing is running.
@@ -909,87 +898,6 @@ describe('macOS', () => {
 // ── mining ───────────────────────────────────────────────────────────────────
 
 describe('mining', () => {
-  it('downloads the engine, starts the miner, and relays engine events', async () => {
-    const ctx = await boot();
-    const BIN = '/tmp/engine/alpha-miner';
-    ctx.fs.existsSync.mockImplementation((p) => p === BIN);
-
-    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
-    await flush();
-
-    // settings persisted, initial stats pushed, ticker + reporter registered
-    expect(ctx.fs.writeFileSync).toHaveBeenCalledWith(SETTINGS_PATH, expect.any(String));
-    expect(ctx.sent('miner:stats').length).toBeGreaterThan(0);
-    const ticker = ctx.interval(1000);
-    expect(ticker).toBeTruthy();
-    ticker.fn();
-    const stats = ctx.sent('miner:stats');
-    expect(stats[stats.length - 1]).toMatchObject({ accepted: 0, rejected: 0, points: [] });
-
-    // reporter posted immediately and again on its interval
-    expect(ctx.probe.postMinerReport).toHaveBeenCalled();
-    const reporter = ctx.interval(ctx.config.NETWORK.reportIntervalMs);
-    reporter.fn();
-    await flush();
-    expect(ctx.probe.detectGpusVram.mock.calls.length).toBeGreaterThanOrEqual(2);
-
-    const logs = () => ctx.sent('miner:log').map((l) => l.line);
-    expect(logs()).toContain('connecting to us2.alphapool.tech:5566 · worker rig01');
-    expect(ctx.sent('miner:engine').map((e) => e.phase)).toEqual(['downloading', 'ready']);
-    expect(logs()).toContain('engine ready: ' + BIN);
-
-    const miner = ctx.MinerManager.instances[0];
-    expect(miner.start).toHaveBeenCalledWith(expect.objectContaining({
-      address: VALID_ADDR, platform: 'linux', binaryPath: BIN,
-    }));
-
-    // engine events flow through to the renderer + the stats accumulator
-    miner.emit('log', { level: 'info', line: 'share accepted' });
-    expect(logs()).toContain('share accepted');
-    miner.emit('event', { type: 'status', hashrate: 12, accepted: 4 });
-    expect(ctx.sent('miner:event')).toContainEqual({ type: 'status', hashrate: 12, accepted: 4 });
-    ticker.fn();
-    const after = ctx.sent('miner:stats');
-    expect(after[after.length - 1].accepted).toBe(4);
-    miner.emit('stopped', 3);
-    expect(logs()).toContain('engine exited (code 3)');
-    miner.emit('error', new Error('spawn EACCES'));
-    expect(logs()).toContain('failed to launch engine: spawn EACCES');
-
-    // while mining, an update install remembers to resume
-    ctx.emit('app:update:install');
-    const persisted = ctx.fs.writeFileSync.mock.calls.map((c) => c[1]).join('\n');
-    expect(persisted).toContain('"resumeMining": true');
-
-    // stop clears the timers and the miner
-    ctx.emit('miner:stop');
-    expect(global.clearInterval).toHaveBeenCalledWith(ticker);
-    expect(global.clearInterval).toHaveBeenCalledWith(reporter);
-    expect(miner.stop).toHaveBeenCalled();
-    expect(ctx.sent('miner:stopped').length).toBeGreaterThan(0);
-  });
-
-  it('does not spawn the miner when STOP arrives while the engine is still downloading', async () => {
-    const ctx = await boot();
-    // Make engine.ensure hang so the start is in flight when STOP lands.
-    let resolveEnsure;
-    ctx.EngineManager.behavior.installed = false;
-    ctx.EngineManager.behavior.ensure = () => new Promise((res) => { resolveEnsure = res; });
-    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
-
-    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
-    await flush();
-    expect(ctx.MinerManager.instances).toHaveLength(0); // still downloading, nothing spawned
-
-    ctx.emit('miner:stop');          // user stops mid-download
-    resolveEnsure('/tmp/engine/alpha-miner'); // download completes AFTER the stop
-    await flush();
-
-    // The stop wins: no miner is spawned behind a UI that says it's stopped.
-    expect(ctx.MinerManager.instances).toHaveLength(0);
-    expect(ctx.sent('miner:stopped').length).toBeGreaterThan(0);
-  });
-
   it('does not start the LLM when STOP arrives during the miner hashrate wait', async () => {
     const ctx = await boot();
     const BIN = '/tmp/engine/alpha-miner';
@@ -998,7 +906,7 @@ describe('mining', () => {
     // mode 'both' → start the miner, then wait for a non-zero hashrate before the LLM.
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'both' });
     await flush();
-    const miner = ctx.MinerManager.instances[0];
+    const miner = ctx.PearlEngine.instances[0];
     expect(miner.start).toHaveBeenCalled(); // miner running, runPlan now awaiting waitForMinerUp
 
     ctx.emit('miner:stop'); // stop during the wait → miner torn down, epoch bumped
@@ -1006,213 +914,6 @@ describe('mining', () => {
 
     // The LLM fleet must not come up for a stopped session.
     expect(ctx.LlmManager.instances).toHaveLength(0);
-  });
-
-  it('uses a custom endpoint/worker/binary and keeps the running miner on re-start', async () => {
-    const ctx = await boot();
-    ctx.fs.existsSync.mockImplementation((p) => p === '/custom/bin');
-    ctx.emit('miner:start', {
-      address: VALID_ADDR, mode: 'mining', endpoint: 'pool.example:1234', worker: 'w9',
-      region: 'eu1', binaryPath: '/custom/bin',
-    });
-    await flush();
-    expect(ctx.sent('miner:log').map((l) => l.line))
-      .toContain('connecting to pool.example:1234 · worker w9');
-    expect(ctx.EngineManager.instances).toHaveLength(0);
-    expect(ctx.MinerManager.instances).toHaveLength(1);
-
-    // second start while running: no new manager, settings persisted again
-    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining', binaryPath: '/custom/bin' });
-    await flush();
-    expect(ctx.MinerManager.instances).toHaveLength(1);
-  });
-
-  it('reports a friendly failure when the engine download fails', async () => {
-    const ctx = await boot({
-      before: (c) => { c.EngineManager.behavior.ensure = () => Promise.reject(new Error('404')); },
-    });
-    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
-    await flush();
-    expect(ctx.sent('miner:engine')).toContainEqual({
-      phase: 'error', message: 'Could not download or set up the mining engine — see Logs.',
-    });
-    expect(ctx.sent('miner:log').map((l) => l.line).join('\n')).toContain('engine setup failed: 404');
-    expect(ctx.MinerManager.instances[0].start).not.toHaveBeenCalled();
-
-    // a retry while the failed session's ticker/reporter are still alive
-    // replaces them instead of stacking a second pair
-    const ticker = ctx.interval(1000);
-    const reporter = ctx.interval(ctx.config.NETWORK.reportIntervalMs);
-    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
-    await flush();
-    expect(global.clearInterval).toHaveBeenCalledWith(ticker);
-    expect(global.clearInterval).toHaveBeenCalledWith(reporter);
-  });
-
-  // The reported failure: Node rejected the pool's certificate chain, and the
-  // log's manual-download hint named a URL but no destination, so the user's
-  // hand-downloaded engine sat in ~/Downloads and the next start failed the
-  // same way.
-  it('names the cause and the exact file to save when the certificate check fails', async () => {
-    const ctx = await boot({
-      before: (c) => {
-        c.EngineManager.behavior.ensure = () => Promise.reject(Object.assign(
-          new Error('unable to verify the first certificate'),
-          { code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' },
-        ));
-      },
-    });
-    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
-    await flush();
-
-    expect(ctx.sent('miner:engine')).toContainEqual({
-      phase: 'error', message: 'The mining engine download failed an HTTPS certificate check — see Logs.',
-    });
-    const log = ctx.sent('miner:log').map((l) => l.line).join('\n');
-    expect(log).toMatch(/proxy, VPN or antivirus/);
-    expect(log).toContain('ca-certificates');
-    // Version-agnostic on purpose: this asserts the guidance names a download URL
-    // and where the file has to go, not which engine build is pinned today. A
-    // The Linux engine is a self-extracting .run, so the advice is "save it as"
-    // — and it downloads under the very name the cache looks for, so there is no
-    // rename to get wrong either. Telling anyone to extract it would be advice
-    // that cannot work, which is the whole point of manualInstallHint.
-    expect(log).toMatch(/Manual install: download \S+ and save it as \S+\.run,/);
-    expect(log).not.toContain('extract it into');
-  });
-
-  it('logs "engine found" when the engine is already installed', async () => {
-    const ctx = await boot({
-      before: (c) => { c.EngineManager.behavior.installed = true; },
-    });
-    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
-    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
-    await flush();
-    expect(ctx.sent('miner:log').map((l) => l.line)).toContain('engine found: /tmp/engine/alpha-miner');
-    expect(ctx.sent('miner:engine').map((e) => e.phase)).toEqual(['ready']);
-  });
-
-  it('flags an antivirus quarantine when the Windows engine vanishes after setup', async () => {
-    const ctx = await boot({ platform: 'win32' });
-    // ensure() resolves but the file never exists on disk
-    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
-    await flush();
-    const engineMsgs = ctx.sent('miner:engine');
-    expect(engineMsgs[engineMsgs.length - 1].message).toContain('Antivirus blocked the mining engine');
-    expect(ctx.MinerManager.instances[0].start).not.toHaveBeenCalled();
-  });
-
-  it('reports a launch failure when spawning the engine throws', async () => {
-    const ctx = await boot({
-      before: (c) => { c.MinerManager.startError = new Error('bad exe'); },
-    });
-    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
-    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
-    await flush();
-    expect(ctx.sent('miner:log').map((l) => l.line)).toContain('failed to launch engine: bad exe');
-  });
-
-  // A stale legacy bundle must NOT be resurrected. Windows now runs a packaged
-  // 1.9.4, and the only thing that could still be sitting under the old
-  // unversioned name is an 1.8.6 build — which mines rank-256 work the fork does
-  // not credit. Taking it would look like success and pay nothing, so the rig
-  // downloads the real engine instead.
-  it('ignores a legacy bundled Windows exe and fetches the packaged engine', async () => {
-    const legacy = require('path').join('/res', 'engine', 'alpha-miner-windows.exe');
-    const ctx = await boot({ platform: 'win32', resourcesPath: '/res' });
-    ctx.fs.existsSync.mockImplementation((p) => p === legacy);
-    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
-    await flush();
-    expect(ctx.sent('miner:log').map((l) => l.line)).not.toContain('using bundled engine: ' + legacy);
-    expect(ctx.EngineManager.instances).toHaveLength(1);
-  });
-
-  // The installer ships the engine too (see the Windows bundling step in
-  // .github/workflows/miner-build.yml), so a fresh rig mines without waiting on
-  // a download. Windows has no execute bit, so unlike the Linux bundle there is
-  // no chmod to re-assert — calling one would be a no-op at best.
-  it('spawns a bundled Windows engine as-is, with no chmod', async () => {
-    const eng = require('../src/shared/engine');
-    const bundled = eng.bundledEnginePath('/res', 'win32', undefined, eng.ENGINE.windows);
-    const ctx = await boot({ platform: 'win32', resourcesPath: '/res' });
-    ctx.fs.existsSync.mockImplementation((p) => p === bundled);
-    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
-    await flush();
-    expect(ctx.EngineManager.instances).toHaveLength(0);
-    expect(ctx.fs.chmodSync).not.toHaveBeenCalled();
-    expect(ctx.MinerManager.instances[0].start)
-      .toHaveBeenCalledWith(expect.objectContaining({ binaryPath: bundled }));
-  });
-
-  // The Linux AppImage now ships both engine builds (see the bundling step in
-  // .github/workflows/miner-build.yml), and one spawned straight out of the
-  // bundle has to be executable — so the mode is re-asserted rather than
-  // trusted. Inside the read-only AppImage mount the chmod fails, and that must
-  // not stop a rig whose binary squashfs already recorded as executable.
-  it('re-asserts +x on a bundled Linux engine and survives a read-only bundle', async () => {
-    const eng = require('../src/shared/engine');
-    // Derived, not spelled out: a packaged engine lives at <dir>/<launcher>, not a
-    // flat versioned filename, and bundledEnginePath is what knows the difference.
-    const bundled = eng.bundledEnginePath('/res', 'linux', undefined, eng.ENGINE.linux);
-    const ctx = await boot({ resourcesPath: '/res' });
-    ctx.fs.existsSync.mockImplementation((p) => p === bundled);
-    ctx.fs.chmodSync.mockImplementation(() => { throw new Error('EROFS: read-only file system'); });
-
-    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
-    await flush();
-
-    expect(ctx.fs.chmodSync).toHaveBeenCalledWith(bundled, 0o755);
-    expect(ctx.sent('miner:log').map((l) => l.line)).toContain('using bundled engine: ' + bundled);
-    expect(ctx.MinerManager.instances[0].start)
-      .toHaveBeenCalledWith(expect.objectContaining({ binaryPath: bundled }));
-  });
-
-  it('falls through to the download when neither Windows bundle exists', async () => {
-    const ctx = await boot({ platform: 'win32', resourcesPath: '/res' });
-    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
-    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
-    await flush();
-    expect(ctx.EngineManager.instances).toHaveLength(1);
-    // Windows pins the single pool build (ENGINE.windows)
-    expect(ctx.EngineManager.instances[0].opts.version).toBe(require('../src/shared/engine').ENGINE.windows);
-  });
-
-  // A Windows rig that QUALIFIES for the rank-128 hotfix must not be quietly
-  // handed the bundled 1.8.6 .exe instead. The legacy-name fallback exists for
-  // when the selected version has no bundle, and taking it here would downgrade
-  // a compliant rig back to mining work the fork no longer credits — the exact
-  // failure this release exists to fix.
-  // Upstream's launcher mangles its own core path when that path contains a
-  // space, and the cache is "%APPDATA%\LLMJob Earn\engine" — always spaced.
-  // Rather than give up the compliant build, put the engine somewhere
-  // space-free so a qualifying rig keeps it.
-  // …but a locked-down box where nothing space-free can be created still has to
-  // mine. A rig that cannot start earns nothing; one on 1.8.6 earns uncredited
-  // work, which is worse than compliant and better than dead.
-  // The same bug, reached the other way: a space-free cache keeps the hotfix
-  // selected, but the bundle sitting in "C:\Program Files\LLMJob Earn" still
-  // cannot run. Spawning it would fail on every start, so it is skipped and the
-  // rig downloads into the path that works.
-  // There is no older build left to fall back to, so an out-of-date driver gets
-  // a warning rather than a silent downgrade — and it is sent BEFORE the
-  // download, so a rig does not spend half a gigabyte on an engine its driver
-  // will refuse to run. An unreadable driver version stays quiet: guessing would
-  // scare a perfectly healthy rig.
-  it('warns about a pre-R580 driver, and stays quiet when it cannot read one', async () => {
-    const old = await boot({ before: (c) => { c.probe.detectDriverMajor.mockResolvedValue(550); } });
-    old.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
-    await flush();
-    expect(old.sent('miner:log').map((l) => l.line).join('\n'))
-      .toContain('NVIDIA driver is older than R580');
-    // It is a warning, not a refusal: the rig still starts and lets the miner
-    // deliver upstream's own driver message.
-    expect(old.MinerManager.instances).toHaveLength(1);
-
-    const unknown = await boot({ before: (c) => { c.probe.detectDriverMajor.mockResolvedValue(null); } });
-    unknown.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
-    await flush();
-    expect(unknown.sent('miner:log').map((l) => l.line).join('\n'))
-      .not.toContain('older than R580');
   });
 
   // A rig whose resolver is broken looks exactly like a pool that is down: the
@@ -1223,7 +924,7 @@ describe('mining', () => {
     const ctx = await boot();
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining', region: 'us1' });
     await flush();
-    const miner = ctx.MinerManager.instances[0];
+    const miner = ctx.PearlEngine.instances[0];
 
     const dnsLine = '[stratum] connect failed: DNS lookup failed: No such host is known.';
     for (let i = 0; i < 3; i++) {
@@ -1234,7 +935,7 @@ describe('mining', () => {
     const hints = ctx.sent('miner:log').map((l) => l.line)
       .filter((l) => l.includes('could not resolve'));
     expect(hints).toHaveLength(1);
-    expect(hints[0]).toContain('could not resolve us1.alphapool.tech:5566');
+    expect(hints[0]).toContain('could not resolve us.pearl.herominers.com:1200');
 
     // A refused connection is the pool's problem — do not blame the resolver.
     miner.emit('event', { type: 'connect-failed', reason: 'connection refused', dns: false });
@@ -1243,20 +944,11 @@ describe('mining', () => {
       .filter((l) => l.includes('could not resolve'))).toHaveLength(1);
   });
 
-  it('logs a start failure when the driver probe throws mid-start', async () => {
-    const ctx = await boot({
-      before: (c) => { c.probe.detectDriverMajor.mockRejectedValue(new Error('nvidia-smi missing')); },
-    });
-    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
-    await flush();
-    expect(ctx.sent('miner:log').map((l) => l.line)).toContain('start failed: nvidia-smi missing');
-  });
-
   it('an invalid address in mining mode runs nothing and tells the renderer', async () => {
     const ctx = await boot();
     ctx.emit('miner:start', { address: 'garbage', mode: 'mining' });
     await flush();
-    expect(ctx.MinerManager.instances).toHaveLength(0);
+    expect(ctx.PearlEngine.instances).toHaveLength(0);
     expect(ctx.fs.writeFileSync).toHaveBeenCalled(); // still persisted
     expect(ctx.sent('miner:stopped').length).toBe(1);
   });
@@ -1361,8 +1053,7 @@ describe('mining', () => {
   // …but a start that actually changes the plan must not be swallowed by the
   // one in flight. This is the START LLM button while mining-only is running.
   it('replays a mid-run start whose settings differ, so mining → both still serves', async () => {
-    const ctx = await boot({ before: (c) => { c.EngineManager.behavior.installed = true; } });
-    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
+    const ctx = await boot();
     wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
     ctx.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 1000 });
 
@@ -1372,8 +1063,8 @@ describe('mining', () => {
 
     // The replay ran with mode 'both': the already-running miner is kept and the
     // LLM half now waits on proof of hashrate, which mining-only never would.
-    expect(ctx.MinerManager.instances).toHaveLength(1);
-    ctx.MinerManager.instances[0].emit('event', { type: 'status', hashrate: '2.5' });
+    expect(ctx.PearlEngine.instances).toHaveLength(1);
+    ctx.PearlEngine.instances[0].emit('event', { type: 'status', hashrate: '2.5' });
     await flush(30);
     expect(ctx.LlmManager.instances).toHaveLength(1);
   });
@@ -1385,36 +1076,15 @@ describe('mining', () => {
     // DEFAULT_MODE is 'auto': mining needs a valid payout address and there is
     // none, but serving inference doesn't — so the LLM comes up on its own and
     // the session is NOT stopped.
-    expect(ctx.MinerManager.instances).toHaveLength(0);
+    expect(ctx.PearlEngine.instances).toHaveLength(0);
     expect(ctx.LlmManager.instances).toHaveLength(1);
     expect(ctx.sent('miner:stopped')).toHaveLength(0);
   });
 });
 
-// ── zip extraction helpers (passed into the engine managers) ─────────────────
+// ── zip extraction helpers (passed into the llama-server engine manager) ────
 
 describe('zip extraction helpers', () => {
-  async function minerExtract() {
-    const ctx = await boot();
-    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
-    await flush();
-    return { ctx, extract: ctx.EngineManager.instances[0].opts.extract };
-  }
-
-  it('extractZip resolves the destination via PowerShell and quotes quotes', async () => {
-    const { ctx, extract } = await minerExtract();
-    ctx.cp.execFile.mockImplementation((...args) => args[args.length - 1](null));
-    await expect(extract("/tmp/o'brien.zip", '/tmp/dest.exe')).resolves.toBe('/tmp/dest.exe');
-    const [bin, args] = ctx.cp.execFile.mock.calls.pop();
-    expect(bin).toBe('powershell.exe');
-    expect(args[args.length - 1]).toContain("'/tmp/o''brien.zip'");
-  });
-
-  it('extractZip rejects when PowerShell fails', async () => {
-    const { ctx, extract } = await minerExtract();
-    ctx.cp.execFile.mockImplementation((...args) => args[args.length - 1](new Error('expand failed')));
-    await expect(extract('/tmp/a.zip', '/tmp/dest.exe')).rejects.toThrow('expand failed');
-  });
 
   async function llamaWinExtract() {
     // win32 + no resources → the llama server manager gets extractLlamaZipWin
@@ -1730,22 +1400,16 @@ describe('local LLM', () => {
   });
 
   it('co-runs mining and the LLM: waits for real hashrate, then flags a pre-ready LLM exit', async () => {
-    // The preferred Linux engine is now a PACKAGE, so the bundled path is a
-    // launcher inside a directory — ask engine.js rather than hardcoding a name.
-    const { bundledEnginePath, ENGINE } = require('../src/shared/engine');
-    const bundledMiner = bundledEnginePath('/res', 'linux', undefined, ENGINE.linux);
     const ctx = await boot({
       resourcesPath: '/res',
       before: (c) => { c.probe.findFreePort.mockResolvedValue(8081); },
     });
-    ctx.fs.existsSync.mockImplementation((p) => p === bundledMiner);
 
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'both' });
     await flush();
 
-    // miner is up (bundled engine), LLM is waiting for proof of hashrate
-    expect(ctx.sent('miner:log').map((l) => l.line)).toContain('using bundled engine: ' + bundledMiner);
-    const miner = ctx.MinerManager.instances[0];
+    // miner is up, LLM is waiting for proof of hashrate
+    const miner = ctx.PearlEngine.instances[0];
     expect(miner.start).toHaveBeenCalled();
     expect(ctx.LlmManager.instances).toHaveLength(0);
 
@@ -1802,7 +1466,7 @@ describe('local LLM', () => {
     await flush();
 
     // the miner proves real hashrate → the LLM fleet starts
-    const miner = ctx.MinerManager.instances[0];
+    const miner = ctx.PearlEngine.instances[0];
     miner.emit('event', { type: 'status', hashrate: '5' });
     await flush(30);
 
@@ -1836,7 +1500,7 @@ describe('local LLM', () => {
     ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'both' });
     await flush();
-    ctx.MinerManager.instances[0].emit('event', { type: 'status', hashrate: '5' });
+    ctx.PearlEngine.instances[0].emit('event', { type: 'status', hashrate: '5' });
     await flush(30);
     const llm = ctx.LlmManager.instances[0];
     llm.emit('ready', { baseUrl: llm.baseUrl });
@@ -1865,7 +1529,7 @@ describe('local LLM', () => {
 
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'both' });
     await flush();
-    ctx.MinerManager.instances[0].emit('event', { type: 'status', hashrate: '5' });
+    ctx.PearlEngine.instances[0].emit('event', { type: 'status', hashrate: '5' });
     await flush(30);
     const llm = ctx.LlmManager.instances[0];
     llm.emit('ready', { baseUrl: llm.baseUrl });
@@ -1887,7 +1551,7 @@ describe('local LLM', () => {
     ctx.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 2000 });
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
     await flush();
-    const miner = ctx.MinerManager.instances[0];
+    const miner = ctx.PearlEngine.instances[0];
     expect(ctx.LlmManager.instances).toHaveLength(0);
     miner.emit('stopped', 1);
     await flush(30);
@@ -2184,5 +1848,91 @@ describe('node linking', () => {
     ctx.emit('miner:start', { address: 'bad', mode: 'mining', worker: 'zzz' });
     await flush();
     expect(ctx.nodeStore.saveNode).not.toHaveBeenCalled();
+  });
+});
+
+describe('the mining engine', () => {
+  // There is one engine now. alpha-miner and AlphaPool are gone: the miner is
+  // this process, the GPU work is a linked N-API addon, and the pool is
+  // HeroMiners. So there is no binary to download, no version to select, no
+  // driver floor to clear and nothing to spawn.
+  it('starts our own core, with no binary to resolve first', async () => {
+    const ctx = await boot();
+    ctx.PearlEngine.instances.length = 0;
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    expect(ctx.PearlEngine.instances).toHaveLength(1);
+    const e = ctx.PearlEngine.instances[0];
+    expect(e.start).toHaveBeenCalled();
+    // Nothing was downloaded and nothing was spawned to get here.
+    expect(ctx.io.downloadFile).not.toHaveBeenCalled();
+    expect(ctx.cp.spawn).not.toHaveBeenCalled();
+  });
+
+  // main.js resolves the endpoint from the region, exactly as before; the
+  // engine is not asked to do it again.
+  it('hands the resolved HeroMiners endpoint to the engine', async () => {
+    const ctx = await boot();
+    ctx.PearlEngine.instances.length = 0;
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    expect(ctx.PearlEngine.instances[0].settings.endpoint)
+      .toBe('us.pearl.herominers.com:1200');
+  });
+
+  // net.connect takes the PORT first and PearlMiner hands over host first, so
+  // the adapter flips them. Backwards, this fails to connect with an error that
+  // names neither side.
+  it('the injected connect passes host and port to net in the right order', async () => {
+    const ctx = await boot();
+    ctx.PearlEngine.instances.length = 0;
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    // AFTER boot: it resets the module registry, so a handle taken earlier
+    // belongs to a mock instance main.js never saw.
+    const net = require('net');
+    net.connect.mockClear();
+    ctx.PearlEngine.instances[0].opts.connect('pool.example', 1200);
+    expect(net.connect).toHaveBeenCalledWith(1200, 'pool.example');
+  });
+
+  // Loading the addon is the one thing here that runs before the try/catch
+  // around start(): a pearl_core.node that is present but throws on load would
+  // otherwise take the whole main process with it.
+  it('an addon that throws while loading is reported, not fatal', async () => {
+    const ctx = await boot();
+    const pearlCore = require('../src/main/pearlCore');
+    pearlCore.coreFactory.mockImplementationOnce(() => { throw new Error('bad addon'); });
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    expect(ctx.sent('miner:log').some((l) => /start failed: bad addon/.test(l.line))).toBe(true);
+  });
+
+  // An engine error with no message would otherwise read "could not start
+  // mining: undefined".
+  it('an error carrying no message still says something useful', async () => {
+    const ctx = await boot();
+    ctx.PearlEngine.instances.length = 0;
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    ctx.PearlEngine.instances[0].emit('error', {});
+    expect(ctx.sent('miner:log').some((l) => /the Pearl core did not initialise/.test(l.line)))
+      .toBe(true);
+  });
+
+  // A throwing start is reported like any other launch failure rather than
+  // taking the main process down.
+  it('a failed start is reported, not thrown', async () => {
+    const ctx = await boot();
+    ctx.PearlEngine.instances.length = 0;
+    ctx.PearlEngine.startError = new Error('no core');
+    try {
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(ctx.PearlEngine.instances).toHaveLength(1);
+      expect(ctx.sent('miner:log').some((l) => /could not start mining/.test(l.line))).toBe(true);
+    } finally {
+      ctx.PearlEngine.startError = null;
+    }
   });
 });

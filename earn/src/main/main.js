@@ -1,7 +1,7 @@
 'use strict';
 
 // Electron main process. Thin shell: owns the window, persists settings, and
-// bridges the renderer to the MinerManager (the real engine). Stats shown to
+// bridges the renderer to our own Pearl miner. Stats shown to
 // the user come only from the engine's own output — no simulated data. All
 // testable logic lives in ../shared and ./minerManager.
 
@@ -14,20 +14,23 @@ const https = require('https');
 
 const { autoUpdater } = require('electron-updater');
 
-const { MinerManager } = require('./minerManager');
-const { EngineManager } = require('./engineManager');
+const net = require('net');
+const { PearlEngine } = require('./pearlEngine');
+const { coreFactory } = require('./pearlCore');
 const { LlmManager } = require('./llmManager');
 const { LlmEngineManager } = require('./llmEngineManager');
-const { postJson, getJson, downloadFile, streamChatCompletion, extractLlamaZip, extractEnginePackage } = require('./io');
+const { postJson, getJson, downloadFile, streamChatCompletion, extractLlamaZip } = require('./io');
 const {
-  detectRegion, detectVram, detectGpusVram, detectDriverMajor,
+  detectRegion, detectVram, detectGpusVram,
   postMinerReport, findFreePort,
 } = require('./probe');
 const probe = require('./probe');
 const nodeStore = require('./nodeStore');
 const settingsStore = require('../shared/settingsStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
-const { REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE, resolveEndpoint, difficultyForCard } = require('../shared/config');
+const {
+  REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE, resolveEndpoint, migrateRegion,
+} = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
 const { resolveEconomics } = require('../shared/economics');
 const nodeProto = require('../shared/node');
@@ -41,13 +44,7 @@ const { minerSupported, minerUnsupportedNote, autoUpdateSupported } = require('.
 const { resolveServerUrl } = require('../shared/llama');
 const { buildBalanceUrl, parseBalance } = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
-const {
-  bundledEnginePath, engineVersionFor, driverTooOld,
-  engineDownloadUrl, manualInstallHint,
-  ENGINE,
-} = require('../shared/engine');
 const { formatUpdate, describeUpdateError } = require('../shared/updateStatus');
-const { describeLaunchError, describeSetupError } = require('../shared/engineError');
 const { buildMinerReports } = require('../shared/minerReport');
 const { runtimeCopyPlan } = require('../shared/llmRuntime');
 const earnings = require('../shared/earnings');
@@ -82,6 +79,14 @@ const settingsLog = (m) => console.error(m);
 function loadSettings() {
   return settingsStore.readSettings(settingsPath(), { fs, log: settingsLog });
 }
+// Translate a saved AlphaPool region onto a live one. Not a write: the renderer
+// hands the migrated id straight back when the user next saves, so the file
+// heals itself without a startup rewrite that would touch a settings file we
+// might have failed to read properly.
+function withLiveRegion(s) {
+  return Object.assign({}, s, { region: migrateRegion(s.region) });
+}
+
 function persistSettings(s) {
   return settingsStore.writeSettings(settingsPath(), s, { fs, log: settingsLog });
 }
@@ -146,12 +151,18 @@ async function refreshEconomics() {
   return liveEcon;
 }
 
-// Report a miner-engine launch failure to the UI + log, translating the common
-// antivirus-quarantine case into plain guidance instead of a cryptic error.
-function reportLaunchFailure(err, missing) {
-  const d = describeLaunchError({ platform: process.platform, missing: !!missing, err });
-  send('miner:engine', { phase: 'error', message: d.ui });
-  send('miner:log', { level: 'error', line: d.log });
+// Report a failure to start mining. This used to translate the
+// antivirus-quarantined-the-download case, which cannot happen any more: there
+// is no download and no spawned binary, so the only way to fail here is that
+// the CUDA core is missing or refused to initialise. PearlEngine already says
+// which, in words; this puts it in front of the user.
+function reportLaunchFailure(err) {
+  // A core that fails to load can surface as something with no message at all,
+  // and "could not start mining: undefined" tells nobody anything.
+  const line = 'could not start mining: '
+    + (err && err.message ? err.message : 'the Pearl core did not initialise');
+  send('miner:engine', { phase: 'error', message: line });
+  send('miner:log', { level: 'error', line: line });
 }
 
 // Map a stats snapshot to the display fields the renderer expects.
@@ -177,26 +188,6 @@ function statsView(snap) {
 // every interpolated value through this closes that.
 function psQuote(value) {
   return "'" + String(value).replace(/'/g, "''") + "'";
-}
-
-// Extract a single engine .exe from a downloaded zip to `dest`. Windows-only:
-// uses PowerShell's Expand-Archive, so there's no extra runtime dependency. Used
-// for the miner engine, whose binary is self-contained.
-function extractZip(zipPath, dest) {
-  return new Promise((resolve, reject) => {
-    const tmp = dest + '.unzip';
-    const wanted = path.basename(dest);
-    const ps = "$ErrorActionPreference='Stop';"
-      + 'Expand-Archive -LiteralPath ' + psQuote(zipPath) + ' -DestinationPath ' + psQuote(tmp) + ' -Force;'
-      + '$e = Get-ChildItem -Path ' + psQuote(tmp) + ' -Recurse -Filter ' + psQuote(wanted) + ' | Select-Object -First 1;'
-      + 'if(-not $e){ $e = Get-ChildItem -Path ' + psQuote(tmp) + " -Recurse -Filter '*.exe' | Select-Object -First 1 }"
-      + 'Copy-Item -LiteralPath $e.FullName -Destination ' + psQuote(dest) + ' -Force;'
-      + 'Remove-Item -LiteralPath ' + psQuote(tmp) + ' -Recurse -Force';
-    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], (err) => {
-      if (err) return reject(err);
-      resolve(dest);
-    });
-  });
 }
 
 // Extract a llama.cpp Windows build zip and flatten EVERY file into dest's
@@ -239,9 +230,6 @@ async function startMining(settings) {
     persistSettings(settings);
     return;
   }
-  // Snapshot the stop epoch: engine setup below can await a multi-minute download,
-  // and if the user presses STOP during it we must not spawn the engine afterward.
-  const epoch = miningEpoch;
   persistSettings(settings);
 
   // Real stats only: the accumulator starts at zero and is filled in from the
@@ -280,97 +268,35 @@ async function startMining(settings) {
   const endpoint = resolveEndpoint(settings);
   send('miner:log', { level: 'info', line: 'connecting to ' + endpoint + ' · worker ' + (settings.worker || DEFAULTS.worker) });
 
-  // Resolve the engine. Each platform picks the newest build its hardware can
-  // actually run — off Windows from the driver version (the 1.8.6+ line is
-  // faster but needs NVIDIA driver >= 580), on Windows from the GPU's compute
-  // capability (below). Either way the version is baked into the cached
-  // filename, so a bump busts the cache. A packaged build may ship the engine
-  // under process.resourcesPath (build.extraResources) — prefer that and skip
-  // the network entirely; the lookup is version-aware, so a bundle only
-  // satisfies the exact build this rig selected. Otherwise download on demand.
-  let binaryPath = settings.binaryPath;
-  // One build per platform now (both 1.9.4): upstream dispatches RTX 30/40/50
-  // inside a single artifact, so there is no compute-capability gate and no
-  // fallback to choose between. A rig it will not run on gets the miner's own
-  // driver/architecture refusal, which names the fix — so the driver check is
-  // now only a heads-up, sent before the download rather than after a rig has
-  // pulled half a gigabyte it cannot use.
-  const version = engineVersionFor(process.platform);
-  if (driverTooOld(await detectDriverMajor())) {
-    send('miner:log', {
-      level: 'warn',
-      line: 'NVIDIA driver is older than R' + ENGINE.minDriverMajor + ' (CUDA 13); alpha-miner '
-        + version + ' will refuse to start. Update the driver to mine.',
-    });
+  // The miner is this process: the GPU work is a linked N-API addon, so there
+  // is no binary to resolve, download, version-gate or spawn. That whole path
+  // went with alpha-miner.
+  //
+  // coreFactory returns null when pearl_core.node is not present, which is the
+  // expected state on a machine without a CUDA build. PearlEngine then stops
+  // cleanly and says so rather than opening a pool socket it could never feed.
+  //
+  // There is no stop-epoch check here any more. It existed because engine setup
+  // awaited a multi-minute download, so STOP could land in the middle of a
+  // start; nothing between the top of this function and here awaits now, so the
+  // guard could never fire. applyPlan still checks the epoch across its real
+  // awaits.
+  miner = new PearlEngine({
+    connect: (host, port) => net.connect(port, host),
+    createCore: coreFactory({ resourcesPath: process.resourcesPath }),
+  });
+  wireMinerEvents(miner, endpoint);
+  try {
+    miner.start(Object.assign({}, settings, { endpoint, gpu: settings.gpu || null }));
+  } catch (e) {
+    reportLaunchFailure(e);
   }
-  // 1.9.4 runs from any path, including one with a space, so the engine
-  // simply lives beside the rest of our data.
-  const engineDir = path.join(app.getPath('userData'), 'engine');
-  let bundled = bundledEnginePath(process.resourcesPath, process.platform, settings.gpu, version);
-  // No legacy-name fallback any more. Windows runs a packaged 1.9.4, so the
-  // only thing that could sit under the old unversioned name is an 1.8.6
-  // build — which mines rank-256 work the fork does not credit. Downloading
-  // the real engine beats silently spawning one that earns nothing.
-  if (!binaryPath && bundled && fs.existsSync(bundled)) {
-    binaryPath = bundled;
-    // Re-assert the execute bit rather than trust every packaging step between
-    // the build's chmod and this disk. Best effort: inside a mounted AppImage
-    // the resources are read-only and this simply fails, which is fine — the
-    // mode is then whatever squashfs recorded, and spawn reports EACCES if that
-    // turns out not to be executable.
-    if (process.platform !== 'win32') {
-      try { fs.chmodSync(bundled, 0o755); } catch (e) { /* read-only bundle */ }
-    }
-    send('miner:engine', { phase: 'ready' });
-    send('miner:log', { level: 'info', line: 'using bundled engine: ' + bundled });
-  }
-  if (!binaryPath) {
-    const engine = new EngineManager({
-      dir: engineDir,
-      platform: process.platform,
-      gpu: settings.gpu,
-      version,
-      fs: fs,
-      download: downloadFile,
-      extract: extractZip,
-      extractPackage: extractEnginePackage,
-      chmod: fs.chmodSync,
-    });
-    // The URL this rig actually needs — the driver-picked build, not the pool's
-    // generic link. A manual-install hint that names a different artifact than
-    // the one the cache is waiting for sends users in circles.
-    const url = engineDownloadUrl(process.platform, settings.gpu, null, version);
-    try {
-      if (engine.isInstalled()) {
-        send('miner:log', { level: 'info', line: 'engine found: ' + engine.binaryPath() });
-      } else {
-        send('miner:engine', { phase: 'downloading' });
-        send('miner:log', { level: 'info', line: 'downloading mining engine from ' + url + ' …' });
-      }
-      binaryPath = await engine.ensure();
-      send('miner:engine', { phase: 'ready' });
-      send('miner:log', { level: 'info', line: 'engine ready: ' + binaryPath });
-    } catch (e) {
-      binaryPath = undefined;
-      // manualInstallHint picks "save it as <file>" for a bare binary vs
-      // "extract it into <dir>" for a package — a tarball cannot be saved as
-      // the launcher, so the advice has to differ.
-      const d = describeSetupError(Object.assign(
-        { err: e, downloadUrl: url },
-        manualInstallHint(process.platform, version, engineDir),
-      ));
-      send('miner:engine', { phase: 'error', message: d.ui });
-      send('miner:log', { level: 'error', line: d.log });
-    }
-  }
+}
 
-  // STOP arrived while the engine was being resolved/downloaded: stopMining() has
-  // already torn down the ticker/reporter/stats and told the UI we stopped, so
-  // spawning now would mine headless behind a UI that says it's off. Abort.
-  if (epoch !== miningEpoch) return;
-
-  // Real alpha-miner engine.
-  miner = new MinerManager({ spawn });
+// Miner event wiring. PearlEngine translates our miner's events into the two
+// the UI reads (a periodic `status` and one `connected`), so nothing
+// downstream of here knows what produced them.
+function wireMinerEvents(miner, endpoint) {
   miner.on('log', (l) => send('miner:log', l));
   // Said once, not on every 5s retry. The engine's own line repeats verbatim and
   // names neither the host it tried nor the fact that the name never resolved,
@@ -383,29 +309,14 @@ async function startMining(settings) {
       dnsHinted = true;
       send('miner:log', {
         level: 'warn',
-        line: 'the engine could not resolve ' + endpoint + ' — nothing is wrong with the GPU.'
-          + ' Check DNS/VPN/firewall, or pick another region in Settings. If the host in the'
-          + ' engine banner above does not match that exactly, send us this log.',
+        line: 'could not resolve ' + endpoint + ' — nothing is wrong with the GPU.'
+          + ' Check DNS/VPN/firewall, or pick another region in Settings.',
       });
     }
     send('miner:event', e);
   });
-  miner.on('error', (err) => reportLaunchFailure(err, false));
+  miner.on('error', (err) => reportLaunchFailure(err));
   miner.on('stopped', (code) => send('miner:log', { level: 'info', line: 'engine exited (code ' + code + ')' }));
-
-  if (binaryPath && !fs.existsSync(binaryPath)) {
-    // ensure() handed us a path but the file is already gone — the classic
-    // antivirus-quarantined-it-right-after-download case.
-    reportLaunchFailure(null, true);
-  } else if (binaryPath) {
-    try {
-      // engineVersion selects the argument shape: 1.9.4 takes --host/--worker
-      // <address>.<rig>/--gpu, nothing like the 1.8.x --pool/--address vector.
-      miner.start(Object.assign({}, settings, { platform: process.platform, binaryPath: binaryPath, engineVersion: version }));
-    } catch (e) {
-      reportLaunchFailure(e, false);
-    }
-  }
 }
 
 function stopMining() {
@@ -434,11 +345,11 @@ function appIcon() {
 }
 
 // Detect the machine's GPU for the settings/device label. Uses Windows'
-// Win32_VideoController via PowerShell (already a dependency of extractZip);
+// Win32_VideoController via PowerShell (already a dependency of the llama unzip);
 // resolves to a display name or null. Never rejects.
 // Delegates to the shared probe (nvidia-smi, then WMI on Windows) rather than
 // keeping a Windows-only copy here — that copy returned null on Linux, so the
-// shipped AppImage showed no device and never applied the per-card difficulty.
+// shipped AppImage showed no device at all.
 // The renderer's IPC contract is a plain name string, so unwrap it here.
 async function detectGpu() {
   const info = await probe.detectGpuInfo();
@@ -1204,7 +1115,9 @@ function applyPlan(settings) {
   return planRun;
 }
 
-ipcMain.handle('settings:get', () => Object.assign(
+// The renderer gets a region that EXISTS. A saved AlphaPool id would otherwise
+// reach a <select> with no matching option, which blanks it silently.
+ipcMain.handle('settings:get', () => withLiveRegion(Object.assign(
   // Both clients default to the shared DEFAULT_MODE ('auto': mine + serve the
   // LLM, balanced from free VRAM).
   // worker defaults to this machine's hostname, not the shared "rig01" constant:
@@ -1212,9 +1125,9 @@ ipcMain.handle('settings:get', () => Object.assign(
   // board identity (and if either is multi-GPU, the other's row is dropped
   // outright). Only fills a FRESH install — loadSettings() below wins, so an
   // existing worker name is never rewritten out from under someone's board row.
-  { region: DEFAULTS.region, worker: defaultWorker(), difficulty: DEFAULTS.difficulty, address: '', mdlAddress: '', mode: DEFAULT_MODE },
+  { region: DEFAULTS.region, worker: defaultWorker(), address: '', mdlAddress: '', mode: DEFAULT_MODE },
   loadSettings(),
-));
+)));
 ipcMain.handle('llm:status', () => llmStatus);
 // `platform` rides along on the config the renderer already fetches at startup,
 // so the UI can stop offering what this OS can't do (the mining compute modes on
@@ -1225,7 +1138,6 @@ ipcMain.handle('config:get', () => ({
   miner: MINER,
   platform: { minerSupported: minerSupported(process.platform) },
 }));
-ipcMain.handle('miner:difficultyForCard', (_e, name) => difficultyForCard(name));
 ipcMain.handle('gpu:detect', () => detectGpu());
 ipcMain.handle('region:detect', () => detectRegion());
 ipcMain.handle('balance:get', (_e, address) => fetchBalance(address, liveEcon.PRL_USD));

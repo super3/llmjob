@@ -41,12 +41,15 @@
     connectedAvatar: $('connected-avatar'), connectedRename: $('connected-rename'), connectDisconnect: $('connect-disconnect'),
     // settings
     modeSeg: $('mode-seg'), modeHint: $('mode-hint'),
-    setWorker: $('set-worker'), setRegion: $('set-region'), setDifficulty: $('set-difficulty'),
+    setWorker: $('set-worker'), setRegion: $('set-region'),
     appVersion: $('app-version'), btnCheckUpdate: $('btn-check-update'), updateStatus: $('update-status'),
     logTerm: $('log-term'),
   };
 
   const state = {
+    // Overwritten from config.defaults at boot. Only a bare literal because the
+    // renderer has no access to shared/config across the preload bridge.
+    defaultRegion: 'us',
     mining: false,       // master process running (miner and/or LLM per mode)
     view: 'mine',        // mine | chat | api | settings | logs
     returnTab: 'mine',   // where settings/logs return to
@@ -493,8 +496,7 @@
     return {
       address: state.address.trim(),
       worker: el.setWorker.value.trim() || 'rig01',
-      region: el.setRegion.value || 'us2',
-      difficulty: Number(el.setDifficulty.value) || 524288,
+      region: el.setRegion.value || state.defaultRegion,
       mode: state.mode || 'mining',
       mdlAddress: state.mdlAddress || '',
     };
@@ -644,6 +646,8 @@
       // Before the saved settings are applied — usableMode() below depends on it.
       applyPlatform(config && config.platform);
       const regions = (config && config.regions) || {};
+      const cfgDefaults = (config && config.defaults) || {};
+      state.defaultRegion = cfgDefaults.region || state.defaultRegion;
       el.setRegion.innerHTML = '';
       Object.keys(regions).forEach((key) => {
         const opt = document.createElement('option');
@@ -659,8 +663,9 @@
       el.addrInput.value = state.address;
       state.mdlAddress = s.mdlAddress || '';
       el.setWorker.value = s.worker || 'rig01';
-      el.setRegion.value = s.region || 'us2';
-      el.setDifficulty.value = s.difficulty || 524288;
+      // main migrates a stale AlphaPool id before we see it, so this always
+      // names an option that exists.
+      el.setRegion.value = s.region || state.defaultRegion;
       // 'auto' to match shared/llmMode's DEFAULT_MODE, which is what main sends
       // for a fresh install. This fallback only fires on a FALSY stored mode —
       // a hand-edited or half-written settings.json holding null or "" — and it
@@ -684,10 +689,6 @@
       if (gpu) {
         state.gpu = gpu;
         if (!state.mining) el.deviceLabel.textContent = gpu;
-        if (api.difficultyForCard && Number(el.setDifficulty.value) === 524288) {
-          const d = await api.difficultyForCard(gpu);
-          if (d) el.setDifficulty.value = d;
-        }
       }
     }
     if (api.detectRegion && !state.mining) {

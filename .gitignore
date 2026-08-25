@@ -144,3 +144,9 @@ dump.rdb
 
 # Generated static site (built by site/build-site.mjs)
 dist/
+
+# Native core build outputs — the addon is built in CI or on a box with CUDA,
+# never committed.
+earn/native/build/
+earn/native/cuda-build/
+earn/native/node_modules/
