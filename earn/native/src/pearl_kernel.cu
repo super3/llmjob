@@ -255,12 +255,25 @@ __device__ void blake3_chunk_cv(const uint32_t key[8], const uint8_t *in,
   uint32_t start = CHUNK_START;
   uint32_t out16[16];
 
+  const bool vec = ((((uintptr_t)in) & 15u) == 0u);
   while (offset + 64 < len) {
+    if (vec) {
+      const int4 *q = (const int4 *)(in + offset);
 #pragma unroll
-    for (int i = 0; i < 16; i++) {
-      uint32_t j = offset + i * 4;
-      block[i] = (uint32_t)in[j] | ((uint32_t)in[j + 1] << 8) |
-                 ((uint32_t)in[j + 2] << 16) | ((uint32_t)in[j + 3] << 24);
+      for (int i = 0; i < 4; i++) {
+        const int4 w = q[i];
+        block[i * 4 + 0] = (uint32_t)w.x;
+        block[i * 4 + 1] = (uint32_t)w.y;
+        block[i * 4 + 2] = (uint32_t)w.z;
+        block[i * 4 + 3] = (uint32_t)w.w;
+      }
+    } else {
+#pragma unroll
+      for (int i = 0; i < 16; i++) {
+        uint32_t j = offset + i * 4;
+        block[i] = (uint32_t)in[j] | ((uint32_t)in[j + 1] << 8) |
+                   ((uint32_t)in[j + 2] << 16) | ((uint32_t)in[j + 3] << 24);
+      }
     }
     blake3_compress(cv, block, counter, 64, base_flags | start, out16);
 #pragma unroll
@@ -269,15 +282,27 @@ __device__ void blake3_chunk_cv(const uint32_t key[8], const uint8_t *in,
     offset += 64;
   }
 
-  uint8_t tail[64];
   uint32_t rem = len - offset;
+  if (vec && rem == 64u) {
+    const int4 *q = (const int4 *)(in + offset);
 #pragma unroll
-  for (int i = 0; i < 64; i++) tail[i] = (i < rem) ? in[offset + i] : 0;
+    for (int i = 0; i < 4; i++) {
+      const int4 w = q[i];
+      block[i * 4 + 0] = (uint32_t)w.x;
+      block[i * 4 + 1] = (uint32_t)w.y;
+      block[i * 4 + 2] = (uint32_t)w.z;
+      block[i * 4 + 3] = (uint32_t)w.w;
+    }
+  } else {
+    uint8_t tail[64];
 #pragma unroll
-  for (int i = 0; i < 16; i++) {
-    block[i] = (uint32_t)tail[i * 4] | ((uint32_t)tail[i * 4 + 1] << 8) |
-               ((uint32_t)tail[i * 4 + 2] << 16) |
-               ((uint32_t)tail[i * 4 + 3] << 24);
+    for (int i = 0; i < 64; i++) tail[i] = (i < rem) ? in[offset + i] : 0;
+#pragma unroll
+    for (int i = 0; i < 16; i++) {
+      block[i] = (uint32_t)tail[i * 4] | ((uint32_t)tail[i * 4 + 1] << 8) |
+                 ((uint32_t)tail[i * 4 + 2] << 16) |
+                 ((uint32_t)tail[i * 4 + 3] << 24);
+    }
   }
   blake3_compress(cv, block, counter, rem, base_flags | start | CHUNK_END, out16);
 #pragma unroll
@@ -507,14 +532,26 @@ extern "C" __global__ void pearl_gen_operand(const uint32_t *key,
 #pragma unroll
   for (int i = 0; i < 8; i++) msg[8 + i] = (uint8_t)(salt >> (i * 8));
 #pragma unroll
-  for (int i = 0; i < 32; i++) msg[32 + i] = label[i];
+  for (int i = 0; i < 8; i++)
+    *(uint32_t *)(msg + 32 + i * 4) = ((const uint32_t *)label)[i];
 
   uint8_t h[32];
   blake3_keyed(kbuf, msg, 64, h);
+
+  __align__(16) int8_t buf[32];
 #pragma unroll
-  for (int i = 0; i < 32; i++) {
-    if (base + (uint64_t)i < total)
-      out[base + i] = (int8_t)((int32_t)(h[i] % 127) - 63);
+  for (int i = 0; i < 32; i++) buf[i] = (int8_t)((int32_t)(h[i] % 127) - 63);
+
+  if (base + 32u <= total) {
+    // base is a multiple of 32, so both halves are 16-byte aligned.
+    int4 *dst = (int4 *)(out + base);
+    dst[0] = *(const int4 *)(buf);
+    dst[1] = *(const int4 *)(buf + 16);
+  } else {
+#pragma unroll
+    for (int i = 0; i < 32; i++) {
+      if (base + (uint64_t)i < total) out[base + i] = buf[i];
+    }
   }
 }
 

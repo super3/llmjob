@@ -194,9 +194,19 @@ const PROFILE = {
   // came from a hashrate that was not a rate and a miner that stalled a few
   // seconds into every measurement, so they described nothing.
   //
-  // Measured on a 4090 with the tensor-core partials kernel, at col_batch 512:
-  // 16384 -> 62.2, 32768 -> 65.7 TH/s, and 65536 is within noise of that. The
-  // curve plateaus rather than peaking, so this takes the knee.
+  // What this trades is L2 residency against how often the operands must be
+  // redrawn: one draw yields (m/16)*(n/16) regions and not one more, so doubling
+  // m and n quarters the number of redraws.
+  //
+  // The knee used to sit at 32768 because a redraw cost 4.4 ms, more than half
+  // of it generating operands a byte at a time. With that fixed the curve moved:
+  // measured at col_batch 4096, 16384 -> 155.3, 32768 -> 171.8, 65536 -> 183.3,
+  // 131072 -> 187.5, 262144 -> 189.3 TH/s. It is still climbing past here, but
+  // the transcript buffer scales with (m/16)*col_batch and this already asks
+  // about a gigabyte of VRAM; the card also has a language model on it.
+  //
+  // Both operands no longer fit in the 4090's 72 MB L2 at this size, which the
+  // measurement says costs less than the redraws it saves.
   //
   // MUST be a power of two, and not merely as a tuning preference. The operand
   // commitment is a BLAKE3 Merkle tree over 1024-byte chunks and the device
@@ -204,8 +214,8 @@ const PROFILE = {
   // a power-of-two chunk count -- BLAKE3's real layout is left-heavy. A value
   // like 12288 (3 * 4096) gives a wrong root, wrong seeds, and shares no pool
   // will accept, and the small parity profile cannot catch it.
-  m: 32768,
-  n: 32768,
+  m: 65536,
+  n: 65536,
 
   // Column offsets per launch. Not protocol: it trades VRAM for amortised
   // launch overhead, and the host clamps it to the number of valid column
