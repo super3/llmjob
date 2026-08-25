@@ -3,7 +3,14 @@
 const { EventEmitter } = require('events');
 const { PearlMiner, RECONNECT_MS } = require('../src/main/pearlMiner');
 const { encode } = require('../src/shared/miner/stratum');
-const { shareBound, PROFILE } = require('../src/shared/miner/pearlhash');
+const { shareBound, PROFILE, buildConfig52, regionToTile } = require('../src/shared/miner/pearlhash');
+const { hash, keyedHash } = require('../src/shared/miner/blake3');
+const M = require('../src/shared/miner/merkle');
+
+// A profile small enough to build real commitment trees in a test, but the same
+// shape as the real one: 1024-byte leaves, a power-of-two leaf count, the 4x16
+// tile, and k/rank = 8 chunks. m*k/1024 = 64 leaves a side.
+const TINY = { k: 1024, rank: 128, mmaType: 0, m: 64, n: 64 };
 
 const ADDR = 'prl1px5ervx6ftaegmdhqa5ajemh20j2uw7l9jt5j5s97rljp72yt3s8qncrxud';
 const MDL = 'mdl1pl80mdy0culfn3g7jl3paa5ccnc8gkkfmkc6t2x0q6rmvd9dpu5wsk0v3z8';
@@ -205,7 +212,9 @@ describe('PearlMiner — protocol', () => {
 
   test('a custom profile changes which rank is credited', () => {
     const b = boot();
-    b.m.start({ ...settings, profile: { rank: 256 } });
+    // A whole profile, not a fragment: the bound is computed from k and the
+    // tile as well as the rank, so a partial override has no meaning.
+    b.m.start({ ...settings, profile: { ...PROFILE, rank: 256, k: 4096 } });
     b.sock.emit('connect');
     b.sock.emit('data', jobLine({ rank: 256 }));
     expect(b.core.setJob).toHaveBeenCalledTimes(1);
@@ -235,30 +244,78 @@ describe('PearlMiner — protocol', () => {
 describe('PearlMiner — shares', () => {
   function withJob() {
     const b = boot();
-    b.m.start(settings);
+    b.m.start({ ...settings, profile: TINY });
     b.sock.emit('connect');
     b.sock.emit('data', jobLine());
     b.sock.written.length = 0;
     return b;
   }
 
-  // A hash comfortably under 2^203.
-  function goodHit(jobId = '00000000_2097152') {
-    const h = Buffer.alloc(32);
-    h[24] = 0x01; // 2^192
-    return { jobId, jackpotHash: h, nonce: 42, aSeed: 'aa', bSeed: 'bb', proof: Buffer.from([1, 2]) };
+  // A hit with GENUINE Merkle proofs, built the way the device builds them, so
+  // the local certify step in _onHit is actually exercised. A stub proof would
+  // make these tests pass against a miner that submits nothing provable.
+  //
+  // The operand contents are arbitrary -- the proof certifies that these leaves
+  // sit under this root, and the root is whatever we committed to.
+  function proofSide(matrix, rows, cols, jobKey) {
+    const layers = M.buildLayers(jobKey, matrix);
+    const leafIndices = M.leafIndicesFromRows(rows, cols);
+    const p = M.multiLeafProof(jobKey, matrix, layers, leafIndices);
+    return {
+      leafIndices: p.leafIndices,
+      leafData: Buffer.concat(p.leafData),
+      siblings: Buffer.concat(p.siblings),
+      root: p.root,
+      totalLeaves: p.totalLeaves,
+    };
   }
 
-  test('a valid hit is submitted with the v2 object params', () => {
+  function goodHit(jobId = '00000000_2097152', nonce = 0) {
+    const h = Buffer.alloc(32);
+    h[24] = 0x01; // 2^192, comfortably under the scaled bound
+    const jobKey = hash(Buffer.concat([Buffer.from(HEADER, 'hex'), buildConfig52(TINY)]));
+    const A = keyedHash(Buffer.alloc(32, 7), Buffer.alloc(64), TINY.m * TINY.k);
+    const B = keyedHash(Buffer.alloc(32, 9), Buffer.alloc(64), TINY.n * TINY.k);
+    const { rows, cols } = regionToTile(nonce, TINY);
+    return {
+      jobId,
+      jackpotHash: h,
+      nonce,
+      proofA: proofSide(A, rows, TINY.k, jobKey),
+      proofBt: proofSide(B, cols, TINY.k, jobKey),
+    };
+  }
+
+  test('a valid hit is submitted as a plain proof', () => {
     const { core, sock } = withJob();
     core.emit('hit', goodHit());
     const sent = JSON.parse(sock.written[0]);
     expect(sent.method).toBe('mining.submit');
-    expect(sent.params).toEqual({
-      wallet: ADDR, worker: 'rig01', job_id: '00000000_2097152', nonce: 42,
-      type: 'v2', sigma: 'aa', b_seed: 'bb', plain_proof: 'AQI=',
-    });
+    expect(Object.keys(sent.params).sort()).toEqual(['hs', 'job_id', 'plain_proof']);
+    expect(sent.params.job_id).toBe('00000000_2097152');
+    expect(Buffer.from(sent.params.plain_proof, 'base64').length).toBeGreaterThan(1024);
     expect(sent.id).toBeGreaterThan(1); // never collides with the authorize id
+  });
+
+  // The device re-draws its operands every few tens of milliseconds. A proof
+  // that has drifted off its hash cannot be certified anywhere, and submitting
+  // it costs a round trip and counts against the worker.
+  test('a hit whose proof does not verify is dropped, not submitted', () => {
+    const { core, sock, events } = withJob();
+    const hit = goodHit();
+    hit.proofA.leafData[0] ^= 0xff;
+    core.emit('hit', hit);
+    expect(sock.written).toHaveLength(0);
+    expect(events.log.some((l) => /does not verify locally/.test(l.line))).toBe(true);
+  });
+
+  // Nothing downstream can rebuild a proof the core did not attach.
+  test('a hit with no proof attached is dropped', () => {
+    const { core, sock } = withJob();
+    const hit = goodHit();
+    delete hit.proofA;
+    core.emit('hit', hit);
+    expect(sock.written).toHaveLength(0);
   });
 
   test('the pool verdict is matched back to the job that produced it', () => {

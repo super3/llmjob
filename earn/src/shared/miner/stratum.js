@@ -45,19 +45,24 @@ function buildAuthorize(wallet, worker) {
 // v2 shape (job_id, the two seeds, the nonce, and the base64 proof the core
 // emits); `serializeProof` is isolated as its own function so the exact wire
 // encoding can be corrected in one place once a real submit is observed.
+// A share submission. The proof is the whole message: it carries m, n, k, the
+// noise rank, and both Merkle proofs with their row indices, and the verifier
+// reconstructs the mining configuration from those indices rather than being
+// told it. So there is no nonce to send and no seeds to send -- the earlier
+// shape here carried wallet, worker, nonce, sigma and b_seed, none of which the
+// pool reads, and it never produced an accepted share.
+//
+// hs is the miner's own hashrate in multiply-accumulates per second, which is
+// what the protocol's difficulty adjustment counts. It is advisory: the pool
+// scores on shares.
 function buildSubmit(id, share) {
   return {
     id,
     method: 'mining.submit',
     params: {
-      wallet: share.wallet,
-      worker: share.worker,
       job_id: share.jobId,
-      nonce: share.nonce,
-      type: 'v2',
-      sigma: share.aSeed,
-      b_seed: share.bSeed,
-      plain_proof: serializeProof(share.proof),
+      plain_proof: share.plainProof,
+      hs: Math.max(0, Math.round(share.hashrate || 0)),
     },
   };
 }

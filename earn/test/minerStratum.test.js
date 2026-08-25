@@ -182,19 +182,27 @@ describe('normalizeError', () => {
 });
 
 describe('buildSubmit / serializeProof', () => {
-  test('assembles the documented v2 object-param submit', () => {
-    const msg = buildSubmit(7, {
-      wallet: 'prl1pabc', worker: 'rig01', jobId: 'j1', nonce: 42,
-      aSeed: 'aa', bSeed: 'bb', proof: Buffer.from([0xde, 0xad]),
-    });
+  // The proof IS the submission. It carries m, n, k, the noise rank and both
+  // Merkle proofs with their row indices, and the verifier rebuilds the mining
+  // configuration from those indices rather than being told it -- so there is
+  // no nonce and there are no seeds to send.
+  //
+  // This used to send wallet, worker, nonce, sigma and b_seed as well. The pool
+  // reads none of them, and that shape never produced an accepted share.
+  test('sends the job id, the proof and nothing else', () => {
+    const msg = buildSubmit(7, { jobId: 'j1', plainProof: '3q0=', hashrate: 5.08e13 });
     expect(msg).toEqual({
       id: 7,
       method: 'mining.submit',
-      params: {
-        wallet: 'prl1pabc', worker: 'rig01', job_id: 'j1', nonce: 42,
-        type: 'v2', sigma: 'aa', b_seed: 'bb', plain_proof: '3q0=',
-      },
+      params: { job_id: 'j1', plain_proof: '3q0=', hs: 50800000000000 },
     });
+  });
+
+  // hs is advisory and the pool scores on shares, but a NaN or a negative would
+  // still be a malformed message.
+  test('a missing or nonsense hashrate submits as zero', () => {
+    expect(buildSubmit(1, { jobId: 'j' }).params.hs).toBe(0);
+    expect(buildSubmit(1, { jobId: 'j', hashrate: -5 }).params.hs).toBe(0);
   });
 
   test('serializeProof base64-encodes bytes and tolerates non-buffers', () => {

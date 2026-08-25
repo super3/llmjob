@@ -4,7 +4,11 @@ const { EventEmitter } = require('events');
 const {
   buildAuthorize, buildSubmit, encode, parseMessage,
 } = require('../shared/miner/stratum');
-const { PROFILE, meetsTarget, rankMatches, shareBound } = require('../shared/miner/pearlhash');
+const {
+  PROFILE, meetsTarget, rankMatches, shareBound, buildConfig52,
+} = require('../shared/miner/pearlhash');
+const { hash } = require('../shared/miner/blake3');
+const { buildShareProof } = require('../shared/miner/shareProof');
 const { combinePayoutAddress } = require('../shared/address');
 
 // The host for our own Pearl miner: it owns the pool socket and the job/lifecycle
@@ -182,6 +186,11 @@ class PearlMiner extends EventEmitter {
       return;
     }
     this.job = job;
+    // job_key binds the header to the mining configuration, and everything
+    // downstream -- both operands, both commitment roots, the noise seeds --
+    // hangs off it. The pool never sends the configuration, so both sides
+    // derive this independently and a single wrong byte is silent.
+    this.jobKey = hash(Buffer.concat([job.header, buildConfig52(this.profile())]));
     this.emit('job', { jobId: job.jobId, height: job.height });
     // No null guard: start() only reaches here with a live core (a createCore
     // that throws OR returns falsy both land in its catch and abort the start).
@@ -191,7 +200,7 @@ class PearlMiner extends EventEmitter {
     // multiply-accumulates rather than attempts. Comparing against the raw
     // target makes shares 65536x rarer than the pool intends, which is
     // indistinguishable from simply being slow.
-    const bound = shareBound(job.target, PROFILE);
+    const bound = shareBound(job.target, this.profile());
     if (bound == null) {
       this.emit('log', { level: 'error', line: 'pool target is too easy to scale for this profile; ignoring the job' });
       return;
@@ -199,8 +208,13 @@ class PearlMiner extends EventEmitter {
     this.core.setJob({ header: job.header, target: bound, jobId: job.jobId });
   }
 
+  // The profile this miner mines, which a caller may override wholesale.
+  profile() {
+    return (this.settings && this.settings.profile) || PROFILE;
+  }
+
   _wireCore(core, wallet, worker) {
-    core.on('hashrate', (th) => this.emit('hashrate', th));
+    core.on('hashrate', (th) => { this.hashrate = th; this.emit('hashrate', th); });
     core.on('error', (err) => this.emit('error', err));
     core.on('hit', (hit) => this._onHit(hit, wallet, worker));
   }
@@ -212,17 +226,24 @@ class PearlMiner extends EventEmitter {
   _onHit(hit, wallet, worker) {
     const job = this.job;
     if (!job || hit.jobId !== job.jobId) return;
-    if (!meetsTarget(hit.jackpotHash, shareBound(job.target, PROFILE))) {
+    if (!meetsTarget(hit.jackpotHash, shareBound(job.target, this.profile()))) {
       this.emit('log', { level: 'info', line: 'dropping a hit that no longer meets target (vardiff moved)' });
+      return;
+    }
+    // Certify the hit before it goes anywhere. The proof was captured on the
+    // device at the moment of the hit, because the search re-draws its operands
+    // every few tens of milliseconds and a proof read back afterwards belongs to
+    // a different matrix than the hash it certifies.
+    const plainProof = buildShareProof(hit, this.jobKey, this.profile());
+    if (!plainProof) {
+      this.emit('log', { level: 'error', line: 'dropping a hit whose proof does not verify locally' });
       return;
     }
     const id = this.submitId++;
     this.pending.set(id, { jobId: job.jobId });
-    const msg = buildSubmit(id, {
-      wallet, worker, jobId: job.jobId, nonce: hit.nonce,
-      aSeed: hit.aSeed, bSeed: hit.bSeed, proof: hit.proof,
-    });
-    this.sock.write(encode(msg));
+    this.sock.write(encode(buildSubmit(id, {
+      jobId: job.jobId, plainProof, hashrate: (this.hashrate || 0) * 1e12,
+    })));
   }
 
   _onClose(host, port, wallet, worker) {
