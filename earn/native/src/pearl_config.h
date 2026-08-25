@@ -216,7 +216,7 @@ static const uint8_t PEARL_SEED_SALT_B[32] = {
 // k = 16 * rank is the smallest common dimension the protocol allows at the
 // mandated rank, and k/rank = 16 chunks is exactly the transcript lane count, so
 // each chunk lands in its own lane and the rotation never wraps.
-static const PearlProfile PEARL_MAINNET_PROFILE = {4096u, 256u, 0u,
+static const PearlProfile PEARL_MAINNET_PROFILE = {2048u, 128u, 0u,
                                                    32768u, 32768u,
                                                    PEARL_SEED_SALTED, 512u, 0u};
 

@@ -145,8 +145,24 @@ function minStridePad(shape) {
 // k = 4096 gave 32 chunks and wrapped each lane twice.
 const PROFILE = {
   // Hashed into config52 — protocol-mandated, must match the network exactly.
-  k: 4096,
-  rank: 256,
+  //
+  // Rank sits on the PENALTY_BASE_RANK floor of 128, and k is the smallest the
+  // sanity checks allow for it (k >= 16r). That is not a tuning preference --
+  // it is worth an exact factor of two in accepted shares.
+  //
+  // The share bound is scaled by penalized_adjustment_factor,
+  //   tile_size * (k/rank) * PENALTY_BASE_RANK,
+  // while one attempt costs tile_size * k multiply-accumulates. So
+  //   shares/second  ~  (MAC rate) * PENALTY_BASE_RANK / (rank * difficulty),
+  // which falls as 1/rank for the same GPU work. At rank 256 every attempt cost
+  // twice the arithmetic and earned the same bound: the unpenalized factor was
+  // tile*k = 2^18, but the penalty rule only ever granted tile*(k/rank)*128 =
+  // 2^17. At rank 128 with k = 16r the two coincide and nothing is forfeited.
+  // The reference miner sits on the floor for exactly this reason.
+  //
+  // k/rank is 16 either way, which is what fills the 16-lane transcript once.
+  k: 2048,
+  rank: 128,
   mmaType: 0, // Int7xInt7ToInt32
   rows: ROWS_PATTERN,
   cols: COLS_PATTERN,

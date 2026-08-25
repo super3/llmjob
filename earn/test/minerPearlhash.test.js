@@ -9,16 +9,22 @@ const {
 } = require('../src/shared/miner/pearlhash');
 
 describe('PROFILE', () => {
-  // Taken from the reference implementation's own defaults, not inferred.
-  // rank 256 and k 4096 are what an in-the-wild miner actually mines --
-  // lpminer's own help text gives them as its mining defaults. 128 and 2048 are
-  // the FLOOR the sanity checks allow, which is not the same thing, and is what
-  // this profile used to carry.
-  test('is the geometry a working miner uses', () => {
-    expect(PROFILE.rank).toBe(256);
-    expect(PROFILE.rank).toBeGreaterThanOrEqual(PENALTY_BASE_RANK);
+  // The floor the sanity checks allow, which is also where the reference miner
+  // deliberately sits: "sitting on the rank-penalty floor keeps mined blocks
+  // valid once that rule activates, without paying the penalty a larger rank
+  // would" (zk-pow/bindings/go/src/mine.rs).
+  //
+  // This profile briefly carried rank 256 / k 4096 instead, on the grounds that
+  // an in-the-wild miner quotes those as its defaults. That was the wrong thing
+  // to copy. The bound a share is measured against scales as
+  // tile*(k/rank)*PENALTY_BASE_RANK, but an attempt COSTS tile*k, so doubling
+  // the rank doubles the arithmetic per attempt and leaves the bound where it
+  // was -- an exact factor of two in accepted shares, paid for nothing.
+  test('sits on the rank-penalty floor, where a share costs the least work', () => {
+    expect(PROFILE.rank).toBe(PENALTY_BASE_RANK);
+    expect(PROFILE.rank).toBe(128);
     expect(PROFILE.k).toBe(16 * PROFILE.rank); // the sanity checks require k >= 16r
-    expect(PROFILE.k).toBe(4096);
+    expect(PROFILE.k).toBe(2048);
     expect(PROFILE.mmaType).toBe(0);         // Int7xInt7ToInt32
   });
 
@@ -74,8 +80,8 @@ describe('buildConfig52', () => {
   test('matches the reference layout field for field', () => {
     const b = buildConfig52();
     expect(b).toHaveLength(CONFIG_BYTES);
-    expect(b.readUInt32LE(0)).toBe(4096);
-    expect(b.readUInt16LE(4)).toBe(256);
+    expect(b.readUInt32LE(0)).toBe(2048);
+    expect(b.readUInt16LE(4)).toBe(128);
     expect(b.readUInt16LE(6)).toBe(0);
     expect(b.slice(8, 14).toString('hex')).toBe('000300000000');
     expect(b.slice(14, 20).toString('hex')).toBe('000f00000000');
@@ -149,12 +155,12 @@ describe('rotl13', () => {
 
 describe('rankMatches', () => {
   test('accepts the profile rank and an unstated one, refuses a mismatch', () => {
-    expect(rankMatches(256)).toBe(true);
+    expect(rankMatches(128)).toBe(true);
     expect(rankMatches(null)).toBe(true);       // pool did not state a rank
-    expect(rankMatches(128)).toBe(false);       // below what we mine — uncredited
+    expect(rankMatches(256)).toBe(false);       // not what we mine
     expect(rankMatches(512)).toBe(false);
-    expect(rankMatches(256, { rank: 128 })).toBe(false);
-    expect(rankMatches(128, { rank: 128 })).toBe(true);
+    expect(rankMatches(128, { rank: 256 })).toBe(false);
+    expect(rankMatches(256, { rank: 256 })).toBe(true);
   });
 });
 
@@ -163,8 +169,8 @@ describe('difficultyAdjustmentFactor', () => {
   // costs, so a hashrate is MACs per second, not attempts per second. Reporting
   // attempts as hashes under-reported this miner by 65536x at mainnet.
   test('is tile size times dot product length', () => {
-    expect(difficultyAdjustmentFactor()).toBe(4 * 16 * 4096);
-    expect(difficultyAdjustmentFactor()).toBe(262144);
+    expect(difficultyAdjustmentFactor()).toBe(4 * 16 * 2048);
+    expect(difficultyAdjustmentFactor()).toBe(131072);
   });
 
   // The sanity check that identified the unit in the first place: a competing
@@ -178,14 +184,15 @@ describe('difficultyAdjustmentFactor', () => {
   });
 
   test('defaults to the mainnet profile when given none', () => {
-    expect(difficultyAdjustmentFactor(undefined)).toBe(262144);
-    expect(difficultyAdjustmentFactor(null)).toBe(262144);
+    expect(difficultyAdjustmentFactor(undefined)).toBe(131072);
+    expect(difficultyAdjustmentFactor(null)).toBe(131072);
   });
 
   // The tile patterns default when a profile omits them, exactly as buildConfig52
   // does — they are protocol constants rather than per-profile knobs.
   test('defaults the tile patterns when a profile omits them', () => {
     expect(difficultyAdjustmentFactor({ k: 4096 })).toBe(262144);
+    expect(difficultyAdjustmentFactor({ k: 2048 })).toBe(131072);
   });
 
   test('scales with k and with the tile', () => {
@@ -201,16 +208,18 @@ describe('the share bound', () => {
   // exactly why they are easy to conflate -- they diverge as soon as rank moves.
   test('the penalized factor divides out the rank and re-multiplies by the base', () => {
     expect(PENALTY_BASE_RANK).toBe(128);
-    // At the mined geometry these two part company, which is what finally made
-    // them distinguishable: consensus scales by tile*k, a miner scales by
-    // tile*(k/rank)*PENALTY_BASE_RANK. At rank 128 with k=2048 both come to the
-    // same number and no experiment could tell them apart.
+    // Consensus scales by tile*k; a miner scales a SHARE target by
+    // tile*(k/rank)*PENALTY_BASE_RANK. At the floor the two coincide, and that
+    // is the point of mining there: whichever rule the pool applies, the bound
+    // is the same, so no attempt is thrown away by guessing wrong.
     expect(penalizedAdjustmentFactor()).toBe(64 * 16 * 128);
-    expect(difficultyAdjustmentFactor()).toBe(64 * 4096);
-    expect(penalizedAdjustmentFactor()).not.toBe(difficultyAdjustmentFactor());
-    // They coincide at the floor geometry.
-    const floorP = { ...PROFILE, rank: 128, k: 2048 };
-    expect(penalizedAdjustmentFactor(floorP)).toBe(difficultyAdjustmentFactor(floorP));
+    expect(difficultyAdjustmentFactor()).toBe(64 * 2048);
+    expect(penalizedAdjustmentFactor()).toBe(difficultyAdjustmentFactor());
+    // Off the floor they part company, and the penalized one is the smaller --
+    // which is exactly the work a higher rank forfeits.
+    const highP = { ...PROFILE, rank: 256, k: 4096 };
+    expect(penalizedAdjustmentFactor(highP)).toBe(131072);
+    expect(difficultyAdjustmentFactor(highP)).toBe(262144);
   });
 
   test('defaults to the mainnet profile', () => {
