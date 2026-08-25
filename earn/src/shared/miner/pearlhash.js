@@ -208,9 +208,15 @@ const PROFILE = {
   n: 32768,
 
   // Column offsets per launch. Not protocol: it trades VRAM for amortised
-  // launch overhead. 32 -> 55.4, 64 -> 58.3, 256 -> 60.8, 512 -> 63.1,
-  // 1024 -> 64.4 TH/s at m=6144, so this is well past the knee.
-  colBatch: 512,
+  // launch overhead, and the host clamps it to the number of valid column
+  // offsets, so 2048 means ONE launch covers a whole operand draw.
+  //
+  // Re-measured at the current geometry: 256 -> 111.2, 512 -> 112.1,
+  // 1024 -> 112.7, 2048 -> 113.3 TH/s, and VRAM does not move (the jackpot
+  // buffer is sized from the clamped context width, not from this hint).
+  // The older figures here were taken at m=6144 and no longer describe
+  // anything this profile does.
+  colBatch: 2048,
   // Which seed derivation binds the operand roots. 'salted' is cert-v3:
   //   hash_a' = blake3(hash_a ‖ pad32(m), key=SEED_SALT_A)
   //   hash_b' = blake3(hash_b ‖ pad32(n), key=SEED_SALT_B)

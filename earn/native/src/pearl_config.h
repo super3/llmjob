@@ -279,7 +279,7 @@ static const uint8_t PEARL_SEED_SALT_B[32] = {
 // each chunk lands in its own lane and the rotation never wraps.
 static const PearlProfile PEARL_MAINNET_PROFILE = {2048u, 128u, 0u,
                                                    32768u, 32768u,
-                                                   PEARL_SEED_SALTED, 512u, 0u};
+                                                   PEARL_SEED_SALTED, 2048u, 0u};
 
 // Serialize the 52-byte mining configuration, matching the reference's
 // MiningConfiguration::to_bytes byte for byte:
