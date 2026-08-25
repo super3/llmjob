@@ -694,7 +694,13 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   (void)batch;
   const uint32_t regions = ctx->batch;
   const uint32_t col_groups = ctx->colBatch;
-  const int threads = 256;
+  // Block size for the search kernels. Tunable because occupancy against
+  // register pressure is not something to guess at.
+  static const int threads = []() {
+    const char *e = getenv("PEARL_BLOCK");
+    const int v = e ? atoi(e) : 256;
+    return (v == 64 || v == 128 || v == 256 || v == 512 || v == 1024) ? v : 256;
+  }();
   const int warps_per_block = threads / 32;
   // A valid-offset INDEX; the kernel expands it into an actual offset.
   const uint32_t col_off =
