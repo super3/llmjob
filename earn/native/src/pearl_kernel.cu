@@ -833,21 +833,19 @@ extern "C" __global__ void pearl_partials(const int8_t *__restrict__ Aprime,
 // does not fit alongside it and would evict A on the way past.
 //
 // So A goes through L1 (.ca) and B streams past it (.cg).
-__device__ __forceinline__ void pearl_cp_async16_ca(void *smem, const void *gmem) {
+__device__ __forceinline__ void pearl_cp_async16_ca(uint32_t addr, const void *gmem) {
 #if __CUDA_ARCH__ >= 800
-  const uint32_t addr = (uint32_t)__cvta_generic_to_shared(smem);
   asm volatile("cp.async.ca.shared.global [%0], [%1], 16;" ::"r"(addr), "l"(gmem));
 #else
-  *(int4 *)smem = *(const int4 *)gmem;
+  *(int4 *)__cvta_shared_to_generic(addr) = *(const int4 *)gmem;
 #endif
 }
 
-__device__ __forceinline__ void pearl_cp_async16(void *smem, const void *gmem) {
+__device__ __forceinline__ void pearl_cp_async16(uint32_t addr, const void *gmem) {
 #if __CUDA_ARCH__ >= 800
-  const uint32_t addr = (uint32_t)__cvta_generic_to_shared(smem);
   asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::"r"(addr), "l"(gmem));
 #else
-  *(int4 *)smem = *(const int4 *)gmem;
+  *(int4 *)__cvta_shared_to_generic(addr) = *(const int4 *)gmem;
 #endif
 }
 
@@ -881,8 +879,7 @@ __device__ __forceinline__ void pearl_cp_async_wait() {
 // bytes -- .b16 is simply the granularity at which it addresses them.
 __device__ __forceinline__ void pearl_ldmatrix_x4(uint32_t &r0, uint32_t &r1,
                                                   uint32_t &r2, uint32_t &r3,
-                                                  const void *p) {
-  const uint32_t a = static_cast<uint32_t>(__cvta_generic_to_shared(p));
+                                                  uint32_t a) {
   asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];"
                : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3)
                : "r"(a));
@@ -1012,6 +1009,8 @@ extern "C" __global__ void pearl_tile_fold_wmma(
   // consecutive slots differ in the row block first.
   const uint32_t sa_rows = PEARL_WARP_ROWS * regions_per_warp * PEARL_ROWS_COUNT;
   int8_t *sA = sB + (size_t)sb_cols * PEARL_SB_STRIDE;
+  const uint32_t sBa = (uint32_t)__cvta_generic_to_shared(sB);
+  const uint32_t sAa = sBa + sb_cols * PEARL_SB_STRIDE;
   const uint32_t row_base = rbg * PEARL_WARP_ROWS * regions_per_warp * PEARL_ROWS_COUNT;
 
   if (active) {
@@ -1102,8 +1101,8 @@ extern "C" __global__ void pearl_tile_fold_wmma(
 #pragma unroll
       for (uint32_t j = 0; j < PEARL_STAGE_SLOTS; j++) {
         const uint32_t i = threadIdx.x + j * blockDim.x;
-        if (i < btotal) pearl_cp_async16(sB + bdst[j], Bprime + bsrc[j] + k0);
-        if (i < atotal) pearl_cp_async16_ca(sA + adst[j], Aprime + asrc[j] + k0);
+        if (i < btotal) pearl_cp_async16(sBa + bdst[j], Bprime + bsrc[j] + k0);
+        if (i < atotal) pearl_cp_async16_ca(sAa + adst[j], Aprime + asrc[j] + k0);
       }
       // Only a geometry that needs more slots than were precomputed gets here.
       for (uint32_t i = threadIdx.x + PEARL_STAGE_SLOTS * blockDim.x; i < btotal;
@@ -1112,14 +1111,14 @@ extern "C" __global__ void pearl_tile_fold_wmma(
         const uint32_t q = i % quads;
         const uint32_t c = pearl_expand_offset(col_off + cg0_block + (col >> 4), PEARL_COLS_MASK)
                            + (col & 15u);
-        pearl_cp_async16(sB + (size_t)col * PEARL_SB_STRIDE + q * 16,
+        pearl_cp_async16(sBa + col * PEARL_SB_STRIDE + q * 16,
                          Bprime + (size_t)c * k + k0 + q * 16);
       }
       for (uint32_t i = threadIdx.x + PEARL_STAGE_SLOTS * blockDim.x; i < atotal;
            i += blockDim.x) {
         const uint32_t row = i / quads;
         const uint32_t q = i % quads;
-        pearl_cp_async16(sA + (size_t)row * PEARL_SB_STRIDE + q * 16,
+        pearl_cp_async16(sAa + row * PEARL_SB_STRIDE + q * 16,
                          Aprime + (size_t)(row_base + row) * k + k0 + q * 16);
       }
       pearl_cp_async_wait();
@@ -1136,9 +1135,8 @@ extern "C" __global__ void pearl_tile_fold_wmma(
       uint32_t af[PEARL_WMMA_ROW_TILES][4];
 #pragma unroll
       for (uint32_t mb = 0; mb < MB; mb++) {
-        const int8_t *rp = sA
-            + (size_t)(wr * regions_per_warp * PEARL_ROWS_COUNT + mb * 16 + alrow)
-                  * PEARL_SB_STRIDE
+        const uint32_t rp = sAa
+            + (wr * regions_per_warp * PEARL_ROWS_COUNT + mb * 16 + alrow) * PEARL_SB_STRIDE
             + kt + albyte;
         pearl_ldmatrix_x4(af[mb][0], af[mb][1], af[mb][2], af[mb][3], rp);
       }
@@ -1149,8 +1147,8 @@ extern "C" __global__ void pearl_tile_fold_wmma(
       // once would have cost more than the loads it saved.
 #pragma unroll
       for (uint32_t nb = 0; nb < NB; nb += 2) {
-        const int8_t *cp = sB
-            + (size_t)(wc * PEARL_WMMA_COL_BLK * 16 + nb * 8 + blcol) * PEARL_SB_STRIDE
+        const uint32_t cp = sBa
+            + (wc * PEARL_WMMA_COL_BLK * 16 + nb * 8 + blcol) * PEARL_SB_STRIDE
             + kt + blbyte;
         uint32_t b0, b1, b2, b3;
         pearl_ldmatrix_x4(b0, b1, b2, b3, cp);
