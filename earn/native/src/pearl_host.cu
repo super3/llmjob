@@ -726,26 +726,28 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   // there are no reusable partials to stage and no second pass.
   const uint32_t warpsPerBlock = threads / 32;
   const uint32_t regionsPerWarp = PEARL_WMMA_ROW_TILES * (PEARL_WMMA_ROWS / PEARL_ROWS_COUNT);
-  const uint64_t warpsNeeded = (uint64_t)(ctx->rowsValid / regionsPerWarp)
-                               * (col_groups / PEARL_WMMA_COL_BLK);
-  const unsigned blocks =
-      (unsigned)((warpsNeeded + warpsPerBlock - 1) / warpsPerBlock);
-  // The staged B block is shared by every warp in the CTA, which is only sound
-  // while a CTA's warps all sit in the same column-group block. Consecutive
-  // slots differ in the row block first, so that holds exactly when the warp
-  // count divides the row-block count.
+  // A block is a 2D grid of warps: PEARL_WARP_ROWS down, the rest across. Both
+  // dimensions have to tile exactly, because a warp that falls outside cannot
+  // return -- staging is a block-wide cooperative load and a __syncthreads()
+  // some warps skip hangs the launch.
   const uint64_t rowBlocks = ctx->rowsValid / regionsPerWarp;
-  if (rowBlocks % warpsPerBlock != 0) {
+  const uint32_t warpCols = warpsPerBlock / PEARL_WARP_ROWS;
+  const uint64_t colBlocks = col_groups / PEARL_WMMA_COL_BLK;
+  if (warpsPerBlock % PEARL_WARP_ROWS != 0 || rowBlocks % PEARL_WARP_ROWS != 0
+      || warpCols == 0 || colBlocks % warpCols != 0) {
     if (err && err_len)
       snprintf(err, err_len,
-               "warps per block (%u) must divide the row-block count (%llu)",
-               warpsPerBlock, (unsigned long long)rowBlocks);
+               "warp grid %ux%u does not tile %llu row blocks by %llu column blocks",
+               PEARL_WARP_ROWS, warpCols, (unsigned long long)rowBlocks,
+               (unsigned long long)colBlocks);
     return false;
   }
+  const unsigned blocks =
+      (unsigned)((rowBlocks / PEARL_WARP_ROWS) * (colBlocks / warpCols));
   const size_t smem = (size_t)warpsPerBlock * regionsPerWarp * PEARL_WMMA_COL_BLK
                           * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)
-                      + (size_t)PEARL_WMMA_COL_BLK * 16 * PEARL_SB_STRIDE
-                      + (size_t)warpsPerBlock * regionsPerWarp * PEARL_ROWS_COUNT
+                      + (size_t)warpCols * PEARL_WMMA_COL_BLK * 16 * PEARL_SB_STRIDE
+                      + (size_t)PEARL_WARP_ROWS * regionsPerWarp * PEARL_ROWS_COUNT
                             * PEARL_SB_STRIDE;
   // Staging both operands puts this past the 48 KB a block gets by default.
   // Ada allows 99 KB per block, but only when asked; without this the launch

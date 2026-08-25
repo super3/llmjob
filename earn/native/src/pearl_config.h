@@ -242,6 +242,20 @@ static_assert(PEARL_COLS_COUNT == (1u << pearl_popcount_ce(PEARL_COLS_MASK)),
 // 16-byte-aligned leading dimension for integer types, which 144 satisfies.
 #define PEARL_SB_STRIDE 144
 
+// How many of a block's warps sit along the ROW dimension. The rest go across
+// the columns, so a block covers
+//   PEARL_WARP_ROWS * PEARL_WMMA_ROW_TILES * 16   rows
+//   (warps/PEARL_WARP_ROWS) * PEARL_WMMA_COL_BLK * 16 columns.
+//
+// This decides arithmetic intensity, which is what the kernel is actually
+// limited by. A sweep reads A once per column-block and B once per row-block:
+//   traffic = m*k*(n/bN) + n*k*(m/bM)
+// so for a fixed number of warps the tile wants to be SQUARE. Laying all eight
+// warps along the rows made a 256x64 block, which re-read A 512 times a sweep
+// for 43 GB; 4x2 makes it 128x128 and 34 GB for exactly the same registers,
+// shared memory and occupancy.
+#define PEARL_WARP_ROWS 4
+
 #define PEARL_WMMA_ROW_TILES 2
 #define PEARL_WMMA_COL_BLK 4
 

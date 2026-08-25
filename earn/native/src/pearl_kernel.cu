@@ -795,6 +795,29 @@ __device__ __forceinline__ void pearl_cp_async_wait() {
 #endif
 }
 
+// One int8 tensor-core op: 16x8 output, 32 deep, accumulating in place.
+//
+// This is the instruction the hardware actually has. wmma only offers k=16 for
+// int8, and a k=16 op does half the multiply-accumulates of a k=32 one for the
+// same issue slot -- so the whole wmma path was capped near half of peak. That
+// cap is what the kernel had been sitting under: with the chunk readout removed
+// it reached 130 T-MAC/s against a 330 peak, but against a ~165 wmma ceiling
+// that is 79%, which is where a well-fed loop should be.
+//
+// Everything else had already been ruled out by measurement: cutting traffic
+// 21% changed nothing, more resident blocks was worse, and pinning the shared
+// loads to a fixed address changed nothing.
+__device__ __forceinline__ void pearl_mma_m16n8k32(
+    int32_t &c0, int32_t &c1, int32_t &c2, int32_t &c3,
+    uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3,
+    uint32_t b0, uint32_t b1) {
+  asm volatile(
+      "mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 "
+      "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+      : "+r"(c0), "+r"(c1), "+r"(c2), "+r"(c3)
+      : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b0), "r"(b1));
+}
+
 // XOR of three words in one instruction. 0x96 is the lop3 truth table for
 // a ^ b ^ c. ptxas often finds this itself, but the fold's reduction tree is
 // hot enough to be worth stating outright.
@@ -831,17 +854,21 @@ extern "C" __global__ void pearl_tile_fold_wmma(
   const uint32_t regions_per_warp = PEARL_WMMA_ROW_TILES * (PEARL_WMMA_ROWS / PEARL_ROWS_COUNT);
   const uint32_t row_blocks = rows_valid / regions_per_warp;
 
-  const uint64_t slot = (uint64_t)blockIdx.x * warps_per_block + warp;
-  // Each warp now carries PEARL_WMMA_COL_BLK column groups, so there are that
-  // many times fewer of them. Counting the old way let surplus warps compute a
-  // column-group block past the end and write outside the transcript buffer.
-  //
-  // A surplus warp may NOT simply return: staging B is a block-wide cooperative
-  // load, and a __syncthreads() some warps never reach hangs the launch.
-  const bool active = slot < (uint64_t)row_blocks * (col_groups / PEARL_WMMA_COL_BLK);
+  // The block is a 2D grid of warps: PEARL_WARP_ROWS down, the rest across.
+  const uint32_t warp_cols = warps_per_block / PEARL_WARP_ROWS;
+  const uint32_t wr = warp % PEARL_WARP_ROWS;                // row slot in the block
+  const uint32_t wc = warp / PEARL_WARP_ROWS;                // column slot
+  const uint32_t row_block_groups = row_blocks / PEARL_WARP_ROWS;
+  const uint32_t rbg = (uint32_t)(blockIdx.x % row_block_groups);
+  const uint32_t cbg = (uint32_t)(blockIdx.x / row_block_groups);
 
-  const uint32_t rb = (uint32_t)(slot % row_blocks);
-  const uint32_t cgb = (uint32_t)(slot / row_blocks);        // column-group BLOCK
+  const uint32_t rb = rbg * PEARL_WARP_ROWS + wr;
+  const uint32_t cgb = cbg * warp_cols + wc;                 // column-group BLOCK
+  // The host launches exactly the blocks the grid needs, but a warp must never
+  // simply return: staging is a block-wide cooperative load and a
+  // __syncthreads() some warps skip hangs the launch.
+  const bool active = rb < row_blocks && cgb < (col_groups / PEARL_WMMA_COL_BLK);
+
   const uint32_t r0idx = rb * regions_per_warp;              // first row-offset index
   const uint32_t kfrags = rank / 16;
 
@@ -850,8 +877,8 @@ extern "C" __global__ void pearl_tile_fold_wmma(
   // slots differ only in the row block -- and the host guarantees that by
   // refusing to stage unless row_blocks divides evenly by the warp count. It
   // has to come from blockIdx, because a surplus warp's own cgb is past the end.
-  const uint32_t cg0 = (uint32_t)(((uint64_t)blockIdx.x * warps_per_block) / row_blocks)
-                       * PEARL_WMMA_COL_BLK;
+  const uint32_t cg0 = cgb * PEARL_WMMA_COL_BLK;             // this warp's groups
+  const uint32_t cg0_block = cbg * warp_cols * PEARL_WMMA_COL_BLK;  // the block's
 
   // Shared: this warp's transcripts, then the staged B columns shared by the
   // whole block. The per-warp 16x16 unpack buffer is gone with the gather that
@@ -869,7 +896,7 @@ extern "C" __global__ void pearl_tile_fold_wmma(
   // re-read far more often than A does.
   int8_t *sB = (int8_t *)(smem_u32 + (size_t)warps_per_block * regions_per_warp
                                          * PEARL_WMMA_COL_BLK * PEARL_JACKPOT_BUCKETS);
-  const uint32_t sb_cols = PEARL_WMMA_COL_BLK * 16;
+  const uint32_t sb_cols = warp_cols * PEARL_WMMA_COL_BLK * 16;
 
   // A is staged too, and NOT to save traffic -- the CTA's warps each hold their
   // own rows, so nothing is shared. It is staged because of HOW wmma reads it.
@@ -884,23 +911,39 @@ extern "C" __global__ void pearl_tile_fold_wmma(
   //
   // The CTA's rows are contiguous: warp w covers rows (rb0+w)*32 .. +31, and
   // consecutive slots differ in the row block first.
-  const uint32_t sa_rows = warps_per_block * regions_per_warp * PEARL_ROWS_COUNT;
+  const uint32_t sa_rows = PEARL_WARP_ROWS * regions_per_warp * PEARL_ROWS_COUNT;
   int8_t *sA = sB + (size_t)sb_cols * PEARL_SB_STRIDE;
-  const uint32_t rb0 = (uint32_t)(((uint64_t)blockIdx.x * warps_per_block) % row_blocks);
-  const uint32_t row_base = rb0 * regions_per_warp * PEARL_ROWS_COUNT;
+  const uint32_t row_base = rbg * PEARL_WARP_ROWS * regions_per_warp * PEARL_ROWS_COUNT;
 
   if (active) {
     for (uint32_t i = lane; i < regions_per_warp * PEARL_WMMA_COL_BLK * PEARL_JACKPOT_BUCKETS; i += 32) jp[i] = 0u;
   }
   __syncwarp();
 
-  // The accumulators live across the whole of k, not one chunk -- one per
-  // (row block, column group) pair this warp carries.
-  wmma::fragment<wmma::accumulator, 16, 16, 16, int32_t> cF[PEARL_WMMA_ROW_TILES][PEARL_WMMA_COL_BLK];
+  // The accumulators live across the whole of k, not one chunk. The m16n8k32
+  // fragment is 16 rows by 8 columns held as four int32 a lane, so a 16-column
+  // group is TWO of them -- hence NB = 2 * PEARL_WMMA_COL_BLK.
+  //
+  // Lane layout, which the readout below depends on:
+  //   g = lane >> 2, tid = lane & 3
+  //   c0 -> row g,     col tid*2      c1 -> row g,     col tid*2+1
+  //   c2 -> row g + 8, col tid*2      c3 -> row g + 8, col tid*2+1
+  // Every element of the 16x8 tile appears exactly once across the warp, which
+  // is all the XOR needs.
+  // Uniform across the block, so the branch in the readout costs nothing.
+  const bool one_pass = chunks <= PEARL_JACKPOT_BUCKETS;
+  const uint32_t g = lane >> 2;
+  const uint32_t tid4 = (lane & 3u) * 4u;
+  const uint32_t MB = PEARL_WMMA_ROW_TILES;
+  const uint32_t NB = PEARL_WMMA_COL_BLK * 2;
+  int32_t acc[PEARL_WMMA_ROW_TILES][PEARL_WMMA_COL_BLK * 2][4];
 #pragma unroll
-  for (uint32_t ti = 0; ti < PEARL_WMMA_ROW_TILES; ti++) {
+  for (uint32_t mb = 0; mb < MB; mb++) {
 #pragma unroll
-    for (uint32_t cb = 0; cb < PEARL_WMMA_COL_BLK; cb++) wmma::fill_fragment(cF[ti][cb], 0);
+    for (uint32_t nb = 0; nb < NB; nb++) {
+#pragma unroll
+      for (uint32_t i = 0; i < 4; i++) acc[mb][nb][i] = 0;
+    }
   }
 
   for (uint32_t chunk = 0; chunk < chunks; chunk++) {
@@ -917,7 +960,7 @@ extern "C" __global__ void pearl_tile_fold_wmma(
       for (uint32_t i = threadIdx.x; i < btotal; i += blockDim.x) {
         const uint32_t col = i / quads;
         const uint32_t q = i % quads;
-        const uint32_t c = pearl_expand_offset(col_off + cg0 + (col >> 4), PEARL_COLS_MASK)
+        const uint32_t c = pearl_expand_offset(col_off + cg0_block + (col >> 4), PEARL_COLS_MASK)
                            + (col & 15u);
         pearl_cp_async16(sB + (size_t)col * PEARL_SB_STRIDE + q * 16,
                          Bprime + (size_t)c * k + k0 + q * 16);
@@ -934,63 +977,65 @@ extern "C" __global__ void pearl_tile_fold_wmma(
     __syncthreads();
 
     if (!active) continue;
-    for (uint32_t t = 0; t < kfrags; t++) {
-      // Load each A fragment ONCE and drive it against every column group this
-      // warp carries. That is the whole point of the blocking.
-      wmma::fragment<wmma::matrix_a, 16, 16, 16, int8_t, wmma::row_major> aF[PEARL_WMMA_ROW_TILES];
+    // k advances 32 at a time now, not 16.
+    const uint32_t ksteps = rank / 32;
+    for (uint32_t t = 0; t < ksteps; t++) {
+      const uint32_t kt = t * 32;
+
+      // A: rows g and g+8 of each 16-row block, four bytes of k per register.
+      uint32_t af[PEARL_WMMA_ROW_TILES][4];
 #pragma unroll
-      for (uint32_t ti = 0; ti < PEARL_WMMA_ROW_TILES; ti++) {
-        wmma::load_matrix_sync(
-            aF[ti],
-            sA + (size_t)(warp * regions_per_warp * PEARL_ROWS_COUNT + ti * PEARL_WMMA_ROWS)
-                     * PEARL_SB_STRIDE + t * 16,
-            PEARL_SB_STRIDE);
+      for (uint32_t mb = 0; mb < MB; mb++) {
+        const int8_t *rp = sA
+            + (size_t)(wr * regions_per_warp * PEARL_ROWS_COUNT + mb * 16 + g) * PEARL_SB_STRIDE
+            + kt;
+        af[mb][0] = *(const uint32_t *)(rp + tid4);
+        af[mb][1] = *(const uint32_t *)(rp + (size_t)8 * PEARL_SB_STRIDE + tid4);
+        af[mb][2] = *(const uint32_t *)(rp + 16 + tid4);
+        af[mb][3] = *(const uint32_t *)(rp + (size_t)8 * PEARL_SB_STRIDE + 16 + tid4);
       }
+
+      // B is already transposed in shared -- sB[col] is k-contiguous -- so a
+      // column of the fragment is two 4-byte reads.
 #pragma unroll
-      for (uint32_t cb = 0; cb < PEARL_WMMA_COL_BLK; cb++) {
-        wmma::fragment<wmma::matrix_b, 16, 16, 16, int8_t, wmma::col_major> bF;
-        wmma::load_matrix_sync(bF, sB + (size_t)(cb * 16) * PEARL_SB_STRIDE + t * 16,
-                               PEARL_SB_STRIDE);
+      for (uint32_t nb = 0; nb < NB; nb++) {
+        const int8_t *cp = sB
+            + (size_t)(wc * PEARL_WMMA_COL_BLK * 16 + nb * 8 + g) * PEARL_SB_STRIDE + kt;
+        const uint32_t b0 = *(const uint32_t *)(cp + tid4);
+        const uint32_t b1 = *(const uint32_t *)(cp + 16 + tid4);
 #pragma unroll
-        for (uint32_t ti = 0; ti < PEARL_WMMA_ROW_TILES; ti++) {
-          wmma::mma_sync(cF[ti][cb], aF[ti], bF, cF[ti][cb]);
+        for (uint32_t mb = 0; mb < MB; mb++) {
+          pearl_mma_m16n8k32(acc[mb][nb][0], acc[mb][nb][1], acc[mb][nb][2], acc[mb][nb][3],
+                             af[mb][0], af[mb][1], af[mb][2], af[mb][3], b0, b1);
         }
       }
     }
 
     // Chunk boundary: XOR the RUNNING tile and fold it into each region's lane.
     //
-    // The region IS the fragment. A 16x16 tile is exactly what one int8 wmma
-    // accumulator holds across the warp, so the XOR over the tile is the XOR
-    // over every lane's registers and then one warp reduction. Which matrix
-    // element lives in which register is unspecified -- and irrelevant, because
-    // XOR does not care about order, only that each element appears once.
-    //
-    // What this replaces: a store_matrix_sync to shared and a strided gather
-    // back, twice per fragment per chunk, because a 4x16 region was a quarter
-    // of a fragment. That gather was two thirds of the kernel's runtime.
+    // A region is 16x16, which is TWO m16n8k32 fragments side by side. XOR
+    // every accumulator register of both, then across the warp: each element of
+    // the tile appears exactly once, and XOR does not care about order.
     const uint32_t bucket = chunk % PEARL_JACKPOT_BUCKETS;
 #pragma unroll
-    for (uint32_t ti = 0; ti < PEARL_WMMA_ROW_TILES; ti++) {
+    for (uint32_t mb = 0; mb < MB; mb++) {
 #pragma unroll
       for (uint32_t cb = 0; cb < PEARL_WMMA_COL_BLK; cb++) {
-        // Fold this lane's slice of the fragment three words at a time, then
-        // across the warp. Every lane holds part of the tile, so the warp
-        // reduction spans all 32.
-        uint32_t x = 0u;
-#pragma unroll
-        for (int i = 0; i + 2 < cF[ti][cb].num_elements; i += 3) {
-          x ^= pearl_xor3((uint32_t)cF[ti][cb].x[i], (uint32_t)cF[ti][cb].x[i + 1],
-                          (uint32_t)cF[ti][cb].x[i + 2]);
-        }
-#pragma unroll
-        for (int i = (cF[ti][cb].num_elements / 3) * 3; i < cF[ti][cb].num_elements; i++) {
-          x ^= (uint32_t)cF[ti][cb].x[i];
-        }
+        const int32_t *l = acc[mb][cb * 2];
+        const int32_t *r = acc[mb][cb * 2 + 1];
+        uint32_t x = pearl_xor3((uint32_t)l[0], (uint32_t)l[1], (uint32_t)l[2]);
+        x ^= pearl_xor3((uint32_t)l[3], (uint32_t)r[0], (uint32_t)r[1]);
+        x ^= pearl_xor3((uint32_t)r[2], (uint32_t)r[3], 0u);
         x = pearl_warp_xor(x);
         if (lane == 0) {
-          uint32_t *slotjp = jp + (cb * regions_per_warp + ti) * PEARL_JACKPOT_BUCKETS;
-          slotjp[bucket] = pearl_rotl13(slotjp[bucket]) ^ x;
+          uint32_t *slotjp = jp + (cb * regions_per_warp + mb) * PEARL_JACKPOT_BUCKETS;
+          // At the mandated geometry k/rank is exactly the lane count, so every
+          // lane is written once and the rotate lands on a zero: rotl13(0) ^ x
+          // is x. Storing straight saves a shared load, a rotate and an XOR per
+          // region per chunk. The read-modify-write is still there for a
+          // geometry with more chunks than lanes, where the rotation is real.
+          if (one_pass) slotjp[bucket] = x;
+          else slotjp[bucket] = pearl_rotl13(slotjp[bucket]) ^ x;
         }
       }
     }
