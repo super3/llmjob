@@ -136,12 +136,48 @@ describe('the shipped config', () => {
     expect(needsMmproj(LLM.model)).toBe(false);
   });
 
-  test('the big model floors are above its resident size, not below it', () => {
-    // 17.56 GB of weights + 0.93 GB of projector is ~18.5 GB before any KV
-    // cache. A floor under that number could only ever OOM a node.
+  test('the big model carries the MEASURED VRAM figure, not an estimate under it', () => {
+    // 30,150 MiB measured on a 5090 at 262144 with a q8_0 KV cache. The value
+    // here was once an estimate of 28,672 — 1,478 MiB UNDER the truth, which is
+    // the direction that OOMs a node rather than merely idling it. Pinned so a
+    // future edit cannot drift back below the measurement.
     const q = allModels().find((m) => m.key === 'qwen3.8-27b');
-    expect(q.vramFullMb).toBeGreaterThan(18500);
+    expect(q.vramFullMb).toBeGreaterThanOrEqual(30150);
     expect(q.minVramMb).toBeGreaterThan(q.vramFullMb);
+  });
+
+  test('a 5090 cannot mine and serve this at 262144, and is not offered it', () => {
+    // 30,150 of 32,607 leaves 2,457 MiB and the miner needs ~2,500. The tier is
+    // therefore unreachable while mining and reachable when idle — which falls
+    // out of requiredFreeMb adding the reserve, not out of a special case.
+    const TOTAL = 32607;
+    const MINER = 2500;
+    const q = allModels().find((m) => m.key === 'qwen3.8-27b');
+
+    // Mining: free VRAM is what the miner has left, and that is below the
+    // model's own resident size before any reserve is even considered.
+    const whileMining = TOTAL - MINER;
+    expect(whileMining).toBeLessThan(q.vramFullMb);
+    expect(pickModel(whileMining, LLM.miningReserveMb)).toBe(LLM.model);   // -> Gemma
+
+    // Idle: the card clears the floor and the tier is offered.
+    expect(pickModel(TOTAL, 0).key).toBe('qwen3.8-27b');
+  });
+
+  test('the flags that make 256K fit are actually configured', () => {
+    // Without a quantised KV cache the model does not load at this context. If
+    // someone drops these flags, the measured VRAM figure above is void — so the
+    // two are pinned together.
+    const q = allModels().find((m) => m.key === 'qwen3.8-27b');
+    const a = q.extraArgs.join(' ');
+    expect(a).toContain('--cache-type-k q8_0');
+    expect(a).toContain('--cache-type-v q8_0');
+    expect(a).toContain('-fa 1');
+    expect(a).toContain('--jinja');
+    // The MTP head ships inside the GGUF, so self-speculation needs no extra file.
+    expect(a).toContain('--spec-type draft-mtp');
+    // NOT -n: capping generation is what made AIME unmeasurable at 6400.
+    expect(q.extraArgs).not.toContain('-n');
   });
 
   test('the big model ladder descends and ends somewhere a 24 GB card could live', () => {

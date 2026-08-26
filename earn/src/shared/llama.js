@@ -69,6 +69,15 @@ function buildServerArgs(opts = {}) {
   // the caller passes the path explicitly instead of us inferring it.
   if (opts.mmprojPath) args.push('--mmproj', String(opts.mmprojPath));
   if (opts.flashAttn) args.push('--flash-attn');
+  // Per-model flags, appended last so a model can override an earlier default.
+  // A large model is not simply a bigger version of a small one: Qwen3.8 needs a
+  // quantised KV cache to fit its context at all, its own chat template to
+  // produce output matching what it was tuned for, and can self-speculate from a
+  // head inside its own GGUF. None of that belongs in the shared arg list, and
+  // none of it can be inferred — it comes from the model entry in config.
+  if (Array.isArray(opts.extraArgs)) {
+    for (const a of opts.extraArgs) if (a != null && a !== '') args.push(String(a));
+  }
   return args;
 }
 

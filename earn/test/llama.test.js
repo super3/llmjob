@@ -138,3 +138,27 @@ describe('buildServerArgs — vision projector', () => {
     expect(buildServerArgs({ modelPath: '/m.gguf', mmprojPath: null })).not.toContain('--mmproj');
   });
 });
+
+describe('buildServerArgs — per-model extra flags', () => {
+  test('appends a model\'s own flags verbatim, in order, last', () => {
+    const a = buildServerArgs({ modelPath: '/m.gguf', extraArgs: ['-fa', '1', '--cache-type-k', 'q8_0'] });
+    expect(a.slice(-4)).toEqual(['-fa', '1', '--cache-type-k', 'q8_0']);
+  });
+
+  test('no extra flags is the existing behaviour, unchanged', () => {
+    const base = buildServerArgs({ modelPath: '/m.gguf' });
+    expect(buildServerArgs({ modelPath: '/m.gguf', extraArgs: [] })).toEqual(base);
+    expect(buildServerArgs({ modelPath: '/m.gguf', extraArgs: null })).toEqual(base);
+    expect(buildServerArgs({ modelPath: '/m.gguf', extraArgs: 'not an array' })).toEqual(base);
+  });
+
+  test('drops empty entries rather than passing a blank argv slot to llama-server', () => {
+    const a = buildServerArgs({ modelPath: '/m.gguf', extraArgs: ['--jinja', '', null, undefined, '--kv-unified'] });
+    expect(a.slice(-2)).toEqual(['--jinja', '--kv-unified']);
+  });
+
+  test('numbers survive as strings, since argv is strings', () => {
+    const a = buildServerArgs({ modelPath: '/m.gguf', extraArgs: ['--spec-draft-n-max', 3] });
+    expect(a.slice(-2)).toEqual(['--spec-draft-n-max', '3']);
+  });
+});

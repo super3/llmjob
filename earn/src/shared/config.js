@@ -177,18 +177,29 @@ const LLM = {
     // 17.56 GB and mmproj-F16 is 0.93 GB, so ~18.5 GB is resident before a single
     // token of KV cache. Both URLs were checked to resolve 200.
     //
-    // vramFullMb/minVramMb are NOT measured and are the weak part of this entry —
-    // nobody has run llama-server at ctxSize 262144 to read the real figure, and
-    // the KV cache is the whole unknown (48 of its 64 layers use linear attention,
-    // whose state does not grow with context, so only 16 layers hold full-context
-    // KV — which is why 256K is plausible at all on one card).
+    // MEASURED on a 5090 running this model in production, not estimated:
+    // llama-server holds 30,150 MiB of 32,607 at ctxSize 262144 WITH a q8_0 KV
+    // cache. Both halves of that sentence matter.
     //
-    // Rather than guess that number and have it be wrong in the direction that
-    // OOMs a node, the floor below is set high enough that only a large card even
-    // attempts it, and llmManager walks `ctxLadder` downward when llama-server
-    // fails to start. A card that cannot hold 262144 lands on a window it can
-    // hold instead of crash-looping. Re-measure and tighten both figures once a
-    // 5090 has actually run it.
+    // The q8_0 KV cache is not a tuning nicety, it is why 256K fits on one card
+    // at all — see `extraArgs`. Drop --cache-type-k/v and the cache doubles and
+    // the model does not load. Any change to those flags invalidates the figure
+    // below.
+    //
+    // 30,150 of 32,607 leaves 2,457 MiB, and the miner needs ~2,500. So a 5090
+    // CANNOT mine and serve this at 262144 — production runs the box in one mode
+    // or the other. That falls out of the numbers rather than needing a rule:
+    // requiredFreeMb adds miningReserveMb, which pushes the requirement past the
+    // card, so a mining node is never offered this tier and keeps serving Gemma.
+    // An idle node clears it.
+    //
+    // The earlier values here were an estimate of 28,672 — 1,478 MiB UNDER the
+    // real usage, i.e. wrong in the direction that OOMs a node rather than the
+    // one that merely idles it. Kept in this comment because the estimate was
+    // built from the weight file plus reasoning about linear attention, and that
+    // method looked sound and was not.
+    //
+    // The ladder below is still unmeasured at every rung except the top.
     {
       key: 'qwen3.8-27b',
       name: 'Qwen3.8-27B-UD-Q4_K_XL',
@@ -201,14 +212,45 @@ const LLM = {
         url: 'https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-F16.gguf',
       },
       vision: true,
-      layers: 64,
+      // 65, from the GGUF's own metadata (arch `qwen35`, 65 blocks). Only ever
+      // an upper bound for --n-gpu-layers, which we pass as ALL_LAYERS anyway,
+      // but a wrong number here would mislead the next reader.
+      layers: 65,
       ctxSize: 262144,
       // Tried in order when the one above fails to start. Each step roughly
       // halves the KV cache, so a card that is short by a little gets a working
-      // server rather than a restart loop.
+      // server rather than a restart loop. Only the top rung has a measured VRAM
+      // figure; the rest are the fallback path, not a promise.
       ctxLadder: [262144, 131072, 65536, 32768],
-      vramFullMb: 28672,  // ESTIMATE — 18.5 GB resident + KV headroom. Measure me.
-      minVramMb: 30720,   // ESTIMATE — deliberately high so only a 32 GB card tries.
+      // The flags this model is actually run with, from the production unit.
+      // Carried per-model rather than globally because they are specific to it:
+      //
+      //   --cache-type-k/v q8_0  quantises the KV cache. THE reason 256K fits.
+      //   -fa 1                  flash attention; required for the quantised
+      //                          cache to be worth anything at this context.
+      //   --kv-unified           one shared cache rather than per-slot.
+      //   --jinja                use the model's own chat template. Without it
+      //                          the served output does not match what the model
+      //                          was tuned for.
+      //   --spec-type draft-mtp  self-speculative decoding via the MTP head that
+      //   --spec-draft-n-max 3   ships INSIDE this GGUF (nextn_predict_layers=1),
+      //                          so there is no draft model to download. Reported
+      //                          at +33-39% decode on consumer cards — free speed
+      //                          for zero extra files.
+      //
+      // Deliberately NOT copied from production: `-n 2048`, which caps a reply at
+      // 2048 tokens. That is right for their interactive use and wrong here — we
+      // just spent a release proving that capping generation silently truncates
+      // reasoning, and our jobs carry an explicit max_tokens anyway.
+      extraArgs: [
+        '-fa', '1',
+        '--cache-type-k', 'q8_0', '--cache-type-v', 'q8_0',
+        '--kv-unified',
+        '--jinja',
+        '--spec-type', 'draft-mtp', '--spec-draft-n-max', '3',
+      ],
+      vramFullMb: 30150,  // MEASURED at 262144 with q8_0 KV, on a 5090.
+      minVramMb: 30720,   // measurement + ~570 MiB so we never spawn at the edge.
       quant: 'Q4_K_XL',
     },
   ],
