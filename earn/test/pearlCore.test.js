@@ -22,6 +22,49 @@ function fakeRequire(map) {
 
 const ADDON = { createCore: () => ({}) };
 
+describe('loadCore candidate paths', () => {
+  const probes = () => {
+    const seen = [];
+    const req = (p) => { seen.push(p); throw new Error('not here'); };
+    return { seen, req };
+  };
+
+  test('PEARL_CORE_PATH is probed first, before every packaged location', () => {
+    const { seen, req } = probes();
+    loadCore({
+      require: req,
+      env: { PEARL_CORE_PATH: '/rig/custom/pearl_core.node' },
+      resourcesPath: '/res',
+      execPath: '/opt/rig/llmjob-earn-cli-linux',
+    });
+    expect(seen[0]).toBe('/rig/custom/pearl_core.node');
+  });
+
+  test('a packaged CLI probes beside its executable — resourcesPath is Electron-only', () => {
+    const { seen, req } = probes();
+    loadCore({ require: req, env: {}, execPath: '/opt/rig/llmjob-earn-cli-linux' });
+    const path = require('path');
+    expect(seen).toContain(path.join('/opt/rig', 'pearl_core.node'));
+    expect(seen).toContain(path.join('/opt/rig', 'native', 'pearl_core.node'));
+    // and the exe-adjacent probe comes before the dev tree's build directories
+    expect(seen.indexOf(path.join('/opt/rig', 'pearl_core.node')))
+      .toBeLessThan(seen.findIndex((c) => c.includes('build')));
+  });
+
+  test('without an injected require it builds a real one and still degrades to null', () => {
+    // The default require is created against the real executable so a packaged
+    // (SEA) binary can dlopen from the real filesystem. Steer every candidate
+    // somewhere nonexistent; on a box with a dev-tree build the addon may
+    // genuinely load, so the only portable assertion is "returns the addon or
+    // null, without throwing".
+    const out = loadCore({
+      env: { PEARL_CORE_PATH: '/nonexistent/pearl_core.node' },
+      execPath: process.execPath,
+    });
+    expect(out === null || typeof out.createCore === 'function').toBe(true);
+  });
+});
+
 describe('loadCore', () => {
   test('finds the addon in the dev Release build tree', () => {
     const req = fakeRequire([[REL, ADDON]]);

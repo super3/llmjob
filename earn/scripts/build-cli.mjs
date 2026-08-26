@@ -9,7 +9,7 @@
 
 import { build } from 'esbuild';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, copyFileSync, writeFileSync, chmodSync } from 'node:fs';
+import { mkdirSync, copyFileSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -45,4 +45,15 @@ execFileSync('npx', [
   '--sentinel-fuse', 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2',
 ], { stdio: 'inherit' });
 
+// The native core travels BESIDE the binary, never inside it: a .node cannot
+// be dlopen'd out of a SEA snapshot, so bundling it would only hide it. CI
+// stages it at vendor/native before this runs; a dev box without a CUDA build
+// still gets a CLI (which will say, loudly and non-zero, that it cannot mine).
+const core = join(root, 'vendor', 'native', 'pearl_core.node');
+if (existsSync(core)) {
+  copyFileSync(core, join(dist, 'pearl_core.node'));
+  process.stdout.write('staged pearl_core.node beside the CLI\n');
+} else {
+  process.stdout.write('warning: no vendor/native/pearl_core.node — this CLI cannot mine\n');
+}
 process.stdout.write('built ' + out + '\n');
