@@ -9,7 +9,7 @@
 
 import { build } from 'esbuild';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, copyFileSync, writeFileSync, chmodSync } from 'node:fs';
+import { mkdirSync, copyFileSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
