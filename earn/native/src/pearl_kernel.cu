@@ -1102,7 +1102,7 @@ extern "C" __global__ __launch_bounds__(512) void pearl_tile_fold_wmma(
     _Pragma("unroll") for (uint32_t j = 0; j < PEARL_STAGE_SLOTS; j++) {              \
       const uint32_t i = threadIdx.x + j * blockDim.x;                                \
       if (i < btotal) pearl_cp_async16(bB_ + bdst[j], Bprime + bsrc[j] + k0_);        \
-      if (i < atotal) pearl_cp_async16_ca(bA_ + adst[j], Aprime + asrc[j] + k0_);     \
+      if (i < atotal) pearl_cp_async16(bA_ + adst[j], Aprime + asrc[j] + k0_);     \
     }                                                                                 \
     for (uint32_t i = threadIdx.x + PEARL_STAGE_SLOTS * blockDim.x; i < btotal;       \
          i += blockDim.x) {                                                           \
@@ -1115,7 +1115,7 @@ extern "C" __global__ __launch_bounds__(512) void pearl_tile_fold_wmma(
     for (uint32_t i = threadIdx.x + PEARL_STAGE_SLOTS * blockDim.x; i < atotal;       \
          i += blockDim.x) {                                                           \
       const uint32_t row = i / quads, q = i % quads;                                  \
-      pearl_cp_async16_ca(bA_ + row * PEARL_SB_STRIDE + ((q ^ (row & 7u)) * 16u),     \
+      pearl_cp_async16(bA_ + row * PEARL_SB_STRIDE + ((q ^ (row & 7u)) * 16u),     \
                           Aprime + (size_t)(row_base + row) * k + k0_ + q * 16);      \
     }                                                                                 \
   }
@@ -1146,8 +1146,12 @@ extern "C" __global__ __launch_bounds__(512) void pearl_tile_fold_wmma(
     const uint32_t stage_off = (chunk & 1u) * buf_bytes;
     const uint32_t sAc = sAa + stage_off;
     const uint32_t sBc = sBa + stage_off;
-    // k advances 32 at a time now, not 16.
+    // k advances 32 at a time, and at the mandated rank there are exactly four
+    // steps. A compile-time bound is worth stating: it lets ptxas unroll the
+    // whole chunk body and schedule ldmatrix for step t+1 underneath the mma of
+    // step t, which a runtime bound forbids.
     const uint32_t ksteps = rank / 32;
+#pragma unroll 4
     for (uint32_t t = 0; t < ksteps; t++) {
       const uint32_t kt = t * 32;
 
