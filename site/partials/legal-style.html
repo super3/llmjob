@@ -1,0 +1,96 @@
+<!-- Shared look for the legal pages (terms.html, privacy.html). Same palette and
+     type as the rest of the site, but a single readable prose column: these are
+     documents to be read start to finish, not scanned like the docs page. -->
+<style>
+  :root {
+    --bg: #fcfcfb;
+    --ink: #0e0f10;
+    --ink-strong: #16160F;
+    --muted: #5b5e62;
+    --muted-2: #8a8f98;
+    --muted-3: #9a9da1;
+    --line: #e3e1d9;
+    --line-soft: #ebeae5;
+    --field: #faf9f6;
+    --accent: #2563eb;
+    --accent-soft: #eff4ff;
+    --accent-line: #dbe6fb;
+    --amber: #d9920a;
+    --dark: #1a1a17;
+    font-synthesis-weight: none;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body { background: var(--bg); color: var(--ink); font-family: "Schibsted Grotesk", sans-serif; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  ::selection { background: #d7f3df; }
+  a { color: inherit; text-decoration: none; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+
+  /* nav (shared partial) */
+  nav.nav { max-width: 1080px; margin: 0 auto; padding: 26px 28px; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+  .logo { font-weight: 700; font-size: 21px; letter-spacing: -.02em; display: inline-flex; align-items: center; gap: 11px; color: var(--ink); }
+  .logo .bolt { display: inline-flex; width: 38px; height: 38px; border-radius: 11px; background: var(--dark); align-items: center; justify-content: center; flex: none; }
+  .nav-right { display: flex; align-items: center; gap: 26px; }
+  .nav-link { font-size: 15px; font-weight: 500; color: var(--ink); transition: opacity .15s; }
+  .nav-link:hover { opacity: .65; }
+  .nav-link.active { color: var(--accent); font-weight: 600; }
+  .btn-discord { color: #fff; background: var(--dark); font-size: 15px; font-weight: 600; padding: 9px 17px; border-radius: 8px; display: inline-flex; align-items: center; gap: 8px; transition: transform .12s ease, box-shadow .15s ease; }
+  .btn-discord:hover { box-shadow: 0 8px 20px -10px rgba(26,26,23,.6); }
+  .btn-discord:active { transform: translateY(1px); }
+
+  /* document */
+  main.legal { max-width: 760px; margin: 0 auto; padding: 56px 28px 100px; }
+  .legal-head .eb { font-family: "IBM Plex Mono", monospace; font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted-3); }
+  .legal-head h1 { font-weight: 800; font-size: clamp(34px, 6vw, 46px); line-height: 1.05; letter-spacing: -.04em; margin-top: 12px; }
+  .updated { font-family: "IBM Plex Mono", monospace; font-size: 13px; color: var(--muted-3); margin-top: 14px; }
+  .lede { font-size: 18px; line-height: 1.55; color: var(--muted); margin-top: 26px; }
+
+  .legal-toc { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 32px; padding: 20px 22px; border: 1px solid var(--line); border-radius: 12px; background: var(--field); }
+  .legal-toc a { font-size: 14px; color: var(--muted); transition: color .14s; }
+  .legal-toc a:hover { color: var(--accent); }
+
+  main.legal section { margin-top: 46px; scroll-margin-top: 20px; }
+  main.legal h2 { font-size: 22px; font-weight: 700; letter-spacing: -.02em; }
+  main.legal h3 { font-size: 16.5px; font-weight: 700; letter-spacing: -.01em; margin-top: 26px; }
+  main.legal p { font-size: 16px; line-height: 1.62; color: var(--muted); margin-top: 14px; }
+  main.legal ul { margin: 14px 0 0 22px; }
+  main.legal li { font-size: 16px; line-height: 1.62; color: var(--muted); margin-top: 9px; }
+  main.legal b { color: var(--ink); font-weight: 600; }
+  main.legal a[href] { color: var(--accent); font-weight: 500; }
+  main.legal p.pair { margin-top: 22px; font-size: 15px; }
+  code.ic { font-family: "IBM Plex Mono", monospace; font-size: .88em; background: var(--field); border: 1px solid var(--line-soft); border-radius: 5px; padding: 1px 5px; color: var(--ink-strong); overflow-wrap: break-word; }
+
+  /* tables (used by the privacy policy's data/processor lists) */
+  .twrap { margin-top: 18px; border: 1px solid var(--line); border-radius: 12px; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; min-width: 520px; }
+  thead th { text-align: left; font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--muted-3); font-weight: 600; padding: 11px 16px; background: var(--field); border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
+  tbody td { padding: 13px 16px; border-bottom: 1px solid var(--line-soft); font-size: 14.5px; line-height: 1.55; color: var(--muted); vertical-align: top; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody td:first-child { color: var(--ink); }
+  td .m { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--ink-strong); }
+
+  /* callouts */
+  .note { display: flex; gap: 11px; border: 1px solid var(--accent-line); background: var(--accent-soft); border-radius: 11px; padding: 14px 16px; margin-top: 22px; font-size: 15px; line-height: 1.55; color: var(--muted); }
+  .note svg { flex: none; color: var(--accent); margin-top: 2px; }
+  .note b { color: var(--ink); font-weight: 600; }
+  .note.warn { border-color: #f0e0c2; background: #fdf8ee; }
+  .note.warn svg { color: var(--amber); }
+
+
+  @media (max-width: 720px) {
+    nav.nav { padding: 20px 18px; }
+    .nav-right { gap: 15px; }
+    main.legal { padding: 40px 18px 72px; }
+  }
+  @media (max-width: 460px) {
+    nav.nav { gap: 10px; }
+/* Compact nav: the links plus the Discord button don't fit a small phone at
+       full size, so shrink the whole bar rather than drop one. */
+    .nav-right { gap: 9px; }
+    .nav-link { font-size: 14px; }
+    .logo { font-size: 18px; gap: 9px; }
+    .logo .bolt { width: 32px; height: 32px; border-radius: 9px; }
+    .btn-discord { padding: 9px 11px; }
+    .btn-discord .dc-txt { display: none; }
+  }
+</style>

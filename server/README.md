@@ -175,8 +175,10 @@ Free web chat (OpenRouter proxy) — all optional, with sensible defaults:
   `POST /api/chat/completions` returns `503` (the rest of the server is
   unaffected).
 - `OPENROUTER_MODELS` - JSON array of allow-listed models,
-  e.g. `[{"id":"qwen/qwen3.6-27b","label":"Qwen3.6 27B"}]`. Defaults to a small
-  built-in Qwen list.
+  e.g. `[{"id":"qwen/qwen3.8-27b","label":"Qwen3.8 27B"}]`. Defaults to the single
+  built-in Qwen model. Note that setting this **replaces** the built-in list
+  rather than adding to it, so a stale value here is why a newly shipped model
+  can be absent from `/api/chat/models` while the docs page already names it.
 - `OPENROUTER_FREE_TOKEN_BUDGET` - Total tokens of free usage before the endpoint
   starts returning `402` (default `1000000`; set `0` to disable the cap).
 - `OPENROUTER_MAX_TOKENS` - Per-request completion ceiling (default `2048`).

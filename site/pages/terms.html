@@ -1,0 +1,241 @@
+<!--build {"fonts": "https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap"} -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>LLMJob — Terms of Service</title>
+<meta name="description" content="The terms governing use of LLMJob: the chat, the API, the node network, and LLMJob Earn." />
+
+{{> head}}
+{{> legal-style}}
+{{> footer-style}}
+</head>
+<body id="top">
+
+{{> nav}}
+
+<main class="legal">
+  <div class="legal-head">
+    <div class="eb">Legal</div>
+    <h1>Terms of Service</h1>
+    <p class="updated">Last updated 13 August 2026</p>
+  </div>
+
+
+  <p class="lede">These terms cover everything at llmjob.com — the free chat, the API, the node
+    network, and the LLMJob Earn desktop app. By using any of it you agree to them. If you don't
+    agree, please don't use the service.</p>
+
+  <nav class="legal-toc" aria-label="Contents">
+    <a href="#accounts">1. Accounts</a>
+    <a href="#service">2. What the service is</a>
+    <a href="#keys">3. API keys</a>
+    <a href="#nodes">4. Running a node</a>
+    <a href="#earn">5. LLMJob Earn and payouts</a>
+    <a href="#acceptable">6. Acceptable use</a>
+    <a href="#content">7. Your content and model output</a>
+    <a href="#free">8. Free usage</a>
+    <a href="#availability">9. Availability and beta software</a>
+    <a href="#ip">10. Intellectual property</a>
+    <a href="#warranty">11. Disclaimers</a>
+    <a href="#liability">12. Limitation of liability</a>
+    <a href="#termination">13. Termination</a>
+    <a href="#changes">14. Changes</a>
+    <a href="#law">15. Governing law</a>
+    <a href="#contact">16. Contact</a>
+  </nav>
+
+  <section id="accounts">
+    <h2>1. Accounts</h2>
+    <p>You need an account for the dashboard, API keys and node management. Accounts are handled by
+      our authentication provider; you must give accurate information and keep your credentials
+      secure. You are responsible for everything done through your account.</p>
+    <p>You must be old enough to enter a binding contract where you live, and at least 13. If you
+      use LLMJob for an organisation, you confirm you may bind that organisation to these terms.</p>
+  </section>
+
+  <section id="service">
+    <h2>2. What the service is</h2>
+    <p>LLMJob pools spare GPU capacity into an OpenAI-compatible inference network. In practice that
+      means four things:</p>
+    <ul>
+      <li><b>Chat</b> — a free assistant on the website, subject to a usage allowance.</li>
+      <li><b>The API</b> — an OpenAI-compatible endpoint authenticated with an LLMJob API key. See
+        the <a href="docs.html">documentation</a>.</li>
+      <li><b>The node network</b> — machines that people connect to serve inference jobs.</li>
+      <li><b>LLMJob Earn</b> — a desktop app that puts idle GPU time to work.</li>
+    </ul>
+    <p>Requests may be served either by the node network or, for the models marked as hosted in the
+      documentation, by an upstream provider we route to on your behalf. Which one served a given
+      request is reported in the response.</p>
+  </section>
+
+  <section id="keys">
+    <h2>3. API keys</h2>
+    <p>Your API key authenticates requests and consumes resources, so treat it as a secret. We store
+      only a hash of it — we cannot recover a lost key, and you should not ask us to. Keep keys out
+      of browser and mobile code, where anyone can read them.</p>
+    <p>You are responsible for all usage on your keys, including usage by someone who obtained a key
+      you failed to protect. Revoke a compromised key from the dashboard; revocation takes effect
+      immediately. We may revoke or rate-limit a key that is being abused, or that threatens the
+      stability of the network.</p>
+    <p>A key set to <b>private</b> routes only to nodes in your own account. A key set to
+      <b>public</b> may be served by any node on the network, and may use the hosted models. Choose
+      deliberately: the routing setting is how you decide where your prompts are allowed to run.</p>
+  </section>
+
+  <section id="nodes">
+    <h2>4. Running a node</h2>
+    <p>When you connect a machine you are volunteering it to the network. You confirm that you own
+      the machine or are authorised to use it this way, and that doing so doesn't breach anyone
+      else's rules — an employer's, a landlord's, a hosting provider's, or an electricity supplier's.</p>
+    <p>If your node is public, <b>inference jobs submitted by other users may run on it</b>, and
+      prompts you did not write will pass through your hardware. If that isn't what you want, keep
+      the node private. Either way you remain responsible for your own machine: its power use, its
+      wear, its cooling, its network, and its security.</p>
+    <p>We may remove a node from the network at any time — for unreliability, for abuse, or because
+      it is failing jobs. Nothing here entitles you to have work sent to your node, or to any
+      particular volume of it.</p>
+  </section>
+
+  <section id="earn">
+    <h2>5. LLMJob Earn and payouts</h2>
+    <p>LLMJob Earn mines cryptocurrency using a third-party mining pool. Some things follow from
+      that, and they matter:</p>
+    <ul>
+      <li><b>We do not custody your funds.</b> Rewards are calculated and paid by the pool directly
+        to the payout address you supply. We never hold, forward or control them.</li>
+      <li><b>The payout address is yours to get right.</b> Cryptocurrency transactions are
+        irreversible. If you enter an address you do not control, or one with a typo, the funds are
+        gone and we cannot recover them.</li>
+      <li><b>Earnings are not guaranteed or predicted.</b> They depend on your hardware, network
+        difficulty, pool rules, uptime and the token's value — none of which we control. Any figure
+        shown in the app or on the site is an estimate, not a promise.</li>
+      <li><b>Pool terms apply too.</b> Payout schedules, minimum thresholds and fees are set by the
+        pool, not by us, and can change without notice to us.</li>
+      <li><b>Tax is your responsibility.</b> Mining rewards may be taxable where you live.</li>
+    </ul>
+    <p>Mining draws sustained power and runs your hardware hard. Satisfy yourself that this is
+      appropriate for your machine and your electricity costs before you start.</p>
+  </section>
+
+  <section id="acceptable">
+    <h2>6. Acceptable use</h2>
+    <p>Don't use LLMJob to:</p>
+    <ul>
+      <li>break the law, or generate material that is illegal where you or the node operator are;</li>
+      <li>produce child sexual abuse material, or content that sexualises minors — this is an
+        absolute limit and results in immediate termination and, where required, a report;</li>
+      <li>harass, threaten, defame or impersonate anyone, or generate content designed to deceive
+        people about who wrote it or who is speaking;</li>
+      <li>generate malware, attack infrastructure, or probe systems you don't own;</li>
+      <li>attempt to reach another user's prompts, keys, jobs or nodes, or to influence which node
+        serves a job beyond the documented targeting header;</li>
+      <li>work around usage limits — sharing keys to pool free allowance, scripting account
+        creation, or reselling free capacity as your own service;</li>
+      <li>submit personal data of others, or regulated data (health, financial, biometric), to a
+        public key or a public node. Public routing means the prompt may run on hardware belonging
+        to someone you have never met;</li>
+      <li>report false telemetry, forge node identity, or otherwise misrepresent contributed work in
+        order to gain rewards or standing on the network.</li>
+    </ul>
+    <p>We may suspend or terminate access for any of the above, and we may do it without notice
+      where the conduct is causing harm.</p>
+  </section>
+
+  <section id="content">
+    <h2>7. Your content and model output</h2>
+    <p>You keep whatever rights you have in the prompts you send. We claim no ownership of them, and
+      we do not use them to train models. As between you and us, output generated for you is yours,
+      subject to these terms and to any rights of the underlying model provider.</p>
+    <p>You are responsible for what you send and for what you do with what comes back. To the extent
+      the law allows, we make no claim that output is accurate, appropriate or original — language
+      models are wrong confidently and often, and identical prompts can produce identical output for
+      different users. Check anything that matters before relying on it.</p>
+  </section>
+
+  <section id="free">
+    <h2>8. Free usage</h2>
+    <p>The chat and the hosted models draw on a shared free allowance that we pay for. It is finite.
+      When it runs out, those models stop serving until it is topped up; requests to the node
+      network are unaffected. We may change or withdraw the free allowance at any time, and we may
+      limit an individual user whose consumption is spoiling it for everyone else.</p>
+  </section>
+
+  <section id="availability">
+    <h2>9. Availability and beta software</h2>
+    <p>LLMJob is early software under active development. Features change, break and occasionally
+      disappear. We offer no uptime commitment, and no service level agreement. The node network in
+      particular depends on volunteered hardware: nodes go offline without warning, and a request
+      may time out simply because nobody was available to serve it.</p>
+    <p>We may change, suspend or discontinue any part of the service. Where a change would be
+      materially adverse and we can reasonably give notice, we will.</p>
+  </section>
+
+  <section id="ip">
+    <h2>10. Intellectual property</h2>
+    <p>The LLMJob source code is open source under the MIT licence, and that licence governs your
+      use of the code. The LLMJob name, logo and site design are not covered by it; please don't use
+      them to imply that we endorse or are affiliated with something we aren't.</p>
+  </section>
+
+  <section id="warranty">
+    <h2>11. Disclaimers</h2>
+    <p>To the fullest extent permitted by law, the service is provided <b>"as is" and "as
+      available"</b>, without warranties of any kind, express or implied, including merchantability,
+      fitness for a particular purpose, non-infringement, and any warranty arising from course of
+      dealing or usage of trade. We do not warrant that the service will be uninterrupted, secure,
+      or free of errors, or that any result obtained through it will be accurate or reliable.</p>
+    <p>Nothing here excludes liability that cannot lawfully be excluded, including for death or
+      personal injury caused by negligence, or for fraud.</p>
+  </section>
+
+  <section id="liability">
+    <h2>12. Limitation of liability</h2>
+    <p>To the fullest extent permitted by law, we are not liable for indirect, incidental, special,
+      consequential or punitive damages, nor for lost profits, lost revenue, lost data, lost
+      cryptocurrency, hardware damage, or increased electricity costs, whether or not we were
+      advised such damages were possible.</p>
+    <p>Our total aggregate liability arising out of or relating to the service is limited to the
+      greater of the amount you paid us in the twelve months before the claim, or US$100.</p>
+  </section>
+
+  <section id="termination">
+    <h2>13. Termination</h2>
+    <p>You may stop using LLMJob at any time; delete your keys and disconnect your nodes. We may
+      suspend or terminate your access if you breach these terms, if your use threatens the service
+      or other users, or if we are required to by law. Sections that by their nature should survive
+      termination — including sections 7, 11, 12 and 15 — do.</p>
+  </section>
+
+  <section id="changes">
+    <h2>14. Changes</h2>
+    <p>We may update these terms. The "last updated" date at the top changes when we do, and
+      continued use after that constitutes acceptance. For material changes we will make a
+      reasonable effort to give notice in the product or the Discord before they take effect.</p>
+  </section>
+
+  <section id="law">
+    <h2>15. Governing law</h2>
+    <p>These terms are governed by the laws of the State of Georgia, USA, without regard to its
+      conflict-of-laws rules. The state and federal courts located in Fulton County, Georgia have
+      exclusive jurisdiction over any dispute arising out of or relating to them, and both parties
+      consent to personal jurisdiction there — except that either party may seek injunctive relief
+      in any court of competent jurisdiction. If you are a consumer, you keep the benefit of any
+      mandatory protections of your home jurisdiction.</p>
+  </section>
+
+  <section id="contact">
+    <h2>16. Contact</h2>
+    <p>LLMJob is operated by LowerPropTax, LLC, 1155 Mount Vernon
+      Hwy NE #800, Atlanta, GA 30338, USA. Questions about these terms:
+      <a href="mailto:help@llmjob.com">help@llmjob.com</a>, or ask in
+      <a href="{{discordUrl}}" target="_blank" rel="noopener">Discord</a>.</p>
+    <p class="pair">See also the <a href="privacy.html">Privacy Policy</a>.</p>
+  </section>
+</main>
+
+{{> footer}}
+</body>
+</html>

@@ -1,8 +1,12 @@
 const ChatUsageService = require('../services/chatUsageService');
 const JobService = require('../services/jobService');
 const ApiKeyService = require('../services/apiKeyService');
+const OpenRouterService = require('../services/openRouterService');
 const {
-  estimateTokens, errorBody, lastUserText, nodeFailMessage,
+  parseSSE, deltaContent, upstreamErrorMessage, logUpstreamError, usageMeta,
+} = OpenRouterService;
+const {
+  estimateTokens, round1, errorBody, lastUserText, nodeFailMessage,
   writeSsePreamble, pollJobResult,
 } = require('./gatewayShared');
 
@@ -21,6 +25,11 @@ const {
 //   • Bounded cost      — only an allow-listed set of models is reachable, and
 //                         max_tokens / prompt length are clamped server-side.
 //
+// The OpenRouter half of that (key, base URL, allow-list, budget, ceilings, the
+// upstream call itself) lives in services/openRouterService.js, because the /v1
+// API gateway serves the same hosted models to public API keys and must do so
+// under exactly the same limits.
+//
 // The client protocol is a small SSE stream of our own shape (not raw OpenAI):
 //   data: {"delta":"..."}                 incremental text
 //   data: {"done":true,"meta":{...}}      final token/perf summary
@@ -28,22 +37,13 @@ const {
 //   data: [DONE]                          terminator
 // Non-streaming callers (stream:false) get a single JSON body instead.
 
-// Sensible defaults; every one is overridable via env or constructor opts so the
-// founder can retune the free tier without a code change.
-const DEFAULT_MODELS = [
-  { id: 'qwen/qwen3.6-27b', label: 'Qwen3.6 27B' },
-  { id: 'qwen/qwen3.6-35b-a3b', label: 'Qwen3.6 35B A3B' }
-];
 // The one model served by the LLMJob node fleet itself (not OpenRouter): a public
 // chat request for it becomes an inference job that a live node runs on its own
 // GPU. Always offered alongside the OpenRouter models, but never the default —
 // callers opt in by selecting it. Its served model id is the fleet default in
 // jobService (JobService fills it in when the job omits `model`).
 const NETWORK_MODEL = { id: 'llmjob-gemma-4-e4b', label: 'Gemma 4 E4B' };
-const DEFAULT_FREE_BUDGET = 1000000; // total tokens of free usage before the cap
-const DEFAULT_MAX_TOKENS = 2048;     // per-request completion ceiling
 const MAX_PROMPT_CHARS = 24000;      // total prompt characters kept per request
-const OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
 
 // Injected as the system message on every request so the model has context about
 // LLMJob (the suggestion prompts — "What is LLMJob?", "What is PPLNS?" — are
@@ -63,21 +63,14 @@ const DEFAULT_SYSTEM_PROMPT = [
 
 class ChatController {
   constructor(opts = {}) {
-    this.apiKey = opts.apiKey !== undefined ? opts.apiKey : process.env.OPENROUTER_API_KEY;
-    this.baseUrl = opts.baseUrl || process.env.OPENROUTER_BASE_URL || OPENROUTER_BASE;
-    this.models = opts.models || ChatController.parseModels(process.env.OPENROUTER_MODELS) || DEFAULT_MODELS;
-    this.freeBudget = opts.freeBudget !== undefined
-      ? opts.freeBudget
-      : numberEnv(process.env.OPENROUTER_FREE_TOKEN_BUDGET, DEFAULT_FREE_BUDGET);
-    this.maxTokens = opts.maxTokens !== undefined
-      ? opts.maxTokens
-      : numberEnv(process.env.OPENROUTER_MAX_TOKENS, DEFAULT_MAX_TOKENS);
-    this.referer = opts.referer || process.env.OPENROUTER_REFERER || 'https://llmjob.com';
-    this.title = opts.title || 'LLMJob';
+    // Everything OpenRouter — key, base URL, allow-list, budget, ceilings — lives
+    // on the shared client so the /v1 API gateway serves the same models under
+    // the same limits. The familiar `this.apiKey` / `this.models` / … accessors
+    // below read straight through to it.
+    this.openRouter = new OpenRouterService(opts);
     this.systemPrompt = opts.systemPrompt !== undefined
       ? opts.systemPrompt
       : (process.env.OPENROUTER_SYSTEM_PROMPT || DEFAULT_SYSTEM_PROMPT);
-    this.fetchFn = opts.fetchFn || globalThis.fetch;
     this.now = opts.now || (() => Date.now());
     // The LLMJob-network model (a job served by a live node) is always available.
     this.networkModel = NETWORK_MODEL;
@@ -88,6 +81,17 @@ class ChatController {
     // be registered before the DB pool connects. Injectable for tests.
     this._services = opts.services || null;
   }
+
+  // OpenRouter configuration, read through to the shared client. Kept as
+  // properties of the controller because that is how the rest of the class (and
+  // its tests) have always referred to them.
+  get apiKey() { return this.openRouter.apiKey; }
+  get baseUrl() { return this.openRouter.baseUrl; }
+  get models() { return this.openRouter.models; }
+  get freeBudget() { return this.openRouter.freeBudget; }
+  get maxTokens() { return this.openRouter.maxTokens; }
+  get referer() { return this.openRouter.referer; }
+  get title() { return this.openRouter.title; }
 
   services(req) {
     if (this._services) return this._services;
@@ -107,16 +111,21 @@ class ChatController {
   async usage(req, res) {
     const svc = this.services(req);
     const totals = await svc.chatUsage.getTotals();
-    // `totals` stays web-chat only: it backs the free-usage cap, which would be
-    // wrong if paid API traffic were folded in (paid usage would burn the free
-    // budget). `network` carries chat + API gateway — everything the fleet has
-    // served — and is what both the network page and the chat page display, so
-    // the two headline figures agree.
+    // `totals` is every token we have bought from OpenRouter — the free web chat
+    // plus the hosted models the /v1 gateway serves to public API keys — and is
+    // what the free-usage cap is measured against. Node-served API traffic is
+    // deliberately absent: it costs the fleet's GPU time, not our credits, and
+    // folding it in would burn the free budget on somebody else's hardware.
+    //
+    // `network` is the headline "tokens served" figure on the network and chat
+    // pages: everything that went through LLMJob, counted once. `apiTokens`
+    // (billed per key) and `totals` overlap by exactly the hosted-model slice the
+    // /v1 gateway records in both places, so subtract it back out.
     const apiTokens = svc.apiKeys ? await svc.apiKeys.getTotalUsage() : 0;
     const capped = this.freeBudget > 0;
     res.json({
       totals,
-      network: { apiTokens, totalTokens: totals.totalTokens + apiTokens },
+      network: { apiTokens, totalTokens: totals.totalTokens + apiTokens - (totals.apiTotalTokens || 0) },
       freeBudget: capped ? this.freeBudget : null,
       remaining: capped ? Math.max(0, this.freeBudget - totals.totalTokens) : null,
       exhausted: capped && totals.totalTokens >= this.freeBudget
@@ -336,7 +345,7 @@ class ChatController {
     }
     if (!upstream.ok) {
       const detail = await upstreamErrorMessage(upstream);
-      logUpstreamError(upstream.status, detail);
+      logUpstreamError('chat', upstream.status, detail);
       send({ error: 'The model backend returned an error: ' + detail });
       return done();
     }
@@ -385,7 +394,7 @@ class ChatController {
     }
     if (!upstream.ok) {
       const detail = await upstreamErrorMessage(upstream);
-      logUpstreamError(upstream.status, detail);
+      logUpstreamError('chat', upstream.status, detail);
       return res.status(502).json(errorBody('The model backend returned an error: ' + detail, 'upstream_error'));
     }
     const data = await upstream.json();
@@ -412,24 +421,12 @@ class ChatController {
   }
 
   async _callUpstream(ctx, stream) {
-    const payload = {
+    return this.openRouter.send({
       model: ctx.modelId,
       messages: ctx.messages,
+      maxTokens: ctx.maxTokens,
+      temperature: ctx.temperature,
       stream,
-      max_tokens: ctx.maxTokens
-    };
-    if (ctx.temperature != null) payload.temperature = ctx.temperature;
-    if (stream) payload.stream_options = { include_usage: true };
-    else payload.usage = { include: true };
-    return this.fetchFn(this.baseUrl + '/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: 'Bearer ' + this.apiKey,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': this.referer,
-        'X-Title': this.title
-      },
-      body: JSON.stringify(payload),
       signal: ctx.controller.signal
     });
   }
@@ -437,26 +434,7 @@ class ChatController {
   // Derive token counts + performance from upstream usage, falling back to a
   // rough estimate when the provider doesn't report counts.
   _computeUsage(ctx) {
-    const end = this.now();
-    const u = ctx.usage || {};
-    const promptTokens = int(u.prompt_tokens, estimateTokens(ctx.promptText));
-    const completionTokens = int(u.completion_tokens, estimateTokens(ctx.text));
-    const totalTokens = int(u.total_tokens, promptTokens + completionTokens);
-    const genMs = Math.max(0, end - (ctx.firstTokenAt || ctx.start));
-    const tokensPerSecond = (completionTokens > 0 && genMs > 0)
-      ? round1(completionTokens / (genMs / 1000))
-      : 0;
-    const ttftMs = ctx.firstTokenAt ? Math.max(0, ctx.firstTokenAt - ctx.start) : 0;
-    return {
-      model: ctx.model || ctx.requestedLabel,
-      promptTokens,
-      completionTokens,
-      totalTokens,
-      tokensPerSecond,
-      latencyMs: Math.max(0, end - ctx.start),
-      ttftMs,
-      finish: ctx.finish // always set: 'stop' by default, or the upstream reason
-    };
+    return usageMeta(ctx, this.now());
   }
 
   // Best-effort usage accounting — never blocks or breaks the response.
@@ -479,37 +457,17 @@ class ChatController {
     if (requested != null && (String(requested) === nm.id || String(requested) === nm.label)) {
       return { id: nm.id, label: nm.label, network: true };
     }
-    if (!requested) return this.models[0]; // default is always an OpenRouter model
-    const r = String(requested);
-    return this.models.find((m) => m.id === r || m.label === r) || null;
+    if (!requested) return this.openRouter.defaultModel; // default is always an OpenRouter model
+    return this.openRouter.resolveModel(requested);
   }
 
   _resolveMaxTokens(v) {
-    const n = Number(v);
-    if (Number.isFinite(n) && n > 0) return Math.min(Math.floor(n), this.maxTokens);
-    return this.maxTokens;
+    return this.openRouter.resolveMaxTokens(v);
   }
 
-  // Parse the OPENROUTER_MODELS env (a JSON array of {id,label}); returns null on
-  // anything malformed so the caller falls back to the defaults.
   static parseModels(str) {
-    if (!str) return null;
-    try {
-      const arr = JSON.parse(str);
-      if (!Array.isArray(arr)) return null;
-      const models = arr
-        .filter((m) => m && m.id)
-        .map((m) => ({ id: String(m.id), label: String(m.label || m.id) }));
-      return models.length ? models : null;
-    } catch (e) {
-      return null;
-    }
+    return OpenRouterService.parseModels(str);
   }
-}
-
-// The assistant text delta on an OpenAI-style streaming chunk, if any.
-function deltaContent(obj) {
-  return obj.choices && obj.choices[0] && obj.choices[0].delta && obj.choices[0].delta.content;
 }
 
 // The subset of the usage/perf summary we expose to the browser.
@@ -554,61 +512,6 @@ function sanitizeMessages(messages) {
   return out.reverse();
 }
 
-// Iterate an OpenAI-style SSE body, yielding each parsed JSON event. Tolerates
-// chunk boundaries splitting a line and skips comments / unparseable payloads.
-async function* parseSSE(body) {
-  const decoder = new (globalThis.TextDecoder)();
-  let buf = '';
-  for await (const chunk of body) {
-    buf += decoder.decode(chunk, { stream: true });
-    let idx;
-    while ((idx = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, idx).trim();
-      buf = buf.slice(idx + 1);
-      if (!line || line.startsWith(':')) continue;
-      if (!line.startsWith('data:')) continue;
-      const payload = line.slice(5).trim();
-      if (payload === '[DONE]') return;
-      try { yield JSON.parse(payload); } catch (e) { /* skip partial/garbage */ }
-    }
-  }
-}
-
-// Pull a human-readable reason out of a failed upstream response. OpenRouter
-// returns `{ "error": { "message": "…" } }`; fall back to the raw body (trimmed)
-// or the bare status. Never contains our API key, so it's safe to relay.
-async function upstreamErrorMessage(resp) {
-  let text = '';
-  try { text = await resp.text(); } catch (e) { return 'HTTP ' + resp.status; }
-  if (text) {
-    try {
-      const j = JSON.parse(text);
-      if (j && j.error && j.error.message) return String(j.error.message);
-    } catch (e) { /* not JSON — fall through to the raw body */ }
-    return text.slice(0, 300);
-  }
-  return 'HTTP ' + resp.status;
-}
-
-// Surface upstream failures in the server logs so they're diagnosable from the
-// deploy console (the browser only sees the sanitized message).
-function logUpstreamError(status, detail) {
-  console.error('[chat] OpenRouter error ' + status + ': ' + detail);
-}
-
-function int(v, fallback) {
-  return Number.isFinite(v) ? Math.round(v) : fallback;
-}
-
-function round1(v) {
-  return Math.round(v * 10) / 10;
-}
-
-function numberEnv(v, fallback) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
-}
-
 // How far a node's self-reported completion count may exceed our estimate of the
 // text it returned. Generous — tokenizers differ, and a thinking model's hidden
 // reasoning tokens are billed but never delivered — while still bounding an
@@ -627,9 +530,11 @@ function boundedTokens(reported, text) {
 }
 
 module.exports = ChatController;
-module.exports.parseSSE = parseSSE;
 module.exports.sanitizeMessages = sanitizeMessages;
 module.exports.estimateTokens = estimateTokens;
 module.exports.boundedTokens = boundedTokens;
+// Re-exported from the shared OpenRouter client, which owns them now: callers
+// (and tests) that reach for them through the chat gateway still find them.
+module.exports.parseSSE = parseSSE;
 module.exports.upstreamErrorMessage = upstreamErrorMessage;
-module.exports.DEFAULT_MODELS = DEFAULT_MODELS;
+module.exports.DEFAULT_MODELS = OpenRouterService.DEFAULT_MODELS;

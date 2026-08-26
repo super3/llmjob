@@ -1,7 +1,13 @@
+const crypto = require('crypto');
 const JobService = require('../services/jobService');
 const LogService = require('../services/logService');
 const ApiKeyService = require('../services/apiKeyService');
 const NodeService = require('../services/nodeService');
+const ChatUsageService = require('../services/chatUsageService');
+const OpenRouterService = require('../services/openRouterService');
+const {
+  parseSSE, deltaContent, deltaReasoning, upstreamErrorMessage, logUpstreamError, usageMeta,
+} = OpenRouterService;
 const {
   estimateTokens, errorBody, joinContent, lastUserText,
   writeSsePreamble, pollJobResult, clampMessages, resolveMaxTokens, MAX_PROMPT_CHARS,
@@ -25,18 +31,33 @@ const TARGET_NODE_HEADER = 'x-llmjob-node';
 // metrics with a model name (older clients). Same source the job default uses.
 const { DEFAULT_MODEL } = JobService;
 
+// What we report as the "node" for a hosted-model request — in the served-by
+// header, and in the dashboard's log rows. No node ran it, and saying so is more
+// useful than an empty column.
+const HOSTED_SERVED_BY = 'openrouter';
+
 // OpenAI-compatible chat-completions gateway.
 //
-// POST /v1/chat/completions (authenticated with an `lj-` API key) turns a
-// standard OpenAI request into an LLMJob inference job, waits for an online node
-// in the fleet to serve it against its local model, and returns the result in
-// OpenAI's shape — non-streaming JSON or an SSE `chat.completion.chunk` stream.
-// This is the front door that makes the API key mean something: callers use it
-// like `https://<host>/v1` with any OpenAI SDK, and it fans out to whatever node
-// picks the job up. Usage (tokens + speed) is recorded against the key on finish.
+// POST /v1/chat/completions (authenticated with an `lj-` API key) takes a
+// standard OpenAI request and returns an OpenAI-shaped result — non-streaming
+// JSON or an SSE `chat.completion.chunk` stream. This is the front door that
+// makes the API key mean something: callers point any OpenAI SDK at
+// `https://<host>/v1`. Usage (tokens + speed) is recorded against the key on
+// finish, either way.
 //
-// The node side (earn/src/main/jobWorker.js) polls, runs, and streams chunks
-// back; this controller only creates the job and long-polls its result.
+// Two backends sit behind it, chosen by the request's `model`:
+//
+//   • The node network (the default, and anything unrecognised). The request
+//     becomes an LLMJob inference job and we long-poll until an online node
+//     serves it against its own local model. The node side
+//     (earn/src/main/jobWorker.js) polls, runs, and streams chunks back; this
+//     controller only creates the job and waits.
+//   • A hosted model — one of the OpenRouter-served models the public Chat page
+//     offers — when the caller names it exactly. Only `public` keys may ask for
+//     one, and the spend comes out of the same free budget the web chat draws
+//     on. This exists so real API traffic can reach those models now, ahead of
+//     the network serving them itself; an unknown model still falls through to
+//     the network, so no existing caller changes behaviour.
 class OpenAiController {
   constructor(opts = {}) {
     this.pollMs = opts.pollMs || 250;          // how often to check the job for progress
@@ -50,6 +71,11 @@ class OpenAiController {
     this.timeoutMs = opts.timeoutMs || 280000;
     this.now = opts.now || (() => Date.now());
     this.sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+    // The hosted-model backend, sharing its configuration (allow-list, key,
+    // ceilings, free budget) with the web-chat gateway so both front doors serve
+    // the same models under the same limits. `opts.openRouter` overrides it for
+    // tests; otherwise it reads the same OPENROUTER_* env the chat gateway does.
+    this.openRouter = new OpenRouterService(opts.openRouter || {});
     // Services are built per-request from req.app.locals.db so one controller
     // instance can be registered before the DB pool is connected. Injectable for
     // tests.
@@ -62,7 +88,27 @@ class OpenAiController {
     return {
       jobService: new JobService(db), logService: new LogService(db),
       apiKeyService: new ApiKeyService(db), nodeService: new NodeService(db),
+      chatUsage: new ChatUsageService(db),
     };
+  }
+
+  // GET /v1/models — the models this key may name, in OpenAI's list shape.
+  //
+  // The network entry is the model the fleet actually runs; any unrecognised
+  // model id is served by it too, so this is a guide rather than a whitelist.
+  // The hosted models are listed only when they are actually reachable: a
+  // private key's requests never leave its owner's nodes, so advertising them
+  // there would just produce a 403 on the next call.
+  listModels(req, res) {
+    const created = Math.floor(this.now() / 1000);
+    const data = [];
+    if (this.openRouter.configured && req.apiKey.visibility !== 'private') {
+      for (const m of this.openRouter.models) {
+        data.push({ id: m.id, object: 'model', created, owned_by: 'llmjob-hosted' });
+      }
+    }
+    data.push({ id: DEFAULT_MODEL, object: 'model', created, owned_by: 'llmjob-network' });
+    res.json({ object: 'list', data });
   }
 
   // The requested target node, from the X-LLMJob-Node header (Express lowercases
@@ -93,27 +139,35 @@ class OpenAiController {
 
     const svc = this.services(req);
 
+    // Bound the request before it goes anywhere. Prompt size and completion
+    // budget are both caller-controlled and both cost real resources — a node's
+    // GPU time, or OpenRouter credit; the web-chat gateway has always clamped
+    // them and this one didn't.
+    const clean = clampMessages(messages, MAX_PROMPT_CHARS);
+    if (clean.length === 0) {
+      return res.status(400).json(errorBody('No usable message content.', 'invalid_request_error'));
+    }
+
+    const targetNode = (this._headerTarget(req) || '').trim() || null;
+
+    // A hosted model, named exactly? Then this request leaves for OpenRouter
+    // rather than the fleet. Anything else — including no model at all, and every
+    // alias callers have always sent — goes to the node network as before.
+    const hosted = this.openRouter.resolveModel(body.model);
+    if (hosted) return this._hostedCompletion(req, res, { svc, body, clean, hosted, targetNode });
+
     // Optional node targeting (X-LLMJob-Node): pin the request to one node so a
     // caller can test whether that node serves and how fast. Fast-fail if it's
     // offline/unknown rather than long-polling to the timeout — the point of the
     // feature is a quick verdict. It only narrows: a targeted job still passes the
     // normal visibility filter at assignment, so this can't reach a node the key
     // isn't already allowed to use.
-    const targetNode = (this._headerTarget(req) || '').trim() || null;
     if (targetNode) {
       const status = await svc.nodeService.getNodeStatus(targetNode);
       if (!status.online) {
         const why = status.exists ? 'is offline' : 'is not a known node';
         return res.status(404).json(errorBody(`Target node ${targetNode} ${why}.`, 'target_node_error'));
       }
-    }
-
-    // Bound the request before it becomes a job. Prompt size and completion
-    // budget are both caller-controlled and both cost a node's GPU time; the
-    // web-chat gateway has always clamped them and this one didn't.
-    const clean = clampMessages(messages, MAX_PROMPT_CHARS);
-    if (clean.length === 0) {
-      return res.status(400).json(errorBody('No usable message content.', 'invalid_request_error'));
     }
 
     const job = await svc.jobService.createJob({
@@ -271,6 +325,231 @@ class OpenAiController {
       key: key.name,
     });
     await svc.apiKeyService.recordUsage(key.hash, ctx.promptTokens + out);
+  }
+
+  // ── Hosted models (OpenRouter) ──────────────────────────────────────────────
+
+  // Gate a hosted-model request, then serve it. Every rejection here is a
+  // deliberate one — the caller named a model we proxy, so silence would look
+  // like the network had served it.
+  async _hostedCompletion(req, res, { svc, body, clean, hosted, targetNode }) {
+    const key = req.apiKey;
+
+    // Private means "my own machines only". A hosted model is neither, so
+    // serving one would quietly break the promise the toggle makes; say so
+    // instead, and name the fix.
+    if (key.visibility === 'private') {
+      return res.status(403).json(errorBody(
+        `Model ${hosted.id} runs on LLMJob's hosted backend, and this key is private — its requests only run on your own nodes. `
+        + 'Switch the key to public in the dashboard, or omit `model` to use the node network.',
+        'permission_error'));
+    }
+    // Pinning a node and asking for a model no node runs are contradictory. The
+    // targeting header exists to give a fast verdict about one machine, so
+    // ignoring it here would be the one answer that helps nobody.
+    if (targetNode) {
+      return res.status(400).json(errorBody(
+        `Model ${hosted.id} is not served by the node network, so it cannot be pinned to node ${targetNode}.`,
+        'invalid_request_error'));
+    }
+    if (!this.openRouter.configured) {
+      return res.status(503).json(errorBody('Hosted models are not configured on this deployment.', 'not_configured'));
+    }
+    // The same pot of credit the free web chat draws on, and the same cap. An API
+    // key that could spend past it would drain exactly what the cap protects.
+    const totals = await svc.chatUsage.getTotals();
+    if (this.openRouter.freeBudget > 0 && totals.totalTokens >= this.openRouter.freeBudget) {
+      return res.status(402).json(errorBody(
+        'Hosted models have reached their free usage cap for now — omit `model` to run this request on the node network.',
+        'quota_exhausted'));
+    }
+
+    const ctx = {
+      res, svc, key,
+      id: 'chatcmpl-' + crypto.randomBytes(12).toString('hex'),
+      created: Math.floor(this.now() / 1000),
+      messages: clean,
+      promptText: joinContent(clean),
+      modelId: hosted.id,
+      requestedLabel: hosted.id, // what to report if the provider names no model
+      maxTokens: this.openRouter.resolveMaxTokens(body.max_tokens),
+      temperature: typeof body.temperature === 'number' ? body.temperature : null,
+      start: this.now(), firstTokenAt: 0,
+      text: '', reasoning: '', usage: null, model: null, finish: 'stop', aborted: false,
+    };
+    ctx.controller = new (globalThis.AbortController)();
+    // Caller hung up — abort the upstream generation rather than paying for
+    // tokens nobody will read, and stop writing to a dead socket.
+    if (res.on) {
+      res.on('close', () => {
+        ctx.aborted = true;
+        try { ctx.controller.abort(); } catch (e) { /* ignore */ }
+      });
+    }
+
+    try {
+      if (body.stream === true) await this._streamHosted(ctx);
+      else await this._jsonHosted(ctx);
+    } catch (err) {
+      if (!res.headersSent) res.status(500).json(errorBody('Gateway error: ' + err.message, 'api_error'));
+      else { try { res.end(); } catch (e) { /* ignore */ } }
+    }
+  }
+
+  _callHosted(ctx, stream) {
+    return this.openRouter.send({
+      model: ctx.modelId,
+      messages: ctx.messages,
+      maxTokens: ctx.maxTokens,
+      temperature: ctx.temperature,
+      stream,
+      signal: ctx.controller.signal,
+    });
+  }
+
+  // One upstream call, one OpenAI chat.completion back.
+  async _jsonHosted(ctx) {
+    const { res } = ctx;
+    let upstream;
+    try {
+      upstream = await this._callHosted(ctx, false);
+    } catch (err) {
+      return res.status(502).json(errorBody('Upstream request failed.', 'upstream_error'));
+    }
+    if (!upstream.ok) {
+      const detail = await upstreamErrorMessage(upstream);
+      logUpstreamError('api', upstream.status, detail);
+      return res.status(502).json(errorBody('The model backend returned an error: ' + detail, 'upstream_error'));
+    }
+
+    const data = await upstream.json();
+    const choice = (data.choices && data.choices[0]) || null;
+    const msg = (choice && choice.message) || null;
+    ctx.text = (msg && msg.content) || '';
+    ctx.reasoning = (msg && (msg.reasoning_content || msg.reasoning)) || '';
+    ctx.usage = data.usage || null;
+    ctx.model = data.model || null;
+    ctx.finish = (choice && choice.finish_reason) || 'stop';
+    ctx.firstTokenAt = ctx.start; // no TTFT signal — attribute speed to full latency
+
+    const meta = usageMeta(ctx, this.now());
+    await this._recordHostedUsage(ctx, meta);
+
+    const message = { role: 'assistant', content: ctx.text };
+    if (ctx.reasoning) message.reasoning_content = ctx.reasoning;
+    this._setServedByHeader(res, { assignedTo: HOSTED_SERVED_BY });
+    return res.status(200).json({
+      id: ctx.id,
+      object: 'chat.completion',
+      created: ctx.created,
+      model: meta.model,
+      choices: [{ index: 0, message, finish_reason: meta.finish }],
+      usage: {
+        prompt_tokens: meta.promptTokens,
+        completion_tokens: meta.completionTokens,
+        total_tokens: meta.totalTokens,
+      },
+    });
+  }
+
+  // Re-emit the upstream generation as our own chat.completion.chunk stream.
+  // Deliberately not a byte-for-byte passthrough: the ids, the `model` field and
+  // the terminator then read the same whether a node or a hosted model served
+  // the request, and we still see every token for the usage accounting.
+  async _streamHosted(ctx) {
+    const { res } = ctx;
+    writeSsePreamble(res);
+    const send = (delta, finish) => res.write('data: ' + JSON.stringify({
+      id: ctx.id, object: 'chat.completion.chunk', created: ctx.created,
+      model: ctx.model || ctx.requestedLabel,
+      choices: [{ index: 0, delta, finish_reason: finish || null }],
+    }) + '\n\n');
+    const fail = (message, type) => {
+      res.write('data: ' + JSON.stringify(errorBody(message, type)) + '\n\n');
+      res.write('data: [DONE]\n\n');
+      res.end();
+    };
+
+    let upstream;
+    try {
+      upstream = await this._callHosted(ctx, true);
+    } catch (err) {
+      return fail('Upstream request failed.', 'upstream_error');
+    }
+    if (!upstream.ok) {
+      const detail = await upstreamErrorMessage(upstream);
+      logUpstreamError('api', upstream.status, detail);
+      return fail('The model backend returned an error: ' + detail, 'upstream_error');
+    }
+
+    send({ role: 'assistant' }); // OpenAI opens with the role
+    try {
+      for await (const obj of parseSSE(upstream.body)) {
+        if (ctx.aborted) break;
+        if (obj.model) ctx.model = obj.model; // chunks name the real model once it's known
+        const content = deltaContent(obj);
+        if (content) {
+          if (!ctx.firstTokenAt) ctx.firstTokenAt = this.now();
+          ctx.text += content;
+          send({ content });
+        }
+        // Surfaced only for a thinking model. Clients that don't know the field
+        // ignore it; the ones that do can show why `content` is short (or empty)
+        // when the completion budget ran out mid-thought.
+        const reasoning = deltaReasoning(obj);
+        if (reasoning) {
+          ctx.reasoning += reasoning;
+          send({ reasoning_content: reasoning });
+        }
+        if (obj.usage) ctx.usage = obj.usage;
+        const fr = obj.choices && obj.choices[0] && obj.choices[0].finish_reason;
+        if (fr) ctx.finish = fr;
+      }
+    } finally {
+      // Bill whatever OpenRouter already streamed, even if the caller hung up
+      // mid-generation: it produced (and charged us for) those tokens whether or
+      // not anyone was still listening, so the budget has to see them.
+      await this._recordHostedUsage(ctx, usageMeta(ctx, this.now()));
+    }
+    if (ctx.aborted) return; // socket gone — skip the finish/[DONE] writes
+    send({}, ctx.finish);
+    res.write('data: [DONE]\n\n');
+    res.end();
+  }
+
+  // Record a completed hosted generation in all three places it belongs, and
+  // never let a bookkeeping failure break the response:
+  //   • chat_usage_totals — this is OpenRouter spend, so it counts against the
+  //     same free cap the web chat draws on (`viaApiKey` tags the slice so the
+  //     public totals don't count it twice against the key's own usage);
+  //   • the user's request log — so the dashboard shows the request like any
+  //     other, attributed to `openrouter` rather than to a node;
+  //   • the key's lifetime usage.
+  async _recordHostedUsage(ctx, meta) {
+    const { svc, key } = ctx;
+    try {
+      await svc.chatUsage.recordUsage({
+        model: meta.model,
+        inTokens: meta.promptTokens,
+        outTokens: meta.completionTokens,
+        speed: meta.tokensPerSecond,
+        latencyMs: meta.latencyMs,
+        ttftMs: meta.ttftMs,
+        finish: meta.finish,
+        viaApiKey: true,
+      });
+      await svc.logService.recordLog(key.userId, {
+        model: meta.model,
+        node: HOSTED_SERVED_BY,
+        app: 'api',
+        in: meta.promptTokens,
+        out: meta.completionTokens,
+        speed: meta.tokensPerSecond,
+        finish: meta.finish,
+        key: key.name,
+      });
+      await svc.apiKeyService.recordUsage(key.hash, meta.totalTokens);
+    } catch (e) { /* ignore */ }
   }
 }
 
