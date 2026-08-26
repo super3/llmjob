@@ -1215,11 +1215,18 @@ extern "C" __global__ __launch_bounds__(512) void pearl_tile_fold_wmma(
         // unrolled compare chain, not jr[slot]: an index only known at run
         // time would force the whole array out of registers into local
         // memory, which is the exact failure being avoided.
-        const uint32_t idx = (cb * regions_per_warp + mb) * PEARL_JACKPOT_BUCKETS + bucket;
+        // Split the flat index into its compile-time and runtime halves. base is
+        // a constant in this doubly-unrolled loop, and bucket stays under the
+        // bucket count, so the slot (idx >> 5) equals base >> 5 -- known at
+        // compile time. Selecting on that folds the capture to one lane compare
+        // and one predicated move, where selecting on (idx >> 5) left a
+        // four-way chain whenever the range analysis missed that bucket < 16.
+        const uint32_t base = (cb * regions_per_warp + mb) * PEARL_JACKPOT_BUCKETS;
+        const uint32_t idx = base + bucket;
         if (lane == (idx & 31u)) {
 #pragma unroll
           for (uint32_t sl = 0; sl < PEARL_JACKPOT_REGS; sl++) {
-            if ((idx >> 5) == sl) {
+            if ((base >> 5) == sl) {
               // At the mandated geometry every slot is written exactly once
               // and the rotate lands on a zero; the host refuses geometries
               // with more chunks than buckets.
