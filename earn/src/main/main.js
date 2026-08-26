@@ -36,6 +36,7 @@ const { resolveEconomics } = require('../shared/economics');
 const nodeProto = require('../shared/node');
 const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
 const { planLlmInstances } = require('../shared/llmPlan');
+const { pickModel, ctxLadder } = require('../shared/models');
 const { LlmFleet } = require('./llmFleet');
 const { buildChatBody } = require('../shared/llmChat');
 const { JobWorker } = require('./jobWorker');
@@ -628,7 +629,16 @@ async function startLlm(reserveMb) {
   // did; when VRAM can't be read the planner returns one unknown-placement
   // instance and lets llama.cpp decide.
   const cards = await detectGpusVram();
-  const plan = planLlmInstances(cards, LLM.model, reserveMb || 0);
+  // Which model this run serves. Chosen from the best card's free VRAM, because
+  // the fleet loads ONE model across every instance — planLlmInstances then drops
+  // any card that cannot hold it. On a mixed rig that trades breadth for
+  // capability: a box with one 32 GB card and three small ones serves the large
+  // model from the one card rather than the small model from four. That is the
+  // intended reading of "for cards that can support it", but it is a trade, and
+  // the small-card case is unaffected because those rigs resolve to the default.
+  const bestCard = pickLlmGpu(cards);
+  const model = pickModel(bestCard ? bestCard.freeMb : null, reserveMb || 0);
+  const plan = planLlmInstances(cards, model, reserveMb || 0);
   if (!plan.length) {
     // An empty plan means VRAM was measured but no card had room — so at least
     // one card parsed, and pickLlmGpu (same parse rules) returns it for the error.
@@ -638,27 +648,31 @@ async function startLlm(reserveMb) {
     // floor: when co-running, the offload budget (model + mining reserve) is the
     // larger of the two, and reporting the floor told users they needed less than
     // they did — then refused them anyway.
-    const needMb = requiredFreeMb(LLM.model, reserveMb);
+    const needMb = requiredFreeMb(model, reserveMb);
     const needGb = Math.round(needMb / 1024);
     send('miner:log', { level: 'error', line: 'not enough free VRAM for the local LLM: ' + freeMb
-      + ' MB free, need ~' + needMb + ' MB for ' + LLM.model.name + ' — skipping the LLM.' });
+      + ' MB free, need ~' + needMb + ' MB for ' + model.name + ' — skipping the LLM.' });
     llmStatus = Object.assign({}, llmStatus, { ready: false, note: null, error: 'Needs ~' + needGb + ' GB free VRAM' });
     sendLlmStatus();
     return false;
   }
 
   const dir = path.join(app.getPath('userData'), 'llm');
-  send('miner:log', { level: 'info', line: 'preparing local LLM (' + LLM.model.name + ')…' });
+  send('miner:log', { level: 'info', line: 'preparing local LLM (' + model.name + ')…' });
 
   // Both of these are no-ops once cached, but on a first run they fetch ~100 MB
   // of llama-server and a ~5 GB model. Report progress so the wait is legible
   // instead of looking like a stall.
-  let binaryPath, modelPath;
+  let binaryPath, modelPath, mmprojPath = null;
   try {
     setLlmNote('Preparing…');
     binaryPath = await resolveLlmBinary(dir, progressReporter('downloading llama-server…'));
     const modelEngine = new LlmEngineManager({ dir, platform: process.platform, fs, download: downloadFile });
-    modelPath = await modelEngine.ensureModel(progressReporter('downloading model ' + LLM.model.name + '…'));
+    modelPath = await modelEngine.ensureModel(progressReporter('downloading model ' + model.name + '…'), model);
+    // A vision model needs its projector too. Fetched after the weights and
+    // reported separately: it is ~1 GB against ~18, so folding it into the same
+    // progress line would make the last 5% look like a stall.
+    mmprojPath = await modelEngine.ensureMmproj(progressReporter('downloading vision projector…'), model);
   } catch (e) {
     // Surface the failure on the hero, not only in the log. Clearing the note
     // without setting an error dropped the row straight back to a grey dot and
@@ -699,7 +713,17 @@ async function startLlm(reserveMb) {
   // and until 'ready' fires the hero is otherwise indistinguishable from idle.
   llmStatus = Object.assign({}, llmStatus, { ready: false, error: null, note: 'Starting…' });
   sendLlmStatus();
-  await fleet.start(plan, { platform: process.platform, binaryPath, modelPath });
+  // llmFleet merges `run` into every llmManager.start(), so the model's own
+  // context ladder, projector and tuned flags reach llama-server from here.
+  // Both context values come from ctxLadder(), which already resolves a model
+  // without its own ctxSize (the default one) to the global LLM.ctxSize. Reading
+  // model.ctxSize directly here handed llama-server `undefined` for exactly that
+  // model — the one every small node runs.
+  const ladder = ctxLadder(model);
+  await fleet.start(plan, {
+    platform: process.platform, binaryPath, modelPath, mmprojPath,
+    ctxSize: ladder[0], ctxLadder: ladder, extraArgs: model.extraArgs,
+  });
   return true;
 }
 
