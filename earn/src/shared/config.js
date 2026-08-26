@@ -159,6 +159,59 @@ const LLM = {
     darwin: 'https://github.com/ggml-org/llama.cpp/releases/download/b9902/llama-b9902-bin-macos-arm64.tar.gz',
     'darwin-x64': 'https://github.com/ggml-org/llama.cpp/releases/download/b9902/llama-b9902-bin-macos-x64.tar.gz',
   },
+  // Models the fleet can serve, biggest first. A node runs exactly ONE of these:
+  // shared/models.pickModel walks this list and takes the first whose VRAM floor
+  // the chosen card clears, so a 32 GB card serves the large vision model and a
+  // 12 GB card keeps serving Gemma. Nothing is split across cards and nothing is
+  // partially offloaded — see vram.js for why.
+  //
+  // Order is capability order, not preference-by-size for its own sake: the list
+  // is walked top-down and the first fit wins.
+  tiers: [
+    // Qwen3.8-27B (Alibaba, Apache-2.0, released 2026-08-14): 27B dense with a
+    // vision tower and a 262,144-token native context. Vision needs the separate
+    // mmproj projector alongside the weights — llama-server loads it with
+    // --mmproj and without it the model runs text-only.
+    //
+    // File sizes are READ FROM THE HUB, not guessed: the Q4_K_XL weights are
+    // 17.56 GB and mmproj-F16 is 0.93 GB, so ~18.5 GB is resident before a single
+    // token of KV cache. Both URLs were checked to resolve 200.
+    //
+    // vramFullMb/minVramMb are NOT measured and are the weak part of this entry —
+    // nobody has run llama-server at ctxSize 262144 to read the real figure, and
+    // the KV cache is the whole unknown (48 of its 64 layers use linear attention,
+    // whose state does not grow with context, so only 16 layers hold full-context
+    // KV — which is why 256K is plausible at all on one card).
+    //
+    // Rather than guess that number and have it be wrong in the direction that
+    // OOMs a node, the floor below is set high enough that only a large card even
+    // attempts it, and llmManager walks `ctxLadder` downward when llama-server
+    // fails to start. A card that cannot hold 262144 lands on a window it can
+    // hold instead of crash-looping. Re-measure and tighten both figures once a
+    // 5090 has actually run it.
+    {
+      key: 'qwen3.8-27b',
+      name: 'Qwen3.8-27B-UD-Q4_K_XL',
+      file: 'Qwen3.8-27B-UD-Q4_K_XL.gguf',
+      url: 'https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_XL.gguf',
+      // The vision projector. Separate download, separate file, loaded with
+      // --mmproj; the weights alone are a text-only model.
+      mmproj: {
+        file: 'Qwen3.8-27B-mmproj-F16.gguf',
+        url: 'https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-F16.gguf',
+      },
+      vision: true,
+      layers: 64,
+      ctxSize: 262144,
+      // Tried in order when the one above fails to start. Each step roughly
+      // halves the KV cache, so a card that is short by a little gets a working
+      // server rather than a restart loop.
+      ctxLadder: [262144, 131072, 65536, 32768],
+      vramFullMb: 28672,  // ESTIMATE — 18.5 GB resident + KV headroom. Measure me.
+      minVramMb: 30720,   // ESTIMATE — deliberately high so only a 32 GB card tries.
+      quant: 'Q4_K_XL',
+    },
+  ],
   // A small, capable model to start with: Google Gemma 4 E4B Instruct, Q4_K_M
   // GGUF (~5 GB). "E4B" = ~4.5B *effective* params via Per-Layer Embeddings, so
   // it keeps a low VRAM footprint (runs in ~5 GB at 4-bit) while adding 128K
@@ -169,6 +222,9 @@ const LLM = {
   // cache). `minVramMb` is the hard floor of free VRAM we require before
   // starting the model on the GPU — above the full-offload figure so we never
   // spawn llama-server right at the edge and OOM.
+  //
+  // Still the fallback every node lands on when it cannot host a tier above, and
+  // still what `LLM.model` means everywhere that reads it.
   model: {
     name: 'Gemma-4-E4B-it-Q4_K_M',
     file: 'gemma-4-E4B-it-Q4_K_M.gguf',

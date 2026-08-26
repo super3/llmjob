@@ -63,6 +63,11 @@ function buildServerArgs(opts = {}) {
   if (Number.isInteger(opts.mainGpu) && opts.mainGpu >= 0) {
     args.push('--main-gpu', String(opts.mainGpu));
   }
+  // The vision projector, for a multimodal model that ships one. The weights
+  // alone load and serve happily as a text-only model, so a missing projector is
+  // a silent capability loss rather than a startup failure — which is exactly why
+  // the caller passes the path explicitly instead of us inferring it.
+  if (opts.mmprojPath) args.push('--mmproj', String(opts.mmprojPath));
   if (opts.flashAttn) args.push('--flash-attn');
   return args;
 }

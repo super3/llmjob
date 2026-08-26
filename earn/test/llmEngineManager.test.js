@@ -167,3 +167,86 @@ describe('LlmEngineManager', () => {
     expect(dl2).toHaveBeenCalledWith(LLM.model.url, modelP, undefined);
   });
 });
+
+// A node no longer serves one fixed model: a card large enough gets a bigger
+// tier, so paths, install checks and downloads are all per-model. Every method
+// keeps its old zero-argument meaning (the fleet default) so existing callers
+// are untouched.
+describe('LlmEngineManager — per-model paths and the vision projector', () => {
+  const { LLM } = require('../src/shared/config');
+  const VISION = {
+    name: 'Big', file: 'big.gguf', url: 'https://h/big.gguf',
+    mmproj: { file: 'big-mmproj.gguf', url: 'https://h/mmproj.gguf' },
+  };
+
+  function mgr(present = []) {
+    const seen = new Set(present);
+    const download = jest.fn(async (url, dest) => { seen.add(dest); });
+    return {
+      download,
+      m: new LlmEngineManager({
+        dir: '/d', platform: 'linux', download,
+        fs: { existsSync: (p) => seen.has(p), mkdirSync: jest.fn() },
+      }),
+    };
+  }
+
+  test('paths are per-model, so a big model cannot overwrite the small one', () => {
+    const { m } = mgr();
+    expect(m.modelPath(VISION)).toBe('/d/big.gguf');
+    expect(m.modelPath(LLM.model)).toBe('/d/' + LLM.model.file);
+    expect(m.modelPath()).toBe('/d/' + LLM.model.file);   // unchanged default
+    expect(m.modelPath(VISION)).not.toBe(m.modelPath());
+  });
+
+  test('mmprojPath is null for a model without a projector', () => {
+    const { m } = mgr();
+    expect(m.mmprojPath(VISION)).toBe('/d/big-mmproj.gguf');
+    expect(m.mmprojPath(LLM.model)).toBeNull();
+    expect(m.mmprojPath()).toBeNull();
+  });
+
+  test('a vision model is not installed until BOTH files are there', () => {
+    const weightsOnly = mgr(['/d/big.gguf']);
+    expect(weightsOnly.m.isModelInstalled(VISION)).toBe(true);
+    expect(weightsOnly.m.isMmprojInstalled(VISION)).toBe(false);
+
+    const both = mgr(['/d/big.gguf', '/d/big-mmproj.gguf']);
+    expect(both.m.isMmprojInstalled(VISION)).toBe(true);
+  });
+
+  test('a model with no projector is trivially satisfied', () => {
+    const { m } = mgr();
+    expect(m.isMmprojInstalled(LLM.model)).toBe(true);
+    expect(m.isMmprojInstalled()).toBe(true);
+  });
+
+  test('ensureModel downloads the requested model, not always the default', async () => {
+    const { m, download } = mgr();
+    await expect(m.ensureModel(null, VISION)).resolves.toBe('/d/big.gguf');
+    expect(download).toHaveBeenCalledWith('https://h/big.gguf', '/d/big.gguf', null);
+  });
+
+  test('ensureMmproj fetches the projector separately from the weights', async () => {
+    // Separate on purpose: a node whose 17 GB of weights are already on disk
+    // must be able to pick up a 0.9 GB projector without re-downloading them.
+    const { m, download } = mgr(['/d/big.gguf']);
+    await expect(m.ensureMmproj(null, VISION)).resolves.toBe('/d/big-mmproj.gguf');
+    expect(download).toHaveBeenCalledTimes(1);
+    expect(download).toHaveBeenCalledWith('https://h/mmproj.gguf', '/d/big-mmproj.gguf', null);
+  });
+
+  test('ensureMmproj is a no-op returning null for a text-only model', async () => {
+    const { m, download } = mgr();
+    await expect(m.ensureMmproj(null, LLM.model)).resolves.toBeNull();
+    await expect(m.ensureMmproj()).resolves.toBeNull();
+    expect(download).not.toHaveBeenCalled();
+  });
+
+  test('neither ensure re-downloads a file already present', async () => {
+    const { m, download } = mgr(['/d/big.gguf', '/d/big-mmproj.gguf']);
+    await m.ensureModel(null, VISION);
+    await m.ensureMmproj(null, VISION);
+    expect(download).not.toHaveBeenCalled();
+  });
+});

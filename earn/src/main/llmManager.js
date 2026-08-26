@@ -59,6 +59,11 @@ class LlmManager extends EventEmitter {
     this._stopping = false;
     this._crashes = 0;
     this._readyAt = 0;
+    // Context sizes to try, largest first, and where we are in that list. A
+    // large-context model is the one case where "it won't start" is a sizing
+    // problem we can actually fix ourselves — see _onExit.
+    this._ladder = [];
+    this._ctxIdx = 0;
   }
 
   isRunning() { return this.running; }
@@ -71,16 +76,26 @@ class LlmManager extends EventEmitter {
     this._stopping = false;
     this._crashes = 0;
     this._readyAt = 0;
+    // A model may offer several context sizes to try. Anything else keeps the
+    // single size the caller asked for, so behaviour is unchanged without one.
+    this._ladder = Array.isArray(opts.ctxLadder) ? opts.ctxLadder.filter((n) => Number(n) > 0) : [];
+    this._ctxIdx = 0;
     this.running = true;
     this.baseUrl = serverBaseUrl(opts);
     this._spawn();
     return true;
   }
 
+  // The context size this spawn should ask for: the current rung of the ladder,
+  // or whatever the caller configured when there is no ladder.
+  _ctxSize() {
+    return this._ladder.length ? this._ladder[this._ctxIdx] : this._opts.ctxSize;
+  }
+
   _spawn() {
     this._attempt++;
     const bin = resolveServerBinary(this._opts.binaryPath, this._opts.platform);
-    const args = buildServerArgs(this._opts);
+    const args = buildServerArgs({ ...this._opts, ctxSize: this._ctxSize() });
     const proc = this.spawn(bin, args);
 
     this.proc = proc;
@@ -105,6 +120,28 @@ class LlmManager extends EventEmitter {
     // wait and re-spawn instead of declaring the LLM dead.
     if (!wasReady && !this._stopping && this._attempt < this.startAttempts) {
       this.emit('log', { level: 'info', line: 'local LLM exited before it was ready — retrying (attempt ' + this._attempt + '/' + this.startAttempts + ')' });
+      this._retryIn(this.retryDelayMs);
+      return;
+    }
+
+    // Still never became ready, and the retries above are spent. If the model
+    // offered smaller context sizes, the size is the likeliest thing we got
+    // wrong: the KV cache for a very large window is the one cost we cannot read
+    // off the weights ahead of time, so a card that is short by a little would
+    // otherwise restart forever. Drop to the next rung and give it a full budget
+    // of attempts there.
+    //
+    // Deliberately AFTER the retry branch, not instead of it: a port-bind clash
+    // also exits before ready, and shrinking the context because the previous
+    // server had not finished releasing 8080 would be the wrong fix applied
+    // permanently.
+    if (!wasReady && !this._stopping && this._ctxIdx + 1 < this._ladder.length) {
+      const from = this._ladder[this._ctxIdx];
+      this._ctxIdx++;
+      this._attempt = 0;
+      const to = this._ladder[this._ctxIdx];
+      this.emit('log', { level: 'warn', line: 'local LLM would not start at a ' + from + '-token context — retrying at ' + to });
+      this.emit('ctx-downgrade', { from, to });
       this._retryIn(this.retryDelayMs);
       return;
     }

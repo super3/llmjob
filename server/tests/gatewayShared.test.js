@@ -5,6 +5,7 @@
 const {
   estimateTokens, errorBody, joinContent, lastUserText, nodeFailMessage,
   writeSsePreamble, pollJobResult, clampMessages, resolveMaxTokens, MAX_PROMPT_CHARS,
+  contentText, MAX_IMAGES, MAX_IMAGE_CHARS,
 } = require('../src/controllers/gatewayShared');
 
 describe('gatewayShared — pure helpers', () => {
@@ -177,5 +178,124 @@ describe('resolveMaxTokens', () => {
     expect(resolveMaxTokens('abc', 6400)).toBe(6400);
     expect(resolveMaxTokens(undefined, 6400)).toBe(6400);
     expect(resolveMaxTokens(Infinity, 6400)).toBe(6400);
+  });
+});
+
+// OpenAI sends multimodal turns as an ARRAY in `content`. Before this, the
+// gateway did String(m.content) on it, which yields the literal "[object
+// Object]" — so a vision request was not merely unsupported, it was corrupted
+// into nonsense and the node answered the nonsense.
+describe('multimodal content', () => {
+  const img = (url, extra = {}) => ({ type: 'image_url', image_url: { url, ...extra } });
+  const txt = (text) => ({ type: 'text', text });
+
+  test('an image survives the gateway instead of becoming "[object Object]"', () => {
+    const out = clampMessages([{ role: 'user', content: [txt('what is this?'), img('data:image/png;base64,AAAA')] }], 24000);
+    expect(out).toEqual([{
+      role: 'user',
+      content: [txt('what is this?'), { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } }],
+    }]);
+    expect(JSON.stringify(out)).not.toContain('[object Object]');
+  });
+
+  test('plain string content is untouched', () => {
+    expect(clampMessages([{ role: 'user', content: 'hi' }], 100)).toEqual([{ role: 'user', content: 'hi' }]);
+  });
+
+  test('detail is carried through only when the caller set it', () => {
+    const [m] = clampMessages([{ role: 'user', content: [img('http://x/a.png', { detail: 'high' })] }], 100);
+    expect(m.content[0].image_url).toEqual({ url: 'http://x/a.png', detail: 'high' });
+    const [n] = clampMessages([{ role: 'user', content: [img('http://x/a.png')] }], 100);
+    expect(n.content[0].image_url).toEqual({ url: 'http://x/a.png' });
+  });
+
+  test('images are capped by count, and the cap does not eat the text', () => {
+    const many = Array.from({ length: MAX_IMAGES + 4 }, (_, i) => img('data:image/png;base64,' + i));
+    const [m] = clampMessages([{ role: 'user', content: [txt('describe'), ...many] }], 24000);
+    expect(m.content.filter((p) => p.type === 'image_url')).toHaveLength(MAX_IMAGES);
+    expect(m.content[0]).toEqual(txt('describe'));
+  });
+
+  test('an oversized image is dropped rather than truncated into a corrupt one', () => {
+    // Half a data: URL decodes to nothing useful; better to drop it and answer
+    // the text than to hand a node a broken image.
+    const huge = 'data:image/png;base64,' + 'A'.repeat(MAX_IMAGE_CHARS);
+    const [m] = clampMessages([{ role: 'user', content: [txt('hi'), img(huge)] }], 100);
+    expect(m.content).toEqual([txt('hi')]);
+  });
+
+  test('image bytes are NOT charged to the text budget', () => {
+    // The whole reason images get their own limit: a base64 screenshot would
+    // exhaust a 24,000-char prompt budget by itself and starve the text.
+    const url = 'data:image/png;base64,' + 'A'.repeat(50000);
+    const [m] = clampMessages([{ role: 'user', content: [img(url), txt('still here')] }], 200);
+    expect(m.content).toEqual([{ type: 'image_url', image_url: { url } }, txt('still here')]);
+  });
+
+  test('text parts still share the text budget, so mixing buys no extra room', () => {
+    const [m] = clampMessages([{ role: 'user', content: [txt('abcdef'), txt('ghijkl')] }], 8);
+    expect(m.content).toEqual([txt('abcdef'), txt('gh')]);
+  });
+
+  test('unknown part types are dropped, not coerced', () => {
+    const out = clampMessages([{ role: 'user', content: [{ type: 'audio', data: 'x' }, txt('ok')] }], 100);
+    expect(out).toEqual([{ role: 'user', content: [txt('ok')] }]);
+  });
+
+  test('a message whose parts are all unusable is dropped entirely', () => {
+    expect(clampMessages([{ role: 'user', content: [{ type: 'audio' }, null, 'nope'] }], 100)).toEqual([]);
+  });
+
+  test('contentText reads text parts and never the image bytes', () => {
+    expect(contentText([txt('a'), img('data:image/png;base64,ZZZZ'), txt('b')])).toBe('a\nb');
+    expect(contentText('plain')).toBe('plain');
+    expect(contentText(null)).toBe('');
+  });
+
+  test('lastUserText and joinContent stay text-only for multimodal turns', () => {
+    const msgs = [{ role: 'user', content: [txt('describe it'), img('data:image/png;base64,ZZZZ')] }];
+    expect(lastUserText(msgs)).toBe('describe it');
+    expect(joinContent(msgs)).toBe('describe it');
+    // Token estimation must not bill a megabyte of base64 as prompt text.
+    expect(joinContent(msgs)).not.toContain('ZZZZ');
+  });
+
+  test('lastUserText falls through an image-only turn to something usable', () => {
+    // No text in the user turn, so it falls back to the joined conversation
+    // (the pre-existing behaviour for a turn with no usable text). What matters
+    // is that it yields the prose and never the base64.
+    const msgs = [{ role: 'system', content: 'be brief' }, { role: 'user', content: [img('data:image/png;base64,ZZZZ')] }];
+    expect(lastUserText(msgs).trim()).toBe('be brief');
+    expect(lastUserText(msgs)).not.toContain('ZZZZ');
+  });
+});
+
+describe('multimodal edge cases', () => {
+  const txt = (text) => ({ type: 'text', text });
+
+  test('an empty or null text part is dropped, not emitted as ""', () => {
+    expect(clampMessages([{ role: 'user', content: [txt(''), txt(null), txt('real')] }], 100))
+      .toEqual([{ role: 'user', content: [txt('real')] }]);
+  });
+
+  test('a malformed image part is dropped rather than throwing', () => {
+    const out = clampMessages([{
+      role: 'user',
+      content: [{ type: 'image_url' }, { type: 'image_url', image_url: {} },
+                { type: 'image_url', image_url: { url: null } }, txt('ok')],
+    }], 100);
+    expect(out).toEqual([{ role: 'user', content: [txt('ok')] }]);
+  });
+
+  test('a text part sliced away by an exhausted budget is dropped', () => {
+    // First part eats the budget exactly; the second slices to '' and must not
+    // be pushed as an empty text part.
+    const [m] = clampMessages([{ role: 'user', content: [txt('abcd'), txt('efgh')] }], 4);
+    expect(m.content).toEqual([txt('abcd')]);
+  });
+
+  test('numeric text is coerced, matching the plain-string path', () => {
+    const [m] = clampMessages([{ role: 'user', content: [{ type: 'text', text: 42 }] }], 100);
+    expect(m.content).toEqual([txt('42')]);
   });
 });

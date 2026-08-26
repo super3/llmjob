@@ -30,8 +30,24 @@ function errorBody(message, type) {
 }
 
 // Join every message's text — the whole-conversation fallback prompt.
+// The text of one message, whatever shape its content is in. Multimodal content
+// is an array of parts; only the text parts have characters worth counting, and
+// an image's data: URL must NOT be counted — billing a caller for a megabyte of
+// base64 as if it were prompt text would be wrong, and joining it into a prompt
+// string would be worse.
+function contentText(content) {
+  if (content == null) return '';
+  if (Array.isArray(content)) {
+    return content
+      .filter((p) => p && p.type === 'text' && p.text != null)
+      .map((p) => String(p.text))
+      .join('\n');
+  }
+  return String(content);
+}
+
 function joinContent(messages) {
-  return messages.map((m) => (m && m.content) || '').join('\n');
+  return messages.map((m) => contentText(m && m.content)).join('\n');
 }
 
 // The single-string prompt kept on the job record for nodes that read `prompt`
@@ -40,7 +56,12 @@ function joinContent(messages) {
 function lastUserText(messages) {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m && m.role === 'user' && m.content != null) return String(m.content);
+    if (m && m.role === 'user' && m.content != null) {
+      // Text only: this is the single-string `prompt` kept on the job record for
+      // nodes that read it, and a base64 image belongs in `messages`, not here.
+      const text = contentText(m.content);
+      if (text) return text;
+    }
   }
   return String(joinContent(messages));
 }
@@ -90,6 +111,43 @@ async function* pollJobResult({ jobService, jobId, now, sleep, pollMs, timeoutMs
 // Total prompt characters accepted per request, across all messages.
 const MAX_PROMPT_CHARS = 24000;
 
+// Images accepted per request, and the largest a single one may be.
+//
+// Deliberately budgeted apart from MAX_PROMPT_CHARS rather than counted against
+// it. A base64 data: URL for even a small screenshot runs to hundreds of
+// kilobytes, so charging it to a 24,000-character text budget would either
+// reject every image request or, if the budget were raised to fit one, let a
+// caller send 24,000 characters of prose they were never meant to have. The two
+// are different resources and get different limits.
+const MAX_IMAGES = 8;
+const MAX_IMAGE_CHARS = 8 * 1024 * 1024;   // ~8 MB of base64 per image
+
+// One OpenAI content part, normalised, or null if it isn't one we pass on.
+//
+// OpenAI's vision requests put an ARRAY in `content`:
+//   content: [{type:'text', text:'…'}, {type:'image_url', image_url:{url:'data:…'}}]
+// The previous String(m.content) turned that array into the literal string
+// "[object Object]" and handed it to a node — so a vision request was not merely
+// unsupported, it was silently corrupted into nonsense that the model then
+// answered. Anything we cannot recognise is dropped rather than coerced, for
+// exactly that reason.
+function normalisePart(part) {
+  if (!part || typeof part !== 'object') return null;
+  if (part.type === 'text') {
+    const text = part.text == null ? '' : String(part.text);
+    return text ? { type: 'text', text } : null;
+  }
+  if (part.type === 'image_url') {
+    const raw = part.image_url && part.image_url.url;
+    const url = raw == null ? '' : String(raw);
+    if (!url || url.length > MAX_IMAGE_CHARS) return null;
+    const detail = part.image_url.detail;
+    const image_url = detail ? { url, detail: String(detail) } : { url };
+    return { type: 'image_url', image_url };
+  }
+  return null;
+}
+
 // Trim a message list to `maxChars`, oldest-first, preserving order. Entries that
 // aren't objects, or whose content is empty after coercion, are dropped;
 // unexpected roles are mapped onto 'user'.
@@ -101,9 +159,36 @@ function clampMessages(messages, maxChars) {
   const allowed = new Set(['system', 'user', 'assistant']);
   const out = [];
   let budget = maxChars == null ? MAX_PROMPT_CHARS : maxChars;
+  let images = 0;
   for (const m of messages || []) {
     if (!m || typeof m !== 'object') continue;
     const role = allowed.has(m.role) ? m.role : 'user';
+
+    // Array content is OpenAI's multimodal shape. Text parts are charged to the
+    // same character budget a plain string would be, so mixing the two cannot
+    // buy a caller extra room; image parts are counted separately.
+    if (Array.isArray(m.content)) {
+      const parts = [];
+      for (const raw of m.content) {
+        const part = normalisePart(raw);
+        if (!part) continue;
+        if (part.type === 'image_url') {
+          if (images >= MAX_IMAGES) continue;
+          images++;
+          parts.push(part);
+          continue;
+        }
+        let text = part.text;
+        if (text.length > budget) text = text.slice(0, budget);
+        if (!text) continue;
+        budget -= text.length;
+        parts.push({ type: 'text', text });
+      }
+      if (parts.length) out.push({ role, content: parts });
+      if (budget <= 0) break;
+      continue;
+    }
+
     let content = m.content == null ? '' : String(m.content);
     if (!content) continue;
     if (content.length > budget) content = content.slice(0, budget);
@@ -139,5 +224,9 @@ module.exports = {
   pollJobResult,
   clampMessages,
   resolveMaxTokens,
+  contentText,
+  normalisePart,
   MAX_PROMPT_CHARS,
+  MAX_IMAGES,
+  MAX_IMAGE_CHARS,
 };

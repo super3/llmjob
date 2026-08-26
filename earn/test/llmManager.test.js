@@ -281,3 +281,96 @@ describe('LlmManager', () => {
     expect(m.isRunning()).toBe(false);
   });
 });
+
+// A large-context model is the one case where "won't start" is a sizing problem
+// the client can fix itself, so it walks a ladder of context sizes down instead
+// of restarting forever at a size the card cannot hold.
+describe('LlmManager context ladder', () => {
+  function ladderManager(extra = {}) {
+    const children = [];
+    const spawn = jest.fn(() => { const c = makeChild(); children.push(c); return c; });
+    const m = new LlmManager({
+      spawn, sleep: () => Promise.resolve(), startAttempts: 2, retryDelayMs: 0, ...extra,
+    });
+    return { m, spawn, children };
+  }
+  const ctxOf = (spawn, i) => {
+    const args = spawn.mock.calls[i][1];
+    return args[args.indexOf('--ctx-size') + 1];
+  };
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  test('starts at the top rung', () => {
+    const { m, spawn } = ladderManager();
+    m.start({ modelPath: '/m.gguf', ctxLadder: [262144, 65536], ctxSize: 999 });
+    // The ladder wins over a bare ctxSize — otherwise the two could disagree and
+    // the server would be asked for a window the caller never chose.
+    expect(ctxOf(spawn, 0)).toBe('262144');
+  });
+
+  test('exhausts the start retries at one rung BEFORE dropping to the next', async () => {
+    // A port-bind clash also exits before ready. Shrinking the context because
+    // the previous server had not released 8080 would apply the wrong fix, and
+    // apply it permanently — so the retries at the current size come first.
+    const { m, spawn, children } = ladderManager();
+    const down = jest.fn();
+    m.on('ctx-downgrade', down);
+    m.start({ modelPath: '/m.gguf', ctxLadder: [262144, 65536] });
+
+    children[0].emit('exit', 1);
+    await flush();
+    expect(spawn).toHaveBeenCalledTimes(2);
+    expect(ctxOf(spawn, 1)).toBe('262144');   // still the same rung
+    expect(down).not.toHaveBeenCalled();
+
+    children[1].emit('exit', 1);
+    await flush();
+    expect(spawn).toHaveBeenCalledTimes(3);
+    expect(ctxOf(spawn, 2)).toBe('65536');    // now it steps down
+    expect(down).toHaveBeenCalledWith({ from: 262144, to: 65536 });
+  });
+
+  test('gives up once the ladder is spent, rather than looping forever', async () => {
+    const { m, spawn, children } = ladderManager();
+    const stopped = jest.fn();
+    m.on('stopped', stopped);
+    m.start({ modelPath: '/m.gguf', ctxLadder: [262144, 65536] });
+
+    for (let i = 0; i < 4; i++) { children[i].emit('exit', 1); await flush(); }
+    expect(spawn).toHaveBeenCalledTimes(4);   // 2 attempts x 2 rungs
+    expect(stopped).toHaveBeenCalledWith(1);
+    expect(m.isRunning()).toBe(false);
+  });
+
+  test('a server that becomes ready never downgrades', async () => {
+    // Reaching ready proves the size fits. A later exit is a crash, and a crash
+    // must not quietly shrink the context the node advertises.
+    const { m, spawn, children } = ladderManager({ crashRestarts: 1 });
+    const down = jest.fn();
+    m.on('ctx-downgrade', down);
+    m.start({ modelPath: '/m.gguf', ctxLadder: [262144, 65536] });
+
+    children[0].stderr.emit('data', 'main: server is listening on http://127.0.0.1:8080 - starting the main loop\n');
+    expect(m.isReady()).toBe(true);
+    children[0].emit('exit', 1);
+    await flush();
+
+    expect(down).not.toHaveBeenCalled();
+    expect(ctxOf(spawn, 1)).toBe('262144');
+  });
+
+  test('no ladder means the caller ctxSize is used unchanged', async () => {
+    const { m, spawn, children } = ladderManager();
+    m.start({ modelPath: '/m.gguf', ctxSize: 32768 });
+    expect(ctxOf(spawn, 0)).toBe('32768');
+    children[0].emit('exit', 1);
+    await flush();
+    expect(ctxOf(spawn, 1)).toBe('32768');
+  });
+
+  test('junk rungs are ignored rather than asked for', () => {
+    const { m, spawn } = ladderManager();
+    m.start({ modelPath: '/m.gguf', ctxLadder: [0, -5, 65536], ctxSize: 1 });
+    expect(ctxOf(spawn, 0)).toBe('65536');
+  });
+});

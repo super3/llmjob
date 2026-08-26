@@ -123,3 +123,18 @@ describe('parseTokensPerSec', () => {
     expect(parseTokensPerSec(null)).toBeNull();
   });
 });
+
+describe('buildServerArgs — vision projector', () => {
+  test('passes --mmproj when the model ships a projector', () => {
+    const a = buildServerArgs({ modelPath: '/m.gguf', mmprojPath: '/mmproj.gguf' });
+    expect(a).toEqual(expect.arrayContaining(['--mmproj', '/mmproj.gguf']));
+  });
+
+  test('omits it entirely when there is none', () => {
+    // A missing projector is not an error: the weights serve fine as a text-only
+    // model. Passing an empty --mmproj would be, so the flag must not appear.
+    expect(buildServerArgs({ modelPath: '/m.gguf' })).not.toContain('--mmproj');
+    expect(buildServerArgs({ modelPath: '/m.gguf', mmprojPath: '' })).not.toContain('--mmproj');
+    expect(buildServerArgs({ modelPath: '/m.gguf', mmprojPath: null })).not.toContain('--mmproj');
+  });
+});
