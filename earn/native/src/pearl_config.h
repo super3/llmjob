@@ -266,7 +266,25 @@ static_assert(PEARL_COLS_COUNT == (1u << pearl_popcount_ce(PEARL_COLS_MASK)),
   ((PEARL_WMMA_ROW_TILES * (PEARL_WMMA_ROWS / PEARL_ROWS_COUNT) * PEARL_WMMA_COL_BLK \
     * PEARL_JACKPOT_BUCKETS + 31u) / 32u)
 
-#define PEARL_SB_STRIDE 144
+// One staged row or column is exactly one chunk of k: 128 bytes, UNPADDED.
+//
+// The stride used to be padded to 144 so that the eight rows one ldmatrix
+// reads landed on different banks. Padding costs shared memory, and shared is
+// now the scarce thing: two full-chunk stages of a 128x256 tile are 96 KB,
+// which fits the 99 KB Ada allows only without padding. Bank conflicts are
+// prevented by a swizzle instead: 16-byte unit q of row r is stored at unit
+// q XOR (r mod 8), so the eight rows of an ldmatrix read touch eight distinct
+// units -- all 32 banks -- at zero bytes of padding. XOR is an involution, so
+// the staging store and the fragment load apply the same transform.
+#define PEARL_SB_STRIDE 128
+// Full-chunk stages in the double buffer.
+#define PEARL_STAGE_BUFS 2
+
+// Transcript words a lane carries: a warp's regions times buckets, spread over
+// its 32 lanes. 8 regions x 16 buckets / 32 = 4 at the mandated geometry.
+#define PEARL_JACKPOT_REGS \
+  ((PEARL_WMMA_ROW_TILES * (PEARL_WMMA_ROWS / PEARL_ROWS_COUNT) * PEARL_WMMA_COL_BLK \
+    * PEARL_JACKPOT_BUCKETS + 31u) / 32u)
 
 // How many of a block's warps sit along the ROW dimension. The rest go across
 // the columns, so a block covers

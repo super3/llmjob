@@ -719,7 +719,10 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   // register pressure is not something to guess at.
   static const int threads = []() {
     const char *e = getenv("PEARL_BLOCK");
-    const int v = e ? atoi(e) : 256;
+    // 512 by default: sixteen warps make the CTA tile 128x256, which raises
+    // the MACs bought per staged byte from 64 to 85 -- and the two-stage
+    // pipeline hides the staging that a single 512-thread block used to expose.
+    const int v = e ? atoi(e) : 512;
     return (v == 64 || v == 128 || v == 256 || v == 512 || v == 1024) ? v : 256;
   }();
   const int warps_per_block = threads / 32;
@@ -749,11 +752,20 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   }
   const unsigned blocks =
       (unsigned)((rowBlocks / PEARL_WARP_ROWS) * (colBlocks / warpCols));
-  const size_t smem = (size_t)warpsPerBlock * regionsPerWarp * PEARL_WMMA_COL_BLK
-                          * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)
-                      + (size_t)warpCols * PEARL_WMMA_COL_BLK * 16 * PEARL_SB_STRIDE
-                      + (size_t)PEARL_WARP_ROWS * regionsPerWarp * PEARL_ROWS_COUNT
-                            * PEARL_SB_STRIDE;
+  // Two full-chunk stages; the transcripts live in registers and global now.
+  const size_t smem = (size_t)PEARL_STAGE_BUFS
+                      * ((size_t)warpCols * PEARL_WMMA_COL_BLK * 16
+                         + (size_t)PEARL_WARP_ROWS * regionsPerWarp * PEARL_ROWS_COUNT)
+                      * PEARL_SB_STRIDE;
+  // The fold writes each transcript slot exactly once only when every chunk
+  // has its own bucket. A geometry with more chunks than buckets would fold
+  // into whatever the buffer already held; refuse it rather than mine garbage.
+  if (chunks > PEARL_JACKPOT_BUCKETS) {
+    if (err && err_len)
+      snprintf(err, err_len, "%u chunks exceed %u transcript buckets", chunks,
+               (unsigned)PEARL_JACKPOT_BUCKETS);
+    return false;
+  }
   // Staging both operands puts this past the 48 KB a block gets by default.
   // Ada allows 99 KB per block, but only when asked; without this the launch
   // fails with an invalid-configuration error rather than running slowly.
