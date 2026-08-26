@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('path');
+const { createRequire } = require('module');
 
 // Loads the native PearlHash core (earn/native → a compiled `pearl_core.node`
 // N-API addon) and adapts it to the small event interface the host drives:
@@ -22,11 +23,25 @@ const path = require('path');
 // .node file, and so the several candidate paths (a dev build tree vs. the
 // packaged app's resources) can be probed in one place.
 function loadCore(opts = {}) {
-  const req = opts.require || require;
+  // Not this module's own require: inside a packaged (SEA) binary the
+  // bundler's require can only see the snapshot, and a native addon cannot be
+  // dlopen'd out of a snapshot at all. createRequire anchored to the real
+  // executable can load from the real filesystem in every packaging.
+  const req = opts.require || createRequire(opts.execPath || process.execPath);
   const resourcesPath = opts.resourcesPath || null;
+  const env = opts.env || process.env;
+  const execDir = path.dirname(opts.execPath || process.execPath);
 
   const candidates = [];
+  // An operator override first: it makes field diagnosis a one-liner, and it
+  // lets a rig run a locally built core without touching the install.
+  if (env.PEARL_CORE_PATH) candidates.push(env.PEARL_CORE_PATH);
   if (resourcesPath) candidates.push(path.join(resourcesPath, 'native', 'pearl_core.node'));
+  // Packaged CLI: the release ships pearl_core.node BESIDE the executable
+  // (and the HiveOS tarball unpacks it there), because process.resourcesPath
+  // is Electron-only and a snapshot path cannot host a .node file.
+  candidates.push(path.join(execDir, 'pearl_core.node'));
+  candidates.push(path.join(execDir, 'native', 'pearl_core.node'));
   candidates.push(path.join(__dirname, '..', '..', 'native', 'build', 'Release', 'pearl_core.node'));
   candidates.push(path.join(__dirname, '..', '..', 'native', 'build', 'Debug', 'pearl_core.node'));
 

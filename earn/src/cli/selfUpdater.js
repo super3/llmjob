@@ -49,6 +49,16 @@ async function applyUpdate(plan, execPath) {
   await downloadFile(plan.downloadUrl, tmp);
   fs.chmodSync(tmp, 0o755);
   fs.renameSync(tmp, exe);
+  // The native core updates WITH the binary, or not at all: a new CLI driving
+  // an old pearl_core.node is a version skew nothing would report. Same
+  // download-beside-then-rename dance, into the directory the loader probes.
+  // Releases older than the split have no core asset; nothing to do then.
+  if (plan.coreUrl) {
+    const core = require('path').join(require('path').dirname(exe), 'pearl_core.node');
+    const coreTmp = core + '.new-' + process.pid;
+    await downloadFile(plan.coreUrl, coreTmp);
+    fs.renameSync(coreTmp, core);
+  }
   return exe;
 }
 

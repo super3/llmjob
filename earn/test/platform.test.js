@@ -41,7 +41,7 @@ describe('minerUnsupportedNote', () => {
     for (const mode of ['auto', 'both']) {
       const note = minerUnsupportedNote('darwin', mode);
       expect(note).toMatch(/mining is not available on macOS/);
-      expect(note).toMatch(/Windows and Linux only/);
+      expect(note).toMatch(/the Pearl core is CUDA/);
       // The reassuring half matters as much as the refusal: an 'auto' start on a
       // Mac does bring the model up, and a note that only said "no mining" would
       // read as "nothing happened".

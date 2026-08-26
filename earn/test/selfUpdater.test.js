@@ -127,6 +127,37 @@ describe('applyUpdate', () => {
     expect(fs.renameSync).toHaveBeenCalledWith(tmp, '/opt/earn');
   });
 
+  it('downloads the paired pearl_core.node beside the exe when the plan has one', async () => {
+    // Two sequential downloads: the binary, then the core. Each gets its own
+    // response + write stream in order.
+    const res1 = fakeRes({ statusCode: 200 });
+    const res2 = fakeRes({ statusCode: 200 });
+    wire([res1, res2]);
+    const out1 = fakeWrite();
+    const out2 = fakeWrite();
+    fs.createWriteStream.mockReturnValueOnce(out1).mockReturnValueOnce(out2);
+    fs.renameSync.mockImplementation(() => {});
+    fs.chmodSync.mockImplementation(() => {});
+
+    const p = updater.applyUpdate(
+      { downloadUrl: 'https://host/bin', coreUrl: 'https://host/pearl_core.node' },
+      '/opt/rig/earn');
+    res1.emit('data', Buffer.from('x'));
+    out1.emit('finish');
+    // let the first rename settle before feeding the second transfer
+    await new Promise((r) => setImmediate(r));
+    res2.emit('data', Buffer.from('y'));
+    out2.emit('finish');
+    await expect(p).resolves.toBe('/opt/rig/earn');
+
+    // The core landed beside the exe via its own temp-then-rename, so a failed
+    // download can never leave a half-written addon where the loader probes.
+    // path.join, not a literal: the core path is built with the platform's
+    // separators, so the expectation must be too or it only passes on Linux.
+    const core = require('path').join('/opt/rig', 'pearl_core.node');
+    expect(fs.renameSync).toHaveBeenCalledWith(core + '.new-' + process.pid, core);
+  });
+
   it('defaults the exe path to process.execPath', async () => {
     const res = fakeRes({ statusCode: 200 });
     wire([res]);

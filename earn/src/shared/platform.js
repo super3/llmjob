@@ -39,8 +39,8 @@ function minerSupported(platform) {
 function minerUnsupportedNote(platform, mode) {
   if (minerSupported(platform)) return '';
   if (mode === 'llm') return ''; // this mode never asked to mine
-  return 'note: mining is not available on macOS — AlphaPool builds alpha-miner for'
-    + ' Windows and Linux only, and Macs have no NVIDIA GPU to run it on.'
+  return 'note: mining is not available on macOS — the Pearl core is CUDA, and'
+    + ' Macs have no NVIDIA GPU to run it on.'
     + (mode === 'mining'
       ? ' Switch the compute mode to LLM to serve the local model instead.'
       : ' The local LLM runs as usual — this Mac serves inference, not Pearl.');

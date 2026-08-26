@@ -582,11 +582,27 @@ async function run(argv) {
     // No engine to resolve: the GPU work is a linked N-API addon, so there is
     // nothing to download, no version to pick and no driver gate to clear
     // before we know whether this rig can mine. coreFactory returns null when
-    // pearl_core.node is absent, and PearlEngine says so and stops.
-    miner = new PearlEngine({
-      connect: (host, port) => net.connect(port, host),
-      createCore: coreFactory({ resourcesPath: process.resourcesPath }),
-    });
+    // pearl_core.node is absent -- and that is decided HERE, before anything
+    // starts, because what happens next depends on what was asked for. A
+    // 'mining' run with no core has nothing to do: exiting non-zero says so to
+    // systemd, where the old exit 0 read as success and produced a silent
+    // ten-second restart loop that mined nothing. An 'auto' run still has its
+    // LLM half, so it says loudly what is missing and serves inference.
+    const createCore = coreFactory({ resourcesPath: process.resourcesPath });
+    if (!createCore) {
+      const where = 'searched: PEARL_CORE_PATH, beside the executable, and the dev tree';
+      log('pearl_core.node not found -- this build cannot mine (' + where + ').', process.stderr);
+      log('Fix: keep pearl_core.node from the release next to the executable, or set PEARL_CORE_PATH=/path/to/pearl_core.node.', process.stderr);
+      if (settings.mode === 'mining') return 1;
+      log('continuing with the local LLM only.', process.stderr);
+    }
+    if (createCore) {
+      miner = new PearlEngine({
+        connect: (host, port) => net.connect(port, host),
+        createCore,
+      });
+    }
+    if (miner) {
     miner.on('log', (l) => log(l.line, l.level === 'error' ? process.stderr : process.stdout));
     miner.on('event', (evt) => {
       applyEvent(stats, evt);
@@ -598,6 +614,7 @@ async function run(argv) {
       }
     });
     miner.on('error', (err) => log('engine error: ' + err.message, process.stderr));
+    }
 
     if (settings.report) {
       // Sample per-card live VRAM (nvidia-smi) and post one board row per GPU,

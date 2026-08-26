@@ -131,7 +131,11 @@ jobs:
         run: |
           set -euo pipefail
           VERSION=$(node -p "require('./package.json').version")
-          gh release upload "v$VERSION" dist/llmjob-earn-cli-linux "dist/llmjob-earn-$VERSION.tar.gz" dist/llmjob-earn-hiveos.tar.gz --clobber --repo "$GITHUB_REPOSITORY"
+          # pearl_core.node rides beside the CLI: a SEA binary cannot dlopen an
+          # addon out of its snapshot, so the loader probes next to the
+          # executable and the self-updater downloads this asset to keep the
+          # pair in step.
+          gh release upload "v$VERSION" dist/llmjob-earn-cli-linux dist/pearl_core.node "dist/llmjob-earn-$VERSION.tar.gz" dist/llmjob-earn-hiveos.tar.gz --clobber --repo "$GITHUB_REPOSITORY"
 
       # electron-builder publishes the release with a BLANK body and a bare
       # "<version>" title, and nothing downstream ever wrote one — every release

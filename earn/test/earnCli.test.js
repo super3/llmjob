@@ -71,7 +71,11 @@ jest.mock('../src/main/pearlEngine', () => {
 });
 jest.mock('../src/main/pearlCore', () => ({
   loadCore: jest.fn(() => null),
-  coreFactory: jest.fn(() => null),
+  // A loadable core by default: the CLI decides UP FRONT whether it can mine,
+  // so a null factory now means "refuse or degrade", not "construct an engine
+  // that will announce the problem later". The no-core paths have their own
+  // tests; everything else models a rig that can actually mine.
+  coreFactory: jest.fn(() => () => null),
 }));
 jest.mock('net', () => ({ connect: jest.fn(() => ({ on: jest.fn(), write: jest.fn(), destroy: jest.fn() })) }));
 jest.mock('../src/main/llmManager', () => {
@@ -206,6 +210,7 @@ function load() {
     m.selfUpdate = require('../src/shared/selfUpdate');
     m.net = require('net');
     m.PearlEngine = require('../src/main/pearlEngine').PearlEngine;
+    m.pearlCore = require('../src/main/pearlCore');
     m.LlmManager = require('../src/main/llmManager').LlmManager;
     m.LlmEngineManager = require('../src/main/llmEngineManager').LlmEngineManager;
     m.JobWorker = require('../src/main/jobWorker').JobWorker;
@@ -547,6 +552,33 @@ describe('mining', () => {
     const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
     await expect(p).resolves.toBe(1);
     expect(allErr()).toContain('failed to launch engine: EACCES');
+  });
+
+  // The v0.4.1 field failure: a packaged CLI with no pearl_core.node exited 0,
+  // which systemd read as success — a silent ten-second restart loop that
+  // mined nothing. The contract now: 'mining' with no core is a non-zero exit
+  // that says what is missing and how to point at it; 'auto' says the same but
+  // keeps its LLM half alive instead of looping.
+  test('mining mode with no loadable core exits 1 and names PEARL_CORE_PATH', async () => {
+    const m = load();
+    m.pearlCore.coreFactory.mockReturnValue(null);
+    await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update'])).resolves.toBe(1);
+    expect(allErr()).toContain('pearl_core.node not found');
+    expect(allErr()).toContain('PEARL_CORE_PATH');
+    expect(m.PearlEngine.instances.length).toBe(0);
+  });
+
+  test('auto mode with no loadable core serves the LLM instead of looping', async () => {
+    const m = load();
+    m.pearlCore.coreFactory.mockReturnValue(null);
+    const p = m.run(['-a', ADDR, '--mode', 'auto', '--no-update']);
+    await settle();
+    expect(allErr()).toContain('pearl_core.node not found');
+    expect(allErr()).toContain('continuing with the local LLM only.');
+    expect(m.PearlEngine.instances.length).toBe(0);
+    // The LLM half is alive; shut it down the way an operator would.
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
   });
 });
 

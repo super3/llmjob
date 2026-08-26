@@ -51,6 +51,21 @@ writeFileSync(join(pkgDir, 'h-manifest.conf'), manifest);
 copyFileSync(bin, join(pkgDir, 'llmjob-earn-cli-linux'));
 chmodSync(join(pkgDir, 'llmjob-earn-cli-linux'), 0o755);
 
+// The native core sits beside the binary — the loader's first packaged-CLI
+// candidate. A tarball without it reproduces the v0.4.1 bug where every rig
+// installed a miner that could not mine, so its absence fails the build
+// unless explicitly waived (ALLOW_MISSING_CORE=1, for script-only work).
+const core = join(dist, 'pearl_core.node');
+if (existsSync(core)) {
+  copyFileSync(core, join(pkgDir, 'pearl_core.node'));
+} else if (process.env.ALLOW_MISSING_CORE === '1') {
+  console.error('warning: packaging WITHOUT pearl_core.node (ALLOW_MISSING_CORE=1)');
+} else {
+  console.error('no ' + core + ' — this package could not mine. Run dist:cli with');
+  console.error('vendor/native/pearl_core.node staged, or set ALLOW_MISSING_CORE=1.');
+  process.exit(1);
+}
+
 // The tarball name carries the version: HiveOS rigs cache the download and can
 // skip re-fetching a URL whose filename hasn't changed, leaving them stuck on an
 // old build after a release. A per-release filename makes every update a fresh

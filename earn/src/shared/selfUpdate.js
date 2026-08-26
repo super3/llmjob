@@ -70,6 +70,11 @@ function planUpdate(opts) {
   const downloadUrl = rel.assets[assetName] || null;
   if (!downloadUrl) return Object.assign(base, { reason: 'asset-missing' });
 
+  // The native core ships as its own asset beside the CLI. It rides on the
+  // plan so the updater can keep the pair in step: a new CLI driving an old
+  // core is a silent version skew. Absent from older releases, hence nullable.
+  const coreUrl = rel.assets['pearl_core.node'] || null;
+
   return {
     updateAvailable: true,
     reason: 'update-available',
@@ -77,6 +82,7 @@ function planUpdate(opts) {
     latestVersion: rel.version,
     assetName,
     downloadUrl,
+    coreUrl,
   };
 }
 
