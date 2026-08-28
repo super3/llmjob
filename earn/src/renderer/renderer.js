@@ -54,6 +54,7 @@
     view: 'mine',        // mine | chat | api | settings | logs
     returnTab: 'mine',   // where settings/logs return to
     address: '', gpu: '', mode: 'auto', mdlAddress: '',
+    temp: 0,             // last core temperature reported, so a frame without one keeps it
     canMine: true,       // false on macOS — no alpha-miner build exists for it
     llm: { ready: false, endpoint: null, webUrl: null, tps: 0, model: null, error: null, note: null },
     chat: { messages: [], streaming: false, streamText: '', bubble: null },
@@ -462,10 +463,19 @@
     // the moment mining started. The engine's label stays as the fallback for a
     // rig with no nvidia-smi.
     //
-    // Still gated on the engine reporting a card, not on having a name to show:
-    // a frame that mentions no GPU leaves the label alone, so the temperature
-    // does not flicker off between updates.
-    if (s.gpu) el.deviceLabel.textContent = deviceText(state.gpu || s.gpu, s.temp);
+    // Gated on having a NAME to show, from either source — not on the engine
+    // being the one to supply it. It used to require `s.gpu`, which quietly
+    // meant the temperature could never appear: currentSettings() sends no
+    // `gpu`, so PearlEngine reports `gpu: null` on every status and the whole
+    // branch was dead. alpha-miner scraped a name out of its own stdout, which
+    // is what made the old gate work.
+    //
+    // The last reading is remembered rather than read straight off the frame, so
+    // a status that carries no temperature leaves the label as it was instead of
+    // dropping the degrees back off it.
+    if (Number(s.temp) > 0) state.temp = Number(s.temp);
+    const deviceName = state.gpu || s.gpu;
+    if (deviceName) el.deviceLabel.textContent = deviceText(deviceName, state.temp);
     const p = chartPaths(s.points);
     el.line.setAttribute('d', p.line);
     el.area.setAttribute('d', p.area);
