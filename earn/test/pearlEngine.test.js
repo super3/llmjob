@@ -139,14 +139,103 @@ describe('PearlEngine — the events the UI actually reads', () => {
     expect(b.e.accepted).toBe(0);
   });
 
-  // We do not read NVML. Reporting a made-up number would be worse than the
-  // blank the UI already renders for a card that does not report one.
-  test('power and temperature are absent, not invented', () => {
+  // Power is still not read at all, and a rig with nothing to answer for
+  // temperature reports none. A made-up number would be worse than the blank
+  // the UI already renders for a card that does not report one.
+  test('power is absent, and so is temperature with no reader', () => {
     const { core, events } = started();
     core.emit('hashrate', 50);
     const s = events.event.find((e) => e.type === 'status');
     expect(s.power).toBeNull();
     expect(s.temp).toBeNull();
+  });
+
+  describe('card temperature', () => {
+    // Sampling is async, so let the reader's promise settle before asserting.
+    const settle = () => new Promise((r) => setImmediate(r));
+
+    function withTemps(readTemps, opts) {
+      const sock = fakeSocket();
+      const core = fakeCore();
+      const e = new PearlEngine(Object.assign(
+        { connect: () => sock, createCore: () => core, readTemps }, opts));
+      const events = [];
+      e.on('event', (x) => events.push(x));
+      e.start({ address: ADDR, worker: 'rig01', endpoint: 'h:1', gpu: 'RTX 4090' });
+      sock.emit('connect');
+      return { e, core, events, status: () => events.filter((x) => x.type === 'status').pop() };
+    }
+
+    test('rides along on the status the UI already reads', async () => {
+      const b = withTemps(() => Promise.resolve({ 0: 71 }));
+      await settle();
+      b.core.emit('hashrate', 50);
+      expect(b.status().temp).toBe(71);
+      b.e.stop();
+    });
+
+    // The first sample is taken at start rather than one interval in, or the
+    // card would show no temperature for the first five seconds of every run.
+    test('is sampled immediately, not one interval later', async () => {
+      const read = jest.fn(() => Promise.resolve({ 0: 64 }));
+      const b = withTemps(read);
+      expect(read).toHaveBeenCalledTimes(1);
+      await settle();
+      expect(b.e.temp).toBe(64);
+      b.e.stop();
+    });
+
+    // This engine mines on one card. Another card's reading is not ours.
+    test('takes this engine\'s own card, not whichever came first', async () => {
+      const b = withTemps(() => Promise.resolve({ 1: 90, 0: 55 }));
+      await settle();
+      expect(b.e.temp).toBe(55);
+      b.e.stop();
+    });
+
+    // nvidia-smi reports "N/A" for a card that has no sensor, which parses to
+    // nothing. Zero is not a temperature -- the UI reads >0 as "show it".
+    test('a missing or zero reading stays null', async () => {
+      for (const temps of [{}, { 0: 0 }, null]) {
+        const b = withTemps(() => Promise.resolve(temps));
+        await settle();
+        expect(b.e.temp).toBeNull();
+        b.e.stop();
+      }
+    });
+
+    // A temperature is the least important thing on the screen; it must never
+    // be able to take the miner down with it.
+    test('a reader that rejects or throws is survivable', async () => {
+      const rejects = withTemps(() => Promise.reject(new Error('no nvidia-smi')));
+      await settle();
+      expect(rejects.e.temp).toBeNull();
+      expect(rejects.e.isRunning()).toBe(true);
+      rejects.e.stop();
+
+      const throws = withTemps(() => { throw new Error('spawn EACCES'); });
+      await settle();
+      expect(throws.e.temp).toBeNull();
+      expect(throws.e.isRunning()).toBe(true);
+      throws.e.stop();
+    });
+
+    test('keeps sampling while mining and stops when the miner does', async () => {
+      jest.useFakeTimers();
+      try {
+        const read = jest.fn(() => Promise.resolve({ 0: 70 }));
+        const b = withTemps(read, { tempPollMs: 1000 });
+        expect(read).toHaveBeenCalledTimes(1);
+        jest.advanceTimersByTime(3000);
+        expect(read).toHaveBeenCalledTimes(4);
+        b.e.stop();
+        jest.advanceTimersByTime(5000);
+        expect(read).toHaveBeenCalledTimes(4);
+        expect(b.e.temp).toBeNull();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
   });
 
   test('miner logs and errors pass straight through', () => {

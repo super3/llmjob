@@ -240,12 +240,13 @@ static_assert(PEARL_COLS_COUNT == (1u << pearl_popcount_ce(PEARL_COLS_MASK)),
 // elements of int8, and the stride is padded past 128 so that the 16 columns of
 // a fragment do not all land on the same shared-memory banks. wmma requires a
 // 16-byte-aligned leading dimension for integer types, which 144 satisfies.
-// How many int4 of each operand one thread stages per chunk, which is also how
-// many staging addresses it precomputes. ceil(max(sb_cols, sa_rows) * quads /
-// threads): at the mandated geometry 128 columns (and 128 rows) x 8 int4 over
-// 256 threads = 4. A geometry needing more still works -- the surplus falls
-// through to a tail loop -- it just pays the arithmetic per chunk again.
-#define PEARL_STAGE_SLOTS 4
+// There is no staging-slot count any more. A thread's staging addresses turned
+// out to be exactly linear in the slot index -- q is constant for the thread and
+// the column advances by a fixed step -- so the fold walks base + stride instead
+// of precomputing a table, and there is no surplus to fall through to a tail
+// loop. That tail loop was an integer divide, an offset expansion and a 64-bit
+// multiply PER COPY, which is cheap when all 512 threads stage and ruinous when
+// only a few do.
 
 // How many row-block groups a wave of blocks walks before moving across.
 //

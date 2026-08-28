@@ -88,6 +88,37 @@ function detectGpusVram() {
   });
 }
 
+// Per-card core temperature (°C) via nvidia-smi, as a map of card index →
+// degrees. Resolves {} on any failure (no nvidia-smi, non-NVIDIA, unparseable),
+// never rejects, so a rig without it simply shows no temperature rather than a
+// wrong one.
+//
+// Our miner is the CUDA core rather than a scraped process, so unlike
+// alpha-miner it has no NVML reading of its own to forward. This is where the
+// number comes from instead. It is a spawn, so PearlEngine samples it on a slow
+// timer rather than per status event — those fire on every share and every
+// hashrate tick.
+function detectGpuTemps() {
+  return new Promise((resolve) => {
+    execFile('nvidia-smi',
+      ['--query-gpu=index,temperature.gpu', '--format=csv,noheader,nounits'],
+      { timeout: 5000 },
+      (err, stdout) => {
+        if (err) return resolve({});
+        const out = {};
+        for (const row of String(stdout).split(/\r?\n/)) {
+          const parts = row.split(',').map((x) => parseInt(x, 10));
+          // A card that reports "N/A" parses to NaN; skip it rather than
+          // recording a zero the UI would render as a real reading.
+          if (parts.length >= 2 && Number.isFinite(parts[0]) && Number.isFinite(parts[1])) {
+            out[parts[0]] = parts[1];
+          }
+        }
+        resolve(out);
+      });
+  });
+}
+
 // NVIDIA driver major version via nvidia-smi, or null when it can't be read.
 // Decides which engine build the rig can run (CUDA 13 builds need >= 580).
 function detectDriverMajor() {
@@ -207,6 +238,7 @@ module.exports = {
   detectRegion,
   detectVram,
   detectGpusVram,
+  detectGpuTemps,
   detectDriverMajor,
   postMinerReport,
   findFreePort,

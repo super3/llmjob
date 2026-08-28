@@ -741,6 +741,19 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   const uint64_t rowBlocks = ctx->rowsValid / regionsPerWarp;
   const uint32_t warpCols = warpsPerBlock / PEARL_WARP_ROWS;
   const uint64_t colBlocks = col_groups / PEARL_WMMA_COL_BLK;
+  // The staging walks base + stride rather than a table of addresses, which is
+  // only the same sequence when quads divides the staging thread count and the
+  // column step lands on a whole number of column groups.
+  const uint32_t quadsPerRow = rank / 16u;
+  const uint32_t stageThreads = (uint32_t)threads;
+  if (quadsPerRow == 0 || stageThreads % quadsPerRow != 0
+      || (stageThreads / quadsPerRow) % PEARL_COLS_COUNT != 0) {
+    if (err && err_len)
+      snprintf(err, err_len,
+               "staging stride is not uniform: %u threads, %u quads a row, %u columns a group",
+               stageThreads, quadsPerRow, (unsigned)PEARL_COLS_COUNT);
+    return false;
+  }
   if (warpsPerBlock % PEARL_WARP_ROWS != 0 || rowBlocks % PEARL_WARP_ROWS != 0
       || warpCols == 0 || colBlocks % warpCols != 0) {
     if (err && err_len)

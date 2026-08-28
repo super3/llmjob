@@ -1068,56 +1068,68 @@ extern "C" __global__ __launch_bounds__(512) void pearl_tile_fold_wmma(
   const uint32_t quads = rank / 16;                     // int4 per row or column
   const uint32_t btotal = sb_cols * quads;
   const uint32_t atotal = sa_rows * quads;
-  uint32_t bsrc[PEARL_STAGE_SLOTS], bdst[PEARL_STAGE_SLOTS];
-  uint32_t asrc[PEARL_STAGE_SLOTS], adst[PEARL_STAGE_SLOTS];
-#pragma unroll
-  for (uint32_t j = 0; j < PEARL_STAGE_SLOTS; j++) {
-    const uint32_t i = threadIdx.x + j * blockDim.x;
-    if (i < btotal) {
-      const uint32_t col = i / quads;
-      const uint32_t q = i % quads;
-      const uint32_t c = pearl_expand_offset(col_off + cg0_block + (col >> 4), PEARL_COLS_MASK)
-                         + (col & 15u);
-      bsrc[j] = c * k + q * 16u;
-      bdst[j] = col * PEARL_SB_STRIDE + ((q ^ (col & 7u)) * 16u);
-    }
-    if (i < atotal) {
-      const uint32_t row = i / quads;
-      const uint32_t q = i % quads;
-      asrc[j] = (row_base + row) * k + q * 16u;
-      adst[j] = row * PEARL_SB_STRIDE + ((q ^ (row & 7u)) * 16u);
-    }
-  }
+  // Slot 0's addresses, and the constant step to the next slot. See the note on
+  // PEARL_ISSUE_CHUNK for why every one of these is linear.
+  const uint32_t pthreads = blockDim.x;
+  const uint32_t pid = threadIdx.x;
+  const uint32_t colstep = pthreads / quads;
+  const uint32_t q0 = pid % quads;
+  const uint32_t col0 = pid / quads;
+  const uint32_t c0 = pearl_expand_offset(col_off + cg0_block + (col0 >> 4), PEARL_COLS_MASK)
+                      + (col0 & 15u);
+  const uint32_t bsrc0 = c0 * k + q0 * 16u;
+  const uint32_t bdst0 = col0 * PEARL_SB_STRIDE + ((q0 ^ (col0 & 7u)) * 16u);
+  const uint32_t asrc0 = (row_base + col0) * k + q0 * 16u;
+  const uint32_t adst0 = col0 * PEARL_SB_STRIDE + ((q0 ^ (col0 & 7u)) * 16u);
+  const uint32_t srcStep = colstep * k;
+  const uint32_t dstStep = colstep * PEARL_SB_STRIDE;
 
   // Two full-chunk stages, double buffered: chunk c lives in buffer c & 1.
   // This is the shape the closed miners use -- it is why the layout above had
   // to lose its padding -- and it costs one barrier per chunk, total.
   const uint32_t buf_bytes = (sb_cols + sa_rows) * PEARL_SB_STRIDE;
 
+// Stage one chunk. Both operands walk the same (colstep) stride, so a copy is a
+// pointer add and a cp.async -- no divide, no expansion, no 64-bit multiply, and
+// no per-slot arrays. A PTX census of the old inner loop is what found those
+// costing 22%; this removes the last of them from the tail as well.
+//
+// The linearity holds because quads divides pthreads and colstep is a multiple
+// of PEARL_COLS_COUNT; the host refuses any geometry where it is not.
 #define PEARL_ISSUE_CHUNK(cc)                                                         \
   {                                                                                   \
     const uint32_t k0_ = (cc) * rank;                                                 \
     const uint32_t bB_ = sBa + ((cc) & 1u) * buf_bytes;                               \
     const uint32_t bA_ = sAa + ((cc) & 1u) * buf_bytes;                               \
-    _Pragma("unroll") for (uint32_t j = 0; j < PEARL_STAGE_SLOTS; j++) {              \
-      const uint32_t i = threadIdx.x + j * blockDim.x;                                \
-      if (i < btotal) pearl_cp_async16(bB_ + bdst[j], Bprime + bsrc[j] + k0_);        \
-      if (i < atotal) pearl_cp_async16(bA_ + adst[j], Aprime + asrc[j] + k0_);     \
+    uint32_t bs_ = bsrc0 + k0_, bd_ = bB_ + bdst0;                                    \
+    for (uint32_t i_ = pid; i_ < btotal; i_ += pthreads) {                            \
+      pearl_cp_async16(bd_, Bprime + bs_);                                            \
+      bs_ += srcStep;                                                                 \
+      bd_ += dstStep;                                                                 \
     }                                                                                 \
-    for (uint32_t i = threadIdx.x + PEARL_STAGE_SLOTS * blockDim.x; i < btotal;       \
-         i += blockDim.x) {                                                           \
-      const uint32_t col = i / quads, q = i % quads;                                  \
-      const uint32_t c_ = pearl_expand_offset(col_off + cg0_block + (col >> 4),       \
-                                              PEARL_COLS_MASK) + (col & 15u);         \
-      pearl_cp_async16(bB_ + col * PEARL_SB_STRIDE + ((q ^ (col & 7u)) * 16u),        \
-                       Bprime + (size_t)c_ * k + k0_ + q * 16);                       \
+    uint32_t as_ = asrc0 + k0_, ad_ = bA_ + adst0;                                    \
+    for (uint32_t i_ = pid; i_ < atotal; i_ += pthreads) {                            \
+      pearl_cp_async16(ad_, Aprime + as_);                                            \
+      as_ += srcStep;                                                                 \
+      ad_ += dstStep;                                                                 \
     }                                                                                 \
-    for (uint32_t i = threadIdx.x + PEARL_STAGE_SLOTS * blockDim.x; i < atotal;       \
-         i += blockDim.x) {                                                           \
-      const uint32_t row = i / quads, q = i % quads;                                  \
-      pearl_cp_async16(bA_ + row * PEARL_SB_STRIDE + ((q ^ (row & 7u)) * 16u),     \
-                          Aprime + (size_t)(row_base + row) * k + k0_ + q * 16);      \
-    }                                                                                 \
+  }
+
+// One k-step's SHARE of the next chunk's copies.
+//
+// Slot p of a thread's walk: source and destination are the same base + stride
+// the whole-chunk macro uses, just evaluated at one p instead of looped over all
+// of them. Threads whose walk is shorter than the k-step count simply skip.
+#define PEARL_ISSUE_SLOT(cc, p)                                                       \
+  {                                                                                   \
+    const uint32_t k0_ = (cc) * rank;                                                 \
+    const uint32_t i_ = pid + (p) * pthreads;                                         \
+    if (i_ < btotal)                                                                  \
+      pearl_cp_async16(sBa + ((cc) & 1u) * buf_bytes + bdst0 + (p) * dstStep,          \
+                       Bprime + bsrc0 + k0_ + (p) * srcStep);                          \
+    if (i_ < atotal)                                                                  \
+      pearl_cp_async16(sAa + ((cc) & 1u) * buf_bytes + adst0 + (p) * dstStep,          \
+                       Aprime + asrc0 + k0_ + (p) * srcStep);                          \
   }
 
   // The transcripts ride in registers until the very end. Writing them to
@@ -1140,9 +1152,19 @@ extern "C" __global__ __launch_bounds__(512) void pearl_tile_fold_wmma(
     // barrier. Those copies fly underneath this chunk's compute.
     pearl_cp_async_wait();
     __syncthreads();
-    if (chunk + 1u < chunks) PEARL_ISSUE_CHUNK(chunk + 1u)
-
-    if (!active) continue;
+    // The next chunk is staged a slot at a time inside the k-loop below, so
+    // that compute starts before the copies are asked for. A warp that owns no
+    // tile still has to issue its share -- staging is block-wide cooperative --
+    // so the inactive ones run a bare copy of the same loop.
+    const bool stage_next = (chunk + 1u < chunks);
+    if (!active) {
+      if (stage_next) {
+        const uint32_t nslots_ = (btotal + pthreads - 1u) / pthreads;
+#pragma unroll 4
+        for (uint32_t p = 0; p < nslots_; p++) PEARL_ISSUE_SLOT(chunk + 1u, p)
+      }
+      continue;
+    }
     const uint32_t stage_off = (chunk & 1u) * buf_bytes;
     const uint32_t sAc = sAa + stage_off;
     const uint32_t sBc = sBa + stage_off;
@@ -1154,6 +1176,9 @@ extern "C" __global__ __launch_bounds__(512) void pearl_tile_fold_wmma(
 #pragma unroll 4
     for (uint32_t t = 0; t < ksteps; t++) {
       const uint32_t kt = t * 32;
+      // This k-step's share of the NEXT chunk's staging, issued BEFORE the
+      // ldmatrix so the copies are already in flight underneath the mma.
+      if (stage_next) PEARL_ISSUE_SLOT(chunk + 1u, t)
 
       // A: the whole 16x32 fragment of each row block in one instruction.
       uint32_t af[PEARL_WMMA_ROW_TILES][4];
@@ -1188,6 +1213,15 @@ extern "C" __global__ __launch_bounds__(512) void pearl_tile_fold_wmma(
                              af[mb][0], af[mb][1], af[mb][2], af[mb][3], b2, b3);
         }
       }
+    }
+
+    {
+      // A thread's walk can be longer than the k-step count; whatever the
+      // interleave above did not reach goes out here. At the mandated geometry
+      // the two are both 4 and this loop is empty.
+      const uint32_t nslots_ = (btotal + pthreads - 1u) / pthreads;
+      if (stage_next)
+        for (uint32_t p = ksteps; p < nslots_; p++) PEARL_ISSUE_SLOT(chunk + 1u, p)
     }
 
     // Chunk boundary: XOR the RUNNING tile and fold it into each region's lane.

@@ -440,6 +440,15 @@ describe('boot with the full bridge', () => {
     // last showed, temperature included, rather than reverting.
     cbs.stats({ total: '1', acceptedLabel: '1', uptime: '1m', estDay: '$1', points: [5] });
     expect($('device-label').textContent).toBe('RTX 4090 (86°C)');
+
+    // A temperature with NO name from the engine still lands. This is the real
+    // shape our own miner reports: currentSettings() sends no `gpu`, so
+    // PearlEngine reports `gpu: null` on every status. Gating the label on the
+    // engine naming the card made the temperature permanently undisplayable,
+    // which no unit test caught because the engine's event was correct — only
+    // running the app showed the bare name.
+    cbs.stats({ total: '1.2', acceptedLabel: '34', uptime: '5m 00s', estDay: '$0.42', temp: 64, points: [1, 2, 3] });
+    expect($('device-label').textContent).toBe('RTX 4090 (64°C)');
     expect($('mk-line').getAttribute('d')).toMatch(/^M0 /);
     // empty + missing points → flat line
     cbs.stats({ total: '1', acceptedLabel: '1', uptime: '1m', estDay: '$1', points: [] });
@@ -1003,6 +1012,13 @@ describe('deferred init and window-fit guards', () => {
 
     setInput($('addr-input'), ADDR);
     click($('btn-start'));
+
+    // Neither source has a name yet: no nvidia-smi, and the engine has not
+    // named the card either. There is nothing to label the row with, so it is
+    // left alone rather than reading "undefined (71°C)".
+    cbs.stats({ total: '1.2', acceptedLabel: '3', uptime: '1m 00s', estDay: '$0.10', temp: 71, points: [1, 2, 3] });
+    expect($('device-label').textContent).toBe('GPU · auto-detect');
+
     cbs.stats({ total: '1.2', acceptedLabel: '3', uptime: '1m 00s', estDay: '$0.10', gpu: 'RTX 5090', temp: 71, points: [1, 2, 3] });
     expect($('device-label').textContent).toBe('RTX 5090 (71°C)');
   });
