@@ -36,6 +36,7 @@ const { statsFilePayload } = require('../shared/statsFile');
 const { shortenAddress, isValidAddress } = require('../shared/address');
 const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
 const { planLlmInstances } = require('../shared/llmPlan');
+const { pickModel, ctxLadder } = require('../shared/models');
 const { LlmFleet } = require('../main/llmFleet');
 const { JobWorker } = require('../main/jobWorker');
 const { resolvePlan } = require('../shared/llmMode');
@@ -169,24 +170,45 @@ async function resolveLlmBinary(settings, dir) {
 // Resolve the GGUF model path. An explicit --llm-model wins; otherwise reuse a
 // cached download or fetch the small default model (a plain file, so this works
 // on the CLI without zip extraction).
-async function resolveLlmModel(settings, dir) {
+// `model` is the tier the caller chose (shared/models.pickModel); it is always
+// passed, so there is deliberately no `|| LLM.model` default here — a silent
+// fallback would be indistinguishable from the selection failing.
+async function resolveLlmModel(settings, dir, model) {
+  const m = model;
+  // An explicit --llm-model is the operator's own file: we cannot know whether
+  // it ships a projector, so it is served exactly as given, text-only.
   if (settings.llmModel) {
     if (!fs.existsSync(settings.llmModel)) {
       throw new Error('LLM model not found: ' + settings.llmModel);
     }
-    return settings.llmModel;
+    return { modelPath: settings.llmModel, mmprojPath: null };
   }
   const engine = new LlmEngineManager({ dir, platform: process.platform, fs, download: downloadFile });
-  if (engine.isModelInstalled()) {
-    log('LLM model found: ' + engine.modelPath());
-    return engine.modelPath();
+  let modelPath;
+  if (engine.isModelInstalled(m)) {
+    modelPath = engine.modelPath(m);
+    log('LLM model found: ' + modelPath);
+  } else {
+    log('downloading LLM model (' + m.name + ') …');
+    modelPath = await engine.ensureModel((pct) => {
+      if (pct != null) process.stdout.write('\r  downloading model… ' + pct + '%   ');
+    }, m);
+    process.stdout.write('\n');
   }
-  log('downloading LLM model (' + LLM.model.name + ') …');
-  const modelPath = await engine.ensureModel((pct) => {
-    if (pct != null) process.stdout.write('\r  downloading model… ' + pct + '%   ');
-  });
-  process.stdout.write('\n');
-  return modelPath;
+  // The vision projector, for a model that ships one. Separate from the weights
+  // so a node that already has 17 GB on disk can pick up a ~1 GB projector
+  // without re-downloading them; null for a text-only model.
+  let mmprojPath = null;
+  if (!engine.isMmprojInstalled(m)) {
+    log('downloading vision projector …');
+    mmprojPath = await engine.ensureMmproj((pct) => {
+      if (pct != null) process.stdout.write('\r  downloading projector… ' + pct + '%   ');
+    }, m);
+    process.stdout.write('\n');
+  } else {
+    mmprojPath = engine.mmprojPath(m);
+  }
+  return { modelPath, mmprojPath };
 }
 
 // ── Cluster serving state (workers + keep-alive pings while the LLM is up) ───
@@ -321,7 +343,12 @@ async function startLlm(settings, reserveMb) {
   // read (non-NVIDIA / no driver) the planner returns one unknown-placement
   // instance and lets llama.cpp decide.
   const cards = await detectGpusVram();
-  const plan = planLlmInstances(cards, LLM.model, reserveMb || 0, {
+  // Which model this run serves, from the best card's free VRAM. The headless
+  // shell has to make the same choice the GUI does, or a large card running
+  // under systemd silently keeps serving the small default.
+  const bestCard = pickLlmGpu(cards);
+  const model = pickModel(bestCard ? bestCard.freeMb : null, reserveMb || 0);
+  const plan = planLlmInstances(cards, model, reserveMb || 0, {
     maxInstances: settings.llmMaxInstances,
   });
   // Say so when the operator's cap bit — a silently smaller fleet is
@@ -337,17 +364,17 @@ async function startLlm(settings, reserveMb) {
     // Quote the binding constraint (model + mining reserve when co-running), not
     // just the preflight floor — the floor understates what was actually enforced.
     log('not enough free VRAM on any single GPU for the local LLM: ' + gpu.freeMb
-      + ' MB free on GPU ' + gpu.index + ', need ~' + requiredFreeMb(LLM.model, reserveMb || 0)
-      + ' MB for ' + LLM.model.name + ' — skipping the LLM.', process.stderr);
+      + ' MB free on GPU ' + gpu.index + ', need ~' + requiredFreeMb(model, reserveMb || 0)
+      + ' MB for ' + model.name + ' — skipping the LLM.', process.stderr);
     return null;
   }
 
-  log('preparing local LLM (' + LLM.model.name + ') …');
+  log('preparing local LLM (' + model.name + ') …');
 
-  let binaryPath, modelPath;
+  let binaryPath, modelPath, mmprojPath = null;
   try {
     binaryPath = await resolveLlmBinary(settings, dir);
-    modelPath = await resolveLlmModel(settings, dir);
+    ({ modelPath, mmprojPath } = await resolveLlmModel(settings, dir, model));
   } catch (e) {
     log('LLM setup failed: ' + e.message, process.stderr);
     return null;
@@ -412,7 +439,14 @@ async function startLlm(settings, reserveMb) {
   fleet.on('error', (err) => log('LLM error: ' + err.message, process.stderr));
 
   fleet.syncWorkers(canServe); // arm serving before instances come up
-  await fleet.start(plan, { platform: process.platform, binaryPath, modelPath });
+  // Same run bits the GUI passes: llmFleet merges these into every
+  // llmManager.start(), so the model's context ladder, projector and tuned flags
+  // reach llama-server here too.
+  const ladder = ctxLadder(model);
+  await fleet.start(plan, {
+    platform: process.platform, binaryPath, modelPath, mmprojPath,
+    ctxSize: ladder[0], ctxLadder: ladder, extraArgs: model.extraArgs,
+  });
   const gpus = plan.map((p) => (p.index == null ? 'auto' : p.index)).join(', ');
   log('local LLM starting on ' + plan.length + ' GPU' + (plan.length === 1 ? '' : 's') + ' [' + gpus + ']');
   return fleet;

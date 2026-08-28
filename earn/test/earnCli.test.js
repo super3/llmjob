@@ -112,12 +112,23 @@ jest.mock('../src/main/llmEngineManager', () => {
         if (onPct) { onPct(20); onPct(null); }
         return '/cache/model.gguf';
       });
+      // The vision projector half. Defaults to "already satisfied, none to
+      // fetch", which is what a text-only model reports — the default fleet
+      // model has no projector.
+      this.isMmprojInstalled = jest.fn(() => LlmEngineManager.mmprojInstalled);
+      this.mmprojPath = jest.fn(() => LlmEngineManager.mmprojFile);
+      this.ensureMmproj = jest.fn(async (onPct) => {
+        if (onPct) { onPct(30); onPct(null); }
+        return LlmEngineManager.mmprojFile;
+      });
       LlmEngineManager.instances.push(this);
     }
   }
   LlmEngineManager.instances = [];
   LlmEngineManager.serverInstalled = false;
   LlmEngineManager.modelInstalled = false;
+  LlmEngineManager.mmprojInstalled = true;   // text-only default: nothing to fetch
+  LlmEngineManager.mmprojFile = null;
   LlmEngineManager.serverError = null;
   return { LlmEngineManager };
 });
@@ -639,6 +650,44 @@ describe('local LLM', () => {
       expect(allOut()).toContain('downloading llama-server from ' + LLM.serverUrl[key]);
       out = [];
     }
+  });
+
+  // The headless path is the one a 5090 box under systemd actually runs, so the
+  // tier has to reach llama-server from HERE, not only from the GUI shell. It
+  // did not until this was wired: earn-cli passed LLM.model unconditionally, so
+  // a 32 GB card would have quietly kept serving the small default.
+  test('a 32 GB card gets the vision tier, its projector and its tuned flags', async () => {
+    const m = load();
+    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: 'rig' }));
+    // An idle 5090, budgeted against what CUDA actually exposes.
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+    m.LlmEngineManager.mmprojInstalled = false;
+    m.LlmEngineManager.mmprojFile = '/cache/mmproj.gguf';
+
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    const p = m.run(['--mode', 'llm', '--no-serve', '--no-update']);
+    await settle();
+
+    const tier = LLM.tiers[0];
+    const llm = m.LlmManager.instances[0];
+    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({
+      mmprojPath: '/cache/mmproj.gguf',
+      ctxSize: 262144,
+      ctxLadder: tier.ctxLadder,
+      extraArgs: tier.extraArgs,
+    }));
+    // Without a quantised KV cache the model does not load at this context.
+    expect(llm.start.mock.calls[0][0].extraArgs.join(' ')).toContain('--cache-type-k q8_0');
+    // And the operator is told which model they are getting, plus the extra
+    // download it implies.
+    expect(allOut()).toContain('preparing local LLM (' + tier.name + ')');
+    expect(allOut()).toContain('downloading vision projector');
+
+    llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    await settle();
+    llm.emit('stopped', 0);
+    await expect(p).resolves.toBe(1);
   });
 
   test('serves cluster jobs when connected: worker, pings, telemetry, SIGINT shutdown', async () => {
