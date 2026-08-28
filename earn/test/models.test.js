@@ -147,11 +147,16 @@ describe('the shipped config', () => {
   });
 
   test('a 5090 cannot mine and serve this at 262144, and is not offered it', () => {
-    // 30,150 of 32,607 leaves 2,457 MiB and the miner needs ~2,500. The tier is
-    // therefore unreachable while mining and reachable when idle — which falls
-    // out of requiredFreeMb adding the reserve, not out of a special case.
-    const TOTAL = 32607;
-    const MINER = 2500;
+    // Measured on the card: llama at full settings holds 30,150 MiB, leaving
+    // 2,457 free, while the miner needs 2,081 for its rank-128 profile plus the
+    // ~500 MiB every CUDA process costs for its context — ~2,581, so it is short
+    // by ~124 MiB. Verified empirically on the box, where the miner refuses with
+    // "not enough free VRAM for the rank-128 profile".
+    //
+    // Budget against what CUDA sees (32,149) rather than what the card reports
+    // (32,607): the driver reserves the difference.
+    const TOTAL = 32149;
+    const MINER = 2581;
     const q = allModels().find((m) => m.key === 'qwen3.8-27b');
 
     // Mining: free VRAM is what the miner has left, and that is below the

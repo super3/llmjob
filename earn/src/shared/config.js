@@ -199,7 +199,28 @@ const LLM = {
     // built from the weight file plus reasoning about linear attention, and that
     // method looked sound and was not.
     //
-    // The ladder below is still unmeasured at every rung except the top.
+    // EVERY RUNG IS MEASURED, from a five-point sweep on the same card:
+    //
+    //     ctx      VRAM        what it means
+    //     4,096    19,142 MiB  the floor: weights + mmproj + MTP + compute
+    //     32,768   20,324
+    //     65,536   21,702
+    //     131,072  24,518
+    //     262,144  30,150      the figure vramFullMb carries
+    //
+    // Linear in context (r ~ 1.0), fitting VRAM_MiB ~= 18967 + ctx * 0.042659,
+    // i.e. a fixed 18,967 MiB plus 43.7 KiB per token of q8_0 KV (both halves,
+    // MTP draft KV included). At 262144 the cache is 11,184 MiB — 37% of the
+    // total, with the weights still the larger half at 56%. Use the fit rather
+    // than guessing if a rung is ever added.
+    //
+    // Two numbers to budget against, both easy to get wrong:
+    //   * A 5090 reports 32,607 MiB but CUDA sees 32,149 — the driver reserves
+    //     ~458 — and any CUDA process costs ~500 MiB for its context alone.
+    //   * The miner needs 2,081 MiB for its rank-128 profile PLUS that ~500 MiB
+    //     of context, so ~2,581 in practice. LLM.miningReserveMb is 2,048 and is
+    //     therefore optimistic by ~500 for a co-running node. Left alone here
+    //     because it applies to every model, not just this one.
     {
       key: 'qwen3.8-27b',
       name: 'Qwen3.8-27B-UD-Q4_K_XL',
