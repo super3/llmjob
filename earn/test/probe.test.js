@@ -133,6 +133,30 @@ describe('detectGpusVram', () => {
   });
 });
 
+describe('detectGpuTemps', () => {
+  it('maps card index to degrees', async () => {
+    execCb(null, '0, 71\n1, 64\n');
+    expect(await probe.detectGpuTemps()).toEqual({ 0: 71, 1: 64 });
+  });
+
+  it('returns {} on error, so a rig without nvidia-smi shows no temperature', async () => {
+    execCb(new Error('no smi'));
+    expect(await probe.detectGpuTemps()).toEqual({});
+  });
+
+  // A card with no sensor reports "N/A". Recording it as 0 would render as a
+  // real reading of zero degrees.
+  it('skips cards that do not report one', async () => {
+    execCb(null, '0, [N/A]\n1, 64\n');
+    expect(await probe.detectGpuTemps()).toEqual({ 1: 64 });
+  });
+
+  it('returns {} when nothing parses', async () => {
+    execCb(null, 'garbage\n');
+    expect(await probe.detectGpuTemps()).toEqual({});
+  });
+});
+
 describe('detectDriverMajor', () => {
   it('returns the parsed major version', async () => {
     execCb(null, '580.42\n');

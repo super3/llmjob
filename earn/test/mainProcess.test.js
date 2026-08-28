@@ -898,6 +898,20 @@ describe('macOS', () => {
 // ── mining ───────────────────────────────────────────────────────────────────
 
 describe('mining', () => {
+  // The engine has no NVML reading of its own the way alpha-miner did, so main
+  // hands it one. Asserting the option is present is not enough -- it has to
+  // actually reach nvidia-smi, or the UI silently loses the temperature again.
+  it('gives the engine a card-temperature reader wired to nvidia-smi', async () => {
+    const ctx = await boot();
+    ctx.probe.detectGpuTemps = jest.fn(() => Promise.resolve({ 0: 68 }));
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    const miner = ctx.PearlEngine.instances[0];
+    expect(typeof miner.opts.readTemps).toBe('function');
+    await expect(miner.opts.readTemps()).resolves.toEqual({ 0: 68 });
+    expect(ctx.probe.detectGpuTemps).toHaveBeenCalled();
+  });
+
   it('does not start the LLM when STOP arrives during the miner hashrate wait', async () => {
     const ctx = await boot();
     const BIN = '/tmp/engine/alpha-miner';

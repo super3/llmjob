@@ -284,6 +284,10 @@ async function startMining(settings) {
   miner = new PearlEngine({
     connect: (host, port) => net.connect(port, host),
     createCore: coreFactory({ resourcesPath: process.resourcesPath }),
+    // The card temperature the UI shows next to the GPU name. Our core has no
+    // NVML reading of its own to forward the way alpha-miner did, so the engine
+    // polls nvidia-smi for it; a rig without nvidia-smi just shows the name.
+    readTemps: () => probe.detectGpuTemps(),
   });
   wireMinerEvents(miner, endpoint);
   try {
