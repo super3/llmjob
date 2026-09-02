@@ -1,0 +1,39 @@
+# Copy to /etc/default/llmjob-earn and edit.
+#
+# Both the systemd unit and gpu-dashboard read this file, so it is the single
+# place rig identity lives.
+
+# Your Pearl payout address. Required.
+EARN_ADDRESS=prl1p...
+
+# Worker name. Must match what shows on the pool, or the dashboard's POOL
+# columns will not find this rig's rows. Defaults to the hostname if unset.
+EARN_WORKER=rig-1
+
+# auto | mining | llm
+#
+# The dashboard REWRITES this line when you change mode with the arrow keys, and
+# restarts the unit. Anything else you put on it will not survive that, so keep
+# other settings in EARN_ARGS below.
+EARN_MODE=auto
+
+# The CLI to run. Either the released standalone binary or a checkout:
+#   EARN_BIN=/usr/local/bin/llmjob-earn-cli
+#   EARN_BIN="/usr/bin/node /opt/llmjob/earn/src/cli/earn-cli.js"
+EARN_BIN=/usr/local/bin/llmjob-earn-cli
+
+# Anything else, passed through verbatim. Common ones:
+#   --no-update        let the package manager or a checkout own the version
+#   --llm-binary PATH  a llama-server built for your card
+#   --gate-host ADDR   narrow the gate from 0.0.0.0 to e.g. 127.0.0.1
+EARN_ARGS=--no-update
+
+# Only needed when EARN_BIN is a source checkout rather than the released
+# binary: the packaged CLI finds its mining core beside itself, a checkout does
+# not. Everything in this file is exported to the process, so this reaches it.
+#PEARL_CORE_PATH=/path/to/earn/native/build/Release/pearl_core.node
+
+# Optional. Only consulted when the unit's own binary cannot be read, to put
+# SOMETHING in the version field; the value is shown with a trailing '?' because
+# it may be a different build from the one actually running.
+#EARN_FALLBACK_BIN=/usr/local/bin/llmjob-earn-cli

@@ -1,0 +1,31 @@
+[Unit]
+Description=LLMJob Earn (Pearl miner + on-demand LLM, one process)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# install.sh rewrites these two to the invoking user. %i/%h only expand in
+# TEMPLATE units (name@instance.service), so they would have been literal here.
+User=__EARN_USER__
+WorkingDirectory=__EARN_HOME__
+
+# Everything rig-specific lives here so this unit needs no editing:
+#   EARN_ADDRESS, EARN_WORKER, EARN_MODE, EARN_BIN, EARN_ARGS
+# Anything else in that file is exported to the process too, which is how a
+# source checkout passes PEARL_CORE_PATH.
+# See llmjob-earn.default.example.
+EnvironmentFile=/etc/default/llmjob-earn
+
+# $EARN_MODE is a single word (auto | mining | llm) that the dashboard rewrites
+# when you change modes, so switching is a restart rather than a unit edit.
+ExecStart=/bin/sh -c 'exec $EARN_BIN --address $EARN_ADDRESS --worker $EARN_WORKER --mode $EARN_MODE $EARN_ARGS'
+
+# on-failure, NOT always. The CLI exits non-zero when an engine fails to start,
+# including a miner that cannot restart after serving. Restart=always would turn
+# that into a silent loop, which is the exact failure the non-zero exit exists to
+# make visible.
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
