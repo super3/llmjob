@@ -282,29 +282,6 @@ const LLM = {
       // server rather than a restart loop. Only the top rung has a measured VRAM
       // figure; the rest are the fallback path, not a promise.
       ctxLadder: [262144, 131072, 65536, 32768],
-      // MiB of VRAM per token of context, from the same five-point sweep as the
-      // curve above (r ~ 1.0). It is what makes a rung PRICEABLE: vramFullMb is
-      // measured at the top rung and the KV cache is the only part of it that
-      // moves with context, so a lower rung costs that figure minus the tokens it
-      // gives up. Predicts 24,559 / 21,763 / 20,365 MiB for the lower three rungs
-      // against the measured 24,518 / 21,702 / 20,324 -- 41-61 MiB high, i.e.
-      // conservative, which gates a borderline card rather than OOMing it.
-      //
-      // Without this the tier is admitted or refused as though 262144 were the
-      // only way to serve it, and the ladder below can never be walked on the
-      // cards it was written for.
-      mbPerCtxToken: 0.042659,
-      // The smallest window at which this tier is worth OFFERING to a card.
-      //
-      // ctxLadder and this are different questions. The ladder is a startup
-      // fallback: a card that was offered the model but cannot start it at the
-      // size we picked walks down rather than restart-looping. This is admission:
-      // below 65536 a 27B model at a small window is not obviously a better use of
-      // a node than the small default at its full one, and that is a fleet policy
-      // call, so it lives here beside the measurements rather than implicitly in
-      // the gate. Raise it to stop offering the tier to smaller cards; remove it
-      // to offer the tier at any rung it fits.
-      minOfferCtx: 65536,
       // The flags this model is actually run with, from the production unit.
       // Carried per-model rather than globally because they are specific to it:
       //

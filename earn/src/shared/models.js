@@ -23,47 +23,6 @@ function allModels() {
   return [...tiers, LLM.model].filter(Boolean);
 }
 
-// What a model costs at a given context. vramFullMb is measured at the model's
-// top rung; only the KV cache moves with context, and mbPerCtxToken prices it.
-// A model without that figure cannot be priced below its top rung, so it keeps
-// its measured cost and is only ever offered at full context.
-function vramAtCtx(model, ctx) {
-  const full = Number(model && model.vramFullMb) || 0;
-  const per = Number(model && model.mbPerCtxToken) || 0;
-  const top = Number(model && model.ctxSize) || 0;
-  // `!full` matters as well as the rest: a model with no measured cost cannot be
-  // priced at a smaller window either, and subtracting a rung's worth of cache
-  // from zero would hand back a NEGATIVE requirement that fits any card.
-  if (!full || !per || !top || !(ctx > 0) || ctx >= top) return full;
-  return Math.ceil(full - (top - ctx) * per);
-}
-
-// The same model pinned to the highest rung of its ladder that `freeMb` can
-// actually host, or null if even the lowest rung will not fit.
-//
-// The pinned copy carries CORRECTED vramFullMb/minVramMb, not just a smaller
-// ctxSize, because llmPlan, computeGpuLayers, the refusal message and the ladder
-// handed to llama-server all re-derive the requirement from those two fields.
-// Pinning them makes every one of those agree by construction instead of each
-// re-deriving the top rung's cost.
-function pinToFittingRung(model, freeMb, reserveMb) {
-  const rungs = ctxLadder(model);
-  const headroom = (Number(model.minVramMb) || 0) - (Number(model.vramFullMb) || 0);
-  const floor = Number(model.minOfferCtx) || 0;
-  for (let i = 1; i < rungs.length; i++) {   // 0 is the top rung, already tested
-    if (rungs[i] < floor) break;             // below this the tier is not worth offering
-    const full = vramAtCtx(model, rungs[i]);
-    const pinned = Object.assign({}, model, {
-      ctxSize: rungs[i],
-      ctxLadder: rungs.slice(i),
-      vramFullMb: full,
-      minVramMb: full + headroom,
-    });
-    if (freeMb >= requiredFreeMb(pinned, reserveMb)) return pinned;
-  }
-  return null;
-}
-
 // The best model `freeMb` can host, or the fallback default when none of the
 // larger tiers fit. Returns the same object shape everything downstream already
 // expects from LLM.model, so callers need no special-casing.
@@ -79,14 +38,7 @@ function pickModel(freeMb, reserveMb = 0, models = null) {
   if (freeMb == null || !Number.isFinite(free)) return fallback;
   for (const m of list) {
     if (!m) continue;
-    // Full context fits: hand back the config object itself, unchanged.
     if (free >= requiredFreeMb(m, reserveMb)) return m;
-    // It does not, but a smaller window might. Admission asks "does ANY rung
-    // fit"; configuration takes the HIGHEST that does. Gating on the top rung
-    // alone refused a 24 GB card the tier outright even though it can serve it
-    // at 65536, which made ctxLadder dead code on exactly those cards.
-    const pinned = pinToFittingRung(m, free, reserveMb);
-    if (pinned) return pinned;
   }
   return fallback;
 }
@@ -130,14 +82,7 @@ function needsMmproj(model) {
 function planAutoMode(freeMb, reserveMb = 0, models = null) {
   const shared = pickModel(freeMb, reserveMb, models);
   const exclusive = pickModel(freeMb, 0, models);
-  // "Better with the card to itself" is not only a bigger MODEL: since the gate
-  // now resolves a context rung too, it can be the same model at a bigger window.
-  // A mining 5090 resolves Qwen at 131072 while co-running and 262144 alone, and
-  // treating those as equivalent would quietly give up half the context the tier
-  // exists to offer.
-  const bigger = !!(exclusive && shared
-    && (exclusive.key !== shared.key
-        || (Number(exclusive.ctxSize) || 0) > (Number(shared.ctxSize) || 0)));
+  const bigger = !!(exclusive && shared && exclusive.key !== shared.key);
   return bigger
     ? { strategy: 'demand', model: exclusive, coRunModel: shared }
     : { strategy: 'corun', model: shared, coRunModel: shared };
