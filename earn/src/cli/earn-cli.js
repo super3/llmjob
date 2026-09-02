@@ -219,7 +219,12 @@ async function resolveLlmModel(settings, dir, model) {
 // teardown, plus the single keep-alive ping shared across the whole fleet.
 let serveFleet = null;
 let servePinger = null;
-let serveLlmState = { ready: false, tps: 0 };
+// `model` is which model this run actually loaded, not the fleet default: with
+// per-node selection those stopped being the same thing, and telemetry read the
+// default — so a 5090 serving Qwen3.8 reported Gemma to the network board, and
+// metrics.model put the same wrong name in the `model` field of every gateway
+// completion it served. Seeded with the default, replaced once startLlm picks.
+let serveLlmState = { ready: false, tps: 0, model: LLM.model };
 // This machine's node id while it is armed to serve cluster jobs — reported on the
 // miner ping so the network board can tell "running the model" from "serving the
 // cluster". Null when not serving (mining only, or --no-serve).
@@ -292,7 +297,7 @@ async function fullTelemetry(node) {
   let vram = null;
   try { vram = await detectVram(); } catch (e) { /* ignore */ }
   return nodeProto.buildTelemetry({
-    model: LLM.model.name, quant: LLM.model.quant,
+    model: serveLlmState.model.name, quant: serveLlmState.model.quant,
     device: await cachedDeviceName(), vram,
     tokensPerSec: serveLlmState.tps, ready: serveLlmState.ready,
     activeJobs: serveFleet ? serveFleet.activeJobs() : 0,
@@ -316,6 +321,7 @@ function makeCliJobWorker(nodeCfg, base, baseUrl) {
     serverUrl: base,
     post: (url, body) => postJson(url, body, 30000),
     runJob: (chatBody, { onDelta, onReasoning }) => streamChatCompletion(baseUrl, chatBody, onDelta, onReasoning).done,
+    servingModel: () => serveLlmState.model,
   });
   // The 'error' listener is mandatory: a listener-less EventEmitter 'error'
   // throws, and one transient poll failure would crash the whole CLI.
@@ -348,6 +354,7 @@ async function startLlm(settings, reserveMb) {
   // under systemd silently keeps serving the small default.
   const bestCard = pickLlmGpu(cards);
   const model = pickModel(bestCard ? bestCard.freeMb : null, reserveMb || 0);
+  serveLlmState.model = model;
   const plan = planLlmInstances(cards, model, reserveMb || 0, {
     maxInstances: settings.llmMaxInstances,
   });
@@ -663,7 +670,7 @@ async function run(argv) {
         // jobs — running the model and serving the cluster are different things,
         // and the board should be able to tell them apart.
         const serving = serveFleet
-          ? { model: LLM.model.name, indices: serveFleet.servingIndices(), nodeId: serveNodeId }
+          ? { model: serveLlmState.model.name, indices: serveFleet.servingIndices(), nodeId: serveNodeId }
           : null;
         return Promise.all(buildMinerReports(settings, snap, gpuVram, pkg.version, serving).map(postMinerReport));
       };
@@ -728,7 +735,9 @@ async function run(argv) {
     // so reaching here always means the whole fleet died on its own.
     if (llm) {
       llm.on('stopped', (code) => {
-        serveLlmState = { ready: false, tps: 0 };
+        // Keep `model`: the run is over but the last telemetry ping should still
+        // name what this node was serving, and fullTelemetry dereferences it.
+        serveLlmState = { ready: false, tps: 0, model: serveLlmState.model };
         stopServe();
         log('local LLM exited (code ' + code + ')', process.stderr);
         if (!miner) finish(code || 1);

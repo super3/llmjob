@@ -24,6 +24,24 @@ describe('jobToChatBody', () => {
     });
   });
 
+  test('reports the model the node actually loaded, not the fleet default', () => {
+    // The whole point of the tier: a 5090 running Qwen must not tell the gateway
+    // it served Gemma. metrics.model is copied straight from this field, and
+    // openaiController.modelName puts it in the `model` of every completion —
+    // so getting it wrong here misreports the model through the public API.
+    const qwen = { name: 'Qwen3.8-27B-UD-Q4_K_XL' };
+    expect(jobToChatBody({ prompt: 'hi' }, qwen).model).toBe('Qwen3.8-27B-UD-Q4_K_XL');
+    // A job's own `model` still loses to what is loaded — that rule is unchanged.
+    expect(jobToChatBody({ prompt: 'hi', model: 'gpt-4' }, qwen).model).toBe('Qwen3.8-27B-UD-Q4_K_XL');
+  });
+
+  test('falls back to the fleet default for a caller that passes no model', () => {
+    // An un-wired call site reports the old answer rather than `undefined`, which
+    // would reach llama-server and the job record as a missing model name.
+    expect(jobToChatBody({ prompt: 'hi' }, null).model).toBe(LLM.model.name);
+    expect(jobToChatBody({ prompt: 'hi' }, {}).model).toBe(LLM.model.name);
+  });
+
   test('drops non-finite temperature/maxTokens and coerces a missing prompt', () => {
     const b = jobToChatBody({ temperature: 'x', maxTokens: null });
     expect(b.messages[0].content).toBe('');

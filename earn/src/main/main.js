@@ -72,6 +72,13 @@ let registeredUnlinked = false; // self-registered an unlinked node once this ru
 // hit START seventeen times over ninety seconds while the download was in fact
 // progressing normally.
 let llmStatus = { ready: false, endpoint: null, webUrl: null, tokensPerSec: 0, model: LLM.model.name, error: null, note: null };
+// Which model this machine actually loaded, once a run has chosen one. Every
+// place that reports a model name reads this rather than LLM.model, which stopped
+// being the answer when selection became per-node: a 5090 serving Qwen3.8 would
+// otherwise tell the dashboard, the telemetry and — via metrics.model — the
+// `model` field of every gateway completion that it was serving Gemma. Seeded
+// with the default so a report before the first start is still truthful.
+let servingModel = LLM.model;
 
 function settingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -255,7 +262,7 @@ async function startMining(settings) {
     const identity = loadNode();
     const serving = fleet
       ? {
-        model: LLM.model.name,
+        model: servingModel.name,
         indices: fleet.servingIndices(),
         nodeId: identity ? identity.nodeId : null,
       }
@@ -638,6 +645,12 @@ async function startLlm(reserveMb) {
   // the small-card case is unaffected because those rigs resolve to the default.
   const bestCard = pickLlmGpu(cards);
   const model = pickModel(bestCard ? bestCard.freeMb : null, reserveMb || 0);
+  servingModel = model;
+  // The hero shows this name, and it was seeded once at startup and never
+  // updated — fine while every node ran the same model, wrong the moment one
+  // doesn't. Set before the first failure path below so even "Needs ~N GB free
+  // VRAM" names the model it was actually short for.
+  llmStatus = Object.assign({}, llmStatus, { model: model.name });
   const plan = planLlmInstances(cards, model, reserveMb || 0);
   if (!plan.length) {
     // An empty plan means VRAM was measured but no card had room — so at least
@@ -884,7 +897,7 @@ async function pingNode() {
   try { vram = await detectVram(); } catch (e) { /* ignore */ }
   const device = await deviceName();
   const telemetry = nodeProto.buildTelemetry({
-    model: LLM.model.name, quant: LLM.model.quant, device, vram,
+    model: servingModel.name, quant: servingModel.quant, device, vram,
     tokensPerSec: llmStatus.tokensPerSec, ready: llmStatus.ready,
     activeJobs: fleet ? fleet.activeJobs() : 0,
     name: node.name,
@@ -995,6 +1008,7 @@ function makeJobWorker(baseUrl) {
     serverUrl: node.serverUrl || NODE.serverUrl,
     post: (url, body) => postJson(url, body, 30000),
     runJob: (chatBody, { onDelta, onReasoning }) => streamChatCompletion(baseUrl, chatBody, onDelta, onReasoning).done,
+    servingModel: () => servingModel,
   });
   w.on('error', () => { /* transient poll failure — keep looping */ });
   w.on('job', ({ id }) => send('miner:log', { level: 'info', line: 'cluster job ' + id + ' — running locally' }));

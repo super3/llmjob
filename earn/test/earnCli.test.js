@@ -690,6 +690,44 @@ describe('local LLM', () => {
     await expect(p).resolves.toBe(1);
   });
 
+  // Starting the tier is half the job; SAYING you started it is the other half.
+  // Every reporting site read LLM.model directly, which was the right answer
+  // only while every node ran the same model — so a serving 5090 told the
+  // network board it was running Gemma, and metrics.model carried that same
+  // wrong name into the `model` field of every gateway completion it served.
+  test('a serving 5090 reports the tier it loaded, not the fleet default', async () => {
+    const m = load();
+    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: 'rig' }));
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+    m.probe.detectVram.mockResolvedValue({ totalMb: 32149, usedMb: 30150 });
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    m.LlmEngineManager.mmprojInstalled = true;
+    const p = m.run(['--mode', 'llm', '--no-update']);
+    await settle();
+
+    const tier = LLM.tiers[0];
+    const llm = m.LlmManager.instances[0];
+    llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    await settle();
+
+    // What runs the jobs — a thunk, so a fleet restart at another tier follows.
+    // Compared by name, not identity: the CLI is loaded in its own module
+    // registry, so its `config` is a different object graph from this file's.
+    expect(m.JobWorker.instances[0].opts.servingModel().name).toBe(tier.name);
+
+    // What the network board is told.
+    const pinger = intervalFor(NODE.pingIntervalMs);
+    await pinger.fn();
+    const ping = m.io.postJson.mock.calls
+      .filter((c) => /\/api\/nodes\/ping$/.test(c[0]))
+      .pop();
+    expect(ping[1]).toMatchObject({ model: tier.name, quant: tier.quant });
+
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
   test('serves cluster jobs when connected: worker, pings, telemetry, SIGINT shutdown', async () => {
     intervalUnref = false; // cover the servePinger without unref()
     const m = load();

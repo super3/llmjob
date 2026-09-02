@@ -1276,6 +1276,16 @@ describe('local LLM', () => {
     expect(extraArgs.join(' ')).toContain('--cache-type-k q8_0');
     // And the log names the model the operator is actually getting.
     expect(ctx.sent('miner:log').map((l) => l.line).join('\n')).toContain(tier.name);
+
+    // Everything that REPORTS a model must name the tier too, not the fleet
+    // default. These all read LLM.model directly until selection became
+    // per-node, at which point a 5090 serving Qwen told the hero, the network
+    // board and — through metrics.model → openaiController.modelName — the
+    // `model` field of every gateway completion that it was serving Gemma.
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ model: tier.name });
+    llm.emit('ready', { baseUrl: llm.baseUrl });
+    await flush();
+    expect(ctx.JobWorker.instances[0].opts.servingModel()).toBe(tier);
   });
 
   it('starts llama-server, goes ready, serves jobs, streams stats, and reports its exit', async () => {

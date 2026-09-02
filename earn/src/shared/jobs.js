@@ -14,7 +14,7 @@ const { LLM } = require('./config');
 // `messages` array (multi-turn, system prompts preserved); older/simple jobs
 // carry a single `prompt` that becomes one user message. Only set fields are
 // included so the server's own defaults apply otherwise.
-function jobToChatBody(job) {
+function jobToChatBody(job, model) {
   const j = job || {};
   const messages = Array.isArray(j.messages) && j.messages.length
     ? j.messages.map((m) => {
@@ -28,7 +28,12 @@ function jobToChatBody(job) {
     // string would otherwise reach the final metrics (metrics.model = chatBody.model)
     // and be reported back as the model that ran. A mismatched name can also make a
     // stricter llama-server reject the request outright.
-    model: LLM.model.name,
+    //
+    // Which model that is became a question the moment nodes stopped all running
+    // the same one. The caller passes what it actually loaded; the fleet default
+    // is the fallback for a caller that has not been taught to, so an unwired path
+    // reports the old answer rather than `undefined`.
+    model: (model && model.name) || LLM.model.name,
     messages,
     stream: true,
   };

@@ -148,6 +148,26 @@ describe('processJob — success streaming', () => {
     expect(w.activeJobs()).toBe(0);
   });
 
+  test('metrics.model follows the tier the node is serving, live', async () => {
+    // A thunk, not a value: the fleet can stop and restart at a different tier
+    // under a worker that outlives it, and the metrics must name the model that
+    // actually ran the job rather than the one loaded when the worker was built.
+    let serving = { name: 'Gemma-4-E4B-it-Q4_K_M' };
+    const { post, calls } = makePost(okFor([{ id: 'JM', prompt: 'p' }]));
+    const w = new JobWorker({
+      identity: IDENT, serverUrl: 's', post, now: () => 1,
+      runJob: () => Promise.resolve(),
+      servingModel: () => serving,
+    });
+    await w.pollOnce();
+    serving = { name: 'Qwen3.8-27B-UD-Q4_K_XL' };
+    await w.pollOnce();
+    const models = calls
+      .filter((c) => /\/chunks$/.test(c.url) && c.body.isFinal)
+      .map((c) => c.body.metrics.model);
+    expect(models).toEqual(['Gemma-4-E4B-it-Q4_K_M', 'Qwen3.8-27B-UD-Q4_K_XL']);
+  });
+
   test('empty result still sends one final metrics chunk, then completes', async () => {
     const { post, calls } = makePost(okFor([{ id: 'J3', prompt: '' }]));
     const w = new JobWorker({ identity: IDENT, serverUrl: 's', post, runJob: () => Promise.resolve(), now: () => 1 });

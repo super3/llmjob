@@ -26,6 +26,12 @@ class JobWorker extends EventEmitter {
     this.serverUrl = opts.serverUrl;
     this.post = opts.post;                 // (url, body) -> Promise<{ status, data }>
     this.runJob = opts.runJob;             // (chatBody, { onDelta }) -> Promise (rejects on error)
+    // What this node has loaded, as a thunk rather than a value: the fleet can be
+    // stopped and restarted at a different tier under a worker that outlives it,
+    // and metrics.model must follow the model that actually ran the job. Omitted
+    // by a caller that has not been taught about tiers, which then gets the fleet
+    // default from jobToChatBody.
+    this.servingModel = opts.servingModel || (() => null);
     this.now = opts.now || Date.now;
     this.schedule = opts.schedule || ((fn, ms) => { const t = setTimeout(fn, ms); t.unref(); return t; });
     this.cancel = opts.cancel || clearTimeout;
@@ -92,7 +98,7 @@ class JobWorker extends EventEmitter {
     this.active++;
     this.emit('job', { id: job.id, active: this.active });
     const base = this.serverUrl + '/api/jobs/' + job.id;
-    const chatBody = jobToChatBody(job);
+    const chatBody = jobToChatBody(job, this.servingModel());
     // Fences this attempt. Every worker on a rig signs as the same node id (one
     // per GPU that fits the model, and the GUI and CLI share one node.json), so
     // the server cannot tell our writes from a sibling's on the node id alone.
