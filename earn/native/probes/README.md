@@ -165,7 +165,7 @@ removing time.
 
 | Attempt | Result | Why it lost |
 |---|---|---|
-| **TMA (`cp.async.bulk.tensor.2d`)** | rejected | Works on this GPU (verified byte-exact) and the fold's manual `q XOR (r mod 8)` swizzle is exactly TMA's SWIZZLE_128B, so it drops in. But on the fold's own staging pattern it is not faster (4.14 vs 4.29 TB/s) and draws MORE power for the same bytes: 600 W / 2776 MHz against cp.async's 551 W / 2925 MHz. On a power-bound card that is strictly worse. Note `boxDim` is capped at 256, so 384 staged rows needs two tiles. |
+| **TMA (`cp.async.bulk.tensor.2d`)** | rejected, **implemented and measured in the real kernel: -27%** | See below. |
 | **All-at-barrier staging** | 142.6 vs 152.6 | Ada interleaves one slot per k-step to stop the memory pipeline backing up. That reasoning was about barrier cost and the barrier is free here, so the opposite schedule was worth pricing -- it still loses. Keep the interleave. |
 | **Locking the SM clock** | no change | 1400 -> 155.5, 1600 -> 152.9, 1800 -> 150.5, 2100 -> 148.6, 2400 -> 147.3 TH/s. The power cap decides the operating point regardless; locking high only raises voltage and costs a little. |
 | **Bigger tiles** | spills | 256x256 spills 5456 B, 128x512 spills 1416 B. The register file is 65536 per SM as on Ada, so the accumulator bound is identical and 128x256 stays optimal. |
@@ -256,3 +256,45 @@ tensor cores.
 | TMA staging | works, but slower AND more power for the same bytes |
 | persistent blocks | monotonically worse (158.9 -> 151.1) |
 | running staging cursors | +0.5%; ptxas already strength-reduces it |
+
+
+## TMA staging, implemented and rejected
+
+Worth writing down properly, because the first rejection was on weak evidence and
+the second is not.
+
+The first pass compared TMA against cp.async in a standalone benchmark of the
+staging pattern: 4.14 vs 4.29 TB/s, and more power for the same bytes. That test
+was **bandwidth-saturated**, so it could not show the thing TMA is supposed to win
+-- one instruction in place of 3072 -- and the real kernel is not bandwidth-bound
+(L2 sits at 32%). So it was re-done inside the fold itself.
+
+It drops in cleanly. The staged regions really are contiguous rectangles: the
+column indices expand to `base*16 + col0` for consecutive `col0`, because
+`COLS_MASK` is `0xF` and `pearl_expand_offset` is then just a shift. `boxDim`'s
+256 cap is fine -- A stages 128 rows and B 256. TMA's SWIZZLE_128B is exactly the
+`q XOR (r mod 8)` the staging already does by hand, so the shared layout and every
+`ldmatrix` below it are untouched. Descriptors are built once per allocation with
+`cuTensorMapEncodeTiled`, fetched via `cudaGetDriverEntryPointByVersion` so the
+addon keeps its cudart-only link line. Two gotchas: the shared destination must be
+128-byte aligned (dynamic shared is 16 by default, and TMA answers "misaligned
+address"), and each barrier's phase flips on every use, so barrier `c & 1` is
+waited with parity `(c >> 1) & 1`.
+
+Measured, alternating, on a clean card:
+
+| | TH/s |
+|---|---|
+| cp.async (shipped) | 145.6 / 142.3 |
+| TMA | 106.3 / 104.4 |
+| | **-27%** |
+
+And the reason is visible in the SASS: the TMA build is **bigger**, 760 instructions
+against 520. The copies were never the instruction cost -- the cp.async ones sit
+inside loops and amortise -- while the mbarrier init, expect_tx and parity waits are
+all new, and one thread issuing both tiles serialises what 512 threads previously
+did cooperatively. On a card that is power-bound rather than issue-bound, that trade
+goes the wrong way.
+
+The code is not kept: the kernel signature change and the per-allocation descriptors
+are an always-on cost for a path that is off and slower.
