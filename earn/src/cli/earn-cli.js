@@ -735,7 +735,7 @@ async function run(argv) {
   }
   const demand = !!(autoPlan && autoPlan.strategy === 'demand');
   if (demand) {
-    log('auto:       ' + autoPlan.model.name + ' needs the GPU to itself — mining while idle');
+    log('auto:       ' + autoPlan.model.name + ' needs the GPU to itself — mining until a request arrives');
   }
 
   // Keep a mining reserve free only when co-running with the miner. In demand
@@ -837,10 +837,10 @@ async function run(argv) {
         },
         port: settings.gatePort == null ? LLM.gate.port : settings.gatePort,
         upstreamPort: LLM.port,
-        modelName: autoPlan.model.name, idleMs: LLM.gate.idleMs, log,
+        modelName: autoPlan.model.name, quietMs: LLM.gate.quietMs, log,
       }).start();
       log('auto:       serving on :' + (settings.gatePort == null ? LLM.gate.port : settings.gatePort) + ' — '
-        + Math.round(LLM.gate.idleMs / 1000) + 's idle hands the GPU back to mining');
+        + Math.round(LLM.gate.quietMs / 1000) + 's with no requests hands the GPU back to mining');
     }
 
     if (miner) {

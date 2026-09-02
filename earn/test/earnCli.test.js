@@ -1212,7 +1212,7 @@ describe('auto mode on a card that cannot co-run its best model', () => {
     await settle();
 
     expect(allOut()).toContain('needs the GPU to itself');
-    expect(allOut()).toContain('mining while idle');
+    expect(allOut()).toContain('mining until a request arrives');
     // The point of demand mode: the miner runs, the model does not.
     expect(m.PearlEngine.instances).toHaveLength(1);
     expect(m.PearlEngine.instances[0].start).toHaveBeenCalled();
@@ -1224,7 +1224,7 @@ describe('auto mode on a card that cannot co-run its best model', () => {
     const gate = m.autoGate.createAutoGate.instances[0];
     expect(gate.started).toBe(true);
     expect(gate.opts.modelName).toBe(LLM.tiers[0].name);
-    expect(gate.opts.idleMs).toBe(LLM.gate.idleMs);
+    expect(gate.opts.quietMs).toBe(LLM.gate.quietMs);
     expect(gate.opts.startMinerArgs()).toEqual(expect.objectContaining({ endpoint: expect.any(String) }));
     expect(gate.opts.isLlmReady()).toBe(false);
 

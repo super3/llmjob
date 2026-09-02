@@ -83,9 +83,14 @@ function planAutoMode(freeMb, reserveMb = 0, models = null) {
   const shared = pickModel(freeMb, reserveMb, models);
   const exclusive = pickModel(freeMb, 0, models);
   const bigger = !!(exclusive && shared && exclusive.key !== shared.key);
+  // Only `model` is returned. Both candidates are computed to make the choice
+  // above, but a node runs ONE model: in 'corun' it is loaded alongside the
+  // miner, in 'demand' the miner is stopped first and nothing is co-resident.
+  // An earlier version also returned the losing candidate as `coRunModel`,
+  // which nothing ever loaded and which read as though two models ran at once.
   return bigger
-    ? { strategy: 'demand', model: exclusive, coRunModel: shared }
-    : { strategy: 'corun', model: shared, coRunModel: shared };
+    ? { strategy: 'demand', model: exclusive }
+    : { strategy: 'corun', model: shared };
 }
 
 module.exports = {

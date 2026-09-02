@@ -47,7 +47,7 @@ function classifyPath(pathname) {
 
 const MINING = 'MINING';
 const SERVING = 'SERVING';
-const TO_SERVING = 'SWITCHING->LLM';
+const TO_SERVING = 'SWITCHING->SERVING';
 const TO_MINING = 'SWITCHING->MINING';
 
 class LlmGate extends EventEmitter {
@@ -61,11 +61,11 @@ class LlmGate extends EventEmitter {
     this.startMiner = opts.startMiner;
     this.stopMiner = opts.stopMiner;
     this.isLlmReady = opts.isLlmReady || (() => false);
-    this.idleMs = opts.idleMs == null ? 60000 : opts.idleMs;
+    this.quietMs = opts.quietMs == null ? 60000 : opts.quietMs;
     this.now = opts.now || (() => Date.now());
     this.state = MINING;
     this.inFlight = 0;
-    this.lastActivity = this.now();
+    this.lastRequestAt = this.now();
     this._transition = null;   // single-flight: one switch at a time
   }
 
@@ -106,16 +106,18 @@ class LlmGate extends EventEmitter {
     return this._transition;
   }
 
-  begin() { this.inFlight += 1; this.lastActivity = this.now(); }
-  end() { this.inFlight = Math.max(0, this.inFlight - 1); this.lastActivity = this.now(); }
+  begin() { this.inFlight += 1; this.lastRequestAt = this.now(); }
+  end() { this.inFlight = Math.max(0, this.inFlight - 1); this.lastRequestAt = this.now(); }
 
-  idleFor() { return this.now() - this.lastActivity; }
+  // Time since the last request STARTED or FINISHED -- not since the GPU last
+  // had work. While mining this climbs with the card at full load.
+  quietFor() { return this.now() - this.lastRequestAt; }
 
   // Called on a timer. Flips back only when serving, nothing is in flight, and the
   // window has actually elapsed -- so a long generation can never be interrupted
   // by the clock.
   shouldRelease() {
-    return this.state === SERVING && this.inFlight === 0 && this.idleFor() >= this.idleMs;
+    return this.state === SERVING && this.inFlight === 0 && this.quietFor() >= this.quietMs;
   }
 }
 

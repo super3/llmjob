@@ -37,8 +37,8 @@ describe('constructor defaults', () => {
     const w = new JobWorker({ identity: IDENT, serverUrl: 's', post: () => {}, runJob: () => {} });
     expect(w.activeJobs()).toBe(0);
     expect(typeof w.now()).toBe('number');
-    expect(w.idleMs).toBe(5000);
-    expect(w.maxIdleMs).toBe(60000);
+    expect(w.pollMinMs).toBe(5000);
+    expect(w.pollMaxMs).toBe(60000);
     expect(w.heartbeatMs).toBe(30000);
     expect(w.flushMs).toBe(1000);
     const t = w.schedule(() => {}, 0); // default setTimeout (unref'd)
@@ -382,27 +382,27 @@ describe('start / stop loop + backoff', () => {
     expect(w.running).toBe(false);
   });
 
-  test('empty polls back off exponentially to maxIdleMs and a job resets the cadence', async () => {
+  test('empty polls back off exponentially to pollMaxMs and a job resets the cadence', async () => {
     const sch = makeScheduler();
     let jobs = [];
     const { post } = makePost(() => ({ status: 200, data: { jobs } }));
     const w = new JobWorker({
       identity: IDENT, serverUrl: 's', post, runJob: () => Promise.resolve(), now: () => 1,
-      schedule: sch.schedule, cancel: sch.cancel, idleMs: 1000, maxIdleMs: 4000,
+      schedule: sch.schedule, cancel: sch.cancel, pollMinMs: 1000, pollMaxMs: 4000,
     });
     w.start();
     await flush();
     expect(sch.scheduled.map((s) => s.ms)).toEqual([2000]); // 1000*2 after 1st empty poll
     sch.scheduled[0].fn(); await flush();
     sch.scheduled[1].fn(); await flush();
-    expect(sch.scheduled.map((s) => s.ms)).toEqual([2000, 4000, 4000]); // capped at maxIdleMs
+    expect(sch.scheduled.map((s) => s.ms)).toEqual([2000, 4000, 4000]); // capped at pollMaxMs
 
     jobs = [{ id: 'JB', prompt: 'p' }];
     sch.scheduled[2].fn(); await flush();
     jobs = [];
     // a job schedules its own heartbeat timer (30000); the poll tick is the last entry
     const pollTicks = sch.scheduled.filter((s) => s.ms !== 30000);
-    expect(pollTicks[pollTicks.length - 1].ms).toBe(1000); // work → reset to idleMs
+    expect(pollTicks[pollTicks.length - 1].ms).toBe(1000); // work → reset to pollMinMs
   });
 
   test('a poll error backs off, is emitted when listened, and never kills the loop when not', async () => {
@@ -410,7 +410,7 @@ describe('start / stop loop + backoff', () => {
     const sch1 = makeScheduler();
     const errors = [];
     const w1 = new JobWorker({
-      identity: IDENT, serverUrl: 's', now: () => 1, schedule: sch1.schedule, cancel: sch1.cancel, idleMs: 1000,
+      identity: IDENT, serverUrl: 's', now: () => 1, schedule: sch1.schedule, cancel: sch1.cancel, pollMinMs: 1000,
       post: () => Promise.reject(new Error('offline')), runJob: () => Promise.resolve(),
     });
     w1.on('error', (e) => errors.push(e.message));

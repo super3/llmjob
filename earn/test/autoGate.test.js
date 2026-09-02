@@ -26,7 +26,7 @@ function mk(over = {}) {
     isLlmReady: () => ready,
     startLlm: async () => { calls.push('startLlm'); ready = true; return mkFleet(true); },
     stopLlm: async () => { calls.push('stopLlm'); ready = false; },
-    port: 0, upstreamPort: 8080, modelName: 'M', idleMs: 50,
+    port: 0, upstreamPort: 8080, modelName: 'M', quietMs: 50,
   }, over));
   return { auto, miner, calls, setReady: (v) => { ready = v; } };
 }
@@ -68,7 +68,7 @@ describe('createAutoGate', () => {
     const auto = createAutoGate({
       miner, startMinerArgs: () => ({}), isLlmReady: () => ready,
       startLlm: async () => { ready = true; return mkFleet(true); }, stopLlm: async () => { ready = false; },
-      port: 0, upstreamPort: 8080, modelName: 'M', idleMs: 50, minerStopTimeoutMs: 100,
+      port: 0, upstreamPort: 8080, modelName: 'M', quietMs: 50, minerStopTimeoutMs: 100,
     });
     const p = auto.gate.ensureServing();
     jest.advanceTimersByTime(150);
@@ -113,7 +113,7 @@ test('the stop timeout firing after a real stop does not resolve twice', async (
   const auto = createAutoGate({
     miner, startMinerArgs: () => ({}), isLlmReady: () => ready,
     startLlm: async () => { ready = true; return mkFleet(true); }, stopLlm: async () => { ready = false; },
-    port: 0, upstreamPort: 8080, modelName: 'M', idleMs: 50, minerStopTimeoutMs: 10,
+    port: 0, upstreamPort: 8080, modelName: 'M', quietMs: 50, minerStopTimeoutMs: 10,
   });
   const p = auto.gate.ensureServing();
   jest.advanceTimersByTime(50);   // the guard timer fires after 'stopped' already did

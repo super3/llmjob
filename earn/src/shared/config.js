@@ -142,10 +142,15 @@ const LLM = {
   // directly has to move.
   //
   // 60s of quiet before handing the card back. Long enough that a conversational
-  // caller does not pay the ~4s reload between turns, short enough that an idle
-  // node is mining within a minute. The reload cost is real: a restart drops the
-  // prompt cache, so a follow-up in a long conversation re-prefills.
-  gate: { port: 8000, idleMs: 60000 },
+  // caller does not pay the ~4s reload between turns, short enough that a node
+  // nobody is calling is mining within a minute. The reload cost is real: a
+  // restart drops the prompt cache, so a follow-up in a long conversation
+  // re-prefills.
+  //
+  // "quiet", not "idle": the node is never idle. It is running the card flat out
+  // either way -- the axis is whether anything is ASKING for tokens, not whether
+  // the GPU has work.
+  gate: { port: 8000, quietMs: 60000 },
   // What to keep free for the miner when deciding whether a model can co-run.
   //
   // Measured, not guessed: the rank-128 profile asks for 2,081 MiB and the CUDA

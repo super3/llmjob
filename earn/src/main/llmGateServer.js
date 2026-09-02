@@ -6,7 +6,7 @@
 // so the model can be stopped and started underneath without the endpoint ever
 // going away. A caller sees one stable address whether the card is currently
 // mining or serving; the only visible difference is that the first request after
-// an idle period takes ~4 s while the model loads.
+// a quiet period takes ~4 s while the model loads.
 //
 // The request is HELD during that load rather than refused. Returning a connection
 // error and asking callers to retry would push the switch into every client.
@@ -86,7 +86,7 @@ class LlmGateServer {
       // A probe must never count as activity, whether the model is up or down.
       // When it is down the gate answers from its own state; when it is UP the
       // probe is forwarded so the caller gets real data -- but WITHOUT begin(),
-      // because refreshing the idle clock on every poll pins the card in SERVING
+      // because refreshing the quiet clock on every poll pins the card in SERVING
       // for as long as anything is monitoring it. A dashboard polling /health
       // once a second would mean the GPU never goes back to mining.
       if (!this.gate.isLlmReady()) return this._passive(req, res);
@@ -116,7 +116,8 @@ class LlmGateServer {
     this.server.listen(this.port, this.host);
     this.timer = setInterval(() => {
       if (this.gate.shouldRelease()) {
-        this.log('idle ' + Math.round(this.gate.idleMs / 1000) + 's — handing the GPU back to mining');
+        this.log('no requests for ' + Math.round(this.gate.quietFor() / 1000)
+          + 's — handing the GPU back to mining');
         this.gate.ensureMining().catch(() => {});
       }
     }, 2000);

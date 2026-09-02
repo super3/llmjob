@@ -47,7 +47,7 @@ describe('LlmGateServer', () => {
     started = 0;
     let ready = false;
     const gate = new LlmGate({
-      idleMs: 10_000,
+      quietMs: 10_000,
       isLlmReady: () => ready,
       // A real load takes seconds; the delay here is what proves the request is
       // HELD rather than refused while the model comes up.
@@ -151,7 +151,7 @@ describe('LlmGateServer edges', () => {
   test('start() binds and arms the idle timer; stop() unwinds both', async () => {
     let released = 0;
     const gate = new LlmGate({
-      idleMs: 0, isLlmReady: () => true,
+      quietMs: 0, isLlmReady: () => true,
       startLlm: async () => {}, stopLlm: async () => { released += 1; },
       startMiner: async () => {}, stopMiner: async () => {},
     });
@@ -173,7 +173,7 @@ describe('LlmGateServer via start()', () => {
     });
     await new Promise((r) => up.listen(0, '127.0.0.1', r));
     const gate = new LlmGate({
-      idleMs: 60_000, isLlmReady: () => true,
+      quietMs: 60_000, isLlmReady: () => true,
       startLlm: async () => {}, stopLlm: async () => {},
       startMiner: async () => {}, stopMiner: async () => {},
     });
@@ -252,7 +252,7 @@ describe('LlmGateServer internals', () => {
 
   test('a release that rejects on the idle tick is swallowed, not thrown at the loop', async () => {
     const gate = new LlmGate({
-      idleMs: 0, isLlmReady: () => true,
+      quietMs: 0, isLlmReady: () => true,
       startLlm: async () => {}, stopLlm: async () => { throw new Error('stop failed'); },
       startMiner: async () => {}, stopMiner: async () => {},
     });
@@ -265,7 +265,7 @@ describe('LlmGateServer internals', () => {
 
 describe('LlmGateServer remaining paths', () => {
   test('an idle tick with nothing to release does nothing', async () => {
-    const gate = new LlmGate({ idleMs: 10_000, isLlmReady: () => false });   // MINING
+    const gate = new LlmGate({ quietMs: 10_000, isLlmReady: () => false });   // MINING
     const gs = new LlmGateServer({ port: 0, host: '127.0.0.1', gate, log: () => {} }).start();
     await new Promise((r) => setTimeout(r, 2300));   // a tick where shouldRelease() is false
     expect(gate.state).toBe('MINING');
@@ -301,7 +301,7 @@ describe('probes never refresh the idle clock', () => {
     await new Promise((r) => up.listen(0, '127.0.0.1', r));
     let t = 0;
     const gate = new LlmGate({
-      idleMs: 1000, now: () => t, isLlmReady: () => true,
+      quietMs: 1000, now: () => t, isLlmReady: () => true,
       startLlm: async () => {}, stopLlm: async () => {},
       startMiner: async () => {}, stopMiner: async () => {},
     });
@@ -313,7 +313,7 @@ describe('probes never refresh the idle clock', () => {
     t = 900;
     await get(s.address().port, '/health');     // a monitor polls
     t = 1100;
-    // If the probe had counted as activity, idleFor() would have reset at t=900
+    // If the probe had counted as activity, quietFor() would have reset at t=900
     // and this would be false — which is how a polled node never stops serving.
     expect(gate.shouldRelease()).toBe(true);
     s.close(); up.close();

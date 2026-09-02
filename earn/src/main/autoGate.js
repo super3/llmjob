@@ -14,7 +14,7 @@ const { LlmGateServer } = require('./llmGateServer');
 function createAutoGate(opts) {
   const {
     miner, startLlm, stopLlm, isLlmReady, startMinerArgs,
-    port, upstreamPort, modelName, idleMs, log = () => {},
+    port, upstreamPort, modelName, quietMs, log = () => {},
     minerStopTimeoutMs = 15000, llmReadyTimeoutMs = 180000,
   } = opts;
 
@@ -64,7 +64,7 @@ function createAutoGate(opts) {
   };
 
   const gate = new LlmGate({
-    idleMs, isLlmReady,
+    quietMs, isLlmReady,
     startLlm: wrappedStartLlm, stopLlm: wrappedStopLlm,
     startMiner, stopMiner,
   });

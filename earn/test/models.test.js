@@ -237,7 +237,6 @@ describe('planAutoMode', () => {
     const p = planAutoMode(32133, 2048, [big, small]);
     expect(p.strategy).toBe('demand');
     expect(p.model.key).toBe('big');
-    expect(p.coRunModel.key).toBe('small');
   });
 
   test('when both choices agree it co-runs, so small cards are undisturbed', () => {

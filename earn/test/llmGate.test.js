@@ -36,7 +36,7 @@ function mkGate(over = {}) {
   const calls = [];
   let ready = false;
   const g = new LlmGate(Object.assign({
-    idleMs: 1000,
+    quietMs: 1000,
     isLlmReady: () => ready,
     startLlm: async () => { calls.push('startLlm'); ready = true; },
     stopLlm: async () => { calls.push('stopLlm'); ready = false; },
@@ -87,7 +87,7 @@ describe('LlmGate', () => {
 
   test('shouldRelease waits for the idle window, and a long generation defers it', async () => {
     let t = 0;
-    const { g } = mkGate({ now: () => t, idleMs: 1000 });
+    const { g } = mkGate({ now: () => t, quietMs: 1000 });
     await g.ensureServing();
     t = 500;
     expect(g.shouldRelease()).toBe(false);   // window not elapsed
@@ -114,7 +114,7 @@ describe('LlmGate edges', () => {
   test('constructs with no dependencies at all and still transitions', async () => {
     const g = new LlmGate();
     expect(g.state).toBe(MINING);
-    expect(g.idleMs).toBe(60000);
+    expect(g.quietMs).toBe(60000);
     await g.ensureServing();          // no start/stop callbacks supplied
     expect(g.state).toBe(SERVING);
     await g.ensureMining();
@@ -153,12 +153,12 @@ describe('LlmGate edges', () => {
     expect(g.state).toBe(SERVING);
   });
 
-  test('idleFor measures from the last activity', () => {
+  test('quietFor measures from the last activity', () => {
     let t = 100;
     const { g } = mkGate({ now: () => t });
     g.begin(); g.end();
     t = 400;
-    expect(g.idleFor()).toBe(300);
+    expect(g.quietFor()).toBe(300);
   });
 
   test('end() never drives the in-flight count negative', () => {
