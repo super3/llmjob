@@ -143,16 +143,20 @@ Ablating every layer in turn, all at the card's maximum 600 W power limit:
 
 | build | TH/s | SM clock |
 |---|---|---|
-| shipped | 151.2 | 1266 MHz |
-| - staging | 201.4 | 1517 MHz |
-| - staging - ldmatrix | 279.1 | 2096 MHz |
-| - staging - ldmatrix - transcript | **287.9** | 2091 MHz |
+| shipped | 157.0 | 1176 MHz |
+| - staging | 208.7 | 1444 MHz |
+| - staging - ldmatrix | 292.9 | 2058 MHz |
+| - staging - ldmatrix - transcript | **299.4** | 2062 MHz |
+
+(Re-measured on v0.4.5, which includes the compile-time geometry work from #209.
+That lifted both the floor and this ceiling -- it was 151.2 / 287.9 before -- without
+changing the conclusion.)
 
 The last row is a kernel that issues every `mma` but moves no operands at all. It is
 not a miner -- it computes nothing usable -- and it still only reaches **287.9 TH/s**.
 
 **That bounds the problem.** Any real fold must feed its tensor cores, so on this card,
-at its hard 600 W maximum, with this algorithm, ~288 TH/s is an unreachable upper
+at its hard 600 W maximum, with this algorithm, ~299 TH/s is an unreachable upper
 limit and the practical ceiling is well below it. Getting past that needs either more
 power (600 W is `power.max_limit`) or an algorithm that moves less data per MAC -- not
 tuning. Note the clock column: every gain here is bought by freeing power, not by
