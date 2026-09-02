@@ -8,7 +8,7 @@
 // one dying -- the CLI's own 'stopped' handlers tear the process down -- so the
 // switching flag is owned here and read by those handlers.
 
-const { LlmGate } = require('../shared/llmGate');
+const { LlmGate, SERVING } = require('../shared/llmGate');
 const { LlmGateServer } = require('./llmGateServer');
 
 function createAutoGate(opts) {
@@ -93,4 +93,36 @@ function createAutoGate(opts) {
   };
 }
 
-module.exports = { createAutoGate };
+// A gate with nothing to switch.
+//
+// In llm mode there is no miner, so there is no handoff to manage -- but the
+// public endpoint still has to BE the public endpoint. Without this the gate
+// existed only in auto, so choosing llm mode silently moved callers from the
+// documented port to llama-server's own one: the endpoint moved out from under
+// every client at exactly the moment the operator committed to serving.
+//
+// Deliberately the same shape as createAutoGate, so the CLI's teardown and its
+// `auto && ...` guards need no special case for it.
+function createServeGate(opts = {}) {
+  const {
+    port, upstreamPort, modelName, isLlmReady, log = () => {},
+  } = opts;
+  const gate = new LlmGate({
+    isLlmReady,
+    state: SERVING,
+    // Never release. There is no miner to release TO, and firing would flip the
+    // reported state to MINING while the model is loaded and answering.
+    quietMs: Infinity,
+  });
+  const server = new LlmGateServer({ port, upstreamPort, modelName, gate, log });
+  return {
+    gate,
+    server,
+    // Nothing here ever stops an engine, so no engine death is ever ours.
+    isSwitching: () => false,
+    start() { server.start(); return this; },
+    stop() { server.stop(); },
+  };
+}
+
+module.exports = { createAutoGate, createServeGate };

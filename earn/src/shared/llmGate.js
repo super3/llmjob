@@ -63,7 +63,10 @@ class LlmGate extends EventEmitter {
     this.isLlmReady = opts.isLlmReady || (() => false);
     this.quietMs = opts.quietMs == null ? 60000 : opts.quietMs;
     this.now = opts.now || (() => Date.now());
-    this.state = MINING;
+    // A gate in front of an already-loaded model starts SERVING: there is no
+    // miner holding the card, so calling the initial state MINING would be a lie
+    // that /health reports until the first request happens to correct it.
+    this.state = opts.state || MINING;
     this.inFlight = 0;
     this.lastRequestAt = this.now();
     this._transition = null;   // single-flight: one switch at a time

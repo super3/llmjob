@@ -38,7 +38,7 @@ const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
 const { planLlmInstances } = require('../shared/llmPlan');
 const { pickModel, ctxLadder, planAutoMode } = require('../shared/models');
 const { LlmFleet } = require('../main/llmFleet');
-const { createAutoGate } = require('../main/autoGate');
+const { createAutoGate, createServeGate } = require('../main/autoGate');
 const { JobWorker } = require('../main/jobWorker');
 const { resolvePlan, normalizeMode } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote } = require('../shared/platform');
@@ -862,6 +862,24 @@ async function run(argv) {
       }).start();
       log('auto:       serving on :' + (settings.gatePort == null ? LLM.gate.port : settings.gatePort) + ' — '
         + Math.round(LLM.gate.quietMs / 1000) + 's with no requests hands the GPU back to mining');
+    } else if (plan.llm && !miner) {
+      // Serving with the card to ourselves. There is nothing to switch, but the
+      // endpoint must not move: the gate port is THE documented endpoint, and it
+      // used to exist only in auto -- so choosing llm mode relocated callers to
+      // llama-server's own port without telling them.
+      const gp = settings.gatePort == null ? LLM.gate.port : settings.gatePort;
+      auto = createServeGate({
+        port: gp,
+        upstreamPort: () => {
+          const url = llm && llm.webUrl && llm.webUrl();
+          const p = url ? Number(new URL(url).port) : NaN;
+          return Number.isFinite(p) && p > 0 ? p : LLM.port;
+        },
+        modelName: serveLlmState.model.name,
+        isLlmReady: () => !!(llm && llm.readyCount && llm.readyCount() > 0),
+        log,
+      }).start();
+      log('llm:        serving on :' + gp);
     }
 
     // Write live stats JSON for external consumers (HiveOS h-stats.sh reads this

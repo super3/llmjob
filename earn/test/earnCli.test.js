@@ -229,6 +229,7 @@ function load() {
     m.PearlEngine = require('../src/main/pearlEngine').PearlEngine;
     m.autoGate = require('../src/main/autoGate');
     m.autoGate.createAutoGate.instances = [];
+    m.autoGate.createServeGate.instances = [];
     m.pearlCore = require('../src/main/pearlCore');
     m.LlmManager = require('../src/main/llmManager').LlmManager;
     m.LlmEngineManager = require('../src/main/llmEngineManager').LlmEngineManager;
@@ -1198,7 +1199,22 @@ jest.mock('../src/main/autoGate', () => {
     return inst;
   });
   createAutoGate.instances = [];
-  return { createAutoGate };
+  // llm mode stands up the same server with nothing to switch, so the CLI can
+  // keep one `auto` variable and one teardown path.
+  const createServeGate = jest.fn((opts) => {
+    const inst = {
+      opts,
+      started: false,
+      isSwitching() { return false; },
+      gate: { state: 'SERVING', inFlight: 0, quietMs: Infinity, quietFor: () => 0 },
+      start() { this.started = true; return this; },
+      stop: jest.fn(),
+    };
+    createServeGate.instances.push(inst);
+    return inst;
+  });
+  createServeGate.instances = [];
+  return { createAutoGate, createServeGate };
 });
 
 
@@ -1543,4 +1559,48 @@ test('the stats file records what the node is doing, not just its counters', asy
 
   m.PearlEngine.instances[0].emit('stopped', 0);
   await expect(p).resolves.toBe(0);
+});
+
+test('llm mode serves on the gate port, not on llama-server\'s own', async () => {
+  // The gate used to exist only in auto, so choosing llm mode silently moved
+  // callers from the documented endpoint to llama-server's port -- at exactly the
+  // moment the operator had committed to serving.
+  const m = load();
+  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+  m.LlmEngineManager.serverInstalled = true;
+  m.LlmEngineManager.modelInstalled = true;
+  m.LlmEngineManager.mmprojInstalled = true;
+  const p = m.run(['--mode', 'llm', '--no-update', '--no-serve', '--gate-port', '0']);
+  await settle();
+  const llm = m.LlmManager.instances[0];
+  llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+  await settle();
+
+  expect(m.autoGate.createAutoGate.instances).toHaveLength(0);   // nothing to switch
+  const gate = m.autoGate.createServeGate.instances[0];
+  expect(gate.started).toBe(true);
+  expect(gate.opts.port).toBe(0);
+  expect(gate.opts.isLlmReady()).toBe(true);
+  expect(gate.opts.upstreamPort()).toBe(8080);
+  expect(allOut()).toContain('serving on :0');
+
+  // 1, not 0: an LLM-only run whose fleet dies is never a clean exit, or a
+  // Restart=on-failure supervisor would never bring the node back.
+  llm.emit('stopped', 0);
+  await expect(p).resolves.toBe(1);
+});
+
+test('the llm-mode gate falls back to the configured port before the fleet is up', async () => {
+  const m = load();
+  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+  m.LlmEngineManager.serverInstalled = true;
+  m.LlmEngineManager.modelInstalled = true;
+  m.LlmEngineManager.mmprojInstalled = true;
+  const p = m.run(['--mode', 'llm', '--no-update', '--no-serve', '--gate-port', '0']);
+  await settle();
+  const gate = m.autoGate.createServeGate.instances[0];
+  expect(gate.opts.upstreamPort()).toBe(LLM.port);   // nothing ready yet
+
+  m.LlmManager.instances[0].emit('stopped', 0);
+  await expect(p).resolves.toBe(1);
 });

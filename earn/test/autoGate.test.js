@@ -182,3 +182,54 @@ describe('createAutoGate: a restart that fails must not be swallowed', () => {
     expect(auto.isSwitching()).toBe(false);
   });
 });
+
+describe('createServeGate: a gate with nothing to switch', () => {
+  const { createServeGate } = require('../src/main/autoGate');
+
+  function mkServe(over = {}) {
+    return createServeGate(Object.assign({
+      port: 0, upstreamPort: 8080, modelName: 'M', isLlmReady: () => true,
+    }, over));
+  }
+
+  test('starts SERVING, because the model is already loaded', () => {
+    // MINING would be a lie that /health reports until the first request happens
+    // to correct it.
+    expect(mkServe().gate.state).toBe('SERVING');
+  });
+
+  test('never hands the card back, however long it stays quiet', () => {
+    // There is no miner to hand it TO, and releasing would report MINING while
+    // the model is loaded and answering.
+    const g = mkServe().gate;
+    let t = 0;
+    g.now = () => t;
+    g.lastRequestAt = 0;
+    t = 86400000;                      // a day of silence
+    expect(g.quietFor()).toBe(86400000);
+    expect(g.shouldRelease()).toBe(false);
+  });
+
+  test('no engine death is ever ours', () => {
+    // The CLI reads this to decide whether a 'stopped' event was deliberate.
+    expect(mkServe().isSwitching()).toBe(false);
+  });
+
+  test('starts and stops its server', async () => {
+    const a = mkServe().start();
+    await new Promise((r) => a.server.server.once('listening', r));
+    expect(a.server.server.listening).toBe(true);
+    a.stop();
+  });
+
+  test('defaults the log to a no-op', () => {
+    expect(() => createServeGate({ port: 0, isLlmReady: () => false })).not.toThrow();
+  });
+
+  test('constructs with no options at all', () => {
+    const a = createServeGate();
+    expect(a.gate.state).toBe('SERVING');
+    expect(a.isSwitching()).toBe(false);
+    expect(() => a.server.log('anything')).not.toThrow();
+  });
+});
