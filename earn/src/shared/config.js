@@ -133,7 +133,32 @@ const LLM = {
   startRetryMs: 2000,
   // Keep this much VRAM free for the miner when co-running (the budgeter caps
   // GPU layers so the model fits in whatever's left).
-  miningReserveMb: 2048,
+  // Demand-driven auto mode (see shared/llmGate). The gate owns this port and
+  // keeps llama-server behind it, so callers have one stable address whether the
+  // card is currently mining or serving.
+  //
+  // 8000 rather than the LLM's own 8080: the gate is the public endpoint and the
+  // model stays where it already listens, so nothing that talks to llama-server
+  // directly has to move.
+  //
+  // 60s of quiet before handing the card back. Long enough that a conversational
+  // caller does not pay the ~4s reload between turns, short enough that an idle
+  // node is mining within a minute. The reload cost is real: a restart drops the
+  // prompt cache, so a follow-up in a long conversation re-prefills.
+  gate: { port: 8000, idleMs: 60000 },
+  // What to keep free for the miner when deciding whether a model can co-run.
+  //
+  // Measured, not guessed: the rank-128 profile asks for 2,081 MiB and the CUDA
+  // context it runs in costs a further ~500, so ~2,581 in practice. 2,048 was
+  // optimistic by exactly that ~500, and on a card near the boundary it decides
+  // the wrong way -- a 5090 with 32,589 MiB free computes Qwen3.8 as co-runnable
+  // (30,150 + 2,048 = 32,198) when the real total is 32,731 and does not fit. The
+  // node then starts both and one of them loses the allocation.
+  //
+  // Rounded up to 2,600 for a little headroom. Raising it only ever makes the
+  // co-run decision more conservative, which is the safe direction: the failure
+  // it prevents is an OOM, the failure it can cause is idling a little VRAM.
+  miningReserveMb: 2600,
   // llama-server binary per platform (bundled/downloaded like the miner engine).
   serverBin: { win32: 'llama-server.exe', linux: 'llama-server', darwin: 'llama-server' },
   // Where to fetch the llama-server build if it isn't bundled. llama.cpp embeds
