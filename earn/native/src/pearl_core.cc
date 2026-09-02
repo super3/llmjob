@@ -205,12 +205,38 @@ Napi::Value PearlCore::SetJob(const Napi::CallbackInfo &info) {
   return env.Undefined();
 }
 
+// Release a thread-safe function once and only once.
+//
+// Release() does not clear the handle, so `if (f) f.Release()` releases again on
+// the next call -- and napi asserts rather than returning an error, taking the
+// whole process with it. Reached by stopping twice, or by stopping and then
+// letting the destructor run.
+static void release_tsfn(Napi::ThreadSafeFunction &f) {
+  if (!f) return;
+  f.Release();
+  f = Napi::ThreadSafeFunction();
+}
+
 Napi::Value PearlCore::Stop(const Napi::CallbackInfo &info) {
   running_ = false;
   if (worker_.joinable()) worker_.join();
-  if (on_hit_) on_hit_.Release();
-  if (on_hashrate_) on_hashrate_.Release();
-  if (on_error_) on_error_.Release();
+  release_tsfn(on_hit_);
+  release_tsfn(on_hashrate_);
+  release_tsfn(on_error_);
+  // Free the device context HERE, not only in the destructor.
+  //
+  // The destructor runs when V8 finalises the wrapper, which is whenever it next
+  // feels like collecting -- so a stopped miner went on holding its VRAM. That is
+  // invisible while mining is the only thing on the card, and fatal the moment
+  // something else wants the memory: a node switching from mining to a large LLM
+  // measured 2,648 MiB still held 20 s after stop(), read 29,959 MiB free where
+  // 30,720 was needed, and silently served a smaller model instead.
+  //
+  // stop() is documented as "release the GPU"; this makes it true.
+  if (ctx_) {
+    pearl_host_destroy(ctx_);
+    ctx_ = nullptr;
+  }
   return info.Env().Undefined();
 }
 
