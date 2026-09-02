@@ -1137,6 +1137,25 @@ describe('hashrate sparkline scale', () => {
     expect(quiet).toBeGreaterThan(0);
   });
 
+  // The jitter is anti-correlated (a 0.5s window that grabs a 13th batch borrows
+  // it from the next), so a short centred mean cancels most of it. Measured on the
+  // live app: 7.2px of 56 raw, 2.2px through a five-point window.
+  it('smooths the alternating quantisation, not just the zoom', async () => {
+    const { api, cbs } = makeFullApi();
+    await boot({ api });
+    setInput($('addr-input'), ADDR);
+    click($('btn-start'));
+
+    // Perfectly alternating, which is the worst case and close to what the
+    // real -0.345 lag-1 autocorrelation produces.
+    const zig = Array.from({ length: 30 }, (_, i) => (i % 2 ? 224 : 228));
+    cbs.stats({ total: '226.0', acceptedLabel: '9', uptime: '5m', estDay: '$2.50', gpu: 'g', points: zig });
+    const smoothed = spread($('mk-line').getAttribute('d'));
+
+    // A five-point centred mean of a pure alternation is nearly constant, so
+    // this should collapse to almost nothing.
+    expect(smoothed).toBeLessThan(H * 0.1);
+  });
   it('still gives a real drop the full chart', async () => {
     const { api, cbs } = makeFullApi();
     await boot({ api });
