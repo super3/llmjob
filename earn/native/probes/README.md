@@ -300,7 +300,38 @@ The code is not kept: the kernel signature change and the per-allocation descrip
 are an always-on cost for a path that is off and slower.
 
 
-## Where the 2.7x actually lives: energy, not instructions
+## Where the 2.7x actually lives: operand traffic, and it costs ~450 W
+
+**Corrected.** The section that followed originally claimed the fold was at 85% of
+pure `mma` per cycle and lost only on clock. That rested on an Nsight profile of a
+single 2.9 ms pure-`mma` launch, which is far too short to reach the power cap -- it
+ran at a boost clock the fold never sees. Measured properly, running back to back
+until sustained:
+
+| | throughput | power | clock |
+|---|---|---|---|
+| pure `mma`, fold geometry | 387.7 T-MAC/s | **149 W** | 1744 MHz |
+| the fold | ~145 TH/s | **600 W** | ~1230 MHz |
+
+Pure `mma` does 2.7x the work on a QUARTER of the power, and is not power-limited at
+all. So the fold's ~450 W of extra draw is bought entirely by moving operands:
+104 GB through L2 and 412 GB through shared per launch, or 1.98 and 7.8 TB/s. At
+plausible energies per byte those two land in the right order of magnitude to
+account for the gap; nothing else in the kernel is close.
+
+Which of the two dominates is answered by the warp-tile result below: a square warp
+tile cut instructions per `mma` by 19% and shared reads per `mma` by a third, and
+bought **2%**. Shared traffic is therefore not the expensive half. That leaves L2 --
+and L2 traffic per MAC is `1/bM + 1/bN`, fixed by the 128x256 BLOCK tile, which is
+pinned by the accumulator's claim on the register file. A 256x256 tile needs 65536
+accumulator registers, the entire file, at any thread count.
+
+**That is the wall, stated precisely.** Not instructions, not occupancy, not the
+launch shape, not the instruction mix: operand bytes per MAC, bounded by registers.
+Cutting it needs an accumulation scheme that does not hold the whole tile in
+registers for the whole of k -- a different algorithm, not a different parameter.
+
+## The earlier framing (kept for the record): instructions per mma
 
 Profiling pure `mma` and the fold with the same metrics finally reconciles the
 numbers, and the answer is not what the earlier notes assumed.
