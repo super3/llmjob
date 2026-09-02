@@ -278,6 +278,24 @@ static_assert(PEARL_COLS_COUNT == (1u << pearl_popcount_ce(PEARL_COLS_MASK)),
 // units -- all 32 banks -- at zero bytes of padding. XOR is an involution, so
 // the staging store and the fragment load apply the same transform.
 #define PEARL_SB_STRIDE 128
+
+// The geometry the fold kernel is COMPILED for, rather than passed at runtime.
+//
+// rank is the consensus floor and k = 16*rank is the smallest the sanity checks
+// allow, so neither ever varies in practice -- and carrying them as kernel
+// arguments cost 4.4% of throughput. quads, ksteps and the chunk count were all
+// runtime with them, so the k-loop was unrolled over a bound ptxas could not
+// see, and the kernel sat pinned at its 128-register cap; the same loop with
+// these as constants needs 120 and schedules better. The host refuses any other
+// rank or k rather than silently folding the wrong shape.
+#define PEARL_FOLD_RANK 128u
+#define PEARL_FOLD_K 2048u
+#define PEARL_FOLD_CHUNKS (PEARL_FOLD_K / PEARL_FOLD_RANK)
+
+// Threads per fold block, frozen for the same reason: it makes the staging trip
+// counts compile-time. Sixteen warps in a 4x4 grid over the 128x256 tile, which
+// is what PEARL_WARP_ROWS and PEARL_WMMA_COL_BLK already assume.
+#define PEARL_FOLD_THREADS 512u
 // Full-chunk stages in the double buffer.
 #define PEARL_STAGE_BUFS 2
 
