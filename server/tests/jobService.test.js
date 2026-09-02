@@ -994,6 +994,43 @@ describe('JobService', () => {
       expect(await jobService.assignJobsToNode('n-bare', 5)).toEqual([]);
     });
 
+    it('a private request only pins to its own nodes', async () => {
+      // A private job may only be served by its owner's nodes, so resolving the
+      // name against the whole fleet would pin it to a model no eligible node
+      // runs -- and the caller would wait out the gateway budget for nothing.
+      await db.query('INSERT INTO nodes (node_id, public_key, last_seen, model, user_id) VALUES ($1,$2,$3,$4,$5)',
+        ['n-theirs', 'k1', Date.now(), 'Qwen3.8-27B-UD-Q4_K_XL', 'someone-else']);
+      const job = await jobService.createJob({
+        prompt: 'p', userId: 'me', visibility: 'private', requestedModel: 'Qwen3.8-27B-UD-Q4_K_XL',
+      });
+      const r = await db.query('SELECT model FROM jobs WHERE id = $1', [job.id]);
+      expect(r.rows[0].model).toBeNull();   // unreachable for me, so not pinned
+    });
+
+    it('a private request pins when the model is on its own node', async () => {
+      await db.query('INSERT INTO nodes (node_id, public_key, last_seen, model, user_id) VALUES ($1,$2,$3,$4,$5)',
+        ['n-mine', 'k1', Date.now(), 'Qwen3.8-27B-UD-Q4_K_XL', 'me']);
+      const job = await jobService.createJob({
+        prompt: 'p', userId: 'me', visibility: 'private', requestedModel: 'Qwen3.8-27B-UD-Q4_K_XL',
+      });
+      const r = await db.query('SELECT model FROM jobs WHERE id = $1', [job.id]);
+      expect(r.rows[0].model).toBe('Qwen3.8-27B-UD-Q4_K_XL');
+    });
+
+    it('prefers the spelling most of the fleet uses', async () => {
+      // Matching is case-insensitive but the poll filter compares exactly, so
+      // WHICH spelling is stored decides who can take the job. An unordered
+      // LIMIT 1 could pin to a lone typo and exclude everyone else.
+      await liveNode('n-1', 'Qwen3.8-27B-UD-Q4_K_XL');
+      await liveNode('n-2', 'Qwen3.8-27B-UD-Q4_K_XL');
+      await liveNode('n-typo', 'qwen3.8-27b-ud-q4_k_xl');
+      const job = await jobService.createJob({
+        prompt: 'p', userId: 'u', requestedModel: 'QWEN3.8-27B-UD-Q4_K_XL',
+      });
+      const r = await db.query('SELECT model FROM jobs WHERE id = $1', [job.id]);
+      expect(r.rows[0].model).toBe('Qwen3.8-27B-UD-Q4_K_XL');
+    });
+
     it('an explicit node target outranks the model pin', async () => {
       // Both given, and they disagree: the target runs Qwen, the caller asked for
       // Gemma. Filtered by model it was excluded from its own target; filtered by

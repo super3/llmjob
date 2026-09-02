@@ -873,7 +873,14 @@ async function run(argv) {
         startLlm: async () => {
           // The miner has exited but the driver may not have reclaimed its VRAM
           // yet; plan against the card as it will be, not as it momentarily reads.
-          await waitForFreeVram(autoPlan.model.vramFullMb);
+          // Ask for exactly what the planner will demand a moment later, using the
+          // planner's own function so the two cannot drift apart. Waiting on
+          // vramFullMb was waiting for LESS: the planner refuses below minVramMb
+          // (the measured cost plus a margin so we never spawn at the edge), so
+          // the wait could hand control back the instant there was ALMOST enough
+          // and the refusal that followed read as "not enough VRAM" on a card that
+          // would have been ready a second later. Reserve is 0: nothing co-resides.
+          await waitForFreeVram(requiredFreeMb(autoPlan.model, 0));
           // Sized against the whole card, and pinned to the tier already chosen:
           // nothing is co-resident in demand mode.
           llm = await startLlm(settings, 0, autoPlan.model, false);
@@ -918,6 +925,7 @@ async function run(argv) {
           finish(1);
         },
         port: settings.gatePort == null ? LLM.gate.port : settings.gatePort,
+        host: settings.gateHost || undefined,
         // NOT LLM.port: llmFleet probes upward from it when it is busy, so the
         // server can land on 8081+ while the gate still proxies to 8080 and
         // every request 502s. Ask the fleet where it actually bound.
@@ -971,6 +979,7 @@ async function run(argv) {
       const gp = settings.gatePort == null ? LLM.gate.port : settings.gatePort;
       auto = createServeGate({
         port: gp,
+        host: settings.gateHost || undefined,
         upstreamPort: () => {
           const url = llm && llm.webUrl && llm.webUrl();
           const p = url ? Number(new URL(url).port) : NaN;

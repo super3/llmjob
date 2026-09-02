@@ -208,7 +208,8 @@ class JobService {
     // request for "gpt-4" once came back looking like the fleet had served it.
     // Pinning is safe: it only narrows which node may take the job.
     const pinnedModel = await this._resolveModelPin(
-      jobData.requestedModel != null ? jobData.requestedModel : jobData.model
+      jobData.requestedModel != null ? jobData.requestedModel : jobData.model,
+      job.visibility === 'private' ? job.userId : null
     );
 
     await this.db.query(
@@ -450,14 +451,24 @@ class JobService {
   // out of /v1/models is the node's own filename stem and nobody types that
   // exactly. Returns the node's spelling, not the caller's, so the poll query
   // compares like with like.
-  async _resolveModelPin(requested) {
+  // `ownerUserId` is set for a private-visibility request, whose job may only be
+  // served by its owner's nodes: resolving against the whole fleet would pin it
+  // to a model no eligible node runs, and the caller would wait out the gateway
+  // budget for nothing.
+  async _resolveModelPin(requested, ownerUserId) {
     const want = typeof requested === 'string' ? requested.trim() : '';
     if (!want) return null;
+    // Matching is case-insensitive but the poll filter compares exactly, so WHICH
+    // spelling we store decides which nodes can take the job. Rank by how many
+    // nodes use each spelling and break ties deterministically -- an unordered
+    // LIMIT 1 could pin to a lone typo and exclude the rest of the fleet, and the
+    // same request could resolve differently on two calls.
     const r = await this.db.query(
-      `SELECT model FROM nodes
+      `SELECT model, COUNT(*)::int AS nodes FROM nodes
         WHERE last_seen >= $1 AND model IS NOT NULL AND lower(model) = lower($2)
-        LIMIT 1`,
-      [Date.now() - NODE_OFFLINE_MS, want]
+          AND ($3::text IS NULL OR user_id = $3)
+        GROUP BY model ORDER BY nodes DESC, model ASC LIMIT 1`,
+      [Date.now() - NODE_OFFLINE_MS, want, ownerUserId == null ? null : ownerUserId]
     );
     return r.rows.length ? r.rows[0].model : null;
   }

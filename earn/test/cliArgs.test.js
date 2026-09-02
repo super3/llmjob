@@ -252,3 +252,31 @@ describe('--gate-port', () => {
     expect(parseCliArgs(['--address', ADDR]).settings.gatePort).toBeNull();
   });
 });
+
+describe('--gate-host', () => {
+  const errs = () => [];
+
+  test('defaults to null, letting the gate pick loopback', () => {
+    expect(buildSettings({}, errs(), true, false).gateHost).toBeNull();
+  });
+
+  test('carries an explicit bind address through', () => {
+    expect(buildSettings({ '--gate-host': '0.0.0.0' }, errs(), true, false).gateHost).toBe('0.0.0.0');
+  });
+
+  test('trims the value', () => {
+    expect(buildSettings({ '--gate-host': '  1.2.3.4 ' }, errs(), true, false).gateHost).toBe('1.2.3.4');
+  });
+
+  test('rejects an empty value rather than reading it as all interfaces', () => {
+    // `--gate-host ""` meaning 0.0.0.0 would be the opposite of what someone
+    // clearing the setting expects.
+    const errors = [];
+    buildSettings({ '--gate-host': '   ' }, errors, true, false);
+    expect(errors.join(' ')).toContain('--gate-host');
+  });
+
+  test('is listed in the usage text', () => {
+    expect(USAGE).toContain('--gate-host');
+  });
+});
