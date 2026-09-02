@@ -1129,6 +1129,12 @@ extern "C" __global__ __launch_bounds__(512) void pearl_tile_fold_wmma(
 // Slot p of a thread's walk: source and destination are the same base + stride
 // the whole-chunk macro uses, just evaluated at one p instead of looped over all
 // of them. Threads whose walk is shorter than the k-step count simply skip.
+// Diagnostic only: PEARL_ABLATE_STAGING makes the copies vanish while leaving every
+// mma, ldmatrix and barrier in place, which prices the staging layer. The fold then
+// computes on whatever is in shared and its output is meaningless -- never ship this.
+#ifdef PEARL_ABLATE_STAGING
+#define PEARL_ISSUE_SLOT(cc, p) {}
+#else
 #define PEARL_ISSUE_SLOT(cc, p)                                                       \
   {                                                                                   \
     const uint32_t k0_ = (cc) * rank;                                                 \
@@ -1140,6 +1146,7 @@ extern "C" __global__ __launch_bounds__(512) void pearl_tile_fold_wmma(
       pearl_cp_async16(sAa + ((cc) & 1u) * buf_bytes + adst0 + (p) * dstStep,          \
                        Aprime + asrc0 + k0_ + (p) * srcStep);                          \
   }
+#endif
 
   // The transcripts ride in registers until the very end. Writing them to
   // global at each chunk boundary turned one 64-byte store per region into
@@ -1160,7 +1167,9 @@ extern "C" __global__ __launch_bounds__(512) void pearl_tile_fold_wmma(
     // what makes it safe to issue the next chunk into it with no second
     // barrier. Those copies fly underneath this chunk's compute.
     pearl_cp_async_wait();
+#ifndef PEARL_ABLATE_BARRIER
     __syncthreads();
+#endif
     // The next chunk is staged a slot at a time inside the k-loop below, so
     // that compute starts before the copies are asked for. A warp that owns no
     // tile still has to issue its share -- staging is block-wide cooperative --
@@ -1252,7 +1261,13 @@ extern "C" __global__ __launch_bounds__(512) void pearl_tile_fold_wmma(
         const uint32_t t1 = pearl_xor3((uint32_t)l[3], (uint32_t)r[0], (uint32_t)r[1]);
         const uint32_t t2 = pearl_xor3((uint32_t)r[2], (uint32_t)r[3], t0);
         uint32_t x = t1 ^ t2;
+#ifdef PEARL_ABLATE_TRANSCRIPT
+        // Diagnostic only: skip the warp reduction and the slot capture, keeping
+        // every mma and ldmatrix. Prices the readout layer. Output is meaningless.
+        x = x;
+#else
         x = pearl_warp_xor(x);
+#endif
         // The reduction leaves x in every lane, so the lane that owns this
         // (region, bucket) slot simply keeps it. The slot select is a small
         // unrolled compare chain, not jr[slot]: an index only known at run

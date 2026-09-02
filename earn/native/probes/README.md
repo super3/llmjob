@@ -87,3 +87,52 @@ roughly half the power budget -- but hashrate collapses, because L2 is in that c
 domain and the fold pulls 2.12 TB/s through it. At 2659 MHz with bandwidth intact the
 kernel would be around 368 TH/s. So **L2 traffic per MAC is the thing to attack**;
 DRAM traffic is already irrelevant.
+
+## The ablation table does not transfer from Ada
+
+Built with `-DPEARL_ABLATE_BARRIER`, `-DPEARL_ABLATE_STAGING`, `-DPEARL_ABLATE_TRANSCRIPT`.
+These produce WRONG results by construction and exist only to price each layer.
+
+| build | 5090 | clock | 4090 (tuning log) |
+|---|---|---|---|
+| shipped | 155.1 | 1281 MHz | 216.0 |
+| barrier deleted | 155.3 (**0%**) | | 246.7 (14.2%) |
+| transcript deleted | 155.5 (1.4%) | 1274 MHz | |
+| staging deleted | 203.0 (**24%**) | 1514 MHz | 242.6 (~13%) |
+| staging + transcript | 206.0 | 1492 MHz | |
+
+**The two cards have opposite bottlenecks.** On Ada the block-wide barrier was the
+biggest single item at 14.2% and staging cost ~13%. On Blackwell the barrier is free
+-- consistent with its 1.11 barrier-stall ratio against Ada's 2.47 -- and staging
+costs 24%, nearly double. So the tuning log's "biggest identified item: the block-wide
+barrier" and its proposed half-chunk pipelining do not apply here; chasing them on
+this card would have been wasted work.
+
+Note the clock column: deleting staging lifts the SM clock from 1281 to 1514 MHz
+inside the same 600 W. Staging is not costing time so much as costing *power*, and
+power is costing clock.
+
+### TMA is available and works
+
+`cp.async.bulk.shared::cluster.global` compiles for sm_120 AND executes correctly on
+the 5090 (verified byte-exact, 2048/2048). Ada has no such instruction, so this is a
+genuinely Blackwell-only lever: one bulk copy can replace the 3072 separate 16-byte
+`cp.async` requests a block issues per chunk, along with their address arithmetic --
+which is where the 6.3e9 ALU instructions (2.9 per MMA) are going.
+
+The kernel's manual XOR swizzle (16-byte unit q of row r stored at q XOR (r mod 8))
+is exactly TMA's SWIZZLE_128B pattern, so the shared layout would not have to change.
+
+## Tile geometry is already optimal on Blackwell
+
+The register file is 65536 per SM on sm_120, the same as Ada, so the accumulator
+bound the tuning log derives holds unchanged. Measured:
+
+| tile | regs | spill | TH/s |
+|---|---|---|---|
+| 128x256 (shipped) | 128 | 0 | 154.7 |
+| 256x128 | 128 | 0 | 154.3 |
+| 256x256 | - | 5456 B | fails |
+| 128x512 | - | 1416 B | fails |
+
+Threads per block: 256 -> 138.6, 512 -> 153.6, 1024 -> exceeds registers. 512 stays.
