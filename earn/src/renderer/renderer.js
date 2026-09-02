@@ -384,6 +384,24 @@
     if (!points || !points.length) return { line: FLAT_LINE, area: FLAT_AREA };
     let lo = Math.min.apply(null, points);
     let hi = Math.max.apply(null, points);
+    // Don't let the axis zoom into noise. The range is taken from the visible
+    // points alone, so once a rig has been up long enough that the window no
+    // longer holds the ramp from zero, the only thing left to scale against is
+    // the wiggle — and a steady card drawing a flat 226 TH/s rendered as a
+    // violent sawtooth, because a ~1% variation was being stretched over the
+    // full 56px. It reads as an unstable rig when nothing is wrong.
+    //
+    // A floor of 10% of the mean is what separates the two cases: normal
+    // variation (a 0.5s window catching 12 batches or 13, and 3 operand reseeds
+    // or 4) stays visibly small, while anything worth noticing — a card
+    // dropping out, a job stall, mining stopping — still fills the chart.
+    const mean = points.reduce((a, b) => a + b, 0) / points.length;
+    const minSpan = Math.abs(mean) * 0.1;
+    if (hi - lo < minSpan) {
+      const mid = (hi + lo) / 2;
+      lo = mid - minSpan / 2;
+      hi = mid + minSpan / 2;
+    }
     const pad = (hi - lo) * 0.2 || Math.max(1, hi * 0.1);
     lo -= pad; hi += pad;
     const span = (hi - lo) || 1;
