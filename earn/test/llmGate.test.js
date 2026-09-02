@@ -175,3 +175,35 @@ test('the default readiness probe reports not-ready', async () => {
   // still uses the default probe, so a second wake re-runs the transition
   expect(await g.ensureServing()).toBe(true);
 });
+
+describe('LlmGate: a failed wake must put the miner back', () => {
+  test('startLlm throwing restarts the miner it already stopped', async () => {
+    const { g, calls } = mkGate({ startLlm: async () => { throw new Error('no vram'); } });
+    await expect(g.ensureServing()).rejects.toThrow('no vram');
+    // Without the restart the node ran NEITHER engine: the release timer only
+    // fires from SERVING and ensureMining() short-circuits on MINING, so nothing
+    // recovered it. It sat at zero while /health still answered.
+    expect(calls).toEqual(['stopMiner', 'startMiner']);
+    expect(g.state).toBe(MINING);
+  });
+
+  test('a miner that also fails to restart still settles in MINING', async () => {
+    const { g } = mkGate({
+      startLlm: async () => { throw new Error('no vram'); },
+      startMiner: async () => { throw new Error('cannot restart either'); },
+    });
+    // The original error is what the caller needs; the restart is best-effort.
+    await expect(g.ensureServing()).rejects.toThrow('no vram');
+    expect(g.state).toBe(MINING);
+  });
+
+  test('a gate with no startMiner configured does not throw on a failed wake', async () => {
+    const g = new LlmGate({
+      isLlmReady: () => false,
+      startLlm: async () => { throw new Error('no vram'); },
+      stopMiner: async () => {},
+    });
+    await expect(g.ensureServing()).rejects.toThrow('no vram');
+    expect(g.state).toBe(MINING);
+  });
+});

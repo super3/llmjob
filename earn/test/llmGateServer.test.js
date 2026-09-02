@@ -319,3 +319,29 @@ describe('probes never refresh the idle clock', () => {
     s.close(); up.close();
   }, 10000);
 });
+
+describe('LlmGateServer: the upstream port is resolved per request', () => {
+  // llmFleet probes upward from the base port when it is busy, so a port read
+  // once at construction can be stale by the time the first request lands --
+  // and a FOREIGN process on the base port answers in the model's place.
+  test('a function upstreamPort is called on every forward', async () => {
+    const a = http.createServer((req, res) => { res.writeHead(200); res.end('A'); });
+    const b = http.createServer((req, res) => { res.writeHead(200); res.end('B'); });
+    await new Promise((r) => a.listen(0, '127.0.0.1', r));
+    await new Promise((r) => b.listen(0, '127.0.0.1', r));
+
+    let target = a.address().port;
+    const gate = new LlmGate({ isLlmReady: () => true });
+    gate.state = 'SERVING';
+    const gs = new LlmGateServer({ port: 0, upstreamPort: () => target, gate });
+    gs.start();
+    await new Promise((r) => gs.server.once('listening', r));
+    const port = gs.server.address().port;
+
+    expect((await post(port, '/v1/chat/completions', '{}')).body).toBe('A');
+    target = b.address().port;            // the model relanded on another port
+    expect((await post(port, '/v1/chat/completions', '{}')).body).toBe('B');
+
+    gs.stop(); a.close(); b.close();
+  }, 10000);
+});

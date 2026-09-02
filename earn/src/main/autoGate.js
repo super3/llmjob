@@ -15,6 +15,7 @@ function createAutoGate(opts) {
   const {
     miner, startLlm, stopLlm, isLlmReady, startMinerArgs,
     port, upstreamPort, modelName, quietMs, log = () => {},
+    onMinerFailed = () => {},
     minerStopTimeoutMs = 15000, llmReadyTimeoutMs = 180000,
   } = opts;
 
@@ -39,23 +40,34 @@ function createAutoGate(opts) {
 
   const startMiner = async () => {
     switching = true;
-    try { miner.start(startMinerArgs()); } finally { switching = false; }
+    let ok;
+    try { ok = miner.start(startMinerArgs()); } finally { switching = false; }
+    // Same contract as the up-front start in the CLI: false means the core did
+    // not construct, so no socket, no job and no 'stopped' event is coming.
+    // Dropping it here left the node believing it had resumed mining when the
+    // card was in fact doing nothing, and telemetry kept reporting the last
+    // hashrate forever because only a 'status' event overwrites it.
+    if (ok === false) onMinerFailed();
   };
 
   // Wait for the server to actually answer, not merely to have been spawned: the
   // gate is holding a caller's request open across this, so returning early would
   // forward it into a socket that is not listening yet.
   const wrappedStartLlm = async () => {
-    const fleet = await startLlm();
-    if (!fleet) throw new Error('llama-server did not start');
-    if (!(fleet.readyCount && fleet.readyCount() > 0)) {
-      await new Promise((resolve, reject) => {
-        const t = setTimeout(() => reject(new Error('llama-server was not ready in time')),
-          llmReadyTimeoutMs);
-        fleet.once('ready', () => { clearTimeout(t); resolve(); });
-      });
-    }
-    switching = false;
+    // finally, not a trailing assignment: on a throw the flag stayed true, and a
+    // stuck `switching` makes the CLI's miner-'stopped' handler early-return
+    // forever, so the process could neither exit nor be restarted by systemd.
+    try {
+      const fleet = await startLlm();
+      if (!fleet) throw new Error('llama-server did not start');
+      if (!(fleet.readyCount && fleet.readyCount() > 0)) {
+        await new Promise((resolve, reject) => {
+          const t = setTimeout(() => reject(new Error('llama-server was not ready in time')),
+            llmReadyTimeoutMs);
+          fleet.once('ready', () => { clearTimeout(t); resolve(); });
+        });
+      }
+    } finally { switching = false; }
   };
 
   const wrappedStopLlm = async () => {

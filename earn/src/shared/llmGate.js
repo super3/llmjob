@@ -86,7 +86,16 @@ class LlmGate extends EventEmitter {
       if (this.startLlm) await this.startLlm();
       this._setState(SERVING);
       return true;
-    })().catch((e) => { this._setState(MINING); throw e; })
+    })().catch(async (e) => {
+      // stopMiner() ran before startLlm(), so the miner is provably DOWN here.
+      // Relabelling the state MINING without restarting it leaves the node
+      // running neither engine, and nothing recovers on its own: the release
+      // timer only fires from SERVING, and ensureMining() short-circuits on
+      // MINING. The node would sit at zero, alive and answering /health.
+      if (this.startMiner) { try { await this.startMiner(); } catch { /* nothing left to try */ } }
+      this._setState(MINING);
+      throw e;
+    })
       .finally(() => { this._transition = null; });
     return this._transition;
   }

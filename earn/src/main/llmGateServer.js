@@ -57,9 +57,15 @@ class LlmGateServer {
     res.end(buf);
   }
 
+  // The upstream port may be a function: the fleet chooses its port at spawn
+  // time, so a value read once at construction can be stale by the first request.
+  _port() {
+    return typeof this.upstreamPort === 'function' ? this.upstreamPort() : this.upstreamPort;
+  }
+
   _forward(req, res, body) {
     const opts = {
-      host: this.upstreamHost, port: this.upstreamPort,
+      host: this.upstreamHost, port: this._port(),
       method: req.method, path: req.url, headers: pickHeaders(req.headers),
     };
     if (body) opts.headers['content-length'] = Buffer.byteLength(body);

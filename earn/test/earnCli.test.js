@@ -1399,3 +1399,73 @@ test('a fatal engine start closes the demand gate rather than leaking its port',
   expect(gate.started).toBe(true);
   expect(gate.stop).toHaveBeenCalled();
 });
+
+test('the gate proxies to the port the fleet actually bound, not the default', async () => {
+  // llmFleet probes upward from LLM.port when it is busy, so a gate pinned to the
+  // constant can dial a port the model is not on. Worse than a 502: a foreign
+  // process sitting on 8080 answers in the model's place, through our endpoint.
+  const m = load();
+  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+  m.LlmEngineManager.serverInstalled = true;
+  m.LlmEngineManager.modelInstalled = true;
+  m.LlmEngineManager.mmprojInstalled = true;
+  const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
+  await settle();
+  const gate = m.autoGate.createAutoGate.instances[0];
+
+  // Nothing serving yet: fall back to the configured port.
+  expect(gate.opts.upstreamPort()).toBe(LLM.port);
+
+  const waking = gate.opts.startLlm();
+  await settle();
+  const llm = m.LlmManager.instances[0];
+  llm.emit('ready', { baseUrl: 'http://127.0.0.1:8087' });   // walked past a busy 8080
+  await waking;
+  expect(gate.opts.upstreamPort()).toBe(8087);
+
+  gate.switching = false;
+  m.PearlEngine.instances[0].emit('stopped', 0);
+  await expect(p).resolves.toBe(0);
+});
+
+test('a miner that fails to restart after serving exits non-zero', async () => {
+  // The same contract as the up-front start: a false return means the core did
+  // not construct. Swallowed, the node reported the last hashrate forever while
+  // the card did nothing, and the supervisor saw a healthy process.
+  const m = load();
+  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+  m.LlmEngineManager.serverInstalled = true;
+  m.LlmEngineManager.modelInstalled = true;
+  m.LlmEngineManager.mmprojInstalled = true;
+  const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
+  await settle();
+  const gate = m.autoGate.createAutoGate.instances[0];
+
+  const waking = gate.opts.startLlm();
+  await settle();
+  m.LlmManager.instances[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+  await waking;
+
+  gate.opts.onMinerFailed();
+  await expect(p).resolves.toBe(1);
+  expect(allErr()).toContain('engine failed to restart after serving');
+  expect(m.LlmManager.instances[0].stop).toHaveBeenCalled();
+});
+
+test('a failed restart with no model loaded still exits non-zero', async () => {
+  // The release path stops the LLM before restarting the miner, so the failure
+  // can land with nothing to tear down.
+  const m = load();
+  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+  m.LlmEngineManager.serverInstalled = true;
+  m.LlmEngineManager.modelInstalled = true;
+  m.LlmEngineManager.mmprojInstalled = true;
+  const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
+  await settle();
+  const gate = m.autoGate.createAutoGate.instances[0];
+
+  expect(m.LlmManager.instances).toHaveLength(0);   // never woke
+  gate.opts.onMinerFailed();
+  await expect(p).resolves.toBe(1);
+  expect(allErr()).toContain('engine failed to restart after serving');
+});

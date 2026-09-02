@@ -831,12 +831,32 @@ async function run(argv) {
         stopLlm: async () => {
           if (llm) { try { llm.stop(); } catch { /* already gone */ } }
           llm = null;
+          // The 'stopped' handler above also calls this, but it early-returns
+          // while the gate is switching -- which is exactly this path. Without
+          // it the ping timer survived every sleep, so a node that woke and
+          // slept N times posted N duplicate telemetry pings per interval, each
+          // spawning its own nvidia-smi.
+          stopServe();
           // Handing the card back does not change WHICH model this node serves,
-          // so the reported model survives the idle flip.
+          // so the reported model survives the flip back to mining.
           serveLlmState = { ready: false, tps: 0, model: serveLlmState.model };
         },
+        // A failed restart is fatal for the same reason it is at first start:
+        // the node would otherwise mine nothing while looking healthy.
+        onMinerFailed: () => {
+          log('engine failed to restart after serving — see the error above', process.stderr);
+          if (llm) llm.stop();
+          finish(1);
+        },
         port: settings.gatePort == null ? LLM.gate.port : settings.gatePort,
-        upstreamPort: LLM.port,
+        // NOT LLM.port: llmFleet probes upward from it when it is busy, so the
+        // server can land on 8081+ while the gate still proxies to 8080 and
+        // every request 502s. Ask the fleet where it actually bound.
+        upstreamPort: () => {
+          const url = llm && llm.webUrl && llm.webUrl();
+          const p = url ? Number(new URL(url).port) : NaN;
+          return Number.isFinite(p) && p > 0 ? p : LLM.port;
+        },
         modelName: autoPlan.model.name, quietMs: LLM.gate.quietMs, log,
       }).start();
       log('auto:       serving on :' + (settings.gatePort == null ? LLM.gate.port : settings.gatePort) + ' — '

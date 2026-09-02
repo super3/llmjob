@@ -143,3 +143,42 @@ describe('waiting for the server to answer', () => {
     await expect(auto.gate.ensureServing()).rejects.toThrow('llama-server did not start');
   });
 });
+
+describe('createAutoGate: a restart that fails must not be swallowed', () => {
+  test('miner.start() returning false reports through onMinerFailed', async () => {
+    const onMinerFailed = jest.fn();
+    const { auto, miner } = mk({ onMinerFailed });
+    await auto.gate.ensureServing();
+    // The core did not construct: no socket, no job, and no 'stopped' event is
+    // coming. Dropped, this left the node "mining" with the card doing nothing.
+    miner.start = jest.fn(() => false);
+    await auto.gate.ensureMining();
+    expect(onMinerFailed).toHaveBeenCalledTimes(1);
+    expect(auto.isSwitching()).toBe(false);
+  });
+
+  test('a truthy start is not reported as a failure', async () => {
+    const onMinerFailed = jest.fn();
+    const { auto, miner } = mk({ onMinerFailed });
+    miner.start = jest.fn(() => true);
+    await auto.gate.ensureServing();
+    await auto.gate.ensureMining();
+    expect(onMinerFailed).not.toHaveBeenCalled();
+  });
+
+  test('a failed restart with no handler configured does not throw', async () => {
+    const { auto, miner } = mk();
+    await auto.gate.ensureServing();
+    miner.start = jest.fn(() => false);
+    await expect(auto.gate.ensureMining()).resolves.toBe(true);
+  });
+
+  test('switching clears when the LLM never comes up', async () => {
+    // Previously `switching = false` sat after the await, so a throw skipped it.
+    // A stuck flag makes the CLI's miner-'stopped' handler early-return forever:
+    // the process could then neither exit nor be restarted by its supervisor.
+    const { auto } = mk({ startLlm: async () => { throw new Error('boom'); } });
+    await expect(auto.gate.ensureServing()).rejects.toThrow('boom');
+    expect(auto.isSwitching()).toBe(false);
+  });
+});
