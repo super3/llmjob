@@ -1739,6 +1739,29 @@ describe('demand mode still serves the cluster', () => {
     await expect(p).resolves.toBe(0);
   });
 
+  test('advertises the tier it will serve, not the default it has loaded', async () => {
+    // Nothing is loaded while mining, so serveLlmState kept the small default --
+    // and that is what the ping publishes and the server now ROUTES on. The board
+    // named a model this node never serves, a job asking for the tier was never
+    // offered to the one node running it, and a job asking for the default would
+    // have been answered by the tier.
+    const m = load();
+    serving(m);
+    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
+    await settle();
+
+    expect(m.LlmManager.instances).toHaveLength(0);   // nothing loaded
+    const pinger = intervalFor(NODE.pingIntervalMs);
+    m.io.postJson.mockClear();
+    await pinger.fn();
+    const body = m.io.postJson.mock.calls[0][1];
+    expect(body.model).toBe(LLM.tiers[0].name);
+    expect(body.model).not.toBe(LLM.model.name);
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
   test('--no-serve still means no poller', async () => {
     const m = load();
     serving(m);

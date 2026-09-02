@@ -766,6 +766,14 @@ async function run(argv) {
   // Demand mode polls for cluster work WHILE MINING, so it needs its identity
   // before any model exists -- not on the first wake, which may never come.
   const demandServe = demand ? await resolveServeIdentity(settings) : null;
+  // And it has to ADVERTISE the tier it will serve, not the one it has loaded --
+  // which is none. serveLlmState.model is seeded with the small default and only
+  // replaced inside startLlm, which demand mode reaches only on a wake, so
+  // everything reading it while mining saw a model this node never serves: the
+  // board and dashboard named the wrong one, and the ping is what the server
+  // routes on, so a job asking for the tier was never offered to the one node
+  // running it while a job asking for the default would have been answered by it.
+  if (demand) serveLlmState.model = autoPlan.model;
   if (demand) {
     log('auto:       ' + autoPlan.model.name + ' needs the GPU to itself — mining until a request arrives');
   }
