@@ -156,8 +156,7 @@ The last row is a kernel that issues every `mma` but moves no operands at all. I
 not a miner -- it computes nothing usable -- and it still only reaches **287.9 TH/s**.
 
 **That bounds the problem.** Any real fold must feed its tensor cores, so on this card,
-at its hard 600 W maximum, with this algorithm, ~299 TH/s is an unreachable upper
-limit and the practical ceiling is well below it. Getting past that needs either more
+at its hard 600 W maximum, the practical ceiling is well short of 300. Getting past that needs either more
 power (600 W is `power.max_limit`) or an algorithm that moves less data per MAC -- not
 tuning. Note the clock column: every gain here is bought by freeing power, not by
 removing time.
@@ -171,3 +170,46 @@ removing time.
 | **Locking the SM clock** | no change | 1400 -> 155.5, 1600 -> 152.9, 1800 -> 150.5, 2100 -> 148.6, 2400 -> 147.3 TH/s. The power cap decides the operating point regardless; locking high only raises voltage and costs a little. |
 | **Bigger tiles** | spills | 256x256 spills 5456 B, 128x512 spills 1416 B. The register file is 65536 per SM as on Ada, so the accumulator bound is identical and 128x256 stays optimal. |
 | **Warp specialization to free registers** | premise false | Staging costs only 2 registers (REG:128 shipped vs 126 with staging ablated), so moving it to dedicated warps cannot buy tile size. Worth checking because Blackwell's free barrier voids one of the two reasons Ada rejected it -- but the register premise fails independently. |
+
+
+## The trustworthy denominator: pure mma at the fold's launch geometry
+
+Two earlier readings here were wrong and are worth recording as traps.
+
+**A short kernel does not reach the power cap.** `mmapeak` first measured 482 T-MAC/s
+at "153 W and 2400 MHz", which made the tensor pipe look nearly free and the memory
+path look like the whole problem. It was sampling a 1.5 ms kernel: the card had not
+settled. Run back to back until sustained, pure mma also sits at **600 W**, the same
+cap as everything else.
+
+**Block count is part of the denominator.** At constant total work:
+
+| blocks | T-MAC/s |
+|---|---|
+| 170 | 422.9 |
+| 1360 | 427.4 |
+| 10880 | **429.4** |
+| 43520 | 395.2 |
+| 131072 (what the fold launches) | **347.2** |
+
+So the fold's own launch geometry costs 19% before it does anything, and 347 T-MAC/s
+-- not 482 -- is what a perfect kernel at this shape would approach.
+
+### Persistent blocks: tried, regressed
+
+Walking several tiles from a smaller resident grid should recover that 19%, paying
+the per-block prologue once instead of per tile. Implemented as a grid-stride loop
+over a virtual block index, it is monotonically **worse**:
+
+| resident blocks | TH/s |
+|---|---|
+| 131072 (one per tile) | **158.9** |
+| 43520 | 157.0 |
+| 10880 | 154.7 |
+| 2720 | 151.5 |
+| 1360 | 151.1 |
+
+The pure-mma probe has nothing to stage, so shrinking its grid costs it nothing. The
+fold restages chunk 0 for every tile, and a smaller grid serialises those stages with
+less work in flight to hide them. The scheduling win is real but the staging loss is
+larger, which is another way of seeing that staging dominates this kernel on Blackwell.

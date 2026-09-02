@@ -1228,8 +1228,11 @@ extern "C" __global__ __launch_bounds__(512) void pearl_tile_fold_wmma(
             + (wr * regions_per_warp * PEARL_ROWS_COUNT + mb * 16 + alrow) * PEARL_SB_STRIDE
             + ((kt + albyte) ^ swz);
 #ifdef PEARL_ABLATE_LDMATRIX
-        // Diagnostic only: leave the A fragments at whatever is already in the
-        // registers. Every mma still issues; only the shared reads vanish.
+        // Diagnostic only. NOTE: substituting arithmetic here prices the
+        // substitute, not the ldmatrix. An earlier version XORed into the
+        // fragments and overstated the ceiling by ~120 TH/s; using constants
+        // instead lets the compiler hoist and understates it. Neither reading
+        // is a trustworthy bound -- see README.
         af[mb][0] ^= rp; af[mb][1] ^= mb; af[mb][2] ^= 1u; af[mb][3] ^= 2u;
 #else
         pearl_ldmatrix_x4(af[mb][0], af[mb][1], af[mb][2], af[mb][3], rp);
