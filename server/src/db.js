@@ -135,6 +135,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   -- Promoted out of the data column so assignment can filter on it: a node is only offered
   -- work it can finish inside the gateway's budget at its measured speed.
   max_tokens integer,
+  -- Promoted for the same reason. NULL means any eligible node; set only when the
+  -- caller named a model the fleet actually advertises, in which case only a node
+  -- running that model is offered the job.
+  model text,
   assigned_to text,
   lock_node text,
   lock_token text,

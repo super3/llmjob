@@ -899,4 +899,104 @@ describe('JobService', () => {
       expect(await jobService.cleanupOldJobs()).toBe(0);
     });
   });
+  describe('model routing', () => {
+    // The `model` field was stored and never read: a caller naming a model got
+    // whichever node polled next, running whatever it had loaded.
+    const liveNode = (nodeId, model) => db.query(
+      'INSERT INTO nodes (node_id, public_key, last_seen, model) VALUES ($1, $2, $3, $4)',
+      [nodeId, 'k-' + nodeId, Date.now(), model]
+    );
+
+    it('pins a job to the model the caller asked for', async () => {
+      await liveNode('n-qwen', 'Qwen3.8-27B-UD-Q4_K_XL');
+      const job = await jobService.createJob({
+        prompt: 'p', userId: 'u', requestedModel: 'Qwen3.8-27B-UD-Q4_K_XL',
+      });
+      const r = await db.query('SELECT model FROM jobs WHERE id = $1', [job.id]);
+      expect(r.rows[0].model).toBe('Qwen3.8-27B-UD-Q4_K_XL');
+    });
+
+    it('matches case-insensitively but stores the node\'s spelling', async () => {
+      // The id a caller copies out of /v1/models is a filename stem; nobody types
+      // it exactly. The poll query compares against what the node reports, so the
+      // node's spelling is what has to be stored.
+      await liveNode('n-qwen', 'Qwen3.8-27B-UD-Q4_K_XL');
+      const job = await jobService.createJob({
+        prompt: 'p', userId: 'u', requestedModel: '  qwen3.8-27b-ud-q4_k_xl  ',
+      });
+      const r = await db.query('SELECT model FROM jobs WHERE id = $1', [job.id]);
+      expect(r.rows[0].model).toBe('Qwen3.8-27B-UD-Q4_K_XL');
+    });
+
+    it('does not pin a model no live node reports', async () => {
+      // The documented contract: an unrecognised id is still served, by whoever
+      // takes it. Pinning it would leave the job pending forever.
+      await liveNode('n-gemma', 'gemma-4-E4B-it-Q4_K_M');
+      const job = await jobService.createJob({ prompt: 'p', userId: 'u', requestedModel: 'gpt-4' });
+      const r = await db.query('SELECT model FROM jobs WHERE id = $1', [job.id]);
+      expect(r.rows[0].model).toBeNull();
+    });
+
+    it('does not pin when the only node running it has gone offline', async () => {
+      await db.query('INSERT INTO nodes (node_id, public_key, last_seen, model) VALUES ($1,$2,$3,$4)',
+        ['n-old', 'k', Date.now() - (16 * 60 * 1000), 'Qwen3.8-27B-UD-Q4_K_XL']);
+      const job = await jobService.createJob({
+        prompt: 'p', userId: 'u', requestedModel: 'Qwen3.8-27B-UD-Q4_K_XL',
+      });
+      const r = await db.query('SELECT model FROM jobs WHERE id = $1', [job.id]);
+      expect(r.rows[0].model).toBeNull();
+    });
+
+    it('does not pin when no model was asked for', async () => {
+      await liveNode('n-qwen', 'Qwen3.8-27B-UD-Q4_K_XL');
+      for (const req of [undefined, null, '', '   ', 42]) {
+        const job = await jobService.createJob({ prompt: 'p', userId: 'u', requestedModel: req });
+        const r = await db.query('SELECT model FROM jobs WHERE id = $1', [job.id]);
+        expect(r.rows[0].model).toBeNull();
+      }
+    });
+
+    it('falls back to jobData.model for direct /api/jobs callers', async () => {
+      await liveNode('n-qwen', 'Qwen3.8-27B-UD-Q4_K_XL');
+      const job = await jobService.createJob({ prompt: 'p', userId: 'u', model: 'Qwen3.8-27B-UD-Q4_K_XL' });
+      const r = await db.query('SELECT model FROM jobs WHERE id = $1', [job.id]);
+      expect(r.rows[0].model).toBe('Qwen3.8-27B-UD-Q4_K_XL');
+    });
+
+    it('offers a pinned job only to a node running that model', async () => {
+      await liveNode('n-qwen', 'Qwen3.8-27B-UD-Q4_K_XL');
+      await liveNode('n-gemma', 'gemma-4-E4B-it-Q4_K_M');
+      const job = await jobService.createJob({
+        prompt: 'p', userId: 'u', requestedModel: 'Qwen3.8-27B-UD-Q4_K_XL',
+      });
+
+      expect(await jobService.assignJobsToNode('n-gemma', 5)).toEqual([]);
+      const mine = await jobService.assignJobsToNode('n-qwen', 5);
+      expect(mine.map((j) => j.id)).toEqual([job.id]);
+    });
+
+    it('offers an unpinned job to any node, including one reporting no model', async () => {
+      await db.query('INSERT INTO nodes (node_id, public_key, last_seen) VALUES ($1,$2,$3)',
+        ['n-bare', 'k', Date.now()]);
+      const job = await jobService.createJob({ prompt: 'p', userId: 'u' });
+      const got = await jobService.assignJobsToNode('n-bare', 5);
+      expect(got.map((j) => j.id)).toEqual([job.id]);
+    });
+
+    it('never offers a pinned job to a node reporting no model', async () => {
+      // An older client, or one whose model is not up yet: it cannot serve the
+      // request as asked, so handing it the job would silently answer with
+      // something else.
+      await liveNode('n-qwen', 'Qwen3.8-27B-UD-Q4_K_XL');
+      await db.query('INSERT INTO nodes (node_id, public_key, last_seen) VALUES ($1,$2,$3)',
+        ['n-bare', 'k', Date.now()]);
+      await jobService.createJob({ prompt: 'p', userId: 'u', requestedModel: 'Qwen3.8-27B-UD-Q4_K_XL' });
+      expect(await jobService.assignJobsToNode('n-bare', 5)).toEqual([]);
+    });
+
+    it('is unknown to a node the server has never seen', async () => {
+      await jobService.createJob({ prompt: 'p', userId: 'u' });
+      expect(await jobService.assignJobsToNode('n-ghost', 5)).toHaveLength(1);
+    });
+  });
 });

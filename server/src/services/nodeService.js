@@ -258,6 +258,23 @@ class NodeService {
   // machines that are mining — so a node that serves jobs without mining appears
   // in neither, and the fleet could only be counted by probing node ids we
   // happened to have seen before.
+  // The model ids the fleet is actually running right now, most-served first.
+  //
+  // This is what makes a model REQUESTABLE: /v1/models advertises these, and a
+  // job naming one is pinned to a node that has it. A model no live node reports
+  // is not offered and does not pin, which keeps the documented contract that an
+  // unrecognised id is still served (by whatever node takes it) rather than
+  // rejected.
+  async listNetworkModels() {
+    const r = await this.db.query(
+      `SELECT model, COUNT(*)::int AS nodes FROM nodes
+        WHERE last_seen >= $1 AND model IS NOT NULL AND model <> ''
+        GROUP BY model ORDER BY nodes DESC, model ASC`,
+      [Date.now() - OFFLINE_THRESHOLD]
+    );
+    return r.rows.map((row) => ({ id: row.model, nodes: row.nodes }));
+  }
+
   async listServingNodes() {
     // Deliberately narrow: node id, speed and freshness only. `name` is set by the
     // node's owner and `device` is a free-text GPU string, and this endpoint is

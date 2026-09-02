@@ -299,7 +299,8 @@
     const FULL_JOB_TPS = 2048 / (280 * 0.8);
 
     // The "serving LLM" cell: a compact model label ("Gemma-4-E4B-it-Q4_K_M" →
-    // "Gemma 4 E4B", full name on hover), or a muted dash when the card isn't
+    // "Gemma 4 E4B", "Qwen3.8-27B-UD-Q4_K_XL" → "Qwen3.8 27B", full name on
+    // hover), or a muted dash when the card isn't
     // serving (insufficient VRAM) or the client is too old to report a model.
     // `nodeId` (present only while the host actually polls the cluster for jobs)
     // adds a node chip after the model. Running a model and serving the network
@@ -345,7 +346,16 @@
         ? '<span class="mr-serving' + cls + '" title="Serving cluster jobs as node ' + esc(nodeId) + esc(detail) + '"></span>'
         : '';
       if (!model) return '<div class="mr-llm">' + dot + '<span class="mr-llm-none">—</span></div>';
-      const short = String(model).split(/-it\b/i)[0].replace(/[-_]+/g, ' ').trim() || String(model);
+      // Trim the parts that are packaging, not identity. The -it split alone left
+      // any model without an instruct tag wearing its quantisation as words:
+      // "Qwen3.8-27B-UD-Q4_K_XL" rendered "Qwen3.8 27B UD Q4 K XL", which then
+      // ellipsised inside the fixed column so the useful half was the half cut off.
+      const short = String(model)
+        .split(/-it\b/i)[0]                                   // instruct tag and the quant after it
+        .replace(/-(?:I?Q\d[A-Z0-9_]*|F16|F32|BF16)$/i, '')   // a trailing quant on its own
+        .replace(/-(?:UD|GGUF)$/i, '')                        // packaging marker left behind by it
+        .replace(/[-_]+/g, ' ')
+        .trim() || String(model);
       return '<div class="mr-llm">' + dot + '<span class="mr-llm-on" title="' + esc(model) + '">' + esc(short) + '</span></div>';
     }
 

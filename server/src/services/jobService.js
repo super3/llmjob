@@ -34,6 +34,10 @@ const MAX_TOKENS_CEILING = 32768;
 // gateway gives up at 280s; a node is only offered work it can finish in 80% of
 // that at its measured speed, so a sample that's a little optimistic (or a
 // prompt that's longer than usual) doesn't turn into a timeout anyway.
+// Must match nodeService's OFFLINE_THRESHOLD: a model is only "live" if the node
+// reporting it would still be listed as serving.
+const NODE_OFFLINE_MS = 15 * 60 * 1000;
+
 const SERVE_BUDGET_MS = 280 * 1000;
 const SERVE_MARGIN = 0.8;
 
@@ -181,10 +185,29 @@ class JobService {
       job.benchmarkWarmup = !!jobData.benchmarkWarmup;
     }
 
+    // Pin the job to nodes running the requested model -- but ONLY when the fleet
+    // actually advertises it. A name no live node reports resolves to null, which
+    // is today's behaviour: served by whoever polls next, running whatever they
+    // have. That keeps the documented contract ("any unrecognised model id is
+    // served by it too, so this is a guide rather than a whitelist") while making
+    // a name that IS live actually mean something.
+    //
+    // Resolved here rather than in the poll query so an unmatchable name cannot
+    // leave a job pending forever waiting for a node that does not exist.
+    // requestedModel is a ROUTING-only channel, deliberately separate from
+    // jobData.model. The gateway must not let a caller's string into data.model,
+    // because that is echoed back as "the model that ran" -- which is how a
+    // request for "gpt-4" once came back looking like the fleet had served it.
+    // Pinning is safe: it only narrows which node may take the job.
+    const pinnedModel = await this._resolveModelPin(
+      jobData.requestedModel != null ? jobData.requestedModel : jobData.model
+    );
+
     await this.db.query(
-      `INSERT INTO jobs (id, data, status, priority, created_at, updated_at, user_id, visibility, target_node, max_tokens)
-       VALUES ($1, $2, 'pending', $3, $4, $4, $5, $6, $7, $8)`,
-      [jobId, JSON.stringify(job), job.priority, timestamp, job.userId, job.visibility, job.targetNode, job.maxTokens]
+      `INSERT INTO jobs (id, data, status, priority, created_at, updated_at, user_id, visibility, target_node, max_tokens, model)
+       VALUES ($1, $2, 'pending', $3, $4, $4, $5, $6, $7, $8, $9)`,
+      [jobId, JSON.stringify(job), job.priority, timestamp, job.userId, job.visibility, job.targetNode, job.maxTokens,
+        pinnedModel]
     );
 
     return job;
@@ -223,9 +246,14 @@ class JobService {
     try {
       await client.query('BEGIN');
       const owner = await client.query(
-        'SELECT user_id, measured_tps, speed_at, speed_samples FROM nodes WHERE node_id = $1', [nodeId]
+        'SELECT user_id, measured_tps, speed_at, speed_samples, model FROM nodes WHERE node_id = $1', [nodeId]
       );
       const ownerUserId = owner.rows.length ? owner.rows[0].user_id : null;
+      // What this node currently has loaded. A job pinned to a model is only
+      // offered to a node running it; a node that reports nothing (an old client,
+      // or one whose model is not up yet) is offered unpinned work only, rather
+      // than being handed a job it cannot serve as asked.
+      const nodeModel = owner.rows.length ? owner.rows[0].model : null;
 
       // Admission control. A node is only offered a job it can finish inside the
       // gateway's budget at the speed we measured it at — which is what stops a
@@ -262,8 +290,9 @@ class JobService {
            AND (visibility IS NULL OR visibility <> 'private' OR user_id = $2)
            AND (target_node IS NULL OR target_node = $3)
            AND ($4::int IS NULL OR target_node IS NOT NULL OR max_tokens IS NULL OR max_tokens <= $4)
+           AND (model IS NULL OR model = $5)
          ORDER BY priority DESC, created_at ASC LIMIT $1 FOR UPDATE SKIP LOCKED`,
-        [maxJobs, ownerUserId, nodeId, capacity]
+        [maxJobs, ownerUserId, nodeId, capacity, nodeModel]
       );
 
       for (const row of pending.rows) {
@@ -405,6 +434,24 @@ class JobService {
     // conditions the node actually serves under (miner co-running and all).
     await this._recordSpeed(nodeId, row, chunks, completedAt);
     return job;
+  }
+
+  // The model id to pin a job to, or null for "any eligible node".
+  //
+  // Case-insensitive against what nodes report, because the id a caller copies
+  // out of /v1/models is the node's own filename stem and nobody types that
+  // exactly. Returns the node's spelling, not the caller's, so the poll query
+  // compares like with like.
+  async _resolveModelPin(requested) {
+    const want = typeof requested === 'string' ? requested.trim() : '';
+    if (!want) return null;
+    const r = await this.db.query(
+      `SELECT model FROM nodes
+        WHERE last_seen >= $1 AND model IS NOT NULL AND lower(model) = lower($2)
+        LIMIT 1`,
+      [Date.now() - NODE_OFFLINE_MS, want]
+    );
+    return r.rows.length ? r.rows[0].model : null;
   }
 
   // Fold this job's generation into the node's measured speed. Token count comes
