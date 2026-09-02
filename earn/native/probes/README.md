@@ -465,3 +465,40 @@ its limit 450 -> 480 W and gaining 0.2%, because a voltage/boost ceiling bound i
 instead. Blackwell hits a hard wall the 4090 never reaches, so a design tuned for
 Ada's constraint does not transfer, and the reverse holds too: three separate
 conclusions in that log (band depth, square warp tile, cache policy) flip sign here.
+
+
+## Independent check: the best public miner on THIS card
+
+Everything above infers the wall from our own kernel. The obvious way to test that
+inference is to run somebody else's kernel on the same silicon, and SRBMiner 3.6.1
+supports `pearlhash` -- its release notes even call out "improvements for 5000 series
+GPUs". It is the miner the 4090 tuning log benchmarks against, at 309 T-MAC/s there.
+
+Run on this 5090, same pool, same address, our miner stopped:
+
+| 60 s sample | hashrate | power | efficiency |
+|---|---|---|---|
+| 1 | 166.82 TH/s | 600.0 W | 0.278 TH/W |
+| 2 | 171.22 | 600.0 W | 0.285 |
+| 3 | 171.27 | 600.0 W | 0.285 |
+| 4 | 171.58 | 600.0 W | 0.286 |
+| 5 | 172.35 | 600.0 W | 0.287 |
+
+1 hr average 171.14 TH/s, 4 shares accepted, clock 1005 MHz.
+
+**Three things follow, and they settle the question.**
+
+1. **300 TH/s is not achievable on this card by any known miner.** The best public
+   implementation reaches 171. The 309 figure is a 4090 number, and Ada is not
+   power-bound at this workload -- the tuning log records raising its cap 450 -> 480 W
+   for 0.2% because a voltage ceiling bound it instead. It does not transfer.
+2. **SRBMiner hits the identical wall.** 600.0 W on every sample, at 1005 MHz -- the
+   same cap, the same throttled clock as our fold. An independent codebase written by
+   someone with every incentive to beat it lands in exactly the same place.
+3. **Our gap to best-in-class is ~20%, not 2x.** Ours reports ~140-145 TH/s live
+   against SRBMiner's 171 (which also takes a 2% dev fee off the top). That is worth
+   chasing, and it is a different-sized problem from the one the 300 target implies.
+
+This is what the earlier sections were missing: they were right about the mechanism
+but had no way to know whether the bound was OUR kernel's or the CARD's. It is the
+card's.
