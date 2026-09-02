@@ -8,10 +8,22 @@
 // 100000000 is one PRL. Reporting the raw integer as a coin amount would
 // overstate a balance by a hundred million.
 //
-// Unlike AlphaPool, which this replaced, there is no lifetime-paid total in the
-// payload: `stats.balance` is the pending (unpaid) balance and the only record
-// of what has been paid is the `payments` list. So lifetime paid is summed from
-// that list rather than read from a field.
+// `stats.balance` is the pending (unpaid) balance and `stats.paid` is the
+// lifetime total paid out. Both are authoritative and both are what the pool's
+// own address page prints.
+//
+// Lifetime paid used to be summed from the `payments` list, because when this
+// was written the pool had paid nothing on this coin and no `paid` field had
+// ever been observed in a response. That undercounted badly once payments
+// started: `payments` is TRUNCATED to the most recent ten (twenty entries —
+// they alternate `tx:amount:fee` with a timestamp), so an address paid 63.63
+// PRL over many payouts displayed 14.95. The list is still the fallback for a
+// payload with no `paid` field, but the field wins when it is there.
+//
+// NOT counted: the top-level `unconfirmed` array, which is the miner's share of
+// blocks that have not matured yet (the pool page shows it on its own line).
+// That is money which still disappears if a block is orphaned, so it is not
+// folded into a figure labelled as earned.
 //
 // The actual HTTPS GET runs in the main process (no CORS/CSP there); this module
 // just builds the URL and parses the response so both are unit-testable.
@@ -58,9 +70,20 @@ function parseBalance(json, priceUsd) {
   const pendingRaw = Number(stats.balance);
   if (!Number.isFinite(pendingRaw) || pendingRaw < 0) return null;
 
-  const paidRaw = Array.isArray(json.payments)
-    ? json.payments.reduce((a, p) => a + paymentAmount(p), 0)
-    : 0;
+  // The pool's own lifetime total, when it reports one. Only fall back to
+  // adding up `payments` if it does not — that list is capped at the last ten
+  // payouts and silently undercounts everything before them.
+  // Absent has to be distinguished from zero before Number() sees it: both
+  // Number(null) and Number('') are 0, which is finite and non-negative, so a
+  // pool that omits the field would read as "paid nothing" and never fall back.
+  const paidField = (stats.paid === null || stats.paid === undefined || stats.paid === '')
+    ? NaN
+    : Number(stats.paid);
+  const paidRaw = Number.isFinite(paidField) && paidField >= 0
+    ? paidField
+    : (Array.isArray(json.payments)
+      ? json.payments.reduce((a, p) => a + paymentAmount(p), 0)
+      : 0);
 
   const pending = pendingRaw / COIN_UNITS;
   const paid = paidRaw / COIN_UNITS;
