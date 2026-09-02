@@ -920,13 +920,22 @@ __device__ __forceinline__ uint32_t pearl_warp_xor(uint32_t x) {
 
 extern "C" __global__ __launch_bounds__(512) void pearl_tile_fold_wmma(
     const int8_t *__restrict__ Aprime, const int8_t *__restrict__ Bprime,
-    uint32_t m, uint32_t n, uint32_t k, uint32_t rank, uint32_t chunks,
+    uint32_t m, uint32_t n, uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg,
     uint32_t col_off, uint32_t rows_valid, uint32_t col_groups,
     uint32_t *__restrict__ jackpot_out) {
   using namespace nvcuda;
 
+  // Compile-time geometry. The host has already refused anything else, so this
+  // is belt-and-braces: a mismatched launch does nothing rather than folding
+  // the wrong shape.
+  constexpr uint32_t k = PEARL_FOLD_K;
+  constexpr uint32_t rank = PEARL_FOLD_RANK;
+  constexpr uint32_t chunks = PEARL_FOLD_CHUNKS;
+  if (k_arg != k || rank_arg != rank || chunks_arg != chunks) return;
+  if (blockDim.x != PEARL_FOLD_THREADS) return;
+
   const uint32_t warp = threadIdx.x >> 5;
-  const uint32_t warps_per_block = blockDim.x >> 5;
+  constexpr uint32_t warps_per_block = PEARL_FOLD_THREADS / 32u;
   const uint32_t lane = threadIdx.x & 31u;
 
   const uint32_t regions_per_warp = PEARL_WMMA_ROW_TILES * (PEARL_WMMA_ROWS / PEARL_ROWS_COUNT);
@@ -1070,7 +1079,7 @@ extern "C" __global__ __launch_bounds__(512) void pearl_tile_fold_wmma(
   const uint32_t atotal = sa_rows * quads;
   // Slot 0's addresses, and the constant step to the next slot. See the note on
   // PEARL_ISSUE_CHUNK for why every one of these is linear.
-  const uint32_t pthreads = blockDim.x;
+  constexpr uint32_t pthreads = PEARL_FOLD_THREADS;
   const uint32_t pid = threadIdx.x;
   const uint32_t colstep = pthreads / quads;
   const uint32_t q0 = pid % quads;
@@ -1172,8 +1181,8 @@ extern "C" __global__ __launch_bounds__(512) void pearl_tile_fold_wmma(
     // steps. A compile-time bound is worth stating: it lets ptxas unroll the
     // whole chunk body and schedule ldmatrix for step t+1 underneath the mma of
     // step t, which a runtime bound forbids.
-    const uint32_t ksteps = rank / 32;
-#pragma unroll 4
+    constexpr uint32_t ksteps = rank / 32;
+#pragma unroll
     for (uint32_t t = 0; t < ksteps; t++) {
       const uint32_t kt = t * 32;
       // This k-step's share of the NEXT chunk's staging, issued BEFORE the

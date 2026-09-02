@@ -707,6 +707,13 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   const uint32_t k = ctx->profile.k;
   const uint32_t rank = ctx->profile.rank;
   const uint32_t chunks = (k + rank - 1) / rank;
+  // The fold is compiled for exactly the mandated geometry (see PEARL_FOLD_*).
+  if (rank != PEARL_FOLD_RANK || k != PEARL_FOLD_K) {
+    if (err && err_len)
+      snprintf(err, err_len, "fold kernel is built for rank %u, k %u (got rank %u, k %u)",
+               (unsigned)PEARL_FOLD_RANK, (unsigned)PEARL_FOLD_K, rank, k);
+    return false;
+  }
   // Clamped to m so one launch shares a single col_off: D is built for exactly
   // the columns that batch touches. nonce_base stays a multiple of m because the
   // caller advances by the attempt count we report back.
@@ -741,6 +748,13 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   const uint64_t rowBlocks = ctx->rowsValid / regionsPerWarp;
   const uint32_t warpCols = warpsPerBlock / PEARL_WARP_ROWS;
   const uint64_t colBlocks = col_groups / PEARL_WMMA_COL_BLK;
+  // The fold is compiled for exactly this block size (see PEARL_FOLD_THREADS).
+  if ((uint32_t)threads != PEARL_FOLD_THREADS) {
+    if (err && err_len)
+      snprintf(err, err_len, "fold kernel is built for %u threads a block (got %d)",
+               (unsigned)PEARL_FOLD_THREADS, threads);
+    return false;
+  }
   // The staging walks base + stride rather than a table of addresses, which is
   // only the same sequence when quads divides the staging thread count and the
   // column step lands on a whole number of column groups.
