@@ -384,3 +384,51 @@ the HOST as well as the device, so unlike `PEARL_BLOCK_GROUP` this cannot be gat
 on `__CUDA_ARCH__`. Shipping it needs the host to dispatch on compute capability
 between two instantiations of the fold, which is real work and cannot be validated
 here without a 4090 to prove no regression.
+
+
+## Why 300 TH/s is out of reach for this tiling, as arithmetic
+
+L2 traffic per MAC is `1/bM + 1/bN`, and the accumulator claims `bM x bN` int32
+registers for the whole k-loop. For a square tile of side b that is `2/b` bytes per
+MAC against `b^2` registers -- so **halving the traffic costs four times the
+registers**:
+
+| tile | B/MAC | accumulator registers | share of the 65536-register file |
+|---|---|---|---|
+| 128x128 | 0.01562 | 16384 | 25% |
+| 128x256 (shipped) | 0.01172 | 32768 | 50% |
+| 181x181 | 0.01105 | 32761 | 50% |
+| 256x256 | 0.00781 | 65536 | **100%** |
+
+The shipped tile already spends half the register file. Spending ALL of it -- which
+leaves nothing for fragments, addresses or transcripts, so it is not buildable -- cuts
+traffic by only 33%. And a square 181 is both barely better than 128x256 and illegal:
+`m` must be a power of two for the BLAKE3 commitment fold.
+
+Now put that against the power budget. The fold moves 1.70 TB/s through L2 at
+145 T-MAC/s, and ~450 W of its 600 W goes to operand movement (pure `mma` does 2.7x
+the work on 149 W). 300 T-MAC/s needs **3.51 TB/s** through the same path -- roughly
+double the bytes, so roughly double the memory power, against a cap that is already
+binding. The tile cannot cut traffic enough to pay for it.
+
+**So 300 TH/s is unreachable by tiling this algorithm on this card.** Not "no ideas
+left": the traffic-versus-registers exchange rate is quadratic and the register file
+is fixed.
+
+### The one identified escape, and an honest estimate of it
+
+Stop reading operands and regenerate them on-chip, trading L2 bandwidth for integer
+ALU. The 4090 log rejected this on throughput grounds -- BLAKE3 costs ~21 int-ops a
+byte, so it needs far more integer issue than an SM has. But that was a card with
+power to spare, and this one is power-bound; the same inversion has already shown up
+twice here (the grid band depth and the square warp tile both flipped sign from Ada).
+
+Redoing the arithmetic for sm_120: at pure `mma`'s rate of ~1306 MACs/SM/cycle and
+0.0117 operand bytes per MAC, regeneration needs ~321 int-ops/SM/cycle against the
+~128 INT32 lanes a Blackwell SM has. So the kernel becomes integer-bound at ~40% of
+the tensor rate -- but it would run at pure `mma`'s power and clock rather than
+throttled. 388 x 0.40 is ~155 T-MAC/s: **about break-even with today, not a win.**
+
+Regenerating only ONE operand halves both the traffic and the integer cost and is
+the version worth pricing properly. It is a large piece of work and the estimate
+above is not tight enough to promise anything.
