@@ -809,7 +809,16 @@ async function run(argv) {
         finish(stopping ? 0 : (code || 0));
       });
       try {
-        miner.start(Object.assign({}, settings, { endpoint: resolveEndpoint(settings) }));
+        // A false return is a fatal start failure, not a hiccup: the core did not
+        // construct, so there is no socket, no job, and no 'stopped' event coming.
+        // Left unchecked the process simply ran out of work and exited 0 -- which
+        // under Restart=always is a ten-second restart loop that mines nothing and
+        // looks healthy to systemd. Exit non-zero so a supervisor can see it.
+        if (miner.start(Object.assign({}, settings, { endpoint: resolveEndpoint(settings) })) === false) {
+          log('engine failed to start — see the error above', process.stderr);
+          if (llm) llm.stop();
+          finish(1);
+        }
       } catch (e) {
         log('failed to launch engine: ' + e.message, process.stderr);
         if (llm) llm.stop();

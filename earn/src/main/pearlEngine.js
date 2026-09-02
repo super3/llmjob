@@ -98,7 +98,12 @@ class PearlEngine extends EventEmitter {
 
     this._announced = false;
     this._startTemps();
-    m.start(Object.assign({}, settings, { profile: this.profile }));
+    // Propagate it. PearlMiner.start() returns false when the core will not
+    // construct -- no VRAM for the rank-128 profile, no pearl_core.node -- and it
+    // emits 'error' but NOT 'stopped', because nothing ever started. Discarding
+    // this return dropped the only signal that the engine is dead rather than
+    // merely quiet.
+    return m.start(Object.assign({}, settings, { profile: this.profile }));
   }
 
   stop() {

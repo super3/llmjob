@@ -246,3 +246,28 @@ describe('PearlEngine — the events the UI actually reads', () => {
     expect(events.error[0].message).toBe('boom');
   });
 });
+
+describe('start() reports whether the engine actually started', () => {
+  // PearlMiner.start() returns false when the core will not construct. That is
+  // the only signal -- it emits 'error' but not 'stopped', because nothing
+  // started -- so the engine must hand it back rather than swallow it.
+  test('a miner that fails to start is reported as false', () => {
+    const e = new PearlEngine({
+      connect: () => ({ on() {}, write() {}, destroy() {} }),
+      createCore: () => { throw new Error('not enough free VRAM for the rank-128 profile'); },
+    });
+    const errs = [];
+    e.on('error', (err) => errs.push(err.message));
+    expect(e.start({ address: 'prl1p', endpoint: 'pool:1200' })).toBe(false);
+    expect(errs.join(' ')).toMatch(/rank-128/);
+  });
+
+  test('a miner that starts is not reported as failed', () => {
+    const e = new PearlEngine({
+      connect: () => ({ on() {}, write() {}, destroy() {} }),
+      createCore: () => ({ setJob() {}, stop() {}, on() {} }),
+    });
+    expect(e.start({ address: 'prl1p', endpoint: 'pool:1200' })).not.toBe(false);
+    e.stop();
+  });
+});

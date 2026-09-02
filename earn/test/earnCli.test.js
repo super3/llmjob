@@ -59,6 +59,9 @@ jest.mock('../src/main/pearlEngine', () => {
       this.start = jest.fn((settings) => {
         this.settings = settings;
         if (PearlEngine.startError) throw PearlEngine.startError;
+        // undefined by default, as the real engine returns when it started. A
+        // fatal start failure returns false, which the CLI must treat as fatal.
+        return PearlEngine.startReturns;
       });
       this.stop = jest.fn();
       this.isRunning = jest.fn(() => true);
@@ -67,6 +70,7 @@ jest.mock('../src/main/pearlEngine', () => {
   }
   PearlEngine.instances = [];
   PearlEngine.startError = null;
+  PearlEngine.startReturns = undefined;
   return { PearlEngine };
 });
 jest.mock('../src/main/pearlCore', () => ({
@@ -205,6 +209,7 @@ function applyDefaults(m) {
   m.selfUpdater.applyUpdate.mockResolvedValue('/opt/earn');
   m.selfUpdater.reexec.mockReturnValue(0);
   m.selfUpdate.planUpdate.mockReturnValue({ updateAvailable: false, reason: 'up-to-date' });
+  m.PearlEngine.startReturns = undefined;
 }
 
 // Load a fresh earn-cli plus fresh instances of every mocked dependency.
@@ -909,9 +914,12 @@ describe('local LLM', () => {
     const m = load();
     m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: 'rig' }));
     // Two roomy cards → one llama-server + cluster worker pinned to each.
+    // Below the Qwen tier's offer floor (65536 needs ~22,333 free) so both cards
+    // resolve the SAME small model: this test is about multi-GPU fan-out, not
+    // about which tier a card qualifies for.
     m.probe.detectGpusVram.mockResolvedValue([
-      { index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 },
-      { index: 1, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+      { index: 0, name: 'RTX 4090', usedMb: 3000, totalMb: 24000 },
+      { index: 1, name: 'RTX 4090', usedMb: 2500, totalMb: 24000 },
     ]);
     m.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 2000 });
     m.probe.findFreePort.mockImplementation((h, p) => Promise.resolve(p));
@@ -1347,4 +1355,30 @@ test('an LLM stopping during a switch does not tear serving down', async () => {
 
   m.PearlEngine.instances[0].emit('stopped', 0);
   await expect(p).resolves.toBe(0);
+});
+
+test('an engine that cannot start exits non-zero, not 0', async () => {
+  // The core failing to construct -- no VRAM for the rank-128 profile, no
+  // pearl_core.node -- makes PearlMiner.start() return false. It emits 'error'
+  // but never 'stopped', because nothing started. Before this was checked the
+  // run simply ran out of work and resolved 0, which under Restart=always is a
+  // silent restart loop that mines nothing and looks healthy to systemd.
+  const m = load();
+  m.PearlEngine.startReturns = false;
+  const code = await m.run(['--address', ADDR, '--mode', 'mining', '--no-update', '--no-serve']);
+  expect(code).toBe(1);
+  expect(allErr()).toContain('engine failed to start');
+});
+
+test('a fatal engine start also stops an LLM that had already come up', async () => {
+  // auto mode starts the LLM before the miner, so a fatal engine failure must
+  // tear the LLM down rather than leave a server orphaned behind a dead node.
+  const m = load();
+  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 3000, totalMb: 24000 }]);
+  m.LlmEngineManager.serverInstalled = true;
+  m.LlmEngineManager.modelInstalled = true;
+  m.PearlEngine.startReturns = false;
+  const code = await m.run(['--address', ADDR, '--no-update', '--no-serve']);
+  expect(code).toBe(1);
+  expect(m.LlmManager.instances[0].stop).toHaveBeenCalled();
 });
