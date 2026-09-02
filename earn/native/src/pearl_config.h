@@ -312,7 +312,9 @@ static_assert(PEARL_COLS_COUNT == (1u << pearl_popcount_ce(PEARL_COLS_MASK)),
 // Threads per fold block, frozen for the same reason: it makes the staging trip
 // counts compile-time. Sixteen warps in a 4x4 grid over the 128x256 tile, which
 // is what PEARL_WARP_ROWS and PEARL_WMMA_COL_BLK already assume.
+#ifndef PEARL_FOLD_THREADS
 #define PEARL_FOLD_THREADS 512u
+#endif
 // Full-chunk stages in the double buffer.
 #ifndef PEARL_STAGE_BUFS
 #define PEARL_STAGE_BUFS 2

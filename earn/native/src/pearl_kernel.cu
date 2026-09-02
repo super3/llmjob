@@ -918,7 +918,15 @@ __device__ __forceinline__ uint32_t pearl_warp_xor(uint32_t x) {
 #endif
 }
 
-extern "C" __global__ __launch_bounds__(512) void pearl_tile_fold_wmma(
+// Bounds follow the geometry rather than being pinned at 512.
+//
+// A hardcoded 512 caps ptxas at 65536/512 = 128 registers a thread even when the
+// kernel is launched with fewer, so a 256-thread build spills instead of using the
+// 256 registers those threads are entitled to. That matters because registers are
+// what bound the warp tile, and the warp tile is what sets instructions per mma --
+// which is what the fold is actually limited by: per cycle it already issues 85%
+// of what pure mma does, and loses only on the clock its extra instructions cost.
+extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold_wmma(
     const int8_t *__restrict__ Aprime, const int8_t *__restrict__ Bprime,
     uint32_t m, uint32_t n, uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg,
     uint32_t col_off, uint32_t rows_valid, uint32_t col_groups,

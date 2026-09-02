@@ -298,3 +298,58 @@ goes the wrong way.
 
 The code is not kept: the kernel signature change and the per-allocation descriptors
 are an always-on cost for a path that is off and slower.
+
+
+## Where the 2.7x actually lives: energy, not instructions
+
+Profiling pure `mma` and the fold with the same metrics finally reconciles the
+numbers, and the answer is not what the earlier notes assumed.
+
+| | tensor pipe active | IMMA / SM / cycle | clock |
+|---|---|---|---|
+| pure `mma`, fold geometry | 94.0% | 0.228 | **2.38 GHz** |
+| the fold | 78.1% | 0.195 (85% of pure) | **1.23 GHz** |
+
+**Per cycle the fold is already at 85% of pure `mma`.** The whole of the 2.7x
+throughput gap is CLOCK: both sit at the 600 W cap, and the fold draws roughly
+double the power per cycle, so it runs at half the frequency. At pure `mma`'s clock
+it would be ~322 T-MAC/s -- past the 300 target.
+
+That reframes the problem. The fold is not short of issue slots or arithmetic; it
+is short of *joules*. The thing to minimise is energy per MAC, and the proxy for
+that is the 6.2 non-tensor instructions it issues per `mma` -- instruction issue and
+register-file traffic, not the 104 GB of L2 or the 412 GB of shared, which at
+plausible pJ/byte account for tens of watts, not hundreds.
+
+Instructions per mma is set by the warp tile: the bigger and squarer it is, the more
+`mma` each `ldmatrix` and each address computation serves. Which is bounded by
+registers -- and that is where a latent bug was hiding.
+
+### `__launch_bounds__(512)` was pinned, so no other thread count could be tried
+
+The kernel hardcoded `__launch_bounds__(512)`, which caps ptxas at 65536/512 = 128
+registers a thread **whatever the launch actually uses**. A 256-thread build is
+entitled to 256 and got 128, so it spilled -- which is why earlier 256-thread sweeps
+measured badly and looked like evidence against fewer, fatter warps. It was evidence
+about the bounds. The bound now follows `PEARL_FOLD_THREADS`, and the default
+512-thread build is SASS-identical on sm_120 and sm_89.
+
+With that fixed, a square warp tile becomes measurable:
+
+| geometry | warp tile | TH/s |
+|---|---|---|
+| 512 threads, WARP_ROWS 4, RT 2, CB 4 (shipped) | 32x64 | 143.4 / 139.8 / 138.6 |
+| 256 threads, WARP_ROWS 2, RT 4, CB 4 | **64x64** | **145.4 / 143.4 / 141.9** |
+| | | **+1.4 / +2.6 / +2.4%** |
+
+Both cover the same 128x256 block tile, so L2 traffic is unchanged; the square warp
+tile serves more `mma` per `ldmatrix`. Note this is the geometry the 4090 log
+rejected outright -- "square 64x64 warp tile: 130, and it lost 40%" -- on the
+grounds that warp count for latency hiding beats shared traffic. That reasoning was
+about a card with time to spare; on a power-bound card the trade inverts.
+
+**Not shipped yet.** `PEARL_FOLD_THREADS` and the warp-grid constants are read by
+the HOST as well as the device, so unlike `PEARL_BLOCK_GROUP` this cannot be gated
+on `__CUDA_ARCH__`. Shipping it needs the host to dispatch on compute capability
+between two instantiations of the fold, which is real work and cannot be validated
+here without a 4090 to prove no regression.
