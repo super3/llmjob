@@ -23,7 +23,8 @@ const { EventEmitter } = require('events');
 //   log      { level, line }   re-emitted from every instance
 //   ready    { baseUrl, index } each time an instance first becomes ready
 //   first-ready { baseUrl }    once, on the first instance to become ready
-//   stats    { tokensPerSec }  latest tok/s from any instance
+//   stats    { tokensPerSec, promptTokensPerSec }  latest generation and prefill
+//                                                  rates from any instance
 //   stopped                    once, when the last running instance stops
 //   error    Error             re-emitted (a listener is required, as ever)
 class LlmFleet extends EventEmitter {
@@ -39,6 +40,7 @@ class LlmFleet extends EventEmitter {
     this.instances = []; // { index, port, mgr, ready, stopped, baseUrl, worker }
     this._serve = false;
     this._lastTps = 0;
+    this._lastPromptTps = 0;
     this._sawFirstReady = false;
     this._stopping = false;
     this._downEmitted = false;
@@ -150,7 +152,7 @@ class LlmFleet extends EventEmitter {
     this.instances.push(inst);
     mgr.on('log', (l) => this.emit('log', l));
     mgr.on('ready', ({ baseUrl }) => this._onReady(inst, baseUrl));
-    mgr.on('stats', ({ tokensPerSec }) => this._onStats(tokensPerSec));
+    mgr.on('stats', (s) => this._onStats(s));
     mgr.on('crashed', (info) => this._onCrashed(inst, info));
     mgr.on('stopped', (code) => this._onStopped(inst, code));
     mgr.on('error', (err) => this.emit('error', err));
@@ -221,10 +223,15 @@ class LlmFleet extends EventEmitter {
     this.emit('crashed', Object.assign({ index: inst.index }, info));
   }
 
-  _onStats(tokensPerSec) {
-    const tps = Number(tokensPerSec) || 0;
-    this._lastTps = tps;
-    this.emit('stats', { tokensPerSec: tps });
+  // Each line carries ONE phase, so hold both and re-emit both every time. That
+  // keeps the fleet's `tokensPerSec` a plain number for existing consumers while
+  // making the prefill figure available to anyone who wants it.
+  _onStats(s) {
+    const gen = s && s.tokensPerSec;
+    const pre = s && s.promptTokensPerSec;
+    if (gen != null) this._lastTps = Number(gen) || 0;
+    if (pre != null) this._lastPromptTps = Number(pre) || 0;
+    this.emit('stats', { tokensPerSec: this._lastTps, promptTokensPerSec: this._lastPromptTps });
   }
 
   _onStopped(inst, code) {
@@ -288,6 +295,10 @@ class LlmFleet extends EventEmitter {
   isReady() { return this.instances.some((i) => i.ready); }
   readyCount() { return this.instances.filter((i) => i.ready).length; }
   tokensPerSec() { return this._lastTps; }
+
+  // Prefill rate, i.e. how fast the prompt was read. Separate from tokensPerSec
+  // because they are different measurements, not two samples of one.
+  promptTokensPerSec() { return this._lastPromptTps; }
 
   // Total jobs in flight across every instance's worker (for node telemetry).
   activeJobs() {

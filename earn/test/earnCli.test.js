@@ -26,6 +26,7 @@ jest.mock('../src/main/probe', () => ({
   findFreePort: jest.fn(),
   // Shared with the GUI now — one detection path for both shells.
   detectGpuInfo: jest.fn(),
+  detectGpuTemps: jest.fn(),
 }));
 jest.mock('../src/main/io', () => ({
   postJson: jest.fn(),
@@ -1186,6 +1187,9 @@ jest.mock('../src/main/autoGate', () => {
       opts,
       started: false,
       switching: false,
+      // The real createAutoGate returns its LlmGate; anything reading node state
+      // (the stats file, and the watch view) goes through it.
+      gate: { state: 'MINING', inFlight: 0, quietMs: 60000, quietFor: () => 0 },
       isSwitching() { return this.switching; },
       start() { this.started = true; return this; },
       stop: jest.fn(),
@@ -1497,6 +1501,46 @@ test('handing the card back waits for the model to actually release its VRAM', a
   expect(m.probe.detectGpusVram).toHaveBeenCalled();
 
   gate.switching = false;
+  m.PearlEngine.instances[0].emit('stopped', 0);
+  await expect(p).resolves.toBe(0);
+});
+
+test('the engine is given a temperature reader, as the GUI has always been', async () => {
+  // Without it PearlEngine never starts its temp poll, so every headless rig
+  // reported temp 0 -- to the stats file, the miner report and the network board.
+  const m = load();
+  m.probe.detectGpuTemps.mockResolvedValue([{ index: 0, temp: 61 }]);
+  const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--no-report', '--mode', 'mining']);
+  await settle();
+  const eng = m.PearlEngine.instances[0];
+  expect(typeof eng.opts.readTemps).toBe('function');
+  eng.opts.readTemps();
+  expect(m.probe.detectGpuTemps).toHaveBeenCalled();
+  eng.emit('stopped', 0);
+  await expect(p).resolves.toBe(0);
+});
+
+test('the stats file records what the node is doing, not just its counters', async () => {
+  // It used to live inside `if (plan.miner)`, so --mode llm wrote nothing, and it
+  // could not see the gate or the model even when both were up. A rig reading
+  // 0 TH/s in demand mode is busy serving, not broken -- the file has to say so.
+  const m = load();
+  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+  m.LlmEngineManager.serverInstalled = true;
+  m.LlmEngineManager.modelInstalled = true;
+  m.LlmEngineManager.mmprojInstalled = true;
+  const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0',
+    '--stats-file', '/tmp/s.json']);
+  await settle();
+
+  m.fs.writeFileSync.mockClear();
+  intervalFor(10000).fn();
+  const written = JSON.parse(m.fs.writeFileSync.mock.calls[0][1]);
+  expect(written.mode).toBe('auto');
+  expect(written.strategy).toBe('demand');
+  expect(written.gate).toBe('MINING');
+  expect(written.schema).toBe(1);
+
   m.PearlEngine.instances[0].emit('stopped', 0);
   await expect(p).resolves.toBe(0);
 });

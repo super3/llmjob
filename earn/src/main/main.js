@@ -316,7 +316,7 @@ function wireMinerEvents(miner, endpoint) {
   // is how a user ends up staring at eight lines of "No such host is known".
   let dnsHinted = false;
   miner.on('event', (e) => {
-    applyEvent(stats, e);
+    applyEvent(stats, e, Date.now());
     if (e.type === 'connect-failed' && e.dns && !dnsHinted) {
       dnsHinted = true;
       send('miner:log', {

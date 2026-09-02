@@ -162,3 +162,29 @@ describe('buildServerArgs — per-model extra flags', () => {
     expect(a.slice(-2)).toEqual(['--spec-draft-n-max', '3']);
   });
 });
+
+describe('parseTiming', () => {
+  const { parseTiming } = require('../src/shared/llama');
+
+  test('tags a generation line', () => {
+    expect(parseTiming('eval time = 10 ms / 200 tokens ... 162.02 tokens per second'))
+      .toEqual({ kind: 'gen', tokensPerSec: 162.02 });
+  });
+
+  test('tags a prefill line', () => {
+    expect(parseTiming('prompt eval time = 5 ms / 900 tokens ... 1840.00 tokens per second'))
+      .toEqual({ kind: 'prompt', tokensPerSec: 1840 });
+  });
+
+  test('is null for a line with no timing', () => {
+    expect(parseTiming('model loaded')).toBeNull();
+    expect(parseTiming(null)).toBeNull();
+    expect(parseTiming()).toBeNull();
+  });
+
+  test('parseTokensPerSec still returns the bare number', () => {
+    const { parseTokensPerSec } = require('../src/shared/llama');
+    expect(parseTokensPerSec('eval time = 1 ms / 2 tokens ... 9.5 tokens per second')).toBe(9.5);
+    expect(parseTokensPerSec('nothing here')).toBeNull();
+  });
+});

@@ -2,7 +2,7 @@
 
 const { EventEmitter } = require('events');
 const {
-  resolveServerBinary, buildServerArgs, serverBaseUrl, isServerReady, parseTokensPerSec,
+  resolveServerBinary, buildServerArgs, serverBaseUrl, isServerReady, parseTiming,
 } = require('../shared/llama');
 
 // Spawns and supervises the llama.cpp `llama-server` child process. Like
@@ -190,8 +190,14 @@ class LlmManager extends EventEmitter {
         this._readyAt = this.now();
         this.emit('ready', { baseUrl: this.baseUrl });
       }
-      const tps = parseTokensPerSec(line);
-      if (tps != null) this.emit('stats', { tokensPerSec: tps });
+      // Exactly one of the two is non-null per line, so a consumer can tell which
+      // phase this measurement describes instead of guessing from magnitude.
+      const t = parseTiming(line);
+      if (t) {
+        this.emit('stats', t.kind === 'prompt'
+          ? { tokensPerSec: null, promptTokensPerSec: t.tokensPerSec }
+          : { tokensPerSec: t.tokensPerSec, promptTokensPerSec: null });
+      }
     }
   }
 

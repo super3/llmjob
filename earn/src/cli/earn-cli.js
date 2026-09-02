@@ -444,9 +444,12 @@ async function startLlm(settings, reserveMb, modelOverride) {
     if (servePinger.unref) servePinger.unref();
     log('serving cluster jobs for the LLMJob network');
   });
-  fleet.on('stats', ({ tokensPerSec }) => {
+  fleet.on('stats', ({ tokensPerSec, promptTokensPerSec }) => {
     serveLlmState.tps = Number(tokensPerSec) || 0;
-    log('🧠 ' + Number(tokensPerSec).toFixed(1) + ' tok/s');
+    serveLlmState.promptTps = Number(promptTokensPerSec) || 0;
+    // Only the generation rate is logged. Prefill is an order of magnitude
+    // higher, so printing both under one label read like the rig had sped up.
+    log('🧠 ' + Number(serveLlmState.tps).toFixed(1) + ' tok/s');
   });
   fleet.on('error', (err) => log('LLM error: ' + err.message, process.stderr));
 
@@ -667,12 +670,17 @@ async function run(argv) {
       miner = new PearlEngine({
         connect: (host, port) => net.connect(port, host),
         createCore,
+        // Without this the engine never polls for a card temperature, so every
+        // headless rig reported temp 0 -- to the stats file, to the miner report,
+        // and to the network board. The GUI has always passed it (main.js);
+        // omitting it here was an oversight, not a decision.
+        readTemps: () => probe.detectGpuTemps(),
       });
     }
     if (miner) {
     miner.on('log', (l) => log(l.line, l.level === 'error' ? process.stderr : process.stdout));
     miner.on('event', (evt) => {
-      applyEvent(stats, evt);
+      applyEvent(stats, evt, Date.now());
       if (evt.type === 'status') {
         const snap = snapshot(stats, Date.now());
         log('⛏  ' + format.formatHashrate(snap.total) + ' TH/s · '
@@ -704,22 +712,6 @@ async function run(argv) {
       if (reporter.unref) reporter.unref();
     }
 
-    // Write live stats JSON for external consumers (HiveOS h-stats.sh reads this
-    // to feed the dashboard). Atomic write (tmp + rename) so readers never see a
-    // torn file; best-effort — a failed write must never affect mining.
-    if (settings.statsFile) {
-      const writeStats = () => {
-        try {
-          const payload = statsFilePayload(snapshot(stats, Date.now()), { version: pkg.version, nowMs: Date.now() });
-          const tmp = settings.statsFile + '.tmp';
-          fs.writeFileSync(tmp, JSON.stringify(payload));
-          fs.renameSync(tmp, settings.statsFile);
-        } catch (e) { /* best effort */ }
-      };
-      writeStats();
-      statsWriter = setInterval(writeStats, 10000);
-      if (statsWriter.unref) statsWriter.unref();
-    }
   }
 
   // ── Local LLM ──────────────────────────────────────────────────────────────
@@ -870,6 +862,35 @@ async function run(argv) {
       }).start();
       log('auto:       serving on :' + (settings.gatePort == null ? LLM.gate.port : settings.gatePort) + ' — '
         + Math.round(LLM.gate.quietMs / 1000) + 's with no requests hands the GPU back to mining');
+    }
+
+    // Write live stats JSON for external consumers (HiveOS h-stats.sh reads this
+    // to feed the dashboard). Atomic write (tmp + rename) so readers never see a
+    // torn file; best-effort — a failed write must never affect mining.
+    //
+    // Placed HERE, after the gate exists, rather than beside the miner report:
+    // it used to live inside `if (plan.miner)`, so `--mode llm` wrote nothing at
+    // all, and it could not see the model or the gate even when they were up.
+    if (settings.statsFile) {
+      const writeStats = () => {
+        try {
+          const payload = statsFilePayload(snapshot(stats, Date.now()), {
+            version: pkg.version,
+            nowMs: Date.now(),
+            mode: normalizeMode(settings.mode),
+            strategy: autoPlan ? autoPlan.strategy : null,
+            gate: auto ? auto.gate.state : null,
+            mining: !!(miner && miner.isRunning()),
+            llm: serveLlmState,
+          });
+          const tmp = settings.statsFile + '.tmp';
+          fs.writeFileSync(tmp, JSON.stringify(payload));
+          fs.renameSync(tmp, settings.statsFile);
+        } catch (e) { /* best effort */ }
+      };
+      writeStats();
+      statsWriter = setInterval(writeStats, 10000);
+      if (statsWriter.unref) statsWriter.unref();
     }
 
     if (miner) {

@@ -97,13 +97,32 @@ function isServerReady(line) {
   return /model loaded|starting the main loop|all slots are idle/i.test(String(line == null ? '' : line));
 }
 
-// Best-effort tokens/sec from llama-server's timing lines
-// (e.g. "eval time = 1234.5 ms / 200 tokens ... 162.02 tokens per second").
+// llama-server prints TWO timing lines per request:
+//
+//   prompt eval time = ...  1840.00 tokens per second   <- prefill
+//          eval time = ...   162.02 tokens per second   <- generation
+//
+// A single /tokens per second/ regex matched both, so whichever printed last
+// won and the two were reported under one name. They measure different things
+// and routinely differ by an order of magnitude, which made the number we
+// showed -- and sent to the network board -- meaningless.
+//
+// Returns { kind: 'prompt'|'gen', tokensPerSec } or null.
+function parseTiming(line) {
+  const s = String(line == null ? '' : line);
+  const m = s.match(/([\d.]+)\s*tokens per second/i);
+  if (!m) return null;
+  return { kind: /prompt eval/i.test(s) ? 'prompt' : 'gen', tokensPerSec: Number(m[1]) };
+}
+
+// Kept for callers that only want a number and do not care which phase it came
+// from. Its old behaviour is preserved exactly: the last timing line wins.
 function parseTokensPerSec(line) {
-  const m = String(line == null ? '' : line).match(/([\d.]+)\s*tokens per second/i);
-  return m ? Number(m[1]) : null;
+  const t = parseTiming(line);
+  return t ? t.tokensPerSec : null;
 }
 
 module.exports = {
-  resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, isServerReady, parseTokensPerSec,
+  resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, isServerReady,
+  parseTokensPerSec, parseTiming,
 };

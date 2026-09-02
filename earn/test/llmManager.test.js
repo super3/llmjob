@@ -71,7 +71,11 @@ describe('LlmManager', () => {
     expect(ready).toHaveBeenCalledTimes(1);
 
     child.stdout.emit('data', 'eval time = 10 ms / 200 tokens ... 162.02 tokens per second\n');
-    expect(stats).toHaveBeenCalledWith({ tokensPerSec: 162.02 });
+    expect(stats).toHaveBeenCalledWith({ tokensPerSec: 162.02, promptTokensPerSec: null });
+    // The prefill line is tagged separately: one regex used to match both, so
+    // whichever printed last was reported as though it were the other.
+    child.stdout.emit('data', 'prompt eval time = 5 ms / 900 tokens ... 1840.00 tokens per second\n');
+    expect(stats).toHaveBeenCalledWith({ tokensPerSec: null, promptTokensPerSec: 1840 });
     expect(logs).toContain('loading model');
   });
 
