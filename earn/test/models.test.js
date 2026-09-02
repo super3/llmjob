@@ -1,6 +1,6 @@
 'use strict';
 
-const { allModels, pickModel, ctxLadder, needsMmproj } = require('../src/shared/models');
+const { allModels, pickModel, ctxLadder, needsMmproj, planAutoMode } = require('../src/shared/models');
 const { LLM } = require('../src/shared/config');
 const { requiredFreeMb } = require('../src/shared/vram');
 
@@ -163,7 +163,14 @@ describe('the shipped config', () => {
     // model's own resident size before any reserve is even considered.
     const whileMining = TOTAL - MINER;
     expect(whileMining).toBeLessThan(q.vramFullMb);
-    expect(pickModel(whileMining, LLM.miningReserveMb)).toBe(LLM.model);   // -> Gemma
+    // So 262144 is not on offer while mining -- which is what this test is about.
+    // It does NOT follow that the tier is off the table: the card can host it at
+    // 131072 alongside the miner, and refusing it outright was the bug that made
+    // ctxLadder unreachable. The rung served is the highest that fits.
+    const mining = pickModel(whileMining, LLM.miningReserveMb);
+    expect(mining.key).toBe('qwen3.8-27b');
+    expect(mining.ctxSize).toBe(131072);
+    expect(mining.ctxSize).toBeLessThan(262144);
 
     // Idle: the card clears the floor and the tier is offered.
     expect(pickModel(TOTAL, 0).key).toBe('qwen3.8-27b');
@@ -267,4 +274,116 @@ describe('planAutoMode', () => {
     expect(p.strategy).toBe('corun');
     expect(p.model).toBeNull();
   });
+});
+
+describe('a card that cannot host the top rung is offered a lower one', () => {
+  const { LLM } = require('../src/shared/config');
+  const QWEN = LLM.tiers[0];
+
+  test('a 24 GB card gets the tier at 65536 instead of being refused it', () => {
+    // The bug: the gate priced the tier at its TOP rung, so a 24 GB card was
+    // refused a model it can host at 65536 — and ctxLadder was dead code on
+    // exactly the cards it was written for.
+    const m = pickModel(24564, 0);
+    expect(m.key).toBe(QWEN.key);
+    expect(m.ctxSize).toBe(65536);
+    expect(m.ctxLadder).toEqual([65536, 32768]);   // rungs above it are gone
+  });
+
+  test('the pinned copy carries corrected VRAM figures, not just a smaller ctx', () => {
+    // llmPlan, computeGpuLayers and the refusal message all re-derive the
+    // requirement from these two fields, so they must describe the rung served.
+    const m = pickModel(24564, 0);
+    expect(m.vramFullMb).toBeLessThan(QWEN.vramFullMb);
+    expect(m.minVramMb - m.vramFullMb).toBe(QWEN.minVramMb - QWEN.vramFullMb);
+    expect(requiredFreeMb(m, 0)).toBeLessThanOrEqual(24564);
+  });
+
+  test('a card that fits the top rung gets the config object itself, unpinned', () => {
+    expect(pickModel(32607, 0)).toBe(QWEN);
+  });
+
+  test('a card too small for even the lowest rung still falls back', () => {
+    expect(pickModel(8192, LLM.miningReserveMb)).toBe(LLM.model);
+  });
+
+  test('a tier with no per-token price is only ever offered at full context', () => {
+    // Without mbPerCtxToken a rung cannot be priced, so the model keeps its
+    // measured cost rather than being offered at a size we cannot cost.
+    const unpriced = { key: 'x', vramFullMb: 30000, minVramMb: 30000, ctxSize: 262144,
+      ctxLadder: [262144, 32768] };
+    const small = { key: 's', vramFullMb: 1000, minVramMb: 1000 };
+    expect(pickModel(20000, 0, [unpriced, small])).toBe(small);
+  });
+
+  test('auto stays demand-driven when the card can serve a BIGGER window alone', () => {
+    // Both choices are now the same model, so comparing keys alone would say
+    // "co-run" and give up half the context.
+    const p = planAutoMode(32607, LLM.miningReserveMb);
+    expect(p.strategy).toBe('demand');
+    expect(p.model.ctxSize).toBe(262144);
+    expect(p.coRunModel.ctxSize).toBe(131072);
+  });
+
+  test('auto co-runs when the window is the same either way', () => {
+    const p = planAutoMode(24564, LLM.miningReserveMb);
+    expect(p.strategy).toBe('corun');
+    expect(p.model.ctxSize).toBe(p.coRunModel.ctxSize);
+  });
+});
+
+describe('minOfferCtx separates admission from the startup ladder', () => {
+  const { LLM } = require('../src/shared/config');
+
+  test('a card below the offer floor keeps the small default', () => {
+    // 22 GB can hold the tier at 32768, but a 27B model at a small window is not
+    // obviously better for the fleet than the default at its full one — so the
+    // floor keeps it on the default rather than the gate deciding silently.
+    expect(pickModel(22000, 0)).toBe(LLM.model);
+  });
+
+  test('the rung below the floor is still available as a startup fallback', () => {
+    // Admission and fallback are different questions: a node offered the tier can
+    // still walk down to 32768 if it cannot start higher.
+    expect(ctxLadder(LLM.tiers[0])).toContain(32768);
+  });
+
+  test('a tier without a floor is offered at any rung it fits', () => {
+    const t = { key: 'x', vramFullMb: 30000, minVramMb: 30000, ctxSize: 262144,
+      mbPerCtxToken: 0.042659, ctxLadder: [262144, 32768] };
+    const small = { key: 's', vramFullMb: 1000, minVramMb: 1000 };
+    const m = pickModel(21000, 0, [t, small]);
+    expect(m.key).toBe('x');
+    expect(m.ctxSize).toBe(32768);
+  });
+});
+
+describe('rung pricing is defensive about missing measurements', () => {
+  const SMALL = { key: 's', vramFullMb: 1000, minVramMb: 1000 };
+
+  test('a tier with no measured cost is never priced below its top rung', () => {
+    // Subtracting a rung's worth of KV cache from an absent measurement would
+    // produce a negative requirement, which fits any card and OOMs it.
+    const noCost = { key: 'n', minVramMb: 30000, ctxSize: 262144,
+      mbPerCtxToken: 0.042659, ctxLadder: [262144, 65536] };
+    expect(pickModel(25000, 0, [noCost, SMALL])).toBe(SMALL);
+  });
+
+  test('a tier with no floor figure still resolves a rung', () => {
+    // minVramMb absent: headroom is just zero, not a crash.
+    const noFloor = { key: 'f', vramFullMb: 30150, ctxSize: 262144,
+      mbPerCtxToken: 0.042659, ctxLadder: [262144, 65536] };
+    const m = pickModel(22000, 0, [noFloor, SMALL]);
+    expect(m.key).toBe('f');
+    expect(m.ctxSize).toBe(65536);
+  });
+});
+
+test('a tier with no top rung recorded cannot be priced below it', () => {
+  // ctxSize is what vramFullMb was measured AT. Without it there is no baseline
+  // to subtract a rung's cache from, so the model keeps its full cost.
+  const noTop = { key: 'u', vramFullMb: 30150, minVramMb: 30720,
+    mbPerCtxToken: 0.042659, ctxLadder: [262144, 65536] };
+  const SMALL = { key: 's', vramFullMb: 1000, minVramMb: 1000 };
+  expect(pickModel(22000, 0, [noTop, SMALL])).toBe(SMALL);
 });

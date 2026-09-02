@@ -1376,8 +1376,13 @@ describe('local LLM', () => {
         c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
         // Two roomy cards → one llama-server + cluster worker pinned to each.
         c.probe.detectGpusVram.mockResolvedValue([
-          { index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 },
-          { index: 1, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+          // Deliberately below the Qwen tier's offer floor (65536 needs ~22,333
+          // free) so both cards resolve the SAME small model. This test is about
+          // multi-GPU fan-out, not about which tier a card qualifies for; leaving
+          // them straddling the boundary would silently turn it into a tier test
+          // and drop one card from the plan.
+          { index: 0, name: 'RTX 4090', usedMb: 3000, totalMb: 24000 },
+          { index: 1, name: 'RTX 4090', usedMb: 2500, totalMb: 24000 },
         ]);
         c.probe.findFreePort.mockImplementation((h, p) => Promise.resolve(p));
       },
@@ -1429,8 +1434,13 @@ describe('local LLM', () => {
         c.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
         c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
         c.probe.detectGpusVram.mockResolvedValue([
-          { index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 },
-          { index: 1, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+          // Deliberately below the Qwen tier's offer floor (65536 needs ~22,333
+          // free) so both cards resolve the SAME small model. This test is about
+          // multi-GPU fan-out, not about which tier a card qualifies for; leaving
+          // them straddling the boundary would silently turn it into a tier test
+          // and drop one card from the plan.
+          { index: 0, name: 'RTX 4090', usedMb: 3000, totalMb: 24000 },
+          { index: 1, name: 'RTX 4090', usedMb: 2500, totalMb: 24000 },
         ]);
         c.probe.findFreePort.mockImplementation((h, p) => Promise.resolve(p));
       },
