@@ -831,6 +831,15 @@ async function run(argv) {
         stopLlm: async () => {
           if (llm) { try { llm.stop(); } catch { /* already gone */ } }
           llm = null;
+          // llm.stop() is a kill, not a join: LlmFleet.stop() signals the process
+          // and returns, so llama-server still holds its ~30 GB for a moment. The
+          // wake path already waits for the MINER's VRAM before spawning the
+          // model; without the mirror image here the miner is restarted into a
+          // card that is still full and its core fails to construct -- which,
+          // now that a failed restart is fatal, takes the whole node down.
+          // Observed on a 5090: 1,469 MiB free at the instant of the restart
+          // against the ~2,081 MiB the rank-128 profile needs.
+          await waitForFreeVram(LLM.miningReserveMb, 30000, 500);
           // The 'stopped' handler above also calls this, but it early-returns
           // while the gate is switching -- which is exactly this path. Without
           // it the ping timer survived every sleep, so a node that woke and

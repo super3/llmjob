@@ -1469,3 +1469,34 @@ test('a failed restart with no model loaded still exits non-zero', async () => {
   await expect(p).resolves.toBe(1);
   expect(allErr()).toContain('engine failed to restart after serving');
 });
+
+test('handing the card back waits for the model to actually release its VRAM', async () => {
+  // LlmFleet.stop() signals llama-server and returns; it does not join. Restarting
+  // the miner straight away put it on a card still holding ~30 GB, and its core
+  // failed to construct -- fatal, now that a failed restart is reported. Observed
+  // on a 5090: 1,469 MiB free at the restart against the ~2,081 MiB it needed.
+  const m = load();
+  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+  m.LlmEngineManager.serverInstalled = true;
+  m.LlmEngineManager.modelInstalled = true;
+  m.LlmEngineManager.mmprojInstalled = true;
+  const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
+  await settle();
+  const gate = m.autoGate.createAutoGate.instances[0];
+
+  const waking = gate.opts.startLlm();
+  await settle();
+  const llm = m.LlmManager.instances[0];
+  llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+  await waking;
+
+  m.probe.detectGpusVram.mockClear();
+  await gate.opts.stopLlm();
+  expect(llm.stop).toHaveBeenCalled();
+  // The card was read before the gate handed control back to the miner.
+  expect(m.probe.detectGpusVram).toHaveBeenCalled();
+
+  gate.switching = false;
+  m.PearlEngine.instances[0].emit('stopped', 0);
+  await expect(p).resolves.toBe(0);
+});
