@@ -1604,3 +1604,118 @@ test('the llm-mode gate falls back to the configured port before the fleet is up
   m.LlmManager.instances[0].emit('stopped', 0);
   await expect(p).resolves.toBe(1);
 });
+
+describe('demand mode still serves the cluster', () => {
+  // Cluster work is PULLED, outbound, so a NAT'd node can serve with no inbound
+  // networking. But a JobWorker is only built per READY llama-server instance,
+  // and demand mode has none while mining -- so the best cards in the fleet
+  // stopped pulling jobs entirely and served only what reached :8000 directly.
+  function serving(m) {
+    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true }));
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    m.LlmEngineManager.mmprojInstalled = true;
+  }
+
+  test('polls for cluster jobs while mining, before any model exists', async () => {
+    const m = load();
+    serving(m);
+    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
+    await settle();
+
+    expect(m.LlmManager.instances).toHaveLength(0);      // nothing loaded
+    expect(m.JobWorker.instances).toHaveLength(1);       // yet a poller exists
+    expect(m.JobWorker.instances[0].start).toHaveBeenCalled();
+    expect(allOut()).toContain('polling for cluster jobs while mining');
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('a cluster job wakes the model and holds the card for its whole run', async () => {
+    const m = load();
+    serving(m);
+    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
+    await settle();
+    const gate = m.autoGate.createAutoGate.instances[0];
+    const worker = m.JobWorker.instances[0];
+
+    // Drive runJob the way JobWorker does when a job is assigned.
+    let ensured = false;
+    gate.gate.ensureServing = jest.fn(async () => { ensured = true; });
+    gate.gate.begin = jest.fn();
+    gate.gate.end = jest.fn();
+    m.io.streamChatCompletion.mockReturnValue({ done: Promise.resolve() });
+
+    await worker.opts.runJob({ messages: [] }, { onDelta: () => {}, onReasoning: () => {} });
+
+    expect(ensured).toBe(true);
+    // begin()/end() bracket the WHOLE job: shouldRelease() needs inFlight === 0,
+    // so without them the quiet timer kills a long generation mid-flight.
+    expect(gate.gate.begin).toHaveBeenCalled();
+    expect(gate.gate.end).toHaveBeenCalled();
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('the card is released even when the job throws', async () => {
+    const m = load();
+    serving(m);
+    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
+    await settle();
+    const gate = m.autoGate.createAutoGate.instances[0];
+    const worker = m.JobWorker.instances[0];
+    gate.gate.ensureServing = jest.fn(async () => {});
+    gate.gate.begin = jest.fn();
+    gate.gate.end = jest.fn();
+    m.io.streamChatCompletion.mockReturnValue({ done: Promise.reject(new Error('model died')) });
+
+    await expect(worker.opts.runJob({ messages: [] }, { onDelta: () => {} })).rejects.toThrow('model died');
+    expect(gate.gate.end).toHaveBeenCalled();   // or the node never mines again
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('the fleet does not arm a second poller when the model wakes', async () => {
+    const m = load();
+    serving(m);
+    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
+    await settle();
+    const gate = m.autoGate.createAutoGate.instances[0];
+
+    const waking = gate.opts.startLlm();
+    await settle();
+    m.LlmManager.instances[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    await waking;
+
+    // Two pollers would double-poll and race each other for the same jobs.
+    expect(m.JobWorker.instances).toHaveLength(1);
+
+    // And the one poller now resolves the port the fleet actually bound, rather
+    // than the null it correctly reported while nothing was loaded.
+    const gate2 = m.autoGate.createAutoGate.instances[0];
+    gate2.gate.ensureServing = jest.fn(async () => {});
+    gate2.gate.begin = jest.fn(); gate2.gate.end = jest.fn();
+    m.io.streamChatCompletion.mockReturnValue({ done: Promise.resolve() });
+    await m.JobWorker.instances[0].opts.runJob({ messages: [] }, { onDelta: () => {} });
+    expect(m.io.streamChatCompletion.mock.calls[0][0]).toBe('http://127.0.0.1:8080');
+
+    gate.switching = false;
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('--no-serve still means no poller', async () => {
+    const m = load();
+    serving(m);
+    const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
+    await settle();
+    expect(m.JobWorker.instances).toHaveLength(0);
+    expect(allOut()).not.toContain('polling for cluster jobs');
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+});

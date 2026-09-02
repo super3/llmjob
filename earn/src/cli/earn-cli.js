@@ -316,12 +316,59 @@ function stopServe() {
 // serving GPU, each running jobs against its own llama-server. The fleet only
 // calls this once serving is armed (syncWorkers(canServe)), so `nodeCfg` is
 // always a linked node here; the fleet starts the returned worker.
-function makeCliJobWorker(nodeCfg, base, baseUrl) {
+// Node identity and its server registration, resolved ONCE per process.
+//
+// This used to live inside startLlm, which was fine while a fleet was the only
+// thing that ever served. Demand mode needs an identity before any model is
+// loaded -- it polls for cluster work while mining -- and resolving it twice
+// would register the node twice and log it twice.
+let serveIdentity = null;
+async function resolveServeIdentity(settings) {
+  if (serveIdentity) return serveIdentity;
+  // Reuse the stored identity when there is one (it carries the node's name and
+  // server URL); only mint a keypair when serving and none exists yet.
+  const nodeCfg = loadNodeConfig() || (settings.serve ? getOrCreateNodeConfig() : null);
+  const canServe = !!(settings.serve && nodeCfg);
+  // Publish the node id on the miner ping only while actually armed to serve.
+  serveNodeId = canServe ? nodeCfg.nodeId : null;
+  const base = (nodeCfg && nodeCfg.serverUrl) || NODE.serverUrl;
+
+  // An unclaimed node needs a row server-side before /jobs/poll will answer it.
+  // Best-effort: a failure here just means no jobs arrive, and the local model
+  // still runs.
+  if (canServe && !nodeCfg.connected) {
+    const registered = await registerNode(nodeCfg, base);
+    log(registered
+      ? 'serving public jobs as an unlinked node (' + nodeCfg.nodeId + ') — run "connect" to attach it to your account'
+      : 'could not register with the network — running the LLM locally only', registered ? process.stdout : process.stderr);
+  }
+  serveIdentity = { nodeCfg, canServe, base };
+  return serveIdentity;
+}
+
+// `baseUrl` may be a thunk: in demand mode no server exists when the worker is
+// built, and the port is not known until one is spawned. `gate`, when given,
+// makes this worker WAKE the model rather than assume one is loaded.
+function makeCliJobWorker(nodeCfg, base, baseUrl, gate) {
+  const urlOf = typeof baseUrl === 'function' ? baseUrl : () => baseUrl;
+  const stream = (chatBody, h) => streamChatCompletion(urlOf(), chatBody, h.onDelta, h.onReasoning).done;
   const w = new JobWorker({
     identity: { nodeId: nodeCfg.nodeId, publicKey: nodeCfg.publicKey, secretKey: nodeCfg.secretKey },
     serverUrl: base,
     post: (url, body) => postJson(url, body, 30000),
-    runJob: (chatBody, { onDelta, onReasoning }) => streamChatCompletion(baseUrl, chatBody, onDelta, onReasoning).done,
+    runJob: gate
+      ? async (chatBody, h) => {
+        // begin()/end() bracket the WHOLE job, not just the wake. shouldRelease()
+        // requires inFlight === 0, so without this the quiet timer would hand the
+        // card back to mining part-way through a long generation -- the cluster
+        // path bypasses the HTTP handler that normally does this accounting.
+        gate.begin();
+        try {
+          await gate.ensureServing();
+          return await stream(chatBody, h);
+        } finally { gate.end(); }
+      }
+      : stream,
     servingModel: () => serveLlmState.model,
   });
   // The 'error' listener is mandatory: a listener-less EventEmitter 'error'
@@ -342,7 +389,10 @@ function makeCliJobWorker(nodeCfg, base, baseUrl) {
 // again here would re-run that decision against whatever VRAM happens to be free
 // at the moment of the switch -- see waitForFreeVram for why that is not the same
 // number a moment later.
-async function startLlm(settings, reserveMb, modelOverride) {
+// armWorkers=false leaves cluster polling to the caller. Demand mode owns its
+// own worker (it has to poll while no fleet exists), and a fleet arming a second
+// one on every wake would double-poll and race it for the same jobs.
+async function startLlm(settings, reserveMb, modelOverride, armWorkers = true) {
   const dir = llmDir(settings);
 
   // Plan one llama-server per eligible GPU before doing anything expensive
@@ -400,21 +450,7 @@ async function startLlm(settings, reserveMb, modelOverride) {
   // out entirely and keeps the model purely local.
   // Reuse the stored identity when there is one (it carries the node's name and
   // server URL); only mint a keypair when serving and none exists yet.
-  const nodeCfg = loadNodeConfig() || (settings.serve ? getOrCreateNodeConfig() : null);
-  const canServe = !!(settings.serve && nodeCfg);
-  // Publish the node id on the miner ping only while actually armed to serve.
-  serveNodeId = canServe ? nodeCfg.nodeId : null;
-  const base = (nodeCfg && nodeCfg.serverUrl) || NODE.serverUrl;
-
-  // An unclaimed node needs a row server-side before /jobs/poll will answer it.
-  // Best-effort: a failure here just means no jobs arrive, and the local model
-  // still runs.
-  if (canServe && !nodeCfg.connected) {
-    const registered = await registerNode(nodeCfg, base);
-    log(registered
-      ? 'serving public jobs as an unlinked node (' + nodeCfg.nodeId + ') — run "connect" to attach it to your account'
-      : 'could not register with the network — running the LLM locally only', registered ? process.stdout : process.stderr);
-  }
+  const { nodeCfg, canServe, base } = await resolveServeIdentity(settings);
 
   // One fleet spawns a llama-server per plan entry, walking to a free port per
   // instance (the same busy-port self-heal the GUI has) and building a cluster
@@ -453,7 +489,7 @@ async function startLlm(settings, reserveMb, modelOverride) {
   });
   fleet.on('error', (err) => log('LLM error: ' + err.message, process.stderr));
 
-  fleet.syncWorkers(canServe); // arm serving before instances come up
+  fleet.syncWorkers(canServe && armWorkers); // arm serving before instances come up
   // Same run bits the GUI passes: llmFleet merges these into every
   // llmManager.start(), so the model's context ladder, projector and tuned flags
   // reach llama-server here too.
@@ -726,6 +762,9 @@ async function run(argv) {
     autoPlan = planAutoMode(best ? best.freeMb : null, LLM.miningReserveMb);
   }
   const demand = !!(autoPlan && autoPlan.strategy === 'demand');
+  // Demand mode polls for cluster work WHILE MINING, so it needs its identity
+  // before any model exists -- not on the first wake, which may never come.
+  const demandServe = demand ? await resolveServeIdentity(settings) : null;
   if (demand) {
     log('auto:       ' + autoPlan.model.name + ' needs the GPU to itself — mining until a request arrives');
   }
@@ -751,11 +790,15 @@ async function run(argv) {
       // Every exit path runs through here, so the gate's listening socket is
       // released whether we stopped on a signal or an engine died underneath us.
       if (auto) { auto.stop(); auto = null; }
+      if (demandWorker) { demandWorker.stop(); demandWorker = null; }
       resolve(code);
     };
     // A deliberate switch must not look like an engine dying: the handlers below
     // tear the process down, and the gate stops engines on purpose.
     let auto = null;
+    // Demand mode's own cluster poller. Not owned by the fleet, so it outlives
+    // every wake/sleep cycle and has to be stopped explicitly.
+    let demandWorker = null;
 
     const shutdown = () => {
       if (stopping) return;
@@ -808,7 +851,7 @@ async function run(argv) {
           await waitForFreeVram(autoPlan.model.vramFullMb);
           // Sized against the whole card, and pinned to the tier already chosen:
           // nothing is co-resident in demand mode.
-          llm = await startLlm(settings, 0, autoPlan.model);
+          llm = await startLlm(settings, 0, autoPlan.model, false);
           if (llm) {
             llm.on('stopped', () => {
               if (auto && auto.isSwitching()) return;
@@ -862,6 +905,22 @@ async function run(argv) {
       }).start();
       log('auto:       serving on :' + (settings.gatePort == null ? LLM.gate.port : settings.gatePort) + ' — '
         + Math.round(LLM.gate.quietMs / 1000) + 's with no requests hands the GPU back to mining');
+
+      // Cluster work is PULLED, outbound, so a node behind NAT can serve with no
+      // inbound networking at all. But a JobWorker is only built per READY
+      // llama-server instance, and demand mode has no instance while mining --
+      // so a demand node stopped pulling cluster jobs entirely and served only
+      // whatever reached :8000 directly. On a NAT'd rig that is nothing: the
+      // most capable cards in the fleet went silently idle.
+      //
+      // Give demand mode a worker of its own that polls while mining and wakes
+      // the model the way an inbound request does.
+      if (demandServe && demandServe.canServe) {
+        demandWorker = makeCliJobWorker(demandServe.nodeCfg, demandServe.base,
+          () => (llm && llm.webUrl && llm.webUrl()) || null, auto.gate);
+        demandWorker.start();
+        log('auto:       polling for cluster jobs while mining');
+      }
     } else if (plan.llm && !miner) {
       // Serving with the card to ourselves. There is nothing to switch, but the
       // endpoint must not move: the gate port is THE documented endpoint, and it
