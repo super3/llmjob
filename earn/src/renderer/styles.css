@@ -33,7 +33,16 @@ body {
    never grows or shrinks when switching tabs and the footer (View Logs / Need
    Help) stays put. Views with unbounded or overflowing content (chat, logs,
    settings) scroll internally instead of stretching the frame. */
-#view-mine, #view-chat, #view-api, #view-settings, #view-logs { height: 470px; }
+#view-chat, #view-api, #view-settings, #view-logs { height: 470px; }
+/* Mine is the one screen that legitimately gets TALLER: the update banner and
+   the engine-error line appear above content of a fixed size, so they push the
+   START button down. At a hard height it overflowed its own section and painted
+   across the footer -- 39px over VIEW LOGS / NEED HELP with the update bar up.
+   Nothing clipped or scrolled, either: a fixed height means the overflow never
+   grows .app, so the ResizeObserver never fires and the window is never refitted.
+   min-height keeps every screen the same 470px in the ordinary case, and lets
+   this one grow the frame when it has to. */
+#view-mine { min-height: 470px; }
 /* Chat and logs fill the height so their scroller sits above the footer. */
 #view-chat, #view-api, #view-logs { display: flex; flex-direction: column; }
 /* Settings runs taller than the frame — scroll it inside, styled like chat. */
