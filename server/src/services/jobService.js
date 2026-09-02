@@ -185,6 +185,14 @@ class JobService {
       job.benchmarkWarmup = !!jobData.benchmarkWarmup;
     }
 
+    // An explicit node target outranks the model name, exactly as it already
+    // outranks the capacity filter above: the caller named a machine, and a
+    // machine serves what it serves. Without that, a request carrying both --
+    // "this node" and a model that node is not running -- was excluded by the
+    // model filter from its target and by the target filter from everyone else,
+    // so it was unassignable by anyone and the caller waited out the whole
+    // gateway budget for a 504.
+    //
     // Pin the job to nodes running the requested model -- but ONLY when the fleet
     // actually advertises it. A name no live node reports resolves to null, which
     // is today's behaviour: served by whoever polls next, running whatever they
@@ -290,7 +298,7 @@ class JobService {
            AND (visibility IS NULL OR visibility <> 'private' OR user_id = $2)
            AND (target_node IS NULL OR target_node = $3)
            AND ($4::int IS NULL OR target_node IS NOT NULL OR max_tokens IS NULL OR max_tokens <= $4)
-           AND (model IS NULL OR model = $5)
+           AND (model IS NULL OR target_node IS NOT NULL OR model = $5)
          ORDER BY priority DESC, created_at ASC LIMIT $1 FOR UPDATE SKIP LOCKED`,
         [maxJobs, ownerUserId, nodeId, capacity, nodeModel]
       );

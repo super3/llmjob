@@ -82,7 +82,16 @@ class LlmGate extends EventEmitter {
   // callers share one transition rather than racing to start two servers.
   ensureServing() {
     if (this.state === SERVING && this.isLlmReady()) return Promise.resolve(true);
-    if (this._transition) return this._transition;
+    // Only join a transition heading the SAME way. _transition is one slot shared
+    // with ensureMining, so a request arriving during a release used to await the
+    // RELEASE, get `true`, and forward into a model that had just been stopped --
+    // a 502 on the HTTP path, and on the cluster path a claimed job reported
+    // FAILED. The window is the whole release: stopLlm waits for the model's VRAM
+    // to come back, up to 30s.
+    if (this._transition && this.state === TO_SERVING) return this._transition;
+    // Heading the other way: let the release finish, then wake from a settled
+    // state rather than racing it.
+    if (this._transition) return this._transition.then(() => this.ensureServing(), () => this.ensureServing());
     this._transition = (async () => {
       this._setState(TO_SERVING);
       if (this.stopMiner) await this.stopMiner();

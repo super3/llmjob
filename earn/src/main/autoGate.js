@@ -62,8 +62,15 @@ function createAutoGate(opts) {
       if (!fleet) throw new Error('llama-server did not start');
       if (!(fleet.readyCount && fleet.readyCount() > 0)) {
         await new Promise((resolve, reject) => {
-          const t = setTimeout(() => reject(new Error('llama-server was not ready in time')),
-            llmReadyTimeoutMs);
+          const t = setTimeout(() => {
+            // Abandoning a still-loading fleet left a llama-server filling the
+            // card while the gate believed it was mining: the miner was restarted
+            // into VRAM that was about to disappear, and the next wake overwrote
+            // the handle, orphaning a process nothing could stop. Give up on
+            // waiting AND on the server.
+            try { fleet.stop(); } catch { /* already gone */ }
+            reject(new Error('llama-server was not ready in time'));
+          }, llmReadyTimeoutMs);
           fleet.once('ready', () => { clearTimeout(t); resolve(); });
         });
       }

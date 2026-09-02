@@ -994,6 +994,23 @@ describe('JobService', () => {
       expect(await jobService.assignJobsToNode('n-bare', 5)).toEqual([]);
     });
 
+    it('an explicit node target outranks the model pin', async () => {
+      // Both given, and they disagree: the target runs Qwen, the caller asked for
+      // Gemma. Filtered by model it was excluded from its own target; filtered by
+      // target it was excluded from everyone else -- unassignable by anyone, and
+      // the caller waited out the whole gateway budget for a 504. The caller named
+      // a machine, and a machine serves what it serves.
+      await liveNode('n-qwen', 'Qwen3.8-27B-UD-Q4_K_XL');
+      await liveNode('n-gemma', 'gemma-4-E4B-it-Q4_K_M');
+      const job = await jobService.createJob({
+        prompt: 'p', userId: 'u', targetNode: 'n-qwen', requestedModel: 'gemma-4-E4B-it-Q4_K_M',
+      });
+      // Nobody else may take it -- the target filter still applies.
+      expect(await jobService.assignJobsToNode('n-gemma', 5)).toEqual([]);
+      // And the machine the caller named does get it.
+      expect((await jobService.assignJobsToNode('n-qwen', 5)).map((j) => j.id)).toEqual([job.id]);
+    });
+
     it('is unknown to a node the server has never seen', async () => {
       await jobService.createJob({ prompt: 'p', userId: 'u' });
       expect(await jobService.assignJobsToNode('n-ghost', 5)).toHaveLength(1);

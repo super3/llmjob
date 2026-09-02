@@ -762,7 +762,11 @@ async function run(argv) {
     const best = pickLlmGpu(cards);
     autoPlan = planAutoMode(best ? best.freeMb : null, LLM.miningReserveMb);
   }
-  const demand = !!(autoPlan && autoPlan.strategy === 'demand');
+  // `miner` is null when the mining core failed to load. Without that guard the
+  // node believed it was in demand mode, skipped the up-front LLM start, never
+  // built the gate (which needs a miner), and fell through to "nothing to run" --
+  // exiting 1 on a card that could have served perfectly well.
+  const demand = !!(miner && autoPlan && autoPlan.strategy === 'demand');
   // Demand mode polls for cluster work WHILE MINING, so it needs its identity
   // before any model exists -- not on the first wake, which may never come.
   const demandServe = demand ? await resolveServeIdentity(settings) : null;
@@ -819,8 +823,18 @@ async function run(argv) {
       if (statsWriter) clearInterval(statsWriter);
       stopServe();
       if (llm) llm.stop();
-      if (miner) miner.stop();
-      else finish(0); // LLM-only: no miner 'stopped' will resolve us
+      // Stop the gate FIRST, so nothing can start a new transition -- or restart
+      // the miner -- while we are tearing down.
+      if (auto) { auto.stop(); auto = null; }
+      // isRunning(), not truthiness. In demand mode the gate has usually already
+      // stopped the miner, and PearlEngine.stop() on a stopped miner emits
+      // nothing: `miner` was still truthy, so the else arm never ran, finish()
+      // was never called, and the run never resolved. The process then sat until
+      // TimeoutStopSec while its release timer restarted the miner underneath the
+      // shutdown and its worker kept claiming jobs it would never finish. A
+      // self-update is a restart, so the rollout mechanism hit this every time.
+      if (miner && miner.isRunning()) miner.stop();
+      else finish(0); // nothing running that will resolve us with a 'stopped'
     };
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
