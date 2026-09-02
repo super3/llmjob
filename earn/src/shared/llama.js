@@ -63,7 +63,28 @@ function buildServerArgs(opts = {}) {
   if (Number.isInteger(opts.mainGpu) && opts.mainGpu >= 0) {
     args.push('--main-gpu', String(opts.mainGpu));
   }
+  // The vision projector, for a multimodal model that ships one. The weights
+  // alone load and serve happily as a text-only model, so a missing projector is
+  // a silent capability loss rather than a startup failure — which is exactly why
+  // the caller passes the path explicitly instead of us inferring it.
+  // What the server calls itself. Without it llama-server falls back to the model
+  // PATH, so /v1/models and the `model` field of every completion come back as
+  // an absolute local filesystem path -- which leaks the node's directory layout
+  // to anything consuming the endpoint and does not match the model name the
+  // fleet reports elsewhere. Verified on a 5090: without this the id is
+  // "/home/.../llm/Qwen3.8-27B-UD-Q4_K_XL.gguf".
+  if (opts.alias) args.push('--alias', String(opts.alias));
+  if (opts.mmprojPath) args.push('--mmproj', String(opts.mmprojPath));
   if (opts.flashAttn) args.push('--flash-attn');
+  // Per-model flags, appended last so a model can override an earlier default.
+  // A large model is not simply a bigger version of a small one: Qwen3.8 needs a
+  // quantised KV cache to fit its context at all, its own chat template to
+  // produce output matching what it was tuned for, and can self-speculate from a
+  // head inside its own GGUF. None of that belongs in the shared arg list, and
+  // none of it can be inferred — it comes from the model entry in config.
+  if (Array.isArray(opts.extraArgs)) {
+    for (const a of opts.extraArgs) if (a != null && a !== '') args.push(String(a));
+  }
   return args;
 }
 
@@ -76,13 +97,32 @@ function isServerReady(line) {
   return /model loaded|starting the main loop|all slots are idle/i.test(String(line == null ? '' : line));
 }
 
-// Best-effort tokens/sec from llama-server's timing lines
-// (e.g. "eval time = 1234.5 ms / 200 tokens ... 162.02 tokens per second").
+// llama-server prints TWO timing lines per request:
+//
+//   prompt eval time = ...  1840.00 tokens per second   <- prefill
+//          eval time = ...   162.02 tokens per second   <- generation
+//
+// A single /tokens per second/ regex matched both, so whichever printed last
+// won and the two were reported under one name. They measure different things
+// and routinely differ by an order of magnitude, which made the number we
+// showed -- and sent to the network board -- meaningless.
+//
+// Returns { kind: 'prompt'|'gen', tokensPerSec } or null.
+function parseTiming(line) {
+  const s = String(line == null ? '' : line);
+  const m = s.match(/([\d.]+)\s*tokens per second/i);
+  if (!m) return null;
+  return { kind: /prompt eval/i.test(s) ? 'prompt' : 'gen', tokensPerSec: Number(m[1]) };
+}
+
+// Kept for callers that only want a number and do not care which phase it came
+// from. Its old behaviour is preserved exactly: the last timing line wins.
 function parseTokensPerSec(line) {
-  const m = String(line == null ? '' : line).match(/([\d.]+)\s*tokens per second/i);
-  return m ? Number(m[1]) : null;
+  const t = parseTiming(line);
+  return t ? t.tokensPerSec : null;
 }
 
 module.exports = {
-  resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, isServerReady, parseTokensPerSec,
+  resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, isServerReady,
+  parseTokensPerSec, parseTiming,
 };

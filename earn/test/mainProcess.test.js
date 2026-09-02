@@ -193,12 +193,16 @@ jest.mock('../src/main/llmEngineManager', () => {
       LlmEngineManager.instances.push(this);
     }
     ensureServer(onProgress) { return LlmEngineManager.behavior.ensureServer(onProgress); }
-    ensureModel(onProgress) { return LlmEngineManager.behavior.ensureModel(onProgress); }
+    ensureModel(onProgress, model) { return LlmEngineManager.behavior.ensureModel(onProgress, model); }
+    ensureMmproj(onProgress, model) { return LlmEngineManager.behavior.ensureMmproj(onProgress, model); }
   }
   LlmEngineManager.instances = [];
   LlmEngineManager.behavior = {
     ensureServer: () => Promise.resolve('/tmp/llm/llama-server'),
     ensureModel: () => Promise.resolve('/tmp/llm/model.gguf'),
+    // The default fleet model has no projector, so the default mock returns null
+    // exactly as the real one does for a text-only model.
+    ensureMmproj: () => Promise.resolve(null),
   };
   return { LlmEngineManager };
 });
@@ -1241,6 +1245,49 @@ describe('local LLM', () => {
     });
   });
 
+  // The path the large-card tier exists for, end to end: a 32 GB card idle
+  // enough to hold Qwen3.8-27B gets it, along with the projector and the flags
+  // the model cannot run at 262144 without. This is the case a human would
+  // otherwise have to verify by hand on a 5090.
+  it('gives a 32 GB card the vision tier, its projector and its tuned flags', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        c.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
+        c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
+        // A 5090 with nothing else on it — the real card totals, idle.
+        c.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32607 }]);
+        c.LlmEngineManager.behavior.ensureMmproj = () => Promise.resolve('/tmp/llm/mmproj.gguf');
+      },
+    });
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+
+    const tier = ctx.config.LLM.tiers[0];
+    const llm = ctx.LlmManager.instances[0];
+    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({
+      mmprojPath: '/tmp/llm/mmproj.gguf',
+      ctxSize: 262144,
+      ctxLadder: tier.ctxLadder,
+      extraArgs: tier.extraArgs,
+    }));
+    // The quantised KV cache is the reason 262144 fits at all, so its absence
+    // here would mean a node asking for a context it cannot hold.
+    const { extraArgs } = llm.start.mock.calls[0][0];
+    expect(extraArgs.join(' ')).toContain('--cache-type-k q8_0');
+    // And the log names the model the operator is actually getting.
+    expect(ctx.sent('miner:log').map((l) => l.line).join('\n')).toContain(tier.name);
+
+    // Everything that REPORTS a model must name the tier too, not the fleet
+    // default. These all read LLM.model directly until selection became
+    // per-node, at which point a 5090 serving Qwen told the hero, the network
+    // board and — through metrics.model → openaiController.modelName — the
+    // `model` field of every gateway completion that it was serving Gemma.
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ model: tier.name });
+    llm.emit('ready', { baseUrl: llm.baseUrl });
+    await flush();
+    expect(ctx.JobWorker.instances[0].opts.servingModel()).toBe(tier);
+  });
+
   it('starts llama-server, goes ready, serves jobs, streams stats, and reports its exit', async () => {
     const ctx = await boot({
       before: (c) => {
@@ -1259,6 +1306,14 @@ describe('local LLM', () => {
     expect(llm.start).toHaveBeenCalledWith({
       platform: 'linux', binaryPath: '/tmp/llm/llama-server', modelPath: '/tmp/llm/model.gguf',
       host: '127.0.0.1', nGpuLayers: ALL_LAYERS, port: 8080, mainGpu: 0,
+      // The chosen model's own serving parameters, forwarded through the fleet.
+      // A 22 GB card resolves to the default model: no projector, no extra flags.
+      mmprojPath: null, ctxSize: ctx.config.LLM.ctxSize,
+      ctxLadder: [ctx.config.LLM.ctxSize], extraArgs: undefined,
+      // What the server should call itself. Without it llama-server reports the
+      // model PATH as its id, so /v1/models and every completion come back with
+      // an absolute local path instead of the model name.
+      alias: ctx.config.LLM.model.name,
     });
     expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false }); // endpoint fills in on ready
 

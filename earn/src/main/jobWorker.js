@@ -26,18 +26,24 @@ class JobWorker extends EventEmitter {
     this.serverUrl = opts.serverUrl;
     this.post = opts.post;                 // (url, body) -> Promise<{ status, data }>
     this.runJob = opts.runJob;             // (chatBody, { onDelta }) -> Promise (rejects on error)
+    // What this node has loaded, as a thunk rather than a value: the fleet can be
+    // stopped and restarted at a different tier under a worker that outlives it,
+    // and metrics.model must follow the model that actually ran the job. Omitted
+    // by a caller that has not been taught about tiers, which then gets the fleet
+    // default from jobToChatBody.
+    this.servingModel = opts.servingModel || (() => null);
     this.now = opts.now || Date.now;
     this.schedule = opts.schedule || ((fn, ms) => { const t = setTimeout(fn, ms); t.unref(); return t; });
     this.cancel = opts.cancel || clearTimeout;
-    this.idleMs = opts.idleMs || 5000;     // poll cadence right after activity
-    this.maxIdleMs = opts.maxIdleMs || 60000; // backoff ceiling for empty/error polls
+    this.pollMinMs = opts.pollMinMs || 5000;   // poll cadence right after activity
+    this.pollMaxMs = opts.pollMaxMs || 60000;  // backoff ceiling for empty/error polls
     this.heartbeatMs = opts.heartbeatMs || 30000; // per-job lock renewal cadence
     this.chunkChars = opts.chunkChars || 60; // flush a result chunk every N chars…
     this.flushMs = opts.flushMs || 1000;     // …or at least this often while text flows
     this.running = false;
     this.active = 0;
     this._timer = null;
-    this._delay = this.idleMs;
+    this._delay = this.pollMinMs;
   }
 
   activeJobs() { return this.active; }
@@ -51,7 +57,7 @@ class JobWorker extends EventEmitter {
   start() {
     if (this.running) return;
     this.running = true;
-    this._delay = this.idleMs;
+    this._delay = this.pollMinMs;
     this._tick();
   }
 
@@ -62,16 +68,16 @@ class JobWorker extends EventEmitter {
 
   // One poll → run any assigned jobs → schedule the next poll. Never rejects; a
   // failure is emitted and the loop keeps going. Empty polls and errors back off
-  // exponentially up to maxIdleMs so an idle fleet (or a down server) isn't
-  // hammered; any assigned job snaps the cadence back to idleMs.
+  // exponentially up to pollMaxMs so a fleet with no work (or a down server)
+  // isn't hammered; any assigned job snaps the cadence back to pollMinMs.
   _tick() {
     if (!this.running) return;
     this.pollOnce()
       .then((count) => {
-        this._delay = count > 0 ? this.idleMs : Math.min(this._delay * 2, this.maxIdleMs);
+        this._delay = count > 0 ? this.pollMinMs : Math.min(this._delay * 2, this.pollMaxMs);
       })
       .catch((e) => {
-        this._delay = Math.min(this._delay * 2, this.maxIdleMs);
+        this._delay = Math.min(this._delay * 2, this.pollMaxMs);
         try { this.emit('error', e); } catch (e2) { /* listener-less 'error' must not kill the loop */ }
       })
       .then(() => { if (this.running) this._timer = this.schedule(() => this._tick(), this._delay); });
@@ -92,7 +98,7 @@ class JobWorker extends EventEmitter {
     this.active++;
     this.emit('job', { id: job.id, active: this.active });
     const base = this.serverUrl + '/api/jobs/' + job.id;
-    const chatBody = jobToChatBody(job);
+    const chatBody = jobToChatBody(job, this.servingModel());
     // Fences this attempt. Every worker on a rig signs as the same node id (one
     // per GPU that fits the model, and the GUI and CLI share one node.json), so
     // the server cannot tell our writes from a sibling's on the node id alone.

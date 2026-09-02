@@ -26,6 +26,7 @@ jest.mock('../src/main/probe', () => ({
   findFreePort: jest.fn(),
   // Shared with the GUI now — one detection path for both shells.
   detectGpuInfo: jest.fn(),
+  detectGpuTemps: jest.fn(),
 }));
 jest.mock('../src/main/io', () => ({
   postJson: jest.fn(),
@@ -59,6 +60,9 @@ jest.mock('../src/main/pearlEngine', () => {
       this.start = jest.fn((settings) => {
         this.settings = settings;
         if (PearlEngine.startError) throw PearlEngine.startError;
+        // undefined by default, as the real engine returns when it started. A
+        // fatal start failure returns false, which the CLI must treat as fatal.
+        return PearlEngine.startReturns;
       });
       this.stop = jest.fn();
       this.isRunning = jest.fn(() => true);
@@ -67,6 +71,7 @@ jest.mock('../src/main/pearlEngine', () => {
   }
   PearlEngine.instances = [];
   PearlEngine.startError = null;
+  PearlEngine.startReturns = undefined;
   return { PearlEngine };
 });
 jest.mock('../src/main/pearlCore', () => ({
@@ -112,12 +117,23 @@ jest.mock('../src/main/llmEngineManager', () => {
         if (onPct) { onPct(20); onPct(null); }
         return '/cache/model.gguf';
       });
+      // The vision projector half. Defaults to "already satisfied, none to
+      // fetch", which is what a text-only model reports — the default fleet
+      // model has no projector.
+      this.isMmprojInstalled = jest.fn(() => LlmEngineManager.mmprojInstalled);
+      this.mmprojPath = jest.fn(() => LlmEngineManager.mmprojFile);
+      this.ensureMmproj = jest.fn(async (onPct) => {
+        if (onPct) { onPct(30); onPct(null); }
+        return LlmEngineManager.mmprojFile;
+      });
       LlmEngineManager.instances.push(this);
     }
   }
   LlmEngineManager.instances = [];
   LlmEngineManager.serverInstalled = false;
   LlmEngineManager.modelInstalled = false;
+  LlmEngineManager.mmprojInstalled = true;   // text-only default: nothing to fetch
+  LlmEngineManager.mmprojFile = null;
   LlmEngineManager.serverError = null;
   return { LlmEngineManager };
 });
@@ -194,6 +210,7 @@ function applyDefaults(m) {
   m.selfUpdater.applyUpdate.mockResolvedValue('/opt/earn');
   m.selfUpdater.reexec.mockReturnValue(0);
   m.selfUpdate.planUpdate.mockReturnValue({ updateAvailable: false, reason: 'up-to-date' });
+  m.PearlEngine.startReturns = undefined;
 }
 
 // Load a fresh earn-cli plus fresh instances of every mocked dependency.
@@ -210,6 +227,9 @@ function load() {
     m.selfUpdate = require('../src/shared/selfUpdate');
     m.net = require('net');
     m.PearlEngine = require('../src/main/pearlEngine').PearlEngine;
+    m.autoGate = require('../src/main/autoGate');
+    m.autoGate.createAutoGate.instances = [];
+    m.autoGate.createServeGate.instances = [];
     m.pearlCore = require('../src/main/pearlCore');
     m.LlmManager = require('../src/main/llmManager').LlmManager;
     m.LlmEngineManager = require('../src/main/llmEngineManager').LlmEngineManager;
@@ -641,6 +661,82 @@ describe('local LLM', () => {
     }
   });
 
+  // The headless path is the one a 5090 box under systemd actually runs, so the
+  // tier has to reach llama-server from HERE, not only from the GUI shell. It
+  // did not until this was wired: earn-cli passed LLM.model unconditionally, so
+  // a 32 GB card would have quietly kept serving the small default.
+  test('a 32 GB card gets the vision tier, its projector and its tuned flags', async () => {
+    const m = load();
+    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: 'rig' }));
+    // An idle 5090, budgeted against what CUDA actually exposes.
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+    m.LlmEngineManager.mmprojInstalled = false;
+    m.LlmEngineManager.mmprojFile = '/cache/mmproj.gguf';
+
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    const p = m.run(['--mode', 'llm', '--no-serve', '--no-update']);
+    await settle();
+
+    const tier = LLM.tiers[0];
+    const llm = m.LlmManager.instances[0];
+    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({
+      mmprojPath: '/cache/mmproj.gguf',
+      ctxSize: 262144,
+      ctxLadder: tier.ctxLadder,
+      extraArgs: tier.extraArgs,
+    }));
+    // Without a quantised KV cache the model does not load at this context.
+    expect(llm.start.mock.calls[0][0].extraArgs.join(' ')).toContain('--cache-type-k q8_0');
+    // And the operator is told which model they are getting, plus the extra
+    // download it implies.
+    expect(allOut()).toContain('preparing local LLM (' + tier.name + ')');
+    expect(allOut()).toContain('downloading vision projector');
+
+    llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    await settle();
+    llm.emit('stopped', 0);
+    await expect(p).resolves.toBe(1);
+  });
+
+  // Starting the tier is half the job; SAYING you started it is the other half.
+  // Every reporting site read LLM.model directly, which was the right answer
+  // only while every node ran the same model — so a serving 5090 told the
+  // network board it was running Gemma, and metrics.model carried that same
+  // wrong name into the `model` field of every gateway completion it served.
+  test('a serving 5090 reports the tier it loaded, not the fleet default', async () => {
+    const m = load();
+    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: 'rig' }));
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+    m.probe.detectVram.mockResolvedValue({ totalMb: 32149, usedMb: 30150 });
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    m.LlmEngineManager.mmprojInstalled = true;
+    const p = m.run(['--mode', 'llm', '--no-update']);
+    await settle();
+
+    const tier = LLM.tiers[0];
+    const llm = m.LlmManager.instances[0];
+    llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    await settle();
+
+    // What runs the jobs — a thunk, so a fleet restart at another tier follows.
+    // Compared by name, not identity: the CLI is loaded in its own module
+    // registry, so its `config` is a different object graph from this file's.
+    expect(m.JobWorker.instances[0].opts.servingModel().name).toBe(tier.name);
+
+    // What the network board is told.
+    const pinger = intervalFor(NODE.pingIntervalMs);
+    await pinger.fn();
+    const ping = m.io.postJson.mock.calls
+      .filter((c) => /\/api\/nodes\/ping$/.test(c[0]))
+      .pop();
+    expect(ping[1]).toMatchObject({ model: tier.name, quant: tier.quant });
+
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
   test('serves cluster jobs when connected: worker, pings, telemetry, SIGINT shutdown', async () => {
     intervalUnref = false; // cover the servePinger without unref()
     const m = load();
@@ -820,9 +916,12 @@ describe('local LLM', () => {
     const m = load();
     m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: 'rig' }));
     // Two roomy cards → one llama-server + cluster worker pinned to each.
+    // Below the Qwen tier's offer floor (65536 needs ~22,333 free) so both cards
+    // resolve the SAME small model: this test is about multi-GPU fan-out, not
+    // about which tier a card qualifies for.
     m.probe.detectGpusVram.mockResolvedValue([
-      { index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 },
-      { index: 1, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+      { index: 0, name: 'RTX 4090', usedMb: 3000, totalMb: 24000 },
+      { index: 1, name: 'RTX 4090', usedMb: 2500, totalMb: 24000 },
     ]);
     m.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 2000 });
     m.probe.findFreePort.mockImplementation((h, p) => Promise.resolve(p));
@@ -1073,6 +1172,604 @@ describe('connect subcommand', () => {
     await settle();
     expect(allOut()).toContain('resuming pings for abc123');
     fire('SIGTERM');
+    await expect(p).resolves.toBe(0);
+  });
+});
+
+// ── demand-driven auto ───────────────────────────────────────────────────────
+
+// autoGate binds a real HTTP server, and this suite mocks `net` down to
+// `connect` — so http can never listen here. Same treatment as llmManager and
+// the fleet: the wiring is asserted, and autoGate's own lifecycle is covered by
+// test/autoGate.test.js against a real socket.
+jest.mock('../src/main/autoGate', () => {
+  const createAutoGate = jest.fn((opts) => {
+    const inst = {
+      opts,
+      started: false,
+      switching: false,
+      // The real createAutoGate returns its LlmGate; anything reading node state
+      // (the stats file, and the watch view) goes through it.
+      gate: { state: 'MINING', inFlight: 0, quietMs: 60000, quietFor: () => 0 },
+      isSwitching() { return this.switching; },
+      start() { this.started = true; return this; },
+      stop: jest.fn(),
+    };
+    createAutoGate.instances.push(inst);
+    return inst;
+  });
+  createAutoGate.instances = [];
+  // llm mode stands up the same server with nothing to switch, so the CLI can
+  // keep one `auto` variable and one teardown path.
+  const createServeGate = jest.fn((opts) => {
+    const inst = {
+      opts,
+      started: false,
+      isSwitching() { return false; },
+      gate: { state: 'SERVING', inFlight: 0, quietMs: Infinity, quietFor: () => 0 },
+      start() { this.started = true; return this; },
+      stop: jest.fn(),
+    };
+    createServeGate.instances.push(inst);
+    return inst;
+  });
+  createServeGate.instances = [];
+  return { createAutoGate, createServeGate };
+});
+
+
+describe('auto mode on a card that cannot co-run its best model', () => {
+  test('mines first and does not start the LLM until something asks for it', async () => {
+    const m = load();
+    // An idle 5090: 32,149 MiB is what CUDA exposes. Qwen3.8 needs 30,720, which
+    // fits alone but not alongside the mining reserve — so auto goes demand-driven
+    // instead of quietly downgrading to the small default.
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    m.LlmEngineManager.mmprojInstalled = true;
+    const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
+    await settle();
+
+    expect(allOut()).toContain('needs the GPU to itself');
+    expect(allOut()).toContain('mining until a request arrives');
+    // The point of demand mode: the miner runs, the model does not.
+    expect(m.PearlEngine.instances).toHaveLength(1);
+    expect(m.PearlEngine.instances[0].start).toHaveBeenCalled();
+    expect(m.LlmManager.instances).toHaveLength(0);
+
+    // The gate was handed working callbacks, not just constructed. Drive them the
+    // way a request would, and check the LLM is sized against the WHOLE card --
+    // no mining reserve, because nothing is co-resident in demand mode.
+    const gate = m.autoGate.createAutoGate.instances[0];
+    expect(gate.started).toBe(true);
+    expect(gate.opts.modelName).toBe(LLM.tiers[0].name);
+    expect(gate.opts.quietMs).toBe(LLM.gate.quietMs);
+    expect(gate.opts.startMinerArgs()).toEqual(expect.objectContaining({ endpoint: expect.any(String) }));
+    expect(gate.opts.isLlmReady()).toBe(false);
+
+    const waking = gate.opts.startLlm();
+    await settle();
+    const llm = m.LlmManager.instances[0];
+    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({ ctxSize: 262144 }));
+    // The gate holds the request until the server actually reports ready, which
+    // is what lets the proxy park a caller through the ~4s load.
+    llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    await waking;
+    expect(gate.opts.isLlmReady()).toBe(true);
+
+    // An LLM that dies on its own, NOT during a switch, must still tear serving
+    // down — the switching flag is what tells those apart.
+    llm.emit('stopped', 1);
+    await settle();
+
+    await gate.opts.stopLlm();
+    expect(llm.stop).toHaveBeenCalled();
+    expect(gate.opts.isLlmReady()).toBe(false);
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+    expect(gate.stop).toHaveBeenCalled();   // torn down with everything else
+  });
+
+  test('a card whose best model co-runs is untouched — it still serves immediately', async () => {
+    const m = load();
+    // 24 GB free: the same model wins with and without the reserve, so nothing
+    // about this node's behaviour changes.
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    const p = m.run(['--address', ADDR, '--no-update', '--no-serve']);
+    await settle();
+
+    expect(allOut()).not.toContain('needs the GPU to itself');
+    expect(m.LlmManager.instances.length).toBeGreaterThan(0);   // co-running as before
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+});
+
+describe('demand-driven auto: the switching flag and failure paths', () => {
+  test('a deliberate stop is ignored, a real one is not; and the default port is used', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    m.LlmEngineManager.mmprojInstalled = true;
+    // No --gate-port: the configured default is what a real node uses.
+    const p = m.run(['--address', ADDR, '--no-update', '--no-serve']);
+    await settle();
+    const gate = m.autoGate.createAutoGate.instances[0];
+    expect(gate.opts.port).toBe(LLM.gate.port);
+
+    // stopLlm before anything started must be a no-op, not a crash.
+    await gate.opts.stopLlm();
+
+    // While switching, an engine's exit is the gate's doing and must NOT tear the
+    // process down — otherwise every wake would end the run.
+    gate.switching = true;
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await settle();
+    let done = false;
+    p.then(() => { done = true; });
+    await settle();
+    expect(done).toBe(false);
+
+    // The same event with the flag clear is a genuine exit.
+    gate.switching = false;
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('an LLM that fails to come up surfaces as an error the gate can report', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    m.LlmEngineManager.mmprojInstalled = true;
+    const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
+    await settle();
+    const gate = m.autoGate.createAutoGate.instances[0];
+
+    // A card that no longer has room: the planner returns no instances, so the
+    // callback hands back null. Turning that into an error is the gate's job
+    // (test/autoGate.test.js), not the CLI's.
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 7900, totalMb: 8000 }]);
+    await expect(gate.opts.startLlm()).resolves.toBeNull();
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+    // Slow on purpose: this exercises the real VRAM-release wait giving up.
+  }, 20000);
+
+});
+
+test('an LLM stopping during a switch does not tear serving down', async () => {
+  const m = load();
+  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+  m.LlmEngineManager.serverInstalled = true;
+  m.LlmEngineManager.modelInstalled = true;
+  m.LlmEngineManager.mmprojInstalled = true;
+  const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
+  await settle();
+  const gate = m.autoGate.createAutoGate.instances[0];
+
+  const waking = gate.opts.startLlm();
+  await settle();
+  const llm = m.LlmManager.instances[0];
+  llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+  await waking;
+
+  // The gate stopping the LLM to hand the card back is not the LLM dying: the
+  // handler must take the early return and leave the node's serve registration
+  // alone, rather than unregistering it on every idle flip.
+  gate.switching = true;
+  llm.emit('stopped', 0);
+  await settle();
+  let ended = false;
+  p.then(() => { ended = true; });
+  await settle();
+  expect(ended).toBe(false);
+  gate.switching = false;
+
+  m.PearlEngine.instances[0].emit('stopped', 0);
+  await expect(p).resolves.toBe(0);
+});
+
+test('an engine that cannot start exits non-zero, not 0', async () => {
+  // The core failing to construct -- no VRAM for the rank-128 profile, no
+  // pearl_core.node -- makes PearlMiner.start() return false. It emits 'error'
+  // but never 'stopped', because nothing started. Before this was checked the
+  // run simply ran out of work and resolved 0, which under Restart=always is a
+  // silent restart loop that mines nothing and looks healthy to systemd.
+  const m = load();
+  m.PearlEngine.startReturns = false;
+  const code = await m.run(['--address', ADDR, '--mode', 'mining', '--no-update', '--no-serve']);
+  expect(code).toBe(1);
+  expect(allErr()).toContain('engine failed to start');
+});
+
+test('a fatal engine start also stops an LLM that had already come up', async () => {
+  // auto mode starts the LLM before the miner, so a fatal engine failure must
+  // tear the LLM down rather than leave a server orphaned behind a dead node.
+  const m = load();
+  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 3000, totalMb: 24000 }]);
+  m.LlmEngineManager.serverInstalled = true;
+  m.LlmEngineManager.modelInstalled = true;
+  m.PearlEngine.startReturns = false;
+  const code = await m.run(['--address', ADDR, '--no-update', '--no-serve']);
+  expect(code).toBe(1);
+  expect(m.LlmManager.instances[0].stop).toHaveBeenCalled();
+});
+
+test('a fatal engine start closes the demand gate rather than leaking its port', async () => {
+  // The gate binds the public port. Created after the miner start, a fatal start
+  // would call finish() while `auto` was still null and the gate would bind
+  // afterwards on a run that had already resolved.
+  const m = load();
+  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+  m.LlmEngineManager.serverInstalled = true;
+  m.LlmEngineManager.modelInstalled = true;
+  m.LlmEngineManager.mmprojInstalled = true;
+  m.PearlEngine.startReturns = false;
+  const code = await m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
+  expect(code).toBe(1);
+  const gate = m.autoGate.createAutoGate.instances[0];
+  expect(gate.started).toBe(true);
+  expect(gate.stop).toHaveBeenCalled();
+});
+
+test('the gate proxies to the port the fleet actually bound, not the default', async () => {
+  // llmFleet probes upward from LLM.port when it is busy, so a gate pinned to the
+  // constant can dial a port the model is not on. Worse than a 502: a foreign
+  // process sitting on 8080 answers in the model's place, through our endpoint.
+  const m = load();
+  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+  m.LlmEngineManager.serverInstalled = true;
+  m.LlmEngineManager.modelInstalled = true;
+  m.LlmEngineManager.mmprojInstalled = true;
+  const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
+  await settle();
+  const gate = m.autoGate.createAutoGate.instances[0];
+
+  // Nothing serving yet: fall back to the configured port.
+  expect(gate.opts.upstreamPort()).toBe(LLM.port);
+
+  const waking = gate.opts.startLlm();
+  await settle();
+  const llm = m.LlmManager.instances[0];
+  llm.emit('ready', { baseUrl: 'http://127.0.0.1:8087' });   // walked past a busy 8080
+  await waking;
+  expect(gate.opts.upstreamPort()).toBe(8087);
+
+  gate.switching = false;
+  m.PearlEngine.instances[0].emit('stopped', 0);
+  await expect(p).resolves.toBe(0);
+});
+
+test('a miner that fails to restart after serving exits non-zero', async () => {
+  // The same contract as the up-front start: a false return means the core did
+  // not construct. Swallowed, the node reported the last hashrate forever while
+  // the card did nothing, and the supervisor saw a healthy process.
+  const m = load();
+  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+  m.LlmEngineManager.serverInstalled = true;
+  m.LlmEngineManager.modelInstalled = true;
+  m.LlmEngineManager.mmprojInstalled = true;
+  const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
+  await settle();
+  const gate = m.autoGate.createAutoGate.instances[0];
+
+  const waking = gate.opts.startLlm();
+  await settle();
+  m.LlmManager.instances[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+  await waking;
+
+  gate.opts.onMinerFailed();
+  await expect(p).resolves.toBe(1);
+  expect(allErr()).toContain('engine failed to restart after serving');
+  expect(m.LlmManager.instances[0].stop).toHaveBeenCalled();
+});
+
+test('a failed restart with no model loaded still exits non-zero', async () => {
+  // The release path stops the LLM before restarting the miner, so the failure
+  // can land with nothing to tear down.
+  const m = load();
+  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+  m.LlmEngineManager.serverInstalled = true;
+  m.LlmEngineManager.modelInstalled = true;
+  m.LlmEngineManager.mmprojInstalled = true;
+  const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
+  await settle();
+  const gate = m.autoGate.createAutoGate.instances[0];
+
+  expect(m.LlmManager.instances).toHaveLength(0);   // never woke
+  gate.opts.onMinerFailed();
+  await expect(p).resolves.toBe(1);
+  expect(allErr()).toContain('engine failed to restart after serving');
+});
+
+test('handing the card back waits for the model to actually release its VRAM', async () => {
+  // LlmFleet.stop() signals llama-server and returns; it does not join. Restarting
+  // the miner straight away put it on a card still holding ~30 GB, and its core
+  // failed to construct -- fatal, now that a failed restart is reported. Observed
+  // on a 5090: 1,469 MiB free at the restart against the ~2,081 MiB it needed.
+  const m = load();
+  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+  m.LlmEngineManager.serverInstalled = true;
+  m.LlmEngineManager.modelInstalled = true;
+  m.LlmEngineManager.mmprojInstalled = true;
+  const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
+  await settle();
+  const gate = m.autoGate.createAutoGate.instances[0];
+
+  const waking = gate.opts.startLlm();
+  await settle();
+  const llm = m.LlmManager.instances[0];
+  llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+  await waking;
+
+  m.probe.detectGpusVram.mockClear();
+  await gate.opts.stopLlm();
+  expect(llm.stop).toHaveBeenCalled();
+  // The card was read before the gate handed control back to the miner.
+  expect(m.probe.detectGpusVram).toHaveBeenCalled();
+
+  gate.switching = false;
+  m.PearlEngine.instances[0].emit('stopped', 0);
+  await expect(p).resolves.toBe(0);
+});
+
+test('the engine is given a temperature reader, as the GUI has always been', async () => {
+  // Without it PearlEngine never starts its temp poll, so every headless rig
+  // reported temp 0 -- to the stats file, the miner report and the network board.
+  const m = load();
+  m.probe.detectGpuTemps.mockResolvedValue([{ index: 0, temp: 61 }]);
+  const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--no-report', '--mode', 'mining']);
+  await settle();
+  const eng = m.PearlEngine.instances[0];
+  expect(typeof eng.opts.readTemps).toBe('function');
+  eng.opts.readTemps();
+  expect(m.probe.detectGpuTemps).toHaveBeenCalled();
+  eng.emit('stopped', 0);
+  await expect(p).resolves.toBe(0);
+});
+
+test('the stats file records what the node is doing, not just its counters', async () => {
+  // It used to live inside `if (plan.miner)`, so --mode llm wrote nothing, and it
+  // could not see the gate or the model even when both were up. A rig reading
+  // 0 TH/s in demand mode is busy serving, not broken -- the file has to say so.
+  const m = load();
+  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+  m.LlmEngineManager.serverInstalled = true;
+  m.LlmEngineManager.modelInstalled = true;
+  m.LlmEngineManager.mmprojInstalled = true;
+  const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0',
+    '--stats-file', '/tmp/s.json']);
+  await settle();
+
+  m.fs.writeFileSync.mockClear();
+  intervalFor(10000).fn();
+  const written = JSON.parse(m.fs.writeFileSync.mock.calls[0][1]);
+  expect(written.mode).toBe('auto');
+  expect(written.strategy).toBe('demand');
+  expect(written.gate).toBe('MINING');
+  expect(written.schema).toBe(1);
+
+  m.PearlEngine.instances[0].emit('stopped', 0);
+  await expect(p).resolves.toBe(0);
+});
+
+test('llm mode serves on the gate port, not on llama-server\'s own', async () => {
+  // The gate used to exist only in auto, so choosing llm mode silently moved
+  // callers from the documented endpoint to llama-server's port -- at exactly the
+  // moment the operator had committed to serving.
+  const m = load();
+  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+  m.LlmEngineManager.serverInstalled = true;
+  m.LlmEngineManager.modelInstalled = true;
+  m.LlmEngineManager.mmprojInstalled = true;
+  const p = m.run(['--mode', 'llm', '--no-update', '--no-serve', '--gate-port', '0']);
+  await settle();
+  const llm = m.LlmManager.instances[0];
+  llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+  await settle();
+
+  expect(m.autoGate.createAutoGate.instances).toHaveLength(0);   // nothing to switch
+  const gate = m.autoGate.createServeGate.instances[0];
+  expect(gate.started).toBe(true);
+  expect(gate.opts.port).toBe(0);
+  expect(gate.opts.isLlmReady()).toBe(true);
+  expect(gate.opts.upstreamPort()).toBe(8080);
+  expect(allOut()).toContain('serving on :0');
+
+  // 1, not 0: an LLM-only run whose fleet dies is never a clean exit, or a
+  // Restart=on-failure supervisor would never bring the node back.
+  llm.emit('stopped', 0);
+  await expect(p).resolves.toBe(1);
+});
+
+test('the llm-mode gate falls back to the configured port before the fleet is up', async () => {
+  const m = load();
+  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+  m.LlmEngineManager.serverInstalled = true;
+  m.LlmEngineManager.modelInstalled = true;
+  m.LlmEngineManager.mmprojInstalled = true;
+  const p = m.run(['--mode', 'llm', '--no-update', '--no-serve', '--gate-port', '0']);
+  await settle();
+  const gate = m.autoGate.createServeGate.instances[0];
+  expect(gate.opts.upstreamPort()).toBe(LLM.port);   // nothing ready yet
+
+  m.LlmManager.instances[0].emit('stopped', 0);
+  await expect(p).resolves.toBe(1);
+});
+
+describe('demand mode still serves the cluster', () => {
+  // Cluster work is PULLED, outbound, so a NAT'd node can serve with no inbound
+  // networking. But a JobWorker is only built per READY llama-server instance,
+  // and demand mode has none while mining -- so the best cards in the fleet
+  // stopped pulling jobs entirely and served only what reached :8000 directly.
+  function serving(m) {
+    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true }));
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    m.LlmEngineManager.mmprojInstalled = true;
+  }
+
+  test('polls for cluster jobs while mining, before any model exists', async () => {
+    const m = load();
+    serving(m);
+    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
+    await settle();
+
+    expect(m.LlmManager.instances).toHaveLength(0);      // nothing loaded
+    expect(m.JobWorker.instances).toHaveLength(1);       // yet a poller exists
+    expect(m.JobWorker.instances[0].start).toHaveBeenCalled();
+    expect(allOut()).toContain('polling for cluster jobs while mining');
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('a cluster job wakes the model and holds the card for its whole run', async () => {
+    const m = load();
+    serving(m);
+    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
+    await settle();
+    const gate = m.autoGate.createAutoGate.instances[0];
+    const worker = m.JobWorker.instances[0];
+
+    // Drive runJob the way JobWorker does when a job is assigned.
+    let ensured = false;
+    gate.gate.ensureServing = jest.fn(async () => { ensured = true; });
+    gate.gate.begin = jest.fn();
+    gate.gate.end = jest.fn();
+    m.io.streamChatCompletion.mockReturnValue({ done: Promise.resolve() });
+
+    await worker.opts.runJob({ messages: [] }, { onDelta: () => {}, onReasoning: () => {} });
+
+    expect(ensured).toBe(true);
+    // begin()/end() bracket the WHOLE job: shouldRelease() needs inFlight === 0,
+    // so without them the quiet timer kills a long generation mid-flight.
+    expect(gate.gate.begin).toHaveBeenCalled();
+    expect(gate.gate.end).toHaveBeenCalled();
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('the card is released even when the job throws', async () => {
+    const m = load();
+    serving(m);
+    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
+    await settle();
+    const gate = m.autoGate.createAutoGate.instances[0];
+    const worker = m.JobWorker.instances[0];
+    gate.gate.ensureServing = jest.fn(async () => {});
+    gate.gate.begin = jest.fn();
+    gate.gate.end = jest.fn();
+    m.io.streamChatCompletion.mockReturnValue({ done: Promise.reject(new Error('model died')) });
+
+    await expect(worker.opts.runJob({ messages: [] }, { onDelta: () => {} })).rejects.toThrow('model died');
+    expect(gate.gate.end).toHaveBeenCalled();   // or the node never mines again
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('the fleet does not arm a second poller when the model wakes', async () => {
+    const m = load();
+    serving(m);
+    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
+    await settle();
+    const gate = m.autoGate.createAutoGate.instances[0];
+
+    const waking = gate.opts.startLlm();
+    await settle();
+    m.LlmManager.instances[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    await waking;
+
+    // Two pollers would double-poll and race each other for the same jobs.
+    expect(m.JobWorker.instances).toHaveLength(1);
+
+    // And the one poller now resolves the port the fleet actually bound, rather
+    // than the null it correctly reported while nothing was loaded.
+    const gate2 = m.autoGate.createAutoGate.instances[0];
+    gate2.gate.ensureServing = jest.fn(async () => {});
+    gate2.gate.begin = jest.fn(); gate2.gate.end = jest.fn();
+    m.io.streamChatCompletion.mockReturnValue({ done: Promise.resolve() });
+    await m.JobWorker.instances[0].opts.runJob({ messages: [] }, { onDelta: () => {} });
+    expect(m.io.streamChatCompletion.mock.calls[0][0]).toBe('http://127.0.0.1:8080');
+
+    gate.switching = false;
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('stays online on the board while mining, not only while serving', async () => {
+    // The fleet's ping loop is armed on its first ready card, so in demand mode
+    // the node only appeared online during the seconds it happened to be
+    // serving and went stale the rest of the time.
+    const m = load();
+    serving(m);
+    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
+    await settle();
+
+    const pinger = intervalFor(NODE.pingIntervalMs);
+    expect(pinger).toBeTruthy();
+    expect(m.LlmManager.instances).toHaveLength(0);   // pinging with no model loaded
+    m.io.postJson.mockClear();
+    await pinger.fn();
+    expect(m.io.postJson).toHaveBeenCalled();
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('the keep-alive handle is unrefed, and survives a runtime without unref', async () => {
+    intervalUnref = false;
+    const m = load();
+    serving(m);
+    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
+    await settle();
+    expect(intervalFor(NODE.pingIntervalMs)).toBeTruthy();
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('advertises the tier it will serve, not the default it has loaded', async () => {
+    // Nothing is loaded while mining, so serveLlmState kept the small default --
+    // and that is what the ping publishes and the server now ROUTES on. The board
+    // named a model this node never serves, a job asking for the tier was never
+    // offered to the one node running it, and a job asking for the default would
+    // have been answered by the tier.
+    const m = load();
+    serving(m);
+    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
+    await settle();
+
+    expect(m.LlmManager.instances).toHaveLength(0);   // nothing loaded
+    const pinger = intervalFor(NODE.pingIntervalMs);
+    m.io.postJson.mockClear();
+    await pinger.fn();
+    const body = m.io.postJson.mock.calls[0][1];
+    expect(body.model).toBe(LLM.tiers[0].name);
+    expect(body.model).not.toBe(LLM.model.name);
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('--no-serve still means no poller', async () => {
+    const m = load();
+    serving(m);
+    const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
+    await settle();
+    expect(m.JobWorker.instances).toHaveLength(0);
+    expect(allOut()).not.toContain('polling for cluster jobs');
+    m.PearlEngine.instances[0].emit('stopped', 0);
     await expect(p).resolves.toBe(0);
   });
 });

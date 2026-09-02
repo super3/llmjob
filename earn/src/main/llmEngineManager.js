@@ -3,6 +3,7 @@
 const path = require('path');
 const { LLM } = require('../shared/config');
 const { resolveServerBinary } = require('../shared/llama');
+const { needsMmproj } = require('../shared/models');
 // Archive detection for downloaded llama-server builds. These lived in
 // shared/engine until alpha-miner was removed; they were never engine-specific.
 function isArchiveUrl(url) {
@@ -46,8 +47,18 @@ class LlmEngineManager {
     return path.join(this.dir, resolveServerBinary(null, this.platform));
   }
 
-  modelPath() {
-    return path.join(this.dir, LLM.model.file);
+  // Where a model's weights live. Takes the model so a node can hold more than
+  // one on disk — the file name is per-model, so a card that graduates to a
+  // larger tier does not overwrite the small model it may have to fall back to.
+  // Defaults to the fleet default, which is what every existing caller means.
+  modelPath(model) {
+    return path.join(this.dir, (model || LLM.model).file);
+  }
+
+  // Where a vision model's projector lives, or null for a model without one.
+  mmprojPath(model) {
+    const m = model || LLM.model;
+    return needsMmproj(m) ? path.join(this.dir, m.mmproj.file) : null;
   }
 
   // Installed means "a usable binary is there" — not merely "a file is there".
@@ -81,8 +92,15 @@ class LlmEngineManager {
     }
   }
 
-  isModelInstalled() {
-    return this.fs.existsSync(this.modelPath());
+  isModelInstalled(model) {
+    return this.fs.existsSync(this.modelPath(model));
+  }
+
+  // A vision model is only fully installed when its projector is there too. A
+  // model with no projector is trivially satisfied.
+  isMmprojInstalled(model) {
+    const p = this.mmprojPath(model);
+    return p ? this.fs.existsSync(p) : true;
   }
 
   // Resolve to the server binary path, downloading + installing it if missing.
@@ -130,11 +148,30 @@ class LlmEngineManager {
   }
 
   // Resolve to the GGUF model path, downloading it (a plain file) if missing.
-  async ensureModel(onProgress) {
-    const dest = this.modelPath();
-    if (this.isModelInstalled()) return dest;
+  async ensureModel(onProgress, model) {
+    const m = model || LLM.model;
+    const dest = this.modelPath(m);
+    if (this.isModelInstalled(m)) return dest;
     this.fs.mkdirSync(this.dir, { recursive: true });
-    await this.download(LLM.model.url, dest, onProgress);
+    await this.download(m.url, dest, onProgress);
+    return dest;
+  }
+
+  // Resolve to the vision projector, downloading it if missing. Returns null for
+  // a model that has none — the caller passes that straight to buildServerArgs,
+  // which omits --mmproj rather than passing an empty one.
+  //
+  // Deliberately a separate step from ensureModel: the projector is a second
+  // file an order of magnitude smaller than the weights, and a model whose
+  // weights are already on disk from an earlier release must still be able to
+  // pick one up without re-downloading 17 GB.
+  async ensureMmproj(onProgress, model) {
+    const m = model || LLM.model;
+    if (!needsMmproj(m)) return null;
+    const dest = this.mmprojPath(m);
+    if (this.isMmprojInstalled(m)) return dest;
+    this.fs.mkdirSync(this.dir, { recursive: true });
+    await this.download(m.mmproj.url, dest, onProgress);
     return dest;
   }
 }

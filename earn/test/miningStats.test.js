@@ -4,7 +4,7 @@ const { MAX_POINTS, initStats, applyEvent, snapshot } = require('../src/shared/m
 
 describe('initStats', () => {
   test('anchors the uptime clock and starts with no cards', () => {
-    expect(initStats(1000)).toEqual({ startMs: 1000, gpus: {}, load: 0, points: [] });
+    expect(initStats(1000)).toEqual({ startMs: 1000, gpus: {}, load: 0, points: [], lastShareMs: null });
   });
   test('defaults startMs to 0 when omitted', () => {
     expect(initStats().startMs).toBe(0);
@@ -25,7 +25,8 @@ describe('applyEvent', () => {
   test('a status event fills the card bucket and appends the rig total as a point', () => {
     const s = initStats(0);
     applyEvent(s, { type: 'status', gpuIndex: 0, hashrate: 286.86, accepted: 5, rejected: 1, power: 449, temp: 71, gpu: 'NVIDIA GeForce RTX 4090' });
-    expect(s.gpus[0]).toEqual({ index: 0, hashrate: 286.86, accepted: 5, rejected: 1, power: 449, temp: 71, gpu: 'NVIDIA GeForce RTX 4090' });
+    expect(s.gpus[0]).toEqual({ index: 0, hashrate: 286.86, accepted: 5, rejected: 1, power: 449, temp: 71, gpu: 'NVIDIA GeForce RTX 4090',
+      carryAccepted: 0, carryRejected: 0, rawAccepted: 5, rawRejected: 1 });
     expect(s.points).toEqual([286.86]);
   });
 
@@ -57,7 +58,8 @@ describe('applyEvent', () => {
     const s = initStats(0);
     applyEvent(s, { type: 'status', gpuIndex: 0, hashrate: 9, accepted: 3, rejected: 2, power: 100, gpu: 'keep' });
     applyEvent(s, { type: 'status', gpuIndex: 0 });
-    expect(s.gpus[0]).toEqual({ index: 0, hashrate: 9, accepted: 3, rejected: 2, power: 100, temp: 0, gpu: 'keep' });
+    expect(s.gpus[0]).toEqual({ index: 0, hashrate: 9, accepted: 3, rejected: 2, power: 100, temp: 0, gpu: 'keep',
+      carryAccepted: 0, carryRejected: 0, rawAccepted: 3, rawRejected: 2 });
   });
 
   test('caps the chart point buffer at MAX_POINTS', () => {
@@ -95,7 +97,7 @@ describe('snapshot', () => {
     expect(snapshot(s, 6000)).toEqual({
       total: 3.2, points: [3.2], accepted: 4, rejected: 0, load: 0, power: 300, temp: 64, gpu: 'RTX 4090',
       gpus: [{ index: 0, gpu: 'RTX 4090', hashrate: 3.2, accepted: 4, rejected: 0, power: 300, temp: 64 }],
-      uptimeSec: 5,
+      uptimeSec: 5, lastShareMs: null,
     });
   });
 
@@ -116,6 +118,7 @@ describe('snapshot', () => {
   test('reads zeros and a null gpu before any card reports', () => {
     expect(snapshot(initStats(0), 0)).toEqual({
       total: 0, points: [], accepted: 0, rejected: 0, load: 0, power: 0, temp: 0, gpu: null, gpus: [], uptimeSec: 0,
+      lastShareMs: null,
     });
   });
 
@@ -139,5 +142,77 @@ describe('snapshot', () => {
   test('clamps uptime to 0 and treats a missing clock as 0', () => {
     const s = initStats(5000);
     expect(snapshot(s).uptimeSec).toBe(0);
+  });
+});
+
+describe('share counters across an engine restart', () => {
+  // Demand mode stops and restarts the miner on every flip back to mining, and
+  // PearlEngine.start() zeroes its counters. Without folding, an hour of mining
+  // reads as a handful of shares.
+  test('a counter that goes backwards banks the old session instead of losing it', () => {
+    const s = initStats(0);
+    applyEvent(s, { type: 'status', gpuIndex: 0, accepted: 9, rejected: 2 });
+    applyEvent(s, { type: 'status', gpuIndex: 0, accepted: 0, rejected: 0 });   // engine restarted
+    expect(snapshot(s, 0).accepted).toBe(9);
+    expect(snapshot(s, 0).rejected).toBe(2);
+    applyEvent(s, { type: 'status', gpuIndex: 0, accepted: 3, rejected: 1 });
+    expect(snapshot(s, 0).accepted).toBe(12);
+    expect(snapshot(s, 0).rejected).toBe(3);
+  });
+
+  test('survives several restarts', () => {
+    const s = initStats(0);
+    for (const n of [4, 0, 5, 0, 1]) applyEvent(s, { type: 'status', gpuIndex: 0, accepted: n });
+    expect(snapshot(s, 0).accepted).toBe(10);
+  });
+
+  test('a repeated total is not counted twice', () => {
+    const s = initStats(0);
+    applyEvent(s, { type: 'status', gpuIndex: 0, accepted: 7 });
+    applyEvent(s, { type: 'status', gpuIndex: 0, accepted: 7 });
+    expect(snapshot(s, 0).accepted).toBe(7);
+  });
+
+  test('each card carries its own count', () => {
+    const s = initStats(0);
+    applyEvent(s, { type: 'status', gpuIndex: 0, accepted: 5 });
+    applyEvent(s, { type: 'status', gpuIndex: 1, accepted: 3 });
+    applyEvent(s, { type: 'status', gpuIndex: 0, accepted: 0 });   // only card 0 restarted
+    applyEvent(s, { type: 'status', gpuIndex: 0, accepted: 2 });
+    expect(snapshot(s, 0).accepted).toBe(10);   // 5 banked + 2 + card 1's 3
+  });
+});
+
+describe('lastShareMs', () => {
+  test('stamps the clock when the accepted count rises', () => {
+    const s = initStats(0);
+    applyEvent(s, { type: 'status', gpuIndex: 0, accepted: 1 }, 5000);
+    expect(snapshot(s, 9000).lastShareMs).toBe(5000);
+  });
+
+  test('does not move when nothing was accepted', () => {
+    const s = initStats(0);
+    applyEvent(s, { type: 'status', gpuIndex: 0, accepted: 1 }, 5000);
+    applyEvent(s, { type: 'status', gpuIndex: 0, accepted: 1, hashrate: 3 }, 8000);
+    expect(snapshot(s, 9000).lastShareMs).toBe(5000);
+  });
+
+  test('the backwards step of a restart is not a share', () => {
+    const s = initStats(0);
+    applyEvent(s, { type: 'status', gpuIndex: 0, accepted: 4 }, 1000);
+    applyEvent(s, { type: 'status', gpuIndex: 0, accepted: 0 }, 2000);
+    expect(snapshot(s, 0).lastShareMs).toBe(1000);
+  });
+
+  test('a rejected share does not stamp it', () => {
+    const s = initStats(0);
+    applyEvent(s, { type: 'status', gpuIndex: 0, rejected: 1 }, 5000);
+    expect(snapshot(s, 0).lastShareMs).toBeNull();
+  });
+
+  test('stays null when the caller passes no clock', () => {
+    const s = initStats(0);
+    applyEvent(s, { type: 'status', gpuIndex: 0, accepted: 1 });
+    expect(snapshot(s, 0).lastShareMs).toBeNull();
   });
 });

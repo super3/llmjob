@@ -128,6 +128,42 @@ describe('NodeService', () => {
     });
   });
 
+  describe('listNetworkModels', () => {
+    // What makes a model REQUESTABLE: /v1/models advertises these, and a job
+    // naming one is pinned to a node running it.
+    const withModel = async (name, model) => {
+      const { nodeId } = await service.claimNode('k-' + name, name, 'user1');
+      await service.updateNodeStatus(nodeId, 'k-' + name, { model });
+      return nodeId;
+    };
+
+    it('lists each live model once, most-served first', async () => {
+      await withModel('a', 'Qwen3.8-27B-UD-Q4_K_XL');
+      await withModel('b', 'gemma-4-E4B-it-Q4_K_M');
+      await withModel('c', 'gemma-4-E4B-it-Q4_K_M');
+      expect(await service.listNetworkModels()).toEqual([
+        { id: 'gemma-4-E4B-it-Q4_K_M', nodes: 2 },
+        { id: 'Qwen3.8-27B-UD-Q4_K_XL', nodes: 1 },
+      ]);
+    });
+
+    it('ignores nodes that report no model', async () => {
+      const { nodeId } = await service.claimNode('k-x', 'x', 'user1');
+      await service.updateNodeStatus(nodeId, 'k-x', { tps: 5 });
+      expect(await service.listNetworkModels()).toEqual([]);
+    });
+
+    it('ignores a node that has gone offline', async () => {
+      const id = await withModel('old', 'Qwen3.8-27B-UD-Q4_K_XL');
+      await setLastSeen(id, Date.now() - (16 * 60 * 1000));
+      expect(await service.listNetworkModels()).toEqual([]);
+    });
+
+    it('is empty on a fleet with no nodes at all', async () => {
+      expect(await service.listNetworkModels()).toEqual([]);
+    });
+  });
+
   describe('updateNodeStatus', () => {
     it('errors when the node was never claimed', async () => {
       const res = await service.updateNodeStatus('nope', 'key', {});

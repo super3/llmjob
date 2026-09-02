@@ -123,3 +123,68 @@ describe('parseTokensPerSec', () => {
     expect(parseTokensPerSec(null)).toBeNull();
   });
 });
+
+describe('buildServerArgs — vision projector', () => {
+  test('passes --mmproj when the model ships a projector', () => {
+    const a = buildServerArgs({ modelPath: '/m.gguf', mmprojPath: '/mmproj.gguf' });
+    expect(a).toEqual(expect.arrayContaining(['--mmproj', '/mmproj.gguf']));
+  });
+
+  test('omits it entirely when there is none', () => {
+    // A missing projector is not an error: the weights serve fine as a text-only
+    // model. Passing an empty --mmproj would be, so the flag must not appear.
+    expect(buildServerArgs({ modelPath: '/m.gguf' })).not.toContain('--mmproj');
+    expect(buildServerArgs({ modelPath: '/m.gguf', mmprojPath: '' })).not.toContain('--mmproj');
+    expect(buildServerArgs({ modelPath: '/m.gguf', mmprojPath: null })).not.toContain('--mmproj');
+  });
+});
+
+describe('buildServerArgs — per-model extra flags', () => {
+  test('appends a model\'s own flags verbatim, in order, last', () => {
+    const a = buildServerArgs({ modelPath: '/m.gguf', extraArgs: ['-fa', '1', '--cache-type-k', 'q8_0'] });
+    expect(a.slice(-4)).toEqual(['-fa', '1', '--cache-type-k', 'q8_0']);
+  });
+
+  test('no extra flags is the existing behaviour, unchanged', () => {
+    const base = buildServerArgs({ modelPath: '/m.gguf' });
+    expect(buildServerArgs({ modelPath: '/m.gguf', extraArgs: [] })).toEqual(base);
+    expect(buildServerArgs({ modelPath: '/m.gguf', extraArgs: null })).toEqual(base);
+    expect(buildServerArgs({ modelPath: '/m.gguf', extraArgs: 'not an array' })).toEqual(base);
+  });
+
+  test('drops empty entries rather than passing a blank argv slot to llama-server', () => {
+    const a = buildServerArgs({ modelPath: '/m.gguf', extraArgs: ['--jinja', '', null, undefined, '--kv-unified'] });
+    expect(a.slice(-2)).toEqual(['--jinja', '--kv-unified']);
+  });
+
+  test('numbers survive as strings, since argv is strings', () => {
+    const a = buildServerArgs({ modelPath: '/m.gguf', extraArgs: ['--spec-draft-n-max', 3] });
+    expect(a.slice(-2)).toEqual(['--spec-draft-n-max', '3']);
+  });
+});
+
+describe('parseTiming', () => {
+  const { parseTiming } = require('../src/shared/llama');
+
+  test('tags a generation line', () => {
+    expect(parseTiming('eval time = 10 ms / 200 tokens ... 162.02 tokens per second'))
+      .toEqual({ kind: 'gen', tokensPerSec: 162.02 });
+  });
+
+  test('tags a prefill line', () => {
+    expect(parseTiming('prompt eval time = 5 ms / 900 tokens ... 1840.00 tokens per second'))
+      .toEqual({ kind: 'prompt', tokensPerSec: 1840 });
+  });
+
+  test('is null for a line with no timing', () => {
+    expect(parseTiming('model loaded')).toBeNull();
+    expect(parseTiming(null)).toBeNull();
+    expect(parseTiming()).toBeNull();
+  });
+
+  test('parseTokensPerSec still returns the bare number', () => {
+    const { parseTokensPerSec } = require('../src/shared/llama');
+    expect(parseTokensPerSec('eval time = 1 ms / 2 tokens ... 9.5 tokens per second')).toBe(9.5);
+    expect(parseTokensPerSec('nothing here')).toBeNull();
+  });
+});

@@ -213,7 +213,7 @@ let partSeq = 0;
 // Writes to a scratch `<dest>.<pid>.<n>.part` and renames on completion, so an
 // interrupted download (multi-GB GGUFs especially) never leaves a truncated file
 // at the final path that an existsSync "is it installed?" check would wrongly
-// accept. A 60s idle socket timeout stops a stalled connection from hanging
+// accept. A 60s stalled-socket timeout stops a dead connection from hanging
 // setup forever.
 //
 // The scratch name is unique per call, not a fixed `<dest>.part`: two downloads

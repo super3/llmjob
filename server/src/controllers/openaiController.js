@@ -99,7 +99,7 @@ class OpenAiController {
   // The hosted models are listed only when they are actually reachable: a
   // private key's requests never leave its owner's nodes, so advertising them
   // there would just produce a 403 on the next call.
-  listModels(req, res) {
+  async listModels(req, res) {
     const created = Math.floor(this.now() / 1000);
     const data = [];
     if (this.openRouter.configured && req.apiKey.visibility !== 'private') {
@@ -107,7 +107,31 @@ class OpenAiController {
         data.push({ id: m.id, object: 'model', created, owned_by: 'llmjob-hosted' });
       }
     }
-    data.push({ id: DEFAULT_MODEL, object: 'model', created, owned_by: 'llmjob-network' });
+    // What the fleet is actually running, so a caller can NAME one and reach it.
+    // Listing only a hardcoded default meant the one model anybody could discover
+    // was also the only one they could not choose to avoid.
+    //
+    // Best-effort: this endpoint is a guide, and a database hiccup should degrade
+    // it to the default rather than fail a request that was only asking what is
+    // available.
+    let live = [];
+    try { live = await this.services(req).nodeService.listNetworkModels(); } catch (e) { live = []; }
+    // Keyed case-insensitively, to match how a requested name is resolved against
+    // what nodes report: the same model spelled two ways is one model, and
+    // listing it twice would suggest a choice that does not exist.
+    const seen = new Set();
+    for (const m of live) {
+      const key = String(m.id).toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      data.push({ id: m.id, object: 'model', created, owned_by: 'llmjob-network', nodes: m.nodes });
+    }
+    // Keep the default listed even when no node reports it: it is the model an
+    // unpinned job is recorded against, so a caller seeing it in the list and
+    // sending it back gets exactly what they already get by sending nothing.
+    if (!seen.has(DEFAULT_MODEL.toLowerCase())) {
+      data.push({ id: DEFAULT_MODEL, object: 'model', created, owned_by: 'llmjob-network' });
+    }
     res.json({ object: 'list', data });
   }
 
@@ -173,11 +197,18 @@ class OpenAiController {
     const job = await svc.jobService.createJob({
       prompt: lastUserText(clean),      // display/fallback for nodes that read prompt
       messages: clean,
-      // Intentionally NOT body.model: the node serves its own local model no matter
-      // what the caller asks for, and a passed model rides through to the node's
-      // reported metrics.model and back out as the "model that ran" — which is how
-      // a request for "gpt-4"/"llmjob" got echoed as if the fleet ran it. Dropping
-      // it here lets jobService fill the real fleet default end to end.
+      // Still intentionally NOT body.model: a passed model rides through to the
+      // node's reported metrics.model and back out as the "model that ran", which
+      // is how a request for "gpt-4"/"llmjob" got echoed as if the fleet ran it.
+      // jobService fills the real fleet default end to end.
+      //
+      // requestedModel is the separate ROUTING channel. It never reaches
+      // data.model, so the echo stays honest; it only decides WHICH node may take
+      // the job, and only when the name matches a model the fleet is actually
+      // running. An unknown name resolves to no pin, i.e. exactly today's
+      // behaviour -- which is what keeps /v1/models a guide rather than a
+      // whitelist.
+      requestedModel: body.model,
       maxTokens: resolveMaxTokens(body.max_tokens, MAX_COMPLETION_TOKENS),
       temperature: body.temperature,
       userId: req.apiKey.userId,

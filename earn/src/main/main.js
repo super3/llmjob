@@ -36,6 +36,7 @@ const { resolveEconomics } = require('../shared/economics');
 const nodeProto = require('../shared/node');
 const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
 const { planLlmInstances } = require('../shared/llmPlan');
+const { pickModel, ctxLadder } = require('../shared/models');
 const { LlmFleet } = require('./llmFleet');
 const { buildChatBody } = require('../shared/llmChat');
 const { JobWorker } = require('./jobWorker');
@@ -71,6 +72,13 @@ let registeredUnlinked = false; // self-registered an unlinked node once this ru
 // hit START seventeen times over ninety seconds while the download was in fact
 // progressing normally.
 let llmStatus = { ready: false, endpoint: null, webUrl: null, tokensPerSec: 0, model: LLM.model.name, error: null, note: null };
+// Which model this machine actually loaded, once a run has chosen one. Every
+// place that reports a model name reads this rather than LLM.model, which stopped
+// being the answer when selection became per-node: a 5090 serving Qwen3.8 would
+// otherwise tell the dashboard, the telemetry and — via metrics.model — the
+// `model` field of every gateway completion that it was serving Gemma. Seeded
+// with the default so a report before the first start is still truthful.
+let servingModel = LLM.model;
 
 function settingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -254,7 +262,7 @@ async function startMining(settings) {
     const identity = loadNode();
     const serving = fleet
       ? {
-        model: LLM.model.name,
+        model: servingModel.name,
         indices: fleet.servingIndices(),
         nodeId: identity ? identity.nodeId : null,
       }
@@ -308,7 +316,7 @@ function wireMinerEvents(miner, endpoint) {
   // is how a user ends up staring at eight lines of "No such host is known".
   let dnsHinted = false;
   miner.on('event', (e) => {
-    applyEvent(stats, e);
+    applyEvent(stats, e, Date.now());
     if (e.type === 'connect-failed' && e.dns && !dnsHinted) {
       dnsHinted = true;
       send('miner:log', {
@@ -628,7 +636,22 @@ async function startLlm(reserveMb) {
   // did; when VRAM can't be read the planner returns one unknown-placement
   // instance and lets llama.cpp decide.
   const cards = await detectGpusVram();
-  const plan = planLlmInstances(cards, LLM.model, reserveMb || 0);
+  // Which model this run serves. Chosen from the best card's free VRAM, because
+  // the fleet loads ONE model across every instance — planLlmInstances then drops
+  // any card that cannot hold it. On a mixed rig that trades breadth for
+  // capability: a box with one 32 GB card and three small ones serves the large
+  // model from the one card rather than the small model from four. That is the
+  // intended reading of "for cards that can support it", but it is a trade, and
+  // the small-card case is unaffected because those rigs resolve to the default.
+  const bestCard = pickLlmGpu(cards);
+  const model = pickModel(bestCard ? bestCard.freeMb : null, reserveMb || 0);
+  servingModel = model;
+  // The hero shows this name, and it was seeded once at startup and never
+  // updated — fine while every node ran the same model, wrong the moment one
+  // doesn't. Set before the first failure path below so even "Needs ~N GB free
+  // VRAM" names the model it was actually short for.
+  llmStatus = Object.assign({}, llmStatus, { model: model.name });
+  const plan = planLlmInstances(cards, model, reserveMb || 0);
   if (!plan.length) {
     // An empty plan means VRAM was measured but no card had room — so at least
     // one card parsed, and pickLlmGpu (same parse rules) returns it for the error.
@@ -638,27 +661,31 @@ async function startLlm(reserveMb) {
     // floor: when co-running, the offload budget (model + mining reserve) is the
     // larger of the two, and reporting the floor told users they needed less than
     // they did — then refused them anyway.
-    const needMb = requiredFreeMb(LLM.model, reserveMb);
+    const needMb = requiredFreeMb(model, reserveMb);
     const needGb = Math.round(needMb / 1024);
     send('miner:log', { level: 'error', line: 'not enough free VRAM for the local LLM: ' + freeMb
-      + ' MB free, need ~' + needMb + ' MB for ' + LLM.model.name + ' — skipping the LLM.' });
+      + ' MB free, need ~' + needMb + ' MB for ' + model.name + ' — skipping the LLM.' });
     llmStatus = Object.assign({}, llmStatus, { ready: false, note: null, error: 'Needs ~' + needGb + ' GB free VRAM' });
     sendLlmStatus();
     return false;
   }
 
   const dir = path.join(app.getPath('userData'), 'llm');
-  send('miner:log', { level: 'info', line: 'preparing local LLM (' + LLM.model.name + ')…' });
+  send('miner:log', { level: 'info', line: 'preparing local LLM (' + model.name + ')…' });
 
   // Both of these are no-ops once cached, but on a first run they fetch ~100 MB
   // of llama-server and a ~5 GB model. Report progress so the wait is legible
   // instead of looking like a stall.
-  let binaryPath, modelPath;
+  let binaryPath, modelPath, mmprojPath = null;
   try {
     setLlmNote('Preparing…');
     binaryPath = await resolveLlmBinary(dir, progressReporter('downloading llama-server…'));
     const modelEngine = new LlmEngineManager({ dir, platform: process.platform, fs, download: downloadFile });
-    modelPath = await modelEngine.ensureModel(progressReporter('downloading model ' + LLM.model.name + '…'));
+    modelPath = await modelEngine.ensureModel(progressReporter('downloading model ' + model.name + '…'), model);
+    // A vision model needs its projector too. Fetched after the weights and
+    // reported separately: it is ~1 GB against ~18, so folding it into the same
+    // progress line would make the last 5% look like a stall.
+    mmprojPath = await modelEngine.ensureMmproj(progressReporter('downloading vision projector…'), model);
   } catch (e) {
     // Surface the failure on the hero, not only in the log. Clearing the note
     // without setting an error dropped the row straight back to a grey dot and
@@ -699,7 +726,18 @@ async function startLlm(reserveMb) {
   // and until 'ready' fires the hero is otherwise indistinguishable from idle.
   llmStatus = Object.assign({}, llmStatus, { ready: false, error: null, note: 'Starting…' });
   sendLlmStatus();
-  await fleet.start(plan, { platform: process.platform, binaryPath, modelPath });
+  // llmFleet merges `run` into every llmManager.start(), so the model's own
+  // context ladder, projector and tuned flags reach llama-server from here.
+  // Both context values come from ctxLadder(), which already resolves a model
+  // without its own ctxSize (the default one) to the global LLM.ctxSize. Reading
+  // model.ctxSize directly here handed llama-server `undefined` for exactly that
+  // model — the one every small node runs.
+  const ladder = ctxLadder(model);
+  await fleet.start(plan, {
+    platform: process.platform, binaryPath, modelPath, mmprojPath,
+    ctxSize: ladder[0], ctxLadder: ladder, extraArgs: model.extraArgs,
+    alias: model.name,
+  });
   return true;
 }
 
@@ -859,7 +897,7 @@ async function pingNode() {
   try { vram = await detectVram(); } catch (e) { /* ignore */ }
   const device = await deviceName();
   const telemetry = nodeProto.buildTelemetry({
-    model: LLM.model.name, quant: LLM.model.quant, device, vram,
+    model: servingModel.name, quant: servingModel.quant, device, vram,
     tokensPerSec: llmStatus.tokensPerSec, ready: llmStatus.ready,
     activeJobs: fleet ? fleet.activeJobs() : 0,
     name: node.name,
@@ -970,6 +1008,7 @@ function makeJobWorker(baseUrl) {
     serverUrl: node.serverUrl || NODE.serverUrl,
     post: (url, body) => postJson(url, body, 30000),
     runJob: (chatBody, { onDelta, onReasoning }) => streamChatCompletion(baseUrl, chatBody, onDelta, onReasoning).done,
+    servingModel: () => servingModel,
   });
   w.on('error', () => { /* transient poll failure — keep looping */ });
   w.on('job', ({ id }) => send('miner:log', { level: 'info', line: 'cluster job ' + id + ' — running locally' }));

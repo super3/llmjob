@@ -187,9 +187,21 @@ describe('LlmFleet', () => {
     fleet.on('stats', (e) => stats.push(e));
     mgrs[0].emit('stats', { tokensPerSec: 42.5 });
     expect(fleet.tokensPerSec()).toBe(42.5);
-    expect(stats).toEqual([{ tokensPerSec: 42.5 }]);
+    expect(stats).toEqual([{ tokensPerSec: 42.5, promptTokensPerSec: 0 }]);
     mgrs[0].emit('stats', { tokensPerSec: 'oops' });
     expect(fleet.tokensPerSec()).toBe(0);
+    // Prefill is held separately and is sticky: a generation line must not wipe
+    // the last prefill figure, and vice versa.
+    mgrs[0].emit('stats', { tokensPerSec: null, promptTokensPerSec: 1840 });
+    expect(fleet.promptTokensPerSec()).toBe(1840);
+    expect(fleet.tokensPerSec()).toBe(0);
+    mgrs[0].emit('stats', { tokensPerSec: 55, promptTokensPerSec: null });
+    expect(fleet.tokensPerSec()).toBe(55);
+    expect(fleet.promptTokensPerSec()).toBe(1840);
+    mgrs[0].emit('stats', { promptTokensPerSec: 'junk' });
+    expect(fleet.promptTokensPerSec()).toBe(0);
+    mgrs[0].emit('stats', undefined);
+    expect(fleet.tokensPerSec()).toBe(55);
   });
 
   test('re-emits log and error from instances', async () => {

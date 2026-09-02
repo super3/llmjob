@@ -14,7 +14,7 @@ const { LLM } = require('./config');
 // `messages` array (multi-turn, system prompts preserved); older/simple jobs
 // carry a single `prompt` that becomes one user message. Only set fields are
 // included so the server's own defaults apply otherwise.
-function jobToChatBody(job) {
+function jobToChatBody(job, model) {
   const j = job || {};
   const messages = Array.isArray(j.messages) && j.messages.length
     ? j.messages.map((m) => {
@@ -28,12 +28,33 @@ function jobToChatBody(job) {
     // string would otherwise reach the final metrics (metrics.model = chatBody.model)
     // and be reported back as the model that ran. A mismatched name can also make a
     // stricter llama-server reject the request outright.
-    model: LLM.model.name,
+    //
+    // Which model that is became a question the moment nodes stopped all running
+    // the same one. The caller passes what it actually loaded; the fleet default
+    // is the fallback for a caller that has not been taught to, so an unwired path
+    // reports the old answer rather than `undefined`.
+    model: (model && model.name) || LLM.model.name,
     messages,
     stream: true,
   };
   if (j.temperature != null && Number.isFinite(Number(j.temperature))) body.temperature = Number(j.temperature);
-  if (j.maxTokens != null && Number.isFinite(Number(j.maxTokens))) body.max_tokens = Number(j.maxTokens);
+  const want = Number(j.maxTokens);
+  if (j.maxTokens != null && Number.isFinite(want)) {
+    // Floor the budget at what this model needs to think AND answer. On a
+    // reasoning tier a small explicit max_tokens is spent entirely on the <think>
+    // block and the completion comes back empty; see minCompletionTokens.
+    //
+    // POSITIVE budgets only. 0 is not "too small" -- it is a caller saying
+    // "generate nothing", which jobService.clampMaxTokens preserves on purpose
+    // ("a meaningful OpenAI value", pinned by its own test). Flooring it would
+    // make this node the one place in the stack that throws that answer away.
+    //
+    // This does make max_tokens advisory on such a tier: a caller asking for 60
+    // can be served up to the floor and is billed for what it generates. That is
+    // the trade -- the alternative bills them for an empty string.
+    const floor = Number((model && model.minCompletionTokens) || 0);
+    body.max_tokens = want > 0 ? Math.max(want, floor) : want;
+  }
   return body;
 }
 

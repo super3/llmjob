@@ -134,6 +134,14 @@ you install the new DMG over the old app.
 
 ## HiveOS (flight sheet)
 
+> **Not currently published.** As of v0.5.0 the release no longer builds or
+> attaches the HiveOS package: it had gone weeks without being exercised, and a
+> release should not carry an artifact nobody has verified. The packaging script
+> and hook scripts below are still in the tree, so restoring it is re-adding two
+> steps to `.github/workflows/miner-build.yml`. Rigs on a flight sheet pinned to
+> an older release keep working — they install by URL from the release they
+> already name. The rest of this section describes how it works when enabled.
+
 The release ships a HiveOS custom-miner package wrapping the headless CLI
 (`hiveos/` + `scripts/build-hiveos.mjs` → `llmjob-earn-<version>.tar.gz`,
 versioned because HiveOS caches the download by filename and can leave rigs

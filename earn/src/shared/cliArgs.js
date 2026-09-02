@@ -31,7 +31,7 @@ const VALUE_FLAGS = new Set([
   '--address', '--mdl', '--region', '--worker',
   '--gpu',
   '--stats-file',
-  '--mode', '--llm-binary', '--llm-model', '--llm-max-instances',
+  '--mode', '--llm-binary', '--llm-model', '--llm-max-instances', '--gate-port',
 ]);
 
 function regionChoices() {
@@ -57,6 +57,9 @@ const USAGE = [
   '                           — use this to skip that or point at your own build.',
   '      --llm-model <path>   Path to a GGUF model file (default: download the',
   '                           bundled small model on first run)',
+  '      --gate-port <port>   Port the auto-mode gate serves on (default: 8000).',
+  '                           Only used when auto mode is demand-driven, i.e. the',
+  '                           card can serve a bigger model than it can co-run.',
   '      --llm-max-instances <n>  Cap how many llama-servers run (default: one per',
   '                           eligible GPU, itself capped by free system RAM)',
   '  -r, --region <id>        Pool region: ' + Object.keys(REGIONS).join('/') + ' (default: auto-detect fastest)',
@@ -121,6 +124,13 @@ function buildSettings(opts, errors, report, update, serve) {
 
   // An explicit ceiling on concurrent llama-servers. Null means "no operator
   // opinion" — the planner then caps by eligible GPUs and free RAM on its own.
+  let gatePort = null;
+  if (opts['--gate-port'] != null) {
+    gatePort = Number(opts['--gate-port']);
+    if (!Number.isInteger(gatePort) || gatePort < 0 || gatePort > 65535) {
+      errors.push('invalid --gate-port: ' + opts['--gate-port'] + ' (must be 0-65535)');
+    }
+  }
   let llmMaxInstances = null;
   if (opts['--llm-max-instances'] != null) {
     llmMaxInstances = Number(opts['--llm-max-instances']);
@@ -140,7 +150,7 @@ function buildSettings(opts, errors, report, update, serve) {
 
   return {
     address, mdlAddress, region, worker, gpu, statsFile,
-    mode, llmBinary, llmModel, llmMaxInstances,
+    mode, llmBinary, llmModel, llmMaxInstances, gatePort,
     report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,
   };
 }

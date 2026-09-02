@@ -24,6 +24,24 @@ describe('jobToChatBody', () => {
     });
   });
 
+  test('reports the model the node actually loaded, not the fleet default', () => {
+    // The whole point of the tier: a 5090 running Qwen must not tell the gateway
+    // it served Gemma. metrics.model is copied straight from this field, and
+    // openaiController.modelName puts it in the `model` of every completion —
+    // so getting it wrong here misreports the model through the public API.
+    const qwen = { name: 'Qwen3.8-27B-UD-Q4_K_XL' };
+    expect(jobToChatBody({ prompt: 'hi' }, qwen).model).toBe('Qwen3.8-27B-UD-Q4_K_XL');
+    // A job's own `model` still loses to what is loaded — that rule is unchanged.
+    expect(jobToChatBody({ prompt: 'hi', model: 'gpt-4' }, qwen).model).toBe('Qwen3.8-27B-UD-Q4_K_XL');
+  });
+
+  test('falls back to the fleet default for a caller that passes no model', () => {
+    // An un-wired call site reports the old answer rather than `undefined`, which
+    // would reach llama-server and the job record as a missing model name.
+    expect(jobToChatBody({ prompt: 'hi' }, null).model).toBe(LLM.model.name);
+    expect(jobToChatBody({ prompt: 'hi' }, {}).model).toBe(LLM.model.name);
+  });
+
   test('drops non-finite temperature/maxTokens and coerces a missing prompt', () => {
     const b = jobToChatBody({ temperature: 'x', maxTokens: null });
     expect(b.messages[0].content).toBe('');
@@ -62,4 +80,39 @@ describe('jobToChatBody', () => {
     // Empty array falls back to the single-prompt path.
     expect(jobToChatBody({ messages: [], prompt: 'fallback' }).messages).toEqual([{ role: 'user', content: 'fallback' }]);
   });
+});
+
+describe('completion floor on a reasoning tier', () => {
+  const { LLM } = require('../src/shared/config');
+  const qwen = LLM.tiers.find((t) => t.minCompletionTokens);
+
+  test('a small max_tokens is raised to the model floor', () => {
+    // Measured: at 60 the model spends the whole budget thinking and returns
+    // content "". The floor is what stops a caller getting an empty string.
+    const b = jobToChatBody({ prompt: 'hi', maxTokens: 60 }, qwen);
+    expect(b.max_tokens).toBe(qwen.minCompletionTokens);
+  });
+
+  test('a generous max_tokens is left exactly as asked', () => {
+    const b = jobToChatBody({ prompt: 'hi', maxTokens: 4000 }, qwen);
+    expect(b.max_tokens).toBe(4000);
+  });
+
+  test('a model without a floor is untouched — Gemma does not reason', () => {
+    const b = jobToChatBody({ prompt: 'hi', maxTokens: 20 }, LLM.model);
+    expect(b.max_tokens).toBe(20);
+  });
+
+  test('no max_tokens means no max_tokens, floor or not', () => {
+    expect(jobToChatBody({ prompt: 'hi' }, qwen).max_tokens).toBeUndefined();
+  });
+});
+
+test('max_tokens 0 survives the floor — it means "generate nothing"', () => {
+  // jobService.clampMaxTokens preserves 0 deliberately ("a meaningful OpenAI
+  // value", pinned by its own test). Flooring it would make the node the one
+  // place in the stack that discards that answer.
+  const { LLM } = require('../src/shared/config');
+  const qwen = LLM.tiers.find((t) => t.minCompletionTokens);
+  expect(jobToChatBody({ prompt: 'hi', maxTokens: 0 }, qwen).max_tokens).toBe(0);
 });

@@ -19,7 +19,10 @@ const MAX_POINTS = 60;
 // A fresh accumulator; startMs anchors the uptime clock. `gpus` is a map of
 // card index → per-card bucket, populated lazily as the engine reports.
 function initStats(startMs) {
-  return { startMs: startMs || 0, gpus: {}, load: 0, points: [] };
+  // lastShareMs is rig-level, not per-card: "when did this rig last get paid"
+  // is the question it answers, and the CLI only ever fills bucket 0 anyway
+  // (PearlEngine.gpuIndex() is hardcoded to it).
+  return { startMs: startMs || 0, gpus: {}, load: 0, points: [], lastShareMs: null };
 }
 
 // Get-or-create the bucket for a card index (a line with no index — e.g. a
@@ -27,9 +30,29 @@ function initStats(startMs) {
 function bucketFor(stats, index) {
   const idx = Number.isFinite(index) ? index : 0;
   if (!stats.gpus[idx]) {
-    stats.gpus[idx] = { index: idx, hashrate: 0, accepted: 0, rejected: 0, power: 0, temp: 0, gpu: null };
+    stats.gpus[idx] = {
+      index: idx, hashrate: 0, accepted: 0, rejected: 0, power: 0, temp: 0, gpu: null,
+      // `raw*` is the last value the ENGINE reported; `carry*` is everything it
+      // reported in earlier engine sessions. `accepted`/`rejected` above stay the
+      // effective totals, so snapshot() and every consumer are unchanged.
+      rawAccepted: 0, rawRejected: 0, carryAccepted: 0, carryRejected: 0,
+    };
   }
   return stats.gpus[idx];
+}
+
+// The engine's share counters are cumulative PER ENGINE SESSION, not for the life
+// of the rig: PearlEngine.start() zeroes them. That was invisible while the miner
+// ran once and ran forever, but demand mode stops and restarts it on every flip
+// back to mining, so the counts fell to 0 several times an hour while uptime kept
+// climbing -- the rig looked like it had stopped earning.
+//
+// A counter moving BACKWARDS is therefore a new session, not a correction: bank
+// what the old session finished with and keep counting from there.
+function foldCounter(g, rawKey, carryKey, raw) {
+  if (raw < g[rawKey]) g[carryKey] += g[rawKey];
+  g[rawKey] = raw;
+  return g[carryKey] + raw;
 }
 
 // Sum a numeric field across every card bucket.
@@ -43,13 +66,22 @@ function sumField(stats, field) {
 // The engine's periodic `status` event carries a card's live hashrate and its
 // *cumulative* share counters, so a card's counts are SET (not incremented).
 // `connected` carries the GPU name. Anything else is ignored.
-function applyEvent(stats, evt) {
+// `nowMs` is optional and only stamps lastShareMs; omitting it keeps every other
+// behaviour identical, which is why the two existing call sites need no change to
+// stay correct.
+function applyEvent(stats, evt, nowMs) {
   if (!stats || !evt) return stats;
   if (evt.type === 'status') {
     const g = bucketFor(stats, evt.gpuIndex);
     if (evt.hashrate != null) g.hashrate = evt.hashrate;
-    if (evt.accepted != null) g.accepted = evt.accepted;
-    if (evt.rejected != null) g.rejected = evt.rejected;
+    if (evt.accepted != null) {
+      const total = foldCounter(g, 'rawAccepted', 'carryAccepted', evt.accepted);
+      // Only a RISE is a share landing. A restart that replays the same total, or
+      // the backwards step itself, must not look like fresh work.
+      if (total > g.accepted && Number.isFinite(nowMs)) stats.lastShareMs = nowMs;
+      g.accepted = total;
+    }
+    if (evt.rejected != null) g.rejected = foldCounter(g, 'rawRejected', 'carryRejected', evt.rejected);
     if (evt.power != null) g.power = evt.power;
     if (evt.temp != null) g.temp = evt.temp;
     if (evt.gpu) g.gpu = evt.gpu;
@@ -93,6 +125,9 @@ function snapshot(stats, nowMs) {
       temp: Number(g.temp) || 0,
     })),
     uptimeSec: Math.max(0, Math.floor(((nowMs || 0) - stats.startMs) / 1000)),
+    // null, not 0: "no share yet" and "a share at the epoch" are different, and a
+    // renderer showing "56 years ago" would be worse than showing nothing.
+    lastShareMs: stats.lastShareMs == null ? null : stats.lastShareMs,
   };
 }
 

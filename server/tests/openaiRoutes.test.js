@@ -7,6 +7,7 @@
 // controller's error/edge branches with injected fakes.
 const request = require('supertest');
 const express = require('express');
+const NodeService = require('../src/services/nodeService');
 const { createTestDb } = require('./helpers/pgmem');
 const { initOpenAiRoutes } = require('../src/routes');
 const JobService = require('../src/services/jobService');
@@ -709,6 +710,56 @@ describe('OpenAI gateway — hosted models', () => {
       const app = makeHostedApp(db, { apiKey: '' });
       const res = await request(app).get('/v1/models').set(...auth(publicKey));
       expect(res.body.data.map((m) => m.id)).toEqual([DEFAULT_MODEL]);
+    });
+
+    it('lists what the fleet is actually running, most-served first', async () => {
+      // Listing only a hardcoded default meant the one model anybody could
+      // discover was also the only one they could not choose to avoid.
+      await db.query('INSERT INTO nodes (node_id, public_key, last_seen, model) VALUES ($1,$2,$3,$4)',
+        ['n-q', 'k1', Date.now(), 'Qwen3.8-27B-UD-Q4_K_XL']);
+      await db.query('INSERT INTO nodes (node_id, public_key, last_seen, model) VALUES ($1,$2,$3,$4)',
+        ['n-g1', 'k2', Date.now(), 'gemma-4-E4B-it-Q4_K_M']);
+      await db.query('INSERT INTO nodes (node_id, public_key, last_seen, model) VALUES ($1,$2,$3,$4)',
+        ['n-g2', 'k3', Date.now(), 'gemma-4-E4B-it-Q4_K_M']);
+      const app = makeHostedApp(db, { apiKey: '' });
+      const res = await request(app).get('/v1/models').set(...auth(publicKey));
+      const net = res.body.data.filter((m) => m.owned_by === 'llmjob-network');
+      expect(net.map((m) => m.id)).toEqual(['gemma-4-E4B-it-Q4_K_M', 'Qwen3.8-27B-UD-Q4_K_XL']);
+      expect(net[0].nodes).toBe(2);
+    });
+
+    it('collapses one model spelled two ways into one entry', async () => {
+      // GROUP BY treats 'Qwen…' and 'qwen…' as different rows, but a requested
+      // name resolves case-insensitively -- so listing both would offer a choice
+      // that does not exist.
+      await db.query('INSERT INTO nodes (node_id, public_key, last_seen, model) VALUES ($1,$2,$3,$4)',
+        ['n-a', 'k1', Date.now(), 'Qwen3.8-27B-UD-Q4_K_XL']);
+      await db.query('INSERT INTO nodes (node_id, public_key, last_seen, model) VALUES ($1,$2,$3,$4)',
+        ['n-b', 'k2', Date.now(), 'qwen3.8-27b-ud-q4_k_xl']);
+      const app = makeHostedApp(db, { apiKey: '' });
+      const res = await request(app).get('/v1/models').set(...auth(publicKey));
+      const qwen = res.body.data.filter((m) => String(m.id).toLowerCase() === 'qwen3.8-27b-ud-q4_k_xl');
+      expect(qwen).toHaveLength(1);
+    });
+
+    it('does not list a model twice when it is also the default', async () => {
+      await db.query('INSERT INTO nodes (node_id, public_key, last_seen, model) VALUES ($1,$2,$3,$4)',
+        ['n-d', 'k1', Date.now(), DEFAULT_MODEL]);
+      const app = makeHostedApp(db, { apiKey: '' });
+      const res = await request(app).get('/v1/models').set(...auth(publicKey));
+      expect(res.body.data.filter((m) => m.id === DEFAULT_MODEL)).toHaveLength(1);
+    });
+
+    it('degrades to the default when the model lookup fails', async () => {
+      // This endpoint is a guide; a database hiccup should not fail a request
+      // that was only asking what is available.
+      const app = makeHostedApp(db, { apiKey: '' });
+      const spy = jest.spyOn(NodeService.prototype, 'listNetworkModels')
+        .mockRejectedValue(new Error('db down'));
+      const res = await request(app).get('/v1/models').set(...auth(publicKey));
+      expect(res.status).toBe(200);
+      expect(res.body.data.map((m) => m.id)).toEqual([DEFAULT_MODEL]);
+      spy.mockRestore();
     });
 
     it('rejects a request with no API key (401)', async () => {
