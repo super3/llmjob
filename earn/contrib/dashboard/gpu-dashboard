@@ -1,0 +1,391 @@
+#!/bin/bash
+export TERM=linux
+printf '\033[?25l'
+trap 'printf "\033[?25h"' EXIT
+RST=$'\033[0m'; DIM=$'\033[90m'; GRN=$'\033[1;92m'; CYB=$'\033[1;96m'; WHT=$'\033[1;97m'; MAG=$'\033[1;95m'; RED=$'\033[1;91m'; REV=$'\033[7m'; YEL=$'\033[1;93m'
+spin='-\|/'   # switching spinner frames (indexed by loop count)
+# ONE process now. LLMJob Earn does the switching itself, so the two units this
+# dashboard used to referee -- worker-miner and llama-qwen, plus the llm-autoswitch
+# proxy that flipped between them -- collapse into llmjob-earn.service, whose mode
+# is a single word in $EARN_ENV.
+#
+#   auto   mine until an inference request lands on :8000, then hand the whole card
+#          to the model and go back after the quiet window. The CLI owns the flip;
+#          nothing here sequences it.
+#   mine   mining only.  serve  model only.  off  stop the unit, GPU free.
+#
+# Co-residence is still impossible at 256K ctx (the model wants ~30.1 of 32.6 GB and
+# the miner ~2.1), which is exactly why the CLI time-slices instead of co-running.
+EARN_UNIT="${EARN_UNIT:-llmjob-earn.service}"
+EARN_ENV="${EARN_ENV:-/etc/default/llmjob-earn}"
+# set_mode <auto|mining|llm> -- rewrite the unit's mode and restart it. Restart, not
+# stop+start: systemd tears the old process down fully (and with it the GPU) before
+# the new one is spawned, which is the sequencing the old two-unit dance did by hand.
+set_mode() {
+  ( printf 'EARN_MODE=%s\n' "$1" > "$EARN_ENV"
+    systemctl restart "$EARN_UNIT" ) >/dev/null 2>&1 &
+}
+mode_switch() {
+  case "$1" in
+    auto)  set_mode auto ;;
+    mine)  set_mode mining ;;
+    serve) set_mode llm ;;
+    # Record the choice as well as acting on it: stopping the unit without
+    # rewriting the mode meant a reboot silently came back up in the mode you
+    # had just switched away from.
+    off)   ( printf 'EARN_MODE=off\n' > "$EARN_ENV"
+             systemctl stop "$EARN_UNIT" ) >/dev/null 2>&1 & ;;
+  esac
+}
+# Rig identity, read from the same env file the unit uses so there is one place
+# to set it. ADDR is only used to look this worker up on the pool's public API;
+# WORKER must match the --worker the unit runs with, or the pool rows will not
+# be found and the POOL columns read '?'.
+[ -r "$EARN_ENV" ] && . "$EARN_ENV"
+ADDR="${EARN_ADDRESS:-}"
+WORKER="${EARN_WORKER:-$(hostname)}"
+if [ -z "$ADDR" ]; then
+  echo "gpu-dashboard: set EARN_ADDRESS in $EARN_ENV (your prl1p… payout address)" >&2
+  exit 1
+fi
+POOLAPI="https://pearl.herominers.com/api/stats_address?address=$ADDR"
+POOLSTATS="https://pearl.herominers.com/api/stats"
+bar() { # label leftval pct color [embed] [nonl]  -- nonl (6th arg) set => no trailing newline (for the last bar)
+  local label=$1 val=$2 pct=$3 color=$4 embed=$5 width=102 fill eol=$'\033[K\n'
+  [ -n "$6" ] && eol=$'\033[K'
+  fill=$(( pct * width / 100 )); (( fill<0 )) && fill=0; (( fill>width )) && fill=width
+  printf ' %b%-4s%b %-14s %b[%b' "$color" "$label" "$RST" "$val" "$DIM" "$color"
+  if [ -z "$embed" ]; then
+    printf '%*s' "$fill" '' | tr ' ' '|'
+    printf '%b%*s%b]%b%s' "$RST" "$(( width - fill ))" '' "$DIM" "$RST" "$eol"
+  else
+    # embed right-aligned (nvtop-style); the fill runs OVER the text -- chars within the filled
+    # region take the bar color, chars past the fill show dim (text recolors, no highlight block).
+    local len=${#embed} pos f1 s1 ef
+    pos=$(( width - len )); (( pos<0 )) && pos=0
+    f1=$(( fill < pos ? fill : pos )); s1=$(( pos - f1 ))
+    ef=$(( fill - pos )); (( ef<0 )) && ef=0; (( ef>len )) && ef=len
+    printf '%*s' "$f1" '' | tr ' ' '|'; printf '%b%*s' "$RST" "$s1" ''
+    printf '%b%s%b' "$color" "${embed:0:ef}" "$RST"
+    printf '%b%s%b' "$DIM" "${embed:ef}" "$RST"
+    printf '%b]%b%s' "$DIM" "$RST" "$eol"
+  fi
+}
+# bw <kib_per_s> -- format a KiB/s value with nvtop-style auto-scaled binary units.
+bw(){ awk -v k="$1" 'BEGIN{ if(k>=1048576)printf "%3.0f GiB/s",k/1048576; else if(k>=1024)printf "%3.0f MiB/s",k/1024; else printf "%3.0f KiB/s",k }'; }
+jval(){ grep -oE "\"$1\": *\"[^\"]*\"" <<<"$2" | head -1 | sed "s/.*: *\"//;s/\"$//"; }
+# pool_fetch -- HeroMiners telemetry for THIS worker + the network-side earnings input.
+# Prints one pipe-delimited row: 10m|1h|24h|shares_good|shares_invalid|prl_per_day
+# (pipe-delimited because the formatted rates contain spaces). Any failure -> "?|?|?|?|?|0".
+# There is no jq on this box, so JSON is parsed with python3 rather than grep.
+pool_fetch() {
+  python3 - "$POOLAPI" "$POOLSTATS" "$WORKER" <<'PY' 2>/dev/null
+import json, sys, urllib.request
+def get(u):
+    with urllib.request.urlopen(u, timeout=6) as r: return json.load(r)
+HASH_UNIT = 2 ** 32   # API hashrate is in 2^32-hash units; pool UI scales by this for TH/s
+def fmt(h):
+    h = float(h or 0) * HASH_UNIT
+    for u in ("H/s","KH/s","MH/s","GH/s","TH/s","PH/s"):
+        if h < 1000: return "%.1f %s" % (h, u)
+        h /= 1000
+    return "%.1f EH/s" % h
+try:
+    a = get(sys.argv[1]); s = get(sys.argv[2]); name = sys.argv[3]
+    w = next((x for x in a.get("workers", []) if x.get("name") == name), None) or {}
+    cfg = s.get("config", {}); net = s.get("network", {})
+    units = float(cfg.get("coinUnits") or 1e8)
+    fee = float(cfg.get("fee") or 0)
+    tgt = float(net.get("difficultyTarget") or cfg.get("coinDifficultyTarget") or 0)
+    nethps = (float(net.get("difficulty") or 0) / tgt) if tgt > 0 else 0
+    rew = float((s.get("pool", {}).get("stats", {}) or {}).get("averageReward")
+                or s.get("lastblock", {}).get("reward") or 0) / units
+    y = float(w.get("hashrate_1h") or 0)
+    pd = (y / nethps) * (86400.0 / tgt) * rew * (1 - fee / 100) if nethps > 0 and tgt > 0 else 0
+    print("|".join([fmt(w.get("hashrate")), fmt(w.get("hashrate_1h")), fmt(w.get("hashrate_24h")),
+                    str(int(w.get("shares_good") or 0)), str(int(w.get("shares_invalid") or 0)),
+                    "%.6f" % pd]))
+except Exception:
+    print("?|?|?|?|?|0")
+PY
+}
+poolc=0; p10m='?'; p1h='?'; p24h='?'; co_name='?'; co_q='?'; co_ctx='?'; cokv='?'; co_extra=''; prl_usd='?'; praw='?'
+est_usdh='?'; est_usdd='?'; est_usdmo='?'
+target=''; last_fired=''; sw_since=0   # mode toggle state (left/right arrows)
+# Version of whatever the unit runs, not of a binary that may not be the one in use.
+#
+# read_miner_ver, not a one-shot: this used to be computed once before the loop,
+# so after an upgrade the dashboard kept reporting the version it started with
+# until somebody restarted it -- and the version is exactly the field you look at
+# to confirm an upgrade landed. Re-read on the pool cadence, which is cheap
+# because it is once a minute, not once a second.
+read_miner_ver() {
+  local pid cl cmd arg v
+  # From the RUNNING process, not from ExecStart. The unit invokes the CLI
+  # through `sh -c` so the path is expanded at runtime and never appears in
+  # ExecStart at all -- reading that found nothing and silently fell back to
+  # whatever binary happened to be installed, which is how a 0.4.5 sat on screen
+  # beside a 0.5.0 node. The cmdline is what is actually executing.
+  pid=$(systemctl show -p MainPID --value "$EARN_UNIT" 2>/dev/null)
+  if [ -n "$pid" ] && [ "$pid" != 0 ]; then
+    cl=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
+    cmd=$(awk '{print $1}' <<<"$cl")
+    # A node script needs its interpreter; a packaged binary is self-contained.
+    arg=$(grep -oE '/[^ ]*earn-cli\.js' <<<"$cl" | head -1)
+  fi
+  v=$( { [ -n "$cmd" ] && "$cmd" $arg --version; } 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  # Fall back to the packaged binary only when the unit could not be read at all.
+  # It is a DIFFERENT build, so it is a guess: mark it rather than present it as
+  # fact, which is how a stale 0.4.5 sat on screen next to a 0.5.0 node.
+  [ -z "$v" ] && [ -n "$EARN_FALLBACK_BIN" ] \
+    && v=$("$EARN_FALLBACK_BIN" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) \
+    && [ -n "$v" ] && v="$v?"
+  [ -z "$v" ] && v='?'
+  printf '%s' "$v"
+}
+miner_ver=$(read_miner_ver)
+while true; do
+  if (( poolc % 12 == 0 )); then
+    # This worker's OWN pool-tracked windows (not the wallet total). pgood/pbad are the pool's
+    # share counts -- the authoritative proof the rig is being CREDITED and not merely hashing.
+    miner_ver=$(read_miner_ver)
+    IFS='|' read -r v1 v2 v3 pgood pbad prlday < <(pool_fetch)
+    if [ -n "$v1" ] && [ "$v1" != '?' ]; then p10m=$v1; p1h=$v2; p24h=$v3; fi
+    # co-resident LLM identity: served model id straight from the API; ctx/KV from cmdline.
+    sn=$(curl -s -m 2 http://127.0.0.1:8000/v1/models 2>/dev/null | grep -oE '"id":"[^"]+"' | head -1 | cut -d'"' -f4)
+    [ -n "$sn" ] && co_name=$sn
+    # PRL/USD price (CoinGecko 'pearl-2' = the PoUW Pearl coin; ~60s refresh)
+    praw=$(curl -s -m 4 "https://api.coingecko.com/api/v3/simple/price?ids=pearl-2&vs_currencies=usd" 2>/dev/null | grep -oE '"usd":[0-9.]+' | cut -d: -f2)
+    [[ $praw =~ ^[0-9.]+$ ]] && prl_usd=$(awk -v x="$praw" 'BEGIN{printf "%.2f", x}')
+    # earnings estimate for THIS worker -- PRL/day comes out of pool_fetch (same pool-page
+    # formula, computed there where the network difficulty/reward already are); USD via price.
+    read -r est_usdh est_usdd est_usdmo < <(awk -v pd="${prlday:-0}" -v p="${praw:-0}" 'BEGIN{
+      if(pd+0<=0||p+0<=0){print "? ? ?"; exit}
+      printf "%.2f %.2f %.2f", (pd/24)*p, pd*p, pd*30*p }')
+  fi
+  poolc=$((poolc+1))
+  IFS=, read -r name util pwr plim temp fan memu memt sclk mclk pgen pwidth < <(nvidia-smi --query-gpu=name,utilization.gpu,power.draw,power.limit,temperature.gpu,fan.speed,memory.used,memory.total,clocks.sm,clocks.mem,pcie.link.gen.current,pcie.link.width.current --format=csv,noheader,nounits)
+  name="${name#"${name%%[![:space:]]*}"}"
+  name="${name#NVIDIA }"; name="${name% Workstation Edition}"   # RTX PRO 6000 Blackwell
+  gpuidx=0   # single GPU today; wrapped as "Device N [ ... ]" so multi-GPU can index later
+  gpulabel="${CYB}Device ${gpuidx}${RST} ${DIM}[${RST} ${WHT}${name}${RST} ${DIM}]${RST}"
+  util=${util// /}; pwr=${pwr// /}; plim=${plim// /}; temp=${temp// /}; fan=${fan// /}; memu=${memu// /}; memt=${memt// /}; sclk=${sclk// /}; mclk=${mclk// /}; pgen=${pgen// /}; pwidth=${pwidth// /}
+  # PCIe RX/TX throughput: nvidia-smi -q reports KB/s (really KiB/s), fine-grained -- dmon only does
+  # integer MB/s so sub-MB traffic shows 0. Auto-scale to KiB/MiB/GiB per sec to match nvtop below.
+  read -r rxkb txkb < <(nvidia-smi -q 2>/dev/null | awk '/Rx Throughput/{r=$(NF-1)} /Tx Throughput/{t=$(NF-1)} END{print r+0, t+0}')
+  rxdisp=$(bw "$rxkb"); txdisp=$(bw "$txkb")
+  mempct=$(( memu * 100 / memt )); pwri=${pwr%.*}; plimi=${plim%.*}; pwrpct=$(( pwri * 100 / plimi ))
+  if [[ $fan =~ ^[0-9]+$ ]]; then fanpct=$fan; fanval="${fan}%"; else fanpct=0; fanval="$fan"; fi
+  # miner telemetry only meaningful when the miner is actually running (blank in LLM-ONLY)
+  earn_active=0; [ "$(systemctl is-active "$EARN_UNIT" 2>/dev/null)" = active ] && earn_active=1
+  # The env file is the PENDING mode -- set_mode writes it before systemd has even
+  # sent SIGTERM. Reading `actual` from it meant the screen showed the destination
+  # as though it had already arrived: the spinner flashed for a single frame, and a
+  # restart that FAILED looked indistinguishable from one that worked, forever.
+  #
+  # The running process's own cmdline is authoritative: systemd has already
+  # expanded ${EARN_MODE} by the time a PID exists.
+  pend_mode=$(grep -oE '^EARN_MODE=[a-z]+' "$EARN_ENV" 2>/dev/null | cut -d= -f2); [ -z "$pend_mode" ] && pend_mode=auto
+  earn_pid=$(systemctl show -p MainPID --value "$EARN_UNIT" 2>/dev/null)
+  earn_mode=''
+  if [ -n "$earn_pid" ] && [ "$earn_pid" != 0 ]; then
+    earn_mode=$(tr '\0' ' ' < "/proc/$earn_pid/cmdline" 2>/dev/null | grep -oE -- '--mode [a-z]+' | awk '{print $2}')
+  fi
+  [ -z "$earn_mode" ] && earn_mode=$pend_mode
+  # One endpoint in every serving mode. The gate used to exist only in auto, so
+  # llm mode moved callers to llama-server's own port; it now runs there too, with
+  # nothing to switch, purely so this port keeps meaning what it says.
+  llm_port=8000
+  # The gate answers :8000 from its own state while the model is DOWN (a `gate` field);
+  # once the model is UP the probe is forwarded, so llama's bare {"status":"ok"} is
+  # itself the signal that we are serving. Neither counts as demand, so polling this
+  # every second cannot pin the card -- that is a design guarantee of the gate.
+  ghealth=$(curl -s -m 1 "http://127.0.0.1:$llm_port/health" 2>/dev/null)
+  case "$ghealth" in
+    *'"gate":"MINING"'*)   gstate=MINING ;;
+    *'"gate":"SWITCHING'*) gstate=SWITCHING ;;
+    *'"gate":"SERVING"'*)  gstate=SERVING ;;
+    *'"status":"ok"'*)     gstate=SERVING ;;
+    *)                     gstate= ;;
+  esac
+  # Actually hashing right now: in auto that is true only between requests.
+  if (( earn_active )) && { [ "$earn_mode" = mining ] || { [ "$earn_mode" = auto ] && [ "$gstate" != SERVING ]; }; }
+  then mining=1; else mining=0; fi
+
+  # Model identity, sampled EVERY tick rather than on the pool cadence: in demand
+  # mode llama-server exists only while serving, which is a short window, so a
+  # 12-cycle sample nearly always landed while it was down and left these blank.
+  # The values are sticky only so the NEXT serving render is populated on its
+  # first tick instead of blank; the mining row prints a fixed string and does
+  # not show them.
+  #
+  # Match on '--model' as well as the binary name: the EARN process carries
+  # '--llm-binary .../llama-server' in its own cmdline and sorts FIRST, so a bare
+  # grep for the binary picks the supervisor and every field below comes back empty.
+  cocmd=$(ps -eo args 2>/dev/null | grep -E 'llama-server .*--model ' | grep -v grep | head -1)
+  if [ -n "$cocmd" ]; then
+    # Long flags: the CLI spawns with --model/--ctx-size, not the -m/-c a
+    # hand-written unit would use. Accept either so this reads both.
+    mp=$(grep -oE '(--model|-m) [^ ]+' <<<"$cocmd" | head -1 | awk '{print $2}' | sed 's#.*/##')
+    [ -n "$mp" ] && { base="${mp%.gguf}"; co_q="${base##*-}"; }
+    nc=$(grep -oE '(--ctx-size|-c) [0-9]+' <<<"$cocmd" | head -1 | grep -oE '[0-9]+')
+    [ -n "$nc" ] && co_ctx="$((nc/1024))K"
+    cokv=$(grep -oE '\-\-cache-type-k [a-z0-9_]+' <<<"$cocmd" | head -1 | awk '{print $2}')
+    [ -z "$cokv" ] && cokv=f16
+    co_extra=''; grep -q 'spec-type' <<<"$cocmd" && co_extra="$co_extra +MTP"; grep -q 'mmproj' <<<"$cocmd" && co_extra="$co_extra +vision"
+  fi
+  # The served id is the model's --alias, which is its filename stem, so it already
+  # ENDS in the quant -- printing both spelled Q4_K_XL twice and pushed the row past
+  # 128 columns. Strip the quant we are about to print in its own field, and the
+  # packaging marker left behind with it.
+  co_disp="$co_name"
+  [ -n "$co_q" ] && [ "$co_q" != '?' ] && co_disp="${co_disp%-$co_q}"
+  co_disp="${co_disp%-UD}"
+  [ -z "$co_disp" ] && co_disp="$co_name"
+  if (( mining )); then
+    # v0.4.2 status line: "\u26cf  162.9 TH/s \u00b7 3 accepted \u00b7 0 rejected \u00b7 up 00m 12s"
+    # (v0.3.x's hashrate_th_s= / component=share tokens are gone -- do not resurrect them.)
+    # Counts are thousands-separated once they pass 999 ("5,698 accepted"), so the digit
+    # runs must allow separators -- a bare [0-9]+ fails the WHOLE match and silently
+    # degrades hashrate to '?' and shares to 0/0. Strip separators after matching.
+    st=$(journalctl -u "$EARN_UNIT" --no-pager -n 80 2>/dev/null | grep -oE '[0-9][0-9,.]* TH/s [^0-9]+[0-9][0-9,]* accepted [^0-9]+[0-9][0-9,]* rejected' | tail -1)
+    hash=$(awk '{print $1}' <<<"$st" | tr -d ','); [ -z "$hash" ] && hash='?'
+    acc=$(awk '{print $4}' <<<"$st" | tr -d ','); [ -z "$acc" ] && acc=0
+    rej=$(awk '{print $7}' <<<"$st" | tr -d ','); [ -z "$rej" ] && rej=0
+    la_ts=$(journalctl -u "$EARN_UNIT" --no-pager -o short-unix -r --since "1 hour ago" 2>/dev/null | grep -m1 'share accepted' | cut -d' ' -f1 | cut -d. -f1)
+    if [[ $la_ts =~ ^[0-9]+$ ]]; then
+      age=$(( $(date +%s) - la_ts )); (( age<0 )) && age=0
+      if   (( age<60 ));   then la="${age}s"
+      elif (( age<3600 )); then la="$((age/60))m$((age%60))s"
+      else la="$((age/3600))h"; fi
+      if   (( age<=25 )); then lacol=$GRN
+      elif (( age<=90 )); then lacol=$'\033[93m'
+      else lacol=$'\033[91m'; fi
+    else la=">1h"; lacol=$'\033[91m'; fi
+  fi
+  if   (( temp >= 83 )); then tcol=$'\033[91m'
+  elif (( temp >= 75 )); then tcol=$'\033[93m'
+  else tcol=$'\033[92m'; fi
+  # LLM health + last generation / prefill tok/s (same journal -- llama is a child)
+  if [ "$gstate" = SERVING ]; then co_up=1; else co_up=0; fi
+  # llama-server is a child of the earn process, so its timings land in the SAME journal.
+  co_tps=$(journalctl -u "$EARN_UNIT" --no-pager -n 400 2>/dev/null | grep 'eval time' | grep -v prompt | tail -1 | grep -oE '[0-9.]+ tokens per second' | head -1 | grep -oE '^[0-9.]+')
+  co_pp=$(journalctl -u "$EARN_UNIT" --no-pager -n 400 2>/dev/null | grep 'prompt eval time' | tail -1 | grep -oE '[0-9.]+ tokens per second' | head -1 | grep -oE '^[0-9.]+')
+  # --- mode detection + selector line ---
+  # The unit's CONFIGURED mode is the answer, not what the GPU happens to be doing.
+  # In auto the card legitimately alternates between mining and serving, and reading
+  # the mode off the current activity would make the selector oscillate on every
+  # request -- the same trap the old two-unit detection had to work around.
+  autoon=0; (( earn_active )) && [ "$earn_mode" = auto ] && autoon=1
+  if   (( ! earn_active )); then actual=off
+  elif [ "$earn_mode" = auto ];   then actual=auto
+  elif [ "$earn_mode" = mining ]; then actual=mine
+  elif [ "$earn_mode" = llm ];    then actual=serve
+  else actual=off; fi
+  [ -z "$target" ] && target=$actual
+  printf '\033[H'
+  afmt="$DIM"; mfmt="$DIM"; sfmt="$DIM"; ofmt="$DIM"
+  case "$target" in
+    auto)  afmt="$CYB$REV" ;; mine)  mfmt="$GRN$REV" ;; serve) sfmt="$GRN$REV" ;; off) ofmt="$RED$REV" ;;
+  esac
+  autolabel=' AUTO '
+  if [ "$actual" = auto ]; then
+    case "$gstate" in
+      SERVING)   autolabel=' AUTO (LLM) ' ;;
+      MINING)    autolabel=' AUTO (MINING) ' ;;
+      SWITCHING) autolabel=' AUTO (SWITCHING) ' ;;
+    esac
+  fi
+  # selector is ALWAYS shown so you can keep arrowing through modes; a spinner sits next to MODE
+  # while the running mode is still catching up to the highlighted target.
+  if [ "$actual" != "$target" ]; then ind="${YEL}${spin:$((poolc%4)):1}${RST}"; else ind=' '; fi
+  printf ' %b%s%b %bPCIe%b %b%s@%sx%b %bRX%b %b%s%b %bTX%b %b%s%b  %bMODE%b%s %b%s%b %b MINE %b %b LLM %b %b OFF %b\033[K\n' \
+    "$WHT" "$gpulabel" "$RST" \
+    "$CYB" "$RST" "$WHT" "${pgen:-?}" "${pwidth:-?}" "$RST" \
+    "$DIM" "$RST" "$WHT" "${rxdisp:-?}" "$RST" \
+    "$DIM" "$RST" "$WHT" "${txdisp:-?}" "$RST" \
+    "$CYB" "$RST" "$ind" "$afmt" "$autolabel" "$RST" "$mfmt" "$RST" "$sfmt" "$RST" "$ofmt" "$RST"
+  printf '\033[K\n'
+  # show live mining stats only while MINE is the chosen target; the instant you arrow away
+  # (LLM/OFF) drop to -- even though the miner takes a beat to actually stop.
+  # The slot that used to hold the worker name / AUTO state now carries the share counters:
+  # accepted vs rejected is the one number that distinguishes "really earning" from "hashing
+  # into the void", and rejects go red the moment they appear. Local counts are session-scoped;
+  # the pool's own totals (pgood/pbad) are the cumulative cross-check.
+  # The row is already ~126 of 128 cols, so keep this field short or it wraps.
+  idfield="${DIM}worker${RST} ${WHT}${WORKER}${RST}"
+  if (( mining )) && { [ "$target" = mine ] || [ "$target" = auto ]; }; then
+    printf ' %bHASHRATE %s TH/s%b  %s  %blast share%b %b%s%b  %b|%b  %bPOOL%b  %b[10m]%b %s  %b[1h]%b %s  %b[24h]%b %s\033[K\n' \
+      "$GRN" "${hash:-?}" "$RST" \
+      "$idfield" \
+      "$DIM" "$RST" "$lacol" "$la" "$RST" \
+      "$DIM" "$RST" \
+      "$CYB" "$RST" \
+      "$DIM" "$RST" "${p10m}" \
+      "$DIM" "$RST" "${p1h}" \
+      "$DIM" "$RST" "${p24h}"
+  else
+    printf ' %bHASHRATE%b %b--%b  %s  %blast share%b %b--%b  %b|%b  %bPOOL%b  %b[10m]%b %s  %b[1h]%b %s  %b[24h]%b %s\033[K\n' \
+      "$DIM" "$RST" "$DIM" "$RST" \
+      "$idfield" \
+      "$DIM" "$RST" "$DIM" "$RST" \
+      "$DIM" "$RST" \
+      "$CYB" "$RST" \
+      "$DIM" "$RST" "${p10m}" \
+      "$DIM" "$RST" "${p1h}" \
+      "$DIM" "$RST" "${p24h}"
+  fi
+  printf ' %bMINER%b %b%s%b    %bPRL%b %b$%s%b    %bEST%b   %b$%s%b %b/ hr%b    %b$%s%b %b/ day%b    %b$%s%b %b/ month%b\033[K\n' \
+    "$CYB" "$RST" "$WHT" "${miner_ver:-?}" "$RST" \
+    "$CYB" "$RST" "$GRN" "${prl_usd:-?}" "$RST" \
+    "$CYB" "$RST" \
+    "$GRN" "${est_usdh:-?}" "$RST" "$DIM" "$RST" \
+    "$GRN" "${est_usdd:-?}" "$RST" "$DIM" "$RST" \
+    "$GRN" "${est_usdmo:-?}" "$RST" "$DIM" "$RST"
+  if (( co_up )); then
+    printf ' %bLLM%b  %bUP%b  %bport%b %b%s%b   %bmodel%b %b%s%b  %bquant%b %b%s%b  %bctx%b %s %bKV%b %s%b%s%b   %bgen%b %b%s t/s%b  %bprefill%b %b%s t/s%b\033[K\n\033[K\n' \
+      "$MAG" "$RST" "$GRN" "$RST" \
+      "$DIM" "$RST" "$WHT" "$llm_port" "$RST" \
+      "$DIM" "$RST" "$WHT" "${co_disp:-${co_name:-?}}" "$RST" \
+      "$DIM" "$RST" "$WHT" "${co_q:-?}" "$RST" \
+      "$DIM" "$RST" "${co_ctx:-?}" "$DIM" "$RST" "${cokv:-?}" "$CYB" "${co_extra}" "$RST" \
+      "$DIM" "$RST" "$WHT" "${co_tps:-na}" "$RST" \
+      "$DIM" "$RST" "$WHT" "${co_pp:-na}" "$RST"
+  elif (( autoon )); then
+    # No model is loaded, but the gate owns :8000 and wakes one on a real inference
+    # request -- so the endpoint IS serving. "DOWN" would be wrong: a client gets an
+    # answer after the ~5s load, not a refused connection. Not "IDLE" either: the card
+    # is mining flat out at ~600W. The axis is demand, not activity.
+    printf ' %bLLM%b  %bREADY%b %bport%b %b8000%b %bmining - a request wakes the model (~5s)%b\033[K\n\033[K\n' \
+      "$MAG" "$RST" "$YEL" "$RST" "$DIM" "$RST" "$WHT" "$RST" "$DIM" "$RST"
+  else
+    printf ' %bLLM%b  %bDOWN%b  %bport %s not serving%b\033[K\n\033[K\n' \
+      "$MAG" "$RST" "$RED" "$RST" "$DIM" "$llm_port" "$RST"
+  fi
+  bar "GPU"  "${util}%"            "$util"   $'\033[92m'  "${sclk:-?} MHz"
+  bar "MEM"  "${memu}/${memt}MB"   "$mempct" $'\033[96m'  "${mclk:-?} MHz"
+  bar "PWR"  "${pwri}/${plimi}W"   "$pwrpct" $'\033[93m'
+  bar "TEMP" "${temp}C"            "$temp"   "$tcol"
+  bar "FAN"  "$fanval"             "$fanpct" $'\033[94m'
+  printf '\033[J'
+  # fire a switch only once the selection SETTLES (>=1s since the last arrow), so quickly arrowing
+  # through intermediate modes doesn't kick off switches you're only passing through.
+  if [ "$target" != "$last_fired" ] && [ "$target" != "$actual" ] && (( $(date +%s) - sw_since >= 1 )); then
+    last_fired=$target; mode_switch "$target"
+  fi
+  # poll keyboard (doubles as refresh). Poll fast (1s) while a switch is pending/running so the
+  # spinner animates and settle-firing is responsive; relax to 5s once settled.
+  # selector row: AUTO | MINE | LLM | OFF ; left toward AUTO, right toward OFF (clamped).
+  k=''; k2=''
+  if [ "$actual" != "$target" ]; then rt=1; else rt=5; fi
+  read -rsn1 -t "$rt" k
+  if [ "$k" = $'\033' ]; then
+    read -rsn2 -t 0.02 k2
+    old=$target
+    case "$k2" in
+      '[C'|'OC') case "$target" in auto) target=mine ;; mine) target=serve ;; serve) target=off ;; esac ;;   # right arrow
+      '[D'|'OD') case "$target" in off) target=serve ;; serve) target=mine ;; mine) target=auto ;; esac ;;   # left arrow
+    esac
+    [ "$target" != "$old" ] && sw_since=$(date +%s)
+  fi
+done
