@@ -1069,3 +1069,40 @@ describe('init interleavings', () => {
     expect($('btn-start').hidden).toBe(false);
   });
 });
+
+// The Mine view's height, asserted against the stylesheet rather than the DOM.
+//
+// jsdom does no layout, so the bug this guards cannot be caught by rendering:
+// #view-mine was pinned to a hard `height: 470px` alongside the views that
+// scroll internally, and the update banner (which sits inside it, above content
+// of a fixed size) pushed the START button straight out the bottom of its own
+// section and across the footer -- 39px over VIEW LOGS / NEED HELP.
+//
+// Nothing clipped or scrolled either, which is why it looked like a paint bug:
+// a fixed height means the overflow never grows .app, so the renderer's
+// ResizeObserver never fires and the window is never refitted.
+describe('mine view height', () => {
+  const CSS = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'styles.css'), 'utf8');
+
+  // Every rule whose selector list mentions #view-mine, as [selector, body].
+  const mineRules = CSS
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('}')
+    .map((chunk) => chunk.split('{'))
+    .filter((p) => p.length === 2 && /(^|,)\s*#view-mine\s*(,|$)/.test(p[0]))
+    .map(([sel, body]) => [sel.trim(), body.trim()]);
+
+  it('is bounded by min-height, never a fixed height', () => {
+    expect(mineRules.length).toBeGreaterThan(0);
+    const decls = mineRules.map(([, body]) => body).join(';');
+    // A bare `height:` on this view is the regression; min-height is the fix.
+    expect(/(^|;)\s*height\s*:/.test(decls)).toBe(false);
+    expect(/min-height\s*:\s*\d/.test(decls)).toBe(true);
+  });
+
+  // The views that scroll internally still need a definite height, or their
+  // flex children (chat list, log terminal) grow instead of scrolling.
+  it('leaves the internally-scrolling views on a fixed height', () => {
+    expect(/#view-chat[^{]*{[^}]*height:\s*\d/.test(CSS.replace(/\/\*[\s\S]*?\*\//g, ''))).toBe(true);
+  });
+});
