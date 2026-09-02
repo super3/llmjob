@@ -36,10 +36,11 @@ const { statsFilePayload } = require('../shared/statsFile');
 const { shortenAddress, isValidAddress } = require('../shared/address');
 const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
 const { planLlmInstances } = require('../shared/llmPlan');
-const { pickModel, ctxLadder } = require('../shared/models');
+const { pickModel, ctxLadder, planAutoMode } = require('../shared/models');
 const { LlmFleet } = require('../main/llmFleet');
+const { createAutoGate } = require('../main/autoGate');
 const { JobWorker } = require('../main/jobWorker');
-const { resolvePlan } = require('../shared/llmMode');
+const { resolvePlan, normalizeMode } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote } = require('../shared/platform');
 const { resolveServerUrl } = require('../shared/llama');
 const format = require('../shared/format');
@@ -337,7 +338,11 @@ function makeCliJobWorker(nodeCfg, base, baseUrl) {
 // (keeping `reserveMb` free for mining), spawns the fleet, and logs its
 // OpenAI-compatible endpoint. Returns the LlmFleet, or null if setup failed
 // (best-effort — a failing LLM never takes the miner down).
-async function startLlm(settings, reserveMb) {
+// modelOverride pins the tier. Demand mode has already chosen one, and choosing
+// again here would re-run that decision against whatever VRAM happens to be free
+// at the moment of the switch -- see waitForFreeVram for why that is not the same
+// number a moment later.
+async function startLlm(settings, reserveMb, modelOverride) {
   const dir = llmDir(settings);
 
   // Plan one llama-server per eligible GPU before doing anything expensive
@@ -353,7 +358,7 @@ async function startLlm(settings, reserveMb) {
   // shell has to make the same choice the GUI does, or a large card running
   // under systemd silently keeps serving the small default.
   const bestCard = pickLlmGpu(cards);
-  const model = pickModel(bestCard ? bestCard.freeMb : null, reserveMb || 0);
+  const model = modelOverride || pickModel(bestCard ? bestCard.freeMb : null, reserveMb || 0);
   serveLlmState.model = model;
   const plan = planLlmInstances(cards, model, reserveMb || 0, {
     maxInstances: settings.llmMaxInstances,
@@ -458,6 +463,26 @@ async function startLlm(settings, reserveMb) {
   const gpus = plan.map((p) => (p.index == null ? 'auto' : p.index)).join(', ');
   log('local LLM starting on ' + plan.length + ' GPU' + (plan.length === 1 ? '' : 's') + ' [' + gpus + ']');
   return fleet;
+}
+
+// Wait for the GPU to actually report `needMb` free.
+//
+// A process exiting does not reclaim its VRAM synchronously: the miner's ~2.6 GB
+// is still counted for a moment after its 'stopped' event. The LLM planner sizes
+// against a live reading, so starting it too early sees a card that is short by
+// exactly that much and quietly plans a SMALLER model -- observed on a 5090,
+// which fell back to Gemma because 29,959 MiB was read where 30,720 was needed.
+// 8s is far more than the release needs -- it is sub-second in practice -- and
+// short enough that a card which genuinely has no room fails fast instead of
+// stalling the first request behind a doomed wait.
+async function waitForFreeVram(needMb, timeoutMs = 8000, stepMs = 250) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const best = pickLlmGpu(await detectGpusVram());
+    if (!best || !Number.isFinite(best.freeMb) || best.freeMb >= needMb) return best;
+    if (Date.now() >= deadline) return best;   // let the planner refuse, with a real reading
+    await new Promise((r) => setTimeout(r, stepMs));
+  }
 }
 
 // ── Connect with LLMJob (node pairing + ping) ────────────────────────────────
@@ -698,8 +723,24 @@ async function run(argv) {
   }
 
   // ── Local LLM ──────────────────────────────────────────────────────────────
-  // Keep a mining reserve free only when co-running with the miner.
-  if (plan.llm) {
+  // Auto on a card that could serve a BIGGER model with the GPU to itself than it
+  // can while mining does not co-run: it mines until something asks for tokens.
+  // planAutoMode makes that call and returns 'corun' whenever the two choices
+  // agree, so a small card behaves exactly as before.
+  let autoPlan = null;
+  if (plan.llm && plan.miner && normalizeMode(settings.mode) === 'auto') {
+    const cards = await detectGpusVram();
+    const best = pickLlmGpu(cards);
+    autoPlan = planAutoMode(best ? best.freeMb : null, LLM.miningReserveMb);
+  }
+  const demand = !!(autoPlan && autoPlan.strategy === 'demand');
+  if (demand) {
+    log('auto:       ' + autoPlan.model.name + ' needs the GPU to itself — mining while idle');
+  }
+
+  // Keep a mining reserve free only when co-running with the miner. In demand
+  // mode nothing is co-resident, so the model is sized against the whole card.
+  if (plan.llm && !demand) {
     llm = await startLlm(settings, plan.miner ? LLM.miningReserveMb : 0);
   }
 
@@ -712,7 +753,17 @@ async function run(argv) {
 
   return new Promise((resolve) => {
     let settled = false;
-    const finish = (code) => { if (!settled) { settled = true; resolve(code); } };
+    const finish = (code) => {
+      if (settled) return;
+      settled = true;
+      // Every exit path runs through here, so the gate's listening socket is
+      // released whether we stopped on a signal or an engine died underneath us.
+      if (auto) { auto.stop(); auto = null; }
+      resolve(code);
+    };
+    // A deliberate switch must not look like an engine dying: the handlers below
+    // tear the process down, and the gate stops engines on purpose.
+    let auto = null;
 
     const shutdown = () => {
       if (stopping) return;
@@ -737,6 +788,9 @@ async function run(argv) {
       llm.on('stopped', (code) => {
         // Keep `model`: the run is over but the last telemetry ping should still
         // name what this node was serving, and fullTelemetry dereferences it.
+        // No demand-mode guard needed here either: this handler is only
+        // registered when the LLM was started up front, which demand mode
+        // never does.
         serveLlmState = { ready: false, tps: 0, model: serveLlmState.model };
         stopServe();
         log('local LLM exited (code ' + code + ')', process.stderr);
@@ -746,6 +800,7 @@ async function run(argv) {
 
     if (miner) {
       miner.on('stopped', (code) => {
+        if (auto && auto.isSwitching()) return;   // handed to the LLM on purpose
         if (reporter) clearInterval(reporter);
         if (statsWriter) clearInterval(statsWriter);
         stopServe();
@@ -760,6 +815,48 @@ async function run(argv) {
         if (llm) llm.stop();
         finish(1);
       }
+    }
+
+    // ── Demand-driven auto ───────────────────────────────────────────────────
+    // Stood up only when planAutoMode asked for it, so every other mode -- and
+    // every card where the model co-runs -- is untouched.
+    if (demand && miner) {
+      auto = createAutoGate({
+        miner,
+        startMinerArgs: () => Object.assign({}, settings, { endpoint: resolveEndpoint(settings) }),
+        isLlmReady: () => !!(llm && llm.readyCount && llm.readyCount() > 0),
+        // Returns the fleet; the gate owns waiting for it to answer.
+        startLlm: async () => {
+          // The miner has exited but the driver may not have reclaimed its VRAM
+          // yet; plan against the card as it will be, not as it momentarily reads.
+          await waitForFreeVram(autoPlan.model.vramFullMb);
+          // Sized against the whole card, and pinned to the tier already chosen:
+          // nothing is co-resident in demand mode.
+          llm = await startLlm(settings, 0, autoPlan.model);
+          if (llm) {
+            llm.on('stopped', () => {
+              if (auto && auto.isSwitching()) return;
+              // Keep `model` for the same reason the up-front handler does: the
+              // last telemetry ping should still name what this node served.
+              serveLlmState = { ready: false, tps: 0, model: serveLlmState.model };
+              stopServe();
+            });
+          }
+          return llm;
+        },
+        stopLlm: async () => {
+          if (llm) { try { llm.stop(); } catch { /* already gone */ } }
+          llm = null;
+          // Handing the card back does not change WHICH model this node serves,
+          // so the reported model survives the idle flip.
+          serveLlmState = { ready: false, tps: 0, model: serveLlmState.model };
+        },
+        port: settings.gatePort == null ? LLM.gate.port : settings.gatePort,
+        upstreamPort: LLM.port,
+        modelName: autoPlan.model.name, idleMs: LLM.gate.idleMs, log,
+      }).start();
+      log('auto:       serving on :' + (settings.gatePort == null ? LLM.gate.port : settings.gatePort) + ' — '
+        + Math.round(LLM.gate.idleMs / 1000) + 's idle hands the GPU back to mining');
     }
   });
 }

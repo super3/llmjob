@@ -227,3 +227,44 @@ describe('config-shape fallbacks', () => {
     expect(m.ctxLadder({ ctxSize: 0 })).toEqual([]);
   });
 });
+
+describe('planAutoMode', () => {
+  const { planAutoMode } = require('../src/shared/models');
+  const big = { key: 'big', minVramMb: 30720, vramFullMb: 30150 };
+  const small = { key: 'small', minVramMb: 6000, vramFullMb: 5000 };
+
+  test('a card that can serve a bigger model alone than while mining goes demand-driven', () => {
+    const p = planAutoMode(32133, 2048, [big, small]);
+    expect(p.strategy).toBe('demand');
+    expect(p.model.key).toBe('big');
+    expect(p.coRunModel.key).toBe('small');
+  });
+
+  test('when both choices agree it co-runs, so small cards are undisturbed', () => {
+    const p = planAutoMode(8000, 2048, [big, small]);
+    expect(p.strategy).toBe('corun');
+    expect(p.model.key).toBe('small');
+  });
+
+  test('unknown VRAM falls back rather than guessing demand', () => {
+    const p = planAutoMode(null, 2048, [big, small]);
+    expect(p.strategy).toBe('corun');
+  });
+
+  test('defaults the mining reserve to zero when not given', () => {
+    const p = planAutoMode(32133);
+    expect(p.strategy).toBe('corun');   // no reserve means both choices agree
+  });
+
+  test('uses the shipped model list when none is passed', () => {
+    const p = planAutoMode(32133, 2048);
+    expect(['demand', 'corun']).toContain(p.strategy);
+    expect(p.model).toBeTruthy();
+  });
+
+  test('an empty model list yields corun with no model rather than throwing', () => {
+    const p = planAutoMode(32133, 2048, []);
+    expect(p.strategy).toBe('corun');
+    expect(p.model).toBeNull();
+  });
+});

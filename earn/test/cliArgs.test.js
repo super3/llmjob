@@ -236,3 +236,19 @@ describe('metadata', () => {
     expect(VALUE_FLAGS.has('--help')).toBe(false);
   });
 });
+
+describe('--gate-port', () => {
+  test('accepts a port', () => {
+    expect(parseCliArgs(['--address', ADDR, '--gate-port', '9000']).settings.gatePort).toBe(9000);
+  });
+  test('accepts 0, which asks the OS to pick (used by tests)', () => {
+    expect(parseCliArgs(['--address', ADDR, '--gate-port', '0']).settings.gatePort).toBe(0);
+  });
+  test('rejects a non-port', () => {
+    const r = parseCliArgs(['--address', ADDR, '--gate-port', '99999']);
+    expect(r.errors.join(' ')).toContain('invalid --gate-port');
+  });
+  test('is null when not given, so config decides', () => {
+    expect(parseCliArgs(['--address', ADDR]).settings.gatePort).toBeNull();
+  });
+});

@@ -36,6 +36,11 @@ module.exports = {
     // that could never re-emit 'stopped') sat in the one file the 100% gate never
     // applied to.
     'src/main/llmFleet.js',
+    // Demand-driven auto mode. Same argument as llmFleet above: it is fully live
+    // whenever a card can serve a model it cannot co-run, and the whole point of
+    // it is lifecycle -- stopping one engine to start another -- which is exactly
+    // the kind of code the 100% gate is worth having on.
+    'src/main/llmGateServer.js', 'src/main/autoGate.js',
     'src/main/io.js', 'src/main/nodeStore.js', 'src/main/probe.js', 'src/main/preload.js',
     // Our own Pearl miner: the protocol/lifecycle half. The CUDA core it
     // drives lives in earn/native and is not measurable here — which is
