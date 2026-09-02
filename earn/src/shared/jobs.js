@@ -38,15 +38,22 @@ function jobToChatBody(job, model) {
     stream: true,
   };
   if (j.temperature != null && Number.isFinite(Number(j.temperature))) body.temperature = Number(j.temperature);
-  if (j.maxTokens != null && Number.isFinite(Number(j.maxTokens))) {
+  const want = Number(j.maxTokens);
+  if (j.maxTokens != null && Number.isFinite(want)) {
     // Floor the budget at what this model needs to think AND answer. On a
     // reasoning tier a small explicit max_tokens is spent entirely on the <think>
     // block and the completion comes back empty; see minCompletionTokens.
     //
-    // This makes max_tokens advisory on such a tier -- a caller asking for 60 can
-    // be served up to the floor, and is billed for what it generates. That is a
-    // deliberate trade: the alternative bills them for an empty string.
-    body.max_tokens = Math.max(Number(j.maxTokens), Number((model && model.minCompletionTokens) || 0));
+    // POSITIVE budgets only. 0 is not "too small" -- it is a caller saying
+    // "generate nothing", which jobService.clampMaxTokens preserves on purpose
+    // ("a meaningful OpenAI value", pinned by its own test). Flooring it would
+    // make this node the one place in the stack that throws that answer away.
+    //
+    // This does make max_tokens advisory on such a tier: a caller asking for 60
+    // can be served up to the floor and is billed for what it generates. That is
+    // the trade -- the alternative bills them for an empty string.
+    const floor = Number((model && model.minCompletionTokens) || 0);
+    body.max_tokens = want > 0 ? Math.max(want, floor) : want;
   }
   return body;
 }

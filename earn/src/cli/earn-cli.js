@@ -798,34 +798,9 @@ async function run(argv) {
       });
     }
 
-    if (miner) {
-      miner.on('stopped', (code) => {
-        if (auto && auto.isSwitching()) return;   // handed to the LLM on purpose
-        if (reporter) clearInterval(reporter);
-        if (statsWriter) clearInterval(statsWriter);
-        stopServe();
-        if (llm) llm.stop();
-        log('engine exited (code ' + code + ')');
-        finish(stopping ? 0 : (code || 0));
-      });
-      try {
-        // A false return is a fatal start failure, not a hiccup: the core did not
-        // construct, so there is no socket, no job, and no 'stopped' event coming.
-        // Left unchecked the process simply ran out of work and exited 0 -- which
-        // under Restart=always is a ten-second restart loop that mines nothing and
-        // looks healthy to systemd. Exit non-zero so a supervisor can see it.
-        if (miner.start(Object.assign({}, settings, { endpoint: resolveEndpoint(settings) })) === false) {
-          log('engine failed to start — see the error above', process.stderr);
-          if (llm) llm.stop();
-          finish(1);
-        }
-      } catch (e) {
-        log('failed to launch engine: ' + e.message, process.stderr);
-        if (llm) llm.stop();
-        finish(1);
-      }
-    }
-
+    // Stood up BEFORE the miner starts, not after: a fatal start calls finish(),
+    // and finish() closes the gate. Created afterwards it would bind the public
+    // port on a run that had already resolved, leaving a listening socket behind.
     // ── Demand-driven auto ───────────────────────────────────────────────────
     // Stood up only when planAutoMode asked for it, so every other mode -- and
     // every card where the model co-runs -- is untouched.
@@ -867,6 +842,35 @@ async function run(argv) {
       log('auto:       serving on :' + (settings.gatePort == null ? LLM.gate.port : settings.gatePort) + ' — '
         + Math.round(LLM.gate.idleMs / 1000) + 's idle hands the GPU back to mining');
     }
+
+    if (miner) {
+      miner.on('stopped', (code) => {
+        if (auto && auto.isSwitching()) return;   // handed to the LLM on purpose
+        if (reporter) clearInterval(reporter);
+        if (statsWriter) clearInterval(statsWriter);
+        stopServe();
+        if (llm) llm.stop();
+        log('engine exited (code ' + code + ')');
+        finish(stopping ? 0 : (code || 0));
+      });
+      try {
+        // A false return is a fatal start failure, not a hiccup: the core did not
+        // construct, so there is no socket, no job, and no 'stopped' event coming.
+        // Left unchecked the process simply ran out of work and exited 0 -- which
+        // under Restart=always is a ten-second restart loop that mines nothing and
+        // looks healthy to systemd. Exit non-zero so a supervisor can see it.
+        if (miner.start(Object.assign({}, settings, { endpoint: resolveEndpoint(settings) })) === false) {
+          log('engine failed to start — see the error above', process.stderr);
+          if (llm) llm.stop();
+          finish(1);
+        }
+      } catch (e) {
+        log('failed to launch engine: ' + e.message, process.stderr);
+        if (llm) llm.stop();
+        finish(1);
+      }
+    }
+
   });
 }
 

@@ -1382,3 +1382,20 @@ test('a fatal engine start also stops an LLM that had already come up', async ()
   expect(code).toBe(1);
   expect(m.LlmManager.instances[0].stop).toHaveBeenCalled();
 });
+
+test('a fatal engine start closes the demand gate rather than leaking its port', async () => {
+  // The gate binds the public port. Created after the miner start, a fatal start
+  // would call finish() while `auto` was still null and the gate would bind
+  // afterwards on a run that had already resolved.
+  const m = load();
+  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+  m.LlmEngineManager.serverInstalled = true;
+  m.LlmEngineManager.modelInstalled = true;
+  m.LlmEngineManager.mmprojInstalled = true;
+  m.PearlEngine.startReturns = false;
+  const code = await m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
+  expect(code).toBe(1);
+  const gate = m.autoGate.createAutoGate.instances[0];
+  expect(gate.started).toBe(true);
+  expect(gate.stop).toHaveBeenCalled();
+});

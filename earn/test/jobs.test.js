@@ -107,3 +107,12 @@ describe('completion floor on a reasoning tier', () => {
     expect(jobToChatBody({ prompt: 'hi' }, qwen).max_tokens).toBeUndefined();
   });
 });
+
+test('max_tokens 0 survives the floor — it means "generate nothing"', () => {
+  // jobService.clampMaxTokens preserves 0 deliberately ("a meaningful OpenAI
+  // value", pinned by its own test). Flooring it would make the node the one
+  // place in the stack that discards that answer.
+  const { LLM } = require('../src/shared/config');
+  const qwen = LLM.tiers.find((t) => t.minCompletionTokens);
+  expect(jobToChatBody({ prompt: 'hi', maxTokens: 0 }, qwen).max_tokens).toBe(0);
+});
