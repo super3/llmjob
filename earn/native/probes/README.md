@@ -136,3 +136,34 @@ bound the tuning log derives holds unchanged. Measured:
 | 128x512 | - | 1416 B | fails |
 
 Threads per block: 256 -> 138.6, 512 -> 153.6, 1024 -> exceeds registers. 512 stays.
+
+## The ceiling at 600 W, and what it rules out
+
+Ablating every layer in turn, all at the card's maximum 600 W power limit:
+
+| build | TH/s | SM clock |
+|---|---|---|
+| shipped | 151.2 | 1266 MHz |
+| - staging | 201.4 | 1517 MHz |
+| - staging - ldmatrix | 279.1 | 2096 MHz |
+| - staging - ldmatrix - transcript | **287.9** | 2091 MHz |
+
+The last row is a kernel that issues every `mma` but moves no operands at all. It is
+not a miner -- it computes nothing usable -- and it still only reaches **287.9 TH/s**.
+
+**That bounds the problem.** Any real fold must feed its tensor cores, so on this card,
+at its hard 600 W maximum, with this algorithm, ~288 TH/s is an unreachable upper
+limit and the practical ceiling is well below it. Getting past that needs either more
+power (600 W is `power.max_limit`) or an algorithm that moves less data per MAC -- not
+tuning. Note the clock column: every gain here is bought by freeing power, not by
+removing time.
+
+## Measured and rejected on sm_120
+
+| Attempt | Result | Why it lost |
+|---|---|---|
+| **TMA (`cp.async.bulk.tensor.2d`)** | rejected | Works on this GPU (verified byte-exact) and the fold's manual `q XOR (r mod 8)` swizzle is exactly TMA's SWIZZLE_128B, so it drops in. But on the fold's own staging pattern it is not faster (4.14 vs 4.29 TB/s) and draws MORE power for the same bytes: 600 W / 2776 MHz against cp.async's 551 W / 2925 MHz. On a power-bound card that is strictly worse. Note `boxDim` is capped at 256, so 384 staged rows needs two tiles. |
+| **All-at-barrier staging** | 142.6 vs 152.6 | Ada interleaves one slot per k-step to stop the memory pipeline backing up. That reasoning was about barrier cost and the barrier is free here, so the opposite schedule was worth pricing -- it still loses. Keep the interleave. |
+| **Locking the SM clock** | no change | 1400 -> 155.5, 1600 -> 152.9, 1800 -> 150.5, 2100 -> 148.6, 2400 -> 147.3 TH/s. The power cap decides the operating point regardless; locking high only raises voltage and costs a little. |
+| **Bigger tiles** | spills | 256x256 spills 5456 B, 128x512 spills 1416 B. The register file is 65536 per SM as on Ada, so the accumulator bound is identical and 128x256 stays optimal. |
+| **Warp specialization to free registers** | premise false | Staging costs only 2 registers (REG:128 shipped vs 126 with staging ablated), so moving it to dedicated warps cannot buy tile size. Worth checking because Blackwell's free barrier voids one of the two reasons Ada rejected it -- but the register premise fails independently. |
