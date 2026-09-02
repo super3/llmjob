@@ -33,6 +33,9 @@ class LlmGateServer {
     this.upstreamHost = opts.upstreamHost || '127.0.0.1';
     this.upstreamPort = opts.upstreamPort || 8080;
     this.modelName = opts.modelName || 'local';
+    // Optional: told when the port could not be bound, so a caller can decide
+    // whether that is fatal. Absent means "log it and carry on serving locally".
+    this.onListenError = opts.onListenError || null;
     this.log = opts.log || (() => {});
     this.gate = opts.gate || new LlmGate(opts);
     this.server = null;
@@ -107,7 +110,21 @@ class LlmGateServer {
       for await (const c of req) chunks.push(c);
       const body = chunks.length ? Buffer.concat(chunks) : null;
       await this.gate.ensureServing();
+      // The caller may be long gone: a wake is ~4s warm and disk-bound cold, and
+      // any client whose timeout is shorter than that has already hung up. 'close'
+      // fired while we were awaiting, and node does not replay it for a listener
+      // attached afterwards -- so the promise below never settled, the finally
+      // never ran, and inFlight stayed at 1 for the life of the process. With
+      // shouldRelease() requiring inFlight === 0, that pinned the card in SERVING
+      // with the model resident and the miner stopped, permanently.
+      //
+      // Checked BEFORE forwarding as well as before waiting: there is no point
+      // opening an upstream request to pipe into a destroyed socket, which also
+      // held an upstream slot until the generation finished.
+      if (res.writableEnded || res.destroyed) return;
       this._forward(req, res, body);
+      // Safe to attach now: _forward does not await, so nothing can have closed
+      // the socket between the guard above and here.
       await new Promise((resolve) => { res.on('close', resolve); res.on('finish', resolve); });
     } catch (e) {
       if (!res.headersSent) res.writeHead(503, { 'Content-Type': 'application/json' });
@@ -119,6 +136,16 @@ class LlmGateServer {
 
   start() {
     this.server = http.createServer((req, res) => { this._handle(req, res); });
+    // A listen failure is an 'error' event, not a throw. Unhandled, it is an
+    // uncaught exception -- and this process is also the miner, so anything
+    // already on the port took mining down with it. Nothing bound this port
+    // before, so every node that gains a gate meets this for the first time.
+    this.server.on('error', (e) => {
+      this.log('gate could not bind :' + this.port + ' — ' + e.message
+        + ' (continuing without the public endpoint)');
+      this.server = null;
+      if (this.onListenError) this.onListenError(e);
+    });
     this.server.listen(this.port, this.host);
     this.timer = setInterval(() => {
       if (this.gate.shouldRelease()) {

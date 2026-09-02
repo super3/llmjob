@@ -14,7 +14,7 @@ const { LlmGateServer } = require('./llmGateServer');
 function createAutoGate(opts) {
   const {
     miner, startLlm, stopLlm, isLlmReady, startMinerArgs,
-    port, upstreamPort, modelName, quietMs, log = () => {},
+    port, host, upstreamPort, modelName, quietMs, log = () => {},
     onMinerFailed = () => {},
     minerStopTimeoutMs = 15000, llmReadyTimeoutMs = 180000,
   } = opts;
@@ -26,16 +26,23 @@ function createAutoGate(opts) {
     // Wait for the engine to actually exit: it holds VRAM until it does, and
     // llama-server started before then fails to allocate.
     let done = false;
+    let guard = null;
     const finish = () => {
       if (done) return;
       done = true;
+      // Cleared, not just ignored: an uncleared 15s timer keeps the event loop
+      // alive after a clean shutdown, so the process lingers on every flip, and
+      // it is not unref'd either. The listener has to go for the same reason --
+      // a miner restarted many times over a long run accumulates one per flip.
+      if (guard) { clearTimeout(guard); guard = null; }
       miner.removeListener('stopped', finish);
       resolve();
     };
     miner.once('stopped', finish);
     try { miner.stop(); } catch { finish(); }
     // Never wedge the gate on an engine that will not exit.
-    setTimeout(finish, minerStopTimeoutMs);
+    guard = setTimeout(finish, minerStopTimeoutMs);
+    if (guard.unref) guard.unref();
   });
 
   const startMiner = async () => {
@@ -62,8 +69,15 @@ function createAutoGate(opts) {
       if (!fleet) throw new Error('llama-server did not start');
       if (!(fleet.readyCount && fleet.readyCount() > 0)) {
         await new Promise((resolve, reject) => {
-          const t = setTimeout(() => reject(new Error('llama-server was not ready in time')),
-            llmReadyTimeoutMs);
+          const t = setTimeout(() => {
+            // Abandoning a still-loading fleet left a llama-server filling the
+            // card while the gate believed it was mining: the miner was restarted
+            // into VRAM that was about to disappear, and the next wake overwrote
+            // the handle, orphaning a process nothing could stop. Give up on
+            // waiting AND on the server.
+            try { fleet.stop(); } catch { /* already gone */ }
+            reject(new Error('llama-server was not ready in time'));
+          }, llmReadyTimeoutMs);
           fleet.once('ready', () => { clearTimeout(t); resolve(); });
         });
       }
@@ -82,7 +96,7 @@ function createAutoGate(opts) {
   });
   gate.on('state', (s) => log('auto:       ' + s));
 
-  const server = new LlmGateServer({ port, upstreamPort, modelName, gate, log });
+  const server = new LlmGateServer({ port, host, upstreamPort, modelName, gate, log });
   return {
     gate,
     server,
@@ -105,7 +119,7 @@ function createAutoGate(opts) {
 // `auto && ...` guards need no special case for it.
 function createServeGate(opts = {}) {
   const {
-    port, upstreamPort, modelName, isLlmReady, log = () => {},
+    port, host, upstreamPort, modelName, isLlmReady, log = () => {},
   } = opts;
   const gate = new LlmGate({
     isLlmReady,
@@ -114,7 +128,7 @@ function createServeGate(opts = {}) {
     // reported state to MINING while the model is loaded and answering.
     quietMs: Infinity,
   });
-  const server = new LlmGateServer({ port, upstreamPort, modelName, gate, log });
+  const server = new LlmGateServer({ port, host, upstreamPort, modelName, gate, log });
   return {
     gate,
     server,

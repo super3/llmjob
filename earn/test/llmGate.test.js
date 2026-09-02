@@ -207,3 +207,63 @@ describe('LlmGate: a failed wake must put the miner back', () => {
     expect(g.state).toBe(MINING);
   });
 });
+
+describe('LlmGate: a wake must not join a release', () => {
+  test('a request arriving during a release waits, then genuinely wakes', async () => {
+    // _transition is one slot shared with ensureMining, so a request arriving
+    // during a release used to await the RELEASE, get `true` back, and forward
+    // into a model that had just been stopped: a 502 on the HTTP path, and on the
+    // cluster path a claimed job reported FAILED. The window is the whole release,
+    // which waits for the model's VRAM to come back -- up to 30s.
+    const calls = [];
+    let releaseStop;
+    let ready = true;
+    const g = new LlmGate({
+      isLlmReady: () => ready,
+      startLlm: async () => { calls.push('startLlm'); ready = true; },
+      stopLlm: () => { calls.push('stopLlm'); ready = false; return new Promise((r) => { releaseStop = r; }); },
+      startMiner: async () => { calls.push('startMiner'); },
+      stopMiner: async () => { calls.push('stopMiner'); },
+    });
+    g.state = SERVING;
+
+    const releasing = g.ensureMining();
+    await Promise.resolve();
+    const waking = g.ensureServing();       // lands mid-release
+
+    releaseStop();
+    await releasing;
+    await expect(waking).resolves.toBe(true);
+
+    // The wake actually ran rather than inheriting the release's `true`.
+    expect(calls).toEqual(['stopLlm', 'startMiner', 'stopMiner', 'startLlm']);
+    expect(g.state).toBe(SERVING);
+    expect(g.isLlmReady()).toBe(true);
+  });
+
+  test('a failed release still lets the next request wake', async () => {
+    let n = 0;
+    const g = new LlmGate({
+      isLlmReady: () => false,
+      stopLlm: async () => { n += 1; if (n === 1) throw new Error('stuck'); },
+      startMiner: async () => {},
+      stopMiner: async () => {},
+      startLlm: async () => {},
+    });
+    g.state = SERVING;
+    const releasing = g.ensureMining().catch(() => {});
+    await Promise.resolve();
+    const waking = g.ensureServing();
+    await releasing;
+    await expect(waking).resolves.toBe(true);
+  });
+
+  test('concurrent wakes still share one transition', async () => {
+    // The direction check must not break the coalescing it was added around.
+    const { g, calls } = mkGate();
+    const a = g.ensureServing();
+    const b = g.ensureServing();
+    await Promise.all([a, b]);
+    expect(calls).toEqual(['stopMiner', 'startLlm']);
+  });
+});

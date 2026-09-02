@@ -1773,3 +1773,51 @@ describe('demand mode still serves the cluster', () => {
     await expect(p).resolves.toBe(0);
   });
 });
+
+describe('shutdown and startup edges the gate introduced', () => {
+  const serving = (m) => {
+    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true }));
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    m.LlmEngineManager.mmprojInstalled = true;
+  };
+
+  test('a signal while the gate is serving resolves the run', async () => {
+    // The gate has already stopped the miner, and PearlEngine.stop() on a stopped
+    // miner emits nothing -- but `miner` was still truthy, so the else arm never
+    // ran and finish() was never called. The process sat until TimeoutStopSec
+    // while its release timer restarted the miner underneath the shutdown. A
+    // self-update IS a restart, so the rollout mechanism hit this every time.
+    const m = load();
+    serving(m);
+    const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
+    await settle();
+    const gate = m.autoGate.createAutoGate.instances[0];
+
+    const waking = gate.opts.startLlm();
+    await settle();
+    m.LlmManager.instances[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    await waking;
+
+    // What the gate leaves behind: the engine is down but the object remains.
+    m.PearlEngine.instances[0].isRunning.mockReturnValue(false);
+    fire('SIGTERM');
+    await expect(p).resolves.toBe(0);
+    expect(gate.stop).toHaveBeenCalled();     // and the public port is released
+  });
+
+  test('a card that cannot mine still serves instead of exiting 1', async () => {
+    // plan.miner stays true when the mining core fails to load, so the node
+    // believed it was in demand mode, skipped the up-front LLM start, never built
+    // the gate (which needs a miner) and fell through to "nothing to run".
+    const m = load();
+    serving(m);
+    m.pearlCore.coreFactory.mockReturnValue(null);   // the mining core will not load
+    const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
+    await settle();
+    expect(m.LlmManager.instances.length).toBeGreaterThan(0);   // it serves
+    m.LlmManager.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(1);
+  });
+});

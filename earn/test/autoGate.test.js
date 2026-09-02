@@ -173,6 +173,37 @@ describe('createAutoGate: a restart that fails must not be swallowed', () => {
     await expect(auto.gate.ensureMining()).resolves.toBe(true);
   });
 
+  test('the stop guard does not outlive the stop', async () => {
+    // An uncleared 15s timer keeps the event loop alive after a clean shutdown,
+    // so the process lingered on every flip; it was not unref'd either.
+    const timers = [];
+    const realSetTimeout = global.setTimeout;
+    global.setTimeout = (fn, ms) => {
+      const h = realSetTimeout(fn, ms);
+      const rec = { ms, cleared: false, unrefed: false, h };
+      timers.push(rec);
+      return { unref() { rec.unrefed = true; return this; }, _rec: rec, [Symbol.toPrimitive]: () => 0 };
+    };
+    const realClear = global.clearTimeout;
+    global.clearTimeout = (t) => { if (t && t._rec) { t._rec.cleared = true; realClear(t._rec.h); } else realClear(t); };
+    try {
+      const { auto } = mk();
+      await auto.gate.ensureServing();
+      const guard = timers.find((t) => t.ms === 15000);
+      expect(guard).toBeTruthy();
+      expect(guard.unrefed).toBe(true);
+      expect(guard.cleared).toBe(true);
+
+      // A runtime whose handle has no unref() must not throw.
+      global.setTimeout = (fn, ms) => { const h = realSetTimeout(fn, ms); return { _rec: { h, ms } }; };
+      const second = mk();
+      await second.auto.gate.ensureServing();
+    } finally {
+      global.setTimeout = realSetTimeout;
+      global.clearTimeout = realClear;
+    }
+  });
+
   test('switching clears when the LLM never comes up', async () => {
     // Previously `switching = false` sat after the await, so a throw skipped it.
     // A stuck flag makes the CLI's miner-'stopped' handler early-return forever:

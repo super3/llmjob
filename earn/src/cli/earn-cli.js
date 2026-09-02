@@ -762,7 +762,11 @@ async function run(argv) {
     const best = pickLlmGpu(cards);
     autoPlan = planAutoMode(best ? best.freeMb : null, LLM.miningReserveMb);
   }
-  const demand = !!(autoPlan && autoPlan.strategy === 'demand');
+  // `miner` is null when the mining core failed to load. Without that guard the
+  // node believed it was in demand mode, skipped the up-front LLM start, never
+  // built the gate (which needs a miner), and fell through to "nothing to run" --
+  // exiting 1 on a card that could have served perfectly well.
+  const demand = !!(miner && autoPlan && autoPlan.strategy === 'demand');
   // Demand mode polls for cluster work WHILE MINING, so it needs its identity
   // before any model exists -- not on the first wake, which may never come.
   const demandServe = demand ? await resolveServeIdentity(settings) : null;
@@ -819,8 +823,18 @@ async function run(argv) {
       if (statsWriter) clearInterval(statsWriter);
       stopServe();
       if (llm) llm.stop();
-      if (miner) miner.stop();
-      else finish(0); // LLM-only: no miner 'stopped' will resolve us
+      // Stop the gate FIRST, so nothing can start a new transition -- or restart
+      // the miner -- while we are tearing down.
+      if (auto) { auto.stop(); auto = null; }
+      // isRunning(), not truthiness. In demand mode the gate has usually already
+      // stopped the miner, and PearlEngine.stop() on a stopped miner emits
+      // nothing: `miner` was still truthy, so the else arm never ran, finish()
+      // was never called, and the run never resolved. The process then sat until
+      // TimeoutStopSec while its release timer restarted the miner underneath the
+      // shutdown and its worker kept claiming jobs it would never finish. A
+      // self-update is a restart, so the rollout mechanism hit this every time.
+      if (miner && miner.isRunning()) miner.stop();
+      else finish(0); // nothing running that will resolve us with a 'stopped'
     };
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
@@ -859,7 +873,14 @@ async function run(argv) {
         startLlm: async () => {
           // The miner has exited but the driver may not have reclaimed its VRAM
           // yet; plan against the card as it will be, not as it momentarily reads.
-          await waitForFreeVram(autoPlan.model.vramFullMb);
+          // Ask for exactly what the planner will demand a moment later, using the
+          // planner's own function so the two cannot drift apart. Waiting on
+          // vramFullMb was waiting for LESS: the planner refuses below minVramMb
+          // (the measured cost plus a margin so we never spawn at the edge), so
+          // the wait could hand control back the instant there was ALMOST enough
+          // and the refusal that followed read as "not enough VRAM" on a card that
+          // would have been ready a second later. Reserve is 0: nothing co-resides.
+          await waitForFreeVram(requiredFreeMb(autoPlan.model, 0));
           // Sized against the whole card, and pinned to the tier already chosen:
           // nothing is co-resident in demand mode.
           llm = await startLlm(settings, 0, autoPlan.model, false);
@@ -904,6 +925,7 @@ async function run(argv) {
           finish(1);
         },
         port: settings.gatePort == null ? LLM.gate.port : settings.gatePort,
+        host: settings.gateHost || undefined,
         // NOT LLM.port: llmFleet probes upward from it when it is busy, so the
         // server can land on 8081+ while the gate still proxies to 8080 and
         // every request 502s. Ask the fleet where it actually bound.
@@ -957,6 +979,7 @@ async function run(argv) {
       const gp = settings.gatePort == null ? LLM.gate.port : settings.gatePort;
       auto = createServeGate({
         port: gp,
+        host: settings.gateHost || undefined,
         upstreamPort: () => {
           const url = llm && llm.webUrl && llm.webUrl();
           const p = url ? Number(new URL(url).port) : NaN;

@@ -265,12 +265,19 @@ class NodeService {
   // is not offered and does not pin, which keeps the documented contract that an
   // unrecognised id is still served (by whatever node takes it) rather than
   // rejected.
-  async listNetworkModels() {
+  // `ownerUserId` scopes the answer to one user's own nodes. A private API key's
+  // requests never leave its owner's nodes, so listing the whole fleet's models
+  // told it about other people's hardware AND handed it names it could not
+  // actually reach: pinning to one produced a job no eligible node could take,
+  // and the caller waited out the gateway budget for a 504.
+  async listNetworkModels(ownerUserId) {
+    const scoped = ownerUserId != null;
     const r = await this.db.query(
       `SELECT model, COUNT(*)::int AS nodes FROM nodes
         WHERE last_seen >= $1 AND model IS NOT NULL AND model <> ''
+          AND ($2::text IS NULL OR user_id = $2)
         GROUP BY model ORDER BY nodes DESC, model ASC`,
-      [Date.now() - OFFLINE_THRESHOLD]
+      [Date.now() - OFFLINE_THRESHOLD, scoped ? ownerUserId : null]
     );
     return r.rows.map((row) => ({ id: row.model, nodes: row.nodes }));
   }

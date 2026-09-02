@@ -345,3 +345,80 @@ describe('LlmGateServer: the upstream port is resolved per request', () => {
     gs.stop(); a.close(); b.close();
   }, 10000);
 });
+
+describe('LlmGateServer: a caller who gave up must not pin the card', () => {
+  test('a client that disconnects during the wake still releases inFlight', async () => {
+    // A wake is ~4s warm and disk-bound cold, so any client whose timeout is
+    // shorter has already hung up. 'close' fires while we are awaiting, and node
+    // does not replay it for a listener attached afterwards -- so the wait never
+    // settled, the finally never ran, and inFlight stayed at 1 for the life of
+    // the process. shouldRelease() needs inFlight === 0, so the card stayed in
+    // SERVING with the model resident and the miner stopped, permanently.
+    let releaseWake;
+    const gate = new LlmGate({
+      isLlmReady: () => true,
+      startLlm: () => new Promise((r) => { releaseWake = r; }),
+      stopMiner: async () => {},
+    });
+    const gs = new LlmGateServer({ port: 0, upstreamPort: 1, gate });
+    gs.start();
+    await new Promise((r) => gs.server.once('listening', r));
+    const port = gs.server.address().port;
+
+    const req = http.request({ host: '127.0.0.1', port, path: '/v1/chat/completions', method: 'POST' });
+    req.on('error', () => {});
+    req.end('{}');
+    await new Promise((r) => setTimeout(r, 40));
+    req.destroy();                       // the caller gives up mid-wake
+    await new Promise((r) => setTimeout(r, 40));
+    releaseWake();                       // the model finishes loading anyway
+    await new Promise((r) => setTimeout(r, 60));
+
+    expect(gate.inFlight).toBe(0);
+    gs.stop();
+  }, 10000);
+
+  test('a port already in use is survivable, not fatal', async () => {
+    // Nothing bound this port before, so every node that gains a gate meets this
+    // for the first time -- and the process is also the miner, so an unhandled
+    // listen error took mining down with it.
+    const squatter = http.createServer(() => {});
+    await new Promise((r) => squatter.listen(0, '127.0.0.1', r));
+    const taken = squatter.address().port;
+
+    const errs = [];
+    const logs = [];
+    const gs = new LlmGateServer({
+      port: taken, host: '127.0.0.1', upstreamPort: 1,
+      gate: new LlmGate({ isLlmReady: () => false }),
+      log: (l) => logs.push(l),
+      onListenError: (e) => errs.push(e),
+    });
+    gs.start();
+    await new Promise((r) => setTimeout(r, 80));
+
+    expect(errs).toHaveLength(1);
+    expect(errs[0].code).toBe('EADDRINUSE');
+    expect(logs.join(' ')).toContain('could not bind');
+    expect(() => gs.stop()).not.toThrow();   // stop after a failed bind is safe
+    squatter.close();
+  }, 10000);
+
+  test('a failed bind with no handler configured is still not fatal', async () => {
+    // The CLI does not pass onListenError today: the gate is a convenience, and
+    // losing it must never take the miner in the same process down.
+    const squatter = http.createServer(() => {});
+    await new Promise((r) => squatter.listen(0, '127.0.0.1', r));
+    const logs = [];
+    const gs = new LlmGateServer({
+      port: squatter.address().port, host: '127.0.0.1',
+      gate: new LlmGate({ isLlmReady: () => false }),
+      log: (l) => logs.push(l),
+    });
+    gs.start();
+    await new Promise((r) => setTimeout(r, 80));
+    expect(logs.join(' ')).toContain('could not bind');
+    gs.stop();
+    squatter.close();
+  }, 10000);
+});

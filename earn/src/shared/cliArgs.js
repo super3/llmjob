@@ -31,7 +31,7 @@ const VALUE_FLAGS = new Set([
   '--address', '--mdl', '--region', '--worker',
   '--gpu',
   '--stats-file',
-  '--mode', '--llm-binary', '--llm-model', '--llm-max-instances', '--gate-port',
+  '--mode', '--llm-binary', '--llm-model', '--llm-max-instances', '--gate-port', '--gate-host',
 ]);
 
 function regionChoices() {
@@ -58,6 +58,8 @@ const USAGE = [
   '      --llm-model <path>   Path to a GGUF model file (default: download the',
   '                           bundled small model on first run)',
   '      --gate-port <port>   Port the auto-mode gate serves on (default: 8000).',
+  '      --gate-host <addr>   Address the gate binds (default: 0.0.0.0, every',
+  '                           interface). Set 127.0.0.1 to keep it to this box.',
   '                           Only used when auto mode is demand-driven, i.e. the',
   '                           card can serve a bigger model than it can co-run.',
   '      --llm-max-instances <n>  Cap how many llama-servers run (default: one per',
@@ -131,6 +133,14 @@ function buildSettings(opts, errors, report, update, serve) {
       errors.push('invalid --gate-port: ' + opts['--gate-port'] + ' (must be 0-65535)');
     }
   }
+  // Empty string is rejected rather than silently meaning "all interfaces":
+  // `--gate-host ""` reading as 0.0.0.0 would be the opposite of what someone
+  // clearing the setting expects.
+  let gateHost = null;
+  if (opts['--gate-host'] != null) {
+    gateHost = String(opts['--gate-host']).trim();
+    if (!gateHost) errors.push('invalid --gate-host: must not be empty');
+  }
   let llmMaxInstances = null;
   if (opts['--llm-max-instances'] != null) {
     llmMaxInstances = Number(opts['--llm-max-instances']);
@@ -150,7 +160,7 @@ function buildSettings(opts, errors, report, update, serve) {
 
   return {
     address, mdlAddress, region, worker, gpu, statsFile,
-    mode, llmBinary, llmModel, llmMaxInstances, gatePort,
+    mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost,
     report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,
   };
 }

@@ -159,6 +159,17 @@ describe('NodeService', () => {
       expect(await service.listNetworkModels()).toEqual([]);
     });
 
+    it('scopes to one owner when asked', async () => {
+      // A private key never reaches anyone else's nodes, so naming their models
+      // would hand it names it cannot use.
+      await db.query('INSERT INTO nodes (node_id, public_key, last_seen, model, user_id) VALUES ($1,$2,$3,$4,$5)',
+        ['n-mine', 'k1', Date.now(), 'Qwen3.8-27B-UD-Q4_K_XL', 'me']);
+      await db.query('INSERT INTO nodes (node_id, public_key, last_seen, model, user_id) VALUES ($1,$2,$3,$4,$5)',
+        ['n-theirs', 'k2', Date.now(), 'gemma-4-E4B-it-Q4_K_M', 'someone-else']);
+      expect(await service.listNetworkModels('me')).toEqual([{ id: 'Qwen3.8-27B-UD-Q4_K_XL', nodes: 1 }]);
+      expect((await service.listNetworkModels()).length).toBe(2);   // unscoped sees both
+    });
+
     it('is empty on a fleet with no nodes at all', async () => {
       expect(await service.listNetworkModels()).toEqual([]);
     });

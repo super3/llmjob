@@ -115,7 +115,11 @@ class OpenAiController {
     // it to the default rather than fail a request that was only asking what is
     // available.
     let live = [];
-    try { live = await this.services(req).nodeService.listNetworkModels(); } catch (e) { live = []; }
+    // A private key only ever reaches its owner's nodes, so it is only told about
+    // their models -- both to avoid advertising other people's hardware and
+    // because a name it cannot reach is worse than no name at all.
+    const scope = req.apiKey.visibility === 'private' ? req.apiKey.userId : null;
+    try { live = await this.services(req).nodeService.listNetworkModels(scope); } catch (e) { live = []; }
     // Keyed case-insensitively, to match how a requested name is resolved against
     // what nodes report: the same model spelled two ways is one model, and
     // listing it twice would suggest a choice that does not exist.
