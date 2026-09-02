@@ -213,3 +213,46 @@ The pure-mma probe has nothing to stage, so shrinking its grid costs it nothing.
 fold restages chunk 0 for every tile, and a smaller grid serialises those stages with
 less work in flight to hide them. The scheduling win is real but the staging loss is
 larger, which is another way of seeing that staging dominates this kernel on Blackwell.
+
+## The honest denominator, and what it says about the target
+
+Two of the numbers above were measured wrong, and the corrected ones change the
+conclusion. Pure `mma` must be measured at the FOLD'S geometry -- its block count
+and its occupancy -- or it is not a denominator at all.
+
+| probe | T-MAC/s |
+|---|---|
+| `mmapeak`, 170 blocks, unconstrained | 422.9 |
+| `mmablocks`, 10880 blocks | 429.4 |
+| `mmablocks`, 131072 blocks (the fold's launch) | 392.4 |
+| `mmaoccupancy`, 131072 blocks + 96 KB shared (1 block/SM, as the fold runs) | **393.3** |
+| **the fold** | **147.0** |
+
+Occupancy is not the excuse: constraining pure `mma` to one block per SM with the
+fold's own 96 KB of shared memory costs it nothing (393.3 vs 392.4). The fold runs
+at **37% of what this card will issue at the fold's own geometry**, and the whole of
+that gap is the memory path -- staging and `ldmatrix` -- not the tensor pipe, not the
+clock, and not the launch shape.
+
+**So 300 TH/s is not out of reach for the silicon.** It is 76% of 393. SRBMiner
+reaches 91% of Ada's ceiling on a 4090, so a fold that fed its tensor cores that well
+would clear 300 here comfortably. What it is out of reach of is *tuning*: every knob
+that exists has been swept, and the remaining 2.7x lives in how operands reach the
+tensor cores.
+
+### Everything swept, for the record
+
+| knob | result |
+|---|---|
+| `PEARL_BLOCK_GROUP` | 1 is best on sm_120 (+4%); SHIPPED |
+| threads/block | 256 -> 138.6, 512 -> 153.6, 1024 -> exceeds registers |
+| tile geometry | 128x256 and 256x128 tie; anything larger spills |
+| `col_batch` | 1024 -> 138.3, 2048 -> 139.3, 4096 -> 72.3 (clamped) |
+| `m` = `n` | 65536 -> 140.6, 131072 -> 140.0, 262144 -> 139.5 (flat; Ada's knee is absent) |
+| power limit | linear, ~0.25 TH/W, 600 W is `power.max_limit` |
+| locked SM clock | no gain at any of 1400-2400 MHz |
+| memory clock | 810 MHz doubles the SM clock but starves L2; net loss |
+| staging schedule | Ada's interleave still wins (152.6 vs 142.6) |
+| TMA staging | works, but slower AND more power for the same bytes |
+| persistent blocks | monotonically worse (158.9 -> 151.1) |
+| running staging cursors | +0.5%; ptxas already strength-reduces it |
