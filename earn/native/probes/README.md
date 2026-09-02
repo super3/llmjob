@@ -432,3 +432,36 @@ throttled. 388 x 0.40 is ~155 T-MAC/s: **about break-even with today, not a win.
 Regenerating only ONE operand halves both the traffic and the integer cost and is
 the version worth pricing properly. It is a large piece of work and the estimate
 above is not tight enough to promise anything.
+
+
+## The power budget, decomposed
+
+Measured sustained, same card, same session:
+
+| build | TH/s | power | clock |
+|---|---|---|---|
+| shipped | 139.6 | **600 W** | 1046 MHz |
+| - staging | 188.5 | **600 W** | 1303 MHz |
+| - staging - ldmatrix | 264.7 | **600 W** | 1858 MHz |
+| pure `mma` | 380.5 T-MAC/s | **145 W** | 1289 MHz |
+
+Two things to read off this. **Pure `mma` is the only build that does not hit the
+cap** -- it uses a quarter of the budget. And ablating work does NOT reduce power:
+every fold variant sits at exactly 600 W and simply converts the freed power into
+clock. So an ablation's power reading says nothing about what it removed; only its
+throughput does.
+
+Cross-referencing the standalone staging benchmark, which drew 551 W moving
+4.27 TB/s, and the fold's own 1.98 TB/s of L2 traffic, the budget decomposes to
+roughly: `mma` ~145 W, staging ~258 W, everything else ~200 W.
+
+That is the whole argument against 300 in one line: **300 T-MAC/s needs ~2x the
+operand bytes, so ~516 W of staging alone, before a single `mma` issues.** The cap
+is 600 W and `power.max_limit` will not move.
+
+It also explains why a 4090 can host a 309 T-MAC/s miner while this card cannot be
+tuned to it. Ada is not power-bound at this workload -- the 4090 log records raising
+its limit 450 -> 480 W and gaining 0.2%, because a voltage/boost ceiling bound it
+instead. Blackwell hits a hard wall the 4090 never reaches, so a design tuned for
+Ada's constraint does not transfer, and the reverse holds too: three separate
+conclusions in that log (band depth, square warp tile, cache policy) flip sign here.
