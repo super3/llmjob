@@ -112,19 +112,17 @@ jobs:
         if: runner.os == 'Linux'
         run: npm run dist:cli
 
-      # Wrap the CLI binary in the HiveOS custom-miner package (hiveos/ hook
-      # scripts + binary → llmjob-earn-<version>.tar.gz, plus an unversioned
-      # legacy copy), the file flight sheets install from. The versioned stem is
-      # CUSTOM_NAME because HiveOS derives the miner name from the filename.
-      - name: Package HiveOS custom miner (Linux)
-        if: runner.os == 'Linux'
-        run: npm run dist:hiveos
+      # The HiveOS custom-miner package is NOT built or published. The packaging
+      # script (scripts/build-hiveos.mjs) and hook scripts (hiveos/) are still in
+      # the tree, so restoring this is re-adding two lines -- but it has not been
+      # exercised in weeks and a release should not carry an artifact nobody has
+      # verified. Flight sheets pinned to a previous release keep working; they
+      # install by URL from whichever release they already name.
 
-      # Attach the CLI binary and the HiveOS package to the same GitHub Release
-      # electron-builder published to (v<version> from package.json), so the
-      # self-updater and flight sheets can find them. Only on a v* tag or a
-      # manual publish.
-      - name: Publish CLI + HiveOS package to release (Linux, on v* tag or manual publish)
+      # Attach the CLI binary to the same GitHub Release electron-builder
+      # published to (v<version> from package.json), so the self-updater can find
+      # it. Only on a v* tag or a manual publish.
+      - name: Publish CLI to release (Linux, on v* tag or manual publish)
         if: runner.os == 'Linux' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -135,7 +133,7 @@ jobs:
           # addon out of its snapshot, so the loader probes next to the
           # executable and the self-updater downloads this asset to keep the
           # pair in step.
-          gh release upload "v$VERSION" dist/llmjob-earn-cli-linux dist/pearl_core.node "dist/llmjob-earn-$VERSION.tar.gz" dist/llmjob-earn-hiveos.tar.gz --clobber --repo "$GITHUB_REPOSITORY"
+          gh release upload "v$VERSION" dist/llmjob-earn-cli-linux dist/pearl_core.node --clobber --repo "$GITHUB_REPOSITORY"
 
       # electron-builder publishes the release with a BLANK body and a bare
       # "<version>" title, and nothing downstream ever wrote one — every release
@@ -227,8 +225,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: llmjob-earn-cli-linux
-          path: |
-            earn/dist/llmjob-earn-cli-linux
-            earn/dist/llmjob-earn-[0-9]*.tar.gz
-            earn/dist/llmjob-earn-hiveos.tar.gz
+          path: earn/dist/llmjob-earn-cli-linux
           if-no-files-found: error

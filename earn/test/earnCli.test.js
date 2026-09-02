@@ -1708,6 +1708,37 @@ describe('demand mode still serves the cluster', () => {
     await expect(p).resolves.toBe(0);
   });
 
+  test('stays online on the board while mining, not only while serving', async () => {
+    // The fleet's ping loop is armed on its first ready card, so in demand mode
+    // the node only appeared online during the seconds it happened to be
+    // serving and went stale the rest of the time.
+    const m = load();
+    serving(m);
+    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
+    await settle();
+
+    const pinger = intervalFor(NODE.pingIntervalMs);
+    expect(pinger).toBeTruthy();
+    expect(m.LlmManager.instances).toHaveLength(0);   // pinging with no model loaded
+    m.io.postJson.mockClear();
+    await pinger.fn();
+    expect(m.io.postJson).toHaveBeenCalled();
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('the keep-alive handle is unrefed, and survives a runtime without unref', async () => {
+    intervalUnref = false;
+    const m = load();
+    serving(m);
+    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
+    await settle();
+    expect(intervalFor(NODE.pingIntervalMs)).toBeTruthy();
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
   test('--no-serve still means no poller', async () => {
     const m = load();
     serving(m);

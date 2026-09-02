@@ -389,10 +389,11 @@ function makeCliJobWorker(nodeCfg, base, baseUrl, gate) {
 // again here would re-run that decision against whatever VRAM happens to be free
 // at the moment of the switch -- see waitForFreeVram for why that is not the same
 // number a moment later.
-// armWorkers=false leaves cluster polling to the caller. Demand mode owns its
-// own worker (it has to poll while no fleet exists), and a fleet arming a second
-// one on every wake would double-poll and race it for the same jobs.
-async function startLlm(settings, reserveMb, modelOverride, armWorkers = true) {
+// armServe=false leaves cluster polling AND the keep-alive ping to the caller.
+// Demand mode owns both: it has to poll and stay online while no fleet exists,
+// and a fleet arming its own on every wake would double-poll, race for the same
+// jobs, and leak a ping timer per cycle.
+async function startLlm(settings, reserveMb, modelOverride, armServe = true) {
   const dir = llmDir(settings);
 
   // Plan one llama-server per eligible GPU before doing anything expensive
@@ -473,7 +474,7 @@ async function startLlm(settings, reserveMb, modelOverride, armWorkers = true) {
   // card: pings ride along with serving so the node stays online on the
   // dashboard (and never gets pruned) while it works.
   fleet.on('first-ready', () => {
-    if (!canServe) return;
+    if (!canServe || !armServe) return;
     const pingFull = async () => pingServer(nodeCfg, base, await fullTelemetry(nodeCfg), false);
     pingFull();
     servePinger = setInterval(pingFull, NODE.pingIntervalMs);
@@ -489,7 +490,7 @@ async function startLlm(settings, reserveMb, modelOverride, armWorkers = true) {
   });
   fleet.on('error', (err) => log('LLM error: ' + err.message, process.stderr));
 
-  fleet.syncWorkers(canServe && armWorkers); // arm serving before instances come up
+  fleet.syncWorkers(canServe && armServe); // arm serving before instances come up
   // Same run bits the GUI passes: llmFleet merges these into every
   // llmManager.start(), so the model's context ladder, projector and tuned flags
   // reach llama-server here too.
@@ -791,14 +792,16 @@ async function run(argv) {
       // released whether we stopped on a signal or an engine died underneath us.
       if (auto) { auto.stop(); auto = null; }
       if (demandWorker) { demandWorker.stop(); demandWorker = null; }
+      if (demandPinger) { clearInterval(demandPinger); demandPinger = null; }
       resolve(code);
     };
     // A deliberate switch must not look like an engine dying: the handlers below
     // tear the process down, and the gate stops engines on purpose.
     let auto = null;
-    // Demand mode's own cluster poller. Not owned by the fleet, so it outlives
-    // every wake/sleep cycle and has to be stopped explicitly.
+    // Demand mode's own cluster poller and keep-alive. Not owned by the fleet,
+    // so they outlive every wake/sleep cycle and have to be stopped explicitly.
     let demandWorker = null;
+    let demandPinger = null;
 
     const shutdown = () => {
       if (stopping) return;
@@ -919,6 +922,23 @@ async function run(argv) {
         demandWorker = makeCliJobWorker(demandServe.nodeCfg, demandServe.base,
           () => (llm && llm.webUrl && llm.webUrl()) || null, auto.gate);
         demandWorker.start();
+
+        // Keep-alive. The fleet's own ping loop is armed on its first ready card,
+        // which in demand mode means the node only appeared online during the
+        // seconds it happened to be serving and went stale on the board the rest
+        // of the time. This one runs on the mining side of the flip too.
+        //
+        // serveNodeId is re-asserted every tick because handing the card back
+        // runs stopServe(), which clears it -- correct for a node that has
+        // stopped serving, wrong for one that is merely between jobs.
+        const demandPing = async () => {
+          serveNodeId = demandServe.nodeCfg.nodeId;
+          return pingServer(demandServe.nodeCfg, demandServe.base,
+            await fullTelemetry(demandServe.nodeCfg), false);
+        };
+        demandPing();
+        demandPinger = setInterval(demandPing, NODE.pingIntervalMs);
+        if (demandPinger.unref) demandPinger.unref();
         log('auto:       polling for cluster jobs while mining');
       }
     } else if (plan.llm && !miner) {
