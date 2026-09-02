@@ -258,6 +258,20 @@ const LLM = {
         url: 'https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-F16.gguf',
       },
       vision: true,
+      // The smallest completion budget this model can actually answer within.
+      //
+      // A reasoning model spends its budget on the <think> block BEFORE it writes
+      // a word of the answer, and both halves bill against the same max_tokens.
+      // Measured on a 5090: max_tokens 60 returned content "" -- the thinking used
+      // all 60 -- while the identical request at 600 answered correctly. An empty
+      // string is strictly worse than a truncated answer, because there is nothing
+      // in it to salvage or even to tell the caller what went wrong.
+      //
+      // 512 is ~3x the 166 completion tokens a one-line answer actually cost end
+      // to end, so the thinking half can run long and still leave the answer room.
+      // Deliberately absent from Gemma, which does not reason: flooring it there
+      // would buy nothing and would make `max_tokens: 20` generate 512.
+      minCompletionTokens: 512,
       // 65, from the GGUF's own metadata (arch `qwen35`, 65 blocks). Only ever
       // an upper bound for --n-gpu-layers, which we pass as ALL_LAYERS anyway,
       // but a wrong number here would mislead the next reader.
@@ -268,6 +282,29 @@ const LLM = {
       // server rather than a restart loop. Only the top rung has a measured VRAM
       // figure; the rest are the fallback path, not a promise.
       ctxLadder: [262144, 131072, 65536, 32768],
+      // MiB of VRAM per token of context, from the same five-point sweep as the
+      // curve above (r ~ 1.0). It is what makes a rung PRICEABLE: vramFullMb is
+      // measured at the top rung and the KV cache is the only part of it that
+      // moves with context, so a lower rung costs that figure minus the tokens it
+      // gives up. Predicts 24,559 / 21,763 / 20,365 MiB for the lower three rungs
+      // against the measured 24,518 / 21,702 / 20,324 -- 41-61 MiB high, i.e.
+      // conservative, which gates a borderline card rather than OOMing it.
+      //
+      // Without this the tier is admitted or refused as though 262144 were the
+      // only way to serve it, and the ladder below can never be walked on the
+      // cards it was written for.
+      mbPerCtxToken: 0.042659,
+      // The smallest window at which this tier is worth OFFERING to a card.
+      //
+      // ctxLadder and this are different questions. The ladder is a startup
+      // fallback: a card that was offered the model but cannot start it at the
+      // size we picked walks down rather than restart-looping. This is admission:
+      // below 65536 a 27B model at a small window is not obviously a better use of
+      // a node than the small default at its full one, and that is a fleet policy
+      // call, so it lives here beside the measurements rather than implicitly in
+      // the gate. Raise it to stop offering the tier to smaller cards; remove it
+      // to offer the tier at any rung it fits.
+      minOfferCtx: 65536,
       // The flags this model is actually run with, from the production unit.
       // Carried per-model rather than globally because they are specific to it:
       //

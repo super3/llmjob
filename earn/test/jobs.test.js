@@ -81,3 +81,29 @@ describe('jobToChatBody', () => {
     expect(jobToChatBody({ messages: [], prompt: 'fallback' }).messages).toEqual([{ role: 'user', content: 'fallback' }]);
   });
 });
+
+describe('completion floor on a reasoning tier', () => {
+  const { LLM } = require('../src/shared/config');
+  const qwen = LLM.tiers.find((t) => t.minCompletionTokens);
+
+  test('a small max_tokens is raised to the model floor', () => {
+    // Measured: at 60 the model spends the whole budget thinking and returns
+    // content "". The floor is what stops a caller getting an empty string.
+    const b = jobToChatBody({ prompt: 'hi', maxTokens: 60 }, qwen);
+    expect(b.max_tokens).toBe(qwen.minCompletionTokens);
+  });
+
+  test('a generous max_tokens is left exactly as asked', () => {
+    const b = jobToChatBody({ prompt: 'hi', maxTokens: 4000 }, qwen);
+    expect(b.max_tokens).toBe(4000);
+  });
+
+  test('a model without a floor is untouched — Gemma does not reason', () => {
+    const b = jobToChatBody({ prompt: 'hi', maxTokens: 20 }, LLM.model);
+    expect(b.max_tokens).toBe(20);
+  });
+
+  test('no max_tokens means no max_tokens, floor or not', () => {
+    expect(jobToChatBody({ prompt: 'hi' }, qwen).max_tokens).toBeUndefined();
+  });
+});

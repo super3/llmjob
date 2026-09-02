@@ -38,7 +38,16 @@ function jobToChatBody(job, model) {
     stream: true,
   };
   if (j.temperature != null && Number.isFinite(Number(j.temperature))) body.temperature = Number(j.temperature);
-  if (j.maxTokens != null && Number.isFinite(Number(j.maxTokens))) body.max_tokens = Number(j.maxTokens);
+  if (j.maxTokens != null && Number.isFinite(Number(j.maxTokens))) {
+    // Floor the budget at what this model needs to think AND answer. On a
+    // reasoning tier a small explicit max_tokens is spent entirely on the <think>
+    // block and the completion comes back empty; see minCompletionTokens.
+    //
+    // This makes max_tokens advisory on such a tier -- a caller asking for 60 can
+    // be served up to the floor, and is billed for what it generates. That is a
+    // deliberate trade: the alternative bills them for an empty string.
+    body.max_tokens = Math.max(Number(j.maxTokens), Number((model && model.minCompletionTokens) || 0));
+  }
   return body;
 }
 
