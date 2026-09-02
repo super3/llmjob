@@ -1300,6 +1300,10 @@ describe('local LLM', () => {
       // A 22 GB card resolves to the default model: no projector, no extra flags.
       mmprojPath: null, ctxSize: ctx.config.LLM.ctxSize,
       ctxLadder: [ctx.config.LLM.ctxSize], extraArgs: undefined,
+      // What the server should call itself. Without it llama-server reports the
+      // model PATH as its id, so /v1/models and every completion come back with
+      // an absolute local path instead of the model name.
+      alias: ctx.config.LLM.model.name,
     });
     expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false }); // endpoint fills in on ready
 

@@ -723,6 +723,7 @@ async function startLlm(reserveMb) {
   await fleet.start(plan, {
     platform: process.platform, binaryPath, modelPath, mmprojPath,
     ctxSize: ladder[0], ctxLadder: ladder, extraArgs: model.extraArgs,
+    alias: model.name,
   });
   return true;
 }

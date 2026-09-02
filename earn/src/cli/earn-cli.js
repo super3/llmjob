@@ -446,6 +446,7 @@ async function startLlm(settings, reserveMb) {
   await fleet.start(plan, {
     platform: process.platform, binaryPath, modelPath, mmprojPath,
     ctxSize: ladder[0], ctxLadder: ladder, extraArgs: model.extraArgs,
+    alias: model.name,
   });
   const gpus = plan.map((p) => (p.index == null ? 'auto' : p.index)).join(', ');
   log('local LLM starting on ' + plan.length + ' GPU' + (plan.length === 1 ? '' : 's') + ' [' + gpus + ']');

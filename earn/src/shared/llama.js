@@ -67,6 +67,13 @@ function buildServerArgs(opts = {}) {
   // alone load and serve happily as a text-only model, so a missing projector is
   // a silent capability loss rather than a startup failure — which is exactly why
   // the caller passes the path explicitly instead of us inferring it.
+  // What the server calls itself. Without it llama-server falls back to the model
+  // PATH, so /v1/models and the `model` field of every completion come back as
+  // an absolute local filesystem path -- which leaks the node's directory layout
+  // to anything consuming the endpoint and does not match the model name the
+  // fleet reports elsewhere. Verified on a 5090: without this the id is
+  // "/home/.../llm/Qwen3.8-27B-UD-Q4_K_XL.gguf".
+  if (opts.alias) args.push('--alias', String(opts.alias));
   if (opts.mmprojPath) args.push('--mmproj', String(opts.mmprojPath));
   if (opts.flashAttn) args.push('--flash-attn');
   // Per-model flags, appended last so a model can override an earlier default.

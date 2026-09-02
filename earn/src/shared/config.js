@@ -270,7 +270,22 @@ const LLM = {
         '--jinja',
         '--spec-type', 'draft-mtp', '--spec-draft-n-max', '3',
       ],
-      vramFullMb: 30150,  // MEASURED at 262144 with q8_0 KV, on a 5090.
+      // MEASURED at 262144 with q8_0 KV on a 5090, with the CUDA b10453 build.
+      //
+      // Verified end to end on the PINNED Vulkan b9902 build, which is what a node
+      // actually downloads and the one thing CI cannot prove: it loads this GGUF
+      // with these args at the full 262144 (n_ctx_slot = 262144), attaches the
+      // projector, and answers about an image supplied as an OpenAI content array.
+      //
+      // Two things that run differs on, neither of which changes this number:
+      //   * Vulkan uses ~28,724 MiB against the 30,150 measured under CUDA. The
+      //     figure below is therefore ~1.4 GB conservative on Vulkan, which gates
+      //     a borderline card rather than OOMing one -- the safe direction, so it
+      //     is left as the CUDA measurement.
+      //   * Prefill is 7.3x slower: 279.7 tok/s against CUDA's 2050.6 on the same
+      //     prompt and card. Decode is close (62.9 vs ~71-81). At this context that
+      //     is the dominant cost -- a 100K-token prompt is ~6 min rather than ~50 s.
+      vramFullMb: 30150,
       minVramMb: 30720,   // measurement + ~570 MiB so we never spawn at the edge.
       quant: 'Q4_K_XL',
     },
