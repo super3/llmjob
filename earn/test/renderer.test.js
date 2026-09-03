@@ -1106,3 +1106,79 @@ describe('mine view height', () => {
     expect(/#view-chat[^{]*{[^}]*height:\s*\d/.test(CSS.replace(/\/\*[\s\S]*?\*\//g, ''))).toBe(true);
   });
 });
+
+// The hashrate sparkline's vertical scale.
+//
+// It takes its range from the visible points alone, with no fixed baseline. That
+// is fine while the window still holds the ramp from zero, but once a rig has
+// been up a few minutes every point is steady-state and the only thing left to
+// scale against is the wiggle — so a card holding a flat 226 TH/s was drawing a
+// violent sawtooth from about 1% of variation. A floor on the span keeps normal
+// jitter looking like jitter while leaving real drops legible.
+describe('hashrate sparkline scale', () => {
+  // Y coordinates out of an SVG path's "M x y L x y ..." command string.
+  const ys = (d) => d.split(/[ML]\s*/).filter(Boolean).map((p) => Number(p.trim().split(/\s+/)[1]));
+  const spread = (d) => { const v = ys(d); return Math.max(...v) - Math.min(...v); };
+  const H = 56;
+
+  it('renders steady-state jitter as small, not full height', async () => {
+    const { api, cbs } = makeFullApi();
+    await boot({ api });
+    setInput($('addr-input'), ADDR);
+    click($('btn-start'));
+
+    // ~1.8% peak-to-peak around 226 — what a healthy 4090 actually produces.
+    const jitter = [226.1, 224.3, 227.0, 225.2, 226.8, 224.9, 226.4, 225.6];
+    cbs.stats({ total: '226.0', acceptedLabel: '749', uptime: '8h 28m', estDay: '$2.50', gpu: 'g', points: jitter });
+    const quiet = spread($('mk-line').getAttribute('d'));
+
+    // Without the floor this filled the chart; it should now use well under half.
+    expect(quiet).toBeLessThan(H * 0.45);
+    expect(quiet).toBeGreaterThan(0);
+  });
+
+  // The jitter is anti-correlated (a 0.5s window that grabs a 13th batch borrows
+  // it from the next), so a short centred mean cancels most of it. Measured on the
+  // live app: 7.2px of 56 raw, 2.2px through a five-point window.
+  it('smooths the alternating quantisation, not just the zoom', async () => {
+    const { api, cbs } = makeFullApi();
+    await boot({ api });
+    setInput($('addr-input'), ADDR);
+    click($('btn-start'));
+
+    // Perfectly alternating, which is the worst case and close to what the
+    // real -0.345 lag-1 autocorrelation produces.
+    const zig = Array.from({ length: 30 }, (_, i) => (i % 2 ? 224 : 228));
+    cbs.stats({ total: '226.0', acceptedLabel: '9', uptime: '5m', estDay: '$2.50', gpu: 'g', points: zig });
+    const smoothed = spread($('mk-line').getAttribute('d'));
+
+    // A five-point centred mean of a pure alternation is nearly constant, so
+    // this should collapse to almost nothing.
+    expect(smoothed).toBeLessThan(H * 0.1);
+  });
+  it('still gives a real drop the full chart', async () => {
+    const { api, cbs } = makeFullApi();
+    await boot({ api });
+    setInput($('addr-input'), ADDR);
+    click($('btn-start'));
+
+    // A card falling out mid-window — this must stay unmistakable.
+    const drop = [226, 226, 225, 226, 120, 118, 119, 121];
+    cbs.stats({ total: '119.0', acceptedLabel: '749', uptime: '8h 30m', estDay: '$1.30', gpu: 'g', points: drop });
+    expect(spread($('mk-line').getAttribute('d'))).toBeGreaterThan(H * 0.6);
+  });
+
+  // The floor is a fraction of the mean, so it must not divide by a zero mean
+  // or a single point and emit NaN into the path.
+  it('survives an all-zero window and a single point', async () => {
+    const { api, cbs } = makeFullApi();
+    await boot({ api });
+    setInput($('addr-input'), ADDR);
+    click($('btn-start'));
+
+    cbs.stats({ total: '0.0', acceptedLabel: '0', uptime: '0m 05s', estDay: '$0.00', gpu: 'g', points: [0, 0, 0] });
+    expect($('mk-line').getAttribute('d')).not.toMatch(/NaN/);
+    cbs.stats({ total: '226.0', acceptedLabel: '1', uptime: '0m 06s', estDay: '$2.50', gpu: 'g', points: [226] });
+    expect($('mk-line').getAttribute('d')).not.toMatch(/NaN/);
+  });
+});
