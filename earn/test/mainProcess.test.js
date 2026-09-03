@@ -1288,6 +1288,91 @@ describe('local LLM', () => {
     expect(ctx.JobWorker.instances[0].opts.servingModel()).toBe(tier);
   });
 
+  // The 24 GB path, end to end, and the reason this change exists: a 4090 with
+  // the card to itself gets the same vision tier a 5090 does, at the largest
+  // window it can actually host. Verified by hand on the reference rig too, but
+  // this is the part CI can hold onto.
+  it('gives an idle 4090 the vision tier at 65536, with its projector and flags', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        c.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
+        c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
+        // The real card totals, with only the desktop resident: 24,564 reported
+        // and 124 MB held by the Windows compositor, measured on the rig.
+        c.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 124, totalMb: 24564 }]);
+        c.LlmEngineManager.behavior.ensureMmproj = () => Promise.resolve('/tmp/llm/mmproj.gguf');
+      },
+    });
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+
+    const tier = ctx.config.LLM.tiers[0];
+    const llm = ctx.LlmManager.instances[0];
+    const args = llm.start.mock.calls[0][0];
+    // The admitted window, not the tier's top rung, is what llama-server is
+    // asked for -- and the ladder it may fall back through starts there, so a
+    // start failure never retries a window this card was already refused.
+    expect(args.ctxSize).toBe(65536);
+    expect(args.ctxLadder).toEqual([65536, 32768]);
+    // Vision and MTP both survive the reduction: the projector is still fetched
+    // and the tuned flags are the tier's own, unmodified.
+    expect(args.mmprojPath).toBe('/tmp/llm/mmproj.gguf');
+    expect(args.extraArgs).toEqual(tier.extraArgs);
+    expect(args.extraArgs.join(' ')).toContain('--spec-type draft-mtp');
+    expect(args.extraArgs.join(' ')).toContain('--cache-type-k q8_0');
+    // And everything that reports a model names the tier, as it does on a 5090.
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ model: tier.name });
+    expect(ctx.sent('miner:log').map((l) => l.line).join('\n')).toContain(tier.name);
+  });
+
+  // The same 4090 in a co-running session must NOT get the tier: 21,702 plus the
+  // miner's ~2,600 leaves no real margin on 24 GB. This is the row whose absence
+  // sank the first attempt at reduced windows, so it is pinned at the main.js
+  // level and not only in the selection unit test.
+  it('does NOT give the tier to a 4090 that is also mining', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        c.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
+        c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
+        c.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 124, totalMb: 24564 }]);
+      },
+    });
+    ctx.emit('miner:start', { mode: 'auto', address: VALID_ADDR });
+    await flush();
+    // Co-running defers the LLM until the miner has actually taken its VRAM, so
+    // release that wait with a hashrate tick before reading the choice back.
+    ctx.PearlEngine.instances[0].emit('event', { type: 'status', hashrate: 226 });
+    await flush(30);
+
+    const llm = ctx.LlmManager.instances[0];
+    expect(llm.start.mock.calls[0][0].ctxSize).toBe(ctx.config.LLM.ctxSize);
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ model: ctx.config.LLM.model.name });
+  });
+
+  // The trade this change makes on a MIXED rig, stated rather than discovered:
+  // the fleet loads one model across every instance, so admitting the tier from
+  // the best card drops any card that cannot hold it. A 24 GB + 12 GB box serves
+  // the 27B from the big card instead of Gemma from both. The same trade already
+  // applied at the top rung (32 GB + small cards); this extends it to 24 GB.
+  it('serves the tier from the one card that can host it on a mixed rig', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        c.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
+        c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
+        c.probe.detectGpusVram.mockResolvedValue([
+          { index: 0, name: 'RTX 4090', usedMb: 124, totalMb: 24564 },
+          { index: 1, name: 'RTX 4070', usedMb: 500, totalMb: 12282 },
+        ]);
+        c.LlmEngineManager.behavior.ensureMmproj = () => Promise.resolve('/tmp/llm/mmproj.gguf');
+        c.probe.findFreePort.mockImplementation((h, p) => Promise.resolve(p));
+      },
+    });
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(ctx.sent('miner:log').map((l) => l.line)).toContain('local LLM starting on 1 GPU [0]');
+    expect(ctx.LlmManager.instances[0].start.mock.calls[0][0].ctxSize).toBe(65536);
+  });
+
   it('starts llama-server, goes ready, serves jobs, streams stats, and reports its exit', async () => {
     const ctx = await boot({
       before: (c) => {
@@ -1376,8 +1461,14 @@ describe('local LLM', () => {
         c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
         // Two roomy cards → one llama-server + cluster worker pinned to each.
         c.probe.detectGpusVram.mockResolvedValue([
+          // Both cards deliberately at the SAME 22,000 MB free, which is just
+          // under the big tier's 65536 floor (22,272). These two tests are about
+          // one instance per eligible card, not about tier selection: give one
+          // card more room than the other and the rig resolves to the 27B at a
+          // reduced window, which only the roomier card could host -- a real
+          // trade, pinned in its own test below, but a different subject.
           { index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 },
-          { index: 1, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+          { index: 1, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 },
         ]);
         c.probe.findFreePort.mockImplementation((h, p) => Promise.resolve(p));
       },
@@ -1429,8 +1520,14 @@ describe('local LLM', () => {
         c.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
         c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
         c.probe.detectGpusVram.mockResolvedValue([
+          // Both cards deliberately at the SAME 22,000 MB free, which is just
+          // under the big tier's 65536 floor (22,272). These two tests are about
+          // one instance per eligible card, not about tier selection: give one
+          // card more room than the other and the rig resolves to the 27B at a
+          // reduced window, which only the roomier card could host -- a real
+          // trade, pinned in its own test below, but a different subject.
           { index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 },
-          { index: 1, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+          { index: 1, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 },
         ]);
         c.probe.findFreePort.mockImplementation((h, p) => Promise.resolve(p));
       },
