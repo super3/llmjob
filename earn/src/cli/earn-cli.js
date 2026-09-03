@@ -681,6 +681,13 @@ async function run(argv) {
   let miner = null;
   let reporter = null;
   let statsWriter = null;
+  // Set once the auto plan is known, for demand mode only: the node id this
+  // machine serves under. Its presence is what tells the reporter below that a
+  // model is available on request even though none is loaded.
+  let demandServing = null;
+  // The reporter's own function, hoisted so the demand plan can fire one extra
+  // board row the moment it knows what this node will serve.
+  let reportNow = null;
   let llm = null;
   let stopping = false;
 
@@ -735,15 +742,32 @@ async function run(argv) {
         const snap = snapshot(stats, Date.now());
         const gpuVram = await detectGpusVram();
         // Tag the cards serving the local LLM so the board shows which model each
-        // GPU runs; null when the fleet isn't up (mining only) → blank on the board.
-        // `nodeId` rides along only while this machine is armed to serve cluster
-        // jobs — running the model and serving the cluster are different things,
-        // and the board should be able to tell them apart.
-        const serving = serveFleet
-          ? { model: serveLlmState.model.name, indices: serveFleet.servingIndices(), nodeId: serveNodeId }
-          : null;
+        // GPU runs. `nodeId` rides along only while this machine is armed to serve
+        // cluster jobs — running the model and serving the cluster are different
+        // things, and the board should be able to tell them apart.
+        //
+        // In demand mode the model is deliberately NOT loaded between requests, so
+        // keying this off a live fleet left the board's model column blank for a
+        // node whose whole purpose is to serve that model — it appeared only for
+        // the seconds either side of an actual request. "Not resident" is not the
+        // same as "not available": the card answers for it within seconds, and the
+        // tier was pinned at startup, so the honest thing to report is the model
+        // this node serves. `indices` is the card the wake would land on, which is
+        // the same card pickLlmGpu will choose then.
+        let serving = null;
+        if (serveFleet) {
+          serving = { model: serveLlmState.model.name, indices: serveFleet.servingIndices(), nodeId: serveNodeId };
+        } else if (demandServing) {
+          const best = pickLlmGpu(gpuVram);
+          serving = {
+            model: serveLlmState.model.name,
+            indices: best ? [best.index] : [],
+            nodeId: demandServing.nodeId,
+          };
+        }
         return Promise.all(buildMinerReports(settings, snap, gpuVram, pkg.version, serving).map(postMinerReport));
       };
+      reportNow = report;
       report();
       reporter = setInterval(report, NETWORK.reportIntervalMs);
       if (reporter.unref) reporter.unref();
@@ -770,6 +794,12 @@ async function run(argv) {
   // Demand mode polls for cluster work WHILE MINING, so it needs its identity
   // before any model exists -- not on the first wake, which may never come.
   const demandServe = demand ? await resolveServeIdentity(settings) : null;
+  if (demand) {
+    demandServing = { nodeId: demandServe && demandServe.canServe ? demandServe.nodeCfg.nodeId : null };
+    // The first report already went out, before the plan was known, and would
+    // otherwise leave the board blank until the next one a minute later.
+    if (reportNow) reportNow();
+  }
   // And it has to ADVERTISE the tier it will serve, not the one it has loaded --
   // which is none. serveLlmState.model is seeded with the small default and only
   // replaced inside startLlm, which demand mode reaches only on a wake, so

@@ -20,6 +20,13 @@ fi
 grep -qE '^EARN_ADDRESS=prl1p.' "$ENV_FILE" || {
   echo "set a real EARN_ADDRESS in $ENV_FILE first" >&2; exit 1; }
 grep -q '^EARN_BIN=' "$ENV_FILE" || { echo "set EARN_BIN in $ENV_FILE first" >&2; exit 1; }
+# systemd's EnvironmentFile does not word-split, so an unquoted value with a space
+# leaves the variable unusable and the unit restart-loops on "exec: --address: not
+# found". Catch it here rather than in the journal.
+if grep -qE '^(EARN_BIN|EARN_ARGS)=[^"'"'"'].* ' "$ENV_FILE"; then
+  echo "quote any value containing a space in $ENV_FILE, e.g. EARN_BIN=\"/usr/bin/node /path/earn-cli.js\"" >&2
+  exit 1
+fi
 
 # Never clobber an existing dashboard without a copy to go back to.
 if [ -f /usr/local/bin/gpu-dashboard ] && [ ! -f /usr/local/bin/gpu-dashboard.pre-llmjob ]; then

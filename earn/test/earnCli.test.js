@@ -1807,6 +1807,54 @@ describe('shutdown and startup edges the gate introduced', () => {
     expect(gate.stop).toHaveBeenCalled();     // and the public port is released
   });
 
+  test('the board keeps showing the model a demand node serves while it mines', async () => {
+    // In demand mode nothing is loaded between requests, so keying the board row
+    // off a live fleet left the model column blank for a node whose whole purpose
+    // is to serve that model -- it appeared only for the seconds either side of a
+    // request. Not resident is not the same as not available.
+    const m = load();
+    serving(m);
+    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
+    await settle();
+
+    expect(m.LlmManager.instances).toHaveLength(0);   // nothing loaded
+    m.probe.postMinerReport.mockClear();
+    await intervalFor(NETWORK.reportIntervalMs).fn();
+    const rows = m.probe.postMinerReport.mock.calls.map((c) => c[0]);
+    const withModel = rows.filter((r) => r && r.llmModel);
+    expect(withModel.length).toBeGreaterThan(0);
+    expect(withModel[0].llmModel).toBe(LLM.tiers[0].name);
+    expect(withModel[0].nodeId).toBeTruthy();
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('--no-report skips the board row without tripping the demand refresh', async () => {
+    const m = load();
+    serving(m);
+    const p = m.run(['--address', ADDR, '--no-update', '--no-report', '--gate-port', '0']);
+    await settle();
+    expect(m.probe.postMinerReport).not.toHaveBeenCalled();
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('a demand node with no readable card reports no serving index', async () => {
+    // pickLlmGpu can come back empty (no driver, unreadable VRAM); the row is
+    // then posted without a card tagged rather than throwing.
+    const m = load();
+    serving(m);
+    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
+    await settle();
+    m.probe.detectGpusVram.mockResolvedValue([]);
+    m.probe.postMinerReport.mockClear();
+    await expect(intervalFor(NETWORK.reportIntervalMs).fn()).resolves.toBeDefined();
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
   test('a card that cannot mine still serves instead of exiting 1', async () => {
     // plan.miner stays true when the mining core fails to load, so the node
     // believed it was in demand mode, skipped the up-front LLM start, never built
