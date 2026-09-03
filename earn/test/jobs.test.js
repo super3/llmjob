@@ -71,6 +71,27 @@ describe('jobToChatBody', () => {
     ]);
   });
 
+  // A vision request arrives with OpenAI's multimodal ARRAY content. This used
+  // to be String()'d into the literal "[object Object]" and handed to
+  // llama-server, so the request was not merely unsupported — it was corrupted
+  // into nonsense the model then answered. (The fleet downloads a vision
+  // projector and loads it with --mmproj, so the model itself was ready.)
+  test('passes OpenAI multimodal content through as an array', () => {
+    const parts = [
+      { type: 'text', text: 'what is in this image?' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } },
+    ];
+    const b = jobToChatBody({ messages: [{ role: 'user', content: parts }] });
+    expect(b.messages).toEqual([{ role: 'user', content: parts }]);
+    expect(JSON.stringify(b)).not.toContain('[object Object]');
+  });
+
+  test('still coerces non-array content to a string', () => {
+    expect(jobToChatBody({ messages: [{ role: 'user', content: 42 }] }).messages[0].content).toBe('42');
+    expect(jobToChatBody({ messages: [{ role: 'user', content: { a: 1 } }] }).messages[0].content)
+      .toBe('[object Object]'); // a plain object is not the multimodal shape
+  });
+
   test('defaults a message role to user and coerces null content; ignores an empty messages array', () => {
     const b = jobToChatBody({ messages: [null, { content: null }] });
     expect(b.messages).toEqual([

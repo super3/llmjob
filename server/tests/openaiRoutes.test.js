@@ -9,13 +9,14 @@ const request = require('supertest');
 const express = require('express');
 const NodeService = require('../src/services/nodeService');
 const { createTestDb } = require('./helpers/pgmem');
-const { initOpenAiRoutes } = require('../src/routes');
+const { initOpenAiRoutes, initBodyParsers } = require('../src/routes');
 const JobService = require('../src/services/jobService');
 const ApiKeyService = require('../src/services/apiKeyService');
 const ChatUsageService = require('../src/services/chatUsageService');
 const LogService = require('../src/services/logService');
 const OpenAiController = require('../src/controllers/openaiController');
 const { lastUserText, estimateTokens, modelName, completionTokens, timeoutBody } = OpenAiController;
+const { MAX_PROMPT_CHARS, MAX_BODY_BYTES } = require('../src/controllers/gatewayShared');
 const { DEFAULT_MODEL } = JobService;
 
 const NODE_ID = 'node-openai-test';
@@ -58,7 +59,10 @@ function throwFetch() {
 
 function makeApp(db, opts) {
   const app = express();
-  app.use(express.json());
+  // The real parser install, not a bare express.json(): the gateway's larger
+  // body ceiling depends on the order these are registered in, so a harness that
+  // rolls its own would test a limit the app does not have.
+  initBodyParsers(app);
   app.locals.db = db;
   initOpenAiRoutes(app, Object.assign({ pollMs: 5, timeoutMs: 1500 }, opts));
   return app;
@@ -156,6 +160,65 @@ describe('OpenAI gateway — integration', () => {
     // The requested model must NOT ride through to the job: the node ignores it and
     // would otherwise echo it back via metrics.model as the model that ran.
     expect(job.model).toBe('Gemma-4-E4B-it-Q4_K_M'); // the fleet default, not 'my-model'
+  });
+
+  // Regression for the live bug this gateway shipped with: the prompt clamp
+  // spent its 24,000-char budget oldest-first, so any conversation over the
+  // budget reached the node WITHOUT the caller's latest question and came back
+  // 200 OK answering stale context. The web-chat gateway had been fixed for
+  // exactly this in its own private copy of the clamp; this one had not.
+  it('sends the node the newest turn when the conversation is over the prompt budget', async () => {
+    const history = Array.from({ length: 40 }, (_, i) => ({
+      role: i % 2 ? 'assistant' : 'user', content: 'x'.repeat(1000),
+    }));
+    const [, job] = await Promise.all([
+      request(app).post('/v1/chat/completions').set(...auth())
+        .send({ messages: [...history, { role: 'user', content: 'What is the capital of France?' }] }),
+      nodeServe(jobService, ['Paris'], { totalTokens: 1 }),
+    ]);
+    expect(job.messages[job.messages.length - 1])
+      .toEqual({ role: 'user', content: 'What is the capital of France?' });
+    // …and the single-string fallback nodes read must name it too, not the
+    // stale turn that used to survive in its place.
+    expect(job.prompt).toBe('What is the capital of France?');
+    const chars = job.messages.reduce((n, m) => n + m.content.length, 0);
+    expect(chars).toBeLessThanOrEqual(MAX_PROMPT_CHARS);
+  });
+
+  // The multimodal path was dead code end to end: the app-wide express.json()
+  // took its 100 KB default, so a request carrying even a modest screenshot was
+  // rejected with a bare 413 before any of gatewayShared's image handling ran —
+  // and had it got through, the node side stringified the content array into
+  // "[object Object]". This drives a real image through the route to a node.
+  it('carries an image through to the node instead of rejecting it at the door', async () => {
+    // ~600 KB of base64: six times the old app-wide body limit.
+    const url = 'data:image/png;base64,' + 'A'.repeat(600 * 1024);
+    const [res, job] = await Promise.all([
+      request(app).post('/v1/chat/completions').set(...auth()).send({
+        messages: [{
+          role: 'user',
+          content: [{ type: 'text', text: 'what is in this image?' }, { type: 'image_url', image_url: { url } }],
+        }],
+      }),
+      nodeServe(jobService, ['A cat.'], { totalTokens: 2 }),
+    ]);
+
+    expect(res.status).toBe(200);
+    // The node is handed the parts as an array, image intact.
+    expect(job.messages[0].content).toEqual([
+      { type: 'text', text: 'what is in this image?' },
+      { type: 'image_url', image_url: { url } },
+    ]);
+    // …and the base64 is never counted as prompt text or joined into `prompt`.
+    expect(job.prompt).toBe('what is in this image?');
+    expect(res.body.usage.prompt_tokens).toBeLessThan(100);
+  });
+
+  it('rejects a body past the gateway ceiling with an error that says so', async () => {
+    const oversized = 'data:image/png;base64,' + 'A'.repeat(MAX_BODY_BYTES);
+    const res = await request(app).post('/v1/chat/completions').set(...auth())
+      .send({ messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: oversized } }] }] });
+    expect(res.status).toBe(413);
   });
 
   it('reports finish_reason "length" and the reasoning when a thinking model runs out of budget', async () => {

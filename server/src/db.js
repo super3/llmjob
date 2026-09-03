@@ -87,6 +87,11 @@ CREATE TABLE IF NOT EXISTS nodes (
   speed_at bigint
 );
 CREATE INDEX IF NOT EXISTS idx_nodes_user ON nodes (user_id);
+-- "Which nodes are live right now" is the most-asked question in the system:
+-- every job creation resolves its model pin against it, /v1/models answers from
+-- it, and the public network page reads it on a 15s timer. Without this each of
+-- those was a full scan of the nodes table.
+CREATE INDEX IF NOT EXISTS idx_nodes_last_seen ON nodes (last_seen);
 
 CREATE TABLE IF NOT EXISTS api_keys (
   hash text PRIMARY KEY,
@@ -146,6 +151,17 @@ CREATE TABLE IF NOT EXISTS jobs (
   heartbeat_at bigint
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status);
+-- The assignment query, which every serving node runs on every poll — by far the
+-- hottest statement here. A bare status index still left Postgres sorting the
+-- whole pending set to satisfy "ORDER BY priority DESC, created_at ASC"; a
+-- partial index in exactly that order returns the queue head as an index scan.
+-- Partial on the pending status so it stays small: it holds only the live queue,
+-- not the day of completed jobs the table keeps for the cleanup sweep.
+CREATE INDEX IF NOT EXISTS idx_jobs_pending_queue
+  ON jobs (priority DESC, created_at ASC) WHERE status = 'pending';
+-- The timeout and cleanup sweeps ("assigned/running whose lock or heartbeat has
+-- gone stale", "completed/failed older than a day").
+CREATE INDEX IF NOT EXISTS idx_jobs_status_updated ON jobs (status, updated_at);
 
 CREATE TABLE IF NOT EXISTS job_chunks (
   job_id text,
@@ -162,9 +178,33 @@ async function initSchema(db) {
   await db.query(SCHEMA);
 }
 
+// Pool sizing, stated rather than inherited. pg's defaults are `max: 10` and no
+// connection timeout, and both were wrong here:
+//
+//   • 10 is small for a process whose job dispatch, both chat gateways and the
+//     dashboard all check out connections concurrently. Every node holding a
+//     long poll takes one for the length of each claim transaction, so a modest
+//     fleet plus a handful of in-flight requests could sit at the ceiling.
+//   • With no connectionTimeoutMillis a request that arrives at an exhausted
+//     pool waits FOREVER rather than failing. That turns a brief spike into a
+//     pile of sockets that never answer — the caller's own timeout fires first
+//     and the work is done anyway, for nobody.
+//
+// Both are env-overridable so the founder can retune against whatever the
+// hosted database actually allows without a code change.
+const DEFAULT_POOL_MAX = 20;
+const DEFAULT_CONNECT_TIMEOUT_MS = 10000;
+
+function numberEnv(v, fallback) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 function createPool() {
   const pool = new Pool({
-    connectionString: process.env.DATABASE_URL || 'postgres://localhost:5432/llmjob'
+    connectionString: process.env.DATABASE_URL || 'postgres://localhost:5432/llmjob',
+    max: numberEnv(process.env.PGPOOL_MAX, DEFAULT_POOL_MAX),
+    connectionTimeoutMillis: numberEnv(process.env.PGPOOL_CONNECT_TIMEOUT_MS, DEFAULT_CONNECT_TIMEOUT_MS)
   });
   // REQUIRED, not optional hygiene: pg emits 'error' on the Pool when a client
   // sitting IDLE in it drops — a Postgres restart, a failover, an idle-timeout

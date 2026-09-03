@@ -20,7 +20,11 @@ async function resolveUsername(userId) {
 // into their account, after which the victim's private jobs routed to it.
 async function claimNode(req, res) {
   try {
-    const { publicKey } = req.verifiedNode;
+    // `nodeId` is the id the caller signs as, passed through so a machine whose
+    // node.json predates the node-id widening keeps its existing 6-character
+    // identity. It is NOT trusted as an identity: nodeService honours it only
+    // when it matches this key's own legacy fingerprint. See _enrolledNodeId.
+    const { publicKey, nodeId } = req.verifiedNode;
     const { name } = req.body;
     const userId = req.user.id;
 
@@ -29,7 +33,7 @@ async function claimNode(req, res) {
     }
 
     const nodeService = new NodeService(req.app.locals.db);
-    const result = await nodeService.claimNode(publicKey, name, userId);
+    const result = await nodeService.claimNode(publicKey, name, userId, nodeId);
 
     if (result.error) {
       return res.status(400).json({ error: result.error });
@@ -48,11 +52,12 @@ async function claimNode(req, res) {
 // the body. An unclaimed node is only ever assigned non-private jobs.
 async function registerNode(req, res) {
   try {
-    const { publicKey } = req.verifiedNode;
+    // See claimNode on why the signed-as `nodeId` is passed through.
+    const { publicKey, nodeId } = req.verifiedNode;
     const { name } = req.body;
 
     const nodeService = new NodeService(req.app.locals.db);
-    const result = await nodeService.registerNode(publicKey, name);
+    const result = await nodeService.registerNode(publicKey, name, nodeId);
 
     if (result.error) {
       return res.status(400).json({ error: result.error });
@@ -189,7 +194,12 @@ async function rotateJoinToken(req, res) {
 // Used by the install script so a machine can self-register non-interactively.
 async function joinNode(req, res) {
   try {
-    const { token, publicKey, name } = req.body;
+    // `nodeId` is the id the installer's node.json already holds, passed through
+    // for the same reason as on the signed routes: a machine that minted a
+    // 6-character id before the widening keeps it. nodeService constrains it to a
+    // derivation of the publicKey in this same body, so it grants no reach the
+    // join token did not already give.
+    const { token, publicKey, name, nodeId } = req.body;
 
     if (!token || !publicKey) {
       return res.status(400).json({ error: 'token and publicKey are required' });
@@ -202,7 +212,7 @@ async function joinNode(req, res) {
     }
 
     const nodeService = new NodeService(req.app.locals.db);
-    const result = await nodeService.claimNode(publicKey, name || 'node', userId);
+    const result = await nodeService.claimNode(publicKey, name || 'node', userId, nodeId);
 
     if (result.error) {
       return res.status(400).json({ error: result.error });

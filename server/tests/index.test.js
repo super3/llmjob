@@ -52,6 +52,22 @@ describe('server bootstrap (index.js)', () => {
       expect(res.status).toHaveBeenCalledWith(500);
       expect(res.json).toHaveBeenCalledWith({ error: 'Internal server error' });
     });
+
+    // body-parser's own message is the bare string "entity.too.large", which
+    // tells a caller nothing. This is the error an oversized image request hits,
+    // and the one that used to make the multimodal path look simply broken.
+    it('explains an oversized body and names the limit', () => {
+      const res = run({ status: 413, type: 'entity.too.large', limit: 20 * 1024 * 1024 });
+      expect(res.status).toHaveBeenCalledWith(413);
+      expect(res.json.mock.calls[0][0].error).toContain('20 MB');
+      expect(res.json.mock.calls[0][0].error).toContain('images');
+    });
+
+    it('still answers when the oversized-body error carries no limit', () => {
+      const res = run({ status: 413, type: 'entity.too.large' });
+      expect(res.status).toHaveBeenCalledWith(413);
+      expect(res.json).toHaveBeenCalledWith({ error: 'Request body too large.' });
+    });
   });
 
   describe('GET /health', () => {

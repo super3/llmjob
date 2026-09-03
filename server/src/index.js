@@ -5,7 +5,7 @@ const dotenv = require('dotenv');
 const { createPool } = require('./db');
 const { corsOrigin } = require('./corsOptions');
 const routes = require('./routes');
-const { initJobRoutes, initOpenAiRoutes, initChatRoutes } = require('./routes');
+const { initBodyParsers, initJobRoutes, initOpenAiRoutes, initChatRoutes } = require('./routes');
 const NodeService = require('./services/nodeService');
 const JobService = require('./services/jobService');
 const BenchmarkService = require('./services/benchmarkService');
@@ -19,7 +19,10 @@ const PORT = process.env.PORT || 3001;
 // app + previews); other websites can't call the API — including the free chat
 // proxy — from a browser. Non-browser callers send no Origin and are unaffected.
 app.use(cors({ origin: corsOrigin }));
-app.use(express.json());
+// JSON bodies. Not a bare express.json(): the OpenAI gateway needs a larger
+// ceiling to accept an image request, and the order the parsers are registered
+// in decides which limit applies. See routes.initBodyParsers.
+initBodyParsers(app);
 
 // Postgres pool
 let db;
@@ -86,6 +89,21 @@ function errorHandler(err, req, res, next) {
   console.error(err.stack || err);
   const status = err.status || 500;
   const clientError = status >= 400 && status < 500;
+  // body-parser's own message for an oversized body is the bare string
+  // "entity.too.large" (or "request entity too large"), which tells a caller
+  // nothing about what to do. Say what the limit was and which knob it applies
+  // to — this is the error an image request hits, and the one that used to make
+  // the multimodal path look simply broken.
+  if (err.type === 'entity.too.large') {
+    const limit = Number(err.limit);
+    const mb = Number.isFinite(limit) ? Math.round(limit / (1024 * 1024)) : null;
+    return res.status(413).json({
+      error: mb
+        ? `Request body too large. This endpoint accepts up to ~${mb} MB; `
+          + 'send fewer or smaller images, or shorten the conversation.'
+        : 'Request body too large.'
+    });
+  }
   res.status(status).json({
     error: clientError && err.message ? err.message : 'Internal server error'
   });

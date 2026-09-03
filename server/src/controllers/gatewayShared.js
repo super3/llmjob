@@ -95,9 +95,13 @@ function writeSsePreamble(res) {
 // are yielded, then iteration ends.
 async function* pollJobResult({ jobService, jobId, now, sleep, pollMs, timeoutMs, isAborted }) {
   const started = now();
+  // Read only the chunk rows this loop has not seen yet. Watching a job used to
+  // re-read every chunk on every 250ms tick, so the DB cost of one generation
+  // grew with the square of its length — see jobService._chunksSince.
+  const cursor = {};
   for (;;) {
     if (isAborted()) return;
-    const r = await jobService.getJobResult(jobId);
+    const r = await jobService.getJobResult(jobId, cursor);
     yield r;
     if (r.status === 'completed' || r.status === 'failed') return;
     if (now() - started > timeoutMs) {
@@ -119,8 +123,26 @@ const MAX_PROMPT_CHARS = 24000;
 // reject every image request or, if the budget were raised to fit one, let a
 // caller send 24,000 characters of prose they were never meant to have. The two
 // are different resources and get different limits.
-const MAX_IMAGES = 8;
-const MAX_IMAGE_CHARS = 8 * 1024 * 1024;   // ~8 MB of base64 per image
+//
+// Sized so the worst case is a request body a server should actually accept.
+// These were 8 images of 8 MB, i.e. a 64 MB request — which nothing enforced,
+// because express.json()'s own 100 KB default rejected the whole thing long
+// before this code ran, so no image request had ever reached a node. Now that
+// the body limit is real (MAX_BODY_BYTES, applied to the gateway routes) the two
+// have to agree, and 4 x 4 MB is both a generous screenshot allowance — base64
+// is 4/3 of the raw bytes, so 4 MB holds a ~3 MB image — and a bound worth
+// having.
+const MAX_IMAGES = 4;
+const MAX_IMAGE_CHARS = 4 * 1024 * 1024;   // ~4 MB of base64 per image
+
+// The request-body ceiling for a gateway route, covering the image budget above
+// plus the text and JSON overhead around it.
+//
+// This is applied per route rather than globally: the anonymous web-chat
+// endpoint keeps express.json()'s small default, because raising the body limit
+// on an unauthenticated route is a cost with no matching benefit — the chat page
+// sends no images.
+const MAX_BODY_BYTES = MAX_IMAGES * MAX_IMAGE_CHARS + 4 * 1024 * 1024;
 
 // One OpenAI content part, normalised, or null if it isn't one we pass on.
 //
@@ -148,19 +170,37 @@ function normalisePart(part) {
   return null;
 }
 
-// Trim a message list to `maxChars`, oldest-first, preserving order. Entries that
-// aren't objects, or whose content is empty after coercion, are dropped;
+// Trim a message list to `maxChars`, preserving chronological order. Entries
+// that aren't objects, or whose content is empty after coercion, are dropped;
 // unexpected roles are mapped onto 'user'.
 //
 // This lives here for the same reason the SSE preamble does: only the web-chat
 // gateway ever clamped its input. The /v1 gateway passed the caller's messages
 // straight through, so a single API key could hand a node an unbounded prompt.
+//
+// The budget is spent NEWEST-FIRST: we walk from the last message backward and
+// stop once it is exhausted, so the most recent turns — including the question
+// the caller just asked, which every chat client sends LAST — are the ones kept.
+// The kept turns are returned in their original order.
+//
+// Walking oldest-first instead spent the budget on the oldest turns and silently
+// dropped the current question in any conversation over the budget, leaving the
+// model to "answer" stale context with a 200 and no error. That was fixed once,
+// in the web-chat gateway's own private copy of this function, and the two
+// copies then disagreed for as long as both existed: /v1 kept answering the
+// wrong turn. This is the surviving copy, and both gateways now use it — which
+// is the whole point of this module.
 function clampMessages(messages, maxChars) {
   const allowed = new Set(['system', 'user', 'assistant']);
   const out = [];
   let budget = maxChars == null ? MAX_PROMPT_CHARS : maxChars;
+  // Newest-first, so the image budget is spent on the newest images too: a
+  // caller who attached a screenshot to THIS turn must not lose it to eight
+  // stale ones earlier in the conversation.
   let images = 0;
-  for (const m of messages || []) {
+  const list = messages || [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    const m = list[i];
     if (!m || typeof m !== 'object') continue;
     const role = allowed.has(m.role) ? m.role : 'user';
 
@@ -196,7 +236,8 @@ function clampMessages(messages, maxChars) {
     out.push({ role, content });
     if (budget <= 0) break;
   }
-  return out;
+  // Collected newest-first; hand back the conversation the right way round.
+  return out.reverse();
 }
 
 // Resolve a caller-supplied max_tokens against a ceiling. The other half of the
@@ -229,4 +270,5 @@ module.exports = {
   MAX_PROMPT_CHARS,
   MAX_IMAGES,
   MAX_IMAGE_CHARS,
+  MAX_BODY_BYTES,
 };

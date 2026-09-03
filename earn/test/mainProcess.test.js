@@ -1830,6 +1830,71 @@ describe('node linking', () => {
     expect(ctx.nodeStore.saveNode).not.toHaveBeenCalled();
   });
 
+  // The server decides which id a machine is enrolled under and can answer with
+  // one this end did not compute — a machine whose old narrow id turns out to be
+  // taken by someone else's key is enrolled on the wide one instead. Keeping the
+  // local id left it signing every later call as a row that does not exist.
+  it('adopts a node id the server reassigns on register, and persists it', async () => {
+    // Unlinked, so serving arms via the self-register path (/api/nodes/register).
+    const node = fakeNode({ nodeId: '5840fc', connected: false });
+    const ctx = await boot({
+      before: (c) => {
+        c.nodeStore.getOrCreateNode.mockReturnValue(node);
+        c.nodeStore.loadNode.mockReturnValue(node);
+        c.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
+      },
+    });
+    ctx.io.postJson.mockResolvedValue({ status: 200, data: { nodeId: 'a1b2c3d4e5f60789' } });
+
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    ctx.LlmManager.instances[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    await flush();
+
+    expect(node.nodeId).toBe('a1b2c3d4e5f60789');
+    expect(ctx.nodeStore.saveNode).toHaveBeenCalledWith(
+      expect.objectContaining({ nodeId: 'a1b2c3d4e5f60789' })
+    );
+    expect(ctx.sent('miner:log').map((l) => l.line).join('\n'))
+      .toContain('node id updated by the network to a1b2c3d4e5f60789');
+  });
+
+  // The server now REFUSES a registration whose node id is held by a different
+  // key (a fingerprint collision) rather than reporting a false success. That
+  // arrives as a non-200 and must be reported, with the local identity untouched.
+  it('reports a refused registration and leaves the node id alone', async () => {
+    const node = fakeNode({ nodeId: '5840fc', connected: false });
+    const ctx = await boot({
+      before: (c) => {
+        c.nodeStore.getOrCreateNode.mockReturnValue(node);
+        c.nodeStore.loadNode.mockReturnValue(node);
+        c.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
+      },
+    });
+    ctx.io.postJson.mockResolvedValue({ status: 400, data: { error: 'Node key mismatch' } });
+
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    ctx.LlmManager.instances[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    await flush();
+
+    expect(ctx.sent('miner:log').map((l) => l.line).join('\n'))
+      .toContain('could not register with the network');
+    expect(node.nodeId).toBe('5840fc');
+    expect(ctx.nodeStore.saveNode).not.toHaveBeenCalled();
+  });
+
+  it('node:connect adopts the id the server reports', async () => {
+    const ctx = await boot({
+      before: (c) => { c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode({ nodeId: '5840fc' })); },
+    });
+    ctx.io.postJson.mockResolvedValueOnce({ status: 201, data: { user: 'alice', nodeId: 'a1b2c3d4e5f60789' } });
+    await ctx.invoke('node:connect', { token: 'tok', name: 'myrig' });
+    expect(ctx.nodeStore.saveNode).toHaveBeenCalledWith(
+      expect.objectContaining({ nodeId: 'a1b2c3d4e5f60789', connected: true })
+    );
+  });
+
   it('node:connect links the node, starts pinging, and node:disconnect undoes it', async () => {
     const ctx = await boot({
       before: (c) => { c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode()); },
