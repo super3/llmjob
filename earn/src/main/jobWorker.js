@@ -35,8 +35,16 @@ class JobWorker extends EventEmitter {
     this.now = opts.now || Date.now;
     this.schedule = opts.schedule || ((fn, ms) => { const t = setTimeout(fn, ms); t.unref(); return t; });
     this.cancel = opts.cancel || clearTimeout;
-    this.pollMinMs = opts.pollMinMs || 5000;   // poll cadence right after activity
-    this.pollMaxMs = opts.pollMaxMs || 60000;  // backoff ceiling for empty/error polls
+    // Gap between a completed poll and re-opening. Small because the WAIT now
+    // happens inside the request: the server holds an empty poll open, so this is
+    // only breathing room between round trips, not a dispatch delay.
+    this.pollMinMs = opts.pollMinMs || 250;
+    this.pollMaxMs = opts.pollMaxMs || 60000;  // backoff ceiling, errors only
+    // How long an empty poll must have taken for us to believe the server HELD
+    // it. A holding server returns either with work or at its hold deadline
+    // (~25s); one that does not hold answers empty in milliseconds. Anything
+    // above a second is a hold by any reasonable network.
+    this.holdHintMs = opts.holdHintMs || 1000;
     this.heartbeatMs = opts.heartbeatMs || 30000; // per-job lock renewal cadence
     this.chunkChars = opts.chunkChars || 60; // flush a result chunk every N chars…
     this.flushMs = opts.flushMs || 1000;     // …or at least this often while text flows
@@ -66,18 +74,39 @@ class JobWorker extends EventEmitter {
     if (this._timer) { this.cancel(this._timer); this._timer = null; }
   }
 
-  // One poll → run any assigned jobs → schedule the next poll. Never rejects; a
-  // failure is emitted and the loop keeps going. Empty polls and errors back off
-  // exponentially up to pollMaxMs so a fleet with no work (or a down server)
-  // isn't hammered; any assigned job snaps the cadence back to pollMinMs.
+  // One poll → run any assigned jobs → re-open. Never rejects; a failure is
+  // emitted and the loop keeps going.
+  //
+  // A SUCCESSFUL poll re-opens immediately, because the server now holds an empty
+  // poll open rather than answering nothing: the request itself is the wait, so
+  // returning means either there is work or the hold expired, and in both cases
+  // the right move is to ask again at once. The old exponential backoff -- 5s
+  // doubling to 60s on empty polls -- put an idle rig on a 20-40s rung, so a job
+  // waited that long just to be ASKED for. That was the largest term in
+  // time-to-first-token, larger than loading the model.
+  //
+  // ERRORS still back off. A server that is down or rejecting must not be
+  // hammered once per round trip, and that is the one case where an empty return
+  // is not a completed wait.
   _tick() {
     if (!this.running) return;
+    const startedAt = this.now();
     this.pollOnce()
       .then((count) => {
-        this._delay = count > 0 ? this.pollMinMs : Math.min(this._delay * 2, this.pollMaxMs);
+        // Did the server HOLD this poll, or answer empty at once?
+        //
+        // This matters because a node can be newer than the server it talks to.
+        // Against a holding server an empty return means "nothing for 25s", and
+        // re-opening immediately is right. Against one that does not hold, an
+        // empty return means nothing at all -- and re-opening immediately would
+        // be four polls a second, forever, on every idle node in the fleet.
+        // Elapsed time tells them apart with no version negotiation.
+        const held = (this.now() - startedAt) >= this.holdHintMs;
+        if (count > 0 || held) this._delay = this.pollMinMs;
+        else this._delay = Math.min(Math.max(this._delay, this.pollMinMs) * 2, this.pollMaxMs);
       })
       .catch((e) => {
-        this._delay = Math.min(this._delay * 2, this.pollMaxMs);
+        this._delay = Math.min(Math.max(this._delay, this.pollMinMs) * 2, this.pollMaxMs);
         try { this.emit('error', e); } catch (e2) { /* listener-less 'error' must not kill the loop */ }
       })
       .then(() => { if (this.running) this._timer = this.schedule(() => this._tick(), this._delay); });
