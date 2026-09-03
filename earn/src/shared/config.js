@@ -403,7 +403,7 @@ const LLM = {
 const NODE = {
   serverUrl: 'https://llmjob-production.up.railway.app',
   // Where the user copies their pairing token (sign in, Dashboard → Add node).
-  dashboardUrl: 'https://llmjob-production.up.railway.app/dashboard.html',
+  dashboardUrl: 'https://llmjob-production.up.railway.app/dashboard',
   pingIntervalMs: 5 * 60 * 1000,
 };
 

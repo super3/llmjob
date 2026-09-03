@@ -412,7 +412,7 @@ function App() {
         } else if (window.Clerk.redirectToSignIn) {
           window.Clerk.redirectToSignIn({ afterSignInUrl: window.location.href, afterSignUpUrl: window.location.href });
         } else {
-          window.location.href = 'index.html';
+          window.location.href = '/';
         }
         return;
       }
@@ -428,9 +428,9 @@ function App() {
 
   const signOut = () => {
     if (window.Clerk && window.Clerk.signOut) {
-      window.Clerk.signOut().then(() => { window.location.href = 'index.html'; });
+      window.Clerk.signOut().then(() => { window.location.href = '/'; });
     } else {
-      window.location.href = 'index.html';
+      window.location.href = '/';
     }
   };
 
@@ -468,7 +468,7 @@ function App() {
   if (authError) {
     return (
       <div className="page-loading">
-        <div>Authentication unavailable. <a href="index.html" style={{ color: "var(--accent)" }}>Return home</a></div>
+        <div>Authentication unavailable. <a href="/" style={{ color: "var(--accent)" }}>Return home</a></div>
       </div>
     );
   }
@@ -477,7 +477,7 @@ function App() {
       <React.Fragment>
         <header className="bar">
           <div className="wrap bar-inner">
-            <a className="logo" href="index.html"><span className="bolt">{I.bolt}</span> LLMJob</a>
+            <a className="logo" href="/"><span className="bolt">{I.bolt}</span> LLMJob</a>
           </div>
         </header>
         <div className="page-loading"><div className="spinner"></div><div>Loading your console…</div></div>
@@ -489,7 +489,7 @@ function App() {
     <React.Fragment>
       <header className={`bar ${scrolled ? "scrolled" : ""}`}>
         <div className="wrap bar-inner">
-          <a className="logo" href="index.html"><span className="bolt">{I.bolt}</span> LLMJob</a>
+          <a className="logo" href="/"><span className="bolt">{I.bolt}</span> LLMJob</a>
           <div className="bar-right">
             <span className="who">{username}</span>
             <button className="signout" onClick={signOut}>Sign out</button>
@@ -519,7 +519,7 @@ function App() {
             <div className="sec-title">
               <div>
                 <h2>API</h2>
-                <div className="sub">Create a key to get your endpoint and start making requests — see the <a href="docs.html" style={{ color: "var(--accent)" }}>docs</a>.</div>
+                <div className="sub">Create a key to get your endpoint and start making requests — see the <a href="/docs" style={{ color: "var(--accent)" }}>docs</a>.</div>
               </div>
               <button className="btn-add" onClick={openCreate}>{I.plus} New key</button>
             </div>
@@ -638,7 +638,7 @@ function App() {
                 </div>
                 <p className="hint">
                   Full reference — models, streaming, limits and errors — in the{' '}
-                  <a href="docs.html" style={{ color: "var(--accent)", textDecoration: "underline", textUnderlineOffset: 2 }}>docs</a>.
+                  <a href="/docs" style={{ color: "var(--accent)", textDecoration: "underline", textUnderlineOffset: 2 }}>docs</a>.
                 </p>
                 <div className="modal-actions">
                   <button className="btn-sm primary" onClick={closeCreate}>Done</button>

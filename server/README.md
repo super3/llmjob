@@ -99,7 +99,7 @@ npm run test:watch
 
 #### Free web chat (OpenRouter proxy)
 
-Powers the public **Chat** page (`chat.html`). No auth — this is the "open
+Powers the public **Chat** page (`/chat`). No auth — this is the "open
 usage" front door, so the OpenRouter API key stays server-side and every request
 is gated by a global free-token budget instead of per-user auth. Prompts are
 **never stored**; only performance (latency, time-to-first-token, tok/s) and

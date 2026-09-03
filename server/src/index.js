@@ -59,7 +59,22 @@ const staticPath = process.env.RAILWAY_ENVIRONMENT
   ? '/app/dist'
   : path.join(__dirname, '../..', 'dist');
 
-app.use(express.static(staticPath));
+// URLs are extensionless: /chat, not /chat.html. Old links (bookmarks, posts,
+// search results) still resolve, but they redirect to the canonical form
+// instead of being served, so a page never answers on two URLs at once.
+// GitHub Pages, which serves the same dist/ for llmjob.com, strips the
+// extension on its own; this is the equivalent for the Railway deployment.
+app.use((req, res, next) => {
+  if ((req.method !== 'GET' && req.method !== 'HEAD') || !req.path.endsWith('.html')) {
+    return next();
+  }
+  // /docs.html -> /docs, /index.html -> / (a directory keeps its trailing slash).
+  const target = req.path.slice(0, -'.html'.length).replace(/(^|\/)index$/, '$1');
+  return res.redirect(301, target + req.url.slice(req.path.length));
+});
+
+// `extensions: ['html']` is what serves dist/chat.html for a request to /chat.
+app.use(express.static(staticPath, { extensions: ['html'] }));
 
 // Error handling middleware. Log the full error server-side, but only echo the
 // message back for explicit client errors (4xx). For anything 500+ (or an

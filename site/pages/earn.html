@@ -9,7 +9,7 @@
 
 <!-- Social cards -->
 <meta property="og:type" content="website" />
-<meta property="og:url" content="https://llmjob.com/earn.html" />
+<meta property="og:url" content="https://llmjob.com/earn" />
 <meta property="og:title" content="LLMJob Earn — Pearl (PRL) GUI Miner for Windows &amp; Linux" />
 <meta property="og:description" content="No command line, no account. Paste your prl1 address, hit Start — auto-detects GPUs and pays out every 4 hours." />
 <meta name="twitter:card" content="summary" />
@@ -632,20 +632,20 @@
 
   // Footer "Login": open Clerk's sign-in modal in place (ported from the prior
   // landing page). If the visitor is already signed in, go straight to the
-  // dashboard; on any failure, fall back to navigating to dashboard.html.
+  // dashboard; on any failure, fall back to navigating to /dashboard.
   const footLogin = document.getElementById('foot-login');
   if (footLogin) {
     footLogin.addEventListener('click', async (e) => {
       e.preventDefault();
       try {
         const clerk = await getClerk();
-        if (clerk.user) { window.location.href = 'dashboard.html'; return; }
-        const opts = { afterSignInUrl: 'dashboard.html', afterSignUpUrl: 'dashboard.html' };
+        if (clerk.user) { window.location.href = '/dashboard'; return; }
+        const opts = { afterSignInUrl: '/dashboard', afterSignUpUrl: '/dashboard' };
         if (clerk.openSignIn) clerk.openSignIn(opts);
         else if (clerk.redirectToSignIn) clerk.redirectToSignIn(opts);
-        else window.location.href = 'dashboard.html';
+        else window.location.href = '/dashboard';
       } catch (err) {
-        window.location.href = 'dashboard.html';
+        window.location.href = '/dashboard';
       }
     });
   }
