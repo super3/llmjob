@@ -125,7 +125,7 @@ const initOpenAiRoutes = (app, opts) => {
   return ctrl;
 };
 
-// Free public web-chat gateway (chat.html), proxied to OpenRouter. No API key —
+// Free public web-chat gateway (/chat), proxied to OpenRouter. No API key —
 // this is the "open usage" front door, gated by a global free-token budget in
 // the controller rather than per-user auth. Mounted at the app root. `opts`
 // (OpenRouter key/models/budget, fetch) is injectable for tests.

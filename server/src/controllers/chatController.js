@@ -12,7 +12,7 @@ const {
 
 // Free public web-chat gateway, backed by OpenRouter.
 //
-// The website's Chat page (chat.html) talks to this proxy instead of OpenRouter
+// The website's Chat page (/chat) talks to this proxy instead of OpenRouter
 // directly, so the OpenRouter API key never leaves the server and every request
 // is gated by our own rules:
 //

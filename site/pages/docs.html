@@ -171,7 +171,7 @@
     <!-- QUICKSTART -->
     <section class="doc" id="start">
       <h2>Quickstart</h2>
-      <p>Create a key on the <a href="dashboard.html">dashboard</a>, then make a request. The base
+      <p>Create a key on the <a href="/dashboard">dashboard</a>, then make a request. The base
         URL is <code class="ic">{{apiBaseProd}}/v1</code>.</p>
 
       <div class="tabs" role="tablist" data-tabs="qs">
@@ -260,7 +260,7 @@ console.log(resp.choices[0].message.content);</code></pre>
     <!-- KEY -->
     <section class="doc" id="key">
       <h2>Your API key</h2>
-      <p>Keys are created on the <a href="dashboard.html">dashboard</a> under <b>API</b>. They look
+      <p>Keys are created on the <a href="/dashboard">dashboard</a> under <b>API</b>. They look
         like <code class="ic">lj-live-…</code> and are shown <b>once</b>, at creation — we only ever
         store a hash, so a lost key has to be revoked and replaced rather than recovered.</p>
       <p>Send it as a bearer token on every request:</p>
@@ -306,7 +306,7 @@ console.log(resp.choices[0].message.content);</code></pre>
         </table>
       </div>
 
-      <p>The Qwen model is the one the free <a href="chat.html">Chat</a> page serves. It is available
+      <p>The Qwen model is the one the free <a href="/chat">Chat</a> page serves. It is available
         through the API so you can build against a working endpoint today, before your own nodes are
         up. It draws on a shared free allowance — see <a href="#limits">Limits</a>.</p>
 
@@ -596,7 +596,7 @@ for chunk in stream:
 
       <p>A <span class="status">504</span> with no <code class="ic">served_by</code> means nothing
         picked the job up: check that a node is online and serving on your
-        <a href="dashboard.html">dashboard</a>. Still stuck? Ask in
+        <a href="/dashboard">dashboard</a>. Still stuck? Ask in
         <a href="{{discordUrl}}" target="_blank" rel="noopener">Discord</a>.</p>
     </section>
   </main>
