@@ -97,6 +97,75 @@ describe('JobController', () => {
       await jobService.createJob({ prompt: 'Test 2', userId: 'user123' });
     });
 
+    describe('long-poll', () => {
+      // The node used to back off exponentially on empty polls -- 5s doubling to
+      // 60s -- so an idle rig sat on a 20-40s rung and a job waited that long
+      // just to be ASKED for. Holding the request open moves that wait inside
+      // the request, where it ends the moment work exists.
+      const held = (opts) => {
+        const clock = { t: 0 };
+        const ctl = new JobController(jobService, nodeService, Object.assign({
+          holdMs: 1000,
+          pollMs: 100,
+          now: () => clock.t,
+          // Injected: advancing the clock IS the sleep, so no real time passes.
+          sleep: async (ms) => { clock.t += ms; },
+        }, opts));
+        return { ctl, clock };
+      };
+
+      beforeEach(() => {
+        nodeService.getNode.mockResolvedValue({ nodeId: 'node123', publicKey: 'test-public-key', status: 'online' });
+        req.body = { nodeId: 'node123' };
+      });
+
+      it('answers at once when a job is already waiting, without holding', async () => {
+        const { ctl } = held();
+        const spy = jest.spyOn(jobService, 'assignJobsToNode');
+        await ctl.pollJobs(req, res);
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(res.json.mock.calls[0][0].jobs.length).toBeGreaterThan(0);
+      });
+
+      it('returns the instant a job appears mid-hold', async () => {
+        const { ctl } = held();
+        let n = 0;
+        jest.spyOn(jobService, 'assignJobsToNode').mockImplementation(async () => {
+          n += 1;
+          return n < 3 ? [] : [{ id: 'j1', prompt: 'p', lockToken: 'tok' }];
+        });
+        await ctl.pollJobs(req, res);
+        expect(n).toBe(3);                                   // two empties, then work
+        expect(res.json.mock.calls[0][0].jobs[0].id).toBe('j1');
+      });
+
+      it('gives up at the deadline and answers empty', async () => {
+        const { ctl } = held();
+        jest.spyOn(jobService, 'assignJobsToNode').mockResolvedValue([]);
+        await ctl.pollJobs(req, res);
+        expect(res.json).toHaveBeenCalledWith({ success: true, jobs: [] });
+      });
+
+      it('stops claiming when the node hangs up mid-hold', async () => {
+        // Continuing would keep claiming jobs for a connection nobody will read,
+        // and every claim locks a job for the full lock window.
+        const { ctl } = held();
+        const spy = jest.spyOn(jobService, 'assignJobsToNode').mockResolvedValue([]);
+        res.destroyed = true;
+        await ctl.pollJobs(req, res);
+        expect(spy).toHaveBeenCalledTimes(1);                // the first, then it stops
+        expect(res.json).not.toHaveBeenCalled();
+      });
+
+      it('defaults hold and cadence when not configured', async () => {
+        const ctl = new JobController(jobService, nodeService);
+        expect(ctl.holdMs).toBe(25000);   // under the node's 30s client timeout
+        expect(ctl.pollMs).toBe(250);
+        expect(typeof ctl.now).toBe('function');
+        await expect(ctl.sleep(0)).resolves.toBeUndefined();
+      });
+    });
+
     // maxJobs lands in a SQL LIMIT and node enrollment is open to the internet,
     // so an unclamped value let one anonymous node lock the entire public queue
     // — a fleet-wide DoS and a way to be handed every caller's prompts.

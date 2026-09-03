@@ -37,7 +37,7 @@ describe('constructor defaults', () => {
     const w = new JobWorker({ identity: IDENT, serverUrl: 's', post: () => {}, runJob: () => {} });
     expect(w.activeJobs()).toBe(0);
     expect(typeof w.now()).toBe('number');
-    expect(w.pollMinMs).toBe(5000);
+    expect(w.pollMinMs).toBe(250);
     expect(w.pollMaxMs).toBe(60000);
     expect(w.heartbeatMs).toBe(30000);
     expect(w.flushMs).toBe(1000);
@@ -382,27 +382,81 @@ describe('start / stop loop + backoff', () => {
     expect(w.running).toBe(false);
   });
 
-  test('empty polls back off exponentially to pollMaxMs and a job resets the cadence', async () => {
+  test('an empty poll from a server that does NOT hold still backs off', async () => {
+    // A node can be newer than the server it talks to. Against a server that
+    // answers empty in milliseconds, re-opening at once would be four polls a
+    // second forever on every idle node in the fleet. Elapsed time tells a held
+    // poll from an unheld one with no version negotiation.
     const sch = makeScheduler();
-    let jobs = [];
-    const { post } = makePost(() => ({ status: 200, data: { jobs } }));
+    const { post } = makePost(() => ({ status: 200, data: { jobs: [] } }));
     const w = new JobWorker({
-      identity: IDENT, serverUrl: 's', post, runJob: () => Promise.resolve(), now: () => 1,
+      identity: IDENT, serverUrl: 's', post, runJob: () => Promise.resolve(),
+      now: () => 1,                       // clock never advances → nothing looks held
       schedule: sch.schedule, cancel: sch.cancel, pollMinMs: 1000, pollMaxMs: 4000,
     });
     w.start();
     await flush();
-    expect(sch.scheduled.map((s) => s.ms)).toEqual([2000]); // 1000*2 after 1st empty poll
     sch.scheduled[0].fn(); await flush();
     sch.scheduled[1].fn(); await flush();
-    expect(sch.scheduled.map((s) => s.ms)).toEqual([2000, 4000, 4000]); // capped at pollMaxMs
+    expect(sch.scheduled.map((s) => s.ms)).toEqual([2000, 4000, 4000]);   // old behaviour, intact
+  });
+
+  test('an empty poll re-opens immediately instead of backing off', async () => {
+    // The server holds an empty poll open now, so the request IS the wait:
+    // returning means either there is work or the hold expired, and both call for
+    // asking again at once. The old exponential backoff -- 5s doubling to 60s --
+    // left an idle rig on a 20-40s rung, so a job waited that long just to be
+    // ASKED for. That was the largest term in time-to-first-token.
+    const sch = makeScheduler();
+    let jobs = [];
+    const { post } = makePost(() => ({ status: 200, data: { jobs } }));
+    // The clock jumps 25s per poll: what a server that HELD the request looks like.
+    let t = 0;
+    const w = new JobWorker({
+      identity: IDENT, serverUrl: 's', post, runJob: () => Promise.resolve(),
+      now: () => { t += 25000; return t; },
+      schedule: sch.schedule, cancel: sch.cancel, pollMinMs: 1000, pollMaxMs: 4000,
+    });
+    w.start();
+    await flush();
+    sch.scheduled[0].fn(); await flush();
+    sch.scheduled[1].fn(); await flush();
+    // Flat, not 1000 -> 2000 -> 4000.
+    expect(sch.scheduled.map((s) => s.ms)).toEqual([1000, 1000, 1000]);
 
     jobs = [{ id: 'JB', prompt: 'p' }];
     sch.scheduled[2].fn(); await flush();
-    jobs = [];
-    // a job schedules its own heartbeat timer (30000); the poll tick is the last entry
     const pollTicks = sch.scheduled.filter((s) => s.ms !== 30000);
-    expect(pollTicks[pollTicks.length - 1].ms).toBe(1000); // work → reset to pollMinMs
+    expect(pollTicks[pollTicks.length - 1].ms).toBe(1000);   // work changes nothing
+  });
+
+  test('an error still backs off, and a success clears it', async () => {
+    // The one case where an empty return is NOT a completed wait: a server that
+    // is down or rejecting must not be hammered once per round trip.
+    const sch = makeScheduler();
+    let fail = true;
+    // Recovery returns WORK, not an empty poll: against a server that does not
+    // hold, an empty poll is not evidence of recovery and correctly keeps backing
+    // off. Being handed a job is.
+    const { post } = makePost(() => {
+      if (fail) throw new Error('offline');
+      return { status: 200, data: { jobs: [{ id: 'JB', prompt: 'p' }] } };
+    });
+    const w = new JobWorker({
+      identity: IDENT, serverUrl: 's', post, runJob: () => Promise.resolve(), now: () => 1,
+      schedule: sch.schedule, cancel: sch.cancel, pollMinMs: 1000, pollMaxMs: 4000,
+    });
+    w.on('error', () => {});
+    w.start();
+    await flush();
+    sch.scheduled[0].fn(); await flush();
+    sch.scheduled[1].fn(); await flush();
+    expect(sch.scheduled.map((s) => s.ms)).toEqual([2000, 4000, 4000]);  // capped
+
+    fail = false;
+    sch.scheduled[2].fn(); await flush();
+    const ticks = sch.scheduled.filter((s) => s.ms !== 30000);
+    expect(ticks[ticks.length - 1].ms).toBe(1000);   // work → back to the floor
   });
 
   test('a poll error backs off, is emitted when listened, and never kills the loop when not', async () => {

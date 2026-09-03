@@ -12,9 +12,24 @@ function clampMaxJobs(v) {
 }
 
 class JobController {
-  constructor(jobService, nodeService) {
+  // `opts` is injected in tests so the long-poll below needs no real timers:
+  // same shape openaiController already uses for the caller-side hold.
+  constructor(jobService, nodeService, opts = {}) {
     this.jobService = jobService;
     this.nodeService = nodeService;
+    // How long to hold an empty poll open before answering with nothing.
+    //
+    // 25s, and the margin is the point: the node posts with a 30s client timeout
+    // (makeCliJobWorker), so a 30s hold would have the client giving up at the
+    // same instant the server answers -- every idle poll a coin-flip between a
+    // clean empty response and a transport error that backs the node off. Well
+    // under the 5-minute no-bytes cutoff a proxy enforces, too.
+    this.holdMs = opts.holdMs || 25000;
+    // How often to re-run the claim while holding. Same 250ms the gateway uses
+    // to watch a job it is waiting on.
+    this.pollMs = opts.pollMs || 250;
+    this.now = opts.now || Date.now;
+    this.sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
   }
 
   // Look up the node for a request and prove the caller really is that node.
@@ -91,7 +106,27 @@ class JobController {
       // with maxJobs: 100000 locks every pending public job for the full LOCK_MS
       // — which is both a fleet-wide denial of service and a way to be handed
       // every other caller's prompts.
-      const jobs = await this.jobService.assignJobsToNode(nodeId, clampMaxJobs(maxJobs));
+      // Long-poll rather than answer empty immediately.
+      //
+      // The node used to poll on an exponential backoff -- 5s doubling to 60s --
+      // so an idle rig sat on a 20-40s rung and a job waited that long to be
+      // ASKED for, before any model work began. That was invisible while nodes
+      // kept a model resident and polled steadily; with demand mode it became
+      // the largest term in time-to-first-token, larger than the model load.
+      //
+      // Holding the request open costs one connection per idle node and needs no
+      // protocol change: same route, same signature check, same atomic claim, so
+      // it does not matter which server instance holds which connection.
+      const limit = clampMaxJobs(maxJobs);
+      const deadline = this.now() + this.holdMs;
+      let jobs = await this.jobService.assignJobsToNode(nodeId, limit);
+      while (!jobs.length && this.now() < deadline) {
+        // Stop holding if the node hung up: continuing would keep claiming jobs
+        // for a connection nobody will read, and each claim locks a job.
+        if (res.writableEnded || res.destroyed) return;
+        await this.sleep(this.pollMs);
+        jobs = await this.jobService.assignJobsToNode(nodeId, limit);
+      }
 
       res.json({
         success: true,
