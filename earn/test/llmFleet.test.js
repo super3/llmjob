@@ -574,3 +574,64 @@ describe('LlmFleet', () => {
     });
   });
 });
+
+describe('stopAndWait', () => {
+  // stop() signals and returns; a 30 GB model is still tearing down when it does.
+  // The caller restarting the miner needs the card back, not a promise that
+  // someone has been told to give it back.
+  //
+  // One live instance, because startup is SERIALISED: start() reports the planned
+  // count while the rest queue behind the first card's settle.
+  const oneUp = async () => {
+    const { fleet, mgrs } = makeFleet();
+    await fleet.start([{ index: 0 }], {});
+    mgrs.forEach((m) => { m.running = true; m.proc = {}; });
+    return { fleet, mgrs };
+  };
+  const tick = () => new Promise((r) => setImmediate(r));
+
+  test('does not resolve until the process has actually exited', async () => {
+    const { fleet, mgrs } = await oneUp();
+    let done = false;
+    const p = fleet.stopAndWait(5000).then((t) => { done = true; return t; });
+    await tick();
+    expect(mgrs[0].stopped).toBe(true);        // signalled…
+    expect(done).toBe(false);                  // …but not yet gone
+    mgrs[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(false);      // false = exited, not timed out
+  });
+
+  test('does not wait on a manager whose process is already gone', async () => {
+    const { fleet, mgrs } = await oneUp();
+    mgrs.forEach((m) => { m.running = false; m.proc = null; });
+    await expect(fleet.stopAndWait(5000)).resolves.toBe(false);
+  });
+
+  test('gives up rather than wedging the handback forever, and says so', async () => {
+    // A stuck child is better reported by the miner failing to start than by
+    // hanging here; the VRAM check downstream is the backstop.
+    const { fleet } = await oneUp();
+    const lines = [];
+    fleet.on('log', (l) => lines.push(l.line));
+    await expect(fleet.stopAndWait(10)).resolves.toBe(true);
+    expect(lines.join(' ')).toContain('did not exit');
+  });
+
+  test('defaults its budget, and tolerates a timer with no unref', async () => {
+    const realSetTimeout = global.setTimeout;
+    global.setTimeout = (fn, ms) => { const h = realSetTimeout(fn, ms); return { _h: h }; };
+    try {
+      const { fleet, mgrs } = await oneUp();
+      const p = fleet.stopAndWait();          // no argument → default budget
+      mgrs[0].emit('stopped', 0);
+      await expect(p).resolves.toBe(false);
+    } finally {
+      global.setTimeout = realSetTimeout;
+    }
+  });
+
+  test('a fleet with nothing running resolves at once', async () => {
+    const { fleet } = makeFleet();
+    await expect(fleet.stopAndWait(5000)).resolves.toBe(false);
+  });
+});
