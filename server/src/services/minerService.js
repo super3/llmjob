@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const NodeService = require('./nodeService');
 
 // A worker unseen for this long drops off the "online" list; rows unseen for
 // PRUNE_TTL are deleted entirely. Clients check in every ~60s, so 5 minutes is
@@ -9,6 +10,11 @@ const crypto = require('crypto');
 const OFFLINE_THRESHOLD = 5 * 60 * 1000;   // 5 minutes
 const PRUNE_TTL = 90 * 60 * 1000;          // 90 minutes
 const ADDRESS_RE = /^prl1p[0-9a-z]{20,80}$/i;
+// A node id as either width nodeService recognises — the current 16 hex
+// characters, or the 6 a machine enrolled under before ids were widened.
+const NODE_ID_RE = new RegExp(
+  `^([0-9a-f]{${NodeService.LEGACY_NODE_ID_HEX}}|[0-9a-f]{${NodeService.NODE_ID_HEX}})$`
+);
 const MAX_HASHRATE = 1e6;                  // TH/s sanity clamp
 const MAX_VRAM_MB = 1e6;                   // VRAM MB sanity clamp (~1 TB)
 
@@ -158,12 +164,16 @@ class MinerService {
     //
     // Shape-validated, not merely length-clamped: this ping is unauthenticated, and
     // the value is rendered into a chip on the public board. A real node id is
-    // sha256(publicKey) truncated to 6 hex chars — both nodeService's
+    // sha256(publicKey) truncated to NODE_ID_HEX hex chars — both nodeService's
     // generateNodeFingerprint and the client's node.fingerprint() produce exactly
     // that — so anything else is junk and stored as null rather than painted onto
     // the board. It remains a display hint only: nothing routes or authorizes on it.
+    //
+    // Both widths are accepted: ids were widened from 6 to 16 hex characters (see
+    // nodeService), and a machine enrolled before that keeps its 6-character id.
+    // Rejecting the old width would blank the serving chip for every existing rig.
     const rawNodeId = input.nodeId == null ? '' : String(input.nodeId).trim();
-    const nodeId = /^[0-9a-f]{6}$/.test(rawNodeId) ? rawNodeId : null;
+    const nodeId = NODE_ID_RE.test(rawNodeId) ? rawNodeId : null;
     const id = minerFingerprint(address, worker);
     const now = Date.now();
 
@@ -191,7 +201,15 @@ class MinerService {
   async getPublicMiners() {
     const now = Date.now();
     await this.db.query('DELETE FROM miners WHERE last_seen < $1', [now - PRUNE_TTL]);
-    const r = await this.db.query('SELECT * FROM miners WHERE last_seen >= $1', [now - OFFLINE_THRESHOLD]);
+    // Named columns, not `SELECT *`: this is an unauthenticated endpoint that the
+    // network page hits every 15 seconds per open tab, and the eight fields below
+    // are all it renders.
+    const r = await this.db.query(
+      `SELECT address, worker, gpu, hashrate, accepted, vram_used, vram_total,
+              version, llm_model, node_id, last_seen
+         FROM miners WHERE last_seen >= $1`,
+      [now - OFFLINE_THRESHOLD]
+    );
 
     // One card per online worker row, then folded into hosts by (address, base).
     // Drop each multi-GPU host's stale bare-worker aggregate row first so it

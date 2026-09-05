@@ -696,6 +696,103 @@ describe('JobService', () => {
     });
   });
 
+  // A gateway watching a job re-read every chunk row on every 250ms poll, so the
+  // DB cost of one generation grew with the square of its length. The cursor
+  // reads each row once — but must still see a requeue's rewind, which is the
+  // only thing about the chunk table that is not append-only.
+  describe('getJobResult with a poll cursor', () => {
+    // A caller hands over a bare object; _chunksSince initialises it.
+    const newCursor = () => ({});
+    // Count only the chunk-table reads, and how many rows each one returned.
+    function countChunkReads() {
+      const real = db.query.bind(db);
+      const stats = { reads: 0, rows: 0 };
+      db.query = async (sql, params) => {
+        const r = await real(sql, params);
+        if (/FROM job_chunks/.test(sql)) { stats.reads++; stats.rows += r.rows.length; }
+        return r;
+      };
+      return stats;
+    }
+
+    async function runningJob() {
+      const job = await jobService.createJob({ prompt: 'Test', userId: 'u' });
+      await jobService.assignJobsToNode('node123', 1);
+      await jobService.handleHeartbeat(job.id, 'node123');
+      return job;
+    }
+
+    it('reads each chunk row exactly once across many polls', async () => {
+      const job = await runningJob();
+      const cursor = newCursor();
+      const stats = countChunkReads();
+
+      for (let i = 0; i < 5; i++) {
+        await jobService.storeChunk(job.id, 'node123', { chunkIndex: i, content: 'c' + i });
+        // Poll twice per chunk, as a 250ms gateway loop would against a slower node.
+        expect((await jobService.getJobResult(job.id, cursor)).partial)
+          .toBe(Array.from({ length: i + 1 }, (_, k) => 'c' + k).join(''));
+        expect((await jobService.getJobResult(job.id, cursor)).partial)
+          .toBe(Array.from({ length: i + 1 }, (_, k) => 'c' + k).join(''));
+      }
+
+      expect(stats.reads).toBe(10);  // one per poll…
+      expect(stats.rows).toBe(5);    // …but only 5 rows in total, not 30
+    });
+
+    it('rewinds when a requeue drops the abandoned attempt\'s chunks', async () => {
+      const job = await runningJob();
+      const cursor = newCursor();
+      await jobService.storeChunk(job.id, 'node123', { chunkIndex: 0, content: 'dead attempt' });
+      expect((await jobService.getJobResult(job.id, cursor)).partial).toBe('dead attempt');
+
+      // Requeue: checkTimeouts deletes the old chunks and stamps returnedToQueue.
+      await expireLock(job.id);
+      expect(await jobService.checkTimeouts()).toEqual([job.id]);
+
+      // The retry starts again at index 0. Without the rewind the cursor would
+      // still hold the dead attempt's text and splice the retry onto it.
+      await jobService.assignJobsToNode('node123', 1);
+      await jobService.handleHeartbeat(job.id, 'node123');
+      await jobService.storeChunk(job.id, 'node123', { chunkIndex: 0, content: 'retry' });
+
+      const after = await jobService.getJobResult(job.id, cursor);
+      expect(after.partial).toBe('retry');
+      expect(after.chunks).toHaveLength(1);
+    });
+
+    it('reads a completed job whole, even on a cursor that missed chunks', async () => {
+      const job = await runningJob();
+      // A cursor that already believes it is past the end of the table, and whose
+      // mark matches so it will not reset.
+      const cursor = { chunks: [], after: 99, mark: null };
+      await jobService.storeChunk(job.id, 'node123', { chunkIndex: 0, content: 'all ' });
+      await jobService.storeChunk(job.id, 'node123', { chunkIndex: 1, content: 'of it' });
+      await jobService.completeJob(job.id, 'node123');
+
+      // Terminal state ignores the cursor, so the answer is never short a chunk.
+      const done = await jobService.getJobResult(job.id, cursor);
+      expect(done.result).toBe('all of it');
+      expect(done.chunks).toHaveLength(2);
+    });
+
+    it('still reads in full when no cursor is passed', async () => {
+      const job = await runningJob();
+      await jobService.storeChunk(job.id, 'node123', { chunkIndex: 0, content: 'a' });
+      await jobService.storeChunk(job.id, 'node123', { chunkIndex: 1, content: 'b' });
+      expect((await jobService.getJobResult(job.id)).partial).toBe('ab');
+      expect((await jobService.getJobResult(job.id)).partial).toBe('ab');
+    });
+
+    it('initialises a bare cursor object', async () => {
+      const job = await runningJob();
+      await jobService.storeChunk(job.id, 'node123', { chunkIndex: 0, content: 'x' });
+      const bare = {}; // no keys at all — the caller supplies nothing
+      expect((await jobService.getJobResult(job.id, bare)).partial).toBe('x');
+      expect(bare).toMatchObject({ after: 0, mark: null });
+    });
+  });
+
   describe('getQueueStats', () => {
     it('counts known statuses and ignores others', async () => {
       await jobService.createJob({ prompt: 'a', userId: 'u' });

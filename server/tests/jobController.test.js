@@ -106,10 +106,10 @@ describe('JobController', () => {
         const clock = { t: 0 };
         const ctl = new JobController(jobService, nodeService, Object.assign({
           holdMs: 1000,
-          pollMs: 100,
+          idleRecheckMs: 100,
           now: () => clock.t,
-          // Injected: advancing the clock IS the sleep, so no real time passes.
-          sleep: async (ms) => { clock.t += ms; },
+          // Injected: advancing the clock IS the wait, so no real time passes.
+          awaitQueue: async (since, ms) => { clock.t += ms; },
         }, opts));
         return { ctl, clock };
       };
@@ -160,9 +160,173 @@ describe('JobController', () => {
       it('defaults hold and cadence when not configured', async () => {
         const ctl = new JobController(jobService, nodeService);
         expect(ctl.holdMs).toBe(25000);   // under the node's 30s client timeout
-        expect(ctl.pollMs).toBe(250);
+        // The fallback recheck, not the dispatch mechanism: an in-process job
+        // wakes the hold immediately via the queue signal. It was 250ms, which
+        // cost every idle node 16 SQL statements a second to learn nothing.
+        expect(ctl.idleRecheckMs).toBe(2000);
         expect(typeof ctl.now).toBe('function');
-        await expect(ctl.sleep(0)).resolves.toBeUndefined();
+        // The default wait is the real queue signal. With the version already
+        // moved it short-circuits, which is what makes this safe to await here.
+        JobService.signalQueue();
+        await expect(ctl.awaitQueue(-1, 0)).resolves.toBeUndefined();
+      });
+
+      // The point of the whole change: an idle hold must not re-run the claim on
+      // a timer. It claims once, then waits to be told.
+      it('claims once and then waits, instead of polling on a timer', async () => {
+        const { ctl, clock } = held({ holdMs: 10000, idleRecheckMs: 2000 });
+        const spy = jest.spyOn(jobService, 'assignJobsToNode').mockResolvedValue([]);
+        await ctl.pollJobs(req, res);
+        // 10s hold / 2s fallback = 5 waits, so 6 claims. The old 250ms cadence
+        // would have run 41.
+        expect(spy).toHaveBeenCalledTimes(6);
+        expect(clock.t).toBe(10000);
+      });
+
+      it('wakes on the queue signal without waiting for the fallback tick', async () => {
+        // A real awaitQueue (not the clock-advancing fake), so this exercises the
+        // signal path end to end: the wait resolves because a job was created,
+        // not because time passed.
+        const clock = { t: 0 };
+        const ctl = new JobController(jobService, nodeService, {
+          holdMs: 60000,
+          idleRecheckMs: 60000,           // a tick this long would never fire in time
+          now: () => clock.t,
+        });
+        let n = 0;
+        jest.spyOn(jobService, 'assignJobsToNode').mockImplementation(async () => {
+          n += 1;
+          return n === 1 ? [] : [{ id: 'j-signal', prompt: 'p', lockToken: 'tok' }];
+        });
+
+        const done = ctl.pollJobs(req, res);
+        await new Promise((r) => setImmediate(r));  // let the hold reach its wait
+        JobService.signalQueue();                   // …and a job shows up
+        await done;
+
+        expect(res.json.mock.calls[0][0].jobs[0].id).toBe('j-signal');
+        expect(clock.t).toBe(0);                    // no fallback tick was needed
+      });
+
+      it('does not sleep through a job created while the claim was in flight', async () => {
+        // The race the version counter exists for: the signal fires AFTER the
+        // empty claim returned but BEFORE the wait starts. Without capturing the
+        // version first, the wait would block for the full fallback tick with
+        // work already sitting in the queue.
+        const clock = { t: 0 };
+        const ctl = new JobController(jobService, nodeService, {
+          holdMs: 60000,
+          idleRecheckMs: 60000,
+          now: () => clock.t,
+        });
+        let n = 0;
+        jest.spyOn(jobService, 'assignJobsToNode').mockImplementation(async () => {
+          n += 1;
+          if (n === 1) {
+            JobService.signalQueue();   // arrives before anyone is waiting
+            return [];
+          }
+          return [{ id: 'j-race', prompt: 'p', lockToken: 'tok' }];
+        });
+
+        await ctl.pollJobs(req, res);
+        expect(res.json.mock.calls[0][0].jobs[0].id).toBe('j-race');
+        expect(clock.t).toBe(0);
+      });
+    });
+
+    describe('queue signal', () => {
+      // Records the timers the wait sets and clears, so "cleans up after itself"
+      // is actually asserted rather than assumed.
+      const spyTimers = () => {
+        const t = { set: 0, cleared: 0, pending: new Map() };
+        let id = 0;
+        return {
+          stats: t,
+          timers: {
+            setTimeout: (fn, ms) => { t.set++; const k = ++id; t.pending.set(k, { fn, ms }); return k; },
+            clearTimeout: (k) => { t.cleared++; t.pending.delete(k); },
+          },
+          fire: (k) => { const e = t.pending.get(k); t.pending.delete(k); e.fn(); },
+        };
+      };
+
+      it('resolves a waiter as soon as the queue changes, and clears its timer', async () => {
+        const { stats, timers } = spyTimers();
+        const since = JobService.queueVersion();
+        let resolved = false;
+        const wait = JobService.awaitQueueChange(since, 60000, timers).then(() => { resolved = true; });
+        await new Promise((r) => setImmediate(r));
+        expect(resolved).toBe(false);
+        expect(stats.set).toBe(1);
+
+        JobService.signalQueue();
+        await wait;
+        expect(resolved).toBe(true);
+        // The fallback timer must not be left pending — otherwise every held poll
+        // leaks one for its full duration.
+        expect(stats.cleared).toBe(1);
+        expect(stats.pending.size).toBe(0);
+      });
+
+      it('returns immediately when the queue already moved, setting no timer', async () => {
+        const { stats, timers } = spyTimers();
+        const since = JobService.queueVersion();
+        JobService.signalQueue();
+        await JobService.awaitQueueChange(since, 60000, timers);
+        expect(stats.set).toBe(0);
+      });
+
+      it('falls back to the timeout when nothing signals, and unregisters', async () => {
+        const { timers, fire, stats } = spyTimers();
+        const since = JobService.queueVersion();
+        const wait = JobService.awaitQueueChange(since, 5, timers);
+        fire([...stats.pending.keys()][0]);
+        await wait;
+        // Having lost the race, the waiter must not be left registered: the next
+        // signal has no one to wake and must not throw.
+        expect(() => JobService.signalQueue()).not.toThrow();
+      });
+
+      it('resolves once even when a scheduler fires synchronously', async () => {
+        // The waiter is registered before the timer is set, so a synchronous
+        // scheduler reaches the cleanup with no timer handle yet.
+        const cleared = [];
+        await JobService.awaitQueueChange(JobService.queueVersion(), 0, {
+          setTimeout: (fn) => { fn(); return 7; },
+          clearTimeout: (k) => cleared.push(k),
+        });
+        expect(cleared).toEqual([null]);          // nothing pending to cancel
+        expect(() => JobService.signalQueue()).not.toThrow();  // and not still registered
+      });
+
+      it('uses real timers when none are injected', async () => {
+        const since = JobService.queueVersion();
+        await JobService.awaitQueueChange(since, 1);
+      });
+
+      it('signalling with no waiters is a no-op', () => {
+        expect(() => JobService.signalQueue()).not.toThrow();
+        expect(JobService.queueVersion()).toBeGreaterThan(0);
+      });
+
+      it('createJob signals the queue so a held poll wakes', async () => {
+        const before = JobService.queueVersion();
+        await jobService.createJob({ prompt: 'wake up', userId: 'user123' });
+        expect(JobService.queueVersion()).toBeGreaterThan(before);
+      });
+
+      it('checkTimeouts signals only when it actually requeued something', async () => {
+        const quiet = JobService.queueVersion();
+        expect(await jobService.checkTimeouts()).toEqual([]);
+        expect(JobService.queueVersion()).toBe(quiet);   // nothing requeued, nothing to say
+
+        // Claim whatever is at the head of the queue, then strand it.
+        const [claimed] = await jobService.assignJobsToNode('node123', 1);
+        await db.query('UPDATE jobs SET lock_expires_at = $1 WHERE id = $2', [Date.now() - 1, claimed.id]);
+        const before = JobService.queueVersion();
+        expect(await jobService.checkTimeouts()).toEqual([claimed.id]);
+        expect(JobService.queueVersion()).toBeGreaterThan(before);
       });
     });
 

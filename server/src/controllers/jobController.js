@@ -1,3 +1,5 @@
+const JobService = require('../services/jobService');
+
 // The most jobs one poll may claim. A node runs them one at a time
 // (jobWorker.processJob awaits each), so a large batch buys nothing but holds
 // locks the rest of the fleet could be working.
@@ -25,11 +27,25 @@ class JobController {
     // clean empty response and a transport error that backs the node off. Well
     // under the 5-minute no-bytes cutoff a proxy enforces, too.
     this.holdMs = opts.holdMs || 25000;
-    // How often to re-run the claim while holding. Same 250ms the gateway uses
-    // to watch a job it is waiting on.
-    this.pollMs = opts.pollMs || 250;
+    // How long to wait between claim attempts when NOTHING has told us the queue
+    // changed. This is a safety net, not the dispatch mechanism: a job created in
+    // this process wakes the hold immediately (JobService's queue signal), so
+    // this only covers what that signal cannot see — a job created by another
+    // replica.
+    //
+    // It was 250ms, which meant every idle node re-ran the full claim
+    // transaction four times a second forever: 16 SQL statements per second per
+    // idle node, each taking a pooled connection, purely to learn there was
+    // still nothing to do. At 2s the idle cost drops 8x and dispatch latency
+    // actually improves, because the common case no longer waits for a tick at
+    // all.
+    this.idleRecheckMs = opts.idleRecheckMs || 2000;
     this.now = opts.now || Date.now;
-    this.sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+    // The one wait between claim attempts: returns as soon as the queue changes,
+    // or after idleRecheckMs. Injectable so a test can stand in for the wait
+    // without real timers.
+    this.awaitQueue = opts.awaitQueue
+      || ((since, ms) => JobService.awaitQueueChange(since, ms));
   }
 
   // Look up the node for a request and prove the caller really is that node.
@@ -119,12 +135,18 @@ class JobController {
       // it does not matter which server instance holds which connection.
       const limit = clampMaxJobs(maxJobs);
       const deadline = this.now() + this.holdMs;
+      // Captured BEFORE each claim, so a job created in the window between a
+      // claim coming back empty and the wait starting has already moved the
+      // version and the wait returns at once rather than sleeping through work
+      // that is sitting in the queue.
+      let version = JobService.queueVersion();
       let jobs = await this.jobService.assignJobsToNode(nodeId, limit);
       while (!jobs.length && this.now() < deadline) {
         // Stop holding if the node hung up: continuing would keep claiming jobs
         // for a connection nobody will read, and each claim locks a job.
         if (res.writableEnded || res.destroyed) return;
-        await this.sleep(this.pollMs);
+        await this.awaitQueue(version, this.idleRecheckMs);
+        version = JobService.queueVersion();
         jobs = await this.jobService.assignJobsToNode(nodeId, limit);
       }
 

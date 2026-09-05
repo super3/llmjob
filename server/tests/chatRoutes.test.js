@@ -9,7 +9,8 @@ const { initChatRoutes } = require('../src/routes');
 const ChatUsageService = require('../src/services/chatUsageService');
 const ApiKeyService = require('../src/services/apiKeyService');
 const ChatController = require('../src/controllers/chatController');
-const { parseSSE, sanitizeMessages, estimateTokens, upstreamErrorMessage } = ChatController;
+const { parseSSE, estimateTokens, upstreamErrorMessage } = ChatController;
+const { MAX_PROMPT_CHARS } = require('../src/controllers/gatewayShared');
 
 // The controller logs upstream failures via console.error; silence it so the
 // test output stays readable (assertions check the returned payloads instead).
@@ -82,6 +83,24 @@ describe('Chat gateway — integration', () => {
     { choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 } },
     '[DONE]'
   ];
+
+  // Regression: an over-budget conversation must still carry the caller's latest
+  // question upstream. Both gateways share one clamp now, so this pins the chat
+  // half of it at the route level.
+  it('forwards the newest turn when the conversation is over the prompt budget', async () => {
+    const calls = [];
+    const app = makeApp(db, { fetchFn: streamFetch(STREAM_EVENTS, calls), now: stepClock() });
+    const history = Array.from({ length: 40 }, (_, i) => ({
+      role: i % 2 ? 'assistant' : 'user', content: 'x'.repeat(1000),
+    }));
+    await request(app).post('/api/chat/completions')
+      .send({ messages: [...history, { role: 'user', content: 'What is the capital of France?' }] });
+
+    const sent = calls[0].body.messages;
+    expect(sent[sent.length - 1]).toEqual({ role: 'user', content: 'What is the capital of France?' });
+    const chars = sent.filter((m) => m.role !== 'system').reduce((n, m) => n + m.content.length, 0);
+    expect(chars).toBeLessThanOrEqual(MAX_PROMPT_CHARS);
+  });
 
   it('streams deltas then a final meta event, and records usage + totals', async () => {
     const calls = [];
@@ -888,37 +907,6 @@ describe('Chat gateway — pure helpers', () => {
     expect(estimateTokens('abcd')).toBe(1);
     expect(estimateTokens('')).toBe(0);
     expect(estimateTokens(null)).toBe(0);
-  });
-
-  it('sanitizeMessages coerces roles, drops empties/non-objects, and caps length', () => {
-    const out = sanitizeMessages([
-      null,
-      'not an object',
-      { role: 'tool', content: 'demoted to user' },
-      { role: 'user', content: null },
-      { role: 'assistant', content: 'kept' }
-    ]);
-    expect(out).toEqual([
-      { role: 'user', content: 'demoted to user' },
-      { role: 'assistant', content: 'kept' }
-    ]);
-  });
-
-  it('sanitizeMessages keeps the newest turns and trims/drops the oldest', () => {
-    const big = 'a'.repeat(30000);
-    // The current question is the LAST message; it must survive even when an earlier
-    // turn already exceeds the budget. (The old front-to-back trim dropped it and
-    // left the model answering stale context.)
-    const out = sanitizeMessages([{ role: 'user', content: big }, { role: 'user', content: 'current question' }]);
-    expect(out[out.length - 1]).toEqual({ role: 'user', content: 'current question' });
-    const total = out.reduce((n, m) => n + m.content.length, 0);
-    expect(total).toBeLessThanOrEqual(24000);
-  });
-
-  it('sanitizeMessages drops the oldest turn when the newest already fills the budget', () => {
-    const big = 'b'.repeat(24000);
-    const out = sanitizeMessages([{ role: 'user', content: 'old' }, { role: 'user', content: big }]);
-    expect(out).toEqual([{ role: 'user', content: big }]); // newest fills the budget → oldest dropped entirely
   });
 
   it('upstreamErrorMessage extracts a reason from JSON, raw text, or status', async () => {

@@ -2,22 +2,66 @@
 
 const nacl = require('tweetnacl');
 const naclUtil = require('tweetnacl-util');
+const crypto = require('crypto');
 const {
-  generateKeypair, fingerprint, pingMessage, signMessage,
-  buildJoinBody, buildTelemetry, signedBody, buildPingBody,
+  generateKeypair, fingerprint, adoptedNodeId, pingMessage, signMessage,
+  buildJoinBody, buildTelemetry, signedBody, buildPingBody, NODE_ID_HEX,
 } = require('../src/shared/node');
 
 describe('generateKeypair / fingerprint', () => {
-  test('makes a base64 Ed25519 keypair and a 6-hex fingerprint', () => {
+  test('makes a base64 Ed25519 keypair and a 16-hex fingerprint', () => {
     const kp = generateKeypair();
     expect(naclUtil.decodeBase64(kp.publicKey).length).toBe(32);
     expect(naclUtil.decodeBase64(kp.secretKey).length).toBe(64);
-    expect(fingerprint(kp.publicKey)).toMatch(/^[0-9a-f]{6}$/);
+    expect(fingerprint(kp.publicKey)).toMatch(/^[0-9a-f]{16}$/);
   });
 
   test('fingerprint is stable per key and tolerates a nullish input', () => {
     expect(fingerprint('abc')).toBe(fingerprint('abc'));
-    expect(fingerprint(null)).toMatch(/^[0-9a-f]{6}$/);
+    expect(fingerprint(null)).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  // 6 hex characters (24 bits) put two honest nodes on the same id with ~3%
+  // probability at 1,000 nodes and 52% at 5,000 — and the loser was silently
+  // unusable, its signed pings refused for a key mismatch. 16 characters
+  // (64 bits) pushes the same 50% point past a billion nodes.
+  test('is wide enough that the fleet will not collide', () => {
+    expect(NODE_ID_HEX).toBe(16);
+    expect(fingerprint('a')).not.toBe(fingerprint('b'));
+  });
+
+  // The server mints ids independently (nodeService.generateNodeFingerprint). If
+  // the two ever disagree a client cannot address itself, so pin the exact
+  // digest this end produces.
+  test('is sha256(publicKey) truncated, which is what the server computes', () => {
+    const expected = crypto.createHash('sha256').update('somekey').digest('hex').slice(0, 16);
+    expect(fingerprint('somekey')).toBe(expected);
+    expect(fingerprint('')).toBe(fingerprint(null));
+  });
+});
+
+// The server is authoritative about which id a machine is enrolled under: it
+// can legitimately answer with an id we did not compute (a machine whose old
+// narrow id turns out to be taken by someone else's key enrolls on the wide one
+// instead). Not adopting it left such a machine signing every later call as an
+// id the server has no row for.
+describe('adoptedNodeId', () => {
+  test('adopts the id the server reports', () => {
+    expect(adoptedNodeId('5840fc', 'a1b2c3d4e5f60789')).toBe('a1b2c3d4e5f60789');
+    expect(adoptedNodeId('5840fc', ' a1b2c3d4e5f60789 ')).toBe('a1b2c3d4e5f60789');
+  });
+
+  test('keeps the local id when the server agrees or says nothing', () => {
+    expect(adoptedNodeId('5840fc', '5840fc')).toBe('5840fc');
+    expect(adoptedNodeId('5840fc', undefined)).toBe('5840fc');
+    expect(adoptedNodeId('5840fc', null)).toBe('5840fc');
+  });
+
+  test('ignores anything that is not a plausible id', () => {
+    // A garbled, proxied or hostile response must not rewrite our identity.
+    for (const bad of ['', 'nope', '<script>', 'ABCDEF', '12345', 'f'.repeat(65), 42, {}]) {
+      expect(adoptedNodeId('5840fc', bad)).toBe('5840fc');
+    }
   });
 });
 

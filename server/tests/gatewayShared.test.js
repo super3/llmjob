@@ -150,8 +150,54 @@ describe('clampMessages', () => {
   });
 
   it('truncates at the character budget and stops consuming', () => {
-    const msgs = [{ role: 'user', content: 'abcdef' }, { role: 'user', content: 'ignored' }];
+    // Newest-first: the LAST message gets the budget and the earlier one is
+    // dropped, not the other way round.
+    const msgs = [{ role: 'user', content: 'dropped' }, { role: 'user', content: 'abcdef' }];
     expect(clampMessages(msgs, 4)).toEqual([{ role: 'user', content: 'abcd' }]);
+  });
+
+  it('keeps the newest turns and trims/drops the oldest', () => {
+    const big = 'a'.repeat(30000);
+    // The current question is the LAST message; it must survive even when an
+    // earlier turn already exceeds the whole budget on its own. Walking
+    // front-to-back dropped it and left the model answering stale context with
+    // a 200 — silently, which is what made it so hard to see.
+    const out = clampMessages([{ role: 'user', content: big }, { role: 'user', content: 'current question' }]);
+    expect(out[out.length - 1]).toEqual({ role: 'user', content: 'current question' });
+    const total = out.reduce((n, m) => n + m.content.length, 0);
+    expect(total).toBeLessThanOrEqual(MAX_PROMPT_CHARS);
+  });
+
+  it('drops the oldest turn entirely when the newest already fills the budget', () => {
+    const big = 'b'.repeat(MAX_PROMPT_CHARS);
+    const out = clampMessages([{ role: 'user', content: 'old' }, { role: 'user', content: big }]);
+    expect(out).toEqual([{ role: 'user', content: big }]);
+  });
+
+  it('returns the kept turns in chronological order', () => {
+    const msgs = [
+      { role: 'system', content: 'be brief' },
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'second' },
+      { role: 'user', content: 'third' },
+    ];
+    expect(clampMessages(msgs, 1000)).toEqual(msgs);
+  });
+
+  it('spends the image budget on the newest images', () => {
+    // A caller who attaches a screenshot to THIS turn must not lose it to
+    // MAX_IMAGES stale ones earlier in the conversation.
+    const stale = Array.from({ length: MAX_IMAGES }, (_, i) => ({
+      type: 'image_url', image_url: { url: 'data:image/png;base64,old' + i },
+    }));
+    const out = clampMessages([
+      { role: 'user', content: stale },
+      { role: 'user', content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,NEW' } }] },
+    ], 1000);
+    const urls = out.flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+      .filter((p) => p.type === 'image_url').map((p) => p.image_url.url);
+    expect(urls).toContain('data:image/png;base64,NEW');
+    expect(urls).toHaveLength(MAX_IMAGES);
   });
 
   it('defaults to MAX_PROMPT_CHARS when no budget is given', () => {

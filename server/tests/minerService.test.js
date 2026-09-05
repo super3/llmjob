@@ -156,13 +156,14 @@ describe('MinerService (db)', () => {
 
   test('rejects a malformed node id rather than painting it onto the public board', async () => {
     // The ping is unauthenticated and the value is rendered in a chip, so anything
-    // that isn't a real fingerprint (sha256(publicKey) sliced to 6 hex) is dropped.
+    // that isn't a real fingerprint (sha256(publicKey) sliced to 16 hex, or the 6
+    // a machine enrolled under before ids were widened) is dropped.
     const junk = [
       'OFFICIAL ✓ SPONSORED — llmjob.io',   // content injection / defacement
       '<script>alert(1)</script>',
       '5840FC',                              // uppercase: not what a client emits
       '5840f',                               // too short
-      '5840fcc',                             // too long
+      '5840fcc',                             // between the two accepted widths
       'zzzzzz',                              // right length, not hex
       '  5840fc  ',                          // padded — trimmed, so this one is kept
     ];
@@ -178,6 +179,19 @@ describe('MinerService (db)', () => {
     expect(byWorker.junk4).toBeNull();
     expect(byWorker.junk5).toBeNull();
     expect(byWorker.junk6).toBe('5840fc'); // surrounding whitespace is trimmed, not rejected
+  });
+
+  // Both widths are accepted: node ids were widened from 6 to 16 hex characters,
+  // and a machine enrolled before that keeps its 6-character id. Rejecting the
+  // old width would blank the serving chip for every existing rig.
+  test('accepts a node id at either width', async () => {
+    const wide = 'a1b2c3d4e5f60789';
+    await service.reportMiner({ address: ADDR.a, worker: 'new-rig', gpu: 'RTX 4090', hashrate: 1, nodeId: wide });
+    await service.reportMiner({ address: ADDR.a, worker: 'old-rig', gpu: 'RTX 3090', hashrate: 1, nodeId: '5840fc' });
+    const rows = (await db.query('SELECT worker, node_id FROM miners ORDER BY worker', [])).rows;
+    const byWorker = rows.reduce((acc, r) => (Object.assign(acc, { [r.worker]: r.node_id })), {});
+    expect(byWorker['new-rig']).toBe(wide);
+    expect(byWorker['old-rig']).toBe('5840fc');
   });
 
   test('keeps the node id on a host whose cards report no model (adopted server / warm-up)', async () => {

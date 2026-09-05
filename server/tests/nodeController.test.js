@@ -40,8 +40,10 @@ describe('Node API Endpoints', () => {
   beforeAll(() => {
     testKeypair = nacl.sign.keyPair();
     testPublicKey = naclUtil.encodeBase64(testKeypair.publicKey);
-    const crypto = require('crypto');
-    testNodeId = crypto.createHash('sha256').update(testPublicKey).digest('hex').substring(0, 6);
+    // Derived, not hardcoded to a width: the service owns how wide a node id is
+    // (it grew from 6 hex characters to 16), and a fixture that pins the old
+    // width tests the fixture rather than the code.
+    testNodeId = NodeService.generateNodeFingerprint(testPublicKey);
   });
 
   beforeEach(async () => {

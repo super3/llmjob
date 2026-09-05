@@ -14,12 +14,30 @@ const { LLM } = require('./config');
 // `messages` array (multi-turn, system prompts preserved); older/simple jobs
 // carry a single `prompt` that becomes one user message. Only set fields are
 // included so the server's own defaults apply otherwise.
+// One message's content, preserving OpenAI's multimodal ARRAY shape.
+//
+// This used to be a bare String(), which turned
+//   content: [{type:'text',…},{type:'image_url',…}]
+// into the literal "[object Object]" and handed that to llama-server. So a
+// vision request was not merely unsupported at this end — it was corrupted into
+// nonsense that the model then answered, which is the same bug the server's
+// normalisePart exists to prevent and which was only ever fixed on that side.
+//
+// The parts are passed through as the server sent them: gatewayShared has
+// already normalised and bounded them (recognised types only, image count and
+// size capped), so re-validating here would only risk the two disagreeing. A
+// non-array content stays a plain string, which is what every text-only job is.
+function contentFor(m) {
+  if (Array.isArray(m.content)) return m.content;
+  return String(m.content == null ? '' : m.content);
+}
+
 function jobToChatBody(job, model) {
   const j = job || {};
   const messages = Array.isArray(j.messages) && j.messages.length
     ? j.messages.map((m) => {
       const mm = m || {};
-      return { role: mm.role || 'user', content: String(mm.content == null ? '' : mm.content) };
+      return { role: mm.role || 'user', content: contentFor(mm) };
     })
     : [{ role: 'user', content: String(j.prompt == null ? '' : j.prompt) }];
   const body = {

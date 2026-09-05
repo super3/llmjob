@@ -28,10 +28,44 @@ const MAX_SAMPLE_TPS = 1000;
 // measurement, so it is dropped rather than blended in.
 const MIN_SAMPLE_TOKENS = 128;
 
-// Generate a short fingerprint from a public key.
+// A node id is a truncated hash of the node's public key, so its WIDTH is the
+// network's collision budget.
+//
+// It was 6 hex characters — 24 bits, 16.7 million ids. The birthday bound puts
+// two honest nodes on the same id with ~3% probability at 1,000 nodes, 52% at
+// 5,000 and 95% at 10,000. And a collision is not cosmetic: the loser's row
+// already exists under someone else's public key, so its signed pings are
+// refused for a key mismatch, /jobs/poll 401s, and it can never be claimed to an
+// account — while registerNode reported success. A rig would run the model,
+// serve nothing, and say nothing about why. For a network whose whole premise is
+// pooling everybody's spare GPUs, that was a ceiling in the low thousands.
+//
+// 16 hex characters is 64 bits, which pushes the same 50% birthday point past a
+// billion nodes. It also makes grinding a key that collides with a CHOSEN node
+// id cost ~2^64 hashes instead of the ~13 seconds 24 bits took on a laptop.
+const NODE_ID_HEX = 16;
+
+// The old width. Machines enrolled before the change keep their 6-character id
+// in node.json and go on signing with it, so both widths must be recognised —
+// see _enrolledNodeId. Nothing MINTS one of these any more.
+const LEGACY_NODE_ID_HEX = 6;
+
+function nodeIdOfWidth(publicKey, hex) {
+  return crypto.createHash('sha256')
+    .update(String(publicKey == null ? '' : publicKey))
+    .digest('hex')
+    .slice(0, hex);
+}
+
+// Generate a node id from a public key. Mirrors earn/src/shared/node.js
+// fingerprint() exactly — the two must agree or a client cannot address itself.
 function generateNodeFingerprint(publicKey) {
-  const hash = crypto.createHash('sha256').update(publicKey).digest('hex');
-  return hash.substring(0, 6);
+  return nodeIdOfWidth(publicKey, NODE_ID_HEX);
+}
+
+// The id the same key would have had under the old width.
+function legacyNodeFingerprint(publicKey) {
+  return nodeIdOfWidth(publicKey, LEGACY_NODE_ID_HEX);
 }
 
 // Render a duration in ms as a compact uptime string, e.g. "3d 4h" or "12m".
@@ -53,8 +87,40 @@ class NodeService {
     this.db = db;
   }
 
-  async claimNode(publicKey, name, userId) {
-    const nodeId = generateNodeFingerprint(publicKey);
+  // The id this key is (or should be) enrolled under. New nodes get the current
+  // 16-character width; the two exceptions both exist so machines that minted a
+  // 6-character id under the old scheme keep working.
+  //
+  // `presentedId` is the id the CALLER says it is. nodeStore persists an id in
+  // node.json on first run and signs every later call with it, so a machine that
+  // minted one before the widening will go on presenting 6 characters forever.
+  // It is honoured only when it equals this key's OWN legacy fingerprint, which
+  // is a value only the holder of the key can produce — so a caller can never
+  // use it to name a row it does not own.
+  async _enrolledNodeId(publicKey, presentedId) {
+    const legacy = legacyNodeFingerprint(publicKey);
+    const r = await this.db.query('SELECT public_key FROM nodes WHERE node_id = $1', [legacy]);
+    const row = r.rows[0];
+
+    // Already ours. Re-registering must not mint a second row and orphan this
+    // one, which would silently drop the rig's name, its is_public flag, and the
+    // user_id that makes it eligible for its owner's private jobs.
+    if (row && row.public_key === publicKey) return legacy;
+
+    // Not enrolled yet, but the caller is signing as its legacy id — a machine
+    // whose node.json predates the widening and has never registered (or whose
+    // row was pruned). Deriving a wide id here would hand back an id the client
+    // never uses, and its very next ping would 404.
+    if (!row && presentedId === legacy) return legacy;
+
+    // Occupied by a DIFFERENT key — the old scheme's collision, which used to
+    // lock this machine out permanently — or an up-to-date client. Either way the
+    // wide id, which is how a machine that used to be stranded enrolls cleanly.
+    return generateNodeFingerprint(publicKey);
+  }
+
+  async claimNode(publicKey, name, userId, presentedId) {
+    const nodeId = await this._enrolledNodeId(publicKey, presentedId);
 
     const existing = await this.db.query('SELECT user_id, public_key FROM nodes WHERE node_id = $1', [nodeId]);
     if (existing.rows.length > 0) {
@@ -103,12 +169,22 @@ class NodeService {
   // node just marks it online, so a claimed rig can't be silently orphaned by
   // anyone who learns its public key (they'd need its secret key to get here at
   // all, but the invariant is worth keeping explicit).
-  async registerNode(publicKey, name) {
-    const nodeId = generateNodeFingerprint(publicKey);
+  async registerNode(publicKey, name, presentedId) {
+    const nodeId = await this._enrolledNodeId(publicKey, presentedId);
     const now = Date.now();
 
-    const existing = await this.db.query('SELECT user_id FROM nodes WHERE node_id = $1', [nodeId]);
+    const existing = await this.db.query('SELECT user_id, public_key FROM nodes WHERE node_id = $1', [nodeId]);
     if (existing.rows.length > 0) {
+      // Same id, different key: a fingerprint collision. Say so.
+      //
+      // This used to return success, which was the worst possible answer: the
+      // caller believed it had enrolled, while every signed call it made
+      // afterwards — ping, /jobs/poll, /complete — was refused for a key
+      // mismatch. The rig ran the model, served nothing, and had no way to learn
+      // why. claimNode has always refused this case; register now matches it.
+      if (existing.rows[0].public_key !== publicKey) {
+        return { error: 'Node key mismatch' };
+      }
       await this.db.query(
         "UPDATE nodes SET status = 'online', last_seen = $2 WHERE node_id = $1",
         [nodeId, now]
@@ -309,28 +385,39 @@ class NodeService {
     });
   }
 
+  // The public node board: the nodes their owners flagged public, plus a count
+  // of everything online.
+  //
+  // Both halves are SQL. This is an UNAUTHENTICATED endpoint and it used to be
+  // `SELECT * FROM nodes` — every column of every row, public keys included,
+  // pulled into the process to be filtered and counted in JS. The count needs no
+  // rows at all, and the listing needs four columns of the handful of rows that
+  // are actually public.
   async getPublicNodes() {
-    const r = await this.db.query('SELECT * FROM nodes', []);
     const now = Date.now();
-    const nodes = [];
-    let totalOnline = 0;
+    const [listed, counted] = await Promise.all([
+      this.db.query(
+        `SELECT node_id, name, status, last_seen FROM nodes
+          WHERE is_public = true ORDER BY seq`,
+        []
+      ),
+      this.db.query(
+        "SELECT count(*)::int AS c FROM nodes WHERE status = 'online' AND last_seen >= $1",
+        [now - OFFLINE_THRESHOLD]
+      ),
+    ]);
 
-    for (const node of r.rows) {
-      const isOnline = (now - num(node.last_seen)) <= OFFLINE_THRESHOLD;
-      if (isOnline && node.status === 'online') {
-        totalOnline++;
-      }
-      if (node.is_public) {
-        nodes.push({
-          nodeId: node.node_id,
-          name: node.name,
-          status: isOnline ? node.status : 'offline',
-          lastSeen: num(node.last_seen)
-        });
-      }
-    }
+    const nodes = listed.rows.map((node) => {
+      const lastSeen = num(node.last_seen);
+      return {
+        nodeId: node.node_id,
+        name: node.name,
+        status: (now - lastSeen) <= OFFLINE_THRESHOLD ? node.status : 'offline',
+        lastSeen
+      };
+    });
 
-    return { nodes, totalOnline };
+    return { nodes, totalOnline: counted.rows[0].c };
   }
 
   async updateNodeVisibility(nodeId, userId, isPublic) {
@@ -366,14 +453,22 @@ class NodeService {
       [now - NODE_TTL_MS]
     );
 
-    const r = await this.db.query('SELECT last_seen FROM nodes', []);
-    let onlineCount = 0;
-    let offlineCount = 0;
-    for (const row of r.rows) {
-      if (now - num(row.last_seen) <= OFFLINE_THRESHOLD) onlineCount++;
-      else offlineCount++;
-    }
-    console.log(`Node status check: ${onlineCount} online, ${offlineCount} offline`);
+    // Counted in SQL. This runs every 60 seconds and its only product is the log
+    // line below, so reading a row per node to tally two numbers in JS was the
+    // whole nodes table crossing the wire every minute to print a sentence.
+    // SUM(CASE …), deliberately, and not the tidier `count(*) FILTER (WHERE …)`:
+    // pg-mem accepts FILTER and then IGNORES it, counting every row into both
+    // columns, so the aggregate is silently wrong under the test database while
+    // looking right in production. SUM(CASE) means the same thing to both.
+    // COALESCE because SUM over an empty table is NULL, not 0.
+    const r = await this.db.query(
+      `SELECT COALESCE(SUM(CASE WHEN last_seen >= $1 THEN 1 ELSE 0 END), 0)::int AS online,
+              COALESCE(SUM(CASE WHEN last_seen IS NULL OR last_seen < $1 THEN 1 ELSE 0 END), 0)::int AS offline
+         FROM nodes`,
+      [now - OFFLINE_THRESHOLD]
+    );
+    const { online, offline } = r.rows[0];
+    console.log(`Node status check: ${online} online, ${offline} offline`);
   }
 
   async getNode(nodeId) {
@@ -405,6 +500,9 @@ class NodeService {
 }
 
 NodeService.generateNodeFingerprint = generateNodeFingerprint;
+NodeService.legacyNodeFingerprint = legacyNodeFingerprint;
+NodeService.NODE_ID_HEX = NODE_ID_HEX;
+NodeService.LEGACY_NODE_ID_HEX = LEGACY_NODE_ID_HEX;
 NodeService.SPEED_STALE_MS = SPEED_STALE_MS;
 NodeService.SPEED_ALPHA = SPEED_ALPHA;
 NodeService.MAX_SAMPLE_TPS = MAX_SAMPLE_TPS;

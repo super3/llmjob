@@ -7,7 +7,7 @@ const {
 } = OpenRouterService;
 const {
   estimateTokens, round1, errorBody, lastUserText, nodeFailMessage,
-  writeSsePreamble, pollJobResult,
+  writeSsePreamble, pollJobResult, clampMessages, joinContent, MAX_PROMPT_CHARS,
 } = require('./gatewayShared');
 
 // Free public web-chat gateway, backed by OpenRouter.
@@ -43,7 +43,6 @@ const {
 // callers opt in by selecting it. Its served model id is the fleet default in
 // jobService (JobService fills it in when the job omits `model`).
 const NETWORK_MODEL = { id: 'llmjob-gemma-4-e4b', label: 'Gemma 4 E4B' };
-const MAX_PROMPT_CHARS = 24000;      // total prompt characters kept per request
 
 // Injected as the system message on every request so the model has context about
 // LLMJob (the suggestion prompts — "What is LLMJob?", "What is PPLNS?" — are
@@ -144,7 +143,7 @@ class ChatController {
       return res.status(400).json(errorBody('Unknown model.', 'invalid_request_error'));
     }
 
-    const clean = sanitizeMessages(messages);
+    const clean = clampMessages(messages, MAX_PROMPT_CHARS);
     if (clean.length === 0) {
       return res.status(400).json(errorBody('No usable message content.', 'invalid_request_error'));
     }
@@ -158,7 +157,11 @@ class ChatController {
     const ctx = {
       res, svc,
       messages: outgoing,
-      promptText: outgoing.map((m) => m.content).join('\n'),
+      // joinContent, not a plain map/join: clampMessages can now hand back
+      // OpenAI's multimodal array content, and String()-ing that yields
+      // "[object Object]" — which would be billed as prompt text and, worse,
+      // would count an image's base64 against the caller's token estimate.
+      promptText: joinContent(outgoing),
       modelId: resolved.id,
       requestedLabel: resolved.label,
       maxTokens: this._resolveMaxTokens(body.max_tokens),
@@ -484,34 +487,6 @@ function publicMeta(meta) {
   };
 }
 
-// Clamp the conversation to allowed roles and a total character budget so a
-// single request can't run up an unbounded prompt cost. Empty turns are dropped.
-//
-// The budget is spent newest-first: we walk from the last message backward and
-// stop once it's exhausted, so the most recent turns — including the question the
-// user just asked, which the chat page always sends LAST — are the ones kept.
-// (Walking front-to-back instead spent the budget on the oldest turns and silently
-// dropped the current question in a long conversation, leaving the model to
-// "answer" stale context with a 200 and no error.) The kept turns are returned in
-// their original chronological order.
-function sanitizeMessages(messages) {
-  const allowed = new Set(['system', 'user', 'assistant']);
-  const out = [];
-  let budget = MAX_PROMPT_CHARS;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (!m || typeof m !== 'object') continue;
-    const role = allowed.has(m.role) ? m.role : 'user';
-    let content = m.content == null ? '' : String(m.content);
-    if (!content) continue;
-    if (content.length > budget) content = content.slice(0, budget);
-    budget -= content.length;
-    out.push({ role, content });
-    if (budget <= 0) break;
-  }
-  return out.reverse();
-}
-
 // How far a node's self-reported completion count may exceed our estimate of the
 // text it returned. Generous — tokenizers differ, and a thinking model's hidden
 // reasoning tokens are billed but never delivered — while still bounding an
@@ -530,7 +505,6 @@ function boundedTokens(reported, text) {
 }
 
 module.exports = ChatController;
-module.exports.sanitizeMessages = sanitizeMessages;
 module.exports.estimateTokens = estimateTokens;
 module.exports.boundedTokens = boundedTokens;
 // Re-exported from the shared OpenRouter client, which owns them now: callers

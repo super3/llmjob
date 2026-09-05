@@ -35,8 +35,37 @@ describe('NodeService', () => {
   });
 
   describe('generateNodeFingerprint', () => {
-    it('is a 6-char hex prefix of the key hash', () => {
-      expect(NodeService.generateNodeFingerprint('somekey')).toMatch(/^[0-9a-f]{6}$/);
+    it('is a 16-char hex prefix of the key hash', () => {
+      expect(NodeService.generateNodeFingerprint('somekey')).toMatch(/^[0-9a-f]{16}$/);
+    });
+
+    // The width IS the collision budget. At 6 hex characters (24 bits) two honest
+    // nodes shared an id with ~3% probability at 1,000 nodes and 52% at 5,000,
+    // and the loser was silently unusable. 16 characters (64 bits) pushes the
+    // same 50% point past a billion nodes.
+    it('is wide enough that the fleet will not collide, and stable per key', () => {
+      expect(NodeService.NODE_ID_HEX).toBe(16);
+      expect(NodeService.generateNodeFingerprint('k')).toBe(NodeService.generateNodeFingerprint('k'));
+      expect(NodeService.generateNodeFingerprint('a')).not.toBe(NodeService.generateNodeFingerprint('b'));
+      expect(NodeService.generateNodeFingerprint(null)).toMatch(/^[0-9a-f]{16}$/);
+    });
+
+    // The old width still has to be computable: machines that enrolled under it
+    // keep their id, and _enrolledNodeId looks for them by it.
+    it('can still derive the legacy 6-char id, and it prefixes the wide one', () => {
+      expect(NodeService.LEGACY_NODE_ID_HEX).toBe(6);
+      const legacy = NodeService.legacyNodeFingerprint('somekey');
+      expect(legacy).toMatch(/^[0-9a-f]{6}$/);
+      expect(NodeService.generateNodeFingerprint('somekey').startsWith(legacy)).toBe(true);
+    });
+
+    // Both ends mint ids independently; if they ever disagree a client cannot
+    // address itself. (earn/src/shared/node.js keeps the matching assertion.)
+    it('matches the earn client\'s fingerprint() byte for byte', () => {
+      const clientFingerprint = require('../../earn/src/shared/node').fingerprint;
+      for (const key of ['somekey', '', 'a/b+c=', 'x'.repeat(64)]) {
+        expect(NodeService.generateNodeFingerprint(key)).toBe(clientFingerprint(key));
+      }
     });
   });
 
@@ -125,6 +154,122 @@ describe('NodeService', () => {
       const { nodeId } = await service.registerNode('key1', 'Rig');
       const ping = await service.updateNodeStatus(nodeId, 'key1', { tps: 12 });
       expect(ping).toMatchObject({ success: true, status: 'online' });
+    });
+
+    // A collision used to come back as SUCCESS, which was the worst possible
+    // answer: the caller believed it had enrolled while every signed call it
+    // made afterwards was refused for a key mismatch, so the rig ran the model,
+    // served nothing, and had no way to learn why.
+    it('reports a key mismatch instead of a false success on a collision', async () => {
+      const victimKey = 'victim-key';
+      const nodeId = NodeService.generateNodeFingerprint(victimKey);
+      await service.registerNode(victimKey, 'Victim');
+
+      // A different key landing on the same id (however it got there).
+      await db.query('UPDATE nodes SET public_key = $2 WHERE node_id = $1', [nodeId, 'someone-else']);
+      expect(await service.registerNode(victimKey, 'Mine')).toEqual({ error: 'Node key mismatch' });
+
+      // …and the row it collided with is untouched.
+      expect((await service.getNode(nodeId)).publicKey).toBe('someone-else');
+    });
+  });
+
+  // Node ids were widened from 6 to 16 hex characters. Machines enrolled under
+  // the old width hold that id in node.json and go on signing with it, so the
+  // server has to keep recognising it — re-registering must not mint a second
+  // row and orphan the first, which would silently drop the rig's name, its
+  // is_public flag, and the user_id that makes it eligible for private jobs.
+  describe('legacy 6-character node ids', () => {
+    const seedLegacy = async (publicKey, extra = {}) => {
+      const legacyId = NodeService.legacyNodeFingerprint(publicKey);
+      await db.query(
+        `INSERT INTO nodes (node_id, public_key, name, user_id, status, is_public, last_seen, claimed_at)
+         VALUES ($1, $2, $3, $4, 'online', $5, $6, $6)`,
+        [legacyId, publicKey, extra.name || 'Old rig', extra.userId || null,
+          !!extra.isPublic, extra.lastSeen || Date.now()]
+      );
+      return legacyId;
+    };
+
+    it('re-registers an enrolled legacy node under its existing id', async () => {
+      const legacyId = await seedLegacy('old-key');
+      await setLastSeen(legacyId, 1);
+
+      const res = await service.registerNode('old-key', 'Old rig');
+      expect(res).toMatchObject({ success: true, nodeId: legacyId });
+      expect((await service.getNode(legacyId)).lastSeen).toBeGreaterThan(1);
+      // Exactly one row: no wide-id twin was minted alongside it.
+      expect((await db.query('SELECT count(*)::int AS c FROM nodes')).rows[0].c).toBe(1);
+    });
+
+    it('claims an enrolled legacy node under its existing id, keeping its state', async () => {
+      const legacyId = await seedLegacy('old-key', { userId: 'user1', name: 'Mine' });
+      const res = await service.claimNode('old-key', 'Mine', 'user1');
+      expect(res).toMatchObject({ success: true, nodeId: legacyId });
+      expect((await db.query('SELECT count(*)::int AS c FROM nodes')).rows[0].c).toBe(1);
+      expect((await service.getNode(legacyId)).userId).toBe('user1');
+    });
+
+    it('mints a wide id for a key with no legacy row', async () => {
+      const res = await service.registerNode('brand-new-key');
+      expect(res.nodeId).toBe(NodeService.generateNodeFingerprint('brand-new-key'));
+      expect(res.nodeId).toHaveLength(16);
+    });
+
+    // The subtle half of the compatibility problem: a machine whose node.json
+    // predates the widening but which has NEVER registered (fresh install of an
+    // old client, or a pruned row). It signs as its 6-character id, so minting a
+    // wide one would hand back an id the client never uses — and its very next
+    // ping would 404 on a row it cannot address.
+    it('enrolls a never-registered legacy client under the id it signs as', async () => {
+      const legacyId = NodeService.legacyNodeFingerprint('old-key');
+      const res = await service.registerNode('old-key', 'Old rig', legacyId);
+      expect(res).toMatchObject({ success: true, nodeId: legacyId });
+      // The id it was given is the id it can actually ping with.
+      expect(await service.updateNodeStatus(legacyId, 'old-key', { tps: 5 }))
+        .toMatchObject({ success: true });
+    });
+
+    it('claims a never-registered legacy client under the id it signs as', async () => {
+      const legacyId = NodeService.legacyNodeFingerprint('old-key');
+      const res = await service.claimNode('old-key', 'Mine', 'user1', legacyId);
+      expect(res).toMatchObject({ success: true, nodeId: legacyId });
+    });
+
+    // The presented id is a convenience, never an identity: it is honoured only
+    // when it is a derivation of the caller's OWN key, which nobody else can
+    // produce. Naming somebody else's id gets the caller its own wide id.
+    it('ignores a presented id that is not this key\'s own legacy fingerprint', async () => {
+      const someoneElse = NodeService.legacyNodeFingerprint('their-key');
+      const res = await service.registerNode('my-key', 'Mine', someoneElse);
+      expect(res.nodeId).toBe(NodeService.generateNodeFingerprint('my-key'));
+
+      // Even when that id is a real, unclaimed row.
+      await service.registerNode('their-key', 'Theirs', someoneElse);
+      const again = await service.registerNode('my-key-2', 'Mine too', someoneElse);
+      expect(again.nodeId).toBe(NodeService.generateNodeFingerprint('my-key-2'));
+      expect((await service.getNode(someoneElse)).publicKey).toBe('their-key');
+    });
+
+    // The old scheme's collision, healed: the legacy id is occupied by SOMEONE
+    // ELSE's key, so it is not this node's id and it enrolls cleanly on the wide
+    // one instead of being locked out forever.
+    it('enrolls on the wide id when the legacy id belongs to another key', async () => {
+      const legacyId = NodeService.legacyNodeFingerprint('my-key');
+      await db.query(
+        `INSERT INTO nodes (node_id, public_key, name, status, is_public, last_seen)
+         VALUES ($1, 'not-my-key', 'squatter', 'online', false, $2)`,
+        [legacyId, Date.now()]
+      );
+
+      const res = await service.registerNode('my-key', 'Mine');
+      expect(res.success).toBe(true);
+      expect(res.nodeId).toBe(NodeService.generateNodeFingerprint('my-key'));
+      // And it can actually be used, which is the whole point.
+      expect(await service.updateNodeStatus(res.nodeId, 'my-key', { tps: 9 }))
+        .toMatchObject({ success: true });
+      // The squatter is untouched.
+      expect((await service.getNode(legacyId)).publicKey).toBe('not-my-key');
     });
   });
 
