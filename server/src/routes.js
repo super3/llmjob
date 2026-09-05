@@ -14,6 +14,7 @@ const OpenAiController = require('./controllers/openaiController');
 const ChatController = require('./controllers/chatController');
 const JobService = require('./services/jobService');
 const NodeService = require('./services/nodeService');
+const { MAX_BODY_BYTES } = require('./controllers/gatewayShared');
 
 // POST /api/nodes/claim - Associate a node with the logged-in user. Requires
 // BOTH the Clerk session (who is claiming) and a node signature (proof the
@@ -110,6 +111,29 @@ const initJobRoutes = (db) => {
   router.post('/jobs/check-timeouts', requireAuth, requireAdmin, (req, res) => jobController.checkTimeouts(req, res));
 };
 
+// Install the JSON body parsers, in the order their limits have to apply.
+//
+// The OpenAI gateway accepts image requests and needs a MAX_BODY_BYTES ceiling
+// to hold one. Everything else — including the ANONYMOUS web-chat endpoint —
+// keeps express.json()'s small default, because raising the body ceiling on an
+// unauthenticated route is a cost with no matching benefit (the chat page sends
+// no images).
+//
+// The ORDER is load-bearing, and getting it wrong is what made the whole
+// multimodal path dead code. `express.json()` is app-wide middleware that runs
+// in registration order, and body-parser skips a request whose body an earlier
+// parser already read — so the FIRST parser to match a request decides its
+// limit. With the app-wide 100 KB parser registered first, a request carrying
+// even a 300 KB screenshot was rejected with a bare 413 before the gateway's own
+// parser, gatewayShared's `image_url` handling, or the node's vision projector
+// ever came into it. No image request had ever reached a node.
+//
+// Both the app and the route tests go through here so the two cannot drift.
+const initBodyParsers = (app) => {
+  app.use('/v1/chat/completions', express.json({ limit: MAX_BODY_BYTES }));
+  app.use(express.json());
+};
+
 // OpenAI-compatible gateway. Mounted at the app root (not under /api) so callers
 // point any OpenAI SDK at `https://<host>/v1`. API-key auth; a request becomes an
 // inference job served by an online node, or — when it names one of the hosted
@@ -118,6 +142,9 @@ const initJobRoutes = (db) => {
 //
 // /v1/models is authenticated too: which models a caller may name depends on
 // whether their key routes publicly or only to their own nodes.
+//
+// The larger body ceiling this route needs for image requests is installed by
+// initBodyParsers, which has to run before the app-wide parser — see there.
 const initOpenAiRoutes = (app, opts) => {
   const ctrl = new OpenAiController(opts || {});
   app.post('/v1/chat/completions', apiKeyAuth, (req, res) => ctrl.chatCompletions(req, res));
@@ -140,6 +167,7 @@ const initChatRoutes = (app, opts) => {
 // Export router as default for backward compatibility with tests
 module.exports = router;
 // Also export the initializers as named exports
+module.exports.initBodyParsers = initBodyParsers;
 module.exports.initJobRoutes = initJobRoutes;
 module.exports.initOpenAiRoutes = initOpenAiRoutes;
 module.exports.initChatRoutes = initChatRoutes;

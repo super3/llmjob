@@ -119,6 +119,82 @@ function normalizeVisibility(v) {
   return v === 'private' ? 'private' : 'public';
 }
 
+// ── Queue wake-up signal ─────────────────────────────────────────────────────
+//
+// A node holding an empty long poll used to re-run the entire claim transaction
+// every 250ms — connect, BEGIN, two SELECTs, COMMIT — purely to discover there
+// was still nothing to do. That is 4 transactions and 16 statements per second
+// PER IDLE NODE, each holding one of the pool's connections while it ran: a
+// 100-node fleet sitting idle cost ~400 transactions a second to answer
+// "nothing", and the whole fleet's idle cost scaled linearly with its size.
+//
+// Nearly every job, though, is created by this same process — both chat gateways
+// call createJob in-process, and checkTimeouts requeues in-process too. So a
+// held poll can WAIT to be told and re-claim only when a job actually appeared,
+// which also makes dispatch faster than the 250ms tick it replaces.
+//
+// `seq` is what makes that race-free. A poller captures the version BEFORE the
+// claim that came back empty, so a job created in the window between its claim
+// and its wait has already moved the counter and the wait returns immediately
+// instead of sleeping through work that is sitting there.
+//
+// The fallback tick stays, at 2s rather than 250ms, because this signal spans
+// only one process: a job created by another replica still has to be found by
+// looking. It is a safety net now rather than the mechanism, which is where the
+// 8x reduction comes from. Making the multi-replica case fast again means
+// LISTEN/NOTIFY, and this is the seam that would slot into.
+//
+// Every waiter wakes on a signal, not just one, so a job is offered to whoever
+// is actually eligible for it — waking a single node would strand a private or
+// model-pinned job on a node that cannot take it until the fallback tick. The
+// cost is a burst of one claim per waiting node per job, which stays far below
+// the continuous 4/s/node it replaces at any job rate that leaves nodes idle.
+let queueSeq = 0;
+const queueWaiters = new Set();
+
+// Tell every held poll that the queue changed.
+function signalQueue() {
+  queueSeq++;
+  if (!queueWaiters.size) return;
+  const waking = [...queueWaiters];
+  queueWaiters.clear();
+  for (const wake of waking) wake();
+}
+
+// The current queue version, to be captured before a claim and passed to
+// awaitQueueChange after it.
+function queueVersion() {
+  return queueSeq;
+}
+
+// Resolve as soon as the queue changes, or after `timeoutMs` — whichever is
+// first. A change that already happened resolves at once rather than waiting for
+// the next one. `timers` is injectable for tests.
+//
+// Whichever way it resolves, it cleans up both halves: the waiter is
+// unregistered and the fallback timer is cleared. Leaving either behind would
+// accumulate one dangling entry (or one pending timer) per held poll per tick
+// across a fleet holding thousands of polls a minute.
+function awaitQueueChange(since, timeoutMs, timers) {
+  if (queueSeq !== since) return Promise.resolve();
+  const setT = (timers && timers.setTimeout) || setTimeout;
+  const clearT = (timers && timers.clearTimeout) || clearTimeout;
+  return new Promise((resolve) => {
+    let timer = null;
+    const finish = () => {
+      // Whichever half got here first, drop the other. The waiter is registered
+      // before the timer is set, so a scheduler that fires synchronously reaches
+      // this with `timer` still null — clearTimeout tolerates that, and the
+      // already-fired handle it then overwrites has nothing left to cancel.
+      queueWaiters.delete(finish);
+      clearT(timer);
+      resolve();
+    };
+    queueWaiters.add(finish);
+    timer = setT(finish, timeoutMs);
+  });
+}
+
 class JobService {
   constructor(db, nodes) {
     this.db = db;
@@ -218,6 +294,10 @@ class JobService {
       [jobId, JSON.stringify(job), job.priority, timestamp, job.userId, job.visibility, job.targetNode, job.maxTokens,
         pinnedModel]
     );
+
+    // Wake any node holding an empty poll. Signalled AFTER the insert, so a
+    // woken poller's claim always sees the row.
+    signalQueue();
 
     return job;
   }
@@ -424,6 +504,46 @@ class JobService {
     return r.rows.map((row) => row.chunk);
   }
 
+  // The same chunk list, but reading only the rows a long-polling caller has not
+  // already seen, accumulating into the cursor it threads through.
+  //
+  // A gateway watching a job re-read EVERY chunk row on every 250ms poll, so the
+  // cost of watching one generation grew with the square of its length: a
+  // 2,500-token reply (167 chunk rows) polled for 100s read ~33,000 rows to
+  // deliver 167 — and re-serialized the whole assembled answer each time. Since
+  // chunks only ever arrive at the end, "everything after the highest index I
+  // hold" returns the same list for a fraction of the work.
+  //
+  // The one thing that is NOT append-only is a requeue: checkTimeouts deletes the
+  // abandoned attempt's rows and the retry starts again at index 0. A cursor
+  // would never see that rewind and would splice the dead attempt's output onto
+  // the retry's. It is detected off the job's own `returnedToQueue` stamp, which
+  // is already in the row we just read: when it changes, the cursor resets and
+  // re-reads from the start, which is exactly the shrink the streaming gateways
+  // watch for.
+  async _chunksSince(jobId, job, cursor) {
+    const mark = job.returnedToQueue == null ? null : job.returnedToQueue;
+    // Start from the beginning on the first call for this cursor, and again
+    // whenever the job's requeue stamp changes. A fresh cursor arrives with
+    // `mark` undefined, which never equals the null-or-number a job carries, so
+    // it takes this path too and needs no other initialisation — which is why
+    // `after` is always a number by the time the query below reads it.
+    if (cursor.mark !== mark) {
+      cursor.mark = mark;
+      cursor.chunks = [];
+      cursor.after = -1;
+    }
+    const r = await this.db.query(
+      'SELECT idx, chunk FROM job_chunks WHERE job_id = $1 AND idx > $2 ORDER BY idx',
+      [jobId, cursor.after]
+    );
+    for (const row of r.rows) {
+      cursor.chunks.push(row.chunk);
+      cursor.after = Number(row.idx);
+    }
+    return cursor.chunks;
+  }
+
   async completeJob(jobId, nodeId, lockToken) {
     const row = await this._assertLock(jobId, nodeId, lockToken);
 
@@ -570,63 +690,86 @@ class JobService {
   }
 
   // Return assigned/running jobs whose lock expired or heartbeat went stale.
+  //
+  // The timeout predicate lives in SQL, not in a JS filter over every in-flight
+  // job. This runs every 30 seconds, and `data` is the whole job payload —
+  // prompt, messages and all — so filtering in JS meant hauling every prompt the
+  // fleet was currently working on out of the database twice a minute just to
+  // discover that almost none of them had timed out. Now the normal case reads
+  // zero rows.
   async checkTimeouts() {
     const now = Date.now();
     const r = await this.db.query(
       `SELECT id, data, status, lock_expires_at, heartbeat_at FROM jobs
-       WHERE status IN ('assigned', 'running')`,
-      []
+       WHERE status IN ('assigned', 'running')
+         AND (lock_expires_at IS NULL OR lock_expires_at <= $1
+              OR (heartbeat_at IS NOT NULL AND $1 - heartbeat_at > $2))`,
+      [now, HEARTBEAT_STALE_MS]
     );
 
     const timeoutJobs = [];
     for (const row of r.rows) {
+      // Which of the two conditions fired is still decided here, because it is
+      // recorded on the job as `timeoutReason` and the two are diagnosed
+      // differently: an expired lock means the node stopped talking to us
+      // entirely, a stale heartbeat means it is alive but wedged.
       const lockExpired = row.lock_expires_at == null || Number(row.lock_expires_at) <= now;
-      const heartbeatStale = row.heartbeat_at != null && now - Number(row.heartbeat_at) > HEARTBEAT_STALE_MS;
-
-      if (lockExpired || heartbeatStale) {
-        const job = { ...row.data };
-        const updated = {
-          ...job,
-          status: 'pending',
-          previousStatus: row.status,
-          returnedToQueue: now,
-          timeoutReason: lockExpired ? 'lock_expired' : 'heartbeat_timeout',
-          updatedAt: now
-        };
-        // Guard on the current status: if the node completed or failed the job
-        // between the SELECT above and this UPDATE, don't clobber that terminal
-        // state back to 'pending' — that would drop the result and re-run work the
-        // caller already got (or is about to).
-        const res = await this.db.query(
-          `UPDATE jobs SET data = $2, status = 'pending', assigned_to = NULL, updated_at = $3,
-             lock_node = NULL, lock_token = NULL, lock_expires_at = NULL, heartbeat_at = NULL
-           WHERE id = $1 AND status IN ('assigned', 'running')`,
-          [job.id, JSON.stringify(updated), now]
-        );
-        if (res.rowCount) {
-          // Clear the previous attempt's streamed chunks. A re-run starts again at
-          // chunk index 0 and storeChunk upserts by (job_id, idx), while
-          // completeJob assembles EVERY chunk row by index — so leaving the old
-          // rows would splice a dead attempt's trailing output onto the new
-          // result. Nothing else clears them until the job is deleted.
-          await this.db.query('DELETE FROM job_chunks WHERE job_id = $1', [job.id]);
-          timeoutJobs.push(job.id);
-        }
+      const job = { ...row.data };
+      const updated = {
+        ...job,
+        status: 'pending',
+        previousStatus: row.status,
+        returnedToQueue: now,
+        timeoutReason: lockExpired ? 'lock_expired' : 'heartbeat_timeout',
+        updatedAt: now
+      };
+      // Guard on the current status: if the node completed or failed the job
+      // between the SELECT above and this UPDATE, don't clobber that terminal
+      // state back to 'pending' — that would drop the result and re-run work the
+      // caller already got (or is about to).
+      const res = await this.db.query(
+        `UPDATE jobs SET data = $2, status = 'pending', assigned_to = NULL, updated_at = $3,
+           lock_node = NULL, lock_token = NULL, lock_expires_at = NULL, heartbeat_at = NULL
+         WHERE id = $1 AND status IN ('assigned', 'running')`,
+        [job.id, JSON.stringify(updated), now]
+      );
+      if (res.rowCount) {
+        // Clear the previous attempt's streamed chunks. A re-run starts again at
+        // chunk index 0 and storeChunk upserts by (job_id, idx), while
+        // completeJob assembles EVERY chunk row by index — so leaving the old
+        // rows would splice a dead attempt's trailing output onto the new
+        // result. Nothing else clears them until the job is deleted.
+        await this.db.query('DELETE FROM job_chunks WHERE job_id = $1', [job.id]);
+        timeoutJobs.push(job.id);
       }
     }
+
+    // A requeued job is new work for whoever is holding a poll, same as a freshly
+    // created one — without this it would wait for the fallback tick.
+    if (timeoutJobs.length) signalQueue();
 
     return timeoutJobs;
   }
 
-  async getJobResult(jobId) {
+  // `cursor` is an optional accumulator a long-polling caller creates once and
+  // passes back on every poll, so a running job's chunks are read incrementally
+  // rather than in full each time (see _chunksSince). Omit it — as the one-shot
+  // readers GET /api/jobs/:id and _recordUsage do — for a plain full read.
+  //
+  // A COMPLETED job always does the full read regardless: it happens once, it is
+  // the answer the caller is actually given, and reading it whole means a
+  // cursor can never leave a terminal result short of a chunk.
+  async getJobResult(jobId, cursor) {
     const job = await this.getJob(jobId);
     if (!job) {
       throw new Error(`Job ${jobId} not found`);
     }
 
     let chunks = [];
-    if (job.status === 'running' || job.status === 'completed') {
+    if (job.status === 'completed') {
       chunks = await this._getChunks(jobId);
+    } else if (job.status === 'running') {
+      chunks = cursor ? await this._chunksSince(jobId, job, cursor) : await this._getChunks(jobId);
     }
 
     if (job.status === 'completed') {
@@ -702,6 +845,9 @@ class JobService {
 }
 
 module.exports = JobService;
+module.exports.signalQueue = signalQueue;
+module.exports.queueVersion = queueVersion;
+module.exports.awaitQueueChange = awaitQueueChange;
 module.exports.DEFAULT_MODEL = DEFAULT_MODEL;
 module.exports.MAX_PRIORITY = MAX_PRIORITY;
 module.exports.MIN_PRIORITY = MIN_PRIORITY;

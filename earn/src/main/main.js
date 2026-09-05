@@ -953,7 +953,11 @@ async function connectNode({ token, name } = {}) {
   }
 
   const user = (res.data && res.data.user) || null; // account handle, if the server resolved one
-  saveNode(Object.assign({}, node, { connected: true, name: nm, user, linkedAt: new Date().toISOString() }));
+  saveNode(Object.assign({}, node, {
+    // The server decides the enrolled id — see nodeProto.adoptedNodeId.
+    nodeId: nodeProto.adoptedNodeId(node.nodeId, res.data && res.data.nodeId),
+    connected: true, name: nm, user, linkedAt: new Date().toISOString(),
+  }));
   startNodePinger();
   syncWorker();
   sendNodeStatus();
@@ -987,10 +991,27 @@ async function registerNode(node) {
       timestamp: Date.now(), telemetry: { name: node.name || undefined },
     });
     const res = await postJson((node.serverUrl || NODE.serverUrl) + '/api/nodes/register', body, 15000);
-    return res.status === 200;
+    if (res.status !== 200) return false;
+    adoptServerNodeId(node, res.data);
+    return true;
   } catch (e) {
     return false;
   }
+}
+
+// Persist the id the server says this machine is enrolled under, when it differs
+// from the one we minted. See nodeProto.adoptedNodeId for why the server's answer
+// wins. A no-op in the ordinary case, where the two agree.
+//
+// Workers already built keep the old id until the next fleet sync or restart;
+// that only arises in the rare case where the server reassigns an id at all, and
+// the persisted value is what every later run uses.
+function adoptServerNodeId(node, data) {
+  const adopted = nodeProto.adoptedNodeId(node.nodeId, data && data.nodeId);
+  if (adopted === node.nodeId) return;
+  node.nodeId = adopted;
+  saveNode(Object.assign({}, loadNode(), { nodeId: adopted }));
+  send('miner:log', { level: 'info', line: 'node id updated by the network to ' + adopted });
 }
 
 // Build a cluster job-worker for the ready LLM instance at `baseUrl` — one per

@@ -254,7 +254,17 @@ async function registerNode(node, base) {
   });
   try {
     const res = await postJson(base + '/api/nodes/register', body, 15000);
-    return res.status === 200;
+    if (res.status !== 200) return false;
+    // The server decides which id this machine is enrolled under and may hand
+    // back one we did not compute — see nodeProto.adoptedNodeId. Persisting it
+    // is what stops every later signed call naming a row that does not exist.
+    const adopted = nodeProto.adoptedNodeId(node.nodeId, res.data && res.data.nodeId);
+    if (adopted !== node.nodeId) {
+      node.nodeId = adopted;
+      saveNodeConfig(node);
+      log('node id updated by the network to ' + adopted);
+    }
+    return true;
   } catch (e) {
     return false;
   }
@@ -589,6 +599,8 @@ async function runConnect(argv) {
       return 1;
     }
     const user = (res.data && res.data.user) || null;
+    // The server decides the enrolled id — see nodeProto.adoptedNodeId.
+    node.nodeId = nodeProto.adoptedNodeId(node.nodeId, res.data && res.data.nodeId);
     node.name = name; node.connected = true; node.user = user; saveNodeConfig(node);
     log('✓ linked' + (user ? ' to ' + user + '’s account' : ' to your account') + ' as ' + name);
   } else if (!node.connected) {

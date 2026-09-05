@@ -20,9 +20,48 @@ function generateKeypair() {
   };
 }
 
-// Short, stable node id = first 6 hex of sha256(publicKey) (same as the server).
+// Short, stable node id = first NODE_ID_HEX hex of sha256(publicKey). Must match
+// the server's nodeService.generateNodeFingerprint exactly, or a client cannot
+// address itself.
+//
+// 16 characters (64 bits), not the 6 (24 bits) this used to be: 24 bits put two
+// honest nodes on the same id with ~3% probability at 1,000 nodes and 52% at
+// 5,000, and the loser was silently unusable — its signed pings refused for a
+// key mismatch, its polls 401ing, and no way to claim it to an account.
+//
+// This is only ever called to MINT an id. A machine that enrolled under the old
+// width keeps the 6-character id already stored in its node.json (see
+// main/nodeStore.js) and the server still recognises it, so nothing has to be
+// re-paired.
+const NODE_ID_HEX = 16;
+
 function fingerprint(publicKey) {
-  return crypto.createHash('sha256').update(String(publicKey == null ? '' : publicKey)).digest('hex').slice(0, 6);
+  return crypto.createHash('sha256')
+    .update(String(publicKey == null ? '' : publicKey))
+    .digest('hex')
+    .slice(0, NODE_ID_HEX);
+}
+
+// The node id to persist after the server answers an enrolment call
+// (/api/nodes/register or /api/nodes/join).
+//
+// The server is authoritative about which id a machine is enrolled under. It
+// chooses between this key's current-width fingerprint and the narrower one a
+// machine minted before ids were widened, and it can legitimately hand back an
+// id we did not compute: a machine whose old narrow id turns out to be occupied
+// by somebody ELSE's key is enrolled on the wide id instead.
+//
+// Adopting the answer is what stops such a machine going on to sign every later
+// call as an id the server has no row for — which reads as "my rig serves
+// nothing and there is no way to tell why". It also retires the standing
+// requirement that two independent implementations agree on the id forever.
+//
+// Anything that is not a plausible id is ignored, so a garbled or truncated
+// response can never rewrite this machine's identity.
+function adoptedNodeId(localId, serverId) {
+  if (typeof serverId !== 'string') return localId;
+  const id = serverId.trim();
+  return /^[0-9a-f]{6,64}$/.test(id) ? id : localId;
 }
 
 // The ping challenge the node signs to prove it holds the secret key.
@@ -84,6 +123,6 @@ function buildPingBody({ nodeId, publicKey, secretKey, timestamp, telemetry } = 
 }
 
 module.exports = {
-  generateKeypair, fingerprint, pingMessage, signMessage,
-  buildJoinBody, buildTelemetry, signedBody, buildPingBody,
+  generateKeypair, fingerprint, adoptedNodeId, pingMessage, signMessage,
+  buildJoinBody, buildTelemetry, signedBody, buildPingBody, NODE_ID_HEX,
 };

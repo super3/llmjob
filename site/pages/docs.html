@@ -360,7 +360,12 @@ console.log(resp.choices[0].message.content);</code></pre>
               <td>array</td>
               <td>The conversation, as <span class="m">{role, content}</span> objects. Roles are
                 <span class="m">system</span>, <span class="m">user</span> and
-                <span class="m">assistant</span>; anything else is treated as a user turn.</td>
+                <span class="m">assistant</span>; anything else is treated as a user turn.
+                <span class="m">content</span> is either a string or OpenAI's array of
+                <span class="m">text</span> and <span class="m">image_url</span> parts — send an
+                image as a <span class="m">data:</span> URL to a node running a vision model.
+                A conversation over the prompt budget is trimmed from the <em>oldest</em> turn, so
+                the question you just asked always survives.</td>
             </tr>
             <tr>
               <td><span class="m">model</span></td>
@@ -517,6 +522,16 @@ for chunk in stream:
               <td>Prompt size</td>
               <td>24,000 characters</td>
               <td>24,000 characters</td>
+            </tr>
+            <tr>
+              <td>Images per request</td>
+              <td>4, up to 4&nbsp;MB each</td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td>Request body</td>
+              <td>20&nbsp;MB</td>
+              <td>20&nbsp;MB</td>
             </tr>
             <tr>
               <td>Completion (<span class="m">max_tokens</span>)</td>

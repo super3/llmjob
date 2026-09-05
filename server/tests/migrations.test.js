@@ -141,4 +141,34 @@ describe('migrations', () => {
     await expect(pool.query('SELECT visibility FROM api_keys')).rejects.toBeDefined();
     await expect(pool.query('SELECT visibility FROM jobs')).rejects.toBeDefined();
   });
+
+  it('add-hot-path-indexes creates the three hot-path indexes and drops them', async () => {
+    const pool = freshPool();
+    await apply(pool, load(byName('init-schema')), 'up');
+    // Drop what init-schema already declares, so `up` does the real work here
+    // rather than no-opping on IF NOT EXISTS.
+    await pool.query('DROP INDEX IF EXISTS idx_nodes_last_seen');
+    await pool.query('DROP INDEX IF EXISTS idx_jobs_pending_queue');
+    await pool.query('DROP INDEX IF EXISTS idx_jobs_status_updated');
+
+    const mod = load(byName('add-hot-path-indexes'));
+    await apply(pool, mod, 'up');
+    // The queries the indexes exist for still answer correctly once they are on.
+    await pool.query("INSERT INTO nodes (node_id, last_seen) VALUES ('n1', 100)");
+    await pool.query("INSERT INTO jobs (id, status, priority, created_at, updated_at) VALUES ('j1', 'pending', 3, 10, 10)");
+    await pool.query("INSERT INTO jobs (id, status, priority, created_at, updated_at) VALUES ('j2', 'pending', 9, 20, 20)");
+    expect((await pool.query('SELECT node_id FROM nodes WHERE last_seen >= $1', [50])).rows).toHaveLength(1);
+    const queue = await pool.query(
+      "SELECT id FROM jobs WHERE status = 'pending' ORDER BY priority DESC, created_at ASC"
+    );
+    expect(queue.rows.map((r) => r.id)).toEqual(['j2', 'j1']);
+
+    // Idempotent: re-running must not fail on the indexes it just created.
+    await apply(pool, mod, 'up');
+
+    await apply(pool, mod, 'down');
+    // Dropping an index leaves the data intact — that is the whole point of it
+    // being safe to roll back.
+    expect((await pool.query('SELECT id FROM jobs')).rows).toHaveLength(2);
+  });
 });

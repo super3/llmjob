@@ -855,6 +855,73 @@ describe('local LLM', () => {
     await expect(p).resolves.toBe(1);
   });
 
+  // The server decides which id a machine is enrolled under and can hand back
+  // one the client did not compute — a machine whose old narrow id turns out to
+  // be taken by someone else's key is enrolled on the wide one instead. Keeping
+  // the local id left it signing every later call as a row that does not exist,
+  // i.e. serving nothing with nothing to show why.
+  test('adopts and persists a node id the server reassigns', async () => {
+    const m = load();
+    const node = makeNode({ nodeId: '5840fc', connected: false });
+    m.nodeStore.loadNode.mockReturnValue(node);
+    m.nodeStore.getOrCreateNode.mockReturnValue(node);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    m.io.postJson.mockResolvedValue({ status: 200, data: { nodeId: 'a1b2c3d4e5f60789' } });
+
+    const p = m.run(['--mode', 'llm', '--no-update']);
+    await settle();
+
+    expect(node.nodeId).toBe('a1b2c3d4e5f60789');
+    expect(m.nodeStore.saveNode).toHaveBeenCalledWith(expect.objectContaining({ nodeId: 'a1b2c3d4e5f60789' }));
+    expect(allOut()).toContain('node id updated by the network to a1b2c3d4e5f60789');
+
+    m.LlmManager.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(1);
+  });
+
+  test('keeps its own node id when the server agrees', async () => {
+    const m = load();
+    const node = makeNode({ nodeId: '5840fc', connected: false });
+    m.nodeStore.loadNode.mockReturnValue(node);
+    m.nodeStore.getOrCreateNode.mockReturnValue(node);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    m.io.postJson.mockResolvedValue({ status: 200, data: { nodeId: '5840fc' } });
+
+    const p = m.run(['--mode', 'llm', '--no-update']);
+    await settle();
+
+    expect(node.nodeId).toBe('5840fc');
+    expect(allOut()).not.toContain('node id updated by the network');
+
+    m.LlmManager.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(1);
+  });
+
+  // The server now REFUSES a registration whose node id is held by a different
+  // key (a fingerprint collision) instead of reporting a false success. That
+  // arrives as a non-200, not a transport failure, and must read as a failure
+  // rather than being mistaken for a successful enrolment.
+  test('a refused registration (node id already held) is reported, not treated as success', async () => {
+    const m = load();
+    const node = makeNode({ nodeId: '5840fc', connected: false });
+    m.nodeStore.loadNode.mockReturnValue(node);
+    m.nodeStore.getOrCreateNode.mockReturnValue(node);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    m.io.postJson.mockResolvedValue({ status: 400, data: { error: 'Node key mismatch' } });
+
+    const p = m.run(['--mode', 'llm', '--no-update']);
+    await settle();
+
+    expect(allErr()).toContain('could not register with the network — running the LLM locally only');
+    expect(node.nodeId).toBe('5840fc');                     // identity untouched
+    expect(m.nodeStore.saveNode).not.toHaveBeenCalled();
+    m.LlmManager.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(1);
+  });
+
   test('a failed registration is survivable — the model still runs locally', async () => {
     const m = load();
     m.nodeStore.loadNode.mockReturnValue(null);
