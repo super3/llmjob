@@ -312,6 +312,51 @@ class LlmFleet extends EventEmitter {
     return this.instances.filter((i) => i.ready && i.index != null).map((i) => i.index);
   }
 
+  // stop(), but resolving only once every llama-server has actually EXITED.
+  //
+  // stop() signals and returns; the processes are still tearing down when it
+  // does, and a 30 GB model does not release its VRAM the instant it is asked
+  // to. The caller that restarts the miner needs the card back, not a promise
+  // that someone has been told to give it back -- so join the exits the same way
+  // autoGate joins the miner's, for the same reason.
+  //
+  // Listeners are attached BEFORE stop() or the event races us. A manager with
+  // no live process resolves at once rather than waiting for an event that will
+  // never come.
+  stopAndWait(timeoutMs = 60000) {
+    const waits = this.instances
+      .map((inst) => inst.mgr)
+      .filter(Boolean)
+      .map((mgr) => new Promise((resolve) => {
+        if (!mgr.running && !mgr.proc) return resolve();
+        mgr.once('stopped', resolve);
+      }));
+    this.stop();
+    if (!waits.length) return Promise.resolve(false);
+    // Never wedge the handback on a server that will not die: the VRAM check
+    // that follows is the backstop, and a stuck child is better reported by the
+    // miner failing to start than by hanging here forever.
+    let timer = null;
+    const expiry = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(true), timeoutMs);
+      if (timer.unref) timer.unref();
+    });
+    return Promise.race([Promise.all(waits).then(() => false), expiry])
+      .then((timedOut) => {
+        clearTimeout(timer);
+        // Said here rather than by the caller: the fleet knows its children did
+        // not die, and whoever is about to reuse the card needs it in the log.
+        if (timedOut) {
+          this.emit('log', {
+            level: 'error',
+            line: 'local LLM did not exit within ' + Math.round(timeoutMs / 1000)
+              + 's — the card may still be held',
+          });
+        }
+        return timedOut;
+      });
+  }
+
   stop() {
     this._stopping = true;
     this._pending = []; // nothing further should spawn

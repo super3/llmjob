@@ -926,7 +926,13 @@ async function run(argv) {
           return llm;
         },
         stopLlm: async () => {
-          if (llm) { try { llm.stop(); } catch { /* already gone */ } }
+          // Wait for llama-server to EXIT, not merely to be signalled. Polling
+          // free VRAM instead was not enough: on a real handback the 30s poll
+          // expired with 1,341 MiB free of the ~2,081 the miner needs, the miner
+          // failed to start, and the node sat with no gate, no miner and a 30 GB
+          // model still resident until someone restarted it by hand.
+          // stopAndWait says so on the fleet's own log channel if it gives up.
+          if (llm) { try { await llm.stopAndWait(45000); } catch { /* already gone */ } }
           llm = null;
           // llm.stop() is a kill, not a join: LlmFleet.stop() signals the process
           // and returns, so llama-server still holds its ~30 GB for a moment. The
@@ -936,7 +942,9 @@ async function run(argv) {
           // now that a failed restart is fatal, takes the whole node down.
           // Observed on a 5090: 1,469 MiB free at the instant of the restart
           // against the ~2,081 MiB the rank-128 profile needs.
-          await waitForFreeVram(LLM.miningReserveMb, 30000, 500);
+          // Backstop only, now that the exit is joined above: the driver can
+          // still lag the process by a moment.
+          await waitForFreeVram(LLM.miningReserveMb, 15000, 250);
           // The 'stopped' handler above also calls this, but it early-returns
           // while the gate is switching -- which is exactly this path. Without
           // it the ping timer survived every sleep, so a node that woke and
@@ -1082,11 +1090,27 @@ async function run(argv) {
   });
 }
 
+// Force the exit if the loop will not drain on its own.
+//
+// Setting exitCode asks node to leave once nothing is left to do, which assumes
+// everything we started has been torn down. A llama-server child that outlived
+// its stop kept the loop alive after a fatal handback: the gate socket was
+// closed, the miner was not running, and the process sat there -- so systemd saw
+// `active`, Restart=on-failure never fired, and the node was neither mining nor
+// serving until someone noticed. A non-zero exit that does not exit is not an
+// exit; give the teardown a few seconds and then insist.
+/* istanbul ignore next */
+function exitWith(code) {
+  process.exitCode = code;
+  const t = setTimeout(() => process.exit(code), 5000);
+  if (t.unref) t.unref();
+}
+
 /* istanbul ignore next */
 if (require.main === module) {
-  run(process.argv.slice(2)).then((code) => { process.exitCode = code; }).catch((e) => {
+  run(process.argv.slice(2)).then(exitWith).catch((e) => {
     log('fatal: ' + (e && e.message ? e.message : e), process.stderr);
-    process.exitCode = 1;
+    exitWith(1);
   });
 }
 
