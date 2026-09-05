@@ -260,7 +260,24 @@ static_assert(PEARL_COLS_COUNT == (1u << pearl_popcount_ce(PEARL_COLS_MASK)),
 // groups the wave covers -- means a wave touches 32*128 rows and 8*128
 // columns, a quarter of a megabyte an operand, which stays in L2. The work is
 // identical; only the order changes.
+//
+// The right depth depends on how many blocks are RESIDENT, which is the SM count:
+// 128 on a 4090, 170 on a 5090. Measured on Blackwell, deeper bands are steadily
+// worse -- 1 -> 160.1, 2 -> 160.1, 4 -> 157.9, 8 -> 154.6, 16 -> 150.7, 32 -> 148.8
+// TH/s -- and an alternating A/B against the Ada default over three rounds puts
+// BLOCK_GROUP=1 at +3.4/+4.3/+4.9%. Ada measured flat at 16/32/64, so 32 stays its
+// default and only sm_120 moves; this is gated rather than changed outright so no
+// Ampere or Ada rig regresses.
+//
+// Only ever used inside pearl_tile_fold_wmma, so __CUDA_ARCH__ is always defined
+// where it is read and the host never sees a differing value.
+#ifndef PEARL_BLOCK_GROUP
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
+#define PEARL_BLOCK_GROUP 1
+#else
 #define PEARL_BLOCK_GROUP 32
+#endif
+#endif
 
 // Transcript registers per lane: a warp's regions times buckets, over 32 lanes.
 #define PEARL_JACKPOT_REGS \
@@ -295,9 +312,13 @@ static_assert(PEARL_COLS_COUNT == (1u << pearl_popcount_ce(PEARL_COLS_MASK)),
 // Threads per fold block, frozen for the same reason: it makes the staging trip
 // counts compile-time. Sixteen warps in a 4x4 grid over the 128x256 tile, which
 // is what PEARL_WARP_ROWS and PEARL_WMMA_COL_BLK already assume.
+#ifndef PEARL_FOLD_THREADS
 #define PEARL_FOLD_THREADS 512u
+#endif
 // Full-chunk stages in the double buffer.
+#ifndef PEARL_STAGE_BUFS
 #define PEARL_STAGE_BUFS 2
+#endif
 
 // Transcript words a lane carries: a warp's regions times buckets, spread over
 // its 32 lanes. 8 regions x 16 buckets / 32 = 4 at the mandated geometry.
@@ -317,10 +338,16 @@ static_assert(PEARL_COLS_COUNT == (1u << pearl_popcount_ce(PEARL_COLS_MASK)),
 // warps along the rows made a 256x64 block, which re-read A 512 times a sweep
 // for 43 GB; 4x2 makes it 128x128 and 34 GB for exactly the same registers,
 // shared memory and occupancy.
+#ifndef PEARL_WARP_ROWS
 #define PEARL_WARP_ROWS 4
+#endif
 
+#ifndef PEARL_WMMA_ROW_TILES
 #define PEARL_WMMA_ROW_TILES 2
+#endif
+#ifndef PEARL_WMMA_COL_BLK
 #define PEARL_WMMA_COL_BLK 4
+#endif
 
 #define PEARL_SEED_SALTED 0u
 #define PEARL_SEED_LEGACY 1u

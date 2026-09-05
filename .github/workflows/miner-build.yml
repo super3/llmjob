@@ -1,9 +1,9 @@
-name: Earn build (Windows + Linux + macOS)
+name: Earn build (Windows + Linux)
 
-# Builds the LLMJob Earn (earn) desktop app for Windows, Linux and macOS. Runs
-# the unit tests, then produces the NSIS installer (Windows), the AppImage
-# (Linux) and the DMGs (macOS, one per architecture) on their respective runners
-# and uploads them as artifacts.
+# Builds the LLMJob Earn (earn) desktop app for Windows and Linux. Runs the unit
+# tests, then produces the NSIS installer (Windows) and the AppImage (Linux) on
+# their respective runners and uploads them as artifacts. macOS is deliberately
+# not built here -- see the commented-out matrix entry below.
 on:
   push:
     branches: [ main ]
@@ -39,20 +39,21 @@ jobs:
             artifact: llmjob-earn-linux
             dist_path: |
               earn/dist/*.AppImage
-          # macOS runs the local LLM (llama.cpp ships a Metal build) but never
-          # mines — AlphaPool has no Darwin engine, so the app refuses the miner
-          # up front (src/shared/platform.js) and the engine-bundling steps below
-          # are Windows/Linux-only. Both architectures are built from the same
-          # arm64 runner: electron-builder fetches whichever Electron binary each
-          # target needs, and the app is ad-hoc signed in an afterPack hook
-          # (earn/scripts/mac-adhoc-sign.mjs) because Apple silicon will not exec
-          # an unsigned binary and electron-builder does not sign without a
-          # keychain identity.
-          - os: macos-latest
-            platform: mac
-            artifact: llmjob-earn-macos
-            dist_path: |
-              earn/dist/*.dmg
+          # macOS is NOT built or published. The build works, but the app has
+          # not been exercised on a Mac recently enough to ship: it never mines
+          # there (AlphaPool has no Darwin engine, so src/shared/platform.js
+          # refuses the miner up front), which leaves the local-LLM half as the
+          # whole product on that platform and the least-tested half of it.
+          #
+          # Nothing is deleted: the ad-hoc signing hook (earn/scripts/
+          # mac-adhoc-sign.mjs) and the electron-builder mac target stay, so
+          # restoring this is re-adding the four lines below.
+          #
+          #   - os: macos-latest
+          #     platform: mac
+          #     artifact: llmjob-earn-macos
+          #     dist_path: |
+          #       earn/dist/*.dmg
     runs-on: ${{ matrix.os }}
     defaults:
       run:

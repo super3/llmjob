@@ -918,7 +918,15 @@ __device__ __forceinline__ uint32_t pearl_warp_xor(uint32_t x) {
 #endif
 }
 
-extern "C" __global__ __launch_bounds__(512) void pearl_tile_fold_wmma(
+// Bounds follow the geometry rather than being pinned at 512.
+//
+// A hardcoded 512 caps ptxas at 65536/512 = 128 registers a thread even when the
+// kernel is launched with fewer, so a 256-thread build spills instead of using the
+// 256 registers those threads are entitled to. That matters because registers are
+// what bound the warp tile, and the warp tile is what sets instructions per mma --
+// which is what the fold is actually limited by: per cycle it already issues 85%
+// of what pure mma does, and loses only on the clock its extra instructions cost.
+extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold_wmma(
     const int8_t *__restrict__ Aprime, const int8_t *__restrict__ Bprime,
     uint32_t m, uint32_t n, uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg,
     uint32_t col_off, uint32_t rows_valid, uint32_t col_groups,
@@ -1129,6 +1137,16 @@ extern "C" __global__ __launch_bounds__(512) void pearl_tile_fold_wmma(
 // Slot p of a thread's walk: source and destination are the same base + stride
 // the whole-chunk macro uses, just evaluated at one p instead of looped over all
 // of them. Threads whose walk is shorter than the k-step count simply skip.
+// Diagnostic only: PEARL_ABLATE_STAGING makes the copies vanish while leaving every
+// mma, ldmatrix and barrier in place, which prices the staging layer. The fold then
+// computes on whatever is in shared and its output is meaningless -- never ship this.
+#ifdef PEARL_ABLATE_STAGING
+#ifndef PEARL_STAGE_AT_BARRIER
+#define PEARL_STAGE_AT_BARRIER 0
+#endif
+
+#define PEARL_ISSUE_SLOT(cc, p) {}
+#else
 #define PEARL_ISSUE_SLOT(cc, p)                                                       \
   {                                                                                   \
     const uint32_t k0_ = (cc) * rank;                                                 \
@@ -1140,6 +1158,7 @@ extern "C" __global__ __launch_bounds__(512) void pearl_tile_fold_wmma(
       pearl_cp_async16(sAa + ((cc) & 1u) * buf_bytes + adst0 + (p) * dstStep,          \
                        Aprime + asrc0 + k0_ + (p) * srcStep);                          \
   }
+#endif
 
   // The transcripts ride in registers until the very end. Writing them to
   // global at each chunk boundary turned one 64-byte store per region into
@@ -1160,12 +1179,25 @@ extern "C" __global__ __launch_bounds__(512) void pearl_tile_fold_wmma(
     // what makes it safe to issue the next chunk into it with no second
     // barrier. Those copies fly underneath this chunk's compute.
     pearl_cp_async_wait();
+#ifndef PEARL_ABLATE_BARRIER
     __syncthreads();
+#endif
     // The next chunk is staged a slot at a time inside the k-loop below, so
     // that compute starts before the copies are asked for. A warp that owns no
     // tile still has to issue its share -- staging is block-wide cooperative --
     // so the inactive ones run a bare copy of the same loop.
     const bool stage_next = (chunk + 1u < chunks);
+#if PEARL_STAGE_AT_BARRIER
+    // Ada's schedule interleaves one slot per k-step because firing all six at the
+    // barrier backed the memory pipeline up before the first mma could issue. That
+    // reasoning is about barrier cost, and the barrier is free on Blackwell, so the
+    // opposite schedule is worth pricing here rather than inherited.
+    if (stage_next) {
+      const uint32_t nall_ = (btotal + pthreads - 1u) / pthreads;
+#pragma unroll 4
+      for (uint32_t p = 0; p < nall_; p++) PEARL_ISSUE_SLOT(chunk + 1u, p)
+    }
+#endif
     if (!active) {
       if (stage_next) {
         const uint32_t nslots_ = (btotal + pthreads - 1u) / pthreads;
@@ -1187,16 +1219,32 @@ extern "C" __global__ __launch_bounds__(512) void pearl_tile_fold_wmma(
       const uint32_t kt = t * 32;
       // This k-step's share of the NEXT chunk's staging, issued BEFORE the
       // ldmatrix so the copies are already in flight underneath the mma.
+#if !PEARL_STAGE_AT_BARRIER
       if (stage_next) PEARL_ISSUE_SLOT(chunk + 1u, t)
+#endif
 
       // A: the whole 16x32 fragment of each row block in one instruction.
       uint32_t af[PEARL_WMMA_ROW_TILES][4];
+#ifdef PEARL_ABLATE_LDMATRIX
+#pragma unroll
+      for (uint32_t z = 0; z < PEARL_WMMA_ROW_TILES; z++)
+        af[z][0] = af[z][1] = af[z][2] = af[z][3] = 0x01010101u;
+#endif
 #pragma unroll
       for (uint32_t mb = 0; mb < MB; mb++) {
         const uint32_t rp = sAc
             + (wr * regions_per_warp * PEARL_ROWS_COUNT + mb * 16 + alrow) * PEARL_SB_STRIDE
             + ((kt + albyte) ^ swz);
+#ifdef PEARL_ABLATE_LDMATRIX
+        // Diagnostic only. NOTE: substituting arithmetic here prices the
+        // substitute, not the ldmatrix. An earlier version XORed into the
+        // fragments and overstated the ceiling by ~120 TH/s; using constants
+        // instead lets the compiler hoist and understates it. Neither reading
+        // is a trustworthy bound -- see README.
+        af[mb][0] ^= rp; af[mb][1] ^= mb; af[mb][2] ^= 1u; af[mb][3] ^= 2u;
+#else
         pearl_ldmatrix_x4(af[mb][0], af[mb][1], af[mb][2], af[mb][3], rp);
+#endif
       }
 
       // B is already transposed in shared -- sB[col] is k-contiguous -- so one
@@ -1209,7 +1257,11 @@ extern "C" __global__ __launch_bounds__(512) void pearl_tile_fold_wmma(
             + (wc * PEARL_WMMA_COL_BLK * 16 + nb * 8 + blcol) * PEARL_SB_STRIDE
             + ((kt + blbyte) ^ swz);
         uint32_t b0, b1, b2, b3;
+#ifdef PEARL_ABLATE_LDMATRIX
+        b0 = cp; b1 = cp ^ 1u; b2 = cp ^ 2u; b3 = cp ^ 3u;
+#else
         pearl_ldmatrix_x4(b0, b1, b2, b3, cp);
+#endif
 #pragma unroll
         for (uint32_t mb = 0; mb < MB; mb++) {
           pearl_mma_m16n8k32(acc[mb][nb][0], acc[mb][nb][1], acc[mb][nb][2], acc[mb][nb][3],
@@ -1229,8 +1281,10 @@ extern "C" __global__ __launch_bounds__(512) void pearl_tile_fold_wmma(
       // interleave above did not reach goes out here. At the mandated geometry
       // the two are both 4 and this loop is empty.
       const uint32_t nslots_ = (btotal + pthreads - 1u) / pthreads;
+#if !PEARL_STAGE_AT_BARRIER
       if (stage_next)
         for (uint32_t p = ksteps; p < nslots_; p++) PEARL_ISSUE_SLOT(chunk + 1u, p)
+#endif
     }
 
     // Chunk boundary: XOR the RUNNING tile and fold it into each region's lane.
@@ -1252,7 +1306,13 @@ extern "C" __global__ __launch_bounds__(512) void pearl_tile_fold_wmma(
         const uint32_t t1 = pearl_xor3((uint32_t)l[3], (uint32_t)r[0], (uint32_t)r[1]);
         const uint32_t t2 = pearl_xor3((uint32_t)r[2], (uint32_t)r[3], t0);
         uint32_t x = t1 ^ t2;
+#ifdef PEARL_ABLATE_TRANSCRIPT
+        // Diagnostic only: skip the warp reduction and the slot capture, keeping
+        // every mma and ldmatrix. Prices the readout layer. Output is meaningless.
+        x = x;
+#else
         x = pearl_warp_xor(x);
+#endif
         // The reduction leaves x in every lane, so the lane that owns this
         // (region, bucket) slot simply keeps it. The slot select is a small
         // unrolled compare chain, not jr[slot]: an index only known at run

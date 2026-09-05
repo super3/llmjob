@@ -1,0 +1,11 @@
+# build artifacts from the local harness
+bench
+mmapeak
+b_*
+g_*
+sch_*
+abl*
+ab3
+orig
+new
+*.o
