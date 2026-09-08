@@ -10,11 +10,12 @@ EARN_ADDRESS=prl1p...
 # columns will not find this rig's rows. Defaults to the hostname if unset.
 EARN_WORKER=rig-1
 
-# auto | mining | llm
+# auto | mining | llm | off
 #
-# The dashboard REWRITES this line when you change mode with the arrow keys, and
-# restarts the unit. Anything else you put on it will not survive that, so keep
-# other settings in EARN_ARGS below.
+# The dashboard rewrites THIS LINE when you change mode with the arrow keys, and
+# restarts the unit. The rest of the file is left alone, so other settings are safe
+# on their own lines -- but anything you append to this line is replaced along with
+# the mode, so do not park settings here.
 EARN_MODE=auto
 
 # The CLI to run. Either the released standalone binary or a checkout:
