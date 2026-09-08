@@ -17,7 +17,7 @@ const { parseCliArgs, USAGE } = require('../shared/cliArgs');
 const selfUpdater = require('./selfUpdater');
 const { planUpdate } = require('../shared/selfUpdate');
 const net = require('net');
-const { PearlEngine } = require('../main/pearlEngine');
+const { createMinerEngine } = require('../main/engineFactory');
 const { coreFactory } = require('../main/pearlCore');
 const { LlmManager } = require('../main/llmManager');
 const { LlmEngineManager } = require('../main/llmEngineManager');
@@ -53,6 +53,19 @@ function log(line, stream) {
   const out = stream || process.stdout;
   const prefix = out.isTTY ? '[' + format.formatLogTime(new Date()) + '] ' : '';
   out.write(prefix + line + '\n');
+}
+
+// Is this path something we could actually exec? Used to find the SRBMiner-Multi
+// binary. X_OK rather than existsSync: a path that is present but not executable
+// would otherwise be selected and then fail at spawn, reporting the wrong
+// problem.
+function isExecutable(p) {
+  try {
+    fs.accessSync(p, fs.constants.X_OK);
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
 // Detect the discrete GPU name via nvidia-smi (Linux/NVIDIA). Resolves the card
@@ -705,33 +718,42 @@ async function run(argv) {
 
   // ── Miner ────────────────────────────────────────────────────────────────
   if (plan.miner) {
-    // No engine to resolve: the GPU work is a linked N-API addon, so there is
-    // nothing to download, no version to pick and no driver gate to clear
-    // before we know whether this rig can mine. coreFactory returns null when
-    // pearl_core.node is absent -- and that is decided HERE, before anything
-    // starts, because what happens next depends on what was asked for. A
-    // 'mining' run with no core has nothing to do: exiting non-zero says so to
-    // systemd, where the old exit 0 read as success and produced a silent
-    // ten-second restart loop that mined nothing. An 'auto' run still has its
-    // LLM half, so it says loudly what is missing and serves inference.
-    const createCore = coreFactory({ resourcesPath: process.resourcesPath });
-    if (!createCore) {
+    // Which engine, decided HERE, before anything starts, because what happens
+    // next depends on what was asked for. A 'mining' run with nothing to mine
+    // with has nothing to do: exiting non-zero says so to systemd, where the old
+    // exit 0 read as success and produced a silent ten-second restart loop that
+    // mined nothing. An 'auto' run still has its LLM half, so it says loudly
+    // what is missing and serves inference.
+    const engine = createMinerEngine({
+      settings,
+      createCore: coreFactory({ resourcesPath: process.resourcesPath }),
+      env: process.env,
+      exists: isExecutable,
+      // Refuse rather than construct an engine that could only announce the
+      // problem later: a 'mining' run with nothing to mine with must exit
+      // non-zero, or systemd reads success and restart-loops silently.
+      requireCore: true,
+      connect: (host, port) => net.connect(port, host),
+      spawn,
+      // Without this the engine never polls for a card temperature, so every
+      // headless rig reported temp 0 -- to the stats file, to the miner report,
+      // and to the network board. The GUI has always passed it (main.js);
+      // omitting it here was an oversight, not a decision.
+      readTemps: () => probe.detectGpuTemps(),
+    });
+    miner = engine.miner;
+    for (const note of engine.notes) {
+      log(note, miner ? process.stdout : process.stderr);
+    }
+    if (engine.coreMissing) {
       const where = 'searched: PEARL_CORE_PATH, beside the executable, and the dev tree';
       log('pearl_core.node not found -- this build cannot mine (' + where + ').', process.stderr);
       log('Fix: keep pearl_core.node from the release next to the executable, or set PEARL_CORE_PATH=/path/to/pearl_core.node.', process.stderr);
+      miner = null;
+    }
+    if (!miner) {
       if (settings.mode === 'mining') return 1;
       log('continuing with the local LLM only.', process.stderr);
-    }
-    if (createCore) {
-      miner = new PearlEngine({
-        connect: (host, port) => net.connect(port, host),
-        createCore,
-        // Without this the engine never polls for a card temperature, so every
-        // headless rig reported temp 0 -- to the stats file, to the miner report,
-        // and to the network board. The GUI has always passed it (main.js);
-        // omitting it here was an oversight, not a decision.
-        readTemps: () => probe.detectGpuTemps(),
-      });
     }
     if (miner) {
     miner.on('log', (l) => log(l.line, l.level === 'error' ? process.stderr : process.stdout));

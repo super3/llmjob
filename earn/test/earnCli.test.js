@@ -74,6 +74,27 @@ jest.mock('../src/main/pearlEngine', () => {
   PearlEngine.startReturns = undefined;
   return { PearlEngine };
 });
+jest.mock('../src/main/srbEngine', () => {
+  const { EventEmitter } = require('events');
+  class SrbEngine extends EventEmitter {
+    constructor(opts) {
+      super();
+      this.opts = opts;
+      this.start = jest.fn((settings) => {
+        this.settings = settings;
+        if (SrbEngine.startError) throw SrbEngine.startError;
+        return SrbEngine.startReturns;
+      });
+      this.stop = jest.fn();
+      this.isRunning = jest.fn(() => true);
+      SrbEngine.instances.push(this);
+    }
+  }
+  SrbEngine.instances = [];
+  SrbEngine.startError = null;
+  SrbEngine.startReturns = undefined;
+  return { SrbEngine, httpStatsFetcher: jest.fn(() => jest.fn()) };
+});
 jest.mock('../src/main/pearlCore', () => ({
   loadCore: jest.fn(() => null),
   // A loadable core by default: the CLI decides UP FRONT whether it can mine,
@@ -192,6 +213,11 @@ async function settle(n) { for (let i = 0; i < (n || 4); i++) await tick(); }
 function applyDefaults(m) {
   m.cp.execFile.mockImplementation((cmd, args, opts, cb) => cb(new Error('no nvidia-smi')));
   m.fs.existsSync.mockReturnValue(true);
+  // No SRBMiner-Multi installed unless a test says otherwise. The CLI probes for the
+  // binary with fs.accessSync, and jest's fs automock resolves every path, which
+  // would silently select SRBMiner-Multi in every test that only means to exercise
+  // the built-in core.
+  m.fs.accessSync.mockImplementation(() => { throw new Error('ENOENT'); });
   m.probe.detectRegion.mockResolvedValue('us');
   m.probe.detectVram.mockResolvedValue(null);
   m.probe.detectGpusVram.mockResolvedValue([]);
@@ -211,6 +237,7 @@ function applyDefaults(m) {
   m.selfUpdater.reexec.mockReturnValue(0);
   m.selfUpdate.planUpdate.mockReturnValue({ updateAvailable: false, reason: 'up-to-date' });
   m.PearlEngine.startReturns = undefined;
+  m.SrbEngine.startReturns = undefined;
 }
 
 // Load a fresh earn-cli plus fresh instances of every mocked dependency.
@@ -227,6 +254,7 @@ function load() {
     m.selfUpdate = require('../src/shared/selfUpdate');
     m.net = require('net');
     m.PearlEngine = require('../src/main/pearlEngine').PearlEngine;
+  m.SrbEngine = require('../src/main/srbEngine').SrbEngine;
     m.autoGate = require('../src/main/autoGate');
     m.autoGate.createAutoGate.instances = [];
     m.autoGate.createServeGate.instances = [];
@@ -599,6 +627,66 @@ describe('mining', () => {
     // The LLM half is alive; shut it down the way an operator would.
     fire('SIGINT');
     await expect(p).resolves.toBe(0);
+  });
+
+  // SRBMiner-Multi is proprietary and never bundled, so 'auto' means "use it if the
+  // operator installed it". These cover the fork in that decision as the CLI
+  // actually makes it: an fs probe against PATH.
+  describe('engine selection', () => {
+    const onPath = (m) => {
+      process.env.PATH = '/usr/bin';
+      m.fs.accessSync.mockImplementation((p) => {
+        if (p !== '/usr/bin/SRBMiner-MULTI') throw new Error('ENOENT');
+      });
+    };
+
+    test('uses SRBMiner-Multi when a binary is on PATH, and says so', async () => {
+      const m = load();
+      onPath(m);
+      const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+      await settle();
+      expect(m.SrbEngine.instances).toHaveLength(1);
+      expect(m.PearlEngine.instances).toHaveLength(0);
+      expect(allOut()).toContain('/usr/bin/SRBMiner-MULTI');
+      m.SrbEngine.instances[0].emit('stopped', 0);
+      await expect(p).resolves.toBe(0);
+    });
+
+    test('--miner native ignores an installed SRBMiner-Multi', async () => {
+      const m = load();
+      onPath(m);
+      const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--miner', 'native']);
+      await settle();
+      expect(m.PearlEngine.instances).toHaveLength(1);
+      expect(m.SrbEngine.instances).toHaveLength(0);
+      m.PearlEngine.instances[0].emit('stopped', 0);
+      await expect(p).resolves.toBe(0);
+    });
+
+    // Asking for a named engine and silently getting the other one would
+    // misreport what the rig is doing, so this exits rather than degrading.
+    test('--miner srb with nothing installed exits 1 in mining mode', async () => {
+      const m = load();
+      await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--miner', 'srb']))
+        .resolves.toBe(1);
+      expect(allErr()).toContain('no binary was found');
+      expect(m.SrbEngine.instances).toHaveLength(0);
+      expect(m.PearlEngine.instances).toHaveLength(0);
+    });
+
+    test('a path that exists but is not executable is not selected', async () => {
+      const m = load();
+      process.env.PATH = '/usr/bin';
+      // present, but X_OK refused -- selecting it would fail later at spawn and
+      // report the wrong problem.
+      m.fs.accessSync.mockImplementation(() => { throw new Error('EACCES'); });
+      const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+      await settle();
+      expect(m.SrbEngine.instances).toHaveLength(0);
+      expect(m.PearlEngine.instances).toHaveLength(1);
+      m.PearlEngine.instances[0].emit('stopped', 0);
+      await expect(p).resolves.toBe(0);
+    });
   });
 });
 

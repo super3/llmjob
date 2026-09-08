@@ -271,3 +271,79 @@ describe('start() reports whether the engine actually started', () => {
     e.stop();
   });
 });
+
+// pearlEngine.js was live from day one but absent from collectCoverageFrom, so
+// the 100% gate never applied to it. These close the defaults and optional
+// paths that gap left untested.
+describe('defaults and optional paths', () => {
+  const sock = () => ({ on() {}, write() {}, destroy() {} });
+  const core = () => ({ setJob() {}, stop() {}, on() {} });
+
+  test('constructed with no options at all', () => {
+    const e = new PearlEngine();
+    expect(e.isRunning()).toBe(false);
+    expect(e.gpuIndex()).toBe(0);
+    expect(e.readTemps).toBe(null);
+  });
+
+  test('start with no settings does not throw', () => {
+    const e = new PearlEngine({ connect: sock, createCore: core });
+    expect(() => e.start()).not.toThrow();
+    e.stop();
+  });
+
+  test('settings with no endpoint leave it null rather than "undefined"', () => {
+    const e = new PearlEngine({ connect: sock, createCore: core });
+    e.start({ address: 'prl1p' });
+    expect(e.endpoint).toBe(null);
+    e.stop();
+  });
+
+  test('stop before start is a no-op, not a crash on a null miner', () => {
+    expect(() => new PearlEngine({}).stop()).not.toThrow();
+  });
+
+  // Timer handles are not guaranteed to carry unref, and assuming it would
+  // crash the start path.
+  test('a temperature timer with no unref is tolerated', () => {
+    const si = jest.spyOn(global, 'setInterval').mockImplementation(() => ({}));
+    try {
+      const e = new PearlEngine({
+        connect: sock, createCore: core, readTemps: async () => [50], tempPollMs: 10,
+      });
+      expect(() => e.start({ address: 'prl1p', endpoint: 'pool:1200' })).not.toThrow();
+      e.stop();
+    } finally { si.mockRestore(); }
+  });
+
+  test('a temperature reader that rejects leaves the reading absent', async () => {
+    const e = new PearlEngine({
+      connect: sock, createCore: core, readTemps: () => Promise.reject(new Error('no smi')),
+    });
+    e.start({ address: 'prl1p', endpoint: 'pool:1200' });
+    await new Promise((r) => setImmediate(r));
+    expect(e.temp).toBe(null);
+    e.stop();
+  });
+
+  // main.js reads this shape to print a DNS hint; a name that does not resolve
+  // is worth saying plainly rather than as a generic connect error.
+  test('a connect-failed from the miner is forwarded as a parsed event', () => {
+    const e = new PearlEngine({ connect: sock, createCore: core });
+    const events = [];
+    e.on('event', (ev) => events.push(ev));
+    e.start({ address: 'prl1p', endpoint: 'pool:1200' });
+    e.miner.emit('connect-failed', { host: 'pool', code: 'ENOTFOUND' });
+    expect(events).toContainEqual({ type: 'connect-failed', host: 'pool', code: 'ENOTFOUND' });
+    e.stop();
+  });
+
+  test('a temperature reader that throws synchronously does not take the engine down', () => {
+    const e = new PearlEngine({
+      connect: sock, createCore: core, readTemps: () => { throw new Error('boom'); },
+    });
+    expect(() => e.start({ address: 'prl1p', endpoint: 'pool:1200' })).not.toThrow();
+    expect(e.temp).toBe(null);
+    e.stop();
+  });
+});

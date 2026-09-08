@@ -10,6 +10,7 @@
 const { REGIONS, DEFAULTS } = require('./config');
 const { isValidAddress, isValidMdlAddress, normalizeAddress } = require('./address');
 const { MODES, DEFAULT_MODE, isValidMode } = require('./llmMode');
+const { CHOICES: MINERS, DEFAULT_MINER, isValidMiner } = require('./minerSelect');
 
 // Short flags → their canonical long form.
 // --mdl / -m are deliberately absent from USAGE: merge mining is retired from
@@ -32,6 +33,7 @@ const VALUE_FLAGS = new Set([
   '--gpu',
   '--stats-file',
   '--mode', '--llm-binary', '--llm-model', '--llm-max-instances', '--gate-port', '--gate-host',
+  '--miner', '--miner-bin',
 ]);
 
 function regionChoices() {
@@ -64,6 +66,14 @@ const USAGE = [
   '                           card can serve a bigger model than it can co-run.',
   '      --llm-max-instances <n>  Cap how many llama-servers run (default: one per',
   '                           eligible GPU, itself capped by free system RAM)',
+  '      --miner <which>      Mining engine: ' + MINERS.join('/') + ' (default: ' + DEFAULT_MINER + ').',
+  '                           "auto" uses SRBMiner-Multi when a binary is found and',
+  '                           falls back to the built-in core. SRBMiner is faster',
+  '                           (~144 vs ~111 TH/s on a 5090) but is closed source and',
+  '                           takes a 2% dev fee; it is not bundled — install it',
+  '                           yourself. "native" always uses our zero-fee core.',
+  '      --miner-bin <path>   Path to the SRBMiner-Multi binary (default: $SRBMINER_BIN,',
+  '                           then SRBMiner-MULTI on PATH).',
   '  -r, --region <id>        Pool region: ' + Object.keys(REGIONS).join('/') + ' (default: auto-detect fastest)',
   '  -w, --worker <name>      Worker/rig name (default: this machine\'s hostname)',
   '  -g, --gpu <card>         GPU name to report on the board (default: auto-detect via nvidia-smi)',
@@ -153,6 +163,22 @@ function buildSettings(opts, errors, report, update, serve) {
   // unset (fastest region; a per-host worker name), so
   // it needs to tell an explicit `--region us2` / `--worker rig01` from the
   // default.
+  // Which mining engine, and where its binary is. Validated here so an unknown
+  // value fails at parse time next to every other bad flag, rather than at the
+  // point the engine is constructed.
+  let miner = DEFAULT_MINER;
+  if (opts['--miner'] != null) {
+    miner = String(opts['--miner']).trim();
+    if (!isValidMiner(miner)) {
+      errors.push('unknown miner: ' + miner + ' (choices: ' + MINERS.join(', ') + ')');
+    }
+  }
+  let minerBin = null;
+  if (opts['--miner-bin'] != null) {
+    minerBin = String(opts['--miner-bin']).trim();
+    if (!minerBin) errors.push('invalid --miner-bin: must not be empty');
+  }
+
   const regionProvided = opts['--region'] != null;
   const gpuProvided = opts['--gpu'] != null;
   const workerProvided = opts['--worker'] != null;
@@ -161,6 +187,7 @@ function buildSettings(opts, errors, report, update, serve) {
   return {
     address, mdlAddress, region, worker, gpu, statsFile,
     mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost,
+    miner, minerBin,
     report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,
   };
 }

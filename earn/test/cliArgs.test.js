@@ -280,3 +280,51 @@ describe('--gate-host', () => {
     expect(USAGE).toContain('--gate-host');
   });
 });
+
+describe('--miner / --miner-bin', () => {
+  const errs = () => [];
+
+  test('defaults to auto, which prefers SRBMiner-Multi but does not require it', () => {
+    const s = buildSettings({}, errs(), true, false);
+    expect(s.miner).toBe('auto');
+    expect(s.minerBin).toBeNull();
+  });
+
+  test('carries an explicit engine choice through', () => {
+    expect(buildSettings({ '--miner': 'srb' }, errs(), true, false).miner).toBe('srb');
+    expect(buildSettings({ '--miner': 'native' }, errs(), true, false).miner).toBe('native');
+  });
+
+  test('trims the value', () => {
+    expect(buildSettings({ '--miner': ' native ' }, errs(), true, false).miner).toBe('native');
+  });
+
+  test('rejects an unknown engine and lists the choices', () => {
+    const errors = [];
+    buildSettings({ '--miner': 'SRBMiner-MULTI' }, errors, true, false);
+    expect(errors.join(' ')).toContain('unknown miner: SRBMiner-MULTI');
+    expect(errors.join(' ')).toContain('auto, srb, native');
+  });
+
+  test('carries an explicit binary path through', () => {
+    expect(buildSettings({ '--miner-bin': '/opt/pm' }, errs(), true, false).minerBin).toBe('/opt/pm');
+  });
+
+  test('rejects an empty binary path rather than silently searching PATH', () => {
+    const errors = [];
+    buildSettings({ '--miner-bin': '  ' }, errors, true, false);
+    expect(errors.join(' ')).toContain('--miner-bin');
+  });
+
+  test('both are listed in the usage text, with the fee disclosed', () => {
+    expect(USAGE).toContain('--miner ');
+    expect(USAGE).toContain('--miner-bin');
+    expect(USAGE).toContain('2% dev fee');
+  });
+
+  test('both take a value, so the next argv item is not read as a flag', () => {
+    const { settings } = parseCliArgs(['-a', ADDR, '--miner', 'native', '--miner-bin', '/opt/pm']);
+    expect(settings.miner).toBe('native');
+    expect(settings.minerBin).toBe('/opt/pm');
+  });
+});
