@@ -57,32 +57,43 @@ line. Built with Electron and shipped for **Windows**, **Linux** and
 
 ## The mining engine
 
-The installer **bundles the engine** — electron-builder `extraResources` ships
-`vendor/engine/` to `<resources>/engine/`, so a normal install runs offline with
-no unsigned download at runtime. If no bundled binary is present (a dev run, or a
-build where antivirus stripped it), the app **downloads it on first Start** and
-caches it under the user-data folder (`…/LLMJob Earn/engine/`): on Windows it
-fetches `AlphaMiner-Pearl-Windows.zip` from the pool's `/downloads/` path and
-extracts `alpha-miner-windows.exe` (via PowerShell `Expand-Archive`, no extra
-dependency; base URL overridable). If that also fails it surfaces a plain-language
-engine error (with antivirus-quarantine guidance) — the stats shown are always the
-engine's real output, never simulated. Point `binaryPath` at your own build to
-skip the download entirely.
+There are two, and the rig picks one at start. Nothing is downloaded either way.
 
-The app drives `alpha-miner` with its documented CLI: `--address prl1…`,
-`--worker`, static difficulty via `--password "x;d=N"`, an optional
-`--force-backend` for cards that need it, and the regional endpoint
-(`us1/us2/eu1/eu2/ru1/sg1/hk1/in1.alphapool.tech:5566`). Merge mining differs by
-platform: Windows appends the MDL address to `--address` as `prl1…+mdl1…`, while
-Linux passes it in the password's `mdl=` field (`x;d=N;mdl=mdl1…`) because the
-Linux engine validates `--address` as a single bech32m address and rejects the
-combined form.
+**Our own core (default fallback).** The miner *is* this process: PearlHash runs
+in a linked N-API addon (`pearl_core.node`, built from `earn/native`), driven by
+the protocol and lifecycle code in `src/main/pearlMiner.js`. **The dev fee is
+zero** — it is our own implementation written against the ISC-licensed reference,
+so there is no fee path and no address to route to. Set `PEARL_CORE_PATH` to
+point at a specific build.
 
-On Linux the engine version is picked per rig (`shared/engine.js`): driver
-≥ 580 gets the faster CUDA 13 build (`alpha-miner-1.8.8`, 3–8% more hashrate on
-40/50-series), older drivers stay on the CUDA 12 stable (`alpha-miner-1.8.3`).
-The version is part of the cached filename, so bumping it forces a fresh
-download instead of trusting a stale cache.
+**PeakMiner (preferred when installed).** Materially faster on current hardware —
+measured **143.6 TH/s against our core's 111 TH/s** on an RTX 5090, and still
+~140.7 net of its fee, so it earns more even after the fee. Two things to know
+before turning it on:
+
+- It takes a **2% dev fee**. The engine says so in the log on every start.
+- It is **proprietary** — "all rights reserved; no reverse engineering /
+  redistribution". We therefore do **not** bundle it, mirror it, or download it
+  for you. Install it yourself from <https://peakminer.org>; the rig only looks
+  for a binary you already have.
+
+That licence is why `auto` is a *preference* rather than a requirement: a fresh
+rig has nothing installed and still mines, on the zero-fee core.
+
+```
+--miner auto        use PeakMiner if a binary is found, else our core (default)
+--miner peak        require PeakMiner; refuse to start without it
+--miner native      always use our zero-fee core
+--miner-bin <path>  where PeakMiner is (else $PEAK_MINER_BIN, else PATH)
+```
+
+Telemetry comes from PeakMiner's local HTTP API (`127.0.0.1:4068/summary`), not
+from scraping its console — the console is a redrawn table with ANSI colour,
+aligned for humans and free to change between releases. Scraping is how the old
+`alpha-miner` integration broke.
+
+The GUI has no engine picker; it takes whatever the rig has, preferring
+PeakMiner, and names its choice in the miner log.
 
 ## macOS (LLM only)
 

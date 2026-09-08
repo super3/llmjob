@@ -15,7 +15,7 @@ const https = require('https');
 const { autoUpdater } = require('electron-updater');
 
 const net = require('net');
-const { PearlEngine } = require('./pearlEngine');
+const { createMinerEngine } = require('./engineFactory');
 const { coreFactory } = require('./pearlCore');
 const { LlmManager } = require('./llmManager');
 const { LlmEngineManager } = require('./llmEngineManager');
@@ -50,6 +50,19 @@ const { buildMinerReports } = require('../shared/minerReport');
 const { runtimeCopyPlan } = require('../shared/llmRuntime');
 const earnings = require('../shared/earnings');
 const format = require('../shared/format');
+
+// Is this path something we could actually exec? Used to find the PeakMiner
+// binary. X_OK rather than existsSync: a path that is present but not executable
+// would otherwise be selected and then fail at spawn, reporting the wrong
+// problem.
+function isExecutable(p) {
+  try {
+    fs.accessSync(p, fs.constants.X_OK);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
 
 let win = null;
 let miner = null;
@@ -276,27 +289,36 @@ async function startMining(settings) {
   const endpoint = resolveEndpoint(settings);
   send('miner:log', { level: 'info', line: 'connecting to ' + endpoint + ' · worker ' + (settings.worker || DEFAULTS.worker) });
 
-  // The miner is this process: the GPU work is a linked N-API addon, so there
-  // is no binary to resolve, download, version-gate or spawn. That whole path
-  // went with alpha-miner.
+  // Usually the miner IS this process: our core is a linked N-API addon, so
+  // there is nothing to download or version-gate. The exception is PeakMiner,
+  // which is a separate proprietary binary the operator installed themselves --
+  // we never ship it, so there is still no download path here, only a lookup.
   //
-  // coreFactory returns null when pearl_core.node is not present, which is the
-  // expected state on a machine without a CUDA build. PearlEngine then stops
-  // cleanly and says so rather than opening a pool socket it could never feed.
+  // createMinerEngine returns a null miner when this rig cannot mine what was
+  // asked for (no pearl_core.node and no PeakMiner). That is the expected state
+  // on a machine without a CUDA build, and it says so rather than opening a pool
+  // socket it could never feed.
   //
   // There is no stop-epoch check here any more. It existed because engine setup
   // awaited a multi-minute download, so STOP could land in the middle of a
   // start; nothing between the top of this function and here awaits now, so the
   // guard could never fire. applyPlan still checks the epoch across its real
   // awaits.
-  miner = new PearlEngine({
-    connect: (host, port) => net.connect(port, host),
+  const engine = createMinerEngine({
+    settings,
     createCore: coreFactory({ resourcesPath: process.resourcesPath }),
+    env: process.env,
+    exists: isExecutable,
+    connect: (host, port) => net.connect(port, host),
+    spawn,
     // The card temperature the UI shows next to the GPU name. Our core has no
     // NVML reading of its own to forward the way alpha-miner did, so the engine
     // polls nvidia-smi for it; a rig without nvidia-smi just shows the name.
     readTemps: () => probe.detectGpuTemps(),
   });
+  miner = engine.miner;
+  engine.notes.forEach((line) => send('miner:log', { level: miner ? 'info' : 'error', line }));
+  if (!miner) return;
   wireMinerEvents(miner, endpoint);
   try {
     miner.start(Object.assign({}, settings, { endpoint, gpu: settings.gpu || null }));

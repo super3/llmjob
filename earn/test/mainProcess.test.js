@@ -83,6 +83,10 @@ jest.mock('fs', () => ({
   copyFileSync: jest.fn(),
   chmodSync: jest.fn(),
   mkdirSync: jest.fn(),
+  // The PeakMiner lookup. Nothing installed by default, so every other test in
+  // this file goes on exercising the built-in core.
+  accessSync: jest.fn(() => { throw new Error('ENOENT'); }),
+  constants: { X_OK: 1 },
 }));
 
 // Default: any health probe fails fast (connection error on next tick).
@@ -156,6 +160,23 @@ jest.mock('../src/main/pearlEngine', () => {
   PearlEngine.instances = [];
   PearlEngine.startError = null;
   return { PearlEngine };
+});
+
+jest.mock('../src/main/peakEngine', () => {
+  const { EventEmitter } = require('events');
+  class PeakEngine extends EventEmitter {
+    constructor(opts) {
+      super();
+      this.opts = opts;
+      this._running = false;
+      this.start = jest.fn((settings) => { this.settings = settings; this._running = true; });
+      this.stop = jest.fn(() => { this._running = false; });
+      this.isRunning = jest.fn(() => this._running);
+      PeakEngine.instances.push(this);
+    }
+  }
+  PeakEngine.instances = [];
+  return { PeakEngine, httpSummaryFetcher: jest.fn(() => jest.fn()) };
 });
 
 jest.mock('../src/main/pearlCore', () => ({
@@ -308,6 +329,7 @@ function loadMain(opts = {}) {
   ctx.probe = require('../src/main/probe');
   ctx.nodeStore = require('../src/main/nodeStore');
   ctx.PearlEngine = require('../src/main/pearlEngine').PearlEngine;
+  ctx.PeakEngine = require('../src/main/peakEngine').PeakEngine;
   ctx.LlmManager = require('../src/main/llmManager').LlmManager;
   ctx.LlmEngineManager = require('../src/main/llmEngineManager').LlmEngineManager;
   ctx.JobWorker = require('../src/main/jobWorker').JobWorker;
@@ -2001,6 +2023,41 @@ describe('the mining engine', () => {
     // Nothing was downloaded and nothing was spawned to get here.
     expect(ctx.io.downloadFile).not.toHaveBeenCalled();
     expect(ctx.cp.spawn).not.toHaveBeenCalled();
+  });
+
+  // The GUI has no engine picker: it takes whatever the rig has, preferring
+  // PeakMiner because it is faster. Still not bundled -- this is a lookup of a
+  // binary the operator installed, not a download.
+  it('prefers PeakMiner when the operator has installed it', async () => {
+    const ctx = await boot();
+    ctx.PearlEngine.instances.length = 0;
+    ctx.PeakEngine.instances.length = 0;
+    process.env.PATH = '/usr/bin';
+    ctx.fs.accessSync.mockImplementation((p) => {
+      if (p !== '/usr/bin/peakminer') throw new Error('ENOENT');
+    });
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    expect(ctx.PeakEngine.instances).toHaveLength(1);
+    expect(ctx.PearlEngine.instances).toHaveLength(0);
+    expect(ctx.PeakEngine.instances[0].opts.binPath).toBe('/usr/bin/peakminer');
+    // and it says which engine it picked, in the log the user is looking at
+    expect(ctx.sent('miner:log').some((l) => /peakminer/.test(l.line))).toBe(true);
+    ctx.fs.accessSync.mockImplementation(() => { throw new Error('ENOENT'); });
+  });
+
+  // --miner peak is a CLI flag, but settings reach main.js by the same route, so
+  // the unsatisfiable case has to degrade rather than construct nothing and
+  // carry on as though it had.
+  it('builds no engine when a named engine cannot be satisfied', async () => {
+    const ctx = await boot();
+    ctx.PearlEngine.instances.length = 0;
+    ctx.PeakEngine.instances.length = 0;
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining', miner: 'peak' });
+    await flush();
+    expect(ctx.PeakEngine.instances).toHaveLength(0);
+    expect(ctx.PearlEngine.instances).toHaveLength(0);
+    expect(ctx.sent('miner:log').some((l) => /no binary was found/.test(l.line))).toBe(true);
   });
 
   // main.js resolves the endpoint from the region, exactly as before; the

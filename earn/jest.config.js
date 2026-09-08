@@ -46,6 +46,12 @@ module.exports = {
     // drives lives in earn/native and is not measurable here — which is
     // exactly why the JS side is held to the full gate.
     'src/main/pearlMiner.js', 'src/main/pearlCore.js',
+    // The engine adapters and the choice between them. pearlEngine was a second
+    // llmFleet -- fully live, with its own test file, and still missing from
+    // this list, so the gate never applied to it. peakEngine is worth the gate
+    // for the same reason llmFleet was: it is all lifecycle, and it supervises a
+    // process that outlives a careless kill.
+    'src/main/pearlEngine.js', 'src/main/peakEngine.js', 'src/main/engineFactory.js',
     'src/main/main.js', 'src/renderer/renderer.js',
     'src/cli/selfUpdater.js', 'src/cli/sea-entry.js', 'src/cli/earn-cli.js',
   ],
