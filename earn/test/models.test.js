@@ -267,3 +267,236 @@ describe('planAutoMode', () => {
     expect(p.model).toBeNull();
   });
 });
+
+// A tier shaped like the real one but with round numbers, so these assertions
+// are about the RULE and not about whatever the shipped sweep says today. The
+// shipped config is exercised separately, in the block below this one.
+const TIER = {
+  key: 'tier', name: 'Tier',
+  vramFullMb: 30000, minVramMb: 30500,      // headroom 500
+  ctxSize: 262144,
+  ctxLadder: [262144, 131072, 65536, 32768],
+  ctxVramMb: { 262144: 30000, 131072: 24000, 65536: 21000, 32768: 19000 },
+  minOfferCtx: 65536,
+};
+const TINY = { key: 'tiny', name: 'Tiny', vramFullMb: 3000, minVramMb: 3500, ctxSize: 32768 };
+
+describe('vramAtCtx', () => {
+  const { vramAtCtx } = require('../src/shared/models');
+
+  test('reads the measured figure for a priced rung', () => {
+    expect(vramAtCtx(TIER, 131072)).toBe(24000);
+    expect(vramAtCtx(TIER, 65536)).toBe(21000);
+  });
+
+  test('an UNPRICED rung costs the full model, which refuses it', () => {
+    // The safe direction, and the reason this returns `full` rather than
+    // interpolating: a guessed rung that comes in low OOMs a node, while one
+    // that refuses merely leaves the node on the default.
+    expect(vramAtCtx(TIER, 16384)).toBe(30000);
+    expect(vramAtCtx(Object.assign({}, TIER, { ctxVramMb: { 262144: 30000 } }), 65536)).toBe(30000);
+  });
+
+  test('a junk figure in the table is refused, not trusted', () => {
+    const junk = Object.assign({}, TIER, { ctxVramMb: { 65536: 0, 131072: -1, 32768: 'lots' } });
+    expect(vramAtCtx(junk, 65536)).toBe(30000);
+    expect(vramAtCtx(junk, 131072)).toBe(30000);
+    expect(vramAtCtx(junk, 32768)).toBe(30000);
+  });
+
+  test('a model with no table cannot be priced below its top rung', () => {
+    expect(vramAtCtx(TINY, 4096)).toBe(3000);
+  });
+
+  test('a model with no measured cost prices at zero, never negative', () => {
+    // Pricing a rung by subtracting cache from an unknown total is how an
+    // earlier approach could hand back a NEGATIVE requirement, which fits any
+    // card. There is no such arithmetic now, and the guard is asserted anyway.
+    expect(vramAtCtx({ ctxVramMb: { 4096: 10 } }, 4096)).toBe(0);
+    expect(vramAtCtx(null, 4096)).toBe(0);
+    expect(vramAtCtx(TIER, 0)).toBe(30000);
+    expect(vramAtCtx(TIER, -1)).toBe(30000);
+  });
+});
+
+describe('pinToFittingRung', () => {
+  const { pinToFittingRung } = require('../src/shared/models');
+
+  test('takes the highest rung that fits and pins the requirement to it', () => {
+    const p = pinToFittingRung(TIER, 24500, 0);
+    expect(p.ctxSize).toBe(131072);
+    expect(p.vramFullMb).toBe(24000);
+    expect(p.minVramMb).toBe(24500);          // measured + the model's own headroom
+    // The ladder handed to llama-server starts where admission landed, so a
+    // start failure walks DOWN from the admitted window rather than retrying one
+    // the card was already refused.
+    expect(p.ctxLadder).toEqual([131072, 65536, 32768]);
+  });
+
+  test('walks down to the next rung when the higher one does not fit', () => {
+    expect(pinToFittingRung(TIER, 24499, 0).ctxSize).toBe(65536);
+    expect(pinToFittingRung(TIER, 21500, 0).ctxSize).toBe(65536);
+  });
+
+  test('stops at minOfferCtx rather than walking the ladder to the bottom', () => {
+    // 19,500 would host the 32768 rung, but a 27B at a small window is not
+    // obviously a better use of a node than the default at its full one.
+    expect(pinToFittingRung(TIER, 21499, 0)).toBeNull();
+    expect(pinToFittingRung(TIER, 19500, 0)).toBeNull();
+  });
+
+  test('never returns the top rung — the caller has already tested it', () => {
+    expect(pinToFittingRung(TIER, 999999, 0).ctxSize).toBe(131072);
+  });
+
+  test('charges the mining reserve against the rung too', () => {
+    expect(pinToFittingRung(TIER, 24500, 0).ctxSize).toBe(131072);
+    expect(pinToFittingRung(TIER, 24500, 2000).ctxSize).toBe(65536);
+    // Enough reserve and no rung above the floor survives at all.
+    expect(pinToFittingRung(TIER, 24500, 4000)).toBeNull();
+  });
+
+  test('a model with no ladder has nothing to walk; no floor walks it all', () => {
+    expect(pinToFittingRung(TINY, 999999, 0)).toBeNull();
+    const noFloor = Object.assign({}, TIER, { minOfferCtx: undefined });
+    expect(pinToFittingRung(noFloor, 19500, 0).ctxSize).toBe(32768);
+  });
+
+  test('a missing VRAM field cannot produce a floor BELOW the measured cost', () => {
+    // Neither field is optional in the shipped config -- both are asserted in
+    // the block above -- but a tier that lost one must not end up with a
+    // negative floor, which is a requirement that fits any card at all.
+    const noFloor = Object.assign({}, TIER, { minVramMb: undefined });
+    const p = pinToFittingRung(noFloor, 24500, 0);
+    expect(p.minVramMb).toBe(p.vramFullMb);
+    expect(p.minVramMb).toBeGreaterThan(0);
+
+    // And with no measured cost the rung prices at zero, which computeGpuLayers
+    // reads as "do not use this card" rather than as a model that fits anywhere.
+    const noCost = { ctxLadder: [262144, 131072], ctxVramMb: { 131072: 500 }, minVramMb: 700 };
+    const q = pinToFittingRung(noCost, 24500, 0);
+    expect(q.vramFullMb).toBe(0);
+    expect(q.minVramMb).toBe(700);
+  });
+  test('leaves the config object untouched', () => {
+    const before = JSON.stringify(TIER);
+    pinToFittingRung(TIER, 24500, 0);
+    expect(JSON.stringify(TIER)).toBe(before);
+  });
+});
+
+describe('a smaller window is offered only to a card serving ALONE', () => {
+  const { planAutoMode } = require('../src/shared/models');
+  const LIST = [TIER, TINY];
+
+  test('a card that cannot host full context still gets the tier when it serves alone', () => {
+    const m = pickModel(24500, 0, LIST);
+    expect(m.key).toBe('tier');
+    expect(m.ctxSize).toBe(131072);
+  });
+
+  test('the SAME card co-running is offered the tier only at full context', () => {
+    // This is the distinction the first attempt at this lacked, and it is not a
+    // policy nicety: any floor low enough to admit a 24 GB card at 65536 also
+    // admits a MINING 32 GB card at 131072, which moved the whole 32 GB fleet
+    // off the small default without anyone asking for it.
+    expect(pickModel(24500, 2048, LIST)).toBe(TINY);
+    expect(pickModel(24500, 1, LIST)).toBe(TINY);
+  });
+
+  test('a card that clears full context is unaffected either way', () => {
+    // Object identity, not merely an equal shape: a card that was always
+    // eligible gets the config object itself back.
+    expect(pickModel(30500, 0, LIST)).toBe(TIER);
+    expect(pickModel(32548, 2048, LIST)).toBe(TIER);
+  });
+
+  test('a card below the lowest offered rung keeps the default', () => {
+    expect(pickModel(21499, 0, LIST)).toBe(TINY);
+  });
+
+  test('unmeasured VRAM is still never handed a reduced window', () => {
+    expect(pickModel(null, 0, LIST)).toBe(TINY);
+  });
+
+  test('auto mode reads a pinned tier as worth waking for, not as a co-run', () => {
+    const p = planAutoMode(24500, 2048, LIST);
+    expect(p.strategy).toBe('demand');
+    expect(p.model.key).toBe('tier');
+    expect(p.model.ctxSize).toBe(131072);
+  });
+});
+
+describe('the shipped config, card by card', () => {
+  const q = () => allModels().find((m) => m.key === 'qwen3.8-27b');
+
+  // Free VRAM measured on the machines, not taken from the box art. A 4090
+  // reports 24,564 MiB and CUDA sees all of it; the Windows desktop on the
+  // reference rig holds 124 (Brave 77, explorer 47), so ~24,440 is what
+  // llama-server can actually have with the card to itself.
+  const C4090 = 24440;
+  const C5090 = 32149;              // 32,607 reported, ~458 reserved by the driver
+  const MINER = 2581;               // 2,081 for the rank-128 profile + ~500 of CUDA context
+
+  test('a 4090 serving alone gets the tier at 65536, with vision and MTP', () => {
+    const m = pickModel(C4090, 0);
+    expect(m.key).toBe('qwen3.8-27b');
+    expect(m.ctxSize).toBe(65536);
+    expect(m.vision).toBe(true);
+    expect(needsMmproj(m)).toBe(true);
+    expect(m.extraArgs.join(' ')).toContain('--spec-type draft-mtp');
+    expect(m.extraArgs.join(' ')).toContain('--cache-type-k q8_0');
+    // Priced from the sweep rather than from the top rung: 21,702 at 65536.
+    expect(m.vramFullMb).toBe(21702);
+    expect(m.minVramMb).toBe(21702 + 570);
+    // And it fits with room, rather than on the edge.
+    expect(C4090 - requiredFreeMb(m, 0)).toBeGreaterThan(2000);
+  });
+
+  test('a 4090 does NOT get it while mining — 24 GB cannot hold both', () => {
+    // 21,702 plus the miner's 2,581 is 24,283 against 24,440: it "fits" by
+    // 157 MiB, which is not a margin. Admission refuses it because a co-running
+    // card is only ever offered the top rung, and that is the intended answer.
+    expect(pickModel(C4090 - MINER, LLM.miningReserveMb)).toBe(LLM.model);
+    expect(pickModel(C4090, LLM.miningReserveMb)).toBe(LLM.model);
+  });
+
+  test('the 5090 rows from the revert still hold, unchanged', () => {
+    expect(pickModel(C5090, 0).ctxSize).toBe(262144);                        // idle
+    expect(pickModel(C5090 - MINER, LLM.miningReserveMb)).toBe(LLM.model);   // mining
+    // The regression the revert existed to undo: a mining 32 GB node must NOT
+    // quietly move onto a 27B at half context.
+    expect(pickModel(C5090, LLM.miningReserveMb)).toBe(LLM.model);
+  });
+
+  test('small cards are untouched', () => {
+    expect(pickModel(12282 - 6795, LLM.miningReserveMb)).toBe(LLM.model);    // the fleet's 4070
+    expect(pickModel(8192, 0)).toBe(LLM.model);
+    expect(pickModel(16384, 0)).toBe(LLM.model);
+  });
+
+  test('every rung the tier may be admitted at carries a MEASURED figure', () => {
+    // The invariant that keeps vramAtCtx from having to refuse a rung the ladder
+    // actually offers: at or above the floor, a rung is priced.
+    const t = q();
+    for (const rung of ctxLadder(t)) {
+      if (rung < t.minOfferCtx) continue;
+      expect(Number(t.ctxVramMb[rung])).toBeGreaterThan(0);
+    }
+  });
+
+  test('the measured table agrees with the curve the config fits', () => {
+    // VRAM_MiB ~= 18967 + ctx * 0.042659, from the same sweep. A cross-check,
+    // not a source — a rung is measured or it is refused — kept because a typo
+    // in the table is otherwise invisible.
+    const t = q();
+    for (const [ctx, mb] of Object.entries(t.ctxVramMb)) {
+      expect(Math.abs((18967 + Number(ctx) * 0.042659) - mb)).toBeLessThan(80);
+    }
+  });
+
+  test('the top rung is priced at the same figure the tier ships', () => {
+    const t = q();
+    expect(t.ctxVramMb[t.ctxSize]).toBe(t.vramFullMb);
+  });
+});

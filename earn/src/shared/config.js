@@ -284,9 +284,43 @@ const LLM = {
       ctxSize: 262144,
       // Tried in order when the one above fails to start. Each step roughly
       // halves the KV cache, so a card that is short by a little gets a working
-      // server rather than a restart loop. Only the top rung has a measured VRAM
-      // figure; the rest are the fallback path, not a promise.
+      // server rather than a restart loop. It is ALSO the set of windows the tier
+      // may be admitted at -- see ctxVramMb and shared/models.pinToFittingRung.
       ctxLadder: [262144, 131072, 65536, 32768],
+      // What this model costs at each rung, MEASURED -- the same five-point sweep
+      // the curve above is fitted to, transcribed here as data instead of prose.
+      //
+      // Admission reads these directly rather than re-deriving a price from
+      // vramFullMb and a per-token rate. Both give nearly the same answer (the
+      // fit lands within ~60 MiB of every rung), but a table cannot drift from
+      // the sweep this file already cites, and there is nothing to get wrong in
+      // the arithmetic. If a rung is ever added, MEASURE it -- the fit
+      // `18967 + ctx * 0.042659` is for sanity-checking a measurement, not for
+      // replacing one. An unpriced rung is refused, not guessed: see vramAtCtx.
+      //
+      // All five are with the projector loaded and the q8_0 KV cache, i.e. the
+      // configuration in `extraArgs`, under CUDA. 4096 is measured (19,142) but
+      // deliberately absent: it is below minOfferCtx and is not a rung.
+      ctxVramMb: {
+        262144: 30150,
+        131072: 24518,
+        65536: 21702,
+        32768: 20324,
+      },
+      // The smallest window at which this tier is worth offering at all.
+      //
+      // A 27B at a tiny window is not obviously a better use of a node than the
+      // small default at its full one, so admission stops here rather than
+      // walking the ladder to the bottom. 65536 is the rung a 24 GB card clears
+      // -- 21,702 measured against 24,564 on a 4090 -- so a 24 GB card serves
+      // this tier and a 22 GB card keeps the default.
+      //
+      // NOT a mechanism for scoping WHICH cards get a reduced window: it cannot
+      // be, and the attempt is what sank the first version of this. A floor is a
+      // minimum, so any value low enough to admit a 24 GB card at 65536 also
+      // admits a mining 32 GB card at 131072. That separation is made by the
+      // mining reserve in pickModel instead.
+      minOfferCtx: 65536,
       // The flags this model is actually run with, from the production unit.
       // Carried per-model rather than globally because they are specific to it:
       //
