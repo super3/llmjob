@@ -18,11 +18,37 @@ spin='-\|/'   # switching spinner frames (indexed by loop count)
 # the miner ~2.1), which is exactly why the CLI time-slices instead of co-running.
 EARN_UNIT="${EARN_UNIT:-llmjob-earn.service}"
 EARN_ENV="${EARN_ENV:-/etc/default/llmjob-earn}"
+# write_mode <mode> -- update ONLY the EARN_MODE line, preserving everything else.
+#
+# This was `printf 'EARN_MODE=%s\n' "$1" > "$EARN_ENV"`, which truncated the whole
+# file. The env file is also where EARN_BIN, EARN_ADDRESS, EARN_WORKER and EARN_ARGS
+# live, so the first mode switch wiped the rig's identity and left the unit in a
+# restart loop on:
+#   /bin/sh: 1: exec: --address: not found
+# Written to a sibling temp file and renamed rather than edited in place, so being
+# killed mid-write cannot leave a half-written env file -- that is the same
+# truncation by another route.
+write_mode() {
+  local tmp
+  tmp=$(mktemp "${EARN_ENV}.XXXXXX") || return 1
+  if [ -r "$EARN_ENV" ]; then
+    cat "$EARN_ENV" > "$tmp" || { rm -f "$tmp"; return 1; }
+    chmod --reference="$EARN_ENV" "$tmp" 2>/dev/null || chmod 644 "$tmp"
+  else
+    chmod 644 "$tmp"
+  fi
+  if grep -qE '^[[:space:]]*EARN_MODE=' "$tmp"; then
+    sed -i -E "s|^[[:space:]]*EARN_MODE=.*|EARN_MODE=$1|" "$tmp"
+  else
+    printf 'EARN_MODE=%s\n' "$1" >> "$tmp"
+  fi
+  mv -f "$tmp" "$EARN_ENV"
+}
 # set_mode <auto|mining|llm> -- rewrite the unit's mode and restart it. Restart, not
 # stop+start: systemd tears the old process down fully (and with it the GPU) before
 # the new one is spawned, which is the sequencing the old two-unit dance did by hand.
 set_mode() {
-  ( printf 'EARN_MODE=%s\n' "$1" > "$EARN_ENV"
+  ( write_mode "$1"
     systemctl restart "$EARN_UNIT" ) >/dev/null 2>&1 &
 }
 mode_switch() {
@@ -33,7 +59,7 @@ mode_switch() {
     # Record the choice as well as acting on it: stopping the unit without
     # rewriting the mode meant a reboot silently came back up in the mode you
     # had just switched away from.
-    off)   ( printf 'EARN_MODE=off\n' > "$EARN_ENV"
+    off)   ( write_mode off
              systemctl stop "$EARN_UNIT" ) >/dev/null 2>&1 & ;;
   esac
 }
@@ -111,7 +137,7 @@ PY
 }
 poolc=0; p10m='?'; p1h='?'; p24h='?'; co_name='?'; co_q='?'; co_ctx='?'; cokv='?'; co_extra=''; prl_usd='?'; praw='?'
 est_usdh='?'; est_usdd='?'; est_usdmo='?'
-target=''; last_fired=''; sw_since=0   # mode toggle state (left/right arrows)
+target=''; last_fired=''; sw_since=0; user_sel=0; last_actual=''   # mode toggle state (left/right arrows)
 # Version of whatever the unit runs, not of a binary that may not be the one in use.
 #
 # read_miner_ver, not a one-shot: this used to be computed once before the loop,
@@ -283,6 +309,16 @@ while true; do
   elif [ "$earn_mode" = llm ];    then actual=serve
   else actual=off; fi
   [ -z "$target" ] && target=$actual
+  # Resync the selector when the unit's state changes underneath us: someone ran
+  # systemctl by hand, a restart failed, a benchmark stopped the unit. Without this
+  # the selector keeps whatever it held when the dashboard started, and the
+  # settle-fire below "corrects" the unit back to it -- so a unit started
+  # externally gets stopped again with nobody at the keyboard. A selection the user
+  # has actually arrowed to wins, and is cleared once it fires.
+  if [ "$actual" != "$last_actual" ]; then
+    (( user_sel )) || { target=$actual; last_fired=$actual; }
+    last_actual=$actual
+  fi
   printf '\033[H'
   afmt="$DIM"; mfmt="$DIM"; sfmt="$DIM"; ofmt="$DIM"
   case "$target" in
@@ -370,8 +406,11 @@ while true; do
   printf '\033[J'
   # fire a switch only once the selection SETTLES (>=1s since the last arrow), so quickly arrowing
   # through intermediate modes doesn't kick off switches you're only passing through.
-  if [ "$target" != "$last_fired" ] && [ "$target" != "$actual" ] && (( $(date +%s) - sw_since >= 1 )); then
-    last_fired=$target; mode_switch "$target"
+  # user_sel gates this on an actual keypress: a mismatch the dashboard did not cause
+  # is the unit's state changing underneath it, which the resync above adopts rather
+  # than fights.
+  if (( user_sel )) && [ "$target" != "$last_fired" ] && [ "$target" != "$actual" ] && (( $(date +%s) - sw_since >= 1 )); then
+    last_fired=$target; user_sel=0; mode_switch "$target"
   fi
   # poll keyboard (doubles as refresh). Poll fast (1s) while a switch is pending/running so the
   # spinner animates and settle-firing is responsive; relax to 5s once settled.
@@ -386,6 +425,6 @@ while true; do
       '[C'|'OC') case "$target" in auto) target=mine ;; mine) target=serve ;; serve) target=off ;; esac ;;   # right arrow
       '[D'|'OD') case "$target" in off) target=serve ;; serve) target=mine ;; mine) target=auto ;; esac ;;   # left arrow
     esac
-    [ "$target" != "$old" ] && sw_since=$(date +%s)
+    [ "$target" != "$old" ] && { sw_since=$(date +%s); user_sel=1; }
   fi
 done

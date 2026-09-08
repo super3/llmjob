@@ -50,10 +50,17 @@ It wants **at least 128 columns**. Narrower and the model row wraps.
 ## How mode switching works
 
 Arrow keys move the highlight; the switch fires once the selection settles.
-Switching rewrites `EARN_MODE` in `/etc/default/llmjob-earn` and restarts the
-unit — systemd re-reads an `EnvironmentFile` only at exec, so a restart is what
-makes a mode change take effect. `OFF` stops the unit and records the choice, so
-a reboot does not resurrect the previous mode.
+Switching rewrites the `EARN_MODE` line in `/etc/default/llmjob-earn` — only that
+line, the rest of the file is preserved — and restarts the unit, because systemd
+re-reads an `EnvironmentFile` only at exec. `OFF` stops the unit and records the
+choice, so a reboot does not resurrect the previous mode.
+
+Only a keypress switches modes. If the unit's state changes underneath the
+dashboard — you ran `systemctl` by hand, a restart failed, a benchmark stopped it
+— the selector adopts the new state rather than correcting it back.
+
+`./test.sh` covers both of those. It is not run by CI; the workflows run the JS
+suites.
 
 `AUTO` shows a sub-state — `AUTO (MINING)`, `AUTO (LLM)`, `AUTO (SWITCHING)` —
 read from the gate's `/health`. Polling that endpoint is safe: probes
