@@ -55,6 +55,18 @@ function log(line, stream) {
   out.write(prefix + line + '\n');
 }
 
+// The quiet window this run uses: the operator's --gate-quiet if given,
+// otherwise the product default. Infinity means "never hand the card back",
+// which is what --gate-quiet 0 asks for.
+function gateQuietMs(settings) {
+  return settings.gateQuietMs == null ? LLM.gate.quietMs : settings.gateQuietMs;
+}
+
+function quietLabel(settings) {
+  const ms = gateQuietMs(settings);
+  return ms === Infinity ? 'no amount of quiet' : Math.round(ms / 1000) + 's';
+}
+
 // Detect the discrete GPU name via nvidia-smi (Linux/NVIDIA). Resolves the card
 // name or null (no nvidia-smi / non-NVIDIA / parse failure). Never rejects — the
 // engine still auto-detects the real device to mine; this is only for the
@@ -984,10 +996,10 @@ async function run(argv) {
           const p = url ? Number(new URL(url).port) : NaN;
           return Number.isFinite(p) && p > 0 ? p : LLM.port;
         },
-        modelName: autoPlan.model.name, quietMs: LLM.gate.quietMs, log,
+        modelName: autoPlan.model.name, quietMs: gateQuietMs(settings), log,
       }).start();
       log('auto:       serving on :' + (settings.gatePort == null ? LLM.gate.port : settings.gatePort) + ' — '
-        + Math.round(LLM.gate.quietMs / 1000) + 's with no requests hands the GPU back to mining');
+        + quietLabel(settings) + ' with no requests hands the GPU back to mining');
 
       // Cluster work is PULLED, outbound, so a node behind NAT can serve with no
       // inbound networking at all. But a JobWorker is only built per READY
