@@ -1285,6 +1285,47 @@ jest.mock('../src/main/autoGate', () => {
 });
 
 
+describe('--gate-quiet', () => {
+  const demandRig = (m) => {
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    m.LlmEngineManager.mmprojInstalled = true;
+  };
+
+  test('the product default is used when the flag is absent', async () => {
+    const m = load();
+    demandRig(m);
+    m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
+    await settle();
+    expect(m.autoGate.createAutoGate.instances[0].opts.quietMs).toBe(60000);
+    expect(allOut()).toContain('60s with no requests hands the GPU back to mining');
+  });
+
+  // The reason the flag exists: an agent pauses between turns to think or run a
+  // tool, and a release drops the prompt cache, so the next turn re-prefills the
+  // whole context.
+  test('an explicit window reaches the gate and is announced', async () => {
+    const m = load();
+    demandRig(m);
+    m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0',
+      '--gate-quiet', '900']);
+    await settle();
+    expect(m.autoGate.createAutoGate.instances[0].opts.quietMs).toBe(900000);
+    expect(allOut()).toContain('900s with no requests hands the GPU back to mining');
+  });
+
+  test('0 pins the card to serving and says so in words', async () => {
+    const m = load();
+    demandRig(m);
+    m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0',
+      '--gate-quiet', '0']);
+    await settle();
+    expect(m.autoGate.createAutoGate.instances[0].opts.quietMs).toBe(Infinity);
+    expect(allOut()).toContain('no amount of quiet with no requests hands the GPU back to mining');
+  });
+});
+
 describe('auto mode on a card that cannot co-run its best model', () => {
   test('mines first and does not start the LLM until something asks for it', async () => {
     const m = load();

@@ -14,6 +14,12 @@
 const http = require('http');
 const { LlmGate, classifyPath } = require('../shared/llmGate');
 
+// How long an idle pooled connection is held open. Has to outlast the pauses a
+// caller takes between requests -- an agent thinking or running a tool -- because
+// whoever closes first decides whose problem the reset is, and a client cannot
+// see it coming.
+const KEEPALIVE_MS = 10 * 60 * 1000;
+
 // Hop-by-hop headers: meaningful to one connection, wrong to forward.
 const HOP = new Set(['connection', 'keep-alive', 'transfer-encoding', 'upgrade',
   'proxy-authorization', 'proxy-authenticate', 'te', 'trailer']);
@@ -136,6 +142,27 @@ class LlmGateServer {
 
   start() {
     this.server = http.createServer((req, res) => { this._handle(req, res); });
+    // Node's HTTP server defaults are tuned for a short-lived JSON API, and both
+    // of the ones below break callers that a direct llama-server endpoint served
+    // fine. Neither failure logs anything here, because both are the SERVER
+    // hanging up on a healthy client:
+    //
+    //   keepAliveTimeout, default 5s. An agent pools connections and pauses
+    //   between turns to think or run a tool. The gate closed the idle socket
+    //   underneath it, so the next request raced onto a half-closed connection
+    //   and the client saw ECONNRESET / 'socket hang up'. A proxy's keep-alive
+    //   has to outlast its clients', not undercut it.
+    //
+    //   requestTimeout, default 300s. A 50-80k token prompt re-prefills at
+    //   ~730 tok/s and then generates at ~31 tok/s; observed totals on this rig
+    //   reach 454s. There is no sane ceiling to put on a generation, so there
+    //   is none.
+    //
+    // headersTimeout must exceed keepAliveTimeout or node warns and the larger
+    // value never takes effect.
+    this.server.keepAliveTimeout = KEEPALIVE_MS;
+    this.server.headersTimeout = KEEPALIVE_MS + 60000;
+    this.server.requestTimeout = 0;
     // A listen failure is an 'error' event, not a throw. Unhandled, it is an
     // uncaught exception -- and this process is also the miner, so anything
     // already on the port took mining down with it. Nothing bound this port
