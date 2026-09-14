@@ -14,7 +14,7 @@ const { LlmGateServer } = require('./llmGateServer');
 function createAutoGate(opts) {
   const {
     miner, startLlm, stopLlm, isLlmReady, startMinerArgs,
-    port, host, upstreamPort, modelName, quietMs, log = () => {},
+    port, host, upstreamPort, modelName, ctxSize, quietMs, log = () => {},
     onMinerFailed = () => {},
     minerStopTimeoutMs = 15000, llmReadyTimeoutMs = 180000,
   } = opts;
@@ -96,7 +96,7 @@ function createAutoGate(opts) {
   });
   gate.on('state', (s) => log('auto:       ' + s));
 
-  const server = new LlmGateServer({ port, host, upstreamPort, modelName, gate, log });
+  const server = new LlmGateServer({ port, host, upstreamPort, modelName, ctxSize, gate, log });
   return {
     gate,
     server,
@@ -119,7 +119,7 @@ function createAutoGate(opts) {
 // `auto && ...` guards need no special case for it.
 function createServeGate(opts = {}) {
   const {
-    port, host, upstreamPort, modelName, isLlmReady, log = () => {},
+    port, host, upstreamPort, modelName, ctxSize, isLlmReady, log = () => {},
   } = opts;
   const gate = new LlmGate({
     isLlmReady,
@@ -128,7 +128,7 @@ function createServeGate(opts = {}) {
     // reported state to MINING while the model is loaded and answering.
     quietMs: Infinity,
   });
-  const server = new LlmGateServer({ port, host, upstreamPort, modelName, gate, log });
+  const server = new LlmGateServer({ port, host, upstreamPort, modelName, ctxSize, gate, log });
   return {
     gate,
     server,

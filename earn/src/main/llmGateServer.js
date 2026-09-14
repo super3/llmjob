@@ -39,6 +39,10 @@ class LlmGateServer {
     this.upstreamHost = opts.upstreamHost || '127.0.0.1';
     this.upstreamPort = opts.upstreamPort || 8080;
     this.modelName = opts.modelName || 'local';
+    // The context window this node serves. Reported on the passive endpoints so a
+    // caller detects the same number whether or not the model happens to be
+    // loaded -- see _passive.
+    this.ctxSize = opts.ctxSize || null;
     // Optional: told when the port could not be bound, so a caller can decide
     // whether that is fatal. Absent means "log it and carry on serving locally".
     this.onListenError = opts.onListenError || null;
@@ -50,14 +54,31 @@ class LlmGateServer {
 
   // Answer a probe from the gate's own state, without waking the model. Shape
   // matches llama-server's so existing dashboards and health checks keep working.
+  //
+  // n_ctx is included because callers DETECT the context window from these two
+  // endpoints, and they are passive precisely so a probe cannot wake the card.
+  // Answering without it meant the reported window depended on whether the model
+  // happened to be loaded: a client that asked while mining got no n_ctx, fell
+  // back to its own default (commonly 131072), and then compacted at half the
+  // window this node actually serves. Same node, same config, half the context,
+  // decided by timing.
   _passive(req, res) {
     const up = this.gate.isLlmReady();
     const path = String(req.url || '').split('?')[0];
+    const ctx = this.ctxSize;
     let body;
     if (path.startsWith('/health')) {
       body = { status: up ? 'ok' : 'loading', gate: this.gate.state };
     } else if (path.startsWith('/v1/models') || path.startsWith('/models')) {
-      body = { object: 'list', data: [{ id: this.modelName, object: 'model', owned_by: 'local' }] };
+      const model = { id: this.modelName, object: 'model', owned_by: 'local' };
+      // Nested under `meta` to match llama-server's own /v1/models entry, so a
+      // client reads the field from the same place either way.
+      if (ctx) model.meta = { n_ctx: ctx, n_ctx_train: ctx };
+      body = { object: 'list', data: [model] };
+    } else if (path.startsWith('/props')) {
+      // llama-server reports it under default_generation_settings; mirror that.
+      body = { gate: this.gate.state, llm_up: up };
+      if (ctx) body.default_generation_settings = { n_ctx: ctx };
     } else {
       body = { gate: this.gate.state, llm_up: up };
     }

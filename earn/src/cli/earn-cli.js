@@ -996,7 +996,8 @@ async function run(argv) {
           const p = url ? Number(new URL(url).port) : NaN;
           return Number.isFinite(p) && p > 0 ? p : LLM.port;
         },
-        modelName: autoPlan.model.name, quietMs: gateQuietMs(settings), log,
+        modelName: autoPlan.model.name, ctxSize: ctxLadder(autoPlan.model)[0],
+        quietMs: gateQuietMs(settings), log,
       }).start();
       log('auto:       serving on :' + (settings.gatePort == null ? LLM.gate.port : settings.gatePort) + ' — '
         + quietLabel(settings) + ' with no requests hands the GPU back to mining');
@@ -1048,6 +1049,7 @@ async function run(argv) {
           return Number.isFinite(p) && p > 0 ? p : LLM.port;
         },
         modelName: serveLlmState.model.name,
+        ctxSize: ctxLadder(serveLlmState.model)[0],
         isLlmReady: () => !!(llm && llm.readyCount && llm.readyCount() > 0),
         log,
       }).start();
