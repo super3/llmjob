@@ -280,3 +280,39 @@ describe('--gate-host', () => {
     expect(USAGE).toContain('--gate-host');
   });
 });
+
+describe('--gate-quiet', () => {
+  const errs = () => [];
+
+  test('defaults to null, letting the product default stand', () => {
+    expect(buildSettings({}, errs(), true, false).gateQuietMs).toBeNull();
+  });
+
+  test('seconds in, milliseconds out', () => {
+    expect(buildSettings({ '--gate-quiet': '600' }, errs(), true, false).gateQuietMs).toBe(600000);
+    expect(buildSettings({ '--gate-quiet': '1.5' }, errs(), true, false).gateQuietMs).toBe(1500);
+  });
+
+  // A rig dedicated to inference wants the model resident, full stop. Releasing
+  // it drops the prompt cache, so the next turn re-prefills the whole context.
+  test('0 means never hand the card back', () => {
+    expect(buildSettings({ '--gate-quiet': '0' }, errs(), true, false).gateQuietMs).toBe(Infinity);
+  });
+
+  test('rejects a negative or non-numeric value', () => {
+    for (const bad of ['-1', 'soon', '']) {
+      const errors = [];
+      buildSettings({ '--gate-quiet': bad }, errors, true, false);
+      expect(errors.join(' ')).toContain('--gate-quiet');
+    }
+  });
+
+  test('is listed in the usage text', () => {
+    expect(USAGE).toContain('--gate-quiet');
+  });
+
+  test('takes a value, so the next argv item is not read as a flag', () => {
+    const { settings } = parseCliArgs(['-a', ADDR, '--gate-quiet', '300', '--no-report']);
+    expect(settings.gateQuietMs).toBe(300000);
+  });
+});

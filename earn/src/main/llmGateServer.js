@@ -14,6 +14,12 @@
 const http = require('http');
 const { LlmGate, classifyPath } = require('../shared/llmGate');
 
+// How long an idle pooled connection is held open. Has to outlast the pauses a
+// caller takes between requests -- an agent thinking or running a tool -- because
+// whoever closes first decides whose problem the reset is, and a client cannot
+// see it coming.
+const KEEPALIVE_MS = 10 * 60 * 1000;
+
 // Hop-by-hop headers: meaningful to one connection, wrong to forward.
 const HOP = new Set(['connection', 'keep-alive', 'transfer-encoding', 'upgrade',
   'proxy-authorization', 'proxy-authenticate', 'te', 'trailer']);
@@ -33,6 +39,10 @@ class LlmGateServer {
     this.upstreamHost = opts.upstreamHost || '127.0.0.1';
     this.upstreamPort = opts.upstreamPort || 8080;
     this.modelName = opts.modelName || 'local';
+    // The context window this node serves. Reported on the passive endpoints so a
+    // caller detects the same number whether or not the model happens to be
+    // loaded -- see _passive.
+    this.ctxSize = opts.ctxSize || null;
     // Optional: told when the port could not be bound, so a caller can decide
     // whether that is fatal. Absent means "log it and carry on serving locally".
     this.onListenError = opts.onListenError || null;
@@ -44,14 +54,31 @@ class LlmGateServer {
 
   // Answer a probe from the gate's own state, without waking the model. Shape
   // matches llama-server's so existing dashboards and health checks keep working.
+  //
+  // n_ctx is included because callers DETECT the context window from these two
+  // endpoints, and they are passive precisely so a probe cannot wake the card.
+  // Answering without it meant the reported window depended on whether the model
+  // happened to be loaded: a client that asked while mining got no n_ctx, fell
+  // back to its own default (commonly 131072), and then compacted at half the
+  // window this node actually serves. Same node, same config, half the context,
+  // decided by timing.
   _passive(req, res) {
     const up = this.gate.isLlmReady();
     const path = String(req.url || '').split('?')[0];
+    const ctx = this.ctxSize;
     let body;
     if (path.startsWith('/health')) {
       body = { status: up ? 'ok' : 'loading', gate: this.gate.state };
     } else if (path.startsWith('/v1/models') || path.startsWith('/models')) {
-      body = { object: 'list', data: [{ id: this.modelName, object: 'model', owned_by: 'local' }] };
+      const model = { id: this.modelName, object: 'model', owned_by: 'local' };
+      // Nested under `meta` to match llama-server's own /v1/models entry, so a
+      // client reads the field from the same place either way.
+      if (ctx) model.meta = { n_ctx: ctx, n_ctx_train: ctx };
+      body = { object: 'list', data: [model] };
+    } else if (path.startsWith('/props')) {
+      // llama-server reports it under default_generation_settings; mirror that.
+      body = { gate: this.gate.state, llm_up: up };
+      if (ctx) body.default_generation_settings = { n_ctx: ctx };
     } else {
       body = { gate: this.gate.state, llm_up: up };
     }
@@ -136,6 +163,27 @@ class LlmGateServer {
 
   start() {
     this.server = http.createServer((req, res) => { this._handle(req, res); });
+    // Node's HTTP server defaults are tuned for a short-lived JSON API, and both
+    // of the ones below break callers that a direct llama-server endpoint served
+    // fine. Neither failure logs anything here, because both are the SERVER
+    // hanging up on a healthy client:
+    //
+    //   keepAliveTimeout, default 5s. An agent pools connections and pauses
+    //   between turns to think or run a tool. The gate closed the idle socket
+    //   underneath it, so the next request raced onto a half-closed connection
+    //   and the client saw ECONNRESET / 'socket hang up'. A proxy's keep-alive
+    //   has to outlast its clients', not undercut it.
+    //
+    //   requestTimeout, default 300s. A 50-80k token prompt re-prefills at
+    //   ~730 tok/s and then generates at ~31 tok/s; observed totals on this rig
+    //   reach 454s. There is no sane ceiling to put on a generation, so there
+    //   is none.
+    //
+    // headersTimeout must exceed keepAliveTimeout or node warns and the larger
+    // value never takes effect.
+    this.server.keepAliveTimeout = KEEPALIVE_MS;
+    this.server.headersTimeout = KEEPALIVE_MS + 60000;
+    this.server.requestTimeout = 0;
     // A listen failure is an 'error' event, not a throw. Unhandled, it is an
     // uncaught exception -- and this process is also the miner, so anything
     // already on the port took mining down with it. Nothing bound this port

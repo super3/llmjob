@@ -222,6 +222,40 @@ describe('LlmGateServer internals', () => {
     expect(res.status).toBe(200);
   });
 
+  // A caller DETECTS the context window from these endpoints, and they are
+  // passive precisely so a probe cannot wake the card. Answering without n_ctx
+  // meant the reported window depended on whether the model happened to be
+  // loaded: ask while mining and a client fell back to its own default (commonly
+  // 131072), then compacted at half the window this node actually serves.
+  test('/v1/models reports the context window while the model is stopped', () => {
+    const gs = new LlmGateServer({ gate: new LlmGate({}), modelName: 'M', ctxSize: 262144 });
+    const res = fakeRes();
+    gs._passive({ url: '/v1/models' }, res);
+    const m = JSON.parse(res.chunks[0]).data[0];
+    // nested under `meta` to match llama-server's own entry, so a client reads
+    // the field from the same place either way
+    expect(m.meta).toEqual({ n_ctx: 262144, n_ctx_train: 262144 });
+  });
+
+  test('/props reports the context window while the model is stopped', () => {
+    const gs = new LlmGateServer({ gate: new LlmGate({}), ctxSize: 262144 });
+    const res = fakeRes();
+    gs._passive({ url: '/props' }, res);
+    const b = JSON.parse(res.chunks[0]);
+    expect(b.default_generation_settings).toEqual({ n_ctx: 262144 });
+    expect(b.gate).toBeDefined();
+  });
+
+  test('with no context size configured the field is omitted, not guessed', () => {
+    const gs = new LlmGateServer({ gate: new LlmGate({}), modelName: 'M' });
+    for (const [path, probe] of [['/v1/models', (b) => b.data[0].meta],
+      ['/props', (b) => b.default_generation_settings]]) {
+      const res = fakeRes();
+      gs._passive({ url: path }, res);
+      expect(probe(JSON.parse(res.chunks[0]))).toBeUndefined();
+    }
+  });
+
   test('/models is answered as well as /v1/models', () => {
     const gs = new LlmGateServer({ gate: new LlmGate({}), modelName: 'M' });
     const res = fakeRes();

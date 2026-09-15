@@ -32,6 +32,7 @@ const VALUE_FLAGS = new Set([
   '--gpu',
   '--stats-file',
   '--mode', '--llm-binary', '--llm-model', '--llm-max-instances', '--gate-port', '--gate-host',
+  '--gate-quiet',
 ]);
 
 function regionChoices() {
@@ -58,6 +59,10 @@ const USAGE = [
   '      --llm-model <path>   Path to a GGUF model file (default: download the',
   '                           bundled small model on first run)',
   '      --gate-port <port>   Port the auto-mode gate serves on (default: 8000).',
+  '      --gate-quiet <secs>  Seconds of no requests before the GPU goes back to',
+  '                           mining (default: 60). Raise it for agent workloads:',
+  '                           a release drops the prompt cache, so the next turn',
+  '                           re-prefills the whole context.',
   '      --gate-host <addr>   Address the gate binds (default: 0.0.0.0, every',
   '                           interface). Set 127.0.0.1 to keep it to this box.',
   '                           Only used when auto mode is demand-driven, i.e. the',
@@ -136,6 +141,22 @@ function buildSettings(opts, errors, report, update, serve) {
   // Empty string is rejected rather than silently meaning "all interfaces":
   // `--gate-host ""` reading as 0.0.0.0 would be the opposite of what someone
   // clearing the setting expects.
+  // Seconds in, milliseconds out: the flag is in the unit an operator thinks in,
+  // the gate is in the unit it compares against. 0 is allowed and means "never
+  // release", which is what a rig dedicated to inference wants.
+  let gateQuietMs = null;
+  if (opts['--gate-quiet'] != null) {
+    // Empty is rejected rather than read as 0: Number('') is 0, so a cleared
+    // setting would silently mean "never release the card", which is the
+    // opposite of harmless.
+    const raw = String(opts['--gate-quiet']).trim();
+    const secs = raw === '' ? NaN : Number(raw);
+    if (!Number.isFinite(secs) || secs < 0) {
+      errors.push('invalid --gate-quiet: ' + opts['--gate-quiet'] + ' (must be 0 or more seconds)');
+    } else {
+      gateQuietMs = secs === 0 ? Infinity : Math.round(secs * 1000);
+    }
+  }
   let gateHost = null;
   if (opts['--gate-host'] != null) {
     gateHost = String(opts['--gate-host']).trim();
@@ -160,7 +181,7 @@ function buildSettings(opts, errors, report, update, serve) {
 
   return {
     address, mdlAddress, region, worker, gpu, statsFile,
-    mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost,
+    mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs,
     report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,
   };
 }
