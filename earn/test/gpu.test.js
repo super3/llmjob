@@ -1,6 +1,9 @@
 'use strict';
 
-const { pickGpu, countGpus, parseGpuStats, parseMacGpu } = require('../src/shared/gpu');
+const {
+  pickGpu, countGpus, alignCudaDeviceOrder, parseDeviceIndex, planMinerGpus,
+  parseGpuStats, parseMacGpu,
+} = require('../src/shared/gpu');
 
 describe('pickGpu', () => {
   test('picks the real GPU and skips the basic display adapter', () => {
@@ -124,5 +127,121 @@ describe('parseMacGpu', () => {
     expect(parseMacGpu(JSON.stringify({ SPDisplaysDataType: 'nope' }))).toBeNull();
     expect(parseMacGpu(JSON.stringify({}))).toBeNull();
     expect(parseMacGpu('null')).toBeNull();
+  });
+});
+
+// The one line that makes "GPU 1" mean the same card to nvidia-smi as it does to
+// our mining core. Without it the CUDA runtime numbers cards by its own "fastest
+// first" heuristic, which is how a rig came to show a 32 GB RTX PRO 4500 on the
+// device label while an RTX 4070 did the mining (issue #226).
+describe('alignCudaDeviceOrder', () => {
+  test('pins CUDA to nvidia-smi ordering when nothing has set it', () => {
+    const env = {};
+    expect(alignCudaDeviceOrder(env)).toBe('PCI_BUS_ID');
+    expect(env.CUDA_DEVICE_ORDER).toBe('PCI_BUS_ID');
+  });
+
+  // An operator who set it meant it. Overriding their choice would be the same
+  // class of bug as the one this fixes: the machine doing something other than
+  // what it was told.
+  test('leaves an operator\'s own ordering alone', () => {
+    const env = { CUDA_DEVICE_ORDER: 'FASTEST_FIRST' };
+    expect(alignCudaDeviceOrder(env)).toBe('FASTEST_FIRST');
+    expect(env.CUDA_DEVICE_ORDER).toBe('FASTEST_FIRST');
+  });
+
+  // Both shells call it at load, and it has to reach the REAL environment: the
+  // mining core initialises CUDA inside this process and reads it from there.
+  test('defaults to the real process environment', () => {
+    const had = Object.prototype.hasOwnProperty.call(process.env, 'CUDA_DEVICE_ORDER');
+    const before = process.env.CUDA_DEVICE_ORDER;
+    delete process.env.CUDA_DEVICE_ORDER;
+    try {
+      expect(alignCudaDeviceOrder()).toBe('PCI_BUS_ID');
+      expect(process.env.CUDA_DEVICE_ORDER).toBe('PCI_BUS_ID');
+    } finally {
+      if (had) process.env.CUDA_DEVICE_ORDER = before;
+      else delete process.env.CUDA_DEVICE_ORDER;
+    }
+  });
+});
+
+// PEARL_GPU_INDEX. A negative index is how the core is told "choose for me", so
+// anything that is not a real card index has to read as absent rather than be
+// passed on -- a typo must not turn into an instruction, and `-1` must not
+// become a card.
+describe('parseDeviceIndex', () => {
+  test('takes a whole number from 0 up', () => {
+    expect(parseDeviceIndex({ PEARL_GPU_INDEX: '0' })).toBe(0);
+    expect(parseDeviceIndex({ PEARL_GPU_INDEX: '3' })).toBe(3);
+    expect(parseDeviceIndex({ PEARL_GPU_INDEX: ' 2 ' })).toBe(2);
+  });
+
+  test('ignores anything that is not one', () => {
+    expect(parseDeviceIndex({})).toBeNull();
+    expect(parseDeviceIndex({ PEARL_GPU_INDEX: '' })).toBeNull();
+    expect(parseDeviceIndex({ PEARL_GPU_INDEX: '  ' })).toBeNull();
+    expect(parseDeviceIndex({ PEARL_GPU_INDEX: 'first' })).toBeNull();
+    expect(parseDeviceIndex({ PEARL_GPU_INDEX: '1.5' })).toBeNull();
+    expect(parseDeviceIndex({ PEARL_GPU_INDEX: '-1' })).toBeNull();
+  });
+
+  test('defaults to the process environment', () => {
+    const had = Object.prototype.hasOwnProperty.call(process.env, 'PEARL_GPU_INDEX');
+    const before = process.env.PEARL_GPU_INDEX;
+    delete process.env.PEARL_GPU_INDEX;
+    try {
+      expect(parseDeviceIndex()).toBeNull();
+    } finally {
+      if (had) process.env.PEARL_GPU_INDEX = before;
+    }
+  });
+});
+
+// Which cards mine. One core per card, so this list is the mining fleet.
+describe('planMinerGpus', () => {
+  const CARDS = [
+    { index: 0, name: 'NVIDIA RTX PRO 4500 Blackwell', usedMb: 4360, totalMb: 32623 },
+    { index: 1, name: 'NVIDIA GeForce RTX 4070', usedMb: 6694, totalMb: 12282 },
+  ];
+
+  test('mines on every card', () => {
+    expect(planMinerGpus(CARDS, null)).toEqual([
+      { index: 0, name: 'NVIDIA RTX PRO 4500 Blackwell' },
+      { index: 1, name: 'NVIDIA GeForce RTX 4070' },
+    ]);
+  });
+
+  // Index order, not nvidia-smi's print order, because the salt slice each card
+  // gets is its position in this list -- a list that reordered between runs
+  // would move cards onto each other's slice mid-rig.
+  test('is in index order', () => {
+    expect(planMinerGpus([CARDS[1], CARDS[0]], null).map((g) => g.index)).toEqual([0, 1]);
+  });
+
+  test('narrows to one card when the operator pins one', () => {
+    expect(planMinerGpus(CARDS, 1)).toEqual([{ index: 1, name: 'NVIDIA GeForce RTX 4070' }]);
+  });
+
+  // An index nvidia-smi didn't list is still passed on: the core checks it
+  // against the real device count and says so, which beats silently ignoring
+  // what the operator asked for.
+  test('passes on a pinned index it cannot name', () => {
+    expect(planMinerGpus(CARDS, 7)).toEqual([{ index: 7, name: null }]);
+    expect(planMinerGpus([], 0)).toEqual([{ index: 0, name: null }]);
+    expect(planMinerGpus(null, 0)).toEqual([{ index: 0, name: null }]);
+    expect(planMinerGpus([{ index: 0 }], 0)).toEqual([{ index: 0, name: null }]);
+  });
+
+  // Nothing from nvidia-smi: the caller starts one core and lets it choose.
+  test('is empty when there are no cards to list', () => {
+    expect(planMinerGpus([], null)).toEqual([]);
+    expect(planMinerGpus(null, null)).toEqual([]);
+    expect(planMinerGpus(undefined, null)).toEqual([]);
+  });
+
+  test('skips entries with no usable index', () => {
+    expect(planMinerGpus([null, {}, { index: -1 }, { index: 2 }], null))
+      .toEqual([{ index: 2, name: null }]);
   });
 });

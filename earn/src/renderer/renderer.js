@@ -54,6 +54,10 @@
     view: 'mine',        // mine | chat | api | settings | logs
     returnTab: 'mine',   // where settings/logs return to
     address: '', gpu: '', mode: 'auto', mdlAddress: '',
+    // The card the ENGINE says it is mining on, once it says so. `gpu` above is
+    // only the startup auto-detect, and on a multi-GPU rig the two can be
+    // different cards (issue #226) — this one is the one doing the work.
+    engineGpu: '',
     temp: 0,             // last core temperature reported, so a frame without one keeps it
     canMine: true,       // false on macOS — no alpha-miner build exists for it
     llm: { ready: false, endpoint: null, webUrl: null, tps: 0, model: null, error: null, note: null },
@@ -528,12 +532,21 @@
     el.accepted.textContent = s.acceptedLabel;
     el.uptime.textContent = s.uptime;
     el.estday.textContent = s.estDay;
-    // nvidia-smi's name wins over the engine's, exactly as the miner report does
-    // (see shared/minerReport). alpha-miner 1.9.4's stats table abbreviates the
-    // card ("RTX 5090"), so taking the snapshot's name here made the app
-    // contradict the board about the same GPU — full name while idle, short name
-    // the moment mining started. The engine's label stays as the fallback for a
-    // rig with no nvidia-smi.
+    // The ENGINE's name wins while mining, and the detected one is the fallback.
+    //
+    // It used to be the other way round, for a reason that has since expired:
+    // alpha-miner 1.9.4's stats table abbreviated the card ("RTX 5090" against
+    // nvidia-smi's "NVIDIA GeForce RTX 5090"), so trusting the engine made the
+    // app contradict the board about the same GPU. Our own core doesn't
+    // abbreviate — it reports the driver's own name for the device it opened, the
+    // same string nvidia-smi prints.
+    //
+    // And the two are not always the same CARD. `state.gpu` is a guess made at
+    // startup: nvidia-smi's first card, which is only the mining card while CUDA
+    // and nvidia-smi agree on the ordering. On the rig in issue #226 they did
+    // not, and this line is where that became a wrong name on screen — an idle
+    // 32 GB RTX PRO 4500 labelled as the miner while an RTX 4070 did the work.
+    // The core says which card it opened; nothing here knows better.
     //
     // Gated on having a NAME to show, from either source — not on the engine
     // being the one to supply it. It used to require `s.gpu`, which quietly
@@ -546,7 +559,11 @@
     // a status that carries no temperature leaves the label as it was instead of
     // dropping the degrees back off it.
     if (Number(s.temp) > 0) state.temp = Number(s.temp);
-    const deviceName = state.gpu || s.gpu;
+    // Remembered for the same reason as the temperature: a status frame that
+    // carries no name must leave the label alone, not flip it back to the
+    // startup guess for one frame and then back again.
+    if (s.gpu) state.engineGpu = s.gpu;
+    const deviceName = state.engineGpu || state.gpu;
     if (deviceName) el.deviceLabel.textContent = deviceText(deviceName, state.temp);
     const p = chartPaths(s.points);
     el.line.setAttribute('d', p.line);
@@ -587,6 +604,9 @@
   function start() {
     if (!canStart()) return;
     state.mining = true;
+    // A fresh run chooses its card again — the last run's answer is not this
+    // run's, and a stale one would outrank the new detection.
+    state.engineGpu = '';
     renderMiningState();
     appendLog({ level: 'info', line: 'starting LLMJob Earn…' });
     if (api.startMiner) api.startMiner(currentSettings());

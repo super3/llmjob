@@ -138,7 +138,17 @@ describe('coreFactory', () => {
     const addon = { createCore: jest.fn(() => made) };
     const factory = coreFactory({ require: fakeRequire([[REL, addon]]) });
     expect(factory({ rank: 128 })).toBe(made);
-    expect(addon.createCore).toHaveBeenCalledWith({ rank: 128 });
+    expect(addon.createCore).toHaveBeenCalledWith({ rank: 128 }, {});
+  });
+
+  // The host builds one core per card and says which card and which slice of the
+  // search space each one gets. The factory's job is to not lose that.
+  test('passes the per-core options through untouched', () => {
+    const addon = { createCore: jest.fn(() => ({})) };
+    const factory = coreFactory({ require: fakeRequire([[REL, addon]]) });
+    factory({ rank: 128 }, { deviceIndex: 1, saltBase: 1, saltStride: 2 });
+    expect(addon.createCore)
+      .toHaveBeenCalledWith({ rank: 128 }, { deviceIndex: 1, saltBase: 1, saltStride: 2 });
   });
 
   test('is null when there is no addon, so the host can say "not built"', () => {

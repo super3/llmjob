@@ -1,10 +1,19 @@
 // N-API binding: exposes the CUDA core to the JS host as
 //
-//   createCore(profile) -> {
+//   createCore(profile, { deviceIndex, saltBase, saltStride }) -> {
 //     setJob({ header: Buffer(76), target: BigInt, jobId: string }),
 //     stop(),
-//     on('hit'|'hashrate'|'error', cb)
+//     on('hit'|'hashrate'|'error', cb),
+//     device: { index, name }        // the card it actually opened
 //   }
+//
+// `deviceIndex` pins a card; omit it and the core ranks the cards and picks one.
+// Either way `device` reports what it took, because the host has no other way to
+// know — and when it assumed, it was wrong.
+//
+// `saltBase`/`saltStride` are this core's slice of the search space. A rig mines
+// with one core per card, and without a slice each of them would search the same
+// operands and find the same shares.
 //
 // The search runs on its own thread so the Electron main thread is never
 // blocked, and results are marshalled back with a thread-safe function. The JS
@@ -21,6 +30,7 @@
 #include <cstring>
 #include <chrono>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -59,12 +69,26 @@ struct PearlSearchResult {
 };
 
 extern "C" {
+// Choose the GPU to mine on and make it this thread's device. `requested` >= 0
+// pins a specific index (an operator's PEARL_GPU_INDEX); anything negative lets
+// the core rank the cards itself. Writes the chosen card's name into `name` and
+// returns its index, or -1 with a message in `err`. Must be called BEFORE
+// pearl_host_create, which allocates on whatever device is current.
+int pearl_host_select_device(const PearlProfile *profile, int requested, char *name,
+                            size_t name_len, char *err, size_t err_len);
+// Point the calling thread at the card a context lives on — the current device
+// is per-thread, and the search runs on its own.
+void pearl_host_bind_thread(void *ctx);
 // Allocate device state for a profile. Returns null on failure (no CUDA device,
 // insufficient memory) with a message in `err`.
 void *pearl_host_create(const PearlProfile *profile, char *err, size_t err_len);
 void pearl_host_destroy(void *ctx);
 // Load a job. header is 76 bytes, target is 32 big-endian bytes.
 void pearl_host_set_job(void *ctx, const uint8_t *header, const uint8_t *target);
+// Load a job and draw its operands under a given salt — one card's slice of the
+// search space. See saltBase/saltStride below.
+void pearl_host_set_job_salted(void *ctx, const uint8_t *header, const uint8_t *target,
+                               uint64_t salt);
 // Re-draw the operands under a new salt. One salt is worth m*n regions.
 void pearl_host_reseed(void *ctx, uint64_t salt);
 // Share-proof accessors: the operand chunks a tile touched, and the sibling
@@ -89,6 +113,7 @@ class PearlCore : public Napi::ObjectWrap<PearlCore> {
   Napi::Value SetJob(const Napi::CallbackInfo &info);
   Napi::Value Stop(const Napi::CallbackInfo &info);
   Napi::Value On(const Napi::CallbackInfo &info);
+  Napi::Value GetDevice(const Napi::CallbackInfo &info);
 
   void SearchLoop();
   void EmitHit(const PearlSearchResult &r, const std::string &job_id);
@@ -101,6 +126,17 @@ class PearlCore : public Napi::ObjectWrap<PearlCore> {
   std::chrono::steady_clock::time_point win_start_{};
   double win_work_ = 0.0;
   void *ctx_ = nullptr;
+  // The card this core actually opened. Exposed to JS as `core.device` so the
+  // host names the GPU it is mining on rather than the one it guessed at — the
+  // two were different on a multi-card rig, which is the whole of issue #226.
+  int device_index_ = -1;
+  std::string device_name_;
+  // This core's slice of the search space, for a rig mining on several cards at
+  // once: it searches salts salt_base_, salt_base_ + salt_stride_, and so on.
+  // One card per core, so the host gives card i base i and stride N. Defaults
+  // (0, 1) are the single-card walk 0, 1, 2, 3 that shipped before.
+  uint64_t salt_base_ = 0;
+  uint64_t salt_stride_ = 1;
   std::thread worker_;
   std::atomic<bool> running_{false};
   std::mutex job_mu_;
@@ -146,7 +182,39 @@ PearlCore::PearlCore(const Napi::CallbackInfo &info)
   }
 
   profile_ = profile;
+
+  // Which card to mine on. An explicit index (PEARL_GPU_INDEX, passed down by
+  // main/pearlCore.js) pins it; otherwise the core ranks the cards itself. This
+  // has to happen BEFORE pearl_host_create, which allocates on whatever device
+  // is current — and until now nothing set that at all, so it was the runtime's
+  // device 0, a card nobody had chosen and the UI did not name.
+  int requested = -1;
+  if (info.Length() > 1 && info[1].IsObject()) {
+    Napi::Object o = info[1].As<Napi::Object>();
+    Napi::Value v = o.Get("deviceIndex");
+    if (v.IsNumber()) requested = v.As<Napi::Number>().Int32Value();
+    Napi::Value b = o.Get("saltBase");
+    if (b.IsNumber()) salt_base_ = (uint64_t)b.As<Napi::Number>().Int64Value();
+    Napi::Value st = o.Get("saltStride");
+    if (st.IsNumber()) {
+      const int64_t v2 = st.As<Napi::Number>().Int64Value();
+      // A zero stride would search one salt for ever, which is a stall rather
+      // than an error the host could see. Keep the single-card default instead.
+      if (v2 > 0) salt_stride_ = (uint64_t)v2;
+    }
+  }
+
   char err[256] = {0};
+  char device_name[256] = {0};
+  device_index_ = pearl_host_select_device(&profile, requested, device_name,
+                                           sizeof(device_name), err, sizeof(err));
+  if (device_index_ < 0) {
+    Napi::Error::New(env, err[0] ? err : "no usable CUDA device")
+        .ThrowAsJavaScriptException();
+    return;
+  }
+  device_name_ = device_name;
+
   ctx_ = pearl_host_create(&profile, err, sizeof(err));
   if (!ctx_) {
     // A missing or too-old CUDA device is the common case. Throwing here surfaces
@@ -195,7 +263,7 @@ Napi::Value PearlCore::SetJob(const Napi::CallbackInfo &info) {
   {
     std::lock_guard<std::mutex> lock(job_mu_);
     job_id_ = job.Get("jobId").As<Napi::String>().Utf8Value();
-    pearl_host_set_job(ctx_, header.Data(), target);
+    pearl_host_set_job_salted(ctx_, header.Data(), target, salt_base_);
     have_job_ = true;
   }
 
@@ -256,6 +324,10 @@ Napi::Value PearlCore::On(const Napi::CallbackInfo &info) {
 // the pool replaces jobs every few seconds and grinding a stale one earns
 // nothing.
 void PearlCore::SearchLoop() {
+  // The current CUDA device is per-thread, and every allocation this loop reads
+  // belongs to the card the constructor chose. Inherit it here or launch on
+  // device 0 against another card's pointers.
+  pearl_host_bind_thread(ctx_);
   win_start_ = std::chrono::steady_clock::now();
   win_work_ = 0.0;
   // Must match PEARL_BATCH_REGIONS: the fold launches one CUDA block per region
@@ -268,7 +340,7 @@ void PearlCore::SearchLoop() {
   // Valid offsets only: m/rows_count down, n/cols_count across.
   const uint64_t span = ((uint64_t)profile_.m / PEARL_ROWS_COUNT)
                         * ((uint64_t)profile_.n / PEARL_COLS_COUNT);
-  uint64_t salt = 0;
+  uint64_t salt = salt_base_;
   while (running_) {
     std::string job_id;
     {
@@ -303,7 +375,10 @@ void PearlCore::SearchLoop() {
     if (nonce >= span) {
       std::lock_guard<std::mutex> lock(job_mu_);
       if (have_job_) {
-        pearl_host_reseed(ctx_, ++salt);
+        // The next salt THIS core owns, not simply the next one: on a multi-card
+        // rig the stride is the card count, so the cards never collide.
+        salt += salt_stride_;
+        pearl_host_reseed(ctx_, salt);
         nonce = 0;
       }
     }
@@ -406,12 +481,23 @@ void PearlCore::EmitError(const std::string &msg) {
   });
 }
 
+// { index, name } for the card this core opened — the host shows this rather
+// than its own guess, so the name on screen is the card doing the work.
+Napi::Value PearlCore::GetDevice(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  Napi::Object out = Napi::Object::New(env);
+  out.Set("index", Napi::Number::New(env, device_index_));
+  out.Set("name", Napi::String::New(env, device_name_));
+  return out;
+}
+
 Napi::Object PearlCore::Init(Napi::Env env, Napi::Object exports) {
   Napi::Function func =
       DefineClass(env, "PearlCore",
                   {InstanceMethod("setJob", &PearlCore::SetJob),
                    InstanceMethod("stop", &PearlCore::Stop),
-                   InstanceMethod("on", &PearlCore::On)});
+                   InstanceMethod("on", &PearlCore::On),
+                   InstanceAccessor("device", &PearlCore::GetDevice, nullptr)});
   exports.Set("PearlCore", func);
   return exports;
 }
@@ -420,7 +506,10 @@ Napi::Value CreateCore(const Napi::CallbackInfo &info) {
   Napi::Env env = info.Env();
   Napi::Object exports = env.Global().Get("__pearl_exports").As<Napi::Object>();
   Napi::Function ctor = exports.Get("PearlCore").As<Napi::Function>();
-  return ctor.New({info.Length() > 0 ? info[0] : env.Undefined()});
+  // Both arguments: the profile, and the core options (deviceIndex). Forwarding
+  // only the first silently dropped the card choice on the floor.
+  return ctor.New({info.Length() > 0 ? info[0] : env.Undefined(),
+                   info.Length() > 1 ? info[1] : env.Undefined()});
 }
 
 Napi::Object InitAll(Napi::Env env, Napi::Object exports) {

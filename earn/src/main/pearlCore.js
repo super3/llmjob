@@ -59,14 +59,20 @@ function loadCore(opts = {}) {
   return null;
 }
 
-// A factory the host calls to get a running core for one profile, or null when
-// the addon is unavailable. Kept separate from loadCore so the host depends on a
-// tiny surface (`createCore(profile) -> core | null`) that a test can fake with a
-// bare EventEmitter.
+// A factory the host calls to get a running core, or null when the addon is
+// unavailable. Kept separate from loadCore so the host depends on a tiny surface
+// (`createCore(profile, opts) -> core | null`) that a test can fake with a bare
+// EventEmitter.
+//
+// `opts` is per-core: which card it opens, and which slice of the search space
+// it owns. The host builds one core per card and fills those in — see
+// shared/gpu.planMinerGpus. An addon built before those options existed ignores
+// the second argument and behaves exactly as it did, which is what a rig running
+// an older pearl_core.node needs.
 function coreFactory(opts = {}) {
   const addon = loadCore(opts);
   if (!addon) return null;
-  return (profile) => addon.createCore(profile);
+  return (profile, coreOpts) => addon.createCore(profile, coreOpts || {});
 }
 
 module.exports = { loadCore, coreFactory };
