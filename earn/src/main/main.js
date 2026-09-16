@@ -48,8 +48,16 @@ const { isValidAddress } = require('../shared/address');
 const { formatUpdate, describeUpdateError } = require('../shared/updateStatus');
 const { buildMinerReports } = require('../shared/minerReport');
 const { runtimeCopyPlan } = require('../shared/llmRuntime');
+const { alignCudaDeviceOrder } = require('../shared/gpu');
 const earnings = require('../shared/earnings');
 const format = require('../shared/format');
+
+// Number the GPUs the way nvidia-smi does, before anything opens a CUDA device.
+// Everything here — the device label, per-card VRAM, temperatures, the board's
+// rows — speaks nvidia-smi's indices, and the CUDA runtime does not unless told
+// to. Set at load, because the mining core initialises CUDA inside THIS process
+// and reads it then.
+alignCudaDeviceOrder(process.env);
 
 let win = null;
 let miner = null;

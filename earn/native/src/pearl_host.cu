@@ -140,6 +140,13 @@ namespace {
 struct Ctx {
   PearlProfile profile;
 
+  // The card every allocation below lives on, as chosen by
+  // pearl_host_select_device. Kept because the current device is a PER-THREAD
+  // setting: the search runs on its own thread, and a thread that never set it
+  // would launch kernels on device 0 against pointers belonging to this one.
+  // pearl_host_bind_thread is how that thread inherits the choice.
+  int device = 0;
+
   // Operands, generated once per job and then read by every region.
   int8_t *dA = nullptr;   // [m, k]
   int8_t *dB = nullptr;   // [n, k]  (Bᵀ, row-major)
@@ -352,6 +359,48 @@ bool fail(char *err, size_t err_len, const char *msg) {
   return false;
 }
 
+// What one instance of `profile` costs on a card, in bytes.
+//
+// Two callers ask: the pre-flight in pearl_host_create, and the device choice
+// in pearl_host_select_device. They have to ask the SAME question — a card
+// chosen against one number and then refused against another is the worst of
+// both answers.
+//
+// The terms moved here wholesale from that pre-flight, comments and all; each
+// one is a thing that was got wrong once.
+size_t needed_bytes(const PearlProfile *profile) {
+  const size_t k = profile->k;
+  const size_t rank = profile->rank;
+  const size_t aBytes = (size_t)profile->m * k;
+  const size_t bBytes = (size_t)profile->n * k;
+  const size_t noiseBytes = (size_t)profile->m * rank + (size_t)profile->n * rank
+                            + 2 * k * 2 * sizeof(uint32_t) + 64;
+  // The materialised operands are int8, the same size as the sources. They were
+  // int32 while the noise was (wrongly) reconstructed at full rank, which cost
+  // 2 GiB at mainnet on top of the 1 GiB of sources.
+  const size_t primeBytes = aBytes + bBytes;
+  // What a batch really costs: one transcript per REGION, and regions are
+  // row OFFSETS by column offsets, not rows by columns. Two stale terms lived
+  // here and together overstated it by about 25x:
+  //
+  //   - profile->m instead of m/PEARL_ROWS_COUNT, which is the number of valid
+  //     row offsets and therefore the batch's real height;
+  //   - a 32-byte hash and a flag PER REGION, from when finalize wrote every
+  //     region's hash and the host read back a flag array. It writes only on a
+  //     hit now, into a fixed PEARL_MAX_HITS list.
+  //
+  // The consequence was not cosmetic: this check refused geometries the miner
+  // runs fine on, which is what kept the search pinned to the smaller operand
+  // draw and paid the redraw cost four times more often than it had to.
+  const size_t colBatch = profile->col_batch ? profile->col_batch : 1u;
+  const size_t rowsValid = profile->m / PEARL_ROWS_COUNT;
+  const size_t colsValid = profile->n / PEARL_COLS_COUNT;
+  const size_t batchCols = colBatch > colsValid ? colsValid : colBatch;
+  const size_t batchBytes = batchCols * rowsValid * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)
+                            + (size_t)PEARL_MAX_HITS * (PEARL_HASH_BYTES + sizeof(uint32_t));
+  return aBytes + bBytes + primeBytes + noiseBytes + batchBytes + (1u << 20);
+}
+
 #define CUDA_OK(expr, msg)                                   \
   do {                                                       \
     cudaError_t _e = (expr);                                 \
@@ -364,6 +413,100 @@ bool fail(char *err, size_t err_len, const char *msg) {
   } while (0)
 
 }  // namespace
+
+// Choose the card this core mines on, and make it the calling thread's device.
+//
+// Nothing used to choose it. The core allocated on whatever the CUDA runtime
+// calls device 0, and device 0 is NOT the first card nvidia-smi lists: the
+// runtime orders devices by its own "fastest first" heuristic unless
+// CUDA_DEVICE_ORDER says otherwise, while nvidia-smi always orders by PCI bus.
+// On a single-card rig the two agree and nobody notices. On a two-card rig they
+// need not, and then the app names one card and mines on another — reported
+// from the field as a 32 GB RTX PRO 4500 shown in the UI while an RTX 4070 did
+// the work, at a fraction of the hashrate (issue #226).
+//
+// Half the fix is that the shells now pin the ordering
+// (CUDA_DEVICE_ORDER=PCI_BUS_ID — see shared/gpu.alignCudaDeviceOrder), so an
+// index means the same card here as it does in nvidia-smi. This is the other
+// half: pick which of those indices to mine on, and report it back with the
+// device's own name so the host can SAY which card it took instead of assuming.
+//
+// `requested` >= 0 is an operator's explicit choice (PEARL_GPU_INDEX) and wins
+// outright, including over a card too small for the profile — create's VRAM
+// pre-flight speaks to that, and it quotes real numbers.
+//
+// Otherwise rank by SM count x clock: "how much machine per second". That is a
+// proxy rather than a benchmark, but it is the proxy that survives across
+// generations, and the only judgement it has to get right is "mine on the big
+// card, not the little one". Cards whose TOTAL memory cannot hold the profile
+// are skipped first — no amount of free VRAM would save them — and ties keep
+// the lower index, so a rig of identical cards picks the same one every run.
+//
+// Returns the chosen device index, or -1 with a message in `err`.
+extern "C" int pearl_host_select_device(const PearlProfile *profile, int requested,
+                                        char *name, size_t name_len, char *err,
+                                        size_t err_len) {
+  if (name && name_len) name[0] = '\0';
+  if (!profile) { fail(err, err_len, "no profile supplied"); return -1; }
+
+  int devices = 0;
+  if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) {
+    fail(err, err_len, "no CUDA device found — is an NVIDIA driver installed?");
+    return -1;
+  }
+
+  int chosen = -1;
+  if (requested >= 0) {
+    if (requested >= devices) {
+      if (err && err_len) {
+        snprintf(err, err_len,
+                 "GPU %d was asked for (PEARL_GPU_INDEX) but this machine has "
+                 "%d: valid indices are 0..%d",
+                 requested, devices, devices - 1);
+      }
+      return -1;
+    }
+    chosen = requested;
+  } else {
+    const size_t need = needed_bytes(profile);
+    double bestScore = -1.0;
+    for (int d = 0; d < devices; d++) {
+      cudaDeviceProp prop;
+      if (cudaGetDeviceProperties(&prop, d) != cudaSuccess) continue;
+      // A card in an exclusive or prohibited compute mode cannot take our
+      // context at all; choosing it would fail the whole start on a rig that
+      // has a perfectly good second card.
+      if (prop.computeMode == cudaComputeModeProhibited) continue;
+      if (prop.totalGlobalMem < need) continue;
+      int clockKHz = 0;
+      if (cudaDeviceGetAttribute(&clockKHz, cudaDevAttrClockRate, d) != cudaSuccess
+          || clockKHz <= 0) {
+        clockKHz = 1;  // unreadable clock: rank on SM count alone rather than drop the card
+      }
+      const double score = (double)prop.multiProcessorCount * (double)clockKHz;
+      if (score > bestScore) { bestScore = score; chosen = d; }
+    }
+    // Every card was skipped — all too small, or none would report itself. Take
+    // the first one anyway: create's pre-flight then refuses with the numbers,
+    // which is a far better answer than "no CUDA device found".
+    if (chosen < 0) chosen = 0;
+  }
+
+  const cudaError_t e = cudaSetDevice(chosen);
+  if (e != cudaSuccess) {
+    if (err && err_len) {
+      snprintf(err, err_len, "could not open GPU %d: %s", chosen,
+               cudaGetErrorString(e));
+    }
+    return -1;
+  }
+
+  cudaDeviceProp prop;
+  if (name && name_len && cudaGetDeviceProperties(&prop, chosen) == cudaSuccess) {
+    snprintf(name, name_len, "%s", prop.name);
+  }
+  return chosen;
+}
 
 extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
                                    size_t err_len) {
@@ -399,36 +542,12 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   const size_t rank = profile->rank;
   const size_t aBytes = (size_t)profile->m * k;
   const size_t bBytes = (size_t)profile->n * k;
-  const size_t noiseBytes = (size_t)profile->m * rank + (size_t)profile->n * rank
-                            + 2 * k * 2 * sizeof(uint32_t) + 64;
-  // The materialised operands are int8, the same size as the sources. They were
-  // int32 while the noise was (wrongly) reconstructed at full rank, which cost
-  // 2 GiB at mainnet on top of the 1 GiB of sources.
-  const size_t primeBytes = aBytes + bBytes;
-  // What a batch really costs: one transcript per REGION, and regions are
-  // row OFFSETS by column offsets, not rows by columns. Two stale terms lived
-  // here and together overstated it by about 25x:
-  //
-  //   - profile->m instead of m/PEARL_ROWS_COUNT, which is the number of valid
-  //     row offsets and therefore the batch's real height;
-  //   - a 32-byte hash and a flag PER REGION, from when finalize wrote every
-  //     region's hash and the host read back a flag array. It writes only on a
-  //     hit now, into a fixed PEARL_MAX_HITS list.
-  //
-  // The consequence was not cosmetic: this check refused geometries the miner
-  // runs fine on, which is what kept the search pinned to the smaller operand
-  // draw and paid the redraw cost four times more often than it had to.
-  const size_t colBatch = profile->col_batch ? profile->col_batch : 1u;
-  const size_t rowsValid = profile->m / PEARL_ROWS_COUNT;
-  const size_t colsValid = profile->n / PEARL_COLS_COUNT;
-  const size_t batchCols = colBatch > colsValid ? colsValid : colBatch;
-  const size_t batchBytes = batchCols * rowsValid * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)
-                            + (size_t)PEARL_MAX_HITS * (PEARL_HASH_BYTES + sizeof(uint32_t));
-  const size_t need = aBytes + bBytes + primeBytes + noiseBytes
-                      + batchBytes + (1u << 20);
+  const size_t need = needed_bytes(profile);
 
   // Check the budget BEFORE allocating, so an 8 GB card gets a sentence it can
-  // act on instead of an out-of-memory abort three kernels deep.
+  // act on instead of an out-of-memory abort three kernels deep. This reads the
+  // CURRENT device, which pearl_host_select_device has already chosen — so the
+  // card measured here is the card that will mine.
   size_t freeMem = 0, totalMem = 0;
   if (cudaMemGetInfo(&freeMem, &totalMem) == cudaSuccess && freeMem < need) {
     if (err && err_len) {
@@ -442,6 +561,9 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
 
   Ctx *ctx = new Ctx();
   ctx->profile = *profile;
+  // Whatever pearl_host_select_device left current is where these allocations
+  // land, so that is the card the context belongs to.
+  if (cudaGetDevice(&ctx->device) != cudaSuccess) ctx->device = 0;
 
   CUDA_OK(cudaMalloc(&ctx->dA, aBytes), "allocating A");
   CUDA_OK(cudaMalloc(&ctx->dB, bBytes), "allocating B");
@@ -535,6 +657,20 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
              cudaMemcpyHostToDevice);
 
   return ctx;
+}
+
+// Point the CALLING thread at the card this context lives on.
+//
+// cudaSetDevice is per-thread state, and the search runs on a thread of its own
+// (PearlCore::SearchLoop). Without this the search thread would default to
+// device 0 and launch kernels there against pointers allocated on the chosen
+// card — on a single-card rig an invisible no-op, on a two-card rig an illegal
+// access at the first batch. Called once when the thread starts, not per batch:
+// a batch is only ~200us, and this is not free.
+extern "C" void pearl_host_bind_thread(void *handle) {
+  Ctx *ctx = (Ctx *)handle;
+  if (!ctx) return;
+  cudaSetDevice(ctx->device);
 }
 
 extern "C" void pearl_host_destroy(void *handle) {

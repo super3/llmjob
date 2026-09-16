@@ -42,6 +42,7 @@ class PearlEngine extends EventEmitter {
     this.temp = null;
     this.tempTimer = null;
     this.miner = null;
+    this.device = null;   // { index, name } once the core says which card it took
 
     // Cumulative for the session, because that is what the UI's counters mean.
     // PearlMiner reports each verdict as it lands, one event per share.
@@ -78,7 +79,7 @@ class PearlEngine extends EventEmitter {
       this._announced = true;
       this.emit('event', {
         type: 'connected',
-        gpuIndex: 0,
+        gpuIndex: this.gpuIndex(),
         endpoint: this.endpoint,
         gpu: this.gpu,
       });
@@ -97,13 +98,25 @@ class PearlEngine extends EventEmitter {
     m.on('hashrate', (th) => { this.hashrate = th; this._status(); });
 
     this._announced = false;
-    this._startTemps();
     // Propagate it. PearlMiner.start() returns false when the core will not
     // construct -- no VRAM for the rank-128 profile, no pearl_core.node -- and it
     // emits 'error' but NOT 'stopped', because nothing ever started. Discarding
     // this return dropped the only signal that the engine is dead rather than
     // merely quiet.
-    return m.start(Object.assign({}, settings, { profile: this.profile }));
+    const ok = m.start(Object.assign({}, settings, { profile: this.profile }));
+
+    // The core has now chosen its card, so stop guessing at it. The GPU name was
+    // detected separately (nvidia-smi's first card) and the index was hardcoded
+    // to 0 -- both true only while CUDA and nvidia-smi happen to number the cards
+    // the same way, which on a multi-GPU rig they need not (issue #226). What the
+    // core reports is what is mining; it wins over both.
+    this.device = m.device;
+    if (this.device) this.gpu = this.device.name;
+
+    // Started after m.start() so the first sample already reads the right card:
+    // it polls per gpuIndex(), and before the core exists that is still a guess.
+    this._startTemps();
+    return ok;
   }
 
   stop() {
@@ -144,10 +157,16 @@ class PearlEngine extends EventEmitter {
     this.temp = null;
   }
 
-  // The card this engine mines on. One core, one GPU, so index 0 -- kept as a
-  // method so the reading follows if that ever stops being true.
+  // The card this engine mines on: the index the core reports, which is
+  // nvidia-smi's index too now that the shells pin CUDA_DEVICE_ORDER (see
+  // shared/gpu.alignCudaDeviceOrder). It was hardcoded to 0, so on a rig where
+  // the core landed on a different card the temperature shown belonged to a card
+  // that was not mining, and the board row was filed under the wrong GPU.
+  //
+  // Still 0 when the core does not report one (an older pearl_core.node), which
+  // is exactly the old behaviour.
   gpuIndex() {
-    return 0;
+    return this.device ? this.device.index : 0;
   }
 
   _status() {

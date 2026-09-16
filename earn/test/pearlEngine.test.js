@@ -271,3 +271,61 @@ describe('start() reports whether the engine actually started', () => {
     e.stop();
   });
 });
+
+// The device label, the temperature and the board row all follow ONE index, and
+// until now that index was the constant 0 while the card name came from a
+// separate nvidia-smi probe. Both are only right while CUDA and nvidia-smi
+// number the cards the same way; on a two-card rig they need not, and the app
+// showed a 32 GB RTX PRO 4500 mining while an RTX 4070 ran at 100% (issue #226).
+// What the core reports is the card that is mining, so it wins over both.
+describe('PearlEngine — the card really mining', () => {
+  const settle = () => new Promise((r) => setImmediate(r));
+
+  function withDevice(device, readTemps) {
+    const sock = fakeSocket();
+    const core = fakeCore();
+    if (device) core.device = device;
+    const e = new PearlEngine({ connect: () => sock, createCore: () => core, readTemps });
+    const events = [];
+    e.on('event', (x) => events.push(x));
+    e.start({ address: ADDR, worker: 'rig01', endpoint: 'h:1', gpu: 'NVIDIA RTX PRO 4500' });
+    sock.emit('connect');
+    return { e, sock, core, events, status: () => events.filter((x) => x.type === 'status').pop() };
+  }
+
+  test('reports the core\'s card, not the one detection guessed at', () => {
+    const b = withDevice({ index: 1, name: 'NVIDIA GeForce RTX 4070' });
+    b.core.emit('hashrate', 50);
+    expect(b.status()).toMatchObject({ gpuIndex: 1, gpu: 'NVIDIA GeForce RTX 4070' });
+  });
+
+  // `connected` is what fills the device label on the mining screen. It carried
+  // a hardcoded index 0 alongside a name from somewhere else entirely.
+  test('names it on the connected event too', () => {
+    const b = withDevice({ index: 1, name: 'NVIDIA GeForce RTX 4070' });
+    b.sock.emit('data', jobLine());
+    const c = b.events.find((e) => e.type === 'connected');
+    expect(c).toMatchObject({ gpuIndex: 1, gpu: 'NVIDIA GeForce RTX 4070' });
+  });
+
+  // The temperature is read per index. Showing card 0's temperature for a run on
+  // card 1 is how a rig looks idle and cool while a fan screams.
+  test('reads the temperature of that card', async () => {
+    const b = withDevice({ index: 1, name: 'NVIDIA GeForce RTX 4070' },
+      () => Promise.resolve({ 0: 38, 1: 73 }));
+    await settle();
+    b.core.emit('hashrate', 50);
+    expect(b.status().temp).toBe(73);
+    b.e.stop();
+  });
+
+  // An older pearl_core.node reports no device at all, and then the engine has
+  // nothing better than what it had before: index 0 and the detected name.
+  test('keeps the old behaviour when the core says nothing', async () => {
+    const b = withDevice(null, () => Promise.resolve({ 0: 38, 1: 73 }));
+    await settle();
+    b.core.emit('hashrate', 50);
+    expect(b.status()).toMatchObject({ gpuIndex: 0, gpu: 'NVIDIA RTX PRO 4500', temp: 38 });
+    b.e.stop();
+  });
+});

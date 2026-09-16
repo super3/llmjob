@@ -45,6 +45,34 @@ function countGpus(names) {
   return discrete > 0 ? discrete : (real > 0 ? 1 : 0);
 }
 
+// Make CUDA number the cards the way nvidia-smi does, by setting
+// CUDA_DEVICE_ORDER=PCI_BUS_ID before anything touches the driver.
+//
+// Everything this app knows about GPUs comes from nvidia-smi, which numbers
+// cards by PCI bus: the name on the device label, the per-card VRAM the LLM
+// planner budgets against, the temperature the UI shows, the rows on the
+// network board. The CUDA runtime does NOT: left alone it orders devices by its
+// own "fastest first" heuristic, so its device 1 can be nvidia-smi's device 0.
+//
+// On a single-card rig the two agree and nothing shows. On a multi-card rig they
+// need not, and then an index means different cards on either side of that line:
+// the mining core mined on one GPU while the app named another — a 32 GB RTX PRO
+// 4500 on screen, an RTX 4070 doing the work (issue #226).
+//
+// The variable is read when the CUDA driver initialises, which for our core is
+// inside this process on the first Start, so it has to be in place before then:
+// both shells set it at load. (It does NOT reach the local LLM: llama-server
+// ships as a Vulkan build, whose --main-gpu indices come from Vulkan's own
+// device enumeration and are a separate question.)
+//
+// An operator who has already set CUDA_DEVICE_ORDER means it — leave it alone.
+// Returns the value now in effect, for the caller to log.
+function alignCudaDeviceOrder(env) {
+  const e = env || process.env;
+  if (!e.CUDA_DEVICE_ORDER) e.CUDA_DEVICE_ORDER = 'PCI_BUS_ID';
+  return e.CUDA_DEVICE_ORDER;
+}
+
 // Parse `nvidia-smi --query-gpu=index,name,memory.used,memory.total
 // --format=csv,noheader,nounits` into one entry per card:
 //   [{ index, name, usedMb, totalMb }, ...]
@@ -96,4 +124,6 @@ function parseMacGpu(out) {
   return name ? { name, count: countGpus(names) } : null;
 }
 
-module.exports = { IGNORE, INTEGRATED, pickGpu, countGpus, parseGpuStats, parseMacGpu };
+module.exports = {
+  IGNORE, INTEGRATED, pickGpu, countGpus, alignCudaDeviceOrder, parseGpuStats, parseMacGpu,
+};

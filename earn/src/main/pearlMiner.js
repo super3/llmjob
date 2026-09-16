@@ -37,6 +37,18 @@ const { combinePayoutAddress } = require('../shared/address');
 
 const RECONNECT_MS = 5000;
 
+// The card a core opened, as { index, name }, or null when it won't say.
+//
+// A core built before the device choice existed has no `device` at all, and the
+// host must stay usable against it — an older pearl_core.node beside a newer
+// app is the normal state of a rig mid-upgrade. Null then means "unknown", and
+// every consumer falls back to what it did before.
+function readDevice(core) {
+  const d = core && core.device;
+  if (!d || !Number.isInteger(d.index) || d.index < 0) return null;
+  return { index: d.index, name: d.name ? String(d.name) : 'GPU ' + d.index };
+}
+
 class PearlMiner extends EventEmitter {
   constructor({ connect, createCore, reconnectMs } = {}) {
     super();
@@ -46,6 +58,7 @@ class PearlMiner extends EventEmitter {
 
     this.sock = null;
     this.core = null;
+    this.device = null;       // { index, name } — the card the core actually opened
     this.running = false;
     this.authorized = false;
     this.job = null;          // the current parsed job the core is searching
@@ -64,6 +77,9 @@ class PearlMiner extends EventEmitter {
     this.authorized = false;
     this.job = null;
     this.buf = '';
+    // Cleared here, not left from the last run: if the core fails to construct
+    // this time, the honest answer is "no card", not the one a previous run got.
+    this.device = null;
 
     // No core means the native addon is not built for this machine. That is a
     // clean, explicable stop — not a crash — so the host says exactly that and
@@ -86,6 +102,18 @@ class PearlMiner extends EventEmitter {
 
     try {
       this.core = this.createCore(settings.profile || PROFILE);
+      this.device = readDevice(this.core);
+      // Name the card in the log, every run. The core chooses it — the host
+      // cannot see CUDA's device list — so this line is the only place the two
+      // halves of "which GPU is mining" are ever written down together. A rig
+      // whose UI names one card and whose fan spins up on another (issue #226)
+      // is diagnosable from a log file because of it.
+      if (this.device) {
+        this.emit('log', {
+          level: 'info',
+          line: 'mining on GPU ' + this.device.index + ' · ' + this.device.name,
+        });
+      }
       this._wireCore(this.core, wallet, worker);
     } catch (e) {
       this.emit('error', e);

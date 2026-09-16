@@ -1,7 +1,7 @@
 'use strict';
 
 const path = require('path');
-const { loadCore, coreFactory } = require('../src/main/pearlCore');
+const { loadCore, coreFactory, parseDeviceIndex } = require('../src/main/pearlCore');
 
 const REL = path.join('native', 'build', 'Release', 'pearl_core.node');
 const DBG = path.join('native', 'build', 'Debug', 'pearl_core.node');
@@ -136,12 +136,73 @@ describe('coreFactory', () => {
   test('returns a factory that builds cores from the addon', () => {
     const made = { id: 'core' };
     const addon = { createCore: jest.fn(() => made) };
-    const factory = coreFactory({ require: fakeRequire([[REL, addon]]) });
+    const factory = coreFactory({ require: fakeRequire([[REL, addon]]), env: {} });
     expect(factory({ rank: 128 })).toBe(made);
-    expect(addon.createCore).toHaveBeenCalledWith({ rank: 128 });
+    // No override set: a null index is the core's cue to rank the cards itself.
+    expect(addon.createCore).toHaveBeenCalledWith({ rank: 128 }, { deviceIndex: null });
+  });
+
+  // The whole point of the override: a rig that mines on the wrong card can pin
+  // the right one without a rebuild, and without us being able to reproduce it.
+  test('hands the core an operator\'s PEARL_GPU_INDEX', () => {
+    const addon = { createCore: jest.fn(() => ({})) };
+    const factory = coreFactory({
+      require: fakeRequire([[REL, addon]]),
+      env: { PEARL_GPU_INDEX: '1' },
+    });
+    factory({ rank: 128 });
+    expect(addon.createCore).toHaveBeenCalledWith({ rank: 128 }, { deviceIndex: 1 });
+  });
+
+  // Reading the ambient environment is the real path: main.js and earn-cli.js
+  // both build the factory without passing one.
+  test('falls back to the process environment for the override', () => {
+    const addon = { createCore: jest.fn(() => ({})) };
+    const had = Object.prototype.hasOwnProperty.call(process.env, 'PEARL_GPU_INDEX');
+    const before = process.env.PEARL_GPU_INDEX;
+    process.env.PEARL_GPU_INDEX = '2';
+    try {
+      coreFactory({ require: fakeRequire([[REL, addon]]) })({ rank: 128 });
+      expect(addon.createCore).toHaveBeenCalledWith({ rank: 128 }, { deviceIndex: 2 });
+    } finally {
+      if (had) process.env.PEARL_GPU_INDEX = before;
+      else delete process.env.PEARL_GPU_INDEX;
+    }
   });
 
   test('is null when there is no addon, so the host can say "not built"', () => {
     expect(coreFactory({ require: fakeRequire([]) })).toBeNull();
+  });
+});
+
+// A negative index is how the core is told "choose for me", so anything that is
+// not a real card index has to read as absent rather than be passed through --
+// a typo must not turn into an instruction, and `PEARL_GPU_INDEX=-1` must not
+// become a card.
+describe('parseDeviceIndex', () => {
+  test('takes a non-negative integer', () => {
+    expect(parseDeviceIndex({ PEARL_GPU_INDEX: '0' })).toBe(0);
+    expect(parseDeviceIndex({ PEARL_GPU_INDEX: '3' })).toBe(3);
+    expect(parseDeviceIndex({ PEARL_GPU_INDEX: ' 2 ' })).toBe(2);
+  });
+
+  test('ignores anything that is not one', () => {
+    expect(parseDeviceIndex({})).toBeNull();
+    expect(parseDeviceIndex({ PEARL_GPU_INDEX: '' })).toBeNull();
+    expect(parseDeviceIndex({ PEARL_GPU_INDEX: '  ' })).toBeNull();
+    expect(parseDeviceIndex({ PEARL_GPU_INDEX: 'first' })).toBeNull();
+    expect(parseDeviceIndex({ PEARL_GPU_INDEX: '1.5' })).toBeNull();
+    expect(parseDeviceIndex({ PEARL_GPU_INDEX: '-1' })).toBeNull();
+  });
+
+  test('defaults to the process environment', () => {
+    const had = Object.prototype.hasOwnProperty.call(process.env, 'PEARL_GPU_INDEX');
+    const before = process.env.PEARL_GPU_INDEX;
+    delete process.env.PEARL_GPU_INDEX;
+    try {
+      expect(parseDeviceIndex()).toBeNull();
+    } finally {
+      if (had) process.env.PEARL_GPU_INDEX = before;
+    }
   });
 });

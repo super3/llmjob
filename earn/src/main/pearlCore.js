@@ -59,14 +59,40 @@ function loadCore(opts = {}) {
   return null;
 }
 
+// An operator's explicit choice of mining card, from PEARL_GPU_INDEX, or null
+// when they haven't made one (the core then ranks the cards itself).
+//
+// It is an escape hatch, not the mechanism: the core's own ranking is what
+// decides on every ordinary rig. But "the app picked the wrong card" is exactly
+// the report we cannot reproduce from here, and a rig that can pin the card in
+// one env var can answer it in one run. Same reasoning as PEARL_CORE_PATH above,
+// and the same place to look for it.
+//
+// Anything that isn't a non-negative integer is ignored rather than passed on:
+// the core reads a negative index as "choose for me", so a typo must not read as
+// an instruction.
+function parseDeviceIndex(env) {
+  const raw = (env || process.env).PEARL_GPU_INDEX;
+  if (raw == null || String(raw).trim() === '') return null;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0) return null;
+  return n;
+}
+
 // A factory the host calls to get a running core for one profile, or null when
 // the addon is unavailable. Kept separate from loadCore so the host depends on a
 // tiny surface (`createCore(profile) -> core | null`) that a test can fake with a
 // bare EventEmitter.
+//
+// The card choice rides along here rather than through the host: it is a
+// property of this machine, like the addon's path, and every caller would
+// otherwise have to remember to pass it. An addon built before `device` existed
+// ignores the second argument and behaves exactly as it did.
 function coreFactory(opts = {}) {
   const addon = loadCore(opts);
   if (!addon) return null;
-  return (profile) => addon.createCore(profile);
+  const deviceIndex = parseDeviceIndex(opts.env || process.env);
+  return (profile) => addon.createCore(profile, { deviceIndex });
 }
 
-module.exports = { loadCore, coreFactory };
+module.exports = { loadCore, coreFactory, parseDeviceIndex };

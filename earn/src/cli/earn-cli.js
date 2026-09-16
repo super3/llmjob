@@ -43,8 +43,16 @@ const { JobWorker } = require('../main/jobWorker');
 const { resolvePlan, normalizeMode } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote } = require('../shared/platform');
 const { resolveServerUrl } = require('../shared/llama');
+const { alignCudaDeviceOrder } = require('../shared/gpu');
 const format = require('../shared/format');
 const pkg = require('../../package.json');
+
+// Number the GPUs the way nvidia-smi does, before anything opens a CUDA device.
+// Everything here — the device label, per-card VRAM, temperatures, the board's
+// rows — speaks nvidia-smi's indices, and the CUDA runtime does not unless told
+// to. Set at load, because the mining core initialises CUDA inside THIS process
+// and reads it then.
+alignCudaDeviceOrder(process.env);
 
 // Write a log line. When attached to a TTY we prefix a wall-clock time; when
 // piped (systemd/journald, `docker logs`, a file) we drop it, since the log

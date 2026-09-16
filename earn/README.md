@@ -84,6 +84,33 @@ On Linux the engine version is picked per rig (`shared/engine.js`): driver
 The version is part of the cached filename, so bumping it forces a fresh
 download instead of trusting a stale cache.
 
+### Which GPU it mines on
+
+One card, chosen by the core, and named in the log on every run:
+
+```
+mining on GPU 0 · NVIDIA RTX PRO 4500 Blackwell
+```
+
+The core ranks the cards by SM count x clock and takes the biggest one that can
+hold the profile, then reports the card it opened so the device label, the
+temperature and the network board all follow the GPU actually doing the work.
+Both shells also set `CUDA_DEVICE_ORDER=PCI_BUS_ID` at startup, so "GPU 1" means
+the same card to the miner as it does to `nvidia-smi` — left to itself the CUDA
+runtime numbers cards by its own "fastest first" heuristic, and on a mixed rig
+that is a different card than the one `nvidia-smi` lists first.
+
+To pin a specific card, set `PEARL_GPU_INDEX` to its `nvidia-smi` index:
+
+```bash
+PEARL_GPU_INDEX=1 llmjob-earn-cli --address prl1p…
+```
+
+The local LLM is unaffected by that choice: it runs an instance on **every** card
+with room for the model (`--main-gpu <index>` per instance), mining card
+included. Its `llama-server` is a Vulkan build, so those indices are Vulkan's own
+and the CUDA ordering above does not apply to them.
+
 ## macOS (LLM only)
 
 The Mac build runs **the local LLM and nothing else**. AlphaPool builds

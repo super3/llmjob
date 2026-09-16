@@ -1,6 +1,8 @@
 'use strict';
 
-const { pickGpu, countGpus, parseGpuStats, parseMacGpu } = require('../src/shared/gpu');
+const {
+  pickGpu, countGpus, alignCudaDeviceOrder, parseGpuStats, parseMacGpu,
+} = require('../src/shared/gpu');
 
 describe('pickGpu', () => {
   test('picks the real GPU and skips the basic display adapter', () => {
@@ -124,5 +126,41 @@ describe('parseMacGpu', () => {
     expect(parseMacGpu(JSON.stringify({ SPDisplaysDataType: 'nope' }))).toBeNull();
     expect(parseMacGpu(JSON.stringify({}))).toBeNull();
     expect(parseMacGpu('null')).toBeNull();
+  });
+});
+
+// The one line that makes "GPU 1" mean the same card to nvidia-smi as it does to
+// our mining core. Without it the CUDA runtime numbers cards by its own "fastest
+// first" heuristic, which is how a rig came to show a 32 GB RTX PRO 4500 on the
+// device label while an RTX 4070 did the mining (issue #226).
+describe('alignCudaDeviceOrder', () => {
+  test('pins CUDA to nvidia-smi ordering when nothing has set it', () => {
+    const env = {};
+    expect(alignCudaDeviceOrder(env)).toBe('PCI_BUS_ID');
+    expect(env.CUDA_DEVICE_ORDER).toBe('PCI_BUS_ID');
+  });
+
+  // An operator who set it meant it. Overriding their choice would be the same
+  // class of bug as the one this fixes: the machine doing something other than
+  // what it was told.
+  test('leaves an operator\'s own ordering alone', () => {
+    const env = { CUDA_DEVICE_ORDER: 'FASTEST_FIRST' };
+    expect(alignCudaDeviceOrder(env)).toBe('FASTEST_FIRST');
+    expect(env.CUDA_DEVICE_ORDER).toBe('FASTEST_FIRST');
+  });
+
+  // Both shells call it at load, and it has to reach the REAL environment: the
+  // mining core initialises CUDA inside this process and reads it from there.
+  test('defaults to the real process environment', () => {
+    const had = Object.prototype.hasOwnProperty.call(process.env, 'CUDA_DEVICE_ORDER');
+    const before = process.env.CUDA_DEVICE_ORDER;
+    delete process.env.CUDA_DEVICE_ORDER;
+    try {
+      expect(alignCudaDeviceOrder()).toBe('PCI_BUS_ID');
+      expect(process.env.CUDA_DEVICE_ORDER).toBe('PCI_BUS_ID');
+    } finally {
+      if (had) process.env.CUDA_DEVICE_ORDER = before;
+      else delete process.env.CUDA_DEVICE_ORDER;
+    }
   });
 });

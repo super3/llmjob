@@ -556,3 +556,65 @@ describe('PearlMiner — lifecycle', () => {
     expect(new PearlMiner()).toBeInstanceOf(PearlMiner);
   });
 });
+
+// Which card is mining is not something the host can work out for itself: the
+// core opens a CUDA device, and CUDA's device list is not nvidia-smi's. So the
+// core says, and the host repeats it. A rig that showed one card in the UI while
+// another did the work (issue #226) is the failure this closes.
+describe('PearlMiner — the card the core opened', () => {
+  const withDevice = (device) => {
+    const core = makeCore();
+    if (device !== undefined) core.device = device;
+    return boot({ core });
+  };
+
+  test('is taken from the core and said out loud', () => {
+    const b = withDevice({ index: 1, name: 'NVIDIA GeForce RTX 4070' });
+    b.m.start(settings);
+    expect(b.m.device).toEqual({ index: 1, name: 'NVIDIA GeForce RTX 4070' });
+    expect(b.events.log.map((l) => l.line))
+      .toContain('mining on GPU 1 · NVIDIA GeForce RTX 4070');
+  });
+
+  // A core built before the device choice existed says nothing. The host has to
+  // stay usable against it -- an older pearl_core.node beside a newer app is the
+  // normal state of a rig part-way through an upgrade -- so "unknown" falls back
+  // to the behaviour that shipped before.
+  test('is null when the core does not report one, without a log line', () => {
+    const b = withDevice(undefined);
+    b.m.start(settings);
+    expect(b.m.device).toBeNull();
+    expect(b.events.log.map((l) => l.line).some((l) => l.startsWith('mining on GPU'))).toBe(false);
+  });
+
+  test('ignores a device the core cannot describe', () => {
+    for (const bad of [null, {}, { index: -1 }, { index: 1.5 }, { index: '0' }]) {
+      const b = withDevice(bad);
+      b.m.start(settings);
+      expect(b.m.device).toBeNull();
+    }
+  });
+
+  // An index with no name still names something. "GPU 1" is a poor label but it
+  // is a true one, and it keeps the UI from falling back to a card name that was
+  // detected separately and may belong to a different card entirely.
+  // A start that cannot build a core must not leave the last run's card standing:
+  // the UI would then label a rig that is mining nothing.
+  test('is cleared when the core will not construct', () => {
+    const core = makeCore();
+    core.device = { index: 1, name: 'NVIDIA GeForce RTX 4070' };
+    const b = boot({ core });
+    b.m.start(settings);
+    expect(b.m.device).not.toBeNull();
+    b.m.stop();
+    b.m.createCore.mockImplementationOnce(() => { throw new Error('no CUDA device found'); });
+    expect(b.m.start(settings)).toBe(false);
+    expect(b.m.device).toBeNull();
+  });
+
+  test('falls back to the bare index when the core gives no name', () => {
+    const b = withDevice({ index: 2, name: '' });
+    b.m.start(settings);
+    expect(b.m.device).toEqual({ index: 2, name: 'GPU 2' });
+  });
+});
