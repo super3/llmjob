@@ -1,15 +1,19 @@
 // N-API binding: exposes the CUDA core to the JS host as
 //
-//   createCore(profile, { deviceIndex }) -> {
+//   createCore(profile, { deviceIndex, saltBase, saltStride }) -> {
 //     setJob({ header: Buffer(76), target: BigInt, jobId: string }),
 //     stop(),
 //     on('hit'|'hashrate'|'error', cb),
 //     device: { index, name }        // the card it actually opened
 //   }
 //
-// `deviceIndex` pins a card (an operator override); omit it and the core ranks
-// the cards and picks one. Either way `device` reports what it took, because
-// the host has no other way to know — and when it assumed, it was wrong.
+// `deviceIndex` pins a card; omit it and the core ranks the cards and picks one.
+// Either way `device` reports what it took, because the host has no other way to
+// know — and when it assumed, it was wrong.
+//
+// `saltBase`/`saltStride` are this core's slice of the search space. A rig mines
+// with one core per card, and without a slice each of them would search the same
+// operands and find the same shares.
 //
 // The search runs on its own thread so the Electron main thread is never
 // blocked, and results are marshalled back with a thread-safe function. The JS
@@ -81,6 +85,10 @@ void *pearl_host_create(const PearlProfile *profile, char *err, size_t err_len);
 void pearl_host_destroy(void *ctx);
 // Load a job. header is 76 bytes, target is 32 big-endian bytes.
 void pearl_host_set_job(void *ctx, const uint8_t *header, const uint8_t *target);
+// Load a job and draw its operands under a given salt — one card's slice of the
+// search space. See saltBase/saltStride below.
+void pearl_host_set_job_salted(void *ctx, const uint8_t *header, const uint8_t *target,
+                               uint64_t salt);
 // Re-draw the operands under a new salt. One salt is worth m*n regions.
 void pearl_host_reseed(void *ctx, uint64_t salt);
 // Share-proof accessors: the operand chunks a tile touched, and the sibling
@@ -123,6 +131,12 @@ class PearlCore : public Napi::ObjectWrap<PearlCore> {
   // two were different on a multi-card rig, which is the whole of issue #226.
   int device_index_ = -1;
   std::string device_name_;
+  // This core's slice of the search space, for a rig mining on several cards at
+  // once: it searches salts salt_base_, salt_base_ + salt_stride_, and so on.
+  // One card per core, so the host gives card i base i and stride N. Defaults
+  // (0, 1) are the single-card walk 0, 1, 2, 3 that shipped before.
+  uint64_t salt_base_ = 0;
+  uint64_t salt_stride_ = 1;
   std::thread worker_;
   std::atomic<bool> running_{false};
   std::mutex job_mu_;
@@ -179,6 +193,15 @@ PearlCore::PearlCore(const Napi::CallbackInfo &info)
     Napi::Object o = info[1].As<Napi::Object>();
     Napi::Value v = o.Get("deviceIndex");
     if (v.IsNumber()) requested = v.As<Napi::Number>().Int32Value();
+    Napi::Value b = o.Get("saltBase");
+    if (b.IsNumber()) salt_base_ = (uint64_t)b.As<Napi::Number>().Int64Value();
+    Napi::Value st = o.Get("saltStride");
+    if (st.IsNumber()) {
+      const int64_t v2 = st.As<Napi::Number>().Int64Value();
+      // A zero stride would search one salt for ever, which is a stall rather
+      // than an error the host could see. Keep the single-card default instead.
+      if (v2 > 0) salt_stride_ = (uint64_t)v2;
+    }
   }
 
   char err[256] = {0};
@@ -240,7 +263,7 @@ Napi::Value PearlCore::SetJob(const Napi::CallbackInfo &info) {
   {
     std::lock_guard<std::mutex> lock(job_mu_);
     job_id_ = job.Get("jobId").As<Napi::String>().Utf8Value();
-    pearl_host_set_job(ctx_, header.Data(), target);
+    pearl_host_set_job_salted(ctx_, header.Data(), target, salt_base_);
     have_job_ = true;
   }
 
@@ -317,7 +340,7 @@ void PearlCore::SearchLoop() {
   // Valid offsets only: m/rows_count down, n/cols_count across.
   const uint64_t span = ((uint64_t)profile_.m / PEARL_ROWS_COUNT)
                         * ((uint64_t)profile_.n / PEARL_COLS_COUNT);
-  uint64_t salt = 0;
+  uint64_t salt = salt_base_;
   while (running_) {
     std::string job_id;
     {
@@ -352,7 +375,10 @@ void PearlCore::SearchLoop() {
     if (nonce >= span) {
       std::lock_guard<std::mutex> lock(job_mu_);
       if (have_job_) {
-        pearl_host_reseed(ctx_, ++salt);
+        // The next salt THIS core owns, not simply the next one: on a multi-card
+        // rig the stride is the card count, so the cards never collide.
+        salt += salt_stride_;
+        pearl_host_reseed(ctx_, salt);
         nonce = 0;
       }
     }

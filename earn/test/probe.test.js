@@ -133,6 +133,39 @@ describe('detectGpusVram', () => {
   });
 });
 
+// The card list both shells mine on. One place, so the GUI and the CLI cannot
+// drift apart on which cards mine — they had their own GPU detection once, and
+// it took a shipped Linux build reporting no device at all to notice.
+describe('detectMinerGpus', () => {
+  it('lists every card nvidia-smi reports, in index order', async () => {
+    execCb(null, '1, RTX 4070, 6694, 12282\n0, RTX PRO 4500, 4360, 32623\n');
+    expect(await probe.detectMinerGpus({})).toEqual([
+      { index: 0, name: 'RTX PRO 4500' },
+      { index: 1, name: 'RTX 4070' },
+    ]);
+  });
+
+  // No nvidia-smi: an empty list, which tells the caller to start one core and
+  // let it choose its own card.
+  it('is empty when nvidia-smi says nothing', async () => {
+    execCb(new Error('no smi'));
+    expect(await probe.detectMinerGpus({})).toEqual([]);
+  });
+
+  it('narrows to the card an operator pinned', async () => {
+    execCb(null, '0, RTX PRO 4500, 4360, 32623\n1, RTX 4070, 6694, 12282\n');
+    expect(await probe.detectMinerGpus({ PEARL_GPU_INDEX: '1' }))
+      .toEqual([{ index: 1, name: 'RTX 4070' }]);
+  });
+
+  // Both shells call it with no argument, so the real environment is the one
+  // that has to be read.
+  it('reads the real environment by default', async () => {
+    execCb(null, '0, RTX 4090, 1024, 24576\n');
+    expect(await probe.detectMinerGpus()).toEqual([{ index: 0, name: 'RTX 4090' }]);
+  });
+});
+
 describe('detectGpuTemps', () => {
   it('maps card index to degrees', async () => {
     execCb(null, '0, 71\n1, 64\n');

@@ -57,18 +57,30 @@ class PearlMiner extends EventEmitter {
     this.reconnectMs = reconnectMs == null ? RECONNECT_MS : reconnectMs;
 
     this.sock = null;
-    this.core = null;
-    this.device = null;       // { index, name } — the card the core actually opened
+    // One core per card. `cores` is [{ core, device }] in the order they were
+    // started; `device` is what that core reported, so it is the card really
+    // mining rather than the one we asked for.
+    this.cores = [];
+    this.hashrates = new Map();   // card index -> its latest TH/s
     this.running = false;
     this.authorized = false;
     this.job = null;          // the current parsed job the core is searching
     this.buf = '';            // partial-line accumulator for the socket
     this.submitId = 100;      // submit request ids start clear of the authorize id (1)
-    this.pending = new Map(); // submit id -> { jobId }
+    // submit id -> { jobId, index }. The card index rides along so an accept or
+    // a reject lands on the card that found the share, not on card 0.
+    this.pending = new Map();
     this.settings = null;
   }
 
   isRunning() { return this.running; }
+
+  // The cards this rig is mining on, as [{ index, name }]. Empty before a start,
+  // and [null] entries are filtered out — a core that won't name its card leaves
+  // the caller on its old single-card behaviour.
+  devices() {
+    return this.cores.map((c) => c.device).filter(Boolean);
+  }
 
   start(settings = {}) {
     if (this.running) return false;
@@ -77,9 +89,10 @@ class PearlMiner extends EventEmitter {
     this.authorized = false;
     this.job = null;
     this.buf = '';
-    // Cleared here, not left from the last run: if the core fails to construct
-    // this time, the honest answer is "no card", not the one a previous run got.
-    this.device = null;
+    // Cleared here, not left from the last run: if no core starts this time, the
+    // honest answer is "no cards", not the ones a previous run got.
+    this.cores = [];
+    this.hashrates = new Map();   // card index -> its latest TH/s
 
     // No core means the native addon is not built for this machine. That is a
     // clean, explicable stop — not a crash — so the host says exactly that and
@@ -100,28 +113,98 @@ class PearlMiner extends EventEmitter {
     const [host, port] = String(settings.endpoint || '').split(':');
     this.emit('started', { pool: settings.endpoint, wallet, worker });
 
-    try {
-      this.core = this.createCore(settings.profile || PROFILE);
-      this.device = readDevice(this.core);
-      // Name the card in the log, every run. The core chooses it — the host
-      // cannot see CUDA's device list — so this line is the only place the two
-      // halves of "which GPU is mining" are ever written down together. A rig
-      // whose UI names one card and whose fan spins up on another (issue #226)
-      // is diagnosable from a log file because of it.
-      if (this.device) {
-        this.emit('log', {
-          level: 'info',
-          line: 'mining on GPU ' + this.device.index + ' · ' + this.device.name,
-        });
-      }
-      this._wireCore(this.core, wallet, worker);
-    } catch (e) {
-      this.emit('error', e);
+    if (!this._startCores(settings, wallet, worker)) {
       this.running = false;
       return false;
     }
 
     this._openSocket(host, Number(port), wallet, worker);
+    return true;
+  }
+
+  // Start one core per card, and keep the ones that start.
+  //
+  // `settings.gpus` is the card list (shared/gpu.planMinerGpus, via
+  // probe.detectMinerGpus). An empty list means nvidia-smi told us nothing, so
+  // we start a single core with no index and let it choose — the single-card
+  // behaviour that shipped before.
+  //
+  // A card that refuses is skipped, not fatal. The usual reason is no room: the
+  // local LLM holds most of the VRAM on that card. One full card used to take
+  // the whole rig's mining down with it; now the rest keep mining.
+  //
+  // Each core gets its own slice of the search space (saltBase/saltStride), or
+  // every card would search the same operands and find the same shares.
+  _startCores(settings, wallet, worker) {
+    const profile = settings.profile || PROFILE;
+    const cards = Array.isArray(settings.gpus) && settings.gpus.length
+      ? settings.gpus
+      : [null];                       // no list: one core, its own choice of card
+    const failures = [];
+
+    for (let i = 0; i < cards.length; i++) {
+      const card = cards[i];
+      const opts = { saltBase: i, saltStride: cards.length };
+      if (card && Number.isInteger(card.index)) opts.deviceIndex = card.index;
+      let core;
+      let device;
+      try {
+        core = this.createCore(profile, opts);
+        // A factory that returns nothing rather than throwing: no core, so the
+        // same answer as one that refused. Wiring is inside the try for the same
+        // reason — a core we cannot listen to is a core we cannot mine with.
+        if (!core) throw new Error('the Pearl core did not initialise');
+        device = readDevice(core);
+        this._wireCore(core, device, wallet, worker);
+      } catch (e) {
+        failures.push({ card, message: (e && e.message) || String(e) });
+        continue;
+      }
+      this.cores.push({ core, device });
+      // Name the card in the log, every run and every card. The core chooses it
+      // — the host cannot see CUDA's device list — so this is the only place the
+      // two halves of "which GPU is mining" are written down together. A rig
+      // whose UI names one card and whose fan spins up on another (issue #226)
+      // is diagnosable from a log file because of it.
+      if (device) {
+        this.emit('log', {
+          level: 'info',
+          line: 'mining on GPU ' + device.index + ' · ' + device.name,
+        });
+      }
+
+      // A core that won't say which card it opened is one built before any of
+      // this existed, and it ignores the card we asked for — it mines on CUDA's
+      // device 0 whatever we pass. Starting a second such core would stack two
+      // searches on that one card and label them as two. Mine on the one, which
+      // is exactly what that build did on its own.
+      if (!device && cards.length > 1) {
+        this.emit('log', {
+          level: 'info',
+          line: 'this pearl_core.node predates per-card mining — mining on one card. '
+            + 'Update to mine on all ' + cards.length + '.',
+        });
+        break;
+      }
+    }
+
+    for (const f of failures) {
+      const where = f.card
+        ? 'GPU ' + f.card.index + (f.card.name ? ' (' + f.card.name + ')' : '')
+        : 'the GPU';
+      this.emit('log', {
+        level: this.cores.length ? 'info' : 'error',
+        line: 'skipping ' + where + ': ' + f.message,
+      });
+    }
+
+    // Nothing started at all. Report the first reason as the error: with one
+    // card that IS the reason, and the log above has already listed the rest.
+    // There is always a reason — every card either started or failed.
+    if (!this.cores.length) {
+      this.emit('error', new Error(failures[0].message));
+      return false;
+    }
     return true;
   }
 
@@ -188,14 +271,19 @@ class PearlMiner extends EventEmitter {
       case 'submit-accepted': {
         const p = this.pending.get(m.id);
         this.pending.delete(m.id);
-        this.emit('share', { jobId: p ? p.jobId : null, accepted: true });
+        // `index` is the card that found it, so a multi-card rig credits the
+        // right one. Card 0 when the submit is unknown to us, which is the same
+        // bucket a single-card rig has always used.
+        this.emit('share', { jobId: p ? p.jobId : null, accepted: true, index: p ? p.index : 0 });
         this.emit('log', { level: 'info', line: 'share accepted' });
         break;
       }
       case 'submit-rejected': {
         const p = this.pending.get(m.id);
         this.pending.delete(m.id);
-        this.emit('rejected', { jobId: p ? p.jobId : null, reason: errText(m.error) });
+        this.emit('rejected', {
+          jobId: p ? p.jobId : null, reason: errText(m.error), index: p ? p.index : 0,
+        });
         this.emit('log', { level: 'error', line: 'share rejected: ' + errText(m.error) });
         break;
       }
@@ -242,7 +330,9 @@ class PearlMiner extends EventEmitter {
       this.emit('log', { level: 'error', line: 'pool target is too easy to scale for this profile; ignoring the job' });
       return;
     }
-    this.core.setJob({ header: job.header, target: bound, jobId: job.jobId });
+    // Every card gets the same job. They search different salts (see
+    // _startCores), so the same job is a different search on each of them.
+    for (const c of this.cores) c.core.setJob({ header: job.header, target: bound, jobId: job.jobId });
   }
 
   // The profile this miner mines, which a caller may override wholesale.
@@ -250,17 +340,30 @@ class PearlMiner extends EventEmitter {
     return (this.settings && this.settings.profile) || PROFILE;
   }
 
-  _wireCore(core, wallet, worker) {
-    core.on('hashrate', (th) => { this.hashrate = th; this.emit('hashrate', th); });
+  _wireCore(core, device, wallet, worker) {
+    core.on('hashrate', (th) => {
+      // Per card for the UI and the board, and summed for what we tell the pool.
+      if (device) this.hashrates.set(device.index, th);
+      this.hashrate = this.totalHashrate();
+      this.emit('hashrate', th, device);
+    });
     core.on('error', (err) => this.emit('error', err));
-    core.on('hit', (hit) => this._onHit(hit, wallet, worker));
+    core.on('hit', (hit) => this._onHit(hit, wallet, worker, device));
+  }
+
+  // The rig's throughput: every card's latest tick, added up. A card that has
+  // not ticked yet contributes nothing rather than a guess.
+  totalHashrate() {
+    let total = 0;
+    for (const th of this.hashrates.values()) total += Number(th) || 0;
+    return total;
   }
 
   // A candidate the core found. Re-verify it against the CURRENT job's target in
   // JS before submitting: the core may have been searching a job that vardiff has
   // since moved, and a bad submit earns a ban. Stale hits are dropped silently —
   // they are not errors, just races.
-  _onHit(hit, wallet, worker) {
+  _onHit(hit, wallet, worker, device) {
     const job = this.job;
     if (!job || hit.jobId !== job.jobId) return;
     if (!meetsTarget(hit.jackpotHash, shareBound(job.target, this.profile()))) {
@@ -277,7 +380,7 @@ class PearlMiner extends EventEmitter {
       return;
     }
     const id = this.submitId++;
-    this.pending.set(id, { jobId: job.jobId });
+    this.pending.set(id, { jobId: job.jobId, index: device ? device.index : 0 });
     this.sock.write(encode(buildSubmit(id, {
       jobId: job.jobId, plainProof, hashrate: (this.hashrate || 0) * 1e12,
     })));
@@ -304,8 +407,11 @@ class PearlMiner extends EventEmitter {
     if (!this.running) return false;
     this.running = false;
     if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
-    try { this.core.stop(); } catch (e) { /* core already gone */ }
-    this.core = null;
+    for (const c of this.cores) {
+      try { c.core.stop(); } catch (e) { /* that core is already gone */ }
+    }
+    this.cores = [];
+    this.hashrates.clear();
     if (this.sock) { try { this.sock.destroy(); } catch (e) { /* already closed */ } this.sock = null; }
     this.job = null;
     this.pending.clear();

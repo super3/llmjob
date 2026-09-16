@@ -697,13 +697,28 @@ extern "C" void pearl_host_destroy(void *handle) {
 
 extern "C" void pearl_host_reseed(void *handle, uint64_t salt);
 
-extern "C" void pearl_host_set_job(void *handle, const uint8_t *header,
-                                   const uint8_t *target) {
+// Load a job and draw its operands under `salt`.
+//
+// The salt is what keeps two cards off each other's work. One salt is worth m*n
+// regions; a card searches those, then re-draws under the next salt it owns. Give
+// every card a different starting salt and a stride equal to the number of cards
+// and they never draw the same operands, so no work and no share is done twice.
+// Without it every card would start at salt 0 and walk 1, 2, 3 in step, and a
+// second card would earn exactly nothing.
+extern "C" void pearl_host_set_job_salted(void *handle, const uint8_t *header,
+                                          const uint8_t *target, uint64_t salt) {
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (!ctx) return;
   memcpy(ctx->header, header, PEARL_HEADER_BYTES);
   memcpy(ctx->target, target, PEARL_HASH_BYTES);
-  pearl_host_reseed(handle, 0);
+  pearl_host_reseed(handle, salt);
+}
+
+// The single-card spelling, kept so the bench probe and anything else built
+// against the old entry point still link.
+extern "C" void pearl_host_set_job(void *handle, const uint8_t *header,
+                                   const uint8_t *target) {
+  pearl_host_set_job_salted(handle, header, target, 0);
 }
 
 // Re-draw the operands under a new salt and rebuild everything downstream of

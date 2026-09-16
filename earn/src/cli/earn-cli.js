@@ -23,7 +23,7 @@ const { LlmManager } = require('../main/llmManager');
 const { LlmEngineManager } = require('../main/llmEngineManager');
 const { postJson, downloadFile, streamChatCompletion, extractLlamaZip } = require('../main/io');
 const {
-  detectRegion, detectVram, detectGpusVram, postMinerReport, findFreePort,
+  detectRegion, detectVram, detectGpusVram, detectMinerGpus, postMinerReport, findFreePort,
 } = require('../main/probe');
 const probe = require('../main/probe');
 const nodeStore = require('../main/nodeStore');
@@ -53,6 +53,9 @@ const pkg = require('../../package.json');
 // to. Set at load, because the mining core initialises CUDA inside THIS process
 // and reads it then.
 alignCudaDeviceOrder(process.env);
+
+// The shortest gap between two mining status lines. See the miner event handler.
+const MINE_LOG_MS = 1000;
 
 // Write a log line. When attached to a TTY we prefix a wall-clock time; when
 // piped (systemd/journald, `docker logs`, a file) we drop it, since the log
@@ -696,6 +699,9 @@ async function run(argv) {
     // gpuCount 1 and reported one card on a board row for N.
     const det = await detectGpu();
     if (!settings.gpuProvided && det && det.name) settings.gpu = det.name;
+    // Every card mines, one core each. Read here, with the rest of the startup
+    // probing, because the start site below is inside a callback.
+    settings.gpus = await detectMinerGpus();
     // Always set, so downstream reads don't need a fallback: 1 when detection
     // found nothing or found a single card.
     settings.gpuCount = det && det.count > 1 ? det.count : 1;
@@ -706,6 +712,13 @@ async function run(argv) {
     if (settings.gpu) {
       log('gpu:        ' + (settings.gpuCount > 1 ? settings.gpuCount + '× ' : '') + settings.gpu
         + (settings.gpuProvided ? '' : '  (auto)'));
+    }
+    // What will actually mine, which is not always what the line above names: a
+    // mixed rig has one name there and several cards here, and PEARL_GPU_INDEX
+    // narrows it to one. Each card names itself again as its core starts.
+    if (settings.gpus.length > 1) {
+      log('mining on:  ' + settings.gpus.length + ' GPUs ['
+        + settings.gpus.map((g) => g.index).join(', ') + ']');
     }
   }
 
@@ -755,10 +768,18 @@ async function run(argv) {
     }
     if (miner) {
     miner.on('log', (l) => log(l.line, l.level === 'error' ? process.stderr : process.stdout));
+    // The line reports the RIG, and every card reports itself: each core ticks
+    // its hashrate about twice a second, so a 13-card rig would write 26 copies
+    // of the same totals every second into the journal. One a second is plenty
+    // — no card's numbers are lost, they are all in the total.
+    let lastMineLog = 0;
     miner.on('event', (evt) => {
       applyEvent(stats, evt, Date.now());
       if (evt.type === 'status') {
-        const snap = snapshot(stats, Date.now());
+        const now = Date.now();
+        if (now - lastMineLog < MINE_LOG_MS) return;
+        lastMineLog = now;
+        const snap = snapshot(stats, now);
         log('⛏  ' + format.formatHashrate(snap.total) + ' TH/s · '
           + format.formatInt(snap.accepted) + ' accepted · ' + snap.rejected + ' rejected · up '
           + format.formatUptime(snap.uptimeSec));

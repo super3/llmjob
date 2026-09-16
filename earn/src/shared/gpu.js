@@ -73,6 +73,54 @@ function alignCudaDeviceOrder(env) {
   return e.CUDA_DEVICE_ORDER;
 }
 
+// An operator's explicit choice of mining card, from PEARL_GPU_INDEX, or null
+// when they haven't made one.
+//
+// It is an escape hatch, not the mechanism: normally every card mines. But "it
+// picked the wrong card" is the report we cannot reproduce from here, and a rig
+// that can pin one card in one env var can answer it in one run. Same idea as
+// PEARL_CORE_PATH, and the same place to look for it.
+//
+// Anything that isn't a whole number from 0 up is ignored rather than passed on,
+// so a typo doesn't read as an instruction.
+function parseDeviceIndex(env) {
+  const raw = (env || process.env).PEARL_GPU_INDEX;
+  if (raw == null || String(raw).trim() === '') return null;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0) return null;
+  return n;
+}
+
+// Which cards mine. One core per card, so this list IS the mining fleet.
+//
+// `cards` is nvidia-smi's list (parseGpuStats). Every card mines: the miner is
+// one CUDA context and a search thread per card, and the LLM planner already
+// sets the mining reserve aside on every card, so a rig that mined on one card
+// was leaving that reserve unused everywhere else.
+//
+// `pinnedIndex` (PEARL_GPU_INDEX) narrows it to one card, even one nvidia-smi
+// didn't list — the core validates the index and says so if it doesn't exist,
+// which is a better answer than silently ignoring what the operator asked for.
+//
+// An empty list means nvidia-smi told us nothing (not installed, not NVIDIA).
+// The caller then starts a single core with no index and lets it choose, which
+// is what a single-card rig did before any of this existed.
+function planMinerGpus(cards, pinnedIndex) {
+  if (pinnedIndex != null) {
+    const match = (Array.isArray(cards) ? cards : []).find((c) => c && Number(c.index) === pinnedIndex);
+    return [{ index: pinnedIndex, name: (match && match.name) || null }];
+  }
+  const list = [];
+  for (const c of (Array.isArray(cards) ? cards : [])) {
+    if (!c) continue;
+    const index = Math.floor(Number(c.index));
+    if (!Number.isFinite(index) || index < 0) continue;
+    list.push({ index, name: c.name || null });
+  }
+  list.sort((a, b) => a.index - b.index);
+  return list;
+}
+
 // Parse `nvidia-smi --query-gpu=index,name,memory.used,memory.total
 // --format=csv,noheader,nounits` into one entry per card:
 //   [{ index, name, usedMb, totalMb }, ...]
@@ -125,5 +173,6 @@ function parseMacGpu(out) {
 }
 
 module.exports = {
-  IGNORE, INTEGRATED, pickGpu, countGpus, alignCudaDeviceOrder, parseGpuStats, parseMacGpu,
+  IGNORE, INTEGRATED, pickGpu, countGpus, alignCudaDeviceOrder, parseDeviceIndex,
+  planMinerGpus, parseGpuStats, parseMacGpu,
 };

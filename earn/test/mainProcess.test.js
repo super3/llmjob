@@ -110,6 +110,9 @@ jest.mock('../src/main/probe', () => ({
   detectRegion: jest.fn(() => Promise.resolve('us1')),
   detectVram: jest.fn(() => Promise.resolve(null)),
   detectGpusVram: jest.fn(() => Promise.resolve([])),
+  // No card list by default: one core that places itself, which is what a rig
+  // with no nvidia-smi gets. The multi-card tests set it explicitly.
+  detectMinerGpus: jest.fn(() => Promise.resolve([])),
   detectDriverMajor: jest.fn(() => Promise.resolve(600)),
   // Empty by default: an unknown compute capability is what keeps Windows on the
   // 1.8.6 fallback, which is the shape most of these tests were written against.
@@ -914,6 +917,53 @@ describe('mining', () => {
     expect(typeof miner.opts.readTemps).toBe('function');
     await expect(miner.opts.readTemps()).resolves.toEqual({ 0: 68 });
     expect(ctx.probe.detectGpuTemps).toHaveBeenCalled();
+  });
+
+  // Every card mines, one core each, and the engine is told which cards.
+  it('hands the engine every card nvidia-smi lists', async () => {
+    const ctx = await boot();
+    ctx.probe.detectMinerGpus.mockResolvedValue([
+      { index: 0, name: 'NVIDIA RTX PRO 4500 Blackwell' },
+      { index: 1, name: 'NVIDIA GeForce RTX 4070' },
+    ]);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+      gpus: [
+        { index: 0, name: 'NVIDIA RTX PRO 4500 Blackwell' },
+        { index: 1, name: 'NVIDIA GeForce RTX 4070' },
+      ],
+    }));
+  });
+
+  // Reading the card list is an await, so STOP can land inside a start again.
+  // Starting a miner the user has already stopped leaves an engine nobody is
+  // holding: the UI shows stopped and the cards keep mining.
+  it('abandons a start that STOP overtakes while the cards are being read', async () => {
+    const ctx = await boot();
+    let release;
+    ctx.probe.detectMinerGpus.mockReturnValue(new Promise((r) => { release = r; }));
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    ctx.emit('miner:stop');
+    release([{ index: 0, name: 'RTX 4090' }]);
+    await flush();
+    expect(ctx.PearlEngine.instances).toHaveLength(0);
+  });
+
+  // The device label names every card that is mining. One name for two working
+  // cards is the same lie issue #226 was about, one level up.
+  it('labels the rig with every card that is mining', async () => {
+    const ctx = await boot();
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    const miner = ctx.PearlEngine.instances[0];
+    miner.emit('event', { type: 'status', gpuIndex: 0, hashrate: 100, gpu: 'RTX PRO 4500' });
+    miner.emit('event', { type: 'status', gpuIndex: 1, hashrate: 40, gpu: 'RTX 4070' });
+    ctx.interval(1000).fn();   // the stats ticker, which is what sends them
+    await flush();
+    const stats = ctx.sent('miner:stats');
+    expect(stats[stats.length - 1].gpu).toBe('RTX PRO 4500 + RTX 4070');
   });
 
   it('does not start the LLM when STOP arrives during the miner hashrate wait', async () => {

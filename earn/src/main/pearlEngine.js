@@ -39,28 +39,42 @@ class PearlEngine extends EventEmitter {
     this.profile = profile || PROFILE;
     this.readTemps = readTemps || null;
     this.tempPollMs = tempPollMs || TEMP_POLL_MS;
-    this.temp = null;
     this.tempTimer = null;
     this.miner = null;
-    this.device = null;   // { index, name } once the core says which card it took
-
-    // Cumulative for the session, because that is what the UI's counters mean.
-    // PearlMiner reports each verdict as it lands, one event per share.
-    this.accepted = 0;
-    this.rejected = 0;
-    this.hashrate = 0;
+    // One entry per mining card, keyed by card index:
+    //   { name, hashrate, accepted, rejected, temp }
+    // The UI, the stats accumulator and the network board are all per card
+    // (miningStats buckets on the index the event carries), so this is the shape
+    // they want. A rig mining on one card has one entry, which is what every
+    // consumer saw before.
+    this.cards = new Map();
     this.gpu = null;
     this.endpoint = null;
+  }
+
+  // Get-or-create a card's counters. Cumulative for the session, because that is
+  // what the UI's counters mean.
+  _card(index) {
+    const i = Number.isInteger(index) ? index : 0;
+    if (!this.cards.has(i)) {
+      this.cards.set(i, { name: null, hashrate: 0, accepted: 0, rejected: 0, temp: null });
+    }
+    return this.cards.get(i);
   }
 
   isRunning() {
     return !!(this.miner && this.miner.isRunning());
   }
 
+  // One card's current numbers, or null when that card isn't mining. Read-only:
+  // unlike _card it never creates a bucket, so asking about a card the rig does
+  // not mine on cannot invent one.
+  card(index) {
+    return this.cards.get(Number.isInteger(index) ? index : 0) || null;
+  }
+
   start(settings = {}) {
-    this.accepted = 0;
-    this.rejected = 0;
-    this.hashrate = 0;
+    this.cards.clear();
     this.gpu = settings.gpu || null;
     this.endpoint = settings.endpoint || null;
 
@@ -71,31 +85,39 @@ class PearlEngine extends EventEmitter {
     m.on('error', (err) => this.emit('error', err));
     m.on('stopped', () => this.emit('stopped', 0));
 
-    // The pool accepted the wallet and we have work: the card is mining. This is
-    // the moment alpha-miner prints its connection banner, and the UI wants the
-    // endpoint and card name from it.
+    // The pool accepted the wallet and we have work: the cards are mining. This
+    // is the moment alpha-miner printed its connection banner, and the UI wants
+    // the endpoint and card name from it. One per card, because that is how the
+    // board learns which GPU is which.
     m.on('job', () => {
       if (this._announced) return;
       this._announced = true;
-      this.emit('event', {
-        type: 'connected',
-        gpuIndex: this.gpuIndex(),
-        endpoint: this.endpoint,
-        gpu: this.gpu,
-      });
+      for (const [index, card] of this.cards) {
+        this.emit('event', {
+          type: 'connected',
+          gpuIndex: index,
+          endpoint: this.endpoint,
+          gpu: card.name || this.gpu,
+        });
+      }
     });
 
     // Forwarded as a parsed event because that is the shape main.js's DNS hint
     // reads, and a name that does not resolve is worth saying plainly.
     m.on('connect-failed', (e) => this.emit('event', Object.assign({ type: 'connect-failed' }, e)));
 
-    m.on('share', () => { this.accepted++; this._status(); });
-    m.on('rejected', () => { this.rejected++; this._status(); });
+    // Credited to the card that found it — the submit carries its index back.
+    m.on('share', (e) => { this._card(e && e.index).accepted++; this._status(e && e.index); });
+    m.on('rejected', (e) => { this._card(e && e.index).rejected++; this._status(e && e.index); });
 
-    // The core's own throughput tick drives the sparkline. Both sides count
+    // Each core's own throughput tick drives the sparkline. Both sides count
     // multiply-accumulates per second in TH/s, which is the unit the UI's
     // hashrate field already carries.
-    m.on('hashrate', (th) => { this.hashrate = th; this._status(); });
+    m.on('hashrate', (th, device) => {
+      const index = device ? device.index : 0;
+      this._card(index).hashrate = th;
+      this._status(index);
+    });
 
     this._announced = false;
     // Propagate it. PearlMiner.start() returns false when the core will not
@@ -105,16 +127,19 @@ class PearlEngine extends EventEmitter {
     // merely quiet.
     const ok = m.start(Object.assign({}, settings, { profile: this.profile }));
 
-    // The core has now chosen its card, so stop guessing at it. The GPU name was
-    // detected separately (nvidia-smi's first card) and the index was hardcoded
-    // to 0 -- both true only while CUDA and nvidia-smi happen to number the cards
-    // the same way, which on a multi-GPU rig they need not (issue #226). What the
-    // core reports is what is mining; it wins over both.
-    this.device = m.device;
-    if (this.device) this.gpu = this.device.name;
+    // The cores have now chosen their cards, so stop guessing at them. The GPU
+    // name used to be detected separately (nvidia-smi's first card) and the index
+    // was hardcoded to 0 -- both true only while CUDA and nvidia-smi happen to
+    // number the cards the same way, which on a multi-GPU rig they need not
+    // (issue #226). What the cores report is what is mining.
+    for (const d of m.devices()) this._card(d.index).name = d.name;
+    // Nothing named a card: an older core that won't say. Keep the one bucket
+    // and the detected name, which is what this did before.
+    if (!this.cards.size) this._card(0).name = this.gpu;
 
-    // Started after m.start() so the first sample already reads the right card:
-    // it polls per gpuIndex(), and before the core exists that is still a guess.
+    // Started after m.start() so the first sample already knows the cards: it
+    // reads a temperature per mining card, and before the cores exist there are
+    // none to read.
     this._startTemps();
     return ok;
   }
@@ -131,6 +156,7 @@ class PearlEngine extends EventEmitter {
   // number is worth. unref'd so it can never hold the process open.
   _startTemps() {
     if (!this.readTemps || this.tempTimer) return;
+    const clear = () => { for (const card of this.cards.values()) card.temp = null; };
     const sample = () => {
       let p;
       // A reader that throws synchronously must not take the miner down with
@@ -138,13 +164,17 @@ class PearlEngine extends EventEmitter {
       try {
         p = Promise.resolve(this.readTemps());
       } catch (e) {
-        this.temp = null;
+        clear();
         return;
       }
       p.then((temps) => {
-        const t = temps ? Number(temps[this.gpuIndex()]) : NaN;
-        this.temp = Number.isFinite(t) && t > 0 ? t : null;
-      }).catch(() => { this.temp = null; });
+        // One reading per mining card. nvidia-smi answers for every card on the
+        // rig; each of ours takes its own.
+        for (const [index, card] of this.cards) {
+          const t = temps ? Number(temps[index]) : NaN;
+          card.temp = Number.isFinite(t) && t > 0 ? t : null;
+        }
+      }).catch(clear);
     };
     sample();
     this.tempTimer = setInterval(sample, this.tempPollMs);
@@ -154,31 +184,27 @@ class PearlEngine extends EventEmitter {
   _stopTemps() {
     if (this.tempTimer) clearInterval(this.tempTimer);
     this.tempTimer = null;
-    this.temp = null;
+    for (const card of this.cards.values()) card.temp = null;
   }
 
-  // The card this engine mines on: the index the core reports, which is
-  // nvidia-smi's index too now that the shells pin CUDA_DEVICE_ORDER (see
-  // shared/gpu.alignCudaDeviceOrder). It was hardcoded to 0, so on a rig where
-  // the core landed on a different card the temperature shown belonged to a card
-  // that was not mining, and the board row was filed under the wrong GPU.
-  //
-  // Still 0 when the core does not report one (an older pearl_core.node), which
-  // is exactly the old behaviour.
-  gpuIndex() {
-    return this.device ? this.device.index : 0;
-  }
-
-  _status() {
+  // One status event for one card, carrying that card's own numbers. The index
+  // is the core's own, which is nvidia-smi's too now that the shells pin
+  // CUDA_DEVICE_ORDER (see shared/gpu.alignCudaDeviceOrder). It used to be
+  // hardcoded to 0, so on a rig where the core landed elsewhere the temperature
+  // shown belonged to a card that wasn't mining and the board row was filed
+  // under the wrong GPU.
+  _status(index) {
+    const i = Number.isInteger(index) ? index : 0;
+    const card = this._card(i);
     this.emit('event', {
       type: 'status',
-      gpuIndex: this.gpuIndex(),
-      hashrate: this.hashrate,
-      accepted: this.accepted,
-      rejected: this.rejected,
+      gpuIndex: i,
+      hashrate: card.hashrate,
+      accepted: card.accepted,
+      rejected: card.rejected,
       power: null,
-      temp: this.temp,
-      gpu: this.gpu,
+      temp: card.temp,
+      gpu: card.name || this.gpu,
     });
   }
 }
