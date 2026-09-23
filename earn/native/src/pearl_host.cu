@@ -1005,9 +1005,13 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   // on a hit and appends to a compact list, so the readback below is four bytes
   // rather than one flag per region.
   cudaMemsetAsync(ctx->dHitCount, 0, sizeof(uint32_t));
+  // Diagnostic only: PEARL_ABLATE_FINALIZE skips the hash so bench.cu reads the
+  // fold on its own. Nothing can hit in that build -- never ship it.
+#ifndef PEARL_ABLATE_FINALIZE
   pearl_finalize_many<<<(regions + 255) / 256, 256>>>(
       ctx->dASeed, ctx->dJackpot, regions, ctx->dTarget, ctx->dHashes,
       ctx->dHitCount, ctx->dHitIndex, (int)ctx->profile.hash_big_endian);
+#endif
 
   uint32_t hits = 0;
   cudaMemcpy(&hits, ctx->dHitCount, sizeof(uint32_t), cudaMemcpyDeviceToHost);

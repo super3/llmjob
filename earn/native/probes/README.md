@@ -35,6 +35,48 @@ the memory path, and the clock it costs is what puts a 5090 below a 4090.
 - **Check `nvidia-smi` compute processes first.** A miner or LLM sharing the card
   silently contaminates every reading.
 
+## RTX 4090 at its stock 450 W: where the reported rate goes
+
+Measured on the v0.5.2 core. The card is **power-capped** at stock (`SW Power Cap:
+Active`, ~449 W, ~2470 MHz) -- the tuning log's "not power-limited" reading was taken
+at a raised 480 W limit, which resets on reboot and which rigs do not run.
+
+| what is timed | TH/s |
+|---|---|
+| the full miner loop -- what the app shows (`hashrate.js`) | 223-224 |
+| fold + finalize, no operand redraws (`bench.cu`) | 232-233 |
+| fold only (`bench.cu`, `-DPEARL_ABLATE_FINALIZE`) | 238-240 |
+
+So the operand redraw between salts costs **4.0%** of wall clock and finalize **2.6%**.
+Neither is the fold, and every fold win is diluted by them.
+
+Inside the fold, fold-only, all at the cap (these builds compute wrong answers):
+
+| build | TH/s | SM clock |
+|---|---|---|
+| shipped | 239.9 | 2475 MHz |
+| `-DPEARL_ABLATE_BARRIER` | 261.7 (+9%) | 2292 MHz |
+| `-DPEARL_ABLATE_STAGING` | 285.6 (+19%) | 2641 MHz |
+| `-DPEARL_ABLATE_TRANSCRIPT` | 244.5 (+2%) | 2441 MHz |
+| 256 threads, 64x64 warp tile | 235.5 (-2%) | 2531 MHz |
+
+The per-chunk `__syncthreads` is worth 18% per clock and still 9% after the clock
+drops to pay for it. The square warp tile that won 2% on Blackwell loses 2% here.
+
+### Measuring, and proving a build correct
+
+- `node hashrate.js <pearl_core.node> 60` -- the app's own number: one core, a synthetic
+  job at the hardest target, the core's hashrate samples averaged after a warm-up, with
+  clock and power sampled alongside.
+- `node verify-hits.js <pearl_core.node> 40` -- the correctness gate. It sets an easy
+  target so the core hits about once a batch, then recomputes **every** hit in JS the way
+  the pool verifies it: Merkle proofs, the seed chain, the noise, the cumulative fold and
+  the transcript hash. The run crosses hundreds of operand redraws. The shipped core
+  passes 400/400; a build with the barrier deleted fails 349 of 353. A faster build that
+  does not pass is not faster, it is broken.
+
+Run one at a time: two processes on the card corrupt each other's timing.
+
 ## Power is the binding constraint on sm_120
 
 The 5090 is hard power-capped running this kernel: steady state sits at exactly the
