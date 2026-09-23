@@ -147,6 +147,12 @@ struct Ctx {
   // pearl_host_bind_thread is how that thread inherits the choice.
   int device = 0;
 
+  // Whether the fold's shared-memory opt-in has been made for this context's
+  // card. The attribute belongs to a DEVICE, so one flag for the whole process
+  // (which this was) opted in only the first card to search; every other card's
+  // fold launch then asked for 96 KB it had not been granted.
+  bool smemOptedIn = false;
+
   // Operands, generated once per job and then read by every region.
   int8_t *dA = nullptr;   // [m, k]
   int8_t *dB = nullptr;   // [n, k]  (Bᵀ, row-major)
@@ -411,6 +417,30 @@ size_t needed_bytes(const PearlProfile *profile) {
       return nullptr;                                        \
     }                                                        \
   } while (0)
+
+// Make a context's card the current device for the length of one call, and put
+// the caller's back afterwards.
+//
+// The current device is PER THREAD, and these entry points run on two kinds of
+// thread: the context's own search thread (pinned once by pearl_host_bind_thread)
+// and the JS thread, which loads every job for every core. Constructing a core
+// leaves the JS thread on that core's card, so on a two-card rig it sat on the
+// LAST card created -- and the first core's operand draw then launched its
+// kernels there, against pointers that live on the other card. That is an
+// illegal memory access, and it is sticky: both cores died on their first search
+// (an RTX PRO 4500 + RTX 4070 rig on v0.5.3). One card never shows it, because
+// there is only one device to be current.
+struct DeviceScope {
+  int prev = -1;
+  explicit DeviceScope(int device) {
+    if (cudaGetDevice(&prev) != cudaSuccess) prev = -1;
+    if (prev != device) cudaSetDevice(device);
+  }
+  ~DeviceScope() {
+    int now = -1;
+    if (prev >= 0 && cudaGetDevice(&now) == cudaSuccess && now != prev) cudaSetDevice(prev);
+  }
+};
 
 }  // namespace
 
@@ -683,6 +713,7 @@ extern "C" void pearl_host_bind_thread(void *handle) {
 extern "C" void pearl_host_destroy(void *handle) {
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (!ctx) return;
+  DeviceScope scope(ctx->device);
   cudaFree(ctx->dA); cudaFree(ctx->dB);
   cudaFree(ctx->dAp); cudaFree(ctx->dBp);
   cudaFree(ctx->dEAL); cudaFree(ctx->dEBR);
@@ -716,6 +747,7 @@ extern "C" void pearl_host_set_job_salted(void *handle, const uint8_t *header,
                                           const uint8_t *target, uint64_t salt) {
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (!ctx) return;
+  DeviceScope scope(ctx->device);
   memcpy(ctx->header, header, PEARL_HEADER_BYTES);
   memcpy(ctx->target, target, PEARL_HASH_BYTES);
   pearl_host_reseed(handle, salt);
@@ -738,6 +770,7 @@ extern "C" void pearl_host_set_job(void *handle, const uint8_t *header,
 extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (!ctx) return;
+  DeviceScope scope(ctx->device);
   ctx->salt = salt;
   const uint8_t *header = ctx->header;
   const uint8_t *target = ctx->target;
@@ -861,6 +894,9 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (attempts) *attempts = 0;
   if (!ctx || !ctx->haveJob || !out) return false;
+  // A no-op on the search thread, which is already bound to this card; the
+  // guard is for any other caller.
+  DeviceScope scope(ctx->device);
 
   const uint32_t k = ctx->profile.k;
   const uint32_t rank = ctx->profile.rank;
@@ -954,11 +990,12 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   // Staging both operands puts this past the 48 KB a block gets by default.
   // Ada allows 99 KB per block, but only when asked; without this the launch
   // fails with an invalid-configuration error rather than running slowly.
-  static bool smemOptedIn = false;
-  if (!smemOptedIn) {
+  // Once per CONTEXT, not once per process: the attribute is per device (see
+  // Ctx::smemOptedIn).
+  if (!ctx->smemOptedIn) {
     cudaFuncSetAttribute(reinterpret_cast<const void *>(pearl_tile_fold_wmma),
                          cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
-    smemOptedIn = true;
+    ctx->smemOptedIn = true;
   }
   pearl_tile_fold_wmma<<<blocks, threads, smem>>>(
       ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
@@ -1056,6 +1093,7 @@ extern "C" bool pearl_host_leaf_chunks(void *handle, int isA,
                                        uint32_t count, uint8_t *out) {
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (!ctx || !leaf_indices || !out) return false;
+  DeviceScope scope(ctx->device);
   const int8_t *src = isA ? ctx->dA : ctx->dB;
   const uint64_t bytes = isA ? (uint64_t)ctx->profile.m * ctx->profile.k
                              : (uint64_t)ctx->profile.n * ctx->profile.k;
@@ -1073,6 +1111,7 @@ extern "C" bool pearl_host_tree_nodes(void *handle, int isA, uint32_t level,
                                       uint8_t *out) {
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (!ctx || !indices || !out) return false;
+  DeviceScope scope(ctx->device);
   const std::vector<uint64_t> &offs = isA ? ctx->layerOffA : ctx->layerOffB;
   const uint32_t *tree = isA ? ctx->dTreeA : ctx->dTreeB;
   if (!tree || level >= offs.size()) return false;
