@@ -45,10 +45,16 @@ at a raised 480 W limit, which resets on reboot and which rigs do not run.
 |---|---|
 | the full miner loop -- what the app shows (`hashrate.js`) | 223-224 |
 | fold + finalize, no operand redraws (`bench.cu`) | 232-233 |
-| fold only (`bench.cu`, `-DPEARL_ABLATE_FINALIZE`) | 238-240 |
+| fold only (`bench.cu` with finalize ablated) | 238-240 |
 
 So the operand redraw between salts costs **4.0%** of wall clock and finalize **2.6%**.
 Neither is the fold, and every fold win is diluted by them.
+
+Both are gone since. A new salt now restamps A instead of drawing both operands again
+(0.72 ms against ~6 ms), and the transcript hash runs in the fold's own epilogue, so the
+1 GiB of transcripts a batch is never written or read back. Finalize turned out to be
+DRAM-bound, not hash-bound: its hash was already within a few instructions of ideal.
+`-DPEARL_ABLATE_TRANSCRIPT_HASH` skips the fused hash to price it (1.8% of the fold).
 
 Inside the fold, fold-only, all at the cap (these builds compute wrong answers):
 

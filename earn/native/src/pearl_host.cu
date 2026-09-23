@@ -74,7 +74,8 @@ extern "C" __global__ void pearl_restamp_operand(const uint32_t *key,
 extern "C" __global__ void pearl_tile_fold_wmma(
     const int8_t *Aprime, const int8_t *Bprime, uint32_t m, uint32_t n,
     uint32_t k, uint32_t rank, uint32_t chunks, uint32_t col_off,
-    uint32_t rows_valid, uint32_t col_groups, uint32_t *jackpot_out);
+    uint32_t rows_valid, uint32_t col_groups, const PearlTranscriptTest test,
+    const PearlHitList hits);
 extern "C" __global__ void pearl_partials(const int8_t *Aprime, const int8_t *Bprime,
                                           const uint32_t *cols_pattern,
                                           uint32_t cols_count, uint32_t m, uint32_t n,
@@ -85,14 +86,6 @@ extern "C" __global__ void pearl_gemm_fold(
     const int32_t *D, const uint32_t *rows_pattern, uint32_t rows_count,
     uint32_t cols_count, uint32_t m, uint32_t rows_valid, uint32_t chunks,
     uint64_t region_base, uint32_t *jackpot_out);
-extern "C" __global__ void pearl_finalize_many(const uint32_t *a_seed,
-                                               const uint32_t *jackpots,
-                                               uint32_t count,
-                                               const uint8_t *target_be,
-                                               uint8_t *hashes_out,
-                                               uint32_t *hit_count,
-                                               uint32_t *hit_index,
-                                               int hash_big_endian);
 extern "C" __global__ void pearl_blake3_chunk_cvs(const uint32_t *key,
                                                   const uint8_t *data,
                                                   uint64_t chunks,
@@ -194,7 +187,7 @@ struct Ctx {
 
   uint32_t *dRows = nullptr;
   uint32_t *dCols = nullptr;
-  uint32_t *dJackpot = nullptr;   // [batch][16]
+  uint32_t *dHitTranscript = nullptr;  // [PEARL_MAX_HITS][16] — hits only
   uint8_t *dHashes = nullptr;     // [PEARL_MAX_HITS][32] — hits only
   uint32_t *dHitCount = nullptr;  // one counter per batch
   uint32_t *dHitIndex = nullptr;  // [PEARL_MAX_HITS]
@@ -669,9 +662,13 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   // consumer and was still sized from col_batch, so raising col_batch to 2048
   // silently reserved GIGABYTES that nothing ever read, and the pre-flight VRAM
   // check refused geometries the miner would have run fine.
-  CUDA_OK(cudaMalloc(&ctx->dJackpot,
-                     (size_t)ctx->batch * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)),
-          "allocating the transcripts");
+  // The same fate befell the per-region transcript buffer: the fold hashes its
+  // own transcripts now, so only a hit's transcript is ever stored -- 64 slots
+  // of 64 bytes where the batch used to take 64 bytes a region, 1 GiB at the
+  // mainnet geometry.
+  CUDA_OK(cudaMalloc(&ctx->dHitTranscript,
+                     (size_t)PEARL_MAX_HITS * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)),
+          "allocating the hit transcripts");
   CUDA_OK(cudaMalloc(&ctx->dHashes, (size_t)PEARL_MAX_HITS * PEARL_HASH_BYTES),
           "allocating the batch hashes");
   CUDA_OK(cudaMalloc(&ctx->dHitCount, sizeof(uint32_t)), "allocating the hit counter");
@@ -746,7 +743,7 @@ extern "C" void pearl_host_destroy(void *handle) {
   cudaFree(ctx->dTreeA); cudaFree(ctx->dTreeB);
   cudaFree(ctx->dCvs); cudaFree(ctx->dSeedBuf); cudaFree(ctx->dSeedInput);
   cudaFree(ctx->dHashA); cudaFree(ctx->dHashB);
-  cudaFree(ctx->dJackpot); cudaFree(ctx->dJobKey);
+  cudaFree(ctx->dHitTranscript); cudaFree(ctx->dJobKey);
   cudaFree(ctx->dASeed); cudaFree(ctx->dBSeed);
   cudaFree(ctx->dTarget); cudaFree(ctx->dHash); cudaFree(ctx->dIsShare);
   delete ctx;
@@ -1178,21 +1175,30 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
                          cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
     ctx->smemOptedIn = true;
   }
+  // The fold hashes every transcript itself and tests it against the bound. It
+  // writes only on a hit and appends to a compact list, so the readback below
+  // is four bytes rather than one flag per region.
+  //
+  // The key and target go in as words, by value (see PearlTranscriptTest):
+  // a_seed as the little-endian words BLAKE3 keys with, the target as
+  // big-endian words so the kernel compares whole words most significant first.
+  PearlTranscriptTest test;
+  memcpy(test.key, ctx->aSeed, sizeof(test.key));
+  for (int i = 0; i < 8; i++) {
+    const uint8_t *t = ctx->target + i * 4;
+    test.target_w[i] = ((uint32_t)t[0] << 24) | ((uint32_t)t[1] << 16) |
+                       ((uint32_t)t[2] << 8) | (uint32_t)t[3];
+  }
+  test.hash_big_endian = (int)ctx->profile.hash_big_endian;
+  PearlHitList hitList;
+  hitList.count = ctx->dHitCount;
+  hitList.index = ctx->dHitIndex;
+  hitList.hash = reinterpret_cast<uint32_t *>(ctx->dHashes);
+  hitList.transcript = ctx->dHitTranscript;
+  cudaMemsetAsync(ctx->dHitCount, 0, sizeof(uint32_t));
   pearl_tile_fold_wmma<<<blocks, threads, smem>>>(
       ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
-      col_off, ctx->rowsValid, col_groups, ctx->dJackpot);
-
-  // Hash every transcript and test it against the bound. finalize writes only
-  // on a hit and appends to a compact list, so the readback below is four bytes
-  // rather than one flag per region.
-  cudaMemsetAsync(ctx->dHitCount, 0, sizeof(uint32_t));
-  // Diagnostic only: PEARL_ABLATE_FINALIZE skips the hash so bench.cu reads the
-  // fold on its own. Nothing can hit in that build -- never ship it.
-#ifndef PEARL_ABLATE_FINALIZE
-  pearl_finalize_many<<<(regions + 255) / 256, 256>>>(
-      ctx->dASeed, ctx->dJackpot, regions, ctx->dTarget, ctx->dHashes,
-      ctx->dHitCount, ctx->dHitIndex, (int)ctx->profile.hash_big_endian);
-#endif
+      col_off, ctx->rowsValid, col_groups, test, hitList);
 
   uint32_t hits = 0;
   cudaMemcpy(&hits, ctx->dHitCount, sizeof(uint32_t), cudaMemcpyDeviceToHost);
@@ -1252,8 +1258,10 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
       out->proof_bt.total_leaves = (uint64_t)ctx->profile.n * ctx->profile.k / 1024;
     }
     out->proof.assign(PEARL_JACKPOT_BUCKETS * 4, 0);
+    // Indexed by the hit's SLOT, like the hash: the fold keeps no per-region
+    // transcripts, only the ones that hit.
     cudaMemcpy(out->proof.data(),
-               ctx->dJackpot + (size_t)ctx->hHitIndex[best] * PEARL_JACKPOT_BUCKETS,
+               ctx->dHitTranscript + (size_t)best * PEARL_JACKPOT_BUCKETS,
                PEARL_JACKPOT_BUCKETS * 4, cudaMemcpyDeviceToHost);
     out->found = true;
     return true;

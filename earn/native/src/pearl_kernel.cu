@@ -224,6 +224,81 @@ __device__ __forceinline__ void pearl_random_hash(const uint32_t key[8],
   blake3_keyed(key, msg, 64, out);
 }
 
+// The transcript hash, specialised to what it always is: ONE keyed compression
+// of exactly one 64-byte block, counter 0, as the root of a one-block chunk.
+// Words in, words out, and the target compared a word at a time.
+//
+// NOT faster than blake3_keyed on a byte array, for the record: ptxas already
+// folded that path's packing and tail handling away, and the SASS census came
+// to ~670 instructions a hash either way, within a few of the 672 that 56 G
+// functions need. The word form is here because the fold hands over words and
+// the target test wants to stop after one.
+#define PEARL_TRANSCRIPT_FLAGS (CHUNK_START | CHUNK_END | ROOT | KEYED_HASH)
+
+__device__ __forceinline__ uint32_t pearl_bswap32(uint32_t x) {
+  return __byte_perm(x, 0u, 0x0123u);
+}
+
+// The hash's most significant 32 bits in the order pearl_meets_target_mode
+// reads it. Default: the 32 bytes are a little-endian number, so the top word
+// is word 7 as it stands. hash_big_endian: byte 0 is most significant, so it
+// is word 0 with its bytes reversed.
+__device__ __forceinline__ uint32_t pearl_hash_word_msf(const uint32_t h[8], int i,
+                                                        int hash_big_endian) {
+  return hash_big_endian ? pearl_bswap32(h[i]) : h[7 - i];
+}
+
+// pearl_meets_target_mode on words. Comparing big-endian words most
+// significant first is the same lexicographic order as comparing the bytes, so
+// this is exact in both modes; target_w holds the target as big-endian words.
+__device__ __forceinline__ bool pearl_hash_meets_words(const uint32_t h[8],
+                                                       const uint32_t target_w[8],
+                                                       int hash_big_endian) {
+#pragma unroll
+  for (int i = 0; i < 8; i++) {
+    const uint32_t hw = pearl_hash_word_msf(h, i, hash_big_endian);
+    if (hw != target_w[i]) return hw < target_w[i];
+  }
+  return true;  // exactly equal counts as a share
+}
+
+__device__ __forceinline__ void pearl_transcript_hash(const uint32_t key[8],
+                                                      const uint32_t m[16],
+                                                      uint32_t h[8]) {
+  uint32_t out16[16];
+  blake3_compress(key, m, 0, 64, PEARL_TRANSCRIPT_FLAGS, out16);
+#pragma unroll
+  for (int i = 0; i < 8; i++) h[i] = out16[i];
+}
+
+// Only the word the target test looks at first. With nothing else of the
+// output used, the last round shrinks to what feeds that word. Callers that
+// need the whole hash recompute it with pearl_transcript_hash_again: at a pool
+// target it is needed only by the one region in billions that survives the
+// first word.
+__device__ __forceinline__ uint32_t pearl_transcript_msw(const uint32_t key[8],
+                                                         const uint32_t m[16],
+                                                         int hash_big_endian) {
+  uint32_t out16[16];
+  blake3_compress(key, m, 0, 64, PEARL_TRANSCRIPT_FLAGS, out16);
+  return hash_big_endian ? pearl_bswap32(out16[0]) : out16[7];
+}
+
+// The full hash for a region that survived pearl_transcript_msw. The inputs go
+// through an empty asm so the compiler cannot merge this with the fast path's
+// compression -- merging would drag the whole last round back out of the rare
+// branch and into every region's hash.
+__device__ __forceinline__ void pearl_transcript_hash_again(const uint32_t key[8],
+                                                            const uint32_t m[16],
+                                                            uint32_t h[8]) {
+  uint32_t k2[8], m2[16];
+#pragma unroll
+  for (int i = 0; i < 8; i++) { k2[i] = key[i]; asm volatile("" : "+r"(k2[i])); }
+#pragma unroll
+  for (int i = 0; i < 16; i++) { m2[i] = m[i]; asm volatile("" : "+r"(m2[i])); }
+  pearl_transcript_hash(k2, m2, h);
+}
+
 }  // namespace
 
 
@@ -1056,7 +1131,7 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
     const int8_t *__restrict__ Aprime, const int8_t *__restrict__ Bprime,
     uint32_t m, uint32_t n, uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg,
     uint32_t col_off, uint32_t rows_valid, uint32_t col_groups,
-    uint32_t *__restrict__ jackpot_out) {
+    const PearlTranscriptTest test, const PearlHitList hits) {
   using namespace nvcuda;
 
   // Compile-time geometry. The host has already refused anything else, so this
@@ -1108,7 +1183,6 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
   // __syncthreads() some warps skip hangs the launch.
   const bool active = rb < row_blocks && cgb < (col_groups / PEARL_WMMA_COL_BLK);
 
-  const uint32_t r0idx = rb * regions_per_warp;              // first row-offset index
   const uint32_t kfrags = rank / 16;
 
   // The column-group block for the WHOLE CTA, taken from warp 0's slot rather
@@ -1116,7 +1190,6 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
   // slots differ only in the row block -- and the host guarantees that by
   // refusing to stage unless row_blocks divides evenly by the warp count. It
   // has to come from blockIdx, because a surplus warp's own cgb is past the end.
-  const uint32_t cg0 = cgb * PEARL_WMMA_COL_BLK;             // this warp's groups
   const uint32_t cg0_block = cbg * warp_cols * PEARL_WMMA_COL_BLK;  // the block's
 
   // Shared: this warp's transcripts, then the staged B columns shared by the
@@ -1468,20 +1541,99 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
     }
   }
 
-  // Emit one transcript per region, each written exactly once.
-  if (!active) return;
-  const uint32_t total_jp = regions_per_warp * PEARL_WMMA_COL_BLK * PEARL_JACKPOT_BUCKETS;
+  // Hash every transcript HERE and keep only the hits.
+  //
+  // The transcripts used to go to global -- 64 bytes a region, 1 GiB a batch at
+  // the mainnet geometry -- for a second kernel to read straight back and hash.
+  // That kernel was 2.6% of wall clock and it was not the hashing that cost it:
+  // its compression is ~670 instructions, already at the floor, and the time
+  // was a full-bandwidth DRAM read of the buffer, on top of the fold having
+  // written it. Hashing in the block that produced the transcript drops both
+  // transfers, and the gigabyte buffer with them: 229.8 -> 235.7 TH/s on a
+  // 4090 at its 450 W cap, and the clock rises with the DRAM traffic gone.
+  //
+  // The hashing is not free here -- it runs with the tensor cores idle, and
+  // skipping it (PEARL_ABLATE_TRANSCRIPT_HASH) measures 1.8% faster. Two ways
+  // of shrinking that both LOST: splitting each hash across a lane pair with
+  // shuffles, so every scheduler had two warps to interleave (-0.2%), and moving
+  // rotations or adds onto the multiply-add pipe as IMAD/IMAD.HI (-0.5 to -1.6%).
+  //
+  // A warp's transcripts are spread one word per lane, so they go through
+  // shared first and one thread then hashes one whole region. The free stage
+  // buffer takes them: chunk c was read from buffer c & 1, so the buffer the
+  // LAST chunk did not use was last read before that chunk's barrier, and no
+  // copy is in flight into it. No extra barrier is needed before writing it.
+  static_assert(PEARL_JACKPOT_BUCKETS == 16, "a transcript is one 64-byte BLAKE3 block");
+  constexpr uint32_t warp_regions = PEARL_WMMA_ROW_TILES
+                                    * (PEARL_WMMA_ROWS / PEARL_ROWS_COUNT) * PEARL_WMMA_COL_BLK;
+  constexpr uint32_t block_regions = warps_per_block * warp_regions;
+  static_assert(block_regions <= PEARL_FOLD_THREADS, "one hashing thread per region");
+  static_assert(chunks >= 2, "the free stage buffer is the one chunk - 2 used");
+  uint32_t *sT = smem_u32 + (chunks & 1u) * (buf_bytes / 4u);
+  // Region L's 16 words are four 16-byte quads, and quad q sits at
+  // q ^ ((L >> 1) & 3). Without the swizzle the eight regions one quarter-warp
+  // reads land on two quad columns of the banks -- a 4-way conflict on every
+  // load -- where with it they cover all eight.
+  if (active) {
+    const uint32_t total_jp = regions_per_warp * PEARL_WMMA_COL_BLK * PEARL_JACKPOT_BUCKETS;
 #pragma unroll
-  for (uint32_t sl = 0; sl < PEARL_JACKPOT_REGS; sl++) {
-    const uint32_t i = lane + sl * 32u;
-    if (i >= total_jp) break;
-    const uint32_t cb = i / (regions_per_warp * PEARL_JACKPOT_BUCKETS);
-    const uint32_t rest = i % (regions_per_warp * PEARL_JACKPOT_BUCKETS);
-    const uint32_t reg = rest / PEARL_JACKPOT_BUCKETS;
-    const uint32_t b = rest % PEARL_JACKPOT_BUCKETS;
-    const uint64_t region = (uint64_t)(cg0 + cb) * rows_valid + r0idx + reg;
-    jackpot_out[region * PEARL_JACKPOT_BUCKETS + b] = jr[sl];
+    for (uint32_t sl = 0; sl < PEARL_JACKPOT_REGS; sl++) {
+      const uint32_t i = lane + sl * 32u;
+      if (i >= total_jp) break;
+      const uint32_t cb = i / (regions_per_warp * PEARL_JACKPOT_BUCKETS);
+      const uint32_t rest = i % (regions_per_warp * PEARL_JACKPOT_BUCKETS);
+      const uint32_t reg = rest / PEARL_JACKPOT_BUCKETS;
+      const uint32_t b = rest % PEARL_JACKPOT_BUCKETS;
+      const uint32_t L = warp * warp_regions + cb * regions_per_warp + reg;
+      sT[L * 16u + ((((b >> 2) ^ ((L >> 1) & 3u)) << 2) | (b & 3u))] = jr[sl];
+    }
   }
+  // Every warp reaches this, active or not: an inactive warp that returned
+  // early would leave the barrier short.
+  __syncthreads();
+  if (threadIdx.x >= block_regions) return;
+#ifdef PEARL_ABLATE_TRANSCRIPT_HASH
+  // Diagnostic only: stop after the hand-off, which prices the hashing that
+  // follows. No hit is ever reported -- never ship this.
+  return;
+#endif
+
+  // Which region this thread hashes, from the owning warp's coordinates -- the
+  // same arithmetic that warp used for its own, with its warp index.
+  const uint32_t L = threadIdx.x;
+  const uint32_t ow = L / warp_regions;
+  const uint32_t ocb = (L % warp_regions) / regions_per_warp;
+  const uint32_t oreg = L % regions_per_warp;
+  const uint32_t orb = rbg * PEARL_WARP_ROWS + ow % PEARL_WARP_ROWS;
+  const uint32_t ocgb = cbg * warp_cols + ow / PEARL_WARP_ROWS;
+  if (!(orb < row_blocks && ocgb < (col_groups / PEARL_WMMA_COL_BLK))) return;
+  const uint32_t region =
+      (ocgb * PEARL_WMMA_COL_BLK + ocb) * rows_valid + orb * regions_per_warp + oreg;
+
+  uint32_t tm[16];
+  const uint4 *sT4 = reinterpret_cast<const uint4 *>(sT) + L * 4u;
+#pragma unroll
+  for (uint32_t q = 0; q < 4; q++) {
+    const uint4 w = sT4[q ^ ((L >> 1) & 3u)];
+    tm[q * 4 + 0] = w.x; tm[q * 4 + 1] = w.y; tm[q * 4 + 2] = w.z; tm[q * 4 + 3] = w.w;
+  }
+  // The key and target arrive by value, so they are constant-bank operands:
+  // loading them from global here would put a memory round trip on the end of
+  // every block, exposed, with the tensor cores idle.
+  if (pearl_transcript_msw(test.key, tm, test.hash_big_endian) > test.target_w[0]) return;
+  uint32_t h[8];
+  pearl_transcript_hash_again(test.key, tm, h);
+  if (!pearl_hash_meets_words(h, test.target_w, test.hash_big_endian)) return;
+  const uint32_t slot = atomicAdd(hits.count, 1u);
+  if (slot >= PEARL_MAX_HITS) return;
+  hits.index[slot] = region;
+  // Little-endian words ARE the hash's bytes in order.
+#pragma unroll
+  for (int i = 0; i < 8; i++) hits.hash[slot * 8u + i] = h[i];
+  // The transcript itself is the share's proof, and it no longer exists
+  // anywhere else once this block exits.
+#pragma unroll
+  for (int i = 0; i < 16; i++) hits.transcript[slot * 16u + i] = tm[i];
 }
 
 // The fold is now a gather. Every product it needs is already in D, so a region
@@ -1542,47 +1694,6 @@ extern "C" __global__ void pearl_gemm_fold(
     uint32_t *out = jackpot_out + (size_t)slot * PEARL_JACKPOT_BUCKETS;
 #pragma unroll
     for (int i = 0; i < PEARL_JACKPOT_BUCKETS; i++) out[i] = jackpot[i];
-  }
-}
-
-// Hash and target-test a whole batch of transcripts, one thread per region.
-// Sequentialising this over 4096 regions with a device-to-host copy each time
-// was most of what made the old search slow even before the single-block fold.
-extern "C" __global__ void pearl_finalize_many(const uint32_t *a_seed,
-                                               const uint32_t *jackpots,
-                                               uint32_t count,
-                                               const uint8_t *target_be,
-                                               uint8_t *hashes_out,
-                                               uint32_t *hit_count,
-                                               uint32_t *hit_index,
-                                               int hash_big_endian) {
-  uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx >= count) return;
-  const uint32_t *j = jackpots + (size_t)idx * PEARL_JACKPOT_BUCKETS;
-  uint8_t transcript[PEARL_JACKPOT_BUCKETS * 4];
-#pragma unroll
-  for (int i = 0; i < PEARL_JACKPOT_BUCKETS; i++) {
-    transcript[i * 4 + 0] = (uint8_t)(j[i]);
-    transcript[i * 4 + 1] = (uint8_t)(j[i] >> 8);
-    transcript[i * 4 + 2] = (uint8_t)(j[i] >> 16);
-    transcript[i * 4 + 3] = (uint8_t)(j[i] >> 24);
-  }
-  uint32_t key[8];
-#pragma unroll
-  for (int i = 0; i < 8; i++) key[i] = a_seed[i];
-  uint8_t h[PEARL_HASH_BYTES];
-  blake3_keyed(key, transcript, sizeof(transcript), h);
-  // Write ONLY on a hit. Storing every region's 32-byte hash unconditionally
-  // was 12.6 MiB a batch at the mainnet geometry, spent almost entirely on
-  // hashes that miss, and it forced the host to read a per-region flag array
-  // back across the bus to find the one that did not.
-  if (!pearl_meets_target_mode(h, target_be, hash_big_endian)) return;
-  const uint32_t slot = atomicAdd(hit_count, 1u);
-  if (slot >= PEARL_MAX_HITS) return;
-  hit_index[slot] = idx;
-#pragma unroll
-  for (int i = 0; i < PEARL_HASH_BYTES; i++) {
-    hashes_out[(size_t)slot * PEARL_HASH_BYTES + i] = h[i];
   }
 }
 

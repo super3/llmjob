@@ -210,6 +210,24 @@ static_assert(PEARL_COLS_COUNT == (1u << pearl_popcount_ce(PEARL_COLS_MASK)),
 // six bits of salt each, so 11 bytes carry a full 64-bit salt.
 #define PEARL_STAMP_BYTES 11
 
+// What the fold needs to hash its own transcripts and test them. Passed to the
+// kernel BY VALUE, so the key and target sit in the constant bank as operands
+// rather than being loaded at the end of every block. The host already holds
+// both: a_seed is read back once per draw, and the target is the job's.
+typedef struct {
+  uint32_t key[8];       // a_seed as the eight little-endian words BLAKE3 keys with
+  uint32_t target_w[8];  // the target as big-endian words, most significant first
+  int hash_big_endian;   // PearlProfile.hash_big_endian
+} PearlTranscriptTest;
+
+// Where the fold reports hits. Written only on a hit, appended with an atomic.
+typedef struct {
+  uint32_t *count;       // hits this batch; may exceed PEARL_MAX_HITS
+  uint32_t *index;       // [PEARL_MAX_HITS] batch-local region index
+  uint32_t *hash;        // [PEARL_MAX_HITS][8] jackpot hash words, bytes in order
+  uint32_t *transcript;  // [PEARL_MAX_HITS][16] the transcript that hashed to it
+} PearlHitList;
+
 // Rows of A one warp covers in the tensor-core partials kernel. The WMMA int8
 // shape is 16x16x16, and valid row offsets are multiples of PEARL_ROWS_COUNT,
 // so a 16-row block is exactly four consecutive row offsets.
