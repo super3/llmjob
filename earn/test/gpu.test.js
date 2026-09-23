@@ -1,8 +1,8 @@
 'use strict';
 
 const {
-  pickGpu, countGpus, alignCudaDeviceOrder, parseDeviceIndex, planMinerGpus,
-  parseGpuStats, parseMacGpu,
+  pickGpu, countGpus, alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda,
+  parseDeviceIndex, planMinerGpus, parseGpuStats, parseMacGpu,
 } = require('../src/shared/gpu');
 
 describe('pickGpu', () => {
@@ -163,6 +163,56 @@ describe('alignCudaDeviceOrder', () => {
       if (had) process.env.CUDA_DEVICE_ORDER = before;
       else delete process.env.CUDA_DEVICE_ORDER;
     }
+  });
+});
+
+// CUDA_VISIBLE_DEVICES hides cards from CUDA but not from nvidia-smi, which the
+// mining fleet is planned from. A rig with it set to 0 asked the core for GPU 1,
+// got "this machine has 1", and its second card never mined.
+describe('clearCudaVisibleDevices', () => {
+  test('removes it and returns what it was', () => {
+    const env = { CUDA_VISIBLE_DEVICES: '0' };
+    expect(clearCudaVisibleDevices(env)).toBe('0');
+    expect('CUDA_VISIBLE_DEVICES' in env).toBe(false);
+  });
+
+  // An empty value hides every card, so it goes too.
+  test('removes an empty value as well', () => {
+    const env = { CUDA_VISIBLE_DEVICES: '' };
+    expect(clearCudaVisibleDevices(env)).toBe('');
+    expect('CUDA_VISIBLE_DEVICES' in env).toBe(false);
+  });
+
+  test('returns null when it was not set', () => {
+    const env = { CUDA_DEVICE_ORDER: 'PCI_BUS_ID' };
+    expect(clearCudaVisibleDevices(env)).toBeNull();
+    expect(env).toEqual({ CUDA_DEVICE_ORDER: 'PCI_BUS_ID' });
+  });
+
+  // Like alignCudaDeviceOrder, it has to reach the real environment: the core
+  // reads it when CUDA initialises inside this process.
+  test('defaults to the real process environment', () => {
+    const had = Object.prototype.hasOwnProperty.call(process.env, 'CUDA_VISIBLE_DEVICES');
+    const before = process.env.CUDA_VISIBLE_DEVICES;
+    process.env.CUDA_VISIBLE_DEVICES = '1';
+    try {
+      expect(clearCudaVisibleDevices()).toBe('1');
+      expect(process.env.CUDA_VISIBLE_DEVICES).toBeUndefined();
+    } finally {
+      if (had) process.env.CUDA_VISIBLE_DEVICES = before;
+      else delete process.env.CUDA_VISIBLE_DEVICES;
+    }
+  });
+});
+
+describe('describeClearedCuda', () => {
+  test('names the value and the variable that replaces it', () => {
+    expect(describeClearedCuda('0')).toBe('ignoring CUDA_VISIBLE_DEVICES=0 so every GPU can mine '
+      + '(set PEARL_GPU_INDEX to mine on one card)');
+  });
+
+  test('says nothing when nothing was removed', () => {
+    expect(describeClearedCuda(null)).toBeNull();
   });
 });
 

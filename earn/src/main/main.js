@@ -48,7 +48,7 @@ const { isValidAddress } = require('../shared/address');
 const { formatUpdate, describeUpdateError } = require('../shared/updateStatus');
 const { buildMinerReports } = require('../shared/minerReport');
 const { runtimeCopyPlan } = require('../shared/llmRuntime');
-const { alignCudaDeviceOrder } = require('../shared/gpu');
+const { alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda } = require('../shared/gpu');
 const earnings = require('../shared/earnings');
 const format = require('../shared/format');
 
@@ -56,8 +56,10 @@ const format = require('../shared/format');
 // Everything here — the device label, per-card VRAM, temperatures, the board's
 // rows — speaks nvidia-smi's indices, and the CUDA runtime does not unless told
 // to. Set at load, because the mining core initialises CUDA inside THIS process
-// and reads it then.
+// and reads it then. For the same reason CUDA must see every card nvidia-smi
+// lists; the removed value is logged on each start, since there is no window yet.
 alignCudaDeviceOrder(process.env);
+const clearedCudaLine = describeClearedCuda(clearCudaVisibleDevices(process.env));
 
 let win = null;
 let miner = null;
@@ -299,6 +301,7 @@ async function startMining(settings) {
   // back — STOP can now land inside a start again, and starting a miner the user
   // has already stopped would leave an engine nobody is holding.
   const epoch = miningEpoch;
+  if (clearedCudaLine) send('miner:log', { level: 'info', line: clearedCudaLine });
   const gpus = await probe.detectMinerGpus();
   if (epoch !== miningEpoch) return;
 

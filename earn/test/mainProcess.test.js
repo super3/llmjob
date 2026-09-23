@@ -936,6 +936,32 @@ describe('mining', () => {
     }));
   });
 
+  // CUDA_VISIBLE_DEVICES=0 hid a rig's second card from the mining core while
+  // nvidia-smi still listed it. main.js removes it at load and says so on start.
+  it('clears CUDA_VISIBLE_DEVICES at load and logs it when mining starts', async () => {
+    const had = Object.prototype.hasOwnProperty.call(process.env, 'CUDA_VISIBLE_DEVICES');
+    const before = process.env.CUDA_VISIBLE_DEVICES;
+    process.env.CUDA_VISIBLE_DEVICES = '0';
+    try {
+      const ctx = await boot();
+      expect(process.env.CUDA_VISIBLE_DEVICES).toBeUndefined();
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(ctx.sent('miner:log').map((l) => l.line)).toContain(
+        'ignoring CUDA_VISIBLE_DEVICES=0 so every GPU can mine (set PEARL_GPU_INDEX to mine on one card)');
+    } finally {
+      if (had) process.env.CUDA_VISIBLE_DEVICES = before;
+      else delete process.env.CUDA_VISIBLE_DEVICES;
+    }
+  });
+
+  it('says nothing about CUDA_VISIBLE_DEVICES when it was not set', async () => {
+    const ctx = await boot();
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    expect(ctx.sent('miner:log').map((l) => l.line).join('\n')).not.toContain('CUDA_VISIBLE_DEVICES');
+  });
+
   // Reading the card list is an await, so STOP can land inside a start again.
   // Starting a miner the user has already stopped leaves an engine nobody is
   // holding: the UI shows stopped and the cards keep mining.

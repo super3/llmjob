@@ -547,6 +547,27 @@ describe('mining', () => {
     await expect(p).resolves.toBe(5);
   });
 
+  // CUDA_VISIBLE_DEVICES=0 hid a rig's second card from the mining core while
+  // nvidia-smi still listed it. The CLI removes it at load and says so.
+  test('clears CUDA_VISIBLE_DEVICES at load and logs it for a mining run', async () => {
+    const had = Object.prototype.hasOwnProperty.call(process.env, 'CUDA_VISIBLE_DEVICES');
+    const before = process.env.CUDA_VISIBLE_DEVICES;
+    process.env.CUDA_VISIBLE_DEVICES = '0';
+    try {
+      const m = load();
+      expect(process.env.CUDA_VISIBLE_DEVICES).toBeUndefined();
+      const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+      await settle();
+      expect(allOut()).toContain(
+        'ignoring CUDA_VISIBLE_DEVICES=0 so every GPU can mine (set PEARL_GPU_INDEX to mine on one card)');
+      m.PearlEngine.instances[0].emit('stopped', 0);
+      await expect(p).resolves.toBe(0);
+    } finally {
+      if (had) process.env.CUDA_VISIBLE_DEVICES = before;
+      else delete process.env.CUDA_VISIBLE_DEVICES;
+    }
+  });
+
   // net.connect takes the PORT first and PearlMiner hands over host first, so
   // the adapter flips them. Backwards, the CLI fails to connect with an error
   // that names neither side.

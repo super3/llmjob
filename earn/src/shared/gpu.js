@@ -73,6 +73,38 @@ function alignCudaDeviceOrder(env) {
   return e.CUDA_DEVICE_ORDER;
 }
 
+// Let CUDA see every card nvidia-smi lists, by removing CUDA_VISIBLE_DEVICES
+// before anything touches the driver.
+//
+// That variable hides cards from CUDA and renumbers the ones left. nvidia-smi
+// ignores it, and the mining fleet is planned from nvidia-smi's list, so with it
+// set the two sides disagree. A two-card rig with CUDA_VISIBLE_DEVICES=0 asked
+// the core for GPU 1, CUDA answered that the machine has one card, and the
+// second card never mined. Set to 1 instead, it would be worse: the core's GPU 0
+// would be nvidia-smi's GPU 1, the wrong-card bug from issue #226 again.
+//
+// It is usually left over from other software or old troubleshooting, not a
+// choice about this app. Mining on one card is what PEARL_GPU_INDEX is for, and
+// that uses the same numbers as everything else here.
+//
+// Same timing as alignCudaDeviceOrder: both shells call it at load. Returns the
+// value it removed, or null when it wasn't set, so the caller can log it.
+function clearCudaVisibleDevices(env) {
+  const e = env || process.env;
+  const was = e.CUDA_VISIBLE_DEVICES;
+  if (was == null) return null;
+  delete e.CUDA_VISIBLE_DEVICES;
+  return was;
+}
+
+// The log line for a CUDA_VISIBLE_DEVICES that clearCudaVisibleDevices removed,
+// or null when there was nothing to remove. One wording for both shells.
+function describeClearedCuda(was) {
+  if (was == null) return null;
+  return 'ignoring CUDA_VISIBLE_DEVICES=' + was + ' so every GPU can mine '
+    + '(set PEARL_GPU_INDEX to mine on one card)';
+}
+
 // An operator's explicit choice of mining card, from PEARL_GPU_INDEX, or null
 // when they haven't made one.
 //
@@ -173,6 +205,7 @@ function parseMacGpu(out) {
 }
 
 module.exports = {
-  IGNORE, INTEGRATED, pickGpu, countGpus, alignCudaDeviceOrder, parseDeviceIndex,
+  IGNORE, INTEGRATED, pickGpu, countGpus, alignCudaDeviceOrder,
+  clearCudaVisibleDevices, describeClearedCuda, parseDeviceIndex,
   planMinerGpus, parseGpuStats, parseMacGpu,
 };
