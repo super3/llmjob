@@ -127,6 +127,83 @@ describe('LlmFleet', () => {
     expect(fleet.servingIndices()).toEqual([0, 1]);
   });
 
+  // Chat used to go to the lowest ready card whatever it was doing. On a rig
+  // with an RTX PRO 4500 (mining) and an RTX 4070 that ran chat at 25 tok/s
+  // while the 4070 did 82 on the same model.
+  describe('chatUrl', () => {
+    const A = 'http://127.0.0.1:8080';
+    const B = 'http://127.0.0.1:8081';
+    async function twoReady() {
+      const f = makeFleet();
+      await f.fleet.start([{ index: 0, nGpuLayers: 42 }, { index: 1, nGpuLayers: 42 }], {});
+      await drain();
+      f.mgrs[0].emit('ready', { baseUrl: A });
+      f.mgrs[1].emit('ready', { baseUrl: B });
+      return f;
+    }
+
+    test('is null with nothing ready', async () => {
+      const { fleet } = makeFleet();
+      expect(fleet.chatUrl()).toBeNull();
+    });
+
+    test('takes the faster card once both are measured', async () => {
+      const { fleet, mgrs } = await twoReady();
+      mgrs[0].emit('stats', { tokensPerSec: 24.8, promptTokensPerSec: null, tokens: 432 });
+      mgrs[1].emit('stats', { tokensPerSec: 82, promptTokensPerSec: null, tokens: 270 });
+      expect(fleet.chatUrl()).toBe(B);
+      expect(fleet.webUrl()).toBe(A); // the API address does not move
+    });
+
+    // Otherwise the first card measured would keep chat for good, and the other
+    // card would never get the reading it needs to win.
+    test('tries a card that has not been measured yet', async () => {
+      const { fleet, mgrs } = await twoReady();
+      mgrs[0].emit('stats', { tokensPerSec: 90, promptTokensPerSec: null, tokens: 300 });
+      expect(fleet.chatUrl()).toBe(B);
+    });
+
+    // The startup warm-up answers in a few tokens and a prefill progress line
+    // has no count. Neither says how fast the card is.
+    test('ignores rates from short replies and lines without a token count', async () => {
+      const { fleet, mgrs } = await twoReady();
+      mgrs[1].emit('stats', { tokensPerSec: 82, promptTokensPerSec: null, tokens: 270 });
+      mgrs[0].emit('stats', { tokensPerSec: 4.3, promptTokensPerSec: null, tokens: 4 });
+      expect(fleet.chatUrl()).toBe(A); // still unmeasured, so it gets tried
+      mgrs[0].emit('stats', { tokensPerSec: 0.81, promptTokensPerSec: null, tokens: null });
+      expect(fleet.chatUrl()).toBe(A);
+      mgrs[0].emit('stats', { tokensPerSec: null, promptTokensPerSec: 900, tokens: 900 });
+      expect(fleet.chatUrl()).toBe(A);
+    });
+
+    // llama-server runs one slot, so chat would wait behind a cluster job.
+    test('skips a card busy with a cluster job, unless every card is', async () => {
+      const { fleet, mgrs, workers } = await twoReady();
+      fleet.syncWorkers(true);
+      mgrs[0].emit('stats', { tokensPerSec: 50, promptTokensPerSec: null, tokens: 300 });
+      mgrs[1].emit('stats', { tokensPerSec: 82, promptTokensPerSec: null, tokens: 300 });
+      workers[1]._active = 1;
+      expect(fleet.chatUrl()).toBe(A);
+      workers[0]._active = 1;
+      expect(fleet.chatUrl()).toBe(B);
+    });
+
+    test('keeps the lower card on a tie, and skips cards that are not ready', async () => {
+      const { fleet, mgrs } = await twoReady();
+      mgrs[0].emit('stats', { tokensPerSec: 60, promptTokensPerSec: null, tokens: 300 });
+      mgrs[1].emit('stats', { tokensPerSec: 60, promptTokensPerSec: null, tokens: 300 });
+      expect(fleet.chatUrl()).toBe(A);
+      mgrs[0].emit('crashed', { code: 1 });
+      expect(fleet.chatUrl()).toBe(B);
+    });
+
+    test('uses an adopted server, which is never measured', () => {
+      const { fleet } = makeFleet();
+      fleet.adopt(A);
+      expect(fleet.chatUrl()).toBe(A);
+    });
+  });
+
   test('serving starts one worker per ready instance; activeJobs sums them', async () => {
     const { fleet, mgrs, workers } = makeFleet();
     await fleet.start([{ index: 0, nGpuLayers: 42 }, { index: 1, nGpuLayers: 42 }], {});

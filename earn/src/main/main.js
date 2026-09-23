@@ -853,7 +853,7 @@ const CHAT_SYSTEM_PROMPT = [
 
 function llmChat(messages) {
   cancelChat('superseded by a new message');
-  const base = (fleet && fleet.webUrl()) || ('http://' + LLM.host + ':' + LLM.port);
+  const base = (fleet && fleet.chatUrl()) || ('http://' + LLM.host + ':' + LLM.port);
   if (!fleet || !fleet.isReady()) { send('llm:chat:error', { message: 'the local LLM is not running' }); return; }
 
   const grounded = [{ role: 'system', content: CHAT_SYSTEM_PROMPT }].concat(Array.isArray(messages) ? messages : []);
