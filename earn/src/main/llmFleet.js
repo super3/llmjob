@@ -2,6 +2,11 @@
 
 const { EventEmitter } = require('events');
 
+// The shortest generation that counts as a measure of a card's speed. The
+// startup warm-up answers in a handful of tokens (4 on the rig that found
+// this), and that rate is mostly setup cost, not the card.
+const MIN_RATE_TOKENS = 32;
+
 // Supervises a FLEET of local llama-server instances — one per eligible GPU (see
 // shared/llmPlan.planLlmInstances) — plus one cluster job-worker per ready
 // instance, so a multi-GPU rig serves the model from every card that has room
@@ -148,11 +153,11 @@ class LlmFleet extends EventEmitter {
     if (this._stopping) return null;
     this._nextPort = port + 1; // the next instance probes from the following port
     const mgr = this.makeManager();
-    const inst = { index: e.index, port, mgr, ready: false, stopped: false, baseUrl: null, worker: null };
+    const inst = { index: e.index, port, mgr, ready: false, stopped: false, baseUrl: null, worker: null, tps: 0 };
     this.instances.push(inst);
     mgr.on('log', (l) => this.emit('log', l));
     mgr.on('ready', ({ baseUrl }) => this._onReady(inst, baseUrl));
-    mgr.on('stats', (s) => this._onStats(s));
+    mgr.on('stats', (s) => this._onStats(s, inst));
     mgr.on('crashed', (info) => this._onCrashed(inst, info));
     mgr.on('stopped', (code) => this._onStopped(inst, code));
     mgr.on('error', (err) => this.emit('error', err));
@@ -172,7 +177,7 @@ class LlmFleet extends EventEmitter {
   // and risk an OOM. It has no GPU index (unknown placement), so it never appears
   // in servingIndices(). Returns the adopted instance.
   adopt(baseUrl) {
-    const inst = { index: null, port: null, mgr: null, ready: true, stopped: false, baseUrl, worker: null };
+    const inst = { index: null, port: null, mgr: null, ready: true, stopped: false, baseUrl, worker: null, tps: 0 };
     this.instances.push(inst);
     this._sawFirstReady = true;
     if (this._serve) this._ensureWorker(inst);
@@ -226,10 +231,14 @@ class LlmFleet extends EventEmitter {
   // Each line carries ONE phase, so hold both and re-emit both every time. That
   // keeps the fleet's `tokensPerSec` a plain number for existing consumers while
   // making the prefill figure available to anyone who wants it.
-  _onStats(s) {
+  //
+  // Each instance also keeps its own generation rate, for chatUrl(). Only from a
+  // reply long enough to mean something (MIN_RATE_TOKENS).
+  _onStats(s, inst) {
     const gen = s && s.tokensPerSec;
     const pre = s && s.promptTokensPerSec;
     if (gen != null) this._lastTps = Number(gen) || 0;
+    if (gen != null && Number(s.tokens) >= MIN_RATE_TOKENS) inst.tps = Number(gen);
     if (pre != null) this._lastPromptTps = Number(pre) || 0;
     this.emit('stats', { tokensPerSec: this._lastTps, promptTokensPerSec: this._lastPromptTps });
   }
@@ -281,10 +290,34 @@ class LlmFleet extends EventEmitter {
     w.start();
   }
 
-  // The endpoint the in-app chat talks to: the first ready instance's base URL.
+  // The first ready instance's base URL: the address the app shows as its API
+  // endpoint, and where the CLI's gate proxies. It stays put for the whole run.
   webUrl() {
     const inst = this.instances.find((i) => i.ready);
     return inst ? inst.baseUrl : null;
+  }
+
+  // The instance the in-app chat should use, as a base URL.
+  //
+  // Not webUrl(). That is always the lowest card, and on a rig where card 0
+  // mines hardest, chat ran there at 25 tok/s while the same model on the card
+  // next to it did 82 (an RTX PRO 4500 and an RTX 4070).
+  //
+  // So: skip instances busy with a cluster job, since llama-server runs one
+  // slot and chat would wait behind it. Among the rest, try any card that
+  // hasn't been measured yet, once, so every card gets a reading. Then take the
+  // fastest measured one. Ties keep the lower card, so identical cards pick the
+  // same one every time.
+  chatUrl() {
+    const ready = this.instances.filter((i) => i.ready);
+    if (!ready.length) return null;
+    const idle = ready.filter((i) => !(i.worker && Number(i.worker.activeJobs()) > 0));
+    const pool = idle.length ? idle : ready;
+    const unmeasured = pool.find((i) => !(i.tps > 0));
+    if (unmeasured) return unmeasured.baseUrl;
+    let best = pool[0];
+    for (const i of pool) if (i.tps > best.tps) best = i;
+    return best.baseUrl;
   }
 
   // True once at least one *spawned* instance is still running (adopted instances

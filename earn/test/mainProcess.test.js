@@ -936,6 +936,32 @@ describe('mining', () => {
     }));
   });
 
+  // CUDA_VISIBLE_DEVICES=0 hid a rig's second card from the mining core while
+  // nvidia-smi still listed it. main.js removes it at load and says so on start.
+  it('clears CUDA_VISIBLE_DEVICES at load and logs it when mining starts', async () => {
+    const had = Object.prototype.hasOwnProperty.call(process.env, 'CUDA_VISIBLE_DEVICES');
+    const before = process.env.CUDA_VISIBLE_DEVICES;
+    process.env.CUDA_VISIBLE_DEVICES = '0';
+    try {
+      const ctx = await boot();
+      expect(process.env.CUDA_VISIBLE_DEVICES).toBeUndefined();
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(ctx.sent('miner:log').map((l) => l.line)).toContain(
+        'ignoring CUDA_VISIBLE_DEVICES=0 so every GPU can mine (set PEARL_GPU_INDEX to mine on one card)');
+    } finally {
+      if (had) process.env.CUDA_VISIBLE_DEVICES = before;
+      else delete process.env.CUDA_VISIBLE_DEVICES;
+    }
+  });
+
+  it('says nothing about CUDA_VISIBLE_DEVICES when it was not set', async () => {
+    const ctx = await boot();
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    expect(ctx.sent('miner:log').map((l) => l.line).join('\n')).not.toContain('CUDA_VISIBLE_DEVICES');
+  });
+
   // Reading the card list is an await, so STOP can land inside a start again.
   // Starting a miner the user has already stopped leaves an engine nobody is
   // holding: the UI shows stopped and the cards keep mining.
@@ -1442,7 +1468,7 @@ describe('local LLM', () => {
     const g0 = ctx.LlmManager.instances[0];
     expect(g0.start).toHaveBeenCalledWith(expect.objectContaining({ port: 8080, mainGpu: 0 }));
 
-    // card 0 ready → card 1 spawns on the next port; chat targets the first ready
+    // card 0 ready → card 1 spawns on the next port
     g0.emit('ready', { baseUrl: g0.baseUrl });
     await flush();
     expect(ctx.LlmManager.instances).toHaveLength(2);
@@ -1471,6 +1497,36 @@ describe('local LLM', () => {
     await ctx.invoke('node:disconnect');
     expect(ctx.JobWorker.instances[0].stop).toHaveBeenCalled();
     expect(ctx.JobWorker.instances[1].stop).toHaveBeenCalled();
+  });
+
+  // Chat went to card 0 whatever it was doing: 25 tok/s on a mining RTX PRO
+  // 4500 while the RTX 4070 beside it ran the same model at 82.
+  it('sends chat to the faster card, not the first one', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        c.probe.detectGpusVram.mockResolvedValue([
+          { index: 0, name: 'RTX PRO 4500', usedMb: 2000, totalMb: 32000 },
+          { index: 1, name: 'RTX 4070', usedMb: 1000, totalMb: 12000 },
+        ]);
+        c.probe.findFreePort.mockImplementation((h, p) => Promise.resolve(p));
+      },
+    });
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    const g0 = ctx.LlmManager.instances[0];
+    g0.emit('ready', { baseUrl: g0.baseUrl });
+    await flush();
+    const g1 = ctx.LlmManager.instances[1];
+    g1.emit('ready', { baseUrl: g1.baseUrl });
+    await flush();
+    g0.emit('stats', { tokensPerSec: 24.8, promptTokensPerSec: null, tokens: 432 });
+    g1.emit('stats', { tokensPerSec: 82, promptTokensPerSec: null, tokens: 270 });
+
+    ctx.io.streamChatCompletion.mockClear();
+    ctx.emit('llm:chat', [{ role: 'user', content: 'hi' }]);
+    expect(ctx.io.streamChatCompletion.mock.calls[0][0]).toBe('http://127.0.0.1:8081');
+    // The API address shown in the app stays on the first card.
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ webUrl: 'http://127.0.0.1:8080' });
   });
 
   it('still serves on a card that comes up after the node unlinks (public jobs need no account)', async () => {

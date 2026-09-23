@@ -168,12 +168,25 @@ describe('parseTiming', () => {
 
   test('tags a generation line', () => {
     expect(parseTiming('eval time = 10 ms / 200 tokens ... 162.02 tokens per second'))
-      .toEqual({ kind: 'gen', tokensPerSec: 162.02 });
+      .toEqual({ kind: 'gen', tokensPerSec: 162.02, tokens: 200 });
   });
 
   test('tags a prefill line', () => {
     expect(parseTiming('prompt eval time = 5 ms / 900 tokens ... 1840.00 tokens per second'))
-      .toEqual({ kind: 'prompt', tokensPerSec: 1840 });
+      .toEqual({ kind: 'prompt', tokensPerSec: 1840, tokens: 900 });
+  });
+
+  // The real format, with llama-server's padding, from a two-card rig's log.
+  test('reads the token count from a real generation line', () => {
+    expect(parseTiming('0.42.314.567 I slot print_timing: id 0 | task 0 |        eval time =    3292.87 ms /   270 tokens (   12.20 ms per token,    82.00 tokens per second)'))
+      .toEqual({ kind: 'gen', tokensPerSec: 82, tokens: 270 });
+  });
+
+  // Printed mid-prefill. It carries a rate but no "/ N tokens", so it is no
+  // measure of a card's generation speed.
+  test('has no token count on a prefill progress line', () => {
+    expect(parseTiming('slot print_timing: id 0 | task 0 | prompt processing, n_tokens = 8, progress = 0.42, t = 9.93 s / 0.81 tokens per second'))
+      .toEqual({ kind: 'gen', tokensPerSec: 0.81, tokens: null });
   });
 
   test('is null for a line with no timing', () => {

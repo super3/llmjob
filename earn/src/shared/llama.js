@@ -107,12 +107,22 @@ function isServerReady(line) {
 // and routinely differ by an order of magnitude, which made the number we
 // showed -- and sent to the network board -- meaningless.
 //
-// Returns { kind: 'prompt'|'gen', tokensPerSec } or null.
+// `tokens` is how many tokens the rate was measured over ("/ 270 tokens"), or
+// null when the line doesn't say. The in-app chat picks a card by its measured
+// rate (LlmFleet.chatUrl), and a 4-token warm-up reply or a progress line
+// printed mid-prefill is no measure of a card.
+//
+// Returns { kind: 'prompt'|'gen', tokensPerSec, tokens } or null.
 function parseTiming(line) {
   const s = String(line == null ? '' : line);
   const m = s.match(/([\d.]+)\s*tokens per second/i);
   if (!m) return null;
-  return { kind: /prompt eval/i.test(s) ? 'prompt' : 'gen', tokensPerSec: Number(m[1]) };
+  const n = s.match(/\/\s*(\d+)\s+tokens\b/i);
+  return {
+    kind: /prompt eval/i.test(s) ? 'prompt' : 'gen',
+    tokensPerSec: Number(m[1]),
+    tokens: n ? Number(n[1]) : null,
+  };
 }
 
 // Kept for callers that only want a number and do not care which phase it came

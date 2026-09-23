@@ -34,7 +34,7 @@ const {
 //   started  { bin, args, baseUrl }
 //   ready    { baseUrl }
 //   log      { level: 'info'|'error', line }
-//   stats    { tokensPerSec }
+//   stats    { tokensPerSec, promptTokensPerSec, tokens }  one phase per event
 //   crashed  { code, restartInMs, attempt }   — down, restarting shortly
 //   stopped  exitCode
 //   error    Error
@@ -195,8 +195,8 @@ class LlmManager extends EventEmitter {
       const t = parseTiming(line);
       if (t) {
         this.emit('stats', t.kind === 'prompt'
-          ? { tokensPerSec: null, promptTokensPerSec: t.tokensPerSec }
-          : { tokensPerSec: t.tokensPerSec, promptTokensPerSec: null });
+          ? { tokensPerSec: null, promptTokensPerSec: t.tokensPerSec, tokens: t.tokens }
+          : { tokensPerSec: t.tokensPerSec, promptTokensPerSec: null, tokens: t.tokens });
       }
     }
   }

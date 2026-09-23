@@ -43,7 +43,7 @@ const { JobWorker } = require('../main/jobWorker');
 const { resolvePlan, normalizeMode } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote } = require('../shared/platform');
 const { resolveServerUrl } = require('../shared/llama');
-const { alignCudaDeviceOrder } = require('../shared/gpu');
+const { alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda } = require('../shared/gpu');
 const format = require('../shared/format');
 const pkg = require('../../package.json');
 
@@ -51,8 +51,10 @@ const pkg = require('../../package.json');
 // Everything here — the device label, per-card VRAM, temperatures, the board's
 // rows — speaks nvidia-smi's indices, and the CUDA runtime does not unless told
 // to. Set at load, because the mining core initialises CUDA inside THIS process
-// and reads it then.
+// and reads it then. For the same reason CUDA must see every card nvidia-smi
+// lists; the removed value is logged when a mining run starts.
 alignCudaDeviceOrder(process.env);
+const clearedCudaLine = describeClearedCuda(clearCudaVisibleDevices(process.env));
 
 // The shortest gap between two mining status lines. See the miner event handler.
 const MINE_LOG_MS = 1000;
@@ -716,6 +718,7 @@ async function run(argv) {
     // What will actually mine, which is not always what the line above names: a
     // mixed rig has one name there and several cards here, and PEARL_GPU_INDEX
     // narrows it to one. Each card names itself again as its core starts.
+    if (clearedCudaLine) log(clearedCudaLine);
     if (settings.gpus.length > 1) {
       log('mining on:  ' + settings.gpus.length + ' GPUs ['
         + settings.gpus.map((g) => g.index).join(', ') + ']');
