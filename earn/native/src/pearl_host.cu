@@ -476,7 +476,14 @@ extern "C" int pearl_host_select_device(const PearlProfile *profile, int request
       // A card in an exclusive or prohibited compute mode cannot take our
       // context at all; choosing it would fail the whole start on a rig that
       // has a perfectly good second card.
-      if (prop.computeMode == cudaComputeModeProhibited) continue;
+      //
+      // Read through cudaDeviceGetAttribute rather than prop.computeMode: CUDA 13
+      // removed that field from cudaDeviceProp (as it did clockRate, read the same
+      // way just below), so the struct member does not compile there. The
+      // attribute exists in 12 and 13 alike.
+      int computeMode = cudaComputeModeDefault;
+      if (cudaDeviceGetAttribute(&computeMode, cudaDevAttrComputeMode, d) == cudaSuccess
+          && computeMode == cudaComputeModeProhibited) continue;
       if (prop.totalGlobalMem < need) continue;
       int clockKHz = 0;
       if (cudaDeviceGetAttribute(&clockKHz, cudaDevAttrClockRate, d) != cudaSuccess
