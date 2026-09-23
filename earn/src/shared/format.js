@@ -28,4 +28,29 @@ function formatLogTime(d) {
   return date.toLocaleTimeString('en-GB');
 }
 
-module.exports = { pad2, formatUptime, formatHashrate, formatInt, formatLogTime };
+// The device label: which cards are mining, from their names.
+//
+//   ['RTX 4090']                    -> 'RTX 4090'
+//   ['RTX 4090', 'RTX 4090']        -> '2x RTX 4090'
+//   ['RTX PRO 4500', 'RTX 4070']    -> 'RTX PRO 4500 + RTX 4070'
+//
+// A rig mines on every card it has, so one name is the honest answer only when
+// there is one card. Identical cards count rather than repeat, because a 13-card
+// rig would otherwise print the same string thirteen times. Mixed cards are
+// listed: the names are the point, and dropping them is how a rig ends up
+// labelled with a card that isn't doing the work.
+//
+// Returns null when there is nothing to name, so the caller can fall back.
+function formatDeviceLabel(names) {
+  const list = (Array.isArray(names) ? names : [])
+    .map((n) => (n == null ? '' : String(n).trim()))
+    .filter(Boolean);
+  if (!list.length) return null;
+  const unique = [...new Set(list)];
+  if (unique.length === 1) return list.length > 1 ? list.length + 'x ' + unique[0] : unique[0];
+  return unique.join(' + ');
+}
+
+module.exports = {
+  pad2, formatUptime, formatHashrate, formatInt, formatLogTime, formatDeviceLabel,
+};

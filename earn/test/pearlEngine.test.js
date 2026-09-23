@@ -136,7 +136,7 @@ describe('PearlEngine — the events the UI actually reads', () => {
     b.e.miner.emit('share', {});
     b.e.stop();
     b.e.start({ address: ADDR, worker: 'rig01', endpoint: 'h:1' });
-    expect(b.e.accepted).toBe(0);
+    expect(b.e.card(0).accepted).toBe(0);
   });
 
   // Power is still not read at all, and a rig with nothing to answer for
@@ -181,7 +181,7 @@ describe('PearlEngine — the events the UI actually reads', () => {
       const b = withTemps(read);
       expect(read).toHaveBeenCalledTimes(1);
       await settle();
-      expect(b.e.temp).toBe(64);
+      expect(b.e.card(0).temp).toBe(64);
       b.e.stop();
     });
 
@@ -189,7 +189,7 @@ describe('PearlEngine — the events the UI actually reads', () => {
     test('takes this engine\'s own card, not whichever came first', async () => {
       const b = withTemps(() => Promise.resolve({ 1: 90, 0: 55 }));
       await settle();
-      expect(b.e.temp).toBe(55);
+      expect(b.e.card(0).temp).toBe(55);
       b.e.stop();
     });
 
@@ -199,7 +199,7 @@ describe('PearlEngine — the events the UI actually reads', () => {
       for (const temps of [{}, { 0: 0 }, null]) {
         const b = withTemps(() => Promise.resolve(temps));
         await settle();
-        expect(b.e.temp).toBeNull();
+        expect(b.e.card(0).temp).toBeNull();
         b.e.stop();
       }
     });
@@ -209,13 +209,13 @@ describe('PearlEngine — the events the UI actually reads', () => {
     test('a reader that rejects or throws is survivable', async () => {
       const rejects = withTemps(() => Promise.reject(new Error('no nvidia-smi')));
       await settle();
-      expect(rejects.e.temp).toBeNull();
+      expect(rejects.e.card(0).temp).toBeNull();
       expect(rejects.e.isRunning()).toBe(true);
       rejects.e.stop();
 
       const throws = withTemps(() => { throw new Error('spawn EACCES'); });
       await settle();
-      expect(throws.e.temp).toBeNull();
+      expect(throws.e.card(0).temp).toBeNull();
       expect(throws.e.isRunning()).toBe(true);
       throws.e.stop();
     });
@@ -231,7 +231,7 @@ describe('PearlEngine — the events the UI actually reads', () => {
         b.e.stop();
         jest.advanceTimersByTime(5000);
         expect(read).toHaveBeenCalledTimes(4);
-        expect(b.e.temp).toBeNull();
+        expect(b.e.card(0).temp).toBeNull();
       } finally {
         jest.useRealTimers();
       }
@@ -269,5 +269,138 @@ describe('start() reports whether the engine actually started', () => {
     });
     expect(e.start({ address: 'prl1p', endpoint: 'pool:1200' })).not.toBe(false);
     e.stop();
+  });
+});
+
+// The device label, the temperature and the board row all follow ONE index, and
+// until now that index was the constant 0 while the card name came from a
+// separate nvidia-smi probe. Both are only right while CUDA and nvidia-smi
+// number the cards the same way; on a two-card rig they need not, and the app
+// showed a 32 GB RTX PRO 4500 mining while an RTX 4070 ran at 100% (issue #226).
+// What the core reports is the card that is mining, so it wins over both.
+describe('PearlEngine — the card really mining', () => {
+  const settle = () => new Promise((r) => setImmediate(r));
+
+  function withDevice(device, readTemps) {
+    const sock = fakeSocket();
+    const core = fakeCore();
+    if (device) core.device = device;
+    const e = new PearlEngine({ connect: () => sock, createCore: () => core, readTemps });
+    const events = [];
+    e.on('event', (x) => events.push(x));
+    e.start({ address: ADDR, worker: 'rig01', endpoint: 'h:1', gpu: 'NVIDIA RTX PRO 4500' });
+    sock.emit('connect');
+    return { e, sock, core, events, status: () => events.filter((x) => x.type === 'status').pop() };
+  }
+
+  test('reports the core\'s card, not the one detection guessed at', () => {
+    const b = withDevice({ index: 1, name: 'NVIDIA GeForce RTX 4070' });
+    b.core.emit('hashrate', 50);
+    expect(b.status()).toMatchObject({ gpuIndex: 1, gpu: 'NVIDIA GeForce RTX 4070' });
+  });
+
+  // `connected` is what fills the device label on the mining screen. It carried
+  // a hardcoded index 0 alongside a name from somewhere else entirely.
+  test('names it on the connected event too', () => {
+    const b = withDevice({ index: 1, name: 'NVIDIA GeForce RTX 4070' });
+    b.sock.emit('data', jobLine());
+    const c = b.events.find((e) => e.type === 'connected');
+    expect(c).toMatchObject({ gpuIndex: 1, gpu: 'NVIDIA GeForce RTX 4070' });
+  });
+
+  // The temperature is read per index. Showing card 0's temperature for a run on
+  // card 1 is how a rig looks idle and cool while a fan screams.
+  test('reads the temperature of that card', async () => {
+    const b = withDevice({ index: 1, name: 'NVIDIA GeForce RTX 4070' },
+      () => Promise.resolve({ 0: 38, 1: 73 }));
+    await settle();
+    b.core.emit('hashrate', 50);
+    expect(b.status().temp).toBe(73);
+    b.e.stop();
+  });
+
+  // An older pearl_core.node reports no device at all, and then the engine has
+  // nothing better than what it had before: index 0 and the detected name.
+  test('keeps the old behaviour when the core says nothing', async () => {
+    const b = withDevice(null, () => Promise.resolve({ 0: 38, 1: 73 }));
+    await settle();
+    b.core.emit('hashrate', 50);
+    expect(b.status()).toMatchObject({ gpuIndex: 0, gpu: 'NVIDIA RTX PRO 4500', temp: 38 });
+    b.e.stop();
+  });
+});
+
+// A rig mines on every card it has, and the UI, the stats file and the board are
+// all per card. The engine is what turns one miner's events into per-card ones.
+describe('PearlEngine — a rig mining on several cards', () => {
+  const settle = () => new Promise((r) => setImmediate(r));
+  const GPUS = [
+    { index: 0, name: 'NVIDIA RTX PRO 4500 Blackwell' },
+    { index: 1, name: 'NVIDIA GeForce RTX 4070' },
+  ];
+
+  function fleet(readTemps) {
+    const sock = fakeSocket();
+    const cores = [];
+    const createCore = (profile, opts) => {
+      const c = fakeCore();
+      c.device = { index: opts.deviceIndex, name: GPUS[opts.deviceIndex].name };
+      cores.push(c);
+      return c;
+    };
+    const e = new PearlEngine({ connect: () => sock, createCore, readTemps });
+    const events = [];
+    e.on('event', (x) => events.push(x));
+    e.start({ address: ADDR, worker: 'rig01', endpoint: 'h:1', gpus: GPUS });
+    sock.emit('connect');
+    const statusFor = (i) => events.filter((x) => x.type === 'status' && x.gpuIndex === i).pop();
+    return { e, sock, cores, events, statusFor };
+  }
+
+  test('reports each card under its own index and name', () => {
+    const b = fleet();
+    b.cores[0].emit('hashrate', 100);
+    b.cores[1].emit('hashrate', 40);
+    expect(b.statusFor(0)).toMatchObject({ hashrate: 100, gpu: 'NVIDIA RTX PRO 4500 Blackwell' });
+    expect(b.statusFor(1)).toMatchObject({ hashrate: 40, gpu: 'NVIDIA GeForce RTX 4070' });
+  });
+
+  // The board learns which GPU is which from `connected`, so every card needs
+  // one — a single event would leave the second card unnamed.
+  test('announces every card when the pool hands out work', () => {
+    const b = fleet();
+    b.sock.emit('data', jobLine());
+    const connected = b.events.filter((x) => x.type === 'connected');
+    expect(connected.map((c) => [c.gpuIndex, c.gpu])).toEqual([
+      [0, 'NVIDIA RTX PRO 4500 Blackwell'],
+      [1, 'NVIDIA GeForce RTX 4070'],
+    ]);
+  });
+
+  // Shares are counted per card, so the board shows which card is earning.
+  test('counts shares against the card that found them', () => {
+    const b = fleet();
+    b.e.miner.emit('share', { index: 1 });
+    b.e.miner.emit('share', { index: 1 });
+    b.e.miner.emit('rejected', { index: 0 });
+    expect(b.statusFor(1)).toMatchObject({ accepted: 2, rejected: 0 });
+    expect(b.statusFor(0)).toMatchObject({ accepted: 0, rejected: 1 });
+  });
+
+  test('gives each card its own temperature', async () => {
+    const b = fleet(() => Promise.resolve({ 0: 38, 1: 73 }));
+    await settle();
+    b.cores[0].emit('hashrate', 1);
+    b.cores[1].emit('hashrate', 1);
+    expect(b.statusFor(0).temp).toBe(38);
+    expect(b.statusFor(1).temp).toBe(73);
+    b.e.stop();
+  });
+
+  // A card that never started has no bucket — the rig must not report a GPU it
+  // is not mining on.
+  test('has nothing to say about a card that is not mining', () => {
+    const b = fleet();
+    expect(b.e.card(2)).toBeNull();
   });
 });

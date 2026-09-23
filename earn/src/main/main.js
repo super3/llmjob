@@ -48,8 +48,16 @@ const { isValidAddress } = require('../shared/address');
 const { formatUpdate, describeUpdateError } = require('../shared/updateStatus');
 const { buildMinerReports } = require('../shared/minerReport');
 const { runtimeCopyPlan } = require('../shared/llmRuntime');
+const { alignCudaDeviceOrder } = require('../shared/gpu');
 const earnings = require('../shared/earnings');
 const format = require('../shared/format');
+
+// Number the GPUs the way nvidia-smi does, before anything opens a CUDA device.
+// Everything here — the device label, per-card VRAM, temperatures, the board's
+// rows — speaks nvidia-smi's indices, and the CUDA runtime does not unless told
+// to. Set at load, because the mining core initialises CUDA inside THIS process
+// and reads it then.
+alignCudaDeviceOrder(process.env);
 
 let win = null;
 let miner = null;
@@ -183,7 +191,9 @@ function statsView(snap) {
     rejected: snap.rejected,
     load: Math.round(snap.load),
     power: snap.power,
-    gpu: snap.gpu,
+    // Every card that is mining, not just the first. On a multi-card rig showing
+    // one name is the same lie issue #226 was about, one level up.
+    gpu: format.formatDeviceLabel(snap.gpus.map((g) => g.gpu)) || snap.gpu,
     temp: snap.temp,
     uptime: format.formatUptime(snap.uptimeSec),
     estDay: earnings.estDailyUsdLabel(snap.total, liveEcon),
@@ -284,11 +294,14 @@ async function startMining(settings) {
   // expected state on a machine without a CUDA build. PearlEngine then stops
   // cleanly and says so rather than opening a pool socket it could never feed.
   //
-  // There is no stop-epoch check here any more. It existed because engine setup
-  // awaited a multi-minute download, so STOP could land in the middle of a
-  // start; nothing between the top of this function and here awaits now, so the
-  // guard could never fire. applyPlan still checks the epoch across its real
-  // awaits.
+  // Which cards to mine on: every card nvidia-smi lists, one core each. This is
+  // an await, short but real (it spawns nvidia-smi), so the stop-epoch check is
+  // back — STOP can now land inside a start again, and starting a miner the user
+  // has already stopped would leave an engine nobody is holding.
+  const epoch = miningEpoch;
+  const gpus = await probe.detectMinerGpus();
+  if (epoch !== miningEpoch) return;
+
   miner = new PearlEngine({
     connect: (host, port) => net.connect(port, host),
     createCore: coreFactory({ resourcesPath: process.resourcesPath }),
@@ -299,7 +312,7 @@ async function startMining(settings) {
   });
   wireMinerEvents(miner, endpoint);
   try {
-    miner.start(Object.assign({}, settings, { endpoint, gpu: settings.gpu || null }));
+    miner.start(Object.assign({}, settings, { endpoint, gpus, gpu: settings.gpu || null }));
   } catch (e) {
     reportLaunchFailure(e);
   }

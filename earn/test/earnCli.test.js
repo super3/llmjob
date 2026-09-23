@@ -21,6 +21,7 @@ jest.mock('../src/main/probe', () => ({
   detectRegion: jest.fn(),
   detectVram: jest.fn(),
   detectGpusVram: jest.fn(),
+  detectMinerGpus: jest.fn(),
   detectDriverMajor: jest.fn(),
   postMinerReport: jest.fn(),
   findFreePort: jest.fn(),
@@ -195,6 +196,9 @@ function applyDefaults(m) {
   m.probe.detectRegion.mockResolvedValue('us');
   m.probe.detectVram.mockResolvedValue(null);
   m.probe.detectGpusVram.mockResolvedValue([]);
+  // No card list by default: one core that places itself, which is what a rig
+  // with no nvidia-smi gets.
+  m.probe.detectMinerGpus.mockResolvedValue([]);
   m.probe.detectDriverMajor.mockResolvedValue(600);
   m.probe.postMinerReport.mockResolvedValue(undefined);
   m.probe.findFreePort.mockResolvedValue(8080);
@@ -459,6 +463,10 @@ describe('mining', () => {
     intervalUnref = false; // cover the interval handles without unref()
     const m = load();
     m.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 3070', count: 2 });
+    m.probe.detectMinerGpus.mockResolvedValue([
+      { index: 0, name: 'NVIDIA GeForce RTX 3070' },
+      { index: 1, name: 'NVIDIA GeForce RTX 3070' },
+    ]);
     const p = m.run(['--address', ADDR, '--mdl', MDL, '--no-update',
       '--stats-file', '/tmp/s.json']);
     await settle();
@@ -471,17 +479,27 @@ describe('mining', () => {
     expect(allOut()).toContain('worker:     rig-host  (auto)');
     expect(allOut()).toContain('(+MDL');
     expect(allOut()).toContain('gpu:        2× NVIDIA GeForce RTX 3070  (auto)');
+    // What will actually mine. Both cards do, one core each.
+    expect(allOut()).toContain('mining on:  2 GPUs [0, 1]');
 
     const miner = m.PearlEngine.instances[0];
     expect(miner.start).toHaveBeenCalledWith(expect.objectContaining({
       endpoint: 'us.pearl.herominers.com:1200',
+      gpus: [
+        { index: 0, name: 'NVIDIA GeForce RTX 3070' },
+        { index: 1, name: 'NVIDIA GeForce RTX 3070' },
+      ],
     }));
     miner.emit('log', { line: 'hello', level: 'info' });
     miner.emit('log', { line: 'bad', level: 'error' });
     miner.emit('event', { type: 'status', hashrate: 3.2, accepted: 5, rejected: 1 });
+    // Each card ticks about twice a second, so the rig line is throttled: this
+    // second status is folded into the totals but writes no second line.
+    miner.emit('event', { type: 'status', gpuIndex: 1, hashrate: 1, accepted: 0, rejected: 0 });
     miner.emit('event', { type: 'connected', gpu: 'RTX 3070' });
     miner.emit('error', new Error('boom'));
     expect(allOut()).toContain('⛏  3.2 TH/s · 5 accepted · 1 rejected');
+    expect(allOut().match(/⛏/g)).toHaveLength(1);
     expect(allErr()).toContain('bad');
     expect(allErr()).toContain('engine error: boom');
 

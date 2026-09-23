@@ -286,6 +286,22 @@ describe('PearlMiner — shares', () => {
     };
   }
 
+  // Which card found it has to be recorded at submit time: the pool's answer
+  // comes back with only a submit id, and on a multi-card rig every share would
+  // otherwise be credited to card 0.
+  test('records the card whose core found the hit', () => {
+    const core = makeCore();
+    core.device = { index: 1, name: 'NVIDIA GeForce RTX 4070' };
+    const b = boot({ core });
+    b.m.start({ ...settings, profile: TINY, gpus: [{ index: 1, name: 'NVIDIA GeForce RTX 4070' }] });
+    b.sock.emit('connect');
+    b.sock.emit('data', jobLine());
+    b.sock.written.length = 0;
+    core.emit('hit', goodHit());
+    const sent = JSON.parse(b.sock.written[0]);
+    expect(b.m.pending.get(sent.id)).toEqual({ jobId: '00000000_2097152', index: 1 });
+  });
+
   test('a valid hit is submitted as a plain proof', () => {
     const { core, sock } = withJob();
     core.emit('hit', goodHit());
@@ -349,7 +365,7 @@ describe('PearlMiner — shares', () => {
     core.emit('hit', goodHit());
     const id = JSON.parse(sock.written[0]).id;
     sock.emit('data', JSON.stringify({ id, result: true, error: null }) + '\n');
-    expect(events.share[0]).toEqual({ jobId: '00000000_2097152', accepted: true });
+    expect(events.share[0]).toEqual({ jobId: '00000000_2097152', accepted: true, index: 0 });
   });
 
   test('a rejection reports the pool reason', () => {
@@ -357,13 +373,14 @@ describe('PearlMiner — shares', () => {
     core.emit('hit', goodHit());
     const id = JSON.parse(sock.written[0]).id;
     sock.emit('data', JSON.stringify({ id, result: null, error: [21, 'Job not found'] }) + '\n');
-    expect(events.rejected[0]).toEqual({ jobId: '00000000_2097152', reason: '[21] Job not found' });
+    expect(events.rejected[0])
+      .toEqual({ jobId: '00000000_2097152', reason: '[21] Job not found', index: 0 });
   });
 
   test('a verdict for an unknown id still resolves without throwing', () => {
     const { sock, events } = withJob();
     sock.emit('data', '{"id":9999,"result":true,"error":null}\n');
-    expect(events.share[0]).toEqual({ jobId: null, accepted: true });
+    expect(events.share[0]).toEqual({ jobId: null, accepted: true, index: 0 });
   });
 
   // The core may still be finishing a job the pool has replaced. Submitting that
@@ -437,7 +454,7 @@ describe('PearlMiner — defaults and edges', () => {
     b.m.start(settings);
     b.sock.emit('connect');
     b.sock.emit('data', '{"id":4242,"result":null,"error":[21,"Job not found"]}\n');
-    expect(b.events.rejected[0]).toEqual({ jobId: null, reason: '[21] Job not found' });
+    expect(b.events.rejected[0]).toEqual({ jobId: null, reason: '[21] Job not found', index: 0 });
   });
 
   test('a verdict with no error detail still renders a reason', () => {
@@ -554,5 +571,244 @@ describe('PearlMiner — lifecycle', () => {
 
   test('constructs with no options at all', () => {
     expect(new PearlMiner()).toBeInstanceOf(PearlMiner);
+  });
+});
+
+// Which card is mining is not something the host can work out for itself: the
+// core opens a CUDA device, and CUDA's device list is not nvidia-smi's. So the
+// core says, and the host repeats it. A rig that showed one card in the UI while
+// another did the work (issue #226) is the failure this closes.
+describe('PearlMiner — the cards the cores opened', () => {
+  const withDevice = (device) => {
+    const core = makeCore();
+    if (device !== undefined) core.device = device;
+    return boot({ core });
+  };
+
+  test('is taken from the core and said out loud', () => {
+    const b = withDevice({ index: 1, name: 'NVIDIA GeForce RTX 4070' });
+    b.m.start(settings);
+    expect(b.m.devices()).toEqual([{ index: 1, name: 'NVIDIA GeForce RTX 4070' }]);
+    expect(b.events.log.map((l) => l.line))
+      .toContain('mining on GPU 1 · NVIDIA GeForce RTX 4070');
+  });
+
+  // A core built before the device choice existed says nothing. The host has to
+  // stay usable against it -- an older pearl_core.node beside a newer app is the
+  // normal state of a rig part-way through an upgrade -- so "unknown" falls back
+  // to the behaviour that shipped before.
+  test('is empty when the core does not report one, without a log line', () => {
+    const b = withDevice(undefined);
+    b.m.start(settings);
+    expect(b.m.devices()).toEqual([]);
+    expect(b.events.log.map((l) => l.line).some((l) => l.startsWith('mining on GPU'))).toBe(false);
+  });
+
+  test('ignores a device the core cannot describe', () => {
+    for (const bad of [null, {}, { index: -1 }, { index: 1.5 }, { index: '0' }]) {
+      const b = withDevice(bad);
+      b.m.start(settings);
+      expect(b.m.devices()).toEqual([]);
+    }
+  });
+
+  // An index with no name still names something. "GPU 1" is a poor label but it
+  // is a true one, and it keeps the UI from falling back to a card name that was
+  // detected separately and may belong to a different card entirely.
+  test('falls back to the bare index when the core gives no name', () => {
+    const b = withDevice({ index: 2, name: '' });
+    b.m.start(settings);
+    expect(b.m.devices()).toEqual([{ index: 2, name: 'GPU 2' }]);
+  });
+
+  // A start that cannot build a core must not leave the last run's cards
+  // standing: the UI would then label a rig that is mining nothing.
+  test('is cleared when the core will not construct', () => {
+    const core = makeCore();
+    core.device = { index: 1, name: 'NVIDIA GeForce RTX 4070' };
+    const b = boot({ core });
+    b.m.start(settings);
+    expect(b.m.devices()).toHaveLength(1);
+    b.m.stop();
+    b.m.createCore.mockImplementationOnce(() => { throw new Error('no CUDA device found'); });
+    expect(b.m.start(settings)).toBe(false);
+    expect(b.m.devices()).toEqual([]);
+  });
+});
+
+// Mining on every card the rig has. One core per card, each on its own slice of
+// the search space -- without that they would search the same operands and find
+// the same shares, and the second card would earn nothing.
+describe('PearlMiner — one core per card', () => {
+  const GPUS = [
+    { index: 0, name: 'NVIDIA RTX PRO 4500 Blackwell' },
+    { index: 1, name: 'NVIDIA GeForce RTX 4070' },
+  ];
+
+  // A factory that hands out a fresh core per call and reports the card it was
+  // asked for, which is what the real addon does.
+  function fleet(over = {}) {
+    const made = [];
+    const sock = over.sock || makeSocket();
+    const createCore = jest.fn((profile, opts) => {
+      const c = makeCore();
+      c.opts = opts;
+      if (!over.silentDevice) c.device = { index: opts.deviceIndex, name: 'GPU' + opts.deviceIndex };
+      made.push(c);
+      return c;
+    });
+    const m = new PearlMiner({ connect: () => sock, createCore, reconnectMs: 0 });
+    const events = { log: [], share: [], rejected: [], hashrate: [], error: [], stopped: [] };
+    for (const k of Object.keys(events)) m.on(k, (...a) => events[k].push(a.length > 1 ? a : a[0]));
+    return { m, sock, made, createCore, events };
+  }
+
+  test('starts a core on every card', () => {
+    const b = fleet();
+    expect(b.m.start({ ...settings, gpus: GPUS })).toBe(true);
+    expect(b.made).toHaveLength(2);
+    expect(b.m.devices().map((d) => d.index)).toEqual([0, 1]);
+    expect(b.events.log.map((l) => l.line)).toEqual(expect.arrayContaining([
+      'mining on GPU 0 · GPU0',
+      'mining on GPU 1 · GPU1',
+    ]));
+  });
+
+  // The whole point of the slice. Same base and stride on two cards means two
+  // cards drawing the same operands, searching the same regions and submitting
+  // the same shares -- the pool takes one and the second card earns nothing.
+  test('gives each card its own slice of the search space', () => {
+    const b = fleet();
+    b.m.start({ ...settings, gpus: GPUS });
+    expect(b.made.map((c) => c.opts)).toEqual([
+      { saltBase: 0, saltStride: 2, deviceIndex: 0 },
+      { saltBase: 1, saltStride: 2, deviceIndex: 1 },
+    ]);
+  });
+
+  test('every card gets the job', () => {
+    const b = fleet();
+    b.m.start({ ...settings, gpus: GPUS });
+    b.sock.emit('connect');
+    b.sock.emit('data', jobLine());
+    for (const c of b.made) expect(c.setJob).toHaveBeenCalledTimes(1);
+  });
+
+  test('stop releases every card', () => {
+    const b = fleet();
+    b.m.start({ ...settings, gpus: GPUS });
+    b.m.stop();
+    for (const c of b.made) expect(c.stop).toHaveBeenCalled();
+  });
+
+  // The rig's hashrate is the sum, and the pool is told the sum -- a share
+  // submitted from one card still reports what the whole rig is doing.
+  test('sums the hashrate across cards', () => {
+    const b = fleet();
+    b.m.start({ ...settings, gpus: GPUS });
+    b.made[0].emit('hashrate', 100);
+    b.made[1].emit('hashrate', 40);
+    expect(b.m.totalHashrate()).toBe(140);
+    expect(b.events.hashrate).toEqual([
+      [100, { index: 0, name: 'GPU0' }],
+      [40, { index: 1, name: 'GPU1' }],
+    ]);
+  });
+
+  // A card with no room -- the local LLM has most of its VRAM -- must not take
+  // the rest of the rig down with it. It used to: one core, one failure, no
+  // mining at all.
+  test('keeps mining on the cards that start when one refuses', () => {
+    const b = fleet();
+    b.createCore.mockImplementationOnce(() => { throw new Error('not enough free VRAM'); });
+    expect(b.m.start({ ...settings, gpus: GPUS })).toBe(true);
+    expect(b.m.devices().map((d) => d.index)).toEqual([1]);
+    expect(b.events.log.map((l) => l.line))
+      .toContain('skipping GPU 0 (NVIDIA RTX PRO 4500 Blackwell): not enough free VRAM');
+    expect(b.events.error).toEqual([]);
+  });
+
+  test('a rig where no card starts reports the first reason and stops', () => {
+    const b = fleet();
+    b.createCore.mockImplementation(() => { throw new Error('not enough free VRAM'); });
+    expect(b.m.start({ ...settings, gpus: GPUS })).toBe(false);
+    expect(b.events.error.map((e) => e.message)).toEqual(['not enough free VRAM']);
+    expect(b.m.isRunning()).toBe(false);
+  });
+
+  // An older pearl_core.node ignores the card we ask for and always opens CUDA's
+  // device 0. Starting a second one would stack two searches on that one card
+  // and report them as two cards.
+  test('stops at one card when the core is too old to place itself', () => {
+    const b = fleet({ silentDevice: true });
+    expect(b.m.start({ ...settings, gpus: GPUS })).toBe(true);
+    expect(b.made).toHaveLength(1);
+    expect(b.events.log.map((l) => l.line).join(' ')).toMatch(/predates per-card mining/);
+  });
+
+  // No card list at all (no nvidia-smi, or not an NVIDIA rig): one core, no index
+  // asked for, and the core picks its own card. Exactly what a single-card rig
+  // did before any of this.
+  test('falls back to a single self-placing core with no card list', () => {
+    const b = fleet();
+    b.m.start(settings);
+    expect(b.made).toHaveLength(1);
+    expect(b.made[0].opts).toEqual({ saltBase: 0, saltStride: 1 });
+  });
+
+  // A factory that returns nothing instead of throwing is the same answer: no
+  // core. It used to be caught only because wiring a falsy core threw.
+  test('treats a core that never materialises as a card that refused', () => {
+    const b = fleet();
+    b.createCore.mockImplementationOnce(() => null);
+    expect(b.m.start({ ...settings, gpus: GPUS })).toBe(true);
+    expect(b.m.devices().map((d) => d.index)).toEqual([1]);
+    expect(b.events.log.map((l) => l.line).join(' ')).toMatch(/did not initialise/);
+  });
+
+  // Thrown strings and objects with no message are not errors we can quote, but
+  // the card still has to say why it is not mining.
+  test('says something useful when a card refuses without a message', () => {
+    const b = fleet();
+    b.createCore.mockImplementation(() => { throw 'CUDA_ERROR_NO_DEVICE'; });
+    expect(b.m.start({ ...settings, gpus: GPUS })).toBe(false);
+    expect(b.events.error.map((e) => e.message)).toEqual(['CUDA_ERROR_NO_DEVICE']);
+  });
+
+  // With no card list there is no card to name in the message, and a pinned card
+  // nvidia-smi never listed has an index but no name.
+  test('names what it can when a card it cannot describe refuses', () => {
+    const noList = fleet();
+    noList.createCore.mockImplementation(() => { throw new Error('no CUDA device found'); });
+    noList.m.start(settings);
+    expect(noList.events.log.map((l) => l.line))
+      .toContain('skipping the GPU: no CUDA device found');
+
+    const unnamed = fleet();
+    unnamed.createCore.mockImplementation(() => { throw new Error('no CUDA device found'); });
+    unnamed.m.start({ ...settings, gpus: [{ index: 3, name: null }] });
+    expect(unnamed.events.log.map((l) => l.line))
+      .toContain('skipping GPU 3: no CUDA device found');
+  });
+
+  // A tick with nothing in it must not turn the rig's hashrate into NaN, which
+  // the UI would render as a blank where a number belongs.
+  test('ignores a hashrate tick that carries no number', () => {
+    const b = fleet();
+    b.m.start({ ...settings, gpus: GPUS });
+    b.made[0].emit('hashrate', 100);
+    b.made[1].emit('hashrate', undefined);
+    expect(b.m.totalHashrate()).toBe(100);
+  });
+
+  // The verdict comes back on the shared socket with only a submit id. Without
+  // the card recorded against that id, every share on the rig would be credited
+  // to card 0.
+  test('credits a share to the card that found it', () => {
+    const b = fleet();
+    b.m.start({ ...settings, gpus: GPUS });
+    b.m.pending.set(7, { jobId: 'j', index: 1 });
+    b.sock.emit('data', JSON.stringify({ id: 7, result: true, error: null }) + '\n');
+    expect(b.events.share[0]).toEqual({ jobId: 'j', accepted: true, index: 1 });
   });
 });

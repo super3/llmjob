@@ -14,7 +14,9 @@ const { execFile } = require('child_process');
 
 const { REGIONS, DEFAULTS, NETWORK } = require('../shared/config');
 const { pickFastestRegion } = require('../shared/region');
-const { parseGpuStats, pickGpu, countGpus, parseMacGpu } = require('../shared/gpu');
+const {
+  parseGpuStats, pickGpu, countGpus, parseMacGpu, parseDeviceIndex, planMinerGpus,
+} = require('../shared/gpu');
 // Major version out of an nvidia-smi driver string. Lived in shared/engine
 // until alpha-miner was removed; the driver version is a property of the
 // machine, not of any engine.
@@ -86,6 +88,18 @@ function detectGpusVram() {
       { timeout: 5000 },
       (err, stdout) => resolve(err ? [] : parseGpuStats(stdout)));
   });
+}
+
+// The cards this rig mines on: one entry per card, [{ index, name }], in index
+// order. Empty when nvidia-smi says nothing, which tells the caller to start a
+// single core and let it choose its own card.
+//
+// Both shells ask this the same way so they cannot drift — the GUI and the CLI
+// having their own GPU detection is what let the two disagree before (see
+// detectGpuInfo below). Never rejects.
+async function detectMinerGpus(env) {
+  const cards = await detectGpusVram();
+  return planMinerGpus(cards, parseDeviceIndex(env || process.env));
 }
 
 // Per-card core temperature (°C) via nvidia-smi, as a map of card index →
@@ -238,6 +252,7 @@ module.exports = {
   detectRegion,
   detectVram,
   detectGpusVram,
+  detectMinerGpus,
   detectGpuTemps,
   detectDriverMajor,
   postMinerReport,

@@ -428,27 +428,28 @@ describe('boot with the full bridge', () => {
     expect($('accepted').textContent).toBe('34');
     expect($('uptime').textContent).toBe('5m 00s');
     expect($('estday').textContent).toBe('$0.42');
-    // nvidia-smi's name wins over the engine's abbreviated one, so the app and
-    // the network board never disagree about the same card.
-    expect($('device-label').textContent).toBe('RTX 4090'); // no temp reported yet → bare name
+    // The engine's name wins: it is the card the core actually opened, while the
+    // detected one is a startup guess that can name a different card entirely
+    // (issue #226).
+    expect($('device-label').textContent).toBe('gpu-live'); // no temp reported yet → bare name
     expect($('mk-line').getAttribute('d')).toMatch(/^M0 .* L480 /);
     // Once the engine reports a core temperature it rides alongside the name, so
     // a rig that keeps crashing can be checked for heat without nvidia-smi.
     cbs.stats({ total: '1.2', acceptedLabel: '34', uptime: '5m 00s', estDay: '$0.42', gpu: 'gpu-live', temp: 86.4, points: [1, 2, 3] });
-    expect($('device-label').textContent).toBe('RTX 4090 (86°C)');
+    expect($('device-label').textContent).toBe('gpu-live (86°C)');
     // single point (flat-span pad fallback), no gpu — the label keeps whatever it
-    // last showed, temperature included, rather than reverting.
+    // last showed, name and temperature both, rather than reverting to the
+    // startup guess for a frame.
     cbs.stats({ total: '1', acceptedLabel: '1', uptime: '1m', estDay: '$1', points: [5] });
-    expect($('device-label').textContent).toBe('RTX 4090 (86°C)');
+    expect($('device-label').textContent).toBe('gpu-live (86°C)');
 
-    // A temperature with NO name from the engine still lands. This is the real
-    // shape our own miner reports: currentSettings() sends no `gpu`, so
-    // PearlEngine reports `gpu: null` on every status. Gating the label on the
-    // engine naming the card made the temperature permanently undisplayable,
-    // which no unit test caught because the engine's event was correct — only
-    // running the app showed the bare name.
+    // A temperature with NO name on the frame still lands, against the name last
+    // reported. Gating the label on the engine naming the card in the SAME frame
+    // made the temperature permanently undisplayable, which no unit test caught
+    // because the engine's event was correct — only running the app showed the
+    // bare name.
     cbs.stats({ total: '1.2', acceptedLabel: '34', uptime: '5m 00s', estDay: '$0.42', temp: 64, points: [1, 2, 3] });
-    expect($('device-label').textContent).toBe('RTX 4090 (64°C)');
+    expect($('device-label').textContent).toBe('gpu-live (64°C)');
     expect($('mk-line').getAttribute('d')).toMatch(/^M0 /);
     // empty + missing points → flat line
     cbs.stats({ total: '1', acceptedLabel: '1', uptime: '1m', estDay: '$1', points: [] });
@@ -492,6 +493,11 @@ describe('boot with the full bridge', () => {
     expect(api.startMiner).toHaveBeenLastCalledWith({
       address: ADDR, worker: 'rig01', region: 'us2', mode: 'mining', mdlAddress: '',
     });
+    // A new run forgets the last run's card, so an engine that names none (an
+    // older core, or a rig with no CUDA device list to report) shows the detected
+    // name again rather than a card the previous run happened to pick.
+    cbs.stats({ total: '2.0', acceptedLabel: '1', uptime: '1m', estDay: '$1', points: [1, 2] });
+    expect($('device-label').textContent).toBe('RTX 4090 (64°C)');
     // manual stop
     click($('btn-stop'));
     expect(api.stopMiner).toHaveBeenCalled();
