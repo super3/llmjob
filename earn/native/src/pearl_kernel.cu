@@ -444,8 +444,26 @@ extern "C" __global__ void pearl_gen_dense(const uint32_t *seed,
   pearl_random_hash(key, lab, ((row * rank) >> 5) + blk, 0, h);
 
   int8_t *dst = out + (size_t)ri * rank + (blk << 5);
+  // Two int4 stores rather than 32 byte stores. A warp's byte stores each
+  // touched 32 different sectors, and this kernel runs on every redraw.
+  if ((((uintptr_t)dst) & 15u) == 0u) {
+    uint32_t w[8];
 #pragma unroll
-  for (int i = 0; i < 32; i++) dst[i] = (int8_t)((int32_t)(h[i] & 63) - 32);
+    for (int i = 0; i < 8; i++) {
+      uint32_t packed = 0;
+#pragma unroll
+      for (int j = 0; j < 4; j++) {
+        packed |= ((uint32_t)((int32_t)(h[i * 4 + j] & 63) - 32) & 0xffu) << (j * 8);
+      }
+      w[i] = packed;
+    }
+    int4 *d4 = reinterpret_cast<int4 *>(dst);
+    d4[0] = make_int4((int)w[0], (int)w[1], (int)w[2], (int)w[3]);
+    d4[1] = make_int4((int)w[4], (int)w[5], (int)w[6], (int)w[7]);
+  } else {
+#pragma unroll
+    for (int i = 0; i < 32; i++) dst[i] = (int8_t)((int32_t)(h[i] & 63) - 32);
+  }
 }
 
 // Sparse factor: k rows, each a (+1 at p0, -1 at p1) pair, written as two u32.
@@ -606,6 +624,114 @@ extern "C" __global__ void pearl_materialize(const int8_t *__restrict__ base,
   const int32_t v = (int32_t)base[idx] + (int32_t)row[perm[kk * 2u]] -
                     (int32_t)row[perm[kk * 2u + 1u]];
   out[idx] = (int8_t)(v < -128 ? -128 : (v > 127 ? 127 : v));
+}
+
+// The same materialisation, sixteen bytes a thread. Every redraw noises a whole
+// operand, and one thread per BYTE spent the pass issuing six scalar memory
+// operations per byte: 256 million threads for A alone. Here a thread reads one
+// int4 of the operand, its sixteen (p0, p1) pairs as eight uint4, and writes one
+// int4. Bit-identical to pearl_materialize; the host uses it whenever k is a
+// power of two and a multiple of 16, which every geometry the fold runs is.
+extern "C" __global__ void pearl_materialize16(const int8_t *__restrict__ base,
+                                               const int8_t *__restrict__ dense,
+                                               const uint32_t *__restrict__ perm,
+                                               int8_t *__restrict__ out,
+                                               uint32_t rows, uint32_t k_log2,
+                                               uint32_t rank) {
+  const uint64_t v = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+  if (v >= (((uint64_t)rows << k_log2) >> 4)) return;
+  const uint64_t idx = v << 4;
+  const uint32_t r = (uint32_t)(idx >> k_log2);
+  const uint32_t kk = (uint32_t)(idx & ((1ull << k_log2) - 1u));
+  const int8_t *__restrict__ row = dense + (size_t)r * rank;
+  const int4 b4 = reinterpret_cast<const int4 *>(base)[v];
+  const uint32_t bw[4] = {(uint32_t)b4.x, (uint32_t)b4.y, (uint32_t)b4.z,
+                          (uint32_t)b4.w};
+  // kk is a multiple of 16, so the pairs start on a 128-byte boundary.
+  const uint4 *__restrict__ pp = reinterpret_cast<const uint4 *>(perm + (size_t)kk * 2u);
+  uint32_t ow[4];
+#pragma unroll
+  for (int w = 0; w < 4; w++) {
+    const uint4 q0 = pp[w * 2];      // pairs for kk + 4w, 4w+1
+    const uint4 q1 = pp[w * 2 + 1];  // pairs for kk + 4w+2, 4w+3
+    const uint32_t p0[4] = {q0.x, q0.z, q1.x, q1.z};
+    const uint32_t p1[4] = {q0.y, q0.w, q1.y, q1.w};
+    uint32_t packed = 0;
+#pragma unroll
+    for (int j = 0; j < 4; j++) {
+      const int32_t a = (int32_t)(int8_t)(bw[w] >> (j * 8));
+      int32_t s = a + (int32_t)row[p0[j]] - (int32_t)row[p1[j]];
+      s = s < -128 ? -128 : (s > 127 ? 127 : s);
+      packed |= ((uint32_t)s & 0xffu) << (j * 8);
+    }
+    ow[w] = packed;
+  }
+  reinterpret_cast<int4 *>(out)[v] =
+      make_int4((int)ow[0], (int)ow[1], (int)ow[2], (int)ow[3]);
+}
+
+// Re-draw an operand by rewriting a few of its bytes, and repair the stored
+// commitment tree to match.
+//
+// A new salt only has to give the search a fresh space, and the space is keyed
+// by a_seed = blake3(b_seed ‖ bound(root_A)). Changing ANY byte of A changes
+// root_A and therefore everything downstream of it. So instead of regenerating
+// 256 MiB of operand and hashing all of it again, this writes the salt into the
+// first PEARL_STAMP_BYTES bytes of A -- six bits a byte, so every byte is in
+// [0, 63] and the operand stays int7 -- and recomputes only what those bytes
+// feed: leaf 0's chaining value and the one node per level above it. The
+// verifier cannot tell: it recomputes the root from the leaves and siblings a
+// share carries, and both are read out of this same operand and tree.
+//
+// Leaf 0's ancestors are node 0 of every level, which is why the stamp goes at
+// the start of the operand: the path needs no index arithmetic. Levels are laid
+// end to end exactly as operand_commitment writes them (level 0 at node 0, each
+// next level straight after the one below). One thread: 16 compressions for the
+// chunk and one per level, tens of microseconds against the ~6 ms full redraw.
+extern "C" __global__ void pearl_restamp_operand(const uint32_t *key,
+                                                 int8_t *operand, uint64_t salt,
+                                                 uint64_t chunks, uint32_t *tree,
+                                                 uint8_t *root_out) {
+  if (blockIdx.x != 0 || threadIdx.x != 0) return;
+#pragma unroll
+  for (int i = 0; i < PEARL_STAMP_BYTES; i++) {
+    operand[i] = (int8_t)((salt >> (6 * i)) & 63u);
+  }
+  uint32_t key_l[8];
+#pragma unroll
+  for (int i = 0; i < 8; i++) key_l[i] = key[i];
+
+  // Leaf 0, read back through the same (non-restrict) pointer just written, so
+  // the stores above are ordered before these loads.
+  uint32_t cv[8];
+  blake3_chunk_cv(key_l, reinterpret_cast<const uint8_t *>(operand), 1024, 0,
+                  KEYED_HASH, cv);
+#pragma unroll
+  for (int i = 0; i < 8; i++) tree[i] = cv[i];
+
+  uint64_t base = 0;
+  uint64_t count = chunks;
+  while (count > 1) {
+    const uint64_t pairs = count / 2;
+    const uint64_t next = base + count;
+    uint32_t block[16], out16[16];
+#pragma unroll
+    for (int i = 0; i < 16; i++) block[i] = tree[base * 8 + i];
+    const uint32_t flags = PARENT | KEYED_HASH | (pairs == 1 ? ROOT : 0u);
+    blake3_compress(key_l, block, 0, 64, flags, out16);
+#pragma unroll
+    for (int i = 0; i < 8; i++) tree[next * 8 + i] = out16[i];
+    base = next;
+    count = pairs;
+  }
+#pragma unroll
+  for (int i = 0; i < 8; i++) {
+    const uint32_t w = tree[base * 8 + i];
+    root_out[i * 4 + 0] = (uint8_t)(w);
+    root_out[i * 4 + 1] = (uint8_t)(w >> 8);
+    root_out[i * 4 + 2] = (uint8_t)(w >> 16);
+    root_out[i * 4 + 3] = (uint8_t)(w >> 24);
+  }
 }
 
 // The heart of the PoW: accumulate C in `rank`-sized chunks and fold the

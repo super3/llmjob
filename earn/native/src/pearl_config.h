@@ -206,6 +206,10 @@ static_assert(PEARL_COLS_COUNT == (1u << pearl_popcount_ce(PEARL_COLS_MASK)),
 // silently lose hits it would never have submitted anyway.
 #define PEARL_MAX_HITS 64
 
+// How many leading bytes of A a same-job redraw rewrites (pearl_restamp_operand):
+// six bits of salt each, so 11 bytes carry a full 64-bit salt.
+#define PEARL_STAMP_BYTES 11
+
 // Rows of A one warp covers in the tensor-core partials kernel. The WMMA int8
 // shape is 16x16x16, and valid row offsets are multiples of PEARL_ROWS_COUNT,
 // so a 16-row block is exactly four consecutive row offsets.

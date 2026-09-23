@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <chrono>
 #include <set>
 #include <vector>
 
@@ -61,6 +62,15 @@ extern "C" __global__ void pearl_materialize(const int8_t *base,
                                              const uint32_t *perm, int8_t *out,
                                              uint32_t rows, uint32_t k,
                                              uint32_t rank);
+extern "C" __global__ void pearl_materialize16(const int8_t *base,
+                                               const int8_t *dense,
+                                               const uint32_t *perm, int8_t *out,
+                                               uint32_t rows, uint32_t k_log2,
+                                               uint32_t rank);
+extern "C" __global__ void pearl_restamp_operand(const uint32_t *key,
+                                                 int8_t *operand, uint64_t salt,
+                                                 uint64_t chunks, uint32_t *tree,
+                                                 uint8_t *root_out);
 extern "C" __global__ void pearl_tile_fold_wmma(
     const int8_t *Aprime, const int8_t *Bprime, uint32_t m, uint32_t n,
     uint32_t k, uint32_t rank, uint32_t chunks, uint32_t col_off,
@@ -240,6 +250,13 @@ struct Ctx {
   uint8_t header[PEARL_HEADER_BYTES] = {0};
   uint8_t target[PEARL_HASH_BYTES] = {0};
   uint64_t salt = 0;
+  // header76 ‖ config52 on the device, for job_key. Allocated once: this was a
+  // cudaMalloc/cudaFree pair inside every redraw.
+  uint8_t *dSeedInput = nullptr;
+  // True once the CURRENT job has had a full draw: A, B, both trees, b_seed and
+  // B' all belong to it. Only then may a redraw restamp A instead of redrawing
+  // everything. set_job clears it, so a new job never mixes with an old tree.
+  bool baseDrawn = false;
 };
 
 // The row/column patterns the tile folds over. Derived from the counts plus the
@@ -678,6 +695,8 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
             "allocating the B commitment tree");
   }
   CUDA_OK(cudaMalloc(&ctx->dSeedBuf, 64), "allocating the seed buffer");
+  CUDA_OK(cudaMalloc(&ctx->dSeedInput, PEARL_HEADER_BYTES + PEARL_CONFIG_BYTES),
+          "allocating the job_key input");
   CUDA_OK(cudaMalloc(&ctx->dHashA, PEARL_HASH_BYTES), "allocating hash_a");
   CUDA_OK(cudaMalloc(&ctx->dHashB, PEARL_HASH_BYTES), "allocating hash_b");
   CUDA_OK(cudaMalloc(&ctx->dTarget, PEARL_HASH_BYTES), "allocating the target");
@@ -725,7 +744,7 @@ extern "C" void pearl_host_destroy(void *handle) {
 
   cudaFree(ctx->dHashes); cudaFree(ctx->dHitCount); cudaFree(ctx->dHitIndex);
   cudaFree(ctx->dTreeA); cudaFree(ctx->dTreeB);
-  cudaFree(ctx->dCvs); cudaFree(ctx->dSeedBuf);
+  cudaFree(ctx->dCvs); cudaFree(ctx->dSeedBuf); cudaFree(ctx->dSeedInput);
   cudaFree(ctx->dHashA); cudaFree(ctx->dHashB);
   cudaFree(ctx->dJackpot); cudaFree(ctx->dJobKey);
   cudaFree(ctx->dASeed); cudaFree(ctx->dBSeed);
@@ -750,6 +769,9 @@ extern "C" void pearl_host_set_job_salted(void *handle, const uint8_t *header,
   DeviceScope scope(ctx->device);
   memcpy(ctx->header, header, PEARL_HEADER_BYTES);
   memcpy(ctx->target, target, PEARL_HASH_BYTES);
+  // A new job always gets a full draw. Clearing this is what stops a restamp
+  // from grafting new bytes onto a tree the previous job's key built.
+  ctx->baseDrawn = false;
   pearl_host_reseed(handle, salt);
 }
 
@@ -760,50 +782,152 @@ extern "C" void pearl_host_set_job(void *handle, const uint8_t *header,
   pearl_host_set_job_salted(handle, header, target, 0);
 }
 
-// Re-draw the operands under a new salt and rebuild everything downstream of
-// them: the commitments, the seeds, the noise, and the noised operands.
+namespace {
+
+// Diagnostic only (PEARL_RESEED_STAGES): the wall time of each restamp stage,
+// synchronising between them, averaged over 32 redraws and printed to stderr.
+// Measured on a 4090 at mainnet geometry: tree 0.04 ms, seeds 0.04, dense+perm
+// 0.04, materialize 0.59 -- 0.72 ms a redraw, against 4.6 ms for a full draw
+// with the same kernels. What is left is one read and one write of A at DRAM
+// speed; a new a_seed changes the noise on every row, so that part cannot go.
+#ifdef PEARL_RESEED_STAGES
+double g_stage[4] = {0, 0, 0, 0};
+int g_stageCalls = 0;
+bool g_stageOn = false;  // only restamps are timed, not the draw a job starts with
+std::chrono::steady_clock::time_point g_stageLast;
+void stage_lap(int i) {
+  cudaDeviceSynchronize();
+  const auto now = std::chrono::steady_clock::now();
+  if (i < 0) {
+    g_stageOn = true;
+  } else if (g_stageOn) {
+    g_stage[i] += std::chrono::duration<double, std::milli>(now - g_stageLast).count();
+  }
+  g_stageLast = now;
+}
+void stage_report() {
+  g_stageOn = false;
+  if (++g_stageCalls < 32) return;
+  fprintf(stderr, "restamp ms: tree %.3f seeds %.3f dense+perm %.3f materialize %.3f\n",
+          g_stage[0] / 32, g_stage[1] / 32, g_stage[2] / 32, g_stage[3] / 32);
+  g_stage[0] = g_stage[1] = g_stage[2] = g_stage[3] = 0;
+  g_stageCalls = 0;
+}
+#define PEARL_LAP(i) stage_lap(i)
+#define PEARL_LAP_REPORT() stage_report()
+#else
+#define PEARL_LAP(i) (void)0
+#define PEARL_LAP_REPORT() (void)0
+#endif
+
+const int kDrawThreads = 256;
+unsigned draw_blocks(size_t n) {
+  return (unsigned)((n + kDrawThreads - 1) / kDrawThreads);
+}
+
+// b_seed = blake3(job_key ‖ bound_b), then a_seed = blake3(b_seed ‖ bound_a).
+// The order is NOT symmetric: b_seed is derived first and feeds a_seed. With
+// `withB` false only the A link is recomputed -- b_seed depends on B alone, so a
+// restamp of A leaves it exactly as it was.
 //
-// This is the outer loop of the search. One salt yields m*n regions and nothing
-// more, because the region index is just (row offset, column offset) -- so the
-// miner must periodically pick new operands or it re-mines what it has already
-// tried, at full reported hashrate and with no chance of a share.
-extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
-  Ctx *ctx = static_cast<Ctx *>(handle);
-  if (!ctx) return;
-  DeviceScope scope(ctx->device);
-  ctx->salt = salt;
-  const uint8_t *header = ctx->header;
-  const uint8_t *target = ctx->target;
+// Bind the roots before they enter the chain. Under cert-v3 each root is
+// re-hashed with its dimension under a domain-separation salt, which is what
+// commits m and n; legacy passes the raw roots straight through.
+//
+// No synchronisation in here: every step is on the one stream, in order. The
+// three cudaDeviceSynchronize calls this replaced ordered nothing the stream
+// did not already order.
+void derive_seeds(Ctx *ctx, bool withB) {
+  const bool legacy = ctx->profile.seed_derivation == PEARL_SEED_LEGACY;
+  if (legacy) {
+    cudaMemcpy(ctx->dBoundA, ctx->dHashA, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
+    if (withB)
+      cudaMemcpy(ctx->dBoundB, ctx->dHashB, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
+  } else {
+    pearl_bind_root<<<1, 1>>>(ctx->dSaltA, ctx->dHashA, ctx->profile.m, ctx->dBoundA);
+    if (withB)
+      pearl_bind_root<<<1, 1>>>(ctx->dSaltB, ctx->dHashB, ctx->profile.n, ctx->dBoundB);
+  }
+  if (withB) {
+    cudaMemcpy(ctx->dSeedBuf, ctx->dJobKey, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
+    cudaMemcpy(ctx->dSeedBuf + PEARL_HASH_BYTES, ctx->dBoundB, PEARL_HASH_BYTES,
+               cudaMemcpyDeviceToDevice);
+    pearl_blake3_unkeyed<<<1, 1>>>(ctx->dSeedBuf, 64,
+                                   reinterpret_cast<uint8_t *>(ctx->dBSeed));
+  }
+  cudaMemcpy(ctx->dSeedBuf, ctx->dBSeed, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
+  cudaMemcpy(ctx->dSeedBuf + PEARL_HASH_BYTES, ctx->dBoundA, PEARL_HASH_BYTES,
+             cudaMemcpyDeviceToDevice);
+  pearl_blake3_unkeyed<<<1, 1>>>(ctx->dSeedBuf, 64,
+                                 reinterpret_cast<uint8_t *>(ctx->dASeed));
+}
 
-  // job_key = blake3(header76 ‖ config52). Computed on-device so there is one
-  // BLAKE3 implementation in the binary rather than two that can disagree.
-  uint8_t seedInput[PEARL_HEADER_BYTES + PEARL_CONFIG_BYTES];
-  memcpy(seedInput, header, PEARL_HEADER_BYTES);
-  pearl_write_config52(&ctx->profile, seedInput + PEARL_HEADER_BYTES);
+// One side's noise, and the noised operand it produces.
+//
+// The A side is keyed by a_seed and the B side by b_seed. Obvious as written,
+// but the reference destructures its tuple as
+//   let (b_noise_seed, a_noise_seed) = commitment_hash;
+// i.e. b first, so it is easy to end up with these swapped — silently, and
+// with no symptom other than shares that are never accepted.
+//
+// row_indices is null here because the whole operand is noised, so a row's
+// index IS its position. The parameter exists for the verifier's path, which
+// only ever wants the handful of rows in one tile.
+//
+// Then fold the noise into the operand ONCE. Each element costs two lookups and
+// a subtract, because E_AR and E_BL are sparse +-1 selectors rather than dense
+// factors — the version that reconstructed at full rank did rank times this
+// much work and computed the wrong thing.
+void draw_noise(Ctx *ctx, bool isA) {
+  const uint32_t rank = ctx->profile.rank;
+  const uint32_t k = ctx->profile.k;
+  const uint32_t rows = isA ? ctx->profile.m : ctx->profile.n;
+  const uint32_t *seed = isA ? ctx->dASeed : ctx->dBSeed;
+  const uint8_t *label = isA ? ctx->dLabelA : ctx->dLabelB;
+  int8_t *dense = isA ? ctx->dEAL : ctx->dEBR;
+  uint32_t *perm = isA ? ctx->dPermA : ctx->dPermB;
+  const int8_t *src = isA ? ctx->dA : ctx->dB;
+  int8_t *dst = isA ? ctx->dAp : ctx->dBp;
+  const size_t len = (size_t)rows * k;
 
-  uint8_t *dSeedInput = nullptr;
-  cudaMalloc(&dSeedInput, sizeof(seedInput));
-  cudaMemcpy(dSeedInput, seedInput, sizeof(seedInput), cudaMemcpyHostToDevice);
+  pearl_gen_dense<<<draw_blocks((size_t)rows * (rank / 32)), kDrawThreads>>>(
+      seed, label, nullptr, dense, rows, rank);
+  pearl_gen_perm<<<draw_blocks((k + 7) / 8), kDrawThreads>>>(seed, label, perm, k, rank);
+  PEARL_LAP(2);
+  if ((k & (k - 1u)) == 0u && k >= 16u) {
+    uint32_t kLog2 = 0;
+    while ((1u << kLog2) < k) kLog2++;
+    pearl_materialize16<<<draw_blocks(len / 16), kDrawThreads>>>(src, dense, perm, dst,
+                                                                 rows, kLog2, rank);
+  } else {
+    pearl_materialize<<<draw_blocks(len), kDrawThreads>>>(src, dense, perm, dst, rows,
+                                                          k, rank);
+  }
+  PEARL_LAP(3);
+}
 
-  // job_key = blake3(header76 ‖ config52), UNKEYED.
+// The full draw: both operands from scratch under `salt`, both commitment trees,
+// both seeds, both sides of the noise. What every job starts with.
+void full_draw(Ctx *ctx, uint64_t salt) {
+  // job_key = blake3(header76 ‖ config52), UNKEYED. Computed on-device so there
+  // is one BLAKE3 implementation in the binary rather than two that can
+  // disagree.
   //
   // This used to hash it KEYED with an all-zero key, under the belief that a
   // zero key is the same as no key. It is not: keyed mode seeds the chaining
   // value from the key and sets KEYED_HASH, so the two produce different
   // digests. The device and the oracle therefore derived different job keys —
   // and, both being internally consistent, nothing anywhere said so.
+  uint8_t seedInput[PEARL_HEADER_BYTES + PEARL_CONFIG_BYTES];
+  memcpy(seedInput, ctx->header, PEARL_HEADER_BYTES);
+  pearl_write_config52(&ctx->profile, seedInput + PEARL_HEADER_BYTES);
+  uint8_t *dSeedInput = ctx->dSeedInput;
+  cudaMemcpy(dSeedInput, seedInput, sizeof(seedInput), cudaMemcpyHostToDevice);
   pearl_blake3_unkeyed<<<1, 1>>>(dSeedInput, sizeof(seedInput),
                                  reinterpret_cast<uint8_t *>(ctx->dJobKey));
-  cudaFree(dSeedInput);
 
   const size_t aLen = (size_t)ctx->profile.m * ctx->profile.k;
   const size_t bLen = (size_t)ctx->profile.n * ctx->profile.k;
-
-  // Operands and the noise factors, regenerated for this job's key.
-  const uint32_t rank = ctx->profile.rank;
-  const uint32_t k = ctx->profile.k;
-  const int threads = 256;
-  auto blocks = [&](size_t n) { return (unsigned)((n + threads - 1) / threads); };
 
   // The operands are the miner's own workload, so their contents are our choice
   // — but their RANGE is not. They must be int7: the noise adds another int7 and
@@ -811,79 +935,136 @@ extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
   //
   // Keyed by job_key rather than by a commitment seed, so these streams cannot
   // collide with the noise streams even though they share the labels.
-  pearl_gen_operand<<<blocks(aLen / 32 + 1), threads>>>(
+  pearl_gen_operand<<<draw_blocks(aLen / 32 + 1), kDrawThreads>>>(
       ctx->dJobKey, ctx->dLabelA, ctx->dA, aLen, salt);
-  pearl_gen_operand<<<blocks(bLen / 32 + 1), threads>>>(
+  pearl_gen_operand<<<draw_blocks(bLen / 32 + 1), kDrawThreads>>>(
       ctx->dJobKey, ctx->dLabelB, ctx->dB, bLen, salt);
 
   // hash_a and hash_b: keyed BLAKE3 over the WHOLE operands. These are Merkle
   // trees over 1024-byte chunks, not one long chain — hashing them as a single
   // chunk (which this did until the device run showed a_seed == b_seed) gives the
   // wrong digest for anything over 1024 bytes and so the wrong seeds.
-  cudaDeviceSynchronize();
   operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dA), aLen,
                      ctx->dHashA, ctx->dTreeA, &ctx->layerOffA);
   operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dB), bLen,
                      ctx->dHashB, ctx->dTreeB, &ctx->layerOffB);
 
-  // Bind the roots before they enter the chain. Under cert-v3 each root is
-  // re-hashed with its dimension under a domain-separation salt, which is what
-  // commits m and n; legacy passes the raw roots straight through.
-  if (ctx->profile.seed_derivation == PEARL_SEED_LEGACY) {
-    cudaMemcpy(ctx->dBoundA, ctx->dHashA, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
-    cudaMemcpy(ctx->dBoundB, ctx->dHashB, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
+  derive_seeds(ctx, true);
+  draw_noise(ctx, true);
+  draw_noise(ctx, false);
+
+  cudaMemcpy(ctx->dTarget, ctx->target, PEARL_HASH_BYTES, cudaMemcpyHostToDevice);
+  cudaMemcpy(ctx->bSeed, ctx->dBSeed, PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
+}
+
+// A same-job redraw: a new A root from a handful of bytes, and nothing on B.
+//
+// The full draw regenerates 512 MiB of operands, hashes all of it into two
+// trees and noises both sides, every ~150 ms of search: 4% of the hashrate the
+// app shows (about 6 ms a draw; 4.6 ms with the faster noise kernels). Most of that is redundant within a job. The search space is keyed
+// by a_seed alone (it keys the jackpot hash and seeds A's noise), and
+// a_seed = blake3(b_seed ‖ bound(root_A)), where b_seed depends only on B. So a
+// fresh space needs only a fresh root_A:
+//
+//   - stamp the salt into A's first bytes and repair leaf 0's path in the
+//     stored tree (pearl_restamp_operand). Share proofs read leaves from dA and
+//     siblings from dTreeA (snapshotProof), so both are updated in place and
+//     keep agreeing with the root;
+//   - re-bind root_A and derive the new a_seed from the unchanged b_seed;
+//   - redraw A's noise and re-materialise A'. B, B', B's tree and b_seed stay.
+//
+// Distinctness: within a job every salt writes a different stamp, so a
+// different root_A. Across cards the first draws differ (each card's full draw
+// uses its own salt), so B and b_seed already differ. A stamp can only repeat
+// the first draw's own random bytes by chance, about 1 in 127^11.
+void restamp(Ctx *ctx, uint64_t salt) {
+  const uint64_t aChunks = (uint64_t)ctx->profile.m * ctx->profile.k / 1024;
+  PEARL_LAP(-1);
+  pearl_restamp_operand<<<1, 1>>>(ctx->dJobKey, ctx->dA, salt, aChunks, ctx->dTreeA,
+                                  ctx->dHashA);
+  PEARL_LAP(0);
+  derive_seeds(ctx, false);
+  PEARL_LAP(1);
+  draw_noise(ctx, true);
+  PEARL_LAP_REPORT();
+}
+
+}  // namespace
+
+// Re-draw the operands under a new salt and rebuild everything downstream of
+// them: the commitments, the seeds, the noise, and the noised operands.
+//
+// This is the outer loop of the search. One salt yields m*n regions and nothing
+// more, because the region index is just (row offset, column offset) -- so the
+// miner must periodically pick new operands or it re-mines what it has already
+// tried, at full reported hashrate and with no chance of a share.
+//
+// The first draw of a job is full; every later one restamps A (see restamp).
+// Measured on a 4090, full miner loop, interleaved A/B: 222.8 -> 229.0 TH/s.
+// Forcing the full draw every time (PEARL_FULL_REDRAW: the old behaviour, but
+// with the faster noise kernels) measured 224.5, so most of the gain is the
+// restamp itself. PEARL_FULL_REDRAW is also how the frozen device parity
+// vectors for salts above 0 were produced.
+extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
+  Ctx *ctx = static_cast<Ctx *>(handle);
+  if (!ctx) return;
+  DeviceScope scope(ctx->device);
+  ctx->salt = salt;
+
+  // A restamp needs a real tree to repair: at least two leaves, so leaf 0 has a
+  // path. Profiles smaller than that always take the full draw.
+  const uint64_t aChunks = (uint64_t)ctx->profile.m * ctx->profile.k / 1024;
+#ifdef PEARL_FULL_REDRAW
+  const bool canRestamp = false;
+  (void)aChunks;
+#else
+  const bool canRestamp = ctx->baseDrawn && aChunks >= 2;
+#endif
+  if (canRestamp) {
+    restamp(ctx, salt);
   } else {
-    pearl_bind_root<<<1, 1>>>(ctx->dSaltA, ctx->dHashA, ctx->profile.m, ctx->dBoundA);
-    pearl_bind_root<<<1, 1>>>(ctx->dSaltB, ctx->dHashB, ctx->profile.n, ctx->dBoundB);
-    cudaDeviceSynchronize();
+    full_draw(ctx, salt);
   }
 
-  // b_seed = blake3(job_key ‖ hash_b), then a_seed = blake3(b_seed ‖ hash_a).
-  // The order is NOT symmetric: b_seed is derived first and feeds a_seed.
-  cudaMemcpy(ctx->dSeedBuf, ctx->dJobKey, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
-  cudaMemcpy(ctx->dSeedBuf + PEARL_HASH_BYTES, ctx->dBoundB, PEARL_HASH_BYTES,
-             cudaMemcpyDeviceToDevice);
-  pearl_blake3_unkeyed<<<1, 1>>>(ctx->dSeedBuf, 64,
-                               reinterpret_cast<uint8_t *>(ctx->dBSeed));
-
-  cudaMemcpy(ctx->dSeedBuf, ctx->dBSeed, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
-  cudaMemcpy(ctx->dSeedBuf + PEARL_HASH_BYTES, ctx->dBoundA, PEARL_HASH_BYTES,
-             cudaMemcpyDeviceToDevice);
-  pearl_blake3_unkeyed<<<1, 1>>>(ctx->dSeedBuf, 64,
-                               reinterpret_cast<uint8_t *>(ctx->dASeed));
-  cudaDeviceSynchronize();
-
-  // The A side is keyed by a_seed and the B side by b_seed. Obvious as written,
-  // but the reference destructures its tuple as
-  //   let (b_noise_seed, a_noise_seed) = commitment_hash;
-  // i.e. b first, so it is easy to end up with these swapped — silently, and
-  // with no symptom other than shares that are never accepted.
-  //
-  // row_indices is null here because the whole operand is noised, so a row's
-  // index IS its position. The parameter exists for the verifier's path, which
-  // only ever wants the handful of rows in one tile.
-  pearl_gen_dense<<<blocks((size_t)ctx->profile.m * (rank / 32)), threads>>>(
-      ctx->dASeed, ctx->dLabelA, nullptr, ctx->dEAL, ctx->profile.m, rank);
-  pearl_gen_dense<<<blocks((size_t)ctx->profile.n * (rank / 32)), threads>>>(
-      ctx->dBSeed, ctx->dLabelB, nullptr, ctx->dEBR, ctx->profile.n, rank);
-  pearl_gen_perm<<<blocks((k + 7) / 8), threads>>>(ctx->dASeed, ctx->dLabelA,
-                                                   ctx->dPermA, k, rank);
-  pearl_gen_perm<<<blocks((k + 7) / 8), threads>>>(ctx->dBSeed, ctx->dLabelB,
-                                                   ctx->dPermB, k, rank);
-
-  // Fold the noise into the operands ONCE. Each element costs two lookups and a
-  // subtract, because E_AR and E_BL are sparse +-1 selectors rather than dense
-  // factors — the version that reconstructed at full rank did rank times this
-  // much work and computed the wrong thing.
-  pearl_materialize<<<blocks(aLen), threads>>>(ctx->dA, ctx->dEAL, ctx->dPermA,
-                                               ctx->dAp, ctx->profile.m, k, rank);
-  pearl_materialize<<<blocks(bLen), threads>>>(ctx->dB, ctx->dEBR, ctx->dPermB,
-                                               ctx->dBp, ctx->profile.n, k, rank);
-
-  cudaMemcpy(ctx->dTarget, target, PEARL_HASH_BYTES, cudaMemcpyHostToDevice);
+  // The one synchronising copy: the search must not launch against half-built
+  // seeds, and the host copy of a_seed travels with every hit.
   cudaMemcpy(ctx->aSeed, ctx->dASeed, PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
-  cudaMemcpy(ctx->bSeed, ctx->dBSeed, PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
-  cudaDeviceSynchronize();
+
+#ifdef PEARL_RESTAMP_CHECK
+  // Diagnostic only: after a restamp, rebuild A's whole tree from scratch and
+  // demand it match the repaired one node for node. Share proofs only carry
+  // leaf 0 when the tile covers row 0, so an end-to-end run could miss a stale
+  // leaf; this cannot. 192 of 192 restamps matched on a 4090.
+  if (canRestamp) {
+    const size_t aLen = (size_t)ctx->profile.m * ctx->profile.k;
+    const size_t nodes = 2 * (aLen / 1024) * 8;
+    static uint32_t *dCheck = nullptr;
+    static uint8_t *dRoot = nullptr;
+    if (!dCheck) {
+      cudaMalloc(&dCheck, nodes * sizeof(uint32_t));
+      cudaMalloc(&dRoot, PEARL_HASH_BYTES);
+    }
+    std::vector<uint64_t> offs;
+    operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dA), aLen, dRoot,
+                       dCheck, &offs);
+    const size_t used = (size_t)(offs.back() + 1) * 8;
+    std::vector<uint32_t> want(used), got(used);
+    uint8_t rootWant[PEARL_HASH_BYTES], rootGot[PEARL_HASH_BYTES];
+    cudaMemcpy(want.data(), dCheck, used * 4, cudaMemcpyDeviceToHost);
+    cudaMemcpy(got.data(), ctx->dTreeA, used * 4, cudaMemcpyDeviceToHost);
+    cudaMemcpy(rootWant, dRoot, PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
+    cudaMemcpy(rootGot, ctx->dHashA, PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
+    const bool same = offs == ctx->layerOffA && want == got
+                      && memcmp(rootWant, rootGot, PEARL_HASH_BYTES) == 0;
+    static int checked = 0, bad = 0;
+    checked++;
+    if (!same) bad++;
+    if (!same || checked % 32 == 0)
+      fprintf(stderr, "restamp check: salt %llu %s (%d checked, %d bad)\n",
+              (unsigned long long)salt, same ? "ok" : "MISMATCH", checked, bad);
+  }
+#endif
+  ctx->baseDrawn = true;
   ctx->haveJob = true;
 }
 
