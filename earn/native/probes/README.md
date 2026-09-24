@@ -69,6 +69,22 @@ Inside the fold, fold-only, all at the cap (these builds compute wrong answers):
 The per-chunk `__syncthreads` is worth 18% per clock and still 9% after the clock
 drops to pay for it. The square warp tile that won 2% on Blackwell loses 2% here.
 
+### Where it ended: 223 -> 264 TH/s at the same 450 W
+
+| step | full miner loop |
+|---|---|
+| v0.5.2 core | 223 |
+| restamp A between salts instead of redrawing both operands | 229 |
+| + hash in the fold's epilogue, no 1 GiB transcript round trip | 234 |
+| + persistent fold, next tile's chunk 0 staged under the last chunk | 241 |
+| + per-group staging, mid-k-step copies, one-barrier seam, serpentine bands | **264** |
+
+The last two are gated to sm_89 (`PEARL_FOLD_PERSISTENT`, `PEARL_FOLD_GROUP_STAGE`,
+`PEARL_FOLD_SERPENTINE`), because only a 4090 has run them. Ampere and Blackwell keep one
+block per tile and the block-wide walk; run on this card with their settings forced, those
+paths measure +1.8% and +1.9% over the previous core rather than a regression, and their
+chunk loops compile to 370 and 484 instructions against 385 and 451 before.
+
 ### Measuring, and proving a build correct
 
 - `node hashrate.js <pearl_core.node> 60` -- the app's own number: one core, a synthetic

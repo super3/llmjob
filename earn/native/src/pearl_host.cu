@@ -161,6 +161,10 @@ struct Ctx {
   // is its grid. Per context for the same reason as the flag above -- two
   // cards need not have the same SM count. 0 until the first search asks.
   unsigned foldResident = 0;
+  // Whether the fold binary this card loaded is the persistent build (see
+  // PEARL_FOLD_PERSISTENT). Only then is the grid foldResident; otherwise it
+  // is one block per tile, as before.
+  bool foldPersistent = false;
 
   // Operands, generated once per job and then read by every region.
   int8_t *dA = nullptr;   // [m, k]
@@ -401,26 +405,22 @@ size_t needed_bytes(const PearlProfile *profile) {
   // int32 while the noise was (wrongly) reconstructed at full rank, which cost
   // 2 GiB at mainnet on top of the 1 GiB of sources.
   const size_t primeBytes = aBytes + bBytes;
-  // What a batch really costs: one transcript per REGION, and regions are
-  // row OFFSETS by column offsets, not rows by columns. Two stale terms lived
-  // here and together overstated it by about 25x:
-  //
-  //   - profile->m instead of m/PEARL_ROWS_COUNT, which is the number of valid
-  //     row offsets and therefore the batch's real height;
-  //   - a 32-byte hash and a flag PER REGION, from when finalize wrote every
-  //     region's hash and the host read back a flag array. It writes only on a
-  //     hit now, into a fixed PEARL_MAX_HITS list.
-  //
-  // The consequence was not cosmetic: this check refused geometries the miner
-  // runs fine on, which is what kept the search pinned to the smaller operand
-  // draw and paid the redraw cost four times more often than it had to.
-  const size_t colBatch = profile->col_batch ? profile->col_batch : 1u;
-  const size_t rowsValid = profile->m / PEARL_ROWS_COUNT;
-  const size_t colsValid = profile->n / PEARL_COLS_COUNT;
-  const size_t batchCols = colBatch > colsValid ? colsValid : colBatch;
-  const size_t batchBytes = batchCols * rowsValid * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)
-                            + (size_t)PEARL_MAX_HITS * (PEARL_HASH_BYTES + sizeof(uint32_t));
-  return aBytes + bBytes + primeBytes + noiseBytes + batchBytes + (1u << 20);
+  // What a batch costs now: nothing per region. The fold hashes its own
+  // transcripts, so only a hit's transcript, hash and index are stored, in a
+  // fixed PEARL_MAX_HITS list. This term used to be a transcript PER REGION --
+  // 1 GiB at the mainnet geometry -- and it stayed here after the buffer went,
+  // so a card whose free VRAM the local LLM had taken could be refused for a
+  // gigabyte the miner no longer asks for.
+  const size_t batchBytes =
+      (size_t)PEARL_MAX_HITS * (PEARL_HASH_BYTES + sizeof(uint32_t)
+                                + PEARL_JACKPOT_BUCKETS * sizeof(uint32_t));
+  // The kept commitment trees (just under 2 nodes a leaf, 32 bytes a node, for
+  // both operands) and the leaf-CV scratch for the larger one. Real
+  // allocations that were never counted: 40 MiB at the mainnet geometry.
+  const size_t aLeaves = aBytes / 1024, bLeaves = bBytes / 1024;
+  const size_t treeBytes = 2 * (aLeaves + bLeaves) * 32
+                           + (aLeaves > bLeaves ? aLeaves : bLeaves) * 32;
+  return aBytes + bBytes + primeBytes + noiseBytes + batchBytes + treeBytes + (1u << 20);
 }
 
 #define CUDA_OK(expr, msg)                                   \
@@ -1186,14 +1186,27 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   // exposed (see the kernel). Launching more would only queue blocks behind
   // the resident ones and bring the exposed starts back. Asked once per
   // context, after the opt-in, because the answer depends on the footprint.
+  //
+  // Only the Ada build is persistent (PEARL_FOLD_PERSISTENT), so ask which
+  // binary this card actually loaded rather than which card it is: the answer
+  // has to match the code that runs.
   if (ctx->foldResident == 0) {
     int sms = 0, perSm = 0;
     cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, ctx->device);
     cudaOccupancyMaxActiveBlocksPerMultiprocessor(
         &perSm, reinterpret_cast<const void *>(pearl_tile_fold_wmma), threads, smem);
     ctx->foldResident = (unsigned)(sms > 0 ? sms : 1) * (unsigned)(perSm > 0 ? perSm : 1);
+#ifdef PEARL_FOLD_PERSISTENT_FORCED
+    ctx->foldPersistent = PEARL_FOLD_PERSISTENT != 0;
+#else
+    cudaFuncAttributes fa;
+    ctx->foldPersistent =
+        cudaFuncGetAttributes(&fa, reinterpret_cast<const void *>(pearl_tile_fold_wmma))
+            == cudaSuccess && fa.binaryVersion == 89;
+#endif
   }
-  const unsigned blocks = tiles < ctx->foldResident ? tiles : ctx->foldResident;
+  const unsigned blocks =
+      (ctx->foldPersistent && ctx->foldResident < tiles) ? ctx->foldResident : tiles;
   // The fold hashes every transcript itself and tests it against the bound. It
   // writes only on a hit and appends to a compact list, so the readback below
   // is four bytes rather than one flag per region.

@@ -387,6 +387,37 @@ typedef struct {
 #endif
 #endif
 
+// Whether the fold is PERSISTENT: one block per resident slot, each walking
+// tiles and staging the next tile's chunk 0 under the last chunk of this one.
+//
+// Ada only, because only Ada has been measured: +3.1% on a 4090. Blackwell is
+// the reason to hold back. It is power-capped hard, the staging ALU is where its
+// power goes, and the persistent walk adds ~17% non-tensor instructions to its
+// chunk (a 64-bit source rebuild and a wrap per copy); the one persistent fold
+// ever run there regressed. Ampere is merely unmeasured. Both keep one block
+// per tile, and with the next-tile staging compiled out their chunk loop is the
+// one they ran before.
+//
+// The host must launch the matching grid, and it decides from the fold binary
+// it actually loaded (cudaFuncAttributes::binaryVersion == 89). Either kind of
+// mismatch stays correct -- a persistent build launched one block per tile runs
+// each block once, and a non-persistent one given fewer blocks restages each
+// later tile's chunk 0 -- it is only slower.
+//
+// A -DPEARL_FOLD_PERSISTENT=0/1 override binds BOTH sides, so a build can run
+// another arch's launch shape on this card (how the Ampere/Blackwell path was
+// checked on a 4090).
+#ifdef PEARL_FOLD_PERSISTENT
+#define PEARL_FOLD_PERSISTENT_FORCED 1
+#endif
+#ifndef PEARL_FOLD_PERSISTENT
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#define PEARL_FOLD_PERSISTENT 1
+#else
+#define PEARL_FOLD_PERSISTENT 0
+#endif
+#endif
+
 // Transcript words a lane carries: a warp's regions times buckets, spread over
 // its 32 lanes. 8 regions x 16 buckets / 32 = 4 at the mandated geometry.
 #define PEARL_JACKPOT_REGS \

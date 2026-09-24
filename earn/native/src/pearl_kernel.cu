@@ -1457,9 +1457,16 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
 //
 // cc runs one past the last chunk when the last chunk stages the next tile's
 // chunk 0 (see the tile loop), so its k offset wraps: chunk `chunks` is k = 0.
+// Without PEARL_FOLD_PERSISTENT nothing stages past the last chunk, so there is
+// nothing to wrap, and the modulo stays out of the copy.
+#if PEARL_FOLD_PERSISTENT
+#define PEARL_SLOT_K0(cc) (((cc) % chunks) * rank)
+#else
+#define PEARL_SLOT_K0(cc) ((cc) * rank)
+#endif
 #define PEARL_ISSUE_SLOT(cc, p)                                                       \
   {                                                                                   \
-    const uint32_t k0_ = ((cc) % chunks) * rank;                                      \
+    const uint32_t k0_ = PEARL_SLOT_K0(cc);                                           \
     const uint32_t i_ = pid + (p) * pthreads;                                         \
     if (i_ < btotal)                                                                  \
       pearl_cp_async16(sBa + ((cc) & 1u) * buf_bytes + bdst0 + (p) * dstStep,          \
@@ -1512,6 +1519,17 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
 #endif
 
   for (uint32_t v = blockIdx.x; v < tiles; v += tile_stride) {
+#if !PEARL_FOLD_PERSISTENT
+    // Not persistent: the host launches one block per tile and this never runs.
+    // It is here so a grid smaller than that (a host that disagrees about the
+    // build) restages chunk 0 rather than folding a tile that was never staged.
+    if (v != blockIdx.x) {
+      tile_srcs(v, bsrc0, asrc0);
+      PEARL_ISSUE_CHUNK(0u)
+      pearl_cp_async_wait();
+      __syncthreads();
+    }
+#endif
     uint32_t rbg, cbg;
     tile_coords(v, rbg, cbg);
     const uint32_t rb = rbg * PEARL_WARP_ROWS + wr;
@@ -1520,7 +1538,9 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
     // simply return: staging is a block-wide cooperative load and a
     // __syncthreads() some warps skip hangs the launch.
     const bool active = rb < row_blocks && cgb < (col_groups / PEARL_WMMA_COL_BLK);
-    const bool has_next = v + tile_stride < tiles;
+    // A compile-time false when the fold is not persistent, which takes the
+    // next-tile source swap out of the chunk loop entirely.
+    const bool has_next = PEARL_FOLD_PERSISTENT && v + tile_stride < tiles;
 
 #pragma unroll
     for (uint32_t mb = 0; mb < MB; mb++) {
