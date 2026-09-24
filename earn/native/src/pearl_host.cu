@@ -74,8 +74,8 @@ extern "C" __global__ void pearl_restamp_operand(const uint32_t *key,
 extern "C" __global__ void pearl_tile_fold_wmma(
     const int8_t *Aprime, const int8_t *Bprime, uint32_t m, uint32_t n,
     uint32_t k, uint32_t rank, uint32_t chunks, uint32_t col_off,
-    uint32_t rows_valid, uint32_t col_groups, const PearlTranscriptTest test,
-    const PearlHitList hits);
+    uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
+    const PearlTranscriptTest test, const PearlHitList hits);
 extern "C" __global__ void pearl_partials(const int8_t *Aprime, const int8_t *Bprime,
                                           const uint32_t *cols_pattern,
                                           uint32_t cols_count, uint32_t m, uint32_t n,
@@ -155,6 +155,12 @@ struct Ctx {
   // (which this was) opted in only the first card to search; every other card's
   // fold launch then asked for 96 KB it had not been granted.
   bool smemOptedIn = false;
+
+  // Fold blocks that fit on this context's card at once: SMs times blocks per
+  // SM at the fold's shared-memory footprint. The fold is persistent, so this
+  // is its grid. Per context for the same reason as the flag above -- two
+  // cards need not have the same SM count. 0 until the first search asks.
+  unsigned foldResident = 0;
 
   // Operands, generated once per job and then read by every region.
   int8_t *dA = nullptr;   // [m, k]
@@ -1149,7 +1155,7 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
                (unsigned long long)colBlocks);
     return false;
   }
-  const unsigned blocks =
+  const unsigned tiles =
       (unsigned)((rowBlocks / PEARL_WARP_ROWS) * (colBlocks / warpCols));
   // Two full-chunk stages; the transcripts live in registers and global now.
   const size_t smem = (size_t)PEARL_STAGE_BUFS
@@ -1175,6 +1181,19 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
                          cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
     ctx->smemOptedIn = true;
   }
+  // The fold is persistent: exactly as many blocks as can be resident, each
+  // walking tiles a grid-width apart, so no tile starts with its first chunk
+  // exposed (see the kernel). Launching more would only queue blocks behind
+  // the resident ones and bring the exposed starts back. Asked once per
+  // context, after the opt-in, because the answer depends on the footprint.
+  if (ctx->foldResident == 0) {
+    int sms = 0, perSm = 0;
+    cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, ctx->device);
+    cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+        &perSm, reinterpret_cast<const void *>(pearl_tile_fold_wmma), threads, smem);
+    ctx->foldResident = (unsigned)(sms > 0 ? sms : 1) * (unsigned)(perSm > 0 ? perSm : 1);
+  }
+  const unsigned blocks = tiles < ctx->foldResident ? tiles : ctx->foldResident;
   // The fold hashes every transcript itself and tests it against the bound. It
   // writes only on a hit and appends to a compact list, so the readback below
   // is four bytes rather than one flag per region.
@@ -1198,7 +1217,7 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   cudaMemsetAsync(ctx->dHitCount, 0, sizeof(uint32_t));
   pearl_tile_fold_wmma<<<blocks, threads, smem>>>(
       ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
-      col_off, ctx->rowsValid, col_groups, test, hitList);
+      col_off, ctx->rowsValid, col_groups, tiles, test, hitList);
 
   uint32_t hits = 0;
   cudaMemcpy(&hits, ctx->dHitCount, sizeof(uint32_t), cudaMemcpyDeviceToHost);
