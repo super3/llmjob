@@ -1145,6 +1145,16 @@ __device__ __forceinline__ uint32_t pearl_warp_xor(uint32_t x) {
 //   B0 A0 | B1 A1 | B2 | B3                   253.6
 // It was also the fastest of six before the fold was persistent, with the
 // copies at the top of each k-step (244.4 against 229.3 - 240.1).
+//
+// Front-loading it all loses too. Against v0.5.5, three interleaved rounds:
+//   B0 A0 A1 | B1 B2 | B3 | -    (this)       263.3 - 263.5
+//   all six in k-step 0                       258.6 - 258.7
+//   B0 B1 B2 A0 | B3 A1 | - | -               255.8 - 256.2
+//   B0 B1 A0 | B2 B3 A1 | - | -               250.6 - 250.8
+// One group drops six of the nine @!PT LDS pads ptxas puts before each group
+// and clocks 40 MHz higher, but the tensor pipe idles more (0.852 -> 0.822 of
+// peak). The grouping does not change what a staged byte costs: 42 pJ with one
+// group or three (probe of this loop; see probes/README.md).
 __host__ __device__ constexpr uint32_t pearl_bslot_lo(uint32_t t) {
   return t == 0u ? 0u : t == 1u ? 1u : t == 2u ? 3u : 4u;
 }

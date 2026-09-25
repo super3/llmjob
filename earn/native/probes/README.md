@@ -115,6 +115,45 @@ fold reaches on this card rather than one vendor's trick. Note where the gap is:
 (0.70 TH/W against 0.59), and on a power-capped card that is the whole difference. The
 pure-mma ceiling here is ~340 T-MAC/s, so they sit at ~92% of it and we sit at ~78%.
 
+### What a staged byte costs, and why a standalone probe underprices it
+
+A standalone copy loop priced staging (L2 to shared by `cp.async`) at 1.87 nJ per IMMA;
+the fold's own power pointed to about 2.4. Measured directly, the fold's number is right,
+and nothing in the copy pattern explains the gap. The chip's load does.
+
+All on 64 SMs, so nothing hits the cap (2700 MHz), 30 s runs, corrected to 70 C. On and
+off runs of one build share their SASS: the copies are switched at run time.
+
+| measurement | cost |
+|---|---|
+| fold with staging minus fold without it, interleaved x2 | 2.38 nJ per IMMA |
+| of which the copies themselves (same build, copies switched off) | ~2.0 nJ per IMMA, 42 pJ per byte |
+| of which DRAM and L2 misses (all tiles re-read L2-resident data) | 0.11 nJ per IMMA |
+
+A copy of the fold's chunk loop (same launch, addresses, swizzle and copy schedule, no
+readout) costs the same 42 pJ/B. Nsight Compute counts the same traffic for it and for
+v0.5.5: 48 B per IMMA from L2 at 99.5% hits, 12 bank writes and 48 bank reads per IMMA,
+no bank conflicts. Varying that loop, pJ per staged byte:
+
+| loop | pJ/B |
+|---|---|
+| as in the fold: ldmatrix + IMMA beside the copies | 41.6 - 43.3 |
+| no ldmatrix (IMMA operands from registers) | 41.6 - 42.3 |
+| one copy group a chunk instead of three | 42.1 |
+| half the copies | 42.3 |
+| contiguous source rows instead of 2 KB-strided | -1.5 |
+| L2-resident source | -2.5 |
+| the fold's operand values instead of uniform bytes | +0.5 |
+| the same copies, rest of the chip idle | 20 - 24 |
+| the same, with 64 other SMs running IMMA or ALU work | 37 - 41 |
+
+The last two rows are the gap. A byte costs about 1.7x more when the chip is busy, and so
+does a plain LOP3: 0.28 - 0.30 nJ per warp-instruction on an idle chip, 0.51 beside the
+IMMA work, on and off alternating every 3 s so both share one die temperature. The
+standalone probe ran with no tensor load; every other unit energy was measured under load.
+There is no copy-pattern fix. What is left is fewer bytes per MAC: at 42 pJ/B a 192x256
+tile saves about 0.45 nJ per IMMA, not 0.34.
+
 ### Measuring, and proving a build correct
 
 - `node hashrate.js <pearl_core.node> 60` -- the app's own number: one core, a synthetic
