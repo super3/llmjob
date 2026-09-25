@@ -41,9 +41,12 @@ const DEVICE = {
   regions: [
     [0, 3, '0f826edbfe51e32eac38f100d578d7b7da6858a959338b5b691b2edbff313503'],
     [0, 629, 'd502d7e96219fff91e953c6d92c69004885d43879062329ec2b8e9b398cc5302'],
-    [1, 9, '16b9a97be6b5d62a0d432620b86f208f2b90e6a363ba4449c964d7fc98be7e02'],
-    [1, 637, '4eadf6ff2b144561ed5e4b2cbd51bdfefab8b630e931db0a54650c7fc6e02e02'],
-    [2, 57, '91d7162abf7a4e028a49f1e32dc1ff761d2f998ad2205743b8697802c527cc02'],
+    // Salts after the first are RESTAMPS, not fresh draws (see forSalt). These
+    // three were captured from a 4090 running the restamping core, built at this
+    // profile; the salt-0 vectors above are unchanged by it.
+    [1, 23, '8aef5c789f1f498ba8d9830e24dc2cb7b7a986054664c215c59a22c6858e1c02'],
+    [2, 76, 'd6b0222bf761181cfb6cb8f5376ccb4e610383bb560d39e6db9490dd8f6e7702'],
+    [3, 18, 'a7fdd81a83d65ae5a950eda0b18777dbe1b8b8f098fd8038610a0963468d4e00'],
   ],
 };
 
@@ -74,10 +77,20 @@ function genOperand(label, total, salt) {
 const s8 = (b) => (b > 127 ? b - 256 : b);
 const cache = new Map();
 
+// A job's first salt is a full draw. Every later salt in the same job RESTAMPS
+// it: B, and so b_seed, stay as drawn, and A's first PEARL_STAMP_BYTES bytes are
+// overwritten with six bits of the salt each. A new A root means new noise, which
+// is a fresh search space for about a tenth of the cost of drawing both operands
+// again. The job here starts at salt 0, as a one-card rig's does.
+const STAMP_BYTES = 11;
+
 function forSalt(salt) {
   if (cache.has(salt)) return cache.get(salt);
-  const A = genOperand(SEED_LABEL_A, m * k, salt);
-  const B = genOperand(SEED_LABEL_B, n * k, salt);
+  const A = genOperand(SEED_LABEL_A, m * k, 0);
+  const B = genOperand(SEED_LABEL_B, n * k, 0);
+  if (salt > 0) {
+    for (let i = 0; i < STAMP_BYTES; i++) A[i] = Number((BigInt(salt) >> BigInt(6 * i)) & 63n);
+  }
 
   // cert-v3: salt each operand root with its dimension before the seed chain.
   // This is the only thing that commits m and n, which config52 does not carry.

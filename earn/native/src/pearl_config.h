@@ -206,6 +206,28 @@ static_assert(PEARL_COLS_COUNT == (1u << pearl_popcount_ce(PEARL_COLS_MASK)),
 // silently lose hits it would never have submitted anyway.
 #define PEARL_MAX_HITS 64
 
+// How many leading bytes of A a same-job redraw rewrites (pearl_restamp_operand):
+// six bits of salt each, so 11 bytes carry a full 64-bit salt.
+#define PEARL_STAMP_BYTES 11
+
+// What the fold needs to hash its own transcripts and test them. Passed to the
+// kernel BY VALUE, so the key and target sit in the constant bank as operands
+// rather than being loaded at the end of every block. The host already holds
+// both: a_seed is read back once per draw, and the target is the job's.
+typedef struct {
+  uint32_t key[8];       // a_seed as the eight little-endian words BLAKE3 keys with
+  uint32_t target_w[8];  // the target as big-endian words, most significant first
+  int hash_big_endian;   // PearlProfile.hash_big_endian
+} PearlTranscriptTest;
+
+// Where the fold reports hits. Written only on a hit, appended with an atomic.
+typedef struct {
+  uint32_t *count;       // hits this batch; may exceed PEARL_MAX_HITS
+  uint32_t *index;       // [PEARL_MAX_HITS] batch-local region index
+  uint32_t *hash;        // [PEARL_MAX_HITS][8] jackpot hash words, bytes in order
+  uint32_t *transcript;  // [PEARL_MAX_HITS][16] the transcript that hashed to it
+} PearlHitList;
+
 // Rows of A one warp covers in the tensor-core partials kernel. The WMMA int8
 // shape is 16x16x16, and valid row offsets are multiples of PEARL_ROWS_COUNT,
 // so a 16-row block is exactly four consecutive row offsets.
@@ -279,6 +301,33 @@ static_assert(PEARL_COLS_COUNT == (1u << pearl_popcount_ce(PEARL_COLS_MASK)),
 #endif
 #endif
 
+// Walk the bands as a serpentine: odd bands take their column groups in
+// reverse, so each band starts on the B columns the one before it ended on.
+//
+// One launch sweeps 64 MB of B per band (2048 column groups of 16 columns, k
+// bytes each), and a band 32 row groups deep adds 8 MB of A: 72 MB, all of a
+// 4090's L2. Walking every band the same way is a cyclic sweep bigger than the
+// cache, which LRU misses end to end, so B came from DRAM once per band --
+// 2.08 GB read per launch (Nsight Compute). Reversing odd bands: 0.60 GB, and
+// on the persistent fold 260.8 -> 263.7 TH/s in the full miner loop (bench
+// 263.0 -> 265.1), the clock rising 2340 -> 2377 MHz at the same 450 W.
+//
+// A shallower band gets there the other way -- at 8 deep the band's A is 2 MB
+// and B stays put (264.9 in the full loop, 0.61 GB) -- but only while B and the
+// band's A fit the L2, so only on the largest Ada parts; a smaller L2 would
+// then re-read B four times as often as at 32. The serpentine helps whatever
+// the cache size, so it is what ships and the depth stays.
+//
+// Ada only: it is what measured. Blackwell's one-deep bands re-sweep B every
+// row group, so it may gain there too, but that has not been measured.
+#ifndef PEARL_FOLD_SERPENTINE
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#define PEARL_FOLD_SERPENTINE 1
+#else
+#define PEARL_FOLD_SERPENTINE 0
+#endif
+#endif
+
 // Transcript registers per lane: a warp's regions times buckets, over 32 lanes.
 #define PEARL_JACKPOT_REGS \
   ((PEARL_WMMA_ROW_TILES * (PEARL_WMMA_ROWS / PEARL_ROWS_COUNT) * PEARL_WMMA_COL_BLK \
@@ -318,6 +367,55 @@ static_assert(PEARL_COLS_COUNT == (1u << pearl_popcount_ce(PEARL_COLS_MASK)),
 // Full-chunk stages in the double buffer.
 #ifndef PEARL_STAGE_BUFS
 #define PEARL_STAGE_BUFS 2
+#endif
+
+// Stage the fold per warp GROUP rather than across the whole block (see the
+// fold's staging notes): a warp reads one row group of A and one column group
+// of B, and each group is staged by exactly the warps that read it, with every
+// copy slot in bounds at compile time and issued in the middle of a k-step.
+//
+// Ada only, like PEARL_BLOCK_GROUP is Blackwell only: this is what measured.
+// Ampere (sm_86) has Ada's SM layout and very likely gains too, but has not
+// been measured, and neither has Blackwell, so both keep the block-wide walk.
+// Device side only -- the host sizes and launches the fold identically either
+// way.
+#ifndef PEARL_FOLD_GROUP_STAGE
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#define PEARL_FOLD_GROUP_STAGE 1
+#else
+#define PEARL_FOLD_GROUP_STAGE 0
+#endif
+#endif
+
+// Whether the fold is PERSISTENT: one block per resident slot, each walking
+// tiles and staging the next tile's chunk 0 under the last chunk of this one.
+//
+// Ada only, because only Ada has been measured: +3.1% on a 4090. Blackwell is
+// the reason to hold back. It is power-capped hard, the staging ALU is where its
+// power goes, and the persistent walk adds ~17% non-tensor instructions to its
+// chunk (a 64-bit source rebuild and a wrap per copy); the one persistent fold
+// ever run there regressed. Ampere is merely unmeasured. Both keep one block
+// per tile, and with the next-tile staging compiled out their chunk loop is the
+// one they ran before.
+//
+// The host must launch the matching grid, and it decides from the fold binary
+// it actually loaded (cudaFuncAttributes::binaryVersion == 89). Either kind of
+// mismatch stays correct -- a persistent build launched one block per tile runs
+// each block once, and a non-persistent one given fewer blocks restages each
+// later tile's chunk 0 -- it is only slower.
+//
+// A -DPEARL_FOLD_PERSISTENT=0/1 override binds BOTH sides, so a build can run
+// another arch's launch shape on this card (how the Ampere/Blackwell path was
+// checked on a 4090).
+#ifdef PEARL_FOLD_PERSISTENT
+#define PEARL_FOLD_PERSISTENT_FORCED 1
+#endif
+#ifndef PEARL_FOLD_PERSISTENT
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#define PEARL_FOLD_PERSISTENT 1
+#else
+#define PEARL_FOLD_PERSISTENT 0
+#endif
 #endif
 
 // Transcript words a lane carries: a warp's regions times buckets, spread over
@@ -399,6 +497,13 @@ static inline void pearl_write_config52(const PearlProfile *p, uint8_t *out) {
 // positions the mask leaves free. This enumerates exactly the VALID offsets,
 // so every region the search visits is one a pool will accept a proof for.
 PEARL_HD static inline uint32_t pearl_expand_offset(uint32_t i, uint32_t mask) {
+  // A contiguous low mask -- both shipped patterns are 0..15 -- leaves every bit
+  // from popcount(mask) up free, so depositing i there is a shift. Every caller
+  // passes a constant mask, so the test folds away at compile time. The
+  // persistent fold runs this once per tile in every thread, to find where the
+  // next tile's chunk 0 comes from, and the general loop below measured 0.4%
+  // behind the shift there (246.6 -> 247.7 TH/s, bench, 4090).
+  if (mask != 0xFFFFFFFFu && (mask & (mask + 1u)) == 0u) return i << pearl_popcount_ce(mask);
   uint32_t out = 0u;
   uint32_t bit = 1u;
   while (i) {
