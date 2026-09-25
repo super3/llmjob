@@ -57,6 +57,27 @@ CREATE TABLE IF NOT EXISTS chat_usage_totals (
 );
 `;
 
+// Signups for the managed-mining service (the /managed page). One row per email;
+// signing up again updates the answers rather than adding a duplicate. Kept as
+// its own constant so the add-managed-waitlist migration can apply it to
+// existing databases.
+const WAITLIST_SCHEMA = `
+CREATE TABLE IF NOT EXISTS managed_waitlist (
+  email text PRIMARY KEY,
+  gpus integer,
+  note text,
+  source text,
+  created_at bigint,
+  updated_at bigint
+);
+`;
+
+// The LLM-era tables (nodes, api_keys, request_logs, node_join_tokens, jobs,
+// job_chunks, chat_*) are no longer read or written by anything. They stay in
+// this constant because the init migration applies it verbatim and later
+// migrations ALTER those tables — dropping them here would break every fresh
+// database (preview environments) at the first of those migrations. Retiring
+// them for real is a separate, explicit drop migration.
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS nodes (
   node_id text PRIMARY KEY,
@@ -172,6 +193,7 @@ CREATE TABLE IF NOT EXISTS job_chunks (
 
 ${MINERS_SCHEMA}
 ${CHAT_SCHEMA}
+${WAITLIST_SCHEMA}
 `;
 
 async function initSchema(db) {
@@ -218,4 +240,4 @@ function createPool() {
   return pool;
 }
 
-module.exports = { createPool, initSchema, SCHEMA, MINERS_SCHEMA, CHAT_SCHEMA };
+module.exports = { createPool, initSchema, SCHEMA, MINERS_SCHEMA, CHAT_SCHEMA, WAITLIST_SCHEMA };

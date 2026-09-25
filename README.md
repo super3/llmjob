@@ -1,6 +1,7 @@
 # LLMJob
 
-Build your own AI infrastructure with spare GPUs and devices. Get OpenAI-compatible API access and monetize excess capacity when idle.
+A free, one-click Pearl (PRL) miner for NVIDIA GPUs. Download it, paste a payout
+address, hit **Start**. No command line, no account, no fee.
 
 [![Test Status](https://img.shields.io/github/actions/workflow/status/super3/llmjob/test.yml?branch=main&label=tests)](https://github.com/super3/llmjob/actions/workflows/test.yml)
 [![Deploy Status](https://img.shields.io/website?url=https%3A%2F%2Fllmjob-production.up.railway.app%2Fhealth&label=deploy&up_message=live&down_message=down)](https://llmjob-production.up.railway.app)
@@ -9,41 +10,23 @@ Build your own AI infrastructure with spare GPUs and devices. Get OpenAI-compati
 
 ## Features
 
-- ⚡ Pool office workstations and spare hardware into a private AI cluster
-- 🤖 Fully OpenAI-compatible API endpoints  
-- 📊 Real-time cluster monitoring dashboard
-- 🔒 Keep sensitive data on your own infrastructure
-- 💸 Turn idle GPU time into crypto **today** with the LLMJob Earn desktop app
+- ⛏️ Our own CUDA miner for Pearl, built into the app. Nothing third-party to download
+- 🖱️ One click: paste a `prl1p…` address and hit Start, every GPU is detected automatically
+- 💸 No dev fee, no pool fee, payouts straight to your wallet
+- 📡 A public board of every rig mining with LLMJob, live
+- 🛠️ Coming next: managed mining, where we tune and maintain your rigs around the clock
 
 This repository contains two packages:
 
-- **Server** (repo root) — the Express API plus the static dashboard pages,
-  backed by Postgres and deployed to Railway / GitHub Pages.
-- **LLMJob Earn** ([`earn/`](earn)) — an Electron desktop app that turns idle GPU
-  time into crypto by wrapping the AlphaPool miner (Pearl / PRL): paste a payout
-  address, hit **Start**, and earn — no command line. It's the easy on-ramp that
-  gets GPUs onto the network today, ahead of LLM co-mining. See
-  [`earn/README.md`](earn/README.md).
-
-## Add a node
-
-Link a machine to your account with **LLMJob Earn**. Grab your pairing token from
-the **Add Node** page in the dashboard, then either:
-
-- **Desktop app** — paste the token into the **API → Connect** tab and hit **Connect**.
-- **Headless CLI** — run the command-line client on a server with no desktop:
-
-```bash
-llmjob-earn-cli connect --token <pairing-token>
-```
-
-Either way the machine generates its own key locally (only the public key is
-sent), joins your account, and pings so it shows online. See
-[`earn/README.md`](earn/README.md).
+- **Server** (repo root) — the Express API behind the miners board and the
+  managed-mining waitlist, plus the static site, backed by Postgres and deployed
+  to Railway / GitHub Pages. See [`server/README.md`](server/README.md).
+- **LLMJob Earn** ([`earn/`](earn)) — the desktop app (Windows / Linux) and the
+  headless CLI that run our Pearl miner. See [`earn/README.md`](earn/README.md).
 
 ## Run LLMJob Earn
 
-Download the latest Windows installer from the
+Download the latest installer from the
 [releases page](https://github.com/super3/llmjob/releases/latest), install, paste
 a Pearl (`prl1p…`) payout address, and hit **Start**. To run it from source:
 
@@ -53,8 +36,8 @@ npm install
 npm start                          # launch the Electron app
 ```
 
-See [`earn/README.md`](earn/README.md) for the mining engine, merge mining, the
-live balance, and building the installer.
+See [`earn/README.md`](earn/README.md) for the miner, merge mining, the live
+balance, and building the installer.
 
 ## Running the server
 

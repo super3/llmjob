@@ -171,4 +171,18 @@ describe('migrations', () => {
     // being safe to roll back.
     expect((await pool.query('SELECT id FROM jobs')).rows).toHaveLength(2);
   });
+
+  it('add-managed-waitlist creates and drops the waitlist table', async () => {
+    // Against a bare database (a deployment created before the table existed)
+    // the migration must create it standalone.
+    const pool = freshPool();
+    const mod = load(byName('add-managed-waitlist'));
+
+    await apply(pool, mod, 'up');
+    await pool.query("INSERT INTO managed_waitlist (email, gpus) VALUES ('a@b.co', 4)");
+    expect((await pool.query('SELECT email FROM managed_waitlist')).rows).toHaveLength(1);
+
+    await apply(pool, mod, 'down');
+    await expect(pool.query('SELECT 1 FROM managed_waitlist')).rejects.toBeDefined();
+  });
 });

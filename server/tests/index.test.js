@@ -1,23 +1,10 @@
 // Boots server/src/index.js without opening a real port or connecting to
-// Postgres: the DB pool, the background-task services, the HTTP server, and the
-// process signal/timer hooks are all mocked so the wiring can be exercised.
-const mockCheckNodeStatuses = jest.fn();
-const mockCheckTimeouts = jest.fn();
-const mockCleanupOldJobs = jest.fn();
-const mockExpireStalePending = jest.fn();
-const mockBenchmarkSweep = jest.fn();
-
+// Postgres: the DB pool, the HTTP server, and the process signal/timer hooks are
+// all mocked so the wiring can be exercised.
 jest.mock('../src/db', () => {
   const actual = jest.requireActual('../src/db');
   return { ...actual, createPool: jest.fn() };
 });
-jest.mock('../src/services/nodeService', () =>
-  jest.fn(() => ({ checkNodeStatuses: mockCheckNodeStatuses })));
-jest.mock('../src/services/jobService', () =>
-  jest.fn(() => ({ checkTimeouts: mockCheckTimeouts, cleanupOldJobs: mockCleanupOldJobs,
-    expireStalePending: mockExpireStalePending })));
-jest.mock('../src/services/benchmarkService', () =>
-  jest.fn(() => ({ sweep: mockBenchmarkSweep })));
 
 const request = require('supertest');
 const { createPool } = require('../src/db');
@@ -53,21 +40,6 @@ describe('server bootstrap (index.js)', () => {
       expect(res.json).toHaveBeenCalledWith({ error: 'Internal server error' });
     });
 
-    // body-parser's own message is the bare string "entity.too.large", which
-    // tells a caller nothing. This is the error an oversized image request hits,
-    // and the one that used to make the multimodal path look simply broken.
-    it('explains an oversized body and names the limit', () => {
-      const res = run({ status: 413, type: 'entity.too.large', limit: 20 * 1024 * 1024 });
-      expect(res.status).toHaveBeenCalledWith(413);
-      expect(res.json.mock.calls[0][0].error).toContain('20 MB');
-      expect(res.json.mock.calls[0][0].error).toContain('images');
-    });
-
-    it('still answers when the oversized-body error carries no limit', () => {
-      const res = run({ status: 413, type: 'entity.too.large' });
-      expect(res.status).toHaveBeenCalledWith(413);
-      expect(res.json).toHaveBeenCalledWith({ error: 'Request body too large.' });
-    });
   });
 
   describe('GET /health', () => {
@@ -95,22 +67,19 @@ describe('server bootstrap (index.js)', () => {
   });
 
   describe('startServer', () => {
-    let intervals, forceTimeouts, signals, exit, fakeServer;
+    let forceTimeouts, signals, exit, fakeServer;
 
     const wireGlobals = () => {
-      intervals = [];
       forceTimeouts = [];
       signals = {};
       exit = jest.spyOn(process, 'exit').mockImplementation(() => {});
-      jest.spyOn(global, 'setInterval').mockImplementation((fn) => { intervals.push(fn); return intervals.length; });
-      jest.spyOn(global, 'clearInterval').mockImplementation(() => {});
       jest.spyOn(global, 'setTimeout').mockImplementation((fn) => { forceTimeouts.push(fn); return forceTimeouts.length; });
       jest.spyOn(process, 'on').mockImplementation((sig, fn) => { signals[sig] = fn; return process; });
       fakeServer = { close: jest.fn((cb) => cb()) };
       jest.spyOn(index.app, 'listen').mockImplementation((port, host, cb) => { cb(); return fakeServer; });
     };
 
-    it('connects, wires background tasks + shutdown, and drives them', async () => {
+    it('connects, starts listening, and wires graceful shutdown', async () => {
       const end = jest.fn().mockResolvedValue();
       createPool.mockReturnValue({ query: jest.fn().mockResolvedValue({ rows: [] }), end });
       wireGlobals();
@@ -122,46 +91,8 @@ describe('server bootstrap (index.js)', () => {
       expect(index.app.listen).toHaveBeenCalled();
       expect(signals.SIGTERM).toBeInstanceOf(Function);
       expect(signals.SIGINT).toBeInstanceOf(Function);
-      expect(intervals).toHaveLength(4);
 
-      const [statusCb, timeoutCb, benchmarkCb, cleanupCb] = intervals;
-
-      // node-status tick: the happy path and the error branch (a transient DB
-      // failure here must be swallowed, not crash the process).
-      mockCheckNodeStatuses.mockResolvedValueOnce();
-      await statusCb();
-      expect(mockCheckNodeStatuses).toHaveBeenCalled();
-      mockCheckNodeStatuses.mockRejectedValueOnce(new Error('status db down'));
-      await statusCb();
-
-      // timeout tick: none returned, some returned, and the error branch. The
-      // same tick also expires pending jobs nothing ever picked up.
-      mockExpireStalePending.mockResolvedValue([]);
-      mockCheckTimeouts.mockResolvedValueOnce([]);
-      await timeoutCb();
-      mockCheckTimeouts.mockResolvedValueOnce(['job-1']);
-      mockExpireStalePending.mockResolvedValueOnce(['job-2']);
-      await timeoutCb();
-      mockCheckTimeouts.mockRejectedValueOnce(new Error('db down'));
-      await timeoutCb();
-
-      // benchmark tick: nothing due, some queued, and the error branch
-      mockBenchmarkSweep.mockResolvedValueOnce([]);
-      await benchmarkCb();
-      mockBenchmarkSweep.mockResolvedValueOnce(['abc123']);
-      await benchmarkCb();
-      mockBenchmarkSweep.mockRejectedValueOnce(new Error('benchmark failed'));
-      await benchmarkCb();
-
-      // cleanup tick: nothing, some, and the error branch
-      mockCleanupOldJobs.mockResolvedValueOnce(0);
-      await cleanupCb();
-      mockCleanupOldJobs.mockResolvedValueOnce(3);
-      await cleanupCb();
-      mockCleanupOldJobs.mockRejectedValueOnce(new Error('cleanup failed'));
-      await cleanupCb();
-
-      // Graceful shutdown: clears intervals, closes the server, ends the pool,
+      // Graceful shutdown: closes the server, ends the pool,
       // exits 0; the force-timeout exits 1.
       await signals.SIGTERM('SIGTERM');
       expect(fakeServer.close).toHaveBeenCalled();

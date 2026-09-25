@@ -45,5 +45,5 @@ If nothing needs a reply, say so in one line — do not pad.
 - Merge mining earns MDL on the same shares (Windows: combined `prl1…+mdl1…` address; Linux/HiveOS: the stratum password `mdl=` field).
 - The in-app earnings estimate pulls live prlscan data as of v0.2.9; older builds overstated it. Real payouts are always what lands in the wallet.
 - HiveOS caches the miner package by filename — a rig stuck on an old version needs a clean reinstall from the versioned tarball at the latest release.
-- LLM co-mining is live but early — no extra earnings yet; it's the direction, not a promise.
+- LLMJob is a Pearl miner only. LLM co-mining, the chat page and the API were retired. Managed mining is a waitlist (https://llmjob.com/managed), not a live service — don't promise dates or pricing.
 - For the current version, check https://github.com/super3/llmjob/releases/latest rather than assuming.

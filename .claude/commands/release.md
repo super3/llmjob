@@ -35,9 +35,9 @@ Install **Node 22**, not the newest LTS. CI (`test.yml`, `miner-build.yml`, `dep
    - `earn/package-lock.json` → the **two** `version` fields near the top (the root object and `packages[""]`). Running `npm install` in `earn/` syncs them for you; editing both by hand is fine when npm isn't available. Don't skip it: v0.3.9 bumped the lock and v0.3.8 didn't, so the lock has silently disagreed with the manifest before.
    - `site/config.json` → `"appVersion": "$NEW"` (the site's download links).
 
-   Then verify by building rather than by grepping the source: `npm run build:site`, and confirm `dist/earn.html` carries six `v$NEW` download URLs (4× `.exe`, 2× `.AppImage`) with no previous version anywhere in the file.
+   Then verify by building rather than by grepping the source: `npm run build:site`, and confirm `dist/index.html` carries six `v$NEW` download URLs (4× `.exe`, 2× `.AppImage`) with no previous version anywhere in the file.
 
-   Do **not** go looking for literal version strings in the page to hand-edit — there are none. The links live in `site/pages/earn.html` (moved out of the repo root) and are templated as `{{!appVersion}}`, so the build substitutes the single `site/config.json` value into all six URLs. This replaced an earlier hand-edited arrangement that went stale twice, lagging at v0.2.7 through two releases; the templating fixes that structurally. If you find yourself editing six URLs by hand, you are on a stale checkout.
+   Do **not** go looking for literal version strings in the page to hand-edit — there are none. The links live in `site/pages/index.html` (the download page, which is the home page) and are templated as `{{!appVersion}}`, so the build substitutes the single `site/config.json` value into all six URLs. This replaced an earlier hand-edited arrangement that went stale twice, lagging at v0.2.7 through two releases; the templating fixes that structurally. If you find yourself editing six URLs by hand, you are on a stale checkout.
 
 5. **Run tests — must be green.** If a suite errors on a missing module (e.g. `jest-environment-jsdom`), the local `node_modules` is stale: run `npm install` in `earn/` then retry. Earn and server suites must both pass at the 100% coverage gate before proceeding.
 

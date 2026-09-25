@@ -40,7 +40,7 @@ jobs:
             return new Promise((resolve, reject) => {
               const options = {
                 hostname: 'llmjob-production.up.railway.app',
-                path: '/api/nodes/public',
+                path: '/api/miners',
                 method: 'GET',
                 headers: {
                   'Content-Type': 'application/json'
@@ -53,7 +53,7 @@ jobs:
                 res.on('end', () => {
                   try {
                     const response = JSON.parse(data);
-                    // Use totalOnline count which includes both public and private nodes
+                    // totalOnline: rigs currently mining (one per host) on the network board
                     const onlineNodes = response.totalOnline || 0;
                     resolve(onlineNodes);
                   } catch (error) {

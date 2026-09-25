@@ -50,44 +50,16 @@ describe('Miner API', () => {
     expect(res.body.miners[0]).toMatchObject({ addr: ADDR, worker: 'rig01', gpu: 'RTX 4090', hash: 100 });
   });
 
-  // Regression: the controller whitelists the ping body field by field, and
-  // llmModel was missing from that list — so the served-model column the client
-  // reports was dropped before it ever reached the service, and the board read
-  // null for every host. Assert the field survives the whole round trip
-  // (request body → upsert → board payload), on the host row and its card.
-  test('POST /api/miners/ping stores the served LLM and GET returns it', async () => {
-    await request(app).post('/api/miners/ping')
-      .send({ address: ADDR, worker: 'rig01', gpu: 'RTX 4090', hashrate: 100, llmModel: 'Gemma-4-E4B-it-Q4_K_M' });
-    const res = await request(app).get('/api/miners');
-    expect(res.body.miners[0].llmModel).toBe('Gemma-4-E4B-it-Q4_K_M');
-    expect(res.body.miners[0].cards[0].llmModel).toBe('Gemma-4-E4B-it-Q4_K_M');
-  });
-
-  // A client too old to report the field (or a card with too little VRAM to
-  // serve) keeps reading null rather than failing the ping.
-  test('POST /api/miners/ping without an llmModel leaves it null', async () => {
-    await request(app).post('/api/miners/ping')
-      .send({ address: ADDR, worker: 'rig01', gpu: 'RTX 4090', hashrate: 100 });
-    const res = await request(app).get('/api/miners');
-    expect(res.body.miners[0].llmModel).toBeNull();
-  });
-
-  // Same whitelist hazard as llmModel above: nodeId is what separates "serving the
-  // cluster" from "running a model", so assert it survives the whole round trip.
-  test('POST /api/miners/ping stores the serving node id and GET returns it', async () => {
+  // The retired LLM fields older clients still send are ignored, not stored or
+  // echoed back onto the public board.
+  test('POST /api/miners/ping ignores the retired llmModel/nodeId fields', async () => {
     await request(app).post('/api/miners/ping')
       .send({ address: ADDR, worker: 'rig01', gpu: 'RTX 4090', hashrate: 100, llmModel: 'Gemma-4-E4B-it-Q4_K_M', nodeId: '5840fc' });
     const res = await request(app).get('/api/miners');
-    expect(res.body.miners[0].nodeId).toBe('5840fc');
-  });
-
-  // A host running the model without serving (or a client too old to send it)
-  // stays unmarked rather than failing the ping.
-  test('POST /api/miners/ping without a nodeId leaves it null', async () => {
-    await request(app).post('/api/miners/ping')
-      .send({ address: ADDR, worker: 'rig01', gpu: 'RTX 4090', hashrate: 100, llmModel: 'Gemma-4-E4B-it-Q4_K_M' });
-    const res = await request(app).get('/api/miners');
-    expect(res.body.miners[0].nodeId).toBeNull();
+    expect(res.body.miners[0]).not.toHaveProperty('llmModel');
+    expect(res.body.miners[0]).not.toHaveProperty('nodeId');
+    const stored = (await db.query('SELECT llm_model, node_id FROM miners', [])).rows[0];
+    expect(stored).toEqual({ llm_model: null, node_id: null });
   });
 
   test('POST returns 500 when the db fails', async () => {
