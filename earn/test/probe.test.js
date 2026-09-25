@@ -22,16 +22,6 @@ function fakeSocket(fire) {
   };
 }
 
-// A fake net.Server for findFreePort: either binds ("listening") or fails.
-function fakeServer(fail) {
-  const h = {};
-  return {
-    once(ev, cb) { h[ev] = cb; return this; },
-    close(cb) { if (cb) cb(); },
-    listen() { process.nextTick(() => (fail ? h.error && h.error() : h.listening && h.listening())); },
-  };
-}
-
 function fakeRes() {
   const res = new EventEmitter();
   res.resume = () => {};
@@ -99,23 +89,6 @@ describe('detectRegion', () => {
   it('falls back to the default when nothing is reachable', async () => {
     net.Socket.mockImplementation(() => fakeSocket('error'));
     expect(await probe.detectRegion()).toBe('us'); // DEFAULTS.region
-  });
-});
-
-describe('detectVram', () => {
-  it('sums used/total across GPU lines', async () => {
-    execCb(null, '1024, 8192\n2048, 8192\n');
-    expect(await probe.detectVram()).toEqual({ usedMb: 3072, totalMb: 16384 });
-  });
-
-  it('returns null on error', async () => {
-    execCb(new Error('no smi'));
-    expect(await probe.detectVram()).toBeNull();
-  });
-
-  it('returns null when nothing parses', async () => {
-    execCb(null, 'garbage\n');
-    expect(await probe.detectVram()).toBeNull();
   });
 });
 
@@ -253,18 +226,6 @@ describe('postMinerReport', () => {
       await expect(done).resolves.toBeUndefined();
       expect(httpMock.request).toHaveBeenCalled();
     });
-  });
-});
-
-describe('findFreePort', () => {
-  it('returns the first port that binds (default tries)', async () => {
-    net.createServer.mockImplementation(() => fakeServer(false));
-    expect(await probe.findFreePort('127.0.0.1', 8080)).toBe(8080);
-  });
-
-  it('walks forward and falls back to the start port when none bind', async () => {
-    net.createServer.mockImplementation(() => fakeServer(true));
-    expect(await probe.findFreePort('127.0.0.1', 8080, 3)).toBe(8080);
   });
 });
 

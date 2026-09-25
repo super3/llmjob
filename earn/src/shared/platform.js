@@ -1,11 +1,8 @@
 'use strict';
 
 // What the OS this copy is running on can actually do. macOS is why this module
-// exists: the Mac build runs the local LLM — llama.cpp publishes a Metal build
-// and shared/config.js points at it — but it cannot mine. AlphaPool ships
-// `alpha-miner` for Windows and Linux only; there is no Darwin binary at any
-// version, and no Rosetta path either (the engine is CUDA, and Macs have no
-// NVIDIA GPU).
+// exists: the Pearl core is CUDA and Macs have no NVIDIA GPU, so a Mac cannot
+// mine at all.
 //
 // The gate has to be explicit rather than implicit, because everything
 // downstream treats "not Windows" as "Linux": engine.enginePackage falls back to
@@ -26,24 +23,16 @@ function minerSupported(platform) {
   return NO_MINER.indexOf(platform) === -1;
 }
 
-// The one-line explanation for a user whose compute mode asked for mining on a
-// platform that has no engine, or '' when there is nothing to explain (mining
-// works here, or the mode never wanted it).
+// The one-line explanation for a user who pressed Start on a platform that has
+// no engine, or '' when mining works here.
 //
 // The branch lives here rather than at the call sites so both shells say the
 // same thing and main.js — which carries a coverage ratchet for its unreachable
-// defensive paths — doesn't grow another one. Without the line the plan simply
-// drops the miner and the run looks broken: an 'auto' Mac start would serve
-// inference and never mention that the mining half was skipped, and a 'mining'
-// Mac start would run nothing at all with no reason given.
-function minerUnsupportedNote(platform, mode) {
+// defensive paths — doesn't grow another one.
+function minerUnsupportedNote(platform) {
   if (minerSupported(platform)) return '';
-  if (mode === 'llm') return ''; // this mode never asked to mine
   return 'note: mining is not available on macOS — the Pearl core is CUDA, and'
-    + ' Macs have no NVIDIA GPU to run it on.'
-    + (mode === 'mining'
-      ? ' Switch the compute mode to LLM to serve the local model instead.'
-      : ' The local LLM runs as usual — this Mac serves inference, not Pearl.');
+    + ' Macs have no NVIDIA GPU to run it on.';
 }
 
 // Can electron-updater actually install an update here?

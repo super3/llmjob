@@ -1,9 +1,8 @@
 'use strict';
 
 // Shared plain-Node IO for both shells (Electron main and the headless CLI):
-// JSON POSTs to the LLMJob server, resumable-safe file downloads, the SSE
-// chat-completions stream against the local llama-server, and llama.cpp zip
-// extraction. One implementation instead of per-shell copies, so protocol and
+// JSON POSTs to the LLMJob server, JSON GETs, and resumable-safe file
+// downloads. One implementation instead of per-shell copies, so protocol and
 // bug fixes land everywhere at once. No Electron dependencies.
 
 const fs = require('fs');
@@ -32,7 +31,6 @@ function isTlsTrustError(err) {
   const code = String(err.code || err.errno || '');
   return TLS_TRUST_CODES.test(code) || TLS_TRUST_TEXT.test(String(err.message || ''));
 }
-const { parseChatStream } = require('../shared/llmChat');
 
 // Minimal JSON POST → { status, data, raw }. Resolves for ANY HTTP status
 // (callers must check `status`); rejects only on transport errors/timeouts.
@@ -336,107 +334,12 @@ function downloadAttempt(url, dest, part, onProgress, redirects, attempt, ca) {
   });
 }
 
-// Stream a chat request to the local llama-server's OpenAI endpoint. Deltas are
-// batched per network chunk — onDelta(text, tokenCount) — instead of one call
-// per token. A thinking model's `reasoning_content` is reported the same way via
-// the optional onReasoning(text, tokenCount), so those tokens are accounted for
-// rather than silently dropped. Returns { done, cancel }: `done` resolves with
-// { finishReason } when the stream finishes and rejects on transport/HTTP errors
-// or cancel(reason); cancel is safe to call at any point and settles `done`
-// before destroying the request, so callers always observe an outcome (no
-// orphaned in-flight state).
-function streamChatCompletion(baseUrl, chatBody, onDelta, onReasoning) {
-  let settled = false;
-  let finishReason = null;
-  let resolveDone, rejectDone;
-  const done = new Promise((res, rej) => { resolveDone = res; rejectDone = rej; });
-  const finish = () => { if (!settled) { settled = true; resolveDone({ finishReason }); } };
-  const fail = (err) => { if (!settled) { settled = true; rejectDone(err); } };
-
-  let url;
-  try { url = new URL(baseUrl + '/v1/chat/completions'); } catch (e) {
-    fail(e);
-    return { done, cancel: () => {} };
-  }
-  const lib = url.protocol === 'http:' ? http : https;
-  const payload = JSON.stringify(chatBody);
-  const req = lib.request(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
-  }, (res) => {
-    if (res.statusCode !== 200) { res.resume(); return fail(new Error('llama-server HTTP ' + res.statusCode)); }
-    let buf = '';
-    res.setEncoding('utf8');
-    res.on('data', (c) => {
-      buf += c;
-      const parsed = parseChatStream(buf);
-      buf = parsed.rest;
-      if (parsed.deltas.length) onDelta(parsed.deltas.join(''), parsed.deltas.length);
-      if (parsed.reasoning.length && onReasoning) {
-        onReasoning(parsed.reasoning.join(''), parsed.reasoning.length);
-      }
-      if (parsed.finishReason) finishReason = parsed.finishReason;
-      if (parsed.done) { res.destroy(); finish(); }
-    });
-    res.on('end', finish);
-    res.on('error', fail);
-  });
-  req.on('error', fail);
-  req.write(payload);
-  req.end();
-
-  return {
-    done,
-    cancel: (reason) => { fail(new Error(reason || 'cancelled')); req.destroy(); },
-  };
-}
-
-// Extract the llama.cpp release archive on Linux/macOS, flattening it into the
-// install dir so `llama-server` lands next to its shared libraries (.so/.dylib)
-// — llama.cpp resolves libs from the binary's own directory ($ORIGIN rpath), so
-// co-locating them is what makes the downloaded server run. llama.cpp ships
-// Linux/macOS as .tar.gz (a build-named top folder) and Windows as .zip; the
-// download always lands at one format-neutral name (llmEngineManager's
-// ARCHIVE_TMP), so sniff the magic bytes rather than trust the name: gzip
-// (1f 8b) → `tar --strip-components=1`, otherwise `unzip -j`.
-// `hint` is appended to the extraction error (e.g. the CLI's --llm-binary
-// escape hatch).
-function extractLlamaZip(zipPath, dest, hint) {
-  return new Promise((resolve, reject) => {
-    const dir = path.dirname(dest);
-    let gzip = false;
-    try {
-      const fd = fs.openSync(zipPath, 'r');
-      const head = Buffer.alloc(2);
-      fs.readSync(fd, head, 0, 2, 0);
-      fs.closeSync(fd);
-      gzip = head[0] === 0x1f && head[1] === 0x8b;
-    } catch (e) {
-      return reject(new Error('could not read the llama-server archive (' + e.message + ')'));
-    }
-    const tool = gzip ? 'tar' : 'unzip';
-    const args = gzip
-      ? ['-xzf', zipPath, '-C', dir, '--strip-components=1'] // strip the build-named top folder
-      : ['-o', '-j', zipPath, '-d', dir];                    // junk paths → flatten
-    execFile(tool, args, { timeout: 120000 }, (err) => {
-      if (err) {
-        return reject(new Error('could not extract the llama-server archive with `' + tool + '` ('
-          + err.message + ')' + (hint ? ' — ' + hint : '')));
-      }
-      if (!fs.existsSync(dest)) {
-        return reject(new Error('llama-server was not found in the downloaded archive'));
-      }
-      resolve(dest);
-    });
-  });
-}
-
 // Extract a packaged engine archive into `destDir`, keeping the archive's own
 // top-level folder. That folder is exactly the `dir` in the package descriptor
 // (alpha-miner-1.9.1b/, AlphaMiner-Windows-1.9.1.02/), so the launcher and its
 // core land together at the path enginePath() resolves to — deliberately NOT
-// flattened like the llama.cpp archives, because the launcher finds its core as
-// a sibling and splitting them breaks every start.
+// flattened, because the launcher finds its core as a sibling and splitting
+// them breaks every start.
 //
 // The same version ships as a .tar.gz on Linux and a .zip on Windows, so sniff
 // the magic bytes rather than trust the name: gzip (1f 8b) → `tar -xzf`,
@@ -496,6 +399,4 @@ module.exports = {
   downloadFile,
   extractEnginePackage,
   trustRecoveryCa,
-  streamChatCompletion,
-  extractLlamaZip,
 };

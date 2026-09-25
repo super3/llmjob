@@ -30,10 +30,6 @@ describe('invoke-based methods', () => {
     ['detectGpu', 'gpu:detect'],
     ['detectRegion', 'region:detect'],
     ['getBalance', 'balance:get', 'prl1abc'],
-    ['getLlmStatus', 'llm:status'],
-    ['getNodeStatus', 'node:status'],
-    ['connectNode', 'node:connect', { token: 't' }],
-    ['disconnectNode', 'node:disconnect'],
     ['getVersion', 'app:version'],
   ];
 
@@ -48,8 +44,6 @@ describe('invoke-based methods', () => {
 
 describe('send-based methods', () => {
   const cases = [
-    ['sendChat', 'llm:chat', [{ role: 'user', content: 'hi' }]],
-    ['openNodeDashboard', 'node:dashboard'],
     ['startMiner', 'miner:start', { address: 'prl1abc' }],
     ['stopMiner', 'miner:stop'],
     ['openExternal', 'open-external', 'https://llmjob.com'],
@@ -71,11 +65,6 @@ describe('send-based methods', () => {
 describe('event subscriptions', () => {
   // [apiMethod, channel, forwardsPayload]
   const cases = [
-    ['onLlm', 'llm:status', true],
-    ['onChatDelta', 'llm:chat:delta', true],
-    ['onChatDone', 'llm:chat:done', false],
-    ['onChatError', 'llm:chat:error', true],
-    ['onNodeStatus', 'node:status', true],
     ['onStats', 'miner:stats', true],
     ['onLog', 'miner:log', true],
     ['onEvent', 'miner:event', true],

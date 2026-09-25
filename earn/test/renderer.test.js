@@ -18,13 +18,8 @@ const BODY = HTML
 
 const ADDR = 'prl1p' + 'a'.repeat(30);
 const ADDR2 = 'prl1p' + 'c'.repeat(30);
-const ENDPOINT = 'http://127.0.0.1:8080/v1';
-const WEB_URL = 'http://127.0.0.1:8080';
 
 const $ = (id) => document.getElementById(id);
-
-let rafQueue = [];
-const flushRaf = () => { rafQueue.splice(0).forEach((cb) => cb()); };
 
 async function flush() {
   for (let i = 0; i < 30; i++) await Promise.resolve();
@@ -37,10 +32,6 @@ function click(elm) {
 function setInput(elm, value) {
   elm.value = value;
   elm.dispatchEvent(new window.Event('input', { bubbles: true }));
-}
-
-function submitChat() {
-  $('chat-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
 }
 
 class ROStub {
@@ -69,17 +60,6 @@ function makeFullApi() {
     detectGpu: jest.fn().mockResolvedValue('RTX 4090'),
     detectRegion: jest.fn().mockResolvedValue('eu1'),
     getBalance: jest.fn().mockResolvedValue({ earned: 1234.5678, usd: 12.3 }),
-    getLlmStatus: jest.fn().mockResolvedValue(null),
-    onLlm: jest.fn((cb) => { cbs.llm = cb; }),
-    sendChat: jest.fn(),
-    onChatDelta: jest.fn((cb) => { cbs.chatDelta = cb; }),
-    onChatDone: jest.fn((cb) => { cbs.chatDone = cb; }),
-    onChatError: jest.fn((cb) => { cbs.chatError = cb; }),
-    getNodeStatus: jest.fn().mockResolvedValue(null),
-    connectNode: jest.fn().mockResolvedValue({ success: true, nodeId: 'n1', name: 'rig-a', user: 'alice' }),
-    disconnectNode: jest.fn().mockResolvedValue(undefined),
-    onNodeStatus: jest.fn((cb) => { cbs.node = cb; }),
-    openNodeDashboard: jest.fn(),
     startMiner: jest.fn(),
     stopMiner: jest.fn(),
     openExternal: jest.fn(),
@@ -107,14 +87,7 @@ function makePartialApi() {
     getConfig: jest.fn().mockResolvedValue(null),
     detectGpu: jest.fn().mockResolvedValue('GpuB'),
     detectRegion: jest.fn().mockResolvedValue(''),
-    getLlmStatus: jest.fn().mockResolvedValue(undefined),
-    getNodeStatus: jest.fn().mockResolvedValue(undefined),
     getVersion: jest.fn().mockResolvedValue(''),
-    onLlm: jest.fn((cb) => { cbs.llm = cb; }),
-    onChatDelta: jest.fn((cb) => { cbs.chatDelta = cb; }),
-    onChatDone: jest.fn((cb) => { cbs.chatDone = cb; }),
-    onChatError: jest.fn((cb) => { cbs.chatError = cb; }),
-    onNodeStatus: jest.fn((cb) => { cbs.node = cb; }),
     onStats: jest.fn((cb) => { cbs.stats = cb; }),
     onLog: jest.fn((cb) => { cbs.log = cb; }),
     onEngine: jest.fn((cb) => { cbs.engine = cb; }),
@@ -130,8 +103,6 @@ function loadRenderer({ api, noApi, resizeObserver, mutate } = {}) {
   if (mutate) mutate();
   if (noApi) delete window.llmjob;
   else window.llmjob = api || {};
-  rafQueue = [];
-  window.requestAnimationFrame = (cb) => { rafQueue.push(cb); return rafQueue.length; };
   if (resizeObserver) window.ResizeObserver = resizeObserver;
   else delete window.ResizeObserver;
   require(RENDERER);
@@ -141,10 +112,6 @@ async function boot(opts) {
   loadRenderer(opts);
   await flush();
 }
-
-const makeReady = (cbs, extra) => cbs.llm(Object.assign({
-  ready: true, endpoint: ENDPOINT, webUrl: WEB_URL, tokensPerSec: 12.34, model: 'gemma',
-}, extra));
 
 beforeEach(() => { jest.useFakeTimers(); });
 
@@ -173,17 +140,19 @@ describe('boot with the full bridge', () => {
     expect($('balance-meta').hidden).toBe(false);
     expect($('get-wallet').hidden).toBe(true);
     expect($('app-version').textContent).toBe('v9.9.9');
-    expect($('chat-suggestions').children).toHaveLength(3);
     expect($('btn-start').disabled).toBe(false);
-    // llm defaults after a null status
-    expect($('llm-hero-tps').textContent).toBe('0.0');
-    expect($('llm-hero-detail').textContent).toBe('gemma-4-E4B-it');
-    expect($('chat-stopped-model').textContent).toBe('the local model');
-    expect($('api-model').textContent).toBe('—');
+    expect($('engine-status').hidden).toBe(true);
+    // External links open in the browser through the bridge, not in the window.
+    click($('get-wallet'));
+    expect(api.openExternal).toHaveBeenCalledWith('https://github.com/pearl-research-labs/pearl/releases');
+    // The LLM's tabs, hero column and compute mode are gone from the window.
+    for (const id of ['tab-chat', 'tab-api', 'view-chat', 'view-api', 'llm-hero-tps', 'mode-seg']) {
+      expect($(id)).toBeNull();
+    }
   });
 
-  it('navigates tabs, settings, logs and unknown views', async () => {
-    const { api, cbs } = makeFullApi();
+  it('navigates between mine, settings, logs and unknown views', async () => {
+    const { api } = makeFullApi();
     await boot({
       api,
       mutate: () => {
@@ -193,17 +162,12 @@ describe('boot with the full bridge', () => {
         document.body.appendChild(ghost);
       },
     });
-    click($('tab-chat'));
-    expect($('view-chat').hidden).toBe(false);
-    expect($('chat-stopped').hidden).toBe(false); // llm down → gate
-    click($('tab-api'));
-    expect($('view-api').hidden).toBe(false);
-    expect($('tab-api').classList.contains('active')).toBe(true);
-    // settings toggles back to the last real tab
+    // the settings gear toggles to settings and back to mine
     click($('btn-settings'));
     expect($('view-settings').hidden).toBe(false);
+    expect($('btn-settings').classList.contains('active')).toBe(true);
     click($('btn-settings'));
-    expect($('view-api').hidden).toBe(false);
+    expect($('view-mine').hidden).toBe(false);
     // logs toggle + back link — the footer link relabels, since it is also the
     // way out of the logs view
     expect($('btn-logs').textContent).toBe('VIEW LOGS');
@@ -211,24 +175,21 @@ describe('boot with the full bridge', () => {
     expect($('view-logs').hidden).toBe(false);
     expect($('btn-logs').textContent).toBe('CLOSE LOGS');
     click($('btn-logs'));
-    expect($('view-api').hidden).toBe(false);
+    expect($('view-mine').hidden).toBe(false);
     expect($('btn-logs').textContent).toBe('VIEW LOGS');
     click($('btn-logs'));
     click(document.querySelector('[data-back]'));
-    expect($('view-api').hidden).toBe(false);
+    expect($('view-mine').hidden).toBe(false);
     expect($('btn-logs').textContent).toBe('VIEW LOGS'); // ← Back relabels too
     // unknown data-tab hides every view
     click($('ghost-tab'));
     expect($('view-mine').hidden).toBe(true);
-    expect($('view-chat').hidden).toBe(true);
-    expect($('view-api').hidden).toBe(true);
-    // chat tab focuses the composer once the model is up
-    makeReady(cbs);
-    click($('tab-chat'));
-    jest.advanceTimersByTime(0);
-    expect(document.activeElement).toBe($('chat-input'));
+    expect($('view-settings').hidden).toBe(true);
+    expect($('view-logs').hidden).toBe(true);
+    // the brand returns to mine
     click($('tab-mine'));
     expect($('view-mine').hidden).toBe(false);
+    expect($('tab-mine').classList.contains('active')).toBe(true);
   });
 
   // Merge mining is gone from the UI but an address someone already configured
@@ -240,7 +201,7 @@ describe('boot with the full bridge', () => {
     const MDL = 'mdl1p' + 'b'.repeat(30);
     api.getSettings = jest.fn().mockResolvedValue({
       address: ADDR, worker: 'w1', region: 'eu1',
-      mode: 'auto', mdlAddress: MDL, resumeMining: false,
+      mdlAddress: MDL, resumeMining: false,
     });
     await boot({ api });
 
@@ -308,114 +269,44 @@ describe('boot with the full bridge', () => {
     expect($('btn-logs').textContent).toBe('CLOSE LOGS');
   });
 
-  it('switches compute modes and falls back on unknown ones', async () => {
+  // macOS: main.js reports minerSupported:false on config:get, because the
+  // Pearl core is CUDA and Macs have no NVIDIA GPU. START would run nothing, so
+  // it stays off and the status line says why instead of staying silent.
+  it('keeps START off and explains why on a platform that cannot mine', async () => {
     const { api } = makeFullApi();
-    await boot({
-      api,
-      mutate: () => {
-        const b = document.createElement('button');
-        b.id = 'mode-empty';
-        b.setAttribute('data-mode', '');
-        document.getElementById('mode-seg').appendChild(b);
-      },
-    });
-    click(document.querySelector('[data-mode="mining"]'));
-    expect($('mode-hint').textContent).toMatch(/mining only/i);
-    expect(document.querySelector('[data-mode="mining"]').classList.contains('active')).toBe(true);
-    click(document.querySelector('[data-mode="llm"]'));
-    expect($('mode-hint').textContent).toMatch(/Local model only/);
-    click(document.querySelector('[data-mode="auto"]'));
-    expect($('mode-hint').textContent).toMatch(/Balances mining/);
-    // unknown mode → default hint
-    click($('mode-empty'));
-    expect($('mode-hint').textContent).toMatch(/Balances mining/);
-    // canStart: invalid address + mining-only disables START
-    setInput($('addr-input'), 'nope');
-    click(document.querySelector('[data-mode="mining"]'));
+    api.getConfig.mockResolvedValue({ regions: {}, platform: { minerSupported: false } });
+    await boot({ api });
     expect($('btn-start').disabled).toBe(true);
-    click(document.querySelector('[data-mode="llm"]'));
-    expect($('btn-start').disabled).toBe(false);
-  });
-
-  // macOS: main.js reports minerSupported:false on config:get, because there is
-  // no alpha-miner build for it. Leaving "Mining" and "Mining+LLM" on screen
-  // would arm a START that runs nothing at all.
-  it('drops the mining modes when the platform has no engine', async () => {
-    const { api } = makeFullApi();
-    api.getConfig.mockResolvedValue({ regions: {}, platform: { minerSupported: false } });
-    // Stored 'mining' on a box that cannot mine: the button is hidden, so leaving
-    // the mode selected would light nothing and arm a run that does nothing.
-    api.getSettings.mockResolvedValue({ address: ADDR, mode: 'mining' });
-    await boot({ api });
-    expect(document.querySelector('[data-mode="auto"]').classList.contains('active')).toBe(true);
-
-    expect(document.querySelector('[data-mode="mining"]').hidden).toBe(true);
-    // Mining+LLM is not hidden — it no longer exists.
-    expect(document.querySelector('[data-mode="both"]')).toBeNull();
-    // 'auto' and 'llm' survive: both degrade correctly to LLM-only, and 'auto'
-    // is what a fresh install lands on.
-    expect(document.querySelector('[data-mode="auto"]').hidden).toBe(false);
-    expect(document.querySelector('[data-mode="llm"]').hidden).toBe(false);
-    expect($('mode-hint').textContent).toMatch(/Runs the local LLM on this Mac/);
-    // START is never blocked there — no mode left needs a payout address.
-    setInput($('addr-input'), '');
-    expect($('btn-start').disabled).toBe(false);
-
-    // Picking LLM explicitly still reads normally.
-    click(document.querySelector('[data-mode="llm"]'));
-    expect($('mode-hint').textContent).toMatch(/Local model only/);
-  });
-
-  // A settings file written on a Windows/Linux rig (or by an older build) can
-  // carry mode:'both'. Without the correction the segment would light nothing
-  // and START would arm a plan whose mining half is refused anyway.
-  it('rewrites a saved mining mode to auto on a platform that cannot mine', async () => {
-    const { api } = makeFullApi();
-    api.getConfig.mockResolvedValue({ regions: {}, platform: { minerSupported: false } });
-    api.getSettings.mockResolvedValue({ address: ADDR, mode: 'both' });
-    await boot({ api });
-
-    expect(document.querySelector('[data-mode="auto"]').classList.contains('active')).toBe(true);
+    expect($('engine-status').hidden).toBe(false);
+    expect($('engine-status').textContent).toMatch(/NVIDIA GPU on Windows or Linux/);
     click($('btn-start'));
-    expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ mode: 'auto' }));
+    expect(api.startMiner).not.toHaveBeenCalled();
   });
 
-  it('keeps every mode where mining works, including when config omits the platform', async () => {
+  it('allows START where mining works, including when config omits the platform', async () => {
     const { api } = makeFullApi();
-    api.getConfig.mockResolvedValue({ regions: {}, platform: { minerSupported: true } });
-    api.getSettings.mockResolvedValue({ address: ADDR, mode: 'both' });
+    api.getConfig.mockResolvedValue({ regions: {} });
     await boot({ api });
-    expect(document.querySelector('[data-mode="mining"]').hidden).toBe(false);
-    // A rig that stored the retired 'both' lands on auto — the same plan, and a
-    // button that actually exists to show as selected.
-    expect(document.querySelector('[data-mode="auto"]').classList.contains('active')).toBe(true);
+    expect($('btn-start').disabled).toBe(false);
+    expect($('engine-status').hidden).toBe(true);
   });
 
   it('starts and stops mining, renders stats, logs and engine phases', async () => {
     const { api, cbs } = makeFullApi();
-    await boot({
-      api,
-      mutate: () => {
-        const b = document.createElement('button');
-        b.id = 'mode-empty';
-        b.setAttribute('data-mode', '');
-        document.getElementById('mode-seg').appendChild(b);
-      },
-    });
+    await boot({ api });
     // stats before mining are ignored
-    cbs.stats({ total: '9.9', acceptedLabel: '9', uptime: '9m', estDay: '$9', points: [1] });
+    cbs.stats({ total: '9.9', acceptedLabel: '9', rejectedLabel: '9', uptime: '9m', estDay: '$9', points: [1] });
     expect($('hashrate').textContent).toBe('0.0');
-    // start() guard: invalid address + mining-only mode is a no-op
+    // start() guard: no valid address is a no-op
     setInput($('addr-input'), '');
-    click(document.querySelector('[data-mode="mining"]'));
+    expect($('btn-start').disabled).toBe(true);
     click($('btn-start'));
     expect(api.startMiner).not.toHaveBeenCalled();
     // valid start
     setInput($('addr-input'), ADDR);
-    click(document.querySelector('[data-mode="auto"]'));
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenCalledWith({
-      address: ADDR, worker: 'w1', region: 'eu1', mode: 'auto', mdlAddress: '',
+      address: ADDR, worker: 'w1', region: 'eu1', mdlAddress: '',
     });
     expect($('addr-static').hidden).toBe(false);
     expect($('addr-static').textContent).toBe(ADDR);
@@ -423,9 +314,10 @@ describe('boot with the full bridge', () => {
     expect($('mine-dot').className).toBe('dot2 on');
     expect($('log-term').textContent).toMatch(/starting LLMJob Earn/);
     // live stats: multi-point chart + gpu label
-    cbs.stats({ total: '1.2', acceptedLabel: '34', uptime: '5m 00s', estDay: '$0.42', gpu: 'gpu-live', points: [1, 2, 3] });
+    cbs.stats({ total: '1.2', acceptedLabel: '34', rejectedLabel: '2', uptime: '5m 00s', estDay: '$0.42', gpu: 'gpu-live', points: [1, 2, 3] });
     expect($('hashrate').textContent).toBe('1.2');
     expect($('accepted').textContent).toBe('34');
+    expect($('rejected').textContent).toBe('2');
     expect($('uptime').textContent).toBe('5m 00s');
     expect($('estday').textContent).toBe('$0.42');
     // The engine's name wins: it is the card the core actually opened, while the
@@ -483,15 +375,15 @@ describe('boot with the full bridge', () => {
     cbs.stopped();
     expect($('btn-start').hidden).toBe(false);
     expect($('hashrate').textContent).toBe('0.0');
+    expect($('rejected').textContent).toBe('0');
     expect($('device-label').textContent).toBe('RTX 4090');
     expect($('engine-status').hidden).toBe(true);
-    // restart with every settings fallback (empty worker/region/mode)
+    // restart with every settings fallback (empty worker/region)
     setInput($('set-worker'), '');
     $('set-region').value = 'zz'; // no such option → '' → falls back to defaults.region
-    click($('mode-empty'));
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenLastCalledWith({
-      address: ADDR, worker: 'rig01', region: 'us2', mode: 'mining', mdlAddress: '',
+      address: ADDR, worker: 'rig01', region: 'us2', mdlAddress: '',
     });
     // A new run forgets the last run's card, so an engine that names none (an
     // older core, or a rig with no CUDA device list to report) shows the detected
@@ -543,286 +435,6 @@ describe('boot with the full bridge', () => {
     api.getBalance.mockClear();
     jest.advanceTimersByTime(60000);
     expect(api.getBalance).not.toHaveBeenCalled();
-  });
-
-  // A first run downloads a ~5 GB model; the hero has to say so. Otherwise it
-  // shows the model name and a grey dot the whole time, which looks identical to
-  // "nothing is happening" and gets users clicking START over and over.
-  it('shows the download/startup note on the hero until the LLM is ready', async () => {
-    const { api, cbs } = makeFullApi();
-    await boot({ api });
-
-    cbs.llm({ note: 'downloading model gemma… 42%' });
-    expect($('llm-hero-detail').textContent).toBe('downloading model gemma… 42%');
-    expect($('llm-hero-dot').className).toBe('dot2 busy');
-
-    cbs.llm({ note: 'Starting…' });
-    expect($('llm-hero-detail').textContent).toBe('Starting…');
-
-    // A real error outranks the note — the note is only ever "still working".
-    cbs.llm({ note: 'Starting…', error: 'Needs ~4 GB free VRAM' });
-    expect($('llm-hero-detail').textContent).toBe('Needs ~4 GB free VRAM');
-    expect($('llm-hero-dot').className).toBe('dot2 err');
-
-    // …and so does being ready, so a stale note can't linger over a live model.
-    makeReady(cbs, { note: 'Starting…' });
-    expect($('llm-hero-detail').textContent).toBe('gemma');
-    expect($('llm-hero-dot').className).toBe('dot2 on');
-  });
-
-  it('renders llm status transitions on the hero and gates', async () => {
-    const { api, cbs } = makeFullApi();
-    await boot({ api });
-    cbs.llm({ error: 'GPU died' });
-    expect($('llm-hero-dot').className).toBe('dot2 err');
-    expect($('llm-hero-detail').textContent).toBe('GPU died');
-    expect($('llm-hero-detail').classList.contains('err')).toBe(true);
-    expect($('llm-hero-tps').textContent).toBe('0.0');
-    makeReady(cbs);
-    expect($('llm-hero-tps').textContent).toBe('12.3');
-    expect($('llm-hero-dot').className).toBe('dot2 on');
-    expect($('llm-hero-detail').textContent).toBe('gemma');
-    expect($('chat-running').hidden).toBe(false);
-    expect($('chat-stopped').hidden).toBe(true);
-    expect($('api-running').hidden).toBe(false);
-    expect($('api-endpoint-url').textContent).toBe(ENDPOINT);
-    expect($('api-model').textContent).toBe('gemma');
-    // ready without endpoint keeps the last endpoint text, model is remembered
-    cbs.llm({ ready: true });
-    expect($('api-endpoint-url').textContent).toBe(ENDPOINT);
-    expect($('llm-hero-detail').textContent).toBe('gemma');
-    expect($('llm-hero-tps').textContent).toBe('0.0');
-    // stopped again
-    cbs.llm({});
-    expect($('chat-stopped').hidden).toBe(false);
-    expect($('api-stopped').hidden).toBe(false);
-    expect($('chat-stopped-model').textContent).toBe('gemma');
-  });
-
-  it('runs the chat loop: send, stream, done, errors and new chat', async () => {
-    const { api, cbs } = makeFullApi();
-    await boot({ api });
-    // submitting the pristine empty composer is a no-op
-    submitChat();
-    // not ready yet → submit is swallowed
-    setInput($('chat-input'), 'early');
-    expect($('chat-send').disabled).toBe(true);
-    submitChat();
-    expect(api.sendChat).not.toHaveBeenCalled();
-    // ready without a model name → header falls back
-    cbs.llm({ ready: true });
-    setInput($('chat-input'), '  hi  ');
-    expect($('chat-send').disabled).toBe(false);
-    submitChat();
-    expect($('chat-model').textContent).toBe('gemma-4-E4B-it');
-    expect($('chat-head').hidden).toBe(false);
-    expect($('chat-empty').hidden).toBe(true);
-    expect(api.sendChat).toHaveBeenCalledWith([{ role: 'user', content: 'hi' }]);
-    expect($('chat-input').value).toBe('');
-    expect($('chat-send').disabled).toBe(true);
-    let msgs = $('chat-messages').querySelectorAll('.chat-msg');
-    expect(msgs).toHaveLength(2);
-    expect(msgs[0].className).toBe('chat-msg user');
-    expect(msgs[1].className).toBe('chat-msg assistant');
-    expect(msgs[1].querySelector('.bubble').classList.contains('streaming')).toBe(true);
-    // two addMsg calls queued a single rAF (throttled), flushing scrolls
-    expect(rafQueue).toHaveLength(1);
-    flushRaf();
-    // deltas: null and empty are ignored, text appends
-    cbs.chatDelta(null);
-    cbs.chatDelta({ text: '' });
-    cbs.chatDelta({ text: 'Hel' });
-    flushRaf();
-    cbs.chatDelta({ text: 'lo' });
-    expect(msgs[1].querySelector('.bubble').textContent).toBe('Hello');
-    // guards while streaming: submit, suggestion chip and new-chat are no-ops
-    setInput($('chat-input'), 'while streaming');
-    submitChat();
-    click($('chat-suggestions').children[0]);
-    click($('chat-new'));
-    expect(api.sendChat).toHaveBeenCalledTimes(1);
-    expect($('chat-messages').querySelectorAll('.chat-msg')).toHaveLength(2);
-    // a ready status mid-stream does not abort the reply
-    cbs.llm({ ready: true, model: 'gemma' });
-    // done ends the stream; a duplicate done is ignored
-    cbs.chatDone();
-    expect(msgs[1].querySelector('.bubble').classList.contains('streaming')).toBe(false);
-    cbs.chatDone();
-    // a stray delta after the stream ended is dropped
-    cbs.chatDelta({ text: 'late-delta' });
-    expect(msgs[1].querySelector('.bubble').textContent).toBe('Hello');
-    // a stray error with no active bubble only re-enables the composer
-    cbs.chatError({ message: 'late' });
-    // suggestion chip sends the canned prompt with history attached
-    click($('tab-chat'));
-    click($('chat-suggestions').children[0]);
-    expect(api.sendChat).toHaveBeenCalledTimes(2);
-    expect(api.sendChat.mock.calls[1][0]).toHaveLength(3);
-    expect($('chat-model').textContent).toBe('gemma');
-    // immediate done with no deltas stores an empty reply
-    cbs.chatDone();
-    // error without a message and without stream text
-    setInput($('chat-input'), 'q1');
-    submitChat();
-    cbs.chatError(null);
-    msgs = $('chat-messages').querySelectorAll('.chat-msg');
-    let bubble = msgs[msgs.length - 1].querySelector('.bubble');
-    expect(bubble.textContent).toBe('⚠ the chat request failed');
-    expect(bubble.classList.contains('err')).toBe(true);
-    // error after partial text keeps the partial reply
-    setInput($('chat-input'), 'q2');
-    submitChat();
-    cbs.chatDelta({ text: 'part' });
-    cbs.chatError({ message: 'oops' });
-    msgs = $('chat-messages').querySelectorAll('.chat-msg');
-    bubble = msgs[msgs.length - 1].querySelector('.bubble');
-    expect(bubble.textContent).toBe('part\n\n⚠ oops');
-    // llm dying mid-stream unbricks the composer via a synthetic error
-    setInput($('chat-input'), 'q3');
-    submitChat();
-    cbs.llm({ ready: false });
-    msgs = $('chat-messages').querySelectorAll('.chat-msg');
-    bubble = msgs[msgs.length - 1].querySelector('.bubble');
-    expect(bubble.textContent).toMatch(/the local LLM stopped/);
-    // new chat wipes the thread (on the chat tab, then off it)
-    makeReady(cbs);
-    click($('chat-new'));
-    expect($('chat-messages').children).toHaveLength(0);
-    expect($('chat-empty').hidden).toBe(false);
-    expect($('chat-head').hidden).toBe(true);
-    click($('tab-mine'));
-    click($('chat-new'));
-    // whitespace-only submit is ignored
-    setInput($('chat-input'), '   ');
-    submitChat();
-    expect(api.sendChat).toHaveBeenCalledTimes(5);
-    // ending a stream off the chat tab skips the refocus
-    click($('tab-chat'));
-    setInput($('chat-input'), 'q4');
-    submitChat();
-    click($('tab-mine'));
-    cbs.chatDone();
-  });
-
-  it('promotes the compute mode when starting the LLM from a gate', async () => {
-    const { api, cbs } = makeFullApi();
-    await boot({ api });
-    const startLlm = document.querySelector('[data-start-llm]');
-    // auto mode starts as-is
-    click(startLlm);
-    expect(api.startMiner).toHaveBeenCalledTimes(1);
-    expect(api.startMiner.mock.calls[0][0].mode).toBe('auto');
-    click($('btn-stop'));
-    // mining-only + valid address → auto (was 'both', which meant the same)
-    click(document.querySelector('[data-mode="mining"]'));
-    click(startLlm);
-    expect(api.startMiner.mock.calls[1][0].mode).toBe('auto');
-    click($('btn-stop'));
-    // mining-only + no address → llm-only
-    setInput($('addr-input'), '');
-    click(document.querySelector('[data-mode="mining"]'));
-    click(startLlm);
-    expect(api.startMiner.mock.calls[2][0].mode).toBe('llm');
-    // already ready → no-op
-    makeReady(cbs);
-    click(startLlm);
-    expect(api.startMiner).toHaveBeenCalledTimes(3);
-  });
-
-  it('copies and opens the API endpoint', async () => {
-    const { api, cbs } = makeFullApi();
-    await boot({ api });
-    makeReady(cbs);
-    click($('api-copy'));
-    expect(api.copyText).toHaveBeenCalledWith(ENDPOINT);
-    expect($('api-copy').textContent).toBe('Copied');
-    jest.advanceTimersByTime(1200);
-    expect($('api-copy').textContent).toBe('Copy API');
-    click($('api-endpoint-url'));
-    expect(api.copyText).toHaveBeenCalledTimes(2);
-    jest.advanceTimersByTime(1200);
-    click($('api-open'));
-    expect(api.openExternal).toHaveBeenCalledWith(WEB_URL);
-    // no webUrl → falls back to the endpoint
-    cbs.llm({ ready: true, endpoint: ENDPOINT });
-    click($('api-open'));
-    expect(api.openExternal).toHaveBeenLastCalledWith(ENDPOINT);
-    // external links go through the bridge
-    click($('get-wallet'));
-    expect(api.openExternal).toHaveBeenLastCalledWith('https://github.com/pearl-research-labs/pearl/releases');
-  });
-
-  it('links and unlinks the node with pairing tokens', async () => {
-    const { api, cbs } = makeFullApi();
-    await boot({ api });
-    // empty token → inline error
-    click($('connect-link'));
-    expect($('connect-error').hidden).toBe(false);
-    expect($('connect-error').textContent).toMatch(/pairing token first/);
-    expect(api.connectNode).not.toHaveBeenCalled();
-    // pairing token flow toggle
-    click($('connect-pair-toggle'));
-    expect($('connect-pair').hidden).toBe(false);
-    expect(document.activeElement).toBe($('connect-token'));
-    click($('connect-pair-toggle'));
-    expect($('connect-pair').hidden).toBe(true);
-    // successful link uses the worker name
-    $('connect-token').value = '  tok-1  ';
-    click($('connect-link'));
-    await flush();
-    expect(api.connectNode).toHaveBeenCalledWith({ token: 'tok-1', name: 'w1' });
-    expect($('connect-link').textContent).toBe('Link');
-    expect($('connect-done').hidden).toBe(false);
-    expect($('connect-form').hidden).toBe(true);
-    expect($('connected-avatar').textContent).toBe('A');
-    expect($('connected-title').textContent).toBe('alice');
-    expect($('connected-name').textContent).toBe('rig-a');
-    expect($('connect-token').value).toBe('');
-    expect($('connect-hint').textContent).toBe('');
-    // rename shortcut jumps to settings
-    click($('connected-rename'));
-    expect($('view-settings').hidden).toBe(false);
-    // disconnect
-    click($('connect-disconnect'));
-    await flush();
-    expect(api.disconnectNode).toHaveBeenCalled();
-    expect($('connect-form').hidden).toBe(false);
-    expect($('connect-hint').textContent).toBe('Not linked to an account');
-    // failure with a server error message; empty worker omits the name
-    setInput($('set-worker'), '');
-    api.connectNode.mockResolvedValueOnce({ success: false, error: 'bad token' });
-    $('connect-token').value = 'tok-2';
-    click($('connect-link'));
-    await flush();
-    expect(api.connectNode).toHaveBeenLastCalledWith({ token: 'tok-2', name: undefined });
-    expect($('connect-error').textContent).toBe('bad token');
-    // null response → generic failure, via the Enter key
-    api.connectNode.mockResolvedValueOnce(null);
-    $('connect-token').value = 'tok-3';
-    $('connect-token').dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', cancelable: true }));
-    await flush();
-    expect($('connect-error').textContent).toBe('Connection failed.');
-    // failure without an error string → generic failure
-    api.connectNode.mockResolvedValueOnce({ success: false });
-    $('connect-token').value = 'tok-4';
-    click($('connect-link'));
-    await flush();
-    expect($('connect-error').textContent).toBe('Connection failed.');
-    // other keys don't submit
-    api.connectNode.mockClear();
-    $('connect-token').dispatchEvent(new window.KeyboardEvent('keydown', { key: 'a' }));
-    expect(api.connectNode).not.toHaveBeenCalled();
-    // dashboard button
-    click($('connect-dashboard'));
-    expect(api.openNodeDashboard).toHaveBeenCalled();
-    // pushed node status with minimal fields
-    cbs.node({ connected: true });
-    expect($('connected-title').textContent).toBe('Connected');
-    expect($('connected-name').textContent).toBe('this rig');
-    cbs.node({ connected: true, nodeId: 'n9' });
-    expect($('connected-name').textContent).toBe('n9');
-    cbs.node(null);
-    expect($('connect-form').hidden).toBe(false);
   });
 
   it('drives the update checker through its phases', async () => {
@@ -906,14 +518,8 @@ describe('partial bridge (fallback settings, missing action methods)', () => {
     expect($('addr-input').value).toBe('');
     expect($('set-worker').value).toBe('rig01');
     expect($('set-region').options).toHaveLength(0);
-    // A falsy stored mode falls back to DEFAULT_MODE, not to mining-only:
-    // mining-only switches the LLM off silently, which reads as "the LLM is
-    // broken" with nothing in the logs to say otherwise.
-    expect($('mode-hint').textContent).toMatch(/Balances mining/);
-    // START is live even with no payout address, because auto can serve the LLM
-    // on its own. A real fresh install behaves the same way, since main sends
-    // DEFAULT_MODE; only the old mining-only fallback made it look disabled.
-    expect($('btn-start').disabled).toBe(false);
+    // No payout address yet, so there is nothing to mine to.
+    expect($('btn-start').disabled).toBe(true);
     expect($('device-label').textContent).toBe('GpuB');
     expect($('app-version').textContent).toBe('—'); // empty version ignored
     // balance refreshes bail on the missing invoke methods
@@ -921,26 +527,6 @@ describe('partial bridge (fallback settings, missing action methods)', () => {
     jest.advanceTimersByTime(600);
     await flush();
     expect($('balance').textContent).toBe('0.000');
-    // ready llm but no sendChat → submit is swallowed
-    cbs.llm({ ready: true, endpoint: ENDPOINT });
-    setInput($('chat-input'), 'hello');
-    submitChat();
-    expect($('chat-messages').children).toHaveLength(0);
-    // copy without a clipboard bridge still flashes Copied
-    click($('api-copy'));
-    expect($('api-copy').textContent).toBe('Copied');
-    jest.advanceTimersByTime(1200);
-    expect($('api-copy').textContent).toBe('Copy API');
-    // open with a url but no shell bridge
-    click($('api-open'));
-    // connect/disconnect/dashboard without the node bridge
-    $('connect-token').value = 'tok';
-    click($('connect-link'));
-    await flush();
-    expect($('connect-link').disabled).toBe(false);
-    click($('connect-disconnect'));
-    await flush();
-    click($('connect-dashboard'));
     // start/stop without the miner bridge still flip local state
     click($('btn-start'));
     expect($('btn-stop').hidden).toBe(false);
@@ -961,30 +547,13 @@ describe('no bridge at all', () => {
   it('boots and stays interactive with window.llmjob missing', async () => {
     await boot({ noApi: true });
     expect($('set-region').options).toHaveLength(0);
-    expect($('chat-suggestions').children).toHaveLength(3);
-    expect($('mode-hint').textContent).toMatch(/Balances mining/); // default auto
     expect($('device-label').textContent).toBe('GPU · auto-detect');
-    // auto mode can start even with no address or miner bridge
+    // a pasted address can start even with no miner bridge
+    setInput($('addr-input'), ADDR);
     click($('btn-start'));
     expect($('btn-stop').hidden).toBe(false);
     expect($('log-term').textContent).toMatch(/starting LLMJob Earn/);
     click($('btn-stop'));
-    // chat gated (llm never comes up)
-    setInput($('chat-input'), 'x');
-    submitChat();
-    expect($('chat-messages').children).toHaveLength(0);
-    // endpoint actions with no endpoint
-    click($('api-copy'));
-    expect($('api-copy').textContent).toBe('Copy API');
-    click($('api-open'));
-    // connect actions bail
-    $('connect-token').value = 'tok';
-    click($('connect-link'));
-    await flush();
-    expect($('connect-done').hidden).toBe(true);
-    click($('connect-disconnect'));
-    await flush();
-    click($('connect-dashboard'));
     // update check bails
     click($('btn-check-update'));
     expect($('btn-check-update').textContent).toBe('Check for updates');
@@ -998,10 +567,12 @@ describe('deferred init and window-fit guards', () => {
     Object.defineProperty(document, 'readyState', { configurable: true, get: () => 'loading' });
     try {
       loadRenderer({ api: { fitWindow: jest.fn() } }); // no ResizeObserver → fit bails
-      expect($('chat-suggestions').children).toHaveLength(0); // init deferred
+      click($('btn-logs')); // init deferred: nothing is wired yet
+      expect($('view-logs').hidden).toBe(true);
       document.dispatchEvent(new window.Event('DOMContentLoaded'));
       await flush();
-      expect($('chat-suggestions').children).toHaveLength(3);
+      click($('btn-logs'));
+      expect($('view-logs').hidden).toBe(false);
     } finally {
       delete document.readyState;
     }
@@ -1060,16 +631,16 @@ describe('init interleavings', () => {
 
   it('resumes mining from saved settings', async () => {
     const { api } = makeFullApi();
-    api.getSettings.mockResolvedValue({ address: ADDR, mode: 'mining', resumeMining: true });
+    api.getSettings.mockResolvedValue({ address: ADDR, resumeMining: true });
     await boot({ api });
     expect(api.startMiner).toHaveBeenCalledTimes(1);
-    expect(api.startMiner.mock.calls[0][0].mode).toBe('mining');
+    expect(api.startMiner.mock.calls[0][0].address).toBe(ADDR);
     expect($('btn-stop').hidden).toBe(false);
   });
 
   it('does not resume without a valid payout address', async () => {
     const { api } = makeFullApi();
-    api.getSettings.mockResolvedValue({ address: 'bad', mode: 'mining', resumeMining: true });
+    api.getSettings.mockResolvedValue({ address: 'bad', resumeMining: true });
     await boot({ api });
     expect(api.startMiner).not.toHaveBeenCalled();
     expect($('btn-start').hidden).toBe(false);
@@ -1107,9 +678,9 @@ describe('mine view height', () => {
   });
 
   // The views that scroll internally still need a definite height, or their
-  // flex children (chat list, log terminal) grow instead of scrolling.
+  // flex children (the log terminal) grow instead of scrolling.
   it('leaves the internally-scrolling views on a fixed height', () => {
-    expect(/#view-chat[^{]*{[^}]*height:\s*\d/.test(CSS.replace(/\/\*[\s\S]*?\*\//g, ''))).toBe(true);
+    expect(/#view-logs[^{]*{[^}]*height:\s*\d/.test(CSS.replace(/\/\*[\s\S]*?\*\//g, ''))).toBe(true);
   });
 });
 

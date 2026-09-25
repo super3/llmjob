@@ -1,53 +1,34 @@
 'use strict';
 
 // Electron main process. Thin shell: owns the window, persists settings, and
-// bridges the renderer to our own Pearl miner. Stats shown to
-// the user come only from the engine's own output — no simulated data. All
-// testable logic lives in ../shared and ./minerManager.
+// bridges the renderer to our own Pearl miner. Stats shown to the user come only
+// from the engine's own output — no simulated data. All testable logic lives in
+// ../shared and the engine modules beside this file.
 
 const { app, BrowserWindow, Menu, ipcMain, shell, clipboard } = require('electron');
-const { spawn, execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const http = require('http');
-const https = require('https');
 
 const { autoUpdater } = require('electron-updater');
 
 const net = require('net');
 const { PearlEngine } = require('./pearlEngine');
 const { coreFactory } = require('./pearlCore');
-const { LlmManager } = require('./llmManager');
-const { LlmEngineManager } = require('./llmEngineManager');
-const { postJson, getJson, downloadFile, streamChatCompletion, extractLlamaZip } = require('./io');
-const {
-  detectRegion, detectVram, detectGpusVram,
-  postMinerReport, findFreePort,
-} = require('./probe');
+const { getJson } = require('./io');
+const { detectRegion, detectGpusVram, postMinerReport } = require('./probe');
 const probe = require('./probe');
-const nodeStore = require('./nodeStore');
 const settingsStore = require('../shared/settingsStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const {
-  REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE, resolveEndpoint, migrateRegion,
+  REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, resolveEndpoint, migrateRegion,
 } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
 const { resolveEconomics } = require('../shared/economics');
-const nodeProto = require('../shared/node');
-const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
-const { planLlmInstances } = require('../shared/llmPlan');
-const { pickModel, ctxLadder } = require('../shared/models');
-const { LlmFleet } = require('./llmFleet');
-const { buildChatBody } = require('../shared/llmChat');
-const { JobWorker } = require('./jobWorker');
-const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote, autoUpdateSupported } = require('../shared/platform');
-const { resolveServerUrl } = require('../shared/llama');
 const { buildBalanceUrl, parseBalance } = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
 const { formatUpdate, describeUpdateError } = require('../shared/updateStatus');
 const { buildMinerReports } = require('../shared/minerReport');
-const { runtimeCopyPlan } = require('../shared/llmRuntime');
 const { alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda } = require('../shared/gpu');
 const earnings = require('../shared/earnings');
 const format = require('../shared/format');
@@ -66,29 +47,11 @@ let miner = null;
 let stats = null;
 let ticker = null;
 let reporter = null;
-// Bumped on every stop. A start is async (the engine can download for minutes),
-// during which the user may press STOP; the in-flight start captures this epoch
-// and, if it has since changed, aborts instead of spawning a headless miner or
-// starting the LLM after the user already stopped.
+// Bumped on every stop. A start is async (it reads the cards first), during
+// which the user may press STOP; the in-flight start captures this epoch and, if
+// it has since changed, aborts instead of starting a miner the user already
+// stopped.
 let miningEpoch = 0;
-let fleet = null;               // LlmFleet (one llama-server per eligible GPU) while up
-let llmEverReady = false;       // did any instance reach "ready" this run (vs. dying first)
-let serveLogged = false;        // "serving cluster jobs" logged once per serving run
-let registeredUnlinked = false; // self-registered an unlinked node once this run
-// `note` is a transient "what is it doing right now" line — "Downloading model…
-// 42%", "Starting…" — shown in place of the model name until the LLM is ready.
-// Without it a first run logs "preparing local LLM…" and then goes silent for
-// however long a ~5 GB model takes, which reads as a hang: a user on a 2-GPU rig
-// hit START seventeen times over ninety seconds while the download was in fact
-// progressing normally.
-let llmStatus = { ready: false, endpoint: null, webUrl: null, tokensPerSec: 0, model: LLM.model.name, error: null, note: null };
-// Which model this machine actually loaded, once a run has chosen one. Every
-// place that reports a model name reads this rather than LLM.model, which stopped
-// being the answer when selection became per-node: a 5090 serving Qwen3.8 would
-// otherwise tell the dashboard, the telemetry and — via metrics.model — the
-// `model` field of every gateway completion that it was serving Gemma. Seeded
-// with the default so a report before the first start is still truthful.
-let servingModel = LLM.model;
 
 function settingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -191,6 +154,7 @@ function statsView(snap) {
     accepted: snap.accepted,
     acceptedLabel: format.formatInt(snap.accepted),
     rejected: snap.rejected,
+    rejectedLabel: format.formatInt(snap.rejected),
     load: Math.round(snap.load),
     power: snap.power,
     // Every card that is mining, not just the first. On a multi-card rig showing
@@ -202,50 +166,9 @@ function statsView(snap) {
   };
 }
 
-// Quote a value as a single PowerShell single-quoted literal, doubling any
-// embedded single quote. Interpolating a raw path into a '...' PS string lets a
-// path containing a quote break out of the quoting and inject commands; routing
-// every interpolated value through this closes that.
-function psQuote(value) {
-  return "'" + String(value).replace(/'/g, "''") + "'";
-}
-
-// Extract a llama.cpp Windows build zip and flatten EVERY file into dest's
-// directory, so llama-server.exe ends up beside all ~30 of its DLLs (a lone
-// .exe can't launch — Windows resolves sibling DLLs from the exe's folder). This
-// mirrors what `unzip -j` does for the Linux/macOS archives. llama.cpp's zip is
-// already flat; the recursive copy also handles a build that nests the binaries.
-//
-// Unzips via .NET's ZipFile rather than PowerShell's Expand-Archive, which
-// validates by FILE EXTENSION and accepts only `.zip`. The download lands at a
-// deliberately format-neutral name (llmEngineManager's ARCHIVE_TMP,
-// `llama-download.archive`, sniffed by magic bytes on POSIX), so Expand-Archive
-// refused every Windows install with "'.archive' is not a supported archive file
-// format" and the local LLM could never start. ZipFile reads the file, not its
-// name. Add-Type is needed on Windows PowerShell 5.1 and absent-but-harmless on
-// 7, hence the swallow.
-function extractLlamaZipWin(zipPath, dest) {
-  return new Promise((resolve, reject) => {
-    const dir = path.dirname(dest);
-    const tmp = path.join(dir, '_llama_unzip');
-    const ps = "$ErrorActionPreference='Stop';"
-      + 'try{Add-Type -AssemblyName System.IO.Compression.FileSystem}catch{};'
-      + 'if(Test-Path -LiteralPath ' + psQuote(tmp) + '){Remove-Item -LiteralPath ' + psQuote(tmp) + ' -Recurse -Force};'
-      + '[System.IO.Compression.ZipFile]::ExtractToDirectory(' + psQuote(zipPath) + ',' + psQuote(tmp) + ');'
-      + 'Get-ChildItem -Path ' + psQuote(tmp) + ' -Recurse -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination ' + psQuote(dir) + ' -Force };'
-      + 'Remove-Item -LiteralPath ' + psQuote(tmp) + ' -Recurse -Force';
-    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { maxBuffer: 8 * 1024 * 1024 }, (err) => {
-      if (err) return reject(err);
-      if (!fs.existsSync(dest)) return reject(new Error('llama-server was not found in the downloaded archive'));
-      resolve(dest);
-    });
-  });
-}
-
 async function startMining(settings) {
-  // Already mining (e.g. START LLM flipped the mode to 'both' while the engine
-  // runs): keep the existing miner — reassigning it would orphan an unstoppable
-  // engine process and spawn a second one on the same GPU.
+  // Already mining: keep the existing miner — reassigning it would orphan an
+  // unstoppable engine and start a second one on the same GPU.
   if (miner && miner.isRunning()) {
     persistSettings(settings);
     return;
@@ -260,26 +183,12 @@ async function startMining(settings) {
   if (ticker) clearInterval(ticker);
   ticker = setInterval(() => send('miner:stats', statsView(snapshot(stats, Date.now()))), 1000);
 
-  // Publish live status to the network page's board while mining, including live
-  // GPU VRAM (used/total) so the board shows headroom for co-running LLMs.
+  // Publish live status to the network page's board while mining, including
+  // live per-card VRAM (used/total).
   const report = async () => {
     const snap = snapshot(stats, Date.now());
     const gpuVram = await detectGpusVram();
-    // Tag the cards serving the local LLM so the board shows which model each GPU
-    // runs; null when the fleet isn't up (mining only) → blank on the board.
-    // `nodeId` rides along whenever the fleet is up, because that is now exactly
-    // when this machine polls the cluster — linked or not (syncWorker arms the
-    // worker on the fleet, not on the account). Running the model and serving the
-    // cluster are the same thing here; a machine with no identity yet reports null.
-    const identity = loadNode();
-    const serving = fleet
-      ? {
-        model: servingModel.name,
-        indices: fleet.servingIndices(),
-        nodeId: identity ? identity.nodeId : null,
-      }
-      : null;
-    buildMinerReports(settings, snap, gpuVram, app.getVersion(), serving).forEach(postMinerReport);
+    buildMinerReports(settings, snap, gpuVram, app.getVersion()).forEach(postMinerReport);
   };
   report();
   if (reporter) clearInterval(reporter);
@@ -348,8 +257,8 @@ function wireMinerEvents(miner, endpoint) {
 }
 
 function stopMining() {
-  // Cancel any start still in flight (see miningEpoch) so it doesn't spawn or
-  // start the LLM after this stop.
+  // Cancel any start still in flight (see miningEpoch) so it doesn't start a
+  // miner after this stop.
   miningEpoch++;
   if (ticker) {
     clearInterval(ticker);
@@ -372,9 +281,8 @@ function appIcon() {
   return path.join(dir, process.platform === 'win32' ? 'icon.ico' : 'icon.png');
 }
 
-// Detect the machine's GPU for the settings/device label. Uses Windows'
-// Win32_VideoController via PowerShell (already a dependency of the llama unzip);
-// resolves to a display name or null. Never rejects.
+// Detect the machine's GPU for the settings/device label. Resolves to a display
+// name or null. Never rejects.
 // Delegates to the shared probe (nvidia-smi, then WMI on Windows) rather than
 // keeping a Windows-only copy here — that copy returned null on Linux, so the
 // shipped AppImage showed no device at all.
@@ -525,693 +433,53 @@ function fitWindowToContent() {
     .catch(() => {});
 }
 
-// ── Local LLM (llama.cpp llama-server), run alongside the miner ─────────────
-
-function sendLlmStatus() { send('llm:status', llmStatus); }
-
-// Prefer a bundled llama-server (it ships with its DLLs, like the miner engine);
-// otherwise download it on demand. NOTE: the llama.cpp release is a folder of
-// exe + shared libs — bundling the whole folder is the reliable path; the
-// download fallback needs full-folder extraction to be production-ready.
-async function resolveLlmBinary(dir, onProgress) {
-  const name = LLM.serverBin[process.platform] || LLM.serverBin.linux;
-  const bundled = process.resourcesPath && path.join(process.resourcesPath, 'llm', name);
-  if (bundled && fs.existsSync(bundled)) return bundled;
-  // The server ships as a folder of shared libraries + the binary, so extraction
-  // must keep them together: Windows flattens the zip with PowerShell; elsewhere
-  // extractLlamaZip sniffs the archive (tar.gz on Linux/macOS, so `tar
-  // --strip-components=1`) and flattens it the same way. macOS needs exactly
-  // that: llama-server's only LC_RPATH is `@loader_path`, so it finds its
-  // dylibs — including libggml-metal — beside itself and nowhere else.
-  const extract = process.platform === 'win32' ? extractLlamaZipWin : (zip, dest) => extractLlamaZip(zip, dest);
-  const engine = new LlmEngineManager({
-    dir, platform: process.platform, serverUrl: resolveServerUrl(process.platform, process.arch),
-    fs, download: downloadFile, extract, chmod: fs.chmodSync,
-  });
-  return engine.ensureServer(onProgress);
-}
-
-// GET <baseUrl>/health — resolves true when a llama-server is already listening
-// and healthy on our port. Lets startLlm adopt an existing server instead of
-// spawning a second one that would fail to bind 8080 (llama-server exits with
-// "couldn't bind HTTP server socket" and the LLM silently never comes up). This
-// happens right after an "Update & restart", when the outgoing server may still
-// be releasing the port as the relaunched app tries to claim it.
-function probeLlmHealth(baseUrl, timeoutMs) {
-  return new Promise((resolve) => {
-    let u;
-    try { u = new URL(baseUrl + '/health'); } catch (e) { return resolve(false); }
-    const lib = u.protocol === 'http:' ? http : https;
-    const req = lib.get(u, (res) => {
-      if (res.statusCode !== 200) { res.resume(); return resolve(false); }
-      // Require llama-server's own health body ({"status":"ok"}), not just any
-      // 200 — otherwise unrelated software on the port (a dev server, NAS UI)
-      // would be adopted as "the LLM" and chat would break against it.
-      let raw = '';
-      res.setEncoding('utf8');
-      res.on('data', (c) => { raw += c; if (raw.length > 4096) res.destroy(); });
-      res.on('end', () => {
-        try { resolve(JSON.parse(raw).status === 'ok'); } catch (e) { resolve(false); }
-      });
-      res.on('error', () => resolve(false));
-    });
-    req.on('error', () => resolve(false));
-    req.setTimeout(timeoutMs || 2000, () => req.destroy());
-  });
-}
-
-// Reset the live-status side of llmStatus and broadcast — the single cleanup
-// used by both user-initiated stops and the process's own exit.
-function resetLlmStatus() {
-  llmStatus = Object.assign({}, llmStatus, { ready: false, tokensPerSec: 0, note: null });
-  sendLlmStatus();
-}
-
-// Set (or clear) the transient stage line and push it to the renderer.
-function setLlmNote(note) {
-  llmStatus = Object.assign({}, llmStatus, { note: note || null });
-  sendLlmStatus();
-}
-
-// A download-progress callback that reports to both the hero line and the log.
-// downloadFile fires onProgress for every chunk, which at a few hundred chunks a
-// second would flood the IPC and bury the log — so emit only on a 5-point move,
-// or every 2s for a slow link, plus the final 100%.
-function progressReporter(label, now) {
-  const clock = now || Date.now;
-  let lastPct = -1;
-  let lastAt = 0;
-  return (pct) => {
-    // progressPercent returns null when the server sends no content-length, and
-    // Number(null) is 0 — so null must be rejected explicitly or a sizeless
-    // download would sit at a permanent, wrong "0%".
-    const p = Math.floor(Number(pct));
-    if (pct == null || !Number.isFinite(p) || p < 0) return;
-    const at = clock();
-    if (p !== 100 && p - lastPct < 5 && at - lastAt < 2000) return;
-    if (p === lastPct) return;
-    lastPct = p;
-    lastAt = at;
-    setLlmNote(label + ' ' + p + '%');
-    send('miner:log', { level: 'info', line: label + ' ' + p + '%' });
-  };
-}
-
-// Start the local LLM: ensure binary + model, size the GPU offload to leave
-// `reserveMb` free for mining, spawn llama-server, and surface its OpenAI
-// endpoint. Best-effort — failures are logged, never thrown to the UI. Returns
-// whether the server was actually started (callers use it to reset the UI when
-// an LLM-only session ends up running nothing).
-async function startLlm(reserveMb) {
-  if (fleet && fleet.hasSpawned()) return true; // a spawned fleet is already up
-
-  // One fleet drives both paths: adopt a lingering server, or spawn one instance
-  // per eligible GPU. Build it once with the process/GPU factories injected.
-  if (!fleet) fleet = buildFleet();
-
-  // If a healthy llama-server is already on our port (e.g. one lingering from a
-  // just-restarted session), adopt it instead of spawning a second process that
-  // would double-load the model and risk an OOM. Reusing it is safe — it serves
-  // the same model on the same OpenAI endpoint.
-  const targetBase = 'http://' + LLM.host + ':' + LLM.port;
-  if (await probeLlmHealth(targetBase)) {
-    fleet.adopt(targetBase);
-    llmEverReady = true;
-    llmStatus = Object.assign({}, llmStatus, { ready: true, error: null, note: null, endpoint: targetBase + '/v1', webUrl: targetBase });
-    send('miner:log', { level: 'info', line: 'local LLM already running on ' + targetBase + ' — reusing it' });
-    sendLlmStatus();
-    syncWorker();
-    warmUpLlm(targetBase);
-    return true;
-  }
-
-  // Plan one llama-server per eligible GPU: the model is small enough to hold a
-  // copy on every card with room, so a multi-GPU rig serves from all of them
-  // (each pinned via --main-gpu) instead of only the best card. An empty plan
-  // means VRAM was measured but nothing fits — refuse, as the single-card path
-  // did; when VRAM can't be read the planner returns one unknown-placement
-  // instance and lets llama.cpp decide.
-  const cards = await detectGpusVram();
-  // Which model this run serves. Chosen from the best card's free VRAM, because
-  // the fleet loads ONE model across every instance — planLlmInstances then drops
-  // any card that cannot hold it. On a mixed rig that trades breadth for
-  // capability: a box with one 32 GB card and three small ones serves the large
-  // model from the one card rather than the small model from four. That is the
-  // intended reading of "for cards that can support it", but it is a trade, and
-  // the small-card case is unaffected because those rigs resolve to the default.
-  const bestCard = pickLlmGpu(cards);
-  const model = pickModel(bestCard ? bestCard.freeMb : null, reserveMb || 0);
-  servingModel = model;
-  // The hero shows this name, and it was seeded once at startup and never
-  // updated — fine while every node ran the same model, wrong the moment one
-  // doesn't. Set before the first failure path below so even "Needs ~N GB free
-  // VRAM" names the model it was actually short for.
-  llmStatus = Object.assign({}, llmStatus, { model: model.name });
-  const plan = planLlmInstances(cards, model, reserveMb || 0);
-  if (!plan.length) {
-    // An empty plan means VRAM was measured but no card had room — so at least
-    // one card parsed, and pickLlmGpu (same parse rules) returns it for the error.
-    const best = pickLlmGpu(cards);
-    const freeMb = best.freeMb;
-    // Quote the constraint that actually refused the card, not just the preflight
-    // floor: when co-running, the offload budget (model + mining reserve) is the
-    // larger of the two, and reporting the floor told users they needed less than
-    // they did — then refused them anyway.
-    const needMb = requiredFreeMb(model, reserveMb);
-    const needGb = Math.round(needMb / 1024);
-    send('miner:log', { level: 'error', line: 'not enough free VRAM for the local LLM: ' + freeMb
-      + ' MB free, need ~' + needMb + ' MB for ' + model.name + ' — skipping the LLM.' });
-    llmStatus = Object.assign({}, llmStatus, { ready: false, note: null, error: 'Needs ~' + needGb + ' GB free VRAM' });
-    sendLlmStatus();
-    return false;
-  }
-
-  const dir = path.join(app.getPath('userData'), 'llm');
-  send('miner:log', { level: 'info', line: 'preparing local LLM (' + model.name + ')…' });
-
-  // Both of these are no-ops once cached, but on a first run they fetch ~100 MB
-  // of llama-server and a ~5 GB model. Report progress so the wait is legible
-  // instead of looking like a stall.
-  let binaryPath, modelPath, mmprojPath = null;
-  try {
-    setLlmNote('Preparing…');
-    binaryPath = await resolveLlmBinary(dir, progressReporter('downloading llama-server…'));
-    const modelEngine = new LlmEngineManager({ dir, platform: process.platform, fs, download: downloadFile });
-    modelPath = await modelEngine.ensureModel(progressReporter('downloading model ' + model.name + '…'), model);
-    // A vision model needs its projector too. Fetched after the weights and
-    // reported separately: it is ~1 GB against ~18, so folding it into the same
-    // progress line would make the last 5% look like a stall.
-    mmprojPath = await modelEngine.ensureMmproj(progressReporter('downloading vision projector…'), model);
-  } catch (e) {
-    // Surface the failure on the hero, not only in the log. Clearing the note
-    // without setting an error dropped the row straight back to a grey dot and
-    // the model name — identical to "not started yet" — so a download that died
-    // at 57% after twenty minutes looked exactly like nothing having happened,
-    // with the reason buried in the Logs tab. Same reasoning as the note itself:
-    // the failing path deserves the legibility the working path just got.
-    llmStatus = Object.assign({}, llmStatus, { ready: false, note: null, error: 'Setup failed — see Logs' });
-    sendLlmStatus();
-    send('miner:log', { level: 'error', line: 'LLM setup failed: ' + e.message });
-    return false;
-  }
-
-  // Make sure the VC++ runtime DLLs sit next to llama-server.exe. llama.cpp's
-  // zips don't include them; on a machine without the redistributable — or one
-  // where it's only reachable via the *user* PATH, which the app relaunched by
-  // the elevated updater doesn't inherit — llama-server dies instantly with
-  // STATUS_DLL_NOT_FOUND before it ever logs a line. The installer bundles the
-  // three DLLs (build.extraResources → <resources>/llm-runtime); co-locating
-  // them beats any PATH because the exe's own dir is searched first.
-  try {
-    const dllPlan = runtimeCopyPlan({
-      platform: process.platform, binDir: path.dirname(binaryPath),
-      resourcesPath: process.resourcesPath, existsFn: fs.existsSync, joinFn: path.join,
-    });
-    dllPlan.forEach((c) => {
-      fs.copyFileSync(c.from, c.to);
-      send('miner:log', { level: 'info', line: 'installed LLM runtime DLL: ' + path.basename(c.to) });
-    });
-  } catch (e) {
-    send('miner:log', { level: 'error', line: 'could not install the LLM runtime DLLs: ' + e.message });
-  }
-
-  const gpus = plan.map((p) => (p.index == null ? 'auto' : p.index)).join(', ');
-  send('miner:log', { level: 'info', line: 'local LLM starting on ' + plan.length + ' GPU'
-    + (plan.length === 1 ? '' : 's') + ' [' + gpus + ']' });
-  // Loading a multi-GB model off disk takes seconds even when nothing downloads,
-  // and until 'ready' fires the hero is otherwise indistinguishable from idle.
-  llmStatus = Object.assign({}, llmStatus, { ready: false, error: null, note: 'Starting…' });
-  sendLlmStatus();
-  // llmFleet merges `run` into every llmManager.start(), so the model's own
-  // context ladder, projector and tuned flags reach llama-server from here.
-  // Both context values come from ctxLadder(), which already resolves a model
-  // without its own ctxSize (the default one) to the global LLM.ctxSize. Reading
-  // model.ctxSize directly here handed llama-server `undefined` for exactly that
-  // model — the one every small node runs.
-  const ladder = ctxLadder(model);
-  await fleet.start(plan, {
-    platform: process.platform, binaryPath, modelPath, mmprojPath,
-    ctxSize: ladder[0], ctxLadder: ladder, extraArgs: model.extraArgs,
-    alias: model.name,
-  });
-  return true;
-}
-
-// Construct an LlmFleet wired to the GUI: spawn real (in prod) LlmManagers, walk
-// to free ports, and build a cluster job-worker per ready instance. Aggregate
-// fleet events map onto the same IPC the single-instance flow used.
-function buildFleet() {
-  llmEverReady = false;
-  serveLogged = false;
-  const f = new LlmFleet({
-    host: LLM.host,
-    basePort: LLM.port,
-    makeManager: () => new LlmManager({ spawn, startAttempts: LLM.startAttempts, retryDelayMs: LLM.startRetryMs }),
-    findFreePort,
-    makeWorker: (baseUrl) => makeJobWorker(baseUrl),
-  });
-  f.on('log', (l) => send('miner:log', l));
-  f.on('first-ready', ({ baseUrl }) => warmUpLlm(baseUrl)); // one warm-up per run
-  f.on('ready', ({ baseUrl }) => {
-    llmEverReady = true;
-    // webUrl() is the first ready instance's base URL — non-null here, since this
-    // instance was just marked ready before the event fired.
-    const web = f.webUrl();
-    // `error: null` alongside ready, matching the adopt path: a model that is up
-    // and answering must not still be wearing an error. The renderer ranks error
-    // above ready in both the hero dot and its label, so a stale one outranks the
-    // truth — and nothing else clears it once the fleet is running, since
-    // startLlm's pre-spawn reset only runs on a fresh start.
-    llmStatus = Object.assign({}, llmStatus, { ready: true, error: null, endpoint: web + '/v1', webUrl: web, note: null });
-    send('miner:log', { level: 'info', line: 'local LLM ready — OpenAI endpoint ' + baseUrl + '/v1' });
-    sendLlmStatus();
-    syncWorker(); // serve cluster jobs once a model is up, if we're linked
-  });
-  f.on('stats', ({ tokensPerSec }) => { llmStatus = Object.assign({}, llmStatus, { tokensPerSec }); sendLlmStatus(); });
-  f.on('error', () => { /* transient instance error — the fleet keeps the others */ });
-  f.on('stopped', () => {
-    cancelChat('the local LLM stopped');
-    resetLlmStatus();
-    // Every instance died before any became ready while mining keeps running —
-    // the silent-failure case (typically a port-bind/OOM), not a user stop.
-    if (!llmEverReady && miner && miner.isRunning()) {
-      llmStatus = Object.assign({}, llmStatus, { ready: false, error: 'The local LLM stopped before it was ready. See Logs.' });
-      sendLlmStatus();
-    }
-    // An LLM-only session ends when the fleet exits — tell the renderer or the UI
-    // keeps showing a running session with nothing running.
-    if (!miner || !miner.isRunning()) send('miner:stopped');
-  });
-  return f;
-}
-
-// Fire one tiny generation as soon as the model is ready, so the Mine tab's
-// tokens/sec figure populates on its own — the user shouldn't have to open Chat
-// to see the LLM is alive. Best-effort and discarded; a real request just
-// overwrites the warm-up's tok/s.
-function warmUpLlm(baseUrl) {
-  try {
-    const body = buildChatBody([{ role: 'user', content: 'Say hello.' }], { stream: true });
-    body.max_tokens = 24;
-    streamChatCompletion(baseUrl, body, () => {}).done.catch(() => {});
-  } catch (e) { /* best effort — never blocks startup */ }
-}
-
-function stopLlm() {
-  cancelChat('the local LLM was stopped');
-  if (fleet) { fleet.stop(); fleet = null; }
-  serveLogged = false;
-  resetLlmStatus();
-}
-
-// ── In-app chat: stream the local llama-server's OpenAI chat completions ──────
-// The renderer can't hit http://127.0.0.1 under its CSP, so main proxies the
-// request over the shared streamChatCompletion and relays batched deltas via
-// IPC (delta → done / error). Only one turn runs at a time. Cancellation always
-// settles the stream, so the renderer is guaranteed a done/error outcome — no
-// stuck "streaming" state when the LLM is stopped mid-reply.
-let chatStream = null;
-
-function cancelChat(reason) {
-  if (!chatStream) return;
-  const s = chatStream;
-  chatStream = null;
-  s.cancel(reason || 'cancelled');
-}
-
-// Grounding for the in-app chat: a small local model has no idea what "LLMJob"
-// or "PPLNS" mean, so prompts like "What is LLMJob?" produce generic guesses.
-// This system message gives it the facts to answer from. In-app chat only — jobs
-// relayed from the cluster (jobWorker) are arbitrary API requests and get none.
-const CHAT_SYSTEM_PROMPT = [
-  "You are the assistant built into LLMJob Earn, running entirely on the user's own GPU via a local server — nothing they type leaves their machine. Use this context when relevant:",
-  '- LLMJob turns the spare power of a GPU the user already owns into money: while the app runs, their GPU mines Pearl (PRL, a cryptocurrency the user is paid in) and can also run you, this local AI model.',
-  '- The mining pool pays with PPLNS ("Pay Per Last N Shares"): when it finds a block, the reward is split across the last N shares miners submitted, so payout reflects sustained contribution rather than luck. Payouts settle about every 4 hours with a 1 PRL minimum.',
-  '- This chat is private — it runs on the user\'s machine, so prompts never leave the computer.',
-  'Answer conversationally and concisely. For anything unrelated to LLMJob, just answer normally.',
-].join('\n');
-
-function llmChat(messages) {
-  cancelChat('superseded by a new message');
-  const base = (fleet && fleet.chatUrl()) || ('http://' + LLM.host + ':' + LLM.port);
-  if (!fleet || !fleet.isReady()) { send('llm:chat:error', { message: 'the local LLM is not running' }); return; }
-
-  const grounded = [{ role: 'system', content: CHAT_SYSTEM_PROMPT }].concat(Array.isArray(messages) ? messages : []);
-  const s = streamChatCompletion(base, buildChatBody(grounded, { stream: true }),
-    (text) => send('llm:chat:delta', { text }));
-  chatStream = s;
-  s.done.then(
-    () => { if (chatStream === s) chatStream = null; send('llm:chat:done', {}); },
-    (e) => { if (chatStream === s) chatStream = null; send('llm:chat:error', { message: e.message }); },
-  );
-}
-
-// ── Connect with LLMJob (node identity + pairing/ping) ───────────────────────
-// The machine's Ed25519 keypair lives in the shared nodeStore (one identity for
-// the GUI AND the CLI); only the public key leaves it. "Connect" self-registers
-// with a pairing token (/api/nodes/join); once linked it pings (/api/nodes/ping)
-// with signed telemetry so the node shows online in the user's cluster. All
-// best-effort — failures never touch mining.
-
-let nodePinger = null;
-const { loadNode, saveNode, getOrCreateNode } = nodeStore;
-
-// Renderer-safe view (no secret key).
-function nodeStatus() {
-  const node = loadNode();
-  return {
-    connected: !!(node && node.connected),
-    nodeId: node ? node.nodeId : null,
-    name: node ? node.name : null,
-    user: node ? (node.user || null) : null,
-  };
-}
-
-function sendNodeStatus() { send('node:status', nodeStatus()); }
-
-// The GPU name is static, so probe it once instead of spawning nvidia-smi /
-// PowerShell on every 5-minute ping for the life of the app.
-let gpuNameProbed = false;
-let cachedGpuName = null;
-async function deviceName() {
-  if (!gpuNameProbed) {
-    gpuNameProbed = true;
-    try { cachedGpuName = await detectGpu(); } catch (e) { cachedGpuName = null; }
-  }
-  return cachedGpuName;
-}
-
-// One signed ping with fresh telemetry. Silent on failure. Carries the node's
-// current name so a Settings rename propagates to the server (see syncNodeName).
-async function pingNode() {
-  const node = loadNode();
-  // Linked machines always ping. An unlinked one pings only while it is actually
-  // serving (the fleet is up), so a machine that merely once had an identity
-  // doesn't advertise itself as an online node while doing nothing.
-  if (!node || !(node.connected || fleet)) return;
-  let vram = null;
-  try { vram = await detectVram(); } catch (e) { /* ignore */ }
-  const device = await deviceName();
-  const telemetry = nodeProto.buildTelemetry({
-    model: servingModel.name, quant: servingModel.quant, device, vram,
-    tokensPerSec: llmStatus.tokensPerSec, ready: llmStatus.ready,
-    activeJobs: fleet ? fleet.activeJobs() : 0,
-    name: node.name,
-  });
-  const body = nodeProto.buildPingBody({
-    nodeId: node.nodeId, publicKey: node.publicKey, secretKey: node.secretKey,
-    timestamp: Date.now(), telemetry,
-  });
-  try { await postJson(NODE.serverUrl + '/api/nodes/ping', body, 15000); } catch (e) { /* offline — try again next tick */ }
-}
-
-// Keep the linked node's name in step with the Settings worker name: the
-// connected card says "rename in Settings", so a changed worker name updates
-// node.json and is pushed on the next ping (the server picks up non-null names).
-function syncNodeName(settings) {
-  const node = loadNode();
-  const worker = settings && settings.worker && String(settings.worker).trim();
-  if (node && node.connected && worker && worker !== node.name) {
-    saveNode(Object.assign({}, node, { name: worker }));
-    sendNodeStatus();
-    pingNode();
-  }
-}
-
-function startNodePinger() {
-  stopNodePinger();
-  pingNode();
-  nodePinger = setInterval(pingNode, NODE.pingIntervalMs);
-  if (nodePinger.unref) nodePinger.unref();
-}
-
-function stopNodePinger() {
-  if (nodePinger) { clearInterval(nodePinger); nodePinger = null; }
-}
-
-// Link this machine to an account with a pairing/join token. Returns a
-// renderer-safe result; on success the node is saved connected and starts pinging.
-async function connectNode({ token, name } = {}) {
-  const t = String(token || '').trim();
-  if (!t) return { error: 'Enter your pairing token first.' };
-  const node = getOrCreateNode();
-  const nm = (name && String(name).trim()) || node.name || null;
-  const body = nodeProto.buildJoinBody({ token: t, nodeId: node.nodeId, publicKey: node.publicKey, name: nm });
-
-  let res;
-  try {
-    res = await postJson(NODE.serverUrl + '/api/nodes/join', body, 20000);
-  } catch (e) {
-    return { error: 'Could not reach LLMJob — check your connection.' };
-  }
-  if (res.status !== 200 && res.status !== 201) {
-    return { error: (res.data && res.data.error) || ('Link failed (HTTP ' + res.status + ').') };
-  }
-
-  const user = (res.data && res.data.user) || null; // account handle, if the server resolved one
-  saveNode(Object.assign({}, node, {
-    // The server decides the enrolled id — see nodeProto.adoptedNodeId.
-    nodeId: nodeProto.adoptedNodeId(node.nodeId, res.data && res.data.nodeId),
-    connected: true, name: nm, user, linkedAt: new Date().toISOString(),
-  }));
-  startNodePinger();
-  syncWorker();
-  sendNodeStatus();
-  return { success: true, nodeId: node.nodeId, name: nm, user };
-}
-
-function disconnectNode() {
-  const node = loadNode();
-  if (node) saveNode(Object.assign({}, node, { connected: false }));
-  stopNodePinger();
-  stopWorker();
-  sendNodeStatus();
-  return { ok: true };
-}
-
-// ── Cluster job worker: serve inference relayed through LLMJob ────────────────
-// When this node is linked AND the local LLM is up, poll for jobs and run them
-// against the local model, streaming chunks back — all outbound, so callers can
-// use this GPU through the shared API without any inbound networking here.
-
-// Register an unclaimed node server-side so /jobs/poll will answer it. Signature
-// only — no account. Best-effort: a failure just means no jobs arrive and the
-// local model still runs. Mirrors the CLI's registerNode.
-async function registerNode(node) {
-  try {
-    // Signing is inside the try on purpose: a corrupt or truncated node.json makes
-    // buildPingBody throw on the base64 secret key, and that must degrade to
-    // "no jobs arrive" rather than take down the app.
-    const body = nodeProto.buildPingBody({
-      nodeId: node.nodeId, publicKey: node.publicKey, secretKey: node.secretKey,
-      timestamp: Date.now(), telemetry: { name: node.name || undefined },
-    });
-    const res = await postJson((node.serverUrl || NODE.serverUrl) + '/api/nodes/register', body, 15000);
-    if (res.status !== 200) return false;
-    adoptServerNodeId(node, res.data);
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
-
-// Persist the id the server says this machine is enrolled under, when it differs
-// from the one we minted. See nodeProto.adoptedNodeId for why the server's answer
-// wins. A no-op in the ordinary case, where the two agree.
-//
-// Workers already built keep the old id until the next fleet sync or restart;
-// that only arises in the rare case where the server reassigns an id at all, and
-// the persisted value is what every later run uses.
-function adoptServerNodeId(node, data) {
-  const adopted = nodeProto.adoptedNodeId(node.nodeId, data && data.nodeId);
-  if (adopted === node.nodeId) return;
-  node.nodeId = adopted;
-  saveNode(Object.assign({}, loadNode(), { nodeId: adopted }));
-  send('miner:log', { level: 'info', line: 'node id updated by the network to ' + adopted });
-}
-
-// Build a cluster job-worker for the ready LLM instance at `baseUrl` — one per
-// serving GPU, each running jobs against its own llama-server. A rig that can run
-// the model is useful to the network whether or not anyone linked it, so an
-// unlinked box serves public work too (the server hands an unclaimed node
-// non-private jobs only, so "unlinked" costs it access to private queues and
-// nothing else) — matching the headless CLI's default.
-function makeJobWorker(baseUrl) {
-  // Reached only via the fleet after syncWorker() armed it, which already bailed
-  // if no identity could be minted — so `node` is always present here.
-  const node = getOrCreateNode();
-  const w = new JobWorker({
-    identity: { nodeId: node.nodeId, publicKey: node.publicKey, secretKey: node.secretKey },
-    serverUrl: node.serverUrl || NODE.serverUrl,
-    post: (url, body) => postJson(url, body, 30000),
-    runJob: (chatBody, { onDelta, onReasoning }) => streamChatCompletion(baseUrl, chatBody, onDelta, onReasoning).done,
-    servingModel: () => servingModel,
-  });
-  w.on('error', () => { /* transient poll failure — keep looping */ });
-  w.on('job', ({ id }) => send('miner:log', { level: 'info', line: 'cluster job ' + id + ' — running locally' }));
-  w.on('done', ({ id }) => send('miner:log', { level: 'info', line: 'cluster job ' + id + ' — done' }));
-  w.on('failed', ({ id, error }) => send('miner:log', { level: 'error', line: 'cluster job ' + id + ' failed: ' + error }));
-  if (!serveLogged) {
-    serveLogged = true;
-    send('miner:log', { level: 'info', line: 'serving cluster jobs for the LLMJob network' });
-  }
-  return w;
-}
-
-// Start cluster serving across every ready instance once a model is up — account
-// or not. Idempotent, called from connect/disconnect and LLM ready. An unlinked
-// machine mints an identity and self-registers so the server will answer its
-// polls; a linked one is already registered and just keeps serving. Pinging
-// starts either way, so the node shows online and can be targeted for testing.
-function syncWorker() {
-  if (!fleet) return;
-  const node = getOrCreateNode();
-  if (!node) return; // no identity and none could be minted — serve nothing
-  if (!node.connected && !registeredUnlinked) {
-    registeredUnlinked = true; // once per run — a retry every LLM-ready is noise
-    registerNode(node).then((ok) => {
-      send('miner:log', ok
-        ? { level: 'info', line: 'serving public jobs as an unlinked node (' + node.nodeId + ') — connect it to your account for private jobs' }
-        : { level: 'error', line: 'could not register with the network — running the LLM locally only' });
-    });
-  }
-  fleet.syncWorkers(true);
-  startNodePinger();
-}
-
-function stopWorker() {
-  if (fleet) fleet.syncWorkers(false);
-  serveLogged = false;
-}
-
-// Resolve once the running miner is actually mining — i.e. it has reported a
-// non-zero hashrate, which proves the GPU is doing real work (not just connected
-// to the pool). Also settles on a miner failure (exit/error) so a broken miner
-// never blocks the LLM, and on a hard cap so a miner that connects but never
-// produces a share doesn't hold it forever.
-function waitForMinerUp(capMs) {
-  return new Promise((resolve) => {
-    // Capture the manager we subscribed to: `miner` is a module global that
-    // stopMining() nulls, and the manager's 'stopped' event arrives async after
-    // the kill — so cleanup through the global crashes the main process with
-    // "Cannot read properties of null (reading 'removeListener')" whenever the
-    // miner is stopped during this wait (seen in the field as the Electron
-    // error dialog). Unsubscribe from the captured reference instead.
-    const m = miner;
-    if (!m) return resolve();
-    let done = false;
-    const settle = () => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      m.removeListener('event', onEvent);
-      m.removeListener('stopped', settle);
-      m.removeListener('error', settle);
-      resolve();
-    };
-    const onEvent = (e) => { if (e && e.type === 'status' && Number(e.hashrate) > 0) settle(); };
-    const timer = setTimeout(settle, capMs || 60000);
-    m.on('event', onEvent);
-    m.once('stopped', settle);
-    m.once('error', settle);
-  });
-}
-
-// Apply the compute mode: run the miner and/or the LLM per the plan. When the
-// plan ends up running nothing (LLM-only mode with the VRAM gate refusing, or
-// no engine at all), tell the renderer — otherwise its optimistic "running"
+// Start mining if this rig can: a valid payout address, and a platform with a
+// miner. When it can't, tell the renderer — otherwise its optimistic "running"
 // state shows STOP for a session in which nothing runs.
 async function runPlan(settings) {
-  const epoch = miningEpoch;
-  const mode = settings.mode || DEFAULT_MODE;
-  // macOS can serve the local LLM but has no mining engine to run, so the miner
-  // is refused up front rather than left to fail on a Linux binary it would have
-  // downloaded first (see shared/platform). The note explains the gap; without
-  // it an 'auto' Mac start silently serves inference only, and a 'mining' one
-  // runs nothing at all with no reason on screen.
-  const note = minerUnsupportedNote(process.platform, mode);
+  // macOS has no mining engine at all (see shared/platform); say so rather than
+  // leave the user looking at a START that did nothing.
+  const note = minerUnsupportedNote(process.platform);
   if (note) send('miner:log', { level: 'warn', line: note });
-  const plan = resolvePlan(mode, {
-    canMine: isValidAddress(settings.address) && minerSupported(process.platform),
-    canLlm: true,
-  });
-  if (plan.miner) {
-    // Start mining FIRST, then — when co-running — wait until the miner reports a
-    // non-zero hashrate before starting the LLM. Spawning the process (or even
-    // connecting to the pool) isn't enough proof mining works: the LLM loads its
-    // model and warms up in a few seconds, so without this wait it goes live
-    // first, and its GPU-layer budgeter reads free VRAM before mining has claimed
-    // its share. Waiting for real TH/s confirms the GPU is mining and its VRAM is
-    // allocated, so the LLM then sizes its offload to what's actually left.
-    try {
-      await startMining(settings);
-    } catch (e) {
-      send('miner:log', { level: 'error', line: 'start failed: ' + e.message });
-    }
-    if (plan.llm && miner && miner.isRunning()) await waitForMinerUp();
-  } else {
-    persistSettings(settings); // startMining persists; do it here when the miner is off
+  if (!isValidAddress(settings.address) || !minerSupported(process.platform)) {
+    persistSettings(settings);
+    send('miner:stopped');
+    return;
   }
-  // STOP arrived during miner setup or the hashrate wait: don't bring the LLM up
-  // (or re-touch node state) for a session the user has already stopped.
-  if (epoch !== miningEpoch) return;
-  syncNodeName(settings);
-  if (plan.llm) {
-    const started = await startLlm(plan.miner ? LLM.miningReserveMb : 0).catch(() => false);
-    if (!started && !plan.miner) send('miner:stopped');
-  } else {
-    stopLlm();
-    if (!plan.miner) send('miner:stopped');
+  try {
+    await startMining(settings);
+  } catch (e) {
+    send('miner:log', { level: 'error', line: 'start failed: ' + e.message });
   }
 }
 
 // Single-flight wrapper around runPlan. `miner:start` is a plain IPC event with
-// no re-entry guard, and the Chat tab's START LLM button fires it on every click
-// while the LLM isn't ready — so a user clicking through a failing LLM setup
-// launched a fresh download+extract each time, all racing on the same scratch
-// files. Concurrent calls now collapse into the run already in flight.
-//
-// Settings that arrived mid-run are replayed once afterwards ONLY if they differ
-// from the run in flight: a click that flips mining → both (START LLM while the
-// miner runs) genuinely changes the plan and swallowing it would leave the LLM
-// off, while a repeated click with the same settings has nothing left to do.
+// no re-entry guard, and a start awaits the card probe before the miner exists —
+// so without this, two quick clicks could each pass the "already mining" check
+// and put two engines on the same GPU. Concurrent calls collapse into the run
+// already in flight.
 let planRun = null;
-let planActive = null;
-let planQueued = null;
 
 function applyPlan(settings) {
-  if (planRun) {
-    if (JSON.stringify(settings) !== planActive) planQueued = settings;
-    return planRun;
-  }
-  planActive = JSON.stringify(settings);
-  planRun = runPlan(settings).finally(() => {
-    planRun = null;
-    planActive = null;
-    const next = planQueued;
-    planQueued = null;
-    if (next) applyPlan(next);
-  });
+  if (planRun) return planRun;
+  planRun = runPlan(settings).finally(() => { planRun = null; });
   return planRun;
 }
 
 // The renderer gets a region that EXISTS. A saved AlphaPool id would otherwise
 // reach a <select> with no matching option, which blanks it silently.
 ipcMain.handle('settings:get', () => withLiveRegion(Object.assign(
-  // Both clients default to the shared DEFAULT_MODE ('auto': mine + serve the
-  // LLM, balanced from free VRAM).
   // worker defaults to this machine's hostname, not the shared "rig01" constant:
   // two rigs on one payout address under the same name collide into a single
   // board identity (and if either is multi-GPU, the other's row is dropped
   // outright). Only fills a FRESH install — loadSettings() below wins, so an
   // existing worker name is never rewritten out from under someone's board row.
-  { region: DEFAULTS.region, worker: defaultWorker(), address: '', mdlAddress: '', mode: DEFAULT_MODE },
+  { region: DEFAULTS.region, worker: defaultWorker(), address: '', mdlAddress: '' },
   loadSettings(),
 )));
-ipcMain.handle('llm:status', () => llmStatus);
 // `platform` rides along on the config the renderer already fetches at startup,
-// so the UI can stop offering what this OS can't do (the mining compute modes on
-// macOS) without a second round trip or a new preload method.
+// so the UI can stop offering what this OS can't do (mining, on macOS) without a
+// second round trip or a new preload method.
 ipcMain.handle('config:get', () => ({
   regions: REGIONS,
   defaults: DEFAULTS,
@@ -1222,31 +490,21 @@ ipcMain.handle('gpu:detect', () => detectGpu());
 ipcMain.handle('region:detect', () => detectRegion());
 ipcMain.handle('balance:get', (_e, address) => fetchBalance(address, liveEcon.PRL_USD));
 ipcMain.on('miner:start', (_e, settings) => applyPlan(settings || {}));
-ipcMain.on('miner:stop', () => { stopMining(); stopLlm(); });
+ipcMain.on('miner:stop', () => { stopMining(); });
 ipcMain.on('open-external', (_e, url) => { openExternalSafe(url); });
 // Re-fit the window to its content when the renderer's layout changes (tab
 // switch, mining start/stop, etc.), so the frame never leaves a gap under the
 // footer or clips a taller view.
 ipcMain.on('app:fit', () => { fitWindowToContent(); });
 ipcMain.on('clipboard:write', (_e, text) => { clipboard.writeText(String(text == null ? '' : text)); });
-ipcMain.on('llm:chat', (_e, messages) => llmChat(messages));
-ipcMain.handle('node:status', () => nodeStatus());
-ipcMain.handle('node:connect', (_e, opts) => connectNode(opts || {}));
-ipcMain.handle('node:disconnect', () => disconnectNode());
-ipcMain.on('node:dashboard', () => openExternalSafe(NODE.dashboardUrl));
 ipcMain.handle('app:version', () => app.getVersion());
 ipcMain.on('app:update:check', () => checkForUpdate());
 ipcMain.on('app:update:install', () => {
   try {
     // If mining right now, remember to resume automatically after the restart.
     if (stats) persistSettings(Object.assign({}, loadSettings(), { resumeMining: true }));
-    // Stop the LLM and miner BEFORE relaunching. llama-server binds a fixed port
-    // (8080) and quitAndInstall relaunches immediately; if the outgoing server is
-    // still holding the port, the resumed instance's llama-server can't bind and
-    // the LLM silently fails to start (the miner binds no port, so it's fine —
-    // exactly the "miner came back, LLM didn't" symptom). Killing them here frees
-    // the port and VRAM deterministically before the new instance starts.
-    stopLlm();
+    // Stop the miner BEFORE relaunching, so the GPU is released deterministically
+    // before the new instance starts mining on it.
     stopMining();
     // isSilent=true: install to the existing directory without re-showing the
     // assisted-installer wizard. isForceRunAfter=true: relaunch the app afterwards.
@@ -1268,22 +526,15 @@ app.whenReady().then(() => {
   refreshEconomics();
   const econTimer = setInterval(refreshEconomics, 10 * 60 * 1000);
   if (econTimer.unref) econTimer.unref();
-  // The identity used to live in Electron's userData dir; move it into the
-  // store shared with the CLI so one machine keeps one nodeId across shells.
-  nodeStore.migrateFrom(path.join(app.getPath('userData'), 'node.json'));
-  // Resume pinging if this machine is already linked to an account.
-  const node = loadNode();
-  if (node && node.connected) startNodePinger();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
 
-// Kill the children we spawned. Idempotent — both quit paths below call it, and
-// on the common path both of them fire.
+// Stop the miner. Idempotent — both quit paths below call it, and on the common
+// path both of them fire.
 function shutdownChildren() {
   stopMining();
-  stopLlm(); // never orphan llama-server (it would hold VRAM + port 8080)
 }
 
 app.on('window-all-closed', () => {
@@ -1294,10 +545,8 @@ app.on('window-all-closed', () => {
 // The other way out, and until now the LEAKING one. Electron does not emit
 // 'window-all-closed' when the quit was started programmatically — which is what
 // the default menu's Quit role and Ctrl/Cmd+Q do. So the most ordinary way to
-// close the app skipped the only cleanup hook and left llama-server and the
-// alpha-miner running: the user's GPU stayed pinned by processes they could no
-// longer see, and the next launch found port 8080 already held (the same
-// symptom the update path documents at 'app:update:install').
+// close the app skipped the only cleanup hook and left the miner running: the
+// user's GPU stayed pinned by work they could no longer see.
 app.on('before-quit', () => {
   shutdownChildren();
 });
