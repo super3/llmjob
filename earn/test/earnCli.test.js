@@ -1365,6 +1365,64 @@ describe('--gate-quiet', () => {
   });
 });
 
+// The lock itself is PearlMiner's (see pearlMiner.test.js); the CLI's part is
+// deciding whether the miner gets asked at all. It must never be in place while
+// an LLM is served, and a co-running LLM is served for the whole run.
+describe('--mine-mem-clock', () => {
+  const IGNORED = '--mine-mem-clock ignored: the LLM co-runs with the miner and needs full memory bandwidth';
+
+  test('a miner on its own gets the clock', async () => {
+    const m = load();
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--no-report', '--mine-mem-clock', '7001']);
+    await settle();
+    const miner = m.PearlEngine.instances[0];
+    expect(miner.settings.mineMemClockMhz).toBe(7001);
+    expect(allErr()).not.toContain(IGNORED);
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  // Demand mode never serves while mining: the miner's stop() releases the lock
+  // before the gate starts llama-server, and every restart after serving asks
+  // for it again.
+  test('demand mode keeps it, on the first start and every restart', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    m.LlmEngineManager.mmprojInstalled = true;
+    const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--no-report', '--gate-port', '0',
+      '--mine-mem-clock', '7001']);
+    await settle();
+
+    expect(allOut()).toContain('mining until a request arrives');
+    const miner = m.PearlEngine.instances[0];
+    expect(miner.settings.mineMemClockMhz).toBe(7001);
+    expect(m.autoGate.createAutoGate.instances[0].opts.startMinerArgs().mineMemClockMhz).toBe(7001);
+    expect(allErr()).not.toContain(IGNORED);
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('a co-running LLM drops it, and says so once', async () => {
+    const m = load();
+    // 24 GB free: the same model wins with and without the mining reserve, so
+    // auto co-runs.
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--no-report', '--mine-mem-clock', '7001']);
+    await settle();
+
+    expect(m.LlmManager.instances.length).toBeGreaterThan(0);
+    const miner = m.PearlEngine.instances[0];
+    expect(miner.settings.mineMemClockMhz).toBeNull();
+    expect(allErr().split(IGNORED)).toHaveLength(2);
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+});
+
 describe('auto mode on a card that cannot co-run its best model', () => {
   test('mines first and does not start the LLM until something asks for it', async () => {
     const m = load();

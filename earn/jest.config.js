@@ -46,6 +46,9 @@ module.exports = {
     // drives lives in earn/native and is not measurable here — which is
     // exactly why the JS side is held to the full gate.
     'src/main/pearlMiner.js', 'src/main/pearlCore.js',
+    // --mine-mem-clock. Releasing the lock is what keeps a served LLM off a card
+    // with its memory clock cut, so it is held to the gate like the miner is.
+    'src/main/gpuClocks.js',
     'src/main/main.js', 'src/renderer/renderer.js',
     'src/cli/selfUpdater.js', 'src/cli/sea-entry.js', 'src/cli/earn-cli.js',
   ],

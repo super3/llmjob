@@ -359,6 +359,7 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
       --backend <name>     Force an engine backend (e.g. ampere)
   -b, --binary <path>      Use this alpha-miner binary instead of downloading one
       --engine-dir <path>  Where to cache the downloaded engine
+      --mine-mem-clock <MHz>  Lock each mining GPU's memory clock while it mines (see below)
       --no-report          Do not publish live status to the public network board
       --no-update          Do not auto-update the CLI to a newer release on start
   -h, --help / -v, --version
@@ -391,6 +392,50 @@ unit:
 ExecStart=/opt/llmjob/llmjob-earn-cli --address prl1p… --binary /opt/llmjob/alpha-miner --no-update
 Restart=always
 ```
+
+### Lock the memory clock while mining (`--mine-mem-clock`)
+
+On a power-capped card the fold is limited by watts, not by memory bandwidth.
+It moves about 5 GB/s of DRAM traffic (418 MB per launch at a 99.6% L2 hit rate,
+measured with Nsight Compute), so GDDR7 at its default 13801 MHz spends power
+the SMs could use. Locking the memory clock lower hands that power to the SM
+clock. Measured on an RTX 5090 capped at 600 W, same core, runs interleaved in
+one session:
+
+| Memory clock | SM clock | TH/s |
+|---|---|---|
+| 13801 MHz (default) | 682 MHz | 95.58 / 95.90 |
+| 7001 MHz (`--mine-mem-clock 7001`) | 742 MHz | 103.18 / 103.55 |
+
+That is +8.0%, with the same work done per SM clock. Going lower (810 or
+405 MHz) raises the SM clock further, but the work per clock drops (the
+L2/crossbar appears to slow down with the memory P-state), so use 7001 on a 5090.
+
+How much it buys depends on how much of the cap the memory is taking. On the
+same card in early September, before its power draw rose, 7001 MHz measured a
+tie (native/probes/README.md). Measure your own card before and after.
+
+```bash
+llmjob-earn-cli --address prl1p… --mode mining --mine-mem-clock 7001
+```
+
+- **Off by default.** Nothing touches the clocks unless you pass the flag.
+- **Needs root.** Setting clocks does, so either run the CLI as root or give its
+  user a sudoers rule for `nvidia-smi`. The CLI calls it through `sudo -n`, which
+  never waits for a password. Without either, it logs one warning per card and
+  mines at the default clock.
+
+  ```
+  # visudo -f /etc/sudoers.d/llmjob-earn   (path from `command -v nvidia-smi`)
+  miner ALL=(root) NOPASSWD: /usr/bin/nvidia-smi
+  ```
+
+- **Released whenever the miner stops**, before anything else happens: on
+  shutdown, and in demand-driven `auto` before the LLM starts. LLM decode is
+  memory-bandwidth-bound, so a model is never served from a locked card. When
+  `auto` co-runs the LLM with the miner, the flag is ignored and the log says so.
+- **A hard kill can't release it.** After a SIGKILL or a crash, run
+  `sudo nvidia-smi -i <index> -rmc` (a reboot clears it too).
 
 ## Develop
 
