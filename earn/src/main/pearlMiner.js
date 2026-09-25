@@ -10,6 +10,7 @@ const {
 const { hash } = require('../shared/miner/blake3');
 const { buildShareProof } = require('../shared/miner/shareProof');
 const { combinePayoutAddress } = require('../shared/address');
+const gpuClocks = require('./gpuClocks');
 
 // The host for our own Pearl miner: it owns the pool socket and the job/lifecycle
 // state machine, and drives a PearlCore (the CUDA addon) for the actual search.
@@ -17,8 +18,9 @@ const { combinePayoutAddress } = require('../shared/address');
 // here is protocol, bookkeeping and safety; none of it touches the GPU directly.
 //
 // Everything IO is injected (connect → a duplex-ish socket, createCore → the
-// native core factory) so the entire state machine is unit-testable against a
-// fake socket and a fake core, with no network and no GPU.
+// native core factory, clocks → gpuClocks' nvidia-smi calls) so the entire state
+// machine is unit-testable against a fake socket and a fake core, with no
+// network and no GPU.
 //
 // Emits, for the app to relay to the renderer exactly like MinerManager does:
 //   started        { pool, wallet, worker }
@@ -50,11 +52,12 @@ function readDevice(core) {
 }
 
 class PearlMiner extends EventEmitter {
-  constructor({ connect, createCore, reconnectMs } = {}) {
+  constructor({ connect, createCore, reconnectMs, clocks } = {}) {
     super();
     this.connect = connect;                 // (host, port) -> socket
     this.createCore = createCore || null;   // (profile) -> core, or null when unbuilt
     this.reconnectMs = reconnectMs == null ? RECONNECT_MS : reconnectMs;
+    this.clocks = clocks || gpuClocks;      // { lockMemoryClock, resetMemoryClock }
 
     this.sock = null;
     // One core per card. `cores` is [{ core, device }] in the order they were
@@ -71,6 +74,12 @@ class PearlMiner extends EventEmitter {
     // a reject lands on the card that found the share, not on card 0.
     this.pending = new Map();
     this.settings = null;
+    // Card indices whose memory clock this run locked, so stop() releases
+    // exactly those: never a card whose lock failed, and never one it did not
+    // touch. start() does not clear it. A run's locks are released by its own
+    // stop(), and a start that fails locks nothing, so start() never finds any
+    // -- and if it somehow did, forgetting them would leave them locked.
+    this.memClockLocked = new Set();
   }
 
   isRunning() { return this.running; }
@@ -172,6 +181,11 @@ class PearlMiner extends EventEmitter {
           line: 'mining on GPU ' + device.index + ' · ' + device.name,
         });
       }
+      // Only a card whose core started gets locked: a card that refused is not
+      // mining, and the lock would only slow whatever else is using it.
+      if (settings.mineMemClockMhz) {
+        this._lockMemClock(device ? device.index : null, settings.mineMemClockMhz);
+      }
 
       // A core that won't say which card it opened is one built before any of
       // this existed, and it ignores the card we asked for — it mines on CUDA's
@@ -206,6 +220,57 @@ class PearlMiner extends EventEmitter {
       return false;
     }
     return true;
+  }
+
+  // Lock one mining card's memory clock (--mine-mem-clock; see gpuClocks for
+  // the measurements). The index is the card the core says it opened. A core
+  // that does not say is one that ignores the card it was asked for (see
+  // below), so the index it was given is a guess, and a wrong guess would lock
+  // a card something else is using.
+  _lockMemClock(index, mhz) {
+    if (index == null) {
+      this.emit('log', {
+        level: 'warn',
+        line: 'memory clock left at default: this pearl_core.node does not say which GPU it opened',
+      });
+      return;
+    }
+    const r = this.clocks.lockMemoryClock(index, mhz);
+    if (r.ok) {
+      this.memClockLocked.add(index);
+      this.emit('log', {
+        level: 'info',
+        line: 'memory clock locked at ' + mhz + ' MHz on GPU ' + index + ' while mining',
+      });
+      return;
+    }
+    this.emit('log', {
+      level: 'warn',
+      line: 'could not lock the memory clock on GPU ' + index + ' (' + r.error + '): it needs root, '
+        + 'or a sudoers NOPASSWD rule for nvidia-smi. Mining continues at the default memory clock.',
+    });
+  }
+
+  // Release every lock this run took. Synchronous, and done before 'stopped' is
+  // emitted: the demand gate starts llama-server as soon as it hears the miner
+  // stopped, and shutdown exits soon after, and the lock must be gone before
+  // either. Said out loud, because "was the card still locked when the model
+  // came up?" is the question a slow LLM on this rig raises, and the log is
+  // where it gets answered.
+  _releaseMemClocks() {
+    for (const index of this.memClockLocked) {
+      const r = this.clocks.resetMemoryClock(index);
+      if (r.ok) {
+        this.emit('log', { level: 'info', line: 'memory clock released on GPU ' + index });
+        continue;
+      }
+      this.emit('log', {
+        level: 'error',
+        line: 'could not release the memory clock on GPU ' + index + ' (' + r.error + '). '
+          + 'An LLM on it will decode slowly until you run: sudo nvidia-smi -i ' + index + ' -rmc',
+      });
+    }
+    this.memClockLocked.clear();
   }
 
   _openSocket(host, port, wallet, worker) {
@@ -410,6 +475,7 @@ class PearlMiner extends EventEmitter {
     for (const c of this.cores) {
       try { c.core.stop(); } catch (e) { /* that core is already gone */ }
     }
+    this._releaseMemClocks();
     this.cores = [];
     this.hashrates.clear();
     if (this.sock) { try { this.sock.destroy(); } catch (e) { /* already closed */ } this.sock = null; }

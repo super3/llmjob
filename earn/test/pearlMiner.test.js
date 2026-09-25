@@ -1,7 +1,16 @@
 'use strict';
 
+// The real gpuClocks runs nvidia-smi as root. A miner built without `clocks`
+// falls back to it, so it is mocked for the whole file: a test that forgets to
+// inject a fake must still never change a real card's clocks.
+jest.mock('../src/main/gpuClocks', () => ({
+  lockMemoryClock: jest.fn(() => ({ ok: true, error: null })),
+  resetMemoryClock: jest.fn(() => ({ ok: true, error: null })),
+}));
+
 const { EventEmitter } = require('events');
 const { PearlMiner, RECONNECT_MS } = require('../src/main/pearlMiner');
+const gpuClocks = require('../src/main/gpuClocks');
 const { encode } = require('../src/shared/miner/stratum');
 const { shareBound, PROFILE, buildConfig52, regionToTile } = require('../src/shared/miner/pearlhash');
 const { hash, keyedHash } = require('../src/shared/miner/blake3');
@@ -810,5 +819,168 @@ describe('PearlMiner — one core per card', () => {
     b.m.pending.set(7, { jobId: 'j', index: 1 });
     b.sock.emit('data', JSON.stringify({ id: 7, result: true, error: null }) + '\n');
     expect(b.events.share[0]).toEqual({ jobId: 'j', accepted: true, index: 1 });
+  });
+});
+
+// --mine-mem-clock. The lock is taken per card as its core starts and released
+// in stop(), before 'stopped', because the demand gate starts llama-server --
+// which needs the full memory clock -- the moment it hears the miner stopped.
+describe('PearlMiner — the memory clock lock', () => {
+  const GPUS = [
+    { index: 0, name: 'NVIDIA GeForce RTX 5090' },
+    { index: 1, name: 'NVIDIA GeForce RTX 5090' },
+  ];
+  const MEM = { ...settings, mineMemClockMhz: 7001 };
+
+  // A card that reports the index it was asked for, like the real addon, and a
+  // clocks double that records every call in order alongside the miner's own
+  // 'stopped', so "released before stopped" is something a test can check.
+  function rig(over = {}) {
+    const calls = [];
+    const clocks = {
+      lockMemoryClock: jest.fn((index, mhz) => { calls.push(['lock', index, mhz]); return over.lock || { ok: true, error: null }; }),
+      resetMemoryClock: jest.fn((index) => { calls.push(['reset', index]); return over.reset || { ok: true, error: null }; }),
+    };
+    const createCore = jest.fn((profile, opts) => {
+      const c = makeCore();
+      if (!over.silentDevice) c.device = { index: opts.deviceIndex, name: 'GPU' + opts.deviceIndex };
+      return c;
+    });
+    const m = new PearlMiner({ connect: () => makeSocket(), createCore, reconnectMs: 0, clocks });
+    const logs = [];
+    m.on('log', (l) => logs.push(l));
+    m.on('stopped', () => calls.push(['stopped']));
+    m.on('error', () => {});
+    return { m, clocks, calls, logs, createCore, lines: () => logs.map((l) => l.line) };
+  }
+
+  test('locks every card that starts, and releases them all before stopped', () => {
+    const b = rig();
+    expect(b.m.start({ ...MEM, gpus: GPUS })).toBe(true);
+    expect(b.calls).toEqual([['lock', 0, 7001], ['lock', 1, 7001]]);
+    expect(b.lines()).toEqual(expect.arrayContaining([
+      'memory clock locked at 7001 MHz on GPU 0 while mining',
+      'memory clock locked at 7001 MHz on GPU 1 while mining',
+    ]));
+
+    b.m.stop();
+    expect(b.calls.slice(2)).toEqual([['reset', 0], ['reset', 1], ['stopped']]);
+    expect(b.lines()).toEqual(expect.arrayContaining([
+      'memory clock released on GPU 0',
+      'memory clock released on GPU 1',
+    ]));
+  });
+
+  // Demand mode stops and restarts the same engine on every request. Each run
+  // locks on start and releases on stop, and a released card is not released
+  // twice.
+  test('locks again on the next start, and releases only once per run', () => {
+    const b = rig();
+    b.m.start({ ...MEM, gpus: [GPUS[0]] });
+    b.m.stop();
+    b.m.stop();
+    b.m.start({ ...MEM, gpus: [GPUS[0]] });
+    b.m.stop();
+    expect(b.calls).toEqual([
+      ['lock', 0, 7001], ['reset', 0], ['stopped'],
+      ['lock', 0, 7001], ['reset', 0], ['stopped'],
+    ]);
+  });
+
+  test('is off by default: no flag, no nvidia-smi, on start or stop', () => {
+    const b = rig();
+    b.m.start({ ...settings, gpus: GPUS });
+    b.m.stop();
+    expect(b.clocks.lockMemoryClock).not.toHaveBeenCalled();
+    expect(b.clocks.resetMemoryClock).not.toHaveBeenCalled();
+    expect(b.lines().join(' ')).not.toMatch(/memory clock/);
+  });
+
+  // No root and no sudoers rule is the usual reason. Mining carries on at the
+  // default clock, the log says once what would fix it, and a card that was
+  // never locked is not "released".
+  test('a failed lock is said once, mining carries on, and it is not reset', () => {
+    const b = rig({ lock: { ok: false, error: 'sudo: a password is required' } });
+    expect(b.m.start({ ...MEM, gpus: [GPUS[0]] })).toBe(true);
+    expect(b.m.isRunning()).toBe(true);
+    const warned = b.logs.filter((l) => /memory clock/.test(l.line));
+    expect(warned).toEqual([{
+      level: 'warn',
+      line: 'could not lock the memory clock on GPU 0 (sudo: a password is required): it needs root, '
+        + 'or a sudoers NOPASSWD rule for nvidia-smi. Mining continues at the default memory clock.',
+    }]);
+
+    b.m.stop();
+    expect(b.clocks.resetMemoryClock).not.toHaveBeenCalled();
+  });
+
+  // Only the cards that locked are released. On a mixed rig one card can take
+  // the lock while another refuses it.
+  test('releases exactly the cards that locked', () => {
+    const b = rig();
+    b.clocks.lockMemoryClock.mockImplementationOnce(() => ({ ok: false, error: 'not supported' }));
+    b.m.start({ ...MEM, gpus: GPUS });
+    b.m.stop();
+    expect(b.clocks.resetMemoryClock.mock.calls).toEqual([[1]]);
+  });
+
+  // A card whose core refused is not mining. Locking it would only slow down
+  // whatever holds it -- usually the local LLM, which is why it had no room.
+  test('does not lock a card whose core did not start', () => {
+    const b = rig();
+    b.createCore.mockImplementationOnce(() => { throw new Error('not enough free VRAM'); });
+    b.m.start({ ...MEM, gpus: GPUS });
+    expect(b.clocks.lockMemoryClock.mock.calls).toEqual([[1, 7001]]);
+  });
+
+  test('a rig where no core starts locks nothing', () => {
+    const b = rig();
+    b.createCore.mockImplementation(() => { throw new Error('no CUDA device found'); });
+    expect(b.m.start({ ...MEM, gpus: GPUS })).toBe(false);
+    expect(b.clocks.lockMemoryClock).not.toHaveBeenCalled();
+  });
+
+  // An older core does not report its card, and it ignores the one it was
+  // asked for, so that index is only a guess -- and a wrong one would lock a
+  // card the rig is using for something else.
+  test('does not guess from the card it asked for when the core does not say', () => {
+    const b = rig({ silentDevice: true });
+    b.m.start({ ...MEM, gpus: [{ index: 2, name: 'NVIDIA GeForce RTX 5090' }] });
+    expect(b.clocks.lockMemoryClock).not.toHaveBeenCalled();
+  });
+
+  test('locks nothing when it cannot tell which card is mining', () => {
+    const b = rig({ silentDevice: true });
+    expect(b.m.start(MEM)).toBe(true);
+    expect(b.clocks.lockMemoryClock).not.toHaveBeenCalled();
+    expect(b.logs).toContainEqual({
+      level: 'warn',
+      line: 'memory clock left at default: this pearl_core.node does not say which GPU it opened',
+    });
+  });
+
+  // The one failure that matters: the card stays locked. The miner still
+  // stops, and the log says how to undo it by hand.
+  test('a failed release is an error that names the fix, and the miner still stops', () => {
+    const b = rig({ reset: { ok: false, error: 'sudo: a password is required' } });
+    b.m.start({ ...MEM, gpus: [GPUS[0]] });
+    b.m.stop();
+    expect(b.m.isRunning()).toBe(false);
+    expect(b.calls).toContainEqual(['stopped']);
+    expect(b.logs).toContainEqual({
+      level: 'error',
+      line: 'could not release the memory clock on GPU 0 (sudo: a password is required). '
+        + 'An LLM on it will decode slowly until you run: sudo nvidia-smi -i 0 -rmc',
+    });
+  });
+
+  test('uses gpuClocks when no clocks are injected', () => {
+    const core = makeCore();
+    core.device = { index: 0, name: 'NVIDIA GeForce RTX 5090' };
+    const m = new PearlMiner({ connect: () => makeSocket(), createCore: () => core });
+    m.start(MEM);
+    m.stop();
+    expect(gpuClocks.lockMemoryClock).toHaveBeenCalledWith(0, 7001);
+    expect(gpuClocks.resetMemoryClock).toHaveBeenCalledWith(0);
   });
 });

@@ -316,3 +316,47 @@ describe('--gate-quiet', () => {
     expect(settings.gateQuietMs).toBe(300000);
   });
 });
+
+describe('--mine-mem-clock', () => {
+  const errs = () => [];
+
+  test('is off unless asked for', () => {
+    expect(buildSettings({}, errs(), true, false).mineMemClockMhz).toBeNull();
+  });
+
+  test('carries a clock in MHz through', () => {
+    expect(buildSettings({ '--mine-mem-clock': '7001' }, errs(), true, false).mineMemClockMhz).toBe(7001);
+    expect(buildSettings({ '--mine-mem-clock': ' 405 ' }, errs(), true, false).mineMemClockMhz).toBe(405);
+  });
+
+  // The range catches the unit mistakes: `7` meaning 7 GHz, `7001000` meaning
+  // kHz. Either would go straight to nvidia-smi as a clock no card runs at.
+  test('rejects anything that is not a plausible whole number of MHz', () => {
+    for (const bad of ['', '7', '99', '30001', '7001000', '7001.5', '-7001', 'fast']) {
+      const errors = [];
+      const s = buildSettings({ '--mine-mem-clock': bad }, errors, true, false);
+      expect(errors).toContain('invalid --mine-mem-clock: ' + bad + ' (must be a whole number of MHz, 100-30000)');
+      expect(s.mineMemClockMhz).toBeNull();
+    }
+  });
+
+  test('accepts the edges of the range', () => {
+    expect(buildSettings({ '--mine-mem-clock': '100' }, errs(), true, false).mineMemClockMhz).toBe(100);
+    expect(buildSettings({ '--mine-mem-clock': '30000' }, errs(), true, false).mineMemClockMhz).toBe(30000);
+  });
+
+  test('takes a value, in either form', () => {
+    expect(parseCliArgs(['-a', ADDR, '--mine-mem-clock', '7001', '--no-report']).settings.mineMemClockMhz).toBe(7001);
+    expect(parseCliArgs(['-a', ADDR, '--mine-mem-clock=7001']).settings.mineMemClockMhz).toBe(7001);
+    expect(parseCliArgs(['-a', ADDR, '--mine-mem-clock']).errors).toContain('missing value for --mine-mem-clock');
+  });
+
+  // The flag's help has to carry the reason to use it, the value to use, and
+  // what it needs -- nobody reads a README before a flight sheet.
+  test('is documented with the number, the recommendation and the requirement', () => {
+    expect(VALUE_FLAGS.has('--mine-mem-clock')).toBe(true);
+    expect(USAGE).toContain('--mine-mem-clock <MHz>');
+    expect(USAGE).toContain('7001');
+    expect(USAGE).toContain('NOPASSWD');
+  });
+});
