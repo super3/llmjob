@@ -69,7 +69,7 @@ Inside the fold, fold-only, all at the cap (these builds compute wrong answers):
 The per-chunk `__syncthreads` is worth 18% per clock and still 9% after the clock
 drops to pay for it. The square warp tile that won 2% on Blackwell loses 2% here.
 
-### Where it ended: 223 -> 264 TH/s at the same 450 W
+### Where it ended: 223 -> 273 TH/s at the same 450 W
 
 | step | full miner loop |
 |---|---|
@@ -77,13 +77,25 @@ drops to pay for it. The square warp tile that won 2% on Blackwell loses 2% here
 | restamp A between salts instead of redrawing both operands | 229 |
 | + hash in the fold's epilogue, no 1 GiB transcript round trip | 234 |
 | + persistent fold, next tile's chunk 0 staged under the last chunk | 241 |
-| + per-group staging, mid-k-step copies, one-barrier seam, serpentine bands | **264** |
+| + per-group staging, mid-k-step copies, one-barrier seam, serpentine bands | 264 |
+| + ldmatrix lane bases held for the kernel, compile-time `active` | 270 |
+| + tile coordinates by shift and mask, not divides | **273** |
 
-The last two are gated to sm_89 (`PEARL_FOLD_PERSISTENT`, `PEARL_FOLD_GROUP_STAGE`,
+The 241 and 264 steps are gated to sm_89 (`PEARL_FOLD_PERSISTENT`, `PEARL_FOLD_GROUP_STAGE`,
 `PEARL_FOLD_SERPENTINE`), because only a 4090 has run them. Ampere and Blackwell keep one
 block per tile and the block-wide walk; run on this card with their settings forced, those
 paths measure +1.8% and +1.9% over the previous core rather than a regression, and their
 chunk loops compile to 370 and 484 instructions against 385 and 451 before.
+
+The last two rows are gated to sm_89 too (`PEARL_FOLD_LANE_BASES`,
+`PEARL_FOLD_FAST_COORDS`). Measured interleaved against v0.5.5 in the full loop: +2.3%,
+then +3.5% with both (262.6 / 262.8 -> 272.0 / 271.8; v0.5.5 measured ~1.5 TH/s under its
+264 that day, so the rows carry the gains onto 264), 400/400 hits verified. Both shorten
+the chunk and tile seams, where all sixteen warps wait at the barrier together and each
+instruction costs about 0.12% of the rate. Both sit on the 128-register knife edge: holding
+the fast-coordinate shift in a register instead of recomputing it cost ptxas the lane bases
+and measured 265.0 against 273.0. Check the SASS after any fold edit: the first `LDSM` should
+be a few instructions after `BAR.SYNC`.
 
 ### Against the field: 264 is 15.8% behind
 

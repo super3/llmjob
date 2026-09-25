@@ -418,6 +418,55 @@ typedef struct {
 #endif
 #endif
 
+// Keep each lane's ldmatrix base address live across the whole kernel, and
+// drop the fold's per-warp `active` test (see the tile loop and the k-loop).
+//
+// At the 128-register cap ptxas could not keep the lane bases, so it rebuilt
+// row * 128 + swizzle from the lane id at the top of every chunk -- between the
+// barrier and the first ldmatrix, where all sixteen warps wait on the same
+// instructions and each one costs about 0.12% of the rate. With this the first
+// ldmatrix is two instructions after the barrier and a warp runs 221
+// instructions a chunk (five and 222 once PEARL_FOLD_FAST_COORDS moves the
+// stage-base multiplies past the barrier).
+//
+// The two halves only work together: the XOR addressing alone measured -1.2%
+// (the bases still did not fit) and the compile-time `active` alone +1.0%.
+// Both (4090 at 450 W, interleaved against v0.5.5):
+//   bench  264.9 / 263.7 / 263.7 -> 269.8 / 266.9 / 269.4 TH/s
+//   full miner loop  261.9 / 262.8 -> 268.4 / 268.4 TH/s (+2.3%)
+//
+// Ada only, like the other fold switches: it is what measured, and the
+// register budget it depends on is the Ada fold's. Device side only.
+#ifndef PEARL_FOLD_LANE_BASES
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#define PEARL_FOLD_LANE_BASES 1
+#else
+#define PEARL_FOLD_LANE_BASES 0
+#endif
+#endif
+
+// Tile coordinates by shift and mask when every band is whole and the
+// column-group count is a power of two, which the mainnet geometry is. The
+// general path's two integer divides are about 60 instructions, and they run
+// at the tile seam, where the block waits on them: once for the next tile's
+// sources in the last chunk, once more for the hashers. On top of
+// PEARL_FOLD_LANE_BASES (bench, TH/s, 4090, interleaved, six rounds):
+//   divides            272.1 / 269.3 / 269.6 / 269.5 / 269.5 / 269.4
+//   shift and mask     273.7 / 273.2 / 272.8 / 273.0 / 272.8 / 272.9   (+1.2%)
+// and against v0.5.5 with both: bench 264.0 -> 273.2 (+3.5%), full miner loop
+// 262.6 / 262.8 -> 272.0 / 271.8 (+3.5%).
+//
+// The shift is recomputed on each call rather than held for the kernel: the
+// held version cost ptxas the lane bases and measured 265.0 against 273.0.
+// Ada only, with PEARL_FOLD_LANE_BASES. Device side only.
+#ifndef PEARL_FOLD_FAST_COORDS
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#define PEARL_FOLD_FAST_COORDS 1
+#else
+#define PEARL_FOLD_FAST_COORDS 0
+#endif
+#endif
+
 // Transcript words a lane carries: a warp's regions times buckets, spread over
 // its 32 lanes. 8 regions x 16 buckets / 32 = 4 at the mandated geometry.
 #define PEARL_JACKPOT_REGS \

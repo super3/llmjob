@@ -1217,7 +1217,32 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
   // keeps both operands in L2 exactly as before.
   const uint32_t col_block_groups = tiles / row_block_groups;
   const uint32_t band_blocks = PEARL_BLOCK_GROUP * col_block_groups;
+#if PEARL_FOLD_FAST_COORDS
+  // When every band is whole and the column-group count is a power of two --
+  // true at the mainnet geometry -- the divides below are shifts and masks.
+  // The test is uniform across the grid, so it is one predictable branch. See
+  // PEARL_FOLD_FAST_COORDS.
+  static_assert((PEARL_BLOCK_GROUP & (PEARL_BLOCK_GROUP - 1u)) == 0u,
+                "band depth must be a power of two");
+  constexpr uint32_t bg_shift = pearl_popcount_ce(PEARL_BLOCK_GROUP - 1u);
+#endif
   auto tile_coords = [&](uint32_t v, uint32_t &rbg_, uint32_t &cbg_) {
+#if PEARL_FOLD_FAST_COORDS
+    // Recomputed per call rather than held: at the register cap, two more
+    // live registers cost the ldmatrix lane bases (see PEARL_FOLD_LANE_BASES).
+    if (row_block_groups % PEARL_BLOCK_GROUP == 0u
+        && (col_block_groups & (col_block_groups - 1u)) == 0u && col_block_groups != 0u) {
+      const uint32_t cbg_shift = __popc(col_block_groups - 1u);
+      const uint32_t band = v >> (bg_shift + cbg_shift);
+      const uint32_t in_band = v & ((PEARL_BLOCK_GROUP << cbg_shift) - 1u);
+      rbg_ = band * PEARL_BLOCK_GROUP + (in_band & (PEARL_BLOCK_GROUP - 1u));
+      cbg_ = in_band >> bg_shift;
+#if PEARL_FOLD_SERPENTINE
+      if (band & 1u) cbg_ = col_block_groups - 1u - cbg_;
+#endif
+      return;
+    }
+#endif
     const uint32_t band = v / band_blocks;
     const uint32_t in_band = v % band_blocks;
     const uint32_t band_first = band * PEARL_BLOCK_GROUP;
@@ -1236,7 +1261,9 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
   // Shared: this warp's transcripts, then the staged B columns shared by the
   // whole block. The per-warp 16x16 unpack buffer is gone with the gather that
   // needed it.
-  extern __shared__ uint32_t smem_u32[];
+  // 128-byte aligned, so every staged row starts on a multiple of 128: the
+  // ldmatrix lane bases below XOR the k offset into bits 5-6 and rely on it.
+  extern __shared__ __align__(128) uint32_t smem_u32[];
   // Every byte of shared belongs to the two stage buffers now. Transcripts go
   // straight to global as each chunk finishes them -- one four-byte store per
   // region per chunk, trivial next to the staging traffic -- because the four
@@ -1391,6 +1418,8 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
   // This is the shape the closed miners use -- it is why the layout above had
   // to lose its padding -- and it costs one barrier per chunk, total.
   const uint32_t buf_bytes = (sb_cols + sa_rows) * PEARL_SB_STRIDE;
+  static_assert(buf_bytes % 128u == 0u,
+                "a stage buffer must keep rows 128-byte aligned (see the ldmatrix lane bases)");
 
 #if PEARL_FOLD_GROUP_STAGE
 // Slot p of this thread's share of its B column group, and of its A row group.
@@ -1518,6 +1547,28 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
   const uint32_t colBar = 1u + wc;
 #endif
 
+#if PEARL_FOLD_LANE_BASES
+  // Each lane's ldmatrix address for mb = 0 / nb = 0, k-step 0, buffer 0.
+  //
+  // The swizzle and the half select only touch bits 4-6 of the address, and
+  // every other term -- the shared base, row * 128, the stage offset, whole
+  // fragments of rows or columns -- is a multiple of 128. So
+  //   base + ((kt + half) ^ swz) == ((base + ((half ^ swz) & 0x10) + (swz & 0x60)) ^ kt)
+  // and a k-step's address is the lane base plus the stage offset, XORed with
+  // kt (bits 5-6), plus a compile-time fragment offset. That is a register
+  // held for the whole kernel and one LOP3 per k-step, in place of rebuilding
+  // row * 128 + swizzle from the lane id at the top of every chunk, which is
+  // where ptxas put it at the register cap -- between the barrier and the
+  // first ldmatrix, where every instruction stalls all sixteen warps.
+  //
+  // ptxas keeps these live only with `active` compile-time too (see the tile
+  // loop); on its own this measured -1.2%. See PEARL_FOLD_LANE_BASES.
+  const uint32_t aLane0 = sAa + (wr * regions_per_warp * PEARL_ROWS_COUNT + alrow) * PEARL_SB_STRIDE
+                          + ((albyte ^ swz) & 0x10u) + (swz & 0x60u);
+  const uint32_t bLane0 = sBa + (wc * PEARL_WMMA_COL_BLK * 16u + blcol) * PEARL_SB_STRIDE
+                          + ((blbyte ^ swz) & 0x10u) + (swz & 0x60u);
+#endif
+
   for (uint32_t v = blockIdx.x; v < tiles; v += tile_stride) {
 #if !PEARL_FOLD_PERSISTENT
     // Not persistent: the host launches one block per tile and this never runs.
@@ -1537,7 +1588,19 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
     // The host launches exactly the tiles the grid needs, but a warp must never
     // simply return: staging is a block-wide cooperative load and a
     // __syncthreads() some warps skip hangs the launch.
+#if PEARL_FOLD_LANE_BASES
+    // Every warp of every tile the grid walks IS active: the host refuses any
+    // geometry whose warp grid does not tile the row and column blocks exactly,
+    // and launches exactly that many tiles. Saying so at compile time drops the
+    // inactive warps' copy path from the chunk loop, and with it the registers
+    // ptxas needed to keep the ldmatrix lane bases live (see
+    // PEARL_FOLD_LANE_BASES): +1.0% on its own.
+    const bool active = true;
+    (void)rb;
+    (void)cgb;
+#else
     const bool active = rb < row_blocks && cgb < (col_groups / PEARL_WMMA_COL_BLK);
+#endif
     // A compile-time false when the fold is not persistent, which takes the
     // next-tile source swap out of the chunk loop entirely.
     const bool has_next = PEARL_FOLD_PERSISTENT && v + tile_stride < tiles;
@@ -1605,8 +1668,10 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
         continue;
       }
       const uint32_t stage_off = (chunk & 1u) * buf_bytes;
+#if !PEARL_FOLD_LANE_BASES
       const uint32_t sAc = sAa + stage_off;
       const uint32_t sBc = sBa + stage_off;
+#endif
       // k advances 32 at a time, and at the mandated rank there are exactly four
       // steps. A compile-time bound is worth stating: it lets ptxas unroll the
       // whole chunk body and schedule ldmatrix for step t+1 underneath the mma of
@@ -1649,9 +1714,13 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
 #endif
 #pragma unroll
         for (uint32_t mb = 0; mb < MB; mb++) {
+#if PEARL_FOLD_LANE_BASES
+          const uint32_t rp = ((aLane0 + stage_off) ^ kt) + mb * 16u * PEARL_SB_STRIDE;
+#else
           const uint32_t rp = sAc
               + (wr * regions_per_warp * PEARL_ROWS_COUNT + mb * 16 + alrow) * PEARL_SB_STRIDE
               + ((kt + albyte) ^ swz);
+#endif
 #ifdef PEARL_ABLATE_LDMATRIX
           // Diagnostic only. NOTE: substituting arithmetic here prices the
           // substitute, not the ldmatrix. An earlier version XORed into the
@@ -1670,9 +1739,13 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
         // once would have cost more than the loads it saved.
 #pragma unroll
         for (uint32_t nb = 0; nb < NB; nb += 2) {
+#if PEARL_FOLD_LANE_BASES
+          const uint32_t cp = ((bLane0 + stage_off) ^ kt) + nb * 8u * PEARL_SB_STRIDE;
+#else
           const uint32_t cp = sBc
               + (wc * PEARL_WMMA_COL_BLK * 16 + nb * 8 + blcol) * PEARL_SB_STRIDE
               + ((kt + blbyte) ^ swz);
+#endif
           uint32_t b0, b1, b2, b3;
 #ifdef PEARL_ABLATE_LDMATRIX
           b0 = cp; b1 = cp ^ 1u; b2 = cp ^ 2u; b3 = cp ^ 3u;
