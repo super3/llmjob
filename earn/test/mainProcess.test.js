@@ -1596,7 +1596,12 @@ describe('local LLM', () => {
     const ctx = await boot({
       before: (c) => {
         c.probe.detectGpusVram.mockResolvedValue([
-          { index: 0, name: 'RTX PRO 4500', usedMb: 2000, totalMb: 32000 },
+          // 22,000 MB free on the 4500 keeps it just under the big tier's 65536
+          // floor (22,272), so both cards serve the same model and this stays a
+          // test of chat routing. With the 4500's full 30 GB free, a card serving
+          // alone now takes the 27B at a reduced window that only it can host,
+          // and the 4070 serves nothing -- pinned in its own test.
+          { index: 0, name: 'RTX PRO 4500', usedMb: 10000, totalMb: 32000 },
           { index: 1, name: 'RTX 4070', usedMb: 1000, totalMb: 12000 },
         ]);
         c.probe.findFreePort.mockImplementation((h, p) => Promise.resolve(p));
