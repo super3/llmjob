@@ -85,6 +85,24 @@ block per tile and the block-wide walk; run on this card with their settings for
 paths measure +1.8% and +1.9% over the previous core rather than a regression, and their
 chunk loops compile to 370 and 484 instructions against 385 and 451 before.
 
+### Against the field: 264 is 15.8% behind
+
+What a user compares is the number a miner DISPLAYS over a few minutes, so that is the
+test: `compare-miners.sh`, 5 minutes each, back to back on this 4090 at stock 450 W, same
+pool, same wallet, after a 60 s unmeasured warm-up (2026-09-25):
+
+| miner | displayed TH/s (min 1-5) | shares ok/rej | SM clock | power | fee |
+|---|---|---|---|---|---|
+| PeakMiner 2.17.1 | **313.5** | 9/0 | 2456 MHz | 449 W | 2% |
+| SRBMiner 3.6.9 | 313.0 | 15/0 | 2471 MHz | 449 W | 2% |
+| ours, v0.5.5 | 264.1 | 6/0 | 2380 MHz | 449 W | 0% |
+
+Two independent codebases land within 0.2% of each other, which reads as what a well-fed
+fold reaches on this card rather than one vendor's trick. Note where the gap is: the same
+449 W, and THEY hold the higher clock. They do ~16% less energy per multiply-accumulate
+(0.70 TH/W against 0.59), and on a power-capped card that is the whole difference. The
+pure-mma ceiling here is ~340 T-MAC/s, so they sit at ~92% of it and we sit at ~78%.
+
 ### Measuring, and proving a build correct
 
 - `node hashrate.js <pearl_core.node> 60` -- the app's own number: one core, a synthetic
