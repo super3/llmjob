@@ -92,7 +92,11 @@ describe('gpuClocks — defaults', () => {
   // The real thing is execFileSync -- synchronous on purpose, so a reset has
   // finished before the caller's next line runs. Mocked above.
   test('uses execFileSync and the process uid', () => {
-    const uid = jest.spyOn(process, 'getuid').mockReturnValue(0);
+    // Assigned, not jest.spyOn'd: Windows has no process.getuid to spy on,
+    // and spyOn throws on a missing method before the test even starts.
+    const real = process.getuid;
+    const uid = jest.fn(() => 0);
+    process.getuid = uid;
     try {
       expect(lockMemoryClock(0, 7001)).toEqual({ ok: true, error: null });
       expect(execFileSync).toHaveBeenCalledWith('nvidia-smi', ['-i', '0', '-lmc', '7001,7001'], expect.any(Object));
@@ -100,7 +104,7 @@ describe('gpuClocks — defaults', () => {
       resetMemoryClock(0);
       expect(execFileSync).toHaveBeenLastCalledWith('sudo', ['-n', 'nvidia-smi', '-i', '0', '-rmc'], expect.any(Object));
     } finally {
-      uid.mockRestore();
+      process.getuid = real;
     }
   });
 
