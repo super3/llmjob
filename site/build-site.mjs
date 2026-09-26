@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Static-site builder for the marketing/dashboard pages. Sources live in
+// Static-site builder for the marketing pages. Sources live in
 // site/pages/ and pull shared chrome from site/partials/ and shared constants
-// from site/config.json, so the <head> boilerplate (analytics, Clerk, favicon,
+// from site/config.json, so the <head> boilerplate (analytics, favicon,
 // fonts), the API-base resolution and the release version are defined once
 // instead of copy-pasted into five files (where they had already drifted).
 //
@@ -20,7 +20,7 @@
 //                          use in partials to catch typos in the shared pieces
 //
 // A page declares optional front-matter as a JSON comment on the first line:
-//   <!--build {"active":"earn","clerk":true,"fonts":"…"} -->
+//   <!--build {"navHome":true,"fonts":"…"} -->
 
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, rmSync, cpSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -86,4 +86,23 @@ for (const file of pages) {
   writeFileSync(join(OUT, file), buildPage(file));
   console.log('built dist/' + file);
 }
-console.log('built ' + pages.length + ' page(s) → ' + OUT);
+
+// Retired pages: a tiny stub per old URL (site/redirects.json maps the old name
+// to where it lives now), so links already out in the world — videos, Discord
+// posts, bookmarks, older app versions — land somewhere useful instead of a 404.
+// A stub rather than a server redirect because GitHub Pages, which serves
+// llmjob.com, can't do redirects. The script keeps the #fragment (/earn#calculator
+// → /#calculator); the meta refresh covers a browser with scripts off.
+const redirects = JSON.parse(readFileSync(join(SITE, 'redirects.json'), 'utf8'));
+for (const [name, to] of Object.entries(redirects)) {
+  if (pages.includes(name + '.html')) throw new Error('redirect "' + name + '" shadows a real page');
+  const target = JSON.stringify(to);
+  writeFileSync(join(OUT, name + '.html'),
+    '<!DOCTYPE html>\n<html lang="en"><head><meta charset="UTF-8" />\n' +
+    '<title>Moved</title>\n<meta name="robots" content="noindex" />\n' +
+    '<meta http-equiv="refresh" content="0; url=' + to + '" />\n' +
+    '<script>location.replace(' + target + ' + location.hash);</script>\n' +
+    '</head><body><p>This page has moved: <a href="' + to + '">continue</a>.</p></body></html>\n');
+  console.log('built dist/' + name + '.html → ' + to);
+}
+console.log('built ' + pages.length + ' page(s) and ' + Object.keys(redirects).length + ' redirect(s) → ' + OUT);

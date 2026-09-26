@@ -22,16 +22,6 @@ function fakeSocket(fire) {
   };
 }
 
-// A fake net.Server for findFreePort: either binds ("listening") or fails.
-function fakeServer(fail) {
-  const h = {};
-  return {
-    once(ev, cb) { h[ev] = cb; return this; },
-    close(cb) { if (cb) cb(); },
-    listen() { process.nextTick(() => (fail ? h.error && h.error() : h.listening && h.listening())); },
-  };
-}
-
 function fakeRes() {
   const res = new EventEmitter();
   res.resume = () => {};
@@ -102,23 +92,6 @@ describe('detectRegion', () => {
   });
 });
 
-describe('detectVram', () => {
-  it('sums used/total across GPU lines', async () => {
-    execCb(null, '1024, 8192\n2048, 8192\n');
-    expect(await probe.detectVram()).toEqual({ usedMb: 3072, totalMb: 16384 });
-  });
-
-  it('returns null on error', async () => {
-    execCb(new Error('no smi'));
-    expect(await probe.detectVram()).toBeNull();
-  });
-
-  it('returns null when nothing parses', async () => {
-    execCb(null, 'garbage\n');
-    expect(await probe.detectVram()).toBeNull();
-  });
-});
-
 describe('detectGpusVram', () => {
   it('returns [] on error', async () => {
     execCb(new Error('x'));
@@ -130,6 +103,25 @@ describe('detectGpusVram', () => {
     const rows = await probe.detectGpusVram();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ index: 0, usedMb: 1024, totalMb: 24576 });
+  });
+});
+
+describe('detectGpuTelemetry', () => {
+  it('returns [] on error, so a rig without nvidia-smi still reports', async () => {
+    execCb(new Error('x'));
+    expect(await probe.detectGpuTelemetry()).toEqual([]);
+  });
+
+  it('asks nvidia-smi for the telemetry fields and parses each card', async () => {
+    execCb(null, '0, 64, 312.45, 450.00, 2520, 10501, 55, 580.82, P2\n');
+    const rows = await probe.detectGpuTelemetry();
+    expect(rows).toEqual([{
+      index: 0, tempC: 64, powerW: 312.45, powerLimitW: 450, coreClockMhz: 2520,
+      memClockMhz: 10501, fanPct: 55, driver: '580.82', pstate: 'P2',
+    }]);
+    const args = execFile.mock.calls[execFile.mock.calls.length - 1][1];
+    expect(args[0]).toMatch(/^--query-gpu=index,temperature\.gpu,power\.draw,/);
+    expect(args).toContain('--format=csv,noheader,nounits');
   });
 });
 
@@ -253,18 +245,6 @@ describe('postMinerReport', () => {
       await expect(done).resolves.toBeUndefined();
       expect(httpMock.request).toHaveBeenCalled();
     });
-  });
-});
-
-describe('findFreePort', () => {
-  it('returns the first port that binds (default tries)', async () => {
-    net.createServer.mockImplementation(() => fakeServer(false));
-    expect(await probe.findFreePort('127.0.0.1', 8080)).toBe(8080);
-  });
-
-  it('walks forward and falls back to the start port when none bind', async () => {
-    net.createServer.mockImplementation(() => fakeServer(true));
-    expect(await probe.findFreePort('127.0.0.1', 8080, 3)).toBe(8080);
   });
 });
 

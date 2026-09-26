@@ -7,6 +7,8 @@ const { Pool } = require('pg');
 
 // Live status of LLMJob Earn mining clients (public network board). Kept as its
 // own constant so the add-miners migration can apply it to existing databases.
+// The health columns from `rejected` down, and `rig_id`, are stored for fleet
+// diagnostics and are never served by GET /api/miners.
 const MINERS_SCHEMA = `
 CREATE TABLE IF NOT EXISTS miners (
   id text PRIMARY KEY,
@@ -22,7 +24,20 @@ CREATE TABLE IF NOT EXISTS miners (
   llm_model text,
   node_id text,
   first_seen bigint,
-  last_seen bigint
+  last_seen bigint,
+  rejected bigint,
+  temp_c double precision,
+  power_w double precision,
+  power_limit_w double precision,
+  core_clock_mhz integer,
+  mem_clock_mhz integer,
+  fan_pct integer,
+  driver text,
+  os text,
+  client text,
+  uptime_sec bigint,
+  last_share_sec bigint,
+  rig_id text
 );
 CREATE INDEX IF NOT EXISTS idx_miners_last_seen ON miners (last_seen);
 `;
@@ -57,6 +72,27 @@ CREATE TABLE IF NOT EXISTS chat_usage_totals (
 );
 `;
 
+// Signups for the managed-mining service (the /managed page). One row per email;
+// signing up again updates the answers rather than adding a duplicate. Kept as
+// its own constant so the add-managed-waitlist migration can apply it to
+// existing databases.
+const WAITLIST_SCHEMA = `
+CREATE TABLE IF NOT EXISTS managed_waitlist (
+  email text PRIMARY KEY,
+  gpus integer,
+  note text,
+  source text,
+  created_at bigint,
+  updated_at bigint
+);
+`;
+
+// The LLM-era tables (nodes, api_keys, request_logs, node_join_tokens, jobs,
+// job_chunks, chat_*) are no longer read or written by anything. They stay in
+// this constant because the init migration applies it verbatim and later
+// migrations ALTER those tables — dropping them here would break every fresh
+// database (preview environments) at the first of those migrations. Retiring
+// them for real is a separate, explicit drop migration.
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS nodes (
   node_id text PRIMARY KEY,
@@ -172,6 +208,7 @@ CREATE TABLE IF NOT EXISTS job_chunks (
 
 ${MINERS_SCHEMA}
 ${CHAT_SCHEMA}
+${WAITLIST_SCHEMA}
 `;
 
 async function initSchema(db) {
@@ -218,4 +255,4 @@ function createPool() {
   return pool;
 }
 
-module.exports = { createPool, initSchema, SCHEMA, MINERS_SCHEMA, CHAT_SCHEMA };
+module.exports = { createPool, initSchema, SCHEMA, MINERS_SCHEMA, CHAT_SCHEMA, WAITLIST_SCHEMA };

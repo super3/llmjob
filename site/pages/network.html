@@ -1,20 +1,20 @@
-<!--build {"clerk": false, "navNetwork": true, "fonts": "https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap"} -->
+<!--build {"navNetwork": true, "fonts": "https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap"} -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>LLMJob Network — Live Pearl (PRL) Mining Leaderboard</title>
-<meta name="description" content="Every rig mining Pearl (PRL) with LLMJob Earn, ranked by live hashrate. Anonymous — each row is a rig, shown by its Pearl address." />
+<meta name="description" content="Every rig mining Pearl (PRL) with LLMJob, ranked by live hashrate. Anonymous — each row is a rig, shown by its Pearl address. Look up your own rigs by payout address." />
 
 <!-- Social cards -->
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://llmjob.com/network" />
 <meta property="og:title" content="LLMJob Network — Live Pearl (PRL) Mining Leaderboard" />
-<meta property="og:description" content="Every rig mining Pearl (PRL) with LLMJob Earn, ranked by live hashrate. Be the next rig on the board." />
+<meta property="og:description" content="Every rig mining Pearl (PRL) with LLMJob, ranked by live hashrate. Be the next rig on the board." />
 <meta name="twitter:card" content="summary" />
 <meta name="twitter:title" content="LLMJob Network — Live Pearl (PRL) Mining Leaderboard" />
-<meta name="twitter:description" content="Every rig mining Pearl (PRL) with LLMJob Earn, ranked by live hashrate. Be the next rig on the board." />
+<meta name="twitter:description" content="Every rig mining Pearl (PRL) with LLMJob, ranked by live hashrate. Be the next rig on the board." />
 
 {{> head}}
 <style>
@@ -77,7 +77,7 @@
   .pg-head p { font-size: clamp(16px, 2.2vw, 18px); line-height: 1.5; color: var(--muted); margin-top: 18px; text-wrap: pretty; }
 
   /* stat cards */
-  .net-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 32px; }
+  .net-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 32px; }
   .stat-card { border: 1px solid var(--line-2); border-radius: 16px; padding: 22px; background: #fff; display: flex; align-items: center; gap: 16px; }
   .stat-ic { width: 48px; height: 48px; flex: none; border-radius: 13px; display: inline-flex; align-items: center; justify-content: center; }
   .stat-ic.blue { background: #eff4ff; }
@@ -97,10 +97,10 @@
   .nt-scroll { overflow-x: auto; }
   /* VRAM/hashrate are whole numbers with the unit as a small suffix, so those
      tracks only have to hold a few digits; that plus a 6…6 address buys the width
-     back for the GPU and LLM names, the two columns that actually need it. The
-     GPU floor fits a full "NVIDIA GeForce RTX 4070 SUPER" even when the table is
-     scrolled at its minimum width on a phone. */
-  .nt-cols, .miner-row { display: grid; grid-template-columns: 44px 124px minmax(256px, 1fr) 136px 86px 76px 82px; gap: 16px; align-items: center; min-width: 900px; }
+     back for the GPU name, the column that actually needs it. The GPU floor fits
+     a full "NVIDIA GeForce RTX 4070 SUPER" even when the table is scrolled at its
+     minimum width on a phone. */
+  .nt-cols, .miner-row { display: grid; grid-template-columns: 44px 124px minmax(256px, 1fr) 86px 76px 82px; gap: 16px; align-items: center; min-width: 760px; }
   .nt-cols { padding: 11px 22px; border-bottom: 1px solid #efeee8; font-size: 11.5px; color: var(--muted-3); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
   .nt-cols .r, .mr-vram, .mr-hash, .mr-last { text-align: right; }
   .mr-vram { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: #6b7077; }
@@ -115,26 +115,6 @@
   .mr-gpu { display: flex; align-items: center; gap: 6px; min-width: 0; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: #6b7077; }
   .mr-gpu .gpu-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   .mr-gpu .gpu-s { display: none; }
-  /* The "serving LLM" cell: which local model this card runs, or a muted dash
-     when it isn't serving (insufficient VRAM) or the client is too old to report. */
-  .mr-llm { min-width: 0; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; }
-  .mr-llm .mr-llm-on { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; color: #6b7077; }
-  .mr-llm .mr-llm-none { color: #c7c4b8; }
-  /* Node chip: this host actually serves cluster jobs (it reported a node id),
-     as opposed to merely running a model locally. */
-  /* "This host serves cluster jobs." Deliberately a fixed-size dot rather than the
-     node id as text: the LLM column is a fixed 136px track, and any inline text
-     long enough to wrap makes that row taller than every other one. The id is in
-     the dot's tooltip. Green to read as "live", distinct from the blue online dot
-     in the address column. */
-  .mr-serving { display: inline-block; width: 6px; height: 6px; border-radius: 50%;
-    background: #16a34a; margin-right: 7px; vertical-align: 1px; flex: none; }
-  /* Amber: the node serves, but we measured it too slow to be handed a
-     full-length job, so assignment only offers it shorter work. Not a fault
-     state — it earns on what it can finish instead of timing out on what it
-     can't. Grey: online but not measured yet (a benchmark is queued). */
-  .mr-serving.is-limited { background: #d97706; }
-  .mr-serving.is-unknown { background: transparent; box-shadow: inset 0 0 0 1.5px var(--muted-3); }
   /* A host running several cards is one clickable row; the chevron expands it
      into a per-card breakdown (the earn client posts each card as worker/gpuN). */
   .miner-row.is-multi { cursor: pointer; }
@@ -144,10 +124,6 @@
   .mr-cards .miner-row { border-bottom: none; padding-top: 8px; padding-bottom: 8px; }
   .mr-cards .mr-gpu { color: #8a8f98; }
   .mr-cards .mr-gpu .ci { color: #b4b1a6; flex: none; }
-  /* The LLM name is a text column like the GPU name beside it, so it takes the
-     same lighter shade in an expanded host's sub-rows — otherwise the two read
-     at different weights once a multi-GPU rig is opened. */
-  .mr-cards .mr-llm .mr-llm-on { color: #8a8f98; }
   .mr-cards .mr-hash { color: #7d9fe0; }
   /* Below ~1040px the GPU column can no longer fit a full "NVIDIA GeForce RTX
      4070 SUPER" — end-ellipsis would hide the model behind the vendor prefix,
@@ -167,17 +143,23 @@
   @media (max-width: 1040px) {
     .mr-gpu .gpu-f { display: none; }
     .mr-gpu .gpu-s { display: inline; }
-    .nt-cols, .miner-row { grid-template-columns: 32px 130px minmax(178px, 1fr) 120px 78px 72px 78px; gap: 12px; min-width: 760px; }
+    .nt-cols, .miner-row { grid-template-columns: 32px 130px minmax(178px, 1fr) 78px 72px 78px; gap: 12px; min-width: 640px; }
   }
   .mr-hash { font-family: "IBM Plex Mono", monospace; font-size: 13px; font-weight: 600; color: var(--accent); }
   .mr-last { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--muted-3); }
+  /* Find-your-rigs lookup: paste a payout address to filter the board to it. */
+  .lookup { margin-top: 32px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .lookup-box { flex: 1 1 420px; display: flex; align-items: center; gap: 10px; border: 1px solid var(--line-2); border-radius: 12px; background: #fff; padding: 12px 14px; transition: border-color .12s; }
+  .lookup-box:focus-within { border-color: var(--accent); }
+  .lookup-box input { border: none; outline: none; background: transparent; width: 100%; min-width: 0; font-family: "IBM Plex Mono", monospace; font-size: 14px; color: var(--ink); }
+  .lookup-clear { border: none; background: none; color: var(--muted-3); font-size: 18px; line-height: 1; cursor: pointer; padding: 0 2px; font-family: inherit; }
+  .lookup-clear[hidden] { display: none; }
+  .lookup-sum { font-size: 14px; color: var(--muted); }
+  .lookup-sum b { color: var(--ink); font-weight: 700; }
   .nt-foot { padding: 14px 22px; text-align: center; font-size: 13px; color: var(--muted-3); border-top: 1px solid #efeee8; }
   .nt-empty { padding: 44px 22px; text-align: center; font-size: 14px; color: var(--muted-2); }
 
-  @media (max-width: 900px) {
-    .net-stats { grid-template-columns: repeat(2, 1fr); }
-  }
-  @media (max-width: 480px) {
+  @media (max-width: 640px) {
     .net-stats { grid-template-columns: 1fr; }
     .stat-v { font-size: 30px; }
   }
@@ -195,7 +177,7 @@
     <span class="t">Live · <span id="net-active-h">0</span> nodes online</span>
   </div>
   <h1>Who's mining right now.</h1>
-  <p>Every rig running LLMJob Earn, ranked by live hashrate — one row per rig, shown only by its Pearl address.</p>
+  <p>Every rig running LLMJob, ranked by live hashrate — one row per rig, shown only by its Pearl address. Paste yours below to find your rigs.</p>
 </section>
 
 <!-- STAT CARDS -->
@@ -221,13 +203,18 @@
       <div class="stat-v" id="net-hr">0</div>
     </div>
   </div>
-  <div class="stat-card">
-    <span class="stat-ic grey"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="#6b7077" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5 a8.38 8.38 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9 L3 21 l1.9-5.7 a8.5 8.5 0 0 1-.9-3.8 8.38 8.38 0 0 1 8.5-8.5 8.5 8.5 0 0 1 8.5 8.5 z"></path></svg></span>
-    <div>
-      <div class="stat-k">Tokens served</div>
-      <div class="stat-v" id="net-tokens">0</div>
-    </div>
-  </div>
+</section>
+
+<!-- FIND YOUR RIGS -->
+<section class="wrap">
+  <form class="lookup" id="lookup" role="search" onsubmit="return false">
+    <label class="lookup-box" for="lookup-addr">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9a9da1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
+      <input id="lookup-addr" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="Find your rigs: paste your prl1p… payout address" aria-label="Your Pearl payout address" />
+      <button class="lookup-clear" type="button" id="lookup-clear" aria-label="Clear" hidden>×</button>
+    </label>
+    <div class="lookup-sum" id="lookup-sum"></div>
+  </form>
 </section>
 
 <!-- LIVE MINERS TABLE -->
@@ -239,7 +226,7 @@
     </div>
     <div class="nt-scroll">
       <div class="nt-cols">
-        <div>#</div><div>Address</div><div>GPU</div><div>LLM</div><div class="r">VRAM</div><div class="r">Hashrate</div><div class="r">Last seen</div>
+        <div>#</div><div>Address</div><div>GPU</div><div class="r">VRAM</div><div class="r">Hashrate</div><div class="r">Last seen</div>
       </div>
       <div id="miners"></div>
     </div>
@@ -261,7 +248,7 @@
     // Truncate the middle of the payout address for a bit of anonymity; the
     // narrow form fits the tighter address column on sub-1040px screens.
     // First six and last six characters: enough to tell rows apart, and the width
-    // saved goes to the GPU and LLM columns. Same on both breakpoints — it is
+    // saved goes to the GPU column. Same on both breakpoints — it is
     // already short enough for a phone.
     function shortAddr(a) {
       a = String(a);
@@ -286,79 +273,6 @@
     function shortGpu(g) {
       return String(g).replace(/^\s*(NVIDIA|AMD|Intel)\s+(GeForce\s+|Radeon\s+|Arc\s+)?/i, '') || String(g);
     }
-    // Measured generation speed per node id, from GET /api/nodes/serving. Empty
-    // until that first load resolves, which just means every dot starts hollow.
-    let speeds = {};
-    // Below this a node can't produce a TYPICAL reply (2048 tokens — the observed
-    // mean completion is 2563) inside the gateway's budget (280s × the 0.8 safety
-    // margin assignment uses), so it is only offered shorter jobs. Keyed on the
-    // typical length rather than the 6400 ceiling for the same reason assignment
-    // is: almost every request carries the ceiling, so gating on it would paint
-    // amber on nodes that serve real traffic perfectly well. Mirrors jobService's
-    // admissionLimit — keep the two in step.
-    const FULL_JOB_TPS = 2048 / (280 * 0.8);
-
-    // The "serving LLM" cell: a compact model label ("Gemma-4-E4B-it-Q4_K_M" →
-    // "Gemma 4 E4B", "Qwen3.8-27B-UD-Q4_K_XL" → "Qwen3.8 27B", full name on
-    // hover), or a muted dash when the card isn't
-    // serving (insufficient VRAM) or the client is too old to report a model.
-    // `nodeId` (present only while the host actually polls the cluster for jobs)
-    // adds a node chip after the model. Running a model and serving the network
-    // are different things — without the chip a row is only advertising locally.
-    function llmCell(model, nodeId) {
-      // The chip is host-level and must not be gated on the model column: a host
-      // serving from an ADOPTED llama-server (after "Update & restart") — or any
-      // fleet still warming up — reports a nodeId while servingIndices() is still
-      // empty, so llmModel is null. Building the chip before the no-model return
-      // keeps those hosts marked instead of showing them as plain miners.
-      // A dot, not a text badge: the LLM column is a fixed track, and a node id
-      // rendered inline wrapped onto a second line and made those rows taller than
-      // the rest. The dot costs ~10px and never wraps; the id itself lives in the
-      // tooltip, which is where you'd grab it to target the host anyway.
-      // Colour carries the node's measured speed (GET /api/nodes/serving): green
-      // takes any job, amber is capped to shorter ones, hollow means we can't
-      // currently vouch for it. The number itself goes in the tooltip for the
-      // same reason the node id does — this column is a fixed track and text
-      // here wraps the row.
-      //
-      // A measurement alone is NOT enough to paint the dot green, because the two
-      // halves of this row have different clocks. `model` comes from the miner
-      // ping and is live to within a minute, so it goes null the moment
-      // llama-server dies; the measurement stays valid for six hours
-      // (SPEED_STALE_MS). A node that lost its LLM therefore kept a green dot
-      // next to an em-dash for the rest of that window — the dot answering "we
-      // measured this recently and it was fast" while the reader takes it to mean
-      // "this is serving right now". Requiring the live signal too makes the two
-      // halves of the cell agree: no model, no colour.
-      //
-      // The dot itself still appears (see above): a host serving from an adopted
-      // llama-server reports a nodeId before it reports a model, and dropping the
-      // dot would show it as a plain miner. Hollow says "serving, unconfirmed",
-      // which is exactly right for both that case and a node whose LLM just died.
-      const speed = model ? speeds[nodeId] : null;
-      const cls = !speed || speed.tps == null ? ' is-unknown' : (speed.tps < FULL_JOB_TPS ? ' is-limited' : '');
-      const detail = !model
-        ? ' · no model loaded'
-        : (!speed || speed.tps == null
-          ? ' · speed not measured yet'
-          : ' · ' + speed.tps + ' tok/s' + (speed.tps < FULL_JOB_TPS ? ' (short jobs only)' : ''));
-      const dot = nodeId
-        ? '<span class="mr-serving' + cls + '" title="Serving cluster jobs as node ' + esc(nodeId) + esc(detail) + '"></span>'
-        : '';
-      if (!model) return '<div class="mr-llm">' + dot + '<span class="mr-llm-none">—</span></div>';
-      // Trim the parts that are packaging, not identity. The -it split alone left
-      // any model without an instruct tag wearing its quantisation as words:
-      // "Qwen3.8-27B-UD-Q4_K_XL" rendered "Qwen3.8 27B UD Q4 K XL", which then
-      // ellipsised inside the fixed column so the useful half was the half cut off.
-      const short = String(model)
-        .split(/-it\b/i)[0]                                   // instruct tag and the quant after it
-        .replace(/-(?:I?Q\d[A-Z0-9_]*|F16|F32|BF16)$/i, '')   // a trailing quant on its own
-        .replace(/-(?:UD|GGUF)$/i, '')                        // packaging marker left behind by it
-        .replace(/[-_]+/g, ' ')
-        .trim() || String(model);
-      return '<div class="mr-llm">' + dot + '<span class="mr-llm-on" title="' + esc(model) + '">' + esc(short) + '</span></div>';
-    }
-
     // Which multi-GPU hosts are expanded, keyed by address|worker so the state
     // survives the 15s auto-refresh (re-render) and identical re-fetches.
     const expanded = {};
@@ -379,30 +293,37 @@
         '<div class="mr-rank"></div><div class="mr-addr"></div>' +
         '<div class="mr-gpu" title="' + esc(c.gpu) + '"><span class="ci">[' + j + ']</span>' +
           '<span class="gpu-name"><span class="gpu-f">' + esc(c.gpu) + '</span><span class="gpu-s">' + esc(shortGpu(c.gpu)) + '</span></span></div>' +
-        llmCell(c.llmModel) +
         '<div class="mr-vram">' + fmtVram(c.vramUsedMb, c.vramTotalMb) + '</div>' +
         '<div class="mr-hash">' + fmtHash(c.hash) + '</div>' +
         '<div class="mr-last"></div>' +
       '</div>';
     }
 
+    // The payout address being looked up ('' = the whole board). Matched in full
+    // and case-insensitively, the same normalization the server applies, so a
+    // pasted address finds its rows however it was typed.
+    let filter = '';
+    const normAddr = (a) => String(a == null ? '' : a).trim().toLowerCase();
+
     // Render the host rows (one per machine; a multi-GPU rig is a single row that
     // sums its cards and expands into them). Stats come straight from the API:
-    // distinct payout addresses, total online GPUs, summed hashrate.
+    // distinct payout addresses, total online GPUs, summed hashrate. A lookup
+    // narrows the rows to one address but keeps each row's board rank, and leaves
+    // the network-wide stat cards alone.
     function render(data) {
       if (data) lastData = data;
-      const hosts = lastData.miners || [];
+      const all = (lastData.miners || []).map((m, i) => ({ m, rank: i + 1 }));
+      const hosts = filter ? all.filter((r) => normAddr(r.m.addr) === filter) : all;
 
       cont.innerHTML = hosts.length
-        ? hosts.map((m, i) => {
+        ? hosts.map(({ m, rank }) => {
             const open = m.multi && !!expanded[hostKey(m)];
             const chev = m.multi ? '<span class="mr-chev">' + (open ? '▾' : '▸') + '</span>' : '';
             const row =
               '<div class="miner-row' + (m.multi ? ' is-multi' : '') + '"' + (m.multi ? ' data-host="' + esc(hostKey(m)) + '"' : '') + '>' +
-                '<div class="mr-rank">' + (i + 1) + '</div>' +
+                '<div class="mr-rank">' + rank + '</div>' +
                 '<div class="mr-addr"><span class="dot"></span><span class="a">' + esc(shortAddr(m.addr)) + '</span></div>' +
                 gpuCell(m.gpu, chev) +
-                llmCell(m.llmModel, m.nodeId) +
                 '<div class="mr-vram">' + fmtVram(m.vramUsedMb, m.vramTotalMb) + '</div>' +
                 '<div class="mr-hash">' + fmtHash(m.hash) + '</div>' +
                 '<div class="mr-last">' + esc(m.last) + '</div>' +
@@ -412,13 +333,53 @@
               : '';
             return row + cards;
           }).join('')
-        : '<div class="nt-empty">No nodes online yet — be the first to connect a rig.</div>';
+        : (filter
+          ? '<div class="nt-empty">No rigs online for this address in the last 5 minutes.</div>'
+          : '<div class="nt-empty">No nodes online yet — be the first to connect a rig.</div>');
 
       setText('net-active', Number(lastData.totalOnline || 0).toLocaleString());
       setText('net-active-h', Number(lastData.totalOnline || 0).toLocaleString());
       setText('net-workers', Number(lastData.totalWorkers || 0).toLocaleString());
-      setText('net-hr', hosts.length ? (Number(lastData.totalHashrate || 0) / 1000).toFixed(2) + ' PH/s' : '0');
-      setText('net-foot', hosts.length ? ('Showing ' + hosts.length + ' of ' + hosts.length + ' miners') : 'Waiting for the first miner to connect…');
+      setText('net-hr', all.length ? (Number(lastData.totalHashrate || 0) / 1000).toFixed(2) + ' PH/s' : '0');
+      setText('net-foot', filter
+        ? ('Showing ' + hosts.length + ' of ' + all.length + ' miners')
+        : (all.length ? ('Showing ' + all.length + ' of ' + all.length + ' miners') : 'Waiting for the first miner to connect…'));
+      renderLookupSummary(hosts.map((r) => r.m));
+    }
+
+    // "2 rigs · 5 GPUs · 612 TH/s" for the address being looked up.
+    const sumEl = document.getElementById('lookup-sum');
+    function renderLookupSummary(hosts) {
+      if (!sumEl) return;
+      if (!filter) { sumEl.textContent = ''; return; }
+      const gpus = hosts.reduce((a, m) => a + (Number(m.gpus) || 1), 0);
+      const hash = hosts.reduce((a, m) => a + (Number(m.hash) || 0), 0);
+      sumEl.innerHTML = '<b>' + hosts.length + '</b> rig' + (hosts.length === 1 ? '' : 's') +
+        ' · <b>' + gpus + '</b> GPU' + (gpus === 1 ? '' : 's') +
+        ' · <b>' + Math.round(hash).toLocaleString() + '</b> TH/s';
+    }
+
+    // The lookup box. The address lives in the URL (?address=…) so a lookup can
+    // be bookmarked or linked to, e.g. from the app.
+    const input = document.getElementById('lookup-addr');
+    const clearBtn = document.getElementById('lookup-clear');
+    function setFilter(value, fromUrl) {
+      filter = normAddr(value);
+      if (clearBtn) clearBtn.hidden = !filter;
+      if (!fromUrl && window.history && window.history.replaceState) {
+        const url = new URL(window.location.href);
+        if (filter) url.searchParams.set('address', filter); else url.searchParams.delete('address');
+        window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+      }
+      render();
+    }
+    if (input) {
+      const initial = new URLSearchParams(window.location.search).get('address');
+      if (initial) { input.value = initial.trim(); setFilter(initial, true); }
+      input.addEventListener('input', () => setFilter(input.value));
+    }
+    if (clearBtn) {
+      clearBtn.addEventListener('click', () => { input.value = ''; setFilter(''); input.focus(); });
     }
 
     // Toggle a multi-GPU host open/closed on click (event-delegated so it keeps
@@ -446,54 +407,9 @@
       } catch (e) { /* offline / API down — keep the current view */ }
     }
 
-    // Per-node measured speed (GET /api/nodes/serving) — the only endpoint that
-    // enumerates the nodes actually serving jobs. Drives the serving dot's colour;
-    // the rate itself stays in the tooltip rather than the stat cards, which are
-    // about the mining board.
-    async function loadSpeeds() {
-      try {
-        const res = await fetch(API_BASE + '/api/nodes/serving', { headers: { Accept: 'application/json' } });
-        if (!res.ok) return;
-        const data = await res.json();
-        const next = {};
-        for (const n of (data.nodes || [])) {
-          next[n.nodeId] = { tps: n.stale ? null : n.tps };
-        }
-        speeds = next;
-        render();
-      } catch (e) { /* offline / API down — keep the current view */ }
-    }
-
-    // Compact token counts (12,345,678 → "12.35M") so the stat card stays tidy.
-    function fmtCompact(n) {
-      n = Number(n) || 0;
-      if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
-      if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
-      if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
-      return String(Math.round(n));
-    }
-
-    // Lifetime tokens the network has served (GET /api/chat/usage): the free
-    // web-chat proxy plus the OpenAI-compatible API gateway. `network.totalTokens`
-    // carries the combined figure; `totals` is chat-only and is the fallback for a
-    // server that predates the combined field.
-    async function loadTokens() {
-      try {
-        const res = await fetch(API_BASE + '/api/chat/usage', { headers: { Accept: 'application/json' } });
-        if (!res.ok) return;
-        const u = await res.json();
-        const total = (u && u.network && u.network.totalTokens) != null
-          ? u.network.totalTokens
-          : (u && u.totals ? u.totals.totalTokens : null);
-        if (total != null) setText('net-tokens', fmtCompact(total));
-      } catch (e) { /* offline / API down — keep the current view */ }
-    }
-
     render({ miners: [], totalOnline: 0, totalWorkers: 0, totalHashrate: 0 });
     load();
-    loadTokens();
-    loadSpeeds();
-    setInterval(() => { load(); loadTokens(); loadSpeeds(); }, 15000);
+    setInterval(load, 15000);
   })();
 </script>
 </body>

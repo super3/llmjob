@@ -26,38 +26,16 @@ describe('minerSupported', () => {
 });
 
 describe('minerUnsupportedNote', () => {
-  test('says nothing where mining works, whatever the mode', () => {
-    for (const mode of ['auto', 'mining', 'both', 'llm']) {
-      expect(minerUnsupportedNote('win32', mode)).toBe('');
-      expect(minerUnsupportedNote('linux', mode)).toBe('');
-    }
+  test('says nothing where mining works', () => {
+    expect(minerUnsupportedNote('win32')).toBe('');
+    expect(minerUnsupportedNote('linux')).toBe('');
   });
 
-  test('says nothing on macOS in LLM mode — that mode never asked to mine', () => {
-    expect(minerUnsupportedNote('darwin', 'llm')).toBe('');
-  });
-
-  test('explains the gap on macOS for the co-running modes, and what still runs', () => {
-    for (const mode of ['auto', 'both']) {
-      const note = minerUnsupportedNote('darwin', mode);
-      expect(note).toMatch(/mining is not available on macOS/);
-      expect(note).toMatch(/the Pearl core is CUDA/);
-      // The reassuring half matters as much as the refusal: an 'auto' start on a
-      // Mac does bring the model up, and a note that only said "no mining" would
-      // read as "nothing happened".
-      expect(note).toMatch(/local LLM runs as usual/);
-    }
-  });
-
-  test('mining-only mode is told where to go instead, since nothing will run', () => {
-    const note = minerUnsupportedNote('darwin', 'mining');
+  test('explains on macOS that there is no GPU to mine on', () => {
+    const note = minerUnsupportedNote('darwin');
     expect(note).toMatch(/mining is not available on macOS/);
-    expect(note).toMatch(/Switch the compute mode to LLM/);
-    expect(note).not.toMatch(/runs as usual/);
-  });
-
-  test('an unknown mode is treated as one that wanted to mine', () => {
-    expect(minerUnsupportedNote('darwin', undefined)).toMatch(/mining is not available/);
+    expect(note).toMatch(/NVIDIA/);
+    expect(note).not.toMatch(/LLM/);
   });
 });
 

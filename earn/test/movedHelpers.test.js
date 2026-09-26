@@ -13,7 +13,6 @@ jest.mock('child_process', () => ({ execFile: jest.fn(), spawn: jest.fn() }));
 
 const { progressPercent, isTlsTrustError } = require('../src/main/io');
 const { parseDriverMajor } = require('../src/main/probe');
-const { isArchiveUrl, looksLikeArchive } = require('../src/main/llmEngineManager');
 
 describe('progressPercent', () => {
   test('is a rounded percentage of the total', () => {
@@ -88,30 +87,5 @@ describe('parseDriverMajor', () => {
     expect(parseDriverMajor(undefined)).toBeNull();
     expect(parseDriverMajor('no nvidia-smi here')).toBeNull();
     expect(parseDriverMajor('576')).toBeNull(); // no minor → not a version string
-  });
-});
-
-describe('archive detection', () => {
-  test('recognises an archive by extension', () => {
-    expect(isArchiveUrl('https://x/y.zip')).toBe(true);
-    expect(isArchiveUrl('https://x/y.tar.gz')).toBe(true);
-    expect(isArchiveUrl('https://x/y.tgz')).toBe(true);
-    expect(isArchiveUrl('https://x/y.TGZ')).toBe(true);
-    expect(isArchiveUrl('https://x/llama-server')).toBe(false);
-    expect(isArchiveUrl('https://x/y.zip.sig')).toBe(false);
-  });
-
-  // By CONTENT, because the download lands under a format-neutral name. A file
-  // that is really an archive sitting where the binary belongs must not be
-  // trusted as the binary.
-  test('recognises gzip and zip by their magic bytes', () => {
-    expect(looksLikeArchive(Buffer.from([0x1f, 0x8b, 0x08, 0x00]))).toBe(true);
-    expect(looksLikeArchive(Buffer.from([0x50, 0x4b, 0x03, 0x04]))).toBe(true);
-    expect(looksLikeArchive(Buffer.from([0x7f, 0x45, 0x4c, 0x46]))).toBe(false); // ELF
-    expect(looksLikeArchive(Buffer.from([0x1f]))).toBe(false);                   // truncated
-    expect(looksLikeArchive(Buffer.from([0x50, 0x4b]))).toBe(false);
-    expect(looksLikeArchive(Buffer.alloc(0))).toBe(false);
-    expect(looksLikeArchive(null)).toBe(false);
-    expect(looksLikeArchive('PK')).toBe(false); // not a Buffer
   });
 });

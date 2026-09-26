@@ -5,10 +5,6 @@ const dotenv = require('dotenv');
 const { createPool } = require('./db');
 const { corsOrigin } = require('./corsOptions');
 const routes = require('./routes');
-const { initBodyParsers, initJobRoutes, initOpenAiRoutes, initChatRoutes } = require('./routes');
-const NodeService = require('./services/nodeService');
-const JobService = require('./services/jobService');
-const BenchmarkService = require('./services/benchmarkService');
 
 dotenv.config();
 
@@ -16,13 +12,10 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Middleware. CORS is restricted to our own origins (llmjob.com + the Railway
-// app + previews); other websites can't call the API — including the free chat
-// proxy — from a browser. Non-browser callers send no Origin and are unaffected.
+// app + previews); other websites can't call the API — including the waitlist
+// signup — from a browser. Non-browser callers send no Origin and are unaffected.
 app.use(cors({ origin: corsOrigin }));
-// JSON bodies. Not a bare express.json(): the OpenAI gateway needs a larger
-// ceiling to accept an image request, and the order the parsers are registered
-// in decides which limit applies. See routes.initBodyParsers.
-initBodyParsers(app);
+app.use(express.json());
 
 // Postgres pool
 let db;
@@ -37,16 +30,9 @@ async function connectDb() {
   app.locals.db = db;
 }
 
-// Routes
+// Routes. They use req.app.locals.db per request, so it's safe to register them
+// before the DB connects.
 app.use('/api', routes);
-
-// OpenAI-compatible gateway at the app root (POST /v1/chat/completions). Uses
-// req.app.locals.db per request, so it's safe to register before the DB connects.
-initOpenAiRoutes(app);
-
-// Free public web-chat gateway (POST /api/chat/completions), proxied to
-// OpenRouter. Also uses req.app.locals.db per request, so it's safe here too.
-initChatRoutes(app);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -62,8 +48,8 @@ const staticPath = process.env.RAILWAY_ENVIRONMENT
   ? '/app/dist'
   : path.join(__dirname, '../..', 'dist');
 
-// URLs are extensionless: /chat, not /chat.html. Old links (bookmarks, posts,
-// search results) still resolve, but they redirect to the canonical form
+// URLs are extensionless: /network, not /network.html. Old links (bookmarks,
+// posts, search results) still resolve, but they redirect to the canonical form
 // instead of being served, so a page never answers on two URLs at once.
 // GitHub Pages, which serves the same dist/ for llmjob.com, strips the
 // extension on its own; this is the equivalent for the Railway deployment.
@@ -71,12 +57,12 @@ app.use((req, res, next) => {
   if ((req.method !== 'GET' && req.method !== 'HEAD') || !req.path.endsWith('.html')) {
     return next();
   }
-  // /docs.html -> /docs, /index.html -> / (a directory keeps its trailing slash).
+  // /network.html -> /network, /index.html -> / (a directory keeps its trailing slash).
   const target = req.path.slice(0, -'.html'.length).replace(/(^|\/)index$/, '$1');
   return res.redirect(301, target + req.url.slice(req.path.length));
 });
 
-// `extensions: ['html']` is what serves dist/chat.html for a request to /chat.
+// `extensions: ['html']` is what serves dist/network.html for a request to /network.
 app.use(express.static(staticPath, { extensions: ['html'] }));
 
 // Error handling middleware. Log the full error server-side, but only echo the
@@ -89,21 +75,6 @@ function errorHandler(err, req, res, next) {
   console.error(err.stack || err);
   const status = err.status || 500;
   const clientError = status >= 400 && status < 500;
-  // body-parser's own message for an oversized body is the bare string
-  // "entity.too.large" (or "request entity too large"), which tells a caller
-  // nothing about what to do. Say what the limit was and which knob it applies
-  // to — this is the error an image request hits, and the one that used to make
-  // the multimodal path look simply broken.
-  if (err.type === 'entity.too.large') {
-    const limit = Number(err.limit);
-    const mb = Number.isFinite(limit) ? Math.round(limit / (1024 * 1024)) : null;
-    return res.status(413).json({
-      error: mb
-        ? `Request body too large. This endpoint accepts up to ~${mb} MB; `
-          + 'send fewer or smaller images, or shorten the conversation.'
-        : 'Request body too large.'
-    });
-  }
   res.status(status).json({
     error: clientError && err.message ? err.message : 'Internal server error'
   });
@@ -115,73 +86,6 @@ async function startServer() {
   try {
     await connectDb();
 
-    // Initialize job routes with the database pool
-    initJobRoutes(db);
-
-    // Initialize services for background tasks
-    const jobService = new JobService(db);
-    const nodeService = new NodeService(db);
-
-    // Check node statuses every minute. Wrapped in try/catch like the sibling
-    // sweeps below: the callback is async, so a rejected DB query here (a
-    // connection reset, a deploy blip) would otherwise become an unhandled
-    // rejection — which, on Node >= 22, terminates the whole process, taking the
-    // API down over a momentary hiccup.
-    const statusInterval = setInterval(async () => {
-      try {
-        await nodeService.checkNodeStatuses();
-      } catch (error) {
-        console.error('Error checking node statuses:', error);
-      }
-    }, 60000);
-
-    // Check for timed out jobs every 30 seconds
-    const timeoutInterval = setInterval(async () => {
-      try {
-        const timeoutJobs = await jobService.checkTimeouts();
-        if (timeoutJobs.length > 0) {
-          console.log(`Returned ${timeoutJobs.length} timed out jobs to queue`);
-        }
-        // …and drop jobs nothing ever picked up, so they neither pile up nor get
-        // run long after their caller gave up waiting.
-        const expired = await jobService.expireStalePending();
-        if (expired.length > 0) {
-          console.log(`Expired ${expired.length} pending jobs no node picked up`);
-        }
-      } catch (error) {
-        console.error('Error checking job timeouts:', error);
-      }
-    }, 30000);
-
-    // Measure any node we can't currently vouch for — never benchmarked, or
-    // benchmarked too long ago to trust. Runs every 5 minutes rather than
-    // continuously because it only ever has work right after a node joins or a
-    // measurement ages out; nodes carrying real traffic re-measure themselves on
-    // every completed job and never appear here.
-    const benchmarkService = new BenchmarkService(db);
-    const benchmarkInterval = setInterval(async () => {
-      try {
-        const queued = await benchmarkService.sweep();
-        if (queued.length > 0) {
-          console.log(`Queued speed benchmarks for ${queued.length} node(s): ${queued.join(', ')}`);
-        }
-      } catch (error) {
-        console.error('Error queueing node benchmarks:', error);
-      }
-    }, 300000);
-
-    // Clean up old jobs every hour
-    const cleanupInterval = setInterval(async () => {
-      try {
-        const cleaned = await jobService.cleanupOldJobs();
-        if (cleaned > 0) {
-          console.log(`Cleaned up ${cleaned} old jobs`);
-        }
-      } catch (error) {
-        console.error('Error cleaning up jobs:', error);
-      }
-    }, 3600000);
-
     const server = app.listen(PORT, '0.0.0.0', () => {
       console.log(`Server running on port ${PORT}`);
     });
@@ -189,11 +93,6 @@ async function startServer() {
     // Graceful shutdown handling
     const gracefulShutdown = async (signal) => {
       console.log(`Received ${signal}, starting graceful shutdown...`);
-
-      clearInterval(statusInterval);
-      clearInterval(timeoutInterval);
-      clearInterval(cleanupInterval);
-      clearInterval(benchmarkInterval);
 
       server.close(async () => {
         console.log('HTTP server closed');

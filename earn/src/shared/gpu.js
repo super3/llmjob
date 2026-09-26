@@ -156,8 +156,8 @@ function planMinerGpus(cards, pinnedIndex) {
 // Parse `nvidia-smi --query-gpu=index,name,memory.used,memory.total
 // --format=csv,noheader,nounits` into one entry per card:
 //   [{ index, name, usedMb, totalMb }, ...]
-// The network board uses this to report each GPU's own VRAM (the limiting
-// factor for co-running an LLM) instead of the rig's summed total. Rows that
+// The network board uses this to report each GPU's own VRAM instead of the
+// rig's summed total. Rows that
 // don't parse cleanly are skipped; index/used/total are read positionally (the
 // name is the middle field and never contains a comma) so a stray column can't
 // misalign the numbers.
@@ -174,6 +174,54 @@ function parseGpuStats(out) {
     if (!Number.isFinite(index) || !Number.isFinite(usedMb) || !Number.isFinite(totalMb)) continue;
     const name = parts.slice(1, parts.length - 2).join(',').trim() || null;
     list.push({ index, name, usedMb, totalMb });
+  }
+  return list;
+}
+
+// The fields GPU_TELEMETRY_QUERY asks nvidia-smi for, in order. Kept beside the
+// parser so the two cannot drift: the parser reads by position.
+const GPU_TELEMETRY_FIELDS = [
+  'index', 'temperature.gpu', 'power.draw', 'power.limit', 'clocks.sm', 'clocks.mem',
+  'fan.speed', 'driver_version', 'pstate',
+];
+const GPU_TELEMETRY_QUERY = '--query-gpu=' + GPU_TELEMETRY_FIELDS.join(',');
+
+// A number from one nvidia-smi field, or null for anything it could not read.
+// A card that doesn't support a sensor prints "[N/A]" or "[Not Supported]" (a
+// passively cooled datacenter card has no fan, a laptop GPU may hide its power
+// limit), and that must stay null — a 0 would read as a real, alarming reading.
+function readingOf(field) {
+  const n = parseFloat(field);
+  return Number.isFinite(n) ? n : null;
+}
+
+// Parse `nvidia-smi <GPU_TELEMETRY_QUERY> --format=csv,noheader,nounits` into
+// one entry per card:
+//   [{ index, tempC, powerW, powerLimitW, coreClockMhz, memClockMhz, fanPct,
+//      driver, pstate }, ...]
+// This is the per-card health the rig reports alongside its hashrate: what a
+// card is drawing and how hot it runs is what separates "this card is slow" from
+// "this card is throttling", and it is the baseline any tuning is measured
+// against. Rows that don't carry a numeric index are skipped.
+function parseGpuTelemetry(out) {
+  const list = [];
+  for (const row of String(out == null ? '' : out).split(/\r?\n/)) {
+    const parts = row.split(',').map((x) => x.trim());
+    if (parts.length < GPU_TELEMETRY_FIELDS.length) continue;
+    const index = parseInt(parts[0], 10);
+    if (!Number.isFinite(index)) continue;
+    const text = (v) => (v && !/^\[.*\]$|^N\/A$/i.test(v) ? v : null);
+    list.push({
+      index,
+      tempC: readingOf(parts[1]),
+      powerW: readingOf(parts[2]),
+      powerLimitW: readingOf(parts[3]),
+      coreClockMhz: readingOf(parts[4]),
+      memClockMhz: readingOf(parts[5]),
+      fanPct: readingOf(parts[6]),
+      driver: text(parts[7]),
+      pstate: text(parts[8]),
+    });
   }
   return list;
 }
@@ -208,4 +256,5 @@ module.exports = {
   IGNORE, INTEGRATED, pickGpu, countGpus, alignCudaDeviceOrder,
   clearCudaVisibleDevices, describeClearedCuda, parseDeviceIndex,
   planMinerGpus, parseGpuStats, parseMacGpu,
+  GPU_TELEMETRY_FIELDS, GPU_TELEMETRY_QUERY, parseGpuTelemetry,
 };

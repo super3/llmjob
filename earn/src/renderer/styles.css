@@ -30,10 +30,10 @@ body {
 
 .app { padding: 20px 30px 26px; } /* 20px top per the mock — was 30px, which read as extra air above the logo */
 /* Every screen is the SAME height (matching the design mocks), so the window
-   never grows or shrinks when switching tabs and the footer (View Logs / Need
-   Help) stays put. Views with unbounded or overflowing content (chat, logs,
+   never grows or shrinks when switching views and the footer (View Logs / Need
+   Help) stays put. Views with unbounded or overflowing content (logs,
    settings) scroll internally instead of stretching the frame. */
-#view-chat, #view-api, #view-settings, #view-logs { height: 470px; }
+#view-settings, #view-logs { height: 470px; }
 /* Mine is the one screen that legitimately gets TALLER: the update banner and
    the engine-error line appear above content of a fixed size, so they push the
    START button down. At a hard height it overflowed its own section and painted
@@ -43,24 +43,20 @@ body {
    min-height keeps every screen the same 470px in the ordinary case, and lets
    this one grow the frame when it has to. */
 #view-mine { min-height: 470px; }
-/* Chat and logs fill the height so their scroller sits above the footer. */
-#view-chat, #view-api, #view-logs { display: flex; flex-direction: column; }
-/* Settings runs taller than the frame — scroll it inside, styled like chat. */
+/* Logs fill the height so their scroller sits above the footer. */
+#view-logs { display: flex; flex-direction: column; }
+/* Settings runs taller than the frame — scroll it inside, styled like the logs. */
 #view-settings { overflow-y: auto; scrollbar-width: thin; scrollbar-color: #d6d2c8 transparent; }
 #view-settings::-webkit-scrollbar { width: 10px; }
 #view-settings::-webkit-scrollbar-track { background: transparent; }
 #view-settings::-webkit-scrollbar-thumb { background: #d6d2c8; border: 2px solid var(--bg, #fff); border-radius: 8px; }
 #view-settings::-webkit-scrollbar-thumb:hover { background: #bdb8aa; }
 
-/* header: tab bar (Mine/Chat/API) + settings gear */
+/* header: brand + settings gear */
 .app-head { display: flex; align-items: stretch; gap: 22px; margin-bottom: 22px; border-bottom: 1px solid #eceae2; }
 .brand { display: inline-flex; align-items: center; gap: 9px; font-weight: 800; font-size: 18px; letter-spacing: -.02em; color: var(--ink); padding: 12px 0; border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer; }
 .brand.active { border-bottom-color: var(--accent); }
 .brand .bolt { display: inline-flex; width: 26px; height: 26px; border-radius: 7px; background: var(--ink); align-items: center; justify-content: center; }
-.tabs { display: flex; gap: 18px; align-items: stretch; }
-.tab { display: inline-flex; align-items: center; padding: 0 2px; font-size: 14px; font-weight: 500; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer; transition: color .14s; }
-.tab:hover { color: var(--ink-3); }
-.tab.active { font-weight: 700; color: #0e0f10; border-bottom-color: var(--accent); }
 .head-spacer { flex: 1; }
 .settings-gear { align-self: center; width: 36px; height: 36px; flex: none; border: 1px solid #e3e1d9; background: #fff; border-radius: 9px; color: #6b7077; display: grid; place-items: center; cursor: pointer; transition: border-color .14s, color .14s, background .14s; }
 .settings-gear:hover, .settings-gear.active { border-color: #dbe6fb; color: var(--accent); background: #eff4ff; }
@@ -105,7 +101,7 @@ input.field-box { user-select: text; }
 .engine-status { margin-top: 12px; text-align: center; font-size: 12.5px; color: var(--muted); }
 .engine-status.err { color: #dc2626; }
 
-/* GPU Activity hero: Mining | LLM two-column */
+/* GPU Activity hero: hashrate | est. earnings, two columns */
 .hero2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; margin-bottom: 10px; }
 .hero-col.right { text-align: right; }
 .hero-num { display: flex; align-items: baseline; gap: 8px; }
@@ -115,115 +111,14 @@ input.field-box { user-select: text; }
 .hero-sub { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
 .hero-col.right .hero-sub { justify-content: flex-end; }
 .hero-label { font-size: 12.5px; font-weight: 600; color: #5b5e62; }
-.hero-detail { font-size: 11.5px; color: #9a9da1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hero-detail.err { color: #dc2626; }
 .dot2 { width: 7px; height: 7px; flex: none; border-radius: 50%; background: #c2bfb4; }
 .dot2.on { background: var(--green); animation: mkPulse 1.6s ease-in-out infinite; }
-/* Working on it — downloading or loading the model. Pulses like .on so the row
-   reads as "busy", but amber rather than green: not ready yet, not an error. */
-.dot2.busy { background: #d97706; animation: mkPulse 1.6s ease-in-out infinite; }
-.dot2.err { background: #dc2626; }
-
-/* status dot (api endpoint) + shared chip button */
-.llm-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: #c2bfb4; }
-.llm-dot.on { background: var(--green); animation: mkPulse 1.6s ease-in-out infinite; }
-.chip { flex: none; font-family: inherit; font-size: 11.5px; font-weight: 600; color: #6b7077; background: #fff; border: 1px solid #e3e1d9; border-radius: 7px; padding: 5px 10px; cursor: pointer; transition: color .14s, border-color .14s; }
-.chip:hover { color: var(--accent); border-color: #dbe6fb; }
-
-/* chat tab */
-.chat-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-.chat-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; flex: none; }
-.chat-model { font-size: 13px; color: #9a9da1; }
-.chat-list { flex: 1; min-height: 0; overflow-y: auto; border: 1px solid var(--line); background: #fff; border-radius: 9px; padding: 16px; }
-/* Slim, rounded scrollbar tuned to the light chat surface (the 2px #fff border
-   insets the thumb so it floats a little off the edge). */
-.chat-list { scrollbar-width: thin; scrollbar-color: #d6d2c8 transparent; }
-.chat-list::-webkit-scrollbar { width: 10px; }
-.chat-list::-webkit-scrollbar-track { background: transparent; }
-.chat-list::-webkit-scrollbar-thumb { background: #d6d2c8; border: 2px solid #fff; border-radius: 8px; }
-.chat-list::-webkit-scrollbar-thumb:hover { background: #bdb8aa; }
-.chat-empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: var(--muted); }
-.chat-empty p { font-size: 13.5px; }
-.chat-suggestions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 16px; }
-.suggest { border: 1px solid #e3e1d9; border-radius: 100px; padding: 8px 14px; font-size: 12.5px; font-weight: 500; color: var(--ink-3); cursor: pointer; transition: border-color .12s, color .12s; }
-.suggest:hover { border-color: var(--accent); color: var(--accent); }
-.chat-messages { display: flex; flex-direction: column; gap: 14px; }
-.chat-msg { display: flex; gap: 10px; align-items: flex-start; }
-.chat-msg.user { justify-content: flex-end; }
-.chat-msg .bubble { font-size: 13.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
-.chat-msg.user .bubble { background: var(--ink); color: #fff; border-radius: 13px 13px 4px 13px; padding: 9px 13px; max-width: 80%; }
-.chat-msg.assistant .bubble { flex: 1; min-width: 0; color: #1d1f21; }
-.chat-msg.assistant .bubble.err { color: #dc2626; }
-.chat-msg.assistant .bubble.streaming::after { content: '▍'; color: var(--muted); }
-.msg-bolt { display: inline-flex; width: 22px; height: 22px; border-radius: 7px; background: var(--ink); align-items: center; justify-content: center; flex: none; margin-top: 2px; }
-.chat-form { display: flex; align-items: center; gap: 8px; margin-top: 20px; flex: none; }
-.chat-input { flex: 1; min-width: 0; height: 44px; box-sizing: border-box; border: 1px solid var(--line); background: #fff; border-radius: 9px; padding: 0 14px; font-family: inherit; font-size: 13.5px; color: var(--ink); outline: none; user-select: text; }
-.chat-input:focus { border-color: var(--accent); }
-.chat-send { width: 44px; height: 44px; flex: none; border: none; border-radius: 9px; background: var(--accent); color: #fff; display: grid; place-items: center; cursor: pointer; transition: background .15s; }
-.chat-send:disabled { background: #e8e6df; color: #b4b1a6; cursor: not-allowed; }
-
-/* empty-state placeholder (chat/api when the LLM isn't running) */
-.tab-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 20px 0; }
-.tab-empty .empty-bolt { display: inline-flex; width: 46px; height: 46px; border-radius: 13px; background: var(--ink); align-items: center; justify-content: center; }
-.tab-empty h3 { font-weight: 800; font-size: 20px; letter-spacing: -.02em; margin: 18px 0 0; }
-.tab-empty p { font-size: 13.5px; line-height: 1.55; color: var(--muted); margin: 8px 0 0; max-width: 320px; }
-.tab-empty p b { color: var(--ink-3); }
-.start-llm-btn { margin-top: 22px; border: none; cursor: pointer; background: var(--green); color: #fff; font-family: inherit; font-weight: 800; font-size: 14px; letter-spacing: .08em; padding: 14px 34px; border-radius: 11px; box-shadow: 0 12px 26px -10px rgba(22,163,74,.7); transition: background .15s; }
-.start-llm-btn:hover { background: #15803d; }
-
-/* API tab */
-#api-running { flex: 1; min-height: 0; overflow-y: auto; }
-.endpoint-row { display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); background: var(--field); border-radius: 9px; padding: 9px 9px 9px 14px; margin-bottom: 26px; }
-.endpoint-row.tight { margin-bottom: 10px; }
-.api-note { font-size: 12px; color: var(--muted); margin: 0 0 26px; line-height: 1.5; }
-.api-note b { color: var(--ink-3); font-weight: 600; }
-.endpoint-url { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 13px; color: var(--ink-3); cursor: pointer; }
-.model-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--line); background: var(--field); border-radius: 9px; padding: 12px 14px; margin-bottom: 26px; }
-.model-row .meta { font-size: 12px; color: var(--muted); white-space: nowrap; }
-.connect-card { border: 1px solid #dbe6fb; background: #eff4ff; border-radius: 11px; padding: 16px 18px; }
-.connect-card p { font-size: 13px; color: var(--ink-3); line-height: 1.6; }
-.connect-input { width: 100%; margin-top: 12px; border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 10px 12px; font-size: 12.5px; color: var(--ink-3); outline: none; user-select: text; }
-.connect-input:focus { border-color: var(--accent); }
-.connect-error { margin-top: 10px; font-size: 12px; color: #dc2626; font-weight: 600; }
-.connect-actions { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
-.connect-btn { flex: none; font-family: inherit; font-size: 13px; font-weight: 700; color: #fff; background: var(--accent); border: none; border-radius: 9px; padding: 11px 20px; cursor: pointer; box-shadow: 0 8px 18px -8px rgba(37,99,235,.6); transition: background .15s; }
-.connect-btn:hover:not(:disabled) { background: #1d4ed8; }
-.connect-btn:disabled { background: #b9c9ef; cursor: not-allowed; box-shadow: none; }
-/* secondary "Use a pairing token" toggle */
-.connect-alt-btn { flex: none; font-family: inherit; font-size: 13px; font-weight: 600; color: #6b7077; background: #fff; border: 1px solid #e3e1d9; border-radius: 9px; padding: 10px 16px; cursor: pointer; transition: color .14s, border-color .14s; }
-.connect-alt-btn:hover { color: var(--accent); border-color: #dbe6fb; }
-/* collapsible pairing-token area */
-.connect-pair { margin-top: 12px; }
-.connect-pair-row { display: flex; align-items: center; gap: 8px; }
-.connect-pair-row .connect-input { flex: 1; min-width: 0; margin-top: 0; border-color: #cfdcf7; }
-.connect-link-btn { flex: none; font-family: inherit; font-size: 12.5px; font-weight: 700; color: #fff; background: var(--accent); border: none; border-radius: 9px; padding: 10px 16px; cursor: pointer; transition: background .15s; }
-.connect-link-btn:hover:not(:disabled) { background: #1d4ed8; }
-.connect-link-btn:disabled { background: #b9c9ef; cursor: not-allowed; }
-.connect-pair-note { font-size: 11.5px; color: var(--muted); margin-top: 8px; line-height: 1.5; }
-/* connected card — avatar · name · rename, with Disconnect */
-.connected-card { display: flex; align-items: center; gap: 12px; border: 1px solid #cdeed6; background: #f2faf4; border-radius: 11px; padding: 12px 14px; }
-.connected-avatar { display: inline-flex; width: 36px; height: 36px; flex: none; border-radius: 50%; background: var(--green); color: #fff; font-weight: 800; font-size: 15px; align-items: center; justify-content: center; }
-.connected-info { flex: 1; min-width: 0; }
-.connected-title { font-size: 13.5px; font-weight: 700; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.connected-sub { font-size: 12px; color: #5f8a6f; margin-top: 1px; }
-.link-inline { color: var(--accent); cursor: pointer; }
-.link-inline:hover { text-decoration: underline; }
-
-/* compute-mode segmented control (settings) */
-.seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; background: var(--field); border: 1px solid var(--line); border-radius: 10px; padding: 5px; }
-.seg-btn { border: none; border-radius: 7px; padding: 7px 0; font-family: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; background: transparent; color: var(--muted); transition: background .14s, color .14s; }
-.seg-btn:hover { color: var(--ink-3); }
-.seg-btn.active { background: #fff; color: var(--accent); box-shadow: 0 1px 4px rgba(20,20,15,.10); }
-
 /* settings + logs views */
 .view-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .view-head .lbl { font-size: 14px; font-weight: 700; color: var(--ink-2); }
 .back { font-size: 12.5px; font-weight: 600; color: var(--accent); cursor: pointer; }
 .settings-section { font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: #a7abb2; margin: 14px 0 8px; }
 .settings-section:first-of-type { margin: 0 0 7px; }
-/* Connection sits below the mode hint, and the mock gives it more air than the
-   section-to-section default. */
-.settings-note + .settings-section { margin-top: 20px; }
 /* The Settings view-head supplies its own spacing; keep the first section tight
    under it (the view-head div steals :first-of-type from .settings-section). */
 #view-settings .view-head + .settings-section { margin-top: 0; }
@@ -254,11 +149,6 @@ select.rv-input { cursor: pointer; }
 .update-actions { display: inline-flex; align-items: center; gap: 12px; }
 .update-status { font-size: 12.5px; color: var(--muted); }
 .update-status.err { color: #dc2626; }
-.settings-note { font-size: 12px; color: var(--muted); margin-top: 10px; line-height: 1.5; }
-#mode-hint { margin-top: 5px; }
-.settings-note a { color: var(--accent); cursor: pointer; }
-.settings-note .ok { color: var(--green); font-weight: 600; }
-.settings-note .warn { color: #dc2626; font-weight: 600; }
 
 /* merge mining */
 

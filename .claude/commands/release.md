@@ -35,9 +35,9 @@ Install **Node 22**, not the newest LTS. CI (`test.yml`, `miner-build.yml`, `dep
    - `earn/package-lock.json` → the **two** `version` fields near the top (the root object and `packages[""]`). Running `npm install` in `earn/` syncs them for you; editing both by hand is fine when npm isn't available. Don't skip it: v0.3.9 bumped the lock and v0.3.8 didn't, so the lock has silently disagreed with the manifest before.
    - `site/config.json` → `"appVersion": "$NEW"` (the site's download links).
 
-   Then verify by building rather than by grepping the source: `npm run build:site`, and confirm `dist/earn.html` carries six `v$NEW` download URLs (4× `.exe`, 2× `.AppImage`) with no previous version anywhere in the file.
+   Then verify by building rather than by grepping the source: `npm run build:site`, and confirm `dist/index.html` carries six `v$NEW` download URLs (4× `.exe`, 2× `.AppImage`) with no previous version anywhere in the file.
 
-   Do **not** go looking for literal version strings in the page to hand-edit — there are none. The links live in `site/pages/earn.html` (moved out of the repo root) and are templated as `{{!appVersion}}`, so the build substitutes the single `site/config.json` value into all six URLs. This replaced an earlier hand-edited arrangement that went stale twice, lagging at v0.2.7 through two releases; the templating fixes that structurally. If you find yourself editing six URLs by hand, you are on a stale checkout.
+   Do **not** go looking for literal version strings in the page to hand-edit — there are none. The links live in `site/pages/index.html` (the download page, which is the home page) and are templated as `{{!appVersion}}`, so the build substitutes the single `site/config.json` value into all six URLs. This replaced an earlier hand-edited arrangement that went stale twice, lagging at v0.2.7 through two releases; the templating fixes that structurally. If you find yourself editing six URLs by hand, you are on a stale checkout.
 
 5. **Run tests — must be green.** If a suite errors on a missing module (e.g. `jest-environment-jsdom`), the local `node_modules` is stale: run `npm install` in `earn/` then retry. Earn and server suites must both pass at the 100% coverage gate before proceeding.
 
@@ -53,13 +53,13 @@ Install **Node 22**, not the newest LTS. CI (`test.yml`, `miner-build.yml`, `dep
 
 7. **Open the PR** titled `Release v$NEW`. Body: summarize everything merged since the previous tag — `git log --oneline vPREV..HEAD` — grouped into meaningful buckets (features/fixes/tooling), with the earn + server test counts. Keep it accurate (per the repo's PR rule), and include the Railway preview URL alongside the PR link as CLAUDE.md requires: `https://llmjob-llmjob-pr-<N>.up.railway.app`. The PR number isn't known until `gh pr create` returns, so if you put the preview URL in the body up front, check the number you guessed and `gh pr edit` it if it differs.
 
-8. **Launch the build on this machine to test.** Stop any old instances (`electron.exe`, `LLMJob Earn.exe`, `llama-server.exe`, `alpha-miner*`), then `cd earn && npm start -- --remote-debugging-port=9223 &`. Wait for the CDP page target, then bring the window to the foreground (PowerShell `SetForegroundWindow`).
+8. **Launch the build on this machine to test.** Stop any old instances (`electron.exe`, `LLMJob Earn.exe`), then `cd earn && npm start -- --remote-debugging-port=9223 &`. Wait for the CDP page target, then bring the window to the foreground (PowerShell `SetForegroundWindow`).
 
    Leave it idle — don't click Start unless asked. The app does **not** auto-start: `applyPlan` runs only from the `miner:start` IPC handler, so a freshly launched instance sits at START with `0m 00s` uptime no matter what `settings.json` holds. If you find it mining, someone clicked it; don't record that as the app's own behaviour.
 
    Then verify the build rather than just reporting that a window appeared. Screenshot it and **look at the image** — a blank frame is a failed launch, and the uptime/START-vs-STOP state tells you whether anything is actually running.
 
-   The deeper checks all require the app to be started, so they are gated on the founder actually testing it (or on him saying go ahead): read the spawned processes' real arguments back off the OS (`(Get-CimInstance Win32_Process -Filter "ProcessId=<PID>").CommandLine`) and confirm `llama-server` carries a real `--main-gpu <index>`; check `curl -s http://127.0.0.1:8080/health`; and once a report lands (~60s) fetch `https://llmjob-production.up.railway.app/api/miners` and confirm the row's `version` is `$NEW`. That last one is what proves you launched the build you think you did rather than a stale artifact — but note the client only reports to the board **while mining**, so an idle instance will never produce a row, and its absence means nothing.
+   The deeper checks all require the app to be started, so they are gated on the founder actually testing it (or on him saying go ahead): check the Logs view names every card as it starts mining, and once a report lands (~60s) fetch `https://llmjob-production.up.railway.app/api/miners` and confirm the row's `version` is `$NEW`. That last one is what proves you launched the build you think you did rather than a stale artifact — but note the client only reports to the board **while mining**, so an idle instance will never produce a row, and its absence means nothing.
 
 ## Phase 2 — publish (after the founder merges)
 

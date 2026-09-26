@@ -26,8 +26,10 @@ function statsFilePayload(snap, meta) {
     // `schema` exists so a consumer can tell an old writer from a new one
     // without inferring it from which keys happen to be present.
     schema: 1,
-    // What the node is DOING, which the counters above cannot express: a rig in
-    // demand mode with 0 TH/s is not a broken miner, it is a busy one.
+    // mode / strategy / gate / model / tps described the local LLM, which is
+    // retired: the CLI writes mode 'mining' and leaves the rest null or 0. The
+    // keys stay because a consumer that reads them by name must keep getting a
+    // value of the same shape rather than a missing key.
     mode: m.mode || null,
     strategy: m.strategy || null,   // 'demand' | 'corun' | null (not auto)
     gate: m.gate || null,           // MINING | SERVING | SWITCHING->* | null
@@ -37,8 +39,6 @@ function statsFilePayload(snap, meta) {
     lastShareMs: s.lastShareMs == null ? null : Number(s.lastShareMs),
     model: modelOf(m.llm),
     tps: {
-      // Two different measurements, not two samples of one. They routinely
-      // differ by an order of magnitude.
       gen: Number(m.llm && m.llm.tps) || 0,
       prefill: Number(m.llm && m.llm.promptTps) || 0,
     },

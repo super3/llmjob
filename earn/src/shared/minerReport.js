@@ -6,8 +6,8 @@
 // network board while mining.
 //
 // One payload per GPU: a rig running several cards posts one row per card, each
-// with its own GPU name, hashrate and VRAM — because per-card VRAM (not the
-// rig's summed total) is what tells you whether a card can hold a given model.
+// with its own GPU name, hashrate, shares, VRAM and health (temperature, power,
+// clocks, fan), because a rig-level sum hides the one card that is throttling.
 // Each card gets a distinct `worker` (so the server, which keys rows on
 // address+worker, stores them as separate rows); single-GPU rigs keep the bare
 // worker name, matching what older clients sent.
@@ -21,36 +21,52 @@
 // that keeps every card's real VRAM visible instead of collapsing the rig into
 // one row, at the cost of an even (rather than measured) hashrate split, which is
 // the best that's possible when the engine doesn't break the hashrate out.
-// `serving` (optional) tags the cards currently running the local LLM so the
-// network board can show which GPU serves which model: { model, indices, nodeId }
-// where `indices` are the GPU indices from the fleet's servingIndices(). A card
-// whose index isn't listed (insufficient VRAM), or any row from a client that
-// doesn't pass `serving` at all (older version), reports llmModel null → blank on
-// the board.
-//
-// `serving.nodeId` is the machine's node id, and is only set when this machine is
-// a linked node whose job worker is armed — i.e. when it actually polls the
-// cluster for work. That's a different thing from running the model: a rig can
-// have the LLM loaded (llmModel set) and still serve nobody, which is exactly the
-// case the board couldn't previously show. It's rig-level, not per-card, so it
-// rides on every row of a multi-GPU host.
-function buildMinerReports(settings, snap, gpuVram, version, serving) {
+// `meta` (optional) carries what the report knows beyond the stats snapshot:
+//   telemetry  per-card health from shared/gpu.parseGpuTelemetry, matched by index
+//   identity   the signed rig identity from shared/node.signRig, or null
+//   client     'gui' | 'cli', so the fleet's two shells can be told apart
+//   os         process.platform
+//   nowMs      the report's clock, for "seconds since the last share"
+// Every field is optional and falls back to null, so a rig without nvidia-smi,
+// or without an identity, still reports its hashrate like any older client.
+function buildMinerReports(settings, snap, gpuVram, version, meta) {
   const s = settings || {};
   const n = snap || {};
+  const m = meta || {};
+  const telemetry = Array.isArray(m.telemetry) ? m.telemetry : [];
+  const nowMs = Number(m.nowMs);
   const base = {
     address: String(s.address || '').trim(),
     worker: String(s.worker || 'rig01').trim() || 'rig01',
     region: s.region || 'us2',
     version: version != null ? String(version) : null, // earn client version, so the board can see fleet versions
-    nodeId: serving && serving.nodeId ? String(serving.nodeId) : null,
+    client: m.client || null,
+    os: m.os || null,
+    // One driver per rig, so any card's reading is the rig's.
+    driver: (telemetry.find((t) => t && t.driver) || {}).driver || null,
+    uptimeSec: Number(n.uptimeSec) || 0,
+    // Seconds, not a timestamp: the rig's clock and the server's need not agree,
+    // but an elapsed time means the same on both.
+    lastShareSec: n.lastShareMs != null && Number.isFinite(nowMs)
+      ? Math.max(0, Math.round((nowMs - Number(n.lastShareMs)) / 1000))
+      : null,
+    ...(m.identity || {}),
   };
 
-  const serveModel = serving && serving.model ? String(serving.model) : null;
-  const serveSet = new Set(
-    serving && Array.isArray(serving.indices) ? serving.indices.map((i) => Number(i)) : []
-  );
-  // The model this card serves, or null when it isn't serving (or nothing is).
-  const llmFor = (index) => (serveModel && serveSet.has(Number(index)) ? serveModel : null);
+  // A card's health from nvidia-smi, by index. The temperature falls back to the
+  // engine's own reading, which is the only one a rig without nvidia-smi has.
+  const healthFor = (index, engineTemp) => {
+    const t = telemetry.find((x) => x && Number(x.index) === Number(index)) || {};
+    const temp = Number(engineTemp);
+    return {
+      tempC: t.tempC != null ? t.tempC : (temp > 0 ? temp : null),
+      powerW: t.powerW != null ? t.powerW : null,
+      powerLimitW: t.powerLimitW != null ? t.powerLimitW : null,
+      coreClockMhz: t.coreClockMhz != null ? t.coreClockMhz : null,
+      memClockMhz: t.memClockMhz != null ? t.memClockMhz : null,
+      fanPct: t.fanPct != null ? t.fanPct : null,
+    };
+  };
 
   // ONE rule for the card name, everywhere below: nvidia-smi first, the engine's
   // own label only as a fallback.
@@ -74,15 +90,16 @@ function buildMinerReports(settings, snap, gpuVram, version, serving) {
   // One row per physical card (from nvidia-smi), splitting a rig-level total
   // evenly — used whenever we know the card count but not each card's hashrate.
   // The distinct "/gpuN" worker is what keeps the cards as separate board rows.
-  const splitRows = (total, accepted, fallbackName) => vram.map((v) => ({
+  const splitRows = (total, accepted, rejected, fallbackName) => vram.map((v) => ({
     ...base,
     worker: workerFor(v.index, vram.length),
     gpu: v.name || fallbackName || null,
     hashrate: total / vram.length,
     accepted: Math.round(accepted / vram.length),
+    rejected: Math.round(rejected / vram.length),
     vramUsedMb: Number(v.usedMb) || 0,
     vramTotalMb: Number(v.totalMb) || 0,
-    llmModel: llmFor(v.index),
+    ...healthFor(v.index),
   }));
 
   // No per-card engine data yet (startup before the first per-card event, or an
@@ -93,15 +110,18 @@ function buildMinerReports(settings, snap, gpuVram, version, serving) {
   // the host's VRAM. A genuine single-GPU rig (or one with no nvidia-smi) keeps
   // the single bare row, matching what older clients sent.
   if (!cards.length) {
-    if (vram.length > 1) return splitRows(Number(n.total) || 0, Number(n.accepted) || 0, n.gpu);
+    if (vram.length > 1) {
+      return splitRows(Number(n.total) || 0, Number(n.accepted) || 0, Number(n.rejected) || 0, n.gpu);
+    }
     return [{
       ...base,
       gpu: (vram[0] && vram[0].name) || n.gpu || null,
       hashrate: Number(n.total) || 0,
       accepted: Number(n.accepted) || 0,
+      rejected: Number(n.rejected) || 0,
       vramUsedMb: vram.reduce((a, v) => a + (Number(v.usedMb) || 0), 0),
       vramTotalMb: vram.reduce((a, v) => a + (Number(v.totalMb) || 0), 0),
-      llmModel: llmFor(vram[0] ? vram[0].index : 0),
+      ...healthFor(vram[0] ? vram[0].index : 0, n.temp),
     }];
   }
 
@@ -112,7 +132,8 @@ function buildMinerReports(settings, snap, gpuVram, version, serving) {
   if (vram.length > cards.length) {
     const total = cards.reduce((a, c) => a + (Number(c.hashrate) || 0), 0);
     const accepted = cards.reduce((a, c) => a + (Number(c.accepted) || 0), 0);
-    return splitRows(total, accepted, cards[0] && cards[0].gpu);
+    const rejected = cards.reduce((a, c) => a + (Number(c.rejected) || 0), 0);
+    return splitRows(total, accepted, rejected, cards[0] && cards[0].gpu);
   }
 
   // Normal path: the engine reports each card, so use its per-card hashrate and
@@ -125,9 +146,10 @@ function buildMinerReports(settings, snap, gpuVram, version, serving) {
       gpu: (v && v.name) || c.gpu || null,
       hashrate: Number(c.hashrate) || 0,
       accepted: Number(c.accepted) || 0,
+      rejected: Number(c.rejected) || 0,
       vramUsedMb: v ? Number(v.usedMb) || 0 : 0,
       vramTotalMb: v ? Number(v.totalMb) || 0 : 0,
-      llmModel: llmFor(c.index),
+      ...healthFor(c.index, c.temp),
     };
   });
 }

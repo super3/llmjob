@@ -1,6 +1,8 @@
 'use strict';
 
-const { parseCliArgs, buildSettings, regionChoices, USAGE, VALUE_FLAGS } = require('../src/shared/cliArgs');
+const {
+  parseCliArgs, buildSettings, regionChoices, USAGE, VALUE_FLAGS, RETIRED_VALUE_FLAGS, RETIRED_SWITCHES,
+} = require('../src/shared/cliArgs');
 const { DEFAULTS } = require('../src/shared/config');
 
 const ADDR = 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
@@ -156,62 +158,51 @@ describe('buildSettings — validation', () => {
   });
 });
 
-describe('buildSettings — compute mode / LLM', () => {
-  test('mode defaults to auto, not provided, with null LLM paths', () => {
-    const s = parseCliArgs(['--address', ADDR]).settings;
-    expect(s.mode).toBe('auto');
-    expect(s.modeProvided).toBe(false);
-    expect(s.llmBinary).toBeNull();
-    expect(s.llmModel).toBeNull();
-  });
-
-  test('explicit --mode is parsed and flagged as provided', () => {
-    const s = parseCliArgs(['--address', ADDR, '--mode', 'both']).settings;
-    expect(s.mode).toBe('both');
-    expect(s.modeProvided).toBe(true);
-  });
-
-  test('--llm-max-instances is parsed, and rejected when not a positive integer', () => {
-    expect(parseCliArgs(['--address', ADDR, '--llm-max-instances', '2']).settings.llmMaxInstances).toBe(2);
-    // Unset means "no operator opinion" — the planner then uses every eligible card.
-    expect(parseCliArgs(['--address', ADDR]).settings.llmMaxInstances).toBeNull();
-    expect(parseCliArgs(['--address', ADDR, '--llm-max-instances', '0']).errors)
-      .toContain('invalid --llm-max-instances: 0 (must be a positive integer)');
-    expect(parseCliArgs(['--address', ADDR, '--llm-max-instances', 'two']).errors)
-      .toContain('invalid --llm-max-instances: two (must be a positive integer)');
-  });
-
-  test('unknown mode is rejected with choices', () => {
-    const r = parseCliArgs(['--address', ADDR, '--mode', 'turbo']);
-    expect(r.errors).toContain('unknown mode: turbo (choices: mining, llm, auto)');
-  });
-
-  test('llm-only mode does not require a payout address', () => {
-    const r = parseCliArgs(['--mode', 'llm']);
+// The LLM options were retired with the LLM, but an old unit or flight sheet
+// still passing them must keep mining after the CLI updates itself — so they
+// parse, are ignored, and are reported back for one startup notice.
+describe('retired LLM options', () => {
+  test('are accepted with their values, ignored, and listed as retired', () => {
+    const r = parseCliArgs([
+      '--address', ADDR, '--mode', 'auto', '--llm-binary', '/opt/llama-server',
+      '--llm-model=/m.gguf', '--llm-max-instances', '2', '--gate-port', '8000',
+      '--gate-host', '0.0.0.0', '--gate-quiet', '60', '--no-serve', '--worker', 'rig3',
+    ]);
     expect(r.errors).toEqual([]);
-    expect(r.settings.address).toBe('');
-    expect(r.settings.mode).toBe('llm');
+    expect(r.settings.retired).toEqual([
+      '--mode', '--llm-binary', '--llm-model', '--llm-max-instances',
+      '--gate-port', '--gate-host', '--gate-quiet', '--no-serve',
+    ]);
+    // Their values are consumed, not mistaken for the next option.
+    expect(r.settings.worker).toBe('rig3');
+    expect(r.settings).not.toHaveProperty('mode');
+    expect(r.settings).not.toHaveProperty('gatePort');
   });
 
-  test('both/auto still require a payout address', () => {
-    expect(parseCliArgs(['--mode', 'both']).errors)
-      .toContain('--address is required (your prl1p… payout address)');
+  test('a retired option with no value is still just ignored, not an error', () => {
+    const r = parseCliArgs(['--address', ADDR, '--mode', '--no-report']);
+    expect(r.errors).toEqual([]);
+    expect(r.settings.retired).toEqual(['--mode']);
+    expect(r.settings.report).toBe(false);
+    expect(parseCliArgs(['--address', ADDR, '--gate-quiet']).errors).toEqual([]);
+  });
+
+  test('nothing retired means an empty list', () => {
+    expect(parseCliArgs(['--address', ADDR]).settings.retired).toEqual([]);
+  });
+
+  test('an old LLM-only unit is told why it now needs an address', () => {
+    expect(parseCliArgs(['--mode', 'llm']).errors).toEqual([
+      '--address is required (your prl1p… payout address); --mode llm was retired and this build only mines',
+    ]);
+    // Any other old mode just gets the plain message.
     expect(parseCliArgs(['--mode', 'auto']).errors)
-      .toContain('--address is required (your prl1p… payout address)');
+      .toEqual(['--address is required (your prl1p… payout address)']);
   });
 
-  test('an invalid address is still rejected in llm mode', () => {
-    const r = parseCliArgs(['--mode', 'llm', '--address', 'nope123']);
-    expect(r.errors).toContain('invalid Pearl address: nope123');
-  });
-
-  test('--llm-binary and --llm-model are captured', () => {
-    const s = parseCliArgs([
-      '--mode', 'both', '--address', ADDR,
-      '--llm-binary', '/opt/llama-server', '--llm-model', '/models/m.gguf',
-    ]).settings;
-    expect(s.llmBinary).toBe('/opt/llama-server');
-    expect(s.llmModel).toBe('/models/m.gguf');
+  test('are not documented any more', () => {
+    for (const flag of [...RETIRED_VALUE_FLAGS, ...RETIRED_SWITCHES]) expect(USAGE).not.toContain(flag);
+    expect(USAGE).not.toContain('connect');
   });
 });
 
@@ -222,6 +213,7 @@ describe('buildSettings — direct', () => {
     expect(s.address).toBe('');
     expect(s.report).toBe(true);
     expect(s.update).toBe(false);
+    expect(s.retired).toEqual([]);
     expect(errors.length).toBeGreaterThan(0);
   });
 });
@@ -234,85 +226,5 @@ describe('metadata', () => {
   test('VALUE_FLAGS includes the value-taking options', () => {
     expect(VALUE_FLAGS.has('--address')).toBe(true);
     expect(VALUE_FLAGS.has('--help')).toBe(false);
-  });
-});
-
-describe('--gate-port', () => {
-  test('accepts a port', () => {
-    expect(parseCliArgs(['--address', ADDR, '--gate-port', '9000']).settings.gatePort).toBe(9000);
-  });
-  test('accepts 0, which asks the OS to pick (used by tests)', () => {
-    expect(parseCliArgs(['--address', ADDR, '--gate-port', '0']).settings.gatePort).toBe(0);
-  });
-  test('rejects a non-port', () => {
-    const r = parseCliArgs(['--address', ADDR, '--gate-port', '99999']);
-    expect(r.errors.join(' ')).toContain('invalid --gate-port');
-  });
-  test('is null when not given, so config decides', () => {
-    expect(parseCliArgs(['--address', ADDR]).settings.gatePort).toBeNull();
-  });
-});
-
-describe('--gate-host', () => {
-  const errs = () => [];
-
-  test('defaults to null, letting the gate pick loopback', () => {
-    expect(buildSettings({}, errs(), true, false).gateHost).toBeNull();
-  });
-
-  test('carries an explicit bind address through', () => {
-    expect(buildSettings({ '--gate-host': '0.0.0.0' }, errs(), true, false).gateHost).toBe('0.0.0.0');
-  });
-
-  test('trims the value', () => {
-    expect(buildSettings({ '--gate-host': '  1.2.3.4 ' }, errs(), true, false).gateHost).toBe('1.2.3.4');
-  });
-
-  test('rejects an empty value rather than reading it as all interfaces', () => {
-    // `--gate-host ""` meaning 0.0.0.0 would be the opposite of what someone
-    // clearing the setting expects.
-    const errors = [];
-    buildSettings({ '--gate-host': '   ' }, errors, true, false);
-    expect(errors.join(' ')).toContain('--gate-host');
-  });
-
-  test('is listed in the usage text', () => {
-    expect(USAGE).toContain('--gate-host');
-  });
-});
-
-describe('--gate-quiet', () => {
-  const errs = () => [];
-
-  test('defaults to null, letting the product default stand', () => {
-    expect(buildSettings({}, errs(), true, false).gateQuietMs).toBeNull();
-  });
-
-  test('seconds in, milliseconds out', () => {
-    expect(buildSettings({ '--gate-quiet': '600' }, errs(), true, false).gateQuietMs).toBe(600000);
-    expect(buildSettings({ '--gate-quiet': '1.5' }, errs(), true, false).gateQuietMs).toBe(1500);
-  });
-
-  // A rig dedicated to inference wants the model resident, full stop. Releasing
-  // it drops the prompt cache, so the next turn re-prefills the whole context.
-  test('0 means never hand the card back', () => {
-    expect(buildSettings({ '--gate-quiet': '0' }, errs(), true, false).gateQuietMs).toBe(Infinity);
-  });
-
-  test('rejects a negative or non-numeric value', () => {
-    for (const bad of ['-1', 'soon', '']) {
-      const errors = [];
-      buildSettings({ '--gate-quiet': bad }, errors, true, false);
-      expect(errors.join(' ')).toContain('--gate-quiet');
-    }
-  });
-
-  test('is listed in the usage text', () => {
-    expect(USAGE).toContain('--gate-quiet');
-  });
-
-  test('takes a value, so the next argv item is not read as a flag', () => {
-    const { settings } = parseCliArgs(['-a', ADDR, '--gate-quiet', '300', '--no-report']);
-    expect(settings.gateQuietMs).toBe(300000);
   });
 });

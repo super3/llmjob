@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const NodeService = require('./nodeService');
+const { verifyRig } = require('./rigIdentity');
 
 // A worker unseen for this long drops off the "online" list; rows unseen for
 // PRUNE_TTL are deleted entirely. Clients check in every ~60s, so 5 minutes is
@@ -10,13 +10,15 @@ const NodeService = require('./nodeService');
 const OFFLINE_THRESHOLD = 5 * 60 * 1000;   // 5 minutes
 const PRUNE_TTL = 90 * 60 * 1000;          // 90 minutes
 const ADDRESS_RE = /^prl1p[0-9a-z]{20,80}$/i;
-// A node id as either width nodeService recognises — the current 16 hex
-// characters, or the 6 a machine enrolled under before ids were widened.
-const NODE_ID_RE = new RegExp(
-  `^([0-9a-f]{${NodeService.LEGACY_NODE_ID_HEX}}|[0-9a-f]{${NodeService.NODE_ID_HEX}})$`
-);
 const MAX_HASHRATE = 1e6;                  // TH/s sanity clamp
 const MAX_VRAM_MB = 1e6;                   // VRAM MB sanity clamp (~1 TB)
+// Ceilings for the per-card health readings, far above any real card: they
+// exist to keep a garbage report from landing a nonsense number, not to judge.
+const MAX_TEMP_C = 200;
+const MAX_POWER_W = 5000;
+const MAX_CLOCK_MHZ = 20000;
+const MAX_FAN_PCT = 100;
+const MAX_SECONDS = 1e9;                   // ~31 years
 
 // Stable per-(address, worker) id.
 function minerFingerprint(address, worker) {
@@ -79,13 +81,6 @@ function groupHosts(cards, now) {
       vramUsedMb: sum((c) => c.vramUsedMb),
       vramTotalMb: sum((c) => c.vramTotalMb),
       version: top.version,
-      // The host's served model: the fleet runs one model across every serving
-      // card, so any card's non-null llmModel is THE model; null if none serve.
-      llmModel: (group.find((c) => c.llmModel) || {}).llmModel || null,
-      // The node id is the machine's, so every card of a host reports the same one
-      // — take whichever card has it. Null means this host runs the model (or just
-      // mines) without serving the cluster.
-      nodeId: (group.find((c) => c.nodeId) || {}).nodeId || null,
       last: formatAgo(now - group.reduce((a, c) => Math.max(a, c.lastMs), 0)),
       cards: group.map((c) => ({
         worker: c.worker,
@@ -95,7 +90,6 @@ function groupHosts(cards, now) {
         vramUsedMb: c.vramUsedMb,
         vramTotalMb: c.vramTotalMb,
         version: c.version,
-        llmModel: c.llmModel,
         last: formatAgo(now - c.lastMs),
       })),
     });
@@ -123,6 +117,26 @@ function clampNum(v, max) {
   const n = Number(v);
   if (!Number.isFinite(n) || n < 0) return 0;
   return (max != null && n > max) ? max : n;
+}
+
+// Like clampNum, but a missing or unreadable value stays null. For health
+// readings "no reading" and "zero" mean different things: a card at 0 °C would
+// be broken, a card with no reading is one nvidia-smi could not see.
+function clampOrNull(v, max) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n > max ? max : n;
+}
+
+function intOrNull(v, max) {
+  const n = clampOrNull(v, max);
+  return n == null ? null : Math.round(n);
+}
+
+function textOrNull(v, len) {
+  const t = v == null ? '' : String(v).trim();
+  return t ? t.slice(0, len) : null;
 }
 
 // Compact "time since" label for the last-share column.
@@ -155,38 +169,46 @@ class MinerService {
     const vramUsed = clampNum(input.vramUsedMb, MAX_VRAM_MB);
     const vramTotal = clampNum(input.vramTotalMb, MAX_VRAM_MB);
     const version = input.version ? String(input.version).slice(0, 32) : null;
-    // The local LLM this card is serving, if any. A card not serving (insufficient
-    // VRAM) or a client too old to report it stores null → blank on the board.
-    const llmModel = input.llmModel ? String(input.llmModel).slice(0, 64) : null;
-    // The machine's node id, sent only while it is armed to serve cluster jobs.
-    // Null (client too old, or running the model without serving) means the board
-    // shows the row as advertising a model rather than serving the network.
-    //
-    // Shape-validated, not merely length-clamped: this ping is unauthenticated, and
-    // the value is rendered into a chip on the public board. A real node id is
-    // sha256(publicKey) truncated to NODE_ID_HEX hex chars — both nodeService's
-    // generateNodeFingerprint and the client's node.fingerprint() produce exactly
-    // that — so anything else is junk and stored as null rather than painted onto
-    // the board. It remains a display hint only: nothing routes or authorizes on it.
-    //
-    // Both widths are accepted: ids were widened from 6 to 16 hex characters (see
-    // nodeService), and a machine enrolled before that keeps its 6-character id.
-    // Rejecting the old width would blank the serving chip for every existing rig.
-    const rawNodeId = input.nodeId == null ? '' : String(input.nodeId).trim();
-    const nodeId = NODE_ID_RE.test(rawNodeId) ? rawNodeId : null;
     const id = minerFingerprint(address, worker);
     const now = Date.now();
 
+    // Diagnostics: stored, never served on the public board. Every one is
+    // optional, and an older client that sends none of them stores NULLs.
+    const health = [
+      Math.floor(clampNum(input.rejected)),
+      clampOrNull(input.tempC, MAX_TEMP_C),
+      clampOrNull(input.powerW, MAX_POWER_W),
+      clampOrNull(input.powerLimitW, MAX_POWER_W),
+      intOrNull(input.coreClockMhz, MAX_CLOCK_MHZ),
+      intOrNull(input.memClockMhz, MAX_CLOCK_MHZ),
+      intOrNull(input.fanPct, MAX_FAN_PCT),
+      textOrNull(input.driver, 32),
+      textOrNull(input.os, 16),
+      textOrNull(input.client, 8),
+      intOrNull(input.uptimeSec, MAX_SECONDS),
+      intOrNull(input.lastShareSec, MAX_SECONDS),
+      // Only a signature that checks out earns the row a rig id (see rigIdentity).
+      verifyRig(input, now),
+    ];
+
     await this.db.query(
-      `INSERT INTO miners (id, address, worker, gpu, region, hashrate, accepted, vram_used, vram_total, version, llm_model, node_id, first_seen, last_seen)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
+      `INSERT INTO miners (id, address, worker, gpu, region, hashrate, accepted, vram_used, vram_total, version, first_seen, last_seen,
+                           rejected, temp_c, power_w, power_limit_w, core_clock_mhz, mem_clock_mhz, fan_pct,
+                           driver, os, client, uptime_sec, last_share_sec, rig_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11,
+               $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
        ON CONFLICT (id) DO UPDATE SET
          gpu = EXCLUDED.gpu, region = EXCLUDED.region, hashrate = EXCLUDED.hashrate,
          accepted = EXCLUDED.accepted, vram_used = EXCLUDED.vram_used,
          vram_total = EXCLUDED.vram_total, version = EXCLUDED.version,
-         llm_model = EXCLUDED.llm_model, node_id = EXCLUDED.node_id,
-         last_seen = EXCLUDED.last_seen`,
-      [id, address, worker, gpu, region, hashrate, accepted, vramUsed, vramTotal, version, llmModel, nodeId, now]
+         last_seen = EXCLUDED.last_seen,
+         rejected = EXCLUDED.rejected, temp_c = EXCLUDED.temp_c, power_w = EXCLUDED.power_w,
+         power_limit_w = EXCLUDED.power_limit_w, core_clock_mhz = EXCLUDED.core_clock_mhz,
+         mem_clock_mhz = EXCLUDED.mem_clock_mhz, fan_pct = EXCLUDED.fan_pct,
+         driver = EXCLUDED.driver, os = EXCLUDED.os, client = EXCLUDED.client,
+         uptime_sec = EXCLUDED.uptime_sec, last_share_sec = EXCLUDED.last_share_sec,
+         rig_id = EXCLUDED.rig_id`,
+      [id, address, worker, gpu, region, hashrate, accepted, vramUsed, vramTotal, version, now, ...health]
     );
     return { success: true, id };
   }
@@ -202,11 +224,11 @@ class MinerService {
     const now = Date.now();
     await this.db.query('DELETE FROM miners WHERE last_seen < $1', [now - PRUNE_TTL]);
     // Named columns, not `SELECT *`: this is an unauthenticated endpoint that the
-    // network page hits every 15 seconds per open tab, and the eight fields below
-    // are all it renders.
+    // network page hits every 15 seconds per open tab, and the fields below are
+    // all it renders.
     const r = await this.db.query(
       `SELECT address, worker, gpu, hashrate, accepted, vram_used, vram_total,
-              version, llm_model, node_id, last_seen
+              version, last_seen
          FROM miners WHERE last_seen >= $1`,
       [now - OFFLINE_THRESHOLD]
     );
@@ -224,8 +246,6 @@ class MinerService {
       vramUsedMb: Math.round(Number(row.vram_used) || 0),
       vramTotalMb: Math.round(Number(row.vram_total) || 0),
       version: row.version || null,
-      llmModel: row.llm_model || null,
-      nodeId: row.node_id || null, // set only while the host serves cluster jobs
       lastMs: Number(row.last_seen), // always positive: the WHERE clause filters on last_seen
     })));
 
@@ -243,6 +263,8 @@ MinerService.minerFingerprint = minerFingerprint;
 MinerService.isValidAddress = isValidAddress;
 MinerService.normalizeAddress = normalizeAddress;
 MinerService.clampNum = clampNum;
+MinerService.clampOrNull = clampOrNull;
+MinerService.textOrNull = textOrNull;
 MinerService.formatAgo = formatAgo;
 MinerService.baseWorker = baseWorker;
 MinerService.dropHostAggregates = dropHostAggregates;

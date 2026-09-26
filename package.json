@@ -1,7 +1,7 @@
 {
   "name": "llmjob-server",
   "version": "1.0.0",
-  "description": "LLMJob server — Express API and dashboard for pooling spare GPUs into an OpenAI-compatible AI cluster.",
+  "description": "LLMJob server — Express API behind the Earn miner: the public miners board, the managed-mining waitlist, and the static site.",
   "main": "server/src/index.js",
   "directories": {
     "test": "server/tests"
@@ -21,11 +21,10 @@
   },
   "keywords": [
     "llmjob",
-    "llm",
-    "inference",
-    "gpu",
-    "cluster",
-    "openai-compatible"
+    "pearl",
+    "prl",
+    "mining",
+    "gpu"
   ],
   "author": "super3",
   "license": "MIT",
@@ -35,7 +34,6 @@
     "npm": ">=10.0.0"
   },
   "dependencies": {
-    "@clerk/clerk-sdk-node": "^4.13.23",
     "cors": "^2.8.5",
     "dotenv": "^17.2.1",
     "express": "^5.1.0",

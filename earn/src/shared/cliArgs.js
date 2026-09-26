@@ -2,14 +2,13 @@
 
 // Pure argument parsing for the headless Linux CLI miner (src/cli/earn-cli.js).
 // Turns a bare argv array into a validated settings object — the same shape the
-// GUI's main process hands to MinerManager (address / worker / region /
-// region, worker, GPU), so the two share the same settings shape. Kept
-// pure and dependency-free so it's fully unit-tested; the CLI shell wires the
-// real IO (download, spawn, network reporting) around it.
+// GUI's main process hands to the miner (address, worker, region, GPU), so the
+// two share one settings shape. Kept pure and dependency-free so it's fully
+// unit-tested; the CLI shell wires the real IO (network reporting, the engine)
+// around it.
 
 const { REGIONS, DEFAULTS } = require('./config');
 const { isValidAddress, isValidMdlAddress, normalizeAddress } = require('./address');
-const { MODES, DEFAULT_MODE, isValidMode } = require('./llmMode');
 
 // Short flags → their canonical long form.
 // --mdl / -m are deliberately absent from USAGE: merge mining is retired from
@@ -31,9 +30,19 @@ const VALUE_FLAGS = new Set([
   '--address', '--mdl', '--region', '--worker',
   '--gpu',
   '--stats-file',
-  '--mode', '--llm-binary', '--llm-model', '--llm-max-instances', '--gate-port', '--gate-host',
-  '--gate-quiet',
 ]);
+
+// The local-LLM options, retired with the LLM itself. Still ACCEPTED — value
+// and all — for the same reason as --mdl: the CLI auto-updates on start, so a
+// systemd unit or flight sheet written for an older build (`--mode auto`,
+// `--no-serve`, `--gate-port 8000`) would otherwise update itself into a hard
+// 'unknown option' exit and stop mining. They are ignored, and listed in
+// settings.retired so the CLI can say so once at startup.
+const RETIRED_VALUE_FLAGS = new Set([
+  '--mode', '--llm-binary', '--llm-model', '--llm-max-instances',
+  '--gate-port', '--gate-host', '--gate-quiet',
+]);
+const RETIRED_SWITCHES = new Set(['--no-serve']);
 
 function regionChoices() {
   return Object.keys(REGIONS).join(', ');
@@ -43,41 +52,17 @@ const USAGE = [
   'LLMJob Earn — headless Pearl (PRL) miner for Linux',
   '',
   'Usage: llmjob-earn-cli --address <prl1p…> [options]',
-  '       llmjob-earn-cli connect --token <pairing-token>   Link this box to your LLMJob account',
   '       llmjob-earn-cli update                            Update the CLI to the latest release',
   '',
   'Required:',
   '  -a, --address <prl1p…>   Your Pearl payout address',
   '',
   'Options:',
-  '      --mode <mode>        Compute mode: ' + MODES.join('/') + ' (default: ' + DEFAULT_MODE + ').',
-  '                           "both"/"auto" co-run a local LLM alongside mining;',
-  '                           "llm" runs the LLM only (no payout address needed).',
-  '      --llm-binary <path>  Path to a prebuilt llama-server binary. Optional:',
-  '                           the CLI auto-downloads + extracts one (needs `unzip`)',
-  '                           — use this to skip that or point at your own build.',
-  '      --llm-model <path>   Path to a GGUF model file (default: download the',
-  '                           bundled small model on first run)',
-  '      --gate-port <port>   Port the auto-mode gate serves on (default: 8000).',
-  '      --gate-quiet <secs>  Seconds of no requests before the GPU goes back to',
-  '                           mining (default: 60). Raise it for agent workloads:',
-  '                           a release drops the prompt cache, so the next turn',
-  '                           re-prefills the whole context.',
-  '      --gate-host <addr>   Address the gate binds (default: 0.0.0.0, every',
-  '                           interface). Set 127.0.0.1 to keep it to this box.',
-  '                           Only used when auto mode is demand-driven, i.e. the',
-  '                           card can serve a bigger model than it can co-run.',
-  '      --llm-max-instances <n>  Cap how many llama-servers run (default: one per',
-  '                           eligible GPU, itself capped by free system RAM)',
   '  -r, --region <id>        Pool region: ' + Object.keys(REGIONS).join('/') + ' (default: auto-detect fastest)',
   '  -w, --worker <name>      Worker/rig name (default: this machine\'s hostname)',
   '  -g, --gpu <card>         GPU name to report on the board (default: auto-detect via nvidia-smi)',
-
   '      --stats-file <path>  Write live stats JSON here every 10s (for HiveOS h-stats etc.)',
   '      --no-report          Do not publish live status to the public network board',
-  '      --no-serve           Do not serve inference jobs for the LLMJob network',
-  '                           (by default a rig serves public jobs even when it is',
-  '                           not linked to an account; linking adds private queues)',
   '      --no-update          Do not auto-update the CLI to a newer release on start',
   '  -h, --help               Show this help and exit',
   '  -v, --version            Print the version and exit',
@@ -85,22 +70,14 @@ const USAGE = [
 
 // Fold the collected option map into a validated settings object, appending any
 // validation problems to `errors`.
-function buildSettings(opts, errors, report, update, serve) {
-  // Compute mode (which engines run). Parsed before the address check because
-  // LLM-only doesn't mine, so it needs no payout address.
-  let mode = DEFAULT_MODE;
-  if (opts['--mode'] != null) {
-    mode = String(opts['--mode']).trim();
-    if (!isValidMode(mode)) {
-      errors.push('unknown mode: ' + mode + ' (choices: ' + MODES.join(', ') + ')');
-    }
-  }
-
+function buildSettings(opts, errors, report, update, retired) {
   const address = opts['--address'] != null ? String(opts['--address']).trim() : '';
   if (!address) {
-    // The address is only required when the mode actually mines. "llm" is
-    // LLM-only, so it can run with no payout address.
-    if (mode !== 'llm') errors.push('--address is required (your prl1p… payout address)');
+    // An old LLM-only unit (`--mode llm`) had no address because it never mined.
+    // Say why it now needs one rather than just that it does.
+    const wasLlmOnly = opts['--mode'] != null && String(opts['--mode']).trim() === 'llm';
+    errors.push('--address is required (your prl1p… payout address)'
+      + (wasLlmOnly ? '; --mode llm was retired and this build only mines' : ''));
   } else if (!isValidAddress(address)) {
     errors.push('invalid Pearl address: ' + address);
   }
@@ -122,83 +99,35 @@ function buildSettings(opts, errors, report, update, serve) {
 
   const worker = opts['--worker'] != null ? String(opts['--worker']).trim() : DEFAULTS.worker;
   const gpu = opts['--gpu'] != null ? String(opts['--gpu']).trim() : null;
-
-
-
   const statsFile = opts['--stats-file'] != null ? String(opts['--stats-file']) : null;
-  const llmBinary = opts['--llm-binary'] != null ? String(opts['--llm-binary']) : null;
-  const llmModel = opts['--llm-model'] != null ? String(opts['--llm-model']) : null;
-
-  // An explicit ceiling on concurrent llama-servers. Null means "no operator
-  // opinion" — the planner then caps by eligible GPUs and free RAM on its own.
-  let gatePort = null;
-  if (opts['--gate-port'] != null) {
-    gatePort = Number(opts['--gate-port']);
-    if (!Number.isInteger(gatePort) || gatePort < 0 || gatePort > 65535) {
-      errors.push('invalid --gate-port: ' + opts['--gate-port'] + ' (must be 0-65535)');
-    }
-  }
-  // Empty string is rejected rather than silently meaning "all interfaces":
-  // `--gate-host ""` reading as 0.0.0.0 would be the opposite of what someone
-  // clearing the setting expects.
-  // Seconds in, milliseconds out: the flag is in the unit an operator thinks in,
-  // the gate is in the unit it compares against. 0 is allowed and means "never
-  // release", which is what a rig dedicated to inference wants.
-  let gateQuietMs = null;
-  if (opts['--gate-quiet'] != null) {
-    // Empty is rejected rather than read as 0: Number('') is 0, so a cleared
-    // setting would silently mean "never release the card", which is the
-    // opposite of harmless.
-    const raw = String(opts['--gate-quiet']).trim();
-    const secs = raw === '' ? NaN : Number(raw);
-    if (!Number.isFinite(secs) || secs < 0) {
-      errors.push('invalid --gate-quiet: ' + opts['--gate-quiet'] + ' (must be 0 or more seconds)');
-    } else {
-      gateQuietMs = secs === 0 ? Infinity : Math.round(secs * 1000);
-    }
-  }
-  let gateHost = null;
-  if (opts['--gate-host'] != null) {
-    gateHost = String(opts['--gate-host']).trim();
-    if (!gateHost) errors.push('invalid --gate-host: must not be empty');
-  }
-  let llmMaxInstances = null;
-  if (opts['--llm-max-instances'] != null) {
-    llmMaxInstances = Number(opts['--llm-max-instances']);
-    if (!Number.isInteger(llmMaxInstances) || llmMaxInstances < 1) {
-      errors.push('invalid --llm-max-instances: ' + opts['--llm-max-instances'] + ' (must be a positive integer)');
-    }
-  }
 
   // Which knobs the user set explicitly. The CLI auto-detects the ones left
-  // unset (fastest region; a per-host worker name), so
-  // it needs to tell an explicit `--region us2` / `--worker rig01` from the
-  // default.
+  // unset (fastest region; a per-host worker name), so it needs to tell an
+  // explicit `--region us2` / `--worker rig01` from the default.
   const regionProvided = opts['--region'] != null;
   const gpuProvided = opts['--gpu'] != null;
   const workerProvided = opts['--worker'] != null;
-  const modeProvided = opts['--mode'] != null;
 
   return {
     address, mdlAddress, region, worker, gpu, statsFile,
-    mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs,
-    report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,
+    report, update, regionProvided, gpuProvided, workerProvided,
+    retired: retired || [],
   };
 }
 
 // Parse a bare argv (typically process.argv.slice(2)) into:
-//   { help, version, report, errors, settings }
+//   { help, version, report, update, errors, settings }
 // `settings` is null when --help/--version short-circuits. Never throws — bad
 // input is reported via the `errors` array so the caller controls exit codes.
 function parseCliArgs(argv) {
   const args = Array.isArray(argv) ? argv : [];
   const opts = {};
   const errors = [];
+  const retired = [];
   let help = false;
   let version = false;
   let report = true;
   let update = true;
-  let serve = true;
 
   for (let i = 0; i < args.length; i++) {
     let token = String(args[i]);
@@ -216,13 +145,17 @@ function parseCliArgs(argv) {
     if (flag === '--help') { help = true; continue; }
     if (flag === '--version') { version = true; continue; }
     if (flag === '--no-report') { report = false; continue; }
-    if (flag === '--no-serve') { serve = false; continue; }
     if (flag === '--no-update') { update = false; continue; }
+    if (RETIRED_SWITCHES.has(flag)) { retired.push(flag); continue; }
 
-    if (VALUE_FLAGS.has(flag)) {
+    const retiredValue = RETIRED_VALUE_FLAGS.has(flag);
+    if (VALUE_FLAGS.has(flag) || retiredValue) {
       if (value == null) {
         const next = i + 1 < args.length ? String(args[i + 1]) : null;
         if (next == null || next.startsWith('-')) {
+          // A retired flag with nothing after it is still harmless: there is no
+          // value to lose, so ignore it rather than fail a unit over it.
+          if (retiredValue) { retired.push(flag); continue; }
           errors.push('missing value for ' + flag);
           continue;
         }
@@ -230,6 +163,7 @@ function parseCliArgs(argv) {
         i++;
       }
       opts[flag] = value;
+      if (retiredValue) retired.push(flag);
       continue;
     }
 
@@ -237,11 +171,14 @@ function parseCliArgs(argv) {
   }
 
   if (help || version) {
-    return { help, version, report, update, serve, errors, settings: null };
+    return { help, version, report, update, errors, settings: null };
   }
 
-  const settings = buildSettings(opts, errors, report, update, serve);
-  return { help, version, report, update, serve, errors, settings };
+  const settings = buildSettings(opts, errors, report, update, retired);
+  return { help, version, report, update, errors, settings };
 }
 
-module.exports = { ALIASES, VALUE_FLAGS, USAGE, regionChoices, buildSettings, parseCliArgs };
+module.exports = {
+  ALIASES, VALUE_FLAGS, RETIRED_VALUE_FLAGS, RETIRED_SWITCHES, USAGE,
+  regionChoices, buildSettings, parseCliArgs,
+};

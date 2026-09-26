@@ -1,14 +1,12 @@
 'use strict';
 
 // Unit tests for the headless CLI shell (src/cli/earn-cli.js). Everything with
-// real IO — child_process, fs, os, the process managers, the probe/io helpers,
-// nodeStore and the self-updater — is mocked; the pure shared modules (cliArgs,
-// config, format, address, miningStats, minerReport, statsFile, …) run for
-// real, exactly like they do in production. Each test loads a fresh copy of the
-// module via jest.isolateModules so the CLI's module-level state (the GPU-probe
-// cache, cluster job worker, serve pinger) never leaks between tests.
+// real IO — fs, os, the engine, the probe helpers and the self-updater — is
+// mocked; the pure shared modules (cliArgs, config, format, address,
+// miningStats, minerReport, statsFile, …) run for real, exactly like they do in
+// production. Each test loads a fresh copy of the module via
+// jest.isolateModules so the CLI's module-level state never leaks between tests.
 
-jest.mock('child_process', () => ({ spawn: jest.fn(), execFile: jest.fn(), spawnSync: jest.fn() }));
 jest.mock('fs');
 jest.mock('os', () => ({
   hostname: jest.fn(() => 'Rig-Host.local'),
@@ -19,29 +17,21 @@ jest.mock('os', () => ({
 }));
 jest.mock('../src/main/probe', () => ({
   detectRegion: jest.fn(),
-  detectVram: jest.fn(),
   detectGpusVram: jest.fn(),
   detectMinerGpus: jest.fn(),
-  detectDriverMajor: jest.fn(),
   postMinerReport: jest.fn(),
-  findFreePort: jest.fn(),
+  detectGpuTelemetry: jest.fn(),
   // Shared with the GUI now — one detection path for both shells.
   detectGpuInfo: jest.fn(),
   detectGpuTemps: jest.fn(),
 }));
-jest.mock('../src/main/io', () => ({
-  postJson: jest.fn(),
-  getJson: jest.fn(),
-  downloadFile: jest.fn(),
-  streamChatCompletion: jest.fn(),
-  extractLlamaZip: jest.fn(),
-  extractEnginePackage: jest.fn(),
-}));
-jest.mock('../src/main/nodeStore', () => ({
-  loadNode: jest.fn(),
-  saveNode: jest.fn(),
-  getOrCreateNode: jest.fn(),
-}));
+jest.mock('../src/main/nodeStore', () => ({ getOrCreateNode: jest.fn() }));
+// tweetnacl loaded once for the file: isolateModules would otherwise re-load it
+// for every test. It is the same real instance, so signatures are genuine.
+const mockNacl = jest.requireActual('tweetnacl');
+const mockNaclUtil = jest.requireActual('tweetnacl-util');
+jest.mock('tweetnacl', () => mockNacl);
+jest.mock('tweetnacl-util', () => mockNaclUtil);
 jest.mock('../src/cli/selfUpdater', () => ({
   UPDATED_ENV: 'LLMJOB_EARN_UPDATED',
   fetchLatestRelease: jest.fn(),
@@ -66,113 +56,32 @@ jest.mock('../src/main/pearlEngine', () => {
         return PearlEngine.startReturns;
       });
       this.stop = jest.fn();
-      this.isRunning = jest.fn(() => true);
+      this.isRunning = jest.fn(() => PearlEngine.running);
       PearlEngine.instances.push(this);
     }
   }
   PearlEngine.instances = [];
   PearlEngine.startError = null;
   PearlEngine.startReturns = undefined;
+  PearlEngine.running = true;
   return { PearlEngine };
 });
 jest.mock('../src/main/pearlCore', () => ({
   loadCore: jest.fn(() => null),
   // A loadable core by default: the CLI decides UP FRONT whether it can mine,
-  // so a null factory now means "refuse or degrade", not "construct an engine
+  // so a null factory now means "refuse", not "construct an engine
   // that will announce the problem later". The no-core paths have their own
   // tests; everything else models a rig that can actually mine.
   coreFactory: jest.fn(() => () => null),
 }));
 jest.mock('net', () => ({ connect: jest.fn(() => ({ on: jest.fn(), write: jest.fn(), destroy: jest.fn() })) }));
-jest.mock('../src/main/llmManager', () => {
-  const { EventEmitter } = require('events');
-  class LlmManager extends EventEmitter {
-    constructor(opts) {
-      super();
-      this.opts = opts;
-      this.baseUrl = 'http://127.0.0.1:8080';
-      // Mirror the real manager: the bound URL follows the port the fleet walked
-      // to, so a busy 8080 lands the worker on the actual serving port.
-      this.start = jest.fn((o) => { this.baseUrl = 'http://127.0.0.1:' + (o && o.port); });
-      this.stop = jest.fn();
-      LlmManager.instances.push(this);
-    }
-  }
-  LlmManager.instances = [];
-  return { LlmManager };
-});
-jest.mock('../src/main/llmEngineManager', () => {
-  class LlmEngineManager {
-    constructor(opts) {
-      this.opts = opts;
-      this.isServerInstalled = jest.fn(() => LlmEngineManager.serverInstalled);
-      this.serverBinaryPath = jest.fn(() => '/cache/llama-server');
-      this.ensureServer = jest.fn(async (onPct) => {
-        if (LlmEngineManager.serverError) throw LlmEngineManager.serverError;
-        if (onPct) { onPct(10); onPct(null); }
-        return '/cache/llama-server';
-      });
-      this.isModelInstalled = jest.fn(() => LlmEngineManager.modelInstalled);
-      this.modelPath = jest.fn(() => '/cache/model.gguf');
-      this.ensureModel = jest.fn(async (onPct) => {
-        if (onPct) { onPct(20); onPct(null); }
-        return '/cache/model.gguf';
-      });
-      // The vision projector half. Defaults to "already satisfied, none to
-      // fetch", which is what a text-only model reports — the default fleet
-      // model has no projector.
-      this.isMmprojInstalled = jest.fn(() => LlmEngineManager.mmprojInstalled);
-      this.mmprojPath = jest.fn(() => LlmEngineManager.mmprojFile);
-      this.ensureMmproj = jest.fn(async (onPct) => {
-        if (onPct) { onPct(30); onPct(null); }
-        return LlmEngineManager.mmprojFile;
-      });
-      LlmEngineManager.instances.push(this);
-    }
-  }
-  LlmEngineManager.instances = [];
-  LlmEngineManager.serverInstalled = false;
-  LlmEngineManager.modelInstalled = false;
-  LlmEngineManager.mmprojInstalled = true;   // text-only default: nothing to fetch
-  LlmEngineManager.mmprojFile = null;
-  LlmEngineManager.serverError = null;
-  return { LlmEngineManager };
-});
-jest.mock('../src/main/jobWorker', () => {
-  const { EventEmitter } = require('events');
-  class JobWorker extends EventEmitter {
-    constructor(opts) {
-      super();
-      this.opts = opts;
-      this.start = jest.fn();
-      this.stop = jest.fn();
-      this.activeJobs = jest.fn(() => 2);
-      JobWorker.instances.push(this);
-    }
-  }
-  JobWorker.instances = [];
-  return { JobWorker };
-});
-
 const pkg = require('../package.json');
-const { NETWORK, NODE, LLM } = require('../src/shared/config');
-const nodeProto = require('../src/shared/node');
-const { ALL_LAYERS } = require('../src/shared/vram');
+const { NETWORK } = require('../src/shared/config');
 
 const ADDR = 'prl1p' + 'a'.repeat(30);
 const MDL = 'mdl1p' + 'b'.repeat(30);
-const KEYS = nodeProto.generateKeypair();
-
-function makeNode(extra) {
-  return Object.assign({
-    nodeId: 'abc123',
-    publicKey: KEYS.publicKey,
-    secretKey: KEYS.secretKey,
-    name: null,
-    connected: false,
-    serverUrl: null,
-  }, extra || {});
-}
+const KEYS = jest.requireActual('../src/shared/node').generateKeypair();
+const RIG = { nodeId: 'a1b2c3d4e5f60789', publicKey: KEYS.publicKey, secretKey: KEYS.secretKey };
 
 // ── Shared per-test capture state ────────────────────────────────────────────
 let out; // strings written to stdout
@@ -191,53 +100,40 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 async function settle(n) { for (let i = 0; i < (n || 4); i++) await tick(); }
 
 function applyDefaults(m) {
-  m.cp.execFile.mockImplementation((cmd, args, opts, cb) => cb(new Error('no nvidia-smi')));
   m.fs.existsSync.mockReturnValue(true);
   m.probe.detectRegion.mockResolvedValue('us');
-  m.probe.detectVram.mockResolvedValue(null);
   m.probe.detectGpusVram.mockResolvedValue([]);
   // No card list by default: one core that places itself, which is what a rig
   // with no nvidia-smi gets.
   m.probe.detectMinerGpus.mockResolvedValue([]);
-  m.probe.detectDriverMajor.mockResolvedValue(600);
   m.probe.postMinerReport.mockResolvedValue(undefined);
-  m.probe.findFreePort.mockResolvedValue(8080);
+  m.probe.detectGpuTelemetry.mockResolvedValue([]);
+  // No rig identity unless a test hands it one: signing is pure-JS crypto, and
+  // doing it on every report made each test here several times slower.
+  m.nodeStore.getOrCreateNode.mockReturnValue(null);
   m.probe.detectGpuInfo.mockResolvedValue(null); // no identifiable GPU by default
-  m.io.postJson.mockResolvedValue({ status: 200, data: {} });
-  m.io.downloadFile.mockResolvedValue(undefined);
-  m.io.streamChatCompletion.mockReturnValue({ done: Promise.resolve('') });
-  m.io.extractLlamaZip.mockResolvedValue(undefined);
-  m.nodeStore.loadNode.mockReturnValue(null);
-  m.nodeStore.getOrCreateNode.mockReturnValue(makeNode());
   m.selfUpdater.fetchLatestRelease.mockResolvedValue(null);
   m.selfUpdater.isPackaged.mockReturnValue(false);
   m.selfUpdater.applyUpdate.mockResolvedValue('/opt/earn');
   m.selfUpdater.reexec.mockReturnValue(0);
   m.selfUpdate.planUpdate.mockReturnValue({ updateAvailable: false, reason: 'up-to-date' });
   m.PearlEngine.startReturns = undefined;
+  m.PearlEngine.running = true;
 }
 
 // Load a fresh earn-cli plus fresh instances of every mocked dependency.
 function load() {
   const m = {};
   jest.isolateModules(() => {
-    m.cp = require('child_process');
     m.fs = require('fs');
     m.os = require('os');
     m.probe = require('../src/main/probe');
-    m.io = require('../src/main/io');
     m.nodeStore = require('../src/main/nodeStore');
     m.selfUpdater = require('../src/cli/selfUpdater');
     m.selfUpdate = require('../src/shared/selfUpdate');
     m.net = require('net');
     m.PearlEngine = require('../src/main/pearlEngine').PearlEngine;
-    m.autoGate = require('../src/main/autoGate');
-    m.autoGate.createAutoGate.instances = [];
-    m.autoGate.createServeGate.instances = [];
     m.pearlCore = require('../src/main/pearlCore');
-    m.LlmManager = require('../src/main/llmManager').LlmManager;
-    m.LlmEngineManager = require('../src/main/llmEngineManager').LlmEngineManager;
-    m.JobWorker = require('../src/main/jobWorker').JobWorker;
     applyDefaults(m);
     m.run = require('../src/cli/earn-cli').run;
   });
@@ -245,8 +141,8 @@ function load() {
 }
 
 // The CLI is shipped for Linux, but `node src/cli/earn-cli.js` runs anywhere —
-// so the macOS gate (no alpha-miner exists for it) and the arch-aware
-// llama-server download both need process.platform / process.arch pinned.
+// so the macOS gate (a Mac has no NVIDIA GPU to mine on) needs process.platform
+// pinned.
 //
 // Every test starts pinned to linux, and that is not tidiness: process.platform
 // now decides whether the CLI mines at all, so a suite that inherited the host's
@@ -255,17 +151,12 @@ function load() {
 // pinned for the same reason. Same lesson as the path-separator expectations
 // elsewhere in this suite: build the conditions the same way on every OS.
 const REAL_PLATFORM = Object.getOwnPropertyDescriptor(process, 'platform');
-const REAL_ARCH = Object.getOwnPropertyDescriptor(process, 'arch');
 function setPlatform(p) {
   Object.defineProperty(process, 'platform', { value: p, configurable: true });
-}
-function setArch(a) {
-  Object.defineProperty(process, 'arch', { value: a, configurable: true });
 }
 
 beforeEach(() => {
   setPlatform('linux'); // a mining-capable platform, whatever the host is
-  setArch('x64');
   out = [];
   err = [];
   intervals = [];
@@ -295,7 +186,6 @@ afterEach(() => {
   process.stderr.isTTY = origErrTty;
   delete process.env.LLMJOB_EARN_UPDATED;
   Object.defineProperty(process, 'platform', REAL_PLATFORM);
-  Object.defineProperty(process, 'arch', REAL_ARCH);
 });
 
 // ── help / version / bad args ────────────────────────────────────────────────
@@ -394,7 +284,7 @@ describe('auto-update on start', () => {
   // A mining run whose engine refuses to start: exits 1 promptly, and — unlike
   // an address the validator rejects — only AFTER the update phase, which is
   // what these tests are about.
-  const argvQuick = ['--address', ADDR, '--mode', 'mining'];
+  const argvQuick = ['--address', ADDR];
   function quick(m) {
     m.PearlEngine.startError = new Error('core not built');
     return m.run(argvQuick);
@@ -472,10 +362,8 @@ describe('mining', () => {
     await settle();
 
     // Auto-detected knobs: region, hostname worker, GPU name.
-    // The default mode is 'auto', so a bare run mines AND serves the LLM.
-    expect(allOut()).toContain('mode:       auto  (default)');
-    expect(allOut()).toContain('preparing local LLM (Gemma-4-E4B-it-Q4_K_M) …');
-    expect(allOut()).toContain('local LLM starting on 1 GPU [auto]');
+    expect(allOut()).toContain('pool:       us.pearl.herominers.com:1200');
+    expect(allOut()).toContain('(auto)');
     expect(allOut()).toContain('worker:     rig-host  (auto)');
     expect(allOut()).toContain('(+MDL');
     expect(allOut()).toContain('gpu:        2× NVIDIA GeForce RTX 3070  (auto)');
@@ -512,15 +400,9 @@ describe('mining', () => {
     expect(m.fs.writeFileSync).toHaveBeenCalledWith('/tmp/s.json.tmp', expect.any(String));
     expect(m.fs.renameSync).toHaveBeenCalledWith('/tmp/s.json.tmp', '/tmp/s.json');
 
-    // mode auto: the LLM comes up once the miner proves real hashrate, so by
-    // here BOTH are running and shutdown has to stop both.
-    await settle();
-    expect(m.LlmManager.instances.length).toBeGreaterThan(0);
-
     fire('SIGINT');
     fire('SIGINT'); // second signal hits the `stopping` guard
-    expect(m.LlmManager.instances[0].stop).toHaveBeenCalled();
-    expect(miner.stop).toHaveBeenCalled();
+    expect(miner.stop).toHaveBeenCalledTimes(1);
     miner.emit('stopped', 0);
     miner.emit('stopped', 0); // second emit hits the `settled` guard
     await expect(p).resolves.toBe(0);
@@ -536,7 +418,6 @@ describe('mining', () => {
     await settle();
 
     expect(m.probe.detectRegion).not.toHaveBeenCalled();
-    expect(m.cp.execFile).not.toHaveBeenCalled();
     expect(/\[\d{2}:\d{2}:\d{2}\] /.test(allOut())).toBe(true);
     expect(allOut()).toContain('worker:     rig9');
     expect(allOut()).toContain('gpu:        RTX 4090');
@@ -556,7 +437,7 @@ describe('mining', () => {
     try {
       const m = load();
       expect(process.env.CUDA_VISIBLE_DEVICES).toBeUndefined();
-      const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+      const p = m.run(['-a', ADDR, '--no-update']);
       await settle();
       expect(allOut()).toContain(
         'ignoring CUDA_VISIBLE_DEVICES=0 so every GPU can mine (set PEARL_GPU_INDEX to mine on one card)');
@@ -573,7 +454,7 @@ describe('mining', () => {
   // that names neither side.
   test('the injected connect passes host and port to net in the right order', async () => {
     const m = load();
-    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+    const p = m.run(['-a', ADDR, '--no-update']);
     await settle();
     m.net.connect.mockClear();
     m.PearlEngine.instances[0].opts.connect('pool.example', 1200);
@@ -590,14 +471,12 @@ describe('mining', () => {
   // convenience for rig dashboards, not something worth killing a miner over.
   test('the stats writer is unrefed, and a write failure is silent', async () => {
     const m = load();
-    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--stats-file', '/tmp/s.json']);
+    const p = m.run(['-a', ADDR, '--no-update', '--stats-file', '/tmp/s.json']);
     await settle();
     m.PearlEngine.instances[0].emit('event', { type: 'status', hashrate: 1, accepted: 1 });
     m.fs.writeFileSync.mockImplementation(() => { throw new Error('read-only /tmp'); });
     intervalFor(10000).fn(); // must not throw
 
-    // Shut down by SIGNAL with mining ONLY: the shutdown path has to cope with
-    // no LLM to stop, which is a different branch from the co-run case.
     fire('SIGTERM');
     expect(m.PearlEngine.instances[0].stop).toHaveBeenCalled();
     m.PearlEngine.instances[0].emit('stopped', 0);
@@ -608,1411 +487,160 @@ describe('mining', () => {
   test('a miner that fails to launch resolves 1', async () => {
     const m = load();
     m.PearlEngine.startError = new Error('EACCES');
-    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+    const p = m.run(['-a', ADDR, '--no-update']);
     await expect(p).resolves.toBe(1);
     expect(allErr()).toContain('failed to launch engine: EACCES');
   });
 
   // The v0.4.1 field failure: a packaged CLI with no pearl_core.node exited 0,
   // which systemd read as success — a silent ten-second restart loop that
-  // mined nothing. The contract now: 'mining' with no core is a non-zero exit
-  // that says what is missing and how to point at it; 'auto' says the same but
-  // keeps its LLM half alive instead of looping.
-  test('mining mode with no loadable core exits 1 and names PEARL_CORE_PATH', async () => {
+  // mined nothing. The contract now: no core is a non-zero exit that says what
+  // is missing and how to point at it.
+  test('no loadable core exits 1 and names PEARL_CORE_PATH', async () => {
     const m = load();
     m.pearlCore.coreFactory.mockReturnValue(null);
-    await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update'])).resolves.toBe(1);
+    await expect(m.run(['-a', ADDR, '--no-update'])).resolves.toBe(1);
     expect(allErr()).toContain('pearl_core.node not found');
     expect(allErr()).toContain('PEARL_CORE_PATH');
     expect(m.PearlEngine.instances.length).toBe(0);
   });
 
-  test('auto mode with no loadable core serves the LLM instead of looping', async () => {
+  // A false return from start() means the core did not construct: no socket, no
+  // job, and no 'stopped' event coming. Left unchecked the run would just end
+  // with exit 0 — a restart loop under systemd that mines nothing.
+  test('a start that returns false is fatal', async () => {
     const m = load();
-    m.pearlCore.coreFactory.mockReturnValue(null);
-    const p = m.run(['-a', ADDR, '--mode', 'auto', '--no-update']);
+    m.PearlEngine.startReturns = false;
+    await expect(m.run(['-a', ADDR, '--no-update'])).resolves.toBe(1);
+    expect(allErr()).toContain('engine failed to start — see the error above');
+  });
+
+  // PearlEngine.stop() on a miner that already stopped emits nothing, so
+  // shutdown must not wait on a 'stopped' that will never come.
+  test('a signal after the engine already stopped resolves at once', async () => {
+    const m = load();
+    const p = m.run(['-a', ADDR, '--no-update', '--no-report']);
     await settle();
-    expect(allErr()).toContain('pearl_core.node not found');
-    expect(allErr()).toContain('continuing with the local LLM only.');
-    expect(m.PearlEngine.instances.length).toBe(0);
-    // The LLM half is alive; shut it down the way an operator would.
+    m.PearlEngine.running = false;
     fire('SIGINT');
     await expect(p).resolves.toBe(0);
+    expect(m.PearlEngine.instances[0].stop).not.toHaveBeenCalled();
   });
-});
 
-// ── local LLM ────────────────────────────────────────────────────────────────
-
-describe('local LLM', () => {
-  test('refuses to start the LLM without enough free VRAM (nothing to run → 1)', async () => {
+  test('the engine is given a temperature reader, as the GUI has always been', async () => {
+    // Without it PearlEngine never starts its temp poll, so every headless rig
+    // reported temp 0 -- to the stats file, the miner report and the network board.
     const m = load();
-    // One card with 1000 MB free (8000 − 7000) — below the model's floor. The
-    // LLM sizes against a single GPU (llama-server --split-mode none), so the
-    // per-card figure is what the preflight uses, not a summed total.
-    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 7000, totalMb: 8000 }]);
-    await expect(m.run(['--mode', 'llm', '--no-update'])).resolves.toBe(1);
-    expect(allErr()).toContain('not enough free VRAM on any single GPU for the local LLM: 1000 MB free on GPU 0');
-    expect(allErr()).toContain('nothing to run — no miner and the LLM did not start');
-  });
-
-  test('missing --llm-binary path fails LLM setup', async () => {
-    const m = load();
-    m.fs.existsSync.mockReturnValue(false);
-    await expect(m.run(['--mode', 'llm', '--llm-binary', '/nope', '--no-update'])).resolves.toBe(1);
-    expect(allErr()).toContain('LLM setup failed: llama-server binary not found: /nope');
-  });
-
-  test('missing --llm-model path fails LLM setup', async () => {
-    const m = load();
-    m.fs.existsSync.mockImplementation((p) => p !== '/nope.gguf');
-    await expect(m.run(['--mode', 'llm', '--llm-binary', '/lb', '--llm-model', '/nope.gguf', '--no-update']))
-      .resolves.toBe(1);
-    expect(allErr()).toContain('LLM setup failed: LLM model not found: /nope.gguf');
-  });
-
-  test('a failed llama-server download points at --llm-binary', async () => {
-    const m = load();
-    m.LlmEngineManager.serverError = new Error('unzip not found');
-    await expect(m.run(['--mode', 'llm', '--no-update'])).resolves.toBe(1);
-    expect(allOut()).toContain('downloading llama-server from');
-    expect(allErr()).toContain('unzip not found — pass --llm-binary </path/to/llama-server> instead');
-  });
-
-  test('macOS with --mode mining has nothing to run and exits 1', async () => {
-    setPlatform('darwin');
-    const m = load();
-    await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update'])).resolves.toBe(1);
-    expect(allErr()).toContain('Switch the compute mode to LLM');
-    expect(allErr()).toContain('nothing to run — no miner and the LLM did not start');
-    expect(m.PearlEngine.instances).toHaveLength(0);
-  });
-
-  test('macOS downloads the llama-server build for its own architecture', async () => {
-    for (const [arch, key] of [['arm64', 'darwin'], ['x64', 'darwin-x64']]) {
-      setPlatform('darwin');
-      setArch(arch);
-      const m = load();
-      m.LlmEngineManager.serverError = new Error('stop here');
-      await expect(m.run(['--mode', 'llm', '--no-update'])).resolves.toBe(1);
-      expect(m.LlmEngineManager.instances[0].opts.serverUrl).toBe(LLM.serverUrl[key]);
-      expect(allOut()).toContain('downloading llama-server from ' + LLM.serverUrl[key]);
-      out = [];
-    }
-  });
-
-  // The headless path is the one a 5090 box under systemd actually runs, so the
-  // tier has to reach llama-server from HERE, not only from the GUI shell. It
-  // did not until this was wired: earn-cli passed LLM.model unconditionally, so
-  // a 32 GB card would have quietly kept serving the small default.
-  test('a 32 GB card gets the vision tier, its projector and its tuned flags', async () => {
-    const m = load();
-    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: 'rig' }));
-    // An idle 5090, budgeted against what CUDA actually exposes.
-    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
-    m.LlmEngineManager.mmprojInstalled = false;
-    m.LlmEngineManager.mmprojFile = '/cache/mmproj.gguf';
-
-    m.LlmEngineManager.serverInstalled = true;
-    m.LlmEngineManager.modelInstalled = true;
-    const p = m.run(['--mode', 'llm', '--no-serve', '--no-update']);
+    m.probe.detectGpuTemps.mockResolvedValue([{ index: 0, temp: 61 }]);
+    const p = m.run(['--address', ADDR, '--no-update', '--no-report']);
     await settle();
-
-    const tier = LLM.tiers[0];
-    const llm = m.LlmManager.instances[0];
-    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({
-      mmprojPath: '/cache/mmproj.gguf',
-      ctxSize: 262144,
-      ctxLadder: tier.ctxLadder,
-      extraArgs: tier.extraArgs,
-    }));
-    // Without a quantised KV cache the model does not load at this context.
-    expect(llm.start.mock.calls[0][0].extraArgs.join(' ')).toContain('--cache-type-k q8_0');
-    // And the operator is told which model they are getting, plus the extra
-    // download it implies.
-    expect(allOut()).toContain('preparing local LLM (' + tier.name + ')');
-    expect(allOut()).toContain('downloading vision projector');
-
-    llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
-    await settle();
-    llm.emit('stopped', 0);
-    await expect(p).resolves.toBe(1);
-  });
-
-  // Starting the tier is half the job; SAYING you started it is the other half.
-  // Every reporting site read LLM.model directly, which was the right answer
-  // only while every node ran the same model — so a serving 5090 told the
-  // network board it was running Gemma, and metrics.model carried that same
-  // wrong name into the `model` field of every gateway completion it served.
-  test('a serving 5090 reports the tier it loaded, not the fleet default', async () => {
-    const m = load();
-    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: 'rig' }));
-    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
-    m.probe.detectVram.mockResolvedValue({ totalMb: 32149, usedMb: 30150 });
-    m.LlmEngineManager.serverInstalled = true;
-    m.LlmEngineManager.modelInstalled = true;
-    m.LlmEngineManager.mmprojInstalled = true;
-    const p = m.run(['--mode', 'llm', '--no-update']);
-    await settle();
-
-    const tier = LLM.tiers[0];
-    const llm = m.LlmManager.instances[0];
-    llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
-    await settle();
-
-    // What runs the jobs — a thunk, so a fleet restart at another tier follows.
-    // Compared by name, not identity: the CLI is loaded in its own module
-    // registry, so its `config` is a different object graph from this file's.
-    expect(m.JobWorker.instances[0].opts.servingModel().name).toBe(tier.name);
-
-    // What the network board is told.
-    const pinger = intervalFor(NODE.pingIntervalMs);
-    await pinger.fn();
-    const ping = m.io.postJson.mock.calls
-      .filter((c) => /\/api\/nodes\/ping$/.test(c[0]))
-      .pop();
-    expect(ping[1]).toMatchObject({ model: tier.name, quant: tier.quant });
-
-    fire('SIGINT');
+    const eng = m.PearlEngine.instances[0];
+    expect(typeof eng.opts.readTemps).toBe('function');
+    eng.opts.readTemps();
+    expect(m.probe.detectGpuTemps).toHaveBeenCalled();
+    eng.emit('stopped', 0);
     await expect(p).resolves.toBe(0);
   });
 
-  test('serves cluster jobs when connected: worker, pings, telemetry, SIGINT shutdown', async () => {
-    intervalUnref = false; // cover the servePinger without unref()
+  // The stats file keeps every key HiveOS's h-stats.sh (and anything else)
+  // reads by name. The LLM's fields stay in the payload as nulls rather than
+  // disappearing, and the mode now always says what the rig does: mine.
+  test('the stats file keeps its shape, with the LLM fields null', async () => {
     const m = load();
-    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: 'rig' }));
-    // One roomy card (22 GB free) — the whole model fits, so full offload, on
-    // GPU 0. detectVram still feeds the keep-alive telemetry below.
-    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
-    m.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 2000 });
-    m.probe.findFreePort.mockResolvedValue(9090);
-    m.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 4090', count: 1 });
-    const p = m.run(['--mode', 'llm', '--no-update']);
+    const p = m.run(['--address', ADDR, '--no-update', '--no-report', '--stats-file', '/tmp/s.json']);
     await settle();
-
-    expect(allOut()).toContain('mode:       llm');
-    expect(allOut()).toContain('local LLM starting on 1 GPU [0]');
-    expect(allOut()).toContain('downloading LLM model');
-
-    // The binary resolver's engine wires the shared extractor with the CLI hint.
-    const le = m.LlmEngineManager.instances[0];
-    await le.opts.extract('/z.zip', '/dest');
-    expect(m.io.extractLlamaZip).toHaveBeenCalledWith('/z.zip', '/dest', expect.stringContaining('unzip'));
-
-    const llm = m.LlmManager.instances[0];
-    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({
-      binaryPath: '/cache/llama-server', modelPath: '/cache/model.gguf', nGpuLayers: ALL_LAYERS, port: 9090, mainGpu: 0,
-    }));
-    llm.emit('log', { line: 'srv up', level: 'info' });
-    llm.emit('log', { line: 'srv err', level: 'error' });
-    llm.emit('ready', { baseUrl: 'http://127.0.0.1:9090' });
-    await settle();
-    expect(allOut()).toContain('local LLM ready — OpenAI endpoint http://127.0.0.1:9090/v1');
-    expect(allOut()).toContain('serving cluster jobs for the LLMJob network');
-
-    const jw = m.JobWorker.instances[0];
-    expect(jw.start).toHaveBeenCalled();
-    expect(jw.opts.serverUrl).toBe(NODE.serverUrl);
-
-    // Exercise the worker's wiring back into io.
-    await jw.opts.post('http://u', { a: 1 });
-    expect(m.io.postJson).toHaveBeenCalledWith('http://u', { a: 1 }, 30000);
-    const onDelta = jest.fn();
-    const onReasoning = jest.fn();
-    await jw.opts.runJob({ messages: [] }, { onDelta, onReasoning });
-    expect(m.io.streamChatCompletion).toHaveBeenCalledWith(llm.baseUrl, { messages: [] }, onDelta, onReasoning);
-
-    jw.emit('error', new Error('poll down'));
-    jw.emit('job', { id: 'j1' });
-    jw.emit('failed', { id: 'j1', error: 'nope' });
-    expect(allErr()).toContain('job poll failed: poll down (retrying)');
-    expect(allOut()).toContain('cluster job j1 — running locally');
-    expect(allErr()).toContain('cluster job j1 failed: nope');
-
-    llm.emit('ready', { baseUrl: 'http://127.0.0.1:9090' }); // no second worker
-    expect(m.JobWorker.instances.length).toBe(1);
-    llm.emit('stats', { tokensPerSec: 12.34 });
-    llm.emit('stats', { tokensPerSec: 'garbage' });
-    llm.emit('error', new Error('cuda oom'));
-    expect(allOut()).toContain('🧠 12.3 tok/s');
-    expect(allErr()).toContain('LLM error: cuda oom');
-
-    // Keep-alive ping with full telemetry, including the VRAM-read failure path
-    // and a ping POST failure (silent — serving pings are not verbose).
-    const pinger = intervalFor(NODE.pingIntervalMs);
-    m.probe.detectVram.mockRejectedValueOnce(new Error('smi gone'));
-    m.io.postJson.mockRejectedValueOnce(new Error('ping down'));
-    await pinger.fn();
-    expect(allErr()).not.toContain('ping down');
-
-    fire('SIGINT');
-    await expect(p).resolves.toBe(0);
-    expect(jw.stop).toHaveBeenCalled();
-    expect(llm.stop).toHaveBeenCalled();
-    llm.emit('stopped', 0); // during shutdown: fleet.stop() already suppressed it
-    await pinger.fn(); // after stopServe: telemetry reports 0 active jobs
-    expect(allErr()).not.toContain('local LLM exited');
-  });
-
-  test('a crashing llama-server fails an LLM-only run with its exit code', async () => {
-    const m = load();
-    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, serverUrl: 'https://custom.example' }));
-    const p = m.run(['--mode', 'llm', '--no-update']);
-    await settle();
-    const llm = m.LlmManager.instances[0];
-    llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
-    await settle();
-    expect(m.JobWorker.instances[0].opts.serverUrl).toBe('https://custom.example');
-    llm.emit('stopped', 3);
-    await expect(p).resolves.toBe(3);
-    expect(allErr()).toContain('local LLM exited (code 3)');
-  });
-
-  // Serving is the DEFAULT, account or not: an unlinked rig self-registers and
-  // takes public jobs. Linking adds access to private queues, nothing else.
-  test('an unconnected node registers itself and serves public jobs anyway', async () => {
-    const m = load();
-    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: false }));
-    m.nodeStore.getOrCreateNode.mockReturnValue(makeNode({ connected: false }));
-    m.LlmEngineManager.serverInstalled = true;
-    m.LlmEngineManager.modelInstalled = true;
-    const p = m.run(['--mode', 'llm', '--no-update']);
-    await settle();
-    expect(allOut()).toContain('LLM server found: /cache/llama-server');
-    expect(allOut()).toContain('LLM model found: /cache/model.gguf');
-
-    // It registered as an unclaimed node before serving.
-    const registerCall = m.io.postJson.mock.calls.find((c) => String(c[0]).endsWith('/api/nodes/register'));
-    expect(registerCall).toBeTruthy();
-    expect(allOut()).toContain('serving public jobs as an unlinked node');
-
-    const llm = m.LlmManager.instances[0];
-    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({ nGpuLayers: ALL_LAYERS })); // no VRAM → full offload
-    llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
-    await settle();
-    expect(m.JobWorker.instances.length).toBe(1);
-    llm.emit('stopped', 0);
-    await expect(p).resolves.toBe(1);
-  });
-
-  // The server decides which id a machine is enrolled under and can hand back
-  // one the client did not compute — a machine whose old narrow id turns out to
-  // be taken by someone else's key is enrolled on the wide one instead. Keeping
-  // the local id left it signing every later call as a row that does not exist,
-  // i.e. serving nothing with nothing to show why.
-  test('adopts and persists a node id the server reassigns', async () => {
-    const m = load();
-    const node = makeNode({ nodeId: '5840fc', connected: false });
-    m.nodeStore.loadNode.mockReturnValue(node);
-    m.nodeStore.getOrCreateNode.mockReturnValue(node);
-    m.LlmEngineManager.serverInstalled = true;
-    m.LlmEngineManager.modelInstalled = true;
-    m.io.postJson.mockResolvedValue({ status: 200, data: { nodeId: 'a1b2c3d4e5f60789' } });
-
-    const p = m.run(['--mode', 'llm', '--no-update']);
-    await settle();
-
-    expect(node.nodeId).toBe('a1b2c3d4e5f60789');
-    expect(m.nodeStore.saveNode).toHaveBeenCalledWith(expect.objectContaining({ nodeId: 'a1b2c3d4e5f60789' }));
-    expect(allOut()).toContain('node id updated by the network to a1b2c3d4e5f60789');
-
-    m.LlmManager.instances[0].emit('stopped', 0);
-    await expect(p).resolves.toBe(1);
-  });
-
-  test('keeps its own node id when the server agrees', async () => {
-    const m = load();
-    const node = makeNode({ nodeId: '5840fc', connected: false });
-    m.nodeStore.loadNode.mockReturnValue(node);
-    m.nodeStore.getOrCreateNode.mockReturnValue(node);
-    m.LlmEngineManager.serverInstalled = true;
-    m.LlmEngineManager.modelInstalled = true;
-    m.io.postJson.mockResolvedValue({ status: 200, data: { nodeId: '5840fc' } });
-
-    const p = m.run(['--mode', 'llm', '--no-update']);
-    await settle();
-
-    expect(node.nodeId).toBe('5840fc');
-    expect(allOut()).not.toContain('node id updated by the network');
-
-    m.LlmManager.instances[0].emit('stopped', 0);
-    await expect(p).resolves.toBe(1);
-  });
-
-  // The server now REFUSES a registration whose node id is held by a different
-  // key (a fingerprint collision) instead of reporting a false success. That
-  // arrives as a non-200, not a transport failure, and must read as a failure
-  // rather than being mistaken for a successful enrolment.
-  test('a refused registration (node id already held) is reported, not treated as success', async () => {
-    const m = load();
-    const node = makeNode({ nodeId: '5840fc', connected: false });
-    m.nodeStore.loadNode.mockReturnValue(node);
-    m.nodeStore.getOrCreateNode.mockReturnValue(node);
-    m.LlmEngineManager.serverInstalled = true;
-    m.LlmEngineManager.modelInstalled = true;
-    m.io.postJson.mockResolvedValue({ status: 400, data: { error: 'Node key mismatch' } });
-
-    const p = m.run(['--mode', 'llm', '--no-update']);
-    await settle();
-
-    expect(allErr()).toContain('could not register with the network — running the LLM locally only');
-    expect(node.nodeId).toBe('5840fc');                     // identity untouched
-    expect(m.nodeStore.saveNode).not.toHaveBeenCalled();
-    m.LlmManager.instances[0].emit('stopped', 0);
-    await expect(p).resolves.toBe(1);
-  });
-
-  test('a failed registration is survivable — the model still runs locally', async () => {
-    const m = load();
-    m.nodeStore.loadNode.mockReturnValue(null);
-    m.nodeStore.getOrCreateNode.mockReturnValue(makeNode({ connected: false }));
-    m.LlmEngineManager.serverInstalled = true;
-    m.LlmEngineManager.modelInstalled = true;
-    m.io.postJson.mockRejectedValue(new Error('offline'));
-    const p = m.run(['--mode', 'llm', '--no-update']);
-    await settle();
-
-    expect(allErr()).toContain('could not register with the network — running the LLM locally only');
-    const llm = m.LlmManager.instances[0];
-    expect(llm.start).toHaveBeenCalled(); // the LLM came up regardless
-    llm.emit('stopped', 0);
-    await expect(p).resolves.toBe(1);
-  });
-
-  test('--no-serve keeps the model entirely local: no registration, no worker', async () => {
-    const m = load();
-    // No stored identity, and --no-serve must not mint one: an opted-out box
-    // never registers a keypair with the network.
-    m.nodeStore.loadNode.mockReturnValue(null);
-    m.LlmEngineManager.serverInstalled = true;
-    m.LlmEngineManager.modelInstalled = true;
-    const p = m.run(['--mode', 'llm', '--no-serve', '--no-update']);
-    await settle();
-
-    expect(m.io.postJson.mock.calls.some((c) => String(c[0]).endsWith('/api/nodes/register'))).toBe(false);
-    expect(m.nodeStore.getOrCreateNode).not.toHaveBeenCalled();
-    expect(allOut()).not.toContain('serving public jobs as an unlinked node');
-    const llm = m.LlmManager.instances[0];
-    llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
-    await settle();
-    expect(m.JobWorker.instances.length).toBe(0);
-    llm.emit('stopped', 0);
-    await expect(p).resolves.toBe(1);
-  });
-
-  test('--llm-max-instances caps the fleet and says so', async () => {
-    const m = load();
-    m.probe.detectGpusVram.mockResolvedValue([
-      { index: 0, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
-      { index: 1, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
-      { index: 2, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
-    ]);
-    m.probe.findFreePort.mockImplementation((h, p) => Promise.resolve(p));
-    const p = m.run(['--mode', 'llm', '--llm-max-instances', '2', '--no-update']);
-    await settle();
-
-    expect(allOut()).toContain('serving on 2 of 3 GPUs — capped by --llm-max-instances 2');
-    expect(allOut()).toContain('local LLM starting on 2 GPUs [0, 1]');
-
-    fire('SIGINT');
-    m.LlmManager.instances[0].emit('stopped', 0);
+    const written = JSON.parse(m.fs.writeFileSync.mock.calls[0][1]);
+    expect(written).toMatchObject({
+      algo: 'pearlhash', schema: 1, mode: 'mining', mining: true,
+      strategy: null, gate: null, model: null, tps: { gen: 0, prefill: 0 },
+    });
+    m.PearlEngine.instances[0].emit('stopped', 0);
     await p;
   });
 
-  test('runs one instance and worker per eligible GPU, summing their active jobs', async () => {
+  test('board reports carry per-card telemetry and a signed rig identity', async () => {
     const m = load();
-    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: 'rig' }));
-    // Two roomy cards → one llama-server + cluster worker pinned to each.
-    // Below the Qwen tier's offer floor (65536 needs ~22,333 free) so both cards
-    // resolve the SAME small model: this test is about multi-GPU fan-out, not
-    // about which tier a card qualifies for.
-    m.probe.detectGpusVram.mockResolvedValue([
-      { index: 0, name: 'RTX 4090', usedMb: 3000, totalMb: 24000 },
-      { index: 1, name: 'RTX 4090', usedMb: 2500, totalMb: 24000 },
-    ]);
-    m.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 2000 });
-    m.probe.findFreePort.mockImplementation((h, p) => Promise.resolve(p));
-    const p = m.run(['--mode', 'llm', '--no-update']);
+    m.nodeStore.getOrCreateNode.mockReturnValue(RIG);
+    m.probe.detectGpuTelemetry.mockResolvedValue([{ index: 0, tempC: 58, powerW: 290, driver: '580.82' }]);
+    const p = m.run(['-a', ADDR, '--no-update']);
     await settle();
-
-    // The plural log names every planned card, but they start ONE AT A TIME:
-    // simultaneous multi-GB model loads thrash the page cache (see LlmFleet).
-    expect(allOut()).toContain('local LLM starting on 2 GPUs [0, 1]');
-    expect(m.LlmManager.instances.length).toBe(1);
-    const g0 = m.LlmManager.instances[0];
-    expect(g0.start).toHaveBeenCalledWith(expect.objectContaining({ port: 8080, mainGpu: 0 }));
-
-    // card 0 ready → card 1 is spawned on the next port
-    g0.emit('ready', { baseUrl: g0.baseUrl });
-    await settle();
-    expect(m.LlmManager.instances.length).toBe(2);
-    const g1 = m.LlmManager.instances[1];
-    expect(g1.start).toHaveBeenCalledWith(expect.objectContaining({ port: 8081, mainGpu: 1 }));
-
-    // both cards up → a cluster worker per card
-    g1.emit('ready', { baseUrl: g1.baseUrl });
-    await settle();
-    expect(m.JobWorker.instances.length).toBe(2);
-
-    // one keep-alive ping loop for the whole fleet, summing active jobs (2 each)
-    const pinger = intervalFor(NODE.pingIntervalMs);
-    await pinger.fn();
-    expect(m.io.postJson.mock.calls.pop()[1].activeJobs).toBe(4);
-
-    // SIGINT stops every instance and resolves the LLM-only run
-    fire('SIGINT');
-    await expect(p).resolves.toBe(0);
-    expect(g0.stop).toHaveBeenCalled();
-    expect(g1.stop).toHaveBeenCalled();
-  });
-});
-
-// ── both mode (miner + LLM together) ─────────────────────────────────────────
-
-describe('both mode', () => {
-  const argvBoth = ['-a', ADDR, '--mode', 'both', '--no-update', '--no-report',
-    '--llm-binary', '/lb', '--llm-model', '/lm'];
-
-  test('co-runs; an LLM death does not stop mining; the miner exit code wins', async () => {
-    const m = load();
-    // One card with 15000 MB free (16000 − 1000): room for the whole model even
-    // after the 2048 MB mining reserve. Pinned to that GPU via --main-gpu.
-    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 1000, totalMb: 16000 }]);
-    const p = m.run(argvBoth);
-    await settle();
-
-    expect(allOut()).toContain('mode:       both');
-    const llm = m.LlmManager.instances[0];
-    // Offload is all-or-nothing, so an eligible card always gets ALL_LAYERS.
-    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({ nGpuLayers: ALL_LAYERS, port: 8080, mainGpu: 0 }));
-    llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' }); // not connected → no worker
-    llm.emit('stopped', 2); // LLM dies; the miner keeps running
-    expect(allErr()).toContain('local LLM exited (code 2)');
-
-    const miner = m.PearlEngine.instances[0];
-    miner.emit('stopped', 7);
-    expect(llm.stop).toHaveBeenCalled();
-    await expect(p).resolves.toBe(7);
-  });
-
-  // Half a model on the GPU means the other half in host RAM, which OOM'd an
-  // 8 GB rig and got the miner killed. Such a card is skipped; mining continues.
-  test('a card that can only hold part of the model is skipped, and mining carries on', async () => {
-    const m = load();
-    // 5000 MB free minus the 2048 reserve = 2952, short of the model's 3800. It
-    // clears the preflight floor, so the all-or-nothing offload gate is what skips it.
-    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 1000, totalMb: 6000 }]);
-    const p = m.run(argvBoth);
-    await settle();
-
-    expect(m.LlmManager.instances.length).toBe(0);
-    expect(allErr()).toContain('not enough free VRAM');
-    const miner = m.PearlEngine.instances[0];
-    expect(miner.start).toHaveBeenCalled();
-    miner.emit('stopped', 0);
-    await expect(p).resolves.toBe(0);
-  });
-
-  test('a miner that fails to launch also stops the LLM', async () => {
-    const m = load();
-    m.PearlEngine.startError = new Error('spawn ENOENT');
-    const p = m.run(argvBoth);
-    await expect(p).resolves.toBe(1);
-    expect(allErr()).toContain('failed to launch engine: spawn ENOENT');
-    expect(m.LlmManager.instances[0].stop).toHaveBeenCalled();
-  });
-
-  test('the board report tags the GPU serving the local LLM', async () => {
-    const m = load();
-    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: 'rig' }));
-    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
-    // 'both' with reporting on (no --no-report), so the miner report path runs
-    // while the LLM serves.
-    const p = m.run(['-a', ADDR, '--mode', 'both', '--no-update', '--llm-binary', '/lb', '--llm-model', '/lm']);
-    await settle();
-
-    const llm = m.LlmManager.instances[0];
-    llm.emit('ready', { baseUrl: llm.baseUrl }); // GPU 0 now serves the model
-    await settle();
-
-    m.probe.postMinerReport.mockClear();
-    const reporter = intervalFor(NETWORK.reportIntervalMs);
-    await reporter.fn();
-    const payloads = m.probe.postMinerReport.mock.calls.map((c) => c[0]);
-    expect(payloads.some((pl) => pl.llmModel === LLM.model.name)).toBe(true);
-
+    const row = m.probe.postMinerReport.mock.calls[0][0];
+    expect(row).toMatchObject({ client: 'cli', os: 'linux', tempC: 58, powerW: 290, driver: '580.82', rigId: 'a1b2c3d4e5f60789' });
+    expect(typeof row.signature).toBe('string');
+    expect(row).not.toHaveProperty('secretKey');
     m.PearlEngine.instances[0].emit('stopped', 0);
-    await expect(p).resolves.toBe(0);
-  });
-});
-
-// ── connect subcommand ───────────────────────────────────────────────────────
-
-describe('connect subcommand', () => {
-  test('reports every flag-parse error with usage', async () => {
-    const m = load();
-    await expect(m.run(['connect', '--bogus', '--token', '--name'])).resolves.toBe(1);
-    expect(allErr()).toContain('error: unknown option: --bogus');
-    expect(allErr()).toContain('error: missing value for --token');
-    expect(allErr()).toContain('error: missing value for --name');
-    expect(allErr()).toContain('usage: llmjob-earn-cli connect --token');
+    await p;
   });
 
-  test('without a token on an unlinked node it points at the dashboard', async () => {
+  // Some rigs run with a read-only home. That must cost the rig its signature,
+  // not its place on the board.
+  test('an identity store that cannot be written means unsigned reports, not none', async () => {
     const m = load();
-    await expect(m.run(['connect'])).resolves.toBe(1);
-    expect(allErr()).toContain('no pairing token yet');
-    expect(allErr()).toContain(NODE.dashboardUrl);
-  });
-
-  test('joins with a token, saves the link, then pings until SIGINT', async () => {
-    const m = load();
-    const node = makeNode();
-    m.nodeStore.getOrCreateNode.mockReturnValue(node);
-    m.io.postJson.mockResolvedValueOnce({ status: 200, data: { user: 'bob' } });
-    m.probe.detectVram.mockResolvedValue({ totalMb: 100, usedMb: 10 });
-    m.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 4090', count: 1 });
-
-    const p = m.run(['connect', '--token=tok123', '--name', 'MyRig', '--server', 'https://srv.example']);
+    m.nodeStore.getOrCreateNode.mockImplementation(() => { throw new Error('EROFS'); });
+    const p = m.run(['-a', ADDR, '--no-update']);
     await settle();
-
-    expect(node.serverUrl).toBe('https://srv.example');
-    expect(node.connected).toBe(true);
-    expect(node.name).toBe('MyRig');
-    expect(m.nodeStore.saveNode).toHaveBeenCalledTimes(2);
-    expect(m.io.postJson.mock.calls[0][0]).toBe('https://srv.example/api/nodes/join');
-    expect(m.io.postJson.mock.calls[0][1]).toEqual(expect.objectContaining({ token: 'tok123', name: 'MyRig' }));
-    expect(allOut()).toContain('✓ linked to bob’s account as MyRig');
-    expect(allOut()).toContain('✓ ping'); // verbose keep-alive started
-    // Sparse telemetry carried the probe results.
-    expect(m.io.postJson.mock.calls[1][1]).toEqual(expect.objectContaining({
-      vramTotal: 100, vramUsed: 10, device: 'NVIDIA GeForce RTX 4090', name: 'MyRig',
-    }));
-
-    fire('SIGINT');
-    await expect(p).resolves.toBe(0);
-    expect(allOut()).toContain('stopped pinging');
-  });
-
-  // The GPU name is only a display hint, so a probe that blows up must
-  // degrade to "unknown device" rather than take the ping (or the run) down.
-  test('a GPU probe that rejects leaves the ping device null', async () => {
-    const m = load();
-    const node = makeNode();
-    m.nodeStore.getOrCreateNode.mockReturnValue(node);
-    m.io.postJson.mockResolvedValueOnce({ status: 200, data: { user: 'bob' } });
-    m.probe.detectVram.mockResolvedValue({ totalMb: 100, usedMb: 10 });
-    m.probe.detectGpuInfo.mockRejectedValue(new Error('nvidia-smi exploded'));
-
-    const p = m.run(['connect', '--token=tok123', '--server', 'https://srv.example']);
-    await settle();
-
-    // Telemetry omits the field entirely rather than carrying a bad name.
-    const pings = m.io.postJson.mock.calls.slice(1).map((c) => c[1]);
-    expect(pings.length).toBeGreaterThan(0);
-    for (const body of pings) expect(body.device == null).toBe(true);
-
-    fire('SIGINT');
-    await expect(p).resolves.toBe(0);
-  });
-
-  test('a 201 join without a user links "your account" under the hostname worker name', async () => {
-    const m = load();
-    m.io.postJson.mockResolvedValueOnce({ status: 201, data: {} });
-    // The GPU probe explodes synchronously — cachedDeviceName absorbs it.
-    m.cp.execFile.mockImplementation(() => { throw new Error('spawn fail'); });
-    const p = m.run(['connect', '-t', 'tok']);
-    await settle();
-    expect(allOut()).toContain('✓ linked to your account as rig-host');
-    fire('SIGTERM');
-    await expect(p).resolves.toBe(0);
-  });
-
-  test('exits 1 when the server is unreachable during join', async () => {
-    const m = load();
-    m.io.postJson.mockRejectedValueOnce(new Error('ECONNREFUSED'));
-    await expect(m.run(['connect', '-t', 'tok'])).resolves.toBe(1);
-    expect(allErr()).toContain('could not reach ' + NODE.serverUrl + ': ECONNREFUSED');
-  });
-
-  [
-    { res: { status: 403, data: { error: 'bad token' }, raw: 'x' }, text: 'join failed (HTTP 403): bad token' },
-    { res: { status: 500, data: null, raw: 'boom' }, text: 'join failed (HTTP 500): boom' },
-    { res: { status: 500, data: {}, raw: null }, text: 'join failed (HTTP 500): ' },
-  ].forEach((c) => {
-    test('exits 1 on join HTTP ' + c.res.status + ' (' + (c.res.raw || 'no raw') + ')', async () => {
-      const m = load();
-      // A node whose stored server matches --server (no re-save needed).
-      m.nodeStore.getOrCreateNode.mockReturnValue(makeNode({ serverUrl: 'https://s.example' }));
-      m.io.postJson.mockResolvedValueOnce(c.res);
-      await expect(m.run(['connect', '-t', 'tok', '--server', 'https://s.example'])).resolves.toBe(1);
-      expect(m.nodeStore.saveNode).not.toHaveBeenCalled();
-      expect(allErr()).toContain(c.text);
-    });
-  });
-
-  test('resumes pinging a linked node by name, logging ping failures verbosely', async () => {
-    const m = load();
-    m.nodeStore.getOrCreateNode.mockReturnValue(makeNode({ connected: true, name: 'rig' }));
-    const p = m.run(['connect']);
-    await settle();
-    expect(allOut()).toContain('resuming pings for rig');
-    expect(allOut()).toContain('✓ ping');
-
-    const pinger = intervalFor(NODE.pingIntervalMs);
-    m.io.postJson.mockResolvedValueOnce({ status: 500 });
-    await pinger.fn();
-    expect(allErr()).toContain('✗ ping failed (HTTP 500)');
-    m.io.postJson.mockRejectedValueOnce(new Error('net down'));
-    m.probe.detectVram.mockRejectedValueOnce(new Error('smi gone')); // sparse telemetry absorbs it
-    await pinger.fn();
-    expect(allErr()).toContain('✗ ping error: net down');
-
-    fire('SIGINT');
-    await expect(p).resolves.toBe(0);
-  });
-
-  test('resumes pinging an unnamed node by its nodeId', async () => {
-    const m = load();
-    m.nodeStore.getOrCreateNode.mockReturnValue(makeNode({ connected: true }));
-    const p = m.run(['connect']);
-    await settle();
-    expect(allOut()).toContain('resuming pings for abc123');
-    fire('SIGTERM');
-    await expect(p).resolves.toBe(0);
-  });
-});
-
-// ── demand-driven auto ───────────────────────────────────────────────────────
-
-// autoGate binds a real HTTP server, and this suite mocks `net` down to
-// `connect` — so http can never listen here. Same treatment as llmManager and
-// the fleet: the wiring is asserted, and autoGate's own lifecycle is covered by
-// test/autoGate.test.js against a real socket.
-jest.mock('../src/main/autoGate', () => {
-  const createAutoGate = jest.fn((opts) => {
-    const inst = {
-      opts,
-      started: false,
-      switching: false,
-      // The real createAutoGate returns its LlmGate; anything reading node state
-      // (the stats file, and the watch view) goes through it.
-      gate: { state: 'MINING', inFlight: 0, quietMs: 60000, quietFor: () => 0 },
-      isSwitching() { return this.switching; },
-      start() { this.started = true; return this; },
-      stop: jest.fn(),
-    };
-    createAutoGate.instances.push(inst);
-    return inst;
-  });
-  createAutoGate.instances = [];
-  // llm mode stands up the same server with nothing to switch, so the CLI can
-  // keep one `auto` variable and one teardown path.
-  const createServeGate = jest.fn((opts) => {
-    const inst = {
-      opts,
-      started: false,
-      isSwitching() { return false; },
-      gate: { state: 'SERVING', inFlight: 0, quietMs: Infinity, quietFor: () => 0 },
-      start() { this.started = true; return this; },
-      stop: jest.fn(),
-    };
-    createServeGate.instances.push(inst);
-    return inst;
-  });
-  createServeGate.instances = [];
-  return { createAutoGate, createServeGate };
-});
-
-
-describe('--gate-quiet', () => {
-  const demandRig = (m) => {
-    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
-    m.LlmEngineManager.serverInstalled = true;
-    m.LlmEngineManager.modelInstalled = true;
-    m.LlmEngineManager.mmprojInstalled = true;
-  };
-
-  test('the product default is used when the flag is absent', async () => {
-    const m = load();
-    demandRig(m);
-    m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
-    await settle();
-    expect(m.autoGate.createAutoGate.instances[0].opts.quietMs).toBe(60000);
-    expect(allOut()).toContain('60s with no requests hands the GPU back to mining');
-  });
-
-  // The reason the flag exists: an agent pauses between turns to think or run a
-  // tool, and a release drops the prompt cache, so the next turn re-prefills the
-  // whole context.
-  test('an explicit window reaches the gate and is announced', async () => {
-    const m = load();
-    demandRig(m);
-    m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0',
-      '--gate-quiet', '900']);
-    await settle();
-    expect(m.autoGate.createAutoGate.instances[0].opts.quietMs).toBe(900000);
-    expect(allOut()).toContain('900s with no requests hands the GPU back to mining');
-  });
-
-  test('0 pins the card to serving and says so in words', async () => {
-    const m = load();
-    demandRig(m);
-    m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0',
-      '--gate-quiet', '0']);
-    await settle();
-    expect(m.autoGate.createAutoGate.instances[0].opts.quietMs).toBe(Infinity);
-    expect(allOut()).toContain('no amount of quiet with no requests hands the GPU back to mining');
-  });
-});
-
-describe('auto mode on a card that cannot co-run its best model', () => {
-  test('mines first and does not start the LLM until something asks for it', async () => {
-    const m = load();
-    // An idle 5090: 32,149 MiB is what CUDA exposes. Qwen3.8 needs 30,720, which
-    // fits alone but not alongside the mining reserve — so auto goes demand-driven
-    // instead of quietly downgrading to the small default.
-    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
-    m.LlmEngineManager.serverInstalled = true;
-    m.LlmEngineManager.modelInstalled = true;
-    m.LlmEngineManager.mmprojInstalled = true;
-    const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
-    await settle();
-
-    expect(allOut()).toContain('needs the GPU to itself');
-    expect(allOut()).toContain('mining until a request arrives');
-    // The point of demand mode: the miner runs, the model does not.
-    expect(m.PearlEngine.instances).toHaveLength(1);
-    expect(m.PearlEngine.instances[0].start).toHaveBeenCalled();
-    expect(m.LlmManager.instances).toHaveLength(0);
-
-    // The gate was handed working callbacks, not just constructed. Drive them the
-    // way a request would, and check the LLM is sized against the WHOLE card --
-    // no mining reserve, because nothing is co-resident in demand mode.
-    const gate = m.autoGate.createAutoGate.instances[0];
-    expect(gate.started).toBe(true);
-    expect(gate.opts.modelName).toBe(LLM.tiers[0].name);
-    expect(gate.opts.quietMs).toBe(LLM.gate.quietMs);
-    expect(gate.opts.startMinerArgs()).toEqual(expect.objectContaining({ endpoint: expect.any(String) }));
-    expect(gate.opts.isLlmReady()).toBe(false);
-
-    const waking = gate.opts.startLlm();
-    await settle();
-    const llm = m.LlmManager.instances[0];
-    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({ ctxSize: 262144 }));
-    // The gate holds the request until the server actually reports ready, which
-    // is what lets the proxy park a caller through the ~4s load.
-    llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
-    await waking;
-    expect(gate.opts.isLlmReady()).toBe(true);
-
-    // An LLM that dies on its own, NOT during a switch, must still tear serving
-    // down — the switching flag is what tells those apart.
-    llm.emit('stopped', 1);
-    await settle();
-
-    await gate.opts.stopLlm();
-    expect(llm.stop).toHaveBeenCalled();
-    expect(gate.opts.isLlmReady()).toBe(false);
-
+    const row = m.probe.postMinerReport.mock.calls[0][0];
+    expect(row.address).toBe(ADDR);
+    expect(row).not.toHaveProperty('rigId');
     m.PearlEngine.instances[0].emit('stopped', 0);
-    await expect(p).resolves.toBe(0);
-    expect(gate.stop).toHaveBeenCalled();   // torn down with everything else
+    await p;
   });
 
-  test('a card whose best model co-runs is untouched — it still serves immediately', async () => {
+  test('--no-report posts nothing to the board and arms no reporter', async () => {
     const m = load();
-    // 24 GB free: the same model wins with and without the reserve, so nothing
-    // about this node's behaviour changes.
-    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
-    m.LlmEngineManager.serverInstalled = true;
-    m.LlmEngineManager.modelInstalled = true;
-    const p = m.run(['--address', ADDR, '--no-update', '--no-serve']);
-    await settle();
-
-    expect(allOut()).not.toContain('needs the GPU to itself');
-    expect(m.LlmManager.instances.length).toBeGreaterThan(0);   // co-running as before
-
-    m.PearlEngine.instances[0].emit('stopped', 0);
-    await expect(p).resolves.toBe(0);
-  });
-});
-
-describe('demand-driven auto: the switching flag and failure paths', () => {
-  test('a deliberate stop is ignored, a real one is not; and the default port is used', async () => {
-    const m = load();
-    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
-    m.LlmEngineManager.serverInstalled = true;
-    m.LlmEngineManager.modelInstalled = true;
-    m.LlmEngineManager.mmprojInstalled = true;
-    // No --gate-port: the configured default is what a real node uses.
-    const p = m.run(['--address', ADDR, '--no-update', '--no-serve']);
-    await settle();
-    const gate = m.autoGate.createAutoGate.instances[0];
-    expect(gate.opts.port).toBe(LLM.gate.port);
-
-    // stopLlm before anything started must be a no-op, not a crash.
-    await gate.opts.stopLlm();
-
-    // While switching, an engine's exit is the gate's doing and must NOT tear the
-    // process down — otherwise every wake would end the run.
-    gate.switching = true;
-    m.PearlEngine.instances[0].emit('stopped', 0);
-    await settle();
-    let done = false;
-    p.then(() => { done = true; });
-    await settle();
-    expect(done).toBe(false);
-
-    // The same event with the flag clear is a genuine exit.
-    gate.switching = false;
-    m.PearlEngine.instances[0].emit('stopped', 0);
-    await expect(p).resolves.toBe(0);
-  });
-
-  test('an LLM that fails to come up surfaces as an error the gate can report', async () => {
-    const m = load();
-    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
-    m.LlmEngineManager.serverInstalled = true;
-    m.LlmEngineManager.modelInstalled = true;
-    m.LlmEngineManager.mmprojInstalled = true;
-    const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
-    await settle();
-    const gate = m.autoGate.createAutoGate.instances[0];
-
-    // A card that no longer has room: the planner returns no instances, so the
-    // callback hands back null. Turning that into an error is the gate's job
-    // (test/autoGate.test.js), not the CLI's.
-    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 7900, totalMb: 8000 }]);
-    await expect(gate.opts.startLlm()).resolves.toBeNull();
-
-    m.PearlEngine.instances[0].emit('stopped', 0);
-    await expect(p).resolves.toBe(0);
-    // Slow on purpose: this exercises the real VRAM-release wait giving up.
-  }, 20000);
-
-});
-
-test('an LLM stopping during a switch does not tear serving down', async () => {
-  const m = load();
-  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
-  m.LlmEngineManager.serverInstalled = true;
-  m.LlmEngineManager.modelInstalled = true;
-  m.LlmEngineManager.mmprojInstalled = true;
-  const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
-  await settle();
-  const gate = m.autoGate.createAutoGate.instances[0];
-
-  const waking = gate.opts.startLlm();
-  await settle();
-  const llm = m.LlmManager.instances[0];
-  llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
-  await waking;
-
-  // The gate stopping the LLM to hand the card back is not the LLM dying: the
-  // handler must take the early return and leave the node's serve registration
-  // alone, rather than unregistering it on every idle flip.
-  gate.switching = true;
-  llm.emit('stopped', 0);
-  await settle();
-  let ended = false;
-  p.then(() => { ended = true; });
-  await settle();
-  expect(ended).toBe(false);
-  gate.switching = false;
-
-  m.PearlEngine.instances[0].emit('stopped', 0);
-  await expect(p).resolves.toBe(0);
-});
-
-test('an engine that cannot start exits non-zero, not 0', async () => {
-  // The core failing to construct -- no VRAM for the rank-128 profile, no
-  // pearl_core.node -- makes PearlMiner.start() return false. It emits 'error'
-  // but never 'stopped', because nothing started. Before this was checked the
-  // run simply ran out of work and resolved 0, which under Restart=always is a
-  // silent restart loop that mines nothing and looks healthy to systemd.
-  const m = load();
-  m.PearlEngine.startReturns = false;
-  const code = await m.run(['--address', ADDR, '--mode', 'mining', '--no-update', '--no-serve']);
-  expect(code).toBe(1);
-  expect(allErr()).toContain('engine failed to start');
-});
-
-test('a fatal engine start also stops an LLM that had already come up', async () => {
-  // auto mode starts the LLM before the miner, so a fatal engine failure must
-  // tear the LLM down rather than leave a server orphaned behind a dead node.
-  const m = load();
-  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 3000, totalMb: 24000 }]);
-  m.LlmEngineManager.serverInstalled = true;
-  m.LlmEngineManager.modelInstalled = true;
-  m.PearlEngine.startReturns = false;
-  const code = await m.run(['--address', ADDR, '--no-update', '--no-serve']);
-  expect(code).toBe(1);
-  expect(m.LlmManager.instances[0].stop).toHaveBeenCalled();
-});
-
-test('a fatal engine start closes the demand gate rather than leaking its port', async () => {
-  // The gate binds the public port. Created after the miner start, a fatal start
-  // would call finish() while `auto` was still null and the gate would bind
-  // afterwards on a run that had already resolved.
-  const m = load();
-  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
-  m.LlmEngineManager.serverInstalled = true;
-  m.LlmEngineManager.modelInstalled = true;
-  m.LlmEngineManager.mmprojInstalled = true;
-  m.PearlEngine.startReturns = false;
-  const code = await m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
-  expect(code).toBe(1);
-  const gate = m.autoGate.createAutoGate.instances[0];
-  expect(gate.started).toBe(true);
-  expect(gate.stop).toHaveBeenCalled();
-});
-
-test('the gate proxies to the port the fleet actually bound, not the default', async () => {
-  // llmFleet probes upward from LLM.port when it is busy, so a gate pinned to the
-  // constant can dial a port the model is not on. Worse than a 502: a foreign
-  // process sitting on 8080 answers in the model's place, through our endpoint.
-  const m = load();
-  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
-  m.LlmEngineManager.serverInstalled = true;
-  m.LlmEngineManager.modelInstalled = true;
-  m.LlmEngineManager.mmprojInstalled = true;
-  const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
-  await settle();
-  const gate = m.autoGate.createAutoGate.instances[0];
-
-  // Nothing serving yet: fall back to the configured port.
-  expect(gate.opts.upstreamPort()).toBe(LLM.port);
-
-  const waking = gate.opts.startLlm();
-  await settle();
-  const llm = m.LlmManager.instances[0];
-  llm.emit('ready', { baseUrl: 'http://127.0.0.1:8087' });   // walked past a busy 8080
-  await waking;
-  expect(gate.opts.upstreamPort()).toBe(8087);
-
-  gate.switching = false;
-  m.PearlEngine.instances[0].emit('stopped', 0);
-  await expect(p).resolves.toBe(0);
-});
-
-test('a miner that fails to restart after serving exits non-zero', async () => {
-  // The same contract as the up-front start: a false return means the core did
-  // not construct. Swallowed, the node reported the last hashrate forever while
-  // the card did nothing, and the supervisor saw a healthy process.
-  const m = load();
-  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
-  m.LlmEngineManager.serverInstalled = true;
-  m.LlmEngineManager.modelInstalled = true;
-  m.LlmEngineManager.mmprojInstalled = true;
-  const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
-  await settle();
-  const gate = m.autoGate.createAutoGate.instances[0];
-
-  const waking = gate.opts.startLlm();
-  await settle();
-  m.LlmManager.instances[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
-  await waking;
-
-  gate.opts.onMinerFailed();
-  await expect(p).resolves.toBe(1);
-  expect(allErr()).toContain('engine failed to restart after serving');
-  expect(m.LlmManager.instances[0].stop).toHaveBeenCalled();
-});
-
-test('a failed restart with no model loaded still exits non-zero', async () => {
-  // The release path stops the LLM before restarting the miner, so the failure
-  // can land with nothing to tear down.
-  const m = load();
-  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
-  m.LlmEngineManager.serverInstalled = true;
-  m.LlmEngineManager.modelInstalled = true;
-  m.LlmEngineManager.mmprojInstalled = true;
-  const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
-  await settle();
-  const gate = m.autoGate.createAutoGate.instances[0];
-
-  expect(m.LlmManager.instances).toHaveLength(0);   // never woke
-  gate.opts.onMinerFailed();
-  await expect(p).resolves.toBe(1);
-  expect(allErr()).toContain('engine failed to restart after serving');
-});
-
-test('handing the card back waits for the model to actually release its VRAM', async () => {
-  // LlmFleet.stop() signals llama-server and returns; it does not join. Restarting
-  // the miner straight away put it on a card still holding ~30 GB, and its core
-  // failed to construct -- fatal, now that a failed restart is reported. Observed
-  // on a 5090: 1,469 MiB free at the restart against the ~2,081 MiB it needed.
-  const m = load();
-  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
-  m.LlmEngineManager.serverInstalled = true;
-  m.LlmEngineManager.modelInstalled = true;
-  m.LlmEngineManager.mmprojInstalled = true;
-  const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
-  await settle();
-  const gate = m.autoGate.createAutoGate.instances[0];
-
-  const waking = gate.opts.startLlm();
-  await settle();
-  const llm = m.LlmManager.instances[0];
-  llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
-  await waking;
-
-  m.probe.detectGpusVram.mockClear();
-  await gate.opts.stopLlm();
-  expect(llm.stop).toHaveBeenCalled();
-  // The card was read before the gate handed control back to the miner.
-  expect(m.probe.detectGpusVram).toHaveBeenCalled();
-
-  gate.switching = false;
-  m.PearlEngine.instances[0].emit('stopped', 0);
-  await expect(p).resolves.toBe(0);
-});
-
-test('the engine is given a temperature reader, as the GUI has always been', async () => {
-  // Without it PearlEngine never starts its temp poll, so every headless rig
-  // reported temp 0 -- to the stats file, the miner report and the network board.
-  const m = load();
-  m.probe.detectGpuTemps.mockResolvedValue([{ index: 0, temp: 61 }]);
-  const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--no-report', '--mode', 'mining']);
-  await settle();
-  const eng = m.PearlEngine.instances[0];
-  expect(typeof eng.opts.readTemps).toBe('function');
-  eng.opts.readTemps();
-  expect(m.probe.detectGpuTemps).toHaveBeenCalled();
-  eng.emit('stopped', 0);
-  await expect(p).resolves.toBe(0);
-});
-
-test('the stats file records what the node is doing, not just its counters', async () => {
-  // It used to live inside `if (plan.miner)`, so --mode llm wrote nothing, and it
-  // could not see the gate or the model even when both were up. A rig reading
-  // 0 TH/s in demand mode is busy serving, not broken -- the file has to say so.
-  const m = load();
-  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
-  m.LlmEngineManager.serverInstalled = true;
-  m.LlmEngineManager.modelInstalled = true;
-  m.LlmEngineManager.mmprojInstalled = true;
-  const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0',
-    '--stats-file', '/tmp/s.json']);
-  await settle();
-
-  m.fs.writeFileSync.mockClear();
-  intervalFor(10000).fn();
-  const written = JSON.parse(m.fs.writeFileSync.mock.calls[0][1]);
-  expect(written.mode).toBe('auto');
-  expect(written.strategy).toBe('demand');
-  expect(written.gate).toBe('MINING');
-  expect(written.schema).toBe(1);
-
-  m.PearlEngine.instances[0].emit('stopped', 0);
-  await expect(p).resolves.toBe(0);
-});
-
-test('llm mode serves on the gate port, not on llama-server\'s own', async () => {
-  // The gate used to exist only in auto, so choosing llm mode silently moved
-  // callers from the documented endpoint to llama-server's port -- at exactly the
-  // moment the operator had committed to serving.
-  const m = load();
-  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
-  m.LlmEngineManager.serverInstalled = true;
-  m.LlmEngineManager.modelInstalled = true;
-  m.LlmEngineManager.mmprojInstalled = true;
-  const p = m.run(['--mode', 'llm', '--no-update', '--no-serve', '--gate-port', '0']);
-  await settle();
-  const llm = m.LlmManager.instances[0];
-  llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
-  await settle();
-
-  expect(m.autoGate.createAutoGate.instances).toHaveLength(0);   // nothing to switch
-  const gate = m.autoGate.createServeGate.instances[0];
-  expect(gate.started).toBe(true);
-  expect(gate.opts.port).toBe(0);
-  expect(gate.opts.isLlmReady()).toBe(true);
-  expect(gate.opts.upstreamPort()).toBe(8080);
-  expect(allOut()).toContain('serving on :0');
-
-  // 1, not 0: an LLM-only run whose fleet dies is never a clean exit, or a
-  // Restart=on-failure supervisor would never bring the node back.
-  llm.emit('stopped', 0);
-  await expect(p).resolves.toBe(1);
-});
-
-test('the llm-mode gate falls back to the configured port before the fleet is up', async () => {
-  const m = load();
-  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
-  m.LlmEngineManager.serverInstalled = true;
-  m.LlmEngineManager.modelInstalled = true;
-  m.LlmEngineManager.mmprojInstalled = true;
-  const p = m.run(['--mode', 'llm', '--no-update', '--no-serve', '--gate-port', '0']);
-  await settle();
-  const gate = m.autoGate.createServeGate.instances[0];
-  expect(gate.opts.upstreamPort()).toBe(LLM.port);   // nothing ready yet
-
-  m.LlmManager.instances[0].emit('stopped', 0);
-  await expect(p).resolves.toBe(1);
-});
-
-describe('demand mode still serves the cluster', () => {
-  // Cluster work is PULLED, outbound, so a NAT'd node can serve with no inbound
-  // networking. But a JobWorker is only built per READY llama-server instance,
-  // and demand mode has none while mining -- so the best cards in the fleet
-  // stopped pulling jobs entirely and served only what reached :8000 directly.
-  function serving(m) {
-    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true }));
-    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
-    m.LlmEngineManager.serverInstalled = true;
-    m.LlmEngineManager.modelInstalled = true;
-    m.LlmEngineManager.mmprojInstalled = true;
-  }
-
-  test('polls for cluster jobs while mining, before any model exists', async () => {
-    const m = load();
-    serving(m);
-    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
-    await settle();
-
-    expect(m.LlmManager.instances).toHaveLength(0);      // nothing loaded
-    expect(m.JobWorker.instances).toHaveLength(1);       // yet a poller exists
-    expect(m.JobWorker.instances[0].start).toHaveBeenCalled();
-    expect(allOut()).toContain('polling for cluster jobs while mining');
-
-    m.PearlEngine.instances[0].emit('stopped', 0);
-    await expect(p).resolves.toBe(0);
-  });
-
-  test('a cluster job wakes the model and holds the card for its whole run', async () => {
-    const m = load();
-    serving(m);
-    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
-    await settle();
-    const gate = m.autoGate.createAutoGate.instances[0];
-    const worker = m.JobWorker.instances[0];
-
-    // Drive runJob the way JobWorker does when a job is assigned.
-    let ensured = false;
-    gate.gate.ensureServing = jest.fn(async () => { ensured = true; });
-    gate.gate.begin = jest.fn();
-    gate.gate.end = jest.fn();
-    m.io.streamChatCompletion.mockReturnValue({ done: Promise.resolve() });
-
-    await worker.opts.runJob({ messages: [] }, { onDelta: () => {}, onReasoning: () => {} });
-
-    expect(ensured).toBe(true);
-    // begin()/end() bracket the WHOLE job: shouldRelease() needs inFlight === 0,
-    // so without them the quiet timer kills a long generation mid-flight.
-    expect(gate.gate.begin).toHaveBeenCalled();
-    expect(gate.gate.end).toHaveBeenCalled();
-
-    m.PearlEngine.instances[0].emit('stopped', 0);
-    await expect(p).resolves.toBe(0);
-  });
-
-  test('the card is released even when the job throws', async () => {
-    const m = load();
-    serving(m);
-    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
-    await settle();
-    const gate = m.autoGate.createAutoGate.instances[0];
-    const worker = m.JobWorker.instances[0];
-    gate.gate.ensureServing = jest.fn(async () => {});
-    gate.gate.begin = jest.fn();
-    gate.gate.end = jest.fn();
-    m.io.streamChatCompletion.mockReturnValue({ done: Promise.reject(new Error('model died')) });
-
-    await expect(worker.opts.runJob({ messages: [] }, { onDelta: () => {} })).rejects.toThrow('model died');
-    expect(gate.gate.end).toHaveBeenCalled();   // or the node never mines again
-
-    m.PearlEngine.instances[0].emit('stopped', 0);
-    await expect(p).resolves.toBe(0);
-  });
-
-  test('the fleet does not arm a second poller when the model wakes', async () => {
-    const m = load();
-    serving(m);
-    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
-    await settle();
-    const gate = m.autoGate.createAutoGate.instances[0];
-
-    const waking = gate.opts.startLlm();
-    await settle();
-    m.LlmManager.instances[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
-    await waking;
-
-    // Two pollers would double-poll and race each other for the same jobs.
-    expect(m.JobWorker.instances).toHaveLength(1);
-
-    // And the one poller now resolves the port the fleet actually bound, rather
-    // than the null it correctly reported while nothing was loaded.
-    const gate2 = m.autoGate.createAutoGate.instances[0];
-    gate2.gate.ensureServing = jest.fn(async () => {});
-    gate2.gate.begin = jest.fn(); gate2.gate.end = jest.fn();
-    m.io.streamChatCompletion.mockReturnValue({ done: Promise.resolve() });
-    await m.JobWorker.instances[0].opts.runJob({ messages: [] }, { onDelta: () => {} });
-    expect(m.io.streamChatCompletion.mock.calls[0][0]).toBe('http://127.0.0.1:8080');
-
-    gate.switching = false;
-    m.PearlEngine.instances[0].emit('stopped', 0);
-    await expect(p).resolves.toBe(0);
-  });
-
-  test('stays online on the board while mining, not only while serving', async () => {
-    // The fleet's ping loop is armed on its first ready card, so in demand mode
-    // the node only appeared online during the seconds it happened to be
-    // serving and went stale the rest of the time.
-    const m = load();
-    serving(m);
-    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
-    await settle();
-
-    const pinger = intervalFor(NODE.pingIntervalMs);
-    expect(pinger).toBeTruthy();
-    expect(m.LlmManager.instances).toHaveLength(0);   // pinging with no model loaded
-    m.io.postJson.mockClear();
-    await pinger.fn();
-    expect(m.io.postJson).toHaveBeenCalled();
-
-    m.PearlEngine.instances[0].emit('stopped', 0);
-    await expect(p).resolves.toBe(0);
-  });
-
-  test('the keep-alive handle is unrefed, and survives a runtime without unref', async () => {
-    intervalUnref = false;
-    const m = load();
-    serving(m);
-    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
-    await settle();
-    expect(intervalFor(NODE.pingIntervalMs)).toBeTruthy();
-    m.PearlEngine.instances[0].emit('stopped', 0);
-    await expect(p).resolves.toBe(0);
-  });
-
-  test('advertises the tier it will serve, not the default it has loaded', async () => {
-    // Nothing is loaded while mining, so serveLlmState kept the small default --
-    // and that is what the ping publishes and the server now ROUTES on. The board
-    // named a model this node never serves, a job asking for the tier was never
-    // offered to the one node running it, and a job asking for the default would
-    // have been answered by the tier.
-    const m = load();
-    serving(m);
-    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
-    await settle();
-
-    expect(m.LlmManager.instances).toHaveLength(0);   // nothing loaded
-    const pinger = intervalFor(NODE.pingIntervalMs);
-    m.io.postJson.mockClear();
-    await pinger.fn();
-    const body = m.io.postJson.mock.calls[0][1];
-    expect(body.model).toBe(LLM.tiers[0].name);
-    expect(body.model).not.toBe(LLM.model.name);
-
-    m.PearlEngine.instances[0].emit('stopped', 0);
-    await expect(p).resolves.toBe(0);
-  });
-
-  test('--no-serve still means no poller', async () => {
-    const m = load();
-    serving(m);
-    const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
-    await settle();
-    expect(m.JobWorker.instances).toHaveLength(0);
-    expect(allOut()).not.toContain('polling for cluster jobs');
-    m.PearlEngine.instances[0].emit('stopped', 0);
-    await expect(p).resolves.toBe(0);
-  });
-});
-
-describe('shutdown and startup edges the gate introduced', () => {
-  const serving = (m) => {
-    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true }));
-    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
-    m.LlmEngineManager.serverInstalled = true;
-    m.LlmEngineManager.modelInstalled = true;
-    m.LlmEngineManager.mmprojInstalled = true;
-  };
-
-  test('a signal while the gate is serving resolves the run', async () => {
-    // The gate has already stopped the miner, and PearlEngine.stop() on a stopped
-    // miner emits nothing -- but `miner` was still truthy, so the else arm never
-    // ran and finish() was never called. The process sat until TimeoutStopSec
-    // while its release timer restarted the miner underneath the shutdown. A
-    // self-update IS a restart, so the rollout mechanism hit this every time.
-    const m = load();
-    serving(m);
-    const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
-    await settle();
-    const gate = m.autoGate.createAutoGate.instances[0];
-
-    const waking = gate.opts.startLlm();
-    await settle();
-    m.LlmManager.instances[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
-    await waking;
-
-    // What the gate leaves behind: the engine is down but the object remains.
-    m.PearlEngine.instances[0].isRunning.mockReturnValue(false);
-    fire('SIGTERM');
-    await expect(p).resolves.toBe(0);
-    expect(gate.stop).toHaveBeenCalled();     // and the public port is released
-  });
-
-  test('the board keeps showing the model a demand node serves while it mines', async () => {
-    // In demand mode nothing is loaded between requests, so keying the board row
-    // off a live fleet left the model column blank for a node whose whole purpose
-    // is to serve that model -- it appeared only for the seconds either side of a
-    // request. Not resident is not the same as not available.
-    const m = load();
-    serving(m);
-    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
-    await settle();
-
-    expect(m.LlmManager.instances).toHaveLength(0);   // nothing loaded
-    m.probe.postMinerReport.mockClear();
-    await intervalFor(NETWORK.reportIntervalMs).fn();
-    const rows = m.probe.postMinerReport.mock.calls.map((c) => c[0]);
-    const withModel = rows.filter((r) => r && r.llmModel);
-    expect(withModel.length).toBeGreaterThan(0);
-    expect(withModel[0].llmModel).toBe(LLM.tiers[0].name);
-    expect(withModel[0].nodeId).toBeTruthy();
-
-    m.PearlEngine.instances[0].emit('stopped', 0);
-    await expect(p).resolves.toBe(0);
-  });
-
-  test('--no-report skips the board row without tripping the demand refresh', async () => {
-    const m = load();
-    serving(m);
-    const p = m.run(['--address', ADDR, '--no-update', '--no-report', '--gate-port', '0']);
+    const p = m.run(['-a', ADDR, '--no-update', '--no-report']);
     await settle();
     expect(m.probe.postMinerReport).not.toHaveBeenCalled();
+    expect(intervalFor(NETWORK.reportIntervalMs)).toBeUndefined();
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+});
+
+// ── the retired LLM surface ──────────────────────────────────────────────────
+
+describe('retired LLM options and commands', () => {
+  // The CLI auto-updates on start, so a unit written for an older build lands
+  // on this one with its old flags. It must keep mining and say what it ignored.
+  test('the LLM flags of an old unit are ignored, announced once, and it still mines', async () => {
+    const m = load();
+    const p = m.run(['-a', ADDR, '--no-update', '--mode', 'auto', '--no-serve', '--gate-port', '8000']);
+    await settle();
+    expect(allErr()).toContain('ignoring retired options: --mode, --no-serve, --gate-port'
+      + ' (the local LLM was removed; this build only mines)');
+    expect(m.PearlEngine.instances).toHaveLength(1);
     m.PearlEngine.instances[0].emit('stopped', 0);
     await expect(p).resolves.toBe(0);
   });
 
-  test('a demand node with no readable card reports no serving index', async () => {
-    // pickLlmGpu can come back empty (no driver, unreadable VRAM); the row is
-    // then posted without a card tagged rather than throwing.
+  test('a single retired flag reads in the singular', async () => {
     const m = load();
-    serving(m);
-    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
+    const p = m.run(['-a', ADDR, '--no-update', '--mode', 'mining']);
     await settle();
-    m.probe.detectGpusVram.mockResolvedValue([]);
-    m.probe.postMinerReport.mockClear();
-    await expect(intervalFor(NETWORK.reportIntervalMs).fn()).resolves.toBeDefined();
-
+    expect(allErr()).toContain('ignoring retired option: --mode (');
     m.PearlEngine.instances[0].emit('stopped', 0);
-    await expect(p).resolves.toBe(0);
+    await p;
   });
 
-  test('a card that cannot mine still serves instead of exiting 1', async () => {
-    // plan.miner stays true when the mining core fails to load, so the node
-    // believed it was in demand mode, skipped the up-front LLM start, never built
-    // the gate (which needs a miner) and fell through to "nothing to run".
+  test('an old LLM-only unit is told it now needs an address', async () => {
     const m = load();
-    serving(m);
-    m.pearlCore.coreFactory.mockReturnValue(null);   // the mining core will not load
-    const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
-    await settle();
-    expect(m.LlmManager.instances.length).toBeGreaterThan(0);   // it serves
-    m.LlmManager.instances[0].emit('stopped', 0);
-    await expect(p).resolves.toBe(1);
+    await expect(m.run(['--mode', 'llm', '--no-update'])).resolves.toBe(1);
+    expect(allErr()).toContain('--mode llm was retired and this build only mines');
+  });
+
+  test('`connect` explains that it was retired instead of "unknown option"', async () => {
+    const m = load();
+    await expect(m.run(['connect', '--token', 't'])).resolves.toBe(1);
+    expect(allErr()).toContain('"connect" was retired with the local LLM');
+    expect(allErr()).toContain('llmjob-earn-cli --address');
+  });
+
+  // A Mac has no NVIDIA GPU, and with the LLM gone there is nothing else to run.
+  test('macOS has nothing to run and exits 1 without building an engine', async () => {
+    setPlatform('darwin');
+    const m = load();
+    await expect(m.run(['-a', ADDR, '--no-update'])).resolves.toBe(1);
+    expect(allErr()).toContain('mining is not available on macOS');
+    expect(m.PearlEngine.instances).toHaveLength(0);
   });
 });

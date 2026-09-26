@@ -3,6 +3,7 @@
 const {
   pickGpu, countGpus, alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda,
   parseDeviceIndex, planMinerGpus, parseGpuStats, parseMacGpu,
+  parseGpuTelemetry, GPU_TELEMETRY_FIELDS, GPU_TELEMETRY_QUERY,
 } = require('../src/shared/gpu');
 
 describe('pickGpu', () => {
@@ -56,6 +57,43 @@ describe('countGpus', () => {
     expect(countGpus([])).toBe(0);
     expect(countGpus(null)).toBe(0);
     expect(countGpus([null])).toBe(0);
+  });
+});
+
+// The per-card health a board report carries. Every sensor can be missing on
+// some card, and a missing one has to stay null: a 0 °C or 0 W would read as a
+// real reading and send anyone tuning off in the wrong direction.
+describe('parseGpuTelemetry', () => {
+  test('the query and the parser agree on the fields', () => {
+    expect(GPU_TELEMETRY_QUERY).toBe('--query-gpu=' + GPU_TELEMETRY_FIELDS.join(','));
+    expect(GPU_TELEMETRY_FIELDS[0]).toBe('index');
+  });
+
+  test('reads every field of a fully instrumented card', () => {
+    expect(parseGpuTelemetry('0, 64, 312.45, 450.00, 2520, 10501, 55, 580.82, P2')).toEqual([{
+      index: 0, tempC: 64, powerW: 312.45, powerLimitW: 450, coreClockMhz: 2520,
+      memClockMhz: 10501, fanPct: 55, driver: '580.82', pstate: 'P2',
+    }]);
+  });
+
+  test('a sensor the card lacks is null, not zero', () => {
+    const [card] = parseGpuTelemetry('1, 58, [N/A], [Not Supported], 1905, 7001, [N/A], 580.82, [N/A]');
+    expect(card).toMatchObject({ index: 1, tempC: 58, powerW: null, powerLimitW: null, fanPct: null, pstate: null });
+    const [bare] = parseGpuTelemetry('2, N/A, 100, 200, 1, 2, 3, N/A, P0');
+    expect(bare).toMatchObject({ tempC: null, driver: null });
+    const [blank] = parseGpuTelemetry('3, 50, 100, 200, 1, 2, 3, , P0');
+    expect(blank.driver).toBeNull();
+  });
+
+  test('skips short rows, rows without an index, and empty or missing output', () => {
+    expect(parseGpuTelemetry('0, 64, 312\n\nx, 1, 2, 3, 4, 5, 6, 7, 8')).toEqual([]);
+    expect(parseGpuTelemetry('')).toEqual([]);
+    expect(parseGpuTelemetry(null)).toEqual([]);
+  });
+
+  test('reads one entry per card on a multi-GPU rig, CRLF or not', () => {
+    const rows = parseGpuTelemetry('0, 64, 300, 450, 1, 2, 3, 580, P2\r\n1, 60, 200, 285, 1, 2, 3, 580, P2\r\n');
+    expect(rows.map((r) => r.index)).toEqual([0, 1]);
   });
 });
 
