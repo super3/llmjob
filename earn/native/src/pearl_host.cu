@@ -76,6 +76,11 @@ extern "C" __global__ void pearl_tile_fold_wmma(
     uint32_t k, uint32_t rank, uint32_t chunks, uint32_t col_off,
     uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
     const PearlTranscriptTest test, const PearlHitList hits);
+extern "C" __global__ void pearl_tile_fold_tall(
+    const int8_t *Aprime, const int8_t *Bprime, uint32_t m, uint32_t n,
+    uint32_t k, uint32_t rank, uint32_t chunks, uint32_t col_off,
+    uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
+    const PearlTranscriptTest test, const PearlHitList hits);
 extern "C" __global__ void pearl_partials(const int8_t *Aprime, const int8_t *Bprime,
                                           const uint32_t *cols_pattern,
                                           uint32_t cols_count, uint32_t m, uint32_t n,
@@ -165,6 +170,15 @@ struct Ctx {
   // PEARL_FOLD_PERSISTENT). Only then is the grid foldResident; otherwise it
   // is one block per tile, as before.
   bool foldPersistent = false;
+  // Whether it is the eight-warp build (PEARL_FOLD_WIDE_WARPS), which must be
+  // launched 256 threads a block rather than 512. Both are read off the loaded
+  // binary once, the first time this card searches.
+  bool foldWide = false;
+  // Whether this card runs the tall fold instead (PEARL_FOLD_TALL): its own
+  // kernel, pearl_tile_fold_tall, over 192x256 tiles. Read off that kernel's
+  // loaded binary (binaryVersion == 89) with the others.
+  bool foldTall = false;
+  bool foldKnown = false;
 
   // Operands, generated once per job and then read by every region.
   int8_t *dA = nullptr;   // [m, k]
@@ -403,8 +417,9 @@ size_t needed_bytes(const PearlProfile *profile) {
                             + 2 * k * 2 * sizeof(uint32_t) + 64;
   // The materialised operands are int8, the same size as the sources. They were
   // int32 while the noise was (wrongly) reconstructed at full rank, which cost
-  // 2 GiB at mainnet on top of the 1 GiB of sources.
-  const size_t primeBytes = aBytes + bBytes;
+  // 2 GiB at mainnet on top of the 1 GiB of sources. The noised A has the tall
+  // fold's padding rows on the end (PEARL_TALL_A_ROWS): 128 KB at mainnet.
+  const size_t primeBytes = (size_t)PEARL_TALL_A_ROWS(profile->m) * k + bBytes;
   // What a batch costs now: nothing per region. The fold hashes its own
   // transcripts, so only a hit's transcript, hash and index are stored, in a
   // fixed PEARL_MAX_HITS list. This term used to be a transcript PER REGION --
@@ -620,7 +635,14 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
 
   CUDA_OK(cudaMalloc(&ctx->dA, aBytes), "allocating A");
   CUDA_OK(cudaMalloc(&ctx->dB, bBytes), "allocating B");
-  CUDA_OK(cudaMalloc(&ctx->dAp, aBytes), "allocating the noised A");
+  // The tall fold's last row group of tiles reads up to PEARL_TALL_A_ROWS(m) rows
+  // (see PEARL_FOLD_TALL). Nothing generates the rows past m; they are zeroed
+  // once so the fold reads defined bytes there, and it hashes no region from them.
+  {
+    const size_t apBytes = (size_t)PEARL_TALL_A_ROWS(profile->m) * k;
+    CUDA_OK(cudaMalloc(&ctx->dAp, apBytes), "allocating the noised A");
+    if (apBytes > aBytes) cudaMemset(ctx->dAp + aBytes, 0, apBytes - aBytes);
+  }
   CUDA_OK(cudaMalloc(&ctx->dBp, bBytes), "allocating the noised B");
   CUDA_OK(cudaMalloc(&ctx->dEAL, (size_t)profile->m * rank), "allocating E_AL");
   CUDA_OK(cudaMalloc(&ctx->dEBR, (size_t)profile->n * rank), "allocating E_BR");
@@ -1100,17 +1122,70 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   (void)batch;
   const uint32_t regions = ctx->batch;
   const uint32_t col_groups = ctx->colBatch;
-  // Block size for the search kernels. Tunable because occupancy against
-  // register pressure is not something to guess at.
-  static const int threads = []() {
-    const char *e = getenv("PEARL_BLOCK");
-    // 512 by default: sixteen warps make the CTA tile 128x256, which raises
-    // the MACs bought per staged byte from 64 to 85 -- and the two-stage
-    // pipeline hides the staging that a single 512-thread block used to expose.
-    const int v = e ? atoi(e) : 512;
-    return (v == 64 || v == 128 || v == 256 || v == 512 || v == 1024) ? v : 256;
-  }();
-  const int warps_per_block = threads / 32;
+  // Which fold this card loaded, asked once per context: the Ada build is the
+  // persistent one (PEARL_FOLD_PERSISTENT) and the eight-warp one
+  // (PEARL_FOLD_WIDE_WARPS). Ask which binary actually loaded rather than which
+  // card it is -- the launch has to match the code that runs.
+  if (!ctx->foldKnown) {
+    cudaFuncAttributes fa;
+    const bool haveAttrs =
+        cudaFuncGetAttributes(&fa, reinterpret_cast<const void *>(pearl_tile_fold_wmma))
+        == cudaSuccess;
+    const bool ada = haveAttrs && fa.binaryVersion == 89;
+#ifdef PEARL_FOLD_PERSISTENT_FORCED
+    ctx->foldPersistent = PEARL_FOLD_PERSISTENT != 0;
+#else
+    ctx->foldPersistent = ada;
+#endif
+#ifdef PEARL_FOLD_WIDE_WARPS_FORCED
+    ctx->foldWide = PEARL_FOLD_WIDE_WARPS != 0;
+#else
+    ctx->foldWide = ada;
+#endif
+    // The tall fold is its own kernel, with a body only in the sm_89 build, so its
+    // binary answers for itself. It is persistent like the Ada fold.
+    {
+      cudaFuncAttributes ft;
+      const bool tallAda =
+          cudaFuncGetAttributes(&ft, reinterpret_cast<const void *>(pearl_tile_fold_tall))
+              == cudaSuccess
+          && ft.binaryVersion == 89 && (uint32_t)ft.maxThreadsPerBlock == PEARL_TALL_THREADS;
+#ifdef PEARL_FOLD_TALL_FORCED
+      ctx->foldTall = PEARL_FOLD_TALL != 0 && tallAda;
+#else
+      ctx->foldTall = tallAda;
+#endif
+    }
+    // The fold is compiled for exactly one block size, which is also its launch
+    // bound. A disagreement would not fail loudly: a block of the wrong size
+    // returns at once, and the search would report hashrate while finding
+    // nothing. So refuse it.
+    const uint32_t want = ctx->foldWide ? PEARL_FOLD_WIDE_THREADS : PEARL_FOLD_THREADS;
+    if (!haveAttrs) {
+      if (err && err_len)
+        snprintf(err, err_len, "no fold kernel for this card: %s",
+                 cudaGetErrorString(cudaGetLastError()));
+      return false;
+    }
+    if ((uint32_t)fa.maxThreadsPerBlock != want) {
+      if (err && err_len)
+        snprintf(err, err_len, "fold binary takes %d threads a block, the host would launch %u",
+                 fa.maxThreadsPerBlock, want);
+      return false;
+    }
+    ctx->foldKnown = true;
+  }
+  // The block's shape: sixteen 32x64 warp tiles, or eight 64x64 ones. Either
+  // way the CTA tile is 128x256, so the tile count, the grid and the shared
+  // footprint below come out the same.
+  // The tall fold (ctx->foldTall) is 256 threads over 192x256 tiles; its tile
+  // count and shared footprint are worked out apart from these, below.
+  const uint32_t threads = ctx->foldTall ? PEARL_TALL_THREADS
+                           : ctx->foldWide ? PEARL_FOLD_WIDE_THREADS : PEARL_FOLD_THREADS;
+  const uint32_t warpRows = ctx->foldWide ? PEARL_FOLD_WIDE_WARP_ROWS : PEARL_WARP_ROWS;
+  const uint32_t rowTiles = ctx->foldWide ? PEARL_FOLD_WIDE_ROW_TILES : PEARL_WMMA_ROW_TILES;
+  const void *foldFn = ctx->foldTall ? reinterpret_cast<const void *>(pearl_tile_fold_tall)
+                                     : reinterpret_cast<const void *>(pearl_tile_fold_wmma);
   // A valid-offset INDEX; the kernel expands it into an actual offset.
   const uint32_t col_off =
       (uint32_t)((nonce_base / ctx->rowsValid) % ctx->colsValid);
@@ -1118,26 +1193,19 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   // One fused launch: the tile fold keeps its accumulator across chunks, so
   // there are no reusable partials to stage and no second pass.
   const uint32_t warpsPerBlock = threads / 32;
-  const uint32_t regionsPerWarp = PEARL_WMMA_ROW_TILES * (PEARL_WMMA_ROWS / PEARL_ROWS_COUNT);
-  // A block is a 2D grid of warps: PEARL_WARP_ROWS down, the rest across. Both
+  const uint32_t regionsPerWarp = rowTiles * (PEARL_WMMA_ROWS / PEARL_ROWS_COUNT);
+  // A block is a 2D grid of warps: warpRows down, the rest across. Both
   // dimensions have to tile exactly, because a warp that falls outside cannot
   // return -- staging is a block-wide cooperative load and a __syncthreads()
   // some warps skip hangs the launch.
   const uint64_t rowBlocks = ctx->rowsValid / regionsPerWarp;
-  const uint32_t warpCols = warpsPerBlock / PEARL_WARP_ROWS;
+  const uint32_t warpCols = warpsPerBlock / warpRows;
   const uint64_t colBlocks = col_groups / PEARL_WMMA_COL_BLK;
-  // The fold is compiled for exactly this block size (see PEARL_FOLD_THREADS).
-  if ((uint32_t)threads != PEARL_FOLD_THREADS) {
-    if (err && err_len)
-      snprintf(err, err_len, "fold kernel is built for %u threads a block (got %d)",
-               (unsigned)PEARL_FOLD_THREADS, threads);
-    return false;
-  }
   // The staging walks base + stride rather than a table of addresses, which is
   // only the same sequence when quads divides the staging thread count and the
   // column step lands on a whole number of column groups.
   const uint32_t quadsPerRow = rank / 16u;
-  const uint32_t stageThreads = (uint32_t)threads;
+  const uint32_t stageThreads = threads;
   if (quadsPerRow == 0 || stageThreads % quadsPerRow != 0
       || (stageThreads / quadsPerRow) % PEARL_COLS_COUNT != 0) {
     if (err && err_len)
@@ -1146,22 +1214,51 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
                stageThreads, quadsPerRow, (unsigned)PEARL_COLS_COUNT);
     return false;
   }
-  if (warpsPerBlock % PEARL_WARP_ROWS != 0 || rowBlocks % PEARL_WARP_ROWS != 0
-      || warpCols == 0 || colBlocks % warpCols != 0) {
+  // The fold stages a tile's columns as one contiguous block, which holds only
+  // while every batch starts on a whole column span (see PEARL_COLS_SPAN): four
+  // valid column offsets for the strided pattern. col_off steps by col_groups
+  // and wraps at colsValid, so both must be whole spans.
+  const uint32_t colsPerSpan = PEARL_COLS_SPAN / PEARL_COLS_COUNT;
+  if (col_groups % colsPerSpan != 0 || ctx->colsValid % colsPerSpan != 0) {
+    if (err && err_len)
+      snprintf(err, err_len,
+               "column offsets must come in whole spans of %u: col_batch %u, %u valid",
+               colsPerSpan, col_groups, ctx->colsValid);
+    return false;
+  }
+  if (!ctx->foldTall && (warpsPerBlock % warpRows != 0 || rowBlocks % warpRows != 0
+                         || warpCols == 0 || colBlocks % warpCols != 0)) {
     if (err && err_len)
       snprintf(err, err_len,
                "warp grid %ux%u does not tile %llu row blocks by %llu column blocks",
-               PEARL_WARP_ROWS, warpCols, (unsigned long long)rowBlocks,
+               warpRows, warpCols, (unsigned long long)rowBlocks,
                (unsigned long long)colBlocks);
     return false;
   }
+  // The tall fold's tiles are 12 valid row offsets by 16 valid column offsets. The
+  // columns must tile exactly; the last row group may run past m, into the rows
+  // PEARL_TALL_A_ROWS pads the noised A with, and the fold hashes none of those.
+  if (ctx->foldTall && (col_groups % PEARL_TALL_COL_OFFSETS != 0
+                        || (uint64_t)PEARL_TALL_A_ROWS(ctx->profile.m) * k
+                               > (uint64_t)0xFFFFFFFFu)) {
+    if (err && err_len)
+      snprintf(err, err_len, "tall fold: col_batch %u is not a whole number of %u-column tiles",
+               col_groups, (unsigned)PEARL_TALL_BN);
+    return false;
+  }
   const unsigned tiles =
-      (unsigned)((rowBlocks / PEARL_WARP_ROWS) * (colBlocks / warpCols));
-  // Two full-chunk stages; the transcripts live in registers and global now.
-  const size_t smem = (size_t)PEARL_STAGE_BUFS
-                      * ((size_t)warpCols * PEARL_WMMA_COL_BLK * 16
-                         + (size_t)PEARL_WARP_ROWS * regionsPerWarp * PEARL_ROWS_COUNT)
-                      * PEARL_SB_STRIDE;
+      ctx->foldTall
+          ? (unsigned)(((ctx->rowsValid + PEARL_TALL_ROW_OFFSETS - 1u) / PEARL_TALL_ROW_OFFSETS)
+                       * (col_groups / PEARL_TALL_COL_OFFSETS))
+          : (unsigned)((rowBlocks / warpRows) * (colBlocks / warpCols));
+  // Two full-chunk stages; the transcripts live in registers and global now. The
+  // tall fold: three 64-deep stages, its ring's barriers, and the transcripts.
+  const size_t smem = ctx->foldTall
+                          ? (size_t)PEARL_TALL_SMEM
+                          : (size_t)PEARL_STAGE_BUFS
+                                * ((size_t)warpCols * PEARL_WMMA_COL_BLK * 16
+                                   + (size_t)warpRows * regionsPerWarp * PEARL_ROWS_COUNT)
+                                * PEARL_SB_STRIDE;
   // The fold writes each transcript slot exactly once only when every chunk
   // has its own bucket. A geometry with more chunks than buckets would fold
   // into whatever the buffer already held; refuse it rather than mine garbage.
@@ -1177,8 +1274,7 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   // Once per CONTEXT, not once per process: the attribute is per device (see
   // Ctx::smemOptedIn).
   if (!ctx->smemOptedIn) {
-    cudaFuncSetAttribute(reinterpret_cast<const void *>(pearl_tile_fold_wmma),
-                         cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
+    cudaFuncSetAttribute(foldFn, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
     ctx->smemOptedIn = true;
   }
   // The fold is persistent: exactly as many blocks as can be resident, each
@@ -1186,27 +1282,16 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   // exposed (see the kernel). Launching more would only queue blocks behind
   // the resident ones and bring the exposed starts back. Asked once per
   // context, after the opt-in, because the answer depends on the footprint.
-  //
-  // Only the Ada build is persistent (PEARL_FOLD_PERSISTENT), so ask which
-  // binary this card actually loaded rather than which card it is: the answer
-  // has to match the code that runs.
+  // Only the persistent build (ctx->foldPersistent, above) uses it.
   if (ctx->foldResident == 0) {
     int sms = 0, perSm = 0;
     cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, ctx->device);
-    cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-        &perSm, reinterpret_cast<const void *>(pearl_tile_fold_wmma), threads, smem);
+    cudaOccupancyMaxActiveBlocksPerMultiprocessor(&perSm, foldFn, (int)threads, smem);
     ctx->foldResident = (unsigned)(sms > 0 ? sms : 1) * (unsigned)(perSm > 0 ? perSm : 1);
-#ifdef PEARL_FOLD_PERSISTENT_FORCED
-    ctx->foldPersistent = PEARL_FOLD_PERSISTENT != 0;
-#else
-    cudaFuncAttributes fa;
-    ctx->foldPersistent =
-        cudaFuncGetAttributes(&fa, reinterpret_cast<const void *>(pearl_tile_fold_wmma))
-            == cudaSuccess && fa.binaryVersion == 89;
-#endif
   }
   const unsigned blocks =
-      (ctx->foldPersistent && ctx->foldResident < tiles) ? ctx->foldResident : tiles;
+      ((ctx->foldPersistent || ctx->foldTall) && ctx->foldResident < tiles) ? ctx->foldResident
+                                                                           : tiles;
   // The fold hashes every transcript itself and tests it against the bound. It
   // writes only on a hit and appends to a compact list, so the readback below
   // is four bytes rather than one flag per region.
@@ -1228,9 +1313,14 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   hitList.hash = reinterpret_cast<uint32_t *>(ctx->dHashes);
   hitList.transcript = ctx->dHitTranscript;
   cudaMemsetAsync(ctx->dHitCount, 0, sizeof(uint32_t));
-  pearl_tile_fold_wmma<<<blocks, threads, smem>>>(
-      ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
-      col_off, ctx->rowsValid, col_groups, tiles, test, hitList);
+  if (ctx->foldTall)
+    pearl_tile_fold_tall<<<blocks, threads, smem>>>(
+        ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
+        col_off, ctx->rowsValid, col_groups, tiles, test, hitList);
+  else
+    pearl_tile_fold_wmma<<<blocks, threads, smem>>>(
+        ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
+        col_off, ctx->rowsValid, col_groups, tiles, test, hitList);
 
   uint32_t hits = 0;
   cudaMemcpy(&hits, ctx->dHitCount, sizeof(uint32_t), cudaMemcpyDeviceToHost);

@@ -39,48 +39,48 @@
 // This replaced a guess. The tile was previously derived as "row i = i*8, columns
 // in pairs at stride 8", which produced a 2x64 tile — the real default is 4x8,
 // and the index sets are not a simple stride at all.
-// The tile is CONTIGUOUS: four consecutive rows by sixteen consecutive columns.
-//
-// This is what the reference miner actually mines. Its own test fixtures open a
-// block with
+// The reference miner's own test fixtures open a block with
 //
 //   A_row_indices    = [192, 193, 194, 195]
 //   B_column_indices = [96, 97, 98, ...]
 //
-// not the strided {0,8,64,72} x {0,1,8,9,32,33,40,41} that MiningConfiguration
-// carries as a DEFAULT. Both are legal -- the pattern is self-describing in
-// config52, and the miner chooses it -- but contiguous is better in every way
-// that matters here: the sixteen B columns are one contiguous run of the
-// operand rather than sixteen scattered rows, the Merkle proof covers
-// consecutive chunks and so needs fewer siblings, and a 4x16 tile is the shape
-// an int8 tensor-core mma maps onto directly.
+// a contiguous tile, not the strided {0,8,64,72} x {0,1,8,9,32,33,40,41} that
+// MiningConfiguration carries as a DEFAULT. Both are legal: the pattern is
+// self-describing in config52, and the miner chooses it.
 //
-// The offset rule is unchanged in form: rows {0,1,2,3} are the subsets of bits
-// {0,1} and columns {0..15} the subsets of bits {0,1,2,3}, so a valid offset is
-// still one with the pattern's own bits clear -- a multiple of 4 down and of 16
-// across. Re-checked against a transcription of offset_is_valid.
-// The tile is 16 CONSECUTIVE ROWS by 16 CONSECUTIVE COLUMNS.
+// The offset rule has the same form for any pattern that is every subset of
+// its own mask bits, as all of these are: a valid offset is one with the
+// pattern's bits clear. Re-checked against a transcription of offset_is_valid.
+//
+// The tile is rows {0,1,2,3} + 8j (j < 4) by columns {0,1} + 8i (i < 8):
+// sixteen rows spread over 32 and sixteen columns spread over 64.
 //
 // Tile size is free. It cancels out of the share rate exactly:
 //   shares/s = regions/s * bound/2^256
 //            = (MACs/s / (tile*k)) * (target * tile * (k/rank) * 128) / 2^256
 // leaves MACs/s * 128 / (rank * difficulty). So the tile is chosen purely for
-// what it costs to READ OUT, and 16x16 is the shape that costs nothing.
+// what it costs to READ OUT, and so is its shape.
 //
-// A 16x16 tile is exactly one int8 wmma accumulator fragment. The XOR over the
-// tile is then the XOR over every lane's registers followed by one warp
-// reduction -- no shared memory, no barriers, and no need to know which element
-// sits in which register, because XOR does not care about order.
+// This is the shape the int8 tensor cores already hand over. In the m16n8k32
+// accumulator, lane L holds rows g and g+8 by columns 2t and 2t+1 (g = L >> 2,
+// t = L & 3). Over the fold's 32x64 warp tile that is rows g + {0,8,16,24} by
+// columns 2t + {0,1} + 8i: a quarter of exactly one region of this pattern.
+// Lanes L, L^4, L^8 and L^12 hold the rest of it, so a region's XOR is each
+// lane's own registers folded together plus one shuffle round trip among four
+// lanes. The 64x64 warp tile a 4090 runs holds a quarter of two regions a lane,
+// one in each 32 rows, the same way.
 //
-// The previous 4x16 tile was a QUARTER of a fragment, so the fold had to spill
-// each accumulator to shared memory and gather four rows back out, twice per
-// fragment per chunk. Measured on a 4090: deleting the readout entirely took
-// the kernel from 57 to 185 TH/s, so that gather was two thirds of all runtime.
+// The contiguous 16x16 tile this replaced was one wmma fragment, whose XOR took
+// a whole-warp reduction per region per chunk. Before that, a 4x16 tile was a
+// QUARTER of a fragment and had to be gathered back out of shared memory, which
+// was two thirds of all runtime on a 4090 (57 -> 185 TH/s without the readout).
 //
-// h*w = 256 is the largest the sanity checks allow, and both dimensions are
-// divisible by TILE_H = 2.
-const ROWS_PATTERN = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-const COLS_PATTERN = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+// h*w = 256 is the largest the sanity checks allow, and both counts are
+// divisible by TILE_H = 2. The verifier rebuilds the pattern from a share's own
+// row indices, so like the strided default MiningConfiguration carries, it is
+// the miner's to choose.
+const ROWS_PATTERN = [0, 1, 2, 3, 8, 9, 10, 11, 16, 17, 18, 19, 24, 25, 26, 27];
+const COLS_PATTERN = [0, 1, 8, 9, 16, 17, 24, 25, 32, 33, 40, 41, 48, 49, 56, 57];
 
 // Expand a pattern's (stride, length) dimensions into its index list, exactly as
 // PeriodicPattern::to_list does: start from [0] and, for each dimension, replace
@@ -152,7 +152,7 @@ function minStridePad(shape) {
 //   rank = 128        the rank-penalty floor; below it blocks are penalised,
 //                     above it costs more work for no extra credit
 //   k    = 16 * rank  the smallest common dimension the sanity checks allow
-//   tile = 4 x 8      rows_pattern x cols_pattern
+//   tile = 16 x 16    rows_pattern x cols_pattern (our choice; see above)
 //
 // Note what is NOT here: m and n. The matmul's outer dimensions are not part of
 // the mining configuration at all — the miner chooses them, because the work is

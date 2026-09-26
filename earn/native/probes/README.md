@@ -69,7 +69,7 @@ Inside the fold, fold-only, all at the cap (these builds compute wrong answers):
 The per-chunk `__syncthreads` is worth 18% per clock and still 9% after the clock
 drops to pay for it. The square warp tile that won 2% on Blackwell loses 2% here.
 
-### Where it ended: 223 -> 264 TH/s at the same 450 W
+### Where it ended: 223 -> 289 TH/s at the same 450 W
 
 | step | full miner loop |
 |---|---|
@@ -77,13 +77,350 @@ drops to pay for it. The square warp tile that won 2% on Blackwell loses 2% here
 | restamp A between salts instead of redrawing both operands | 229 |
 | + hash in the fold's epilogue, no 1 GiB transcript round trip | 234 |
 | + persistent fold, next tile's chunk 0 staged under the last chunk | 241 |
-| + per-group staging, mid-k-step copies, one-barrier seam, serpentine bands | **264** |
+| + per-group staging, mid-k-step copies, one-barrier seam, serpentine bands | 264 |
+| + ldmatrix lane bases held for the kernel, compile-time `active` | 270 |
+| + tile coordinates by shift and mask, not divides | 273 |
+| + a tile pattern the accumulators hold, eight 64x64 warps a block | 280 |
+| + a 192x256 tile, three 64-deep stages on an mbarrier ring | **289** |
 
-The last two are gated to sm_89 (`PEARL_FOLD_PERSISTENT`, `PEARL_FOLD_GROUP_STAGE`,
+The 241 and 264 steps are gated to sm_89 (`PEARL_FOLD_PERSISTENT`, `PEARL_FOLD_GROUP_STAGE`,
 `PEARL_FOLD_SERPENTINE`), because only a 4090 has run them. Ampere and Blackwell keep one
 block per tile and the block-wide walk; run on this card with their settings forced, those
 paths measure +1.8% and +1.9% over the previous core rather than a regression, and their
 chunk loops compile to 370 and 484 instructions against 385 and 451 before.
+
+The last two rows are gated to sm_89 too (`PEARL_FOLD_LANE_BASES`,
+`PEARL_FOLD_FAST_COORDS`). Measured interleaved against v0.5.5 in the full loop: +2.3%,
+then +3.5% with both (262.6 / 262.8 -> 272.0 / 271.8; v0.5.5 measured ~1.5 TH/s under its
+264 that day, so the rows carry the gains onto 264), 400/400 hits verified. Both shorten
+the chunk and tile seams, where all sixteen warps wait at the barrier together and each
+instruction costs about 0.12% of the rate. Both sit on the 128-register knife edge: holding
+the fast-coordinate shift in a register instead of recomputing it cost ptxas the lane bases
+and measured 265.0 against 273.0. Check the SASS after any fold edit: the first `LDSM` should
+be a few instructions after `BAR.SYNC`.
+
+The 280 row is gated to sm_89 as well (`PEARL_FOLD_WIDE_WARPS`; the tile pattern it needs is
+every card's). It measured 271.6 -> 279.8 against the row before it, interleaved the same
+day (+3.0%); see "Eight 64x64 warps a block" below.
+
+The last row is its own kernel, `pearl_tile_fold_tall`, with a body only in the sm_89 build
+(`PEARL_FOLD_TALL`); the host launches it when that is the binary it loaded. Against the 273
+row, interleaved: 271.8 / 271.9 -> 288.6 / 289.4 in the full loop (+6.3%); see "A 192x256
+tile on an mbarrier ring" below.
+
+### Against the field: 264 is 15.8% behind
+
+What a user compares is the number a miner DISPLAYS over a few minutes, so that is the
+test: `compare-miners.sh`, 5 minutes each, back to back on this 4090 at stock 450 W, same
+pool, same wallet, after a 60 s unmeasured warm-up (2026-09-25):
+
+| miner | displayed TH/s (min 1-5) | shares ok/rej | SM clock | power | fee |
+|---|---|---|---|---|---|
+| PeakMiner 2.17.1 | **313.5** | 9/0 | 2456 MHz | 449 W | 2% |
+| SRBMiner 3.6.9 | 313.0 | 15/0 | 2471 MHz | 449 W | 2% |
+| ours, v0.5.5 | 264.1 | 6/0 | 2380 MHz | 449 W | 0% |
+
+Two independent codebases land within 0.2% of each other, which reads as what a well-fed
+fold reaches on this card rather than one vendor's trick. Note where the gap is: the same
+449 W, and THEY hold the higher clock. They do ~16% less energy per multiply-accumulate
+(0.70 TH/W against 0.59), and on a power-capped card that is the whole difference. The
+pure-mma ceiling here is ~340 T-MAC/s, so they sit at ~92% of it and we sit at ~78%.
+
+### A tile the accumulators already hold: +0.5%, all of it energy
+
+The tile moved from contiguous 0..15 by 0..15 to rows {0,1,2,3}+8j by columns {0,1}+8i
+(`pearl_config.h`). Across the 32x64 warp tile each lane's 64 m16n8k32 accumulators are
+then a quarter of exactly one region, shared with lanes L^4, L^8 and L^12. So the per-chunk
+readout is the lane's own XOR tree plus three shuffles, where it was a tree plus eight
+whole-warp REDUX and their uniform-register moves. The pattern is self-describing, and
+config52, the proofs and the oracle follow it. The pool takes it: 2 of 2 shares accepted in
+49 s at us2.pearl.herominers.com (`earn-cli`, 2026-09-25). That also confirms the
+two-dimension pattern encoding in config52 against the live verifier.
+
+Bench, 4090 at 450 W, 30 s runs, interleaved (2026-09-25):
+
+| build | TH/s | vs v0.5.5 |
+|---|---|---|
+| v0.5.5, REDUX readout | 263.4 / 264.1 / 263.9 | |
+| lane readout, three independent shuffles (shipped) | 265.1 / 265.1 / 265.1 | +0.5% |
+| lane readout, two-step butterfly | 264.6 / 264.7 / 264.8 | +0.3% |
+| fold deferred into the next chunk's first k-step | 258.7 / 258.4 / 258.9 | -2.0% |
+| diagnostic: no shuffles (`PEARL_ABLATE_TRANSCRIPT`) | 267.1 | +1.2% |
+| diagnostic: no per-chunk readout at all (`PEARL_ABLATE_READOUT`) | 271.3 | +2.8% |
+
+The full miner loop (`hashrate.js`) went 262.9 / 262.8 -> 264.0 / 264.9. The gain is
+energy, not tensor-pipe time. Nsight Compute has the pipe 85.6% busy before and 85.5% after,
+while instructions per mma fell from 4.43 to 4.12, and at the power cap that buys clock.
+
+It is worth more once the chunk head is short. On a build that keeps the ldmatrix lane bases
+live across chunks (the first ldmatrix two instructions after the barrier), the same readout
+measured 269.2 / 269.7 / 269.4 -> 272.9 / 273.0 / 272.8 (bench) and 268.0 / 268.2 ->
+271.4 / 271.3 (full loop), +1.2-1.3%, at the same clock. So there it is tensor-pipe time:
+rate over clock times the 131072 MAC/clk peak goes from 0.867 to 0.880. With little else
+between the barrier and the first mma, the readout's latency is on the critical path.
+Add shift-and-mask tile coordinates to that build as well and most of it is gone again:
+272.7 / 273.0 / 273.0 -> 274.0 / 273.5 / 273.8 (bench), 271.2 / 271.7 -> 272.5 / 272.6
+(full loop), +0.3-0.4%. The two gains overlap rather than add.
+The two diagnostics bound what any readout can still give: the 32-gate tree is the floor for
+XORing 64 values and costs ~1.6%, and the shuffles ~0.7%. That is mostly their latency at the
+chunk end, where every warp arrives at once. Moving them elsewhere did not work: ptxas sinks
+them back to the end of the chunk, volatile asm or not, and holding their inputs across the
+barrier made it re-read `threadIdx` in the chunk head.
+
+### Eight 64x64 warps a block: +3.0%
+
+On Ada the fold now runs eight 64x64 warp tiles (256 threads) over the same 128x256 CTA
+tile, with the tile pattern above (`PEARL_FOLD_WIDE_WARPS`). A 512-thread block caps a
+thread at 128 registers, half of them accumulators, and that is what held the warp tile
+at 32x64. At 256 threads the cap is 255. A thread holds 128 accumulators, a fragment
+ldmatrix feeds twice the mma (0.25 per mma, not 0.375), and each lane holds a quarter of
+two regions of the pattern instead of one. The fold uses 235 registers and spills
+nothing. The host reads the block size off the loaded binary, as it does for the
+persistent grid, and refuses a fold whose launch bound says otherwise.
+
+Against the sixteen-warp fold of the rows above, 4090 at 450 W, interleaved (2026-09-25):
+
+| | sixteen 32x64 warps | eight 64x64 warps |
+|---|---|---|
+| bench, 30 s | 273.8 / 273.5 / 272.2 | 281.2 / 281.4 / 281.3 (+3.0%) |
+| full miner loop, 60 s | 271.73 / 271.51 | 279.86 / 279.65 (+3.0%) |
+| SM clock | ~2365 MHz | ~2425 MHz |
+| rate / (clock x 131072) | 0.882 | 0.887 |
+| instructions per mma (Nsight) | 3.75 | 2.89 |
+| tensor pipe busy (Nsight) | 88.7% | 89.0% |
+
+400 of 400 hits verified, across 303 operand draws. The pool takes it: 2 of 2 shares
+accepted in 26 s at us2.pearl.herominers.com (`earn-cli`, 2026-09-25).
+
+Every 256-thread fold before this lost: -2% at v0.5.2, -0.4% on the block-wide staging
+walk. The probe pre-check (`feedprobe2c`, lane readout and hash in both) had it at +1.8%.
+What it took on the real fold, each step measured against the one before (bench):
+
+| step | gain |
+|---|---|
+| group staging, copies in the middle of k-steps 0-2, ldmatrix lane bases held | +1.1% |
+| staging destinations held too | +0.7% |
+| the next chunk's A slots first: A0-A3, B0-B3, B4-B7, one group a k-step | +1.1% |
+
+Two things about eight warps explain all three.
+
+- **A scheduler has two warps, and the barrier keeps them in step.** The tensor pipe takes
+  one mma at a time (16 cycles; the issuing warp then waits 8 before its next instruction).
+  It idles whenever both warps of a scheduler run something else at once, and with the
+  barrier lining them up, they often do; sixteen warps had four a scheduler to cover each
+  other. So every instruction between mma costs more. ptxas rebuilt the ldmatrix bases and
+  the staging destinations from the lane id although registers were free (24 instructions
+  after every barrier, 7 an operand in every copy group): it prices recomputing below
+  holding. It cannot recompute a value behind an empty `asm volatile`.
+- **The copy schedule only steers ptxas.** A small copy group gets predicated instead of
+  branched around, and a predicated group is scheduled freely. Of the thirteen schedules
+  in `pearl_slots_before`, every one that ended up with copies ahead of the chunk's first
+  mma lost 2% or more, and so did the two whose first copies follow only 5-8 mma.
+  Predicating every copy, which saves the branches, lost 1.2% for the same reason despite
+  50 MHz more clock. The shipped one lands its copies after the chunk's 11th, 33rd and 80th
+  mma.
+
+Tried and dropped: offsetting the two warps' copies by a pair or two (0% to -2%);
+computing the copy bases once a chunk (the groups then get predicated and land in the
+seam); folding a region's transcript right after its last mma (ptxas sinks it back to the
+chunk's end, SASS unchanged). Ablations, the first eight-warp build against sixteen warps
+(wrong results, pricing only): without the fused hash 0% against -4.3% (sixteen warps need
+their hashers' skew, eight do not); without the per-chunk barrier +1.9% against +4.0%.
+
+Check after any fold edit: 0 spill; the first `LDSM` a few instructions after `BAR.SYNC`;
+no `LDGSTS` ahead of the chunk loop's first `IMMA` (today they follow its 11th, 33rd and
+80th).
+
+### A 192x256 tile on an mbarrier ring: +3.2% over eight 64x64 warps
+
+Staging is the fold's largest cuttable energy: 42 pJ a byte under load, 48 bytes an mma at
+128x256 (see the next section). Bytes per MAC are 1/BM + 1/BN, so a 192-row tile moves 22%
+fewer, 37.3 an mma, and a 96x64 warp tile feeds each ldmatrix to twelve mma, not eight. It
+needs 192 accumulators a thread, which is as far as 255 registers go.
+
+Two things had stopped it. Two 128-deep stages of 192x256 are 112 KB, over the 99 KB a
+block may have, so the stages have to be 64 deep, three of them. And with a `__syncthreads`
+a stage, as the fold synchronises, that is two lockstep seams a chunk: the old feed probe
+had 64-deep stages losing 3.5-5.5% at either tile size.
+
+So the tall fold drops the barrier for an mbarrier ring. FULL[b] completes when all 256
+threads' copies into buffer b have landed (each thread arrives through
+`cp.async.mbarrier.arrive.noinc` once it has issued them); EMPTY[b] when all eight warps have
+read b. A warp waits on FULL before it reads a stage and on EMPTY before it refills a buffer,
+and on nothing else, so the two warps of a scheduler can drift up to a stage apart and stop
+lining their readout seams up. sm_89 has no `try_wait`, so a wait spins on `test_wait`; the
+waits rarely spin, because what they wait for was issued a chunk earlier.
+
+Priced first on a feed probe (`perf-scratch/r7-probe/feedprobe4.cu`) that models the
+eight-warp fold -- group staging, lane readout with its shift queue, four hashers -- and
+checks every variant's results against the barrier build's. 4090 at 450 W, 128 SMs, T-MAC/s,
+interleaved, two sessions:
+
+| CTA tile, warps | stages | sync | rate | clock |
+|---|---|---|---|---|
+| 128x256, eight 64x64 | 2 x 128 | `__syncthreads` (the eight-warp fold) | 275.8 - 276.8 | 2470 MHz |
+| 128x256, eight 64x64 | 2 x 128 | ring | 278.1 - 279.4 | 2395 MHz |
+| 128x256, eight 64x64 | 3 x 64 | `__syncthreads` | 267.3 | 2430 MHz |
+| 128x256, eight 64x64 | 3 x 64 | ring | 278.2 - 278.8 | 2340 MHz |
+| 128x256, eight 64x64 | 4 x 64 | ring | 272.2 - 273.9 | 2367 MHz |
+| 192x256, eight 96x64 | 3 x 64 | `__syncthreads` | 277.5 - 277.6 | 2502 MHz |
+| 192x256, eight 96x64 | 3 x 64 | ring | **291.0 - 292.6** | 2420 MHz |
+| 128x256 / 192x256, no sync at all (wrong results) | | | 294.4 / 299.7 | |
+
+The ring is worth little to the 128x256 tile and is what the 192x256 tile needs. On 64 SMs,
+where nothing hits the cap (2685 MHz), the larger tile spends 4-7% less energy an mma at the
+same synchronisation: 6.54 against 6.83 nJ with the barrier, 6.67 against 6.95 with the
+ring (power above a 90 W baseline, corrected to 75 C). The rest of its gain is the tensor
+pipe: rate / (clock x 131072) 0.921 against 0.853.
+
+The fold (`PEARL_FOLD_TALL`, a kernel of its own on sm_89), interleaved on the same day:
+
+| | eight 64x64 warps, 128x256 | eight 96x64 warps, 192x256, ring |
+|---|---|---|
+| bench, 30 s (sixteen-warp fold alongside: 273.5 / 272.8 / 273.4) | 281.4 / 281.5 / 281.4 | 290.7 / 290.8 / 290.1 (+3.2%) |
+| full miner loop, 60 s | 280.9 / 279.7 | 289.3 / 289.4 (+3.2%) |
+| full miner loop, 60 s, against the sixteen-warp fold (271.8 / 271.9) | | 288.6 / 289.4 (+6.3%) |
+| SM clock | ~2420 MHz | ~2405 MHz |
+| rate / (clock x 131072) | 0.887 | 0.921 |
+| registers | 235 | 255, no spill |
+
+400 of 400 hits verified, across 312 operand draws. The pool takes it: 2 of 2 shares
+accepted in 62 s at us2.pearl.herominers.com (`earn-cli`, 2026-09-25), the tile pattern
+unchanged.
+
+What else it takes:
+
+- **Transcripts in shared.** 192 accumulators leave no room for twelve transcript words a
+  lane: the lane that keeps a chunk stores its region's word, one `STS` a region a chunk,
+  into 12 KB after the stages and barriers (98368 bytes in all). A column slot's two warps
+  meet once a tile on a 64-thread barrier, and the first hashes the slot's 48 regions, a
+  pass and a half. Nothing else orders the hand-off: the second warp can overwrite those
+  words only in its next chunk-0 readout, after its stage 1 waited on EMPTY for the buffer
+  every warp's stage 0 read, which the hasher releases only after hashing.
+- **A ragged last row group.** m is a power of two and 192 is not a factor of it, so 683
+  row groups cover 131136 rows. The noised A is allocated that long (the 64 extra rows
+  zeroed once and never generated), and the fold hashes no region past row m. The attempts
+  it reports are the valid regions only, so the extra work (0.05%) never counts.
+- **Where the copies go.** A's after the second B pair of a stage's first k-step, behind the
+  EMPTY wait; B's after the first pair of its second, then the arrival. Bench, TH/s: that
+  290.3 - 290.6; B one pair later 288.2 - 288.6; A a pair later 287.8; both at the start
+  of their k-steps 283.0; B a pair earlier still spills.
+
+Tried and dropped: releasing a stage right after its last ldmatrix instead of its last mma
+(-0.6%); every warp hashing its own 24 regions, which drops the column barrier but stops both
+warps of a scheduler to hash (-0.3%); a relaxed shared counter for EMPTY instead of an
+mbarrier arrive (-0.6% in the probe); later copies in a chunk's second stage, whose EMPTY
+wait spins the most (Nsight: 2.4% of warp samples), -1% to -4%. Band depth measured flat: 8,
+16 and 32 row groups.
+
+What is left to take, priced by ablation (bench, wrong results, the build at 290.9):
+without the ring's waits (`PEARL_ABLATE_RING`) 294.2 / 294.6 (+1.2%), without the fused hash
+293.5 / 293.8 (+1.0%). Neither is where the rest of the distance to 313 is. Nsight has the
+fold at 3.22 instructions an mma against the eight-warp fold's 2.89: more copy groups and
+their `@!PT LDS` pads (0.146 an mma), the ring's spins (0.05 `LDS` an mma), and a copy's
+shared writes taking twice the wavefronts, because a 64-deep stage reads half of each
+128-byte line of a 2 KB-strided row.
+
+Check after any edit to the tall fold: 255 registers or fewer and 0 spill; SASS stays two
+`LDGSTS` groups a stage, the A group behind the EMPTY spin and the B group ending in
+`ARRIVES.LDGSTSBAR`.
+
+### What a staged byte costs, and why a standalone probe underprices it
+
+A standalone copy loop priced staging (L2 to shared by `cp.async`) at 1.87 nJ per IMMA;
+the fold's own power pointed to about 2.4. Measured directly, the fold's number is right,
+and nothing in the copy pattern explains the gap. The chip's load does.
+
+All on 64 SMs, so nothing hits the cap (2700 MHz), 30 s runs, corrected to 70 C. On and
+off runs of one build share their SASS: the copies are switched at run time.
+
+| measurement | cost |
+|---|---|
+| fold with staging minus fold without it, interleaved x2 | 2.38 nJ per IMMA |
+| of which the copies themselves (same build, copies switched off) | ~2.0 nJ per IMMA, 42 pJ per byte |
+| of which DRAM and L2 misses (all tiles re-read L2-resident data) | 0.11 nJ per IMMA |
+
+A copy of the fold's chunk loop (same launch, addresses, swizzle and copy schedule, no
+readout) costs the same 42 pJ/B. Nsight Compute counts the same traffic for it and for
+v0.5.5: 48 B per IMMA from L2 at 99.5% hits, 12 bank writes and 48 bank reads per IMMA,
+no bank conflicts. Varying that loop, pJ per staged byte:
+
+| loop | pJ/B |
+|---|---|
+| as in the fold: ldmatrix + IMMA beside the copies | 41.6 - 43.3 |
+| no ldmatrix (IMMA operands from registers) | 41.6 - 42.3 |
+| one copy group a chunk instead of three | 42.1 |
+| half the copies | 42.3 |
+| contiguous source rows instead of 2 KB-strided | -1.5 |
+| L2-resident source | -2.5 |
+| the fold's operand values instead of uniform bytes | +0.5 |
+| the same copies, rest of the chip idle | 20 - 24 |
+| the same, with 64 other SMs running IMMA or ALU work | 37 - 41 |
+
+The last two rows are the gap. A byte costs about 1.7x more when the chip is busy, and so
+does a plain LOP3: 0.28 - 0.30 nJ per warp-instruction on an idle chip, 0.51 beside the
+IMMA work, on and off alternating every 3 s so both share one die temperature. The
+standalone probe ran with no tensor load; every other unit energy was measured under load.
+There is no copy-pattern fix. What is left is fewer bytes per MAC: at 42 pJ/B a 192x256
+tile saves about 0.45 nJ per IMMA, not 0.34.
+
+### Two warp groups instead of the per-chunk barrier: measured, not shipped
+
+The per-chunk `__syncthreads` holds all sixteen warps in the chunk seam together. The idea
+was to split them into two groups of eight by row slot (row slots 0-1, which hold the
+hashers, and 2-3), two warps of each on every scheduler, each group crossing chunk
+boundaries on its own named barriers, so one group's seam runs while the other keeps the
+tensor pipes fed. A is already private to a group. B is not: every warp reads all 64
+columns of its column slot, so the groups have to hand B to each other.
+
+What it could be worth, from builds that race (results wrong), bench, interleaved against
+the same session's base:
+
+| build | vs base |
+|---|---|
+| per-chunk barrier deleted | +2.8 to +3.1% |
+| each group on its own 256-thread barrier, same code; the hash at the tile seam sets the offset | +1.7 to +2.2% |
+| the same, with one group staging all of B | +2.8 to +3.2% |
+| the same, B split by k between the groups | +0.8 to +1.2% |
+| group 1's seam placed 2 k-steps into the chunk (the form priced at +1.3% before `PEARL_FOLD_FAST_COORDS`) | +0.25% |
+
+What correct versions got. Each passed `verify-hits.js` 400/400. Under random warp and
+group delays the three protocols (rows 1, 3 and 5) passed again, 400/400, while the same
+protocols with the refill wait removed failed: 82, 89 and 160 of 400 hits wrong.
+
+| how the groups share B | vs base |
+|---|---|
+| each stages half the columns, as now; the trailing group publishes its half mid-chunk (offset at most half a k-step) | 0.0% |
+| the same, B copies bunched into k-step 1 (offset up to 1.5 k-steps) | -3.0% |
+| split by k: the leading group stages quads 0-3, the trailing group 4-7, so the leading group needs the other half only from k-step 2 (offset up to 2) | -0.4% |
+| the same, chunk 0 run like every other chunk | -4.7% |
+| the leading group stages all of B in whole rows | -3.0% |
+| the same, offset pinned at 1.5 k-steps | -0.9% |
+
+In the full miner loop the best of them (row 1) measured 272.6 / 272.1 against 271.6 /
+272.2 TH/s, +0.2%.
+
+Two copy patterns cost on their own, under the plain barrier: the k split, -1.2%, because
+every 128-byte source row is then fetched as two 64-byte halves by different warps; one
+group staging all of B, -2.3%.
+
+Why the correct versions lose what the racing ones show. With two stages -- 96 KB of the
+99 KB -- a buffer can be refilled only once BOTH groups are done with it, so the refill
+waits for the slower group and starts late in the chunk. The producer then waits for its
+own copies at its next chunk top, and the other group waits for the producer. Nsight,
+per-PC sampling, the pinned version against its racing twin: 8.6% of stall samples on that
+copy wait against 0.9%, 11.4% against 9.1% at the chunk-top barrier, and 4.15 against 3.82
+warp-instructions per IMMA. Every protocol adds three or four barrier instructions a warp
+per chunk, and a barrier inside the k-loop can cost ptxas the A lane base at the register
+cap: the k split and the pinned version rebuild it after every chunk-top barrier, about 8
+instructions. And when one group stages all of B it is the slower group, so the other
+catches up behind it and the seams line up again (row 5); pinning the offset (row 6)
+recovers most of that, not all.
+
+What would change the answer: a third stage (no room at 128x256), finer stages (k64 x 3
+measured -5.5% with the barrier in the probe), or a tile where the shared operand is small.
+The development code (all six protocols, the stress and negative-control switches) is kept
+out of the fold.
 
 ### Measuring, and proving a build correct
 
@@ -443,11 +780,11 @@ rejected outright -- "square 64x64 warp tile: 130, and it lost 40%" -- on the
 grounds that warp count for latency hiding beats shared traffic. That reasoning was
 about a card with time to spare; on a power-bound card the trade inverts.
 
-**Not shipped yet.** `PEARL_FOLD_THREADS` and the warp-grid constants are read by
+**Not shipped here.** `PEARL_FOLD_THREADS` and the warp-grid constants are read by
 the HOST as well as the device, so unlike `PEARL_BLOCK_GROUP` this cannot be gated
-on `__CUDA_ARCH__`. Shipping it needs the host to dispatch on compute capability
-between two instantiations of the fold, which is real work and cannot be validated
-here without a 4090 to prove no regression.
+on `__CUDA_ARCH__` alone. The host now reads the block size off the loaded fold
+(`PEARL_FOLD_WIDE_WARPS`), and the 4090 ships eight 64x64 warps. The 5090 still runs
+sixteen: the Ada fold it would take has not been measured on this card.
 
 
 ## Why 300 TH/s is out of reach for this tiling, as arithmetic

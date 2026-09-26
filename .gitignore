@@ -150,3 +150,5 @@ dist/
 earn/native/build/
 earn/native/cuda-build/
 earn/native/node_modules/
+# compare-miners.sh output
+earn/native/probes/compare-*/

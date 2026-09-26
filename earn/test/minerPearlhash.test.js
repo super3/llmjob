@@ -34,25 +34,81 @@ describe('PROFILE', () => {
     expect(PROFILE.k / PROFILE.rank).toBe(JACKPOT_BUCKETS);
   });
 
-  // 16x16 contiguous. The size is chosen for what it costs to READ OUT, not for
-  // anything protocol: tile size cancels out of the share rate exactly, since
-  // the bound it earns and the work it costs both scale with it.
-  //
-  // A 16x16 tile is exactly one int8 wmma accumulator fragment, so the fold's
-  // XOR is the XOR over each lane's registers and one warp reduction -- no
-  // shared memory and no need to know the fragment layout. The 4x16 tile this
-  // replaced was a QUARTER of a fragment, so every chunk boundary had to spill
-  // the accumulator to shared and gather rows back. On a 4090 that gather cost
-  // about two thirds of the kernel's runtime.
+  // Rows {0,1,2,3}+8j by columns {0,1}+8i. The shape is chosen for what it costs
+  // to READ OUT, not for anything protocol: tile size cancels out of the share
+  // rate exactly, since the bound it earns and the work it costs both scale
+  // with it, and the verifier rebuilds the pattern from a share's own indices.
   //
   // 256 is the largest h*w the sanity checks allow, and both dimensions are
   // divisible by TILE_H = 2.
-  test('the tile is a contiguous 16x16 block, the largest allowed', () => {
-    expect(PROFILE.rows).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
-    expect(PROFILE.cols).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+  test('the tile is 16 rows over 32 by 16 columns over 64, the largest allowed', () => {
+    expect(PROFILE.rows).toEqual([0, 1, 2, 3, 8, 9, 10, 11, 16, 17, 18, 19, 24, 25, 26, 27]);
+    expect(PROFILE.cols).toEqual([0, 1, 8, 9, 16, 17, 24, 25, 32, 33, 40, 41, 48, 49, 56, 57]);
     expect(PROFILE.rows.length * PROFILE.cols.length).toBe(256);
     expect(PROFILE.rows.length % 2).toBe(0); // TILE_H
     expect(PROFILE.cols.length % 2).toBe(0);
+  });
+
+  // Why this shape: it is what the int8 tensor cores already hand over. In the
+  // m16n8k32 accumulator lane L holds rows g, g+8 and columns 2t, 2t+1 (g = L >> 2,
+  // t = L & 3), and across the fold's 32x64 warp tile (two m16 tiles by eight n8
+  // tiles) each lane's 64 values fall in exactly ONE region, shared with lanes
+  // L^4, L^8 and L^12. That is what lets the fold XOR a region in registers plus
+  // two shuffles. This pins the claim the kernel's readout is built on, so the
+  // pattern cannot drift from it unnoticed.
+  test('each lane of a 32x64 m16n8k32 warp tile holds a quarter of exactly one region', () => {
+    // A cell's region is its row and column offset: the pattern's bits cleared.
+    const regionOf = (r, c) => (r & ~ROWS_MASK) + ',' + (c & ~COLS_MASK);
+    const cellsOf = new Map();
+    const lanesOf = new Map();
+    for (let lane = 0; lane < 32; lane++) {
+      const g = lane >> 2, t = lane & 3, mine = new Set();
+      for (let mb = 0; mb < 2; mb++) for (let nb = 0; nb < 8; nb++) for (let i = 0; i < 4; i++) {
+        const r = mb * 16 + g + (i >= 2 ? 8 : 0), c = nb * 8 + 2 * t + (i & 1);
+        const reg = regionOf(r, c);
+        mine.add(reg);
+        cellsOf.set(reg, (cellsOf.get(reg) || 0) + 1);
+      }
+      // Row offset 0 or 4 (lane bit 4), column offset 2t: what the kernel's
+      // hand-off assumes when it files each lane's words under a region.
+      expect([...mine]).toEqual([(4 * ((lane >> 4) & 1)) + ',' + (2 * t)]);
+      lanesOf.set([...mine][0], [...(lanesOf.get([...mine][0]) || []), lane]);
+    }
+    expect(cellsOf.size).toBe(8);
+    for (const n of cellsOf.values()) expect(n).toBe(256); // whole regions, 64 cells a lane
+    for (const lanes of lanesOf.values()) {
+      expect(lanes.map((l) => l ^ lanes[0]).sort((a, b) => a - b)).toEqual([0, 4, 8, 12]);
+    }
+  });
+
+  // The Ada fold runs 64x64 warp tiles (four m16 tiles by eight n8), and its
+  // readout and hand-off assume each lane's 128 values are a quarter of exactly
+  // two regions: m16 tiles 0-1 fold into one, 2-3 into the other, row offsets
+  // 4 * (lane bit 4) and 32 more, both at column offset 2t.
+  test('each lane of a 64x64 m16n8k32 warp tile holds a quarter of exactly two regions', () => {
+    const regionOf = (r, c) => (r & ~ROWS_MASK) + ',' + (c & ~COLS_MASK);
+    const cellsOf = new Map();
+    const lanesOf = new Map();
+    for (let lane = 0; lane < 32; lane++) {
+      const g = lane >> 2, t = lane & 3;
+      const halves = [new Set(), new Set()];
+      for (let mb = 0; mb < 4; mb++) for (let nb = 0; nb < 8; nb++) for (let i = 0; i < 4; i++) {
+        const r = mb * 16 + g + (i >= 2 ? 8 : 0), c = nb * 8 + 2 * t + (i & 1);
+        const reg = regionOf(r, c);
+        halves[mb >> 1].add(reg);
+        cellsOf.set(reg, (cellsOf.get(reg) || 0) + 1);
+      }
+      for (let rl = 0; rl < 2; rl++) {
+        expect([...halves[rl]]).toEqual([(32 * rl + 4 * ((lane >> 4) & 1)) + ',' + (2 * t)]);
+        const reg = [...halves[rl]][0];
+        lanesOf.set(reg, [...(lanesOf.get(reg) || []), lane]);
+      }
+    }
+    expect(cellsOf.size).toBe(16);
+    for (const n of cellsOf.values()) expect(n).toBe(256); // whole regions, 64 cells a lane each
+    for (const lanes of lanesOf.values()) {
+      expect(lanes.map((l) => l ^ lanes[0]).sort((a, b) => a - b)).toEqual([0, 4, 8, 12]);
+    }
   });
 
   // m and n are the miner's own workload dimensions and are NOT protocol.
@@ -73,12 +129,32 @@ describe('periodic patterns', () => {
       .toEqual(PROFILE.cols);
   });
 
-  // The exact six-byte encodings the reference produces for these defaults.
-  // A contiguous run is a single (stride 1, length N) dimension, so the factor
-  // byte is 0 and the length byte is N-1.
+  // The exact six-byte encodings, (factor-1, length-1) per dimension, where the
+  // factor is the stride over the running product of the dimensions before it:
+  //   rows: (stride 1, length 4), (stride 8, length 4) -> factors 1, 8/4 = 2
+  //   cols: (stride 1, length 2), (stride 8, length 8) -> factors 1, 8/2 = 4
+  // and the unused third dimension pads as factor 1, length 1.
   test('encode to the reference bytes', () => {
-    expect(patternToBytes(patternFromList(PROFILE.rows)).toString('hex')).toBe('000f00000000');
-    expect(patternToBytes(patternFromList(PROFILE.cols)).toString('hex')).toBe('000f00000000');
+    expect(patternFromList(PROFILE.rows)).toEqual([[1, 4], [8, 4]]);
+    expect(patternFromList(PROFILE.cols)).toEqual([[1, 2], [8, 8]]);
+    expect(patternToBytes(patternFromList(PROFILE.rows)).toString('hex')).toBe('000301030000');
+    expect(patternToBytes(patternFromList(PROFILE.cols)).toString('hex')).toBe('000103070000');
+  });
+
+  // A contiguous run is a single (stride 1, length N) dimension, so its factor
+  // byte is 0 and its length byte N-1: the encoding the previous 0..15 tile had.
+  test('a contiguous run encodes as one dimension', () => {
+    const run = Array.from({ length: 16 }, (_, i) => i);
+    expect(patternToBytes(patternFromList(run)).toString('hex')).toBe('000f00000000');
+  });
+
+  // The bytes the reference produces for MiningConfiguration's own strided
+  // defaults, two and three dimensions. The mined tile has two, so this pins the
+  // factor rule it depends on to the reference rather than to our own reading.
+  test("reproduces the reference's encoding of its strided defaults", () => {
+    expect(patternToBytes(patternFromList([0, 8, 64, 72])).toString('hex')).toBe('070103010000');
+    expect(patternToBytes(patternFromList([0, 1, 8, 9, 32, 33, 40, 41])).toString('hex'))
+      .toBe('000103010101');
   });
 
   test('a non-periodic index list is refused rather than mis-encoded', () => {
@@ -95,8 +171,8 @@ describe('buildConfig52', () => {
     expect(b.readUInt32LE(0)).toBe(2048);
     expect(b.readUInt16LE(4)).toBe(128);
     expect(b.readUInt16LE(6)).toBe(0);
-    expect(b.slice(8, 14).toString('hex')).toBe('000f00000000');
-    expect(b.slice(14, 20).toString('hex')).toBe('000f00000000');
+    expect(b.slice(8, 14).toString('hex')).toBe('000301030000');
+    expect(b.slice(14, 20).toString('hex')).toBe('000103070000');
   });
 
   test('the MoE trailer is zero for a standard job', () => {
@@ -292,21 +368,29 @@ describe('valid tile offsets', () => {
   }
 
   // The masks are the OR of each pattern's own values, and the patterns are
-  // exactly the subsets of those bits.
+  // exactly the subsets of those bits -- which is what makes the bit test below
+  // the reference rule, and what makes valid tiles partition the grid.
   test('the mask is the pattern bits', () => {
-    expect(ROWS_MASK).toBe(15); // bits 0 to 3
-    expect(COLS_MASK).toBe(15); // bits 0 to 3
-    for (const r of PROFILE.rows) expect(r & ~ROWS_MASK).toBe(0);
-    for (const c of PROFILE.cols) expect(c & ~COLS_MASK).toBe(0);
+    expect(ROWS_MASK).toBe(0x1b); // bits 0, 1, 3, 4
+    expect(COLS_MASK).toBe(0x39); // bits 0, 3, 4, 5
+    const subsets = (m) => {
+      const out = [];
+      for (let v = 0; v <= m; v++) if ((v & ~m) === 0) out.push(v);
+      return out;
+    };
+    expect(PROFILE.rows).toEqual(subsets(ROWS_MASK));
+    expect(PROFILE.cols).toEqual(subsets(COLS_MASK));
   });
 
   // The whole reason the search enumerates offsets the way it does. Getting
   // this wrong is not slow, it is unusable: the pool rejects the share with
   // "offset N is not valid for pattern" and the work is lost.
   test('the bit test agrees with the reference rule everywhere', () => {
+    const rowShape = patternFromList(PROFILE.rows);
+    const colShape = patternFromList(PROFILE.cols);
     for (let o = 0; o < 4096; o++) {
-      expect(offsetIsValid(o, ROWS_MASK)).toBe(referenceIsValid(o, [[1, 16]]));
-      expect(offsetIsValid(o, COLS_MASK)).toBe(referenceIsValid(o, [[1, 16]]));
+      expect(offsetIsValid(o, ROWS_MASK)).toBe(referenceIsValid(o, rowShape));
+      expect(offsetIsValid(o, COLS_MASK)).toBe(referenceIsValid(o, colShape));
     }
   });
 
@@ -332,14 +416,39 @@ describe('valid tile offsets', () => {
   });
 
   test('a tile is the offset OR-ed with the pattern', () => {
-    const t = regionToTile(0, { ...PROFILE, m: 4096, n: 4096 });
+    const p = { ...PROFILE, m: 4096, n: 4096 };
+    const t = regionToTile(0, p);
     expect(t.rows).toEqual(PROFILE.rows);
     expect(t.cols).toEqual(PROFILE.cols);
-    // The next valid row offset is 16, not 1: a valid offset has the pattern's
-    // bits clear, and the contiguous tile occupies bits 0 to 3.
-    const t2 = regionToTile(1, { ...PROFILE, m: 4096, n: 4096 });
-    expect(t2.rows).toEqual([16, 17, 18, 19, 20, 21, 22, 23,
-                             24, 25, 26, 27, 28, 29, 30, 31]);
+    // The next valid row offset is 4, not 1: a valid offset has the pattern's
+    // bits clear, and bit 2 is the first the rows leave free. The one after is
+    // 32, where bits 0 to 4 run out.
+    expect(regionToTile(1, p).rows).toEqual([4, 5, 6, 7, 12, 13, 14, 15,
+                                             20, 21, 22, 23, 28, 29, 30, 31]);
+    expect(regionToTile(2, p).rowOff).toBe(32);
+    // Columns likewise: 2, 4, 6, then 64. Region index = column index * rows + row.
+    const rowsValid = p.m / PROFILE.rows.length;
+    expect([1, 2, 3, 4].map((j) => regionToTile(j * rowsValid, p).colOff)).toEqual([2, 4, 6, 64]);
+    expect(regionToTile(rowsValid, p).cols).toEqual(PROFILE.cols.map((c) => c + 2));
+  });
+
+  // Four column offsets tile 64 columns and two row offsets 32 rows with no
+  // gaps, so a run of offset indices that starts on a multiple of four (two)
+  // is one contiguous block of the operand, beginning at index * 16. The fold
+  // stages each tile on exactly that assumption.
+  test('span-aligned runs of offsets are contiguous blocks', () => {
+    const p = { ...PROFILE, m: 4096, n: 4096 };
+    const rowsValid = p.m / PROFILE.rows.length;
+    for (const j0 of [0, 4, 16, 36]) {
+      const cols = [];
+      for (let j = j0; j < j0 + 16; j++) cols.push(...regionToTile(j * rowsValid, p).cols);
+      expect(cols.sort((a, b) => a - b)).toEqual(Array.from({ length: 256 }, (_, i) => j0 * 16 + i));
+    }
+    for (const i0 of [0, 8, 24]) {
+      const rows = [];
+      for (let i = i0; i < i0 + 8; i++) rows.push(...regionToTile(i, p).rows);
+      expect(rows.sort((a, b) => a - b)).toEqual(Array.from({ length: 128 }, (_, i) => i0 * 16 + i));
+    }
   });
 
   // Tiles partitioning the grid is what makes the search non-redundant: no two

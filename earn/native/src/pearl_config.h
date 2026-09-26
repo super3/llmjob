@@ -55,44 +55,59 @@
 
 // The mandated mainnet profile. rank=128 is the post-softfork value; mining any
 // other rank produces work the network does not credit.
-// The tile is 16 CONSECUTIVE ROWS by 16 CONSECUTIVE COLUMNS.
+// The tile is rows {0,1,2,3} + 8j (j < 4) by columns {0,1} + 8i (i < 8): sixteen
+// rows spread over 32, and sixteen columns spread over 64.
 //
 // Tile size is free. It cancels out of the share rate exactly:
 //   shares/s = regions/s * bound/2^256
 //            = (MACs/s / (tile*k)) * (target * tile * (k/rank) * 128) / 2^256
 // leaves MACs/s * 128 / (rank * difficulty). So the tile is chosen purely for
-// what it costs to READ OUT, and 16x16 is the shape that costs nothing.
+// what it costs to READ OUT, and so is its shape.
 //
-// A 16x16 tile is exactly one int8 wmma accumulator fragment. The XOR over the
-// tile is then the XOR over every lane's registers followed by one warp
-// reduction -- no shared memory, no barriers, and no need to know which element
-// sits in which register, because XOR does not care about order.
+// This shape is the one the tensor cores already hand over. An m16n8k32
+// accumulator gives lane L the elements at row g (c0, c1) and row g + 8 (c2,
+// c3), columns 2t and 2t + 1, where g = L >> 2 and t = L & 3. Across the fold's
+// 32x64 warp tile -- two m16 tiles down, eight n8 tiles across -- lane L holds
+// rows g + {0, 8, 16, 24} by columns 2t + {0, 1} + 8i. That is a quarter of
+// exactly one region: the one at row offset g & 4 and column offset 2t. Lanes
+// L, L^4, L^8 and L^12 hold the other three quarters. So a region's XOR is the
+// lane's own 64 accumulators folded in registers plus one shuffle round trip
+// among those four lanes, and every lane ends up holding its own region's
+// value. A 64x64 warp tile -- the fold's on Ada, see PEARL_FOLD_WIDE_WARPS --
+// gives each lane a quarter of two regions the same way, one per 32 rows, and
+// 96x64 three.
 //
-// The previous 4x16 tile was a QUARTER of a fragment, so the fold had to spill
-// each accumulator to shared memory and gather four rows back out, twice per
-// fragment per chunk. Measured on a 4090: deleting the readout entirely took
-// the kernel from 57 to 185 TH/s, so that gather was two thirds of all runtime.
+// The contiguous 16x16 tile this replaced was one wmma fragment. Folding it
+// took a whole-warp REDUX per region per chunk: eight a warp, each landing in a
+// uniform register that then had to be moved back into a vector one. Measured
+// on a 4090 at 450 W against that: fold 263.8 -> 265.1 TH/s (bench, three
+// interleaved rounds), full miner loop 262.8 -> 264.5 (two rounds), all of it
+// from 7% fewer instructions; see the fold's readout for what else was tried.
 //
-// h*w = 256 is the largest the sanity checks allow, and both dimensions are
+// h*w = 256 is the largest the sanity checks allow, and both counts are
 // divisible by TILE_H = 2.
 //
-// The pattern is self-describing in config52 and the miner picks it, so this is
-// as legal as the strided 4x8 set MiningConfiguration carries as a DEFAULT.
+// The pattern is self-describing: the verifier rebuilds it from the row indices
+// a share carries, and config52 carries its encoding. So this is as legal as
+// the strided {0,8,64,72} x {0,1,8,9,32,33,40,41} MiningConfiguration carries
+// as a DEFAULT -- which is itself neither contiguous nor square.
 #define PEARL_ROWS_COUNT 16
 #define PEARL_COLS_COUNT 16
-static constexpr uint32_t PEARL_ROWS_PATTERN[PEARL_ROWS_COUNT] = {0, 1, 2,  3,  4,  5,  6,  7,
-                                                                  8, 9, 10, 11, 12, 13, 14, 15};
-static constexpr uint32_t PEARL_COLS_PATTERN[PEARL_COLS_COUNT] = {0, 1, 2,  3,  4,  5,  6,  7,
-                                                                  8, 9, 10, 11, 12, 13, 14, 15};
+static constexpr uint32_t PEARL_ROWS_PATTERN[PEARL_ROWS_COUNT] = {0,  1,  2,  3,  8,  9,  10, 11,
+                                                                  16, 17, 18, 19, 24, 25, 26, 27};
+static constexpr uint32_t PEARL_COLS_PATTERN[PEARL_COLS_COUNT] = {0,  1,  8,  9,  16, 17, 24, 25,
+                                                                  32, 33, 40, 41, 48, 49, 56, 57};
 
 // The six-byte periodic encoding of each pattern: (factor-1, length-1) per
-// dimension. Precomputed rather than derived at runtime — the derivation is
-// exercised on the JS side, and the values are asserted equal by
+// dimension, where factor is the stride divided by the running product of the
+// dimensions before it. Precomputed rather than derived at runtime -- the
+// derivation is exercised on the JS side, and the values are asserted equal by
 // test/nativeConfig.test.js so the two cannot drift.
-// A contiguous run is a single (stride 1, length N) dimension: factor byte 0,
-// length byte N-1.
-static const uint8_t PEARL_ROWS_PATTERN_BYTES[6] = {0, 15, 0, 0, 0, 0};
-static const uint8_t PEARL_COLS_PATTERN_BYTES[6] = {0, 15, 0, 0, 0, 0};
+//   rows: (stride 1, length 4) then (stride 8, length 4): factors 1 and 8/4 = 2
+//   cols: (stride 1, length 2) then (stride 8, length 8): factors 1 and 8/2 = 4
+// The unused third dimension pads as factor 1, length 1, i.e. two zero bytes.
+static const uint8_t PEARL_ROWS_PATTERN_BYTES[6] = {0, 3, 1, 3, 0, 0};
+static const uint8_t PEARL_COLS_PATTERN_BYTES[6] = {0, 1, 3, 7, 0, 0};
 
 typedef struct PearlProfile {
   // Hashed into config52 — protocol-mandated.
@@ -139,9 +154,10 @@ typedef struct PearlProfile {
 //
 //     (offset & mask) == 0
 //
-// where the mask is the OR of the pattern's own values -- rows {0,1,2,3} are
-// the subsets of bits {0,1}, and columns {0..15} the subsets of bits {0..3}, so
-// a valid offset is a multiple of 4 down and of 16 across. Verified against a
+// where the mask is the OR of the pattern's own values. Rows {0,1,2,3} + 8j are
+// the subsets of bits {0,1,3,4} (mask 0x1B) and columns {0,1} + 8i the subsets
+// of bits {0,3,4,5} (mask 0x39), so a valid row offset is 0, 4, 32, 36, 64, ...
+// and a valid column offset 0, 2, 4, 6, 64, 66, ... Verified against a
 // transcription of offset_is_valid in the JS tests rather than taken on trust.
 //
 // This matters twice over. A share at an invalid offset is unverifiable and
@@ -178,6 +194,20 @@ static_assert(PEARL_ROWS_COUNT == (1u << pearl_popcount_ce(PEARL_ROWS_MASK)),
               "rows pattern must be every subset of its mask bits");
 static_assert(PEARL_COLS_COUNT == (1u << pearl_popcount_ce(PEARL_COLS_MASK)),
               "cols pattern must be every subset of its mask bits");
+
+// The smallest aligned run of rows (columns) that whole tiles cover exactly:
+// the power of two just above the mask. 32 rows hold the two row offsets 0 and
+// 4; 64 columns hold the four column offsets 0, 2, 4 and 6. A run of valid
+// offset INDICES that starts on a multiple of span/count is therefore a
+// contiguous block of the operand, beginning at index * count -- which is what
+// lets the fold stage a CTA tile as one block of rows and one of columns.
+PEARL_HD constexpr uint32_t pearl_pattern_span(uint32_t mask) {
+  uint32_t s = 1u;
+  while (s <= mask) s <<= 1;
+  return s;
+}
+#define PEARL_ROWS_SPAN (pearl_pattern_span(PEARL_ROWS_MASK))
+#define PEARL_COLS_SPAN (pearl_pattern_span(PEARL_COLS_MASK))
 
 // How many rows of A one thread carries.
 //
@@ -358,6 +388,173 @@ typedef struct {
 #define PEARL_FOLD_K 2048u
 #define PEARL_FOLD_CHUNKS (PEARL_FOLD_K / PEARL_FOLD_RANK)
 
+// Eight 64x64 warp tiles (256 threads) over the fold's 128x256 CTA tile, in
+// place of sixteen 32x64 ones (512 threads).
+//
+// A 512-thread block caps ptxas at 128 registers a thread, half of them the
+// accumulators, so a warp tile cannot grow past 32x64. At 256 threads the cap is
+// 255: a warp holds 64x64 (128 accumulators), every fragment ldmatrix feeds
+// twice the mma (0.25 ldmatrix.x4 per mma, not 0.375), and each lane holds a
+// quarter of two regions of the tile pattern instead of one. The fold uses 235
+// registers and spills nothing.
+//
+// Measured on a 4090 at 450 W against the sixteen-warp fold (lane bases and
+// shift-and-mask tile coordinates, before the tile pattern changed),
+// interleaved:
+//   bench             273.8 / 273.5 / 272.2 -> 281.2 / 281.4 / 281.3 TH/s (+3.0%)
+//   full miner loop   271.73 / 271.51 -> 279.86 / 279.65                  (+3.0%)
+// Instructions per mma fall from 3.75 to 2.89 (Nsight) and ldmatrix per mma by a
+// third, so the clock rises ~60 MHz at the same 449 W, and the tensor pipe is no
+// less busy for it (rate / (clock * 131072): 0.882 -> 0.887).
+//
+// Every earlier 256-thread fold lost: -2% at v0.5.2, -0.4% on the block-wide
+// staging walk. What it took, each measured on the one before (bench):
+//   - group staging with the copies in the middle of k-steps 0-2, as sixteen
+//     warps do, and the ldmatrix lane bases held opaque (ptxas rebuilt them
+//     after every barrier even with registers to spare): +1.1%, the clock up
+//     60 MHz but the pipe idle more;
+//   - the staging destinations held the same way: +0.7%;
+//   - the next chunk's A slots first (see pearl_slots_before): +1.1%.
+// Tried and dropped: offsetting the copies of the two warps that share a
+// scheduler by a pair or two (0% to -2%); predicating every copy, which
+// frees 50 MHz but lets ptxas hoist copies into the seam ahead of the first
+// mma (-1.2%); folding a region's transcript right after its last mma
+// (ptxas sinks it back to the chunk's end). On the first of these builds the
+// fused hash was free -- without it the fold ran the same, where sixteen warps
+// lose 4.3% (their hashers' skew helps) -- and deleting the per-chunk barrier
+// (wrong results) was worth +1.9%, against +4.0% with sixteen warps.
+//
+// The CTA tile, the stage buffers and the tile walk are the same either way, so
+// the host's grid, shared size and tile count do not change -- only the block.
+// It must launch the one the loaded fold was compiled for, and decides from the
+// binary as for PEARL_FOLD_PERSISTENT (binaryVersion == 89), refusing a fold
+// whose launch bound says otherwise. A -DPEARL_FOLD_WIDE_WARPS=0/1 override
+// binds both sides.
+//
+// Ada only: it is what measured. Ampere and Blackwell keep sixteen warps.
+#ifdef PEARL_FOLD_WIDE_WARPS
+#define PEARL_FOLD_WIDE_WARPS_FORCED 1
+#endif
+#ifndef PEARL_FOLD_WIDE_WARPS
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#define PEARL_FOLD_WIDE_WARPS 1
+#else
+#define PEARL_FOLD_WIDE_WARPS 0
+#endif
+#endif
+// The wide geometry by name, so the host can launch it without being compiled
+// for it: two row slots of four 16-row blocks, by the usual four column slots.
+#define PEARL_FOLD_WIDE_THREADS 256u
+#define PEARL_FOLD_WIDE_WARP_ROWS 2
+#define PEARL_FOLD_WIDE_ROW_TILES 4
+#if PEARL_FOLD_WIDE_WARPS
+#define PEARL_FOLD_THREADS PEARL_FOLD_WIDE_THREADS
+#define PEARL_WARP_ROWS PEARL_FOLD_WIDE_WARP_ROWS
+#define PEARL_WMMA_ROW_TILES PEARL_FOLD_WIDE_ROW_TILES
+#endif
+
+// A 192x256 CTA tile: eight 96x64 warp tiles (256 threads), staged in three 64-deep
+// stages that the warps pass through on an mbarrier ring instead of a block-wide
+// barrier (pearl_tile_fold_tall).
+//
+// What a staged byte costs is the fold's largest cuttable energy: 42 pJ under load,
+// 48 bytes an mma at 128x256 (probes/README.md). Bytes per MAC are 1/BM + 1/BN, so
+// 192 rows cut them 22%, to 37.3 an mma, and a 96x64 warp tile feeds each ldmatrix
+// to twelve mma where 64x64 feeds eight. The accumulators are 75% of the register
+// file (192 a thread), which is as far as 255 registers go: the transcripts move to
+// shared memory to make room, the one place with any left.
+//
+// Two full 128-deep stages of 192x256 are 112 KB against the 99 KB a block may have,
+// so it takes three 64-deep ones -- and with one __syncthreads a stage, as the fold
+// synchronises, that is two lockstep seams a chunk. Priced on the feed probe
+// (perf-scratch/r7-probe/feedprobe4.cu, which models the eight-warp fold: 276.4
+// T-MAC/s there against 281.3 TH/s for the fold itself), 4090 at 450 W, 128 SMs:
+//   128x256, 64x64 warps, 2 x k128, __syncthreads    276.4 (the eight-warp fold)
+//   128x256, 64x64 warps, 3 x k64,  __syncthreads    267.3
+//   128x256, 64x64 warps, 3 x k64,  mbarrier ring    278.3
+//   192x256, 96x64 warps, 3 x k64,  __syncthreads    277.6
+//   192x256, 96x64 warps, 3 x k64,  mbarrier ring    291.8 (+5.6%)
+// The ring lets the two warps of a scheduler drift apart by up to a stage, so one
+// warp's readout seam runs under the other's mma instead of both stopping together.
+// It is worth little on the 128x256 tile (279 with two k128 stages), and it is what
+// the 192x256 tile needs.
+//
+// The fold itself, against the eight-warp fold, 4090 at 450 W, interleaved:
+//   bench             281.4 / 281.5 / 281.4 -> 290.7 / 290.8 / 290.1 TH/s (+3.2%)
+//   full miner loop   280.9 / 279.7 -> 289.3 / 289.4                  (+3.2%)
+// at the same clock (~2405-2420 MHz): the tensor pipe is busier, rate / (clock *
+// 131072) 0.887 -> 0.921. 400/400 hits verified; the pool accepted 2 of 2 shares.
+// probes/README.md has the rest, and what was tried.
+//
+// Ada only, like the eight-warp fold it grows out of. The host launches it when the
+// loaded pearl_tile_fold_tall is the sm_89 build (binaryVersion == 89), and a
+// -DPEARL_FOLD_TALL=0/1 override binds both sides.
+#ifdef PEARL_FOLD_TALL
+#define PEARL_FOLD_TALL_FORCED 1
+#endif
+#ifndef PEARL_FOLD_TALL
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#define PEARL_FOLD_TALL 1
+#else
+#define PEARL_FOLD_TALL 0
+#endif
+#endif
+// The tall geometry by name, for the host: two row slots of six 16-row blocks by four
+// column slots of 64 columns, three 64-deep stages.
+#define PEARL_TALL_THREADS 256u
+#define PEARL_TALL_ROW_TILES 6u
+#define PEARL_TALL_BM (2u * PEARL_TALL_ROW_TILES * 16u)          // 192 rows of A
+#define PEARL_TALL_BN (4u * 64u)                                 // 256 columns of B
+#define PEARL_TALL_STAGE_K 64u
+#define PEARL_TALL_STAGES 3u
+// Valid row and column offsets one tile covers: two per 32 rows, four per 64 columns.
+#define PEARL_TALL_ROW_OFFSETS (PEARL_TALL_BM / 16u)             // 12
+#define PEARL_TALL_COL_OFFSETS (PEARL_TALL_BN / 16u)             // 16
+// Shared: the three stages, six mbarriers (padded to 64 bytes), and one 64-byte
+// transcript a region -- 192 regions a tile. 98368 bytes of the 101376 Ada allows.
+#define PEARL_TALL_STAGE_BYTES ((PEARL_TALL_BM + PEARL_TALL_BN) * PEARL_TALL_STAGE_K)
+#define PEARL_TALL_SMEM \
+  (PEARL_TALL_STAGES * PEARL_TALL_STAGE_BYTES + 64u + PEARL_TALL_BM * PEARL_TALL_BN / 4u)
+// m is a power of two and 192 is not a factor of it, so the last row group of tiles
+// runs past m: at the mainnet 131072 rows, 683 groups cover 131136. The noised A is
+// allocated with that many rows (the extra zeroed, never generated), and the fold
+// hashes no region whose row offset falls past the end.
+#define PEARL_TALL_A_ROWS(m) \
+  ((((m) + PEARL_TALL_BM - 1u) / PEARL_TALL_BM) * PEARL_TALL_BM)
+// Row groups a band of the tile walk covers (see PEARL_BLOCK_GROUP). The eight-warp
+// fold's 32 is 12 MB of A at 192 rows a group, and with the 64 MB of B one launch
+// sweeps that is more than the 72 MB L2; 16 keeps both in it. It measured flat:
+// 8, 16 and 32 deep all ran 288.3 - 290.1 TH/s (bench, two interleaved rounds).
+#ifndef PEARL_TALL_BAND
+#define PEARL_TALL_BAND 16u
+#endif
+// Where a stage's copies of the next chunk go out: after B pair (point % 4) of k-step
+// (point / 4). A's go first, behind the ring's EMPTY wait; B's follow, then the arrival
+// that counts them. Measured (bench, TH/s, 4090 at 450 W, interleaved, first run of a
+// session left out):
+//   A at 1, B at 4 (this)    290.3 290.5 290.6
+//   A at 1, B at 5           288.2 288.3 288.4 288.6
+//   A at 2, B at 4           287.8 287.8
+//   A at 2, B at 6           287.0 287.1
+//   A at 1, B at 6           286.0 286.2
+//   A at 0, B at 4           283.0 283.0
+//   A at 1, B at 2 or 3      spills (rejected)
+// Nsight puts the ring's largest wait at a chunk's second stage, whose EMPTY wait is on
+// the stage just before it (2.4% of warp samples spin there). Moving only that stage's
+// copies later, to give it slack, lost instead: A at 2, B at 5 287.8 / 287.9; A at 4,
+// B at 5 285.2 / 285.9; A at 5, B at 6 279.1 / 279.2. A at 3, B at 4 tied, 291.1 /
+// 291.3 against 290.7.
+// Also tried on the A at 1, B at 5 build, and dropped: releasing a stage right after
+// its last ldmatrix rather than after its last mma, 287.1 / 287.2; every warp hashing
+// its own 24 regions instead of one warp a column slot hashing 48, which drops the
+// column barrier, 287.8 / 288.1 -- both warps of a scheduler then stop to hash.
+#ifndef PEARL_TALL_APT
+#define PEARL_TALL_APT 1u
+#endif
+#ifndef PEARL_TALL_BPT
+#define PEARL_TALL_BPT 4u
+#endif
+
 // Threads per fold block, frozen for the same reason: it makes the staging trip
 // counts compile-time. Sixteen warps in a 4x4 grid over the 128x256 tile, which
 // is what PEARL_WARP_ROWS and PEARL_WMMA_COL_BLK already assume.
@@ -415,6 +612,55 @@ typedef struct {
 #define PEARL_FOLD_PERSISTENT 1
 #else
 #define PEARL_FOLD_PERSISTENT 0
+#endif
+#endif
+
+// Keep each lane's ldmatrix base address live across the whole kernel, and
+// drop the fold's per-warp `active` test (see the tile loop and the k-loop).
+//
+// At the 128-register cap ptxas could not keep the lane bases, so it rebuilt
+// row * 128 + swizzle from the lane id at the top of every chunk -- between the
+// barrier and the first ldmatrix, where all sixteen warps wait on the same
+// instructions and each one costs about 0.12% of the rate. With this the first
+// ldmatrix is two instructions after the barrier and a warp runs 221
+// instructions a chunk (five and 222 once PEARL_FOLD_FAST_COORDS moves the
+// stage-base multiplies past the barrier).
+//
+// The two halves only work together: the XOR addressing alone measured -1.2%
+// (the bases still did not fit) and the compile-time `active` alone +1.0%.
+// Both (4090 at 450 W, interleaved against v0.5.5):
+//   bench  264.9 / 263.7 / 263.7 -> 269.8 / 266.9 / 269.4 TH/s
+//   full miner loop  261.9 / 262.8 -> 268.4 / 268.4 TH/s (+2.3%)
+//
+// Ada only, like the other fold switches: it is what measured, and the
+// register budget it depends on is the Ada fold's. Device side only.
+#ifndef PEARL_FOLD_LANE_BASES
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#define PEARL_FOLD_LANE_BASES 1
+#else
+#define PEARL_FOLD_LANE_BASES 0
+#endif
+#endif
+
+// Tile coordinates by shift and mask when every band is whole and the
+// column-group count is a power of two, which the mainnet geometry is. The
+// general path's two integer divides are about 60 instructions, and they run
+// at the tile seam, where the block waits on them: once for the next tile's
+// sources in the last chunk, once more for the hashers. On top of
+// PEARL_FOLD_LANE_BASES (bench, TH/s, 4090, interleaved, six rounds):
+//   divides            272.1 / 269.3 / 269.6 / 269.5 / 269.5 / 269.4
+//   shift and mask     273.7 / 273.2 / 272.8 / 273.0 / 272.8 / 272.9   (+1.2%)
+// and against v0.5.5 with both: bench 264.0 -> 273.2 (+3.5%), full miner loop
+// 262.6 / 262.8 -> 272.0 / 271.8 (+3.5%).
+//
+// The shift is recomputed on each call rather than held for the kernel: the
+// held version cost ptxas the lane bases and measured 265.0 against 273.0.
+// Ada only, with PEARL_FOLD_LANE_BASES. Device side only.
+#ifndef PEARL_FOLD_FAST_COORDS
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#define PEARL_FOLD_FAST_COORDS 1
+#else
+#define PEARL_FOLD_FAST_COORDS 0
 #endif
 #endif
 
@@ -497,12 +743,16 @@ static inline void pearl_write_config52(const PearlProfile *p, uint8_t *out) {
 // positions the mask leaves free. This enumerates exactly the VALID offsets,
 // so every region the search visits is one a pool will accept a proof for.
 PEARL_HD static inline uint32_t pearl_expand_offset(uint32_t i, uint32_t mask) {
-  // A contiguous low mask -- both shipped patterns are 0..15 -- leaves every bit
-  // from popcount(mask) up free, so depositing i there is a shift. Every caller
-  // passes a constant mask, so the test folds away at compile time. The
-  // persistent fold runs this once per tile in every thread, to find where the
-  // next tile's chunk 0 comes from, and the general loop below measured 0.4%
-  // behind the shift there (246.6 -> 247.7 TH/s, bench, 4090).
+  // A contiguous low mask leaves every bit from popcount(mask) up free, so
+  // depositing i there is a shift. Every caller passes a constant mask, so the
+  // test folds away at compile time.
+  //
+  // Neither shipped pattern is contiguous any more, and the fold no longer
+  // calls this per tile: it only ever expands the start of a span-aligned run
+  // (see PEARL_COLS_SPAN), which is index * count. The general loop measured
+  // 0.4% behind the shift when the persistent fold did run it once per tile in
+  // every thread (246.6 -> 247.7 TH/s, bench, 4090); here it runs on the host,
+  // once per share, and in the gather kernels nothing launches.
   if (mask != 0xFFFFFFFFu && (mask & (mask + 1u)) == 0u) return i << pearl_popcount_ce(mask);
   uint32_t out = 0u;
   uint32_t bit = 1u;
