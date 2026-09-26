@@ -81,6 +81,36 @@ describe('PROFILE', () => {
     }
   });
 
+  // The Ada fold runs 64x64 warp tiles (four m16 tiles by eight n8), and its
+  // readout and hand-off assume each lane's 128 values are a quarter of exactly
+  // two regions: m16 tiles 0-1 fold into one, 2-3 into the other, row offsets
+  // 4 * (lane bit 4) and 32 more, both at column offset 2t.
+  test('each lane of a 64x64 m16n8k32 warp tile holds a quarter of exactly two regions', () => {
+    const regionOf = (r, c) => (r & ~ROWS_MASK) + ',' + (c & ~COLS_MASK);
+    const cellsOf = new Map();
+    const lanesOf = new Map();
+    for (let lane = 0; lane < 32; lane++) {
+      const g = lane >> 2, t = lane & 3;
+      const halves = [new Set(), new Set()];
+      for (let mb = 0; mb < 4; mb++) for (let nb = 0; nb < 8; nb++) for (let i = 0; i < 4; i++) {
+        const r = mb * 16 + g + (i >= 2 ? 8 : 0), c = nb * 8 + 2 * t + (i & 1);
+        const reg = regionOf(r, c);
+        halves[mb >> 1].add(reg);
+        cellsOf.set(reg, (cellsOf.get(reg) || 0) + 1);
+      }
+      for (let rl = 0; rl < 2; rl++) {
+        expect([...halves[rl]]).toEqual([(32 * rl + 4 * ((lane >> 4) & 1)) + ',' + (2 * t)]);
+        const reg = [...halves[rl]][0];
+        lanesOf.set(reg, [...(lanesOf.get(reg) || []), lane]);
+      }
+    }
+    expect(cellsOf.size).toBe(16);
+    for (const n of cellsOf.values()) expect(n).toBe(256); // whole regions, 64 cells a lane each
+    for (const lanes of lanesOf.values()) {
+      expect(lanes.map((l) => l ^ lanes[0]).sort((a, b) => a - b)).toEqual([0, 4, 8, 12]);
+    }
+  });
+
   // m and n are the miner's own workload dimensions and are NOT protocol.
   test('carries m and n, which are not part of the configuration', () => {
     expect(PROFILE.m).toBeGreaterThan(Math.max(...PROFILE.rows));

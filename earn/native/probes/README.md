@@ -69,7 +69,7 @@ Inside the fold, fold-only, all at the cap (these builds compute wrong answers):
 The per-chunk `__syncthreads` is worth 18% per clock and still 9% after the clock
 drops to pay for it. The square warp tile that won 2% on Blackwell loses 2% here.
 
-### Where it ended: 223 -> 273 TH/s at the same 450 W
+### Where it ended: 223 -> 280 TH/s at the same 450 W
 
 | step | full miner loop |
 |---|---|
@@ -79,7 +79,8 @@ drops to pay for it. The square warp tile that won 2% on Blackwell loses 2% here
 | + persistent fold, next tile's chunk 0 staged under the last chunk | 241 |
 | + per-group staging, mid-k-step copies, one-barrier seam, serpentine bands | 264 |
 | + ldmatrix lane bases held for the kernel, compile-time `active` | 270 |
-| + tile coordinates by shift and mask, not divides | **273** |
+| + tile coordinates by shift and mask, not divides | 273 |
+| + a tile pattern the accumulators hold, eight 64x64 warps a block | **280** |
 
 The 241 and 264 steps are gated to sm_89 (`PEARL_FOLD_PERSISTENT`, `PEARL_FOLD_GROUP_STAGE`,
 `PEARL_FOLD_SERPENTINE`), because only a 4090 has run them. Ampere and Blackwell keep one
@@ -96,6 +97,10 @@ instruction costs about 0.12% of the rate. Both sit on the 128-register knife ed
 the fast-coordinate shift in a register instead of recomputing it cost ptxas the lane bases
 and measured 265.0 against 273.0. Check the SASS after any fold edit: the first `LDSM` should
 be a few instructions after `BAR.SYNC`.
+
+The last row is gated to sm_89 as well (`PEARL_FOLD_WIDE_WARPS`; the tile pattern it needs is
+every card's). It measured 271.6 -> 279.8 against the row before it, interleaved the same
+day (+3.0%); see "Eight 64x64 warps a block" below.
 
 ### Against the field: 264 is 15.8% behind
 
@@ -114,45 +119,6 @@ fold reaches on this card rather than one vendor's trick. Note where the gap is:
 449 W, and THEY hold the higher clock. They do ~16% less energy per multiply-accumulate
 (0.70 TH/W against 0.59), and on a power-capped card that is the whole difference. The
 pure-mma ceiling here is ~340 T-MAC/s, so they sit at ~92% of it and we sit at ~78%.
-
-### What a staged byte costs, and why a standalone probe underprices it
-
-A standalone copy loop priced staging (L2 to shared by `cp.async`) at 1.87 nJ per IMMA;
-the fold's own power pointed to about 2.4. Measured directly, the fold's number is right,
-and nothing in the copy pattern explains the gap. The chip's load does.
-
-All on 64 SMs, so nothing hits the cap (2700 MHz), 30 s runs, corrected to 70 C. On and
-off runs of one build share their SASS: the copies are switched at run time.
-
-| measurement | cost |
-|---|---|
-| fold with staging minus fold without it, interleaved x2 | 2.38 nJ per IMMA |
-| of which the copies themselves (same build, copies switched off) | ~2.0 nJ per IMMA, 42 pJ per byte |
-| of which DRAM and L2 misses (all tiles re-read L2-resident data) | 0.11 nJ per IMMA |
-
-A copy of the fold's chunk loop (same launch, addresses, swizzle and copy schedule, no
-readout) costs the same 42 pJ/B. Nsight Compute counts the same traffic for it and for
-v0.5.5: 48 B per IMMA from L2 at 99.5% hits, 12 bank writes and 48 bank reads per IMMA,
-no bank conflicts. Varying that loop, pJ per staged byte:
-
-| loop | pJ/B |
-|---|---|
-| as in the fold: ldmatrix + IMMA beside the copies | 41.6 - 43.3 |
-| no ldmatrix (IMMA operands from registers) | 41.6 - 42.3 |
-| one copy group a chunk instead of three | 42.1 |
-| half the copies | 42.3 |
-| contiguous source rows instead of 2 KB-strided | -1.5 |
-| L2-resident source | -2.5 |
-| the fold's operand values instead of uniform bytes | +0.5 |
-| the same copies, rest of the chip idle | 20 - 24 |
-| the same, with 64 other SMs running IMMA or ALU work | 37 - 41 |
-
-The last two rows are the gap. A byte costs about 1.7x more when the chip is busy, and so
-does a plain LOP3: 0.28 - 0.30 nJ per warp-instruction on an idle chip, 0.51 beside the
-IMMA work, on and off alternating every 3 s so both share one die temperature. The
-standalone probe ran with no tensor load; every other unit energy was measured under load.
-There is no copy-pattern fix. What is left is fewer bytes per MAC: at 42 pJ/B a 192x256
-tile saves about 0.45 nJ per IMMA, not 0.34.
 
 ### A tile the accumulators already hold: +0.5%, all of it energy
 
@@ -194,6 +160,109 @@ XORing 64 values and costs ~1.6%, and the shuffles ~0.7%. That is mostly their l
 chunk end, where every warp arrives at once. Moving them elsewhere did not work: ptxas sinks
 them back to the end of the chunk, volatile asm or not, and holding their inputs across the
 barrier made it re-read `threadIdx` in the chunk head.
+
+### Eight 64x64 warps a block: +3.0%
+
+On Ada the fold now runs eight 64x64 warp tiles (256 threads) over the same 128x256 CTA
+tile, with the tile pattern above (`PEARL_FOLD_WIDE_WARPS`). A 512-thread block caps a
+thread at 128 registers, half of them accumulators, and that is what held the warp tile
+at 32x64. At 256 threads the cap is 255. A thread holds 128 accumulators, a fragment
+ldmatrix feeds twice the mma (0.25 per mma, not 0.375), and each lane holds a quarter of
+two regions of the pattern instead of one. The fold uses 235 registers and spills
+nothing. The host reads the block size off the loaded binary, as it does for the
+persistent grid, and refuses a fold whose launch bound says otherwise.
+
+Against the sixteen-warp fold of the rows above, 4090 at 450 W, interleaved (2026-09-25):
+
+| | sixteen 32x64 warps | eight 64x64 warps |
+|---|---|---|
+| bench, 30 s | 273.8 / 273.5 / 272.2 | 281.2 / 281.4 / 281.3 (+3.0%) |
+| full miner loop, 60 s | 271.73 / 271.51 | 279.86 / 279.65 (+3.0%) |
+| SM clock | ~2365 MHz | ~2425 MHz |
+| rate / (clock x 131072) | 0.882 | 0.887 |
+| instructions per mma (Nsight) | 3.75 | 2.89 |
+| tensor pipe busy (Nsight) | 88.7% | 89.0% |
+
+400 of 400 hits verified, across 303 operand draws. The pool takes it: 2 of 2 shares
+accepted in 26 s at us2.pearl.herominers.com (`earn-cli`, 2026-09-25).
+
+Every 256-thread fold before this lost: -2% at v0.5.2, -0.4% on the block-wide staging
+walk. The probe pre-check (`feedprobe2c`, lane readout and hash in both) had it at +1.8%.
+What it took on the real fold, each step measured against the one before (bench):
+
+| step | gain |
+|---|---|
+| group staging, copies in the middle of k-steps 0-2, ldmatrix lane bases held | +1.1% |
+| staging destinations held too | +0.7% |
+| the next chunk's A slots first: A0-A3, B0-B3, B4-B7, one group a k-step | +1.1% |
+
+Two things about eight warps explain all three.
+
+- **A scheduler has two warps, and the barrier keeps them in step.** The tensor pipe takes
+  one mma at a time (16 cycles; the issuing warp then waits 8 before its next instruction).
+  It idles whenever both warps of a scheduler run something else at once, and with the
+  barrier lining them up, they often do; sixteen warps had four a scheduler to cover each
+  other. So every instruction between mma costs more. ptxas rebuilt the ldmatrix bases and
+  the staging destinations from the lane id although registers were free (24 instructions
+  after every barrier, 7 an operand in every copy group): it prices recomputing below
+  holding. It cannot recompute a value behind an empty `asm volatile`.
+- **The copy schedule only steers ptxas.** A small copy group gets predicated instead of
+  branched around, and a predicated group is scheduled freely. Of the thirteen schedules
+  in `pearl_slots_before`, every one that ended up with copies ahead of the chunk's first
+  mma lost 2% or more, and so did the two whose first copies follow only 5-8 mma.
+  Predicating every copy, which saves the branches, lost 1.2% for the same reason despite
+  50 MHz more clock. The shipped one lands its copies after the chunk's 11th, 33rd and 80th
+  mma.
+
+Tried and dropped: offsetting the two warps' copies by a pair or two (0% to -2%);
+computing the copy bases once a chunk (the groups then get predicated and land in the
+seam); folding a region's transcript right after its last mma (ptxas sinks it back to the
+chunk's end, SASS unchanged). Ablations, the first eight-warp build against sixteen warps
+(wrong results, pricing only): without the fused hash 0% against -4.3% (sixteen warps need
+their hashers' skew, eight do not); without the per-chunk barrier +1.9% against +4.0%.
+
+Check after any fold edit: 0 spill; the first `LDSM` a few instructions after `BAR.SYNC`;
+no `LDGSTS` ahead of the chunk loop's first `IMMA` (today they follow its 11th, 33rd and
+80th).
+
+### What a staged byte costs, and why a standalone probe underprices it
+
+A standalone copy loop priced staging (L2 to shared by `cp.async`) at 1.87 nJ per IMMA;
+the fold's own power pointed to about 2.4. Measured directly, the fold's number is right,
+and nothing in the copy pattern explains the gap. The chip's load does.
+
+All on 64 SMs, so nothing hits the cap (2700 MHz), 30 s runs, corrected to 70 C. On and
+off runs of one build share their SASS: the copies are switched at run time.
+
+| measurement | cost |
+|---|---|
+| fold with staging minus fold without it, interleaved x2 | 2.38 nJ per IMMA |
+| of which the copies themselves (same build, copies switched off) | ~2.0 nJ per IMMA, 42 pJ per byte |
+| of which DRAM and L2 misses (all tiles re-read L2-resident data) | 0.11 nJ per IMMA |
+
+A copy of the fold's chunk loop (same launch, addresses, swizzle and copy schedule, no
+readout) costs the same 42 pJ/B. Nsight Compute counts the same traffic for it and for
+v0.5.5: 48 B per IMMA from L2 at 99.5% hits, 12 bank writes and 48 bank reads per IMMA,
+no bank conflicts. Varying that loop, pJ per staged byte:
+
+| loop | pJ/B |
+|---|---|
+| as in the fold: ldmatrix + IMMA beside the copies | 41.6 - 43.3 |
+| no ldmatrix (IMMA operands from registers) | 41.6 - 42.3 |
+| one copy group a chunk instead of three | 42.1 |
+| half the copies | 42.3 |
+| contiguous source rows instead of 2 KB-strided | -1.5 |
+| L2-resident source | -2.5 |
+| the fold's operand values instead of uniform bytes | +0.5 |
+| the same copies, rest of the chip idle | 20 - 24 |
+| the same, with 64 other SMs running IMMA or ALU work | 37 - 41 |
+
+The last two rows are the gap. A byte costs about 1.7x more when the chip is busy, and so
+does a plain LOP3: 0.28 - 0.30 nJ per warp-instruction on an idle chip, 0.51 beside the
+IMMA work, on and off alternating every 3 s so both share one die temperature. The
+standalone probe ran with no tensor load; every other unit energy was measured under load.
+There is no copy-pattern fix. What is left is fewer bytes per MAC: at 42 pJ/B a 192x256
+tile saves about 0.45 nJ per IMMA, not 0.34.
 
 ### Measuring, and proving a build correct
 
@@ -553,11 +622,11 @@ rejected outright -- "square 64x64 warp tile: 130, and it lost 40%" -- on the
 grounds that warp count for latency hiding beats shared traffic. That reasoning was
 about a card with time to spare; on a power-bound card the trade inverts.
 
-**Not shipped yet.** `PEARL_FOLD_THREADS` and the warp-grid constants are read by
+**Not shipped here.** `PEARL_FOLD_THREADS` and the warp-grid constants are read by
 the HOST as well as the device, so unlike `PEARL_BLOCK_GROUP` this cannot be gated
-on `__CUDA_ARCH__`. Shipping it needs the host to dispatch on compute capability
-between two instantiations of the fold, which is real work and cannot be validated
-here without a 4090 to prove no regression.
+on `__CUDA_ARCH__` alone. The host now reads the block size off the loaded fold
+(`PEARL_FOLD_WIDE_WARPS`), and the 4090 ships eight 64x64 warps. The 5090 still runs
+sixteen: the Ada fold it would take has not been measured on this card.
 
 
 ## Why 300 TH/s is out of reach for this tiling, as arithmetic

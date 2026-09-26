@@ -165,6 +165,11 @@ struct Ctx {
   // PEARL_FOLD_PERSISTENT). Only then is the grid foldResident; otherwise it
   // is one block per tile, as before.
   bool foldPersistent = false;
+  // Whether it is the eight-warp build (PEARL_FOLD_WIDE_WARPS), which must be
+  // launched 256 threads a block rather than 512. Both are read off the loaded
+  // binary once, the first time this card searches.
+  bool foldWide = false;
+  bool foldKnown = false;
 
   // Operands, generated once per job and then read by every region.
   int8_t *dA = nullptr;   // [m, k]
@@ -1100,17 +1105,51 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   (void)batch;
   const uint32_t regions = ctx->batch;
   const uint32_t col_groups = ctx->colBatch;
-  // Block size for the search kernels. Tunable because occupancy against
-  // register pressure is not something to guess at.
-  static const int threads = []() {
-    const char *e = getenv("PEARL_BLOCK");
-    // 512 by default: sixteen warps make the CTA tile 128x256, which raises
-    // the MACs bought per staged byte from 64 to 85 -- and the two-stage
-    // pipeline hides the staging that a single 512-thread block used to expose.
-    const int v = e ? atoi(e) : 512;
-    return (v == 64 || v == 128 || v == 256 || v == 512 || v == 1024) ? v : 256;
-  }();
-  const int warps_per_block = threads / 32;
+  // Which fold this card loaded, asked once per context: the Ada build is the
+  // persistent one (PEARL_FOLD_PERSISTENT) and the eight-warp one
+  // (PEARL_FOLD_WIDE_WARPS). Ask which binary actually loaded rather than which
+  // card it is -- the launch has to match the code that runs.
+  if (!ctx->foldKnown) {
+    cudaFuncAttributes fa;
+    const bool haveAttrs =
+        cudaFuncGetAttributes(&fa, reinterpret_cast<const void *>(pearl_tile_fold_wmma))
+        == cudaSuccess;
+    const bool ada = haveAttrs && fa.binaryVersion == 89;
+#ifdef PEARL_FOLD_PERSISTENT_FORCED
+    ctx->foldPersistent = PEARL_FOLD_PERSISTENT != 0;
+#else
+    ctx->foldPersistent = ada;
+#endif
+#ifdef PEARL_FOLD_WIDE_WARPS_FORCED
+    ctx->foldWide = PEARL_FOLD_WIDE_WARPS != 0;
+#else
+    ctx->foldWide = ada;
+#endif
+    // The fold is compiled for exactly one block size, which is also its launch
+    // bound. A disagreement would not fail loudly: a block of the wrong size
+    // returns at once, and the search would report hashrate while finding
+    // nothing. So refuse it.
+    const uint32_t want = ctx->foldWide ? PEARL_FOLD_WIDE_THREADS : PEARL_FOLD_THREADS;
+    if (!haveAttrs) {
+      if (err && err_len)
+        snprintf(err, err_len, "no fold kernel for this card: %s",
+                 cudaGetErrorString(cudaGetLastError()));
+      return false;
+    }
+    if ((uint32_t)fa.maxThreadsPerBlock != want) {
+      if (err && err_len)
+        snprintf(err, err_len, "fold binary takes %d threads a block, the host would launch %u",
+                 fa.maxThreadsPerBlock, want);
+      return false;
+    }
+    ctx->foldKnown = true;
+  }
+  // The block's shape: sixteen 32x64 warp tiles, or eight 64x64 ones. Either
+  // way the CTA tile is 128x256, so the tile count, the grid and the shared
+  // footprint below come out the same.
+  const uint32_t threads = ctx->foldWide ? PEARL_FOLD_WIDE_THREADS : PEARL_FOLD_THREADS;
+  const uint32_t warpRows = ctx->foldWide ? PEARL_FOLD_WIDE_WARP_ROWS : PEARL_WARP_ROWS;
+  const uint32_t rowTiles = ctx->foldWide ? PEARL_FOLD_WIDE_ROW_TILES : PEARL_WMMA_ROW_TILES;
   // A valid-offset INDEX; the kernel expands it into an actual offset.
   const uint32_t col_off =
       (uint32_t)((nonce_base / ctx->rowsValid) % ctx->colsValid);
@@ -1118,26 +1157,19 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   // One fused launch: the tile fold keeps its accumulator across chunks, so
   // there are no reusable partials to stage and no second pass.
   const uint32_t warpsPerBlock = threads / 32;
-  const uint32_t regionsPerWarp = PEARL_WMMA_ROW_TILES * (PEARL_WMMA_ROWS / PEARL_ROWS_COUNT);
-  // A block is a 2D grid of warps: PEARL_WARP_ROWS down, the rest across. Both
+  const uint32_t regionsPerWarp = rowTiles * (PEARL_WMMA_ROWS / PEARL_ROWS_COUNT);
+  // A block is a 2D grid of warps: warpRows down, the rest across. Both
   // dimensions have to tile exactly, because a warp that falls outside cannot
   // return -- staging is a block-wide cooperative load and a __syncthreads()
   // some warps skip hangs the launch.
   const uint64_t rowBlocks = ctx->rowsValid / regionsPerWarp;
-  const uint32_t warpCols = warpsPerBlock / PEARL_WARP_ROWS;
+  const uint32_t warpCols = warpsPerBlock / warpRows;
   const uint64_t colBlocks = col_groups / PEARL_WMMA_COL_BLK;
-  // The fold is compiled for exactly this block size (see PEARL_FOLD_THREADS).
-  if ((uint32_t)threads != PEARL_FOLD_THREADS) {
-    if (err && err_len)
-      snprintf(err, err_len, "fold kernel is built for %u threads a block (got %d)",
-               (unsigned)PEARL_FOLD_THREADS, threads);
-    return false;
-  }
   // The staging walks base + stride rather than a table of addresses, which is
   // only the same sequence when quads divides the staging thread count and the
   // column step lands on a whole number of column groups.
   const uint32_t quadsPerRow = rank / 16u;
-  const uint32_t stageThreads = (uint32_t)threads;
+  const uint32_t stageThreads = threads;
   if (quadsPerRow == 0 || stageThreads % quadsPerRow != 0
       || (stageThreads / quadsPerRow) % PEARL_COLS_COUNT != 0) {
     if (err && err_len)
@@ -1158,21 +1190,21 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
                colsPerSpan, col_groups, ctx->colsValid);
     return false;
   }
-  if (warpsPerBlock % PEARL_WARP_ROWS != 0 || rowBlocks % PEARL_WARP_ROWS != 0
+  if (warpsPerBlock % warpRows != 0 || rowBlocks % warpRows != 0
       || warpCols == 0 || colBlocks % warpCols != 0) {
     if (err && err_len)
       snprintf(err, err_len,
                "warp grid %ux%u does not tile %llu row blocks by %llu column blocks",
-               PEARL_WARP_ROWS, warpCols, (unsigned long long)rowBlocks,
+               warpRows, warpCols, (unsigned long long)rowBlocks,
                (unsigned long long)colBlocks);
     return false;
   }
   const unsigned tiles =
-      (unsigned)((rowBlocks / PEARL_WARP_ROWS) * (colBlocks / warpCols));
+      (unsigned)((rowBlocks / warpRows) * (colBlocks / warpCols));
   // Two full-chunk stages; the transcripts live in registers and global now.
   const size_t smem = (size_t)PEARL_STAGE_BUFS
                       * ((size_t)warpCols * PEARL_WMMA_COL_BLK * 16
-                         + (size_t)PEARL_WARP_ROWS * regionsPerWarp * PEARL_ROWS_COUNT)
+                         + (size_t)warpRows * regionsPerWarp * PEARL_ROWS_COUNT)
                       * PEARL_SB_STRIDE;
   // The fold writes each transcript slot exactly once only when every chunk
   // has its own bucket. A geometry with more chunks than buckets would fold
@@ -1198,24 +1230,13 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   // exposed (see the kernel). Launching more would only queue blocks behind
   // the resident ones and bring the exposed starts back. Asked once per
   // context, after the opt-in, because the answer depends on the footprint.
-  //
-  // Only the Ada build is persistent (PEARL_FOLD_PERSISTENT), so ask which
-  // binary this card actually loaded rather than which card it is: the answer
-  // has to match the code that runs.
+  // Only the persistent build (ctx->foldPersistent, above) uses it.
   if (ctx->foldResident == 0) {
     int sms = 0, perSm = 0;
     cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, ctx->device);
     cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-        &perSm, reinterpret_cast<const void *>(pearl_tile_fold_wmma), threads, smem);
+        &perSm, reinterpret_cast<const void *>(pearl_tile_fold_wmma), (int)threads, smem);
     ctx->foldResident = (unsigned)(sms > 0 ? sms : 1) * (unsigned)(perSm > 0 ? perSm : 1);
-#ifdef PEARL_FOLD_PERSISTENT_FORCED
-    ctx->foldPersistent = PEARL_FOLD_PERSISTENT != 0;
-#else
-    cudaFuncAttributes fa;
-    ctx->foldPersistent =
-        cudaFuncGetAttributes(&fa, reinterpret_cast<const void *>(pearl_tile_fold_wmma))
-            == cudaSuccess && fa.binaryVersion == 89;
-#endif
   }
   const unsigned blocks =
       (ctx->foldPersistent && ctx->foldResident < tiles) ? ctx->foldResident : tiles;

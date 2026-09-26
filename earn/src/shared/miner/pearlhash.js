@@ -67,7 +67,8 @@
 // columns 2t + {0,1} + 8i: a quarter of exactly one region of this pattern.
 // Lanes L, L^4, L^8 and L^12 hold the rest of it, so a region's XOR is each
 // lane's own registers folded together plus one shuffle round trip among four
-// lanes.
+// lanes. The 64x64 warp tile a 4090 runs holds a quarter of two regions a lane,
+// one in each 32 rows, the same way.
 //
 // The contiguous 16x16 tile this replaced was one wmma fragment, whose XOR took
 // a whole-warp reduction per region per chunk. Before that, a 4x16 tile was a

@@ -1112,10 +1112,14 @@ __device__ __forceinline__ uint32_t pearl_xor3(uint32_t a, uint32_t b, uint32_t 
   return d;
 }
 
-// Which of a thread's staging slots k-step t issues, with PEARL_FOLD_GROUP_STAGE:
-// B slots [pearl_bslot_lo(t), pearl_bslot_lo(t + 1)), A slots likewise. Written
-// for the mandated geometry -- four k-steps, four B slots and two A slots a
-// thread -- which the fold asserts.
+// Where a thread's staging slots go out, with PEARL_FOLD_GROUP_STAGE. A
+// schedule is written per ISSUE POINT: point i is the end of B pair i % 4 of
+// k-step i / 4, and nibble i of the schedule is how many slots go out there, B
+// slots and A slots each in order. The fold asserts that every slot goes out
+// exactly once.
+//
+// Sixteen warps: four B slots and two A slots a thread, all after the second
+// pair (points 1, 5 and 9; B 0x1000200010, A 0x20):
 //
 //   k-step   0          1        2     3
 //   copies   B0 A0 A1   B1 B2    B3    -
@@ -1141,12 +1145,58 @@ __device__ __forceinline__ uint32_t pearl_xor3(uint32_t a, uint32_t b, uint32_t 
 // and clocks 40 MHz higher, but the tensor pipe idles more (0.852 -> 0.822 of
 // peak). The grouping does not change what a staged byte costs: 42 pJ with one
 // group or three (probe of this loop; see probes/README.md).
-__host__ __device__ constexpr uint32_t pearl_bslot_lo(uint32_t t) {
-  return t == 0u ? 0u : t == 1u ? 1u : t == 2u ? 3u : 4u;
+//
+// Eight warps (PEARL_FOLD_WIDE_WARPS): a B group has half the stagers and an A
+// group as many, so a thread has eight B slots and four A slots. They go out in
+// k-steps 0-2 after the second pair again, but A first (B 0x4000400000, A 0x40):
+//
+//   k-step   0             1             2             3
+//   copies   A0 A1 A2 A3   B0 B1 B2 B3   B4 B5 B6 B7   -
+//
+// Measured, eight warps, bench TH/s, 4090 at 450 W, interleaved, two rounds
+// each, with the sixteen-warp fold at 272.6 - 273.6 alongside (lane bases and
+// shift-and-mask coordinates, the tile pattern before this one):
+//   A0-A3 | B0-B3 | B4-B7 | -    (this)             281.4 281.4 281.5 281.5
+//     A after the third pair instead                281.0 281.0
+//     each group halved, after pairs two and four   280.1 280.0
+//     all after the third pair                      275.6 275.7
+//     B4-B7 split over k-steps 2 and 3              275.2 275.4
+//     all after the first pair                      273.2 273.1
+//     B after the third pair                        271.5 271.5
+//   B0 B1 A0 A1 | B2 B3 A2 A3 | B4-B7 | -           278.1 278.4
+//     after the third pair                          278.3 278.9
+//     after the first pair                          272.0 272.9
+//   B0 B1 A0-A3 | B2-B5 | B6 B7 | -                 276.2 276.7
+//   B0-B3 | B4-B7 | A0-A3 | -                       275.3 275.4
+//   two B and one A in each of the four k-steps     274.6 274.9
+// The schedule only steers where the copies land, and ptxas decides the rest:
+// it predicates a small copy group instead of branching around it, and
+// schedules a predicated group freely. Every schedule above that ended up with
+// copies ahead of the chunk's first mma, in the seam behind the barrier, lost
+// 2% or more, and so did the two whose first group follows only 5-8 mma. This
+// one lands its groups after the chunk's 11th, 33rd and 80th mma (the last one
+// still behind its branch). Check where they land after any edit to the chunk
+// loop, not just to the schedule.
+//
+// Summed without a loop, so that it folds to a constant once the k-loop is
+// unrolled: a loop here survived into the SASS and took the copies with it (72
+// LDGSTS in the chunk loop, each behind a branch). The multiply adds every
+// nibble below i into the top one, and no running total can carry out of its
+// nibble while the whole schedule is under sixteen slots (asserted in the fold).
+__host__ __device__ constexpr uint32_t pearl_slots_before(uint64_t sched, uint32_t i) {
+  return i == 0u ? 0u
+                 : (uint32_t)(((sched & (i >= 16u ? ~0ull : (1ull << (4u * i)) - 1ull))
+                               * 0x1111111111111111ull) >> 60);
 }
-__host__ __device__ constexpr uint32_t pearl_aslot_lo(uint32_t t) {
-  return t == 0u ? 0u : 2u;
-}
+#ifndef PEARL_STAGE_BSCHED
+#if PEARL_FOLD_WIDE_WARPS
+#define PEARL_STAGE_BSCHED 0x4000400000ull   // B0-B3 at point 5, B4-B7 at point 9
+#define PEARL_STAGE_ASCHED 0x40ull           // A0-A3 at point 1
+#else
+#define PEARL_STAGE_BSCHED 0x1000200010ull   // B0 at point 1, B1 B2 at 5, B3 at 9
+#define PEARL_STAGE_ASCHED 0x20ull           // A0 A1 at point 1
+#endif
+#endif
 
 // Bounds follow the geometry rather than being pinned at 512.
 //
@@ -1184,10 +1234,11 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
 #if PEARL_FOLD_GROUP_STAGE
   // Column slot fastest. A warp runs on scheduler warp % 4, so the four warps
   // sharing a scheduler -- and its one tensor pipe -- are the four that stage
-  // and read one column group of B, and the first four warps, which hash, are
-  // one per scheduler. Measured against rows fastest and a diagonal map (every
-  // scheduler holding one warp of each row and column group): 260.0 against
-  // 255.5 and 252.7 TH/s (bench, 4090, same code otherwise).
+  // and read one column group of B (two, with PEARL_FOLD_WIDE_WARPS), and the
+  // first four warps, which hash, are one per scheduler. Measured against rows
+  // fastest and a diagonal map (every scheduler holding one warp of each row
+  // and column group): 260.0 against 255.5 and 252.7 TH/s (bench, 4090, same
+  // code otherwise).
   const uint32_t wr = warp / warp_cols;                      // row slot in the block
   const uint32_t wc = warp % warp_cols;                      // column slot
 #else
@@ -1379,7 +1430,8 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
   constexpr uint32_t aslots = PEARL_WMMA_ROW_TILES * PEARL_WMMA_ROWS / astep;
   // The source is linear in the slot because a tile's columns and rows are each
   // one contiguous block (see tile_srcs), and a step of whole swizzle bands
-  // keeps the XOR constant, as in the block-wide walk.
+  // keeps the XOR constant, as in the block-wide walk. Nothing ties the step to
+  // the tile pattern: with eight warps a B slot is eight columns, one band.
   static_assert(bstep % 8u == 0 && astep % 8u == 0, "slot step breaks linearity");
   static_assert(bstep * bslots == PEARL_WMMA_COL_BLK * 16u
                     && astep * aslots == PEARL_WMMA_ROW_TILES * PEARL_WMMA_ROWS,
@@ -1387,8 +1439,16 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
   const uint32_t q0 = lane % gquads;
   const uint32_t bcol = wc * PEARL_WMMA_COL_BLK * 16u + (wr * 32u + lane) / gquads;
   const uint32_t arow = wr * regions_per_warp * PEARL_ROWS_COUNT + (wc * 32u + lane) / gquads;
-  const uint32_t bdst0 = bcol * PEARL_SB_STRIDE + ((q0 ^ (bcol & 7u)) * 16u);
-  const uint32_t adst0 = arow * PEARL_SB_STRIDE + ((q0 ^ (arow & 7u)) * 16u);
+  uint32_t bdst0 = bcol * PEARL_SB_STRIDE + ((q0 ^ (bcol & 7u)) * 16u);
+  uint32_t adst0 = arow * PEARL_SB_STRIDE + ((q0 ^ (arow & 7u)) * 16u);
+#if PEARL_FOLD_WIDE_WARPS
+  // Held opaque, like the ldmatrix lane bases below. Otherwise ptxas rebuilds
+  // both from the lane id in every copy group -- about seven instructions an
+  // operand, three groups a chunk -- with registers to spare. Measured with the
+  // eight-warp schedule (bench, TH/s, interleaved): 277.4 / 277.6 rebuilt,
+  // 281.5 / 281.5 held.
+  asm volatile("" : "+r"(bdst0), "+r"(adst0));
+#endif
   constexpr uint32_t bSrcStep = bstep * k, bDstStep = bstep * PEARL_SB_STRIDE;
   constexpr uint32_t aSrcStep = astep * k, aDstStep = astep * PEARL_SB_STRIDE;
 #else
@@ -1659,10 +1719,17 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
   //
   // ptxas keeps these live only with `active` compile-time too (see the tile
   // loop); on its own this measured -1.2%. See PEARL_FOLD_LANE_BASES.
-  const uint32_t aLane0 = sAa + (wr * regions_per_warp * PEARL_ROWS_COUNT + alrow) * PEARL_SB_STRIDE
-                          + ((albyte ^ swz) & 0x10u) + (swz & 0x60u);
-  const uint32_t bLane0 = sBa + (wc * PEARL_WMMA_COL_BLK * 16u + blcol) * PEARL_SB_STRIDE
-                          + ((blbyte ^ swz) & 0x10u) + (swz & 0x60u);
+  uint32_t aLane0 = sAa + (wr * regions_per_warp * PEARL_ROWS_COUNT + alrow) * PEARL_SB_STRIDE
+                    + ((albyte ^ swz) & 0x10u) + (swz & 0x60u);
+  uint32_t bLane0 = sBa + (wc * PEARL_WMMA_COL_BLK * 16u + blcol) * PEARL_SB_STRIDE
+                    + ((blbyte ^ swz) & 0x10u) + (swz & 0x60u);
+#if PEARL_FOLD_WIDE_WARPS
+  // With eight warps there are registers to spare, and ptxas still rebuilt both
+  // bases from the lane id at the top of every chunk -- 24 instructions after
+  // the barrier -- because it prices recomputing them below holding them. It
+  // cannot recompute a value it cannot see into.
+  asm volatile("" : "+r"(aLane0), "+r"(bLane0));
+#endif
 #endif
 
   for (uint32_t v = blockIdx.x; v < tiles; v += tile_stride) {
@@ -1774,8 +1841,10 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
       // step t, which a runtime bound forbids.
       constexpr uint32_t ksteps = rank / 32;
 #if PEARL_FOLD_GROUP_STAGE
-      static_assert(ksteps == 4u && bslots == 4u && aslots == 2u,
-                    "the staging schedule below is written for the mandated geometry");
+      static_assert(ksteps == 4u && NB == 8u && bslots < 16u && aslots < 16u
+                        && pearl_slots_before(PEARL_STAGE_BSCHED, 16u) == bslots
+                        && pearl_slots_before(PEARL_STAGE_ASCHED, 16u) == aslots,
+                    "the staging schedule must issue every slot once, in four k-steps of four pairs");
       // Each k-step's share of the NEXT chunk's staging goes out in the MIDDLE
       // of the k-step, after the mma of its second B pair, rather than at its
       // top. At the top, the copies' address arithmetic and issue sit between
@@ -1790,7 +1859,8 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
       //   after the third                          257.2
       //   after the fourth, at the end             250.7
       //   one copy after each pair                 254.0
-      constexpr uint32_t copy_nb = 2u;
+      // Those are sixteen warps; see pearl_slots_before for the schedules, and
+      // for what eight warps measured.
 #endif
 #pragma unroll
       for (uint32_t t = 0; t < ksteps; t++) {
@@ -1860,13 +1930,22 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
                                af[mb][0], af[mb][1], af[mb][2], af[mb][3], b2, b3);
           }
 #if PEARL_FOLD_GROUP_STAGE
-          if (nb == copy_nb && stage_next) {
+          {
+            const uint32_t pt = t * (NB / 2u) + nb / 2u;   // this pair's issue point
+            const uint32_t b_lo = pearl_slots_before(PEARL_STAGE_BSCHED, pt);
+            const uint32_t b_hi = pearl_slots_before(PEARL_STAGE_BSCHED, pt + 1u);
+            const uint32_t a_lo = pearl_slots_before(PEARL_STAGE_ASCHED, pt);
+            const uint32_t a_hi = pearl_slots_before(PEARL_STAGE_ASCHED, pt + 1u);
+            // The point test first, in one condition with stage_next: guarding
+            // every pair with stage_next alone, empty or not, changed the chunk
+            // loop's codegen enough that the sixteen-warp fold lost its lane
+            // bases at the 128-register cap (345 instructions, not 306).
+            if ((b_hi > b_lo || a_hi > a_lo) && stage_next) {
 #pragma unroll
-            for (uint32_t p = pearl_bslot_lo(t); p < pearl_bslot_lo(t + 1u); p++)
-              PEARL_ISSUE_B(chunk + 1u, p)
+              for (uint32_t p = b_lo; p < b_hi; p++) PEARL_ISSUE_B(chunk + 1u, p)
 #pragma unroll
-            for (uint32_t p = pearl_aslot_lo(t); p < pearl_aslot_lo(t + 1u); p++)
-              PEARL_ISSUE_A(chunk + 1u, p)
+              for (uint32_t p = a_lo; p < a_hi; p++) PEARL_ISSUE_A(chunk + 1u, p)
+            }
           }
 #endif
         }
@@ -1954,12 +2033,13 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
     // With the staging partitioned, the hand-off needs one block-wide barrier
     // instead of three. Each column slot's first warp (wr == 0, one per
     // scheduler) hashes that slot's 32 regions, and they are handed to it
-    // INSIDE the bytes it stages itself for the next tile's chunk 1: sixteen
-    // whole B columns of the buffer the last chunk read, 2 KB, two regions a
-    // column. So
+    // INSIDE the bytes it stages itself for the next tile's chunk 1: whole B
+    // columns of the buffer the last chunk read, two regions a column, 2 KB in
+    // all. Sixteen warps give the hasher sixteen such columns, exactly that;
+    // eight give it thirty-two, and the transcripts take its first sixteen. So
     //   - before writing, only this column slot has to be done reading the last
     //     chunk -- those columns belong to its B group, which nobody else
-    //     reads -- and that is a 128-thread barrier on one scheduler;
+    //     reads -- and that is a gB-thread barrier on one scheduler;
     //   - the barrier that publishes the next tile's chunk 0 publishes the
     //     transcripts with it;
     //   - nothing has to wait for the hasher to read them back: the only copies
@@ -1968,26 +2048,33 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
     // Measured against the three-barrier hand-off above it replaces, same fold
     // otherwise: 259.6 -> 260.5 TH/s (bench, 4090, three interleaved rounds).
     static_assert(PEARL_WARP_ROWS * warp_regions == 32u, "one hashing lane per region of a column slot");
-    static_assert(bslots * (32u / gquads) * PEARL_SB_STRIDE == 32u * 64u,
-                  "a hasher's chunk-1 slots must hold exactly its column slot's transcripts");
+    static_assert(bslots * (32u / gquads) * PEARL_SB_STRIDE >= 32u * 64u,
+                  "a hasher's chunk-1 slots must hold its column slot's transcripts");
     // Region Lc (0..31 in the column slot) is the half Lc & 1 of column ci =
     // Lc >> 1 of the hasher's slots -- column ci % 4 of its slot ci / 4 -- and
-    // its quad q sits at quad (4 * (Lc & 1) + q) ^ (ci & 3) of the column, so
-    // the eight regions a quarter-warp reads cover all eight quads of the banks.
+    // its quad q sits at quad (4 * (Lc & 1) + q) ^ hq(ci) of the column. Both
+    // sides are conflict free (a bank group is quad pos of any column):
+    //   - the hasher reads regions 8m .. 8m+7 a quarter-warp at a time, ci =
+    //     4m .. 4m+3, and hq(ci) takes all four values;
+    //   - for one sl a warp writes one quad of eight regions, its column pairs
+    //     by its row halves. With sixteen warps their ci differ in bits 0-1, so
+    //     hq = ci & 3 separates them. With eight a lane's two regions are
+    //     adjacent columns, the four ci differ in bits 1-2 instead, and hq
+    //     folds bit 2 in.
     constexpr uint32_t hcols = 32u / gquads;                  // hasher's columns a slot
+    auto hq = [](uint32_t ci) { return (RPL > 1u ? ci ^ (ci >> 2) : ci) & 3u; };
     uint32_t *sTB = smem_u32 + ((chunks - 1u) & 1u) * (buf_bytes / 4u);
     pearl_bar_sync(colBar, gB);
     if (active) {
-      // Conflict free: for one sl a lane's word lands on bank 4 * pos + (b & 3),
-      // and pos takes all eight values as the lane's row half and column pair
-      // vary, so the 32 lanes hit 32 banks.
+      // For one sl a lane's word lands on bank 4 * pos + (b & 3), and pos takes
+      // all eight values as the lane's row half and column pair vary.
 #pragma unroll
       for (uint32_t sl = 0; sl < PEARL_JACKPOT_REGS; sl++) {
         const uint32_t b = word_bucket(sl);
         const uint32_t Lc = wr * warp_regions + wcb * regions_per_warp + word_reg(sl);
         const uint32_t ci = Lc >> 1;
         const uint32_t col = wc * PEARL_WMMA_COL_BLK * 16u + (ci / hcols) * bstep + ci % hcols;
-        const uint32_t pos = (((Lc & 1u) << 2) | (b >> 2)) ^ (ci & 3u);
+        const uint32_t pos = (((Lc & 1u) << 2) | (b >> 2)) ^ hq(ci);
         sTB[col * (PEARL_SB_STRIDE / 4u) + pos * 4u + (b & 3u)] = jr[sl];
       }
     }
@@ -2016,7 +2103,7 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
       const uint32_t col = wc * PEARL_WMMA_COL_BLK * 16u + (ci / hcols) * bstep + ci % hcols;
 #pragma unroll
       for (uint32_t q = 0; q < 4; q++) {
-        const uint32_t pos = (((lane & 1u) << 2) | q) ^ (ci & 3u);
+        const uint32_t pos = (((lane & 1u) << 2) | q) ^ hq(ci);
         const uint4 w =
             *reinterpret_cast<const uint4 *>(sTB + col * (PEARL_SB_STRIDE / 4u) + pos * 4u);
         tm[q * 4 + 0] = w.x; tm[q * 4 + 1] = w.y; tm[q * 4 + 2] = w.z; tm[q * 4 + 3] = w.w;

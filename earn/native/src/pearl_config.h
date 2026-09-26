@@ -73,7 +73,8 @@
 // L, L^4, L^8 and L^12 hold the other three quarters. So a region's XOR is the
 // lane's own 64 accumulators folded in registers plus one shuffle round trip
 // among those four lanes, and every lane ends up holding its own region's
-// value. A 64x64 warp tile gives each lane two whole regions the same way, and
+// value. A 64x64 warp tile -- the fold's on Ada, see PEARL_FOLD_WIDE_WARPS --
+// gives each lane a quarter of two regions the same way, one per 32 rows, and
 // 96x64 three.
 //
 // The contiguous 16x16 tile this replaced was one wmma fragment. Folding it
@@ -386,6 +387,71 @@ typedef struct {
 #define PEARL_FOLD_RANK 128u
 #define PEARL_FOLD_K 2048u
 #define PEARL_FOLD_CHUNKS (PEARL_FOLD_K / PEARL_FOLD_RANK)
+
+// Eight 64x64 warp tiles (256 threads) over the fold's 128x256 CTA tile, in
+// place of sixteen 32x64 ones (512 threads).
+//
+// A 512-thread block caps ptxas at 128 registers a thread, half of them the
+// accumulators, so a warp tile cannot grow past 32x64. At 256 threads the cap is
+// 255: a warp holds 64x64 (128 accumulators), every fragment ldmatrix feeds
+// twice the mma (0.25 ldmatrix.x4 per mma, not 0.375), and each lane holds a
+// quarter of two regions of the tile pattern instead of one. The fold uses 235
+// registers and spills nothing.
+//
+// Measured on a 4090 at 450 W against the sixteen-warp fold (lane bases and
+// shift-and-mask tile coordinates, before the tile pattern changed),
+// interleaved:
+//   bench             273.8 / 273.5 / 272.2 -> 281.2 / 281.4 / 281.3 TH/s (+3.0%)
+//   full miner loop   271.73 / 271.51 -> 279.86 / 279.65                  (+3.0%)
+// Instructions per mma fall from 3.75 to 2.89 (Nsight) and ldmatrix per mma by a
+// third, so the clock rises ~60 MHz at the same 449 W, and the tensor pipe is no
+// less busy for it (rate / (clock * 131072): 0.882 -> 0.887).
+//
+// Every earlier 256-thread fold lost: -2% at v0.5.2, -0.4% on the block-wide
+// staging walk. What it took, each measured on the one before (bench):
+//   - group staging with the copies in the middle of k-steps 0-2, as sixteen
+//     warps do, and the ldmatrix lane bases held opaque (ptxas rebuilt them
+//     after every barrier even with registers to spare): +1.1%, the clock up
+//     60 MHz but the pipe idle more;
+//   - the staging destinations held the same way: +0.7%;
+//   - the next chunk's A slots first (see pearl_slots_before): +1.1%.
+// Tried and dropped: offsetting the copies of the two warps that share a
+// scheduler by a pair or two (0% to -2%); predicating every copy, which
+// frees 50 MHz but lets ptxas hoist copies into the seam ahead of the first
+// mma (-1.2%); folding a region's transcript right after its last mma
+// (ptxas sinks it back to the chunk's end). On the first of these builds the
+// fused hash was free -- without it the fold ran the same, where sixteen warps
+// lose 4.3% (their hashers' skew helps) -- and deleting the per-chunk barrier
+// (wrong results) was worth +1.9%, against +4.0% with sixteen warps.
+//
+// The CTA tile, the stage buffers and the tile walk are the same either way, so
+// the host's grid, shared size and tile count do not change -- only the block.
+// It must launch the one the loaded fold was compiled for, and decides from the
+// binary as for PEARL_FOLD_PERSISTENT (binaryVersion == 89), refusing a fold
+// whose launch bound says otherwise. A -DPEARL_FOLD_WIDE_WARPS=0/1 override
+// binds both sides.
+//
+// Ada only: it is what measured. Ampere and Blackwell keep sixteen warps.
+#ifdef PEARL_FOLD_WIDE_WARPS
+#define PEARL_FOLD_WIDE_WARPS_FORCED 1
+#endif
+#ifndef PEARL_FOLD_WIDE_WARPS
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#define PEARL_FOLD_WIDE_WARPS 1
+#else
+#define PEARL_FOLD_WIDE_WARPS 0
+#endif
+#endif
+// The wide geometry by name, so the host can launch it without being compiled
+// for it: two row slots of four 16-row blocks, by the usual four column slots.
+#define PEARL_FOLD_WIDE_THREADS 256u
+#define PEARL_FOLD_WIDE_WARP_ROWS 2
+#define PEARL_FOLD_WIDE_ROW_TILES 4
+#if PEARL_FOLD_WIDE_WARPS
+#define PEARL_FOLD_THREADS PEARL_FOLD_WIDE_THREADS
+#define PEARL_WARP_ROWS PEARL_FOLD_WIDE_WARP_ROWS
+#define PEARL_WMMA_ROW_TILES PEARL_FOLD_WIDE_ROW_TILES
+#endif
 
 // Threads per fold block, frozen for the same reason: it makes the staging trip
 // counts compile-time. Sixteen warps in a 4x4 grid over the 128x256 tile, which
