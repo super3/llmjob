@@ -453,6 +453,108 @@ typedef struct {
 #define PEARL_WMMA_ROW_TILES PEARL_FOLD_WIDE_ROW_TILES
 #endif
 
+// A 192x256 CTA tile: eight 96x64 warp tiles (256 threads), staged in three 64-deep
+// stages that the warps pass through on an mbarrier ring instead of a block-wide
+// barrier (pearl_tile_fold_tall).
+//
+// What a staged byte costs is the fold's largest cuttable energy: 42 pJ under load,
+// 48 bytes an mma at 128x256 (probes/README.md). Bytes per MAC are 1/BM + 1/BN, so
+// 192 rows cut them 22%, to 37.3 an mma, and a 96x64 warp tile feeds each ldmatrix
+// to twelve mma where 64x64 feeds eight. The accumulators are 75% of the register
+// file (192 a thread), which is as far as 255 registers go: the transcripts move to
+// shared memory to make room, the one place with any left.
+//
+// Two full 128-deep stages of 192x256 are 112 KB against the 99 KB a block may have,
+// so it takes three 64-deep ones -- and with one __syncthreads a stage, as the fold
+// synchronises, that is two lockstep seams a chunk. Priced on the feed probe
+// (perf-scratch/r7-probe/feedprobe4.cu, which models the eight-warp fold: 276.4
+// T-MAC/s there against 281.3 TH/s for the fold itself), 4090 at 450 W, 128 SMs:
+//   128x256, 64x64 warps, 2 x k128, __syncthreads    276.4 (the eight-warp fold)
+//   128x256, 64x64 warps, 3 x k64,  __syncthreads    267.3
+//   128x256, 64x64 warps, 3 x k64,  mbarrier ring    278.3
+//   192x256, 96x64 warps, 3 x k64,  __syncthreads    277.6
+//   192x256, 96x64 warps, 3 x k64,  mbarrier ring    291.8 (+5.6%)
+// The ring lets the two warps of a scheduler drift apart by up to a stage, so one
+// warp's readout seam runs under the other's mma instead of both stopping together.
+// It is worth little on the 128x256 tile (279 with two k128 stages), and it is what
+// the 192x256 tile needs.
+//
+// The fold itself, against the eight-warp fold, 4090 at 450 W, interleaved:
+//   bench             281.4 / 281.5 / 281.4 -> 290.7 / 290.8 / 290.1 TH/s (+3.2%)
+//   full miner loop   280.9 / 279.7 -> 289.3 / 289.4                  (+3.2%)
+// at the same clock (~2405-2420 MHz): the tensor pipe is busier, rate / (clock *
+// 131072) 0.887 -> 0.921. 400/400 hits verified; the pool accepted 2 of 2 shares.
+// probes/README.md has the rest, and what was tried.
+//
+// Ada only, like the eight-warp fold it grows out of. The host launches it when the
+// loaded pearl_tile_fold_tall is the sm_89 build (binaryVersion == 89), and a
+// -DPEARL_FOLD_TALL=0/1 override binds both sides.
+#ifdef PEARL_FOLD_TALL
+#define PEARL_FOLD_TALL_FORCED 1
+#endif
+#ifndef PEARL_FOLD_TALL
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#define PEARL_FOLD_TALL 1
+#else
+#define PEARL_FOLD_TALL 0
+#endif
+#endif
+// The tall geometry by name, for the host: two row slots of six 16-row blocks by four
+// column slots of 64 columns, three 64-deep stages.
+#define PEARL_TALL_THREADS 256u
+#define PEARL_TALL_ROW_TILES 6u
+#define PEARL_TALL_BM (2u * PEARL_TALL_ROW_TILES * 16u)          // 192 rows of A
+#define PEARL_TALL_BN (4u * 64u)                                 // 256 columns of B
+#define PEARL_TALL_STAGE_K 64u
+#define PEARL_TALL_STAGES 3u
+// Valid row and column offsets one tile covers: two per 32 rows, four per 64 columns.
+#define PEARL_TALL_ROW_OFFSETS (PEARL_TALL_BM / 16u)             // 12
+#define PEARL_TALL_COL_OFFSETS (PEARL_TALL_BN / 16u)             // 16
+// Shared: the three stages, six mbarriers (padded to 64 bytes), and one 64-byte
+// transcript a region -- 192 regions a tile. 98368 bytes of the 101376 Ada allows.
+#define PEARL_TALL_STAGE_BYTES ((PEARL_TALL_BM + PEARL_TALL_BN) * PEARL_TALL_STAGE_K)
+#define PEARL_TALL_SMEM \
+  (PEARL_TALL_STAGES * PEARL_TALL_STAGE_BYTES + 64u + PEARL_TALL_BM * PEARL_TALL_BN / 4u)
+// m is a power of two and 192 is not a factor of it, so the last row group of tiles
+// runs past m: at the mainnet 131072 rows, 683 groups cover 131136. The noised A is
+// allocated with that many rows (the extra zeroed, never generated), and the fold
+// hashes no region whose row offset falls past the end.
+#define PEARL_TALL_A_ROWS(m) \
+  ((((m) + PEARL_TALL_BM - 1u) / PEARL_TALL_BM) * PEARL_TALL_BM)
+// Row groups a band of the tile walk covers (see PEARL_BLOCK_GROUP). The eight-warp
+// fold's 32 is 12 MB of A at 192 rows a group, and with the 64 MB of B one launch
+// sweeps that is more than the 72 MB L2; 16 keeps both in it. It measured flat:
+// 8, 16 and 32 deep all ran 288.3 - 290.1 TH/s (bench, two interleaved rounds).
+#ifndef PEARL_TALL_BAND
+#define PEARL_TALL_BAND 16u
+#endif
+// Where a stage's copies of the next chunk go out: after B pair (point % 4) of k-step
+// (point / 4). A's go first, behind the ring's EMPTY wait; B's follow, then the arrival
+// that counts them. Measured (bench, TH/s, 4090 at 450 W, interleaved, first run of a
+// session left out):
+//   A at 1, B at 4 (this)    290.3 290.5 290.6
+//   A at 1, B at 5           288.2 288.3 288.4 288.6
+//   A at 2, B at 4           287.8 287.8
+//   A at 2, B at 6           287.0 287.1
+//   A at 1, B at 6           286.0 286.2
+//   A at 0, B at 4           283.0 283.0
+//   A at 1, B at 2 or 3      spills (rejected)
+// Nsight puts the ring's largest wait at a chunk's second stage, whose EMPTY wait is on
+// the stage just before it (2.4% of warp samples spin there). Moving only that stage's
+// copies later, to give it slack, lost instead: A at 2, B at 5 287.8 / 287.9; A at 4,
+// B at 5 285.2 / 285.9; A at 5, B at 6 279.1 / 279.2. A at 3, B at 4 tied, 291.1 /
+// 291.3 against 290.7.
+// Also tried on the A at 1, B at 5 build, and dropped: releasing a stage right after
+// its last ldmatrix rather than after its last mma, 287.1 / 287.2; every warp hashing
+// its own 24 regions instead of one warp a column slot hashing 48, which drops the
+// column barrier, 287.8 / 288.1 -- both warps of a scheduler then stop to hash.
+#ifndef PEARL_TALL_APT
+#define PEARL_TALL_APT 1u
+#endif
+#ifndef PEARL_TALL_BPT
+#define PEARL_TALL_BPT 4u
+#endif
+
 // Threads per fold block, frozen for the same reason: it makes the staging trip
 // counts compile-time. Sixteen warps in a 4x4 grid over the 128x256 tile, which
 // is what PEARL_WARP_ROWS and PEARL_WMMA_COL_BLK already assume.

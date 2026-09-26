@@ -69,7 +69,7 @@ Inside the fold, fold-only, all at the cap (these builds compute wrong answers):
 The per-chunk `__syncthreads` is worth 18% per clock and still 9% after the clock
 drops to pay for it. The square warp tile that won 2% on Blackwell loses 2% here.
 
-### Where it ended: 223 -> 280 TH/s at the same 450 W
+### Where it ended: 223 -> 289 TH/s at the same 450 W
 
 | step | full miner loop |
 |---|---|
@@ -80,7 +80,8 @@ drops to pay for it. The square warp tile that won 2% on Blackwell loses 2% here
 | + per-group staging, mid-k-step copies, one-barrier seam, serpentine bands | 264 |
 | + ldmatrix lane bases held for the kernel, compile-time `active` | 270 |
 | + tile coordinates by shift and mask, not divides | 273 |
-| + a tile pattern the accumulators hold, eight 64x64 warps a block | **280** |
+| + a tile pattern the accumulators hold, eight 64x64 warps a block | 280 |
+| + a 192x256 tile, three 64-deep stages on an mbarrier ring | **289** |
 
 The 241 and 264 steps are gated to sm_89 (`PEARL_FOLD_PERSISTENT`, `PEARL_FOLD_GROUP_STAGE`,
 `PEARL_FOLD_SERPENTINE`), because only a 4090 has run them. Ampere and Blackwell keep one
@@ -98,9 +99,14 @@ the fast-coordinate shift in a register instead of recomputing it cost ptxas the
 and measured 265.0 against 273.0. Check the SASS after any fold edit: the first `LDSM` should
 be a few instructions after `BAR.SYNC`.
 
-The last row is gated to sm_89 as well (`PEARL_FOLD_WIDE_WARPS`; the tile pattern it needs is
+The 280 row is gated to sm_89 as well (`PEARL_FOLD_WIDE_WARPS`; the tile pattern it needs is
 every card's). It measured 271.6 -> 279.8 against the row before it, interleaved the same
 day (+3.0%); see "Eight 64x64 warps a block" below.
+
+The last row is its own kernel, `pearl_tile_fold_tall`, with a body only in the sm_89 build
+(`PEARL_FOLD_TALL`); the host launches it when that is the binary it loaded. Against the 273
+row, interleaved: 271.8 / 271.9 -> 288.6 / 289.4 in the full loop (+6.3%); see "A 192x256
+tile on an mbarrier ring" below.
 
 ### Against the field: 264 is 15.8% behind
 
@@ -224,6 +230,100 @@ their hashers' skew, eight do not); without the per-chunk barrier +1.9% against 
 Check after any fold edit: 0 spill; the first `LDSM` a few instructions after `BAR.SYNC`;
 no `LDGSTS` ahead of the chunk loop's first `IMMA` (today they follow its 11th, 33rd and
 80th).
+
+### A 192x256 tile on an mbarrier ring: +3.2% over eight 64x64 warps
+
+Staging is the fold's largest cuttable energy: 42 pJ a byte under load, 48 bytes an mma at
+128x256 (see the next section). Bytes per MAC are 1/BM + 1/BN, so a 192-row tile moves 22%
+fewer, 37.3 an mma, and a 96x64 warp tile feeds each ldmatrix to twelve mma, not eight. It
+needs 192 accumulators a thread, which is as far as 255 registers go.
+
+Two things had stopped it. Two 128-deep stages of 192x256 are 112 KB, over the 99 KB a
+block may have, so the stages have to be 64 deep, three of them. And with a `__syncthreads`
+a stage, as the fold synchronises, that is two lockstep seams a chunk: the old feed probe
+had 64-deep stages losing 3.5-5.5% at either tile size.
+
+So the tall fold drops the barrier for an mbarrier ring. FULL[b] completes when all 256
+threads' copies into buffer b have landed (each thread arrives through
+`cp.async.mbarrier.arrive.noinc` once it has issued them); EMPTY[b] when all eight warps have
+read b. A warp waits on FULL before it reads a stage and on EMPTY before it refills a buffer,
+and on nothing else, so the two warps of a scheduler can drift up to a stage apart and stop
+lining their readout seams up. sm_89 has no `try_wait`, so a wait spins on `test_wait`; the
+waits rarely spin, because what they wait for was issued a chunk earlier.
+
+Priced first on a feed probe (`perf-scratch/r7-probe/feedprobe4.cu`) that models the
+eight-warp fold -- group staging, lane readout with its shift queue, four hashers -- and
+checks every variant's results against the barrier build's. 4090 at 450 W, 128 SMs, T-MAC/s,
+interleaved, two sessions:
+
+| CTA tile, warps | stages | sync | rate | clock |
+|---|---|---|---|---|
+| 128x256, eight 64x64 | 2 x 128 | `__syncthreads` (the eight-warp fold) | 275.8 - 276.8 | 2470 MHz |
+| 128x256, eight 64x64 | 2 x 128 | ring | 278.1 - 279.4 | 2395 MHz |
+| 128x256, eight 64x64 | 3 x 64 | `__syncthreads` | 267.3 | 2430 MHz |
+| 128x256, eight 64x64 | 3 x 64 | ring | 278.2 - 278.8 | 2340 MHz |
+| 128x256, eight 64x64 | 4 x 64 | ring | 272.2 - 273.9 | 2367 MHz |
+| 192x256, eight 96x64 | 3 x 64 | `__syncthreads` | 277.5 - 277.6 | 2502 MHz |
+| 192x256, eight 96x64 | 3 x 64 | ring | **291.0 - 292.6** | 2420 MHz |
+| 128x256 / 192x256, no sync at all (wrong results) | | | 294.4 / 299.7 | |
+
+The ring is worth little to the 128x256 tile and is what the 192x256 tile needs. On 64 SMs,
+where nothing hits the cap (2685 MHz), the larger tile spends 4-7% less energy an mma at the
+same synchronisation: 6.54 against 6.83 nJ with the barrier, 6.67 against 6.95 with the
+ring (power above a 90 W baseline, corrected to 75 C). The rest of its gain is the tensor
+pipe: rate / (clock x 131072) 0.921 against 0.853.
+
+The fold (`PEARL_FOLD_TALL`, a kernel of its own on sm_89), interleaved on the same day:
+
+| | eight 64x64 warps, 128x256 | eight 96x64 warps, 192x256, ring |
+|---|---|---|
+| bench, 30 s (sixteen-warp fold alongside: 273.5 / 272.8 / 273.4) | 281.4 / 281.5 / 281.4 | 290.7 / 290.8 / 290.1 (+3.2%) |
+| full miner loop, 60 s | 280.9 / 279.7 | 289.3 / 289.4 (+3.2%) |
+| full miner loop, 60 s, against the sixteen-warp fold (271.8 / 271.9) | | 288.6 / 289.4 (+6.3%) |
+| SM clock | ~2420 MHz | ~2405 MHz |
+| rate / (clock x 131072) | 0.887 | 0.921 |
+| registers | 235 | 255, no spill |
+
+400 of 400 hits verified, across 312 operand draws. The pool takes it: 2 of 2 shares
+accepted in 62 s at us2.pearl.herominers.com (`earn-cli`, 2026-09-25), the tile pattern
+unchanged.
+
+What else it takes:
+
+- **Transcripts in shared.** 192 accumulators leave no room for twelve transcript words a
+  lane: the lane that keeps a chunk stores its region's word, one `STS` a region a chunk,
+  into 12 KB after the stages and barriers (98368 bytes in all). A column slot's two warps
+  meet once a tile on a 64-thread barrier, and the first hashes the slot's 48 regions, a
+  pass and a half. Nothing else orders the hand-off: the second warp can overwrite those
+  words only in its next chunk-0 readout, after its stage 1 waited on EMPTY for the buffer
+  every warp's stage 0 read, which the hasher releases only after hashing.
+- **A ragged last row group.** m is a power of two and 192 is not a factor of it, so 683
+  row groups cover 131136 rows. The noised A is allocated that long (the 64 extra rows
+  zeroed once and never generated), and the fold hashes no region past row m. The attempts
+  it reports are the valid regions only, so the extra work (0.05%) never counts.
+- **Where the copies go.** A's after the second B pair of a stage's first k-step, behind the
+  EMPTY wait; B's after the first pair of its second, then the arrival. Bench, TH/s: that
+  290.3 - 290.6; B one pair later 288.2 - 288.6; A a pair later 287.8; both at the start
+  of their k-steps 283.0; B a pair earlier still spills.
+
+Tried and dropped: releasing a stage right after its last ldmatrix instead of its last mma
+(-0.6%); every warp hashing its own 24 regions, which drops the column barrier but stops both
+warps of a scheduler to hash (-0.3%); a relaxed shared counter for EMPTY instead of an
+mbarrier arrive (-0.6% in the probe); later copies in a chunk's second stage, whose EMPTY
+wait spins the most (Nsight: 2.4% of warp samples), -1% to -4%. Band depth measured flat: 8,
+16 and 32 row groups.
+
+What is left to take, priced by ablation (bench, wrong results, the build at 290.9):
+without the ring's waits (`PEARL_ABLATE_RING`) 294.2 / 294.6 (+1.2%), without the fused hash
+293.5 / 293.8 (+1.0%). Neither is where the rest of the distance to 313 is. Nsight has the
+fold at 3.22 instructions an mma against the eight-warp fold's 2.89: more copy groups and
+their `@!PT LDS` pads (0.146 an mma), the ring's spins (0.05 `LDS` an mma), and a copy's
+shared writes taking twice the wavefronts, because a 64-deep stage reads half of each
+128-byte line of a 2 KB-strided row.
+
+Check after any edit to the tall fold: 255 registers or fewer and 0 spill; SASS stays two
+`LDGSTS` groups a stage, the A group behind the EMPTY spin and the B group ending in
+`ARRIVES.LDGSTSBAR`.
 
 ### What a staged byte costs, and why a standalone probe underprices it
 
