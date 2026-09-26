@@ -26,6 +26,12 @@ jest.mock('../src/main/probe', () => ({
   detectGpuTemps: jest.fn(),
 }));
 jest.mock('../src/main/nodeStore', () => ({ getOrCreateNode: jest.fn() }));
+// tweetnacl loaded once for the file: isolateModules would otherwise re-load it
+// for every test. It is the same real instance, so signatures are genuine.
+const mockNacl = jest.requireActual('tweetnacl');
+const mockNaclUtil = jest.requireActual('tweetnacl-util');
+jest.mock('tweetnacl', () => mockNacl);
+jest.mock('tweetnacl-util', () => mockNaclUtil);
 jest.mock('../src/cli/selfUpdater', () => ({
   UPDATED_ENV: 'LLMJOB_EARN_UPDATED',
   fetchLatestRelease: jest.fn(),
@@ -74,7 +80,8 @@ const { NETWORK } = require('../src/shared/config');
 
 const ADDR = 'prl1p' + 'a'.repeat(30);
 const MDL = 'mdl1p' + 'b'.repeat(30);
-const KEYS = require('../src/shared/node').generateKeypair();
+const KEYS = jest.requireActual('../src/shared/node').generateKeypair();
+const RIG = { nodeId: 'a1b2c3d4e5f60789', publicKey: KEYS.publicKey, secretKey: KEYS.secretKey };
 
 // ── Shared per-test capture state ────────────────────────────────────────────
 let out; // strings written to stdout
@@ -101,7 +108,9 @@ function applyDefaults(m) {
   m.probe.detectMinerGpus.mockResolvedValue([]);
   m.probe.postMinerReport.mockResolvedValue(undefined);
   m.probe.detectGpuTelemetry.mockResolvedValue([]);
-  m.nodeStore.getOrCreateNode.mockReturnValue({ nodeId: 'a1b2c3d4e5f60789', publicKey: KEYS.publicKey, secretKey: KEYS.secretKey });
+  // No rig identity unless a test hands it one: signing is pure-JS crypto, and
+  // doing it on every report made each test here several times slower.
+  m.nodeStore.getOrCreateNode.mockReturnValue(null);
   m.probe.detectGpuInfo.mockResolvedValue(null); // no identifiable GPU by default
   m.selfUpdater.fetchLatestRelease.mockResolvedValue(null);
   m.selfUpdater.isPackaged.mockReturnValue(false);
@@ -551,6 +560,7 @@ describe('mining', () => {
 
   test('board reports carry per-card telemetry and a signed rig identity', async () => {
     const m = load();
+    m.nodeStore.getOrCreateNode.mockReturnValue(RIG);
     m.probe.detectGpuTelemetry.mockResolvedValue([{ index: 0, tempC: 58, powerW: 290, driver: '580.82' }]);
     const p = m.run(['-a', ADDR, '--no-update']);
     await settle();

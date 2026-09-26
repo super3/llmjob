@@ -108,15 +108,22 @@ jest.mock('../src/main/probe', () => ({
   detectGpuInfo: jest.fn(() => Promise.resolve(null)),
 }));
 
-// The rig identity store. A real keypair by default, so a report can be checked
-// to carry a signature that actually verifies.
-jest.mock('../src/main/nodeStore', () => {
-  const kp = jest.requireActual('../src/shared/node').generateKeypair();
-  return {
-    migrateFrom: jest.fn(),
-    getOrCreateNode: jest.fn(() => ({ nodeId: 'a1b2c3d4e5f60789', publicKey: kp.publicKey, secretKey: kp.secretKey })),
-  };
-});
+// Keep the rig identity's crypto out of every test but the ones about it.
+// tweetnacl is pure JS: re-loading it after each registry reset and signing
+// every report made each test here ~100 ms slower, enough to push the cold
+// first test past Jest's 5 s timeout on the Windows runner. So tweetnacl is
+// loaded once for the file (the same real instance, so signatures are still
+// genuine), and the store has no identity unless a test hands it one.
+const mockNacl = jest.requireActual('tweetnacl');
+const mockNaclUtil = jest.requireActual('tweetnacl-util');
+jest.mock('tweetnacl', () => mockNacl);
+jest.mock('tweetnacl-util', () => mockNaclUtil);
+jest.mock('../src/main/nodeStore', () => ({
+  migrateFrom: jest.fn(),
+  getOrCreateNode: jest.fn(() => null),
+}));
+const RIG_KEYS = jest.requireActual('../src/shared/node').generateKeypair();
+const RIG = { nodeId: 'a1b2c3d4e5f60789', publicKey: RIG_KEYS.publicKey, secretKey: RIG_KEYS.secretKey };
 
 jest.mock('../src/main/pearlEngine', () => {
   const { EventEmitter } = require('events');
@@ -922,19 +929,19 @@ describe('mining', () => {
   // Every row carries the rig's health and a signed identity, so a report can
   // be tied to the machine that sent it and a card's throttling is visible.
   it('signs board reports with the rig identity and attaches per-card telemetry', async () => {
-    const nacl = require('tweetnacl');
-    const naclUtil = require('tweetnacl-util');
+    const nacl = mockNacl;
+    const naclUtil = mockNaclUtil;
     const ctx = await boot();
+    ctx.nodeStore.getOrCreateNode.mockReturnValue(RIG);
     ctx.probe.detectGpuTelemetry.mockResolvedValue([{ index: 0, tempC: 63, powerW: 311, driver: '580.82' }]);
     ctx.emit('miner:start', { address: VALID_ADDR });
     await flush();
     const row = ctx.probe.postMinerReport.mock.calls[0][0];
     expect(row).toMatchObject({ client: 'gui', os: 'linux', driver: '580.82', tempC: 63, powerW: 311, rigId: 'a1b2c3d4e5f60789' });
-    const { publicKey } = ctx.nodeStore.getOrCreateNode.mock.results[0].value;
     expect(nacl.sign.detached.verify(
       naclUtil.decodeUTF8(row.rigId + ':' + row.timestamp),
       naclUtil.decodeBase64(row.signature),
-      naclUtil.decodeBase64(publicKey),
+      naclUtil.decodeBase64(RIG.publicKey),
     )).toBe(true);
 
     // Read once, not every minute: node.json does not change under a running app.
