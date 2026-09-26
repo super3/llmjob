@@ -154,6 +154,47 @@ standalone probe ran with no tensor load; every other unit energy was measured u
 There is no copy-pattern fix. What is left is fewer bytes per MAC: at 42 pJ/B a 192x256
 tile saves about 0.45 nJ per IMMA, not 0.34.
 
+### A tile the accumulators already hold: +0.5%, all of it energy
+
+The tile moved from contiguous 0..15 by 0..15 to rows {0,1,2,3}+8j by columns {0,1}+8i
+(`pearl_config.h`). Across the 32x64 warp tile each lane's 64 m16n8k32 accumulators are
+then a quarter of exactly one region, shared with lanes L^4, L^8 and L^12. So the per-chunk
+readout is the lane's own XOR tree plus three shuffles, where it was a tree plus eight
+whole-warp REDUX and their uniform-register moves. The pattern is self-describing, and
+config52, the proofs and the oracle follow it. The pool takes it: 2 of 2 shares accepted in
+49 s at us2.pearl.herominers.com (`earn-cli`, 2026-09-25). That also confirms the
+two-dimension pattern encoding in config52 against the live verifier.
+
+Bench, 4090 at 450 W, 30 s runs, interleaved (2026-09-25):
+
+| build | TH/s | vs v0.5.5 |
+|---|---|---|
+| v0.5.5, REDUX readout | 263.4 / 264.1 / 263.9 | |
+| lane readout, three independent shuffles (shipped) | 265.1 / 265.1 / 265.1 | +0.5% |
+| lane readout, two-step butterfly | 264.6 / 264.7 / 264.8 | +0.3% |
+| fold deferred into the next chunk's first k-step | 258.7 / 258.4 / 258.9 | -2.0% |
+| diagnostic: no shuffles (`PEARL_ABLATE_TRANSCRIPT`) | 267.1 | +1.2% |
+| diagnostic: no per-chunk readout at all (`PEARL_ABLATE_READOUT`) | 271.3 | +2.8% |
+
+The full miner loop (`hashrate.js`) went 262.9 / 262.8 -> 264.0 / 264.9. The gain is
+energy, not tensor-pipe time. Nsight Compute has the pipe 85.6% busy before and 85.5% after,
+while instructions per mma fell from 4.43 to 4.12, and at the power cap that buys clock.
+
+It is worth more once the chunk head is short. On a build that keeps the ldmatrix lane bases
+live across chunks (the first ldmatrix two instructions after the barrier), the same readout
+measured 269.2 / 269.7 / 269.4 -> 272.9 / 273.0 / 272.8 (bench) and 268.0 / 268.2 ->
+271.4 / 271.3 (full loop), +1.2-1.3%, at the same clock. So there it is tensor-pipe time:
+rate over clock times the 131072 MAC/clk peak goes from 0.867 to 0.880. With little else
+between the barrier and the first mma, the readout's latency is on the critical path.
+Add shift-and-mask tile coordinates to that build as well and most of it is gone again:
+272.7 / 273.0 / 273.0 -> 274.0 / 273.5 / 273.8 (bench), 271.2 / 271.7 -> 272.5 / 272.6
+(full loop), +0.3-0.4%. The two gains overlap rather than add.
+The two diagnostics bound what any readout can still give: the 32-gate tree is the floor for
+XORing 64 values and costs ~1.6%, and the shuffles ~0.7%. That is mostly their latency at the
+chunk end, where every warp arrives at once. Moving them elsewhere did not work: ptxas sinks
+them back to the end of the chunk, volatile asm or not, and holding their inputs across the
+barrier made it re-read `threadIdx` in the chunk head.
+
 ### Measuring, and proving a build correct
 
 - `node hashrate.js <pearl_core.node> 60` -- the app's own number: one core, a synthetic

@@ -904,11 +904,9 @@ extern "C" __global__ void pearl_partials(const int8_t *__restrict__ Aprime,
     // col_off is a valid-offset INDEX; expanding it gives an offset with the
     // column pattern's bits clear, so the tile column is a bitwise OR.
     const uint32_t coff = pearl_expand_offset(col_off + cg, PEARL_COLS_MASK);
-    // The tile's columns are CONTIGUOUS, so they need one base pointer and a
-    // stride rather than an array of sixteen. That array cost thirty-two
-    // registers a thread, which at sixteen columns was enough to halve
-    // occupancy and with it the achieved throughput.
-    (void)cols_pattern;
+    // Nothing launches this kernel any more (the fused tile fold replaced it).
+    // It read the tile's columns as one contiguous run while the pattern was
+    // 0..15; the pattern is strided now, so each column comes from the table.
     const int8_t *__restrict__ bbase = Bprime + (size_t)coff * k + k0;
 
     int32_t acc[PEARL_ROWS_PER_THREAD][PEARL_COLS_COUNT];
@@ -927,7 +925,7 @@ extern "C" __global__ void pearl_partials(const int8_t *__restrict__ Aprime,
         if (q >= quads) break;
 #pragma unroll
         for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) {
-          const int4 bv = reinterpret_cast<const int4 *>(bbase + (size_t)c * k)[q];
+          const int4 bv = reinterpret_cast<const int4 *>(bbase + (size_t)cols_pattern[c] * k)[q];
           const int32_t *bw = reinterpret_cast<const int32_t *>(&bv);
 #pragma unroll
           for (uint32_t rr = 0; rr < PEARL_ROWS_PER_THREAD; rr++) {
@@ -945,7 +943,8 @@ extern "C" __global__ void pearl_partials(const int8_t *__restrict__ Aprime,
         for (uint32_t rr = 0; rr < PEARL_ROWS_PER_THREAD; rr++) {
           const int32_t a = (int32_t)Aprime[(size_t)(r0 + rr) * k + k0 + t];
 #pragma unroll
-          for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++) acc[rr][c] += a * bbase[(size_t)c * k + t];
+          for (uint32_t c = 0; c < PEARL_COLS_COUNT; c++)
+            acc[rr][c] += a * bbase[(size_t)cols_pattern[c] * k + t];
         }
       }
     }
@@ -1111,19 +1110,6 @@ __device__ __forceinline__ uint32_t pearl_xor3(uint32_t a, uint32_t b, uint32_t 
   uint32_t d;
   asm("lop3.b32 %0, %1, %2, %3, 0x96;" : "=r"(d) : "r"(a), "r"(b), "r"(c));
   return d;
-}
-
-// XOR across the whole warp. Ampere and later do this as a single REDUX.SYNC
-// instead of the five-step shuffle butterfly it replaces -- and the fold runs
-// one of these per region per chunk, which is often enough to matter.
-__device__ __forceinline__ uint32_t pearl_warp_xor(uint32_t x) {
-#if __CUDA_ARCH__ >= 800
-  return __reduce_xor_sync(0xffffffffu, x);
-#else
-#pragma unroll
-  for (uint32_t sft = 16; sft > 0; sft >>= 1) x ^= __shfl_xor_sync(0xffffffffu, x, sft);
-  return x;
-#endif
 }
 
 // Which of a thread's staging slots k-step t issues, with PEARL_FOLD_GROUP_STAGE:
@@ -1309,12 +1295,20 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
   // fragment is 16 rows by 8 columns held as four int32 a lane, so a 16-column
   // group is TWO of them -- hence NB = 2 * PEARL_WMMA_COL_BLK.
   //
-  // Lane layout, which the readout below depends on:
+  // Lane layout, which the tile pattern and the readout below are built on:
   //   g = lane >> 2, tid = lane & 3
   //   c0 -> row g,     col tid*2      c1 -> row g,     col tid*2+1
   //   c2 -> row g + 8, col tid*2      c3 -> row g + 8, col tid*2+1
-  // Every element of the 16x8 tile appears exactly once across the warp, which
-  // is all the XOR needs.
+  // Over the warp tile that puts rows g + 8j by columns 2*tid + {0, 1} + 8i in
+  // one lane, which is a quarter of one region of the pattern (see
+  // PEARL_ROWS_PATTERN): the region at row offset 32*(mb/2) + (g & 4) and column
+  // offset 2*tid. So each lane folds its own accumulators, and only the four
+  // lanes sharing lane & 0x13 have to talk.
+  static_assert(PEARL_ROWS_MASK == 0x1Bu && PEARL_COLS_MASK == 0x39u,
+                "the readout folds the regions the m16n8k32 accumulators hold: "
+                "rows {0,1,2,3}+8j, cols {0,1}+8i");
+  static_assert(PEARL_WMMA_COL_BLK * 16u == PEARL_COLS_SPAN && PEARL_WMMA_ROW_TILES % 2u == 0u,
+                "a warp tile must be exactly one column span wide and whole row spans deep");
   // Uniform across the block, so the branch in the readout costs nothing.
   const bool one_pass = chunks <= PEARL_JACKPOT_BUCKETS;
   const uint32_t g = lane >> 2;
@@ -1383,9 +1377,10 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
   constexpr uint32_t astep = gA / gquads;                // rows one slot advances
   constexpr uint32_t bslots = PEARL_WMMA_COL_BLK * 16u / bstep;
   constexpr uint32_t aslots = PEARL_WMMA_ROW_TILES * PEARL_WMMA_ROWS / astep;
-  // A step of whole column groups keeps the offset expansion linear, and a step
-  // of whole swizzle bands keeps the XOR constant, as in the block-wide walk.
-  static_assert(bstep % PEARL_COLS_COUNT == 0 && astep % 8u == 0, "slot step breaks linearity");
+  // The source is linear in the slot because a tile's columns and rows are each
+  // one contiguous block (see tile_srcs), and a step of whole swizzle bands
+  // keeps the XOR constant, as in the block-wide walk.
+  static_assert(bstep % 8u == 0 && astep % 8u == 0, "slot step breaks linearity");
   static_assert(bstep * bslots == PEARL_WMMA_COL_BLK * 16u
                     && astep * aslots == PEARL_WMMA_ROW_TILES * PEARL_WMMA_ROWS,
                 "a group must split evenly over its stagers");
@@ -1411,12 +1406,19 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
   // The column-group block is the whole CTA's, not each warp's own -- every
   // warp in the block shares it, and the host guarantees that by refusing to
   // stage unless row_blocks divides evenly by the warp count.
+  //
+  // A tile's valid column offsets are one run of indices starting on a whole
+  // span (see PEARL_COLS_SPAN): col_off is a multiple of the span's offset count
+  // -- the host checks -- and so is every tile's share of the batch. Whole spans
+  // tile the columns with no gaps, so the tile's 256 columns are one contiguous
+  // block starting at index * count, and this thread's column is bcol past it.
+  // The rows likewise: a tile's first row offset index is a multiple of the row
+  // span's two, and its 128 rows start at that index times PEARL_ROWS_COUNT.
   auto tile_srcs = [&](uint32_t v, uint32_t &bsrc_, uint32_t &asrc_) {
     uint32_t rbg_, cbg_;
     tile_coords(v, rbg_, cbg_);
     const uint32_t cg0_block = cbg_ * warp_cols * PEARL_WMMA_COL_BLK;
-    const uint32_t c0 =
-        pearl_expand_offset(col_off + cg0_block + (bcol >> 4), PEARL_COLS_MASK) + (bcol & 15u);
+    const uint32_t c0 = (col_off + cg0_block) * PEARL_COLS_COUNT + bcol;
     const uint32_t row_base = rbg_ * PEARL_WARP_ROWS * regions_per_warp * PEARL_ROWS_COUNT;
     bsrc_ = c0 * k + q0 * 16u;
     asrc_ = (row_base + arow) * k + q0 * 16u;
@@ -1521,8 +1523,92 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
   // global at each chunk boundary turned one 64-byte store per region into
   // sixteen scattered 4-byte stores -- each its own 32-byte sector in L2 --
   // and that write traffic buried the staging reads: 8.8 TH/s against the
-  // 215 the same kernel measures with the readout stores ablated.
-  uint32_t jr[PEARL_JACKPOT_REGS];
+  // 215 the same kernel measures with the readout stores ablated. Zeroed again
+  // at the top of every tile; this initialiser only tells the compiler so for
+  // the readout below, which it analyses where it is defined (ptxas drops it).
+  uint32_t jr[PEARL_JACKPOT_REGS] = {};
+
+  // The chunk readout: XOR the RUNNING tile and fold it into each region's
+  // transcript.
+  //
+  // Lane L's accumulators of m16 tiles 2rl and 2rl + 1 are a quarter of one
+  // region (see the lane layout above), so the fold is the lane's own 64 values
+  // XORed in registers, then across the four lanes that share the region, after
+  // which all four hold its value. The REDUX this replaces reduced across the
+  // whole warp, eight times a chunk, into uniform registers that then had to be
+  // moved back: the readout went from ~60 instructions a chunk per warp to 41,
+  // and the fold as a whole from 4.43 to 4.12 per mma (Nsight Compute).
+  //
+  // A region keeps sixteen transcript words, one a chunk, and each of its four
+  // lanes keeps four: lane L keeps the chunks c with c & 3 == (L >> 2) & 3, in
+  // jr[4rl .. 4rl + 3]. The chunk loop is not unrolled (the x2 unroll measured
+  // -2.8%), and a runtime chunk cannot index jr -- an index only known at run
+  // time forces the whole array out of registers into local memory. So the
+  // four words are a queue: on its chunks a lane shifts them down one and
+  // appends the new word, a compare and four selects, and after sixteen chunks
+  // word j holds chunk 4j + ((L >> 2) & 3). With more chunks than buckets the
+  // word shifted out is the same bucket's previous value, which is exactly what
+  // the rotate folds in; the host refuses that geometry.
+  //
+  // Measured (bench, 4090 at 450 W, interleaved, three rounds): v0.5.5's REDUX
+  // readout 263.4-264.1 TH/s, this 265.1, the same with a two-step butterfly
+  // for the shuffles 264.6-264.7. The whole gain is energy: Nsight has the
+  // tensor pipe 85.6% busy before and 85.5% after, and 7% fewer instructions at
+  // the power cap buy the clock. What did not work, and why:
+  //   - the fold deferred into the next chunk's first k-step, each B pair just
+  //     before its mma overwrite it: 258.4-258.9. The fold then sits between
+  //     the barrier and the first mma of every warp at once.
+  //   - the shuffles sent at the end of the chunk and combined after the next
+  //     barrier: 262.5. Four registers held across the barrier, and ptxas
+  //     re-read threadIdx with S2R in the chunk head to find them.
+  //   - the lane XOR carried across the barrier and shuffled in the middle of
+  //     the next chunk: 259.6-260.5. ptxas sinks the shuffles and the push to
+  //     the end of the chunk anyway, volatile asm or not.
+  // For scale: with no shuffles (PEARL_ABLATE_TRANSCRIPT) it is 267.1, and with
+  // no readout at all but one fold a tile (PEARL_ABLATE_READOUT) 271.3. So the
+  // 32-gate fold itself, the floor for XORing 64 values, costs about 1.6%.
+  static_assert(chunks % PEARL_JACKPOT_BUCKETS == 0u, "the queue must turn over whole times");
+  constexpr uint32_t RPL = PEARL_WMMA_ROW_TILES / 2u;  // regions a lane folds into
+  static_assert(RPL * 4u == PEARL_JACKPOT_REGS, "four transcript words per region a lane holds");
+  // B pair np of region rl into x: the pair's sixteen values and x in eight
+  // xor3, so 32 for all 64 -- the floor, since each gate retires two values.
+  // p3 is the pair's last mma, two gates from the end.
+  auto fold_pair = [&](uint32_t x, uint32_t rl, uint32_t np) -> uint32_t {
+    const int32_t *p0 = acc[2u * rl][2u * np], *p1 = acc[2u * rl + 1u][2u * np];
+    const int32_t *p2 = acc[2u * rl][2u * np + 1u], *p3 = acc[2u * rl + 1u][2u * np + 1u];
+    const uint32_t ta = pearl_xor3((uint32_t)p0[0], (uint32_t)p0[1], (uint32_t)p0[2]);
+    const uint32_t tb = pearl_xor3((uint32_t)p0[3], (uint32_t)p1[0], (uint32_t)p1[1]);
+    const uint32_t tc = pearl_xor3((uint32_t)p1[2], (uint32_t)p1[3], (uint32_t)p2[0]);
+    const uint32_t td = pearl_xor3((uint32_t)p2[1], (uint32_t)p2[2], (uint32_t)p2[3]);
+    const uint32_t te = pearl_xor3(ta, tb, tc);
+    const uint32_t rest = np == 0u ? (te ^ td) : pearl_xor3(te, td, x);
+    const uint32_t t3 = pearl_xor3((uint32_t)p3[0], (uint32_t)p3[1], (uint32_t)p3[2]);
+    return pearl_xor3(t3, (uint32_t)p3[3], rest);
+  };
+  // Region rl of this lane: fold it, gather the other three lanes' shares, and
+  // append the region's value to the queue if this lane keeps chunk c. Lanes
+  // L ^ 4, L ^ 8 and L ^ 12 hold the shares, so it is three independent
+  // shuffles, one round trip, rather than a butterfly whose second shuffle
+  // waits on the first.
+  auto readout = [&](uint32_t rl, uint32_t c) {
+    uint32_t x = 0u;
+#pragma unroll
+    for (uint32_t np = 0; np < NB / 2u; np++) x = fold_pair(x, rl, np);
+#ifndef PEARL_ABLATE_TRANSCRIPT
+    // Diagnostic only when defined: skip the shuffles, keeping every mma,
+    // ldmatrix and the in-lane fold. Output is meaningless.
+    const uint32_t s4 = __shfl_xor_sync(0xffffffffu, x, 4);
+    const uint32_t s8 = __shfl_xor_sync(0xffffffffu, x, 8);
+    const uint32_t s12 = __shfl_xor_sync(0xffffffffu, x, 12);
+    x = pearl_xor3(x, s4, s8) ^ s12;
+#endif
+    const bool keep = ((c ^ (lane >> 2)) & 3u) == 0u;
+    const uint32_t in = one_pass ? x : pearl_rotl13(jr[4u * rl]) ^ x;
+    jr[4u * rl + 0u] = keep ? jr[4u * rl + 1u] : jr[4u * rl + 0u];
+    jr[4u * rl + 1u] = keep ? jr[4u * rl + 2u] : jr[4u * rl + 1u];
+    jr[4u * rl + 2u] = keep ? jr[4u * rl + 3u] : jr[4u * rl + 2u];
+    jr[4u * rl + 3u] = keep ? in : jr[4u * rl + 3u];
+  };
 
   // The fold is PERSISTENT: one block per resident slot, each walking tiles a
   // grid-width apart. What that buys is the seam between tiles. As one block
@@ -1799,60 +1885,21 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
       }
 #endif
 
-      // Chunk boundary: XOR the RUNNING tile and fold it into each region's lane.
-      //
-      // A region is 16x16, which is TWO m16n8k32 fragments side by side. XOR
-      // every accumulator register of both, then across the warp: each element of
-      // the tile appears exactly once, and XOR does not care about order.
-      const uint32_t bucket = chunk % PEARL_JACKPOT_BUCKETS;
+      // Chunk boundary: fold the running tile into each region's transcript.
+#ifndef PEARL_ABLATE_READOUT
 #pragma unroll
-      for (uint32_t mb = 0; mb < MB; mb++) {
-#pragma unroll
-        for (uint32_t cb = 0; cb < PEARL_WMMA_COL_BLK; cb++) {
-          const int32_t *l = acc[mb][cb * 2];
-          const int32_t *r = acc[mb][cb * 2 + 1];
-          // Eight values, three inputs to a gate: each xor3 retires two of them, so
-          // four ops is the floor. Feeding t0 into the third gate rather than a
-          // zero is what reaches it -- the old shape spent a gate on a constant.
-          const uint32_t t0 = pearl_xor3((uint32_t)l[0], (uint32_t)l[1], (uint32_t)l[2]);
-          const uint32_t t1 = pearl_xor3((uint32_t)l[3], (uint32_t)r[0], (uint32_t)r[1]);
-          const uint32_t t2 = pearl_xor3((uint32_t)r[2], (uint32_t)r[3], t0);
-          uint32_t x = t1 ^ t2;
-#ifdef PEARL_ABLATE_TRANSCRIPT
-          // Diagnostic only: skip the warp reduction and the slot capture, keeping
-          // every mma and ldmatrix. Prices the readout layer. Output is meaningless.
-          x = x;
-#else
-          x = pearl_warp_xor(x);
+      for (uint32_t rl = 0; rl < RPL; rl++) readout(rl, chunk);
 #endif
-          // The reduction leaves x in every lane, so the lane that owns this
-          // (region, bucket) slot simply keeps it. The slot select is a small
-          // unrolled compare chain, not jr[slot]: an index only known at run
-          // time would force the whole array out of registers into local
-          // memory, which is the exact failure being avoided.
-          // Split the flat index into its compile-time and runtime halves. base is
-          // a constant in this doubly-unrolled loop, and bucket stays under the
-          // bucket count, so the slot (idx >> 5) equals base >> 5 -- known at
-          // compile time. Selecting on that folds the capture to one lane compare
-          // and one predicated move, where selecting on (idx >> 5) left a
-          // four-way chain whenever the range analysis missed that bucket < 16.
-          const uint32_t base = (cb * regions_per_warp + mb) * PEARL_JACKPOT_BUCKETS;
-          const uint32_t idx = base + bucket;
-          if (lane == (idx & 31u)) {
-#pragma unroll
-            for (uint32_t sl = 0; sl < PEARL_JACKPOT_REGS; sl++) {
-              if ((base >> 5) == sl) {
-                // At the mandated geometry every slot is written exactly once
-                // and the rotate lands on a zero; the host refuses geometries
-                // with more chunks than buckets.
-                if (one_pass) jr[sl] = x;
-                else jr[sl] = pearl_rotl13(jr[sl]) ^ x;
-              }
-            }
-          }
-        }
-      }
     }
+#ifdef PEARL_ABLATE_READOUT
+    // Diagnostic only: no per-chunk readout, just one fold a tile so the
+    // accumulators stay live (ptxas deletes mma whose results nothing reads).
+    // Prices the whole readout. Output is meaningless.
+    if (active) {
+#pragma unroll
+      for (uint32_t rl = 0; rl < RPL; rl++) readout(rl, chunks - 1u);
+    }
+#endif
 
     // Hash every transcript HERE and keep only the hits.
     //
@@ -1894,6 +1941,15 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
                                       * (PEARL_WMMA_ROWS / PEARL_ROWS_COUNT) * PEARL_WMMA_COL_BLK;
     constexpr uint32_t block_regions = warps_per_block * warp_regions;
     static_assert(block_regions <= PEARL_FOLD_THREADS, "one hashing thread per region");
+    // Transcript word sl of this lane, as the readout left it: bucket
+    // word_bucket(sl) of the lane's region sl / 4. That region is row offset
+    // word_reg(sl) and column offset wcb of the warp tile, counted in valid
+    // offsets -- the (oreg, ocb) the hasher decodes below: two row offsets per
+    // 32 rows (0 and 4, told apart by lane bit 4) and four column offsets per
+    // 64 columns (0, 2, 4, 6: the lane's column pair).
+    const uint32_t wcb = lane & 3u;
+    auto word_bucket = [&](uint32_t sl) { return 4u * (sl % 4u) + ((lane >> 2) & 3u); };
+    auto word_reg = [&](uint32_t sl) { return 2u * (sl / 4u) + ((lane >> 4) & 1u); };
 #if PEARL_FOLD_GROUP_STAGE
     // With the staging partitioned, the hand-off needs one block-wide barrier
     // instead of three. Each column slot's first warp (wr == 0, one per
@@ -1922,16 +1978,13 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
     uint32_t *sTB = smem_u32 + ((chunks - 1u) & 1u) * (buf_bytes / 4u);
     pearl_bar_sync(colBar, gB);
     if (active) {
-      const uint32_t total_jp = regions_per_warp * PEARL_WMMA_COL_BLK * PEARL_JACKPOT_BUCKETS;
+      // Conflict free: for one sl a lane's word lands on bank 4 * pos + (b & 3),
+      // and pos takes all eight values as the lane's row half and column pair
+      // vary, so the 32 lanes hit 32 banks.
 #pragma unroll
       for (uint32_t sl = 0; sl < PEARL_JACKPOT_REGS; sl++) {
-        const uint32_t i = lane + sl * 32u;
-        if (i >= total_jp) break;
-        const uint32_t cb = i / (regions_per_warp * PEARL_JACKPOT_BUCKETS);
-        const uint32_t rest = i % (regions_per_warp * PEARL_JACKPOT_BUCKETS);
-        const uint32_t reg = rest / PEARL_JACKPOT_BUCKETS;
-        const uint32_t b = rest % PEARL_JACKPOT_BUCKETS;
-        const uint32_t Lc = wr * warp_regions + cb * regions_per_warp + reg;
+        const uint32_t b = word_bucket(sl);
+        const uint32_t Lc = wr * warp_regions + wcb * regions_per_warp + word_reg(sl);
         const uint32_t ci = Lc >> 1;
         const uint32_t col = wc * PEARL_WMMA_COL_BLK * 16u + (ci / hcols) * bstep + ci % hcols;
         const uint32_t pos = (((Lc & 1u) << 2) | (b >> 2)) ^ (ci & 3u);
@@ -1979,16 +2032,10 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
     // reads land on two quad columns of the banks -- a 4-way conflict on every
     // load -- where with it they cover all eight.
     if (active) {
-      const uint32_t total_jp = regions_per_warp * PEARL_WMMA_COL_BLK * PEARL_JACKPOT_BUCKETS;
 #pragma unroll
       for (uint32_t sl = 0; sl < PEARL_JACKPOT_REGS; sl++) {
-        const uint32_t i = lane + sl * 32u;
-        if (i >= total_jp) break;
-        const uint32_t cb = i / (regions_per_warp * PEARL_JACKPOT_BUCKETS);
-        const uint32_t rest = i % (regions_per_warp * PEARL_JACKPOT_BUCKETS);
-        const uint32_t reg = rest / PEARL_JACKPOT_BUCKETS;
-        const uint32_t b = rest % PEARL_JACKPOT_BUCKETS;
-        const uint32_t L = warp * warp_regions + cb * regions_per_warp + reg;
+        const uint32_t b = word_bucket(sl);
+        const uint32_t L = warp * warp_regions + wcb * regions_per_warp + word_reg(sl);
         sT[L * 16u + ((((b >> 2) ^ ((L >> 1) & 3u)) << 2) | (b & 3u))] = jr[sl];
       }
     }

@@ -1146,6 +1146,18 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
                stageThreads, quadsPerRow, (unsigned)PEARL_COLS_COUNT);
     return false;
   }
+  // The fold stages a tile's columns as one contiguous block, which holds only
+  // while every batch starts on a whole column span (see PEARL_COLS_SPAN): four
+  // valid column offsets for the strided pattern. col_off steps by col_groups
+  // and wraps at colsValid, so both must be whole spans.
+  const uint32_t colsPerSpan = PEARL_COLS_SPAN / PEARL_COLS_COUNT;
+  if (col_groups % colsPerSpan != 0 || ctx->colsValid % colsPerSpan != 0) {
+    if (err && err_len)
+      snprintf(err, err_len,
+               "column offsets must come in whole spans of %u: col_batch %u, %u valid",
+               colsPerSpan, col_groups, ctx->colsValid);
+    return false;
+  }
   if (warpsPerBlock % PEARL_WARP_ROWS != 0 || rowBlocks % PEARL_WARP_ROWS != 0
       || warpCols == 0 || colBlocks % warpCols != 0) {
     if (err && err_len)

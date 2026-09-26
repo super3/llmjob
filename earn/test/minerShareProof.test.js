@@ -127,10 +127,12 @@ describe('buildShareProof', () => {
     expect(buildShareProof(h, jobKey, TINY)).toBeNull();
   });
 
+  // The neighbouring tile's columns: a real tile of the same tree, two columns
+  // over, and not the one region 0 names.
   test('the column side is checked the same way', () => {
     const h = hitAt(0);
     const { cols } = regionToTile(0, TINY);
-    h.proofBt = side(matrix(9, TINY.n * TINY.k), cols.map((c) => c + 16), TINY.k);
+    h.proofBt = side(matrix(9, TINY.n * TINY.k), cols.map((c) => c + 2), TINY.k);
     expect(buildShareProof(h, jobKey, TINY)).toBeNull();
   });
 });

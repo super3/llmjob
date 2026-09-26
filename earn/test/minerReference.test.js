@@ -24,8 +24,13 @@ const { JACKPOT_BUCKETS, meetsTarget } = require('../src/shared/miner/pearlhash'
 const { PROFILE } = require('../src/shared/miner/pearlhash');
 
 // Small in m/n/k so the oracle runs in milliseconds, but STRUCTURALLY the real
-// thing: k/rank = 16 chunks (one per lane) and the protocol's own 4x8 tile index
-// sets. Mainnet's k = 2048 would need ~1M keyed hashes per run.
+// thing: k/rank = 16 chunks (one per lane) and the mined 16x16 strided tile
+// index sets. Mainnet's k = 2048 would need ~1M keyed hashes per run.
+//
+// The tile is hashed into job_key through config52, so every value below
+// changes with it. Regenerated when the tile went from contiguous 0..15 to rows
+// {0,1,2,3}+8j by cols {0,1}+8i; the old values reproduce exactly from the old
+// pattern.
 //
 // rank is 32, not 16. The reference asserts that rank is a power of two AND a
 // multiple of BLAKE3_DIGEST_SIZE, because the dense factor is generated one
@@ -56,12 +61,12 @@ function operandB() {
 }
 
 const VECTOR = {
-  jobKey: '6067f255c955f1cf849b2fc5107f4c769b94a705b59e6b792eb689a791038a78',
-  hashA: '9d3b42c623c95c41b7e1d0a634674f7e440a5424f2eb3f8b326e96ca06b6cdc2',
-  hashB: 'b6b10c4b8c8173c2a05f2f5a6a8a2d6c34dd42889f4c248fd0446f8580c907af',
-  bSeed: 'fc11a3328fe77830e289334a057e0c9857cd752e10c156a6544a501752c9949a',
-  aSeed: '53de1c85b1a1b09a40c72eba188edf85865007d251f8db80de17471db73e7687',
-  jackpotHash: 'f6b96ebcb7c3cf11000d9386143d60c155c470d8c53688cee8d6a428ff33fae6',
+  jobKey: '5a33dfe9636c60b135a0ff4b32ac8d510ea5c2b62eef2e781739df8fb3682cf9',
+  hashA: '2840a6169276a672e0daa23c687ad3958d5d7eb5082c4b87556d768c6de90251',
+  hashB: '4c44eab12bf6ab823b2111835456a2fd76c40e2f76f218e87acf90e1456d29a5',
+  bSeed: '6f8658385babc297c5fbccea48d62b86661edc24ceff2c89c932438522b780c8',
+  aSeed: 'ac53440df442db0937eecd0e672669ef137347a4c17dcbbb7cea2e575373e7fa',
+  jackpotHash: '53297db801b9dbece5537534573faf28e21e17496812ebf4ad69e1caa2c1ba90',
 };
 
 describe('PearlHash reference — known-answer vector', () => {

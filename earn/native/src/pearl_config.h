@@ -55,44 +55,58 @@
 
 // The mandated mainnet profile. rank=128 is the post-softfork value; mining any
 // other rank produces work the network does not credit.
-// The tile is 16 CONSECUTIVE ROWS by 16 CONSECUTIVE COLUMNS.
+// The tile is rows {0,1,2,3} + 8j (j < 4) by columns {0,1} + 8i (i < 8): sixteen
+// rows spread over 32, and sixteen columns spread over 64.
 //
 // Tile size is free. It cancels out of the share rate exactly:
 //   shares/s = regions/s * bound/2^256
 //            = (MACs/s / (tile*k)) * (target * tile * (k/rank) * 128) / 2^256
 // leaves MACs/s * 128 / (rank * difficulty). So the tile is chosen purely for
-// what it costs to READ OUT, and 16x16 is the shape that costs nothing.
+// what it costs to READ OUT, and so is its shape.
 //
-// A 16x16 tile is exactly one int8 wmma accumulator fragment. The XOR over the
-// tile is then the XOR over every lane's registers followed by one warp
-// reduction -- no shared memory, no barriers, and no need to know which element
-// sits in which register, because XOR does not care about order.
+// This shape is the one the tensor cores already hand over. An m16n8k32
+// accumulator gives lane L the elements at row g (c0, c1) and row g + 8 (c2,
+// c3), columns 2t and 2t + 1, where g = L >> 2 and t = L & 3. Across the fold's
+// 32x64 warp tile -- two m16 tiles down, eight n8 tiles across -- lane L holds
+// rows g + {0, 8, 16, 24} by columns 2t + {0, 1} + 8i. That is a quarter of
+// exactly one region: the one at row offset g & 4 and column offset 2t. Lanes
+// L, L^4, L^8 and L^12 hold the other three quarters. So a region's XOR is the
+// lane's own 64 accumulators folded in registers plus one shuffle round trip
+// among those four lanes, and every lane ends up holding its own region's
+// value. A 64x64 warp tile gives each lane two whole regions the same way, and
+// 96x64 three.
 //
-// The previous 4x16 tile was a QUARTER of a fragment, so the fold had to spill
-// each accumulator to shared memory and gather four rows back out, twice per
-// fragment per chunk. Measured on a 4090: deleting the readout entirely took
-// the kernel from 57 to 185 TH/s, so that gather was two thirds of all runtime.
+// The contiguous 16x16 tile this replaced was one wmma fragment. Folding it
+// took a whole-warp REDUX per region per chunk: eight a warp, each landing in a
+// uniform register that then had to be moved back into a vector one. Measured
+// on a 4090 at 450 W against that: fold 263.8 -> 265.1 TH/s (bench, three
+// interleaved rounds), full miner loop 262.8 -> 264.5 (two rounds), all of it
+// from 7% fewer instructions; see the fold's readout for what else was tried.
 //
-// h*w = 256 is the largest the sanity checks allow, and both dimensions are
+// h*w = 256 is the largest the sanity checks allow, and both counts are
 // divisible by TILE_H = 2.
 //
-// The pattern is self-describing in config52 and the miner picks it, so this is
-// as legal as the strided 4x8 set MiningConfiguration carries as a DEFAULT.
+// The pattern is self-describing: the verifier rebuilds it from the row indices
+// a share carries, and config52 carries its encoding. So this is as legal as
+// the strided {0,8,64,72} x {0,1,8,9,32,33,40,41} MiningConfiguration carries
+// as a DEFAULT -- which is itself neither contiguous nor square.
 #define PEARL_ROWS_COUNT 16
 #define PEARL_COLS_COUNT 16
-static constexpr uint32_t PEARL_ROWS_PATTERN[PEARL_ROWS_COUNT] = {0, 1, 2,  3,  4,  5,  6,  7,
-                                                                  8, 9, 10, 11, 12, 13, 14, 15};
-static constexpr uint32_t PEARL_COLS_PATTERN[PEARL_COLS_COUNT] = {0, 1, 2,  3,  4,  5,  6,  7,
-                                                                  8, 9, 10, 11, 12, 13, 14, 15};
+static constexpr uint32_t PEARL_ROWS_PATTERN[PEARL_ROWS_COUNT] = {0,  1,  2,  3,  8,  9,  10, 11,
+                                                                  16, 17, 18, 19, 24, 25, 26, 27};
+static constexpr uint32_t PEARL_COLS_PATTERN[PEARL_COLS_COUNT] = {0,  1,  8,  9,  16, 17, 24, 25,
+                                                                  32, 33, 40, 41, 48, 49, 56, 57};
 
 // The six-byte periodic encoding of each pattern: (factor-1, length-1) per
-// dimension. Precomputed rather than derived at runtime — the derivation is
-// exercised on the JS side, and the values are asserted equal by
+// dimension, where factor is the stride divided by the running product of the
+// dimensions before it. Precomputed rather than derived at runtime -- the
+// derivation is exercised on the JS side, and the values are asserted equal by
 // test/nativeConfig.test.js so the two cannot drift.
-// A contiguous run is a single (stride 1, length N) dimension: factor byte 0,
-// length byte N-1.
-static const uint8_t PEARL_ROWS_PATTERN_BYTES[6] = {0, 15, 0, 0, 0, 0};
-static const uint8_t PEARL_COLS_PATTERN_BYTES[6] = {0, 15, 0, 0, 0, 0};
+//   rows: (stride 1, length 4) then (stride 8, length 4): factors 1 and 8/4 = 2
+//   cols: (stride 1, length 2) then (stride 8, length 8): factors 1 and 8/2 = 4
+// The unused third dimension pads as factor 1, length 1, i.e. two zero bytes.
+static const uint8_t PEARL_ROWS_PATTERN_BYTES[6] = {0, 3, 1, 3, 0, 0};
+static const uint8_t PEARL_COLS_PATTERN_BYTES[6] = {0, 1, 3, 7, 0, 0};
 
 typedef struct PearlProfile {
   // Hashed into config52 — protocol-mandated.
@@ -139,9 +153,10 @@ typedef struct PearlProfile {
 //
 //     (offset & mask) == 0
 //
-// where the mask is the OR of the pattern's own values -- rows {0,1,2,3} are
-// the subsets of bits {0,1}, and columns {0..15} the subsets of bits {0..3}, so
-// a valid offset is a multiple of 4 down and of 16 across. Verified against a
+// where the mask is the OR of the pattern's own values. Rows {0,1,2,3} + 8j are
+// the subsets of bits {0,1,3,4} (mask 0x1B) and columns {0,1} + 8i the subsets
+// of bits {0,3,4,5} (mask 0x39), so a valid row offset is 0, 4, 32, 36, 64, ...
+// and a valid column offset 0, 2, 4, 6, 64, 66, ... Verified against a
 // transcription of offset_is_valid in the JS tests rather than taken on trust.
 //
 // This matters twice over. A share at an invalid offset is unverifiable and
@@ -178,6 +193,20 @@ static_assert(PEARL_ROWS_COUNT == (1u << pearl_popcount_ce(PEARL_ROWS_MASK)),
               "rows pattern must be every subset of its mask bits");
 static_assert(PEARL_COLS_COUNT == (1u << pearl_popcount_ce(PEARL_COLS_MASK)),
               "cols pattern must be every subset of its mask bits");
+
+// The smallest aligned run of rows (columns) that whole tiles cover exactly:
+// the power of two just above the mask. 32 rows hold the two row offsets 0 and
+// 4; 64 columns hold the four column offsets 0, 2, 4 and 6. A run of valid
+// offset INDICES that starts on a multiple of span/count is therefore a
+// contiguous block of the operand, beginning at index * count -- which is what
+// lets the fold stage a CTA tile as one block of rows and one of columns.
+PEARL_HD constexpr uint32_t pearl_pattern_span(uint32_t mask) {
+  uint32_t s = 1u;
+  while (s <= mask) s <<= 1;
+  return s;
+}
+#define PEARL_ROWS_SPAN (pearl_pattern_span(PEARL_ROWS_MASK))
+#define PEARL_COLS_SPAN (pearl_pattern_span(PEARL_COLS_MASK))
 
 // How many rows of A one thread carries.
 //
@@ -546,12 +575,16 @@ static inline void pearl_write_config52(const PearlProfile *p, uint8_t *out) {
 // positions the mask leaves free. This enumerates exactly the VALID offsets,
 // so every region the search visits is one a pool will accept a proof for.
 PEARL_HD static inline uint32_t pearl_expand_offset(uint32_t i, uint32_t mask) {
-  // A contiguous low mask -- both shipped patterns are 0..15 -- leaves every bit
-  // from popcount(mask) up free, so depositing i there is a shift. Every caller
-  // passes a constant mask, so the test folds away at compile time. The
-  // persistent fold runs this once per tile in every thread, to find where the
-  // next tile's chunk 0 comes from, and the general loop below measured 0.4%
-  // behind the shift there (246.6 -> 247.7 TH/s, bench, 4090).
+  // A contiguous low mask leaves every bit from popcount(mask) up free, so
+  // depositing i there is a shift. Every caller passes a constant mask, so the
+  // test folds away at compile time.
+  //
+  // Neither shipped pattern is contiguous any more, and the fold no longer
+  // calls this per tile: it only ever expands the start of a span-aligned run
+  // (see PEARL_COLS_SPAN), which is index * count. The general loop measured
+  // 0.4% behind the shift when the persistent fold did run it once per tile in
+  // every thread (246.6 -> 247.7 TH/s, bench, 4090); here it runs on the host,
+  // once per share, and in the gather kernels nothing launches.
   if (mask != 0xFFFFFFFFu && (mask & (mask + 1u)) == 0u) return i << pearl_popcount_ce(mask);
   uint32_t out = 0u;
   uint32_t bit = 1u;

@@ -16,7 +16,13 @@ const {
 //
 // The profile is deliberately small so the oracle runs in milliseconds, but
 // STRUCTURALLY it is the real thing: k/rank = 16 chunks (one per transcript
-// lane), the contiguous 4x16 tile, valid offsets only, and the operand salt.
+// lane), the mined 16x16 strided tile, valid offsets only, and the operand salt.
+//
+// Recaptured when the tile went from contiguous 0..15 to rows {0,1,2,3}+8j by
+// cols {0,1}+8i: the pattern is hashed into job_key, so the seeds changed with
+// it, and the fold now reads each region out of four lanes' own accumulators.
+// Captured at col_batch 16 (two batches a salt), so the regions include column
+// indices past 16 and every row and column sub-offset of a warp tile.
 //
 // This is the check that closes the loop. The JS rests on a BLAKE3 that passes
 // the official published vectors, so agreement means the GPU computes what we
@@ -35,18 +41,19 @@ const PROFILE = { k: 512, rank: 32, mmaType: 0, m: 512, n: 512 };
 const { m, n, k, rank } = PROFILE;
 
 const DEVICE = {
-  aSeed: 'ff6556a61358e74b7adb65f03b81bac8868d330c7a8d386a1460d7d7f57dc024',
-  bSeed: 'edb3483789036d710f24aa23a16be7a471def174b90a748783bceaab724614e7',
+  aSeed: '2311ccf1262161fcaf096d5f4d6bef16816cac4c56743d413460d819d266cdb7',
+  bSeed: '06949add2af428da0353d85140466cc28d36534f584fca71bdb19e2c8aa98cf5',
   // salt, region -> jackpot hash
   regions: [
-    [0, 3, '0f826edbfe51e32eac38f100d578d7b7da6858a959338b5b691b2edbff313503'],
-    [0, 629, 'd502d7e96219fff91e953c6d92c69004885d43879062329ec2b8e9b398cc5302'],
-    // Salts after the first are RESTAMPS, not fresh draws (see forSalt). These
-    // three were captured from a 4090 running the restamping core, built at this
-    // profile; the salt-0 vectors above are unchanged by it.
-    [1, 23, '8aef5c789f1f498ba8d9830e24dc2cb7b7a986054664c215c59a22c6858e1c02'],
-    [2, 76, 'd6b0222bf761181cfb6cb8f5376ccb4e610383bb560d39e6db9490dd8f6e7702'],
-    [3, 18, 'a7fdd81a83d65ae5a950eda0b18777dbe1b8b8f098fd8038610a0963468d4e00'],
+    [0, 198, '23e8428b4da026b0d0efbb550e959e176998473de2682e3de4fce2f8f2047d02'],
+    [0, 528, 'caf0096df932a4d4eec1a67ebf30761da5ca1d9bc2129ca447d93964b4686500'],
+    // Salts after the first are RESTAMPS, not fresh draws (see forSalt).
+    [1, 36, '8b492c720cdf8ec2ac307a96d4e50cc46607164b8d33c282d79ecf0588183c00'],
+    [1, 636, '8cd6a4ef48bb311c01b3b00d6e7d076d19234102513d6c23fb44b997e2eb0402'],
+    [2, 21, '7dd6ee2d0628b9064f8dbfd41b8202a641d8f26e106f9ba7e7788233d7530f00'],
+    [2, 517, '6d69763da21187bb6c1ad66f455941e6aac28762fc8e78ef381157f2d2dbce02'],
+    [3, 99, 'a9c0548621763e4d6ed6d0297125925c182813e045fe032ecb7fe8f33c8d3b01'],
+    [3, 580, 'a3458250b0d203ffaf87bf321559c24fe53c2baf99446b5b3e64588d34e2f302'],
   ],
 };
 
