@@ -28,6 +28,8 @@
 // known-answer vectors for semantics (test/minerReference.test.js), not against
 // a running GPU. Treat every performance claim as absent rather than optimistic.
 
+#include <cuda.h>          // CUtensorMap (types only; the addon links cudart alone)
+#include <cudaTypedefs.h>  // PFN_cuTensorMapEncodeTiled
 #include <cuda_runtime.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -67,6 +69,11 @@ extern "C" __global__ void pearl_materialize16(const int8_t *base,
                                                const uint32_t *perm, int8_t *out,
                                                uint32_t rows, uint32_t k_log2,
                                                uint32_t rank);
+extern "C" __global__ void pearl_materialize16_kblocked(const int8_t *base,
+                                                        const int8_t *dense,
+                                                        const uint32_t *perm, int8_t *out,
+                                                        uint32_t rows, uint32_t k_log2,
+                                                        uint32_t rank, uint32_t kb_log2);
 extern "C" __global__ void pearl_restamp_operand(const uint32_t *key,
                                                  int8_t *operand, uint64_t salt,
                                                  uint64_t chunks, uint32_t *tree,
@@ -80,7 +87,8 @@ extern "C" __global__ void pearl_tile_fold_tall(
     const int8_t *Aprime, const int8_t *Bprime, uint32_t m, uint32_t n,
     uint32_t k, uint32_t rank, uint32_t chunks, uint32_t col_off,
     uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
-    const PearlTranscriptTest test, const PearlHitList hits);
+    const PearlTranscriptTest test, const PearlHitList hits,
+    const CUtensorMap tmA, const CUtensorMap tmB);
 extern "C" __global__ void pearl_partials(const int8_t *Aprime, const int8_t *Bprime,
                                           const uint32_t *cols_pattern,
                                           uint32_t cols_count, uint32_t m, uint32_t n,
@@ -172,13 +180,24 @@ struct Ctx {
   bool foldPersistent = false;
   // Whether it is the eight-warp build (PEARL_FOLD_WIDE_WARPS), which must be
   // launched 256 threads a block rather than 512. Both are read off the loaded
-  // binary once, the first time this card searches.
+  // binary once, when the context is created (resolve_fold).
   bool foldWide = false;
   // Whether this card runs the tall fold instead (PEARL_FOLD_TALL): its own
   // kernel, pearl_tile_fold_tall, over 192x256 tiles. Read off that kernel's
-  // loaded binary (binaryVersion == 89) with the others.
+  // loaded binary (PEARL_TALL_ARCH of its binaryVersion) with the others.
   bool foldTall = false;
+  // Whether that is Blackwell's build, which stages with TMA (PEARL_TALL_TMA): it
+  // reads A' and B' k-blocked, through the tensor maps below, so the operand draw
+  // writes them that way. The draw runs before any search, so all of this is
+  // resolved when the context is created (resolve_fold) and never changes after.
+  bool foldTma = false;
   bool foldKnown = false;
+  // Why not, when foldKnown is false: reported by the first search, as it was when
+  // the search itself asked.
+  char foldErr[256] = {0};
+  // TMA descriptors for the k-blocked noised operands, encoded once against dAp and
+  // dBp (which never move) when foldTma. Zero, and ignored, for every other build.
+  CUtensorMap tmA{}, tmB{};
 
   // Operands, generated once per job and then read by every region.
   int8_t *dA = nullptr;   // [m, k]
@@ -473,6 +492,123 @@ struct DeviceScope {
   }
 };
 
+// cuTensorMapEncodeTiled is a driver API entry point; fetching it through the
+// runtime keeps the addon's cudart-only link line. Resolved once per process.
+PFN_cuTensorMapEncodeTiled_v12000 pearl_encode_tiled() {
+  static PFN_cuTensorMapEncodeTiled_v12000 fn = nullptr;
+  static bool tried = false;
+  if (!tried) {
+    tried = true;
+    void *p = nullptr;
+    cudaDriverEntryPointQueryResult q;
+    if (cudaGetDriverEntryPointByVersion("cuTensorMapEncodeTiled", &p, 12000, cudaEnableDefault,
+                                         &q) == cudaSuccess
+        && q == cudaDriverEntryPointSuccess)
+      fn = reinterpret_cast<PFN_cuTensorMapEncodeTiled_v12000>(p);
+  }
+  return fn;
+}
+
+// One k-blocked noised operand as the tall fold's TMA reads it (PEARL_TALL_TMA):
+// `rows` rows of k int8, stored [k / kBlock][rows][kBlock] by
+// pearl_materialize16_kblocked, read as boxes of kBlock bytes by `boxRows` rows of
+// one k-block, swizzled SWIZZLE_64B (unit q of box row r at q ^ ((r >> 1) & 3), what
+// the fold's ldmatrix lane bases expect). The map is 3-D -- kBlock bytes, rows,
+// k-blocks -- rather than a 2-D flattening, so the row dimension stays bounded by
+// `rows`: the last row group's rows past m come back zero-filled instead of being the
+// next k-block's first rows.
+bool pearl_encode_operand(CUtensorMap *map, const void *base, uint64_t rows, uint64_t k,
+                          uint32_t kBlock, uint32_t boxRows) {
+  PFN_cuTensorMapEncodeTiled_v12000 enc = pearl_encode_tiled();
+  if (!enc || kBlock != 64u || k % kBlock != 0u || boxRows == 0u || boxRows > 256u) return false;
+  const cuuint64_t dims[3] = {(cuuint64_t)kBlock, (cuuint64_t)rows, (cuuint64_t)(k / kBlock)};
+  const cuuint64_t strides[2] = {(cuuint64_t)kBlock, (cuuint64_t)rows * kBlock};  // bytes
+  const cuuint32_t box[3] = {kBlock, boxRows, 1u};
+  const cuuint32_t estr[3] = {1u, 1u, 1u};
+  return enc(map, CU_TENSOR_MAP_DATA_TYPE_UINT8, 3, const_cast<void *>(base), dims, strides, box,
+             estr, CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_64B,
+             CU_TENSOR_MAP_L2_PROMOTION_L2_256B, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE)
+         == CUDA_SUCCESS;
+}
+
+// Which fold this card loaded, and what launching it takes. Ask which binary
+// actually loaded rather than which card it is -- the launch has to match the code
+// that runs. The Ada build of pearl_tile_fold_wmma is the persistent one
+// (PEARL_FOLD_PERSISTENT) and the eight-warp one (PEARL_FOLD_WIDE_WARPS); the tall
+// fold is its own kernel, with a body only in the builds PEARL_TALL_ARCH names, so
+// its binary answers for itself, and Blackwell's also says the noised operands are
+// read k-blocked through tensor maps (PEARL_TALL_TMA).
+//
+// Once per context, when it is created: the job's first operand draw has to know
+// the layout, and it runs before any search. Nothing here changes afterwards, so the
+// draw (on the JS thread) and the search (on its own) read it without a lock. A
+// failure is kept in foldErr and reported by the first search.
+void resolve_fold(Ctx *ctx) {
+  char *err = ctx->foldErr;
+  const size_t err_len = sizeof ctx->foldErr;
+  err[0] = 0;
+  cudaFuncAttributes fa;
+  const bool haveAttrs =
+      cudaFuncGetAttributes(&fa, reinterpret_cast<const void *>(pearl_tile_fold_wmma))
+      == cudaSuccess;
+  const bool ada = haveAttrs && fa.binaryVersion == 89;
+#ifdef PEARL_FOLD_PERSISTENT_FORCED
+  ctx->foldPersistent = PEARL_FOLD_PERSISTENT != 0;
+#else
+  ctx->foldPersistent = ada;
+#endif
+#ifdef PEARL_FOLD_WIDE_WARPS_FORCED
+  ctx->foldWide = PEARL_FOLD_WIDE_WARPS != 0;
+#else
+  ctx->foldWide = ada;
+#endif
+  // The tall fold is persistent like the Ada fold.
+  {
+    cudaFuncAttributes ft;
+    const bool haveTall =
+        cudaFuncGetAttributes(&ft, reinterpret_cast<const void *>(pearl_tile_fold_tall))
+        == cudaSuccess;
+    const bool tallBody = haveTall && PEARL_TALL_ARCH(ft.binaryVersion)
+                          && (uint32_t)ft.maxThreadsPerBlock == PEARL_TALL_THREADS;
+#ifdef PEARL_FOLD_TALL_FORCED
+    ctx->foldTall = PEARL_FOLD_TALL != 0 && tallBody;
+#else
+    ctx->foldTall = tallBody;
+#endif
+    // -DPEARL_TALL_TMA=0 builds Blackwell's tall fold on cp.async instead; the host
+    // pass sees the same value.
+    ctx->foldTma = ctx->foldTall && PEARL_TALL_TMA != 0 && PEARL_TALL_TMA_ARCH(ft.binaryVersion);
+  }
+  // The fold is compiled for exactly one block size, which is also its launch
+  // bound. A disagreement would not fail loudly: a block of the wrong size
+  // returns at once, and the search would report hashrate while finding
+  // nothing. So refuse it.
+  const uint32_t want = ctx->foldWide ? PEARL_FOLD_WIDE_THREADS : PEARL_FOLD_THREADS;
+  if (!haveAttrs) {
+    snprintf(err, err_len, "no fold kernel for this card: %s",
+             cudaGetErrorString(cudaGetLastError()));
+    return;
+  }
+  if ((uint32_t)fa.maxThreadsPerBlock != want) {
+    snprintf(err, err_len, "fold binary takes %d threads a block, the host would launch %u",
+             fa.maxThreadsPerBlock, want);
+    return;
+  }
+  // The TMA fold's boxes: 64 bytes of k (one k-block) by the tile's 192 A rows and
+  // its 256 B columns. A's map is bounded by m, not by the padded PEARL_TALL_A_ROWS:
+  // TMA zero-fills the last row group's rows past it (see PEARL_TALL_TMA).
+  if (ctx->foldTma
+      && (!pearl_encode_operand(&ctx->tmA, ctx->dAp, ctx->profile.m, ctx->profile.k,
+                                PEARL_TALL_STAGE_K, PEARL_TALL_BM)
+          || !pearl_encode_operand(&ctx->tmB, ctx->dBp, ctx->profile.n, ctx->profile.k,
+                                   PEARL_TALL_STAGE_K, PEARL_TALL_BN))) {
+    snprintf(err, err_len, "could not encode the tall fold's TMA descriptors (k %u, %u-byte k-blocks)",
+             ctx->profile.k, (unsigned)PEARL_TALL_STAGE_K);
+    return;
+  }
+  ctx->foldKnown = true;
+}
+
 }  // namespace
 
 // Choose the card this core mines on, and make it the calling thread's device.
@@ -737,6 +873,9 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   cudaMemcpy(ctx->dCols, cols.data(), cols.size() * sizeof(uint32_t),
              cudaMemcpyHostToDevice);
 
+  // Which fold runs, before any operand is drawn (see resolve_fold).
+  resolve_fold(ctx);
+
   return ctx;
 }
 
@@ -922,8 +1061,20 @@ void draw_noise(Ctx *ctx, bool isA) {
   if ((k & (k - 1u)) == 0u && k >= 16u) {
     uint32_t kLog2 = 0;
     while ((1u << kLog2) < k) kLog2++;
-    pearl_materialize16<<<draw_blocks(len / 16), kDrawThreads>>>(src, dense, perm, dst,
-                                                                 rows, kLog2, rank);
+    if (ctx->foldTma && k >= PEARL_TALL_STAGE_K) {
+      // The same values, stored [k / 64][rows][64] for the tall fold's TMA staging
+      // (PEARL_TALL_TMA): each 64-byte stage box is then whole L2 lines rather than
+      // half of every line. resolve_fold decided this for the context, before its
+      // first draw, and the search launches the fold that reads it. (Any other k is
+      // one the search refuses.)
+      uint32_t kbLog2 = 0;
+      while ((1u << kbLog2) < PEARL_TALL_STAGE_K) kbLog2++;
+      pearl_materialize16_kblocked<<<draw_blocks(len / 16), kDrawThreads>>>(
+          src, dense, perm, dst, rows, kLog2, rank, kbLog2);
+    } else {
+      pearl_materialize16<<<draw_blocks(len / 16), kDrawThreads>>>(src, dense, perm, dst,
+                                                                   rows, kLog2, rank);
+    }
   } else {
     pearl_materialize<<<draw_blocks(len), kDrawThreads>>>(src, dense, perm, dst, rows,
                                                           k, rank);
@@ -1122,58 +1273,11 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   (void)batch;
   const uint32_t regions = ctx->batch;
   const uint32_t col_groups = ctx->colBatch;
-  // Which fold this card loaded, asked once per context: the Ada build is the
-  // persistent one (PEARL_FOLD_PERSISTENT) and the eight-warp one
-  // (PEARL_FOLD_WIDE_WARPS). Ask which binary actually loaded rather than which
-  // card it is -- the launch has to match the code that runs.
+  // Which fold this card loaded: resolved when the context was created (see
+  // resolve_fold), because the operand draw has to know it too.
   if (!ctx->foldKnown) {
-    cudaFuncAttributes fa;
-    const bool haveAttrs =
-        cudaFuncGetAttributes(&fa, reinterpret_cast<const void *>(pearl_tile_fold_wmma))
-        == cudaSuccess;
-    const bool ada = haveAttrs && fa.binaryVersion == 89;
-#ifdef PEARL_FOLD_PERSISTENT_FORCED
-    ctx->foldPersistent = PEARL_FOLD_PERSISTENT != 0;
-#else
-    ctx->foldPersistent = ada;
-#endif
-#ifdef PEARL_FOLD_WIDE_WARPS_FORCED
-    ctx->foldWide = PEARL_FOLD_WIDE_WARPS != 0;
-#else
-    ctx->foldWide = ada;
-#endif
-    // The tall fold is its own kernel, with a body only in the sm_89 build, so its
-    // binary answers for itself. It is persistent like the Ada fold.
-    {
-      cudaFuncAttributes ft;
-      const bool tallAda =
-          cudaFuncGetAttributes(&ft, reinterpret_cast<const void *>(pearl_tile_fold_tall))
-              == cudaSuccess
-          && ft.binaryVersion == 89 && (uint32_t)ft.maxThreadsPerBlock == PEARL_TALL_THREADS;
-#ifdef PEARL_FOLD_TALL_FORCED
-      ctx->foldTall = PEARL_FOLD_TALL != 0 && tallAda;
-#else
-      ctx->foldTall = tallAda;
-#endif
-    }
-    // The fold is compiled for exactly one block size, which is also its launch
-    // bound. A disagreement would not fail loudly: a block of the wrong size
-    // returns at once, and the search would report hashrate while finding
-    // nothing. So refuse it.
-    const uint32_t want = ctx->foldWide ? PEARL_FOLD_WIDE_THREADS : PEARL_FOLD_THREADS;
-    if (!haveAttrs) {
-      if (err && err_len)
-        snprintf(err, err_len, "no fold kernel for this card: %s",
-                 cudaGetErrorString(cudaGetLastError()));
-      return false;
-    }
-    if ((uint32_t)fa.maxThreadsPerBlock != want) {
-      if (err && err_len)
-        snprintf(err, err_len, "fold binary takes %d threads a block, the host would launch %u",
-                 fa.maxThreadsPerBlock, want);
-      return false;
-    }
-    ctx->foldKnown = true;
+    if (err && err_len) snprintf(err, err_len, "%s", ctx->foldErr);
+    return false;
   }
   // The block's shape: sixteen 32x64 warp tiles, or eight 64x64 ones. Either
   // way the CTA tile is 128x256, so the tile count, the grid and the shared
@@ -1274,7 +1378,26 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   // Once per CONTEXT, not once per process: the attribute is per device (see
   // Ctx::smemOptedIn).
   if (!ctx->smemOptedIn) {
-    cudaFuncSetAttribute(foldFn, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
+    // Refuse a footprint the card cannot grant rather than launch into an
+    // invalid-configuration error: the fold's static shared counts too.
+    int optin = 0;
+    cudaFuncAttributes fs{};
+    cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, ctx->device);
+    cudaFuncGetAttributes(&fs, foldFn);
+    if (optin > 0 && smem + fs.sharedSizeBytes > (size_t)optin) {
+      if (err && err_len)
+        snprintf(err, err_len, "fold needs %zu B of shared a block (+%zu static), card allows %d",
+                 smem, (size_t)fs.sharedSizeBytes, optin);
+      return false;
+    }
+    const cudaError_t se =
+        cudaFuncSetAttribute(foldFn, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
+    if (se != cudaSuccess) {
+      if (err && err_len)
+        snprintf(err, err_len, "fold shared-memory opt-in (%zu B) failed: %s", smem,
+                 cudaGetErrorString(se));
+      return false;
+    }
     ctx->smemOptedIn = true;
   }
   // The fold is persistent: exactly as many blocks as can be resident, each
@@ -1316,7 +1439,7 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   if (ctx->foldTall)
     pearl_tile_fold_tall<<<blocks, threads, smem>>>(
         ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
-        col_off, ctx->rowsValid, col_groups, tiles, test, hitList);
+        col_off, ctx->rowsValid, col_groups, tiles, test, hitList, ctx->tmA, ctx->tmB);
   else
     pearl_tile_fold_wmma<<<blocks, threads, smem>>>(
         ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
@@ -1390,6 +1513,20 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   }
   out->found = false;
   return false;
+}
+
+// Which fold this context's card runs, as resolve_fold read it off the loaded
+// binaries, for the bench probe to print: host-pass macros describe the host compile,
+// not the cubin that runs, and would credit a reading to the wrong fold.
+extern "C" const char *pearl_host_fold_name(void *handle) {
+  const Ctx *ctx = static_cast<const Ctx *>(handle);
+  if (!ctx || !ctx->foldKnown) return "unresolved";
+  if (ctx->foldTall)
+    return ctx->foldTma ? "tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands"
+                        : "tall 192x256, 8 warps of 96x64, cp.async ring";
+  if (ctx->foldWide) return "wmma 128x256, 8 warps of 64x64";
+  return ctx->foldPersistent ? "wmma 128x256, 16 warps of 32x64, persistent"
+                             : "wmma 128x256, 16 warps of 32x64";
 }
 
 // ---------------------------------------------------------------------------

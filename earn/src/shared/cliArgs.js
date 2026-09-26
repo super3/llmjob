@@ -32,8 +32,12 @@ const VALUE_FLAGS = new Set([
   '--gpu',
   '--stats-file',
   '--mode', '--llm-binary', '--llm-model', '--llm-max-instances', '--gate-port', '--gate-host',
-  '--gate-quiet',
+  '--gate-quiet', '--mine-mem-clock',
 ]);
+
+// Bounds on --mine-mem-clock, in MHz. See buildSettings.
+const MEM_CLOCK_MIN_MHZ = 100;
+const MEM_CLOCK_MAX_MHZ = 30000;
 
 function regionChoices() {
   return Object.keys(REGIONS).join(', ');
@@ -69,6 +73,15 @@ const USAGE = [
   '                           card can serve a bigger model than it can co-run.',
   '      --llm-max-instances <n>  Cap how many llama-servers run (default: one per',
   '                           eligible GPU, itself capped by free system RAM)',
+  '      --mine-mem-clock <MHz>  Lock each mining GPU\'s memory clock to <MHz>',
+  '                           while it mines (default: off). The fold barely',
+  '                           touches DRAM, so a power-capped card spends the',
+  '                           watts on its SM clock instead: 7001 took a 600 W',
+  '                           RTX 5090 from 95.7 to 103.4 TH/s (+8%). Use 7001',
+  '                           there; lower raises the clock but cuts the work',
+  '                           done per clock. Needs root, or a sudoers NOPASSWD',
+  '                           rule for nvidia-smi. Released whenever mining',
+  '                           stops; ignored while an LLM co-runs with it.',
   '  -r, --region <id>        Pool region: ' + Object.keys(REGIONS).join('/') + ' (default: auto-detect fastest)',
   '  -w, --worker <name>      Worker/rig name (default: this machine\'s hostname)',
   '  -g, --gpu <card>         GPU name to report on the board (default: auto-detect via nvidia-smi)',
@@ -162,6 +175,21 @@ function buildSettings(opts, errors, report, update, serve) {
     gateHost = String(opts['--gate-host']).trim();
     if (!gateHost) errors.push('invalid --gate-host: must not be empty');
   }
+  // A memory clock to lock while mining, in MHz; null (the default) leaves the
+  // clocks alone. The range is a typo guard, not a hardware table -- nvidia-smi
+  // and the driver decide what a card accepts. Below 100 is a GHz figure (`7`
+  // for 7001), above 30000 a kHz one. An empty value is Number('') = 0, which
+  // the range already refuses.
+  let mineMemClockMhz = null;
+  if (opts['--mine-mem-clock'] != null) {
+    const mhz = Number(opts['--mine-mem-clock']);
+    if (!Number.isInteger(mhz) || mhz < MEM_CLOCK_MIN_MHZ || mhz > MEM_CLOCK_MAX_MHZ) {
+      errors.push('invalid --mine-mem-clock: ' + opts['--mine-mem-clock']
+        + ' (must be a whole number of MHz, ' + MEM_CLOCK_MIN_MHZ + '-' + MEM_CLOCK_MAX_MHZ + ')');
+    } else {
+      mineMemClockMhz = mhz;
+    }
+  }
   let llmMaxInstances = null;
   if (opts['--llm-max-instances'] != null) {
     llmMaxInstances = Number(opts['--llm-max-instances']);
@@ -181,7 +209,7 @@ function buildSettings(opts, errors, report, update, serve) {
 
   return {
     address, mdlAddress, region, worker, gpu, statsFile,
-    mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs,
+    mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs, mineMemClockMhz,
     report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,
   };
 }

@@ -103,8 +103,9 @@ The 280 row is gated to sm_89 as well (`PEARL_FOLD_WIDE_WARPS`; the tile pattern
 every card's). It measured 271.6 -> 279.8 against the row before it, interleaved the same
 day (+3.0%); see "Eight 64x64 warps a block" below.
 
-The last row is its own kernel, `pearl_tile_fold_tall`, with a body only in the sm_89 build
-(`PEARL_FOLD_TALL`); the host launches it when that is the binary it loaded. Against the 273
+The last row is its own kernel, `pearl_tile_fold_tall`, with a body only in the sm_89 and
+sm_120 builds (`PEARL_FOLD_TALL`; sm_120's stages with TMA, see `PEARL_TALL_TMA`); the host
+launches it when that is the binary it loaded. Against the 273
 row, interleaved: 271.8 / 271.9 -> 288.6 / 289.4 in the full loop (+6.3%); see "A 192x256
 tile on an mbarrier ring" below.
 
@@ -323,7 +324,11 @@ shared writes taking twice the wavefronts, because a 64-deep stage reads half of
 
 Check after any edit to the tall fold: 255 registers or fewer and 0 spill; SASS stays two
 `LDGSTS` groups a stage, the A group behind the EMPTY spin and the B group ending in
-`ARRIVES.LDGSTSBAR`.
+`ARRIVES.LDGSTSBAR`. On sm_120 (the TMA build): 255 or fewer and 0 spill, no `LDGSTS`, four
+`UTMALDG.3D` in the chunk loop (the producer's two boxes a stage), and 160 of its 192 `IMMA`
+with B `.reuse` (`cuobjdump -sass | grep -c 'IMMA.*reuse'`; ptxas 13.3: 248 registers, 2.672
+instructions an `IMMA`), which is what `PEARL_TALL_MMA_FENCE_MASK` and
+`PEARL_TALL_STAGE_FENCE` are for.
 
 ### What a staged byte costs, and why a standalone probe underprices it
 

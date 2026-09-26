@@ -25,6 +25,7 @@ extern "C" void *pearl_host_create(const PearlProfile *, char *, size_t);
 extern "C" void pearl_host_destroy(void *);
 extern "C" void pearl_host_set_job(void *, const uint8_t *, const uint8_t *);
 extern "C" bool pearl_host_search(void *, uint64_t, uint32_t, PearlSearchResult *, uint64_t *, char *, size_t);
+extern "C" const char *pearl_host_fold_name(void *);
 
 int main(int argc, char **argv) {
   double seconds = argc > 1 ? atof(argv[1]) : 20.0;
@@ -50,10 +51,13 @@ int main(int argc, char **argv) {
   memset(target, verify ? 0xFF : 0x00, sizeof target);
   pearl_host_set_job(h, header, target);
 
-  printf("build %s %s | m=n=%u col_batch=%u | BLOCK_GROUP=%d WARP_ROWS=%d "
-         "ROW_TILES=%d COL_BLK=%d STAGE_BUFS=%d SB_STRIDE=%d\n",
-         __DATE__, __TIME__, prof.m, prof.col_batch, PEARL_BLOCK_GROUP, PEARL_WARP_ROWS,
-         PEARL_WMMA_ROW_TILES, PEARL_WMMA_COL_BLK, PEARL_STAGE_BUFS, PEARL_SB_STRIDE);
+  // The fold the LOADED binary runs, as the host resolved it. The macros after it are
+  // this file's host pass, which describe only the sixteen-warp fold's defaults.
+  printf("build %s %s | m=n=%u col_batch=%u | fold: %s | host-pass BLOCK_GROUP=%d "
+         "WARP_ROWS=%d ROW_TILES=%d COL_BLK=%d STAGE_BUFS=%d SB_STRIDE=%d\n",
+         __DATE__, __TIME__, prof.m, prof.col_batch, pearl_host_fold_name(h),
+         PEARL_BLOCK_GROUP, PEARL_WARP_ROWS, PEARL_WMMA_ROW_TILES, PEARL_WMMA_COL_BLK,
+         PEARL_STAGE_BUFS, PEARL_SB_STRIDE);
 
   PearlSearchResult res; uint64_t attempts = 0, total = 0; int hits = 0;
   uint64_t nonce = 0;

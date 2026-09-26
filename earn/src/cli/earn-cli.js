@@ -868,6 +868,19 @@ async function run(argv) {
     log('auto:       ' + autoPlan.model.name + ' needs the GPU to itself — mining until a request arrives');
   }
 
+  // --mine-mem-clock is only safe while nothing else wants the memory. LLM
+  // decode is memory-bandwidth-bound -- the opposite of the fold -- so a model
+  // served from a locked card slows down with the memory clock. Demand mode
+  // never overlaps the two: the miner's stop() releases the lock before the
+  // gate starts llama-server. A co-running LLM shares the card for the whole
+  // run, so the lock is dropped here, where the plan is known, and the miner
+  // never has to ask which mode it is in.
+  if (settings.mineMemClockMhz != null && miner && plan.llm && !demand) {
+    log('--mine-mem-clock ignored: the LLM co-runs with the miner and needs full memory bandwidth',
+      process.stderr);
+    settings.mineMemClockMhz = null;
+  }
+
   // Keep a mining reserve free only when co-running with the miner. In demand
   // mode nothing is co-resident, so the model is sized against the whole card.
   if (plan.llm && !demand) {
