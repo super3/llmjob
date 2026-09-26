@@ -2,6 +2,7 @@ const request = require('supertest');
 const express = require('express');
 const routes = require('../src/routes');
 const { createTestDb } = require('./helpers/pgmem');
+const { generateKeypair, fingerprint, signRig } = require('../../earn/src/shared/node');
 
 const ADDR = 'prl1p' + 'a'.repeat(30);
 
@@ -60,6 +61,26 @@ describe('Miner API', () => {
     expect(res.body.miners[0]).not.toHaveProperty('nodeId');
     const stored = (await db.query('SELECT llm_model, node_id FROM miners', [])).rows[0];
     expect(stored).toEqual({ llm_model: null, node_id: null });
+  });
+
+  test('POST /api/miners/ping stores the health fields and a verified rig id', async () => {
+    const kp = generateKeypair();
+    const identity = { ...kp, nodeId: fingerprint(kp.publicKey) };
+    const res = await request(app).post('/api/miners/ping').send({
+      address: ADDR, worker: 'rig01', hashrate: 100, rejected: 2, tempC: 61, powerW: 290, powerLimitW: 450,
+      coreClockMhz: 2520, memClockMhz: 10501, fanPct: 55, driver: '580.82', os: 'linux', client: 'gui',
+      uptimeSec: 120, lastShareSec: 4, ...signRig(identity, Date.now()),
+    });
+    expect(res.status).toBe(200);
+    const row = (await db.query('SELECT * FROM miners', [])).rows[0];
+    expect(row).toMatchObject({ temp_c: 61, power_w: 290, core_clock_mhz: 2520, mem_clock_mhz: 10501, fan_pct: 55,
+      driver: '580.82', os: 'linux', client: 'gui', rig_id: identity.nodeId });
+    expect(Number(row.rejected)).toBe(2);
+  });
+
+  test('POST /api/miners/ping with no JSON body is a bad address, not a crash', async () => {
+    const res = await request(app).post('/api/miners/ping').set('Content-Type', 'text/plain').send('hello');
+    expect(res.status).toBe(400);
   });
 
   test('POST returns 500 when the db fails', async () => {

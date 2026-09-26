@@ -106,6 +106,25 @@ describe('detectGpusVram', () => {
   });
 });
 
+describe('detectGpuTelemetry', () => {
+  it('returns [] on error, so a rig without nvidia-smi still reports', async () => {
+    execCb(new Error('x'));
+    expect(await probe.detectGpuTelemetry()).toEqual([]);
+  });
+
+  it('asks nvidia-smi for the telemetry fields and parses each card', async () => {
+    execCb(null, '0, 64, 312.45, 450.00, 2520, 10501, 55, 580.82, P2\n');
+    const rows = await probe.detectGpuTelemetry();
+    expect(rows).toEqual([{
+      index: 0, tempC: 64, powerW: 312.45, powerLimitW: 450, coreClockMhz: 2520,
+      memClockMhz: 10501, fanPct: 55, driver: '580.82', pstate: 'P2',
+    }]);
+    const args = execFile.mock.calls[execFile.mock.calls.length - 1][1];
+    expect(args[0]).toMatch(/^--query-gpu=index,temperature\.gpu,power\.draw,/);
+    expect(args).toContain('--format=csv,noheader,nounits');
+  });
+});
+
 // The card list both shells mine on. One place, so the GUI and the CLI cannot
 // drift apart on which cards mine — they had their own GPU detection once, and
 // it took a shipped Linux build reporting no device at all to notice.

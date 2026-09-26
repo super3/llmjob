@@ -9,11 +9,22 @@ const MinerService = require('../services/minerService');
 // service stores but this list drops silently reads null for every host on the
 // board. Older clients still send the retired LLM fields (llmModel, nodeId);
 // they are simply not picked up.
+const PING_FIELDS = [
+  'address', 'worker', 'gpu', 'region', 'hashrate', 'accepted', 'vramUsedMb', 'vramTotalMb', 'version',
+  // Per-card health and rig details, stored for diagnostics and not shown.
+  'rejected', 'tempC', 'powerW', 'powerLimitW', 'coreClockMhz', 'memClockMhz', 'fanPct',
+  'driver', 'os', 'client', 'uptimeSec', 'lastShareSec',
+  // The signed rig identity (see services/rigIdentity).
+  'rigId', 'publicKey', 'timestamp', 'signature',
+];
+
 async function pingMiner(req, res) {
   try {
-    const { address, worker, gpu, region, hashrate, accepted, vramUsedMb, vramTotalMb, version } = req.body;
+    const body = req.body || {};
+    const input = {};
+    for (const k of PING_FIELDS) input[k] = body[k];
     const service = new MinerService(req.app.locals.db);
-    const result = await service.reportMiner({ address, worker, gpu, region, hashrate, accepted, vramUsedMb, vramTotalMb, version });
+    const result = await service.reportMiner(input);
     if (result.error) {
       return res.status(400).json({ error: result.error });
     }

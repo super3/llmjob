@@ -172,6 +172,36 @@ describe('migrations', () => {
     expect((await pool.query('SELECT id FROM jobs')).rows).toHaveLength(2);
   });
 
+  it('add-miner-telemetry adds and drops the health and rig-id columns', async () => {
+    const pool = freshPool();
+    await apply(pool, load(byName('init-schema')), 'up');
+    const mod = load(byName('add-miner-telemetry'));
+    // Simulate a miners table from before the columns existed.
+    for (const [name] of mod.COLUMNS) await pool.query(`ALTER TABLE miners DROP COLUMN ${name}`);
+
+    await apply(pool, mod, 'up');
+    await pool.query("INSERT INTO miners (id, rejected, temp_c, fan_pct, driver, rig_id) VALUES ('m1', 2, 61.5, 55, '580.82', 'a1b2c3d4e5f60789')");
+    const row = (await pool.query('SELECT temp_c, fan_pct, rig_id FROM miners')).rows[0];
+    expect(row).toEqual({ temp_c: 61.5, fan_pct: 55, rig_id: 'a1b2c3d4e5f60789' });
+    // Idempotent: on a fresh database the init schema already has them.
+    await apply(pool, mod, 'up');
+
+    await apply(pool, mod, 'down');
+    for (const [name] of mod.COLUMNS) {
+      await expect(pool.query(`SELECT ${name} FROM miners`)).rejects.toBeDefined();
+    }
+    // Rolling back drops only the new columns; the row survives.
+    expect((await pool.query('SELECT id FROM miners')).rows).toHaveLength(1);
+  });
+
+  it('the init schema and add-miner-telemetry declare the same columns', async () => {
+    const pool = freshPool();
+    await apply(pool, load(byName('init-schema')), 'up');
+    for (const [name] of load(byName('add-miner-telemetry')).COLUMNS) {
+      await expect(pool.query(`SELECT ${name} FROM miners`)).resolves.toBeDefined();
+    }
+  });
+
   it('add-managed-waitlist creates and drops the waitlist table', async () => {
     // Against a bare database (a deployment created before the table existed)
     // the migration must create it standalone.

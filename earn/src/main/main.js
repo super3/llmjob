@@ -17,6 +17,7 @@ const { coreFactory } = require('./pearlCore');
 const { getJson } = require('./io');
 const { detectRegion, detectGpusVram, postMinerReport } = require('./probe');
 const probe = require('./probe');
+const nodeStore = require('./nodeStore');
 const settingsStore = require('../shared/settingsStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const {
@@ -29,6 +30,7 @@ const { buildBalanceUrl, parseBalance } = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
 const { formatUpdate, describeUpdateError } = require('../shared/updateStatus');
 const { buildMinerReports } = require('../shared/minerReport');
+const { signRig } = require('../shared/node');
 const { alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda } = require('../shared/gpu');
 const earnings = require('../shared/earnings');
 const format = require('../shared/format');
@@ -183,12 +185,15 @@ async function startMining(settings) {
   if (ticker) clearInterval(ticker);
   ticker = setInterval(() => send('miner:stats', statsView(snapshot(stats, Date.now()))), 1000);
 
-  // Publish live status to the network page's board while mining, including
-  // live per-card VRAM (used/total).
+  // Publish live status to the network page's board while mining: per-card
+  // VRAM and health (temperature, power, clocks), signed with the rig identity.
   const report = async () => {
-    const snap = snapshot(stats, Date.now());
-    const gpuVram = await detectGpusVram();
-    buildMinerReports(settings, snap, gpuVram, app.getVersion()).forEach(postMinerReport);
+    const now = Date.now();
+    const snap = snapshot(stats, now);
+    const [gpuVram, telemetry] = await Promise.all([detectGpusVram(), probe.detectGpuTelemetry()]);
+    buildMinerReports(settings, snap, gpuVram, app.getVersion(), {
+      telemetry, identity: rigIdentity(now), client: 'gui', os: process.platform, nowMs: now,
+    }).forEach(postMinerReport);
   };
   report();
   if (reporter) clearInterval(reporter);
@@ -228,6 +233,18 @@ async function startMining(settings) {
   } catch (e) {
     reportLaunchFailure(e);
   }
+}
+
+// The rig's signed identity for a board report (see shared/node). The keypair is
+// read once and cached: node.json does not change under a running app. A store
+// that cannot be read or written leaves the rig reporting unsigned, the way
+// every older client does — never without a report.
+let rigKey; // undefined until first read; null when there is none to be had
+function rigIdentity(now) {
+  if (rigKey === undefined) {
+    try { rigKey = nodeStore.getOrCreateNode(); } catch (e) { rigKey = null; }
+  }
+  return signRig(rigKey, now);
 }
 
 // Miner event wiring. PearlEngine translates our miner's events into the two
@@ -526,6 +543,9 @@ app.whenReady().then(() => {
   refreshEconomics();
   const econTimer = setInterval(refreshEconomics, 10 * 60 * 1000);
   if (econTimer.unref) econTimer.unref();
+  // The identity used to live in Electron's userData dir; move it into the
+  // store shared with the CLI so one machine keeps one rig id across shells.
+  nodeStore.migrateFrom(path.join(app.getPath('userData'), 'node.json'));
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

@@ -19,7 +19,7 @@
   <div class="legal-head">
     <div class="eb">Legal</div>
     <h1>Privacy Policy</h1>
-    <p class="updated">Last updated 25 September 2026</p>
+    <p class="updated">Last updated 26 September 2026</p>
   </div>
 
 
@@ -48,6 +48,8 @@
       <li>There are <b>no accounts</b>. The miner needs a payout address and nothing else.</li>
       <li>While it mines, the app reports its <b>hashrate and hardware</b> to us once a minute, and
         that report is <b>shown on a public page</b> next to your payout address.</li>
+      <li>The same report carries <b>card health</b> (temperature, power, clocks, fan) and a random
+        <b>rig id</b>. We keep those to diagnose miners and <b>don't publish them</b>.</li>
       <li>If you join the managed-mining waitlist, we keep the <b>email address</b> you give us and
         use it only to contact you about managed mining.</li>
       <li>We don't log IP addresses, we don't set cookies, and we never sell data.</li>
@@ -62,6 +64,16 @@
     <p>While mining, the app reports once a minute per graphics card: your <b>payout address</b>, a
       worker name, the pool region, GPU model, hashrate, accepted shares, VRAM used and total, and
       the app version. This is what the public network board displays.</p>
+    <p>The same report also carries readings we keep for diagnosing miners and <b>do not show</b>
+      on the board: rejected shares, each card's temperature, power draw and power limit, core and
+      memory clocks and fan speed, the graphics driver version, the operating system
+      (Windows, Linux or macOS, nothing more specific), whether the app or the command-line miner
+      sent it, how long it has been mining and how long since its last share.</p>
+    <p>Each install also makes a random <b>rig key</b> the first time it runs and keeps it on your
+      machine. The report carries the key's public half, a short <b>rig id</b> derived from it and
+      a signature, so we can tell your rigs apart and know a report really came from that rig. The
+      rig id is stored with the rest of that rig's report, including its payout address, and is not
+      shown on the board. It has nothing to do with your wallet and can't move funds.</p>
     <p><b>The worker name defaults to your computer's hostname</b> (lower-cased and stripped of
       punctuation), so if your machine is called something like <code>alex-desktop</code>
       that is what appears on a public page next to your payout address. Change it in the app's
@@ -94,6 +106,8 @@
       information behind it is public by design: payout addresses (shortened on the page, but
       returned in full by the API behind it), worker names, GPU models, hashrates, shares, VRAM and
       client versions. Anyone can look up an address to see its rigs.</p>
+    <p>The health readings and rig id from section 1 are not on the page and not in the API behind
+      it.</p>
     <p>Two consequences worth being explicit about. A payout address is a permanent, publicly
       searchable identifier on its blockchain, so anything shown beside it is linked to it in
       public and stays linked. And because the worker name defaults to your hostname, the default
@@ -112,7 +126,7 @@
         any server that answers your browser or your rig — our host, the analytics service, the
         font CDN, the mining pool — necessarily sees your IP address in order to reply, and keeps
         its own logs. We mean that <em>we</em> don't store one, not that none exists anywhere.</li>
-      <li><b>No device telemetry beyond mining.</b> The app collects no operating system username,
+      <li><b>No device telemetry beyond what section 1 lists.</b> The app collects no operating system username,
         file paths, MAC address, installed-software inventory or crash-analytics stream, and ships
         no analytics SDK.</li>
       <li><b>No cookies of our own</b>, and no cross-site tracking or advertising pixels.</li>
@@ -148,7 +162,7 @@
       <table>
         <thead><tr><th>Data</th><th>Kept for</th></tr></thead>
         <tbody>
-          <tr><td>Miner rows</td><td>Removed after about 90 minutes without a report</td></tr>
+          <tr><td>Miner rows, including the health readings and rig id</td><td>Removed after about 90 minutes without a report</td></tr>
           <tr><td>Waitlist signups</td><td>Until managed mining launches and we have contacted you, or until you ask us to delete yours</td></tr>
         </tbody>
       </table>
@@ -157,8 +171,9 @@
 
   <section id="security">
     <h2>6. Security</h2>
-    <p>Traffic is encrypted in transit. The app never handles a private key, so there is no key for
-      it to leak, and payouts go from the pool straight to your address.</p>
+    <p>Traffic is encrypted in transit. The app never handles a wallet key, so there is none for it
+      to leak, and payouts go from the pool straight to your address. The only key it holds is the
+      rig key from section 1, which can sign "this is rig X" and nothing else.</p>
     <p>No system is perfectly secure, and we can't promise otherwise. If you find a vulnerability,
       please tell us privately at <a href="mailto:help@llmjob.com">help@llmjob.com</a> before
       disclosing it.</p>
@@ -170,6 +185,8 @@
     <ul>
       <li>Change the worker name in the app before you start, so your hostname isn't published.</li>
       <li>Stop mining to stop reporting to the public board; the row ages off by itself.</li>
+      <li>Run the command-line miner with <code>--no-report</code> to mine without sending any
+        report at all.</li>
       <li>Leave the waitlist form's optional fields blank; only the email is required.</li>
     </ul>
     <p>Depending on where you live you may also have rights to access, correct, export, restrict or

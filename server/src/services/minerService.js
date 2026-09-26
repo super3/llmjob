@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { verifyRig } = require('./rigIdentity');
 
 // A worker unseen for this long drops off the "online" list; rows unseen for
 // PRUNE_TTL are deleted entirely. Clients check in every ~60s, so 5 minutes is
@@ -11,6 +12,13 @@ const PRUNE_TTL = 90 * 60 * 1000;          // 90 minutes
 const ADDRESS_RE = /^prl1p[0-9a-z]{20,80}$/i;
 const MAX_HASHRATE = 1e6;                  // TH/s sanity clamp
 const MAX_VRAM_MB = 1e6;                   // VRAM MB sanity clamp (~1 TB)
+// Ceilings for the per-card health readings, far above any real card: they
+// exist to keep a garbage report from landing a nonsense number, not to judge.
+const MAX_TEMP_C = 200;
+const MAX_POWER_W = 5000;
+const MAX_CLOCK_MHZ = 20000;
+const MAX_FAN_PCT = 100;
+const MAX_SECONDS = 1e9;                   // ~31 years
 
 // Stable per-(address, worker) id.
 function minerFingerprint(address, worker) {
@@ -111,6 +119,26 @@ function clampNum(v, max) {
   return (max != null && n > max) ? max : n;
 }
 
+// Like clampNum, but a missing or unreadable value stays null. For health
+// readings "no reading" and "zero" mean different things: a card at 0 °C would
+// be broken, a card with no reading is one nvidia-smi could not see.
+function clampOrNull(v, max) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n > max ? max : n;
+}
+
+function intOrNull(v, max) {
+  const n = clampOrNull(v, max);
+  return n == null ? null : Math.round(n);
+}
+
+function textOrNull(v, len) {
+  const t = v == null ? '' : String(v).trim();
+  return t ? t.slice(0, len) : null;
+}
+
 // Compact "time since" label for the last-share column.
 function formatAgo(ms) {
   const s = Math.floor((ms > 0 ? ms : 0) / 1000);
@@ -144,15 +172,43 @@ class MinerService {
     const id = minerFingerprint(address, worker);
     const now = Date.now();
 
+    // Diagnostics: stored, never served on the public board. Every one is
+    // optional, and an older client that sends none of them stores NULLs.
+    const health = [
+      Math.floor(clampNum(input.rejected)),
+      clampOrNull(input.tempC, MAX_TEMP_C),
+      clampOrNull(input.powerW, MAX_POWER_W),
+      clampOrNull(input.powerLimitW, MAX_POWER_W),
+      intOrNull(input.coreClockMhz, MAX_CLOCK_MHZ),
+      intOrNull(input.memClockMhz, MAX_CLOCK_MHZ),
+      intOrNull(input.fanPct, MAX_FAN_PCT),
+      textOrNull(input.driver, 32),
+      textOrNull(input.os, 16),
+      textOrNull(input.client, 8),
+      intOrNull(input.uptimeSec, MAX_SECONDS),
+      intOrNull(input.lastShareSec, MAX_SECONDS),
+      // Only a signature that checks out earns the row a rig id (see rigIdentity).
+      verifyRig(input, now),
+    ];
+
     await this.db.query(
-      `INSERT INTO miners (id, address, worker, gpu, region, hashrate, accepted, vram_used, vram_total, version, first_seen, last_seen)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+      `INSERT INTO miners (id, address, worker, gpu, region, hashrate, accepted, vram_used, vram_total, version, first_seen, last_seen,
+                           rejected, temp_c, power_w, power_limit_w, core_clock_mhz, mem_clock_mhz, fan_pct,
+                           driver, os, client, uptime_sec, last_share_sec, rig_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11,
+               $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
        ON CONFLICT (id) DO UPDATE SET
          gpu = EXCLUDED.gpu, region = EXCLUDED.region, hashrate = EXCLUDED.hashrate,
          accepted = EXCLUDED.accepted, vram_used = EXCLUDED.vram_used,
          vram_total = EXCLUDED.vram_total, version = EXCLUDED.version,
-         last_seen = EXCLUDED.last_seen`,
-      [id, address, worker, gpu, region, hashrate, accepted, vramUsed, vramTotal, version, now]
+         last_seen = EXCLUDED.last_seen,
+         rejected = EXCLUDED.rejected, temp_c = EXCLUDED.temp_c, power_w = EXCLUDED.power_w,
+         power_limit_w = EXCLUDED.power_limit_w, core_clock_mhz = EXCLUDED.core_clock_mhz,
+         mem_clock_mhz = EXCLUDED.mem_clock_mhz, fan_pct = EXCLUDED.fan_pct,
+         driver = EXCLUDED.driver, os = EXCLUDED.os, client = EXCLUDED.client,
+         uptime_sec = EXCLUDED.uptime_sec, last_share_sec = EXCLUDED.last_share_sec,
+         rig_id = EXCLUDED.rig_id`,
+      [id, address, worker, gpu, region, hashrate, accepted, vramUsed, vramTotal, version, now, ...health]
     );
     return { success: true, id };
   }
@@ -207,6 +263,8 @@ MinerService.minerFingerprint = minerFingerprint;
 MinerService.isValidAddress = isValidAddress;
 MinerService.normalizeAddress = normalizeAddress;
 MinerService.clampNum = clampNum;
+MinerService.clampOrNull = clampOrNull;
+MinerService.textOrNull = textOrNull;
 MinerService.formatAgo = formatAgo;
 MinerService.baseWorker = baseWorker;
 MinerService.dropHostAggregates = dropHostAggregates;

@@ -1,11 +1,10 @@
 'use strict';
 
-// One node identity per machine, shared by BOTH shells. The GUI and CLI used to
-// keep separate node.json files (Electron userData vs ~/.local/share), which
-// gave one machine two nodeIds: linking in the GUI left the CLI unlinked (it
-// silently refused to serve jobs) and pairing both registered one GPU as two
-// cluster nodes. Everything now reads/writes ~/.local/share/llmjob-earn/node.json
-// — a path both shells can compute without Electron. The secret key never leaves
+// One rig identity per machine (see shared/node.js), shared by BOTH shells. The
+// GUI and CLI used to keep separate node.json files (Electron userData vs
+// ~/.local/share), which gave one machine two ids — one physical rig showing up
+// as two. Everything now reads/writes ~/.local/share/llmjob-earn/node.json — a
+// path both shells can compute without Electron. The secret key never leaves
 // this file.
 
 const fs = require('fs');
@@ -27,7 +26,7 @@ function saveNode(node) {
 
 // One-time migration from a shell's old private location (the GUI's Electron
 // userData dir). Only runs when the shared store is empty and the legacy file
-// holds a full identity, so an existing pairing survives the path change.
+// holds a full identity, so an existing rig keeps its id across the path change.
 function migrateFrom(legacyPath) {
   if (loadNode() || !legacyPath) return false;
   try {

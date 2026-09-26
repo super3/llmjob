@@ -73,7 +73,18 @@ All public, no authentication.
 
 - `POST /api/miners/ping` — a mining client reports its live status: payout
   `address` (required, `prl1p…`), `worker`, `gpu`, `region`, `hashrate`,
-  `accepted`, `vramUsedMb`, `vramTotalMb`, `version`.
+  `accepted`, `vramUsedMb`, `vramTotalMb`, `version`. All optional after the
+  address, and stored but never served back by `GET /api/miners`:
+  - per-card health: `rejected`, `tempC`, `powerW`, `powerLimitW`,
+    `coreClockMhz`, `memClockMhz`, `fanPct`;
+  - rig details: `driver`, `os`, `client` (`gui`/`cli`), `uptimeSec`,
+    `lastShareSec`;
+  - rig identity: `rigId`, `publicKey`, `timestamp`, `signature`. The server
+    stores `rigId` only when it is the leading hex of sha256(`publicKey`) (16
+    characters, or 6 for older rigs), the timestamp is within 5 minutes, and
+    `signature` is a valid Ed25519 signature over `"<rigId>:<timestamp>"`
+    (`src/services/rigIdentity.js`). An unsigned or failing report is still
+    accepted and stored, just without a rig id.
 - `GET /api/miners` — online rigs for the network page, one row per host with
   its cards nested, plus `totalOnline`, `totalWorkers` and `totalHashrate`.
 - `POST /api/waitlist` — join the managed-mining waitlist: `email` (required),

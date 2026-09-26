@@ -1,11 +1,17 @@
 'use strict';
 
-// Pure node-identity + protocol helpers for "Connect with LLMJob". The machine
-// holds an Ed25519 signing keypair (only the public key ever leaves it); the
-// nodeId is a short fingerprint of the public key. These build the exact request
-// bodies the server expects (/api/nodes/join, /api/nodes/ping) and sign the ping
-// challenge — all deterministic and unit-testable. The IO (persist the key, POST
-// to the server, sample telemetry) lives in main.js.
+// Rig identity. Each machine holds an Ed25519 signing keypair (only the public
+// key ever leaves it), and its id is a short fingerprint of that key. The miner
+// signs its once-a-minute board report with it, so the server can tell one rig
+// from another — and trust that a report claiming to be rig X came from the
+// machine holding X's key — with no accounts involved. These are the pure,
+// deterministic halves; the keypair itself is persisted by main/nodeStore.js,
+// which both shells share, so one machine keeps one id whether it runs the GUI
+// or the CLI.
+//
+// "node" in the names is historical: this keypair was first minted to link a
+// machine to an account as an LLM node, and existing rigs already hold one in
+// node.json. Reusing it means every rig that ever ran LLMJob keeps its id.
 
 const nacl = require('tweetnacl');
 const naclUtil = require('tweetnacl-util');
@@ -20,19 +26,15 @@ function generateKeypair() {
   };
 }
 
-// Short, stable node id = first NODE_ID_HEX hex of sha256(publicKey). Must match
-// the server's nodeService.generateNodeFingerprint exactly, or a client cannot
-// address itself.
+// Short, stable id = first NODE_ID_HEX hex of sha256(publicKey). The server
+// recomputes it from the public key to check a report's claim, so the two must
+// agree exactly.
 //
 // 16 characters (64 bits), not the 6 (24 bits) this used to be: 24 bits put two
-// honest nodes on the same id with ~3% probability at 1,000 nodes and 52% at
-// 5,000, and the loser was silently unusable — its signed pings refused for a
-// key mismatch, its polls 401ing, and no way to claim it to an account.
-//
-// This is only ever called to MINT an id. A machine that enrolled under the old
-// width keeps the 6-character id already stored in its node.json (see
-// main/nodeStore.js) and the server still recognises it, so nothing has to be
-// re-paired.
+// honest rigs on the same id with ~3% probability at 1,000 rigs and 52% at
+// 5,000. This is only ever called to MINT an id; a machine that minted one at
+// the old width keeps the 6-character id already stored in its node.json, and
+// the server accepts either width.
 const NODE_ID_HEX = 16;
 
 function fingerprint(publicKey) {
@@ -42,29 +44,8 @@ function fingerprint(publicKey) {
     .slice(0, NODE_ID_HEX);
 }
 
-// The node id to persist after the server answers an enrolment call
-// (/api/nodes/register or /api/nodes/join).
-//
-// The server is authoritative about which id a machine is enrolled under. It
-// chooses between this key's current-width fingerprint and the narrower one a
-// machine minted before ids were widened, and it can legitimately hand back an
-// id we did not compute: a machine whose old narrow id turns out to be occupied
-// by somebody ELSE's key is enrolled on the wide id instead.
-//
-// Adopting the answer is what stops such a machine going on to sign every later
-// call as an id the server has no row for — which reads as "my rig serves
-// nothing and there is no way to tell why". It also retires the standing
-// requirement that two independent implementations agree on the id forever.
-//
-// Anything that is not a plausible id is ignored, so a garbled or truncated
-// response can never rewrite this machine's identity.
-function adoptedNodeId(localId, serverId) {
-  if (typeof serverId !== 'string') return localId;
-  const id = serverId.trim();
-  return /^[0-9a-f]{6,64}$/.test(id) ? id : localId;
-}
-
-// The ping challenge the node signs to prove it holds the secret key.
+// The challenge a rig signs to prove it holds the secret key: its id and the
+// time, so a signature cannot be replayed beyond the server's window.
 function pingMessage(nodeId, timestamp) {
   return String(nodeId) + ':' + String(timestamp);
 }
@@ -75,54 +56,25 @@ function signMessage(message, secretKeyB64) {
   return naclUtil.encodeBase64(sig);
 }
 
-// Body for POST /api/nodes/join — attach this machine to an account with a
-// pairing/join token. Falls back to a Node-<id> name when none is given.
-function buildJoinBody({ token, nodeId, publicKey, name } = {}) {
-  return {
-    token: token || '',
-    nodeId,
-    publicKey,
-    name: (name && String(name).trim()) || ('Node-' + nodeId),
-  };
-}
-
-// Map the app's live state into the server's ping telemetry shape. Anything the
-// app can't read right now is sent as null / 0 rather than omitted. `name` rides
-// along so renaming the worker propagates on the next ping (the server ignores
-// a null name rather than clobbering the stored one).
-function buildTelemetry({ model, quant, device, vram, tokensPerSec, ready, activeJobs, name } = {}) {
-  return {
-    capabilities: ready ? ['chat'] : [],
-    activeJobs: Number(activeJobs) || 0,
-    maxConcurrentJobs: 1,
-    device: device || null,
-    vramTotal: vram && Number.isFinite(vram.totalMb) ? vram.totalMb : null,
-    vramUsed: vram && Number.isFinite(vram.usedMb) ? vram.usedMb : null,
-    model: model || null,
-    quant: quant || null,
-    tps: Number(tokensPerSec) || 0,
-    name: name || null,
-  };
-}
-
-// A signed request body for any node→server call the `verifySignature` middleware
-// guards (ping, job poll/chunks/complete/…): the identity + a detached signature
-// over "<nodeId>:<timestamp>", merged with the call-specific `extra` fields.
-function signedBody({ nodeId, publicKey, secretKey, timestamp } = {}, extra) {
-  return Object.assign({
-    nodeId,
-    publicKey,
-    signature: signMessage(pingMessage(nodeId, timestamp), secretKey),
-    timestamp,
-  }, extra || {});
-}
-
-// Body for POST /api/nodes/ping — a signed challenge carrying telemetry.
-function buildPingBody({ nodeId, publicKey, secretKey, timestamp, telemetry } = {}) {
-  return signedBody({ nodeId, publicKey, secretKey, timestamp }, telemetry);
+// The identity fields a board report carries: { rigId, publicKey, timestamp,
+// signature }. Null when there is no usable identity — none stored, or a
+// node.json whose key is corrupt or truncated and cannot sign — because a report
+// without an identity is still a report: the rig just shows up unsigned, the way
+// every older client does, rather than going missing from the board.
+function signRig(identity, timestamp) {
+  if (!identity || !identity.nodeId || !identity.publicKey || !identity.secretKey) return null;
+  try {
+    return {
+      rigId: identity.nodeId,
+      publicKey: identity.publicKey,
+      timestamp,
+      signature: signMessage(pingMessage(identity.nodeId, timestamp), identity.secretKey),
+    };
+  } catch (e) {
+    return null;
+  }
 }
 
 module.exports = {
-  generateKeypair, fingerprint, adoptedNodeId, pingMessage, signMessage,
-  buildJoinBody, buildTelemetry, signedBody, buildPingBody, NODE_ID_HEX,
+  generateKeypair, fingerprint, pingMessage, signMessage, signRig, NODE_ID_HEX,
 };

@@ -1,5 +1,6 @@
 const MinerService = require('../src/services/minerService');
 const { createTestDb } = require('./helpers/pgmem');
+const { generateKeypair, fingerprint, signRig } = require('../../earn/src/shared/node');
 
 const ADDR = {
   a: 'prl1p' + 'a'.repeat(30),
@@ -28,6 +29,23 @@ describe('MinerService helpers', () => {
     expect(MinerService.clampNum('nope')).toBe(0);
     expect(MinerService.clampNum(50, 10)).toBe(10);
     expect(MinerService.clampNum(5, 10)).toBe(5);
+  });
+
+  test('clampOrNull keeps "no reading" apart from zero', () => {
+    expect(MinerService.clampOrNull(61.5, 200)).toBe(61.5);
+    expect(MinerService.clampOrNull('310', 5000)).toBe(310);
+    expect(MinerService.clampOrNull(0, 200)).toBe(0);
+    expect(MinerService.clampOrNull(900, 200)).toBe(200);
+    for (const v of [undefined, null, '', 'N/A', -1, Infinity]) {
+      expect(MinerService.clampOrNull(v, 200)).toBeNull();
+    }
+  });
+
+  test('textOrNull trims, caps, and turns blank into null', () => {
+    expect(MinerService.textOrNull('  580.82 ', 32)).toBe('580.82');
+    expect(MinerService.textOrNull('x'.repeat(50), 8)).toBe('x'.repeat(8));
+    expect(MinerService.textOrNull('   ', 8)).toBeNull();
+    expect(MinerService.textOrNull(null, 8)).toBeNull();
   });
 
   test('baseWorker strips a /gpuN suffix, leaving the host name', () => {
@@ -87,6 +105,68 @@ describe('MinerService (db)', () => {
     expect(Number(row.vram_used)).toBe(4096);  // upserted
     expect(Number(row.vram_total)).toBe(24564);
     expect(row.version).toBe('0.1.16');        // reported version, upserted
+  });
+
+  test('stores per-card health, clamped, with missing readings left null', async () => {
+    const r = await service.reportMiner({
+      address: ADDR.a, worker: 'rig01', hashrate: 250, accepted: 40,
+      rejected: 3.7, tempC: 250, powerW: '310.5', powerLimitW: 450, coreClockMhz: 2520.4,
+      memClockMhz: 'N/A', fanPct: 140, driver: ' 580.82 ', os: 'linux', client: 'cli',
+      uptimeSec: 3600, lastShareSec: -5,
+    });
+    const row = (await db.query('SELECT * FROM miners WHERE id = $1', [r.id])).rows[0];
+    expect(Number(row.rejected)).toBe(3);         // floored like accepted
+    expect(Number(row.temp_c)).toBe(200);         // capped
+    expect(Number(row.power_w)).toBe(310.5);
+    expect(Number(row.power_limit_w)).toBe(450);
+    expect(row.core_clock_mhz).toBe(2520);        // whole MHz
+    expect(row.mem_clock_mhz).toBeNull();         // nvidia-smi could not read it
+    expect(row.fan_pct).toBe(100);
+    expect(row.driver).toBe('580.82');
+    expect(row.os).toBe('linux');
+    expect(row.client).toBe('cli');
+    expect(Number(row.uptime_sec)).toBe(3600);
+    expect(row.last_share_sec).toBeNull();        // negative is nonsense, not zero
+    expect(row.rig_id).toBeNull();                // unsigned
+  });
+
+  test('an older client that sends no health fields stores nulls (and 0 rejected)', async () => {
+    const r = await service.reportMiner({ address: ADDR.a, hashrate: 100 });
+    const row = (await db.query('SELECT * FROM miners WHERE id = $1', [r.id])).rows[0];
+    expect(Number(row.rejected)).toBe(0);
+    for (const col of ['temp_c', 'power_w', 'power_limit_w', 'core_clock_mhz', 'mem_clock_mhz', 'fan_pct',
+      'driver', 'os', 'client', 'uptime_sec', 'last_share_sec', 'rig_id']) {
+      expect(row[col]).toBeNull();
+    }
+  });
+
+  test('stores the rig id only while the report is signed', async () => {
+    const kp = generateKeypair();
+    const identity = { ...kp, nodeId: fingerprint(kp.publicKey) };
+    const r = await service.reportMiner({ address: ADDR.a, hashrate: 100, ...signRig(identity, Date.now()) });
+    const rigId = async () => (await db.query('SELECT rig_id FROM miners WHERE id = $1', [r.id])).rows[0].rig_id;
+    expect(await rigId()).toBe(identity.nodeId);
+
+    // The next report arrives unsigned (a downgrade, or a clock that drifted):
+    // the row reflects that rather than keeping a stale claim.
+    await service.reportMiner({ address: ADDR.a, hashrate: 100 });
+    expect(await rigId()).toBeNull();
+  });
+
+  test('the public board never carries the health fields or the rig id', async () => {
+    const kp = generateKeypair();
+    const identity = { ...kp, nodeId: fingerprint(kp.publicKey) };
+    await service.reportMiner({
+      address: ADDR.a, hashrate: 100, tempC: 60, powerW: 300, driver: '580.82', os: 'linux', client: 'gui',
+      ...signRig(identity, Date.now()),
+    });
+    const { miners } = await service.getPublicMiners();
+    // Pinned exactly, so a field added to the public payload is a deliberate change.
+    expect(Object.keys(miners[0]).sort()).toEqual(
+      ['accepted', 'addr', 'cards', 'gpu', 'gpus', 'hash', 'last', 'multi', 'version', 'vramTotalMb', 'vramUsedMb', 'worker']);
+    expect(Object.keys(miners[0].cards[0]).sort()).toEqual(
+      ['accepted', 'gpu', 'hash', 'last', 'version', 'vramTotalMb', 'vramUsedMb', 'worker']);
+    expect(JSON.stringify(miners)).not.toContain(identity.nodeId);
   });
 
   test('getPublicMiners returns one row per online worker (its own GPU/VRAM/last), sorted by hashrate', async () => {

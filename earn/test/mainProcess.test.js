@@ -100,12 +100,23 @@ jest.mock('../src/main/probe', () => ({
   // The tests that care about the 1.9.1b Windows package set it explicitly.
   detectComputeCaps: jest.fn(() => Promise.resolve([])),
   postMinerReport: jest.fn(() => Promise.resolve()),
+  detectGpuTelemetry: jest.fn(() => Promise.resolve([])),
   findFreePort: jest.fn(() => Promise.resolve(8080)),
   // GPU detection moved into probe so the GUI and the CLI share one
   // implementation — the GUI's own copy was Windows-only, which left the Linux
   // AppImage with no device name.
   detectGpuInfo: jest.fn(() => Promise.resolve(null)),
 }));
+
+// The rig identity store. A real keypair by default, so a report can be checked
+// to carry a signature that actually verifies.
+jest.mock('../src/main/nodeStore', () => {
+  const kp = jest.requireActual('../src/shared/node').generateKeypair();
+  return {
+    migrateFrom: jest.fn(),
+    getOrCreateNode: jest.fn(() => ({ nodeId: 'a1b2c3d4e5f60789', publicKey: kp.publicKey, secretKey: kp.secretKey })),
+  };
+});
 
 jest.mock('../src/main/pearlEngine', () => {
   const { EventEmitter } = require('events');
@@ -195,6 +206,7 @@ function loadMain(opts = {}) {
   ctx.fs = require('fs');
   ctx.io = require('../src/main/io');
   ctx.probe = require('../src/main/probe');
+  ctx.nodeStore = require('../src/main/nodeStore');
   ctx.PearlEngine = require('../src/main/pearlEngine').PearlEngine;
   ctx.config = require('../src/shared/config');
   ctx.timers = timers;
@@ -234,7 +246,7 @@ afterEach(() => {
 // ── boot / window lifecycle ──────────────────────────────────────────────────
 
 describe('app boot and window lifecycle', () => {
-  it('creates the window and refreshes economics on ready', async () => {
+  it('creates the window, refreshes economics, and migrates the rig identity on ready', async () => {
     const ctx = await boot();
     expect(ctx.electron.BrowserWindow).toHaveBeenCalledTimes(1);
     expect(ctx.win().loadFile).toHaveBeenCalledWith(expect.stringContaining('index.html'));
@@ -246,6 +258,8 @@ describe('app boot and window lifecycle', () => {
     const econ = ctx.interval(10 * 60 * 1000);
     expect(econ).toBeTruthy();
     expect(econ.unref).toHaveBeenCalled();
+    // one rig id across both shells: the GUI's old private copy moves into the shared store
+    expect(ctx.nodeStore.migrateFrom).toHaveBeenCalledWith(path.join('/tmp/userData', 'node.json'));
   });
 
   it('arms the economics refresh on a runtime whose handles have no unref', async () => {
@@ -903,6 +917,41 @@ describe('mining', () => {
     expect(written.pop()).toMatchObject({ resumeMining: true });
     expect(ctx.PearlEngine.instances[0].stop).toHaveBeenCalled();
     expect(ctx.updater.quitAndInstall).toHaveBeenCalledWith(true, true);
+  });
+
+  // Every row carries the rig's health and a signed identity, so a report can
+  // be tied to the machine that sent it and a card's throttling is visible.
+  it('signs board reports with the rig identity and attaches per-card telemetry', async () => {
+    const nacl = require('tweetnacl');
+    const naclUtil = require('tweetnacl-util');
+    const ctx = await boot();
+    ctx.probe.detectGpuTelemetry.mockResolvedValue([{ index: 0, tempC: 63, powerW: 311, driver: '580.82' }]);
+    ctx.emit('miner:start', { address: VALID_ADDR });
+    await flush();
+    const row = ctx.probe.postMinerReport.mock.calls[0][0];
+    expect(row).toMatchObject({ client: 'gui', os: 'linux', driver: '580.82', tempC: 63, powerW: 311, rigId: 'a1b2c3d4e5f60789' });
+    const { publicKey } = ctx.nodeStore.getOrCreateNode.mock.results[0].value;
+    expect(nacl.sign.detached.verify(
+      naclUtil.decodeUTF8(row.rigId + ':' + row.timestamp),
+      naclUtil.decodeBase64(row.signature),
+      naclUtil.decodeBase64(publicKey),
+    )).toBe(true);
+
+    // Read once, not every minute: node.json does not change under a running app.
+    ctx.interval(ctx.config.NETWORK.reportIntervalMs).fn();
+    await flush();
+    expect(ctx.nodeStore.getOrCreateNode).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports unsigned rather than not at all when the identity store fails', async () => {
+    const ctx = await boot();
+    ctx.nodeStore.getOrCreateNode.mockImplementation(() => { throw new Error('EROFS'); });
+    ctx.emit('miner:start', { address: VALID_ADDR });
+    await flush();
+    const row = ctx.probe.postMinerReport.mock.calls[0][0];
+    expect(row.address).toBe(VALID_ADDR);
+    expect(row).not.toHaveProperty('signature');
+    expect(row).not.toHaveProperty('rigId');
   });
 
   it('sends formatted accepted and rejected share counts to the renderer', async () => {

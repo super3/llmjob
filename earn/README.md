@@ -30,9 +30,10 @@ no command line, no account, no fee. Built with Electron and shipped for
   - `miningStats.js` — accumulates engine events into the live stats snapshot.
   - `earnings.js` / `economics.js` — PRL/USD per-day estimates from live prlscan data.
   - `balance.js` — builds the pool balance lookup and parses the pending + paid response.
-  - `minerReport.js` — the payload published to the public network board while mining.
+  - `minerReport.js` — the once-a-minute report to the network board: hashrate, shares and VRAM (shown on the board), plus per-card health and the signed rig identity (stored for diagnostics, not shown).
+  - `node.js` — rig identity: an Ed25519 keypair per install (persisted by `main/nodeStore.js`), a rig id derived from its public key, and the signature on each report.
   - `statsFile.js` — the JSON the CLI writes with `--stats-file` (read by HiveOS's `h-stats.sh`).
-  - `gpu.js` / `region.js` — GPU detection parsing and the lowest-latency pool region.
+  - `gpu.js` / `region.js` — GPU detection and per-card health parsing (`nvidia-smi`), and the lowest-latency pool region.
   - `selfUpdate.js` — decides, from the running version + GitHub's latest release, whether the CLI binary should self-update.
   - `updateStatus.js` — formats the in-app auto-update banner.
   - `format.js`, `settingsStore.js`, `worker.js` — formatting, settings persistence, the default worker name.

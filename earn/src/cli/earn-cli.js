@@ -17,10 +17,12 @@ const { PearlEngine } = require('../main/pearlEngine');
 const { coreFactory } = require('../main/pearlCore');
 const { detectRegion, detectGpusVram, detectMinerGpus, postMinerReport } = require('../main/probe');
 const probe = require('../main/probe');
+const nodeStore = require('../main/nodeStore');
 const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
 const { NETWORK, resolveEndpoint, regionLabel } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
 const { buildMinerReports } = require('../shared/minerReport');
+const { signRig } = require('../shared/node');
 const { statsFilePayload } = require('../shared/statsFile');
 const { shortenAddress } = require('../shared/address');
 const { minerUnsupportedNote } = require('../shared/platform');
@@ -240,12 +242,20 @@ async function run(argv) {
   miner.on('error', (err) => log('engine error: ' + err.message, process.stderr));
 
   if (settings.report) {
-    // Sample per-card live VRAM (nvidia-smi) and post one board row per GPU,
-    // just like the GUI — otherwise the board shows 0 GB for a CLI-driven rig.
+    // The rig's keypair, read once (see shared/node). A store that cannot be read
+    // or written — a read-only home on some rigs — leaves the reports unsigned,
+    // never missing.
+    let rigKey = null;
+    try { rigKey = nodeStore.getOrCreateNode(); } catch (e) { /* report unsigned */ }
+    // Sample per-card VRAM and health (nvidia-smi) and post one board row per
+    // GPU, just like the GUI — otherwise the board shows 0 GB for a CLI rig.
     const report = async () => {
-      const snap = snapshot(stats, Date.now());
-      const gpuVram = await detectGpusVram();
-      return Promise.all(buildMinerReports(settings, snap, gpuVram, pkg.version).map(postMinerReport));
+      const now = Date.now();
+      const snap = snapshot(stats, now);
+      const [gpuVram, telemetry] = await Promise.all([detectGpusVram(), probe.detectGpuTelemetry()]);
+      return Promise.all(buildMinerReports(settings, snap, gpuVram, pkg.version, {
+        telemetry, identity: signRig(rigKey, now), client: 'cli', os: process.platform, nowMs: now,
+      }).map(postMinerReport));
     };
     report();
     reporter = setInterval(report, NETWORK.reportIntervalMs);

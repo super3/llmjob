@@ -20,10 +20,12 @@ jest.mock('../src/main/probe', () => ({
   detectGpusVram: jest.fn(),
   detectMinerGpus: jest.fn(),
   postMinerReport: jest.fn(),
+  detectGpuTelemetry: jest.fn(),
   // Shared with the GUI now — one detection path for both shells.
   detectGpuInfo: jest.fn(),
   detectGpuTemps: jest.fn(),
 }));
+jest.mock('../src/main/nodeStore', () => ({ getOrCreateNode: jest.fn() }));
 jest.mock('../src/cli/selfUpdater', () => ({
   UPDATED_ENV: 'LLMJOB_EARN_UPDATED',
   fetchLatestRelease: jest.fn(),
@@ -72,6 +74,7 @@ const { NETWORK } = require('../src/shared/config');
 
 const ADDR = 'prl1p' + 'a'.repeat(30);
 const MDL = 'mdl1p' + 'b'.repeat(30);
+const KEYS = require('../src/shared/node').generateKeypair();
 
 // ── Shared per-test capture state ────────────────────────────────────────────
 let out; // strings written to stdout
@@ -97,6 +100,8 @@ function applyDefaults(m) {
   // with no nvidia-smi gets.
   m.probe.detectMinerGpus.mockResolvedValue([]);
   m.probe.postMinerReport.mockResolvedValue(undefined);
+  m.probe.detectGpuTelemetry.mockResolvedValue([]);
+  m.nodeStore.getOrCreateNode.mockReturnValue({ nodeId: 'a1b2c3d4e5f60789', publicKey: KEYS.publicKey, secretKey: KEYS.secretKey });
   m.probe.detectGpuInfo.mockResolvedValue(null); // no identifiable GPU by default
   m.selfUpdater.fetchLatestRelease.mockResolvedValue(null);
   m.selfUpdater.isPackaged.mockReturnValue(false);
@@ -114,6 +119,7 @@ function load() {
     m.fs = require('fs');
     m.os = require('os');
     m.probe = require('../src/main/probe');
+    m.nodeStore = require('../src/main/nodeStore');
     m.selfUpdater = require('../src/cli/selfUpdater');
     m.selfUpdate = require('../src/shared/selfUpdate');
     m.net = require('net');
@@ -539,6 +545,33 @@ describe('mining', () => {
       algo: 'pearlhash', schema: 1, mode: 'mining', mining: true,
       strategy: null, gate: null, model: null, tps: { gen: 0, prefill: 0 },
     });
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await p;
+  });
+
+  test('board reports carry per-card telemetry and a signed rig identity', async () => {
+    const m = load();
+    m.probe.detectGpuTelemetry.mockResolvedValue([{ index: 0, tempC: 58, powerW: 290, driver: '580.82' }]);
+    const p = m.run(['-a', ADDR, '--no-update']);
+    await settle();
+    const row = m.probe.postMinerReport.mock.calls[0][0];
+    expect(row).toMatchObject({ client: 'cli', os: 'linux', tempC: 58, powerW: 290, driver: '580.82', rigId: 'a1b2c3d4e5f60789' });
+    expect(typeof row.signature).toBe('string');
+    expect(row).not.toHaveProperty('secretKey');
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await p;
+  });
+
+  // Some rigs run with a read-only home. That must cost the rig its signature,
+  // not its place on the board.
+  test('an identity store that cannot be written means unsigned reports, not none', async () => {
+    const m = load();
+    m.nodeStore.getOrCreateNode.mockImplementation(() => { throw new Error('EROFS'); });
+    const p = m.run(['-a', ADDR, '--no-update']);
+    await settle();
+    const row = m.probe.postMinerReport.mock.calls[0][0];
+    expect(row.address).toBe(ADDR);
+    expect(row).not.toHaveProperty('rigId');
     m.PearlEngine.instances[0].emit('stopped', 0);
     await p;
   });

@@ -16,6 +16,7 @@ const { REGIONS, DEFAULTS, NETWORK } = require('../shared/config');
 const { pickFastestRegion } = require('../shared/region');
 const {
   parseGpuStats, pickGpu, countGpus, parseMacGpu, parseDeviceIndex, planMinerGpus,
+  GPU_TELEMETRY_QUERY, parseGpuTelemetry,
 } = require('../shared/gpu');
 // Major version out of an nvidia-smi driver string. Lived in shared/engine
 // until alpha-miner was removed; the driver version is a property of the
@@ -60,6 +61,19 @@ function detectGpusVram() {
       ['--query-gpu=index,name,memory.used,memory.total', '--format=csv,noheader,nounits'],
       { timeout: 5000 },
       (err, stdout) => resolve(err ? [] : parseGpuStats(stdout)));
+  });
+}
+
+// Per-card health via nvidia-smi — temperature, power draw and limit, core and
+// memory clocks, fan, driver and performance state — for the telemetry each
+// board report carries (see shared/gpu.parseGpuTelemetry). Resolves [] on any
+// failure and never rejects: a rig without nvidia-smi reports its hashrate and
+// simply no health readings.
+function detectGpuTelemetry() {
+  return new Promise((resolve) => {
+    execFile('nvidia-smi', [GPU_TELEMETRY_QUERY, '--format=csv,noheader,nounits'],
+      { timeout: 5000 },
+      (err, stdout) => resolve(err ? [] : parseGpuTelemetry(stdout)));
   });
 }
 
@@ -209,6 +223,7 @@ module.exports = {
   pingEndpoint,
   detectRegion,
   detectGpusVram,
+  detectGpuTelemetry,
   detectMinerGpus,
   detectGpuTemps,
   detectDriverMajor,
