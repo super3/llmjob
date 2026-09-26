@@ -486,19 +486,28 @@ typedef struct {
 // 131072) 0.887 -> 0.921. 400/400 hits verified; the pool accepted 2 of 2 shares.
 // probes/README.md has the rest, and what was tried.
 //
-// Ada only, like the eight-warp fold it grows out of. The host launches it when the
-// loaded pearl_tile_fold_tall is the sm_89 build (binaryVersion == 89), and a
-// -DPEARL_FOLD_TALL=0/1 override binds both sides.
+// Ada and Blackwell. Blackwell's build stages with TMA instead of cp.async (see
+// PEARL_TALL_TMA, which has what it measured there); Ampere keeps the sixteen-warp
+// fold. The host launches the tall fold when the loaded pearl_tile_fold_tall is one
+// that has a body (PEARL_TALL_ARCH of its binaryVersion), and a -DPEARL_FOLD_TALL=0/1
+// override binds both sides.
 #ifdef PEARL_FOLD_TALL
 #define PEARL_FOLD_TALL_FORCED 1
 #endif
 #ifndef PEARL_FOLD_TALL
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 890 || __CUDA_ARCH__ >= 1200)
 #define PEARL_FOLD_TALL 1
 #else
 #define PEARL_FOLD_TALL 0
 #endif
 #endif
+// Which cubins carry a tall-fold body, by the architecture number the host reads
+// back as cudaFuncAttributes::binaryVersion (the binary ships sm_86, sm_89 and
+// sm_120 SASS and no PTX, so that is exactly the build that runs): Ada's, and
+// Blackwell's, which stages with TMA unless PEARL_TALL_TMA is 0. The fold's #if
+// spells out the same architectures.
+#define PEARL_TALL_ARCH(v) ((v) == 89 || (v) >= 120)
+#define PEARL_TALL_TMA_ARCH(v) ((v) >= 120)
 // The tall geometry by name, for the host: two row slots of six 16-row blocks by four
 // column slots of 64 columns, three 64-deep stages.
 #define PEARL_TALL_THREADS 256u
@@ -525,8 +534,17 @@ typedef struct {
 // fold's 32 is 12 MB of A at 192 rows a group, and with the 64 MB of B one launch
 // sweeps that is more than the 72 MB L2; 16 keeps both in it. It measured flat:
 // 8, 16 and 32 deep all ran 288.3 - 290.1 TH/s (bench, two interleaved rounds).
+//
+// Blackwell walks bands one row group deep: consecutive tiles share a row group of A
+// and sweep B. That is PEARL_BLOCK_GROUP 1 there, which is what its measurements ran
+// on, and the TMA fold was tuned with (perf/sm120-throughput, one tile a block). A
+// persistent grid of one block an SM walks the same tiles in the same order.
 #ifndef PEARL_TALL_BAND
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
+#define PEARL_TALL_BAND 1u
+#else
 #define PEARL_TALL_BAND 16u
+#endif
 #endif
 // Where a stage's copies of the next chunk go out: after B pair (point % 4) of k-step
 // (point / 4). A's go first, behind the ring's EMPTY wait; B's follow, then the arrival
@@ -553,6 +571,119 @@ typedef struct {
 #endif
 #ifndef PEARL_TALL_BPT
 #define PEARL_TALL_BPT 4u
+#endif
+
+// Blackwell (sm_120) stages the tall fold with TMA instead of cp.async.
+//
+// One elected thread -- lane 0 of warp 4, a warp that does not hash (see the fold) --
+// issues each 64-deep stage as two cp.async.bulk.tensor boxes, 64 bytes of k by the
+// tile's 256 B columns and by its 192 A rows, completing on the stage's FULL barrier
+// (mbarrier complete_tx). They land in exactly the layout the cp.async walk writes by
+// hand: 16-byte unit q of row r at q ^ ((r >> 1) & 3) is CU_TENSOR_MAP_SWIZZLE_64B on a
+// 512-byte-aligned buffer, so the ldmatrix lane bases, the readout and the hand-off
+// are Ada's. FULL counts one arrival (the producer's expect_tx) instead of 256, only
+// the producer waits on EMPTY, and every other thread's copy walk -- seven LDGSTS a
+// stage, their addresses and an arrive -- leaves the chunk loop.
+//
+// The operands it reads are the NOISED A' and B' laid out k-BLOCKED,
+// [k / 64][rows][64] (pearl_materialize16_kblocked; the host writes them that way for
+// this build only, Ctx::foldTma), through 3-D tensor maps {64 bytes, rows, k-block}.
+// A 64-byte stage of a row-major operand is half of every 128-byte L2 line it touches
+// (k is 2048 bytes a row), so each line was fetched in two halves on consecutive
+// stages; k-blocked, a stage box is one contiguous run of whole lines, and shared
+// memory is laid out exactly as before. The row dimension stays bounded by the
+// operand's own rows (not flattened into the k-blocks), so the last row group's rows
+// past m come back zero-filled by TMA; the fold hashes no region on them. That is
+// what PEARL_TALL_A_ROWS pads the cp.async build's A' with, so the TMA build does not
+// read the padding. A and B themselves, and every commitment and proof, stay
+// row-major.
+//
+// The rate at the 600 W cap is energy a MAC, and what moved it was bytes and exposed
+// load stalls. Measured on perf/sm120-throughput (base 00f3e6e, the previous tile
+// pattern, in pearl_tile_fold_wmma's sm_120 build: 256 threads, one 192x256 tile a
+// block, the same ring), RTX 5090, 600 W, one session each, all hits verified:
+//   TMA staging (2 x 128-byte stages, 128x256)             +2.3%
+//   192x256 tile, 96x64 warps, 3 x 64-byte stages           +3.4%
+//   k-blocked operands   101.18 -> 103.91 TH/s              +2.7%  (645 -> 660 MHz)
+//     (isolated at 128x256: row-major 64-byte stages 94.12, 128-byte 96.83,
+//      k-blocked 64-byte 96.79 -- the half-line fetches were the whole loss)
+//   16 epilogue registers back (PEARL_TALL_FRAG_PIPE)       +1.6%
+//   m-inner order with B .reuse, one fence a step           +0.6%, +0.57%
+// ending level with SRBMiner 3.6.1 head to head: 105.40 against 105.53 TH/s at the
+// default memory clock, 113.52 against 113.34 at 7001 MHz. This build is those
+// pieces on the tall fold (its ring, shared transcripts, lane-grouped readout of the
+// current tile pattern and persistent blocks), and has not been measured as a whole.
+//
+// 0 builds Ada's cp.async ring for sm_120 instead, row-major, for A/B only (ptxas 13.3
+// spills 24 bytes of it there); the host reads the value too (Ctx::foldTma), so
+// -DPEARL_TALL_TMA=0 binds both sides.
+#ifndef PEARL_TALL_TMA
+#define PEARL_TALL_TMA 1
+#endif
+// Device side: whether THIS compile's tall fold is the TMA one.
+#if PEARL_TALL_TMA && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
+#define PEARL_TALL_TMA_BODY 1
+#else
+#define PEARL_TALL_TMA_BODY 0
+#endif
+
+// How far ahead of its mma the TMA build loads each fragment (sm_120).
+//
+// 0 is Ada's stage body: each k32 step loads its six A fragments, then each B pair
+// right before the twelve mma that read it. 1 streams them: a stage's first B pair
+// and six A are loaded behind its FULL wait, B pair p + 1 as pair p starts (twelve
+// mma ahead, double-buffered, eight registers), and each A fragment is reloaded for
+// the next k32 step in place, right after its last mma of this one (in the last n8
+// column, five mma of cover). It needs the registers: 192 accumulators, 24 of A and
+// 8 of B. On perf/sm120-throughput the first mma after an A ldmatrix was the chunk
+// loop's top short-scoreboard stall (7.9% of the loop's warp time) while sixteen
+// registers of the loop were the epilogue's transcript words; with those back ptxas
+// loaded A ahead of its mma, 102.98 -> 104.67 TH/s (+1.6%, 685 -> 666 MHz). The tall
+// fold keeps its transcripts in shared and reads them only inside the hash, so it
+// never held them. (Also measured there and dropped: covering the seam between
+// stages and chunks as well, +0.6% -- its extra cover did not pay for its
+// instructions, since the other warp on each scheduler already covered most of it.)
+#ifndef PEARL_TALL_FRAG_PIPE
+#define PEARL_TALL_FRAG_PIPE 1
+#endif
+
+// Which n8 columns of a k32 step the TMA build (sm_120) fences after, bit nb for
+// column nb; 0 for none.
+//
+// A step issues its 48 mma m-inner: column nb's six mma share one B fragment, and an
+// IMMA whose B is the one before's reads it from the operand cache (.reuse) rather
+// than the register file, 256 of the 1280 bytes an mma reads. ptxas re-sorts
+// independent IMMA back into A-major runs by itself (13.3, at -O3), which leaves no
+// B .reuse at all. Some instructions it will not move an IMMA across;
+// griddepcontrol.launch_dependents (PREEXIT) is one, and costs one instruction.
+// It only lets a dependent grid launched with programmatic stream serialization start
+// early, and nothing launches one, so it does nothing else. Where the fences go
+// matters more than how many (perf/sm120-throughput, static, ptxas 13.3, per chunk of
+// 192 mma):
+//   mask  fences/chunk  instr/mma  B .reuse
+//   0xff      32         3.151     160/192   (every column)
+//   0xaa      16         3.068     124       (between B pairs)
+//   0x55      16         3.068     160       (inside each B pair)
+//   0x40       4         3.005     160       (before the last column only)
+//   0x80       4         3.005      30
+//   0x00       0         2.984       0
+// (all 256 masks swept: 0x40 is the only one-fence mask that keeps 160; the other 32
+// IMMA are each column's first, whose B nothing has read yet). RTX 5090, 600 W, one
+// session, 3 rounds, all verified: m outer and n inner (no B .reuse) 104.13 TH/s,
+// m-inner with every column fenced 104.74 (+0.6%, ahead in every round); in a later
+// session 0x40 105.28 against 104.69 for 0xff (+0.57%, ahead in every round). It is a
+// ptxas preference, so another ptxas may need the mask re-swept: the B .reuse count
+// in the fold's SASS is the check.
+#ifndef PEARL_TALL_MMA_FENCE_MASK
+#define PEARL_TALL_MMA_FENCE_MASK 0x40
+#endif
+// The same fence after stage s of a chunk, bit s (the streamed body only). On the tall
+// fold ptxas pulls the readout's XOR tree, and a stage's EMPTY arrive, up into the
+// last n8 column, between its IMMA, which costs that column its B .reuse: 154/192
+// without these, 160/192 with both (and one instruction fewer a chunk: 2.672 against
+// 2.677 instr/mma, ptxas 13.3). Static only; not measured on the card.
+#ifndef PEARL_TALL_STAGE_FENCE
+#define PEARL_TALL_STAGE_FENCE 0x3
 #endif
 
 // Threads per fold block, frozen for the same reason: it makes the staging trip
