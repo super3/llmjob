@@ -264,6 +264,64 @@ standalone probe ran with no tensor load; every other unit energy was measured u
 There is no copy-pattern fix. What is left is fewer bytes per MAC: at 42 pJ/B a 192x256
 tile saves about 0.45 nJ per IMMA, not 0.34.
 
+### Two warp groups instead of the per-chunk barrier: measured, not shipped
+
+The per-chunk `__syncthreads` holds all sixteen warps in the chunk seam together. The idea
+was to split them into two groups of eight by row slot (row slots 0-1, which hold the
+hashers, and 2-3), two warps of each on every scheduler, each group crossing chunk
+boundaries on its own named barriers, so one group's seam runs while the other keeps the
+tensor pipes fed. A is already private to a group. B is not: every warp reads all 64
+columns of its column slot, so the groups have to hand B to each other.
+
+What it could be worth, from builds that race (results wrong), bench, interleaved against
+the same session's base:
+
+| build | vs base |
+|---|---|
+| per-chunk barrier deleted | +2.8 to +3.1% |
+| each group on its own 256-thread barrier, same code; the hash at the tile seam sets the offset | +1.7 to +2.2% |
+| the same, with one group staging all of B | +2.8 to +3.2% |
+| the same, B split by k between the groups | +0.8 to +1.2% |
+| group 1's seam placed 2 k-steps into the chunk (the form priced at +1.3% before `PEARL_FOLD_FAST_COORDS`) | +0.25% |
+
+What correct versions got. Each passed `verify-hits.js` 400/400. Under random warp and
+group delays the three protocols (rows 1, 3 and 5) passed again, 400/400, while the same
+protocols with the refill wait removed failed: 82, 89 and 160 of 400 hits wrong.
+
+| how the groups share B | vs base |
+|---|---|
+| each stages half the columns, as now; the trailing group publishes its half mid-chunk (offset at most half a k-step) | 0.0% |
+| the same, B copies bunched into k-step 1 (offset up to 1.5 k-steps) | -3.0% |
+| split by k: the leading group stages quads 0-3, the trailing group 4-7, so the leading group needs the other half only from k-step 2 (offset up to 2) | -0.4% |
+| the same, chunk 0 run like every other chunk | -4.7% |
+| the leading group stages all of B in whole rows | -3.0% |
+| the same, offset pinned at 1.5 k-steps | -0.9% |
+
+In the full miner loop the best of them (row 1) measured 272.6 / 272.1 against 271.6 /
+272.2 TH/s, +0.2%.
+
+Two copy patterns cost on their own, under the plain barrier: the k split, -1.2%, because
+every 128-byte source row is then fetched as two 64-byte halves by different warps; one
+group staging all of B, -2.3%.
+
+Why the correct versions lose what the racing ones show. With two stages -- 96 KB of the
+99 KB -- a buffer can be refilled only once BOTH groups are done with it, so the refill
+waits for the slower group and starts late in the chunk. The producer then waits for its
+own copies at its next chunk top, and the other group waits for the producer. Nsight,
+per-PC sampling, the pinned version against its racing twin: 8.6% of stall samples on that
+copy wait against 0.9%, 11.4% against 9.1% at the chunk-top barrier, and 4.15 against 3.82
+warp-instructions per IMMA. Every protocol adds three or four barrier instructions a warp
+per chunk, and a barrier inside the k-loop can cost ptxas the A lane base at the register
+cap: the k split and the pinned version rebuild it after every chunk-top barrier, about 8
+instructions. And when one group stages all of B it is the slower group, so the other
+catches up behind it and the seams line up again (row 5); pinning the offset (row 6)
+recovers most of that, not all.
+
+What would change the answer: a third stage (no room at 128x256), finer stages (k64 x 3
+measured -5.5% with the barrier in the probe), or a tile where the shared operand is small.
+The development code (all six protocols, the stress and negative-control switches) is kept
+out of the fold.
+
 ### Measuring, and proving a build correct
 
 - `node hashrate.js <pearl_core.node> 60` -- the app's own number: one core, a synthetic
