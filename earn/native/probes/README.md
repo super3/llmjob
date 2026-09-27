@@ -125,7 +125,8 @@ onto 300. Against v0.5.6 in the same session: 290.8 / 290.7 -> 311.7 / 311.4 (+7
 
 v0.5.7's sm_89 fold is v0.5.6's instruction for instruction (it added the sm_120 build), so
 its row is 289 too. The last two rows on top of it, against it, interleaved: 291.6 / 290.2
--> 310.6 / 310.9 in the full loop (+6.8%). See "Onto v0.5.7" below.
+-> 310.6 / 310.9 in the full loop (+6.8%); a second session, 290.2 / 291.1 -> 311.1 / 311.5
+(+7.1%). See "Onto v0.5.7" below.
 
 ### Against the field: 264 is 15.8% behind
 
@@ -495,6 +496,9 @@ every run):
 | the same work on v0.5.6, per-tile order (`perf-scratch/r10-combo-bin`) | 311.2 / 311.6 | 2526 / 2534 MHz |
 | this | 310.9 / 310.7 (-0.2%) | 2526 / 2525 MHz |
 
+A second session against v0.5.7 alone, after the review fixes (comments only; the SASS is
+the same): 290.2 / 291.1 -> 311.1 / 311.5 (+7.1%), 2413 / 2427 -> 2528 / 2531 MHz.
+
 The -0.2% against the v0.5.6 build is the order: that build's tall fold is the per-tile
 build's above, instruction for instruction. Tall fold: 253 registers, no spill, 2640
 instructions (v0.5.7's: 255 and 2688). Every other kernel's sm_89 SASS is v0.5.7's, the
@@ -660,7 +664,8 @@ So on top of the trims the fill adds the same +3.6% it adds alone. `verify-hits`
 
 **The pool takes it.** 3 of 3 shares accepted in 198 s at us2.pearl.herominers.com
 (`earn-cli`, 2026-09-26), with the constant fill on v0.5.6's fold (`perf-scratch/r9-fill-bin`).
-The build with the trims as well has not been on a pool yet. If a pool ever refuses these
+The build with the trims as well, on v0.5.7 (`perf-scratch/r12-port-bin`): 12 of 12 shares
+accepted in 240 s at us2 (`earn-cli`, 2026-09-26). If a pool ever refuses these
 shares, go back to the hashed fill:
 
 - `earn/src/shared/miner/pearlhash.js`: in `PROFILE`, set `operandFill: 'hashed'` and
