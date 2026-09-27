@@ -62,7 +62,7 @@ const staticPath = process.env.RAILWAY_ENVIRONMENT
   ? '/app/dist'
   : path.join(__dirname, '../..', 'dist');
 
-// URLs are extensionless: /chat, not /chat.html. Old links (bookmarks, posts,
+// URLs are extensionless: /network, not /network.html. Old links (bookmarks, posts,
 // search results) still resolve, but they redirect to the canonical form
 // instead of being served, so a page never answers on two URLs at once.
 // GitHub Pages, which serves the same dist/ for llmjob.com, strips the
@@ -76,7 +76,7 @@ app.use((req, res, next) => {
   return res.redirect(301, target + req.url.slice(req.path.length));
 });
 
-// `extensions: ['html']` is what serves dist/chat.html for a request to /chat.
+// `extensions: ['html']` is what serves dist/network.html for a request to /network.
 app.use(express.static(staticPath, { extensions: ['html'] }));
 
 // Error handling middleware. Log the full error server-side, but only echo the
