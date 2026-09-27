@@ -76,7 +76,9 @@ function render(src, ctx, depth = 0) {
 
 // The page left at a retired URL: a meta refresh, plus a script so the redirect
 // doesn't wait on the refresh, and a plain link for anything that runs neither.
-// noindex keeps search engines from listing the stub in place of its target.
+// The script carries the #fragment along (/earn#calculator → /#calculator),
+// which a meta refresh can't. noindex keeps search engines from listing the
+// stub in place of its target.
 function redirectPage(target) {
   const attr = target.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
   return `<!DOCTYPE html>
@@ -86,7 +88,7 @@ function redirectPage(target) {
 <title>LLMJob</title>
 <meta name="robots" content="noindex" />
 <meta http-equiv="refresh" content="0; url=${attr}" />
-<script>location.replace(${JSON.stringify(target)});</script>
+<script>location.replace(${JSON.stringify(target)} + location.hash);</script>
 </head>
 <body><p>This page has moved. <a href="${attr}">Continue to LLMJob</a>.</p></body>
 </html>

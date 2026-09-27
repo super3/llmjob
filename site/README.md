@@ -1,6 +1,6 @@
 # Static site sources
 
-The marketing/dashboard pages (`index.html`, `earn.html`, `network.html`,
+The marketing/dashboard pages (`index.html`, `llm.html`, `network.html`,
 `docs.html`, `terms.html`, `privacy.html`, `add-node.html`, `dashboard.html`)
 are
 **generated** from the sources here into
@@ -24,8 +24,10 @@ that still carries `.html` works, but costs the visitor a redirect.
 
 ### Retired pages
 
-When a page is removed, add it to `site/redirects.json` (`{ "chat": "/" }`) so
-old links still land somewhere. The build writes a small `dist/<name>.html`
+When a page is removed or moved, add its old name to `site/redirects.json`
+(`{ "chat": "/" }`) so old links still land somewhere. `/earn` is there too:
+the Earn download page is now the home page (`index.html`), and the "Run LLMs
+at home" page that used to be the home page is `llm.html`. The build writes a small `dist/<name>.html`
 that redirects the visitor to the target. It works on both hosts because it is
 just a page, and the build fails if a redirect has the same name as a real page.
 

@@ -95,7 +95,7 @@ const ECON = {
 };
 
 // prlscan API endpoints the app live-refreshes economics from (CORS-open; the
-// explorer's own backend). Mirrors the earn.html calculator's sources.
+// explorer's own backend). Mirrors the site calculator's sources (site/pages/index.html).
 const ECON_API = {
   price: 'https://api.prlscan.com/v1/market/prl',
   metrics: 'https://api.prlscan.com/v1/analytics/block-metrics',

@@ -28,17 +28,38 @@ describe('extensionless page URLs', () => {
     const res = await request(app).get('/chat');
     expect(res.status).toBe(200);
     expect(res.text).toContain('<meta http-equiv="refresh" content="0; url=/" />');
-    expect(res.text).toContain('location.replace("/")');
+    expect(res.text).toContain('location.replace("/" + location.hash)');
     expect(res.text).toContain('<meta name="robots" content="noindex" />');
     // Nothing on the site links to it any more.
     const home = await request(app).get('/');
     expect(home.text).not.toContain('href="/chat"');
   });
 
-  it('still serves the home page at /', async () => {
+  // The Earn download page is the home page, and the "Run LLMs at home"
+  // waitlist page that used to be the home page is /llm.
+  it('serves the Earn download page as the home page', async () => {
     const res = await request(app).get('/');
     expect(res.status).toBe(200);
-    expect(res.text).toContain('<title>LLMJob');
+    expect(res.text).toContain('<title>LLMJob Earn');
+    expect(res.text).toContain('Download for Windows');
+    expect(res.text).toContain('href="/llm"');
+  });
+
+  it('serves the LLM waitlist page at /llm', async () => {
+    const res = await request(app).get('/llm');
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('<title>LLMJob — Run LLMs at home');
+  });
+
+  // Old /earn links (Discord posts, videos, the app) land on the home page, and
+  // keep their #fragment, so /earn#calculator still opens the calculator.
+  it('sends the old /earn URL to the home page, keeping the #fragment', async () => {
+    const res = await request(app).get('/earn');
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('<meta http-equiv="refresh" content="0; url=/" />');
+    expect(res.text).toContain('location.replace("/" + location.hash)');
+    const home = await request(app).get('/');
+    expect(home.text).not.toContain('href="/earn"');
   });
 
   it('links between pages carry no .html', async () => {
