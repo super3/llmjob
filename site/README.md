@@ -1,24 +1,24 @@
 # Static site sources
 
-The marketing/dashboard pages (`index.html`, `chat.html`, `earn.html`,
-`network.html`, `docs.html`, `terms.html`, `privacy.html`, `add-node.html`,
-`dashboard.html`) are
+The marketing/dashboard pages (`index.html`, `earn.html`, `network.html`,
+`docs.html`, `terms.html`, `privacy.html`, `add-node.html`, `dashboard.html`)
+are
 **generated** from the sources here into
 `dist/` by `site/build-site.mjs`. `dist/` is git-ignored — nothing generated
 is committed. Edit the sources in this directory, never a built page.
 
 ## URLs
 
-Pages are served **without the `.html`**: `chat.html` is `/chat`, and the home
+Pages are served **without the `.html`**: `network.html` is `/network`, and the home
 page is `/`. The source and built files keep their extension — only the URL
 drops it, and both hosts resolve it:
 
 - **GitHub Pages** strips the extension itself; nothing to configure.
 - **The Express server** passes `extensions: ['html']` to `express.static`, and
-  301-redirects `/chat.html` → `/chat` (and `/index.html` → `/`) so a page never
+  301-redirects `/network.html` → `/network` (and `/index.html` → `/`) so a page never
   answers on two URLs at once.
 
-So link between pages as `href="/chat"` — root-absolute, no extension — and
+So link between pages as `href="/network"` — root-absolute, no extension — and
 write `og:url` and any `window.location` / Clerk redirect the same way. A link
 that still carries `.html` works, but costs the visitor a redirect.
 
