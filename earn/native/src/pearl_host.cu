@@ -187,10 +187,11 @@ struct Ctx {
   // kernel, pearl_tile_fold_tall, over 192x256 tiles. Read off that kernel's
   // loaded binary (PEARL_TALL_ARCH of its binaryVersion) with the others.
   bool foldTall = false;
-  // Whether that is Blackwell's build, which stages with TMA (PEARL_TALL_TMA): it
-  // reads A' and B' k-blocked, through the tensor maps below, so the operand draw
-  // writes them that way. The draw runs before any search, so all of this is
-  // resolved when the context is created (resolve_fold) and never changes after.
+  // Whether that is Blackwell's build, which stages with TMA (PEARL_TALL_TMA),
+  // through the tensor maps below. Both tall builds read A' and B' k-blocked, so
+  // the operand draw writes them that way whenever foldTall. The draw runs before
+  // any search, so all of this is resolved when the context is created
+  // (resolve_fold) and never changes after.
   bool foldTma = false;
   bool foldKnown = false;
   // Why not, when foldKnown is false: reported by the first search, as it was when
@@ -772,9 +773,10 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
 
   CUDA_OK(cudaMalloc(&ctx->dA, aBytes), "allocating A");
   CUDA_OK(cudaMalloc(&ctx->dB, bBytes), "allocating B");
-  // The tall fold's last row group of tiles reads up to PEARL_TALL_A_ROWS(m) rows
-  // (see PEARL_FOLD_TALL). Nothing generates the rows past m; they are zeroed
-  // once so the fold reads defined bytes there, and it hashes no region from them.
+  // The tall fold's last row group of tiles reads past A's m rows (see
+  // PEARL_TALL_A_ROWS): Ada's build up to 64 rows past the end of the last k-block.
+  // Nothing generates the bytes past m * k; they are zeroed once so the fold reads
+  // defined bytes there, and it hashes no region from them.
   {
     const size_t apBytes = (size_t)PEARL_TALL_A_ROWS(profile->m) * k;
     CUDA_OK(cudaMalloc(&ctx->dAp, apBytes), "allocating the noised A");
@@ -1070,12 +1072,13 @@ void draw_noise(Ctx *ctx, bool isA) {
   if ((k & (k - 1u)) == 0u && k >= 16u) {
     uint32_t kLog2 = 0;
     while ((1u << kLog2) < k) kLog2++;
-    if (ctx->foldTma && k >= PEARL_TALL_STAGE_K) {
-      // The same values, stored [k / 64][rows][64] for the tall fold's TMA staging
-      // (PEARL_TALL_TMA): each 64-byte stage box is then whole L2 lines rather than
-      // half of every line. resolve_fold decided this for the context, before its
-      // first draw, and the search launches the fold that reads it. (Any other k is
-      // one the search refuses.)
+    if (ctx->foldTall && k >= PEARL_TALL_STAGE_K) {
+      // The same values, stored [k / 64][rows][64] for the tall fold's staging: each
+      // 64-byte stage of a tile is then whole L2 lines rather than half of every line,
+      // for Blackwell's TMA boxes (PEARL_TALL_TMA) and Ada's cp.async copies alike.
+      // resolve_fold decided this for the context, before its first draw, and the
+      // search launches the fold that reads it. (Any other k is one the search
+      // refuses.)
       uint32_t kbLog2 = 0;
       while ((1u << kbLog2) < PEARL_TALL_STAGE_K) kbLog2++;
       pearl_materialize16_kblocked<<<draw_blocks(len / 16), kDrawThreads>>>(
@@ -1384,9 +1387,10 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
                        * (col_groups / PEARL_TALL_COL_OFFSETS))
           : (unsigned)((rowBlocks / warpRows) * (colBlocks / warpCols));
   // Two full-chunk stages; the transcripts live in registers and global now. The
-  // tall fold: three 64-deep stages, its ring's barriers, and the transcripts.
+  // tall fold: three 64-deep stages, its ring's barriers, and the transcripts, laid
+  // out differently by the cp.async and TMA builds (see PEARL_TALL_SMEM).
   const size_t smem = ctx->foldTall
-                          ? (size_t)PEARL_TALL_SMEM
+                          ? (ctx->foldTma ? (size_t)PEARL_TALL_SMEM_TMA : (size_t)PEARL_TALL_SMEM)
                           : (size_t)PEARL_STAGE_BUFS
                                 * ((size_t)warpCols * PEARL_WMMA_COL_BLK * 16
                                    + (size_t)warpRows * regionsPerWarp * PEARL_ROWS_COUNT)

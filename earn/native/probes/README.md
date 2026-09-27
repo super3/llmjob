@@ -69,7 +69,7 @@ Inside the fold, fold-only, all at the cap (these builds compute wrong answers):
 The per-chunk `__syncthreads` is worth 18% per clock and still 9% after the clock
 drops to pay for it. The square warp tile that won 2% on Blackwell loses 2% here.
 
-### Where it ended: 223 -> 299 TH/s at the same 450 W
+### Where it ended: 223 -> 311 TH/s at the same 450 W
 
 | step | full miner loop |
 |---|---|
@@ -82,7 +82,8 @@ drops to pay for it. The square warp tile that won 2% on Blackwell loses 2% here
 | + tile coordinates by shift and mask, not divides | 273 |
 | + a tile pattern the accumulators hold, eight 64x64 warps a block | 280 |
 | + a 192x256 tile, three 64-deep stages on an mbarrier ring | 289 |
-| + a constant operand fill, A = B = 48 | **299** |
+| + whole-line operand order, EMPTY arrivals from every thread, the ring's roles in registers | 300 |
+| + a constant operand fill, A = B = 48 | **311** |
 
 The 241 and 264 steps are gated to sm_89 (`PEARL_FOLD_PERSISTENT`, `PEARL_FOLD_GROUP_STAGE`,
 `PEARL_FOLD_SERPENTINE`), because only a 4090 has run them. Ampere and Blackwell keep one
@@ -110,11 +111,21 @@ launches it when that is the binary it loaded. Against the 273 row, interleaved:
 271.9 -> 288.6 / 289.4 in the full loop (+6.3%); see "A 192x256 tile on an mbarrier ring"
 below.
 
+The 300 row changes that kernel's sm_89 build, and the order the draws write its operands
+in. Against v0.5.6, interleaved, both with the hashed fill: 289.6 / 290.6 -> 300.4 / 300.6
+in the full loop (+3.6%); see "Whole-line staging and a leaner ring" below. The order is now
+the k-blocked one sm_120's TMA reads, shared by both builds; see "Onto v0.5.7" below.
+
 The last row changes only the bytes A and B hold, on every card: 48 plus the salt stamp,
 instead of hashed int7. It is the mainnet default, and a pool has accepted shares made with
-it. Against v0.5.6, interleaved: 288.1 / 288.3 -> 298.7 / 298.6 in the full loop (+3.6%).
+it. Against the 300 row's build, interleaved: 300.8 / 301.0 -> 311.6 / 311.7 in the full
+loop (+3.6%). That session ran about 1 TH/s over the 300 row, so the row carries the +3.6%
+onto 300. Against v0.5.6 in the same session: 290.8 / 290.7 -> 311.7 / 311.4 (+7.1%). See
+"Operand values" below.
+
 v0.5.7's sm_89 fold is v0.5.6's instruction for instruction (it added the sm_120 build), so
-the row carries the +3.6% onto 289. See "Operand values" below.
+its row is 289 too. The last two rows on top of it, against it, interleaved: 291.6 / 290.2
+-> 310.6 / 310.9 in the full loop (+6.8%). See "Onto v0.5.7" below.
 
 ### Against the field: 264 is 15.8% behind
 
@@ -331,11 +342,172 @@ shared writes taking twice the wavefronts, because a 64-deep stage reads half of
 
 Check after any edit to the tall fold: 255 registers or fewer and 0 spill; SASS stays two
 `LDGSTS` groups a stage, the A group behind the EMPTY spin and the B group ending in
-`ARRIVES.LDGSTSBAR`. On sm_120 (the TMA build): 255 or fewer and 0 spill, no `LDGSTS`, four
-`UTMALDG.3D` in the chunk loop (the producer's two boxes a stage), and 160 of its 192 `IMMA`
-with B `.reuse` (`cuobjdump -sass | grep -c 'IMMA.*reuse'`; ptxas 13.3: 248 registers, 2.672
-instructions an `IMMA`), which is what `PEARL_TALL_MMA_FENCE_MASK` and
-`PEARL_TALL_STAGE_FENCE` are for.
+`ARRIVES.LDGSTSBAR`. Since the next section, each stage ends in a `MEMBAR.ALL.CTA` and an
+`ATOMS.ARRIVE` on EMPTY, from every thread, with no branch around them. On sm_120 (the TMA
+build): 255 or fewer and 0 spill, no `LDGSTS`, four `UTMALDG.3D` in the chunk loop (the
+producer's two boxes a stage), and 160 of its 192 `IMMA` with B `.reuse` (`cuobjdump -sass |
+grep -c 'IMMA.*reuse'`; ptxas 13.3: 248 registers, 2.672 instructions an `IMMA`), which is
+what `PEARL_TALL_MMA_FENCE_MASK` and `PEARL_TALL_STAGE_FENCE` are for.
+
+### Whole-line staging and a leaner ring: +3.6%
+
+Six changes to the tall fold, still sm_89 only. Against v0.5.6, interleaved in one session
+(4090 at 450 W, 2026-09-26), both with the hashed operand fill. The constant fill is a
+separate change; "Operand values" has the two together.
+
+| | v0.5.6 | this |
+|---|---|---|
+| bench, 30 s | 294.8 / 291.4 | 302.7 / 302.3 (+3.2%) |
+| full miner loop, 60 s | 289.6 / 290.6 | 300.4 / 300.6 (+3.6%) |
+| SM clock (full loop) | 2414 - 2421 MHz | 2440 MHz |
+| instructions per mma (Nsight) | 3.22 | 3.02 |
+| tensor pipe busy (Nsight) | 92.7% | 95.0% |
+| registers | 255 | 253, no spill |
+
+400 of 400 hits verified (1271 hits across 488 operand draws in 60 s). What the pool sees
+does not change: same tiles, same pattern, same transcripts.
+
+Each step against the build before it, bench, two interleaved rounds. Sessions drift about
+1% with the card's temperature, so every row is against its own control:
+
+| step | before | after | |
+|---|---|---|---|
+| operands in staging order: whole 128-byte lines | 293.6 / 292.6 | 296.1 / 296.1 | +1.0% |
+| the k-step holds B and streams A | 298.1 / 295.9 | 295.6 / 294.7 | -0.6% |
+| + every thread arrives on EMPTY (measured as a `cp.async` arrival, see below) | 295.2 / 295.1 | 297.7 / 297.8 | +0.9% |
+| + copy points moved (A after m16 tile 3, B after tile 8) | 297.9 / 297.8 | 300.7 / 300.8 | +1.0% |
+| + the ring's buffer roles in registers | 300.5 / 300.9 | 303.4 / 303.3 | +0.9% |
+| + 64-bit source pointers | 302.2 / 302.7 | 303.2 / 303.0 | +0.2% |
+
+- **Whole lines.** A 64-deep stage of a row-major operand reads 64 bytes of each 2 KB row,
+  half a 128-byte line, and a `cp.async` writes shared memory one wavefront per global line
+  it touches: Nsight counted 1253M wavefronts against 627M ideal. The draws now write the
+  noised operands so that a stage of a tile is one contiguous run, and eight threads copy
+  one whole line, two rows. Wavefronts drop to the ideal and the clock rises 45 MHz. This
+  table measured it with an order of its own -- A in blocks of 192 rows, B in blocks of
+  256, each block k/64 slabs of [rows][64]. Since v0.5.7 it is the k-blocked order sm_120's
+  TMA reads, [k/64][rows][64] (`pearl_materialize16_kblocked`), which gives the same whole
+  lines and measured 0.15% behind; see "Onto v0.5.7". Only the fold reads the noised operands.
+  The host settles the order when it makes the context, because the first draw comes
+  before the first search.
+- **The EMPTY arrival.** Lane 0 used to arrive for its warp after a `__syncwarp`, with
+  EMPTY expecting 8: a branch and its `BSSY`/`BSYNC` a stage. Now every thread arrives
+  itself and EMPTY expects 256. The arrival is an ordinary `mbarrier.arrive`, a release,
+  and the refill's `test_wait` is an acquire. So PTX orders a stage's ldmatrix reads before
+  any copy into its buffer, and the hasher's transcript reads before its partner's next
+  writes. On sm_89 the release is a `MEMBAR.ALL.CTA` a stage per warp, and it costs
+  nothing measurable. The step table's +0.9% was measured with the arrival made through
+  `cp.async.mbarrier.arrive.noinc`, which has no fence. Against that build, interleaved,
+  both with the constant fill: full loop 311.5 / 311.0 -> 311.5 / 311.7, bench 313.2 /
+  312.8 -> 313.1 / 312.7. In an earlier session the lane-0 form measured 310.5 / 310.6 /
+  310.5 against 313.4 / 313.2 / 313.3 (bench, -0.9%). So the gain was the branch, not the
+  fence. The `cp.async` arrival never shipped: it is ordered only after the thread's own
+  copies, not its ldmatrix reads. In that build ptxas happened to issue it after each read
+  had landed, but nothing made it do so, and past that point only timing keeps a refill off
+  data not yet read.
+- **The k-step holds B.** Alone it lost 0.6%, but it frees eight registers: the warp's 64
+  columns of B fragments are 16, one m16 tile of A is 4, where all 96 rows of A were 24. On
+  the A-holding k-step the every-thread `cp.async` arrival spilled 52 - 252 bytes.
+- **Copy points.** Now counted in m16 tiles, 12 a stage. A at 3 and B at 8 was the best of
+  twenty placements, its neighbours 0.2 - 2.7% behind; see `PEARL_TALL_APT` for the table.
+- **The ring's roles in registers.** Stage 0 of a chunk reads buffer A and refills C, stage
+  1 reads B and refills A, and the three rotate once a chunk. Each buffer's FULL and EMPTY
+  sit in 128 bytes behind its rows (98688 bytes of shared in all), so every ring address is
+  a role register plus a constant. ptxas keeps the roles in uniform registers, and the
+  per-stage modulo, the parity selects and the barrier-address arithmetic are gone.
+- **64-bit source pointers**, held a tile, with B's centred on its four slots so all of them
+  are immediate offsets of one register: a B copy group's address arithmetic goes from six
+  instructions to three.
+
+Tried and dropped, bench against the same session's control:
+
+| tried | result |
+|---|---|
+| the partner signals the column hand-off with `bar.arrive`, only the hasher waits | -2.4%: any named-barrier arrive, even predicated or non-`.aligned`, costs ptxas the loop's warp uniformity -- the ring roles leave the uniform registers and every copy group gets `BSSY`/`BSYNC` |
+| the same on an mbarrier, plus a 32-thread `bar.sync` a warp to keep uniformity | +0.05%, noise |
+| the partner hashes 16 of its own regions itself | -0.3% |
+| test the next FULL a tile early, wait only if it had not completed | -1.5% to +0.2% by position |
+| `nanosleep` 20 or 100 ns between failed ring tests | -0.2% (clock +8 MHz) |
+| fold a region pair right after its last mma of the chunk | -2.4% (ptxas interleaves, but renames accumulators) |
+| later copy points, A at 4 - 9 and B at 8 - 10 | -0.7% to -2.7% |
+| the A-holding k-step with the new ring (it fits once the roles are registers) | -0.5% to -0.9% |
+| band depth 8 or 32 | flat |
+
+What is left, priced by ablation on the build before the pointers (wrong results): without
+the fused hash +1.1%, without the ring's waits +0.5%. Nsight still has the ring's spins at
+~3.5% of warp samples, three quarters of them on EMPTY. The transcript stores run at 4x
+their ideal wavefronts (8 lanes to one bank pair), but they are 0.16% of samples.
+
+**A 256x192 tile was not built.** Bytes per MAC are the same (1/256 + 1/192), so it could
+only win on fragment loads, and it cannot. Eight 32x192 warp tiles load 2 A and 12 B
+fragments per 48 mma, 0.29 an mma against 0.21 now (+40% shared reads). 64x96 and 128x48
+load the same or more, and a 96- or 48-column warp tile does not hold whole regions of the
+tile pattern, whose columns span 64. A 192-column tile also does not divide the 8192 column
+offsets, so a batch would wrap inside a tile. Pricing 32x192's extra reads in the real fold
+(four more B ldmatrix a k-step) spilled at every placement.
+
+### Onto v0.5.7: one operand order for both builds
+
+v0.5.7 runs the tall fold on sm_120 too, staged by TMA from operands k-blocked
+[k/64][rows][64] (`PEARL_TALL_TMA`). Its sm_89 SASS is v0.5.6's, instruction for instruction
+(all 16 kernels the same; `pearl_materialize16_kblocked` is new), so the numbers above
+carry over. The trims and the constant fill went onto it with sm_120 left as it was: its
+preprocessed device code is main's token for token, ring, stage body and shared layout
+included. Only the restamp kernel's stamp loop is spelled differently (`pearl_stamp_byte`,
+the same bytes). The trims are sm_89's alone: its build takes the per-thread EMPTY
+arrival, the ring roles in registers with the barriers behind each buffer (98688 bytes of
+shared; sm_120 keeps 98368), the k-step that holds B, and the new copy points.
+
+The one open choice was sm_89's operand order. The k-blocked order stores each 192-row
+stage slice of A' in one 12 KB run and each 256-column slice of B' in one 16 KB run, so
+the `cp.async` copies get the same whole lines as from the trims' own per-tile blocks. The
+difference is where a tile's next stage sits: one k-block on, m x 64 bytes of A' and n x 64
+of B' later, instead of right behind. Both builds: 253 registers, no spill, 400 of 400 hits
+verified. Their SASS differs only in the stride arithmetic, a stage stride of m x 64 or n x
+64 from the constant bank instead of a constant: the stretch from the first `IMMA` to the
+last is one instruction longer, and the fold 2640 instructions against 2632. The copy
+points (A at 3, B at 8) were kept, not swept again. Interleaved, 4090 at 450 W, one
+session:
+
+| | per-tile blocks | k-blocked |
+|---|---|---|
+| full miner loop, 60 s, k-blocked run first | 311.69 / 311.33 | 311.16 / 310.89 |
+| full miner loop, 60 s, per-tile run first | 311.26 / 311.27 | 310.84 / 310.74 |
+| bench, 30 s | 313.2 / 313.0 | 312.9 / 312.7 |
+| SM clock (full loop) | 2526 - 2534 MHz | 2527 - 2530 MHz |
+
+The per-tile order was ahead in all six pairs, by 0.1 - 0.2%: 311.39 against 310.91 in the
+full loop on average (+0.15%), +0.1% in the bench. That is small, and one order for both
+builds is worth more, so the k-blocked order ships. Both builds now read one order, written
+by one kernel. The per-tile order's `block_rows` argument, its per-context flag and its
+column-offset check are gone: a k-block has no tile boundary, so any 256 consecutive
+columns of it are one run. On sm_89 the last row group's rows past m read the next
+k-block's first rows, or past the last k-block the zeroed rows `PEARL_TALL_A_ROWS` pads A'
+with. The fold hashes no region on them. (TMA zero-fills them instead.)
+
+The result, full miner loop, 60 s, interleaved, 4090 at 450 W, one session (449 - 450 W in
+every run):
+
+| | TH/s | SM clock |
+|---|---|---|
+| v0.5.7 (hashed fill) | 291.6 / 290.2 | 2428 / 2412 MHz |
+| this | 310.6 / 310.9 (+6.8%) | 2525 / 2530 MHz |
+| the same work on v0.5.6, per-tile order (`perf-scratch/r10-combo-bin`) | 311.2 / 311.6 | 2526 / 2534 MHz |
+| this | 310.9 / 310.7 (-0.2%) | 2526 / 2525 MHz |
+
+The -0.2% against the v0.5.6 build is the order: that build's tall fold is the per-tile
+build's above, instruction for instruction. Tall fold: 253 registers, no spill, 2640
+instructions (v0.5.7's: 255 and 2688). Every other kernel's sm_89 SASS is v0.5.7's, the
+restamp kernel included. `verify-hits`: 400 of 400 hits verified (2625 hits across 1014
+salts in 120 s). `r9-fill-distinct.js`: no a_seed shared between two cards (salt base 0 and
+1, stride 2); a full draw and a restamp at the same salt gave the same a_seed and root_A at
+all 17 salts the cards had in common; every A and B leaf byte a hit carried was 48. With
+the hashed fill, cards still share no a_seed, and a full draw and a restamp differ, as
+before.
+
+Not measured: anything on sm_120, which this card cannot run and CUDA 12.6 cannot build.
+Its fold, ring and operand order are v0.5.7's. What changes there is the bytes it reads:
+the constant fill is every card's default, and it has not been on a 5090.
 
 ### What a staged byte costs, and why a standalone probe underprices it
 
@@ -434,7 +606,7 @@ The hashed fill stays as `PEARL_OPERAND_HASHED` (`operandFill: 'hashed'`, code 0
 frozen parity vectors were captured with it, and it is the fallback if a pool refuses the
 constant.
 
-Measured on v0.5.6's fold. The fill does not change the fold's SASS, only the bytes
+First measured on v0.5.6's fold. The fill does not change the fold's SASS, only the bytes
 it reads. Full miner loop, 60 s, interleaved against v0.5.6, 4090 at 450 W:
 
 | | TH/s | SM clock |
@@ -444,9 +616,52 @@ it reads. Full miner loop, 60 s, interleaved against v0.5.6, 4090 at 450 W:
 
 `verify-hits`: 400 of 400 hits verified across 325 salts.
 
+Then with the trims ("Whole-line staging and a leaner ring"), all in one later session,
+4090 at 450 W (449 - 450 W in every run). Full miner loop, 60 s, two interleaved A/Bs:
+
+| | TH/s | SM clock |
+|---|---|---|
+| v0.5.6 (hashed) | 287.7 / 288.6 | 2399 / 2407 MHz |
+| trims and constant fill | 308.8 / 308.8 (+7.2%) | 2509 / 2504 MHz |
+| v0.5.6's fold, constant fill | 298.6 / 298.6 | 2487 / 2488 MHz |
+| trims and constant fill | 308.7 / 308.6 (+3.4%) | 2508 / 2508 MHz |
+
+Bench, 30 s, five builds interleaved, two rounds:
+
+| | TH/s | SM clock |
+|---|---|---|
+| v0.5.6 (hashed) | 289.8 / 289.6 | 2400 / 2405 MHz |
+| trims, hashed | 300.8 / 300.4 (+3.8%) | 2431 / 2426 MHz |
+| trims, hashed, from the combined build (`PEARL_OPERAND_FILL_CODE=0`) | 300.1 / 300.4 (+3.6%) | 2423 / 2427 MHz |
+| v0.5.6's fold, constant fill | 299.9 / 300.0 (+3.5%) | 2480 / 2486 MHz |
+| trims and constant fill | 310.6 / 310.4 (+7.2%) | 2510 / 2505 MHz |
+
+In the bench the two gains multiply: +3.6% and +3.5% alone, 1.036 x 1.035 = 1.072, and
++7.2% together. In the full loop the trims add a little less on top of the constant fill,
++3.4%, against +3.6% on the hashed fill. The combined build's
+tall fold is the trims' SASS, instruction for instruction (253 registers, no spill), and
+with the hashed fill it benches the same as the trims' own build. `verify-hits`: 400 of 400
+hits verified (2614 hits across 1008 salts in 120 s). `r9-fill-distinct.js` on it: no
+a_seed shared between the two cards, and a full draw and a restamp at the same salt gave
+the same a_seed at all 17 salts the cards had in common.
+
+Then the EMPTY arrival became a release (see "Whole-line staging and a leaner ring"), and a
+third session measured the result. Full miner loop, 60 s, interleaved, 449 - 450 W:
+
+| | TH/s | SM clock |
+|---|---|---|
+| v0.5.6 (hashed) | 290.8 / 290.7 | 2417 / 2419 MHz |
+| trims and constant fill | 311.7 / 311.4 (+7.1%) | 2535 / 2532 MHz |
+| trims, hashed (the 300 row's build) | 300.8 / 301.0 | 2445 / 2445 MHz |
+| trims and constant fill | 311.6 / 311.7 (+3.6%) | 2534 / 2535 MHz |
+
+So on top of the trims the fill adds the same +3.6% it adds alone. `verify-hits`: 400 of
+400 hits verified (2636 hits across 1018 salts in 120 s).
+
 **The pool takes it.** 3 of 3 shares accepted in 198 s at us2.pearl.herominers.com
 (`earn-cli`, 2026-09-26), with the constant fill on v0.5.6's fold (`perf-scratch/r9-fill-bin`).
-If a pool ever refuses these shares, go back to the hashed fill:
+The build with the trims as well has not been on a pool yet. If a pool ever refuses these
+shares, go back to the hashed fill:
 
 - `earn/src/shared/miner/pearlhash.js`: in `PROFILE`, set `operandFill: 'hashed'` and
   `operandFillCode: 0`. This alone switches the miner, with no CUDA rebuild: the addon
