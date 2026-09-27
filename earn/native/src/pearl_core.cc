@@ -179,6 +179,11 @@ PearlCore::PearlCore(const Napi::CallbackInfo &info)
     // target. The reference says little-endian; shares are being rejected
     // regardless of margin, which is what the other choice would look like.
     profile.hash_big_endian = u32("hashBigEndian", profile.hash_big_endian);
+    // 0 = hashed operands, 1 = the constant fill (PEARL_OPERAND_CONST). A number,
+    // for the same reason as seedDerivationCode. Settable from JS so a pool that
+    // refuses the constant fill can be answered without a rebuild, and so the
+    // frozen parity vectors, captured with the hashed fill, can be reproduced.
+    profile.operand_fill = u32("operandFillCode", profile.operand_fill);
   }
 
   profile_ = profile;

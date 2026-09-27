@@ -143,6 +143,10 @@ typedef struct PearlProfile {
   // 0 = read the jackpot hash little-endian, as the reference does; 1 = big.
   // A diagnostic for the share rejections, not a protocol choice.
   uint32_t hash_big_endian;
+  // What a full draw fills A and B with: PEARL_OPERAND_HASHED or
+  // PEARL_OPERAND_CONST, see there. Not hashed into config52 -- the operands
+  // are the miner's own, and only their roots reach the chain.
+  uint32_t operand_fill;
 } PearlProfile;
 
 // A tile offset is only VALID if it has the pattern's own bits clear.
@@ -239,6 +243,18 @@ PEARL_HD constexpr uint32_t pearl_pattern_span(uint32_t mask) {
 // How many leading bytes of A a same-job redraw rewrites (pearl_restamp_operand):
 // six bits of salt each, so 11 bytes carry a full 64-bit salt.
 #define PEARL_STAMP_BYTES 11
+
+// Byte i of the salt stamp. Every byte is in [0, 63], so A stays int7, and the
+// stamp is one-to-one in the salt.
+//
+// Two writers use it: the restamp kernel, and the full draw under
+// PEARL_OPERAND_CONST. They must agree, because under the constant fill the
+// stamp is ALL that separates one salt's A from another's. A full draw at salt s
+// and a restamp at salt s then leave the same A, and so the same a_seed,
+// whichever salt the job started on.
+PEARL_HD static inline int8_t pearl_stamp_byte(uint64_t salt, int i) {
+  return (int8_t)((salt >> (6 * i)) & 63u);
+}
 
 // What the fold needs to hash its own transcripts and test them. Passed to the
 // kernel BY VALUE, so the key and target sit in the constant bank as operands
@@ -486,11 +502,22 @@ typedef struct {
 // 131072) 0.887 -> 0.921. 400/400 hits verified; the pool accepted 2 of 2 shares.
 // probes/README.md has the rest, and what was tried.
 //
+// Since then, on Ada: the draws write the noised operands k-blocked (the layout
+// Blackwell's TMA reads, see PEARL_TALL_TMA), so a stage copies whole 128-byte lines;
+// every thread arrives on EMPTY itself, with no __syncwarp or branch; the k-step holds B
+// and streams A; and the ring's buffer roles live in registers. First measured on v0.5.6
+// with an operand order of its own (per-tile blocks), against v0.5.6, interleaved, both
+// with the hashed operand fill: bench 294.8 / 291.4 -> 302.7 / 302.3, full miner loop
+// 289.6 / 290.6 -> 300.4 / 300.6 TH/s (+3.6%). On v0.5.7, k-blocked and with the constant
+// fill (PEARL_OPERAND_CONST), against v0.5.7: full miner loop 291.6 / 290.2 -> 310.6 /
+// 310.9 TH/s (+6.8%), 253 registers, 400/400 hits verified. See "Whole-line staging and a
+// leaner ring" and "Onto v0.5.7" in probes/README.md.
+//
 // Ada and Blackwell. Blackwell's build stages with TMA instead of cp.async (see
-// PEARL_TALL_TMA, which has what it measured there); Ampere keeps the sixteen-warp
-// fold. The host launches the tall fold when the loaded pearl_tile_fold_tall is one
-// that has a body (PEARL_TALL_ARCH of its binaryVersion), and a -DPEARL_FOLD_TALL=0/1
-// override binds both sides.
+// PEARL_TALL_TMA, which has what it measured there) and keeps the ring and stage body
+// it was measured with; Ampere keeps the sixteen-warp fold. The host launches the tall
+// fold when the loaded pearl_tile_fold_tall is one that has a body (PEARL_TALL_ARCH of
+// its binaryVersion), and a -DPEARL_FOLD_TALL=0/1 override binds both sides.
 #ifdef PEARL_FOLD_TALL
 #define PEARL_FOLD_TALL_FORCED 1
 #endif
@@ -519,15 +546,23 @@ typedef struct {
 // Valid row and column offsets one tile covers: two per 32 rows, four per 64 columns.
 #define PEARL_TALL_ROW_OFFSETS (PEARL_TALL_BM / 16u)             // 12
 #define PEARL_TALL_COL_OFFSETS (PEARL_TALL_BN / 16u)             // 16
-// Shared: the three stages, six mbarriers (padded to 64 bytes), and one 64-byte
-// transcript a region -- 192 regions a tile. 98368 bytes of the 101376 Ada allows.
+// Shared: the three stages, the ring's six mbarriers, and one 64-byte transcript a
+// region -- 192 regions a tile. Ada's cp.async build keeps each stage's FULL and EMPTY
+// in 128 bytes behind its rows: 98688 bytes of the 101376 Ada allows. Blackwell's TMA
+// build keeps all six after the stages, in 64 bytes: 98368 (PEARL_TALL_SMEM_TMA).
 #define PEARL_TALL_STAGE_BYTES ((PEARL_TALL_BM + PEARL_TALL_BN) * PEARL_TALL_STAGE_K)
+#define PEARL_TALL_STAGE_STRIDE (PEARL_TALL_STAGE_BYTES + 128u)
 #define PEARL_TALL_SMEM \
+  (PEARL_TALL_STAGES * PEARL_TALL_STAGE_STRIDE + PEARL_TALL_BM * PEARL_TALL_BN / 4u)
+#define PEARL_TALL_SMEM_TMA \
   (PEARL_TALL_STAGES * PEARL_TALL_STAGE_BYTES + 64u + PEARL_TALL_BM * PEARL_TALL_BN / 4u)
 // m is a power of two and 192 is not a factor of it, so the last row group of tiles
-// runs past m: at the mainnet 131072 rows, 683 groups cover 131136. The noised A is
-// allocated with that many rows (the extra zeroed, never generated), and the fold
-// hashes no region whose row offset falls past the end.
+// runs past m: at the mainnet 131072 rows, 683 groups cover 131136. The fold hashes no
+// region whose row offset falls past m. Both builds read A' k-blocked, m rows a k-block
+// (see PEARL_TALL_TMA). TMA zero-fills the rows past m. Ada's cp.async reads them: in
+// every k-block but the last they are the next k-block's first 64 rows, and in the last
+// they run past m * k. So the noised A is allocated with this many rows, the extra
+// zeroed and never generated.
 #define PEARL_TALL_A_ROWS(m) \
   ((((m) + PEARL_TALL_BM - 1u) / PEARL_TALL_BM) * PEARL_TALL_BM)
 // Row groups a band of the tile walk covers (see PEARL_BLOCK_GROUP). The eight-warp
@@ -546,10 +581,23 @@ typedef struct {
 #define PEARL_TALL_BAND 16u
 #endif
 #endif
-// Where a stage's copies of the next chunk go out: after B pair (point % 4) of k-step
-// (point / 4). A's go first, behind the ring's EMPTY wait; B's follow, then the arrival
-// that counts them. Measured (bench, TH/s, 4090 at 450 W, interleaved, first run of a
-// session left out):
+// Where a stage's copies of the next chunk go out: after m16 tile (point % 6) of k-step
+// (point / 6) -- the k-step holds B and streams A a tile at a time. A's go first, behind
+// the ring's EMPTY wait; B's follow, then the arrival that counts them. Measured on the
+// fold as it is now (bench, TH/s, 4090 at 450 W, interleaved, two rounds):
+//   A at 3, B at 8 (this)    303.4 303.3 (session 1); 302.2 302.7 (session 2)
+//   A at 3, B at 7           tied before the ring roles went to registers (300.8 300.8
+//                            against 300.7 300.8), 0.4% behind after (299.7 300.2
+//                            against 301.6 300.6)
+//   A at 2, B at 7 or 8      297.8 298.4, 1.0% behind
+//   A at 4, B at 8 or 9      292.8 / 296.3, 2.7% and 1.5% behind
+//   A at 3, B at 9 or 10     296.6 / 292.7
+//   A at 5 - 9, B at 8 - 10  293.9 - 299.1, all behind; A at 1, B at 6 292.1
+// Only a point's rank against its neighbours carries: they steer where ptxas puts the
+// copy groups, and a group one tile off moved the rate by up to 2.7%.
+//
+// Before, with the k-step holding A and streaming B pairs, points counted B pairs
+// (point % 4 of k-step point / 4), measured on that fold (first run left out):
 //   A at 1, B at 4 (this)    290.3 290.5 290.6
 //   A at 1, B at 5           288.2 288.3 288.4 288.6
 //   A at 2, B at 4           287.8 287.8
@@ -567,10 +615,10 @@ typedef struct {
 // its own 24 regions instead of one warp a column slot hashing 48, which drops the
 // column barrier, 287.8 / 288.1 -- both warps of a scheduler then stop to hash.
 #ifndef PEARL_TALL_APT
-#define PEARL_TALL_APT 1u
+#define PEARL_TALL_APT 3u
 #endif
 #ifndef PEARL_TALL_BPT
-#define PEARL_TALL_BPT 4u
+#define PEARL_TALL_BPT 8u
 #endif
 
 // Blackwell (sm_120) stages the tall fold with TMA instead of cp.async.
@@ -587,16 +635,17 @@ typedef struct {
 //
 // The operands it reads are the NOISED A' and B' laid out k-BLOCKED,
 // [k / 64][rows][64] (pearl_materialize16_kblocked; the host writes them that way for
-// this build only, Ctx::foldTma), through 3-D tensor maps {64 bytes, rows, k-block}.
+// both tall builds, Ctx::foldTall), through 3-D tensor maps {64 bytes, rows, k-block}.
 // A 64-byte stage of a row-major operand is half of every 128-byte L2 line it touches
 // (k is 2048 bytes a row), so each line was fetched in two halves on consecutive
 // stages; k-blocked, a stage box is one contiguous run of whole lines, and shared
 // memory is laid out exactly as before. The row dimension stays bounded by the
 // operand's own rows (not flattened into the k-blocks), so the last row group's rows
-// past m come back zero-filled by TMA; the fold hashes no region on them. That is
-// what PEARL_TALL_A_ROWS pads the cp.async build's A' with, so the TMA build does not
-// read the padding. A and B themselves, and every commitment and proof, stay
-// row-major.
+// past m come back zero-filled by TMA; the fold hashes no region on them. (Ada's
+// cp.async build reads those rows from A' itself, see PEARL_TALL_A_ROWS.) A and B
+// themselves, and every commitment and proof, stay row-major. Ada's cp.async ring reads
+// the same layout, for the same reason: see "Whole-line staging and a leaner ring" in
+// probes/README.md.
 //
 // The rate at the 600 W cap is energy a MAC, and what moved it was bytes and exposed
 // load stalls. Measured on perf/sm120-throughput (base 00f3e6e, the previous tile
@@ -614,9 +663,9 @@ typedef struct {
 // pieces on the tall fold (its ring, shared transcripts, lane-grouped readout of the
 // current tile pattern and persistent blocks), and has not been measured as a whole.
 //
-// 0 builds Ada's cp.async ring for sm_120 instead, row-major, for A/B only (ptxas 13.3
-// spills 24 bytes of it there); the host reads the value too (Ctx::foldTma), so
-// -DPEARL_TALL_TMA=0 binds both sides.
+// 0 builds Ada's cp.async ring for sm_120 instead, for A/B only. ptxas 13.3 spilled 24
+// bytes of it there before Ada's trims; the trimmed ring has not been built for sm_120.
+// The host reads the value too (Ctx::foldTma), so -DPEARL_TALL_TMA=0 binds both sides.
 #ifndef PEARL_TALL_TMA
 #define PEARL_TALL_TMA 1
 #endif
@@ -629,12 +678,13 @@ typedef struct {
 
 // How far ahead of its mma the TMA build loads each fragment (sm_120).
 //
-// 0 is Ada's stage body: each k32 step loads its six A fragments, then each B pair
-// right before the twelve mma that read it. 1 streams them: a stage's first B pair
-// and six A are loaded behind its FULL wait, B pair p + 1 as pair p starts (twelve
-// mma ahead, double-buffered, eight registers), and each A fragment is reloaded for
-// the next k32 step in place, right after its last mma of this one (in the last n8
-// column, five mma of cover). It needs the registers: 192 accumulators, 24 of A and
+// 0 is the stage body Ada had before its trims: each k32 step loads its six A
+// fragments, then each B pair right before the twelve mma that read it. (Ada's body
+// now holds B and streams A, see PEARL_TALL_APT; it comes only with the cp.async ring,
+// never with TMA.) 1 streams them: a stage's first B pair and six A are loaded behind
+// its FULL wait, B pair p + 1 as pair p starts (twelve mma ahead, double-buffered,
+// eight registers), and each A fragment is reloaded for the next k32 step in place,
+// right after its last mma of this one (in the last n8 column, five mma of cover). It needs the registers: 192 accumulators, 24 of A and
 // 8 of B. On perf/sm120-throughput the first mma after an A ldmatrix was the chunk
 // loop's top short-scoreboard stall (7.9% of the loop's warp time) while sixteen
 // registers of the loop were the epilogue's transcript words; with those back ptxas
@@ -827,6 +877,45 @@ typedef struct {
 #define PEARL_SEED_SALTED 0u
 #define PEARL_SEED_LEGACY 1u
 
+// What a full draw puts in A and B.
+//
+// The protocol fixes only the noise, which is seeded from the operands' roots.
+// A and B themselves are the miner's own, and must only be int7. So their values
+// are ours to pick, and they cost energy: A' = sat(A + noise) and B' feed the
+// staging copies, ldmatrix and the tensor datapath, and every bit that flips
+// between one mma's operands and the next draws power. Hashed uniform bytes flip
+// the sign bit of A' half the time. A base of 48, with noise in [-63, 63], keeps
+// A' in [-15, 111] and its sign bit mostly still.
+//
+// Measured on a 4090 at 450 W (probes/README.md, "Operand values"):
+//   bench, A = B = 0 / 16 / 32 / 48 / 63: +0.6 / +2.5 / +3.0 / +3.3 to +3.7 /
+//     +3.5 to +3.6%, each against its own session's run of v0.5.6
+//   full miner loop, v0.5.6's fold with this fill against v0.5.6, interleaved:
+//     288.1 / 288.3 -> 298.7 / 298.6 TH/s (+3.6%), the clock 2400 -> 2487 MHz
+//   with the tall fold's later trims as well (PEARL_FOLD_TALL), against v0.5.6:
+//     287.7 / 288.6 -> 308.8 / 308.8 TH/s (+7.2%), the clock 2403 -> 2507 MHz
+// The fill does not change the fold's code, only the bytes it reads. Zero does not
+// help: A' is then pure noise and flips sign as often as ever.
+//
+//   PEARL_OPERAND_HASHED  uniform int7 from job_key and the salt (pearl_gen_operand).
+//                         The frozen device parity vectors were captured with it,
+//                         so any run that reproduces them must ask for it.
+//   PEARL_OPERAND_CONST   every byte PEARL_OPERAND_FILL, then the salt stamp over
+//                         A's first PEARL_STAMP_BYTES bytes (pearl_stamp_byte).
+//
+// The stamp is what keeps two salts apart. Under this fill every card draws the
+// same B, root_B, b_seed and B' for a job, and A differs only in the stamp.
+// Without it every salt's first draw would be the same A and B, so every card of
+// a rig would search the same space until its first restamp.
+//
+// The pool takes it: 3 of 3 shares accepted in 198 s at us2.pearl.herominers.com
+// (earn-cli, 2026-09-26, v0.5.6's fold). The verifier recomputes A' from the
+// leaves a share carries, and these are valid int7. If a pool ever refuses them,
+// PEARL_OPERAND_HASHED is the fallback (probes/README.md, "Operand values").
+#define PEARL_OPERAND_HASHED 0u
+#define PEARL_OPERAND_CONST 1u
+#define PEARL_OPERAND_FILL 48
+
 // blake3("pearl/cert-v3/noise-seed/A") and .../B. Hardcoded in the reference so
 // consensus does not depend on runtime string hashing; both are re-derived from
 // their strings in the JS tests.
@@ -844,7 +933,8 @@ static const uint8_t PEARL_SEED_SALT_B[32] = {
 // each chunk lands in its own lane and the rotation never wraps.
 static const PearlProfile PEARL_MAINNET_PROFILE = {2048u, 128u, 0u,
                                                    131072u, 131072u,
-                                                   PEARL_SEED_SALTED, 2048u, 0u};
+                                                   PEARL_SEED_SALTED, 2048u, 0u,
+                                                   PEARL_OPERAND_CONST};
 
 // Serialize the 52-byte mining configuration, matching the reference's
 // MiningConfiguration::to_bytes byte for byte:
