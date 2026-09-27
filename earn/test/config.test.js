@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-  REGIONS, DEFAULTS, MINER, ECON,
+  REGIONS, DEFAULTS, MINER, ECON, DEV_FEE,
   regionFor, endpointFor, normalizeEndpoint, resolveEndpoint, splitEndpoint, regionLabel,
   migrateRegion, LEGACY_REGIONS,
 } = require('../src/shared/config');
@@ -38,8 +38,14 @@ describe('config', () => {
   });
 
   test('engine and economics metadata are present', () => {
-    expect(MINER).toMatchObject({ engine: 'llmjob-pearl', pool: 'HeroMiners', pow: 'pearlhash', devFeePct: 0, poolFeePct: 0 });
-    expect(ECON).toMatchObject({ NET_TH: 61e6, DAILY_NET_PRL: 1.62e6, FEE: 0.99, PRL_USD: 0.30 });
+    expect(MINER).toMatchObject({ engine: 'llmjob-pearl', pool: 'HeroMiners', pow: 'pearlhash', devFeePct: 2, poolFeePct: 0 });
+    expect(ECON).toMatchObject({ NET_TH: 61e6, DAILY_NET_PRL: 1.62e6, FEE: 0.98, PRL_USD: 0.30 });
+  });
+
+  test('the dev fee is 2%: one 60 s slice in every 50 min', () => {
+    expect(DEV_FEE.sliceMs / DEV_FEE.cycleMs).toBeCloseTo(DEV_FEE.pct / 100, 10);
+    expect(DEV_FEE.pct).toBe(MINER.devFeePct);
+    expect(DEV_FEE.address).toMatch(/^prl1/);
   });
 });
 
