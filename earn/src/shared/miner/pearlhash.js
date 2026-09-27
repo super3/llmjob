@@ -230,7 +230,7 @@ const PROFILE = {
 
   // Column offsets per launch. Not protocol: it trades VRAM for amortised
   // launch overhead, and the host clamps it to the number of valid column
-  // offsets, so 2048 means ONE launch covers a whole operand draw.
+  // offsets. At n = 262144 a draw takes 8 launches of 2048.
   //
   // Re-measured at the current geometry: 256 -> 111.2, 512 -> 112.1,
   // 1024 -> 112.7, 2048 -> 113.3 TH/s, and VRAM does not move (the jackpot

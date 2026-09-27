@@ -227,7 +227,8 @@ row-major `pearl_materialize16`), and with the hashed fill. `PEARL_RESTAMP_CHECK
 two cards, and a full draw at s gives the same a_seed as a restamp at s at all 14 shared
 salts. The first draws' a_seeds are v0.5.8's, bit for bit.
 
-Two things a pool sees differently. Neither has been tested against a live pool yet:
+Two things a pool sees differently. The pool took both: 11 of 11 shares accepted in 5 min
+at us2 (2026-09-27, the first head-to-head run in "Against the field" below):
 - n = 262144 is declared in every share and bound by cert-v3. B's Merkle proof is one
   level deeper. n is the miner's choice as long as the sanity checks pass. To go back,
   set `PROFILE.n` in `pearlhash.js` and n in `PEARL_MAINNET_PROFILE` to 131072.
@@ -261,6 +262,20 @@ fold reaches on this card rather than one vendor's trick. Note where the gap is:
 449 W, and THEY hold the higher clock. They do ~16% less energy per multiply-accumulate
 (0.70 TH/W against 0.59), and on a power-capped card that is the whole difference. The
 pure-mma ceiling here is ~340 T-MAC/s, so they sit at ~92% of it and we sit at ~78%.
+
+**2026-09-27: level with them.** The same harness, twice, with the build that has the
+host loop and the per-tile order (see "The host loop" above). The second run reverses the
+order (PeakMiner, SRBMiner, then ours), because whoever runs first gets the coolest card:
+
+| run | ours | SRBMiner 3.6.9 | PeakMiner 2.17.1 |
+|---|---|---|---|
+| ours first | **310.9** (11/0 shares, 2504 MHz) | 309.9 (7/0, 2440 MHz) | 310.3 (9/0, 2433 MHz) |
+| ours last | 313.2 (16/0, 2524 MHz) | **313.5** (14/0, 2467 MHz) | 313.4 (6/0, 2459 MHz) |
+
+The order moves every miner by ~0.3%, more than the gaps between them, so the three are
+level. We run ~60 MHz higher at the same power, so we still do less work per clock:
+~0.95 of the tensor pipe per clock against their ~0.97. The pool accepted all 27 of our
+shares at n = 262144.
 
 ### A tile the accumulators already hold: +0.5%, all of it energy
 

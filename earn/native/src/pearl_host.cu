@@ -3,8 +3,9 @@
 // Without this the addon compiles and fails to link on four undefined symbols.
 //
 // MEMORY BUDGET, because it is the design constraint that shapes everything
-// here. The mandated profile is m=n=131072, k=4096, which makes a full int8 A
-// (m×k) and Bᵀ (n×k) 512 MiB each — 1 GiB resident, before noise. That fits a
+// here. The mainnet profile is m=131072, n=262144, k=2048. Under the hashed fill
+// a full int8 A (m×k) is 256 MiB and Bᵀ (n×k) 512 MiB, before noise; the
+// constant fill stores both compact (see pearl_host_create). That fits a
 // 24 GB card comfortably and would not fit an 8 GB one alongside a co-running
 // LLM, so `pearl_host_create` checks free VRAM up front and fails with a
 // readable message rather than dying inside a kernel launch. The app already
