@@ -1,11 +1,10 @@
-// The OpenRouter client shared by the two gateways that reach hosted models: the
-// free web chat (chatController) and the OpenAI-compatible API gateway
-// (openaiController). Both are exercised end to end in their own suites; this
+// The OpenRouter client behind the OpenAI-compatible API gateway
+// (openaiController). The gateway is exercised end to end in its own suite; this
 // file covers the client's own contract — the configuration it resolves, the
 // allow-list it enforces, and the upstream request it builds — so a change here
-// can't quietly alter what either gateway sends or spends.
+// can't quietly alter what the gateway sends or spends.
 const OpenRouterService = require('../src/services/openRouterService');
-const { deltaContent, deltaReasoning, usageMeta } = OpenRouterService;
+const { deltaContent, deltaReasoning, usageMeta, upstreamErrorMessage, parseSSE } = OpenRouterService;
 
 // Two entries, though we ship one: OPENROUTER_MODELS can widen the allow-list
 // without a deploy, so lookup has to hold at any length, not just at one.
@@ -27,15 +26,13 @@ describe('OpenRouterService — configuration', () => {
     expect(or.configured).toBe(false); // no key → the gateways answer 503
     expect(or.baseUrl).toBe('https://openrouter.ai/api/v1');
     expect(or.models).toBe(OpenRouterService.DEFAULT_MODELS);
-    expect(or.defaultModel).toBe(OpenRouterService.DEFAULT_MODELS[0]);
     expect(or.freeBudget).toBe(1000000);
     expect(or.maxTokens).toBe(2048);
     expect(or.referer).toBe('https://llmjob.com');
     expect(or.title).toBe('LLMJob');
   });
 
-  it('ships exactly one hosted model, the one the Chat page offers', () => {
-    // The whole point of the hosted path: the same model, reachable both ways.
+  it('ships exactly one hosted model, the one the API offers', () => {
     expect(OpenRouterService.DEFAULT_MODELS.map((m) => m.id)).toEqual(['qwen/qwen3.8-27b']);
     // Length is the assertion that matters. Every hosted model bills against
     // one shared free budget, so a second one added here doesn't add capacity —
@@ -58,6 +55,50 @@ describe('OpenRouterService — configuration', () => {
     expect(or.freeBudget).toBe(500);
     expect(or.maxTokens).toBe(64);
     expect(or.referer).toBe('https://env.example');
+  });
+
+  it('ignores a malformed OPENROUTER_MODELS and keeps the defaults', () => {
+    expect(OpenRouterService.parseModels('{not json')).toBeNull();
+    expect(OpenRouterService.parseModels('{"id":"x"}')).toBeNull();          // not an array
+    expect(OpenRouterService.parseModels('[{"label":"no id"}, null]')).toBeNull(); // nothing usable
+    // Entries without an id are dropped; a missing label falls back to the id.
+    expect(OpenRouterService.parseModels('[{"id":"a/b"}, {"label":"skip"}]')).toEqual([{ id: 'a/b', label: 'a/b' }]);
+    process.env.OPENROUTER_MODELS = '{not json';
+    expect(new OpenRouterService().models).toBe(OpenRouterService.DEFAULT_MODELS);
+  });
+});
+
+describe('OpenRouterService — parseSSE', () => {
+  const body = (text) => (async function* () { yield new TextEncoder().encode(text); })();
+  const collect = async (text) => { const out = []; for await (const e of parseSSE(body(text))) out.push(e); return out; };
+
+  it('yields data events and stops at [DONE]', async () => {
+    expect(await collect('data: {"a":1}\n\ndata: [DONE]\n\ndata: {"b":2}\n')).toEqual([{ a: 1 }]);
+  });
+
+  it('skips comments, other fields and unparseable payloads', async () => {
+    expect(await collect(': keep-alive\nevent: ping\ndata: {oops\ndata: {"a":1}\n')).toEqual([{ a: 1 }]);
+  });
+});
+
+describe('OpenRouterService — upstream error messages', () => {
+  const resp = (status, text) => ({ status, text: async () => text });
+
+  it('prefers OpenRouter\'s own error message', async () => {
+    expect(await upstreamErrorMessage(resp(429, JSON.stringify({ error: { message: 'Rate limited' } }))))
+      .toBe('Rate limited');
+  });
+
+  it('falls back to the raw body, trimmed, when it is not the usual JSON', async () => {
+    expect(await upstreamErrorMessage(resp(502, 'Bad gateway'))).toBe('Bad gateway');
+    expect(await upstreamErrorMessage(resp(500, JSON.stringify({ oops: 1 })))).toBe('{"oops":1}');
+    expect(await upstreamErrorMessage(resp(500, 'x'.repeat(400)))).toHaveLength(300);
+  });
+
+  it('falls back to the bare status when there is no body to read', async () => {
+    expect(await upstreamErrorMessage(resp(503, ''))).toBe('HTTP 503');
+    expect(await upstreamErrorMessage({ status: 500, text: async () => { throw new Error('gone'); } }))
+      .toBe('HTTP 500');
   });
 });
 

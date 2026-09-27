@@ -27,9 +27,11 @@ CREATE TABLE IF NOT EXISTS miners (
 CREATE INDEX IF NOT EXISTS idx_miners_last_seen ON miners (last_seen);
 `;
 
-// Free public web chat, served through the OpenRouter proxy. We deliberately do
-// NOT store prompts or replies — only per-request performance and token counts,
-// plus a single running-totals row so free usage can be summed and capped. Kept
+// Hosted-model (OpenRouter) usage: the /v1 gateway's hosted models today, and
+// the free web chat's lifetime totals from before it was removed. We
+// deliberately do NOT store prompts or replies — only per-request performance
+// and token counts, plus a single running-totals row so free usage can be summed
+// and capped. Kept
 // as its own constant so the add-chat-usage migration can apply it to existing
 // databases.
 const CHAT_SCHEMA = `

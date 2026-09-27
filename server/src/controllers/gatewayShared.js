@@ -1,12 +1,10 @@
 'use strict';
 
-// Shared machinery for the two chat gateways that turn a request into an LLMJob
-// inference job and long-poll its result: the OpenAI-compatible API gateway
-// (openaiController) and the free web-chat proxy's network-model path
-// (chatController). These helpers used to be copy-pasted between the two files,
-// which let them drift — the /v1 SSE stream was missing the X-Accel-Buffering
-// header the web-chat path added to defeat Railway/nginx buffering. Keeping the
-// one copy here means a fix lands in both gateways at once.
+// Machinery the OpenAI-compatible API gateway (openaiController) uses to turn a
+// request into an LLMJob inference job and long-poll its result. It was pulled
+// out when a second gateway, the free web chat (since removed), carried its own
+// copy and the two drifted: the /v1 SSE stream was missing the
+// X-Accel-Buffering header the chat added to defeat Railway/nginx buffering.
 
 // A rough token count (~4 chars/token) for when a provider omits usage counts.
 function estimateTokens(text) {
@@ -24,7 +22,7 @@ function round1(v) {
   return Math.round(v * 10) / 10;
 }
 
-// The OpenAI-style error envelope both gateways return.
+// The OpenAI-style error envelope the gateway returns.
 function errorBody(message, type) {
   return { error: { message, type, code: null } };
 }
@@ -66,13 +64,7 @@ function lastUserText(messages) {
   return String(joinContent(messages));
 }
 
-// A node-failure message for either response path (one place, so the empty-reason
-// fallback is covered once).
-function nodeFailMessage(r) {
-  return 'The node failed to run the job: ' + ((r && r.error) || 'unknown error');
-}
-
-// Write the SSE response preamble both gateways share. `X-Accel-Buffering: no` is
+// Write the gateway's SSE response preamble. `X-Accel-Buffering: no` is
 // load-bearing: without it Railway/nginx buffer the whole "stream" and deliver it
 // in one burst at the end (and a long silent buffer can trip the platform's
 // no-bytes-flowing cutoff the gateway timeouts are sized around).
@@ -138,10 +130,9 @@ const MAX_IMAGE_CHARS = 4 * 1024 * 1024;   // ~4 MB of base64 per image
 // The request-body ceiling for a gateway route, covering the image budget above
 // plus the text and JSON overhead around it.
 //
-// This is applied per route rather than globally: the anonymous web-chat
-// endpoint keeps express.json()'s small default, because raising the body limit
-// on an unauthenticated route is a cost with no matching benefit — the chat page
-// sends no images.
+// This is applied per route rather than globally: every other route keeps
+// express.json()'s small default, because raising the body limit on a route
+// that takes no images is a cost with no matching benefit.
 const MAX_BODY_BYTES = MAX_IMAGES * MAX_IMAGE_CHARS + 4 * 1024 * 1024;
 
 // One OpenAI content part, normalised, or null if it isn't one we pass on.
@@ -175,7 +166,7 @@ function normalisePart(part) {
 // unexpected roles are mapped onto 'user'.
 //
 // This lives here for the same reason the SSE preamble does: only the web-chat
-// gateway ever clamped its input. The /v1 gateway passed the caller's messages
+// gateway (since removed) ever clamped its input. The /v1 gateway passed the caller's messages
 // straight through, so a single API key could hand a node an unbounded prompt.
 //
 // The budget is spent NEWEST-FIRST: we walk from the last message backward and
@@ -188,8 +179,7 @@ function normalisePart(part) {
 // model to "answer" stale context with a 200 and no error. That was fixed once,
 // in the web-chat gateway's own private copy of this function, and the two
 // copies then disagreed for as long as both existed: /v1 kept answering the
-// wrong turn. This is the surviving copy, and both gateways now use it — which
-// is the whole point of this module.
+// wrong turn. This is the surviving copy.
 function clampMessages(messages, maxChars) {
   const allowed = new Set(['system', 'user', 'assistant']);
   const out = [];
@@ -260,7 +250,6 @@ module.exports = {
   errorBody,
   joinContent,
   lastUserText,
-  nodeFailMessage,
   writeSsePreamble,
   pollJobResult,
   clampMessages,

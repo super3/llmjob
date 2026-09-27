@@ -5,7 +5,7 @@ const dotenv = require('dotenv');
 const { createPool } = require('./db');
 const { corsOrigin } = require('./corsOptions');
 const routes = require('./routes');
-const { initBodyParsers, initJobRoutes, initOpenAiRoutes, initChatRoutes } = require('./routes');
+const { initBodyParsers, initJobRoutes, initOpenAiRoutes, initUsageRoutes } = require('./routes');
 const NodeService = require('./services/nodeService');
 const JobService = require('./services/jobService');
 const BenchmarkService = require('./services/benchmarkService');
@@ -16,8 +16,8 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Middleware. CORS is restricted to our own origins (llmjob.com + the Railway
-// app + previews); other websites can't call the API — including the free chat
-// proxy — from a browser. Non-browser callers send no Origin and are unaffected.
+// app + previews); other websites can't call the API from a browser. Non-browser
+// callers send no Origin and are unaffected.
 app.use(cors({ origin: corsOrigin }));
 // JSON bodies. Not a bare express.json(): the OpenAI gateway needs a larger
 // ceiling to accept an image request, and the order the parsers are registered
@@ -44,9 +44,9 @@ app.use('/api', routes);
 // req.app.locals.db per request, so it's safe to register before the DB connects.
 initOpenAiRoutes(app);
 
-// Free public web-chat gateway (POST /api/chat/completions), proxied to
-// OpenRouter. Also uses req.app.locals.db per request, so it's safe here too.
-initChatRoutes(app);
+// The network page's "tokens served" figure (GET /api/chat/usage). Also uses
+// req.app.locals.db per request, so it's safe here too.
+initUsageRoutes(app);
 
 // Health check endpoint
 app.get('/health', (req, res) => {

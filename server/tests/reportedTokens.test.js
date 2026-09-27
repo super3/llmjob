@@ -1,54 +1,14 @@
-// Token counts that arrive from an untrusted party.
-//
-// Two paths reported their own numbers and were believed verbatim:
-//   • a node's metrics.totalTokens, which chatController folds into the GLOBAL
-//     free-chat budget — and node enrollment is open to the internet, so one
-//     inflated report could push the running total past the cap and 402 the
-//     public chat permanently;
-//   • POST /api/usage, where the key holder states its own billing figures,
-//     which are then summed into the public "tokens served" counter.
+// Token counts that arrive from an untrusted party: POST /api/usage, where the
+// key holder states its own billing figures, which are then summed into the
+// public "tokens served" counter and were once believed verbatim.
 const request = require('supertest');
 const express = require('express');
 const { createTestDb } = require('./helpers/pgmem');
-const ChatController = require('../src/controllers/chatController');
 const ApiKeyService = require('../src/services/apiKeyService');
 const routes = require('../src/routes');
-const { boundedTokens } = ChatController;
 const {
   countField, numField, logLimit, MAX_REPORTED_TOKENS, MAX_LOG_LIMIT,
 } = require('../src/controllers/logController');
-
-describe('node-reported completion tokens (boundedTokens)', () => {
-  it('trusts a plausible report over the character estimate', () => {
-    // 40 chars ≈ 10 estimated tokens; a report of 12 is believable and kept.
-    expect(boundedTokens(12, 'x'.repeat(40))).toBe(12);
-  });
-
-  it('clamps an absurd report to a ceiling proportional to the delivered text', () => {
-    const text = 'x'.repeat(40); // est 10 → ceiling max(10*8, 1000) = 1000
-    expect(boundedTokens(1e15, text)).toBe(1000);
-  });
-
-  it('scales the ceiling with a genuinely long answer', () => {
-    const text = 'x'.repeat(40000); // est 10000 → ceiling 80000
-    expect(boundedTokens(1e15, text)).toBe(80000);
-    expect(boundedTokens(50000, text)).toBe(50000);
-  });
-
-  it('falls back to the estimate for a missing, negative or non-finite report', () => {
-    const text = 'x'.repeat(40); // est 10
-    expect(boundedTokens(undefined, text)).toBe(10);
-    expect(boundedTokens(null, text)).toBe(10);
-    expect(boundedTokens(NaN, text)).toBe(10);
-    expect(boundedTokens(Infinity, text)).toBe(10);
-    expect(boundedTokens(-5, text)).toBe(10);
-  });
-
-  it('gives a thinking model room for reasoning tokens it never delivered', () => {
-    // Empty content but real work done — the estimate alone would say 0.
-    expect(boundedTokens(900, '')).toBe(900);
-  });
-});
 
 describe('self-reported usage fields (POST /api/usage)', () => {
   describe('countField', () => {

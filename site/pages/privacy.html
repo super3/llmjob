@@ -19,7 +19,7 @@
   <div class="legal-head">
     <div class="eb">Legal</div>
     <h1>Privacy Policy</h1>
-    <p class="updated">Last updated 13 August 2026</p>
+    <p class="updated">Last updated 27 September 2026</p>
   </div>
 
 
@@ -48,7 +48,7 @@
     <h2>The short version</h2>
     <ul>
       <li>We <b>never</b> use your prompts or outputs to train models, and we never sell data.</li>
-      <li>The free chat and the hosted models record <b>no prompt or reply text at all</b> — only
+      <li>The hosted models record <b>no prompt or reply text at all</b> — only
         token counts and speed, with nothing attached that identifies you.</li>
       <li>Requests served by the <b>node network</b> are different: the prompt and the reply are
         stored for up to <b>24 hours</b> so a node can pick the job up and you can read the answer
@@ -135,7 +135,7 @@
         </thead>
         <tbody>
           <tr>
-            <td>Hosted models<br><span class="m">the free chat's default</span></td>
+            <td>Hosted models<br><span class="m">when an API request names one</span></td>
             <td><b>No.</b> We record only token counts, speed and latency — there is no field
               anywhere in our database that could hold the text, and nothing ties those numbers to
               you.</td>
@@ -143,8 +143,7 @@
               and applies its own policy.</td>
           </tr>
           <tr>
-            <td>The node network<br><span class="m">the API's default, and the chat's network
-              model</span></td>
+            <td>The node network<br><span class="m">the API's default</span></td>
             <td><b>Yes, temporarily.</b> The prompt, the full conversation and the generated reply
               are held while the job runs and are deleted within 24 hours of it finishing.</td>
             <td>The operator of the node that serves it, whose machine runs the model locally on
@@ -160,8 +159,7 @@
       finished or failed for 24 hours.</p>
 
     <p>Nobody can read back a conversation that isn't theirs. A job is only readable by the account
-      that submitted it, and free-chat jobs have no account attached, so they are not readable over
-      the API by anyone at all.</p>
+      that submitted it.</p>
 
     <div class="note">
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg>
@@ -184,9 +182,9 @@
         identify, in a country you did not choose. Their machine processes your prompt in order to
         answer it.</li>
     </ul>
-    <p>The free chat is public by nature. Treat both public routes as you would any public service:
-      don't send secrets, credentials, or other people's personal data through them. If the content
-      matters, use a private key and your own nodes.</p>
+    <p>Treat a public key as you would any public service: don't send secrets, credentials, or
+      other people's personal data through it. If the content matters, use a private key and your
+      own nodes.</p>
   </section>
 
   <section id="public">
@@ -260,7 +258,7 @@
           <tr><td>Prompts and replies (node network)</td><td>Until 24 hours after the job finishes, then deleted automatically</td></tr>
           <tr><td>Prompts and replies (hosted models)</td><td>Never stored</td></tr>
           <tr><td>Your request logs</td><td>The most recent 200 requests per account</td></tr>
-          <tr><td>Anonymous chat performance rows</td><td>The most recent 200 across the whole service</td></tr>
+          <tr><td>Anonymous hosted-model performance rows</td><td>The most recent 200 across the whole service</td></tr>
           <tr><td>Aggregate token totals</td><td>Indefinitely — sums only, not linked to anyone</td></tr>
           <tr><td>API keys</td><td>Until you revoke them</td></tr>
           <tr><td>Miner rows</td><td>Removed after about 90 minutes without a report</td></tr>
@@ -293,7 +291,6 @@
       <li>Make a node private, or disconnect it.</li>
       <li>Change the worker name in the app before you start, so your hostname isn't published.</li>
       <li>Stop mining to stop reporting to the public board; the row ages off by itself.</li>
-      <li>Use the free chat without an account at all.</li>
     </ul>
     <p>Depending on where you live you may also have rights to access, correct, export, restrict or
       delete personal data, and to object to processing or complain to a regulator. Ask us at
