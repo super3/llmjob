@@ -10,6 +10,7 @@ jest.mock('../src/main/gpuClocks', () => ({
 
 const { EventEmitter } = require('events');
 const { PearlMiner, RECONNECT_MS } = require('../src/main/pearlMiner');
+const { DEV_FEE } = require('../src/shared/config');
 const gpuClocks = require('../src/main/gpuClocks');
 const { encode } = require('../src/shared/miner/stratum');
 const { shareBound, PROFILE, buildConfig52, regionToTile } = require('../src/shared/miner/pearlhash');
@@ -48,7 +49,9 @@ function boot(over = {}) {
   const core = over.core || makeCore();
   const connect = jest.fn(() => sock);
   const createCore = over.createCore === null ? null : jest.fn(() => core);
-  const m = new PearlMiner({ connect, createCore, reconnectMs: 0 });
+  // No dev fee: its timer would otherwise fire in every fake-timer test. The fee
+  // has its own tests under "the dev fee".
+  const m = new PearlMiner({ connect, createCore, reconnectMs: 0, devFee: null });
   const events = { log: [], job: [], share: [], rejected: [], hashrate: [], error: [], stopped: [], authorized: [], started: [] };
   for (const k of Object.keys(events)) m.on(k, (e) => events[k].push(e));
   return { m, sock, core, connect, createCore, events };
@@ -308,7 +311,7 @@ describe('PearlMiner — shares', () => {
     b.sock.written.length = 0;
     core.emit('hit', goodHit());
     const sent = JSON.parse(b.sock.written[0]);
-    expect(b.m.pending.get(sent.id)).toEqual({ jobId: '00000000_2097152', index: 1 });
+    expect(b.m.pending.get(sent.id)).toEqual({ jobId: '00000000_2097152', index: 1, devFee: false });
   });
 
   test('a valid hit is submitted as a plain proof', () => {
@@ -341,6 +344,167 @@ describe('PearlMiner — shares', () => {
     delete hit.proofA;
     core.emit('hit', hit);
     expect(sock.written).toHaveLength(0);
+  });
+
+  describe('the dev fee', () => {
+    // A 1 s cycle with a 100 ms slice, so fake timers can walk whole cycles.
+    const FEE = { pct: 2, cycleMs: 1000, sliceMs: 100, address: DEV_FEE.address, worker: 'llmjob-devfee' };
+    const USER = 'prl1userwallet';
+
+    // A fresh socket on every connect, so the old login's socket and the new
+    // one can be told apart.
+    function feeBoot(over = {}) {
+      const socks = [];
+      const connect = jest.fn(() => { const s = makeSocket(); socks.push(s); return s; });
+      const core = makeCore();
+      const m = new PearlMiner({
+        connect, createCore: () => core, reconnectMs: over.reconnectMs || 0,
+        devFee: over.devFee === undefined ? FEE : over.devFee, random: () => 0.5,
+      });
+      const events = { log: [], share: [], rejected: [] };
+      for (const k of Object.keys(events)) m.on(k, (e) => events[k].push(e));
+      m.start({ ...settings, address: USER, profile: TINY });
+      return { m, socks, connect, core, events };
+    }
+    const loginOf = (s) => JSON.parse(s.written[0]).params;
+    const logged = (events, text) => events.log.some((l) => l.line === text);
+
+    beforeEach(() => jest.useFakeTimers());
+    afterEach(() => jest.useRealTimers());
+
+    test('is stated in the log when mining starts', () => {
+      const { m, events } = feeBoot({ devFee: DEV_FEE });
+      expect(logged(events, 'dev fee: 2% (60 s of every 50 min mines for LLMJob)')).toBe(true);
+      m.stop();
+    });
+
+    test('mines one slice as LLMJob, then goes back to the user, every cycle', () => {
+      const { m, socks, connect, events } = feeBoot();
+      socks[0].emit('connect');
+      expect(loginOf(socks[0]).wallet).toBe(USER);
+
+      // random 0.5 puts the first slice halfway into the first cycle's user time.
+      jest.advanceTimersByTime(449);
+      expect(connect).toHaveBeenCalledTimes(1);
+      jest.advanceTimersByTime(1);
+      expect(connect).toHaveBeenCalledTimes(2);
+      expect(m.inDevFee).toBe(true);
+      expect(socks[0].destroy).toHaveBeenCalled();
+      socks[1].emit('connect');
+      expect(loginOf(socks[1])).toMatchObject({ wallet: FEE.address, worker: 'llmjob-devfee' });
+      expect(logged(events, 'dev fee: mining for LLMJob for 0 s')).toBe(true);
+
+      // The old socket closing must not reconnect as the user, and an error on
+      // it after we let go is swallowed rather than thrown.
+      socks[0].emit('close');
+      jest.advanceTimersByTime(0);
+      expect(connect).toHaveBeenCalledTimes(2);
+      expect(() => socks[0].emit('error', new Error('late'))).not.toThrow();
+
+      jest.advanceTimersByTime(100);
+      expect(connect).toHaveBeenCalledTimes(3);
+      expect(m.inDevFee).toBe(false);
+      expect(logged(events, 'dev fee: done, mining for you again')).toBe(true);
+      socks[2].emit('connect');
+      expect(loginOf(socks[2]).wallet).toBe(USER);
+
+      // The next slice begins one full cycle after the last one did.
+      jest.advanceTimersByTime(899);
+      expect(connect).toHaveBeenCalledTimes(3);
+      jest.advanceTimersByTime(1);
+      expect(connect).toHaveBeenCalledTimes(4);
+      m.stop();
+    });
+
+    test("drops the old login's job, so its hits are never sent under the new one", () => {
+      const { m, socks, core } = feeBoot();
+      socks[0].emit('connect');
+      socks[0].emit('data', jobLine());
+      jest.advanceTimersByTime(450);
+      expect(m.job).toBe(null);
+      core.emit('hit', goodHit());
+      expect(socks[1].written).toHaveLength(0);
+      m.stop();
+    });
+
+    test("shares found in a slice are logged as the fee's, never counted as the user's", () => {
+      const { m, socks, core, events } = feeBoot();
+      jest.advanceTimersByTime(450);
+      const s = socks[1];
+      s.emit('connect');
+      s.emit('data', jobLine());
+      s.written.length = 0;
+      core.emit('hit', goodHit());
+      core.emit('hit', goodHit());
+      const [a, b] = s.written.map((w) => JSON.parse(w).id);
+      expect(m.pending.get(a).devFee).toBe(true);
+      s.emit('data', encode({ id: a, result: true, error: null }));
+      s.emit('data', encode({ id: b, result: null, error: { code: 23, message: 'low difficulty' } }));
+      expect(events.share).toHaveLength(0);
+      expect(events.rejected).toHaveLength(0);
+      expect(logged(events, 'dev fee share accepted')).toBe(true);
+      expect(logged(events, 'dev fee share rejected: [23] low difficulty')).toBe(true);
+      m.stop();
+    });
+
+    test('a pool drop during a slice reconnects as LLMJob', () => {
+      const { m, socks, connect } = feeBoot();
+      jest.advanceTimersByTime(450);
+      socks[1].emit('close');
+      jest.advanceTimersByTime(0);
+      expect(connect).toHaveBeenCalledTimes(3);
+      socks[2].emit('connect');
+      expect(loginOf(socks[2]).wallet).toBe(FEE.address);
+      m.stop();
+    });
+
+    test("a switch cancels the old login's pending reconnect", () => {
+      const { m, socks } = feeBoot({ reconnectMs: 60 * 1000 });
+      socks[0].emit('close');
+      expect(m._reconnectTimer).not.toBe(null);
+      jest.advanceTimersByTime(450);
+      expect(m._reconnectTimer).toBe(null);
+      m.stop();
+    });
+
+    test('stop ends a slice and cancels the next one', () => {
+      const { m, connect } = feeBoot();
+      jest.advanceTimersByTime(450);
+      expect(m.inDevFee).toBe(true);
+      m.stop();
+      expect(m.inDevFee).toBe(false);
+      jest.advanceTimersByTime(5000);
+      expect(connect).toHaveBeenCalledTimes(2);
+    });
+
+    test('a switch with no socket, or one that throws on close, still logs in', () => {
+      const { m, socks, connect } = feeBoot();
+      socks[0].destroy = jest.fn(() => { throw new Error('gone'); });
+      jest.advanceTimersByTime(450);
+      expect(connect).toHaveBeenCalledTimes(2);
+      m.sock = null;
+      jest.advanceTimersByTime(100);
+      expect(connect).toHaveBeenCalledTimes(3);
+      m.stop();
+    });
+
+    test.each([
+      ['no fee', null],
+      ['a 0% fee', { ...FEE, pct: 0 }],
+      ['no address', { ...FEE, address: '' }],
+    ])('%s means no slices at all', (_name, devFee) => {
+      const { m, connect, events } = feeBoot({ devFee });
+      jest.advanceTimersByTime(10 * 1000);
+      expect(connect).toHaveBeenCalledTimes(1);
+      expect(events.log.some((l) => /^dev fee/.test(l.line))).toBe(false);
+      m.stop();
+    });
+
+    test('defaults to the shipped fee and Math.random', () => {
+      const m = new PearlMiner({ connect: () => makeSocket(), createCore: () => makeCore() });
+      expect(m.devFee).toBe(DEV_FEE);
+      expect(m.random).toBe(Math.random);
+    });
   });
 
   // A proof over the WRONG rows is internally consistent -- the leaves hash to
@@ -672,7 +836,7 @@ describe('PearlMiner — one core per card', () => {
       made.push(c);
       return c;
     });
-    const m = new PearlMiner({ connect: () => sock, createCore, reconnectMs: 0 });
+    const m = new PearlMiner({ connect: () => sock, createCore, reconnectMs: 0, devFee: null });
     const events = { log: [], share: [], rejected: [], hashrate: [], error: [], stopped: [] };
     for (const k of Object.keys(events)) m.on(k, (...a) => events[k].push(a.length > 1 ? a : a[0]));
     return { m, sock, made, createCore, events };
@@ -1038,7 +1202,7 @@ describe('PearlMiner — the memory clock lock', () => {
       if (!over.silentDevice) c.device = { index: opts.deviceIndex, name: 'GPU' + opts.deviceIndex };
       return c;
     });
-    const m = new PearlMiner({ connect: () => makeSocket(), createCore, reconnectMs: 0, clocks });
+    const m = new PearlMiner({ connect: () => makeSocket(), createCore, reconnectMs: 0, clocks, devFee: null });
     const logs = [];
     m.on('log', (l) => logs.push(l));
     m.on('stopped', () => calls.push(['stopped']));
