@@ -37,9 +37,7 @@ const { DEV_FEE } = require('../shared/config');
 // The dev fee is 2%, taken by time: for one slice of every cycle (60 s of every
 // 50 min, see config DEV_FEE) the miner logs in to the pool as LLMJob's address
 // and mines for it, then logs back in as the user. The GPU never stops; only
-// the pool login changes. Shares found in a slice are the pool's to credit to
-// LLMJob, so they are logged as dev-fee shares and never emitted as the user's
-// 'share' or 'rejected' events.
+// the pool login changes.
 
 const RECONNECT_MS = 5000;
 
@@ -420,10 +418,6 @@ class PearlMiner extends EventEmitter {
       case 'submit-accepted': {
         const p = this.pending.get(m.id);
         this.pending.delete(m.id);
-        if (p && p.devFee) {
-          this.emit('log', { level: 'info', line: 'dev fee share accepted' });
-          break;
-        }
         // `index` is the card that found it, so a multi-card rig credits the
         // right one. Card 0 when the submit is unknown to us, which is the same
         // bucket a single-card rig has always used.
@@ -434,10 +428,6 @@ class PearlMiner extends EventEmitter {
       case 'submit-rejected': {
         const p = this.pending.get(m.id);
         this.pending.delete(m.id);
-        if (p && p.devFee) {
-          this.emit('log', { level: 'error', line: 'dev fee share rejected: ' + errText(m.error) });
-          break;
-        }
         this.emit('rejected', {
           jobId: p ? p.jobId : null, reason: errText(m.error), index: p ? p.index : 0,
         });
@@ -587,7 +577,7 @@ class PearlMiner extends EventEmitter {
       return;
     }
     const id = this.submitId++;
-    this.pending.set(id, { jobId: job.jobId, index: device ? device.index : 0, devFee: this.inDevFee });
+    this.pending.set(id, { jobId: job.jobId, index: device ? device.index : 0 });
     this.sock.write(encode(buildSubmit(id, {
       jobId: job.jobId, plainProof, hashrate: (this.hashrate || 0) * 1e12,
     })));

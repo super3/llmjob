@@ -431,7 +431,7 @@
         <div class="res-row"><span class="l">PRL price</span><span class="v" id="r-price">—</span></div>
         <div class="res-row"><span class="l">Network hashrate</span><span class="v" id="r-net">—</span></div>
       </div>
-      <p class="disclaimer"><span id="r-live">Loading live network data…</span> Estimated from the network hashrate and the current block reward. The pool takes no fee; our 2% dev fee is already taken off. Mining is probabilistic — real payouts vary with luck and network growth.</p>
+      <p class="disclaimer"><span id="r-live">Loading live network data…</span> Estimated from the network hashrate and the current block reward. The pool takes no fee. Mining is probabilistic — real payouts vary with luck and network growth.</p>
     </div>
   </div>
   <div class="percard">
@@ -675,7 +675,7 @@
     let PRICE = 0.30;               // PRL/USD (snapshot)
     let NET_TH = 60.6e6;            // network hashrate in TH/s, ~60.6 EH/s (snapshot)
     let DAILY_NET_PRL = 1.62e6;     // ~2,489 PRL/block × ~650 blocks/day (snapshot)
-    const FEE = 0.98;               // HeroMiners charges no pool fee; our miner takes a 2% dev fee
+    const FEE = 1;                  // HeroMiners charges no pool fee
     let live = { price: false, net: false, reward: false };
 
     const state = { hashrate: 354, cards: 1, selected: 'RTX 5090' };

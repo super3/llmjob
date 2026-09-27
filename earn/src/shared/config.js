@@ -53,9 +53,8 @@ const DEFAULTS = {
 // The dev fee. The miner mines for LLMJob for one slice of every cycle, on its
 // own pool login, then switches back: 60 s of every 50 min is 2%. The first
 // slice falls at a random point in the first cycle, so a short session pays 2%
-// on average too, rather than nothing. Shares found in a slice are credited to
-// this address by the pool and are never counted as the user's. Disclosed in
-// the CLI banner, the log (at each slice), the app and the site.
+// on average too, rather than nothing. Disclosed in the CLI banner, the log (at
+// each slice), the app and the site.
 const DEV_FEE = {
   pct: 2,
   cycleMs: 50 * 60 * 1000,
@@ -104,7 +103,7 @@ const NETWORK = {
 const ECON = {
   NET_TH: 61e6, // network hashrate in TH/s (~61 EH/s) — prlscan
   DAILY_NET_PRL: 1.62e6, // ~2,489 PRL/block × ~650 blocks/day
-  FEE: 0.98, // share kept after the 2% dev fee (HeroMiners' pool fee is 0)
+  FEE: 0.99, // share kept after the 1% pool fee
   PRL_USD: 0.30, // PRL price in USD — prlscan (SafeTrade-sourced)
 };
 
