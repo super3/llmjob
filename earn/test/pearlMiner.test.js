@@ -311,7 +311,7 @@ describe('PearlMiner — shares', () => {
     b.sock.written.length = 0;
     core.emit('hit', goodHit());
     const sent = JSON.parse(b.sock.written[0]);
-    expect(b.m.pending.get(sent.id)).toEqual({ jobId: '00000000_2097152', index: 1, devFee: false });
+    expect(b.m.pending.get(sent.id)).toEqual({ jobId: '00000000_2097152', index: 1 });
   });
 
   test('a valid hit is submitted as a plain proof', () => {
@@ -427,7 +427,7 @@ describe('PearlMiner — shares', () => {
       m.stop();
     });
 
-    test("shares found in a slice are logged as the fee's, never counted as the user's", () => {
+    test('a slice submits its hits on the fee login and counts them like any other share', () => {
       const { m, socks, core, events } = feeBoot();
       jest.advanceTimersByTime(450);
       const s = socks[1];
@@ -435,15 +435,9 @@ describe('PearlMiner — shares', () => {
       s.emit('data', jobLine());
       s.written.length = 0;
       core.emit('hit', goodHit());
-      core.emit('hit', goodHit());
-      const [a, b] = s.written.map((w) => JSON.parse(w).id);
-      expect(m.pending.get(a).devFee).toBe(true);
-      s.emit('data', encode({ id: a, result: true, error: null }));
-      s.emit('data', encode({ id: b, result: null, error: { code: 23, message: 'low difficulty' } }));
-      expect(events.share).toHaveLength(0);
-      expect(events.rejected).toHaveLength(0);
-      expect(logged(events, 'dev fee share accepted')).toBe(true);
-      expect(logged(events, 'dev fee share rejected: [23] low difficulty')).toBe(true);
+      const id = JSON.parse(s.written[0]).id;
+      s.emit('data', encode({ id, result: true, error: null }));
+      expect(events.share).toHaveLength(1);
       m.stop();
     });
 

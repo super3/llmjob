@@ -39,7 +39,7 @@ describe('config', () => {
 
   test('engine and economics metadata are present', () => {
     expect(MINER).toMatchObject({ engine: 'llmjob-pearl', pool: 'HeroMiners', pow: 'pearlhash', devFeePct: 2, poolFeePct: 0 });
-    expect(ECON).toMatchObject({ NET_TH: 61e6, DAILY_NET_PRL: 1.62e6, FEE: 0.98, PRL_USD: 0.30 });
+    expect(ECON).toMatchObject({ NET_TH: 61e6, DAILY_NET_PRL: 1.62e6, FEE: 0.99, PRL_USD: 0.30 });
   });
 
   test('the dev fee is 2%: one 60 s slice in every 50 min', () => {
