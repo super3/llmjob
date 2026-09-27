@@ -1,9 +1,10 @@
 // node verify-hits.js <pearl_core.node> [seconds=40] [targetBits=232]
-// End-to-end correctness gate, independent of the pool: every hit the core
-// reports is recomputed from scratch in JS the way the pool's verifier would --
-// Merkle proofs, seed chain, noise, the cumulative fold, the transcript hash --
-// and must match the device's jackpot hash exactly. The target is set easy
-// enough to hit about once a batch so the run crosses many operand redraws.
+// End-to-end correctness gate, independent of the pool: the first 400 hits the
+// core reports are recomputed from scratch in JS the way the pool's verifier
+// would -- Merkle proofs, seed chain, noise, the cumulative fold, the transcript
+// hash -- and must match the device's jackpot hash exactly. Later hits are only
+// counted, so a longer run checks no more. The target is set easy enough to hit
+// about once a batch so the run crosses many operand redraws.
 'use strict';
 const path = require('path');
 const R = path.join(__dirname, '..', '..', 'src', 'shared', 'miner') + path.sep;

@@ -749,11 +749,12 @@ out of the fold.
   job at the hardest target, the core's hashrate samples averaged after a warm-up, with
   clock and power sampled alongside.
 - `node verify-hits.js <pearl_core.node> 40` -- the correctness gate. It sets an easy
-  target so the core hits about once a batch, then recomputes **every** hit in JS the way
-  the pool verifies it: Merkle proofs, the seed chain, the noise, the cumulative fold and
-  the transcript hash. The run crosses hundreds of operand redraws. The shipped core
+  target so the core hits about once a batch, then recomputes the first 400 hits in JS the
+  way the pool verifies it: Merkle proofs, the seed chain, the noise, the cumulative fold
+  and the transcript hash. The run crosses hundreds of operand redraws. The shipped core
   passes 400/400; a build with the barrier deleted fails 349 of 353. A faster build that
-  does not pass is not faster, it is broken.
+  does not pass is not faster, it is broken. A longer run counts more hits but checks no
+  more of them, so it cannot catch an error rarer than about one hit in a few hundred.
 - `bench.exe <secs>` (built from `bench.cu`) -- fold plus finalize, no redraws. It benches
   the mainnet fill, now the constant one; `PEARL_OPERAND_FILL_CODE=0` benches the hashed
   fill from the same binary.
