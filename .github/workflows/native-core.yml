@@ -35,19 +35,91 @@ on:
 
 jobs:
   build:
-    name: ${{ matrix.os }}
+    # Two builds per OS. The first two entries are the core every rig has run
+    # (CUDA 12.8.1, sm_86/89/120); their job names ("ubuntu-latest",
+    # "windows-2022") and artifact names (pearl-core-<os>) are unchanged, and
+    # miner-build.yml still downloads them by those names.
+    #
+    # The "-cu13" entries build the same source with a CUDA 13 toolkit for
+    # sm_120 ONLY, shipped as pearl_core_cu13.node. ptxas 13 compiles the
+    # Blackwell fold far better than 12.8 does -- statically 2.67-3.0
+    # instructions per IMMA with 160/192 B operands reused, against 3.891 with
+    # 0/192 -- and on an RTX 5090 at 600 W the same v0.5.7 source ran 107.27
+    # TH/s built with 13.3 against 103.97 with 12.8.1 (+3.2%). It is sm_120
+    # only so the 3090/4090 code paths never change, and a separate file
+    # because a CUDA 13 runtime needs driver 580+: the app loads it only on an
+    # all-Blackwell rig with a new enough driver (src/shared/coreVariant.js).
+    name: ${{ matrix.os }}${{ matrix.variant }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-2022]
+        include:
+          - os: ubuntu-latest
+            variant: ''
+            file: pearl_core.node
+            # 12.8 is the first toolkit that knows sm_120 (Blackwell), and needs
+            # action v0.2.36+ — older tags carry a version table that predates it
+            # and answer "Version not available".
+            cuda: '12.8.1'
+            release: '12.8'
+            subpackages: '["nvcc", "cudart", "cudart-dev", "nvrtc", "nvrtc-dev"]'
+            gencode: >-
+              -gencode arch=compute_86,code=sm_86
+              -gencode arch=compute_89,code=sm_89
+              -gencode arch=compute_120,code=sm_120
+          - os: windows-2022
+            variant: ''
+            file: pearl_core.node
+            cuda: '12.8.1'
+            release: '12.8'
+            subpackages: '["nvcc", "cudart", "nvrtc"]'
+            gencode: >-
+              -gencode arch=compute_86,code=sm_86
+              -gencode arch=compute_89,code=sm_89
+              -gencode arch=compute_120,code=sm_120
+          # 13.3.1 is the newest toolkit Jimver/cuda-toolkit v0.2.36 (the
+          # version already pinned here) lists, on Linux and Windows alike, and
+          # it is the toolkit the 5090 rig builds with (nvcc V13.3.73) -- so the
+          # measured 107.27 TH/s is this compiler's code. On Linux the action
+          # installs from NVIDIA's apt repo, which resolves cuda-nvcc-13-3 to
+          # 13.3.73, the same nvcc.
+          - os: ubuntu-latest
+            variant: '-cu13'
+            file: pearl_core_cu13.node
+            cuda: '13.3.1'
+            release: '13.3'
+            # The same list as 12.8: apt pulls nvcc's split-out pieces (crt,
+            # nvvm, nvptxcompiler) in as dependencies of cuda-nvcc-13-3.
+            subpackages: '["nvcc", "cudart", "cudart-dev", "nvrtc", "nvrtc-dev"]'
+            gencode: -gencode arch=compute_120,code=sm_120
+          - os: windows-2022
+            variant: '-cu13'
+            file: pearl_core_cu13.node
+            cuda: '13.3.1'
+            release: '13.3'
+            # CUDA 13 on Windows split crt, nvvm and nvptxcompiler out of the
+            # nvcc component (they are separate entries in 13.3.1's installer
+            # list and absent from 12.8.1's), and the Windows installer is given
+            # exactly the list it installs. Named explicitly so nvcc has its
+            # headers and its back end.
+            subpackages: '["nvcc", "crt", "nvvm", "nvptxcompiler", "cudart", "nvrtc"]'
+            gencode: -gencode arch=compute_120,code=sm_120
     # Pinned to windows-2022. windows-latest now points at Server 2025, where
     # the CUDA installer dies with exit 0xE0E1E1D9 before reaching any of our
     # source. The Windows artifact is the one that MATTERS most here: it is the
     # build that can actually be run, on the RTX 4090 in the dev box, which is
     # the only GPU anywhere in this pipeline. Non-blocking only until the
     # install is proven.
-    continue-on-error: ${{ matrix.os == 'windows-2022' }}
+    #
+    # The CUDA 13 builds are non-blocking too, and that one is deliberate, not
+    # provisional. miner-build.yml takes its cores from the newest SUCCESSFUL
+    # run of this workflow. If a CUDA 13 failure failed the run, the installers
+    # would silently ship the previous run's 12.8 core -- the core every rig
+    # needs, gone stale for the sake of a 3% extra on one card. Non-blocking,
+    # the run still succeeds, the 12.8 core is current, and miner-build warns
+    # that the CUDA 13 one is missing.
+    continue-on-error: ${{ matrix.os == 'windows-2022' || matrix.variant != '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -65,25 +137,13 @@ jobs:
       # nvrtc-dev_12.8`. Those hyphenated `-dev` components are LINUX naming;
       # Windows ships headers inside `cudart` and has no `-dev` split, so the
       # installer rejects the argument list and exits non-zero before installing
-      # anything. Hence two steps rather than one shared list.
-      - name: Install the CUDA toolkit (Windows)
-        if: runner.os == 'Windows'
+      # anything. Hence a list per matrix entry rather than one shared list.
+      - name: Install the CUDA toolkit
         uses: Jimver/cuda-toolkit@v0.2.36
         with:
-          # 12.8 is the first toolkit that knows sm_120 (Blackwell), and needs
-          # action v0.2.36+ — older tags carry a version table that predates it
-          # and answer "Version not available".
-          cuda: '12.8.1'
+          cuda: ${{ matrix.cuda }}
           method: 'network'
-          sub-packages: '["nvcc", "cudart", "nvrtc"]'
-
-      - name: Install the CUDA toolkit (Linux)
-        if: runner.os == 'Linux'
-        uses: Jimver/cuda-toolkit@v0.2.36
-        with:
-          cuda: '12.8.1'
-          method: 'network'
-          sub-packages: '["nvcc", "cudart", "cudart-dev", "nvrtc", "nvrtc-dev"]'
+          sub-packages: ${{ matrix.subpackages }}
 
       # nvcc on Windows does not compile anything itself — it drives MSVC's
       # cl.exe as the host compiler and fails with "Cannot find compiler
@@ -95,17 +155,31 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
 
+      # And check it is the toolkit this entry asked for. The CUDA 13 core is
+      # worth shipping only because of what ptxas 13 does to the sm_120 fold; a
+      # 12.x nvcc that happened to be on PATH would build a "cu13" core that is
+      # just the 12.8 one again, and nothing downstream could tell.
       - name: Report the toolchain
+        shell: bash
         run: |
-          nvcc --version
+          # Captured, not piped into grep -q: under Actions' `bash -eo pipefail`
+          # a grep that exits on its first match can SIGPIPE nvcc and fail the
+          # step ON a match -- and this check runs in the blocking 12.8 job too.
+          v=$(nvcc --version)
+          echo "$v"
           node --version
+          case "$v" in
+            *"release ${{ matrix.release }},"*) ;;
+            *) echo "::error::expected CUDA ${{ matrix.release }}, got the nvcc above"; exit 1 ;;
+          esac
 
       - name: Install node-addon-api
         working-directory: earn/native
         run: npm install --no-save node-addon-api node-gyp
 
       # Compile the CUDA half into a static library. sm_86/89/120 covers Ampere,
-      # Ada and Blackwell — the cards the app actually targets.
+      # Ada and Blackwell — the cards the app actually targets. The CUDA 13
+      # entries pass sm_120 alone; every other flag is the same.
       - name: Compile the CUDA kernels
         working-directory: earn/native
         shell: bash
@@ -117,14 +191,10 @@ jobs:
           # shared object". MSVC has no equivalent flag and needs none.
           if [ "$RUNNER_OS" = "Linux" ]; then FPIC="-Xcompiler -fPIC"; else FPIC=""; fi
           nvcc -O3 -std=c++17 -cudart static $FPIC \
-            -gencode arch=compute_86,code=sm_86 \
-            -gencode arch=compute_89,code=sm_89 \
-            -gencode arch=compute_120,code=sm_120 \
+            ${{ matrix.gencode }} \
             -c src/pearl_kernel.cu -o cuda-build/pearl_kernel.o
           nvcc -O3 -std=c++17 -cudart static $FPIC \
-            -gencode arch=compute_86,code=sm_86 \
-            -gencode arch=compute_89,code=sm_89 \
-            -gencode arch=compute_120,code=sm_120 \
+            ${{ matrix.gencode }} \
             -c src/pearl_host.cu -o cuda-build/pearl_host.o
 
       # Deliberately NOT build/: the next step runs `node-gyp rebuild`, whose
@@ -147,15 +217,22 @@ jobs:
         working-directory: earn/native
         run: npx node-gyp rebuild
 
+      # node-gyp names the addon after its target, pearl_core, whichever toolkit
+      # built it. The CUDA 13 one ships under its own name so the two can sit
+      # side by side in an install; an N-API addon registers itself on load, so
+      # the file name is free to differ from the target's.
       - name: Confirm the addon was produced
         working-directory: earn/native
         shell: bash
         run: |
           test -f build/Release/pearl_core.node
-          echo "built: $(ls -l build/Release/pearl_core.node)"
+          if [ "${{ matrix.file }}" != pearl_core.node ]; then
+            cp build/Release/pearl_core.node "build/Release/${{ matrix.file }}"
+          fi
+          echo "built: $(ls -l "build/Release/${{ matrix.file }}")"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: pearl-core-${{ matrix.os }}
-          path: earn/native/build/Release/pearl_core.node
+          name: pearl-core${{ matrix.variant }}-${{ matrix.os }}
+          path: earn/native/build/Release/${{ matrix.file }}
           if-no-files-found: error

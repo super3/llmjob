@@ -5,6 +5,9 @@ Where the packaged installer picks up `pearl_core.node`, our CUDA mining core.
 CI stages it here from the `native-core` workflow's artifact (see
 `.github/workflows/miner-build.yml`), and electron-builder copies it to
 `resources/native/`, which is the first place `src/main/pearlCore.js` looks.
+`pearl_core_cu13.node`, the CUDA 13 build for RTX 50 cards, is staged beside it
+the same way when the native-core run built one; it is optional (see
+`src/shared/coreVariant.js` for when it is loaded).
 
 Nothing to check in: the file is a compiled addon and is built per platform. A
 local dev build is found automatically at `earn/native/build/Release/`, so this

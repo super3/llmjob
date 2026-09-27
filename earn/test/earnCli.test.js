@@ -23,6 +23,7 @@ jest.mock('../src/main/probe', () => ({
   detectGpusVram: jest.fn(),
   detectMinerGpus: jest.fn(),
   detectDriverMajor: jest.fn(),
+  detectCudaCards: jest.fn(),
   postMinerReport: jest.fn(),
   findFreePort: jest.fn(),
   // Shared with the GUI now — one detection path for both shells.
@@ -200,6 +201,8 @@ function applyDefaults(m) {
   // with no nvidia-smi gets.
   m.probe.detectMinerGpus.mockResolvedValue([]);
   m.probe.detectDriverMajor.mockResolvedValue(600);
+  // Nothing known about the cards: the core factory then picks the 12.8 build.
+  m.probe.detectCudaCards.mockResolvedValue([]);
   m.probe.postMinerReport.mockResolvedValue(undefined);
   m.probe.findFreePort.mockResolvedValue(8080);
   m.probe.detectGpuInfo.mockResolvedValue(null); // no identifiable GPU by default
@@ -625,6 +628,27 @@ describe('mining', () => {
     expect(allErr()).toContain('pearl_core.node not found');
     expect(allErr()).toContain('PEARL_CORE_PATH');
     expect(m.PearlEngine.instances.length).toBe(0);
+  });
+
+  // Which build of the core loads is the factory's call (pearlCore.test.js); the
+  // CLI's part is handing it the mining cards and nvidia-smi's answer, and
+  // printing what it says -- an error on stderr, anything else on stdout.
+  test('hands the core factory the mining cards and their compute capability', async () => {
+    const m = load();
+    const cards = [{ index: 0, major: 12, minor: 0, driverMajor: 610 }];
+    m.probe.detectMinerGpus.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 5090' }]);
+    m.probe.detectCudaCards.mockResolvedValue(cards);
+    m.pearlCore.coreFactory.mockReturnValue(null);
+    await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update'])).resolves.toBe(1);
+    const opts = m.pearlCore.coreFactory.mock.calls[0][0];
+    expect(opts).toMatchObject({ gpus: [{ index: 0, name: 'NVIDIA GeForce RTX 5090' }], cards });
+    opts.log('info', 'Pearl core: CUDA 13 build · driver 610, mining card is compute 12.0');
+    opts.log('warn', 'Pearl core: CUDA 12.8 build · the CUDA 13 build could not start (x)');
+    opts.log('error', 'core trouble');
+    expect(allOut()).toContain('Pearl core: CUDA 13 build · driver 610, mining card is compute 12.0');
+    expect(allOut()).toContain('the CUDA 13 build could not start (x)');
+    expect(allErr()).toContain('core trouble');
+    expect(allOut()).not.toContain('core trouble');
   });
 
   test('auto mode with no loadable core serves the LLM instead of looping', async () => {

@@ -750,7 +750,16 @@ async function run(argv) {
     // systemd, where the old exit 0 read as success and produced a silent
     // ten-second restart loop that mined nothing. An 'auto' run still has its
     // LLM half, so it says loudly what is missing and serves inference.
-    const createCore = coreFactory({ resourcesPath: process.resourcesPath });
+    //
+    // Which of the two builds loads (CUDA 12.8, or CUDA 13 on an all-Blackwell
+    // rig with driver 580+) is decided from one more nvidia-smi query and the
+    // card list above; see shared/coreVariant. The factory logs its choice.
+    const createCore = coreFactory({
+      resourcesPath: process.resourcesPath,
+      gpus: settings.gpus,
+      cards: await probe.detectCudaCards(),
+      log: (level, line) => log(line, level === 'error' ? process.stderr : process.stdout),
+    });
     if (!createCore) {
       const where = 'searched: PEARL_CORE_PATH, beside the executable, and the dev tree';
       log('pearl_core.node not found -- this build cannot mine (' + where + ').', process.stderr);

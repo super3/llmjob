@@ -74,6 +74,11 @@ function planUpdate(opts) {
   // plan so the updater can keep the pair in step: a new CLI driving an old
   // core is a silent version skew. Absent from older releases, hence nullable.
   const coreUrl = rel.assets['pearl_core.node'] || null;
+  // The CUDA 13 build rides the same way (see shared/coreVariant). Null when a
+  // release does not carry it -- older ones, or one whose CUDA 13 build failed
+  // in CI -- and the updater then REMOVES any copy beside the binary, because a
+  // stale one would be loaded ahead of the fresh 12.8 core on a 5090.
+  const coreCu13Url = rel.assets['pearl_core_cu13.node'] || null;
 
   return {
     updateAvailable: true,
@@ -83,6 +88,7 @@ function planUpdate(opts) {
     assetName,
     downloadUrl,
     coreUrl,
+    coreCu13Url,
   };
 }
 

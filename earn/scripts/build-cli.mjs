@@ -56,4 +56,14 @@ if (existsSync(core)) {
 } else {
   process.stdout.write('warning: no vendor/native/pearl_core.node — this CLI cannot mine\n');
 }
+// The CUDA 13 build (sm_120 only; see src/shared/coreVariant.js) travels the
+// same way. Optional: without it a Blackwell rig loads the 12.8 core above,
+// which is what every rig did before there were two.
+const cu13 = join(root, 'vendor', 'native', 'pearl_core_cu13.node');
+if (existsSync(cu13)) {
+  copyFileSync(cu13, join(dist, 'pearl_core_cu13.node'));
+  process.stdout.write('staged pearl_core_cu13.node beside the CLI\n');
+} else {
+  process.stdout.write('warning: no vendor/native/pearl_core_cu13.node — RTX 50 rigs will use the CUDA 12.8 core\n');
+}
 process.stdout.write('built ' + out + '\n');

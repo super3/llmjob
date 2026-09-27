@@ -53,11 +53,33 @@ async function applyUpdate(plan, execPath) {
   // an old pearl_core.node is a version skew nothing would report. Same
   // download-beside-then-rename dance, into the directory the loader probes.
   // Releases older than the split have no core asset; nothing to do then.
+  const dir = require('path').dirname(exe);
   if (plan.coreUrl) {
-    const core = require('path').join(require('path').dirname(exe), 'pearl_core.node');
+    const core = require('path').join(dir, 'pearl_core.node');
     const coreTmp = core + '.new-' + process.pid;
     await downloadFile(plan.coreUrl, coreTmp);
     fs.renameSync(coreTmp, core);
+  }
+  // The CUDA 13 core (shared/coreVariant) is paired the same way but is
+  // OPTIONAL, which changes the order. Last release's copy goes first, always:
+  // on a Blackwell rig with driver 580+ the loader prefers that file, so one
+  // left beside this release's binary is exactly the skew the rule above
+  // prevents -- whether this release has no CUDA 13 core or its download fails.
+  // And a failed download does not fail the update. The binary and the 12.8
+  // core are already in place by now; throwing here would have the caller
+  // "continue on" the old version with the NEW 12.8 core beside it, a skew of
+  // its own, to save a 5090 3%. Without the file the loader says "not
+  // installed" at start and mines on the 12.8 core.
+  const cu13 = require('path').join(dir, 'pearl_core_cu13.node');
+  fs.rmSync(cu13, { force: true });
+  if (plan.coreCu13Url) {
+    const cu13Tmp = cu13 + '.new-' + process.pid;
+    try {
+      await downloadFile(plan.coreCu13Url, cu13Tmp);
+      fs.renameSync(cu13Tmp, cu13);
+    } catch (e) {
+      // Nothing to undo: downloadFile removes its own partial file.
+    }
   }
   return exe;
 }
