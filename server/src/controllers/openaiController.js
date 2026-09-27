@@ -13,8 +13,8 @@ const {
   writeSsePreamble, pollJobResult, clampMessages, resolveMaxTokens, MAX_PROMPT_CHARS,
 } = require('./gatewayShared');
 
-// Per-request completion ceiling for this gateway. The web-chat gateway has
-// always clamped max_tokens; here it rode through unbounded, so a single key
+// Per-request completion ceiling for this gateway. The web-chat gateway (since
+// removed) always clamped max_tokens; here it rode through unbounded, so a single key
 // could ask for millions of tokens and hold a node's GPU for as long as it took.
 // Sized to the node's context window (earn/src/shared/config.js LLM.ctxSize).
 // Still a real bound, just a larger one: what a caller can actually be served is
@@ -52,12 +52,12 @@ const HOSTED_SERVED_BY = 'openrouter';
 //     serves it against its own local model. The node side
 //     (earn/src/main/jobWorker.js) polls, runs, and streams chunks back; this
 //     controller only creates the job and waits.
-//   • A hosted model — one of the OpenRouter-served models the public Chat page
-//     offers — when the caller names it exactly. Only `public` keys may ask for
-//     one, and the spend comes out of the same free budget the web chat draws
-//     on. This exists so real API traffic can reach those models now, ahead of
-//     the network serving them itself; an unknown model still falls through to
-//     the network, so no existing caller changes behaviour.
+//   • A hosted model — one of the OpenRouter-served models — when the caller
+//     names it exactly. Only `public` keys may ask for one, and the spend comes
+//     out of the free hosted-model budget. This exists so real API traffic can
+//     reach those models now, ahead of the network serving them itself; an
+//     unknown model still falls through to the network, so no existing caller
+//     changes behaviour.
 class OpenAiController {
   constructor(opts = {}) {
     this.pollMs = opts.pollMs || 250;          // how often to check the job for progress
@@ -71,10 +71,9 @@ class OpenAiController {
     this.timeoutMs = opts.timeoutMs || 280000;
     this.now = opts.now || (() => Date.now());
     this.sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
-    // The hosted-model backend, sharing its configuration (allow-list, key,
-    // ceilings, free budget) with the web-chat gateway so both front doors serve
-    // the same models under the same limits. `opts.openRouter` overrides it for
-    // tests; otherwise it reads the same OPENROUTER_* env the chat gateway does.
+    // The hosted-model backend (allow-list, key, ceilings, free budget).
+    // `opts.openRouter` overrides it for tests; otherwise it reads the
+    // OPENROUTER_* env.
     this.openRouter = new OpenRouterService(opts.openRouter || {});
     // Services are built per-request from req.app.locals.db so one controller
     // instance can be registered before the DB pool is connected. Injectable for
@@ -169,8 +168,8 @@ class OpenAiController {
 
     // Bound the request before it goes anywhere. Prompt size and completion
     // budget are both caller-controlled and both cost real resources — a node's
-    // GPU time, or OpenRouter credit; the web-chat gateway has always clamped
-    // them and this one didn't.
+    // GPU time, or OpenRouter credit; the web-chat gateway (since removed) always
+    // clamped them and this one didn't.
     const clean = clampMessages(messages, MAX_PROMPT_CHARS);
     if (clean.length === 0) {
       return res.status(400).json(errorBody('No usable message content.', 'invalid_request_error'));
@@ -390,8 +389,8 @@ class OpenAiController {
     if (!this.openRouter.configured) {
       return res.status(503).json(errorBody('Hosted models are not configured on this deployment.', 'not_configured'));
     }
-    // The same pot of credit the free web chat draws on, and the same cap. An API
-    // key that could spend past it would drain exactly what the cap protects.
+    // The free hosted-model budget. An API key that could spend past it would
+    // drain exactly what the cap protects.
     const totals = await svc.chatUsage.getTotals();
     if (this.openRouter.freeBudget > 0 && totals.totalTokens >= this.openRouter.freeBudget) {
       return res.status(402).json(errorBody(
@@ -555,7 +554,7 @@ class OpenAiController {
   // Record a completed hosted generation in all three places it belongs, and
   // never let a bookkeeping failure break the response:
   //   • chat_usage_totals — this is OpenRouter spend, so it counts against the
-  //     same free cap the web chat draws on (`viaApiKey` tags the slice so the
+  //     free hosted-model cap (`viaApiKey` tags the slice so the
   //     public totals don't count it twice against the key's own usage);
   //   • the user's request log — so the dashboard shows the request like any
   //     other, attributed to `openrouter` rather than to a node;

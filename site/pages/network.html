@@ -473,10 +473,11 @@
       return String(Math.round(n));
     }
 
-    // Lifetime tokens the network has served (GET /api/chat/usage): the free
-    // web-chat proxy plus the OpenAI-compatible API gateway. `network.totalTokens`
-    // carries the combined figure; `totals` is chat-only and is the fallback for a
-    // server that predates the combined field.
+    // Lifetime tokens the network has served (GET /api/chat/usage): the
+    // OpenAI-compatible API gateway, plus what the free web chat served before it
+    // was removed. `network.totalTokens` carries the combined figure; `totals` is
+    // the hosted-model count and is the fallback for a server that predates the
+    // combined field.
     async function loadTokens() {
       try {
         const res = await fetch(API_BASE + '/api/chat/usage', { headers: { Accept: 'application/json' } });

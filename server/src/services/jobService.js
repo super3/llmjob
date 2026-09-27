@@ -10,11 +10,11 @@ const LOCK_MS = 10 * 60 * 1000;       // assignment lock lifetime (10 min)
 // it still throws away a generation that was going to finish. Four missed beats
 // is a real outage, not a blip.
 const HEARTBEAT_STALE_MS = 120 * 1000;
-// How long a job may sit pending before it is abandoned. Both gateways give up
-// waiting after 120s, so anything older than this has no caller left listening —
+// How long a job may sit pending before it is abandoned. The /v1 gateway gives
+// up waiting after 280s, so anything older than this has no caller left listening —
 // running it later would burn a node's GPU on a reply nobody receives, and the
 // rows would otherwise accumulate forever (nothing else clears `pending`). The
-// margin over 120s means this can never expire a job someone is still waiting on.
+// margin over 280s means this can never expire a job someone is still waiting on.
 const PENDING_TTL_MS = 5 * 60 * 1000;
 // The model the earn-client fleet actually serves (earn/src/shared/config.js
 // LLM.model.name) — the default a job records must match what runs it.

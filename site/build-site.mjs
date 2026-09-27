@@ -21,6 +21,12 @@
 //
 // A page declares optional front-matter as a JSON comment on the first line:
 //   <!--build {"active":"earn","clerk":true,"fonts":"…"} -->
+//
+// Retired pages are listed in site/redirects.json as { "name": "/target" }. Each
+// gets a small page at dist/<name>.html that sends the visitor on, so old links
+// (Discord posts, videos, bookmarks) still land somewhere. GitHub Pages can't
+// send a server-side redirect, so the page redirects itself; the Express server
+// serves the same file.
 
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, rmSync, cpSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -31,6 +37,7 @@ const ROOT = join(SITE, '..');
 const PARTIALS = join(SITE, 'partials');
 const PAGES = join(SITE, 'pages');
 const STATIC = join(SITE, 'static'); // optional passthrough assets (images, etc.)
+const REDIRECTS = join(SITE, 'redirects.json');
 const OUT = join(ROOT, 'dist');
 
 const config = JSON.parse(readFileSync(join(SITE, 'config.json'), 'utf8'));
@@ -67,6 +74,25 @@ function render(src, ctx, depth = 0) {
   return out;
 }
 
+// The page left at a retired URL: a meta refresh, plus a script so the redirect
+// doesn't wait on the refresh, and a plain link for anything that runs neither.
+// noindex keeps search engines from listing the stub in place of its target.
+function redirectPage(target) {
+  const attr = target.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>LLMJob</title>
+<meta name="robots" content="noindex" />
+<meta http-equiv="refresh" content="0; url=${attr}" />
+<script>location.replace(${JSON.stringify(target)});</script>
+</head>
+<body><p>This page has moved. <a href="${attr}">Continue to LLMJob</a>.</p></body>
+</html>
+`;
+}
+
 function buildPage(file) {
   const { data, body } = parseFrontMatter(readFileSync(join(PAGES, file), 'utf8'));
   const ctx = { ...config, ...data };
@@ -86,4 +112,13 @@ for (const file of pages) {
   writeFileSync(join(OUT, file), buildPage(file));
   console.log('built dist/' + file);
 }
-console.log('built ' + pages.length + ' page(s) → ' + OUT);
+// A redirect must never replace a real page, or the page would silently vanish.
+const redirects = existsSync(REDIRECTS) ? JSON.parse(readFileSync(REDIRECTS, 'utf8')) : {};
+for (const [name, target] of Object.entries(redirects)) {
+  if (pages.includes(name + '.html')) {
+    throw new Error('site/redirects.json: "' + name + '" is also a page in site/pages/');
+  }
+  writeFileSync(join(OUT, name + '.html'), redirectPage(target));
+  console.log('built dist/' + name + '.html → ' + target);
+}
+console.log('built ' + pages.length + ' page(s) and ' + Object.keys(redirects).length + ' redirect(s) → ' + OUT);

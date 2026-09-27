@@ -1,9 +1,8 @@
-// Direct coverage for the shared gateway helpers extracted from the two chat
-// controllers (chatController + openaiController). The controllers exercise most
-// of these paths through their route tests; this file pins every branch so the
-// module stands on its own.
+// Direct coverage for the gateway helpers openaiController uses. The controller
+// exercises most of these paths through its route tests; this file pins every
+// branch so the module stands on its own.
 const {
-  estimateTokens, errorBody, joinContent, lastUserText, nodeFailMessage,
+  estimateTokens, errorBody, joinContent, lastUserText,
   writeSsePreamble, pollJobResult, clampMessages, resolveMaxTokens, MAX_PROMPT_CHARS,
   contentText, MAX_IMAGES, MAX_IMAGE_CHARS,
 } = require('../src/controllers/gatewayShared');
@@ -35,12 +34,6 @@ describe('gatewayShared — pure helpers', () => {
     expect(lastUserText([{ role: 'assistant', content: 'x' }])).toBe('x'); // no user → join
     expect(lastUserText([null, { role: 'system' }])).toBe('\n');           // no user, null entry in the join
     expect(lastUserText([{ role: 'user', content: 42 }])).toBe('42');      // coerced to string
-  });
-
-  it('nodeFailMessage prefers the reason, falls back for empty/nullish results', () => {
-    expect(nodeFailMessage({ error: 'boom' })).toBe('The node failed to run the job: boom');
-    expect(nodeFailMessage({})).toBe('The node failed to run the job: unknown error');
-    expect(nodeFailMessage(null)).toBe('The node failed to run the job: unknown error');
   });
 });
 

@@ -11,7 +11,7 @@ const apiKeyController = require('./controllers/apiKeyController');
 const logController = require('./controllers/logController');
 const JobController = require('./controllers/jobController');
 const OpenAiController = require('./controllers/openaiController');
-const ChatController = require('./controllers/chatController');
+const NetworkUsageController = require('./controllers/networkUsageController');
 const JobService = require('./services/jobService');
 const NodeService = require('./services/nodeService');
 const { MAX_BODY_BYTES } = require('./controllers/gatewayShared');
@@ -114,10 +114,9 @@ const initJobRoutes = (db) => {
 // Install the JSON body parsers, in the order their limits have to apply.
 //
 // The OpenAI gateway accepts image requests and needs a MAX_BODY_BYTES ceiling
-// to hold one. Everything else — including the ANONYMOUS web-chat endpoint —
-// keeps express.json()'s small default, because raising the body ceiling on an
-// unauthenticated route is a cost with no matching benefit (the chat page sends
-// no images).
+// to hold one. Everything else keeps express.json()'s small default, because
+// raising the body ceiling on a route that takes no images is a cost with no
+// matching benefit.
 //
 // The ORDER is load-bearing, and getting it wrong is what made the whole
 // multimodal path dead code. `express.json()` is app-wide middleware that runs
@@ -152,14 +151,12 @@ const initOpenAiRoutes = (app, opts) => {
   return ctrl;
 };
 
-// Free public web-chat gateway (/chat), proxied to OpenRouter. No API key —
-// this is the "open usage" front door, gated by a global free-token budget in
-// the controller rather than per-user auth. Mounted at the app root. `opts`
-// (OpenRouter key/models/budget, fetch) is injectable for tests.
-const initChatRoutes = (app, opts) => {
-  const ctrl = new ChatController(opts || {});
-  app.post('/api/chat/completions', (req, res) => ctrl.chatCompletions(req, res));
-  app.get('/api/chat/models', (req, res) => ctrl.listModels(req, res));
+// The network page's "tokens served" figure (GET /api/chat/usage). No auth: it
+// is public totals only. The path is kept from when the free web chat lived
+// beside it; see NetworkUsageController. `opts` (free budget, services) is
+// injectable for tests.
+const initUsageRoutes = (app, opts) => {
+  const ctrl = new NetworkUsageController(opts);
   app.get('/api/chat/usage', (req, res) => ctrl.usage(req, res));
   return ctrl;
 };
@@ -170,4 +167,4 @@ module.exports = router;
 module.exports.initBodyParsers = initBodyParsers;
 module.exports.initJobRoutes = initJobRoutes;
 module.exports.initOpenAiRoutes = initOpenAiRoutes;
-module.exports.initChatRoutes = initChatRoutes;
+module.exports.initUsageRoutes = initUsageRoutes;

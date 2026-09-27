@@ -97,25 +97,12 @@ npm run test:watch
 - `POST /v1/chat/completions` - OpenAI-compatible chat completions (LLMJob **API key** required); turns the request into an inference job served by an online node, streams if `stream: true`, and bills the key's token usage
 - `POST /api/usage` - Record a completed generation (LLMJob **API key** required); writes a request log entry and bills the key's token usage. Used by clients that run inference elsewhere and only report usage — the dashboard advertises `/v1/chat/completions` as the endpoint to call
 
-#### Free web chat (OpenRouter proxy)
+#### Tokens served
 
-Powers the public **Chat** page (`/chat`). No auth — this is the "open
-usage" front door, so the OpenRouter API key stays server-side and every request
-is gated by a global free-token budget instead of per-user auth. Prompts are
-**never stored**; only performance (latency, time-to-first-token, tok/s) and
-token counts are recorded, plus a running lifetime total used for the cap and the
-"tokens served" display. Once free chat is proven out this can be repointed at
-the LLMJob node network.
-
-- `POST /api/chat/completions` - Proxy a chat to OpenRouter. Streams a small SSE
-  protocol by default (`data: {"delta":…}`, then `data: {"done":true,"meta":…}`,
-  then `data: [DONE]`); pass `{"stream": false}` for a single JSON body. Returns
-  `402` once the free-token budget is spent and `503` when no OpenRouter key is
-  configured. Only allow-listed models are reachable, and `max_tokens` / prompt
-  length are clamped server-side.
-- `GET /api/chat/models` - The allow-listed models (`{ id, label }`) the Chat UI
-  may offer.
-- `GET /api/chat/usage` - Running token totals plus remaining free budget.
+- `GET /api/chat/usage` - The network page's "tokens served" figure, plus the
+  running hosted-model token totals and how much of the free budget is left. No
+  auth. The path is left over from the free web chat, which has been removed;
+  the network page still calls it by this name.
 
 ### Node join flow
 
@@ -169,22 +156,21 @@ Required for production:
 - `DATABASE_URL` - Automatically provided by Railway (Postgres plugin)
 - `PORT` - Automatically provided by Railway
 
-Free web chat (OpenRouter proxy) — all optional, with sensible defaults:
+Hosted models on the `/v1` API (OpenRouter) — all optional, with sensible
+defaults:
 
-- `OPENROUTER_API_KEY` - OpenRouter key for the free Chat page. Without it,
-  `POST /api/chat/completions` returns `503` (the rest of the server is
-  unaffected).
+- `OPENROUTER_API_KEY` - OpenRouter key for the hosted models. Without it, a
+  `/v1` request that names a hosted model returns `503` (the rest of the server
+  is unaffected).
 - `OPENROUTER_MODELS` - JSON array of allow-listed models,
   e.g. `[{"id":"qwen/qwen3.8-27b","label":"Qwen3.8 27B"}]`. Defaults to the single
   built-in Qwen model. Note that setting this **replaces** the built-in list
   rather than adding to it, so a stale value here is why a newly shipped model
-  can be absent from `/api/chat/models` while the docs page already names it.
-- `OPENROUTER_FREE_TOKEN_BUDGET` - Total tokens of free usage before the endpoint
-  starts returning `402` (default `1000000`; set `0` to disable the cap).
+  can be absent from `/v1/models` while the docs page already names it.
+- `OPENROUTER_FREE_TOKEN_BUDGET` - Total tokens of free hosted-model usage
+  before `/v1` starts refusing hosted requests (default `1000000`; set `0` to
+  disable the cap).
 - `OPENROUTER_MAX_TOKENS` - Per-request completion ceiling (default `2048`).
-- `OPENROUTER_SYSTEM_PROMPT` - System message injected on every chat request so
-  the model has LLMJob context (what LLMJob is, PPLNS, etc.). Defaults to a
-  built-in prompt; set to an empty string to disable injection.
 - `OPENROUTER_BASE_URL` - Override the OpenRouter base URL (default
   `https://openrouter.ai/api/v1`).
 - `OPENROUTER_REFERER` - Sent as the `HTTP-Referer` attribution header (default

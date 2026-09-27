@@ -22,6 +22,13 @@ So link between pages as `href="/network"` — root-absolute, no extension — a
 write `og:url` and any `window.location` / Clerk redirect the same way. A link
 that still carries `.html` works, but costs the visitor a redirect.
 
+### Retired pages
+
+When a page is removed, add it to `site/redirects.json` (`{ "chat": "/" }`) so
+old links still land somewhere. The build writes a small `dist/<name>.html`
+that redirects the visitor to the target. It works on both hosts because it is
+just a page, and the build fails if a redirect has the same name as a real page.
+
 ## Where the output goes
 
 - **GitHub Pages** builds `dist/` in `.github/workflows/deploy.yml` and publishes

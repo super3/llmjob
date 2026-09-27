@@ -2,24 +2,19 @@
 
 const { estimateTokens, int, round1 } = require('../controllers/gatewayShared');
 
-// The OpenRouter client both gateways share.
+// The OpenRouter client behind the OpenAI-compatible API gateway
+// (openaiController), where a `public` API key may ask for a hosted model by id,
+// so we can put real traffic on them before the node network serves them
+// itself. (The free web chat used to share it; the chat has been removed.)
 //
-// Two different front doors reach the same hosted models:
+// Which models are reachable, the allow-list lookup, the completion ceiling, the
+// upstream HTTP call, reading its SSE body, and turning its `usage` block into
+// our metrics all live here, apart from the gateway's request handling.
 //
-//   • the free public web chat (chatController) — anonymous, no key, gated by a
-//     global free-token budget, and
-//   • the OpenAI-compatible API gateway (openaiController) — where a `public`
-//     API key may ask for a hosted model by id, so we can put real traffic on
-//     them before the node network serves them itself.
-//
-// Everything the two have in common — which models are reachable, the allow-list
-// lookup, the completion ceiling, the upstream HTTP call, reading its SSE body,
-// and turning its `usage` block into our metrics — lives here so they can't
-// drift the way the SSE preamble once did (see controllers/gatewayShared.js).
-//
-// The spend cap is carried here (`freeBudget`) but not enforced here: each
+// The spend cap is carried here (`freeBudget`) but not enforced here: the
 // gateway decides when to weigh it against the running chat_usage_totals,
-// because only the caller knows whether this request is billable to that pot.
+// because only it knows whether a request is billable to that pot. The network
+// page's usage figure reads the same budget (see networkUsageController).
 
 // Sensible defaults; every one is overridable via env or constructor opts so the
 // founder can retune the free tier without a code change.
@@ -62,12 +57,6 @@ class OpenRouterService {
   // failing at the fetch.
   get configured() {
     return !!this.apiKey;
-  }
-
-  // The model a caller gets when they don't name one (web chat only — the API
-  // gateway sends an unnamed model to the node network instead).
-  get defaultModel() {
-    return this.models[0];
   }
 
   // Look a requested model up in the allow-list, by id or by friendly label.

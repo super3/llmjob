@@ -4,7 +4,7 @@
 // (GitHub Pages) and from the Railway app itself, and the pages call the API
 // cross-origin (API_BASE points at the Railway prod host), so those origins
 // must be allowed. Any other website trying to call the API from a browser —
-// e.g. embedding the free chat proxy on its own page — is refused.
+// e.g. reading the usage figures on its own page — is refused.
 //
 // Non-browser callers (curl, the CLI, cluster nodes, server-side API-key use)
 // send no Origin header, so they are always allowed: CORS is a browser-only

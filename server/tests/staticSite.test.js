@@ -22,9 +22,15 @@ describe('extensionless page URLs', () => {
     expect(res.text).toContain('<title>LLMJob Network');
   });
 
-  // The chat page was removed; nothing builds or serves it any more.
-  it('no longer serves the chat page', async () => {
-    expect((await request(app).get('/chat')).status).toBe(404);
+  // The chat page was removed. Its URL now serves a small page that sends the
+  // visitor to the home page (site/redirects.json), so old links still work.
+  it('sends the retired chat page to the home page', async () => {
+    const res = await request(app).get('/chat');
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('<meta http-equiv="refresh" content="0; url=/" />');
+    expect(res.text).toContain('location.replace("/")');
+    expect(res.text).toContain('<meta name="robots" content="noindex" />');
+    // Nothing on the site links to it any more.
     const home = await request(app).get('/');
     expect(home.text).not.toContain('href="/chat"');
   });

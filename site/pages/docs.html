@@ -553,8 +553,8 @@ for chunk in stream:
       </div>
       <p>Prompts over the character budget are trimmed rather than rejected, and an oversized
         <code class="ic">max_tokens</code> is clamped to the ceiling — your request still runs.</p>
-      <p>The hosted models draw on one shared, capped allowance across everybody's API traffic and
-        the free web chat. Once it is spent they return <span class="status">402</span> until it is
+      <p>The hosted models draw on one shared, capped allowance across everybody's API traffic.
+        Once it is spent they return <span class="status">402</span> until it is
         topped up; the node network is unaffected, so a request with no
         <code class="ic">model</code> keeps working.</p>
     </section>

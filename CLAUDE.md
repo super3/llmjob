@@ -37,7 +37,7 @@ rebased.
 
 **Always include the preview URL** when you give me a PR link. It comes from the
 PR number: `https://llmjob-llmjob-pr-<PR-number>.up.railway.app`. Add a page path
-when you mean a specific page, like `/chat.html` or `/network.html`.
+when you mean a specific page, like `/network` or `/docs`.
 
 **One conversation, one PR.** Everything I ask for during a conversation goes on
 the branch that is already open, even when it has nothing to do with what the PR
