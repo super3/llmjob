@@ -546,16 +546,50 @@ typedef struct {
 // Valid row and column offsets one tile covers: two per 32 rows, four per 64 columns.
 #define PEARL_TALL_ROW_OFFSETS (PEARL_TALL_BM / 16u)             // 12
 #define PEARL_TALL_COL_OFFSETS (PEARL_TALL_BN / 16u)             // 16
+// Blackwell's ring bookkeeping (sm_120, the TMA build), A/B switches documented with
+// PEARL_TALL_STAGE_FENCE below. Defined here because the shared size depends on the first.
+// RTX 5090, 600 W, memory at 7001 MHz, one session, 3 rounds, all verified:
+//   off (v0.5.8's sm_120 ring)            123.34 TH/s
+//   PEARL_TALL_TMA_ROLES                  123.79 TH/s  +0.36%, ahead in every round
+//   ROLES + PEARL_TALL_TMA_EMPTY_ALL      123.78       (EMPTY_ALL alone 123.41)
+//   PEARL_TALL_TMA_FILL_PT 16             123.43
+//   PEARL_TALL_TMA_PRODUCER2              123.11
+//   all of them + fence mask 0x41         121.86
+// So ROLES is on; the others stay A/B switches, off.
+#ifndef PEARL_TALL_TMA_ROLES
+#define PEARL_TALL_TMA_ROLES 1
+#endif
+#ifndef PEARL_TALL_TMA_EMPTY_ALL
+#define PEARL_TALL_TMA_EMPTY_ALL 0
+#endif
+#ifndef PEARL_TALL_TMA_PRODUCER2
+#define PEARL_TALL_TMA_PRODUCER2 0
+#endif
+#ifndef PEARL_TALL_TMA_FILL_PT
+#define PEARL_TALL_TMA_FILL_PT 0
+#endif
+#define PEARL_TALL_TMA_EMPTY_COUNT \
+  (PEARL_TALL_TMA_EMPTY_ALL ? PEARL_TALL_THREADS : PEARL_TALL_THREADS / 32u)
 // Shared: the three stages, the ring's six mbarriers, and one 64-byte transcript a
 // region -- 192 regions a tile. Ada's cp.async build keeps each stage's FULL and EMPTY
 // in 128 bytes behind its rows: 98688 bytes of the 101376 Ada allows. Blackwell's TMA
-// build keeps all six after the stages, in 64 bytes: 98368 (PEARL_TALL_SMEM_TMA).
+// build keeps them in a 512-byte pad behind each buffer (PEARL_TALL_TMA_ROLES, the
+// default): 99840, plus 1024 of static shared; without ROLES all six sit after the
+// stages in 64 bytes, 98368 (PEARL_TALL_SMEM_TMA).
 #define PEARL_TALL_STAGE_BYTES ((PEARL_TALL_BM + PEARL_TALL_BN) * PEARL_TALL_STAGE_K)
 #define PEARL_TALL_STAGE_STRIDE (PEARL_TALL_STAGE_BYTES + 128u)
 #define PEARL_TALL_SMEM \
   (PEARL_TALL_STAGES * PEARL_TALL_STAGE_STRIDE + PEARL_TALL_BM * PEARL_TALL_BN / 4u)
+#if PEARL_TALL_TMA_ROLES
+// With PEARL_TALL_TMA_ROLES, Blackwell's buffers are 512 bytes apart too, each buffer's
+// FULL and EMPTY in the pad behind its rows: 99840.
+#define PEARL_TALL_STAGE_STRIDE_TMA (PEARL_TALL_STAGE_BYTES + 512u)
+#define PEARL_TALL_SMEM_TMA \
+  (PEARL_TALL_STAGES * PEARL_TALL_STAGE_STRIDE_TMA + PEARL_TALL_BM * PEARL_TALL_BN / 4u)
+#else
 #define PEARL_TALL_SMEM_TMA \
   (PEARL_TALL_STAGES * PEARL_TALL_STAGE_BYTES + 64u + PEARL_TALL_BM * PEARL_TALL_BN / 4u)
+#endif
 // m is a power of two and 192 is not a factor of it, so the last row group of tiles
 // runs past m: at the mainnet 131072 rows, 683 groups cover 131136. The fold hashes no
 // region whose row offset falls past m. Both builds read A' k-blocked, m rows a k-block
@@ -732,9 +766,56 @@ typedef struct {
 // last n8 column, between its IMMA, which costs that column its B .reuse: 154/192
 // without these, 160/192 with both (and one instruction fewer a chunk: 2.672 against
 // 2.677 instr/mma, ptxas 13.3). Static only; not measured on the card.
+// A refill at the stage's end (PEARL_TALL_TMA_FILL_PT 16) holds them there itself, and
+// takes 0: 160/192 either way, four instructions fewer a chunk without them.
 #ifndef PEARL_TALL_STAGE_FENCE
+#if PEARL_TALL_TMA_FILL_PT == 16
+#define PEARL_TALL_STAGE_FENCE 0x0
+#else
 #define PEARL_TALL_STAGE_FENCE 0x3
 #endif
+#endif
+
+// Blackwell's ring bookkeeping (sm_120, the TMA build): four A/B switches, all 0 by
+// default, which is the ring as it was measured on the RTX 5090 (see the fold). The
+// first two are Ada's trims from v0.5.8 (PEARL_FOLD_TALL); the other two only move the
+// producer's refills. None changes what any mma computes, only who arrives where and
+// when, and the order of issue.
+//
+//   PEARL_TALL_TMA_ROLES      the ring's buffer roles in registers, Ada's: stage 0 of a
+//       chunk reads buffer A and refills C, stage 1 reads B and refills A, and the roles
+//       rotate once a chunk. Each buffer's FULL and EMPTY sit in a 512-byte pad behind
+//       its rows (99840 bytes of shared; 512 keeps SWIZZLE_64B's period), so every ring
+//       address is a role plus a constant, and the per-stage buffer index, its wrap, the
+//       parity flip and the index-to-address multiplies go.
+//   PEARL_TALL_TMA_EMPTY_ALL  every thread arrives on EMPTY itself, and EMPTY expects
+//       256, Ada's: no __syncwarp or lane-0 predicate a stage. Each arrival is a release
+//       of that thread's own ldmatrix reads and the producer's wait an acquire, so no TMA
+//       refill can overtake a read of the buffer.
+//   PEARL_TALL_TMA_PRODUCER2  stage 1's refills from lane 0 of warp 5 (scheduler 1)
+//       rather than warp 4. The producer waits on EMPTY for the stage before, so its
+//       warp cannot run ahead of the slowest, and it issues the refill's 38 instructions
+//       a stage on top of its share; split, each of the two does so every other stage.
+//   PEARL_TALL_TMA_FILL_PT    where in the stage the refill goes: 0 at the top (as
+//       measured), p after n8 column (p - 1) % 8 of k-step (p - 1) / 8, so 16 is the
+//       stage's end. At the end the producer waits for a stage the other warps finished
+//       a whole stage ago, so it rarely stalls there; the boxes then land under one
+//       stage of mma instead of two. Points inside the stage cost the IMMA stream B
+//       .reuse (156 - 159 of 192 at every point 1 - 15); 16 keeps 160.
+//
+// Static cost of the chunk loop, ptxas 13.3 (the hot loop, and the part of it a warp
+// other than the producer's issues: the refill and the hand-off wait are branched
+// around), per mma:
+//   switches                    regs  loop        consumer    B .reuse
+//   none (as measured)          248   513 2.672   425 2.214   160/192
+//   ROLES                       254   488 2.542   415 2.161   160
+//   EMPTY_ALL                   249   510 2.656   422 2.198   160
+//   PRODUCER2                   248   514 2.677   426 2.219   160
+//   FILL_PT 16                  250   511 2.661   417 2.172   160
+//   ROLES + EMPTY_ALL           254   485 2.526   412 2.146   160
+//   all four, fence mask 0x41   255   491 2.557   417 2.172   160
+// (All four at mask 0x40 are 159/192: a stray ISETP of the refill's predicate lands
+// between two IMMA that share a B.) Static only; none has run on the card.
 
 // Threads per fold block, frozen for the same reason: it makes the staging trip
 // counts compile-time. Sixteen warps in a 4x4 grid over the 128x256 tile, which

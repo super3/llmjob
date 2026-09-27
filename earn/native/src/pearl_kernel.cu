@@ -2385,7 +2385,9 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
 // transcripts above, but not Ada's ring or k-step, which were tuned on a 4090 only: its
 // FULL and EMPTY sit after the three buffers, the stage's buffer and parity are fb and
 // fpar, each warp arrives on EMPTY once (lane 0 after a __syncwarp, the same releasing
-// mbarrier.arrive), and the k-step keeps all six A fragments live. And:
+// mbarrier.arrive), and the k-step keeps all six A fragments live. (Ada's ring roles and
+// per-thread arrivals are there to A/B behind PEARL_TALL_TMA_ROLES and
+// PEARL_TALL_TMA_EMPTY_ALL, off by default; see pearl_config.h.) And:
 //   - One producer thread, lane 0 of warp 4, fills stage g + 2 at the top of stage g,
 //     into the buffer stage g - 1 read, once EMPTY says all eight warps released it --
 //     the same schedule as the copies above, issued by one thread as two boxes of the
@@ -2437,6 +2439,13 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
                 "one transcript word a chunk, one 64-byte block a region");
 #if PEARL_TALL_TMA_BODY
   static_assert(PEARL_TALL_SMEM_TMA <= 101376u, "Ada gives a block 99 KB of shared");
+#if PEARL_TALL_TMA_ROLES
+  // A buffer's rows, then its FULL and EMPTY barriers (PEARL_TALL_TMA_ROLES). 512 bytes
+  // apart keeps every buffer on SWIZZLE_64B's 512-byte period (see the lane bases).
+  constexpr uint32_t STRIDE = PEARL_TALL_STAGE_STRIDE_TMA;
+  static_assert(STRIDE % 512u == 0u && STRIDE >= STAGE + 16u,
+                "stage buffers stay 512-byte aligned, with their barriers behind them");
+#endif
 #else
   // A buffer's rows, then its FULL and EMPTY barriers (see the ring's roles, below).
   constexpr uint32_t STRIDE = PEARL_TALL_STAGE_STRIDE;
@@ -2490,15 +2499,22 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
 #if PEARL_TALL_TMA_BODY
   // SWIZZLE_64B XORs address bits [4, 6) with bits [7, 9) of the shared address, which
   // is the q ^ ((r >> 1) & 3) the lane bases expect only for a box that starts on a
-  // 512-byte boundary. Every stage and operand offset is a multiple of 1024, so an
-  // aligned base is enough; the prologue traps rather than fold a mis-swizzled tile.
+  // 512-byte boundary. Every stage and operand offset is a multiple of 512 (of 1024
+  // without PEARL_TALL_TMA_ROLES, whose barrier pad makes the stride 29184 = 57 x 512),
+  // so an aligned base is enough; the prologue traps rather than fold a mis-swizzled
+  // tile. The 512-byte layout was verified on an RTX 5090 (verify-hits 359/359).
   // (Its own name: a redeclaration of smem_u32 may not change its alignment.)
   extern __shared__ __align__(1024) uint32_t pearl_tall_smem[];
   const uint32_t sbase = (uint32_t)__cvta_generic_to_shared(pearl_tall_smem);
+#if PEARL_TALL_TMA_ROLES
+  // Each buffer's FULL and EMPTY in the pad behind its rows.
+  const uint32_t sTr = sbase + NST * STRIDE;
+#else
   // FULL[3] and EMPTY[3] after the three buffers.
   const uint32_t barFull = sbase + NST * STAGE;
   const uint32_t barEmpty = barFull + 8u * NST;
   const uint32_t sTr = sbase + NST * STAGE + 64u;
+#endif
 #else
   // Each buffer's FULL and EMPTY in the 128 bytes behind its rows.
   extern __shared__ __align__(128) uint32_t smem_u32[];
@@ -2552,6 +2568,9 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
   // never hashes, and the next tile's third stage does not wait for a hash.
   constexpr uint32_t PRODUCER = 4u * 32u;
   static_assert(PRODUCER / 32u >= 4u, "the producer must not be in a hashing warp (wr 0)");
+  static_assert(PEARL_TALL_TMA_FILL_PT <= KS * NB, "a fill point is after an n8 column");
+  static_assert(!PEARL_TALL_TMA_PRODUCER2 || (PRODUCER + 32u * (SPC - 1u)) / 32u < 8u,
+                "stage 1's producer (PEARL_TALL_TMA_PRODUCER2) is another non-hashing warp");
   static_assert(STAGE % 1024u == 0u && (BN * SK) % 1024u == 0u,
                 "every box must start 1024-byte aligned for the swizzle");
   static_assert(BM <= 256u && BN <= 256u, "a TMA box is at most 256 rows");
@@ -2570,8 +2589,14 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
   // k-block kofs / SK, whole (the host blocks A' and B' by exactly one stage). Both
   // boxes count their full size toward FULL's transaction, the rows past m that TMA
   // zero-fills included.
+#if PEARL_TALL_TMA_ROLES
+  // (Here bi is the buffer's shared address, a ring role, and FULL sits behind it.)
+  auto tma_fill = [&](uint32_t bi, uint32_t kofs) {
+    const uint32_t full = bi + STAGE, dst = bi;
+#else
   auto tma_fill = [&](uint32_t bi, uint32_t kofs) {
     const uint32_t full = barFull + 8u * bi, dst = sbase + bi * STAGE;
+#endif
     pearl_mbar_expect_tx(full, STAGE);
     pearl_tma_3d(dst, &tmB, 0u, boxB, kofs / SK, full);
     pearl_tma_3d(dst + BN * SK, &tmA, 0u, boxA, kofs / SK, full);
@@ -2584,7 +2609,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
   const uint32_t f = (lane >> 1) & 3u;   // (row >> 1) & 3 of every row this lane addresses
   const uint32_t alrow = (lane & 7u) + ((lane >> 3) & 1u) * 8u;
   const uint32_t blcol = (lane & 7u) + ((lane >> 4) & 1u) * 8u;
-#if PEARL_TALL_TMA_BODY
+#if PEARL_TALL_TMA_BODY && !PEARL_TALL_TMA_ROLES
   uint32_t aLane0 = sbase + (BN + wr * (BM / 2u) + alrow) * SK + 16u * (((lane >> 4) & 1u) ^ f);
   uint32_t bLane0 = sbase + (wc * 64u + blcol) * SK + 16u * (((lane >> 3) & 1u) ^ f);
 #else
@@ -2632,8 +2657,14 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
 #if PEARL_TALL_TMA_BODY
     if ((sbase & 1023u) != 0u) __trap();
     // FULL's one arrival is the producer's expect_tx; the boxes' bytes complete it.
+    // EMPTY's are the eight warps', or every thread's (PEARL_TALL_TMA_EMPTY_ALL).
+#if PEARL_TALL_TMA_ROLES
+    pearl_mbar_init(sbase + threadIdx.x * STRIDE + STAGE, 1u);
+    pearl_mbar_init(sbase + threadIdx.x * STRIDE + STAGE + 8u, PEARL_TALL_TMA_EMPTY_COUNT);
+#else
     pearl_mbar_init(barFull + 8u * threadIdx.x, 1u);
-    pearl_mbar_init(barEmpty + 8u * threadIdx.x, PEARL_TALL_THREADS / 32u);
+    pearl_mbar_init(barEmpty + 8u * threadIdx.x, PEARL_TALL_TMA_EMPTY_COUNT);
+#endif
     // Makes the initialised barriers visible to the async proxy (the TMA unit) too.
     asm volatile("fence.mbarrier_init.release.cluster;" ::: "memory");
 #else
@@ -2651,12 +2682,25 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
   // The first tile's chunk 0: stages 0 and 1, into buffers 0 and 1, which nothing has
   // read yet.
   if (threadIdx.x == PRODUCER) {
+#if PEARL_TALL_TMA_ROLES
+#pragma unroll
+    for (uint32_t s = 0; s < SPC; s++) tma_fill(sbase + s * STRIDE, s * SK);
+#else
 #pragma unroll
     for (uint32_t s = 0; s < SPC; s++) tma_fill(s, s * SK);
+#endif
   }
 
+#if PEARL_TALL_TMA_ROLES
+  // The ring's roles (PEARL_TALL_TMA_ROLES), Ada's: each a buffer's shared address and
+  // the parity of its next FULL phase. A is read by the chunk's stage 0, B by its stage
+  // 1, and C is refilled by stage 0; at the kernel's start buffers 0, 1 and 2, phase 0.
+  uint32_t soA = sbase, soB = sbase + STRIDE, soC = sbase + 2u * STRIDE;
+  uint32_t pA = 0u, pB = 0u, pC = 0u;
+#else
   // The stage being read: its buffer fb, and the parity of that buffer's use.
   uint32_t fb = 0u, fpar = 0u;
+#endif
 #else
   uint32_t bsrc0, asrc0;
   tile_srcs(blockIdx.x, bsrc0, asrc0);
@@ -2706,6 +2750,18 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
       const uint32_t cn = last ? 0u : chunk + 1u;
 #pragma unroll
       for (uint32_t s = 0; s < SPC; s++) {
+#if PEARL_TALL_TMA_ROLES
+        // Stage 0 reads A and refills C, which the stage before it read; stage 1 reads B
+        // and refills A. A refill waits for its buffer's previous use to be released: C's
+        // is the phase before its next FULL (pC ^ 1), A's the one stage 0 just read (pA).
+        // At the kernel's first stage that is the phase before phase 0, which counts as
+        // done. Every address is a role plus a constant.
+        const uint32_t so = s == 0u ? soA : soB;
+        const uint32_t bi = s == 0u ? soC : soA;
+        const uint32_t rpar = s == 0u ? pA : pB;
+        const uint32_t epar = s == 0u ? (pC ^ 1u) : pA;
+        const uint32_t emptyBi = bi + STAGE + 8u, fullSo = so + STAGE, emptySo = so + STAGE + 8u;
+#else
         const uint32_t so = fb * STAGE;
         // This stage refills buffer (fb + 2) % 3, which the stage before it read. Stage
         // g = 3 * turn + fb refills it for use (g + 2) / 3, so it waits for that buffer's
@@ -2713,22 +2769,42 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
         // the kernel's first stage that is the phase before phase 0, which counts as done.
         const uint32_t bi = fb == 0u ? 2u : fb - 1u;
         const uint32_t epar = fb == 0u ? fpar ^ 1u : fpar;
+        // The ring addresses by the names the roles give them (macros: as locals, ptxas
+        // 13.3 schedules this build differently).
+#define emptyBi (barEmpty + 8u * bi)
+#define fullSo (barFull + 8u * fb)
+#define rpar fpar
+#define emptySo (barEmpty + 8u * fb)
+#endif
         // The producer refills bi at the top of the stage, before its warp reads
         // anything, so the boxes have two stages of mma to land under (where the ring on
         // perf/sm120-throughput issued its fills, measured). Its EMPTY wait -- all eight
         // warps have released bi -- is the WAR guard, and the only EMPTY wait but the
-        // hand-off's below.
-        if (threadIdx.x == PRODUCER && stage_next) {
+        // hand-off's below. (PEARL_TALL_TMA_FILL_PT moves it into the stage body, and
+        // PEARL_TALL_TMA_PRODUCER2 gives stage 1's refills to lane 0 of warp 5.)
 #ifndef PEARL_ABLATE_RING
-          pearl_mbar_wait(barEmpty + 8u * bi, epar);
+#define PEARL_TALL_REFILL_WAIT pearl_mbar_wait(emptyBi, epar);
+#else
+#define PEARL_TALL_REFILL_WAIT
 #endif
-          tma_fill(bi, cn * rank + s * SK);
-        }
+#define PEARL_TALL_REFILL(prod)                                                        \
+  if (threadIdx.x == (prod) && stage_next) {                                           \
+    PEARL_TALL_REFILL_WAIT                                                             \
+    tma_fill(bi, cn * rank + s * SK);                                                  \
+  }
+#if PEARL_TALL_TMA_PRODUCER2
+#define PEARL_TALL_PRODUCER_S (PRODUCER + 32u * s)
+#else
+#define PEARL_TALL_PRODUCER_S PRODUCER
+#endif
+#if PEARL_TALL_TMA_FILL_PT == 0
+        PEARL_TALL_REFILL(PEARL_TALL_PRODUCER_S)
+#endif
 #ifndef PEARL_ABLATE_RING
         // Diagnostic only when defined: no ring waits, so warps read stages that may not
         // have landed and refill ones still being read. Prices the synchronisation; the
         // output is meaningless.
-        pearl_mbar_wait(barFull + 8u * fb, fpar);
+        pearl_mbar_wait(fullSo, rpar);
 #endif
 #if PEARL_TALL_FRAG_PIPE
         {
@@ -2774,6 +2850,11 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
                 // (see PEARL_TALL_MMA_FENCE_MASK).
                 if ((PEARL_TALL_MMA_FENCE_MASK >> nb) & 1u)
                   asm volatile("griddepcontrol.launch_dependents;" ::: "memory");
+#if PEARL_TALL_TMA_FILL_PT
+                if (t * NB + nb + 1u == PEARL_TALL_TMA_FILL_PT) {
+                  PEARL_TALL_REFILL(PEARL_TALL_PRODUCER_S)
+                }
+#endif
               }
             }
           }
@@ -2782,6 +2863,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
             asm volatile("griddepcontrol.launch_dependents;" ::: "memory");
         }
 #else
+        static_assert(PEARL_TALL_TMA_FILL_PT == 0, "a fill point needs the streamed body");
         // Each k32 step loads its six A fragments, then each B pair right before the
         // twelve mma that read it.
 #pragma unroll
@@ -2812,16 +2894,49 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
           }
         }
 #endif  // PEARL_TALL_FRAG_PIPE
+#if PEARL_TALL_TMA_EMPTY_ALL
+        // This thread is done reading the stage: its own arrival, a release, which the
+        // producer's EMPTY wait acquires before it refills the buffer. PTX orders every
+        // ldmatrix this thread made of the stage before the arrival, so no TMA write can
+        // overtake a read (PEARL_TALL_TMA_EMPTY_ALL).
+        pearl_mbar_arrive(emptySo);
+#else
         // This warp is done reading the stage: one arrival for the whole warp, after a
         // __syncwarp that orders every lane's ldmatrix before it.
         __syncwarp();
-        if (lane == 0u) pearl_mbar_arrive(barEmpty + 8u * fb);
+        if (lane == 0u) pearl_mbar_arrive(emptySo);
+#endif
+#undef PEARL_TALL_REFILL_WAIT
+#undef PEARL_TALL_REFILL
+#undef PEARL_TALL_PRODUCER_S
+#if PEARL_TALL_TMA_ROLES
+      }
+#ifndef PEARL_ABLATE_RING
+      // The hand-off's ordering (see below): the tile's stage 0 read role A, at parity pA.
+      if (chunk == 0u && wr != 0u) pearl_mbar_wait(soA + STAGE + 8u, pA);
+#endif
+      // The next chunk starts on C: the roles rotate, and A and B have each been used once.
+      {
+        const uint32_t tso = soC, tpar = pC;
+        soC = soB;
+        pC = pB ^ 1u;
+        soB = soA;
+        pB = pA ^ 1u;
+        soA = tso;
+        pA = tpar;
+      }
+#else
+#undef emptyBi
+#undef fullSo
+#undef rpar
+#undef emptySo
         if (++fb == NST) {
           fb = 0u;
           fpar ^= 1u;
         }
       }
-#ifndef PEARL_ABLATE_RING
+#endif
+#if !PEARL_TALL_TMA_ROLES && !defined(PEARL_ABLATE_RING)
       // The hand-off's ordering. Under TMA only the producer waits on EMPTY, so
       // nothing else would stop warp wr = 1 writing its chunk 0 words over the ones
       // its column slot's hasher may still be reading. It waits for the tile's stage 0

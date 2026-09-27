@@ -457,7 +457,14 @@ preprocessed device code is main's token for token, ring, stage body and shared 
 included. Only the restamp kernel's stamp loop is spelled differently (`pearl_stamp_byte`,
 the same bytes). The trims are sm_89's alone: its build takes the per-thread EMPTY
 arrival, the ring roles in registers with the barriers behind each buffer (98688 bytes of
-shared; sm_120 keeps 98368), the k-step that holds B, and the new copy points.
+shared; sm_120 kept 98368), the k-step that holds B, and the new copy points.
+
+Later, sm_120 took the ring roles too (`PEARL_TALL_TMA_ROLES`, 99840 bytes of shared,
+buffers 512-byte aligned, which SWIZZLE_64B allows -- verify-hits 359/359). RTX 5090 at
+600 W, memory at 7001 MHz, one session, 3 rounds: 123.34 -> 123.79 TH/s (+0.36%, ahead in
+every round). The per-thread EMPTY arrival that paid on Ada measured flat there (123.41,
+and 123.78 on top of the roles), and so did the other ring ideas (producer at the fill end
+123.43, a second producer warp 123.11); they stay off, as switches.
 
 The one open choice was sm_89's operand order. The k-blocked order stores each 192-row
 stage slice of A' in one 12 KB run and each 256-column slice of B' in one 16 KB run, so
