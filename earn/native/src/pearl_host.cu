@@ -12,9 +12,10 @@
 //
 // WHY A AND B ARE RESIDENT AT ALL. The commitments hash the WHOLE operands
 // (hash_a over pad1024(A), hash_b over pad1024(Bᵀ)), so they must exist somewhere
-// once per job. They are generated on-device from job_key rather than uploaded,
-// which keeps the PCIe bus out of it entirely: generation and hashing are both
-// GPU-side and happen once per job, after which the search reads them.
+// once per job. They are made on-device (a constant fill plus a salt stamp, or
+// hashed from job_key; see PEARL_OPERAND_CONST) rather than uploaded, which
+// keeps the PCIe bus out of it entirely: filling and hashing are both GPU-side
+// and happen once per job, after which the search reads them.
 //
 // WHAT THE SEARCH VARIES. Not a header nonce — re-deriving job_key per attempt
 // would mean re-hashing 1 GiB per attempt. Per job the commitments are computed
@@ -923,9 +924,17 @@ extern "C" void pearl_host_reseed(void *handle, uint64_t salt);
 // The salt is what keeps two cards off each other's work. One salt is worth m*n
 // regions; a card searches those, then re-draws under the next salt it owns. Give
 // every card a different starting salt and a stride equal to the number of cards
-// and they never draw the same operands, so no work and no share is done twice.
-// Without it every card would start at salt 0 and walk 1, 2, 3 in step, and a
-// second card would earn exactly nothing.
+// and no two cards ever draw under the same salt, so no work and no share is done
+// twice. Without it every card would start at salt 0 and walk 1, 2, 3 in step, and
+// a second card would earn exactly nothing.
+//
+// Different salts mean different work because of A, not B. Every draw stamps the
+// salt into A's first bytes (pearl_stamp_byte, one-to-one in the salt), so each
+// salt gets its own root_A and so its own a_seed, and a_seed keys the search: the
+// jackpot hash and A's noise. B can be shared. Under the constant fill
+// (PEARL_OPERAND_CONST) every card draws the same B, root_B, b_seed and B' for a
+// job, and A is the fill plus the stamp, so the stamp is all that keeps two cards
+// apart. Under the hashed fill B differs between cards as well.
 extern "C" void pearl_host_set_job_salted(void *handle, const uint8_t *header,
                                           const uint8_t *target, uint64_t salt) {
   Ctx *ctx = static_cast<Ctx *>(handle);
@@ -1108,13 +1117,28 @@ void full_draw(Ctx *ctx, uint64_t salt) {
   // The operands are the miner's own workload, so their contents are our choice
   // — but their RANGE is not. They must be int7: the noise adds another int7 and
   // the sum has to stay inside int8 for the Int7xInt7ToInt32 MMA.
-  //
-  // Keyed by job_key rather than by a commitment seed, so these streams cannot
-  // collide with the noise streams even though they share the labels.
-  pearl_gen_operand<<<draw_blocks(aLen / 32 + 1), kDrawThreads>>>(
-      ctx->dJobKey, ctx->dLabelA, ctx->dA, aLen, salt);
-  pearl_gen_operand<<<draw_blocks(bLen / 32 + 1), kDrawThreads>>>(
-      ctx->dJobKey, ctx->dLabelB, ctx->dB, bLen, salt);
+  if (ctx->profile.operand_fill == PEARL_OPERAND_CONST) {
+    // A constant costs the fold less energy than random bytes (about 3.5% in the
+    // rate, see PEARL_OPERAND_CONST). Two memsets, cheaper than hashing.
+    //
+    // Then the salt stamp, the same bytes a restamp at this salt would write.
+    // It is the only thing that differs between salts: skip it and every card of
+    // a rig draws the same A and B for a new job, and they all search one space
+    // until their first restamp. With it, a_seed depends on the job and the salt
+    // alone, and the cards' salts never meet.
+    cudaMemset(ctx->dA, PEARL_OPERAND_FILL, aLen);
+    cudaMemset(ctx->dB, PEARL_OPERAND_FILL, bLen);
+    int8_t stamp[PEARL_STAMP_BYTES];
+    for (int i = 0; i < PEARL_STAMP_BYTES; i++) stamp[i] = pearl_stamp_byte(salt, i);
+    cudaMemcpy(ctx->dA, stamp, sizeof(stamp), cudaMemcpyHostToDevice);
+  } else {
+    // Keyed by job_key rather than by a commitment seed, so these streams cannot
+    // collide with the noise streams even though they share the labels.
+    pearl_gen_operand<<<draw_blocks(aLen / 32 + 1), kDrawThreads>>>(
+        ctx->dJobKey, ctx->dLabelA, ctx->dA, aLen, salt);
+    pearl_gen_operand<<<draw_blocks(bLen / 32 + 1), kDrawThreads>>>(
+        ctx->dJobKey, ctx->dLabelB, ctx->dB, bLen, salt);
+  }
 
   // hash_a and hash_b: keyed BLAKE3 over the WHOLE operands. These are Merkle
   // trees over 1024-byte chunks, not one long chain — hashing them as a single
@@ -1150,9 +1174,13 @@ void full_draw(Ctx *ctx, uint64_t salt) {
 //   - redraw A's noise and re-materialise A'. B, B', B's tree and b_seed stay.
 //
 // Distinctness: within a job every salt writes a different stamp, so a
-// different root_A. Across cards the first draws differ (each card's full draw
-// uses its own salt), so B and b_seed already differ. A stamp can only repeat
-// the first draw's own random bytes by chance, about 1 in 127^11.
+// different root_A. Across cards, it depends on the fill:
+//   - hashed: each card's full draw uses its own salt, so B and b_seed already
+//     differ. A stamp can only repeat the first draw's own random bytes by
+//     chance, about 1 in 127^11.
+//   - constant: B and b_seed are the same on every card, and the full draw
+//     stamps A exactly as this does. So A is the fill plus stamp(salt) whichever
+//     way it was drawn, and cards differ because their salts do.
 void restamp(Ctx *ctx, uint64_t salt) {
   const uint64_t aChunks = (uint64_t)ctx->profile.m * ctx->profile.k / 1024;
   PEARL_LAP(-1);

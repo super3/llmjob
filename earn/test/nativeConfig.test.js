@@ -148,6 +148,22 @@ describe('native/JS config agreement', () => {
     expect(init).toContain('PEARL_SEED_SALTED');
   });
 
+  // The operand fill is not protocol, but the two sides must still name the same
+  // one: the JS profile's code is what the addon is handed, and a profile with no
+  // code falls back to the C default.
+  test('both sides default to the constant operand fill, and it is int7', () => {
+    expect(defineOf('PEARL_OPERAND_HASHED')).toBe(0);
+    expect(defineOf('PEARL_OPERAND_CONST')).toBe(1);
+    expect(PROFILE.operandFillCode).toBe(defineOf('PEARL_OPERAND_CONST'));
+    const at = HEADER.indexOf('PEARL_MAINNET_PROFILE =');
+    const init = HEADER.slice(at, HEADER.indexOf('}', at));
+    expect(init).toContain('PEARL_OPERAND_CONST');
+    // The noise adds another int7, and the sum must stay inside int8.
+    const fill = defineOf('PEARL_OPERAND_FILL');
+    expect(fill).not.toBeNull();
+    expect(Math.abs(fill)).toBeLessThanOrEqual(63);
+  });
+
   // job_key is UNKEYED. Hashing it keyed with a zero key is a different
   // function, and was what made the device and the oracle disagree silently.
   test('the device derives job_key with the unkeyed kernel', () => {

@@ -2,7 +2,7 @@
 
 const { hash, keyedHash } = require('../src/shared/miner/blake3');
 const {
-  PROFILE, SEED_SALT_A, SEED_SALT_B, bindMessage, seedDerivationCode,
+  PROFILE, SEED_SALT_A, SEED_SALT_B, bindMessage, seedDerivationCode, operandFillCode,
 } = require('../src/shared/miner/pearlhash');
 const ref = require('../src/shared/miner/reference');
 
@@ -135,6 +135,17 @@ describe('the mainnet profile', () => {
     expect(seedDerivationCode()).toBe(0);
     expect(seedDerivationCode({ ...PROFILE, seedDerivation: 'legacy' })).toBe(1);
     expect(PROFILE.seedDerivationCode).toBe(seedDerivationCode(PROFILE));
+  });
+
+  // The operand fill travels as a number for the same reason. A profile that
+  // does not name a fill gets the constant one, as the addon's default does, so
+  // only 'hashed' maps to 0.
+  test('the operand fill code agrees with the string and defaults to constant', () => {
+    expect(PROFILE.operandFill).toBe('constant');
+    expect(operandFillCode()).toBe(1);
+    expect(operandFillCode({ ...PROFILE, operandFill: 'hashed' })).toBe(0);
+    expect(operandFillCode({ k: 2048, rank: 128 })).toBe(1);
+    expect(PROFILE.operandFillCode).toBe(operandFillCode(PROFILE));
   });
 
   // m and n are bound into the seeds by cert-v3, so the JS profile and the core

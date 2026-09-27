@@ -587,6 +587,10 @@ extern "C" __global__ void pearl_gen_perm(const uint32_t *seed,
 // RANGE is not. Values must be int7 ([-63, 63]), because the noise adds another
 // int7 and the sum has to stay inside int8 for the Int7xInt7ToInt32 MMA.
 //
+// Only PEARL_OPERAND_HASHED draws with this. The mainnet profile fills the
+// operands with a constant instead, which costs the fold less energy (see
+// PEARL_OPERAND_CONST).
+//
 // One hash per 32 output bytes rather than one per byte.
 extern "C" __global__ void pearl_gen_operand(const uint32_t *key,
                                              const uint8_t *label, int8_t *out,
@@ -823,10 +827,10 @@ extern "C" __global__ void pearl_restamp_operand(const uint32_t *key,
                                                  uint64_t chunks, uint32_t *tree,
                                                  uint8_t *root_out) {
   if (blockIdx.x != 0 || threadIdx.x != 0) return;
+  // The same stamp the constant full draw writes (pearl_stamp_byte), so a restamp
+  // at salt s and a full draw at salt s leave the same A.
 #pragma unroll
-  for (int i = 0; i < PEARL_STAMP_BYTES; i++) {
-    operand[i] = (int8_t)((salt >> (6 * i)) & 63u);
-  }
+  for (int i = 0; i < PEARL_STAMP_BYTES; i++) operand[i] = pearl_stamp_byte(salt, i);
   uint32_t key_l[8];
 #pragma unroll
   for (int i = 0; i < 8; i++) key_l[i] = key[i];

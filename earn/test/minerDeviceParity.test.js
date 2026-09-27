@@ -37,7 +37,11 @@ const {
 // The vectors span several SALTS on purpose. The operands are re-drawn whenever
 // the region space is exhausted, and that mechanism is as capable of silent
 // breakage as anything else here.
-const PROFILE = { k: 512, rank: 32, mmaType: 0, m: 512, n: 512 };
+//
+// The vectors were captured with the HASHED operand fill (genOperand below), so a
+// run that reproduces them must pass operandFillCode 0. The addon's default is
+// now the constant fill, which draws different operands and so different seeds.
+const PROFILE = { k: 512, rank: 32, mmaType: 0, m: 512, n: 512, operandFillCode: 0 };
 const { m, n, k, rank } = PROFILE;
 
 const DEVICE = {

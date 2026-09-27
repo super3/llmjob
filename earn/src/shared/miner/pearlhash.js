@@ -250,12 +250,35 @@ const PROFILE = {
   // non-numeric text. That happened to be the value for 'salted', so setting
   // 'legacy' would have been silently ignored and mined the wrong derivation.
   seedDerivationCode: 0,
+
+  // What the core fills the operands A and B with. Not protocol: the protocol
+  // fixes only the noise, and A and B just have to be int7.
+  //   'constant'  every byte 48, plus the salt stamped into A's first 11 bytes
+  //   'hashed'    uniform int7 bytes hashed from job_key and the salt
+  // A constant keeps the sign bits of the noised operands still, which saves
+  // enough switching energy in the fold to raise the clock: 288.2 -> 298.7 TH/s
+  // (+3.6%) on a 4090 at 450 W, full miner loop. See PEARL_OPERAND_CONST in
+  // native/src/pearl_config.h.
+  //
+  // A pool takes it: 3 of 3 shares accepted at us2.pearl.herominers.com
+  // (2026-09-26). If a pool ever refuses these shares, 'hashed' is the fallback.
+  operandFill: 'constant',
+
+  // The same choice as the number the addon reads, as with seedDerivationCode.
+  operandFillCode: 1,
 };
 
 // 0 = cert-v3 salted, 1 = legacy. The addon takes the number.
 function seedDerivationCode(profile) {
   const p = profile || PROFILE;
   return p.seedDerivation === 'legacy' ? 1 : 0;
+}
+
+// 0 = hashed operands, 1 = constant. The addon takes the number. A profile that
+// does not say gets the constant fill, as the addon's own default does.
+function operandFillCode(profile) {
+  const p = profile || PROFILE;
+  return p.operandFill === 'hashed' ? 0 : 1;
 }
 
 // The difficulty adjustment factor: tile size x dot product length.
@@ -463,6 +486,7 @@ module.exports = {
   PROFILE, ROWS_PATTERN, COLS_PATTERN,
   SEED_SALT_A, SEED_SALT_B, bindMessage,
   PENALTY_BASE_RANK, penalizedAdjustmentFactor, shareBound, seedDerivationCode,
+  operandFillCode,
   ROWS_MASK, COLS_MASK, offsetIsValid, expandOffset, regionToTile,
   patternToList, patternFromList, patternToBytes, difficultyAdjustmentFactor,
   CONFIG_BYTES,

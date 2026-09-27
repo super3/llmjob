@@ -7,6 +7,12 @@
 // TRAP (tuning log s6): a harness that silently measures a stale binary invalidates
 // everything. This one is compiled from source every run and prints its own build
 // stamp and the geometry it was built with, so a reading can always be attributed.
+//
+// OPERAND FILL. It benches the mainnet fill (PEARL_OPERAND_CONST, A = B = 48 plus the
+// salt stamp); PEARL_OPERAND_FILL_CODE=0 benches the hashed fill from the same binary.
+// The fill alone moves the rate about 3.5%. A bench.exe from v0.5.7 or older knows only
+// the hashed fill, so an A/B against one compares the fills as well as the code unless
+// this side runs with PEARL_OPERAND_FILL_CODE=0.
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -34,6 +40,10 @@ int main(int argc, char **argv) {
   prof.m = 131072; prof.n = 131072;
   prof.seed_derivation = PEARL_SEED_SALTED;
   prof.col_batch = 2048; prof.hash_big_endian = 0;
+  // What ships, unless PEARL_OPERAND_FILL_CODE says otherwise (see OPERAND FILL above).
+  prof.operand_fill = PEARL_MAINNET_PROFILE.operand_fill;
+  if (getenv("PEARL_OPERAND_FILL_CODE"))
+    prof.operand_fill = (uint32_t)strtoul(getenv("PEARL_OPERAND_FILL_CODE"), nullptr, 10);
   if (argc > 2) prof.m = prof.n = (uint32_t)strtoul(argv[2], nullptr, 10);
   if (argc > 3) prof.col_batch = (uint32_t)strtoul(argv[3], nullptr, 10);
 
@@ -53,9 +63,9 @@ int main(int argc, char **argv) {
 
   // The fold the LOADED binary runs, as the host resolved it. The macros after it are
   // this file's host pass, which describe only the sixteen-warp fold's defaults.
-  printf("build %s %s | m=n=%u col_batch=%u | fold: %s | host-pass BLOCK_GROUP=%d "
+  printf("build %s %s | m=n=%u col_batch=%u fill=%u | fold: %s | host-pass BLOCK_GROUP=%d "
          "WARP_ROWS=%d ROW_TILES=%d COL_BLK=%d STAGE_BUFS=%d SB_STRIDE=%d\n",
-         __DATE__, __TIME__, prof.m, prof.col_batch, pearl_host_fold_name(h),
+         __DATE__, __TIME__, prof.m, prof.col_batch, prof.operand_fill, pearl_host_fold_name(h),
          PEARL_BLOCK_GROUP, PEARL_WARP_ROWS, PEARL_WMMA_ROW_TILES, PEARL_WMMA_COL_BLK,
          PEARL_STAGE_BUFS, PEARL_SB_STRIDE);
 

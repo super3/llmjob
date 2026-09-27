@@ -377,7 +377,8 @@ class PearlMiner extends EventEmitter {
     }
     this.job = job;
     // job_key binds the header to the mining configuration, and everything
-    // downstream -- both operands, both commitment roots, the noise seeds --
+    // downstream -- both commitment roots, the noise seeds, and the operands
+    // too under the hashed fill (the default constant fill does not read it) --
     // hangs off it. The pool never sends the configuration, so both sides
     // derive this independently and a single wrong byte is silent.
     this.jobKey = hash(Buffer.concat([job.header, buildConfig52(this.profile())]));

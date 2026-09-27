@@ -143,6 +143,10 @@ typedef struct PearlProfile {
   // 0 = read the jackpot hash little-endian, as the reference does; 1 = big.
   // A diagnostic for the share rejections, not a protocol choice.
   uint32_t hash_big_endian;
+  // What a full draw fills A and B with: PEARL_OPERAND_HASHED or
+  // PEARL_OPERAND_CONST, see there. Not hashed into config52 -- the operands
+  // are the miner's own, and only their roots reach the chain.
+  uint32_t operand_fill;
 } PearlProfile;
 
 // A tile offset is only VALID if it has the pattern's own bits clear.
@@ -239,6 +243,18 @@ PEARL_HD constexpr uint32_t pearl_pattern_span(uint32_t mask) {
 // How many leading bytes of A a same-job redraw rewrites (pearl_restamp_operand):
 // six bits of salt each, so 11 bytes carry a full 64-bit salt.
 #define PEARL_STAMP_BYTES 11
+
+// Byte i of the salt stamp. Every byte is in [0, 63], so A stays int7, and the
+// stamp is one-to-one in the salt.
+//
+// Two writers use it: the restamp kernel, and the full draw under
+// PEARL_OPERAND_CONST. They must agree, because under the constant fill the
+// stamp is ALL that separates one salt's A from another's. A full draw at salt s
+// and a restamp at salt s then leave the same A, and so the same a_seed,
+// whichever salt the job started on.
+PEARL_HD static inline int8_t pearl_stamp_byte(uint64_t salt, int i) {
+  return (int8_t)((salt >> (6 * i)) & 63u);
+}
 
 // What the fold needs to hash its own transcripts and test them. Passed to the
 // kernel BY VALUE, so the key and target sit in the constant bank as operands
@@ -827,6 +843,43 @@ typedef struct {
 #define PEARL_SEED_SALTED 0u
 #define PEARL_SEED_LEGACY 1u
 
+// What a full draw puts in A and B.
+//
+// The protocol fixes only the noise, which is seeded from the operands' roots.
+// A and B themselves are the miner's own, and must only be int7. So their values
+// are ours to pick, and they cost energy: A' = sat(A + noise) and B' feed the
+// staging copies, ldmatrix and the tensor datapath, and every bit that flips
+// between one mma's operands and the next draws power. Hashed uniform bytes flip
+// the sign bit of A' half the time. A base of 48, with noise in [-63, 63], keeps
+// A' in [-15, 111] and its sign bit mostly still.
+//
+// Measured on a 4090 at 450 W (probes/README.md, "Operand values"):
+//   bench, A = B = 0 / 16 / 32 / 48 / 63: +0.6 / +2.5 / +3.0 / +3.3 to +3.7 /
+//     +3.5 to +3.6%, each against its own session's run of v0.5.6
+//   full miner loop, v0.5.6's fold with this fill against v0.5.6, interleaved:
+//     288.1 / 288.3 -> 298.7 / 298.6 TH/s (+3.6%), the clock 2400 -> 2487 MHz
+// The fill does not change the fold's code, only the bytes it reads. Zero does not
+// help: A' is then pure noise and flips sign as often as ever.
+//
+//   PEARL_OPERAND_HASHED  uniform int7 from job_key and the salt (pearl_gen_operand).
+//                         The frozen device parity vectors were captured with it,
+//                         so any run that reproduces them must ask for it.
+//   PEARL_OPERAND_CONST   every byte PEARL_OPERAND_FILL, then the salt stamp over
+//                         A's first PEARL_STAMP_BYTES bytes (pearl_stamp_byte).
+//
+// The stamp is what keeps two salts apart. Under this fill every card draws the
+// same B, root_B, b_seed and B' for a job, and A differs only in the stamp.
+// Without it every salt's first draw would be the same A and B, so every card of
+// a rig would search the same space until its first restamp.
+//
+// The pool takes it: 3 of 3 shares accepted in 198 s at us2.pearl.herominers.com
+// (earn-cli, 2026-09-26, v0.5.6's fold). The verifier recomputes A' from the
+// leaves a share carries, and these are valid int7. If a pool ever refuses them,
+// PEARL_OPERAND_HASHED is the fallback (probes/README.md, "Operand values").
+#define PEARL_OPERAND_HASHED 0u
+#define PEARL_OPERAND_CONST 1u
+#define PEARL_OPERAND_FILL 48
+
 // blake3("pearl/cert-v3/noise-seed/A") and .../B. Hardcoded in the reference so
 // consensus does not depend on runtime string hashing; both are re-derived from
 // their strings in the JS tests.
@@ -844,7 +897,8 @@ static const uint8_t PEARL_SEED_SALT_B[32] = {
 // each chunk lands in its own lane and the rotation never wraps.
 static const PearlProfile PEARL_MAINNET_PROFILE = {2048u, 128u, 0u,
                                                    131072u, 131072u,
-                                                   PEARL_SEED_SALTED, 2048u, 0u};
+                                                   PEARL_SEED_SALTED, 2048u, 0u,
+                                                   PEARL_OPERAND_CONST};
 
 // Serialize the 52-byte mining configuration, matching the reference's
 // MiningConfiguration::to_bytes byte for byte:

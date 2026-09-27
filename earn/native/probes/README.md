@@ -69,7 +69,7 @@ Inside the fold, fold-only, all at the cap (these builds compute wrong answers):
 The per-chunk `__syncthreads` is worth 18% per clock and still 9% after the clock
 drops to pay for it. The square warp tile that won 2% on Blackwell loses 2% here.
 
-### Where it ended: 223 -> 289 TH/s at the same 450 W
+### Where it ended: 223 -> 299 TH/s at the same 450 W
 
 | step | full miner loop |
 |---|---|
@@ -81,7 +81,8 @@ drops to pay for it. The square warp tile that won 2% on Blackwell loses 2% here
 | + ldmatrix lane bases held for the kernel, compile-time `active` | 270 |
 | + tile coordinates by shift and mask, not divides | 273 |
 | + a tile pattern the accumulators hold, eight 64x64 warps a block | 280 |
-| + a 192x256 tile, three 64-deep stages on an mbarrier ring | **289** |
+| + a 192x256 tile, three 64-deep stages on an mbarrier ring | 289 |
+| + a constant operand fill, A = B = 48 | **299** |
 
 The 241 and 264 steps are gated to sm_89 (`PEARL_FOLD_PERSISTENT`, `PEARL_FOLD_GROUP_STAGE`,
 `PEARL_FOLD_SERPENTINE`), because only a 4090 has run them. Ampere and Blackwell keep one
@@ -89,7 +90,7 @@ block per tile and the block-wide walk; run on this card with their settings for
 paths measure +1.8% and +1.9% over the previous core rather than a regression, and their
 chunk loops compile to 370 and 484 instructions against 385 and 451 before.
 
-The last two rows are gated to sm_89 too (`PEARL_FOLD_LANE_BASES`,
+The 270 and 273 rows are gated to sm_89 too (`PEARL_FOLD_LANE_BASES`,
 `PEARL_FOLD_FAST_COORDS`). Measured interleaved against v0.5.5 in the full loop: +2.3%,
 then +3.5% with both (262.6 / 262.8 -> 272.0 / 271.8; v0.5.5 measured ~1.5 TH/s under its
 264 that day, so the rows carry the gains onto 264), 400/400 hits verified. Both shorten
@@ -103,11 +104,17 @@ The 280 row is gated to sm_89 as well (`PEARL_FOLD_WIDE_WARPS`; the tile pattern
 every card's). It measured 271.6 -> 279.8 against the row before it, interleaved the same
 day (+3.0%); see "Eight 64x64 warps a block" below.
 
-The last row is its own kernel, `pearl_tile_fold_tall`, with a body only in the sm_89 and
+The 289 row is its own kernel, `pearl_tile_fold_tall`, with a body only in the sm_89 and
 sm_120 builds (`PEARL_FOLD_TALL`; sm_120's stages with TMA, see `PEARL_TALL_TMA`); the host
-launches it when that is the binary it loaded. Against the 273
-row, interleaved: 271.8 / 271.9 -> 288.6 / 289.4 in the full loop (+6.3%); see "A 192x256
-tile on an mbarrier ring" below.
+launches it when that is the binary it loaded. Against the 273 row, interleaved: 271.8 /
+271.9 -> 288.6 / 289.4 in the full loop (+6.3%); see "A 192x256 tile on an mbarrier ring"
+below.
+
+The last row changes only the bytes A and B hold, on every card: 48 plus the salt stamp,
+instead of hashed int7. It is the mainnet default, and a pool has accepted shares made with
+it. Against v0.5.6, interleaved: 288.1 / 288.3 -> 298.7 / 298.6 in the full loop (+3.6%).
+v0.5.7's sm_89 fold is v0.5.6's instruction for instruction (it added the sm_120 build), so
+the row carries the +3.6% onto 289. See "Operand values" below.
 
 ### Against the field: 264 is 15.8% behind
 
@@ -369,6 +376,100 @@ standalone probe ran with no tensor load; every other unit energy was measured u
 There is no copy-pattern fix. What is left is fewer bytes per MAC: at 42 pJ/B a 192x256
 tile saves about 0.45 nJ per IMMA, not 0.34.
 
+### Operand values: a constant A and B, +3.6%
+
+A and B are the miner's own int7 matrices. The protocol fixes only the low-rank noise,
+seeded from their roots, so what they hold is our choice. It costs energy: A' = sat(A +
+noise) and B' go through the staging copies, ldmatrix and the tensor datapath, and every
+bit that flips between one mma's operands and the next draws power.
+
+The research build set A and B to a constant with `cudaMemset` after drawing them
+(`perf-scratch/r9-ideal`, v0.5.6's fold). Bench, capped. The rows come from three research
+sessions, s3, s4 and s6, and each is against that session's own run of the shipped fold:
+290.9 in s3, 292.0 in s4, 292.8 in s6. Sessions drift about 1%, so compare within one.
+
+| A = B = | session | TH/s | vs that session's shipped |
+|---|---|---|---|
+| 0 | s3 | 292.7 / 293.1 | +0.6% / +0.8% |
+| uniform [-4, 3] | s3 | 293.2 | +0.8% |
+| 16 | s6 | 300.1 | +2.5% |
+| 32 | s6 | 301.5 | +3.0% |
+| 40 | s6 | 302.3 | +3.2% |
+| **48** | s6 / s4 | **302.6 / 302.8** | **+3.3% / +3.7%** |
+| 56 | s6 | 302.5 | +3.3% |
+| 63 | s3 / s4 | 301.4 / 302.1 | +3.6% / +3.5% |
+| -48 | s6 | 298.4 | +1.9% |
+| A = 48, B = -48 | s6 | 300.3 | +2.6% |
+| A = 63 only | s4 | 295.6 | +1.2% |
+| B = 63 only | s4 | 297.7 | +2.0% |
+
+- 48 and 63 are close. The one session that ran both had 48 ahead, 302.8 against 302.1.
+- The noise is in [-63, 63], so at 48 A' stays in [-15, 111] and its sign bit rarely
+  flips. Zero does not help: A' is then pure noise and flips sign half the time.
+- 127 measured +5.9% (s4), but it is not int7, so it was not taken further.
+- Marginal energy per mma (64 SMs minus 32, uncapped): 6.61 nJ shipped, 5.81 at 48.
+- The same pure-mma build (operand values loaded once and held in registers, no staging,
+  uncapped) drew 40 W less with A = B = 63 than with hashed values on 128 SMs (370 -> 330
+  W, 2685 MHz), and 15 W less on 64 SMs (233 -> 218 W, 2700 MHz). The saving does not
+  scale with the SM count, and these runs do not show why.
+
+What ships (`PEARL_OPERAND_CONST`, the mainnet default): a full draw memsets A and B to 48,
+then writes the salt stamp over A's first 11 bytes. These are the same bytes a restamp at
+that salt writes (`pearl_stamp_byte`).
+
+The stamp is not optional. Under the constant fill every card draws the same B, root_B,
+b_seed and B' for a job, so the stamp in A is all that keeps two cards apart. The research
+build had none, so every salt's full draw was the same A and B, and on a multi-GPU rig
+every card would search the same space for a new job until its first restamp. Measured on
+that build: cores with salt base 0 and 1 drew the same first a_seed. With the stamp,
+a_seed depends only on the job and the salt (`perf-scratch/r9-fill-distinct.js`):
+
+- base 0 and base 1 (stride 2) shared none of their a_seeds, first draws included;
+- every reseed on one core gave a new a_seed (33 salts, 33 a_seeds);
+- a full draw at salt s and a restamp at salt s gave the same a_seed and root_A at all 16
+  salts two cores had in common;
+- every A and B leaf byte a share carried was 48 (leaf 0, the stamp's, was never hit).
+
+The hashed fill stays as `PEARL_OPERAND_HASHED` (`operandFill: 'hashed'`, code 0). The
+frozen parity vectors were captured with it, and it is the fallback if a pool refuses the
+constant.
+
+Measured on v0.5.6's fold. The fill does not change the fold's SASS, only the bytes
+it reads. Full miner loop, 60 s, interleaved against v0.5.6, 4090 at 450 W:
+
+| | TH/s | SM clock |
+|---|---|---|
+| v0.5.6 (hashed) | 288.1 / 288.3 | 2401 / 2397 MHz |
+| constant fill | 298.7 / 298.6 (+3.6%) | 2487 / 2487 MHz |
+
+`verify-hits`: 400 of 400 hits verified across 325 salts.
+
+**The pool takes it.** 3 of 3 shares accepted in 198 s at us2.pearl.herominers.com
+(`earn-cli`, 2026-09-26), with the constant fill on v0.5.6's fold (`perf-scratch/r9-fill-bin`).
+If a pool ever refuses these shares, go back to the hashed fill:
+
+- `earn/src/shared/miner/pearlhash.js`: in `PROFILE`, set `operandFill: 'hashed'` and
+  `operandFillCode: 0`. This alone switches the miner, with no CUDA rebuild: the addon
+  reads `operandFillCode`.
+- Same file, `operandFillCode()`: return `p.operandFill === 'constant' ? 1 : 0`, so a
+  profile that names no fill gets the hashed one, like the C default below.
+- `earn/native/src/pearl_config.h`: make the last field of `PEARL_MAINNET_PROFILE`
+  `PEARL_OPERAND_HASHED`. That is the default for bench and for any caller that passes no
+  code. It takes effect at the next build.
+- `earn/test/minerSeeds.test.js`, "the operand fill code agrees with the string and
+  defaults to constant": expect `PROFILE.operandFill` to be `'hashed'`, and
+  `operandFillCode()` and `operandFillCode({ k: 2048, rank: 128 })` to be 0. Change the
+  `{ ...PROFILE, operandFill: 'hashed' }` line to `'constant'` and expect 1: otherwise no
+  test takes the `? 1` branch and earn's 100% branch coverage fails. Rename the test to
+  say hashed.
+- `earn/test/nativeConfig.test.js`, "both sides default to the constant operand fill, and
+  it is int7": expect `PROFILE.operandFillCode` to be `defineOf('PEARL_OPERAND_HASHED')`
+  and the `PEARL_MAINNET_PROFILE` initialiser to contain `PEARL_OPERAND_HASHED`. Rename it
+  too.
+
+Then fix the comments that call the constant the default (beside `PROFILE.operandFill`
+and `PEARL_OPERAND_CONST`), and run `npm test` in `earn/`.
+
 ### Two warp groups instead of the per-chunk barrier: measured, not shipped
 
 The per-chunk `__syncthreads` holds all sixteen warps in the chunk seam together. The idea
@@ -438,6 +539,18 @@ out of the fold.
   the transcript hash. The run crosses hundreds of operand redraws. The shipped core
   passes 400/400; a build with the barrier deleted fails 349 of 353. A faster build that
   does not pass is not faster, it is broken.
+- `bench.exe <secs>` (built from `bench.cu`) -- fold plus finalize, no redraws. It benches
+  the mainnet fill, now the constant one; `PEARL_OPERAND_FILL_CODE=0` benches the hashed
+  fill from the same binary.
+
+Mind the operand fill when comparing builds. `hashrate.js` and `verify-hits.js` hand the
+core the JS profile, so they run the constant fill, but a core from v0.5.7 or older has no
+`operandFillCode` and always runs the hashed one. Its bench does too. An A/B against such
+a build compares the fills as well as the code, which is about 3.5% on its own (see
+"Operand values"). To compare code alone, bench the new build with
+`PEARL_OPERAND_FILL_CODE=0`. `hashrate.js` and `verify-hits.js` take no profile option:
+edit their `addon.createCore(PROFILE, {})` to `addon.createCore({ ...PROFILE,
+operandFillCode: 0 }, {})`.
 
 Run one at a time: two processes on the card corrupt each other's timing.
 
