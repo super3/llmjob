@@ -368,9 +368,6 @@ Napi::Value PearlCore::On(const Napi::CallbackInfo &info) {
 // The search thread. Batches nonces so a job switch is picked up promptly —
 // the pool replaces jobs every few seconds and grinding a stale one earns
 // nothing.
-// The search thread. Batches nonces so a job switch is picked up promptly —
-// the pool replaces jobs every few seconds and grinding a stale one earns
-// nothing.
 //
 // It keeps two batches queued on the device (pearl_host_submit), and reads the older
 // one's result (pearl_host_collect) while the newer runs, so the fold never waits for
@@ -472,10 +469,16 @@ void PearlCore::SearchLoop() {
     if (fresh) {
       while (!queued.empty())
         if (!collect(true)) return;
-      pearl_host_set_job_salted(ctx_, header, target, salt_base_);
+      // Every job after the first is drawn at the next salt this core owns, not
+      // back at salt_base_. A pool re-sends the job it is on after a reconnect,
+      // and the dev fee's login switch can hand over the same header, so going
+      // back to salt_base_ would search that salt again and resubmit every share
+      // it had already found, which the pool rejects as duplicates. Salts only
+      // grow, in steps of the stride, so the cards' spaces stay disjoint.
+      if (drawn) salt += salt_stride_;
+      pearl_host_set_job_salted(ctx_, header, target, salt);
       job_id = fresh_id;
       drawn = true;
-      // The draw is at salt_base_, and its regions start at 0.
       nonce = 0;
     }
     if (!drawn) {
