@@ -45,6 +45,22 @@ describe('extensionless page URLs', () => {
     expect(res.text).toContain('href="/llm"');
   });
 
+  // Download clicks are counted in Umami: every download link carries the event
+  // name and which OS and which button it was, top or bottom of the page.
+  it('tags every download link on the home page as an Umami event', async () => {
+    const res = await request(app).get('/');
+    const links = res.text.match(/<a [^>]*releases\/download\/[^>]*>/g);
+    expect(links).toHaveLength(6);
+    for (const a of links) {
+      expect(a).toContain('data-umami-event="download"');
+      expect(a).toMatch(/data-umami-event-os="(windows|linux)"/);
+      expect(a).toMatch(/data-umami-event-place="(top|bottom)"/);
+    }
+    // Each installer's links say which OS they are.
+    expect(links.filter((a) => a.includes('.exe')).every((a) => a.includes('data-umami-event-os="windows"'))).toBe(true);
+    expect(links.filter((a) => a.includes('.AppImage')).every((a) => a.includes('data-umami-event-os="linux"'))).toBe(true);
+  });
+
   it('serves the LLM waitlist page at /llm', async () => {
     const res = await request(app).get('/llm');
     expect(res.status).toBe(200);
