@@ -43,6 +43,9 @@ describe('extensionless page URLs', () => {
     expect(res.text).toContain('<title>LLMJob Earn');
     expect(res.text).toContain('Download for Windows');
     expect(res.text).toContain('href="/llm"');
+    // Both ways to get a payout address: the web wallet and the desktop wallet.
+    expect(res.text).toContain('href="https://wallet.alphapool.tech/"');
+    expect(res.text).toContain('href="https://github.com/pearl-research-labs/pearl/releases"');
   });
 
   // Download clicks are counted in Umami: every download link carries the event
