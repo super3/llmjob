@@ -76,9 +76,12 @@ function render(src, ctx, depth = 0) {
 
 // The page left at a retired URL: a meta refresh, plus a script so the redirect
 // doesn't wait on the refresh, and a plain link for anything that runs neither.
-// The script carries the #fragment along (/earn#calculator → /#calculator),
-// which a meta refresh can't. noindex keeps search engines from listing the
-// stub in place of its target.
+// The script carries the visitor's ?query and #fragment along, which a meta
+// refresh can't: /earn#calculator → /#calculator, and a sponsor's tagged link
+// /earn.html?ref=rabid → /?ref=rabid, so the tag still reaches analytics. When
+// the target has its own query (a campaign short link), the visitor's is added
+// after it with "&". noindex keeps search engines from listing the stub in place
+// of its target.
 function redirectPage(target) {
   const attr = target.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
   return `<!DOCTYPE html>
@@ -88,7 +91,7 @@ function redirectPage(target) {
 <title>LLMJob</title>
 <meta name="robots" content="noindex" />
 <meta http-equiv="refresh" content="0; url=${attr}" />
-<script>location.replace(${JSON.stringify(target)} + location.hash);</script>
+<script>var t = ${JSON.stringify(target)}, q = location.search; if (q) t += (t.indexOf("?") < 0 ? "?" : "&") + q.slice(1); location.replace(t + location.hash);</script>
 </head>
 <body><p>This page has moved. <a href="${attr}">Continue to LLMJob</a>.</p></body>
 </html>

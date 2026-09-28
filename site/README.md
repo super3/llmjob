@@ -32,9 +32,12 @@ that redirects the visitor to the target. It works on both hosts because it is
 just a page, and the build fails if a redirect has the same name as a real page.
 
 Short links for campaigns live in the same file. `/nec` (New England Crypto's
-video) goes to the home page with UTM tags, so Umami can tell those visits and
-their download clicks apart. A target can carry a query string; the redirect
-page keeps it.
+video) and `/rabid` go to the home page with UTM tags, so Umami can tell those
+visits and their download clicks apart.
+
+The redirect page carries the visitor's own `?query` and `#fragment` along, so
+an old tagged link like `/earn.html?ref=rabid` still lands on `/?ref=rabid`. If
+the target already has a query, the visitor's is added after it with `&`.
 
 ## Where the output goes
 

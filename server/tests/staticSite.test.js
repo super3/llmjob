@@ -5,6 +5,7 @@
 // retires the old .html URLs.
 const { execFileSync } = require('node:child_process');
 const path = require('node:path');
+const vm = require('node:vm');
 const request = require('supertest');
 const { app } = require('../src/index');
 
@@ -13,6 +14,15 @@ const ROOT = path.join(__dirname, '../..');
 beforeAll(() => {
   execFileSync('node', ['site/build-site.mjs'], { cwd: ROOT, stdio: 'ignore' });
 });
+
+// Run a redirect page's script against a pretend browser location and return
+// where it sends the visitor, so the tests check the behaviour, not the text.
+function redirectFrom(html, search = '', hash = '') {
+  const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+  let to = null;
+  vm.runInNewContext(script, { location: { search, hash, replace: (url) => { to = url; } } });
+  return to;
+}
 
 describe('extensionless page URLs', () => {
   it('serves a page at its extensionless path', async () => {
@@ -28,7 +38,7 @@ describe('extensionless page URLs', () => {
     const res = await request(app).get('/chat');
     expect(res.status).toBe(200);
     expect(res.text).toContain('<meta http-equiv="refresh" content="0; url=/" />');
-    expect(res.text).toContain('location.replace("/" + location.hash)');
+    expect(redirectFrom(res.text)).toBe('/');
     expect(res.text).toContain('<meta name="robots" content="noindex" />');
     // Nothing on the site links to it any more.
     const home = await request(app).get('/');
@@ -72,7 +82,15 @@ describe('extensionless page URLs', () => {
     const target = '/?utm_source=newenglandcrypto&utm_medium=youtube&utm_campaign=pearl-miner';
     // In HTML attributes the & is escaped; in the script it is plain.
     expect(res.text).toContain('content="0; url=' + target.replace(/&/g, '&amp;') + '"');
-    expect(res.text).toContain('location.replace("' + target + '" + location.hash)');
+    expect(redirectFrom(res.text)).toBe(target);
+    // Anything the visitor's link carried is added after the short link's own tags.
+    expect(redirectFrom(res.text, '?fbclid=abc', '#calculator')).toBe(target + '&fbclid=abc#calculator');
+  });
+
+  it('sends the /rabid short link to the home page with its UTM tags', async () => {
+    const res = await request(app).get('/rabid');
+    expect(res.status).toBe(200);
+    expect(redirectFrom(res.text)).toBe('/?utm_source=rabid&utm_medium=youtube&utm_campaign=pearl-miner');
   });
 
   it('serves the LLM waitlist page at /llm', async () => {
@@ -87,9 +105,21 @@ describe('extensionless page URLs', () => {
     const res = await request(app).get('/earn');
     expect(res.status).toBe(200);
     expect(res.text).toContain('<meta http-equiv="refresh" content="0; url=/" />');
-    expect(res.text).toContain('location.replace("/" + location.hash)');
+    expect(redirectFrom(res.text)).toBe('/');
+    expect(redirectFrom(res.text, '', '#calculator')).toBe('/#calculator');
     const home = await request(app).get('/');
     expect(home.text).not.toContain('href="/earn"');
+  });
+
+  // A sponsor's July video still links to /earn.html?ref=rabid. The tag has to
+  // survive both hops (the .html 301, then the redirect page) to reach Umami.
+  it('keeps the ?query of a tagged link through the /earn redirect', async () => {
+    const hop = await request(app).get('/earn.html?ref=rabid');
+    expect(hop.status).toBe(301);
+    expect(hop.headers.location).toBe('/earn?ref=rabid');
+    const res = await request(app).get('/earn');
+    expect(redirectFrom(res.text, '?ref=rabid')).toBe('/?ref=rabid');
+    expect(redirectFrom(res.text, '?ref=rabid', '#calculator')).toBe('/?ref=rabid#calculator');
   });
 
   it('links between pages carry no .html', async () => {
