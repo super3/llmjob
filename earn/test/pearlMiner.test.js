@@ -421,13 +421,19 @@ describe('PearlMiner — shares', () => {
     expect(sock.written).toHaveLength(0);
   });
 
+  // A rig's only core failing is the end of mining: the error is relayed as it
+  // came, and the miner stops rather than holding a pool connection open for a
+  // card that will never search again.
   test('hashrate and core errors are relayed', () => {
-    const { core, events } = withJob();
+    const { m, core, events } = withJob();
     core.emit('hashrate', 296.5);
     const err = new Error('kernel launch failed');
     core.emit('error', err);
     expect(events.hashrate).toEqual([296.5]);
     expect(events.error).toEqual([err]);
+    expect(core.stop).toHaveBeenCalled();
+    expect(events.stopped).toHaveLength(1);
+    expect(m.isRunning()).toBe(false);
   });
 });
 
@@ -819,6 +825,192 @@ describe('PearlMiner — one core per card', () => {
     b.m.pending.set(7, { jobId: 'j', index: 1 });
     b.sock.emit('data', JSON.stringify({ id: 7, result: true, error: null }) + '\n');
     expect(b.events.share[0]).toEqual({ jobId: 'j', accepted: true, index: 1 });
+  });
+});
+
+// A core whose search fails (a CUDA fault such as the Windows Blackwell
+// "misaligned address") never searches again. Leaving it in the rig meant the
+// next pool job called setJob on it, the native core started a second search
+// thread over the finished one, std::thread's assignment called std::terminate,
+// and on Windows the whole app closed a few seconds after the error. The host
+// now drops that card and carries on with the others.
+describe('PearlMiner — a core that fails mid-run', () => {
+  const GPUS = [
+    { index: 0, name: 'NVIDIA GeForce RTX 5090' },
+    { index: 1, name: 'NVIDIA GeForce RTX 4090' },
+  ];
+  const MISALIGNED = 'CUDA error during search: misaligned address';
+
+  // One fresh core per card, reporting the card it was asked for (the real
+  // addon's behaviour), and a clocks double that records the order of every
+  // lock, reset and 'stopped'.
+  function rig(over = {}) {
+    const made = [];
+    const calls = [];
+    const sock = makeSocket();
+    const clocks = {
+      lockMemoryClock: jest.fn((index, mhz) => { calls.push(['lock', index, mhz]); return { ok: true, error: null }; }),
+      resetMemoryClock: jest.fn((index) => { calls.push(['reset', index]); return { ok: true, error: null }; }),
+    };
+    const createCore = jest.fn((profile, opts) => {
+      const c = makeCore();
+      if (!over.silentDevice) {
+        c.device = { index: opts.deviceIndex, name: GPUS[opts.deviceIndex].name };
+      }
+      made.push(c);
+      return c;
+    });
+    const m = new PearlMiner({ connect: () => sock, createCore, reconnectMs: 0, clocks });
+    const events = { log: [], hashrate: [], error: [], stopped: [] };
+    for (const k of Object.keys(events)) m.on(k, (...a) => events[k].push(a.length > 1 ? a : a[0]));
+    m.on('stopped', () => calls.push(['stopped']));
+    const lines = () => events.log.map((l) => l.line);
+    return { m, sock, made, calls, clocks, events, lines };
+  }
+
+  // A hashrate sample the dead core queued before failing must not bring the
+  // card back into the rig's total.
+  test('ignores a late hashrate sample from a core it already dropped', () => {
+    const b = rig();
+    b.m.start({ ...settings, gpus: GPUS });
+    b.made[0].emit('hashrate', 107);
+    b.made[1].emit('hashrate', 60);
+    b.made[0].emit('error', new Error('GPU 0: ' + MISALIGNED));
+    b.events.hashrate.length = 0;
+    b.made[0].emit('hashrate', 107);
+    expect(b.m.totalHashrate()).toBe(60);
+    expect(b.m.hashrate).toBe(60);
+    expect(b.events.hashrate).toEqual([]);
+  });
+
+  test('drops the failed card, says so once, and keeps mining on the other', () => {
+    const b = rig();
+    b.m.start({ ...settings, gpus: GPUS });
+    b.sock.emit('connect');
+    b.sock.emit('data', jobLine());
+    b.made[0].emit('hashrate', 107);
+    b.made[1].emit('hashrate', 60);
+    b.events.hashrate.length = 0;
+
+    // As the native core sends it: already naming its card.
+    b.made[0].emit('error', new Error('GPU 0: ' + MISALIGNED));
+
+    expect(b.made[0].stop).toHaveBeenCalledTimes(1);
+    expect(b.made[1].stop).not.toHaveBeenCalled();
+    expect(b.m.devices()).toEqual([{ index: 1, name: 'NVIDIA GeForce RTX 4090' }]);
+    expect(b.m.isRunning()).toBe(true);
+    // Logged once, with the card named once, and not escalated to an error:
+    // the rig is still mining.
+    expect(b.events.log.filter((l) => /stopped:/.test(l.line))).toEqual([{
+      level: 'error',
+      line: 'GPU 0 (NVIDIA GeForce RTX 5090) stopped: ' + MISALIGNED,
+    }]);
+    expect(b.events.error).toEqual([]);
+    expect(b.events.stopped).toEqual([]);
+    // Its hashrate leaves the rig total, and the UI hears it drop to zero.
+    expect(b.m.totalHashrate()).toBe(60);
+    expect(b.m.hashrate).toBe(60);
+    expect(b.events.hashrate).toEqual([[0, { index: 0, name: 'NVIDIA GeForce RTX 5090' }]]);
+
+    // The next job goes to the card that is left, and never to the failed one:
+    // that setJob is what used to terminate the process.
+    b.sock.emit('data', jobLine({ job_id: '00000000_2097153' }));
+    expect(b.made[0].setJob).toHaveBeenCalledTimes(1);
+    expect(b.made[1].setJob).toHaveBeenCalledTimes(2);
+
+    // And stopping the rig later stops only what is still running.
+    b.m.stop();
+    expect(b.made[0].stop).toHaveBeenCalledTimes(1);
+    expect(b.made[1].stop).toHaveBeenCalledTimes(1);
+  });
+
+  // With --mine-mem-clock the failed card is locked at the mining clock. It is
+  // not mining any more, so it is released now, not when the rest of the rig
+  // stops -- and not released a second time then.
+  test('releases the failed card\'s memory clock at once, and only once', () => {
+    const b = rig();
+    b.m.start({ ...settings, gpus: GPUS, mineMemClockMhz: 7001 });
+    expect(b.calls).toEqual([['lock', 0, 7001], ['lock', 1, 7001]]);
+
+    b.made[1].emit('error', new Error('GPU 1: ' + MISALIGNED));
+    expect(b.calls.slice(2)).toEqual([['reset', 1]]);
+    expect(b.lines()).toContain('memory clock released on GPU 1');
+
+    b.m.stop();
+    expect(b.calls.slice(3)).toEqual([['reset', 0], ['stopped']]);
+  });
+
+  // Every card gone is the same end as a start with no core: an error that
+  // says why, then 'stopped', so the app shows mining has stopped rather than
+  // a pool connection that mines nothing. Locks are released before 'stopped',
+  // because the demand gate starts the LLM the moment it hears it.
+  test('when the last card fails, reports it and stops, releasing every lock first', () => {
+    const b = rig();
+    b.m.start({ ...settings, gpus: GPUS, mineMemClockMhz: 7001 });
+    b.sock.emit('connect');
+    b.made[0].emit('error', new Error('GPU 0: ' + MISALIGNED));
+    expect(b.m.isRunning()).toBe(true);
+
+    const last = new Error('GPU 1: ' + MISALIGNED);
+    b.made[1].emit('error', last);
+    expect(b.events.error).toEqual([last]);
+    // Marked as a failure, which PearlEngine turns into a non-zero exit code.
+    expect(b.events.stopped).toEqual([{ failed: true }]);
+    expect(b.m.isRunning()).toBe(false);
+    expect(b.m.devices()).toEqual([]);
+    expect(b.sock.destroy).toHaveBeenCalled();
+    expect(b.calls.slice(2)).toEqual([['reset', 0], ['reset', 1], ['stopped']]);
+    expect(b.lines()).toEqual(expect.arrayContaining([
+      'GPU 0 (NVIDIA GeForce RTX 5090) stopped: ' + MISALIGNED,
+      'GPU 1 (NVIDIA GeForce RTX 4090) stopped: ' + MISALIGNED,
+    ]));
+  });
+
+  // The native side can deliver one more error after the host has dropped the
+  // core, and a stopped miner can hear one too. Neither is news.
+  test('ignores an error from a core it has already dropped', () => {
+    const b = rig();
+    b.m.start({ ...settings, gpus: GPUS });
+    b.made[0].emit('error', new Error('GPU 0: ' + MISALIGNED));
+    b.made[0].emit('error', new Error('GPU 0: ' + MISALIGNED));
+    expect(b.lines().filter((l) => /stopped:/.test(l))).toHaveLength(1);
+    expect(b.made[0].stop).toHaveBeenCalledTimes(1);
+
+    b.m.stop();
+    b.made[1].emit('error', new Error('GPU 1: ' + MISALIGNED));
+    expect(b.events.error).toEqual([]);
+    // A stop somebody asked for is not a failure.
+    expect(b.events.stopped).toEqual([{}]);
+  });
+
+  // A core that throws on stop is already gone; that must not stop the host
+  // from dropping it and carrying on.
+  test('tolerates a failed core that throws on stop', () => {
+    const b = rig();
+    b.m.start({ ...settings, gpus: GPUS });
+    b.made[0].stop.mockImplementation(() => { throw new Error('already stopped'); });
+    b.made[0].emit('error', new Error('GPU 0: ' + MISALIGNED));
+    expect(b.m.devices().map((d) => d.index)).toEqual([1]);
+    expect(b.m.isRunning()).toBe(true);
+  });
+
+  // An older core does not prefix its errors, and a core that will not name
+  // its card cannot be named in the log either.
+  test('quotes an unprefixed message as it is, and names no card it cannot', () => {
+    const b = rig();
+    b.m.start({ ...settings, gpus: GPUS });
+    b.made[1].emit('error', new Error('an illegal memory access was encountered'));
+    expect(b.lines()).toContain(
+      'GPU 1 (NVIDIA GeForce RTX 4090) stopped: an illegal memory access was encountered',
+    );
+
+    const old = rig({ silentDevice: true });
+    old.m.start(settings);
+    old.made[0].emit('error', 'CUDA_ERROR_LAUNCH_FAILED');
+    expect(old.lines()).toContain('the GPU stopped: CUDA_ERROR_LAUNCH_FAILED');
+    expect(old.events.error).toEqual(['CUDA_ERROR_LAUNCH_FAILED']);
+    expect(old.events.hashrate).toEqual([]);
+    expect(old.m.isRunning()).toBe(false);
   });
 });
 

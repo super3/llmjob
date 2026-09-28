@@ -63,7 +63,9 @@ jobs:
             # and answer "Version not available".
             cuda: '12.8.1'
             release: '12.8'
-            subpackages: '["nvcc", "cudart", "cudart-dev", "nvrtc", "nvrtc-dev"]'
+            # cuobjdump for the tensor-map offset check after the compile; it is
+            # its own package on both platforms and nvcc does not pull it in.
+            subpackages: '["nvcc", "cudart", "cudart-dev", "nvrtc", "nvrtc-dev", "cuobjdump"]'
             gencode: >-
               -gencode arch=compute_86,code=sm_86
               -gencode arch=compute_89,code=sm_89
@@ -73,7 +75,7 @@ jobs:
             file: pearl_core.node
             cuda: '12.8.1'
             release: '12.8'
-            subpackages: '["nvcc", "cudart", "nvrtc"]'
+            subpackages: '["nvcc", "cudart", "nvrtc", "cuobjdump"]'
             gencode: >-
               -gencode arch=compute_86,code=sm_86
               -gencode arch=compute_89,code=sm_89
@@ -91,7 +93,7 @@ jobs:
             release: '13.3'
             # The same list as 12.8: apt pulls nvcc's split-out pieces (crt,
             # nvvm, nvptxcompiler) in as dependencies of cuda-nvcc-13-3.
-            subpackages: '["nvcc", "cudart", "cudart-dev", "nvrtc", "nvrtc-dev"]'
+            subpackages: '["nvcc", "cudart", "cudart-dev", "nvrtc", "nvrtc-dev", "cuobjdump"]'
             gencode: -gencode arch=compute_120,code=sm_120
           - os: windows-2022
             variant: '-cu13'
@@ -103,7 +105,7 @@ jobs:
             # list and absent from 12.8.1's), and the Windows installer is given
             # exactly the list it installs. Named explicitly so nvcc has its
             # headers and its back end.
-            subpackages: '["nvcc", "crt", "nvvm", "nvptxcompiler", "cudart", "nvrtc"]'
+            subpackages: '["nvcc", "crt", "nvvm", "nvptxcompiler", "cudart", "nvrtc", "cuobjdump"]'
             gencode: -gencode arch=compute_120,code=sm_120
     # Pinned to windows-2022. windows-latest now points at Server 2025, where
     # the CUDA installer dies with exit 0xE0E1E1D9 before reaching any of our
@@ -196,6 +198,89 @@ jobs:
           nvcc -O3 -std=c++17 -cudart static $FPIC \
             ${{ matrix.gencode }} \
             -c src/pearl_host.cu -o cuda-build/pearl_host.o
+
+      # The Blackwell tall fold's two TMA descriptors must sit at 128-byte-aligned
+      # parameter addresses. In v0.5.7 and v0.5.8 the Windows builds put them at
+      # offsets 0x98 and 0x118 -- cuda.h aligns CUtensorMap only when __cplusplus
+      # says C++11, and MSVC says 199711L -- and every Blackwell card on Windows
+      # failed its first TMA load with "misaligned address". Nothing else in this
+      # workflow could see that: it compiles, links and ships. The fix
+      # (src/pearl_tensor_map.h) spells the alignment in our own code; this step
+      # reads what the compiler actually did, so the fault cannot come back
+      # quietly. Every entry builds sm_120, so every entry runs it.
+      #
+      # 128, not the hardware's 64: 128 is what the code asks for, so anything
+      # less means the declared alignment was lost, which is the bug. A 64 check
+      # would pass such a build whenever the parameters before the descriptors
+      # happened to add up to a multiple of 64, and the fault would return with
+      # the next parameter change.
+      #
+      # The address checked is the parameter bank's base (EIATTR_PARAM_CBANK: the
+      # low 16 bits are the offset, 0x380 on sm_120) plus each descriptor's offset
+      # (EIATTR_KPARAM_INFO, Size 0x80). On sm_120 the base is itself a multiple
+      # of 128, so this is the same as checking the offsets, but it stays right if
+      # a toolkit moves the base. Only sm_120's copy is checked: it is the only
+      # build that reads the descriptors.
+      #
+      # Anything the step cannot find is a failure, not a pass: no cuobjdump, no
+      # sm_120 ELF, no bank base, or not exactly two 128-byte parameters. A
+      # failed Windows job is non-blocking here, but it then uploads no core, and
+      # miner-build.yml's Windows job fails on a missing one
+      # (if_no_artifact_found: fail) rather than ship it.
+      #
+      # Not added: -Xcompiler /Zc:__cplusplus on the Windows compiles. It would
+      # fix cuda.h's guard too, but it changes __cplusplus for every header nvcc
+      # and cl.exe read on Windows, in ways no build here has been run with,
+      # and pearl_tensor_map.h no longer depends on it.
+      - name: Check the tensor-map parameter offsets
+        working-directory: earn/native
+        shell: bash
+        run: |
+          if ! command -v cuobjdump >/dev/null; then
+            echo "::error::cuobjdump is not on PATH, so the tall fold's parameters cannot be checked"
+            exit 1
+          fi
+          # tr: cuobjdump.exe writes CRLF, which would break every anchored match.
+          elf=$(cuobjdump -elf cuda-build/pearl_kernel.o | tr -d '\r')
+          # The .nv.info section of the tall fold, from the sm_120 ELF only. Each
+          # embedded ELF is introduced by an "arch = sm_XX" line.
+          info=$(printf '%s\n' "$elf" | awk '
+            /^arch = / { arch = $3 }
+            /^\.nv\.info\.pearl_tile_fold_tall$/ { inside = (arch == "sm_120"); next }
+            /^\./ { inside = 0 }
+            inside')
+          if [ -z "$info" ]; then
+            echo "::error::no .nv.info.pearl_tile_fold_tall section for sm_120 in cuobjdump -elf output"
+            exit 1
+          fi
+          # `|| true`: under the runner's `bash -eo pipefail` a grep that matches
+          # nothing would end the step here, before the error that says why.
+          base=$(printf '%s\n' "$info" | grep -A3 'EIATTR_PARAM_CBANK' \
+            | sed -n 's/.*Value:[[:space:]]*0x[0-9a-fA-F]*[[:space:]]*0x\([0-9a-fA-F]*\).*/\1/p' \
+            | head -n 1 || true)
+          offs=$(printf '%s\n' "$info" | grep -E 'Size[[:space:]]*:[[:space:]]*0x80([^0-9a-fA-F]|$)' \
+            | sed -n 's/.*Offset[[:space:]]*:[[:space:]]*0x\([0-9a-fA-F]*\).*/\1/p' || true)
+          if [ -z "$base" ]; then
+            echo "::error::no EIATTR_PARAM_CBANK for the tall fold; cannot tell where its parameters start"
+            exit 1
+          fi
+          n=$(printf '%s\n' "$offs" | grep -c . || true)
+          if [ "$n" != 2 ]; then
+            echo "::error::expected the tall fold's two 128-byte tensor-map parameters, found $n"
+            exit 1
+          fi
+          bank=$(( 16#$base & 0xffff ))
+          printf 'sm_120 pearl_tile_fold_tall: parameters start at c[0x0][0x%x]\n' "$bank"
+          bad=0
+          for off in $offs; do
+            addr=$(( bank + 16#$off ))
+            printf 'tensor map: offset 0x%x, address c[0x0][0x%x]\n' $(( 16#$off )) "$addr"
+            if [ $(( addr % 128 )) -ne 0 ]; then
+              echo "::error::a tensor map is at c[0x0][$(printf '0x%x' "$addr")], not 128-byte aligned; TMA loads will fault with 'misaligned address'"
+              bad=1
+            fi
+          done
+          exit $bad
 
       # Deliberately NOT build/: the next step runs `node-gyp rebuild`, whose
       # clean phase deletes that directory — which is what produced

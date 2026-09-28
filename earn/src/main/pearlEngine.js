@@ -83,7 +83,11 @@ class PearlEngine extends EventEmitter {
 
     m.on('log', (l) => this.emit('log', l));
     m.on('error', (err) => this.emit('error', err));
-    m.on('stopped', () => this.emit('stopped', 0));
+    // 1 when the miner stopped itself because every card failed, the only stop
+    // nobody asked for. The CLI exits with this code, and a 0 there reads as a
+    // clean exit: under the service's Restart=on-failure a rig whose cards all
+    // faulted would then sit neither mining nor restarting.
+    m.on('stopped', (info) => this.emit('stopped', info && info.failed ? 1 : 0));
 
     // The pool accepted the wallet and we have work: the cards are mining. This
     // is the moment alpha-miner printed its connection banner, and the UI wants

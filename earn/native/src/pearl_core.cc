@@ -139,6 +139,11 @@ class PearlCore : public Napi::ObjectWrap<PearlCore> {
   uint64_t salt_stride_ = 1;
   std::thread worker_;
   std::atomic<bool> running_{false};
+  // Set by the search thread when a search fails, before it clears running_ and
+  // exits. A failed core never searches again: its CUDA context is usually dead
+  // (a fault such as "misaligned address" is sticky), and the host drops the core
+  // when it hears the error. setJob on it does nothing.
+  std::atomic<bool> failed_{false};
   std::mutex job_mu_;
   std::string job_id_;
   bool have_job_ = false;
@@ -238,6 +243,11 @@ PearlCore::~PearlCore() {
 
 Napi::Value PearlCore::SetJob(const Napi::CallbackInfo &info) {
   Napi::Env env = info.Env();
+  // A failed core stays failed, and a stopped one has no device context left.
+  // The pool keeps sending jobs until the host has handled the core's 'error',
+  // so this is reached; ignoring the job is the answer, not a throw into the
+  // host's job loop.
+  if (failed_ || !ctx_) return env.Undefined();
   if (info.Length() < 1 || !info[0].IsObject()) {
     Napi::TypeError::New(env, "setJob expects a job object").ThrowAsJavaScriptException();
     return env.Undefined();
@@ -273,6 +283,17 @@ Napi::Value PearlCore::SetJob(const Napi::CallbackInfo &info) {
   }
 
   if (!running_.exchange(true)) {
+    // A search thread that ended on its own -- a failed search -- has returned or
+    // is about to, but it is still joinable, and assigning a new std::thread over
+    // a joinable one calls std::terminate. That is what closed the app on Windows
+    // a few seconds after a CUDA error: the next pool job landed here. Join it.
+    if (worker_.joinable()) worker_.join();
+    // failed_ is set before running_ is cleared, so after the join it is certain;
+    // a job that raced the failure past the check above stops here.
+    if (failed_) {
+      running_ = false;
+      return env.Undefined();
+    }
     worker_ = std::thread([this] { SearchLoop(); });
   }
   return env.Undefined();
@@ -360,7 +381,11 @@ void PearlCore::SearchLoop() {
     // A CUDA fault mid-search used to vanish here: the loop simply produced no
     // hits and no hashrate, which looks exactly like bad luck. Surface it and
     // stop, rather than spinning on a dead device for ever.
+    //
+    // failed_ first: setJob reads it to refuse a respawn, and must see it set by
+    // the time running_ reads false.
     if (err[0]) {
+      failed_ = true;
       EmitError(err);
       running_ = false;
       return;
@@ -477,9 +502,11 @@ void PearlCore::EmitHashrate(double th) {
   if (st != napi_ok) delete v;  // dropped: free what the callback would have
 }
 
+// Every error names the card: on a multi-card rig "misaligned address" alone
+// does not say which GPU stopped.
 void PearlCore::EmitError(const std::string &msg) {
   if (!on_error_) return;
-  std::string *m = new std::string(msg);
+  std::string *m = new std::string("GPU " + std::to_string(device_index_) + ": " + msg);
   on_error_.BlockingCall(m, [](Napi::Env env, Napi::Function cb, std::string *s) {
     cb.Call({Napi::Error::New(env, *s).Value()});
     delete s;

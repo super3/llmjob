@@ -27,13 +27,14 @@
 //        jackpot[tid] = rotl13(jackpot[tid]) ^ xor(tile), tid = chunk % 16
 //   6. jackpot_hash = blake3(transcript64, key=a_seed); share iff <= target
 
-#include <cuda.h>   // CUtensorMap, the tall fold's TMA descriptors (sm_120)
+#include <cuda.h>
 #include <cuda_runtime.h>
 #include <stdint.h>
 
 #include <mma.h>
 
 #include "pearl_config.h"
+#include "pearl_tensor_map.h"  // the tall fold's TMA descriptors (sm_120)
 
 namespace {
 
@@ -1186,7 +1187,7 @@ __device__ __forceinline__ void pearl_mbar_expect_tx(uint32_t bar, uint32_t byte
 // `bar`: c0 the byte in the k-block, c1 the row (A) or column (B), c2 the k-block.
 // The box is {PEARL_TALL_STAGE_K, rows, 1}, so it lands in shared exactly as a 2-D
 // box of a row-major operand would, rows STAGE_K bytes apart and SWIZZLE_64B.
-__device__ __forceinline__ void pearl_tma_3d(uint32_t dst, const CUtensorMap *map, uint32_t c0,
+__device__ __forceinline__ void pearl_tma_3d(uint32_t dst, const PearlTensorMap *map, uint32_t c0,
                                              uint32_t c1, uint32_t c2, uint32_t bar) {
   asm volatile(
       "cp.async.bulk.tensor.3d.shared::cta.global.tile.mbarrier::complete_tx::bytes"
@@ -2408,7 +2409,9 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
     const PearlTranscriptTest test, const PearlHitList hits,
     // TMA descriptors for the k-blocked A' and B', read only by Blackwell's build
     // (PEARL_TALL_TMA); Ada's ignores them. Last, so no other parameter moves.
-    const __grid_constant__ CUtensorMap tmA, const __grid_constant__ CUtensorMap tmB) {
+    // PearlTensorMap, not CUtensorMap: cuda.h's alignment is lost under MSVC,
+    // which put these at 0x98 and faulted every TMA load (pearl_tensor_map.h).
+    const __grid_constant__ PearlTensorMap tmA, const __grid_constant__ PearlTensorMap tmB) {
 #if PEARL_FOLD_TALL && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 890 || __CUDA_ARCH__ >= 1200)
   constexpr uint32_t k = PEARL_FOLD_K;
   constexpr uint32_t rank = PEARL_FOLD_RANK;
