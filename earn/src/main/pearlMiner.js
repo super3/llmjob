@@ -11,6 +11,7 @@ const { hash } = require('../shared/miner/blake3');
 const { buildShareProof } = require('../shared/miner/shareProof');
 const { combinePayoutAddress } = require('../shared/address');
 const gpuClocks = require('./gpuClocks');
+const { DEV_FEE } = require('../shared/config');
 
 // The host for our own Pearl miner: it owns the pool socket and the job/lifecycle
 // state machine, and drives a PearlCore (the CUDA addon) for the actual search.
@@ -33,9 +34,10 @@ const gpuClocks = require('./gpuClocks');
 //   stopped        {}
 //   error          Error
 //
-// The dev fee is ZERO and there is no dev-address code path, by design — this is
-// our own implementation written against the ISC-licensed reference, not a
-// derivative of any fee-bearing miner, so there is nothing to disclose or route.
+// The dev fee is 2%, taken by time: for one slice of every cycle (60 s of every
+// 50 min, see config DEV_FEE) the miner logs in to the pool as LLMJob's address
+// and mines for it, then logs back in as the user. The GPU never stops; only
+// the pool login changes.
 
 const RECONNECT_MS = 5000;
 
@@ -52,12 +54,17 @@ function readDevice(core) {
 }
 
 class PearlMiner extends EventEmitter {
-  constructor({ connect, createCore, reconnectMs, clocks } = {}) {
+  constructor({ connect, createCore, reconnectMs, clocks, devFee, random } = {}) {
     super();
     this.connect = connect;                 // (host, port) -> socket
     this.createCore = createCore || null;   // (profile) -> core, or null when unbuilt
     this.reconnectMs = reconnectMs == null ? RECONNECT_MS : reconnectMs;
     this.clocks = clocks || gpuClocks;      // { lockMemoryClock, resetMemoryClock }
+    // null turns the fee off (tests of everything else pass null).
+    this.devFee = devFee === undefined ? DEV_FEE : devFee;
+    this.random = random || Math.random;
+    this.inDevFee = false;
+    this._devFeeTimer = null;
 
     this.sock = null;
     // One core per card. `cores` is [{ core, device }] in the order they were
@@ -127,8 +134,78 @@ class PearlMiner extends EventEmitter {
       return false;
     }
 
-    this._openSocket(host, Number(port), wallet, worker);
+    // The login the socket uses. It is the user's except during a dev-fee slice.
+    this.userLogin = { wallet, worker };
+    this.login = this.userLogin;
+    this.inDevFee = false;
+    this.host = host;
+    this.port = Number(port);
+    this._openSocket(host, this.port, wallet, worker);
+    this._scheduleFirstDevFee();
     return true;
+  }
+
+  // The first slice starts at a random point in the first cycle, so the fee is
+  // 2% of mining time on average however long a session lasts. Starting every
+  // session with a full cycle of user time would let anyone who restarts more
+  // often than every 49 minutes pay nothing, and starting with the slice would
+  // charge a short session far more than 2%.
+  _scheduleFirstDevFee() {
+    const f = this.devFee;
+    if (!f || !(f.pct > 0) || !f.address) return;
+    const offset = Math.floor(this.random() * (f.cycleMs - f.sliceMs));
+    this.emit('log', {
+      level: 'info',
+      line: 'dev fee: ' + f.pct + '% (' + Math.round(f.sliceMs / 1000) + ' s of every '
+        + Math.round(f.cycleMs / 60000) + ' min mines for LLMJob)',
+    });
+    this._setDevFeeTimer(() => this._beginDevFee(), offset);
+  }
+
+  _setDevFeeTimer(fn, ms) {
+    this._devFeeTimer = setTimeout(fn, ms);
+    this._devFeeTimer.unref();
+  }
+
+  // No running check in these two: stop() clears the timer that calls them.
+  _beginDevFee() {
+    const f = this.devFee;
+    this.inDevFee = true;
+    this.emit('log', {
+      level: 'info',
+      line: 'dev fee: mining for LLMJob for ' + Math.round(f.sliceMs / 1000) + ' s',
+    });
+    this._switchLogin({ wallet: f.address, worker: f.worker });
+    this._setDevFeeTimer(() => this._endDevFee(), f.sliceMs);
+  }
+
+  _endDevFee() {
+    const f = this.devFee;
+    this.inDevFee = false;
+    this.emit('log', { level: 'info', line: 'dev fee: done, mining for you again' });
+    this._switchLogin(this.userLogin);
+    this._setDevFeeTimer(() => this._beginDevFee(), f.cycleMs - f.sliceMs);
+  }
+
+  // Log in again as someone else. The old socket is detached before it is
+  // closed, so its close does not schedule a reconnect as the old login, and
+  // the job is dropped, so a hit on the old login's job is never submitted
+  // under the new one. The cores keep searching; the new login's first job
+  // replaces what they have.
+  _switchLogin(login) {
+    this.login = login;
+    this.authorized = false;
+    this.job = null;
+    this.buf = '';
+    if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
+    const old = this.sock;
+    if (old) {
+      old.removeAllListeners();
+      // An error from a socket we have let go must not become an uncaught one.
+      old.on('error', () => {});
+      try { old.destroy(); } catch (e) { /* already closed */ }
+    }
+    this._openSocket(this.host, this.port, login.wallet, login.worker);
   }
 
   // Start one core per card, and keep the ones that start.
@@ -511,8 +588,10 @@ class PearlMiner extends EventEmitter {
     if (!this.running) return;
     // The core keeps its current job loaded across a reconnect, so a brief pool
     // blip does not idle the GPU. Reopen after a backoff.
+    // Reconnect as whoever the miner is mining for now, which a dev-fee slice
+    // may have changed since this socket opened.
     this.emit('log', { level: 'info', line: 'pool connection closed; reconnecting' });
-    this._scheduleReconnect(host, port, wallet, worker);
+    this._scheduleReconnect(host, port, this.login.wallet, this.login.worker);
   }
 
   _scheduleReconnect(host, port, wallet, worker) {
@@ -530,6 +609,8 @@ class PearlMiner extends EventEmitter {
     if (!this.running) return false;
     this.running = false;
     if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
+    if (this._devFeeTimer) { clearTimeout(this._devFeeTimer); this._devFeeTimer = null; }
+    this.inDevFee = false;
     for (const c of this.cores) {
       try { c.core.stop(); } catch (e) { /* that core is already gone */ }
     }

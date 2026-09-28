@@ -29,6 +29,7 @@
 #include <atomic>
 #include <cstring>
 #include <chrono>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -99,6 +100,16 @@ void pearl_host_reseed(void *ctx, uint64_t salt);
 bool pearl_host_search(void *ctx, uint64_t nonce_base, uint32_t batch,
                        PearlSearchResult *out, uint64_t *attempts, char *err,
                        size_t err_len);
+// The same search as a pipeline: submit queues a batch without waiting (at most two at
+// once) and reports how many regions it covers; collect waits for the oldest queued
+// batch and reports it as pearl_host_search would; pending counts the queued ones.
+bool pearl_host_submit(void *ctx, uint64_t nonce_base, uint32_t batch, uint64_t *regions,
+                       char *err, size_t err_len);
+bool pearl_host_collect(void *ctx, PearlSearchResult *out, uint64_t *attempts, char *err,
+                        size_t err_len);
+int pearl_host_pending(void *ctx);
+// The collected batch's other hits, one a call, after the one collect returned.
+bool pearl_host_next_hit(void *ctx, PearlSearchResult *out);
 }
 
 namespace {
@@ -147,6 +158,12 @@ class PearlCore : public Napi::ObjectWrap<PearlCore> {
   std::mutex job_mu_;
   std::string job_id_;
   bool have_job_ = false;
+  // A job SetJob has taken and the search thread has not drawn yet. The draw runs on
+  // the search thread, between batches, so the device is only ever driven from one
+  // thread and no queued batch reads operands a new job is rewriting underneath it.
+  bool job_dirty_ = false;
+  uint8_t job_header_[PEARL_HEADER_BYTES] = {0};
+  uint8_t job_target_[PEARL_HASH_BYTES] = {0};
 
   Napi::ThreadSafeFunction on_hit_;
   Napi::ThreadSafeFunction on_hashrate_;
@@ -278,7 +295,9 @@ Napi::Value PearlCore::SetJob(const Napi::CallbackInfo &info) {
   {
     std::lock_guard<std::mutex> lock(job_mu_);
     job_id_ = job.Get("jobId").As<Napi::String>().Utf8Value();
-    pearl_host_set_job_salted(ctx_, header.Data(), target, salt_base_);
+    memcpy(job_header_, header.Data(), PEARL_HEADER_BYTES);
+    memcpy(job_target_, target, PEARL_HASH_BYTES);
+    job_dirty_ = true;
     have_job_ = true;
   }
 
@@ -349,6 +368,13 @@ Napi::Value PearlCore::On(const Napi::CallbackInfo &info) {
 // The search thread. Batches nonces so a job switch is picked up promptly —
 // the pool replaces jobs every few seconds and grinding a stale one earns
 // nothing.
+//
+// It keeps two batches queued on the device (pearl_host_submit), and reads the older
+// one's result (pearl_host_collect) while the newer runs, so the fold never waits for
+// the host between launches. The synchronous loop this replaced left the GPU idle for
+// ~0.1 ms at every launch and at every redraw, while the host saw the batch finish,
+// read its hit count and queued the next one: about 1% of the rate at four launches a
+// salt, measured with the GPU's own event timers.
 void PearlCore::SearchLoop() {
   // The current CUDA device is per-thread, and every allocation this loop reads
   // belongs to the card the constructor chose. Inherit it here or launch on
@@ -359,6 +385,8 @@ void PearlCore::SearchLoop() {
   // Must match PEARL_BATCH_REGIONS: the fold launches one CUDA block per region
   // and the host sizes its batch scratch to this.
   const uint32_t BATCH = PEARL_BATCH_REGIONS;
+  // Batches queued at once. Two is enough: one runs while the next waits behind it.
+  const size_t DEPTH = 2;
   uint64_t nonce = 0;
   // A region is (row offset, column offset), so one choice of operands offers
   // exactly m*n of them. Past that the search repeats itself, so the operands
@@ -367,17 +395,20 @@ void PearlCore::SearchLoop() {
   const uint64_t span = ((uint64_t)profile_.m / PEARL_ROWS_COUNT)
                         * ((uint64_t)profile_.n / PEARL_COLS_COUNT);
   uint64_t salt = salt_base_;
-  while (running_) {
-    std::string job_id;
-    {
-      std::lock_guard<std::mutex> lock(job_mu_);
-      if (!have_job_) continue;
-      job_id = job_id_;
-    }
+  // The job each queued batch belongs to, oldest first: a hit is reported under the
+  // job its batch searched, not the one current when it is read.
+  std::deque<std::string> queued;
+  std::string job_id;
+  bool drawn = false;
+
+  // Read the oldest queued batch: count its work toward the hashrate and report a hit.
+  auto collect = [&](bool report) -> bool {
     PearlSearchResult r;
     uint64_t attempts = 0;
     char err[256] = {0};
-    bool found = pearl_host_search(ctx_, nonce, BATCH, &r, &attempts, err, sizeof(err));
+    const bool found = pearl_host_collect(ctx_, &r, &attempts, err, sizeof(err));
+    const std::string jid = queued.front();
+    queued.pop_front();
     // A CUDA fault mid-search used to vanish here: the loop simply produced no
     // hits and no hashrate, which looks exactly like bad luck. Surface it and
     // stop, rather than spinning on a dead device for ever.
@@ -386,32 +417,11 @@ void PearlCore::SearchLoop() {
     // the time running_ reads false.
     if (err[0]) {
       failed_ = true;
-      EmitError(err);
+      if (report) EmitError(err);
       running_ = false;
-      return;
+      return false;
     }
-    // Advance by what was actually consumed, NOT by the batch size. The search
-    // returns the moment it finds a share, so a batch that hits at index 0 has
-    // tried exactly one region — and skipping ahead a whole batch throws away
-    // the other 4095 unexamined.
-    //
-    // Measured on a 4090 before this fix: with a permissive target every batch
-    // hit immediately, so every reported nonce was a multiple of BATCH. BATCH
-    // being a multiple of m then pinned row_off at 0 for ever and the entire
-    // search collapsed to the 64 distinct column offsets. Against a real target
-    // batches rarely hit and attempts == BATCH, so this changes nothing there
-    // except that found work is no longer discarded.
-    nonce += (attempts > 0 ? attempts : BATCH);
-    if (nonce >= span) {
-      std::lock_guard<std::mutex> lock(job_mu_);
-      if (have_job_) {
-        // The next salt THIS core owns, not simply the next one: on a multi-card
-        // rig the stride is the card count, so the cards never collide.
-        salt += salt_stride_;
-        pearl_host_reseed(ctx_, salt);
-        nonce = 0;
-      }
-    }
+    if (!report) return true;
     // attempts * DAF = multiply-accumulates, which is the unit the network and
     // every other miner reports in. Dividing raw attempts by 1e12 treated one
     // attempt as one hash and under-reported by 65536x at the mainnet profile.
@@ -419,7 +429,8 @@ void PearlCore::SearchLoop() {
     // And then DIVIDE BY TIME. This emitted work-per-batch for a while, which is
     // not a rate at all: it read as a constant to the last digit no matter how
     // fast the card ran, and any number taken from it was meaningless. Averaged
-    // over a short window so a single slow batch does not spike it.
+    // over a short window so a single slow batch does not spike it. Work counts
+    // when its batch completes, so the window holds only finished work.
     if (attempts > 0) {
       const auto now = std::chrono::steady_clock::now();
       win_work_ += (double)attempts * PEARL_DAF(profile_);
@@ -430,8 +441,79 @@ void PearlCore::SearchLoop() {
         win_start_ = now;
       }
     }
-    if (found) EmitHit(r, job_id);
+    if (found) {
+      EmitHit(r, jid);
+      // A batch can hold more than one hit; each is its own share.
+      PearlSearchResult more;
+      while (pearl_host_next_hit(ctx_, &more)) EmitHit(more, jid);
+    }
+    return true;
+  };
+
+  while (running_) {
+    // A new job: finish what is queued under the old one, then draw the new one's
+    // operands here, on this thread.
+    bool fresh = false;
+    uint8_t header[PEARL_HEADER_BYTES], target[PEARL_HASH_BYTES];
+    std::string fresh_id;
+    {
+      std::lock_guard<std::mutex> lock(job_mu_);
+      if (job_dirty_) {
+        memcpy(header, job_header_, sizeof header);
+        memcpy(target, job_target_, sizeof target);
+        fresh_id = job_id_;
+        job_dirty_ = false;
+        fresh = true;
+      }
+    }
+    if (fresh) {
+      while (!queued.empty())
+        if (!collect(true)) return;
+      // Every job after the first is drawn at the next salt this core owns, not
+      // back at salt_base_. A pool re-sends the job it is on after a reconnect,
+      // and the dev fee's login switch can hand over the same header, so going
+      // back to salt_base_ would search that salt again and resubmit every share
+      // it had already found, which the pool rejects as duplicates. Salts only
+      // grow, in steps of the stride, so the cards' spaces stay disjoint.
+      if (drawn) salt += salt_stride_;
+      pearl_host_set_job_salted(ctx_, header, target, salt);
+      job_id = fresh_id;
+      drawn = true;
+      nonce = 0;
+    }
+    if (!drawn) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      continue;
+    }
+
+    uint64_t regions = 0;
+    char err[256] = {0};
+    if (!pearl_host_submit(ctx_, nonce, BATCH, &regions, err, sizeof(err))) {
+      // Failed like a collect error: set before running_ clears, so setJob will
+      // not respawn a search on a context that is probably dead.
+      failed_ = true;
+      EmitError(err[0] ? err : "the search could not queue a batch");
+      running_ = false;
+      break;
+    }
+    queued.push_back(job_id);
+    // Advance by what the batch covers. (A hit no longer ends a batch early: the
+    // fold searches the whole batch and lists its hits.)
+    nonce += regions;
+    if (nonce >= span) {
+      // The next salt THIS core owns, not simply the next one: on a multi-card
+      // rig the stride is the card count, so the cards never collide. The redraw
+      // queues behind the batches already queued, and the host knows the new
+      // a_seed without waiting for it (see pearl_host_reseed).
+      salt += salt_stride_;
+      pearl_host_reseed(ctx_, salt);
+      nonce = 0;
+    }
+    if (queued.size() >= DEPTH && !collect(true)) return;
   }
+  // Stopping: let the queued batches finish, unreported, before the context goes.
+  while (!queued.empty())
+    if (!collect(false)) break;
 }
 
 void PearlCore::EmitHit(const PearlSearchResult &r, const std::string &job_id) {

@@ -3,8 +3,8 @@
 // Static configuration for the LLMJob Earn desktop wrapper.
 //
 // The app mines Pearl (PRL) with our own CUDA core — see src/main/pearlMiner.js
-// and earn/native. There is no external engine to download, no vendored binary
-// and no dev fee.
+// and earn/native. There is no external engine to download and no vendored
+// binary. The miner takes a disclosed 2% dev fee (DEV_FEE below).
 //
 // The pool is HeroMiners. AlphaPool was dropped along with alpha-miner: it gates
 // its stratum behind a GPU-solved challenge and then DICTATES the mining
@@ -42,19 +42,32 @@ const DEFAULTS = {
 //
 // There is nothing to download any more: the engine is our own CUDA core,
 // linked into this process as an N-API addon (earn/native), so no URL, no zip
-// and no Docker image. The dev fee is zero and there is no dev-address code
-// path — this is our own implementation written against the ISC-licensed
-// reference, not a derivative of any fee-bearing miner.
+// and no Docker image. It is our own implementation, written against the
+// ISC-licensed reference, not a derivative of any fee-bearing miner. It takes
+// its own 2% dev fee, the same rate SRBMiner and PeakMiner charge; see DEV_FEE.
 //
 // The pool terms are HeroMiners' own, read from
 // https://pearl.herominers.com/api/stats rather than transcribed from a setup
 // page: fee 0, paymentsInterval 3600s, minPaymentThreshold 1e8 against
 // coinUnits 1e8 (so 1 PRL), rewardScheme "prop".
+// The dev fee. The miner mines for LLMJob for one slice of every cycle, on its
+// own pool login, then switches back: 60 s of every 50 min is 2%. The first
+// slice falls at a random point in the first cycle, so a short session pays 2%
+// on average too, rather than nothing. Disclosed in the CLI banner, the log (at
+// each slice), the app and the site.
+const DEV_FEE = {
+  pct: 2,
+  cycleMs: 50 * 60 * 1000,
+  sliceMs: 60 * 1000,
+  address: 'prl1px5ervx6ftaegmdhqa5ajemh20j2uw7l9jt5j5s97rljp72yt3s8qncrxud',
+  worker: 'llmjob-devfee',
+};
+
 const MINER = {
   engine: 'llmjob-pearl',
   pool: 'HeroMiners',
   pow: 'pearlhash',
-  devFeePct: 0,
+  devFeePct: 2,
   poolFeePct: 0,
   payoutScheme: 'PROP',
   payoutIntervalHours: 1,
@@ -492,7 +505,7 @@ function regionLabel(region) {
 
 
 module.exports = {
-  REGIONS, LEGACY_REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE,
+  REGIONS, LEGACY_REGIONS, DEFAULTS, MINER, DEV_FEE, NETWORK, ECON, ECON_API, LLM, NODE,
   regionFor, endpointFor, normalizeEndpoint, resolveEndpoint, splitEndpoint, regionLabel,
   migrateRegion,
 };
