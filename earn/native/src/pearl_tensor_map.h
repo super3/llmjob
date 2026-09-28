@@ -25,6 +25,16 @@
 // parameters, the host's copies it encodes into, and the launch -- is this type,
 // never a bare CUtensorMap. The CI build checks the resulting offsets
 // (.github/workflows/native-core.yml, "Check the tensor-map parameter offsets").
+//
+// The alignment is the DEVICE pass's alone. The parameter offsets a launch copies
+// the descriptors to come from the cubin (the kernel's KPARAM_INFO), which the
+// device pass lays out, so that is where 128 is needed. The host pass must NOT
+// see it: nvcc's host stub takes every kernel parameter by value, and MSVC
+// refuses an over-aligned by-value parameter outright (C2719, "formal parameter
+// with requested alignment of 128 won't be aligned") -- presumably why cuda.h's
+// own alignment is conditional. So the host sees a plain 128-byte struct, and
+// keeps its stored copies aligned with an aligned member declaration instead
+// (Ctx in pearl_host.cu), which MSVC allows.
 
 #ifndef PEARL_TENSOR_MAP_H
 #define PEARL_TENSOR_MAP_H
@@ -34,11 +44,19 @@
 // 128, what cuda.h asks for from CUDA 13 on, rather than the hardware's 64: it
 // is the most any toolkit has asked, and it costs nothing, since the descriptors
 // are the fold's last parameters and the host keeps two of them.
-struct alignas(128) PearlTensorMap {
+#if defined(__CUDA_ARCH__)
+#define PEARL_TENSOR_MAP_ALIGN alignas(128)
+#else
+#define PEARL_TENSOR_MAP_ALIGN
+#endif
+
+struct PEARL_TENSOR_MAP_ALIGN PearlTensorMap {
   CUtensorMap map;
 };
 
+#if defined(__CUDA_ARCH__)
 static_assert(alignof(PearlTensorMap) == 128, "a TMA descriptor must be 128-byte aligned");
+#endif
 static_assert(sizeof(PearlTensorMap) == 128,
               "PearlTensorMap must be exactly one CUtensorMap (128 bytes), with no padding");
 

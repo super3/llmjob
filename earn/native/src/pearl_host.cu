@@ -200,9 +200,11 @@ struct Ctx {
   char foldErr[256] = {0};
   // TMA descriptors for the k-blocked noised operands, encoded once against dAp and
   // dBp (which never move) when foldTma. Zero, and ignored, for every other build.
-  // PearlTensorMap for its alignment (pearl_tensor_map.h), which also meets
-  // cuTensorMapEncodeTiled's own rule that the map it writes be 64-byte aligned.
-  PearlTensorMap tmA{}, tmB{};
+  // cuTensorMapEncodeTiled wants the map it writes 64-byte aligned. The host pass
+  // sees PearlTensorMap unaligned (MSVC cannot pass an over-aligned kernel
+  // parameter by value; see pearl_tensor_map.h), so the alignment is declared on
+  // the members instead, which MSVC allows.
+  alignas(128) PearlTensorMap tmA{}, tmB{};
 
   // Operands, generated once per job and then read by every region.
   int8_t *dA = nullptr;   // [m, k]
