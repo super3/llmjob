@@ -6,7 +6,7 @@
      visitor came to do rather than by product area, which is why Chat and the
      docs sit together and Earn and Network sit together.
 
-     The Log in link keeps id="foot-login" because index.html and earn.html
+     The Log in link keeps id="foot-login" because index.html and llm.html
      attach a Clerk sign-in handler to it. On pages without that handler it
      simply follows its href, which is the same destination. -->
 <footer class="foot">
@@ -22,13 +22,14 @@
     <div class="foot-cols">
       <nav class="foot-col" aria-label="Use">
         <div class="foot-h">Use</div>
+        <a href="/llm">Run LLMs</a>
         <a href="/docs">Docs</a>
         <a href="/dashboard" id="foot-login">Log in</a>
       </nav>
 
       <nav class="foot-col" aria-label="Earn">
         <div class="foot-h">Earn</div>
-        <a href="/earn">Run a node</a>
+        <a href="/">Run a node</a>
         <a href="/network">Network</a>
       </nav>
 

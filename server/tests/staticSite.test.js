@@ -28,17 +28,57 @@ describe('extensionless page URLs', () => {
     const res = await request(app).get('/chat');
     expect(res.status).toBe(200);
     expect(res.text).toContain('<meta http-equiv="refresh" content="0; url=/" />');
-    expect(res.text).toContain('location.replace("/")');
+    expect(res.text).toContain('location.replace("/" + location.hash)');
     expect(res.text).toContain('<meta name="robots" content="noindex" />');
     // Nothing on the site links to it any more.
     const home = await request(app).get('/');
     expect(home.text).not.toContain('href="/chat"');
   });
 
-  it('still serves the home page at /', async () => {
+  // The Earn download page is the home page, and the "Run LLMs at home"
+  // waitlist page that used to be the home page is /llm.
+  it('serves the Earn download page as the home page', async () => {
     const res = await request(app).get('/');
     expect(res.status).toBe(200);
-    expect(res.text).toContain('<title>LLMJob');
+    expect(res.text).toContain('<title>LLMJob Earn');
+    expect(res.text).toContain('Download for Windows');
+    expect(res.text).toContain('href="/llm"');
+    // Both ways to get a payout address: the web wallet and the desktop wallet.
+    expect(res.text).toContain('href="https://wallet.alphapool.tech/"');
+    expect(res.text).toContain('href="https://github.com/pearl-research-labs/pearl/releases"');
+  });
+
+  // Download clicks are counted in Umami: every download link carries the event
+  // name and which OS and which button it was, top or bottom of the page.
+  it('tags every download link on the home page as an Umami event', async () => {
+    const res = await request(app).get('/');
+    const links = res.text.match(/<a [^>]*releases\/download\/[^>]*>/g);
+    expect(links).toHaveLength(6);
+    for (const a of links) {
+      expect(a).toContain('data-umami-event="download"');
+      expect(a).toMatch(/data-umami-event-os="(windows|linux)"/);
+      expect(a).toMatch(/data-umami-event-place="(top|bottom)"/);
+    }
+    // Each installer's links say which OS they are.
+    expect(links.filter((a) => a.includes('.exe')).every((a) => a.includes('data-umami-event-os="windows"'))).toBe(true);
+    expect(links.filter((a) => a.includes('.AppImage')).every((a) => a.includes('data-umami-event-os="linux"'))).toBe(true);
+  });
+
+  it('serves the LLM waitlist page at /llm', async () => {
+    const res = await request(app).get('/llm');
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('<title>LLMJob — Run LLMs at home');
+  });
+
+  // Old /earn links (Discord posts, videos, the app) land on the home page, and
+  // keep their #fragment, so /earn#calculator still opens the calculator.
+  it('sends the old /earn URL to the home page, keeping the #fragment', async () => {
+    const res = await request(app).get('/earn');
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('<meta http-equiv="refresh" content="0; url=/" />');
+    expect(res.text).toContain('location.replace("/" + location.hash)');
+    const home = await request(app).get('/');
+    expect(home.text).not.toContain('href="/earn"');
   });
 
   it('links between pages carry no .html', async () => {
