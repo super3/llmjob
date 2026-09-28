@@ -31,6 +31,11 @@ at home" page that used to be the home page is `llm.html`. The build writes a sm
 that redirects the visitor to the target. It works on both hosts because it is
 just a page, and the build fails if a redirect has the same name as a real page.
 
+Short links for campaigns live in the same file. `/nec` (New England Crypto's
+video) goes to the home page with UTM tags, so Umami can tell those visits and
+their download clicks apart. A target can carry a query string; the redirect
+page keeps it.
+
 ## Where the output goes
 
 - **GitHub Pages** builds `dist/` in `.github/workflows/deploy.yml` and publishes

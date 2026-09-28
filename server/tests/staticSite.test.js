@@ -64,6 +64,17 @@ describe('extensionless page URLs', () => {
     expect(links.filter((a) => a.includes('.AppImage')).every((a) => a.includes('data-umami-event-os="linux"'))).toBe(true);
   });
 
+  // A short link for a sponsor's video: /nec lands on the home page with UTM
+  // tags, so Umami can attribute the visit and its download clicks.
+  it('sends the /nec short link to the home page with its UTM tags', async () => {
+    const res = await request(app).get('/nec');
+    expect(res.status).toBe(200);
+    const target = '/?utm_source=newenglandcrypto&utm_medium=youtube&utm_campaign=pearl-miner';
+    // In HTML attributes the & is escaped; in the script it is plain.
+    expect(res.text).toContain('content="0; url=' + target.replace(/&/g, '&amp;') + '"');
+    expect(res.text).toContain('location.replace("' + target + '" + location.hash)');
+  });
+
   it('serves the LLM waitlist page at /llm', async () => {
     const res = await request(app).get('/llm');
     expect(res.status).toBe(200);
