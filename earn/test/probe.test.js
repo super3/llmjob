@@ -202,6 +202,26 @@ describe('detectDriverMajor', () => {
   });
 });
 
+// What decides which build of the core loads (shared/coreVariant).
+describe('detectCudaCards', () => {
+  it('asks for index, compute capability and driver in one call', async () => {
+    execCb(null, '0, 12.0, 610.57.04\n1, 8.9, 610.57.04\n');
+    expect(await probe.detectCudaCards()).toEqual([
+      { index: 0, major: 12, minor: 0, driverMajor: 610 },
+      { index: 1, major: 8, minor: 9, driverMajor: 610 },
+    ]);
+    expect(execFile.mock.calls[0][1]).toEqual(
+      ['--query-gpu=index,compute_cap,driver_version', '--format=csv,noheader']);
+  });
+
+  // No nvidia-smi, or a driver too old to know compute_cap: both mean the 12.8
+  // build, which an empty list gives.
+  it('is empty when nvidia-smi fails', async () => {
+    execCb(new Error('Field "compute_cap" is not a valid field to query.'));
+    expect(await probe.detectCudaCards()).toEqual([]);
+  });
+});
+
 describe('postMinerReport', () => {
   it('POSTs over https (the configured report url) and resolves on end', async () => {
     const req = fakeReq();

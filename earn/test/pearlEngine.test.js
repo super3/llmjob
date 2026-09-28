@@ -245,6 +245,22 @@ describe('PearlEngine — the events the UI actually reads', () => {
     expect(events.log.some((l) => l.line === 'hello')).toBe(true);
     expect(events.error[0].message).toBe('boom');
   });
+
+  // The CLI exits with the engine's 'stopped' code, and the service restarts
+  // only on a non-zero one: a stop asked for is 0, and the miner stopping itself
+  // because its last card failed is 1.
+  test('a stop that was asked for exits 0; the last card failing exits 1', () => {
+    const asked = started();
+    asked.e.stop();
+    expect(asked.events.stopped).toEqual([0]);
+
+    const failed = started();
+    failed.sock.emit('data', jobLine());
+    failed.core.emit('error', new Error('GPU 0: misaligned address'));
+    expect(failed.events.error.map((err) => err.message)).toEqual(['GPU 0: misaligned address']);
+    expect(failed.events.stopped).toEqual([1]);
+    expect(failed.e.isRunning()).toBe(false);
+  });
 });
 
 describe('start() reports whether the engine actually started', () => {

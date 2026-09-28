@@ -158,6 +158,81 @@ describe('applyUpdate', () => {
     expect(fs.renameSync).toHaveBeenCalledWith(core + '.new-' + process.pid, core);
   });
 
+  it('downloads the CUDA 13 core beside the exe when the plan has one', async () => {
+    const res1 = fakeRes({ statusCode: 200 });
+    const res2 = fakeRes({ statusCode: 200 });
+    wire([res1, res2]);
+    const out1 = fakeWrite();
+    const out2 = fakeWrite();
+    fs.createWriteStream.mockReturnValueOnce(out1).mockReturnValueOnce(out2);
+    fs.renameSync.mockImplementation(() => {});
+    fs.chmodSync.mockImplementation(() => {});
+
+    const p = updater.applyUpdate(
+      { downloadUrl: 'https://host/bin', coreCu13Url: 'https://host/pearl_core_cu13.node' },
+      '/opt/rig/earn');
+    res1.emit('data', Buffer.from('x'));
+    out1.emit('finish');
+    await new Promise((r) => setImmediate(r));
+    res2.emit('data', Buffer.from('y'));
+    out2.emit('finish');
+    await expect(p).resolves.toBe('/opt/rig/earn');
+
+    const cu13 = require('path').join('/opt/rig', 'pearl_core_cu13.node');
+    expect(fs.renameSync).toHaveBeenCalledWith(cu13 + '.new-' + process.pid, cu13);
+    // The old copy is removed BEFORE the new one is fetched, so no failure on
+    // the way can leave last release's core where the loader prefers it.
+    expect(fs.rmSync).toHaveBeenCalledWith(cu13, { force: true });
+    const renamed = fs.renameSync.mock.calls.findIndex((c) => c[1] === cu13);
+    expect(fs.rmSync.mock.invocationCallOrder[0])
+      .toBeLessThan(fs.renameSync.mock.invocationCallOrder[renamed]);
+  });
+
+  // The CUDA 13 core is optional. By the time it is fetched the binary and the
+  // 12.8 core are already replaced; failing the update there would have the
+  // caller "continue on" the old version beside the new 12.8 core.
+  it('does not fail the update when the CUDA 13 core cannot be installed', async () => {
+    const res1 = fakeRes({ statusCode: 200 });
+    const res2 = fakeRes({ statusCode: 200 });
+    wire([res1, res2]);
+    const out1 = fakeWrite();
+    const out2 = fakeWrite();
+    fs.createWriteStream.mockReturnValueOnce(out1).mockReturnValueOnce(out2);
+    const cu13 = require('path').join('/opt/rig', 'pearl_core_cu13.node');
+    fs.renameSync.mockImplementation((from, to) => {
+      if (to === cu13) throw new Error('EACCES: permission denied');
+    });
+    fs.chmodSync.mockImplementation(() => {});
+
+    const p = updater.applyUpdate(
+      { downloadUrl: 'https://host/bin', coreCu13Url: 'https://host/pearl_core_cu13.node' },
+      '/opt/rig/earn');
+    res1.emit('data', Buffer.from('x'));
+    out1.emit('finish');
+    await new Promise((r) => setImmediate(r));
+    res2.emit('data', Buffer.from('y'));
+    out2.emit('finish');
+    await expect(p).resolves.toBe('/opt/rig/earn');
+    // ...and last release's copy is gone all the same: the rig mines on the
+    // 12.8 core rather than an old CUDA 13 one.
+    expect(fs.rmSync).toHaveBeenCalledWith(cu13, { force: true });
+  });
+
+  // On a Blackwell rig the loader prefers the CUDA 13 file, so last release's
+  // copy beside this release's binary would be the skew the pairing prevents.
+  it('deletes an old CUDA 13 core when the new release has none', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    wire([res]);
+    fs.createWriteStream.mockReturnValue(fakeWrite());
+    fs.renameSync.mockImplementation(() => {});
+    fs.chmodSync.mockImplementation(() => {});
+
+    const p = updater.applyUpdate({ downloadUrl: 'https://host/bin', coreCu13Url: null }, '/opt/rig/earn');
+    fs.createWriteStream.mock.results[0].value.emit('finish');
+    await expect(p).resolves.toBe('/opt/rig/earn');
+    expect(fs.rmSync).toHaveBeenCalledWith(require('path').join('/opt/rig', 'pearl_core_cu13.node'), { force: true });
+  });
+
   it('defaults the exe path to process.execPath', async () => {
     const res = fakeRes({ statusCode: 200 });
     wire([res]);

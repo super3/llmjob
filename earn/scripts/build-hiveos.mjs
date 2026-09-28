@@ -65,6 +65,10 @@ if (existsSync(core)) {
   console.error('vendor/native/pearl_core.node staged, or set ALLOW_MISSING_CORE=1.');
   process.exit(1);
 }
+// The CUDA 13 build rides along when the CLI build staged it. Optional, like
+// it is there: without it a Blackwell rig mines on the 12.8 core above.
+const cu13 = join(dist, 'pearl_core_cu13.node');
+if (existsSync(cu13)) copyFileSync(cu13, join(pkgDir, 'pearl_core_cu13.node'));
 
 // The tarball name carries the version: HiveOS rigs cache the download and can
 // skip re-fetching a URL whose filename hasn't changed, leaving them stuck on an

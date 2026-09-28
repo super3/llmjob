@@ -302,12 +302,20 @@ async function startMining(settings) {
   // has already stopped would leave an engine nobody is holding.
   const epoch = miningEpoch;
   if (clearedCudaLine) send('miner:log', { level: 'info', line: clearedCudaLine });
-  const gpus = await probe.detectMinerGpus();
+  // The same nvidia-smi round also reads each card's compute capability and the
+  // driver version, which decide whether this rig loads the CUDA 12.8 core or
+  // the CUDA 13 one (shared/coreVariant). The factory logs its choice.
+  const [gpus, cudaCards] = await Promise.all([probe.detectMinerGpus(), probe.detectCudaCards()]);
   if (epoch !== miningEpoch) return;
 
   miner = new PearlEngine({
     connect: (host, port) => net.connect(port, host),
-    createCore: coreFactory({ resourcesPath: process.resourcesPath }),
+    createCore: coreFactory({
+      resourcesPath: process.resourcesPath,
+      gpus,
+      cards: cudaCards,
+      log: (level, line) => send('miner:log', { level, line }),
+    }),
     // The card temperature the UI shows next to the GPU name. Our core has no
     // NVML reading of its own to forward the way alpha-miner did, so the engine
     // polls nvidia-smi for it; a rig without nvidia-smi just shows the name.

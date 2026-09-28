@@ -114,6 +114,8 @@ jest.mock('../src/main/probe', () => ({
   // with no nvidia-smi gets. The multi-card tests set it explicitly.
   detectMinerGpus: jest.fn(() => Promise.resolve([])),
   detectDriverMajor: jest.fn(() => Promise.resolve(600)),
+  // Nothing known about the cards: the core factory then picks the 12.8 build.
+  detectCudaCards: jest.fn(() => Promise.resolve([])),
   // Empty by default: an unknown compute capability is what keeps Windows on the
   // 1.8.6 fallback, which is the shape most of these tests were written against.
   // The tests that care about the 1.9.1b Windows package set it explicitly.
@@ -934,6 +936,24 @@ describe('mining', () => {
         { index: 1, name: 'NVIDIA GeForce RTX 4070' },
       ],
     }));
+  });
+
+  // Which build of the core loads is the factory's call (pearlCore.test.js); the
+  // GUI hands it the mining cards and nvidia-smi's compute capabilities, and
+  // puts what it says in the miner log.
+  it('hands the core factory the mining cards and their compute capability', async () => {
+    const ctx = await boot();
+    const pearlCore = require('../src/main/pearlCore');
+    const cards = [{ index: 0, major: 12, minor: 0, driverMajor: 610 }];
+    ctx.probe.detectMinerGpus.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 5090' }]);
+    ctx.probe.detectCudaCards.mockResolvedValue(cards);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    const opts = pearlCore.coreFactory.mock.calls[pearlCore.coreFactory.mock.calls.length - 1][0];
+    expect(opts).toMatchObject({ gpus: [{ index: 0, name: 'NVIDIA GeForce RTX 5090' }], cards });
+    opts.log('warn', 'Pearl core: CUDA 12.8 build · the CUDA 13 build could not start (x)');
+    expect(ctx.sent('miner:log')).toContainEqual(
+      { level: 'warn', line: 'Pearl core: CUDA 12.8 build · the CUDA 13 build could not start (x)' });
   });
 
   // CUDA_VISIBLE_DEVICES=0 hid a rig's second card from the mining core while

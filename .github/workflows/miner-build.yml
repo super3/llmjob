@@ -79,6 +79,7 @@ jobs:
       # native-core workflow's artifact rather than rebuilt here, because
       # building it needs the CUDA toolkit and this runner does not have one.
       - name: Stage the Pearl core
+        id: core
         if: runner.os == 'Windows' || runner.os == 'Linux'
         uses: dawidd6/action-download-artifact@v6
         with:
@@ -92,6 +93,36 @@ jobs:
           # warning nobody reads on the way to a release.
           if_no_artifact_found: fail
 
+      # The CUDA 13 build of the core: sm_120 only, loaded instead of the one
+      # above on an all-Blackwell rig with driver 580+ (src/shared/coreVariant.js)
+      # for about 3% more hashrate on an RTX 5090. Both shells pick it up from
+      # the same directory, so electron-builder's vendor/native → resources/native
+      # rule ships it with no config change.
+      #
+      # From the SAME native-core run as the 12.8 core, by run id, never "the
+      # newest run that has one": a pair built from two different commits is a
+      # version skew between two cores the same app may load.
+      #
+      # Optional, but loud. Without it every rig mines exactly as it did before
+      # there were two cores; a 5090 just leaves ~3% on the table. Failing the
+      # build instead would hold back a release that works for every card over
+      # a speed-up for one -- and the CUDA 13 job is the newer, less proven of
+      # the two (on Windows especially). So: warn here, warn in the verify step
+      # and the run summary, ship the 12.8 core.
+      - name: Stage the CUDA 13 Pearl core (RTX 50 series)
+        if: runner.os == 'Windows' || runner.os == 'Linux'
+        # if_no_artifact_found covers only "not there"; any other error in the
+        # action (an API hiccup, a failed download) calls setFailed. Optional
+        # has to mean optional: the verify step below still says it is missing.
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: native-core.yml
+          run_id: ${{ fromJSON(steps.core.outputs.artifacts)[0].workflow_run.id }}
+          name: pearl-core-cu13-${{ runner.os == 'Windows' && 'windows-2022' || 'ubuntu-latest' }}
+          path: earn/vendor/native
+          if_no_artifact_found: warn
+
       - name: Verify the core is really there
         if: runner.os == 'Windows' || runner.os == 'Linux'
         shell: bash
@@ -100,6 +131,13 @@ jobs:
           test -f vendor/native/pearl_core.node \
             || { echo "::error::no pearl_core.node staged — this build cannot mine"; exit 1; }
           echo "staged core: $(ls -l vendor/native/pearl_core.node)"
+          if [ -f vendor/native/pearl_core_cu13.node ]; then
+            echo "staged CUDA 13 core: $(ls -l vendor/native/pearl_core_cu13.node)"
+          else
+            msg="no pearl_core_cu13.node staged — RTX 50 rigs will mine on the CUDA 12.8 core (about 3% slower on a 5090). Check the native-core run's -cu13 job."
+            echo "::warning::$msg"
+            echo "**Warning:** $msg" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Build installer (publishes on v* tag or manual publish)
         run: npx electron-builder --${{ matrix.platform }} --publish ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.publish) && 'always' || 'never' }}
@@ -134,7 +172,27 @@ jobs:
           # addon out of its snapshot, so the loader probes next to the
           # executable and the self-updater downloads this asset to keep the
           # pair in step.
-          gh release upload "v$VERSION" dist/llmjob-earn-cli-linux dist/pearl_core.node --clobber --repo "$GITHUB_REPOSITORY"
+          #
+          # Cores FIRST, the binary last. electron-builder has already made this
+          # release live (releaseType "release"), and the self-updater acts on
+          # the binary asset alone: until that exists the release reads as
+          # "asset-missing" and no rig updates. Uploaded together, a rig that
+          # checked mid-upload could take the new binary before its cores were
+          # there -- keeping an old pearl_core.node, and (a missing CUDA 13 core
+          # meaning "delete the old one") dropping a 5090 to the 12.8 core until
+          # the next release.
+          gh release upload "v$VERSION" dist/pearl_core.node --clobber --repo "$GITHUB_REPOSITORY"
+          # The CUDA 13 core, when this build staged one. When it did not,
+          # delete any copy an earlier run of this workflow left on the release:
+          # that one came from a different native-core run than the 12.8 core
+          # just uploaded, and the self-updater would pair them.
+          if [ -f dist/pearl_core_cu13.node ]; then
+            gh release upload "v$VERSION" dist/pearl_core_cu13.node --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            echo "::warning::publishing v$VERSION without pearl_core_cu13.node"
+            gh release delete-asset "v$VERSION" pearl_core_cu13.node --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+          fi
+          gh release upload "v$VERSION" dist/llmjob-earn-cli-linux --clobber --repo "$GITHUB_REPOSITORY"
 
       # electron-builder publishes the release with a BLANK body and a bare
       # "<version>" title, and nothing downstream ever wrote one — every release

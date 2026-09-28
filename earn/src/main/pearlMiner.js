@@ -258,19 +258,24 @@ class PearlMiner extends EventEmitter {
   // came up?" is the question a slow LLM on this rig raises, and the log is
   // where it gets answered.
   _releaseMemClocks() {
-    for (const index of this.memClockLocked) {
-      const r = this.clocks.resetMemoryClock(index);
-      if (r.ok) {
-        this.emit('log', { level: 'info', line: 'memory clock released on GPU ' + index });
-        continue;
-      }
-      this.emit('log', {
-        level: 'error',
-        line: 'could not release the memory clock on GPU ' + index + ' (' + r.error + '). '
-          + 'An LLM on it will decode slowly until you run: sudo nvidia-smi -i ' + index + ' -rmc',
-      });
+    for (const index of this.memClockLocked) this._releaseMemClock(index);
+  }
+
+  // Release one card's lock, if this run holds it. Also used when a single core
+  // fails mid-run: that card has stopped mining, and whatever runs on it next
+  // should not be stuck at the mining clock until the whole rig stops.
+  _releaseMemClock(index) {
+    if (!this.memClockLocked.delete(index)) return;
+    const r = this.clocks.resetMemoryClock(index);
+    if (r.ok) {
+      this.emit('log', { level: 'info', line: 'memory clock released on GPU ' + index });
+      return;
     }
-    this.memClockLocked.clear();
+    this.emit('log', {
+      level: 'error',
+      line: 'could not release the memory clock on GPU ' + index + ' (' + r.error + '). '
+        + 'An LLM on it will decode slowly until you run: sudo nvidia-smi -i ' + index + ' -rmc',
+    });
   }
 
   _openSocket(host, port, wallet, worker) {
@@ -408,13 +413,62 @@ class PearlMiner extends EventEmitter {
 
   _wireCore(core, device, wallet, worker) {
     core.on('hashrate', (th) => {
+      // A sample the core queued before it failed can arrive after _onCoreError
+      // dropped it; counting it would put the dead card back into the total we
+      // report to the pool and the board.
+      if (!this.cores.some((c) => c.core === core)) return;
       // Per card for the UI and the board, and summed for what we tell the pool.
       if (device) this.hashrates.set(device.index, th);
       this.hashrate = this.totalHashrate();
       this.emit('hashrate', th, device);
     });
-    core.on('error', (err) => this.emit('error', err));
+    core.on('error', (err) => this._onCoreError(core, device, err));
     core.on('hit', (hit) => this._onHit(hit, wallet, worker, device));
+  }
+
+  // A core's search failed, and a failed core does not search again (its CUDA
+  // context is usually gone). Drop that one card and keep mining on the rest.
+  //
+  // This used to be relayed as a plain 'error' with the core left in `cores`,
+  // so the next pool job called setJob on it. The native core then started a
+  // new search thread over the old one, which calls std::terminate, and on
+  // Windows the whole app closed a few seconds after the error with nothing on
+  // screen. That is how the v0.5.7/v0.5.8 "misaligned address" fault on
+  // Blackwell looked to a user.
+  _onCoreError(core, device, err) {
+    const i = this.cores.findIndex((c) => c.core === core);
+    // Already dropped, or the miner has stopped: nothing left to do.
+    if (i < 0) return;
+    this.cores.splice(i, 1);
+    // Frees its VRAM and joins its (finished) search thread.
+    try { core.stop(); } catch (e) { /* already gone */ }
+
+    const message = (err && err.message) || String(err);
+    if (device) {
+      // The core already names its card ("GPU 1: ..."); say it once.
+      const prefix = 'GPU ' + device.index + ': ';
+      const reason = message.startsWith(prefix) ? message.slice(prefix.length) : message;
+      this.emit('log', {
+        level: 'error',
+        line: 'GPU ' + device.index + ' (' + device.name + ') stopped: ' + reason,
+      });
+      // Its last tick would otherwise stand in the rig total and on the board
+      // for as long as the others keep mining.
+      this.hashrates.delete(device.index);
+      this.hashrate = this.totalHashrate();
+      this.emit('hashrate', 0, device);
+      this._releaseMemClock(device.index);
+    } else {
+      this.emit('log', { level: 'error', line: 'the GPU stopped: ' + message });
+    }
+
+    // The last card has gone: the same end as a start with no core, an error
+    // that says why and then 'stopped', so the app shows mining has stopped
+    // instead of a pool connection that mines nothing.
+    if (!this.cores.length) {
+      this.emit('error', err);
+      this.stop(true);
+    }
   }
 
   // The rig's throughput: every card's latest tick, added up. A card that has
@@ -469,7 +523,10 @@ class PearlMiner extends EventEmitter {
     this._reconnectTimer.unref();
   }
 
-  stop() {
+  // `failed` marks the one stop the miner makes on its own, when its last card
+  // has died, and 'stopped' carries it ({ failed: true }) so a supervisor can
+  // tell that from a stop somebody asked for (see PearlEngine).
+  stop(failed = false) {
     if (!this.running) return false;
     this.running = false;
     if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
@@ -482,7 +539,7 @@ class PearlMiner extends EventEmitter {
     if (this.sock) { try { this.sock.destroy(); } catch (e) { /* already closed */ } this.sock = null; }
     this.job = null;
     this.pending.clear();
-    this.emit('stopped', {});
+    this.emit('stopped', failed ? { failed: true } : {});
     return true;
   }
 }

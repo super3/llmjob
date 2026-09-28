@@ -17,6 +17,7 @@ const { pickFastestRegion } = require('../shared/region');
 const {
   parseGpuStats, pickGpu, countGpus, parseMacGpu, parseDeviceIndex, planMinerGpus,
 } = require('../shared/gpu');
+const { parseCudaCards } = require('../shared/coreVariant');
 // Major version out of an nvidia-smi driver string. Lived in shared/engine
 // until alpha-miner was removed; the driver version is a property of the
 // machine, not of any engine.
@@ -143,6 +144,20 @@ function detectDriverMajor() {
   });
 }
 
+// Each card's compute capability and the driver version, in one nvidia-smi
+// call: what decides which build of the Pearl core this rig loads (see
+// shared/coreVariant). Resolves [{ index, major, minor, driverMajor }], or []
+// when nvidia-smi fails -- including a driver too old to know compute_cap,
+// which is one that must stay on the 12.8 build anyway. Never rejects.
+function detectCudaCards() {
+  return new Promise((resolve) => {
+    execFile('nvidia-smi',
+      ['--query-gpu=index,compute_cap,driver_version', '--format=csv,noheader'],
+      { timeout: 5000 },
+      (err, stdout) => resolve(err ? [] : parseCudaCards(stdout)));
+  });
+}
+
 // Publish this miner's live status to the network board (best-effort — never
 // throws; timeouts and errors are swallowed so mining is never affected).
 function postMinerReport(payload) {
@@ -255,6 +270,7 @@ module.exports = {
   detectMinerGpus,
   detectGpuTemps,
   detectDriverMajor,
+  detectCudaCards,
   postMinerReport,
   findFreePort,
   detectGpuInfo,

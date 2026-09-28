@@ -92,6 +92,28 @@ describe('planUpdate', () => {
     });
   });
 
+  // Both cores ride on the plan beside the binary, so the updater can keep all
+  // three from one release.
+  test('carries both core assets when the release has them', () => {
+    const release = {
+      version: '0.1.12',
+      assets: {
+        'llmjob-earn-cli-linux': 'https://x/cli',
+        'pearl_core.node': 'https://x/core',
+        'pearl_core_cu13.node': 'https://x/core13',
+      },
+    };
+    const p = planUpdate({ currentVersion: '0.1.11', release, platform: 'linux' });
+    expect(p).toMatchObject({ coreUrl: 'https://x/core', coreCu13Url: 'https://x/core13' });
+  });
+
+  // Null, not absent: the updater reads null as "delete any old copy".
+  test('a release without the CUDA 13 core plans null for it', () => {
+    const p = planUpdate({ currentVersion: '0.1.11', release: linuxRelease, platform: 'linux' });
+    expect(p.coreUrl).toBeNull();
+    expect(p.coreCu13Url).toBeNull();
+  });
+
   test('unsupported platform', () => {
     const p = planUpdate({ currentVersion: '0.1.11', release: linuxRelease, platform: 'win32' });
     expect(p.updateAvailable).toBe(false);

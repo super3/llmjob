@@ -152,6 +152,16 @@ npx node-gyp rebuild
 is green on Linux: the workflow produces a real `pearl_core.node`. So the core
 compiles and links today, even though nothing on a runner can execute it.
 
+It builds the same source a second time with CUDA 13.3 for sm_120 only, and
+uploads that as `pearl_core_cu13.node` (artifacts `pearl-core-cu13-<os>`).
+ptxas 13 compiles the Blackwell fold to 2.67–3.0 instructions per IMMA with
+160/192 B operands reused, where 12.8 manages 3.891 with 0/192; on an RTX 5090
+that is +3.2% hashrate. A CUDA 13 runtime needs driver 580+, so the app loads
+this build only on an all-Blackwell rig with a new enough driver
+(`src/shared/coreVariant.js`) and keeps `pearl_core.node` for everything else.
+The CUDA 13 jobs are non-blocking: if they fail, the run still succeeds with a
+current 12.8 core and the release ships without the CUDA 13 one, with a warning.
+
 It earned that on the way. Bringing the gate up caught, in order: an
 `Unsupported gpu architecture` (sm_120 needs CUDA 12.8, not 12.6); device code
 calling host-only helpers out of `pearl_config.h`; a `Napi::BigInt::ToWords`

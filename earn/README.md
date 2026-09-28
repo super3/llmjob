@@ -118,6 +118,36 @@ model (`--main-gpu <index>` each), mining cards included. Its `llama-server` is 
 Vulkan build, so those indices are Vulkan's own and the CUDA ordering above does
 not apply to them.
 
+### Two builds of the core (CUDA 12.8 and CUDA 13)
+
+A release ships two builds of the mining core side by side, in the installer's
+`resources/native/` and beside the CLI binary:
+
+| File | Toolkit | Cards |
+|---|---|---|
+| `pearl_core.node` | CUDA 12.8 | RTX 30, 40 and 50 (sm_86/89/120) — every rig |
+| `pearl_core_cu13.node` | CUDA 13.3 | RTX 50 / Blackwell only (sm_120) |
+
+The CUDA 13 compiler produces faster code for Blackwell: on an RTX 5090 at
+600 W the same source ran 107.27 TH/s built with CUDA 13.3 against 103.97 with
+12.8 (+3.2%). But a CUDA 13 build needs NVIDIA driver 580 or newer, so it is used
+only when **the driver is 580+ and every card that will mine is compute 12.x**
+(read from `nvidia-smi --query-gpu=index,compute_cap,driver_version`). Everything
+else — a 3090 or 4090, a mixed 4090 + 5090 rig, an older driver, or a rig where
+`nvidia-smi` can't say — loads `pearl_core.node`, as before. If the CUDA 13 core
+is missing, won't load, or fails its first start with a driver/runtime error, the
+app falls back to `pearl_core.node` and logs why. The choice is logged once per
+start:
+
+```
+Pearl core: CUDA 13 build · driver 610, mining card is compute 12.0
+Pearl core: CUDA 12.8 build · GPU 1 is compute 8.9 (the CUDA 13 build is compute 12.x only)
+```
+
+To override it, set `PEARL_CORE_VARIANT=cu12` or `cu13`, which forces that
+build (a forced `cu13` still falls back if it can't start). `PEARL_CORE_PATH=/path/to/core.node`
+beats both and loads exactly that file.
+
 ## macOS (LLM only)
 
 The Mac build runs **the local LLM and nothing else**. AlphaPool builds
@@ -333,7 +363,11 @@ chmod +x llmjob-earn-cli
 That binary **auto-updates itself**. On start it checks the GitHub "latest
 release", and if a newer version is out it downloads the new binary, atomically
 replaces itself in place, and re-launches with the same arguments before mining
-— so a long-running rig stays current hands-off. Opt out per-run with
+— so a long-running rig stays current hands-off. Both mining cores beside it
+(`pearl_core.node` and `pearl_core_cu13.node`) update with it; the old CUDA 13
+core is always deleted first, so a release without one (or a failed download of
+it) leaves the 12.8 core in charge rather than last release's CUDA 13 core
+paired with a newer binary. Opt out per-run with
 `--no-update`, or update on demand without (re)starting a mine:
 
 ```bash

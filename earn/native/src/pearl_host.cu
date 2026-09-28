@@ -29,7 +29,7 @@
 // known-answer vectors for semantics (test/minerReference.test.js), not against
 // a running GPU. Treat every performance claim as absent rather than optimistic.
 
-#include <cuda.h>          // CUtensorMap (types only; the addon links cudart alone)
+#include <cuda.h>
 #include <cudaTypedefs.h>  // PFN_cuTensorMapEncodeTiled
 #include <cuda_runtime.h>
 #include <stdint.h>
@@ -44,6 +44,7 @@
 #include <cstdio>
 
 #include "pearl_config.h"
+#include "pearl_tensor_map.h"
 
 // Declared in pearl_kernel.cu.
 extern "C" __global__ void pearl_gen_dense(const uint32_t *seed,
@@ -89,7 +90,7 @@ extern "C" __global__ void pearl_tile_fold_tall(
     uint32_t k, uint32_t rank, uint32_t chunks, uint32_t col_off,
     uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
     const PearlTranscriptTest test, const PearlHitList hits,
-    const CUtensorMap tmA, const CUtensorMap tmB);
+    const PearlTensorMap tmA, const PearlTensorMap tmB);
 extern "C" __global__ void pearl_partials(const int8_t *Aprime, const int8_t *Bprime,
                                           const uint32_t *cols_pattern,
                                           uint32_t cols_count, uint32_t m, uint32_t n,
@@ -199,7 +200,11 @@ struct Ctx {
   char foldErr[256] = {0};
   // TMA descriptors for the k-blocked noised operands, encoded once against dAp and
   // dBp (which never move) when foldTma. Zero, and ignored, for every other build.
-  CUtensorMap tmA{}, tmB{};
+  // cuTensorMapEncodeTiled wants the map it writes 64-byte aligned. The host pass
+  // sees PearlTensorMap unaligned (MSVC cannot pass an over-aligned kernel
+  // parameter by value; see pearl_tensor_map.h), so the alignment is declared on
+  // the members instead, which MSVC allows.
+  alignas(128) PearlTensorMap tmA{}, tmB{};
 
   // Operands, generated once per job and then read by every region.
   int8_t *dA = nullptr;   // [m, k]
@@ -519,7 +524,7 @@ PFN_cuTensorMapEncodeTiled_v12000 pearl_encode_tiled() {
 // k-blocks -- rather than a 2-D flattening, so the row dimension stays bounded by
 // `rows`: the last row group's rows past m come back zero-filled instead of being the
 // next k-block's first rows.
-bool pearl_encode_operand(CUtensorMap *map, const void *base, uint64_t rows, uint64_t k,
+bool pearl_encode_operand(PearlTensorMap *map, const void *base, uint64_t rows, uint64_t k,
                           uint32_t kBlock, uint32_t boxRows) {
   PFN_cuTensorMapEncodeTiled_v12000 enc = pearl_encode_tiled();
   if (!enc || kBlock != 64u || k % kBlock != 0u || boxRows == 0u || boxRows > 256u) return false;
@@ -527,8 +532,8 @@ bool pearl_encode_operand(CUtensorMap *map, const void *base, uint64_t rows, uin
   const cuuint64_t strides[2] = {(cuuint64_t)kBlock, (cuuint64_t)rows * kBlock};  // bytes
   const cuuint32_t box[3] = {kBlock, boxRows, 1u};
   const cuuint32_t estr[3] = {1u, 1u, 1u};
-  return enc(map, CU_TENSOR_MAP_DATA_TYPE_UINT8, 3, const_cast<void *>(base), dims, strides, box,
-             estr, CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_64B,
+  return enc(&map->map, CU_TENSOR_MAP_DATA_TYPE_UINT8, 3, const_cast<void *>(base), dims, strides,
+             box, estr, CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_64B,
              CU_TENSOR_MAP_L2_PROMOTION_L2_256B, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE)
          == CUDA_SUCCESS;
 }
