@@ -170,13 +170,12 @@ Every entry also compiles `pearl_kernel.cu` with `-Xptxas -v` and reads what
 ptxas said about both fold kernels (`pearl_tile_fold_tall`,
 `pearl_tile_fold_wmma`) on every architecture. The tall fold sits at 253–255
 registers; a compiler or gate change that spills still compiles, links and
-ships, and nothing else in CI can see it. A spill fails the job only on the
-architectures in that matrix entry's `spill_fail_archs`, the ones the tuning
-log has a 0-spill figure for under that compiler: sm_89 in the 12.8 entries,
-sm_120 in the CUDA 13 ones. Anywhere else (sm_86, sm_120 under 12.8, sm_89
-under 13.3) a spill is printed as a warning, so an unmeasured build cannot take
-a measured core out of a release. Widen the list once a run has shown those
-clean.
+ships, and nothing else in CI can see it. A spill fails the job on every
+architecture in that matrix entry's `spill_fail_archs`. The check's first run
+(2026-10-02) had both folds at 0 spill on every architecture either toolkit
+builds, so that is all of them: the tall fold at 253 registers on sm_86 and
+sm_89 and 254–255 on sm_120, the wmma fold at 235, 235 and 128. An
+architecture added later starts as a warning until a run has shown it clean.
 
 The CUDA 13 jobs are non-blocking: if they fail, the run still succeeds with a
 current 12.8 core and the release ships without the CUDA 13 one, with a warning.

@@ -51,11 +51,10 @@ jobs:
     # probes/hashrate.js and probes/verify-hits.js at pearl_core_cu13.node
     # (they take the .node path as their first argument and read no
     # environment variable). PEARL_CORE_VARIANT=cu13 is the override for the
-    # app and earn-cli only, and like any use of this build needs driver 580+.
-    # Today the app loads it only on an all-Blackwell rig. No sm_86, so the
-    # 3090 code path never changes. It is a separate file because a CUDA 13
-    # runtime needs driver 580+: the app loads it only with a new enough
-    # driver (src/shared/coreVariant.js).
+    # app and earn-cli only. No sm_86, so the 3090 code path never changes.
+    # It is a separate file because a CUDA 13 runtime needs driver 580+: the
+    # app loads it only on an all-Blackwell rig with a new enough driver
+    # (src/shared/coreVariant.js).
     name: ${{ matrix.os }}${{ matrix.variant }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -79,13 +78,14 @@ jobs:
               -gencode arch=compute_89,code=sm_89
               -gencode arch=compute_120,code=sm_120
             # Architectures on which a register spill in a fold kernel fails
-            # the job (the spill check below). Only where the tuning log has a
-            # 0-spill figure for this compiler: sm_89 under 12.8 (tall fold
-            # 253 registers, wmma fold 255). sm_86 has no recorded figure, and
-            # the log's sm_120 figures (tall fold 248 registers) are ptxas
-            # 13.3's, not 12.8's, so on those a spill is a warning until a run
-            # has shown them clean; then add them here.
-            spill_fail_archs: sm_89
+            # the job (the spill check below): the ones a run of this check
+            # has shown clean under this compiler. Its first run (native core
+            # run 37078406753, 2026-10-02) had every fold at 0 spill: the tall
+            # fold 253 registers on sm_86 and sm_89 and 255 on sm_120, the
+            # wmma fold 235, 235 and 128. So all three fail on a spill. An
+            # architecture added later starts as a warning until a run has
+            # shown it clean too.
+            spill_fail_archs: sm_86 sm_89 sm_120
           - os: windows-2022
             variant: ''
             file: pearl_core.node
@@ -97,7 +97,7 @@ jobs:
               -gencode arch=compute_86,code=sm_86
               -gencode arch=compute_89,code=sm_89
               -gencode arch=compute_120,code=sm_120
-            spill_fail_archs: sm_89
+            spill_fail_archs: sm_86 sm_89 sm_120
           # 13.3.1 is the newest toolkit Jimver/cuda-toolkit v0.2.36 (the
           # version already pinned here) lists, on Linux and Windows alike, and
           # it is the toolkit the 5090 rig builds with (nvcc V13.3.73) -- so the
@@ -115,13 +115,13 @@ jobs:
             gencode: >-
               -gencode arch=compute_89,code=sm_89
               -gencode arch=compute_120,code=sm_120
-            # sm_120 under 13.3 is the measured build (tall fold 248
-            # registers, 0 spill). sm_89 under 13.3 is unmeasured, and 13.3
-            # spilled 24 bytes of the untrimmed cp.async ring when it was
-            # built for sm_120 (src/pearl_config.h, PEARL_TALL_TMA). A spill
-            # in the sm_89 half must not cost Blackwell its core, so there it
-            # is a warning until the 4090 A/B has been run.
-            spill_fail_archs: sm_120
+            # Both clean in the check's first run (native core run
+            # 37078406753): the tall fold 253 registers on sm_89 and 254 on
+            # sm_120, the wmma fold 235 and 128, 0 spill everywhere. sm_120 is
+            # the measured build; sm_89 under 13.3 fits but is unmeasured, and
+            # a spill appearing there later is a finding for the 4090 A/B,
+            # not a reason to drop the gate.
+            spill_fail_archs: sm_89 sm_120
           - os: windows-2022
             variant: '-cu13'
             file: pearl_core_cu13.node
@@ -136,7 +136,7 @@ jobs:
             gencode: >-
               -gencode arch=compute_89,code=sm_89
               -gencode arch=compute_120,code=sm_120
-            spill_fail_archs: sm_120
+            spill_fail_archs: sm_89 sm_120
     # Pinned to windows-2022. windows-latest now points at Server 2025, where
     # the CUDA installer dies with exit 0xE0E1E1D9 before reaching any of our
     # source. The Windows artifact is the one that MATTERS most here: it is the
@@ -239,15 +239,13 @@ jobs:
       # over spills to local memory, and the kernel still compiles, links and
       # ships; nothing else in CI can see that. This reads what ptxas said
       # above for both fold kernels on every architecture and prints one row
-      # each. A spill fails the job only on the architectures in the entry's
-      # spill_fail_archs: the ones the tuning log has a 0-spill figure for
-      # under that compiler. Anywhere else it is a warning, so a build nobody
-      # has measured (sm_89 under 13.3, sm_86, sm_120 under 12.8) cannot take
-      # a measured core out of a release: a failed cu13 job uploads no
-      # pearl_core_cu13.node, and a failed ubuntu 12.8 job makes
-      # miner-build.yml fall back to the previous run's core. If one of the
-      # warned builds turns out to spill, that is a finding to record, not a
-      # reason to drop the check. Needs no GPU.
+      # each. A spill fails the job on the architectures in the entry's
+      # spill_fail_archs, which is every architecture the entry builds since
+      # the check's first run showed them all clean; an architecture added
+      # later is a warning until a run has shown it clean too. A failed cu13
+      # job uploads no pearl_core_cu13.node, and a failed ubuntu 12.8 job
+      # makes miner-build.yml fall back to the previous run's core, which is
+      # the right outcome for a fold that spills. Needs no GPU.
       - name: Check the fold kernels for register spills
         working-directory: earn/native
         shell: bash
