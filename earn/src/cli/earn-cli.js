@@ -44,6 +44,7 @@ const { resolvePlan, normalizeMode } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote } = require('../shared/platform');
 const { resolveServerUrl } = require('../shared/llama');
 const { alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda } = require('../shared/gpu');
+const { planMemClocks } = require('../shared/memClock');
 const format = require('../shared/format');
 const pkg = require('../../package.json');
 
@@ -738,6 +739,9 @@ async function run(argv) {
   let reportNow = null;
   let llm = null;
   let stopping = false;
+  // nvidia-smi's compute capability per card, read with the miner below. The
+  // memory clock plan needs it too, further down, once the LLM plan is known.
+  let cudaCards = [];
 
   // ── Miner ────────────────────────────────────────────────────────────────
   if (plan.miner) {
@@ -754,10 +758,11 @@ async function run(argv) {
     // Which of the two builds loads (CUDA 12.8, or CUDA 13 on an all-Blackwell
     // rig with driver 580+) is decided from one more nvidia-smi query and the
     // card list above; see shared/coreVariant. The factory logs its choice.
+    cudaCards = await probe.detectCudaCards();
     const createCore = coreFactory({
       resourcesPath: process.resourcesPath,
       gpus: settings.gpus,
-      cards: await probe.detectCudaCards(),
+      cards: cudaCards,
       log: (level, line) => log(line, level === 'error' ? process.stderr : process.stdout),
     });
     if (!createCore) {
@@ -877,17 +882,26 @@ async function run(argv) {
     log('auto:       ' + autoPlan.model.name + ' needs the GPU to itself — mining until a request arrives');
   }
 
-  // --mine-mem-clock is only safe while nothing else wants the memory. LLM
-  // decode is memory-bandwidth-bound -- the opposite of the fold -- so a model
-  // served from a locked card slows down with the memory clock. Demand mode
-  // never overlaps the two: the miner's stop() releases the lock before the
-  // gate starts llama-server. A co-running LLM shares the card for the whole
-  // run, so the lock is dropped here, where the plan is known, and the miner
-  // never has to ask which mode it is in.
-  if (settings.mineMemClockMhz != null && miner && plan.llm && !demand) {
-    log('--mine-mem-clock ignored: the LLM co-runs with the miner and needs full memory bandwidth',
-      process.stderr);
-    settings.mineMemClockMhz = null;
+  // Which cards lock their memory clock while mining, and at what: the
+  // Blackwell default, or --mine-mem-clock (shared/memClock). Decided here,
+  // where the LLM plan is known, because the lock is only safe while nothing
+  // else wants the memory. LLM decode is memory-bandwidth-bound -- the opposite
+  // of the fold -- so a model served from a locked card slows down with the
+  // memory clock. Demand mode never overlaps the two: the miner's stop()
+  // releases the lock before the gate starts llama-server. A co-running LLM
+  // shares the card for the whole run, so that drops the plan, and the miner
+  // never has to ask which mode it is in. Set on `settings` so the gate's
+  // restarts (startMinerArgs) carry the same plan.
+  if (miner) {
+    const memPlan = planMemClocks({
+      requestedMhz: settings.mineMemClockMhz,
+      cards: cudaCards,
+      gpus: settings.gpus,
+      llmCoRuns: !!(plan.llm && !demand),
+    });
+    settings.mineMemClockByIndex = memPlan.byIndex;
+    settings.mineMemClockDefault = memPlan.isDefault;
+    if (memPlan.reason) log(memPlan.reason, memPlan.dropped ? process.stderr : process.stdout);
   }
 
   // Keep a mining reserve free only when co-running with the miner. In demand

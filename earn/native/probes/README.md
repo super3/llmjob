@@ -261,6 +261,14 @@ per clock and runs ~6 MHz lower). verify-hits 400/400 for both cores at n = 2621
 pipelined CLI mined live on HeroMiners us2 for 8 minutes at 410.4 TH/s, 14 shares accepted
 and 0 rejected at n = 262144.
 
+Gating note (2026-10-02): the switches above that were gated to sm_89
+(`PEARL_FOLD_PERSISTENT`, `PEARL_FOLD_GROUP_STAGE`, `PEARL_FOLD_SERPENTINE`,
+`PEARL_FOLD_LANE_BASES`, `PEARL_FOLD_FAST_COORDS`, `PEARL_FOLD_WIDE_WARPS`) and the tall
+fold's cp.async body (`PEARL_FOLD_TALL`) now build for sm_86 as well, so Ampere runs the
+sm_89 path instead of the one-block-per-tile walk described for it above. No Ampere card
+has run it; every figure in this log is a 4090's or a 5090's. See `PEARL_TALL_BODY_ARCH`
+in `src/pearl_config.h`.
+
 ### Against the field: 264 is 15.8% behind
 
 What a user compares is the number a miner DISPLAYS over a few minutes, so that is the

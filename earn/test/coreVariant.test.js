@@ -1,7 +1,8 @@
 'use strict';
 
 const {
-  CU12, CU13, FILES, MIN_DRIVER_CU13, parseCudaCards, pickCoreVariant, isRuntimeError,
+  CU12, CU13, FILES, MIN_DRIVER_CU13, cu13HasCodeFor, cu13AutoSelectsFor,
+  parseCudaCards, pickCoreVariant, isRuntimeError,
 } = require('../src/shared/coreVariant');
 
 // Cards as parseCudaCards returns them.
@@ -12,6 +13,7 @@ const card = (index, cap, driverMajor) => {
 const RTX5090 = (index, drv) => card(index, '12.0', drv == null ? 610 : drv);
 const RTX4090 = (index, drv) => card(index, '8.9', drv == null ? 610 : drv);
 const RTX2080TI = (index, drv) => card(index, '7.5', drv == null ? 610 : drv);
+const RTX3090 = (index, drv) => card(index, '8.6', drv == null ? 610 : drv);
 
 describe('core file names', () => {
   // These are the release asset names too: the self-updater and the workflows
@@ -20,6 +22,29 @@ describe('core file names', () => {
     expect(FILES[CU12]).toBe('pearl_core.node');
     expect(FILES[CU13]).toBe('pearl_core_cu13.node');
     expect(MIN_DRIVER_CU13).toBe(580);
+  });
+});
+
+// What the CUDA 13 build is compiled for (the workflow's gencode list: sm_89
+// and sm_120) against what the loader picks it for on its own (Blackwell only
+// until the Ada fold under ptxas 13.3 has been benched on a 4090).
+describe('cu13HasCodeFor / cu13AutoSelectsFor', () => {
+  test('Blackwell has code and is selected', () => {
+    expect(cu13HasCodeFor(RTX5090(0))).toBe(true);
+    expect(cu13AutoSelectsFor(RTX5090(0))).toBe(true);
+    expect(cu13HasCodeFor(card(0, '12.1', 610))).toBe(true);
+  });
+
+  test('Ada has code but is not selected yet', () => {
+    expect(cu13HasCodeFor(RTX4090(0))).toBe(true);
+    expect(cu13AutoSelectsFor(RTX4090(0))).toBe(false);
+  });
+
+  // 8.6 is Ampere: same major as Ada, no code in the build.
+  test('Ampere and anything older has no code', () => {
+    expect(cu13HasCodeFor(RTX3090(0))).toBe(false);
+    expect(cu13AutoSelectsFor(RTX3090(0))).toBe(false);
+    expect(cu13HasCodeFor(card(0, '7.5', 610))).toBe(false);
   });
 });
 
@@ -79,16 +104,25 @@ describe('pickCoreVariant', () => {
     });
   });
 
-  test('a 3090/4090 rig keeps the 12.8 build: the CUDA 13 one has no code for it', () => {
+  // The build carries sm_89 code, but the Ada fold under ptxas 13.3 has not
+  // been benched, so Ada is not picked on its own; the reason says which.
+  test('a 4090 rig keeps the 12.8 build: the CUDA 13 one is not selected for Ada yet', () => {
     expect(pickCoreVariant({ env: {}, cards: [RTX4090(0)], gpus: [{ index: 0 }] })).toEqual({
-      variant: CU12, reason: 'GPU 0 is compute 8.9 (the CUDA 13 build is compute 12.x only)',
+      variant: CU12,
+      reason: 'GPU 0 is compute 8.9 (the CUDA 13 build has code for it but is not yet selected automatically)',
+    });
+  });
+
+  test('a 3090 rig keeps the 12.8 build: the CUDA 13 one has no code for it', () => {
+    expect(pickCoreVariant({ env: {}, cards: [RTX3090(0)], gpus: [{ index: 0 }] })).toEqual({
+      variant: CU12, reason: 'GPU 0 is compute 8.6 (the CUDA 13 build has no code for it)',
     });
   });
 
   // Turing's code is in the 12.8 build only (sm_75); the CUDA 13 one is sm_120.
   test('a 2080 Ti rig keeps the 12.8 build', () => {
     expect(pickCoreVariant({ env: {}, cards: [RTX2080TI(0)], gpus: [{ index: 0 }] })).toEqual({
-      variant: CU12, reason: 'GPU 0 is compute 7.5 (the CUDA 13 build is compute 12.x only)',
+      variant: CU12, reason: 'GPU 0 is compute 7.5 (the CUDA 13 build has no code for it)',
     });
   });
 
