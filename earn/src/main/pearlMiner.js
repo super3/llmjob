@@ -150,6 +150,12 @@ class PearlMiner extends EventEmitter {
       ? settings.gpus
       : [null];                       // no list: one core, its own choice of card
     const failures = [];
+    // Which cards to lock the memory clock on, and at what: { index: mhz } from
+    // shared/memClock.planMemClocks, which the shells run. The miner does not
+    // decide this -- it cannot see the compute capabilities, the request, or
+    // whether an LLM co-runs -- it only takes the lock a card was planned for.
+    const memClocks = settings.mineMemClockByIndex || {};
+    const anyMemClock = Object.keys(memClocks).length > 0;
 
     for (let i = 0; i < cards.length; i++) {
       const card = cards[i];
@@ -182,9 +188,14 @@ class PearlMiner extends EventEmitter {
         });
       }
       // Only a card whose core started gets locked: a card that refused is not
-      // mining, and the lock would only slow whatever else is using it.
-      if (settings.mineMemClockMhz) {
-        this._lockMemClock(device ? device.index : null, settings.mineMemClockMhz);
+      // mining, and the lock would only slow whatever else is using it. A card
+      // the plan has no entry for -- a 4090 beside a 5090 on the default -- is
+      // left alone. A core that will not name its card is told about below.
+      if (anyMemClock) {
+        const index = device ? device.index : null;
+        if (index == null || memClocks[index]) {
+          this._lockMemClock(index, index == null ? null : memClocks[index], !!settings.mineMemClockDefault);
+        }
       }
 
       // A core that won't say which card it opened is one built before any of
@@ -222,15 +233,27 @@ class PearlMiner extends EventEmitter {
     return true;
   }
 
-  // Lock one mining card's memory clock (--mine-mem-clock; see gpuClocks for
-  // the measurements). The index is the card the core says it opened. A core
-  // that does not say is one that ignores the card it was asked for (see
-  // below), so the index it was given is a guess, and a wrong guess would lock
-  // a card something else is using.
-  _lockMemClock(index, mhz) {
+  // Lock one mining card's memory clock (the Blackwell default, or
+  // --mine-mem-clock; see gpuClocks for the measurements). The index is the
+  // card the core says it opened. A core that does not say is one that ignores
+  // the card it was asked for (see below), so the index it was given is a
+  // guess, and a wrong guess would lock a card something else is using.
+  //
+  // `byDefault` is true when nobody asked for this lock: the log then says
+  // where it came from, and not getting it is information, not a warning. A
+  // rig with no rights to set clocks is the common case, and it should not
+  // read a warning on every start for something it never asked for. A
+  // requested lock that fails keeps its warning.
+  //
+  // These lines reach both shells, so they name neither a flag nor sudo: the
+  // GUI has no --mine-mem-clock, and on Windows there is no sudoers rule, only
+  // running the app as administrator. The shell's own plan line
+  // (shared/memClock) says how to turn the default off, and the README says
+  // what rights each platform needs.
+  _lockMemClock(index, mhz, byDefault) {
     if (index == null) {
       this.emit('log', {
-        level: 'warn',
+        level: byDefault ? 'info' : 'warn',
         line: 'memory clock left at default: this pearl_core.node does not say which GPU it opened',
       });
       return;
@@ -240,7 +263,16 @@ class PearlMiner extends EventEmitter {
       this.memClockLocked.add(index);
       this.emit('log', {
         level: 'info',
-        line: 'memory clock locked at ' + mhz + ' MHz on GPU ' + index + ' while mining',
+        line: 'memory clock locked at ' + mhz + ' MHz on GPU ' + index + ' while mining'
+          + (byDefault ? ' (the default on Blackwell)' : ''),
+      });
+      return;
+    }
+    if (byDefault) {
+      this.emit('log', {
+        level: 'info',
+        line: 'memory clock left at the driver\'s default on GPU ' + index + ' (' + r.error
+          + '): the Blackwell lock needs root or administrator rights for nvidia-smi',
       });
       return;
     }
@@ -259,6 +291,16 @@ class PearlMiner extends EventEmitter {
   // where it gets answered.
   _releaseMemClocks() {
     for (const index of this.memClockLocked) this._releaseMemClock(index);
+  }
+
+  // Release every lock while the miner keeps running. For the GUI's START LLM
+  // while mining-only is up: the miner is kept (restarting it would drop the
+  // pool connection for nothing) but a model is about to be served from its
+  // cards, and a served model must never sit on a locked card. Mining then
+  // carries on at the driver's clock -- slower on a Blackwell card, never
+  // wrong. Idempotent, and a later stop() finds nothing left to release.
+  releaseMemClocks() {
+    this._releaseMemClocks();
   }
 
   // Release one card's lock, if this run holds it. Also used when a single core

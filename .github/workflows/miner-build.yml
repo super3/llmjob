@@ -93,11 +93,12 @@ jobs:
           # warning nobody reads on the way to a release.
           if_no_artifact_found: fail
 
-      # The CUDA 13 build of the core: sm_120 only, loaded instead of the one
-      # above on an all-Blackwell rig with driver 580+ (src/shared/coreVariant.js)
-      # for about 3% more hashrate on an RTX 5090. Both shells pick it up from
-      # the same directory, so electron-builder's vendor/native → resources/native
-      # rule ships it with no config change.
+      # The CUDA 13 build of the core: sm_89 and sm_120, loaded instead of the
+      # one above only on an all-Blackwell rig with driver 580+
+      # (src/shared/coreVariant.js) for about 3% more hashrate on an RTX 5090;
+      # the sm_89 half is unmeasured and never picked automatically. Both
+      # shells pick it up from the same directory, so electron-builder's
+      # vendor/native → resources/native rule ships it with no config change.
       #
       # From the SAME native-core run as the 12.8 core, by run id, never "the
       # newest run that has one": a pair built from two different commits is a

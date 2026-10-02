@@ -540,7 +540,8 @@ bool pearl_encode_operand(PearlTensorMap *map, const void *base, uint64_t rows, 
 
 // Which fold this card loaded, and what launching it takes. Ask which binary
 // actually loaded rather than which card it is -- the launch has to match the code
-// that runs. The Ada build of pearl_tile_fold_wmma is the persistent one
+// that runs. The Ada-layout builds of pearl_tile_fold_wmma (sm_89, and sm_86, which
+// takes Ada's switches on the shared SM layout, unmeasured) are the persistent one
 // (PEARL_FOLD_PERSISTENT) and the eight-warp one (PEARL_FOLD_WIDE_WARPS); the tall
 // fold is its own kernel, with a body only in the builds PEARL_TALL_ARCH names, so
 // its binary answers for itself, and Blackwell's also says the noised operands are
@@ -558,18 +559,21 @@ void resolve_fold(Ctx *ctx) {
   const bool haveAttrs =
       cudaFuncGetAttributes(&fa, reinterpret_cast<const void *>(pearl_tile_fold_wmma))
       == cudaSuccess;
-  const bool ada = haveAttrs && fa.binaryVersion == 89;
+  // An Ada-layout build: sm_89, or sm_86 compiled with Ada's switches. The same
+  // architectures pearl_config.h's gates spell out; the launch bound check below
+  // catches a build whose gates disagree.
+  const bool adaLayout = haveAttrs && (fa.binaryVersion == 86 || fa.binaryVersion == 89);
 #ifdef PEARL_FOLD_PERSISTENT_FORCED
   ctx->foldPersistent = PEARL_FOLD_PERSISTENT != 0;
 #else
-  ctx->foldPersistent = ada;
+  ctx->foldPersistent = adaLayout;
 #endif
 #ifdef PEARL_FOLD_WIDE_WARPS_FORCED
   ctx->foldWide = PEARL_FOLD_WIDE_WARPS != 0;
 #else
-  ctx->foldWide = ada;
+  ctx->foldWide = adaLayout;
 #endif
-  // The tall fold is persistent like the Ada fold.
+  // The tall fold is persistent like the Ada-layout fold.
   {
     cudaFuncAttributes ft;
     const bool haveTall =
@@ -779,9 +783,9 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   CUDA_OK(cudaMalloc(&ctx->dA, aBytes), "allocating A");
   CUDA_OK(cudaMalloc(&ctx->dB, bBytes), "allocating B");
   // The tall fold's last row group of tiles reads past A's m rows (see
-  // PEARL_TALL_A_ROWS): Ada's build up to 64 rows past the end of the last k-block.
-  // Nothing generates the bytes past m * k; they are zeroed once so the fold reads
-  // defined bytes there, and it hashes no region from them.
+  // PEARL_TALL_A_ROWS): the cp.async build (Ada and Ampere) up to 64 rows past the
+  // end of the last k-block. Nothing generates the bytes past m * k; they are zeroed
+  // once so the fold reads defined bytes there, and it hashes no region from them.
   {
     const size_t apBytes = (size_t)PEARL_TALL_A_ROWS(profile->m) * k;
     CUDA_OK(cudaMalloc(&ctx->dAp, apBytes), "allocating the noised A");
@@ -1080,7 +1084,8 @@ void draw_noise(Ctx *ctx, bool isA) {
     if (ctx->foldTall && k >= PEARL_TALL_STAGE_K) {
       // The same values, stored [k / 64][rows][64] for the tall fold's staging: each
       // 64-byte stage of a tile is then whole L2 lines rather than half of every line,
-      // for Blackwell's TMA boxes (PEARL_TALL_TMA) and Ada's cp.async copies alike.
+      // for Blackwell's TMA boxes (PEARL_TALL_TMA) and the cp.async copies of Ada and
+      // Ampere alike.
       // resolve_fold decided this for the context, before its first draw, and the
       // search launches the fold that reads it. (Any other k is one the search
       // refuses.)

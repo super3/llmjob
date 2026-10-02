@@ -73,9 +73,9 @@
 // L, L^4, L^8 and L^12 hold the other three quarters. So a region's XOR is the
 // lane's own 64 accumulators folded in registers plus one shuffle round trip
 // among those four lanes, and every lane ends up holding its own region's
-// value. A 64x64 warp tile -- the fold's on Ada, see PEARL_FOLD_WIDE_WARPS --
-// gives each lane a quarter of two regions the same way, one per 32 rows, and
-// 96x64 three.
+// value. A 64x64 warp tile -- the fold's on Ada and Ampere, see
+// PEARL_FOLD_WIDE_WARPS -- gives each lane a quarter of two regions the same
+// way, one per 32 rows, and 96x64 three.
 //
 // The contiguous 16x16 tile this replaced was one wmma fragment. Folding it
 // took a whole-warp REDUX per region per chunk: eight a warp, each landing in a
@@ -364,10 +364,13 @@ typedef struct {
 // then re-read B four times as often as at 32. The serpentine helps whatever
 // the cache size, so it is what ships and the depth stays.
 //
-// Ada only: it is what measured. Blackwell's one-deep bands re-sweep B every
-// row group, so it may gain there too, but that has not been measured.
+// Ada is what measured. Ampere (sm_86) runs it too, on the strength of the
+// shared SM layout, and has not been measured: its L2 is a fraction of the
+// 4090's 72 MB, so B misses more there whatever the walk order. Blackwell's
+// one-deep bands re-sweep B every row group, so it may gain there too, but
+// that has not been measured. Device side only.
 #ifndef PEARL_FOLD_SERPENTINE
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
 #define PEARL_FOLD_SERPENTINE 1
 #else
 #define PEARL_FOLD_SERPENTINE 0
@@ -443,16 +446,19 @@ typedef struct {
 // The CTA tile, the stage buffers and the tile walk are the same either way, so
 // the host's grid, shared size and tile count do not change -- only the block.
 // It must launch the one the loaded fold was compiled for, and decides from the
-// binary as for PEARL_FOLD_PERSISTENT (binaryVersion == 89), refusing a fold
+// binary as for PEARL_FOLD_PERSISTENT (binaryVersion 86 or 89), refusing a fold
 // whose launch bound says otherwise. A -DPEARL_FOLD_WIDE_WARPS=0/1 override
 // binds both sides.
 //
-// Ada only: it is what measured. Ampere and Blackwell keep sixteen warps.
+// Ada is what measured. Ampere (sm_86) gets it too: a GA10x SM has Ada's
+// schedulers, register file and 99 KB of shared a block, the budget the 64x64
+// warp tile depends on, but no Ampere card has run it. Blackwell keeps sixteen
+// warps.
 #ifdef PEARL_FOLD_WIDE_WARPS
 #define PEARL_FOLD_WIDE_WARPS_FORCED 1
 #endif
 #ifndef PEARL_FOLD_WIDE_WARPS
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
 #define PEARL_FOLD_WIDE_WARPS 1
 #else
 #define PEARL_FOLD_WIDE_WARPS 0
@@ -513,27 +519,37 @@ typedef struct {
 // 310.9 TH/s (+6.8%), 253 registers, 400/400 hits verified. See "Whole-line staging and a
 // leaner ring" and "Onto v0.5.7" in probes/README.md.
 //
-// Ada and Blackwell. Blackwell's build stages with TMA instead of cp.async (see
+// Ada, Ampere and Blackwell. Blackwell's build stages with TMA instead of cp.async (see
 // PEARL_TALL_TMA, which has what it measured there) and keeps the ring and stage body
-// it was measured with; Ampere keeps the sixteen-warp fold. The host launches the tall
-// fold when the loaded pearl_tile_fold_tall is one that has a body (PEARL_TALL_ARCH of
-// its binaryVersion), and a -DPEARL_FOLD_TALL=0/1 override binds both sides.
+// it was measured with. Ampere (sm_86) builds Ada's cp.async ring unchanged: everything
+// it issues -- mbarrier init, arrive and test_wait, cp.async and its mbarrier arrive,
+// ldmatrix, the int8 m16n8k32 mma -- is sm_80, and a GA10x SM has Ada's schedulers,
+// register file and 99 KB of shared a block. It has not run on an Ampere card; the
+// band depth it inherits was swept on a 72 MB L2 only (PEARL_TALL_BAND). The host
+// launches the tall fold when the loaded pearl_tile_fold_tall is one that has a body
+// (PEARL_TALL_ARCH of its binaryVersion), and a -DPEARL_FOLD_TALL=0/1 override binds
+// both sides.
+//
+// Which builds carry a tall-fold body, by __CUDA_ARCH__: Ampere's and Ada's, both the
+// cp.async ring, and Blackwell's, which stages with TMA unless PEARL_TALL_TMA is 0.
+// This one list is what the default below, the fold's own #if in pearl_kernel.cu and
+// PEARL_TALL_ARCH all test, so they cannot drift apart.
+#define PEARL_TALL_BODY_ARCH(a) ((a) == 860 || (a) == 890 || (a) >= 1200)
 #ifdef PEARL_FOLD_TALL
 #define PEARL_FOLD_TALL_FORCED 1
 #endif
 #ifndef PEARL_FOLD_TALL
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 890 || __CUDA_ARCH__ >= 1200)
+#if defined(__CUDA_ARCH__) && PEARL_TALL_BODY_ARCH(__CUDA_ARCH__)
 #define PEARL_FOLD_TALL 1
 #else
 #define PEARL_FOLD_TALL 0
 #endif
 #endif
-// Which cubins carry a tall-fold body, by the architecture number the host reads
-// back as cudaFuncAttributes::binaryVersion (the binary ships sm_86, sm_89 and
-// sm_120 SASS and no PTX, so that is exactly the build that runs): Ada's, and
-// Blackwell's, which stages with TMA unless PEARL_TALL_TMA is 0. The fold's #if
-// spells out the same architectures.
-#define PEARL_TALL_ARCH(v) ((v) == 89 || (v) >= 120)
+// The same test for the host, by the architecture number it reads back as
+// cudaFuncAttributes::binaryVersion (86, 89, 120: the binary ships sm_86, sm_89 and
+// sm_120 SASS and no PTX, so that is exactly the build that runs). binaryVersion is
+// __CUDA_ARCH__ / 10.
+#define PEARL_TALL_ARCH(v) PEARL_TALL_BODY_ARCH((v) * 10)
 #define PEARL_TALL_TMA_ARCH(v) ((v) >= 120)
 // The tall geometry by name, for the host: two row slots of six 16-row blocks by four
 // column slots of 64 columns, three 64-deep stages.
@@ -571,8 +587,9 @@ typedef struct {
 #define PEARL_TALL_TMA_EMPTY_COUNT \
   (PEARL_TALL_TMA_EMPTY_ALL ? PEARL_TALL_THREADS : PEARL_TALL_THREADS / 32u)
 // Shared: the three stages, the ring's six mbarriers, and one 64-byte transcript a
-// region -- 192 regions a tile. Ada's cp.async build keeps each stage's FULL and EMPTY
-// in 128 bytes behind its rows: 98688 bytes of the 101376 Ada allows. Blackwell's TMA
+// region -- 192 regions a tile. The cp.async build (Ada and Ampere) keeps each stage's
+// FULL and EMPTY in 128 bytes behind its rows: 98688 bytes of the 101376 both allow.
+// Blackwell's TMA
 // build keeps them in a 512-byte pad behind each buffer (PEARL_TALL_TMA_ROLES, the
 // default): 99840, plus 1024 of static shared; without ROLES all six sit after the
 // stages in 64 bytes, 98368 (PEARL_TALL_SMEM_TMA).
@@ -593,7 +610,7 @@ typedef struct {
 // m is a power of two and 192 is not a factor of it, so the last row group of tiles
 // runs past m: at the mainnet 131072 rows, 683 groups cover 131136. The fold hashes no
 // region whose row offset falls past m. Both builds read A' k-blocked, m rows a k-block
-// (see PEARL_TALL_TMA). TMA zero-fills the rows past m. Ada's cp.async reads them: in
+// (see PEARL_TALL_TMA). TMA zero-fills the rows past m. The cp.async build reads them: in
 // every k-block but the last they are the next k-block's first 64 rows, and in the last
 // they run past m * k. So the noised A is allocated with this many rows, the extra
 // zeroed and never generated.
@@ -603,6 +620,11 @@ typedef struct {
 // fold's 32 is 12 MB of A at 192 rows a group, and with the 64 MB of B one launch
 // sweeps that is more than the 72 MB L2; 16 keeps both in it. It measured flat:
 // 8, 16 and 32 deep all ran 288.3 - 290.1 TH/s (bench, two interleaved rounds).
+//
+// Ampere (sm_86) runs the same 16. That flat result is from a 72 MB L2, where every
+// depth kept B resident; an Ampere L2 is a fraction of that and cannot keep the 64 MB
+// sweep of B resident, so the depth may matter there. It has not been swept on an
+// Ampere card.
 //
 // Blackwell walks bands one row group deep: consecutive tiles share a row group of A
 // and sweep B. That is PEARL_BLOCK_GROUP 1 there, which is what its measurements ran
@@ -833,13 +855,12 @@ typedef struct {
 // of B, and each group is staged by exactly the warps that read it, with every
 // copy slot in bounds at compile time and issued in the middle of a k-step.
 //
-// Ada only, like PEARL_BLOCK_GROUP is Blackwell only: this is what measured.
-// Ampere (sm_86) has Ada's SM layout and very likely gains too, but has not
-// been measured, and neither has Blackwell, so both keep the block-wide walk.
-// Device side only -- the host sizes and launches the fold identically either
-// way.
+// Ada is what measured, as PEARL_BLOCK_GROUP's 1 is Blackwell's. Ampere (sm_86)
+// has Ada's SM layout, so it runs this too, and has not been measured. Blackwell
+// has not been measured either and keeps the block-wide walk. Device side only
+// -- the host sizes and launches the fold identically either way.
 #ifndef PEARL_FOLD_GROUP_STAGE
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
 #define PEARL_FOLD_GROUP_STAGE 1
 #else
 #define PEARL_FOLD_GROUP_STAGE 0
@@ -849,28 +870,28 @@ typedef struct {
 // Whether the fold is PERSISTENT: one block per resident slot, each walking
 // tiles and staging the next tile's chunk 0 under the last chunk of this one.
 //
-// Ada only, because only Ada has been measured: +3.1% on a 4090. Blackwell is
-// the reason to hold back. It is power-capped hard, the staging ALU is where its
-// power goes, and the persistent walk adds ~17% non-tensor instructions to its
-// chunk (a 64-bit source rebuild and a wrap per copy); the one persistent fold
-// ever run there regressed. Ampere is merely unmeasured. Both keep one block
-// per tile, and with the next-tile staging compiled out their chunk loop is the
-// one they ran before.
+// Ada is what measured: +3.1% on a 4090. Ampere (sm_86) runs it too, on the
+// strength of the shared SM layout, and has not been measured. Blackwell holds
+// back. It is power-capped hard, the staging ALU is where its power goes, and
+// the persistent walk adds ~17% non-tensor instructions to its chunk (a 64-bit
+// source rebuild and a wrap per copy); the one persistent fold ever run there
+// regressed. It keeps one block per tile, and with the next-tile staging
+// compiled out its chunk loop is the one it ran before.
 //
 // The host must launch the matching grid, and it decides from the fold binary
-// it actually loaded (cudaFuncAttributes::binaryVersion == 89). Either kind of
-// mismatch stays correct -- a persistent build launched one block per tile runs
-// each block once, and a non-persistent one given fewer blocks restages each
-// later tile's chunk 0 -- it is only slower.
+// it actually loaded (cudaFuncAttributes::binaryVersion 86 or 89). Either kind
+// of mismatch stays correct -- a persistent build launched one block per tile
+// runs each block once, and a non-persistent one given fewer blocks restages
+// each later tile's chunk 0 -- it is only slower.
 //
 // A -DPEARL_FOLD_PERSISTENT=0/1 override binds BOTH sides, so a build can run
-// another arch's launch shape on this card (how the Ampere/Blackwell path was
+// another arch's launch shape on this card (how the one-block-per-tile shape was
 // checked on a 4090).
 #ifdef PEARL_FOLD_PERSISTENT
 #define PEARL_FOLD_PERSISTENT_FORCED 1
 #endif
 #ifndef PEARL_FOLD_PERSISTENT
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
 #define PEARL_FOLD_PERSISTENT 1
 #else
 #define PEARL_FOLD_PERSISTENT 0
@@ -894,10 +915,11 @@ typedef struct {
 //   bench  264.9 / 263.7 / 263.7 -> 269.8 / 266.9 / 269.4 TH/s
 //   full miner loop  261.9 / 262.8 -> 268.4 / 268.4 TH/s (+2.3%)
 //
-// Ada only, like the other fold switches: it is what measured, and the
-// register budget it depends on is the Ada fold's. Device side only.
+// Ada is what measured, and the register budget it depends on is the Ada
+// fold's. Ampere (sm_86) has the same register file and runs it too, not
+// measured. Device side only.
 #ifndef PEARL_FOLD_LANE_BASES
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
 #define PEARL_FOLD_LANE_BASES 1
 #else
 #define PEARL_FOLD_LANE_BASES 0
@@ -917,9 +939,10 @@ typedef struct {
 //
 // The shift is recomputed on each call rather than held for the kernel: the
 // held version cost ptxas the lane bases and measured 265.0 against 273.0.
-// Ada only, with PEARL_FOLD_LANE_BASES. Device side only.
+// Goes with PEARL_FOLD_LANE_BASES: Ada measured, Ampere (sm_86) on the same SM
+// layout and not measured. Device side only.
 #ifndef PEARL_FOLD_FAST_COORDS
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
 #define PEARL_FOLD_FAST_COORDS 1
 #else
 #define PEARL_FOLD_FAST_COORDS 0

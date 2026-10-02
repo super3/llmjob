@@ -65,7 +65,22 @@ describe('PearlEngine — the MinerManager surface', () => {
     expect(typeof e.start).toBe('function');
     expect(typeof e.stop).toBe('function');
     expect(typeof e.isRunning).toBe('function');
+    expect(typeof e.releaseMemClocks).toBe('function');
     expect(e.isRunning()).toBe(false);
+  });
+
+  // START LLM while mining-only runs: main.js keeps the miner and asks for its
+  // memory clock locks back before the model starts. The call reaches the
+  // miner; which cards it releases is PearlMiner's (pearlMiner.test.js).
+  test('releaseMemClocks reaches the running miner, and is nothing before a start', () => {
+    const { e } = boot();
+    expect(() => e.releaseMemClocks()).not.toThrow();
+    e.start({ address: ADDR, worker: 'rig01', endpoint: 'us.pearl.herominers.com:1200' });
+    const release = jest.spyOn(e.miner, 'releaseMemClocks');
+    e.releaseMemClocks();
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(e.isRunning()).toBe(true);
+    e.stop();
   });
 
   test('runs once started and stops on stop', () => {

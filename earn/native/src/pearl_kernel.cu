@@ -760,9 +760,10 @@ extern "C" __global__ void pearl_materialize16(const int8_t *__restrict__ base,
 // the same code over the same inputs -- a copy, so that kernel's SASS stays exactly
 // what it was on every architecture; only the store address differs. The host
 // launches this whenever the card runs the tall fold (Ctx::foldTall), for
-// Blackwell's TMA boxes and Ada's cp.async copies alike; A and B themselves (and so
-// every commitment and proof) stay row-major. Needs kb a power of two of at least 16
-// dividing k, so a thread's sixteen bytes never straddle a k-block.
+// Blackwell's TMA boxes and the cp.async copies of Ada and Ampere alike; A and B
+// themselves (and so every commitment and proof) stay row-major. Needs kb a power
+// of two of at least 16 dividing k, so a thread's sixteen bytes never straddle a
+// k-block.
 extern "C" __global__ void pearl_materialize16_kblocked(const int8_t *__restrict__ base,
                                                         const int8_t *__restrict__ dense,
                                                         const uint32_t *__restrict__ perm,
@@ -1124,12 +1125,13 @@ __device__ __forceinline__ void pearl_bar_sync(uint32_t id, uint32_t count) {
   asm volatile("bar.sync %0, %1;" ::"r"(id), "r"(count) : "memory");
 }
 
-#if PEARL_FOLD_TALL && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 890 || __CUDA_ARCH__ >= 1200)
+#if PEARL_FOLD_TALL && defined(__CUDA_ARCH__) && PEARL_TALL_BODY_ARCH(__CUDA_ARCH__)
 // The tall fold's staging ring (pearl_tile_fold_tall). sm_80 and later have what it
 // needs -- init, arrive, a phase test and a cp.async-driven arrive -- but not
 // mbarrier.try_wait, which is sm_90: a wait is a spin on test_wait, an LDS and a
-// compare. The fold's waits rarely spin, because the copies they wait for were
-// issued a chunk earlier. (Blackwell's build, below, has try_wait and TMA.)
+// compare. That is the ring both sm_86 and sm_89 build. The fold's waits rarely spin,
+// because the copies they wait for were issued a chunk earlier. (Blackwell's build,
+// below, has try_wait and TMA.)
 __device__ __forceinline__ void pearl_mbar_init(uint32_t bar, uint32_t count) {
   asm volatile("mbarrier.init.shared.b64 [%0], %1;" ::"r"(bar), "r"(count) : "memory");
 }
@@ -2330,10 +2332,12 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
   }
 }
 
-// The tall fold (PEARL_FOLD_TALL, Ada and Blackwell): pearl_tile_fold_wmma's fold over a
-// 192x256 CTA tile -- eight 96x64 warp tiles, three 64-deep stages, and an mbarrier ring
-// where the eight-warp fold has a __syncthreads a chunk. PEARL_FOLD_TALL has why, and
-// what the probe measured.
+// The tall fold (PEARL_FOLD_TALL, Ada, Ampere and Blackwell): pearl_tile_fold_wmma's fold
+// over a 192x256 CTA tile -- eight 96x64 warp tiles, three 64-deep stages, and an
+// mbarrier ring where the eight-warp fold has a __syncthreads a chunk. PEARL_FOLD_TALL
+// has why, and what the probe measured. Ampere (sm_86) builds the body below exactly as
+// Ada does -- the cp.async ring, every instruction of it sm_80 -- on the strength of the
+// two SMs' shared layout; it has not run on an Ampere card.
 //
 // Kept from the eight-warp fold: persistent blocks walking tiles a grid apart, the next
 // tile's first chunk staged under this one's last, group staging (a row slot's A by its
@@ -2412,7 +2416,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
     // PearlTensorMap, not CUtensorMap: cuda.h's alignment is lost under MSVC,
     // which put these at 0x98 and faulted every TMA load (pearl_tensor_map.h).
     const __grid_constant__ PearlTensorMap tmA, const __grid_constant__ PearlTensorMap tmB) {
-#if PEARL_FOLD_TALL && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 890 || __CUDA_ARCH__ >= 1200)
+#if PEARL_FOLD_TALL && defined(__CUDA_ARCH__) && PEARL_TALL_BODY_ARCH(__CUDA_ARCH__)
   constexpr uint32_t k = PEARL_FOLD_K;
   constexpr uint32_t rank = PEARL_FOLD_RANK;
   constexpr uint32_t chunks = PEARL_FOLD_CHUNKS;
@@ -2454,7 +2458,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
   constexpr uint32_t STRIDE = PEARL_TALL_STAGE_STRIDE;
   static_assert(STRIDE % 128u == 0u && STRIDE >= STAGE + 16u,
                 "stage buffers stay 128-byte aligned, with their barriers behind them");
-  static_assert(PEARL_TALL_SMEM <= 101376u, "Ada gives a block 99 KB of shared");
+  static_assert(PEARL_TALL_SMEM <= 101376u, "Ada and Ampere give a block 99 KB of shared");
 #endif
 
   const uint32_t warp = threadIdx.x >> 5;

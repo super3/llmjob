@@ -153,6 +153,13 @@ class PearlEngine extends EventEmitter {
     if (this.miner) this.miner.stop();
   }
 
+  // Hand every mining card's memory clock back to the driver without stopping.
+  // main.js calls it when START LLM joins a running miner, before the model
+  // starts (see PearlMiner.releaseMemClocks). Nothing to do before a start.
+  releaseMemClocks() {
+    if (this.miner) this.miner.releaseMemClocks();
+  }
+
   // Poll the card temperature while mining. Sampled once immediately so the
   // reading appears with the first status rather than five seconds into the
   // run, then on a timer -- a status event fires on every share and every
