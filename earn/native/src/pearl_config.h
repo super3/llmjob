@@ -733,9 +733,17 @@ typedef struct {
 #endif
 
 // A two-CTA cluster that shares the staged B by TMA multicast (sm_120, the TMA build).
-// An A/B switch, off. NOTHING about it has been measured: no hashrate, no clock, no
-// register count. It is to be priced on the feed probe and then on the card before
-// it is turned on.
+// An A/B switch, off. No hashrate and no clock have been measured. What CI has measured
+// is the compile. The first build of the switch held the cluster rank in a local for the
+// whole kernel and spilled: ptxas 12.8, sm_120, 255 registers, 196 bytes of spill
+// stores, 248 of loads (native core run 37087176421), on a fold the shipped build
+// compiles to 254-255 registers and 0 spill. The rank is re-read where it is used
+// instead (pearl_cluster_ctarank in pearl_kernel.cu), and the CI step prints the
+// figure after every change; the fold has to fit before the probe is worth running.
+// ptxas also printed, at every multicast, that the modifier should be used on
+// sm_90a/sm_100a/sm_101a instead of sm_120 "as this feature is expected to have
+// substantially reduced performance on some future architectures". It is to be priced
+// on the feed probe and then on the card before it is turned on.
 //
 // Why it exists. The 5090 is hard power-capped at 600 W; the 128x256 fold it ran at
 // the time pulled 2.12 TB/s through L2 with DRAM at 3.5% of peak, and the memory

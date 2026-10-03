@@ -1202,10 +1202,16 @@ __device__ __forceinline__ void pearl_tma_3d(uint32_t dst, const PearlTensorMap 
 // sm_120 assembles it; none of it has run on a card, and whether the runtime grants
 // the cluster launch is not verified (pearl_config.h).
 //
-// This CTA's rank in its cluster, 0 or 1.
+// This CTA's rank in its cluster, 0 or 1. Volatile, so every call site reads the
+// special register where it stands (one instruction) instead of ptxas holding one copy
+// live for the whole kernel: the fold sits at 255 registers, and the first CI build of
+// this switch, with the rank held in a local, spilled (ptxas 12.8, sm_120: 255
+// registers, 196 bytes of spill stores, 248 of loads, a 136-byte stack frame; native
+// core run 37087176421) where the shipped build has none. The rank is read at the tile
+// seam, once a stage by lane 0 for the remote arrive, and by the producer's fills.
 __device__ __forceinline__ uint32_t pearl_cluster_ctarank() {
   uint32_t r;
-  asm("mov.u32 %0, %%cluster_ctarank;" : "=r"(r));   // not volatile: a constant, free to re-read
+  asm volatile("mov.u32 %0, %%cluster_ctarank;" : "=r"(r));
   return r;
 }
 // Every thread of both CTAs arrives, then waits: a release and an acquire across the
@@ -2546,7 +2552,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
   // hasher skips every row; see hash_region). The host passes `tiles` as pair tiles.
   constexpr uint32_t CLUSTER = PEARL_TALL_CLUSTER_SIZE;
   static_assert(CLUSTER == 2u, "the pair walk, the mask and the rank arithmetic are for two CTAs");
-  const uint32_t crank = pearl_cluster_ctarank();
+  // The rank is not held: pearl_cluster_ctarank() is read where it is needed.
   const uint32_t cluster_idx = blockIdx.x / CLUSTER;
   const uint32_t walk_rows = (row_groups + CLUSTER - 1u) / CLUSTER;
 #else
@@ -2580,7 +2586,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
     if (band & 1u) cbg_ = col_block_groups - 1u - cbg_;
 #endif
 #if PEARL_TALL_CLUSTER_BODY
-    rbg_ = rbg_ * CLUSTER + crank;   // the pair's row group for this CTA
+    rbg_ = rbg_ * CLUSTER + pearl_cluster_ctarank();   // the pair's row group for this CTA
 #endif
   };
 
@@ -2695,7 +2701,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
     // tx-count below zero for a while; the mbarrier allows that, and the phase cannot
     // complete before the expect_tx's arrival, so it is how CUTLASS's multicast
     // pipelines run too. Each CTA's own A box follows, as before.
-    if (crank == 0u)
+    if (pearl_cluster_ctarank() == 0u)
       pearl_tma_3d_multicast(dst, &tmB, 0u, boxB, kofs / SK, full,
                              (uint16_t)((1u << CLUSTER) - 1u));
 #else
@@ -3034,7 +3040,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
         // producer's expect_tx and refill. The remote arrive is issued first by
         // preference; the order is not what makes the ring safe.
 #define PEARL_TALL_EMPTY_ARRIVE(bar)                       \
-  pearl_mbar_arrive_remote(pearl_mapa((bar), crank ^ 1u)); \
+  pearl_mbar_arrive_remote(pearl_mapa((bar), pearl_cluster_ctarank() ^ 1u)); \
   pearl_mbar_arrive_cluster(bar);
 #else
 #define PEARL_TALL_EMPTY_ARRIVE(bar) pearl_mbar_arrive(bar);
