@@ -37,6 +37,7 @@
 #include <string.h>
 
 #include <chrono>
+#include <mutex>
 #include <set>
 #include <vector>
 
@@ -194,6 +195,10 @@ struct Ctx {
   // any search, so all of this is resolved when the context is created
   // (resolve_fold) and never changes after.
   bool foldTma = false;
+  // Whether that TMA build is the two-CTA cluster one (PEARL_TALL_CLUSTER, off by
+  // default): the tall fold is then launched in clusters of PEARL_TALL_CLUSTER_SIZE
+  // over tiles of two row groups, and its resident count is in clusters.
+  bool foldCluster = false;
   bool foldKnown = false;
   // Why not, when foldKnown is false: reported by the first search, as it was when
   // the search itself asked.
@@ -203,8 +208,10 @@ struct Ctx {
   // cuTensorMapEncodeTiled wants the map it writes 64-byte aligned. The host pass
   // sees PearlTensorMap unaligned (MSVC cannot pass an over-aligned kernel
   // parameter by value; see pearl_tensor_map.h), so the alignment is declared on
-  // the members instead, which MSVC allows.
-  alignas(128) PearlTensorMap tmA{}, tmB{};
+  // the members instead, which MSVC allows. tmA has one map per noised-A buffer
+  // (see dAp); tmA[1] is encoded only with the host overlap on.
+  alignas(128) PearlTensorMap tmA[2]{};
+  alignas(128) PearlTensorMap tmB{};
 
   // Operands, generated once per job and then read by every region.
   int8_t *dA = nullptr;   // [m, k]
@@ -213,7 +220,10 @@ struct Ctx {
   // The noised operands, computed once per commitment. int8, matching the
   // reference's saturating convert-down: operand and noise are both int7, so the
   // sum fits, and an int8 operand is what lets the fold use __dp4a at all.
-  int8_t *dAp = nullptr; // [m, k]
+  // dAp[apCur] is the buffer the fold reads. dAp[1] exists only with the host
+  // overlap on (see the block at the end of this struct), for the next salt's
+  // materialize to write while the fold reads dAp[apCur].
+  int8_t *dAp[2] = {nullptr, nullptr}; // [PEARL_TALL_A_ROWS(m), k] each
   int8_t *dBp = nullptr; // [n, k]
 
   // The noise factors. Only two of the four are dense — E_AR and E_BL are sparse
@@ -237,10 +247,14 @@ struct Ctx {
 
   uint32_t *dRows = nullptr;
   uint32_t *dCols = nullptr;
-  uint32_t *dHitTranscript = nullptr;  // [PEARL_MAX_HITS][16] — hits only
-  uint8_t *dHashes = nullptr;     // [PEARL_MAX_HITS][32] — hits only
-  uint32_t *dHitCount = nullptr;  // one counter per batch
-  uint32_t *dHitIndex = nullptr;  // [PEARL_MAX_HITS]
+  // The hit list a fold appends to. Set 0 is the one every search used to have;
+  // set 1 exists only with the host overlap on, so consecutive batches can
+  // alternate and the next batch's list can be cleared while the current batch's
+  // is still unread.
+  uint32_t *dHitTranscript[2] = {nullptr, nullptr};  // [PEARL_MAX_HITS][16] — hits only
+  uint8_t *dHashes[2] = {nullptr, nullptr};     // [PEARL_MAX_HITS][32] — hits only
+  uint32_t *dHitCount[2] = {nullptr, nullptr};  // one counter per batch
+  uint32_t *dHitIndex[2] = {nullptr, nullptr};  // [PEARL_MAX_HITS]
   uint32_t colBatch = 1;          // valid column offsets per launch
   uint32_t rowsValid = 1;         // count of valid row offsets
   uint32_t colsValid = 1;         // count of valid column offsets
@@ -300,7 +314,134 @@ struct Ctx {
   // B' all belong to it. Only then may a redraw restamp A instead of redrawing
   // everything. set_job clears it, so a new job never mixes with an old tree.
   bool baseDrawn = false;
+
+  // ---------------------------------------------------------------------------
+  // Host overlap (PEARL_HOST_OVERLAP=1; see pearl_overlap_enabled).
+  //
+  // Where the card idles today. pearl_host_search launches one fold and reads
+  // the hit count back with a synchronous copy, so between every batch the card
+  // waits a host round trip for the next launch. And whenever the nonce reaches
+  // the salt span, pearl_host_reseed restamps A on the same stream with the
+  // tensor cores idle: 0.72 ms a redraw on a 4090, 0.59 of it materialize (see
+  // restamp). The log puts the full loop at 311 TH/s against 313 for the bench
+  // (probes/README.md), which has no reseeds and a tighter loop; that gap is the
+  // most the prepared restamp can be worth on a 4090. The per-batch round trip
+  // is in the bench too, which calls pearl_host_search one batch at a time, so
+  // nothing in the log bounds that part. None of it has been run on a GPU; every
+  // figure here is the log's, not this code's.
+  //
+  // With the switch on the host keeps one batch in flight: the next batch is
+  // launched before the current one's hits are read, so the card has work queued
+  // when a fold ends, and a salt's last batch has the next salt's restamp issued
+  // beside it rather than after it. How much of that restamp actually runs beside
+  // the fold is the card's business: the tall fold takes 253-255 registers a
+  // thread (probes/README.md), the whole register file at 256 threads, so on that
+  // build the restamp's blocks start only as the fold's drain, and what overlaps
+  // is the batch's tail plus the host round trips. Not measured.
+  //
+  // Streams. The fold stays on the legacy default stream, so set_job's full draw
+  // (launched from the JS thread, on that stream) still queues behind an in-flight
+  // fold exactly as today. The legacy stream synchronises with blocking streams
+  // and NOT with cudaStreamNonBlocking ones, and both streams below are
+  // non-blocking: sideStream runs the next salt's restamp, which must not wait
+  // for the fold; readStream carries every readback (hit count, hit data, proof
+  // copies), because a copy on the legacy stream would queue behind the fold
+  // launched AFTER the one it reads, and that wait is the round trip being
+  // removed. Events (cudaEventDisableTiming) order the three: one is recorded
+  // after each fold and readStream waits on it before reading that batch's list;
+  // one is recorded after the shadow save and readStream waits on it before
+  // reading the shadow.
+  //
+  // Buffers. The noised A is double-buffered (dAp[2], a TMA descriptor each) so
+  // the next salt's materialize writes one while the fold reads the other; apCur
+  // is the live one. Two hit lists alternate between consecutive batches, and a
+  // list is cleared only once its previous batch has been read or dropped.
+  //
+  // The shadow. A restamp rewrites, in place, exactly leaf 0 of A (the stamp is
+  // A's first PEARL_STAMP_BYTES bytes), node 0 of every tree level, and root_A.
+  // A hit found under salt s but read after salt s+1's restamp has run needs salt
+  // s's values for those, so they are copied aside on sideStream before the
+  // restamp kernel, and snapshotProof reads them from there whenever the shadow
+  // belongs to the hit's salt. Everything else the proof reads -- the other
+  // leaves and siblings, all of B's side -- a restamp does not touch.
+  //
+  // Why it defaults off. Nothing here has been run on a GPU. The repo's gate for
+  // a change that touches which nonce or salt a hit belongs to is
+  // probes/verify-hits.js at 400/400 plus a pool-accepted share, and until
+  // someone has run that on a 4090 with the switch on, the proven path stays the
+  // default. With the switch off every entry point does the same device work on
+  // the same stream in the same order as before. What did change on that path:
+  // derive_seeds' device-to-device copies are cudaMemcpyAsync on stream 0 rather
+  // than cudaMemcpy, snapshotProof copies its siblings after the level walk
+  // instead of during it, and mu (below) is taken around search, reseed and
+  // set_job, so set_job on the JS thread waits for a search in progress.
+  //
+  // Locking. The search thread (pearl_host_search_next, pearl_host_reseed) and
+  // the JS thread (pearl_host_set_job_salted) both reach into this state, so mu
+  // guards apCur, salt, aSeed, jobGen and the prepared / in-flight / shadow
+  // records, and is held for the whole of each of those three calls, switch on
+  // or off. pearl_core.cc takes its job_mu_ around set_job_salted and around
+  // reseed, never around a search, and nothing here calls back into it, so the
+  // order is job_mu_ then mu on both threads. mu is not recursive:
+  // set_job_salted reaches the redraw through reseed_locked, which assumes it is
+  // held.
+  // ---------------------------------------------------------------------------
+  bool overlap = false;
+  std::mutex mu;
+  cudaStream_t sideStream = nullptr;
+  cudaStream_t readStream = nullptr;
+  int apCur = 0;
+  // The hit list the next launch takes. Flipped by every launch.
+  int nextList = 0;
+  // Recorded on the legacy stream right after the fold that writes that list.
+  cudaEvent_t listEvent[2] = {nullptr, nullptr};
+  // Bumped by set_job. A batch launched under an older job is dropped unread.
+  uint64_t jobGen = 0;
+  // One launched batch: what reading its hits and building a hit's result takes.
+  // The salt and a_seed are the batch's own, because by the time a hit is read the
+  // context may already name the prepared salt.
+  struct Batch {
+    bool valid = false;
+    uint64_t nonce = 0;  // nonce_base
+    uint64_t salt = 0;
+    uint8_t aSeed[PEARL_HASH_BYTES] = {0};
+    int apBuf = 0;
+    int list = 0;
+    uint64_t jobGen = 0;
+  };
+  Batch inflight;  // launched, not yet read
+  // The next salt, restamped into dAp[prepared.apBuf] ahead of pearl_host_reseed,
+  // which swaps to it instead of drawing.
+  struct Prepared {
+    bool valid = false;
+    uint64_t salt = 0;
+    int apBuf = 0;
+    uint8_t aSeed[PEARL_HASH_BYTES] = {0};
+  };
+  Prepared prepared;
+  // The shadow (above): leaf 0 of A, node 0 of each level, root_A, end to end.
+  uint8_t *dShadow = nullptr;
+  uint32_t shadowLevels = 0;  // tree levels the allocation has room for
+  bool shadowValid = false;
+  uint64_t shadowSalt = 0;
+  cudaEvent_t shadowEvent = nullptr;
 };
+
+// Where the shadow keeps each piece. `levels` is layerOffA.size(), which a
+// restamp never changes, so the save and the read agree on it.
+uint8_t *shadow_leaf0(uint8_t *s) { return s; }
+uint8_t *shadow_node0(uint8_t *s, size_t level) { return s + 1024 + level * PEARL_HASH_BYTES; }
+uint8_t *shadow_root(uint8_t *s, size_t levels) { return s + 1024 + levels * PEARL_HASH_BYTES; }
+
+// The process-wide switch, read once. Off unless PEARL_HOST_OVERLAP is exactly
+// "1" (see Ctx for why off is the default).
+bool pearl_overlap_enabled() {
+  static const bool on = [] {
+    const char *v = std::getenv("PEARL_HOST_OVERLAP");
+    return v != nullptr && strcmp(v, "1") == 0;
+  }();
+  return on;
+}
 
 // The row/column patterns the tile folds over. Derived from the counts plus the
 // fixed stride, exactly as the reference does, so the host and the config block
@@ -368,14 +509,38 @@ void leafIndicesForRows(const uint32_t *rows, uint32_t nrows, uint32_t k,
   out->assign(s.begin(), s.end());
 }
 
+// One device-to-host copy of a hit's data. With the host overlap on it goes on
+// readStream, behind the batch's event, so it does not queue behind a fold
+// launched after the one it reads (see Ctx). Every destination is pageable (a
+// std::vector, a field of the result, a stack word; nothing here is pinned), and
+// the runtime completes a device-to-pageable-host cudaMemcpyAsync before it
+// returns, so each copy is a host sync of its own. The caller's copies_done is a
+// safety net, not the sync; pinning the destinations (cudaMallocHost) is what
+// would make it one synchronisation per hit. Otherwise it is the synchronous
+// cudaMemcpy it always was.
+void copy_out(Ctx *ctx, void *dst, const void *src, size_t n) {
+  if (ctx->overlap)
+    cudaMemcpyAsync(dst, src, n, cudaMemcpyDeviceToHost, ctx->readStream);
+  else
+    cudaMemcpy(dst, src, n, cudaMemcpyDeviceToHost);
+}
+void copies_done(Ctx *ctx) {
+  if (ctx->overlap) cudaStreamSynchronize(ctx->readStream);
+}
+
 // Capture one side's proof while the tree still belongs to the hit.
 //
 // The sibling order must match the verifier's exactly: level by level, visiting
 // the live set in ascending index order, emitting a sibling only when it is not
 // itself live.
+//
+// `shadow` is non-null only for A, with the host overlap on, when the live leaf 0,
+// node 0 of each level and root already belong to the NEXT salt (see Ctx, "The
+// shadow"): those three then come from the copy saved before the restamp, and
+// everything else from the live arrays, which a restamp does not touch.
 void snapshotProof(Ctx *ctx, bool isA, const uint32_t *rows, uint32_t nrows,
                    std::vector<uint32_t> *leafIdx, std::vector<uint8_t> *leaves,
-                   std::vector<uint8_t> *sibs) {
+                   std::vector<uint8_t> *sibs, uint8_t *shadow) {
   const uint32_t k = ctx->profile.k;
   const int8_t *operand = isA ? ctx->dA : ctx->dB;
   const uint32_t *tree = isA ? ctx->dTreeA : ctx->dTreeB;
@@ -387,12 +552,15 @@ void snapshotProof(Ctx *ctx, bool isA, const uint32_t *rows, uint32_t nrows,
 
   leaves->resize(leafIdx->size() * 1024);
   for (size_t i = 0; i < leafIdx->size(); i++) {
-    cudaMemcpy(leaves->data() + i * 1024,
-               operand + (uint64_t)(*leafIdx)[i] * 1024, 1024,
-               cudaMemcpyDeviceToHost);
+    const uint32_t idx = (*leafIdx)[i];
+    const void *src = (shadow && idx == 0)
+                          ? static_cast<const void *>(shadow_leaf0(shadow))
+                          : static_cast<const void *>(operand + (uint64_t)idx * 1024);
+    copy_out(ctx, leaves->data() + i * 1024, src, 1024);
   }
 
   sibs->clear();
+  std::vector<const void *> srcs;  // one device address per sibling, in order
   std::vector<uint32_t> current = *leafIdx;
   uint64_t levelLen = totalLeaves;
   uint32_t level = 0;
@@ -407,10 +575,9 @@ void snapshotProof(Ctx *ctx, bool isA, const uint32_t *rows, uint32_t nrows,
         if (live.count(i + 1) || (uint64_t)i + 1 >= levelLen) continue;
         want = i + 1;
       }
-      uint8_t node[PEARL_HASH_BYTES];
-      cudaMemcpy(node, tree + (offs[level] + want) * 8, PEARL_HASH_BYTES,
-                 cudaMemcpyDeviceToHost);
-      sibs->insert(sibs->end(), node, node + PEARL_HASH_BYTES);
+      srcs.push_back(shadow && want == 0
+                         ? static_cast<const void *>(shadow_node0(shadow, level))
+                         : static_cast<const void *>(tree + (offs[level] + want) * 8));
     }
     std::set<uint32_t> next;
     for (uint32_t i : current) next.insert(i / 2);
@@ -418,6 +585,14 @@ void snapshotProof(Ctx *ctx, bool isA, const uint32_t *rows, uint32_t nrows,
     levelLen = (levelLen + 1) / 2;
     level++;
   }
+  // The sources are worked out first and the output sized once, so every copy
+  // lands in memory that no later step moves. With pageable destinations each
+  // copy completes before it returns (copy_out); copies_done at the end is what
+  // would make the snapshot one synchronisation if they were pinned.
+  sibs->resize(srcs.size() * PEARL_HASH_BYTES);
+  for (size_t j = 0; j < srcs.size(); j++)
+    copy_out(ctx, sibs->data() + j * PEARL_HASH_BYTES, srcs[j], PEARL_HASH_BYTES);
+  copies_done(ctx);
 }
 
 bool fail(char *err, size_t err_len, const char *msg) {
@@ -461,7 +636,17 @@ size_t needed_bytes(const PearlProfile *profile) {
   const size_t aLeaves = aBytes / 1024, bLeaves = bBytes / 1024;
   const size_t treeBytes = 2 * (aLeaves + bLeaves) * 32
                            + (aLeaves > bLeaves ? aLeaves : bLeaves) * 32;
-  return aBytes + bBytes + primeBytes + noiseBytes + batchBytes + treeBytes + (1u << 20);
+  // The host overlap (PEARL_HOST_OVERLAP=1, see Ctx) double-buffers the noised A
+  // and the hit list and keeps the shadow: leaf 0, a node a level with room for
+  // 64 levels (more than any power-of-two leaf count has), and the root. Counted
+  // only when it is on, which both callers see the same way.
+  const size_t overlapBytes =
+      pearl_overlap_enabled()
+          ? (size_t)PEARL_TALL_A_ROWS(profile->m) * k + batchBytes
+                + 1024 + 64 * PEARL_HASH_BYTES + PEARL_HASH_BYTES
+          : 0;
+  return aBytes + bBytes + primeBytes + noiseBytes + batchBytes + treeBytes + overlapBytes
+         + (1u << 20);
 }
 
 #define CUDA_OK(expr, msg)                                   \
@@ -540,7 +725,8 @@ bool pearl_encode_operand(PearlTensorMap *map, const void *base, uint64_t rows, 
 
 // Which fold this card loaded, and what launching it takes. Ask which binary
 // actually loaded rather than which card it is -- the launch has to match the code
-// that runs. The Ada build of pearl_tile_fold_wmma is the persistent one
+// that runs. The Ada-layout builds of pearl_tile_fold_wmma (sm_89, and sm_86, which
+// takes Ada's switches on the shared SM layout, unmeasured) are the persistent one
 // (PEARL_FOLD_PERSISTENT) and the eight-warp one (PEARL_FOLD_WIDE_WARPS); the tall
 // fold is its own kernel, with a body only in the builds PEARL_TALL_ARCH names, so
 // its binary answers for itself, and Blackwell's also says the noised operands are
@@ -558,18 +744,21 @@ void resolve_fold(Ctx *ctx) {
   const bool haveAttrs =
       cudaFuncGetAttributes(&fa, reinterpret_cast<const void *>(pearl_tile_fold_wmma))
       == cudaSuccess;
-  const bool ada = haveAttrs && fa.binaryVersion == 89;
+  // An Ada-layout build: sm_89, or sm_86 compiled with Ada's switches. The same
+  // architectures pearl_config.h's gates spell out; the launch bound check below
+  // catches a build whose gates disagree.
+  const bool adaLayout = haveAttrs && (fa.binaryVersion == 86 || fa.binaryVersion == 89);
 #ifdef PEARL_FOLD_PERSISTENT_FORCED
   ctx->foldPersistent = PEARL_FOLD_PERSISTENT != 0;
 #else
-  ctx->foldPersistent = ada;
+  ctx->foldPersistent = adaLayout;
 #endif
 #ifdef PEARL_FOLD_WIDE_WARPS_FORCED
   ctx->foldWide = PEARL_FOLD_WIDE_WARPS != 0;
 #else
-  ctx->foldWide = ada;
+  ctx->foldWide = adaLayout;
 #endif
-  // The tall fold is persistent like the Ada fold.
+  // The tall fold is persistent like the Ada-layout fold.
   {
     cudaFuncAttributes ft;
     const bool haveTall =
@@ -585,6 +774,9 @@ void resolve_fold(Ctx *ctx) {
     // -DPEARL_TALL_TMA=0 builds Blackwell's tall fold on cp.async instead; the host
     // pass sees the same value.
     ctx->foldTma = ctx->foldTall && PEARL_TALL_TMA != 0 && PEARL_TALL_TMA_ARCH(ft.binaryVersion);
+    // -DPEARL_TALL_CLUSTER=1 builds that TMA fold as a two-CTA cluster; the host pass
+    // sees the same value, so the launch shape follows the body.
+    ctx->foldCluster = ctx->foldTma && PEARL_TALL_CLUSTER != 0;
   }
   // The fold is compiled for exactly one block size, which is also its launch
   // bound. A disagreement would not fail loudly: a block of the wrong size
@@ -604,9 +796,14 @@ void resolve_fold(Ctx *ctx) {
   // The TMA fold's boxes: 64 bytes of k (one k-block) by the tile's 192 A rows and
   // its 256 B columns. A's map is bounded by m, not by the padded PEARL_TALL_A_ROWS:
   // TMA zero-fills the last row group's rows past it (see PEARL_TALL_TMA).
+  // One map per noised-A buffer; the second buffer exists only with the host
+  // overlap on (see Ctx), and the launch passes the map of the buffer it reads.
   if (ctx->foldTma
-      && (!pearl_encode_operand(&ctx->tmA, ctx->dAp, ctx->profile.m, ctx->profile.k,
+      && (!pearl_encode_operand(&ctx->tmA[0], ctx->dAp[0], ctx->profile.m, ctx->profile.k,
                                 PEARL_TALL_STAGE_K, PEARL_TALL_BM)
+          || (ctx->overlap
+              && !pearl_encode_operand(&ctx->tmA[1], ctx->dAp[1], ctx->profile.m,
+                                       ctx->profile.k, PEARL_TALL_STAGE_K, PEARL_TALL_BM))
           || !pearl_encode_operand(&ctx->tmB, ctx->dBp, ctx->profile.n, ctx->profile.k,
                                    PEARL_TALL_STAGE_K, PEARL_TALL_BN))) {
     snprintf(err, err_len, "could not encode the tall fold's TMA descriptors (k %u, %u-byte k-blocks)",
@@ -772,6 +969,9 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
 
   Ctx *ctx = new Ctx();
   ctx->profile = *profile;
+  // Read once, here: everything below that the switch adds is allocated against it,
+  // and needed_bytes counted it the same way.
+  ctx->overlap = pearl_overlap_enabled();
   // Whatever pearl_host_select_device left current is where these allocations
   // land, so that is the card the context belongs to.
   if (cudaGetDevice(&ctx->device) != cudaSuccess) ctx->device = 0;
@@ -779,13 +979,19 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   CUDA_OK(cudaMalloc(&ctx->dA, aBytes), "allocating A");
   CUDA_OK(cudaMalloc(&ctx->dB, bBytes), "allocating B");
   // The tall fold's last row group of tiles reads past A's m rows (see
-  // PEARL_TALL_A_ROWS): Ada's build up to 64 rows past the end of the last k-block.
-  // Nothing generates the bytes past m * k; they are zeroed once so the fold reads
-  // defined bytes there, and it hashes no region from them.
+  // PEARL_TALL_A_ROWS): the cp.async build (Ada and Ampere) up to 64 rows past the
+  // end of the last k-block. Nothing generates the bytes past m * k; they are zeroed
+  // once so the fold reads defined bytes there, and it hashes no region from them.
+  // The second buffer, with the host overlap on, is padded the same way: a restamp
+  // writes only rows 0..m-1 of it.
   {
     const size_t apBytes = (size_t)PEARL_TALL_A_ROWS(profile->m) * k;
-    CUDA_OK(cudaMalloc(&ctx->dAp, apBytes), "allocating the noised A");
-    if (apBytes > aBytes) cudaMemset(ctx->dAp + aBytes, 0, apBytes - aBytes);
+    CUDA_OK(cudaMalloc(&ctx->dAp[0], apBytes), "allocating the noised A");
+    if (apBytes > aBytes) cudaMemset(ctx->dAp[0] + aBytes, 0, apBytes - aBytes);
+    if (ctx->overlap) {
+      CUDA_OK(cudaMalloc(&ctx->dAp[1], apBytes), "allocating the second noised A");
+      if (apBytes > aBytes) cudaMemset(ctx->dAp[1] + aBytes, 0, apBytes - aBytes);
+    }
   }
   CUDA_OK(cudaMalloc(&ctx->dBp, bBytes), "allocating the noised B");
   CUDA_OK(cudaMalloc(&ctx->dEAL, (size_t)profile->m * rank), "allocating E_AL");
@@ -838,14 +1044,48 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   // own transcripts now, so only a hit's transcript is ever stored -- 64 slots
   // of 64 bytes where the batch used to take 64 bytes a region, 1 GiB at the
   // mainnet geometry.
-  CUDA_OK(cudaMalloc(&ctx->dHitTranscript,
+  CUDA_OK(cudaMalloc(&ctx->dHitTranscript[0],
                      (size_t)PEARL_MAX_HITS * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)),
           "allocating the hit transcripts");
-  CUDA_OK(cudaMalloc(&ctx->dHashes, (size_t)PEARL_MAX_HITS * PEARL_HASH_BYTES),
+  CUDA_OK(cudaMalloc(&ctx->dHashes[0], (size_t)PEARL_MAX_HITS * PEARL_HASH_BYTES),
           "allocating the batch hashes");
-  CUDA_OK(cudaMalloc(&ctx->dHitCount, sizeof(uint32_t)), "allocating the hit counter");
-  CUDA_OK(cudaMalloc(&ctx->dHitIndex, (size_t)PEARL_MAX_HITS * sizeof(uint32_t)),
+  CUDA_OK(cudaMalloc(&ctx->dHitCount[0], sizeof(uint32_t)), "allocating the hit counter");
+  CUDA_OK(cudaMalloc(&ctx->dHitIndex[0], (size_t)PEARL_MAX_HITS * sizeof(uint32_t)),
           "allocating the hit list");
+  if (ctx->overlap) {
+    // The second hit list, the two streams, the events and the shadow: the host
+    // overlap's own state (see Ctx). None of it exists with the switch off.
+    CUDA_OK(cudaMalloc(&ctx->dHitTranscript[1],
+                       (size_t)PEARL_MAX_HITS * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)),
+            "allocating the second hit transcripts");
+    CUDA_OK(cudaMalloc(&ctx->dHashes[1], (size_t)PEARL_MAX_HITS * PEARL_HASH_BYTES),
+            "allocating the second batch hashes");
+    CUDA_OK(cudaMalloc(&ctx->dHitCount[1], sizeof(uint32_t)),
+            "allocating the second hit counter");
+    CUDA_OK(cudaMalloc(&ctx->dHitIndex[1], (size_t)PEARL_MAX_HITS * sizeof(uint32_t)),
+            "allocating the second hit list");
+    CUDA_OK(cudaStreamCreateWithFlags(&ctx->sideStream, cudaStreamNonBlocking),
+            "creating the restamp stream");
+    CUDA_OK(cudaStreamCreateWithFlags(&ctx->readStream, cudaStreamNonBlocking),
+            "creating the readback stream");
+    CUDA_OK(cudaEventCreateWithFlags(&ctx->listEvent[0], cudaEventDisableTiming),
+            "creating the first batch event");
+    CUDA_OK(cudaEventCreateWithFlags(&ctx->listEvent[1], cudaEventDisableTiming),
+            "creating the second batch event");
+    CUDA_OK(cudaEventCreateWithFlags(&ctx->shadowEvent, cudaEventDisableTiming),
+            "creating the shadow event");
+    // A's tree has one level per halving of its (power-of-two, checked above)
+    // chunk count, plus the leaves: what operand_commitment's layerOffA will hold.
+    {
+      const uint64_t aChunks = aBytes / 1024;
+      uint32_t lg = 0;
+      while ((1ull << lg) < aChunks) lg++;
+      ctx->shadowLevels = lg + 1;
+    }
+    CUDA_OK(cudaMalloc(&ctx->dShadow,
+                       1024 + (size_t)ctx->shadowLevels * PEARL_HASH_BYTES + PEARL_HASH_BYTES),
+            "allocating the proof shadow");
+  }
   CUDA_OK(cudaMalloc(&ctx->dJobKey, 8 * sizeof(uint32_t)), "allocating job_key");
   CUDA_OK(cudaMalloc(&ctx->dASeed, 8 * sizeof(uint32_t)), "allocating a_seed");
   CUDA_OK(cudaMalloc(&ctx->dBSeed, 8 * sizeof(uint32_t)), "allocating b_seed");
@@ -905,8 +1145,14 @@ extern "C" void pearl_host_destroy(void *handle) {
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (!ctx) return;
   DeviceScope scope(ctx->device);
+  if (ctx->overlap) {
+    // A pre-launched batch may still be running, and a restamp may be on
+    // sideStream; today's last search always waited for its own fold, so
+    // nothing else here expects work in flight when the memory goes.
+    cudaDeviceSynchronize();
+  }
   cudaFree(ctx->dA); cudaFree(ctx->dB);
-  cudaFree(ctx->dAp); cudaFree(ctx->dBp);
+  cudaFree(ctx->dAp[0]); cudaFree(ctx->dBp);
   cudaFree(ctx->dEAL); cudaFree(ctx->dEBR);
   cudaFree(ctx->dPermA); cudaFree(ctx->dPermB);
   cudaFree(ctx->dLabelA); cudaFree(ctx->dLabelB);
@@ -914,13 +1160,24 @@ extern "C" void pearl_host_destroy(void *handle) {
   cudaFree(ctx->dBoundA); cudaFree(ctx->dBoundB);
   cudaFree(ctx->dRows); cudaFree(ctx->dCols);
 
-  cudaFree(ctx->dHashes); cudaFree(ctx->dHitCount); cudaFree(ctx->dHitIndex);
+  cudaFree(ctx->dHashes[0]); cudaFree(ctx->dHitCount[0]); cudaFree(ctx->dHitIndex[0]);
   cudaFree(ctx->dTreeA); cudaFree(ctx->dTreeB);
   cudaFree(ctx->dCvs); cudaFree(ctx->dSeedBuf); cudaFree(ctx->dSeedInput);
   cudaFree(ctx->dHashA); cudaFree(ctx->dHashB);
-  cudaFree(ctx->dHitTranscript); cudaFree(ctx->dJobKey);
+  cudaFree(ctx->dHitTranscript[0]); cudaFree(ctx->dJobKey);
   cudaFree(ctx->dASeed); cudaFree(ctx->dBSeed);
   cudaFree(ctx->dTarget); cudaFree(ctx->dHash); cudaFree(ctx->dIsShare);
+  if (ctx->overlap) {
+    cudaFree(ctx->dAp[1]);
+    cudaFree(ctx->dHashes[1]); cudaFree(ctx->dHitCount[1]); cudaFree(ctx->dHitIndex[1]);
+    cudaFree(ctx->dHitTranscript[1]);
+    cudaFree(ctx->dShadow);
+    if (ctx->listEvent[0]) cudaEventDestroy(ctx->listEvent[0]);
+    if (ctx->listEvent[1]) cudaEventDestroy(ctx->listEvent[1]);
+    if (ctx->shadowEvent) cudaEventDestroy(ctx->shadowEvent);
+    if (ctx->sideStream) cudaStreamDestroy(ctx->sideStream);
+    if (ctx->readStream) cudaStreamDestroy(ctx->readStream);
+  }
   delete ctx;
 }
 
@@ -942,17 +1199,39 @@ extern "C" void pearl_host_reseed(void *handle, uint64_t salt);
 // (PEARL_OPERAND_CONST) every card draws the same B, root_B, b_seed and B' for a
 // job, and A is the fill plus the stamp, so the stamp is all that keeps two cards
 // apart. Under the hashed fill B differs between cards as well.
+namespace {
+void reseed_locked(Ctx *ctx, uint64_t salt);
+}
+
 extern "C" void pearl_host_set_job_salted(void *handle, const uint8_t *header,
                                           const uint8_t *target, uint64_t salt) {
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (!ctx) return;
+  // Called on the JS thread while the search thread may be inside a search or a
+  // reseed; the lock order is job_mu_ then mu (see Ctx).
+  std::lock_guard<std::mutex> lock(ctx->mu);
   DeviceScope scope(ctx->device);
   memcpy(ctx->header, header, PEARL_HEADER_BYTES);
   memcpy(ctx->target, target, PEARL_HASH_BYTES);
+  if (ctx->overlap) {
+    // The next salt's restamp may be rewriting A's leaf 0 and tree on sideStream.
+    // The full draw below rewrites both on the legacy stream, which does not wait
+    // for a non-blocking stream, so wait it out here. Then forget everything that
+    // belonged to the old job: the prepared salt, the shadow, and the in-flight
+    // batch, which the next search drops unread because its jobGen differs. Its
+    // fold is ahead of the full draw on the legacy stream, so the draw's writes
+    // to dAp[apCur] wait for it.
+    cudaStreamSynchronize(ctx->sideStream);
+    if (ctx->inflight.valid) cudaEventSynchronize(ctx->listEvent[ctx->inflight.list]);
+    ctx->prepared.valid = false;
+    ctx->shadowValid = false;
+    ctx->inflight.valid = false;
+    ctx->jobGen++;
+  }
   // A new job always gets a full draw. Clearing this is what stops a restamp
   // from grafting new bytes onto a tree the previous job's key built.
   ctx->baseDrawn = false;
-  pearl_host_reseed(handle, salt);
+  reseed_locked(ctx, salt);
 }
 
 // The single-card spelling, kept so the bench probe and anything else built
@@ -970,6 +1249,11 @@ namespace {
 // 0.04, materialize 0.59 -- 0.72 ms a redraw, against 4.6 ms for a full draw
 // with the same kernels. What is left is one read and one write of A at DRAM
 // speed; a new a_seed changes the noise on every row, so that part cannot go.
+//
+// Meant for the synchronous path. With PEARL_HOST_OVERLAP=1 the restamp runs on
+// sideStream beside a fold, and each lap here synchronises the whole device, so the
+// stage times would include whatever the fold was doing: measure with the switch
+// off, where they mean what they say.
 #ifdef PEARL_RESEED_STAGES
 double g_stage[4] = {0, 0, 0, 0};
 int g_stageCalls = 0;
@@ -1017,29 +1301,40 @@ unsigned draw_blocks(size_t n) {
 // No synchronisation in here: every step is on the one stream, in order. The
 // three cudaDeviceSynchronize calls this replaced ordered nothing the stream
 // did not already order.
-void derive_seeds(Ctx *ctx, bool withB) {
+//
+// `stream` is 0 (the legacy default stream) for every draw a job starts with and
+// for a synchronous reseed, and sideStream for a restamp prepared beside a fold
+// (see Ctx). On stream 0 these asynchronous copies are the same device-to-device
+// copies as before, on the same stream, in the same order.
+void derive_seeds(Ctx *ctx, bool withB, cudaStream_t stream) {
   const bool legacy = ctx->profile.seed_derivation == PEARL_SEED_LEGACY;
   if (legacy) {
-    cudaMemcpy(ctx->dBoundA, ctx->dHashA, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
+    cudaMemcpyAsync(ctx->dBoundA, ctx->dHashA, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice,
+                    stream);
     if (withB)
-      cudaMemcpy(ctx->dBoundB, ctx->dHashB, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
+      cudaMemcpyAsync(ctx->dBoundB, ctx->dHashB, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice,
+                      stream);
   } else {
-    pearl_bind_root<<<1, 1>>>(ctx->dSaltA, ctx->dHashA, ctx->profile.m, ctx->dBoundA);
+    pearl_bind_root<<<1, 1, 0, stream>>>(ctx->dSaltA, ctx->dHashA, ctx->profile.m,
+                                         ctx->dBoundA);
     if (withB)
-      pearl_bind_root<<<1, 1>>>(ctx->dSaltB, ctx->dHashB, ctx->profile.n, ctx->dBoundB);
+      pearl_bind_root<<<1, 1, 0, stream>>>(ctx->dSaltB, ctx->dHashB, ctx->profile.n,
+                                           ctx->dBoundB);
   }
   if (withB) {
-    cudaMemcpy(ctx->dSeedBuf, ctx->dJobKey, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
-    cudaMemcpy(ctx->dSeedBuf + PEARL_HASH_BYTES, ctx->dBoundB, PEARL_HASH_BYTES,
-               cudaMemcpyDeviceToDevice);
-    pearl_blake3_unkeyed<<<1, 1>>>(ctx->dSeedBuf, 64,
-                                   reinterpret_cast<uint8_t *>(ctx->dBSeed));
+    cudaMemcpyAsync(ctx->dSeedBuf, ctx->dJobKey, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice,
+                    stream);
+    cudaMemcpyAsync(ctx->dSeedBuf + PEARL_HASH_BYTES, ctx->dBoundB, PEARL_HASH_BYTES,
+                    cudaMemcpyDeviceToDevice, stream);
+    pearl_blake3_unkeyed<<<1, 1, 0, stream>>>(ctx->dSeedBuf, 64,
+                                              reinterpret_cast<uint8_t *>(ctx->dBSeed));
   }
-  cudaMemcpy(ctx->dSeedBuf, ctx->dBSeed, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
-  cudaMemcpy(ctx->dSeedBuf + PEARL_HASH_BYTES, ctx->dBoundA, PEARL_HASH_BYTES,
-             cudaMemcpyDeviceToDevice);
-  pearl_blake3_unkeyed<<<1, 1>>>(ctx->dSeedBuf, 64,
-                                 reinterpret_cast<uint8_t *>(ctx->dASeed));
+  cudaMemcpyAsync(ctx->dSeedBuf, ctx->dBSeed, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice,
+                  stream);
+  cudaMemcpyAsync(ctx->dSeedBuf + PEARL_HASH_BYTES, ctx->dBoundA, PEARL_HASH_BYTES,
+                  cudaMemcpyDeviceToDevice, stream);
+  pearl_blake3_unkeyed<<<1, 1, 0, stream>>>(ctx->dSeedBuf, 64,
+                                            reinterpret_cast<uint8_t *>(ctx->dASeed));
 }
 
 // One side's noise, and the noised operand it produces.
@@ -1058,7 +1353,10 @@ void derive_seeds(Ctx *ctx, bool withB) {
 // a subtract, because E_AR and E_BL are sparse +-1 selectors rather than dense
 // factors — the version that reconstructed at full rank did rank times this
 // much work and computed the wrong thing.
-void draw_noise(Ctx *ctx, bool isA) {
+//
+// `apBuf` is which noised-A buffer the A side writes (see Ctx::dAp); the B side
+// has one. `stream` as in derive_seeds.
+void draw_noise(Ctx *ctx, bool isA, cudaStream_t stream, int apBuf) {
   const uint32_t rank = ctx->profile.rank;
   const uint32_t k = ctx->profile.k;
   const uint32_t rows = isA ? ctx->profile.m : ctx->profile.n;
@@ -1067,12 +1365,13 @@ void draw_noise(Ctx *ctx, bool isA) {
   int8_t *dense = isA ? ctx->dEAL : ctx->dEBR;
   uint32_t *perm = isA ? ctx->dPermA : ctx->dPermB;
   const int8_t *src = isA ? ctx->dA : ctx->dB;
-  int8_t *dst = isA ? ctx->dAp : ctx->dBp;
+  int8_t *dst = isA ? ctx->dAp[apBuf] : ctx->dBp;
   const size_t len = (size_t)rows * k;
 
-  pearl_gen_dense<<<draw_blocks((size_t)rows * (rank / 32)), kDrawThreads>>>(
+  pearl_gen_dense<<<draw_blocks((size_t)rows * (rank / 32)), kDrawThreads, 0, stream>>>(
       seed, label, nullptr, dense, rows, rank);
-  pearl_gen_perm<<<draw_blocks((k + 7) / 8), kDrawThreads>>>(seed, label, perm, k, rank);
+  pearl_gen_perm<<<draw_blocks((k + 7) / 8), kDrawThreads, 0, stream>>>(seed, label, perm, k,
+                                                                        rank);
   PEARL_LAP(2);
   if ((k & (k - 1u)) == 0u && k >= 16u) {
     uint32_t kLog2 = 0;
@@ -1080,21 +1379,22 @@ void draw_noise(Ctx *ctx, bool isA) {
     if (ctx->foldTall && k >= PEARL_TALL_STAGE_K) {
       // The same values, stored [k / 64][rows][64] for the tall fold's staging: each
       // 64-byte stage of a tile is then whole L2 lines rather than half of every line,
-      // for Blackwell's TMA boxes (PEARL_TALL_TMA) and Ada's cp.async copies alike.
+      // for Blackwell's TMA boxes (PEARL_TALL_TMA) and the cp.async copies of Ada and
+      // Ampere alike.
       // resolve_fold decided this for the context, before its first draw, and the
       // search launches the fold that reads it. (Any other k is one the search
       // refuses.)
       uint32_t kbLog2 = 0;
       while ((1u << kbLog2) < PEARL_TALL_STAGE_K) kbLog2++;
-      pearl_materialize16_kblocked<<<draw_blocks(len / 16), kDrawThreads>>>(
+      pearl_materialize16_kblocked<<<draw_blocks(len / 16), kDrawThreads, 0, stream>>>(
           src, dense, perm, dst, rows, kLog2, rank, kbLog2);
     } else {
-      pearl_materialize16<<<draw_blocks(len / 16), kDrawThreads>>>(src, dense, perm, dst,
-                                                                   rows, kLog2, rank);
+      pearl_materialize16<<<draw_blocks(len / 16), kDrawThreads, 0, stream>>>(
+          src, dense, perm, dst, rows, kLog2, rank);
     }
   } else {
-    pearl_materialize<<<draw_blocks(len), kDrawThreads>>>(src, dense, perm, dst, rows,
-                                                          k, rank);
+    pearl_materialize<<<draw_blocks(len), kDrawThreads, 0, stream>>>(src, dense, perm, dst,
+                                                                     rows, k, rank);
   }
   PEARL_LAP(3);
 }
@@ -1157,9 +1457,11 @@ void full_draw(Ctx *ctx, uint64_t salt) {
   operand_commitment(ctx, reinterpret_cast<const uint8_t *>(ctx->dB), bLen,
                      ctx->dHashB, ctx->dTreeB, &ctx->layerOffB);
 
-  derive_seeds(ctx, true);
-  draw_noise(ctx, true);
-  draw_noise(ctx, false);
+  // All on the legacy stream, into the live noised-A buffer: a full draw is what a
+  // job starts with, and it queues behind any fold still running (see Ctx).
+  derive_seeds(ctx, true, 0);
+  draw_noise(ctx, true, 0, ctx->apCur);
+  draw_noise(ctx, false, 0, ctx->apCur);
 
   cudaMemcpy(ctx->dTarget, ctx->target, PEARL_HASH_BYTES, cudaMemcpyHostToDevice);
   cudaMemcpy(ctx->bSeed, ctx->dBSeed, PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
@@ -1189,16 +1491,36 @@ void full_draw(Ctx *ctx, uint64_t salt) {
 //   - constant: B and b_seed are the same on every card, and the full draw
 //     stamps A exactly as this does. So A is the fill plus stamp(salt) whichever
 //     way it was drawn, and cards differ because their salts do.
-void restamp(Ctx *ctx, uint64_t salt) {
+//
+// `stream` and `apBuf` as in draw_noise: the legacy stream and the live buffer for
+// a synchronous reseed; sideStream and the other buffer for a restamp prepared
+// beside a fold (see Ctx). Either way the stamp, the tree path and root_A are
+// rewritten in place, which is why the prepared case saves the shadow first.
+void restamp(Ctx *ctx, uint64_t salt, cudaStream_t stream, int apBuf) {
   const uint64_t aChunks = (uint64_t)ctx->profile.m * ctx->profile.k / 1024;
   PEARL_LAP(-1);
-  pearl_restamp_operand<<<1, 1>>>(ctx->dJobKey, ctx->dA, salt, aChunks, ctx->dTreeA,
-                                  ctx->dHashA);
+  pearl_restamp_operand<<<1, 1, 0, stream>>>(ctx->dJobKey, ctx->dA, salt, aChunks,
+                                             ctx->dTreeA, ctx->dHashA);
   PEARL_LAP(0);
-  derive_seeds(ctx, false);
+  derive_seeds(ctx, false, stream);
   PEARL_LAP(1);
-  draw_noise(ctx, true);
+  draw_noise(ctx, true, stream, apBuf);
   PEARL_LAP_REPORT();
+}
+
+// Whether a reseed may restamp A rather than draw everything: the current job has
+// had its full draw, and A's tree has at least two leaves, so leaf 0 has a path to
+// repair. PEARL_FULL_REDRAW forces the full draw every time (see
+// pearl_host_reseed).
+bool can_restamp(const Ctx *ctx) {
+  const uint64_t aChunks = (uint64_t)ctx->profile.m * ctx->profile.k / 1024;
+#ifdef PEARL_FULL_REDRAW
+  (void)ctx;
+  (void)aChunks;
+  return false;
+#else
+  return ctx->baseDrawn && aChunks >= 2;
+#endif
 }
 
 }  // namespace
@@ -1217,23 +1539,52 @@ void restamp(Ctx *ctx, uint64_t salt) {
 // with the faster noise kernels) measured 224.5, so most of the gain is the
 // restamp itself. PEARL_FULL_REDRAW is also how the frozen device parity
 // vectors for salts above 0 were produced.
-extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
-  Ctx *ctx = static_cast<Ctx *>(handle);
-  if (!ctx) return;
+//
+// With the host overlap on (see Ctx) the search usually has this salt PREPARED
+// already: restamped into the other noised-A buffer while the previous salt's
+// last batch ran, with its first batch in flight. Then this only swaps buffers.
+// Only when nothing is prepared for this salt does it take the path below.
+namespace {
+void reseed_locked(Ctx *ctx, uint64_t salt) {
   DeviceScope scope(ctx->device);
+  if (ctx->overlap) {
+    if (ctx->prepared.valid && ctx->prepared.salt == salt) {
+      // A, its tree, root_A, dASeed and dAp[prepared.apBuf] already belong to this
+      // salt (pearl_host_search_next waited for that restamp before launching the
+      // salt's first batch). The shadow held the previous salt's leaf 0, nodes and
+      // root for a hit from its last batch, and that batch has been read by now;
+      // from here the live arrays are this salt's, so the shadow goes.
+      // PEARL_RESTAMP_CHECK does not run on this path; it stays with the
+      // synchronous restamp below, where it was measured.
+      ctx->apCur = ctx->prepared.apBuf;
+      ctx->salt = salt;
+      memcpy(ctx->aSeed, ctx->prepared.aSeed, PEARL_HASH_BYTES);
+      ctx->prepared.valid = false;
+      ctx->shadowValid = false;
+      return;
+    }
+    // Nothing prepared for this salt: today's synchronous path. First wait out any
+    // restamp still on sideStream, since the one below rewrites the same leaf, tree
+    // path and root on the legacy stream, which does not wait for a non-blocking
+    // stream. Whatever was prepared is for some other salt, so forget it, and the
+    // in-flight batch is dropped unread: its A' is about to be rewritten under it.
+    // Its fold is ahead of this restamp on the legacy stream, so the rewrite would
+    // wait for it anyway; waiting here as well means nothing after this has to
+    // know the batch existed (a later restamp on sideStream could otherwise be
+    // writing a buffer it still reads).
+    cudaStreamSynchronize(ctx->sideStream);
+    if (ctx->inflight.valid) cudaEventSynchronize(ctx->listEvent[ctx->inflight.list]);
+    ctx->prepared.valid = false;
+    ctx->shadowValid = false;
+    ctx->inflight.valid = false;
+  }
   ctx->salt = salt;
 
   // A restamp needs a real tree to repair: at least two leaves, so leaf 0 has a
   // path. Profiles smaller than that always take the full draw.
-  const uint64_t aChunks = (uint64_t)ctx->profile.m * ctx->profile.k / 1024;
-#ifdef PEARL_FULL_REDRAW
-  const bool canRestamp = false;
-  (void)aChunks;
-#else
-  const bool canRestamp = ctx->baseDrawn && aChunks >= 2;
-#endif
+  const bool canRestamp = can_restamp(ctx);
   if (canRestamp) {
-    restamp(ctx, salt);
+    restamp(ctx, salt, 0, ctx->apCur);
   } else {
     full_draw(ctx, salt);
   }
@@ -1279,18 +1630,50 @@ extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
   ctx->baseDrawn = true;
   ctx->haveJob = true;
 }
+}  // namespace
 
-extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
-                                  uint32_t batch, PearlSearchResult *out,
-                                  uint64_t *attempts, char *err,
-                                  size_t err_len) {
+extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
   Ctx *ctx = static_cast<Ctx *>(handle);
-  if (attempts) *attempts = 0;
-  if (!ctx || !ctx->haveJob || !out) return false;
-  // A no-op on the search thread, which is already bound to this card; the
-  // guard is for any other caller.
-  DeviceScope scope(ctx->device);
+  if (!ctx) return;
+  std::lock_guard<std::mutex> lock(ctx->mu);
+  reseed_locked(ctx, salt);
+}
 
+namespace {
+
+// The cluster build's launch configuration (PEARL_TALL_CLUSTER): `threads` a block,
+// `smem` dynamic shared, the legacy default stream, and one attribute, clusters of
+// `ctas` x 1 x 1. The grid is one cluster, which the occupancy query needs;
+// launch_fold sets the real one. One place, so the occupancy query and the launch
+// cannot disagree. `attr` must outlive the config.
+void pearl_cluster_config(cudaLaunchConfig_t *cfg, cudaLaunchAttribute attr[1], unsigned ctas,
+                          uint32_t threads, size_t smem) {
+  attr[0].id = cudaLaunchAttributeClusterDimension;
+  attr[0].val.clusterDim.x = ctas;
+  attr[0].val.clusterDim.y = 1;
+  attr[0].val.clusterDim.z = 1;
+  cfg->gridDim = dim3(ctas);
+  cfg->blockDim = dim3(threads);
+  cfg->dynamicSmemBytes = smem;
+  cfg->stream = 0;
+  cfg->attrs = attr;
+  cfg->numAttrs = 1;
+}
+
+// Everything a fold launch needs that does not change between batches: the
+// geometry checks, the shared-memory opt-in and the resident block count, in the
+// order pearl_host_search always ran them. Returns false with a message when the
+// search must be refused.
+struct FoldShape {
+  uint32_t k = 0, rank = 0, chunks = 0;
+  uint32_t regions = 0;     // what one batch tries, and what it reports
+  uint32_t col_groups = 0;
+  uint32_t threads = 0;
+  unsigned tiles = 0, blocks = 0;
+  size_t smem = 0;
+};
+
+bool fold_shape(Ctx *ctx, FoldShape *s, char *err, size_t err_len) {
   const uint32_t k = ctx->profile.k;
   const uint32_t rank = ctx->profile.rank;
   const uint32_t chunks = (k + rank - 1) / rank;
@@ -1304,9 +1687,6 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   // Clamped to m so one launch shares a single col_off: D is built for exactly
   // the columns that batch touches. nonce_base stays a multiple of m because the
   // caller advances by the attempt count we report back.
-  // The caller's batch hint is advisory; the real width is the context's, since
-  // the partial table was allocated for exactly that many column groups.
-  (void)batch;
   const uint32_t regions = ctx->batch;
   const uint32_t col_groups = ctx->colBatch;
   // Which fold this card loaded: resolved when the context was created (see
@@ -1326,9 +1706,6 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   const uint32_t rowTiles = ctx->foldWide ? PEARL_FOLD_WIDE_ROW_TILES : PEARL_WMMA_ROW_TILES;
   const void *foldFn = ctx->foldTall ? reinterpret_cast<const void *>(pearl_tile_fold_tall)
                                      : reinterpret_cast<const void *>(pearl_tile_fold_wmma);
-  // A valid-offset INDEX; the kernel expands it into an actual offset.
-  const uint32_t col_off =
-      (uint32_t)((nonce_base / ctx->rowsValid) % ctx->colsValid);
 
   // One fused launch: the tile fold keeps its accumulator across chunks, so
   // there are no reusable partials to stage and no second pass.
@@ -1386,11 +1763,18 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
                col_groups, (unsigned)PEARL_TALL_BN);
     return false;
   }
+  // The cluster build (ctx->foldCluster) walks tiles of a row-group PAIR by a column
+  // group, one per cluster of two CTAs; the odd last pair's second CTA has no rows
+  // and hashes nothing (see the kernel). Its grid is counted in CTAs, two a tile.
+  const unsigned tallRowGroups =
+      (unsigned)((ctx->rowsValid + PEARL_TALL_ROW_OFFSETS - 1u) / PEARL_TALL_ROW_OFFSETS);
+  const unsigned ctasPerTile = ctx->foldCluster ? (unsigned)PEARL_TALL_CLUSTER_SIZE : 1u;
   const unsigned tiles =
       ctx->foldTall
-          ? (unsigned)(((ctx->rowsValid + PEARL_TALL_ROW_OFFSETS - 1u) / PEARL_TALL_ROW_OFFSETS)
-                       * (col_groups / PEARL_TALL_COL_OFFSETS))
+          ? ((tallRowGroups + ctasPerTile - 1u) / ctasPerTile)
+                * (unsigned)(col_groups / PEARL_TALL_COL_OFFSETS)
           : (unsigned)((rowBlocks / warpRows) * (colBlocks / warpCols));
+  const unsigned tileCtas = tiles * ctasPerTile;
   // Two full-chunk stages; the transcripts live in registers and global now. The
   // tall fold: three 64-deep stages, its ring's barriers, and the transcripts, laid
   // out differently by the cp.async and TMA builds (see PEARL_TALL_SMEM).
@@ -1448,19 +1832,60 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
     cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, ctx->device);
     cudaOccupancyMaxActiveBlocksPerMultiprocessor(&perSm, foldFn, (int)threads, smem);
     ctx->foldResident = (unsigned)(sms > 0 ? sms : 1) * (unsigned)(perSm > 0 ? perSm : 1);
+    if (ctx->foldCluster) {
+      // In CTAs, but whole clusters of them: what the runtime says fit at once with the
+      // launch's own configuration (the same block size, shared footprint and cluster
+      // shape as launch_fold), or the card's resident block count rounded down to a
+      // multiple of the cluster size if it cannot say.
+      cudaLaunchConfig_t cfg = {};
+      cudaLaunchAttribute attr[1] = {};
+      pearl_cluster_config(&cfg, attr, PEARL_TALL_CLUSTER_SIZE, threads, smem);
+      int clusters = 0;
+      if (cudaOccupancyMaxActiveClusters(&clusters, foldFn, &cfg) == cudaSuccess && clusters > 0) {
+        ctx->foldResident = (unsigned)clusters * PEARL_TALL_CLUSTER_SIZE;
+      } else {
+        // A failed query is recorded as the thread's last error, and the search reads
+        // cudaGetLastError after its first launch; drop it, or the fallback fails the
+        // search it exists for.
+        (void)cudaGetLastError();
+        ctx->foldResident -= ctx->foldResident % PEARL_TALL_CLUSTER_SIZE;
+      }
+      if (ctx->foldResident == 0) ctx->foldResident = PEARL_TALL_CLUSTER_SIZE;
+    }
   }
   const unsigned blocks =
-      ((ctx->foldPersistent || ctx->foldTall) && ctx->foldResident < tiles) ? ctx->foldResident
-                                                                           : tiles;
+      ((ctx->foldPersistent || ctx->foldTall) && ctx->foldResident < tileCtas) ? ctx->foldResident
+                                                                              : tileCtas;
+  s->k = k;
+  s->rank = rank;
+  s->chunks = chunks;
+  s->regions = regions;
+  s->col_groups = col_groups;
+  s->threads = threads;
+  s->tiles = tiles;
+  s->blocks = blocks;
+  s->smem = smem;
+  return true;
+}
+
+// One fold over the batch at nonce_base, reading dAp[apBuf] under `key` and
+// appending its hits to list `list`, which is cleared first. Always on the legacy
+// default stream (see Ctx): a full draw from the JS thread and a synchronous
+// reseed queue behind it there, as they always have.
+void launch_fold(Ctx *ctx, const FoldShape &s, uint64_t nonce_base, int apBuf, int list,
+                 const uint8_t *key) {
+  // A valid-offset INDEX; the kernel expands it into an actual offset. From THIS
+  // batch's nonce_base, which for a pre-launched batch is not the caller's.
+  const uint32_t col_off = (uint32_t)((nonce_base / ctx->rowsValid) % ctx->colsValid);
   // The fold hashes every transcript itself and tests it against the bound. It
-  // writes only on a hit and appends to a compact list, so the readback below
-  // is four bytes rather than one flag per region.
+  // writes only on a hit and appends to a compact list, so the readback is four
+  // bytes rather than one flag per region.
   //
   // The key and target go in as words, by value (see PearlTranscriptTest):
   // a_seed as the little-endian words BLAKE3 keys with, the target as
   // big-endian words so the kernel compares whole words most significant first.
   PearlTranscriptTest test;
-  memcpy(test.key, ctx->aSeed, sizeof(test.key));
+  memcpy(test.key, key, sizeof(test.key));
   for (int i = 0; i < 8; i++) {
     const uint8_t *t = ctx->target + i * 4;
     test.target_w[i] = ((uint32_t)t[0] << 24) | ((uint32_t)t[1] << 16) |
@@ -1468,22 +1893,131 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   }
   test.hash_big_endian = (int)ctx->profile.hash_big_endian;
   PearlHitList hitList;
-  hitList.count = ctx->dHitCount;
-  hitList.index = ctx->dHitIndex;
-  hitList.hash = reinterpret_cast<uint32_t *>(ctx->dHashes);
-  hitList.transcript = ctx->dHitTranscript;
-  cudaMemsetAsync(ctx->dHitCount, 0, sizeof(uint32_t));
-  if (ctx->foldTall)
-    pearl_tile_fold_tall<<<blocks, threads, smem>>>(
-        ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
-        col_off, ctx->rowsValid, col_groups, tiles, test, hitList, ctx->tmA, ctx->tmB);
+  hitList.count = ctx->dHitCount[list];
+  hitList.index = ctx->dHitIndex[list];
+  hitList.hash = reinterpret_cast<uint32_t *>(ctx->dHashes[list]);
+  hitList.transcript = ctx->dHitTranscript[list];
+  cudaMemsetAsync(ctx->dHitCount[list], 0, sizeof(uint32_t));
+  if (ctx->foldTall && ctx->foldCluster) {
+    // The cluster build: the same launch, in clusters of PEARL_TALL_CLUSTER_SIZE CTAs
+    // (s.blocks is a multiple of it, see fold_shape), the same arguments by value, on
+    // the same stream. cudaLaunchKernelEx coerces each argument to the kernel's
+    // parameter type, the tensor maps included.
+    cudaLaunchConfig_t cfg = {};
+    cudaLaunchAttribute attr[1] = {};
+    pearl_cluster_config(&cfg, attr, PEARL_TALL_CLUSTER_SIZE, s.threads, s.smem);
+    cfg.gridDim = dim3(s.blocks);
+    cudaLaunchKernelEx(&cfg, pearl_tile_fold_tall, ctx->dAp[apBuf], ctx->dBp, ctx->profile.m,
+                       ctx->profile.n, s.k, s.rank, s.chunks, col_off, ctx->rowsValid,
+                       s.col_groups, s.tiles, test, hitList, ctx->tmA[apBuf], ctx->tmB);
+  } else if (ctx->foldTall)
+    pearl_tile_fold_tall<<<s.blocks, s.threads, s.smem>>>(
+        ctx->dAp[apBuf], ctx->dBp, ctx->profile.m, ctx->profile.n, s.k, s.rank, s.chunks,
+        col_off, ctx->rowsValid, s.col_groups, s.tiles, test, hitList, ctx->tmA[apBuf],
+        ctx->tmB);
   else
-    pearl_tile_fold_wmma<<<blocks, threads, smem>>>(
-        ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
-        col_off, ctx->rowsValid, col_groups, tiles, test, hitList);
+    pearl_tile_fold_wmma<<<s.blocks, s.threads, s.smem>>>(
+        ctx->dAp[apBuf], ctx->dBp, ctx->profile.m, ctx->profile.n, s.k, s.rank, s.chunks,
+        col_off, ctx->rowsValid, s.col_groups, s.tiles, test, hitList);
+}
+
+// Host overlap only: launch a batch, record the event its readback waits on, and
+// hand the other list to the next launch.
+void launch_batch(Ctx *ctx, const FoldShape &s, const Ctx::Batch &b) {
+  launch_fold(ctx, s, b.nonce, b.apBuf, b.list, b.aSeed);
+  cudaEventRecord(ctx->listEvent[b.list], 0);
+  ctx->nextList = b.list ^ 1;
+}
+
+// A finished batch with `hits` in its list: build the result for the lowest region
+// index, and capture its proof NOW, while the operands and tree still belong to
+// this hit. A few tens of milliseconds later they will have been re-drawn.
+//
+// The salt and a_seed are the batch's own (Ctx::Batch), not the context's: with
+// the host overlap on, the context may already name the prepared salt.
+bool build_hit(Ctx *ctx, const Ctx::Batch &b, uint32_t hits, PearlSearchResult *out) {
+  const uint32_t n_hits = hits < PEARL_MAX_HITS ? hits : PEARL_MAX_HITS;
+  copy_out(ctx, ctx->hHitIndex.data(), ctx->dHitIndex[b.list],
+           (size_t)n_hits * sizeof(uint32_t));
+  copies_done(ctx);
+  // The kernel appends with an atomic, so the list is in an arbitrary order.
+  // Take the LOWEST region index, which is what a sequential scan would have
+  // returned — otherwise which share gets submitted varies run to run.
+  uint32_t best = 0;
+  for (uint32_t i = 1; i < n_hits; i++) {
+    if (ctx->hHitIndex[i] < ctx->hHitIndex[best]) best = i;
+  }
+  copy_out(ctx, out->jackpot_hash, ctx->dHashes[b.list] + (size_t)best * PEARL_HASH_BYTES,
+           PEARL_HASH_BYTES);
+  memcpy(out->a_seed, b.aSeed, PEARL_HASH_BYTES);
+  memcpy(out->b_seed, ctx->bSeed, PEARL_HASH_BYTES);
+  out->nonce = b.nonce + ctx->hHitIndex[best];
+  out->salt = b.salt;
+
+  // Leaf 0, the node-0s and root_A come from the shadow when the live ones have
+  // already been restamped for the next salt (see Ctx, "The shadow"). The
+  // readback stream waits for the save first; the save was also waited for on the
+  // host before the restamp's a_seed was read, so this is belt and braces.
+  uint8_t *shadow = (ctx->overlap && ctx->shadowValid && ctx->shadowSalt == b.salt)
+                        ? ctx->dShadow
+                        : nullptr;
+  if (shadow) cudaStreamWaitEvent(ctx->readStream, ctx->shadowEvent, 0);
+  {
+    // The GLOBAL region index, not the batch-local one. Both give the same
+    // row offset, because nonce_base is a multiple of rowsValid -- but the
+    // COLUMN offset is (region / rowsValid) % colsValid, and the local index
+    // drops the batch base entirely. The columns in the snapshot then belong
+    // to a different tile than the row indices the proof declares, which the
+    // pool reports as "Failed to extract strip".
+    const uint64_t region = out->nonce;
+    const uint32_t rowIdx = (uint32_t)(region % ctx->rowsValid);
+    const uint32_t colIdx = (uint32_t)((region / ctx->rowsValid) % ctx->colsValid);
+    const uint32_t rowOff = pearl_expand_offset(rowIdx, PEARL_ROWS_MASK);
+    const uint32_t colOff = pearl_expand_offset(colIdx, PEARL_COLS_MASK);
+
+    uint32_t rows[PEARL_ROWS_COUNT], cols[PEARL_COLS_COUNT];
+    for (int i = 0; i < PEARL_ROWS_COUNT; i++) rows[i] = rowOff | PEARL_ROWS_PATTERN[i];
+    for (int i = 0; i < PEARL_COLS_COUNT; i++) cols[i] = colOff | PEARL_COLS_PATTERN[i];
+
+    snapshotProof(ctx, true, rows, PEARL_ROWS_COUNT, &out->proof_a.leaf_indices,
+                  &out->proof_a.leaves, &out->proof_a.siblings, shadow);
+    snapshotProof(ctx, false, cols, PEARL_COLS_COUNT, &out->proof_bt.leaf_indices,
+                  &out->proof_bt.leaves, &out->proof_bt.siblings, nullptr);
+    copy_out(ctx, out->proof_a.root,
+             shadow ? shadow_root(shadow, ctx->layerOffA.size()) : ctx->dHashA,
+             PEARL_HASH_BYTES);
+    copy_out(ctx, out->proof_bt.root, ctx->dHashB, PEARL_HASH_BYTES);
+    out->proof_a.total_leaves = (uint64_t)ctx->profile.m * ctx->profile.k / 1024;
+    out->proof_bt.total_leaves = (uint64_t)ctx->profile.n * ctx->profile.k / 1024;
+  }
+  out->proof.assign(PEARL_JACKPOT_BUCKETS * 4, 0);
+  // Indexed by the hit's SLOT, like the hash: the fold keeps no per-region
+  // transcripts, only the ones that hit.
+  copy_out(ctx, out->proof.data(),
+           ctx->dHitTranscript[b.list] + (size_t)best * PEARL_JACKPOT_BUCKETS,
+           PEARL_JACKPOT_BUCKETS * 4);
+  copies_done(ctx);
+  out->found = true;
+  return true;
+}
+
+// Today's search, call for call: one fold on the legacy stream, a synchronous copy
+// of its hit count, then the hits. What every rig runs unless PEARL_HOST_OVERLAP=1.
+// Buffer 0 and list 0 are the only ones there are on this path.
+bool search_sync(Ctx *ctx, const FoldShape &s, uint64_t nonce_base, PearlSearchResult *out,
+                 uint64_t *attempts, char *err, size_t err_len) {
+  Ctx::Batch b;
+  b.valid = true;
+  b.nonce = nonce_base;
+  b.salt = ctx->salt;
+  memcpy(b.aSeed, ctx->aSeed, PEARL_HASH_BYTES);
+  b.apBuf = 0;
+  b.list = 0;
+  b.jobGen = ctx->jobGen;
+  launch_fold(ctx, s, nonce_base, 0, 0, ctx->aSeed);
 
   uint32_t hits = 0;
-  cudaMemcpy(&hits, ctx->dHitCount, sizeof(uint32_t), cudaMemcpyDeviceToHost);
+  cudaMemcpy(&hits, ctx->dHitCount[0], sizeof(uint32_t), cudaMemcpyDeviceToHost);
 
   cudaError_t e = cudaGetLastError();
   if (e != cudaSuccess) {
@@ -1491,65 +2025,196 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
       snprintf(err, err_len, "CUDA error during search: %s", cudaGetErrorString(e));
     return false;
   }
-  if (attempts) *attempts = regions;
+  if (attempts) *attempts = s.regions;
 
-  if (hits > 0) {
-    const uint32_t n_hits = hits < PEARL_MAX_HITS ? hits : PEARL_MAX_HITS;
-    cudaMemcpy(ctx->hHitIndex.data(), ctx->dHitIndex, (size_t)n_hits * sizeof(uint32_t),
-               cudaMemcpyDeviceToHost);
-    // The kernel appends with an atomic, so the list is in an arbitrary order.
-    // Take the LOWEST region index, which is what a sequential scan would have
-    // returned — otherwise which share gets submitted varies run to run.
-    uint32_t best = 0;
-    for (uint32_t i = 1; i < n_hits; i++) {
-      if (ctx->hHitIndex[i] < ctx->hHitIndex[best]) best = i;
-    }
-    cudaMemcpy(out->jackpot_hash, ctx->dHashes + (size_t)best * PEARL_HASH_BYTES,
-               PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
-    memcpy(out->a_seed, ctx->aSeed, PEARL_HASH_BYTES);
-    memcpy(out->b_seed, ctx->bSeed, PEARL_HASH_BYTES);
-    out->nonce = nonce_base + ctx->hHitIndex[best];
-    out->salt = ctx->salt;
-
-    // Capture the proof NOW, while the operands and tree still belong to this
-    // hit. A few tens of milliseconds later they will have been re-drawn.
-    {
-      // The GLOBAL region index, not the batch-local one. Both give the same
-      // row offset, because nonce_base is a multiple of rowsValid -- but the
-      // COLUMN offset is (region / rowsValid) % colsValid, and the local index
-      // drops the batch base entirely. The columns in the snapshot then belong
-      // to a different tile than the row indices the proof declares, which the
-      // pool reports as "Failed to extract strip".
-      const uint64_t region = out->nonce;
-      const uint32_t rowIdx = (uint32_t)(region % ctx->rowsValid);
-      const uint32_t colIdx = (uint32_t)((region / ctx->rowsValid) % ctx->colsValid);
-      const uint32_t rowOff = pearl_expand_offset(rowIdx, PEARL_ROWS_MASK);
-      const uint32_t colOff = pearl_expand_offset(colIdx, PEARL_COLS_MASK);
-
-      uint32_t rows[PEARL_ROWS_COUNT], cols[PEARL_COLS_COUNT];
-      for (int i = 0; i < PEARL_ROWS_COUNT; i++) rows[i] = rowOff | PEARL_ROWS_PATTERN[i];
-      for (int i = 0; i < PEARL_COLS_COUNT; i++) cols[i] = colOff | PEARL_COLS_PATTERN[i];
-
-      snapshotProof(ctx, true, rows, PEARL_ROWS_COUNT, &out->proof_a.leaf_indices,
-                    &out->proof_a.leaves, &out->proof_a.siblings);
-      snapshotProof(ctx, false, cols, PEARL_COLS_COUNT, &out->proof_bt.leaf_indices,
-                    &out->proof_bt.leaves, &out->proof_bt.siblings);
-      cudaMemcpy(out->proof_a.root, ctx->dHashA, PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
-      cudaMemcpy(out->proof_bt.root, ctx->dHashB, PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
-      out->proof_a.total_leaves = (uint64_t)ctx->profile.m * ctx->profile.k / 1024;
-      out->proof_bt.total_leaves = (uint64_t)ctx->profile.n * ctx->profile.k / 1024;
-    }
-    out->proof.assign(PEARL_JACKPOT_BUCKETS * 4, 0);
-    // Indexed by the hit's SLOT, like the hash: the fold keeps no per-region
-    // transcripts, only the ones that hit.
-    cudaMemcpy(out->proof.data(),
-               ctx->dHitTranscript + (size_t)best * PEARL_JACKPOT_BUCKETS,
-               PEARL_JACKPOT_BUCKETS * 4, cudaMemcpyDeviceToHost);
-    out->found = true;
-    return true;
-  }
+  if (hits > 0) return build_hit(ctx, b, hits, out);
   out->found = false;
   return false;
+}
+
+// Host overlap only: copy aside what the next salt's restamp is about to rewrite
+// (see Ctx, "The shadow"), on sideStream ahead of that restamp, and mark the copy
+// as salt `salt`'s. The event is what a reader waits on.
+void save_shadow(Ctx *ctx, uint64_t salt) {
+  const size_t levels = ctx->layerOffA.size();
+  cudaMemcpyAsync(shadow_leaf0(ctx->dShadow), ctx->dA, 1024, cudaMemcpyDeviceToDevice,
+                  ctx->sideStream);
+  for (size_t L = 0; L < levels; L++)
+    cudaMemcpyAsync(shadow_node0(ctx->dShadow, L), ctx->dTreeA + ctx->layerOffA[L] * 8,
+                    PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice, ctx->sideStream);
+  cudaMemcpyAsync(shadow_root(ctx->dShadow, levels), ctx->dHashA, PEARL_HASH_BYTES,
+                  cudaMemcpyDeviceToDevice, ctx->sideStream);
+  cudaEventRecord(ctx->shadowEvent, ctx->sideStream);
+  ctx->shadowValid = true;
+  ctx->shadowSalt = salt;
+}
+
+// The search with the host overlap on (see Ctx). One batch is kept in flight:
+//
+//   1. the CURRENT batch, at nonce_base, is the in-flight one when that was
+//      launched for this nonce, salt and job; otherwise any stale in-flight batch
+//      is waited for and dropped, and this one is launched now;
+//   2. the NEXT batch is launched behind it on the legacy stream: the next nonce
+//      under the same salt, or, at the salt's last batch when the caller named the
+//      next salt, that salt's first batch, after its restamp has been run on
+//      sideStream into the other noised-A buffer. The host waits for that restamp
+//      before launching, because the fold takes the new a_seed by value;
+//   3. only then is the current batch's hit count read, on readStream, behind the
+//      event its fold recorded, so the read does not wait for the batch launched in
+//      step 2.
+//
+// Which nonce the next batch gets is fixed by the caller's contract: a batch
+// always runs its whole `regions` and reports exactly that, and the caller
+// advances by what it reports. A caller that does anything else simply misses
+// the in-flight batch at step 1 and pays a launch, as today.
+bool search_overlapped(Ctx *ctx, const FoldShape &s, uint64_t nonce_base, int have_next,
+                       uint64_t next_salt, PearlSearchResult *out, uint64_t *attempts,
+                       char *err, size_t err_len) {
+  Ctx::Batch cur;
+  Ctx::Batch &in = ctx->inflight;
+  if (in.valid && in.nonce == nonce_base && in.salt == ctx->salt && in.jobGen == ctx->jobGen) {
+    cur = in;
+    in.valid = false;
+  } else {
+    if (in.valid) {
+      // Another nonce, a salt no reseed swapped to, or an older job. Nothing reads
+      // it, but its list is reused below and its fold is ahead of everything that
+      // follows on the legacy stream, so wait for it rather than reason about it.
+      cudaEventSynchronize(ctx->listEvent[in.list]);
+      in.valid = false;
+    }
+    cur.valid = true;
+    cur.nonce = nonce_base;
+    cur.salt = ctx->salt;
+    memcpy(cur.aSeed, ctx->aSeed, PEARL_HASH_BYTES);
+    cur.apBuf = ctx->apCur;
+    cur.list = ctx->nextList;
+    cur.jobGen = ctx->jobGen;
+    launch_batch(ctx, s, cur);
+  }
+
+  // The next batch. A caller with no next salt (the bench) walks nonce_base past
+  // the span and lets col_off wrap, as it always has, so it is kept fed the same
+  // way.
+  const uint64_t span = (uint64_t)ctx->rowsValid * ctx->colsValid;
+  const uint64_t nextNonce = nonce_base + s.regions;
+  if (nextNonce < span || !have_next) {
+    Ctx::Batch nx = cur;
+    nx.nonce = nextNonce;
+    nx.list = ctx->nextList;
+    launch_batch(ctx, s, nx);
+    in = nx;
+  } else if (ctx->prepared.valid) {
+    // Prepared on an earlier call whose pre-launched batch was dropped. The arrays
+    // already hold that salt, so there is nothing to restamp; its first batch is
+    // relaunched if it is the salt asked for, and otherwise reseed will take the
+    // synchronous path.
+    if (ctx->prepared.salt == next_salt) {
+      Ctx::Batch nx;
+      nx.valid = true;
+      nx.nonce = 0;
+      nx.salt = next_salt;
+      memcpy(nx.aSeed, ctx->prepared.aSeed, PEARL_HASH_BYTES);
+      nx.apBuf = ctx->prepared.apBuf;
+      nx.list = ctx->nextList;
+      nx.jobGen = ctx->jobGen;
+      launch_batch(ctx, s, nx);
+      in = nx;
+    }
+  } else if (can_restamp(ctx) && ctx->layerOffA.size() <= ctx->shadowLevels
+             && cur.salt == ctx->salt) {
+    // The salt's last batch: prepare the next salt beside it. The shadow first,
+    // on the same stream as the restamp so it reads the values the restamp is
+    // about to replace; then the restamp into the other buffer, whose last reader
+    // was the previous salt's last batch, read on an earlier call. The fold has
+    // its key by value, so dASeed and dHashA may change under it, and B is not
+    // touched. Then wait for the restamp here: the next batch's key is the new
+    // a_seed, and the host needs it to launch.
+    const int other = 1 - ctx->apCur;
+    save_shadow(ctx, cur.salt);
+    restamp(ctx, next_salt, ctx->sideStream, other);
+    cudaMemcpyAsync(ctx->prepared.aSeed, ctx->dASeed, PEARL_HASH_BYTES,
+                    cudaMemcpyDeviceToHost, ctx->sideStream);
+    cudaStreamSynchronize(ctx->sideStream);
+    ctx->prepared.valid = true;
+    ctx->prepared.salt = next_salt;
+    ctx->prepared.apBuf = other;
+    Ctx::Batch nx;
+    nx.valid = true;
+    nx.nonce = 0;
+    nx.salt = next_salt;
+    memcpy(nx.aSeed, ctx->prepared.aSeed, PEARL_HASH_BYTES);
+    nx.apBuf = other;
+    nx.list = ctx->nextList;
+    nx.jobGen = ctx->jobGen;
+    launch_batch(ctx, s, nx);
+    in = nx;
+  }
+  // Otherwise nothing is pre-launched: the last batch of a salt with no next one,
+  // or a profile that cannot restamp. reseed then draws synchronously, as today.
+
+  // Now the current batch's hits, behind ITS fold and nothing later.
+  cudaStreamWaitEvent(ctx->readStream, ctx->listEvent[cur.list], 0);
+  uint32_t hits = 0;
+  cudaMemcpyAsync(&hits, ctx->dHitCount[cur.list], sizeof(uint32_t), cudaMemcpyDeviceToHost,
+                  ctx->readStream);
+  cudaStreamSynchronize(ctx->readStream);
+
+  cudaError_t e = cudaGetLastError();
+  if (e != cudaSuccess) {
+    if (err && err_len)
+      snprintf(err, err_len, "CUDA error during search: %s", cudaGetErrorString(e));
+    return false;
+  }
+  if (attempts) *attempts = s.regions;
+
+  if (hits > 0) return build_hit(ctx, cur, hits, out);
+  out->found = false;
+  return false;
+}
+
+}  // namespace
+
+// Search the batch at nonce_base. Returns true and fills `out` on a hit; `attempts`
+// is the batch's region count either way. `have_next_salt` and `next_salt` tell the
+// host overlap (PEARL_HOST_OVERLAP=1, see Ctx) which salt the caller will reseed to
+// when this salt's regions run out, so it can be prepared beside the last batch;
+// with the switch off they are ignored, and this is pearl_host_search.
+extern "C" bool pearl_host_search_next(void *handle, uint64_t nonce_base, uint32_t batch,
+                                       int have_next_salt, uint64_t next_salt,
+                                       PearlSearchResult *out, uint64_t *attempts,
+                                       char *err, size_t err_len) {
+  Ctx *ctx = static_cast<Ctx *>(handle);
+  if (attempts) *attempts = 0;
+  if (!ctx || !out) return false;
+  // Held for the whole call, switch on or off (see Ctx, "Locking"), so set_job's
+  // full draw on the JS thread cannot land in the middle of a launch; set_job then
+  // waits for the search in progress instead of queuing behind its fold on the
+  // stream.
+  std::lock_guard<std::mutex> lock(ctx->mu);
+  if (!ctx->haveJob) return false;
+  // A no-op on the search thread, which is already bound to this card; the
+  // guard is for any other caller.
+  DeviceScope scope(ctx->device);
+
+  // The caller's batch hint is advisory; the real width is the context's, since
+  // the partial table was allocated for exactly that many column groups.
+  (void)batch;
+  FoldShape shape;
+  if (!fold_shape(ctx, &shape, err, err_len)) return false;
+
+  if (!ctx->overlap) return search_sync(ctx, shape, nonce_base, out, attempts, err, err_len);
+  return search_overlapped(ctx, shape, nonce_base, have_next_salt, next_salt, out, attempts,
+                           err, err_len);
+}
+
+// The spelling the bench probe and pearl_core.cc were built against: no next salt,
+// so nothing is prepared ahead of a reseed.
+extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
+                                  uint32_t batch, PearlSearchResult *out,
+                                  uint64_t *attempts, char *err,
+                                  size_t err_len) {
+  return pearl_host_search_next(handle, nonce_base, batch, 0, 0, out, attempts, err, err_len);
 }
 
 // Which fold this context's card runs, as resolve_fold read it off the loaded
@@ -1558,6 +2223,9 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
 extern "C" const char *pearl_host_fold_name(void *handle) {
   const Ctx *ctx = static_cast<const Ctx *>(handle);
   if (!ctx || !ctx->foldKnown) return "unresolved";
+  if (ctx->foldTall && ctx->foldCluster)
+    return "tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands, "
+           "2-CTA cluster sharing B by multicast";
   if (ctx->foldTall)
     return ctx->foldTma ? "tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands"
                         : "tall 192x256, 8 warps of 96x64, cp.async ring";

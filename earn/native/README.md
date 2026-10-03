@@ -152,13 +152,34 @@ npx node-gyp rebuild
 is green on Linux: the workflow produces a real `pearl_core.node`. So the core
 compiles and links today, even though nothing on a runner can execute it.
 
-It builds the same source a second time with CUDA 13.3 for sm_120 only, and
-uploads that as `pearl_core_cu13.node` (artifacts `pearl-core-cu13-<os>`).
+It builds the same source a second time with CUDA 13.3 for sm_89 and sm_120,
+and uploads that as `pearl_core_cu13.node` (artifacts `pearl-core-cu13-<os>`).
 ptxas 13 compiles the Blackwell fold to 2.67–3.0 instructions per IMMA with
 160/192 B operands reused, where 12.8 manages 3.891 with 0/192; on an RTX 5090
-that is +3.2% hashrate. A CUDA 13 runtime needs driver 580+, so the app loads
-this build only on an all-Blackwell rig with a new enough driver
-(`src/shared/coreVariant.js`) and keeps `pearl_core.node` for everything else.
+that is +3.2% hashrate. The sm_89 half is unmeasured: it is there so the Ada
+fold under ptxas 13.3 can be benched on a 4090 before the app is allowed to
+load it on Ada. To run that bench, point `probes/hashrate.js` and
+`probes/verify-hits.js` at `pearl_core_cu13.node`; they take the `.node` path
+as their first argument and read no environment variable.
+`PEARL_CORE_VARIANT=cu13` is the override for the app and `earn-cli` only. A
+CUDA 13 runtime needs driver 580+, so the app loads this build only on an
+all-Blackwell rig with a new enough driver (`src/shared/coreVariant.js`) and
+keeps `pearl_core.node` for everything else.
+
+Every entry also compiles `pearl_kernel.cu` with `-Xptxas -v` and reads what
+ptxas said about both fold kernels (`pearl_tile_fold_tall`,
+`pearl_tile_fold_wmma`) on every architecture. The tall fold sits at 253–255
+registers; a compiler or gate change that spills still compiles, links and
+ships, and nothing else in CI can see it. A spill fails the job on every
+architecture in that matrix entry's `spill_fail_archs`. The check's first run
+(2026-10-02) had both folds at 0 spill on every architecture either toolkit
+builds: the tall fold at 253 registers on sm_86 and sm_89 and 254–255 on
+sm_120, the wmma fold at 235, 235 and 128. So the 12.8 entries fail on all
+three. The CUDA 13 entries fail on sm_120 only: their sm_89 half is never
+picked automatically, and a failed CUDA 13 job ships no `pearl_core_cu13.node`,
+which would cost every all-Blackwell rig the +3.2%. A spill on sm_89 there is a
+warning in the log. Any architecture added later starts as a warning too.
+
 The CUDA 13 jobs are non-blocking: if they fail, the run still succeeds with a
 current 12.8 core and the release ships without the CUDA 13 one, with a warning.
 
@@ -177,6 +198,14 @@ The compile-and-link signal is platform independent, so Linux is the gate.
 
 `CUDA_PATH` is picked up automatically; override the arch for other cards
 (`sm_86` Ampere, `sm_89` Ada, `sm_120` Blackwell).
+
+The sm_86 build runs the Ada fold path: every tuning switch in
+`src/pearl_config.h` that tests for sm_89 (the persistent, eight-warp, tall
+fold and its staging) accepts sm_86 too, because a GA10x SM has the same
+schedulers, register file and 99 KB of shared a block the fold was tuned
+against. No Ampere card has run it, so there is no hashrate figure for it; the
+Ada numbers in the tuning log are Ada's only, and Ampere's much smaller L2 means
+the band walk that keeps B resident on a 4090 will miss there.
 
 The addon lands at `build/Release/pearl_core.node`, which is exactly where
 `src/main/pearlCore.js` looks for it. When it is absent — as on any machine

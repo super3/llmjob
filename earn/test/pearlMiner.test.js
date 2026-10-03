@@ -924,12 +924,12 @@ describe('PearlMiner — a core that fails mid-run', () => {
     expect(b.made[1].stop).toHaveBeenCalledTimes(1);
   });
 
-  // With --mine-mem-clock the failed card is locked at the mining clock. It is
-  // not mining any more, so it is released now, not when the rest of the rig
+  // With a memory clock plan the failed card is locked at the mining clock. It
+  // is not mining any more, so it is released now, not when the rest of the rig
   // stops -- and not released a second time then.
   test('releases the failed card\'s memory clock at once, and only once', () => {
     const b = rig();
-    b.m.start({ ...settings, gpus: GPUS, mineMemClockMhz: 7001 });
+    b.m.start({ ...settings, gpus: GPUS, mineMemClockByIndex: { 0: 7001, 1: 7001 } });
     expect(b.calls).toEqual([['lock', 0, 7001], ['lock', 1, 7001]]);
 
     b.made[1].emit('error', new Error('GPU 1: ' + MISALIGNED));
@@ -946,7 +946,7 @@ describe('PearlMiner — a core that fails mid-run', () => {
   // because the demand gate starts the LLM the moment it hears it.
   test('when the last card fails, reports it and stops, releasing every lock first', () => {
     const b = rig();
-    b.m.start({ ...settings, gpus: GPUS, mineMemClockMhz: 7001 });
+    b.m.start({ ...settings, gpus: GPUS, mineMemClockByIndex: { 0: 7001, 1: 7001 } });
     b.sock.emit('connect');
     b.made[0].emit('error', new Error('GPU 0: ' + MISALIGNED));
     expect(b.m.isRunning()).toBe(true);
@@ -1014,15 +1014,20 @@ describe('PearlMiner — a core that fails mid-run', () => {
   });
 });
 
-// --mine-mem-clock. The lock is taken per card as its core starts and released
-// in stop(), before 'stopped', because the demand gate starts llama-server --
+// The memory clock lock (the Blackwell default, or --mine-mem-clock). The
+// shells decide which cards and what clock (shared/memClock) and hand the miner
+// { index: mhz }; the lock is taken per card as its core starts and released in
+// stop(), before 'stopped', because the demand gate starts llama-server --
 // which needs the full memory clock -- the moment it hears the miner stopped.
 describe('PearlMiner — the memory clock lock', () => {
   const GPUS = [
     { index: 0, name: 'NVIDIA GeForce RTX 5090' },
     { index: 1, name: 'NVIDIA GeForce RTX 5090' },
   ];
-  const MEM = { ...settings, mineMemClockMhz: 7001 };
+  // A requested lock on both cards, as planMemClocks gives it for --mine-mem-clock.
+  const MEM = { ...settings, mineMemClockByIndex: { 0: 7001, 1: 7001 } };
+  // The same two cards on the Blackwell default.
+  const DEFAULT = { ...MEM, mineMemClockDefault: true };
 
   // A card that reports the index it was asked for, like the real addon, and a
   // clocks double that records every call in order alongside the miner's own
@@ -1079,13 +1084,76 @@ describe('PearlMiner — the memory clock lock', () => {
     ]);
   });
 
-  test('is off by default: no flag, no nvidia-smi, on start or stop', () => {
+  // START LLM while mining-only runs: the GUI keeps the miner and asks for the
+  // locks back before the model starts. Every locked card is released, mining
+  // carries on, and the stop that follows has nothing left to release.
+  test('releaseMemClocks() releases every card mid-run, and stop() does not release again', () => {
     const b = rig();
-    b.m.start({ ...settings, gpus: GPUS });
+    b.m.start({ ...DEFAULT, gpus: GPUS });
+    b.m.releaseMemClocks();
+    expect(b.m.isRunning()).toBe(true);
+    expect(b.calls).toEqual([['lock', 0, 7001], ['lock', 1, 7001], ['reset', 0], ['reset', 1]]);
+    expect(b.lines()).toEqual(expect.arrayContaining([
+      'memory clock released on GPU 0',
+      'memory clock released on GPU 1',
+    ]));
+    b.m.releaseMemClocks();
     b.m.stop();
-    expect(b.clocks.lockMemoryClock).not.toHaveBeenCalled();
+    expect(b.calls.slice(4)).toEqual([['stopped']]);
+  });
+
+  test('with no plan touches nothing: no nvidia-smi, on start or stop', () => {
+    for (const plan of [{}, { mineMemClockByIndex: {} }]) {
+      const b = rig();
+      b.m.start({ ...settings, ...plan, gpus: GPUS });
+      b.m.stop();
+      expect(b.clocks.lockMemoryClock).not.toHaveBeenCalled();
+      expect(b.clocks.resetMemoryClock).not.toHaveBeenCalled();
+      expect(b.lines().join(' ')).not.toMatch(/memory clock/);
+    }
+  });
+
+  // A mixed rig on the default: the plan names the 5090 and not the 4090
+  // beside it, and the 4090 is left at the driver's clock, in silence.
+  test('locks only the cards the plan names', () => {
+    const b = rig();
+    b.m.start({ ...settings, gpus: GPUS, mineMemClockByIndex: { 1: 7001 }, mineMemClockDefault: true });
+    expect(b.calls).toEqual([['lock', 1, 7001]]);
+    expect(b.lines().filter((l) => /memory clock/.test(l))).toHaveLength(1);
+    b.m.stop();
+    expect(b.calls.slice(1)).toEqual([['reset', 1], ['stopped']]);
+  });
+
+  // Nobody asked for the default, so the line says where it came from. It does
+  // not name the off switch: these lines reach the GUI too, which has no flag,
+  // so that is the shell's plan line (shared/memClock). A requested lock says
+  // nothing extra.
+  test('a default lock says so; a requested one does not', () => {
+    const b = rig();
+    b.m.start({ ...DEFAULT, gpus: [GPUS[0]] });
+    expect(b.logs).toContainEqual({
+      level: 'info',
+      line: 'memory clock locked at 7001 MHz on GPU 0 while mining (the default on Blackwell)',
+    });
+    const asked = rig();
+    asked.m.start({ ...MEM, gpus: [GPUS[0]] });
+    expect(asked.lines()).toContain('memory clock locked at 7001 MHz on GPU 0 while mining');
+  });
+
+  // The common case: a GUI rig without the rights to set clocks. The user did
+  // not ask for the lock, so losing it is one info line, not a warning on
+  // every start -- and the card is not "released" at stop. The line names
+  // neither sudo nor a flag: on Windows the fix is running as administrator.
+  test('a failed default lock is one info line, and the card is not reset', () => {
+    const b = rig({ lock: { ok: false, error: 'sudo: a password is required' } });
+    expect(b.m.start({ ...DEFAULT, gpus: [GPUS[0]] })).toBe(true);
+    expect(b.logs.filter((l) => /memory clock/.test(l.line))).toEqual([{
+      level: 'info',
+      line: 'memory clock left at the driver\'s default on GPU 0 (sudo: a password is required): '
+        + 'the Blackwell lock needs root or administrator rights for nvidia-smi',
+    }]);
+    b.m.stop();
     expect(b.clocks.resetMemoryClock).not.toHaveBeenCalled();
-    expect(b.lines().join(' ')).not.toMatch(/memory clock/);
   });
 
   // No root and no sudoers rule is the usual reason. Mining carries on at the
@@ -1149,6 +1217,18 @@ describe('PearlMiner — the memory clock lock', () => {
       level: 'warn',
       line: 'memory clock left at default: this pearl_core.node does not say which GPU it opened',
     });
+  });
+
+  // The same old core on a Blackwell rig that asked for nothing: the default
+  // is skipped, and that is information, not a warning on every start.
+  test('a default the core cannot take is one info line', () => {
+    const b = rig({ silentDevice: true });
+    expect(b.m.start(DEFAULT)).toBe(true);
+    expect(b.clocks.lockMemoryClock).not.toHaveBeenCalled();
+    expect(b.logs.filter((l) => /memory clock/.test(l.line))).toEqual([{
+      level: 'info',
+      line: 'memory clock left at default: this pearl_core.node does not say which GPU it opened',
+    }]);
   });
 
   // The one failure that matters: the card stays locked. The miner still
