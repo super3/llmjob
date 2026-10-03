@@ -173,9 +173,12 @@ registers; a compiler or gate change that spills still compiles, links and
 ships, and nothing else in CI can see it. A spill fails the job on every
 architecture in that matrix entry's `spill_fail_archs`. The check's first run
 (2026-10-02) had both folds at 0 spill on every architecture either toolkit
-builds, so that is all of them: the tall fold at 253 registers on sm_86 and
-sm_89 and 254–255 on sm_120, the wmma fold at 235, 235 and 128. An
-architecture added later starts as a warning until a run has shown it clean.
+builds: the tall fold at 253 registers on sm_86 and sm_89 and 254–255 on
+sm_120, the wmma fold at 235, 235 and 128. So the 12.8 entries fail on all
+three. The CUDA 13 entries fail on sm_120 only: their sm_89 half is never
+picked automatically, and a failed CUDA 13 job ships no `pearl_core_cu13.node`,
+which would cost every all-Blackwell rig the +3.2%. A spill on sm_89 there is a
+warning in the log. Any architecture added later starts as a warning too.
 
 The CUDA 13 jobs are non-blocking: if they fail, the run still succeeds with a
 current 12.8 core and the release ships without the CUDA 13 one, with a warning.

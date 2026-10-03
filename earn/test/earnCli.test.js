@@ -1429,7 +1429,7 @@ describe('--mine-mem-clock', () => {
     expect(miner.settings.mineMemClockByIndex).toEqual({ 0: 7001 });
     expect(miner.settings.mineMemClockDefault).toBe(true);
     expect(allOut()).toContain(
-      'memory clock 7001 MHz by default on GPU 0 (Blackwell; --mine-mem-clock 0 on the CLI leaves the driver\'s clock)');
+      'memory clock 7001 MHz by default on GPU 0 (Blackwell; --mine-mem-clock 0 leaves the driver\'s clock)');
     miner.emit('stopped', 0);
     await expect(p).resolves.toBe(0);
   });

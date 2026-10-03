@@ -51,7 +51,7 @@ jobs:
     # probes/hashrate.js and probes/verify-hits.js at pearl_core_cu13.node
     # (they take the .node path as their first argument and read no
     # environment variable). PEARL_CORE_VARIANT=cu13 is the override for the
-    # app and earn-cli only. No sm_86, so the 3090 code path never changes.
+    # app and earn-cli only. No sm_86, so this build never loads on a 3090.
     # It is a separate file because a CUDA 13 runtime needs driver 580+: the
     # app loads it only on an all-Blackwell rig with a new enough driver
     # (src/shared/coreVariant.js).
@@ -115,11 +115,15 @@ jobs:
               -gencode arch=compute_120,code=sm_120
             # Both clean in the check's first run (native core run
             # 37078406753): the tall fold 253 registers on sm_89 and 254 on
-            # sm_120, the wmma fold 235 and 128, 0 spill everywhere. sm_120 is
-            # the measured build; sm_89 under 13.3 fits but is unmeasured, and
-            # a spill appearing there later is a finding for the 4090 A/B,
-            # not a reason to drop the gate.
-            spill_fail_archs: sm_89 sm_120
+            # sm_120, the wmma fold 235 and 128, 0 spill everywhere. Only
+            # sm_120 fails the job: it is the half this file ships for, and a
+            # failed cu13 job uploads no pearl_core_cu13.node, so every
+            # all-Blackwell rig would mine on the 12.8 core and lose the +3.2%
+            # this build exists for. sm_89 under 13.3 fits but is unmeasured
+            # and never picked automatically (coreVariant.js), so a spill
+            # there is a warning in the log and a finding for the 4090 A/B,
+            # not a reason to withhold the sm_120 core.
+            spill_fail_archs: sm_120
           - os: windows-2022
             variant: '-cu13'
             file: pearl_core_cu13.node
@@ -134,7 +138,8 @@ jobs:
             gencode: >-
               -gencode arch=compute_89,code=sm_89
               -gencode arch=compute_120,code=sm_120
-            spill_fail_archs: sm_89 sm_120
+            # sm_120 only, for the reason given on the ubuntu entry.
+            spill_fail_archs: sm_120
     # Pinned to windows-2022. windows-latest now points at Server 2025, where
     # the CUDA installer dies with exit 0xE0E1E1D9 before reaching any of our
     # source. The Windows artifact is the one that MATTERS most here: it is the
@@ -232,18 +237,51 @@ jobs:
             ${{ matrix.gencode }} \
             -c src/pearl_host.cu -o cuda-build/pearl_host.o
 
+      # The two-CTA cluster build of the Blackwell tall fold (PEARL_TALL_CLUSTER in
+      # pearl_config.h) is an A/B switch, off by default and not measured. Nothing
+      # ships it, so nothing else would notice if its PTX stopped assembling --
+      # multicast TMA, mapa, barrier.cluster, cluster-scope mbarrier -- or if the
+      # host's cluster launch stopped compiling. So it is compiled a second time
+      # here, sm_120 only (the only build with the body), into a scratch directory
+      # that no later step reads. Compile only: not archived, not linked, not
+      # uploaded. ptxas -v is printed so a spill or the register count can be read
+      # off the log; it is not gated, since the build has no measured baseline.
+      #
+      # Non-blocking, for the reason the CUDA 13 entries are: a build nothing ships
+      # must not fail the run and leave miner-build.yml on the previous run's
+      # shipped core. It has never been assembled anywhere before this step, so a
+      # failure here is a finding, shown in the log and as a step annotation,
+      # not a reason to hold the 12.8 core back.
+      - name: Compile the cluster build of the tall fold (sm_120, not shipped)
+        working-directory: earn/native
+        shell: bash
+        continue-on-error: true
+        run: |
+          mkdir -p cuda-build/cluster
+          if [ "$RUNNER_OS" = "Linux" ]; then FPIC="-Xcompiler -fPIC"; else FPIC=""; fi
+          nvcc -O3 -std=c++17 -cudart static $FPIC \
+            -gencode arch=compute_120,code=sm_120 \
+            -DPEARL_TALL_CLUSTER=1 \
+            -Xptxas -v \
+            -c src/pearl_kernel.cu -o cuda-build/cluster/pearl_kernel.o 2>&1 | tee cuda-build/cluster/ptxas-kernel.txt
+          nvcc -O3 -std=c++17 -cudart static $FPIC \
+            -gencode arch=compute_120,code=sm_120 \
+            -DPEARL_TALL_CLUSTER=1 \
+            -c src/pearl_host.cu -o cuda-build/cluster/pearl_host.o
+
       # The tall fold sits at 253-255 registers (probes/README.md: 255 or fewer
       # and 0 spill after any edit). A compiler or gate change that pushes it
       # over spills to local memory, and the kernel still compiles, links and
       # ships; nothing else in CI can see that. This reads what ptxas said
       # above for both fold kernels on every architecture and prints one row
       # each. A spill fails the job on the architectures in the entry's
-      # spill_fail_archs, which is every architecture the entry builds since
-      # the check's first run showed them all clean; an architecture added
-      # later is a warning until a run has shown it clean too. A failed cu13
-      # job uploads no pearl_core_cu13.node, and a failed ubuntu 12.8 job
-      # makes miner-build.yml fall back to the previous run's core, which is
-      # the right outcome for a fold that spills. Needs no GPU.
+      # spill_fail_archs: every architecture the 12.8 entries build, since the
+      # check's first run showed them all clean, and sm_120 alone in the cu13
+      # entries, whose sm_89 half nothing ships (see those entries). Any other
+      # architecture is a warning. A failed cu13 job uploads no
+      # pearl_core_cu13.node, and a failed ubuntu 12.8 job makes
+      # miner-build.yml fall back to the previous run's core, which is the
+      # right outcome for a fold that spills. Needs no GPU.
       - name: Check the fold kernels for register spills
         working-directory: earn/native
         shell: bash

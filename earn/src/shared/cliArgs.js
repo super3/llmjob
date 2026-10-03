@@ -10,6 +10,7 @@
 const { REGIONS, DEFAULTS } = require('./config');
 const { isValidAddress, isValidMdlAddress, normalizeAddress } = require('./address');
 const { MODES, DEFAULT_MODE, isValidMode } = require('./llmMode');
+const { parseMemClockMhz } = require('./memClock');
 
 // Short flags → their canonical long form.
 // --mdl / -m are deliberately absent from USAGE: merge mining is retired from
@@ -34,10 +35,6 @@ const VALUE_FLAGS = new Set([
   '--mode', '--llm-binary', '--llm-model', '--llm-max-instances', '--gate-port', '--gate-host',
   '--gate-quiet', '--mine-mem-clock',
 ]);
-
-// Bounds on a non-zero --mine-mem-clock, in MHz. See buildSettings.
-const MEM_CLOCK_MIN_MHZ = 100;
-const MEM_CLOCK_MAX_MHZ = 30000;
 
 function regionChoices() {
   return Object.keys(REGIONS).join(', ');
@@ -180,20 +177,15 @@ function buildSettings(opts, errors, report, update, serve) {
   }
   // A memory clock to lock while mining, in MHz. Null (not given) means the
   // Blackwell default applies (shared/memClock); 0 turns that off and leaves
-  // every card at the driver's clock. The range is a typo guard, not a hardware
-  // table -- nvidia-smi and the driver decide what a card accepts. Below 100 is
-  // a GHz figure (`7` for 7001), above 30000 a kHz one. An empty value is
-  // refused rather than read as 0: Number('') is 0, and a cleared setting must
-  // not silently switch the default off.
+  // every card at the driver's clock. The value's rules, and the GUI's
+  // environment variable that takes the same values, are shared/memClock's.
   let mineMemClockMhz = null;
   if (opts['--mine-mem-clock'] != null) {
-    const raw = String(opts['--mine-mem-clock']).trim();
-    const mhz = raw === '' ? NaN : Number(raw);
-    if (!Number.isInteger(mhz) || (mhz !== 0 && (mhz < MEM_CLOCK_MIN_MHZ || mhz > MEM_CLOCK_MAX_MHZ))) {
-      errors.push('invalid --mine-mem-clock: ' + opts['--mine-mem-clock']
-        + ' (must be 0, or a whole number of MHz, ' + MEM_CLOCK_MIN_MHZ + '-' + MEM_CLOCK_MAX_MHZ + ')');
+    const parsed = parseMemClockMhz(opts['--mine-mem-clock']);
+    if (parsed.error) {
+      errors.push('invalid --mine-mem-clock: ' + opts['--mine-mem-clock'] + ' (' + parsed.error + ')');
     } else {
-      mineMemClockMhz = mhz;
+      mineMemClockMhz = parsed.mhz;
     }
   }
   let llmMaxInstances = null;

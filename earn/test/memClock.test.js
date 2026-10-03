@@ -1,7 +1,8 @@
 'use strict';
 
 const {
-  BLACKWELL_MINE_MEM_CLOCK_MHZ, BLACKWELL_COMPUTE_MAJOR, CORUN_IGNORED, planMemClocks,
+  BLACKWELL_MINE_MEM_CLOCK_MHZ, BLACKWELL_COMPUTE_MAJOR, CLI_MEM_CLOCK_FLAG, GUI_MEM_CLOCK_ENV,
+  MEM_CLOCK_MIN_MHZ, MEM_CLOCK_MAX_MHZ, CORUN_IGNORED, parseMemClockMhz, readMemClockEnv, planMemClocks,
 } = require('../src/shared/memClock');
 
 // Cards as parseCudaCards returns them.
@@ -24,16 +25,18 @@ describe('the Blackwell default', () => {
     expect(BLACKWELL_COMPUTE_MAJOR).toBe(12);
   });
 
-  // The line names the off switch as the CLI's: the GUI prints it too, and has
-  // no such switch.
+  // The line names the off switch the way its shell's operator types it: the
+  // CLI's flag by default, the GUI's environment variable when main.js asks.
   test('locks every mining Blackwell card and says so, naming the off switch', () => {
     const plan = planMemClocks({ requestedMhz: null, cards: [RTX5090(0), RTX5090(1)], gpus: [gpu(0), gpu(1)] });
     expect(plan).toEqual({
       byIndex: { 0: 7001, 1: 7001 },
       isDefault: true,
       dropped: false,
-      reason: 'memory clock 7001 MHz by default on GPU 0, 1 (Blackwell; --mine-mem-clock 0 on the CLI leaves the driver\'s clock)',
+      reason: 'memory clock 7001 MHz by default on GPU 0, 1 (Blackwell; --mine-mem-clock 0 leaves the driver\'s clock)',
     });
+    expect(planMemClocks({ cards: [RTX5090(0)], gpus: [gpu(0)], requestName: GUI_MEM_CLOCK_ENV }).reason)
+      .toBe('memory clock 7001 MHz by default on GPU 0 (Blackwell; LLMJOB_MINE_MEM_CLOCK=0 leaves the driver\'s clock)');
   });
 
   // A mixed rig: the 4090 is not power-bound the same way and was never
@@ -115,6 +118,65 @@ describe('an explicit --mine-mem-clock', () => {
   test('treats a non-numeric request as none', () => {
     expect(planMemClocks({ requestedMhz: '7001', cards: [RTX4090(0)], gpus: [gpu(0)] }).byIndex).toEqual({});
     expect(planMemClocks({ requestedMhz: -5, cards: [RTX5090(0)], gpus: [gpu(0)] }).byIndex).toEqual({ 0: 7001 });
+  });
+
+  // The GUI's lines name its switch as an assignment, the way an operator sets
+  // an environment variable; the plan itself is the same.
+  test('names the GUI\'s environment variable when asked to', () => {
+    const gui = { requestName: GUI_MEM_CLOCK_ENV, cards: [RTX4090(0)], gpus: [gpu(0)] };
+    expect(planMemClocks({ ...gui, requestedMhz: 0 }))
+      .toEqual({ byIndex: {}, isDefault: false, dropped: false, reason: 'LLMJOB_MINE_MEM_CLOCK=0: memory clocks left to the driver' });
+    expect(planMemClocks({ ...gui, requestedMhz: 7001 }))
+      .toEqual({ byIndex: { 0: 7001 }, isDefault: false, dropped: false, reason: 'LLMJOB_MINE_MEM_CLOCK=7001 MHz on GPU 0' });
+    expect(planMemClocks({ ...gui, requestedMhz: 7001, cards: [], gpus: [] }).reason)
+      .toBe('LLMJOB_MINE_MEM_CLOCK=7001: nvidia-smi listed no GPU, nothing to lock');
+    expect(planMemClocks({ ...gui, requestedMhz: 7001, llmCoRuns: true }))
+      .toEqual({ byIndex: {}, isDefault: false, dropped: true, reason: 'LLMJOB_MINE_MEM_CLOCK ignored: the LLM co-runs with the miner and needs full memory bandwidth' });
+  });
+});
+
+// One parser for both switches: the CLI's flag (cliArgs.test.js has the flag's
+// own cases) and the GUI's environment variable.
+describe('parseMemClockMhz', () => {
+  test('reads 0 and a whole number of MHz within the bounds', () => {
+    expect(CLI_MEM_CLOCK_FLAG).toBe('--mine-mem-clock');
+    expect(parseMemClockMhz('0')).toEqual({ mhz: 0 });
+    expect(parseMemClockMhz(' 7001 ')).toEqual({ mhz: 7001 });
+    expect(parseMemClockMhz(7001)).toEqual({ mhz: 7001 });
+    expect(parseMemClockMhz(String(MEM_CLOCK_MIN_MHZ))).toEqual({ mhz: 100 });
+    expect(parseMemClockMhz(String(MEM_CLOCK_MAX_MHZ))).toEqual({ mhz: 30000 });
+  });
+
+  // An empty value is refused, not read as 0: Number('') is 0, and a cleared
+  // setting must not switch the default off by accident.
+  test('refuses anything else, with the reason in the CLI\'s words', () => {
+    for (const bad of ['', ' ', 'abc', '7', '99', '30001', '7001.5', '-7001', '7e3x']) {
+      expect(parseMemClockMhz(bad)).toEqual({ error: 'must be 0, or a whole number of MHz, 100-30000' });
+    }
+  });
+});
+
+// The GUI's switch, as main.js reads it on every start.
+describe('readMemClockEnv', () => {
+  test('is no request when the variable is unset', () => {
+    expect(GUI_MEM_CLOCK_ENV).toBe('LLMJOB_MINE_MEM_CLOCK');
+    expect(readMemClockEnv({})).toEqual({ mhz: null, warning: null });
+    expect(readMemClockEnv(undefined)).toEqual({ mhz: null, warning: null });
+  });
+
+  test('reads 0 and a clock, with nothing to warn about', () => {
+    expect(readMemClockEnv({ LLMJOB_MINE_MEM_CLOCK: '0' })).toEqual({ mhz: 0, warning: null });
+    expect(readMemClockEnv({ LLMJOB_MINE_MEM_CLOCK: '7001' })).toEqual({ mhz: 7001, warning: null });
+  });
+
+  // A typo keeps the default rather than silently turning it off, and the
+  // warning says both what was ignored and what stands.
+  test('ignores a bad value and warns, keeping the default', () => {
+    expect(readMemClockEnv({ LLMJOB_MINE_MEM_CLOCK: 'off' })).toEqual({
+      mhz: null,
+      warning: 'LLMJOB_MINE_MEM_CLOCK=off ignored (must be 0, or a whole number of MHz, 100-30000); the Blackwell default stands',
+    });
+    expect(readMemClockEnv({ LLMJOB_MINE_MEM_CLOCK: '' }).mhz).toBeNull();
   });
 });
 

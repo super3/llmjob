@@ -99,6 +99,15 @@ void pearl_host_reseed(void *ctx, uint64_t salt);
 bool pearl_host_search(void *ctx, uint64_t nonce_base, uint32_t batch,
                        PearlSearchResult *out, uint64_t *attempts, char *err,
                        size_t err_len);
+// The same search, told which salt the caller will reseed to when this one's
+// regions run out (have_next_salt != 0). With PEARL_HOST_OVERLAP=1 the host
+// prepares that salt beside the current salt's last batch and keeps one batch in
+// flight; otherwise the two extra arguments are ignored and this is
+// pearl_host_search. Off by default: see Ctx in pearl_host.cu.
+bool pearl_host_search_next(void *ctx, uint64_t nonce_base, uint32_t batch,
+                            int have_next_salt, uint64_t next_salt,
+                            PearlSearchResult *out, uint64_t *attempts, char *err,
+                            size_t err_len);
 }
 
 namespace {
@@ -377,7 +386,13 @@ void PearlCore::SearchLoop() {
     PearlSearchResult r;
     uint64_t attempts = 0;
     char err[256] = {0};
-    bool found = pearl_host_search(ctx_, nonce, BATCH, &r, &attempts, err, sizeof(err));
+    // The next salt this core owns is what the reseed below will ask for, so the
+    // host can prepare it beside this salt's last batch (PEARL_HOST_OVERLAP=1;
+    // with the switch off this is pearl_host_search). job_mu_ is not held here,
+    // and the host takes its own mutex inside: job_mu_ then that, never the
+    // other way (see Ctx in pearl_host.cu).
+    bool found = pearl_host_search_next(ctx_, nonce, BATCH, 1, salt + salt_stride_, &r,
+                                        &attempts, err, sizeof(err));
     // A CUDA fault mid-search used to vanish here: the loop simply produced no
     // hits and no hashrate, which looks exactly like bad luck. Surface it and
     // stop, rather than spinning on a dead device for ever.

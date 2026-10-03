@@ -940,10 +940,12 @@ describe('mining', () => {
   });
 
   // The memory clock plan is shared/memClock's (memClock.test.js) and the lock
-  // is PearlMiner's; the GUI's part is feeding the plan the cards and whether
-  // the LLM co-runs, and handing the result to the engine. There is no setting
-  // for it in the GUI, so the Blackwell default is the only way a GUI rig gets
-  // the lock -- which is the point: before this, no GUI rig ever did.
+  // is PearlMiner's; the GUI's part is feeding the plan the cards, whether the
+  // LLM co-runs and what LLMJOB_MINE_MEM_CLOCK in its environment says, and
+  // handing the result to the engine. The renderer has no setting for it, so
+  // the Blackwell default is how a GUI rig gets the lock -- which is the point:
+  // before this, no GUI rig ever did -- and the environment variable is how it
+  // gets off it, or onto it on another card.
   describe('the memory clock', () => {
     const RTX5090 = { index: 0, major: 12, minor: 0, driverMajor: 610 };
     const RTX4090 = { index: 0, major: 8, minor: 9, driverMajor: 610 };
@@ -952,6 +954,19 @@ describe('mining', () => {
       ctx.probe.detectCudaCards.mockResolvedValue([card]);
     };
     const lines = (ctx) => ctx.sent('miner:log').map((l) => l.line);
+    // The variable is read from the real process.env on each start, so a test
+    // that sets it puts it back.
+    const ENV = 'LLMJOB_MINE_MEM_CLOCK';
+    let hadEnv, envBefore;
+    beforeEach(() => {
+      hadEnv = Object.prototype.hasOwnProperty.call(process.env, ENV);
+      envBefore = process.env[ENV];
+      delete process.env[ENV];
+    });
+    afterEach(() => {
+      if (hadEnv) process.env[ENV] = envBefore;
+      else delete process.env[ENV];
+    });
 
     it('is locked by default on a Blackwell card mining alone, and the log says so', async () => {
       const ctx = await boot();
@@ -962,7 +977,7 @@ describe('mining', () => {
         mineMemClockByIndex: { 0: 7001 }, mineMemClockDefault: true,
       }));
       expect(lines(ctx)).toContain(
-        'memory clock 7001 MHz by default on GPU 0 (Blackwell; --mine-mem-clock 0 on the CLI leaves the driver\'s clock)');
+        'memory clock 7001 MHz by default on GPU 0 (Blackwell; LLMJOB_MINE_MEM_CLOCK=0 leaves the driver\'s clock)');
       // The plan rides on the start call only: what is saved is what the
       // renderer sent, and never the plan.
       const saved = ctx.fs.writeFileSync.mock.calls
@@ -994,6 +1009,68 @@ describe('mining', () => {
         mineMemClockByIndex: {}, mineMemClockDefault: false,
       }));
       expect(lines(ctx).join('\n')).not.toMatch(/memory clock/);
+    });
+
+    // The default is measured on a 5090 only. A rig that regresses on another
+    // compute 12.x card turns it off the way the CLI does with --mine-mem-clock 0.
+    it('is turned off by LLMJOB_MINE_MEM_CLOCK=0, and the log says so', async () => {
+      process.env[ENV] = '0';
+      const ctx = await boot();
+      oneCard(ctx, RTX5090, 'NVIDIA GeForce RTX 5090');
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+        mineMemClockByIndex: {}, mineMemClockDefault: false,
+      }));
+      expect(ctx.sent('miner:log')).toContainEqual(
+        { level: 'info', line: 'LLMJOB_MINE_MEM_CLOCK=0: memory clocks left to the driver' });
+    });
+
+    // Any other value is a request, on every mining card, Blackwell or not.
+    it('locks any card at the clock LLMJOB_MINE_MEM_CLOCK asks for', async () => {
+      process.env[ENV] = '7001';
+      const ctx = await boot();
+      oneCard(ctx, RTX4090, 'NVIDIA GeForce RTX 4090');
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+        mineMemClockByIndex: { 0: 7001 }, mineMemClockDefault: false,
+      }));
+      expect(ctx.sent('miner:log')).toContainEqual(
+        { level: 'info', line: 'LLMJOB_MINE_MEM_CLOCK=7001 MHz on GPU 0' });
+    });
+
+    // A request the LLM co-run refuses is a warning, as on the CLI (stderr).
+    it('warns when the LLM co-run drops the requested clock', async () => {
+      process.env[ENV] = '7001';
+      const ctx = await boot();
+      oneCard(ctx, RTX5090, 'NVIDIA GeForce RTX 5090');
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+      await flush();
+      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+        mineMemClockByIndex: {},
+      }));
+      expect(ctx.sent('miner:log')).toContainEqual({
+        level: 'warn',
+        line: 'LLMJOB_MINE_MEM_CLOCK ignored: the LLM co-runs with the miner and needs full memory bandwidth',
+      });
+    });
+
+    // A typo must not silently switch the default off: it is ignored, with a
+    // warning, and the Blackwell default is applied as if it were unset.
+    it('ignores a bad LLMJOB_MINE_MEM_CLOCK with a warning and keeps the default', async () => {
+      process.env[ENV] = 'off';
+      const ctx = await boot();
+      oneCard(ctx, RTX5090, 'NVIDIA GeForce RTX 5090');
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+        mineMemClockByIndex: { 0: 7001 }, mineMemClockDefault: true,
+      }));
+      expect(ctx.sent('miner:log')).toContainEqual({
+        level: 'warn',
+        line: 'LLMJOB_MINE_MEM_CLOCK=off ignored (must be 0, or a whole number of MHz, 100-30000); the Blackwell default stands',
+      });
     });
 
     // START LLM while mining-only runs (renderer: mining -> auto, then start).
