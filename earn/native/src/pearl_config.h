@@ -907,12 +907,16 @@ typedef struct {
 
 // A two-CTA cluster that shares the staged B by TMA multicast (sm_120, the TMA build).
 // An A/B switch, off. No hashrate and no clock have been measured. What CI has measured
-// is the compile. The first build of the switch held the cluster rank in a local for the
-// whole kernel and spilled: ptxas 12.8, sm_120, 255 registers, 196 bytes of spill
-// stores, 248 of loads (native core run 37087176421), on a fold the shipped build
-// compiles to 254-255 registers and 0 spill. The rank is re-read where it is used
-// instead (pearl_cluster_ctarank in pearl_kernel.cu), and the CI step prints the
-// figure after every change; the fold has to fit before the probe is worth running.
+// is the compile, and the fold does not fit yet. The first build of the switch held
+// the cluster rank in a local for the whole kernel and spilled: ptxas 12.8, sm_120,
+// 255 registers, 196 bytes of spill stores, 248 of loads (native core run
+// 37087176421), on a fold the shipped build compiles to 254-255 registers and 0 spill.
+// Re-reading the rank where it is used (pearl_cluster_ctarank in pearl_kernel.cu)
+// took back a little, not enough: 255 registers, 180 bytes of spill stores, 224 of
+// loads under ptxas 12.8, and 184 and 228 under 13.3, the compiler the Blackwell core
+// ships from (run 37087607029). The CI step prints the row after every change. The
+// fold has to fit before the probe is worth running; what the spilled values are has
+// not been read from the SASS.
 // ptxas also printed, at every multicast, that the modifier should be used on
 // sm_90a/sm_100a/sm_101a instead of sm_120 "as this feature is expected to have
 // substantially reduced performance on some future architectures". It is to be priced
