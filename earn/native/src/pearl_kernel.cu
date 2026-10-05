@@ -1734,6 +1734,56 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
 #endif
 #endif  // PEARL_FOLD_GROUP_STAGE
 
+#if PEARL_STAGE_REGS
+#if PEARL_FOLD_GROUP_STAGE
+#error "PEARL_STAGE_REGS stages the block-wide walk: build with PEARL_FOLD_GROUP_STAGE=0"
+#endif
+#if PEARL_STAGE_AT_BARRIER
+#error "PEARL_STAGE_REGS and PEARL_STAGE_AT_BARRIER each place the copies: pick one"
+#endif
+// Register staging (PEARL_STAGE_REGS): PEARL_ISSUE_SLOT's copies split in two.
+// LOAD reads all of this thread's slots of chunk cc into registers, rB[p] and
+// rA[p]; STORE writes them to stage buffer cc & 1. Same sources, destinations
+// and bounds as PEARL_ISSUE_SLOT, and the loads are ld.global.nc like its plain
+// copy's: neither operand changes during a launch.
+//
+// Four B slots and four A slots a thread on Turing. The block is exactly
+// pthreads threads (checked at the top), so when an operand splits evenly over
+// them every slot is in bounds. Saying so drops a compare a slot, and leaves
+// stage_next the only condition on the copies.
+  constexpr uint32_t rbslots = (btotal + pthreads - 1u) / pthreads;
+  constexpr uint32_t raslots = (atotal + pthreads - 1u) / pthreads;
+#define PEARL_REG_SLOT_IN(p, total) \
+  ((total) % pthreads == 0u || pid + (p) * pthreads < (total))
+#ifdef PEARL_ABLATE_STAGING
+#define PEARL_LOAD_REGS(cc) { (void)rB; (void)rA; }
+#define PEARL_STORE_REGS(cc) {}
+#else
+#define PEARL_LOAD_REGS(cc)                                                           \
+  {                                                                                   \
+    const int8_t *b_ = Bprime + bsrc0 + PEARL_SLOT_K0(cc);                            \
+    const int8_t *a_ = Aprime + asrc0 + PEARL_SLOT_K0(cc);                            \
+    _Pragma("unroll") for (uint32_t p_ = 0; p_ < rbslots; p_++)                       \
+      if (PEARL_REG_SLOT_IN(p_, btotal))                                              \
+        rB[p_] = __ldg(reinterpret_cast<const int4 *>(b_ + p_ * srcStep));            \
+    _Pragma("unroll") for (uint32_t p_ = 0; p_ < raslots; p_++)                       \
+      if (PEARL_REG_SLOT_IN(p_, atotal))                                              \
+        rA[p_] = __ldg(reinterpret_cast<const int4 *>(a_ + p_ * srcStep));            \
+  }
+#define PEARL_STORE_REGS(cc)                                                          \
+  {                                                                                   \
+    const uint32_t b_ = sBa + ((cc) & 1u) * buf_bytes + bdst0;                        \
+    const uint32_t a_ = sAa + ((cc) & 1u) * buf_bytes + adst0;                        \
+    _Pragma("unroll") for (uint32_t p_ = 0; p_ < rbslots; p_++)                       \
+      if (PEARL_REG_SLOT_IN(p_, btotal))                                              \
+        *(int4 *)__cvta_shared_to_generic(b_ + p_ * dstStep) = rB[p_];                \
+    _Pragma("unroll") for (uint32_t p_ = 0; p_ < raslots; p_++)                       \
+      if (PEARL_REG_SLOT_IN(p_, atotal))                                              \
+        *(int4 *)__cvta_shared_to_generic(a_ + p_ * dstStep) = rA[p_];                \
+  }
+#endif
+#endif  // PEARL_STAGE_REGS
+
   // The transcripts ride in registers until the very end. Writing them to
   // global at each chunk boundary turned one 64-byte store per region into
   // sixteen scattered 4-byte stores -- each its own 32-byte sector in L2 --
@@ -1973,10 +2023,29 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
         for (uint32_t p = 0; p < nall_; p++) PEARL_ISSUE_SLOT(chunk + 1u, p)
       }
 #endif
+#if PEARL_STAGE_REGS
+      // Every load of the next chunk goes out here, ahead of this chunk's mma, and
+      // the stores wait until after the last k-step (below). A plain copy's store
+      // waits on its load, and in the k-loop that wait stalls the warp's mma; held
+      // in registers, the loads land under the whole chunk instead.
+      //
+      // Safe with the one barrier a chunk: buffer (chunk + 1) & 1 was last read in
+      // chunk - 1, and the barrier at the top of this chunk retired those reads.
+      // The barrier at the top of the next chunk publishes the stores.
+      //
+      // Ahead of the `active` branch on purpose: both sides use the registers, so
+      // ptxas cannot move the loads past it. Placed after it, they were one
+      // predicated block, and ptxas sank them into the second k-step (sm_75,
+      // ptxas 12.8), behind 99 of the chunk's 256 IMMA.
+      int4 rB[rbslots], rA[raslots];
+      if (stage_next) PEARL_LOAD_REGS(chunk + 1u)
+#endif
       if (!active) {
         if (stage_next) {
 #if PEARL_FOLD_GROUP_STAGE
           PEARL_ISSUE_CHUNK(chunk + 1u)
+#elif PEARL_STAGE_REGS
+          PEARL_STORE_REGS(chunk + 1u)
 #else
           const uint32_t nslots_ = (btotal + pthreads - 1u) / pthreads;
 #pragma unroll 4
@@ -2020,7 +2089,7 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
 #pragma unroll
       for (uint32_t t = 0; t < ksteps; t++) {
         const uint32_t kt = t * 32;
-#if !PEARL_FOLD_GROUP_STAGE && !PEARL_STAGE_AT_BARRIER
+#if !PEARL_FOLD_GROUP_STAGE && !PEARL_STAGE_AT_BARRIER && !PEARL_STAGE_REGS
         // This k-step's share of the NEXT chunk's staging, issued BEFORE the
         // ldmatrix so the copies are already in flight underneath the mma.
         if (stage_next) PEARL_ISSUE_SLOT(chunk + 1u, t)
@@ -2106,7 +2175,7 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
         }
       }
 
-#if !PEARL_FOLD_GROUP_STAGE
+#if !PEARL_FOLD_GROUP_STAGE && !PEARL_STAGE_REGS
       {
         // A thread's walk can be longer than the k-step count; whatever the
         // interleave above did not reach goes out here. At the mandated geometry
@@ -2117,6 +2186,12 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
           for (uint32_t p = ksteps; p < nslots_; p++) PEARL_ISSUE_SLOT(chunk + 1u, p)
 #endif
       }
+#endif
+#if PEARL_STAGE_REGS
+      // The next chunk's stores. ptxas cannot move a shared store above a shared
+      // read it might overlap, so these stay behind the last k-step's ldmatrix;
+      // on sm_75 they land after its last mma, just before the readout.
+      if (stage_next) PEARL_STORE_REGS(chunk + 1u)
 #endif
 
       // Chunk boundary: fold the running tile into each region's transcript.

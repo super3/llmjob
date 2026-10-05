@@ -337,11 +337,18 @@ typedef struct {
 // default and only sm_120 moves; this is gated rather than changed outright so no
 // Ampere or Ada rig regresses.
 //
+// Turing has 68 SMs and 5.5 MB of L2, against a 4090's 72 MB, and its 128x128 tile
+// reads twice the bytes per mac. Measured on an RTX 2080 Ti (bench, TH/s, two
+// rounds): 4 -> 48.5, 8 -> 51.8, 16 -> 54.1, 32 -> 47.7 with copies staged per
+// k-step; 8 -> 58.1, 16 -> 58.5, 32 -> 52.0 with PEARL_STAGE_REGS. So 16.
+//
 // Only ever used inside pearl_tile_fold_wmma, so __CUDA_ARCH__ is always defined
 // where it is read and the host never sees a differing value.
 #ifndef PEARL_BLOCK_GROUP
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
 #define PEARL_BLOCK_GROUP 1
+#elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
+#define PEARL_BLOCK_GROUP 16
 #else
 #define PEARL_BLOCK_GROUP 32
 #endif
@@ -857,6 +864,37 @@ typedef struct {
 #define PEARL_FOLD_GROUP_STAGE 1
 #else
 #define PEARL_FOLD_GROUP_STAGE 0
+#endif
+#endif
+
+// Stage the next chunk through registers: a thread loads all of its slots at the
+// top of a chunk and stores them to shared after the chunk's last k-step.
+//
+// Turing has no cp.async, so there pearl_cp_async16 is a plain load and store,
+// and the store waits for the load to come back from L2 or DRAM. With one slot
+// copied per k-step, that wait sits in the middle of the mma loop: ptxas keeps
+// each store ahead of the next k-step's ldmatrix, since it cannot tell the two
+// stage buffers apart, so the warp stalls there. The Turing fold has only two
+// warps a scheduler to cover it, and the first k-step's copy has nothing ahead
+// of it at all. Loading at the top and storing at the end gives the loads a
+// whole chunk of mma to land under. This is the usual Volta/Turing pipeline
+// (CUTLASS's sm70 and sm75 mainloops do the same).
+//
+// It costs registers: with 256 threads a thread holds four B and four A slots,
+// eight int4. The Turing fold goes from 166 to 172 registers, no spills (ptxas
+// 12.8), well inside the 255 its launch bound allows. The sixteen-warp fold is
+// capped at 128 and spills with it (48 bytes on sm_86, 64 on sm_120).
+//
+// Turing only: from sm_80 cp.async copies without registers and without
+// stalling the thread. Block-wide walk only (PEARL_FOLD_GROUP_STAGE=0). Device
+// side only. Measured on an RTX 2080 Ti (bench, TH/s, two rounds): 46.3 -> 52.0
+// at PEARL_BLOCK_GROUP 32, and 52.7 -> 58.5 at 16. With the copies ablated it
+// runs 78.1, so the staging still costs a quarter; see PEARL_BLOCK_GROUP.
+#ifndef PEARL_STAGE_REGS
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
+#define PEARL_STAGE_REGS 1
+#else
+#define PEARL_STAGE_REGS 0
 #endif
 #endif
 
