@@ -245,6 +245,22 @@ What did not work, full loop:
 | blocking-sync events (the host sleeps instead of spinning) | -0.4% against spinning. The fold's own timer ran slower at the same clock; why is not known |
 | pipelining with one stream | +0.17%, not the +0.36% the idle time predicted. The fold's GPU time per batch rose ~0.2%: under the power cap, idle time was partly paid back as clock |
 
+**2026-10-05, sm_120: +0.3% on an RTX PRO 6000 Blackwell.** The same build ported to a
+fresh branch and built with CUDA 13.3 for sm_120 (188 SMs, 128 MB L2, 600 W, memory at its
+default 13365 MHz). `bench.sh --verify`, 60 s rounds, interleaved against the v0.5.9 core:
+
+| | v0.5.9 core | this build | SM clock |
+|---|---|---|---|
+| production profile, n = 131072 | 408.9 / 408.9 / 409.1 | 410.3 / 410.3 / 410.0 (**+0.3%**, ahead every round) | 2280 / 2278 MHz |
+| n = 262144 | 409.4 / 410.6 / 410.5 | 410.4 / 410.4 / 410.4 (+0.05%) | 2281 / 2274 MHz |
+
+Smaller than the 4090's +0.8% for the reason the 5090 notes predict: at 21.5 ms a launch
+the host's share is bigger, but at the power cap most of the idle time the pipeline removes
+comes back as a lower SM clock, not as hashrate (the pipelined build does ~0.3% more work
+per clock and runs ~6 MHz lower). verify-hits 400/400 for both cores at n = 262144; the
+pipelined CLI mined live on HeroMiners us2 for 8 minutes at 410.4 TH/s, 14 shares accepted
+and 0 rejected at n = 262144.
+
 ### Against the field: 264 is 15.8% behind
 
 What a user compares is the number a miner DISPLAYS over a few minutes, so that is the
