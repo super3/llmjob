@@ -469,6 +469,20 @@ typedef struct {
 #define PEARL_WMMA_ROW_TILES PEARL_FOLD_WIDE_ROW_TILES
 #endif
 
+// Turing (sm_75, the RTX 20 series): eight 32x64 warps in a 4x2 grid, a 128x128
+// tile. Turing grants a block at most 64 KB of shared memory, and the 128x256
+// tile's two full-chunk stages take 96 KB. Half the columns brings them to
+// exactly 64 KB, 2 x (128 B columns + 128 A rows) x 128 bytes, and nothing else
+// with two stages and at least eight warps fits. The warp tile, the row slots
+// and the column blocks are the sixteen-warp fold's; only the column slots halve,
+// and the kernel and the host derive those from the thread count. The host
+// launches this many threads when the loaded fold is Turing's (binaryVersion ==
+// 75), as it does for the Ada build.
+#define PEARL_FOLD_TURING_THREADS 256u
+#if !defined(PEARL_FOLD_THREADS) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
+#define PEARL_FOLD_THREADS PEARL_FOLD_TURING_THREADS
+#endif
+
 // A 192x256 CTA tile: eight 96x64 warp tiles (256 threads), staged in three 64-deep
 // stages that the warps pass through on an mbarrier ring instead of a block-wide
 // barrier (pearl_tile_fold_tall).

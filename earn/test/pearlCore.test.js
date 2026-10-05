@@ -166,6 +166,7 @@ describe('coreFactory — choosing a build', () => {
   const CU13_BESIDE = path.join('/opt/rig', 'pearl_core_cu13.node');
   const BLACKWELL = { cards: [{ index: 0, major: 12, minor: 0, driverMajor: 610 }], gpus: [{ index: 0 }] };
   const ADA = { cards: [{ index: 0, major: 8, minor: 9, driverMajor: 610 }], gpus: [{ index: 0 }] };
+  const TURING = { cards: [{ index: 0, major: 7, minor: 5, driverMajor: 610 }], gpus: [{ index: 0 }] };
 
   // Both builds installed beside the executable, each with a spy createCore.
   function rig(overrides = {}) {
@@ -211,6 +212,15 @@ describe('coreFactory — choosing a build', () => {
     expect(r.req).not.toHaveBeenCalledWith(CU13_BESIDE);
     expect(r.lines).toEqual([['info',
       'Pearl core: CUDA 12.8 build · GPU 0 is compute 8.9 (the CUDA 13 build is compute 12.x only)']]);
+  });
+
+  test('a 2080 Ti rig loads the 12.8 build and never looks for the CUDA 13 one', () => {
+    const r = rig();
+    const f = factory(r, TURING);
+    expect(f({ rank: 128 })).toEqual({ build: 'cu12' });
+    expect(r.req).not.toHaveBeenCalledWith(CU13_BESIDE);
+    expect(r.lines).toEqual([['info',
+      'Pearl core: CUDA 12.8 build · GPU 0 is compute 7.5 (the CUDA 13 build is compute 12.x only)']]);
   });
 
   // An install from before there were two, or a release whose CUDA 13 job failed.

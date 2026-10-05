@@ -184,6 +184,9 @@ struct Ctx {
   // launched 256 threads a block rather than 512. Both are read off the loaded
   // binary once, when the context is created (resolve_fold).
   bool foldWide = false;
+  // Whether it is Turing's build (binaryVersion 75): 256 threads over a 128x128
+  // tile, so that its two stages fit the 64 KB of shared Turing grants a block.
+  bool foldTuring = false;
   // Whether this card runs the tall fold instead (PEARL_FOLD_TALL): its own
   // kernel, pearl_tile_fold_tall, over 192x256 tiles. Read off that kernel's
   // loaded binary (PEARL_TALL_ARCH of its binaryVersion) with the others.
@@ -569,6 +572,9 @@ void resolve_fold(Ctx *ctx) {
 #else
   ctx->foldWide = ada;
 #endif
+  // Turing's fold has its own block size (PEARL_FOLD_TURING_THREADS); a wide
+  // build forced onto every arch takes precedence, as it does in the kernel.
+  ctx->foldTuring = haveAttrs && fa.binaryVersion == 75 && !ctx->foldWide;
   // The tall fold is persistent like the Ada fold.
   {
     cudaFuncAttributes ft;
@@ -590,7 +596,9 @@ void resolve_fold(Ctx *ctx) {
   // bound. A disagreement would not fail loudly: a block of the wrong size
   // returns at once, and the search would report hashrate while finding
   // nothing. So refuse it.
-  const uint32_t want = ctx->foldWide ? PEARL_FOLD_WIDE_THREADS : PEARL_FOLD_THREADS;
+  const uint32_t want = ctx->foldWide     ? PEARL_FOLD_WIDE_THREADS
+                        : ctx->foldTuring ? PEARL_FOLD_TURING_THREADS
+                                          : PEARL_FOLD_THREADS;
   if (!haveAttrs) {
     snprintf(err, err_len, "no fold kernel for this card: %s",
              cudaGetErrorString(cudaGetLastError()));
@@ -1318,10 +1326,15 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   // The block's shape: sixteen 32x64 warp tiles, or eight 64x64 ones. Either
   // way the CTA tile is 128x256, so the tile count, the grid and the shared
   // footprint below come out the same.
+  // Turing's fold is eight 32x64 warp tiles in a 4x2 grid: a 128x128 tile, so
+  // twice the tiles and half the shared footprint, both of which follow from
+  // warpCols below.
   // The tall fold (ctx->foldTall) is 256 threads over 192x256 tiles; its tile
   // count and shared footprint are worked out apart from these, below.
-  const uint32_t threads = ctx->foldTall ? PEARL_TALL_THREADS
-                           : ctx->foldWide ? PEARL_FOLD_WIDE_THREADS : PEARL_FOLD_THREADS;
+  const uint32_t threads = ctx->foldTall     ? PEARL_TALL_THREADS
+                           : ctx->foldWide   ? PEARL_FOLD_WIDE_THREADS
+                           : ctx->foldTuring ? PEARL_FOLD_TURING_THREADS
+                                             : PEARL_FOLD_THREADS;
   const uint32_t warpRows = ctx->foldWide ? PEARL_FOLD_WIDE_WARP_ROWS : PEARL_WARP_ROWS;
   const uint32_t rowTiles = ctx->foldWide ? PEARL_FOLD_WIDE_ROW_TILES : PEARL_WMMA_ROW_TILES;
   const void *foldFn = ctx->foldTall ? reinterpret_cast<const void *>(pearl_tile_fold_tall)
@@ -1562,6 +1575,7 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
     return ctx->foldTma ? "tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands"
                         : "tall 192x256, 8 warps of 96x64, cp.async ring";
   if (ctx->foldWide) return "wmma 128x256, 8 warps of 64x64";
+  if (ctx->foldTuring) return "wmma 128x128, 8 warps of 32x64, m8n8k16 (Turing)";
   return ctx->foldPersistent ? "wmma 128x256, 16 warps of 32x64, persistent"
                              : "wmma 128x256, 16 warps of 32x64";
 }

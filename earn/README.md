@@ -125,7 +125,7 @@ A release ships two builds of the mining core side by side, in the installer's
 
 | File | Toolkit | Cards |
 |---|---|---|
-| `pearl_core.node` | CUDA 12.8 | RTX 30, 40 and 50 (sm_86/89/120) — every rig |
+| `pearl_core.node` | CUDA 12.8 | RTX 20, 30, 40 and 50 (sm_75/86/89/120) — every rig |
 | `pearl_core_cu13.node` | CUDA 13.3 | RTX 50 / Blackwell only (sm_120) |
 
 The CUDA 13 compiler produces faster code for Blackwell: on an RTX 5090 at
@@ -133,7 +133,7 @@ The CUDA 13 compiler produces faster code for Blackwell: on an RTX 5090 at
 12.8 (+3.2%). But a CUDA 13 build needs NVIDIA driver 580 or newer, so it is used
 only when **the driver is 580+ and every card that will mine is compute 12.x**
 (read from `nvidia-smi --query-gpu=index,compute_cap,driver_version`). Everything
-else — a 3090 or 4090, a mixed 4090 + 5090 rig, an older driver, or a rig where
+else — a 2080 Ti, 3090 or 4090, a mixed 4090 + 5090 rig, an older driver, or a rig where
 `nvidia-smi` can't say — loads `pearl_core.node`, as before. If the CUDA 13 core
 is missing, won't load, or fails its first start with a driver/runtime error, the
 app falls back to `pearl_core.node` and logs why. The choice is logged once per

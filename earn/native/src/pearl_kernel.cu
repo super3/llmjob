@@ -1226,15 +1226,33 @@ __device__ __forceinline__ void pearl_ldmatrix_x4(uint32_t &r0, uint32_t &r1,
                : "r"(a));
 }
 
+//
+// Turing (sm_75) has no m16n8k32; its int8 op is m8n8k16, a quarter of the size.
+// Its fragments are exactly the quadrants of this one's, so the same registers go
+// in four times: a0/a1 are rows 0-7/8-15 at k 0-15 and a2/a3 the same rows at
+// k 16-31, b0/b1 are k 0-15/16-31, and c0,c1/c2,c3 are rows 0-7/8-15. Integer
+// accumulation is exact (no .satfinite, and |acc| stays under 2^25), so the order
+// of the four adds cannot change a bit of the result. Every caller, the ldmatrix
+// loads and the readout keep the m16n8k32 layout on every card.
 __device__ __forceinline__ void pearl_mma_m16n8k32(
     int32_t &c0, int32_t &c1, int32_t &c2, int32_t &c3,
     uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3,
     uint32_t b0, uint32_t b1) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
+  asm volatile(
+      "mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 {%0,%1}, {%4}, {%8}, {%0,%1};\n"
+      "mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 {%0,%1}, {%6}, {%9}, {%0,%1};\n"
+      "mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 {%2,%3}, {%5}, {%8}, {%2,%3};\n"
+      "mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 {%2,%3}, {%7}, {%9}, {%2,%3};\n"
+      : "+r"(c0), "+r"(c1), "+r"(c2), "+r"(c3)
+      : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b0), "r"(b1));
+#else
   asm volatile(
       "mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 "
       "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
       : "+r"(c0), "+r"(c1), "+r"(c2), "+r"(c3)
       : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b0), "r"(b1));
+#endif
 }
 
 // XOR of three words in one instruction. 0x96 is the lop3 truth table for

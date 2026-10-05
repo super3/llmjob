@@ -177,3 +177,50 @@ describe('native/JS config agreement', () => {
     expect(HEADER).toContain('return 1;  // exactly equal counts as a share');
   });
 });
+
+// The value of a #define that has a numeric one. Some names are first defined as
+// an alias (PEARL_WARP_ROWS is PEARL_FOLD_WIDE_WARP_ROWS in the Ada build) and
+// only later as a number, so this skips past aliases instead of stopping at the
+// first match as defineOf does.
+function numericDefineOf(name) {
+  const key = '#define ' + name + ' ';
+  for (let at = HEADER.indexOf(key); at >= 0; at = HEADER.indexOf(key, at + 1)) {
+    const eol = HEADER.indexOf(String.fromCharCode(10), at);
+    const n = parseInt(HEADER.slice(at + key.length, eol < 0 ? undefined : eol).trim(), 10);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+describe('Turing fold geometry', () => {
+  // Turing grants a block at most 64 KB of shared memory. If the fold's two
+  // stages outgrow it, every RTX 20 card stops at its first search with "fold
+  // needs ... card allows 65536". This is the host's formula (pearl_host.cu,
+  // the smem it opts in to) with Turing's thread count and the default warp grid.
+  test('its two stages fit the 64 KB of shared Turing grants a block', () => {
+    const threads = numericDefineOf('PEARL_FOLD_TURING_THREADS');
+    const warpRows = numericDefineOf('PEARL_WARP_ROWS');
+    const rowTiles = numericDefineOf('PEARL_WMMA_ROW_TILES');
+    const colBlk = numericDefineOf('PEARL_WMMA_COL_BLK');
+    const wmmaRows = numericDefineOf('PEARL_WMMA_ROWS');
+    const rowsCount = numericDefineOf('PEARL_ROWS_COUNT');
+    const stride = numericDefineOf('PEARL_SB_STRIDE');
+    const stages = numericDefineOf('PEARL_STAGE_BUFS');
+    for (const v of [threads, warpRows, rowTiles, colBlk, wmmaRows, rowsCount, stride, stages]) {
+      expect(v).not.toBeNull();
+    }
+    const warpCols = threads / 32 / warpRows;
+    expect(Number.isInteger(warpCols) && warpCols > 0).toBe(true);
+    const regionsPerWarp = rowTiles * (wmmaRows / rowsCount);
+    const smem = stages * (warpCols * colBlk * 16 + warpRows * regionsPerWarp * rowsCount) * stride;
+    expect(smem).toBeLessThanOrEqual(65536);
+  });
+
+  // The kernel picks Turing's thread count only for sm_75 builds. Everything
+  // from sm_80 up keeps the sixteen-warp default.
+  test('only builds below sm_80 take it', () => {
+    expect(HEADER).toContain(
+      '#if !defined(PEARL_FOLD_THREADS) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800\n'
+      + '#define PEARL_FOLD_THREADS PEARL_FOLD_TURING_THREADS');
+  });
+});

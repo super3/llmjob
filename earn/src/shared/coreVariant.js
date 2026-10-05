@@ -5,7 +5,7 @@
 //
 // A release ships two cores:
 //
-//   pearl_core.node       CUDA 12.8, sm_86/89/120. Runs on every card and every
+//   pearl_core.node       CUDA 12.8, sm_75/86/89/120. Runs on every card and every
 //                         driver the app supports. What every rig loaded before.
 //   pearl_core_cu13.node  CUDA 13.x, sm_120 ONLY (Blackwell, compute 12.x).
 //
@@ -17,9 +17,9 @@
 // It cannot simply replace the first. The runtime is linked statically, and a
 // CUDA 13 runtime needs driver 580 or newer; on an older driver it does not fail
 // at require() but at the first CUDA call, as "no CUDA device found". Much of
-// the 3090/4090 fleet and many 5090 rigs run older drivers. And a 3090 or 4090
-// gains nothing from it: it carries no sm_86/89 code, so those cards stay on
-// the build they have always run.
+// the 3090/4090 fleet and many 5090 rigs run older drivers. And a 2080 Ti, 3090
+// or 4090 gains nothing from it: it carries no sm_75/86/89 code, so those cards
+// stay on the build they have always run.
 //
 // So the CUDA 13 build is used only when BOTH hold:
 //   - the driver is 580 or newer, and
