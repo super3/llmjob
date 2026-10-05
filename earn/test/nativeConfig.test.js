@@ -217,10 +217,13 @@ describe('Turing fold geometry', () => {
   });
 
   // The kernel picks Turing's thread count only for sm_75 builds. Everything
-  // from sm_80 up keeps the sixteen-warp default.
+  // from sm_80 up keeps the sixteen-warp default. Compared line by line: a
+  // Windows checkout has CRLF endings.
   test('only builds below sm_80 take it', () => {
-    expect(HEADER).toContain(
-      '#if !defined(PEARL_FOLD_THREADS) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800\n'
-      + '#define PEARL_FOLD_THREADS PEARL_FOLD_TURING_THREADS');
+    const lines = HEADER.split(String.fromCharCode(10)).map((l) => l.trim());
+    const at = lines.indexOf(
+      '#if !defined(PEARL_FOLD_THREADS) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800');
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(lines[at + 1]).toBe('#define PEARL_FOLD_THREADS PEARL_FOLD_TURING_THREADS');
   });
 });
