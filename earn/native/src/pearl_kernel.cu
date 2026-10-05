@@ -1244,7 +1244,10 @@ __device__ __forceinline__ void pearl_mma_m16n8k32(
       "mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 {%0,%1}, {%6}, {%9}, {%0,%1};\n"
       "mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 {%2,%3}, {%5}, {%8}, {%2,%3};\n"
       "mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 {%2,%3}, {%7}, {%9}, {%2,%3};\n"
-      : "+r"(c0), "+r"(c1), "+r"(c2), "+r"(c3)
+      // Early-clobber: the second and fourth ops read a2, a3 and b1 after the
+      // first and third have written the accumulators, so no input may share an
+      // accumulator's register (nvcc does that when their values happen to match).
+      : "+&r"(c0), "+&r"(c1), "+&r"(c2), "+&r"(c3)
       : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b0), "r"(b1));
 #else
   asm volatile(

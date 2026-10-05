@@ -543,8 +543,8 @@ typedef struct {
 #endif
 #endif
 // Which cubins carry a tall-fold body, by the architecture number the host reads
-// back as cudaFuncAttributes::binaryVersion (the binary ships sm_86, sm_89 and
-// sm_120 SASS and no PTX, so that is exactly the build that runs): Ada's, and
+// back as cudaFuncAttributes::binaryVersion (the binary ships sm_75, sm_86, sm_89
+// and sm_120 SASS and no PTX, so that is exactly the build that runs): Ada's, and
 // Blackwell's, which stages with TMA unless PEARL_TALL_TMA is 0. The fold's #if
 // spells out the same architectures.
 #define PEARL_TALL_ARCH(v) ((v) == 89 || (v) >= 120)

@@ -1327,8 +1327,8 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   // way the CTA tile is 128x256, so the tile count, the grid and the shared
   // footprint below come out the same.
   // Turing's fold is eight 32x64 warp tiles in a 4x2 grid: a 128x128 tile, so
-  // twice the tiles and half the shared footprint, both of which follow from
-  // warpCols below.
+  // twice the tiles and two thirds of the shared footprint (64 KB against
+  // 96 KB), both of which follow from warpCols below.
   // The tall fold (ctx->foldTall) is 256 threads over 192x256 tiles; its tile
   // count and shared footprint are worked out apart from these, below.
   const uint32_t threads = ctx->foldTall     ? PEARL_TALL_THREADS
