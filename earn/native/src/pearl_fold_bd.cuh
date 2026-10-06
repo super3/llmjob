@@ -134,6 +134,21 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
   // a band's rows first, the band as deep as this card's L2 suits: the host
   // leaves it PEARL_BD_BAND_WORD words past the hit counter (PEARL_BD_L2_SHARE).
   const uint32_t band_depth = __ldg(hits.count + PEARL_BD_BAND_WORD);
+#if PEARL_BD_WALK == 1
+  // Column bands instead (PEARL_BD_WALK 1): band_depth column groups of B stay
+  // in L2 while every row group's A streams past them, a band's columns first.
+  const uint32_t band_tiles = band_depth * row_block_groups;
+  auto tile_coords = [&](uint32_t v, uint32_t &rbg_, uint32_t &cbg_) {
+    const uint32_t band = v / band_tiles;
+    const uint32_t in_band = v % band_tiles;
+    const uint32_t band_first = band * band_depth;
+    const uint32_t band_cols = col_block_groups - band_first < band_depth
+                                   ? col_block_groups - band_first
+                                   : band_depth;
+    cbg_ = band_first + in_band % band_cols;
+    rbg_ = in_band / band_cols;
+  };
+#else
   const uint32_t band_blocks = band_depth * col_block_groups;
   auto tile_coords = [&](uint32_t v, uint32_t &rbg_, uint32_t &cbg_) {
     const uint32_t band = v / band_blocks;
@@ -145,6 +160,7 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     rbg_ = band_first + in_band % band_rows;
     cbg_ = in_band / band_rows;
   };
+#endif
 
   extern __shared__ __align__(128) uint32_t smem_u32[];
   const uint32_t sA = (uint32_t)__cvta_generic_to_shared(smem_u32);

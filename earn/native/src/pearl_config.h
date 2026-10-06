@@ -628,21 +628,48 @@ typedef struct {
 #define PEARL_BD_CTR_SLOTS 2u
 // And the band depth the host chose (PEARL_BD_L2_SHARE), this many words past it.
 #define PEARL_BD_BAND_WORD (2u * PEARL_BD_CTR_SLOTS)
-// The B-direct fold's band depth (its PEARL_BLOCK_GROUP), chosen per card by
-// the host from the L2 and read by the fold PEARL_BD_BAND_WORD words past its
-// hit counter: 16, halved while a band's A -- depth x 128 rows x k bytes,
-// 256 KB a row group at the mainnet k -- is over PEARL_BD_L2_SHARE percent of
-// the L2, and never below 4. So 8 on the RTX 2060 (3 MB) and the 4 MB cards
-// (2060 Super, 2070, 2070 Super, 2080), and 16 on the 2080 Ti (5.5 MB).
+// The B-direct fold's band depth, chosen per card by the host from the L2 and
+// read by the fold PEARL_BD_BAND_WORD words past its hit counter: the band that
+// stays in L2 is kept to PEARL_BD_L2_SHARE percent of it (pearl_bd_band_for).
+// With column bands (PEARL_BD_WALK 1, the default): 8 column groups, halved
+// while depth x 256 columns x k bytes (512 KB a group at the mainnet k) is
+// over that, never below 2. So 4 on the 3-4 MB cards (RTX 2060 to 2080) and 8
+// on the 2080 Ti (5.5 MB). With row bands (PEARL_BD_WALK 0): 16 row groups,
+// halved while depth x 128 rows x k bytes (256 KB) is over it, never below 4:
+// 8 on the 3-4 MB cards and 16 on the 2080 Ti.
 //
-// At 16 a band's A is 4 MB, so on a 3-4 MB L2 it came from DRAM once per
-// column group. Measured, hashrate.js 3 x 60 s, against 16:
+// Row bands of 16 hold 4 MB of A, so on a 3-4 MB L2 A came from DRAM once per
+// column group. Measured, hashrate.js 3 x 60 s, row bands against 16:
 //   RTX 2060 6 GB (3 MB, Australia): 8 +1.8%, 4 +1.8%
 //   RTX 2070 Super (4 MB, Alberta):  8 +1.6%
 //   RTX 2080 Ti (5.5 MB, Pennsylvania): 8 -0.4%, 12 +0.1%
 // -DPEARL_BD_BAND=N forces N on every card. Host only.
 #ifndef PEARL_BD_L2_SHARE
 #define PEARL_BD_L2_SHARE 75u
+#endif
+// The B-direct fold's tile walk. 1 (the default): bands of column groups
+// across every row group, so a band's B stays in L2 and A streams from DRAM. 0:
+// bands of row groups across every column group, A staying and B streaming.
+// The host sizes the band to the L2 either way (pearl_bd_band_for).
+//
+// B is the operand that cannot wait. A warp loads it a k-step ahead, into
+// registers. A goes through shared, loaded at k-step 0 for the next chunk and
+// stored at k-step 2, so it has two k-steps to arrive. With A held in L2 and
+// B streaming, every tile of a band's column group reads each B line at
+// almost the same moment, all of them waiting on DRAM together. Measured with
+// the fold's own ablations on an RTX 2060 (bench): every B load an L1 hit
+// +12%, every A load an L2 hit +3%.
+//
+// hashrate.js, 3 x 60 s, against row bands (8, or 16 on the 2080 Ti), 400/400
+// hits verified:
+//   RTX 2060 6 GB (3 MB L2, Australia):  column bands of 2 +1.8%, 4 +2.9%, 8 -0.3%;
+//     nvidia-smi memory utilization 33% -> 22% at 4
+//   RTX 2060 Super (4 MB L2, Germany):   4 +1.3%
+//   RTX 2080 (4 MB L2, Colorado):        2 +0.1%, 4 +1.5%
+//   RTX 2080 Ti (5.5 MB L2, Pennsylvania): 4 +0.3%, 8 +1.7%
+// Both passes read it.
+#ifndef PEARL_BD_WALK
+#define PEARL_BD_WALK 1
 #endif
 #define PEARL_FOLD_TURING_THREADS 256u
 #define PEARL_TURING_WIDE_STAGE_BUFS 1
