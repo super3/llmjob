@@ -248,6 +248,10 @@ struct Ctx {
   // the context is created (resolve_fold) and never changes after.
   bool foldTma = false;
   bool foldTiled = false;
+  // Whether that TMA build is the two-CTA cluster one (PEARL_TALL_CLUSTER, off by
+  // default): the tall fold is then launched in clusters of PEARL_TALL_CLUSTER_SIZE
+  // over tiles of two row groups, and its resident count is in clusters.
+  bool foldCluster = false;
   bool foldKnown = false;
   // Why not, when foldKnown is false: reported by the first search, as it was when
   // the search itself asked.
@@ -864,6 +868,9 @@ void resolve_fold(Ctx *ctx) {
     // pass sees the same value.
     ctx->foldTma = ctx->foldTall && PEARL_TALL_TMA != 0 && PEARL_TALL_TMA_ARCH(ft.binaryVersion);
     ctx->foldTiled = ctx->foldTall && !ctx->foldTma && PEARL_TALL_TILE_ORDER != 0;
+    // -DPEARL_TALL_CLUSTER=1 builds that TMA fold as a two-CTA cluster; the host pass
+    // sees the same value, so the launch shape follows the body.
+    ctx->foldCluster = ctx->foldTma && PEARL_TALL_CLUSTER != 0;
   }
   // The fold is compiled for exactly one block size, which is also its launch
   // bound. A disagreement would not fail loudly: a block of the wrong size
@@ -1750,6 +1757,25 @@ void fill_hit(Ctx *ctx, const Ctx::Pending &p, int slot, uint32_t i, PearlSearch
   out->found = true;
 }
 
+
+// The cluster build's launch configuration (PEARL_TALL_CLUSTER): `threads` a block,
+// `smem` dynamic shared, stream `st`, and one attribute, clusters of `ctas` x 1 x 1.
+// The grid is one cluster, which the occupancy query needs; the launch sets the real
+// one. One place, so the occupancy query and the launch cannot disagree. `attr` must
+// outlive the config.
+void pearl_cluster_config(cudaLaunchConfig_t *cfg, cudaLaunchAttribute attr[1], unsigned ctas,
+                          uint32_t threads, size_t smem, cudaStream_t st) {
+  attr[0].id = cudaLaunchAttributeClusterDimension;
+  attr[0].val.clusterDim.x = ctas;
+  attr[0].val.clusterDim.y = 1;
+  attr[0].val.clusterDim.z = 1;
+  cfg->gridDim = dim3(ctas);
+  cfg->blockDim = dim3(threads);
+  cfg->dynamicSmemBytes = smem;
+  cfg->stream = st;
+  cfg->attrs = attr;
+  cfg->numAttrs = 1;
+}
 }  // namespace
 
 // Queue one batch at nonce_base, under the current salt, into the next free pipeline
@@ -1880,11 +1906,18 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
                col_groups, (unsigned)PEARL_TALL_BN);
     return false;
   }
+  // The cluster build (ctx->foldCluster) walks tiles of a row-group PAIR by a column
+  // group, one per cluster of two CTAs; the odd last pair's second CTA has no rows
+  // and hashes nothing (see the kernel). Its grid is counted in CTAs, two a tile.
+  const unsigned tallRowGroups =
+      (unsigned)((ctx->rowsValid + PEARL_TALL_ROW_OFFSETS - 1u) / PEARL_TALL_ROW_OFFSETS);
+  const unsigned ctasPerTile = ctx->foldCluster ? (unsigned)PEARL_TALL_CLUSTER_SIZE : 1u;
   const unsigned tiles =
       ctx->foldTall
-          ? (unsigned)(((ctx->rowsValid + PEARL_TALL_ROW_OFFSETS - 1u) / PEARL_TALL_ROW_OFFSETS)
-                       * (col_groups / PEARL_TALL_COL_OFFSETS))
+          ? ((tallRowGroups + ctasPerTile - 1u) / ctasPerTile)
+                * (unsigned)(col_groups / PEARL_TALL_COL_OFFSETS)
           : (unsigned)((rowBlocks / warpRows) * (colBlocks / warpCols));
+  const unsigned tileCtas = tiles * ctasPerTile;
   // Turing's B-direct fold reads B' in blocks of 16 columns, and the draw writes
   // it that way only when n is a whole number of them (draw_noise).
   if (ctx->foldBDirect && ctx->profile.n % 16u != 0u) {
@@ -1960,10 +1993,30 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
     cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, ctx->device);
     cudaOccupancyMaxActiveBlocksPerMultiprocessor(&perSm, foldFn, (int)threads, smem);
     ctx->foldResident = (unsigned)(sms > 0 ? sms : 1) * (unsigned)(perSm > 0 ? perSm : 1);
+    if (ctx->foldCluster) {
+      // In CTAs, but whole clusters of them: what the runtime says fit at once with the
+      // launch's own configuration (the same block size, shared footprint and cluster
+      // shape as the launch below), or the card's resident block count rounded down to
+      // a multiple of the cluster size if it cannot say.
+      cudaLaunchConfig_t cfg = {};
+      cudaLaunchAttribute attr[1] = {};
+      pearl_cluster_config(&cfg, attr, PEARL_TALL_CLUSTER_SIZE, threads, smem, 0);
+      int clusters = 0;
+      if (cudaOccupancyMaxActiveClusters(&clusters, foldFn, &cfg) == cudaSuccess && clusters > 0) {
+        ctx->foldResident = (unsigned)clusters * PEARL_TALL_CLUSTER_SIZE;
+      } else {
+        // A failed query is recorded as the thread's last error, and the search reads
+        // cudaGetLastError after its launch; drop it, or the fallback fails the search
+        // it exists for.
+        (void)cudaGetLastError();
+        ctx->foldResident -= ctx->foldResident % PEARL_TALL_CLUSTER_SIZE;
+      }
+      if (ctx->foldResident == 0) ctx->foldResident = PEARL_TALL_CLUSTER_SIZE;
+    }
   }
   const unsigned blocks =
-      ((ctx->foldPersistent || ctx->foldTall) && ctx->foldResident < tiles) ? ctx->foldResident
-                                                                           : tiles;
+      ((ctx->foldPersistent || ctx->foldTall) && ctx->foldResident < tileCtas) ? ctx->foldResident
+                                                                              : tileCtas;
   // The fold hashes every transcript itself and tests it against the bound. It
   // writes only on a hit and appends to a compact list, so the readback below
   // is four bytes rather than one flag per region.
@@ -1987,7 +2040,19 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   hitList.transcript =
       ctx->dHitTranscript + (size_t)slot * PEARL_MAX_HITS * PEARL_JACKPOT_BUCKETS;
   cudaMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);
-  if (ctx->foldTall)
+  if (ctx->foldTall && ctx->foldCluster) {
+    // The cluster build: the same launch, in clusters of PEARL_TALL_CLUSTER_SIZE CTAs
+    // (blocks is a multiple of it, see foldResident), the same arguments by value, on
+    // the slot's stream. cudaLaunchKernelEx coerces each argument to the kernel's
+    // parameter type, the tensor maps included.
+    cudaLaunchConfig_t cfg = {};
+    cudaLaunchAttribute attr[1] = {};
+    pearl_cluster_config(&cfg, attr, PEARL_TALL_CLUSTER_SIZE, threads, smem, st);
+    cfg.gridDim = dim3(blocks);
+    cudaLaunchKernelEx(&cfg, pearl_tile_fold_tall, ctx->dAp, ctx->dBp, ctx->profile.m,
+                       ctx->profile.n, k, rank, chunks, col_off, ctx->rowsValid, col_groups,
+                       tiles, test, hitList, ctx->tmA, ctx->tmB);
+  } else if (ctx->foldTall)
     pearl_tile_fold_tall<<<blocks, threads, smem, st>>>(
         ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
         col_off, ctx->rowsValid, col_groups, tiles, test, hitList, ctx->tmA, ctx->tmB);
@@ -2110,6 +2175,9 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base, uint32_t ba
 extern "C" const char *pearl_host_fold_name(void *handle) {
   const Ctx *ctx = static_cast<const Ctx *>(handle);
   if (!ctx || !ctx->foldKnown) return "unresolved";
+  if (ctx->foldTall && ctx->foldCluster)
+    return "tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands, "
+           "2-CTA cluster sharing B by multicast";
   if (ctx->foldTall)
     return ctx->foldTma ? "tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands"
                         : (ctx->foldTiled ? "tall 192x256, 8 warps of 96x64, cp.async ring, per-tile operands"

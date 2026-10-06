@@ -1458,6 +1458,68 @@ __device__ __forceinline__ void pearl_tma_3d(uint32_t dst, const PearlTensorMap 
       "r"(c0), "r"(c1), "r"(c2), "r"(bar)
       : "memory");
 }
+#if PEARL_TALL_CLUSTER_BODY
+// The two-CTA cluster build (PEARL_TALL_CLUSTER). Everything here is sm_90 PTX, so
+// sm_120 assembles it; none of it has run on a card, and whether the runtime grants
+// the cluster launch is not verified (pearl_config.h).
+//
+// This CTA's rank in its cluster, 0 or 1.
+__device__ __forceinline__ uint32_t pearl_cluster_ctarank() {
+  uint32_t r;
+  asm("mov.u32 %0, %%cluster_ctarank;" : "=r"(r));   // not volatile: a constant, free to re-read
+  return r;
+}
+// Every thread of both CTAs arrives, then waits: a release and an acquire across the
+// cluster. .aligned: all threads of the warp execute it together, so it is only ever
+// called where the whole block is converged.
+__device__ __forceinline__ void pearl_cluster_sync() {
+  asm volatile("barrier.cluster.arrive.release.aligned;\n\tbarrier.cluster.wait.acquire.aligned;" ::: "memory");
+}
+// The shared::cluster address of this CTA's shared address `addr`, in the CTA of rank
+// `rank`: the same CTA-relative offset, in the peer's window.
+__device__ __forceinline__ uint32_t pearl_mapa(uint32_t addr, uint32_t rank) {
+  uint32_t r;
+  asm volatile("mapa.shared::cluster.u32 %0, %1, %2;" : "=r"(r) : "r"(addr), "r"(rank));
+  return r;
+}
+// Arrive on the peer's barrier at shared::cluster address `bar` (from pearl_mapa): a
+// release at cluster scope, and no state word comes back from a remote arrive.
+__device__ __forceinline__ void pearl_mbar_arrive_remote(uint32_t bar) {
+  asm volatile("mbarrier.arrive.release.cluster.shared::cluster.b64 _, [%0];" ::"r"(bar)
+               : "memory");
+}
+// Arrive on this CTA's barrier, released at CLUSTER scope rather than pearl_mbar_arrive's
+// CTA scope, so it pairs with the producer's cluster-scope acquire in either CTA.
+__device__ __forceinline__ void pearl_mbar_arrive_cluster(uint32_t bar) {
+  asm volatile(
+      "{\n\t.reg .b64 st;\n\tmbarrier.arrive.release.cluster.shared::cta.b64 st, [%0];\n\t}" ::"r"(
+          bar)
+      : "memory");
+}
+// pearl_mbar_wait, acquiring at cluster scope: the EMPTY phase it waits for is completed
+// by the peer's arrivals as well as this CTA's, and the refill it guards lands in both.
+__device__ __forceinline__ void pearl_mbar_wait_cluster(uint32_t bar, uint32_t parity) {
+  asm volatile(
+      "{\n\t.reg .pred done;\n"
+      "PEARL_MBAR_WAIT_CL_%=:\n\t"
+      "mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 done, [%0], %1;\n\t"
+      "@!done bra PEARL_MBAR_WAIT_CL_%=;\n\t}" ::"r"(bar), "r"(parity)
+      : "memory");
+}
+// pearl_tma_3d's box, multicast to every CTA in `mask` (bit r for rank r): the data
+// lands at dst's CTA-relative offset in each, and the complete_tx on `bar`'s offset in
+// each. dst and bar are this CTA's shared addresses, which are valid shared::cluster
+// addresses for it. The mask is a 16-bit operand.
+__device__ __forceinline__ void pearl_tma_3d_multicast(uint32_t dst, const PearlTensorMap *map,
+                                                       uint32_t c0, uint32_t c1, uint32_t c2,
+                                                       uint32_t bar, uint16_t mask) {
+  asm volatile(
+      "cp.async.bulk.tensor.3d.shared::cluster.global.tile.mbarrier::complete_tx::bytes"
+      ".multicast::cluster [%0], [%1, {%2, %3, %4}], [%5], %6;" ::"r"(dst),
+      "l"(reinterpret_cast<uint64_t>(map)), "r"(c0), "r"(c1), "r"(c2), "r"(bar), "h"(mask)
+      : "memory");
+}
+#endif
 #endif
 #endif
 
@@ -2846,6 +2908,10 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
 //     hashing, so its reads are ordered before those writes as before.
 //   - The stage body streams its fragments (PEARL_TALL_FRAG_PIPE) and fences the mma
 //     order for B .reuse (PEARL_TALL_MMA_FENCE_MASK).
+//   - PEARL_TALL_CLUSTER (off, unmeasured) pairs two CTAs in a cluster that read B once:
+//     rank 0 multicasts the B box into both, EMPTY counts both CTAs' arrivals, and the
+//     pair walks tiles of two row groups. The switch's comment in pearl_config.h has
+//     the accounting; the code is under PEARL_TALL_CLUSTER_BODY below.
 extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold_tall(
     const int8_t *__restrict__ Aprime, const int8_t *__restrict__ Bprime,
     uint32_t m, uint32_t n, uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg,
@@ -2912,6 +2978,20 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
   // column offsets (256 columns). The last row group runs past m (PEARL_TALL_A_ROWS).
   const uint32_t row_groups = (rows_valid + PEARL_TALL_ROW_OFFSETS - 1u) / PEARL_TALL_ROW_OFFSETS;
   const uint32_t col_block_groups = col_groups / PEARL_TALL_COL_OFFSETS;
+#if PEARL_TALL_CLUSTER_BODY
+  // The cluster build (PEARL_TALL_CLUSTER): the pair walks tiles of (row-group PAIR,
+  // column group), both CTAs over the same cluster-level index, and this CTA's row group
+  // is twice the pair plus its rank. So the walk's rows are the pairs, and in the odd
+  // last pair rank 1's row group is past the last one (its A box is zero-filled and its
+  // hasher skips every row; see hash_region). The host passes `tiles` as pair tiles.
+  constexpr uint32_t CLUSTER = PEARL_TALL_CLUSTER_SIZE;
+  static_assert(CLUSTER == 2u, "the pair walk, the mask and the rank arithmetic are for two CTAs");
+  const uint32_t crank = pearl_cluster_ctarank();
+  const uint32_t cluster_idx = blockIdx.x / CLUSTER;
+  const uint32_t walk_rows = (row_groups + CLUSTER - 1u) / CLUSTER;
+#else
+  const uint32_t walk_rows = row_groups;
+#endif
   // The eight-warp fold's band walk (PEARL_BLOCK_GROUP, PEARL_FOLD_SERPENTINE), in bands
   // PEARL_TALL_BAND row groups deep. 683 row groups do not fill whole bands, so every
   // band but the last takes the shift and mask and the last one divides.
@@ -2928,16 +3008,19 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
       in_band = v % band_blocks;
     }
     const uint32_t band_first = band * PEARL_TALL_BAND;
-    if (band_first + PEARL_TALL_BAND <= row_groups) {
+    if (band_first + PEARL_TALL_BAND <= walk_rows) {
       rbg_ = band_first + (in_band & (PEARL_TALL_BAND - 1u));
       cbg_ = in_band >> band_shift;
     } else {
-      const uint32_t band_rows = row_groups - band_first;
+      const uint32_t band_rows = walk_rows - band_first;
       rbg_ = band_first + in_band % band_rows;
       cbg_ = in_band / band_rows;
     }
 #if PEARL_FOLD_SERPENTINE
     if (band & 1u) cbg_ = col_block_groups - 1u - cbg_;
+#endif
+#if PEARL_TALL_CLUSTER_BODY
+    rbg_ = rbg_ * CLUSTER + crank;   // the pair's row group for this CTA
 #endif
   };
 
@@ -3059,7 +3142,19 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
     const uint32_t full = barFull + 8u * bi, dst = sbase + bi * STAGE;
 #endif
     pearl_mbar_expect_tx(full, STAGE);
+#if PEARL_TALL_CLUSTER_BODY
+    // B once for the pair: rank 0's box lands in both CTAs' buffers at this offset and
+    // completes on both FULLs at this offset (PEARL_TALL_CLUSTER). The peer's FULL may
+    // see those bytes before its own producer's expect_tx above, which takes its
+    // tx-count below zero for a while; the mbarrier allows that, and the phase cannot
+    // complete before the expect_tx's arrival, so it is how CUTLASS's multicast
+    // pipelines run too. Each CTA's own A box follows, as before.
+    if (crank == 0u)
+      pearl_tma_3d_multicast(dst, &tmB, 0u, boxB, kofs / SK, full,
+                             (uint16_t)((1u << CLUSTER) - 1u));
+#else
     pearl_tma_3d(dst, &tmB, 0u, boxB, kofs / SK, full);
+#endif
     pearl_tma_3d(dst + BN * SK, &tmA, 0u, boxA, kofs / SK, full);
   };
 #endif
@@ -3118,13 +3213,14 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
 #if PEARL_TALL_TMA_BODY
     if ((sbase & 1023u) != 0u) __trap();
     // FULL's one arrival is the producer's expect_tx; the boxes' bytes complete it.
-    // EMPTY's are the eight warps', or every thread's (PEARL_TALL_TMA_EMPTY_ALL).
+    // EMPTY's are the eight warps', or every thread's (PEARL_TALL_TMA_EMPTY_ALL), from
+    // both CTAs of the pair in the cluster build (PEARL_TALL_CLUSTER).
 #if PEARL_TALL_TMA_ROLES
     pearl_mbar_init(sbase + threadIdx.x * STRIDE + STAGE, 1u);
-    pearl_mbar_init(sbase + threadIdx.x * STRIDE + STAGE + 8u, PEARL_TALL_TMA_EMPTY_COUNT);
+    pearl_mbar_init(sbase + threadIdx.x * STRIDE + STAGE + 8u, PEARL_TALL_TMA_EMPTY_ARRIVALS);
 #else
     pearl_mbar_init(barFull + 8u * threadIdx.x, 1u);
-    pearl_mbar_init(barEmpty + 8u * threadIdx.x, PEARL_TALL_TMA_EMPTY_COUNT);
+    pearl_mbar_init(barEmpty + 8u * threadIdx.x, PEARL_TALL_TMA_EMPTY_ARRIVALS);
 #endif
     // Makes the initialised barriers visible to the async proxy (the TMA unit) too.
     asm volatile("fence.mbarrier_init.release.cluster;" ::: "memory");
@@ -3134,12 +3230,24 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
     pearl_mbar_init(sbase + threadIdx.x * STRIDE + STAGE + 8u, PEARL_TALL_THREADS);
 #endif
   }
-  // Publishes the initialised barriers: the fold's only block-wide barrier.
+  // Publishes the initialised barriers: the fold's only block-wide barrier (the
+  // cluster build adds the two cluster barriers, here and before the return).
   __syncthreads();
+#if PEARL_TALL_CLUSTER_BODY
+  // And across the pair: the peer's barriers exist before this CTA arrives on them or
+  // multicasts into its shared memory. Both CTAs take the same early returns below
+  // (the geometry ones above took neither here), so neither waits on a CTA that left.
+  pearl_cluster_sync();
+  if (cluster_idx >= tiles) return;   // whole pair; the host never does this
+  const uint32_t tile_stride = gridDim.x / CLUSTER;
+  const uint32_t tile_first = cluster_idx;
+#else
   if ((uint32_t)blockIdx.x >= tiles) return;   // whole block; the host never does this
   const uint32_t tile_stride = gridDim.x;
+  const uint32_t tile_first = blockIdx.x;
+#endif
 #if PEARL_TALL_TMA_BODY
-  tile_box(blockIdx.x, boxB, boxA);
+  tile_box(tile_first, boxB, boxA);
   // The first tile's chunk 0: stages 0 and 1, into buffers 0 and 1, which nothing has
   // read yet.
   if (threadIdx.x == PRODUCER) {
@@ -3164,7 +3272,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
 #endif
 #else
   uint32_t bsrc0, asrc0;
-  tile_srcs(blockIdx.x, bsrc0, asrc0);
+  tile_srcs(tile_first, bsrc0, asrc0);
   const int8_t *aP = Aprime + asrc0, *bP = Bprime + bsrc0 + BMID;
   // The first tile's chunk 0: stages 0 and 1, into buffers 0 and 1.
 #pragma unroll
@@ -3183,7 +3291,9 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
   uint32_t soA = sbase, soB = sbase + STRIDE, soC = sbase + 2u * STRIDE;
   uint32_t pA = 0u, pB = 0u, pC = 0u;
 #endif
-  for (uint32_t v = blockIdx.x; v < tiles; v += tile_stride) {
+  // (In the cluster build v, tile_stride, has_next and so every stage_next and cn below
+  // are cluster-level, never from blockIdx.x: the pair must agree on all of them.)
+  for (uint32_t v = tile_first; v < tiles; v += tile_stride) {
     const bool has_next = v + tile_stride < tiles;
 #if PEARL_TALL_TMA_BODY
     // The next tile's boxes, for the last chunk's fills (its first two stages). Worked
@@ -3244,7 +3354,13 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
         // hand-off's below. (PEARL_TALL_TMA_FILL_PT moves it into the stage body, and
         // PEARL_TALL_TMA_PRODUCER2 gives stage 1's refills to lane 0 of warp 5.)
 #ifndef PEARL_ABLATE_RING
+#if PEARL_TALL_CLUSTER_BODY
+        // Both CTAs have released bi: the phase counts the peer's arrivals too, and the
+        // acquire is at cluster scope to pair with them (PEARL_TALL_CLUSTER).
+#define PEARL_TALL_REFILL_WAIT pearl_mbar_wait_cluster(emptyBi, epar);
+#else
 #define PEARL_TALL_REFILL_WAIT pearl_mbar_wait(emptyBi, epar);
+#endif
 #else
 #define PEARL_TALL_REFILL_WAIT
 #endif
@@ -3355,18 +3471,43 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
           }
         }
 #endif  // PEARL_TALL_FRAG_PIPE
+#if PEARL_TALL_CLUSTER_BODY
+        // The cluster build: the same arrival, made twice -- on the peer's EMPTY for this
+        // buffer and on its own -- both releases at cluster scope. Rank 0's refill of the
+        // buffer lands in both CTAs, so each producer's wait needs both CTAs' reads done.
+        // Nothing orders one CTA's two arrivals against the other CTA's, so a late local
+        // arrival for one use can be counted toward the phase of the next: the peer may
+        // read the next use, and arrive here for it, once its own barrier has this CTA's
+        // remote arrivals. That is harmless, by counting. A phase needs every reader of
+        // both CTAs (PEARL_TALL_TMA_EMPTY_ARRIVALS). A CTA with a reader still on a use
+        // has made fewer than its share of arrivals for it, remote and local alike, and
+        // none for a later use; so neither CTA's phase for that use can complete, neither
+        // producer refills the buffer, no CTA reads the next use, and no arrival for the
+        // next use exists yet. That rests on two things: every refill of a buffer, in
+        // either CTA, sits behind an EMPTY wait, and a CTA reads a use only after its own
+        // producer's expect_tx and refill. The remote arrive is issued first by
+        // preference; the order is not what makes the ring safe.
+#define PEARL_TALL_EMPTY_ARRIVE(bar)                       \
+  pearl_mbar_arrive_remote(pearl_mapa((bar), crank ^ 1u)); \
+  pearl_mbar_arrive_cluster(bar);
+#else
+#define PEARL_TALL_EMPTY_ARRIVE(bar) pearl_mbar_arrive(bar);
+#endif
 #if PEARL_TALL_TMA_EMPTY_ALL
         // This thread is done reading the stage: its own arrival, a release, which the
         // producer's EMPTY wait acquires before it refills the buffer. PTX orders every
         // ldmatrix this thread made of the stage before the arrival, so no TMA write can
         // overtake a read (PEARL_TALL_TMA_EMPTY_ALL).
-        pearl_mbar_arrive(emptySo);
+        PEARL_TALL_EMPTY_ARRIVE(emptySo)
 #else
         // This warp is done reading the stage: one arrival for the whole warp, after a
         // __syncwarp that orders every lane's ldmatrix before it.
         __syncwarp();
-        if (lane == 0u) pearl_mbar_arrive(emptySo);
+        if (lane == 0u) {
+          PEARL_TALL_EMPTY_ARRIVE(emptySo)
+        }
 #endif
+#undef PEARL_TALL_EMPTY_ARRIVE
 #undef PEARL_TALL_REFILL_WAIT
 #undef PEARL_TALL_REFILL
 #undef PEARL_TALL_PRODUCER_S
@@ -3374,6 +3515,8 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
       }
 #ifndef PEARL_ABLATE_RING
       // The hand-off's ordering (see below): the tile's stage 0 read role A, at parity pA.
+      // (In the cluster build that phase also counts the peer's arrivals, so this waits
+      // for the peer's stage 0 reads too: stricter than it needs, and still correct.)
       if (chunk == 0u && wr != 0u) pearl_mbar_wait(soA + STAGE + 8u, pA);
 #endif
       // The next chunk starts on C: the roles rotate, and A and B have each been used once.
@@ -3403,7 +3546,8 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
       // its column slot's hasher may still be reading. It waits for the tile's stage 0
       // to be released by all eight warps, which the hasher does only after hashing.
       // That stage is two back: buffer (fb + 1) % 3, in the use whose parity is fpar
-      // unless the ring wrapped since (fb 0 or 1).
+      // unless the ring wrapped since (fb 0 or 1). (In the cluster build the phase also
+      // counts the peer's arrivals: stricter than it needs, and still correct.)
       if (chunk == 0u && wr != 0u)
         pearl_mbar_wait(barEmpty + 8u * (fb == 2u ? 0u : fb + 1u), fb == 2u ? fpar : fpar ^ 1u);
 #endif
@@ -3533,6 +3677,12 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
       if (lane < 2u * WARP_REGIONS - 32u) hash_region(32u + lane);
     }
   }
+#if PEARL_TALL_CLUSTER_BODY
+  // No CTA leaves while its peer may still arrive on its EMPTY barriers: the peer's last
+  // stage's remote arrivals are ordered before its arrive here. (Every multicast into this
+  // CTA landed before it read that stage, so none is in flight.)
+  pearl_cluster_sync();
+#endif
 #undef PEARL_TALL_ISSUE_A
 #undef PEARL_TALL_ISSUE_B
 #else

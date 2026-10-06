@@ -49,7 +49,7 @@ const { formatUpdate, describeUpdateError } = require('../shared/updateStatus');
 const { buildMinerReports } = require('../shared/minerReport');
 const { runtimeCopyPlan } = require('../shared/llmRuntime');
 const { alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda } = require('../shared/gpu');
-const { planMemClocks } = require('../shared/memClock');
+const { planMemClocks, readMemClockEnv, GUI_MEM_CLOCK_ENV } = require('../shared/memClock');
 const earnings = require('../shared/earnings');
 const format = require('../shared/format');
 
@@ -320,14 +320,25 @@ async function startMining(settings, llmCoRuns) {
   if (epoch !== miningEpoch) return;
 
   // Which cards lock their memory clock while mining: the Blackwell default
-  // (shared/memClock), with no request -- the GUI has no setting for one. Not
+  // (shared/memClock), or LLMJOB_MINE_MEM_CLOCK from the app's environment, the
+  // GUI's one switch for it. The renderer has no setting yet, and the default
+  // is measured on a 5090 only, so a rig that regresses on another compute
+  // 12.x card needs a way off it: 0 leaves every card at the driver's clock,
+  // any other value locks every mining card at it, the same as --mine-mem-clock.
+  // Read on every start, like the CLI reads its flag; a bad value is logged and
+  // ignored, so a typo keeps the default rather than silently dropping it. Not
   // while the LLM co-runs: llama-server is memory-bandwidth-bound, and here
   // 'auto' always co-runs (resolvePlan gives { miner, llm } and runPlan starts
   // both; the GUI has no demand mode), so plan.llm is the whole of the GUI's
   // co-run condition. The plan rides on the start call, not on `settings`,
   // so persistSettings never writes it to disk.
-  const memPlan = planMemClocks({ requestedMhz: null, cards: cudaCards, gpus, llmCoRuns: !!llmCoRuns });
-  if (memPlan.reason) send('miner:log', { level: 'info', line: memPlan.reason });
+  const memRequest = readMemClockEnv(process.env);
+  if (memRequest.warning) send('miner:log', { level: 'warn', line: memRequest.warning });
+  const memPlan = planMemClocks({
+    requestedMhz: memRequest.mhz, requestName: GUI_MEM_CLOCK_ENV,
+    cards: cudaCards, gpus, llmCoRuns: !!llmCoRuns,
+  });
+  if (memPlan.reason) send('miner:log', { level: memPlan.dropped ? 'warn' : 'info', line: memPlan.reason });
 
   miner = new PearlEngine({
     connect: (host, port) => net.connect(port, host),

@@ -905,6 +905,70 @@ typedef struct {
 #define PEARL_TALL_TMA_BODY 0
 #endif
 
+// A two-CTA cluster that shares the staged B by TMA multicast (sm_120, the TMA build).
+// An A/B switch, off. NOTHING about it has been measured: no hashrate, no clock, no
+// register count. It is to be priced on the feed probe and then on the card before
+// it is turned on.
+//
+// Why it exists. The 5090 is hard power-capped at 600 W; the 128x256 fold it ran at
+// the time pulled 2.12 TB/s through L2 with DRAM at 3.5% of peak, and the memory
+// domain is worth roughly half the power budget (probes/README.md, "Power is the
+// binding constraint on sm_120" and "The memory clock experiment"). The tall fold has
+// not been profiled there; its bytes a MAC are fewer. L2 bytes a MAC are 1/BM + 1/BN,
+// and at 192x256 the tile cannot grow: 192 accumulators a thread is as far as 255
+// registers go. Two CTAs that fold the same 256 B columns against two row groups of A
+// read B from L2 once if one TMA box lands in both: the L2 sees a 384x256 tile,
+// 1/384 + 1/256 bytes a MAC against 1/192 + 1/256, 29% fewer. Each CTA still reads
+// its own A, and shared memory, the ring, the k-step and the readout are unchanged.
+//
+// What it changes, in the TMA body of pearl_tile_fold_tall and the host's launch:
+//   - The grid is launched in clusters of PEARL_TALL_CLUSTER_SIZE CTAs (cudaLaunchKernelEx,
+//     cudaLaunchAttributeClusterDimension). A tile is a (row-group PAIR, column group);
+//     the persistent walk is over cluster indices, and a CTA's row group is twice the
+//     pair plus its %cluster_ctarank. The band walk's row count becomes the pair count,
+//     ceil(683 / 2) at mainnet; in the odd last pair rank 1's row group is past the
+//     last one, its A box is all rows past m, which TMA zero-fills, and the hasher
+//     already skips rows past rows_valid. It still takes part in every barrier.
+//   - Only rank 0's producer issues the B box, .multicast::cluster to both CTAs, into
+//     the same CTA-relative offset, completing on the FULL barrier at the same offset
+//     in both. Each CTA issues its own A box and its own expect_tx of a whole stage.
+//   - EMPTY is cluster-wide: a buffer is refilled only when BOTH CTAs have finished
+//     reading it, since rank 0's refill lands in both. Every EMPTY arrival is made
+//     twice, on the peer's barrier (mapa, a cluster-scope remote arrive) and on its
+//     own, EMPTY expects PEARL_TALL_TMA_EMPTY_COUNT * PEARL_TALL_CLUSTER_SIZE, and the
+//     producer's wait acquires at cluster scope. FULL stays local.
+//   - A cluster barrier after the mbarrier inits, so the peer's barriers exist before
+//     anything arrives on them or multicasts into its shared memory, and one before
+//     the kernel returns, so no CTA exits while its peer may still arrive on it.
+//
+// The caveat, and why it is off: the PTX ISA says .multicast::cluster is optimized
+// for sm_90a, sm_100a and sm_101a and may have substantially reduced performance on
+// other targets, and CUTLASS keeps 1x1x1 clusters on SM120. If the multicast is not
+// one L2 read on this card it buys nothing and costs the cluster barriers; the feed
+// probe (perf-scratch/r7-probe/feedprobe4.cu in probes/README.md) is where that is
+// settled, before the fold. Whether the card grants a cluster launch at all is not
+// verified either: the PTX is sm_90's, which sm_120 assembles, but the runtime has
+// not been asked. If it refuses, cudaLaunchKernelEx fails and the search reports
+// "CUDA error during search".
+// The host reads the value too (Ctx::foldCluster), so -DPEARL_TALL_CLUSTER=1 binds
+// both sides. The CI workflow compiles the switch on, sm_120 only, so it stays
+// buildable; nothing of it ships.
+#ifndef PEARL_TALL_CLUSTER
+#define PEARL_TALL_CLUSTER 0
+#endif
+#define PEARL_TALL_CLUSTER_SIZE 2u
+// Device side: whether THIS compile's tall fold is the cluster one. Only the TMA
+// body has it; the cp.async builds ignore the switch.
+#if PEARL_TALL_CLUSTER && PEARL_TALL_TMA_BODY
+#define PEARL_TALL_CLUSTER_BODY 1
+#else
+#define PEARL_TALL_CLUSTER_BODY 0
+#endif
+// What EMPTY expects a phase: the CTA's own arrivals (PEARL_TALL_TMA_EMPTY_COUNT), and
+// the peer's too in the cluster build.
+#define PEARL_TALL_TMA_EMPTY_ARRIVALS \
+  (PEARL_TALL_TMA_EMPTY_COUNT * (PEARL_TALL_CLUSTER_BODY ? PEARL_TALL_CLUSTER_SIZE : 1u))
+
 // How far ahead of its mma the TMA build loads each fragment (sm_120).
 //
 // 0 is the stage body Ada had before its trims: each k32 step loads its six A

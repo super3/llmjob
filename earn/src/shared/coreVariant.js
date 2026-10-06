@@ -17,9 +17,9 @@
 //
 // Its sm_89 half is unmeasured. It is built so the Ada fold under ptxas 13.3
 // can be benched on a 4090 against the 12.8 build of the same source. Every
-// fold change in native/probes/README.md was measured on the card before it
-// shipped, so until that A/B has been run this file never picks the CUDA 13
-// build for an Ada card on its own. To bench it, point native/probes/hashrate.js
+// Ada fold change in native/probes/README.md was measured on a 4090 before it
+// shipped on Ada, so until that A/B has been run this file never picks the
+// CUDA 13 build for an Ada card on its own. To bench it, point native/probes/hashrate.js
 // and verify-hits.js at pearl_core_cu13.node: they take the .node path as their
 // first argument and never come through this file. PEARL_CORE_VARIANT=cu13 is
 // the override for the app and earn-cli, which do come through here. Either
