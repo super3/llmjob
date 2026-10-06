@@ -45,8 +45,10 @@
 // The ablation macros price here what they price in the other folds, where
 // they apply: PEARL_ABLATE_BARRIER (the barrier a chunk), _STAGING (A's copies
 // in the chunk loop), _LDMATRIX (A's), _TRANSCRIPT, _READOUT and
-// _TRANSCRIPT_HASH. The other folds' feature switches below are not built
-// here, so asking for one is an error rather than a build that ignores it.
+// _TRANSCRIPT_HASH. PEARL_ABLATE_BLOAD is this fold's own: B is loaded once a
+// tile instead of every k-step, so the mma stay and the B traffic goes. The
+// other folds' feature switches below are not built here, so asking for one is
+// an error rather than a build that ignores it.
 
 #if PEARL_FOLD_GROUP_STAGE || PEARL_FOLD_LANE_BASES || PEARL_FOLD_FAST_COORDS \
     || PEARL_FOLD_SERPENTINE || PEARL_STAGE_AT_BARRIER || !PEARL_STAGE_REGS
@@ -217,6 +219,14 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #pragma unroll
     for (uint32_t j = 0; j < 4u; j++)
       bf[0][j] = __ldg(reinterpret_cast<const int4 *>(bsrc + j * FRAG_BLOCK));
+#ifdef PEARL_ABLATE_BLOAD
+    // Diagnostic only: k-step 1's B too, once a tile. The k-steps below load no
+    // B and alternate between these two, so both stay live all tile, as the
+    // two buffers do when they load. Output is meaningless.
+#pragma unroll
+    for (uint32_t j = 0; j < 4u; j++)
+      bf[1][j] = __ldg(reinterpret_cast<const int4 *>(bsrc + j * FRAG_BLOCK + 512u));
+#endif
 #pragma unroll
     for (uint32_t mb = 0; mb < MB; mb++)
 #pragma unroll
@@ -246,12 +256,19 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
           ra[p] = pearl_bd_lda(asrc + ((ch + 1u) % chunks) * rank + p * SSTEP * k);
       }
 #endif
+#ifndef PEARL_ABLATE_BLOAD
       {
         const uint32_t s1 = (s + 1u) % (chunks * KSTEPS);
 #pragma unroll
         for (uint32_t j = 0; j < 4u; j++)
           bf[(t + 1u) & 1u][j] = pearl_bd_ldg(bsrc + j * FRAG_BLOCK + s1 * 512u);
       }
+#else
+      // Diagnostic only when defined: no B loads in the chunk loop (see the
+      // tile's start). The memory clobber keeps the order the loads imposed.
+      (void)s;
+      asm volatile("" ::: "memory");
+#endif
       uint32_t af[MB][4];
 #pragma unroll
       for (uint32_t mb = 0; mb < MB; mb++) {
