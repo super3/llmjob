@@ -1303,6 +1303,20 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
     CUDA_OK(cudaMemcpy(ctx->dHitCount + PEARL_BD_BAND_WORD, bands, sizeof bands,
                        cudaMemcpyHostToDevice),
             "setting the tall fold's band depth");
+#if PEARL_AMPERE_PERSIST_A
+    // A persisting L2 slice for the band's A' (PEARL_AMPERE_PERSIST_A). Without one the
+    // fold still runs, only slower, so a refusal is dropped.
+    int maxp = 0;
+    if (cudaDeviceGetAttribute(&maxp, cudaDevAttrMaxPersistingL2CacheSize, ctx->device)
+            == cudaSuccess && maxp > 0) {
+      size_t slice = (size_t)ctx->tallBand * PEARL_TALL_BM * profile->k;
+      if (slice > (size_t)maxp) slice = (size_t)maxp;
+      if (cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, slice) != cudaSuccess)
+        (void)cudaGetLastError();
+    } else {
+      (void)cudaGetLastError();
+    }
+#endif
   }
   // Turing (the B-direct fold): a band of row groups whose A fits the L2. See
   // PEARL_BD_L2_SHARE.

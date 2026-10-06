@@ -940,6 +940,28 @@ typedef struct {
 #ifndef PEARL_AMPERE_BAND_L2_SHARE
 #define PEARL_AMPERE_BAND_L2_SHARE 80u
 #endif
+// Ampere: keep each band's A' in a persisting slice of the L2. The host sets
+// cudaLimitPersistingL2CacheSize to the band's A' (band x 192 rows x k bytes), capped at
+// the card's cudaDevAttrMaxPersistingL2CacheSize, and the sm_86 fold's A copies carry an
+// L2 evict_last policy. A failed limit only leaves the copies' policy without a slice.
+//
+// A band's A' is read again every wave of resident tiles, and in between a wave's whole
+// working set (~5 MB at band 4 on a 3060) passes through the L2, so A' came back from DRAM
+// every wave. The slice keeps it. evict_last without a slice (the default limit is 0) did
+// nothing measurable. Measured with hashrate.js, 3 rounds, against the same build without
+// it, ahead in every round but the 3070 Ti's, 400/400 hits:
+//   RTX 3060, 2.25 MB L2 (1.55 MB max slice), band 4   47.71 -> 47.86 .. 47.93 (+0.3 to +0.5%)
+//   RTX 3060 Ti, 3 MB (2.06 MB), band 4                 62.7 -> 63.1 (+0.6 to +0.7%)
+//   RTX 3070 Ti, 4 MB, band 8                           85.39 -> 85.48, 85.64 -> 85.70 (+0.1%)
+//   RTX 3080 Ti, 6 MB (4.13 MB), band 8                 126.41 -> 127.00 (+0.5%)
+//   RTX 3090, 6 MB, band 8, 300 W                       116.61 -> 117.55 (+0.8%)
+// Pool runs accepted 5 of 5 shares (3070 Ti) and 1 of 1 (3060).
+// (L2 sizes as the driver reports them.) Deeper bands than the L2 pick lose with it, as
+// they do without: their A' is larger than the slice the card allows.
+// 0 turns it off. Both passes read it.
+#ifndef PEARL_AMPERE_PERSIST_A
+#define PEARL_AMPERE_PERSIST_A 1
+#endif
 // Device side: whether THIS compile's tall fold reads its band depth at run time.
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 860
 #define PEARL_TALL_BAND_RT 1

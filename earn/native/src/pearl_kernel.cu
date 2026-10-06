@@ -3124,8 +3124,19 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
   constexpr uint32_t BMID = BSLOTS / 2u * bStep * SK;   // B's pointer, from its slot 0
   // Stage sg of the tile (0 .. 2 * chunks - 1: its slab, or its k-block), slot p, into
   // the buffer at ib.
+#if PEARL_AMPERE_PERSIST_A && defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 860
+  // Ampere: A's copies evict_last, so they land in the persisting L2 slice the host set
+  // aside for the band's A' (PEARL_AMPERE_PERSIST_A).
+  uint64_t polA;
+  asm volatile("createpolicy.fractional.L2::evict_last.b64 %0, 1.0;" : "=l"(polA));
+#define PEARL_TALL_ISSUE_A(ib, sg, p)                                                  \
+  asm volatile("cp.async.cg.shared.global.L2::cache_hint [%0], [%1], 16, %2;"          \
+               ::"r"((ib) + adst0 + (p) * aStep * SK),                                  \
+               "l"(aP + (sg) * aKB + (p) * aStep * SK), "l"(polA));
+#else
 #define PEARL_TALL_ISSUE_A(ib, sg, p)                                                  \
   pearl_cp_async16((ib) + adst0 + (p) * aStep * SK, aP + (sg) * aKB + (p) * aStep * SK);
+#endif
 #define PEARL_TALL_ISSUE_B(ib, sg, p)                                                  \
   pearl_cp_async16((ib) + bdst0 + (p) * bStep * SK,                                    \
                    bP + (sg) * bKB + (int)((p) * bStep * SK) - (int)BMID);
