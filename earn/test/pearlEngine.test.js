@@ -2,6 +2,7 @@
 
 const { EventEmitter } = require('events');
 const { PearlEngine } = require('../src/main/pearlEngine');
+const { RESTART_MS, RESTART_LIMIT } = require('../src/main/pearlMiner');
 
 // PearlEngine's whole job is to make our own miner indistinguishable from
 // alpha-miner as far as main.js and the renderer are concerned. The UI is
@@ -248,18 +249,27 @@ describe('PearlEngine — the events the UI actually reads', () => {
 
   // The CLI exits with the engine's 'stopped' code, and the service restarts
   // only on a non-zero one: a stop asked for is 0, and the miner stopping itself
-  // because its last card failed is 1.
-  test('a stop that was asked for exits 0; the last card failing exits 1', () => {
+  // because its last card failed and would not come back is 1.
+  test('a stop that was asked for exits 0; the last card failing for good exits 1', () => {
     const asked = started();
     asked.e.stop();
     expect(asked.events.stopped).toEqual([0]);
 
-    const failed = started();
-    failed.sock.emit('data', jobLine());
-    failed.core.emit('error', new Error('GPU 0: misaligned address'));
-    expect(failed.events.error.map((err) => err.message)).toEqual(['GPU 0: misaligned address']);
-    expect(failed.events.stopped).toEqual([1]);
-    expect(failed.e.isRunning()).toBe(false);
+    jest.useFakeTimers();
+    try {
+      const failed = started();
+      failed.sock.emit('data', jobLine());
+      // The card will not open again, so each restart fails until it is left off.
+      failed.e.miner.createCore = () => { throw new Error('no CUDA device found'); };
+      failed.core.emit('error', new Error('GPU 0: misaligned address'));
+      expect(failed.e.isRunning()).toBe(true);
+      jest.advanceTimersByTime(RESTART_MS * RESTART_LIMIT);
+      expect(failed.events.error.map((err) => err.message)).toEqual(['no CUDA device found']);
+      expect(failed.events.stopped).toEqual([1]);
+      expect(failed.e.isRunning()).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 
