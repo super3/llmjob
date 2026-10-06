@@ -3,8 +3,9 @@
 // Without this the addon compiles and fails to link on four undefined symbols.
 //
 // MEMORY BUDGET, because it is the design constraint that shapes everything
-// here. The mandated profile is m=n=131072, k=4096, which makes a full int8 A
-// (m×k) and Bᵀ (n×k) 512 MiB each — 1 GiB resident, before noise. That fits a
+// here. The mainnet profile is m=131072, n=262144, k=2048. Under the hashed fill
+// a full int8 A (m×k) is 256 MiB and Bᵀ (n×k) 512 MiB, before noise; the
+// constant fill stores both compact (see pearl_host_create). That fits a
 // 24 GB card comfortably and would not fit an 8 GB one alongside a co-running
 // LLM, so `pearl_host_create` checks free VRAM up front and fails with a
 // readable message rather than dying inside a kernel launch. The app already
@@ -36,6 +37,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <algorithm>
 #include <chrono>
 #include <set>
 #include <vector>
@@ -45,6 +47,23 @@
 
 #include "pearl_config.h"
 #include "pearl_tensor_map.h"
+
+// How the search thread waits for a batch: spinning, as the synchronous copy it
+// replaced did. cudaEventBlockingSync, which sleeps instead, measured 0.4% slower on a
+// 4090 with the next batch already queued: the fold itself ran slower by the GPU's own
+// timer, at the same clock. Why is not known.
+#ifndef PEARL_SLOT_EVENT_FLAGS
+#define PEARL_SLOT_EVENT_FLAGS cudaEventDisableTiming
+#endif
+// The pipeline's two slots on two streams, so one batch starts on the SMs the one before
+// it has already left (Ctx::foldStream). 0 puts both on the default stream.
+#ifndef PEARL_FOLD_STREAMS
+#define PEARL_FOLD_STREAMS 1
+#endif
+// Report every hit a batch holds, not only its lowest region (pearl_host_next_hit).
+#ifndef PEARL_ALL_HITS
+#define PEARL_ALL_HITS 1
+#endif
 
 // Declared in pearl_kernel.cu.
 extern "C" __global__ void pearl_gen_dense(const uint32_t *seed,
@@ -70,23 +89,40 @@ extern "C" __global__ void pearl_materialize16(const int8_t *base,
                                                const int8_t *dense,
                                                const uint32_t *perm, int8_t *out,
                                                uint32_t rows, uint32_t k_log2,
-                                               uint32_t rank);
+                                               uint32_t rank, uint64_t read_vecs,
+                                               uint32_t fill_word);
 extern "C" __global__ void pearl_materialize16_kblocked(const int8_t *base,
                                                         const int8_t *dense,
                                                         const uint32_t *perm, int8_t *out,
                                                         uint32_t rows, uint32_t k_log2,
-                                                        uint32_t rank, uint32_t kb_log2);
+                                                        uint32_t rank, uint32_t kb_log2,
+                                                        uint64_t read_vecs, uint32_t fill_word);
+extern "C" __global__ void pearl_materialize16_tiled(const int8_t *base,
+                                                     const int8_t *dense,
+                                                     const uint32_t *perm, int8_t *out,
+                                                     uint32_t rows, uint32_t k_log2,
+                                                     uint32_t rank, uint32_t kb_log2,
+                                                     uint32_t block_rows, uint64_t read_vecs,
+                                                     uint32_t fill_word);
+extern "C" __global__ void pearl_noise_materialize_kblocked(
+    const uint32_t *seed, const uint8_t *label, const uint32_t *perm, const int8_t *base,
+    int8_t *out, uint32_t rows, uint32_t k_log2, uint32_t rank, uint32_t kb_log2,
+    uint64_t read_vecs, uint32_t fill_word, uint32_t block_rows);
 extern "C" __global__ void pearl_restamp_operand(const uint32_t *key,
                                                  int8_t *operand, uint64_t salt,
                                                  uint64_t chunks, uint32_t *tree,
                                                  uint8_t *root_out);
+extern "C" __global__ void pearl_restamp_commit(const PearlRestampRecord rec, int8_t *operand,
+                                                uint32_t *tree, uint8_t *root_out,
+                                                uint8_t *bound_out, uint32_t *a_seed_out);
 #if PEARL_TURING_BDIRECT
 // Built only with the B-direct fold, the only reader of its layout.
 extern "C" __global__ void pearl_materialize16_frag(const int8_t *base,
                                                     const int8_t *dense,
                                                     const uint32_t *perm, int8_t *out,
                                                     uint32_t rows, uint32_t k_log2,
-                                                    uint32_t rank);
+                                                    uint32_t rank, uint64_t read_vecs,
+                                                    uint32_t fill_word);
 #endif
 extern "C" __global__ void pearl_tile_fold_wmma(
     const int8_t *Aprime, const int8_t *Bprime, uint32_t m, uint32_t n,
@@ -112,7 +148,7 @@ extern "C" __global__ void pearl_gemm_fold(
 extern "C" __global__ void pearl_blake3_chunk_cvs(const uint32_t *key,
                                                   const uint8_t *data,
                                                   uint64_t chunks,
-                                                  uint32_t *cvs_out);
+                                                  uint32_t *cvs_out, uint32_t compact);
 extern "C" __global__ void pearl_blake3_parent_layer(const uint32_t *key,
                                                      const uint32_t *in_cvs,
                                                      uint64_t pairs,
@@ -206,11 +242,12 @@ struct Ctx {
   // loaded binary (PEARL_TALL_ARCH of its binaryVersion) with the others.
   bool foldTall = false;
   // Whether that is Blackwell's build, which stages with TMA (PEARL_TALL_TMA),
-  // through the tensor maps below. Both tall builds read A' and B' k-blocked, so
-  // the operand draw writes them that way whenever foldTall. The draw runs before
-  // any search, so all of this is resolved when the context is created
-  // (resolve_fold) and never changes after.
+  // through the tensor maps below, and reads A' and B' k-blocked. Ada's reads them
+  // in per-tile order (foldTiled, PEARL_TALL_TILE_ORDER). The operand draw writes the
+  // order the fold reads; it runs before any search, so all of this is resolved when
+  // the context is created (resolve_fold) and never changes after.
   bool foldTma = false;
+  bool foldTiled = false;
   bool foldKnown = false;
   // Why not, when foldKnown is false: reported by the first search, as it was when
   // the search itself asked.
@@ -226,6 +263,13 @@ struct Ctx {
   // Operands, generated once per job and then read by every region.
   int8_t *dA = nullptr;   // [m, k]
   int8_t *dB = nullptr;   // [n, k]  (Bᵀ, row-major)
+  // COMPACT operands (pearl_compact_operands): under the constant fill every 1024-byte
+  // chunk of A but chunk 0 (the salt stamp's) is the fill, and every chunk of B is. So
+  // each is stored as two chunks, chunk 0 and the fill chunk, and read through
+  // operand_chunk. Nothing reads them whole: the noised operands are drawn from the fill
+  // (read_vecs), the tree hashes the two chunks, and a proof's leaves are copied chunk by
+  // chunk. That is m*k + n*k bytes not allocated, 512 MiB at m = n = 131072.
+  bool compact = false;
 
   // The noised operands, computed once per commitment. int8, matching the
   // reference's saturating convert-down: operand and noise are both int7, so the
@@ -317,7 +361,67 @@ struct Ctx {
   // B' all belong to it. Only then may a redraw restamp A instead of redrawing
   // everything. set_job clears it, so a new job never mixes with an old tree.
   bool baseDrawn = false;
+
+  // THE PIPELINE. The search keeps kSlots batches queued on the device, so the fold
+  // never waits for the host between launches: batch j+1 is already queued when the
+  // host reads batch j's hits. Each slot has its own hit list, and the hit count comes
+  // back through pinned memory behind an event, not a synchronising copy. Before this
+  // the GPU sat idle ~0.1 ms at every launch (WDDM submission plus the round trip),
+  // 0.36% of the time at four launches a salt; after it, ~2 us.
+  static const int kSlots = 2;
+  struct Pending {
+    uint64_t nonceBase;
+    uint64_t salt;
+    uint8_t aSeed[PEARL_HASH_BYTES];
+    uint32_t regions;
+  };
+  Pending pend[kSlots];
+  int pendHead = 0, pendCount = 0;
+  cudaEvent_t slotDone[kSlots] = {};
+  uint32_t *hSlotCount = nullptr;    // pinned, [kSlots]
+  // Proof reads run here, not on the search's stream: that stream holds the next
+  // batch, and a copy queued behind it would wait for it and then leave the GPU idle.
+  cudaStream_t side = nullptr;
+  // The stream each slot's batches run on. Blocking streams, so the redraw, which runs
+  // on the legacy default stream, still waits for every queued batch and every later
+  // batch waits for it; two batches of one salt may overlap. With PEARL_FOLD_STREAMS 0
+  // both are the default stream and batches run strictly one after another.
+  cudaStream_t foldStream[kSlots] = {};
+  // The collected batch's hits after the first, for pearl_host_next_hit.
+  std::vector<PearlSearchResult> extraHits;
+  size_t extraNext = 0;
+
+  // Host-side restamps (host_record). What the job's full draw leaves for them: job_key,
+  // leaf 0's bytes and node 1 of every level (the siblings of leaf 0's path, which no
+  // restamp changes). hostSeeds is set only once a record the host hashed matched the
+  // device's own root and a_seed for the job's first draw; until then every restamp
+  // takes the device path and synchronises, as before.
+  bool hostSeeds = false;
+  uint32_t jobKeyW[8] = {0};
+  uint8_t leaf0[1024] = {0};
+  uint32_t sib[PEARL_RESTAMP_MAX_LEVELS][8] = {};
+  // The records of the last few salts. A hit's proof is read while later work may
+  // already have restamped A, so its salt-dependent part (leaf 0's head, node 0 of each
+  // level, the root) comes from its own salt's record instead of from the device.
+  static const int kRecords = 4;
+  PearlRestampRecord rec[kRecords] = {};
+  uint64_t recSalt[kRecords] = {0};
+  bool recValid[kRecords] = {false, false, false, false};
+  int recNext = 0;
 };
+
+// Whether A and B are stored compact (Ctx::compact): the constant fill, at a k every
+// materialise path reads through read_vecs (a power of two, at least 16).
+bool pearl_compact_operands(const PearlProfile *profile) {
+  const uint32_t k = profile->k;
+  return profile->operand_fill == PEARL_OPERAND_CONST && k >= 16u && (k & (k - 1u)) == 0u;
+}
+
+// Where chunk `i` of an operand lives: its own place, or one of the two a compact
+// operand stores.
+const int8_t *operand_chunk(const Ctx *ctx, const int8_t *operand, uint64_t i) {
+  return ctx->compact ? operand + (i == 0 ? 0 : 1024) : operand + i * 1024;
+}
 
 // The row/column patterns the tile folds over. Derived from the counts plus the
 // fixed stride, exactly as the reference does, so the host and the config block
@@ -356,7 +460,7 @@ void operand_commitment(Ctx *ctx, const uint8_t *data, size_t len,
   uint64_t base = 0;
   if (offsets) offsets->push_back(0);
   pearl_blake3_chunk_cvs<<<(unsigned)((chunks + threads - 1) / threads), threads>>>(
-      ctx->dJobKey, data, chunks, dst);
+      ctx->dJobKey, data, chunks, dst, ctx->compact ? 1u : 0u);
 
   uint64_t count = chunks;
   while (count > 1) {
@@ -371,6 +475,141 @@ void operand_commitment(Ctx *ctx, const uint8_t *data, size_t len,
   }
   cudaMemcpy(out32, dst + base * 8, PEARL_HASH_BYTES, cudaMemcpyDeviceToDevice);
 }
+
+// ---------------------------------------------------------------------------
+// BLAKE3 on the host, for host_record only: one chunk CV, parent compressions and
+// two one-block hashes a redraw, about 40 compressions, some tens of microseconds on
+// one core. The device's BLAKE3 (pearl_kernel.cu) is the one every other hash uses;
+// this one is checked against it once a job (see setup_host_seeds) and not trusted
+// until it agrees.
+// ---------------------------------------------------------------------------
+const uint32_t kB3Iv[8] = {0x6A09E667u, 0xBB67AE85u, 0x3C6EF372u, 0xA54FF53Au,
+                           0x510E527Fu, 0x9B05688Cu, 0x1F83D9ABu, 0x5BE0CD19u};
+const uint32_t kB3ChunkStart = 1u, kB3ChunkEnd = 2u, kB3Parent = 4u, kB3Root = 8u,
+               kB3Keyed = 16u;
+
+inline uint32_t hb3_rotr(uint32_t x, int n) { return (x >> n) | (x << (32 - n)); }
+
+void hb3_compress(const uint32_t cv[8], const uint32_t block[16], uint64_t counter,
+                  uint32_t len, uint32_t flags, uint32_t out[16]) {
+  static const int perm[16] = {2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8};
+  uint32_t v[16], m[16], t[16];
+  for (int i = 0; i < 8; i++) v[i] = cv[i];
+  for (int i = 0; i < 4; i++) v[8 + i] = kB3Iv[i];
+  v[12] = (uint32_t)counter; v[13] = (uint32_t)(counter >> 32); v[14] = len; v[15] = flags;
+  for (int i = 0; i < 16; i++) m[i] = block[i];
+  auto g = [&](int a, int b, int c, int d, uint32_t x, uint32_t y) {
+    v[a] = v[a] + v[b] + x; v[d] = hb3_rotr(v[d] ^ v[a], 16);
+    v[c] = v[c] + v[d];     v[b] = hb3_rotr(v[b] ^ v[c], 12);
+    v[a] = v[a] + v[b] + y; v[d] = hb3_rotr(v[d] ^ v[a], 8);
+    v[c] = v[c] + v[d];     v[b] = hb3_rotr(v[b] ^ v[c], 7);
+  };
+  for (int r = 0; r < 7; r++) {
+    g(0, 4, 8, 12, m[0], m[1]);   g(1, 5, 9, 13, m[2], m[3]);
+    g(2, 6, 10, 14, m[4], m[5]);  g(3, 7, 11, 15, m[6], m[7]);
+    g(0, 5, 10, 15, m[8], m[9]);  g(1, 6, 11, 12, m[10], m[11]);
+    g(2, 7, 8, 13, m[12], m[13]); g(3, 4, 9, 14, m[14], m[15]);
+    for (int i = 0; i < 16; i++) t[i] = m[perm[i]];
+    for (int i = 0; i < 16; i++) m[i] = t[i];
+  }
+  for (int i = 0; i < 8; i++) { out[i] = v[i] ^ v[i + 8]; out[i + 8] = v[i + 8] ^ cv[i]; }
+}
+
+void hb3_words(const uint8_t *b, uint32_t *w, int n) {
+  for (int i = 0; i < n; i++)
+    w[i] = (uint32_t)b[4 * i] | ((uint32_t)b[4 * i + 1] << 8) | ((uint32_t)b[4 * i + 2] << 16)
+           | ((uint32_t)b[4 * i + 3] << 24);
+}
+
+// The CV of a whole 1024-byte chunk at `counter`, keyed.
+void hb3_chunk_cv(const uint32_t key[8], const uint8_t *chunk, uint64_t counter,
+                  uint32_t out[8]) {
+  uint32_t cv[8], block[16], o[16];
+  for (int i = 0; i < 8; i++) cv[i] = key[i];
+  for (int b = 0; b < 16; b++) {
+    hb3_words(chunk + b * 64, block, 16);
+    const uint32_t flags = kB3Keyed | (b == 0 ? kB3ChunkStart : 0u) | (b == 15 ? kB3ChunkEnd : 0u);
+    hb3_compress(cv, block, counter, 64, flags, o);
+    for (int i = 0; i < 8; i++) cv[i] = o[i];
+  }
+  for (int i = 0; i < 8; i++) out[i] = cv[i];
+}
+
+// BLAKE3 of exactly 64 bytes as a root: keyed when key is given, else unkeyed.
+void hb3_hash64(const uint32_t *key, const uint8_t msg[64], uint32_t out[8]) {
+  uint32_t block[16], o[16];
+  hb3_words(msg, block, 16);
+  hb3_compress(key ? key : kB3Iv, block, 0, 64,
+               kB3ChunkStart | kB3ChunkEnd | kB3Root | (key ? kB3Keyed : 0u), o);
+  for (int i = 0; i < 8; i++) out[i] = o[i];
+}
+
+void hb3_bytes(const uint32_t w[8], uint8_t out[32]) {
+  for (int i = 0; i < 32; i++) out[i] = (uint8_t)(w[i >> 2] >> ((i & 3) * 8));
+}
+
+// The record a restamp at `salt` produces, hashed on the host: leaf 0 with the stamp
+// written over it (or as it stands, when stamp is false: the check against the job's
+// first draw), its path to the root with the stored siblings, the binding, a_seed.
+void host_record(const Ctx *ctx, uint64_t salt, bool stamp, PearlRestampRecord *r) {
+  uint8_t leaf[1024];
+  memcpy(leaf, ctx->leaf0, sizeof leaf);
+  if (stamp)
+    for (int i = 0; i < PEARL_STAMP_BYTES; i++) leaf[i] = (uint8_t)pearl_stamp_byte(salt, i);
+  memcpy(r->head, leaf, sizeof r->head);
+  const uint32_t levels = (uint32_t)ctx->layerOffA.size();
+  r->levels = levels;
+  for (uint32_t L = 0; L < levels; L++) r->node_off[L] = (uint32_t)ctx->layerOffA[L];
+  hb3_chunk_cv(ctx->jobKeyW, leaf, 0, r->path[0]);
+  for (uint32_t L = 0; L + 1 < levels; L++) {
+    uint32_t block[16], o[16];
+    for (int i = 0; i < 8; i++) { block[i] = r->path[L][i]; block[8 + i] = ctx->sib[L][i]; }
+    const uint32_t flags = kB3Parent | kB3Keyed | (L + 2 == levels ? kB3Root : 0u);
+    hb3_compress(ctx->jobKeyW, block, 0, 64, flags, o);
+    for (int i = 0; i < 8; i++) r->path[L + 1][i] = o[i];
+  }
+  uint8_t root[32], bound[32];
+  hb3_bytes(r->path[levels - 1], root);
+  if (ctx->profile.seed_derivation == PEARL_SEED_LEGACY) {
+    memcpy(bound, root, 32);
+  } else {
+    uint8_t msg[64] = {0};
+    memcpy(msg, root, 32);
+    const uint32_t dim = ctx->profile.m;
+    msg[32] = (uint8_t)dim; msg[33] = (uint8_t)(dim >> 8);
+    msg[34] = (uint8_t)(dim >> 16); msg[35] = (uint8_t)(dim >> 24);
+    uint32_t key[8], bw[8];
+    hb3_words(PEARL_SEED_SALT_A, key, 8);
+    hb3_hash64(key, msg, bw);
+    hb3_bytes(bw, bound);
+  }
+  hb3_words(bound, r->bound, 8);
+  uint8_t msg[64];
+  memcpy(msg, ctx->bSeed, 32);
+  memcpy(msg + 32, bound, 32);
+  hb3_hash64(nullptr, msg, r->a_seed);
+}
+
+void keep_record(Ctx *ctx, uint64_t salt, const PearlRestampRecord &r) {
+  const int i = ctx->recNext;
+  ctx->rec[i] = r;
+  ctx->recSalt[i] = salt;
+  ctx->recValid[i] = true;
+  ctx->recNext = (i + 1) % Ctx::kRecords;
+}
+
+const PearlRestampRecord *find_record(const Ctx *ctx, uint64_t salt) {
+  for (int i = 0; i < Ctx::kRecords; i++)
+    if (ctx->recValid[i] && ctx->recSalt[i] == salt) return &ctx->rec[i];
+  return nullptr;
+}
+
+// A device-to-host copy on the side stream, so it does not queue behind the fold.
+void side_copy(Ctx *ctx, void *dst, const void *src, size_t n) {
+  cudaMemcpyAsync(dst, src, n, cudaMemcpyDeviceToHost, ctx->side);
+  cudaStreamSynchronize(ctx->side);
+}
+
 
 // Which 1024-byte chunks hold these matrix rows. A row of k bytes can straddle
 // a boundary, so this is a range per row.
@@ -390,9 +629,15 @@ void leafIndicesForRows(const uint32_t *rows, uint32_t nrows, uint32_t k,
 // The sibling order must match the verifier's exactly: level by level, visiting
 // the live set in ascending index order, emitting a sibling only when it is not
 // itself live.
+//
+// `rec` is the record of the hit's salt, when there is one. Later work may already have
+// restamped A for the next salt, so the parts a restamp changes -- leaf 0's head and node
+// 0 of every level -- come from the record; every other leaf and node is the same for
+// every salt of the job.
 void snapshotProof(Ctx *ctx, bool isA, const uint32_t *rows, uint32_t nrows,
                    std::vector<uint32_t> *leafIdx, std::vector<uint8_t> *leaves,
-                   std::vector<uint8_t> *sibs) {
+                   std::vector<uint8_t> *sibs, const PearlRestampRecord *rec) {
+  if (!isA) rec = nullptr;
   const uint32_t k = ctx->profile.k;
   const int8_t *operand = isA ? ctx->dA : ctx->dB;
   const uint32_t *tree = isA ? ctx->dTreeA : ctx->dTreeB;
@@ -404,9 +649,8 @@ void snapshotProof(Ctx *ctx, bool isA, const uint32_t *rows, uint32_t nrows,
 
   leaves->resize(leafIdx->size() * 1024);
   for (size_t i = 0; i < leafIdx->size(); i++) {
-    cudaMemcpy(leaves->data() + i * 1024,
-               operand + (uint64_t)(*leafIdx)[i] * 1024, 1024,
-               cudaMemcpyDeviceToHost);
+    side_copy(ctx, leaves->data() + i * 1024, operand_chunk(ctx, operand, (*leafIdx)[i]), 1024);
+    if (rec && (*leafIdx)[i] == 0) memcpy(leaves->data() + i * 1024, rec->head, sizeof rec->head);
   }
 
   sibs->clear();
@@ -425,8 +669,10 @@ void snapshotProof(Ctx *ctx, bool isA, const uint32_t *rows, uint32_t nrows,
         want = i + 1;
       }
       uint8_t node[PEARL_HASH_BYTES];
-      cudaMemcpy(node, tree + (offs[level] + want) * 8, PEARL_HASH_BYTES,
-                 cudaMemcpyDeviceToHost);
+      if (rec && want == 0)
+        hb3_bytes(rec->path[level], node);
+      else
+        side_copy(ctx, node, tree + (offs[level] + want) * 8, PEARL_HASH_BYTES);
       sibs->insert(sibs->end(), node, node + PEARL_HASH_BYTES);
     }
     std::set<uint32_t> next;
@@ -436,6 +682,7 @@ void snapshotProof(Ctx *ctx, bool isA, const uint32_t *rows, uint32_t nrows,
     level++;
   }
 }
+
 
 bool fail(char *err, size_t err_len, const char *msg) {
   if (err && err_len) snprintf(err, err_len, "%s", msg);
@@ -456,6 +703,8 @@ size_t needed_bytes(const PearlProfile *profile) {
   const size_t rank = profile->rank;
   const size_t aBytes = (size_t)profile->m * k;
   const size_t bBytes = (size_t)profile->n * k;
+  const bool compact = pearl_compact_operands(profile);
+  const size_t aStored = compact ? 2048 : aBytes, bStored = compact ? 2048 : bBytes;
   const size_t noiseBytes = (size_t)profile->m * rank + (size_t)profile->n * rank
                             + 2 * k * 2 * sizeof(uint32_t) + 64;
   // The materialised operands are int8, the same size as the sources. They were
@@ -469,16 +718,17 @@ size_t needed_bytes(const PearlProfile *profile) {
   // 1 GiB at the mainnet geometry -- and it stayed here after the buffer went,
   // so a card whose free VRAM the local LLM had taken could be refused for a
   // gigabyte the miner no longer asks for.
+  // One hit list per pipeline slot (Ctx::kSlots).
   const size_t batchBytes =
-      (size_t)PEARL_MAX_HITS * (PEARL_HASH_BYTES + sizeof(uint32_t)
-                                + PEARL_JACKPOT_BUCKETS * sizeof(uint32_t));
+      (size_t)Ctx::kSlots * PEARL_MAX_HITS
+      * (PEARL_HASH_BYTES + 2 * sizeof(uint32_t) + PEARL_JACKPOT_BUCKETS * sizeof(uint32_t));
   // The kept commitment trees (just under 2 nodes a leaf, 32 bytes a node, for
   // both operands) and the leaf-CV scratch for the larger one. Real
   // allocations that were never counted: 40 MiB at the mainnet geometry.
   const size_t aLeaves = aBytes / 1024, bLeaves = bBytes / 1024;
   const size_t treeBytes = 2 * (aLeaves + bLeaves) * 32
                            + (aLeaves > bLeaves ? aLeaves : bLeaves) * 32;
-  return aBytes + bBytes + primeBytes + noiseBytes + batchBytes + treeBytes + (1u << 20);
+  return aStored + bStored + primeBytes + noiseBytes + batchBytes + treeBytes + (1u << 20);
 }
 
 #define CUDA_OK(expr, msg)                                   \
@@ -609,6 +859,7 @@ void resolve_fold(Ctx *ctx) {
     // -DPEARL_TALL_TMA=0 builds Blackwell's tall fold on cp.async instead; the host
     // pass sees the same value.
     ctx->foldTma = ctx->foldTall && PEARL_TALL_TMA != 0 && PEARL_TALL_TMA_ARCH(ft.binaryVersion);
+    ctx->foldTiled = ctx->foldTall && !ctx->foldTma && PEARL_TALL_TILE_ORDER != 0;
   }
   // The fold is compiled for exactly one block size, which is also its launch
   // bound. A disagreement would not fail loudly: a block of the wrong size
@@ -802,8 +1053,9 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   // land, so that is the card the context belongs to.
   if (cudaGetDevice(&ctx->device) != cudaSuccess) ctx->device = 0;
 
-  CUDA_OK(cudaMalloc(&ctx->dA, aBytes), "allocating A");
-  CUDA_OK(cudaMalloc(&ctx->dB, bBytes), "allocating B");
+  ctx->compact = pearl_compact_operands(profile);
+  CUDA_OK(cudaMalloc(&ctx->dA, ctx->compact ? 2048 : aBytes), "allocating A");
+  CUDA_OK(cudaMalloc(&ctx->dB, ctx->compact ? 2048 : bBytes), "allocating B");
   // The tall fold's last row group of tiles reads past A's m rows (see
   // PEARL_TALL_A_ROWS): Ada's build up to 64 rows past the end of the last k-block.
   // Nothing generates the bytes past m * k; they are zeroed once so the fold reads
@@ -864,14 +1116,29 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   // own transcripts now, so only a hit's transcript is ever stored -- 64 slots
   // of 64 bytes where the batch used to take 64 bytes a region, 1 GiB at the
   // mainnet geometry.
+  // One hit list per pipeline slot: a batch's hits must survive until the host reads
+  // them, which is after the next batch has been queued.
+  const size_t S = Ctx::kSlots;
   CUDA_OK(cudaMalloc(&ctx->dHitTranscript,
-                     (size_t)PEARL_MAX_HITS * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)),
+                     S * PEARL_MAX_HITS * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)),
           "allocating the hit transcripts");
-  CUDA_OK(cudaMalloc(&ctx->dHashes, (size_t)PEARL_MAX_HITS * PEARL_HASH_BYTES),
+  CUDA_OK(cudaMalloc(&ctx->dHashes, S * PEARL_MAX_HITS * PEARL_HASH_BYTES),
           "allocating the batch hashes");
-  CUDA_OK(cudaMalloc(&ctx->dHitCount, sizeof(uint32_t)), "allocating the hit counter");
-  CUDA_OK(cudaMalloc(&ctx->dHitIndex, (size_t)PEARL_MAX_HITS * sizeof(uint32_t)),
+  CUDA_OK(cudaMalloc(&ctx->dHitCount, S * sizeof(uint32_t)), "allocating the hit counter");
+  CUDA_OK(cudaMalloc(&ctx->dHitIndex, S * PEARL_MAX_HITS * sizeof(uint32_t)),
           "allocating the hit list");
+  CUDA_OK(cudaHostAlloc(&ctx->hSlotCount, S * sizeof(uint32_t), cudaHostAllocDefault),
+          "allocating the pinned hit counts");
+  for (int i = 0; i < Ctx::kSlots; i++)
+    CUDA_OK(cudaEventCreateWithFlags(&ctx->slotDone[i], PEARL_SLOT_EVENT_FLAGS),
+            "creating the batch events");
+  CUDA_OK(cudaStreamCreateWithFlags(&ctx->side, cudaStreamNonBlocking),
+          "creating the proof stream");
+#if PEARL_FOLD_STREAMS
+  for (int i = 0; i < Ctx::kSlots; i++)
+    CUDA_OK(cudaStreamCreateWithFlags(&ctx->foldStream[i], cudaStreamDefault),
+            "creating the fold streams");
+#endif
   CUDA_OK(cudaMalloc(&ctx->dJobKey, 8 * sizeof(uint32_t)), "allocating job_key");
   CUDA_OK(cudaMalloc(&ctx->dASeed, 8 * sizeof(uint32_t)), "allocating a_seed");
   CUDA_OK(cudaMalloc(&ctx->dBSeed, 8 * sizeof(uint32_t)), "allocating b_seed");
@@ -909,6 +1176,10 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
 
   // Which fold runs, before any operand is drawn (see resolve_fold).
   resolve_fold(ctx);
+  // In per-tile order A's padding rows sit inside every slab of its last block, not
+  // after m * k, so the whole noised A is zeroed once.
+  if (ctx->foldTiled)
+    cudaMemset(ctx->dAp, 0, (size_t)PEARL_TALL_A_ROWS(profile->m) * profile->k);
 
   return ctx;
 }
@@ -931,6 +1202,7 @@ extern "C" void pearl_host_destroy(void *handle) {
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (!ctx) return;
   DeviceScope scope(ctx->device);
+  cudaDeviceSynchronize();  // nothing still queued may read what is freed below
   cudaFree(ctx->dA); cudaFree(ctx->dB);
   cudaFree(ctx->dAp); cudaFree(ctx->dBp);
   cudaFree(ctx->dEAL); cudaFree(ctx->dEBR);
@@ -947,10 +1219,17 @@ extern "C" void pearl_host_destroy(void *handle) {
   cudaFree(ctx->dHitTranscript); cudaFree(ctx->dJobKey);
   cudaFree(ctx->dASeed); cudaFree(ctx->dBSeed);
   cudaFree(ctx->dTarget); cudaFree(ctx->dHash); cudaFree(ctx->dIsShare);
+  for (int i = 0; i < Ctx::kSlots; i++)
+    if (ctx->slotDone[i]) cudaEventDestroy(ctx->slotDone[i]);
+  if (ctx->side) cudaStreamDestroy(ctx->side);
+  for (int i = 0; i < Ctx::kSlots; i++)
+    if (ctx->foldStream[i]) cudaStreamDestroy(ctx->foldStream[i]);
+  if (ctx->hSlotCount) cudaFreeHost(ctx->hSlotCount);
   delete ctx;
 }
 
 extern "C" void pearl_host_reseed(void *handle, uint64_t salt);
+
 
 // Load a job and draw its operands under `salt`.
 //
@@ -1095,43 +1374,71 @@ void draw_noise(Ctx *ctx, bool isA) {
   const int8_t *src = isA ? ctx->dA : ctx->dB;
   int8_t *dst = isA ? ctx->dAp : ctx->dBp;
   const size_t len = (size_t)rows * k;
+  const bool kPow2 = (k & (k - 1u)) == 0u && k >= 16u;
+  uint32_t kLog2 = 0;
+  while ((1u << kLog2) < k) kLog2++;
+  uint32_t kbLog2 = 0;
+  while ((1u << kbLog2) < PEARL_TALL_STAGE_K) kbLog2++;
+  // Under the constant fill the operand is the fill everywhere except the stamp in
+  // A's first PEARL_STAMP_BYTES bytes, so only the sixteen-byte groups holding it are
+  // read (see the kernels): a restamp then reads nothing of A but that.
+  const bool constFill = ctx->profile.operand_fill == PEARL_OPERAND_CONST;
+  const uint64_t readVecs = constFill ? (PEARL_STAMP_BYTES + 15u) / 16u : (uint64_t)(len / 16);
+  const uint32_t fillWord = (uint32_t)(uint8_t)PEARL_OPERAND_FILL * 0x01010101u;
+  // The tall fold's operands (k-blocked, or per-tile on Ada), drawn by the fused kernel
+  // whenever its shape allows (pearl_noise_materialize_kblocked): the mainnet geometry
+  // always does.
+  const bool tallLayout = ctx->foldTall && kPow2 && k >= PEARL_TALL_STAGE_K;
+  const bool fused = tallLayout && k >= 64u && k <= 4096u && rank % 32u == 0u && rank <= 128u
+                     && rows % 32u == 0u;
 
-  pearl_gen_dense<<<draw_blocks((size_t)rows * (rank / 32)), kDrawThreads>>>(
-      seed, label, nullptr, dense, rows, rank);
+  if (!fused)
+    pearl_gen_dense<<<draw_blocks((size_t)rows * (rank / 32)), kDrawThreads>>>(
+        seed, label, nullptr, dense, rows, rank);
   pearl_gen_perm<<<draw_blocks((k + 7) / 8), kDrawThreads>>>(seed, label, perm, k, rank);
   PEARL_LAP(2);
-  if ((k & (k - 1u)) == 0u && k >= 16u) {
-    uint32_t kLog2 = 0;
-    while ((1u << kLog2) < k) kLog2++;
+  // Ada's cp.async fold reads them in per-tile order (foldTiled, PEARL_TALL_TILE_ORDER):
+  // blocks of a tile's 192 rows of A' or 256 columns of B', each k / 64 slabs. 0 is the
+  // k-blocked order Blackwell's TMA reads.
+  const uint32_t blockRows = ctx->foldTiled ? (isA ? PEARL_TALL_BM : PEARL_TALL_BN) : 0u;
 #if PEARL_TURING_BDIRECT
-    if (ctx->foldBDirect && !isA && rows % 16u == 0u && k >= 32u) {
-      // The same values, in the fragment order Turing's B-direct fold loads B'
-      // in (pearl_materialize16_frag). A' stays row-major, so a restamp, which
-      // redraws only A', is unchanged. Decided per card when its context was
-      // created (resolve_fold). The search refuses the B-direct fold for any
-      // geometry this branch does not take.
-      pearl_materialize16_frag<<<draw_blocks(len / 16), kDrawThreads>>>(src, dense, perm, dst,
-                                                                        rows, kLog2, rank);
-    } else
+  if (ctx->foldBDirect && !isA && kPow2 && rows % 16u == 0u && k >= 32u) {
+    // The same values, in the fragment order Turing's B-direct fold loads B'
+    // in (pearl_materialize16_frag). A' stays row-major, so a restamp, which
+    // redraws only A', is unchanged. Decided per card when its context was
+    // created (resolve_fold). The search refuses the B-direct fold for any
+    // geometry this branch does not take. Turing has no tall fold, so `fused`
+    // is never set here and pearl_gen_dense above has written the dense factor
+    // this reads; under the constant fill it reads B through read_vecs, like
+    // every other materialise.
+    pearl_materialize16_frag<<<draw_blocks(len / 16), kDrawThreads>>>(
+        src, dense, perm, dst, rows, kLog2, rank, readVecs, fillWord);
+  } else
 #endif
-    if (ctx->foldTall && k >= PEARL_TALL_STAGE_K) {
-      // The same values, stored [k / 64][rows][64] for the tall fold's staging: each
-      // 64-byte stage of a tile is then whole L2 lines rather than half of every line,
-      // for Blackwell's TMA boxes (PEARL_TALL_TMA) and Ada's cp.async copies alike.
-      // resolve_fold decided this for the context, before its first draw, and the
-      // search launches the fold that reads it. (Any other k is one the search
-      // refuses.)
-      uint32_t kbLog2 = 0;
-      while ((1u << kbLog2) < PEARL_TALL_STAGE_K) kbLog2++;
+  if (fused) {
+    pearl_noise_materialize_kblocked<<<rows / 32u, 256>>>(seed, label, perm, src, dst, rows,
+                                                         kLog2, rank, kbLog2, readVecs,
+                                                         fillWord, blockRows);
+  } else if (tallLayout) {
+    // The same values, stored for the tall fold's staging: each 64-byte stage of a tile
+    // is then whole L2 lines rather than half of every line, for Blackwell's TMA boxes
+    // (PEARL_TALL_TMA, k-blocked) and Ada's cp.async copies (per-tile) alike.
+    // resolve_fold decided this for the context, before its first draw, and the
+    // search launches the fold that reads it. (Any other k is one the search
+    // refuses.)
+    if (ctx->foldTiled)
+      pearl_materialize16_tiled<<<draw_blocks(len / 16), kDrawThreads>>>(
+          src, dense, perm, dst, rows, kLog2, rank, kbLog2, blockRows, readVecs, fillWord);
+    else
       pearl_materialize16_kblocked<<<draw_blocks(len / 16), kDrawThreads>>>(
-          src, dense, perm, dst, rows, kLog2, rank, kbLog2);
-    } else {
-      pearl_materialize16<<<draw_blocks(len / 16), kDrawThreads>>>(src, dense, perm, dst,
-                                                                   rows, kLog2, rank);
-    }
+          src, dense, perm, dst, rows, kLog2, rank, kbLog2, readVecs, fillWord);
+  } else if (kPow2) {
+    pearl_materialize16<<<draw_blocks(len / 16), kDrawThreads>>>(src, dense, perm, dst, rows,
+                                                                 kLog2, rank, readVecs,
+                                                                 fillWord);
   } else {
-    pearl_materialize<<<draw_blocks(len), kDrawThreads>>>(src, dense, perm, dst, rows,
-                                                          k, rank);
+    pearl_materialize<<<draw_blocks(len), kDrawThreads>>>(src, dense, perm, dst, rows, k,
+                                                          rank);
   }
   PEARL_LAP(3);
 }
@@ -1171,8 +1478,8 @@ void full_draw(Ctx *ctx, uint64_t salt) {
     // a rig draws the same A and B for a new job, and they all search one space
     // until their first restamp. With it, a_seed depends on the job and the salt
     // alone, and the cards' salts never meet.
-    cudaMemset(ctx->dA, PEARL_OPERAND_FILL, aLen);
-    cudaMemset(ctx->dB, PEARL_OPERAND_FILL, bLen);
+    cudaMemset(ctx->dA, PEARL_OPERAND_FILL, ctx->compact ? 2048 : aLen);
+    cudaMemset(ctx->dB, PEARL_OPERAND_FILL, ctx->compact ? 2048 : bLen);
     int8_t stamp[PEARL_STAMP_BYTES];
     for (int i = 0; i < PEARL_STAMP_BYTES; i++) stamp[i] = pearl_stamp_byte(salt, i);
     cudaMemcpy(ctx->dA, stamp, sizeof(stamp), cudaMemcpyHostToDevice);
@@ -1238,6 +1545,51 @@ void restamp(Ctx *ctx, uint64_t salt) {
   PEARL_LAP_REPORT();
 }
 
+// A record read back from the device, for a draw the host did not hash itself.
+void device_record(Ctx *ctx, PearlRestampRecord *r) {
+  const uint32_t levels = (uint32_t)ctx->layerOffA.size();
+  memset(r, 0, sizeof *r);
+  r->levels = levels < PEARL_RESTAMP_MAX_LEVELS ? levels : PEARL_RESTAMP_MAX_LEVELS;
+  cudaMemcpy(r->head, ctx->dA, sizeof r->head, cudaMemcpyDeviceToHost);
+  for (uint32_t L = 0; L < r->levels; L++) {
+    r->node_off[L] = (uint32_t)ctx->layerOffA[L];
+    cudaMemcpy(r->path[L], ctx->dTreeA + ctx->layerOffA[L] * 8, 32, cudaMemcpyDeviceToHost);
+  }
+  cudaMemcpy(r->bound, ctx->dBoundA, 32, cudaMemcpyDeviceToHost);
+  hb3_words(ctx->aSeed, r->a_seed, 8);
+}
+
+// After a job's full draw: fetch what host_record needs -- job_key, leaf 0, and node 1
+// of every level -- and check the host's hashing against the device's own root and
+// a_seed for this draw. Only a match turns host-side restamps on for the job.
+void setup_host_seeds(Ctx *ctx) {
+  ctx->hostSeeds = false;
+  for (int i = 0; i < Ctx::kRecords; i++) ctx->recValid[i] = false;
+  const uint32_t levels = (uint32_t)ctx->layerOffA.size();
+  PearlRestampRecord r;
+  if (levels >= 2 && levels <= PEARL_RESTAMP_MAX_LEVELS) {
+    cudaMemcpy(ctx->jobKeyW, ctx->dJobKey, 32, cudaMemcpyDeviceToHost);
+    cudaMemcpy(ctx->leaf0, ctx->dA, sizeof ctx->leaf0, cudaMemcpyDeviceToHost);
+    for (uint32_t L = 0; L + 1 < levels; L++)
+      cudaMemcpy(ctx->sib[L], ctx->dTreeA + (ctx->layerOffA[L] + 1) * 8, 32,
+                 cudaMemcpyDeviceToHost);
+    host_record(ctx, ctx->salt, false, &r);
+    uint8_t root[32], hroot[32], hseed[32];
+    cudaMemcpy(root, ctx->dHashA, 32, cudaMemcpyDeviceToHost);
+    hb3_bytes(r.path[levels - 1], hroot);
+    hb3_bytes(r.a_seed, hseed);
+    if (memcmp(root, hroot, 32) == 0 && memcmp(hseed, ctx->aSeed, 32) == 0) {
+      ctx->hostSeeds = true;
+      keep_record(ctx, ctx->salt, r);
+      return;
+    }
+    fprintf(stderr, "pearl: the host's restamp hashing disagrees with the device; "
+                    "restamps will run on the device\n");
+  }
+  device_record(ctx, &r);
+  keep_record(ctx, ctx->salt, r);
+}
+
 }  // namespace
 
 // Re-draw the operands under a new salt and rebuild everything downstream of
@@ -1269,15 +1621,36 @@ extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
 #else
   const bool canRestamp = ctx->baseDrawn && aChunks >= 2;
 #endif
-  if (canRestamp) {
-    restamp(ctx, salt);
+  if (canRestamp && ctx->hostSeeds) {
+    // The host hashes the new path and a_seed itself (host_record), so nothing here
+    // waits for the device: the commit and A's noise queue behind whatever batches are
+    // already queued, and the next batch queues behind them with an a_seed the host
+    // already holds. That wait was one synchronising copy a salt, and the serial
+    // restamp and seed kernels were ~0.08 ms of a single device thread.
+    PearlRestampRecord r;
+    host_record(ctx, salt, true, &r);
+    pearl_restamp_commit<<<1, 256>>>(r, ctx->dA, ctx->dTreeA, ctx->dHashA, ctx->dBoundA,
+                                     ctx->dASeed);
+    draw_noise(ctx, true);
+    hb3_bytes(r.a_seed, ctx->aSeed);
+    keep_record(ctx, salt, r);
   } else {
-    full_draw(ctx, salt);
+    if (canRestamp) {
+      restamp(ctx, salt);
+    } else {
+      full_draw(ctx, salt);
+    }
+    // The one synchronising copy on this path: the search must not launch against
+    // half-built seeds, and the host copy of a_seed travels with every hit.
+    cudaMemcpy(ctx->aSeed, ctx->dASeed, PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
+    if (canRestamp) {
+      PearlRestampRecord r;
+      device_record(ctx, &r);
+      keep_record(ctx, salt, r);
+    } else {
+      setup_host_seeds(ctx);
+    }
   }
-
-  // The one synchronising copy: the search must not launch against half-built
-  // seeds, and the host copy of a_seed travels with every hit.
-  cudaMemcpy(ctx->aSeed, ctx->dASeed, PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
 
 #ifdef PEARL_RESTAMP_CHECK
   // Diagnostic only: after a restamp, rebuild A's whole tree from scratch and
@@ -1317,16 +1690,81 @@ extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
   ctx->haveJob = true;
 }
 
-extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
-                                  uint32_t batch, PearlSearchResult *out,
-                                  uint64_t *attempts, char *err,
-                                  size_t err_len) {
+
+namespace {
+// One hit of a collected batch -- entry `i` of slot `slot`'s hit list -- as a result:
+// its hash, region and seeds, the transcript that hashed to it, and its share proof.
+// The proof is read now, while the tree still belongs to this job; within the job only
+// leaf 0's head and node 0 of each level change between salts, and those come from the
+// salt's own record (snapshotProof), since later work may already have restamped A.
+void fill_hit(Ctx *ctx, const Ctx::Pending &p, int slot, uint32_t i, PearlSearchResult *out) {
+  const uint8_t *dHashes = ctx->dHashes + (size_t)slot * PEARL_MAX_HITS * PEARL_HASH_BYTES;
+  const uint32_t *dTranscripts =
+      ctx->dHitTranscript + (size_t)slot * PEARL_MAX_HITS * PEARL_JACKPOT_BUCKETS;
+  side_copy(ctx, out->jackpot_hash, dHashes + (size_t)i * PEARL_HASH_BYTES, PEARL_HASH_BYTES);
+  memcpy(out->a_seed, p.aSeed, PEARL_HASH_BYTES);
+  memcpy(out->b_seed, ctx->bSeed, PEARL_HASH_BYTES);
+  out->nonce = p.nonceBase + ctx->hHitIndex[i];
+  out->salt = p.salt;
+  const PearlRestampRecord *rec = find_record(ctx, p.salt);
+
+  // The GLOBAL region index, not the batch-local one. Both give the same
+  // row offset, because nonce_base is a multiple of rowsValid -- but the
+  // COLUMN offset is (region / rowsValid) % colsValid, and the local index
+  // drops the batch base entirely. The columns in the snapshot then belong
+  // to a different tile than the row indices the proof declares, which the
+  // pool reports as "Failed to extract strip".
+  const uint64_t region = out->nonce;
+  const uint32_t rowIdx = (uint32_t)(region % ctx->rowsValid);
+  const uint32_t colIdx = (uint32_t)((region / ctx->rowsValid) % ctx->colsValid);
+  const uint32_t rowOff = pearl_expand_offset(rowIdx, PEARL_ROWS_MASK);
+  const uint32_t colOff = pearl_expand_offset(colIdx, PEARL_COLS_MASK);
+
+  uint32_t rows[PEARL_ROWS_COUNT], cols[PEARL_COLS_COUNT];
+  for (int j = 0; j < PEARL_ROWS_COUNT; j++) rows[j] = rowOff | PEARL_ROWS_PATTERN[j];
+  for (int j = 0; j < PEARL_COLS_COUNT; j++) cols[j] = colOff | PEARL_COLS_PATTERN[j];
+
+  snapshotProof(ctx, true, rows, PEARL_ROWS_COUNT, &out->proof_a.leaf_indices,
+                &out->proof_a.leaves, &out->proof_a.siblings, rec);
+  snapshotProof(ctx, false, cols, PEARL_COLS_COUNT, &out->proof_bt.leaf_indices,
+                &out->proof_bt.leaves, &out->proof_bt.siblings, nullptr);
+  if (rec)
+    hb3_bytes(rec->path[rec->levels - 1], out->proof_a.root);
+  else
+    side_copy(ctx, out->proof_a.root, ctx->dHashA, PEARL_HASH_BYTES);
+  side_copy(ctx, out->proof_bt.root, ctx->dHashB, PEARL_HASH_BYTES);
+  out->proof_a.total_leaves = (uint64_t)ctx->profile.m * ctx->profile.k / 1024;
+  out->proof_bt.total_leaves = (uint64_t)ctx->profile.n * ctx->profile.k / 1024;
+
+  out->proof.assign(PEARL_JACKPOT_BUCKETS * 4, 0);
+  // Indexed by the hit's SLOT in the list, like the hash: the fold keeps no
+  // per-region transcripts, only the ones that hit.
+  side_copy(ctx, out->proof.data(), dTranscripts + (size_t)i * PEARL_JACKPOT_BUCKETS,
+            PEARL_JACKPOT_BUCKETS * 4);
+  out->found = true;
+}
+
+}  // namespace
+
+// Queue one batch at nonce_base, under the current salt, into the next free pipeline
+// slot, without waiting for anything. pearl_host_collect returns its results, oldest
+// batch first; at most Ctx::kSlots batches are queued at once.
+extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t batch,
+                                  uint64_t *regions_out, char *err, size_t err_len) {
   Ctx *ctx = static_cast<Ctx *>(handle);
-  if (attempts) *attempts = 0;
-  if (!ctx || !ctx->haveJob || !out) return false;
+  if (regions_out) *regions_out = 0;
+  if (!ctx || !ctx->haveJob) return false;
+  if (ctx->pendCount >= Ctx::kSlots) {
+    if (err && err_len) snprintf(err, err_len, "search pipeline full: collect a batch first");
+    return false;
+  }
   // A no-op on the search thread, which is already bound to this card; the
   // guard is for any other caller.
   DeviceScope scope(ctx->device);
+  const int slot = (ctx->pendHead + ctx->pendCount) % Ctx::kSlots;
+  // Each slot's batches run on the slot's own stream, so a batch can start on the SMs
+  // the one before it has already left (see Ctx::foldStream).
+  cudaStream_t st = ctx->foldStream[slot];
 
   const uint32_t k = ctx->profile.k;
   const uint32_t rank = ctx->profile.rank;
@@ -1427,6 +1865,8 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   // columns must tile exactly; the last row group may run past m, into the rows
   // PEARL_TALL_A_ROWS pads the noised A with, and the fold hashes none of those.
   if (ctx->foldTall && (col_groups % PEARL_TALL_COL_OFFSETS != 0
+                        || (ctx->foldTiled && (col_off % PEARL_TALL_COL_OFFSETS != 0
+                                               || ctx->profile.n % PEARL_TALL_BN != 0))
                         || (uint64_t)PEARL_TALL_A_ROWS(ctx->profile.m) * k
                                > (uint64_t)0xFFFFFFFFu)) {
     if (err && err_len)
@@ -1534,88 +1974,128 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   }
   test.hash_big_endian = (int)ctx->profile.hash_big_endian;
   PearlHitList hitList;
-  hitList.count = ctx->dHitCount;
-  hitList.index = ctx->dHitIndex;
-  hitList.hash = reinterpret_cast<uint32_t *>(ctx->dHashes);
-  hitList.transcript = ctx->dHitTranscript;
-  cudaMemsetAsync(ctx->dHitCount, 0, sizeof(uint32_t));
+  hitList.count = ctx->dHitCount + slot;
+  hitList.index = ctx->dHitIndex + (size_t)slot * PEARL_MAX_HITS;
+  hitList.hash = reinterpret_cast<uint32_t *>(ctx->dHashes + (size_t)slot * PEARL_MAX_HITS
+                                                                 * PEARL_HASH_BYTES);
+  hitList.transcript =
+      ctx->dHitTranscript + (size_t)slot * PEARL_MAX_HITS * PEARL_JACKPOT_BUCKETS;
+  cudaMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);
   if (ctx->foldTall)
-    pearl_tile_fold_tall<<<blocks, threads, smem>>>(
+    pearl_tile_fold_tall<<<blocks, threads, smem, st>>>(
         ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
         col_off, ctx->rowsValid, col_groups, tiles, test, hitList, ctx->tmA, ctx->tmB);
   else
-    pearl_tile_fold_wmma<<<blocks, threads, smem>>>(
+    pearl_tile_fold_wmma<<<blocks, threads, smem, st>>>(
         ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
         col_off, ctx->rowsValid, col_groups, tiles, test, hitList);
 
-  uint32_t hits = 0;
-  cudaMemcpy(&hits, ctx->dHitCount, sizeof(uint32_t), cudaMemcpyDeviceToHost);
-
+  // The count comes back through pinned memory behind the slot's event; the host reads
+  // it once the event has passed, and the hit list itself only when it is not zero.
+  cudaMemcpyAsync(ctx->hSlotCount + slot, hitList.count, sizeof(uint32_t),
+                  cudaMemcpyDeviceToHost, st);
+  cudaEventRecord(ctx->slotDone[slot], st);
+  // WDDM batches submissions until something forces them out; this does, so the
+  // batch starts behind the one running rather than when the host next waits.
+  cudaStreamQuery(st);
   cudaError_t e = cudaGetLastError();
   if (e != cudaSuccess) {
     if (err && err_len)
       snprintf(err, err_len, "CUDA error during search: %s", cudaGetErrorString(e));
     return false;
   }
-  if (attempts) *attempts = regions;
+  Ctx::Pending &p = ctx->pend[slot];
+  p.nonceBase = nonce_base;
+  p.salt = ctx->salt;
+  memcpy(p.aSeed, ctx->aSeed, PEARL_HASH_BYTES);
+  p.regions = regions;
+  ctx->pendCount++;
+  if (regions_out) *regions_out = regions;
+  return true;
+}
 
+// How many batches are queued and not yet collected.
+extern "C" int pearl_host_pending(void *handle) {
+  const Ctx *ctx = static_cast<const Ctx *>(handle);
+  return ctx ? ctx->pendCount : 0;
+}
+
+// Wait for the oldest queued batch and report it: `attempts` is its region count, and
+// the return is true with `out` filled when it hit. The hit's proof is read now, on the
+// side stream, with the salt-dependent part from its own salt's record (snapshotProof),
+// so it is right even when later work has already restamped A.
+extern "C" bool pearl_host_collect(void *handle, PearlSearchResult *out, uint64_t *attempts,
+                                   char *err, size_t err_len) {
+  Ctx *ctx = static_cast<Ctx *>(handle);
+  if (attempts) *attempts = 0;
+  if (!ctx || !out || ctx->pendCount == 0) return false;
+  DeviceScope scope(ctx->device);
+  const int slot = ctx->pendHead;
+  const Ctx::Pending p = ctx->pend[slot];
+  cudaError_t e = cudaEventSynchronize(ctx->slotDone[slot]);
+  if (e == cudaSuccess) e = cudaGetLastError();
+  ctx->pendHead = (ctx->pendHead + 1) % Ctx::kSlots;
+  ctx->pendCount--;
+  if (e != cudaSuccess) {
+    if (err && err_len)
+      snprintf(err, err_len, "CUDA error during search: %s", cudaGetErrorString(e));
+    return false;
+  }
+  const uint32_t hits = ctx->hSlotCount[slot];
+  if (attempts) *attempts = p.regions;
+
+  ctx->extraHits.clear();
+  ctx->extraNext = 0;
   if (hits > 0) {
+    const uint32_t *dIndex = ctx->dHitIndex + (size_t)slot * PEARL_MAX_HITS;
     const uint32_t n_hits = hits < PEARL_MAX_HITS ? hits : PEARL_MAX_HITS;
-    cudaMemcpy(ctx->hHitIndex.data(), ctx->dHitIndex, (size_t)n_hits * sizeof(uint32_t),
-               cudaMemcpyDeviceToHost);
-    // The kernel appends with an atomic, so the list is in an arbitrary order.
-    // Take the LOWEST region index, which is what a sequential scan would have
-    // returned — otherwise which share gets submitted varies run to run.
-    uint32_t best = 0;
-    for (uint32_t i = 1; i < n_hits; i++) {
-      if (ctx->hHitIndex[i] < ctx->hHitIndex[best]) best = i;
-    }
-    cudaMemcpy(out->jackpot_hash, ctx->dHashes + (size_t)best * PEARL_HASH_BYTES,
-               PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
-    memcpy(out->a_seed, ctx->aSeed, PEARL_HASH_BYTES);
-    memcpy(out->b_seed, ctx->bSeed, PEARL_HASH_BYTES);
-    out->nonce = nonce_base + ctx->hHitIndex[best];
-    out->salt = ctx->salt;
-
-    // Capture the proof NOW, while the operands and tree still belong to this
-    // hit. A few tens of milliseconds later they will have been re-drawn.
-    {
-      // The GLOBAL region index, not the batch-local one. Both give the same
-      // row offset, because nonce_base is a multiple of rowsValid -- but the
-      // COLUMN offset is (region / rowsValid) % colsValid, and the local index
-      // drops the batch base entirely. The columns in the snapshot then belong
-      // to a different tile than the row indices the proof declares, which the
-      // pool reports as "Failed to extract strip".
-      const uint64_t region = out->nonce;
-      const uint32_t rowIdx = (uint32_t)(region % ctx->rowsValid);
-      const uint32_t colIdx = (uint32_t)((region / ctx->rowsValid) % ctx->colsValid);
-      const uint32_t rowOff = pearl_expand_offset(rowIdx, PEARL_ROWS_MASK);
-      const uint32_t colOff = pearl_expand_offset(colIdx, PEARL_COLS_MASK);
-
-      uint32_t rows[PEARL_ROWS_COUNT], cols[PEARL_COLS_COUNT];
-      for (int i = 0; i < PEARL_ROWS_COUNT; i++) rows[i] = rowOff | PEARL_ROWS_PATTERN[i];
-      for (int i = 0; i < PEARL_COLS_COUNT; i++) cols[i] = colOff | PEARL_COLS_PATTERN[i];
-
-      snapshotProof(ctx, true, rows, PEARL_ROWS_COUNT, &out->proof_a.leaf_indices,
-                    &out->proof_a.leaves, &out->proof_a.siblings);
-      snapshotProof(ctx, false, cols, PEARL_COLS_COUNT, &out->proof_bt.leaf_indices,
-                    &out->proof_bt.leaves, &out->proof_bt.siblings);
-      cudaMemcpy(out->proof_a.root, ctx->dHashA, PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
-      cudaMemcpy(out->proof_bt.root, ctx->dHashB, PEARL_HASH_BYTES, cudaMemcpyDeviceToHost);
-      out->proof_a.total_leaves = (uint64_t)ctx->profile.m * ctx->profile.k / 1024;
-      out->proof_bt.total_leaves = (uint64_t)ctx->profile.n * ctx->profile.k / 1024;
-    }
-    out->proof.assign(PEARL_JACKPOT_BUCKETS * 4, 0);
-    // Indexed by the hit's SLOT, like the hash: the fold keeps no per-region
-    // transcripts, only the ones that hit.
-    cudaMemcpy(out->proof.data(),
-               ctx->dHitTranscript + (size_t)best * PEARL_JACKPOT_BUCKETS,
-               PEARL_JACKPOT_BUCKETS * 4, cudaMemcpyDeviceToHost);
-    out->found = true;
+    side_copy(ctx, ctx->hHitIndex.data(), dIndex, (size_t)n_hits * sizeof(uint32_t));
+    // The kernel appends with an atomic, so the list is in an arbitrary order. Report
+    // it in region order, the LOWEST index first, which is what a sequential scan
+    // would have returned -- otherwise which share goes first varies run to run.
+    std::vector<uint32_t> order(n_hits);
+    for (uint32_t i = 0; i < n_hits; i++) order[i] = i;
+    std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+      return ctx->hHitIndex[a] < ctx->hHitIndex[b];
+    });
+    fill_hit(ctx, p, slot, order[0], out);
+    // Every other hit of the batch as well (PEARL_ALL_HITS). Only the lowest used to be
+    // reported and the rest dropped: each is a distinct region that met the target, so
+    // at a pool's difficulty that was a share lost whenever a batch held two.
+#if PEARL_ALL_HITS
+    ctx->extraHits.resize(n_hits - 1);
+    for (uint32_t i = 1; i < n_hits; i++) fill_hit(ctx, p, slot, order[i], &ctx->extraHits[i - 1]);
+#endif
     return true;
   }
   out->found = false;
   return false;
+}
+
+// The collected batch's other hits, one a call, after the one pearl_host_collect
+// returned (PEARL_ALL_HITS). False when there are no more.
+extern "C" bool pearl_host_next_hit(void *handle, PearlSearchResult *out) {
+  Ctx *ctx = static_cast<Ctx *>(handle);
+  if (!ctx || !out || ctx->extraNext >= ctx->extraHits.size()) return false;
+  *out = ctx->extraHits[ctx->extraNext++];
+  return true;
+}
+
+// The synchronous search the bench probe and any older caller use: queue one batch and
+// wait for it. The miner's own loop (pearl_core.cc) keeps the pipeline full instead.
+extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base, uint32_t batch,
+                                  PearlSearchResult *out, uint64_t *attempts, char *err,
+                                  size_t err_len) {
+  if (attempts) *attempts = 0;
+  if (!handle || !out) return false;
+  Ctx *ctx = static_cast<Ctx *>(handle);
+  while (ctx->pendCount > 0) {  // not meant to be mixed with the pipelined calls
+    PearlSearchResult drop;
+    uint64_t a = 0;
+    pearl_host_collect(handle, &drop, &a, nullptr, 0);
+  }
+  if (!pearl_host_submit(handle, nonce_base, batch, nullptr, err, err_len)) return false;
+  return pearl_host_collect(handle, out, attempts, err, err_len);
 }
 
 // Which fold this context's card runs, as resolve_fold read it off the loaded
@@ -1626,7 +2106,8 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
   if (!ctx || !ctx->foldKnown) return "unresolved";
   if (ctx->foldTall)
     return ctx->foldTma ? "tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands"
-                        : "tall 192x256, 8 warps of 96x64, cp.async ring";
+                        : (ctx->foldTiled ? "tall 192x256, 8 warps of 96x64, cp.async ring, per-tile operands"
+                                          : "tall 192x256, 8 warps of 96x64, cp.async ring");
   if (ctx->foldWide) return "wmma 128x256, 8 warps of 64x64";
   if (ctx->foldBDirect)
     return PEARL_BD_GROUPS == 2
@@ -1662,7 +2143,8 @@ extern "C" bool pearl_host_leaf_chunks(void *handle, int isA,
   for (uint32_t i = 0; i < count; i++) {
     const uint64_t off = (uint64_t)leaf_indices[i] * 1024;
     if (off + 1024 > bytes) return false;
-    cudaMemcpy(out + (size_t)i * 1024, src + off, 1024, cudaMemcpyDeviceToHost);
+    cudaMemcpy(out + (size_t)i * 1024, operand_chunk(ctx, src, leaf_indices[i]), 1024,
+               cudaMemcpyDeviceToHost);
   }
   return true;
 }

@@ -274,6 +274,22 @@ typedef struct {
   uint32_t *transcript;  // [PEARL_MAX_HITS][16] the transcript that hashed to it
 } PearlHitList;
 
+// Everything a same-job redraw of A changes, as the host works it out (pearl_host.cu,
+// host_record) and pearl_restamp_commit writes it. A restamp changes A's first
+// PEARL_STAMP_BYTES bytes, so leaf 0 and node 0 of every level above it, the root, its
+// binding and a_seed, and nothing else: every other node's inputs are unchanged. The
+// host has the rest of that path (node 1 of each level) from the job's full draw, so it
+// can hash the new path itself and know a_seed before the device does. Passed by value.
+#define PEARL_RESTAMP_MAX_LEVELS 33
+typedef struct {
+  uint8_t head[16];     // A's first 16 bytes: the stamp, and the unchanged bytes after it
+  uint32_t levels;      // tree levels, leaves included; path[levels - 1] is the root
+  uint32_t node_off[PEARL_RESTAMP_MAX_LEVELS];      // node offset of each level (layerOffA)
+  uint32_t path[PEARL_RESTAMP_MAX_LEVELS][8];       // node 0 of each level: leaf 0's CV first
+  uint32_t bound[8];    // the bound root, bytes in order
+  uint32_t a_seed[8];
+} PearlRestampRecord;
+
 // Rows of A one warp covers in the tensor-core partials kernel. The WMMA int8
 // shape is 16x16x16, and valid row offsets are multiples of PEARL_ROWS_COUNT,
 // so a 16-row block is exactly four consecutive row offsets.
@@ -726,11 +742,11 @@ typedef struct {
 #endif
 // m is a power of two and 192 is not a factor of it, so the last row group of tiles
 // runs past m: at the mainnet 131072 rows, 683 groups cover 131136. The fold hashes no
-// region whose row offset falls past m. Both builds read A' k-blocked, m rows a k-block
-// (see PEARL_TALL_TMA). TMA zero-fills the rows past m. Ada's cp.async reads them: in
-// every k-block but the last they are the next k-block's first 64 rows, and in the last
-// they run past m * k. So the noised A is allocated with this many rows, the extra
-// zeroed and never generated.
+// region whose row offset falls past m. Blackwell reads A' k-blocked, m rows a k-block
+// (see PEARL_TALL_TMA), and TMA zero-fills the rows past m. Ada reads it in per-tile
+// order (PEARL_TALL_TILE_ORDER), where they are the last 64 rows of every slab of the
+// last block. So the noised A is allocated with this many rows, the extra zeroed and
+// never generated.
 #define PEARL_TALL_A_ROWS(m) \
   ((((m) + PEARL_TALL_BM - 1u) / PEARL_TALL_BM) * PEARL_TALL_BM)
 // Row groups a band of the tile walk covers (see PEARL_BLOCK_GROUP). The eight-warp
@@ -787,6 +803,29 @@ typedef struct {
 #endif
 #ifndef PEARL_TALL_BPT
 #define PEARL_TALL_BPT 8u
+#endif
+
+// The order Ada's tall fold (the cp.async ring) reads its noised operands in: 1 for
+// per-tile blocks, 0 for the k-blocked order Blackwell's TMA reads.
+//
+// Per-tile blocks: a tile's 192 rows of A' (256 columns of B') are one block, stored as
+// k / 64 slabs of [192][64] (pearl_materialize16_tiled). A stage of a tile is one
+// contiguous run of whole 128-byte lines either way; in this order the tile's next stage
+// sits right behind it, 12 KB (16 KB) on, a compile-time stride, where k-blocked it is a
+// k-block on, m * 64 (n * 64) bytes, read from the constant bank. The fold's copy
+// addresses then take one instruction fewer, and it is 2632 instructions against 2640.
+//
+// Measured on v0.5.7 (probes/README.md, "Onto v0.5.7"), ahead in all six pairs, +0.15%
+// in the full loop. On v0.5.8, interleaved against it, 4090 at 450 W: full miner loop
+// 308.22 / 308.32 -> 308.76 / 308.80 TH/s (+0.17%), bench 310.3 / 310.2 / 310.1 ->
+// 310.7 / 310.4 / 310.5 (+0.1%); 400 of 400 hits verified. It was dropped in v0.5.7 so
+// both builds would read one order; it comes back for Ada alone, and Blackwell keeps
+// k-blocked.
+// Needs the column offset and n in whole 256-column blocks: the search checks both.
+// The host reads the value too (Ctx::foldTiled), so -DPEARL_TALL_TILE_ORDER=0 binds both
+// sides.
+#ifndef PEARL_TALL_TILE_ORDER
+#define PEARL_TALL_TILE_ORDER 1
 #endif
 
 // Blackwell (sm_120) stages the tall fold with TMA instead of cp.async.
@@ -1187,9 +1226,10 @@ static const uint8_t PEARL_SEED_SALT_B[32] = {
 
 // k = 16 * rank is the smallest common dimension the protocol allows at the
 // mandated rank, and k/rank = 16 chunks is exactly the transcript lane count, so
-// each chunk lands in its own lane and the rotation never wraps.
+// each chunk lands in its own lane and the rotation never wraps. n is twice m:
+// only n dilutes the cost of a redraw (see PROFILE.n in pearlhash.js).
 static const PearlProfile PEARL_MAINNET_PROFILE = {2048u, 128u, 0u,
-                                                   131072u, 131072u,
+                                                   131072u, 262144u,
                                                    PEARL_SEED_SALTED, 2048u, 0u,
                                                    PEARL_OPERAND_CONST};
 

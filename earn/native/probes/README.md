@@ -84,6 +84,7 @@ drops to pay for it. The square warp tile that won 2% on Blackwell loses 2% here
 | + a 192x256 tile, three 64-deep stages on an mbarrier ring | 289 |
 | + whole-line operand order, EMPTY arrivals from every thread, the ring's roles in registers | 300 |
 | + a constant operand fill, A = B = 48 | **311** |
+| + the host loop: two batches queued, the redraw hashed on the host, n = 2m | +0.8% |
 
 The 241 and 264 steps are gated to sm_89 (`PEARL_FOLD_PERSISTENT`, `PEARL_FOLD_GROUP_STAGE`,
 `PEARL_FOLD_SERPENTINE`), because only a 4090 has run them. Ampere and Blackwell keep one
@@ -128,6 +129,138 @@ its row is 289 too. The last two rows on top of it, against it, interleaved: 291
 -> 310.6 / 310.9 in the full loop (+6.8%); a second session, 290.2 / 291.1 -> 311.1 / 311.5
 (+7.1%). See "Onto v0.5.7" below.
 
+### The host loop: the full miner loop now matches the bench, +0.8%
+
+The bench times fold and finalize back to back. The full miner loop, the number the app
+shows, also redraws A between salts and waits for every batch. On v0.5.8 that cost 0.65%:
+308.2 in the loop against 310.2 in the bench, same session. The fold's own GPU timer
+(CUDA events around each launch) showed where it went:
+
+| | share of wall time |
+|---|---|
+| the fold | 98.95% |
+| the redraw between salts, 0.76 ms every ~113 ms | 0.69% |
+| the GPU idle between launches, ~0.1 ms at each of four launches a salt | 0.36% |
+
+The idle part is the WDDM submission plus a synchronising copy: the host saw a batch
+finish, read its hit count, and only then queued the next batch. Ablations in the full
+loop (these builds skip work, so they are not miners): no restamp +0.6%, no per-batch
+readback +0.26%, both +0.85%.
+
+What changed, all in the host except two draw kernels. The fold's SASS is unchanged
+(the same 2640 instructions).
+
+- **Two batches queued.** `pearl_host_submit` queues a batch into one of two slots, each
+  with its own hit list. The hit count comes back to pinned memory behind an event, and
+  `pearl_host_collect` reads the older batch while the newer one runs. The gap between
+  launches went from ~0.1 ms to ~2 us.
+- **The host hashes the redraw.** A restamp changes leaf 0 of A and node 0 of every level
+  above it, and nothing else. The job's full draw leaves the host job_key, leaf 0 and node
+  1 of every level, so the host hashes the new path, the bound root and a_seed itself
+  (~40 BLAKE3 compressions). `pearl_restamp_commit` writes them to the device in order
+  behind the queued batches. The next batch then queues with no wait for a_seed, and the
+  serial one-thread restamp kernels are gone. The host's hashing is checked against the
+  device's root and a_seed at every job's first draw, and is used only if they match.
+- **Proofs from the salt's record.** A hit is now read after later work may already have
+  restamped A. So a proof takes leaf 0's first bytes, node 0 of each level and the root
+  from its own salt's record, and every other leaf and node from the device. Those are the
+  same for every salt of a job. Proof reads go on a separate stream, so they do not wait
+  behind the queued batch.
+- **Noise and A' in one kernel** (`pearl_noise_materialize_kblocked`). The old
+  materialise ran at half of DRAM speed, limited by L1, not DRAM. Each thread read its
+  sixteen (p0, p1) pairs as eight uint4, with a warp's threads 128 bytes apart: 256
+  wavefronts a warp. Now a block packs the pair table into shared memory (two bytes a
+  pair) and hashes its 32 rows' dense noise there too, so the 16 MiB dense factor is
+  never written. It writes the order the fold reads: per-tile on Ada
+  (`PEARL_TALL_TILE_ORDER`), k-blocked for Blackwell's TMA. Under the constant fill it
+  reads nothing of A but the stamp. The redraw
+  went from 0.73 ms to 0.34 ms. A version that walked the output in order, so its writes
+  were sequential, was slower (0.65 ms): each warp's gathers then span eight rows.
+- **Two streams.** The two slots run on two blocking streams, so a batch starts on the
+  SMs the one before it has already left. The redraw runs on the legacy stream, which
+  still waits for both. +0.23%, the launch tail.
+- **Compact operands.** Under the constant fill every chunk of A but chunk 0 is 48, and
+  every chunk of B is. So A and B are stored as two 1024-byte chunks each. The tree, the
+  draws and the proofs read them through `operand_chunk`. That is 512 MiB less at
+  131072 x 131072.
+- **n = 2m.** A redraw costs m*k bytes and buys (m/16)*(n/16) regions, so only n dilutes
+  it. `PROFILE.n` is 262144 now: a redraw every ~225 ms. With the compact operands this
+  still uses less VRAM than v0.5.8 did: 1333 MiB in use against 1549 (nvidia-smi, 111
+  MiB of it the idle desktop).
+- **Every hit of a batch.** The fold lists up to 64 hits a batch, but only the lowest was
+  reported and the rest were dropped. Now all of them are (`pearl_host_next_hit`). At a
+  pool's difficulty a batch rarely holds two, but each dropped one was a lost share. At
+  verify's easy target the same 120 s reported 4088 hits instead of ~2600.
+- **Jobs switch on the search thread.** `setJob` used to draw the new job on the JS
+  thread while a batch was in flight. A hit found around the switch then carried the new
+  job's tree, and its proof failed. `perf-scratch/r13-host/verify13j.js` switches jobs every 0.3 s and checks
+  each hit against its own job's key: v0.5.8 fails 18 of 400, this build 0 of 400
+  (97 jobs). `setJob` now only records the job. The search thread finishes the queued
+  batches, then draws.
+
+Full miner loop, 60 s, interleaved, 4090 at 450 W. It was a warm session, ~1% under the
+311 above:
+
+| | TH/s | SM clock |
+|---|---|---|
+| v0.5.8 | 308.2 / 308.3 | 2504 / 2508 MHz |
+| this build, n = 262144 | **310.7 / 310.6 (+0.8%)** | 2502 / 2502 MHz |
+| this build, n = 131072 | 309.9 / 310.0 (+0.6%) | 2504 / 2507 MHz |
+
+How the steps added up. Each row is interleaved in its own session against the base it
+names:
+
+| step | against | gain |
+|---|---|---|
+| two batches queued, host-hashed redraw, one stream | the old loop, same fold | +0.17% |
+| + the fused noise kernel (redraw 0.73 -> 0.34 ms) | v0.5.8 | +0.28% in total |
+| + two streams | the same build on one stream | +0.23% |
+| + compact operands | the build before | 0.0% (VRAM only) |
+| + n = 262144 | the same build at 131072 | +0.2 to +0.25% |
+
+The bench is unchanged: 310.2 / 310.1 against 310.0 / 309.9. The full loop now equals it
+(310.3 in the same session). `verify-hits`: 400 of 400 at both geometries (4088 and 4094
+hits across 995 and 509 salts in 120 s). Also 400 of 400 on this card with the Ampere
+path forced (`-DPEARL_FOLD_TALL=0 -DPEARL_FOLD_PERSISTENT=0 -DPEARL_FOLD_WIDE_WARPS=0`,
+row-major `pearl_materialize16`), and with the hashed fill. `PEARL_RESTAMP_CHECK`: 160 of
+160 repaired trees match a full rebuild. `r9-fill-distinct.js`: no a_seed shared between
+two cards, and a full draw at s gives the same a_seed as a restamp at s at all 14 shared
+salts. The first draws' a_seeds are v0.5.8's, bit for bit.
+
+Two things a pool sees differently. The pool took both: 11 of 11 shares accepted in 5 min
+at us2 (2026-09-27, the first head-to-head run in "Against the field" below):
+- n = 262144 is declared in every share and bound by cert-v3. B's Merkle proof is one
+  level deeper. n is the miner's choice as long as the sanity checks pass. To go back,
+  set `PROFILE.n` in `pearlhash.js` and n in `PEARL_MAINNET_PROFILE` to 131072.
+- A batch with two hits submits both. They are different regions.
+
+What did not work, full loop:
+
+| tried | vs its base |
+|---|---|
+| col_batch 8192, one launch a salt (old loop) | -0.8%, 30 MHz lower: worse L2 reuse |
+| col_batch 4096 / 1024 / 512 (old loop) | -0.5% / -0.37% / -1.0% |
+| col_batch 1024 with two streams, n = 262144 | +0.03%, noise |
+| m = 65536, n = 262144 (pipelined, one stream) | -0.2% against 131072 x 131072: the last row tile is padding, and there are twice the launches |
+| blocking-sync events (the host sleeps instead of spinning) | -0.4% against spinning. The fold's own timer ran slower at the same clock; why is not known |
+| pipelining with one stream | +0.17%, not the +0.36% the idle time predicted. The fold's GPU time per batch rose ~0.2%: under the power cap, idle time was partly paid back as clock |
+
+**2026-10-05, sm_120: +0.3% on an RTX PRO 6000 Blackwell.** The same build ported to a
+fresh branch and built with CUDA 13.3 for sm_120 (188 SMs, 128 MB L2, 600 W, memory at its
+default 13365 MHz). `bench.sh --verify`, 60 s rounds, interleaved against the v0.5.9 core:
+
+| | v0.5.9 core | this build | SM clock |
+|---|---|---|---|
+| production profile, n = 131072 | 408.9 / 408.9 / 409.1 | 410.3 / 410.3 / 410.0 (**+0.3%**, ahead every round) | 2280 / 2278 MHz |
+| n = 262144 | 409.4 / 410.6 / 410.5 | 410.4 / 410.4 / 410.4 (+0.05%) | 2281 / 2274 MHz |
+
+Smaller than the 4090's +0.8% for the reason the 5090 notes predict: at 21.5 ms a launch
+the host's share is bigger, but at the power cap most of the idle time the pipeline removes
+comes back as a lower SM clock, not as hashrate (the pipelined build does ~0.3% more work
+per clock and runs ~6 MHz lower). verify-hits 400/400 for both cores at n = 262144; the
+pipelined CLI mined live on HeroMiners us2 for 8 minutes at 410.4 TH/s, 14 shares accepted
+and 0 rejected at n = 262144.
+
 ### Against the field: 264 is 15.8% behind
 
 What a user compares is the number a miner DISPLAYS over a few minutes, so that is the
@@ -145,6 +278,20 @@ fold reaches on this card rather than one vendor's trick. Note where the gap is:
 449 W, and THEY hold the higher clock. They do ~16% less energy per multiply-accumulate
 (0.70 TH/W against 0.59), and on a power-capped card that is the whole difference. The
 pure-mma ceiling here is ~340 T-MAC/s, so they sit at ~92% of it and we sit at ~78%.
+
+**2026-09-27: level with them.** The same harness, twice, with the build that has the
+host loop and the per-tile order (see "The host loop" above). The second run reverses the
+order (PeakMiner, SRBMiner, then ours), because whoever runs first gets the coolest card:
+
+| run | ours | SRBMiner 3.6.9 | PeakMiner 2.17.1 |
+|---|---|---|---|
+| ours first | **310.9** (11/0 shares, 2504 MHz) | 309.9 (7/0, 2440 MHz) | 310.3 (9/0, 2433 MHz) |
+| ours last | 313.2 (16/0, 2524 MHz) | **313.5** (14/0, 2467 MHz) | 313.4 (6/0, 2459 MHz) |
+
+The order moves every miner by ~0.3%, more than the gaps between them, so the three are
+level. We run ~60 MHz higher at the same power, so we still do less work per clock:
+~0.95 of the tensor pipe per clock against their ~0.97. The pool accepted all 27 of our
+shares at n = 262144.
 
 ### A tile the accumulators already hold: +0.5%, all of it energy
 

@@ -215,12 +215,22 @@ const PROFILE = {
   // a power-of-two chunk count -- BLAKE3's real layout is left-heavy. A value
   // like 12288 (3 * 4096) gives a wrong root, wrong seeds, and shares no pool
   // will accept, and the small parity profile cannot catch it.
+  //
+  // n is twice m now. A new salt only restamps A and re-noises A' (see
+  // pearl_host_reseed), so a redraw costs m*k bytes of writes while it buys
+  // (m/16)*(n/16) regions: only n dilutes it. At n = 262144 a redraw comes every
+  // ~225 ms of search instead of ~113, and it takes 0.34 ms. Full miner loop on a
+  // 4090 at 450 W, same build, interleaved: 309.8 / 310.0 -> 310.6 / 310.6 TH/s
+  // (+0.2%). The constant fill no longer stores A and B whole (Ctx::compact in
+  // pearl_host.cu), so this measures 1333 MiB in use against 1549 for the old
+  // build at 131072 x 131072. A bigger m buys nothing (a redraw grows with it),
+  // and a smaller one measured lower.
   m: 131072,
-  n: 131072,
+  n: 262144,
 
   // Column offsets per launch. Not protocol: it trades VRAM for amortised
   // launch overhead, and the host clamps it to the number of valid column
-  // offsets, so 2048 means ONE launch covers a whole operand draw.
+  // offsets. At n = 262144 a draw takes 8 launches of 2048.
   //
   // Re-measured at the current geometry: 256 -> 111.2, 512 -> 112.1,
   // 1024 -> 112.7, 2048 -> 113.3 TH/s, and VRAM does not move (the jackpot
