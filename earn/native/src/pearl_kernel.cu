@@ -2918,6 +2918,13 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
 //     rank 0 multicasts the B box into both, EMPTY counts both CTAs' arrivals, and the
 //     pair walks tiles of two row groups. The switch's comment in pearl_config.h has
 //     the accounting; the code is under PEARL_TALL_CLUSTER_BODY below.
+// Whether this compile's tall fold reads out with shared-memory XORs (see
+// PEARL_TALL_RED_READOUT): Ada's build only.
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890 && PEARL_TALL_RED_READOUT
+#define PEARL_TALL_RED_ON 1
+#else
+#define PEARL_TALL_RED_ON 0
+#endif
 extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold_tall(
     const int8_t *__restrict__ Aprime, const int8_t *__restrict__ Bprime,
     uint32_t m, uint32_t n, uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg,
@@ -3214,6 +3221,13 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
     uint32_t x = 0u;
 #pragma unroll
     for (uint32_t np = 0; np < NB / 2u; np++) x = fold_pair(x, rl, np);
+#if PEARL_TALL_RED_ON
+    // Every lane XORs its part in. The predicate is always true (lane is never 99), but
+    // inside the asm: without one, or with any predicate ptxas can see, it spills 220 bytes.
+    asm volatile("{\n .reg .pred p;\n setp.ne.u32 p, %2, 99;\n @p red.shared.xor.b32 [%0], %1;\n}"
+                 ::"r"(trBase + rl * 128u + c * 4u), "r"(x), "r"(lane) : "memory");
+    return;
+#endif
     const uint32_t s4 = __shfl_xor_sync(0xffffffffu, x, 4);
     const uint32_t s8 = __shfl_xor_sync(0xffffffffu, x, 8);
     const uint32_t s12 = __shfl_xor_sync(0xffffffffu, x, 12);
@@ -3244,6 +3258,11 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
     pearl_mbar_init(sbase + threadIdx.x * STRIDE + STAGE + 8u, PEARL_TALL_THREADS);
 #endif
   }
+#if PEARL_TALL_RED_ON
+  // The transcripts start at zero: the readout XORs into them (PEARL_TALL_RED_READOUT).
+  for (uint32_t o = threadIdx.x * 16u; o < BM * BN / 4u; o += PEARL_TALL_THREADS * 16u)
+    asm volatile("st.shared.v4.u32 [%0], {%1,%1,%1,%1};" ::"r"(sTr + o), "r"(0u) : "memory");
+#endif
   // Publishes the initialised barriers: the fold's only block-wide barrier (the
   // cluster build adds the two cluster barriers, here and before the return).
   __syncthreads();
@@ -3661,7 +3680,9 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
         const uint32_t owr = Lc / WARP_REGIONS, rem = Lc % WARP_REGIONS;
         const uint32_t ocb = rem / (2u * RPL), oreg = rem % (2u * RPL);
         const uint32_t row_idx = (hrbg * 2u + owr) * (2u * RPL) + oreg;
+#if !PEARL_TALL_RED_ON
         if (row_idx >= rows_valid) return;   // the last row group's rows past m
+#endif
         uint32_t tm[16];
         const uint32_t ra = sTr + (wc * 2u * WARP_REGIONS + Lc) * 64u;
 #pragma unroll
@@ -3671,6 +3692,14 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
                          "=r"(tm[4 * q + 3])
                        : "r"(ra + 16u * q)
                        : "memory");
+#if PEARL_TALL_RED_ON
+        // Read: zero it for the next tile's XORs, the rows past m included.
+#pragma unroll
+        for (uint32_t q = 0; q < 4; q++)
+          asm volatile("st.shared.v4.u32 [%0], {%1,%1,%1,%1};" ::"r"(ra + 16u * q), "r"(0u)
+                       : "memory");
+        if (row_idx >= rows_valid) return;   // the last row group's rows past m
+#endif
 #ifdef PEARL_ABLATE_TRANSCRIPT_HASH
         return;   // diagnostic only: prices the hashing; no hit is ever reported
 #endif

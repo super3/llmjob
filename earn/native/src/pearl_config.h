@@ -982,6 +982,29 @@ typedef struct {
 #define PEARL_TALL_TILE_ORDER 1
 #endif
 
+// How the tall fold's per-chunk readout combines the four lanes that hold a region, on
+// Ada (sm_89; other builds ignore it). 0: three shuffles give every lane the whole XOR,
+// and the lane that keeps the chunk stores the word. 1: each lane XORs its own quarter
+// into the word in shared (red.shared.xor), with no shuffle and no select. The words then
+// have to start at zero: the kernel zeroes them once before its first tile, and the hasher
+// zeroes each region's after reading it. The ring orders that before the partner warp's
+// next writes, as it orders the hasher's reads (see the fold's hand-off).
+//
+// Measured with hashrate.js against the shuffle readout, 3-4 rounds, ahead in every round,
+// 400/400 hits verified on each card (2026-10-06):
+//   RTX 4060, fixed 1995 MHz (a pure per-clock reading)   46.51 -> 46.74 TH/s  (+0.49%)
+//   RTX 4060, 115 W cap                                   59.68 -> 60.03       (+0.59%)
+//   RTX 4070 Ti, 285 W                                    158.07 -> 158.91     (+0.53%)
+//   RTX 4090, 370 W                                       302.48 -> 303.11     (+0.21%)
+// The shuffles were on the readout's critical path, and the readout runs while the
+// partner warp has the scheduler's tensor pipe to itself. The chunk loop goes from 559
+// instructions to 541. The XORs carry a predicate that is
+// always true inside their asm: with none, or with any predicate ptxas can see through,
+// ptxas 12.8 spills 220 bytes of the fold.
+#ifndef PEARL_TALL_RED_READOUT
+#define PEARL_TALL_RED_READOUT 1
+#endif
+
 // Blackwell (sm_120) stages the tall fold with TMA instead of cp.async.
 //
 // One elected thread -- lane 0 of warp 4, a warp that does not hash (see the fold) --
