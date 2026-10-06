@@ -24,6 +24,9 @@ batch (see the RTX 2070 note). Later runs will average every reading after
 the first minute instead. On a multi-GPU rental, every miner is pinned to
 GPU 0 and GPU 1 is checked to stay idle.
 
+"% of top competitor" is our rate divided by the faster of PeakMiner and
+SRBMiner on the same host.
+
 ## How hosts are picked
 
 - The driver supports CUDA 12.8, which our miner needs.
@@ -44,21 +47,24 @@ existed, so the Thailand 2080 Ti (170 W of 250 W) is on the list.
 
 Run on 2026-10-06, 09:15–09:38 UTC, at commit `f66f80c`.
 
-| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner |
-|---|---|---|---|---|---|
-| RTX 2080 Ti | Thailand (170 W) | 95392 | 60.5 | 70.9 | 70.3 |
-| RTX 2080 Ti | Pennsylvania (260 W) | 150735 | 85.7 | 94.2 | 94.2 |
-| RTX 2080 | Colorado (275 W) | 149439 | 70.9 | didn't run | 80.3 |
-| RTX 2070 Super | Alberta (215 W) | 31798 | 55.0 | 60.9 | 59.1 |
-| RTX 2070 | South Korea (150 W) | 139007 | ~43 ⚠️ | 47.8 | 46.5 |
-| RTX 2060 Super | Germany (175 W) | 149900 | 41.1 | 46.5 | 45.0 |
-| RTX 2060 | Australia (190 W, 6 GB) | 152547 | 43.4 | 50.3 | 47.3 |
-| RTX 2060 | South Korea (184 W, 12 GB) | 27568 | 46.3 | 52.9 | 52.3 |
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of top competitor |
+|---|---|---|---|---|---|---|
+| RTX 2080 Ti | Thailand (170 W) | 95392 | 60.5 | 70.9 | 70.3 | 85% |
+| RTX 2080 Ti | Pennsylvania (260 W) | 150735 | 85.7 | 94.2 | 94.2 | 91% |
+| RTX 2080 | Colorado (275 W) | 149439 | 70.9 | didn't run | 80.3 | 88% |
+| RTX 2070 Super | Alberta (215 W) | 31798 | 55.0 | 60.9 | 59.1 | 90% |
+| RTX 2070 | South Korea (150 W) | 139007 | ~43 ⚠️ | 47.8 | 46.5 | ~90% |
+| RTX 2060 Super | Germany (175 W) | 149900 | 41.1 | 46.5 | 45.0 | 88% |
+| RTX 2060 | Australia (190 W, 6 GB) | 152547 | 43.4 | 50.3 | 47.3 | 86% |
+| RTX 2060 | South Korea (184 W, 12 GB) | 27568 | 46.3 | 52.9 | 52.3 | 88% |
 
 Every host passed the hit check, and every run had 0 rejected shares.
 
-- **Against PeakMiner:** we're at 85–91% on every card. PeakMiner keeps the
-  tensor cores busier: about 92% of peak against our 78–82%.
+- **Against the top competitor:** we're at 85–91% on every card. The top
+  competitor is PeakMiner everywhere except the 2080, where PeakMiner didn't
+  run and SRBMiner is the comparison. On the Pennsylvania 2080 Ti the two
+  tie at 94.2. PeakMiner keeps the tensor cores busier: about 92% of peak
+  against our 78–82%.
 - **⚠️ RTX 2070:** the CLI's last reading was 57.2 TH/s, which can't be
   right: at the 1395 MHz it ran at, the card's peak is 51.4. The hit check's
   own work count puts it at about 43 (55 operand redraws in 90 s), in line
@@ -75,70 +81,70 @@ Every host passed the hit check, and every run had 0 rejected shares.
 
 Not run yet. Hosts picked 2026-10-06; none has been tested before.
 
-| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner |
-|---|---|---|---|---|---|
-| RTX 3060 | Thailand (170 W) | 146320 | | | |
-| RTX 3060 | Vietnam (170 W) | 138808 | | | |
-| RTX 3060 Ti | Japan (180 W) | 137800 | | | |
-| RTX 3060 Ti | New Zealand (220 W) | 142449 | | | |
-| RTX 3070 | Quebec (220 W) | 148988 | | | |
-| RTX 3070 | Quebec (180 W) | 152549 | | | |
-| RTX 3070 Ti | Ontario (310 W) | 43435 | | | |
-| RTX 3070 Ti | Pennsylvania (310 W) | 136798 | | | |
-| RTX 3080 | Kentucky (320 W) | 29108 | | | |
-| RTX 3080 | France (320 W) | 153103 | | | |
-| RTX 3080 Ti | Japan (330 W) | 137807 | | | |
-| RTX 3080 Ti | Portugal (350 W) | 56596 | | | |
-| RTX 3090 | Quebec (350 W) | 16146 | | | |
-| RTX 3090 | Argentina (280 W) | 54987 | | | |
-| RTX 3090 Ti | Vietnam (450 W) | 27934 | | | |
-| RTX 3090 Ti | Greece (450 W) | 152830 | | | |
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of top competitor |
+|---|---|---|---|---|---|---|
+| RTX 3060 | Thailand (170 W) | 146320 | | | | |
+| RTX 3060 | Vietnam (170 W) | 138808 | | | | |
+| RTX 3060 Ti | Japan (180 W) | 137800 | | | | |
+| RTX 3060 Ti | New Zealand (220 W) | 142449 | | | | |
+| RTX 3070 | Quebec (220 W) | 148988 | | | | |
+| RTX 3070 | Quebec (180 W) | 152549 | | | | |
+| RTX 3070 Ti | Ontario (310 W) | 43435 | | | | |
+| RTX 3070 Ti | Pennsylvania (310 W) | 136798 | | | | |
+| RTX 3080 | Kentucky (320 W) | 29108 | | | | |
+| RTX 3080 | France (320 W) | 153103 | | | | |
+| RTX 3080 Ti | Japan (330 W) | 137807 | | | | |
+| RTX 3080 Ti | Portugal (350 W) | 56596 | | | | |
+| RTX 3090 | Quebec (350 W) | 16146 | | | | |
+| RTX 3090 | Argentina (280 W) | 54987 | | | | |
+| RTX 3090 Ti | Vietnam (450 W) | 27934 | | | | |
+| RTX 3090 Ti | Greece (450 W) | 152830 | | | | |
 
 ## RTX 40-series (PR #250 build)
 
 Not run yet. Hosts picked 2026-10-06; none has been tested before.
 
-| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner |
-|---|---|---|---|---|---|
-| RTX 4060 | New Zealand (115 W) | 148383 | | | |
-| RTX 4060 | Australia (115 W) | 143986 | | | |
-| RTX 4060 Ti | Ontario (160 W) | 37799 | | | |
-| RTX 4060 Ti | Brazil (160 W) | 152073 | | | |
-| RTX 4070 | Mexico (135 W) | 136612 | | | |
-| RTX 4070 Super | Delaware (220 W) | 142006 | | | |
-| RTX 4070 Super | California (220 W) | 153237 | | | |
-| RTX 4070 Ti | North Macedonia (285 W) | 150347 | | | |
-| RTX 4070 Ti | Delaware (285 W) | 39901 | | | |
-| RTX 4070 Ti Super | Ontario (285 W) | 29907 | | | |
-| RTX 4070 Ti Super | Romania (250 W) | 150551 | | | |
-| RTX 4080 | Utah (320 W) | 150424 | | | |
-| RTX 4080 | Nevada (320 W) | 147894 | | | |
-| RTX 4080 Super | Japan (320 W) | 36413 | | | |
-| RTX 4080 Super | California (275 W) | 138449 | | | |
-| RTX 4090 | Estonia (450 W) | 56522 | | | |
-| RTX 4090 | Poland (400 W) | 151409 | | | |
-| RTX 4090D | Tanzania (425 W) | 70632 | | | |
-| RTX 4090D | South Carolina (425 W) | 142279 | | | |
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of top competitor |
+|---|---|---|---|---|---|---|
+| RTX 4060 | New Zealand (115 W) | 148383 | | | | |
+| RTX 4060 | Australia (115 W) | 143986 | | | | |
+| RTX 4060 Ti | Ontario (160 W) | 37799 | | | | |
+| RTX 4060 Ti | Brazil (160 W) | 152073 | | | | |
+| RTX 4070 | Mexico (135 W) | 136612 | | | | |
+| RTX 4070 Super | Delaware (220 W) | 142006 | | | | |
+| RTX 4070 Super | California (220 W) | 153237 | | | | |
+| RTX 4070 Ti | North Macedonia (285 W) | 150347 | | | | |
+| RTX 4070 Ti | Delaware (285 W) | 39901 | | | | |
+| RTX 4070 Ti Super | Ontario (285 W) | 29907 | | | | |
+| RTX 4070 Ti Super | Romania (250 W) | 150551 | | | | |
+| RTX 4080 | Utah (320 W) | 150424 | | | | |
+| RTX 4080 | Nevada (320 W) | 147894 | | | | |
+| RTX 4080 Super | Japan (320 W) | 36413 | | | | |
+| RTX 4080 Super | California (275 W) | 138449 | | | | |
+| RTX 4090 | Estonia (450 W) | 56522 | | | | |
+| RTX 4090 | Poland (400 W) | 151409 | | | | |
+| RTX 4090D | Tanzania (425 W) | 70632 | | | | |
+| RTX 4090D | South Carolina (425 W) | 142279 | | | | |
 
 ## RTX 50-series (PR #250 build)
 
 Not run yet. Hosts picked 2026-10-06; none has been tested before.
 
-| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner |
-|---|---|---|---|---|---|
-| RTX 5060 | United States (145 W) | 68005 | | | |
-| RTX 5060 | Virginia (125 W) | 151478 | | | |
-| RTX 5060 Ti | Virginia (150 W) | 151123 | | | |
-| RTX 5060 Ti | France (180 W) | 146674 | | | |
-| RTX 5070 | New York (200 W) | 142292 | | | |
-| RTX 5070 | Kansas (250 W) | 151873 | | | |
-| RTX 5070 Ti | South Korea (250 W) | 39891 | | | |
-| RTX 5070 Ti | South Korea (300 W) | 18149 | | | |
-| RTX 5080 | Georgia (360 W) | 147973 | | | |
-| RTX 5080 | New Jersey (360 W) | 152066 | | | |
-| RTX 5090 | British Columbia (575 W) | 38389 | | | |
-| RTX 5090 | Romania (600 W) | 9105 | | | |
-| RTX 5090D | Taiwan (575 W) | 151179 | | | |
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of top competitor |
+|---|---|---|---|---|---|---|
+| RTX 5060 | United States (145 W) | 68005 | | | | |
+| RTX 5060 | Virginia (125 W) | 151478 | | | | |
+| RTX 5060 Ti | Virginia (150 W) | 151123 | | | | |
+| RTX 5060 Ti | France (180 W) | 146674 | | | | |
+| RTX 5070 | New York (200 W) | 142292 | | | | |
+| RTX 5070 | Kansas (250 W) | 151873 | | | | |
+| RTX 5070 Ti | South Korea (250 W) | 39891 | | | | |
+| RTX 5070 Ti | South Korea (300 W) | 18149 | | | | |
+| RTX 5080 | Georgia (360 W) | 147973 | | | | |
+| RTX 5080 | New Jersey (360 W) | 152066 | | | | |
+| RTX 5090 | British Columbia (575 W) | 38389 | | | | |
+| RTX 5090 | Romania (600 W) | 9105 | | | | |
+| RTX 5090D | Taiwan (575 W) | 151179 | | | | |
 
 ## Notes on the 30/40/50-series hosts
 
