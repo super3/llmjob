@@ -40,9 +40,9 @@ GPU 0 and GPU 1 is checked to stay idle.
 The 20-series hosts were picked before the power and performance-score rules
 existed, so the Thailand 2080 Ti (170 W of 250 W) is on the list.
 
-## RTX 20-series (PR #250 build), 2026-10-06 09:15–09:38 UTC
+## RTX 20-series (PR #250 build)
 
-Commit `f66f80c`.
+Run on 2026-10-06, 09:15–09:38 UTC, at commit `f66f80c`.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner |
 |---|---|---|---|---|---|
@@ -71,9 +71,9 @@ Every host passed the hit check, and every run had 0 rejected shares.
 - **SRBMiner** logs an OpenCL error at start on every 20-series card, then
   mines normally on CUDA.
 
-## RTX 30-series (PR #250 build), not run yet
+## RTX 30-series (PR #250 build)
 
-Hosts picked 2026-10-06. None has been tested before.
+Not run yet. Hosts picked 2026-10-06; none has been tested before.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner |
 |---|---|---|---|---|---|
@@ -94,9 +94,9 @@ Hosts picked 2026-10-06. None has been tested before.
 | RTX 3090 Ti | Vietnam (450 W) | 27934 | | | |
 | RTX 3090 Ti | Greece (450 W) | 152830 | | | |
 
-## RTX 40-series (PR #250 build), not run yet
+## RTX 40-series (PR #250 build)
 
-Hosts picked 2026-10-06. None has been tested before.
+Not run yet. Hosts picked 2026-10-06; none has been tested before.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner |
 |---|---|---|---|---|---|
@@ -120,9 +120,9 @@ Hosts picked 2026-10-06. None has been tested before.
 | RTX 4090D | Tanzania (425 W) | 70632 | | | |
 | RTX 4090D | South Carolina (425 W) | 142279 | | | |
 
-## RTX 50-series (PR #250 build), not run yet
+## RTX 50-series (PR #250 build)
 
-Hosts picked 2026-10-06. None has been tested before.
+Not run yet. Hosts picked 2026-10-06; none has been tested before.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner |
 |---|---|---|---|---|---|
