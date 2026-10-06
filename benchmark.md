@@ -7,8 +7,10 @@ power limits and cooling differ from host to host.
 
 ## How a host is tested
 
-1. Build our core from source for the card, and run the CLI from the same
-   source, so the run is exactly the commit under test.
+1. Download our CLI and core from the published release (now v0.5.11) on
+   GitHub, the same files a user gets. The first 20-series run predates the
+   release: it built PR #250 from source, which is the code that shipped as
+   v0.5.11.
 2. Hit check: `earn/native/probes/verify-hits.js` runs the core for 90 s and
    recomputes the first 400 hits from scratch the way the pool's verifier would.
    Every one must match. It checks that the answers are right, not the speed.
@@ -18,11 +20,12 @@ power limits and cooling differ from host to host.
    `us.pearl.herominers.com`. The order alternates between hosts, because
    whoever runs first gets the coolest card.
 
-Rates are in TH/s: each miner's own reading at the end of its 5 minutes. For
-our miner that last reading covers only about 0.5 s, so it can be off by one
-batch (see the RTX 2070 note). Later runs will average every reading after
-the first minute instead. On a multi-GPU rental, every miner is pinned to
-GPU 0 and GPU 1 is checked to stay idle.
+Rates are in TH/s. For PeakMiner and SRBMiner it's the miner's own figure at
+the end of its 5 minutes. For our miner it's the mean of every reading after
+the first minute. A single reading covers only about 0.5 s and can be off by
+one batch (see the RTX 2070 note). The first 20-series run used the last
+reading, so its "Ours" figures are single readings. On a multi-GPU rental,
+every miner is pinned to GPU 0 and GPU 1 is checked to stay idle.
 
 "% of best" is our rate divided by the faster of PeakMiner and
 SRBMiner on the same host.
@@ -43,9 +46,10 @@ SRBMiner on the same host.
 The 20-series hosts were picked before the power and performance-score rules
 existed, so the Thailand 2080 Ti (170 W of 250 W) is on the list.
 
-## RTX 20-series (PR #250 build)
+## RTX 20-series (v0.5.11)
 
-Run on 2026-10-06, 09:15–09:38 UTC, at commit `f66f80c`.
+Run on 2026-10-06, 09:15–09:38 UTC, with PR #250 built from source at
+`f66f80c`: the code that shipped as v0.5.11.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
@@ -77,20 +81,21 @@ Every host passed the hit check, and every run had 0 rejected shares.
 - **SRBMiner** logs an OpenCL error at start on every 20-series card, then
   mines normally on CUDA.
 
-## RTX 30-series (PR #250 build)
+## RTX 30-series (v0.5.11)
 
-Not run yet. Hosts picked 2026-10-06; none has been tested before.
+Running on 2026-10-06 from 10:24 UTC with the v0.5.11 release. Three hosts
+picked earlier were no longer listed and were replaced by the same rules.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
-| RTX 3090 Ti | Vietnam (450 W) | 27934 | | | | |
 | RTX 3090 Ti | Greece (450 W) | 152830 | | | | |
+| RTX 3090 Ti | Washington (450 W) | 151121 | | | | |
 | RTX 3090 | Quebec (350 W) | 16146 | | | | |
-| RTX 3090 | Argentina (280 W) | 54987 | | | | |
+| RTX 3090 | Czechia (350 W) | 24191 | | | | |
 | RTX 3080 Ti | Japan (330 W) | 137807 | | | | |
 | RTX 3080 Ti | Portugal (350 W) | 56596 | | | | |
 | RTX 3080 | Kentucky (320 W) | 29108 | | | | |
-| RTX 3080 | France (320 W) | 153103 | | | | |
+| RTX 3080 | Washington (280 W) | 25433 | | | | |
 | RTX 3070 Ti | Ontario (310 W) | 43435 | | | | |
 | RTX 3070 Ti | Pennsylvania (310 W) | 136798 | | | | |
 | RTX 3070 | Quebec (220 W) | 148988 | | | | |
@@ -100,7 +105,7 @@ Not run yet. Hosts picked 2026-10-06; none has been tested before.
 | RTX 3060 | Thailand (170 W) | 146320 | | | | |
 | RTX 3060 | Vietnam (170 W) | 138808 | | | | |
 
-## RTX 40-series (PR #250 build)
+## RTX 40-series (v0.5.11)
 
 Not run yet. Hosts picked 2026-10-06; none has been tested before.
 
@@ -126,7 +131,7 @@ Not run yet. Hosts picked 2026-10-06; none has been tested before.
 | RTX 4060 | New Zealand (115 W) | 148383 | | | | |
 | RTX 4060 | Australia (115 W) | 143986 | | | | |
 
-## RTX 50-series (PR #250 build)
+## RTX 50-series (v0.5.11)
 
 Not run yet. Hosts picked 2026-10-06; none has been tested before.
 
