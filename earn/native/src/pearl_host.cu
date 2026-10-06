@@ -80,6 +80,14 @@ extern "C" __global__ void pearl_restamp_operand(const uint32_t *key,
                                                  int8_t *operand, uint64_t salt,
                                                  uint64_t chunks, uint32_t *tree,
                                                  uint8_t *root_out);
+#if PEARL_TURING_BDIRECT
+// Built only with the B-direct fold, the only reader of its layout.
+extern "C" __global__ void pearl_materialize16_frag(const int8_t *base,
+                                                    const int8_t *dense,
+                                                    const uint32_t *perm, int8_t *out,
+                                                    uint32_t rows, uint32_t k_log2,
+                                                    uint32_t rank);
+#endif
 extern "C" __global__ void pearl_tile_fold_wmma(
     const int8_t *Aprime, const int8_t *Bprime, uint32_t m, uint32_t n,
     uint32_t k, uint32_t rank, uint32_t chunks, uint32_t col_off,
@@ -184,9 +192,15 @@ struct Ctx {
   // launched 256 threads a block rather than 512. Both are read off the loaded
   // binary once, when the context is created (resolve_fold).
   bool foldWide = false;
-  // Whether it is Turing's build (binaryVersion 75): 256 threads over a 128x128
-  // tile, so that its two stages fit the 64 KB of shared Turing grants a block.
+  // Whether it is Turing's build (binaryVersion 75): 256 threads, and a fold
+  // that fits the 64 KB of shared Turing grants a block (PEARL_TURING_BDIRECT
+  // and PEARL_TURING_WIDE pick which).
   bool foldTuring = false;
+  // Whether that is the B-direct fold (PEARL_TURING_BDIRECT), which reads B'
+  // fragment-ordered. The operand draw writes this card's B' that way exactly
+  // when this is set. It is per context, so in a rig with a 2080 Ti beside a
+  // 3090 or a 4090 each card's B' is in the layout its own fold reads.
+  bool foldBDirect = false;
   // Whether this card runs the tall fold instead (PEARL_FOLD_TALL): its own
   // kernel, pearl_tile_fold_tall, over 192x256 tiles. Read off that kernel's
   // loaded binary (PEARL_TALL_ARCH of its binaryVersion) with the others.
@@ -575,6 +589,10 @@ void resolve_fold(Ctx *ctx) {
   // Turing's fold has its own block size (PEARL_FOLD_TURING_THREADS); a wide
   // build forced onto every arch takes precedence, as it does in the kernel.
   ctx->foldTuring = haveAttrs && fa.binaryVersion == 75 && !ctx->foldWide;
+  // The sm_75 pass builds the B-direct fold exactly when PEARL_TURING_BDIRECT
+  // (PEARL_TURING_BD_BODY), which this pass reads the same, unless the block is
+  // forced wide, which foldTuring already excludes.
+  ctx->foldBDirect = ctx->foldTuring && PEARL_TURING_BDIRECT != 0;
   // The tall fold is persistent like the Ada fold.
   {
     cudaFuncAttributes ft;
@@ -1085,6 +1103,17 @@ void draw_noise(Ctx *ctx, bool isA) {
   if ((k & (k - 1u)) == 0u && k >= 16u) {
     uint32_t kLog2 = 0;
     while ((1u << kLog2) < k) kLog2++;
+#if PEARL_TURING_BDIRECT
+    if (ctx->foldBDirect && !isA && rows % 16u == 0u && k >= 32u) {
+      // The same values, in the fragment order Turing's B-direct fold loads B'
+      // in (pearl_materialize16_frag). A' stays row-major, so a restamp, which
+      // redraws only A', is unchanged. Decided per card when its context was
+      // created (resolve_fold). The search refuses the B-direct fold for any
+      // geometry this branch does not take.
+      pearl_materialize16_frag<<<draw_blocks(len / 16), kDrawThreads>>>(src, dense, perm, dst,
+                                                                        rows, kLog2, rank);
+    } else
+#endif
     if (ctx->foldTall && k >= PEARL_TALL_STAGE_K) {
       // The same values, stored [k / 64][rows][64] for the tall fold's staging: each
       // 64-byte stage of a tile is then whole L2 lines rather than half of every line,
@@ -1326,17 +1355,23 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   // The block's shape: sixteen 32x64 warp tiles, or eight 64x64 ones. Either
   // way the CTA tile is 128x256, so the tile count, the grid and the shared
   // footprint below come out the same.
-  // Turing's fold is eight 32x64 warp tiles in a 4x2 grid: a 128x128 tile, so
-  // twice the tiles and two thirds of the shared footprint (64 KB against
-  // 96 KB), both of which follow from warpCols below.
+  // Turing's folds (see PEARL_TURING_BDIRECT) are eight 64x64 warp tiles over
+  // 128x256 too: by default the B-direct fold (ctx->foldBDirect), whose shared
+  // footprint is its own, below, and with PEARL_TURING_BDIRECT=0 one stage of
+  // 48 KB instead of two. With PEARL_TURING_WIDE=0 it is eight 32x64 warp tiles
+  // in a 4x2 grid: a 128x128 tile, so twice the tiles and two stages of 32 KB,
+  // both of which follow from warpCols below.
   // The tall fold (ctx->foldTall) is 256 threads over 192x256 tiles; its tile
   // count and shared footprint are worked out apart from these, below.
+  const bool wideWarps = ctx->foldWide || (ctx->foldTuring && PEARL_TURING_WIDE);
   const uint32_t threads = ctx->foldTall     ? PEARL_TALL_THREADS
                            : ctx->foldWide   ? PEARL_FOLD_WIDE_THREADS
                            : ctx->foldTuring ? PEARL_FOLD_TURING_THREADS
                                              : PEARL_FOLD_THREADS;
-  const uint32_t warpRows = ctx->foldWide ? PEARL_FOLD_WIDE_WARP_ROWS : PEARL_WARP_ROWS;
-  const uint32_t rowTiles = ctx->foldWide ? PEARL_FOLD_WIDE_ROW_TILES : PEARL_WMMA_ROW_TILES;
+  const uint32_t warpRows = wideWarps ? PEARL_FOLD_WIDE_WARP_ROWS : PEARL_WARP_ROWS;
+  const uint32_t rowTiles = wideWarps ? PEARL_FOLD_WIDE_ROW_TILES : PEARL_WMMA_ROW_TILES;
+  const uint32_t stageBufs =
+      ctx->foldTuring && PEARL_TURING_WIDE ? PEARL_TURING_WIDE_STAGE_BUFS : PEARL_STAGE_BUFS;
   const void *foldFn = ctx->foldTall ? reinterpret_cast<const void *>(pearl_tile_fold_tall)
                                      : reinterpret_cast<const void *>(pearl_tile_fold_wmma);
   // A valid-offset INDEX; the kernel expands it into an actual offset.
@@ -1404,15 +1439,30 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
           ? (unsigned)(((ctx->rowsValid + PEARL_TALL_ROW_OFFSETS - 1u) / PEARL_TALL_ROW_OFFSETS)
                        * (col_groups / PEARL_TALL_COL_OFFSETS))
           : (unsigned)((rowBlocks / warpRows) * (colBlocks / warpCols));
-  // Two full-chunk stages; the transcripts live in registers and global now. The
-  // tall fold: three 64-deep stages, its ring's barriers, and the transcripts, laid
-  // out differently by the cp.async and TMA builds (see PEARL_TALL_SMEM).
-  const size_t smem = ctx->foldTall
-                          ? (ctx->foldTma ? (size_t)PEARL_TALL_SMEM_TMA : (size_t)PEARL_TALL_SMEM)
-                          : (size_t)PEARL_STAGE_BUFS
-                                * ((size_t)warpCols * PEARL_WMMA_COL_BLK * 16
-                                   + (size_t)warpRows * regionsPerWarp * PEARL_ROWS_COUNT)
-                                * PEARL_SB_STRIDE;
+  // Turing's B-direct fold reads B' in blocks of 16 columns, and the draw writes
+  // it that way only when n is a whole number of them (draw_noise).
+  if (ctx->foldBDirect && ctx->profile.n % 16u != 0u) {
+    if (err && err_len)
+      snprintf(err, err_len, "B-direct fold: n %u is not a multiple of 16", ctx->profile.n);
+    return false;
+  }
+  // Two full-chunk stages (one on Turing's one-stage fold); the transcripts live
+  // in registers and global now. The tall fold: three 64-deep stages, its ring's
+  // barriers, and the transcripts, laid out differently by the cp.async and TMA
+  // builds (see PEARL_TALL_SMEM). Turing's B-direct fold: PEARL_BD_A_STAGES
+  // stages of the tile's A rows, then the block's transcripts, 64 bytes a
+  // region (pearl_fold_bd.cuh): 40 KB.
+  const size_t smem =
+      ctx->foldTall ? (ctx->foldTma ? (size_t)PEARL_TALL_SMEM_TMA : (size_t)PEARL_TALL_SMEM)
+      : ctx->foldBDirect
+          ? (size_t)PEARL_BD_A_STAGES * warpRows * regionsPerWarp * PEARL_ROWS_COUNT
+                    * PEARL_SB_STRIDE
+                + (size_t)warpsPerBlock * regionsPerWarp * PEARL_WMMA_COL_BLK
+                      * PEARL_JACKPOT_BUCKETS * 4u
+          : (size_t)stageBufs
+                * ((size_t)warpCols * PEARL_WMMA_COL_BLK * 16
+                   + (size_t)warpRows * regionsPerWarp * PEARL_ROWS_COUNT)
+                * PEARL_SB_STRIDE;
   // The fold writes each transcript slot exactly once only when every chunk
   // has its own bucket. A geometry with more chunks than buckets would fold
   // into whatever the buffer already held; refuse it rather than mine garbage.
@@ -1425,6 +1475,9 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base,
   // Staging both operands puts this past the 48 KB a block gets by default.
   // Ada allows 99 KB per block, but only when asked; without this the launch
   // fails with an invalid-configuration error rather than running slowly.
+  // On Turing the B-direct fold takes 40 KB and the one-stage fold 48 KB, so
+  // neither needs the opt-in, and setting it anyway changes nothing. The
+  // 128x128 fold (PEARL_TURING_WIDE=0) takes 64 KB and does.
   // Once per CONTEXT, not once per process: the attribute is per device (see
   // Ctx::smemOptedIn).
   if (!ctx->smemOptedIn) {
@@ -1575,7 +1628,13 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
     return ctx->foldTma ? "tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands"
                         : "tall 192x256, 8 warps of 96x64, cp.async ring";
   if (ctx->foldWide) return "wmma 128x256, 8 warps of 64x64";
-  if (ctx->foldTuring) return "wmma 128x128, 8 warps of 32x64, m8n8k16 (Turing)";
+  if (ctx->foldBDirect)
+    return PEARL_BD_GROUPS == 2
+               ? "B-direct 128x256, 8 warps of 64x64, 2 row groups, m8n8k16 (Turing)"
+               : "B-direct 128x256, 8 warps of 64x64, 1 row group, m8n8k16 (Turing)";
+  if (ctx->foldTuring)
+    return PEARL_TURING_WIDE ? "wmma 128x256, 8 warps of 64x64, one stage, m8n8k16 (Turing)"
+                             : "wmma 128x128, 8 warps of 32x64, m8n8k16 (Turing)";
   return ctx->foldPersistent ? "wmma 128x256, 16 warps of 32x64, persistent"
                              : "wmma 128x256, 16 warps of 32x64";
 }

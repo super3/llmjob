@@ -337,10 +337,15 @@ typedef struct {
 // default and only sm_120 moves; this is gated rather than changed outright so no
 // Ampere or Ada rig regresses.
 //
-// Turing has 68 SMs and 5.5 MB of L2, against a 4090's 72 MB, and its 128x128 tile
-// reads twice the bytes per mac. Measured on an RTX 2080 Ti (bench, TH/s, two
-// rounds): 4 -> 48.5, 8 -> 51.8, 16 -> 54.1, 32 -> 47.7 with copies staged per
-// k-step; 8 -> 58.1, 16 -> 58.5, 32 -> 52.0 with PEARL_STAGE_REGS. So 16.
+// Turing has 68 SMs and 5.5 MB of L2, against a 4090's 72 MB. Measured on an RTX
+// 2080 Ti with the 128x128 tile (PEARL_TURING_WIDE=0), which reads a third more
+// bytes per mac than 128x256 (bench, TH/s, two rounds): 4 -> 48.5, 8 -> 51.8,
+// 16 -> 54.1, 32 -> 47.7 with copies staged per k-step; 8 -> 58.1, 16 -> 58.5,
+// 32 -> 52.0 with PEARL_STAGE_REGS. So 16. On the B-direct fold with one row
+// group (PEARL_TURING_BDIRECT, three rounds): 12 -> 77.5 / 77.4 / 77.4 against
+// 77.6 / 77.3 / 77.4 at 16, and with an L2 prefetch (since dropped) 12 -> 75.3
+// and 32 -> 69.0 against 74.0 - 74.2 at 16. So 16 stays. The shipped fold, two
+// row groups, has not been swept.
 //
 // Only ever used inside pearl_tile_fold_wmma, so __CUDA_ARCH__ is always defined
 // where it is read and the host never sees a differing value.
@@ -476,18 +481,126 @@ typedef struct {
 #define PEARL_WMMA_ROW_TILES PEARL_FOLD_WIDE_ROW_TILES
 #endif
 
-// Turing (sm_75, the RTX 20 series): eight 32x64 warps in a 4x2 grid, a 128x128
-// tile. Turing grants a block at most 64 KB of shared memory, and the 128x256
-// tile's two full-chunk stages take 96 KB. Half the columns brings them to
-// exactly 64 KB, 2 x (128 B columns + 128 A rows) x 128 bytes, and nothing else
-// with two stages and at least eight warps fits. The warp tile, the row slots
-// and the column blocks are the sixteen-warp fold's; only the column slots halve,
-// and the kernel and the host derive those from the thread count. The host
-// launches this many threads when the loaded fold is Turing's (binaryVersion ==
-// 75), as it does for the Ada build.
+// Turing (sm_75, the RTX 20 series): eight warps, 256 threads. Turing grants a
+// block at most 64 KB of shared memory, and the 128x256 tile's two full-chunk
+// stages take 96 KB, so Turing has folds of its own:
+//
+//   PEARL_TURING_BDIRECT=1 (default)  the B-direct fold, pearl_fold_bd.cuh.
+//       Ada's eight 64x64 warps over the 128x256 tile, and B never goes through
+//       shared: the host writes B' fragment-ordered, and each warp loads its B
+//       fragments straight into registers, one k-step ahead. The two warps of a
+//       scheduler read the same B, so the second should find it in L1. A goes
+//       through two 16 KB stages, stored mid-chunk, so a chunk has one barrier
+//       and no stores in its seam. 40 KB of shared, 238 registers, no spills.
+//   PEARL_TURING_BDIRECT=0  the same tile with both operands in ONE 48 KB stage,
+//       (256 B columns + 128 A rows) x 128 bytes. The next chunk waits in
+//       registers (PEARL_STAGE_REGS) until every warp is done reading the stage,
+//       which costs a second barrier a chunk.
+//   PEARL_TURING_WIDE=0  eight 32x64 warps in a 4x2 grid over a 128x128 tile,
+//       in two 32 KB stages: exactly 64 KB. The warp tile, the row slots and the
+//       column blocks are the sixteen-warp fold's; only the column slots halve.
+//       PEARL_TURING_BDIRECT defaults to 0 with it.
+//
+// Measured on an RTX 2080 Ti at its 250 W cap (probes/bench.cu, TH/s, three
+// interleaved rounds of 15 s, median SM clock):
+//   PEARL_TURING_BDIRECT=0             60.0 / 59.0 / 59.0   1530-1575 MHz
+//   B-direct, PEARL_BD_GROUPS=1        77.6 / 77.3 / 77.4   1455-1470 MHz
+//   B-direct, PEARL_BD_GROUPS=2        79.0 / 78.7 / 78.8   1440 MHz
+// The 128x128 fold (PEARL_TURING_WIDE=0) was not in that batch. Two earlier
+// batches of two rounds each, with no clock recorded, gave it 58.5 - 61.1.
+// PeakMiner runs 88.5 on a 2080 Ti at about 1390 MHz, SRBMiner 86.1. The
+// tensor pipe alone (mmapeak with Turing's mma) runs 122.7 T-MAC/s at 1770 MHz,
+// so per clock the one-stage fold gets 55% of it and the B-direct fold 79%.
+// verify-hits.js recomputed 400 of 400 hits in JS for the one-stage fold, for
+// one group, and for two groups with the skew below.
+//
+// Why. Probes on the one-stage fold: without its global loads it ran 84.0 at
+// 1710 MHz, without its shared stores 60.7, and without staging or barriers
+// 92.5 at 1530. So the loads and the power they draw were the cost, not the
+// stores.
+//
+// ldmatrix, shared stores and L1-hit loads each move 64 B/clk/SM on this card,
+// and a chunk of the one-stage fold pushes 224 KB an SM through that path:
+// 128 KB of ldmatrix, 48 KB of loads, 48 KB of stores. The B-direct fold pushes
+// 160 KB (64, 80, 16), and its loads go out a k-step ahead instead of all at
+// the top of the chunk.
+//
+// Tried on the B-direct fold and dropped (same rounds): the second row group
+// spinning 2000 clocks at the start of each tile, so the groups' seams fall
+// apart, 75.2 / 74.9 / 74.9; an L2 prefetch of the chunk two ahead at each seam,
+// 74.2 / 74.0 / 74.0 with one group; A fragment-ordered as well, with no
+// operand in shared, which faulted with an illegal address and is not in this
+// build.
+//
+// The 128x128 fold reads a byte from L2 for every 64 mac, against 85 at
+// 128x256, and its 32x64 warp tiles issue one ldmatrix per 10.7 mma against one
+// per 16 for 64x64 (sm_75 SASS: 24 LDSM per 256 IMMA a chunk, against 32 per
+// 512 on the one-stage fold).
+//
+// The host launches this many threads when the loaded fold is Turing's
+// (binaryVersion == 75), as it does for the Ada build. It picks the warp grid
+// and stage count from PEARL_TURING_WIDE, and with PEARL_TURING_BDIRECT writes
+// B' fragment-ordered for that card (Ctx::foldBDirect) and sizes its shared
+// from PEARL_BD_A_STAGES. Neither switch depends on the arch, so the host pass
+// and the sm_75 pass always agree; pass any override to both compiles.
+#ifndef PEARL_TURING_WIDE
+#define PEARL_TURING_WIDE 1
+#endif
+#ifndef PEARL_TURING_BDIRECT
+#if PEARL_TURING_WIDE
+#define PEARL_TURING_BDIRECT 1
+#else
+#define PEARL_TURING_BDIRECT 0
+#endif
+#endif
+// The B-direct fold's row-slot groups: 2, each row slot staging its own A and
+// meeting on its own 128-thread barrier, or 1, one __syncthreads a chunk.
+// Measured above: 2 is 1.8% ahead. The host reads it only for the fold's name.
+#ifndef PEARL_BD_GROUPS
+#define PEARL_BD_GROUPS 2
+#endif
+#if (PEARL_TURING_WIDE != 0 && PEARL_TURING_WIDE != 1) \
+    || (PEARL_TURING_BDIRECT != 0 && PEARL_TURING_BDIRECT != 1)
+#error "PEARL_TURING_WIDE and PEARL_TURING_BDIRECT are 0 or 1"
+#endif
+#if PEARL_TURING_BDIRECT && !PEARL_TURING_WIDE
+#error "the B-direct fold is the 128x256 tile: PEARL_TURING_WIDE=0 needs PEARL_TURING_BDIRECT=0"
+#endif
+#if PEARL_BD_GROUPS != 1 && PEARL_BD_GROUPS != 2
+#error "PEARL_BD_GROUPS is 1 or 2"
+#endif
 #define PEARL_FOLD_TURING_THREADS 256u
+#define PEARL_TURING_WIDE_STAGE_BUFS 1
+// The B-direct fold's shared memory is this many A stages of the tile's 128
+// rows, then the block's 128 transcripts of 64 bytes: 40 KB. That takes
+// Turing's 64 KB shared carveout and leaves 32 KB of L1 for B.
+#define PEARL_BD_A_STAGES 2
+// A block size forced from the command line skips Turing's block below, so
+// sm_75 builds the generic fold at that size: with 256 threads, the 128x128
+// tile in two 32 KB stages. The host still takes the card for Turing's. With
+// PEARL_TURING_WIDE it launches the 128x256 warp grid over half the tiles,
+// gives the shared of one stage or of the B-direct fold, and with B-direct
+// writes B' fragment-ordered. The fold would read past its shared and skip half
+// the columns. With PEARL_TURING_WIDE=0 the host launches the 128x128 tile, and
+// B-direct is off.
+#if defined(PEARL_FOLD_THREADS) && !PEARL_FOLD_WIDE_WARPS && defined(__CUDA_ARCH__) \
+    && __CUDA_ARCH__ < 800 && PEARL_TURING_WIDE
+#error "a forced PEARL_FOLD_THREADS replaces Turing's fold: build sm_75 with PEARL_TURING_WIDE=0"
+#endif
 #if !defined(PEARL_FOLD_THREADS) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
 #define PEARL_FOLD_THREADS PEARL_FOLD_TURING_THREADS
+#if PEARL_TURING_WIDE
+#define PEARL_WARP_ROWS PEARL_FOLD_WIDE_WARP_ROWS
+#define PEARL_WMMA_ROW_TILES PEARL_FOLD_WIDE_ROW_TILES
+#define PEARL_STAGE_BUFS PEARL_TURING_WIDE_STAGE_BUFS
+#endif
+#define PEARL_TURING_BD_BODY PEARL_TURING_BDIRECT
+#endif
+// Device side: whether THIS compile's pearl_tile_fold_wmma is the B-direct fold.
+// Never in the host pass, and not in an sm_75 build forced onto another block
+// (PEARL_FOLD_WIDE_WARPS), which the host does not treat as Turing's either.
+#ifndef PEARL_TURING_BD_BODY
+#define PEARL_TURING_BD_BODY 0
 #endif
 
 // A 192x256 CTA tile: eight 96x64 warp tiles (256 threads), staged in three 64-deep
@@ -844,7 +957,10 @@ typedef struct {
 #ifndef PEARL_FOLD_THREADS
 #define PEARL_FOLD_THREADS 512u
 #endif
-// Full-chunk stages in the double buffer.
+// Full-chunk stages in shared: two, double buffered. Turing's one-stage fold
+// (PEARL_TURING_BDIRECT=0) has room for only one, which works only with
+// PEARL_STAGE_REGS. The B-direct fold ignores this: it stages only A, in
+// PEARL_BD_A_STAGES stages of its own.
 #ifndef PEARL_STAGE_BUFS
 #define PEARL_STAGE_BUFS 2
 #endif
@@ -880,16 +996,24 @@ typedef struct {
 // whole chunk of mma to land under. This is the usual Volta/Turing pipeline
 // (CUTLASS's sm70 and sm75 mainloops do the same).
 //
-// It costs registers: with 256 threads a thread holds four B and four A slots,
-// eight int4. The Turing fold goes from 166 to 172 registers, no spills (ptxas
-// 12.8), well inside the 255 its launch bound allows. The sixteen-warp fold is
-// capped at 128 and spills with it (48 bytes on sm_86, 64 on sm_120).
+// It costs registers (ptxas 12.8). On the 128x128 tile (PEARL_TURING_WIDE=0) a
+// thread holds four B and four A slots, eight int4, and the fold goes from 166
+// to 172 registers with no spills. On the one-stage 128x256 fold
+// (PEARL_TURING_BDIRECT=0) it holds eight B and four A, twelve int4: 217
+// registers with the copies ablated, 255 with them, and 36 bytes of spill
+// stores and 32 of spill loads. In the chunk loop that is two 4-byte reloads a
+// chunk, the tile's two source offsets, ahead of the loads; the k-loop and the
+// readout spill nothing. The sixteen-warp fold is capped at 128 and spills with
+// it (48 bytes on sm_86, 64 on sm_120).
 //
 // Turing only: from sm_80 cp.async copies without registers and without
 // stalling the thread. Block-wide walk only (PEARL_FOLD_GROUP_STAGE=0). Device
-// side only. Measured on an RTX 2080 Ti (bench, TH/s, two rounds): 46.3 -> 52.0
-// at PEARL_BLOCK_GROUP 32, and 52.7 -> 58.5 at 16. With the copies ablated it
-// runs 78.1, so the staging still costs a quarter; see PEARL_BLOCK_GROUP.
+// side only. Measured on an RTX 2080 Ti with the 128x128 tile (bench, TH/s, two
+// rounds): 46.3 -> 52.0 at PEARL_BLOCK_GROUP 32, and 52.7 -> 58.5 at 16. With
+// the copies ablated it runs 78.1, so the staging still costs a quarter; see
+// PEARL_BLOCK_GROUP. The B-direct fold (PEARL_TURING_BDIRECT) always stages A
+// through registers its own way, loading at k-step 0 and storing at k-step 2,
+// and loads B straight into registers; it does not build with this at 0.
 #ifndef PEARL_STAGE_REGS
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
 #define PEARL_STAGE_REGS 1

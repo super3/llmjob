@@ -805,6 +805,61 @@ extern "C" __global__ void pearl_materialize16_kblocked(const int8_t *__restrict
       make_int4((int)ow[0], (int)ow[1], (int)ow[2], (int)ow[3]);
 }
 
+// pearl_materialize16, writing the noised operand FRAGMENT-ORDERED for Turing's
+// B-direct fold (PEARL_TURING_BDIRECT), which reads B' this way. For each 16-row
+// block and 32-byte k-step it stores the 512 bytes one ldmatrix.x4 would hand a
+// warp, lane by lane: lane L = 4g + t gets rows g and g + 8 at k bytes 4t..4t+3 and
+// 16 + 4t..+3, as {b0, b1, b2, b3}, so a warp loads one m16n8k32 B pair with one
+// coalesced LDG.128. Element (row, kk) goes to
+//   ((row >> 4) * (k / 32) + (kk >> 5)) * 512 + ((row & 7) * 4 + ((kk >> 2) & 3)) * 16
+//     + (((row >> 3) & 1) * 2 + ((kk >> 4) & 1)) * 4 + (kk & 3).
+// The values are pearl_materialize16's; only the store address differs. Needs rows a
+// multiple of 16 and k a power of two of at least 32; the host checks both.
+//
+// Only built with PEARL_TURING_BDIRECT, and with a body only in the pass that
+// builds the B-direct fold (PEARL_TURING_BD_BODY, sm_75). Elsewhere it is an empty
+// kernel nothing launches, so no other architecture's existing kernels change.
+#if PEARL_TURING_BDIRECT
+extern "C" __global__ void pearl_materialize16_frag(const int8_t *__restrict__ base,
+                                                    const int8_t *__restrict__ dense,
+                                                    const uint32_t *__restrict__ perm,
+                                                    int8_t *__restrict__ out,
+                                                    uint32_t rows, uint32_t k_log2,
+                                                    uint32_t rank) {
+#if PEARL_TURING_BD_BODY
+  const uint64_t v = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+  if (v >= (((uint64_t)rows << k_log2) >> 4)) return;
+  const uint64_t idx = v << 4;
+  const uint32_t r = (uint32_t)(idx >> k_log2);
+  const uint32_t kk = (uint32_t)(idx & ((1ull << k_log2) - 1u));
+  const int8_t *__restrict__ row = dense + (size_t)r * rank;
+  const int4 b4 = reinterpret_cast<const int4 *>(base)[v];
+  const uint32_t bw[4] = {(uint32_t)b4.x, (uint32_t)b4.y, (uint32_t)b4.z,
+                          (uint32_t)b4.w};
+  const uint4 *__restrict__ pp = reinterpret_cast<const uint4 *>(perm + (size_t)kk * 2u);
+  const uint64_t blk = ((uint64_t)(r >> 4) << (k_log2 - 5)) + (kk >> 5);
+  const uint32_t reg = ((r >> 3) & 1u) * 2u + ((kk >> 4) & 1u);
+  uint32_t *o = reinterpret_cast<uint32_t *>(out + blk * 512u + (r & 7u) * 64u) + reg;
+#pragma unroll
+  for (int w = 0; w < 4; w++) {
+    const uint4 q0 = pp[w * 2];
+    const uint4 q1 = pp[w * 2 + 1];
+    const uint32_t p0[4] = {q0.x, q0.z, q1.x, q1.z};
+    const uint32_t p1[4] = {q0.y, q0.w, q1.y, q1.w};
+    uint32_t packed = 0;
+#pragma unroll
+    for (int j = 0; j < 4; j++) {
+      const int32_t a = (int32_t)(int8_t)(bw[w] >> (j * 8));
+      int32_t sv = a + (int32_t)row[p0[j]] - (int32_t)row[p1[j]];
+      sv = sv < -128 ? -128 : (sv > 127 ? 127 : sv);
+      packed |= ((uint32_t)sv & 0xffu) << (j * 8);
+    }
+    o[w * 4] = packed;  // lane 4 * (r & 7) + w, 16 bytes a lane
+  }
+#endif  // PEARL_TURING_BD_BODY
+}
+#endif  // PEARL_TURING_BDIRECT
+
 // Re-draw an operand by rewriting a few of its bytes, and repair the stored
 // commitment tree to match.
 //
@@ -1361,12 +1416,24 @@ __host__ __device__ constexpr uint32_t pearl_slots_before(uint64_t sched, uint32
 // what bound the warp tile, and the warp tile is what sets instructions per mma --
 // which is what the fold is actually limited by: per cycle it already issues 85%
 // of what pure mma does, and loses only on the clock its extra instructions cost.
+#if PEARL_TURING_BD_BODY
+#include "pearl_fold_bd.cuh"
+#endif
 extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold_wmma(
     const int8_t *__restrict__ Aprime, const int8_t *__restrict__ Bprime,
     uint32_t m, uint32_t n, uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg,
     uint32_t col_off, uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
     const PearlTranscriptTest test, const PearlHitList hits) {
   using namespace nvcuda;
+#if PEARL_TURING_BD_BODY
+  // Turing's B-direct fold (PEARL_TURING_BDIRECT, pearl_fold_bd.cuh) is this
+  // kernel's whole body in the sm_75 build. The same geometry check as below.
+  if (k_arg != PEARL_FOLD_K || rank_arg != PEARL_FOLD_RANK || chunks_arg != PEARL_FOLD_CHUNKS
+      || blockDim.x != PEARL_FOLD_THREADS)
+    return;
+  (void)m; (void)n; (void)col_groups;
+  pearl_fold_bd(Aprime, Bprime, col_off, rows_valid, tiles, test, hits);
+#else
 
   // Compile-time geometry. The host has already refused anything else, so this
   // is belt-and-braces: a mismatched launch does nothing rather than folding
@@ -1644,9 +1711,39 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
   // Two full-chunk stages, double buffered: chunk c lives in buffer c & 1.
   // This is the shape the closed miners use -- it is why the layout above had
   // to lose its padding -- and it costs one barrier per chunk, total.
+  //
+  // Turing's one-stage fold (PEARL_TURING_BDIRECT=0) has room for one: every
+  // chunk lives in buffer 0, and the next one waits in registers
+  // (PEARL_STAGE_REGS) until a second barrier says every warp is done reading
+  // this one.
   const uint32_t buf_bytes = (sb_cols + sa_rows) * PEARL_SB_STRIDE;
   static_assert(buf_bytes % 128u == 0u,
                 "a stage buffer must keep rows 128-byte aligned (see the ldmatrix lane bases)");
+  // Where chunk cc lives in shared, as an offset from the stage base.
+#if PEARL_STAGE_BUFS == 1
+#if !PEARL_STAGE_REGS
+#error "one stage buffer needs PEARL_STAGE_REGS: the next chunk has to wait in registers"
+#endif
+#if PEARL_FOLD_PERSISTENT
+#error "one stage buffer cannot take the next tile's chunk 0 and the transcripts at once: build with PEARL_FOLD_PERSISTENT=0 (or, on Turing, PEARL_TURING_BDIRECT=1 or PEARL_TURING_WIDE=0)"
+#endif
+#define PEARL_STAGE_OFF(cc) 0u
+// The read barrier, a chunk's second: every warp is done reading the stage
+// before any thread stores the next chunk into it. Whether a chunk has one is
+// stage_next, which is the same for the whole block, and every warp reaches it
+// at the same place, inactive ones too (see the chunk loop). PEARL_ABLATE_BARRIER
+// drops it with the other.
+#ifdef PEARL_ABLATE_BARRIER
+#define PEARL_STAGE_READ_BARRIER()
+#else
+#define PEARL_STAGE_READ_BARRIER() __syncthreads();
+#endif
+#elif PEARL_STAGE_BUFS == 2
+#define PEARL_STAGE_OFF(cc) (((cc) & 1u) * buf_bytes)
+#define PEARL_STAGE_READ_BARRIER()
+#else
+#error "PEARL_STAGE_BUFS must be 1 or 2"
+#endif
 
 #if PEARL_FOLD_GROUP_STAGE
 // Slot p of this thread's share of its B column group, and of its A row group.
@@ -1657,10 +1754,10 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
 #define PEARL_ISSUE_A(cc, p) {}
 #else
 #define PEARL_ISSUE_B(cc, p)                                                          \
-  pearl_cp_async16(sBa + ((cc) & 1u) * buf_bytes + bdst0 + (p) * bDstStep,             \
+  pearl_cp_async16(sBa + PEARL_STAGE_OFF(cc) + bdst0 + (p) * bDstStep,                 \
                    Bprime + bsrc0 + ((cc) % chunks) * rank + (p) * bSrcStep);
 #define PEARL_ISSUE_A(cc, p)                                                          \
-  pearl_cp_async16(sAa + ((cc) & 1u) * buf_bytes + adst0 + (p) * aDstStep,             \
+  pearl_cp_async16(sAa + PEARL_STAGE_OFF(cc) + adst0 + (p) * aDstStep,                 \
                    Aprime + asrc0 + ((cc) % chunks) * rank + (p) * aSrcStep);
 #endif
 #define PEARL_ISSUE_CHUNK(cc)                                                         \
@@ -1679,8 +1776,8 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
 #define PEARL_ISSUE_CHUNK(cc)                                                         \
   {                                                                                   \
     const uint32_t k0_ = (cc) * rank;                                                 \
-    const uint32_t bB_ = sBa + ((cc) & 1u) * buf_bytes;                               \
-    const uint32_t bA_ = sAa + ((cc) & 1u) * buf_bytes;                               \
+    const uint32_t bB_ = sBa + PEARL_STAGE_OFF(cc);                                   \
+    const uint32_t bA_ = sAa + PEARL_STAGE_OFF(cc);                                   \
     uint32_t bs_ = bsrc0 + k0_, bd_ = bB_ + bdst0;                                    \
     for (uint32_t i_ = pid; i_ < btotal; i_ += pthreads) {                            \
       pearl_cp_async16(bd_, Bprime + bs_);                                            \
@@ -1725,10 +1822,10 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
     const uint32_t k0_ = PEARL_SLOT_K0(cc);                                           \
     const uint32_t i_ = pid + (p) * pthreads;                                         \
     if (i_ < btotal)                                                                  \
-      pearl_cp_async16(sBa + ((cc) & 1u) * buf_bytes + bdst0 + (p) * dstStep,          \
+      pearl_cp_async16(sBa + PEARL_STAGE_OFF(cc) + bdst0 + (p) * dstStep,              \
                        Bprime + bsrc0 + k0_ + (p) * srcStep);                          \
     if (i_ < atotal)                                                                  \
-      pearl_cp_async16(sAa + ((cc) & 1u) * buf_bytes + adst0 + (p) * dstStep,          \
+      pearl_cp_async16(sAa + PEARL_STAGE_OFF(cc) + adst0 + (p) * dstStep,              \
                        Aprime + asrc0 + k0_ + (p) * srcStep);                          \
   }
 #endif
@@ -1743,14 +1840,15 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
 #endif
 // Register staging (PEARL_STAGE_REGS): PEARL_ISSUE_SLOT's copies split in two.
 // LOAD reads all of this thread's slots of chunk cc into registers, rB[p] and
-// rA[p]; STORE writes them to stage buffer cc & 1. Same sources, destinations
-// and bounds as PEARL_ISSUE_SLOT, and the loads are ld.global.nc like its plain
-// copy's: neither operand changes during a launch.
+// rA[p]; STORE writes them to chunk cc's stage buffer. Same sources,
+// destinations and bounds as PEARL_ISSUE_SLOT, and the loads are ld.global.nc
+// like its plain copy's: neither operand changes during a launch.
 //
-// Four B slots and four A slots a thread on Turing. The block is exactly
-// pthreads threads (checked at the top), so when an operand splits evenly over
-// them every slot is in bounds. Saying so drops a compare a slot, and leaves
-// stage_next the only condition on the copies.
+// A thread has eight B slots and four A slots on Turing's one-stage 128x256
+// fold, four and four on its 128x128 one. The block is exactly pthreads threads
+// (checked at the top), so when an operand splits evenly over them every slot
+// is in bounds. Saying so drops a compare a slot, and leaves stage_next the
+// only condition on the copies.
   constexpr uint32_t rbslots = (btotal + pthreads - 1u) / pthreads;
   constexpr uint32_t raslots = (atotal + pthreads - 1u) / pthreads;
 #define PEARL_REG_SLOT_IN(p, total) \
@@ -1772,8 +1870,8 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
   }
 #define PEARL_STORE_REGS(cc)                                                          \
   {                                                                                   \
-    const uint32_t b_ = sBa + ((cc) & 1u) * buf_bytes + bdst0;                        \
-    const uint32_t a_ = sAa + ((cc) & 1u) * buf_bytes + adst0;                        \
+    const uint32_t b_ = sBa + PEARL_STAGE_OFF(cc) + bdst0;                            \
+    const uint32_t a_ = sAa + PEARL_STAGE_OFF(cc) + adst0;                            \
     _Pragma("unroll") for (uint32_t p_ = 0; p_ < rbslots; p_++)                       \
       if (PEARL_REG_SLOT_IN(p_, btotal))                                              \
         *(int4 *)__cvta_shared_to_generic(b_ + p_ * dstStep) = rB[p_];                \
@@ -1990,7 +2088,9 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
       // double duty: it publishes the staged bytes to every warp, and it
       // certifies that every warp is done READING the other buffer, which is
       // what makes it safe to issue the next chunk into it with no second
-      // barrier. Those copies fly underneath this chunk's compute.
+      // barrier. Those copies fly underneath this chunk's compute. With one
+      // stage there is no other buffer, so this barrier only publishes, and the
+      // read barrier after the k-loop (PEARL_STAGE_READ_BARRIER) does the rest.
       //
       // Chunk 0's drain and barrier happened already, at the end of the previous
       // tile (or before the first one) -- see the transcript hand-off.
@@ -2003,7 +2103,9 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
       // The next chunk is staged a slot at a time inside the k-loop below, so
       // that compute starts before the copies are asked for. A warp that owns no
       // tile still has to issue its share -- staging is block-wide cooperative --
-      // so the inactive ones run a bare copy of the same loop.
+      // so the inactive ones run a bare copy of the same loop. (With
+      // PEARL_STAGE_REGS the copies are split into the loads and stores below
+      // instead, and with one stage an inactive warp runs those like any other.)
       //
       // The last chunk stages the NEXT TILE's chunk 0. Its sources are the only
       // thing that differ, and this tile has issued its last copy by now, so the
@@ -2029,17 +2131,36 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
       // waits on its load, and in the k-loop that wait stalls the warp's mma; held
       // in registers, the loads land under the whole chunk instead.
       //
-      // Safe with the one barrier a chunk: buffer (chunk + 1) & 1 was last read in
-      // chunk - 1, and the barrier at the top of this chunk retired those reads.
-      // The barrier at the top of the next chunk publishes the stores.
+      // With two stages that is safe with the one barrier a chunk: buffer
+      // (chunk + 1) & 1 was last read in chunk - 1, and the barrier at the top of
+      // this chunk retired those reads. With one stage the next chunk goes into
+      // the buffer this chunk is read from, so a second barrier comes first (see
+      // PEARL_STAGE_READ_BARRIER). Either way the barrier at the top of the next
+      // chunk publishes the stores.
       //
-      // Ahead of the `active` branch on purpose: both sides use the registers, so
-      // ptxas cannot move the loads past it. Placed after it, they were one
-      // predicated block, and ptxas sank them into the second k-step (sm_75,
-      // ptxas 12.8), behind 99 of the chunk's 256 IMMA.
+      // Ahead of the `active` branch on purpose: both sides use the registers (with
+      // one stage, the code after it), so ptxas cannot move the loads past it.
+      // Placed after it, they were one predicated block, and ptxas sank them into
+      // the second k-step, behind 99 of the chunk's 256 IMMA (128x128 tile, sm_75,
+      // ptxas 12.8).
       int4 rB[rbslots], rA[raslots];
       if (stage_next) PEARL_LOAD_REGS(chunk + 1u)
 #endif
+#if PEARL_STAGE_BUFS == 1
+      // One stage: a warp with no tile skips only the mma, then meets the others
+      // at the read barrier and the stores after the k-loop. So every warp passes
+      // both of a chunk's barriers at the same instruction, which __syncthreads
+      // (the aligned bar.sync) requires. Its readout folds zeros, and the hand-off
+      // writes nothing for it.
+      //
+      // The other way, an inactive path of its own as below, needs a second copy
+      // of the read barrier there, and so the non-aligned barrier.sync in both.
+      // That compiled worse (sm_75, ptxas 12.8): 56 bytes of spill loads against
+      // 32, and in the chunk loop five reloads and three spills a chunk against
+      // two reloads. Here ptxas also issues the loads above the top-of-chunk
+      // barrier.
+      if (active) {
+#else
       if (!active) {
         if (stage_next) {
 #if PEARL_FOLD_GROUP_STAGE
@@ -2054,7 +2175,8 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
         }
         continue;
       }
-      const uint32_t stage_off = (chunk & 1u) * buf_bytes;
+#endif  // PEARL_STAGE_BUFS == 1
+      const uint32_t stage_off = PEARL_STAGE_OFF(chunk);
 #if !PEARL_FOLD_LANE_BASES
       const uint32_t sAc = sAa + stage_off;
       const uint32_t sBc = sBa + stage_off;
@@ -2187,11 +2309,18 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
 #endif
       }
 #endif
+#if PEARL_STAGE_BUFS == 1
+      }  // if (active)
+#endif
 #if PEARL_STAGE_REGS
       // The next chunk's stores. ptxas cannot move a shared store above a shared
       // read it might overlap, so these stay behind the last k-step's ldmatrix;
-      // on sm_75 they land after its last mma, just before the readout.
-      if (stage_next) PEARL_STORE_REGS(chunk + 1u)
+      // on sm_75 they land after its last mma, just before the readout. With one
+      // stage the read barrier goes first, and every warp comes through here.
+      if (stage_next) {
+        PEARL_STAGE_READ_BARRIER()
+        PEARL_STORE_REGS(chunk + 1u)
+      }
 #endif
 
       // Chunk boundary: fold the running tile into each region's transcript.
@@ -2230,10 +2359,11 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
     // A warp's transcripts are spread one word per lane, so they go through
     // shared first and one thread then hashes one whole region. The buffer the
     // LAST chunk read takes them, because the other one is now receiving the next
-    // tile's chunk 0. That costs two barriers the one-tile-per-block fold did
-    // not need: every warp has to be done reading the last chunk before any warp
-    // overwrites it, and every hashing thread has to have read its transcript
-    // back out before the next tile's chunk 1 is issued on top of it. The next
+    // tile's chunk 0 (with one stage there is no other; see below). That costs
+    // two barriers the one-tile-per-block fold did not need: every warp has to
+    // be done reading the last chunk before any warp overwrites it, and every
+    // hashing thread has to have read its transcript back out before the next
+    // tile's chunk 1 is issued on top of it. The next
     // tile's chunk 0 barrier merges into the hand-off barrier between the two,
     // so the seam between tiles costs one barrier more than a block's start and
     // end did, and no exposed staging.
@@ -2293,7 +2423,7 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
     //     folds bit 2 in.
     constexpr uint32_t hcols = 32u / gquads;                  // hasher's columns a slot
     auto hq = [](uint32_t ci) { return (RPL > 1u ? ci ^ (ci >> 2) : ci) & 3u; };
-    uint32_t *sTB = smem_u32 + ((chunks - 1u) & 1u) * (buf_bytes / 4u);
+    uint32_t *sTB = smem_u32 + PEARL_STAGE_OFF(chunks - 1u) / 4u;
     pearl_bar_sync(colBar, gB);
     if (active) {
       // For one sl a lane's word lands on bank 4 * pos + (b & 3), and pos takes
@@ -2342,7 +2472,12 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
     // Every lane's read is done before any lane's chunk-1 copy can land on it.
     __syncwarp();
 #else
-    uint32_t *sT = smem_u32 + ((chunks - 1u) & 1u) * (buf_bytes / 4u);
+    // With one stage this is the only buffer. That is safe because a one-stage
+    // fold is never persistent: nothing is staged into it until the next tile
+    // restages chunk 0, after the barrier that ends the hand-off.
+    static_assert(block_regions * PEARL_JACKPOT_BUCKETS * 4u <= buf_bytes,
+                  "the transcripts must fit in a stage buffer");
+    uint32_t *sT = smem_u32 + PEARL_STAGE_OFF(chunks - 1u) / 4u;
     __syncthreads();
     // Region L's 16 words are four 16-byte quads, and quad q sits at
     // q ^ ((L >> 1) & 3). Without the swizzle the eight regions one quarter-warp
@@ -2424,6 +2559,7 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
       for (int i = 0; i < 16; i++) hits.transcript[slot * 16u + i] = tm[i];
     }();
   }
+#endif  // PEARL_TURING_BD_BODY
 }
 
 // The tall fold (PEARL_FOLD_TALL, Ada and Blackwell): pearl_tile_fold_wmma's fold over a
