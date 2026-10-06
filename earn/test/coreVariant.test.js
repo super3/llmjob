@@ -11,6 +11,7 @@ const card = (index, cap, driverMajor) => {
 };
 const RTX5090 = (index, drv) => card(index, '12.0', drv == null ? 610 : drv);
 const RTX4090 = (index, drv) => card(index, '8.9', drv == null ? 610 : drv);
+const RTX2080TI = (index, drv) => card(index, '7.5', drv == null ? 610 : drv);
 
 describe('core file names', () => {
   // These are the release asset names too: the self-updater and the workflows
@@ -27,6 +28,12 @@ describe('parseCudaCards', () => {
     expect(parseCudaCards('0, 12.0, 610.57.04\r\n1, 8.9, 610.57.04\n')).toEqual([
       { index: 0, major: 12, minor: 0, driverMajor: 610 },
       { index: 1, major: 8, minor: 9, driverMajor: 610 },
+    ]);
+  });
+
+  test('reads a Turing card (compute 7.5)', () => {
+    expect(parseCudaCards('0, 7.5, 575.57.08')).toEqual([
+      { index: 0, major: 7, minor: 5, driverMajor: 575 },
     ]);
   });
 
@@ -78,6 +85,13 @@ describe('pickCoreVariant', () => {
     });
   });
 
+  // Turing's code is in the 12.8 build only (sm_75); the CUDA 13 one is sm_120.
+  test('a 2080 Ti rig keeps the 12.8 build', () => {
+    expect(pickCoreVariant({ env: {}, cards: [RTX2080TI(0)], gpus: [{ index: 0 }] })).toEqual({
+      variant: CU12, reason: 'GPU 0 is compute 7.5 (the CUDA 13 build is compute 12.x only)',
+    });
+  });
+
   // One addon serves every card in the process, so one card that cannot run
   // it decides for the rig.
   test('a mixed rig keeps the 12.8 build', () => {
@@ -86,6 +100,14 @@ describe('pickCoreVariant', () => {
     });
     expect(out.variant).toBe(CU12);
     expect(out.reason).toMatch(/^GPU 1 is compute 8\.9/);
+  });
+
+  test('a 5090 + 2080 Ti rig keeps the 12.8 build', () => {
+    const out = pickCoreVariant({
+      env: {}, cards: [RTX5090(0), RTX2080TI(1)], gpus: [{ index: 0 }, { index: 1 }],
+    });
+    expect(out.variant).toBe(CU12);
+    expect(out.reason).toMatch(/^GPU 1 is compute 7\.5/);
   });
 
   // PEARL_GPU_INDEX narrows the mining list to one card; only that card counts.

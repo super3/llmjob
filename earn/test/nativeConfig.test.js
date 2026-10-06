@@ -177,3 +177,132 @@ describe('native/JS config agreement', () => {
     expect(HEADER).toContain('return 1;  // exactly equal counts as a share');
   });
 });
+
+// The value of a #define that has a numeric one. Some names are first defined as
+// an alias (PEARL_WARP_ROWS is PEARL_FOLD_WIDE_WARP_ROWS in the Ada build) and
+// only later as a number, so this skips past aliases instead of stopping at the
+// first match as defineOf does.
+function numericDefineOf(name) {
+  const key = '#define ' + name + ' ';
+  for (let at = HEADER.indexOf(key); at >= 0; at = HEADER.indexOf(key, at + 1)) {
+    const eol = HEADER.indexOf(String.fromCharCode(10), at);
+    const n = parseInt(HEADER.slice(at + key.length, eol < 0 ? undefined : eol).trim(), 10);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+describe('Turing fold geometry', () => {
+  // Compared line by line, trimmed: a Windows checkout has CRLF endings.
+  const LINES = HEADER.split(String.fromCharCode(10)).map((l) => l.trim());
+  const SM75_BLOCK =
+    '#if !defined(PEARL_FOLD_THREADS) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800';
+
+  function defines(names) {
+    const out = {};
+    for (const name of names) {
+      out[name] = numericDefineOf(name);
+      expect(out[name]).not.toBeNull();
+    }
+    return out;
+  }
+
+  // Turing grants a block at most 64 KB of shared memory. If a fold outgrows
+  // it, every RTX 20 card stops at its first search with "fold needs ... card
+  // allows 65536". These are the host's formulas (pearl_host.cu, the smem it
+  // opts in to) with Turing's thread count.
+  //
+  // The fold that ships is the B-direct one: two A stages of the tile's rows,
+  // then the block's transcripts, 64 bytes a region (pearl_fold_bd.cuh).
+  function bdirectSmem() {
+    const d = defines(['PEARL_FOLD_TURING_THREADS', 'PEARL_FOLD_WIDE_WARP_ROWS',
+      'PEARL_FOLD_WIDE_ROW_TILES', 'PEARL_WMMA_COL_BLK', 'PEARL_WMMA_ROWS', 'PEARL_ROWS_COUNT',
+      'PEARL_SB_STRIDE', 'PEARL_BD_A_STAGES', 'PEARL_JACKPOT_BUCKETS']);
+    const warps = d.PEARL_FOLD_TURING_THREADS / 32;
+    const regionsPerWarp = d.PEARL_FOLD_WIDE_ROW_TILES * (d.PEARL_WMMA_ROWS / d.PEARL_ROWS_COUNT);
+    return d.PEARL_BD_A_STAGES * d.PEARL_FOLD_WIDE_WARP_ROWS * regionsPerWarp * d.PEARL_ROWS_COUNT
+        * d.PEARL_SB_STRIDE
+      + warps * regionsPerWarp * d.PEARL_WMMA_COL_BLK * d.PEARL_JACKPOT_BUCKETS * 4;
+  }
+
+  // The fallbacks stage both operands: one stage of the 128x256 tile
+  // (PEARL_TURING_BDIRECT=0), or two of the 128x128 one (PEARL_TURING_WIDE=0).
+  function stagedSmem(wide) {
+    const d = defines(['PEARL_FOLD_TURING_THREADS', 'PEARL_WMMA_COL_BLK', 'PEARL_WMMA_ROWS',
+      'PEARL_ROWS_COUNT', 'PEARL_SB_STRIDE']);
+    const warpRows = numericDefineOf(wide ? 'PEARL_FOLD_WIDE_WARP_ROWS' : 'PEARL_WARP_ROWS');
+    const rowTiles = numericDefineOf(wide ? 'PEARL_FOLD_WIDE_ROW_TILES' : 'PEARL_WMMA_ROW_TILES');
+    const stages = numericDefineOf(wide ? 'PEARL_TURING_WIDE_STAGE_BUFS' : 'PEARL_STAGE_BUFS');
+    for (const v of [warpRows, rowTiles, stages]) expect(v).not.toBeNull();
+    const warpCols = d.PEARL_FOLD_TURING_THREADS / 32 / warpRows;
+    expect(Number.isInteger(warpCols) && warpCols > 0).toBe(true);
+    const regionsPerWarp = rowTiles * (d.PEARL_WMMA_ROWS / d.PEARL_ROWS_COUNT);
+    return stages * (warpCols * d.PEARL_WMMA_COL_BLK * 16 + warpRows * regionsPerWarp
+      * d.PEARL_ROWS_COUNT) * d.PEARL_SB_STRIDE;
+  }
+
+  // An unflagged build ships the B-direct fold with two row groups: what the
+  // 2080 Ti measured fastest.
+  test('the default is the B-direct fold, two row groups, on the 128x256 tile', () => {
+    expect(numericDefineOf('PEARL_TURING_WIDE')).toBe(1);
+    expect(numericDefineOf('PEARL_BD_GROUPS')).toBe(2);
+    // B-direct follows PEARL_TURING_WIDE, so -DPEARL_TURING_WIDE=0 alone still
+    // builds the 128x128 fold.
+    const at = LINES.indexOf('#ifndef PEARL_TURING_BDIRECT');
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(LINES.slice(at + 1, at + 7)).toEqual([
+      '#if PEARL_TURING_WIDE',
+      '#define PEARL_TURING_BDIRECT 1',
+      '#else',
+      '#define PEARL_TURING_BDIRECT 0',
+      '#endif',
+      '#endif',
+    ]);
+  });
+
+  // 40 KB is also what the kernel lays out (a static_assert in the fold). It
+  // takes Turing's 64 KB shared carveout and leaves 32 KB of L1 for B.
+  test('the B-direct fold takes 40 KB of shared, as the kernel lays it out', () => {
+    expect(bdirectSmem()).toBe(40960);
+    expect(bdirectSmem()).toBeLessThanOrEqual(65536);
+    const fold = fs.readFileSync(
+      path.join(__dirname, '..', 'native', 'src', 'pearl_fold_bd.cuh'), 'utf8');
+    expect(fold).toContain('== 40960u');
+  });
+
+  test('both fallbacks fit the 64 KB of shared Turing grants a block', () => {
+    expect(stagedSmem(true)).toBeLessThanOrEqual(65536);
+    expect(stagedSmem(false)).toBeLessThanOrEqual(65536);
+  });
+
+  // The kernel picks Turing's thread count, and the B-direct body, only for
+  // sm_75 builds. Everything from sm_80 up keeps its own fold.
+  test('only builds below sm_80 take it', () => {
+    const at = LINES.indexOf(SM75_BLOCK);
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(LINES[at + 1]).toBe('#define PEARL_FOLD_THREADS PEARL_FOLD_TURING_THREADS');
+  });
+
+  // The tests above size each shape from the names the host reads. The sm_75
+  // kernel must map its own warp grid and stage count onto those same names,
+  // and build the B-direct body exactly when the host's switch says so, or the
+  // host would write B' in a layout the fold does not read.
+  test('the sm_75 kernel builds its shape from the switches the host reads', () => {
+    const at = LINES.indexOf(SM75_BLOCK);
+    expect(LINES.slice(at + 2, at + 9)).toEqual([
+      '#if PEARL_TURING_WIDE',
+      '#define PEARL_WARP_ROWS PEARL_FOLD_WIDE_WARP_ROWS',
+      '#define PEARL_WMMA_ROW_TILES PEARL_FOLD_WIDE_ROW_TILES',
+      '#define PEARL_STAGE_BUFS PEARL_TURING_WIDE_STAGE_BUFS',
+      '#endif',
+      '#define PEARL_TURING_BD_BODY PEARL_TURING_BDIRECT',
+      '#endif',
+    ]);
+    // Defined nowhere else but as the 0 every other pass gets.
+    const bodies = LINES.filter((l) => l.startsWith('#define PEARL_TURING_BD_BODY '));
+    expect(bodies).toEqual([
+      '#define PEARL_TURING_BD_BODY PEARL_TURING_BDIRECT',
+      '#define PEARL_TURING_BD_BODY 0',
+    ]);
+  });
+});

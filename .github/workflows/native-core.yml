@@ -36,7 +36,7 @@ on:
 jobs:
   build:
     # Two builds per OS. The first two entries are the core every rig has run
-    # (CUDA 12.8.1, sm_86/89/120); their job names ("ubuntu-latest",
+    # (CUDA 12.8.1, sm_75/86/89/120); their job names ("ubuntu-latest",
     # "windows-2022") and artifact names (pearl-core-<os>) are unchanged, and
     # miner-build.yml still downloads them by those names.
     #
@@ -67,6 +67,7 @@ jobs:
             # its own package on both platforms and nvcc does not pull it in.
             subpackages: '["nvcc", "cudart", "cudart-dev", "nvrtc", "nvrtc-dev", "cuobjdump"]'
             gencode: >-
+              -gencode arch=compute_75,code=sm_75
               -gencode arch=compute_86,code=sm_86
               -gencode arch=compute_89,code=sm_89
               -gencode arch=compute_120,code=sm_120
@@ -77,6 +78,7 @@ jobs:
             release: '12.8'
             subpackages: '["nvcc", "cudart", "nvrtc", "cuobjdump"]'
             gencode: >-
+              -gencode arch=compute_75,code=sm_75
               -gencode arch=compute_86,code=sm_86
               -gencode arch=compute_89,code=sm_89
               -gencode arch=compute_120,code=sm_120
@@ -179,8 +181,8 @@ jobs:
         working-directory: earn/native
         run: npm install --no-save node-addon-api node-gyp
 
-      # Compile the CUDA half into a static library. sm_86/89/120 covers Ampere,
-      # Ada and Blackwell — the cards the app actually targets. The CUDA 13
+      # Compile the CUDA half into a static library. sm_75/86/89/120 covers
+      # Turing, Ampere, Ada and Blackwell — the cards the app actually targets. The CUDA 13
       # entries pass sm_120 alone; every other flag is the same.
       - name: Compile the CUDA kernels
         working-directory: earn/native

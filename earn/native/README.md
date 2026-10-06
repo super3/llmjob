@@ -148,7 +148,7 @@ nvcc -lib cuda-build/pearl_kernel.o cuda-build/pearl_host.o -o cuda-build/pearl_
 npx node-gyp rebuild
 ```
 
-`.github/workflows/native-core.yml` does exactly this for sm_86/89/120, and it
+`.github/workflows/native-core.yml` does exactly this for sm_75/86/89/120, and it
 is green on Linux: the workflow produces a real `pearl_core.node`. So the core
 compiles and links today, even though nothing on a runner can execute it.
 
@@ -176,7 +176,7 @@ the Server 2025 runner (exit `0xE0E1E1D9`) before reaching any of our source.
 The compile-and-link signal is platform independent, so Linux is the gate.
 
 `CUDA_PATH` is picked up automatically; override the arch for other cards
-(`sm_86` Ampere, `sm_89` Ada, `sm_120` Blackwell).
+(`sm_75` Turing, `sm_86` Ampere, `sm_89` Ada, `sm_120` Blackwell).
 
 The addon lands at `build/Release/pearl_core.node`, which is exactly where
 `src/main/pearlCore.js` looks for it. When it is absent — as on any machine

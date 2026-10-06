@@ -21,7 +21,12 @@
 #include <cuda_runtime.h>
 #include "pearl_config.h"
 
-struct PearlProofSide { std::vector<uint8_t> leaves; std::vector<uint8_t> path; uint8_t root[PEARL_HASH_BYTES]; uint64_t total_leaves; };
+// Must match pearl_host.cu's layout exactly: the host writes these through the
+// pointer, and the old {leaves, path, root} version was 48 bytes short of it.
+struct PearlProofSide {
+  std::vector<uint32_t> leaf_indices; std::vector<uint8_t> leaves; std::vector<uint8_t> siblings;
+  uint8_t root[PEARL_HASH_BYTES]; uint64_t total_leaves;
+};
 struct PearlSearchResult {
   uint8_t jackpot_hash[PEARL_HASH_BYTES], a_seed[PEARL_HASH_BYTES], b_seed[PEARL_HASH_BYTES];
   uint64_t nonce, salt; std::vector<uint8_t> proof;
