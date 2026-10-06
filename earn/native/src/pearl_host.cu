@@ -256,6 +256,10 @@ struct Ctx {
   // default): the tall fold is then launched in clusters of PEARL_TALL_CLUSTER_SIZE
   // over tiles of two row groups, and its resident count is in clusters.
   bool foldCluster = false;
+  // Whether it is Ampere's cp.async build (binaryVersion 86), whose band depth the host
+  // picks from the L2 (PEARL_AMPERE_BAND_L2_SHARE), and the depth it picked.
+  bool foldAmpere = false;
+  uint32_t tallBand = 0;
   bool foldKnown = false;
   // Why not, when foldKnown is false: reported by the first search, as it was when
   // the search itself asked.
@@ -882,6 +886,7 @@ void resolve_fold(Ctx *ctx) {
     // -DPEARL_TALL_CLUSTER=1 builds that TMA fold as a two-CTA cluster; the host pass
     // sees the same value, so the launch shape follows the body.
     ctx->foldCluster = ctx->foldTma && PEARL_TALL_CLUSTER != 0;
+    ctx->foldAmpere = ctx->foldTall && !ctx->foldTma && ft.binaryVersion == 86;
   }
   // The fold is compiled for exactly one block size, which is also its launch
   // bound. A disagreement would not fail loudly: a block of the wrong size
@@ -952,6 +957,25 @@ uint32_t pearl_bd_band_for(uint32_t k, uint64_t l2) {
   uint32_t band = 16u;
   if (l2 == 0u) return band;
   while (band > 4u && (uint64_t)band * 128u * k * 100u > l2 * (uint64_t)PEARL_BD_L2_SHARE)
+    band /= 2u;
+  return band;
+#endif
+}
+
+// Ampere's band depth for the tall fold (see PEARL_AMPERE_BAND_L2_SHARE): 16, halved
+// while a band's A' -- depth x 192 rows x k bytes -- is more than
+// PEARL_AMPERE_BAND_L2_SHARE percent of the L2, never below 4. -DPEARL_AMPERE_BAND=N
+// forces N, a power of two.
+uint32_t pearl_ampere_band_for(uint32_t k, uint64_t l2) {
+#ifdef PEARL_AMPERE_BAND
+  (void)k;
+  (void)l2;
+  return (uint32_t)PEARL_AMPERE_BAND;
+#else
+  uint32_t band = 16u;
+  if (l2 == 0u) return band;
+  while (band > 4u
+         && (uint64_t)band * PEARL_TALL_BM * k * 100u > l2 * (uint64_t)PEARL_AMPERE_BAND_L2_SHARE)
     band /= 2u;
   return band;
 #endif
@@ -1193,7 +1217,8 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   // counters][band depths], one word a slot each.
   static_assert(PEARL_BD_CTR_SLOTS == Ctx::kSlots && PEARL_BD_BAND_WORD == 2u * Ctx::kSlots,
                 "the B-direct fold's words, one a pipeline slot");
-  CUDA_OK(cudaMalloc(&ctx->dHitCount, S * (PEARL_TURING_BDIRECT ? 3u : 1u) * sizeof(uint32_t)),
+  // Ampere's tall fold reads its band depth from the same word (PEARL_AMPERE_BAND_L2_SHARE).
+  CUDA_OK(cudaMalloc(&ctx->dHitCount, S * 3u * sizeof(uint32_t)),
           "allocating the hit counter");
   CUDA_OK(cudaMalloc(&ctx->dHitIndex, S * PEARL_MAX_HITS * sizeof(uint32_t)),
           "allocating the hit list");
@@ -1259,6 +1284,21 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
       ctx->colBatch = cb;
       ctx->batch = ctx->colBatch * ctx->rowsValid;
     }
+  }
+  // Ampere (the sm_86 tall fold): a band of row groups whose A' fits the L2. See
+  // PEARL_AMPERE_BAND_L2_SHARE.
+  if (ctx->foldAmpere) {
+    int l2 = 0;
+    if (cudaDeviceGetAttribute(&l2, cudaDevAttrL2CacheSize, ctx->device) != cudaSuccess) {
+      (void)cudaGetLastError();
+      l2 = 0;
+    }
+    ctx->tallBand = pearl_ampere_band_for(profile->k, (uint64_t)l2);
+    // The fold reads it PEARL_BD_BAND_WORD words past its slot's hit counter.
+    const uint32_t bands[Ctx::kSlots] = {ctx->tallBand, ctx->tallBand};
+    CUDA_OK(cudaMemcpy(ctx->dHitCount + PEARL_BD_BAND_WORD, bands, sizeof bands,
+                       cudaMemcpyHostToDevice),
+            "setting the tall fold's band depth");
   }
   // Turing (the B-direct fold): a band of row groups whose A fits the L2. See
   // PEARL_BD_L2_SHARE.
@@ -2279,6 +2319,12 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
   if (ctx->foldTall && ctx->foldCluster)
     return "tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands, "
            "2-CTA cluster sharing B by multicast";
+  if (ctx->foldAmpere) {
+    snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,
+             "tall 192x256, 8 warps of 96x64, cp.async ring, %s operands, band %u",
+             ctx->foldTiled ? "per-tile" : "k-blocked", ctx->tallBand);
+    return ctx->foldName;
+  }
   if (ctx->foldTall)
     return ctx->foldTma ? "tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands"
                         : (ctx->foldTiled ? "tall 192x256, 8 warps of 96x64, cp.async ring, per-tile operands"

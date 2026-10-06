@@ -877,6 +877,48 @@ typedef struct {
 #ifndef PEARL_TMA_L2_SHARE
 #define PEARL_TMA_L2_SHARE 67u
 #endif
+// Ampere's band depth (host side, the sm_86 tall fold only): 16, halved while a band's
+// A' -- depth x 192 rows x k bytes, 384 KB a row group at the mainnet k -- is over this
+// many percent of the L2, and never below 4. The fold reads it from the word
+// PEARL_BD_BAND_WORD past its slot's hit counter, as Turing's B-direct fold reads its own.
+//
+// A band's A' is reused across its whole sweep of the batch's B' columns if it stays in
+// L2; then only B' streams from DRAM, once per band. Ampere's L2 is 3-6 MB, so #246's 16
+// deep (6 MB of A') missed on every card, and too shallow re-reads B' too often.
+// Measured with hashrate.js, 3 rounds of 60 s, against 16, every build 400/400 hits
+// verified (memory utilization from nvidia-smi):
+//   RTX 3060, 3 MB L2, 170 W (Vast 138808; target 48.9):
+//     band 16  46.96 TH/s  1713 MHz  memory 65%
+//           8  47.13       1721              58-66%
+//           4  47.45       1736              51%     +1.1%  <- this rule's pick
+//   RTX 3070 Ti, 4 MB L2, 310 W (Vast 43435; target 85.8):
+//     band 16  84.47       1810              46%
+//           8  85.34       1829              30%     +1.0%  <- this rule's pick
+//           4  85.16       1824              33%
+//           2  84.27       1808              51%
+//   RTX 3090, 6 MB L2, 320 W (Vast 4557):
+//     band 32  118.39      1480              40%
+//          16  121.59      1530              28%
+//           8  123.89      1554              18%     +1.9%  <- this rule's pick
+//           4  121.40      1528              25%
+//           2  118.00      1481              41%
+// The clock rises at the same power: the DRAM watts come back. 80% picks the best
+// measured depth on all three: the 4 MB card's band 8 is 75% of its L2. Those sweeps ran
+// before the serial restamp (0f263bf), whose absence biased hashrate.js up to ~1% on slow
+// batches. This build against its own base with it in, 4 rounds (3090: 3), every round
+// ahead: 3060 46.66 -> 47.09 (+0.9%), 3070 Ti 84.50 -> 85.08 (+0.7%); the 3070 Ti's pool
+// run accepted 3 of 3 shares. The 3090, on an earlier build of the same rule: 121.32 ->
+// 123.49 (+1.8%).
+// -DPEARL_AMPERE_BAND=N forces N on every Ampere card. Host only.
+#ifndef PEARL_AMPERE_BAND_L2_SHARE
+#define PEARL_AMPERE_BAND_L2_SHARE 80u
+#endif
+// Device side: whether THIS compile's tall fold reads its band depth at run time.
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 860
+#define PEARL_TALL_BAND_RT 1
+#else
+#define PEARL_TALL_BAND_RT 0
+#endif
 // Where a stage's copies of the next chunk go out: after m16 tile (point % 6) of k-step
 // (point / 6) -- the k-step holds B and streams A a tile at a time. A's go first, behind
 // the ring's EMPTY wait; B's follow, then the arrival that counts them. Measured on the

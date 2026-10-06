@@ -3001,10 +3001,18 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
   // The eight-warp fold's band walk (PEARL_BLOCK_GROUP, PEARL_FOLD_SERPENTINE), in bands
   // PEARL_TALL_BAND row groups deep. 683 row groups do not fill whole bands, so every
   // band but the last takes the shift and mask and the last one divides.
+#if PEARL_TALL_BAND_RT
+  // Ampere: the depth the host picked from the L2 (PEARL_AMPERE_BAND_L2_SHARE), a power of
+  // two, PEARL_BD_BAND_WORD words past the slot's hit counter.
+  const uint32_t band_depth = hits.count[PEARL_BD_BAND_WORD];
+  const uint32_t band_shift = (uint32_t)__ffs(band_depth) - 1u;
+#else
   static_assert((PEARL_TALL_BAND & (PEARL_TALL_BAND - 1u)) == 0u, "band depth: a power of two");
   constexpr uint32_t band_shift = pearl_popcount_ce(PEARL_TALL_BAND - 1u);
+  constexpr uint32_t band_depth = PEARL_TALL_BAND;
+#endif
   auto tile_coords = [&](uint32_t v, uint32_t &rbg_, uint32_t &cbg_) {
-    const uint32_t band_blocks = PEARL_TALL_BAND * col_block_groups;
+    const uint32_t band_blocks = band_depth * col_block_groups;
     uint32_t band, in_band;
     if ((col_block_groups & (col_block_groups - 1u)) == 0u) {
       band = v >> (band_shift + __popc(col_block_groups - 1u));
@@ -3013,9 +3021,9 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
       band = v / band_blocks;
       in_band = v % band_blocks;
     }
-    const uint32_t band_first = band * PEARL_TALL_BAND;
-    if (band_first + PEARL_TALL_BAND <= walk_rows) {
-      rbg_ = band_first + (in_band & (PEARL_TALL_BAND - 1u));
+    const uint32_t band_first = band * band_depth;
+    if (band_first + band_depth <= walk_rows) {
+      rbg_ = band_first + (in_band & (band_depth - 1u));
       cbg_ = in_band >> band_shift;
     } else {
       const uint32_t band_rows = walk_rows - band_first;
