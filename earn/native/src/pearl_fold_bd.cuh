@@ -31,6 +31,19 @@
 // chunk's first B load down to the barrier, because the mma that read it were
 // across a branch.
 //
+// The seam. ptxas places a barrier just before the next shared access after it,
+// not where the source puts it, so with the barrier after k-step 3 it sat at the
+// end of the readout, and the next chunk's first mma waited on the barrier, then
+// on its ldmatrix. So the barrier goes in k-step 3, after its ldmatrix (the
+// last reads of chunk c's stage) and before its mma, and k-step 0 of chunk c + 1
+// loads its A there, behind the barrier, into its own registers (afn): those
+// loads are the shared access that pins the barrier, and their latency hides
+// under k-step 3's 128 mma. The readout's words are stored after that k-step's
+// ldmatrix, so the loads do not queue behind stores that wait on the shuffles.
+// 2080 Ti, bench, three rounds each: at the 260 W cap 85.1-86.1 -> 86.1-86.7
+// TH/s (+1.0 to 1.2%), and on a card held at 1095 MHz 60.6 -> 62.8 (+3.6%);
+// 253 registers.
+//
 // PEARL_BD_GROUPS 2 (default): each row slot is a group of four warps. It
 // stages its own 64 rows of A, waits on its own 128-thread named barrier, and
 // hashes its own 64 regions, so the two row slots' chunk seams need not line
@@ -181,7 +194,7 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
   // shares, and lanes 0-3 and 16-19 write the region's word. Word c of region L
   // sits at L * 16 + (c ^ ((L >> 1) & 15)), so the eight writers hit eight
   // banks.
-  auto readout = [&](uint32_t rl, uint32_t c) {
+  auto readout_x = [&](uint32_t rl) -> uint32_t {
     uint32_t x = 0u;
 #pragma unroll
     for (uint32_t np = 0; np < NB / 2u; np++) x = fold_pair(x, rl, np);
@@ -192,12 +205,16 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     const uint32_t s12 = __shfl_xor_sync(0xffffffffu, x, 12);
     x = pearl_xor3(x, s4, s8) ^ s12;
 #endif
+    return x;
+  };
+  auto readout_st = [&](uint32_t rl, uint32_t c, uint32_t x) {
     if (((lane >> 2) & 3u) == 0u) {
       const uint32_t L = warp * warp_regions + (lane & 3u) * regions_per_warp + 2u * rl
                          + ((lane >> 4) & 1u);
       sT[L * 16u + (c ^ ((L >> 1) & 15u))] = x;
     }
   };
+  auto readout = [&](uint32_t rl, uint32_t c) { readout_st(rl, c, readout_x(rl)); };
 
   for (uint32_t v = blockIdx.x; v < tiles; v += gridDim.x) {
     uint32_t rbg, cbg;
@@ -236,10 +253,14 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     PEARL_BD_BAR();
 
     int4 ra[ASLOTS];
+    // K-step 0 of the next chunk's A, loaded at the seam (see the top).
+    uint32_t afn[MB][4];
     // K-step t of chunk ch: load the next k-step's B (and at t = 0 the next
     // chunk's A), ldmatrix this k-step's A from stage ch & 1, 32 mma, and at
-    // t = 2 store the next chunk's A into the other stage.
-    auto kstep = [&](uint32_t ch, uint32_t t, bool stage_next) {
+    // t = 2 store the next chunk's A into the other stage. seam: k-step 3 of a
+    // chunk with another after it, which meets the barrier after its ldmatrix
+    // and then loads afn. pre: k-step 0 after a seam, whose A is afn.
+    auto kstep = [&](uint32_t ch, uint32_t t, bool stage_next, bool seam, bool pre) {
       const uint32_t buf = (ch & 1u) * ABUF;
       const uint32_t s = ch * KSTEPS + t;
       // Both loads wrap rather than test: past the last chunk they re-read
@@ -273,13 +294,35 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #pragma unroll
       for (uint32_t mb = 0; mb < MB; mb++) {
         const uint32_t ap = ((aLane0 + buf) ^ (t * 32u)) + mb * 16u * 128u;
+        if (pre) {
+#pragma unroll
+          for (uint32_t i = 0; i < 4u; i++) af[mb][i] = afn[mb][i];
+        } else {
 #ifdef PEARL_ABLATE_LDMATRIX
-        // Diagnostic only, and a poor bound: see the other folds'.
-        af[mb][0] = 0x01010101u ^ ap; af[mb][1] = 0x01010101u ^ mb;
-        af[mb][2] = 0x01010101u ^ 1u; af[mb][3] = 0x01010101u ^ 2u;
+          // Diagnostic only, and a poor bound: see the other folds'.
+          af[mb][0] = 0x01010101u ^ ap; af[mb][1] = 0x01010101u ^ mb;
+          af[mb][2] = 0x01010101u ^ 1u; af[mb][3] = 0x01010101u ^ 2u;
 #else
-        pearl_ldmatrix_x4(af[mb][0], af[mb][1], af[mb][2], af[mb][3], ap);
+          pearl_ldmatrix_x4(af[mb][0], af[mb][1], af[mb][2], af[mb][3], ap);
 #endif
+        }
+      }
+      if (seam) {
+        // Publishes chunk + 1's A, and certifies that every warp is done
+        // reading chunk's stage before k-step 2 of chunk + 1 stores into it.
+#ifndef PEARL_ABLATE_BARRIER
+        PEARL_BD_BAR();
+#endif
+#pragma unroll
+        for (uint32_t mb = 0; mb < MB; mb++) {
+          const uint32_t ap = (aLane0 + (ABUF - buf)) + mb * 16u * 128u;
+#ifdef PEARL_ABLATE_LDMATRIX
+          afn[mb][0] = 0x01010101u ^ ap; afn[mb][1] = 0x01010101u ^ mb;
+          afn[mb][2] = 0x01010101u ^ 1u; afn[mb][3] = 0x01010101u ^ 2u;
+#else
+          pearl_ldmatrix_x4(afn[mb][0], afn[mb][1], afn[mb][2], afn[mb][3], ap);
+#endif
+        }
       }
 #pragma unroll
       for (uint32_t j = 0; j < 4u; j++) {
@@ -306,25 +349,25 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
       (void)ra;
 #endif
     };
-    kstep(0u, 0u, true);
-    kstep(0u, 1u, true);
+    kstep(0u, 0u, true, false, false);
+    kstep(0u, 1u, true, false, false);
     for (uint32_t chunk = 0; chunk + 1u < chunks; chunk++) {
-      kstep(chunk, 2u, true);
-      kstep(chunk, 3u, true);
-      // Publishes chunk + 1's A, and certifies that every warp is done reading
-      // chunk's stage before k-step 2 of chunk + 1 stores into it.
-#ifndef PEARL_ABLATE_BARRIER
-      PEARL_BD_BAR();
+      kstep(chunk, 2u, true, false, false);
+      kstep(chunk, 3u, true, true, false);  // the barrier, then chunk + 1's afn
+#ifndef PEARL_ABLATE_READOUT
+      uint32_t rx[RPL];
+#pragma unroll
+      for (uint32_t rl = 0; rl < RPL; rl++) rx[rl] = readout_x(rl);
 #endif
+      kstep(chunk + 1u, 0u, true, false, true);
 #ifndef PEARL_ABLATE_READOUT
 #pragma unroll
-      for (uint32_t rl = 0; rl < RPL; rl++) readout(rl, chunk);
+      for (uint32_t rl = 0; rl < RPL; rl++) readout_st(rl, chunk, rx[rl]);
 #endif
-      kstep(chunk + 1u, 0u, true);
-      kstep(chunk + 1u, 1u, true);
+      kstep(chunk + 1u, 1u, true, false, false);
     }
-    kstep(chunks - 1u, 2u, false);
-    kstep(chunks - 1u, 3u, false);
+    kstep(chunks - 1u, 2u, false, false, false);
+    kstep(chunks - 1u, 3u, false, false, false);
     // The last chunk's readout; with PEARL_ABLATE_READOUT the tile's only one,
     // so the accumulators stay live.
 #pragma unroll
