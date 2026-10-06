@@ -1010,7 +1010,7 @@ typedef struct {
 #endif
 
 // How the tall fold's per-chunk readout combines the four lanes that hold a region, on
-// Ada (sm_89; other builds ignore it). 0: three shuffles give every lane the whole XOR,
+// Ada (sm_89) and Blackwell (sm_120); Ampere ignores it. 0: three shuffles give every lane the whole XOR,
 // and the lane that keeps the chunk stores the word. 1: each lane XORs its own quarter
 // into the word in shared (red.shared.xor), with no shuffle and no select. The words then
 // have to start at zero: the kernel zeroes them once before its first tile, and the hasher
@@ -1023,6 +1023,13 @@ typedef struct {
 //   RTX 4060, 115 W cap                                   59.68 -> 60.03       (+0.59%)
 //   RTX 4070 Ti, 285 W                                    158.07 -> 158.91     (+0.53%)
 //   RTX 4090, 370 W                                       302.48 -> 303.11     (+0.21%)
+// and on Blackwell's TMA fold, CUDA 13.3, 4 rounds each:
+//   RTX 5070 Ti, held at ~1346 MHz (per clock)            91.45 -> 91.72 TH/s  (+0.30%)
+//   RTX 5060, 125 W cap                                   75.98 -> 76.20       (+0.29%)
+// The same readout without the in-asm predicate measured +0.30% on a second 5060, +0.26%
+// on an RTX 5080 and +0.16% on an RTX 5090, each ahead in every round. ptxas 13.3 and
+// 12.8 both build sm_120's fold at 254 registers with no spill. The CUDA 12.8 core (drivers
+// before 580) gains more: RTX 5060 at 140 W, 72.54 -> 74.42 TH/s (+2.6%).
 // The shuffles were on the readout's critical path, and the readout runs while the
 // partner warp has the scheduler's tensor pipe to itself. The chunk loop goes from 559
 // instructions to 541. The XORs carry a predicate that is
