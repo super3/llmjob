@@ -83,22 +83,22 @@ Not run yet. Hosts picked 2026-10-06; none has been tested before.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
-| RTX 3060 | Thailand (170 W) | 146320 | | | | |
-| RTX 3060 | Vietnam (170 W) | 138808 | | | | |
-| RTX 3060 Ti | Japan (180 W) | 137800 | | | | |
-| RTX 3060 Ti | New Zealand (220 W) | 142449 | | | | |
-| RTX 3070 | Quebec (220 W) | 148988 | | | | |
-| RTX 3070 | Quebec (180 W) | 152549 | | | | |
-| RTX 3070 Ti | Ontario (310 W) | 43435 | | | | |
-| RTX 3070 Ti | Pennsylvania (310 W) | 136798 | | | | |
-| RTX 3080 | Kentucky (320 W) | 29108 | | | | |
-| RTX 3080 | France (320 W) | 153103 | | | | |
-| RTX 3080 Ti | Japan (330 W) | 137807 | | | | |
-| RTX 3080 Ti | Portugal (350 W) | 56596 | | | | |
-| RTX 3090 | Quebec (350 W) | 16146 | | | | |
-| RTX 3090 | Argentina (280 W) | 54987 | | | | |
 | RTX 3090 Ti | Vietnam (450 W) | 27934 | | | | |
 | RTX 3090 Ti | Greece (450 W) | 152830 | | | | |
+| RTX 3090 | Quebec (350 W) | 16146 | | | | |
+| RTX 3090 | Argentina (280 W) | 54987 | | | | |
+| RTX 3080 Ti | Japan (330 W) | 137807 | | | | |
+| RTX 3080 Ti | Portugal (350 W) | 56596 | | | | |
+| RTX 3080 | Kentucky (320 W) | 29108 | | | | |
+| RTX 3080 | France (320 W) | 153103 | | | | |
+| RTX 3070 Ti | Ontario (310 W) | 43435 | | | | |
+| RTX 3070 Ti | Pennsylvania (310 W) | 136798 | | | | |
+| RTX 3070 | Quebec (220 W) | 148988 | | | | |
+| RTX 3070 | Quebec (180 W) | 152549 | | | | |
+| RTX 3060 Ti | Japan (180 W) | 137800 | | | | |
+| RTX 3060 Ti | New Zealand (220 W) | 142449 | | | | |
+| RTX 3060 | Thailand (170 W) | 146320 | | | | |
+| RTX 3060 | Vietnam (170 W) | 138808 | | | | |
 
 ## RTX 40-series (PR #250 build)
 
@@ -106,25 +106,25 @@ Not run yet. Hosts picked 2026-10-06; none has been tested before.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
-| RTX 4060 | New Zealand (115 W) | 148383 | | | | |
-| RTX 4060 | Australia (115 W) | 143986 | | | | |
-| RTX 4060 Ti | Ontario (160 W) | 37799 | | | | |
-| RTX 4060 Ti | Brazil (160 W) | 152073 | | | | |
-| RTX 4070 | Mexico (135 W) | 136612 | | | | |
-| RTX 4070 Super | Delaware (220 W) | 142006 | | | | |
-| RTX 4070 Super | California (220 W) | 153237 | | | | |
-| RTX 4070 Ti | North Macedonia (285 W) | 150347 | | | | |
-| RTX 4070 Ti | Delaware (285 W) | 39901 | | | | |
-| RTX 4070 Ti Super | Ontario (285 W) | 29907 | | | | |
-| RTX 4070 Ti Super | Romania (250 W) | 150551 | | | | |
-| RTX 4080 | Utah (320 W) | 150424 | | | | |
-| RTX 4080 | Nevada (320 W) | 147894 | | | | |
-| RTX 4080 Super | Japan (320 W) | 36413 | | | | |
-| RTX 4080 Super | California (275 W) | 138449 | | | | |
 | RTX 4090 | Estonia (450 W) | 56522 | | | | |
 | RTX 4090 | Poland (400 W) | 151409 | | | | |
 | RTX 4090D | Tanzania (425 W) | 70632 | | | | |
 | RTX 4090D | South Carolina (425 W) | 142279 | | | | |
+| RTX 4080 Super | Japan (320 W) | 36413 | | | | |
+| RTX 4080 Super | California (275 W) | 138449 | | | | |
+| RTX 4080 | Utah (320 W) | 150424 | | | | |
+| RTX 4080 | Nevada (320 W) | 147894 | | | | |
+| RTX 4070 Ti Super | Ontario (285 W) | 29907 | | | | |
+| RTX 4070 Ti Super | Romania (250 W) | 150551 | | | | |
+| RTX 4070 Ti | North Macedonia (285 W) | 150347 | | | | |
+| RTX 4070 Ti | Delaware (285 W) | 39901 | | | | |
+| RTX 4070 Super | Delaware (220 W) | 142006 | | | | |
+| RTX 4070 Super | California (220 W) | 153237 | | | | |
+| RTX 4070 | Mexico (135 W) | 136612 | | | | |
+| RTX 4060 Ti | Ontario (160 W) | 37799 | | | | |
+| RTX 4060 Ti | Brazil (160 W) | 152073 | | | | |
+| RTX 4060 | New Zealand (115 W) | 148383 | | | | |
+| RTX 4060 | Australia (115 W) | 143986 | | | | |
 
 ## RTX 50-series (PR #250 build)
 
@@ -132,19 +132,19 @@ Not run yet. Hosts picked 2026-10-06; none has been tested before.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
-| RTX 5060 | United States (145 W) | 68005 | | | | |
-| RTX 5060 | Virginia (125 W) | 151478 | | | | |
-| RTX 5060 Ti | Virginia (150 W) | 151123 | | | | |
-| RTX 5060 Ti | France (180 W) | 146674 | | | | |
-| RTX 5070 | New York (200 W) | 142292 | | | | |
-| RTX 5070 | Kansas (250 W) | 151873 | | | | |
-| RTX 5070 Ti | South Korea (250 W) | 39891 | | | | |
-| RTX 5070 Ti | South Korea (300 W) | 18149 | | | | |
-| RTX 5080 | Georgia (360 W) | 147973 | | | | |
-| RTX 5080 | New Jersey (360 W) | 152066 | | | | |
 | RTX 5090 | British Columbia (575 W) | 38389 | | | | |
 | RTX 5090 | Romania (600 W) | 9105 | | | | |
 | RTX 5090D | Taiwan (575 W) | 151179 | | | | |
+| RTX 5080 | Georgia (360 W) | 147973 | | | | |
+| RTX 5080 | New Jersey (360 W) | 152066 | | | | |
+| RTX 5070 Ti | South Korea (250 W) | 39891 | | | | |
+| RTX 5070 Ti | South Korea (300 W) | 18149 | | | | |
+| RTX 5070 | New York (200 W) | 142292 | | | | |
+| RTX 5070 | Kansas (250 W) | 151873 | | | | |
+| RTX 5060 Ti | Virginia (150 W) | 151123 | | | | |
+| RTX 5060 Ti | France (180 W) | 146674 | | | | |
+| RTX 5060 | United States (145 W) | 68005 | | | | |
+| RTX 5060 | Virginia (125 W) | 151478 | | | | |
 
 ## Notes on the 30/40/50-series hosts
 
