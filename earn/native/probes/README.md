@@ -1428,3 +1428,33 @@ Run on this 5090, same pool, same address, our miner stopped:
 This is what the earlier sections were missing: they were right about the mechanism
 but had no way to know whether the bound was OUR kernel's or the CARD's. It is the
 card's.
+
+## RTX 50 cards below the 5090: a batch's B' must fit the L2
+
+Blackwell walks the tall fold's tiles one row group deep (`PEARL_TALL_BAND` 1), so every
+row group sweeps all of a batch's columns of B': col_batch x 16 columns x 2048 bytes, 64 MB
+at col_batch 2048. A 5090 has 96 MB of L2 and keeps it. An RTX 5060 has 24 MB, a 5060 Ti
+32 MB, and there B' came from DRAM once per row group, 683 times a launch: ~360 GB/s of a
+5060's 448, with nvidia-smi's memory utilization at 92-100%. The card is power-capped, so
+those DRAM watts came out of the SM clock.
+
+The host now narrows the batch on the TMA fold until that B' is at most 67% of the L2
+(`PEARL_TMA_L2_SHARE`, `pearl_tma_col_batch`): 512 on a 5060 or 5060 Ti, 1024 at 48-64 MB,
+2048 on a 5090. hashrate.js, 3 rounds of 60 s, CUDA 13.3, 400/400 hits verified:
+
+| card (Vast machine, power) | col_batch 2048 | 512 | clock |
+|---|---|---|---|
+| RTX 5060 (151478, 125 W) | 69.58 TH/s | 76.22 (+9.5%) | 2404 -> 2628 MHz |
+| RTX 5060 Ti (151123, 150 W) | 87.98 | 93.64 (+6.4%) | 2509 -> 2689 MHz |
+
+On the 5060, 128 and 256 measured 75.30 and 75.94: narrower re-reads all of A' (256 MB)
+once a launch, more often. On the 5060 Ti 1024 (32 MB, all of its L2) measured 91.35.
+
+Tried first, in the kernel: deeper bands spill 164 bytes of the tall fold under ptxas 13.3
+(ptxas 12.8 does not) and ran 17% slower; the serpentine walk gained 2.3% at 2048 and
+nothing on top of 512.
+
+The same arithmetic says why a memory-clock lock would have hurt these cards before this
+change: at 7001 MHz a 5060 has 224 GB/s, against the ~360 GB/s the 2048-wide walk needed.
+Now a launch reads A' once and B' once, ~8 GB/s on a 5060. Vast containers may not set
+clocks (`nvidia-smi -lmc` exits 4), so neither case has been measured.

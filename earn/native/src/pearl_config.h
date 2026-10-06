@@ -787,6 +787,43 @@ typedef struct {
 #define PEARL_TALL_BAND 16u
 #endif
 #endif
+// Blackwell's batch width (host side, the TMA fold only): at most this many percent of
+// the L2 for the B' a row group sweeps.
+//
+// One-deep bands mean every row group sweeps all of a batch's columns of B': col_batch *
+// 16 columns of k bytes, 64 MB at the mainnet col_batch of 2048. A 5090's 96 MB L2 keeps
+// that, so B' comes from DRAM about once a launch. Every smaller RTX 50 card has 24-64 MB,
+// and there B' came from DRAM once per row group, 683 times a launch: on an RTX 5060 (24
+// MB) at 70 TH/s that is ~360 GB/s of its 448, and nvidia-smi's memory utilization read
+// 92-100%. On a power-capped card those DRAM watts come out of the SM clock. So the host
+// halves col_batch (pearl_tma_col_batch) until that B' fits this share of the L2.
+//
+// Measured with hashrate.js, 3 rounds of 60 s, CUDA 13.3, each width ahead of 2048 in
+// every round, 400/400 hits verified for every build:
+//   RTX 5060, 24 MB L2, 125 W (Vast 151478; target 77.1):
+//     col_batch 2048 (64 MB)  69.58 TH/s  2404 MHz
+//                128 (4 MB)   75.30       2594      +8.2%
+//                256 (8 MB)   75.94       2618      +9.1%
+//                512 (16 MB)  76.22       2628      +9.5%   <- this rule's pick
+//   RTX 5060 Ti, 32 MB L2, 150 W (Vast 151123; target 94.5):
+//     col_batch 2048          87.98       2509
+//                256          93.44       2679      +6.2%
+//                512          93.64       2689      +6.4%   <- this rule's pick
+//               1024 (32 MB)  91.35       2625      +3.8%
+// The clock rises at the same power: that is the DRAM watts coming back. Narrower than
+// that loses a little: each launch re-reads all of A' (256 MB) once, and there are more
+// launches. 67% of the L2 is where the pick lands on both cards; on a 5090 (96 MB) it
+// keeps 2048 (64 MB), the width it was tuned and measured at.
+//
+// Deeper bands would fix it in the kernel instead, but ptxas 13.3 spills the tall fold
+// at any band depth past 1 (164 bytes, -17% on a 5060), and at col_batch 2048 a band 16
+// deep would still read B' from DRAM 43 times a launch. The serpentine walk alone, which
+// does not spill, measured +2.3% at 2048 and nothing on top of 512.
+//
+// Only the batch width changes: the same regions, searched in more, shorter launches.
+#ifndef PEARL_TMA_L2_SHARE
+#define PEARL_TMA_L2_SHARE 67u
+#endif
 // Where a stage's copies of the next chunk go out: after m16 tile (point % 6) of k-step
 // (point / 6) -- the k-step holds B and streams A a tile at a time. A's go first, behind
 // the ring's EMPTY wait; B's follow, then the arrival that counts them. Measured on the

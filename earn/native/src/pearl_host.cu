@@ -904,6 +904,31 @@ void resolve_fold(Ctx *ctx) {
   ctx->foldKnown = true;
 }
 
+// The column offsets one batch of Blackwell's TMA fold covers (see PEARL_TMA_L2_SHARE):
+// the profile's col_batch, halved while the B' a row group sweeps -- col_batch * 16
+// columns of k bytes -- is more than PEARL_TMA_L2_SHARE percent of the L2. Never below
+// one tile's 16 column offsets, and only to a width that divides the valid offsets, so
+// a salt still splits into whole batches. -DPEARL_TMA_COL_BATCH=N forces N instead.
+uint32_t pearl_tma_col_batch(uint32_t colBatch, uint32_t colsValid, uint32_t k, uint64_t l2) {
+#ifdef PEARL_TMA_COL_BATCH
+  (void)k;
+  (void)l2;
+  const uint32_t forced = (uint32_t)PEARL_TMA_COL_BATCH;
+  if (forced >= PEARL_TALL_COL_OFFSETS && forced <= colBatch && forced % PEARL_TALL_COL_OFFSETS == 0u
+      && colsValid % forced == 0u)
+    return forced;
+  return colBatch;
+#else
+  if (l2 == 0u) return colBatch;
+  const uint64_t colBytes = (uint64_t)PEARL_COLS_COUNT * k;
+  uint32_t cb = colBatch;
+  while ((uint64_t)cb * colBytes * 100u > l2 * (uint64_t)PEARL_TMA_L2_SHARE && cb % 2u == 0u
+         && (cb / 2u) % PEARL_TALL_COL_OFFSETS == 0u && colsValid % (cb / 2u) == 0u)
+    cb /= 2u;
+  return cb;
+#endif
+}
+
 }  // namespace
 
 // Choose the card this core mines on, and make it the calling thread's device.
@@ -1187,6 +1212,20 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
 
   // Which fold runs, before any operand is drawn (see resolve_fold).
   resolve_fold(ctx);
+  // Blackwell (the TMA fold): a batch narrow enough that the B' it sweeps fits the L2.
+  // See PEARL_TMA_L2_SHARE.
+  if (ctx->foldTma) {
+    int l2 = 0;
+    if (cudaDeviceGetAttribute(&l2, cudaDevAttrL2CacheSize, ctx->device) != cudaSuccess) {
+      (void)cudaGetLastError();
+      l2 = 0;
+    }
+    const uint32_t cb = pearl_tma_col_batch(ctx->colBatch, ctx->colsValid, profile->k, (uint64_t)l2);
+    if (cb != ctx->colBatch) {
+      ctx->colBatch = cb;
+      ctx->batch = ctx->colBatch * ctx->rowsValid;
+    }
+  }
   // In per-tile order A's padding rows sit inside every slab of its last block, not
   // after m * k, so the whole noised A is zeroed once.
   if (ctx->foldTiled)
