@@ -391,6 +391,13 @@ struct Ctx {
   // batch waits for it; two batches of one salt may overlap. With PEARL_FOLD_STREAMS 0
   // both are the default stream and batches run strictly one after another.
   cudaStream_t foldStream[kSlots] = {};
+  // Batches to submit since a queued redraw (see pearl_host_reseed). Both batches queued
+  // behind a redraw wait for it, so when it finishes they start together and share the
+  // SMs: each takes two batch periods and they finish within ~0.1 ms of each other. The
+  // GPU loses nothing, but the core's hashrate windows, which count work as batches
+  // complete, then alternate (on a 4060, 3 and 5 batches a window around 4). So the
+  // second batch after a redraw waits for the first to finish, and they run in order.
+  int afterRedraw = 0;
   // The collected batch's hits after the first, for pearl_host_next_hit.
   std::vector<PearlSearchResult> extraHits;
   size_t extraNext = 0;
@@ -1686,6 +1693,7 @@ extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
     draw_noise(ctx, true);
     hb3_bytes(r.a_seed, ctx->aSeed);
     keep_record(ctx, salt, r);
+    ctx->afterRedraw = 2;
   } else {
     if (canRestamp) {
       restamp(ctx, salt);
@@ -1836,6 +1844,13 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   // Each slot's batches run on the slot's own stream, so a batch can start on the SMs
   // the one before it has already left (see Ctx::foldStream).
   cudaStream_t st = ctx->foldStream[slot];
+  // The second batch after a queued redraw runs after the first, not beside it (see
+  // Ctx::afterRedraw). The other slot holds the batch submitted just before this one.
+  if (ctx->afterRedraw > 0) {
+    if (ctx->afterRedraw == 1 && ctx->pendCount > 0)
+      cudaStreamWaitEvent(st, ctx->slotDone[(slot + Ctx::kSlots - 1) % Ctx::kSlots], 0);
+    ctx->afterRedraw--;
+  }
 
   const uint32_t k = ctx->profile.k;
   const uint32_t rank = ctx->profile.rank;
