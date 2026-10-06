@@ -10,6 +10,7 @@
 const { REGIONS, DEFAULTS } = require('./config');
 const { isValidAddress, isValidMdlAddress, normalizeAddress } = require('./address');
 const { MODES, DEFAULT_MODE, isValidMode } = require('./llmMode');
+const { parseMemClockMhz } = require('./memClock');
 
 // Short flags → their canonical long form.
 // --mdl / -m are deliberately absent from USAGE: merge mining is retired from
@@ -34,10 +35,6 @@ const VALUE_FLAGS = new Set([
   '--mode', '--llm-binary', '--llm-model', '--llm-max-instances', '--gate-port', '--gate-host',
   '--gate-quiet', '--mine-mem-clock',
 ]);
-
-// Bounds on --mine-mem-clock, in MHz. See buildSettings.
-const MEM_CLOCK_MIN_MHZ = 100;
-const MEM_CLOCK_MAX_MHZ = 30000;
 
 function regionChoices() {
   return Object.keys(REGIONS).join(', ');
@@ -74,14 +71,17 @@ const USAGE = [
   '      --llm-max-instances <n>  Cap how many llama-servers run (default: one per',
   '                           eligible GPU, itself capped by free system RAM)',
   '      --mine-mem-clock <MHz>  Lock each mining GPU\'s memory clock to <MHz>',
-  '                           while it mines (default: off). The fold barely',
+  '                           while it mines. Default: 7001 on Blackwell (RTX 50,',
+  '                           compute 12.x), off on every other card; 0 leaves',
+  '                           the driver\'s clock everywhere. The fold barely',
   '                           touches DRAM, so a power-capped card spends the',
   '                           watts on its SM clock instead: 7001 took a 600 W',
-  '                           RTX 5090 from 95.7 to 103.4 TH/s (+8%). Use 7001',
-  '                           there; lower raises the clock but cuts the work',
-  '                           done per clock. Needs root, or a sudoers NOPASSWD',
-  '                           rule for nvidia-smi. Released whenever mining',
-  '                           stops; ignored while an LLM co-runs with it.',
+  '                           RTX 5090 from 95.7 to 103.4 TH/s (+8%). Only the',
+  '                           5090 has been measured; lower raises the clock but',
+  '                           cuts the work done per clock. Needs root, or a',
+  '                           sudoers NOPASSWD rule for nvidia-smi. Released',
+  '                           whenever mining stops; skipped while an LLM',
+  '                           co-runs with it.',
   '  -r, --region <id>        Pool region: ' + Object.keys(REGIONS).join('/') + ' (default: auto-detect fastest)',
   '  -w, --worker <name>      Worker/rig name (default: this machine\'s hostname)',
   '  -g, --gpu <card>         GPU name to report on the board (default: auto-detect via nvidia-smi)',
@@ -175,19 +175,17 @@ function buildSettings(opts, errors, report, update, serve) {
     gateHost = String(opts['--gate-host']).trim();
     if (!gateHost) errors.push('invalid --gate-host: must not be empty');
   }
-  // A memory clock to lock while mining, in MHz; null (the default) leaves the
-  // clocks alone. The range is a typo guard, not a hardware table -- nvidia-smi
-  // and the driver decide what a card accepts. Below 100 is a GHz figure (`7`
-  // for 7001), above 30000 a kHz one. An empty value is Number('') = 0, which
-  // the range already refuses.
+  // A memory clock to lock while mining, in MHz. Null (not given) means the
+  // Blackwell default applies (shared/memClock); 0 turns that off and leaves
+  // every card at the driver's clock. The value's rules, and the GUI's
+  // environment variable that takes the same values, are shared/memClock's.
   let mineMemClockMhz = null;
   if (opts['--mine-mem-clock'] != null) {
-    const mhz = Number(opts['--mine-mem-clock']);
-    if (!Number.isInteger(mhz) || mhz < MEM_CLOCK_MIN_MHZ || mhz > MEM_CLOCK_MAX_MHZ) {
-      errors.push('invalid --mine-mem-clock: ' + opts['--mine-mem-clock']
-        + ' (must be a whole number of MHz, ' + MEM_CLOCK_MIN_MHZ + '-' + MEM_CLOCK_MAX_MHZ + ')');
+    const parsed = parseMemClockMhz(opts['--mine-mem-clock']);
+    if (parsed.error) {
+      errors.push('invalid --mine-mem-clock: ' + opts['--mine-mem-clock'] + ' (' + parsed.error + ')');
     } else {
-      mineMemClockMhz = mhz;
+      mineMemClockMhz = parsed.mhz;
     }
   }
   let llmMaxInstances = null;

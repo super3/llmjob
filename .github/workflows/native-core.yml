@@ -41,14 +41,20 @@ jobs:
     # miner-build.yml still downloads them by those names.
     #
     # The "-cu13" entries build the same source with a CUDA 13 toolkit for
-    # sm_120 ONLY, shipped as pearl_core_cu13.node. ptxas 13 compiles the
+    # sm_89 and sm_120, shipped as pearl_core_cu13.node. ptxas 13 compiles the
     # Blackwell fold far better than 12.8 does -- statically 2.67-3.0
     # instructions per IMMA with 160/192 B operands reused, against 3.891 with
     # 0/192 -- and on an RTX 5090 at 600 W the same v0.5.7 source ran 107.27
-    # TH/s built with 13.3 against 103.97 with 12.8.1 (+3.2%). It is sm_120
-    # only so the 3090/4090 code paths never change, and a separate file
-    # because a CUDA 13 runtime needs driver 580+: the app loads it only on an
-    # all-Blackwell rig with a new enough driver (src/shared/coreVariant.js).
+    # TH/s built with 13.3 against 103.97 with 12.8.1 (+3.2%). The sm_89 half
+    # is unmeasured. It is built so the Ada fold under ptxas 13.3 can be
+    # benched on a 4090 before the app is allowed to load it on Ada: point
+    # probes/hashrate.js and probes/verify-hits.js at pearl_core_cu13.node
+    # (they take the .node path as their first argument and read no
+    # environment variable). PEARL_CORE_VARIANT=cu13 is the override for the
+    # app and earn-cli only. No sm_86, so this build never loads on a 3090.
+    # It is a separate file because a CUDA 13 runtime needs driver 580+: the
+    # app loads it only on an all-Blackwell rig with a new enough driver
+    # (src/shared/coreVariant.js).
     name: ${{ matrix.os }}${{ matrix.variant }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -71,6 +77,15 @@ jobs:
               -gencode arch=compute_86,code=sm_86
               -gencode arch=compute_89,code=sm_89
               -gencode arch=compute_120,code=sm_120
+            # Architectures on which a register spill in a fold kernel fails
+            # the job (the spill check below): the ones a run of this check
+            # has shown clean under this compiler. Its first run (native core
+            # run 37078406753, 2026-10-02) had every fold at 0 spill: the tall
+            # fold 253 registers on sm_86 and sm_89 and 255 on sm_120, the
+            # wmma fold 235, 235 and 128. So all three fail on a spill. An
+            # architecture added later starts as a warning until a run has
+            # shown it clean too.
+            spill_fail_archs: sm_86 sm_89 sm_120
           - os: windows-2022
             variant: ''
             file: pearl_core.node
@@ -82,6 +97,7 @@ jobs:
               -gencode arch=compute_86,code=sm_86
               -gencode arch=compute_89,code=sm_89
               -gencode arch=compute_120,code=sm_120
+            spill_fail_archs: sm_86 sm_89 sm_120
           # 13.3.1 is the newest toolkit Jimver/cuda-toolkit v0.2.36 (the
           # version already pinned here) lists, on Linux and Windows alike, and
           # it is the toolkit the 5090 rig builds with (nvcc V13.3.73) -- so the
@@ -96,7 +112,20 @@ jobs:
             # The same list as 12.8: apt pulls nvcc's split-out pieces (crt,
             # nvvm, nvptxcompiler) in as dependencies of cuda-nvcc-13-3.
             subpackages: '["nvcc", "cudart", "cudart-dev", "nvrtc", "nvrtc-dev", "cuobjdump"]'
-            gencode: -gencode arch=compute_120,code=sm_120
+            gencode: >-
+              -gencode arch=compute_89,code=sm_89
+              -gencode arch=compute_120,code=sm_120
+            # Both clean in the check's first run (native core run
+            # 37078406753): the tall fold 253 registers on sm_89 and 254 on
+            # sm_120, the wmma fold 235 and 128, 0 spill everywhere. Only
+            # sm_120 fails the job: it is the half this file ships for, and a
+            # failed cu13 job uploads no pearl_core_cu13.node, so every
+            # all-Blackwell rig would mine on the 12.8 core and lose the +3.2%
+            # this build exists for. sm_89 under 13.3 fits but is unmeasured
+            # and never picked automatically (coreVariant.js), so a spill
+            # there is a warning in the log and a finding for the 4090 A/B,
+            # not a reason to withhold the sm_120 core.
+            spill_fail_archs: sm_120
           - os: windows-2022
             variant: '-cu13'
             file: pearl_core_cu13.node
@@ -108,7 +137,11 @@ jobs:
             # exactly the list it installs. Named explicitly so nvcc has its
             # headers and its back end.
             subpackages: '["nvcc", "crt", "nvvm", "nvptxcompiler", "cudart", "nvrtc", "cuobjdump"]'
-            gencode: -gencode arch=compute_120,code=sm_120
+            gencode: >-
+              -gencode arch=compute_89,code=sm_89
+              -gencode arch=compute_120,code=sm_120
+            # sm_120 only, for the reason given on the ubuntu entry.
+            spill_fail_archs: sm_120
     # Pinned to windows-2022. windows-latest now points at Server 2025, where
     # the CUDA installer dies with exit 0xE0E1E1D9 before reaching any of our
     # source. The Windows artifact is the one that MATTERS most here: it is the
@@ -184,7 +217,7 @@ jobs:
 
       # Compile the CUDA half into a static library. sm_75/86/89/120 covers
       # Turing, Ampere, Ada and Blackwell — the cards the app actually targets. The CUDA 13
-      # entries pass sm_120 alone; every other flag is the same.
+      # entries pass sm_89 and sm_120; every other flag is the same.
       - name: Compile the CUDA kernels
         working-directory: earn/native
         shell: bash
@@ -195,12 +228,123 @@ jobs:
           # with "relocation R_X86_64_PC32 ... can not be used when making a
           # shared object". MSVC has no equivalent flag and needs none.
           if [ "$RUNNER_OS" = "Linux" ]; then FPIC="-Xcompiler -fPIC"; else FPIC=""; fi
+          # -Xptxas -v: ptxas prints registers and spills per kernel and
+          # architecture on stderr. Kept in cuda-build/ for the spill check in
+          # the next step. Under the runner's pipefail a failed nvcc still
+          # fails this step through the tee.
           nvcc -O3 -std=c++17 -cudart static $FPIC \
             ${{ matrix.gencode }} \
-            -c src/pearl_kernel.cu -o cuda-build/pearl_kernel.o
+            -Xptxas -v \
+            -c src/pearl_kernel.cu -o cuda-build/pearl_kernel.o 2>&1 | tee cuda-build/ptxas-kernel.txt
           nvcc -O3 -std=c++17 -cudart static $FPIC \
             ${{ matrix.gencode }} \
             -c src/pearl_host.cu -o cuda-build/pearl_host.o
+
+      # The two-CTA cluster build of the Blackwell tall fold (PEARL_TALL_CLUSTER in
+      # pearl_config.h) is an A/B switch, off by default and not measured. Nothing
+      # ships it, so nothing else would notice if its PTX stopped assembling --
+      # multicast TMA, mapa, barrier.cluster, cluster-scope mbarrier -- or if the
+      # host's cluster launch stopped compiling. So it is compiled a second time
+      # here, sm_120 only (the only build with the body), into a scratch directory
+      # that no later step reads. Compile only: not archived, not linked, not
+      # uploaded. ptxas -v is printed so a spill or the register count can be read
+      # off the log; it is not gated, since the build has no measured baseline.
+      #
+      # Non-blocking, for the reason the CUDA 13 entries are: a build nothing ships
+      # must not fail the run and leave miner-build.yml on the previous run's
+      # shipped core. It has never been assembled anywhere before this step, so a
+      # failure here is a finding, shown in the log and as a step annotation,
+      # not a reason to hold the 12.8 core back.
+      - name: Compile the cluster build of the tall fold (sm_120, not shipped)
+        working-directory: earn/native
+        shell: bash
+        continue-on-error: true
+        run: |
+          mkdir -p cuda-build/cluster
+          if [ "$RUNNER_OS" = "Linux" ]; then FPIC="-Xcompiler -fPIC"; else FPIC=""; fi
+          nvcc -O3 -std=c++17 -cudart static $FPIC \
+            -gencode arch=compute_120,code=sm_120 \
+            -DPEARL_TALL_CLUSTER=1 \
+            -Xptxas -v \
+            -c src/pearl_kernel.cu -o cuda-build/cluster/pearl_kernel.o 2>&1 | tee cuda-build/cluster/ptxas-kernel.txt
+          nvcc -O3 -std=c++17 -cudart static $FPIC \
+            -gencode arch=compute_120,code=sm_120 \
+            -DPEARL_TALL_CLUSTER=1 \
+            -c src/pearl_host.cu -o cuda-build/cluster/pearl_host.o
+
+      # The tall fold sits at 253-255 registers (probes/README.md: 255 or fewer
+      # and 0 spill after any edit). A compiler or gate change that pushes it
+      # over spills to local memory, and the kernel still compiles, links and
+      # ships; nothing else in CI can see that. This reads what ptxas said
+      # above for both fold kernels on every architecture and prints one row
+      # each. A spill fails the job on the architectures in the entry's
+      # spill_fail_archs: every architecture the 12.8 entries build, since the
+      # check's first run showed them all clean, and sm_120 alone in the cu13
+      # entries, whose sm_89 half nothing ships (see those entries). Any other
+      # architecture is a warning. A failed cu13 job uploads no
+      # pearl_core_cu13.node, and a failed ubuntu 12.8 job makes
+      # miner-build.yml fall back to the previous run's core, which is the
+      # right outcome for a fold that spills. Needs no GPU.
+      - name: Check the fold kernels for register spills
+        working-directory: earn/native
+        shell: bash
+        run: |
+          # tr: on Windows nvcc writes CRLF, which would break every anchored match.
+          log=$(tr -d '\r' < cuda-build/ptxas-kernel.txt)
+          # One row per kernel and architecture: name arch registers stores loads.
+          # A block runs from one "Compiling entry function" line to the next.
+          # Every spill line in it is summed: a spill in a function the kernel
+          # calls without inlining is a spill in the kernel.
+          rows=$(printf '%s\n' "$log" | awk '
+            function flush() {
+              if (name != "") printf "%s %s %s %d %d\n", name, arch, regs, stores, loads
+              name = ""; arch = "?"; regs = "?"; stores = 0; loads = 0
+            }
+            /Compiling entry function/ {
+              flush()
+              for (i = 1; i <= NF; i++) {
+                if ($i == "function") name = substr($(i + 1), 2, length($(i + 1)) - 2)
+                if ($i == "for") arch = substr($(i + 1), 2, length($(i + 1)) - 2)
+              }
+              next
+            }
+            /bytes spill stores/ {
+              if (match($0, /[0-9]+ bytes spill stores/)) stores += substr($0, RSTART, RLENGTH - 19)
+              if (match($0, /[0-9]+ bytes spill loads/)) loads += substr($0, RSTART, RLENGTH - 18)
+            }
+            /Used [0-9]+ registers/ {
+              match($0, /Used [0-9]+ registers/); regs = substr($0, RSTART + 5, RLENGTH - 15)
+            }
+            END { flush() }')
+          # Padded with spaces so the case pattern matches whole words only.
+          fail_archs=" ${{ matrix.spill_fail_archs }} "
+          bad=0
+          seen_tall=0
+          seen_wmma=0
+          while read -r name arch regs stores loads; do
+            case "$name" in
+              pearl_tile_fold_tall) seen_tall=1 ;;
+              pearl_tile_fold_wmma) seen_wmma=1 ;;
+              *) continue ;;
+            esac
+            echo "$arch $name: $regs registers, $stores bytes spill stores, $loads bytes spill loads"
+            if [ "$stores" != 0 ] || [ "$loads" != 0 ]; then
+              case "$fail_archs" in
+                *" $arch "*)
+                  echo "::error::$name spills on $arch ($stores bytes stored, $loads loaded); the fold must fit in 255 registers with 0 spill"
+                  bad=1 ;;
+                *)
+                  echo "::warning::$name spills on $arch ($stores bytes stored, $loads loaded); not failing the job, this build is unmeasured (spill_fail_archs: ${{ matrix.spill_fail_archs }})" ;;
+              esac
+            fi
+          done <<< "$rows"
+          # Nothing found is a failure, not a pass: the names changed, or ptxas
+          # was not run with -v.
+          if [ "$seen_tall" != 1 ] || [ "$seen_wmma" != 1 ]; then
+            echo "::error::ptxas -v output has no entry for both pearl_tile_fold_tall and pearl_tile_fold_wmma; was pearl_kernel.cu compiled with -Xptxas -v?"
+            exit 1
+          fi
+          exit $bad
 
       # The Blackwell tall fold's two TMA descriptors must sit at 128-byte-aligned
       # parameter addresses. In v0.5.7 and v0.5.8 the Windows builds put them at

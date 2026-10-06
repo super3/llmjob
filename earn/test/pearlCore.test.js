@@ -157,7 +157,7 @@ describe('coreFactory', () => {
 });
 
 // Two builds of the core: pearl_core.node (CUDA 12.8, every card) and
-// pearl_core_cu13.node (CUDA 13, sm_120 only). Which one loads is decided from
+// pearl_core_cu13.node (CUDA 13, sm_89 and sm_120). Which one loads is decided from
 // what nvidia-smi said (shared/coreVariant) -- these tests cover the loading
 // half: where each is looked for, what is logged, and the fallback.
 describe('coreFactory — choosing a build', () => {
@@ -211,7 +211,7 @@ describe('coreFactory — choosing a build', () => {
     expect(f({ rank: 128 })).toEqual({ build: 'cu12' });
     expect(r.req).not.toHaveBeenCalledWith(CU13_BESIDE);
     expect(r.lines).toEqual([['info',
-      'Pearl core: CUDA 12.8 build · GPU 0 is compute 8.9 (the CUDA 13 build is compute 12.x only)']]);
+      'Pearl core: CUDA 12.8 build · GPU 0 is compute 8.9 (the CUDA 13 build has code for it but measured no faster on a 4090)']]);
   });
 
   test('a 2080 Ti rig loads the 12.8 build and never looks for the CUDA 13 one', () => {
@@ -220,7 +220,7 @@ describe('coreFactory — choosing a build', () => {
     expect(f({ rank: 128 })).toEqual({ build: 'cu12' });
     expect(r.req).not.toHaveBeenCalledWith(CU13_BESIDE);
     expect(r.lines).toEqual([['info',
-      'Pearl core: CUDA 12.8 build · GPU 0 is compute 7.5 (the CUDA 13 build is compute 12.x only)']]);
+      'Pearl core: CUDA 12.8 build · GPU 0 is compute 7.5 (the CUDA 13 build has no code for it)']]);
   });
 
   // An install from before there were two, or a release whose CUDA 13 job failed.
