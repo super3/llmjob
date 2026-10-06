@@ -237,6 +237,10 @@ struct Ctx {
   // when this is set. It is per context, so in a rig with a 2080 Ti beside a
   // 3090 or a 4090 each card's B' is in the layout its own fold reads.
   bool foldBDirect = false;
+  // The B-direct fold's band depth on this card (see PEARL_BD_L2_SHARE).
+  uint32_t bdBand = 0;
+  // pearl_host_fold_name's text when it has to be formatted.
+  char foldName[160] = {0};
   // Whether this card runs the tall fold instead (PEARL_FOLD_TALL): its own
   // kernel, pearl_tile_fold_tall, over 192x256 tiles. Read off that kernel's
   // loaded binary (PEARL_TALL_ARCH of its binaryVersion) with the others.
@@ -936,6 +940,23 @@ uint32_t pearl_tma_col_batch(uint32_t colBatch, uint32_t colsValid, uint32_t k, 
 #endif
 }
 
+// Turing's band depth for the B-direct fold (see PEARL_BD_L2_SHARE): 16, halved
+// while a band's A -- depth x 128 rows x k bytes -- is more than PEARL_BD_L2_SHARE
+// percent of the L2, never below 4. -DPEARL_BD_BAND=N forces N.
+uint32_t pearl_bd_band_for(uint32_t k, uint64_t l2) {
+#ifdef PEARL_BD_BAND
+  (void)k;
+  (void)l2;
+  return (uint32_t)PEARL_BD_BAND;
+#else
+  uint32_t band = 16u;
+  if (l2 == 0u) return band;
+  while (band > 4u && (uint64_t)band * 128u * k * 100u > l2 * (uint64_t)PEARL_BD_L2_SHARE)
+    band /= 2u;
+  return band;
+#endif
+}
+
 }  // namespace
 
 // Choose the card this core mines on, and make it the calling thread's device.
@@ -1167,7 +1188,13 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
           "allocating the hit transcripts");
   CUDA_OK(cudaMalloc(&ctx->dHashes, S * PEARL_MAX_HITS * PEARL_HASH_BYTES),
           "allocating the batch hashes");
-  CUDA_OK(cudaMalloc(&ctx->dHitCount, S * sizeof(uint32_t)), "allocating the hit counter");
+  // Turing's B-direct fold keeps each slot's tile counter (PEARL_BD_PERSIST) and
+  // its band depth (PEARL_BD_L2_SHARE) after the hit counters: [hit counts][tile
+  // counters][band depths], one word a slot each.
+  static_assert(PEARL_BD_CTR_SLOTS == Ctx::kSlots && PEARL_BD_BAND_WORD == 2u * Ctx::kSlots,
+                "the B-direct fold's words, one a pipeline slot");
+  CUDA_OK(cudaMalloc(&ctx->dHitCount, S * (PEARL_TURING_BDIRECT ? 3u : 1u) * sizeof(uint32_t)),
+          "allocating the hit counter");
   CUDA_OK(cudaMalloc(&ctx->dHitIndex, S * PEARL_MAX_HITS * sizeof(uint32_t)),
           "allocating the hit list");
   CUDA_OK(cudaHostAlloc(&ctx->hSlotCount, S * sizeof(uint32_t), cudaHostAllocDefault),
@@ -1232,6 +1259,21 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
       ctx->colBatch = cb;
       ctx->batch = ctx->colBatch * ctx->rowsValid;
     }
+  }
+  // Turing (the B-direct fold): a band of row groups whose A fits the L2. See
+  // PEARL_BD_L2_SHARE.
+  if (ctx->foldBDirect) {
+    int l2 = 0;
+    if (cudaDeviceGetAttribute(&l2, cudaDevAttrL2CacheSize, ctx->device) != cudaSuccess) {
+      (void)cudaGetLastError();
+      l2 = 0;
+    }
+    ctx->bdBand = pearl_bd_band_for(profile->k, (uint64_t)l2);
+    // The fold reads it PEARL_BD_BAND_WORD words past its slot's hit counter.
+    const uint32_t bands[Ctx::kSlots] = {ctx->bdBand, ctx->bdBand};
+    CUDA_OK(cudaMemcpy(ctx->dHitCount + PEARL_BD_BAND_WORD, bands, sizeof bands,
+                       cudaMemcpyHostToDevice),
+            "setting the B-direct fold's band depth");
   }
   // In per-tile order A's padding rows sit inside every slab of its last block, not
   // after m * k, so the whole noised A is zeroed once.
@@ -2069,8 +2111,10 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
     }
   }
   const unsigned blocks =
-      ((ctx->foldPersistent || ctx->foldTall) && ctx->foldResident < tileCtas) ? ctx->foldResident
-                                                                              : tileCtas;
+      ((ctx->foldPersistent || ctx->foldTall || (ctx->foldBDirect && PEARL_BD_PERSIST))
+       && ctx->foldResident < tileCtas)
+          ? ctx->foldResident
+          : tileCtas;
   // The fold hashes every transcript itself and tests it against the bound. It
   // writes only on a hit and appends to a compact list, so the readback below
   // is four bytes rather than one flag per region.
@@ -2094,6 +2138,9 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   hitList.transcript =
       ctx->dHitTranscript + (size_t)slot * PEARL_MAX_HITS * PEARL_JACKPOT_BUCKETS;
   cudaMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);
+  // Turing's persistent B-direct fold takes its tiles from this slot's counter.
+  if (ctx->foldBDirect && PEARL_BD_PERSIST)
+    cudaMemsetAsync(hitList.count + PEARL_BD_CTR_SLOTS, 0, sizeof(uint32_t), st);
   if (ctx->foldTall && ctx->foldCluster) {
     // The cluster build: the same launch, in clusters of PEARL_TALL_CLUSTER_SIZE CTAs
     // (blocks is a multiple of it, see foldResident), the same arguments by value, on
@@ -2237,10 +2284,13 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
                         : (ctx->foldTiled ? "tall 192x256, 8 warps of 96x64, cp.async ring, per-tile operands"
                                           : "tall 192x256, 8 warps of 96x64, cp.async ring");
   if (ctx->foldWide) return "wmma 128x256, 8 warps of 64x64";
-  if (ctx->foldBDirect)
-    return PEARL_BD_GROUPS == 2
-               ? "B-direct 128x256, 8 warps of 64x64, 2 row groups, m8n8k16 (Turing)"
-               : "B-direct 128x256, 8 warps of 64x64, 1 row group, m8n8k16 (Turing)";
+  if (ctx->foldBDirect) {
+    snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,
+             "B-direct 128x256, 8 warps of 64x64, %d row group%s, %s, band %u, m8n8k16 (Turing)",
+             PEARL_BD_GROUPS, PEARL_BD_GROUPS == 2 ? "s" : "",
+             PEARL_BD_PERSIST ? "persistent" : "a block a tile", ctx->bdBand);
+    return ctx->foldName;
+  }
   if (ctx->foldTuring)
     return PEARL_TURING_WIDE ? "wmma 128x256, 8 warps of 64x64, one stage, m8n8k16 (Turing)"
                              : "wmma 128x128, 8 warps of 32x64, m8n8k16 (Turing)";

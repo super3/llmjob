@@ -360,8 +360,9 @@ typedef struct {
 // 32 -> 52.0 with PEARL_STAGE_REGS. So 16. On the B-direct fold with one row
 // group (PEARL_TURING_BDIRECT, three rounds): 12 -> 77.5 / 77.4 / 77.4 against
 // 77.6 / 77.3 / 77.4 at 16, and with an L2 prefetch (since dropped) 12 -> 75.3
-// and 32 -> 69.0 against 74.0 - 74.2 at 16. So 16 stays. The shipped fold, two
-// row groups, has not been swept.
+// and 32 -> 69.0 against 74.0 - 74.2 at 16. So 16 stays. The B-direct fold
+// no longer reads this: the host picks its depth per card from the L2 (see
+// PEARL_BD_L2_SHARE), 16 on the 2080 Ti and 8 on the 3-4 MB cards.
 //
 // Only ever used inside pearl_tile_fold_wmma, so __CUDA_ARCH__ is always defined
 // where it is read and the host never sees a differing value.
@@ -590,6 +591,58 @@ typedef struct {
 #endif
 #if PEARL_BD_GROUPS != 1 && PEARL_BD_GROUPS != 2
 #error "PEARL_BD_GROUPS is 1 or 2"
+#endif
+// The B-direct fold is persistent, with its tiles handed out as it goes
+// (PEARL_BD_PERSIST 1, the default). The host launches one block an SM. Block b
+// starts on tile b, and every later tile comes from a counter the host zeroes
+// before each launch, so the tiles in flight stay one contiguous run of the
+// band walk (PEARL_BD_L2_SHARE), as they do when the hardware launches a block
+// a tile. Each tile's chunk 0 is loaded under the last chunk of the tile
+// before, the block meets once a tile (the hand-off, a __syncthreads), and the
+// two row groups hash on different schedulers, so every scheduler keeps a warp
+// on the next tile while the other hashes.
+//
+// Why: with a block a tile, a tile took ~78K cycles against 65.5K at the IMMA
+// peak (1024 MAC/clk/SM). ~1.5K of that was chunk 0's exposed loads and ~2.3K
+// the hash, during which two of the four schedulers had nothing to issue.
+// (Timed in the fold with clock(), RTX 2060 and 2080 Ti; Vast blocks the
+// performance counters.) A persistent walk that strides tiles a grid apart
+// lost 7% instead: the blocks drift through the band walk and spread its L2
+// working set, and the chunks themselves got 11% slower.
+//
+// Measured, hashrate.js 3-4 rounds of 60 s, 400/400 hits verified, the same
+// band depth both ways:
+//   RTX 2060 6 GB (Australia, 190 W), band 8:     44.47 -> 46.29 TH/s (+4.1%)
+//   RTX 2070 Super (Alberta, 215 W), band 8:      56.61 -> 58.12 TH/s (+2.7%)
+//   RTX 2080 Ti (Pennsylvania, 260 W), band 16:   83.62 -> 85.78 TH/s (+2.6%)
+//
+// The counter is the word PEARL_BD_CTR_SLOTS past the slot's hit counter: one
+// a pipeline slot, because the two slots' batches overlap on their streams.
+// 0 launches a block a tile, as before. Both passes read it.
+#ifndef PEARL_BD_PERSIST
+#define PEARL_BD_PERSIST 1
+#endif
+#if PEARL_BD_PERSIST != 0 && PEARL_BD_PERSIST != 1
+#error "PEARL_BD_PERSIST is 0 or 1"
+#endif
+#define PEARL_BD_CTR_SLOTS 2u
+// And the band depth the host chose (PEARL_BD_L2_SHARE), this many words past it.
+#define PEARL_BD_BAND_WORD (2u * PEARL_BD_CTR_SLOTS)
+// The B-direct fold's band depth (its PEARL_BLOCK_GROUP), chosen per card by
+// the host from the L2 and read by the fold PEARL_BD_BAND_WORD words past its
+// hit counter: 16, halved while a band's A -- depth x 128 rows x k bytes,
+// 256 KB a row group at the mainnet k -- is over PEARL_BD_L2_SHARE percent of
+// the L2, and never below 4. So 8 on the RTX 2060 (3 MB) and the 4 MB cards
+// (2060 Super, 2070, 2070 Super, 2080), and 16 on the 2080 Ti (5.5 MB).
+//
+// At 16 a band's A is 4 MB, so on a 3-4 MB L2 it came from DRAM once per
+// column group. Measured, hashrate.js 3 x 60 s, against 16:
+//   RTX 2060 6 GB (3 MB, Australia): 8 +1.8%, 4 +1.8%
+//   RTX 2070 Super (4 MB, Alberta):  8 +1.6%
+//   RTX 2080 Ti (5.5 MB, Pennsylvania): 8 -0.4%, 12 +0.1%
+// -DPEARL_BD_BAND=N forces N on every card. Host only.
+#ifndef PEARL_BD_L2_SHARE
+#define PEARL_BD_L2_SHARE 75u
 #endif
 #define PEARL_FOLD_TURING_THREADS 256u
 #define PEARL_TURING_WIDE_STAGE_BUFS 1
