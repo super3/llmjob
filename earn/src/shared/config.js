@@ -82,23 +82,25 @@ const NETWORK = {
   releasesUrl: 'https://github.com/super3/llmjob/releases/latest',
 };
 
-// Network economics for earnings estimates. The app live-refreshes these from
-// the prlscan API at runtime (see shared/economics.js + main.js); the constants
-// here are only the offline fallback, so keep them roughly current — a stale
-// fallback silently overstates earnings (a network that doubled makes every
-// estimate ~2x too high). Snapshot: 2026-07 (prlscan).
+// Network economics for earnings estimates (see shared/earnings.js). The app
+// live-refreshes these from the prlscan API at runtime (see shared/economics.js
+// + main.js); the constants here are only the offline fallback, so keep them
+// roughly current — a stale fallback silently overstates earnings (a network
+// whose difficulty doubled makes every estimate ~2x too high).
+// Snapshot: 2026-10-06 (prlscan, block 124012).
 const ECON = {
-  NET_TH: 61e6, // network hashrate in TH/s (~61 EH/s) — prlscan
-  DAILY_NET_PRL: 1.62e6, // ~2,489 PRL/block × ~650 blocks/day
-  FEE: 0.99, // share kept after the 1% pool fee
-  PRL_USD: 0.30, // PRL price in USD — prlscan (SafeTrade-sourced)
+  DIFFICULTY: 34.45e6, // network difficulty of the latest block
+  BLOCK_REWARD: 2278, // PRL per block
+  // The share of the work that pays you: what is left after the dev fee and the
+  // pool fee, so a fee change in MINER reaches every estimate.
+  FEE: 1 - (MINER.devFeePct + MINER.poolFeePct) / 100,
+  PRL_USD: 1.14, // PRL price in USD — prlscan (CoinMarketCap-sourced)
 };
 
 // prlscan API endpoints the app live-refreshes economics from (CORS-open; the
 // explorer's own backend). Mirrors the site calculator's sources (site/pages/index.html).
 const ECON_API = {
   price: 'https://api.prlscan.com/v1/market/prl',
-  metrics: 'https://api.prlscan.com/v1/analytics/block-metrics',
   blocks: 'https://api.prlscan.com/v1/blocks?limit=1',
 };
 

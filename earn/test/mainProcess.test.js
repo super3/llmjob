@@ -388,9 +388,8 @@ describe('app boot and window lifecycle', () => {
     const ctx = await boot();
     expect(ctx.electron.BrowserWindow).toHaveBeenCalledTimes(1);
     expect(ctx.win().loadFile).toHaveBeenCalledWith(expect.stringContaining('index.html'));
-    // economics refreshed from the three prlscan endpoints
+    // economics refreshed from the two prlscan endpoints
     expect(ctx.io.getJson).toHaveBeenCalledWith(ctx.config.ECON_API.price);
-    expect(ctx.io.getJson).toHaveBeenCalledWith(ctx.config.ECON_API.metrics);
     expect(ctx.io.getJson).toHaveBeenCalledWith(ctx.config.ECON_API.blocks);
     // econ refresh interval registered and unref'd
     const econ = ctx.interval(10 * 60 * 1000);
@@ -709,13 +708,13 @@ describe('balance handlers', () => {
   });
 
   it('live economics feed the balance USD conversion', async () => {
-    const items = Array.from({ length: 12 }, () => ({ estimated_hashrate_hps: 1e18, block_time_seconds: 120 }));
     const ctx = loadMain({
       before: (c) => {
         c.io.getJson.mockImplementation((url) => {
           if (url === c.config.ECON_API.price) return Promise.resolve({ price_usd: 0.5 });
-          if (url === c.config.ECON_API.metrics) return Promise.resolve({ items });
-          if (url === c.config.ECON_API.blocks) return Promise.resolve({ items: [{ reward_grains: 2489e8 }] });
+          if (url === c.config.ECON_API.blocks) {
+            return Promise.resolve({ items: [{ difficulty: 34.45e6, reward_grains: 2278e8 }] });
+          }
           return Promise.resolve(null);
         });
       },
