@@ -982,8 +982,21 @@ typedef struct {
 #ifndef PEARL_TALL_APT
 #define PEARL_TALL_APT 3u
 #endif
+// Ampere (sm_86) issues B's copies one m16 tile earlier, after tile 1 of k-step 1. With
+// the shared-XOR readout (PEARL_TALL_RED_READOUT), against A at 3 and B at 8, hashrate.js,
+// 3 or 4 rounds, ahead in every round, 400/400 hits: RTX 3060 47.10 -> 47.76 (+1.41%), RTX
+// 3070 Ti 85.05 -> 85.38 (+0.39%), RTX 3090 116.07 -> 116.62 (+0.47%), RTX 3080 106.31 ->
+// 106.81 (+0.47%); pool runs on the 3090 and 3080 accepted 2 of 2 and 5 of 5 shares. Alone, with the shuffle readout: 3060 +0.88 / +1.08 / +1.44%
+// in three sessions, 3070 Ti +0.23 / 0.00 / -0.01%. Its neighbours lose 1-5%: A at 3 and
+// B at 6 -5.1%, A at 4 and B at 7 -3.6%, A at 2 and B at 7 +0.5% (3060). They steer where
+// ptxas schedules the copy groups. Copying B first (behind the EMPTY wait) lost 3% at A 2,
+// B 7 and was level at 3, 8.
 #ifndef PEARL_TALL_BPT
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 860
+#define PEARL_TALL_BPT 7u
+#else
 #define PEARL_TALL_BPT 8u
+#endif
 #endif
 
 // The order Ada's tall fold (the cp.async ring) reads its noised operands in: 1 for
@@ -1010,9 +1023,10 @@ typedef struct {
 #endif
 
 // How the tall fold's per-chunk readout combines the four lanes that hold a region, on
-// Ada (sm_89) and Blackwell (sm_120); Ampere ignores it. 0: three shuffles give every lane the whole XOR,
-// and the lane that keeps the chunk stores the word. 1: each lane XORs its own quarter
-// into the word in shared (red.shared.xor), with no shuffle and no select. The words then
+// Ada (sm_89), Ampere (sm_86) and Blackwell (sm_120); Turing ignores it. 0: three shuffles
+// give every lane the whole XOR, and the lane that keeps the chunk stores the word. 1:
+// each lane XORs its own quarter into the word in shared (red.shared.xor), with no
+// shuffle and no select. The words then
 // have to start at zero: the kernel zeroes them once before its first tile, and the hasher
 // zeroes each region's after reading it. The ring orders that before the partner warp's
 // next writes, as it orders the hasher's reads (see the fold's hand-off).
@@ -1030,6 +1044,11 @@ typedef struct {
 // on an RTX 5080 and +0.16% on an RTX 5090, each ahead in every round. ptxas 13.3 and
 // 12.8 both build sm_120's fold at 254 registers with no spill. The CUDA 12.8 core (drivers
 // before 580) gains more: RTX 5060 at 140 W, 72.54 -> 74.42 TH/s (+2.6%).
+// On Ampere, with B's copies one m16 tile earlier (PEARL_TALL_BPT 7, see there):
+//   RTX 3060, 170 W, 3 rounds        47.10 -> 47.76  (+1.41%; the readout alone +0.57%)
+//   RTX 3070 Ti, 310 W, 3 rounds     85.05 -> 85.38  (+0.39%; alone +0.15%)
+//   RTX 3090, 300 W, 4 rounds        116.07 -> 116.62 (+0.47%)
+//   RTX 3080, 320 W, 4 rounds        106.31 -> 106.81 (+0.47%)
 // The shuffles were on the readout's critical path, and the readout runs while the
 // partner warp has the scheduler's tensor pipe to itself. The chunk loop goes from 559
 // instructions to 541. The XORs carry a predicate that is

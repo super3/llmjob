@@ -2919,8 +2919,9 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
 //     pair walks tiles of two row groups. The switch's comment in pearl_config.h has
 //     the accounting; the code is under PEARL_TALL_CLUSTER_BODY below.
 // Whether this compile's tall fold reads out with shared-memory XORs (see
-// PEARL_TALL_RED_READOUT): Ada's build and Blackwell's.
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 890 || __CUDA_ARCH__ >= 1200) && PEARL_TALL_RED_READOUT
+// PEARL_TALL_RED_READOUT): Ada's, Ampere's and Blackwell's builds.
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890 || __CUDA_ARCH__ >= 1200) \
+    && PEARL_TALL_RED_READOUT
 #define PEARL_TALL_RED_ON 1
 #else
 #define PEARL_TALL_RED_ON 0
