@@ -966,6 +966,18 @@ uint32_t pearl_bd_band_for(uint32_t k, uint64_t l2) {
 #endif
 }
 
+// The column offsets one batch of Ampere's tall fold covers (see PEARL_AMPERE_COL_BATCH):
+// the profile's col_batch, or PEARL_AMPERE_COL_BATCH if that is narrower, is a whole
+// number of tiles' 16 column offsets, and divides the valid offsets, so a salt still
+// splits into whole batches.
+uint32_t pearl_ampere_col_batch(uint32_t colBatch, uint32_t colsValid) {
+  const uint32_t want = (uint32_t)PEARL_AMPERE_COL_BATCH;
+  if (want >= PEARL_TALL_COL_OFFSETS && want < colBatch && want % PEARL_TALL_COL_OFFSETS == 0u
+      && colsValid % want == 0u)
+    return want;
+  return colBatch;
+}
+
 // Ampere's band depth for the tall fold (see PEARL_AMPERE_BAND_L2_SHARE): 16, halved
 // while a band's A' -- depth x 192 rows x k bytes -- is more than
 // PEARL_AMPERE_BAND_L2_SHARE percent of the L2, never below 4. -DPEARL_AMPERE_BAND=N
@@ -1292,6 +1304,14 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   // Ampere (the sm_86 tall fold): a band of row groups whose A' fits the L2. See
   // PEARL_AMPERE_BAND_L2_SHARE.
   if (ctx->foldAmpere) {
+    // A narrower batch than the profile's (PEARL_AMPERE_COL_BATCH).
+    {
+      const uint32_t cb = pearl_ampere_col_batch(ctx->colBatch, ctx->colsValid);
+      if (cb != ctx->colBatch) {
+        ctx->colBatch = cb;
+        ctx->batch = ctx->colBatch * ctx->rowsValid;
+      }
+    }
     int l2 = 0;
     if (cudaDeviceGetAttribute(&l2, cudaDevAttrL2CacheSize, ctx->device) != cudaSuccess) {
       (void)cudaGetLastError();

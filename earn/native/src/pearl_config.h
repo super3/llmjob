@@ -940,6 +940,24 @@ typedef struct {
 #ifndef PEARL_AMPERE_BAND_L2_SHARE
 #define PEARL_AMPERE_BAND_L2_SHARE 80u
 #endif
+// Ampere's batch width (host side, the sm_86 tall fold only): at most this many column
+// offsets a launch, against the profile's 2048. With A' held in the persisting slice
+// (PEARL_AMPERE_PERSIST_A), what DRAM still serves is B' fetched again when the tiles that
+// share it drift apart. A shorter launch starts the blocks together more often, and a
+// band's sweep of B' is shorter, so the serpentine reuses more of it at each turn.
+// Measured with hashrate.js, 3 rounds, 400/400 hits, against 2048:
+//   width                 1024     512      256
+//   RTX 3060 (Vietnam)    +0.3%   +0.9%    +0.8%    memory utilization 41% -> 33% at 512
+//   RTX 3060 Ti (Japan)   +0.3%   +0.6%    +0.5%
+//   RTX 3070 Ti (Ontario) +0.3%   +0.2%
+//   RTX 3090 (Quebec)     +0.4%   +0.7%    +0.3%
+//   RTX 3080 Ti (Portugal) +0.1%  -0.1%
+// 512 led in every round on all but the 3080 Ti. Pool runs at 512: 4 of 4 shares (3080 Ti).
+// Before the slice the width measured flat (RTX 3070 Ti, 1024 - 128 all within -0.4%).
+// 0 keeps the profile's width. Host only.
+#ifndef PEARL_AMPERE_COL_BATCH
+#define PEARL_AMPERE_COL_BATCH 512u
+#endif
 // Ampere: keep each band's A' in a persisting slice of the L2. The host sets
 // cudaLimitPersistingL2CacheSize to the band's A' (band x 192 rows x k bytes), capped at
 // the card's cudaDevAttrMaxPersistingL2CacheSize, and the sm_86 fold's A copies carry an
