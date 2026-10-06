@@ -991,8 +991,14 @@ typedef struct {
 // B at 6 -5.1%, A at 4 and B at 7 -3.6%, A at 2 and B at 7 +0.5% (3060). They steer where
 // ptxas schedules the copy groups. Copying B first (behind the EMPTY wait) lost 3% at A 2,
 // B 7 and was level at 3, 8.
+//
+// Ada (sm_89) takes B at 7 too, with the shared-XOR readout on. Against A at 3 and B at 8,
+// hashrate.js, ahead in every round, 400/400 hits: RTX 4060 (115 W) 60.01 -> 60.11 TH/s
+// (+0.16%, 3 rounds), RTX 4070 Ti (Delaware) 156.35 -> 156.59 (+0.15%, 4 rounds); level on
+// the RTX 4090 (303.41 -> 303.36) and RTX 4060 Ti (88.55 -> 88.59). A at 2 and B at 7 or
+// 8 measured -0.07 to -0.11% on the 4060, and B at 9 -1.1 to -1.3%.
 #ifndef PEARL_TALL_BPT
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 860
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
 #define PEARL_TALL_BPT 7u
 #else
 #define PEARL_TALL_BPT 8u
