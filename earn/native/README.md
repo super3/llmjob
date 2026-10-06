@@ -156,9 +156,10 @@ It builds the same source a second time with CUDA 13.3 for sm_89 and sm_120,
 and uploads that as `pearl_core_cu13.node` (artifacts `pearl-core-cu13-<os>`).
 ptxas 13 compiles the Blackwell fold to 2.67–3.0 instructions per IMMA with
 160/192 B operands reused, where 12.8 manages 3.891 with 0/192; on an RTX 5090
-that is +3.2% hashrate. The sm_89 half is unmeasured: it is there so the Ada
-fold under ptxas 13.3 can be benched on a 4090 before the app is allowed to
-load it on Ada. To run that bench, point `probes/hashrate.js` and
+that is +3.2% hashrate. The sm_89 half is no faster: on a 4090 it averaged
+313.23 TH/s against 313.08 for the 12.8 build of the same source, inside the
+run-to-run spread (probes/README.md, 2026-10-06), so the app does not load it
+on Ada. To run that bench again, point `probes/hashrate.js` and
 `probes/verify-hits.js` at `pearl_core_cu13.node`; they take the `.node` path
 as their first argument and read no environment variable.
 `PEARL_CORE_VARIANT=cu13` is the override for the app and `earn-cli` only. A
@@ -205,7 +206,9 @@ fold and its staging) accepts sm_86 too, because a GA10x SM has the same
 schedulers, register file and 99 KB of shared a block the fold was tuned
 against. No Ampere card has run it, so there is no hashrate figure for it; the
 Ada numbers in the tuning log are Ada's only, and Ampere's much smaller L2 means
-the band walk that keeps B resident on a 4090 will miss there.
+the band walk that keeps B resident on a 4090 will miss there. Its correctness
+has been checked: an sm_86-only build runs on a 4090 (compute 8.9 runs sm_86
+code), took the tall fold, and passed verify-hits 400/400 (probes/README.md).
 
 The addon lands at `build/Release/pearl_core.node`, which is exactly where
 `src/main/pearlCore.js` looks for it. When it is absent — as on any machine

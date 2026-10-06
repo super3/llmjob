@@ -109,7 +109,7 @@ describe('pickCoreVariant', () => {
   test('a 4090 rig keeps the 12.8 build: the CUDA 13 one is not selected for Ada yet', () => {
     expect(pickCoreVariant({ env: {}, cards: [RTX4090(0)], gpus: [{ index: 0 }] })).toEqual({
       variant: CU12,
-      reason: 'GPU 0 is compute 8.9 (the CUDA 13 build has code for it but is not yet selected automatically)',
+      reason: 'GPU 0 is compute 8.9 (the CUDA 13 build has code for it but measured no faster on a 4090)',
     });
   });
 

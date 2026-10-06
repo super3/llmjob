@@ -126,12 +126,13 @@ A release ships two builds of the mining core side by side, in the installer's
 | File | Toolkit | Cards |
 |---|---|---|
 | `pearl_core.node` | CUDA 12.8 | RTX 20, 30, 40 and 50 (sm_75/86/89/120) — every rig |
-| `pearl_core_cu13.node` | CUDA 13.3 | sm_89 and sm_120; picked automatically for RTX 50 / Blackwell only (the sm_89 half is unmeasured) |
+| `pearl_core_cu13.node` | CUDA 13.3 | sm_89 and sm_120; picked automatically for RTX 50 / Blackwell only (the sm_89 half measured no faster on a 4090) |
 
 **RTX 30 (Ampere) note.** The sm_86 half of `pearl_core.node` now runs the same
-fold path as an RTX 40 (the persistent, eight-warp, tall fold), which has not
-been run on an Ampere card: there is no hashrate figure for it, and the previous
-Ampere path is no longer in this build. If a 3090 mines slower on this release,
+fold path as an RTX 40 (the persistent, eight-warp, tall fold). Its hits check
+out (the sm_86 code, run on a 4090), but it has not been run on an Ampere card:
+there is no hashrate figure for it, and the previous Ampere path is no longer
+in this build. If a 3090 mines slower on this release,
 `PEARL_CORE_PATH=<path to the previous release's pearl_core.node>` loads the old
 core unchanged, and a report with both numbers is what settles it.
 
@@ -148,7 +149,7 @@ start:
 
 ```
 Pearl core: CUDA 13 build · driver 610, mining card is compute 12.0
-Pearl core: CUDA 12.8 build · GPU 1 is compute 8.9 (the CUDA 13 build has code for it but is not yet selected automatically)
+Pearl core: CUDA 12.8 build · GPU 1 is compute 8.9 (the CUDA 13 build has code for it but measured no faster on a 4090)
 Pearl core: CUDA 12.8 build · GPU 0 is compute 8.6 (the CUDA 13 build has no code for it)
 ```
 

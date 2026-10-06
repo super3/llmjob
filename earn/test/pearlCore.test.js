@@ -211,7 +211,7 @@ describe('coreFactory — choosing a build', () => {
     expect(f({ rank: 128 })).toEqual({ build: 'cu12' });
     expect(r.req).not.toHaveBeenCalledWith(CU13_BESIDE);
     expect(r.lines).toEqual([['info',
-      'Pearl core: CUDA 12.8 build · GPU 0 is compute 8.9 (the CUDA 13 build has code for it but is not yet selected automatically)']]);
+      'Pearl core: CUDA 12.8 build · GPU 0 is compute 8.9 (the CUDA 13 build has code for it but measured no faster on a 4090)']]);
   });
 
   test('a 2080 Ti rig loads the 12.8 build and never looks for the CUDA 13 one', () => {

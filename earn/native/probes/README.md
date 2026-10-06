@@ -269,6 +269,30 @@ sm_89 path instead of the one-block-per-tile walk described for it above. No Amp
 has run it; every figure in this log is a 4090's or a 5090's. See `PEARL_TALL_BODY_ARCH`
 in `src/pearl_config.h`.
 
+**PR #246 on this 4090 (2026-10-06).** Stock 450 W, the CI-built cores from the PR's head
+(`edfe6a6`) and from main (`02d0d98`), `hashrate.js` 60 s after 10 s of warm-up, three
+rounds with the order rotated each round:
+
+| core | round 1 | round 2 | round 3 | mean |
+|---|---|---|---|---|
+| main, `pearl_core.node` (CUDA 12.8) | 313.14 | 313.20 | 312.96 | 313.10 |
+| PR, `pearl_core.node` (CUDA 12.8) | 313.14 | 313.03 | 313.08 | 313.08 |
+| PR, `pearl_core_cu13.node` (CUDA 13.3) | 313.14 | 313.36 | 313.18 | **313.23** |
+
+The CUDA 13 build's sm_89 fold is +0.05% over the 12.8 build of the same source. That is
+inside the spread between rounds of one core (0.24 TH/s), so it is level, and the app keeps
+Ada on the 12.8 build (`src/shared/coreVariant.js`). ptxas 13's gain is Blackwell's: 12.8
+compiles the sm_120 fold badly and the sm_89 fold well. Every run held 2521-2526 MHz at
+449-450 W, and verify-hits passed 400/400 on all three cores.
+
+The sm_86 gate, run on Ada: a 4090 runs sm_86 code, so a build with only
+`-gencode arch=compute_86,code=sm_86` (CUDA 12.6, local) runs Ampere's path here. The PR's
+build took the tall fold (`tall 192x256, 8 warps of 96x64, cp.async ring, per-tile
+operands`) and passed verify-hits 400/400; main's took the sixteen-warp wmma fold, also
+400/400. Speed on this card: 312.93 TH/s for the PR's sm_86 build against 251.95 for
+main's (+24.2%). That is Ada's 72 MB L2 and Ada's clocks, so it shows the sm_86 code is
+correct and compiles as well as sm_89's (312.93 against 313.08), not what a 3090 will do.
+
 ### Against the field: 264 is 15.8% behind
 
 What a user compares is the number a miner DISPLAYS over a few minutes, so that is the

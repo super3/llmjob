@@ -15,15 +15,17 @@
 // against 3.891 with 0/192. On an RTX 5090 at 600 W the same v0.5.7 source ran
 // 103.97 TH/s built with CUDA 12.8.1 and 107.27 built with 13.3 (+3.2%).
 //
-// Its sm_89 half is unmeasured. It is built so the Ada fold under ptxas 13.3
-// can be benched on a 4090 against the 12.8 build of the same source. Every
-// Ada fold change in native/probes/README.md was measured on a 4090 before it
-// shipped on Ada, so until that A/B has been run this file never picks the
-// CUDA 13 build for an Ada card on its own. To bench it, point native/probes/hashrate.js
-// and verify-hits.js at pearl_core_cu13.node: they take the .node path as their
-// first argument and never come through this file. PEARL_CORE_VARIANT=cu13 is
-// the override for the app and earn-cli, which do come through here. Either
-// way the card needs driver 580 or newer.
+// Its sm_89 half is no faster. On an RTX 4090 at 450 W, three interleaved
+// rounds against the 12.8 build of the same source averaged 313.23 TH/s to
+// 313.08 (+0.05%, inside the run-to-run spread), and verify-hits passed 400/400
+// (2026-10-06, native/probes/README.md). ptxas 12.8 already compiles the Ada
+// fold well; it is the sm_120 fold it does badly. So this file never picks the
+// CUDA 13 build for an Ada card on its own: a new build for no gain. To bench
+// it again, point native/probes/hashrate.js and verify-hits.js at
+// pearl_core_cu13.node: they take the .node path as their first argument and
+// never come through this file. PEARL_CORE_VARIANT=cu13 is the override for
+// the app and earn-cli, which do come through here. Either way the card needs
+// driver 580 or newer.
 //
 // It cannot simply replace the first. The runtime is linked statically, and a
 // CUDA 13 runtime needs driver 580 or newer; on an older driver it does not fail
@@ -56,8 +58,9 @@ const ADA_COMPUTE_MINOR = 9;
 // Two facts about a card, kept apart on purpose. What the CUDA 13 build is
 // compiled for is set by the workflow's gencode list (sm_89 and sm_120); which
 // of those cards it is picked for on its own is a decision this file makes,
-// and today it is Blackwell only (see the header). Letting Ada in after the
-// 4090 bench is making cu13AutoSelectsFor return cu13HasCodeFor.
+// and it is Blackwell only: the 4090 bench found Ada's half no faster (see the
+// header). Letting Ada in would be making cu13AutoSelectsFor return
+// cu13HasCodeFor.
 function cu13HasCodeFor(card) {
   return card.major === BLACKWELL_COMPUTE_MAJOR
     || (card.major === ADA_COMPUTE_MAJOR && card.minor === ADA_COMPUTE_MINOR);
@@ -129,7 +132,7 @@ function pickCoreVariant({ env, cards, gpus } = {}) {
     if (!cu13AutoSelectsFor(card)) {
       return cu12('GPU ' + index + ' is compute ' + card.major + '.' + card.minor
         + (cu13HasCodeFor(card)
-          ? ' (the CUDA 13 build has code for it but is not yet selected automatically)'
+          ? ' (the CUDA 13 build has code for it but measured no faster on a 4090)'
           : ' (the CUDA 13 build has no code for it)'));
     }
     caps.push(card.major + '.' + card.minor);
