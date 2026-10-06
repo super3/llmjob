@@ -9,7 +9,7 @@ on:
     branches: [ main ]
     tags: [ 'v*' ]
   pull_request:
-    paths: [ 'earn/**', '.github/workflows/miner-build.yml' ]
+    paths: [ 'earn/**', '.github/workflows/miner-build.yml', '.github/scripts/pick-core-run.sh' ]
   workflow_dispatch:
     inputs:
       publish:
@@ -78,13 +78,31 @@ jobs:
       # the core is not built, and mines nothing. It is downloaded from the
       # native-core workflow's artifact rather than rebuilt here, because
       # building it needs the CUDA toolkit and this runner does not have one.
+      #
+      # Which native-core run to take the cores from: the one for this commit,
+      # or, when it has none, one whose commit has the same earn/native and
+      # native-core.yml (usually main's). The rules are at the top of
+      # .github/scripts/pick-core-run.sh. If that run is still going, this step
+      # waits for it, about 4 minutes. A release tag always has a run of its
+      # own, because the tag push itself starts native-core.
+      - name: Pick the native-core run
+        id: pick
+        if: runner.os == 'Windows' || runner.os == 'Linux'
+        shell: bash
+        # The script gives up waiting after 25 minutes; this also covers a
+        # hung API call.
+        timeout-minutes: 30
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash ../.github/scripts/pick-core-run.sh
+
       - name: Stage the Pearl core
-        id: core
         if: runner.os == 'Windows' || runner.os == 'Linux'
         uses: dawidd6/action-download-artifact@v6
         with:
           workflow: native-core.yml
-          workflow_conclusion: success
+          run_id: ${{ steps.pick.outputs.run_id }}
           name: pearl-core-${{ runner.os == 'Windows' && 'windows-2022' || 'ubuntu-latest' }}
           path: earn/vendor/native
           # An installer without the core is an app that starts, reports the
@@ -118,7 +136,7 @@ jobs:
         uses: dawidd6/action-download-artifact@v6
         with:
           workflow: native-core.yml
-          run_id: ${{ fromJSON(steps.core.outputs.artifacts)[0].workflow_run.id }}
+          run_id: ${{ steps.pick.outputs.run_id }}
           name: pearl-core-cu13-${{ runner.os == 'Windows' && 'windows-2022' || 'ubuntu-latest' }}
           path: earn/vendor/native
           if_no_artifact_found: warn
