@@ -131,4 +131,39 @@ function snapshot(stats, nowMs) {
   };
 }
 
-module.exports = { MAX_POINTS, initStats, applyEvent, snapshot };
+// The rig's hashrate averaged over time between two log lines.
+//
+// Each core reports a rate about every half second, worked out over the batches that
+// finished in that window. A log line once a second used to print only the latest of
+// those, so it printed every other window. When the windows alternate (two batches
+// finishing together put one batch's work in the next window: 3 and 5 batches around
+// a true 4 on an RTX 4060), every printed value came from the same phase, and the
+// printed rate was off by up to a quarter for as long as the phase held. Averaging
+// the latest rate over the time it was showing uses every window.
+function createRateMeter() {
+  return { t: null, v: 0, area: 0, start: null };
+}
+
+// The rig total changed (or was re-reported) at nowMs.
+function meterSample(meter, value, nowMs) {
+  if (meter.t == null) meter.start = nowMs;
+  else meter.area += meter.v * (nowMs - meter.t);
+  meter.t = nowMs;
+  meter.v = value;
+  return meter;
+}
+
+// The time-weighted mean since the last read (or the first sample), and start the next
+// interval. With no time elapsed, the value as it stands.
+function meterRead(meter, nowMs) {
+  if (meter.t == null) return 0;
+  meter.area += meter.v * (nowMs - meter.t);
+  meter.t = nowMs;
+  const span = nowMs - meter.start;
+  const mean = span > 0 ? meter.area / span : meter.v;
+  meter.area = 0;
+  meter.start = nowMs;
+  return mean;
+}
+
+module.exports = { MAX_POINTS, initStats, applyEvent, snapshot, createRateMeter, meterSample, meterRead };

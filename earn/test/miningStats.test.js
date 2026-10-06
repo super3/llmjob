@@ -1,6 +1,6 @@
 'use strict';
 
-const { MAX_POINTS, initStats, applyEvent, snapshot } = require('../src/shared/miningStats');
+const { MAX_POINTS, initStats, applyEvent, snapshot, createRateMeter, meterSample, meterRead } = require('../src/shared/miningStats');
 
 describe('initStats', () => {
   test('anchors the uptime clock and starts with no cards', () => {
@@ -214,5 +214,39 @@ describe('lastShareMs', () => {
     const s = initStats(0);
     applyEvent(s, { type: 'status', gpuIndex: 0, accepted: 1 });
     expect(snapshot(s, 0).lastShareMs).toBeNull();
+  });
+});
+
+describe('rate meter', () => {
+  test('reads 0 before any sample', () => {
+    expect(meterRead(createRateMeter(), 5)).toBe(0);
+  });
+
+  test('a read with no time elapsed is the value as it stands', () => {
+    const m = meterSample(createRateMeter(), 59.6, 1000);
+    expect(meterRead(m, 1000)).toBe(59.6);
+  });
+
+  test('alternating windows average to the true rate, whichever phase the reads land on', () => {
+    // A core's windows alternating 3 and 5 batches around a true 4 (44.7 / 74.5 around
+    // 59.6), one every 589 ms, read once a second: the latest window would print only
+    // one phase. The meter prints their time-weighted mean.
+    const m = createRateMeter();
+    meterSample(m, 44.7, 0);
+    expect(meterRead(m, 0)).toBe(44.7);
+    meterSample(m, 74.5, 589);
+    meterSample(m, 44.7, 1178);
+    expect(meterRead(m, 1178)).toBeCloseTo(59.6, 6);
+    meterSample(m, 74.5, 1767);
+    meterSample(m, 44.7, 2356);
+    expect(meterRead(m, 2356)).toBeCloseTo(59.6, 6);
+  });
+
+  test('a re-reported value adds no weight of its own', () => {
+    // A share re-reports the same rate; the mean is over time, not over events.
+    const m = meterSample(createRateMeter(), 10, 0);
+    meterSample(m, 10, 100);
+    meterSample(m, 30, 500);
+    expect(meterRead(m, 1000)).toBe(20);
   });
 });

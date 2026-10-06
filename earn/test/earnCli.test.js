@@ -503,6 +503,13 @@ describe('mining', () => {
     miner.emit('error', new Error('boom'));
     expect(allOut()).toContain('⛏  3.2 TH/s · 5 accepted · 1 rejected');
     expect(allOut().match(/⛏/g)).toHaveLength(1);
+    // A second later the line prints the rig rate averaged over that second (card 0
+    // at 3.2 and card 1 at 1 the whole time: 4.2), not the latest window alone.
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 1500);
+    miner.emit('event', { type: 'status', gpuIndex: 1, hashrate: 1, accepted: 0, rejected: 0 });
+    nowSpy.mockRestore();
+    expect(allOut().match(/⛏/g)).toHaveLength(2);
+    expect(allOut()).toMatch(/⛏ {2}4\.2 TH\/s/);
     expect(allErr()).toContain('bad');
     expect(allErr()).toContain('engine error: boom');
 

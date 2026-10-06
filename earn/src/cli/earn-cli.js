@@ -27,7 +27,7 @@ const {
 } = require('../main/probe');
 const probe = require('../main/probe');
 const nodeStore = require('../main/nodeStore');
-const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
+const { initStats, applyEvent, snapshot, createRateMeter, meterSample, meterRead } = require('../shared/miningStats');
 const { NETWORK, LLM, NODE, resolveEndpoint, regionLabel } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
 const nodeProto = require('../shared/node');
@@ -789,15 +789,20 @@ async function run(argv) {
     // its hashrate about twice a second, so a 13-card rig would write 26 copies
     // of the same totals every second into the journal. One a second is plenty
     // — no card's numbers are lost, they are all in the total.
+    // The line prints the rig's rate averaged over the second since the last line,
+    // not the latest card window: printing every other window could lock onto one
+    // phase of an alternating pattern (see createRateMeter).
     let lastMineLog = 0;
+    const meter = createRateMeter();
     miner.on('event', (evt) => {
       applyEvent(stats, evt, Date.now());
       if (evt.type === 'status') {
         const now = Date.now();
+        meterSample(meter, snapshot(stats, now).total, now);
         if (now - lastMineLog < MINE_LOG_MS) return;
         lastMineLog = now;
         const snap = snapshot(stats, now);
-        log('⛏  ' + format.formatHashrate(snap.total) + ' TH/s · '
+        log('⛏  ' + format.formatHashrate(meterRead(meter, now)) + ' TH/s · '
           + format.formatInt(snap.accepted) + ' accepted · ' + snap.rejected + ' rejected · up '
           + format.formatUptime(snap.uptimeSec));
       }
