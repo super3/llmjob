@@ -24,7 +24,7 @@ batch (see the RTX 2070 note). Later runs will average every reading after
 the first minute instead. On a multi-GPU rental, every miner is pinned to
 GPU 0 and GPU 1 is checked to stay idle.
 
-"% of top competitor" is our rate divided by the faster of PeakMiner and
+"% of best" is our rate divided by the faster of PeakMiner and
 SRBMiner on the same host.
 
 ## How hosts are picked
@@ -47,7 +47,7 @@ existed, so the Thailand 2080 Ti (170 W of 250 W) is on the list.
 
 Run on 2026-10-06, 09:15–09:38 UTC, at commit `f66f80c`.
 
-| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of top competitor |
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
 | RTX 2080 Ti | Thailand (170 W) | 95392 | 60.5 | 70.9 | 70.3 | 85% |
 | RTX 2080 Ti | Pennsylvania (260 W) | 150735 | 85.7 | 94.2 | 94.2 | 91% |
@@ -81,7 +81,7 @@ Every host passed the hit check, and every run had 0 rejected shares.
 
 Not run yet. Hosts picked 2026-10-06; none has been tested before.
 
-| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of top competitor |
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
 | RTX 3060 | Thailand (170 W) | 146320 | | | | |
 | RTX 3060 | Vietnam (170 W) | 138808 | | | | |
@@ -104,7 +104,7 @@ Not run yet. Hosts picked 2026-10-06; none has been tested before.
 
 Not run yet. Hosts picked 2026-10-06; none has been tested before.
 
-| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of top competitor |
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
 | RTX 4060 | New Zealand (115 W) | 148383 | | | | |
 | RTX 4060 | Australia (115 W) | 143986 | | | | |
@@ -130,7 +130,7 @@ Not run yet. Hosts picked 2026-10-06; none has been tested before.
 
 Not run yet. Hosts picked 2026-10-06; none has been tested before.
 
-| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of top competitor |
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
 | RTX 5060 | United States (145 W) | 68005 | | | | |
 | RTX 5060 | Virginia (125 W) | 151478 | | | | |
