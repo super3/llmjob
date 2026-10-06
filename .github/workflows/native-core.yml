@@ -117,12 +117,13 @@ jobs:
     # install is proven.
     #
     # The CUDA 13 builds are non-blocking too, and that one is deliberate, not
-    # provisional. miner-build.yml takes its cores from the newest SUCCESSFUL
-    # run of this workflow. If a CUDA 13 failure failed the run, the installers
-    # would silently ship the previous run's 12.8 core -- the core every rig
-    # needs, gone stale for the sake of a 3% extra on one card. Non-blocking,
-    # the run still succeeds, the 12.8 core is current, and miner-build warns
-    # that the CUDA 13 one is missing.
+    # provisional. miner-build.yml takes its cores from this workflow's run for
+    # the commit it builds (or for one with the same native source), and fails
+    # if that run failed. If a CUDA 13 failure failed the run, no installer
+    # could be built from that commit -- the core every rig needs, held back
+    # for the sake of a 3% extra on one card. Non-blocking, the run still
+    # succeeds, the 12.8 core ships, and miner-build warns that the CUDA 13 one
+    # is missing.
     continue-on-error: ${{ matrix.os == 'windows-2022' || matrix.variant != '' }}
 
     steps:
