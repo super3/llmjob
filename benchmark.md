@@ -271,7 +271,9 @@ the RTX tables.
   at 82 C. All three miners were power-capped.
 - **CMP 170HX:** SRBMiner's rate fell near the end of its run. Its average
   after the first minute was 168.9, which also puts us at 87%. The card has
-  74 SMs and a 32 MB L2, with the A100's full tensor rate per SM.
+  74 SMs and a 32 MB L2, with the A100's full tensor rate per SM. Its owner
+  has unlocked it: it reports 64 GB, where a stock card has 8 GB and 70 SMs.
+  Every CMP 170HX on Vast is like this, so a stock card hasn't been tested.
 
 ## Hopper (sm_90, PR #253)
 

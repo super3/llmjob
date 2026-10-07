@@ -36,7 +36,7 @@ on:
 jobs:
   build:
     # Two builds per OS. The first two entries are the core every rig has run
-    # (CUDA 12.8.1, sm_75/80/86/89/120); their job names ("ubuntu-latest",
+    # (CUDA 12.8.1, sm_75/80/86/89/90/120); their job names ("ubuntu-latest",
     # "windows-2022") and artifact names (pearl-core-<os>) are unchanged, and
     # miner-build.yml still downloads them by those names.
     #
@@ -222,9 +222,9 @@ jobs:
         working-directory: earn/native
         run: npm install --no-save node-addon-api node-gyp
 
-      # Compile the CUDA half into a static library. sm_75/80/86/89/120 covers
-      # Turing, Ampere (GA100 and GA10x), Ada and Blackwell — the cards the app
-      # actually targets. The CUDA 13 entries pass sm_89 and sm_120; every
+      # Compile the CUDA half into a static library. sm_75/80/86/89/90/120
+      # covers Turing, Ampere (GA100 and GA10x), Ada, Hopper and Blackwell —
+      # the cards the app actually targets. The CUDA 13 entries pass sm_89 and sm_120; every
       # other flag is the same.
       - name: Compile the CUDA kernels
         working-directory: earn/native
