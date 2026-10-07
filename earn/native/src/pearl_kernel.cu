@@ -2928,10 +2928,10 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
 #endif
 
 #if PEARL_TALL_HASH_PAIRS_ON
-// Ada's hash, 1.5 regions a lane (PEARL_TALL_HASH_PAIRS). A column slot's 48 regions took
-// two passes of its hasher warp, the second on 16 lanes with the other 16 idle. Now every
-// lane hashes one region whole (pearl_hp_msw), and each lane pair (L, L ^ 1) hashes one of
-// the last 16 together (pearl_hp_msw_pair).
+// Ada's and Ampere's hash, 1.5 regions a lane (PEARL_TALL_HASH_PAIRS). A column slot's
+// 48 regions took two passes of its hasher warp, the second on 16 lanes with the other 16
+// idle. Now every lane hashes one region whole (pearl_hp_msw), and each lane pair
+// (L, L ^ 1) hashes one of the last 16 together (pearl_hp_msw_pair).
 __device__ __forceinline__ void pearl_hp_g(uint32_t &a, uint32_t &b, uint32_t &c, uint32_t &d,
                                            uint32_t mx, uint32_t my) {
   a = a + b + mx;
