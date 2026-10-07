@@ -1100,6 +1100,37 @@ describe('mining', () => {
       expect(llmsAtRelease).toBe(0);
     });
 
+    // LLM-only picked while mining (the mode buttons stay live): the plan no
+    // longer mines, so the miner stops, which also releases its lock, before
+    // the model starts on the cards. The session itself goes on.
+    it('goes with the miner when LLM-only is picked mid-run, before the model starts', async () => {
+      const ctx = await boot();
+      wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+      ctx.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 1000 });
+      oneCard(ctx, RTX5090, 'NVIDIA GeForce RTX 5090');
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      const miner = ctx.PearlEngine.instances[0];
+      expect(miner.isRunning()).toBe(true);
+      let llmsAtStop = null;
+      miner.stop.mockImplementation(() => { llmsAtStop = ctx.LlmManager.instances.length; miner._running = false; });
+
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'llm' });
+      await flush(30);
+      expect(miner.stop).toHaveBeenCalledTimes(1);
+      expect(llmsAtStop).toBe(0);
+      expect(ctx.LlmManager.instances).toHaveLength(1);
+      expect(ctx.PearlEngine.instances).toHaveLength(1);
+      expect(ctx.sent('miner:stopped')).toHaveLength(0);
+      // The mining figures read zero, not the last ones the miner reported.
+      expect(ctx.sent('miner:stats').slice(-1)[0]).toMatchObject({ accepted: 0, uptime: '00m 00s' });
+
+      // Stopping the session later stops what is left, and nothing twice.
+      ctx.emit('miner:stop');
+      expect(miner.stop).toHaveBeenCalledTimes(1);
+      expect(ctx.sent('miner:stopped')).toHaveLength(1);
+    });
+
     // A repeated mining-only start changes nothing, so it touches nothing.
     it('is kept when a start that keeps mining alone repeats', async () => {
       const ctx = await boot();
