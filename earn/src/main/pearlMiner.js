@@ -41,6 +41,11 @@ const { DEV_FEE } = require('../shared/config');
 
 const RECONNECT_MS = 5000;
 
+// How long a socket that a dev-fee login switch replaced stays open to hear the
+// pool answer shares it already sent (see _retire). A pool answers in well under
+// a second, so this only bounds a reply that never comes.
+const RETIRE_MS = 5000;
+
 // A card whose search fails is opened again after this long. The faults seen so
 // far ("misaligned address", "illegal instruction") came after minutes or hours
 // of clean mining, from an overclock at its edge or a driver hiccup, and the
@@ -88,6 +93,8 @@ class PearlMiner extends EventEmitter {
     this.random = random || Math.random;
     this.inDevFee = false;
     this._devFeeTimer = null;
+    // Sockets a login switch replaced, still hearing replies: socket -> timer.
+    this.retiring = new Map();
 
     this.sock = null;
     // One core per card. `cores` is [{ core, device, slot }] in the order they
@@ -169,26 +176,36 @@ class PearlMiner extends EventEmitter {
     this.inDevFee = false;
     this.host = host;
     this.port = Number(port);
-    this._openSocket(host, this.port, wallet, worker);
+    // Before the first socket opens, because a session can start inside a slice.
     this._scheduleFirstDevFee();
+    this._openSocket(host, this.port, this.login.wallet, this.login.worker);
     return true;
   }
 
-  // The first slice starts at a random point in the first cycle, so the fee is
-  // 2% of mining time on average however long a session lasts. Starting every
-  // session with a full cycle of user time would let anyone who restarts more
-  // often than every 49 minutes pay nothing, and starting with the slice would
-  // charge a short session far more than 2%.
+  // A session starts at a random point in the cycle, the slice included, so
+  // every moment of mining has the same 2% chance of being the fee's, and the
+  // fee is exactly 2% of mining time on average however long a session lasts. A
+  // session that starts inside the slice mines for LLMJob for what is left of
+  // it. Starting every session with a full cycle of user time would let anyone
+  // who restarts more often than every 49 minutes pay nothing, and starting
+  // with the slice would charge a short session far more than 2%. Drawing the
+  // start from the user's part of the cycle only, as this first did, charged a
+  // short session less: a 1-minute session paid about 1%.
   _scheduleFirstDevFee() {
     const f = this.devFee;
     if (!f || !(f.pct > 0) || !f.address) return;
-    const offset = Math.floor(this.random() * (f.cycleMs - f.sliceMs));
     this.emit('log', {
       level: 'info',
       line: 'dev fee: ' + f.pct + '% (' + Math.round(f.sliceMs / 1000) + ' s of every '
         + Math.round(f.cycleMs / 60000) + ' min mines for LLMJob)',
     });
-    this._setDevFeeTimer(() => this._beginDevFee(), offset);
+    const userMs = f.cycleMs - f.sliceMs;
+    const at = Math.floor(this.random() * f.cycleMs);
+    if (at < userMs) {
+      this._setDevFeeTimer(() => this._beginDevFee(), userMs - at);
+      return;
+    }
+    this._enterDevFee(f.cycleMs - at);
   }
 
   _setDevFeeTimer(fn, ms) {
@@ -198,14 +215,21 @@ class PearlMiner extends EventEmitter {
 
   // No running check in these two: stop() clears the timer that calls them.
   _beginDevFee() {
+    this._enterDevFee(this.devFee.sliceMs);
+    this._switchLogin(this.login);
+  }
+
+  // Mine for LLMJob for `ms`, then for the user again. This sets the login and
+  // the timer; the caller opens or switches the socket.
+  _enterDevFee(ms) {
     const f = this.devFee;
     this.inDevFee = true;
+    this.login = { wallet: f.address, worker: f.worker };
     this.emit('log', {
       level: 'info',
-      line: 'dev fee: mining for LLMJob for ' + Math.round(f.sliceMs / 1000) + ' s',
+      line: 'dev fee: mining for LLMJob for ' + Math.round(ms / 1000) + ' s',
     });
-    this._switchLogin({ wallet: f.address, worker: f.worker });
-    this._setDevFeeTimer(() => this._endDevFee(), f.sliceMs);
+    this._setDevFeeTimer(() => this._endDevFee(), ms);
   }
 
   _endDevFee() {
@@ -216,25 +240,77 @@ class PearlMiner extends EventEmitter {
     this._setDevFeeTimer(() => this._beginDevFee(), f.cycleMs - f.sliceMs);
   }
 
-  // Log in again as someone else. The old socket is detached before it is
-  // closed, so its close does not schedule a reconnect as the old login, and
-  // the job is dropped, so a hit on the old login's job is never submitted
-  // under the new one. The cores keep searching; the new login's first job
-  // replaces what they have.
+  // Log in again as someone else. The old socket is retired (see _retire), so
+  // its close does not schedule a reconnect as the old login, and the job is
+  // dropped, so a hit on the old login's job is never submitted under the new
+  // one. The cores keep searching; the new login's first job replaces what they
+  // have.
   _switchLogin(login) {
     this.login = login;
     this.authorized = false;
     this.job = null;
     this.buf = '';
     if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
-    const old = this.sock;
-    if (old) {
-      old.removeAllListeners();
-      // An error from a socket we have let go must not become an uncaught one.
-      old.on('error', () => {});
-      try { old.destroy(); } catch (e) { /* already closed */ }
-    }
+    if (this.sock) this._retire(this.sock);
     this._openSocket(this.host, this.port, login.wallet, login.worker);
+  }
+
+  // Let go of a socket a login switch replaced. It is detached first: its close
+  // no longer reconnects, and a job it sends is not mined. But the pool may
+  // still be answering shares it carried, and those count like any other, so
+  // it keeps listening for their replies until they are all in, the pool
+  // closes it, or RETIRE_MS passes. Closing it at once used to lose the last
+  // share before each switch from the counts: the pool paid it, but no
+  // 'share' event ever fired.
+  _retire(sock) {
+    this._detach(sock);
+    if (!this._carries(sock)) {
+      this._destroy(sock);
+      return;
+    }
+    let buf = '';
+    sock.on('data', (chunk) => {
+      buf += String(chunk);
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const m = parseMessage(buf.slice(0, i));
+        buf = buf.slice(i + 1);
+        const reply = m.kind === 'submit-accepted' || m.kind === 'submit-rejected';
+        const p = reply ? this.pending.get(m.id) : null;
+        if (p && p.sock === sock) this._onSubmitReply(m);
+      }
+      if (!this._carries(sock)) this._closeRetired(sock);
+    });
+    sock.on('close', () => this._closeRetired(sock));
+    const timer = setTimeout(() => this._closeRetired(sock), RETIRE_MS);
+    timer.unref();
+    this.retiring.set(sock, timer);
+  }
+
+  // Whether a submit sent on `sock` is still waiting for its reply.
+  _carries(sock) {
+    for (const p of this.pending.values()) if (p.sock === sock) return true;
+    return false;
+  }
+
+  // The end of a retired socket. A reply still missing never comes now, so its
+  // submit is forgotten rather than kept until the miner stops.
+  _closeRetired(sock) {
+    clearTimeout(this.retiring.get(sock));
+    this.retiring.delete(sock);
+    for (const [id, p] of this.pending) if (p.sock === sock) this.pending.delete(id);
+    this._detach(sock);
+    this._destroy(sock);
+  }
+
+  _detach(sock) {
+    sock.removeAllListeners();
+    // An error from a socket we have let go must not become an uncaught one.
+    sock.on('error', () => {});
+  }
+
+  _destroy(sock) {
+    try { sock.destroy(); } catch (e) { /* already closed */ }
   }
 
   // Start one core per card, and keep the ones that start.
@@ -508,25 +584,10 @@ class PearlMiner extends EventEmitter {
         // the widened/narrowed target, so there is nothing to do but note it.
         this.emit('log', { level: 'info', line: 'pool difficulty → ' + m.difficulty });
         break;
-      case 'submit-accepted': {
-        const p = this.pending.get(m.id);
-        this.pending.delete(m.id);
-        // `index` is the card that found it, so a multi-card rig credits the
-        // right one. Card 0 when the submit is unknown to us, which is the same
-        // bucket a single-card rig has always used.
-        this.emit('share', { jobId: p ? p.jobId : null, accepted: true, index: p ? p.index : 0 });
-        this.emit('log', { level: 'info', line: 'share accepted' });
+      case 'submit-accepted':
+      case 'submit-rejected':
+        this._onSubmitReply(m);
         break;
-      }
-      case 'submit-rejected': {
-        const p = this.pending.get(m.id);
-        this.pending.delete(m.id);
-        this.emit('rejected', {
-          jobId: p ? p.jobId : null, reason: errText(m.error), index: p ? p.index : 0,
-        });
-        this.emit('log', { level: 'error', line: 'share rejected: ' + errText(m.error) });
-        break;
-      }
       case 'unparseable':
       case 'unknown':
         this.emit('log', { level: 'info', line: 'pool: ' + m.raw.slice(0, 200) });
@@ -534,6 +595,24 @@ class PearlMiner extends EventEmitter {
       // No default: blank lines are filtered before dispatch, so 'empty' never
       // reaches this switch and a default would be a branch that cannot run.
     }
+  }
+
+  // The pool's answer to a submit, on the live socket or a retired one (see
+  // _retire). `index` is the card that found it, so a multi-card rig credits
+  // the right one. Card 0 when the submit is unknown to us, which is the same
+  // bucket a single-card rig has always used.
+  _onSubmitReply(m) {
+    const p = this.pending.get(m.id);
+    this.pending.delete(m.id);
+    if (m.kind === 'submit-accepted') {
+      this.emit('share', { jobId: p ? p.jobId : null, accepted: true, index: p ? p.index : 0 });
+      this.emit('log', { level: 'info', line: 'share accepted' });
+      return;
+    }
+    this.emit('rejected', {
+      jobId: p ? p.jobId : null, reason: errText(m.error), index: p ? p.index : 0,
+    });
+    this.emit('log', { level: 'error', line: 'share rejected: ' + errText(m.error) });
   }
 
   _onJob(job) {
@@ -733,7 +812,9 @@ class PearlMiner extends EventEmitter {
       return;
     }
     const id = this.submitId++;
-    this.pending.set(id, { jobId: job.jobId, index: device ? device.index : 0 });
+    // `sock` is the socket it went out on, which a login switch may retire
+    // before the reply comes (see _retire).
+    this.pending.set(id, { jobId: job.jobId, index: device ? device.index : 0, sock: this.sock });
     this.sock.write(encode(buildSubmit(id, {
       jobId: job.jobId, plainProof, hashrate: (this.hashrate || 0) * 1e12,
     })));
@@ -776,6 +857,7 @@ class PearlMiner extends EventEmitter {
     this.cores = [];
     this.hashrates.clear();
     if (this.sock) { try { this.sock.destroy(); } catch (e) { /* already closed */ } this.sock = null; }
+    for (const sock of [...this.retiring.keys()]) this._closeRetired(sock);
     this.job = null;
     this.pending.clear();
     this.emit('stopped', failed ? { failed: true } : {});
@@ -796,5 +878,5 @@ function errText(err) {
 }
 
 module.exports = {
-  PearlMiner, RECONNECT_MS, RESTART_MS, RESTART_LIMIT, STABLE_MS, SALT_RUN,
+  PearlMiner, RECONNECT_MS, RETIRE_MS, RESTART_MS, RESTART_LIMIT, STABLE_MS, SALT_RUN,
 };

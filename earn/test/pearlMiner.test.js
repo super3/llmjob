@@ -10,7 +10,7 @@ jest.mock('../src/main/gpuClocks', () => ({
 
 const { EventEmitter } = require('events');
 const {
-  PearlMiner, RECONNECT_MS, RESTART_MS, RESTART_LIMIT, STABLE_MS, SALT_RUN,
+  PearlMiner, RECONNECT_MS, RETIRE_MS, RESTART_MS, RESTART_LIMIT, STABLE_MS, SALT_RUN,
 } = require('../src/main/pearlMiner');
 const { DEV_FEE } = require('../src/shared/config');
 const gpuClocks = require('../src/main/gpuClocks');
@@ -313,7 +313,7 @@ describe('PearlMiner — shares', () => {
     b.sock.written.length = 0;
     core.emit('hit', goodHit());
     const sent = JSON.parse(b.sock.written[0]);
-    expect(b.m.pending.get(sent.id)).toEqual({ jobId: '00000000_2097152', index: 1 });
+    expect(b.m.pending.get(sent.id)).toEqual({ jobId: '00000000_2097152', index: 1, sock: b.sock });
   });
 
   test('a valid hit is submitted as a plain proof', () => {
@@ -361,7 +361,8 @@ describe('PearlMiner — shares', () => {
       const core = makeCore();
       const m = new PearlMiner({
         connect, createCore: () => core, reconnectMs: over.reconnectMs || 0,
-        devFee: over.devFee === undefined ? FEE : over.devFee, random: () => 0.5,
+        devFee: over.devFee === undefined ? FEE : over.devFee,
+        random: () => (over.random === undefined ? 0.45 : over.random),
       });
       const events = { log: [], share: [], rejected: [] };
       for (const k of Object.keys(events)) m.on(k, (e) => events[k].push(e));
@@ -385,7 +386,8 @@ describe('PearlMiner — shares', () => {
       socks[0].emit('connect');
       expect(loginOf(socks[0]).wallet).toBe(USER);
 
-      // random 0.5 puts the first slice halfway into the first cycle's user time.
+      // random 0.45 starts the session 450 ms into the cycle's 900 ms of user
+      // time, so the first slice begins 450 ms in.
       jest.advanceTimersByTime(449);
       expect(connect).toHaveBeenCalledTimes(1);
       jest.advanceTimersByTime(1);
@@ -416,6 +418,155 @@ describe('PearlMiner — shares', () => {
       jest.advanceTimersByTime(1);
       expect(connect).toHaveBeenCalledTimes(4);
       m.stop();
+    });
+
+    test('a session that starts inside a slice mines for LLMJob first, for what is left of it', () => {
+      // random 0.95 starts the session 950 ms into the cycle: 50 ms into the slice.
+      const { m, socks, connect, events } = feeBoot({ random: 0.95 });
+      expect(m.inDevFee).toBe(true);
+      expect(connect).toHaveBeenCalledTimes(1);
+      socks[0].emit('connect');
+      expect(loginOf(socks[0])).toMatchObject({ wallet: FEE.address, worker: 'llmjob-devfee' });
+      expect(logged(events, 'dev fee: mining for LLMJob for 0 s')).toBe(true);
+
+      jest.advanceTimersByTime(49);
+      expect(connect).toHaveBeenCalledTimes(1);
+      jest.advanceTimersByTime(1);
+      expect(connect).toHaveBeenCalledTimes(2);
+      expect(m.inDevFee).toBe(false);
+      socks[1].emit('connect');
+      expect(loginOf(socks[1]).wallet).toBe(USER);
+
+      // Then the usual cycle: 900 ms for the user, then the next slice.
+      jest.advanceTimersByTime(899);
+      expect(connect).toHaveBeenCalledTimes(2);
+      jest.advanceTimersByTime(1);
+      expect(m.inDevFee).toBe(true);
+      m.stop();
+    });
+
+    // A session starts anywhere in the cycle with the same chance, so at every
+    // moment of a session exactly the fee's share of starts are inside a slice,
+    // and the fee comes to exactly its share of the time for every length. 100
+    // starts spread evenly over the 1000 ms cycle stand in for that chance. When
+    // starts came only from the user's 900 ms, a session shorter than the cycle
+    // paid less (for 50 ms, under a third of the fee).
+    test.each([1, 50, 99, 100, 101, 250, 899, 1000, 1500, 2731])(
+      'a %i ms session pays exactly the fee on average', (L) => {
+        let total = 0;
+        for (let k = 0; k < 100; k++) {
+          const { m } = feeBoot({ random: (10 * k + 5.5) / 1000 });
+          const t0 = Date.now();
+          let since = m.inDevFee ? t0 : null;
+          m.on('log', (l) => {
+            if (l.line.startsWith('dev fee: mining for LLMJob')) since = Date.now();
+            if (l.line === 'dev fee: done, mining for you again') { total += Date.now() - since; since = null; }
+          });
+          jest.advanceTimersByTime(L);
+          if (since != null) total += t0 + L - since;
+          m.stop();
+        }
+        // 10% (100 ms of every 1000 ms) of 100 sessions of L ms each.
+        expect(total).toBe(10 * L);
+      });
+
+    // The pool answers a submit a moment after it is sent, and a switch can
+    // fall in that moment. The share is the pool's to pay either way; these
+    // keep it in the counts too.
+    describe('a share still in flight at a switch', () => {
+      // A user session with one submit on its socket, then the switch to the fee.
+      function inFlight() {
+        const b = feeBoot();
+        const s = b.socks[0];
+        s.emit('connect');
+        s.emit('data', jobLine());
+        s.written.length = 0;
+        b.core.emit('hit', goodHit());
+        const id = JSON.parse(s.written[0]).id;
+        jest.advanceTimersByTime(450);
+        expect(b.m.inDevFee).toBe(true);
+        return { ...b, s, id };
+      }
+
+      test('is counted when its reply comes on the old socket, which then closes', () => {
+        const { m, s, id, events } = inFlight();
+        expect(s.destroy).not.toHaveBeenCalled();
+        // A reply split across two chunks is put back together.
+        const reply = encode({ id, result: true, error: null });
+        s.emit('data', reply.slice(0, 5));
+        expect(events.share).toHaveLength(0);
+        s.emit('data', reply.slice(5));
+        expect(events.share).toEqual([{ jobId: '00000000_2097152', accepted: true, index: 0 }]);
+        expect(s.destroy).toHaveBeenCalled();
+        expect(m.pending.size).toBe(0);
+        expect(m.retiring.size).toBe(0);
+        m.stop();
+      });
+
+      test('is counted as rejected when the pool rejects it', () => {
+        const { m, s, id, events } = inFlight();
+        s.emit('data', encode({ id, result: null, error: { code: 23, message: 'Low difficulty share' } }));
+        expect(events.rejected).toHaveLength(1);
+        expect(events.share).toHaveLength(0);
+        expect(s.destroy).toHaveBeenCalled();
+        m.stop();
+      });
+
+      test('the old socket hears only that reply: no job, no other submit', () => {
+        const { m, socks, s, id, core, events } = inFlight();
+        // The new login's own submit, on the new socket.
+        socks[1].emit('connect');
+        socks[1].emit('data', jobLine());
+        const job = m.job;
+        socks[1].written.length = 0;
+        core.emit('hit', goodHit());
+        const other = JSON.parse(socks[1].written[0]).id;
+
+        s.emit('data', jobLine({ job_id: '00000000_9999999' }));
+        s.emit('data', encode({ id: 1, result: true, error: null }));
+        s.emit('data', encode({ id: other, result: true, error: null }));
+        s.emit('data', encode({ id: 999, result: true, error: null }));
+        expect(m.job).toBe(job);
+        expect(events.share).toHaveLength(0);
+        expect(m.pending.has(other)).toBe(true);
+        expect(s.destroy).not.toHaveBeenCalled();
+
+        s.emit('data', encode({ id, result: true, error: null }));
+        expect(events.share).toHaveLength(1);
+        expect(m.pending.has(other)).toBe(true);
+        m.stop();
+      });
+
+      test('is given up after RETIRE_MS if no reply comes', () => {
+        const { m, s } = inFlight();
+        jest.advanceTimersByTime(RETIRE_MS - 1);
+        expect(s.destroy).not.toHaveBeenCalled();
+        jest.advanceTimersByTime(1);
+        expect(s.destroy).toHaveBeenCalled();
+        expect([...m.pending.values()].some((p) => p.sock === s)).toBe(false);
+        expect(m.retiring.size).toBe(0);
+        m.stop();
+      });
+
+      test('ends when the pool closes the old socket, without a reconnect', () => {
+        const { m, s, connect } = inFlight();
+        s.emit('close');
+        jest.advanceTimersByTime(0);
+        expect(connect).toHaveBeenCalledTimes(2);
+        expect(s.destroy).toHaveBeenCalled();
+        expect(m.pending.size).toBe(0);
+        expect(() => s.emit('error', new Error('late'))).not.toThrow();
+        m.stop();
+      });
+
+      test('stop closes an old socket that is still waiting', () => {
+        const { m, s } = inFlight();
+        m.stop();
+        expect(s.destroy).toHaveBeenCalled();
+        expect(m.retiring.size).toBe(0);
+        jest.advanceTimersByTime(RETIRE_MS);
+        expect(s.destroy).toHaveBeenCalledTimes(1);
+      });
     });
 
     test("drops the old login's job, so its hits are never sent under the new one", () => {
