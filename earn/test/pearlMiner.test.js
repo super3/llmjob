@@ -1337,6 +1337,30 @@ describe('PearlMiner — the memory clock lock', () => {
     expect(b.calls.slice(4)).toEqual([['stopped']]);
   });
 
+  // A card that fails after START LLM and is opened again (#252's restart)
+  // must not take the lock back while the model is served on it. The next
+  // start plans the locks afresh, so it locks again.
+  test('a card restarted after releaseMemClocks() stays at the driver\'s clock', () => {
+    jest.useFakeTimers();
+    try {
+      const b = rig();
+      b.m.start({ ...DEFAULT, gpus: GPUS });
+      b.m.releaseMemClocks();
+      const first = b.createCore.mock.results[0].value;
+      first.emit('error', new Error('GPU 0: misaligned address'));
+      jest.advanceTimersByTime(RESTART_MS);
+      expect(b.createCore).toHaveBeenCalledTimes(3);
+      expect(b.calls).toEqual([['lock', 0, 7001], ['lock', 1, 7001], ['reset', 0], ['reset', 1]]);
+
+      b.m.stop();
+      b.m.start({ ...DEFAULT, gpus: [GPUS[0]] });
+      expect(b.calls.slice(4)).toEqual([['stopped'], ['lock', 0, 7001]]);
+      b.m.stop();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test('with no plan touches nothing: no nvidia-smi, on start or stop', () => {
     for (const plan of [{}, { mineMemClockByIndex: {} }]) {
       const b = rig();
