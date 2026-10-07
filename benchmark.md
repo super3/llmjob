@@ -15,6 +15,7 @@ host:
 - RTX 40-series: 97–101%.
 - RTX 50-series: 90–102%. The 5090 and 5080 are close to even; the 5070 Ti,
   5070, 5060 Ti and 5060 trail by 5–10%.
+- A100-class (sm_80, PR #253, not in a release yet): 87–89%.
 
 ## How a host is tested
 
@@ -235,6 +236,25 @@ Every host passed the hit check, and every run had 0 rejected shares.
   other two. Two 300 W hosts were tried and couldn't attach the GPU.
 - **Not tested:** the RTX 5090D, which no host lists, and laptop GPUs (3060,
   4070 and 4080 laptop), which are on Vast but left out.
+
+## A100-class (sm_80, PR #253)
+
+Run on 2026-10-07, 14:53–15:15 UTC, with PR #253's core at `feba1ca`. No
+release supports these cards yet. Same harness, pool and miner versions as
+the RTX tables.
+
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
+|---|---|---|---|---|---|---|
+| A100 PCIe 40 GB | Japan (250 W) | 146405 | 192.0 | 214.8 | 216.0 | 89% |
+| CMP 170HX | Georgia (250 W) | 147823 | 146.9 | 167.9 | 165.0 | 87% |
+
+- **Both cards:** all three miners ran at the 250 W limit. PeakMiner and
+  SRBMiner get about 85% of the tensor cores' peak work per clock, and we get
+  about 70%. We run at a higher clock (on the A100, 1236 MHz against their
+  1151–1155), so the gap is work per clock, not power.
+- **CMP 170HX:** SRBMiner's rate fell near the end of its run. Its average
+  after the first minute was 168.9, which also puts us at 87%. The card has
+  74 SMs and a 32 MB L2, with the A100's full tensor rate per SM.
 
 ## Replaced hosts (40/50-series)
 
