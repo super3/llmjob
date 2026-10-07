@@ -1207,8 +1207,12 @@ typedef struct {
 #ifndef PEARL_HOPPER_TILED
 #define PEARL_HOPPER_TILED 1
 #endif
+// Stages in the ring, 24 KB each. 8 against 6, hashrate.js 3 rounds, ahead in every round,
+// 400/400 hits: H100 NVL (Vast 29785) 425.91 -> 435.43 TH/s (+2.24%), H100 SXM (Vast 153443)
+// 533.05 -> 537.04 (+0.75%). 9 (the most that fits 227 KB) did 538.66 on the SXM (+1.05%) and
+// has not run on the NVL. At least 2: a chunk waits for two stages before its first wgmma.
 #ifndef PEARL_HOPPER_STAGES
-#define PEARL_HOPPER_STAGES 6u
+#define PEARL_HOPPER_STAGES 8u
 #endif
 // Stages of 64 bytes of k (B's 256 rows, then A's 128), the transcripts (128 regions of
 // 64 bytes), then FULL and EMPTY barriers.
