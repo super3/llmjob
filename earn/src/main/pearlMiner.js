@@ -227,7 +227,7 @@ class PearlMiner extends EventEmitter {
     this.login = { wallet: f.address, worker: f.worker };
     this.emit('log', {
       level: 'info',
-      line: 'dev fee: mining for LLMJob for ' + Math.round(ms / 1000) + ' s',
+      line: 'dev fee: mining for LLMJob for ' + (ms < 1000 ? 'under 1 s' : Math.round(ms / 1000) + ' s'),
     });
     this._setDevFeeTimer(() => this._endDevFee(), ms);
   }
@@ -246,12 +246,14 @@ class PearlMiner extends EventEmitter {
   // one. The cores keep searching; the new login's first job replaces what they
   // have.
   _switchLogin(login) {
+    // Part of a line the old socket had started to send; it finishes there.
+    const rest = this.buf;
     this.login = login;
     this.authorized = false;
     this.job = null;
     this.buf = '';
     if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
-    if (this.sock) this._retire(this.sock);
+    if (this.sock) this._retire(this.sock, rest);
     this._openSocket(this.host, this.port, login.wallet, login.worker);
   }
 
@@ -262,13 +264,17 @@ class PearlMiner extends EventEmitter {
   // closes it, or RETIRE_MS passes. Closing it at once used to lose the last
   // share before each switch from the counts: the pool paid it, but no
   // 'share' event ever fired.
-  _retire(sock) {
+  //
+  // `rest` is a line the socket had started before the switch, so a reply split
+  // across it is still read whole. A socket still connecting never sent its
+  // submits, and a closed one can answer nothing, so neither is waited on.
+  _retire(sock, rest) {
     this._detach(sock);
-    if (!this._carries(sock)) {
-      this._destroy(sock);
+    if (sock.connecting || sock.destroyed || !this._carries(sock)) {
+      this._closeRetired(sock);
       return;
     }
-    let buf = '';
+    let buf = rest;
     sock.on('data', (chunk) => {
       buf += String(chunk);
       let i;
@@ -298,9 +304,15 @@ class PearlMiner extends EventEmitter {
   _closeRetired(sock) {
     clearTimeout(this.retiring.get(sock));
     this.retiring.delete(sock);
-    for (const [id, p] of this.pending) if (p.sock === sock) this.pending.delete(id);
+    this._forget(sock);
     this._detach(sock);
     this._destroy(sock);
+  }
+
+  // Drop the submits a socket carried. Its replies can no longer come, and an
+  // entry would otherwise hold the dead socket until the miner stops.
+  _forget(sock) {
+    for (const [id, p] of this.pending) if (p.sock === sock) this.pending.delete(id);
   }
 
   _detach(sock) {
@@ -549,7 +561,7 @@ class PearlMiner extends EventEmitter {
         dns: /ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(String(err.message)),
       });
     });
-    sock.on('close', () => this._onClose(host, port, wallet, worker));
+    sock.on('close', () => this._onClose(sock, host, port, wallet, worker));
   }
 
   _onData(chunk, wallet, worker) {
@@ -820,8 +832,9 @@ class PearlMiner extends EventEmitter {
     })));
   }
 
-  _onClose(host, port, wallet, worker) {
+  _onClose(sock, host, port, wallet, worker) {
     this.authorized = false;
+    this._forget(sock);
     if (!this.running) return;
     // The core keeps its current job loaded across a reconnect, so a brief pool
     // blip does not idle the GPU. Reopen after a backoff.

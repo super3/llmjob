@@ -381,6 +381,15 @@ describe('PearlMiner — shares', () => {
       m.stop();
     });
 
+    test('says how long each slice mines for LLMJob', () => {
+      // random 0.45 starts the session 1,350,000 ms into the shipped cycle.
+      const { m, events } = feeBoot({ devFee: DEV_FEE });
+      jest.advanceTimersByTime(DEV_FEE.cycleMs - DEV_FEE.sliceMs - 1350000);
+      expect(m.inDevFee).toBe(true);
+      expect(logged(events, 'dev fee: mining for LLMJob for 60 s')).toBe(true);
+      m.stop();
+    });
+
     test('mines one slice as LLMJob, then goes back to the user, every cycle', () => {
       const { m, socks, connect, events } = feeBoot();
       socks[0].emit('connect');
@@ -396,7 +405,7 @@ describe('PearlMiner — shares', () => {
       expect(socks[0].destroy).toHaveBeenCalled();
       socks[1].emit('connect');
       expect(loginOf(socks[1])).toMatchObject({ wallet: FEE.address, worker: 'llmjob-devfee' });
-      expect(logged(events, 'dev fee: mining for LLMJob for 0 s')).toBe(true);
+      expect(logged(events, 'dev fee: mining for LLMJob for under 1 s')).toBe(true);
 
       // The old socket closing must not reconnect as the user, and an error on
       // it after we let go is swallowed rather than thrown.
@@ -427,7 +436,7 @@ describe('PearlMiner — shares', () => {
       expect(connect).toHaveBeenCalledTimes(1);
       socks[0].emit('connect');
       expect(loginOf(socks[0])).toMatchObject({ wallet: FEE.address, worker: 'llmjob-devfee' });
-      expect(logged(events, 'dev fee: mining for LLMJob for 0 s')).toBe(true);
+      expect(logged(events, 'dev fee: mining for LLMJob for under 1 s')).toBe(true);
 
       jest.advanceTimersByTime(49);
       expect(connect).toHaveBeenCalledTimes(1);
@@ -449,8 +458,9 @@ describe('PearlMiner — shares', () => {
     // moment of a session exactly the fee's share of starts are inside a slice,
     // and the fee comes to exactly its share of the time for every length. 100
     // starts spread evenly over the 1000 ms cycle stand in for that chance. When
-    // starts came only from the user's 900 ms, a session shorter than the cycle
-    // paid less (for 50 ms, under a third of the fee).
+    // starts came only from the user's 900 ms, a session shorter than half the
+    // cycle paid less (for 50 ms, under a third of the fee) and a longer one a
+    // little more (10.5% for 900 ms).
     test.each([1, 50, 99, 100, 101, 250, 899, 1000, 1500, 2731])(
       'a %i ms session pays exactly the fee on average', (L) => {
         let total = 0;
@@ -502,6 +512,41 @@ describe('PearlMiner — shares', () => {
         expect(m.retiring.size).toBe(0);
         m.stop();
       });
+
+      test('is counted when its reply had started to arrive before the switch', () => {
+        const b = feeBoot();
+        const s = b.socks[0];
+        s.emit('connect');
+        s.emit('data', jobLine());
+        s.written.length = 0;
+        b.core.emit('hit', goodHit());
+        const id = JSON.parse(s.written[0]).id;
+        const reply = encode({ id, result: true, error: null });
+        s.emit('data', reply.slice(0, 10));
+        jest.advanceTimersByTime(450);
+        expect(b.m.inDevFee).toBe(true);
+        s.emit('data', reply.slice(10));
+        expect(b.events.share).toHaveLength(1);
+        expect(s.destroy).toHaveBeenCalled();
+        expect(b.m.pending.size).toBe(0);
+        b.m.stop();
+      });
+
+      test.each([['still connecting', 'connecting'], ['already closed', 'destroyed']])(
+        'is not waited for on a socket %s, which cannot answer', (_name, flag) => {
+          const b = feeBoot();
+          const s = b.socks[0];
+          s.emit('connect');
+          s.emit('data', jobLine());
+          b.core.emit('hit', goodHit());
+          s[flag] = true;
+          jest.advanceTimersByTime(450);
+          expect(b.m.inDevFee).toBe(true);
+          expect(s.destroy).toHaveBeenCalled();
+          expect(b.m.pending.size).toBe(0);
+          expect(b.m.retiring.size).toBe(0);
+          b.m.stop();
+        });
 
       test('is counted as rejected when the pool rejects it', () => {
         const { m, s, id, events } = inFlight();
@@ -591,6 +636,17 @@ describe('PearlMiner — shares', () => {
       const id = JSON.parse(s.written[0]).id;
       s.emit('data', encode({ id, result: true, error: null }));
       expect(events.share).toHaveLength(1);
+      m.stop();
+    });
+
+    test("a pool drop forgets the closed socket's submits, which get no reply now", () => {
+      const { m, socks, core } = feeBoot();
+      socks[0].emit('connect');
+      socks[0].emit('data', jobLine());
+      core.emit('hit', goodHit());
+      expect(m.pending.size).toBe(1);
+      socks[0].emit('close');
+      expect(m.pending.size).toBe(0);
       m.stop();
     });
 
