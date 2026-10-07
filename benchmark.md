@@ -16,6 +16,10 @@ host:
 - RTX 50-series: 90–102%. The 5090 and 5080 are close to even; the 5070 Ti,
   5070, 5060 Ti and 5060 trail by 5–10%.
 - A100-class (sm_80, PR #253, not in a release yet): 87–97%.
+- Hopper (sm_90, PR #253, not in a release yet): 58–63%. These cards
+  couldn't mine at all before this PR.
+- L40S-class (sm_89: L40S, L40, RTX 6000 Ada): 102–111%.
+- RTX A4000 (sm_86): 102%.
 
 ## How a host is tested
 
@@ -268,6 +272,75 @@ the RTX tables.
 - **CMP 170HX:** SRBMiner's rate fell near the end of its run. Its average
   after the first minute was 168.9, which also puts us at 87%. The card has
   74 SMs and a 32 MB L2, with the A100's full tensor rate per SM.
+
+## Hopper (sm_90, PR #253)
+
+Run on 2026-10-07, 16:58–18:16 UTC, with PR #253's core at `ff4b782`, the
+sm_90 port. The boxes built it on `5f427dd`; the commit in between,
+`dd64b2c`, changes only sm_80, so the sm_90 code is the same. No release
+supports these cards yet. Same harness, pool and miner versions as the RTX
+tables.
+
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
+|---|---|---|---|---|---|---|
+| H100 SXM 80 GB | New York (700 W) | 153443 | 436.2 | 757.7 | 734.4 | 58% |
+| H100 NVL 94 GB | Japan (400 W) | 29785 | 341.0 | 533.0 | 537.6 | 63% |
+| H100 PCIe 80 GB | United States (350 W) | 81035 | 299.4 | 478.4 | 485.1 | 62% |
+
+- **All three cards:** every miner ran at the power limit. We ran at
+  1585–1833 MHz and the other two at 1116–1495 MHz, so the gap is work per
+  clock. PeakMiner and SRBMiner get about 94% of Hopper's tensor peak per
+  clock. This port runs the Ampere fold and gets about 44%.
+- **H100 PCIe, France (153139):** passed the hit check, but the host kept
+  restarting the container, and PeakMiner and SRBMiner never ran. No row.
+- **Not tested:** the H200 and H200 NVL. They are the same chip at compute
+  9.0.
+
+## L40S-class (sm_89)
+
+Run on 2026-10-07, 16:55–18:39 UTC, with PR #253's core at `5f427dd`. The
+L40S, L40 and RTX 6000 Ada are AD102 cards and run the same sm_89 code as
+the RTX 40-series. Same harness, pool and miner versions as the RTX tables.
+
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
+|---|---|---|---|---|---|---|
+| L40S | Texas (350 W) | 96563 | 288.4 | 257.1 | 281.8 | 102% |
+| L40S | Taiwan (350 W) | 151291 | 288.9 | 250.8 | 270.7 | 107% |
+| L40 | Vietnam (300 W) | 114318 | 173.8 | 166.5 | 170.4 | 102% |
+| L40 | New York (250 W) | 56199 | 153.6 | 131.8 | 139.0 | 111% |
+| RTX 6000 Ada | Germany (300 W) | 146274 | 194.2 | 167.5 | 179.2 | 108% |
+| RTX 6000 Ada | New York (300 W) | 142572 | 227.5 | 195.9 | 210.4 | 108% |
+
+- **All six hosts:** every miner ran at the power limit. We ran 50–310 MHz
+  faster than the other two at the same watts, so we use less power for
+  the same work.
+- **L40:** half the L40S's int8 tensor rate per SM, so its rates are lower.
+  The New York host sets the card to 250 W; its maximum is 300 W.
+- **RTX 6000 Ada:** at the same 300 W, the Germany card ran at 83–85 C and
+  about 1400 MHz, and the New York card at 77–79 C and 1640 MHz. Every
+  miner was about 17% faster in New York, so the gap between the rows is
+  the host.
+
+## RTX A4000 (sm_86)
+
+Run on 2026-10-07, 16:53–17:47 UTC, with PR #253's core at `5f427dd`. The
+A4000 is a GA104 card and runs the same sm_86 code as the RTX 30-series.
+Same harness, pool and miner versions as the RTX tables.
+
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
+|---|---|---|---|---|---|---|
+| RTX A4000 | Kazakhstan (140 W) | 147920 | 59.5 | 58.2 | 56.6 | 102% |
+| RTX A4000 | Kentucky (140 W) | 29102 | 56.9 | 55.8 | 53.5 | 102% |
+
+- **Both hosts:** every miner ran at the 140 W limit. We ran 60–110 MHz
+  faster than the other two.
+- **Kentucky:** the card runs at 92–94 C. In this 5-minute run all three
+  miners stayed at the power limit, but in our longer speed tests the card
+  hit its thermal limit and read 54.7–55.1 TH/s.
+- **PeakMiner, Kazakhstan:** got no share accepted in its 5 minutes. The
+  rate is its own figure.
+- **Replaced host:** Germany (14335). Another workload was using the GPU,
+  and the tensor probe read 37 T-MAC/s against 92 on a clean card.
 
 ## Replaced hosts (40/50-series)
 
