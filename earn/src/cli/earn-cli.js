@@ -28,7 +28,7 @@ const {
 const probe = require('../main/probe');
 const nodeStore = require('../main/nodeStore');
 const { initStats, applyEvent, snapshot, createRateMeter, meterSample, meterRead } = require('../shared/miningStats');
-const { NETWORK, LLM, NODE, DEV_FEE, resolveEndpoint, regionLabel } = require('../shared/config');
+const { NETWORK, LLM, NODE, resolveEndpoint, regionLabel } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
 const nodeProto = require('../shared/node');
 const { buildMinerReports } = require('../shared/minerReport');
@@ -712,8 +712,6 @@ async function run(argv) {
     log('address:    ' + shortenAddress(settings.address) + (settings.mdlAddress ? '  (+MDL ' + shortenAddress(settings.mdlAddress) + ')' : ''));
     log('pool:       ' + endpoint + '  ' + regionLabel(settings.region) + (settings.regionProvided ? '' : '  (auto)'));
     log('worker:     ' + settings.worker + (settings.workerProvided ? '' : '  (auto)'));
-    log('dev fee:    ' + DEV_FEE.pct + '% of mining time (' + DEV_FEE.sliceMs / 1000 + ' s of every '
-      + DEV_FEE.cycleMs / 60000 + ' min mines for LLMJob)');
     if (settings.gpu) {
       log('gpu:        ' + (settings.gpuCount > 1 ? settings.gpuCount + '× ' : '') + settings.gpu
         + (settings.gpuProvided ? '' : '  (auto)'));

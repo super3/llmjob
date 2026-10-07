@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-  REGIONS, DEFAULTS, MINER, ECON, DEV_FEE,
+  REGIONS, DEFAULTS, MINER, ECON,
   regionFor, endpointFor, normalizeEndpoint, resolveEndpoint, splitEndpoint, regionLabel,
   migrateRegion, LEGACY_REGIONS,
 } = require('../src/shared/config');
@@ -38,18 +38,10 @@ describe('config', () => {
   });
 
   test('engine and economics metadata are present', () => {
-    expect(MINER).toMatchObject({ engine: 'llmjob-pearl', pool: 'HeroMiners', pow: 'pearlhash', devFeePct: 2, poolFeePct: 0 });
+    expect(MINER).toMatchObject({ engine: 'llmjob-pearl', pool: 'HeroMiners', pow: 'pearlhash', devFeePct: 0, poolFeePct: 0 });
     expect(ECON).toMatchObject({ DIFFICULTY: 34.45e6, BLOCK_REWARD: 2278, PRL_USD: 1.14 });
-    // The pool's fee comes off the estimate. The dev fee does not, so the
-    // estimate stays the pool's own.
-    expect(ECON.FEE).toBe(1 - MINER.poolFeePct / 100);
-    expect(ECON.FEE).toBe(1);
-  });
-
-  test('the dev fee is 2%: one 60 s slice in every 50 min', () => {
-    expect(DEV_FEE.sliceMs / DEV_FEE.cycleMs).toBeCloseTo(DEV_FEE.pct / 100, 10);
-    expect(DEV_FEE.pct).toBe(MINER.devFeePct);
-    expect(DEV_FEE.address).toMatch(/^prl1/);
+    // Every fee the miner and the pool take comes off the estimate, and no other.
+    expect(ECON.FEE).toBe(1 - (MINER.devFeePct + MINER.poolFeePct) / 100);
   });
 });
 

@@ -384,8 +384,8 @@
       <p class="col-text">Payouts go straight to your address. No custody, no account, nothing held by us.</p>
     </div>
     <div>
-      <h3 class="col-title">Just 2% dev fee</h3>
-      <p class="col-text">A flat 2% dev fee, the same as SRBMiner and PeakMiner, and the pool takes nothing. You keep 98% of everything you mine — no subscriptions, no surprises.</p>
+      <h3 class="col-title">Just 1% dev fee</h3>
+      <p class="col-text">A flat 1% dev fee, 1% pool. You keep 98% of everything you mine — no subscriptions, no surprises.</p>
     </div>
   </div>
 </section>
@@ -431,7 +431,7 @@
         <div class="res-row"><span class="l">PRL price</span><span class="v" id="r-price">—</span></div>
         <div class="res-row"><span class="l">Network hashrate</span><span class="v" id="r-net">—</span></div>
       </div>
-      <p class="disclaimer"><span id="r-live">Loading live network data…</span> Estimated from the network hashrate and the current block reward. The pool takes no fee. Mining is probabilistic — real payouts vary with luck and network growth.</p>
+      <p class="disclaimer"><span id="r-live">Loading live network data…</span> Estimated from the network hashrate and the current block reward. The pool takes no fee and neither do we. Mining is probabilistic — real payouts vary with luck and network growth.</p>
     </div>
   </div>
   <div class="percard">
@@ -676,7 +676,7 @@
     let NET_TH = 65.2e6;            // network hashrate in TH/s, ~65 EH/s (snapshot)
     let DIFFICULTY = 34.45e6;       // the latest block's difficulty (snapshot)
     let REWARD = 2278;              // PRL per block (snapshot)
-    const FEE = 1;                  // HeroMiners charges no pool fee; the dev fee is left out, as the app does
+    const FEE = 1;                  // HeroMiners charges no pool fee, and our miner has no dev fee
     let live = { price: false, net: false, block: false };
 
     const state = { hashrate: 354, cards: 1, selected: 'RTX 5090' };

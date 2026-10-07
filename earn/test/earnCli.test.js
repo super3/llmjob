@@ -480,7 +480,6 @@ describe('mining', () => {
     expect(allOut()).toContain('preparing local LLM (Gemma-4-E4B-it-Q4_K_M) …');
     expect(allOut()).toContain('local LLM starting on 1 GPU [auto]');
     expect(allOut()).toContain('worker:     rig-host  (auto)');
-    expect(allOut()).toContain('dev fee:    2% of mining time (60 s of every 50 min mines for LLMJob)');
     expect(allOut()).toContain('(+MDL');
     expect(allOut()).toContain('gpu:        2× NVIDIA GeForce RTX 3070  (auto)');
     // What will actually mine. Both cards do, one core each.
