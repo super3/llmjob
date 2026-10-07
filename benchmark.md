@@ -239,19 +239,24 @@ Every host passed the hit check, and every run had 0 rejected shares.
 
 ## A100-class (sm_80, PR #253)
 
-Run on 2026-10-07, 14:53–15:15 UTC, with PR #253's core at `feba1ca`. No
+Run on 2026-10-07, 14:53–15:57 UTC, with PR #253's core at `feba1ca`. No
 release supports these cards yet. Same harness, pool and miner versions as
 the RTX tables.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
 | A100 PCIe 40 GB | Japan (250 W) | 146405 | 192.0 | 214.8 | 216.0 | 89% |
+| A100 SXM4 40 GB | California (400 W) | 152356 | 177.3 | 197.4 | 199.8 | 89% |
 | CMP 170HX | Georgia (250 W) | 147823 | 146.9 | 167.9 | 165.0 | 87% |
 
-- **Both cards:** all three miners ran at the 250 W limit. PeakMiner and
+- **A100 PCIe and CMP 170HX:** all three miners ran at the 250 W limit. PeakMiner and
   SRBMiner get about 85% of the tensor cores' peak work per clock, and we get
   about 70%. We run at a higher clock (on the A100, 1236 MHz against their
   1151–1155), so the gap is work per clock, not power.
+- **A100 SXM4, California:** the host cools the card poorly. All three miners
+  ran at 85 C and the thermal limit, drawing about 215 W of the 400 W allowed,
+  so this row says more about the host than the card. A better-cooled SXM4
+  host will be added. The first SXM4 host tried (149846) failed during setup.
 - **CMP 170HX:** SRBMiner's rate fell near the end of its run. Its average
   after the first minute was 168.9, which also puts us at 87%. The card has
   74 SMs and a 32 MB L2, with the A100's full tensor rate per SM.
