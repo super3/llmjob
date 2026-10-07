@@ -382,7 +382,14 @@ typedef struct {
 // rate an SM, a 24-40 MB L2 and 164 KB of shared an SM; a gate that names only one of the
 // two is a measured difference between them. The host reads binaryVersion, which is
 // __CUDA_ARCH__ / 10.
-#define PEARL_AMPERE_ARCH(a) ((a) == 800 || (a) == 860)
+//
+// Hopper (sm_90: H100, H200) builds the same cp.async fold and takes the same host
+// rules, for now. Its SM still has the int8 m16n8k32 mma.sync, ldmatrix and cp.async,
+// and pearl_mbar_wait uses its try_wait. It is not Hopper's fast path: there mma.sync
+// reaches only part of the int8 rate wgmma does. A gate that names PEARL_HOPPER_ARCH
+// alone is a measured difference: so far only PEARL_AMPERE_PERSIST_ARCH, the A' slice.
+#define PEARL_HOPPER_ARCH(a) ((a) == 900)
+#define PEARL_AMPERE_ARCH(a) ((a) == 800 || (a) == 860 || PEARL_HOPPER_ARCH(a))
 
 // Walk the bands as a serpentine: odd bands take their column groups in
 // reverse, so each band starts on the B columns the one before it ended on.
@@ -483,7 +490,7 @@ typedef struct {
 // The CTA tile, the stage buffers and the tile walk are the same either way, so
 // the host's grid, shared size and tile count do not change -- only the block.
 // It must launch the one the loaded fold was compiled for, and decides from the
-// binary as for PEARL_FOLD_PERSISTENT (binaryVersion 80, 86 or 89), refusing a fold
+// binary as for PEARL_FOLD_PERSISTENT (binaryVersion 80, 86, 89 or 90), refusing a fold
 // whose launch bound says otherwise. A -DPEARL_FOLD_WIDE_WARPS=0/1 override
 // binds both sides.
 //
@@ -784,8 +791,9 @@ typedef struct {
 #endif
 #endif
 // The same test for the host, by the architecture number it reads back as
-// cudaFuncAttributes::binaryVersion (75, 80, 86, 89, 120: the binary ships sm_75, sm_80,
-// sm_86, sm_89 and sm_120 SASS and no PTX, so that is exactly the build that runs).
+// cudaFuncAttributes::binaryVersion (75, 80, 86, 89, 90, 120: the binary ships sm_75,
+// sm_80, sm_86, sm_89, sm_90 and sm_120 SASS and no PTX, so that is exactly the build
+// that runs).
 // binaryVersion is __CUDA_ARCH__ / 10. Turing (75) has no tall fold.
 #define PEARL_TALL_ARCH(v) PEARL_TALL_BODY_ARCH((v) * 10)
 #define PEARL_TALL_TMA_ARCH(v) ((v) >= 120)
@@ -988,6 +996,12 @@ typedef struct {
 #ifndef PEARL_AMPERE_PERSIST_A
 #define PEARL_AMPERE_PERSIST_A 1
 #endif
+// The builds that take it, by __CUDA_ARCH__ (the device pass) or binaryVersion * 10 (the
+// host): Ampere's, not Hopper's. On sm_90 the A copies' cp.async.L2::cache_hint raised
+// "an illegal instruction was encountered" in every block (H100 PCIe, s90-002;
+// compute-sanitizer put it on the A copy), and ptxas 12.6 to 13.3 all build it the same
+// way. So Hopper copies A without the hint, and the host sets no slice for it.
+#define PEARL_AMPERE_PERSIST_ARCH(a) (PEARL_AMPERE_ARCH(a) && !PEARL_HOPPER_ARCH(a))
 // Device side: whether THIS compile's tall fold reads its band depth at run time.
 #if defined(__CUDA_ARCH__) && PEARL_AMPERE_ARCH(__CUDA_ARCH__)
 #define PEARL_TALL_BAND_RT 1
@@ -1509,7 +1523,7 @@ typedef struct {
 // compiled out its chunk loop is the one it ran before.
 //
 // The host must launch the matching grid, and it decides from the fold binary
-// it actually loaded (cudaFuncAttributes::binaryVersion 80, 86 or 89). Either kind
+// it actually loaded (cudaFuncAttributes::binaryVersion 80, 86, 89 or 90). Either kind
 // of mismatch stays correct -- a persistent build launched one block per tile
 // runs each block once, and a non-persistent one given fewer blocks restages
 // each later tile's chunk 0 -- it is only slower.

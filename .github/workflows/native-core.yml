@@ -51,8 +51,8 @@ jobs:
     # probes/hashrate.js and probes/verify-hits.js at pearl_core_cu13.node
     # (they take the .node path as their first argument and read no
     # environment variable). PEARL_CORE_VARIANT=cu13 is the override for the
-    # app and earn-cli only. No sm_80 or sm_86, so this build never loads on
-    # an A100 or a 3090.
+    # app and earn-cli only. No sm_80, sm_86 or sm_90, so this build never
+    # loads on an A100, a 3090 or an H100.
     # It is a separate file because a CUDA 13 runtime needs driver 580+: the
     # app loads it only on an all-Blackwell rig with a new enough driver
     # (src/shared/coreVariant.js).
@@ -78,6 +78,7 @@ jobs:
               -gencode arch=compute_80,code=sm_80
               -gencode arch=compute_86,code=sm_86
               -gencode arch=compute_89,code=sm_89
+              -gencode arch=compute_90,code=sm_90
               -gencode arch=compute_120,code=sm_120
             # Architectures on which a register spill in a fold kernel fails
             # the job (the spill check below): the ones a run of this check
@@ -86,8 +87,9 @@ jobs:
             # fold 253 registers on sm_86 and sm_89 and 255 on sm_120, the
             # wmma fold 235, 235 and 128. So all three fail on a spill. An
             # architecture added later starts as a warning until a run has
-            # shown it clean too: sm_80 (GA100: A100, A800, A30, CMP 170HX),
-            # added 2026-10-07, is not in the list yet.
+            # shown it clean too: sm_80 (GA100: A100, A800, A30, CMP 170HX)
+            # and sm_90 (Hopper: H100, H200), both added 2026-10-07, are not
+            # in the list yet.
             spill_fail_archs: sm_86 sm_89 sm_120
           - os: windows-2022
             variant: ''
@@ -100,6 +102,7 @@ jobs:
               -gencode arch=compute_80,code=sm_80
               -gencode arch=compute_86,code=sm_86
               -gencode arch=compute_89,code=sm_89
+              -gencode arch=compute_90,code=sm_90
               -gencode arch=compute_120,code=sm_120
             spill_fail_archs: sm_86 sm_89 sm_120
           # 13.3.1 is the newest toolkit Jimver/cuda-toolkit v0.2.36 (the

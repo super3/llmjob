@@ -3214,7 +3214,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
   constexpr uint32_t BMID = BSLOTS / 2u * bStep * SK;   // B's pointer, from its slot 0
   // Stage sg of the tile (0 .. 2 * chunks - 1: its slab, or its k-block), slot p, into
   // the buffer at ib.
-#if PEARL_AMPERE_PERSIST_A && defined(__CUDA_ARCH__) && PEARL_AMPERE_ARCH(__CUDA_ARCH__)
+#if PEARL_AMPERE_PERSIST_A && defined(__CUDA_ARCH__) && PEARL_AMPERE_PERSIST_ARCH(__CUDA_ARCH__)
   // Ampere: A's copies evict_last, so they land in the persisting L2 slice the host set
   // aside for the band's A' (PEARL_AMPERE_PERSIST_A).
   uint64_t polA;

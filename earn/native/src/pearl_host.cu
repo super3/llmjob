@@ -256,9 +256,13 @@ struct Ctx {
   // default): the tall fold is then launched in clusters of PEARL_TALL_CLUSTER_SIZE
   // over tiles of two row groups, and its resident count is in clusters.
   bool foldCluster = false;
-  // Whether it is Ampere's cp.async build (binaryVersion 86), whose band depth the host
-  // picks from the L2 (PEARL_AMPERE_BAND_L2_SHARE), and the depth it picked.
+  // Whether it is Ampere's cp.async build (binaryVersion 80 or 86, and Hopper's 90), whose
+  // band depth the host picks from the L2 (PEARL_AMPERE_BAND_L2_SHARE), and the depth it
+  // picked.
   bool foldAmpere = false;
+  // Whether that build's A copies carry the evict_last hint the persisting slice is for
+  // (PEARL_AMPERE_PERSIST_ARCH: Ampere's, not Hopper's).
+  bool foldPersistA = false;
   uint32_t tallBand = 0;
   bool foldKnown = false;
   // Why not, when foldKnown is false: reported by the first search, as it was when
@@ -888,6 +892,7 @@ void resolve_fold(Ctx *ctx) {
     // sees the same value, so the launch shape follows the body.
     ctx->foldCluster = ctx->foldTma && PEARL_TALL_CLUSTER != 0;
     ctx->foldAmpere = ctx->foldTall && !ctx->foldTma && PEARL_AMPERE_ARCH(ft.binaryVersion * 10);
+    ctx->foldPersistA = ctx->foldAmpere && PEARL_AMPERE_PERSIST_ARCH(ft.binaryVersion * 10);
   }
   // The fold is compiled for exactly one block size, which is also its launch
   // bound. A disagreement would not fail loudly: a block of the wrong size
@@ -1302,8 +1307,8 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
       ctx->batch = ctx->colBatch * ctx->rowsValid;
     }
   }
-  // Ampere (the sm_80 and sm_86 tall fold): a band of row groups whose A' fits the L2. See
-  // PEARL_AMPERE_BAND_L2_SHARE.
+  // Ampere (the sm_80, sm_86 and sm_90 tall fold): a band of row groups whose A' fits the
+  // L2. See PEARL_AMPERE_BAND_L2_SHARE.
   if (ctx->foldAmpere) {
     // A narrower batch than the profile's (PEARL_AMPERE_COL_BATCH).
     {
@@ -1328,8 +1333,10 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
     // A persisting L2 slice for the band's A' (PEARL_AMPERE_PERSIST_A). Without one the
     // fold still runs, only slower, so a refusal is dropped.
     int maxp = 0;
-    if (cudaDeviceGetAttribute(&maxp, cudaDevAttrMaxPersistingL2CacheSize, ctx->device)
-            == cudaSuccess && maxp > 0) {
+    if (!ctx->foldPersistA) {
+      // Hopper: its A copies carry no hint, so a slice would only take L2 from the rest.
+    } else if (cudaDeviceGetAttribute(&maxp, cudaDevAttrMaxPersistingL2CacheSize, ctx->device)
+                   == cudaSuccess && maxp > 0) {
       size_t slice = (size_t)ctx->tallBand * PEARL_TALL_BM * profile->k;
       if (slice > (size_t)maxp) slice = (size_t)maxp;
       if (cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, slice) != cudaSuccess)

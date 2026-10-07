@@ -137,7 +137,7 @@ A release ships two builds of the mining core side by side, in the installer's
 
 | File | Toolkit | Cards |
 |---|---|---|
-| `pearl_core.node` | CUDA 12.8 | RTX 20, 30, 40 and 50, and A100 / A800 / A30 / CMP 170HX (sm_75/80/86/89/120) — every rig |
+| `pearl_core.node` | CUDA 12.8 | RTX 20, 30, 40 and 50, A100 / A800 / A30 / CMP 170HX, and H100 / H200 (sm_75/80/86/89/90/120) — every rig |
 | `pearl_core_cu13.node` | CUDA 13.3 | sm_89 and sm_120; picked automatically for RTX 50 / Blackwell only (the sm_89 half measured no faster on a 4090) |
 
 **RTX 30 (Ampere) note.** The sm_86 half of `pearl_core.node` now runs the same
