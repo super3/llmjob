@@ -2926,6 +2926,89 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
 #else
 #define PEARL_TALL_RED_ON 0
 #endif
+
+#if PEARL_TALL_HASH_PAIRS_ON
+// Ada's hash, 1.5 regions a lane (PEARL_TALL_HASH_PAIRS). A column slot's 48 regions took
+// two passes of its hasher warp, the second on 16 lanes with the other 16 idle. Now every
+// lane hashes one region whole (pearl_hp_msw), and each lane pair (L, L ^ 1) hashes one of
+// the last 16 together (pearl_hp_msw_pair).
+__device__ __forceinline__ void pearl_hp_g(uint32_t &a, uint32_t &b, uint32_t &c, uint32_t &d,
+                                           uint32_t mx, uint32_t my) {
+  a = a + b + mx;
+  d = rotr32(d ^ a, 16);
+  c = c + d;
+  b = rotr32(b ^ c, 12);
+  a = a + b + my;
+  d = rotr32(d ^ a, 8);
+  c = c + d;
+  b = rotr32(b ^ c, 7);
+}
+#define PEARL_HP_PERM(m)                                                                    \
+  {                                                                                         \
+    const uint32_t p_[16] = {m[2], m[6], m[3],  m[10], m[7],  m[0],  m[4],  m[13],          \
+                             m[1], m[11], m[12], m[5], m[9], m[14], m[15], m[8]};           \
+    _Pragma("unroll") for (int i_ = 0; i_ < 16; i_++) m[i_] = p_[i_];                       \
+  }
+// The transcript's top word (pearl_transcript_msw's), one lane a region.
+__device__ __forceinline__ uint32_t pearl_hp_msw(const uint32_t key[8], const uint32_t mm[16],
+                                                 int hbe) {
+  uint32_t s[16], m[16];
+#pragma unroll
+  for (int i = 0; i < 8; i++) s[i] = key[i];
+  s[8] = BLAKE3_IV[0]; s[9] = BLAKE3_IV[1]; s[10] = BLAKE3_IV[2]; s[11] = BLAKE3_IV[3];
+  s[12] = 0u; s[13] = 0u; s[14] = 64u; s[15] = PEARL_TRANSCRIPT_FLAGS;
+#pragma unroll
+  for (int i = 0; i < 16; i++) m[i] = mm[i];
+#pragma unroll
+  for (int r = 0; r < 7; r++) {
+    pearl_hp_g(s[0], s[4], s[8], s[12], m[0], m[1]);
+    pearl_hp_g(s[1], s[5], s[9], s[13], m[2], m[3]);
+    pearl_hp_g(s[2], s[6], s[10], s[14], m[4], m[5]);
+    pearl_hp_g(s[3], s[7], s[11], s[15], m[6], m[7]);
+    pearl_hp_g(s[0], s[5], s[10], s[15], m[8], m[9]);
+    pearl_hp_g(s[1], s[6], s[11], s[12], m[10], m[11]);
+    pearl_hp_g(s[2], s[7], s[8], s[13], m[12], m[13]);
+    pearl_hp_g(s[3], s[4], s[9], s[14], m[14], m[15]);
+    if (r < 6) PEARL_HP_PERM(m)
+  }
+  return hbe ? pearl_bswap32(s[0] ^ s[8]) : (s[7] ^ s[15]);
+}
+// The same word from a lane pair, each lane half the compression: lane half h = L & 1 runs
+// state columns 2h and 2h + 1, then diagonals 2h and 2h + 1, trading with the other half the
+// four words a diagonal step crosses over before it and back after it (shfl.xor 1, 8 a
+// round). The word is valid on h = 0 big-endian (s0 ^ s8), on h = 1 little-endian
+// (s7 ^ s15). Every lane of the warp must call it.
+__device__ __forceinline__ uint32_t pearl_hp_msw_pair(const uint32_t key[8], const uint32_t mm[16],
+                                                      uint32_t h, int hbe) {
+  uint32_t A[2], B[2], C[2], Dd[2], m[16];
+#pragma unroll
+  for (int q = 0; q < 2; q++) {
+    A[q] = h ? key[2 + q] : key[q];
+    B[q] = h ? key[6 + q] : key[4 + q];
+    C[q] = h ? BLAKE3_IV[2 + q] : BLAKE3_IV[q];
+  }
+  Dd[0] = h ? 64u : 0u;
+  Dd[1] = h ? PEARL_TRANSCRIPT_FLAGS : 0u;
+#pragma unroll
+  for (int i = 0; i < 16; i++) m[i] = mm[i];
+#pragma unroll
+  for (int r = 0; r < 7; r++) {
+#pragma unroll
+    for (int q = 0; q < 2; q++)
+      pearl_hp_g(A[q], B[q], C[q], Dd[q], h ? m[4 + 2 * q] : m[2 * q], h ? m[5 + 2 * q] : m[2 * q + 1]);
+    const uint32_t pC0 = __shfl_xor_sync(~0u, C[0], 1), pC1 = __shfl_xor_sync(~0u, C[1], 1);
+    const uint32_t pD1 = __shfl_xor_sync(~0u, Dd[1], 1), pB0 = __shfl_xor_sync(~0u, B[0], 1);
+    uint32_t a0 = A[0], b0 = B[1], c0 = pC0, d0 = pD1, a1 = A[1], b1 = pB0, c1 = pC1, d1 = Dd[0];
+    pearl_hp_g(a0, b0, c0, d0, h ? m[12] : m[8], h ? m[13] : m[9]);
+    pearl_hp_g(a1, b1, c1, d1, h ? m[14] : m[10], h ? m[15] : m[11]);
+    A[0] = a0; A[1] = a1; B[1] = b0; Dd[0] = d1;
+    C[0] = __shfl_xor_sync(~0u, c0, 1); C[1] = __shfl_xor_sync(~0u, c1, 1);
+    Dd[1] = __shfl_xor_sync(~0u, d0, 1); B[0] = __shfl_xor_sync(~0u, b1, 1);
+    if (r < 6) PEARL_HP_PERM(m)
+  }
+  return hbe ? pearl_bswap32(A[0] ^ C[0]) : (B[1] ^ Dd[1]);
+}
+#endif
 extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold_tall(
     const int8_t *__restrict__ Aprime, const int8_t *__restrict__ Bprime,
     uint32_t m, uint32_t n, uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg,
@@ -3682,7 +3765,14 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
     // Hand-off: the column slot's two warps (one scheduler) meet, so every chunk-15 word
     // is in shared, and the first hashes the slot's 48 regions -- all 32 lanes, then 16.
     pearl_bar_sync(1u + wc, 64u);
+#if PEARL_TALL_HASH_PAIRS_ON
+    // The same test, made warp-uniform by a vote: the shuffles of the paired hash below
+    // sit inside it, and behind a plain wr == 0 branch ptxas fences every ring wait of the
+    // tile loop with convergence barriers to reach them (-1.2% a tile, g40-042).
+    if (__any_sync(0xffffffffu, wr == 0u)) {
+#else
     if (wr == 0u) {
+#endif
       // The tile's coordinates again, from an opaque copy of v (not held through the tile).
       uint32_t hv = v;
       asm volatile("" : "+r"(hv));
@@ -3728,8 +3818,72 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
 #pragma unroll
         for (int i = 0; i < 16; i++) hits.transcript[slot * 16u + i] = tm[i];
       };
+#if !PEARL_TALL_HASH_PAIRS_ON
       hash_region(lane);
       if (lane < 2u * WARP_REGIONS - 32u) hash_region(32u + lane);
+#else
+      static_assert(2u * WARP_REGIONS == 48u, "1.5 regions a lane");
+      // Lane L hashes region L whole and, with lane L ^ 1, half of region 32 + L / 2. Both
+      // transcripts are read, hashed, and zeroed for the next tile's XORs only after the
+      // whole warp is done with them; the rare hit reads its transcript back from shared,
+      // so neither stays live through the compressions (holding them spills 8 bytes).
+      const uint32_t Lp = 32u + (lane >> 1), hh = lane & 1u;
+      const uint32_t ra = sTr + (wc * 2u * WARP_REGIONS + lane) * 64u;
+      const uint32_t rp = sTr + (wc * 2u * WARP_REGIONS + Lp) * 64u;
+      uint32_t tm[16], tp[16];
+#pragma unroll
+      for (uint32_t q = 0; q < 4; q++)
+        asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
+                     : "=r"(tm[4 * q]), "=r"(tm[4 * q + 1]), "=r"(tm[4 * q + 2]), "=r"(tm[4 * q + 3])
+                     : "r"(ra + 16u * q)
+                     : "memory");
+      const uint32_t w1 = pearl_hp_msw(test.key, tm, test.hash_big_endian);
+#pragma unroll
+      for (uint32_t q = 0; q < 4; q++)
+        asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
+                     : "=r"(tp[4 * q]), "=r"(tp[4 * q + 1]), "=r"(tp[4 * q + 2]), "=r"(tp[4 * q + 3])
+                     : "r"(rp + 16u * q)
+                     : "memory");
+      const uint32_t w2 = pearl_hp_msw_pair(test.key, tp, hh, test.hash_big_endian);
+      auto record = [&](uint32_t Lc) {
+        const uint32_t owr = Lc / WARP_REGIONS, rem = Lc % WARP_REGIONS;
+        const uint32_t ocb = rem / (2u * RPL);
+        const uint32_t row_idx = (hrbg * 2u + owr) * (2u * RPL) + rem % (2u * RPL);
+        if (row_idx >= rows_valid) return;   // the last row group's rows past m
+        uint32_t t[16];
+        const uint32_t rr = sTr + (wc * 2u * WARP_REGIONS + Lc) * 64u;
+#pragma unroll
+        for (uint32_t q = 0; q < 4; q++)
+          asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
+                       : "=r"(t[4 * q]), "=r"(t[4 * q + 1]), "=r"(t[4 * q + 2]), "=r"(t[4 * q + 3])
+                       : "r"(rr + 16u * q)
+                       : "memory");
+        uint32_t h[8];
+        pearl_transcript_hash_again(test.key, t, h);
+        if (!pearl_hash_meets_words(h, test.target_w, test.hash_big_endian)) return;
+        const uint32_t region = ((hcbg * 4u + wc) * 4u + ocb) * rows_valid + row_idx;
+        const uint32_t slot = atomicAdd(hits.count, 1u);
+        if (slot >= PEARL_MAX_HITS) return;
+        hits.index[slot] = region;
+#pragma unroll
+        for (int i = 0; i < 8; i++) hits.hash[slot * 8u + i] = h[i];
+#pragma unroll
+        for (int i = 0; i < 16; i++) hits.transcript[slot * 16u + i] = t[i];
+      };
+      if (wr == 0u) {
+#ifndef PEARL_ABLATE_TRANSCRIPT_HASH
+        if (w1 <= test.target_w[0]) record(lane);
+        if (hh == (test.hash_big_endian ? 0u : 1u) && w2 <= test.target_w[0]) record(Lp);
+#endif
+      }
+      __syncwarp();   // every lane's reads (hit re-reads too) of both regions before any zeroing
+#pragma unroll
+      for (uint32_t q = 0; q < 4; q++) {
+        asm volatile("st.shared.v4.u32 [%0], {%1,%1,%1,%1};" ::"r"(ra + 16u * q), "r"(0u) : "memory");
+        if (hh == 0u)
+          asm volatile("st.shared.v4.u32 [%0], {%1,%1,%1,%1};" ::"r"(rp + 16u * q), "r"(0u) : "memory");
+      }
+#endif
     }
   }
 #if PEARL_TALL_CLUSTER_BODY

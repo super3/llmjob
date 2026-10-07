@@ -1019,6 +1019,25 @@ typedef struct {
 // its last ldmatrix rather than after its last mma, 287.1 / 287.2; every warp hashing
 // its own 24 regions instead of one warp a column slot hashing 48, which drops the
 // column barrier, 287.8 / 288.1 -- both warps of a scheduler then stop to hash.
+// Ada's tall fold hashes 1.5 regions a lane: each lane one region whole, and each lane pair
+// one of the column slot's last 16 together (pearl_hp_msw_pair), where the second pass ran
+// on 16 lanes with the other 16 idle. Its hasher branch is a vote, so the pair's shuffles
+// add no convergence barriers to the tile loop. Cycles a tile (PEARL_TALL_CYC), RTX 4060,
+// 3 rounds: 102,977 -> 102,714 (-262, every round; no second pass at all is 102,424).
+// hashrate.js, 3-4 rounds, ahead in every round, 400/400 hits:
+//   RTX 4060 (115 W)      59.87 -> 60.07   +0.33%
+//   RTX 4060 Ti (160 W)   88.65 -> 89.04   +0.45%
+//   RTX 4070 Ti (285 W)  159.19 -> 159.87  +0.43%
+//   RTX 4090 (450 W)     319.04 -> 320.37  +0.41%
+// Same hit lists as two passes over a fixed job in both hash byte orders. 0 turns it off.
+#ifndef PEARL_TALL_HASH_PAIRS
+#define PEARL_TALL_HASH_PAIRS 1
+#endif
+#if PEARL_TALL_HASH_PAIRS && defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#define PEARL_TALL_HASH_PAIRS_ON 1
+#else
+#define PEARL_TALL_HASH_PAIRS_ON 0
+#endif
 #ifndef PEARL_TALL_APT
 #define PEARL_TALL_APT 3u
 #endif
