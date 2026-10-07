@@ -3962,10 +3962,10 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
 // GA100's transcript hash (PEARL_TALL_UNFUSED): one thread a region over the batch the
 // fold just wrote, `regions` x 64 bytes at `tr`, each region at its batch-local number.
 // The same tests as the fold's own hash: the top word against the target's, then the
-// whole hash, and a hit is reported through the same list. It exists only in the sm_80
-// build and the host pass, so every other architecture's binary is unchanged; the host
+// whole hash, and a hit is reported through the same list. Every architecture compiles
+// it, because the host launches it by name and a build without sm_80 (the CUDA 13 core)
+// would otherwise have no symbol to link; outside sm_80 its body is empty. The host
 // launches it only when the loaded fold is the unfused one (Ctx::foldUnfused).
-#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ == 800
 extern "C" __global__ __launch_bounds__(256) void pearl_tall_hash80(
     const uint4 *__restrict__ tr, uint32_t regions, const PearlTranscriptTest test,
     const PearlHitList hits, uint32_t one) {
@@ -4030,7 +4030,6 @@ extern "C" __global__ __launch_bounds__(256) void pearl_tall_hash80(
 #endif
   (void)one;
 }
-#endif
 
 // The fold is now a gather. Every product it needs is already in D, so a region
 // costs 32 loads and a warp reduction per chunk instead of 32 dot products.
