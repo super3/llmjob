@@ -1041,11 +1041,25 @@ typedef struct {
 //   RTX 3080 Ti (315 W)  123.88 -> 123.69  -0.15%, ahead in 1 of 3, rounds overlap
 //   RTX 3090 Ti (450 W)  152.89 -> 153.22  +0.22%, ahead in 4 of 4
 // Pool, RTX 3080 Ti: 10 of 10 shares in 600 s.
+// Blackwell (sm_120) takes it too, but only from the CUDA 13 compiler: under 12.8 the
+// paired hash spills (255 registers, 160 bytes of spill stores), so the 12.8 core keeps
+// two passes. Under 13.3 the sm_120 fold stays at 254 registers with no spill, and its
+// chunk loop is unchanged (468 instructions).
+// Cycles a tile (PEARL_TALL_CYC), RTX 5070 Ti at its locked 1346 MHz, 4 rounds:
+// 103,451 -> 103,098 (-353, every round). hashrate.js, ahead in every round, 400/400 hits:
+//   RTX 5070 Ti (locked 1346 MHz)  91.72 -> 92.28   +0.61%
+//   RTX 5080 (360 W)              226.36 -> 227.68  +0.58%
+//   RTX 5060 (125 W)               76.46 -> 76.78   +0.41%
+//   RTX 5090 (500 W)              373.79 -> 375.17  +0.37%
+// Same hit lists as two passes over a fixed job in both hash byte orders on both cards.
+// A device test against pearl_transcript_msw found no mismatch in 4M whole and 2M paired
+// compressions in each byte order.
 #ifndef PEARL_TALL_HASH_PAIRS
 #define PEARL_TALL_HASH_PAIRS 1
 #endif
 #if PEARL_TALL_HASH_PAIRS && defined(__CUDA_ARCH__) \
-    && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
+    && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890 \
+        || (__CUDA_ARCH__ >= 1200 && __CUDACC_VER_MAJOR__ >= 13))
 #define PEARL_TALL_HASH_PAIRS_ON 1
 #else
 #define PEARL_TALL_HASH_PAIRS_ON 0
