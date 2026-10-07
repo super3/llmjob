@@ -15,8 +15,9 @@ host:
 - RTX 40-series: 97–101%.
 - RTX 50-series: 90–102%. The 5090 and 5080 are close to even; the 5070 Ti,
   5070, 5060 Ti and 5060 trail by 5–10%.
-- A100-class (sm_80, PR #253, not in a release yet): 87–107%. The A30 is
-  ahead; the rest are measured below on older builds of this PR.
+- A100-class (sm_80, PR #253, not in a release yet): the A30 107%, the A100
+  PCIe 98% and the A100 SXM4 97% on the current build. The CMP 170HX row is
+  from the first build (87%); it screens at about 98% now.
 - Hopper (sm_90, PR #253, not in a release yet): 58–63%. These cards
   couldn't mine at all before this PR.
 - Ada workstation and data-center cards (sm_89: L40S, L40, L4, RTX 6000,
@@ -247,27 +248,32 @@ Every host passed the hit check, and every run had 0 rejected shares.
 
 ## A100-class (sm_80, PR #253)
 
-Run on 2026-10-07, 14:53–19:29 UTC, with PR #253's core at `feba1ca`,
-except the New York A100 SXM4, which ran `dd64b2c` (the sm_80 copy points),
-and the A30, which ran `1f699da` (the hash in its own kernel).
+Run on 2026-10-07, 14:53–22:52 UTC. The A100 PCIe and the New York A100
+SXM4 ran `3804a7c` and the A30 `1f699da`, each with PeakMiner and SRBMiner
+re-run on the same box in the same session. The CMP 170HX and the
+California A100 SXM4 ran the first build, `feba1ca`.
 No release supports these cards yet. Same harness, pool and miner versions as
 the RTX tables.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
-| A100 PCIe 40 GB | Japan (250 W) | 146405 | 192.0 | 214.8 | 216.0 | 89% |
-| A100 SXM4 40 GB | New York (400 W) | 152837 | 240.3 | 252.6 | 253.8 | 95% |
+| A100 PCIe 40 GB | Japan (250 W) | 146405 | 209.5 | 212.2 | 213.9 | 98% |
+| A100 SXM4 40 GB | New York (400 W) | 152837 | 246.5 | 252.2 | 254.7 | 97% |
 | A100 SXM4 40 GB | California (400 W) | 152356 | 177.3 | 197.4 | 199.8 | 89% |
 | A30 24 GB | Australia (155 W) | 145742 | 104.7 | 98.1 | 96.2 | 107% |
 | CMP 170HX | Georgia (250 W) | 147823 | 146.9 | 167.9 | 165.0 | 87% |
 
-- **A100 PCIe and CMP 170HX:** all three miners ran at the 250 W limit.
-  PeakMiner and SRBMiner get about 85% of the tensor cores' peak work per
-  clock. We got about 70% on `feba1ca`, at a higher clock (on the A100,
-  1236 MHz against their 1151–1155), so the gap is work per clock, not power.
-  `dd64b2c` takes the A100 to 75–77%.
+- **A100 PCIe and SXM4:** all three miners ran at the power limit. SRBMiner
+  does 4.0–4.3% more work per clock than we do, and we run a 1–2.6% higher
+  clock at the same watts, so the gap is work per clock. On `feba1ca` the
+  PCIe read 192.0 (89%) and on `dd64b2c` the SXM4 read 240.3 (95%). The copy
+  points (`dd64b2c`), the hash in its own kernel (`1f699da`) and band 32
+  (`3804a7c`) closed most of it.
+- **CMP 170HX:** all three miners ran at the 250 W limit on `feba1ca`, when
+  we got about 70% of the tensor peak per clock to their 85%. On `1f699da`
+  our screen reads 165.0, 98% of PeakMiner's 167.9.
 - **A100 SXM4, New York:** all three miners ran at the 400 W limit, at
-  71–77 C. This is the row that shows the card at its rated power.
+  75–77 C. This is the row that shows the card at its rated power.
 - **A100 SXM4, California:** the host cools the card poorly. All three miners
   ran at 85 C and the thermal limit, drawing about 215 W of the 400 W allowed,
   so this row says more about the host than the card. The first SXM4 host
@@ -276,11 +282,12 @@ the RTX tables.
   miners were power-capped at 82 C. This row is a second run on `1f699da`,
   with PeakMiner and SRBMiner re-run on the same box at the same 154 W. On
   `feba1ca` we read 94.7 against 98.0 and 96.1 (97%).
-- **CMP 170HX:** SRBMiner's rate fell near the end of its run. Its average
-  after the first minute was 168.9, which also puts us at 87%. The card has
-  74 SMs and a 32 MB L2, with the A100's full tensor rate per SM. Its owner
-  has unlocked it: it reports 64 GB, where a stock card has 8 GB and 70 SMs.
-  Every CMP 170HX on Vast is like this, so a stock card hasn't been tested.
+- **CMP 170HX, first run:** SRBMiner's rate fell near the end of its run.
+  Its average after the first minute was 168.9, which also puts us at 87%.
+  The card has 74 SMs and a 32 MB L2, with the A100's full tensor rate per
+  SM. Its owner has unlocked it: it reports 64 GB, where a stock card has
+  8 GB and 70 SMs. Every CMP 170HX on Vast is like this, so a stock card
+  hasn't been tested.
 
 ## Hopper (sm_90, PR #253)
 
