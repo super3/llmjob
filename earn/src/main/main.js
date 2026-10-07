@@ -393,6 +393,14 @@ function stopMining() {
   // Cancel any start still in flight (see miningEpoch) so it doesn't spawn or
   // start the LLM after this stop.
   miningEpoch++;
+  haltMiner();
+  send('miner:stopped');
+}
+
+// Stop the engine, its stats ticker and its board reports, and forget it. Half
+// of stopMining(): runPlan also uses it alone, when a plan drops mining but the
+// session goes on with the LLM.
+function haltMiner() {
   if (ticker) {
     clearInterval(ticker);
     ticker = null;
@@ -406,7 +414,6 @@ function stopMining() {
     miner.stop();
     miner = null;
   }
-  send('miner:stopped');
 }
 
 function appIcon() {
@@ -1192,6 +1199,17 @@ async function runPlan(settings) {
     }
     if (plan.llm && miner && miner.isRunning()) await waitForMinerUp();
   } else {
+    // A miner from an earlier plan can still be running: LLM-only picked while
+    // mining. Stop it. Mining is no longer asked for, and the model is about to
+    // be served from these cards with no mining reserve, under the miner's
+    // memory clock lock if it holds one (on an RTX 5090 that slows the model).
+    // Not stopMining(): the session goes on, so the epoch stays (this run still
+    // starts the model) and the renderer is not told it stopped. Its mining
+    // figures are zeroed instead, as an LLM-only start shows them.
+    if (miner) {
+      haltMiner();
+      send('miner:stats', statsView(snapshot(initStats(Date.now()), Date.now())));
+    }
     persistSettings(settings); // startMining persists; do it here when the miner is off
   }
   // STOP arrived during miner setup or the hashrate wait: don't bring the LLM up
