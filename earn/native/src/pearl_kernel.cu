@@ -3971,7 +3971,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
 extern "C" __global__ __launch_bounds__(256) void pearl_tall_hash80(
     const uint4 *__restrict__ tr, uint32_t regions, const PearlTranscriptTest test,
     const PearlHitList hits, uint32_t one) {
-#if PEARL_TALL_UNFUSED_ON
+#if PEARL_TALL_UNFUSED_ON || PEARL_HOPPER_WGMMA_BODY
   const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i >= regions) return;
   uint32_t tm[16];
@@ -4042,6 +4042,246 @@ extern "C" __global__ __launch_bounds__(256) void pearl_tall_hash80(
 #endif
   (void)one;
 }
+
+// Hopper's wgmma fold (PEARL_HOPPER_WGMMA; see pearl_config.h). With the switch on every
+// architecture compiles the symbol, because the host names it; only the sm_90a pass has a
+// body, and only that body carries the 384-thread launch bound the host keys on. With it
+// off (the default) neither the kernel nor the host's references exist.
+#if PEARL_HOPPER_WGMMA
+#if PEARL_HOPPER_WGMMA_BODY
+__device__ __forceinline__ void pearl_h_mbar_init(uint32_t bar, uint32_t count) {
+  asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;" ::"r"(bar), "r"(count) : "memory");
+}
+__device__ __forceinline__ void pearl_h_mbar_wait(uint32_t bar, uint32_t parity) {
+  asm volatile(
+      "{\n\t.reg .pred done;\n"
+      "PEARL_H_WAIT_%=:\n\t"
+      "mbarrier.try_wait.parity.shared::cta.b64 done, [%0], %1;\n\t"
+      "@!done bra PEARL_H_WAIT_%=;\n\t}" ::"r"(bar), "r"(parity)
+      : "memory");
+}
+__device__ __forceinline__ void pearl_h_expect_tx(uint32_t bar, uint32_t bytes) {
+  asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;" ::"r"(bar), "r"(bytes)
+               : "memory");
+}
+__device__ __forceinline__ void pearl_h_tma_3d(uint32_t dst, const PearlTensorMap *map, uint32_t c0,
+                                               uint32_t c1, uint32_t c2, uint32_t bar) {
+  asm volatile(
+      "cp.async.bulk.tensor.3d.shared::cluster.global.tile.mbarrier::complete_tx::bytes"
+      " [%0], [%1, {%2, %3, %4}], [%5];" ::"r"(dst), "l"(reinterpret_cast<uint64_t>(map)),
+      "r"(c0), "r"(c1), "r"(c2), "r"(bar)
+      : "memory");
+}
+// A wgmma shared-memory descriptor for a K-major operand in SWIZZLE_64B (layout type 2):
+// start address >> 4, leading offset unused (1), stride 512 bytes (8 rows of 64), base
+// offset 0, which needs every operand to start on the 512-byte swizzle period.
+__device__ __forceinline__ uint64_t pearl_h_desc(uint32_t addr) {
+  return (uint64_t)((addr >> 4) & 0x3FFFu) | (1ull << 16) | ((uint64_t)(512u >> 4) << 32)
+         | (2ull << 62);
+}
+#endif
+
+extern "C" __global__ void
+#if PEARL_HOPPER_WGMMA_BODY
+__launch_bounds__(PEARL_HOPPER_THREADS, 1)
+#endif
+pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, uint32_t col_off,
+                       uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
+                       uint32_t band_depth, uint4 *__restrict__ trg,
+                       const __grid_constant__ PearlTensorMap tmA,
+                       const __grid_constant__ PearlTensorMap tmB) {
+#if PEARL_HOPPER_WGMMA_BODY
+  constexpr uint32_t k = PEARL_FOLD_K, rank = PEARL_FOLD_RANK, chunks = PEARL_FOLD_CHUNKS;
+  if (k_arg != k || rank_arg != rank || chunks_arg != chunks) return;
+  if (blockDim.x != PEARL_HOPPER_THREADS) return;
+  constexpr uint32_t BM = PEARL_TALL_BM, BN = PEARL_TALL_BN, SK = PEARL_TALL_STAGE_K;
+  constexpr uint32_t NST = PEARL_HOPPER_STAGES;
+  constexpr uint32_t STAGE = (BM + BN) * SK;           // B's 256 rows, then A's 192
+  constexpr uint32_t KBLK = k / SK;                    // stages a tile: 32
+  constexpr uint32_t NWARPS = PEARL_HOPPER_THREADS / 32u;
+  constexpr uint32_t NREG = BM / 32u * 4u * 8u;        // regions a tile: 192
+  static_assert(BM == 192u && BN == 256u && SK == 64u && rank == 2u * SK,
+                "three m64n256 warpgroups; a chunk is two stages of four k32 steps");
+  static_assert(STAGE % 1024u == 0u && (BN * SK) % 1024u == 0u,
+                "every operand starts on the swizzle period");
+  static_assert(PEARL_HOPPER_SMEM >= NST * STAGE + NREG * 64u + 16u * NST, "shared layout");
+  extern __shared__ __align__(1024) uint8_t pearl_hopper_smem[];
+  const uint32_t sbase = (uint32_t)__cvta_generic_to_shared(pearl_hopper_smem);
+  const uint32_t sTr = sbase + NST * STAGE;
+  const uint32_t barFull = sTr + NREG * 64u;
+  const uint32_t cnt = barFull + 8u * NST;
+  const uint32_t tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;
+
+  // The tall fold's walk: row groups of 12 row offsets by column groups of 16 column
+  // offsets, in bands band_depth row groups deep (the host's Ampere band, a power of two).
+  const uint32_t row_groups = (rows_valid + PEARL_TALL_ROW_OFFSETS - 1u) / PEARL_TALL_ROW_OFFSETS;
+  const uint32_t col_block_groups = col_groups / PEARL_TALL_COL_OFFSETS;
+  const uint32_t walk_rows = row_groups;
+  const uint32_t band_shift = (uint32_t)__ffs(band_depth) - 1u;
+  auto tile_coords = [&](uint32_t v, uint32_t &rbg_, uint32_t &cbg_) {
+    const uint32_t band_blocks = band_depth * col_block_groups;
+    uint32_t band, in_band;
+    if ((col_block_groups & (col_block_groups - 1u)) == 0u) {
+      band = v >> (band_shift + __popc(col_block_groups - 1u));
+      in_band = v & (band_blocks - 1u);
+    } else {
+      band = v / band_blocks;
+      in_band = v % band_blocks;
+    }
+    const uint32_t band_first = band * band_depth;
+    if (band_first + band_depth <= walk_rows) {
+      rbg_ = band_first + (in_band & (band_depth - 1u));
+      cbg_ = in_band >> band_shift;
+    } else {
+      const uint32_t band_rows = walk_rows - band_first;
+      rbg_ = band_first + in_band % band_rows;
+      cbg_ = in_band / band_rows;
+    }
+#if PEARL_FOLD_SERPENTINE
+    if (band & 1u) cbg_ = col_block_groups - 1u - cbg_;
+#endif
+  };
+
+  if (tid == 0) {
+    if (sbase & 1023u) __trap();
+    for (uint32_t s = 0; s < NST; s++) {
+      pearl_h_mbar_init(barFull + 8u * s, 1u);
+      asm volatile("st.shared.u32 [%0], %1;" ::"r"(cnt + 4u * s), "r"(0u) : "memory");
+    }
+    asm volatile("fence.mbarrier_init.release.cluster;" ::: "memory");
+  }
+  for (uint32_t o = tid * 16u; o < NREG * 64u; o += PEARL_HOPPER_THREADS * 16u)
+    asm volatile("st.shared.v4.u32 [%0], {%1,%1,%1,%1};" ::"r"(sTr + o), "r"(0u) : "memory");
+  __syncthreads();
+
+  // Stage G of this CTA's walk: its tile G / KBLK, k-block G % KBLK, into buffer G % NST.
+  // Both boxes count their full size toward FULL, A's rows past m (zero-filled) included.
+  const uint32_t mytiles = blockIdx.x < tiles ? (tiles - 1u - blockIdx.x) / gridDim.x + 1u : 0u;
+  const uint32_t total = mytiles * KBLK;
+  auto fill = [&](uint32_t G) {
+    const uint32_t s = G % NST, v = blockIdx.x + (G / KBLK) * gridDim.x, kb = G % KBLK;
+    uint32_t rbg, cbg;
+    tile_coords(v, rbg, cbg);
+    const uint32_t full = barFull + 8u * s, dst = sbase + s * STAGE;
+    pearl_h_expect_tx(full, STAGE);
+#if PEARL_HOPPER_TILED
+    // Per-tile order: B's 256-column block (col_off is a multiple of a tile's 16 column
+    // offsets there), A's row group, each k / 64 consecutive boxes.
+    pearl_h_tma_3d(dst, &tmB, 0u, 0u, (col_off / PEARL_TALL_COL_OFFSETS + cbg) * KBLK + kb, full);
+    pearl_h_tma_3d(dst + BN * SK, &tmA, 0u, 0u, rbg * KBLK + kb, full);
+#else
+    pearl_h_tma_3d(dst, &tmB, 0u, (col_off + cbg * PEARL_TALL_COL_OFFSETS) * PEARL_COLS_COUNT, kb,
+                   full);
+    pearl_h_tma_3d(dst + BN * SK, &tmA, 0u, rbg * BM, kb, full);
+#endif
+  };
+  if (tid == 0)
+    for (uint32_t G = 0; G < NST && G < total; G++) fill(G);
+
+  // Warpgroup wgi holds rows 64 wgi .. 64 wgi + 63 of the tile, all 256 columns. Warp q of
+  // it holds 16 of those rows; in each n8 slice j lane (gq, t) holds rows gq and gq + 8,
+  // columns 8j + 2t and 8j + 2t + 1 (mma.sync's C layout). So the lane's values belong to
+  // four regions, one a 64-column span: row span rs = 2 wgi + (q >> 1), row offset gq >> 2,
+  // column offset t. Region id ((rs * 4 + cs) * 2 + ro) * 4 + co, 64 bytes each in shared.
+  const uint32_t wgi = warp >> 2, q = warp & 3u, gq = lane >> 2, t = lane & 3u;
+  const uint32_t rs = 2u * wgi + (q >> 1), ro = gq >> 2;
+  const uint32_t trl = sTr + (((rs * 4u) * 2u + ro) * 4u + t) * 64u;   // + cs * 512 + ch * 4
+  uint32_t g = 0;
+  int d[128];
+#pragma unroll
+  for (int i = 0; i < 128; i++) d[i] = 0;
+  for (uint32_t v = blockIdx.x; v < tiles; v += gridDim.x) {
+    for (uint32_t ch = 0; ch < chunks; ch++) {
+      // Both stages of the chunk before the first wgmma: a wait between them is a
+      // divergent path inside the wgmma sequence, and ptxas would serialize them.
+      pearl_h_mbar_wait(barFull + 8u * (g % NST), (g / NST) & 1u);
+      pearl_h_mbar_wait(barFull + 8u * ((g + 1u) % NST), ((g + 1u) / NST) & 1u);
+      asm volatile("wgmma.fence.sync.aligned;" ::: "memory");
+#pragma unroll
+      for (uint32_t h = 0; h < 2; h++) {
+        const uint32_t st = sbase + ((g + h) % NST) * STAGE;
+        const uint64_t db0 = pearl_h_desc(st), da0 = pearl_h_desc(st + BN * SK + wgi * 64u * SK);
+        {
+          const uint64_t da = da0, db = db0;
+          // The accumulators run through the whole tile, as the fold's transcripts are
+          // defined: chunk c's word is the XOR of the sums over k 0 .. 128 (c + 1), not over
+          // chunk c alone. Only the tile's first k32 starts from zero.
+          const uint32_t sc = (ch != 0u || h != 0u) ? 1u : 0u;
+          asm volatile("{\n.reg .pred p;\nsetp.ne.b32 p, %130, 0;\n"
+            "wgmma.mma_async.sync.aligned.m64n256k32.s32.s8.s8 {%0, %1, %2, %3, %4, %5, %6, %7, %8, %9, %10, %11, %12, %13, %14, %15, %16, %17, %18, %19, %20, %21, %22, %23, %24, %25, %26, %27, %28, %29, %30, %31, %32, %33, %34, %35, %36, %37, %38, %39, %40, %41, %42, %43, %44, %45, %46, %47, %48, %49, %50, %51, %52, %53, %54, %55, %56, %57, %58, %59, %60, %61, %62, %63, %64, %65, %66, %67, %68, %69, %70, %71, %72, %73, %74, %75, %76, %77, %78, %79, %80, %81, %82, %83, %84, %85, %86, %87, %88, %89, %90, %91, %92, %93, %94, %95, %96, %97, %98, %99, %100, %101, %102, %103, %104, %105, %106, %107, %108, %109, %110, %111, %112, %113, %114, %115, %116, %117, %118, %119, %120, %121, %122, %123, %124, %125, %126, %127}, %128, %129, p;\n}\n"
+            : "+r"(d[0]), "+r"(d[1]), "+r"(d[2]), "+r"(d[3]), "+r"(d[4]), "+r"(d[5]), "+r"(d[6]), "+r"(d[7]), "+r"(d[8]), "+r"(d[9]), "+r"(d[10]), "+r"(d[11]), "+r"(d[12]), "+r"(d[13]), "+r"(d[14]), "+r"(d[15]), "+r"(d[16]), "+r"(d[17]), "+r"(d[18]), "+r"(d[19]), "+r"(d[20]), "+r"(d[21]), "+r"(d[22]), "+r"(d[23]), "+r"(d[24]), "+r"(d[25]), "+r"(d[26]), "+r"(d[27]), "+r"(d[28]), "+r"(d[29]), "+r"(d[30]), "+r"(d[31]), "+r"(d[32]), "+r"(d[33]), "+r"(d[34]), "+r"(d[35]), "+r"(d[36]), "+r"(d[37]), "+r"(d[38]), "+r"(d[39]), "+r"(d[40]), "+r"(d[41]), "+r"(d[42]), "+r"(d[43]), "+r"(d[44]), "+r"(d[45]), "+r"(d[46]), "+r"(d[47]), "+r"(d[48]), "+r"(d[49]), "+r"(d[50]), "+r"(d[51]), "+r"(d[52]), "+r"(d[53]), "+r"(d[54]), "+r"(d[55]), "+r"(d[56]), "+r"(d[57]), "+r"(d[58]), "+r"(d[59]), "+r"(d[60]), "+r"(d[61]), "+r"(d[62]), "+r"(d[63]), "+r"(d[64]), "+r"(d[65]), "+r"(d[66]), "+r"(d[67]), "+r"(d[68]), "+r"(d[69]), "+r"(d[70]), "+r"(d[71]), "+r"(d[72]), "+r"(d[73]), "+r"(d[74]), "+r"(d[75]), "+r"(d[76]), "+r"(d[77]), "+r"(d[78]), "+r"(d[79]), "+r"(d[80]), "+r"(d[81]), "+r"(d[82]), "+r"(d[83]), "+r"(d[84]), "+r"(d[85]), "+r"(d[86]), "+r"(d[87]), "+r"(d[88]), "+r"(d[89]), "+r"(d[90]), "+r"(d[91]), "+r"(d[92]), "+r"(d[93]), "+r"(d[94]), "+r"(d[95]), "+r"(d[96]), "+r"(d[97]), "+r"(d[98]), "+r"(d[99]), "+r"(d[100]), "+r"(d[101]), "+r"(d[102]), "+r"(d[103]), "+r"(d[104]), "+r"(d[105]), "+r"(d[106]), "+r"(d[107]), "+r"(d[108]), "+r"(d[109]), "+r"(d[110]), "+r"(d[111]), "+r"(d[112]), "+r"(d[113]), "+r"(d[114]), "+r"(d[115]), "+r"(d[116]), "+r"(d[117]), "+r"(d[118]), "+r"(d[119]), "+r"(d[120]), "+r"(d[121]), "+r"(d[122]), "+r"(d[123]), "+r"(d[124]), "+r"(d[125]), "+r"(d[126]), "+r"(d[127])
+            : "l"(da), "l"(db), "r"(sc));
+        }
+        {
+          const uint64_t da = da0 + 2u, db = db0 + 2u;   // +32 bytes of k
+          asm volatile("{\n.reg .pred p;\nsetp.ne.b32 p, %130, 0;\n"
+            "wgmma.mma_async.sync.aligned.m64n256k32.s32.s8.s8 {%0, %1, %2, %3, %4, %5, %6, %7, %8, %9, %10, %11, %12, %13, %14, %15, %16, %17, %18, %19, %20, %21, %22, %23, %24, %25, %26, %27, %28, %29, %30, %31, %32, %33, %34, %35, %36, %37, %38, %39, %40, %41, %42, %43, %44, %45, %46, %47, %48, %49, %50, %51, %52, %53, %54, %55, %56, %57, %58, %59, %60, %61, %62, %63, %64, %65, %66, %67, %68, %69, %70, %71, %72, %73, %74, %75, %76, %77, %78, %79, %80, %81, %82, %83, %84, %85, %86, %87, %88, %89, %90, %91, %92, %93, %94, %95, %96, %97, %98, %99, %100, %101, %102, %103, %104, %105, %106, %107, %108, %109, %110, %111, %112, %113, %114, %115, %116, %117, %118, %119, %120, %121, %122, %123, %124, %125, %126, %127}, %128, %129, p;\n}\n"
+            : "+r"(d[0]), "+r"(d[1]), "+r"(d[2]), "+r"(d[3]), "+r"(d[4]), "+r"(d[5]), "+r"(d[6]), "+r"(d[7]), "+r"(d[8]), "+r"(d[9]), "+r"(d[10]), "+r"(d[11]), "+r"(d[12]), "+r"(d[13]), "+r"(d[14]), "+r"(d[15]), "+r"(d[16]), "+r"(d[17]), "+r"(d[18]), "+r"(d[19]), "+r"(d[20]), "+r"(d[21]), "+r"(d[22]), "+r"(d[23]), "+r"(d[24]), "+r"(d[25]), "+r"(d[26]), "+r"(d[27]), "+r"(d[28]), "+r"(d[29]), "+r"(d[30]), "+r"(d[31]), "+r"(d[32]), "+r"(d[33]), "+r"(d[34]), "+r"(d[35]), "+r"(d[36]), "+r"(d[37]), "+r"(d[38]), "+r"(d[39]), "+r"(d[40]), "+r"(d[41]), "+r"(d[42]), "+r"(d[43]), "+r"(d[44]), "+r"(d[45]), "+r"(d[46]), "+r"(d[47]), "+r"(d[48]), "+r"(d[49]), "+r"(d[50]), "+r"(d[51]), "+r"(d[52]), "+r"(d[53]), "+r"(d[54]), "+r"(d[55]), "+r"(d[56]), "+r"(d[57]), "+r"(d[58]), "+r"(d[59]), "+r"(d[60]), "+r"(d[61]), "+r"(d[62]), "+r"(d[63]), "+r"(d[64]), "+r"(d[65]), "+r"(d[66]), "+r"(d[67]), "+r"(d[68]), "+r"(d[69]), "+r"(d[70]), "+r"(d[71]), "+r"(d[72]), "+r"(d[73]), "+r"(d[74]), "+r"(d[75]), "+r"(d[76]), "+r"(d[77]), "+r"(d[78]), "+r"(d[79]), "+r"(d[80]), "+r"(d[81]), "+r"(d[82]), "+r"(d[83]), "+r"(d[84]), "+r"(d[85]), "+r"(d[86]), "+r"(d[87]), "+r"(d[88]), "+r"(d[89]), "+r"(d[90]), "+r"(d[91]), "+r"(d[92]), "+r"(d[93]), "+r"(d[94]), "+r"(d[95]), "+r"(d[96]), "+r"(d[97]), "+r"(d[98]), "+r"(d[99]), "+r"(d[100]), "+r"(d[101]), "+r"(d[102]), "+r"(d[103]), "+r"(d[104]), "+r"(d[105]), "+r"(d[106]), "+r"(d[107]), "+r"(d[108]), "+r"(d[109]), "+r"(d[110]), "+r"(d[111]), "+r"(d[112]), "+r"(d[113]), "+r"(d[114]), "+r"(d[115]), "+r"(d[116]), "+r"(d[117]), "+r"(d[118]), "+r"(d[119]), "+r"(d[120]), "+r"(d[121]), "+r"(d[122]), "+r"(d[123]), "+r"(d[124]), "+r"(d[125]), "+r"(d[126]), "+r"(d[127])
+            : "l"(da), "l"(db), "r"(1));
+        }
+      }
+      asm volatile("wgmma.commit_group.sync.aligned;" ::: "memory");
+      asm volatile("wgmma.wait_group.sync.aligned 0;" ::: "memory");
+      __syncwarp();
+      if (lane == 0) {
+        // Release both stages. The last of the 12 warps to release one refills it, a ring
+        // ahead: every wgmma that read it has completed (wait_group 0 in each warp, ordered
+        // before its release), so no warp ever waits on another's release.
+#pragma unroll
+        for (uint32_t h = 0; h < 2; h++) {
+          const uint32_t G = g + h, s = G % NST;
+          uint32_t old;
+          // Relaxed, on purpose: an acq_rel atomic here is a MEMBAR.ALL.CTA every chunk, which
+          // cost a probe of this loop 7% (sm90 lane, s90-011 against s90-013). The wgmma reads
+          // it orders after have completed at wait_group 0.
+          asm volatile("atom.relaxed.cta.shared::cta.add.u32 %0, [%1], 1;"
+                       : "=r"(old) : "r"(cnt + 4u * s) : "memory");
+          if (old == NWARPS - 1u) {
+            asm volatile("st.shared.u32 [%0], %1;" ::"r"(cnt + 4u * s), "r"(0u) : "memory");
+            if (G + NST < total) fill(G + NST);
+          }
+        }
+      }
+      g += 2u;
+#pragma unroll
+      for (uint32_t cs = 0; cs < 4u; cs++) {
+        uint32_t x = 0;
+#pragma unroll
+        for (uint32_t i = 0; i < 32u; i++) x ^= (uint32_t)d[32u * cs + i];
+        asm volatile("red.shared.xor.b32 [%0], %1;" ::"r"(trl + cs * 512u + ch * 4u), "r"(x)
+                     : "memory");
+      }
+    }
+    // Tile end: the warpgroup's 64 regions (its own rows) are complete. Each goes to the
+    // slot's buffer at its batch-local number, as GA100's unfused fold stores them, and is
+    // zeroed for the next tile. Regions on rows past the valid ones are not stored.
+    asm volatile("bar.sync %0, 128;" ::"r"(1u + wgi) : "memory");
+    {
+      uint32_t rbg, cbg;
+      tile_coords(v, rbg, cbg);
+      const uint32_t wt = tid & 127u;
+#pragma unroll
+      for (uint32_t i = 0; i < 2u; i++) {
+        const uint32_t u = wt + 128u * i, reg = 64u * wgi + (u >> 2), qq = u & 3u;
+        const uint32_t rrs = reg >> 5, rcs = (reg >> 3) & 3u, rro = (reg >> 2) & 1u, rco = reg & 3u;
+        const uint32_t row_idx = rbg * PEARL_TALL_ROW_OFFSETS + 2u * rrs + rro;
+        const uint32_t col_idx = cbg * PEARL_TALL_COL_OFFSETS + 4u * rcs + rco;
+        const uint32_t a = sTr + reg * 64u + qq * 16u;
+        uint4 w;
+        asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
+                     : "=r"(w.x), "=r"(w.y), "=r"(w.z), "=r"(w.w) : "r"(a) : "memory");
+        asm volatile("st.shared.v4.u32 [%0], {%1,%1,%1,%1};" ::"r"(a), "r"(0u) : "memory");
+        if (row_idx < rows_valid) trg[((size_t)col_idx * rows_valid + row_idx) * 4u + qq] = w;
+      }
+    }
+    asm volatile("bar.sync %0, 128;" ::"r"(1u + wgi) : "memory");
+  }
+#else
+  (void)k_arg; (void)rank_arg; (void)chunks_arg; (void)col_off; (void)rows_valid;
+  (void)col_groups; (void)tiles; (void)band_depth; (void)trg; (void)tmA; (void)tmB;
+#endif
+}
+#endif  // PEARL_HOPPER_WGMMA
 
 // The fold is now a gather. Every product it needs is already in D, so a region
 // costs 32 loads and a warp reduction per chunk instead of 32 dot products.

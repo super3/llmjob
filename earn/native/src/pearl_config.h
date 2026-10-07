@@ -1160,6 +1160,52 @@ typedef struct {
 #ifndef PEARL_TALL_HASH80_IMAD
 #define PEARL_TALL_HASH80_IMAD 1
 #endif
+// Hopper's wgmma fold (pearl_tile_fold_hopper, sm_90a only; work in progress, off by
+// default). mma.sync reaches 66% of H100's int8 tensor rate and the cp.async tall fold about
+// 44% a clock; only wgmma reaches the rest. The tile is the tall fold's, 192 rows by 256
+// columns, so the host's operand draw and tile walk are reused, read through 3-D tensor
+// maps in SWIZZLE_64B boxes of 192 and 256 rows. Three consumer warpgroups, each 64 rows by 256 columns
+// (wgmma m64n256k32, 128 accumulators a thread), read A and B from shared; a chunk is four
+// k32 steps, the accumulators running on from the chunk before (only the tile's first step
+// starts from zero), then each lane XORs its 32 values of each of its four regions and
+// adds that word to shared with red.shared.xor. No producer warp: the last warp to release
+// a stage refills it with TMA, a ring ahead (a 13th warp would cap ptxas at 128 registers,
+// and setmaxnreg does not lift that for allocation in ptxas 12.8). No hash in the fold: at
+// each tile's end each warpgroup copies its 64 regions to the slot's transcript buffer, as
+// GA100's unfused fold does, and pearl_tall_hash80 hashes them. The host picks it when the
+// loaded binary has its body (its 384-thread launch bound) and PEARL_HOPPER_WGMMA is set.
+// The release builds sm_90, not sm_90a, so today it is never in a shipped core.
+//
+// Measured on an H100 NVL (Vast 29785, 400 W), sm_90a build with the switch on, hashrate.js
+// 3 rounds: 393.75 TH/s at 1366 MHz against the cp.async fold's 342.16 at 1590 MHz (+15.1%,
+// ahead in every round); verify-hits 400/400; the CLI mined at 393.2 with 11 shares accepted
+// and none rejected. A wgmma probe of the same loop with a producer warp and two consumer
+// warpgroups on a 128-row tile did ~40% more a clock (kopt sm90 lane, s90-011/013), so the
+// warp roles are the next thing to change.
+#ifndef PEARL_HOPPER_WGMMA
+#define PEARL_HOPPER_WGMMA 0
+#endif
+#if PEARL_HOPPER_WGMMA && defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 900 \
+    && defined(__CUDA_ARCH_FEAT_SM90_ALL)
+#define PEARL_HOPPER_WGMMA_BODY 1
+#else
+#define PEARL_HOPPER_WGMMA_BODY 0
+#endif
+#define PEARL_HOPPER_THREADS 384u
+// Which operand order it reads (host and device): 1, the per-tile order the cp.async fold
+// reads ([tile block][k-block][192 or 256 rows][64]), through tensor maps whose third
+// coordinate is block * k-blocks + k-block; 0, the k-blocked order Blackwell's TMA reads.
+// Both pass verify-hits; per-tile measured 1.0% faster (H100 NVL: 393.75 against 389.86).
+#ifndef PEARL_HOPPER_TILED
+#define PEARL_HOPPER_TILED 1
+#endif
+#ifndef PEARL_HOPPER_STAGES
+#define PEARL_HOPPER_STAGES 6u
+#endif
+// Stages of 64 bytes of k (B's 256 rows, then A's 192), the transcripts (192 regions of
+// 64 bytes), FULL barriers and release counters.
+#define PEARL_HOPPER_SMEM \
+  (PEARL_HOPPER_STAGES * (256u + 192u) * 64u + 192u * 64u + 16u * PEARL_HOPPER_STAGES + 64u)
 #ifndef PEARL_TALL_APT
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 800 && PEARL_TALL_UNFUSED
 #define PEARL_TALL_APT 3u
