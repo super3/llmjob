@@ -2920,8 +2920,7 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
 //     the accounting; the code is under PEARL_TALL_CLUSTER_BODY below.
 // Whether this compile's tall fold reads out with shared-memory XORs (see
 // PEARL_TALL_RED_READOUT): Ada's, Ampere's and Blackwell's builds.
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890 || __CUDA_ARCH__ >= 1200) \
-    && PEARL_TALL_RED_READOUT
+#if defined(__CUDA_ARCH__) && PEARL_TALL_BODY_ARCH(__CUDA_ARCH__) && PEARL_TALL_RED_READOUT
 #define PEARL_TALL_RED_ON 1
 #else
 #define PEARL_TALL_RED_ON 0
@@ -3215,7 +3214,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
   constexpr uint32_t BMID = BSLOTS / 2u * bStep * SK;   // B's pointer, from its slot 0
   // Stage sg of the tile (0 .. 2 * chunks - 1: its slab, or its k-block), slot p, into
   // the buffer at ib.
-#if PEARL_AMPERE_PERSIST_A && defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 860
+#if PEARL_AMPERE_PERSIST_A && defined(__CUDA_ARCH__) && PEARL_AMPERE_ARCH(__CUDA_ARCH__)
   // Ampere: A's copies evict_last, so they land in the persisting L2 slice the host set
   // aside for the band's A' (PEARL_AMPERE_PERSIST_A).
   uint64_t polA;

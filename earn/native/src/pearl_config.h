@@ -376,6 +376,14 @@ typedef struct {
 #endif
 #endif
 
+// The Ampere builds, by __CUDA_ARCH__: GA100 (sm_80: A100, A800, A30, CMP 170HX) and GA10x
+// (sm_86: the RTX 30 cards). Both take the same fold paths and the same host rules
+// (Ctx::foldAmpere). GA100 has GA10x's int8 m16n8k32 and cp.async, twice the int8 tensor
+// rate an SM, a 24-40 MB L2 and 164 KB of shared an SM; a gate that names only one of the
+// two is a measured difference between them. The host reads binaryVersion, which is
+// __CUDA_ARCH__ / 10.
+#define PEARL_AMPERE_ARCH(a) ((a) == 800 || (a) == 860)
+
 // Walk the bands as a serpentine: odd bands take their column groups in
 // reverse, so each band starts on the B columns the one before it ended on.
 //
@@ -399,7 +407,7 @@ typedef struct {
 // one-deep bands re-sweep B every row group, so it may gain there too, but
 // that has not been measured. Device side only.
 #ifndef PEARL_FOLD_SERPENTINE
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
+#if defined(__CUDA_ARCH__) && (PEARL_AMPERE_ARCH(__CUDA_ARCH__) || __CUDA_ARCH__ == 890)
 #define PEARL_FOLD_SERPENTINE 1
 #else
 #define PEARL_FOLD_SERPENTINE 0
@@ -475,7 +483,7 @@ typedef struct {
 // The CTA tile, the stage buffers and the tile walk are the same either way, so
 // the host's grid, shared size and tile count do not change -- only the block.
 // It must launch the one the loaded fold was compiled for, and decides from the
-// binary as for PEARL_FOLD_PERSISTENT (binaryVersion 86 or 89), refusing a fold
+// binary as for PEARL_FOLD_PERSISTENT (binaryVersion 80, 86 or 89), refusing a fold
 // whose launch bound says otherwise. A -DPEARL_FOLD_WIDE_WARPS=0/1 override
 // binds both sides.
 //
@@ -487,7 +495,7 @@ typedef struct {
 #define PEARL_FOLD_WIDE_WARPS_FORCED 1
 #endif
 #ifndef PEARL_FOLD_WIDE_WARPS
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
+#if defined(__CUDA_ARCH__) && (PEARL_AMPERE_ARCH(__CUDA_ARCH__) || __CUDA_ARCH__ == 890)
 #define PEARL_FOLD_WIDE_WARPS 1
 #else
 #define PEARL_FOLD_WIDE_WARPS 0
@@ -764,7 +772,7 @@ typedef struct {
 // cp.async ring, and Blackwell's, which stages with TMA unless PEARL_TALL_TMA is 0.
 // This one list is what the default below, the fold's own #if in pearl_kernel.cu and
 // PEARL_TALL_ARCH all test, so they cannot drift apart.
-#define PEARL_TALL_BODY_ARCH(a) ((a) == 860 || (a) == 890 || (a) >= 1200)
+#define PEARL_TALL_BODY_ARCH(a) (PEARL_AMPERE_ARCH(a) || (a) == 890 || (a) >= 1200)
 #ifdef PEARL_FOLD_TALL
 #define PEARL_FOLD_TALL_FORCED 1
 #endif
@@ -776,8 +784,8 @@ typedef struct {
 #endif
 #endif
 // The same test for the host, by the architecture number it reads back as
-// cudaFuncAttributes::binaryVersion (75, 86, 89, 120: the binary ships sm_75, sm_86,
-// sm_89 and sm_120 SASS and no PTX, so that is exactly the build that runs).
+// cudaFuncAttributes::binaryVersion (75, 80, 86, 89, 120: the binary ships sm_75, sm_80,
+// sm_86, sm_89 and sm_120 SASS and no PTX, so that is exactly the build that runs).
 // binaryVersion is __CUDA_ARCH__ / 10. Turing (75) has no tall fold.
 #define PEARL_TALL_ARCH(v) PEARL_TALL_BODY_ARCH((v) * 10)
 #define PEARL_TALL_TMA_ARCH(v) ((v) >= 120)
@@ -981,7 +989,7 @@ typedef struct {
 #define PEARL_AMPERE_PERSIST_A 1
 #endif
 // Device side: whether THIS compile's tall fold reads its band depth at run time.
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 860
+#if defined(__CUDA_ARCH__) && PEARL_AMPERE_ARCH(__CUDA_ARCH__)
 #define PEARL_TALL_BAND_RT 1
 #else
 #define PEARL_TALL_BAND_RT 0
@@ -1058,7 +1066,7 @@ typedef struct {
 #define PEARL_TALL_HASH_PAIRS 1
 #endif
 #if PEARL_TALL_HASH_PAIRS && defined(__CUDA_ARCH__) \
-    && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890 \
+    && (PEARL_AMPERE_ARCH(__CUDA_ARCH__) || __CUDA_ARCH__ == 890 \
         || (__CUDA_ARCH__ >= 1200 && __CUDACC_VER_MAJOR__ >= 13))
 #define PEARL_TALL_HASH_PAIRS_ON 1
 #else
@@ -1098,7 +1106,7 @@ typedef struct {
 // the RTX 4090 (303.41 -> 303.36) and RTX 4060 Ti (88.55 -> 88.59). A at 2 and B at 7 or
 // 8 measured -0.07 to -0.11% on the 4060, and B at 9 -1.1 to -1.3%.
 #ifndef PEARL_TALL_BPT
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
+#if defined(__CUDA_ARCH__) && (PEARL_AMPERE_ARCH(__CUDA_ARCH__) || __CUDA_ARCH__ == 890)
 #define PEARL_TALL_BPT 7u
 #else
 #define PEARL_TALL_BPT 8u
@@ -1426,7 +1434,7 @@ typedef struct {
 // has not been measured either and keeps the block-wide walk. Device side only
 // -- the host sizes and launches the fold identically either way.
 #ifndef PEARL_FOLD_GROUP_STAGE
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
+#if defined(__CUDA_ARCH__) && (PEARL_AMPERE_ARCH(__CUDA_ARCH__) || __CUDA_ARCH__ == 890)
 #define PEARL_FOLD_GROUP_STAGE 1
 #else
 #define PEARL_FOLD_GROUP_STAGE 0
@@ -1484,7 +1492,7 @@ typedef struct {
 // compiled out its chunk loop is the one it ran before.
 //
 // The host must launch the matching grid, and it decides from the fold binary
-// it actually loaded (cudaFuncAttributes::binaryVersion 86 or 89). Either kind
+// it actually loaded (cudaFuncAttributes::binaryVersion 80, 86 or 89). Either kind
 // of mismatch stays correct -- a persistent build launched one block per tile
 // runs each block once, and a non-persistent one given fewer blocks restages
 // each later tile's chunk 0 -- it is only slower.
@@ -1496,7 +1504,7 @@ typedef struct {
 #define PEARL_FOLD_PERSISTENT_FORCED 1
 #endif
 #ifndef PEARL_FOLD_PERSISTENT
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
+#if defined(__CUDA_ARCH__) && (PEARL_AMPERE_ARCH(__CUDA_ARCH__) || __CUDA_ARCH__ == 890)
 #define PEARL_FOLD_PERSISTENT 1
 #else
 #define PEARL_FOLD_PERSISTENT 0
@@ -1524,7 +1532,7 @@ typedef struct {
 // fold's. Ampere (sm_86) has the same register file and runs it too, not
 // measured. Device side only.
 #ifndef PEARL_FOLD_LANE_BASES
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
+#if defined(__CUDA_ARCH__) && (PEARL_AMPERE_ARCH(__CUDA_ARCH__) || __CUDA_ARCH__ == 890)
 #define PEARL_FOLD_LANE_BASES 1
 #else
 #define PEARL_FOLD_LANE_BASES 0
@@ -1547,7 +1555,7 @@ typedef struct {
 // Goes with PEARL_FOLD_LANE_BASES: Ada measured, Ampere (sm_86) on the same SM
 // layout and not measured. Device side only.
 #ifndef PEARL_FOLD_FAST_COORDS
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
+#if defined(__CUDA_ARCH__) && (PEARL_AMPERE_ARCH(__CUDA_ARCH__) || __CUDA_ARCH__ == 890)
 #define PEARL_FOLD_FAST_COORDS 1
 #else
 #define PEARL_FOLD_FAST_COORDS 0

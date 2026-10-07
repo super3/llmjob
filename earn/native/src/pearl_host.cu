@@ -848,7 +848,8 @@ void resolve_fold(Ctx *ctx) {
   // An Ada-layout build: sm_89, or sm_86 compiled with Ada's switches. The same
   // architectures pearl_config.h's gates spell out; the launch bound check below
   // catches a build whose gates disagree.
-  const bool adaLayout = haveAttrs && (fa.binaryVersion == 86 || fa.binaryVersion == 89);
+  const bool adaLayout =
+      haveAttrs && (PEARL_AMPERE_ARCH(fa.binaryVersion * 10) || fa.binaryVersion == 89);
 #ifdef PEARL_FOLD_PERSISTENT_FORCED
   ctx->foldPersistent = PEARL_FOLD_PERSISTENT != 0;
 #else
@@ -886,7 +887,7 @@ void resolve_fold(Ctx *ctx) {
     // -DPEARL_TALL_CLUSTER=1 builds that TMA fold as a two-CTA cluster; the host pass
     // sees the same value, so the launch shape follows the body.
     ctx->foldCluster = ctx->foldTma && PEARL_TALL_CLUSTER != 0;
-    ctx->foldAmpere = ctx->foldTall && !ctx->foldTma && ft.binaryVersion == 86;
+    ctx->foldAmpere = ctx->foldTall && !ctx->foldTma && PEARL_AMPERE_ARCH(ft.binaryVersion * 10);
   }
   // The fold is compiled for exactly one block size, which is also its launch
   // bound. A disagreement would not fail loudly: a block of the wrong size
@@ -1301,7 +1302,7 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
       ctx->batch = ctx->colBatch * ctx->rowsValid;
     }
   }
-  // Ampere (the sm_86 tall fold): a band of row groups whose A' fits the L2. See
+  // Ampere (the sm_80 and sm_86 tall fold): a band of row groups whose A' fits the L2. See
   // PEARL_AMPERE_BAND_L2_SHARE.
   if (ctx->foldAmpere) {
     // A narrower batch than the profile's (PEARL_AMPERE_COL_BATCH).
