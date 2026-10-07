@@ -2934,6 +2934,14 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
 #define PEARL_TALL_PREGUARD_ON 0
 #endif
 
+// BLAKE3's message permutation, in place. The paired hash below and GA100's hash kernel
+// (pearl_tall_hash80) both use it, so it is defined whatever PEARL_TALL_HASH_PAIRS says.
+#define PEARL_HP_PERM(m)                                                                    \
+  {                                                                                         \
+    const uint32_t p_[16] = {m[2], m[6], m[3],  m[10], m[7],  m[0],  m[4],  m[13],          \
+                             m[1], m[11], m[12], m[5], m[9], m[14], m[15], m[8]};           \
+    _Pragma("unroll") for (int i_ = 0; i_ < 16; i_++) m[i_] = p_[i_];                       \
+  }
 #if PEARL_TALL_HASH_PAIRS_ON
 // Ada's and Ampere's hash, 1.5 regions a lane (PEARL_TALL_HASH_PAIRS). A column slot's
 // 48 regions took two passes of its hasher warp, the second on 16 lanes with the other 16
@@ -2950,12 +2958,6 @@ __device__ __forceinline__ void pearl_hp_g(uint32_t &a, uint32_t &b, uint32_t &c
   c = c + d;
   b = rotr32(b ^ c, 7);
 }
-#define PEARL_HP_PERM(m)                                                                    \
-  {                                                                                         \
-    const uint32_t p_[16] = {m[2], m[6], m[3],  m[10], m[7],  m[0],  m[4],  m[13],          \
-                             m[1], m[11], m[12], m[5], m[9], m[14], m[15], m[8]};           \
-    _Pragma("unroll") for (int i_ = 0; i_ < 16; i_++) m[i_] = p_[i_];                       \
-  }
 // The transcript's top word (pearl_transcript_msw's), one lane a region.
 __device__ __forceinline__ uint32_t pearl_hp_msw(const uint32_t key[8], const uint32_t mm[16],
                                                  int hbe) {
@@ -3978,6 +3980,16 @@ extern "C" __global__ __launch_bounds__(256) void pearl_tall_hash80(
     const uint4 w = __ldcs(tr + (size_t)i * 4u + q);
     tm[4 * q] = w.x; tm[4 * q + 1] = w.y; tm[4 * q + 2] = w.z; tm[4 * q + 3] = w.w;
   }
+#ifdef PEARL_ABLATE_TRANSCRIPT_HASH
+  // Diagnostic only, as in the fused hasher: prices the hashing; no hit is ever reported.
+  // The words feed a test that never passes (hash_big_endian is 0 or 1, and the add is
+  // of zero), so ptxas keeps the loads and only the hash goes.
+  uint32_t x = 0u;
+#pragma unroll
+  for (int j = 0; j < 16; j++) x ^= tm[j];
+  if (test.hash_big_endian == 2 && x == 0u) atomicAdd(hits.count, 0u);
+  return;
+#endif
 #if PEARL_TALL_HASH80_IMAD
   // The adds on the FMA pipe: a multiply by `one`, which ptxas cannot see is 1, turns each
   // into an IMAD, while the XORs and rotates keep the integer pipe. Both pipes are 16

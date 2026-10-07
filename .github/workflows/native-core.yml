@@ -284,12 +284,13 @@ jobs:
       # and 0 spill after any edit). A compiler or gate change that pushes it
       # over spills to local memory, and the kernel still compiles, links and
       # ships; nothing else in CI can see that. This reads what ptxas said
-      # above for both fold kernels on every architecture and prints one row
-      # each. A spill fails the job on the architectures in the entry's
-      # spill_fail_archs: every architecture the 12.8 entries build, since the
-      # check's first run showed them all clean, and sm_120 alone in the cu13
-      # entries, whose sm_89 half nothing ships (see those entries). Any other
-      # architecture is a warning. A failed cu13 job uploads no
+      # above for both fold kernels, and for GA100's transcript hash kernel
+      # (pearl_tall_hash80, an empty body on every other architecture), on
+      # every architecture and prints one row each. A spill fails the job on
+      # the architectures in the entry's spill_fail_archs: every architecture
+      # the 12.8 entries build, since the check's first run showed them all
+      # clean, and sm_120 alone in the cu13 entries, whose sm_89 half nothing
+      # ships (see those entries). Any other architecture is a warning. A failed cu13 job uploads no
       # pearl_core_cu13.node, and a failed ubuntu 12.8 job makes
       # miner-build.yml fall back to the previous run's core, which is the
       # right outcome for a fold that spills. Needs no GPU.
@@ -329,17 +330,19 @@ jobs:
           bad=0
           seen_tall=0
           seen_wmma=0
+          seen_h80=0
           while read -r name arch regs stores loads; do
             case "$name" in
               pearl_tile_fold_tall) seen_tall=1 ;;
               pearl_tile_fold_wmma) seen_wmma=1 ;;
+              pearl_tall_hash80) seen_h80=1 ;;
               *) continue ;;
             esac
             echo "$arch $name: $regs registers, $stores bytes spill stores, $loads bytes spill loads"
             if [ "$stores" != 0 ] || [ "$loads" != 0 ]; then
               case "$fail_archs" in
                 *" $arch "*)
-                  echo "::error::$name spills on $arch ($stores bytes stored, $loads loaded); the fold must fit in 255 registers with 0 spill"
+                  echo "::error::$name spills on $arch ($stores bytes stored, $loads loaded); it must build with 0 spill (the fold in at most 255 registers)"
                   bad=1 ;;
                 *)
                   echo "::warning::$name spills on $arch ($stores bytes stored, $loads loaded); not failing the job, this build is unmeasured (spill_fail_archs: ${{ matrix.spill_fail_archs }})" ;;
@@ -348,8 +351,8 @@ jobs:
           done <<< "$rows"
           # Nothing found is a failure, not a pass: the names changed, or ptxas
           # was not run with -v.
-          if [ "$seen_tall" != 1 ] || [ "$seen_wmma" != 1 ]; then
-            echo "::error::ptxas -v output has no entry for both pearl_tile_fold_tall and pearl_tile_fold_wmma; was pearl_kernel.cu compiled with -Xptxas -v?"
+          if [ "$seen_tall" != 1 ] || [ "$seen_wmma" != 1 ] || [ "$seen_h80" != 1 ]; then
+            echo "::error::ptxas -v output has no entry for one of pearl_tile_fold_tall, pearl_tile_fold_wmma and pearl_tall_hash80; was pearl_kernel.cu compiled with -Xptxas -v?"
             exit 1
           fi
           exit $bad

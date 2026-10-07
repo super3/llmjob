@@ -721,7 +721,41 @@ bool fail(char *err, size_t err_len, const char *msg) {
   return false;
 }
 
-// What one instance of `profile` costs on a card, in bytes.
+uint32_t pearl_ampere_col_batch(uint32_t colBatch, uint32_t colsValid);
+
+// GA100's unfused fold (PEARL_TALL_UNFUSED) writes every region's transcript to a buffer a
+// pipeline slot, 64 bytes a region, for its hash kernel to read. Which fold a card runs
+// is known only once its fold binary has loaded (resolve_fold), so both VRAM checks ask
+// by compute capability: 8.0 is GA100, the only card the release gives sm_80 code. A
+// build that forces another fold onto it is over-counted, which only makes the check
+// stricter.
+static bool unfused_fold_card(int device) {
+  if (!PEARL_TALL_UNFUSED) return false;
+  int major = 0, minor = 0;
+  if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, device) != cudaSuccess
+      || cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, device)
+             != cudaSuccess) {
+    (void)cudaGetLastError();
+    return false;
+  }
+  return major == 8 && minor == 0;
+}
+
+// Those buffers' bytes: the batch width pearl_host_create settles on for Ampere (the
+// profile's col_batch, at most the valid column offsets, then PEARL_AMPERE_COL_BATCH's
+// narrower width) by the valid row offsets, 64 bytes a region, one buffer a slot. 512 MiB
+// at the mainnet geometry.
+static size_t unfused_transcript_bytes(const PearlProfile *profile) {
+  const uint32_t rowsValid = profile->m / PEARL_ROWS_COUNT;
+  const uint32_t colsValid = profile->n / PEARL_COLS_COUNT;
+  uint32_t cb = profile->col_batch ? profile->col_batch : 1u;
+  if (cb > colsValid) cb = colsValid;
+  cb = pearl_ampere_col_batch(cb, colsValid);
+  return (size_t)Ctx::kSlots * cb * rowsValid * 16u * sizeof(uint32_t);
+}
+
+// What one instance of `profile` costs on a card, in bytes. `unfused` is whether the
+// card runs GA100's unfused fold (unfused_fold_card).
 //
 // Two callers ask: the pre-flight in pearl_host_create, and the device choice
 // in pearl_host_select_device. They have to ask the SAME question — a card
@@ -730,7 +764,7 @@ bool fail(char *err, size_t err_len, const char *msg) {
 //
 // The terms moved here wholesale from that pre-flight, comments and all; each
 // one is a thing that was got wrong once.
-size_t needed_bytes(const PearlProfile *profile) {
+size_t needed_bytes(const PearlProfile *profile, bool unfused) {
   const size_t k = profile->k;
   const size_t rank = profile->rank;
   const size_t aBytes = (size_t)profile->m * k;
@@ -744,12 +778,12 @@ size_t needed_bytes(const PearlProfile *profile) {
   // 2 GiB at mainnet on top of the 1 GiB of sources. The noised A has the tall
   // fold's padding rows on the end (PEARL_TALL_A_ROWS): 128 KB at mainnet.
   const size_t primeBytes = (size_t)PEARL_TALL_A_ROWS(profile->m) * k + bBytes;
-  // What a batch costs now: nothing per region. The fold hashes its own
-  // transcripts, so only a hit's transcript, hash and index are stored, in a
-  // fixed PEARL_MAX_HITS list. This term used to be a transcript PER REGION --
-  // 1 GiB at the mainnet geometry -- and it stayed here after the buffer went,
-  // so a card whose free VRAM the local LLM had taken could be refused for a
-  // gigabyte the miner no longer asks for.
+  // What a batch costs now: nothing per region, except on GA100 (trBytes below).
+  // The fold hashes its own transcripts, so only a hit's transcript, hash and
+  // index are stored, in a fixed PEARL_MAX_HITS list. This term used to be a
+  // transcript PER REGION -- 1 GiB at the mainnet geometry -- and it stayed here
+  // after the buffer went, so a card whose free VRAM the local LLM had taken could
+  // be refused for a gigabyte the miner no longer asks for.
   // One hit list per pipeline slot (Ctx::kSlots).
   const size_t batchBytes =
       (size_t)Ctx::kSlots * PEARL_MAX_HITS
@@ -760,9 +794,21 @@ size_t needed_bytes(const PearlProfile *profile) {
   const size_t aLeaves = aBytes / 1024, bLeaves = bBytes / 1024;
   const size_t treeBytes = 2 * (aLeaves + bLeaves) * 32
                            + (aLeaves > bLeaves ? aLeaves : bLeaves) * 32;
-  return aStored + bStored + primeBytes + noiseBytes + batchBytes + treeBytes + (1u << 20);
+  // GA100's unfused fold does keep a transcript a region, in a buffer a slot, for the
+  // hash kernel that follows it (unfused_transcript_bytes). Left out, the pre-flight
+  // passed a card that then failed on these buffers, the last allocation create makes.
+  const size_t trBytes = unfused ? unfused_transcript_bytes(profile) : 0;
+  return aStored + bStored + primeBytes + noiseBytes + batchBytes + treeBytes + trBytes
+         + (1u << 20);
 }
 
+// pearl_host_create's check on each allocation, and the only place that uses it (after
+// `ctx` exists). A failure frees what the context already holds: pearl_host_destroy takes
+// a partly built one, since every member starts null. Without it those buffers stayed
+// held until the process exited, and the restart's pre-flight refused the card for them.
+// The failed call's error is cleared too, so nothing later on this thread reads it as its
+// own.
+extern "C" void pearl_host_destroy(void *handle);
 #define CUDA_OK(expr, msg)                                   \
   do {                                                       \
     cudaError_t _e = (expr);                                 \
@@ -770,6 +816,8 @@ size_t needed_bytes(const PearlProfile *profile) {
       if (err && err_len)                                    \
         snprintf(err, err_len, "%s: %s", msg,                \
                  cudaGetErrorString(_e));                    \
+      pearl_host_destroy(ctx);                               \
+      (void)cudaGetLastError();                              \
       return nullptr;                                        \
     }                                                        \
   } while (0)
@@ -1069,11 +1117,11 @@ extern "C" int pearl_host_select_device(const PearlProfile *profile, int request
     }
     chosen = requested;
   } else {
-    const size_t need = needed_bytes(profile);
     double bestScore = -1.0;
     for (int d = 0; d < devices; d++) {
       cudaDeviceProp prop;
       if (cudaGetDeviceProperties(&prop, d) != cudaSuccess) continue;
+      const size_t need = needed_bytes(profile, unfused_fold_card(d));
       // A card in an exclusive or prohibited compute mode cannot take our
       // context at all; choosing it would fail the whole start on a rig that
       // has a perfectly good second card.
@@ -1150,7 +1198,9 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   const size_t rank = profile->rank;
   const size_t aBytes = (size_t)profile->m * k;
   const size_t bBytes = (size_t)profile->n * k;
-  const size_t need = needed_bytes(profile);
+  int current = 0;
+  if (cudaGetDevice(&current) != cudaSuccess) current = 0;
+  const size_t need = needed_bytes(profile, unfused_fold_card(current));
 
   // Check the budget BEFORE allocating, so an 8 GB card gets a sentence it can
   // act on instead of an out-of-memory abort three kernels deep. This reads the
@@ -1235,7 +1285,9 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   // The same fate befell the per-region transcript buffer: the fold hashes its
   // own transcripts now, so only a hit's transcript is ever stored -- 64 slots
   // of 64 bytes where the batch used to take 64 bytes a region, 1 GiB at the
-  // mainnet geometry.
+  // mainnet geometry. GA100 is the exception: its unfused fold leaves the hashing
+  // to a kernel of its own, so it keeps 64 bytes a region again, in a buffer a
+  // slot (dTrG, allocated once the width is final; needed_bytes counts it).
   // One hit list per pipeline slot: a batch's hits must survive until the host reads
   // them, which is after the next batch has been queued.
   const size_t S = Ctx::kSlots;
@@ -1357,7 +1409,8 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
 #endif
   }
   // GA100's unfused fold: a transcript buffer a slot, 64 bytes a region of the batch
-  // (PEARL_TALL_UNFUSED). The batch width is final here.
+  // (PEARL_TALL_UNFUSED). The batch width is final here. The pre-flight counted these
+  // (unfused_transcript_bytes); if they still do not fit, CUDA_OK frees the rest.
   if (ctx->foldUnfused) {
     static_assert(Ctx::kSlots == 2, "one transcript buffer a pipeline slot");
     for (int s = 0; s < Ctx::kSlots; s++)
