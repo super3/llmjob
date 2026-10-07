@@ -1088,7 +1088,11 @@ typedef struct {
 #define PEARL_TALL_PREGUARD 1
 #endif
 #ifndef PEARL_TALL_APT
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 800
+#define PEARL_TALL_APT 2u
+#else
 #define PEARL_TALL_APT 3u
+#endif
 #endif
 // Ampere (sm_86) issues B's copies one m16 tile earlier, after tile 1 of k-step 1. With
 // the shared-XOR readout (PEARL_TALL_RED_READOUT), against A at 3 and B at 8, hashrate.js,
@@ -1105,8 +1109,21 @@ typedef struct {
 // (+0.16%, 3 rounds), RTX 4070 Ti (Delaware) 156.35 -> 156.59 (+0.15%, 4 rounds); level on
 // the RTX 4090 (303.41 -> 303.36) and RTX 4060 Ti (88.55 -> 88.59). A at 2 and B at 7 or
 // 8 measured -0.07 to -0.11% on the 4060, and B at 9 -1.1 to -1.3%.
+//
+// GA100 (sm_80) issues A's copies after m16 tile 2 of k-step 0 and B's after tile 0 of
+// k-step 1 (A at 2, B at 6). Against sm_86's 3 and 7, hashrate.js, 3 rounds, ahead in every
+// round, 400/400 hits: A100 PCIe 40 GB (250 W) 189.59 -> 202.32 TH/s (+6.71%), and 192.86 ->
+// 206.28 (+6.96%) in a second session; A100 SXM4 40 GB (400 W, base at its 1410 MHz clock
+// limit) 220.26 -> 240.50 (+9.19%); A30 (164 W) 97.31 -> 104.70 (+7.59%). A pool run on the
+// A100 PCIe accepted 6 of 6 shares. In cycles a tile (ideal 49,152 at GA100's 2048 MAC/clk/SM)
+// 70,300 -> 63,600-65,400, from 70% to 75-77% of the tensor peak a clock. B at 6 is what
+// counts: A at 3 or 1 with B at 6 measured +5.8% and +4.4%; B at 7, 8 or 9 with any A, and A at
+// 2 with B at 5, measured no better than 3 and 7 (A 2, B 5 saves 4.7% of cycles and gives it
+// all back in clock at the power cap).
 #ifndef PEARL_TALL_BPT
-#if defined(__CUDA_ARCH__) && (PEARL_AMPERE_ARCH(__CUDA_ARCH__) || __CUDA_ARCH__ == 890)
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 800
+#define PEARL_TALL_BPT 6u
+#elif defined(__CUDA_ARCH__) && (PEARL_AMPERE_ARCH(__CUDA_ARCH__) || __CUDA_ARCH__ == 890)
 #define PEARL_TALL_BPT 7u
 #else
 #define PEARL_TALL_BPT 8u
