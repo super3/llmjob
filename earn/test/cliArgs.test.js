@@ -320,8 +320,21 @@ describe('--gate-quiet', () => {
 describe('--mine-mem-clock', () => {
   const errs = () => [];
 
-  test('is off unless asked for', () => {
+  // Null is "not given": the RTX 5090 default then applies (shared/memClock).
+  test('is null unless given', () => {
     expect(buildSettings({}, errs(), true, false).mineMemClockMhz).toBeNull();
+  });
+
+  // The way to turn the RTX 5090 default off. An empty value is not 0: a
+  // flight sheet with `--mine-mem-clock ""` has lost its number, not asked for
+  // the driver's clock.
+  test('0 means leave the driver\'s clock, and only a real 0 does', () => {
+    expect(buildSettings({ '--mine-mem-clock': '0' }, errs(), true, false).mineMemClockMhz).toBe(0);
+    expect(buildSettings({ '--mine-mem-clock': ' 0 ' }, errs(), true, false).mineMemClockMhz).toBe(0);
+    expect(parseCliArgs(['-a', ADDR, '--mine-mem-clock=0']).settings.mineMemClockMhz).toBe(0);
+    const errors = [];
+    expect(buildSettings({ '--mine-mem-clock': '' }, errors, true, false).mineMemClockMhz).toBeNull();
+    expect(errors).toContain('invalid --mine-mem-clock:  (must be 0, or a whole number of MHz, 100-30000)');
   });
 
   test('carries a clock in MHz through', () => {
@@ -332,10 +345,10 @@ describe('--mine-mem-clock', () => {
   // The range catches the unit mistakes: `7` meaning 7 GHz, `7001000` meaning
   // kHz. Either would go straight to nvidia-smi as a clock no card runs at.
   test('rejects anything that is not a plausible whole number of MHz', () => {
-    for (const bad of ['', '7', '99', '30001', '7001000', '7001.5', '-7001', 'fast']) {
+    for (const bad of ['', ' ', '7', '99', '30001', '7001000', '7001.5', '-7001', 'fast']) {
       const errors = [];
       const s = buildSettings({ '--mine-mem-clock': bad }, errors, true, false);
-      expect(errors).toContain('invalid --mine-mem-clock: ' + bad + ' (must be a whole number of MHz, 100-30000)');
+      expect(errors).toContain('invalid --mine-mem-clock: ' + bad + ' (must be 0, or a whole number of MHz, 100-30000)');
       expect(s.mineMemClockMhz).toBeNull();
     }
   });
@@ -352,11 +365,16 @@ describe('--mine-mem-clock', () => {
   });
 
   // The flag's help has to carry the reason to use it, the value to use, and
-  // what it needs -- nobody reads a README before a flight sheet.
-  test('is documented with the number, the recommendation and the requirement', () => {
+  // what it needs -- nobody reads a README before a flight sheet. Now that it
+  // is on by default on the RTX 5090 it also has to say so, say how to turn it
+  // off, and not claim a measurement for any card but the one measured.
+  test('is documented with the number, the default, the off switch and the requirement', () => {
     expect(VALUE_FLAGS.has('--mine-mem-clock')).toBe(true);
     expect(USAGE).toContain('--mine-mem-clock <MHz>');
     expect(USAGE).toContain('7001');
     expect(USAGE).toContain('NOPASSWD');
+    expect(USAGE).toMatch(/Default: 7001 on the RTX 5090/);
+    expect(USAGE).toMatch(/0 leaves/);
+    expect(USAGE).toMatch(/Only the\s+5090 has been measured/);
   });
 });

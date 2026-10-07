@@ -102,6 +102,18 @@ the network board show one row per card.
 A card that can't start is skipped, not fatal — the usual reason is the local LLM
 holding most of that card's VRAM. The rest of the rig keeps mining.
 
+A card that stops mid-run (a CUDA error such as `misaligned address`) is opened
+again 30 seconds later, on salts it hasn't searched, so it can't resend shares the
+pool already has. If it stops again within 10 minutes of each of 3 restarts in a
+row, it's left off until mining is restarted. That usually means an unstable
+overclock or a card that is failing.
+
+```
+GPU 1 (NVIDIA GeForce RTX 4070) stopped: CUDA error during search: an illegal instruction was encountered
+restarting GPU 1 (NVIDIA GeForce RTX 4070) in 30 s
+mining on GPU 1 · NVIDIA GeForce RTX 4070
+```
+
 Both shells set `CUDA_DEVICE_ORDER=PCI_BUS_ID` at startup, so "GPU 1" means the
 same card to the miner as it does to `nvidia-smi`. Left to itself the CUDA
 runtime numbers cards by its own "fastest first" heuristic, which on a mixed rig
@@ -126,7 +138,15 @@ A release ships two builds of the mining core side by side, in the installer's
 | File | Toolkit | Cards |
 |---|---|---|
 | `pearl_core.node` | CUDA 12.8 | RTX 20, 30, 40 and 50 (sm_75/86/89/120) — every rig |
-| `pearl_core_cu13.node` | CUDA 13.3 | RTX 50 / Blackwell only (sm_120) |
+| `pearl_core_cu13.node` | CUDA 13.3 | sm_89 and sm_120; picked automatically for RTX 50 / Blackwell only (the sm_89 half measured no faster on a 4090) |
+
+**RTX 30 (Ampere) note.** The sm_86 half of `pearl_core.node` now runs the same
+fold path as an RTX 40 (the persistent, eight-warp, tall fold). Its hits check
+out (the sm_86 code, run on a 4090), but it has not been run on an Ampere card:
+there is no hashrate figure for it, and the previous Ampere path is no longer
+in this build. If a 3090 mines slower on this release,
+`PEARL_CORE_PATH=<path to the previous release's pearl_core.node>` loads the old
+core unchanged, and a report with both numbers is what settles it.
 
 The CUDA 13 compiler produces faster code for Blackwell: on an RTX 5090 at
 600 W the same source ran 107.27 TH/s built with CUDA 13.3 against 103.97 with
@@ -141,7 +161,8 @@ start:
 
 ```
 Pearl core: CUDA 13 build · driver 610, mining card is compute 12.0
-Pearl core: CUDA 12.8 build · GPU 1 is compute 8.9 (the CUDA 13 build is compute 12.x only)
+Pearl core: CUDA 12.8 build · GPU 1 is compute 8.9 (the CUDA 13 build has code for it but measured no faster on a 4090)
+Pearl core: CUDA 12.8 build · GPU 0 is compute 8.6 (the CUDA 13 build has no code for it)
 ```
 
 To override it, set `PEARL_CORE_VARIANT=cu12` or `cu13`, which forces that
@@ -393,7 +414,7 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
       --backend <name>     Force an engine backend (e.g. ampere)
   -b, --binary <path>      Use this alpha-miner binary instead of downloading one
       --engine-dir <path>  Where to cache the downloaded engine
-      --mine-mem-clock <MHz>  Lock each mining GPU's memory clock while it mines (see below)
+      --mine-mem-clock <MHz>  Lock each mining GPU's memory clock while it mines (default: 7001 on the RTX 5090, see below; 0 turns it off)
       --no-report          Do not publish live status to the public network board
       --no-update          Do not auto-update the CLI to a newer release on start
   -h, --help / -v, --version
@@ -450,14 +471,35 @@ same card in early September, before its power draw rose, 7001 MHz measured a
 tie (native/probes/README.md). Measure your own card before and after.
 
 ```bash
-llmjob-earn-cli --address prl1p… --mode mining --mine-mem-clock 7001
+llmjob-earn-cli --address prl1p… --mode mining                        # RTX 5090: 7001 by default
+llmjob-earn-cli --address prl1p… --mode mining --mine-mem-clock 7001  # any card: lock at 7001
+llmjob-earn-cli --address prl1p… --mode mining --mine-mem-clock 0     # leave the driver's clock
 ```
 
-- **Off by default.** Nothing touches the clocks unless you pass the flag.
+- **On by default on the RTX 5090.** A mining RTX 5090 is locked at 7001 MHz,
+  in the CLI and in the desktop app. It is the only card measured. Other
+  Blackwell cards (the rest of the RTX 50 line, RTX PRO Blackwell) may gain the
+  same way, since they share the hard power cap and the power-bound fold, but
+  they stay at the driver's clock until one has been measured. Pass the flag to
+  lock any card.
+- **`--mine-mem-clock 0` turns it off** in the CLI. Any other value replaces the
+  default on every mining card. The desktop app has no setting for it in its
+  window yet; its switch is the environment variable `LLMJOB_MINE_MEM_CLOCK`,
+  which takes the same values (`0` leaves the driver's clock, any other value
+  locks every mining card at it) and is read on every start. Set it the way you
+  set any variable for the app: in the shell that launches it on Linux, or in
+  Windows' system environment variables. A bad value is ignored with a warning
+  in the log and the default stands. Without it an RTX 5090 mining alone is
+  locked whenever the app has the rights to set clocks, and the log says so.
+- **Skipped while an LLM co-runs.** `llama-server` is memory-bandwidth-bound, so
+  a card that serves a model alongside mining keeps the driver's clock. Demand
+  mode releases the lock before the model starts, so it keeps the default.
 - **Needs root.** Setting clocks does, so either run the CLI as root or give its
   user a sudoers rule for `nvidia-smi`. The CLI calls it through `sudo -n`, which
-  never waits for a password. Without either, it logs one warning per card and
-  mines at the default clock.
+  never waits for a password. The desktop app needs the same: root or that rule
+  on Linux, and on Windows it must run as administrator. Without them, it mines
+  at the driver's clock: the default lock says so in one info line per card, a
+  requested one in a warning.
 
   ```
   # visudo -f /etc/sudoers.d/llmjob-earn   (path from `command -v nvidia-smi`)
@@ -465,11 +507,14 @@ llmjob-earn-cli --address prl1p… --mode mining --mine-mem-clock 7001
   ```
 
 - **Released whenever the miner stops**, before anything else happens: on
-  shutdown, and in demand-driven `auto` before the LLM starts. LLM decode is
-  memory-bandwidth-bound, so a model is never served from a locked card. When
-  `auto` co-runs the LLM with the miner, the flag is ignored and the log says so.
-- **A hard kill can't release it.** After a SIGKILL or a crash, run
-  `sudo nvidia-smi -i <index> -rmc` (a reboot clears it too).
+  shutdown, and in demand-driven `auto` before the LLM starts. The desktop app
+  also releases it the moment START LLM joins a running miner, before the model
+  loads. LLM decode is memory-bandwidth-bound, so a model is never served from a
+  locked card. When `auto` co-runs the LLM with the miner, neither the default
+  nor the flag is applied, and the log says so.
+- **A hard kill can't release it.** After a SIGKILL or a crash, in either shell,
+  run `sudo nvidia-smi -i <index> -rmc` (on Windows `nvidia-smi -i <index> -rmc`
+  as administrator; a reboot clears it too).
 
 ## Develop
 

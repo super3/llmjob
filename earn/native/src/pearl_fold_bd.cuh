@@ -52,14 +52,20 @@
 // anyway (238 registers). PEARL_BD_GROUPS 1: the whole block stages A and
 // meets at one __syncthreads.
 //
-// Not persistent: the host launches one block per tile. A smaller grid still
-// works (each block walks tiles a grid apart and restages chunk 0 of each).
+// Persistent (PEARL_BD_PERSIST, see pearl_config.h): one block an SM, tiles
+// handed out by a counter. With PEARL_BD_PERSIST=0 the host launches one block
+// per tile; a smaller grid still works then (each block walks tiles a grid
+// apart and restages chunk 0 of each).
 //
 // The ablation macros price here what they price in the other folds, where
 // they apply: PEARL_ABLATE_BARRIER (the barrier a chunk), _STAGING (A's copies
 // in the chunk loop), _LDMATRIX (A's), _TRANSCRIPT, _READOUT and
 // _TRANSCRIPT_HASH. PEARL_ABLATE_BLOAD is this fold's own: B is loaded once a
-// tile instead of every k-step, so the mma stay and the B traffic goes. The
+// tile instead of every k-step, so the mma stay and the B traffic goes. So are
+// _BSHARE (the second warp of a scheduler reads other B lines than the first),
+// _BHIT (every B load after the first two an L1 hit) and _AHIT (every A load an
+// L2 hit). On an RTX 2060 (bench, against the same build): -11%, +12%, +3%: the
+// two warps do share B in L1, and B's L2 latency is the largest cost left. The
 // other folds' feature switches below are not built here, so asking for one is
 // an error rather than a build that ignores it.
 
@@ -124,19 +130,37 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
   const uint32_t row_blocks = rows_valid / regions_per_warp;
   const uint32_t row_block_groups = row_blocks / 2u;
   const uint32_t col_block_groups = tiles / row_block_groups;
-  const uint32_t band_blocks = PEARL_BLOCK_GROUP * col_block_groups;
   // The other folds' general walk (see PEARL_BLOCK_GROUP): bands of row groups,
-  // a band's rows first.
+  // a band's rows first, the band as deep as this card's L2 suits: the host
+  // leaves it PEARL_BD_BAND_WORD words past the hit counter (PEARL_BD_L2_SHARE).
+  const uint32_t band_depth = __ldg(hits.count + PEARL_BD_BAND_WORD);
+#if PEARL_BD_WALK == 1
+  // Column bands instead (PEARL_BD_WALK 1): band_depth column groups of B stay
+  // in L2 while every row group's A streams past them, a band's columns first.
+  const uint32_t band_tiles = band_depth * row_block_groups;
+  auto tile_coords = [&](uint32_t v, uint32_t &rbg_, uint32_t &cbg_) {
+    const uint32_t band = v / band_tiles;
+    const uint32_t in_band = v % band_tiles;
+    const uint32_t band_first = band * band_depth;
+    const uint32_t band_cols = col_block_groups - band_first < band_depth
+                                   ? col_block_groups - band_first
+                                   : band_depth;
+    cbg_ = band_first + in_band % band_cols;
+    rbg_ = in_band / band_cols;
+  };
+#else
+  const uint32_t band_blocks = band_depth * col_block_groups;
   auto tile_coords = [&](uint32_t v, uint32_t &rbg_, uint32_t &cbg_) {
     const uint32_t band = v / band_blocks;
     const uint32_t in_band = v % band_blocks;
-    const uint32_t band_first = band * PEARL_BLOCK_GROUP;
-    const uint32_t band_rows = row_block_groups - band_first < PEARL_BLOCK_GROUP
+    const uint32_t band_first = band * band_depth;
+    const uint32_t band_rows = row_block_groups - band_first < band_depth
                                    ? row_block_groups - band_first
-                                   : PEARL_BLOCK_GROUP;
+                                   : band_depth;
     rbg_ = band_first + in_band % band_rows;
     cbg_ = in_band / band_rows;
   };
+#endif
 
   extern __shared__ __align__(128) uint32_t smem_u32[];
   const uint32_t sA = (uint32_t)__cvta_generic_to_shared(smem_u32);
@@ -216,34 +240,91 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
   };
   auto readout = [&](uint32_t rl, uint32_t c) { readout_st(rl, c, readout_x(rl)); };
 
-  for (uint32_t v = blockIdx.x; v < tiles; v += gridDim.x) {
-    uint32_t rbg, cbg;
-    tile_coords(v, rbg, cbg);
-    const int8_t *asrc = Aprime + (size_t)(rbg * ROWS + srow0) * k + sq * 16u;
-    const int8_t *bsrc =
-        Bprime + (size_t)(col_off + cbg * 16u + wc * 4u) * FRAG_BLOCK + lane * 16u;
-
-    // Chunk 0 of A into stage 0, and k-step 0 of B into registers. Stage 0 was
-    // last read in the previous tile's chunk 14, before that chunk's barrier.
+  auto a_src = [&](uint32_t rbg_) {
+    return Aprime + (size_t)(rbg_ * ROWS + srow0) * k + sq * 16u;
+  };
+  auto b_src = [&](uint32_t cbg_) {
+#ifdef PEARL_ABLATE_BSHARE
+    // Diagnostic only: row slot 1 reads another column group's B, so the two
+    // warps of a scheduler never share a line in L1. Output is meaningless.
+    cbg_ = wr ? cbg_ ^ 1u : cbg_;
+#endif
+    return Bprime + (size_t)(col_off + cbg_ * 16u + wc * 4u) * FRAG_BLOCK + lane * 16u;
+  };
+  // Chunk 0 of A into stage 0, and k-step 0 of B into registers. Stage 0 was
+  // last read in the previous tile's chunk 14, before that chunk's barrier.
+  auto tile_prologue = [&](const int8_t *asrc_, const int8_t *bsrc_, int4 (&bf_)[2][4]) {
     {
       int4 ra[ASLOTS];
 #pragma unroll
-      for (uint32_t p = 0; p < ASLOTS; p++) ra[p] = pearl_bd_lda(asrc + p * SSTEP * k);
+      for (uint32_t p = 0; p < ASLOTS; p++) ra[p] = pearl_bd_lda(asrc_ + p * SSTEP * k);
 #pragma unroll
       for (uint32_t p = 0; p < ASLOTS; p++) pearl_st_shared_v4(adst0 + p * SSTEP * 128u, ra[p]);
     }
-    int4 bf[2][4];
 #pragma unroll
     for (uint32_t j = 0; j < 4u; j++)
-      bf[0][j] = __ldg(reinterpret_cast<const int4 *>(bsrc + j * FRAG_BLOCK));
+      bf_[0][j] = __ldg(reinterpret_cast<const int4 *>(bsrc_ + j * FRAG_BLOCK));
 #ifdef PEARL_ABLATE_BLOAD
     // Diagnostic only: k-step 1's B too, once a tile. The k-steps below load no
     // B and alternate between these two, so both stay live all tile, as the
     // two buffers do when they load. Output is meaningless.
 #pragma unroll
     for (uint32_t j = 0; j < 4u; j++)
-      bf[1][j] = __ldg(reinterpret_cast<const int4 *>(bsrc + j * FRAG_BLOCK + 512u));
+      bf_[1][j] = __ldg(reinterpret_cast<const int4 *>(bsrc_ + j * FRAG_BLOCK + 512u));
 #endif
+  };
+
+#if PEARL_BD_PERSIST
+  // Persistent (PEARL_BD_PERSIST): block b starts on tile b and takes every
+  // later tile from the slot's counter, PEARL_BD_CTR_SLOTS words past its hit
+  // counter, which the host zeroes before the launch. Thread 0 takes the tile
+  // after next at the start of each tile and writes it to shared just before
+  // the tile's hand-off __syncthreads, which publishes it. The first tile's
+  // chunk 0 is loaded here, every later one's under the last chunk of the tile
+  // before it.
+  if (blockIdx.x >= tiles) return;
+  uint32_t *const tile_ctr = hits.count + PEARL_BD_CTR_SLOTS;
+  __shared__ uint32_t sNext[2];
+  if (threadIdx.x == 0u) sNext[0] = gridDim.x + atomicAdd(tile_ctr, 1u);
+  int4 bf[2][4];
+  {
+    uint32_t rbg0, cbg0;
+    tile_coords(blockIdx.x, rbg0, cbg0);
+    tile_prologue(a_src(rbg0), b_src(cbg0), bf);
+  }
+  __syncthreads();
+  uint32_t it = 0u;
+  for (uint32_t v = blockIdx.x; v < tiles; it++) {
+    const uint32_t vnext = sNext[it & 1u];
+    // The tile after next: asked for now, written to shared only before the
+    // hand-off, so the atomic's round trip hides under the tile. (Written at
+    // once it held warp 0 for the round trip every tile: -2.6% on a 2070.)
+    uint32_t vgrab = 0u;
+    if (threadIdx.x == 0u) vgrab = gridDim.x + atomicAdd(tile_ctr, 1u);
+    uint32_t rbg, cbg;
+    tile_coords(v, rbg, cbg);
+    const int8_t *asrc = a_src(rbg);
+    const int8_t *bsrc = b_src(cbg);
+    // The next tile's sources, as 32-bit offsets from this tile's (A' and B'
+    // are each under 2 GB); the last tile reloads its own, which nothing reads.
+    uint32_t rbgn, cbgn;
+    tile_coords(vnext < tiles ? vnext : v, rbgn, cbgn);
+    const int32_t adn = (int32_t)(rbgn * ROWS * k) - (int32_t)(rbg * ROWS * k);
+    const int32_t bdn = (int32_t)(cbgn * 16u * FRAG_BLOCK) - (int32_t)(cbg * 16u * FRAG_BLOCK);
+#pragma unroll
+    for (uint32_t mb = 0; mb < MB; mb++)
+#pragma unroll
+      for (uint32_t nb = 0; nb < NB; nb++)
+#pragma unroll
+        for (uint32_t i = 0; i < 4; i++) acc[mb][nb][i] = 0;
+#else
+  for (uint32_t v = blockIdx.x; v < tiles; v += gridDim.x) {
+    uint32_t rbg, cbg;
+    tile_coords(v, rbg, cbg);
+    const int8_t *asrc = a_src(rbg);
+    const int8_t *bsrc = b_src(cbg);
+    int4 bf[2][4];
+    tile_prologue(asrc, bsrc, bf);
 #pragma unroll
     for (uint32_t mb = 0; mb < MB; mb++)
 #pragma unroll
@@ -251,6 +332,7 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #pragma unroll
         for (uint32_t i = 0; i < 4; i++) acc[mb][nb][i] = 0;
     PEARL_BD_BAR();
+#endif
 
     int4 ra[ASLOTS];
     // K-step 0 of the next chunk's A, loaded at the seam (see the top).
@@ -272,17 +354,42 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
       // loads stay: they feed the mma, like the other folds' ldmatrix. Output
       // is meaningless.
       if (t == 0u) {
+#if PEARL_BD_PERSIST
+        // Under the last chunk, the next tile's chunk 0 (a select, not a branch).
+        const int8_t *an = asrc + (ch + 1u < chunks ? (int32_t)((ch + 1u) * rank) : adn);
+#else
+        const int8_t *an = asrc + ((ch + 1u) % chunks) * rank;
+#endif
+#ifdef PEARL_ABLATE_AHIT
+        // Diagnostic only: always chunk 1 of this tile's A, so the staging
+        // loads all hit L2. Output is meaningless.
+        (void)an;
 #pragma unroll
-        for (uint32_t p = 0; p < ASLOTS; p++)
-          ra[p] = pearl_bd_lda(asrc + ((ch + 1u) % chunks) * rank + p * SSTEP * k);
+        for (uint32_t p = 0; p < ASLOTS; p++) ra[p] = pearl_bd_lda(asrc + rank + p * SSTEP * k);
+#else
+#pragma unroll
+        for (uint32_t p = 0; p < ASLOTS; p++) ra[p] = pearl_bd_lda(an + p * SSTEP * k);
+#endif
       }
 #endif
 #ifndef PEARL_ABLATE_BLOAD
       {
+#ifdef PEARL_ABLATE_BHIT
+        // Diagnostic only: B for k-steps 0 and 1 over and over, so every B load
+        // after the first two hits L1. Output is meaningless.
+        const uint32_t s1 = (s + 1u) & 1u;
+#else
         const uint32_t s1 = (s + 1u) % (chunks * KSTEPS);
+#endif
+#if PEARL_BD_PERSIST
+        // Past the last k-step, the next tile's k-step 0.
+        const int8_t *bs = bsrc + (s + 1u < chunks * KSTEPS ? 0 : bdn);
+#else
+        const int8_t *bs = bsrc;
+#endif
 #pragma unroll
         for (uint32_t j = 0; j < 4u; j++)
-          bf[(t + 1u) & 1u][j] = pearl_bd_ldg(bsrc + j * FRAG_BLOCK + s1 * 512u);
+          bf[(t + 1u) & 1u][j] = pearl_bd_ldg(bs + j * FRAG_BLOCK + s1 * 512u);
       }
 #else
       // Diagnostic only when defined: no B loads in the chunk loop (see the
@@ -366,7 +473,9 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #endif
       kstep(chunk + 1u, 1u, true, false, false);
     }
-    kstep(chunks - 1u, 2u, false, false, false);
+    // Persistent: k-step 2 of the last chunk stores the next tile's chunk 0 into
+    // stage 0, which chunk 14 last read before its barrier.
+    kstep(chunks - 1u, 2u, PEARL_BD_PERSIST != 0, false, false);
     kstep(chunks - 1u, 3u, false, false, false);
     // The last chunk's readout; with PEARL_ABLATE_READOUT the tile's only one,
     // so the accumulators stay live.
@@ -377,8 +486,20 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     // takes region L of the group's 64 (the block's 128), the same arithmetic
     // its warp used to write it. The next tile writes these words again only
     // after its first barrier, which the hashers reach after reading them.
+    // Persistent: the whole block meets here, which also publishes the next
+    // tile's chunk 0 and the tile after it (sNext).
+#if PEARL_BD_PERSIST
+    if (threadIdx.x == 0u) sNext[(it + 1u) & 1u] = vgrab;
+    __syncthreads();
+#else
     PEARL_BD_BAR();
-#if PEARL_BD_GROUPS == 2
+#endif
+#if PEARL_BD_GROUPS == 2 && PEARL_BD_PERSIST
+    // The first group hashes on schedulers 0-1 and the second on 2-3, so each
+    // scheduler keeps one warp on the next tile's chunk 0.
+    const bool hasher = wr ? sid >= 64u : sid < 64u;
+    const uint32_t L = wr * 64u + (sid & 63u);
+#elif PEARL_BD_GROUPS == 2
     const bool hasher = sid < 64u;
     const uint32_t L = wr * 64u + sid;
 #else
@@ -414,6 +535,9 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
         for (int i = 0; i < 16; i++) hits.transcript[slot * 16u + i] = tm[i];
       }();
     }
+#if PEARL_BD_PERSIST
+    v = vnext;
+#endif
   }
 }
 

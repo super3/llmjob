@@ -384,8 +384,8 @@
       <p class="col-text">Payouts go straight to your address. No custody, no account, nothing held by us.</p>
     </div>
     <div>
-      <h3 class="col-title">Just 1% dev fee</h3>
-      <p class="col-text">A flat 1% dev fee, 1% pool. You keep 98% of everything you mine — no subscriptions, no surprises.</p>
+      <h3 class="col-title">No dev fee</h3>
+      <p class="col-text">No dev fee, and the pool takes nothing. You keep everything you mine — no subscriptions, no surprises.</p>
     </div>
   </div>
 </section>
@@ -666,17 +666,18 @@
     ];
 
     // Live market data from the prlscan API (api.prlscan.com, CORS-open) — the
-    // same source the explorer's own frontend uses: price, a 100-block average
-    // of the network hashrate, and the current block reward + cadence. The
-    // constants below are a July 2026 snapshot used only until the live fetch
-    // lands; if it fails, the page SAYS so (see r-live) instead of passing off
-    // stale numbers as current — overstated earnings cost more trust than a
-    // missing figure.
-    let PRICE = 0.30;               // PRL/USD (snapshot)
-    let NET_TH = 60.6e6;            // network hashrate in TH/s, ~60.6 EH/s (snapshot)
-    let DAILY_NET_PRL = 1.62e6;     // ~2,489 PRL/block × ~650 blocks/day (snapshot)
+    // same source the explorer's own frontend uses: price, the latest block's
+    // difficulty and reward, and a 100-block average of the network hashrate
+    // (shown beside the estimate, not used in it). The constants below are an
+    // October 2026 snapshot used only until the live fetch lands; if it fails,
+    // the page SAYS so (see r-live) instead of passing off stale numbers as
+    // current — overstated earnings cost more trust than a missing figure.
+    let PRICE = 1.14;               // PRL/USD (snapshot)
+    let NET_TH = 65.2e6;            // network hashrate in TH/s, ~65 EH/s (snapshot)
+    let DIFFICULTY = 34.45e6;       // the latest block's difficulty (snapshot)
+    let REWARD = 2278;              // PRL per block (snapshot)
     const FEE = 1;                  // HeroMiners charges no pool fee, and our miner has no dev fee
-    let live = { price: false, net: false, reward: false };
+    let live = { price: false, net: false, block: false };
 
     const state = { hashrate: 354, cards: 1, selected: 'RTX 5090' };
 
@@ -723,7 +724,10 @@
     function render() {
       const h = (Number(state.hashrate) || 0) * (Number(state.cards) || 0);
       const share = NET_TH > 0 ? h / NET_TH : 0;
-      const prlDay = share * DAILY_NET_PRL * FEE;
+      // Expected PRL/day from difficulty alone, the way the pool works it out: a
+      // block takes difficulty x 2^48 hashes on average. Share x daily emission
+      // read ~8% high when blocks ran faster than prlscan's hashrate average.
+      const prlDay = (h * 1e12 * 86400) / (DIFFICULTY * 2 ** 48) * REWARD * FEE;
       const usdDay = prlDay * PRICE;
 
       document.getElementById('r-prlday').textContent = fmt(prlDay, 1);
@@ -744,9 +748,9 @@
       const el = document.getElementById('r-live');
       if (!el) return;
       if (!done) { el.textContent = 'Loading live network data…'; return; }
-      el.textContent = (live.price && live.net && live.reward)
+      el.textContent = (live.price && live.net && live.block)
         ? 'Live network data.'
-        : 'Live data unavailable right now — figures below use a July 2026 snapshot and may be outdated.';
+        : 'Live data unavailable right now — figures below use an October 2026 snapshot and may be outdated.';
     }
 
     inHash.addEventListener('input', (e) => { state.hashrate = e.target.value; state.selected = null; render(); });
@@ -754,7 +758,7 @@
 
     render();
 
-    // ---- Best-effort live refresh (price, network hashrate, emission) ----
+    // ---- Best-effort live refresh (price, network hashrate, difficulty and reward) ----
     // All three come from the prlscan API (the explorer's own backend). Any
     // failure (offline, endpoint change) keeps the snapshot constants and
     // renderLiveNote flags it, so stale numbers are never presented as live.
@@ -783,24 +787,21 @@
 
       if (price && price < 1000) { PRICE = price; live.price = true; } // PRL is well under $1
 
-      // Network hashrate + block cadence: average the explorer's per-block
+      // Network hashrate, for display: average the explorer's per-block
       // estimates over its ~100-block window — single-block figures swing wildly.
       const items = metrics && Array.isArray(metrics.items) ? metrics.items : [];
       const hps = items.map((i) => num(i && i.estimated_hashrate_hps)).filter(Boolean);
-      const times = items.map((i) => num(i && i.block_time_seconds)).filter(Boolean);
       if (hps.length >= 10) {
         const th = hps.reduce((a, b) => a + b, 0) / hps.length / 1e12;
         if (th > 1 && th < 1e12) { NET_TH = th; live.net = true; }
       }
 
-      // Daily emission = current block reward × blocks/day at the observed pace.
-      const grains = blocks && Array.isArray(blocks.items) && blocks.items[0]
-        && num(blocks.items[0].reward_grains);
-      if (grains && times.length >= 10) {
-        const rewardPrl = grains / 1e8;
-        const avgSec = times.reduce((a, b) => a + b, 0) / times.length;
-        const daily = rewardPrl * (86400 / avgSec);
-        if (daily > 1e4 && daily < 1e9) { DAILY_NET_PRL = daily; live.reward = true; }
+      // The latest block's difficulty and reward, which set the estimate.
+      const block = blocks && Array.isArray(blocks.items) && blocks.items[0];
+      const diff = block && num(block.difficulty);
+      const reward = block && num(block.reward_grains) && block.reward_grains / 1e8;
+      if (diff > 1 && diff < 1e15 && reward > 1 && reward < 1e6) {
+        DIFFICULTY = diff; REWARD = reward; live.block = true;
       }
 
       renderLiveNote(true);

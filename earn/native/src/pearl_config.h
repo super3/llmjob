@@ -73,9 +73,9 @@
 // L, L^4, L^8 and L^12 hold the other three quarters. So a region's XOR is the
 // lane's own 64 accumulators folded in registers plus one shuffle round trip
 // among those four lanes, and every lane ends up holding its own region's
-// value. A 64x64 warp tile -- the fold's on Ada, see PEARL_FOLD_WIDE_WARPS --
-// gives each lane a quarter of two regions the same way, one per 32 rows, and
-// 96x64 three.
+// value. A 64x64 warp tile -- the fold's on Ada and Ampere, see
+// PEARL_FOLD_WIDE_WARPS -- gives each lane a quarter of two regions the same
+// way, one per 32 rows, and 96x64 three.
 //
 // The contiguous 16x16 tile this replaced was one wmma fragment. Folding it
 // took a whole-warp REDUX per region per chunk: eight a warp, each landing in a
@@ -360,8 +360,9 @@ typedef struct {
 // 32 -> 52.0 with PEARL_STAGE_REGS. So 16. On the B-direct fold with one row
 // group (PEARL_TURING_BDIRECT, three rounds): 12 -> 77.5 / 77.4 / 77.4 against
 // 77.6 / 77.3 / 77.4 at 16, and with an L2 prefetch (since dropped) 12 -> 75.3
-// and 32 -> 69.0 against 74.0 - 74.2 at 16. So 16 stays. The shipped fold, two
-// row groups, has not been swept.
+// and 32 -> 69.0 against 74.0 - 74.2 at 16. So 16 stays. The B-direct fold
+// no longer reads this: the host picks its depth per card from the L2 (see
+// PEARL_BD_L2_SHARE), 16 on the 2080 Ti and 8 on the 3-4 MB cards.
 //
 // Only ever used inside pearl_tile_fold_wmma, so __CUDA_ARCH__ is always defined
 // where it is read and the host never sees a differing value.
@@ -392,10 +393,13 @@ typedef struct {
 // then re-read B four times as often as at 32. The serpentine helps whatever
 // the cache size, so it is what ships and the depth stays.
 //
-// Ada only: it is what measured. Blackwell's one-deep bands re-sweep B every
-// row group, so it may gain there too, but that has not been measured.
+// Ada is what measured. Ampere (sm_86) runs it too, on the strength of the
+// shared SM layout, and has not been measured: its L2 is a fraction of the
+// 4090's 72 MB, so B misses more there whatever the walk order. Blackwell's
+// one-deep bands re-sweep B every row group, so it may gain there too, but
+// that has not been measured. Device side only.
 #ifndef PEARL_FOLD_SERPENTINE
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
 #define PEARL_FOLD_SERPENTINE 1
 #else
 #define PEARL_FOLD_SERPENTINE 0
@@ -471,16 +475,19 @@ typedef struct {
 // The CTA tile, the stage buffers and the tile walk are the same either way, so
 // the host's grid, shared size and tile count do not change -- only the block.
 // It must launch the one the loaded fold was compiled for, and decides from the
-// binary as for PEARL_FOLD_PERSISTENT (binaryVersion == 89), refusing a fold
+// binary as for PEARL_FOLD_PERSISTENT (binaryVersion 86 or 89), refusing a fold
 // whose launch bound says otherwise. A -DPEARL_FOLD_WIDE_WARPS=0/1 override
 // binds both sides.
 //
-// Ada only: it is what measured. Ampere and Blackwell keep sixteen warps.
+// Ada is what measured. Ampere (sm_86) gets it too: a GA10x SM has Ada's
+// schedulers, register file and 99 KB of shared a block, the budget the 64x64
+// warp tile depends on, but no Ampere card has run it. Blackwell keeps sixteen
+// warps.
 #ifdef PEARL_FOLD_WIDE_WARPS
 #define PEARL_FOLD_WIDE_WARPS_FORCED 1
 #endif
 #ifndef PEARL_FOLD_WIDE_WARPS
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
 #define PEARL_FOLD_WIDE_WARPS 1
 #else
 #define PEARL_FOLD_WIDE_WARPS 0
@@ -585,6 +592,85 @@ typedef struct {
 #if PEARL_BD_GROUPS != 1 && PEARL_BD_GROUPS != 2
 #error "PEARL_BD_GROUPS is 1 or 2"
 #endif
+// The B-direct fold is persistent, with its tiles handed out as it goes
+// (PEARL_BD_PERSIST 1, the default). The host launches one block an SM. Block b
+// starts on tile b, and every later tile comes from a counter the host zeroes
+// before each launch, so the tiles in flight stay one contiguous run of the
+// band walk (PEARL_BD_L2_SHARE), as they do when the hardware launches a block
+// a tile. Each tile's chunk 0 is loaded under the last chunk of the tile
+// before, the block meets once a tile (the hand-off, a __syncthreads), and the
+// two row groups hash on different schedulers, so every scheduler keeps a warp
+// on the next tile while the other hashes.
+//
+// Why: with a block a tile, a tile took ~78K cycles against 65.5K at the IMMA
+// peak (1024 MAC/clk/SM). ~1.5K of that was chunk 0's exposed loads and ~2.3K
+// the hash, during which two of the four schedulers had nothing to issue.
+// (Timed in the fold with clock(), RTX 2060 and 2080 Ti; Vast blocks the
+// performance counters.) A persistent walk that strides tiles a grid apart
+// lost 7% instead: the blocks drift through the band walk and spread its L2
+// working set, and the chunks themselves got 11% slower.
+//
+// Measured, hashrate.js 3-4 rounds of 60 s, 400/400 hits verified, the same
+// band depth both ways:
+//   RTX 2060 6 GB (Australia, 190 W), band 8:     44.47 -> 46.29 TH/s (+4.1%)
+//   RTX 2070 Super (Alberta, 215 W), band 8:      56.61 -> 58.12 TH/s (+2.7%)
+//   RTX 2080 Ti (Pennsylvania, 260 W), band 16:   83.62 -> 85.78 TH/s (+2.6%)
+//
+// The counter is the word PEARL_BD_CTR_SLOTS past the slot's hit counter: one
+// a pipeline slot, because the two slots' batches overlap on their streams.
+// 0 launches a block a tile, as before. Both passes read it.
+#ifndef PEARL_BD_PERSIST
+#define PEARL_BD_PERSIST 1
+#endif
+#if PEARL_BD_PERSIST != 0 && PEARL_BD_PERSIST != 1
+#error "PEARL_BD_PERSIST is 0 or 1"
+#endif
+#define PEARL_BD_CTR_SLOTS 2u
+// And the band depth the host chose (PEARL_BD_L2_SHARE), this many words past it.
+#define PEARL_BD_BAND_WORD (2u * PEARL_BD_CTR_SLOTS)
+// The B-direct fold's band depth, chosen per card by the host from the L2 and
+// read by the fold PEARL_BD_BAND_WORD words past its hit counter: the band that
+// stays in L2 is kept to PEARL_BD_L2_SHARE percent of it (pearl_bd_band_for).
+// With column bands (PEARL_BD_WALK 1, the default): 8 column groups, halved
+// while depth x 256 columns x k bytes (512 KB a group at the mainnet k) is
+// over that, never below 2. So 4 on the 3-4 MB cards (RTX 2060 to 2080) and 8
+// on the 2080 Ti (5.5 MB). With row bands (PEARL_BD_WALK 0): 16 row groups,
+// halved while depth x 128 rows x k bytes (256 KB) is over it, never below 4:
+// 8 on the 3-4 MB cards and 16 on the 2080 Ti.
+//
+// Row bands of 16 hold 4 MB of A, so on a 3-4 MB L2 A came from DRAM once per
+// column group. Measured, hashrate.js 3 x 60 s, row bands against 16:
+//   RTX 2060 6 GB (3 MB, Australia): 8 +1.8%, 4 +1.8%
+//   RTX 2070 Super (4 MB, Alberta):  8 +1.6%
+//   RTX 2080 Ti (5.5 MB, Pennsylvania): 8 -0.4%, 12 +0.1%
+// -DPEARL_BD_BAND=N forces N on every card. Host only.
+#ifndef PEARL_BD_L2_SHARE
+#define PEARL_BD_L2_SHARE 75u
+#endif
+// The B-direct fold's tile walk. 1 (the default): bands of column groups
+// across every row group, so a band's B stays in L2 and A streams from DRAM. 0:
+// bands of row groups across every column group, A staying and B streaming.
+// The host sizes the band to the L2 either way (pearl_bd_band_for).
+//
+// B is the operand that cannot wait. A warp loads it a k-step ahead, into
+// registers. A goes through shared, loaded at k-step 0 for the next chunk and
+// stored at k-step 2, so it has two k-steps to arrive. With A held in L2 and
+// B streaming, every tile of a band's column group reads each B line at
+// almost the same moment, all of them waiting on DRAM together. Measured with
+// the fold's own ablations on an RTX 2060 (bench): every B load an L1 hit
+// +12%, every A load an L2 hit +3%.
+//
+// hashrate.js, 3 x 60 s, against row bands (8, or 16 on the 2080 Ti), 400/400
+// hits verified:
+//   RTX 2060 6 GB (3 MB L2, Australia):  column bands of 2 +1.8%, 4 +2.9%, 8 -0.3%;
+//     nvidia-smi memory utilization 33% -> 22% at 4
+//   RTX 2060 Super (4 MB L2, Germany):   4 +1.3%
+//   RTX 2080 (4 MB L2, Colorado):        2 +0.1%, 4 +1.5%
+//   RTX 2080 Ti (5.5 MB L2, Pennsylvania): 4 +0.3%, 8 +1.7%
+// Both passes read it.
+#ifndef PEARL_BD_WALK
+#define PEARL_BD_WALK 1
+#endif
 #define PEARL_FOLD_TURING_THREADS 256u
 #define PEARL_TURING_WIDE_STAGE_BUFS 1
 // The B-direct fold's shared memory is this many A stages of the tile's 128
@@ -663,27 +749,37 @@ typedef struct {
 // 310.9 TH/s (+6.8%), 253 registers, 400/400 hits verified. See "Whole-line staging and a
 // leaner ring" and "Onto v0.5.7" in probes/README.md.
 //
-// Ada and Blackwell. Blackwell's build stages with TMA instead of cp.async (see
+// Ada, Ampere and Blackwell. Blackwell's build stages with TMA instead of cp.async (see
 // PEARL_TALL_TMA, which has what it measured there) and keeps the ring and stage body
-// it was measured with; Ampere keeps the sixteen-warp fold. The host launches the tall
-// fold when the loaded pearl_tile_fold_tall is one that has a body (PEARL_TALL_ARCH of
-// its binaryVersion), and a -DPEARL_FOLD_TALL=0/1 override binds both sides.
+// it was measured with. Ampere (sm_86) builds Ada's cp.async ring unchanged: everything
+// it issues -- mbarrier init, arrive and test_wait, cp.async and its mbarrier arrive,
+// ldmatrix, the int8 m16n8k32 mma -- is sm_80, and a GA10x SM has Ada's schedulers,
+// register file and 99 KB of shared a block. It has not run on an Ampere card; the
+// band depth it inherits was swept on a 72 MB L2 only (PEARL_TALL_BAND). The host
+// launches the tall fold when the loaded pearl_tile_fold_tall is one that has a body
+// (PEARL_TALL_ARCH of its binaryVersion), and a -DPEARL_FOLD_TALL=0/1 override binds
+// both sides.
+//
+// Which builds carry a tall-fold body, by __CUDA_ARCH__: Ampere's and Ada's, both the
+// cp.async ring, and Blackwell's, which stages with TMA unless PEARL_TALL_TMA is 0.
+// This one list is what the default below, the fold's own #if in pearl_kernel.cu and
+// PEARL_TALL_ARCH all test, so they cannot drift apart.
+#define PEARL_TALL_BODY_ARCH(a) ((a) == 860 || (a) == 890 || (a) >= 1200)
 #ifdef PEARL_FOLD_TALL
 #define PEARL_FOLD_TALL_FORCED 1
 #endif
 #ifndef PEARL_FOLD_TALL
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 890 || __CUDA_ARCH__ >= 1200)
+#if defined(__CUDA_ARCH__) && PEARL_TALL_BODY_ARCH(__CUDA_ARCH__)
 #define PEARL_FOLD_TALL 1
 #else
 #define PEARL_FOLD_TALL 0
 #endif
 #endif
-// Which cubins carry a tall-fold body, by the architecture number the host reads
-// back as cudaFuncAttributes::binaryVersion (the binary ships sm_75, sm_86, sm_89
-// and sm_120 SASS and no PTX, so that is exactly the build that runs): Ada's, and
-// Blackwell's, which stages with TMA unless PEARL_TALL_TMA is 0. The fold's #if
-// spells out the same architectures.
-#define PEARL_TALL_ARCH(v) ((v) == 89 || (v) >= 120)
+// The same test for the host, by the architecture number it reads back as
+// cudaFuncAttributes::binaryVersion (75, 86, 89, 120: the binary ships sm_75, sm_86,
+// sm_89 and sm_120 SASS and no PTX, so that is exactly the build that runs).
+// binaryVersion is __CUDA_ARCH__ / 10. Turing (75) has no tall fold.
+#define PEARL_TALL_ARCH(v) PEARL_TALL_BODY_ARCH((v) * 10)
 #define PEARL_TALL_TMA_ARCH(v) ((v) >= 120)
 // The tall geometry by name, for the host: two row slots of six 16-row blocks by four
 // column slots of 64 columns, three 64-deep stages.
@@ -721,8 +817,9 @@ typedef struct {
 #define PEARL_TALL_TMA_EMPTY_COUNT \
   (PEARL_TALL_TMA_EMPTY_ALL ? PEARL_TALL_THREADS : PEARL_TALL_THREADS / 32u)
 // Shared: the three stages, the ring's six mbarriers, and one 64-byte transcript a
-// region -- 192 regions a tile. Ada's cp.async build keeps each stage's FULL and EMPTY
-// in 128 bytes behind its rows: 98688 bytes of the 101376 Ada allows. Blackwell's TMA
+// region -- 192 regions a tile. The cp.async build (Ada and Ampere) keeps each stage's
+// FULL and EMPTY in 128 bytes behind its rows: 98688 bytes of the 101376 both allow.
+// Blackwell's TMA
 // build keeps them in a 512-byte pad behind each buffer (PEARL_TALL_TMA_ROLES, the
 // default): 99840, plus 1024 of static shared; without ROLES all six sit after the
 // stages in 64 bytes, 98368 (PEARL_TALL_SMEM_TMA).
@@ -743,16 +840,21 @@ typedef struct {
 // m is a power of two and 192 is not a factor of it, so the last row group of tiles
 // runs past m: at the mainnet 131072 rows, 683 groups cover 131136. The fold hashes no
 // region whose row offset falls past m. Blackwell reads A' k-blocked, m rows a k-block
-// (see PEARL_TALL_TMA), and TMA zero-fills the rows past m. Ada reads it in per-tile
-// order (PEARL_TALL_TILE_ORDER), where they are the last 64 rows of every slab of the
-// last block. So the noised A is allocated with this many rows, the extra zeroed and
-// never generated.
+// (see PEARL_TALL_TMA), and TMA zero-fills the rows past m. The cp.async builds (Ada,
+// and Ampere) read it in per-tile order (PEARL_TALL_TILE_ORDER), where they are the
+// last 64 rows of every slab of the last block. So the noised A is allocated with this
+// many rows, the extra zeroed and never generated.
 #define PEARL_TALL_A_ROWS(m) \
   ((((m) + PEARL_TALL_BM - 1u) / PEARL_TALL_BM) * PEARL_TALL_BM)
 // Row groups a band of the tile walk covers (see PEARL_BLOCK_GROUP). The eight-warp
 // fold's 32 is 12 MB of A at 192 rows a group, and with the 64 MB of B one launch
 // sweeps that is more than the 72 MB L2; 16 keeps both in it. It measured flat:
 // 8, 16 and 32 deep all ran 288.3 - 290.1 TH/s (bench, two interleaved rounds).
+//
+// Ampere (sm_86) runs the same 16. That flat result is from a 72 MB L2, where every
+// depth kept B resident; an Ampere L2 is a fraction of that and cannot keep the 64 MB
+// sweep of B resident, so the depth may matter there. It has not been swept on an
+// Ampere card.
 //
 // Blackwell walks bands one row group deep: consecutive tiles share a row group of A
 // and sweep B. That is PEARL_BLOCK_GROUP 1 there, which is what its measurements ran
@@ -764,6 +866,125 @@ typedef struct {
 #else
 #define PEARL_TALL_BAND 16u
 #endif
+#endif
+// Blackwell's batch width (host side, the TMA fold only): at most this many percent of
+// the L2 for the B' a row group sweeps.
+//
+// One-deep bands mean every row group sweeps all of a batch's columns of B': col_batch *
+// 16 columns of k bytes, 64 MB at the mainnet col_batch of 2048. A 5090's 96 MB L2 keeps
+// that, so B' comes from DRAM about once a launch. Every smaller RTX 50 card has 24-64 MB,
+// and there B' came from DRAM once per row group, 683 times a launch: on an RTX 5060 (24
+// MB) at 70 TH/s that is ~360 GB/s of its 448, and nvidia-smi's memory utilization read
+// 92-100%. On a power-capped card those DRAM watts come out of the SM clock. So the host
+// halves col_batch (pearl_tma_col_batch) until that B' fits this share of the L2.
+//
+// Measured with hashrate.js, 3 rounds of 60 s, CUDA 13.3, each width ahead of 2048 in
+// every round, 400/400 hits verified for every build:
+//   RTX 5060, 24 MB L2, 125 W (Vast 151478; target 77.1):
+//     col_batch 2048 (64 MB)  69.58 TH/s  2404 MHz
+//                128 (4 MB)   75.30       2594      +8.2%
+//                256 (8 MB)   75.94       2618      +9.1%
+//                512 (16 MB)  76.22       2628      +9.5%   <- this rule's pick
+//   RTX 5060 Ti, 32 MB L2, 150 W (Vast 151123; target 94.5):
+//     col_batch 2048          87.98       2509
+//                256          93.44       2679      +6.2%
+//                512          93.64       2689      +6.4%   <- this rule's pick
+//               1024 (32 MB)  91.35       2625      +3.8%
+// The clock rises at the same power: that is the DRAM watts coming back. Narrower than
+// that loses a little: each launch re-reads all of A' (256 MB) once, and there are more
+// launches. 67% of the L2 is where the pick lands on both cards; on a 5090 (96 MB) it
+// keeps 2048 (64 MB), the width it was tuned and measured at.
+//
+// Deeper bands would fix it in the kernel instead, but ptxas 13.3 spills the tall fold
+// at any band depth past 1 (164 bytes, -17% on a 5060), and at col_batch 2048 a band 16
+// deep would still read B' from DRAM 43 times a launch. The serpentine walk alone, which
+// does not spill, measured +2.3% at 2048 and nothing on top of 512.
+//
+// Only the batch width changes: the same regions, searched in more, shorter launches.
+#ifndef PEARL_TMA_L2_SHARE
+#define PEARL_TMA_L2_SHARE 67u
+#endif
+// Ampere's band depth (host side, the sm_86 tall fold only): 16, halved while a band's
+// A' -- depth x 192 rows x k bytes, 384 KB a row group at the mainnet k -- is over this
+// many percent of the L2, and never below 4. The fold reads it from the word
+// PEARL_BD_BAND_WORD past its slot's hit counter, as Turing's B-direct fold reads its own.
+//
+// A band's A' is reused across its whole sweep of the batch's B' columns if it stays in
+// L2; then only B' streams from DRAM, once per band. Ampere's L2 is 3-6 MB, so #246's 16
+// deep (6 MB of A') missed on every card, and too shallow re-reads B' too often.
+// Measured with hashrate.js, 3 rounds of 60 s, against 16, every build 400/400 hits
+// verified (memory utilization from nvidia-smi):
+//   RTX 3060, 3 MB L2, 170 W (Vast 138808; target 48.9):
+//     band 16  46.96 TH/s  1713 MHz  memory 65%
+//           8  47.13       1721              58-66%
+//           4  47.45       1736              51%     +1.1%  <- this rule's pick
+//   RTX 3070 Ti, 4 MB L2, 310 W (Vast 43435; target 85.8):
+//     band 16  84.47       1810              46%
+//           8  85.34       1829              30%     +1.0%  <- this rule's pick
+//           4  85.16       1824              33%
+//           2  84.27       1808              51%
+//   RTX 3090, 6 MB L2, 320 W (Vast 4557):
+//     band 32  118.39      1480              40%
+//          16  121.59      1530              28%
+//           8  123.89      1554              18%     +1.9%  <- this rule's pick
+//           4  121.40      1528              25%
+//           2  118.00      1481              41%
+// The clock rises at the same power: the DRAM watts come back. 80% picks the best
+// measured depth on all three: the 4 MB card's band 8 is 75% of its L2. Those sweeps ran
+// before the serial restamp (0f263bf), whose absence biased hashrate.js up to ~1% on slow
+// batches. This build against its own base with it in, 4 rounds (3090: 3), every round
+// ahead: 3060 46.66 -> 47.09 (+0.9%), 3070 Ti 84.50 -> 85.08 (+0.7%); the 3070 Ti's pool
+// run accepted 3 of 3 shares. The 3090, on an earlier build of the same rule: 121.32 ->
+// 123.49 (+1.8%).
+// -DPEARL_AMPERE_BAND=N forces N on every Ampere card. Host only.
+#ifndef PEARL_AMPERE_BAND_L2_SHARE
+#define PEARL_AMPERE_BAND_L2_SHARE 80u
+#endif
+// Ampere's batch width (host side, the sm_86 tall fold only): at most this many column
+// offsets a launch, against the profile's 2048. With A' held in the persisting slice
+// (PEARL_AMPERE_PERSIST_A), what DRAM still serves is B' fetched again when the tiles that
+// share it drift apart. A shorter launch starts the blocks together more often, and a
+// band's sweep of B' is shorter, so the serpentine reuses more of it at each turn.
+// Measured with hashrate.js, 3 rounds, 400/400 hits, against 2048:
+//   width                 1024     512      256
+//   RTX 3060 (Vietnam)    +0.3%   +0.9%    +0.8%    memory utilization 41% -> 33% at 512
+//   RTX 3060 Ti (Japan)   +0.3%   +0.6%    +0.5%
+//   RTX 3070 Ti (Ontario) +0.3%   +0.2%
+//   RTX 3090 (Quebec)     +0.4%   +0.7%    +0.3%
+//   RTX 3080 Ti (Portugal) +0.1%  -0.1%
+// 512 led in every round on all but the 3080 Ti. Pool runs at 512: 4 of 4 shares (3080 Ti).
+// Before the slice the width measured flat (RTX 3070 Ti, 1024 - 128 all within -0.4%).
+// 0 keeps the profile's width. Host only.
+#ifndef PEARL_AMPERE_COL_BATCH
+#define PEARL_AMPERE_COL_BATCH 512u
+#endif
+// Ampere: keep each band's A' in a persisting slice of the L2. The host sets
+// cudaLimitPersistingL2CacheSize to the band's A' (band x 192 rows x k bytes), capped at
+// the card's cudaDevAttrMaxPersistingL2CacheSize, and the sm_86 fold's A copies carry an
+// L2 evict_last policy. A failed limit only leaves the copies' policy without a slice.
+//
+// A band's A' is read again every wave of resident tiles, and in between a wave's whole
+// working set (~5 MB at band 4 on a 3060) passes through the L2, so A' came back from DRAM
+// every wave. The slice keeps it. evict_last without a slice (the default limit is 0) did
+// nothing measurable. Measured with hashrate.js, 3 rounds, against the same build without
+// it, ahead in every round but the 3070 Ti's, 400/400 hits:
+//   RTX 3060, 2.25 MB L2 (1.55 MB max slice), band 4   47.71 -> 47.86 .. 47.93 (+0.3 to +0.5%)
+//   RTX 3060 Ti, 3 MB (2.06 MB), band 4                 62.7 -> 63.1 (+0.6 to +0.7%)
+//   RTX 3070 Ti, 4 MB, band 8                           85.39 -> 85.48, 85.64 -> 85.70 (+0.1%)
+//   RTX 3080 Ti, 6 MB (4.13 MB), band 8                 126.41 -> 127.00 (+0.5%)
+//   RTX 3090, 6 MB, band 8, 300 W                       116.61 -> 117.55 (+0.8%)
+// Pool runs accepted 5 of 5 shares (3070 Ti) and 1 of 1 (3060).
+// (L2 sizes as the driver reports them.) Deeper bands than the L2 pick lose with it, as
+// they do without: their A' is larger than the slice the card allows.
+// 0 turns it off. Both passes read it.
+#ifndef PEARL_AMPERE_PERSIST_A
+#define PEARL_AMPERE_PERSIST_A 1
+#endif
+// Device side: whether THIS compile's tall fold reads its band depth at run time.
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 860
+#define PEARL_TALL_BAND_RT 1
+#else
+#define PEARL_TALL_BAND_RT 0
 #endif
 // Where a stage's copies of the next chunk go out: after m16 tile (point % 6) of k-step
 // (point / 6) -- the k-step holds B and streams A a tile at a time. A's go first, behind
@@ -798,11 +1019,90 @@ typedef struct {
 // its last ldmatrix rather than after its last mma, 287.1 / 287.2; every warp hashing
 // its own 24 regions instead of one warp a column slot hashing 48, which drops the
 // column barrier, 287.8 / 288.1 -- both warps of a scheduler then stop to hash.
+// Ada's and Ampere's tall folds hash 1.5 regions a lane: each lane one region whole, and
+// each lane pair one of the column slot's last 16 together (pearl_hp_msw_pair), where the
+// second pass ran on 16 lanes with the other 16 idle. Its hasher branch is a vote, so the
+// pair's shuffles add no convergence barriers to the tile loop. Cycles a tile
+// (PEARL_TALL_CYC), RTX 4060, 3 rounds: 102,977 -> 102,714 (-262, every round; no second
+// pass at all is 102,424).
+// hashrate.js, 3-4 rounds, ahead in every round, 400/400 hits:
+//   RTX 4060 (115 W)      59.87 -> 60.07   +0.33%
+//   RTX 4060 Ti (160 W)   88.65 -> 89.04   +0.45%
+//   RTX 4070 Ti (285 W)  159.19 -> 159.87  +0.43%
+//   RTX 4090 (450 W)     319.04 -> 320.37  +0.41%
+// Same hit lists as two passes over a fixed job in both hash byte orders. 0 turns it off.
+// Ampere (sm_86) builds the same code: 254 registers, 0 spill, no BSSY, chunk loop 542
+// instructions under 12.8 and 13.3 (the two-pass build is 542 and 543). Cycles a tile,
+// RTX 3060 Ti, 3 rounds: 102,969 -> 102,655 (-313, every round). hashrate.js, 3-4 rounds,
+// 400/400 hits. These cards sit at their power cap. P2 saves cycles, not work, so the
+// clock falls back and takes some or all of it; on the 3080 Ti it is about level:
+//   RTX 3060 (170 W)      48.34 -> 48.41   +0.14%, ahead in 4 of 4
+//   RTX 3060 Ti (180 W)   62.70 -> 62.81   +0.17%, ahead in 3 of 4
+//   RTX 3080 Ti (315 W)  123.88 -> 123.69  -0.15%, ahead in 1 of 3, rounds overlap
+//   RTX 3090 Ti (450 W)  152.89 -> 153.22  +0.22%, ahead in 4 of 4
+// Pool, RTX 3080 Ti: 10 of 10 shares in 600 s.
+// Blackwell (sm_120) takes it too, but only from the CUDA 13 compiler: under 12.8 the
+// paired hash spills (255 registers, 160 bytes of spill stores), so the 12.8 core keeps
+// two passes. Under 13.3 the sm_120 fold stays at 254 registers with no spill, and its
+// chunk loop is unchanged (468 instructions).
+// Cycles a tile (PEARL_TALL_CYC), RTX 5070 Ti at its locked 1346 MHz, 4 rounds:
+// 103,451 -> 103,098 (-353, every round). hashrate.js, ahead in every round, 400/400 hits:
+//   RTX 5070 Ti (locked 1346 MHz)  91.72 -> 92.28   +0.61%
+//   RTX 5080 (360 W)              226.36 -> 227.68  +0.58%
+//   RTX 5060 (125 W)               76.46 -> 76.78   +0.41%
+//   RTX 5090 (500 W)              373.79 -> 375.17  +0.37%
+// Same hit lists as two passes over a fixed job in both hash byte orders on both cards.
+// A device test against pearl_transcript_msw found no mismatch in 4M whole and 2M paired
+// compressions in each byte order.
+#ifndef PEARL_TALL_HASH_PAIRS
+#define PEARL_TALL_HASH_PAIRS 1
+#endif
+#if PEARL_TALL_HASH_PAIRS && defined(__CUDA_ARCH__) \
+    && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890 \
+        || (__CUDA_ARCH__ >= 1200 && __CUDACC_VER_MAJOR__ >= 13))
+#define PEARL_TALL_HASH_PAIRS_ON 1
+#else
+#define PEARL_TALL_HASH_PAIRS_ON 0
+#endif
+// Blackwell's tall fold makes its readout's XOR folds before the chunk-0 hand-off guard,
+// where only the three shared XORs that write the transcripts need to wait for the hasher.
+// The readout's ~100 integer ops then run while the hasher's partner would otherwise sit
+// at the guard. A small gain, kept because it is the same in every round on two cards:
+// cycles a tile (PEARL_TALL_CYC), RTX 5070 Ti at its locked 1346 MHz, on the paired hash,
+// 4 rounds: 103,098 -> 102,989 (-109, every round). hashrate.js, 4 rounds, ahead in every
+// round, 400/400 hits:
+//   RTX 5070 Ti (locked 1346 MHz)  92.28 -> 92.32   +0.04%
+//   RTX 5060 (125 W)               76.78 -> 76.84   +0.08%
+// Both are under the usual three-round-spreads bar. 254 registers, no spill, chunk loop
+// 468 -> 469 instructions (13.3; 12.8 634 -> 635). Same hit lists as without it over a
+// fixed job in both hash byte orders. sm_120's TMA build only; 0 turns it off.
+#ifndef PEARL_TALL_PREGUARD
+#define PEARL_TALL_PREGUARD 1
+#endif
 #ifndef PEARL_TALL_APT
 #define PEARL_TALL_APT 3u
 #endif
+// Ampere (sm_86) issues B's copies one m16 tile earlier, after tile 1 of k-step 1. With
+// the shared-XOR readout (PEARL_TALL_RED_READOUT), against A at 3 and B at 8, hashrate.js,
+// 3 or 4 rounds, ahead in every round, 400/400 hits: RTX 3060 47.10 -> 47.76 (+1.41%), RTX
+// 3070 Ti 85.05 -> 85.38 (+0.39%), RTX 3090 116.07 -> 116.62 (+0.47%), RTX 3080 106.31 ->
+// 106.81 (+0.47%); pool runs on the 3090 and 3080 accepted 2 of 2 and 5 of 5 shares. Alone, with the shuffle readout: 3060 +0.88 / +1.08 / +1.44%
+// in three sessions, 3070 Ti +0.23 / 0.00 / -0.01%. Its neighbours lose 1-5%: A at 3 and
+// B at 6 -5.1%, A at 4 and B at 7 -3.6%, A at 2 and B at 7 +0.5% (3060). They steer where
+// ptxas schedules the copy groups. Copying B first (behind the EMPTY wait) lost 3% at A 2,
+// B 7 and was level at 3, 8.
+//
+// Ada (sm_89) takes B at 7 too, with the shared-XOR readout on. Against A at 3 and B at 8,
+// hashrate.js, ahead in every round, 400/400 hits: RTX 4060 (115 W) 60.01 -> 60.11 TH/s
+// (+0.16%, 3 rounds), RTX 4070 Ti (Delaware) 156.35 -> 156.59 (+0.15%, 4 rounds); level on
+// the RTX 4090 (303.41 -> 303.36) and RTX 4060 Ti (88.55 -> 88.59). A at 2 and B at 7 or
+// 8 measured -0.07 to -0.11% on the 4060, and B at 9 -1.1 to -1.3%.
 #ifndef PEARL_TALL_BPT
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
+#define PEARL_TALL_BPT 7u
+#else
 #define PEARL_TALL_BPT 8u
+#endif
 #endif
 
 // The order Ada's tall fold (the cp.async ring) reads its noised operands in: 1 for
@@ -826,6 +1126,42 @@ typedef struct {
 // sides.
 #ifndef PEARL_TALL_TILE_ORDER
 #define PEARL_TALL_TILE_ORDER 1
+#endif
+
+// How the tall fold's per-chunk readout combines the four lanes that hold a region, on
+// Ada (sm_89), Ampere (sm_86) and Blackwell (sm_120); Turing ignores it. 0: three shuffles
+// give every lane the whole XOR, and the lane that keeps the chunk stores the word. 1:
+// each lane XORs its own quarter into the word in shared (red.shared.xor), with no
+// shuffle and no select. The words then
+// have to start at zero: the kernel zeroes them once before its first tile, and the hasher
+// zeroes each region's after reading it. The ring orders that before the partner warp's
+// next writes, as it orders the hasher's reads (see the fold's hand-off).
+//
+// Measured with hashrate.js against the shuffle readout, 3-4 rounds, ahead in every round,
+// 400/400 hits verified on each card (2026-10-06):
+//   RTX 4060, fixed 1995 MHz (a pure per-clock reading)   46.51 -> 46.74 TH/s  (+0.49%)
+//   RTX 4060, 115 W cap                                   59.68 -> 60.03       (+0.59%)
+//   RTX 4070 Ti, 285 W                                    158.07 -> 158.91     (+0.53%)
+//   RTX 4090, 370 W                                       302.48 -> 303.11     (+0.21%)
+// and on Blackwell's TMA fold, CUDA 13.3, 4 rounds each:
+//   RTX 5070 Ti, held at ~1346 MHz (per clock)            91.45 -> 91.72 TH/s  (+0.30%)
+//   RTX 5060, 125 W cap                                   75.98 -> 76.20       (+0.29%)
+// The same readout without the in-asm predicate measured +0.30% on a second 5060, +0.26%
+// on an RTX 5080 and +0.16% on an RTX 5090, each ahead in every round. ptxas 13.3 and
+// 12.8 both build sm_120's fold at 254 registers with no spill. The CUDA 12.8 core (drivers
+// before 580) gains more: RTX 5060 at 140 W, 72.54 -> 74.42 TH/s (+2.6%).
+// On Ampere, with B's copies one m16 tile earlier (PEARL_TALL_BPT 7, see there):
+//   RTX 3060, 170 W, 3 rounds        47.10 -> 47.76  (+1.41%; the readout alone +0.57%)
+//   RTX 3070 Ti, 310 W, 3 rounds     85.05 -> 85.38  (+0.39%; alone +0.15%)
+//   RTX 3090, 300 W, 4 rounds        116.07 -> 116.62 (+0.47%)
+//   RTX 3080, 320 W, 4 rounds        106.31 -> 106.81 (+0.47%)
+// The shuffles were on the readout's critical path, and the readout runs while the
+// partner warp has the scheduler's tensor pipe to itself. The chunk loop goes from 559
+// instructions to 541. The XORs carry a predicate that is
+// always true inside their asm: with none, or with any predicate ptxas can see through,
+// ptxas 12.8 spills 220 bytes of the fold.
+#ifndef PEARL_TALL_RED_READOUT
+#define PEARL_TALL_RED_READOUT 1
 #endif
 
 // Blackwell (sm_120) stages the tall fold with TMA instead of cp.async.
@@ -882,6 +1218,82 @@ typedef struct {
 #else
 #define PEARL_TALL_TMA_BODY 0
 #endif
+
+// A two-CTA cluster that shares the staged B by TMA multicast (sm_120, the TMA build).
+// An A/B switch, off. No hashrate and no clock have been measured. What CI has measured
+// is the compile, and the fold does not fit yet. The first build of the switch held
+// the cluster rank in a local for the whole kernel and spilled: ptxas 12.8, sm_120,
+// 255 registers, 196 bytes of spill stores, 248 of loads (native core run
+// 37087176421), on a fold the shipped build compiles to 254-255 registers and 0 spill.
+// Re-reading the rank where it is used (pearl_cluster_ctarank in pearl_kernel.cu)
+// took back a little, not enough: 255 registers, 180 bytes of spill stores, 224 of
+// loads under ptxas 12.8, and 184 and 228 under 13.3, the compiler the Blackwell core
+// ships from (run 37087607029). The CI step prints the row after every change. The
+// fold has to fit before the probe is worth running; what the spilled values are has
+// not been read from the SASS.
+// ptxas also printed, at every multicast, that the modifier should be used on
+// sm_90a/sm_100a/sm_101a instead of sm_120 "as this feature is expected to have
+// substantially reduced performance on some future architectures". It is to be priced
+// on the feed probe and then on the card before it is turned on.
+//
+// Why it exists. The 5090 is hard power-capped at 600 W; the 128x256 fold it ran at
+// the time pulled 2.12 TB/s through L2 with DRAM at 3.5% of peak, and the memory
+// domain is worth roughly half the power budget (probes/README.md, "Power is the
+// binding constraint on sm_120" and "The memory clock experiment"). The tall fold has
+// not been profiled there; its bytes a MAC are fewer. L2 bytes a MAC are 1/BM + 1/BN,
+// and at 192x256 the tile cannot grow: 192 accumulators a thread is as far as 255
+// registers go. Two CTAs that fold the same 256 B columns against two row groups of A
+// read B from L2 once if one TMA box lands in both: the L2 sees a 384x256 tile,
+// 1/384 + 1/256 bytes a MAC against 1/192 + 1/256, 29% fewer. Each CTA still reads
+// its own A, and shared memory, the ring, the k-step and the readout are unchanged.
+//
+// What it changes, in the TMA body of pearl_tile_fold_tall and the host's launch:
+//   - The grid is launched in clusters of PEARL_TALL_CLUSTER_SIZE CTAs (cudaLaunchKernelEx,
+//     cudaLaunchAttributeClusterDimension). A tile is a (row-group PAIR, column group);
+//     the persistent walk is over cluster indices, and a CTA's row group is twice the
+//     pair plus its %cluster_ctarank. The band walk's row count becomes the pair count,
+//     ceil(683 / 2) at mainnet; in the odd last pair rank 1's row group is past the
+//     last one, its A box is all rows past m, which TMA zero-fills, and the hasher
+//     already skips rows past rows_valid. It still takes part in every barrier.
+//   - Only rank 0's producer issues the B box, .multicast::cluster to both CTAs, into
+//     the same CTA-relative offset, completing on the FULL barrier at the same offset
+//     in both. Each CTA issues its own A box and its own expect_tx of a whole stage.
+//   - EMPTY is cluster-wide: a buffer is refilled only when BOTH CTAs have finished
+//     reading it, since rank 0's refill lands in both. Every EMPTY arrival is made
+//     twice, on the peer's barrier (mapa, a cluster-scope remote arrive) and on its
+//     own, EMPTY expects PEARL_TALL_TMA_EMPTY_COUNT * PEARL_TALL_CLUSTER_SIZE, and the
+//     producer's wait acquires at cluster scope. FULL stays local.
+//   - A cluster barrier after the mbarrier inits, so the peer's barriers exist before
+//     anything arrives on them or multicasts into its shared memory, and one before
+//     the kernel returns, so no CTA exits while its peer may still arrive on it.
+//
+// The caveat, and why it is off: the PTX ISA says .multicast::cluster is optimized
+// for sm_90a, sm_100a and sm_101a and may have substantially reduced performance on
+// other targets, and CUTLASS keeps 1x1x1 clusters on SM120. If the multicast is not
+// one L2 read on this card it buys nothing and costs the cluster barriers; the feed
+// probe (perf-scratch/r7-probe/feedprobe4.cu in probes/README.md) is where that is
+// settled, before the fold. Whether the card grants a cluster launch at all is not
+// verified either: the PTX is sm_90's, which sm_120 assembles, but the runtime has
+// not been asked. If it refuses, cudaLaunchKernelEx fails and the search reports
+// "CUDA error during search".
+// The host reads the value too (Ctx::foldCluster), so -DPEARL_TALL_CLUSTER=1 binds
+// both sides. The CI workflow compiles the switch on, sm_120 only, so it stays
+// buildable; nothing of it ships.
+#ifndef PEARL_TALL_CLUSTER
+#define PEARL_TALL_CLUSTER 0
+#endif
+#define PEARL_TALL_CLUSTER_SIZE 2u
+// Device side: whether THIS compile's tall fold is the cluster one. Only the TMA
+// body has it; the cp.async builds ignore the switch.
+#if PEARL_TALL_CLUSTER && PEARL_TALL_TMA_BODY
+#define PEARL_TALL_CLUSTER_BODY 1
+#else
+#define PEARL_TALL_CLUSTER_BODY 0
+#endif
+// What EMPTY expects a phase: the CTA's own arrivals (PEARL_TALL_TMA_EMPTY_COUNT), and
+// the peer's too in the cluster build.
+#define PEARL_TALL_TMA_EMPTY_ARRIVALS \
+  (PEARL_TALL_TMA_EMPTY_COUNT * (PEARL_TALL_CLUSTER_BODY ? PEARL_TALL_CLUSTER_SIZE : 1u))
 
 // How far ahead of its mma the TMA build loads each fragment (sm_120).
 //
@@ -1009,13 +1421,12 @@ typedef struct {
 // of B, and each group is staged by exactly the warps that read it, with every
 // copy slot in bounds at compile time and issued in the middle of a k-step.
 //
-// Ada only, like PEARL_BLOCK_GROUP is Blackwell only: this is what measured.
-// Ampere (sm_86) has Ada's SM layout and very likely gains too, but has not
-// been measured, and neither has Blackwell, so both keep the block-wide walk.
-// Device side only -- the host sizes and launches the fold identically either
-// way.
+// Ada is what measured, as PEARL_BLOCK_GROUP's 1 is Blackwell's. Ampere (sm_86)
+// has Ada's SM layout, so it runs this too, and has not been measured. Blackwell
+// has not been measured either and keeps the block-wide walk. Device side only
+// -- the host sizes and launches the fold identically either way.
 #ifndef PEARL_FOLD_GROUP_STAGE
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
 #define PEARL_FOLD_GROUP_STAGE 1
 #else
 #define PEARL_FOLD_GROUP_STAGE 0
@@ -1064,28 +1475,28 @@ typedef struct {
 // Whether the fold is PERSISTENT: one block per resident slot, each walking
 // tiles and staging the next tile's chunk 0 under the last chunk of this one.
 //
-// Ada only, because only Ada has been measured: +3.1% on a 4090. Blackwell is
-// the reason to hold back. It is power-capped hard, the staging ALU is where its
-// power goes, and the persistent walk adds ~17% non-tensor instructions to its
-// chunk (a 64-bit source rebuild and a wrap per copy); the one persistent fold
-// ever run there regressed. Ampere is merely unmeasured. Both keep one block
-// per tile, and with the next-tile staging compiled out their chunk loop is the
-// one they ran before.
+// Ada is what measured: +3.1% on a 4090. Ampere (sm_86) runs it too, on the
+// strength of the shared SM layout, and has not been measured. Blackwell holds
+// back. It is power-capped hard, the staging ALU is where its power goes, and
+// the persistent walk adds ~17% non-tensor instructions to its chunk (a 64-bit
+// source rebuild and a wrap per copy); the one persistent fold ever run there
+// regressed. It keeps one block per tile, and with the next-tile staging
+// compiled out its chunk loop is the one it ran before.
 //
 // The host must launch the matching grid, and it decides from the fold binary
-// it actually loaded (cudaFuncAttributes::binaryVersion == 89). Either kind of
-// mismatch stays correct -- a persistent build launched one block per tile runs
-// each block once, and a non-persistent one given fewer blocks restages each
-// later tile's chunk 0 -- it is only slower.
+// it actually loaded (cudaFuncAttributes::binaryVersion 86 or 89). Either kind
+// of mismatch stays correct -- a persistent build launched one block per tile
+// runs each block once, and a non-persistent one given fewer blocks restages
+// each later tile's chunk 0 -- it is only slower.
 //
 // A -DPEARL_FOLD_PERSISTENT=0/1 override binds BOTH sides, so a build can run
-// another arch's launch shape on this card (how the Ampere/Blackwell path was
+// another arch's launch shape on this card (how the one-block-per-tile shape was
 // checked on a 4090).
 #ifdef PEARL_FOLD_PERSISTENT
 #define PEARL_FOLD_PERSISTENT_FORCED 1
 #endif
 #ifndef PEARL_FOLD_PERSISTENT
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
 #define PEARL_FOLD_PERSISTENT 1
 #else
 #define PEARL_FOLD_PERSISTENT 0
@@ -1109,10 +1520,11 @@ typedef struct {
 //   bench  264.9 / 263.7 / 263.7 -> 269.8 / 266.9 / 269.4 TH/s
 //   full miner loop  261.9 / 262.8 -> 268.4 / 268.4 TH/s (+2.3%)
 //
-// Ada only, like the other fold switches: it is what measured, and the
-// register budget it depends on is the Ada fold's. Device side only.
+// Ada is what measured, and the register budget it depends on is the Ada
+// fold's. Ampere (sm_86) has the same register file and runs it too, not
+// measured. Device side only.
 #ifndef PEARL_FOLD_LANE_BASES
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
 #define PEARL_FOLD_LANE_BASES 1
 #else
 #define PEARL_FOLD_LANE_BASES 0
@@ -1132,9 +1544,10 @@ typedef struct {
 //
 // The shift is recomputed on each call rather than held for the kernel: the
 // held version cost ptxas the lane bases and measured 265.0 against 273.0.
-// Ada only, with PEARL_FOLD_LANE_BASES. Device side only.
+// Goes with PEARL_FOLD_LANE_BASES: Ada measured, Ampere (sm_86) on the same SM
+// layout and not measured. Device side only.
 #ifndef PEARL_FOLD_FAST_COORDS
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 890
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
 #define PEARL_FOLD_FAST_COORDS 1
 #else
 #define PEARL_FOLD_FAST_COORDS 0

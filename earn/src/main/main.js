@@ -49,6 +49,7 @@ const { formatUpdate, describeUpdateError } = require('../shared/updateStatus');
 const { buildMinerReports } = require('../shared/minerReport');
 const { runtimeCopyPlan } = require('../shared/llmRuntime');
 const { alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda } = require('../shared/gpu');
+const { planMemClocks, readMemClockEnv, GUI_MEM_CLOCK_ENV } = require('../shared/memClock');
 const earnings = require('../shared/earnings');
 const format = require('../shared/format');
 
@@ -157,15 +158,14 @@ async function fetchBalance(address, priceUsd) {
 // fallback and is refreshed from the prlscan API so the app's $/day and the
 // balance's USD figure track the real network + price instead of drifting
 // (a stale fallback silently overstates earnings as the network grows).
-let liveEcon = Object.assign({}, ECON, { live: { price: false, net: false, reward: false } });
+let liveEcon = Object.assign({}, ECON, { live: { price: false, difficulty: false, reward: false } });
 
-// Refresh liveEcon from the prlscan API (price, network hashrate, emission).
-// Best-effort: whatever doesn't come back stays on the previous/fallback value.
+// Refresh liveEcon from the prlscan API (price, and the latest block's
+// difficulty and reward). Best-effort: whatever doesn't come back falls back to
+// the ECON constants.
 async function refreshEconomics() {
-  const [market, metrics, blocks] = await Promise.all([
-    getJson(ECON_API.price), getJson(ECON_API.metrics), getJson(ECON_API.blocks),
-  ]);
-  liveEcon = resolveEconomics({ market, metrics, blocks }, ECON);
+  const [market, blocks] = await Promise.all([getJson(ECON_API.price), getJson(ECON_API.blocks)]);
+  liveEcon = resolveEconomics({ market, blocks }, ECON);
   return liveEcon;
 }
 
@@ -242,11 +242,21 @@ function extractLlamaZipWin(zipPath, dest) {
   });
 }
 
-async function startMining(settings) {
+// `llmCoRuns` is runPlan's plan.llm: whether a local LLM will share the cards
+// for this run. It decides the memory clock plan below.
+async function startMining(settings, llmCoRuns) {
   // Already mining (e.g. START LLM flipped the mode to 'both' while the engine
   // runs): keep the existing miner — reassigning it would orphan an unstoppable
   // engine process and spawn a second one on the same GPU.
+  //
+  // A miner that started mining-only may hold the Blackwell memory clock lock
+  // (below). When the LLM joins it, that lock goes now, before runPlan starts
+  // the model: a served model must never sit on a locked card. The other way
+  // round -- the mode flipped back to mining-only mid-run -- takes no lock; the
+  // card mines at the driver's clock until the next start, which is slower,
+  // never wrong.
   if (miner && miner.isRunning()) {
+    if (llmCoRuns) miner.releaseMemClocks();
     persistSettings(settings);
     return;
   }
@@ -308,6 +318,27 @@ async function startMining(settings) {
   const [gpus, cudaCards] = await Promise.all([probe.detectMinerGpus(), probe.detectCudaCards()]);
   if (epoch !== miningEpoch) return;
 
+  // Which cards lock their memory clock while mining: the RTX 5090 default
+  // (shared/memClock), or LLMJOB_MINE_MEM_CLOCK from the app's environment, the
+  // GUI's one switch for it. The renderer has no setting yet, so a rig that
+  // regresses with the lock needs a way off it: 0 leaves every card at the
+  // driver's clock, any other value locks every mining card at it, the same as
+  // --mine-mem-clock.
+  // Read on every start, like the CLI reads its flag; a bad value is logged and
+  // ignored, so a typo keeps the default rather than silently dropping it. Not
+  // while the LLM co-runs: llama-server is memory-bandwidth-bound, and here
+  // 'auto' always co-runs (resolvePlan gives { miner, llm } and runPlan starts
+  // both; the GUI has no demand mode), so plan.llm is the whole of the GUI's
+  // co-run condition. The plan rides on the start call, not on `settings`,
+  // so persistSettings never writes it to disk.
+  const memRequest = readMemClockEnv(process.env);
+  if (memRequest.warning) send('miner:log', { level: 'warn', line: memRequest.warning });
+  const memPlan = planMemClocks({
+    requestedMhz: memRequest.mhz, requestName: GUI_MEM_CLOCK_ENV,
+    cards: cudaCards, gpus, llmCoRuns: !!llmCoRuns,
+  });
+  if (memPlan.reason) send('miner:log', { level: memPlan.dropped ? 'warn' : 'info', line: memPlan.reason });
+
   miner = new PearlEngine({
     connect: (host, port) => net.connect(port, host),
     createCore: coreFactory({
@@ -323,7 +354,10 @@ async function startMining(settings) {
   });
   wireMinerEvents(miner, endpoint);
   try {
-    miner.start(Object.assign({}, settings, { endpoint, gpus, gpu: settings.gpu || null }));
+    miner.start(Object.assign({}, settings, {
+      endpoint, gpus, gpu: settings.gpu || null,
+      mineMemClockByIndex: memPlan.byIndex, mineMemClockDefault: memPlan.isDefault,
+    }));
   } catch (e) {
     reportLaunchFailure(e);
   }
@@ -359,6 +393,14 @@ function stopMining() {
   // Cancel any start still in flight (see miningEpoch) so it doesn't spawn or
   // start the LLM after this stop.
   miningEpoch++;
+  haltMiner();
+  send('miner:stopped');
+}
+
+// Stop the engine, its stats ticker and its board reports, and forget it. Half
+// of stopMining(): runPlan also uses it alone, when a plan drops mining but the
+// session goes on with the LLM.
+function haltMiner() {
   if (ticker) {
     clearInterval(ticker);
     ticker = null;
@@ -372,7 +414,6 @@ function stopMining() {
     miner.stop();
     miner = null;
   }
-  send('miner:stopped');
 }
 
 function appIcon() {
@@ -1152,12 +1193,23 @@ async function runPlan(settings) {
     // its share. Waiting for real TH/s confirms the GPU is mining and its VRAM is
     // allocated, so the LLM then sizes its offload to what's actually left.
     try {
-      await startMining(settings);
+      await startMining(settings, plan.llm);
     } catch (e) {
       send('miner:log', { level: 'error', line: 'start failed: ' + e.message });
     }
     if (plan.llm && miner && miner.isRunning()) await waitForMinerUp();
   } else {
+    // A miner from an earlier plan can still be running: LLM-only picked while
+    // mining. Stop it. Mining is no longer asked for, and the model is about to
+    // be served from these cards with no mining reserve, under the miner's
+    // memory clock lock if it holds one (on an RTX 5090 that slows the model).
+    // Not stopMining(): the session goes on, so the epoch stays (this run still
+    // starts the model) and the renderer is not told it stopped. Its mining
+    // figures are zeroed instead, as an LLM-only start shows them.
+    if (miner) {
+      haltMiner();
+      send('miner:stats', statsView(snapshot(initStats(Date.now()), Date.now())));
+    }
     persistSettings(settings); // startMining persists; do it here when the miner is off
   }
   // STOP arrived during miner setup or the hashrate wait: don't bring the LLM up

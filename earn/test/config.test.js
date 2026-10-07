@@ -39,7 +39,9 @@ describe('config', () => {
 
   test('engine and economics metadata are present', () => {
     expect(MINER).toMatchObject({ engine: 'llmjob-pearl', pool: 'HeroMiners', pow: 'pearlhash', devFeePct: 0, poolFeePct: 0 });
-    expect(ECON).toMatchObject({ NET_TH: 61e6, DAILY_NET_PRL: 1.62e6, FEE: 0.99, PRL_USD: 0.30 });
+    expect(ECON).toMatchObject({ DIFFICULTY: 34.45e6, BLOCK_REWARD: 2278, PRL_USD: 1.14 });
+    // Every fee the miner and the pool take comes off the estimate, and no other.
+    expect(ECON.FEE).toBe(1 - (MINER.devFeePct + MINER.poolFeePct) / 100);
   });
 });
 
