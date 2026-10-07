@@ -39,6 +39,26 @@ const gpuClocks = require('./gpuClocks');
 
 const RECONNECT_MS = 5000;
 
+// A card whose search fails is opened again after this long. The faults seen so
+// far ("misaligned address", "illegal instruction") came after minutes or hours
+// of clean mining, from an overclock at its edge or a driver hiccup, and the
+// card mined again after a restart. Left off, it cost its whole hashrate until
+// somebody noticed and restarted mining by hand.
+const RESTART_MS = 30 * 1000;
+// A card that fails again within STABLE_MS of coming back counts toward this
+// limit; after RESTART_LIMIT of those in a row it is left off, because a card
+// that cannot mine for ten minutes is not having a hiccup. A card that mines
+// that long first starts the count over.
+const RESTART_LIMIT = 3;
+const STABLE_MS = 10 * 60 * 1000;
+// Each opening of a card searches salts of its own: the run's first salt is moved
+// on by this many of the card's salts. Otherwise a card restarted under the same
+// job would search the salts it already searched and send the pool the same
+// shares again, which it rejects as duplicates. The card's salts only grow by
+// several a second, so 2^32 of them is years. Moving in steps of the stride keeps
+// the card in its own lane, clear of every other card.
+const SALT_RUN = 2 ** 32;
+
 // The card a core opened, as { index, name }, or null when it won't say.
 //
 // A core built before the device choice existed has no `device` at all, and the
@@ -52,17 +72,21 @@ function readDevice(core) {
 }
 
 class PearlMiner extends EventEmitter {
-  constructor({ connect, createCore, reconnectMs, clocks } = {}) {
+  constructor({ connect, createCore, reconnectMs, restartMs, clocks } = {}) {
     super();
     this.connect = connect;                 // (host, port) -> socket
     this.createCore = createCore || null;   // (profile) -> core, or null when unbuilt
     this.reconnectMs = reconnectMs == null ? RECONNECT_MS : reconnectMs;
+    this.restartMs = restartMs == null ? RESTART_MS : restartMs;
     this.clocks = clocks || gpuClocks;      // { lockMemoryClock, resetMemoryClock }
+    // Pending restarts of cards that failed (see _scheduleRestart), cleared by stop().
+    this.restartTimers = new Set();
 
     this.sock = null;
-    // One core per card. `cores` is [{ core, device }] in the order they were
-    // started; `device` is what that core reported, so it is the card really
-    // mining rather than the one we asked for.
+    // One core per card. `cores` is [{ core, device, slot }] in the order they
+    // were started; `device` is what that core reported, so it is the card really
+    // mining rather than the one we asked for, and `slot` is what it takes to open
+    // that card again (see _openCore).
     this.cores = [];
     this.hashrates = new Map();   // card index -> its latest TH/s
     this.running = false;
@@ -119,6 +143,9 @@ class PearlMiner extends EventEmitter {
 
     const wallet = combinePayoutAddress(settings.address, settings.mdlAddress);
     const worker = settings.worker || 'rig01';
+    // Kept for a card restarted mid-run, which is wired like the ones started here.
+    this.wallet = wallet;
+    this.worker = worker;
     const [host, port] = String(settings.endpoint || '').split(':');
     this.emit('started', { pool: settings.endpoint, wallet, worker });
 
@@ -145,57 +172,23 @@ class PearlMiner extends EventEmitter {
   // Each core gets its own slice of the search space (saltBase/saltStride), or
   // every card would search the same operands and find the same shares.
   _startCores(settings, wallet, worker) {
-    const profile = settings.profile || PROFILE;
     const cards = Array.isArray(settings.gpus) && settings.gpus.length
       ? settings.gpus
       : [null];                       // no list: one core, its own choice of card
     const failures = [];
-    // Which cards to lock the memory clock on, and at what: { index: mhz } from
-    // shared/memClock.planMemClocks, which the shells run. The miner does not
-    // decide this -- it cannot see the compute capabilities, the request, or
-    // whether an LLM co-runs -- it only takes the lock a card was planned for.
-    const memClocks = settings.mineMemClockByIndex || {};
-    const anyMemClock = Object.keys(memClocks).length > 0;
 
     for (let i = 0; i < cards.length; i++) {
       const card = cards[i];
       const opts = { saltBase: i, saltStride: cards.length };
       if (card && Number.isInteger(card.index)) opts.deviceIndex = card.index;
-      let core;
+      // Everything a restart needs to open this card again (see _scheduleRestart).
+      const slot = { opts, runs: 0, fails: 0, startedAt: 0 };
       let device;
       try {
-        core = this.createCore(profile, opts);
-        // A factory that returns nothing rather than throwing: no core, so the
-        // same answer as one that refused. Wiring is inside the try for the same
-        // reason — a core we cannot listen to is a core we cannot mine with.
-        if (!core) throw new Error('the Pearl core did not initialise');
-        device = readDevice(core);
-        this._wireCore(core, device, wallet, worker);
+        ({ device } = this._openCore(slot, wallet, worker));
       } catch (e) {
         failures.push({ card, message: (e && e.message) || String(e) });
         continue;
-      }
-      this.cores.push({ core, device });
-      // Name the card in the log, every run and every card. The core chooses it
-      // — the host cannot see CUDA's device list — so this is the only place the
-      // two halves of "which GPU is mining" are written down together. A rig
-      // whose UI names one card and whose fan spins up on another (issue #226)
-      // is diagnosable from a log file because of it.
-      if (device) {
-        this.emit('log', {
-          level: 'info',
-          line: 'mining on GPU ' + device.index + ' · ' + device.name,
-        });
-      }
-      // Only a card whose core started gets locked: a card that refused is not
-      // mining, and the lock would only slow whatever else is using it. A card
-      // the plan has no entry for -- a 4090 beside a 5090 on the default -- is
-      // left alone. A core that will not name its card is told about below.
-      if (anyMemClock) {
-        const index = device ? device.index : null;
-        if (index == null || memClocks[index]) {
-          this._lockMemClock(index, index == null ? null : memClocks[index], !!settings.mineMemClockDefault);
-        }
       }
 
       // A core that won't say which card it opened is one built before any of
@@ -231,6 +224,55 @@ class PearlMiner extends EventEmitter {
       return false;
     }
     return true;
+  }
+
+  // Open one card's core and put it to work: wired, in `cores`, named in the log
+  // and, when the memory-clock plan names its card, locked. Returns
+  // { core, device }, or throws when the card will not open. Used by start() and
+  // by a restart alike.
+  _openCore(slot, wallet, worker) {
+    const { opts } = slot;
+    // A fresh run of salts each time this card opens (see SALT_RUN). The first
+    // run starts where it always has, at the card's own base.
+    const saltBase = opts.saltBase + opts.saltStride * SALT_RUN * slot.runs;
+    slot.runs++;
+    slot.startedAt = Date.now();
+    const core = this.createCore(this.profile(), { ...opts, saltBase });
+    // A factory that returns nothing rather than throwing: no core, so the same
+    // answer as one that refused. Wiring is inside the caller's try for the same
+    // reason — a core we cannot listen to is a core we cannot mine with.
+    if (!core) throw new Error('the Pearl core did not initialise');
+    const device = readDevice(core);
+    this._wireCore(core, device, wallet, worker);
+    this.cores.push({ core, device, slot });
+    // Name the card in the log, every run and every card. The core chooses it
+    // — the host cannot see CUDA's device list — so this is the only place the
+    // two halves of "which GPU is mining" are written down together. A rig
+    // whose UI names one card and whose fan spins up on another (issue #226)
+    // is diagnosable from a log file because of it.
+    if (device) {
+      this.emit('log', {
+        level: 'info',
+        line: 'mining on GPU ' + device.index + ' · ' + device.name,
+      });
+    }
+    // Only a card whose core started gets locked: a card that refused is not
+    // mining, and the lock would only slow whatever else is using it. Which
+    // cards, and at what clock, is { index: mhz } from shared/memClock's
+    // planMemClocks, which the shells run: the miner cannot see the compute
+    // capabilities, the request, or whether an LLM co-runs, so it only takes the
+    // lock a card was planned for. A card the plan has no entry for -- a 4090
+    // beside a 5090 on the default -- is left alone. A core that will not name
+    // its card is told about in _lockMemClock.
+    const memClocks = this.settings.mineMemClockByIndex || {};
+    if (Object.keys(memClocks).length > 0) {
+      const index = device ? device.index : null;
+      if (index == null || memClocks[index]) {
+        this._lockMemClock(index, index == null ? null : memClocks[index],
+          !!this.settings.mineMemClockDefault);
+      }
+    }
+    return { core, device };
   }
 
   // Lock one mining card's memory clock (the Blackwell default, or
@@ -469,7 +511,8 @@ class PearlMiner extends EventEmitter {
   }
 
   // A core's search failed, and a failed core does not search again (its CUDA
-  // context is usually gone). Drop that one card and keep mining on the rest.
+  // context is usually gone). Drop that one card, keep mining on the rest, and
+  // open the card again in a while (see _scheduleRestart).
   //
   // This used to be relayed as a plain 'error' with the core left in `cores`,
   // so the next pool job called setJob on it. The native core then started a
@@ -481,6 +524,7 @@ class PearlMiner extends EventEmitter {
     const i = this.cores.findIndex((c) => c.core === core);
     // Already dropped, or the miner has stopped: nothing left to do.
     if (i < 0) return;
+    const { slot } = this.cores[i];
     this.cores.splice(i, 1);
     // Frees its VRAM and joins its (finished) search thread.
     try { core.stop(); } catch (e) { /* already gone */ }
@@ -504,13 +548,74 @@ class PearlMiner extends EventEmitter {
       this.emit('log', { level: 'error', line: 'the GPU stopped: ' + message });
     }
 
-    // The last card has gone: the same end as a start with no core, an error
-    // that says why and then 'stopped', so the app shows mining has stopped
-    // instead of a pool connection that mines nothing.
+    this._cardDown(slot, device, err);
+  }
+
+  // A card is down. Open it again in a while, unless it keeps failing.
+  //
+  // A card left off with others still mining just stays off. The last card left
+  // off is the end of mining: the same end as a start with no core, an error
+  // that says why and then 'stopped', so the app shows mining has stopped
+  // instead of a pool connection that mines nothing. While the last card waits
+  // for its restart, the pool connection stays open, so it comes back to work.
+  _cardDown(slot, device, err) {
+    if (this._scheduleRestart(slot, device)) return;
     if (!this.cores.length) {
       this.emit('error', err);
       this.stop(true);
     }
+  }
+
+  // Returns true when a restart is scheduled, false when the card is left off.
+  //
+  // The timer is not unref'd, unlike the reconnect timer. With the last card
+  // down, it can be the one thing this miner has left to do, and a process that
+  // drains its loop and exits 0 there is one systemd's Restart=on-failure never
+  // brings back. stop() clears it.
+  _scheduleRestart(slot, device) {
+    const where = cardName(device);
+    // A card that mined a good while since it last came up was healthy, so this
+    // is a new fault, not the same one again.
+    if (Date.now() - slot.startedAt >= STABLE_MS) slot.fails = 0;
+    if (slot.fails >= RESTART_LIMIT) {
+      this.emit('log', {
+        level: 'error',
+        line: 'leaving ' + where + ' off: it stopped again within ' + STABLE_MS / 60000
+          + ' minutes of each of ' + RESTART_LIMIT + ' restarts. Stop and start mining to try it again.',
+      });
+      return false;
+    }
+    slot.fails++;
+    this.emit('log', {
+      level: 'info',
+      line: 'restarting ' + where + ' in ' + Math.round(this.restartMs / 1000) + ' s',
+    });
+    const timer = setTimeout(() => {
+      this.restartTimers.delete(timer);
+      this._restartCore(slot, device);
+    }, this.restartMs);
+    this.restartTimers.add(timer);
+    return true;
+  }
+
+  // Open a failed card again and give it the job the rest of the rig is on. The
+  // pool will not send that job again, and a core does not search until it has
+  // one. Only reached while running: stop() clears the timers that call it.
+  _restartCore(slot, device) {
+    let core;
+    try {
+      ({ core } = this._openCore(slot, this.wallet, this.worker));
+    } catch (e) {
+      this.emit('log', {
+        level: 'error',
+        line: 'could not restart ' + cardName(device) + ': ' + ((e && e.message) || String(e)),
+      });
+      this._cardDown(slot, device, e);
+      return;
+    }
+    const job = this.job;
+    const bound = job && shareBound(job.target, this.profile());
+    if (bound != null) core.setJob({ header: job.header, target: bound, jobId: job.jobId });
   }
 
   // The rig's throughput: every card's latest tick, added up. A card that has
@@ -572,6 +677,8 @@ class PearlMiner extends EventEmitter {
     if (!this.running) return false;
     this.running = false;
     if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
+    for (const t of this.restartTimers) clearTimeout(t);
+    this.restartTimers.clear();
     for (const c of this.cores) {
       try { c.core.stop(); } catch (e) { /* that core is already gone */ }
     }
@@ -586,10 +693,18 @@ class PearlMiner extends EventEmitter {
   }
 }
 
+// How the log names a card: by index and name, or not at all for a core that
+// will not say which card it opened.
+function cardName(device) {
+  return device ? 'GPU ' + device.index + ' (' + device.name + ')' : 'the GPU';
+}
+
 // Only ever called for an auth-fail or submit-rejected, both of which carry a
 // non-null error by construction — hence no null guard.
 function errText(err) {
   return (err.code != null ? '[' + err.code + '] ' : '') + (err.message || '');
 }
 
-module.exports = { PearlMiner, RECONNECT_MS };
+module.exports = {
+  PearlMiner, RECONNECT_MS, RESTART_MS, RESTART_LIMIT, STABLE_MS, SALT_RUN,
+};

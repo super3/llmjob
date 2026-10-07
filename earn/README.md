@@ -102,6 +102,18 @@ the network board show one row per card.
 A card that can't start is skipped, not fatal — the usual reason is the local LLM
 holding most of that card's VRAM. The rest of the rig keeps mining.
 
+A card that stops mid-run (a CUDA error such as `misaligned address`) is opened
+again 30 seconds later, on salts it hasn't searched, so it can't resend shares the
+pool already has. If it stops again within 10 minutes of each of 3 restarts in a
+row, it's left off until mining is restarted. That usually means an unstable
+overclock or a card that is failing.
+
+```
+GPU 1 (NVIDIA GeForce RTX 4070) stopped: CUDA error during search: an illegal instruction was encountered
+restarting GPU 1 (NVIDIA GeForce RTX 4070) in 30 s
+mining on GPU 1 · NVIDIA GeForce RTX 4070
+```
+
 Both shells set `CUDA_DEVICE_ORDER=PCI_BUS_ID` at startup, so "GPU 1" means the
 same card to the miner as it does to `nvidia-smi`. Left to itself the CUDA
 runtime numbers cards by its own "fastest first" heuristic, which on a mixed rig

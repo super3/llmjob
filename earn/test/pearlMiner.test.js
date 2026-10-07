@@ -9,7 +9,9 @@ jest.mock('../src/main/gpuClocks', () => ({
 }));
 
 const { EventEmitter } = require('events');
-const { PearlMiner, RECONNECT_MS } = require('../src/main/pearlMiner');
+const {
+  PearlMiner, RECONNECT_MS, RESTART_MS, RESTART_LIMIT, STABLE_MS, SALT_RUN,
+} = require('../src/main/pearlMiner');
 const gpuClocks = require('../src/main/gpuClocks');
 const { encode } = require('../src/shared/miner/stratum');
 const { shareBound, PROFILE, buildConfig52, regionToTile } = require('../src/shared/miner/pearlhash');
@@ -421,19 +423,25 @@ describe('PearlMiner — shares', () => {
     expect(sock.written).toHaveLength(0);
   });
 
-  // A rig's only core failing is the end of mining: the error is relayed as it
-  // came, and the miner stops rather than holding a pool connection open for a
-  // card that will never search again.
-  test('hashrate and core errors are relayed', () => {
-    const { m, core, events } = withJob();
-    core.emit('hashrate', 296.5);
-    const err = new Error('kernel launch failed');
-    core.emit('error', err);
-    expect(events.hashrate).toEqual([296.5]);
-    expect(events.error).toEqual([err]);
-    expect(core.stop).toHaveBeenCalled();
-    expect(events.stopped).toHaveLength(1);
-    expect(m.isRunning()).toBe(false);
+  // A rig's only core failing is not the end of mining: the card is opened again
+  // after a while (see 'restarting a card that stopped'). Until then the failure
+  // is in the log, not raised as an error, and the pool connection stays open
+  // for the card to come back to.
+  test('hashrate is relayed, and a failed only core is dropped without ending mining', () => {
+    jest.useFakeTimers();
+    try {
+      const { m, core, events } = withJob();
+      core.emit('hashrate', 296.5);
+      core.emit('error', new Error('kernel launch failed'));
+      expect(events.hashrate).toEqual([296.5]);
+      expect(core.stop).toHaveBeenCalled();
+      expect(events.error).toEqual([]);
+      expect(events.stopped).toEqual([]);
+      expect(m.isRunning()).toBe(true);
+      m.stop();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 
@@ -841,6 +849,14 @@ describe('PearlMiner — a core that fails mid-run', () => {
   ];
   const MISALIGNED = 'CUDA error during search: misaligned address';
 
+  // A failed card's restart is a timer; fake ones keep a test from leaving a
+  // real 30 s timer behind, and let a test run the restart when it wants to.
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => {
+    jest.clearAllTimers();
+    jest.useRealTimers();
+  });
+
   // One fresh core per card, reporting the card it was asked for (the real
   // addon's behaviour), and a clocks double that records the order of every
   // lock, reset and 'stopped'.
@@ -940,20 +956,34 @@ describe('PearlMiner — a core that fails mid-run', () => {
     expect(b.calls.slice(3)).toEqual([['reset', 0], ['stopped']]);
   });
 
-  // Every card gone is the same end as a start with no core: an error that
-  // says why, then 'stopped', so the app shows mining has stopped rather than
-  // a pool connection that mines nothing. Locks are released before 'stopped',
-  // because the demand gate starts the LLM the moment it hears it.
-  test('when the last card fails, reports it and stops, releasing every lock first', () => {
+  // Every card left off for good is the same end as a start with no core: an
+  // error that says why, then 'stopped', so the app shows mining has stopped
+  // rather than a pool connection that mines nothing. Locks are released before
+  // 'stopped', because the demand gate starts the LLM the moment it hears it.
+  test('when the last card is left off, reports it and stops, releasing every lock first', () => {
     const b = rig();
     b.m.start({ ...settings, gpus: GPUS, mineMemClockByIndex: { 0: 7001, 1: 7001 } });
     b.sock.emit('connect');
-    b.made[0].emit('error', new Error('GPU 0: ' + MISALIGNED));
-    expect(b.m.isRunning()).toBe(true);
+    // From here on, no card opens again.
+    const gone = new Error('no CUDA device found');
+    b.m.createCore = jest.fn(() => { throw gone; });
 
-    const last = new Error('GPU 1: ' + MISALIGNED);
-    b.made[1].emit('error', last);
-    expect(b.events.error).toEqual([last]);
+    b.made[0].emit('error', new Error('GPU 0: ' + MISALIGNED));
+    jest.advanceTimersByTime(RESTART_MS * RESTART_LIMIT);
+    expect(b.lines()).toContain('leaving GPU 0 (NVIDIA GeForce RTX 5090) off: it stopped again within 10 '
+      + 'minutes of each of 3 restarts. Stop and start mining to try it again.');
+    // GPU 1 is still mining, so the rig is.
+    expect(b.m.isRunning()).toBe(true);
+    expect(b.events.error).toEqual([]);
+
+    b.made[1].emit('error', new Error('GPU 1: ' + MISALIGNED));
+    jest.advanceTimersByTime(RESTART_MS * (RESTART_LIMIT - 1));
+    // Waiting on its last restart, the rig is still up.
+    expect(b.m.isRunning()).toBe(true);
+    jest.advanceTimersByTime(RESTART_MS);
+    expect(b.m.createCore).toHaveBeenCalledTimes(2 * RESTART_LIMIT);
+    // The error is why the card could not come back.
+    expect(b.events.error).toEqual([gone]);
     // Marked as a failure, which PearlEngine turns into a non-zero exit code.
     expect(b.events.stopped).toEqual([{ failed: true }]);
     expect(b.m.isRunning()).toBe(false);
@@ -963,6 +993,7 @@ describe('PearlMiner — a core that fails mid-run', () => {
     expect(b.lines()).toEqual(expect.arrayContaining([
       'GPU 0 (NVIDIA GeForce RTX 5090) stopped: ' + MISALIGNED,
       'GPU 1 (NVIDIA GeForce RTX 4090) stopped: ' + MISALIGNED,
+      'could not restart GPU 1 (NVIDIA GeForce RTX 4090): no CUDA device found',
     ]));
   });
 
@@ -1008,9 +1039,213 @@ describe('PearlMiner — a core that fails mid-run', () => {
     old.m.start(settings);
     old.made[0].emit('error', 'CUDA_ERROR_LAUNCH_FAILED');
     expect(old.lines()).toContain('the GPU stopped: CUDA_ERROR_LAUNCH_FAILED');
-    expect(old.events.error).toEqual(['CUDA_ERROR_LAUNCH_FAILED']);
+    expect(old.lines()).toContain('restarting the GPU in 30 s');
     expect(old.events.hashrate).toEqual([]);
-    expect(old.m.isRunning()).toBe(false);
+  });
+});
+
+// A card whose search failed is opened again after RESTART_MS, the way a user
+// would by stopping and starting mining, but for that card alone.
+describe('PearlMiner — restarting a card that stopped', () => {
+  const GPUS = [
+    { index: 0, name: 'NVIDIA RTX PRO 4500 Blackwell' },
+    { index: 1, name: 'NVIDIA GeForce RTX 4070' },
+  ];
+  const ILLEGAL = 'CUDA error during search: an illegal instruction was encountered';
+
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => {
+    jest.clearAllTimers();
+    jest.useRealTimers();
+  });
+
+  function rig() {
+    const made = [];
+    const sock = makeSocket();
+    const clocks = {
+      lockMemoryClock: jest.fn(() => ({ ok: true, error: null })),
+      resetMemoryClock: jest.fn(() => ({ ok: true, error: null })),
+    };
+    const createCore = jest.fn((profile, opts) => {
+      const c = makeCore();
+      c.device = { index: opts.deviceIndex, name: GPUS[opts.deviceIndex].name };
+      made.push(c);
+      return c;
+    });
+    const m = new PearlMiner({ connect: () => sock, createCore, reconnectMs: 0, clocks });
+    const events = { log: [], hashrate: [], error: [], stopped: [] };
+    for (const k of Object.keys(events)) m.on(k, (...a) => events[k].push(a.length > 1 ? a : a[0]));
+    const lines = () => events.log.map((l) => l.line);
+    return { m, sock, made, clocks, createCore, events, lines };
+  }
+
+  // The newest core made for a card.
+  const coreFor = (b, index) => b.made.filter((c) => c.device.index === index).pop();
+
+  test('opens the card again after a wait, on its own card, and hands it the current job', () => {
+    const b = rig();
+    b.m.start({ ...settings, gpus: GPUS, mineMemClockByIndex: { 0: 7001, 1: 7001 } });
+    b.sock.emit('connect');
+    b.sock.emit('data', jobLine());
+    const first = b.made[1];
+    first.emit('error', new Error('GPU 1: ' + ILLEGAL));
+    expect(b.lines()).toContain('restarting GPU 1 (NVIDIA GeForce RTX 4070) in 30 s');
+
+    // Nothing until the wait is over.
+    jest.advanceTimersByTime(RESTART_MS - 1);
+    expect(b.createCore).toHaveBeenCalledTimes(2);
+    jest.advanceTimersByTime(1);
+    expect(b.createCore).toHaveBeenCalledTimes(3);
+
+    // The same card, in the same lane, on salts its first run never reaches.
+    expect(b.createCore.mock.calls[2][1]).toEqual({
+      deviceIndex: 1, saltStride: 2, saltBase: 1 + 2 * SALT_RUN,
+    });
+    const again = coreFor(b, 1);
+    expect(again).not.toBe(first);
+    expect(b.m.devices()).toEqual([GPUS[0], GPUS[1]]);
+    expect(b.lines().filter((l) => l === 'mining on GPU 1 · NVIDIA GeForce RTX 4070')).toHaveLength(2);
+    // Locked again for mining, after the release at the failure.
+    expect(b.clocks.lockMemoryClock.mock.calls).toEqual([[0, 7001], [1, 7001], [1, 7001]]);
+    // The job the rig is on, so it searches now rather than at the next job.
+    expect(again.setJob).toHaveBeenCalledTimes(1);
+    expect(again.setJob.mock.calls[0][0].jobId).toBe('00000000_2097152');
+
+    // It counts again: its hashrate is in the rig total.
+    b.made[0].emit('hashrate', 180);
+    again.emit('hashrate', 115);
+    expect(b.m.totalHashrate()).toBe(295);
+    // And the next job reaches it like any other card.
+    b.sock.emit('data', jobLine({ job_id: '00000000_2097153' }));
+    expect(again.setJob).toHaveBeenCalledTimes(2);
+    expect(first.setJob).toHaveBeenCalledTimes(1);
+  });
+
+  // With the last card down, the rig waits for it with the pool connection open.
+  // A job that arrives in the meantime is the one the card is handed.
+  test('restarts the only card, keeping the pool connection, on the latest job', () => {
+    const b = rig();
+    b.m.start({ ...settings, gpus: [GPUS[1]] });
+    b.sock.emit('connect');
+    b.sock.emit('data', jobLine());
+    b.made[0].emit('error', new Error('GPU 1: ' + ILLEGAL));
+    expect(b.m.isRunning()).toBe(true);
+    expect(b.m.devices()).toEqual([]);
+    expect(b.sock.destroy).not.toHaveBeenCalled();
+
+    b.sock.emit('data', jobLine({ job_id: '00000000_2097153' }));
+    jest.advanceTimersByTime(RESTART_MS);
+    expect(b.createCore.mock.calls[1][1]).toEqual({ deviceIndex: 1, saltStride: 1, saltBase: SALT_RUN });
+    expect(b.made[1].setJob.mock.calls[0][0].jobId).toBe('00000000_2097153');
+    expect(b.events.error).toEqual([]);
+    expect(b.events.stopped).toEqual([]);
+  });
+
+  // A core searches nothing until it has a job, and there is none to give it
+  // yet; it gets the first one when the pool sends it.
+  test('a card restarted before any job waits for the first one', () => {
+    const b = rig();
+    b.m.start({ ...settings, gpus: GPUS });
+    b.made[0].emit('error', new Error('GPU 0: ' + ILLEGAL));
+    jest.advanceTimersByTime(RESTART_MS);
+    const again = coreFor(b, 0);
+    expect(again.setJob).not.toHaveBeenCalled();
+    b.sock.emit('connect');
+    b.sock.emit('data', jobLine());
+    expect(again.setJob).toHaveBeenCalledTimes(1);
+  });
+
+  // Each run gets salts of its own, however many times the card comes back.
+  test('every run of a card searches its own salts', () => {
+    const b = rig();
+    b.m.start({ ...settings, gpus: GPUS });
+    for (let run = 1; run <= RESTART_LIMIT; run++) {
+      coreFor(b, 0).emit('error', new Error('GPU 0: ' + ILLEGAL));
+      jest.advanceTimersByTime(RESTART_MS);
+    }
+    const bases = b.createCore.mock.calls
+      .filter(([, o]) => o.deviceIndex === 0)
+      .map(([, o]) => o.saltBase);
+    expect(bases).toEqual([0, 2 * SALT_RUN, 4 * SALT_RUN, 6 * SALT_RUN]);
+  });
+
+  // A card that cannot mine for ten minutes at a time is not having a hiccup.
+  // Leave it off, say why and how to try again, and keep the rest mining.
+  test('leaves a card off once it keeps failing soon after coming back', () => {
+    const b = rig();
+    b.m.start({ ...settings, gpus: GPUS });
+    for (let i = 0; i < RESTART_LIMIT; i++) {
+      coreFor(b, 1).emit('error', new Error('GPU 1: ' + ILLEGAL));
+      jest.advanceTimersByTime(RESTART_MS);
+    }
+    expect(b.createCore).toHaveBeenCalledTimes(2 + RESTART_LIMIT);
+
+    // Fails again a minute after its third restart: that is the limit.
+    jest.advanceTimersByTime(60 * 1000);
+    coreFor(b, 1).emit('error', new Error('GPU 1: ' + ILLEGAL));
+    expect(b.lines()).toContain('leaving GPU 1 (NVIDIA GeForce RTX 4070) off: it stopped again within 10 '
+      + 'minutes of each of 3 restarts. Stop and start mining to try it again.');
+    jest.advanceTimersByTime(STABLE_MS);
+    expect(b.createCore).toHaveBeenCalledTimes(2 + RESTART_LIMIT);
+    expect(b.m.devices()).toEqual([GPUS[0]]);
+    expect(b.m.isRunning()).toBe(true);
+    expect(b.events.error).toEqual([]);
+  });
+
+  // A card that mined ten minutes since it came back was healthy, so a fault
+  // after that starts the count over rather than adding to it. A rig whose card
+  // faults every hour or so keeps getting it back.
+  test('a card that mined a while since its last restart starts the count over', () => {
+    const b = rig();
+    b.m.start({ ...settings, gpus: GPUS });
+    for (let i = 0; i < 2 * RESTART_LIMIT; i++) {
+      jest.advanceTimersByTime(STABLE_MS);
+      coreFor(b, 1).emit('error', new Error('GPU 1: ' + ILLEGAL));
+      jest.advanceTimersByTime(RESTART_MS);
+    }
+    expect(b.createCore).toHaveBeenCalledTimes(2 + 2 * RESTART_LIMIT);
+    expect(b.lines().some((l) => /^leaving/.test(l))).toBe(false);
+    expect(b.m.devices()).toEqual([GPUS[0], GPUS[1]]);
+  });
+
+  // A card that will not open is a failed restart, and waits for the next one.
+  test('a restart that cannot open the card says why and tries again', () => {
+    const b = rig();
+    b.m.start({ ...settings, gpus: GPUS });
+    const real = b.createCore.getMockImplementation();
+    b.m.createCore = jest.fn()
+      .mockImplementationOnce(() => null)
+      .mockImplementation(real);
+    b.made[1].emit('error', new Error('GPU 1: ' + ILLEGAL));
+    jest.advanceTimersByTime(RESTART_MS);
+    expect(b.lines()).toContain('could not restart GPU 1 (NVIDIA GeForce RTX 4070): the Pearl core did not initialise');
+    expect(b.lines().filter((l) => l === 'restarting GPU 1 (NVIDIA GeForce RTX 4070) in 30 s')).toHaveLength(2);
+    jest.advanceTimersByTime(RESTART_MS);
+    expect(b.m.devices()).toEqual([GPUS[0], GPUS[1]]);
+
+    // A factory that throws something that is not an Error is quoted as it is.
+    b.m.createCore = jest.fn(() => { throw 'CUDA_ERROR_NO_DEVICE'; });
+    coreFor(b, 0).emit('error', new Error('GPU 0: ' + ILLEGAL));
+    jest.advanceTimersByTime(RESTART_MS);
+    expect(b.lines()).toContain('could not restart GPU 0 (NVIDIA RTX PRO 4500 Blackwell): CUDA_ERROR_NO_DEVICE');
+  });
+
+  // A stop somebody asked for cancels a restart that has not happened yet.
+  test('stop() cancels a pending restart', () => {
+    const b = rig();
+    b.m.start({ ...settings, gpus: GPUS });
+    b.made[1].emit('error', new Error('GPU 1: ' + ILLEGAL));
+    b.m.stop();
+    jest.advanceTimersByTime(RESTART_MS * 10);
+    expect(b.createCore).toHaveBeenCalledTimes(2);
+    expect(b.events.stopped).toEqual([{}]);
+  });
+
+  test('the wait is configurable, and defaults to 30 s', () => {
+    expect(RESTART_MS).toBe(30000);
+    expect(new PearlMiner({}).restartMs).toBe(RESTART_MS);
+    const m = new PearlMiner({ restartMs: 5 });
+    expect(m.restartMs).toBe(5);
   });
 });
 

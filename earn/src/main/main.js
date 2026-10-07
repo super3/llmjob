@@ -158,15 +158,14 @@ async function fetchBalance(address, priceUsd) {
 // fallback and is refreshed from the prlscan API so the app's $/day and the
 // balance's USD figure track the real network + price instead of drifting
 // (a stale fallback silently overstates earnings as the network grows).
-let liveEcon = Object.assign({}, ECON, { live: { price: false, net: false, reward: false } });
+let liveEcon = Object.assign({}, ECON, { live: { price: false, difficulty: false, reward: false } });
 
-// Refresh liveEcon from the prlscan API (price, network hashrate, emission).
-// Best-effort: whatever doesn't come back stays on the previous/fallback value.
+// Refresh liveEcon from the prlscan API (price, and the latest block's
+// difficulty and reward). Best-effort: whatever doesn't come back falls back to
+// the ECON constants.
 async function refreshEconomics() {
-  const [market, metrics, blocks] = await Promise.all([
-    getJson(ECON_API.price), getJson(ECON_API.metrics), getJson(ECON_API.blocks),
-  ]);
-  liveEcon = resolveEconomics({ market, metrics, blocks }, ECON);
+  const [market, blocks] = await Promise.all([getJson(ECON_API.price), getJson(ECON_API.blocks)]);
+  liveEcon = resolveEconomics({ market, blocks }, ECON);
   return liveEcon;
 }
 
