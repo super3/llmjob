@@ -3961,13 +3961,15 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
 #endif
 }
 
-// GA100's transcript hash (PEARL_TALL_UNFUSED): one thread a region over the batch the
-// fold just wrote, `regions` x 64 bytes at `tr`, each region at its batch-local number.
-// The same tests as the fold's own hash: the top word against the target's, then the
-// whole hash, and a hit is reported through the same list. Every architecture compiles
-// it, because the host launches it by name and a build without sm_80 (the CUDA 13 core)
-// would otherwise have no symbol to link; outside sm_80 its body is empty. The host
-// launches it only when the loaded fold is the unfused one (Ctx::foldUnfused).
+// The transcript hash after a fold that stores every transcript: GA100's unfused fold
+// (PEARL_TALL_UNFUSED) and Hopper's wgmma fold (PEARL_HOPPER_WGMMA, sm_90a). One thread a
+// region over the batch the fold just wrote, `regions` x 64 bytes at `tr`, each region at
+// its batch-local number. The same tests as the fold's own hash: the top word against the
+// target's, then the whole hash, and a hit is reported through the same list. Every
+// architecture compiles it, because the host launches it by name and a build without sm_80
+// (the CUDA 13 core) would otherwise have no symbol to link; its body is empty except on
+// sm_80 and the sm_90a wgmma build. The host launches it only after those two folds
+// (Ctx::foldUnfused, Ctx::foldHopper).
 extern "C" __global__ __launch_bounds__(256) void pearl_tall_hash80(
     const uint4 *__restrict__ tr, uint32_t regions, const PearlTranscriptTest test,
     const PearlHitList hits, uint32_t one) {
@@ -4045,7 +4047,7 @@ extern "C" __global__ __launch_bounds__(256) void pearl_tall_hash80(
 
 // Hopper's wgmma fold (PEARL_HOPPER_WGMMA; see pearl_config.h). With the switch on every
 // architecture compiles the symbol, because the host names it; only the sm_90a pass has a
-// body, and only that body carries the 384-thread launch bound the host keys on. With it
+// body, and only that body carries the 288-thread launch bound the host keys on. With it
 // off (the default) neither the kernel nor the host's references exist.
 #if PEARL_HOPPER_WGMMA
 #if PEARL_HOPPER_WGMMA_BODY
@@ -4094,14 +4096,17 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
   constexpr uint32_t k = PEARL_FOLD_K, rank = PEARL_FOLD_RANK, chunks = PEARL_FOLD_CHUNKS;
   if (k_arg != k || rank_arg != rank || chunks_arg != chunks) return;
   if (blockDim.x != PEARL_HOPPER_THREADS) return;
-  constexpr uint32_t BM = PEARL_TALL_BM, BN = PEARL_TALL_BN, SK = PEARL_TALL_STAGE_K;
+  constexpr uint32_t BM = PEARL_HOPPER_BM, BN = PEARL_TALL_BN, SK = PEARL_TALL_STAGE_K;
+  constexpr uint32_t ROWOFS = PEARL_HOPPER_ROW_OFFSETS;   // row offsets a row group: 8
   constexpr uint32_t NST = PEARL_HOPPER_STAGES;
-  constexpr uint32_t STAGE = (BM + BN) * SK;           // B's 256 rows, then A's 192
+  constexpr uint32_t STAGE = (BM + BN) * SK;           // B's 256 rows, then A's 128
   constexpr uint32_t KBLK = k / SK;                    // stages a tile: 32
-  constexpr uint32_t NWARPS = PEARL_HOPPER_THREADS / 32u;
-  constexpr uint32_t NREG = BM / 32u * 4u * 8u;        // regions a tile: 192
-  static_assert(BM == 192u && BN == 256u && SK == 64u && rank == 2u * SK,
-                "three m64n256 warpgroups; a chunk is two stages of four k32 steps");
+  constexpr uint32_t CWARPS = 8u;                      // two consumer warpgroups
+  constexpr uint32_t NREG = BM / 32u * 4u * 8u;        // regions a tile: 128
+  static_assert(BM == 128u && BN == 256u && SK == 64u && rank == 2u * SK && ROWOFS * 16u == BM,
+                "two m64n256 warpgroups; a chunk is two stages of four k32 steps");
+  static_assert(PEARL_HOPPER_THREADS == CWARPS * 32u + 32u, "consumers, then one producer warp");
+  static_assert(NST >= 2u, "a chunk waits for two stages before its first wgmma");
   static_assert(STAGE % 1024u == 0u && (BN * SK) % 1024u == 0u,
                 "every operand starts on the swizzle period");
   static_assert(PEARL_HOPPER_SMEM >= NST * STAGE + NREG * 64u + 16u * NST, "shared layout");
@@ -4109,12 +4114,13 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
   const uint32_t sbase = (uint32_t)__cvta_generic_to_shared(pearl_hopper_smem);
   const uint32_t sTr = sbase + NST * STAGE;
   const uint32_t barFull = sTr + NREG * 64u;
-  const uint32_t cnt = barFull + 8u * NST;
+  const uint32_t barEmpty = barFull + 8u * NST;
   const uint32_t tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;
 
-  // The tall fold's walk: row groups of 12 row offsets by column groups of 16 column
-  // offsets, in bands band_depth row groups deep (the host's Ampere band, a power of two).
-  const uint32_t row_groups = (rows_valid + PEARL_TALL_ROW_OFFSETS - 1u) / PEARL_TALL_ROW_OFFSETS;
+  // The tall fold's walk on this kernel's tiles: row groups of 8 row offsets (128 rows) by
+  // column groups of 16 column offsets, in bands band_depth row groups deep (the host's
+  // Ampere band, a power of two).
+  const uint32_t row_groups = (rows_valid + ROWOFS - 1u) / ROWOFS;
   const uint32_t col_block_groups = col_groups / PEARL_TALL_COL_OFFSETS;
   const uint32_t walk_rows = row_groups;
   const uint32_t band_shift = (uint32_t)__ffs(band_depth) - 1u;
@@ -4146,7 +4152,7 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
     if (sbase & 1023u) __trap();
     for (uint32_t s = 0; s < NST; s++) {
       pearl_h_mbar_init(barFull + 8u * s, 1u);
-      asm volatile("st.shared.u32 [%0], %1;" ::"r"(cnt + 4u * s), "r"(0u) : "memory");
+      pearl_h_mbar_init(barEmpty + 8u * s, CWARPS);
     }
     asm volatile("fence.mbarrier_init.release.cluster;" ::: "memory");
   }
@@ -4154,29 +4160,37 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
     asm volatile("st.shared.v4.u32 [%0], {%1,%1,%1,%1};" ::"r"(sTr + o), "r"(0u) : "memory");
   __syncthreads();
 
-  // Stage G of this CTA's walk: its tile G / KBLK, k-block G % KBLK, into buffer G % NST.
-  // Both boxes count their full size toward FULL, A's rows past m (zero-filled) included.
-  const uint32_t mytiles = blockIdx.x < tiles ? (tiles - 1u - blockIdx.x) / gridDim.x + 1u : 0u;
-  const uint32_t total = mytiles * KBLK;
-  auto fill = [&](uint32_t G) {
-    const uint32_t s = G % NST, v = blockIdx.x + (G / KBLK) * gridDim.x, kb = G % KBLK;
-    uint32_t rbg, cbg;
-    tile_coords(v, rbg, cbg);
-    const uint32_t full = barFull + 8u * s, dst = sbase + s * STAGE;
-    pearl_h_expect_tx(full, STAGE);
+  if (warp == CWARPS) {
+    // The producer: lane 0 of the last warp fills the ring, a stage (one k-block of the
+    // tile's 128 A rows and 256 B columns) at a time, as soon as all eight consumer warps
+    // have released it. Both boxes count their full size toward FULL, A's rows past m
+    // (zero-filled) included.
+    if (lane == 0) {
+      uint32_t G = 0;
+      for (uint32_t v = blockIdx.x; v < tiles; v += gridDim.x) {
+        uint32_t rbg, cbg;
+        tile_coords(v, rbg, cbg);
+        for (uint32_t kb = 0; kb < KBLK; kb++, G++) {
+          const uint32_t s = G % NST;
+          pearl_h_mbar_wait(barEmpty + 8u * s, ((G / NST) & 1u) ^ 1u);
+          const uint32_t full = barFull + 8u * s, dst = sbase + s * STAGE;
+          pearl_h_expect_tx(full, STAGE);
 #if PEARL_HOPPER_TILED
-    // Per-tile order: B's 256-column block (col_off is a multiple of a tile's 16 column
-    // offsets there), A's row group, each k / 64 consecutive boxes.
-    pearl_h_tma_3d(dst, &tmB, 0u, 0u, (col_off / PEARL_TALL_COL_OFFSETS + cbg) * KBLK + kb, full);
-    pearl_h_tma_3d(dst + BN * SK, &tmA, 0u, 0u, rbg * KBLK + kb, full);
+          // Per-tile order: B's 256-column block (col_off is a multiple of a tile's 16
+          // column offsets there) and A's 128-row block, each k / 64 consecutive boxes.
+          pearl_h_tma_3d(dst, &tmB, 0u, 0u, (col_off / PEARL_TALL_COL_OFFSETS + cbg) * KBLK + kb,
+                         full);
+          pearl_h_tma_3d(dst + BN * SK, &tmA, 0u, 0u, rbg * KBLK + kb, full);
 #else
-    pearl_h_tma_3d(dst, &tmB, 0u, (col_off + cbg * PEARL_TALL_COL_OFFSETS) * PEARL_COLS_COUNT, kb,
-                   full);
-    pearl_h_tma_3d(dst + BN * SK, &tmA, 0u, rbg * BM, kb, full);
+          pearl_h_tma_3d(dst, &tmB, 0u, (col_off + cbg * PEARL_TALL_COL_OFFSETS) * PEARL_COLS_COUNT,
+                         kb, full);
+          pearl_h_tma_3d(dst + BN * SK, &tmA, 0u, rbg * BM, kb, full);
 #endif
-  };
-  if (tid == 0)
-    for (uint32_t G = 0; G < NST && G < total; G++) fill(G);
+        }
+      }
+    }
+    return;
+  }
 
   // Warpgroup wgi holds rows 64 wgi .. 64 wgi + 63 of the tile, all 256 columns. Warp q of
   // it holds 16 of those rows; in each n8 slice j lane (gq, t) holds rows gq and gq + 8,
@@ -4223,24 +4237,13 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
       asm volatile("wgmma.commit_group.sync.aligned;" ::: "memory");
       asm volatile("wgmma.wait_group.sync.aligned 0;" ::: "memory");
       __syncwarp();
+      // Release both stages to the producer: every wgmma of this warp that read them has
+      // completed (wait_group 0), and the arrive is a release.
       if (lane == 0) {
-        // Release both stages. The last of the 12 warps to release one refills it, a ring
-        // ahead: every wgmma that read it has completed (wait_group 0 in each warp, ordered
-        // before its release), so no warp ever waits on another's release.
-#pragma unroll
-        for (uint32_t h = 0; h < 2; h++) {
-          const uint32_t G = g + h, s = G % NST;
-          uint32_t old;
-          // Relaxed, on purpose: an acq_rel atomic here is a MEMBAR.ALL.CTA every chunk, which
-          // cost a probe of this loop 7% (sm90 lane, s90-011 against s90-013). The wgmma reads
-          // it orders after have completed at wait_group 0.
-          asm volatile("atom.relaxed.cta.shared::cta.add.u32 %0, [%1], 1;"
-                       : "=r"(old) : "r"(cnt + 4u * s) : "memory");
-          if (old == NWARPS - 1u) {
-            asm volatile("st.shared.u32 [%0], %1;" ::"r"(cnt + 4u * s), "r"(0u) : "memory");
-            if (G + NST < total) fill(G + NST);
-          }
-        }
+        asm volatile("mbarrier.arrive.shared::cta.b64 _, [%0];" ::"r"(barEmpty + 8u * (g % NST))
+                     : "memory");
+        asm volatile("mbarrier.arrive.shared::cta.b64 _, [%0];"
+                     ::"r"(barEmpty + 8u * ((g + 1u) % NST)) : "memory");
       }
       g += 2u;
 #pragma unroll
@@ -4264,7 +4267,7 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
       for (uint32_t i = 0; i < 2u; i++) {
         const uint32_t u = wt + 128u * i, reg = 64u * wgi + (u >> 2), qq = u & 3u;
         const uint32_t rrs = reg >> 5, rcs = (reg >> 3) & 3u, rro = (reg >> 2) & 1u, rco = reg & 3u;
-        const uint32_t row_idx = rbg * PEARL_TALL_ROW_OFFSETS + 2u * rrs + rro;
+        const uint32_t row_idx = rbg * ROWOFS + 2u * rrs + rro;
         const uint32_t col_idx = cbg * PEARL_TALL_COL_OFFSETS + 4u * rcs + rco;
         const uint32_t a = sTr + reg * 64u + qq * 16u;
         uint4 w;

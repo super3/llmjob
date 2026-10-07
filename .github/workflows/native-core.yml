@@ -280,6 +280,31 @@ jobs:
             -DPEARL_TALL_CLUSTER=1 \
             -c src/pearl_host.cu -o cuda-build/cluster/pearl_host.o
 
+      # Hopper's wgmma fold (PEARL_HOPPER_WGMMA in pearl_config.h) is off by default and
+      # needs sm_90a, which the release does not build, so nothing above compiles its
+      # body or the host code behind the switch. Compiled here the same way as the
+      # cluster build: the 12.8 entries only, sm_90a only, a scratch directory, ptxas -v
+      # printed, not linked or shipped, and non-blocking. When sm_90a ships, the spill
+      # check below must also read pearl_tile_fold_hopper, with sm_90a in
+      # spill_fail_archs (ptxas names that architecture "sm_90a").
+      - name: Compile the wgmma fold (sm_90a, not shipped)
+        if: matrix.release == '12.8'
+        working-directory: earn/native
+        shell: bash
+        continue-on-error: true
+        run: |
+          mkdir -p cuda-build/hopper
+          if [ "$RUNNER_OS" = "Linux" ]; then FPIC="-Xcompiler -fPIC"; else FPIC=""; fi
+          nvcc -O3 -std=c++17 -cudart static $FPIC \
+            -gencode arch=compute_90a,code=sm_90a \
+            -DPEARL_HOPPER_WGMMA=1 \
+            -Xptxas -v \
+            -c src/pearl_kernel.cu -o cuda-build/hopper/pearl_kernel.o 2>&1 | tee cuda-build/hopper/ptxas-kernel.txt
+          nvcc -O3 -std=c++17 -cudart static $FPIC \
+            -gencode arch=compute_90a,code=sm_90a \
+            -DPEARL_HOPPER_WGMMA=1 \
+            -c src/pearl_host.cu -o cuda-build/hopper/pearl_host.o
+
       # The tall fold sits at 253-255 registers (probes/README.md: 255 or fewer
       # and 0 spill after any edit). A compiler or gate change that pushes it
       # over spills to local memory, and the kernel still compiles, links and

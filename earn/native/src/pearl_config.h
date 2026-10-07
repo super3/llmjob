@@ -1162,26 +1162,29 @@ typedef struct {
 #endif
 // Hopper's wgmma fold (pearl_tile_fold_hopper, sm_90a only; work in progress, off by
 // default). mma.sync reaches 66% of H100's int8 tensor rate and the cp.async tall fold about
-// 44% a clock; only wgmma reaches the rest. The tile is the tall fold's, 192 rows by 256
-// columns, so the host's operand draw and tile walk are reused, read through 3-D tensor
-// maps in SWIZZLE_64B boxes of 192 and 256 rows. Three consumer warpgroups, each 64 rows by 256 columns
-// (wgmma m64n256k32, 128 accumulators a thread), read A and B from shared; a chunk is four
-// k32 steps, the accumulators running on from the chunk before (only the tile's first step
-// starts from zero), then each lane XORs its 32 values of each of its four regions and
-// adds that word to shared with red.shared.xor. No producer warp: the last warp to release
-// a stage refills it with TMA, a ring ahead (a 13th warp would cap ptxas at 128 registers,
-// and setmaxnreg does not lift that for allocation in ptxas 12.8). No hash in the fold: at
-// each tile's end each warpgroup copies its 64 regions to the slot's transcript buffer, as
-// GA100's unfused fold does, and pearl_tall_hash80 hashes them. The host picks it when the
-// loaded binary has its body (its 384-thread launch bound) and PEARL_HOPPER_WGMMA is set.
-// The release builds sm_90, not sm_90a, so today it is never in a shipped core.
+// 44% a clock; only wgmma reaches the rest. Tiles of 128 rows (8 row offsets) by 256
+// columns, walked as the tall fold walks its 192-row tiles, read through 3-D tensor maps in
+// SWIZZLE_64B boxes of 128 and 256 rows. Two consumer warpgroups, each 64 rows by 256
+// columns (wgmma m64n256k32, 128 accumulators a thread), read A and B from shared; a chunk
+// is four k32 steps, the accumulators running on from the chunk before (only the tile's
+// first step starts from zero: the transcript words are XORs of running sums), then each
+// lane XORs its 32 values of each of its four regions and adds that word to shared with
+// red.shared.xor. One producer warp fills the ring by TMA as the consumers release stages.
+// Nine warps put three on a scheduler, so ptxas may use 168 registers a thread; a third
+// m64n256 warpgroup would make 13 warps and a 128-register cap, too few, and setmaxnreg
+// does not lift that for allocation in ptxas 12.8. No hash in the fold: at each tile's
+// end each warpgroup copies its 64 regions to the slot's transcript buffer, as GA100's
+// unfused fold does, and pearl_tall_hash80 hashes them. The host picks it when the loaded
+// binary has its body (its 288-thread launch bound) and PEARL_HOPPER_WGMMA is set. The
+// release builds sm_90, not sm_90a, so today it is never in a shipped core.
 //
-// Measured on an H100 NVL (Vast 29785, 400 W), sm_90a build with the switch on, hashrate.js
-// 3 rounds: 393.75 TH/s at 1366 MHz against the cp.async fold's 342.16 at 1590 MHz (+15.1%,
-// ahead in every round); verify-hits 400/400; the CLI mined at 393.2 with 11 shares accepted
-// and none rejected. A wgmma probe of the same loop with a producer warp and two consumer
-// warpgroups on a 128-row tile did ~40% more a clock (kopt sm90 lane, s90-011/013), so the
-// warp roles are the next thing to change.
+// Measured, sm_90a with the switch on, hashrate.js 3 rounds, ahead in every round, against
+// the cp.async fold and against the first version (three consumer warpgroups on 192-row
+// tiles and no producer warp, 40904f6), 400/400 hits for each:
+//   H100 NVL (Vast 29785, 400 W)    344.35 / 396.29 -> 429.24 TH/s at 1212 MHz
+//   H100 SXM (Vast 153443, 700 W)   436.17 / 525.23 -> 532.19 TH/s at 1567 MHz
+// 79.8% and 70.2% of SRBMiner's and PeakMiner's rates on those hosts. Both clocks sit at
+// the power cap: per clock this form does 2570-2680 MAC/clk/SM against ~2190.
 #ifndef PEARL_HOPPER_WGMMA
 #define PEARL_HOPPER_WGMMA 0
 #endif
@@ -1191,21 +1194,27 @@ typedef struct {
 #else
 #define PEARL_HOPPER_WGMMA_BODY 0
 #endif
-#define PEARL_HOPPER_THREADS 384u
-// Which operand order it reads (host and device): 1, the per-tile order the cp.async fold
-// reads ([tile block][k-block][192 or 256 rows][64]), through tensor maps whose third
-// coordinate is block * k-blocks + k-block; 0, the k-blocked order Blackwell's TMA reads.
-// Both pass verify-hits; per-tile measured 1.0% faster (H100 NVL: 393.75 against 389.86).
+#define PEARL_HOPPER_THREADS 288u
+#define PEARL_HOPPER_BM 128u                                       // rows of A a tile
+#define PEARL_HOPPER_ROW_OFFSETS (PEARL_HOPPER_BM / 16u)           // 8
+// Which operand order it reads (host and device): 1, per-tile ([tile block][k-block][128
+// rows of A or 256 columns of B][64]; A in 128-row blocks for this fold, where the cp.async
+// fold's are 192), through tensor maps whose third coordinate is block * k-blocks + k-block;
+// 0, the k-blocked order Blackwell's TMA reads. Both pass verify-hits; per-tile is faster
+// (H100 NVL: 429.24 against 422.51 TH/s). The host draws the order the build reads, whatever
+// PEARL_TALL_TILE_ORDER says, and keeps the cp.async fold if m's 128-row blocks do not fit
+// the A' allocation (padded to 192-row tiles); at mainnet they do.
 #ifndef PEARL_HOPPER_TILED
 #define PEARL_HOPPER_TILED 1
 #endif
 #ifndef PEARL_HOPPER_STAGES
 #define PEARL_HOPPER_STAGES 6u
 #endif
-// Stages of 64 bytes of k (B's 256 rows, then A's 192), the transcripts (192 regions of
-// 64 bytes), FULL barriers and release counters.
+// Stages of 64 bytes of k (B's 256 rows, then A's 128), the transcripts (128 regions of
+// 64 bytes), then FULL and EMPTY barriers.
 #define PEARL_HOPPER_SMEM \
-  (PEARL_HOPPER_STAGES * (256u + 192u) * 64u + 192u * 64u + 16u * PEARL_HOPPER_STAGES + 64u)
+  (PEARL_HOPPER_STAGES * (256u + PEARL_HOPPER_BM) * 64u + PEARL_HOPPER_BM / 32u * 32u * 64u \
+   + 16u * PEARL_HOPPER_STAGES + 64u)
 #ifndef PEARL_TALL_APT
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 800 && PEARL_TALL_UNFUSED
 #define PEARL_TALL_APT 3u
