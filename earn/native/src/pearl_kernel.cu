@@ -4,8 +4,8 @@
 // Independent implementation from the ISC-licensed specification in
 // pearl-research-labs/pearl (zk-pow crate) and the protocol notes captured from
 // the live pool. It is deliberately NOT derived from any dev-fee-licensed miner:
-// this file exists so LLMJob ships a core we own outright, with no fee to
-// retain, no redistribution restriction, and a binary we can code-sign so
+// this file exists so LLMJob ships a core we own outright, with no
+// licence-mandated fee to retain, no redistribution restriction, and a binary we can code-sign so
 // Windows Defender stops eating it.
 //
 // STATUS: this is the reference-correct scalar/dp4a path. It is structured so

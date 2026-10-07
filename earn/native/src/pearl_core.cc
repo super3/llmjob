@@ -21,8 +21,9 @@
 // layer is free to be optimistic.
 //
 // Independent implementation against the ISC-licensed pearl-research-labs
-// specification. No dev fee, no fee address, nothing to disclose — see
-// pearl_kernel.cu for why that matters.
+// specification, so it owes no fee to anyone else's licence — see
+// pearl_kernel.cu for why that matters. The app's own 2% dev fee is a pool
+// login switch in the JS host (pearlMiner.js, config DEV_FEE), not in this core.
 
 #include <napi.h>
 

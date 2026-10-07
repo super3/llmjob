@@ -14,8 +14,9 @@ Every third-party Pearl miner we evaluated is blocked for a product like ours:
 | Muskwak/Open-Pearl-Miner | open source, but its licence **mandates a 2% dev fee on any distribution** — a fork was DMCA'd in July 2026 for lowering it |
 | pearl-research-labs (official) | ISC, but **sm90-only** (H100/H200) and a vLLM plugin, not a pool miner |
 
-Owning the core removes all three problems at once: no dev fee, no
-redistribution restriction, and a binary **we compile and code-sign**, which is
+Owning the core removes all three problems at once: no dev fee owed to another
+miner's licence (the app takes LLMJob's own 2%, see `DEV_FEE` in
+`earn/src/shared/config.js`), no redistribution restriction, and a binary **we compile and code-sign**, which is
 what stops Defender flagging it as `Trojan:Wacatac.H!ml`.
 
 ## Provenance
@@ -23,8 +24,8 @@ what stops Defender flagging it as `Trojan:Wacatac.H!ml`.
 Written against the algorithm specification in the ISC-licensed
 [`pearl-research-labs/pearl`](https://github.com/pearl-research-labs/pearl)
 (zk-pow crate) plus protocol behaviour captured from the live pool. It is **not**
-derived from any dev-fee-licensed miner — deliberately, so there is no fee to
-retain and no licence to comply with beyond ISC attribution.
+derived from any dev-fee-licensed miner — deliberately, so there is no licence-mandated
+fee to retain and no licence to comply with beyond ISC attribution.
 
 ## Status
 

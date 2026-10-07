@@ -167,6 +167,7 @@
   .stop-btn .dot { width: 9px; height: 9px; border-radius: 50%; background: #fff; animation: amPulse 1.4s ease-in-out infinite; }
   .app-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 22px; padding-top: 16px; border-top: 1px solid #f0ede5; }
   .app-foot span { font-size: 12.5px; font-weight: 600; letter-spacing: .04em; color: var(--accent); }
+  .app-foot span.foot-note { color: var(--muted-2); }
 
   /* generic three-up grid */
   .triple { display: grid; grid-template-columns: repeat(3, 1fr); gap: 48px; }
@@ -343,6 +344,7 @@
 
       <div class="app-foot">
         <span>VIEW LOGS</span>
+        <span class="foot-note">2% DEV FEE</span>
         <span>NEED HELP?</span>
       </div>
     </div>
@@ -431,7 +433,7 @@
         <div class="res-row"><span class="l">PRL price</span><span class="v" id="r-price">—</span></div>
         <div class="res-row"><span class="l">Network hashrate</span><span class="v" id="r-net">—</span></div>
       </div>
-      <p class="disclaimer"><span id="r-live">Loading live network data…</span> Estimated from the network hashrate and the current block reward. The pool takes no fee. Mining is probabilistic — real payouts vary with luck and network growth.</p>
+      <p class="disclaimer"><span id="r-live">Loading live network data…</span> Estimated from the network hashrate and the current block reward. The pool takes no fee. The estimate is before the 2% dev fee, so about 98% of it reaches your address. Mining is probabilistic — real payouts vary with luck and network growth.</p>
     </div>
   </div>
   <div class="percard">
