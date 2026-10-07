@@ -135,6 +135,10 @@ extern "C" __global__ void pearl_tile_fold_tall(
     uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
     const PearlTranscriptTest test, const PearlHitList hits,
     const PearlTensorMap tmA, const PearlTensorMap tmB);
+// GA100's transcript hash, after an unfused fold (PEARL_TALL_UNFUSED; sm_80 only).
+extern "C" __global__ void pearl_tall_hash80(const uint4 *tr, uint32_t regions,
+                                             const PearlTranscriptTest test,
+                                             const PearlHitList hits, uint32_t one);
 extern "C" __global__ void pearl_partials(const int8_t *Aprime, const int8_t *Bprime,
                                           const uint32_t *cols_pattern,
                                           uint32_t cols_count, uint32_t m, uint32_t n,
@@ -264,6 +268,11 @@ struct Ctx {
   // (PEARL_AMPERE_PERSIST_ARCH: Ampere's, not Hopper's).
   bool foldPersistA = false;
   uint32_t tallBand = 0;
+  // Whether that is GA100's unfused fold (binaryVersion 80, PEARL_TALL_UNFUSED): it writes
+  // each slot's transcripts to dTrG[slot], 64 bytes a region of the batch, and
+  // pearl_tall_hash80 hashes them after it on the slot's stream.
+  bool foldUnfused = false;
+  uint4 *dTrG[2] = {nullptr, nullptr};
   bool foldKnown = false;
   // Why not, when foldKnown is false: reported by the first search, as it was when
   // the search itself asked.
@@ -893,6 +902,7 @@ void resolve_fold(Ctx *ctx) {
     ctx->foldCluster = ctx->foldTma && PEARL_TALL_CLUSTER != 0;
     ctx->foldAmpere = ctx->foldTall && !ctx->foldTma && PEARL_AMPERE_ARCH(ft.binaryVersion * 10);
     ctx->foldPersistA = ctx->foldAmpere && PEARL_AMPERE_PERSIST_ARCH(ft.binaryVersion * 10);
+    ctx->foldUnfused = ctx->foldAmpere && ft.binaryVersion == 80 && PEARL_TALL_UNFUSED != 0;
   }
   // The fold is compiled for exactly one block size, which is also its launch
   // bound. A disagreement would not fail loudly: a block of the wrong size
@@ -1346,6 +1356,14 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
     }
 #endif
   }
+  // GA100's unfused fold: a transcript buffer a slot, 64 bytes a region of the batch
+  // (PEARL_TALL_UNFUSED). The batch width is final here.
+  if (ctx->foldUnfused) {
+    static_assert(Ctx::kSlots == 2, "one transcript buffer a pipeline slot");
+    for (int s = 0; s < Ctx::kSlots; s++)
+      CUDA_OK(cudaMalloc(&ctx->dTrG[s], (size_t)ctx->batch * 16u * sizeof(uint32_t)),
+              "allocating the unfused fold's transcripts");
+  }
   // Turing (the B-direct fold): a band of row groups whose A fits the L2. See
   // PEARL_BD_L2_SHARE.
   if (ctx->foldBDirect) {
@@ -1398,6 +1416,7 @@ extern "C" void pearl_host_destroy(void *handle) {
   cudaFree(ctx->dRows); cudaFree(ctx->dCols);
 
   cudaFree(ctx->dHashes); cudaFree(ctx->dHitCount); cudaFree(ctx->dHitIndex);
+  for (int s = 0; s < 2; s++) cudaFree(ctx->dTrG[s]);
   cudaFree(ctx->dTreeA); cudaFree(ctx->dTreeB);
   cudaFree(ctx->dCvs); cudaFree(ctx->dSeedBuf); cudaFree(ctx->dSeedInput);
   cudaFree(ctx->dHashA); cudaFree(ctx->dHashB);
@@ -2239,6 +2258,18 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
     cudaLaunchKernelEx(&cfg, pearl_tile_fold_tall, ctx->dAp, ctx->dBp, ctx->profile.m,
                        ctx->profile.n, k, rank, chunks, col_off, ctx->rowsValid, col_groups,
                        tiles, test, hitList, ctx->tmA, ctx->tmB);
+  } else if (ctx->foldTall && ctx->foldUnfused) {
+    // GA100's unfused fold (PEARL_TALL_UNFUSED): the slot's transcript buffer travels in
+    // the first bytes of tmA, which the cp.async fold does not otherwise read; the hash
+    // kernel follows on the same stream, before the count is read back.
+    PearlTensorMap trm;
+    memset(&trm, 0, sizeof trm);
+    memcpy(&trm, &ctx->dTrG[slot], sizeof ctx->dTrG[slot]);
+    pearl_tile_fold_tall<<<blocks, threads, smem, st>>>(
+        ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
+        col_off, ctx->rowsValid, col_groups, tiles, test, hitList, trm, ctx->tmB);
+    pearl_tall_hash80<<<(regions + 255u) / 256u, 256, 0, st>>>(ctx->dTrG[slot], regions, test,
+                                                               hitList, 1u);
   } else if (ctx->foldTall)
     pearl_tile_fold_tall<<<blocks, threads, smem, st>>>(
         ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
@@ -2367,8 +2398,9 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
            "2-CTA cluster sharing B by multicast";
   if (ctx->foldAmpere) {
     snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,
-             "tall 192x256, 8 warps of 96x64, cp.async ring, %s operands, band %u",
-             ctx->foldTiled ? "per-tile" : "k-blocked", ctx->tallBand);
+             "tall 192x256, 8 warps of 96x64, cp.async ring, %s operands, band %u%s",
+             ctx->foldTiled ? "per-tile" : "k-blocked", ctx->tallBand,
+             ctx->foldUnfused ? ", hash in its own kernel" : "");
     return ctx->foldName;
   }
   if (ctx->foldTall)

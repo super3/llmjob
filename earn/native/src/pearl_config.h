@@ -1101,8 +1101,52 @@ typedef struct {
 #ifndef PEARL_TALL_PREGUARD
 #define PEARL_TALL_PREGUARD 1
 #endif
+// GA100 (sm_80): the tall fold leaves the transcript hash to a kernel of its own. At each
+// tile's end every warp copies its 24 regions' words from shared to a per-slot buffer in
+// global memory (64 bytes a region) and zeroes them; pearl_tall_hash80 hashes the batch
+// right after the fold on the same stream and reports hits as the fold did. There is no
+// hasher warp and no hand-off barrier. The host reads the value too (Ctx::foldUnfused), so
+// -DPEARL_TALL_UNFUSED=0/1 binds both sides. The buffer's address reaches the fold in the
+// first bytes of its tmA parameter, which the cp.async builds otherwise ignore, so the
+// kernel's signature is the same for every arch.
+//
+// Why. GA100's tensor pipe does twice GA10x's int8 MACs a clock against the same integer
+// path, and on GA100 integer work beside an IMMA warp costs it much more: in a probe of the
+// stage body, four IMMA warps ran 86% of the pipe alone and 59% beside four BLAKE3-like
+// warps. So the fused hash, one warp a scheduler hashing ~3,600 cycles at every tile seam,
+// slowed both warps of its scheduler and cost ~14% of a tile (cycles a tile, A100 PCIe:
+// 73,100 with it, 62,700 without). In a kernel of its own the hash runs at full occupancy
+// with nothing beside it, ~2.7% of the time, and the 64-byte round trip is 256 MB a batch
+// at width 512, which HBM2e carries at ~13% memory utilization.
+//
+// Measured with A at 3, B at 6 (PEARL_TALL_APT/BPT, the best points once the hash has left
+// the fold) and the hash kernel's adds on the FMA pipe (PEARL_TALL_HASH80_IMAD), against the
+// fused fold at 2 and 6, hashrate.js, 3 rounds, ahead in every round, 400/400 hits:
+//   CMP 170HX (250 W)                157.38 -> 164.97 TH/s  +4.82%
+//   A100 SXM4 40 GB (400 W)          240.43 -> 246.62       +2.58%
+//   A100 PCIe 40 GB (250 W)          205.79 -> 210.33       +2.21%  (199.68 -> 211.98 without
+//                                                                    the FMA adds, another day)
+//   A30 (155 W)                      101.35 -> 104.83       +3.44%
+// The FMA adds alone: +0.45% (CMP) and +0.53% (SXM4), ahead in every round. A pool run on
+// the A100 PCIe accepted 11 of 11 shares.
+#ifndef PEARL_TALL_UNFUSED
+#define PEARL_TALL_UNFUSED 1
+#endif
+#if PEARL_TALL_UNFUSED && defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 800
+#define PEARL_TALL_UNFUSED_ON 1
+#else
+#define PEARL_TALL_UNFUSED_ON 0
+#endif
+// The unfused hash kernel's adds as IMAD, on the FMA pipe, where they run beside the XORs
+// and rotates on the integer pipe; both are 16 lanes on GA100. The compression's message
+// test then issues 424 integer-pipe and 334 FMA-pipe instructions, against 531 and 109.
+#ifndef PEARL_TALL_HASH80_IMAD
+#define PEARL_TALL_HASH80_IMAD 1
+#endif
 #ifndef PEARL_TALL_APT
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 800
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 800 && PEARL_TALL_UNFUSED
+#define PEARL_TALL_APT 3u
+#elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 800
 #define PEARL_TALL_APT 2u
 #else
 #define PEARL_TALL_APT 3u
@@ -1133,7 +1177,9 @@ typedef struct {
 // 70,300 -> 63,600-65,400, from 70% to 75-77% of the tensor peak a clock. B at 6 is what
 // counts: A at 3 or 1 with B at 6 measured +5.8% and +4.4%; B at 7, 8 or 9 with any A, and A at
 // 2 with B at 5, measured no better than 3 and 7 (A 2, B 5 saves 4.7% of cycles and gives it
-// all back in clock at the power cap).
+// all back in clock at the power cap). With the hash in its own kernel (PEARL_TALL_UNFUSED)
+// A at 3 does better: A100 PCIe, hashrate.js, 3 rounds, 400/400 hits, unfused: A at 2, B at
+// 6 209.45 TH/s, 3 and 6 211.98, 3 and 7 210.49; CMP 170HX 3 and 6 164.24, 3 and 7 162.80.
 #ifndef PEARL_TALL_BPT
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 800
 #define PEARL_TALL_BPT 6u

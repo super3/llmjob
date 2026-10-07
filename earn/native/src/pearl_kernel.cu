@@ -3790,6 +3790,35 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
 #endif
     }
 
+#if PEARL_TALL_UNFUSED_ON
+    // GA100 (PEARL_TALL_UNFUSED): no hasher and no hand-off. Each warp copies the 24
+    // regions it reads out (lanes L, L ^ 4, L ^ 8, L ^ 12 hold one region, a quarter each)
+    // to this slot's buffer, indexed by the region's batch-local number as a hit would be,
+    // and zeroes them for the next tile's XORs. Only this warp writes these words, so the
+    // __syncwarp pair orders its lanes' XORs, reads and zeroing; pearl_tall_hash80 hashes
+    // the buffer after the launch. The last row group's rows past m are zeroed, not stored.
+    {
+      uint32_t uv = v, urbg, ucbg;
+      asm volatile("" : "+r"(uv));
+      tile_coords(uv, urbg, ucbg);
+      uint4 *const trg = *reinterpret_cast<uint4 *const *>(&tmA);
+      const uint32_t uq = (lane >> 2) & 3u;
+      const uint32_t urow = (urbg * 2u + wr) * (2u * RPL) + ((lane >> 4) & 1u);
+      const uint32_t ucol = (ucbg * 4u + wc) * 4u + (lane & 3u);
+      __syncwarp();
+#pragma unroll
+      for (uint32_t rl = 0; rl < RPL; rl++) {
+        const uint32_t sa = trBase + rl * 128u + uq * 16u;
+        uint4 w;
+        asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
+                     : "=r"(w.x), "=r"(w.y), "=r"(w.z), "=r"(w.w) : "r"(sa) : "memory");
+        asm volatile("st.shared.v4.u32 [%0], {%1,%1,%1,%1};" ::"r"(sa), "r"(0u) : "memory");
+        const uint32_t row_idx = urow + 2u * rl;
+        if (row_idx < rows_valid) trg[((size_t)ucol * rows_valid + row_idx) * 4u + uq] = w;
+      }
+      __syncwarp();
+    }
+#else
     // Hand-off: the column slot's two warps (one scheduler) meet, so every chunk-15 word
     // is in shared, and the first hashes the slot's 48 regions -- all 32 lanes, then 16.
     pearl_bar_sync(1u + wc, 64u);
@@ -3913,6 +3942,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
       }
 #endif
     }
+#endif  // PEARL_TALL_UNFUSED_ON
   }
 #if PEARL_TALL_CLUSTER_BODY
   // No CTA leaves while its peer may still arrive on its EMPTY barriers: the peer's last
@@ -3928,6 +3958,79 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
   (void)tmA; (void)tmB;
 #endif
 }
+
+// GA100's transcript hash (PEARL_TALL_UNFUSED): one thread a region over the batch the
+// fold just wrote, `regions` x 64 bytes at `tr`, each region at its batch-local number.
+// The same tests as the fold's own hash: the top word against the target's, then the
+// whole hash, and a hit is reported through the same list. It exists only in the sm_80
+// build and the host pass, so every other architecture's binary is unchanged; the host
+// launches it only when the loaded fold is the unfused one (Ctx::foldUnfused).
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ == 800
+extern "C" __global__ __launch_bounds__(256) void pearl_tall_hash80(
+    const uint4 *__restrict__ tr, uint32_t regions, const PearlTranscriptTest test,
+    const PearlHitList hits, uint32_t one) {
+#if PEARL_TALL_UNFUSED_ON
+  const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= regions) return;
+  uint32_t tm[16];
+#pragma unroll
+  for (uint32_t q = 0; q < 4u; q++) {
+    const uint4 w = __ldcs(tr + (size_t)i * 4u + q);
+    tm[4 * q] = w.x; tm[4 * q + 1] = w.y; tm[4 * q + 2] = w.z; tm[4 * q + 3] = w.w;
+  }
+#if PEARL_TALL_HASH80_IMAD
+  // The adds on the FMA pipe: a multiply by `one`, which ptxas cannot see is 1, turns each
+  // into an IMAD, while the XORs and rotates keep the integer pipe. Both pipes are 16
+  // lanes on GA100, so this splits the compression's work between them. (`one` is a
+  // parameter, always 1: computed in the kernel, ptxas proves it and folds the multiplies.)
+  uint32_t v[16], m[16];
+#pragma unroll
+  for (int j = 0; j < 8; j++) v[j] = test.key[j];
+  v[8] = BLAKE3_IV[0]; v[9] = BLAKE3_IV[1]; v[10] = BLAKE3_IV[2]; v[11] = BLAKE3_IV[3];
+  v[12] = 0u; v[13] = 0u; v[14] = 64u; v[15] = PEARL_TRANSCRIPT_FLAGS;
+#pragma unroll
+  for (int j = 0; j < 16; j++) m[j] = tm[j];
+#define PEARL_H80_G(a, b, c, d, x, y)                         \
+  a = b * one + a; a = x * one + a; d = rotr32(d ^ a, 16);    \
+  c = d * one + c; b = rotr32(b ^ c, 12);                     \
+  a = b * one + a; a = y * one + a; d = rotr32(d ^ a, 8);     \
+  c = d * one + c; b = rotr32(b ^ c, 7);
+#pragma unroll
+  for (int r = 0; r < 7; r++) {
+    PEARL_H80_G(v[0], v[4], v[8], v[12], m[0], m[1])
+    PEARL_H80_G(v[1], v[5], v[9], v[13], m[2], m[3])
+    PEARL_H80_G(v[2], v[6], v[10], v[14], m[4], m[5])
+    PEARL_H80_G(v[3], v[7], v[11], v[15], m[6], m[7])
+    PEARL_H80_G(v[0], v[5], v[10], v[15], m[8], m[9])
+    PEARL_H80_G(v[1], v[6], v[11], v[12], m[10], m[11])
+    PEARL_H80_G(v[2], v[7], v[8], v[13], m[12], m[13])
+    PEARL_H80_G(v[3], v[4], v[9], v[14], m[14], m[15])
+    if (r < 6) PEARL_HP_PERM(m)
+  }
+#undef PEARL_H80_G
+  const uint32_t msw = test.hash_big_endian ? pearl_bswap32(v[0] ^ v[8]) : (v[7] ^ v[15]);
+  if (msw > test.target_w[0]) return;
+#elif PEARL_TALL_HASH_PAIRS_ON
+  if (pearl_hp_msw(test.key, tm, test.hash_big_endian) > test.target_w[0]) return;
+#else
+  if (pearl_transcript_msw(test.key, tm, test.hash_big_endian) > test.target_w[0]) return;
+#endif
+  uint32_t h[8];
+  pearl_transcript_hash_again(test.key, tm, h);
+  if (!pearl_hash_meets_words(h, test.target_w, test.hash_big_endian)) return;
+  const uint32_t slot = atomicAdd(hits.count, 1u);
+  if (slot >= PEARL_MAX_HITS) return;
+  hits.index[slot] = i;
+#pragma unroll
+  for (int j = 0; j < 8; j++) hits.hash[slot * 8u + j] = h[j];
+#pragma unroll
+  for (int j = 0; j < 16; j++) hits.transcript[slot * 16u + j] = tm[j];
+#else
+  (void)tr; (void)regions; (void)test; (void)hits;
+#endif
+  (void)one;
+}
+#endif
 
 // The fold is now a gather. Every product it needs is already in D, so a region
 // costs 32 loads and a warp reduction per chunk instead of 32 dot products.
