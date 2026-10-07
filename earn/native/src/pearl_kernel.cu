@@ -2926,6 +2926,14 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
 #else
 #define PEARL_TALL_RED_ON 0
 #endif
+// Whether this compile's tall fold folds its readout before the chunk-0 hand-off guard
+// (PEARL_TALL_PREGUARD): Blackwell's TMA build only.
+#if PEARL_TALL_RED_ON && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200 && PEARL_TALL_TMA_BODY \
+    && PEARL_TALL_TMA_ROLES && PEARL_TALL_PREGUARD
+#define PEARL_TALL_PREGUARD_ON 1
+#else
+#define PEARL_TALL_PREGUARD_ON 0
+#endif
 
 #if PEARL_TALL_HASH_PAIRS_ON
 // Ada's and Ampere's hash, 1.5 regions a lane (PEARL_TALL_HASH_PAIRS). A column slot's
@@ -3641,6 +3649,19 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
 #undef PEARL_TALL_PRODUCER_S
 #if PEARL_TALL_TMA_ROLES
       }
+#if PEARL_TALL_PREGUARD_ON
+      // The readout's XOR folds, into registers, before the chunk-0 guard below
+      // (PEARL_TALL_PREGUARD): only its three shared XORs at the chunk's end write the
+      // transcripts the guard protects, so only they need to wait for it.
+      uint32_t xg[RPL];
+#pragma unroll
+      for (uint32_t rl = 0; rl < RPL; rl++) {
+        uint32_t x = 0u;
+#pragma unroll
+        for (uint32_t np = 0; np < NB / 2u; np++) x = fold_pair(x, rl, np);
+        xg[rl] = x;
+      }
+#endif
 #ifndef PEARL_ABLATE_RING
       // The hand-off's ordering (see below): the tile's stage 0 read role A, at parity pA.
       // (In the cluster build that phase also counts the peer's arrivals, so this waits
@@ -3758,8 +3779,16 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
         pA = tpar;
       }
 #endif
+#if PEARL_TALL_PREGUARD_ON
+      // The folds were made before the guard; every lane XORs its part in (see readout).
+#pragma unroll
+      for (uint32_t rl = 0; rl < RPL; rl++)
+        asm volatile("{\n .reg .pred p;\n setp.ne.u32 p, %2, 99;\n @p red.shared.xor.b32 [%0], %1;\n}"
+                     ::"r"(trBase + rl * 128u + chunk * 4u), "r"(xg[rl]), "r"(lane) : "memory");
+#else
 #pragma unroll
       for (uint32_t rl = 0; rl < RPL; rl++) readout(rl, chunk);
+#endif
     }
 
     // Hand-off: the column slot's two warps (one scheduler) meet, so every chunk-15 word

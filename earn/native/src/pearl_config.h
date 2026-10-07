@@ -1064,6 +1064,21 @@ typedef struct {
 #else
 #define PEARL_TALL_HASH_PAIRS_ON 0
 #endif
+// Blackwell's tall fold makes its readout's XOR folds before the chunk-0 hand-off guard,
+// where only the three shared XORs that write the transcripts need to wait for the hasher.
+// The readout's ~100 integer ops then run while the hasher's partner would otherwise sit
+// at the guard. A small gain, kept because it is the same in every round on two cards:
+// cycles a tile (PEARL_TALL_CYC), RTX 5070 Ti at its locked 1346 MHz, on the paired hash,
+// 4 rounds: 103,098 -> 102,989 (-109, every round). hashrate.js, 4 rounds, ahead in every
+// round, 400/400 hits:
+//   RTX 5070 Ti (locked 1346 MHz)  92.28 -> 92.32   +0.04%
+//   RTX 5060 (125 W)               76.78 -> 76.84   +0.08%
+// Both are under the usual three-round-spreads bar. 254 registers, no spill, chunk loop
+// 468 -> 469 instructions (13.3; 12.8 634 -> 635). Same hit lists as without it over a
+// fixed job in both hash byte orders. sm_120's TMA build only; 0 turns it off.
+#ifndef PEARL_TALL_PREGUARD
+#define PEARL_TALL_PREGUARD 1
+#endif
 #ifndef PEARL_TALL_APT
 #define PEARL_TALL_APT 3u
 #endif
