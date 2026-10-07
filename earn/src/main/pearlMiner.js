@@ -133,6 +133,8 @@ class PearlMiner extends EventEmitter {
     // honest answer is "no cards", not the ones a previous run got.
     this.cores = [];
     this.hashrates = new Map();   // card index -> its latest TH/s
+    // Set by releaseMemClocks(): this run's cards stay at the driver's clock.
+    this.memClocksReleased = false;
 
     // No core means the native addon is not built for this machine. That is a
     // clean, explicable stop — not a crash — so the host says exactly that and
@@ -341,7 +343,11 @@ class PearlMiner extends EventEmitter {
     // lock a card was planned for. A card the plan has no entry for -- a 4090
     // beside a 5090 on the default -- is left alone. A core that will not name
     // its card is told about in _lockMemClock.
-    const memClocks = this.settings.mineMemClockByIndex || {};
+    //
+    // Once releaseMemClocks() has run, no card takes the lock again this run. A
+    // card that fails and is opened again (see _restartCore) would otherwise
+    // lock its clock under the LLM that releaseMemClocks() made way for.
+    const memClocks = (!this.memClocksReleased && this.settings.mineMemClockByIndex) || {};
     if (Object.keys(memClocks).length > 0) {
       const index = device ? device.index : null;
       if (index == null || memClocks[index]) {
@@ -417,8 +423,11 @@ class PearlMiner extends EventEmitter {
   // pool connection for nothing) but a model is about to be served from its
   // cards, and a served model must never sit on a locked card. Mining then
   // carries on at the driver's clock -- slower on an RTX 5090, never
-  // wrong. Idempotent, and a later stop() finds nothing left to release.
+  // wrong. Idempotent, and a later stop() finds nothing left to release. A card
+  // restarted after this does not lock again (see _openCore); the next start
+  // plans the locks afresh.
   releaseMemClocks() {
+    this.memClocksReleased = true;
     this._releaseMemClocks();
   }
 
