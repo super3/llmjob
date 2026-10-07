@@ -275,7 +275,7 @@ class PearlMiner extends EventEmitter {
     return { core, device };
   }
 
-  // Lock one mining card's memory clock (the Blackwell default, or
+  // Lock one mining card's memory clock (the RTX 5090 default, or
   // --mine-mem-clock; see gpuClocks for the measurements). The index is the
   // card the core says it opened. A core that does not say is one that ignores
   // the card it was asked for (see below), so the index it was given is a
@@ -306,7 +306,7 @@ class PearlMiner extends EventEmitter {
       this.emit('log', {
         level: 'info',
         line: 'memory clock locked at ' + mhz + ' MHz on GPU ' + index + ' while mining'
-          + (byDefault ? ' (the default on Blackwell)' : ''),
+          + (byDefault ? ' (the default on the RTX 5090)' : ''),
       });
       return;
     }
@@ -314,7 +314,7 @@ class PearlMiner extends EventEmitter {
       this.emit('log', {
         level: 'info',
         line: 'memory clock left at the driver\'s default on GPU ' + index + ' (' + r.error
-          + '): the Blackwell lock needs root or administrator rights for nvidia-smi',
+          + '): the RTX 5090 lock needs root or administrator rights for nvidia-smi',
       });
       return;
     }
@@ -339,7 +339,7 @@ class PearlMiner extends EventEmitter {
   // while mining-only is up: the miner is kept (restarting it would drop the
   // pool connection for nothing) but a model is about to be served from its
   // cards, and a served model must never sit on a locked card. Mining then
-  // carries on at the driver's clock -- slower on a Blackwell card, never
+  // carries on at the driver's clock -- slower on an RTX 5090, never
   // wrong. Idempotent, and a later stop() finds nothing left to release.
   releaseMemClocks() {
     this._releaseMemClocks();

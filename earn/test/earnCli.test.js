@@ -1425,9 +1425,9 @@ describe('--mine-mem-clock', () => {
     await expect(p).resolves.toBe(0);
   });
 
-  // The default. A Blackwell card is locked without being asked, and the log
+  // The default. An RTX 5090 is locked without being asked, and the log
   // says so and names the way to turn it off.
-  test('a Blackwell card is locked by default, and told how to opt out', async () => {
+  test('an RTX 5090 is locked by default, and told how to opt out', async () => {
     const m = load();
     oneCard(m, RTX5090, 'NVIDIA GeForce RTX 5090');
     const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--no-report']);
@@ -1436,7 +1436,7 @@ describe('--mine-mem-clock', () => {
     expect(miner.settings.mineMemClockByIndex).toEqual({ 0: 7001 });
     expect(miner.settings.mineMemClockDefault).toBe(true);
     expect(allOut()).toContain(
-      'memory clock 7001 MHz by default on GPU 0 (Blackwell; --mine-mem-clock 0 leaves the driver\'s clock)');
+      'memory clock 7001 MHz by default on GPU 0 (RTX 5090; --mine-mem-clock 0 leaves the driver\'s clock)');
     miner.emit('stopped', 0);
     await expect(p).resolves.toBe(0);
   });
@@ -1512,7 +1512,7 @@ describe('--mine-mem-clock', () => {
 
   // The default is dropped the same way, but nobody asked for it, so the line
   // is information on stdout, not a complaint on stderr.
-  test('a co-running LLM skips the Blackwell default, and says so on stdout', async () => {
+  test('a co-running LLM skips the RTX 5090 default, and says so on stdout', async () => {
     const m = load();
     oneCard(m, RTX5090, 'NVIDIA GeForce RTX 5090');
     // Plenty free: the same model wins with and without the mining reserve.

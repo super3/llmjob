@@ -1,8 +1,8 @@
 'use strict';
 
-// Lock and release a card's memory clock while it mines. On Blackwell (compute
-// 12.x) the lock is the default, at BLACKWELL_MINE_MEM_CLOCK_MHZ from
-// shared/memClock, which also decides which cards get it; --mine-mem-clock on
+// Lock and release a card's memory clock while it mines. On the RTX 5090 the
+// lock is the default, at BLACKWELL_MINE_MEM_CLOCK_MHZ from shared/memClock,
+// which also decides which cards get it; --mine-mem-clock on
 // the CLI sets another value, or 0 to leave the driver's clock. This file is
 // only the nvidia-smi call.
 //
@@ -15,10 +15,10 @@
 // core, interleaved runs), with the same work per SM clock. Lower still (810 or
 // 405 MHz) raises the SM clock further but the work per clock drops -- the
 // L2/crossbar appears to slow with the memory P-state -- so 7001 is the value
-// to use on a 5090. The 5090 is the only card measured. The default reaches
-// every compute 12.x card because the mechanism -- a hard power cap and a fold
-// that is power-bound, not bandwidth-bound -- is shared across the line, not
-// because another card has been run.
+// to use on a 5090. The 5090 is the only card measured, so it is the only card
+// the default covers. The rest of the Blackwell line shares the mechanism -- a
+// hard power cap and a fold that is power-bound, not bandwidth-bound -- but
+// stays at the driver's clock until a card has been run.
 //
 // LLM decode is the opposite: llama-server is memory-bandwidth-bound, so a card
 // must never serve a model with this lock in place. The miner releases it in

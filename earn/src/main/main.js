@@ -318,12 +318,12 @@ async function startMining(settings, llmCoRuns) {
   const [gpus, cudaCards] = await Promise.all([probe.detectMinerGpus(), probe.detectCudaCards()]);
   if (epoch !== miningEpoch) return;
 
-  // Which cards lock their memory clock while mining: the Blackwell default
+  // Which cards lock their memory clock while mining: the RTX 5090 default
   // (shared/memClock), or LLMJOB_MINE_MEM_CLOCK from the app's environment, the
-  // GUI's one switch for it. The renderer has no setting yet, and the default
-  // is measured on a 5090 only, so a rig that regresses on another compute
-  // 12.x card needs a way off it: 0 leaves every card at the driver's clock,
-  // any other value locks every mining card at it, the same as --mine-mem-clock.
+  // GUI's one switch for it. The renderer has no setting yet, so a rig that
+  // regresses with the lock needs a way off it: 0 leaves every card at the
+  // driver's clock, any other value locks every mining card at it, the same as
+  // --mine-mem-clock.
   // Read on every start, like the CLI reads its flag; a bad value is logged and
   // ignored, so a typo keeps the default rather than silently dropping it. Not
   // while the LLM co-runs: llama-server is memory-bandwidth-bound, and here

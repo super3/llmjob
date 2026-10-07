@@ -12,11 +12,13 @@ const card = (index, cap, driverMajor) => {
 };
 const RTX5090 = (index) => card(index, '12.0');
 const RTX4090 = (index) => card(index, '8.9');
-const gpu = (index) => ({ index, name: 'GPU ' + index });
+// The mining list, as shared/gpu.planMinerGpus returns it. The default goes by
+// the name, so cards are named the way nvidia-smi names them.
+const gpu = (index, name = 'NVIDIA GeForce RTX 5090') => ({ index, name });
 
 const IGNORED = '--mine-mem-clock ignored: the LLM co-runs with the miner and needs full memory bandwidth';
 
-describe('the Blackwell default', () => {
+describe('the RTX 5090 default', () => {
   // 7001 is the one value measured: 682 -> 742 MHz SM clock, +8.0% on a 600 W
   // 5090 (main/gpuClocks). The constant is where both shells and the docs
   // get it from, so it is pinned here.
@@ -27,16 +29,16 @@ describe('the Blackwell default', () => {
 
   // The line names the off switch the way its shell's operator types it: the
   // CLI's flag by default, the GUI's environment variable when main.js asks.
-  test('locks every mining Blackwell card and says so, naming the off switch', () => {
+  test('locks every mining 5090 and says so, naming the off switch', () => {
     const plan = planMemClocks({ requestedMhz: null, cards: [RTX5090(0), RTX5090(1)], gpus: [gpu(0), gpu(1)] });
     expect(plan).toEqual({
       byIndex: { 0: 7001, 1: 7001 },
       isDefault: true,
       dropped: false,
-      reason: 'memory clock 7001 MHz by default on GPU 0, 1 (Blackwell; --mine-mem-clock 0 leaves the driver\'s clock)',
+      reason: 'memory clock 7001 MHz by default on GPU 0, 1 (RTX 5090; --mine-mem-clock 0 leaves the driver\'s clock)',
     });
     expect(planMemClocks({ cards: [RTX5090(0)], gpus: [gpu(0)], requestName: GUI_MEM_CLOCK_ENV }).reason)
-      .toBe('memory clock 7001 MHz by default on GPU 0 (Blackwell; LLMJOB_MINE_MEM_CLOCK=0 leaves the driver\'s clock)');
+      .toBe('memory clock 7001 MHz by default on GPU 0 (RTX 5090; LLMJOB_MINE_MEM_CLOCK=0 leaves the driver\'s clock)');
   });
 
   // A mixed rig: the 4090 is not power-bound the same way and was never
@@ -63,11 +65,41 @@ describe('the Blackwell default', () => {
     expect(planMemClocks({ cards: null, gpus: null }).reason).toBeNull();
   });
 
-  // An empty mining list means the shell starts one core and lets it choose,
-  // so any listed card may be the one mining.
-  test('with no mining list, covers every Blackwell card nvidia-smi listed', () => {
+  // An empty mining list means the shell starts one core and lets it choose.
+  // Without the list there are no names, so no card can be told to be a 5090.
+  test('with no mining list, locks nothing: no names, so no 5090', () => {
     const plan = planMemClocks({ cards: [RTX4090(0), RTX5090(1), RTX5090(2)], gpus: [] });
-    expect(plan.byIndex).toEqual({ 1: 7001, 2: 7001 });
+    expect(plan).toEqual({ byIndex: {}, isDefault: false, dropped: false, reason: null });
+  });
+
+  // Only the 5090 has been measured. The rest of the Blackwell line is compute
+  // 12.x too, and stays at the driver's clock until a card has been run.
+  test('covers the RTX 5090 and 5090 D, not the rest of Blackwell', () => {
+    const blackwell = [RTX5090(0), RTX5090(1), RTX5090(2), RTX5090(3), RTX5090(4)];
+    const plan = planMemClocks({
+      cards: blackwell,
+      gpus: [
+        gpu(0, 'NVIDIA GeForce RTX 5090'),
+        gpu(1, 'NVIDIA GeForce RTX 5090 D'),
+        gpu(2, 'NVIDIA GeForce RTX 5080'),
+        gpu(3, 'NVIDIA GeForce RTX 5070 Ti'),
+        gpu(4, 'NVIDIA RTX PRO 6000 Blackwell Workstation Edition'),
+      ],
+    });
+    expect(plan.byIndex).toEqual({ 0: 7001, 1: 7001 });
+    expect(plan.reason).toContain('on GPU 0, 1 (RTX 5090;');
+  });
+
+  test('is nothing on a rig of other Blackwell cards, with nothing to say', () => {
+    expect(planMemClocks({ cards: [RTX5090(0)], gpus: [gpu(0, 'NVIDIA GeForce RTX 5060')] }))
+      .toEqual({ byIndex: {}, isDefault: false, dropped: false, reason: null });
+    expect(planMemClocks({ cards: [RTX5090(0)], gpus: [gpu(0, null)] }).byIndex).toEqual({});
+  });
+
+  // A name that says 5090 on a card nvidia-smi reports as something else is
+  // not trusted: both have to agree.
+  test('needs the compute capability to agree with the name', () => {
+    expect(planMemClocks({ cards: [RTX4090(0)], gpus: [gpu(0, 'NVIDIA GeForce RTX 5090')] }).byIndex).toEqual({});
   });
 
   // PEARL_GPU_INDEX narrows the fleet to one card; the plan follows it.
@@ -174,7 +206,7 @@ describe('readMemClockEnv', () => {
   test('ignores a bad value and warns, keeping the default', () => {
     expect(readMemClockEnv({ LLMJOB_MINE_MEM_CLOCK: 'off' })).toEqual({
       mhz: null,
-      warning: 'LLMJOB_MINE_MEM_CLOCK=off ignored (must be 0, or a whole number of MHz, 100-30000); the Blackwell default stands',
+      warning: 'LLMJOB_MINE_MEM_CLOCK=off ignored (must be 0, or a whole number of MHz, 100-30000); the RTX 5090 default stands',
     });
     expect(readMemClockEnv({ LLMJOB_MINE_MEM_CLOCK: '' }).mhz).toBeNull();
   });
@@ -190,7 +222,7 @@ describe('an LLM co-running with the miner', () => {
   });
 
   // Nobody asked for the default, so losing it is information, not a drop.
-  test('skips the Blackwell default and says why in one line', () => {
+  test('skips the 5090 default and says why in one line', () => {
     const plan = planMemClocks({ cards: [RTX4090(0), RTX5090(1)], gpus: [gpu(0), gpu(1)], llmCoRuns: true });
     expect(plan).toEqual({
       byIndex: {}, isDefault: false, dropped: false,

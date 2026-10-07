@@ -888,7 +888,7 @@ async function run(argv) {
   }
 
   // Which cards lock their memory clock while mining, and at what: the
-  // Blackwell default, or --mine-mem-clock (shared/memClock). Decided here,
+  // RTX 5090 default, or --mine-mem-clock (shared/memClock). Decided here,
   // where the LLM plan is known, because the lock is only safe while nothing
   // else wants the memory. LLM decode is memory-bandwidth-bound -- the opposite
   // of the fold -- so a model served from a locked card slows down with the

@@ -1249,7 +1249,7 @@ describe('PearlMiner — restarting a card that stopped', () => {
   });
 });
 
-// The memory clock lock (the Blackwell default, or --mine-mem-clock). The
+// The memory clock lock (the RTX 5090 default, or --mine-mem-clock). The
 // shells decide which cards and what clock (shared/memClock) and hand the miner
 // { index: mhz }; the lock is taken per card as its core starts and released in
 // stop(), before 'stopped', because the demand gate starts llama-server --
@@ -1261,7 +1261,7 @@ describe('PearlMiner — the memory clock lock', () => {
   ];
   // A requested lock on both cards, as planMemClocks gives it for --mine-mem-clock.
   const MEM = { ...settings, mineMemClockByIndex: { 0: 7001, 1: 7001 } };
-  // The same two cards on the Blackwell default.
+  // The same two cards on the RTX 5090 default.
   const DEFAULT = { ...MEM, mineMemClockDefault: true };
 
   // A card that reports the index it was asked for, like the real addon, and a
@@ -1368,7 +1368,7 @@ describe('PearlMiner — the memory clock lock', () => {
     b.m.start({ ...DEFAULT, gpus: [GPUS[0]] });
     expect(b.logs).toContainEqual({
       level: 'info',
-      line: 'memory clock locked at 7001 MHz on GPU 0 while mining (the default on Blackwell)',
+      line: 'memory clock locked at 7001 MHz on GPU 0 while mining (the default on the RTX 5090)',
     });
     const asked = rig();
     asked.m.start({ ...MEM, gpus: [GPUS[0]] });
@@ -1385,7 +1385,7 @@ describe('PearlMiner — the memory clock lock', () => {
     expect(b.logs.filter((l) => /memory clock/.test(l.line))).toEqual([{
       level: 'info',
       line: 'memory clock left at the driver\'s default on GPU 0 (sudo: a password is required): '
-        + 'the Blackwell lock needs root or administrator rights for nvidia-smi',
+        + 'the RTX 5090 lock needs root or administrator rights for nvidia-smi',
     }]);
     b.m.stop();
     expect(b.clocks.resetMemoryClock).not.toHaveBeenCalled();
@@ -1454,7 +1454,7 @@ describe('PearlMiner — the memory clock lock', () => {
     });
   });
 
-  // The same old core on a Blackwell rig that asked for nothing: the default
+  // The same old core on a 5090 rig that asked for nothing: the default
   // is skipped, and that is information, not a warning on every start.
   test('a default the core cannot take is one info line', () => {
     const b = rig({ silentDevice: true });

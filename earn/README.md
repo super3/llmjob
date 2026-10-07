@@ -414,7 +414,7 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
       --backend <name>     Force an engine backend (e.g. ampere)
   -b, --binary <path>      Use this alpha-miner binary instead of downloading one
       --engine-dir <path>  Where to cache the downloaded engine
-      --mine-mem-clock <MHz>  Lock each mining GPU's memory clock while it mines (default: 7001 on Blackwell, see below; 0 turns it off)
+      --mine-mem-clock <MHz>  Lock each mining GPU's memory clock while it mines (default: 7001 on the RTX 5090, see below; 0 turns it off)
       --no-report          Do not publish live status to the public network board
       --no-update          Do not auto-update the CLI to a newer release on start
   -h, --help / -v, --version
@@ -471,17 +471,17 @@ same card in early September, before its power draw rose, 7001 MHz measured a
 tie (native/probes/README.md). Measure your own card before and after.
 
 ```bash
-llmjob-earn-cli --address prl1p… --mode mining                        # Blackwell: 7001 by default
+llmjob-earn-cli --address prl1p… --mode mining                        # RTX 5090: 7001 by default
 llmjob-earn-cli --address prl1p… --mode mining --mine-mem-clock 7001  # any card: lock at 7001
 llmjob-earn-cli --address prl1p… --mode mining --mine-mem-clock 0     # leave the driver's clock
 ```
 
-- **On by default on Blackwell.** Every mining card with compute capability
-  12.x (RTX 50, RTX PRO Blackwell) is locked at 7001 MHz, in the CLI and in the
-  desktop app. Only the 5090 has been measured; the default covers the rest of
-  the line because what it relies on, a hard power cap and a fold that is
-  power-bound rather than bandwidth-bound, is shared across it. Every other card
-  is left at the driver's clock unless you pass the flag.
+- **On by default on the RTX 5090.** A mining RTX 5090 is locked at 7001 MHz,
+  in the CLI and in the desktop app. It is the only card measured. Other
+  Blackwell cards (the rest of the RTX 50 line, RTX PRO Blackwell) may gain the
+  same way, since they share the hard power cap and the power-bound fold, but
+  they stay at the driver's clock until one has been measured. Pass the flag to
+  lock any card.
 - **`--mine-mem-clock 0` turns it off** in the CLI. Any other value replaces the
   default on every mining card. The desktop app has no setting for it in its
   window yet; its switch is the environment variable `LLMJOB_MINE_MEM_CLOCK`,
@@ -489,7 +489,7 @@ llmjob-earn-cli --address prl1p… --mode mining --mine-mem-clock 0     # leave 
   locks every mining card at it) and is read on every start. Set it the way you
   set any variable for the app: in the shell that launches it on Linux, or in
   Windows' system environment variables. A bad value is ignored with a warning
-  in the log and the default stands. Without it a Blackwell card mining alone is
+  in the log and the default stands. Without it an RTX 5090 mining alone is
   locked whenever the app has the rights to set clocks, and the log says so.
 - **Skipped while an LLM co-runs.** `llama-server` is memory-bandwidth-bound, so
   a card that serves a model alongside mining keeps the driver's clock. Demand

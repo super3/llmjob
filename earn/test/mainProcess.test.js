@@ -942,7 +942,7 @@ describe('mining', () => {
   // is PearlMiner's; the GUI's part is feeding the plan the cards, whether the
   // LLM co-runs and what LLMJOB_MINE_MEM_CLOCK in its environment says, and
   // handing the result to the engine. The renderer has no setting for it, so
-  // the Blackwell default is how a GUI rig gets the lock -- which is the point:
+  // the RTX 5090 default is how a GUI rig gets the lock -- which is the point:
   // before this, no GUI rig ever did -- and the environment variable is how it
   // gets off it, or onto it on another card.
   describe('the memory clock', () => {
@@ -967,7 +967,7 @@ describe('mining', () => {
       else delete process.env[ENV];
     });
 
-    it('is locked by default on a Blackwell card mining alone, and the log says so', async () => {
+    it('is locked by default on an RTX 5090 mining alone, and the log says so', async () => {
       const ctx = await boot();
       oneCard(ctx, RTX5090, 'NVIDIA GeForce RTX 5090');
       ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
@@ -976,7 +976,7 @@ describe('mining', () => {
         mineMemClockByIndex: { 0: 7001 }, mineMemClockDefault: true,
       }));
       expect(lines(ctx)).toContain(
-        'memory clock 7001 MHz by default on GPU 0 (Blackwell; LLMJOB_MINE_MEM_CLOCK=0 leaves the driver\'s clock)');
+        'memory clock 7001 MHz by default on GPU 0 (RTX 5090; LLMJOB_MINE_MEM_CLOCK=0 leaves the driver\'s clock)');
       // The plan rides on the start call only: what is saved is what the
       // renderer sent, and never the plan.
       const saved = ctx.fs.writeFileSync.mock.calls
@@ -1056,7 +1056,7 @@ describe('mining', () => {
     });
 
     // A typo must not silently switch the default off: it is ignored, with a
-    // warning, and the Blackwell default is applied as if it were unset.
+    // warning, and the RTX 5090 default is applied as if it were unset.
     it('ignores a bad LLMJOB_MINE_MEM_CLOCK with a warning and keeps the default', async () => {
       process.env[ENV] = 'off';
       const ctx = await boot();
@@ -1068,7 +1068,7 @@ describe('mining', () => {
       }));
       expect(ctx.sent('miner:log')).toContainEqual({
         level: 'warn',
-        line: 'LLMJOB_MINE_MEM_CLOCK=off ignored (must be 0, or a whole number of MHz, 100-30000); the Blackwell default stands',
+        line: 'LLMJOB_MINE_MEM_CLOCK=off ignored (must be 0, or a whole number of MHz, 100-30000); the RTX 5090 default stands',
       });
     });
 
