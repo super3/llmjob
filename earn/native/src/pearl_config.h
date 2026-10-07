@@ -956,6 +956,23 @@ typedef struct {
 #ifndef PEARL_AMPERE_BAND_L2_SHARE
 #define PEARL_AMPERE_BAND_L2_SHARE 80u
 #endif
+// GA100's band (host side, the sm_80 unfused fold only): 32 deep where a band's A' (12 MB
+// at the mainnet k) is at most this many percent of the L2. That is the A100's 40 MB (30%);
+// the A30's 24 MB and the CMP 170HX's 32 MB keep the rule above (16). The persisting
+// slice (PEARL_AMPERE_PERSIST_A) takes the whole 12 MB on all three (max 15-25 MB).
+// Measured with -DPEARL_AMPERE_BAND=32 against 16, hashrate.js, 3 or 4 rounds, 400/400
+// hits:
+//   A100 SXM4 40 GB (New York, 400 W)  246.60 -> 246.98  +0.15%  ahead in every round
+//   A100 PCIe 40 GB (Japan, 250 W)     211.13 -> 211.74  +0.29%  ahead in every round
+//   the same two on the four-buffer ring (not kept), against it: -0.03% (ahead in 1 of 3
+//   rounds) and +0.20% (every round)
+//   CMP 170HX (Georgia, 250 W)         164.63 -> 164.75  +0.07%  (behind in 2 of 4 rounds)
+//   A30 (Australia, 155 W)             104.56 -> 103.79  -0.74%  (behind in all 4)
+//   A100s at band 64 (24 MB): -0.85% and -1.31%.
+// 0 turns it off. Host only.
+#ifndef PEARL_GA100_BAND32_L2_SHARE
+#define PEARL_GA100_BAND32_L2_SHARE 33u
+#endif
 // Ampere's batch width (host side, the sm_86 tall fold only): at most this many column
 // offsets a launch, against the profile's 2048. With A' held in the persisting slice
 // (PEARL_AMPERE_PERSIST_A), what DRAM still serves is B' fetched again when the tiles that

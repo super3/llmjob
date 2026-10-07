@@ -1044,16 +1044,21 @@ uint32_t pearl_ampere_col_batch(uint32_t colBatch, uint32_t colsValid) {
 
 // Ampere's band depth for the tall fold (see PEARL_AMPERE_BAND_L2_SHARE): 16, halved
 // while a band's A' -- depth x 192 rows x k bytes -- is more than
-// PEARL_AMPERE_BAND_L2_SHARE percent of the L2, never below 4. -DPEARL_AMPERE_BAND=N
-// forces N, a power of two.
-uint32_t pearl_ampere_band_for(uint32_t k, uint64_t l2) {
+// PEARL_AMPERE_BAND_L2_SHARE percent of the L2, never below 4. GA100's unfused fold
+// (`ga100`) goes to 32 where that A' is at most PEARL_GA100_BAND32_L2_SHARE percent of
+// the L2. -DPEARL_AMPERE_BAND=N forces N, a power of two.
+uint32_t pearl_ampere_band_for(uint32_t k, uint64_t l2, bool ga100) {
 #ifdef PEARL_AMPERE_BAND
   (void)k;
   (void)l2;
+  (void)ga100;
   return (uint32_t)PEARL_AMPERE_BAND;
 #else
   uint32_t band = 16u;
   if (l2 == 0u) return band;
+  if (ga100 && PEARL_GA100_BAND32_L2_SHARE != 0u
+      && 32ull * PEARL_TALL_BM * k * 100u <= l2 * (uint64_t)PEARL_GA100_BAND32_L2_SHARE)
+    return 32u;
   while (band > 4u
          && (uint64_t)band * PEARL_TALL_BM * k * 100u > l2 * (uint64_t)PEARL_AMPERE_BAND_L2_SHARE)
     band /= 2u;
@@ -1385,7 +1390,7 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
       (void)cudaGetLastError();
       l2 = 0;
     }
-    ctx->tallBand = pearl_ampere_band_for(profile->k, (uint64_t)l2);
+    ctx->tallBand = pearl_ampere_band_for(profile->k, (uint64_t)l2, ctx->foldUnfused);
     // The fold reads it PEARL_BD_BAND_WORD words past its slot's hit counter.
     const uint32_t bands[Ctx::kSlots] = {ctx->tallBand, ctx->tallBand};
     CUDA_OK(cudaMemcpy(ctx->dHitCount + PEARL_BD_BAND_WORD, bands, sizeof bands,
