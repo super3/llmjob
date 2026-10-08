@@ -18,8 +18,9 @@ host:
 - A100-class (sm_80, PR #253, not in a release yet): the A30 107%, the A100
   PCIe 98% and the A100 SXM4 97% on the current build. The CMP 170HX row is
   from the first build (87%); it screens at about 98% now.
-- Hopper (sm_90, PR #253, not in a release yet): 58–63%. These cards
-  couldn't mine at all before this PR.
+- Hopper (sm_90a, PR #253, not in a release yet): 83–88% on the H100 SXM,
+  NVL and PCIe, the H200 and the H200 NVL, with Hopper's wgmma fold on by
+  default. These cards couldn't mine at all before this PR.
 - Ada workstation and data-center cards (sm_89: L40S, L40, L4, RTX 6000,
   5000, 4500, 4000 and 2000 Ada): 101–111%.
 - RTX PRO Blackwell (sm_120): 99–101%. The 6000 Max-Q and the RTX 6000D are
@@ -289,28 +290,45 @@ the RTX tables.
   8 GB and 70 SMs. Every CMP 170HX on Vast is like this, so a stock card
   hasn't been tested.
 
-## Hopper (sm_90, PR #253)
+## Hopper (sm_90a, PR #253)
 
-Run on 2026-10-07, 16:58–18:16 UTC, with PR #253's core at `ff4b782`, the
-sm_90 port. The boxes built it on `5f427dd`; the commit in between,
-`dd64b2c`, changes only sm_80, so the sm_90 code is the same. No release
-supports these cards yet. Same harness, pool and miner versions as the RTX
-tables.
+Run on 2026-10-08, 06:35–07:17 UTC, with PR #253's release build at `e8c04b4`,
+which mines with Hopper's wgmma fold by default. Each box built the core as
+native-core.yml does (CUDA 12.8, sm_75/80/86/89/90a/120, no `-D` flags). No
+release supports these cards yet. Same harness, pool and miner versions as the
+RTX tables. PeakMiner and SRBMiner on the H100 SXM and NVL hosts are the
+2026-10-07 runs; the other three hosts are new, so all three miners ran there.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
-| H100 SXM 80 GB | New York (700 W) | 153443 | 436.2 | 757.7 | 734.4 | 58% |
-| H100 NVL 94 GB | Japan (400 W) | 29785 | 341.0 | 533.0 | 537.6 | 63% |
-| H100 PCIe 80 GB | United States (350 W) | 81035 | 299.4 | 478.4 | 485.1 | 62% |
+| H100 SXM 80 GB | New York (700 W) | 153443 | 630.8 | 757.7 | 734.4 | 83% |
+| H100 NVL 94 GB | Japan (400 W) | 29785 | 471.0 | 533.0 | 537.6 | 88% |
+| H100 PCIe 80 GB | Czechia (350 W) | 147981 | 423.1 | 391.6 | 481.0 | 88% |
+| H200 141 GB | Saudi Arabia (700 W) | 131919 | 619.9 | 718.6 | 720.4 | 86% |
+| H200 NVL 141 GB | Quebec (600 W) | 153365 | 591.5 | 669.8 | 675.3 | 88% |
 
-- **All three cards:** every miner ran at the power limit. We ran at
-  1585–1833 MHz and the other two at 1116–1495 MHz, so the gap is work per
-  clock. PeakMiner and SRBMiner get about 94% of Hopper's tensor peak per
-  clock. This port runs the Ampere fold and gets about 44%.
-- **H100 PCIe, France (153139):** passed the hit check, but the host kept
-  restarting the container, and PeakMiner and SRBMiner never ran. No row.
-- **Not tested:** the H200 and H200 NVL. They are the same chip at compute
-  9.0.
+- **Every host:** passed the hit check and picked the wgmma fold (2-CTA
+  clusters, 128x256 tiles). The CLI got 26, 19, 9, 18 and 15 shares accepted,
+  none rejected.
+- **The gap is work per clock.** Every miner ran at the power cap, and we ran
+  70–290 MHz faster than the other two at the same watts. Per clock the fold
+  does 71–75% of the wgmma peak and the competitors 87–94%; most of the
+  difference is the fold's readout.
+- **Before `e8c04b4`:** the cp.async port, run on 2026-10-07, did 436.2 on the
+  H100 SXM (58%) and 341.0 on the H100 NVL (63%), and 299.4 against 478.4 and
+  485.1 on an H100 PCIe in the United States (81035, 62%).
+- **H100 PCIe:** 81035 wasn't offered, so this is a new host. PeakMiner ran
+  at 915 MHz and fell from about 404 to 391.6 by 5:00. SRBMiner is the faster
+  competitor here either way.
+- **H200:** the same chip as the H100 with faster memory, but the fold does
+  about 10% less per clock on it than on the H100 SXM (about 2770 against 3063
+  int8 MAC/clock/SM). Not looked into yet.
+- **Order:** on the three new hosts the miners ran ours, then SRBMiner, then
+  PeakMiner, not alternating between hosts.
+- **Skipped hosts:** H200 Massachusetts (153354, reliability 0.68), H200 New
+  Jersey (153539, performance score 2), H200 NVL Czechia (43532, rented at
+  $5.61/h against the $3.74 listed, destroyed after 14 s), and H100 PCIe
+  France (153139, restarts the container).
 
 ## Ada workstation and data-center cards (sm_89)
 
