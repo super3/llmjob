@@ -1,9 +1,8 @@
 # LLMJob Earn (`earn`)
 
-A desktop GUI that turns the excess compute on GPUs you already own into crypto,
-wrapping the AlphaPool [`alpha-miner`](https://pearl.alphapool.tech/#setup) engine
-for Pearl (**PRL**). Paste a payout address, hit **Start**, and earn — no command
-line. Built with Electron and shipped for **Windows**, **Linux** and
+A desktop GUI that turns the excess compute on GPUs you already own into crypto.
+It mines Pearl (**PRL**) on the HeroMiners pool with its own CUDA mining core.
+Paste a payout address, hit **Start**, and earn — no command line. Built with Electron and shipped for **Windows**, **Linux** and
 **[macOS](#macos-llm-only)** (LLM only — see below); headless rigs can use the
 [command-line miner](#headless-cli-linux) instead of the GUI.
 
@@ -15,74 +14,67 @@ line. Built with Electron and shipped for **Windows**, **Linux** and
 **Highlights**
 
 - **Live pool balance** — your pending payout plus lifetime paid for the address.
-- **Merge mining** — add an `mdl1p…` address in Settings to also earn ModelOS
-  (MDL) on the very same shares, no extra power or hardware.
 - **Public board** — while mining, the app publishes live status to the network
   page (your Pearl address only — nothing else is reported).
-- **Zero-config** — auto-detects the discrete GPU and its recommended static
-  difficulty, picks the lowest-latency pool region, and updates itself.
+- **Zero-config** — mines on every GPU, picks the lowest-latency pool region,
+  and updates itself.
 
 ## How it works
 
 - **`src/shared/`** — pure, fully unit-tested logic (no Electron/DOM):
-  - `config.js` — pool endpoints, per-card static difficulty, engine metadata, economics.
+  - `config.js` — pool regions (and the old AlphaPool ids they replace), the llama-server and model downloads, economics.
   - `address.js` — `prl1p…` / `mdl1p…` validation, shortening, and the merge-mining combined address.
   - `cliArgs.js` — parses/validates the headless CLI flags into the same settings shape the GUI uses.
   - `llmMode.js` — the compute-mode policy (mining / both / llm / auto → which engines run), shared by the GUI and the CLI.
-  - `platform.js` — what each OS can do: whether a mining engine exists for it (no on macOS) and whether electron-updater can install there.
+  - `platform.js` — what each OS can do: whether it can mine (not on macOS) and whether electron-updater can install there.
   - `llama.js` / `vram.js` — build the local `llama-server` command line + parse its output, and size the GPU offload (`--n-gpu-layers`) from free VRAM.
   - `selfUpdate.js` — decides, from the running version + GitHub's latest release, whether the CLI binary should self-update.
-  - `minerArgs.js` — builds the engine argument vector / launcher env (`--address`, `--worker`, `--password "x;d=N"`, `--force-backend`).
-  - `parser.js` — turns `alpha-miner` stdout into structured events (shares, hashrate, connect).
-  - `miningStats.js` — accumulates those events into the live stats snapshot.
+  - `miner/` — the Pearl protocol: Stratum messages, PearlHash, and the share proofs the pool checks.
+  - `coreVariant.js` — which build of the mining core a rig loads (CUDA 12.8 or CUDA 13).
+  - `memClock.js` — which mining cards get their memory clock locked, and at what.
+  - `miningStats.js` — accumulates the miner's events into the live stats snapshot.
   - `earnings.js` — PRL/USD per-day estimates.
   - `balance.js` — builds the pool balance lookup and parses the pending + paid response.
   - `minerReport.js` — the payload published to the public network board while mining.
-  - `gpu.js` / `region.js` — pick the discrete GPU and the lowest-latency pool region from what's detected.
-  - `engine.js` — engine download URLs, binary names, and progress math.
-  - `engineError.js` — plain-language guidance for launch failures (incl. antivirus quarantine).
+  - `statsFile.js` — the stats JSON the CLI writes for HiveOS's `h-stats.sh`.
+  - `gpu.js` — reads `nvidia-smi`'s card list and decides which cards mine (`--gpu-index`, `PEARL_GPU_INDEX`).
+  - `region.js` — picks the lowest-latency pool region.
   - `updateStatus.js` — formats the in-app auto-update banner.
   - `format.js` — uptime / hashrate / number formatting.
 - **`src/main/`** — Electron main process:
-  - `minerManager.js` — spawns and supervises the engine (injectable `spawn`, unit-tested).
-  - `engineManager.js` — downloads + installs the engine on first run (injected IO, unit-tested).
-  - `llmManager.js` / `llmEngineManager.js` — spawn/supervise the local `llama-server` and download its binary + GGUF model on demand (same injectable pattern as the miner pair, unit-tested).
+  - `pearlMiner.js` — the miner: one core per card, the pool connection, and share submission.
+  - `pearlEngine.js` — wraps `pearlMiner.js` in the start/stop and event interface both shells drive.
+  - `pearlCore.js` — loads `pearl_core.node` (built from [`native/`](native)), picking the CUDA 12.8 or CUDA 13 build.
+  - `probe.js` — asks `nvidia-smi` about the cards (names, VRAM, temperatures, PCI bus ids), pings the pool regions, and posts the board report.
+  - `gpuClocks.js` — locks and releases a card's memory clock while it mines.
+  - `llmManager.js` / `llmEngineManager.js` — spawn/supervise the local `llama-server` and download its binary + GGUF model on demand (injected IO, unit-tested).
   - `main.js` / `preload.js` — window, settings persistence, IPC bridge (thin shells).
 - **`src/renderer/`** — the GUI (Setup → Running → Settings → Logs), pure display + IPC.
 - **`src/cli/`** — headless Linux miner (no Electron); thin IO shells that reuse
-  the same `shared/*` logic and process supervisor as the GUI:
-  - `earn-cli.js` — the CLI entry (arg handling, engine resolution, run loop, self-update check).
+  the same `shared/*` logic and the same miner as the GUI:
+  - `earn-cli.js` — the CLI entry (arg handling, which cards mine, run loop, self-update check).
   - `selfUpdater.js` — the IO side of self-update (GitHub fetch, download, atomic self-replace, re-exec).
   - `sea-entry.js` — entry shim for the packaged single-file binary (`scripts/build-cli.mjs`).
 
 ## The mining engine
 
-The installer **bundles the engine** — electron-builder `extraResources` ships
-`vendor/engine/` to `<resources>/engine/`, so a normal install runs offline with
-no unsigned download at runtime. If no bundled binary is present (a dev run, or a
-build where antivirus stripped it), the app **downloads it on first Start** and
-caches it under the user-data folder (`…/LLMJob Earn/engine/`): on Windows it
-fetches `AlphaMiner-Pearl-Windows.zip` from the pool's `/downloads/` path and
-extracts `alpha-miner-windows.exe` (via PowerShell `Expand-Archive`, no extra
-dependency; base URL overridable). If that also fails it surfaces a plain-language
-engine error (with antivirus-quarantine guidance) — the stats shown are always the
-engine's real output, never simulated. Point `binaryPath` at your own build to
-skip the download entirely.
+The miner is our own. Its GPU work is a CUDA core, `pearl_core.node`, an N-API
+addon built from [`native/`](native), that runs inside the app's own process.
+`src/main/pearlMiner.js` drives it and speaks Stratum to the pool. There is no
+separate engine to download or start. The installer ships the cores in
+`resources/native/` (electron-builder `extraResources`, from `vendor/native/`),
+and the CLI looks for them beside its binary. If no core loads, the app says so
+and doesn't mine.
 
-The app drives `alpha-miner` with its documented CLI: `--address prl1…`,
-`--worker`, static difficulty via `--password "x;d=N"`, an optional
-`--force-backend` for cards that need it, and the regional endpoint
-(`us1/us2/eu1/eu2/ru1/sg1/hk1/in1.alphapool.tech:5566`). Merge mining differs by
-platform: Windows appends the MDL address to `--address` as `prl1…+mdl1…`, while
-Linux passes it in the password's `mdl=` field (`x;d=N;mdl=mdl1…`) because the
-Linux engine validates `--address` as a single bech32m address and rejects the
-combined form.
+It mines on **HeroMiners** (`<region>.pearl.herominers.com:1200`), in the
+region with the lowest latency unless one is pinned: `us`, `us2`, `ca`, `br`,
+`de`, `fi`, `fr`, `tr`, `sg`, `hk`, `kr` or `au`. The pool sends a block header
+and a target, and the core chooses how to search.
 
-On Linux the engine version is picked per rig (`shared/engine.js`): driver
-≥ 580 gets the faster CUDA 13 build (`alpha-miner-1.8.8`, 3–8% more hashrate on
-40/50-series), older drivers stay on the CUDA 12 stable (`alpha-miner-1.8.3`).
-The version is part of the cached filename, so bumping it forces a fresh
-download instead of trusting a stale cache.
+Earlier versions wrapped AlphaPool's `alpha-miner`. That engine and
+that pool are gone. An old AlphaPool region id (`us1`, `eu1`, `eu2`, `ru1`,
+`sg1`, `hk1`, `in1`), in saved settings or passed to the CLI, maps to the
+nearest HeroMiners region.
 
 ### Which GPUs it mines on
 
@@ -192,11 +184,9 @@ beats both and loads exactly that file.
 
 ## macOS (LLM only)
 
-The Mac build runs **the local LLM and nothing else**. AlphaPool builds
-`alpha-miner` for Windows and Linux only — there is no macOS binary at any
-version, and no CUDA GPU to run one on — so the app refuses the miner up front
-(`src/shared/platform.js`) rather than downloading the Linux ELF that every
-non-Windows path in `shared/engine.js` would otherwise resolve to. Concretely:
+The Mac build runs **the local LLM and nothing else**. The mining core is
+CUDA, and a Mac has no NVIDIA GPU to run it on, so the app turns the miner off
+up front (`src/shared/platform.js`). Concretely:
 
 - **Settings → Compute Mode** offers only **Auto** and **LLM**; the two mining
   modes are removed rather than left to arm a **START** that runs nothing.
@@ -437,8 +427,9 @@ CI packages the CLI into a **standalone single-file Linux executable**
 (`llmjob-earn-cli-linux`, built with [Node SEA](https://nodejs.org/api/single-executable-applications.html))
 and attaches it to each GitHub Release, so a headless box can run it with **no
 Node install**. The mining cores are separate files on the same release, and
-the binary looks for them beside itself (`pearl_core_cu13.node` is only used on
-RTX 50 cards):
+the binary looks for them beside itself (`pearl_core_cu13.node` is used only on
+Blackwell cards, such as the RTX 50 series and RTX PRO Blackwell, with driver
+580 or newer):
 
 ```bash
 base=https://github.com/super3/llmjob/releases/latest/download
@@ -512,7 +503,7 @@ llmjob-earn-cli --address prl1p… --mode mining --region de --no-update --no-re
   mining cores beside it.
 - `--no-report` (optional) keeps the rig off the public network board.
 
-The mining cores (`pearl_core.node`, and `pearl_core_cu13.node` for RTX 50
+The mining cores (`pearl_core.node`, and `pearl_core_cu13.node` for Blackwell
 cards) sit beside the binary, so nothing is downloaded to mine. To run a core
 you built or vetted yourself, set `PEARL_CORE_PATH=/path/to/pearl_core.node`.
 
@@ -601,7 +592,7 @@ llmjob-earn-cli --address prl1p… --mode mining --mine-mem-clock 0     # leave 
 npm install        # from this earn/ directory
 npm start          # launch the Electron app
 npm run start:cli -- --address prl1p…   # run the headless Linux miner
-npm test           # jest — 100% coverage gate on shared/* + miner/engineManager
+npm test           # jest — 100% coverage gate (see jest.config.js)
 ```
 
 ## Build (Windows + Linux + macOS)
@@ -620,9 +611,9 @@ the Linux **AppImage** builds on Linux; the macOS **DMG** builds on macOS
 build is uploaded as an artifact and, on a `v*` tag, published to the GitHub
 Release.
 
-The mining engine is bundled into the Windows and Linux builds only
+The mining cores are bundled into the Windows and Linux builds only
 (`build.win.extraResources` / `build.linux.extraResources`); the Mac build ships
-neither it nor the Windows VC++ runtime DLLs, since it cannot mine. The macOS app
+neither them nor the Windows VC++ runtime DLLs, since it cannot mine. The macOS app
 is ad-hoc signed in an `afterPack` hook — see
 [macOS (LLM only)](#macos-llm-only) for why, and what it means on first launch.
 
@@ -632,4 +623,4 @@ macOS `.icns` and the Linux icon set) is generated by
 
 ---
 
-Not affiliated with Pearl Research Labs or AlphaPool — this is a third-party GUI.
+Not affiliated with Pearl Research Labs or HeroMiners — this is a third-party GUI.
