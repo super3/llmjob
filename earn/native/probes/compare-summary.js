@@ -8,6 +8,21 @@ function gpu(name) {
   return { mhz: mean(rows.map((r) => r[1])), w: mean(rows.map((r) => r[2])), c: mean(rows.map((r) => r[3])) };
 }
 const out = [];
+// The competitors' versions, from what actually ran rather than a hard-coded label:
+// PeakMiner's API reports its own ("version"); SRBMiner's version is in the name of
+// the directory it was unpacked into (SRBMiner-Multi-3-7-1), which compare-miners.sh
+// records in miners.txt, unless its API says so itself ("miner_version").
+const srbPath = (read('miners.txt').match(/^SRB_EXE=(.*)$/m) || [])[1] || '';
+const srbFromPath = (srbPath.match(/SRBMiner-Multi-(\d+)-(\d+)-(\d+)/i) || []).slice(1).join('.');
+function apiVersion(file, key) {
+  for (const l of read(file).split('\n')) {
+    const m = l.match(new RegExp('"' + key + '"\\s*:\\s*"([^"]+)"'));
+    if (m) return m[1];
+  }
+  return '';
+}
+const srbVer = apiVersion('srb.api', 'miner_version') || srbFromPath || 'version unknown';
+const peakVer = apiVersion('peak.api', 'version') || 'version unknown';
 { // ours: the CLI's status line, one per second
   const lines = read('ours.log').split('\n').filter((l) => l.includes('TH/s'));
   const pts = lines.map((l) => { const th = +l.match(/([\d.]+) TH\/s/)[1]; const m = l.match(/up (\d+)m (\d+)s/); return { t: +m[1] * 60 + +m[2], th, acc: +(l.match(/(\d+) accepted/) || [0, 0])[1], rej: +(l.match(/(\d+) rejected/) || [0, 0])[1] }; });
@@ -20,7 +35,7 @@ function api(file, pick) {
 {
   const pts = api('srb.api', (j) => { const a = j.algorithms[0]; return { th: a.hashrate.gpu.total / 1e12, acc: a.shares.accepted, rej: a.shares.rejected }; });
   const steady = pts.filter((p) => p.t >= 60); const last = pts[pts.length - 1] || {};
-  out.push({ miner: 'SRBMiner 3.6.9 (2% fee)', avg: mean(steady.map((p) => p.th)), end: last.th, acc: last.acc, rej: last.rej, ...gpu('srb') });
+  out.push({ miner: `SRBMiner ${srbVer} (2% fee)`, avg: mean(steady.map((p) => p.th)), end: last.th, acc: last.acc, rej: last.rej, ...gpu('srb') });
 }
 {
   const pts = api('peak.api', (j) => {
@@ -29,7 +44,7 @@ function api(file, pick) {
     walk(j); return { th: hs > 1e9 ? hs / 1e12 : hs, acc, rej };
   });
   const steady = pts.filter((p) => p.t >= 60); const last = pts[pts.length - 1] || {};
-  out.push({ miner: 'PeakMiner 2.17.1 (2% fee)', avg: mean(steady.map((p) => p.th)), end: last.th, acc: last.acc, rej: last.rej, ...gpu('peak') });
+  out.push({ miner: `PeakMiner ${peakVer} (2% fee)`, avg: mean(steady.map((p) => p.th)), end: last.th, acc: last.acc, rej: last.rej, ...gpu('peak') });
 }
 const top = Math.max(...out.map((r) => r.avg || 0));
 console.log('| Miner | Displayed TH/s (avg min 1-5) | At 5:00 | vs top | Shares ok/rej | SM clock | Power |');
