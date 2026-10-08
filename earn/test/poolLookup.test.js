@@ -168,7 +168,8 @@ describe('fileCache', () => {
     const fs = fakeFs(new Error('ENOENT'));
     const cache = fileCache(FILE, fs, path);
     cache.set(HOST, [{ address: '51.81.1.1', family: 4, ttl: 300 }]);
-    expect(fs.mkdirSync).toHaveBeenCalledWith('/store', { recursive: true });
+    // path.dirname, not '/store': on Windows the folder is '\store'.
+    expect(fs.mkdirSync).toHaveBeenCalledWith(path.dirname(FILE), { recursive: true });
     expect(JSON.parse(fs.writeFileSync.mock.calls[0][1])).toEqual({ [HOST]: [{ address: '51.81.1.1', family: 4 }] });
     cache.set(HOST, [{ address: '51.81.1.1', family: 4 }]);
     expect(fs.writeFileSync).toHaveBeenCalledTimes(1);
