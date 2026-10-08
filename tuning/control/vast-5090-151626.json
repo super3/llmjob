@@ -1,5 +1,4 @@
 {
   "default": {"core": "release", "flags": "", "env": {}},
-  "gpus": {},
-  "builds": {"serp": {"ref": "c374bd0", "defines": "-DPEARL_FOLD_SERPENTINE=1"}}
+  "gpus": {}
 }
