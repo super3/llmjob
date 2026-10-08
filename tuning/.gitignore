@@ -1,0 +1,4 @@
+# Written by sell_prl.py when it runs from this folder
+sales.csv
+sell_prl_state.json
+__pycache__/

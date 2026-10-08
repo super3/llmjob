@@ -46,3 +46,41 @@ the GPU goes back to the release default.
 - `control/<worker>.json`: each box's live settings. These steer running boxes; they are an
   experiment log, not part of the miner.
 - [`RESULTS.md`](RESULTS.md): what was tried on which card, and the result.
+- [`sell_prl.py`](sell_prl.py): sells mined PRL on SafeTrade as it arrives. See below.
+
+## Selling PRL as it arrives
+
+`sell_prl.py` checks your SafeTrade PRL balance every minute and sells what is there for USDT,
+so each payout is turned into dollars at that moment's price instead of riding the PRL price.
+It uses only the Python standard library.
+
+It will not sell into a bad book:
+
+- The lowest price it accepts is 1% under the best bid (`--max-slip`). Bids below that are left
+  alone, and the rest of the balance waits for the next round.
+- It sells nothing when the best bid is more than 5% under the last trade (`--max-gap`).
+- `--floor 1.20` stops all sales under $1.20.
+- An order that hasn't filled after 2 minutes is cancelled and tried again next round.
+
+Each sale is added to `sales.csv`. The order in flight is saved in `sell_prl_state.json`, so a
+restarted run finishes it. Orders you place yourself on SafeTrade are never touched.
+
+To set it up:
+
+1. On SafeTrade, check that its PRL is the coin you mine. Then point your pool payouts at your
+   SafeTrade PRL deposit address, or send PRL there yourself.
+2. Make an API key with trading rights only. Leave withdrawals off, so the key can't move funds
+   out even if it leaks.
+3. Run it on your own computer or a server. SafeTrade sits behind Cloudflare, which refuses many
+   cloud addresses, including the ones Claude Code sessions run in.
+
+```sh
+export SAFETRADE_API_KEY=...  SAFETRADE_API_SECRET=...
+python3 sell_prl.py --check   # read market, book, ticker and balance; print them; place nothing
+python3 sell_prl.py           # dry run: logs what it would sell, places nothing
+python3 sell_prl.py --live    # sells for real
+```
+
+`--check` shows what the script understood from the API. If a balance or price reads as `None` or
+0 when it shouldn't, stop and fix the field names before going live. Use `--market prlusdc` to sell
+for USDC. Tests: `python3 test_sell_prl.py` (runs against a fake SafeTrade server).
