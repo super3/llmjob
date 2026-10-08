@@ -3,7 +3,7 @@ export DEBIAN_FRONTEND=noninteractive
 # tuning/control/<worker>.json on this PR's branch, so each GPU can be tuned on its own
 # while the others keep mining.
 #
-# Starts mining at once with the published v0.5.12 release (the CLI picks its CUDA 12 or
+# Starts mining at once with the published release named in VER (the CLI picks its CUDA 12 or
 # CUDA 13 core). Build tools install in the background afterwards, so a core built from
 # this branch can be tried on one GPU when its control file asks for one.
 #
@@ -30,7 +30,7 @@ export DEBIAN_FRONTEND=noninteractive
 W=prl1px5ervx6ftaegmdhqa5ajemh20j2uw7l9jt5j5s97rljp72yt3s8qncrxud
 WORKER=__WORKER__
 REPO=super3/llmjob; BRANCH=claude/sleepy-noether-lt2mh9; NODE_VER=v22.22.0
-REL=https://github.com/super3/llmjob/releases/download/v0.5.12
+VER=v0.5.13; REL=https://github.com/super3/llmjob/releases/download/$VER
 CTL_API="https://api.github.com/repos/$REPO/contents/tuning/control/$WORKER.json?ref=$BRANCH"
 CTL_RAW="https://raw.githubusercontent.com/$REPO/$BRANCH/tuning/control/$WORKER.json"
 D=/opt/m; mkdir -p $D/rel $D/builds $D/run
@@ -55,7 +55,7 @@ else
   done
   for f in "${!dl[@]}"; do wait ${dl[$f]} || { echo "[run] FAIL: download $f"; sleep infinity; }; done
   mv $D/rel/llmjob-earn-cli-linux $D/rel/cli && chmod +x $D/rel/cli
-  echo "[run] release v0.5.12 ready"
+  echo "[run] release $VER ready"
   touch $D/setup
 fi
 
