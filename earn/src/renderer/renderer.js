@@ -45,6 +45,8 @@
     setWorker: $('set-worker'), setRegion: $('set-region'),
     setShare: $('set-share'), shareNote: $('share-note'),
     appVersion: $('app-version'), btnCheckUpdate: $('btn-check-update'), updateStatus: $('update-status'),
+    prefTray: $('pref-tray'), prefStartup: $('pref-startup'), prefIdle: $('pref-idle'),
+    idleStatus: $('idle-status'),
     logTerm: $('log-term'),
   };
 
@@ -53,6 +55,10 @@
     // renderer has no access to shared/config across the preload bridge.
     defaultRegion: 'us',
     mining: false,       // master process running (miner and/or LLM per mode)
+    // START stands but the work is paused, because "only mine when idle" is on
+    // and someone is using the computer. STOP still shows.
+    paused: false,
+    idleAfterSec: 300,
     view: 'mine',        // mine | chat | api | settings | logs
     returnTab: 'mine',   // where settings/logs return to
     address: '', gpu: '', mode: 'auto', mdlAddress: '',
@@ -508,7 +514,10 @@
     el.addrStatic.hidden = !state.mining;
     el.btnStart.hidden = state.mining;
     el.btnStop.hidden = !state.mining;
-    el.mineDot.className = 'dot2' + (state.mining ? ' on' : '');
+    el.mineDot.className = 'dot2' + (state.mining && !state.paused ? ' on' : '');
+    el.idleStatus.hidden = !(state.mining && state.paused);
+    el.idleStatus.textContent = 'Waiting for your computer to be idle. Mining starts after '
+      + Math.round(state.idleAfterSec / 60) + ' minutes without keyboard or mouse use.';
     if (state.mining) {
       el.addrStatic.textContent = state.address;
     } else {
@@ -617,6 +626,27 @@
     el.logTerm.scrollTop = el.logTerm.scrollHeight;
   }
 
+  // ── Background (Settings): tray, start with the computer, idle-only ──────
+  function renderPrefs(p) {
+    if (!p) return;
+    el.prefTray.checked = !!p.closeToTray;
+    el.prefStartup.checked = !!p.runAtStartup;
+    el.prefIdle.checked = !!p.mineWhenIdle;
+  }
+
+  // Main answers with what now holds, which can differ from the click: a build
+  // that cannot start with the computer turns that switch back off.
+  function savePref(change) {
+    if (api.setPrefs) api.setPrefs(change).then(renderPrefs);
+  }
+
+  // The main process paused or resumed the work for idle-only mining.
+  function onIdle(d) {
+    state.paused = !!(d && d.paused);
+    if (d && d.idleAfterSec) state.idleAfterSec = d.idleAfterSec;
+    renderMiningState();
+  }
+
   // mdlAddress is carried through untouched, never shown. Merge mining is
   // retired from the UI, but an address someone already configured keeps
   // earning — and settings are persisted FROM this object, so omitting the key
@@ -639,6 +669,7 @@
   function start() {
     if (!canStart()) return;
     state.mining = true;
+    state.paused = false;
     // A fresh run chooses its card again — the last run's answer is not this
     // run's, and a stale one would outrank the new detection.
     state.engineGpu = '';
@@ -649,6 +680,7 @@
 
   function stop() {
     state.mining = false;
+    state.paused = false;
     renderMiningState();
     if (api.stopMiner) api.stopMiner();
   }
@@ -702,6 +734,9 @@
     });
     el.btnStart.addEventListener('click', start);
     el.btnStop.addEventListener('click', stop);
+    el.prefTray.addEventListener('change', () => savePref({ closeToTray: el.prefTray.checked }));
+    el.prefStartup.addEventListener('change', () => savePref({ runAtStartup: el.prefStartup.checked }));
+    el.prefIdle.addEventListener('change', () => savePref({ mineWhenIdle: el.prefIdle.checked }));
     el.updateBarBtn.addEventListener('click', () => { if (api.installUpdate) api.installUpdate(); });
     el.btnCheckUpdate.addEventListener('click', () => {
       if (updateReady) { if (api.installUpdate) api.installUpdate(); return; }
@@ -788,6 +823,10 @@
     wire();
     watchWindowFit();
     initSuggestions();
+    // Before anything slow below (GPU and region detection can take seconds),
+    // so Settings never shows the switches in their unchecked HTML state.
+    if (api.onIdle) api.onIdle(onIdle);
+    if (api.getPrefs) api.getPrefs().then(renderPrefs);
     if (api.getConfig) {
       const config = await api.getConfig();
       // Before the saved settings are applied — usableMode() below depends on it.
@@ -846,7 +885,7 @@
     }
     if (api.onStats) api.onStats(applyStats);
     if (api.onLog) api.onLog(appendLog);
-    if (api.onStopped) api.onStopped(() => { state.mining = false; renderMiningState(); });
+    if (api.onStopped) api.onStopped(() => { state.mining = false; state.paused = false; renderMiningState(); });
     if (api.onEngine) api.onEngine((e) => {
       if (!e) return;
       if (e.phase === 'downloading') {

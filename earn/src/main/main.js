@@ -5,10 +5,13 @@
 // the user come only from the engine's own output — no simulated data. All
 // testable logic lives in ../shared and ./minerManager.
 
-const { app, BrowserWindow, Menu, ipcMain, shell, clipboard } = require('electron');
+const {
+  app, BrowserWindow, Menu, Tray, Notification, powerMonitor, ipcMain, shell, clipboard,
+} = require('electron');
 const { spawn, execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const http = require('http');
 const https = require('https');
 
@@ -55,6 +58,8 @@ const {
 const { planMemClocks, readMemClockEnv, GUI_MEM_CLOCK_ENV } = require('../shared/memClock');
 const earnings = require('../shared/earnings');
 const format = require('../shared/format');
+const appPrefs = require('../shared/appPrefs');
+const autostart = require('../shared/autostart');
 
 // Number the GPUs the way nvidia-smi does, before anything opens a CUDA device.
 // Everything here — the device label, per-card VRAM, temperatures, the board's
@@ -64,6 +69,21 @@ const format = require('../shared/format');
 // lists; the removed value is logged on each start, since there is no window yet.
 alignCudaDeviceOrder(process.env);
 const clearedCudaLine = describeClearedCuda(clearCudaVisibleDevices(process.env));
+
+// One copy of the app at a time. With the window closing to the tray, opening
+// the app again is how someone gets it back, and a second copy would mine the
+// same cards beside the first. A second launch shows this one's window and
+// exits.
+const primaryInstance = app.requestSingleInstanceLock();
+if (!primaryInstance) app.quit();
+
+// Started by the login item or the autostart entry: stay in the tray and start
+// mining. Read once; a window made later (from the tray) shows as usual.
+let hiddenLaunch = autostart.launchedHidden(process.argv);
+let tray = null;
+// Set on a real quit (the tray's Quit, an update, logging off), so the window's
+// close handler lets the window close instead of hiding it.
+let quitting = false;
 
 let win = null;
 let miner = null;
@@ -123,6 +143,51 @@ function withLiveRegion(s) {
 
 function persistSettings(s) {
   return settingsStore.writeSettings(settingsPath(), s, { fs, log: settingsLog });
+}
+
+// The app's behaviour switches (tray, startup, idle-only), from Settings. In
+// their own file, see shared/appPrefs. Read once, then kept here.
+let prefs = null;
+function prefsPath() {
+  return path.join(app.getPath('userData'), 'preferences.json');
+}
+function getPrefs() {
+  if (!prefs) prefs = appPrefs.normalizePrefs(settingsStore.readSettings(prefsPath(), { fs, log: settingsLog }));
+  return prefs;
+}
+function savePrefs(change) {
+  prefs = appPrefs.normalizePrefs(Object.assign({}, getPrefs(), change));
+  settingsStore.writeSettings(prefsPath(), prefs, { fs, log: settingsLog });
+  return prefs;
+}
+
+// Make the app start (or stop starting) with the computer. Returns whether the
+// computer will now start it, which is what Settings shows.
+//
+// Only in the installed app: a dev run would register the bare Electron binary.
+// Windows has a login item for it. Linux has none, so the AppImage gets a
+// freedesktop autostart entry, pointing at the AppImage file ($APPIMAGE), not
+// the binary inside it, whose mount is gone after a reboot.
+function applyLoginItem(on) {
+  if (!app.isPackaged) return false;
+  if (process.platform !== 'linux') {
+    app.setLoginItemSettings({ openAtLogin: on, args: on ? [autostart.HIDDEN_ARG] : [] });
+    return on;
+  }
+  const configHome = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+  const file = autostart.linuxAutostartFile(configHome);
+  const appImage = process.env.APPIMAGE;
+  try {
+    if (on && appImage) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, autostart.linuxDesktopEntry(appImage));
+      return true;
+    }
+    if (fs.existsSync(file)) fs.unlinkSync(file);
+  } catch (e) {
+    send('miner:log', { level: 'error', line: 'could not change the start-with-computer setting: ' + e.message });
+  }
+  return false;
 }
 
 function send(channel, payload) {
@@ -542,15 +607,31 @@ function createWindow() {
   });
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
 
+  // A launch at login stays in the tray. Only when there is a tray to find it
+  // in: without one, a hidden window could never be opened.
+  const showOnLoad = !(hiddenLaunch && tray);
+  hiddenLaunch = false;
+
   // Size the window to the rendered content so there's no default scrollbar and
   // no trailing whitespace, whatever the platform chrome / font metrics / DPI.
   // Do it before showing (window starts hidden) to avoid a resize flash. The
   // renderer keeps overflow-y:auto, so a transient taller state (update bar,
   // engine error) still scrolls rather than clipping.
   win.webContents.on('did-finish-load', () => {
-    fitWindowToContent().finally(() => { if (win && !win.isDestroyed()) win.show(); });
+    fitWindowToContent().finally(() => { if (showOnLoad && win && !win.isDestroyed()) win.show(); });
   });
-  setTimeout(() => { if (win && !win.isDestroyed() && !win.isVisible()) win.show(); }, 1500);
+  setTimeout(() => { if (showOnLoad && win && !win.isDestroyed() && !win.isVisible()) win.show(); }, 1500);
+
+  // Closing the window hides it to the tray, and mining carries on, unless the
+  // user turned that off in Settings or the app is really quitting.
+  win.on('close', (e) => {
+    if (quitting || !tray || !getPrefs().closeToTray) return;
+    e.preventDefault();
+    win.hide();
+    trayHint();
+  });
+  // Logging off or shutting down on Windows: let the window close.
+  win.on('session-end', () => { quitting = true; });
 
   // Right-click cut/copy/paste — Electron has no default context menu, so
   // pasting a payout address (or copying it) is otherwise mouse-inaccessible.
@@ -568,6 +649,54 @@ function createWindow() {
     }
     if (items.length && !win.isDestroyed()) Menu.buildFromTemplate(items).popup({ window: win });
   });
+}
+
+// Bring the window back: from the tray, or when the app is opened again while
+// it runs (second-instance).
+function showWindow() {
+  if (!win || win.isDestroyed()) {
+    createWindow();
+    return;
+  }
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+}
+
+function quitApp() {
+  quitting = true;
+  app.quit();
+}
+
+// The tray icon: the way back to a closed window, and the way to quit.
+function createTray() {
+  try {
+    tray = new Tray(appIcon());
+  } catch (e) {
+    // No tray on this desktop. Closing the window then quits, as before.
+    tray = null;
+    return;
+  }
+  tray.setToolTip('LLMJob Earn');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Open LLMJob Earn', click: showWindow },
+    { type: 'separator' },
+    { label: 'Quit', click: quitApp },
+  ]));
+  tray.on('click', showWindow);
+}
+
+// The first time the window closes to the tray, say so once. Otherwise the app
+// looks closed while the GPU is still working.
+function trayHint() {
+  if (getPrefs().trayHintShown) return;
+  savePrefs({ trayHintShown: true });
+  if (!Notification.isSupported()) return;
+  new Notification({
+    title: 'LLMJob Earn is still running',
+    body: 'It keeps running in the tray. Click the tray icon to open it, or right-click it to quit. '
+      + 'You can change this in Settings.',
+  }).show();
 }
 
 // How far the frame may sit from the measured content before it is worth
@@ -1274,9 +1403,12 @@ let planRun = null;
 let planActive = null;
 let planQueued = null;
 
-function applyPlan(settings) {
+// `force` replays even the same settings once the run in flight ends. A resume
+// after an idle pause needs it: the pause cancelled that run (miningEpoch), so
+// its settings are no longer running whatever they say.
+function applyPlan(settings, force) {
   if (planRun) {
-    if (JSON.stringify(settings) !== planActive) planQueued = settings;
+    if (force || JSON.stringify(settings) !== planActive) planQueued = settings;
     return planRun;
   }
   planActive = JSON.stringify(settings);
@@ -1290,19 +1422,114 @@ function applyPlan(settings) {
   return planRun;
 }
 
+// The START the user pressed, kept until they press STOP: { settings, paused }.
+// With "only mine when idle" on, the idle watcher pauses it while someone uses
+// the computer and resumes it when they leave. The renderer keeps showing STOP
+// throughout, because the user's START still stands.
+let session = null;
+let idleTimer = null;
+
+function startSession(settings) {
+  session = { settings, paused: false };
+  syncIdleWatcher();
+  // Someone just pressed START, so with idle-only on the computer is in use:
+  // wait for it to go idle instead of starting now.
+  if (getPrefs().mineWhenIdle && appPrefs.idleAction(idleState(), false) === 'pause') {
+    pauseSession();
+    return;
+  }
+  applyPlan(settings);
+}
+
+function endSession() {
+  session = null;
+  syncIdleWatcher();
+  stopMining();
+  stopLlm();
+}
+
+function idleState() {
+  return powerMonitor.getSystemIdleState(appPrefs.IDLE_AFTER_SEC);
+}
+
+// Stop the GPU work for the user, keeping their START. Not stopMining(): that
+// tells the renderer mining stopped. The epoch still moves, so a start in
+// flight does not finish after the pause.
+function pauseSession() {
+  session.paused = true;
+  miningEpoch++;
+  haltMiner();
+  stopLlm();
+  send('miner:stats', statsView(snapshot(initStats(Date.now()), Date.now())));
+  send('miner:idle', { paused: true, idleAfterSec: appPrefs.IDLE_AFTER_SEC });
+  send('miner:log', {
+    level: 'info',
+    line: 'paused while the computer is in use; mining starts again after '
+      + appPrefs.IDLE_AFTER_SEC / 60 + ' minutes without keyboard or mouse input',
+  });
+}
+
+function resumeSession() {
+  session.paused = false;
+  send('miner:idle', { paused: false, idleAfterSec: appPrefs.IDLE_AFTER_SEC });
+  send('miner:log', { level: 'info', line: 'the computer is idle; mining' });
+  applyPlan(session.settings, true);
+}
+
+function checkIdle() {
+  const action = appPrefs.idleAction(idleState(), session.paused);
+  if (action === 'pause') pauseSession();
+  else if (action === 'resume') resumeSession();
+}
+
+// The watcher runs only while there is a START to pause and idle-only is on.
+function syncIdleWatcher() {
+  const wanted = !!session && getPrefs().mineWhenIdle;
+  if (wanted && !idleTimer) idleTimer = setInterval(checkIdle, appPrefs.IDLE_POLL_MS);
+  else if (!wanted && idleTimer) {
+    clearInterval(idleTimer);
+    idleTimer = null;
+  }
+}
+
+// Settings changed one or more of the app's switches. Returns what now holds.
+function setPrefs(change) {
+  const next = Object.assign({}, change);
+  // Starting with the computer is reported as it ended up: a dev run, or a
+  // Linux build that is not an AppImage, cannot do it.
+  if (typeof next.runAtStartup === 'boolean') next.runAtStartup = applyLoginItem(next.runAtStartup);
+  const saved = savePrefs(next);
+  // Idle-only switched off while paused: there is nothing left to wait for.
+  if (!saved.mineWhenIdle && session && session.paused) resumeSession();
+  syncIdleWatcher();
+  return saved;
+}
+
 // The renderer gets a region that EXISTS. A saved AlphaPool id would otherwise
 // reach a <select> with no matching option, which blanks it silently.
-ipcMain.handle('settings:get', () => withLiveRegion(Object.assign(
-  // Both clients default to the shared DEFAULT_MODE ('auto': mine + serve the
-  // LLM, balanced from free VRAM).
-  // worker defaults to this machine's hostname, not the shared "rig01" constant:
-  // two rigs on one payout address under the same name collide into a single
-  // board identity (and if either is multi-GPU, the other's row is dropped
-  // outright). Only fills a FRESH install — loadSettings() below wins, so an
-  // existing worker name is never rewritten out from under someone's board row.
-  { region: DEFAULTS.region, worker: defaultWorker(), address: '', mdlAddress: '', mode: DEFAULT_MODE },
-  loadSettings(),
-)));
+// A launch at login starts mining once, the first time the renderer asks.
+let startMiningOnLaunch = hiddenLaunch;
+
+ipcMain.handle('settings:get', () => {
+  const s = withLiveRegion(Object.assign(
+    // Both clients default to the shared DEFAULT_MODE ('auto': mine + serve the
+    // LLM, balanced from free VRAM).
+    // worker defaults to this machine's hostname, not the shared "rig01" constant:
+    // two rigs on one payout address under the same name collide into a single
+    // board identity (and if either is multi-GPU, the other's row is dropped
+    // outright). Only fills a FRESH install — loadSettings() below wins, so an
+    // existing worker name is never rewritten out from under someone's board row.
+    { region: DEFAULTS.region, worker: defaultWorker(), address: '', mdlAddress: '', mode: DEFAULT_MODE },
+    loadSettings(),
+  ));
+  // The renderer already resumes mining after an update; a launch at login asks
+  // for the same thing. It only starts with a valid payout address.
+  if (startMiningOnLaunch) s.resumeMining = true;
+  startMiningOnLaunch = false;
+  return s;
+});
+ipcMain.handle('prefs:get', () => getPrefs());
+ipcMain.handle('prefs:set', (_e, change) => setPrefs(change || {}));
 ipcMain.handle('llm:status', () => llmStatus);
 // `platform` rides along on the config the renderer already fetches at startup,
 // so the UI can stop offering what this OS can't do (the mining compute modes on
@@ -1316,8 +1543,8 @@ ipcMain.handle('config:get', () => ({
 ipcMain.handle('gpu:detect', () => detectGpu());
 ipcMain.handle('region:detect', () => detectRegion());
 ipcMain.handle('balance:get', (_e, address) => fetchBalance(address, liveEcon.PRL_USD));
-ipcMain.on('miner:start', (_e, settings) => applyPlan(settings || {}));
-ipcMain.on('miner:stop', () => { stopMining(); stopLlm(); });
+ipcMain.on('miner:start', (_e, settings) => startSession(settings || {}));
+ipcMain.on('miner:stop', () => endSession());
 ipcMain.on('open-external', (_e, url) => { openExternalSafe(url); });
 // Re-fit the window to its content when the renderer's layout changes (tab
 // switch, mining start/stop, etc.), so the frame never leaves a gap under the
@@ -1340,8 +1567,11 @@ ipcMain.handle('app:version', () => app.getVersion());
 ipcMain.on('app:update:check', () => checkForUpdate());
 ipcMain.on('app:update:install', () => {
   try {
-    // If mining right now, remember to resume automatically after the restart.
-    if (stats) persistSettings(Object.assign({}, loadSettings(), { resumeMining: true }));
+    // If mining right now, or paused waiting for the computer to go idle,
+    // remember to resume automatically after the restart.
+    if (session) persistSettings(Object.assign({}, loadSettings(), { resumeMining: true }));
+    // The relaunch needs this window to really close, not hide to the tray.
+    quitting = true;
     // Stop the LLM and miner BEFORE relaunching. llama-server binds a fixed port
     // (8080) and quitAndInstall relaunches immediately; if the outgoing server is
     // still holding the port, the resumed instance's llama-server can't bind and
@@ -1358,8 +1588,18 @@ ipcMain.on('app:update:install', () => {
   }
 });
 
+app.on('second-instance', () => showWindow());
+
 app.whenReady().then(() => {
+  // The second copy is on its way out (see requestSingleInstanceLock above).
+  if (!primaryInstance) return;
+  createTray();
   createWindow();
+  // Logging off or shutting down on Linux: let the window close.
+  powerMonitor.on('shutdown', () => { quitting = true; });
+  // Re-register the login item on every start, so it points at this install
+  // after an update moved or renamed it.
+  if (getPrefs().runAtStartup) applyLoginItem(true);
   // Not on macOS: Squirrel.Mac checks the downloaded bundle's signature against
   // the running app's, and this build carries only an ad-hoc one, so wiring the
   // updater there buys a periodic download that always ends in an error bar the
@@ -1384,8 +1624,9 @@ app.whenReady().then(() => {
 // Kill the children we spawned. Idempotent — both quit paths below call it, and
 // on the common path both of them fire.
 function shutdownChildren() {
-  stopMining();
-  stopLlm(); // never orphan llama-server (it would hold VRAM + port 8080)
+  // endSession stops the miner and the LLM (never orphan llama-server: it would
+  // hold VRAM + port 8080), and the idle watcher with them.
+  endSession();
 }
 
 app.on('window-all-closed', () => {
@@ -1401,5 +1642,7 @@ app.on('window-all-closed', () => {
 // longer see, and the next launch found port 8080 already held (the same
 // symptom the update path documents at 'app:update:install').
 app.on('before-quit', () => {
+  // Every real quit comes through here, so the window may close now.
+  quitting = true;
   shutdownChildren();
 });

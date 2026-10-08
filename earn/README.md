@@ -18,6 +18,9 @@ Paste a payout address, hit **Start**, and earn — no command line. Built with 
   page (your Pearl address only — nothing else is reported).
 - **Zero-config** — mines on every GPU, picks the lowest-latency pool region,
   and updates itself.
+- **Runs in the background** — closes to the tray, can start with the computer,
+  and can mine only while nobody is using it. See
+  [Running in the background](#running-in-the-background).
 
 ## How it works
 
@@ -202,6 +205,28 @@ other computers on the same network use it too.
   the firewall. Allow it on private networks.
 - **Port 8000 taken** (for example by the CLI on the same computer): the switch
   says so, and the app carries on without it.
+
+## Running in the background
+
+Three switches in **Settings → Background**, saved in `preferences.json` next to
+`settings.json` in the app's data folder:
+
+- **Keep running in the tray when I close the window** (on by default). Closing
+  the window hides it and mining carries on. The first time, a notification says
+  so. The tray icon opens the window again, and its menu has **Quit**. Opening
+  the app a second time shows the running window instead of starting a second
+  copy. On a Linux desktop with no tray, closing quits as before.
+- **Start with my computer, and start mining** (off by default). Windows gets a
+  login item, and a Linux AppImage gets an entry in `~/.config/autostart`. Both
+  start the app with `--hidden`, so it stays in the tray and starts mining with
+  the saved payout address. Only the installed app can do this; a dev run turns
+  the switch back off.
+- **Only mine when my computer is idle** (off by default). Idle means 5 minutes
+  without keyboard or mouse input, or a locked screen. While someone uses the
+  computer, mining and the local LLM stop and the window says what it is waiting
+  for. **STOP** still shows, because the START stands. Mining resumes on its own
+  once the computer goes idle again. A desktop that cannot report idle time (some
+  Linux setups) counts as idle.
 
 ## macOS (LLM only)
 

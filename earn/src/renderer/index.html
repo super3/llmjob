@@ -68,6 +68,7 @@
     <button id="btn-start" class="start-btn" type="button" disabled>START</button>
     <button id="btn-stop" class="stop-btn" type="button" hidden><span class="dot"></span>STOP MINING</button>
     <div id="engine-status" class="engine-status" hidden></div>
+    <div id="idle-status" class="engine-status" hidden></div>
   </section>
 
   <!-- ══════════ CHAT ══════════ -->
@@ -187,6 +188,23 @@
       </label>
     </div>
     <p id="share-note" class="settings-note"></p>
+
+    <div class="settings-section">Background</div>
+    <div class="settings-rows">
+      <label class="settings-row toggle-row">
+        <span class="rk">Keep running in the tray when I close the window</span>
+        <input id="pref-tray" class="toggle" type="checkbox" />
+      </label>
+      <label class="settings-row toggle-row">
+        <span class="rk">Start with my computer, and start mining</span>
+        <input id="pref-startup" class="toggle" type="checkbox" />
+      </label>
+      <label class="settings-row toggle-row">
+        <span class="rk">Only mine when my computer is idle</span>
+        <input id="pref-idle" class="toggle" type="checkbox" />
+      </label>
+    </div>
+    <p id="pref-note" class="settings-note">Idle means 5 minutes without keyboard or mouse use. Mining pauses as soon as you're back.</p>
 
     <div class="settings-section">Software Update</div>
     <div class="settings-rows">

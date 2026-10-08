@@ -35,6 +35,8 @@ describe('invoke-based methods', () => {
     ['connectNode', 'node:connect', { token: 't' }],
     ['disconnectNode', 'node:disconnect'],
     ['getVersion', 'app:version'],
+    ['getPrefs', 'prefs:get'],
+    ['setPrefs', 'prefs:set', { closeToTray: false }],
   ];
 
   cases.forEach(([method, channel, arg]) => {
@@ -83,6 +85,7 @@ describe('event subscriptions', () => {
     ['onEngine', 'miner:engine', true],
     ['onStopped', 'miner:stopped', false],
     ['onUpdate', 'app:update', true],
+    ['onIdle', 'miner:idle', true],
   ];
 
   cases.forEach(([method, channel, forwardsPayload]) => {
