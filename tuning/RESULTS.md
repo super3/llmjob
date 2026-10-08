@@ -38,8 +38,11 @@ agents never edit the same lines. Verified gains are copied here.
   card. Forcing the CUDA 12.8 core cost 2.9% on Finland 149979: g1 ran 93.5 TH/s against
   96.3 on cu13, at the same clock (2737 vs 2730 MHz) and power (171 vs 169 W), while the
   control GPU held 98.7 (Oct 8, 20 minutes). So the loss is in work done per clock. It also
-  means a core built on the box, which uses nvcc 12.8, starts about 3% behind the release on
-  Blackwell cards.
+  means a plain on-box build (nvcc 12.8) starts about 3% behind the release on Blackwell.
+  Build with `"cuda": "13"` instead: a CUDA 13.3 build of operand fill 63 ran level with the
+  release on the same GPU, so that path matches it. The driver-JIT build (12.8 PTX compiled
+  by the 595 driver) came out about 0.3% behind. Operand fill 63 neither raised the rate nor
+  cut the power against 48 on this card.
 
 - **Ada: the CUDA 12 and CUDA 13 cores run the same fold.** Built for sm_89 under nvcc
   12.8.93 and 13.3.73, `pearl_tile_fold_tall` comes out the same: 255 registers, no spill,
