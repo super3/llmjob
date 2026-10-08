@@ -153,6 +153,8 @@ verified() {   # $1 = gpu, $2 = build name; prints PASS or FAIL
 # After a pause the container restarts this script: keep the last control file, so tuned GPUs come straight
 # back on their settings. A built core starts only if it already passed the hit check on this box.
 [ -f $D/control.json ] || echo '{}' > $D/control.json; rm -f $D/g*.lastbad
+# A build the pause cut off has neither a core nor a FAIL mark, and would never be tried again: clear it so it rebuilds.
+for B in $D/builds/*/; do [ -d "$B" ] || continue; [ -f "$B/pearl_core.node" ] || [ -f "$B/FAIL" ] || rm -rf "$B"; done
 for g in $(seq 0 $((N-1))); do
   cfg=$(want $g); core=$(echo "$cfg" | jq -r '.core')
   if [ "${core#build:}" != "$core" ] && [ ! -f $D/builds/${core#build:}/PASS ]; then cfg=$BASE; fi
