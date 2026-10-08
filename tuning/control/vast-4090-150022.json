@@ -1,6 +1,6 @@
 {
   "default": {"core": "release", "flags": "", "env": {}},
-  "gpus": {},
+  "gpus": {"0": {"core": "build:apt3bpt8"}},
   "builds": {
     "apt4bpt7b": {"ref": "54e91d8825b9b08d83c0283bcfaf1721fd6b103c", "defines": "-DPEARL_TALL_APT=4u -DPEARL_TALL_BPT=7u"},
     "apt3bpt8": {"ref": "54e91d8825b9b08d83c0283bcfaf1721fd6b103c", "defines": "-DPEARL_TALL_APT=3u -DPEARL_TALL_BPT=8u"}
