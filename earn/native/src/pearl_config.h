@@ -213,9 +213,9 @@ PEARL_HD constexpr uint32_t pearl_pattern_span(uint32_t mask) {
 #define PEARL_ROWS_SPAN (pearl_pattern_span(PEARL_ROWS_MASK))
 #define PEARL_COLS_SPAN (pearl_pattern_span(PEARL_COLS_MASK))
 
-// How many regions share one warp in the fold. The producer collapses each
-// row's columns, so a region needs only PEARL_ROWS_COUNT lanes; giving it a
-// whole warp left 28 of 32 idle.
+// How many regions share one warp in pearl_gemm_fold. Its producer, pearl_partials
+// (removed 2026-10-08), collapsed each row's columns, so a region needs only
+// PEARL_ROWS_COUNT lanes; giving it a whole warp left 28 of 32 idle.
 #define PEARL_REGIONS_PER_WARP (32 / PEARL_ROWS_COUNT)
 
 // How many hits one batch can report. The search returns on the first one, so

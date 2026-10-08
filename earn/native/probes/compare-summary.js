@@ -8,10 +8,10 @@ function gpu(name) {
   return { mhz: mean(rows.map((r) => r[1])), w: mean(rows.map((r) => r[2])), c: mean(rows.map((r) => r[3])) };
 }
 const out = [];
-// The competitors' versions, from what actually ran rather than a hard-coded label:
-// PeakMiner's API reports its own ("version"); SRBMiner's version is in the name of
-// the directory it was unpacked into (SRBMiner-Multi-3-7-1), which compare-miners.sh
-// records in miners.txt, unless its API says so itself ("miner_version").
+// The competitors' versions, from what actually ran rather than a hard-coded label.
+// PeakMiner's API reports "version" and SRBMiner's "miner_version". If SRBMiner's API
+// never answered, its version comes from the directory it was unpacked into
+// (SRBMiner-Multi-3-7-1), which compare-miners.sh records in miners.txt.
 const srbPath = (read('miners.txt').match(/^SRB_EXE=(.*)$/m) || [])[1] || '';
 const srbFromPath = (srbPath.match(/SRBMiner-Multi-(\d+)-(\d+)-(\d+)/i) || []).slice(1).join('.');
 function apiVersion(file, key) {

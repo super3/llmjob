@@ -21,8 +21,9 @@ CORE=${CORE:-$EARN/native/build/Release/pearl_core.node}
 SRB_EXE=${SRB_EXE:-/c/miners/srb-latest/SRBMiner-Multi-3-6-9/SRBMiner-MULTI.exe}
 PEAK_EXE=${PEAK_EXE:-/c/miners/peak/peakminer.exe}
 OUT=${OUT:-$HERE/compare-$(date +%Y%m%d-%H%M)}; mkdir -p "$OUT"; echo "out: $OUT"
-# Which binaries ran, for the summary's labels: SRBMiner's version is only in its
-# install directory's name (SRBMiner-Multi-3-7-1); PeakMiner reports its own.
+# Which binaries ran, a fallback for the summary's labels. Both APIs report their
+# miner's version (SRBMiner's "miner_version", PeakMiner's "version"); if SRBMiner's
+# never answers, the summary reads it from the install directory (SRBMiner-Multi-3-7-1).
 printf 'SRB_EXE=%s\nPEAK_EXE=%s\n' "$SRB_EXE" "$PEAK_EXE" > "$OUT/miners.txt"
 native() { command -v cygpath >/dev/null && cygpath -w "$1" || echo "$1"; }
 ours() { cd "$EARN" && PEARL_CORE_PATH="$(native "$CORE")" node src/cli/earn-cli.js -a "$WALLET" \

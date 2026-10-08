@@ -1158,10 +1158,9 @@ extern "C" __global__ void pearl_restamp_commit(const PearlRestampRecord rec, in
 // The dp4a partials kernel (pearl_partials, removed 2026-10-08: nothing launched
 // it once the fused tile fold replaced it) topped out around an eighth of that
 // instruction's own peak, and dp4a's peak is itself about half what the int8
-// tensor cores can do. Since
-// valid tiles partition the grid there is no reuse left to exploit, so the
-// reported hashrate IS the multiply-accumulate rate -- and closing the gap to a
-// competitive miner means going to the tensor cores.
+// tensor cores can do. Since valid tiles partition the grid there is no reuse
+// left to exploit, so the reported hashrate IS the multiply-accumulate rate --
+// and closing the gap to a competitive miner means going to the tensor cores.
 //
 // The contiguous tile is what makes this clean. WMMA's int8 shape is 16x16x16,
 // and:
@@ -4278,8 +4277,10 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
 }
 #endif  // PEARL_HOPPER_WGMMA
 
-// The fold is now a gather. Every product it needs is already in D, so a region
-// costs 32 loads and a warp reduction per chunk instead of 32 dot products.
+// The fold is now a gather. Every product it needs is already in D, which
+// pearl_partials wrote (removed 2026-10-08, so nothing writes D now and nothing
+// launches this), so a region costs 32 loads and a warp reduction per chunk
+// instead of 32 dot products.
 extern "C" __global__ void pearl_gemm_fold(
     const int32_t *__restrict__ D,
     const uint32_t *__restrict__ rows_pattern, uint32_t rows_count,
@@ -4291,8 +4292,8 @@ extern "C" __global__ void pearl_gemm_fold(
 
   // PEARL_REGIONS_PER_WARP regions share a warp, each using rows_count lanes.
   //
-  // The producer already XORed each row's columns together, so a region needs
-  // only rows_count values combined — four at the mandated tile. Giving each
+  // The producer (pearl_partials) already XORed each row's columns together, so a
+  // region needs only rows_count values combined — four at the mandated tile. Giving each
   // region a whole warp left 28 of 32 lanes idle, and measured per-stage timing
   // put this kernel at 42% of the batch, the largest single share. Packing
   // eight regions per warp fills it.
