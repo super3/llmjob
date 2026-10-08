@@ -8,6 +8,7 @@
     "b64": {"ref": "da82d3e8afe2665109f7ff054ca743812480d2cd", "defines": "-DPEARL_TALL_BAND=64u"},
     "b32": {"ref": "da82d3e8afe2665109f7ff054ca743812480d2cd", "defines": "-DPEARL_TALL_BAND=32u"},
     "cb1024": {"ref": "9085a2b3a0f4e7b4c3f6fd92506e15b18bca168a", "defines": "-DPEARL_ADA_COL_BATCH=1024u"},
-    "f63": {"ref": "9085a2b3a0f4e7b4c3f6fd92506e15b18bca168a", "defines": "-DPEARL_OPERAND_FILL=63"}
+    "f63": {"ref": "9085a2b3a0f4e7b4c3f6fd92506e15b18bca168a", "defines": "-DPEARL_OPERAND_FILL=63"},
+    "cb512": {"ref": "9085a2b3a0f4e7b4c3f6fd92506e15b18bca168a", "defines": "-DPEARL_ADA_COL_BATCH=512u"}
   }
 }
