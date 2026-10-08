@@ -80,6 +80,14 @@ agents never edit the same lines. Verified gains are copied here.
   3.0% on another card of the same box over the same runs. Finland 149979 (5060 Ti, driver
   595.84) got the same: -0.3% vs cu13. Boxes rented before 09:47 UTC don't have box.sh's
   `"cuda": "13"` build option; this is how they test sm_120 knobs against the release.
+- **RTX 5090: a CUDA 13.3 build made on the box runs like the release.** On Japan 58108
+  (box.sh `"cuda": "13"`), a build of 58a5ea3 with no defines ran level with the release cu13
+  core: -0.05% against the control GPUs over 10 minutes, same clock and watts, 400/400 hits,
+  0 invalid. So sm_120 knob builds made this way can be judged straight against the release.
+  That box's four cards sat near 2242 MHz at 449-477 W of a 575 W limit, so something other
+  than power held the clock. There, col_batch 1024 and the serpentine walk (CUDA 13.3 builds)
+  ran level (+0.01%, +0.03%) over a short window of 2-4 readings before the box was outbid.
+  A 5090 held at its power cap (400-450 W) is where those two could still help. Not tested yet.
 - **RTX 3090 (Ampere): keep operand fill 48.** On the Bulgaria 8x 3090 box (49870, 350 W cap,
   driver 570, so the release runs its CUDA 12.8 core), fill 63 ran level (+0.1 to +0.3% against
   control over the same 10 minutes) and fill 32 slightly behind (-0.3 to -0.45%). Same order as
