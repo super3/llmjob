@@ -1,6 +1,6 @@
 {
   "default": {"core": "build:cb1024", "flags": "", "env": {}},
-  "gpus": {"0": {"core": "build:cb512"}},
+  "gpus": {"0": {"core": "build:rule"}, "1": {"core": "build:rulef63"}},
   "builds": {
     "base": {"ref": "da82d3e8afe2665109f7ff054ca743812480d2cd", "defines": ""},
     "band32": {"ref": "da82d3e8afe2665109f7ff054ca743812480d2cd", "defines": "-DPEARL_TALL_BAND=32u"},
