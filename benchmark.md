@@ -70,6 +70,24 @@ SRBMiner on the same host.
 The 20-series hosts were picked before the power and performance-score rules
 existed, so the Thailand 2080 Ti (170 W of 250 W) is on the list.
 
+## Keeping this file current
+
+- A change that re-measures a host in this file updates its row in the same
+  PR. A number that only appears in chat or in a PR description doesn't
+  count as recorded.
+- Only a run of our miner on the row's own host (same machine ID) replaces
+  its "Ours" and "% of best". Give the earlier figure in that section's
+  notes, with the date and the commit that ran.
+- PeakMiner and SRBMiner figures are fixed targets. Don't rerun them for a
+  row that has them. A new host runs all three miners.
+- A run on a different host, or by a different method than "How a host is
+  tested", goes in the section's notes and leaves the row alone.
+- When a row changes, check that the Summary and the section heading still
+  match it.
+- Before tagging a release, check that the headings, the Summary and "How a
+  host is tested" name the right release, and that no section calls a
+  shipped card unreleased.
+
 ## RTX 20-series (v0.5.11)
 
 Run on 2026-10-06, 09:15–09:38 UTC, with PR #250 built from source at

@@ -17,6 +17,11 @@ Run the tests before you start work and again when you finish. Use `npm test` in
 the directory you changed: the repo root for the server, `earn/` for the desktop
 app. The job isn't done until every test passes.
 
+## Benchmarks
+
+Follow "Keeping this file current" in `benchmark.md`. A re-measure goes into
+`benchmark.md` in the same PR, and the file is checked before every release.
+
 ## Git
 
 - Don't commit unless I ask. "Commit", "push", and "save" mean I'm asking.
