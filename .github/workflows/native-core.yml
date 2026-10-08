@@ -88,16 +88,15 @@ jobs:
             # wmma fold 235, 235 and 128. So all three fail on a spill. An
             # architecture added later starts as a warning until a run has
             # shown it clean too. sm_80 (GA100: A100, A800, A30, CMP 170HX),
-            # added 2026-10-07, is still a warning: run 37737801086 built it
-            # clean too (tall fold 255, wmma fold 235, transcript hash 40), but
-            # it hasn't been promoted yet. sm_90a (Hopper: H100,
+            # added 2026-10-07, is in it: run 37737801086 built it clean (tall
+            # fold 255 registers, wmma fold 235, transcript hash 40). sm_90a (Hopper: H100,
             # H200; it replaced plain sm_90 on 2026-10-08, so the release has
             # Hopper's wgmma fold) is: native core run 37718450743 built it
             # with every fold at 0 spill, the wgmma fold 163 registers, the
             # tall fold 254, the wmma fold 231 and the transcript hash 40. On
             # Hopper the wgmma fold is the one that mines, so a spill in it
             # fails the job.
-            spill_fail_archs: sm_86 sm_89 sm_90a sm_120
+            spill_fail_archs: sm_80 sm_86 sm_89 sm_90a sm_120
           - os: windows-2022
             variant: ''
             file: pearl_core.node
@@ -111,7 +110,7 @@ jobs:
               -gencode arch=compute_89,code=sm_89
               -gencode arch=compute_90a,code=sm_90a
               -gencode arch=compute_120,code=sm_120
-            spill_fail_archs: sm_86 sm_89 sm_90a sm_120
+            spill_fail_archs: sm_80 sm_86 sm_89 sm_90a sm_120
           # 13.3.1 is the newest toolkit Jimver/cuda-toolkit v0.2.36 (the
           # version already pinned here) lists, on Linux and Windows alike, and
           # it is the toolkit the 5090 rig builds with (nvcc V13.3.73) -- so the
@@ -296,9 +295,9 @@ jobs:
       # hash kernel (pearl_tall_hash80, a body only on sm_80 and sm_90a), on
       # every architecture and prints one row each. A spill fails the job on
       # the architectures in the entry's spill_fail_archs (the comment there
-      # says why each is in it): sm_86, sm_89, sm_90a and sm_120 in the 12.8
-      # entries, and sm_120 alone in the cu13 entries, whose sm_89 half nothing
-      # ships (see those entries). Any other architecture, sm_75 and sm_80
+      # says why each is in it): sm_80, sm_86, sm_89, sm_90a and sm_120 in the
+      # 12.8 entries, and sm_120 alone in the cu13 entries, whose sm_89 half
+      # nothing ships (see those entries). Any other architecture, sm_75
       # included, is a warning. A failed cu13 job uploads no
       # pearl_core_cu13.node, and a failed ubuntu 12.8 job makes
       # miner-build.yml fall back to the previous run's core, which is the
