@@ -352,7 +352,9 @@ jobs:
           name: llmjob-earn-cli-linux
           # The HiveOS tarballs ride along, so a PR build can be installed on a
           # test rig. if-no-files-found looks at all three paths together, so a
-          # build without them still uploads the binary.
+          # build without them still uploads the binary. Every build of a
+          # version has the release's file name, and HiveOS reuses a cached
+          # archive of the same name: to retest, see the README's HiveOS section.
           path: |
             earn/dist/llmjob-earn-cli-linux
             earn/dist/llmjob-earn-[0-9]*.tar.gz

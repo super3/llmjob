@@ -245,6 +245,12 @@ Flight sheet:
   `releases/latest/download/`) is good for a first install only. The part of
   the file name before the version must stay `llmjob-earn`. HiveOS takes the
   miner name from it and refuses to install when it differs from Miner name.
+  A PR build from CI has the same file name as its version's release, so to
+  install a different build of a version a rig already has, delete
+  `/hive/miners/custom/downloads/llmjob-earn-<version>.tar.gz` before changing
+  the URL. Or, after changing it, run
+  `/hive/miners/custom/custom-get <url> -f` from Hive Shell, then
+  `miner restart`.
 - **Hash algorithm** → `pearlhash`.
 - **Wallet and worker template** → `%WAL%`, with your `prl1p…` address as the
   wallet. `%WAL%.%WORKER_NAME%` also works: everything after the first `.` is

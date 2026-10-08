@@ -5,8 +5,10 @@
 // without parsing miner logs. Pure so it's unit-testable; the CLI wires the
 // timer and the atomic write around it.
 //
-// Units: `ths` is the engine's total hashrate in TH/s (the snapshot's native
-// unit). Consumers convert — HiveOS wants kH/s for `khs` and MH/s for `hs`.
+// Units: `ths` and each card's `hashrate` in `gpus` are in TH/s (the snapshot's
+// native unit). Consumers convert. HiveOS's h-stats.sh multiplies by 1e9 and
+// sends kH/s for both `khs` and each card's `hs`, with hs_units "khs". Keep hs
+// in kH/s: HiveOS range-checks it as kH/s whatever hs_units says.
 function statsFilePayload(snap, meta) {
   const s = snap || {};
   const m = meta || {};
