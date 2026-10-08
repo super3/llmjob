@@ -70,8 +70,9 @@ product every time:
 | MACs per batch, as written | 268,435,456 |
 | distinct dot products | 67,108,864 |
 
-`pearl_partials` now computes each distinct partial once into `D[chunk][r][c]`
-and the fold gathers from it. D is 2 MiB, L2-resident. Beyond the arithmetic
+`pearl_partials` then computed each distinct partial once into `D[chunk][r][c]`
+and the fold gathered from it. (Nothing has launched it since the fused tile fold
+replaced it, and it was removed on 2026-10-08.) D is 2 MiB, L2-resident. Beyond the arithmetic
 saving this changes the *shape* of the work: D is a dense `[m x 8]` GEMM with a
 k-reduction, which is what `mma.sync` wants — the per-warp tile fold never was,
 which is why every attempt to speed that fold up kept failing.

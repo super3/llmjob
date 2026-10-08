@@ -213,23 +213,6 @@ PEARL_HD constexpr uint32_t pearl_pattern_span(uint32_t mask) {
 #define PEARL_ROWS_SPAN (pearl_pattern_span(PEARL_ROWS_MASK))
 #define PEARL_COLS_SPAN (pearl_pattern_span(PEARL_COLS_MASK))
 
-// How many rows of A one thread carries.
-//
-// The partials kernel is 86% of a batch and runs at about an eighth of the
-// card's __dp4a peak, because it issues one 16-byte load of B for every four
-// multiply-accumulate instructions. Carrying several rows against the same
-// eight B columns multiplies that ratio directly: at two rows it is eight
-// __dp4a per load, at four it is sixteen.
-//
-// The cost is registers -- each row holds a whole k-slice, so this trades
-// occupancy for arithmetic intensity.
-#define PEARL_ROWS_PER_THREAD 2
-
-// How many 16-byte groups of an A row slice a thread can hold in registers.
-// 8 covers rank 128, the mandated profile. A rank needing more falls back to
-// re-reading the slice per column group, which is correct but slower.
-#define PEARL_MAX_A_QUADS 16
-
 // How many regions share one warp in the fold. The producer collapses each
 // row's columns, so a region needs only PEARL_ROWS_COUNT lanes; giving it a
 // whole warp left 28 of 32 idle.

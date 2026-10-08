@@ -150,12 +150,6 @@ extern "C" __global__ void pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_
 extern "C" __global__ void pearl_tall_hash80(const uint4 *tr, uint32_t regions,
                                              const PearlTranscriptTest test,
                                              const PearlHitList hits, uint32_t one);
-extern "C" __global__ void pearl_partials(const int8_t *Aprime, const int8_t *Bprime,
-                                          const uint32_t *cols_pattern,
-                                          uint32_t cols_count, uint32_t m, uint32_t n,
-                                          uint32_t k, uint32_t rank, uint32_t chunks,
-                                          uint32_t col_off, uint32_t col_groups,
-                                          int32_t *D);
 extern "C" __global__ void pearl_gemm_fold(
     const int32_t *D, const uint32_t *rows_pattern, uint32_t rows_count,
     uint32_t cols_count, uint32_t m, uint32_t rows_valid, uint32_t chunks,
