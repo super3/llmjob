@@ -1,4 +1,3 @@
 {
-  "default": {"core": "release", "flags": "", "env": {}},
-  "gpus": {"0": {"flags": "--mine-mem-clock 5001"}}
+  "default": {"core": "release", "flags": "", "env": {}}
 }
