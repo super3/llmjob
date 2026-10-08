@@ -4345,6 +4345,28 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
 #endif
       }
       g += 2u;
+#if PEARL_HOPPER_RSCATTER
+      {
+        // The four lanes of a row offset and column offset in this warp (lane bits 2 and 3)
+        // hold the same four regions. Two exchanges leave each with one region's XOR of all
+        // four (a reduce-scatter), so a lane adds one word to shared, not four.
+        uint32_t w[4];
+#pragma unroll
+        for (uint32_t cs = 0; cs < 4u; cs++) {
+          uint32_t x = 0;
+#pragma unroll
+          for (uint32_t i = 0; i < 32u; i++) x ^= (uint32_t)d[32u * cs + i];
+          w[cs] = x;
+        }
+        const bool b2 = (lane >> 2) & 1u, b3 = (lane >> 3) & 1u;
+        const uint32_t k0 = (b2 ? w[2] : w[0]) ^ __shfl_xor_sync(0xffffffffu, b2 ? w[0] : w[2], 4);
+        const uint32_t k1 = (b2 ? w[3] : w[1]) ^ __shfl_xor_sync(0xffffffffu, b2 ? w[1] : w[3], 4);
+        const uint32_t f = (b3 ? k1 : k0) ^ __shfl_xor_sync(0xffffffffu, b3 ? k0 : k1, 8);
+        asm volatile("red.shared.xor.b32 [%0], %1;"
+                     ::"r"(trl + (2u * (uint32_t)b2 + (uint32_t)b3) * 512u + ch * 4u), "r"(f)
+                     : "memory");
+      }
+#else
 #pragma unroll
       for (uint32_t cs = 0; cs < 4u; cs++) {
         uint32_t x = 0;
@@ -4353,6 +4375,7 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
         asm volatile("red.shared.xor.b32 [%0], %1;" ::"r"(trl + cs * 512u + ch * 4u), "r"(x)
                      : "memory");
       }
+#endif
     }
     // Tile end: the warpgroup's 64 regions (its own rows) are complete. Each goes to the
     // slot's buffer at its batch-local number, as GA100's unfused fold stores them, and is

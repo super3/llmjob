@@ -1224,6 +1224,16 @@ typedef struct {
 // 153443) 536.88 -> 545.29 TH/s (+1.57%), H100 NVL (Vast 29785) 437.34 -> 440.02 (+0.61%).
 // 128: -0.85% on the SXM. Wider loses: 1024 -7.3% and 2048 -21% on the NVL, where B' for a
 // 2048-wide sweep (64 MB) no longer fits the 60 MB L2.
+// The readout's last step (device): 0, each lane adds its four region words to shared with
+// four red.shared.xor; 1, the four lanes sharing those regions first exchange words with
+// three shuffles (a reduce-scatter) and each adds one. 1 against 0, with clusters of 2 at
+// width 256, hashrate.js 3 rounds, ahead in every round, 400/400 hits: H100 SXM (Vast
+// 153443) 603.70 -> 630.64 TH/s (+4.46%), H100 NVL (Vast 29785) 451.32 -> 470.41 (+4.23%).
+// A check build compared every region of a batch with the cp.async fold's: 2,097,152
+// regions, none differ.
+#ifndef PEARL_HOPPER_RSCATTER
+#define PEARL_HOPPER_RSCATTER 1
+#endif
 #ifndef PEARL_HOPPER_COL_BATCH
 #define PEARL_HOPPER_COL_BATCH 256u
 #endif
