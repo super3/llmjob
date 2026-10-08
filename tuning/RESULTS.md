@@ -28,6 +28,8 @@ agents never edit the same lines. Verified gains are copied here.
 | Oct 8 09:51-10:00 | RTX 4070 Super (160 W, 48 MB L2) | US 116195 | Build with `-DPEARL_ADA_COL_BATCH=1024` (1024 column offsets a launch, not 2048) | g2 116.67 TH/s vs g0/g1 release 109.72, same minutes | **+2.5 to +3.1%**, SM clock +60-75 MHz at the same 160 W, 0 invalid. Verified, rolled out to the box 10:02 |
 | Oct 8 09:51-10:00 | RTX 4070 Super (160 W, 48 MB L2) | US 116195 | Build with `-DPEARL_TALL_BAND=64` (band of 64 row groups, not 16) | g3 111.26 vs 109.73 | +1.9 to +2.2%, 0 invalid. Smaller than col_batch 1024, and the two don't fit the L2 together, so not rolled out |
 | Oct 8 10:05-10:15 | RTX 4070 Super (160 W, 48 MB L2) | US 116195 | Build with `-DPEARL_ADA_COL_BATCH=512` | g0 109.07 vs g1-g3 on col_batch 1024, 114.10 | 1.4% behind 1024 (+0.9% over the release). 1024 is the width for 48 MB. The rollout held: g1-g3 +2.0 / +2.6 / +2.7% over their own release rates |
+| Oct 8 10:25-10:35 | RTX 4070 Super (160 W, 48 MB L2) | US 116195 | Build of 29ac5f5 (the Ada L2 rule), no defines | g0 111.56 vs g2/g3 on col_batch 1024 | +3.2% over g0's release rate, in line with cb1024: the rule picks 1024 here. Verified, all four GPUs on it from 10:51; box 453.5 vs 442.3 TH/s (+2.5%) |
+| Oct 8 10:25-10:49 | RTX 4070 Super (160 W, 48 MB L2) | US 116195 | On top of the rule: `-DPEARL_OPERAND_FILL=63`, then `-DPEARL_TALL_BAND=32` | g1 vs the rule GPUs | Both level (-0.3%, +0.1%), 0 invalid. Fill 63 is pool-safe but buys nothing on Ada; a deeper band adds nothing once B' fits |
 
 ## What we've learned
 
