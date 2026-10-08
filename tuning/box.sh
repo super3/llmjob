@@ -15,7 +15,7 @@ export DEBIAN_FRONTEND=noninteractive
 # Control file:
 #   {"default": {"core": "release", "flags": "", "env": {}},
 #    "gpus":    {"0": {"core": "cu12"}},
-#    "builds":  {"tallapt4": {"ref": "<commit or branch>", "defines": "-DPEARL_TALL_APT=4"}}}
+#    "builds":  {"tallapt4": {"ref": "<full commit hash, or branch>", "defines": "-DPEARL_TALL_APT=4"}}}
 #   core: release (CLI's choice) | cu12 | cu13 | build:<name>
 #   flags: extra CLI flags, e.g. "--mine-mem-clock 0"; env: extra environment for the miner.
 #   A build compiles with CUDA 12.8 and runs as the cu12 core. "cuda": "13" in its entry compiles
@@ -84,7 +84,9 @@ build_core() {
       { dpkg --configure -a; apt-get install -y --no-install-recommends cuda-nvcc-13-3 cuda-cudart-dev-13-3; } >> $B/log 2>&1
       [ -x $C/bin/nvcc ] || { echo "[build] $name FAIL: CUDA 13.3 did not install: $(tail -1 $B/log | cut -c1-200)"; touch $B/FAIL; exit; }
     fi
+    # The branch moves fast, so a commit can be older than the last 50; fetch it by its hash then.
     cd $D/src && git fetch -q --depth 50 origin $BRANCH && git checkout -q --detach "$ref" 2>>$B/log || git checkout -q --detach "origin/$ref" 2>>$B/log ||
+      { git fetch -q --depth 1 origin "$ref" 2>>$B/log && git checkout -q --detach FETCH_HEAD 2>>$B/log; } ||
       { echo "[build] $name FAIL: no ref $ref"; touch $B/FAIL; exit; }
     at=$(git -C $D/src rev-parse --short HEAD)
     rm -rf $B/a && mkdir -p $B/a/cuda-build && cp -r $D/src/earn/native/src $D/src/earn/native/binding.gyp $B/a/ ||
