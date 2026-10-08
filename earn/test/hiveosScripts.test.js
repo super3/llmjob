@@ -192,6 +192,60 @@ suite('h-config.sh: mode and Extra config', () => {
   });
 });
 
+// HiveOS's `miner start` (bin/miner disable_gpu) exports CUDA_VISIBLE_DEVICES
+// when a card is turned off (power limit 1 in the NVIDIA overclock, or
+// GPU_DISABLE): the CUDA numbers of the cards still on, or one space when
+// every NVIDIA card is off. It is left unset when none is off.
+suite('h-config.sh: cards turned off in HiveOS', () => {
+  const gpuIndex = (vars) => {
+    const r = config(Object.assign({ CUSTOM_TEMPLATE: ADDR }, vars));
+    expect(r.status).toBe(0);
+    expect(r.parsed.errors).toEqual([]);
+    return { line: r.line, gpuIndices: r.parsed.settings.gpuIndices };
+  };
+
+  test('none off (unset): no --gpu-index, every card mines', () => {
+    const r = gpuIndex({});
+    expect(r.line).not.toContain('--gpu-index');
+    expect(r.gpuIndices).toBeNull();
+  });
+
+  test('the cards still on become --gpu-index', () => {
+    expect(gpuIndex({ CUDA_VISIBLE_DEVICES: '0' })).toEqual({
+      line: '--address ' + ADDR + ' --mode mining --gpu-index=0 --no-update --stats-file ' + STATS_PATH,
+      gpuIndices: [0],
+    });
+    expect(gpuIndex({ CUDA_VISIBLE_DEVICES: '0,2' }).gpuIndices).toEqual([0, 2]);
+    expect(gpuIndex({ CUDA_VISIBLE_DEVICES: ' 1,3 ' }).gpuIndices).toEqual([1, 3]);
+  });
+
+  test('every card off (one space): --gpu-index=none', () => {
+    expect(gpuIndex({ CUDA_VISIBLE_DEVICES: ' ' })).toMatchObject({ gpuIndices: [] });
+    expect(gpuIndex({ CUDA_VISIBLE_DEVICES: ' ' }).line).toContain(' --gpu-index=none ');
+    expect(gpuIndex({ CUDA_VISIBLE_DEVICES: '' }).gpuIndices).toEqual([]);
+  });
+
+  // Not from HiveOS's switch. The CLI drops the variable and logs that it did.
+  test('GPU UUIDs, MIG ids or anything else: nothing passed on', () => {
+    for (const v of ['GPU-8f0e2b1c-55aa-4c3d-9e1f-0123456789ab', 'MIG-1a2b3c4d', '0 2', '0,,2', '-1']) {
+      const r = gpuIndex({ CUDA_VISIBLE_DEVICES: v });
+      expect(r.line).not.toContain('--gpu-index');
+      expect(r.gpuIndices).toBeNull();
+    }
+  });
+
+  // The flight sheet's own choice wins, in either form. h-config.sh leaves its
+  // flag out so the line names the cards once.
+  test('a --gpu-index in Extra config replaces HiveOS\'s', () => {
+    for (const extra of ['--gpu-index 1', '--region de --gpu-index=1']) {
+      const r = gpuIndex({ CUDA_VISIBLE_DEVICES: '0,2', CUSTOM_USER_CONFIG: extra });
+      expect(r.line.match(/--gpu-index/g)).toHaveLength(1);
+      expect(r.gpuIndices).toEqual([1]);
+    }
+    expect(gpuIndex({ CUDA_VISIBLE_DEVICES: ' ', CUSTOM_USER_CONFIG: '--gpu-index 0' }).gpuIndices).toEqual([0]);
+  });
+});
+
 // ── h-stats.sh ──────────────────────────────────────────────────────────────
 
 // TH/s to kH/s, rounded down the way h-stats.sh does (both are IEEE doubles).
@@ -302,6 +356,31 @@ suite('h-stats.sh', () => {
     expect(stats.bus_numbers).toEqual([1, 3]);
     expect(stats.temp).toEqual([62, 59]);
     expect(stats.fan).toEqual([70, 66]);
+  });
+
+  // Card 1 turned off in HiveOS: the CLI mines on 0 and 2 and writes only
+  // those. Each must land on its own row, not on rows 0 and 1.
+  test('a card turned off: only the mining cards, each on its own bus', () => {
+    const lists = gpuLists([['01:00.0', 61, 70], ['02:00.0', 40, 30], ['03:00.0', 63, 72]]);
+    let r = runStats(statsFile([card(0, 300, '00000000:01:00.0'), card(2, 280, '00000000:03:00.0')]), lists);
+    expectHiveOsShape(r.khs, r.stats);
+    expect(r.khs).toBe(kh(580));
+    expect(r.stats.hs).toEqual([kh(300), kh(280)]);
+    expect(r.stats.bus_numbers).toEqual([1, 3]);
+    expect(r.stats.temp).toEqual([61, 63]);
+    expect(r.stats.fan).toEqual([70, 72]);
+    // Without the CLI's bus ids, the card's index still finds its row.
+    r = runStats(statsFile([card(0, 300, null), card(2, 280, null)]), lists);
+    expect(r.stats.bus_numbers).toEqual([1, 3]);
+    expect(r.stats.temp).toEqual([61, 63]);
+  });
+
+  // Every card off: the CLI waits and keeps the file fresh with no cards.
+  test('every card turned off: khs 0 and no cards', () => {
+    const { khs, stats } = runStats(statsFile([], { mining: false }), gpuLists([['01:00.0', 40, 30]]));
+    expect(khs).toBe(0);
+    expect(stats.hs).toEqual([]);
+    expect(stats.bus_numbers).toBeUndefined();
   });
 
   test('cards the CLI has no bus for: the NVIDIA cards gpu-detect lists stand in, past a BMC', () => {

@@ -11,6 +11,7 @@ const { REGIONS, DEFAULTS } = require('./config');
 const { isValidAddress, isValidMdlAddress, normalizeAddress } = require('./address');
 const { MODES, DEFAULT_MODE, isValidMode } = require('./llmMode');
 const { parseMemClockMhz } = require('./memClock');
+const { parseGpuIndexList } = require('./gpu');
 
 // Short flags → their canonical long form.
 // --mdl / -m are deliberately absent from USAGE: merge mining is retired from
@@ -30,7 +31,7 @@ const ALIASES = {
 // Options that consume a following value.
 const VALUE_FLAGS = new Set([
   '--address', '--mdl', '--region', '--worker',
-  '--gpu',
+  '--gpu', '--gpu-index',
   '--stats-file',
   '--mode', '--llm-binary', '--llm-model', '--llm-max-instances', '--gate-port', '--gate-host',
   '--gate-quiet', '--mine-mem-clock',
@@ -85,6 +86,10 @@ const USAGE = [
   '  -r, --region <id>        Pool region: ' + Object.keys(REGIONS).join('/') + ' (default: auto-detect fastest)',
   '  -w, --worker <name>      Worker/rig name (default: this machine\'s hostname)',
   '  -g, --gpu <card>         GPU name to report on the board (default: auto-detect via nvidia-smi)',
+  '      --gpu-index <list>   Mine only on these GPUs: nvidia-smi indices such as',
+  '                           0,2, or "none" for no GPU (default: every GPU). The',
+  '                           local LLM picks its own cards. PEARL_GPU_INDEX takes',
+  '                           the same list.',
 
   '      --stats-file <path>  Write live stats JSON here every 10s (for HiveOS h-stats etc.)',
   '      --no-report          Do not publish live status to the public network board',
@@ -135,6 +140,20 @@ function buildSettings(opts, errors, report, update, serve) {
 
   const worker = opts['--worker'] != null ? String(opts['--worker']).trim() : DEFAULTS.worker;
   const gpu = opts['--gpu'] != null ? String(opts['--gpu']).trim() : null;
+
+  // Which cards mine: null for every card, [] for none, else nvidia-smi
+  // indices. Blank is an error rather than "every card": HiveOS's h-config.sh
+  // writes this flag, and a value lost on the way should be loud.
+  let gpuIndices = null;
+  if (opts['--gpu-index'] != null) {
+    const parsed = parseGpuIndexList(opts['--gpu-index']);
+    if (!parsed || parsed.error) {
+      errors.push('invalid --gpu-index: ' + opts['--gpu-index'] + ' ('
+        + (parsed ? parsed.error : 'must not be empty') + ')');
+    } else {
+      gpuIndices = parsed.indices;
+    }
+  }
 
 
 
@@ -206,7 +225,7 @@ function buildSettings(opts, errors, report, update, serve) {
   const modeProvided = opts['--mode'] != null;
 
   return {
-    address, mdlAddress, region, worker, gpu, statsFile,
+    address, mdlAddress, region, worker, gpu, gpuIndices, statsFile,
     mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs, mineMemClockMhz,
     report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,
   };

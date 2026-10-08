@@ -15,7 +15,7 @@ const { execFile } = require('child_process');
 const { REGIONS, DEFAULTS, NETWORK } = require('../shared/config');
 const { pickFastestRegion } = require('../shared/region');
 const {
-  parseGpuStats, pickGpu, countGpus, parseMacGpu, parseDeviceIndex, planMinerGpus,
+  parseGpuStats, pickGpu, countGpus, parseMacGpu, parseGpuIndexEnv, planMinerGpus,
   parsePciBusIds,
 } = require('../shared/gpu');
 const { parseCudaCards } = require('../shared/coreVariant');
@@ -98,10 +98,13 @@ function detectGpusVram() {
 //
 // Both shells ask this the same way so they cannot drift — the GUI and the CLI
 // having their own GPU detection is what let the two disagree before (see
-// detectGpuInfo below). Never rejects.
-async function detectMinerGpus(env) {
+// detectGpuInfo below). `chosen` is the CLI's choice of cards (a list, or null
+// for every card); left out, PEARL_GPU_INDEX in `env` decides, which is how the
+// GUI calls it. Never rejects.
+async function detectMinerGpus(env, chosen) {
   const cards = await detectGpusVram();
-  return planMinerGpus(cards, parseDeviceIndex(env || process.env));
+  const pick = chosen !== undefined ? chosen : parseGpuIndexEnv(env || process.env);
+  return planMinerGpus(cards, pick);
 }
 
 // Per-card core temperature (°C) via nvidia-smi, as a map of card index →

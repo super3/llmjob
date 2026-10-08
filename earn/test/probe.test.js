@@ -158,6 +158,16 @@ describe('detectMinerGpus', () => {
       .toEqual([{ index: 1, name: 'RTX 4070' }]);
   });
 
+  // The CLI passes its own choice (--gpu-index, or PEARL_GPU_INDEX as it read
+  // it), and that wins over the environment. Null means every card.
+  it('takes the caller\'s choice over PEARL_GPU_INDEX', async () => {
+    execCb(null, '0, RTX 4090, 1024, 24576\n1, RTX 4090, 1024, 24576\n2, RTX 4090, 1024, 24576\n');
+    expect(await probe.detectMinerGpus({ PEARL_GPU_INDEX: '1' }, [0, 2]))
+      .toEqual([{ index: 0, name: 'RTX 4090' }, { index: 2, name: 'RTX 4090' }]);
+    expect((await probe.detectMinerGpus({ PEARL_GPU_INDEX: '1' }, null)).map((g) => g.index))
+      .toEqual([0, 1, 2]);
+  });
+
   // Both shells call it with no argument, so the real environment is the one
   // that has to be read.
   it('reads the real environment by default', async () => {

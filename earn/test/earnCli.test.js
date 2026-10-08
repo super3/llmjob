@@ -463,6 +463,26 @@ describe('auto-update on start', () => {
 
 // ── mining runs ──────────────────────────────────────────────────────────────
 
+// Run `fn` with these environment variables set (undefined removes one), and
+// put them back afterwards. The CLI reads CUDA_VISIBLE_DEVICES at load, so set
+// it before load().
+async function withEnv(vars, fn) {
+  const saved = {};
+  for (const k of Object.keys(vars)) {
+    saved[k] = Object.prototype.hasOwnProperty.call(process.env, k) ? process.env[k] : undefined;
+    if (vars[k] === undefined) delete process.env[k];
+    else process.env[k] = vars[k];
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const k of Object.keys(saved)) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+}
+
 describe('mining', () => {
   test('full auto-detected run: report, stats file, SIGINT shutdown', async () => {
     intervalUnref = false; // cover the interval handles without unref()
@@ -562,22 +582,31 @@ describe('mining', () => {
   // CUDA_VISIBLE_DEVICES=0 hid a rig's second card from the mining core while
   // nvidia-smi still listed it. The CLI removes it at load and says so.
   test('clears CUDA_VISIBLE_DEVICES at load and logs it for a mining run', async () => {
-    const had = Object.prototype.hasOwnProperty.call(process.env, 'CUDA_VISIBLE_DEVICES');
-    const before = process.env.CUDA_VISIBLE_DEVICES;
-    process.env.CUDA_VISIBLE_DEVICES = '0';
-    try {
+    await withEnv({ CUDA_VISIBLE_DEVICES: '0' }, async () => {
       const m = load();
       expect(process.env.CUDA_VISIBLE_DEVICES).toBeUndefined();
       const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
       await settle();
       expect(allOut()).toContain(
-        'ignoring CUDA_VISIBLE_DEVICES=0 so every GPU can mine (set PEARL_GPU_INDEX to mine on one card)');
+        'ignoring CUDA_VISIBLE_DEVICES=0 so every GPU can mine (use --gpu-index to choose the cards)');
+      expect(m.probe.detectMinerGpus).toHaveBeenCalledWith(process.env, null);
       m.PearlEngine.instances[0].emit('stopped', 0);
       await expect(p).resolves.toBe(0);
-    } finally {
-      if (had) process.env.CUDA_VISIBLE_DEVICES = before;
-      else delete process.env.CUDA_VISIBLE_DEVICES;
-    }
+    });
+  });
+
+  // HiveOS only ever writes card numbers there, so anything else (a UUID, a MIG
+  // id) gets no --gpu-index from h-config.sh. The log has to say it was ignored.
+  test('a CUDA_VISIBLE_DEVICES of GPU UUIDs is ignored, and the log says so', async () => {
+    const uuid = 'GPU-8f0e2b1c-55aa-4c3d-9e1f-0123456789ab';
+    await withEnv({ CUDA_VISIBLE_DEVICES: uuid }, async () => {
+      const m = load();
+      const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+      await settle();
+      expect(allOut()).toContain('ignoring CUDA_VISIBLE_DEVICES=' + uuid + ' so every GPU can mine');
+      m.PearlEngine.instances[0].emit('stopped', 0);
+      await p;
+    });
   });
 
   // net.connect takes the PORT first and PearlMiner hands over host first, so
@@ -675,6 +704,149 @@ describe('mining', () => {
 });
 
 // ── local LLM ────────────────────────────────────────────────────────────────
+
+// Mining on some cards, or none. HiveOS turns a card off by naming the ones
+// still on in CUDA_VISIBLE_DEVICES, which the CLI drops; h-config.sh passes the
+// same numbers as --gpu-index instead.
+describe('--gpu-index', () => {
+  const THREE = [
+    { index: 0, name: 'NVIDIA GeForce RTX 4090' },
+    { index: 1, name: 'NVIDIA GeForce RTX 4090' },
+    { index: 2, name: 'NVIDIA GeForce RTX 4090' },
+  ];
+  const stop = async (m, p) => {
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  };
+
+  test('mines on the cards it names, and says which and why', async () => {
+    const m = load();
+    m.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 4090', count: 3 });
+    m.probe.detectMinerGpus.mockResolvedValue([THREE[0], THREE[2]]);
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu-index', '0,2']);
+    await settle();
+    expect(m.probe.detectMinerGpus).toHaveBeenCalledWith(process.env, [0, 2]);
+    expect(allOut()).toContain('gpu:        3× NVIDIA GeForce RTX 4090  (auto)');
+    expect(allOut()).toContain('mining on:  2 GPUs [0, 2]  (--gpu-index)');
+    expect(m.PearlEngine.instances[0].start).toHaveBeenCalledWith(
+      expect.objectContaining({ gpus: [THREE[0], THREE[2]] }));
+    await stop(m, p);
+  });
+
+  // The HiveOS case: both are set to the same cards. "so every GPU can mine"
+  // would be wrong here.
+  test('with CUDA_VISIBLE_DEVICES set too, it says the flag chose the cards', async () => {
+    await withEnv({ CUDA_VISIBLE_DEVICES: '0,2' }, async () => {
+      const m = load();
+      m.probe.detectMinerGpus.mockResolvedValue([THREE[0], THREE[2]]);
+      const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu-index=0,2']);
+      await settle();
+      expect(allOut()).toContain('mining on:  2 GPUs [0, 2]  (--gpu-index)');
+      expect(allOut()).toContain('ignoring CUDA_VISIBLE_DEVICES=0,2: --gpu-index picks the cards');
+      expect(allOut()).not.toContain('every GPU can mine');
+      await stop(m, p);
+    });
+  });
+
+  // nvidia-smi has no GPU 5 (planMinerGpus drops it): mine on the rest and say so.
+  test('a card nvidia-smi does not list is skipped with a line on stderr', async () => {
+    const m = load();
+    m.probe.detectMinerGpus.mockResolvedValue([THREE[0]]);
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu-index', '0,5']);
+    await settle();
+    expect(allErr()).toContain('skipping GPU 5 from --gpu-index: nvidia-smi does not list it');
+    expect(allOut()).toContain('mining on:  1 GPU [0]  (--gpu-index)');
+    await stop(m, p);
+  });
+
+  test('PEARL_GPU_INDEX takes the same list, and the flag beats it', async () => {
+    await withEnv({ PEARL_GPU_INDEX: '1,2' }, async () => {
+      let m = load();
+      m.probe.detectMinerGpus.mockResolvedValue([THREE[1], THREE[2]]);
+      let p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+      await settle();
+      expect(m.probe.detectMinerGpus).toHaveBeenCalledWith(process.env, [1, 2]);
+      expect(allOut()).toContain('mining on:  2 GPUs [1, 2]  (PEARL_GPU_INDEX)');
+      await stop(m, p);
+
+      out = [];
+      m = load();
+      m.probe.detectMinerGpus.mockResolvedValue([THREE[0]]);
+      p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu-index', '0']);
+      await settle();
+      expect(m.probe.detectMinerGpus).toHaveBeenCalledWith(process.env, [0]);
+      expect(allOut()).toContain('mining on:  1 GPU [0]  (--gpu-index)');
+      await stop(m, p);
+    });
+  });
+
+  test('a bad value exits 1 before anything starts', async () => {
+    const m = load();
+    await expect(m.run(['-a', ADDR, '--no-update', '--gpu-index', 'first'])).resolves.toBe(1);
+    expect(allErr()).toContain('error: invalid --gpu-index: first');
+    expect(m.PearlEngine.instances).toHaveLength(0);
+  });
+
+  // HiveOS passes none when every GPU is turned off there. Exiting would only
+  // be restarted every few seconds and end in "Miner starting error", so the
+  // run waits, and the stats file keeps saying it isn't mining.
+  test('none, mining only: mines nothing, says so, and waits until stopped', async () => {
+    const m = load();
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu-index=none',
+      '--stats-file', '/tmp/s.json']);
+    await settle();
+    expect(m.PearlEngine.instances).toHaveLength(0);
+    expect(m.probe.detectMinerGpus).not.toHaveBeenCalled();
+    expect(m.probe.postMinerReport).not.toHaveBeenCalled();
+    expect(allOut()).toContain('mining on:  no GPU  (--gpu-index none)');
+    expect(allOut()).toContain('nothing to run with every GPU turned off; waiting until stopped');
+    expect(allErr()).not.toContain('nothing to run —');
+
+    // Something has to hold the process open: everything else is unrefed.
+    const idle = intervalFor(60 * 60 * 1000);
+    expect(idle).toBeDefined();
+    expect(idle.unref).not.toHaveBeenCalled();
+    idle.fn();
+
+    intervalFor(10000).fn();
+    const call = m.fs.writeFileSync.mock.calls.filter((c) => c[0] === '/tmp/s.json.tmp').pop();
+    expect(JSON.parse(call[1])).toMatchObject({ mining: false, ths: 0, gpus: [] });
+
+    let settled = false;
+    p.then(() => { settled = true; });
+    await settle();
+    expect(settled).toBe(false);
+    fire('SIGTERM');
+    await expect(p).resolves.toBe(0);
+  });
+
+  // The LLM picks its own cards, so none only stops the mining half.
+  test('none, auto mode: no miner, the LLM still runs', async () => {
+    const m = load();
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    const p = m.run(['-a', ADDR, '--mode', 'auto', '--no-update', '--no-serve', '--gpu-index', 'none']);
+    await settle();
+    expect(m.PearlEngine.instances).toHaveLength(0);
+    expect(allOut()).toContain('mining on:  no GPU  (--gpu-index none)');
+    expect(allOut()).not.toContain('waiting until stopped');
+    expect(intervalFor(60 * 60 * 1000)).toBeUndefined();
+    const llm = m.LlmManager.instances[0];
+    expect(llm).toBeDefined();
+    llm.emit('stopped', 0);
+    await expect(p).resolves.toBe(1);
+  });
+
+  // An LLM asked for that fails to start is still a failure, cards or not.
+  test('none, LLM mode with an LLM that cannot start: exits 1 as before', async () => {
+    const m = load();
+    m.fs.existsSync.mockReturnValue(false);
+    await expect(m.run(['--mode', 'llm', '--no-update', '--llm-binary', '/nope', '--gpu-index', 'none']))
+      .resolves.toBe(1);
+    expect(allOut()).not.toContain('mining on:  no GPU');
+    expect(allErr()).toContain('nothing to run — no miner and the LLM did not start');
+  });
+});
 
 describe('local LLM', () => {
   test('refuses to start the LLM without enough free VRAM (nothing to run → 1)', async () => {

@@ -84,8 +84,8 @@ function alignCudaDeviceOrder(env) {
 // would be nvidia-smi's GPU 1, the wrong-card bug from issue #226 again.
 //
 // It is usually left over from other software or old troubleshooting, not a
-// choice about this app. Mining on one card is what PEARL_GPU_INDEX is for, and
-// that uses the same numbers as everything else here.
+// choice about this app. Choosing cards is what PEARL_GPU_INDEX (and the CLI's
+// --gpu-index) is for, and those use the same numbers as everything else here.
 //
 // Same timing as alignCudaDeviceOrder: both shells call it at load. Returns the
 // value it removed, or null when it wasn't set, so the caller can log it.
@@ -98,29 +98,55 @@ function clearCudaVisibleDevices(env) {
 }
 
 // The log line for a CUDA_VISIBLE_DEVICES that clearCudaVisibleDevices removed,
-// or null when there was nothing to remove. One wording for both shells.
-function describeClearedCuda(was) {
+// or null when there was nothing to remove. One wording for both shells; the
+// CLI passes its own `hint`, since it has a flag for choosing cards.
+function describeClearedCuda(was, hint) {
   if (was == null) return null;
   return 'ignoring CUDA_VISIBLE_DEVICES=' + was + ' so every GPU can mine '
-    + '(set PEARL_GPU_INDEX to mine on one card)';
+    + '(' + (hint || 'set PEARL_GPU_INDEX to mine on one card') + ')';
 }
 
-// An operator's explicit choice of mining card, from PEARL_GPU_INDEX, or null
-// when they haven't made one.
+// Parse a list of cards to mine on: nvidia-smi indices separated by commas,
+// such as "0,2", or "none" for no card at all. The CLI's --gpu-index and
+// PEARL_GPU_INDEX both use this, so "which cards" means one thing.
+//
+// Returns null for a blank value (no choice made), { indices } for a valid one,
+// and { error } otherwise. `indices` is sorted with duplicates dropped, and is
+// empty for "none". Spaces around an entry are fine; anything else that isn't
+// a whole number from 0 up is an error, so a typo can't read as an instruction.
+function parseGpuIndexList(raw) {
+  if (raw == null) return null;
+  const text = String(raw).trim();
+  if (text === '') return null;
+  if (text.toLowerCase() === 'none') return { indices: [] };
+  const indices = [];
+  for (const part of text.split(',')) {
+    const entry = part.trim();
+    const n = Number(entry);
+    if (!/^[0-9]+$/.test(entry) || !Number.isSafeInteger(n)) {
+      return { error: 'give GPU numbers from nvidia-smi separated by commas, such as 0,2, or none' };
+    }
+    if (!indices.includes(n)) indices.push(n);
+  }
+  indices.sort((a, b) => a - b);
+  return { indices };
+}
+
+// The cards an operator chose with PEARL_GPU_INDEX, as a list, or null when
+// they haven't chosen.
 //
 // It is an escape hatch, not the mechanism: normally every card mines. But "it
 // picked the wrong card" is the report we cannot reproduce from here, and a rig
-// that can pin one card in one env var can answer it in one run. Same idea as
+// that can pin cards in one env var can answer it in one run. Same idea as
 // PEARL_CORE_PATH, and the same place to look for it.
 //
-// Anything that isn't a whole number from 0 up is ignored rather than passed on,
-// so a typo doesn't read as an instruction.
-function parseDeviceIndex(env) {
-  const raw = (env || process.env).PEARL_GPU_INDEX;
-  if (raw == null || String(raw).trim() === '') return null;
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < 0) return null;
-  return n;
+// Takes the same list as --gpu-index, except "none": the desktop app has no way
+// to say "mine on no card", and an empty list means "let the core choose" to
+// planMinerGpus. Anything that doesn't parse is ignored rather than passed on.
+function parseGpuIndexEnv(env) {
+  const parsed = parseGpuIndexList((env || process.env).PEARL_GPU_INDEX);
+  if (!parsed || parsed.error || !parsed.indices.length) return null;
+  return parsed.indices;
 }
 
 // Which cards mine. One core per card, so this list IS the mining fleet.
@@ -130,18 +156,19 @@ function parseDeviceIndex(env) {
 // sets the mining reserve aside on every card, so a rig that mined on one card
 // was leaving that reserve unused everywhere else.
 //
-// `pinnedIndex` (PEARL_GPU_INDEX) narrows it to one card, even one nvidia-smi
-// didn't list — the core validates the index and says so if it doesn't exist,
-// which is a better answer than silently ignoring what the operator asked for.
+// `chosen` (PEARL_GPU_INDEX, or the CLI's --gpu-index) narrows it to those
+// cards: a non-empty list of indices, or null for every card. An index
+// nvidia-smi doesn't list is dropped, and the caller logs it, as long as another
+// chosen card is listed. When none of them is, or nvidia-smi listed nothing at
+// all, the choice is passed on as it is: the core checks each index against the
+// real device count and says so, which beats silently mining on cards nobody
+// asked for.
 //
-// An empty list means nvidia-smi told us nothing (not installed, not NVIDIA).
-// The caller then starts a single core with no index and lets it choose, which
-// is what a single-card rig did before any of this existed.
-function planMinerGpus(cards, pinnedIndex) {
-  if (pinnedIndex != null) {
-    const match = (Array.isArray(cards) ? cards : []).find((c) => c && Number(c.index) === pinnedIndex);
-    return [{ index: pinnedIndex, name: (match && match.name) || null }];
-  }
+// An empty list means nvidia-smi told us nothing (not installed, not NVIDIA)
+// and nothing was chosen. The caller then starts a single core with no index
+// and lets it choose, which is what a single-card rig did before any of this
+// existed.
+function planMinerGpus(cards, chosen) {
   const list = [];
   for (const c of (Array.isArray(cards) ? cards : [])) {
     if (!c) continue;
@@ -150,7 +177,10 @@ function planMinerGpus(cards, pinnedIndex) {
     list.push({ index, name: c.name || null });
   }
   list.sort((a, b) => a.index - b.index);
-  return list;
+  if (!Array.isArray(chosen) || !chosen.length) return list;
+  const listed = list.filter((g) => chosen.includes(g.index));
+  if (listed.length) return listed;
+  return chosen.slice().sort((a, b) => a - b).map((index) => ({ index, name: null }));
 }
 
 // Parse `nvidia-smi --query-gpu=index,name,memory.used,memory.total
@@ -229,6 +259,6 @@ function parseMacGpu(out) {
 
 module.exports = {
   IGNORE, INTEGRATED, pickGpu, countGpus, alignCudaDeviceOrder,
-  clearCudaVisibleDevices, describeClearedCuda, parseDeviceIndex,
+  clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexList, parseGpuIndexEnv,
   planMinerGpus, parseGpuStats, parsePciBusIds, parseMacGpu,
 };

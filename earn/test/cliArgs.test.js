@@ -378,3 +378,46 @@ describe('--mine-mem-clock', () => {
     expect(USAGE).toMatch(/Only the\s+5090 has been measured/);
   });
 });
+
+// Which cards mine. HiveOS's h-config.sh writes this from the cards turned off
+// there, so a bad value has to be loud, not read as "every card".
+describe('--gpu-index', () => {
+  test('not given: every card (null)', () => {
+    expect(parseCliArgs(['-a', ADDR]).settings.gpuIndices).toBeNull();
+  });
+
+  test('a card or a comma list, in either form, sorted and deduplicated', () => {
+    expect(parseCliArgs(['-a', ADDR, '--gpu-index', '1']).settings.gpuIndices).toEqual([1]);
+    expect(parseCliArgs(['-a', ADDR, '--gpu-index=2,0']).settings.gpuIndices).toEqual([0, 2]);
+    expect(parseCliArgs(['-a', ADDR, '--gpu-index', '0,2,0']).settings.gpuIndices).toEqual([0, 2]);
+    expect(parseCliArgs(['-a', ADDR, '--gpu-index', ' 0 , 2 ']).settings.gpuIndices).toEqual([0, 2]);
+  });
+
+  test('none: an empty list', () => {
+    const r = parseCliArgs(['-a', ADDR, '--gpu-index=none']);
+    expect(r.errors).toEqual([]);
+    expect(r.settings.gpuIndices).toEqual([]);
+  });
+
+  test('empty, or not card numbers: an error that says what it takes', () => {
+    expect(parseCliArgs(['-a', ADDR, '--gpu-index=']).errors)
+      .toContain('invalid --gpu-index:  (must not be empty)');
+    expect(parseCliArgs(['-a', ADDR, '--gpu-index', 'GPU-1a2b']).errors).toContain(
+      'invalid --gpu-index: GPU-1a2b (give GPU numbers from nvidia-smi separated by commas, such as 0,2, or none)');
+    expect(parseCliArgs(['-a', ADDR, '--gpu-index', '0,']).errors[0]).toMatch(/^invalid --gpu-index: 0, /);
+    expect(parseCliArgs(['-a', ADDR, '--gpu-index']).errors).toContain('missing value for --gpu-index');
+  });
+
+  // The user's Extra config comes after h-config.sh's flags, and a repeated
+  // flag keeps its last value.
+  test('given twice, the last one wins', () => {
+    expect(parseCliArgs(['-a', ADDR, '--gpu-index=0,2', '--gpu-index', '1']).settings.gpuIndices).toEqual([1]);
+  });
+
+  test('is in the help, with the list form, none, and the variable', () => {
+    expect(VALUE_FLAGS.has('--gpu-index')).toBe(true);
+    expect(USAGE).toContain('--gpu-index <list>');
+    expect(USAGE).toMatch(/such as\s+0,2, or "none" for no GPU/);
+    expect(USAGE).toContain('PEARL_GPU_INDEX');
+  });
+});

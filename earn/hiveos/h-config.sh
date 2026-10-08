@@ -47,6 +47,24 @@ args="--address $address"
 # 5-18 GB model onto the HiveOS drive.
 [[ " $CUSTOM_USER_CONFIG " =~ [[:space:]]--mode([[:space:]]|=) ]] || args+=" --mode mining"
 
+# Cards turned off in HiveOS (power limit 1 in the NVIDIA overclock, or
+# GPU_DISABLE) must not mine. HiveOS's `miner start` says which are off through
+# CUDA_VISIBLE_DEVICES: the CUDA numbers of the NVIDIA cards still on, such as
+# 0,2, or a single space when every one is off. It is not set when none is off.
+# The CLI drops that variable when it starts (see shared/gpu.js), so pass the
+# choice on as --gpu-index. The numbers mean the same cards to both: HiveOS and
+# the CLI number them in PCI bus order (CUDA_DEVICE_ORDER=PCI_BUS_ID).
+# Anything else in it (GPU UUIDs, MIG ids) did not come from HiveOS, so it is
+# not passed on, and the CLI logs that it ignored it. A --gpu-index in Extra
+# config replaces HiveOS's choice.
+if [[ -v CUDA_VISIBLE_DEVICES && ! " $CUSTOM_USER_CONFIG " =~ [[:space:]]--gpu-index([[:space:]]|=) ]]; then
+  if [[ $CUDA_VISIBLE_DEVICES =~ ^[[:space:]]*$ ]]; then
+    args+=" --gpu-index=none"
+  elif [[ $CUDA_VISIBLE_DEVICES =~ ^[[:space:]]*([0-9]+(,[0-9]+)*)[[:space:]]*$ ]]; then
+    args+=" --gpu-index=${BASH_REMATCH[1]}"
+  fi
+fi
+
 # Self-update stays off: the agent owns the miner's lifecycle, and a new version
 # arrives as a new Installation URL. The stats file feeds h-stats.sh.
 args+=" --no-update --stats-file /run/hive/llmjob-earn-stats.json"

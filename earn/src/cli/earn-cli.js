@@ -43,7 +43,9 @@ const { JobWorker } = require('../main/jobWorker');
 const { resolvePlan, normalizeMode } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote } = require('../shared/platform');
 const { resolveServerUrl } = require('../shared/llama');
-const { alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda } = require('../shared/gpu');
+const {
+  alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexEnv,
+} = require('../shared/gpu');
 const { planMemClocks } = require('../shared/memClock');
 const format = require('../shared/format');
 const pkg = require('../../package.json');
@@ -53,9 +55,11 @@ const pkg = require('../../package.json');
 // rows — speaks nvidia-smi's indices, and the CUDA runtime does not unless told
 // to. Set at load, because the mining core initialises CUDA inside THIS process
 // and reads it then. For the same reason CUDA must see every card nvidia-smi
-// lists; the removed value is logged when a mining run starts.
+// lists; the removed value is logged when a mining run starts. Cards are chosen
+// with --gpu-index instead, which HiveOS's h-config.sh fills in from this
+// variable when cards are turned off there.
 alignCudaDeviceOrder(process.env);
-const clearedCudaLine = describeClearedCuda(clearCudaVisibleDevices(process.env));
+const clearedCuda = clearCudaVisibleDevices(process.env);
 
 // The shortest gap between two mining status lines. See the miner event handler.
 const MINE_LOG_MS = 1000;
@@ -74,6 +78,19 @@ function log(line, stream) {
 // which is what --gate-quiet 0 asks for.
 function gateQuietMs(settings) {
   return settings.gateQuietMs == null ? LLM.gate.quietMs : settings.gateQuietMs;
+}
+
+// The cards this run may mine on, and what chose them: --gpu-index first, then
+// PEARL_GPU_INDEX. Null means every card; an empty list is `--gpu-index none`.
+function gpuChoice(settings) {
+  if (settings.gpuIndices != null) return { indices: settings.gpuIndices, from: '--gpu-index' };
+  const indices = parseGpuIndexEnv(process.env);
+  return indices ? { indices, from: 'PEARL_GPU_INDEX' } : null;
+}
+
+// "2 GPUs [0, 2]"
+function cardList(indices) {
+  return indices.length + (indices.length === 1 ? ' GPU' : ' GPUs') + ' [' + indices.join(', ') + ']';
 }
 
 function quietLabel(settings) {
@@ -667,6 +684,12 @@ async function run(argv) {
   }
 
   const settings = parsed.settings;
+  const gpuPick = gpuChoice(settings);
+  // --gpu-index none: no card mines. The LLM, which picks its own cards, still
+  // follows the mode. With nothing else to run the CLI waits rather than exits:
+  // HiveOS passes none when every GPU is turned off there, and an exit would
+  // only be restarted every few seconds.
+  const noGpus = !!(gpuPick && !gpuPick.indices.length);
 
   if (settings.update) {
     const code = await maybeAutoUpdate(argv);
@@ -680,14 +703,16 @@ async function run(argv) {
   // engine resolver would download the Linux binary and spawn something the
   // kernel refuses to exec (see shared/platform).
   const plan = resolvePlan(settings.mode, {
-    canMine: isValidAddress(settings.address) && minerSupported(process.platform),
+    canMine: isValidAddress(settings.address) && minerSupported(process.platform) && !noGpus,
     canLlm: true,
   });
+  const idleByChoice = noGpus && !plan.llm;
 
   log('LLMJob Earn CLI v' + pkg.version);
   log('mode:       ' + settings.mode + (settings.modeProvided ? '' : '  (default)'));
   const platformNote = minerUnsupportedNote(process.platform, settings.mode);
   if (platformNote) log(platformNote, process.stderr);
+  if (noGpus && normalizeMode(settings.mode) !== 'llm') log('mining on:  no GPU  (--gpu-index none)');
 
   let endpoint = null;
   if (plan.miner) {
@@ -702,9 +727,10 @@ async function run(argv) {
     // gpuCount 1 and reported one card on a board row for N.
     const det = await detectGpu();
     if (!settings.gpuProvided && det && det.name) settings.gpu = det.name;
-    // Every card mines, one core each. Read here, with the rest of the startup
-    // probing, because the start site below is inside a callback.
-    settings.gpus = await detectMinerGpus();
+    // Every card mines, one core each, unless --gpu-index or PEARL_GPU_INDEX
+    // chose some. Read here, with the rest of the startup probing, because the
+    // start site below is inside a callback.
+    settings.gpus = await detectMinerGpus(process.env, gpuPick ? gpuPick.indices : null);
     // Always set, so downstream reads don't need a fallback: 1 when detection
     // found nothing or found a single card.
     settings.gpuCount = det && det.count > 1 ? det.count : 1;
@@ -717,12 +743,25 @@ async function run(argv) {
         + (settings.gpuProvided ? '' : '  (auto)'));
     }
     // What will actually mine, which is not always what the line above names: a
-    // mixed rig has one name there and several cards here, and PEARL_GPU_INDEX
-    // narrows it to one. Each card names itself again as its core starts.
-    if (clearedCudaLine) log(clearedCudaLine);
-    if (settings.gpus.length > 1) {
-      log('mining on:  ' + settings.gpus.length + ' GPUs ['
-        + settings.gpus.map((g) => g.index).join(', ') + ']');
+    // mixed rig has one name there and several cards here, and --gpu-index or
+    // PEARL_GPU_INDEX narrows it. Each card names itself again as its core
+    // starts. A chosen card nvidia-smi doesn't list is dropped (shared/gpu
+    // planMinerGpus), and said so here.
+    const mining = settings.gpus.map((g) => g.index);
+    if (gpuPick) {
+      for (const i of gpuPick.indices) {
+        if (!mining.includes(i)) {
+          log('skipping GPU ' + i + ' from ' + gpuPick.from + ': nvidia-smi does not list it', process.stderr);
+        }
+      }
+      log('mining on:  ' + cardList(mining) + '  (' + gpuPick.from + ')');
+      if (clearedCuda != null) {
+        log('ignoring CUDA_VISIBLE_DEVICES=' + clearedCuda + ': ' + gpuPick.from + ' picks the cards');
+      }
+    } else {
+      const cudaLine = describeClearedCuda(clearedCuda, 'use --gpu-index to choose the cards');
+      if (cudaLine) log(cudaLine);
+      if (mining.length > 1) log('mining on:  ' + cardList(mining));
     }
   }
 
@@ -916,11 +955,13 @@ async function run(argv) {
   }
 
   // Nothing to run (e.g. the LLM failed to set up and there's no miner): exit
-  // with an error rather than hanging on an idle process.
-  if (!miner && !llm) {
+  // with an error rather than hanging on an idle process. Unless nothing was
+  // asked to run: --gpu-index none in mining mode waits (see noGpus above).
+  if (!miner && !llm && !idleByChoice) {
     log('nothing to run — no miner and the LLM did not start', process.stderr);
     return 1;
   }
+  if (idleByChoice) log('nothing to run with every GPU turned off; waiting until stopped');
 
   return new Promise((resolve) => {
     let settled = false;
@@ -932,6 +973,7 @@ async function run(argv) {
       if (auto) { auto.stop(); auto = null; }
       if (demandWorker) { demandWorker.stop(); demandWorker = null; }
       if (demandPinger) { clearInterval(demandPinger); demandPinger = null; }
+      if (idle) { clearInterval(idle); idle = null; }
       resolve(code);
     };
     // A deliberate switch must not look like an engine dying: the handlers below
@@ -941,6 +983,9 @@ async function run(argv) {
     // so they outlive every wake/sleep cycle and have to be stopped explicitly.
     let demandWorker = null;
     let demandPinger = null;
+    // A run with nothing to do on purpose has nothing else holding the process
+    // open, so it would exit at once. This timer keeps it waiting for a signal.
+    let idle = idleByChoice ? setInterval(() => {}, 60 * 60 * 1000) : null;
 
     const shutdown = () => {
       if (stopping) return;

@@ -119,11 +119,24 @@ same card to the miner as it does to `nvidia-smi`. Left to itself the CUDA
 runtime numbers cards by its own "fastest first" heuristic, which on a mixed rig
 is a different card than the one `nvidia-smi` lists first.
 
-To mine on one specific card, set `PEARL_GPU_INDEX` to its `nvidia-smi` index:
+To mine on some cards only, list their `nvidia-smi` indices with `--gpu-index`
+on the CLI, or with `PEARL_GPU_INDEX` in either app. Both take the same list,
+and the flag wins over the variable:
 
 ```bash
+llmjob-earn-cli --address prl1p… --gpu-index 0,2
 PEARL_GPU_INDEX=1 llmjob-earn-cli --address prl1p…
 ```
+
+The log says which cards mine and what chose them. A listed card that
+`nvidia-smi` doesn't show is skipped, and the log says so. If it shows none of them, they go to the core, which fails
+and names the cards that exist. `--gpu-index none` mines on no card; with
+`--mode mining` the CLI then waits until it is stopped instead of exiting.
+These choose the mining cards only: the local LLM picks its own.
+
+A `CUDA_VISIBLE_DEVICES` left in the environment is removed at start, and the
+log says so. It hides cards from CUDA but not from `nvidia-smi`, so the two
+disagreed about which card was which, and once kept a rig's second card idle.
 
 The local LLM works the same way — an instance on every card with room for the
 model (`--main-gpu <index>` each), mining cards included. Its `llama-server` is a
@@ -280,6 +293,17 @@ downloads a 5 GB model to the HiveOS drive, or about 18 GB on a card with 30 GB
 or more free. On such a card it also stops mining while it serves, which
 HiveOS's watchdog can take for a hung miner. To serve the LLM anyway, put
 `--mode auto` in Extra config (`--mode llm` for the LLM only).
+
+**A card turned off in HiveOS doesn't mine.** HiveOS turns a card off with a
+power limit of 1 in its NVIDIA overclock, or with `GPU_DISABLE`, and tells the
+miner which cards are still on through `CUDA_VISIBLE_DEVICES`. `h-config.sh`
+passes that on as `--gpu-index`, so the CLI mines on the cards still on, and
+each one's hashrate lands on its own row. With every card off it passes
+`--gpu-index none`: the miner logs that and waits, instead of exiting and being
+restarted every few seconds. HiveOS reads the setting when the miner starts, so
+restart the miner after turning a card on or off. A `--gpu-index` in Extra
+config replaces HiveOS's choice. The local LLM (`--mode auto`) doesn't follow
+it.
 
 `h-stats.sh` sends HiveOS each card's own hashrate with its PCI bus number,
 plus the rig total, shares, uptime and version. HiveOS uses the bus numbers to
@@ -440,6 +464,7 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
   -w, --worker <name>      Worker/rig name (default: this machine's hostname)
   -d, --difficulty <n>     Static share difficulty (default: from detected/--gpu card, else 524288)
   -g, --gpu <card>         GPU name for the difficulty table (default: auto-detect via nvidia-smi)
+      --gpu-index <list>   Mine only on these GPUs, by nvidia-smi index, e.g. 0,2 ("none" for no GPU)
       --backend <name>     Force an engine backend (e.g. ampere)
   -b, --binary <path>      Use this alpha-miner binary instead of downloading one
       --engine-dir <path>  Where to cache the downloaded engine
