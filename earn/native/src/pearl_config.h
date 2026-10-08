@@ -1948,7 +1948,14 @@ typedef struct {
 // PEARL_OPERAND_HASHED is the fallback (probes/README.md, "Operand values").
 #define PEARL_OPERAND_HASHED 0u
 #define PEARL_OPERAND_CONST 1u
+// -DPEARL_OPERAND_FILL=N tries another fill, for A/B tests on other cards (48 was picked
+// on a 4090). It must stay int7, |N| <= 63, or the pool rejects the share.
+#ifndef PEARL_OPERAND_FILL
 #define PEARL_OPERAND_FILL 48
+#endif
+#if PEARL_OPERAND_FILL < -63 || PEARL_OPERAND_FILL > 63
+#error "PEARL_OPERAND_FILL must be int7: the noise adds another int7 and the sum must fit int8"
+#endif
 
 // blake3("pearl/cert-v3/noise-seed/A") and .../B. Hardcoded in the reference so
 // consensus does not depend on runtime string hashing; both are re-derived from
