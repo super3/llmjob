@@ -8,13 +8,11 @@
 // retain, no redistribution restriction, and a binary we can code-sign so
 // Windows Defender stops eating it.
 //
-// STATUS: this is the reference-correct scalar/dp4a path. It is structured so
-// the tensor-core (mma.sync int8) mainloop drops into pearl_gemm_fold() without
-// touching the surrounding pipeline — that specialisation is what takes a card
-// from tens of TH/s to hundreds, and is the next piece of work. Every kernel
-// here is written to be bit-exact with the JS reference so the two can be
-// cross-checked before any performance work begins; a fast core that disagrees
-// with the spec mines nothing.
+// STATUS: the search runs on the int8 tensor cores, in the tile folds
+// (pearl_tile_fold_wmma, pearl_tile_fold_tall, and pearl_tile_fold_hopper on
+// sm_90a). Each computes C and folds the tiles in one pass. Every kernel here
+// is written to be bit-exact with the JS reference so the two can be
+// cross-checked; a fast core that disagrees with the spec mines nothing.
 //
 // Pipeline per job:
 //   1. job_key = blake3(header76 ‖ config52)                       [host]
@@ -23,9 +21,11 @@
 //   4. E_A = E_AL·E_AR, E_B = E_BL·E_BR   (E_AR/E_BL are sparse ±1 selectors,
 //      so this is two lookups per element, not a rank-length dot product)
 //                                                    [pearl_gen_dense/_perm]
-//   5. C accumulated in rank chunks; per chunk fold the sub-tile   [pearl_gemm_fold]
+//   5. C accumulated in rank chunks; per chunk fold the sub-tile   [pearl_tile_fold_*]
 //        jackpot[tid] = rotl13(jackpot[tid]) ^ xor(tile), tid = chunk % 16
 //   6. jackpot_hash = blake3(transcript64, key=a_seed); share iff <= target
+//      [in the fold's epilogue, or pearl_tall_hash80 after a fold that stores
+//       its transcripts: sm_80's unfused fold and sm_90a's wgmma fold]
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -241,18 +241,35 @@ __device__ __forceinline__ uint32_t pearl_bswap32(uint32_t x) {
   return __byte_perm(x, 0u, 0x0123u);
 }
 
-// The hash's most significant 32 bits in the order pearl_meets_target_mode
-// reads it. Default: the 32 bytes are a little-endian number, so the top word
-// is word 7 as it stands. hash_big_endian: byte 0 is most significant, so it
-// is word 0 with its bytes reversed.
+// Word i of the hash counting from the most significant, as a number. Default:
+// the 32 bytes are a little-endian number, so that is word 7 - i as it stands.
+// hash_big_endian: byte 0 is most significant, so it is word i with its bytes
+// reversed.
 __device__ __forceinline__ uint32_t pearl_hash_word_msf(const uint32_t h[8], int i,
                                                         int hash_big_endian) {
   return hash_big_endian ? pearl_bswap32(h[i]) : h[7 - i];
 }
 
-// pearl_meets_target_mode on words. Comparing big-endian words most
-// significant first is the same lexicographic order as comparing the bytes, so
-// this is exact in both modes; target_w holds the target as big-endian words.
+// Does the jackpot hash meet the bound? Exactly equal counts as a share.
+//
+// The reference reads the hash LITTLE-endian --
+// U256::from_little_endian(hash_jackpot) -- and the pool sends its target as a
+// big-endian hex string. target_w holds the target as big-endian words, most
+// significant first (pearl_host.cu packs it), and comparing those words in
+// order is the same as comparing the numbers, so this is exact in both modes.
+//
+// hash_big_endian exists because, when it was added, that pairing was not
+// producing accepted shares. A hash 36x inside the computed bound was still
+// rejected, which is what it would look like if the pool read the hash the
+// other way round: its value would be effectively random with respect to ours,
+// so no margin would ever help. Selectable so the two can be told apart against
+// a live pool, which is the only place the question can be settled.
+//
+// The folds test the top word first and call this only for a region that
+// passes. Each top-word test picks that word itself (pearl_transcript_msw, and
+// the tall fold's pearl_hp_msw, pearl_hp_msw_pair and pearl_tall_hash80), so
+// each must agree with pearl_hash_word_msf; earn/test/nativeConfig.test.js
+// checks them all.
 __device__ __forceinline__ bool pearl_hash_meets_words(const uint32_t h[8],
                                                        const uint32_t target_w[8],
                                                        int hash_big_endian) {
@@ -1131,51 +1148,16 @@ extern "C" __global__ void pearl_restamp_commit(const PearlRestampRecord rec, in
   if (t < 8u) a_seed_out[t] = rec.a_seed[t];
 }
 
-// The heart of the PoW: accumulate C in `rank`-sized chunks and fold the
-// mandated sub-tile of each chunk into the 16-lane jackpot transcript.
+// The tile folds, the heart of the PoW. C is accumulated over k in `rank`-sized
+// chunks, and the mandated sub-tile of each chunk is folded into the region's
+// 16-word jackpot transcript:
 //
 //   jackpot[tid] = rotl13(jackpot[tid]) ^ xor(tile),  tid = chunk % 16
 //
-// ONE BLOCK PER REGION. The first version ran <<<1, threads>>> and searched one
-// region per launch, which used a single SM of the 128 on a 4090 and never
-// finished a batch at the mainnet profile — 90 s of 100% utilisation and not one
-// completed attempt. Regions are independent, so they are the natural axis to
-// parallelise over: blockIdx.x IS the region offset from region_base, and each
-// block writes its own transcript to jackpot_out[blockIdx.x].
-//
-// THE OPERANDS ARE RECONSTRUCTED ONCE, NOT PER CELL. The noised values are
-//   A'[r,kk] = A[r,kk] + Σ_j E_AL[r,j]·E_AR[j,kk]
-//   B'[c,kk] = B[c,kk] + Σ_j E_BL[c,j]·E_BR[j,kk]
-// and the naive loop recomputed A'[r,kk] once for every column sharing that row
-// — 64 times over, for a rank-length dot product each time. Hoisting both into
-// shared memory turns (rows·cols·rank·2rank) into ((rows+cols)·rank² + cells·rank).
-//
-// This is still the scalar path. The tensor-core mainloop replaces only the
-// accumulation below; the transcript semantics are what the parity vectors pin.
-//
-// The partials, on the int8 TENSOR CORES.
-//
-// The dp4a partials kernel (pearl_partials, removed 2026-10-08: nothing launched
-// it once the fused tile fold replaced it) topped out around an eighth of that
-// instruction's own peak, and dp4a's peak is itself about half what the int8
-// tensor cores can do. Since valid tiles partition the grid there is no reuse
-// left to exploit, so the reported hashrate IS the multiply-accumulate rate --
-// and closing the gap to a competitive miner means going to the tensor cores.
-//
-// The contiguous tile is what makes this clean. WMMA's int8 shape is 16x16x16,
-// and:
-//
-//   - the tile's sixteen columns are consecutive, so they are exactly one B
-//     fragment rather than sixteen scattered rows;
-//   - valid row offsets are multiples of four, so a sixteen-row block is
-//     precisely four consecutive row offsets and nothing is wasted;
-//   - A is row-major [m][k] and B is [n][k], which for the product means A is
-//     row_major with leading dimension k and B is COL_MAJOR with the same
-//     leading dimension -- no staging or transpose needed.
-//
-// One warp computes a 16x16 block of C for one chunk and one column group.
-// The tile fold, on the int8 tensor cores, with the accumulator kept ACROSS
-// chunks -- which is what the protocol actually specifies.
+// They run on the int8 tensor cores: pearl_tile_fold_wmma and
+// pearl_tile_fold_tall below, and pearl_tile_fold_hopper on sm_90a. The
+// accumulator is kept ACROSS chunks, which is what the protocol actually
+// specifies.
 //
 // From the reference miner (zk-pow/src/ffi/mine.rs):
 //
@@ -1197,9 +1179,13 @@ extern "C" __global__ void pearl_restamp_commit(const PearlRestampRecord rec, in
 // lost by that: valid tiles partition the grid, so there was no sharing between
 // regions to exploit in the first place.
 //
-// One warp covers PEARL_WMMA_ROW_TILES 16-row blocks against one column group.
-// A 16-row block is four consecutive row offsets, so a warp carries
-// 4*PEARL_WMMA_ROW_TILES regions and emits a transcript for each.
+// A warp of pearl_tile_fold_wmma covers PEARL_WMMA_ROW_TILES 16-row blocks by
+// one column span (PEARL_COLS_SPAN, 64 columns). Tiles interleave -- rows
+// {0,1,2,3} + 8j, columns {0,1} + 8i -- so every 32 rows hold two whole row
+// offsets and the 64 columns hold four column offsets: a warp carries
+// 4*PEARL_WMMA_ROW_TILES regions and emits a transcript for each. The tall
+// fold's tiles are its own (see pearl_tile_fold_tall).
+
 // A 16-byte global->shared copy that does not pass through registers.
 //
 // The plain form, *(int4 *)dst = *(const int4 *)src, loads into a register and
@@ -4276,89 +4262,3 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
 #endif
 }
 #endif  // PEARL_HOPPER_WGMMA
-
-// The fold is now a gather. Every product it needs is already in D, which
-// pearl_partials wrote (removed 2026-10-08, so nothing writes D now and nothing
-// launches this), so a region costs 32 loads and a warp reduction per chunk
-// instead of 32 dot products.
-extern "C" __global__ void pearl_gemm_fold(
-    const int32_t *__restrict__ D,
-    const uint32_t *__restrict__ rows_pattern, uint32_t rows_count,
-    uint32_t cols_count, uint32_t m, uint32_t rows_valid, uint32_t chunks,
-    uint64_t region_base, uint32_t *__restrict__ jackpot_out) {
-  const uint32_t lane = threadIdx.x & 31u;
-  const uint32_t warp = threadIdx.x >> 5;
-  const uint32_t warps_per_block = blockDim.x >> 5;
-
-  // PEARL_REGIONS_PER_WARP regions share a warp, each using rows_count lanes.
-  //
-  // The producer (pearl_partials) already XORed each row's columns together, so a
-  // region needs only rows_count values combined — four at the mandated tile. Giving each
-  // region a whole warp left 28 of 32 lanes idle, and measured per-stage timing
-  // put this kernel at 42% of the batch, the largest single share. Packing
-  // eight regions per warp fills it.
-  (void)cols_count;
-  const uint32_t sub = lane / rows_count;   // which region within the warp
-  const uint32_t ri = lane % rows_count;    // which row of that region's tile
-  const bool active = sub < PEARL_REGIONS_PER_WARP;
-
-  const uint64_t slot =
-      ((uint64_t)blockIdx.x * warps_per_block + warp) * PEARL_REGIONS_PER_WARP
-      + (active ? sub : 0u);
-  // rows_valid decomposes the region index; m stays the STRIDE of the partial
-  // table, which is indexed by the actual row. Conflating the two is silent:
-  // the fold reads the wrong partials and every hash differs.
-  const uint32_t cg = (uint32_t)(slot / rows_valid);
-  const uint32_t row_off =
-      pearl_expand_offset((uint32_t)(slot % rows_valid), PEARL_ROWS_MASK);
-  const uint32_t r = row_off | rows_pattern[ri];
-
-  uint32_t jackpot[PEARL_JACKPOT_BUCKETS];
-#pragma unroll
-  for (int i = 0; i < PEARL_JACKPOT_BUCKETS; i++) jackpot[i] = 0u;
-
-  for (uint32_t chunk = 0; chunk < chunks; chunk++) {
-    // Lanes sharing a row read cols_count contiguous ints — one transaction.
-    const int32_t v =
-        active ? D[((size_t)cg * chunks + chunk) * m + r] : 0;
-    uint32_t x = (uint32_t)v;
-    // Reduce only within each region's own lanes, not across the whole warp.
-#pragma unroll
-    for (uint32_t sft = 1; sft < PEARL_ROWS_COUNT; sft <<= 1) {
-      x ^= __shfl_xor_sync(0xffffffffu, x, sft);
-    }
-    if (ri == 0) {
-      const uint32_t l = chunk % PEARL_JACKPOT_BUCKETS;
-      jackpot[l] = pearl_rotl13(jackpot[l]) ^ x;
-    }
-  }
-
-  if (ri == 0 && active) {
-    uint32_t *out = jackpot_out + (size_t)slot * PEARL_JACKPOT_BUCKETS;
-#pragma unroll
-    for (int i = 0; i < PEARL_JACKPOT_BUCKETS; i++) out[i] = jackpot[i];
-  }
-}
-
-// Hash the 64-byte transcript under a_seed and test it against the target. The
-// host re-checks every reported hit in JS before submitting, so a bug here can
-// waste work but can never push a bad share to the pool.
-extern "C" __global__ void pearl_finalize(const uint32_t *a_seed,
-                                          const uint32_t *jackpot,
-                                          const uint8_t *target_be,
-                                          uint8_t *hash_out, int *is_share) {
-  if (blockIdx.x != 0 || threadIdx.x != 0) return;
-  uint8_t transcript[PEARL_JACKPOT_BUCKETS * 4];
-#pragma unroll
-  for (int i = 0; i < PEARL_JACKPOT_BUCKETS; i++) {
-    transcript[i * 4 + 0] = (uint8_t)(jackpot[i]);
-    transcript[i * 4 + 1] = (uint8_t)(jackpot[i] >> 8);
-    transcript[i * 4 + 2] = (uint8_t)(jackpot[i] >> 16);
-    transcript[i * 4 + 3] = (uint8_t)(jackpot[i] >> 24);
-  }
-  uint32_t key[8];
-#pragma unroll
-  for (int i = 0; i < 8; i++) key[i] = a_seed[i];
-  blake3_keyed(key, transcript, sizeof(transcript), hash_out);
-  *is_share = pearl_meets_target(hash_out, target_be);
-}

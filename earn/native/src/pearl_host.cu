@@ -150,10 +150,6 @@ extern "C" __global__ void pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_
 extern "C" __global__ void pearl_tall_hash80(const uint4 *tr, uint32_t regions,
                                              const PearlTranscriptTest test,
                                              const PearlHitList hits, uint32_t one);
-extern "C" __global__ void pearl_gemm_fold(
-    const int32_t *D, const uint32_t *rows_pattern, uint32_t rows_count,
-    uint32_t cols_count, uint32_t m, uint32_t rows_valid, uint32_t chunks,
-    uint64_t region_base, uint32_t *jackpot_out);
 extern "C" __global__ void pearl_blake3_chunk_cvs(const uint32_t *key,
                                                   const uint8_t *data,
                                                   uint64_t chunks,
@@ -168,10 +164,6 @@ extern "C" __global__ void pearl_blake3_unkeyed(const uint8_t *in, uint32_t len,
 extern "C" __global__ void pearl_bind_root(const uint8_t *salt,
                                            const uint8_t *root, uint32_t dim,
                                            uint8_t *out);
-extern "C" __global__ void pearl_finalize(const uint32_t *a_seed,
-                                          const uint32_t *jackpot,
-                                          const uint8_t *target_be,
-                                          uint8_t *hash_out, int *is_share);
 
 // Mirrors the struct pearl_core.cc declares. Kept in this one header-free form
 // deliberately: the two files must agree on the layout, and a shared header that
@@ -2211,11 +2203,12 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
                (unsigned)PEARL_FOLD_RANK, (unsigned)PEARL_FOLD_K, rank, k);
     return false;
   }
-  // Clamped to m so one launch shares a single col_off: D is built for exactly
-  // the columns that batch touches. nonce_base stays a multiple of m because the
-  // caller advances by the attempt count we report back.
-  // The caller's batch hint is advisory; the real width is the context's, since
-  // the partial table was allocated for exactly that many column groups.
+  // The caller's batch hint is ignored. A launch covers ctx->batch regions:
+  // ctx->colBatch column offsets from col_off, by every valid row offset. The
+  // width is fixed when the context is made, which may narrow it
+  // (pearl_tma_col_batch, pearl_ampere_col_batch) and sizes GA100's and
+  // Hopper's transcript buffers from it. nonce_base stays a multiple of
+  // rowsValid because the caller advances by the region count reported back.
   (void)batch;
   const uint32_t regions = ctx->batch;
   const uint32_t col_groups = ctx->colBatch;

@@ -32,12 +32,10 @@
 #define PEARL_JACKPOT_BUCKETS 16
 #define PEARL_ROTL_BITS 13
 
-// Regions searched per launch. One CUDA block each, so this is also the grid
-// width — big enough to fill every SM on a large card, small enough that a job
-// switch is picked up promptly.
-// Regions per launch. Also the width of the partials pass, which runs one thread
-// per (chunk, row): at m = 4096 that is 65536 threads against the 196608 a 4090
-// holds resident, so a third of the machine. Sized to fill it instead.
+// The batch size pearl_core.cc's search loop passes to pearl_host_submit. The
+// host ignores it: a launch covers the context's own width, col_batch column
+// offsets by every valid row offset (see PearlProfile.col_batch), and the loop
+// advances by the region count the host reports back.
 #define PEARL_BATCH_REGIONS 16384
 
 // The difficulty adjustment factor: tile_size * dot_product_length.
@@ -134,11 +132,12 @@ typedef struct PearlProfile {
   // search launch-bound rather than compute-bound: measured on a 4090, a batch
   // cost a flat 134-213us whether it carried 1024 regions or 8192, because
   // three kernel launches and a synchronising copy dominated whatever work was
-  // inside them. Widening the batch amortises that fixed cost, and it also
-  // gives the partials kernel far better arithmetic intensity, since each A row
-  // it reads is now used against col_batch*8 columns instead of 8.
+  // inside them. Widening the batch amortises that fixed cost.
   //
-  // Costs col_batch * chunks * m * cols * 4 bytes of partial table.
+  // The host can narrow it when it makes the context (pearl_tma_col_batch,
+  // pearl_ampere_col_batch). It costs memory only on the two folds that store
+  // every transcript, GA100's unfused fold and Hopper's wgmma fold: 64 bytes a
+  // region of the batch, for each of the two pipeline slots.
   uint32_t col_batch;
   // 0 = read the jackpot hash little-endian, as the reference does; 1 = big.
   // A diagnostic for the share rejections, not a protocol choice.
@@ -213,11 +212,6 @@ PEARL_HD constexpr uint32_t pearl_pattern_span(uint32_t mask) {
 #define PEARL_ROWS_SPAN (pearl_pattern_span(PEARL_ROWS_MASK))
 #define PEARL_COLS_SPAN (pearl_pattern_span(PEARL_COLS_MASK))
 
-// How many regions share one warp in pearl_gemm_fold. Its producer, pearl_partials
-// (removed 2026-10-08), collapsed each row's columns, so a region needs only
-// PEARL_ROWS_COUNT lanes; giving it a whole warp left 28 of 32 idle.
-#define PEARL_REGIONS_PER_WARP (32 / PEARL_ROWS_COUNT)
-
 // How many hits one batch can report. The search returns on the first one, so
 // this only has to be large enough that a pathologically easy target does not
 // silently lose hits it would never have submitted anyway.
@@ -273,9 +267,10 @@ typedef struct {
   uint32_t a_seed[8];
 } PearlRestampRecord;
 
-// Rows of A one warp covers in the tensor-core partials kernel. The WMMA int8
-// shape is 16x16x16, and valid row offsets are multiples of PEARL_ROWS_COUNT,
-// so a 16-row block is exactly four consecutive row offsets.
+// Rows of A in one of a fold warp's 16-row blocks (PEARL_WMMA_ROW_TILES of them
+// a warp). A tile's PEARL_ROWS_COUNT rows are spread over a 32-row span that
+// holds two whole row offsets, so a 16-row block counts for
+// PEARL_WMMA_ROWS / PEARL_ROWS_COUNT row offsets: one.
 #define PEARL_WMMA_ROWS 16
 
 // How many 16-wide k-steps of A a warp holds in registers at once. 8 covers
@@ -1861,7 +1856,7 @@ PEARL_HD static inline uint32_t pearl_expand_offset(uint32_t i, uint32_t mask) {
   // (see PEARL_COLS_SPAN), which is index * count. The general loop measured
   // 0.4% behind the shift when the persistent fold did run it once per tile in
   // every thread (246.6 -> 247.7 TH/s, bench, 4090); here it runs on the host,
-  // once per share, and in the gather kernels nothing launches.
+  // once per share.
   if (mask != 0xFFFFFFFFu && (mask & (mask + 1u)) == 0u) return i << pearl_popcount_ce(mask);
   uint32_t out = 0u;
   uint32_t bit = 1u;
@@ -1877,39 +1872,6 @@ PEARL_HD static inline uint32_t pearl_expand_offset(uint32_t i, uint32_t mask) {
 
 PEARL_HD static inline uint32_t pearl_rotl13(uint32_t x) {
   return (x << PEARL_ROTL_BITS) | (x >> (32 - PEARL_ROTL_BITS));
-}
-
-// Compare a 32-byte little-endian jackpot hash against a 32-byte BIG-endian
-// target. Both endiannesses are load-bearing and opposite: the hash is read
-// least-significant-byte-first, the pool's target most-significant-first.
-// Returns non-zero when the hash is a share.
-// Does the jackpot hash meet the bound?
-//
-// The reference reads the hash LITTLE-endian --
-// U256::from_little_endian(hash_jackpot) -- and the pool sends its target as a
-// big-endian hex string, so the default walks the hash from its last byte and
-// the target from its first.
-//
-// hash_big_endian exists because that pairing is not producing accepted shares.
-// A hash 36x inside the computed bound was still rejected, which is what it
-// would look like if the pool read the hash the other way round: its value
-// would be effectively random with respect to ours, so no margin would ever
-// help. Selectable so the two can be told apart against a live pool, which is
-// the only place the question can be settled.
-PEARL_HD static inline int pearl_meets_target_mode(const uint8_t *hash_le,
-                                                   const uint8_t *target_be,
-                                                   int hash_big_endian) {
-  for (int i = 0; i < PEARL_HASH_BYTES; i++) {
-    uint8_t h = hash_big_endian ? hash_le[i] : hash_le[PEARL_HASH_BYTES - 1 - i];
-    uint8_t t = target_be[i];
-    if (h < t) return 1;
-    if (h > t) return 0;
-  }
-  return 1;  // exactly equal counts as a share
-}
-
-PEARL_HD static inline int pearl_meets_target(const uint8_t *hash_le, const uint8_t *target_be) {
-  return pearl_meets_target_mode(hash_le, target_be, 0);
 }
 
 #endif  // PEARL_CONFIG_H

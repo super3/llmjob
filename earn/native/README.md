@@ -28,6 +28,12 @@ retain and no licence to comply with beyond ISC attribution.
 
 ## Status
 
+This table and "Where it actually stands" below are from August 2026, before
+the tensor-core work, and are kept as a record. The search now runs on the int8
+tensor cores, in the tile folds (`pearl_tile_fold_wmma`, `pearl_tile_fold_tall`,
+and `pearl_tile_fold_hopper` on sm_90a). The scalar/dp4a fold and its partials
+pass are gone. Later measurements are in `probes/README.md`.
+
 | Piece | State |
 |---|---|
 | Stratum protocol, job/target math, MDL, share assembly, lifecycle (JS) | **done, 70 tests, 100% gate** |
@@ -69,7 +75,8 @@ it points at the protocol rather than at arithmetic.
 
 ## Where it actually stands
 
-Measured on an RTX 4090, at the real mainnet geometry:
+August 2026, a record (see Status). Measured on an RTX 4090, at the real
+mainnet geometry:
 
 | | |
 |---|---|
@@ -102,11 +109,12 @@ and the GPU box downloads the artifact and runs it. That loop found three bugs
 that no amount of review would have, because each one produced a miner that
 looked healthy:
 
-1. **The search was not searching.** `pearl_gemm_fold` had no region parameter,
-   so every attempt recomputed an identical transcript. The GPU sat at 76-79%
-   utilisation, kernels launched, hashrate was reported — and 65536 "attempts"
-   against a target that accepts half of all hashes produced zero hits, because
-   there was only ever one distinct value.
+1. **The search was not searching.** `pearl_gemm_fold` (the fold kernel of that
+   time; the tile folds replaced it, and it was removed on 2026-10-08) had no
+   region parameter, so every attempt recomputed an identical transcript. The
+   GPU sat at 76-79% utilisation, kernels launched, hashrate was reported — and
+   65536 "attempts" against a target that accepts half of all hashes produced
+   zero hits, because there was only ever one distinct value.
 
 2. **A share threw away the rest of its batch.** The search returns on the first
    hit, but the loop advanced the nonce by the whole batch regardless. With
@@ -118,11 +126,12 @@ looked healthy:
    the device BLAKE3 handled only a single chunk, so it gave the wrong digest for
    any operand over 1024 bytes — which is all of them.
 
-4. **One block, one SM.** `pearl_gemm_fold` launched `<<<1, 128>>>` and searched
-   one region per launch, using a single SM of the 128 on a 4090. At the mainnet
-   profile it could not finish one batch in 90 seconds. Regions are independent,
-   so one block per region plus reconstructing the operands once per chunk rather
-   than once per cell took it from under 45 regions/sec to 48,800.
+4. **One block, one SM.** `pearl_gemm_fold` (since removed) launched
+   `<<<1, 128>>>` and searched one region per launch, using a single SM of the
+   128 on a 4090. At the mainnet profile it could not finish one batch in 90
+   seconds. Regions are independent, so one block per region plus
+   reconstructing the operands once per chunk rather than once per cell took it
+   from under 45 regions/sec to 48,800.
 
 After the first three: 128616 attempts, **128616 distinct hashes**, seeds
 correctly distinct. After the fourth, mainnet runs at all — and parity with the
