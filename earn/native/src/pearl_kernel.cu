@@ -4048,7 +4048,7 @@ extern "C" __global__ __launch_bounds__(256) void pearl_tall_hash80(
 // Hopper's wgmma fold (PEARL_HOPPER_WGMMA; see pearl_config.h). With the switch on every
 // architecture compiles the symbol, because the host names it; only the sm_90a pass has a
 // body, and only that body carries the 288-thread launch bound the host keys on. With it
-// off (the default) neither the kernel nor the host's references exist.
+// off (-DPEARL_HOPPER_WGMMA=0) neither the kernel nor the host's references exist.
 #if PEARL_HOPPER_WGMMA
 #if PEARL_HOPPER_WGMMA_BODY
 __device__ __forceinline__ void pearl_h_mbar_init(uint32_t bar, uint32_t count) {

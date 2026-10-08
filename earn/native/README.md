@@ -148,7 +148,7 @@ nvcc -lib cuda-build/pearl_kernel.o cuda-build/pearl_host.o -o cuda-build/pearl_
 npx node-gyp rebuild
 ```
 
-`.github/workflows/native-core.yml` does exactly this for sm_75/80/86/89/90/120, and it
+`.github/workflows/native-core.yml` does exactly this for sm_75/80/86/89/90a/120, and it
 is green on Linux: the workflow produces a real `pearl_core.node`. So the core
 compiles and links today, even though nothing on a runner can execute it.
 

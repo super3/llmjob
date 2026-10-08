@@ -5,11 +5,11 @@
 //
 // A release ships two cores:
 //
-//   pearl_core.node       CUDA 12.8, sm_75/80/86/89/90/120. Runs on every card
+//   pearl_core.node       CUDA 12.8, sm_75/80/86/89/90a/120. Runs on every card
 //                         and every driver the app supports. What every rig
 //                         loaded before.
 //   pearl_core_cu13.node  CUDA 13.x, sm_89 and sm_120 (Ada, compute 8.9, and
-//                         Blackwell, compute 12.x). No sm_80, sm_86 or sm_90.
+//                         Blackwell, compute 12.x). No sm_80, sm_86 or sm_90a.
 //
 // The second exists because ptxas 13 compiles the sm_120 fold much better than
 // ptxas 12.8: 2.67-3.0 instructions per IMMA with 160/192 B operands reused,
@@ -33,7 +33,7 @@
 // at require() but at the first CUDA call, as "no CUDA device found". Much of
 // the 3090/4090 fleet and many 5090 rigs run older drivers. And a 2080 Ti, an
 // A100, a 3090 or an H100 gains nothing from it: it carries no sm_75, sm_80,
-// sm_86 or sm_90 code, so those cards stay on the build they have always run.
+// sm_86 or sm_90a code, so those cards stay on the build they have always run.
 //
 // So the CUDA 13 build is used only when BOTH hold:
 //   - the driver is 580 or newer, and
@@ -53,7 +53,7 @@ const MIN_DRIVER_CU13 = 580;
 // Blackwell consumer and workstation cards (RTX 50, RTX PRO) are compute 12.x.
 // Ada (RTX 40) is compute 8.9 exactly; 8.6 is Ampere (RTX 30) and 8.0 is
 // GA100 Ampere (A100, A800, A30, CMP 170HX). 9.0 is Hopper (H100, H200), whose
-// sm_90 code is in the 12.8 build only.
+// sm_90a code is in the 12.8 build only.
 const BLACKWELL_COMPUTE_MAJOR = 12;
 const ADA_COMPUTE_MAJOR = 8;
 const ADA_COMPUTE_MINOR = 9;

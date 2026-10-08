@@ -51,7 +51,7 @@ describe('cu13HasCodeFor / cu13AutoSelectsFor', () => {
     expect(cu13HasCodeFor(card(0, '7.5', 610))).toBe(false);
   });
 
-  // 9.0 is Hopper: its sm_90 code is in the 12.8 build only.
+  // 9.0 is Hopper: its sm_90a code is in the 12.8 build only.
   test('Hopper has no code', () => {
     expect(cu13HasCodeFor(H100(0))).toBe(false);
     expect(cu13AutoSelectsFor(H100(0))).toBe(false);
@@ -136,7 +136,7 @@ describe('pickCoreVariant', () => {
     });
   });
 
-  // Hopper (H100, H200) has sm_90 code in the 12.8 build only, on any driver.
+  // Hopper (H100, H200) has sm_90a code in the 12.8 build only, on any driver.
   test('an H100 rig keeps the 12.8 build: the CUDA 13 one has no code for it', () => {
     expect(pickCoreVariant({ env: {}, cards: [H100(0)], gpus: [{ index: 0 }] })).toEqual({
       variant: CU12, reason: 'GPU 0 is compute 9.0 (the CUDA 13 build has no code for it)',

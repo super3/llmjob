@@ -1160,9 +1160,9 @@ typedef struct {
 #ifndef PEARL_TALL_HASH80_IMAD
 #define PEARL_TALL_HASH80_IMAD 1
 #endif
-// Hopper's wgmma fold (pearl_tile_fold_hopper, sm_90a only; work in progress, off by
-// default). mma.sync reaches 66% of H100's int8 tensor rate and the cp.async tall fold about
-// 44% a clock; only wgmma reaches the rest. Tiles of 128 rows (8 row offsets) by 256
+// Hopper's wgmma fold (pearl_tile_fold_hopper, sm_90a only; on by default since
+// 2026-10-08). mma.sync reaches 66% of H100's int8 tensor rate and the cp.async tall fold
+// about 44% a clock; only wgmma reaches the rest. Tiles of 128 rows (8 row offsets) by 256
 // columns, walked as the tall fold walks its 192-row tiles, read through 3-D tensor maps in
 // SWIZZLE_64B boxes of 128 and 256 rows. Two consumer warpgroups, each 64 rows by 256
 // columns (wgmma m64n256k32, 128 accumulators a thread), read A and B from shared; a chunk
@@ -1176,17 +1176,20 @@ typedef struct {
 // end each warpgroup copies its 64 regions to the slot's transcript buffer, as GA100's
 // unfused fold does, and pearl_tall_hash80 hashes them. The host picks it when the loaded
 // binary has its body (its 288-thread launch bound) and PEARL_HOPPER_WGMMA is set. The
-// release builds sm_90, not sm_90a, so today it is never in a shipped core.
+// CUDA 12.8 release builds sm_90a (native-core.yml), so a compute 9.0 card loads that body;
+// -DPEARL_HOPPER_WGMMA=0, or a build for plain sm_90, runs the cp.async tall fold instead.
 //
-// Measured, sm_90a with the switch on, hashrate.js 3 rounds, ahead in every round, against
-// the cp.async fold and against the first version (three consumer warpgroups on 192-row
-// tiles and no producer warp, 40904f6), 400/400 hits for each:
-//   H100 NVL (Vast 29785, 400 W)    344.35 / 396.29 -> 429.24 TH/s at 1212 MHz
-//   H100 SXM (Vast 153443, 700 W)   436.17 / 525.23 -> 532.19 TH/s at 1567 MHz
-// 79.8% and 70.2% of SRBMiner's and PeakMiner's rates on those hosts. Both clocks sit at
-// the power cap: per clock this form does 2570-2680 MAC/clk/SM against ~2190.
+// Measured, sm_90a, hashrate.js 3 rounds, ahead in every round, against the cp.async tall
+// fold and against the first version (three consumer warpgroups on 192-row tiles and no
+// producer warp, 40904f6), 400/400 hits for each, with 2-CTA clusters, width 256 and the
+// reduce-scatter readout below:
+//   H100 SXM (Vast 153443, 700 W)   436.17 / 525.23 -> 630.64 TH/s at 1560 MHz
+//   H100 NVL (Vast 29785, 400 W)    344.35 / 396.29 -> 470.41 TH/s at 1226-1230 MHz
+// 83.2% and 87.5% of PeakMiner's and SRBMiner's rates on those hosts. Both clocks sit at
+// the power cap. Per clock the fold does 75% (SXM) and 71% (NVL) of the wgmma peak; with
+// the readout switched off it does 90%, so the readout is most of the per-clock gap.
 #ifndef PEARL_HOPPER_WGMMA
-#define PEARL_HOPPER_WGMMA 0
+#define PEARL_HOPPER_WGMMA 1
 #endif
 #if PEARL_HOPPER_WGMMA && defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 900 \
     && defined(__CUDA_ARCH_FEAT_SM90_ALL)

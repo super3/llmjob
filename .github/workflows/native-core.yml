@@ -36,7 +36,7 @@ on:
 jobs:
   build:
     # Two builds per OS. The first two entries are the core every rig has run
-    # (CUDA 12.8.1, sm_75/80/86/89/90/120); their job names ("ubuntu-latest",
+    # (CUDA 12.8.1, sm_75/80/86/89/90a/120); their job names ("ubuntu-latest",
     # "windows-2022") and artifact names (pearl-core-<os>) are unchanged, and
     # miner-build.yml still downloads them by those names.
     #
@@ -51,7 +51,7 @@ jobs:
     # probes/hashrate.js and probes/verify-hits.js at pearl_core_cu13.node
     # (they take the .node path as their first argument and read no
     # environment variable). PEARL_CORE_VARIANT=cu13 is the override for the
-    # app and earn-cli only. No sm_80, sm_86 or sm_90, so this build never
+    # app and earn-cli only. No sm_80, sm_86 or sm_90a, so this build never
     # loads on an A100, a 3090 or an H100.
     # It is a separate file because a CUDA 13 runtime needs driver 580+: the
     # app loads it only on an all-Blackwell rig with a new enough driver
@@ -78,7 +78,7 @@ jobs:
               -gencode arch=compute_80,code=sm_80
               -gencode arch=compute_86,code=sm_86
               -gencode arch=compute_89,code=sm_89
-              -gencode arch=compute_90,code=sm_90
+              -gencode arch=compute_90a,code=sm_90a
               -gencode arch=compute_120,code=sm_120
             # Architectures on which a register spill in a fold kernel fails
             # the job (the spill check below): the ones a run of this check
@@ -87,10 +87,15 @@ jobs:
             # fold 253 registers on sm_86 and sm_89 and 255 on sm_120, the
             # wmma fold 235, 235 and 128. So all three fail on a spill. An
             # architecture added later starts as a warning until a run has
-            # shown it clean too: sm_80 (GA100: A100, A800, A30, CMP 170HX)
-            # and sm_90 (Hopper: H100, H200), both added 2026-10-07, are not
-            # in the list yet.
-            spill_fail_archs: sm_86 sm_89 sm_120
+            # shown it clean too. sm_80 (GA100: A100, A800, A30, CMP 170HX),
+            # added 2026-10-07, is not in the list yet. sm_90a (Hopper: H100,
+            # H200; it replaced plain sm_90 on 2026-10-08, so the release has
+            # Hopper's wgmma fold) is: native core run 37718450743 built it
+            # with every fold at 0 spill, the wgmma fold 163 registers, the
+            # tall fold 254, the wmma fold 231 and the transcript hash 40. On
+            # Hopper the wgmma fold is the one that mines, so a spill in it
+            # fails the job.
+            spill_fail_archs: sm_86 sm_89 sm_90a sm_120
           - os: windows-2022
             variant: ''
             file: pearl_core.node
@@ -102,9 +107,9 @@ jobs:
               -gencode arch=compute_80,code=sm_80
               -gencode arch=compute_86,code=sm_86
               -gencode arch=compute_89,code=sm_89
-              -gencode arch=compute_90,code=sm_90
+              -gencode arch=compute_90a,code=sm_90a
               -gencode arch=compute_120,code=sm_120
-            spill_fail_archs: sm_86 sm_89 sm_120
+            spill_fail_archs: sm_86 sm_89 sm_90a sm_120
           # 13.3.1 is the newest toolkit Jimver/cuda-toolkit v0.2.36 (the
           # version already pinned here) lists, on Linux and Windows alike, and
           # it is the toolkit the 5090 rig builds with (nvcc V13.3.73) -- so the
@@ -222,7 +227,7 @@ jobs:
         working-directory: earn/native
         run: npm install --no-save node-addon-api node-gyp
 
-      # Compile the CUDA half into a static library. sm_75/80/86/89/90/120
+      # Compile the CUDA half into a static library. sm_75/80/86/89/90a/120
       # covers Turing, Ampere (GA100 and GA10x), Ada, Hopper and Blackwell —
       # the cards the app actually targets. The CUDA 13 entries pass sm_89 and sm_120; every
       # other flag is the same.
@@ -280,37 +285,13 @@ jobs:
             -DPEARL_TALL_CLUSTER=1 \
             -c src/pearl_host.cu -o cuda-build/cluster/pearl_host.o
 
-      # Hopper's wgmma fold (PEARL_HOPPER_WGMMA in pearl_config.h) is off by default and
-      # needs sm_90a, which the release does not build, so nothing above compiles its
-      # body or the host code behind the switch. Compiled here like the cluster build
-      # (a scratch directory, ptxas -v printed, not linked or shipped, non-blocking), but
-      # only in the 12.8 entries and only for sm_90a. When sm_90a ships, the spill
-      # check below must also read pearl_tile_fold_hopper, with sm_90a in
-      # spill_fail_archs (ptxas names that architecture "sm_90a").
-      - name: Compile the wgmma fold (sm_90a, not shipped)
-        if: matrix.release == '12.8'
-        working-directory: earn/native
-        shell: bash
-        continue-on-error: true
-        run: |
-          mkdir -p cuda-build/hopper
-          if [ "$RUNNER_OS" = "Linux" ]; then FPIC="-Xcompiler -fPIC"; else FPIC=""; fi
-          nvcc -O3 -std=c++17 -cudart static $FPIC \
-            -gencode arch=compute_90a,code=sm_90a \
-            -DPEARL_HOPPER_WGMMA=1 \
-            -Xptxas -v \
-            -c src/pearl_kernel.cu -o cuda-build/hopper/pearl_kernel.o 2>&1 | tee cuda-build/hopper/ptxas-kernel.txt
-          nvcc -O3 -std=c++17 -cudart static $FPIC \
-            -gencode arch=compute_90a,code=sm_90a \
-            -DPEARL_HOPPER_WGMMA=1 \
-            -c src/pearl_host.cu -o cuda-build/hopper/pearl_host.o
-
       # The tall fold sits at 253-255 registers (probes/README.md: 255 or fewer
       # and 0 spill after any edit). A compiler or gate change that pushes it
       # over spills to local memory, and the kernel still compiles, links and
       # ships; nothing else in CI can see that. This reads what ptxas said
-      # above for both fold kernels, and for GA100's transcript hash kernel
-      # (pearl_tall_hash80, an empty body on every other architecture), on
+      # above for both fold kernels, for Hopper's wgmma fold
+      # (pearl_tile_fold_hopper, a body only on sm_90a) and for the transcript
+      # hash kernel (pearl_tall_hash80, a body only on sm_80 and sm_90a), on
       # every architecture and prints one row each. A spill fails the job on
       # the architectures in the entry's spill_fail_archs: every architecture
       # the 12.8 entries build, since the check's first run showed them all
@@ -356,11 +337,13 @@ jobs:
           seen_tall=0
           seen_wmma=0
           seen_h80=0
+          seen_hopper=0
           while read -r name arch regs stores loads; do
             case "$name" in
               pearl_tile_fold_tall) seen_tall=1 ;;
               pearl_tile_fold_wmma) seen_wmma=1 ;;
               pearl_tall_hash80) seen_h80=1 ;;
+              pearl_tile_fold_hopper) seen_hopper=1 ;;
               *) continue ;;
             esac
             echo "$arch $name: $regs registers, $stores bytes spill stores, $loads bytes spill loads"
@@ -376,21 +359,23 @@ jobs:
           done <<< "$rows"
           # Nothing found is a failure, not a pass: the names changed, or ptxas
           # was not run with -v.
-          if [ "$seen_tall" != 1 ] || [ "$seen_wmma" != 1 ] || [ "$seen_h80" != 1 ]; then
-            echo "::error::ptxas -v output has no entry for one of pearl_tile_fold_tall, pearl_tile_fold_wmma and pearl_tall_hash80; was pearl_kernel.cu compiled with -Xptxas -v?"
+          if [ "$seen_tall" != 1 ] || [ "$seen_wmma" != 1 ] || [ "$seen_h80" != 1 ] || [ "$seen_hopper" != 1 ]; then
+            echo "::error::ptxas -v output has no entry for one of pearl_tile_fold_tall, pearl_tile_fold_wmma, pearl_tall_hash80 and pearl_tile_fold_hopper; was pearl_kernel.cu compiled with -Xptxas -v?"
             exit 1
           fi
           exit $bad
 
-      # The Blackwell tall fold's two TMA descriptors must sit at 128-byte-aligned
-      # parameter addresses. In v0.5.7 and v0.5.8 the Windows builds put them at
+      # The Blackwell tall fold's two TMA descriptors, and Hopper's wgmma fold's,
+      # must sit at 128-byte-aligned parameter addresses. In v0.5.7 and v0.5.8 the
+      # Windows builds put the Blackwell ones at
       # offsets 0x98 and 0x118 -- cuda.h aligns CUtensorMap only when __cplusplus
       # says C++11, and MSVC says 199711L -- and every Blackwell card on Windows
       # failed its first TMA load with "misaligned address". Nothing else in this
       # workflow could see that: it compiles, links and ships. The fix
       # (src/pearl_tensor_map.h) spells the alignment in our own code; this step
       # reads what the compiler actually did, so the fault cannot come back
-      # quietly. Every entry builds sm_120, so every entry runs it.
+      # quietly. Every entry builds sm_120, so every entry runs it, and the 12.8
+      # entries also build sm_90a, so they check pearl_tile_fold_hopper there too.
       #
       # 128, not the hardware's 64: 128 is what the code asks for, so anything
       # less means the declared alignment was lost, which is the bug. A 64 check
@@ -402,11 +387,14 @@ jobs:
       # low 16 bits are the offset, 0x380 on sm_120) plus each descriptor's offset
       # (EIATTR_KPARAM_INFO, Size 0x80). On sm_120 the base is itself a multiple
       # of 128, so this is the same as checking the offsets, but it stays right if
-      # a toolkit moves the base. Only sm_120's copy is checked: it is the only
-      # build that reads the descriptors.
+      # a toolkit moves the base. Only the copies that read the descriptors are
+      # checked: the tall fold's on sm_120 and the wgmma fold's on sm_90a. (GA100's
+      # unfused fold puts a buffer address in tmA's first bytes, which TMA never
+      # reads, and every other copy ignores both.)
       #
       # Anything the step cannot find is a failure, not a pass: no cuobjdump, no
-      # sm_120 ELF, no bank base, or not exactly two 128-byte parameters. A
+      # ELF for a checked kernel and architecture, no bank base, or not exactly two
+      # 128-byte parameters. A
       # failed Windows job is non-blocking here, but it then uploads no core, and
       # miner-build.yml's Windows job fails on a missing one
       # (if_no_artifact_found: fail) rather than ship it.
@@ -425,43 +413,52 @@ jobs:
           fi
           # tr: cuobjdump.exe writes CRLF, which would break every anchored match.
           elf=$(cuobjdump -elf cuda-build/pearl_kernel.o | tr -d '\r')
-          # The .nv.info section of the tall fold, from the sm_120 ELF only. Each
-          # embedded ELF is introduced by an "arch = sm_XX" line.
-          info=$(printf '%s\n' "$elf" | awk '
-            /^arch = / { arch = $3 }
-            /^\.nv\.info\.pearl_tile_fold_tall$/ { inside = (arch == "sm_120"); next }
-            /^\./ { inside = 0 }
-            inside')
-          if [ -z "$info" ]; then
-            echo "::error::no .nv.info.pearl_tile_fold_tall section for sm_120 in cuobjdump -elf output"
-            exit 1
-          fi
-          # `|| true`: under the runner's `bash -eo pipefail` a grep that matches
-          # nothing would end the step here, before the error that says why.
-          base=$(printf '%s\n' "$info" | grep -A3 'EIATTR_PARAM_CBANK' \
-            | sed -n 's/.*Value:[[:space:]]*0x[0-9a-fA-F]*[[:space:]]*0x\([0-9a-fA-F]*\).*/\1/p' \
-            | head -n 1 || true)
-          offs=$(printf '%s\n' "$info" | grep -E 'Size[[:space:]]*:[[:space:]]*0x80([^0-9a-fA-F]|$)' \
-            | sed -n 's/.*Offset[[:space:]]*:[[:space:]]*0x\([0-9a-fA-F]*\).*/\1/p' || true)
-          if [ -z "$base" ]; then
-            echo "::error::no EIATTR_PARAM_CBANK for the tall fold; cannot tell where its parameters start"
-            exit 1
-          fi
-          n=$(printf '%s\n' "$offs" | grep -c . || true)
-          if [ "$n" != 2 ]; then
-            echo "::error::expected the tall fold's two 128-byte tensor-map parameters, found $n"
-            exit 1
-          fi
-          bank=$(( 16#$base & 0xffff ))
-          printf 'sm_120 pearl_tile_fold_tall: parameters start at c[0x0][0x%x]\n' "$bank"
+          # kernel:arch pairs whose two 128-byte parameters TMA reads.
+          checks="pearl_tile_fold_tall:sm_120"
+          case " ${{ matrix.gencode }} " in
+            *"code=sm_90a "*) checks="$checks pearl_tile_fold_hopper:sm_90a" ;;
+          esac
           bad=0
-          for off in $offs; do
-            addr=$(( bank + 16#$off ))
-            printf 'tensor map: offset 0x%x, address c[0x0][0x%x]\n' $(( 16#$off )) "$addr"
-            if [ $(( addr % 128 )) -ne 0 ]; then
-              echo "::error::a tensor map is at c[0x0][$(printf '0x%x' "$addr")], not 128-byte aligned; TMA loads will fault with 'misaligned address'"
-              bad=1
+          for pair in $checks; do
+            kernel=${pair%%:*}
+            want=${pair##*:}
+            # The kernel's .nv.info section, from that architecture's ELF only. Each
+            # embedded ELF is introduced by an "arch = sm_XX" line.
+            info=$(printf '%s\n' "$elf" | awk -v k=".nv.info.$kernel" -v a="$want" '
+              /^arch = / { arch = $3 }
+              $0 == k { inside = (arch == a); next }
+              /^\./ { inside = 0 }
+              inside')
+            if [ -z "$info" ]; then
+              echo "::error::no .nv.info.$kernel section for $want in cuobjdump -elf output"
+              exit 1
             fi
+            # `|| true`: under the runner's `bash -eo pipefail` a grep that matches
+            # nothing would end the step here, before the error that says why.
+            base=$(printf '%s\n' "$info" | grep -A3 'EIATTR_PARAM_CBANK' \
+              | sed -n 's/.*Value:[[:space:]]*0x[0-9a-fA-F]*[[:space:]]*0x\([0-9a-fA-F]*\).*/\1/p' \
+              | head -n 1 || true)
+            offs=$(printf '%s\n' "$info" | grep -E 'Size[[:space:]]*:[[:space:]]*0x80([^0-9a-fA-F]|$)' \
+              | sed -n 's/.*Offset[[:space:]]*:[[:space:]]*0x\([0-9a-fA-F]*\).*/\1/p' || true)
+            if [ -z "$base" ]; then
+              echo "::error::no EIATTR_PARAM_CBANK for $kernel on $want; cannot tell where its parameters start"
+              exit 1
+            fi
+            n=$(printf '%s\n' "$offs" | grep -c . || true)
+            if [ "$n" != 2 ]; then
+              echo "::error::expected $kernel's two 128-byte tensor-map parameters on $want, found $n"
+              exit 1
+            fi
+            bank=$(( 16#$base & 0xffff ))
+            printf '%s %s: parameters start at c[0x0][0x%x]\n' "$want" "$kernel" "$bank"
+            for off in $offs; do
+              addr=$(( bank + 16#$off ))
+              printf 'tensor map: offset 0x%x, address c[0x0][0x%x]\n' $(( 16#$off )) "$addr"
+              if [ $(( addr % 128 )) -ne 0 ]; then
+                echo "::error::a tensor map of $kernel on $want is at c[0x0][$(printf '0x%x' "$addr")], not 128-byte aligned; TMA loads will fault with 'misaligned address'"
+                bad=1
+              fi
+            done
           done
           exit $bad
 
