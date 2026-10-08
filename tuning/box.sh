@@ -41,14 +41,19 @@ if [ -f $D/setup ]; then
   echo "[run] resumed $(now)"
 else
   echo "[run] setup $(now)"
-  ok=0; for h in us us2 ca de; do timeout 5 bash -c "exec 3<>/dev/tcp/$h.pearl.herominers.com/1200" 2>/dev/null && ok=1; done
+  ok=0; for h in us us2 ca de; do timeout 5 bash -c "exec 3<>/dev/tcp/$h.pearl.herominers.com/1200" 2>/dev/null && { ok=1; break; }; done
   [ $ok = 1 ] || { echo "[run] FAIL: outbound port 1200 blocked"; sleep infinity; }
   dpkg --configure -a > /dev/null 2>&1   # a pause during an earlier apt-get leaves dpkg half-done
-  apt-get update 2>&1 | tail -1; apt-get install -y --no-install-recommends curl ca-certificates procps jq git 2>&1 | tail -1
+  # Only what the miner needs; git comes with the build tools. These package lists leave out NVIDIA's CUDA
+  # repo, which the image also lists: when that server is slow or down, apt-get waits on it before mining
+  # can start. The build tools refresh the lists with it.
+  mkdir -p /tmp/apt-nocuda; for f in /etc/apt/sources.list.d/*; do [ -f "$f" ] && ! grep -q developer.download.nvidia.com "$f" && cp "$f" /tmp/apt-nocuda/; done
+  apt-get update -o Dir::Etc::SourceParts=/tmp/apt-nocuda 2>&1 | tail -1; apt-get install -y --no-install-recommends curl ca-certificates procps jq 2>&1 | tail -1
   nvidia-smi --query-gpu=index,name,driver_version,power.limit,clocks.max.sm,compute_cap --format=csv,noheader | sed 's/^/[card] /'
-  for f in llmjob-earn-cli-linux pearl_core.node pearl_core_cu13.node; do
-    curl -fsSL --retry 3 -o $D/rel/$f "$REL/$f" || { echo "[run] FAIL: download $f"; sleep infinity; }
+  declare -A dl; for f in llmjob-earn-cli-linux pearl_core.node pearl_core_cu13.node; do   # all three at once
+    curl -fsSL --retry 3 -o $D/rel/$f "$REL/$f" & dl[$f]=$!
   done
+  for f in "${!dl[@]}"; do wait ${dl[$f]} || { echo "[run] FAIL: download $f"; sleep infinity; }; done
   mv $D/rel/llmjob-earn-cli-linux $D/rel/cli && chmod +x $D/rel/cli
   echo "[run] release v0.5.12 ready"
   touch $D/setup
@@ -61,8 +66,8 @@ if [ ! -f $D/tools ]; then
       [ $try = 1 ] || sleep 600
       nice -n 19 bash -c "
         dpkg --configure -a > $D/tools.log 2>&1;
-        [ $try = 1 ] || apt-get update >> $D/tools.log 2>&1;
-        apt-get install -y --no-install-recommends xz-utils python3 make g++ cuda-nvcc-12-8 cuda-cudart-dev-12-8 cuda-cccl-12-8 >> $D/tools.log 2>&1 &&
+        apt-get update >> $D/tools.log 2>&1;   # with NVIDIA's repo, which setup's lists leave out
+        apt-get install -y --no-install-recommends xz-utils python3 make g++ git cuda-nvcc-12-8 cuda-cudart-dev-12-8 cuda-cccl-12-8 >> $D/tools.log 2>&1 &&
         curl -fsSL https://nodejs.org/dist/$NODE_VER/node-$NODE_VER-linux-x64.tar.xz | tar -xJ -C /opt &&
         rm -rf $D/src && git clone -q --depth 50 -b $BRANCH https://github.com/$REPO.git $D/src >> $D/tools.log 2>&1 &&
         mkdir -p $D/gyp && cd $D/gyp && echo '{}' > package.json &&
