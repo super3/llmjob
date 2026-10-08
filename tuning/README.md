@@ -17,7 +17,7 @@ What a control file can set, per GPU or as the box default:
 |---|---|
 | `"core": "release"` | The CLI's own pick of its CUDA 12 or CUDA 13 core (the default) |
 | `"core": "cu12"` / `"cu13"` | Force one of the release's two cores |
-| `"core": "build:<name>"` | A core built on the box from this branch, listed under `"builds"` with a commit and `-D` defines |
+| `"core": "build:<name>"` | A core built on the box from this branch, listed under `"builds"` with a commit and `-D` defines. Built with CUDA 12.8 and run as the cu12 core, or with CUDA 13.3 and run as the cu13 core when its entry has `"cuda": "13"` (needs a 580+ driver; on Blackwell, 12.8 builds run about 3% slower) |
 | `"flags"` | Extra CLI flags, e.g. `--mine-mem-clock 0` |
 | `"env"` | Extra environment for the miner |
 

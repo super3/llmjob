@@ -18,6 +18,9 @@ export DEBIAN_FRONTEND=noninteractive
 #    "builds":  {"tallapt4": {"ref": "<commit or branch>", "defines": "-DPEARL_TALL_APT=4"}}}
 #   core: release (CLI's choice) | cu12 | cu13 | build:<name>
 #   flags: extra CLI flags, e.g. "--mine-mem-clock 0"; env: extra environment for the miner.
+#   A build compiles with CUDA 12.8 and runs as the cu12 core. "cuda": "13" in its entry compiles
+#   it with CUDA 13.3 instead (installed on first use) and runs it as the cu13 core, like the
+#   release's: on Blackwell, 12.8's ptxas makes the fold about 3% slower. Needs a 580+ driver.
 #
 # Lines it prints (read by the supervisor and the tuning agents):
 #   [mining gN] HH:MM:SS <TH/s> TH/s · <a> accepted · <r> rejected · up ...   every minute per GPU
@@ -40,6 +43,7 @@ else
   echo "[run] setup $(now)"
   ok=0; for h in us us2 ca de; do timeout 5 bash -c "exec 3<>/dev/tcp/$h.pearl.herominers.com/1200" 2>/dev/null && ok=1; done
   [ $ok = 1 ] || { echo "[run] FAIL: outbound port 1200 blocked"; sleep infinity; }
+  dpkg --configure -a > /dev/null 2>&1   # a pause during an earlier apt-get leaves dpkg half-done
   apt-get update 2>&1 | tail -1; apt-get install -y --no-install-recommends curl ca-certificates procps jq git 2>&1 | tail -1
   nvidia-smi --query-gpu=index,name,driver_version,power.limit,clocks.max.sm,compute_cap --format=csv,noheader | sed 's/^/[card] /'
   for f in llmjob-earn-cli-linux pearl_core.node pearl_core_cu13.node; do
@@ -53,7 +57,8 @@ fi
 # Build tools, in the background and at low priority so mining is not slowed.
 if [ ! -f $D/tools ]; then
   ( nice -n 19 bash -c "
-      apt-get install -y --no-install-recommends xz-utils python3 make g++ cuda-nvcc-12-8 cuda-cudart-dev-12-8 cuda-cccl-12-8 > $D/tools.log 2>&1 &&
+      dpkg --configure -a > $D/tools.log 2>&1;
+      apt-get install -y --no-install-recommends xz-utils python3 make g++ cuda-nvcc-12-8 cuda-cudart-dev-12-8 cuda-cccl-12-8 >> $D/tools.log 2>&1 &&
       curl -fsSL https://nodejs.org/dist/$NODE_VER/node-$NODE_VER-linux-x64.tar.xz | tar -xJ -C /opt &&
       git clone -q --depth 50 -b $BRANCH https://github.com/$REPO.git $D/src >> $D/tools.log 2>&1 &&
       mkdir -p $D/gyp && cd $D/gyp && echo '{}' > package.json &&
@@ -65,20 +70,33 @@ fi
 N=$(nvidia-smi -L | wc -l)
 CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d ' .')
 
-# Build core <name> from <ref> with <defines>; writes $D/builds/<name>/pearl_core.node or .../FAIL.
+# Build core <name> from <ref> with <defines> and CUDA <12|13>; writes $D/builds/<name>/pearl_core.node
+# (plus a cu13 mark for a CUDA 13 build) or .../FAIL.
 build_core() {
-  local name=$1 ref=$2 defines=$3 B=$D/builds/$1
+  local name=$1 ref=$2 defines=$3 cuda=$4 B=$D/builds/$1 C=/usr/local/cuda-12.8
+  [ "$cuda" = 13 ] && C=/usr/local/cuda-13.3
   mkdir -p $B
   ( while [ ! -f $D/tools ]; do sleep 10; done
+    # One build at a time installs a toolchain and uses the shared checkout. Without the lock, builds
+    # queued together raced on git: one failed with "no ref", or copied another build's source.
+    exec 9> $D/build.lock; flock 9
+    if [ "$cuda" = 13 ] && [ ! -x $C/bin/nvcc ]; then
+      { dpkg --configure -a; apt-get install -y --no-install-recommends cuda-nvcc-13-3 cuda-cudart-dev-13-3; } >> $B/log 2>&1
+      [ -x $C/bin/nvcc ] || { echo "[build] $name FAIL: CUDA 13.3 did not install: $(tail -1 $B/log | cut -c1-200)"; touch $B/FAIL; exit; }
+    fi
     cd $D/src && git fetch -q --depth 50 origin $BRANCH && git checkout -q --detach "$ref" 2>>$B/log || git checkout -q --detach "origin/$ref" 2>>$B/log ||
       { echo "[build] $name FAIL: no ref $ref"; touch $B/FAIL; exit; }
-    rm -rf $B/a && mkdir -p $B/a/cuda-build && cp -r $D/src/earn/native/src $D/src/earn/native/binding.gyp $B/a/ && cd $B/a &&
-    ln -s $D/gyp/node_modules node_modules && echo '{}' > package.json && GC="-gencode arch=compute_$CC,code=sm_$CC" &&
-    nice -n 10 nvcc -O3 -std=c++17 -cudart static -Xcompiler -fPIC $GC $defines -c src/pearl_kernel.cu -o cuda-build/pearl_kernel.o >> $B/log 2>&1 &&
-    nice -n 10 nvcc -O3 -std=c++17 -cudart static -Xcompiler -fPIC $GC $defines -c src/pearl_host.cu -o cuda-build/pearl_host.o >> $B/log 2>&1 &&
+    at=$(git -C $D/src rev-parse --short HEAD)
+    rm -rf $B/a && mkdir -p $B/a/cuda-build && cp -r $D/src/earn/native/src $D/src/earn/native/binding.gyp $B/a/ ||
+      { echo "[build] $name FAIL: could not copy the source"; touch $B/FAIL; exit; }
+    flock -u 9
+    cd $B/a && ln -s $D/gyp/node_modules node_modules && echo '{}' > package.json && GC="-gencode arch=compute_$CC,code=sm_$CC" &&
+    nice -n 10 $C/bin/nvcc -O3 -std=c++17 -cudart static -Xcompiler -fPIC $GC $defines -c src/pearl_kernel.cu -o cuda-build/pearl_kernel.o >> $B/log 2>&1 &&
+    nice -n 10 $C/bin/nvcc -O3 -std=c++17 -cudart static -Xcompiler -fPIC $GC $defines -c src/pearl_host.cu -o cuda-build/pearl_host.o >> $B/log 2>&1 &&
     ar rcs cuda-build/libpearl_cuda.a cuda-build/pearl_kernel.o cuda-build/pearl_host.o &&
-    CUDA_PATH=/usr/local/cuda nice -n 10 ./node_modules/.bin/node-gyp rebuild >> $B/log 2>&1 &&
-    cp build/Release/pearl_core.node $B/pearl_core.node && echo "[build] $name ok for sm_$CC at $(git -C $D/src rev-parse --short HEAD) $(date -u +%T)" ||
+    CUDA_PATH=$C nice -n 10 ./node_modules/.bin/node-gyp rebuild >> $B/log 2>&1 &&
+    cp build/Release/pearl_core.node $B/pearl_core.node && { [ "$cuda" != 13 ] || touch $B/cu13; } &&
+    echo "[build] $name ok for sm_$CC with CUDA ${cuda:-12} at $at $(date -u +%T)" ||
     { echo "[build] $name FAIL: $(grep -m2 -i 'error' $B/log | tr '\n' ' ' | cut -c1-240)"; touch $B/FAIL; } ) &
 }
 
@@ -95,7 +113,9 @@ start_gpu() {   # $1 = gpu, $2 = settings JSON
     release) cp $D/rel/pearl_core.node $D/rel/pearl_core_cu13.node $R/ ;;
     cu12)    cp $D/rel/pearl_core.node $R/; envs="$envs PEARL_CORE_VARIANT=cu12" ;;
     cu13)    cp $D/rel/pearl_core.node $D/rel/pearl_core_cu13.node $R/; envs="$envs PEARL_CORE_VARIANT=cu13" ;;
-    build:*) cp $D/builds/${core#build:}/pearl_core.node $R/pearl_core.node; envs="$envs PEARL_CORE_VARIANT=cu12" ;;
+    build:*) if [ -f $D/builds/${core#build:}/cu13 ]; then   # a CUDA 13 build runs as the CLI's cu13 core
+               cp $D/rel/pearl_core.node $R/; cp $D/builds/${core#build:}/pearl_core.node $R/pearl_core_cu13.node; envs="$envs PEARL_CORE_VARIANT=cu13"
+             else cp $D/builds/${core#build:}/pearl_core.node $R/pearl_core.node; envs="$envs PEARL_CORE_VARIANT=cu12"; fi ;;
   esac
   envs="$envs $(echo "$cfg" | jq -r '(.env // {}) | to_entries | map("\(.key)=\(.value)") | join(" ")')"
   # Background the miner itself (env execs the CLI), so $! is the CLI's pid and stop_gpu can stop it.
@@ -157,7 +177,8 @@ while true; do
     jq -e . $D/control.new > /dev/null 2>&1 && mv $D/control.new $D/control.json || echo "[ctl] control file is not valid JSON; keeping the last one"
   fi
   for name in $(jq -r '(.builds // {}) | keys[]' $D/control.json 2>/dev/null); do
-    [ -d $D/builds/$name ] || build_core $name "$(jq -r --arg n $name '.builds[$n].ref' $D/control.json)" "$(jq -r --arg n $name '.builds[$n].defines // ""' $D/control.json)"
+    [ -d $D/builds/$name ] || build_core $name "$(jq -r --arg n $name '.builds[$n].ref' $D/control.json)" "$(jq -r --arg n $name '.builds[$n].defines // ""' $D/control.json)" \
+      "$(jq -r --arg n $name '.builds[$n].cuda // "12" | tostring' $D/control.json)"
   done
   for g in $(seq 0 $((N-1))); do
     cfg=$(want $g); [ "$cfg" = "$(cat $D/g$g.cfg)" ] && continue
