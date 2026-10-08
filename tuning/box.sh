@@ -98,7 +98,11 @@ start_gpu() {   # $1 = gpu, $2 = settings JSON
     build:*) cp $D/builds/${core#build:}/pearl_core.node $R/pearl_core.node; envs="$envs PEARL_CORE_VARIANT=cu12" ;;
   esac
   envs="$envs $(echo "$cfg" | jq -r '(.env // {}) | to_entries | map("\(.key)=\(.value)") | join(" ")')"
-  ( cd $R && env $envs ./cli -a $W --mode mining -w $WORKER-g$g --no-serve --no-update $flags >> $D/g$g.log 2>&1 & echo $! > $D/g$g.pid )
+  # Background the miner itself (env execs the CLI), so $! is the CLI's pid and stop_gpu can stop it.
+  # The first version backgrounded "cd && env ...", whose pid was a wrapper shell: stopping it left the
+  # old miner running beside the new one, each at about half speed.
+  cd $R; env $envs ./cli -a $W --mode mining -w $WORKER-g$g --no-serve --no-update $flags >> $D/g$g.log 2>&1 &
+  echo $! > $D/g$g.pid; cd /
   echo "$cfg" > $D/g$g.cfg; echo 0 > $D/g$g.restarts
   echo "[ctl] g$g running $cfg $(now)"
   # The miner's own startup lines (core loaded, clock lock, errors) go to $D/g$g.log; echo them once.
@@ -106,7 +110,14 @@ start_gpu() {   # $1 = gpu, $2 = settings JSON
   ( sleep 40; tail -c +$((from + 1)) $D/g$g.log | tr '\r' '\n' | grep -v 'TH/s ·' | grep -v '^\s*$' | head -12 | cut -c1-200 | sed "s/^/[minerlog g$g] /" ) &
 }
 
-stop_gpu() { [ -f $D/g$1.pid ] && kill $(cat $D/g$1.pid) 2>/dev/null; sleep 5; }
+stop_gpu() {   # stop GPU $1's miner and make sure nothing else is still mining as that GPU's worker
+  local pid; pid=$(cat $D/g$1.pid 2>/dev/null)
+  [ -n "$pid" ] && kill $pid 2>/dev/null
+  for i in $(seq 1 20); do [ -n "$pid" ] && kill -0 $pid 2>/dev/null || break; sleep 1; done
+  [ -n "$pid" ] && kill -9 $pid 2>/dev/null
+  for p in $(pgrep -f -- "-w $WORKER-g$1 "); do [ "$(cat /proc/$p/comm 2>/dev/null)" = cli ] && kill -9 $p 2>/dev/null; done
+  sleep 2
+}
 
 # A built core runs on a GPU only after the hit check passes on that GPU.
 verified() {   # $1 = gpu, $2 = build name; prints PASS or FAIL
