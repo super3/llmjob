@@ -4074,6 +4074,47 @@ __device__ __forceinline__ void pearl_h_tma_3d(uint32_t dst, const PearlTensorMa
       "r"(c0), "r"(c1), "r"(c2), "r"(bar)
       : "memory");
 }
+#if PEARL_HOPPER_CLUSTER
+// The two-CTA cluster build (PEARL_HOPPER_CLUSTER): this CTA's rank, a shared address in the
+// peer's window, arrivals on this CTA's and the peer's barrier, the producer's wait, B's half
+// box multicast to both CTAs, and a cluster-wide barrier. The arrivals and the wait keep
+// mbarrier's default CTA-scope semantics, as CUTLASS's multicast pipelines do: at cluster
+// scope ptxas puts MEMBAR.ALL.CTA, MEMBAR.ALL.GPU, ERRBAR and CGAERRBAR before every arrive,
+// and the fold ran at a third of its rate (s90-026). What the arrive orders is the wgmma
+// reads of the stage, complete at wait_group 0 before it.
+__device__ __forceinline__ uint32_t pearl_h_ctarank() {
+  uint32_t r;
+  asm volatile("mov.u32 %0, %%cluster_ctarank;" : "=r"(r));
+  return r;
+}
+__device__ __forceinline__ uint32_t pearl_h_mapa(uint32_t addr, uint32_t rank) {
+  uint32_t r;
+  asm volatile("mapa.shared::cluster.u32 %0, %1, %2;" : "=r"(r) : "r"(addr), "r"(rank));
+  return r;
+}
+__device__ __forceinline__ void pearl_h_arrive_cluster(uint32_t bar) {
+  asm volatile("mbarrier.arrive.shared::cta.b64 _, [%0];" ::"r"(bar) : "memory");
+}
+__device__ __forceinline__ void pearl_h_arrive_remote(uint32_t bar) {
+  asm volatile("mbarrier.arrive.shared::cluster.b64 _, [%0];" ::"r"(bar) : "memory");
+}
+__device__ __forceinline__ void pearl_h_wait_cluster(uint32_t bar, uint32_t parity) {
+  pearl_h_mbar_wait(bar, parity);
+}
+__device__ __forceinline__ void pearl_h_tma_3d_mc(uint32_t dst, const PearlTensorMap *map,
+                                                  uint32_t c0, uint32_t c1, uint32_t c2,
+                                                  uint32_t bar, uint16_t mask) {
+  asm volatile(
+      "cp.async.bulk.tensor.3d.shared::cluster.global.tile.mbarrier::complete_tx::bytes"
+      ".multicast::cluster [%0], [%1, {%2, %3, %4}], [%5], %6;" ::"r"(dst),
+      "l"(reinterpret_cast<uint64_t>(map)), "r"(c0), "r"(c1), "r"(c2), "r"(bar), "h"(mask)
+      : "memory");
+}
+__device__ __forceinline__ void pearl_h_cluster_sync() {
+  asm volatile("barrier.cluster.arrive.release.aligned;\n\tbarrier.cluster.wait.acquire.aligned;"
+               ::: "memory");
+}
+#endif
 // A wgmma shared-memory descriptor for a K-major operand in SWIZZLE_64B (layout type 2):
 // start address >> 4, leading offset unused (1), stride 512 bytes (8 rows of 64), base
 // offset 0, which needs every operand to start on the 512-byte swizzle period.
@@ -4118,13 +4159,26 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
   const uint32_t barFull = sTr + NREG * 64u;
   const uint32_t barEmpty = barFull + 8u * NST;
   const uint32_t tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;
+#if PEARL_HOPPER_CLUSTER
+  // A cluster of two CTAs walks tiles of (row-group PAIR, column group): both CTAs take the
+  // same tile index, rank r its row group 2 pair + r, and each loads half of the shared B
+  // box and multicasts it to both (PEARL_HOPPER_CLUSTER). `tiles` counts pair tiles.
+  const uint32_t crank = pearl_h_ctarank();
+  const uint32_t cfirst = blockIdx.x / 2u, cstep = gridDim.x / 2u;
+#else
+  const uint32_t cfirst = blockIdx.x, cstep = gridDim.x;
+#endif
 
   // The tall fold's walk on this kernel's tiles: row groups of 8 row offsets (128 rows) by
   // column groups of 16 column offsets, in bands band_depth row groups deep (the host's
   // Ampere band, a power of two).
   const uint32_t row_groups = (rows_valid + ROWOFS - 1u) / ROWOFS;
   const uint32_t col_block_groups = col_groups / PEARL_TALL_COL_OFFSETS;
+#if PEARL_HOPPER_CLUSTER
+  const uint32_t walk_rows = (row_groups + 1u) / 2u;
+#else
   const uint32_t walk_rows = row_groups;
+#endif
   const uint32_t band_shift = (uint32_t)__ffs(band_depth) - 1u;
   auto tile_coords = [&](uint32_t v, uint32_t &rbg_, uint32_t &cbg_) {
     const uint32_t band_blocks = band_depth * col_block_groups;
@@ -4148,19 +4202,28 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
 #if PEARL_FOLD_SERPENTINE
     if (band & 1u) cbg_ = col_block_groups - 1u - cbg_;
 #endif
+#if PEARL_HOPPER_CLUSTER
+    rbg_ = rbg_ * 2u + crank;   // the pair's row group for this CTA (past the last: no rows)
+#endif
   };
 
   if (tid == 0) {
     if (sbase & 1023u) __trap();
     for (uint32_t s = 0; s < NST; s++) {
       pearl_h_mbar_init(barFull + 8u * s, 1u);
-      pearl_h_mbar_init(barEmpty + 8u * s, CWARPS);
+      // Both CTAs' consumer warps release a stage before either producer refills it, since
+      // each producer writes half of B into both.
+      pearl_h_mbar_init(barEmpty + 8u * s, CWARPS * (PEARL_HOPPER_CLUSTER ? 2u : 1u));
     }
     asm volatile("fence.mbarrier_init.release.cluster;" ::: "memory");
   }
   for (uint32_t o = tid * 16u; o < NREG * 64u; o += PEARL_HOPPER_THREADS * 16u)
     asm volatile("st.shared.v4.u32 [%0], {%1,%1,%1,%1};" ::"r"(sTr + o), "r"(0u) : "memory");
   __syncthreads();
+#if PEARL_HOPPER_CLUSTER
+  // The peer's barriers are initialised before anyone arrives on them or multicasts to it.
+  pearl_h_cluster_sync();
+#endif
 
   if (warp == CWARPS) {
     // The producer: lane 0 of the last warp fills the ring, a stage (one k-block of the
@@ -4169,13 +4232,33 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
     // (zero-filled) included.
     if (lane == 0) {
       uint32_t G = 0;
-      for (uint32_t v = blockIdx.x; v < tiles; v += gridDim.x) {
+      for (uint32_t v = cfirst; v < tiles; v += cstep) {
         uint32_t rbg, cbg;
         tile_coords(v, rbg, cbg);
         for (uint32_t kb = 0; kb < KBLK; kb++, G++) {
           const uint32_t s = G % NST;
-          pearl_h_mbar_wait(barEmpty + 8u * s, ((G / NST) & 1u) ^ 1u);
           const uint32_t full = barFull + 8u * s, dst = sbase + s * STAGE;
+#if PEARL_HOPPER_CLUSTER
+          // Both CTAs' consumers have released stage s (EMPTY counts all 16 warps), so this
+          // CTA's half of B may land in both, and its A in its own. The peer's half arrives
+          // on this FULL too, perhaps before the expect_tx: the phase still cannot complete
+          // before this arrival.
+          pearl_h_wait_cluster(barEmpty + 8u * s, ((G / NST) & 1u) ^ 1u);
+          pearl_h_expect_tx(full, STAGE);
+#if PEARL_HOPPER_TILED
+          pearl_h_tma_3d_mc(dst + crank * (BN / 2u) * SK, &tmB, 0u, crank * (BN / 2u),
+                            (col_off / PEARL_TALL_COL_OFFSETS + cbg) * KBLK + kb, full, 3u);
+          pearl_h_tma_3d(dst + BN * SK, &tmA, 0u, 0u, rbg * KBLK + kb, full);
+#else
+          pearl_h_tma_3d_mc(dst + crank * (BN / 2u) * SK, &tmB, 0u,
+                            (col_off + cbg * PEARL_TALL_COL_OFFSETS) * PEARL_COLS_COUNT
+                                + crank * (BN / 2u),
+                            kb, full, 3u);
+          pearl_h_tma_3d(dst + BN * SK, &tmA, 0u, rbg * BM, kb, full);
+#endif
+          continue;
+#endif
+          pearl_h_mbar_wait(barEmpty + 8u * s, ((G / NST) & 1u) ^ 1u);
           pearl_h_expect_tx(full, STAGE);
 #if PEARL_HOPPER_TILED
           // Per-tile order: B's 256-column block (col_off is a multiple of a tile's 16
@@ -4191,6 +4274,9 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
         }
       }
     }
+#if PEARL_HOPPER_CLUSTER
+    pearl_h_cluster_sync();   // no CTA leaves while its peer may still write to it
+#endif
     return;
   }
 
@@ -4206,7 +4292,10 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
   int d[128];
 #pragma unroll
   for (int i = 0; i < 128; i++) d[i] = 0;
-  for (uint32_t v = blockIdx.x; v < tiles; v += gridDim.x) {
+#if PEARL_HOPPER_CLUSTER
+  const uint32_t peerEmpty = pearl_h_mapa(barEmpty, crank ^ 1u);
+#endif
+  for (uint32_t v = cfirst; v < tiles; v += cstep) {
     for (uint32_t ch = 0; ch < chunks; ch++) {
       // Both stages of the chunk before the first wgmma: a wait between them is a
       // divergent path inside the wgmma sequence, and ptxas would serialize them.
@@ -4242,10 +4331,18 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
       // Release both stages to the producer: every wgmma of this warp that read them has
       // completed (wait_group 0), and the arrive is a release.
       if (lane == 0) {
+#if PEARL_HOPPER_CLUSTER
+        // Released to both producers: each writes half of B into this CTA.
+        pearl_h_arrive_cluster(barEmpty + 8u * (g % NST));
+        pearl_h_arrive_cluster(barEmpty + 8u * ((g + 1u) % NST));
+        pearl_h_arrive_remote(peerEmpty + 8u * (g % NST));
+        pearl_h_arrive_remote(peerEmpty + 8u * ((g + 1u) % NST));
+#else
         asm volatile("mbarrier.arrive.shared::cta.b64 _, [%0];" ::"r"(barEmpty + 8u * (g % NST))
                      : "memory");
         asm volatile("mbarrier.arrive.shared::cta.b64 _, [%0];"
                      ::"r"(barEmpty + 8u * ((g + 1u) % NST)) : "memory");
+#endif
       }
       g += 2u;
 #pragma unroll
@@ -4281,6 +4378,9 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
     }
     asm volatile("bar.sync %0, 128;" ::"r"(1u + wgi) : "memory");
   }
+#if PEARL_HOPPER_CLUSTER
+  pearl_h_cluster_sync();   // the peer's last releases have landed before either CTA leaves
+#endif
 #else
   (void)k_arg; (void)rank_arg; (void)chunks_arg; (void)col_off; (void)rows_valid;
   (void)col_groups; (void)tiles; (void)band_depth; (void)trg; (void)tmA; (void)tmB;

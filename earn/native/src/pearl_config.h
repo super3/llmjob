@@ -1207,6 +1207,26 @@ typedef struct {
 #ifndef PEARL_HOPPER_TILED
 #define PEARL_HOPPER_TILED 1
 #endif
+// Two-CTA clusters (host and device): a pair of CTAs takes two row groups of one column
+// group, and each loads half of the tile's B box and multicasts it to both, so B's L2 bytes
+// halve (a third of a stage's). Each stage's EMPTY then counts both CTAs' consumer warps.
+// Against one CTA a tile, both at width 256, hashrate.js 3 rounds, ahead in every round,
+// 400/400 hits: H100 SXM (Vast 153443) 544.59 -> 605.04 TH/s (+11.1%), H100 NVL (Vast
+// 29785) 441.09 -> 456.43 (+3.5%; k-blocked operands 452.45). Both still at the power cap,
+// the clock up 13-66 MHz: fewer bytes a MAC is less energy a MAC. A check build compared
+// every region of a batch with the cp.async fold's: 2,097,152 regions, none differ.
+#ifndef PEARL_HOPPER_CLUSTER
+#define PEARL_HOPPER_CLUSTER 1
+#endif
+// The wgmma fold's batch width, in column offsets, where it is narrower than the Ampere
+// width (PEARL_AMPERE_COL_BATCH, 512). Host only, and only when the wgmma fold runs. 256
+// against 512, hashrate.js 3 rounds, ahead in every round, 400/400 hits: H100 SXM (Vast
+// 153443) 536.88 -> 545.29 TH/s (+1.57%), H100 NVL (Vast 29785) 437.34 -> 440.02 (+0.61%).
+// 128: -0.85% on the SXM. Wider loses: 1024 -7.3% and 2048 -21% on the NVL, where B' for a
+// 2048-wide sweep (64 MB) no longer fits the 60 MB L2.
+#ifndef PEARL_HOPPER_COL_BATCH
+#define PEARL_HOPPER_COL_BATCH 256u
+#endif
 // Stages in the ring, 24 KB each. 8 against 6, hashrate.js 3 rounds, ahead in every round,
 // 400/400 hits: H100 NVL (Vast 29785) 425.91 -> 435.43 TH/s (+2.24%), H100 SXM (Vast 153443)
 // 533.05 -> 537.04 (+0.75%). 9 (the most that fits 227 KB) did 538.66 on the SXM (+1.05%) and
