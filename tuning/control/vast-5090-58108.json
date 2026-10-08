@@ -1,6 +1,6 @@
 {
   "default": {"core": "release", "flags": "", "env": {}},
-  "gpus": {"1": {"core": "build:base13"}},
+  "gpus": {"1": {"core": "build:cb1024"}, "2": {"core": "build:serp"}},
   "builds": {"base13": {"ref": "58a5ea3b03bcdb92f18bbe541f7d27235feecca0", "defines": "", "cuda": "13"},
              "cb1024": {"ref": "58a5ea3b03bcdb92f18bbe541f7d27235feecca0", "defines": "-DPEARL_TMA_COL_BATCH=1024u", "cuda": "13"},
              "serp": {"ref": "58a5ea3b03bcdb92f18bbe541f7d27235feecca0", "defines": "-DPEARL_FOLD_SERPENTINE=1", "cuda": "13"}}
