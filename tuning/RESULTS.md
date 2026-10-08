@@ -27,3 +27,10 @@ agents never edit the same lines. Verified gains are copied here.
 
 ## What we've learned
 
+
+- **RTX 5060 Ti (Blackwell): keep the CUDA 13 core.** It is what the release picks on this
+  card. Forcing the CUDA 12.8 core cost 2.9% on Finland 149979: g1 ran 93.5 TH/s against
+  96.3 on cu13, at the same clock (2737 vs 2730 MHz) and power (171 vs 169 W), while the
+  control GPU held 98.7 (Oct 8, 20 minutes). So the loss is in work done per clock. It also
+  means a core built on the box, which uses nvcc 12.8, starts about 3% behind the release on
+  Blackwell cards.
