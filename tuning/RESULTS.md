@@ -80,3 +80,14 @@ agents never edit the same lines. Verified gains are copied here.
   3.0% on another card of the same box over the same runs. Finland 149979 (5060 Ti, driver
   595.84) got the same: -0.3% vs cu13. Boxes rented before 09:47 UTC don't have box.sh's
   `"cuda": "13"` build option; this is how they test sm_120 knobs against the release.
+- **RTX 3090 (Ampere): keep operand fill 48.** On the Bulgaria 8x 3090 box (49870, 350 W cap,
+  driver 570, so the release runs its CUDA 12.8 core), fill 63 ran level (+0.1 to +0.3% against
+  control over the same 10 minutes) and fill 32 slightly behind (-0.3 to -0.45%). Same order as
+  on the 4090, but smaller. Build `-DPEARL_OPERAND_FILL=N` (df0fb5c) to try other values; the
+  pool accepted 63 and 32 with no invalid shares. On sm_86 an on-box build (nvcc 12.8, same
+  flags as CI) can be judged straight against the release. These cards already run the fold
+  at about 95% of the int8 tensor peak per clock (82 SMs x 1024 MACs a clock), and most of
+  them sit at the 350 W cap, so only energy per MAC can raise the rate. Two GPUs on this box
+  run well under the cap at a lower clock that falls as the room warms (283-326 W, 1395-1470
+  MHz, edge temp only 71-76 C). Something nvidia-smi's `[gpu]` line doesn't show holds them
+  back, likely the GDDR6X temperature.
