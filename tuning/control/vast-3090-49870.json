@@ -2,5 +2,7 @@
   "default": {"core": "release", "flags": "", "env": {}},
   "gpus": {},
   "builds": {"f63": {"ref": "df0fb5cf3082971ef87815ff3cb4bfe05969922f", "defines": "-DPEARL_OPERAND_FILL=63"},
-             "f32": {"ref": "df0fb5cf3082971ef87815ff3cb4bfe05969922f", "defines": "-DPEARL_OPERAND_FILL=32"}}
+             "f32": {"ref": "df0fb5cf3082971ef87815ff3cb4bfe05969922f", "defines": "-DPEARL_OPERAND_FILL=32"},
+             "cb1024": {"ref": "df0fb5cf3082971ef87815ff3cb4bfe05969922f", "defines": "-DPEARL_AMPERE_COL_BATCH=1024u"},
+             "cb256": {"ref": "df0fb5cf3082971ef87815ff3cb4bfe05969922f", "defines": "-DPEARL_AMPERE_COL_BATCH=256u"}}
 }
