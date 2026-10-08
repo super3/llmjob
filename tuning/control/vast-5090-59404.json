@@ -1,0 +1,5 @@
+{
+  "default": {"core": "release", "flags": "", "env": {}},
+  "gpus": {"1": {"core": "build:jit"}},
+  "builds": {"jit": {"ref": "f4f6d63", "defines": "-DPEARL_FORCE_PTX_JIT=1 -gencode arch=compute_120,code=compute_120"}}
+}
