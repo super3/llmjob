@@ -866,6 +866,49 @@ describe('--gpu-index', () => {
     expect(settled).toBe(false);
     fire('SIGTERM');
     await expect(p).resolves.toBe(0);
+    // Left running, that timer would hold the process open after the run ends,
+    // until exitWith's forced exit seconds later.
+    expect(clearInterval).toHaveBeenCalledWith(idle);
+  });
+
+  test('PEARL_GPU_INDEX=none does the same as --gpu-index none', async () => {
+    await withEnv({ PEARL_GPU_INDEX: 'none' }, async () => {
+      const m = load();
+      const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+      await settle();
+      expect(m.PearlEngine.instances).toHaveLength(0);
+      expect(allOut()).toContain('mining on:  no GPU  (PEARL_GPU_INDEX=none)');
+      expect(allOut()).toContain('waiting until stopped');
+      fire('SIGTERM');
+      await expect(p).resolves.toBe(0);
+    });
+  });
+
+  // The same rule as the flag: a value that doesn't parse stops the CLI. Mining
+  // on every card instead could put a card to work that was meant to be left out.
+  test('a PEARL_GPU_INDEX that does not parse exits 1 and says why', async () => {
+    for (const bad of ['0 2', '0;2', '0,2x']) {
+      await withEnv({ PEARL_GPU_INDEX: bad }, async () => {
+        err = [];
+        const m = load();
+        await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update'])).resolves.toBe(1);
+        expect(allErr()).toContain('error: invalid PEARL_GPU_INDEX: ' + bad
+          + ' (give GPU numbers from nvidia-smi separated by commas, such as 0,2, or none)');
+        expect(m.PearlEngine.instances).toHaveLength(0);
+      });
+    }
+  });
+
+  test('a bad PEARL_GPU_INDEX does not matter when --gpu-index is given', async () => {
+    await withEnv({ PEARL_GPU_INDEX: 'first' }, async () => {
+      const m = load();
+      m.probe.detectMinerGpus.mockResolvedValue([THREE[1]]);
+      const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu-index', '1']);
+      await settle();
+      expect(allOut()).toContain('mining on:  1 GPU [1]  (--gpu-index)');
+      expect(allErr()).not.toContain('PEARL_GPU_INDEX');
+      await stop(m, p);
+    });
   });
 
   // The LLM picks its own cards, so none only stops the mining half.

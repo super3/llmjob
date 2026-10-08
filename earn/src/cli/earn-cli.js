@@ -44,7 +44,8 @@ const { resolvePlan, normalizeMode } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote } = require('../shared/platform');
 const { resolveServerUrl } = require('../shared/llama');
 const {
-  alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexEnv,
+  alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexList,
+  describeSkippedGpus,
 } = require('../shared/gpu');
 const { planMemClocks } = require('../shared/memClock');
 const format = require('../shared/format');
@@ -81,11 +82,18 @@ function gateQuietMs(settings) {
 }
 
 // The cards this run may mine on, and what chose them: --gpu-index first, then
-// PEARL_GPU_INDEX. Null means every card; an empty list is `--gpu-index none`.
-function gpuChoice(settings) {
+// PEARL_GPU_INDEX, which takes the same list, none included. Null means every
+// card; an empty list means none. A PEARL_GPU_INDEX that doesn't parse is an
+// error, as the flag is: mining on a card someone meant to leave out is worse
+// than not starting. (The desktop app can't refuse to start, so it logs and
+// ignores such a value: shared/gpu readGpuIndexEnv.)
+function gpuChoice(settings, env) {
   if (settings.gpuIndices != null) return { indices: settings.gpuIndices, from: '--gpu-index' };
-  const indices = parseGpuIndexEnv(process.env);
-  return indices ? { indices, from: 'PEARL_GPU_INDEX' } : null;
+  const raw = env.PEARL_GPU_INDEX;
+  const parsed = parseGpuIndexList(raw);
+  if (!parsed) return null;
+  if (parsed.error) return { error: 'invalid PEARL_GPU_INDEX: ' + raw + ' (' + parsed.error + ')' };
+  return { indices: parsed.indices, from: 'PEARL_GPU_INDEX' };
 }
 
 // "2 GPUs [0, 2]"
@@ -684,8 +692,12 @@ async function run(argv) {
   }
 
   const settings = parsed.settings;
-  const gpuPick = gpuChoice(settings);
-  // --gpu-index none: no card mines. The LLM, which picks its own cards, still
+  const gpuPick = gpuChoice(settings, process.env);
+  if (gpuPick && gpuPick.error) {
+    log('error: ' + gpuPick.error, process.stderr);
+    return 1;
+  }
+  // --gpu-index none (or PEARL_GPU_INDEX=none): no card mines. The LLM, which picks its own cards, still
   // follows the mode. With nothing else to run the CLI waits rather than exits:
   // HiveOS passes none when every GPU is turned off there, and an exit would
   // only be restarted every few seconds.
@@ -712,7 +724,9 @@ async function run(argv) {
   log('mode:       ' + settings.mode + (settings.modeProvided ? '' : '  (default)'));
   const platformNote = minerUnsupportedNote(process.platform, settings.mode);
   if (platformNote) log(platformNote, process.stderr);
-  if (noGpus && normalizeMode(settings.mode) !== 'llm') log('mining on:  no GPU  (--gpu-index none)');
+  if (noGpus && normalizeMode(settings.mode) !== 'llm') {
+    log('mining on:  no GPU  (' + (gpuPick.from === '--gpu-index' ? '--gpu-index none' : 'PEARL_GPU_INDEX=none') + ')');
+  }
 
   let endpoint = null;
   if (plan.miner) {
@@ -754,10 +768,8 @@ async function run(argv) {
     // planMinerGpus), and said so here.
     const mining = settings.gpus.map((g) => g.index);
     if (gpuPick) {
-      for (const i of gpuPick.indices) {
-        if (!mining.includes(i)) {
-          log('skipping GPU ' + i + ' from ' + gpuPick.from + ': nvidia-smi does not list it', process.stderr);
-        }
+      for (const line of describeSkippedGpus(gpuPick.indices, settings.gpus, gpuPick.from)) {
+        log(line, process.stderr);
       }
       log('mining on:  ' + cardList(mining) + '  (' + gpuPick.from + ')');
       if (clearedCuda != null) {
@@ -969,7 +981,7 @@ async function run(argv) {
 
   // Nothing to run (e.g. the LLM failed to set up and there's no miner): exit
   // with an error rather than hanging on an idle process. Unless nothing was
-  // asked to run: --gpu-index none in mining mode waits (see noGpus above).
+  // asked to run: no GPU in mining mode waits (see noGpus above).
   if (!miner && !llm && !idleByChoice) {
     log('nothing to run — no miner and the LLM did not start', process.stderr);
     return 1;

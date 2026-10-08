@@ -132,21 +132,45 @@ function parseGpuIndexList(raw) {
   return { indices };
 }
 
-// The cards an operator chose with PEARL_GPU_INDEX, as a list, or null when
-// they haven't chosen.
+// PEARL_GPU_INDEX as the desktop app reads it: { indices, warning }. `indices`
+// is the cards chosen, or null for every card. `warning` is the log line for a
+// value that is set but not used, or null.
 //
 // It is an escape hatch, not the mechanism: normally every card mines. But "it
 // picked the wrong card" is the report we cannot reproduce from here, and a rig
 // that can pin cards in one env var can answer it in one run. Same idea as
 // PEARL_CORE_PATH, and the same place to look for it.
 //
-// Takes the same list as --gpu-index, except "none": the desktop app has no way
-// to say "mine on no card", and an empty list means "let the core choose" to
-// planMinerGpus. Anything that doesn't parse is ignored rather than passed on.
-function parseGpuIndexEnv(env) {
-  const parsed = parseGpuIndexList((env || process.env).PEARL_GPU_INDEX);
-  if (!parsed || parsed.error || !parsed.indices.length) return null;
-  return parsed.indices;
+// Takes the same list as the CLI's --gpu-index, except "none": the desktop app
+// cannot run with no mining card (its LLM compute mode is how it doesn't mine),
+// and an empty list means "let the core choose" to planMinerGpus. So none is
+// ignored, and so is anything that doesn't parse, with a warning either way.
+// The CLI reads the variable itself (earn-cli gpuChoice) and honours none.
+function readGpuIndexEnv(env) {
+  const raw = (env || process.env).PEARL_GPU_INDEX;
+  const parsed = parseGpuIndexList(raw);
+  if (!parsed) return { indices: null, warning: null };
+  const said = 'PEARL_GPU_INDEX=' + String(raw).trim();
+  if (parsed.error) {
+    return { indices: null, warning: said + ' ignored (' + parsed.error + '); every GPU mines' };
+  }
+  if (!parsed.indices.length) {
+    return {
+      indices: null,
+      warning: said + ' ignored: the app cannot mine on no GPU (set Compute Mode to LLM for that); every GPU mines',
+    };
+  }
+  return { indices: parsed.indices, warning: null };
+}
+
+// The log lines for chosen cards that planMinerGpus dropped because nvidia-smi
+// doesn't list them, one per card, in the same words in both shells. `from`
+// names what chose them. Empty when nothing was chosen or nothing was dropped.
+function describeSkippedGpus(chosen, gpus, from) {
+  if (!Array.isArray(chosen)) return [];
+  const mining = (Array.isArray(gpus) ? gpus : []).map((g) => g.index);
+  return chosen.filter((i) => !mining.includes(i))
+    .map((i) => 'skipping GPU ' + i + ' from ' + from + ': nvidia-smi does not list it');
 }
 
 // Which cards mine. One core per card, so this list IS the mining fleet.
@@ -158,8 +182,8 @@ function parseGpuIndexEnv(env) {
 //
 // `chosen` (PEARL_GPU_INDEX, or the CLI's --gpu-index) narrows it to those
 // cards: a non-empty list of indices, or null for every card. An index
-// nvidia-smi doesn't list is dropped, and the caller logs it, as long as another
-// chosen card is listed. When none of them is, or nvidia-smi listed nothing at
+// nvidia-smi doesn't list is dropped, as long as another chosen card is listed,
+// and both shells log it (describeSkippedGpus). When none of them is, or nvidia-smi listed nothing at
 // all, the choice is passed on as it is: the core checks each index against the
 // real device count and says so, which beats silently mining on cards nobody
 // asked for.
@@ -259,6 +283,7 @@ function parseMacGpu(out) {
 
 module.exports = {
   IGNORE, INTEGRATED, pickGpu, countGpus, alignCudaDeviceOrder,
-  clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexList, parseGpuIndexEnv,
+  clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexList, readGpuIndexEnv,
+  describeSkippedGpus,
   planMinerGpus, parseGpuStats, parsePciBusIds, parseMacGpu,
 };

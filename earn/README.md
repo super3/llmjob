@@ -120,18 +120,26 @@ runtime numbers cards by its own "fastest first" heuristic, which on a mixed rig
 is a different card than the one `nvidia-smi` lists first.
 
 To mine on some cards only, list their `nvidia-smi` indices with `--gpu-index`
-on the CLI, or with `PEARL_GPU_INDEX` in either app. Both take the same list,
-and the flag wins over the variable:
+on the CLI, or with `PEARL_GPU_INDEX` in either app. The flag wins over the
+variable:
 
 ```bash
 llmjob-earn-cli --address prl1p… --gpu-index 0,2
 PEARL_GPU_INDEX=1 llmjob-earn-cli --address prl1p…
 ```
 
-The log says which cards mine and what chose them. A listed card that
-`nvidia-smi` doesn't show is skipped, and the log says so. If it shows none of them, they go to the core, which fails
-and names the cards that exist. `--gpu-index none` mines on no card; with
-`--mode mining` the CLI then waits until it is stopped instead of exiting.
+A listed card that `nvidia-smi` doesn't show is skipped, and the log says so.
+If it shows none of them, they go to the core, which fails and names the cards
+that exist. Each card names itself in the log as its core starts, and the CLI
+also logs the whole list and what chose it.
+
+`none` mines on no card. With `--mode mining` the CLI then waits until it is
+stopped instead of exiting. The CLI takes the same values from the flag and the
+variable, and stops with an error on one it can't read. The desktop app can't
+run with no mining card (set Compute Mode to LLM for that). So it ignores
+`PEARL_GPU_INDEX=none`, and any value it can't read, says so in the log, and
+mines on every card.
+
 These choose the mining cards only: the local LLM picks its own.
 
 A `CUDA_VISIBLE_DEVICES` left in the environment is removed at start, and the

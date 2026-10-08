@@ -15,7 +15,7 @@ const { execFile } = require('child_process');
 const { REGIONS, DEFAULTS, NETWORK } = require('../shared/config');
 const { pickFastestRegion } = require('../shared/region');
 const {
-  parseGpuStats, pickGpu, countGpus, parseMacGpu, parseGpuIndexEnv, planMinerGpus,
+  parseGpuStats, pickGpu, countGpus, parseMacGpu, readGpuIndexEnv, planMinerGpus,
   parsePciBusIds,
 } = require('../shared/gpu');
 const { parseCudaCards } = require('../shared/coreVariant');
@@ -98,12 +98,13 @@ function detectGpusVram() {
 //
 // Both shells ask this the same way so they cannot drift — the GUI and the CLI
 // having their own GPU detection is what let the two disagree before (see
-// detectGpuInfo below). `chosen` is the CLI's choice of cards (a list, or null
-// for every card); left out, PEARL_GPU_INDEX in `env` decides, which is how the
-// GUI calls it. Never rejects.
+// detectGpuInfo below). `chosen` is the shell's choice of cards: a list, or null
+// for every card. Both shells pass it, since each reads PEARL_GPU_INDEX itself
+// to log what it did with it. Left out, PEARL_GPU_INDEX in `env` decides.
+// Never rejects.
 async function detectMinerGpus(env, chosen) {
   const cards = await detectGpusVram();
-  const pick = chosen !== undefined ? chosen : parseGpuIndexEnv(env || process.env);
+  const pick = chosen !== undefined ? chosen : readGpuIndexEnv(env || process.env).indices;
   return planMinerGpus(cards, pick);
 }
 

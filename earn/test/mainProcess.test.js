@@ -938,6 +938,52 @@ describe('mining', () => {
     }));
   });
 
+  // PEARL_GPU_INDEX narrows the cards. What the app can't use (none, a typo)
+  // and a listed card nvidia-smi doesn't show are logged, not dropped quietly.
+  describe('PEARL_GPU_INDEX', () => {
+    const ENV = 'PEARL_GPU_INDEX';
+    let hadEnv, envBefore;
+    beforeEach(() => {
+      hadEnv = Object.prototype.hasOwnProperty.call(process.env, ENV);
+      envBefore = process.env[ENV];
+    });
+    afterEach(() => {
+      if (hadEnv) process.env[ENV] = envBefore;
+      else delete process.env[ENV];
+    });
+    const warnings = (ctx) => ctx.sent('miner:log').filter((l) => l.level === 'warn').map((l) => l.line);
+
+    it('passes the cards on, and logs one nvidia-smi does not list', async () => {
+      process.env[ENV] = '0,5';
+      const ctx = await boot();
+      ctx.probe.detectMinerGpus.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 4090' }]);
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(ctx.probe.detectMinerGpus).toHaveBeenCalledWith(process.env, [0, 5]);
+      expect(warnings(ctx)).toEqual(['skipping GPU 5 from PEARL_GPU_INDEX: nvidia-smi does not list it']);
+    });
+
+    it('ignores none with a warning, and every card mines', async () => {
+      process.env[ENV] = 'none';
+      const ctx = await boot();
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(ctx.probe.detectMinerGpus).toHaveBeenCalledWith(process.env, null);
+      expect(warnings(ctx)).toEqual([
+        'PEARL_GPU_INDEX=none ignored: the app cannot mine on no GPU (set Compute Mode to LLM for that); every GPU mines',
+      ]);
+    });
+
+    it('says nothing when it is not set', async () => {
+      delete process.env[ENV];
+      const ctx = await boot();
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(ctx.probe.detectMinerGpus).toHaveBeenCalledWith(process.env, null);
+      expect(warnings(ctx).filter((l) => l.includes(ENV))).toEqual([]);
+    });
+  });
+
   // The memory clock plan is shared/memClock's (memClock.test.js) and the lock
   // is PearlMiner's; the GUI's part is feeding the plan the cards, whether the
   // LLM co-runs and what LLMJOB_MINE_MEM_CLOCK in its environment says, and

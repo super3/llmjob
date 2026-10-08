@@ -2,7 +2,8 @@
 
 const {
   pickGpu, countGpus, alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda,
-  parseGpuIndexList, parseGpuIndexEnv, planMinerGpus, parseGpuStats, parsePciBusIds, parseMacGpu,
+  parseGpuIndexList, readGpuIndexEnv, describeSkippedGpus, planMinerGpus, parseGpuStats, parsePciBusIds,
+  parseMacGpu,
 } = require('../src/shared/gpu');
 
 describe('pickGpu', () => {
@@ -275,20 +276,38 @@ describe('parseGpuIndexList', () => {
   });
 });
 
-// PEARL_GPU_INDEX. The same list, but not "none": the desktop app has no way
-// to mine on nothing, and an empty list would read as "let the core choose".
-describe('parseGpuIndexEnv', () => {
+// PEARL_GPU_INDEX as the desktop app reads it. The same list, but not "none":
+// the app has no way to mine on nothing, and an empty list would read as "let
+// the core choose". What it can't use it ignores, and says so.
+describe('readGpuIndexEnv', () => {
   test('takes a card or a list', () => {
-    expect(parseGpuIndexEnv({ PEARL_GPU_INDEX: '0' })).toEqual([0]);
-    expect(parseGpuIndexEnv({ PEARL_GPU_INDEX: ' 2 ' })).toEqual([2]);
-    expect(parseGpuIndexEnv({ PEARL_GPU_INDEX: '3,1' })).toEqual([1, 3]);
+    expect(readGpuIndexEnv({ PEARL_GPU_INDEX: '0' })).toEqual({ indices: [0], warning: null });
+    expect(readGpuIndexEnv({ PEARL_GPU_INDEX: ' 2 ' })).toEqual({ indices: [2], warning: null });
+    expect(readGpuIndexEnv({ PEARL_GPU_INDEX: '3,1' })).toEqual({ indices: [1, 3], warning: null });
   });
 
-  test('ignores anything else', () => {
-    expect(parseGpuIndexEnv({})).toBeNull();
-    for (const v of ['', '  ', 'none', 'first', '1.5', '-1', '0,x']) {
-      expect(parseGpuIndexEnv({ PEARL_GPU_INDEX: v })).toBeNull();
+  test('unset or blank is no choice, and nothing to say', () => {
+    for (const env of [{}, { PEARL_GPU_INDEX: '' }, { PEARL_GPU_INDEX: '  ' }]) {
+      expect(readGpuIndexEnv(env)).toEqual({ indices: null, warning: null });
     }
+  });
+
+  test('a value that does not parse is ignored with a warning', () => {
+    for (const v of ['first', '1.5', '-1', '0,x', '0 2', '0;2']) {
+      expect(readGpuIndexEnv({ PEARL_GPU_INDEX: v })).toEqual({
+        indices: null,
+        warning: 'PEARL_GPU_INDEX=' + v + ' ignored (give GPU numbers from nvidia-smi separated by commas, '
+          + 'such as 0,2, or none); every GPU mines',
+      });
+    }
+  });
+
+  test('none is ignored with a warning that says how not to mine', () => {
+    expect(readGpuIndexEnv({ PEARL_GPU_INDEX: ' None ' })).toEqual({
+      indices: null,
+      warning: 'PEARL_GPU_INDEX=None ignored: the app cannot mine on no GPU '
+        + '(set Compute Mode to LLM for that); every GPU mines',
+    });
   });
 
   test('defaults to the process environment', () => {
@@ -296,11 +315,35 @@ describe('parseGpuIndexEnv', () => {
     const before = process.env.PEARL_GPU_INDEX;
     process.env.PEARL_GPU_INDEX = '1';
     try {
-      expect(parseGpuIndexEnv()).toEqual([1]);
+      expect(readGpuIndexEnv().indices).toEqual([1]);
     } finally {
       if (had) process.env.PEARL_GPU_INDEX = before;
       else delete process.env.PEARL_GPU_INDEX;
     }
+  });
+});
+
+// One line per chosen card that planMinerGpus dropped, worded the same in both
+// shells.
+describe('describeSkippedGpus', () => {
+  const MINING = [{ index: 0, name: 'A' }, { index: 2, name: 'C' }];
+
+  test('names each chosen card that is not mining, and what chose it', () => {
+    expect(describeSkippedGpus([0, 2, 5, 7], MINING, '--gpu-index')).toEqual([
+      'skipping GPU 5 from --gpu-index: nvidia-smi does not list it',
+      'skipping GPU 7 from --gpu-index: nvidia-smi does not list it',
+    ]);
+  });
+
+  test('is empty when nothing was chosen or nothing was dropped', () => {
+    expect(describeSkippedGpus(null, MINING, 'PEARL_GPU_INDEX')).toEqual([]);
+    expect(describeSkippedGpus([0, 2], MINING, 'PEARL_GPU_INDEX')).toEqual([]);
+    expect(describeSkippedGpus([], null, 'PEARL_GPU_INDEX')).toEqual([]);
+  });
+
+  test('a mining list that is not a list skips every chosen card', () => {
+    expect(describeSkippedGpus([1], undefined, 'PEARL_GPU_INDEX'))
+      .toEqual(['skipping GPU 1 from PEARL_GPU_INDEX: nvidia-smi does not list it']);
   });
 });
 
@@ -335,8 +378,8 @@ describe('planMinerGpus', () => {
     ]);
   });
 
-  // HiveOS listed a card nvidia-smi doesn't have. Mine on the rest; the CLI
-  // logs the one it dropped.
+  // HiveOS listed a card nvidia-smi doesn't have. Mine on the rest; the shell
+  // logs the one it dropped (describeSkippedGpus).
   test('drops a chosen card nvidia-smi does not list', () => {
     expect(planMinerGpus(THREE, [1, 5])).toEqual([{ index: 1, name: 'RTX 4090 B' }]);
   });

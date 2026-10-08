@@ -95,7 +95,7 @@ const USAGE = [
   '      --gpu-index <list>   Mine only on these GPUs: nvidia-smi indices such as',
   '                           0,2, or "none" for no GPU (default: every GPU). The',
   '                           local LLM picks its own cards. PEARL_GPU_INDEX takes',
-  '                           the same list.',
+  '                           the same list; the flag wins.',
 
   '      --stats-file <path>  Write live stats JSON here every 10s (for HiveOS h-stats etc.)',
   '      --no-report          Do not publish live status to the public network board',
