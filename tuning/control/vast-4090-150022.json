@@ -1,5 +1,8 @@
 {
   "default": {"core": "cu13", "flags": "", "env": {}},
   "gpus": {},
-  "builds": {}
+  "builds": {
+    "apt4bpt7": {"ref": "54e91d8825b9b08d83c0283bcfaf1721fd6b103c", "defines": "-DPEARL_TALL_APT=4u -DPEARL_TALL_BPT=7u"},
+    "apt3bpt8": {"ref": "54e91d8825b9b08d83c0283bcfaf1721fd6b103c", "defines": "-DPEARL_TALL_APT=3u -DPEARL_TALL_BPT=8u"}
+  }
 }
