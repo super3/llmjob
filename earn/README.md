@@ -219,50 +219,73 @@ you install the new DMG over the old app.
 
 ## HiveOS (flight sheet)
 
-> **Not currently published.** As of v0.5.0 the release no longer builds or
-> attaches the HiveOS package: it had gone weeks without being exercised, and a
-> release should not carry an artifact nobody has verified. The packaging script
-> and hook scripts below are still in the tree, so restoring it is re-adding two
-> steps to `.github/workflows/miner-build.yml`. Rigs on a flight sheet pinned to
-> an older release keep working — they install by URL from the release they
-> already name. The rest of this section describes how it works when enabled.
+Each release ships a HiveOS custom-miner package, `llmjob-earn-<version>.tar.gz`:
+the headless CLI binary, its mining cores, and the hook scripts in `hiveos/`,
+packed by `scripts/build-hiveos.mjs` (`npm run dist:hiveos`). CI packs it from
+the same binary and cores it publishes on the release. Releases v0.5.0 to
+v0.5.12 have no package; use a later one.
 
-The release ships a HiveOS custom-miner package wrapping the headless CLI
-(`hiveos/` + `scripts/build-hiveos.mjs` → `llmjob-earn-<version>.tar.gz`,
-versioned because HiveOS caches the download by filename and can leave rigs
-stuck on an old build when the name never changes; an unversioned
-`llmjob-earn-hiveos.tar.gz` copy is still published for flight sheets that
-predate the rename):
+**It needs the HiveOS 0.6 jammy image (Ubuntu 22.04).** The mining cores need
+glibc 2.34 and libstdc++ with `GLIBCXX_3.4.29` (read with `objdump -T` from the
+v0.5.12 release files). Jammy has glibc 2.35. The older focal image (Ubuntu
+20.04) has glibc 2.31, so the cores don't load there and the rig mines nothing.
+RTX 50-series and RTX PRO Blackwell cards also need a newer NVIDIA driver than
+the stable image's 550: run `nvidia-driver-update` from Hive Shell.
 
-- **Miner** → Custom · **Miner name** → `llmjob-earn`
-- **Installation URL** → the versioned tarball from the [latest release](https://github.com/super3/llmjob/releases/latest),
-  i.e. `https://github.com/super3/llmjob/releases/download/v<version>/llmjob-earn-<version>.tar.gz` —
-  update the URL (and rigs re-download automatically) when a new version ships
+Flight sheet:
 
-The versioned filename's stem must stay exactly `llmjob-earn`, matching
-`CUSTOM_NAME`. HiveOS splits a `<name>-<version>.tar.gz` install URL to derive
-the miner name and then looks for `<name>/h-manifest.conf` inside the archive,
-so a stem of `llmjob-earn-hiveos` made every install fail with
-`No llmjob-earn-hiveos/h-manifest.conf` while leaving the rig on its previous
-build. Releases v0.1.17–v0.3.0 shipped that broken name; rigs pointed at one of
-those URLs need the flight sheet moved to a `llmjob-earn-<version>.tar.gz` URL.
-- **Wallet** → your `prl1p…` address only (HiveOS caps the wallet field at 90
-  characters, so the combined `prl1p…+mdl1p…` form doesn't fit)
-- **Pool URL** → any non-empty placeholder (e.g. `alphapool.tech:5566`) — HiveOS
-  refuses to save the flight sheet without it (`The url field is required`), but
-  the miner ignores it and auto-picks the fastest region (override with
-  `--region` in extra config); leave **Pass** blank
-- **Extra config arguments** → `--mdl mdl1p…` to merge-mine MDL, plus any other
-  CLI flags, e.g. `--region eu1` (optional)
+- **Miner** → Custom. **Miner name** → `llmjob-earn`.
+- **Installation URL** →
+  `https://github.com/super3/llmjob/releases/download/v<version>/llmjob-earn-<version>.tar.gz`,
+  with `<version>` from the [latest release](https://github.com/super3/llmjob/releases/latest).
+  To update a rig, change the URL to the new version. HiveOS reinstalls only
+  when the URL changes, and then reuses any archive of the same file name it
+  already downloaded. So an unchanging file name never updates: the
+  unversioned `llmjob-earn-hiveos.tar.gz` that each release also carries (at
+  `releases/latest/download/`) is good for a first install only. The part of
+  the file name before the version must stay `llmjob-earn`. HiveOS takes the
+  miner name from it and refuses to install when it differs from Miner name.
+- **Hash algorithm** → `pearlhash`.
+- **Wallet and worker template** → `%WAL%`, with your `prl1p…` address as the
+  wallet. `%WAL%.%WORKER_NAME%` also works: everything after the first `.` is
+  the worker name. Otherwise the worker is the rig's HiveOS name. An old
+  `prl1p…+mdl1p…` wallet still mines, but merge mining is retired.
+- **Pool URL** → any `host:port`, e.g. `us.pearl.herominers.com:1200`. HiveOS
+  won't save the flight sheet without one (`The url field is required`), but
+  the miner doesn't read it: it mines on HeroMiners and picks the region with
+  the lowest latency when it starts. **Pass** → leave blank.
+- **Extra config arguments** → optional CLI flags; leave it empty for the
+  defaults. The ones that make sense on a rig:
+  - `--region <id>` pins the pool region: `us`, `us2`, `ca`, `br`, `de`, `fi`,
+    `fr`, `tr`, `sg`, `hk`, `kr` or `au`.
+  - `--mine-mem-clock <MHz>` locks the memory clock while mining; `0` turns off
+    the RTX 5090 default (see below).
+  - `--mode auto` also serves a local LLM (next paragraph).
+  - `--no-report` keeps the rig off the public network board.
 
-The worker name comes from the rig's HiveOS name, and the dashboard gets live
-hashrate/shares via `h-stats.sh`, which reads the JSON the CLI writes with
-`--stats-file` (10s cadence; a stale file reports zeros rather than lying).
-Auto-update on start is disabled under HiveOS (`--no-update`) — the agent owns
-the lifecycle, so updates normally arrive by reinstalling the package URL. To
-move a single rig without touching its flight sheet, run the CLI's explicit
-update from Hive Shell; it replaces the binary in place but leaves the wrapper
-scripts (and the `CUSTOM_VERSION` the dashboard displays) as they were:
+  `llmjob-earn-cli-linux --help` lists every flag. A flag the CLI doesn't have
+  makes it exit at once. HiveOS then restarts it every few seconds and shows
+  "Miner starting error", and `miner log` names the flag. Old examples such as
+  `--region eu1` and `--difficulty` no longer exist.
+
+**The rig mines only.** The package adds `--mode mining` unless Extra config
+has a `--mode`. The CLI's own default, `auto`, also serves a local LLM. It
+downloads a 5 GB model to the HiveOS drive, or about 18 GB on a card with 30 GB
+or more free. On such a card it also stops mining while it serves, which
+HiveOS's watchdog can take for a hung miner. To serve the LLM anyway, put
+`--mode auto` in Extra config (`--mode llm` for the LLM only).
+
+`h-stats.sh` sends HiveOS each card's own hashrate with its PCI bus number,
+plus the rig total, shares, uptime and version. HiveOS uses the bus numbers to
+put each hashrate on its GPU's row, so an iGPU or a server's BMC display in the
+GPU list doesn't shift them. It reads all this from the file the CLI writes
+every 10 s (`--stats-file`), and a file older than 2 minutes reports 0.
+
+Self-update is off under HiveOS (`--no-update`): the agent owns the miner, and
+a new version arrives with a new Installation URL. To move a single rig without
+touching its flight sheet, run the CLI's update from Hive Shell. It replaces the
+binary in place but leaves the hook scripts and the `CUSTOM_VERSION` the
+dashboard shows as they were:
 
 ```
 miner stop

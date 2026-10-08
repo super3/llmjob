@@ -42,8 +42,8 @@ If nothing needs a reply, say so in one line — do not pad.
 ## Grounding facts (keep replies accurate)
 
 - Pearl (PRL) is GPU-only (NoisyGEMM algorithm) — it cannot be mined on CPU. CPU mining in general nets almost nothing after electricity.
-- Merge mining earns MDL on the same shares (Windows: combined `prl1…+mdl1…` address; Linux/HiveOS: the stratum password `mdl=` field).
+- Merge mining (MDL) is retired: the app no longer offers it, so don't suggest it. Old setups that still pass an `mdl1…` address keep mining PRL.
 - The in-app earnings estimate pulls live prlscan data as of v0.2.9; older builds overstated it. Real payouts are always what lands in the wallet.
-- HiveOS caches the miner package by filename — a rig stuck on an old version needs a clean reinstall from the versioned tarball at the latest release.
+- HiveOS: the flight sheet's Installation URL must be the versioned `https://github.com/super3/llmjob/releases/download/v<version>/llmjob-earn-<version>.tar.gz`. HiveOS keeps the old build while the file name stays the same, so updating a rig means changing that URL. Releases v0.5.0 to v0.5.12 have no HiveOS package. It needs the HiveOS 0.6 jammy image (the focal image's glibc is too old for the mining core). Wallet template `%WAL%` (or `%WAL%.%WORKER_NAME%`); the Pool URL field is required by HiveOS but ignored. The package mines only unless Extra config has `--mode auto`. The README's "HiveOS (flight sheet)" section has the rest.
 - LLM co-mining is live but early — no extra earnings yet; it's the direction, not a promise.
 - For the current version, check https://github.com/super3/llmjob/releases/latest rather than assuming.
