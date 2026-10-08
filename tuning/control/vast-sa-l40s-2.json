@@ -1,6 +1,6 @@
 {
   "default": {"core": "release", "flags": "", "env": {}},
-  "gpus": {},
+  "gpus": {"1": {"core": "build:rule"}, "2": {"core": "build:cb1024"}},
   "builds": {
     "rule": {"ref": "29ac5f5b6274f863917bb247aa0f5f06bfb9993b", "defines": ""},
     "cb1024": {"ref": "29ac5f5b6274f863917bb247aa0f5f06bfb9993b", "defines": "-DPEARL_ADA_COL_BATCH=1024u"}
