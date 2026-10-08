@@ -140,20 +140,39 @@ describe('HiveOS flight sheet on the home page', () => {
   const manifest = fs.readFileSync(path.join(ROOT, 'earn/hiveos/h-manifest.conf'), 'utf8');
   const minerName = manifest.match(/^CUSTOM_NAME=(.+)$/m)[1];
 
+  // The section's HTML with the <wbr> line-break hints taken out: they add no
+  // text, so a copied or selected URL doesn't carry them.
   async function section() {
     const res = await request(app).get('/');
     const m = res.text.match(/<section[^>]*id="hiveos"[^>]*>([\s\S]*?)<\/section>/);
     expect(m).not.toBeNull();
-    return { page: res.text, sec: m[1] };
+    return { page: res.text, sec: m[1].replace(/<wbr>/g, '') };
+  }
+
+  // The text of the <code> with this id, which is what the Copy button copies.
+  function codeText(sec, id) {
+    const m = sec.match(new RegExp(`<code id="${id}">([\\s\\S]*?)</code>`));
+    expect(m).not.toBeNull();
+    return m[1].replace(/<[^>]+>/g, '');
   }
 
   it('gives the versioned package URL of the current release', async () => {
     const { sec } = await section();
     const url = `https://github.com/super3/llmjob/releases/download/v${version}/${minerName}-${version}.tar.gz`;
-    expect(sec).toContain(`<code id="hive-url">${url}</code>`);
+    expect(codeText(sec, 'hive-url')).toBe(url);
     // Not the unversioned name: HiveOS would keep the old build on update.
     expect(sec).not.toContain('llmjob-earn-hiveos.tar.gz');
     expect(sec).not.toContain('{{');
+  });
+
+  // The copy script finds the URL by the button's data-copy id, and does
+  // nothing if no element has that id.
+  it('points the Copy button at the Installation URL', async () => {
+    const { sec } = await section();
+    const buttons = sec.match(/<button [^>]*data-copy="[^"]*"[^>]*>/g);
+    expect(buttons).toHaveLength(1);
+    const id = buttons[0].match(/data-copy="([^"]*)"/)[1];
+    expect(codeText(sec, id)).toMatch(/^https:\/\/github\.com\/\S+\.tar\.gz$/);
   });
 
   it('lists the flight sheet fields', async () => {
@@ -167,13 +186,33 @@ describe('HiveOS flight sheet on the home page', () => {
     expect(sec).toContain('<code>pearlhash</code>');
     expect(sec).toContain('<code>%WAL%</code>');
     expect(sec).toContain('<code>%WAL%.%WORKER_NAME%</code>');
-    expect(sec).toContain('<code>us.pearl.herominers.com:1200</code>');
+    expect(sec).toMatch(/<code[^>]*>us\.pearl\.herominers\.com:1200<\/code>/);
     expect(sec).toContain('Ubuntu 22.04');
   });
 
-  it('is linked from both download menus', async () => {
-    const { page } = await section();
-    expect(page.match(/<a role="menuitem" href="#hiveos">/g)).toHaveLength(2);
+  // HiveOS reads which cards are off only when the miner starts, and only the
+  // mining follows it, so the page must not say more than that.
+  it('says what turning a card off does and does not do', async () => {
+    const { sec } = await section();
+    expect(sec).toContain("A card you turn off in HiveOS doesn't mine.");
+    expect(sec).toContain('restart the miner after turning a card on or off');
+    expect(sec).toContain("The local LLM from <code>--mode auto</code> doesn't follow it.");
+  });
+
+  // Umami counts the HiveOS path like the other platforms. A Copy of the
+  // Installation URL is the HiveOS download. Opening the flight sheet from a
+  // menu is its own event, so the two aren't counted as two downloads.
+  it('is linked from both download menus, and Umami counts its links and Copy', async () => {
+    const { page, sec } = await section();
+    const links = page.match(/<a role="menuitem"[^>]*href="#hiveos"[^>]*>/g);
+    expect(links).toHaveLength(2);
+    for (const a of links) expect(a).toContain('data-umami-event="hiveos-flight-sheet"');
+    expect(links[0]).toContain('data-umami-event-place="top"');
+    expect(links[1]).toContain('data-umami-event-place="bottom"');
+    const copy = sec.match(/<button class="hive-copy"[^>]*>/)[0];
+    expect(copy).toContain('data-umami-event="download"');
+    expect(copy).toContain('data-umami-event-os="hiveos"');
+    expect(copy).toContain('data-umami-event-place="flight-sheet"');
   });
 });
 
