@@ -61,7 +61,7 @@ const USAGE = [
   '                           "both"/"auto" co-run a local LLM alongside mining;',
   '                           "llm" runs the LLM only (no payout address needed).',
   '      --llm-binary <path>  Path to a prebuilt llama-server binary. Optional:',
-  '                           the CLI auto-downloads + extracts one (needs `unzip`)',
+  '                           the CLI downloads one and unpacks it with `tar`',
   '                           — use this to skip that or point at your own build.',
   '      --llm-model <path>   Path to a GGUF model file (default: download the',
   '                           bundled small model on first run)',

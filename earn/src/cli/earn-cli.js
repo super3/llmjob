@@ -118,10 +118,6 @@ function detectGpu() {
   return probe.detectGpuInfo();
 }
 
-// llama-server zips extract via the shared io helper; point failures at the
-// CLI's escape hatch.
-const LLM_UNZIP_HINT = 'install unzip, or pass --llm-binary </path/to/llama-server>';
-
 // Explicit `llmjob-earn-cli update` — check the latest release and, if this is
 // the packaged binary, replace it in place.
 async function runExplicitUpdate() {
@@ -188,9 +184,9 @@ function llmDir(settings) {
 
 // Resolve the llama-server binary for the local LLM. An explicit --llm-binary
 // wins; otherwise fall back to a previously installed one in the cache dir, and
-// only then download the llama.cpp release zip and extract it (via unzip). If
-// extraction isn't possible (no `unzip`), we surface a clear error pointing at
-// --llm-binary as the escape hatch.
+// only then download the llama.cpp release and unpack it (io.extractLlamaZip:
+// tar for Linux's .tar.gz). If that fails, the error names the tool that failed
+// and points at --llm-binary as the escape hatch.
 async function resolveLlmBinary(settings, dir) {
   if (settings.llmBinary) {
     if (!fs.existsSync(settings.llmBinary)) {
@@ -201,7 +197,7 @@ async function resolveLlmBinary(settings, dir) {
   const serverUrl = resolveServerUrl(process.platform, process.arch);
   const engine = new LlmEngineManager({
     dir, platform: process.platform, serverUrl,
-    fs, download: downloadFile, extract: (zip, dest) => extractLlamaZip(zip, dest, LLM_UNZIP_HINT), chmod: fs.chmodSync,
+    fs, download: downloadFile, extract: (zip, dest) => extractLlamaZip(zip, dest), chmod: fs.chmodSync,
   });
   if (engine.isServerInstalled()) {
     log('LLM server found: ' + engine.serverBinaryPath());

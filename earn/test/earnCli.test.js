@@ -1089,10 +1089,13 @@ describe('local LLM', () => {
     expect(allOut()).toContain('local LLM starting on 1 GPU [0]');
     expect(allOut()).toContain('downloading LLM model');
 
-    // The binary resolver's engine wires the shared extractor with the CLI hint.
+    // The binary resolver's engine wires the shared extractor with no hint of
+    // its own: the extractor names the tool that failed (tar on Linux), and the
+    // resolver adds the --llm-binary way out. A hint here said "install unzip",
+    // the wrong tool, and named --llm-binary twice.
     const le = m.LlmEngineManager.instances[0];
     await le.opts.extract('/z.zip', '/dest');
-    expect(m.io.extractLlamaZip).toHaveBeenCalledWith('/z.zip', '/dest', expect.stringContaining('unzip'));
+    expect(m.io.extractLlamaZip).toHaveBeenCalledWith('/z.zip', '/dest');
 
     const llm = m.LlmManager.instances[0];
     expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({
