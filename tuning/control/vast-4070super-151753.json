@@ -1,9 +1,5 @@
 {
   "default": {"core": "release", "flags": "", "env": {}},
   "gpus": {},
-  "builds": {
-    "cb1024": {"ref": "9085a2b3a0f4e7b4c3f6fd92506e15b18bca168a", "defines": "-DPEARL_ADA_COL_BATCH=1024u"},
-    "rule": {"ref": "29ac5f5b6274f863917bb247aa0f5f06bfb9993b", "defines": ""},
-    "cb1024b32": {"ref": "9085a2b3a0f4e7b4c3f6fd92506e15b18bca168a", "defines": "-DPEARL_ADA_COL_BATCH=1024u -DPEARL_TALL_BAND=32u"}
-  }
+  "builds": {}
 }
