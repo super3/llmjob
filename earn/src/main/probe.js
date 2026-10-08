@@ -16,6 +16,7 @@ const { REGIONS, DEFAULTS, NETWORK } = require('../shared/config');
 const { pickFastestRegion } = require('../shared/region');
 const {
   parseGpuStats, pickGpu, countGpus, parseMacGpu, parseDeviceIndex, planMinerGpus,
+  parsePciBusIds,
 } = require('../shared/gpu');
 const { parseCudaCards } = require('../shared/coreVariant');
 // Major version out of an nvidia-smi driver string. Lived in shared/engine
@@ -158,6 +159,17 @@ function detectCudaCards() {
   });
 }
 
+// Each card's PCI bus id, as { index: '00000000:01:00.0' }, for the stats file
+// HiveOS reads (see shared/gpu.parsePciBusIds). Resolves {} when nvidia-smi
+// fails. Never rejects.
+function detectPciBusIds() {
+  return new Promise((resolve) => {
+    execFile('nvidia-smi', ['--query-gpu=index,pci.bus_id', '--format=csv,noheader'],
+      { timeout: 5000 },
+      (err, stdout) => resolve(err ? {} : parsePciBusIds(stdout)));
+  });
+}
+
 // Publish this miner's live status to the network board (best-effort — never
 // throws; timeouts and errors are swallowed so mining is never affected).
 function postMinerReport(payload) {
@@ -271,6 +283,7 @@ module.exports = {
   detectGpuTemps,
   detectDriverMajor,
   detectCudaCards,
+  detectPciBusIds,
   postMinerReport,
   findFreePort,
   detectGpuInfo,

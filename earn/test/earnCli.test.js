@@ -24,6 +24,7 @@ jest.mock('../src/main/probe', () => ({
   detectMinerGpus: jest.fn(),
   detectDriverMajor: jest.fn(),
   detectCudaCards: jest.fn(),
+  detectPciBusIds: jest.fn(),
   postMinerReport: jest.fn(),
   findFreePort: jest.fn(),
   // Shared with the GUI now — one detection path for both shells.
@@ -203,6 +204,7 @@ function applyDefaults(m) {
   m.probe.detectDriverMajor.mockResolvedValue(600);
   // Nothing known about the cards: the core factory then picks the 12.8 build.
   m.probe.detectCudaCards.mockResolvedValue([]);
+  m.probe.detectPciBusIds.mockResolvedValue({});
   m.probe.postMinerReport.mockResolvedValue(undefined);
   m.probe.findFreePort.mockResolvedValue(8080);
   m.probe.detectGpuInfo.mockResolvedValue(null); // no identifiable GPU by default
@@ -1872,6 +1874,39 @@ test('the stats file records what the node is doing, not just its counters', asy
   expect(written.gate).toBe('MINING');
   expect(written.schema).toBe(1);
 
+  m.PearlEngine.instances[0].emit('stopped', 0);
+  await expect(p).resolves.toBe(0);
+});
+
+// HiveOS's h-stats.sh sends each card's bus as bus_numbers, which is what puts
+// the card's hashrate on its own dashboard row rather than matching by position.
+test('the stats file gives each mining card its PCI bus id', async () => {
+  const m = load();
+  m.probe.detectPciBusIds.mockResolvedValue({ 0: '00000000:01:00.0', 1: '00000000:02:00.0' });
+  const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--stats-file', '/tmp/s.json']);
+  await settle();
+  expect(m.probe.detectPciBusIds).toHaveBeenCalledTimes(1);
+
+  const eng = m.PearlEngine.instances[0];
+  eng.emit('event', { type: 'status', gpuIndex: 1, hashrate: 90, accepted: 2, rejected: 0 });
+  eng.emit('event', { type: 'status', gpuIndex: 0, hashrate: 100, accepted: 3, rejected: 0 });
+  m.fs.writeFileSync.mockClear();
+  intervalFor(10000).fn();
+  const written = JSON.parse(m.fs.writeFileSync.mock.calls[0][1]);
+  expect(written.gpus.map((g) => [g.index, g.hashrate, g.pciBusId])).toEqual([
+    [0, 100, '00000000:01:00.0'],
+    [1, 90, '00000000:02:00.0'],
+  ]);
+
+  eng.emit('stopped', 0);
+  await expect(p).resolves.toBe(0);
+});
+
+test('no stats file, no bus id query', async () => {
+  const m = load();
+  const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+  await settle();
+  expect(m.probe.detectPciBusIds).not.toHaveBeenCalled();
   m.PearlEngine.instances[0].emit('stopped', 0);
   await expect(p).resolves.toBe(0);
 });

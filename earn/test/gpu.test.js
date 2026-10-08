@@ -2,7 +2,7 @@
 
 const {
   pickGpu, countGpus, alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda,
-  parseDeviceIndex, planMinerGpus, parseGpuStats, parseMacGpu,
+  parseDeviceIndex, planMinerGpus, parseGpuStats, parsePciBusIds, parseMacGpu,
 } = require('../src/shared/gpu');
 
 describe('pickGpu', () => {
@@ -56,6 +56,26 @@ describe('countGpus', () => {
     expect(countGpus([])).toBe(0);
     expect(countGpus(null)).toBe(0);
     expect(countGpus([null])).toBe(0);
+  });
+});
+
+// What HiveOS's h-stats.sh turns into bus_numbers, so each card's hashrate lands
+// on its own dashboard row.
+describe('parsePciBusIds', () => {
+  test('maps each card index to its PCI bus id', () => {
+    const out = '0, 00000000:01:00.0\n1, 00000000:0A:00.0\n';
+    expect(parsePciBusIds(out)).toEqual({ 0: '00000000:01:00.0', 1: '00000000:0A:00.0' });
+  });
+
+  test('accepts a 4-digit domain and skips rows that do not parse', () => {
+    const out = '\n0, 0000:81:00.0\nNo devices were found\n1, [N/A]\nx, 00000000:02:00.0\n';
+    expect(parsePciBusIds(out)).toEqual({ 0: '0000:81:00.0' });
+  });
+
+  test('returns an empty map for empty or nullish input', () => {
+    expect(parsePciBusIds('')).toEqual({});
+    expect(parsePciBusIds(null)).toEqual({});
+    expect(parsePciBusIds(undefined)).toEqual({});
   });
 });
 

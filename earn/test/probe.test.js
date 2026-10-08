@@ -222,6 +222,20 @@ describe('detectCudaCards', () => {
   });
 });
 
+// Which PCI bus each card sits on, for the stats file HiveOS reads.
+describe('detectPciBusIds', () => {
+  it('asks nvidia-smi for each card index and bus id', async () => {
+    execCb(null, '0, 00000000:01:00.0\n1, 00000000:02:00.0\n');
+    expect(await probe.detectPciBusIds()).toEqual({ 0: '00000000:01:00.0', 1: '00000000:02:00.0' });
+    expect(execFile.mock.calls[0][1]).toEqual(['--query-gpu=index,pci.bus_id', '--format=csv,noheader']);
+  });
+
+  it('is empty when nvidia-smi fails', async () => {
+    execCb(new Error('nvidia-smi: not found'));
+    expect(await probe.detectPciBusIds()).toEqual({});
+  });
+});
+
 describe('postMinerReport', () => {
   it('POSTs over https (the configured report url) and resolves on end', async () => {
     const req = fakeReq();

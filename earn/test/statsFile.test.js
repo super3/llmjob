@@ -70,8 +70,28 @@ describe('statsFilePayload: what the node is doing', () => {
   });
 
   test('per-card rows pass through, defaulting to an empty array', () => {
-    const gpus = [{ index: 0, gpu: 'RTX 5090', hashrate: 130, accepted: 9, rejected: 0, power: 600, temp: 61 }];
-    expect(statsFilePayload({ gpus }, {}).gpus).toBe(gpus);
+    const card = { index: 0, gpu: 'RTX 5090', hashrate: 130, accepted: 9, rejected: 0, power: 600, temp: 61 };
+    expect(statsFilePayload({ gpus: [card] }, {}).gpus).toEqual([{ ...card, pciBusId: null }]);
     expect(statsFilePayload({ gpus: 'nope' }, {}).gpus).toEqual([]);
+  });
+
+  // HiveOS binds each card's hashrate to a dashboard row by PCI bus. The bus is
+  // looked up by the card's own index, so a rig mining on card 1 only gets card
+  // 1's bus, not card 0's.
+  test('each card carries its PCI bus id, looked up by its index', () => {
+    const gpus = [{ index: 1, hashrate: 90 }, { index: 3, hashrate: 80 }];
+    const pciBusIds = { 0: '00000000:01:00.0', 1: '00000000:02:00.0', 3: '00000000:81:00.0' };
+    expect(statsFilePayload({ gpus }, { pciBusIds }).gpus).toEqual([
+      { index: 1, hashrate: 90, pciBusId: '00000000:02:00.0' },
+      { index: 3, hashrate: 80, pciBusId: '00000000:81:00.0' },
+    ]);
+    // The snapshot's own rows are not modified.
+    expect(gpus[0]).toEqual({ index: 1, hashrate: 90 });
+  });
+
+  test('a card with no known bus id gets null', () => {
+    expect(statsFilePayload({ gpus: [{ index: 2 }] }, { pciBusIds: { 0: '00000000:01:00.0' } }).gpus)
+      .toEqual([{ index: 2, pciBusId: null }]);
+    expect(statsFilePayload({ gpus: [null] }, { pciBusIds: {} }).gpus).toEqual([{ pciBusId: null }]);
   });
 });

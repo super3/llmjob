@@ -178,6 +178,29 @@ function parseGpuStats(out) {
   return list;
 }
 
+// Parse `nvidia-smi --query-gpu=index,pci.bus_id --format=csv,noheader` into a
+// map of card index → PCI bus id, e.g. { 0: '00000000:01:00.0' }.
+//
+// The stats file carries it beside each card's numbers so HiveOS's h-stats.sh
+// can tell the dashboard which GPU row each hashrate belongs to. The index is
+// the core's CUDA device, which is nvidia-smi's index because both shells pin
+// CUDA_DEVICE_ORDER=PCI_BUS_ID (see alignCudaDeviceOrder), so pairing the two
+// here is the same pairing the board rows already rely on. Rows that don't
+// parse are skipped.
+const PCI_BUS_ID_RE = /^[0-9a-f]{4,8}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]$/i;
+
+function parsePciBusIds(out) {
+  const map = {};
+  for (const row of String(out == null ? '' : out).split(/\r?\n/)) {
+    const parts = row.split(',').map((x) => x.trim());
+    if (parts.length < 2) continue;
+    const index = parseInt(parts[0], 10);
+    if (!Number.isInteger(index) || !PCI_BUS_ID_RE.test(parts[1])) continue;
+    map[index] = parts[1];
+  }
+  return map;
+}
+
 // Parse `system_profiler SPDisplaysDataType -json` into { name, count }, or
 // null when nothing usable is in there.
 //
@@ -207,5 +230,5 @@ function parseMacGpu(out) {
 module.exports = {
   IGNORE, INTEGRATED, pickGpu, countGpus, alignCudaDeviceOrder,
   clearCudaVisibleDevices, describeClearedCuda, parseDeviceIndex,
-  planMinerGpus, parseGpuStats, parseMacGpu,
+  planMinerGpus, parseGpuStats, parsePciBusIds, parseMacGpu,
 };

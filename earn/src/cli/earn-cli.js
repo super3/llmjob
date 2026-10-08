@@ -1137,6 +1137,11 @@ async function run(argv) {
     // it used to live inside `if (plan.miner)`, so `--mode llm` wrote nothing at
     // all, and it could not see the model or the gate even when they were up.
     if (settings.statsFile) {
+      // Each card's PCI bus id, read once. HiveOS needs it to put each card's
+      // hashrate on the right dashboard row. Not awaited: mining shouldn't wait
+      // on nvidia-smi, and the first writes simply go out without it.
+      let pciBusIds = {};
+      probe.detectPciBusIds().then((ids) => { pciBusIds = ids; });
       const writeStats = () => {
         try {
           const payload = statsFilePayload(snapshot(stats, Date.now()), {
@@ -1147,6 +1152,7 @@ async function run(argv) {
             gate: auto ? auto.gate.state : null,
             mining: !!(miner && miner.isRunning()),
             llm: serveLlmState,
+            pciBusIds,
           });
           const tmp = settings.statsFile + '.tmp';
           fs.writeFileSync(tmp, JSON.stringify(payload));

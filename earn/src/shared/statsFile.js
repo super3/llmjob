@@ -42,8 +42,18 @@ function statsFilePayload(snap, meta) {
       gen: Number(m.llm && m.llm.tps) || 0,
       prefill: Number(m.llm && m.llm.promptTps) || 0,
     },
-    gpus: Array.isArray(s.gpus) ? s.gpus : [],
+    // One row per mining card. Each also gets its PCI bus id (`pciBusId`,
+    // nvidia-smi's "00000000:01:00.0", or null when unknown) from
+    // meta.pciBusIds, keyed by the card's index. HiveOS's h-stats.sh sends it as
+    // bus_numbers, which is how the dashboard puts each card's hashrate on that
+    // card's row instead of matching by position.
+    gpus: Array.isArray(s.gpus) ? s.gpus.map((g) => withBusId(g, m.pciBusIds)) : [],
   };
+}
+
+function withBusId(card, busIds) {
+  const id = busIds && card && busIds[card.index];
+  return Object.assign({}, card, { pciBusId: id || null });
 }
 
 // The served model, flattened to the fields a consumer can act on. Returns null
