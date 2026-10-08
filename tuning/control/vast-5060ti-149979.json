@@ -1,0 +1,5 @@
+{
+  "default": {"core": "release", "flags": "", "env": {}},
+  "gpus": {"1": {"core": "cu12"}},
+  "builds": {}
+}
