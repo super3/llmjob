@@ -34,3 +34,12 @@ agents never edit the same lines. Verified gains are copied here.
   control GPU held 98.7 (Oct 8, 20 minutes). So the loss is in work done per clock. It also
   means a core built on the box, which uses nvcc 12.8, starts about 3% behind the release on
   Blackwell cards.
+
+- **Ada: the CUDA 12 and CUDA 13 cores run the same fold.** Built for sm_89 under nvcc
+  12.8.93 and 13.3.73, `pearl_tile_fold_tall` comes out the same: 255 registers, no spill,
+  3040 instructions, a 540-instruction chunk loop for 192 IMMA. Only predicate-register
+  names differ. The North Carolina 4090 measured cu13 level with the release (+0.6%, inside
+  drift). So `core: cu13` is not worth a test window on Ada.
+- **Memory clock locks don't work on Vast.** `--mine-mem-clock 5001` left the memory clock
+  at the driver's value on the SA L40S (149491), the Japan 4090 (151594) and the Maryland
+  5090 (151626): the containers can't set clocks.
