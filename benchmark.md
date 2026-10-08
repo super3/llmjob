@@ -16,8 +16,11 @@ host:
 - RTX 30-series: 97–104% on the eleven hosts re-measured with v0.5.13's
   kernel. Four rows are still from v0.5.11, at 78–80%: both 3090 Tis, the
   Ukraine 3090 and the 220 W Quebec 3070.
-- RTX 40-series: 99–103% on the eight hosts re-measured with v0.5.13's
-  kernel, and 97–101% on the ten still from v0.5.11.
+- RTX 40-series: 97–103% on the ten hosts re-measured with PR #256's build
+  (`51d88e8`, not yet released), and 97–101% on the eight still from
+  v0.5.11. Against v0.5.13 in the same rental, the build gained 0.5% on the
+  209 W 4070 Super and was level on the rest. That card is at 97% because
+  its host ran 2% slower than in its earlier rental.
 - RTX 50-series: 99–100% on the four hosts re-measured with v0.5.13's kernel.
   Of the eight still from v0.5.11, the 5090s and 5080s are close to even
   (98–102%); the 5070 Tis, the Poland 5070 and the India 5060 trail by
@@ -33,20 +36,23 @@ host:
   6.1–8.0% on the other four. These cards couldn't mine at all before
   v0.5.13.
 - Ada workstation and data-center cards (sm_89: L40S, L40, L4, RTX 6000,
-  5000, 4500, 4000 and 2000 Ada): 101–111%.
+  5000, 4500, 4000 and 2000 Ada): 101–111%. Ten rows are from PR #256's
+  build, which gained 0.7–1.7% over v0.5.13 in the same rental on the L4s
+  and the RTX 2000, 4000 and 4500 Ada, and was level on the rest. Three are
+  still from 2026-10-07, on v0.5.13's kernel.
 - RTX PRO Blackwell (sm_120): 99–101%. The 6000 Max-Q and the RTX 6000D are
   level; the RTX PRO 5000 and 6000 Server are 0.7% short.
 - RTX A4000 (sm_86): 102%.
 
 ## How a host is tested
 
-1. Get our CLI and core. The v0.5.11 runs downloaded them from the
-   published release on GitHub, the same files a user gets. So did the
-   re-measures of 17 RTX rows and four Hopper rows on 2026-10-08,
-   17:03–18:47 UTC, from the published v0.5.13 release; those boxes also
-   checked the files against the release digests. Each section names those
-   rows. Other later runs built a commit from source, or as CI builds it;
-   each section names the commit and says whether its kernel is
+1. Get our CLI and core. The v0.5.11 runs downloaded them from the published
+   release on GitHub, the same files a user gets. So did the re-measures of
+   ten RTX rows and four Hopper rows on 2026-10-08, 17:03–18:47 UTC, from
+   the published v0.5.13 release; those boxes also checked the files against
+   the release digests. The 20-, 30- and 50-series and Hopper sections name
+   those rows. Other later runs built a commit from source, or as CI builds
+   it; each section names the commit and says whether its kernel is
    byte-identical to v0.5.13's. The first 20-series run predates the
    release: it built PR #250 from source, which is the code that shipped as
    v0.5.11. On an RTX 50-series card with driver 580 or newer, the CLI loads
@@ -257,71 +263,95 @@ Every host passed the hit check, and every run had 0 rejected shares.
   - Three hosts planned earlier (3090 Ti Vietnam, 3090 Argentina, 3080
     France) were no longer listed when the run started.
 
-## RTX 40-series (v0.5.13 and v0.5.11)
+## RTX 40-series (PR #256's build and v0.5.11)
 
 Run on 2026-10-06, 11:12–12:10 UTC, with the v0.5.11 release.
 
-Eight rows were re-measured later with 5-minute pool runs. The Australia
-4090 ran on 2026-10-08, 14:11–14:22 UTC, with the v0.5.13 release candidate
-(`26c50b3`) built as CI builds it, which has the same sm_89 kernel as
-v0.5.12 and v0.5.13, byte for byte. Both 4080 Supers, the Taiwan 4080, both
-4070 Supers, the Brazil 4060 Ti and the New Zealand 4060 ran on 2026-10-08,
-18:22–18:37 UTC, with the published v0.5.13 release. Still from v0.5.11:
-the British Columbia 4090, the 4090D, the Nevada 4080, both 4070 Ti Supers,
-both 4070 Tis, the 4070, the Ontario 4060 Ti and the Australia 4060.
+Ten rows were re-measured on 2026-10-08, 19:19–20:53 UTC, with 5-minute
+pool runs of PR #256's build at `51d88e8`, not yet released: the Australia
+4090, both 4080 Supers, both 4080s, both 4070 Supers, both 4060 Tis and the
+New Zealand 4060. Each box built the core from source (CUDA 12.8, sm_89,
+native-core.yml's flags) with `-DPEARL_LOG_ADA_L2=1`, which only prints the
+card's L2 and the batch width, and ran it under the v0.5.13 CLI. The only
+change from v0.5.13 is host code that picks the batch width from the L2
+(see "Ada batch width (PR #256)" below), so the sm_89 kernel is v0.5.13's.
+Still from v0.5.11: the British Columbia 4090, the 4090D, both 4070 Ti
+Supers, both 4070 Tis, the 4070 and the Australia 4060.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
-| RTX 4090 | Australia (450 W) | 17334 | 323.5 | 314.7 | 314.2 | 103% |
+| RTX 4090 | Australia (450 W) | 17334 | 317.7 | 314.7 | 314.2 | 101% |
 | RTX 4090 | British Columbia (370 W) | 152545 | 289.3 | 287.5 | 289.6 | 100% |
 | RTX 4090D | South Carolina (425 W) | 142279 | 272.2 | 264.1 | 271.1 | 100% |
-| RTX 4080 Super | Florida (320 W) | 142085 | 197.9 | didn't start | 196.3 | 101% |
-| RTX 4080 Super | California (275 W) | 138449 | 198.0 | 192.9 | 192.6 | 103% |
-| RTX 4080 | Taiwan (280 W) | 149135 | 190.2 | 187.4 | 188.1 | 101% |
-| RTX 4080 | Nevada (320 W) | 147894 | 194.7 | 197.4 | 197.1 | 99% |
+| RTX 4080 Super | Florida (320 W) | 142085 | 198.5 | didn't start | 196.3 | 101% |
+| RTX 4080 Super | California (275 W) | 138449 | 198.6 | 192.9 | 192.6 | 103% |
+| RTX 4080 | Taiwan (280 W) | 149135 | 190.4 | 187.4 | 188.1 | 101% |
+| RTX 4080 | Nevada (320 W) | 147894 | 197.8 | 197.4 | 197.1 | 100% |
 | RTX 4070 Ti Super | Texas (285 W) | 142663 | 171.6 | 171.9 | 171.7 | 100% |
 | RTX 4070 Ti Super | United States (285 W) | 43741 | 167.4 | 169.5 | 168.8 | 99% |
 | RTX 4070 Ti | United Kingdom (285 W) | 149163 | 159.8 | 160.6 | 159.7 | 100% |
 | RTX 4070 Ti | Delaware (285 W) | 39901 | 156.1 | 157.5 | 156.8 | 99% |
-| RTX 4070 Super | California (209 W) | 145255 | 138.5 | 139.6 | 139.3 | 99% |
-| RTX 4070 Super | California (220 W) | 153237 | 141.7 | 139.0 | 141.3 | 100% |
+| RTX 4070 Super | California (209 W) | 145255 | 136.0 | 139.6 | 139.3 | 97% |
+| RTX 4070 Super | California (220 W) | 153237 | 140.1 | 139.0 | 141.3 | 99% |
 | RTX 4070 | New York (200 W) | 19053 | 122.0 | 120.9 | 119.4 | 101% |
-| RTX 4060 Ti | Ontario (160 W) | 37799 | 86.3 | 86.1 | 86.6 | 100% |
-| RTX 4060 Ti | Brazil (160 W) | 152073 | 88.7 | 88.3 | 89.0 | 100% |
-| RTX 4060 | New Zealand (115 W) | 148383 | 60.2 | 60.3 | 58.7 | 100% |
+| RTX 4060 Ti | Ontario (160 W) | 37799 | 85.9 | 86.1 | 86.6 | 99% |
+| RTX 4060 Ti | Brazil (160 W) | 152073 | 89.0 | 88.3 | 89.0 | 100% |
+| RTX 4060 | New Zealand (115 W) | 148383 | 60.3 | 60.3 | 58.7 | 100% |
 | RTX 4060 | Australia (120 W) | 143986 | 46.5 | 47.7 | 47.5 | 97% |
 
 Every host passed the hit check, and every run had 0 rejected shares.
 
-- **Against the top competitor:** 99–103% on the eight re-measured hosts and
-  97–101% on the rest. All three miners finish within about 3% of each other
-  on Ada, so there's little left to gain here.
+- **Against the top competitor:** 97–103% on the ten hosts re-measured with
+  PR #256's build and 97–101% on the eight still from v0.5.11. All three
+  miners finish within about 3% of each other on Ada, so there's little left
+  to gain here.
+- **On v0.5.13:** before PR #256's build, eight of the re-measured rows read,
+  on 2026-10-08: 323.5 (103%) on the Australia 4090, on `26c50b3` at
+  14:11–14:22 UTC; and with the published release at 18:22–18:37 UTC,
+  197.9 (101%) and 198.0 (103%) on the Florida and California 4080 Supers,
+  190.2 (101%) on the Taiwan 4080, 138.5 (99%) and 141.7 (100%) on the
+  209 W and 220 W 4070 Supers, 88.7 (100%) on the Brazil 4060 Ti, and 60.2
+  (100%) on the New Zealand 4060.
 - **On v0.5.11:** the re-measured rows read 314.9 (100%) on the Australia
   4090, 196.5 (100%) and 193.4 (100%) on the Florida and California 4080
-  Supers, 189.6 (101%) on the Taiwan 4080, 138.5 (99%) and 139.9 (99%) on
-  the 209 W and 220 W 4070 Supers, 89.1 (100%) on the Brazil 4060 Ti, and
-  59.9 (99%) on the New Zealand 4060.
+  Supers, 189.6 (101%) on the Taiwan 4080, 194.7 (99%) on the Nevada 4080,
+  138.5 (99%) and 139.9 (99%) on the 209 W and 220 W 4070 Supers, 86.3
+  (100%) and 89.1 (100%) on the Ontario and Brazil 4060 Tis, and 59.9 (99%)
+  on the New Zealand 4060.
+- **The release in the same rental:** each box ran the v0.5.13 release
+  before and after PR #256's build (A1 and A2, in "Ada batch width (PR
+  #256)" below). Four rows went down because the host was slower than in
+  its earlier rental, not because of the build:
+  - Australia 4090: the release read 317.4 both times, against 323.5 on
+    `26c50b3`.
+  - 209 W 4070 Super: 135.4 and 135.3, against 138.5.
+  - 220 W 4070 Super: 140.1 both times, against 141.7.
+  - Ontario 4060 Ti: 85.8 and 85.9, against 86.3 on v0.5.11. The card ran
+    at 83–84 C and slowed for heat in every run.
 - **Speed tests, not pool runs:** on 2026-10-07 a speed test of the v0.5.13
   kernel, on `79173e2`, read 198.1 (100%) on the Nevada 4080, 171.6 (100%)
   on the Texas 4070 Ti Super and 160.0 (100%) on the United Kingdom
-  4070 Ti. They aren't pool runs, so those rows keep their v0.5.11 figures.
+  4070 Ti. They aren't pool runs. The Texas and United Kingdom rows keep
+  their v0.5.11 figures; the Nevada row is now a pool run of PR #256's
+  build.
 - **RTX 4060, Australia:** the host runs the card in two clock states. It
   sometimes locks it at 1995 MHz and sometimes leaves it power-capped at
   about 2600 MHz. In the v0.5.11 session all three miners ran at 1995 MHz,
   so the fixed competitor figures come from that state. At
   1995 MHz a speed test of the v0.5.13 kernel, on `79173e2`, read 47.1
-  (99%) on 2026-10-07; it isn't a pool run. A pool run of the published
-  v0.5.13 release on 2026-10-08 read 61.1 at about 2600 MHz. That's the
-  other state, so it can't be compared with this row, which keeps its
-  v0.5.11 figure. Both later runs had a 115 W limit; the v0.5.11 session
-  had 120 W.
-- **RTX 4060 Ti, Brazil:** the v0.5.13 pool run got no share accepted in
-  its 5 minutes, and none rejected. It connected to the pool and passed the
-  hit check. The rate is the CLI's own figure.
-- **RTX 4070 Super, California (220 W):** in the v0.5.13 pool run the card
-  ran at a median 81 C, reached 85 C, and slowed for heat in 8 of 49
-  samples, so its lowest reading was 138.5 against a median of 142.1. This
-  row may be a little low.
+  (99%) on 2026-10-07; it isn't a pool run. On 2026-10-08 two later
+  rentals ran in the other state, at about 2600 MHz: a pool run of the
+  published v0.5.13 release read 61.1, and at 19:18–19:39 UTC PR #256's
+  build read 61.9, between release runs of 61.9 and 62.0 (62.0 with the
+  width forced to 1024). They can't be compared with this row, which keeps
+  its v0.5.11 figure. All the later runs had a 115 W limit; the v0.5.11
+  session had 120 W.
+- **RTX 4060 Ti, Brazil:** the earlier v0.5.13 pool run (88.7) got no share
+  accepted in its 5 minutes, and none rejected. The run in the row got 3.
+- **RTX 4070 Super, California (220 W):** in the earlier v0.5.13 pool run
+  (141.7) the card ran at a median 81 C, reached 85 C, and slowed for heat
+  in 8 of 49 samples. In the rental for the row it ran at 70–72 C and only
+  the power limit held it, yet every run read about 140.1.
 - **RTX 4080 Super, Florida:** PeakMiner exited at once with code 127 and
   wrote nothing (see the 50-series notes). The comparison there is SRBMiner.
   It's a 2-GPU rental. Every miner was pinned to GPU 0, and each one's rate
@@ -524,30 +554,56 @@ a 5-minute pool run. The H100 SXM is still from `e8c04b4`.
   $5.61/h against the $3.74 listed, destroyed after 14 s), and H100 PCIe
   France (153139, restarts the container).
 
-## Ada workstation and data-center cards (sm_89, v0.5.13)
+## Ada workstation and data-center cards (sm_89, PR #256's build and v0.5.13)
 
 Run on 2026-10-07, 16:55–21:45 UTC, with PR #253's core at `5f427dd`,
 `54c993d` or `e0bee03`. Their sm_89 kernels are byte-identical to each other
-and to v0.5.13's, and no change was made for these cards. They run the same
-sm_89 code as the RTX 40-series. Same harness, pool and miner versions as the
-RTX tables.
+and to v0.5.13's, and PR #253 made no change for these cards. They run the
+same sm_89 code as the RTX 40-series. Same harness, pool and miner versions as
+the RTX tables.
+
+Ten rows were re-measured on 2026-10-08, 19:23–20:17 UTC, with 5-minute
+pool runs of PR #256's build at `51d88e8`, not yet released, built on each
+box as for the RTX 40-series. It has v0.5.13's sm_89 kernel and changes
+only the batch width the host picks from the card's L2 (see "Ada batch
+width (PR #256)" below). Still from PR #253's core: the Germany RTX 6000
+Ada, the New York L40 and the France RTX 4000 Ada.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
-| L40S | Texas (350 W) | 96563 | 288.4 | 257.1 | 281.8 | 102% |
-| L40S | Taiwan (350 W) | 151291 | 288.9 | 250.8 | 270.7 | 107% |
-| RTX 6000 Ada | New York (300 W) | 142572 | 227.5 | 195.9 | 210.4 | 108% |
+| L40S | Texas (350 W) | 96563 | 288.2 | 257.1 | 281.8 | 102% |
+| L40S | Taiwan (350 W) | 151291 | 288.6 | 250.8 | 270.7 | 107% |
+| RTX 6000 Ada | New York (300 W) | 142572 | 228.1 | 195.9 | 210.4 | 108% |
 | RTX 6000 Ada | Germany (300 W) | 146274 | 194.2 | 167.5 | 179.2 | 108% |
-| RTX 5000 Ada | Minnesota (250 W) | 151333 | 215.4 | 193.4 | 201.1 | 107% |
-| L40 | Vietnam (300 W) | 114318 | 173.8 | 166.5 | 170.4 | 102% |
+| RTX 5000 Ada | Minnesota (250 W) | 151333 | 222.3 | 193.4 | 201.1 | 111% |
+| L40 | Vietnam (300 W) | 114318 | 172.9 | 166.5 | 170.4 | 101% |
 | L40 | New York (250 W) | 56199 | 153.6 | 131.8 | 139.0 | 111% |
-| RTX 4500 Ada | France (210 W) | 148971 | 146.7 | 134.3 | 145.1 | 101% |
-| RTX 4000 Ada | Norway (130 W) | 149238 | 96.6 | 94.0 | 95.0 | 102% |
+| RTX 4500 Ada | France (210 W) | 148971 | 148.1 | 134.3 | 145.1 | 102% |
+| RTX 4000 Ada | Norway (130 W) | 149238 | 97.7 | 94.0 | 95.0 | 103% |
 | RTX 4000 Ada | France (130 W) | 152701 | 93.1 | 91.3 | 91.8 | 101% |
-| L4 | Czechia (72 W) | 116596 | 79.4 | 74.4 | 77.8 | 102% |
-| L4 | Washington (72 W) | 152541 | 78.5 | 74.2 | 77.2 | 102% |
-| RTX 2000 Ada | Romania (70 W) | 68269 | 47.8 | 47.1 | 43.6 | 102% |
+| L4 | Czechia (72 W) | 116596 | 79.5 | 74.4 | 77.8 | 102% |
+| L4 | Washington (72 W) | 152541 | 80.0 | 74.2 | 77.2 | 104% |
+| RTX 2000 Ada | Romania (70 W) | 68269 | 48.5 | 47.1 | 43.6 | 103% |
 
+- **Before PR #256's build:** on 2026-10-07, with PR #253's core, the
+  re-measured rows read 288.4 (102%) and 288.9 (107%) on the Texas and
+  Taiwan L40S, 227.5 (108%) on the New York RTX 6000 Ada, 215.4 (107%) on
+  the RTX 5000 Ada, 173.8 (102%) on the Vietnam L40, 146.7 (101%) on the
+  RTX 4500 Ada, 96.6 (102%) on the Norway RTX 4000 Ada, 79.4 (102%) and
+  78.5 (102%) on the Czechia and Washington L4s, and 47.8 (102%) on the
+  RTX 2000 Ada.
+- **The release in the same rental:** each box ran the v0.5.13 release
+  before and after PR #256's build (A1 and A2, in "Ada batch width (PR
+  #256)" below).
+  - Both L40S and the L40 went down 0.1–0.5%. The build keeps the
+    release's own width there, and the release read about the same as the
+    build: 288.7 and 288.1 in Texas, 288.6 and 288.5 in Taiwan, and 172.8
+    and 172.9 on the L40.
+  - The RTX 5000 Ada's rise from 215.4 is mostly the host: the release read
+    221.7 and 221.6 in the same rental, and the build added 0.3%.
+  - On the Czechia L4 the release read 78.3 and 78.0, 1.5% below
+    2026-10-07, so the build's 1.7% gain moved the row only from 79.4 to
+    79.5.
 - **Every host:** every miner ran at the power limit. We ran 30–310 MHz
   faster than the other two at the same watts, so we use less power for the
   same work. Per clock we get about 96% of the tensor peak and SRBMiner about
@@ -557,12 +613,72 @@ RTX tables.
   host sets the L40 to 250 W; its maximum is 300 W.
 - **Hosts matter:** at the same 300 W, the Germany RTX 6000 Ada ran at
   83–85 C and about 1400 MHz, and the New York one at 77–79 C and 1640 MHz,
-  so every miner was about 17% faster in New York. The RTX 4000 Ada read 4%
-  higher in Norway (74 C) than in France (85 C).
+  so every miner was about 17% faster in New York. On 2026-10-07 the RTX
+  4000 Ada read 4% higher in Norway (74 C) than in France (85 C).
 - **RTX 2000 Ada:** PeakMiner is the faster competitor here.
 - **Replaced hosts:** L4 Brazil (151023) blocks outbound port 1200, so the
   competitors couldn't run. L4 Utah (109523) is thermally limited: it drew
   about 50 W of its 72 W at 87–88 C, and every miner's rate swung by ±4 TH/s.
+
+## Ada batch width (PR #256)
+
+PR #256's `51d88e8` ports a host-only rule from PR #255 for the sm_89 tall
+fold. At v0.5.13's batch width (`col_batch` 2048), one launch keeps
+re-reading 64 MB of one input (B') and a 6 MB band of the other (A'). When
+the L2 can't hold that, B' comes back from memory once a band, and on a
+power-capped card that memory power comes out of the SM clock. The rule
+halves `col_batch` until B' and one band fit the L2 the card reports. On
+these cards that gave 512 on 24 and 32 MB, 1024 on 40–64 MB, and 2048, the
+release's width, on 72 MB and up. The kernel is unchanged.
+
+Each host ran three to five 5-minute pool runs in one rental on 2026-10-08,
+19:18–20:53 UTC: the v0.5.13 release (A1), `51d88e8` (B), on some hosts
+`51d88e8` with the width forced to another value (C), then the release
+again (A2). B and C were built on the box (see the RTX 40-series intro);
+C also set `-DPEARL_ADA_COL_BATCH=N`. Every built core passed the hit
+check, and every run had 0 rejected shares. "B vs release" is B over the
+mean of A1 and A2, and "A2 vs A1" is how far the release itself moved in
+the rental.
+
+| Card | Host | L2 | Width | Release, A1 / A2 | B | B vs release | A2 vs A1 | C (vs release) |
+|---|---|---|---|---|---|---|---|---|
+| RTX 4060 | New Zealand | 24 MB | 512 | 60.2 / 59.9 | 60.3 | +0.4% | -0.5% | 1024: 60.2 (+0.2%) |
+| RTX 4060 | Australia | 24 MB | 512 | 61.9 / 62.0 | 61.9 | 0.0% | 0.0% | 1024: 62.0 (0.0%) |
+| RTX 2000 Ada | Romania | 24 MB | 512 | 47.9 / 47.7 | 48.5 | +1.4% | -0.2% | 256: 48.4 (+1.2%); 512: 48.3 (+1.1%) |
+| RTX 4060 Ti | Ontario | 32 MB | 512 | 85.8 / 85.9 | 85.9 | +0.1% | +0.1% | 1024: 86.0 (+0.2%) |
+| RTX 4060 Ti | Brazil | 32 MB | 512 | 88.7 / 88.7 | 89.0 | +0.4% | 0.0% | 1024: 89.0 (+0.4%) |
+| RTX 4000 Ada | Norway | 40 MB | 1024 | 96.6 / 96.6 | 97.7 | +1.1% | 0.0% | 512: 97.9 (+1.3%) |
+| L4 | Czechia | 48 MB | 1024 | 78.3 / 78.0 | 79.5 | +1.7% | -0.4% | 512: 79.1 (+1.2%) |
+| L4 | Washington | 48 MB | 1024 | 78.7 / 78.6 | 80.0 | +1.7% | -0.1% | |
+| RTX 4500 Ada | France | 48 MB | 1024 | 147.1 / 147.0 | 148.1 | +0.7% | 0.0% | |
+| RTX 4070 Super | California (209 W) | 48 MB | 1024 | 135.4 / 135.3 | 136.0 | +0.5% | -0.1% | |
+| RTX 4070 Super | California (220 W) | 48 MB | 1024 | 140.1 / 140.1 | 140.1 | 0.0% | 0.0% | |
+| RTX 4080 | Taiwan | 64 MB | 1024 | 190.2 / 190.2 | 190.4 | +0.1% | 0.0% | 512: 190.1 (0.0%) |
+| RTX 4080 | Nevada | 64 MB | 1024 | 197.7 / 197.4 | 197.8 | +0.1% | -0.2% | |
+| RTX 4080 Super | Florida | 64 MB | 1024 | 198.9 / 197.9 | 198.5 | 0.0% | -0.5% | |
+| RTX 4080 Super | California | 64 MB | 1024 | 198.0 / 198.0 | 198.6 | +0.3% | 0.0% | |
+| RTX 5000 Ada | Minnesota | 64 MB | 1024 | 221.7 / 221.6 | 222.3 | +0.3% | -0.1% | |
+| RTX 4090 | Australia | 72 MB | 2048 | 317.4 / 317.4 | 317.7 | +0.1% | 0.0% | 1024: 318.3 (+0.3%) |
+| L40S | Texas | 96 MB | 2048 | 288.7 / 288.1 | 288.2 | -0.1% | -0.2% | 1024: 288.1 (-0.1%) |
+| L40S | Taiwan | 96 MB | 2048 | 288.6 / 288.5 | 288.6 | 0.0% | 0.0% | 1024: 288.2 (-0.1%) |
+| L40 | Vietnam | 96 MB | 2048 | 172.8 / 172.9 | 172.9 | 0.0% | 0.0% | 1024: 172.8 (-0.1%) |
+| RTX 6000 Ada | New York | 96 MB | 2048 | 227.9 / 228.2 | 228.1 | 0.0% | +0.1% | 1024: 226.1 (-0.9%) |
+
+- **Where the rule narrows the batch,** it gained 0.7–1.7% on the
+  power-capped workstation and data-center cards (both L4s and the RTX
+  2000, 4000 and 4500 Ada) and 0.5% on the 209 W 4070 Super. Their median
+  SM clock rose 15–45 MHz at the same power. On the other cards it narrows,
+  B was 0.0–0.4% above the release, within the 0.5% the release itself
+  moved between A1 and A2 on two hosts.
+- **At 72 MB and up** the rule keeps 2048, so B runs the release's batch
+  and read within 0.1% of it.
+- **Forced widths:** none beat the rule's pick by more than 0.2% (1024 on
+  the 4090 and the Ontario 4060 Ti, 512 on the RTX 4000 Ada). 1024 instead
+  of 2048 cost 0.9% on the RTX 6000 Ada, and 512 instead of 1024 cost 0.5%
+  on the Czechia L4. The RTX 2000 Ada's C at 512 is the rule's own width,
+  forced; it read 0.3% below B, which is about the run-to-run noise.
+- **RTX 4060, Australia:** ran in its 2600 MHz state, so its row is
+  unchanged (see the 40-series notes).
 
 ## RTX PRO Blackwell (sm_120, v0.5.13)
 
