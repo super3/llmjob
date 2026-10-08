@@ -265,6 +265,9 @@ struct Ctx {
   // (PEARL_AMPERE_PERSIST_ARCH: Ampere's, not Hopper's).
   bool foldPersistA = false;
   uint32_t tallBand = 0;
+  // Whether it is Ada's cp.async build (binaryVersion 89), whose batch width the host
+  // picks from the L2 (pearl_ada_col_batch).
+  bool foldAda = false;
   // Whether that is GA100's unfused fold (binaryVersion 80, PEARL_TALL_UNFUSED): it writes
   // each slot's transcripts to dTrG[slot], 64 bytes a region of the batch, and
   // pearl_tall_hash80 hashes them after it on the slot's stream.
@@ -959,6 +962,7 @@ void resolve_fold(Ctx *ctx) {
     // sees the same value, so the launch shape follows the body.
     ctx->foldCluster = ctx->foldTma && PEARL_TALL_CLUSTER != 0;
     ctx->foldAmpere = ctx->foldTall && !ctx->foldTma && PEARL_AMPERE_ARCH(ft.binaryVersion * 10);
+    ctx->foldAda = ctx->foldTall && !ctx->foldTma && ft.binaryVersion == 89;
     ctx->foldPersistA = ctx->foldAmpere && PEARL_AMPERE_PERSIST_ARCH(ft.binaryVersion * 10);
     ctx->foldUnfused = ctx->foldAmpere && ft.binaryVersion == 80 && PEARL_TALL_UNFUSED != 0;
     // Hopper's wgmma fold: only when this binary has its body, which alone carries the
@@ -1121,6 +1125,55 @@ uint32_t pearl_ampere_col_batch(uint32_t colBatch, uint32_t colsValid) {
       && colsValid % want == 0u)
     return want;
   return colBatch;
+}
+
+// Ada's batch width (host side, the sm_89 cp.async tall fold only): the profile's
+// col_batch, halved while what one launch keeps re-reading -- the B' every row group
+// sweeps, col_batch * 16 columns of k bytes, plus one band of A', PEARL_TALL_BAND row
+// groups of 192 rows of k bytes -- is more than PEARL_ADA_L2_SHARE percent of the L2.
+// Never below one tile's 16 column offsets, and only to a width that divides the valid
+// offsets, so a salt still splits into whole batches.
+//
+// At 2048 a launch sweeps 64 MB of B' plus a 6 MB band of A'. A 48 MB L2 cannot hold
+// that, so B' comes back from DRAM once a band, 43 times a launch. On a power-capped card
+// those DRAM watts come out of the SM clock, as on Blackwell (PEARL_TMA_L2_SHARE).
+// Measured on an RTX 4070 Super, 48 MB L2, 160 W cap (Vast 116195): one GPU on the build,
+// two GPUs of the same box on the release over the same 10 minutes, 400/400 hits, no
+// invalid shares:
+//   col_batch 2048 (release)  109.7 TH/s on the control GPUs; test GPU at 2040-2070 MHz
+//   col_batch 1024 (38 MB)    +2.5 to +3.1%, test GPU at 2115-2130 MHz, same 160 W
+//   col_batch 512 (22 MB)     1.4% behind 1024 (+0.9% over 2048), against three 1024 GPUs
+// The clock rises at the same power: the DRAM watts come back. Narrower than the L2 needs
+// loses some of it: each launch re-reads all of A' (256 MB), and there are more launches.
+// (A band of 64 row groups instead, at 2048, measured +2%: fewer bands, fewer B' re-reads.)
+//
+// At 100% the rule keeps 2048 on a 72 MB L2 (RTX 4090: 70 MB fits) or larger, where it
+// was tuned; takes 1024 on 48-64 MB (4070 Super, 4070 Ti, 4080); and 512 on 24-36 MB
+// (4060, 4060 Ti, 4070), where 1024's 38 MB does not fit. Only the 48 MB pick has been
+// measured. Only the batch width changes: the same regions, searched in more, shorter
+// launches. -DPEARL_ADA_COL_BATCH=N forces N instead.
+#ifndef PEARL_ADA_L2_SHARE
+#define PEARL_ADA_L2_SHARE 100u
+#endif
+uint32_t pearl_ada_col_batch(uint32_t colBatch, uint32_t colsValid, uint32_t k, uint64_t l2) {
+#ifdef PEARL_ADA_COL_BATCH
+  (void)k;
+  (void)l2;
+  const uint32_t want = (uint32_t)PEARL_ADA_COL_BATCH;
+  if (want >= PEARL_TALL_COL_OFFSETS && want < colBatch && want % PEARL_TALL_COL_OFFSETS == 0u
+      && colsValid % want == 0u)
+    return want;
+  return colBatch;
+#else
+  if (l2 == 0u) return colBatch;
+  const uint64_t colBytes = (uint64_t)PEARL_COLS_COUNT * k;
+  const uint64_t bandBytes = (uint64_t)PEARL_TALL_BAND * PEARL_TALL_BM * k;
+  uint32_t cb = colBatch;
+  while (((uint64_t)cb * colBytes + bandBytes) * 100u > l2 * (uint64_t)PEARL_ADA_L2_SHARE
+         && cb % 2u == 0u && (cb / 2u) % PEARL_TALL_COL_OFFSETS == 0u && colsValid % (cb / 2u) == 0u)
+    cb /= 2u;
+  return cb;
+#endif
 }
 
 // Ampere's band depth for the tall fold (see PEARL_AMPERE_BAND_L2_SHARE): 16, halved
@@ -1454,6 +1507,26 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
       ctx->colBatch = cb;
       ctx->batch = ctx->colBatch * ctx->rowsValid;
     }
+  }
+  // Ada (the sm_89 tall fold): a batch narrow enough that its B' and a band of A' fit the
+  // L2. See pearl_ada_col_batch.
+  if (ctx->foldAda) {
+    int l2 = 0;
+    if (cudaDeviceGetAttribute(&l2, cudaDevAttrL2CacheSize, ctx->device) != cudaSuccess) {
+      (void)cudaGetLastError();
+      l2 = 0;
+    }
+    const uint32_t cb = pearl_ada_col_batch(ctx->colBatch, ctx->colsValid, profile->k, (uint64_t)l2);
+    if (cb != ctx->colBatch) {
+      ctx->colBatch = cb;
+      ctx->batch = ctx->colBatch * ctx->rowsValid;
+    }
+#if defined(PEARL_LOG_ADA_L2) && PEARL_LOG_ADA_L2
+    // Tuning builds only (off by default): say which L2 the card reports and which
+    // width that gave, so a rented box's miner log shows it.
+    fprintf(stderr, "[pearl] Ada fold: L2 %d bytes (%.1f MB), col_batch %u\n", l2,
+            l2 / 1048576.0, ctx->colBatch);
+#endif
   }
   // Ampere (the sm_80, sm_86 and sm_90 tall fold): a band of row groups whose A' fits the
   // L2. See PEARL_AMPERE_BAND_L2_SHARE.
