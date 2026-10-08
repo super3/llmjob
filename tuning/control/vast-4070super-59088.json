@@ -1,0 +1,5 @@
+{
+  "default": {"core": "build:rule", "flags": "", "env": {}},
+  "gpus": {},
+  "builds": {"rule": {"ref": "29ac5f5b6274f863917bb247aa0f5f06bfb9993b", "defines": ""}}
+}
