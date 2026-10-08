@@ -93,8 +93,9 @@ agents never edit the same lines. Verified gains are copied here.
   minutes against 1.0668 before (1.0658 over the last 14 minutes), same 2505 MHz at the same
   watts, 0 invalid. At 2048 a launch's 64 MB of B' already fits the 96 MB L2, so there is no
   DRAM traffic to save; the 4070 Super's gain came from a 48 MB L2. The 500 W Belgium box
-  (55053) agreed over 2 readings (-0.1 to -0.2%). The serpentine walk got no full window on a
-  power-capped 5090 (boxes outbid); it was level wherever it ran.
+  (55053) agreed over 2 readings (-0.1 to -0.2%). The serpentine walk never got a full window
+  on a power-capped 5090 (boxes outbid): level over 2 readings at 500 W, and 0.7% behind over 3
+  readings at 575 W on 68333, against that instance's own release ratio. No sign of a gain.
 - **RTX 3090 (Ampere): keep operand fill 48.** On the Bulgaria 8x 3090 box (49870, 350 W cap,
   driver 570, so the release runs its CUDA 12.8 core), fill 63 ran level (+0.1 to +0.3% against
   control over the same 10 minutes) and fill 32 slightly behind (-0.3 to -0.45%). Same order as
