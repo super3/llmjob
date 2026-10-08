@@ -23,3 +23,4 @@ g1 over the same minutes, and against g2's own baseline.
 
 | Time (UTC) | Change on g2 | g2 TH/s | g0 / g1 TH/s (same minutes) | Shares g2 (good/invalid) | Verdict |
 |---|---|---|---|---|---|
+| 08:57 | `--mine-mem-clock 5001` | not measured: the old release miner kept running next to the new one (box.sh orphan bug), 124-132 TH/s each | 294 / 285 | 23 / 0 at 09:01 | No effect. The lock does not take on this host: `[gpu g2] mem=9001` at 09:00:14, 3 min after the start. Left in place (a no-op) because reverting would add a third miner on g2 with this box's old box.sh. |
