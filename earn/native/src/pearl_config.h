@@ -1147,7 +1147,8 @@ typedef struct {
 // columns (wgmma m64n256k32, 128 accumulators a thread), read A and B from shared; a chunk
 // is four k32 steps, the accumulators running on from the chunk before (only the tile's
 // first step starts from zero: the transcript words are XORs of running sums), then each
-// lane XORs its 32 values of each of its four regions and adds that word to shared with
+// lane XORs its 32 values of each of its four regions, and the readout below
+// (PEARL_HOPPER_RSCATTER, PEARL_HOPPER_RLAYOUT) adds those words to shared with
 // red.shared.xor. One producer warp fills the ring by TMA as the consumers release stages.
 // Nine warps put three on a scheduler, so ptxas may use 168 registers a thread; a third
 // m64n256 warpgroup would make 13 warps and a 128-register cap, too few, and setmaxnreg
@@ -1166,7 +1167,10 @@ typedef struct {
 //   H100 NVL (Vast 29785, 400 W)    344.35 / 396.29 -> 470.41 TH/s at 1226-1230 MHz
 // 83.2% and 87.5% of PeakMiner's and SRBMiner's rates on those hosts. Both clocks sit at
 // the power cap. Per clock the fold does 75% (SXM) and 71% (NVL) of the wgmma peak; with
-// the readout switched off it does 90%, so the readout is most of the per-clock gap.
+// the readout switched off it does 90%, so the readout is most of the per-clock gap. On
+// two other hosts, where it did 75% and 69%, the bank-conflict-free readout and uniform
+// descriptors below (PEARL_HOPPER_RLAYOUT, PEARL_HOPPER_UDESC, on since 2026-10-08) took
+// it to 82% and 77%.
 #ifndef PEARL_HOPPER_WGMMA
 #define PEARL_HOPPER_WGMMA 1
 #endif
@@ -1212,7 +1216,7 @@ typedef struct {
 // width 256, hashrate.js 3 rounds, ahead in every round, 400/400 hits: H100 SXM (Vast
 // 153443) 603.70 -> 630.64 TH/s (+4.46%), H100 NVL (Vast 29785) 451.32 -> 470.41 (+4.23%).
 // A check build compared every region of a batch with the cp.async fold's: 2,097,152
-// regions, none differ.
+// regions, none differ. Build 0 with PEARL_HOPPER_RLAYOUT=0.
 #ifndef PEARL_HOPPER_RSCATTER
 #define PEARL_HOPPER_RSCATTER 1
 #endif
@@ -1226,10 +1230,51 @@ typedef struct {
 #ifndef PEARL_HOPPER_STAGES
 #define PEARL_HOPPER_STAGES 8u
 #endif
-// Stages of 64 bytes of k (B's 256 rows, then A's 128), the transcripts (128 regions of
-// 64 bytes), then FULL and EMPTY barriers.
+// Where the readout's words sit in shared memory (device, and the host's shared size
+// follows it, so build both with the same value). 1: one row of 33 words for each (row
+// span, chunk), and a lane's word is slot `lane` of its row, so a warp's red.shared.xor
+// for a chunk lands on 32 banks. The tile end reads each region back from the slots (also
+// on 32 banks) and stores the same transcript buffer as 0. This form also keeps the
+// word's address as a running pointer, and tests both lane bits for the reduce-scatter's
+// selects with one R2P a chunk (two instructions under 12.8, which redoes tid & 31 first).
+// 0 rebuilds the address and each bit from the thread index every chunk, four instructions
+// a bit. It takes 256 bytes more shared than 0. 0: 64 bytes a region, so a warp's
+// red.shared.xor for a chunk lands on two banks (word ch of 32 regions 64 bytes apart), a
+// 16-way bank conflict. Needs PEARL_HOPPER_RSCATTER.
+#ifndef PEARL_HOPPER_RLAYOUT
+#define PEARL_HOPPER_RLAYOUT 1
+#endif
+#if PEARL_HOPPER_RLAYOUT && !PEARL_HOPPER_RSCATTER
+#error "PEARL_HOPPER_RLAYOUT needs PEARL_HOPPER_RSCATTER: build RSCATTER=0 with RLAYOUT=0"
+#endif
+// How the chunk loop gets its wgmma shared-memory descriptors (device). 1: stage 0's are
+// built once and a stage adds its offset, both warp-uniform, so ptxas keeps them on the
+// uniform datapath. The add cannot carry out of the 14-bit start-address field: all of
+// shared memory is below 256 KB. 0: each chunk builds them from the stage's address with
+// a shift and mask on the vector ALU, and ptxas copies them to uniform registers with 16
+// R2UR a chunk.
+//
+// RLAYOUT and UDESC together against neither (2026-10-08), hashrate.js 3 rounds in
+// alternating order, ahead in every round, 400/400 hits in both operand orders: H100 SXM
+// (Vast 152422, 700 W) 623.01 -> 670.19 TH/s (+7.57%), H100 NVL (Vast 58970, 400 W)
+// 475.44 -> 509.39 (+7.14%). Alone: RLAYOUT +2.04% and +1.99%, UDESC +5.89% and +5.97%.
+// The hosts above (153443, 29785) were rented by others, so these ran on two others at the
+// same power caps. Both clocks sit at the cap and fall 27-40 MHz; per clock the fold does
+// 82% (SXM) and 77% (NVL) of the wgmma peak, from 75% and 69%. A check build with both
+// compared every region of a batch with the cp.async fold's: 2,097,152 regions, none
+// differ. With both, ptxas 12.8 builds the chunk loop in 135 instructions (190 with
+// neither) and the fold in 154 registers (163), 0 spill.
+#ifndef PEARL_HOPPER_UDESC
+#define PEARL_HOPPER_UDESC 1
+#endif
+// Stages of 64 bytes of k (B's 256 rows, then A's 128), the transcripts (4 row spans x 16
+// chunks x 33 words; with PEARL_HOPPER_RLAYOUT=0, 128 regions of 64 bytes), then FULL and
+// EMPTY barriers: 205,248 bytes with the defaults.
+#define PEARL_HOPPER_TR_BYTES                                                              \
+  (PEARL_HOPPER_RLAYOUT ? PEARL_HOPPER_BM / 32u * 16u * 33u * 4u                            \
+                        : PEARL_HOPPER_BM / 32u * 32u * 64u)
 #define PEARL_HOPPER_SMEM \
-  (PEARL_HOPPER_STAGES * (256u + PEARL_HOPPER_BM) * 64u + PEARL_HOPPER_BM / 32u * 32u * 64u \
+  (PEARL_HOPPER_STAGES * (256u + PEARL_HOPPER_BM) * 64u + PEARL_HOPPER_TR_BYTES \
    + 16u * PEARL_HOPPER_STAGES + 64u)
 #ifndef PEARL_TALL_APT
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 800 && PEARL_TALL_UNFUSED

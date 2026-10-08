@@ -3969,11 +3969,23 @@ __device__ __forceinline__ void pearl_h_cluster_sync() {
 #endif
 // A wgmma shared-memory descriptor for a K-major operand in SWIZZLE_64B (layout type 2):
 // start address >> 4, leading offset unused (1), stride 512 bytes (8 rows of 64), base
-// offset 0, which needs every operand to start on the 512-byte swizzle period.
+// offset 0, which needs every operand to start on the 512-byte swizzle period. With
+// PEARL_HOPPER_UDESC the fold builds these once, for stage 0, and adds a stage's offset.
 __device__ __forceinline__ uint64_t pearl_h_desc(uint32_t addr) {
   return (uint64_t)((addr >> 4) & 0x3FFFu) | (1ull << 16) | ((uint64_t)(512u >> 4) << 32)
          | (2ull << 62);
 }
+#if PEARL_HOPPER_RLAYOUT
+// Two selects on one lane bit: keep = bit ? a : b, send = bit ? b : a. Written as PTX so
+// ptxas tests the bit with one instruction; from a C conditional it rebuilds the predicate
+// from the thread index (shift, and, compare) at every use.
+__device__ __forceinline__ void pearl_h_pick(uint32_t lane, uint32_t bit, uint32_t a, uint32_t b,
+                                             uint32_t &keep, uint32_t &send) {
+  asm("{\n\t.reg .pred p;\n\t.reg .b32 m;\n\tand.b32 m, %2, %3;\n\tsetp.ne.b32 p, m, 0;\n\t"
+      "selp.b32 %0, %4, %5, p;\n\tselp.b32 %1, %5, %4, p;\n\t}"
+      : "=r"(keep), "=r"(send) : "r"(lane), "r"(bit), "r"(a), "r"(b));
+}
+#endif
 #endif
 
 extern "C" __global__ void
@@ -4004,11 +4016,13 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
                 "H100 gives a block at most 227 KB; more and the host quietly runs the cp.async fold");
   static_assert(STAGE % 1024u == 0u && (BN * SK) % 1024u == 0u,
                 "every operand starts on the swizzle period");
-  static_assert(PEARL_HOPPER_SMEM >= NST * STAGE + NREG * 64u + 16u * NST, "shared layout");
+  constexpr uint32_t TRB = PEARL_HOPPER_TR_BYTES;     // the transcripts in shared
+  static_assert(TRB >= NREG * 64u && TRB % 16u == 0u && chunks == 16u, "128 regions of 16 words");
+  static_assert(PEARL_HOPPER_SMEM >= NST * STAGE + TRB + 16u * NST, "shared layout");
   extern __shared__ __align__(1024) uint8_t pearl_hopper_smem[];
   const uint32_t sbase = (uint32_t)__cvta_generic_to_shared(pearl_hopper_smem);
   const uint32_t sTr = sbase + NST * STAGE;
-  const uint32_t barFull = sTr + NREG * 64u;
+  const uint32_t barFull = sTr + TRB;
   const uint32_t barEmpty = barFull + 8u * NST;
   const uint32_t tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;
 #if PEARL_HOPPER_CLUSTER
@@ -4069,7 +4083,7 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
     }
     asm volatile("fence.mbarrier_init.release.cluster;" ::: "memory");
   }
-  for (uint32_t o = tid * 16u; o < NREG * 64u; o += PEARL_HOPPER_THREADS * 16u)
+  for (uint32_t o = tid * 16u; o < TRB; o += PEARL_HOPPER_THREADS * 16u)
     asm volatile("st.shared.v4.u32 [%0], {%1,%1,%1,%1};" ::"r"(sTr + o), "r"(0u) : "memory");
   __syncthreads();
 #if PEARL_HOPPER_CLUSTER
@@ -4136,10 +4150,21 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
   // it holds 16 of those rows; in each n8 slice j lane (gq, t) holds rows gq and gq + 8,
   // columns 8j + 2t and 8j + 2t + 1 (mma.sync's C layout). So the lane's values belong to
   // four regions, one a 64-column span: row span rs = 2 wgi + (q >> 1), row offset gq >> 2,
-  // column offset t. Region id ((rs * 4 + cs) * 2 + ro) * 4 + co, 64 bytes each in shared.
+  // column offset t. Region id ((rs * 4 + cs) * 2 + ro) * 4 + co. In shared each region
+  // is 64 bytes with PEARL_HOPPER_RLAYOUT=0; by default its words sit in the slot rows below.
   const uint32_t wgi = warp >> 2, q = warp & 3u, gq = lane >> 2, t = lane & 3u;
   const uint32_t rs = 2u * wgi + (q >> 1), ro = gq >> 2;
+#if PEARL_HOPPER_RLAYOUT
+  // The lane's word for chunk ch is slot `lane` of row (rs, ch), 33 words a row, so a
+  // warp's red.shared.xor is 32 consecutive words, one a bank. The two warps of a row span
+  // add to the same slots. After the reduce-scatter the lane holds column span 2 b2 + b3
+  // (lane bits 2 and 3) of its row offset ro and column offset t; the tile end maps the
+  // slots back to regions.
+  const uint32_t trw = sTr + (rs * 16u * 33u + lane) * 4u;   // + ch * 132
+  (void)ro; (void)t;
+#else
   const uint32_t trl = sTr + (((rs * 4u) * 2u + ro) * 4u + t) * 64u;   // + cs * 512 + ch * 4
+#endif
   uint32_t g = 0;
   int d[128];
 #pragma unroll
@@ -4147,7 +4172,18 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
 #if PEARL_HOPPER_CLUSTER
   const uint32_t peerEmpty = pearl_h_mapa(barEmpty, crank ^ 1u);
 #endif
+#if PEARL_HOPPER_UDESC
+  // Stage 0's descriptors; a stage adds STAGE >> 4 to the start-address field. The shuffle
+  // (CUTLASS's idiom) tells ptxas that wgi is the same across the warp, so both stay in
+  // uniform registers and the chunk loop has no R2UR. Built from the stage's address
+  // instead (PEARL_HOPPER_UDESC=0), they take 16 R2UR a chunk.
+  const uint32_t wgu = __shfl_sync(0xffffffffu, wgi, 0);
+  const uint64_t dB0 = pearl_h_desc(sbase), dA0 = pearl_h_desc(sbase + BN * SK + wgu * 64u * SK);
+#endif
   for (uint32_t v = cfirst; v < tiles; v += cstep) {
+#if PEARL_HOPPER_RLAYOUT
+    uint32_t ra = trw;   // this chunk's word
+#endif
     for (uint32_t ch = 0; ch < chunks; ch++) {
       // Both stages of the chunk before the first wgmma: a wait between them is a
       // divergent path inside the wgmma sequence, and ptxas would serialize them.
@@ -4156,8 +4192,13 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
       asm volatile("wgmma.fence.sync.aligned;" ::: "memory");
 #pragma unroll
       for (uint32_t h = 0; h < 2; h++) {
+#if PEARL_HOPPER_UDESC
+        const uint64_t so = (uint64_t)(((g + h) % NST) * (STAGE >> 4));
+        const uint64_t db0 = dB0 + so, da0 = dA0 + so;
+#else
         const uint32_t st = sbase + ((g + h) % NST) * STAGE;
         const uint64_t db0 = pearl_h_desc(st), da0 = pearl_h_desc(st + BN * SK + wgi * 64u * SK);
+#endif
         {
           const uint64_t da = da0, db = db0;
           // The accumulators run through the whole tile, as the fold's transcripts are
@@ -4210,6 +4251,17 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
           for (uint32_t i = 0; i < 32u; i++) x ^= (uint32_t)d[32u * cs + i];
           w[cs] = x;
         }
+#if PEARL_HOPPER_RLAYOUT
+        uint32_t e0, s0, e1, s1, e2, s2;
+        pearl_h_pick(lane, 4u, w[2], w[0], e0, s0);
+        pearl_h_pick(lane, 4u, w[3], w[1], e1, s1);
+        const uint32_t k0 = e0 ^ __shfl_xor_sync(0xffffffffu, s0, 4);
+        const uint32_t k1 = e1 ^ __shfl_xor_sync(0xffffffffu, s1, 4);
+        pearl_h_pick(lane, 8u, k1, k0, e2, s2);
+        const uint32_t f = e2 ^ __shfl_xor_sync(0xffffffffu, s2, 8);
+        asm volatile("red.shared.xor.b32 [%0], %1;" ::"r"(ra), "r"(f) : "memory");
+        ra += 33u * 4u;
+#else
         const bool b2 = (lane >> 2) & 1u, b3 = (lane >> 3) & 1u;
         const uint32_t k0 = (b2 ? w[2] : w[0]) ^ __shfl_xor_sync(0xffffffffu, b2 ? w[0] : w[2], 4);
         const uint32_t k1 = (b2 ? w[3] : w[1]) ^ __shfl_xor_sync(0xffffffffu, b2 ? w[1] : w[3], 4);
@@ -4217,6 +4269,7 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
         asm volatile("red.shared.xor.b32 [%0], %1;"
                      ::"r"(trl + (2u * (uint32_t)b2 + (uint32_t)b3) * 512u + ch * 4u), "r"(f)
                      : "memory");
+#endif
       }
 #else
 #pragma unroll
@@ -4237,6 +4290,30 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
       uint32_t rbg, cbg;
       tile_coords(v, rbg, cbg);
       const uint32_t wt = tid & 127u;
+#if PEARL_HOPPER_RLAYOUT
+      // Warp wq of the warpgroup, pass i: row span 2 wgi + (wq & 1), column span
+      // 2 i + (wq >> 1). Lane (rco, rro, qq) reads words 4 qq .. 4 qq + 3 of the region at
+      // row offset rro, column offset rco from the slot of the readout lane that held it,
+      // zeroes them and stores 16 bytes, as the 64-byte layout does. Each LDS's 32 words
+      // sit on 32 banks.
+      const uint32_t wq = wt >> 5, rco = lane & 3u, rro = (lane >> 2) & 1u, qq = lane >> 3;
+#pragma unroll
+      for (uint32_t i = 0; i < 2u; i++) {
+        const uint32_t rrs = 2u * wgi + (wq & 1u), rcs = 2u * i + (wq >> 1);
+        const uint32_t slot = rco + 4u * (rcs >> 1) + 8u * (rcs & 1u) + 16u * rro;
+        const uint32_t a = sTr + ((rrs * 16u + 4u * qq) * 33u + slot) * 4u;
+        const uint32_t row_idx = rbg * ROWOFS + 2u * rrs + rro;
+        const uint32_t col_idx = cbg * PEARL_TALL_COL_OFFSETS + 4u * rcs + rco;
+        uint4 w;
+        asm volatile("ld.shared.u32 %0, [%4];\n\tld.shared.u32 %1, [%4+132];\n\t"
+                     "ld.shared.u32 %2, [%4+264];\n\tld.shared.u32 %3, [%4+396];"
+                     : "=r"(w.x), "=r"(w.y), "=r"(w.z), "=r"(w.w) : "r"(a) : "memory");
+        asm volatile("st.shared.u32 [%0], %1;\n\tst.shared.u32 [%0+132], %1;\n\t"
+                     "st.shared.u32 [%0+264], %1;\n\tst.shared.u32 [%0+396], %1;"
+                     ::"r"(a), "r"(0u) : "memory");
+        if (row_idx < rows_valid) trg[((size_t)col_idx * rows_valid + row_idx) * 4u + qq] = w;
+      }
+#else
 #pragma unroll
       for (uint32_t i = 0; i < 2u; i++) {
         const uint32_t u = wt + 128u * i, reg = 64u * wgi + (u >> 2), qq = u & 3u;
@@ -4250,6 +4327,7 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
         asm volatile("st.shared.v4.u32 [%0], {%1,%1,%1,%1};" ::"r"(a), "r"(0u) : "memory");
         if (row_idx < rows_valid) trg[((size_t)col_idx * rows_valid + row_idx) * 4u + qq] = w;
       }
+#endif
     }
     asm volatile("bar.sync %0, 128;" ::"r"(1u + wgi) : "memory");
   }
