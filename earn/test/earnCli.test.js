@@ -517,6 +517,10 @@ describe('mining', () => {
     }));
     miner.emit('log', { line: 'hello', level: 'info' });
     miner.emit('log', { line: 'bad', level: 'error' });
+    // The throttle reads the clock, so pin it. With the real clock, a busy Windows
+    // runner that stalled a second between the two emits below printed two lines.
+    const t0 = Date.now();
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(t0);
     miner.emit('event', { type: 'status', hashrate: 3.2, accepted: 5, rejected: 1 });
     // Each card ticks about twice a second, so the rig line is throttled: this
     // second status is folded into the totals but writes no second line.
@@ -527,7 +531,7 @@ describe('mining', () => {
     expect(allOut().match(/⛏/g)).toHaveLength(1);
     // A second later the line prints the rig rate averaged over that second (card 0
     // at 3.2 and card 1 at 1 the whole time: 4.2), not the latest window alone.
-    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 1500);
+    nowSpy.mockReturnValue(t0 + 1500);
     miner.emit('event', { type: 'status', gpuIndex: 1, hashrate: 1, accepted: 0, rejected: 0 });
     nowSpy.mockRestore();
     expect(allOut().match(/⛏/g)).toHaveLength(2);
