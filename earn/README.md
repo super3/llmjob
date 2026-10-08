@@ -328,17 +328,16 @@ miner start
 
 ## Headless CLI (Linux)
 
-For rigs and servers with no desktop, `src/cli/earn-cli.js` runs the exact same
-engine from the command line — no Electron, no window. It shares all the logic
-with the GUI (engine download, `prl1…`/`mdl1…` addresses, static difficulty,
-merge mining, the public-board report), so behaviour matches the app.
+For rigs and servers with no desktop, `src/cli/earn-cli.js` mines from the
+command line with the same mining core as the GUI, with no Electron and no
+window. It shares the GUI's logic (address checks, which cards mine, the stats,
+the public-board report, the local LLM), so the two behave the same.
 
-Like the GUI, it **auto-detects** the bits you don't pin: the lowest-latency
-pool region (it TCP-pings every endpoint on start) and the GPU (`nvidia-smi`),
-picking that card's recommended static difficulty from the table. Both are
-best-effort — if the pings all fail it falls back to `us2`, and if there's no
-`nvidia-smi` it falls back to the default difficulty — and an explicit
-`--region`, `--gpu`, or `--difficulty` always overrides the detected value.
+Like the GUI, it **auto-detects** what you don't pin: the lowest-latency
+HeroMiners region (it TCP-pings every endpoint on start, and falls back to `us`
+if none answers) and the GPUs (`nvidia-smi`), and mines on every card.
+`--region`, `--gpu` (the card name shown on the board) and `--gpu-index`
+(which cards mine) override what it detects.
 
 ```bash
 # from this earn/ directory
@@ -347,11 +346,12 @@ node src/cli/earn-cli.js --address prl1pYOUR_ADDRESS
 npm run start:cli -- --address prl1pYOUR_ADDRESS   # via the package script
 ```
 
-On first run it downloads the Linux `alpha-miner` binary from the pool and
-caches it under `~/.local/share/llmjob-earn/engine/` (override with
-`--engine-dir`, or skip the download entirely with `--binary /path/to/alpha-miner`).
-It streams the engine's real output, prints a periodic hashrate/share summary,
-and shuts the engine down cleanly on Ctrl-C.
+The mining core is a CUDA addon (`pearl_core.node`) that runs inside the CLI's
+own process, not a separate engine to download. The CLI loads it from beside
+its binary (see [Standalone binary](#standalone-binary--self-update)), from
+`native/build/Release/` when run from source, or from the file
+`PEARL_CORE_PATH` names. It prints a hashrate and shares line about once a
+second, and stops cleanly on Ctrl-C.
 
 ### Local LLM (`--mode`)
 
@@ -379,11 +379,10 @@ out-of-memory crash; it logs a clear "not enough free VRAM" line and skips the
 LLM (mining, if enabled, carries on). If VRAM can't be read (non-NVIDIA / no
 driver) it proceeds and lets llama.cpp decide.
 
-The pool ships `llama-server` as a release **zip**; the CLI downloads and
-extracts it with `unzip` (flattening the archive so the binary sits next to its
-shared libraries), caching it under the same `llm/` dir. If `unzip` isn't
-installed — or you'd rather pin your own build — pass a prebuilt binary with
-`--llm-binary /path/to/llama-server` to skip the download entirely.
+`llama-server` comes from a llama.cpp release, a `.tar.gz` on Linux. The CLI
+extracts it with `tar` into the same `llm/` dir, so the binary sits next to its
+shared libraries. To skip the download, or pin your own build, pass
+`--llm-binary /path/to/llama-server`.
 
 ```bash
 # mine and co-run the local LLM
@@ -429,10 +428,14 @@ network is reachable through the shared API without opening a port or exposing
 CI packages the CLI into a **standalone single-file Linux executable**
 (`llmjob-earn-cli-linux`, built with [Node SEA](https://nodejs.org/api/single-executable-applications.html))
 and attaches it to each GitHub Release, so a headless box can run it with **no
-Node install**:
+Node install**. The mining cores are separate files on the same release, and
+the binary looks for them beside itself (`pearl_core_cu13.node` is only used on
+RTX 50 cards):
 
 ```bash
-curl -L -o llmjob-earn-cli https://github.com/super3/llmjob/releases/latest/download/llmjob-earn-cli-linux
+base=https://github.com/super3/llmjob/releases/latest/download
+curl -L -o llmjob-earn-cli $base/llmjob-earn-cli-linux
+curl -L -O $base/pearl_core.node -O $base/pearl_core_cu13.node
 chmod +x llmjob-earn-cli
 ./llmjob-earn-cli --address prl1pYOUR_ADDRESS
 ```
@@ -457,42 +460,53 @@ just prints a notice when a newer release is available (update via git/npm).
 
 ```
 Usage: llmjob-earn-cli --address <prl1p…> [options]
+       llmjob-earn-cli connect --token <pairing-token>   Link this box to your LLMJob account
+       llmjob-earn-cli update                            Update the CLI to the latest release
 
-  -a, --address <prl1p…>   Your Pearl payout address (required unless --mode llm)
-  -m, --mdl <mdl1p…>       Also merge-mine ModelOS (MDL) on the same shares
-      --mode <mode>        Compute mode: mining/both/llm/auto (default: auto)
-      --llm-binary <path>  Path to a llama-server binary (to run the local LLM)
-      --llm-model <path>   Path to a GGUF model file (default: download the small model)
-  -r, --region <id>        Pool region: us1/us2/eu1/eu2/ru1/sg1/hk1/in1 (default: auto-detect fastest)
+  -a, --address <prl1p…>   Your Pearl payout address (not needed with --mode llm)
+      --mode <mode>        auto (default) mines and serves a local LLM; mining
+                           only mines; llm only serves. "both" means auto.
+  -r, --region <id>        Pool region: us/us2/ca/br/de/fi/fr/tr/sg/hk/kr/au
+                           (default: the fastest). An old AlphaPool id such as
+                           eu1 maps to the nearest.
   -w, --worker <name>      Worker/rig name (default: this machine's hostname)
-  -d, --difficulty <n>     Static share difficulty (default: from detected/--gpu card, else 524288)
-  -g, --gpu <card>         GPU name for the difficulty table (default: auto-detect via nvidia-smi)
-      --gpu-index <list>   Mine only on these GPUs, by nvidia-smi index, e.g. 0,2 ("none" for no GPU)
-      --backend <name>     Force an engine backend (e.g. ampere)
-  -b, --binary <path>      Use this alpha-miner binary instead of downloading one
-      --engine-dir <path>  Where to cache the downloaded engine
-      --mine-mem-clock <MHz>  Lock each mining GPU's memory clock while it mines (default: 7001 on the RTX 5090, see below; 0 turns it off)
+  -g, --gpu <card>         GPU name to report on the board (default: from nvidia-smi)
+      --gpu-index <list>   Mine only on these GPUs: nvidia-smi indices such as
+                           0,2, or "none" (default: every GPU)
+      --mine-mem-clock <MHz>  Lock each mining GPU's memory clock while it mines
+                           (default: 7001 on the RTX 5090; 0 turns it off; see below)
+      --stats-file <path>  Write live stats JSON here every 10 s (HiveOS's h-stats.sh reads it)
+      --llm-binary <path>  Use this llama-server instead of downloading one
+      --llm-model <path>   Use this GGUF model instead of downloading the default
+      --llm-max-instances <n>  Cap how many llama-servers run (default: one per GPU that fits)
+      --gate-port <port>   Port the auto-mode gate serves on (default: 8000)
+      --gate-host <addr>   Address the gate binds (default: 0.0.0.0)
+      --gate-quiet <secs>  Seconds with no requests before the GPU goes back to mining (default: 60)
       --no-report          Do not publish live status to the public network board
+      --no-serve           Do not serve inference jobs for the LLMJob network
       --no-update          Do not auto-update the CLI to a newer release on start
-  -h, --help / -v, --version
+  -h, --help               Show the full help, with what each option is for
+  -v, --version            Print the version and exit
 ```
 
 ### Running on a server (pinned, no surprises)
 
-For unattended / production rigs, prefer a fully-pinned setup — a vetted engine
-you control, no background self-updates, and no outbound fetches at start:
+For unattended rigs, pin what the CLI would otherwise decide or fetch when it
+starts:
 
 ```bash
-llmjob-earn-cli --address prl1p… \
-  --binary /opt/llmjob/alpha-miner \   # vetted engine you placed — no download, no engine drift
-  --no-update \                        # don't self-replace the CLI binary
-  --no-report                          # optional: don't publish to the public board
+llmjob-earn-cli --address prl1p… --mode mining --region de --no-update --no-report
 ```
 
-`--binary` skips the on-demand engine download entirely and pins a known-good
-`alpha-miner` (download + audit it once, then point every host at it), so an
-engine bump never lands on a box without you choosing it. `--no-update` does the
-same for the CLI itself.
+- `--mode mining` mines only, so no model is downloaded.
+- `--region de` skips the latency probe and always mines in one region.
+- `--no-update` keeps this version: the CLI never replaces itself, or the
+  mining cores beside it.
+- `--no-report` (optional) keeps the rig off the public network board.
+
+The mining cores (`pearl_core.node`, and `pearl_core_cu13.node` for RTX 50
+cards) sit beside the binary, so nothing is downloaded to mine. To run a core
+you built or vetted yourself, set `PEARL_CORE_PATH=/path/to/pearl_core.node`.
 
 Log lines are **journald-friendly**: the `[HH:MM:SS]` prefix is only added when
 stdout is a TTY, so under systemd / `docker logs` (where the collector adds its
@@ -501,7 +515,7 @@ unit:
 
 ```ini
 [Service]
-ExecStart=/opt/llmjob/llmjob-earn-cli --address prl1p… --binary /opt/llmjob/alpha-miner --no-update
+ExecStart=/opt/llmjob/llmjob-earn-cli --address prl1p… --mode mining --no-update
 Restart=always
 ```
 

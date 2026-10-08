@@ -1,6 +1,10 @@
 'use strict';
 
-const { parseCliArgs, buildSettings, regionChoices, USAGE, VALUE_FLAGS } = require('../src/shared/cliArgs');
+const fs = require('fs');
+const path = require('path');
+const {
+  parseCliArgs, buildSettings, regionChoices, USAGE, VALUE_FLAGS, ALIASES,
+} = require('../src/shared/cliArgs');
 const { DEFAULTS, LEGACY_REGIONS } = require('../src/shared/config');
 
 const ADDR = 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
@@ -449,5 +453,40 @@ describe('--gpu-index', () => {
     expect(USAGE).toContain('--gpu-index <list>');
     expect(USAGE).toMatch(/such as\s+0,2, or "none" for no GPU/);
     expect(USAGE).toContain('PEARL_GPU_INDEX');
+  });
+});
+
+// earn/README.md has a copy of the usage. It listed flags that had been
+// removed (--difficulty, --binary) for several releases, so check it against
+// what the parser takes and what --help lists.
+describe('the README\'s usage block', () => {
+  // Option rows only: "  -a, --address <…>" or "      --mode <…>".
+  const flagsIn = (text) => {
+    const flags = [];
+    for (const line of text.split('\n')) {
+      const m = line.match(/^ {2}(?:(-[a-z]), )? *(--[a-z][a-z0-9-]*)/);
+      if (m) flags.push({ short: m[1] || null, long: m[2] });
+    }
+    return flags;
+  };
+  const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
+  const block = readme.match(/```\nUsage: llmjob-earn-cli [\s\S]*?```/);
+  const documented = block ? flagsIn(block[0]) : [];
+
+  test('is there, and lists options', () => {
+    expect(block).not.toBeNull();
+    expect(documented.length).toBeGreaterThan(10);
+  });
+
+  test('names only flags the CLI takes, with the right short forms', () => {
+    for (const { short, long } of documented) {
+      expect(parseCliArgs([long]).errors).not.toContain('unknown option: ' + long);
+      if (short) expect(ALIASES[short]).toBe(long);
+    }
+  });
+
+  test('lists every flag --help lists', () => {
+    const names = documented.map((f) => f.long);
+    for (const { long } of flagsIn(USAGE)) expect(names).toContain(long);
   });
 });
