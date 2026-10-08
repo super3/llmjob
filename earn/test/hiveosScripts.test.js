@@ -184,6 +184,13 @@ suite('h-config.sh: mode and Extra config', () => {
     expect(r.parsed.errors).toEqual([]);
   });
 
+  // Old flight sheets carried AlphaPool's region ids. The CLI maps them now.
+  test('an old flight sheet\'s --region eu1 mines in de', () => {
+    const r = config({ CUSTOM_TEMPLATE: ADDR, CUSTOM_USER_CONFIG: '--region eu1' });
+    expect(r.parsed.errors).toEqual([]);
+    expect(r.parsed.settings).toMatchObject({ region: 'de', legacyRegion: 'eu1' });
+  });
+
   // Not defended against in h-config.sh: the CLI names the bad flag in the
   // miner log, and HiveOS marks "Miner starting error" after a few restarts.
   test('a flag the CLI does not have is passed through for the CLI to report', () => {

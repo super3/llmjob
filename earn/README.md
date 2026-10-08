@@ -276,7 +276,9 @@ Flight sheet:
 - **Extra config arguments** → optional CLI flags; leave it empty for the
   defaults. The ones that make sense on a rig:
   - `--region <id>` pins the pool region: `us`, `us2`, `ca`, `br`, `de`, `fi`,
-    `fr`, `tr`, `sg`, `hk`, `kr` or `au`.
+    `fr`, `tr`, `sg`, `hk`, `kr` or `au`. An old AlphaPool id from an older
+    flight sheet (`us1`, `eu1`, `eu2`, `ru1`, `sg1`, `hk1`, `in1`) maps to the
+    nearest of these, and the miner log says which (`region eu1 is now de`).
   - `--mine-mem-clock <MHz>` locks the memory clock while mining; `0` turns off
     the RTX 5090 default (see below).
   - `--mode auto` also serves a local LLM (next paragraph).
@@ -285,7 +287,8 @@ Flight sheet:
   `llmjob-earn-cli-linux --help` lists every flag. A flag the CLI doesn't have
   makes it exit at once. HiveOS then restarts it every few seconds and shows
   "Miner starting error", and `miner log` names the flag. Old examples such as
-  `--region eu1` and `--difficulty` no longer exist.
+  `--difficulty` no longer exist. A region the CLI doesn't know stops it the
+  same way.
 
 **The rig mines only.** The package adds `--mode mining` unless Extra config
 has a `--mode`. The CLI's own default, `auto`, also serves a local LLM. It

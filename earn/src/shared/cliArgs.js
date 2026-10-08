@@ -7,7 +7,7 @@
 // pure and dependency-free so it's fully unit-tested; the CLI shell wires the
 // real IO (download, spawn, network reporting) around it.
 
-const { REGIONS, DEFAULTS } = require('./config');
+const { REGIONS, LEGACY_REGIONS, DEFAULTS } = require('./config');
 const { isValidAddress, isValidMdlAddress, normalizeAddress } = require('./address');
 const { MODES, DEFAULT_MODE, isValidMode } = require('./llmMode');
 const { parseMemClockMhz } = require('./memClock');
@@ -36,6 +36,11 @@ const VALUE_FLAGS = new Set([
   '--mode', '--llm-binary', '--llm-model', '--llm-max-instances', '--gate-port', '--gate-host',
   '--gate-quiet', '--mine-mem-clock',
 ]);
+
+// Own keys only, so `--region constructor` is not a region.
+function has(table, key) {
+  return Object.prototype.hasOwnProperty.call(table, key);
+}
 
 function regionChoices() {
   return Object.keys(REGIONS).join(', ');
@@ -84,6 +89,7 @@ const USAGE = [
   '                           whenever mining stops; skipped while an LLM',
   '                           co-runs with it.',
   '  -r, --region <id>        Pool region: ' + Object.keys(REGIONS).join('/') + ' (default: auto-detect fastest)',
+  '                           An old AlphaPool id (eu1, sg1, …) maps to the nearest.',
   '  -w, --worker <name>      Worker/rig name (default: this machine\'s hostname)',
   '  -g, --gpu <card>         GPU name to report on the board (default: auto-detect via nvidia-smi)',
   '      --gpu-index <list>   Mine only on these GPUs: nvidia-smi indices such as',
@@ -130,11 +136,22 @@ function buildSettings(opts, errors, report, update, serve) {
     else errors.push('invalid MDL address: ' + opts['--mdl']);
   }
 
+  // An AlphaPool region id (eu1, sg1, ...) from an old flight sheet or service
+  // file maps to the nearest HeroMiners region, and `legacyRegion` keeps what
+  // was typed so the CLI can say so. Anything else is an error rather than the
+  // default: a typo should be loud, not mine on another continent.
+  // config.migrateRegion falls back to the default, so it is not used here.
   let region = DEFAULTS.region;
+  let legacyRegion = null;
   if (opts['--region'] != null) {
     region = String(opts['--region']).trim();
-    if (!REGIONS[region]) {
-      errors.push('unknown region: ' + region + ' (choices: ' + regionChoices() + ')');
+    if (!has(REGIONS, region)) {
+      if (has(LEGACY_REGIONS, region)) {
+        legacyRegion = region;
+        region = LEGACY_REGIONS[region];
+      } else {
+        errors.push('unknown region: ' + region + ' (choices: ' + regionChoices() + ')');
+      }
     }
   }
 
@@ -225,7 +242,7 @@ function buildSettings(opts, errors, report, update, serve) {
   const modeProvided = opts['--mode'] != null;
 
   return {
-    address, mdlAddress, region, worker, gpu, gpuIndices, statsFile,
+    address, mdlAddress, region, legacyRegion, worker, gpu, gpuIndices, statsFile,
     mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs, mineMemClockMhz,
     report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,
   };

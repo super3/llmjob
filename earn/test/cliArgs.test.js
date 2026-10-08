@@ -1,7 +1,7 @@
 'use strict';
 
 const { parseCliArgs, buildSettings, regionChoices, USAGE, VALUE_FLAGS } = require('../src/shared/cliArgs');
-const { DEFAULTS } = require('../src/shared/config');
+const { DEFAULTS, LEGACY_REGIONS } = require('../src/shared/config');
 
 const ADDR = 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
 const MDL = 'mdl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
@@ -138,6 +138,36 @@ describe('buildSettings — validation', () => {
   test('unknown region is rejected with choices', () => {
     const r = parseCliArgs(['--address', ADDR, '--region', 'mars']);
     expect(r.errors).toContain('unknown region: mars (choices: ' + regionChoices() + ')');
+  });
+
+  // Old HiveOS flight sheets carry --region eu1 in Extra config. It used to be
+  // an "unknown region" exit, and HiveOS restarted the miner in a loop.
+  test('an old AlphaPool region maps to the nearest one and remembers what was typed', () => {
+    for (const [old, now] of Object.entries(LEGACY_REGIONS)) {
+      const r = parseCliArgs(['--address', ADDR, '--region', old]);
+      expect(r.errors).toEqual([]);
+      expect(r.settings).toMatchObject({ region: now, legacyRegion: old, regionProvided: true });
+    }
+    expect(parseCliArgs(['-a', ADDR, '-r', 'eu1']).settings.region).toBe('de');
+    expect(Object.keys(LEGACY_REGIONS).sort()).toEqual(['eu1', 'eu2', 'hk1', 'in1', 'ru1', 'sg1', 'us1']);
+  });
+
+  test('a current region has no legacyRegion; us2 exists on both pools', () => {
+    expect(parseCliArgs(['-a', ADDR, '-r', 'de']).settings.legacyRegion).toBeNull();
+    expect(parseCliArgs(['-a', ADDR, '-r', 'us2']).settings).toMatchObject({ region: 'us2', legacyRegion: null });
+    expect(parseCliArgs(['-a', ADDR]).settings.legacyRegion).toBeNull();
+  });
+
+  // A typo is loud: no quiet fall back to the default region.
+  test('a region that is neither is still rejected, even an Object property name', () => {
+    for (const bad of ['eu3', 'EU1', 'constructor', '__proto__', 'toString']) {
+      expect(parseCliArgs(['-a', ADDR, '-r', bad]).errors)
+        .toContain('unknown region: ' + bad + ' (choices: ' + regionChoices() + ')');
+    }
+  });
+
+  test('the help says old ids still work', () => {
+    expect(USAGE).toContain('An old AlphaPool id (eu1, sg1, …) maps to the nearest.');
   });
 
   test('region defaults when omitted', () => {

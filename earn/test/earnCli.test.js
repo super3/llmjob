@@ -579,6 +579,28 @@ describe('mining', () => {
     await expect(p).resolves.toBe(5);
   });
 
+  // An old HiveOS flight sheet's --region eu1 used to stop the CLI at once.
+  test('an old AlphaPool region mines in the region it maps to, and says so', async () => {
+    const m = load();
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--region', 'eu1']);
+    await settle();
+    expect(allOut()).toContain('region eu1 is now de (Europe · Germany)');
+    expect(allOut()).toContain('pool:       de.pearl.herominers.com:1200');
+    expect(m.probe.detectRegion).not.toHaveBeenCalled();
+    expect(m.PearlEngine.instances[0].start).toHaveBeenCalledWith(
+      expect.objectContaining({ region: 'de', endpoint: 'de.pearl.herominers.com:1200' }));
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('an unknown region still exits 1 with the list', async () => {
+    const m = load();
+    await expect(m.run(['-a', ADDR, '--no-update', '--region', 'eu9'])).resolves.toBe(1);
+    expect(allErr()).toContain('error: unknown region: eu9 (choices: us, us2, ca, br, de, fi, fr, tr, sg, hk, kr, au)');
+    expect(allOut()).not.toContain('is now');
+    expect(m.PearlEngine.instances).toHaveLength(0);
+  });
+
   // CUDA_VISIBLE_DEVICES=0 hid a rig's second card from the mining core while
   // nvidia-smi still listed it. The CLI removes it at load and says so.
   test('clears CUDA_VISIBLE_DEVICES at load and logs it for a mining run', async () => {

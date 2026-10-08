@@ -28,7 +28,7 @@ const {
 const probe = require('../main/probe');
 const nodeStore = require('../main/nodeStore');
 const { initStats, applyEvent, snapshot, createRateMeter, meterSample, meterRead } = require('../shared/miningStats');
-const { NETWORK, LLM, NODE, resolveEndpoint, regionLabel } = require('../shared/config');
+const { NETWORK, LLM, NODE, REGIONS, resolveEndpoint, regionLabel } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
 const nodeProto = require('../shared/node');
 const { buildMinerReports } = require('../shared/minerReport');
@@ -736,6 +736,11 @@ async function run(argv) {
     settings.gpuCount = det && det.count > 1 ? det.count : 1;
     endpoint = resolveEndpoint(settings);
     log('address:    ' + shortenAddress(settings.address) + (settings.mdlAddress ? '  (+MDL ' + shortenAddress(settings.mdlAddress) + ')' : ''));
+    // An old AlphaPool id (--region eu1) mines in the region it maps to.
+    if (settings.legacyRegion) {
+      log('region ' + settings.legacyRegion + ' is now ' + settings.region
+        + ' (' + REGIONS[settings.region].name + ')');
+    }
     log('pool:       ' + endpoint + '  ' + regionLabel(settings.region) + (settings.regionProvided ? '' : '  (auto)'));
     log('worker:     ' + settings.worker + (settings.workerProvided ? '' : '  (auto)'));
     if (settings.gpu) {
