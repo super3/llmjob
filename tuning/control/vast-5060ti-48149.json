@@ -2,7 +2,6 @@
   "default": {"core": "release", "flags": "", "env": {}},
   "gpus": {},
   "builds": {
-    "base": {"ref": "afa2210125b1e0169c1ac2dd2c4b1a2744468d57", "defines": ""},
     "cluster": {"ref": "afa2210125b1e0169c1ac2dd2c4b1a2744468d57", "defines": "-DPEARL_TALL_CLUSTER=1"}
   }
 }
