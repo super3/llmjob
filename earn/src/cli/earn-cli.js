@@ -857,9 +857,17 @@ async function run(argv) {
     if (settings.report) {
       // Sample per-card live VRAM (nvidia-smi) and post one board row per GPU,
       // just like the GUI — otherwise the board shows 0 GB for a CLI-driven rig.
+      //
+      // nvidia-smi lists every card, mining or not. When --gpu-index or
+      // PEARL_GPU_INDEX chose the cards, only those get a row. Given more cards
+      // than the engine reports, buildMinerReports assumes an engine that lumps
+      // its cards together: it posts a row for every card and splits the
+      // hashrate evenly, so a card turned off in HiveOS would show as mining.
+      const miningCards = new Set(settings.gpus.map((g) => g.index));
       const report = async () => {
         const snap = snapshot(stats, Date.now());
-        const gpuVram = await detectGpusVram();
+        const allVram = await detectGpusVram();
+        const gpuVram = gpuPick ? allVram.filter((v) => miningCards.has(Number(v.index))) : allVram;
         // Tag the cards serving the local LLM so the board shows which model each
         // GPU runs. `nodeId` rides along only while this machine is armed to serve
         // cluster jobs — running the model and serving the cluster are different
@@ -872,12 +880,12 @@ async function run(argv) {
         // same as "not available": the card answers for it within seconds, and the
         // tier was pinned at startup, so the honest thing to report is the model
         // this node serves. `indices` is the card the wake would land on, which is
-        // the same card pickLlmGpu will choose then.
+        // the same card pickLlmGpu will choose then, from every card.
         let serving = null;
         if (serveFleet) {
           serving = { model: serveLlmState.model.name, indices: serveFleet.servingIndices(), nodeId: serveNodeId };
         } else if (demandServing) {
-          const best = pickLlmGpu(gpuVram);
+          const best = pickLlmGpu(allVram);
           serving = {
             model: serveLlmState.model.name,
             indices: best ? [best.index] : [],

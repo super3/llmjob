@@ -781,6 +781,32 @@ describe('--gpu-index', () => {
     await stop(m, p);
   });
 
+  // nvidia-smi still lists the card that is turned off. It must not reach the
+  // board, and the two that mine keep their own hashrates rather than an even
+  // split of the total across all three.
+  test('the board gets a row for each mining card and none for the others', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue(THREE.map((g) => ({ ...g, usedMb: 1000, totalMb: 24564 })));
+    m.probe.detectMinerGpus.mockResolvedValue([THREE[0], THREE[2]]);
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu-index', '0,2']);
+    await settle();
+    const rows = () => m.probe.postMinerReport.mock.calls.map((c) => c[0]);
+    const cardOf = (r) => r.worker.split('/').pop();
+    // Before any card has reported: the mining cards only.
+    expect(rows().map(cardOf)).toEqual(['gpu0', 'gpu2']);
+
+    const miner = m.PearlEngine.instances[0];
+    miner.emit('event', { type: 'status', gpuIndex: 0, hashrate: 10, accepted: 4, rejected: 0 });
+    miner.emit('event', { type: 'status', gpuIndex: 2, hashrate: 12, accepted: 6, rejected: 0 });
+    m.probe.postMinerReport.mockClear();
+    await intervalFor(NETWORK.reportIntervalMs).fn();
+    expect(rows().map((r) => [cardOf(r), r.hashrate, r.accepted, r.vramTotalMb])).toEqual([
+      ['gpu0', 10, 4, 24564],
+      ['gpu2', 12, 6, 24564],
+    ]);
+    await stop(m, p);
+  });
+
   test('PEARL_GPU_INDEX takes the same list, and the flag beats it', async () => {
     await withEnv({ PEARL_GPU_INDEX: '1,2' }, async () => {
       let m = load();
