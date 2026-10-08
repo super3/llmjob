@@ -1,0 +1,9 @@
+{
+  "default": {"core": "release", "flags": "", "env": {}},
+  "gpus": {},
+  "builds": {
+    "base": {"ref": "e50f6e62888b5229bee0c8036a1bad6ba06ace20", "defines": ""},
+    "cb1024": {"ref": "e50f6e62888b5229bee0c8036a1bad6ba06ace20", "defines": "-DPEARL_ADA_COL_BATCH=1024u"},
+    "cb512": {"ref": "e50f6e62888b5229bee0c8036a1bad6ba06ace20", "defines": "-DPEARL_ADA_COL_BATCH=512u"}
+  }
+}
