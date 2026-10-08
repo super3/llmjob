@@ -469,7 +469,9 @@ describe('the README\'s usage block', () => {
     }
     return flags;
   };
-  const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
+  // A Windows checkout has CRLF line endings (core.autocrlf), and the block
+  // match and the row match below both split on '\n'.
+  const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8').replace(/\r\n/g, '\n');
   const block = readme.match(/```\nUsage: llmjob-earn-cli [\s\S]*?```/);
   const documented = block ? flagsIn(block[0]) : [];
 
