@@ -1,8 +1,7 @@
 {
   "default": {"core": "release", "flags": "", "env": {}},
-  "gpus": {"1": {"core": "build:rulelog"}, "2": {"core": "build:cb1024"}},
+  "gpus": {},
   "builds": {
-    "rule": {"ref": "29ac5f5b6274f863917bb247aa0f5f06bfb9993b", "defines": ""},
     "cb1024": {"ref": "29ac5f5b6274f863917bb247aa0f5f06bfb9993b", "defines": "-DPEARL_ADA_COL_BATCH=1024u"},
     "rulelog": {"ref": "17d80bc1cac3e882e9f9f685e097b8203b2af05a", "defines": "-DPEARL_LOG_ADA_L2=1"}
   }

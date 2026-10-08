@@ -30,3 +30,22 @@ ratio to the g0/g3 mean in the test window over the same ratio in the baseline.
 
 | Time (UTC) | GPU | Change | Test TH/s | g0/g3 mean, same minutes | vs base ratio | Shares (good/invalid) | Verdict |
 |---|---|---|---|---|---|---|---|
+| 11:07 | g1 | build:rule (29ac5f5, no defines: width from the reported L2) | - | - | - | - | No reading. Hit check passed 400/400 (2964 hits, 371 salts) and g1 started on it at 11:07:13. |
+| 11:07 | g2 | build:cb1024 (29ac5f5, `-DPEARL_ADA_COL_BATCH=1024u`) | - | - | - | - | No reading. The instance stopped at about 11:08 during g2's hit check. |
+
+The whole fleet stopped at 11:08-11:10: the Vast account ran out of credit (supervisors
+logged `insufficient_credit`). The supervisor released this box at 11:30 after 20 minutes
+stopped. When credit came back, rewatch.py passed on it at 11:53: the host's minimum is
+$0.342/GPU and our limit $0.307.
+
+## Left for the next run
+
+- `tuning/control/vast-sa-l40s-2.json` has no GPU switches and two builds queued:
+  `cb1024` (29ac5f5) and `rulelog` (17d80bc with `-DPEARL_LOG_ADA_L2=1`).
+  `rulelog` is the rule plus one startup line, `[pearl] Ada fold: L2 <bytes> (<MB>),
+  col_batch <n>`, so its GPU's `[minerlog]` shows the L2 the L40S reports and the width the
+  rule picked. No box line prints the L2 otherwise.
+- The test to run: g1 `build:rulelog`, g2 `build:cb1024`, g0/g3 release, judged against
+  the baseline ratios above (g1 0.9917, g2 0.9933). If rulelog prints col_batch 2048
+  (L2 of 72 MB or more) and cb1024 beats the release by 1% or more, the rule's 100% share
+  is too loose for this card.
