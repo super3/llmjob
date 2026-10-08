@@ -1,6 +1,6 @@
 {
   "default": {"core": "build:rule", "flags": "", "env": {}},
-  "gpus": {"1": {"core": "build:ruleb32"}},
+  "gpus": {},
   "builds": {
     "base": {"ref": "da82d3e8afe2665109f7ff054ca743812480d2cd", "defines": ""},
     "band32": {"ref": "da82d3e8afe2665109f7ff054ca743812480d2cd", "defines": "-DPEARL_TALL_BAND=32u"},
