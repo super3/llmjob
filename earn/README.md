@@ -1,9 +1,8 @@
 # LLMJob Earn (`earn`)
 
-A desktop GUI that turns the excess compute on GPUs you already own into crypto,
-wrapping the AlphaPool [`alpha-miner`](https://pearl.alphapool.tech/#setup) engine
-for Pearl (**PRL**). Paste a payout address, hit **Start**, and earn — no command
-line. Built with Electron and shipped for **Windows**, **Linux** and
+A desktop GUI that turns the excess compute on GPUs you already own into crypto.
+It mines Pearl (**PRL**) on the HeroMiners pool with its own CUDA mining core.
+Paste a payout address, hit **Start**, and earn — no command line. Built with Electron and shipped for **Windows**, **Linux** and
 **[macOS](#macos-llm-only)** (LLM only — see below); headless rigs can use the
 [command-line miner](#headless-cli-linux) instead of the GUI.
 
@@ -15,74 +14,67 @@ line. Built with Electron and shipped for **Windows**, **Linux** and
 **Highlights**
 
 - **Live pool balance** — your pending payout plus lifetime paid for the address.
-- **Merge mining** — add an `mdl1p…` address in Settings to also earn ModelOS
-  (MDL) on the very same shares, no extra power or hardware.
 - **Public board** — while mining, the app publishes live status to the network
   page (your Pearl address only — nothing else is reported).
-- **Zero-config** — auto-detects the discrete GPU and its recommended static
-  difficulty, picks the lowest-latency pool region, and updates itself.
+- **Zero-config** — mines on every GPU, picks the lowest-latency pool region,
+  and updates itself.
 
 ## How it works
 
 - **`src/shared/`** — pure, fully unit-tested logic (no Electron/DOM):
-  - `config.js` — pool endpoints, per-card static difficulty, engine metadata, economics.
+  - `config.js` — pool regions (and the old AlphaPool ids they replace), the llama-server and model downloads, economics.
   - `address.js` — `prl1p…` / `mdl1p…` validation, shortening, and the merge-mining combined address.
   - `cliArgs.js` — parses/validates the headless CLI flags into the same settings shape the GUI uses.
   - `llmMode.js` — the compute-mode policy (mining / both / llm / auto → which engines run), shared by the GUI and the CLI.
-  - `platform.js` — what each OS can do: whether a mining engine exists for it (no on macOS) and whether electron-updater can install there.
+  - `platform.js` — what each OS can do: whether it can mine (not on macOS) and whether electron-updater can install there.
   - `llama.js` / `vram.js` — build the local `llama-server` command line + parse its output, and size the GPU offload (`--n-gpu-layers`) from free VRAM.
   - `selfUpdate.js` — decides, from the running version + GitHub's latest release, whether the CLI binary should self-update.
-  - `minerArgs.js` — builds the engine argument vector / launcher env (`--address`, `--worker`, `--password "x;d=N"`, `--force-backend`).
-  - `parser.js` — turns `alpha-miner` stdout into structured events (shares, hashrate, connect).
-  - `miningStats.js` — accumulates those events into the live stats snapshot.
+  - `miner/` — the Pearl protocol: Stratum messages, PearlHash, and the share proofs the pool checks.
+  - `coreVariant.js` — which build of the mining core a rig loads (CUDA 12.8 or CUDA 13).
+  - `memClock.js` — which mining cards get their memory clock locked, and at what.
+  - `miningStats.js` — accumulates the miner's events into the live stats snapshot.
   - `earnings.js` — PRL/USD per-day estimates.
   - `balance.js` — builds the pool balance lookup and parses the pending + paid response.
   - `minerReport.js` — the payload published to the public network board while mining.
-  - `gpu.js` / `region.js` — pick the discrete GPU and the lowest-latency pool region from what's detected.
-  - `engine.js` — engine download URLs, binary names, and progress math.
-  - `engineError.js` — plain-language guidance for launch failures (incl. antivirus quarantine).
+  - `statsFile.js` — the stats JSON the CLI writes for HiveOS's `h-stats.sh`.
+  - `gpu.js` — reads `nvidia-smi`'s card list and decides which cards mine (`--gpu-index`, `PEARL_GPU_INDEX`).
+  - `region.js` — picks the lowest-latency pool region.
   - `updateStatus.js` — formats the in-app auto-update banner.
   - `format.js` — uptime / hashrate / number formatting.
 - **`src/main/`** — Electron main process:
-  - `minerManager.js` — spawns and supervises the engine (injectable `spawn`, unit-tested).
-  - `engineManager.js` — downloads + installs the engine on first run (injected IO, unit-tested).
-  - `llmManager.js` / `llmEngineManager.js` — spawn/supervise the local `llama-server` and download its binary + GGUF model on demand (same injectable pattern as the miner pair, unit-tested).
+  - `pearlMiner.js` — the miner: one core per card, the pool connection, and share submission.
+  - `pearlEngine.js` — wraps `pearlMiner.js` in the start/stop and event interface both shells drive.
+  - `pearlCore.js` — loads `pearl_core.node` (built from [`native/`](native)), picking the CUDA 12.8 or CUDA 13 build.
+  - `probe.js` — asks `nvidia-smi` about the cards (names, VRAM, temperatures, PCI bus ids), pings the pool regions, and posts the board report.
+  - `gpuClocks.js` — locks and releases a card's memory clock while it mines.
+  - `llmManager.js` / `llmEngineManager.js` — spawn/supervise the local `llama-server` and download its binary + GGUF model on demand (injected IO, unit-tested).
   - `main.js` / `preload.js` — window, settings persistence, IPC bridge (thin shells).
 - **`src/renderer/`** — the GUI (Setup → Running → Settings → Logs), pure display + IPC.
 - **`src/cli/`** — headless Linux miner (no Electron); thin IO shells that reuse
-  the same `shared/*` logic and process supervisor as the GUI:
-  - `earn-cli.js` — the CLI entry (arg handling, engine resolution, run loop, self-update check).
+  the same `shared/*` logic and the same miner as the GUI:
+  - `earn-cli.js` — the CLI entry (arg handling, which cards mine, run loop, self-update check).
   - `selfUpdater.js` — the IO side of self-update (GitHub fetch, download, atomic self-replace, re-exec).
   - `sea-entry.js` — entry shim for the packaged single-file binary (`scripts/build-cli.mjs`).
 
 ## The mining engine
 
-The installer **bundles the engine** — electron-builder `extraResources` ships
-`vendor/engine/` to `<resources>/engine/`, so a normal install runs offline with
-no unsigned download at runtime. If no bundled binary is present (a dev run, or a
-build where antivirus stripped it), the app **downloads it on first Start** and
-caches it under the user-data folder (`…/LLMJob Earn/engine/`): on Windows it
-fetches `AlphaMiner-Pearl-Windows.zip` from the pool's `/downloads/` path and
-extracts `alpha-miner-windows.exe` (via PowerShell `Expand-Archive`, no extra
-dependency; base URL overridable). If that also fails it surfaces a plain-language
-engine error (with antivirus-quarantine guidance) — the stats shown are always the
-engine's real output, never simulated. Point `binaryPath` at your own build to
-skip the download entirely.
+The miner is our own. Its GPU work is a CUDA core, `pearl_core.node`, an N-API
+addon built from [`native/`](native), that runs inside the app's own process.
+`src/main/pearlMiner.js` drives it and speaks Stratum to the pool. There is no
+separate engine to download or start. The installer ships the cores in
+`resources/native/` (electron-builder `extraResources`, from `vendor/native/`),
+and the CLI looks for them beside its binary. If no core loads, the app says so
+and doesn't mine.
 
-The app drives `alpha-miner` with its documented CLI: `--address prl1…`,
-`--worker`, static difficulty via `--password "x;d=N"`, an optional
-`--force-backend` for cards that need it, and the regional endpoint
-(`us1/us2/eu1/eu2/ru1/sg1/hk1/in1.alphapool.tech:5566`). Merge mining differs by
-platform: Windows appends the MDL address to `--address` as `prl1…+mdl1…`, while
-Linux passes it in the password's `mdl=` field (`x;d=N;mdl=mdl1…`) because the
-Linux engine validates `--address` as a single bech32m address and rejects the
-combined form.
+It mines on **HeroMiners** (`<region>.pearl.herominers.com:1200`), in the
+region with the lowest latency unless one is pinned: `us`, `us2`, `ca`, `br`,
+`de`, `fi`, `fr`, `tr`, `sg`, `hk`, `kr` or `au`. The pool sends a block header
+and a target, and the core chooses how to search.
 
-On Linux the engine version is picked per rig (`shared/engine.js`): driver
-≥ 580 gets the faster CUDA 13 build (`alpha-miner-1.8.8`, 3–8% more hashrate on
-40/50-series), older drivers stay on the CUDA 12 stable (`alpha-miner-1.8.3`).
-The version is part of the cached filename, so bumping it forces a fresh
-download instead of trusting a stale cache.
+Earlier versions wrapped AlphaPool's `alpha-miner`. That engine and
+that pool are gone. An old AlphaPool region id (`us1`, `eu1`, `eu2`, `ru1`,
+`sg1`, `hk1`, `in1`), in saved settings or passed to the CLI, maps to the
+nearest HeroMiners region.
 
 ### Which GPUs it mines on
 
@@ -119,11 +111,32 @@ same card to the miner as it does to `nvidia-smi`. Left to itself the CUDA
 runtime numbers cards by its own "fastest first" heuristic, which on a mixed rig
 is a different card than the one `nvidia-smi` lists first.
 
-To mine on one specific card, set `PEARL_GPU_INDEX` to its `nvidia-smi` index:
+To mine on some cards only, list their `nvidia-smi` indices with `--gpu-index`
+on the CLI, or with `PEARL_GPU_INDEX` in either app. The flag wins over the
+variable:
 
 ```bash
+llmjob-earn-cli --address prl1p… --gpu-index 0,2
 PEARL_GPU_INDEX=1 llmjob-earn-cli --address prl1p…
 ```
+
+A listed card that `nvidia-smi` doesn't show is skipped, and the log says so.
+If it shows none of them, they go to the core, which fails and names the cards
+that exist. Each card names itself in the log as its core starts, and the CLI
+also logs the whole list and what chose it.
+
+`none` mines on no card. With `--mode mining` the CLI then waits until it is
+stopped instead of exiting. The CLI takes the same values from the flag and the
+variable, and stops with an error on one it can't read. The desktop app can't
+run with no mining card (set Compute Mode to LLM for that). So it ignores
+`PEARL_GPU_INDEX=none`, and any value it can't read, says so in the log, and
+mines on every card.
+
+These choose the mining cards only: the local LLM picks its own.
+
+A `CUDA_VISIBLE_DEVICES` left in the environment is removed at start, and the
+log says so. It hides cards from CUDA but not from `nvidia-smi`, so the two
+disagreed about which card was which, and once kept a rig's second card idle.
 
 The local LLM works the same way — an instance on every card with room for the
 model (`--main-gpu <index>` each), mining cards included. Its `llama-server` is a
@@ -137,7 +150,7 @@ A release ships two builds of the mining core side by side, in the installer's
 
 | File | Toolkit | Cards |
 |---|---|---|
-| `pearl_core.node` | CUDA 12.8 | RTX 20, 30, 40 and 50 (sm_75/86/89/120) — every rig |
+| `pearl_core.node` | CUDA 12.8 | RTX 20, 30, 40 and 50, A100 / A800 / A30 / CMP 170HX, and H100 / H200 (sm_75/80/86/89/90a/120) — every rig |
 | `pearl_core_cu13.node` | CUDA 13.3 | sm_89 and sm_120; picked automatically for RTX 50 / Blackwell only (the sm_89 half measured no faster on a 4090) |
 
 **RTX 30 (Ampere) note.** The sm_86 half of `pearl_core.node` now runs the same
@@ -171,11 +184,9 @@ beats both and loads exactly that file.
 
 ## macOS (LLM only)
 
-The Mac build runs **the local LLM and nothing else**. AlphaPool builds
-`alpha-miner` for Windows and Linux only — there is no macOS binary at any
-version, and no CUDA GPU to run one on — so the app refuses the miner up front
-(`src/shared/platform.js`) rather than downloading the Linux ELF that every
-non-Windows path in `shared/engine.js` would otherwise resolve to. Concretely:
+The Mac build runs **the local LLM and nothing else**. The mining core is
+CUDA, and a Mac has no NVIDIA GPU to run it on, so the app turns the miner off
+up front (`src/shared/platform.js`). Concretely:
 
 - **Settings → Compute Mode** offers only **Auto** and **LLM**; the two mining
   modes are removed rather than left to arm a **START** that runs nothing.
@@ -219,50 +230,93 @@ you install the new DMG over the old app.
 
 ## HiveOS (flight sheet)
 
-> **Not currently published.** As of v0.5.0 the release no longer builds or
-> attaches the HiveOS package: it had gone weeks without being exercised, and a
-> release should not carry an artifact nobody has verified. The packaging script
-> and hook scripts below are still in the tree, so restoring it is re-adding two
-> steps to `.github/workflows/miner-build.yml`. Rigs on a flight sheet pinned to
-> an older release keep working — they install by URL from the release they
-> already name. The rest of this section describes how it works when enabled.
+Each release ships a HiveOS custom-miner package, `llmjob-earn-<version>.tar.gz`:
+the headless CLI binary, its mining cores, and the hook scripts in `hiveos/`,
+packed by `scripts/build-hiveos.mjs` (`npm run dist:hiveos`). CI packs it from
+the same binary and cores it publishes on the release. Releases v0.5.0 to
+v0.5.12 have no package; use a later one.
 
-The release ships a HiveOS custom-miner package wrapping the headless CLI
-(`hiveos/` + `scripts/build-hiveos.mjs` → `llmjob-earn-<version>.tar.gz`,
-versioned because HiveOS caches the download by filename and can leave rigs
-stuck on an old build when the name never changes; an unversioned
-`llmjob-earn-hiveos.tar.gz` copy is still published for flight sheets that
-predate the rename):
+**It needs the HiveOS 0.6 jammy image (Ubuntu 22.04).** The mining cores need
+glibc 2.34 and libstdc++ with `GLIBCXX_3.4.29` (read with `objdump -T` from the
+v0.5.12 release files). Jammy has glibc 2.35. The older focal image (Ubuntu
+20.04) has glibc 2.31, so the cores don't load there and the rig mines nothing.
+RTX 50-series and RTX PRO Blackwell cards also need a newer NVIDIA driver than
+the stable image's 550: run `nvidia-driver-update` from Hive Shell.
 
-- **Miner** → Custom · **Miner name** → `llmjob-earn`
-- **Installation URL** → the versioned tarball from the [latest release](https://github.com/super3/llmjob/releases/latest),
-  i.e. `https://github.com/super3/llmjob/releases/download/v<version>/llmjob-earn-<version>.tar.gz` —
-  update the URL (and rigs re-download automatically) when a new version ships
+Flight sheet:
 
-The versioned filename's stem must stay exactly `llmjob-earn`, matching
-`CUSTOM_NAME`. HiveOS splits a `<name>-<version>.tar.gz` install URL to derive
-the miner name and then looks for `<name>/h-manifest.conf` inside the archive,
-so a stem of `llmjob-earn-hiveos` made every install fail with
-`No llmjob-earn-hiveos/h-manifest.conf` while leaving the rig on its previous
-build. Releases v0.1.17–v0.3.0 shipped that broken name; rigs pointed at one of
-those URLs need the flight sheet moved to a `llmjob-earn-<version>.tar.gz` URL.
-- **Wallet** → your `prl1p…` address only (HiveOS caps the wallet field at 90
-  characters, so the combined `prl1p…+mdl1p…` form doesn't fit)
-- **Pool URL** → any non-empty placeholder (e.g. `alphapool.tech:5566`) — HiveOS
-  refuses to save the flight sheet without it (`The url field is required`), but
-  the miner ignores it and auto-picks the fastest region (override with
-  `--region` in extra config); leave **Pass** blank
-- **Extra config arguments** → `--mdl mdl1p…` to merge-mine MDL, plus any other
-  CLI flags, e.g. `--region eu1` (optional)
+- **Miner** → Custom. **Miner name** → `llmjob-earn`.
+- **Installation URL** →
+  `https://github.com/super3/llmjob/releases/download/v<version>/llmjob-earn-<version>.tar.gz`,
+  with `<version>` from the [latest release](https://github.com/super3/llmjob/releases/latest).
+  To update a rig, change the URL to the new version. HiveOS reinstalls only
+  when the URL changes, and then reuses any archive of the same file name it
+  already downloaded. So an unchanging file name never updates: the
+  unversioned `llmjob-earn-hiveos.tar.gz` that each release also carries (at
+  `releases/latest/download/`) is good for a first install only. The part of
+  the file name before the version must stay `llmjob-earn`. HiveOS takes the
+  miner name from it and refuses to install when it differs from Miner name.
+  A PR build from CI has the same file name as its version's release, so to
+  install a different build of a version a rig already has, delete
+  `/hive/miners/custom/downloads/llmjob-earn-<version>.tar.gz` before changing
+  the URL. Or, after changing it, run
+  `/hive/miners/custom/custom-get <url> -f` from Hive Shell, then
+  `miner restart`.
+- **Hash algorithm** → `pearlhash`.
+- **Wallet and worker template** → `%WAL%`, with your `prl1p…` address as the
+  wallet. `%WAL%.%WORKER_NAME%` also works: everything after the first `.` is
+  the worker name. Otherwise the worker is the rig's HiveOS name. An old
+  `prl1p…+mdl1p…` wallet still mines, but merge mining is retired.
+- **Pool URL** → any `host:port`, e.g. `us.pearl.herominers.com:1200`. HiveOS
+  won't save the flight sheet without one (`The url field is required`), but
+  the miner doesn't read it: it mines on HeroMiners and picks the region with
+  the lowest latency when it starts. **Pass** → leave blank.
+- **Extra config arguments** → optional CLI flags; leave it empty for the
+  defaults. The ones that make sense on a rig:
+  - `--region <id>` pins the pool region: `us`, `us2`, `ca`, `br`, `de`, `fi`,
+    `fr`, `tr`, `sg`, `hk`, `kr` or `au`. An old AlphaPool id from an older
+    flight sheet (`us1`, `eu1`, `eu2`, `ru1`, `sg1`, `hk1`, `in1`) maps to the
+    nearest of these, and the miner log says which (`region eu1 is now de`).
+  - `--mine-mem-clock <MHz>` locks the memory clock while mining; `0` turns off
+    the RTX 5090 default (see below).
+  - `--mode auto` also serves a local LLM (next paragraph).
+  - `--no-report` keeps the rig off the public network board.
 
-The worker name comes from the rig's HiveOS name, and the dashboard gets live
-hashrate/shares via `h-stats.sh`, which reads the JSON the CLI writes with
-`--stats-file` (10s cadence; a stale file reports zeros rather than lying).
-Auto-update on start is disabled under HiveOS (`--no-update`) — the agent owns
-the lifecycle, so updates normally arrive by reinstalling the package URL. To
-move a single rig without touching its flight sheet, run the CLI's explicit
-update from Hive Shell; it replaces the binary in place but leaves the wrapper
-scripts (and the `CUSTOM_VERSION` the dashboard displays) as they were:
+  `llmjob-earn-cli-linux --help` lists every flag. A flag the CLI doesn't have
+  makes it exit at once. HiveOS then restarts it every few seconds and shows
+  "Miner starting error", and `miner log` names the flag. Old examples such as
+  `--difficulty` no longer exist. A region the CLI doesn't know stops it the
+  same way.
+
+**The rig mines only.** The package adds `--mode mining` unless Extra config
+has a `--mode`. The CLI's own default, `auto`, also serves a local LLM. It
+downloads a 5 GB model to the HiveOS drive, or about 18 GB on a card with 30 GB
+or more free. On such a card it also stops mining while it serves, which
+HiveOS's watchdog can take for a hung miner. To serve the LLM anyway, put
+`--mode auto` in Extra config (`--mode llm` for the LLM only).
+
+**A card turned off in HiveOS doesn't mine.** HiveOS turns a card off with a
+power limit of 1 in its NVIDIA overclock, or with `GPU_DISABLE`, and tells the
+miner which cards are still on through `CUDA_VISIBLE_DEVICES`. `h-config.sh`
+passes that on as `--gpu-index`, so the CLI mines on the cards still on, and
+each one's hashrate lands on its own row. With every card off it passes
+`--gpu-index none`: the miner logs that and waits, instead of exiting and being
+restarted every few seconds. HiveOS reads the setting when the miner starts, so
+restart the miner after turning a card on or off. A `--gpu-index` in Extra
+config replaces HiveOS's choice. The local LLM (`--mode auto`) doesn't follow
+it.
+
+`h-stats.sh` sends HiveOS each card's own hashrate with its PCI bus number,
+plus the rig total, shares, uptime and version. HiveOS uses the bus numbers to
+put each hashrate on its GPU's row, so an iGPU or a server's BMC display in the
+GPU list doesn't shift them. It reads all this from the file the CLI writes
+every 10 s (`--stats-file`), and a file older than 2 minutes reports 0.
+
+Self-update is off under HiveOS (`--no-update`): the agent owns the miner, and
+a new version arrives with a new Installation URL. To move a single rig without
+touching its flight sheet, run the CLI's update from Hive Shell. It replaces the
+binary in place but leaves the hook scripts and the `CUSTOM_VERSION` the
+dashboard shows as they were:
 
 ```
 miner stop
@@ -272,17 +326,16 @@ miner start
 
 ## Headless CLI (Linux)
 
-For rigs and servers with no desktop, `src/cli/earn-cli.js` runs the exact same
-engine from the command line — no Electron, no window. It shares all the logic
-with the GUI (engine download, `prl1…`/`mdl1…` addresses, static difficulty,
-merge mining, the public-board report), so behaviour matches the app.
+For rigs and servers with no desktop, `src/cli/earn-cli.js` mines from the
+command line with the same mining core as the GUI, with no Electron and no
+window. It shares the GUI's logic (address checks, which cards mine, the stats,
+the public-board report, the local LLM), so the two behave the same.
 
-Like the GUI, it **auto-detects** the bits you don't pin: the lowest-latency
-pool region (it TCP-pings every endpoint on start) and the GPU (`nvidia-smi`),
-picking that card's recommended static difficulty from the table. Both are
-best-effort — if the pings all fail it falls back to `us2`, and if there's no
-`nvidia-smi` it falls back to the default difficulty — and an explicit
-`--region`, `--gpu`, or `--difficulty` always overrides the detected value.
+Like the GUI, it **auto-detects** what you don't pin: the lowest-latency
+HeroMiners region (it TCP-pings every endpoint on start, and falls back to `us`
+if none answers) and the GPUs (`nvidia-smi`), and mines on every card.
+`--region`, `--gpu` (the card name shown on the board) and `--gpu-index`
+(which cards mine) override what it detects.
 
 ```bash
 # from this earn/ directory
@@ -291,11 +344,12 @@ node src/cli/earn-cli.js --address prl1pYOUR_ADDRESS
 npm run start:cli -- --address prl1pYOUR_ADDRESS   # via the package script
 ```
 
-On first run it downloads the Linux `alpha-miner` binary from the pool and
-caches it under `~/.local/share/llmjob-earn/engine/` (override with
-`--engine-dir`, or skip the download entirely with `--binary /path/to/alpha-miner`).
-It streams the engine's real output, prints a periodic hashrate/share summary,
-and shuts the engine down cleanly on Ctrl-C.
+The mining core is a CUDA addon (`pearl_core.node`) that runs inside the CLI's
+own process, not a separate engine to download. The CLI loads it from beside
+its binary (see [Standalone binary](#standalone-binary--self-update)), from
+`native/build/Release/` when run from source, or from the file
+`PEARL_CORE_PATH` names. It prints a hashrate and shares line about once a
+second, and stops cleanly on Ctrl-C.
 
 ### Local LLM (`--mode`)
 
@@ -323,11 +377,10 @@ out-of-memory crash; it logs a clear "not enough free VRAM" line and skips the
 LLM (mining, if enabled, carries on). If VRAM can't be read (non-NVIDIA / no
 driver) it proceeds and lets llama.cpp decide.
 
-The pool ships `llama-server` as a release **zip**; the CLI downloads and
-extracts it with `unzip` (flattening the archive so the binary sits next to its
-shared libraries), caching it under the same `llm/` dir. If `unzip` isn't
-installed — or you'd rather pin your own build — pass a prebuilt binary with
-`--llm-binary /path/to/llama-server` to skip the download entirely.
+`llama-server` comes from a llama.cpp release, a `.tar.gz` on Linux. The CLI
+extracts it with `tar` into the same `llm/` dir, so the binary sits next to its
+shared libraries. To skip the download, or pin your own build, pass
+`--llm-binary /path/to/llama-server`.
 
 ```bash
 # mine and co-run the local LLM
@@ -373,10 +426,15 @@ network is reachable through the shared API without opening a port or exposing
 CI packages the CLI into a **standalone single-file Linux executable**
 (`llmjob-earn-cli-linux`, built with [Node SEA](https://nodejs.org/api/single-executable-applications.html))
 and attaches it to each GitHub Release, so a headless box can run it with **no
-Node install**:
+Node install**. The mining cores are separate files on the same release, and
+the binary looks for them beside itself (`pearl_core_cu13.node` is used only on
+Blackwell cards, such as the RTX 50 series and RTX PRO Blackwell, with driver
+580 or newer):
 
 ```bash
-curl -L -o llmjob-earn-cli https://github.com/super3/llmjob/releases/latest/download/llmjob-earn-cli-linux
+base=https://github.com/super3/llmjob/releases/latest/download
+curl -L -o llmjob-earn-cli $base/llmjob-earn-cli-linux
+curl -L -O $base/pearl_core.node -O $base/pearl_core_cu13.node
 chmod +x llmjob-earn-cli
 ./llmjob-earn-cli --address prl1pYOUR_ADDRESS
 ```
@@ -401,41 +459,53 @@ just prints a notice when a newer release is available (update via git/npm).
 
 ```
 Usage: llmjob-earn-cli --address <prl1p…> [options]
+       llmjob-earn-cli connect --token <pairing-token>   Link this box to your LLMJob account
+       llmjob-earn-cli update                            Update the CLI to the latest release
 
-  -a, --address <prl1p…>   Your Pearl payout address (required unless --mode llm)
-  -m, --mdl <mdl1p…>       Also merge-mine ModelOS (MDL) on the same shares
-      --mode <mode>        Compute mode: mining/both/llm/auto (default: auto)
-      --llm-binary <path>  Path to a llama-server binary (to run the local LLM)
-      --llm-model <path>   Path to a GGUF model file (default: download the small model)
-  -r, --region <id>        Pool region: us1/us2/eu1/eu2/ru1/sg1/hk1/in1 (default: auto-detect fastest)
+  -a, --address <prl1p…>   Your Pearl payout address (not needed with --mode llm)
+      --mode <mode>        auto (default) mines and serves a local LLM; mining
+                           only mines; llm only serves. "both" means auto.
+  -r, --region <id>        Pool region: us/us2/ca/br/de/fi/fr/tr/sg/hk/kr/au
+                           (default: the fastest). An old AlphaPool id such as
+                           eu1 maps to the nearest.
   -w, --worker <name>      Worker/rig name (default: this machine's hostname)
-  -d, --difficulty <n>     Static share difficulty (default: from detected/--gpu card, else 524288)
-  -g, --gpu <card>         GPU name for the difficulty table (default: auto-detect via nvidia-smi)
-      --backend <name>     Force an engine backend (e.g. ampere)
-  -b, --binary <path>      Use this alpha-miner binary instead of downloading one
-      --engine-dir <path>  Where to cache the downloaded engine
-      --mine-mem-clock <MHz>  Lock each mining GPU's memory clock while it mines (default: 7001 on the RTX 5090, see below; 0 turns it off)
+  -g, --gpu <card>         GPU name to report on the board (default: from nvidia-smi)
+      --gpu-index <list>   Mine only on these GPUs: nvidia-smi indices such as
+                           0,2, or "none" (default: every GPU)
+      --mine-mem-clock <MHz>  Lock each mining GPU's memory clock while it mines
+                           (default: 7001 on the RTX 5090; 0 turns it off; see below)
+      --stats-file <path>  Write live stats JSON here every 10 s (HiveOS's h-stats.sh reads it)
+      --llm-binary <path>  Use this llama-server instead of downloading one
+      --llm-model <path>   Use this GGUF model instead of downloading the default
+      --llm-max-instances <n>  Cap how many llama-servers run (default: one per GPU that fits)
+      --gate-port <port>   Port the auto-mode gate serves on (default: 8000)
+      --gate-host <addr>   Address the gate binds (default: 0.0.0.0)
+      --gate-quiet <secs>  Seconds with no requests before the GPU goes back to mining (default: 60)
       --no-report          Do not publish live status to the public network board
+      --no-serve           Do not serve inference jobs for the LLMJob network
       --no-update          Do not auto-update the CLI to a newer release on start
-  -h, --help / -v, --version
+  -h, --help               Show the full help, with what each option is for
+  -v, --version            Print the version and exit
 ```
 
 ### Running on a server (pinned, no surprises)
 
-For unattended / production rigs, prefer a fully-pinned setup — a vetted engine
-you control, no background self-updates, and no outbound fetches at start:
+For unattended rigs, pin what the CLI would otherwise decide or fetch when it
+starts:
 
 ```bash
-llmjob-earn-cli --address prl1p… \
-  --binary /opt/llmjob/alpha-miner \   # vetted engine you placed — no download, no engine drift
-  --no-update \                        # don't self-replace the CLI binary
-  --no-report                          # optional: don't publish to the public board
+llmjob-earn-cli --address prl1p… --mode mining --region de --no-update --no-report
 ```
 
-`--binary` skips the on-demand engine download entirely and pins a known-good
-`alpha-miner` (download + audit it once, then point every host at it), so an
-engine bump never lands on a box without you choosing it. `--no-update` does the
-same for the CLI itself.
+- `--mode mining` mines only, so no model is downloaded.
+- `--region de` skips the latency probe and always mines in one region.
+- `--no-update` keeps this version: the CLI never replaces itself, or the
+  mining cores beside it.
+- `--no-report` (optional) keeps the rig off the public network board.
+
+The mining cores (`pearl_core.node`, and `pearl_core_cu13.node` for Blackwell
+cards) sit beside the binary, so nothing is downloaded to mine. To run a core
+you built or vetted yourself, set `PEARL_CORE_PATH=/path/to/pearl_core.node`.
 
 Log lines are **journald-friendly**: the `[HH:MM:SS]` prefix is only added when
 stdout is a TTY, so under systemd / `docker logs` (where the collector adds its
@@ -444,7 +514,7 @@ unit:
 
 ```ini
 [Service]
-ExecStart=/opt/llmjob/llmjob-earn-cli --address prl1p… --binary /opt/llmjob/alpha-miner --no-update
+ExecStart=/opt/llmjob/llmjob-earn-cli --address prl1p… --mode mining --no-update
 Restart=always
 ```
 
@@ -522,7 +592,7 @@ llmjob-earn-cli --address prl1p… --mode mining --mine-mem-clock 0     # leave 
 npm install        # from this earn/ directory
 npm start          # launch the Electron app
 npm run start:cli -- --address prl1p…   # run the headless Linux miner
-npm test           # jest — 100% coverage gate on shared/* + miner/engineManager
+npm test           # jest — 100% coverage gate (see jest.config.js)
 ```
 
 ## Build (Windows + Linux + macOS)
@@ -541,9 +611,9 @@ the Linux **AppImage** builds on Linux; the macOS **DMG** builds on macOS
 build is uploaded as an artifact and, on a `v*` tag, published to the GitHub
 Release.
 
-The mining engine is bundled into the Windows and Linux builds only
+The mining cores are bundled into the Windows and Linux builds only
 (`build.win.extraResources` / `build.linux.extraResources`); the Mac build ships
-neither it nor the Windows VC++ runtime DLLs, since it cannot mine. The macOS app
+neither them nor the Windows VC++ runtime DLLs, since it cannot mine. The macOS app
 is ad-hoc signed in an `afterPack` hook — see
 [macOS (LLM only)](#macos-llm-only) for why, and what it means on first launch.
 
@@ -553,4 +623,4 @@ macOS `.icns` and the Linux icon set) is generated by
 
 ---
 
-Not affiliated with Pearl Research Labs or AlphaPool — this is a third-party GUI.
+Not affiliated with Pearl Research Labs or HeroMiners — this is a third-party GUI.

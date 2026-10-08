@@ -48,7 +48,9 @@ const { isValidAddress } = require('../shared/address');
 const { formatUpdate, describeUpdateError } = require('../shared/updateStatus');
 const { buildMinerReports } = require('../shared/minerReport');
 const { runtimeCopyPlan } = require('../shared/llmRuntime');
-const { alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda } = require('../shared/gpu');
+const {
+  alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda, readGpuIndexEnv, describeSkippedGpus,
+} = require('../shared/gpu');
 const { planMemClocks, readMemClockEnv, GUI_MEM_CLOCK_ENV } = require('../shared/memClock');
 const earnings = require('../shared/earnings');
 const format = require('../shared/format');
@@ -312,11 +314,20 @@ async function startMining(settings, llmCoRuns) {
   // has already stopped would leave an engine nobody is holding.
   const epoch = miningEpoch;
   if (clearedCudaLine) send('miner:log', { level: 'info', line: clearedCudaLine });
+  // PEARL_GPU_INDEX can narrow the cards. A value the app can't use, and a
+  // listed card nvidia-smi doesn't show, are logged rather than dropped quietly.
+  const gpuEnv = readGpuIndexEnv(process.env);
+  if (gpuEnv.warning) send('miner:log', { level: 'warn', line: gpuEnv.warning });
   // The same nvidia-smi round also reads each card's compute capability and the
   // driver version, which decide whether this rig loads the CUDA 12.8 core or
   // the CUDA 13 one (shared/coreVariant). The factory logs its choice.
-  const [gpus, cudaCards] = await Promise.all([probe.detectMinerGpus(), probe.detectCudaCards()]);
+  const [gpus, cudaCards] = await Promise.all([
+    probe.detectMinerGpus(process.env, gpuEnv.indices), probe.detectCudaCards(),
+  ]);
   if (epoch !== miningEpoch) return;
+  for (const line of describeSkippedGpus(gpuEnv.indices, gpus, 'PEARL_GPU_INDEX')) {
+    send('miner:log', { level: 'warn', line });
+  }
 
   // Which cards lock their memory clock while mining: the RTX 5090 default
   // (shared/memClock), or LLMJOB_MINE_MEM_CLOCK from the app's environment, the

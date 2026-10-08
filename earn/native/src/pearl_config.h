@@ -32,12 +32,10 @@
 #define PEARL_JACKPOT_BUCKETS 16
 #define PEARL_ROTL_BITS 13
 
-// Regions searched per launch. One CUDA block each, so this is also the grid
-// width — big enough to fill every SM on a large card, small enough that a job
-// switch is picked up promptly.
-// Regions per launch. Also the width of the partials pass, which runs one thread
-// per (chunk, row): at m = 4096 that is 65536 threads against the 196608 a 4090
-// holds resident, so a third of the machine. Sized to fill it instead.
+// The batch size pearl_core.cc's search loop passes to pearl_host_submit. The
+// host ignores it: a launch covers the context's own width, col_batch column
+// offsets by every valid row offset (see PearlProfile.col_batch), and the loop
+// advances by the region count the host reports back.
 #define PEARL_BATCH_REGIONS 16384
 
 // The difficulty adjustment factor: tile_size * dot_product_length.
@@ -134,11 +132,12 @@ typedef struct PearlProfile {
   // search launch-bound rather than compute-bound: measured on a 4090, a batch
   // cost a flat 134-213us whether it carried 1024 regions or 8192, because
   // three kernel launches and a synchronising copy dominated whatever work was
-  // inside them. Widening the batch amortises that fixed cost, and it also
-  // gives the partials kernel far better arithmetic intensity, since each A row
-  // it reads is now used against col_batch*8 columns instead of 8.
+  // inside them. Widening the batch amortises that fixed cost.
   //
-  // Costs col_batch * chunks * m * cols * 4 bytes of partial table.
+  // The host can narrow it when it makes the context (pearl_tma_col_batch,
+  // pearl_ampere_col_batch). It costs memory only on the two folds that store
+  // every transcript, GA100's unfused fold and Hopper's wgmma fold: 64 bytes a
+  // region of the batch, for each of the two pipeline slots.
   uint32_t col_batch;
   // 0 = read the jackpot hash little-endian, as the reference does; 1 = big.
   // A diagnostic for the share rejections, not a protocol choice.
@@ -213,28 +212,6 @@ PEARL_HD constexpr uint32_t pearl_pattern_span(uint32_t mask) {
 #define PEARL_ROWS_SPAN (pearl_pattern_span(PEARL_ROWS_MASK))
 #define PEARL_COLS_SPAN (pearl_pattern_span(PEARL_COLS_MASK))
 
-// How many rows of A one thread carries.
-//
-// The partials kernel is 86% of a batch and runs at about an eighth of the
-// card's __dp4a peak, because it issues one 16-byte load of B for every four
-// multiply-accumulate instructions. Carrying several rows against the same
-// eight B columns multiplies that ratio directly: at two rows it is eight
-// __dp4a per load, at four it is sixteen.
-//
-// The cost is registers -- each row holds a whole k-slice, so this trades
-// occupancy for arithmetic intensity.
-#define PEARL_ROWS_PER_THREAD 2
-
-// How many 16-byte groups of an A row slice a thread can hold in registers.
-// 8 covers rank 128, the mandated profile. A rank needing more falls back to
-// re-reading the slice per column group, which is correct but slower.
-#define PEARL_MAX_A_QUADS 16
-
-// How many regions share one warp in the fold. The producer collapses each
-// row's columns, so a region needs only PEARL_ROWS_COUNT lanes; giving it a
-// whole warp left 28 of 32 idle.
-#define PEARL_REGIONS_PER_WARP (32 / PEARL_ROWS_COUNT)
-
 // How many hits one batch can report. The search returns on the first one, so
 // this only has to be large enough that a pathologically easy target does not
 // silently lose hits it would never have submitted anyway.
@@ -290,9 +267,10 @@ typedef struct {
   uint32_t a_seed[8];
 } PearlRestampRecord;
 
-// Rows of A one warp covers in the tensor-core partials kernel. The WMMA int8
-// shape is 16x16x16, and valid row offsets are multiples of PEARL_ROWS_COUNT,
-// so a 16-row block is exactly four consecutive row offsets.
+// Rows of A in one of a fold warp's 16-row blocks (PEARL_WMMA_ROW_TILES of them
+// a warp). A tile's PEARL_ROWS_COUNT rows are spread over a 32-row span that
+// holds two whole row offsets, so a 16-row block counts for
+// PEARL_WMMA_ROWS / PEARL_ROWS_COUNT row offsets: one.
 #define PEARL_WMMA_ROWS 16
 
 // How many 16-wide k-steps of A a warp holds in registers at once. 8 covers
@@ -376,6 +354,22 @@ typedef struct {
 #endif
 #endif
 
+// The Ampere builds, by __CUDA_ARCH__: GA100 (sm_80: A100, A800, A30, CMP 170HX) and GA10x
+// (sm_86: the RTX 30 cards). Both take the same fold paths and the same host rules
+// (Ctx::foldAmpere). GA100 has GA10x's int8 m16n8k32 and cp.async, twice the int8 tensor
+// rate an SM, a 24-40 MB L2 and 164 KB of shared an SM; a gate that names only one of the
+// two is a measured difference between them. The host reads binaryVersion, which is
+// __CUDA_ARCH__ / 10.
+//
+// Hopper (sm_90a: H100, H200) builds the same cp.async fold, as its fallback, and takes
+// the same host rules; it mines on the wgmma fold, pearl_tile_fold_hopper
+// (PEARL_HOPPER_WGMMA). Its SM still has the int8 m16n8k32 mma.sync, ldmatrix and cp.async,
+// and pearl_mbar_wait uses its try_wait. It is not Hopper's fast path: there mma.sync
+// reaches only part of the int8 rate wgmma does. A gate that names PEARL_HOPPER_ARCH
+// alone is a measured difference: so far only PEARL_AMPERE_PERSIST_ARCH, the A' slice.
+#define PEARL_HOPPER_ARCH(a) ((a) == 900)
+#define PEARL_AMPERE_ARCH(a) ((a) == 800 || (a) == 860 || PEARL_HOPPER_ARCH(a))
+
 // Walk the bands as a serpentine: odd bands take their column groups in
 // reverse, so each band starts on the B columns the one before it ended on.
 //
@@ -399,7 +393,7 @@ typedef struct {
 // one-deep bands re-sweep B every row group, so it may gain there too, but
 // that has not been measured. Device side only.
 #ifndef PEARL_FOLD_SERPENTINE
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
+#if defined(__CUDA_ARCH__) && (PEARL_AMPERE_ARCH(__CUDA_ARCH__) || __CUDA_ARCH__ == 890)
 #define PEARL_FOLD_SERPENTINE 1
 #else
 #define PEARL_FOLD_SERPENTINE 0
@@ -475,7 +469,7 @@ typedef struct {
 // The CTA tile, the stage buffers and the tile walk are the same either way, so
 // the host's grid, shared size and tile count do not change -- only the block.
 // It must launch the one the loaded fold was compiled for, and decides from the
-// binary as for PEARL_FOLD_PERSISTENT (binaryVersion 86 or 89), refusing a fold
+// binary as for PEARL_FOLD_PERSISTENT (binaryVersion 80, 86, 89 or 90), refusing a fold
 // whose launch bound says otherwise. A -DPEARL_FOLD_WIDE_WARPS=0/1 override
 // binds both sides.
 //
@@ -487,7 +481,7 @@ typedef struct {
 #define PEARL_FOLD_WIDE_WARPS_FORCED 1
 #endif
 #ifndef PEARL_FOLD_WIDE_WARPS
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
+#if defined(__CUDA_ARCH__) && (PEARL_AMPERE_ARCH(__CUDA_ARCH__) || __CUDA_ARCH__ == 890)
 #define PEARL_FOLD_WIDE_WARPS 1
 #else
 #define PEARL_FOLD_WIDE_WARPS 0
@@ -764,7 +758,7 @@ typedef struct {
 // cp.async ring, and Blackwell's, which stages with TMA unless PEARL_TALL_TMA is 0.
 // This one list is what the default below, the fold's own #if in pearl_kernel.cu and
 // PEARL_TALL_ARCH all test, so they cannot drift apart.
-#define PEARL_TALL_BODY_ARCH(a) ((a) == 860 || (a) == 890 || (a) >= 1200)
+#define PEARL_TALL_BODY_ARCH(a) (PEARL_AMPERE_ARCH(a) || (a) == 890 || (a) >= 1200)
 #ifdef PEARL_FOLD_TALL
 #define PEARL_FOLD_TALL_FORCED 1
 #endif
@@ -776,8 +770,9 @@ typedef struct {
 #endif
 #endif
 // The same test for the host, by the architecture number it reads back as
-// cudaFuncAttributes::binaryVersion (75, 86, 89, 120: the binary ships sm_75, sm_86,
-// sm_89 and sm_120 SASS and no PTX, so that is exactly the build that runs).
+// cudaFuncAttributes::binaryVersion (75, 80, 86, 89, 90, 120: the binary ships sm_75,
+// sm_80, sm_86, sm_89, sm_90a and sm_120 SASS and no PTX, so that is exactly the build
+// that runs; sm_90a reads back as 90).
 // binaryVersion is __CUDA_ARCH__ / 10. Turing (75) has no tall fold.
 #define PEARL_TALL_ARCH(v) PEARL_TALL_BODY_ARCH((v) * 10)
 #define PEARL_TALL_TMA_ARCH(v) ((v) >= 120)
@@ -940,6 +935,23 @@ typedef struct {
 #ifndef PEARL_AMPERE_BAND_L2_SHARE
 #define PEARL_AMPERE_BAND_L2_SHARE 80u
 #endif
+// GA100's band (host side, the sm_80 unfused fold only): 32 deep where a band's A' (12 MB
+// at the mainnet k) is at most this many percent of the L2. That is the A100's 40 MB (30%);
+// the A30's 24 MB and the CMP 170HX's 32 MB keep the rule above (16). The persisting
+// slice (PEARL_AMPERE_PERSIST_A) takes the whole 12 MB on all three (max 15-25 MB).
+// Measured with -DPEARL_AMPERE_BAND=32 against 16, hashrate.js, 3 or 4 rounds, 400/400
+// hits:
+//   A100 SXM4 40 GB (New York, 400 W)  246.60 -> 246.98  +0.15%  ahead in every round
+//   A100 PCIe 40 GB (Japan, 250 W)     211.13 -> 211.74  +0.29%  ahead in every round
+//   the same two on the four-buffer ring (not kept), against it: -0.03% (ahead in 1 of 3
+//   rounds) and +0.20% (every round)
+//   CMP 170HX (Georgia, 250 W)         164.63 -> 164.75  +0.07%  (behind in 2 of 4 rounds)
+//   A30 (Australia, 155 W)             104.56 -> 103.79  -0.74%  (behind in all 4)
+//   A100s at band 64 (24 MB): -0.85% and -1.31%.
+// 0 turns it off. Host only.
+#ifndef PEARL_GA100_BAND32_L2_SHARE
+#define PEARL_GA100_BAND32_L2_SHARE 33u
+#endif
 // Ampere's batch width (host side, the sm_86 tall fold only): at most this many column
 // offsets a launch, against the profile's 2048. With A' held in the persisting slice
 // (PEARL_AMPERE_PERSIST_A), what DRAM still serves is B' fetched again when the tiles that
@@ -980,8 +992,14 @@ typedef struct {
 #ifndef PEARL_AMPERE_PERSIST_A
 #define PEARL_AMPERE_PERSIST_A 1
 #endif
+// The builds that take it, by __CUDA_ARCH__ (the device pass) or binaryVersion * 10 (the
+// host): Ampere's, not Hopper's. On sm_90 the A copies' cp.async.L2::cache_hint raised
+// "an illegal instruction was encountered" in every block (H100 PCIe, s90-002;
+// compute-sanitizer put it on the A copy), and ptxas 12.6 to 13.3 all build it the same
+// way. So Hopper copies A without the hint, and the host sets no slice for it.
+#define PEARL_AMPERE_PERSIST_ARCH(a) (PEARL_AMPERE_ARCH(a) && !PEARL_HOPPER_ARCH(a))
 // Device side: whether THIS compile's tall fold reads its band depth at run time.
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 860
+#if defined(__CUDA_ARCH__) && PEARL_AMPERE_ARCH(__CUDA_ARCH__)
 #define PEARL_TALL_BAND_RT 1
 #else
 #define PEARL_TALL_BAND_RT 0
@@ -1058,7 +1076,7 @@ typedef struct {
 #define PEARL_TALL_HASH_PAIRS 1
 #endif
 #if PEARL_TALL_HASH_PAIRS && defined(__CUDA_ARCH__) \
-    && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890 \
+    && (PEARL_AMPERE_ARCH(__CUDA_ARCH__) || __CUDA_ARCH__ == 890 \
         || (__CUDA_ARCH__ >= 1200 && __CUDACC_VER_MAJOR__ >= 13))
 #define PEARL_TALL_HASH_PAIRS_ON 1
 #else
@@ -1079,8 +1097,193 @@ typedef struct {
 #ifndef PEARL_TALL_PREGUARD
 #define PEARL_TALL_PREGUARD 1
 #endif
+// GA100 (sm_80): the tall fold leaves the transcript hash to a kernel of its own. At each
+// tile's end every warp copies its 24 regions' words from shared to a per-slot buffer in
+// global memory (64 bytes a region) and zeroes them; pearl_tall_hash80 hashes the batch
+// right after the fold on the same stream and reports hits as the fold did. There is no
+// hasher warp and no hand-off barrier. The host reads the value too (Ctx::foldUnfused), so
+// -DPEARL_TALL_UNFUSED=0/1 binds both sides. The buffer's address reaches the fold in the
+// first bytes of its tmA parameter, which the cp.async builds otherwise ignore, so the
+// kernel's signature is the same for every arch.
+//
+// Why. GA100's tensor pipe does twice GA10x's int8 MACs a clock against the same integer
+// path, and on GA100 integer work beside an IMMA warp costs it much more: in a probe of the
+// stage body, four IMMA warps ran 86% of the pipe alone and 59% beside four BLAKE3-like
+// warps. So the fused hash, one warp a scheduler hashing ~3,600 cycles at every tile seam,
+// slowed both warps of its scheduler and cost ~14% of a tile (cycles a tile, A100 PCIe:
+// 73,100 with it, 62,700 without). In a kernel of its own the hash runs at full occupancy
+// with nothing beside it, ~2.7% of the time, and the 64-byte round trip is 256 MB a batch
+// at width 512, which HBM2e carries at ~13% memory utilization.
+//
+// Measured with A at 3, B at 6 (PEARL_TALL_APT/BPT, the best points once the hash has left
+// the fold) and the hash kernel's adds on the FMA pipe (PEARL_TALL_HASH80_IMAD), against the
+// fused fold at 2 and 6, hashrate.js, 3 rounds, ahead in every round, 400/400 hits:
+//   CMP 170HX (250 W)                157.38 -> 164.97 TH/s  +4.82%
+//   A100 SXM4 40 GB (400 W)          240.43 -> 246.62       +2.58%
+//   A100 PCIe 40 GB (250 W)          205.79 -> 210.33       +2.21%  (199.68 -> 211.98 without
+//                                                                    the FMA adds, another day)
+//   A30 (155 W)                      101.35 -> 104.83       +3.44%
+// The FMA adds alone: +0.45% (CMP) and +0.53% (SXM4), ahead in every round. A pool run on
+// the A100 PCIe accepted 11 of 11 shares.
+#ifndef PEARL_TALL_UNFUSED
+#define PEARL_TALL_UNFUSED 1
+#endif
+#if PEARL_TALL_UNFUSED && defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 800
+#define PEARL_TALL_UNFUSED_ON 1
+#else
+#define PEARL_TALL_UNFUSED_ON 0
+#endif
+// The unfused hash kernel's adds as IMAD, on the FMA pipe, where they run beside the XORs
+// and rotates on the integer pipe; both are 16 lanes on GA100. The compression's message
+// test then issues 424 integer-pipe and 334 FMA-pipe instructions, against 531 and 109.
+#ifndef PEARL_TALL_HASH80_IMAD
+#define PEARL_TALL_HASH80_IMAD 1
+#endif
+// Hopper's wgmma fold (pearl_tile_fold_hopper, sm_90a only; on by default since
+// 2026-10-08). mma.sync reaches 66% of H100's int8 tensor rate and the cp.async tall fold
+// about 44% a clock; only wgmma reaches the rest. Tiles of 128 rows (8 row offsets) by 256
+// columns, walked as the tall fold walks its 192-row tiles, read through 3-D tensor maps in
+// SWIZZLE_64B boxes of 128 and 256 rows. Two consumer warpgroups, each 64 rows by 256
+// columns (wgmma m64n256k32, 128 accumulators a thread), read A and B from shared; a chunk
+// is four k32 steps, the accumulators running on from the chunk before (only the tile's
+// first step starts from zero: the transcript words are XORs of running sums), then each
+// lane XORs its 32 values of each of its four regions, and the readout below
+// (PEARL_HOPPER_RSCATTER, PEARL_HOPPER_RLAYOUT) adds those words to shared with
+// red.shared.xor. One producer warp fills the ring by TMA as the consumers release stages.
+// Nine warps put three on a scheduler, so ptxas may use 168 registers a thread; a third
+// m64n256 warpgroup would make 13 warps and a 128-register cap, too few, and setmaxnreg
+// does not lift that for allocation in ptxas 12.8. No hash in the fold: at each tile's
+// end each warpgroup copies its 64 regions to the slot's transcript buffer, as GA100's
+// unfused fold does, and pearl_tall_hash80 hashes them. The host picks it when the loaded
+// binary has its body (its 288-thread launch bound) and PEARL_HOPPER_WGMMA is set. The
+// CUDA 12.8 release builds sm_90a (native-core.yml), so a compute 9.0 card loads that body;
+// -DPEARL_HOPPER_WGMMA=0, or a build for plain sm_90, runs the cp.async tall fold instead.
+//
+// Measured, sm_90a, hashrate.js 3 rounds, ahead in every round, against the cp.async tall
+// fold and against the first version (three consumer warpgroups on 192-row tiles and no
+// producer warp, 40904f6), 400/400 hits for each, with 2-CTA clusters, width 256 and the
+// reduce-scatter readout below:
+//   H100 SXM (Vast 153443, 700 W)   436.17 / 525.23 -> 630.64 TH/s at 1560 MHz
+//   H100 NVL (Vast 29785, 400 W)    344.35 / 396.29 -> 470.41 TH/s at 1226-1230 MHz
+// 83.2% and 87.5% of PeakMiner's and SRBMiner's rates on those hosts. Both clocks sit at
+// the power cap. Per clock the fold does 75% (SXM) and 71% (NVL) of the wgmma peak; with
+// the readout switched off it does 90%, so the readout is most of the per-clock gap. On
+// two other hosts, where it did 75% and 69%, the bank-conflict-free readout and uniform
+// descriptors below (PEARL_HOPPER_RLAYOUT, PEARL_HOPPER_UDESC, on since 2026-10-08) took
+// it to 82% and 77%.
+#ifndef PEARL_HOPPER_WGMMA
+#define PEARL_HOPPER_WGMMA 1
+#endif
+#if PEARL_HOPPER_WGMMA && defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 900 \
+    && defined(__CUDA_ARCH_FEAT_SM90_ALL)
+#define PEARL_HOPPER_WGMMA_BODY 1
+#else
+#define PEARL_HOPPER_WGMMA_BODY 0
+#endif
+#define PEARL_HOPPER_THREADS 288u
+#define PEARL_HOPPER_BM 128u                                       // rows of A a tile
+#define PEARL_HOPPER_ROW_OFFSETS (PEARL_HOPPER_BM / 16u)           // 8
+// Which operand order it reads (host and device): 1, per-tile ([tile block][k-block][128
+// rows of A or 256 columns of B][64]; A in 128-row blocks for this fold, where the cp.async
+// fold's are 192), through tensor maps whose third coordinate is block * k-blocks + k-block;
+// 0, the k-blocked order Blackwell's TMA reads. Both pass verify-hits; per-tile is faster
+// (H100 NVL: 429.24 against 422.51 TH/s). The host draws the order the build reads, whatever
+// PEARL_TALL_TILE_ORDER says, and keeps the cp.async fold if m's 128-row blocks do not fit
+// the A' allocation (padded to 192-row tiles); at mainnet they do.
+#ifndef PEARL_HOPPER_TILED
+#define PEARL_HOPPER_TILED 1
+#endif
+// Two-CTA clusters (host and device): a pair of CTAs takes two row groups of one column
+// group, and each loads half of the tile's B box and multicasts it to both, so B's L2 bytes
+// halve (a third of a stage's). Each stage's EMPTY then counts both CTAs' consumer warps.
+// Against one CTA a tile, both at width 256, hashrate.js 3 rounds, ahead in every round,
+// 400/400 hits: H100 SXM (Vast 153443) 544.59 -> 605.04 TH/s (+11.1%), H100 NVL (Vast
+// 29785) 441.09 -> 456.43 (+3.5%; k-blocked operands 452.45). Both still at the power cap,
+// the clock up 13-66 MHz: fewer bytes a MAC is less energy a MAC. A check build compared
+// every region of a batch with the cp.async fold's: 2,097,152 regions, none differ.
+#ifndef PEARL_HOPPER_CLUSTER
+#define PEARL_HOPPER_CLUSTER 1
+#endif
+// The wgmma fold's batch width, in column offsets, where it is narrower than the Ampere
+// width (PEARL_AMPERE_COL_BATCH, 512). Host only, and only when the wgmma fold runs. 256
+// against 512, hashrate.js 3 rounds, ahead in every round, 400/400 hits: H100 SXM (Vast
+// 153443) 536.88 -> 545.29 TH/s (+1.57%), H100 NVL (Vast 29785) 437.34 -> 440.02 (+0.61%).
+// 128: -0.85% on the SXM. Wider loses: 1024 -7.3% and 2048 -21% on the NVL, where B' for a
+// 2048-wide sweep (64 MB) no longer fits the 60 MB L2.
+// The readout's last step (device): 0, each lane adds its four region words to shared with
+// four red.shared.xor; 1, the four lanes sharing those regions first exchange words with
+// three shuffles (a reduce-scatter) and each adds one. 1 against 0, with clusters of 2 at
+// width 256, hashrate.js 3 rounds, ahead in every round, 400/400 hits: H100 SXM (Vast
+// 153443) 603.70 -> 630.64 TH/s (+4.46%), H100 NVL (Vast 29785) 451.32 -> 470.41 (+4.23%).
+// A check build compared every region of a batch with the cp.async fold's: 2,097,152
+// regions, none differ. Build 0 with PEARL_HOPPER_RLAYOUT=0.
+#ifndef PEARL_HOPPER_RSCATTER
+#define PEARL_HOPPER_RSCATTER 1
+#endif
+#ifndef PEARL_HOPPER_COL_BATCH
+#define PEARL_HOPPER_COL_BATCH 256u
+#endif
+// Stages in the ring, 24 KB each. 8 against 6, hashrate.js 3 rounds, ahead in every round,
+// 400/400 hits: H100 NVL (Vast 29785) 425.91 -> 435.43 TH/s (+2.24%), H100 SXM (Vast 153443)
+// 533.05 -> 537.04 (+0.75%). 9 (the most that fits 227 KB) did 538.66 on the SXM (+1.05%) and
+// has not run on the NVL. At least 2: a chunk waits for two stages before its first wgmma.
+#ifndef PEARL_HOPPER_STAGES
+#define PEARL_HOPPER_STAGES 8u
+#endif
+// Where the readout's words sit in shared memory (device, and the host's shared size
+// follows it, so build both with the same value). 1: one row of 33 words for each (row
+// span, chunk), and a lane's word is slot `lane` of its row, so a warp's red.shared.xor
+// for a chunk lands on 32 banks. The tile end reads each region back from the slots (also
+// on 32 banks) and stores the same transcript buffer as 0. This form also keeps the
+// word's address as a running pointer, and tests both lane bits for the reduce-scatter's
+// selects with one R2P a chunk (two instructions under 12.8, which redoes tid & 31 first).
+// 0 rebuilds the address and each bit from the thread index every chunk, four instructions
+// a bit. It takes 256 bytes more shared than 0. 0: 64 bytes a region, so a warp's
+// red.shared.xor for a chunk lands on two banks (word ch of 32 regions 64 bytes apart), a
+// 16-way bank conflict. Needs PEARL_HOPPER_RSCATTER.
+#ifndef PEARL_HOPPER_RLAYOUT
+#define PEARL_HOPPER_RLAYOUT 1
+#endif
+#if PEARL_HOPPER_RLAYOUT && !PEARL_HOPPER_RSCATTER
+#error "PEARL_HOPPER_RLAYOUT needs PEARL_HOPPER_RSCATTER: build RSCATTER=0 with RLAYOUT=0"
+#endif
+// How the chunk loop gets its wgmma shared-memory descriptors (device). 1: stage 0's are
+// built once and a stage adds its offset, both warp-uniform, so ptxas keeps them on the
+// uniform datapath. The add cannot carry out of the 14-bit start-address field: all of
+// shared memory is below 256 KB. 0: each chunk builds them from the stage's address with
+// a shift and mask on the vector ALU, and ptxas copies them to uniform registers with 16
+// R2UR a chunk.
+//
+// RLAYOUT and UDESC together against neither (2026-10-08), hashrate.js 3 rounds in
+// alternating order, ahead in every round, 400/400 hits in both operand orders: H100 SXM
+// (Vast 152422, 700 W) 623.01 -> 670.19 TH/s (+7.57%), H100 NVL (Vast 58970, 400 W)
+// 475.44 -> 509.39 (+7.14%). Alone: RLAYOUT +2.04% and +1.99%, UDESC +5.89% and +5.97%.
+// The hosts above (153443, 29785) were rented by others, so these ran on two others at the
+// same power caps. Both clocks sit at the cap and fall 27-40 MHz; per clock the fold does
+// 82% (SXM) and 77% (NVL) of the wgmma peak, from 75% and 69%. A check build with both
+// compared every region of a batch with the cp.async fold's: 2,097,152 regions, none
+// differ. With both, ptxas 12.8 builds the chunk loop in 135 instructions (190 with
+// neither) and the fold in 154 registers (163), 0 spill.
+#ifndef PEARL_HOPPER_UDESC
+#define PEARL_HOPPER_UDESC 1
+#endif
+// Stages of 64 bytes of k (B's 256 rows, then A's 128), the transcripts (4 row spans x 16
+// chunks x 33 words; with PEARL_HOPPER_RLAYOUT=0, 128 regions of 64 bytes), then FULL and
+// EMPTY barriers: 205,248 bytes with the defaults.
+#define PEARL_HOPPER_TR_BYTES                                                              \
+  (PEARL_HOPPER_RLAYOUT ? PEARL_HOPPER_BM / 32u * 16u * 33u * 4u                            \
+                        : PEARL_HOPPER_BM / 32u * 32u * 64u)
+#define PEARL_HOPPER_SMEM \
+  (PEARL_HOPPER_STAGES * (256u + PEARL_HOPPER_BM) * 64u + PEARL_HOPPER_TR_BYTES \
+   + 16u * PEARL_HOPPER_STAGES + 64u)
 #ifndef PEARL_TALL_APT
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 800 && PEARL_TALL_UNFUSED
 #define PEARL_TALL_APT 3u
+#elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 800
+#define PEARL_TALL_APT 2u
+#else
+#define PEARL_TALL_APT 3u
+#endif
 #endif
 // Ampere (sm_86) issues B's copies one m16 tile earlier, after tile 1 of k-step 1. With
 // the shared-XOR readout (PEARL_TALL_RED_READOUT), against A at 3 and B at 8, hashrate.js,
@@ -1097,8 +1300,23 @@ typedef struct {
 // (+0.16%, 3 rounds), RTX 4070 Ti (Delaware) 156.35 -> 156.59 (+0.15%, 4 rounds); level on
 // the RTX 4090 (303.41 -> 303.36) and RTX 4060 Ti (88.55 -> 88.59). A at 2 and B at 7 or
 // 8 measured -0.07 to -0.11% on the 4060, and B at 9 -1.1 to -1.3%.
+//
+// GA100 (sm_80) issues A's copies after m16 tile 2 of k-step 0 and B's after tile 0 of
+// k-step 1 (A at 2, B at 6). Against sm_86's 3 and 7, hashrate.js, 3 rounds, ahead in every
+// round, 400/400 hits: A100 PCIe 40 GB (250 W) 189.59 -> 202.32 TH/s (+6.71%), and 192.86 ->
+// 206.28 (+6.96%) in a second session; A100 SXM4 40 GB (400 W, base at its 1410 MHz clock
+// limit) 220.26 -> 240.50 (+9.19%); A30 (164 W) 97.31 -> 104.70 (+7.59%). A pool run on the
+// A100 PCIe accepted 6 of 6 shares. In cycles a tile (ideal 49,152 at GA100's 2048 MAC/clk/SM)
+// 70,300 -> 63,600-65,400, from 70% to 75-77% of the tensor peak a clock. B at 6 is what
+// counts: A at 3 or 1 with B at 6 measured +5.8% and +4.4%; B at 7, 8 or 9 with any A, and A at
+// 2 with B at 5, measured no better than 3 and 7 (A 2, B 5 saves 4.7% of cycles and gives it
+// all back in clock at the power cap). With the hash in its own kernel (PEARL_TALL_UNFUSED)
+// A at 3 does better: A100 PCIe, hashrate.js, 3 rounds, 400/400 hits, unfused: A at 2, B at
+// 6 209.45 TH/s, 3 and 6 211.98, 3 and 7 210.49; CMP 170HX 3 and 6 164.24, 3 and 7 162.80.
 #ifndef PEARL_TALL_BPT
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 800
+#define PEARL_TALL_BPT 6u
+#elif defined(__CUDA_ARCH__) && (PEARL_AMPERE_ARCH(__CUDA_ARCH__) || __CUDA_ARCH__ == 890)
 #define PEARL_TALL_BPT 7u
 #else
 #define PEARL_TALL_BPT 8u
@@ -1426,7 +1644,7 @@ typedef struct {
 // has not been measured either and keeps the block-wide walk. Device side only
 // -- the host sizes and launches the fold identically either way.
 #ifndef PEARL_FOLD_GROUP_STAGE
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
+#if defined(__CUDA_ARCH__) && (PEARL_AMPERE_ARCH(__CUDA_ARCH__) || __CUDA_ARCH__ == 890)
 #define PEARL_FOLD_GROUP_STAGE 1
 #else
 #define PEARL_FOLD_GROUP_STAGE 0
@@ -1484,7 +1702,7 @@ typedef struct {
 // compiled out its chunk loop is the one it ran before.
 //
 // The host must launch the matching grid, and it decides from the fold binary
-// it actually loaded (cudaFuncAttributes::binaryVersion 86 or 89). Either kind
+// it actually loaded (cudaFuncAttributes::binaryVersion 80, 86, 89 or 90). Either kind
 // of mismatch stays correct -- a persistent build launched one block per tile
 // runs each block once, and a non-persistent one given fewer blocks restages
 // each later tile's chunk 0 -- it is only slower.
@@ -1496,7 +1714,7 @@ typedef struct {
 #define PEARL_FOLD_PERSISTENT_FORCED 1
 #endif
 #ifndef PEARL_FOLD_PERSISTENT
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
+#if defined(__CUDA_ARCH__) && (PEARL_AMPERE_ARCH(__CUDA_ARCH__) || __CUDA_ARCH__ == 890)
 #define PEARL_FOLD_PERSISTENT 1
 #else
 #define PEARL_FOLD_PERSISTENT 0
@@ -1524,7 +1742,7 @@ typedef struct {
 // fold's. Ampere (sm_86) has the same register file and runs it too, not
 // measured. Device side only.
 #ifndef PEARL_FOLD_LANE_BASES
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
+#if defined(__CUDA_ARCH__) && (PEARL_AMPERE_ARCH(__CUDA_ARCH__) || __CUDA_ARCH__ == 890)
 #define PEARL_FOLD_LANE_BASES 1
 #else
 #define PEARL_FOLD_LANE_BASES 0
@@ -1547,7 +1765,7 @@ typedef struct {
 // Goes with PEARL_FOLD_LANE_BASES: Ada measured, Ampere (sm_86) on the same SM
 // layout and not measured. Device side only.
 #ifndef PEARL_FOLD_FAST_COORDS
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
+#if defined(__CUDA_ARCH__) && (PEARL_AMPERE_ARCH(__CUDA_ARCH__) || __CUDA_ARCH__ == 890)
 #define PEARL_FOLD_FAST_COORDS 1
 #else
 #define PEARL_FOLD_FAST_COORDS 0
@@ -1683,7 +1901,7 @@ PEARL_HD static inline uint32_t pearl_expand_offset(uint32_t i, uint32_t mask) {
   // (see PEARL_COLS_SPAN), which is index * count. The general loop measured
   // 0.4% behind the shift when the persistent fold did run it once per tile in
   // every thread (246.6 -> 247.7 TH/s, bench, 4090); here it runs on the host,
-  // once per share, and in the gather kernels nothing launches.
+  // once per share.
   if (mask != 0xFFFFFFFFu && (mask & (mask + 1u)) == 0u) return i << pearl_popcount_ce(mask);
   uint32_t out = 0u;
   uint32_t bit = 1u;
@@ -1699,39 +1917,6 @@ PEARL_HD static inline uint32_t pearl_expand_offset(uint32_t i, uint32_t mask) {
 
 PEARL_HD static inline uint32_t pearl_rotl13(uint32_t x) {
   return (x << PEARL_ROTL_BITS) | (x >> (32 - PEARL_ROTL_BITS));
-}
-
-// Compare a 32-byte little-endian jackpot hash against a 32-byte BIG-endian
-// target. Both endiannesses are load-bearing and opposite: the hash is read
-// least-significant-byte-first, the pool's target most-significant-first.
-// Returns non-zero when the hash is a share.
-// Does the jackpot hash meet the bound?
-//
-// The reference reads the hash LITTLE-endian --
-// U256::from_little_endian(hash_jackpot) -- and the pool sends its target as a
-// big-endian hex string, so the default walks the hash from its last byte and
-// the target from its first.
-//
-// hash_big_endian exists because that pairing is not producing accepted shares.
-// A hash 36x inside the computed bound was still rejected, which is what it
-// would look like if the pool read the hash the other way round: its value
-// would be effectively random with respect to ours, so no margin would ever
-// help. Selectable so the two can be told apart against a live pool, which is
-// the only place the question can be settled.
-PEARL_HD static inline int pearl_meets_target_mode(const uint8_t *hash_le,
-                                                   const uint8_t *target_be,
-                                                   int hash_big_endian) {
-  for (int i = 0; i < PEARL_HASH_BYTES; i++) {
-    uint8_t h = hash_big_endian ? hash_le[i] : hash_le[PEARL_HASH_BYTES - 1 - i];
-    uint8_t t = target_be[i];
-    if (h < t) return 1;
-    if (h > t) return 0;
-  }
-  return 1;  // exactly equal counts as a share
-}
-
-PEARL_HD static inline int pearl_meets_target(const uint8_t *hash_le, const uint8_t *target_be) {
-  return pearl_meets_target_mode(hash_le, target_be, 0);
 }
 
 #endif  // PEARL_CONFIG_H

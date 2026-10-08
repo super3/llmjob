@@ -28,6 +28,12 @@ retain and no licence to comply with beyond ISC attribution.
 
 ## Status
 
+This table and "Where it actually stands" below are from August 2026, before
+the tensor-core work, and are kept as a record. The search now runs on the int8
+tensor cores, in the tile folds (`pearl_tile_fold_wmma`, `pearl_tile_fold_tall`,
+and `pearl_tile_fold_hopper` on sm_90a). The scalar/dp4a fold and its partials
+pass are gone. Later measurements are in `probes/README.md`.
+
 | Piece | State |
 |---|---|
 | Stratum protocol, job/target math, MDL, share assembly, lifecycle (JS) | **done, 70 tests, 100% gate** |
@@ -69,7 +75,8 @@ it points at the protocol rather than at arithmetic.
 
 ## Where it actually stands
 
-Measured on an RTX 4090, at the real mainnet geometry:
+August 2026, a record (see Status). Measured on an RTX 4090, at the real
+mainnet geometry:
 
 | | |
 |---|---|
@@ -102,11 +109,12 @@ and the GPU box downloads the artifact and runs it. That loop found three bugs
 that no amount of review would have, because each one produced a miner that
 looked healthy:
 
-1. **The search was not searching.** `pearl_gemm_fold` had no region parameter,
-   so every attempt recomputed an identical transcript. The GPU sat at 76-79%
-   utilisation, kernels launched, hashrate was reported — and 65536 "attempts"
-   against a target that accepts half of all hashes produced zero hits, because
-   there was only ever one distinct value.
+1. **The search was not searching.** `pearl_gemm_fold` (the fold kernel of that
+   time; the tile folds replaced it, and it was removed on 2026-10-08) had no
+   region parameter, so every attempt recomputed an identical transcript. The
+   GPU sat at 76-79% utilisation, kernels launched, hashrate was reported — and
+   65536 "attempts" against a target that accepts half of all hashes produced
+   zero hits, because there was only ever one distinct value.
 
 2. **A share threw away the rest of its batch.** The search returns on the first
    hit, but the loop advanced the nonce by the whole batch regardless. With
@@ -118,11 +126,12 @@ looked healthy:
    the device BLAKE3 handled only a single chunk, so it gave the wrong digest for
    any operand over 1024 bytes — which is all of them.
 
-4. **One block, one SM.** `pearl_gemm_fold` launched `<<<1, 128>>>` and searched
-   one region per launch, using a single SM of the 128 on a 4090. At the mainnet
-   profile it could not finish one batch in 90 seconds. Regions are independent,
-   so one block per region plus reconstructing the operands once per chunk rather
-   than once per cell took it from under 45 regions/sec to 48,800.
+4. **One block, one SM.** `pearl_gemm_fold` (since removed) launched
+   `<<<1, 128>>>` and searched one region per launch, using a single SM of the
+   128 on a 4090. At the mainnet profile it could not finish one batch in 90
+   seconds. Regions are independent, so one block per region plus
+   reconstructing the operands once per chunk rather than once per cell took it
+   from under 45 regions/sec to 48,800.
 
 After the first three: 128616 attempts, **128616 distinct hashes**, seeds
 correctly distinct. After the fourth, mainnet runs at all — and parity with the
@@ -148,7 +157,7 @@ nvcc -lib cuda-build/pearl_kernel.o cuda-build/pearl_host.o -o cuda-build/pearl_
 npx node-gyp rebuild
 ```
 
-`.github/workflows/native-core.yml` does exactly this for sm_75/86/89/120, and it
+`.github/workflows/native-core.yml` does exactly this for sm_75/80/86/89/90a/120, and it
 is green on Linux: the workflow produces a real `pearl_core.node`. So the core
 compiles and links today, even though nothing on a runner can execute it.
 
@@ -168,18 +177,29 @@ all-Blackwell rig with a new enough driver (`src/shared/coreVariant.js`) and
 keeps `pearl_core.node` for everything else.
 
 Every entry also compiles `pearl_kernel.cu` with `-Xptxas -v` and reads what
-ptxas said about both fold kernels (`pearl_tile_fold_tall`,
-`pearl_tile_fold_wmma`) on every architecture. The tall fold sits at 253–255
+ptxas said, on every architecture, about the tall fold, the wmma fold, Hopper's
+wgmma fold (`pearl_tile_fold_hopper`, with a body only on sm_90a) and the
+transcript hash (`pearl_tall_hash80`). The tall fold sits at 253–255
 registers; a compiler or gate change that spills still compiles, links and
 ships, and nothing else in CI can see it. A spill fails the job on every
-architecture in that matrix entry's `spill_fail_archs`. The check's first run
-(2026-10-02) had both folds at 0 spill on every architecture either toolkit
-builds: the tall fold at 253 registers on sm_86 and sm_89 and 254–255 on
-sm_120, the wmma fold at 235, 235 and 128. So the 12.8 entries fail on all
-three. The CUDA 13 entries fail on sm_120 only: their sm_89 half is never
-picked automatically, and a failed CUDA 13 job ships no `pearl_core_cu13.node`,
-which would cost every all-Blackwell rig the +3.2%. A spill on sm_89 there is a
-warning in the log. Any architecture added later starts as a warning too.
+architecture in that matrix entry's `spill_fail_archs`:
+
+- **The 12.8 entries fail on sm_80, sm_86, sm_89, sm_90a and sm_120.** The
+  check's first run (2026-10-02) had every fold at 0 spill on sm_86, sm_89 and
+  sm_120. sm_90a went in when it replaced sm_90 (2026-10-08): run 37718450743
+  built every sm_90a fold at 0 spill, the wgmma fold at 163 registers. sm_80
+  went in the same day, after run 37737801086 built it clean (tall fold 255
+  registers, wmma fold 235, transcript hash 40).
+- **The CUDA 13 entries fail on sm_120 only.** Their sm_89 half is never picked
+  automatically, and a failed CUDA 13 job ships no `pearl_core_cu13.node`,
+  which would cost every all-Blackwell rig the +3.2%. A spill on sm_89 there is
+  a warning in the log.
+- **Any other architecture is a warning:** today that is sm_75. A newly added
+  architecture warns until a run has shown it clean.
+
+The tensor-map step also checks that the sm_90a wgmma fold has its body (its
+288-thread launch bound). A build that drops it still compiles and links, and
+Hopper cards would quietly mine on the slower cp.async fold.
 
 The CUDA 13 jobs are non-blocking: if they fail, the run still succeeds with a
 current 12.8 core and the release ships without the CUDA 13 one, with a warning.
@@ -198,7 +218,10 @@ the Server 2025 runner (exit `0xE0E1E1D9`) before reaching any of our source.
 The compile-and-link signal is platform independent, so Linux is the gate.
 
 `CUDA_PATH` is picked up automatically; override the arch for other cards
-(`sm_75` Turing, `sm_86` Ampere, `sm_89` Ada, `sm_120` Blackwell).
+(`sm_75` Turing, `sm_80` A100 / A800 / A30 / CMP 170HX, `sm_86` Ampere, `sm_89`
+Ada, `sm_90a` Hopper, `sm_120` Blackwell). Hopper has to be `sm_90a`, not
+`sm_90`: a plain sm_90 build compiles and links, but it has no wgmma fold, so
+it mines on the slower cp.async tall fold.
 
 The sm_86 build runs the Ada fold path: every tuning switch in
 `src/pearl_config.h` that tests for sm_89 (the persistent, eight-warp, tall

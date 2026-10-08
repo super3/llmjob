@@ -5,8 +5,10 @@
 // without parsing miner logs. Pure so it's unit-testable; the CLI wires the
 // timer and the atomic write around it.
 //
-// Units: `ths` is the engine's total hashrate in TH/s (the snapshot's native
-// unit). Consumers convert — HiveOS wants kH/s for `khs` and MH/s for `hs`.
+// Units: `ths` and each card's `hashrate` in `gpus` are in TH/s (the snapshot's
+// native unit). Consumers convert. HiveOS's h-stats.sh multiplies by 1e9 and
+// sends kH/s for both `khs` and each card's `hs`, with hs_units "khs". Keep hs
+// in kH/s: HiveOS range-checks it as kH/s whatever hs_units says.
 function statsFilePayload(snap, meta) {
   const s = snap || {};
   const m = meta || {};
@@ -42,8 +44,18 @@ function statsFilePayload(snap, meta) {
       gen: Number(m.llm && m.llm.tps) || 0,
       prefill: Number(m.llm && m.llm.promptTps) || 0,
     },
-    gpus: Array.isArray(s.gpus) ? s.gpus : [],
+    // One row per mining card. Each also gets its PCI bus id (`pciBusId`,
+    // nvidia-smi's "00000000:01:00.0", or null when unknown) from
+    // meta.pciBusIds, keyed by the card's index. HiveOS's h-stats.sh sends it as
+    // bus_numbers, which is how the dashboard puts each card's hashrate on that
+    // card's row instead of matching by position.
+    gpus: Array.isArray(s.gpus) ? s.gpus.map((g) => withBusId(g, m.pciBusIds)) : [],
   };
+}
+
+function withBusId(card, busIds) {
+  const id = busIds && card && busIds[card.index];
+  return Object.assign({}, card, { pciBusId: id || null });
 }
 
 // The served model, flattened to the fields a consumer can act on. Returns null

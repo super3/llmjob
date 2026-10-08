@@ -7,10 +7,11 @@
 // pure and dependency-free so it's fully unit-tested; the CLI shell wires the
 // real IO (download, spawn, network reporting) around it.
 
-const { REGIONS, DEFAULTS } = require('./config');
+const { REGIONS, LEGACY_REGIONS, DEFAULTS } = require('./config');
 const { isValidAddress, isValidMdlAddress, normalizeAddress } = require('./address');
 const { MODES, DEFAULT_MODE, isValidMode } = require('./llmMode');
 const { parseMemClockMhz } = require('./memClock');
+const { parseGpuIndexList } = require('./gpu');
 
 // Short flags → their canonical long form.
 // --mdl / -m are deliberately absent from USAGE: merge mining is retired from
@@ -30,11 +31,16 @@ const ALIASES = {
 // Options that consume a following value.
 const VALUE_FLAGS = new Set([
   '--address', '--mdl', '--region', '--worker',
-  '--gpu',
+  '--gpu', '--gpu-index',
   '--stats-file',
   '--mode', '--llm-binary', '--llm-model', '--llm-max-instances', '--gate-port', '--gate-host',
   '--gate-quiet', '--mine-mem-clock',
 ]);
+
+// Own keys only, so `--region constructor` is not a region.
+function has(table, key) {
+  return Object.prototype.hasOwnProperty.call(table, key);
+}
 
 function regionChoices() {
   return Object.keys(REGIONS).join(', ');
@@ -55,7 +61,7 @@ const USAGE = [
   '                           "both"/"auto" co-run a local LLM alongside mining;',
   '                           "llm" runs the LLM only (no payout address needed).',
   '      --llm-binary <path>  Path to a prebuilt llama-server binary. Optional:',
-  '                           the CLI auto-downloads + extracts one (needs `unzip`)',
+  '                           the CLI downloads one and unpacks it with `tar`',
   '                           — use this to skip that or point at your own build.',
   '      --llm-model <path>   Path to a GGUF model file (default: download the',
   '                           bundled small model on first run)',
@@ -83,8 +89,13 @@ const USAGE = [
   '                           whenever mining stops; skipped while an LLM',
   '                           co-runs with it.',
   '  -r, --region <id>        Pool region: ' + Object.keys(REGIONS).join('/') + ' (default: auto-detect fastest)',
+  '                           An old AlphaPool id (eu1, sg1, …) maps to the nearest.',
   '  -w, --worker <name>      Worker/rig name (default: this machine\'s hostname)',
   '  -g, --gpu <card>         GPU name to report on the board (default: auto-detect via nvidia-smi)',
+  '      --gpu-index <list>   Mine only on these GPUs: nvidia-smi indices such as',
+  '                           0,2, or "none" for no GPU (default: every GPU). The',
+  '                           local LLM picks its own cards. PEARL_GPU_INDEX takes',
+  '                           the same list; the flag wins.',
 
   '      --stats-file <path>  Write live stats JSON here every 10s (for HiveOS h-stats etc.)',
   '      --no-report          Do not publish live status to the public network board',
@@ -125,16 +136,41 @@ function buildSettings(opts, errors, report, update, serve) {
     else errors.push('invalid MDL address: ' + opts['--mdl']);
   }
 
+  // An AlphaPool region id (eu1, sg1, ...) from an old flight sheet or service
+  // file maps to the nearest HeroMiners region, and `legacyRegion` keeps what
+  // was typed so the CLI can say so. Anything else is an error rather than the
+  // default: a typo should be loud, not mine on another continent.
+  // config.migrateRegion falls back to the default, so it is not used here.
   let region = DEFAULTS.region;
+  let legacyRegion = null;
   if (opts['--region'] != null) {
     region = String(opts['--region']).trim();
-    if (!REGIONS[region]) {
-      errors.push('unknown region: ' + region + ' (choices: ' + regionChoices() + ')');
+    if (!has(REGIONS, region)) {
+      if (has(LEGACY_REGIONS, region)) {
+        legacyRegion = region;
+        region = LEGACY_REGIONS[region];
+      } else {
+        errors.push('unknown region: ' + region + ' (choices: ' + regionChoices() + ')');
+      }
     }
   }
 
   const worker = opts['--worker'] != null ? String(opts['--worker']).trim() : DEFAULTS.worker;
   const gpu = opts['--gpu'] != null ? String(opts['--gpu']).trim() : null;
+
+  // Which cards mine: null for every card, [] for none, else nvidia-smi
+  // indices. Blank is an error rather than "every card": HiveOS's h-config.sh
+  // writes this flag, and a value lost on the way should be loud.
+  let gpuIndices = null;
+  if (opts['--gpu-index'] != null) {
+    const parsed = parseGpuIndexList(opts['--gpu-index']);
+    if (!parsed || parsed.error) {
+      errors.push('invalid --gpu-index: ' + opts['--gpu-index'] + ' ('
+        + (parsed ? parsed.error : 'must not be empty') + ')');
+    } else {
+      gpuIndices = parsed.indices;
+    }
+  }
 
 
 
@@ -206,7 +242,7 @@ function buildSettings(opts, errors, report, update, serve) {
   const modeProvided = opts['--mode'] != null;
 
   return {
-    address, mdlAddress, region, worker, gpu, statsFile,
+    address, mdlAddress, region, legacyRegion, worker, gpu, gpuIndices, statsFile,
     mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs, mineMemClockMhz,
     report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,
   };

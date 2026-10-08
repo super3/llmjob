@@ -20,7 +20,7 @@ This repository contains two packages:
 - **Server** (repo root) — the Express API plus the static dashboard pages,
   backed by Postgres and deployed to Railway / GitHub Pages.
 - **LLMJob Earn** ([`earn/`](earn)) — an Electron desktop app that turns idle GPU
-  time into crypto by wrapping the AlphaPool miner (Pearl / PRL): paste a payout
+  time into crypto by mining Pearl (PRL) with its own CUDA miner: paste a payout
   address, hit **Start**, and earn — no command line. It's the easy on-ramp that
   gets GPUs onto the network today, ahead of LLM co-mining. See
   [`earn/README.md`](earn/README.md).
@@ -53,8 +53,8 @@ npm install
 npm start                          # launch the Electron app
 ```
 
-See [`earn/README.md`](earn/README.md) for the mining engine, merge mining, the
-live balance, and building the installer.
+See [`earn/README.md`](earn/README.md) for the mining engine, the live balance,
+and building the installer.
 
 ## Running the server
 

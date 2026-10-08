@@ -225,6 +225,29 @@
   .pcard .pc-th { font-family: "IBM Plex Mono", monospace; font-weight: 600; font-size: 15px; color: var(--accent); white-space: nowrap; }
   .percard-note { font-size: 12px; color: #a3a6aa; margin-top: 18px; }
 
+  /* hiveos flight sheet */
+  .hive-sec { max-width: 1080px; margin: 104px auto 0; padding: 0 28px; }
+  /* A value or flag such as --region de stays on one line. A long one may
+     wrap, at the <wbr> hints in the HTML. */
+  .hive-sec code { font-family: "IBM Plex Mono", monospace; font-size: .9em; color: var(--ink-strong); background: var(--field); border: 1px solid var(--field-line); border-radius: 5px; padding: 0 5px; white-space: nowrap; }
+  .hive-sec code.hive-long { white-space: normal; overflow-wrap: break-word; }
+  .hive-card { margin-top: 32px; border: 1px solid var(--line-soft); border-radius: 16px; background: #fff; overflow: hidden; }
+  .hive-row { display: grid; grid-template-columns: 184px minmax(0, 1fr); gap: 20px; padding: 16px 22px; border-bottom: 1px solid var(--line-soft); align-items: baseline; }
+  .hive-row:last-child { border-bottom: none; }
+  .hive-k { font-size: 13px; font-weight: 700; color: #2a2e34; }
+  .hive-v { font-size: 15px; line-height: 1.55; color: var(--muted); min-width: 0; }
+  .hive-url { display: flex; align-items: center; gap: 10px; border: 1px solid var(--field-line); background: var(--field); border-radius: 9px; padding: 9px 9px 9px 14px; margin-bottom: 8px; }
+  .hive-url code { flex: 1; min-width: 0; border: none; background: none; padding: 0; font-size: 13px; color: #3d4148; line-height: 1.5; white-space: normal; overflow-wrap: break-word; }
+  .hive-file { display: inline-block; max-width: 100%; } /* the file name goes to the next line whole, unless it's wider than the box */
+  .hive-copy { flex: none; min-width: 64px; font-family: inherit; font-size: 13px; font-weight: 600; color: var(--ink); background: #fff; border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px; cursor: pointer; transition: border-color .15s ease; }
+  .hive-copy:hover { border-color: var(--muted-3); }
+  .hive-notes { list-style: none; margin-top: 28px; display: grid; grid-template-columns: 1fr 1fr; gap: 18px 48px; }
+  .hive-notes li { font-size: 14.5px; line-height: 1.55; color: var(--muted); }
+  .hive-notes b { color: var(--ink-strong); font-weight: 700; }
+  .hive-nw { white-space: nowrap; }
+  .hive-notes a, .hive-more a { color: var(--accent); font-weight: 600; }
+  .hive-more { font-size: 14.5px; color: var(--muted); margin-top: 22px; }
+
   /* closing cta */
   .cta { max-width: 880px; margin: 104px auto 0; padding: 0 28px 110px; text-align: center; }
   .cta h2 { font-weight: 800; font-size: clamp(40px, 8vw, 60px); line-height: 1.0; letter-spacing: -.04em; }
@@ -240,6 +263,10 @@
     .chart-tag .model { display: none; } /* long model id would crowd the narrow card */
     .app-nav { gap: 18px; }
     .app-tab.active { font-size: 20px; }
+    /* the Installation URL gets the full width; Copy goes under it */
+    .hive-url { flex-wrap: wrap; padding: 11px 9px 9px 14px; }
+    .hive-url code { flex-basis: 100%; }
+    .hive-copy { margin-left: auto; }
   }
 
   @media (max-width: 760px) {
@@ -247,7 +274,9 @@
     .calc { grid-template-columns: 1fr; }
     .percard-grid { grid-template-columns: 1fr; }
     .steps { margin-top: 80px; }
-    .props, .calc-sec { margin-top: 80px; }
+    .props, .calc-sec, .hive-sec { margin-top: 80px; }
+    .hive-row { grid-template-columns: 1fr; gap: 6px; padding: 14px 18px; }
+    .hive-notes { grid-template-columns: 1fr; }
     .cta { margin-top: 80px; }
   }
 </style>
@@ -275,6 +304,9 @@
         </a>
         <a role="menuitem" data-dl-os="linux" data-umami-event="download" data-umami-event-os="linux" data-umami-event-place="top" href="https://github.com/super3/llmjob/releases/download/v{{!appVersion}}/LLMJob-Earn-{{!appVersion}}.AppImage" target="_blank" rel="noopener">
           <svg class="os-ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c-2.2 0-3.5 1.8-3.5 4.2 0 1.2.1 2 .1 2.8 0 .9-.6 1.6-1.4 2.8-.8 1.1-1.7 2.4-1.7 4 0 .8.3 1.4.8 1.8-.3.4-.5.9-.5 1.4 0 1.5 1.6 2.8 3.6 3.1.7.6 1.6.9 2.5.9s1.8-.3 2.5-.9c2-.3 3.6-1.6 3.6-3.1 0-.5-.2-1-.5-1.4.5-.4.8-1 .8-1.8 0-1.6-.9-2.9-1.7-4-.8-1.2-1.4-1.9-1.4-2.8 0-.8.1-1.6.1-2.8C15.5 3.8 14.2 2 12 2zm-1.4 4.2c.4 0 .7.4.7 1s-.3 1-.7 1-.7-.4-.7-1 .3-1 .7-1zm2.8 0c.4 0 .7.4.7 1s-.3 1-.7 1-.7-.4-.7-1 .3-1 .7-1z"></path></svg>Linux (AppImage)
+        </a>
+        <a role="menuitem" data-umami-event="hiveos-flight-sheet" data-umami-event-place="top" href="#hiveos">
+          <svg class="os-ic" viewBox="0 0 24 24" fill="currentColor"><path fill-rule="evenodd" d="M3 4h18v4.5H3zM3 9.75h18v4.5H3zM3 15.5h18V20H3zM5 5.5h2v1.5H5zM5 11.25h2v1.5H5zM5 17h2v1.5H5z"></path></svg>HiveOS (flight sheet)
         </a>
       </div>
     </div>
@@ -441,6 +473,41 @@
   </div>
 </section>
 
+<!-- HIVEOS
+     Matches the HiveOS section of earn/README.md and earn/hiveos/h-manifest.conf.
+     The Installation URL takes its version from appVersion in site/config.json,
+     like the download buttons, so the release that bumps it updates this too. -->
+<section class="wrap hive-sec" id="hiveos">
+  <div class="calc-head">
+    <h2>Running a HiveOS rig?</h2>
+    <p>Add LLMJob Earn to a flight sheet as a custom miner. Fill in these fields and apply it to your rigs.</p>
+  </div>
+  <div class="hive-card">
+    <div class="hive-row"><span class="hive-k">Miner</span><span class="hive-v"><code>Custom</code></span></div>
+    <div class="hive-row"><span class="hive-k">Miner name</span><span class="hive-v"><code>llmjob-earn</code></span></div>
+    <div class="hive-row">
+      <span class="hive-k">Installation URL</span>
+      <div class="hive-v">
+        <div class="hive-url"><code id="hive-url">https://<wbr>github.com/<wbr>super3/<wbr>llmjob/<wbr>releases/<wbr>download/<wbr>v{{!appVersion}}/<wbr><span class="hive-file">llmjob-earn-{{!appVersion}}.tar.gz</span></code><button class="hive-copy" type="button" data-copy="hive-url" data-umami-event="download" data-umami-event-os="hiveos" data-umami-event-place="flight-sheet">Copy</button></div>
+        To update a rig, put in the new version's URL. HiveOS keeps the old build while the file name stays the same.
+      </div>
+    </div>
+    <div class="hive-row"><span class="hive-k">Hash algorithm</span><span class="hive-v"><code>pearlhash</code></span></div>
+    <div class="hive-row"><span class="hive-k">Wallet and worker template</span><span class="hive-v"><code>%WAL%</code>, with your <code>prl1p…</code> address as the wallet. The worker is then the rig's HiveOS name. <code>%WAL%.%WORKER_NAME%</code> also works: everything after the first dot is the worker name.</span></div>
+    <div class="hive-row"><span class="hive-k">Pool URL</span><span class="hive-v"><code class="hive-long">us.pearl.<wbr>herominers.com:1200</code>, or any other <code>host:port</code>. HiveOS won't save the flight sheet without one, but the miner doesn't use it. It picks the HeroMiners region with the lowest latency itself.</span></div>
+    <div class="hive-row"><span class="hive-k">Pass</span><span class="hive-v">Leave blank.</span></div>
+    <div class="hive-row"><span class="hive-k">Extra config arguments</span><span class="hive-v">Optional. Leave it empty for the defaults. For example, <code>--region de</code> pins the pool region, and <code>--mode auto</code> also serves a local LLM. A flag the miner doesn't know stops it from starting, and <code>miner log</code> names the flag.</span></div>
+  </div>
+  <ul class="hive-notes">
+    <li><b>Ubuntu 22.04 image.</b> It needs the HiveOS 0.6 jammy image (Ubuntu 22.04). On the older 20.04 image the mining cores don't load and the rig mines nothing. RTX 50-series and RTX PRO Blackwell cards also need a newer driver: run <code>nvidia-driver-update</code> from Hive Shell.</li>
+    <li><b>Mining only.</b> The rig mines and serves no LLM unless Extra config sets a mode. <code>--mode auto</code> also serves a local LLM, which downloads a <span class="hive-nw">5–18 GB</span> model once.</li>
+    <!-- Needs h-config.sh to pass HiveOS's CUDA_VISIBLE_DEVICES on as --gpu-index. -->
+    <li><b>Turned-off cards.</b> A card you turn off in HiveOS doesn't mine. HiveOS reads this when the miner starts, so restart the miner after turning a card on or off. The local LLM from <code>--mode auto</code> doesn't follow it.</li>
+    <li><b>Stats.</b> HiveOS shows each card's hashrate, the shares and the uptime, as it does for any miner. The rig also shows on the <a href="/network">network board</a>.</li>
+  </ul>
+  <p class="hive-more">The <a href="https://github.com/super3/llmjob/tree/main/earn#hiveos-flight-sheet" target="_blank" rel="noopener">README</a> has the details, including how to update one rig from Hive Shell.</p>
+</section>
+
 <!-- CLOSING CTA -->
 <section class="cta">
   <h2>Put your GPUs to work.</h2>
@@ -459,6 +526,9 @@
         </a>
         <a role="menuitem" data-dl-os="linux" data-umami-event="download" data-umami-event-os="linux" data-umami-event-place="bottom" href="https://github.com/super3/llmjob/releases/download/v{{!appVersion}}/LLMJob-Earn-{{!appVersion}}.AppImage" target="_blank" rel="noopener">
           <svg class="os-ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c-2.2 0-3.5 1.8-3.5 4.2 0 1.2.1 2 .1 2.8 0 .9-.6 1.6-1.4 2.8-.8 1.1-1.7 2.4-1.7 4 0 .8.3 1.4.8 1.8-.3.4-.5.9-.5 1.4 0 1.5 1.6 2.8 3.6 3.1.7.6 1.6.9 2.5.9s1.8-.3 2.5-.9c2-.3 3.6-1.6 3.6-3.1 0-.5-.2-1-.5-1.4.5-.4.8-1 .8-1.8 0-1.6-.9-2.9-1.7-4-.8-1.2-1.4-1.9-1.4-2.8 0-.8.1-1.6.1-2.8C15.5 3.8 14.2 2 12 2zm-1.4 4.2c.4 0 .7.4.7 1s-.3 1-.7 1-.7-.4-.7-1 .3-1 .7-1zm2.8 0c.4 0 .7.4.7 1s-.3 1-.7 1-.7-.4-.7-1 .3-1 .7-1z"></path></svg>Linux (AppImage)
+        </a>
+        <a role="menuitem" data-umami-event="hiveos-flight-sheet" data-umami-event-place="bottom" href="#hiveos">
+          <svg class="os-ic" viewBox="0 0 24 24" fill="currentColor"><path fill-rule="evenodd" d="M3 4h18v4.5H3zM3 9.75h18v4.5H3zM3 15.5h18V20H3zM5 5.5h2v1.5H5zM5 11.25h2v1.5H5zM5 17h2v1.5H5z"></path></svg>HiveOS (flight sheet)
         </a>
       </div>
     </div>
@@ -554,6 +624,30 @@
       wraps.forEach(function (w) { w.classList.remove('open'); const t = w.querySelector('[data-dl-toggle]'); if (t) t.setAttribute('aria-expanded', 'false'); });
     });
   })();
+
+  /* ---- HiveOS: copy the Installation URL ---- */
+  document.querySelectorAll('[data-copy]').forEach(function (btn) {
+    const el = document.getElementById(btn.getAttribute('data-copy'));
+    if (!el) return;
+    function show(msg) {
+      btn.textContent = msg;
+      setTimeout(function () { btn.textContent = 'Copy'; }, 1500);
+    }
+    // Without clipboard access (an older browser, or a page not on https),
+    // select the URL so Ctrl+C copies it.
+    function select() {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      show('Selected');
+    }
+    btn.addEventListener('click', function () {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) { select(); return; }
+      navigator.clipboard.writeText(el.textContent.trim()).then(function () { show('Copied'); }, select);
+    });
+  });
 
   /* ---- Live miner mockup (chart + ticking stats) ---- */
   (function () {

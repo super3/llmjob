@@ -382,8 +382,9 @@ void PearlCore::SearchLoop() {
   pearl_host_bind_thread(ctx_);
   win_start_ = std::chrono::steady_clock::now();
   win_work_ = 0.0;
-  // Must match PEARL_BATCH_REGIONS: the fold launches one CUDA block per region
-  // and the host sizes its batch scratch to this.
+  // A hint only: pearl_host_submit searches the context's own width (col_batch
+  // column offsets by every valid row offset) and reports the count in
+  // `regions`, which is what the nonce advances by.
   const uint32_t BATCH = PEARL_BATCH_REGIONS;
   // Batches queued at once. Two is enough: one runs while the next waits behind it.
   const size_t DEPTH = 2;

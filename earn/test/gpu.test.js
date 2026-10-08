@@ -2,7 +2,8 @@
 
 const {
   pickGpu, countGpus, alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda,
-  parseDeviceIndex, planMinerGpus, parseGpuStats, parseMacGpu,
+  parseGpuIndexList, readGpuIndexEnv, describeSkippedGpus, planMinerGpus, parseGpuStats, parsePciBusIds,
+  parseMacGpu,
 } = require('../src/shared/gpu');
 
 describe('pickGpu', () => {
@@ -56,6 +57,26 @@ describe('countGpus', () => {
     expect(countGpus([])).toBe(0);
     expect(countGpus(null)).toBe(0);
     expect(countGpus([null])).toBe(0);
+  });
+});
+
+// What HiveOS's h-stats.sh turns into bus_numbers, so each card's hashrate lands
+// on its own dashboard row.
+describe('parsePciBusIds', () => {
+  test('maps each card index to its PCI bus id', () => {
+    const out = '0, 00000000:01:00.0\n1, 00000000:0A:00.0\n';
+    expect(parsePciBusIds(out)).toEqual({ 0: '00000000:01:00.0', 1: '00000000:0A:00.0' });
+  });
+
+  test('accepts a 4-digit domain and skips rows that do not parse', () => {
+    const out = '\n0, 0000:81:00.0\nNo devices were found\n1, [N/A]\nx, 00000000:02:00.0\n';
+    expect(parsePciBusIds(out)).toEqual({ 0: '0000:81:00.0' });
+  });
+
+  test('returns an empty map for empty or nullish input', () => {
+    expect(parsePciBusIds('')).toEqual({});
+    expect(parsePciBusIds(null)).toEqual({});
+    expect(parsePciBusIds(undefined)).toEqual({});
   });
 });
 
@@ -211,40 +232,118 @@ describe('describeClearedCuda', () => {
       + '(set PEARL_GPU_INDEX to mine on one card)');
   });
 
+  // The CLI has a flag for choosing cards, so it names that instead.
+  test('takes the hint the shell passes', () => {
+    expect(describeClearedCuda('GPU-1a2b', 'use --gpu-index to choose the cards'))
+      .toBe('ignoring CUDA_VISIBLE_DEVICES=GPU-1a2b so every GPU can mine (use --gpu-index to choose the cards)');
+  });
+
   test('says nothing when nothing was removed', () => {
     expect(describeClearedCuda(null)).toBeNull();
   });
 });
 
-// PEARL_GPU_INDEX. A negative index is how the core is told "choose for me", so
-// anything that is not a real card index has to read as absent rather than be
-// passed on -- a typo must not turn into an instruction, and `-1` must not
-// become a card.
-describe('parseDeviceIndex', () => {
-  test('takes a whole number from 0 up', () => {
-    expect(parseDeviceIndex({ PEARL_GPU_INDEX: '0' })).toBe(0);
-    expect(parseDeviceIndex({ PEARL_GPU_INDEX: '3' })).toBe(3);
-    expect(parseDeviceIndex({ PEARL_GPU_INDEX: ' 2 ' })).toBe(2);
+// The one way to say which cards mine: the CLI's --gpu-index and
+// PEARL_GPU_INDEX both read it.
+describe('parseGpuIndexList', () => {
+  test('takes one card or a comma list, sorted, duplicates dropped', () => {
+    expect(parseGpuIndexList('0')).toEqual({ indices: [0] });
+    expect(parseGpuIndexList('0,2')).toEqual({ indices: [0, 2] });
+    expect(parseGpuIndexList('2,0,2,0')).toEqual({ indices: [0, 2] });
+    expect(parseGpuIndexList(' 3 , 1 ')).toEqual({ indices: [1, 3] });
+    expect(parseGpuIndexList(12)).toEqual({ indices: [12] });
   });
 
-  test('ignores anything that is not one', () => {
-    expect(parseDeviceIndex({})).toBeNull();
-    expect(parseDeviceIndex({ PEARL_GPU_INDEX: '' })).toBeNull();
-    expect(parseDeviceIndex({ PEARL_GPU_INDEX: '  ' })).toBeNull();
-    expect(parseDeviceIndex({ PEARL_GPU_INDEX: 'first' })).toBeNull();
-    expect(parseDeviceIndex({ PEARL_GPU_INDEX: '1.5' })).toBeNull();
-    expect(parseDeviceIndex({ PEARL_GPU_INDEX: '-1' })).toBeNull();
+  test('"none" is an empty list', () => {
+    expect(parseGpuIndexList('none')).toEqual({ indices: [] });
+    expect(parseGpuIndexList(' NONE ')).toEqual({ indices: [] });
+  });
+
+  test('blank is no choice at all', () => {
+    expect(parseGpuIndexList(undefined)).toBeNull();
+    expect(parseGpuIndexList(null)).toBeNull();
+    expect(parseGpuIndexList('')).toBeNull();
+    expect(parseGpuIndexList('   ')).toBeNull();
+  });
+
+  // A typo must not turn into an instruction, and -1 must not become a card:
+  // a negative index is how the core is told "choose for me".
+  test('anything that is not a list of whole numbers is an error', () => {
+    for (const bad of ['first', '1.5', '-1', '0,', ',0', '0,,2', '0 2', '0;2', '0x1', '1e3',
+      'GPU-1a2b3c4d', 'MIG-1a2b', '99999999999999999999']) {
+      expect(parseGpuIndexList(bad)).toEqual({ error: expect.stringContaining('such as 0,2, or none') });
+    }
+  });
+});
+
+// PEARL_GPU_INDEX as the desktop app reads it. The same list, but not "none":
+// the app has no way to mine on nothing, and an empty list would read as "let
+// the core choose". What it can't use it ignores, and says so.
+describe('readGpuIndexEnv', () => {
+  test('takes a card or a list', () => {
+    expect(readGpuIndexEnv({ PEARL_GPU_INDEX: '0' })).toEqual({ indices: [0], warning: null });
+    expect(readGpuIndexEnv({ PEARL_GPU_INDEX: ' 2 ' })).toEqual({ indices: [2], warning: null });
+    expect(readGpuIndexEnv({ PEARL_GPU_INDEX: '3,1' })).toEqual({ indices: [1, 3], warning: null });
+  });
+
+  test('unset or blank is no choice, and nothing to say', () => {
+    for (const env of [{}, { PEARL_GPU_INDEX: '' }, { PEARL_GPU_INDEX: '  ' }]) {
+      expect(readGpuIndexEnv(env)).toEqual({ indices: null, warning: null });
+    }
+  });
+
+  test('a value that does not parse is ignored with a warning', () => {
+    for (const v of ['first', '1.5', '-1', '0,x', '0 2', '0;2']) {
+      expect(readGpuIndexEnv({ PEARL_GPU_INDEX: v })).toEqual({
+        indices: null,
+        warning: 'PEARL_GPU_INDEX=' + v + ' ignored (give GPU numbers from nvidia-smi separated by commas, '
+          + 'such as 0,2, or none); every GPU mines',
+      });
+    }
+  });
+
+  test('none is ignored with a warning that says how not to mine', () => {
+    expect(readGpuIndexEnv({ PEARL_GPU_INDEX: ' None ' })).toEqual({
+      indices: null,
+      warning: 'PEARL_GPU_INDEX=None ignored: the app cannot mine on no GPU '
+        + '(set Compute Mode to LLM for that); every GPU mines',
+    });
   });
 
   test('defaults to the process environment', () => {
     const had = Object.prototype.hasOwnProperty.call(process.env, 'PEARL_GPU_INDEX');
     const before = process.env.PEARL_GPU_INDEX;
-    delete process.env.PEARL_GPU_INDEX;
+    process.env.PEARL_GPU_INDEX = '1';
     try {
-      expect(parseDeviceIndex()).toBeNull();
+      expect(readGpuIndexEnv().indices).toEqual([1]);
     } finally {
       if (had) process.env.PEARL_GPU_INDEX = before;
+      else delete process.env.PEARL_GPU_INDEX;
     }
+  });
+});
+
+// One line per chosen card that planMinerGpus dropped, worded the same in both
+// shells.
+describe('describeSkippedGpus', () => {
+  const MINING = [{ index: 0, name: 'A' }, { index: 2, name: 'C' }];
+
+  test('names each chosen card that is not mining, and what chose it', () => {
+    expect(describeSkippedGpus([0, 2, 5, 7], MINING, '--gpu-index')).toEqual([
+      'skipping GPU 5 from --gpu-index: nvidia-smi does not list it',
+      'skipping GPU 7 from --gpu-index: nvidia-smi does not list it',
+    ]);
+  });
+
+  test('is empty when nothing was chosen or nothing was dropped', () => {
+    expect(describeSkippedGpus(null, MINING, 'PEARL_GPU_INDEX')).toEqual([]);
+    expect(describeSkippedGpus([0, 2], MINING, 'PEARL_GPU_INDEX')).toEqual([]);
+    expect(describeSkippedGpus([], null, 'PEARL_GPU_INDEX')).toEqual([]);
+  });
+
+  test('a mining list that is not a list skips every chosen card', () => {
+    expect(describeSkippedGpus([1], undefined, 'PEARL_GPU_INDEX'))
+      .toEqual(['skipping GPU 1 from PEARL_GPU_INDEX: nvidia-smi does not list it']);
   });
 });
 
@@ -253,6 +352,9 @@ describe('planMinerGpus', () => {
   const CARDS = [
     { index: 0, name: 'NVIDIA RTX PRO 4500 Blackwell', usedMb: 4360, totalMb: 32623 },
     { index: 1, name: 'NVIDIA GeForce RTX 4070', usedMb: 6694, totalMb: 12282 },
+  ];
+  const THREE = [
+    { index: 0, name: 'RTX 4090 A' }, { index: 1, name: 'RTX 4090 B' }, { index: 2, name: 'RTX 4090 C' },
   ];
 
   test('mines on every card', () => {
@@ -269,18 +371,28 @@ describe('planMinerGpus', () => {
     expect(planMinerGpus([CARDS[1], CARDS[0]], null).map((g) => g.index)).toEqual([0, 1]);
   });
 
-  test('narrows to one card when the operator pins one', () => {
-    expect(planMinerGpus(CARDS, 1)).toEqual([{ index: 1, name: 'NVIDIA GeForce RTX 4070' }]);
+  test('narrows to the cards chosen', () => {
+    expect(planMinerGpus(CARDS, [1])).toEqual([{ index: 1, name: 'NVIDIA GeForce RTX 4070' }]);
+    expect(planMinerGpus(THREE, [0, 2])).toEqual([
+      { index: 0, name: 'RTX 4090 A' }, { index: 2, name: 'RTX 4090 C' },
+    ]);
   });
 
-  // An index nvidia-smi didn't list is still passed on: the core checks it
-  // against the real device count and says so, which beats silently ignoring
-  // what the operator asked for.
-  test('passes on a pinned index it cannot name', () => {
-    expect(planMinerGpus(CARDS, 7)).toEqual([{ index: 7, name: null }]);
-    expect(planMinerGpus([], 0)).toEqual([{ index: 0, name: null }]);
-    expect(planMinerGpus(null, 0)).toEqual([{ index: 0, name: null }]);
-    expect(planMinerGpus([{ index: 0 }], 0)).toEqual([{ index: 0, name: null }]);
+  // HiveOS listed a card nvidia-smi doesn't have. Mine on the rest; the shell
+  // logs the one it dropped (describeSkippedGpus).
+  test('drops a chosen card nvidia-smi does not list', () => {
+    expect(planMinerGpus(THREE, [1, 5])).toEqual([{ index: 1, name: 'RTX 4090 B' }]);
+  });
+
+  // When none of them is listed, or nvidia-smi listed nothing, they go on to the
+  // core: it checks them against the real device count and says so, which
+  // beats mining on cards nobody chose.
+  test('passes the choice on when it cannot name any of it', () => {
+    expect(planMinerGpus(CARDS, [7])).toEqual([{ index: 7, name: null }]);
+    expect(planMinerGpus(CARDS, [9, 7])).toEqual([{ index: 7, name: null }, { index: 9, name: null }]);
+    expect(planMinerGpus([], [0])).toEqual([{ index: 0, name: null }]);
+    expect(planMinerGpus(null, [0, 2])).toEqual([{ index: 0, name: null }, { index: 2, name: null }]);
+    expect(planMinerGpus([{ index: 0 }], [0])).toEqual([{ index: 0, name: null }]);
   });
 
   // Nothing from nvidia-smi: the caller starts one core and lets it choose.

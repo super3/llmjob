@@ -15,6 +15,17 @@ host:
 - RTX 40-series: 97–101%.
 - RTX 50-series: 90–102%. The 5090 and 5080 are close to even; the 5070 Ti,
   5070, 5060 Ti and 5060 trail by 5–10%.
+- A100-class (sm_80, PR #253, not in a release yet): the A30 107%, the A100
+  PCIe 98% and the A100 SXM4 97% on the current build. The CMP 170HX row is
+  from the first build (87%); it screens at about 98% now.
+- Hopper (sm_90a, PR #253, not in a release yet): 83–88% on the H100 SXM,
+  NVL and PCIe, the H200 and the H200 NVL, with Hopper's wgmma fold on by
+  default. These cards couldn't mine at all before this PR.
+- Ada workstation and data-center cards (sm_89: L40S, L40, L4, RTX 6000,
+  5000, 4500, 4000 and 2000 Ada): 101–111%.
+- RTX PRO Blackwell (sm_120): 99–101%. The 6000 Max-Q and the RTX 6000D are
+  level; the RTX PRO 5000 and 6000 Server are 0.7% short.
+- RTX A4000 (sm_86): 102%.
 
 ## How a host is tested
 
@@ -235,6 +246,181 @@ Every host passed the hit check, and every run had 0 rejected shares.
   other two. Two 300 W hosts were tried and couldn't attach the GPU.
 - **Not tested:** the RTX 5090D, which no host lists, and laptop GPUs (3060,
   4070 and 4080 laptop), which are on Vast but left out.
+
+## A100-class (sm_80, PR #253)
+
+Run on 2026-10-07, 14:53–22:52 UTC. The A100 PCIe and the New York A100
+SXM4 ran `3804a7c` and the A30 `1f699da`, each with PeakMiner and SRBMiner
+re-run on the same box in the same session. The CMP 170HX and the
+California A100 SXM4 ran the first build, `feba1ca`.
+No release supports these cards yet. Same harness, pool and miner versions as
+the RTX tables.
+
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
+|---|---|---|---|---|---|---|
+| A100 PCIe 40 GB | Japan (250 W) | 146405 | 209.5 | 212.2 | 213.9 | 98% |
+| A100 SXM4 40 GB | New York (400 W) | 152837 | 246.5 | 252.2 | 254.7 | 97% |
+| A100 SXM4 40 GB | California (400 W) | 152356 | 177.3 | 197.4 | 199.8 | 89% |
+| A30 24 GB | Australia (155 W) | 145742 | 104.7 | 98.1 | 96.2 | 107% |
+| CMP 170HX | Georgia (250 W) | 147823 | 146.9 | 167.9 | 165.0 | 87% |
+
+- **A100 PCIe and SXM4:** all three miners ran at the power limit. SRBMiner
+  does 4.0–4.3% more work per clock than we do, and we run a 1–2.6% higher
+  clock at the same watts, so the gap is work per clock. On `feba1ca` the
+  PCIe read 192.0 (89%) and on `dd64b2c` the SXM4 read 240.3 (95%). The copy
+  points (`dd64b2c`), the hash in its own kernel (`1f699da`) and band 32
+  (`3804a7c`) closed most of it.
+- **CMP 170HX:** all three miners ran at the 250 W limit on `feba1ca`, when
+  we got about 70% of the tensor peak per clock to their 85%. On `1f699da`
+  our screen reads 165.0, 98% of PeakMiner's 167.9.
+- **A100 SXM4, New York:** all three miners ran at the 400 W limit, at
+  75–77 C. This is the row that shows the card at its rated power.
+- **A100 SXM4, California:** the host cools the card poorly. All three miners
+  ran at 85 C and the thermal limit, drawing about 215 W of the 400 W allowed,
+  so this row says more about the host than the card. The first SXM4 host
+  tried (149846) failed during setup.
+- **A30:** the host enforces 155 W, not its listed 165 W, and all three
+  miners were power-capped at 82 C. This row is a second run on `1f699da`,
+  with PeakMiner and SRBMiner re-run on the same box at the same 154 W. On
+  `feba1ca` we read 94.7 against 98.0 and 96.1 (97%).
+- **CMP 170HX, first run:** SRBMiner's rate fell near the end of its run.
+  Its average after the first minute was 168.9, which also puts us at 87%.
+  The card has 74 SMs and a 32 MB L2, with the A100's full tensor rate per
+  SM. Its owner has unlocked it: it reports 64 GB, where a stock card has
+  8 GB and 70 SMs. Every CMP 170HX on Vast is like this, so a stock card
+  hasn't been tested.
+
+## Hopper (sm_90a, PR #253)
+
+Run on 2026-10-08, 06:35–07:17 UTC, with PR #253's release build at `e8c04b4`,
+which mines with Hopper's wgmma fold by default. Each box built the core as
+native-core.yml does (CUDA 12.8, sm_75/80/86/89/90a/120, no `-D` flags). No
+release supports these cards yet. Same harness, pool and miner versions as the
+RTX tables. PeakMiner and SRBMiner on the H100 SXM and NVL hosts are the
+2026-10-07 runs; the other three hosts are new, so all three miners ran there.
+
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
+|---|---|---|---|---|---|---|
+| H100 SXM 80 GB | New York (700 W) | 153443 | 630.8 | 757.7 | 734.4 | 83% |
+| H100 NVL 94 GB | Japan (400 W) | 29785 | 471.0 | 533.0 | 537.6 | 88% |
+| H100 PCIe 80 GB | Czechia (350 W) | 147981 | 423.1 | 391.6 | 481.0 | 88% |
+| H200 141 GB | Saudi Arabia (700 W) | 131919 | 619.9 | 718.6 | 720.4 | 86% |
+| H200 NVL 141 GB | Quebec (600 W) | 153365 | 591.5 | 669.8 | 675.3 | 88% |
+
+- **Every host:** passed the hit check and picked the wgmma fold (2-CTA
+  clusters, 128x256 tiles). The CLI got 26, 19, 9, 18 and 15 shares accepted,
+  none rejected.
+- **The gap is work per clock.** Every miner ran at the power cap, and we ran
+  70–290 MHz faster than the other two at the same watts. Per clock the fold
+  does 71–75% of the wgmma peak and the competitors 87–94%; most of the
+  difference is the fold's readout.
+- **Before `e8c04b4`:** the cp.async port, run on 2026-10-07, did 436.2 on the
+  H100 SXM (58%) and 341.0 on the H100 NVL (63%), and 299.4 against 478.4 and
+  485.1 on an H100 PCIe in the United States (81035, 62%).
+- **H100 PCIe:** 81035 wasn't offered, so this is a new host. PeakMiner ran
+  at 915 MHz and fell from about 404 to 391.6 by 5:00. SRBMiner is the faster
+  competitor here either way.
+- **H200:** the same chip as the H100 with faster memory, but the fold does
+  about 10% less per clock on it than on the H100 SXM (about 2770 against 3063
+  int8 MAC/clock/SM). Not looked into yet.
+- **Order:** on the three new hosts the miners ran ours, then SRBMiner, then
+  PeakMiner, not alternating between hosts.
+- **Skipped hosts:** H200 Massachusetts (153354, reliability 0.68), H200 New
+  Jersey (153539, performance score 2), H200 NVL Czechia (43532, rented at
+  $5.61/h against the $3.74 listed, destroyed after 14 s), and H100 PCIe
+  France (153139, restarts the container).
+
+## Ada workstation and data-center cards (sm_89)
+
+Run on 2026-10-07, 16:55–21:45 UTC, with PR #253's core at `5f427dd`,
+`54c993d` or `e0bee03`. Their sm_89 kernels are byte-identical, and no change
+was made for these cards. They run the same sm_89 code as the RTX 40-series.
+Same harness, pool and miner versions as the RTX tables.
+
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
+|---|---|---|---|---|---|---|
+| L40S | Texas (350 W) | 96563 | 288.4 | 257.1 | 281.8 | 102% |
+| L40S | Taiwan (350 W) | 151291 | 288.9 | 250.8 | 270.7 | 107% |
+| RTX 6000 Ada | New York (300 W) | 142572 | 227.5 | 195.9 | 210.4 | 108% |
+| RTX 6000 Ada | Germany (300 W) | 146274 | 194.2 | 167.5 | 179.2 | 108% |
+| RTX 5000 Ada | Minnesota (250 W) | 151333 | 215.4 | 193.4 | 201.1 | 107% |
+| L40 | Vietnam (300 W) | 114318 | 173.8 | 166.5 | 170.4 | 102% |
+| L40 | New York (250 W) | 56199 | 153.6 | 131.8 | 139.0 | 111% |
+| RTX 4500 Ada | France (210 W) | 148971 | 146.7 | 134.3 | 145.1 | 101% |
+| RTX 4000 Ada | Norway (130 W) | 149238 | 96.6 | 94.0 | 95.0 | 102% |
+| RTX 4000 Ada | France (130 W) | 152701 | 93.1 | 91.3 | 91.8 | 101% |
+| L4 | Czechia (72 W) | 116596 | 79.4 | 74.4 | 77.8 | 102% |
+| L4 | Washington (72 W) | 152541 | 78.5 | 74.2 | 77.2 | 102% |
+| RTX 2000 Ada | Romania (70 W) | 68269 | 47.8 | 47.1 | 43.6 | 102% |
+
+- **Every host:** every miner ran at the power limit. We ran 30–310 MHz
+  faster than the other two at the same watts, so we use less power for the
+  same work. Per clock we get about 96% of the tensor peak and SRBMiner about
+  97%.
+- **L40:** half the L40S's int8 tensor rate per SM, so its rates are lower.
+  Every other card here has the full rate, the L4 included. The New York
+  host sets the L40 to 250 W; its maximum is 300 W.
+- **Hosts matter:** at the same 300 W, the Germany RTX 6000 Ada ran at
+  83–85 C and about 1400 MHz, and the New York one at 77–79 C and 1640 MHz,
+  so every miner was about 17% faster in New York. The RTX 4000 Ada read 4%
+  higher in Norway (74 C) than in France (85 C).
+- **RTX 2000 Ada:** PeakMiner is the faster competitor here.
+- **Replaced hosts:** L4 Brazil (151023) blocks outbound port 1200, so the
+  competitors couldn't run. L4 Utah (109523) is thermally limited: it drew
+  about 50 W of its 72 W at 87–88 C, and every miner's rate swung by ±4 TH/s.
+
+## RTX PRO Blackwell (sm_120)
+
+Run on 2026-10-07, 19:20–21:15 UTC, with PR #253's core at `54c993d` or
+`e0bee03` (their sm_120 kernels are byte-identical), on the CUDA 13 core, as
+a rig with driver 580 or newer loads it. No change was made for these cards.
+Same harness, pool and miner versions as the RTX tables.
+
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
+|---|---|---|---|---|---|---|
+| RTX PRO 6000 Workstation | Mississippi (600 W) | 148552 | 397.0 | 389.9 | 393.9 | 101% |
+| RTX PRO 6000 Server | California (600 W) | 150951 | 378.8 | 377.2 | 381.5 | 99% |
+| RTX PRO 6000 Max-Q | Illinois (300 W) | 153399 | 311.4 | 307.4 | 311.5 | 100% |
+| RTX PRO 5000 48 GB | California (250 W) | 150611 | 211.4 | 208.7 | 212.8 | 99% |
+| RTX PRO 4500 | Arizona (200 W) | 148915 | 175.5 | 170.8 | 172.9 | 101% |
+| RTX PRO 4000 | Pennsylvania (145 W) | 150214 | 127.4 | 126.2 | 126.9 | 100% |
+| RTX 6000D | Czechia (550 W) | 149788 | 144.6 | 144.8 | 144.8 | 100% |
+
+- **Per clock:** we get 94–96% of the tensor peak on every card, and SRBMiner
+  97–98%. At the power cap we run 2.6–4.1% faster at the same watts, which
+  is enough on most cards. The RTX PRO 5000 (2.6%) is 0.7% short, and the
+  6000 Max-Q (99.97%) and the RTX 6000D (99.9%) round to 100%.
+- **RTX PRO 6000 Server:** a passive server card. Once it reached 85 C it
+  held about 2065 MHz and 440 W of its 600 W, for every miner, so heat, not
+  power, set its rate on this host.
+- **RTX PRO 5000 48 GB:** the host sets 250 W, 83% of the card's 300 W.
+- **RTX 6000D:** Vast's name for a cut-down card with 156 SMs and 84 GB. Its
+  int8 tensor rate is capped at about 37% of the RTX PRO 6000's per SM per
+  clock. All three miners tie at its top clock and about 253 W.
+- **Not in the table:** the RTX PRO 5000 72 GB. Its only host (California,
+  153314) blocks outbound port 1200, so no miner could reach the pool. Our
+  speed screen read 239.4 at 300 W. Vast lists no RTX PRO 2000 or 4000 SFF.
+
+## RTX A4000 (sm_86)
+
+Run on 2026-10-07, 16:53–17:47 UTC, with PR #253's core at `5f427dd`. The
+A4000 is a GA104 card and runs the same sm_86 code as the RTX 30-series.
+Same harness, pool and miner versions as the RTX tables.
+
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
+|---|---|---|---|---|---|---|
+| RTX A4000 | Kazakhstan (140 W) | 147920 | 59.5 | 58.2 | 56.6 | 102% |
+| RTX A4000 | Kentucky (140 W) | 29102 | 56.9 | 55.8 | 53.5 | 102% |
+
+- **Both hosts:** every miner ran at the 140 W limit. We ran 60–110 MHz
+  faster than the other two.
+- **Kentucky:** the card runs at 92–94 C. In this 5-minute run all three
+  miners stayed at the power limit, but in our longer speed tests the card
+  hit its thermal limit and read 54.7–55.1 TH/s.
+- **PeakMiner, Kazakhstan:** got no share accepted in its 5 minutes. The
+  rate is its own figure.
+- **Replaced host:** Germany (14335). Another workload was using the GPU,
+  and the tensor probe read 37 T-MAC/s against 92 on a clean card.
 
 ## Replaced hosts (40/50-series)
 

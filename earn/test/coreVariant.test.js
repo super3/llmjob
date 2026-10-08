@@ -14,6 +14,8 @@ const RTX5090 = (index, drv) => card(index, '12.0', drv == null ? 610 : drv);
 const RTX4090 = (index, drv) => card(index, '8.9', drv == null ? 610 : drv);
 const RTX2080TI = (index, drv) => card(index, '7.5', drv == null ? 610 : drv);
 const RTX3090 = (index, drv) => card(index, '8.6', drv == null ? 610 : drv);
+const A100 = (index, drv) => card(index, '8.0', drv == null ? 610 : drv);
+const H100 = (index, drv) => card(index, '9.0', drv == null ? 610 : drv);
 
 describe('core file names', () => {
   // These are the release asset names too: the self-updater and the workflows
@@ -40,11 +42,19 @@ describe('cu13HasCodeFor / cu13AutoSelectsFor', () => {
     expect(cu13AutoSelectsFor(RTX4090(0))).toBe(false);
   });
 
-  // 8.6 is Ampere: same major as Ada, no code in the build.
+  // 8.6 and 8.0 are Ampere: same major as Ada, no code in the build.
   test('Ampere and anything older has no code', () => {
     expect(cu13HasCodeFor(RTX3090(0))).toBe(false);
     expect(cu13AutoSelectsFor(RTX3090(0))).toBe(false);
+    expect(cu13HasCodeFor(A100(0))).toBe(false);
+    expect(cu13AutoSelectsFor(A100(0))).toBe(false);
     expect(cu13HasCodeFor(card(0, '7.5', 610))).toBe(false);
+  });
+
+  // 9.0 is Hopper: its sm_90a code is in the 12.8 build only.
+  test('Hopper has no code', () => {
+    expect(cu13HasCodeFor(H100(0))).toBe(false);
+    expect(cu13AutoSelectsFor(H100(0))).toBe(false);
   });
 });
 
@@ -116,6 +126,23 @@ describe('pickCoreVariant', () => {
   test('a 3090 rig keeps the 12.8 build: the CUDA 13 one has no code for it', () => {
     expect(pickCoreVariant({ env: {}, cards: [RTX3090(0)], gpus: [{ index: 0 }] })).toEqual({
       variant: CU12, reason: 'GPU 0 is compute 8.6 (the CUDA 13 build has no code for it)',
+    });
+  });
+
+  // GA100 (A100, A800, A30, CMP 170HX) has sm_80 code in the 12.8 build only.
+  test('an A100 rig keeps the 12.8 build: the CUDA 13 one has no code for it', () => {
+    expect(pickCoreVariant({ env: {}, cards: [A100(0)], gpus: [{ index: 0 }] })).toEqual({
+      variant: CU12, reason: 'GPU 0 is compute 8.0 (the CUDA 13 build has no code for it)',
+    });
+  });
+
+  // Hopper (H100, H200) has sm_90a code in the 12.8 build only, on any driver.
+  test('an H100 rig keeps the 12.8 build: the CUDA 13 one has no code for it', () => {
+    expect(pickCoreVariant({ env: {}, cards: [H100(0)], gpus: [{ index: 0 }] })).toEqual({
+      variant: CU12, reason: 'GPU 0 is compute 9.0 (the CUDA 13 build has no code for it)',
+    });
+    expect(pickCoreVariant({ env: {}, cards: [H100(0, 580)], gpus: [] })).toEqual({
+      variant: CU12, reason: 'GPU 0 is compute 9.0 (the CUDA 13 build has no code for it)',
     });
   });
 

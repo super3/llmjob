@@ -70,11 +70,13 @@ product every time:
 | MACs per batch, as written | 268,435,456 |
 | distinct dot products | 67,108,864 |
 
-`pearl_partials` now computes each distinct partial once into `D[chunk][r][c]`
-and the fold gathers from it. D is 2 MiB, L2-resident. Beyond the arithmetic
-saving this changes the *shape* of the work: D is a dense `[m x 8]` GEMM with a
-k-reduction, which is what `mma.sync` wants — the per-warp tile fold never was,
-which is why every attempt to speed that fold up kept failing.
+`pearl_partials` then computed each distinct partial once into `D[chunk][r][c]`
+and the fold, `pearl_gemm_fold`, gathered from it. (Nothing has launched either
+since the fused tile fold replaced them, and both were removed on 2026-10-08.)
+D is 2 MiB, L2-resident. Beyond the arithmetic saving this changes the *shape*
+of the work: D is a dense `[m x 8]` GEMM with a k-reduction, which is what
+`mma.sync` wants — the per-warp tile fold never was, which is why every attempt
+to speed that fold up kept failing.
 
 ### m is a tunable, and the curve is sharp
 
@@ -137,9 +139,11 @@ structural change was worth more than every constant-factor attempt combined,
 which is the lesson: the eliminations were correct, but they were eliminating
 explanations for the wrong kernel.
 
-The partials GEMM now runs at roughly 9e11 MACs/s against an int32 ceiling near
-4e13 on this card — about 2%. So there is still a large factor available inside
-the current int32 formulation, before tensor cores enter the picture at all.
+The partials GEMM ran at roughly 9e11 MACs/s against an int32 ceiling near
+4e13 on this card — about 2%. So there was still a large factor available inside
+that int32 formulation, before tensor cores entered the picture at all. (The
+tensor-core tile folds replaced it and its gather; both were removed on
+2026-10-08.)
 
 ### An unresolved correctness question, recorded rather than buried
 

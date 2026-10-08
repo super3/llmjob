@@ -15,7 +15,8 @@ const { execFile } = require('child_process');
 const { REGIONS, DEFAULTS, NETWORK } = require('../shared/config');
 const { pickFastestRegion } = require('../shared/region');
 const {
-  parseGpuStats, pickGpu, countGpus, parseMacGpu, parseDeviceIndex, planMinerGpus,
+  parseGpuStats, pickGpu, countGpus, parseMacGpu, readGpuIndexEnv, planMinerGpus,
+  parsePciBusIds,
 } = require('../shared/gpu');
 const { parseCudaCards } = require('../shared/coreVariant');
 // Major version out of an nvidia-smi driver string. Lived in shared/engine
@@ -97,10 +98,14 @@ function detectGpusVram() {
 //
 // Both shells ask this the same way so they cannot drift — the GUI and the CLI
 // having their own GPU detection is what let the two disagree before (see
-// detectGpuInfo below). Never rejects.
-async function detectMinerGpus(env) {
+// detectGpuInfo below). `chosen` is the shell's choice of cards: a list, or null
+// for every card. Both shells pass it, since each reads PEARL_GPU_INDEX itself
+// to log what it did with it. Left out, PEARL_GPU_INDEX in `env` decides.
+// Never rejects.
+async function detectMinerGpus(env, chosen) {
   const cards = await detectGpusVram();
-  return planMinerGpus(cards, parseDeviceIndex(env || process.env));
+  const pick = chosen !== undefined ? chosen : readGpuIndexEnv(env || process.env).indices;
+  return planMinerGpus(cards, pick);
 }
 
 // Per-card core temperature (°C) via nvidia-smi, as a map of card index →
@@ -155,6 +160,17 @@ function detectCudaCards() {
       ['--query-gpu=index,compute_cap,driver_version', '--format=csv,noheader'],
       { timeout: 5000 },
       (err, stdout) => resolve(err ? [] : parseCudaCards(stdout)));
+  });
+}
+
+// Each card's PCI bus id, as { index: '00000000:01:00.0' }, for the stats file
+// HiveOS reads (see shared/gpu.parsePciBusIds). Resolves {} when nvidia-smi
+// fails. Never rejects.
+function detectPciBusIds() {
+  return new Promise((resolve) => {
+    execFile('nvidia-smi', ['--query-gpu=index,pci.bus_id', '--format=csv,noheader'],
+      { timeout: 5000 },
+      (err, stdout) => resolve(err ? {} : parsePciBusIds(stdout)));
   });
 }
 
@@ -271,6 +287,7 @@ module.exports = {
   detectGpuTemps,
   detectDriverMajor,
   detectCudaCards,
+  detectPciBusIds,
   postMinerReport,
   findFreePort,
   detectGpuInfo,

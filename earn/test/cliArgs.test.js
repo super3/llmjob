@@ -1,7 +1,11 @@
 'use strict';
 
-const { parseCliArgs, buildSettings, regionChoices, USAGE, VALUE_FLAGS } = require('../src/shared/cliArgs');
-const { DEFAULTS } = require('../src/shared/config');
+const fs = require('fs');
+const path = require('path');
+const {
+  parseCliArgs, buildSettings, regionChoices, USAGE, VALUE_FLAGS, ALIASES,
+} = require('../src/shared/cliArgs');
+const { DEFAULTS, LEGACY_REGIONS } = require('../src/shared/config');
 
 const ADDR = 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
 const MDL = 'mdl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
@@ -138,6 +142,36 @@ describe('buildSettings — validation', () => {
   test('unknown region is rejected with choices', () => {
     const r = parseCliArgs(['--address', ADDR, '--region', 'mars']);
     expect(r.errors).toContain('unknown region: mars (choices: ' + regionChoices() + ')');
+  });
+
+  // Old HiveOS flight sheets carry --region eu1 in Extra config. It used to be
+  // an "unknown region" exit, and HiveOS restarted the miner in a loop.
+  test('an old AlphaPool region maps to the nearest one and remembers what was typed', () => {
+    for (const [old, now] of Object.entries(LEGACY_REGIONS)) {
+      const r = parseCliArgs(['--address', ADDR, '--region', old]);
+      expect(r.errors).toEqual([]);
+      expect(r.settings).toMatchObject({ region: now, legacyRegion: old, regionProvided: true });
+    }
+    expect(parseCliArgs(['-a', ADDR, '-r', 'eu1']).settings.region).toBe('de');
+    expect(Object.keys(LEGACY_REGIONS).sort()).toEqual(['eu1', 'eu2', 'hk1', 'in1', 'ru1', 'sg1', 'us1']);
+  });
+
+  test('a current region has no legacyRegion; us2 exists on both pools', () => {
+    expect(parseCliArgs(['-a', ADDR, '-r', 'de']).settings.legacyRegion).toBeNull();
+    expect(parseCliArgs(['-a', ADDR, '-r', 'us2']).settings).toMatchObject({ region: 'us2', legacyRegion: null });
+    expect(parseCliArgs(['-a', ADDR]).settings.legacyRegion).toBeNull();
+  });
+
+  // A typo is loud: no quiet fall back to the default region.
+  test('a region that is neither is still rejected, even an Object property name', () => {
+    for (const bad of ['eu3', 'EU1', 'constructor', '__proto__', 'toString']) {
+      expect(parseCliArgs(['-a', ADDR, '-r', bad]).errors)
+        .toContain('unknown region: ' + bad + ' (choices: ' + regionChoices() + ')');
+    }
+  });
+
+  test('the help says old ids still work', () => {
+    expect(USAGE).toContain('An old AlphaPool id (eu1, sg1, …) maps to the nearest.');
   });
 
   test('region defaults when omitted', () => {
@@ -376,5 +410,85 @@ describe('--mine-mem-clock', () => {
     expect(USAGE).toMatch(/Default: 7001 on the RTX 5090/);
     expect(USAGE).toMatch(/0 leaves/);
     expect(USAGE).toMatch(/Only the\s+5090 has been measured/);
+  });
+});
+
+// Which cards mine. HiveOS's h-config.sh writes this from the cards turned off
+// there, so a bad value has to be loud, not read as "every card".
+describe('--gpu-index', () => {
+  test('not given: every card (null)', () => {
+    expect(parseCliArgs(['-a', ADDR]).settings.gpuIndices).toBeNull();
+  });
+
+  test('a card or a comma list, in either form, sorted and deduplicated', () => {
+    expect(parseCliArgs(['-a', ADDR, '--gpu-index', '1']).settings.gpuIndices).toEqual([1]);
+    expect(parseCliArgs(['-a', ADDR, '--gpu-index=2,0']).settings.gpuIndices).toEqual([0, 2]);
+    expect(parseCliArgs(['-a', ADDR, '--gpu-index', '0,2,0']).settings.gpuIndices).toEqual([0, 2]);
+    expect(parseCliArgs(['-a', ADDR, '--gpu-index', ' 0 , 2 ']).settings.gpuIndices).toEqual([0, 2]);
+  });
+
+  test('none: an empty list', () => {
+    const r = parseCliArgs(['-a', ADDR, '--gpu-index=none']);
+    expect(r.errors).toEqual([]);
+    expect(r.settings.gpuIndices).toEqual([]);
+  });
+
+  test('empty, or not card numbers: an error that says what it takes', () => {
+    expect(parseCliArgs(['-a', ADDR, '--gpu-index=']).errors)
+      .toContain('invalid --gpu-index:  (must not be empty)');
+    expect(parseCliArgs(['-a', ADDR, '--gpu-index', 'GPU-1a2b']).errors).toContain(
+      'invalid --gpu-index: GPU-1a2b (give GPU numbers from nvidia-smi separated by commas, such as 0,2, or none)');
+    expect(parseCliArgs(['-a', ADDR, '--gpu-index', '0,']).errors[0]).toMatch(/^invalid --gpu-index: 0, /);
+    expect(parseCliArgs(['-a', ADDR, '--gpu-index']).errors).toContain('missing value for --gpu-index');
+  });
+
+  // The user's Extra config comes after h-config.sh's flags, and a repeated
+  // flag keeps its last value.
+  test('given twice, the last one wins', () => {
+    expect(parseCliArgs(['-a', ADDR, '--gpu-index=0,2', '--gpu-index', '1']).settings.gpuIndices).toEqual([1]);
+  });
+
+  test('is in the help, with the list form, none, and the variable', () => {
+    expect(VALUE_FLAGS.has('--gpu-index')).toBe(true);
+    expect(USAGE).toContain('--gpu-index <list>');
+    expect(USAGE).toMatch(/such as\s+0,2, or "none" for no GPU/);
+    expect(USAGE).toContain('PEARL_GPU_INDEX');
+  });
+});
+
+// earn/README.md has a copy of the usage. It listed flags that had been
+// removed (--difficulty, --binary) for several releases, so check it against
+// what the parser takes and what --help lists.
+describe('the README\'s usage block', () => {
+  // Option rows only: "  -a, --address <…>" or "      --mode <…>".
+  const flagsIn = (text) => {
+    const flags = [];
+    for (const line of text.split('\n')) {
+      const m = line.match(/^ {2}(?:(-[a-z]), )? *(--[a-z][a-z0-9-]*)/);
+      if (m) flags.push({ short: m[1] || null, long: m[2] });
+    }
+    return flags;
+  };
+  // A Windows checkout has CRLF line endings (core.autocrlf), and the block
+  // match and the row match below both split on '\n'.
+  const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8').replace(/\r\n/g, '\n');
+  const block = readme.match(/```\nUsage: llmjob-earn-cli [\s\S]*?```/);
+  const documented = block ? flagsIn(block[0]) : [];
+
+  test('is there, and lists options', () => {
+    expect(block).not.toBeNull();
+    expect(documented.length).toBeGreaterThan(10);
+  });
+
+  test('names only flags the CLI takes, with the right short forms', () => {
+    for (const { short, long } of documented) {
+      expect(parseCliArgs([long]).errors).not.toContain('unknown option: ' + long);
+      if (short) expect(ALIASES[short]).toBe(long);
+    }
+  });
+
+  test('lists every flag --help lists', () => {
+    const names = documented.map((f) => f.long);
+    for (const { long } of flagsIn(USAGE)) expect(names).toContain(long);
   });
 });

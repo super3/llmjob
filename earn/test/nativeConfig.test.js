@@ -1,11 +1,12 @@
 'use strict';
 
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const {
   PROFILE, CONFIG_BYTES, JACKPOT_BUCKETS, ROTL_BITS, buildConfig52,
   patternFromList, patternToBytes,
-  SEED_SALT_A, SEED_SALT_B,
+  SEED_SALT_A, SEED_SALT_B, meetsTarget,
 } = require('../src/shared/miner/pearlhash');
 
 // The CUDA core and the JS reference must agree byte for byte. config52 is
@@ -118,15 +119,6 @@ describe('native/JS config agreement', () => {
     expect(block.slice(20).every((b) => b === 0)).toBe(true);
   });
 
-  // The comparison in pearl_meets_target walks the hash high→low against a
-  // big-endian target — i.e. the hash is little-endian and the target is not.
-  // Getting this backwards makes every reported share spurious, so the source is
-  // checked for the reversal rather than trusting the comment.
-  test('the native target comparison reverses the hash, not the target', () => {
-    expect(HEADER).toContain('hash_le[PEARL_HASH_BYTES - 1 - i]');
-    expect(HEADER).toContain('target_be[i]');
-  });
-
   // The cert-v3 salts are duplicated as C byte arrays. They are consensus
   // constants, so a drift means the device derives different seeds than the
   // oracle and every share is rejected with nothing to point at.
@@ -172,9 +164,128 @@ describe('native/JS config agreement', () => {
     expect(host).toContain('pearl_blake3_unkeyed<<<1, 1>>>(dSeedInput');
     expect(host).not.toContain('zeroKey');
   });
+});
 
-  test('equality counts as a share on both sides', () => {
-    expect(HEADER).toContain('return 1;  // exactly equal counts as a share');
+// The share test the folds run on the device, in pearl_kernel.cu. The host
+// re-checks every hit with meetsTarget before submitting, so a byte-order slip
+// here cannot send a bad share. It makes the device test the wrong number: it
+// skips real shares, and the hits it does report fail the re-check.
+//
+// Nothing here can run the device code, so the source is checked for the order
+// it uses, and a JS transcription of that order is checked against meetsTarget.
+describe('native target test', () => {
+  const SRC = path.join(__dirname, '..', 'native', 'src');
+  const KERNEL = fs.readFileSync(path.join(SRC, 'pearl_kernel.cu'), 'utf8');
+  const HOST = fs.readFileSync(path.join(SRC, 'pearl_host.cu'), 'utf8');
+  const FOLD_BD = fs.readFileSync(path.join(SRC, 'pearl_fold_bd.cuh'), 'utf8');
+  const NL = String.fromCharCode(10);
+
+  // A function's source, from its signature to the brace that closes it at the
+  // start of a line.
+  function body(src, signature) {
+    const at = src.indexOf(signature);
+    expect(at).toBeGreaterThanOrEqual(0);
+    const end = src.indexOf(NL + '}', at);
+    expect(end).toBeGreaterThan(at);
+    return src.slice(at, end);
+  }
+
+  function count(src, needle) {
+    let n = 0;
+    for (let at = src.indexOf(needle); at >= 0; at = src.indexOf(needle, at + 1)) n++;
+    return n;
+  }
+
+  // The hash comes out of BLAKE3 as eight little-endian words. Read as a
+  // little-endian number its top word is word 7; the target is packed as
+  // big-endian words, most significant first. The full compare walks both from
+  // the top, and a tie is a share.
+  test('the full compare reads the hash little-endian, from word 7, against big-endian target words', () => {
+    expect(body(KERNEL, 'uint32_t pearl_bswap32(')).toContain('__byte_perm(x, 0u, 0x0123u)');
+    expect(body(KERNEL, 'uint32_t pearl_hash_word_msf('))
+      .toContain('return hash_big_endian ? pearl_bswap32(h[i]) : h[7 - i];');
+    const meets = body(KERNEL, 'bool pearl_hash_meets_words(');
+    expect(meets).toContain('for (int i = 0; i < 8; i++) {');
+    expect(meets).toContain('const uint32_t hw = pearl_hash_word_msf(h, i, hash_big_endian);');
+    expect(meets).toContain('if (hw != target_w[i]) return hw < target_w[i];');
+    expect(meets).toContain('return true;  // exactly equal counts as a share');
+    expect(HOST).toContain('const uint8_t *t = ctx->target + i * 4;');
+    expect(HOST).toContain('test.target_w[i] = ((uint32_t)t[0] << 24) | ((uint32_t)t[1] << 16) |');
+    expect(HOST).toContain('((uint32_t)t[2] << 8) | (uint32_t)t[3];');
+  });
+
+  // The folds test only the top word for every region, and run the full
+  // compare on the few that pass. Each top-word test computes that word itself,
+  // so each has to pick the same word: output word 7 (s7 ^ s15 inside the
+  // compression), or word 0 byte-reversed under hash_big_endian.
+  test('every top-word test takes the word the full compare starts with', () => {
+    const sites = [
+      ['uint32_t pearl_transcript_msw(', 'hash_big_endian ? pearl_bswap32(out16[0]) : out16[7]'],
+      ['uint32_t pearl_hp_msw(', 'hbe ? pearl_bswap32(s[0] ^ s[8]) : (s[7] ^ s[15])'],
+      // A lane pair splits the state by columns: half 0 holds s0 and s8, half 1
+      // holds s7 and s15, and the caller reads the half that has the word.
+      ['uint32_t pearl_hp_msw_pair(', 'hbe ? pearl_bswap32(A[0] ^ C[0]) : (B[1] ^ Dd[1])'],
+      ['void pearl_tall_hash80(', 'test.hash_big_endian ? pearl_bswap32(v[0] ^ v[8]) : (v[7] ^ v[15])'],
+    ];
+    for (const [signature, choice] of sites) expect(body(KERNEL, signature)).toContain(choice);
+    expect(KERNEL).toContain('hh == (test.hash_big_endian ? 0u : 1u) && w2 <= test.target_w[0]');
+    // These and pearl_hash_word_msf's are the only places that pick the word.
+    // A new one has to be added above.
+    expect(count(KERNEL, '? pearl_bswap32(')).toBe(sites.length + 1);
+    expect(count(FOLD_BD, 'pearl_bswap32(')).toBe(0);
+    // And each test passes a tie on to the full compare: it rejects only a top
+    // word greater than the target's.
+    for (const src of [KERNEL, FOLD_BD]) {
+      const uses = count(src, 'test.target_w[0]');
+      expect(uses).toBeGreaterThan(0);
+      expect(count(src, '> test.target_w[0]) return;') + count(src, '<= test.target_w[0]) record('))
+        .toBe(uses);
+    }
+  });
+
+  // The order pinned above, transcribed: hash bytes as little-endian words,
+  // compared from word 7 against the target's big-endian words.
+  function deviceMeets(hash, target) {
+    const t = Buffer.from(target.toString(16).padStart(64, '0'), 'hex');
+    for (let i = 0; i < 8; i++) {
+      const hw = hash.readUInt32LE(4 * (7 - i));
+      const tw = t.readUInt32BE(4 * i);
+      if (hw !== tw) return hw < tw;
+    }
+    return true;
+  }
+
+  // Deterministic, so a failure reproduces.
+  function bytes(seed) {
+    return crypto.createHash('sha256').update(String(seed)).digest();
+  }
+
+  function asNumber(hash) {
+    let v = 0n;
+    for (let i = 31; i >= 0; i--) v = (v << 8n) | BigInt(hash[i]);
+    return v;
+  }
+
+  test('that order is the one meetsTarget uses', () => {
+    const top = (1n << 256n) - 1n;
+    let checked = 0;
+    for (let s = 0; s < 200; s++) {
+      const hash = bytes('hash ' + s);
+      const h = asNumber(hash);
+      // Targets around the hash, so every word position decides some case.
+      const targets = [h, h - 1n, h + 1n, asNumber(bytes('target ' + s))];
+      for (let w = 0; w < 8; w++) targets.push(h ^ (1n << BigInt(32 * w + (s % 32))));
+      for (const target of targets) {
+        if (target < 0n || target > top) continue;
+        expect(deviceMeets(hash, target)).toBe(meetsTarget(hash, target));
+        // The top-word test may only reject a hash the full compare rejects.
+        const msw = hash.readUInt32LE(28);
+        const tw0 = Number(target >> 224n);
+        if (msw > tw0) expect(meetsTarget(hash, target)).toBe(false);
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThan(2000);
   });
 });
 
