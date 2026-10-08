@@ -80,6 +80,21 @@ that pool are gone. An old AlphaPool region id (`us1`, `eu1`, `eu2`, `ru1`,
 `sg1`, `hk1`, `in1`), in saved settings or passed to the CLI, maps to the
 nearest HeroMiners region.
 
+### When the pool's name won't resolve
+
+Both shells look up the pool's name with the system resolver first. If that
+fails, they try the computer's DNS servers directly (skipping the system's
+resolver and its cache), then public DNS (1.1.1.1, 8.8.8.8), then the last
+address that worked, saved in `pool-addresses.json` beside the node identity.
+The log names the fallback used:
+
+```
+could not look up us2.pearl.herominers.com (ENOENT); using 203.0.113.7 from the last address that worked
+```
+
+While the pool connection is down, the rig reports 0 TH/s to the network
+board, so the board agrees with the pool about whether the rig is mining.
+
 ### Which GPUs it mines on
 
 **Every card the rig has**, one mining core each, and each names itself in the

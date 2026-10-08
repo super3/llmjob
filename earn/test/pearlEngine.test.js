@@ -105,6 +105,24 @@ describe('PearlEngine — the MinerManager surface', () => {
   });
 });
 
+// The network board reports no hashrate while this is false (see offPool), so
+// it must be true only while the pool has accepted the login on the connection
+// that is open now.
+describe('PearlEngine — whether the pool is connected', () => {
+  test('false before a start, until the login is accepted, and after a drop', () => {
+    const b = boot();
+    expect(b.e.poolConnected()).toBe(false);
+    b.e.start({ address: ADDR, worker: 'rig01', endpoint: 'us.pearl.herominers.com:1200' });
+    b.sock.emit('connect');
+    expect(b.e.poolConnected()).toBe(false);
+    b.sock.emit('data', JSON.stringify({ id: 1, result: true, error: null }) + '\n');
+    expect(b.e.poolConnected()).toBe(true);
+    b.sock.emit('close');
+    expect(b.e.poolConnected()).toBe(false);
+    b.e.stop();
+  });
+});
+
 describe('PearlEngine — the events the UI actually reads', () => {
   test('announces the card once work arrives, not merely on connect', () => {
     const { sock, events } = started();

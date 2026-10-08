@@ -40,6 +40,7 @@ jest.mock('../src/main/io', () => ({
   extractEnginePackage: jest.fn(),
 }));
 jest.mock('../src/main/nodeStore', () => ({
+  nodePath: jest.fn(() => '/tmp/store/node.json'),
   loadNode: jest.fn(),
   saveNode: jest.fn(),
   getOrCreateNode: jest.fn(),
@@ -69,6 +70,7 @@ jest.mock('../src/main/pearlEngine', () => {
       });
       this.stop = jest.fn();
       this.isRunning = jest.fn(() => true);
+      this.poolConnected = jest.fn(() => true);
       PearlEngine.instances.push(this);
     }
   }
@@ -640,7 +642,61 @@ describe('mining', () => {
     await settle();
     m.net.connect.mockClear();
     m.PearlEngine.instances[0].opts.connect('pool.example', 1200);
-    expect(m.net.connect).toHaveBeenCalledWith(1200, 'pool.example');
+    expect(m.net.connect).toHaveBeenCalledWith({ port: 1200, host: 'pool.example', lookup: expect.any(Function) });
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await p;
+  });
+
+  // The GPU keeps working on its last job while the pool connection is being
+  // reopened, but the pool gets nothing, so neither should the board.
+  test('reports no hashrate to the board while the pool is not connected', async () => {
+    const m = load();
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+    await settle();
+    const miner = m.PearlEngine.instances[0];
+    miner.emit('event', { type: 'status', hashrate: 120 });
+    const reporter = intervalFor(NETWORK.reportIntervalMs);
+
+    m.probe.postMinerReport.mockClear();
+    await reporter.fn();
+    expect(m.probe.postMinerReport.mock.calls.map((c) => c[0].hashrate)).toEqual([120]);
+
+    miner.poolConnected.mockReturnValue(false);
+    m.probe.postMinerReport.mockClear();
+    await reporter.fn();
+    expect(m.probe.postMinerReport.mock.calls.map((c) => c[0].hashrate)).toEqual([0]);
+
+    miner.emit('stopped', 0);
+    await p;
+  });
+
+  // A failed system lookup falls back (shared/poolLookup), and the CLI says
+  // which address it used.
+  test('finds the pool by a fallback when the system lookup fails, and says so', async () => {
+    const m = load();
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+    await settle();
+    m.net.connect.mockClear();
+    m.PearlEngine.instances[0].opts.connect('pool.example', 1200);
+    const { lookup } = m.net.connect.mock.calls[0][0];
+    const dns = require('dns');
+    const fail = jest.spyOn(dns, 'lookup').mockImplementation((h, o, cb) => cb(Object.assign(new Error('no data'), { code: 'ENOENT' })));
+    const resolver = jest.spyOn(dns.promises, 'Resolver').mockImplementation(() => ({
+      setServers: jest.fn(),
+      resolve4: jest.fn(() => Promise.resolve(['203.0.113.7'])),
+    }));
+    const write = jest.spyOn(require('fs'), 'writeFileSync').mockImplementation(() => {});
+    const mkdir = jest.spyOn(require('fs'), 'mkdirSync').mockImplementation(() => {});
+    try {
+      const got = await new Promise((resolve) => lookup('pool.example', {}, (err, address) => resolve({ err, address })));
+      expect(got).toEqual({ err: null, address: '203.0.113.7' });
+      expect(allOut()).toContain('could not look up pool.example (ENOENT); using 203.0.113.7 from DNS');
+    } finally {
+      fail.mockRestore();
+      resolver.mockRestore();
+      write.mockRestore();
+      mkdir.mockRestore();
+    }
     m.PearlEngine.instances[0].emit('stopped', 0);
     await p;
   });

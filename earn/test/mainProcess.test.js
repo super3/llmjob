@@ -185,6 +185,7 @@ jest.mock('../src/main/pearlEngine', () => {
       });
       this.stop = jest.fn(() => { this._running = false; });
       this.isRunning = jest.fn(() => this._running);
+      this.poolConnected = jest.fn(() => true);
       this.releaseMemClocks = jest.fn();
       PearlEngine.instances.push(this);
     }
@@ -2543,7 +2544,71 @@ describe('the mining engine', () => {
     const net = require('net');
     net.connect.mockClear();
     ctx.PearlEngine.instances[0].opts.connect('pool.example', 1200);
-    expect(net.connect).toHaveBeenCalledWith(1200, 'pool.example');
+    expect(net.connect).toHaveBeenCalledWith({ port: 1200, host: 'pool.example', lookup: expect.any(Function) });
+  });
+
+  // The GPU keeps working on its last job while the pool connection is being
+  // reopened, but the pool gets nothing, so neither should the board.
+  it('reports no hashrate to the board while the pool is not connected', async () => {
+    const ctx = await boot();
+    ctx.PearlEngine.instances.length = 0;
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    const miner = ctx.PearlEngine.instances[0];
+    miner.emit('event', { type: 'status', hashrate: 120 });
+    const reporter = ctx.interval(ctx.config.NETWORK.reportIntervalMs);
+
+    ctx.probe.postMinerReport.mockClear();
+    reporter.fn();
+    await flush();
+    expect(ctx.probe.postMinerReport.mock.calls.map((c) => c[0].hashrate)).toEqual([120]);
+
+    miner.poolConnected.mockReturnValue(false);
+    ctx.probe.postMinerReport.mockClear();
+    reporter.fn();
+    await flush();
+    expect(ctx.probe.postMinerReport.mock.calls.map((c) => c[0].hashrate)).toEqual([0]);
+  });
+
+  // A failed system lookup falls back (shared/poolLookup); the app says which
+  // address it used, and keeps the address beside the node identity for next
+  // time. One lookup serves every start.
+  it('finds the pool by a fallback when the system lookup fails, and says so', async () => {
+    const ctx = await boot();
+    ctx.PearlEngine.instances.length = 0;
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    const net = require('net');
+    const dns = require('dns');
+    net.connect.mockClear();
+    ctx.PearlEngine.instances[0].opts.connect('pool.example', 1200);
+    const { lookup } = net.connect.mock.calls[0][0];
+
+    const fail = jest.spyOn(dns, 'lookup').mockImplementation((h, o, cb) => cb(Object.assign(new Error('no data'), { code: 'ENOENT' })));
+    const resolver = jest.spyOn(dns.promises, 'Resolver').mockImplementation(() => ({
+      setServers: jest.fn(),
+      resolve4: jest.fn(() => Promise.resolve(['203.0.113.7'])),
+    }));
+    try {
+      const got = await new Promise((resolve) => lookup('pool.example', {}, (err, address) => resolve({ err, address })));
+      expect(got).toEqual({ err: null, address: '203.0.113.7' });
+      expect(ctx.sent('miner:log')).toContainEqual({
+        level: 'warn',
+        line: 'could not look up pool.example (ENOENT); using 203.0.113.7 from DNS',
+      });
+      expect(ctx.fs.writeFileSync).toHaveBeenCalledWith(path.join('/tmp/store', 'pool-addresses.json'), expect.any(String));
+    } finally {
+      fail.mockRestore();
+      resolver.mockRestore();
+    }
+
+    // The next start reuses the same lookup and its saved addresses.
+    ctx.emit('miner:stop');
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    net.connect.mockClear();
+    ctx.PearlEngine.instances[1].opts.connect('pool.example', 1200);
+    expect(net.connect.mock.calls[0][0].lookup).toBe(lookup);
   });
 
   // Loading the addon is the one thing here that runs before the try/catch

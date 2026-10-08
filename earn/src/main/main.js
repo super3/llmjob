@@ -18,6 +18,7 @@ const https = require('https');
 const { autoUpdater } = require('electron-updater');
 
 const net = require('net');
+const dns = require('dns');
 const { PearlEngine } = require('./pearlEngine');
 const { coreFactory } = require('./pearlCore');
 const { LlmManager } = require('./llmManager');
@@ -30,7 +31,8 @@ const {
 const probe = require('./probe');
 const nodeStore = require('./nodeStore');
 const settingsStore = require('../shared/settingsStore');
-const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
+const { initStats, applyEvent, snapshot, offPool } = require('../shared/miningStats');
+const { makePoolLookup, fileCache } = require('../shared/poolLookup');
 const {
   REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE, resolveEndpoint, migrateRegion,
 } = require('../shared/config');
@@ -322,6 +324,21 @@ function extractLlamaZipWin(zipPath, dest) {
   });
 }
 
+// How the pool's name becomes an address: the system lookup, then fallbacks
+// when it fails (see shared/poolLookup). One for the life of the app, with the
+// last good addresses kept beside the node identity, shared with the CLI.
+let poolLookupFn = null;
+function poolLookup() {
+  if (!poolLookupFn) {
+    poolLookupFn = makePoolLookup({
+      dns,
+      cache: fileCache(path.join(path.dirname(nodeStore.nodePath()), 'pool-addresses.json'), fs, path),
+      log: (line) => send('miner:log', { level: 'warn', line }),
+    });
+  }
+  return poolLookupFn;
+}
+
 // `llmCoRuns` is runPlan's plan.llm: whether a local LLM will share the cards
 // for this run. It decides the memory clock plan below.
 async function startMining(settings, llmCoRuns) {
@@ -353,7 +370,10 @@ async function startMining(settings, llmCoRuns) {
   // Publish live status to the network page's board while mining, including live
   // GPU VRAM (used/total) so the board shows headroom for co-running LLMs.
   const report = async () => {
-    const snap = snapshot(stats, Date.now());
+    // While the pool connection is down, the board hears no hashrate: the pool
+    // is getting none, and the board should agree with it.
+    const live = snapshot(stats, Date.now());
+    const snap = miner && !miner.poolConnected() ? offPool(live) : live;
     const gpuVram = await detectGpusVram();
     // Tag the cards serving the local LLM so the board shows which model each GPU
     // runs; null when the fleet isn't up (mining only) → blank on the board.
@@ -429,7 +449,7 @@ async function startMining(settings, llmCoRuns) {
   if (memPlan.reason) send('miner:log', { level: memPlan.dropped ? 'warn' : 'info', line: memPlan.reason });
 
   miner = new PearlEngine({
-    connect: (host, port) => net.connect(port, host),
+    connect: (host, port) => net.connect({ port, host, lookup: poolLookup() }),
     createCore: coreFactory({
       resourcesPath: process.resourcesPath,
       gpus,

@@ -166,4 +166,15 @@ function meterRead(meter, nowMs) {
   return mean;
 }
 
-module.exports = { MAX_POINTS, initStats, applyEvent, snapshot, createRateMeter, meterSample, meterRead };
+// A snapshot as the pool sees it while the connection to the pool is down: no
+// hashrate, because no share can reach it. The GPU may still be working on its
+// last job, but the network board must not show a rig as mining that the pool
+// shows as offline. Shares and everything else stay as they are.
+function offPool(snap) {
+  return Object.assign({}, snap, {
+    total: 0,
+    gpus: snap.gpus.map((g) => Object.assign({}, g, { hashrate: 0 })),
+  });
+}
+
+module.exports = { MAX_POINTS, initStats, applyEvent, snapshot, offPool, createRateMeter, meterSample, meterRead };
