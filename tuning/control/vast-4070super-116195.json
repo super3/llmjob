@@ -5,6 +5,7 @@
     "base": {"ref": "da82d3e8afe2665109f7ff054ca743812480d2cd", "defines": ""},
     "band32": {"ref": "da82d3e8afe2665109f7ff054ca743812480d2cd", "defines": "-DPEARL_TALL_BAND=32u"},
     "band64": {"ref": "da82d3e8afe2665109f7ff054ca743812480d2cd", "defines": "-DPEARL_TALL_BAND=64u"},
-    "b64": {"ref": "da82d3e8afe2665109f7ff054ca743812480d2cd", "defines": "-DPEARL_TALL_BAND=64u"}
+    "b64": {"ref": "da82d3e8afe2665109f7ff054ca743812480d2cd", "defines": "-DPEARL_TALL_BAND=64u"},
+    "b32": {"ref": "da82d3e8afe2665109f7ff054ca743812480d2cd", "defines": "-DPEARL_TALL_BAND=32u"}
   }
 }
