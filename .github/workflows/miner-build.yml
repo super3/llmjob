@@ -176,13 +176,15 @@ jobs:
       # step above staged, so a rig gets the same binary and cores the release
       # publishes. The listing in the log is the tarball's layout.
       #
-      # Allowed to fail: a packaging problem must not stop the publish step
-      # below from uploading the CLI binary, which every self-updating rig
-      # needs. That step warns when the package is missing.
+      # Allowed to fail on a publish run only: there, a packaging problem must
+      # not stop the publish step below from uploading the CLI binary, which
+      # every self-updating rig needs, and that step warns when the package is
+      # missing. On a PR or a push to main nothing would warn, so a break fails
+      # the job and is caught before a release.
       - name: Package HiveOS custom miner (Linux)
         id: hiveos
         if: runner.os == 'Linux'
-        continue-on-error: true
+        continue-on-error: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.publish == true }}
         run: |
           set -euo pipefail
           npm run dist:hiveos
@@ -245,7 +247,17 @@ jobs:
                 --clobber --repo "$GITHUB_REPOSITORY" \
               || hive_warn "uploading the HiveOS package to v$VERSION failed"
           else
-            hive_warn "no HiveOS package was built, so v$VERSION ships without llmjob-earn-$VERSION.tar.gz. See the 'Package HiveOS custom miner' step."
+            # A re-run or manual publish over this version can find the tarballs
+            # an earlier run uploaded. They stay: deleting them would break new
+            # installs from a flight sheet that already names this URL. But they
+            # hold that run's binary and cores, so the warning says so.
+            assets=$(gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json assets \
+              --jq '.assets[].name' 2>/dev/null || true)
+            if grep -qxF -- "llmjob-earn-$VERSION.tar.gz" <<< "$assets"; then
+              hive_warn "no HiveOS package was built this run. The llmjob-earn-$VERSION.tar.gz already on v$VERSION is from an earlier run and holds that run's binary and cores, not the ones just uploaded. See the 'Package HiveOS custom miner' step."
+            else
+              hive_warn "no HiveOS package was built, so v$VERSION ships without llmjob-earn-$VERSION.tar.gz. See the 'Package HiveOS custom miner' step."
+            fi
           fi
 
       # electron-builder publishes the release with a BLANK body and a bare

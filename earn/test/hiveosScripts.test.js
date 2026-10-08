@@ -6,8 +6,8 @@
 //   h-stats.sh   sourced, with the agent's $gpu_stats and $gpu_detect_json set
 //   h-run.sh     executed, then stopped with Ctrl+C the way `miner stop` does
 //
-// They are HiveOS (Linux) scripts and need bash and jq. Without them, or on
-// Windows, the suite is skipped and its name says why.
+// They are HiveOS scripts, so they need Linux (h-stats.sh uses GNU stat), bash
+// and jq. Without any of them the suite is skipped and its name says why.
 
 const fs = require('fs');
 const os = require('os');
@@ -23,7 +23,7 @@ const MDL = 'mdl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
 function has(cmd) {
   return spawnSync(cmd, ['--version'], { stdio: 'ignore' }).status === 0;
 }
-const skipReason = process.platform === 'win32' ? 'HiveOS scripts do not run on Windows'
+const skipReason = process.platform !== 'linux' ? 'HiveOS scripts run on Linux only'
   : !has('bash') ? 'bash not found'
     : !has('jq') ? 'jq not found' : null;
 const suite = (name, fn) => (skipReason

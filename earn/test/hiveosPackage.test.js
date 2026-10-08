@@ -6,12 +6,15 @@
 // the miner name by splitting a `<name>-<version>.tar.gz` install URL, then
 // looks for `<name>/h-manifest.conf` in the archive — so publishing it as
 // llmjob-earn-hiveos-<version>.tar.gz made every install fail with
-// "No llmjob-earn-hiveos/h-manifest.conf". These are cheap text assertions
-// because the packaging itself needs a built binary and a tar. The scripts
-// themselves are run for real in hiveosScripts.test.js.
+// "No llmjob-earn-hiveos/h-manifest.conf". Most of these are text assertions.
+// "build-hiveos.mjs, run for real" below also runs the script on Linux, with
+// stand-in binary and core files, so a break shows up in `npm test` and not
+// first on a release run. The hook scripts are run in hiveosScripts.test.js.
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const { spawnSync } = require('child_process');
 const { parseCliArgs } = require('../src/shared/cliArgs');
 
 const earnRoot = path.join(__dirname, '..');
@@ -69,6 +72,91 @@ describe('hiveos package naming', () => {
     // process loads.
     expect(buildSrc).toContain("chmodSync(join(pkgDir, 'pearl_core.node'), 0o644)");
     expect(buildSrc).toContain("chmodSync(join(pkgDir, 'pearl_core_cu13.node'), 0o644)");
+  });
+});
+
+// Runs a copy of build-hiveos.mjs in a temp dir laid out like earn/: its own
+// package.json, the real hiveos/ files, and dist/ holding stand-ins for the CLI
+// binary and cores, left 0666 the way the CI artifact arrives. Needs Linux for
+// tar and file modes.
+const tarOk = process.platform === 'linux'
+  && spawnSync('tar', ['--version'], { stdio: 'ignore' }).status === 0;
+(tarOk ? describe : describe.skip)('build-hiveos.mjs, run for real', () => {
+  let tmp;
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hiveos-build-'));
+    fs.mkdirSync(path.join(tmp, 'scripts'));
+    fs.mkdirSync(path.join(tmp, 'hiveos'));
+    fs.mkdirSync(path.join(tmp, 'dist'));
+    fs.copyFileSync(path.join(earnRoot, 'scripts', 'build-hiveos.mjs'),
+      path.join(tmp, 'scripts', 'build-hiveos.mjs'));
+    for (const f of ['h-config.sh', 'h-run.sh', 'h-stats.sh', 'h-manifest.conf']) {
+      fs.copyFileSync(path.join(earnRoot, 'hiveos', f), path.join(tmp, 'hiveos', f));
+    }
+    for (const f of ['llmjob-earn-cli-linux', 'pearl_core.node', 'pearl_core_cu13.node']) {
+      const p = path.join(tmp, 'dist', f);
+      fs.writeFileSync(p, 'stand-in ' + f + '\n');
+      fs.chmodSync(p, 0o666);
+    }
+  });
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function build(version) {
+    fs.writeFileSync(path.join(tmp, 'package.json'), JSON.stringify({ version }));
+    return spawnSync(process.execPath, [path.join(tmp, 'scripts', 'build-hiveos.mjs')],
+      { encoding: 'utf8' });
+  }
+  function tarballs() {
+    return fs.readdirSync(path.join(tmp, 'dist')).filter((f) => f.endsWith('.tar.gz')).sort();
+  }
+
+  test('packs llmjob-earn/ with the right files, modes and version', () => {
+    const r = build('9.8.7');
+    expect(r.stderr).toBe('');
+    expect(r.status).toBe(0);
+    expect(tarballs()).toEqual(['llmjob-earn-9.8.7.tar.gz', 'llmjob-earn-hiveos.tar.gz']);
+
+    const out = path.join(tmp, 'dist', 'llmjob-earn-9.8.7.tar.gz');
+    const list = spawnSync('tar', ['-tvzf', out], { encoding: 'utf8' }).stdout;
+    const modes = {};
+    for (const line of list.trim().split('\n')) {
+      const cols = line.trim().split(/\s+/);
+      modes[cols[cols.length - 1]] = cols[0];
+    }
+    expect(modes).toEqual({
+      'llmjob-earn/': expect.stringMatching(/^d/),
+      'llmjob-earn/h-config.sh': '-rwxr-xr-x',
+      'llmjob-earn/h-run.sh': '-rwxr-xr-x',
+      'llmjob-earn/h-stats.sh': '-rwxr-xr-x',
+      'llmjob-earn/h-manifest.conf': '-rw-r--r--',
+      'llmjob-earn/llmjob-earn-cli-linux': '-rwxr-xr-x',
+      'llmjob-earn/pearl_core.node': '-rw-r--r--',
+      'llmjob-earn/pearl_core_cu13.node': '-rw-r--r--',
+    });
+
+    const manifest = spawnSync('tar', ['-xzOf', out, 'llmjob-earn/h-manifest.conf'],
+      { encoding: 'utf8' }).stdout;
+    expect(manifest).toMatch(/^CUSTOM_VERSION=9\.8\.7$/m);
+    expect(manifest).toMatch(/^CUSTOM_NAME=llmjob-earn$/m);
+    expect(fs.readFileSync(path.join(tmp, 'dist', 'llmjob-earn-hiveos.tar.gz')))
+      .toEqual(fs.readFileSync(out));
+  });
+
+  test('a version with a dash builds nothing and says why', () => {
+    const r = build('9.8.7-rc.1');
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("contains '-'");
+    expect(tarballs()).toEqual([]);
+  });
+
+  test('a missing pearl_core.node builds nothing', () => {
+    fs.rmSync(path.join(tmp, 'dist', 'pearl_core.node'));
+    const r = build('9.8.7');
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('could not mine');
+    expect(tarballs()).toEqual([]);
   });
 });
 
