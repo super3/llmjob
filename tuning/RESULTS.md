@@ -26,6 +26,7 @@ agents never edit the same lines. Verified gains are copied here.
 |---|---|---|---|---|---|
 | Oct 8 09:51-10:00 | RTX 4070 Super (160 W, 48 MB L2) | US 116195 | Build with `-DPEARL_ADA_COL_BATCH=1024` (1024 column offsets a launch, not 2048) | g2 116.67 TH/s vs g0/g1 release 109.72, same minutes | **+2.5 to +3.1%**, SM clock +60-75 MHz at the same 160 W, 0 invalid. Verified, rolled out to the box 10:02 |
 | Oct 8 09:51-10:00 | RTX 4070 Super (160 W, 48 MB L2) | US 116195 | Build with `-DPEARL_TALL_BAND=64` (band of 64 row groups, not 16) | g3 111.26 vs 109.73 | +1.9 to +2.2%, 0 invalid. Smaller than col_batch 1024, and the two don't fit the L2 together, so not rolled out |
+| Oct 8 10:05-10:15 | RTX 4070 Super (160 W, 48 MB L2) | US 116195 | Build with `-DPEARL_ADA_COL_BATCH=512` | g0 109.07 vs g1-g3 on col_batch 1024, 114.10 | 1.4% behind 1024 (+0.9% over the release). 1024 is the width for 48 MB. The rollout held: g1-g3 +2.0 / +2.6 / +2.7% over their own release rates |
 
 ## What we've learned
 
@@ -47,7 +48,12 @@ agents never edit the same lines. Verified gains are copied here.
   Super) B' comes back from DRAM every band, and at the power cap those DRAM watts come out
   of the SM clock. col_batch 1024 (32 MB) keeps it in the L2: +2.5 to +3.1% on 116195, with
   the SM clock 60-75 MHz higher at the same 160 W. Band 64 (fewer bands, so fewer B' re-reads)
-  gave +2%. Same mechanism as Blackwell's `PEARL_TMA_L2_SHARE` rule.
+  gave +2%. 512 was 1.4% behind 1024: narrower than the L2 needs costs more launches, each
+  re-reading all 256 MB of A'. Same mechanism as Blackwell's `PEARL_TMA_L2_SHARE` rule.
+  Commit 29ac5f5 makes it a rule in `pearl_host.cu` (sm_89 only): halve col_batch while one
+  launch's B' plus a band of A' is more than the L2. 72 MB and up (4090) keep 2048; 48-64 MB
+  (4070 Super, 4070 Ti, 4080) get 1024; 24-36 MB (4060, 4060 Ti, 4070) get 512, which is
+  not measured yet.
 - **Memory clock locks don't work on Vast.** `--mine-mem-clock 5001` left the memory clock
   at the driver's value on the SA L40S (149491), the Japan 4090 (151594) and the Maryland
   5090 (151626): the containers can't set clocks.
