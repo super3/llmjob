@@ -54,17 +54,23 @@ else
   touch $D/setup
 fi
 
-# Build tools, in the background and at low priority so mining is not slowed.
+# Build tools, in the background and at low priority so mining is not slowed. A failed try
+# (NVIDIA's package server unreachable, say) is tried again every 10 minutes, up to 6 times.
 if [ ! -f $D/tools ]; then
-  ( nice -n 19 bash -c "
-      dpkg --configure -a > $D/tools.log 2>&1;
-      apt-get install -y --no-install-recommends xz-utils python3 make g++ cuda-nvcc-12-8 cuda-cudart-dev-12-8 cuda-cccl-12-8 >> $D/tools.log 2>&1 &&
-      curl -fsSL https://nodejs.org/dist/$NODE_VER/node-$NODE_VER-linux-x64.tar.xz | tar -xJ -C /opt &&
-      git clone -q --depth 50 -b $BRANCH https://github.com/$REPO.git $D/src >> $D/tools.log 2>&1 &&
-      mkdir -p $D/gyp && cd $D/gyp && echo '{}' > package.json &&
-      npm install --no-save --ignore-scripts --no-audit --no-fund node-addon-api node-gyp >> $D/tools.log 2>&1 &&
-      ./node_modules/.bin/node-gyp install >> $D/tools.log 2>&1 && touch $D/tools && echo \"[build] tools ready \$(date -u +%T)\" ||
-      echo \"[build] tools FAIL: \$(tail -2 $D/tools.log | tr '\n' ' ' | cut -c1-200)\"" ) &
+  ( for try in 1 2 3 4 5 6; do
+      [ $try = 1 ] || sleep 600
+      nice -n 19 bash -c "
+        dpkg --configure -a > $D/tools.log 2>&1;
+        [ $try = 1 ] || apt-get update >> $D/tools.log 2>&1;
+        apt-get install -y --no-install-recommends xz-utils python3 make g++ cuda-nvcc-12-8 cuda-cudart-dev-12-8 cuda-cccl-12-8 >> $D/tools.log 2>&1 &&
+        curl -fsSL https://nodejs.org/dist/$NODE_VER/node-$NODE_VER-linux-x64.tar.xz | tar -xJ -C /opt &&
+        rm -rf $D/src && git clone -q --depth 50 -b $BRANCH https://github.com/$REPO.git $D/src >> $D/tools.log 2>&1 &&
+        mkdir -p $D/gyp && cd $D/gyp && echo '{}' > package.json &&
+        npm install --no-save --ignore-scripts --no-audit --no-fund node-addon-api node-gyp >> $D/tools.log 2>&1 &&
+        ./node_modules/.bin/node-gyp install >> $D/tools.log 2>&1" &&
+        { touch $D/tools; echo "[build] tools ready $(date -u +%T)"; break; }
+      echo "[build] tools FAIL (try $try of 6): $(tail -2 $D/tools.log | tr '\n' ' ' | cut -c1-200)"
+    done ) &
 fi
 
 N=$(nvidia-smi -L | wc -l)
