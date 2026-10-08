@@ -87,7 +87,14 @@ agents never edit the same lines. Verified gains are copied here.
   That box's four cards sat near 2242 MHz at 449-477 W of a 575 W limit, so something other
   than power held the clock. There, col_batch 1024 and the serpentine walk (CUDA 13.3 builds)
   ran level (+0.01%, +0.03%) over a short window of 2-4 readings before the box was outbid.
-  A 5090 held at its power cap (400-450 W) is where those two could still help. Not tested yet.
+- **RTX 5090: col_batch 1024 doesn't help, even at the power cap.** On Belgium 68333 (driver
+  570, both cards at the 575 W cap, so CUDA 12.8 builds against the release's cu12 core),
+  `-DPEARL_TMA_COL_BATCH=1024u` on g1 ran level with g0 on the release: ratio 1.0658 over 10
+  minutes against 1.0668 before (1.0658 over the last 14 minutes), same 2505 MHz at the same
+  watts, 0 invalid. At 2048 a launch's 64 MB of B' already fits the 96 MB L2, so there is no
+  DRAM traffic to save; the 4070 Super's gain came from a 48 MB L2. The 500 W Belgium box
+  (55053) agreed over 2 readings (-0.1 to -0.2%). The serpentine walk got no full window on a
+  power-capped 5090 (boxes outbid); it was level wherever it ran.
 - **RTX 3090 (Ampere): keep operand fill 48.** On the Bulgaria 8x 3090 box (49870, 350 W cap,
   driver 570, so the release runs its CUDA 12.8 core), fill 63 ran level (+0.1 to +0.3% against
   control over the same 10 minutes) and fill 32 slightly behind (-0.3 to -0.45%). Same order as
