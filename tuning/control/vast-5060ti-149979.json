@@ -1,10 +1,5 @@
 {
   "default": {"core": "release", "flags": "", "env": {}},
-  "gpus": {"1": {"core": "build:f63c13"}},
-  "builds": {
-    "jit": {"ref": "c835a9058654ebecce822baeec2e0093c347ffb9",
-            "defines": "-DPEARL_FORCE_PTX_JIT=1 -gencode arch=compute_120,code=compute_120"},
-    "f63c13": {"ref": "93c676ff6e8ebf6852eaa5236c5e6e5fa53cfb3d", "cuda": "13",
-               "defines": "-DPEARL_OPERAND_FILL=63"}
-  }
+  "gpus": {},
+  "builds": {}
 }
