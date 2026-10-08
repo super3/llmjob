@@ -168,18 +168,28 @@ all-Blackwell rig with a new enough driver (`src/shared/coreVariant.js`) and
 keeps `pearl_core.node` for everything else.
 
 Every entry also compiles `pearl_kernel.cu` with `-Xptxas -v` and reads what
-ptxas said about both fold kernels (`pearl_tile_fold_tall`,
-`pearl_tile_fold_wmma`) on every architecture. The tall fold sits at 253–255
+ptxas said, on every architecture, about the tall fold, the wmma fold, Hopper's
+wgmma fold (`pearl_tile_fold_hopper`, with a body only on sm_90a) and the
+transcript hash (`pearl_tall_hash80`). The tall fold sits at 253–255
 registers; a compiler or gate change that spills still compiles, links and
 ships, and nothing else in CI can see it. A spill fails the job on every
-architecture in that matrix entry's `spill_fail_archs`. The check's first run
-(2026-10-02) had both folds at 0 spill on every architecture either toolkit
-builds: the tall fold at 253 registers on sm_86 and sm_89 and 254–255 on
-sm_120, the wmma fold at 235, 235 and 128. So the 12.8 entries fail on all
-three. The CUDA 13 entries fail on sm_120 only: their sm_89 half is never
-picked automatically, and a failed CUDA 13 job ships no `pearl_core_cu13.node`,
-which would cost every all-Blackwell rig the +3.2%. A spill on sm_89 there is a
-warning in the log. Any architecture added later starts as a warning too.
+architecture in that matrix entry's `spill_fail_archs`:
+
+- **The 12.8 entries fail on sm_86, sm_89, sm_90a and sm_120.** The check's
+  first run (2026-10-02) had every fold at 0 spill on sm_86, sm_89 and sm_120.
+  sm_90a went in when it replaced sm_90 (2026-10-08): run 37718450743 built
+  every sm_90a fold at 0 spill, the wgmma fold at 163 registers.
+- **The CUDA 13 entries fail on sm_120 only.** Their sm_89 half is never picked
+  automatically, and a failed CUDA 13 job ships no `pearl_core_cu13.node`,
+  which would cost every all-Blackwell rig the +3.2%. A spill on sm_89 there is
+  a warning in the log.
+- **Any other architecture is a warning:** sm_75, and sm_80 (GA100), which is
+  clean but not promoted yet. A newly added architecture warns until a run has
+  shown it clean.
+
+The tensor-map step also checks that the sm_90a wgmma fold has its body (its
+288-thread launch bound). A build that drops it still compiles and links, and
+Hopper cards would quietly mine on the slower cp.async fold.
 
 The CUDA 13 jobs are non-blocking: if they fail, the run still succeeds with a
 current 12.8 core and the release ships without the CUDA 13 one, with a warning.
@@ -198,7 +208,10 @@ the Server 2025 runner (exit `0xE0E1E1D9`) before reaching any of our source.
 The compile-and-link signal is platform independent, so Linux is the gate.
 
 `CUDA_PATH` is picked up automatically; override the arch for other cards
-(`sm_75` Turing, `sm_86` Ampere, `sm_89` Ada, `sm_120` Blackwell).
+(`sm_75` Turing, `sm_80` A100 / A800 / A30 / CMP 170HX, `sm_86` Ampere, `sm_89`
+Ada, `sm_90a` Hopper, `sm_120` Blackwell). Hopper has to be `sm_90a`, not
+`sm_90`: a plain sm_90 build compiles and links, but it has no wgmma fold, so
+it mines on the slower cp.async tall fold.
 
 The sm_86 build runs the Ada fold path: every tuning switch in
 `src/pearl_config.h` that tests for sm_89 (the persistent, eight-warp, tall

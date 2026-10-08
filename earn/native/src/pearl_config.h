@@ -383,8 +383,9 @@ typedef struct {
 // two is a measured difference between them. The host reads binaryVersion, which is
 // __CUDA_ARCH__ / 10.
 //
-// Hopper (sm_90: H100, H200) builds the same cp.async fold and takes the same host
-// rules, for now. Its SM still has the int8 m16n8k32 mma.sync, ldmatrix and cp.async,
+// Hopper (sm_90a: H100, H200) builds the same cp.async fold, as its fallback, and takes
+// the same host rules; it mines on the wgmma fold, pearl_tile_fold_hopper
+// (PEARL_HOPPER_WGMMA). Its SM still has the int8 m16n8k32 mma.sync, ldmatrix and cp.async,
 // and pearl_mbar_wait uses its try_wait. It is not Hopper's fast path: there mma.sync
 // reaches only part of the int8 rate wgmma does. A gate that names PEARL_HOPPER_ARCH
 // alone is a measured difference: so far only PEARL_AMPERE_PERSIST_ARCH, the A' slice.
@@ -792,8 +793,8 @@ typedef struct {
 #endif
 // The same test for the host, by the architecture number it reads back as
 // cudaFuncAttributes::binaryVersion (75, 80, 86, 89, 90, 120: the binary ships sm_75,
-// sm_80, sm_86, sm_89, sm_90 and sm_120 SASS and no PTX, so that is exactly the build
-// that runs).
+// sm_80, sm_86, sm_89, sm_90a and sm_120 SASS and no PTX, so that is exactly the build
+// that runs; sm_90a reads back as 90).
 // binaryVersion is __CUDA_ARCH__ / 10. Turing (75) has no tall fold.
 #define PEARL_TALL_ARCH(v) PEARL_TALL_BODY_ARCH((v) * 10)
 #define PEARL_TALL_TMA_ARCH(v) ((v) >= 120)

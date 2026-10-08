@@ -88,7 +88,9 @@ jobs:
             # wmma fold 235, 235 and 128. So all three fail on a spill. An
             # architecture added later starts as a warning until a run has
             # shown it clean too. sm_80 (GA100: A100, A800, A30, CMP 170HX),
-            # added 2026-10-07, is not in the list yet. sm_90a (Hopper: H100,
+            # added 2026-10-07, is still a warning: run 37737801086 built it
+            # clean too (tall fold 255, wmma fold 235, transcript hash 40), but
+            # it hasn't been promoted yet. sm_90a (Hopper: H100,
             # H200; it replaced plain sm_90 on 2026-10-08, so the release has
             # Hopper's wgmma fold) is: native core run 37718450743 built it
             # with every fold at 0 spill, the wgmma fold 163 registers, the
@@ -293,10 +295,11 @@ jobs:
       # (pearl_tile_fold_hopper, a body only on sm_90a) and for the transcript
       # hash kernel (pearl_tall_hash80, a body only on sm_80 and sm_90a), on
       # every architecture and prints one row each. A spill fails the job on
-      # the architectures in the entry's spill_fail_archs: every architecture
-      # the 12.8 entries build, since the check's first run showed them all
-      # clean, and sm_120 alone in the cu13 entries, whose sm_89 half nothing
-      # ships (see those entries). Any other architecture is a warning. A failed cu13 job uploads no
+      # the architectures in the entry's spill_fail_archs (the comment there
+      # says why each is in it): sm_86, sm_89, sm_90a and sm_120 in the 12.8
+      # entries, and sm_120 alone in the cu13 entries, whose sm_89 half nothing
+      # ships (see those entries). Any other architecture, sm_75 and sm_80
+      # included, is a warning. A failed cu13 job uploads no
       # pearl_core_cu13.node, and a failed ubuntu 12.8 job makes
       # miner-build.yml fall back to the previous run's core, which is the
       # right outcome for a fold that spills. Needs no GPU.
@@ -408,7 +411,7 @@ jobs:
         shell: bash
         run: |
           if ! command -v cuobjdump >/dev/null; then
-            echo "::error::cuobjdump is not on PATH, so the tall fold's parameters cannot be checked"
+            echo "::error::cuobjdump is not on PATH, so the tensor-map parameters cannot be checked"
             exit 1
           fi
           # tr: cuobjdump.exe writes CRLF, which would break every anchored match.
@@ -448,6 +451,22 @@ jobs:
             if [ "$n" != 2 ]; then
               echo "::error::expected $kernel's two 128-byte tensor-map parameters on $want, found $n"
               exit 1
+            fi
+            # The wgmma fold must also have its body. A build whose sm_90a pass
+            # leaves PEARL_HOPPER_WGMMA_BODY at 0 (compute_90 instead of
+            # compute_90a, say) still has the kernel and its two parameters, so
+            # everything above passes. But on a card the host then finds no
+            # 288-thread launch bound, and H100s and H200s quietly mine on the
+            # slower cp.async fold. Only the body carries that bound
+            # (EIATTR_MAX_THREADS 0x120 = PEARL_HOPPER_THREADS); change both together.
+            if [ "$kernel" = pearl_tile_fold_hopper ]; then
+              maxt=$(printf '%s\n' "$info" | grep -A2 'EIATTR_MAX_THREADS' \
+                | sed -n 's/.*Value:[[:space:]]*\(0x[0-9a-fA-F]*\).*/\1/p' | head -n 1 || true)
+              if [ "$maxt" != 0x120 ]; then
+                echo "::error::$kernel on $want has no 288-thread launch bound (EIATTR_MAX_THREADS: '${maxt:-none}'), so the build has no wgmma fold body; was sm_90a compiled from compute_90a? H100 and H200 cards would fall back to the cp.async fold"
+                exit 1
+              fi
+              echo "$want $kernel: launch bound $maxt (288 threads), so the wgmma fold body is in"
             fi
             bank=$(( 16#$base & 0xffff ))
             printf '%s %s: parameters start at c[0x0][0x%x]\n' "$want" "$kernel" "$bank"

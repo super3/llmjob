@@ -3,7 +3,7 @@
 # This is the fast path for kernel work: seconds instead of the ~4 minute
 # commit-push-CI-download round trip. It targets ONLY sm_89 (Ada, the RTX 4090
 # in this box) because that halves compile time and nothing else runs here.
-# CI still builds sm_75/86/89/120 for the shipped binary -- do not treat a green
+# CI still builds sm_75/80/86/89/90a/120 for the shipped binary -- do not treat a green
 # local build as a substitute for that.
 #
 #   powershell -ExecutionPolicy Bypass -File earn\native\build-local.ps1
