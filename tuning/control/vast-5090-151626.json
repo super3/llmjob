@@ -1,5 +1,5 @@
 {
   "default": {"core": "release", "flags": "", "env": {}},
   "gpus": {},
-  "builds": {"cb1024": {"ref": "c374bd0", "defines": "-DPEARL_TMA_COL_BATCH=1024"}}
+  "builds": {"serp": {"ref": "c374bd0", "defines": "-DPEARL_FOLD_SERPENTINE=1"}}
 }
