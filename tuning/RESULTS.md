@@ -15,6 +15,7 @@ minutes after warm-up with no rejected or invalid shares, and was rolled out to 
 | RTX 4090 | Poland (151409) | 314 | Oct 8 |
 | RTX 4090 | Japan (151594) | 319 | Oct 8 |
 | RTX 5090 | Alberta (35115) | 396 | Oct 8 |
+| RTX 5090 (400 W cap) | Vietnam (59404) | 349, 346, 298, 311 (four cards, all at the cap) | Oct 8 |
 | RTX 5060 Ti | Finland (149979) | 97 | Oct 8 |
 
 ## Tests
@@ -57,3 +58,12 @@ agents never edit the same lines. Verified gains are copied here.
 - **Memory clock locks don't work on Vast.** `--mine-mem-clock 5001` left the memory clock
   at the driver's value on the SA L40S (149491), the Japan 4090 (151594) and the Maryland
   5090 (151626): the containers can't set clocks.
+- **Blackwell: a core built on the box can run at cu13 speed through the driver's JIT.**
+  Build it with `-DPEARL_FORCE_PTX_JIT=1 -gencode arch=compute_120,code=compute_120` (switch
+  added in f4f6d63, off by default). The core then sets `CUDA_FORCE_PTX_JIT=1` as it loads,
+  and the driver (CUDA 13.x on 580+) compiles the fold instead of nvcc 12.8's ptxas. On the
+  Vietnam 5090 box (59404, driver 595.71) that build ran level with the release cu13 core
+  (-0.2% vs control, hit check 400/400, 0 invalid), while the release's own cu12 core lost
+  3.0% on another card of the same box over the same runs. Finland 149979 (5060 Ti, driver
+  595.84) got the same: -0.3% vs cu13. Boxes rented before 09:47 UTC don't have box.sh's
+  `"cuda": "13"` build option; this is how they test sm_120 knobs against the release.
