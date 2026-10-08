@@ -22,6 +22,7 @@ export DEBIAN_FRONTEND=noninteractive
 # Lines it prints (read by the supervisor and the tuning agents):
 #   [mining gN] HH:MM:SS <TH/s> TH/s · <a> accepted · <r> rejected · up ...   every minute per GPU
 #   [gpu gN] HH:MM:SS sm=.. mem=.. W=../.. C=.. util=..                       every 5 minutes
+#   [minerlog gN] the miner's first lines after each (re)start (core, clock lock, errors)
 #   [ctl] / [build] / [verify] / [run]                                         as they happen
 W=prl1px5ervx6ftaegmdhqa5ajemh20j2uw7l9jt5j5s97rljp72yt3s8qncrxud
 WORKER=__WORKER__
@@ -100,6 +101,9 @@ start_gpu() {   # $1 = gpu, $2 = settings JSON
   ( cd $R && env $envs ./cli -a $W --mode mining -w $WORKER-g$g --no-serve --no-update $flags >> $D/g$g.log 2>&1 & echo $! > $D/g$g.pid )
   echo "$cfg" > $D/g$g.cfg; echo 0 > $D/g$g.restarts
   echo "[ctl] g$g running $cfg $(now)"
+  # The miner's own startup lines (core loaded, clock lock, errors) go to $D/g$g.log; echo them once.
+  local from; from=$(wc -c < $D/g$g.log 2>/dev/null || echo 0)
+  ( sleep 40; tail -c +$((from + 1)) $D/g$g.log | tr '\r' '\n' | grep -v 'TH/s ·' | grep -v '^\s*$' | head -12 | cut -c1-200 | sed "s/^/[minerlog g$g] /" ) &
 }
 
 stop_gpu() { [ -f $D/g$1.pid ] && kill $(cat $D/g$1.pid) 2>/dev/null; sleep 5; }
