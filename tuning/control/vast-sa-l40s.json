@@ -1,5 +1,7 @@
 {
   "default": {"core": "release", "flags": "", "env": {}},
   "gpus": {"2": {"flags": "--mine-mem-clock 5001"}},
-  "builds": {}
+  "builds": {
+    "cb1024": {"ref": "bfa15c5102aa93b669c062c9f1f0ed45195429cb", "defines": "-DPEARL_ADA_COL_BATCH=1024"}
+  }
 }
