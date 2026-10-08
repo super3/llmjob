@@ -4,6 +4,7 @@
 // `extensions` option resolving /network to dist/network.html, and the 301 that
 // retires the old .html URLs.
 const { execFileSync } = require('node:child_process');
+const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const request = require('supertest');
@@ -126,6 +127,53 @@ describe('extensionless page URLs', () => {
     const res = await request(app).get('/');
     expect(res.text).toContain('href="/network"');
     expect(res.text).not.toMatch(/href="[^"]*\.html"/);
+  });
+});
+
+// The home page carries the HiveOS flight sheet. The Installation URL must name
+// the tarball CI publishes: earn/scripts/build-hiveos.mjs names it after
+// earn/package.json's version, and the page stamps appVersion from
+// site/config.json. If the two ever differ, the page points at a file that the
+// release doesn't have.
+describe('HiveOS flight sheet on the home page', () => {
+  const { version } = JSON.parse(fs.readFileSync(path.join(ROOT, 'earn/package.json'), 'utf8'));
+  const manifest = fs.readFileSync(path.join(ROOT, 'earn/hiveos/h-manifest.conf'), 'utf8');
+  const minerName = manifest.match(/^CUSTOM_NAME=(.+)$/m)[1];
+
+  async function section() {
+    const res = await request(app).get('/');
+    const m = res.text.match(/<section[^>]*id="hiveos"[^>]*>([\s\S]*?)<\/section>/);
+    expect(m).not.toBeNull();
+    return { page: res.text, sec: m[1] };
+  }
+
+  it('gives the versioned package URL of the current release', async () => {
+    const { sec } = await section();
+    const url = `https://github.com/super3/llmjob/releases/download/v${version}/${minerName}-${version}.tar.gz`;
+    expect(sec).toContain(`<code id="hive-url">${url}</code>`);
+    // Not the unversioned name: HiveOS would keep the old build on update.
+    expect(sec).not.toContain('llmjob-earn-hiveos.tar.gz');
+    expect(sec).not.toContain('{{');
+  });
+
+  it('lists the flight sheet fields', async () => {
+    const { sec } = await section();
+    for (const field of ['Miner', 'Miner name', 'Installation URL', 'Hash algorithm',
+      'Wallet and worker template', 'Pool URL', 'Pass', 'Extra config arguments']) {
+      expect(sec).toContain(`<span class="hive-k">${field}</span>`);
+    }
+    expect(sec).toContain('<code>Custom</code>');
+    expect(sec).toContain(`<code>${minerName}</code>`);
+    expect(sec).toContain('<code>pearlhash</code>');
+    expect(sec).toContain('<code>%WAL%</code>');
+    expect(sec).toContain('<code>%WAL%.%WORKER_NAME%</code>');
+    expect(sec).toContain('<code>us.pearl.herominers.com:1200</code>');
+    expect(sec).toContain('Ubuntu 22.04');
+  });
+
+  it('is linked from both download menus', async () => {
+    const { page } = await section();
+    expect(page.match(/<a role="menuitem" href="#hiveos">/g)).toHaveLength(2);
   });
 });
 
