@@ -282,9 +282,9 @@ jobs:
 
       # Hopper's wgmma fold (PEARL_HOPPER_WGMMA in pearl_config.h) is off by default and
       # needs sm_90a, which the release does not build, so nothing above compiles its
-      # body or the host code behind the switch. Compiled here the same way as the
-      # cluster build: the 12.8 entries only, sm_90a only, a scratch directory, ptxas -v
-      # printed, not linked or shipped, and non-blocking. When sm_90a ships, the spill
+      # body or the host code behind the switch. Compiled here like the cluster build
+      # (a scratch directory, ptxas -v printed, not linked or shipped, non-blocking), but
+      # only in the 12.8 entries and only for sm_90a. When sm_90a ships, the spill
       # check below must also read pearl_tile_fold_hopper, with sm_90a in
       # spill_fail_archs (ptxas names that architecture "sm_90a").
       - name: Compile the wgmma fold (sm_90a, not shipped)

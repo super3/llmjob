@@ -4107,6 +4107,8 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
                 "two m64n256 warpgroups; a chunk is two stages of four k32 steps");
   static_assert(PEARL_HOPPER_THREADS == CWARPS * 32u + 32u, "consumers, then one producer warp");
   static_assert(NST >= 2u, "a chunk waits for two stages before its first wgmma");
+  static_assert(PEARL_HOPPER_SMEM <= 232448u,
+                "H100 gives a block at most 227 KB; more and the host quietly runs the cp.async fold");
   static_assert(STAGE % 1024u == 0u && (BN * SK) % 1024u == 0u,
                 "every operand starts on the swizzle period");
   static_assert(PEARL_HOPPER_SMEM >= NST * STAGE + NREG * 64u + 16u * NST, "shared layout");
