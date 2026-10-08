@@ -11,6 +11,7 @@
     "f63": {"ref": "9085a2b3a0f4e7b4c3f6fd92506e15b18bca168a", "defines": "-DPEARL_OPERAND_FILL=63"},
     "cb512": {"ref": "9085a2b3a0f4e7b4c3f6fd92506e15b18bca168a", "defines": "-DPEARL_ADA_COL_BATCH=512u"},
     "rule": {"ref": "29ac5f5b6274f863917bb247aa0f5f06bfb9993b", "defines": ""},
-    "rulef63": {"ref": "29ac5f5b6274f863917bb247aa0f5f06bfb9993b", "defines": "-DPEARL_OPERAND_FILL=63"}
+    "rulef63": {"ref": "29ac5f5b6274f863917bb247aa0f5f06bfb9993b", "defines": "-DPEARL_OPERAND_FILL=63"},
+    "ruleb32": {"ref": "29ac5f5b6274f863917bb247aa0f5f06bfb9993b", "defines": "-DPEARL_TALL_BAND=32u"}
   }
 }
