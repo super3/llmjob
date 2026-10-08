@@ -1,0 +1,5 @@
+{
+  "default": {"core": "release", "flags": "", "env": {}},
+  "gpus": {"2": {"flags": "--mine-mem-clock 5001"}},
+  "builds": {}
+}
