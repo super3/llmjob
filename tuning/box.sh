@@ -54,7 +54,7 @@ if [ ! -f $D/tools ]; then
   ( nice -n 19 bash -c "
       apt-get install -y --no-install-recommends xz-utils python3 make g++ cuda-nvcc-12-8 cuda-cudart-dev-12-8 cuda-cccl-12-8 > $D/tools.log 2>&1 &&
       curl -fsSL https://nodejs.org/dist/$NODE_VER/node-$NODE_VER-linux-x64.tar.xz | tar -xJ -C /opt &&
-      git clone -q -b $BRANCH https://github.com/$REPO.git $D/src >> $D/tools.log 2>&1 &&
+      git clone -q --depth 50 -b $BRANCH https://github.com/$REPO.git $D/src >> $D/tools.log 2>&1 &&
       mkdir -p $D/gyp && cd $D/gyp && echo '{}' > package.json &&
       npm install --no-save --ignore-scripts --no-audit --no-fund node-addon-api node-gyp >> $D/tools.log 2>&1 &&
       ./node_modules/.bin/node-gyp install >> $D/tools.log 2>&1 && touch $D/tools && echo \"[build] tools ready \$(date -u +%T)\" ||
@@ -69,7 +69,7 @@ build_core() {
   local name=$1 ref=$2 defines=$3 B=$D/builds/$1
   mkdir -p $B
   ( while [ ! -f $D/tools ]; do sleep 10; done
-    cd $D/src && git fetch -q origin $BRANCH && git checkout -q --detach "$ref" 2>>$B/log || git checkout -q --detach "origin/$ref" 2>>$B/log ||
+    cd $D/src && git fetch -q --depth 50 origin $BRANCH && git checkout -q --detach "$ref" 2>>$B/log || git checkout -q --detach "origin/$ref" 2>>$B/log ||
       { echo "[build] $name FAIL: no ref $ref"; touch $B/FAIL; exit; }
     rm -rf $B/a && mkdir -p $B/a/cuda-build && cp -r $D/src/earn/native/src $D/src/earn/native/binding.gyp $B/a/ && cd $B/a &&
     ln -s $D/gyp/node_modules node_modules && echo '{}' > package.json && GC="-gencode arch=compute_$CC,code=sm_$CC" &&

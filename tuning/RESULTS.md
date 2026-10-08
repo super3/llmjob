@@ -19,6 +19,9 @@ minutes after warm-up with no rejected or invalid shares, and was rolled out to 
 
 ## Tests
 
+Each box's tuning agent logs every test it runs in `results/<worker>.md`, its own file so
+agents never edit the same lines. Verified gains are copied here.
+
 | Date (UTC) | Card | Box | Change | Test GPUs vs control | Result |
 |---|---|---|---|---|---|
 
