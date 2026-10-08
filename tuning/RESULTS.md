@@ -49,6 +49,14 @@ agents never edit the same lines. Verified gains are copied here.
   3040 instructions, a 540-instruction chunk loop for 192 IMMA. Only predicate-register
   names differ. The North Carolina 4090 measured cu13 level with the release (+0.6%, inside
   drift). So `core: cu13` is not worth a test window on Ada.
+- **Ada: an on-box build with no defines is the release.** The v0.5.12 release core's sm_89
+  `pearl_tile_fold_tall` is the same as a local nvcc 12.8.93 build of this branch,
+  instruction for instruction, so Ada builds can be judged against the release directly.
+  Compiler flags don't move the fold: `--extra-device-vectorization`,
+  `-Xptxas --allow-expensive-optimizations=true` and `-Xptxas -O2` leave its SASS unchanged.
+  Moving B's copies back to m16 tile 8 (`PEARL_TALL_BPT=8`, Ada's point before v0.5.12) lost
+  about 1.5% on the North Carolina 4090, which heat holds near 2205 MHz at 90 C (273.3 TH/s
+  between release runs of 277.4 and 277.5). The release's copy points stand.
 - **Ada cards with less L2 than a 4090: run a narrower batch.** At col_batch 2048 one launch
   of Ada's tall fold sweeps 64 MB of B' plus a 6 MB band of A'. On a 48 MB L2 (RTX 4070
   Super) B' comes back from DRAM every band, and at the power cap those DRAM watts come out
