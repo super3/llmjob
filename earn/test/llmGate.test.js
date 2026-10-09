@@ -60,6 +60,23 @@ describe('LlmGate', () => {
     expect(g.state).toBe(SERVING);
   });
 
+  // Demand mode fetches the model while mining. A wake that arrives mid-download
+  // waits for it with the miner still running, and only then stops it.
+  test('a wake finishes preparing the model before it stops the miner', async () => {
+    const { g, calls } = mkGate({ prepareLlm: async () => { calls.push('prepareLlm'); } });
+    await g.ensureServing();
+    expect(calls).toEqual(['prepareLlm', 'stopMiner', 'startLlm']);
+    expect(g.state).toBe(SERVING);
+  });
+
+  test('a prepare that fails does not fail the wake; startLlm fetches the model itself', async () => {
+    const { g, calls } = mkGate({ prepareLlm: async () => { throw new Error('offline'); } });
+    await expect(g.ensureServing()).resolves.toBe(true);
+    // No restart of a miner that was never stopped: the wake went on as usual.
+    expect(calls).toEqual(['stopMiner', 'startLlm']);
+    expect(g.state).toBe(SERVING);
+  });
+
   test('concurrent requests share one transition instead of starting two servers', async () => {
     const { g, calls } = mkGate();
     await Promise.all([g.ensureServing(), g.ensureServing(), g.ensureServing()]);

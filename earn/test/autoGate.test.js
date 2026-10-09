@@ -32,6 +32,14 @@ function mk(over = {}) {
 }
 
 describe('createAutoGate', () => {
+  test('passes prepareLlm through, so a wake fetches the model before stopping the miner', async () => {
+    const order = [];
+    const { auto, miner } = mk({ prepareLlm: async () => { order.push('prepare'); } });
+    miner.stop.mockImplementation(() => { order.push('stopMiner'); setImmediate(() => miner.emit('stopped', 0)); });
+    await auto.gate.ensureServing();
+    expect(order).toEqual(['prepare', 'stopMiner']);
+  });
+
   test('waking stops the miner and waits for it to actually exit', async () => {
     const { auto, miner, calls } = mk();
     await auto.gate.ensureServing();

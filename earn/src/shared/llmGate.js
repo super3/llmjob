@@ -57,6 +57,9 @@ class LlmGate extends EventEmitter {
   constructor(opts = {}) {
     super();
     this.startLlm = opts.startLlm;
+    // Optional: make the model ready to load (download it) while the miner still
+    // runs. Awaited before stopMiner, so the card mines through the download.
+    this.prepareLlm = opts.prepareLlm;
     this.stopLlm = opts.stopLlm;
     this.startMiner = opts.startMiner;
     this.stopMiner = opts.stopMiner;
@@ -94,6 +97,10 @@ class LlmGate extends EventEmitter {
     if (this._transition) return this._transition.then(() => this.ensureServing(), () => this.ensureServing());
     this._transition = (async () => {
       this._setState(TO_SERVING);
+      // Never fails the wake: a model that didn't download here is fetched by
+      // startLlm, as it was before prepareLlm existed. Failing here would also
+      // run the catch below, which restarts a miner that was never stopped.
+      if (this.prepareLlm) { try { await this.prepareLlm(); } catch { /* startLlm fetches it */ } }
       if (this.stopMiner) await this.stopMiner();
       if (this.startLlm) await this.startLlm();
       this._setState(SERVING);
