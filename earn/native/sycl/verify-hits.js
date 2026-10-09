@@ -16,6 +16,14 @@
 //
 // Prints one JSON line. PASS: every checked hit matched, --hits of them were
 // checked, and they came from at least 3 salts (operand redraws).
+//
+// This shows that the hits the core reports are real. It cannot show that none
+// went missing; verify.sh's fold check does that, region by region. As a rough
+// cross-check the line also has expectedHits, the work the core reports doing
+// (each 'hashrate' event times the time since the one before) over the work a
+// hit takes on average, and hitRatio, hits / expectedHits. With 400 hits the
+// ratio should be within about 0.85-1.15; well under that means the fold drops
+// hits that it counts as searched.
 'use strict';
 const path = require('path');
 const R = path.join(__dirname, '..', '..', 'src', 'shared', 'miner') + path.sep;
@@ -54,6 +62,9 @@ const jobKey = hash(Buffer.concat([header, buildConfig52(profile)]));
 const target = 2n ** BigInt(opt.bits);
 const { k, rank, m, n } = profile;
 let hits = 0, ok = 0, bad = 0, rate = 0, rates = 0;
+// MACs the core reports, from its rate events: each is the rate over the time
+// since the previous one (the first window starts when the search does).
+let work = 0, lastRate = 0, lastAt = 0;
 const salts = new Set();
 const fails = [];
 const t0 = Date.now();
@@ -102,11 +113,18 @@ function finish() {
   if (done) return;
   done = true;
   core.stop();
+  const now = Date.now();
+  const seconds = (now - t0) / 1000;
+  const meanThs = rates ? rate / rates : 0;
+  work += lastRate * 1e12 * (now - (lastAt || now)) / 1000;  // since the last event
+  // regions searched = MACs / (16 x 16 x k); a region hits with chance target / 2^256
+  const expected = work / (256 * k) * Math.pow(2, opt.bits - 256);
   const res = {
     file: path.basename(opt.file), device: core.device && core.device.name, fold: process.env.PEARL_SYCL_FOLD || 'auto',
     m, n, colBatch: opt.colBatch, bits: opt.bits, fill: opt.hashed ? 'hashed' : 'constant',
     hits, verified: ok, failed: bad, salts: salts.size,
-    seconds: Math.round((Date.now() - t0) / 100) / 10, meanThs: rates ? Math.round(rate / rates * 1000) / 1000 : 0,
+    seconds: Math.round(seconds * 10) / 10, meanThs: Math.round(meanThs * 1000) / 1000,
+    expectedHits: Math.round(expected * 10) / 10, hitRatio: expected ? Math.round(hits / expected * 100) / 100 : null,
     fails, PASS: bad === 0 && ok >= opt.hits && salts.size >= 3,
   };
   console.log(JSON.stringify(res));
@@ -123,6 +141,13 @@ core.on('hit', (hit) => {
   if (ok + bad >= opt.hits) finish();
 });
 core.on('error', (e) => { console.log(JSON.stringify({ error: String(e) })); process.exit(2); });
-core.on('hashrate', (r) => { rate += r; rates++; });
+core.on('hashrate', (r) => {
+  const now = Date.now();
+  work += r * 1e12 * (now - (lastAt || t0)) / 1000;
+  lastRate = r;
+  lastAt = now;
+  rate += r;
+  rates++;
+});
 core.setJob({ header, target, jobId: 'verify' });
 setTimeout(finish, opt.seconds * 1000);

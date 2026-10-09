@@ -2,8 +2,8 @@
 // device). Ports of the draw kernels in ../src/pearl_kernel.cu, which they must
 // match bit for bit, plus two folds of our own:
 //
-//   fold_dot  plain int8 dot products in local memory. Runs on any SYCL device.
-//             The reference fold of this port.
+//   fold_dot  plain int8 dot products in local memory. Needs no XMX, so it runs
+//             on any device the build has kernels for. The reference fold.
 //   fold_xmx  the XMX matrix engines through DPAS, at sub-group 16 (Xe2, Xe3,
 //             Xe-HPC) or 8 (Xe-HPG). With PEARL_SYCL_XMX_HW (an AOT build) it is
 //             the hardware instruction on those GPUs; everywhere else it is the

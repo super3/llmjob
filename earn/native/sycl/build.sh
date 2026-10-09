@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Build the SYCL Pearl core for Intel GPUs.
 #
-#   ./build.sh                 AOT for every Intel GPU target below plus the CPU
-#                              device, with the hardware XMX folds
+#   ./build.sh                 AOT for every Intel GPU with XMX (TARGETS below)
+#                              plus the CPU device, with the hardware XMX folds.
+#                              Runs on those devices only: another GPU (Meteor
+#                              Lake, Arrow Lake, Iris Xe, DG1) needs --jit
 #   ./build.sh --targets LIST  AOT for LIST only (comma separated, e.g.
-#                              intel_gpu_bmg_g21,spir64_x86_64)
+#                              intel_gpu_bmg_g21,spir64_x86_64): faster, and the
+#                              way round a compiler or ocloc that does not know
+#                              one of the default targets
 #   ./build.sh --jit           one SPIR-V image, compiled by the driver at first
 #                              run: any Intel GPU and the CPU device, but the
 #                              XMX folds run the reference code (no hardware DPAS)
@@ -19,15 +23,16 @@
 #                          against libpearl_sycl.so (found beside it)
 #   pearl_sycl_check       the fold check and bench tool (pearl_sycl_check.cpp)
 #
-# Needs the oneAPI DPC++ compiler (icpx) on PATH, or CXX set to it, and Node 18+
-# for the addon headers. install-toolchain.sh installs a compiler if there is
-# none. Nothing here touches the CUDA build.
+# Needs the oneAPI DPC++ compiler (icpx) on PATH, or CXX set to it, ocloc for
+# the GPU targets, and Node 18+ for the addon headers. The default targets were
+# built with DPC++ 2026.1.1 and ocloc 26.31; install-toolchain.sh --ocloc
+# installs exactly those. Nothing here touches the CUDA build.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 SRC="$HERE/../src"
 OUT="$HERE/build"
-TARGETS="intel_gpu_bmg_g21,intel_gpu_bmg_g31,intel_gpu_lnl_m,intel_gpu_ptl_h,intel_gpu_pvc,intel_gpu_acm_g10,intel_gpu_acm_g11,intel_gpu_acm_g12,spir64_x86_64"
+TARGETS="intel_gpu_bmg_g21,intel_gpu_bmg_g31,intel_gpu_lnl_m,intel_gpu_ptl_h,intel_gpu_ptl_u,intel_gpu_pvc,intel_gpu_acm_g10,intel_gpu_acm_g11,intel_gpu_acm_g12,spir64_x86_64"
 JIT=0
 DUMP=""
 LARGE_GRF=0
@@ -38,7 +43,7 @@ while [ $# -gt 0 ]; do
     --dump) DUMP="$2"; shift 2 ;;
     --large-grf) LARGE_GRF=1; shift ;;
     --out) OUT="$2"; shift 2 ;;
-    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
 done
@@ -105,7 +110,12 @@ fi
 
 echo "[1/3] libpearl_sycl.so ($([ "$JIT" = 1 ] && echo spir64 JIT || echo "AOT: $TARGETS"))"
 "${DUMP_ENV[@]}" "$CXX" "${SYCL_FLAGS[@]}" "${GCC_FLAGS[@]}" -shared -I"$HERE" -I"$SRC" \
-  "$HERE/pearl_sycl_host.cpp" -o "$OUT/libpearl_sycl.so" "${RPATH[@]}"
+  "$HERE/pearl_sycl_host.cpp" -o "$OUT/libpearl_sycl.so" "${RPATH[@]}" || {
+  echo "build failed. If the error names a target (an older compiler or ocloc may not know" >&2
+  echo "bmg_g31, ptl_h or ptl_u), build for your card only, e.g." >&2
+  echo "  ./build.sh --targets intel_gpu_bmg_g21,spir64_x86_64   (README.md, \"Which build\")" >&2
+  exit 1
+}
 
 echo "[2/3] pearl_core_sycl.node"
 "$CXX" -O2 -fPIC -std=c++17 "${GCC_FLAGS[@]}" -DNAPI_DISABLE_CPP_EXCEPTIONS -DNAPI_VERSION=8 \

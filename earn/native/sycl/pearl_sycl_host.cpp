@@ -674,6 +674,21 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err, size_
     delete ctx;
     return nullptr;
   }
+  // A build carries kernels only for its own targets (build.sh). On any other
+  // device the first kernel would fail with "No kernel named ... was found";
+  // say what to do instead.
+  bool haveImage = true;
+  try {
+    haveImage = sycl::has_kernel_bundle<sycl::bundle_state::executable>(ctx->q->get_context(), {ctx->dev});
+  } catch (const std::exception &) {
+  }
+  if (!haveImage) {
+    fail(err, err_len, "this build has no kernels for " + ctx->deviceName
+                           + ": rebuild with ./build.sh --jit, or with --targets naming this GPU"
+                             " (README.md, \"Which build\")");
+    pearl_host_destroy(ctx);
+    return nullptr;
+  }
   if (!pick_fold(ctx, err, err_len)) {
     pearl_host_destroy(ctx);
     return nullptr;
@@ -720,7 +735,9 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err, size_
   // batches. The cap keeps a batch short on a slow fold: at mainnet 256 column
   // offsets are 2^21 regions, 1.1e12 MACs, 0.2 s at 5 TH/s, where the profile's
   // 2048 would be 1.8 s, near the GPU drivers' job timeouts. The B' one batch
-  // sweeps (256 x 16 columns of 2048 bytes, 8 MB) also fits every Intel card's L2.
+  // sweeps is 256 x 16 columns of 2048 bytes, 8 MB: inside the L2 of the A770,
+  // A750 and B580 (16-18 MB), but not of the A380 (6 MB), where bench.sh
+  // --sweep's narrower batches may do better.
   const uint64_t kMaxColBatch = 256;
   uint64_t cb = profile->col_batch ? profile->col_batch : 4u;
   if (cb > kMaxColBatch) cb = kMaxColBatch;
@@ -729,6 +746,10 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err, size_
   if (cb > ctx->colsValid) cb = ctx->colsValid;
   if (cb < 4) cb = 4;
   ctx->colBatch = floor_pow2(cb);
+  // The plain fold launches 32 work-items a region, and a SYCL launch range must
+  // fit in an int, so a batch is at most 2^25 regions (4096 column offsets at
+  // mainnet). Only a large PEARL_SYCL_COL_BATCH gets here.
+  while ((uint64_t)ctx->colBatch * ctx->rowsValid > (1ull << 25) && ctx->colBatch > 4) ctx->colBatch /= 2;
   ctx->batch = ctx->colBatch * ctx->rowsValid;
   // Row windows a band: as many as keep a band's A' (32 rows of k bytes a window)
   // within a quarter of the device's last-level cache. PEARL_SYCL_BAND forces it.

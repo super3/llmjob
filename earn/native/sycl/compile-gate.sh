@@ -13,7 +13,7 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 TARGETS=("$@")
 [ ${#TARGETS[@]} -eq 0 ] && TARGETS=(intel_gpu_bmg_g21 intel_gpu_bmg_g31 intel_gpu_lnl_m intel_gpu_ptl_h \
-  intel_gpu_pvc intel_gpu_acm_g10 intel_gpu_acm_g11 intel_gpu_acm_g12)
+  intel_gpu_ptl_u intel_gpu_pvc intel_gpu_acm_g10 intel_gpu_acm_g11 intel_gpu_acm_g12)
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 fail=0
