@@ -16,9 +16,15 @@ EARN=$(cd "$HERE/../.." && pwd)
 ADDR=${1:?usage: ./pool-run.sh <prl1p...address> [seconds=300] [region]}
 SECS=${2:-300}
 REGION=${3:-}
-# The CLI needs two small packages; install them if this checkout has none.
-(cd "$EARN" && node -e "require('tweetnacl'); require('tweetnacl-util')" 2>/dev/null) \
-  || (cd "$EARN" && npm install --no-save --no-audit --no-fund tweetnacl@1 tweetnacl-util@0.15 >/dev/null)
+# The CLI needs two small packages, tweetnacl and tweetnacl-util. A checkout
+# without them gets them in build/cli-deps, through NODE_PATH: npm install in
+# earn/ would install every package the desktop app uses, Electron among them.
+if ! (cd "$EARN" && node -e "require('tweetnacl'); require('tweetnacl-util')" 2>/dev/null); then
+  DEPS="$B/cli-deps"
+  [ -d "$DEPS/node_modules/tweetnacl-util" ] \
+    || npm install --no-save --no-package-lock --no-audit --no-fund --prefix "$DEPS" tweetnacl@1 tweetnacl-util@0.15 >/dev/null
+  export NODE_PATH="$DEPS/node_modules${NODE_PATH:+:$NODE_PATH}"
+fi
 STATS="$HERE/pool-run-stats.json"
 rm -f "$STATS"
 ARGS=(--address "$ADDR" --mode mining --no-report --no-serve --no-update --stats-file "$STATS")

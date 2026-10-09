@@ -8,9 +8,10 @@
 #   ./install-toolchain.sh [DIR] [--ocloc]
 #
 # --ocloc also extracts ocloc 26.31 and IGC 2.40.13 from the kobuk-team PPA
-# (Ubuntu 24.04 packages, 228 MB): what AOT for GPU targets needs on a box with
-# no Intel GPU driver. A box with an Intel GPU has ocloc from its driver
-# packages instead (see README.md, "Driver").
+# (Ubuntu 24.04 packages, 228 MB), the versions the default targets were built
+# with. AOT for GPU targets needs an ocloc; a driver's own may be too old to know
+# every default target (README.md, "Compiler"). Nothing is installed system-wide,
+# and the driver keeps its own IGC: only ocloc runs with these libraries.
 #
 # If oneAPI is installed already (source /opt/intel/oneapi/setvars.sh), none of
 # this is needed: build.sh uses whatever icpx is on PATH.
@@ -52,20 +53,33 @@ if [ "$OCLOC" = 1 ]; then
   rm -rf gpudl
   L=gpu/usr/lib/x86_64-linux-gnu
   for l in libigc libigdfcl libiga64; do ln -sf "$l.so.2.40.13+0" "$L/$l.so.2"; done
-  ln -sf ocloc-26.31.1 gpu/usr/bin/ocloc
+  # ocloc gets these IGC libraries through a wrapper, not through envrc.sh's
+  # LD_LIBRARY_PATH: on a box with an Intel driver, the driver must keep
+  # loading its own IGC in that shell.
+  mkdir -p gpu/bin
+  cat > gpu/bin/ocloc <<OCLOC
+#!/bin/sh
+LD_LIBRARY_PATH="$DIR/$L\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}" exec "$DIR/gpu/usr/bin/ocloc-26.31.1" "\$@"
+OCLOC
+  chmod +x gpu/bin/ocloc
 fi
+# OCL_ICD_VENDORS replaces the system's list of OpenCL drivers, so pointing it
+# at the CPU runtime alone hid the GPU from clinfo and sycl-ls in that shell.
+# envrc.sh builds a directory with both, each time it is sourced, so a driver
+# installed after the toolchain is picked up too.
 cat > envrc.sh <<ENV
 # source this: the SYCL compiler and runtime from install-toolchain.sh
 export PATH="$E/bin:$E/bin/compiler:\$PATH"
 export LD_LIBRARY_PATH="$E/lib:\${LD_LIBRARY_PATH:-}"
-export OCL_ICD_VENDORS="$E/etc/OpenCL/vendors"
+mkdir -p "$DIR/ocl-vendors" && rm -f "$DIR/ocl-vendors"/*.icd
+for f in /etc/OpenCL/vendors/*.icd; do if [ -e "\$f" ]; then ln -sf "\$f" "$DIR/ocl-vendors/system-\${f##*/}"; fi; done
+for f in "$E"/etc/OpenCL/vendors/*.icd; do if [ -e "\$f" ]; then ln -sf "\$f" "$DIR/ocl-vendors/toolchain-\${f##*/}"; fi; done
+unset f
+export OCL_ICD_VENDORS="$DIR/ocl-vendors"
 export CONDA_PREFIX="$E"
 ENV
 if [ "$OCLOC" = 1 ]; then
-  cat >> envrc.sh <<ENV
-export PATH="$DIR/gpu/usr/bin:\$PATH"
-export LD_LIBRARY_PATH="$DIR/gpu/usr/lib/x86_64-linux-gnu:\$LD_LIBRARY_PATH"
-ENV
+  echo "export PATH=\"$DIR/gpu/bin:\$PATH\"" >> envrc.sh
 fi
 du -sh "$DIR"
 echo "done: . $DIR/envrc.sh"
