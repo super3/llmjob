@@ -91,6 +91,12 @@ if [ -z "$NAPI_INC" ] || [ ! -f "$NAPI_INC/napi.h" ]; then
   NAPI_INC="$OUT/npm/node_modules/node-addon-api"
 fi
 
+# Run paths: the output directory, then the compiler's own lib directory, so the
+# addon finds libsycl and the Intel runtime libraries without LD_LIBRARY_PATH.
+RPATH=(-Wl,-rpath,'$ORIGIN')
+SYCL_LIB=$(dirname "$("$CXX" -fsycl -print-file-name=libsycl.so)")
+[ -f "$SYCL_LIB/libsycl.so" ] && RPATH+=(-Wl,-rpath,"$(cd "$SYCL_LIB" && pwd)")
+
 DUMP_ENV=()
 if [ -n "$DUMP" ]; then
   mkdir -p "$DUMP"
@@ -99,16 +105,16 @@ fi
 
 echo "[1/3] libpearl_sycl.so ($([ "$JIT" = 1 ] && echo spir64 JIT || echo "AOT: $TARGETS"))"
 "${DUMP_ENV[@]}" "$CXX" "${SYCL_FLAGS[@]}" "${GCC_FLAGS[@]}" -shared -I"$HERE" -I"$SRC" \
-  "$HERE/pearl_sycl_host.cpp" -o "$OUT/libpearl_sycl.so" -Wl,-rpath,'$ORIGIN'
+  "$HERE/pearl_sycl_host.cpp" -o "$OUT/libpearl_sycl.so" "${RPATH[@]}"
 
 echo "[2/3] pearl_core_sycl.node"
 "$CXX" -O2 -fPIC -std=c++17 "${GCC_FLAGS[@]}" -DNAPI_DISABLE_CPP_EXCEPTIONS -DNAPI_VERSION=8 \
   -I"$NODE_INC" -I"$NAPI_INC" -I"$SRC" -c "$SRC/pearl_core.cc" -o "$OUT/pearl_core.o"
 "$CXX" -fsycl "${GCC_FLAGS[@]}" -shared "$OUT/pearl_core.o" -L"$OUT" -lpearl_sycl \
-  -o "$OUT/pearl_core_sycl.node" -Wl,-rpath,'$ORIGIN'
+  -o "$OUT/pearl_core_sycl.node" "${RPATH[@]}"
 
 echo "[3/3] pearl_sycl_check"
 "$CXX" -fsycl -O2 -std=c++17 "${GCC_FLAGS[@]}" -I"$HERE" -I"$SRC" "$HERE/pearl_sycl_check.cpp" \
-  -L"$OUT" -lpearl_sycl -o "$OUT/pearl_sycl_check" -Wl,-rpath,'$ORIGIN' -lpthread
+  -L"$OUT" -lpearl_sycl -o "$OUT/pearl_sycl_check" "${RPATH[@]}" -lpthread
 rm -f "$OUT/pearl_core.o"
 echo "done: $OUT"
