@@ -379,7 +379,10 @@ typedef struct {
 // their mma, and it uses no L2 cache hints (the cp.async fold's A' hint faulted on sm_90).
 // Plain sm_100, not sm_100a: nothing it issues is arch-specific. ptxas 12.8 builds the
 // fold for sm_100 in 255 registers with no spill, and keeps B in the operand cache for 159
-// of a chunk's 192 IMMA, where its sm_120 build keeps it for none. It has not run on a card.
+// of a chunk's 192 IMMA, where its sm_120 build keeps it for none. On a 1000 W B200 it found
+// 400/400 good hits and mined 460 TH/s, a third of PeakMiner's and SRBMiner's 1,380 there
+// (benchmark.md, "B200"). mma.sync tops out near 570 on that card, so matching them needs a
+// tcgen05 fold.
 #define PEARL_SM100_ARCH(a) ((a) == 1000)
 // The builds whose tall fold stages with TMA (PEARL_TALL_TMA): consumer Blackwell (sm_120)
 // and sm_100. The device pass tests __CUDA_ARCH__, the host binaryVersion * 10.

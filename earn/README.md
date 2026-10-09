@@ -166,9 +166,9 @@ core unchanged, and a report with both numbers is what settles it.
 host) runs the sm_100 half of `pearl_core.node`: the CUDA 12.8 build of the tall
 fold source that RTX 50 cards use, built for sm_100. (An RTX 50 card on driver
 580 or newer mines on the CUDA 13 build of it.) It does not use the B200's own
-tensor instructions (tcgen05) yet, and it has not been run on a B200: there is
-no hashrate figure for it. Before this build the core had no sm_100 code, so a
-B200 could not mine at all. A GB200 can't run the miner: its host CPU is Arm
+tensor instructions (tcgen05) yet, so it is slow: a 1000 W B200 mined 460 TH/s
+on it, a third of PeakMiner's and SRBMiner's 1,380 (`benchmark.md`, "B200").
+Before this build the core had no sm_100 code, so a B200 could not mine at all. A GB200 can't run the miner: its host CPU is Arm
 (Grace), and the core is built for x86-64 Linux and Windows only.
 
 The CUDA 13 compiler produces faster code for Blackwell: on an RTX 5090 at

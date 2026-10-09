@@ -31,7 +31,7 @@ host:
   poorly) and the CMP 170HX (87%) are from an earlier build. A speed test of
   v0.5.13's kernel on the CMP 170HX read 98%.
 - Hopper (sm_90a, new in v0.5.13): 100–102% on the H100 NVL, H100 PCIe, H200
-  and H200 NVL, re-measured with PR #256's build (`79e26da`, not yet
+  and H200 NVL, re-measured with PR #256's build (`1df3c20`, not yet
   released). That's 6.5–8.8% above their v0.5.13 pool runs. The H100 SXM
   (83%) is still from a build before v0.5.13, without the fold changes
   since; a speed test of PR #256's fold on another H100 SXM host read 96%.
@@ -43,15 +43,23 @@ host:
   still from 2026-10-07, on v0.5.13's kernel.
 - RTX PRO Blackwell (sm_120): 99–101%. The 6000 Max-Q and the RTX 6000D are
   level; the RTX PRO 5000 and 6000 Server are 0.7% short.
-- RTX A4000 (sm_86): 102%.
+- Ampere workstation and data-center cards (sm_86: RTX A6000, A5000, A4000
+  and A2000, and the A40): 97–102% on v0.5.13's kernel. Seven of the ten
+  rows are at 100–102%. The Kansas A6000 (99.8%) and the Belgium A40
+  (99.4%) are just short, and the 6 GB A2000 is at 97%.
+- B200 (sm_100, new in PR #256): 33%. Its hits are correct, but it mines on
+  `mma.sync`, which tops out at about 41% of the competitors on this card.
+  Matching them needs a fold on the B200's own tensor instructions
+  (tcgen05). Before this build a B200 couldn't mine at all.
 
 ## How a host is tested
 
 1. Get our CLI and core. The v0.5.11 runs downloaded them from the published
    release on GitHub, the same files a user gets. So did the re-measures of
-   ten RTX rows on 2026-10-08, 18:21–18:47 UTC, from the published v0.5.13
-   release; those boxes also checked the files against the release digests.
-   The 20-, 30- and 50-series sections name those rows. Other later runs
+   ten RTX rows on 2026-10-08, 18:21–18:47 UTC, and the eight new sm_86 rows
+   on 2026-10-09, from the published v0.5.13 release; those boxes also
+   checked the files against the release digests. The 20-, 30-, 50-series
+   and sm_86 sections name those rows. Other later runs
    built a commit from source, or as CI builds it; each section names the
    commit and says whether its kernel is byte-identical to v0.5.13's. The
    first 20-series run predates the release: it built PR #250 from source,
@@ -502,9 +510,11 @@ PeakMiner and SRBMiner on the H100 SXM and NVL hosts are the 2026-10-07
 runs; the other three hosts are new, so all three miners ran there.
 
 Four rows were re-measured on 2026-10-09, 00:33–00:48 UTC, with 5-minute
-pool runs of PR #256's build at `79e26da`, not yet released: the H100 NVL,
-the H100 PCIe, the H200 and the H200 NVL. Each box built that commit as
+pool runs of PR #256's build at `1df3c20`, not yet released: the H100 NVL,
+the H100 PCIe, the H200 and the H200 NVL. Each box built it as
 native-core.yml does and ran the hit check and the pool run on that core.
+The boxes built `79e26da`, a local commit that differs from `1df3c20` only
+in comments.
 Its sm_90a fold is not v0.5.13's: it runs the fold's three-warpgroup form
 (see "After v0.5.13" below). The H100 SXM is still from `e8c04b4`.
 
@@ -517,7 +527,7 @@ Its sm_90a fold is not v0.5.13's: it runs the fold's three-warpgroup form
 | H200 NVL 141 GB | Quebec (600 W) | 153365 | 682.9 | 669.8 | 675.3 | 101% |
 
 - **Every host:** passed the hit check and picked the wgmma fold with 2-CTA
-  clusters: 192x256 tiles on `79e26da`, 128x256 in the H100 SXM's
+  clusters: 192x256 tiles on `1df3c20`, 128x256 in the H100 SXM's
   `e8c04b4` run. The CLI got 26, 19, 21, 20 and 23 shares accepted, none
   rejected.
 - **The gap is work per clock.** Every miner ran at the power cap. On
@@ -550,12 +560,12 @@ Its sm_90a fold is not v0.5.13's: it runs the fold's three-warpgroup form
   a different method, so the H100 SXM row is unchanged.
 - **After v0.5.13:** PR #256 makes the fold's three-warpgroup form the
   default (192x256 tiles, band 8; `PEARL_HOPPER_WG3` in `pearl_config.h`).
-  In the table's pool runs of `79e26da`, the H100 NVL read 6.5% more than
+  In the table's pool runs of `1df3c20`, the H100 NVL read 6.5% more than
   in its v0.5.13 pool run, the H100 PCIe 8.0%, the H200 7.5% and the H200
   NVL 8.8%. Each compares two rentals of the same host. The H200 is at
   99.9% of SRBMiner, which rounds to 100%.
 - **Speed tests of the new fold:** `hashrate.js` speed tests on 2026-10-08,
-  22:46–23:39 UTC, of a build with `79e26da`'s sm_90a kernel against
+  22:46–23:39 UTC, of a build with `1df3c20`'s sm_90a kernel against
   v0.5.13's in the same rental, 3 rounds each, ahead in every round: 547.1
   against 501.0 (+9.2%) on the H100 NVL (Japan, 29785, this table's host);
   and 729.3 against 670.8 (+8.7%) on an H100 SXM (California, 152422,
@@ -736,20 +746,52 @@ the RTX tables.
   153314) blocks outbound port 1200, so no miner could reach the pool. Our
   speed test read 239.4 at 300 W. Vast lists no RTX PRO 2000 or 4000 SFF.
 
-## RTX A4000 (sm_86, v0.5.13)
+## Ampere workstation and data-center cards (sm_86, v0.5.13)
 
-Run on 2026-10-07, 16:53–17:47 UTC, with PR #253's core at `5f427dd`, whose
-sm_86 kernel is byte-identical to v0.5.13's. The A4000 is a GA104 card and
-runs the same sm_86 code as the RTX 30-series. Same harness, pool and miner
+These cards run the same sm_86 code as the RTX 30-series. The A4000 rows ran
+on 2026-10-07, 16:53–17:47 UTC, with PR #253's core at `5f427dd`, whose sm_86
+kernel is byte-identical to v0.5.13's. The other eight ran on 2026-10-09,
+04:54–05:24 UTC, from the published v0.5.13 files, checked against the
+release digests. PR #256 doesn't change this kernel: all 20 sm_86 functions
+built from `9adc88a` match the published core. Same harness, pool and miner
 versions as the RTX tables.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
+| RTX A6000 | Italy (300 W) | 47281 | 123.4 | 122.3 | 122.6 | 101% |
+| RTX A6000 | Kansas (300 W) | 38333 | 127.7 | 127.9 | 127.8 | 99.8% |
+| A40 | United Kingdom (300 W) | 152158 | 123.2 | 123.1 | 120.5 | 100% |
+| A40 | Belgium (300 W) | 150273 | 124.5 | 124.2 | 125.2 | 99% |
+| RTX A5000 | North Carolina (230 W) | 147999 | 93.8 | 92.1 | 87.0 | 102% |
+| RTX A5000 | Italy (200 W) | 151139 | 84.5 | 83.2 | 81.8 | 102% |
 | RTX A4000 | Kazakhstan (140 W) | 147920 | 59.5 | 58.2 | 56.6 | 102% |
 | RTX A4000 | Kentucky (140 W) | 29102 | 56.9 | 55.8 | 53.5 | 102% |
+| RTX A2000 12 GB | Poland (70 W) | 28227 | 29.2 | 28.1 | 28.8 | 101% |
+| RTX A2000 6 GB | Japan (70 W) | 152199 | 27.7 | 28.5 | 28.1 | 97% |
 
-- **Both hosts:** every miner ran at the 140 W limit. We ran 60–110 MHz
-  faster than the other two.
+- **Every host:** passed the hit check, and every miner sat at the power
+  limit after the first minute. No miner had a share rejected.
+- **Order:** on the 2026-10-09 hosts, the first host of each card ran ours,
+  PeakMiner, SRBMiner; the second ran SRBMiner, PeakMiner, ours.
+- **RTX A5000, Italy:** the host sets 200 W, 87% of the card's 230 W stock
+  limit. SRBMiner's rate swung between 75 and 84.
+- **RTX A2000s:** at their speed, the 90 s hit check found only 264 (Poland)
+  and 248 (Japan) hits, all correct. A 240 s rerun on each machine found 764
+  and 736, and the first 400 of each checked out. Poland's rerun was a
+  different offer on the same machine, with a x4 PCIe link against x16, so
+  it probably ran on another card of the same model.
+- **RTX A2000 12 GB, Poland:** neither our miner nor SRBMiner got a share
+  accepted in its 5 minutes. Both rates are the miners' own figures.
+- **RTX A2000 6 GB, Japan:** the card ran at 86–91 C for every miner.
+  PeakMiner averaged 28.22 over its run, against which we'd be 98%. The box
+  logged only every 15th CLI reading; those average 27.91, against 27.69 for
+  the box's mean over all 217.
+- **A40, Belgium:** a 2-GPU rental, with every miner pinned to GPU 0. GPU 1
+  stayed idle throughout.
+- **No RTX A4500 row:** its only host (Czechia, 149635) sets 130 W of the
+  card's 200 W, below the power rule.
+- **A4000, both hosts:** every miner ran at the 140 W limit. We ran 60–110
+  MHz faster than the other two.
 - **Kentucky:** the card runs at 92–94 C. In this 5-minute run all three
   miners stayed at the power limit, but in our longer speed tests the card
   hit its thermal limit and read 54.7–55.1 TH/s.
@@ -757,6 +799,37 @@ versions as the RTX tables.
   rate is its own figure.
 - **Replaced host:** Germany (14335). Another workload was using the GPU,
   and the tensor probe read 37 T-MAC/s against 92 on a clean card.
+
+## B200 (sm_100, PR #256's build)
+
+Run on 2026-10-09, 05:28–06:09 UTC, with PR #256's build at `7f92992`, not
+yet released. The box built it as native-core.yml does: CUDA 12.8, the
+release's architectures plus sm_100. Our miner ran from source with
+`PEARL_CORE_PATH` set to that core; the app picks the same CUDA 12.8 core
+for a compute 10.0 card. Same pool and miner versions as the RTX tables.
+
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
+|---|---|---|---|---|---|---|
+| B200 180 GB | Oregon (1000 W) | 96942 | 460.2 | 1376.9 | 1384.1 | 33% |
+
+- **Hit check:** 400/400, in both operand orders.
+- **Why it's slow:** the B200 runs the TMA tall fold that RTX 50 cards mine
+  on, built for sm_100. That fold uses `mma.sync`, and a probe on this card
+  topped out at about 568 TH/s with it, 41% of SRBMiner. PeakMiner and
+  SRBMiner did about 6,300 int8 MACs per clock per SM, three times what
+  `mma.sync` reached, so they use the B200's own tensor instructions
+  (tcgen05). Matching them needs a tcgen05 fold.
+- **Clocks and power:** ours ran at 1965 MHz and 872 W, under the 1000 W
+  limit. PeakMiner and SRBMiner ran at the limit, at 1470 and 1492 MHz.
+- **Speed tests** (`hashrate.js`, 3 rounds): the shipped fold 461.6, and the
+  cp.async fold (`-DPEARL_TALL_TMA=0`) 468.8, 1.5% faster in every round.
+  Batch widths of 1024 and 512 were level with 2048.
+- **Shares:** 19 accepted for ours, 46 for PeakMiner and 43 for SRBMiner,
+  none rejected.
+- **Order:** ours, then PeakMiner, then SRBMiner. The competitors' figures
+  are their last reading, at 295 s.
+- **Host:** the cheapest 1-GPU offer, reliability 0.997, driver 580.126.09,
+  148 SMs and 126.5 MiB of L2.
 
 ## Replaced hosts (40/50-series)
 
