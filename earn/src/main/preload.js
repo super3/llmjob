@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('llmjob', {
   getLlmStatus: () => ipcRenderer.invoke('llm:status'),
   onLlm: (cb) => ipcRenderer.on('llm:status', (_e, d) => cb(d)),
   sendChat: (messages) => ipcRenderer.send('llm:chat', messages),
+  setShareLlm: (on) => ipcRenderer.send('llm:share', on),
   onChatDelta: (cb) => ipcRenderer.on('llm:chat:delta', (_e, d) => cb(d)),
   onChatDone: (cb) => ipcRenderer.on('llm:chat:done', () => cb()),
   onChatError: (cb) => ipcRenderer.on('llm:chat:error', (_e, d) => cb(d)),

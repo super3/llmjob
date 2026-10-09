@@ -257,6 +257,19 @@ describe('createServeGate: a gate with nothing to switch', () => {
     expect(() => createServeGate({ port: 0, isLlmReady: () => false })).not.toThrow();
   });
 
+  test('hands a port it cannot bind to onListenError', async () => {
+    // The desktop app's network switch shows this on screen, so the error has to
+    // reach the caller, not only the log.
+    const blocker = require('http').createServer();
+    await new Promise((r) => blocker.listen(0, '0.0.0.0', r));
+    const onListenError = jest.fn();
+    const a = mkServe({ port: blocker.address().port, onListenError }).start();
+    await new Promise((r) => { onListenError.mockImplementation(r); });
+    expect(onListenError.mock.calls[0][0].code).toBe('EADDRINUSE');
+    a.stop();
+    await new Promise((r) => blocker.close(r));
+  });
+
   test('constructs with no options at all', () => {
     const a = createServeGate();
     expect(a.gate.state).toBe('SERVING');

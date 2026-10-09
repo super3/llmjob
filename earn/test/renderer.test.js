@@ -235,6 +235,61 @@ describe('boot with the full bridge', () => {
   // keeps earning. Settings are persisted FROM currentSettings(), so the value
   // has to survive a round trip it is never shown in — otherwise the first
   // Start quietly erases it and ends the earnings we kept it for.
+  it('shares the local LLM on the network from Settings', async () => {
+    const { api, cbs } = makeFullApi();
+    api.setShareLlm = jest.fn();
+    await boot({ api });
+    const flip = (on) => {
+      $('set-share').checked = on;
+      $('set-share').dispatchEvent(new window.Event('change', { bubbles: true }));
+    };
+    // Off: the note says what it would do, and nothing claims the network.
+    expect($('set-share').checked).toBe(false);
+    expect($('share-note').textContent).toContain('turn this on only on a network you trust');
+    expect($('api-lan').hidden).toBe(true);
+    expect($('connect-reach').textContent).toBe('this computer');
+
+    // On, before any model runs.
+    flip(true);
+    expect(api.setShareLlm).toHaveBeenLastCalledWith(true);
+    expect($('share-note').textContent).toBe('Other devices on your network can reach it on port 8000 while the local LLM runs.');
+
+    // main reports the gate up: the first address is the one shown.
+    makeReady(cbs, { lan: { urls: ['http://192.168.0.220:8000/v1', 'http://10.0.0.7:8000/v1'], error: null } });
+    expect($('share-note').textContent).toBe('Other devices on your network can use it at http://192.168.0.220:8000/v1, with no key. '
+      + 'If your firewall asks, allow LLMJob Earn on private networks.');
+    expect($('api-lan').hidden).toBe(false);
+    expect($('api-lan-url').textContent).toBe('http://192.168.0.220:8000/v1');
+    expect($('connect-reach').textContent).toBe('this computer and your network');
+    click($('api-lan-url'));
+    expect(api.copyText).toHaveBeenLastCalledWith('http://192.168.0.220:8000/v1');
+
+    makeReady(cbs, { lan: { urls: [], error: null } });
+    expect($('share-note').textContent).toBe('Shared on port 8000, but this computer has no network address right now.');
+    expect($('api-lan').hidden).toBe(true);
+
+    makeReady(cbs, { lan: { urls: [], error: 'Port 8000 is already in use' } });
+    expect($('share-note').textContent).toBe('Could not share it: Port 8000 is already in use.');
+    expect($('share-note').classList.contains('err')).toBe(true);
+
+    // START rewrites settings.json from what it sends, so the switch rides along.
+    click($('btn-start'));
+    expect(api.startMiner).toHaveBeenLastCalledWith(expect.objectContaining({ shareLlm: true }));
+
+    // Off again: whatever main said last no longer shows.
+    flip(false);
+    expect(api.setShareLlm).toHaveBeenLastCalledWith(false);
+    expect($('share-note').classList.contains('err')).toBe(false);
+    expect($('api-lan').hidden).toBe(true);
+  });
+
+  it('shows a saved network switch as on', async () => {
+    const { api } = makeFullApi();
+    api.getSettings.mockResolvedValue({ address: ADDR, worker: 'w1', region: 'us2', shareLlm: true });
+    await boot({ api });
+    expect($('set-share').checked).toBe(true);
+  });
+
   it('carries a stored MDL address through invisibly, with nothing to set it', async () => {
     const { api } = makeFullApi();
     const MDL = 'mdl1p' + 'b'.repeat(30);
@@ -415,7 +470,7 @@ describe('boot with the full bridge', () => {
     click(document.querySelector('[data-mode="auto"]'));
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenCalledWith({
-      address: ADDR, worker: 'w1', region: 'eu1', mode: 'auto', mdlAddress: '',
+      address: ADDR, worker: 'w1', region: 'eu1', mode: 'auto', mdlAddress: '', shareLlm: false,
     });
     expect($('addr-static').hidden).toBe(false);
     expect($('addr-static').textContent).toBe(ADDR);
@@ -491,7 +546,7 @@ describe('boot with the full bridge', () => {
     click($('mode-empty'));
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenLastCalledWith({
-      address: ADDR, worker: 'rig01', region: 'us2', mode: 'mining', mdlAddress: '',
+      address: ADDR, worker: 'rig01', region: 'us2', mode: 'mining', mdlAddress: '', shareLlm: false,
     });
     // A new run forgets the last run's card, so an engine that names none (an
     // older core, or a rig with no CUDA device list to report) shows the detected
@@ -933,6 +988,11 @@ describe('partial bridge (fallback settings, missing action methods)', () => {
     expect($('api-copy').textContent).toBe('Copy API');
     // open with a url but no shell bridge
     click($('api-open'));
+    // the network switch and its address without the bridge
+    $('set-share').checked = true;
+    $('set-share').dispatchEvent(new window.Event('change', { bubbles: true }));
+    cbs.llm({ ready: true, endpoint: ENDPOINT, lan: { urls: ['http://192.168.0.5:8000/v1'], error: null } });
+    click($('api-lan-url'));
     // connect/disconnect/dashboard without the node bridge
     $('connect-token').value = 'tok';
     click($('connect-link'));

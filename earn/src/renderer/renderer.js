@@ -32,16 +32,18 @@
     // api
     apiRunning: $('api-running'), apiStopped: $('api-stopped'),
     apiEndpointUrl: $('api-endpoint-url'), apiCopy: $('api-copy'), apiOpen: $('api-open'),
-    apiModel: $('api-model'),
+    apiModel: $('api-model'), apiLan: $('api-lan'), apiLanUrl: $('api-lan-url'),
     // connect
     connectHint: $('connect-hint'), connectForm: $('connect-form'), connectToken: $('connect-token'),
     connectError: $('connect-error'), connectLink: $('connect-link'), connectDashboard: $('connect-dashboard'),
     connectPairToggle: $('connect-pair-toggle'), connectPair: $('connect-pair'),
     connectDone: $('connect-done'), connectedTitle: $('connected-title'), connectedName: $('connected-name'),
     connectedAvatar: $('connected-avatar'), connectedRename: $('connected-rename'), connectDisconnect: $('connect-disconnect'),
+    connectReach: $('connect-reach'),
     // settings
     modeSeg: $('mode-seg'), modeHint: $('mode-hint'),
     setWorker: $('set-worker'), setRegion: $('set-region'),
+    setShare: $('set-share'), shareNote: $('share-note'),
     appVersion: $('app-version'), btnCheckUpdate: $('btn-check-update'), updateStatus: $('update-status'),
     logTerm: $('log-term'),
   };
@@ -54,13 +56,14 @@
     view: 'mine',        // mine | chat | api | settings | logs
     returnTab: 'mine',   // where settings/logs return to
     address: '', gpu: '', mode: 'auto', mdlAddress: '',
+    shareLlm: false,     // Settings → Local network: share the local LLM on port 8000
     // The card the ENGINE says it is mining on, once it says so. `gpu` above is
     // only the startup auto-detect, and on a multi-GPU rig the two can be
     // different cards (issue #226) — this one is the one doing the work.
     engineGpu: '',
     temp: 0,             // last core temperature reported, so a frame without one keeps it
     canMine: true,       // false on macOS — no alpha-miner build exists for it
-    llm: { ready: false, endpoint: null, webUrl: null, tps: 0, model: null, error: null, note: null },
+    llm: { ready: false, endpoint: null, webUrl: null, tps: 0, model: null, error: null, note: null, lan: null },
     chat: { messages: [], streaming: false, streamText: '', bubble: null },
     node: { connected: false, nodeId: null, name: null },
   };
@@ -190,6 +193,33 @@
     updateSendEnabled();
   }
 
+  // Settings → Local network, and the network address on the API tab. main
+  // reports lan only while the network gate runs (or failed to bind).
+  function renderShare() {
+    el.setShare.checked = state.shareLlm;
+    const lan = state.shareLlm ? state.llm.lan : null;
+    const url = lan && lan.urls[0];
+    let note;
+    if (!state.shareLlm) {
+      note = 'Lets phones and other computers on your network use the local LLM, on port 8000. '
+        + 'Anyone on the network can use it, with no key, so turn this on only on a network you trust.';
+    } else if (lan && lan.error) {
+      note = 'Could not share it: ' + lan.error + '.';
+    } else if (url) {
+      note = 'Other devices on your network can use it at ' + url + ', with no key. '
+        + 'If your firewall asks, allow LLMJob Earn on private networks.';
+    } else if (lan) {
+      note = 'Shared on port 8000, but this computer has no network address right now.';
+    } else {
+      note = 'Other devices on your network can reach it on port 8000 while the local LLM runs.';
+    }
+    el.shareNote.textContent = note;
+    el.shareNote.classList.toggle('err', !!(lan && lan.error));
+    el.apiLan.hidden = !url;
+    if (url) el.apiLanUrl.textContent = url;
+    el.connectReach.textContent = url ? 'this computer and your network' : 'this computer';
+  }
+
   function renderApiGate() {
     const up = state.llm.ready;
     el.apiRunning.hidden = !up;
@@ -206,10 +236,12 @@
       model: (s && s.model) || state.llm.model,
       error: (s && s.error) || null,
       note: (s && s.note) || null,
+      lan: (s && s.lan) || null,
     };
     renderLlmHero();
     renderChatGate();
     renderApiGate();
+    renderShare();
     // If the model went away mid-reply, unbrick the composer even if the
     // main-process chat-error event was lost in the shuffle.
     if (!state.llm.ready && state.chat.streaming) onChatError({ message: 'the local LLM stopped' });
@@ -598,6 +630,9 @@
       region: el.setRegion.value || state.defaultRegion,
       mode: state.mode || 'mining',
       mdlAddress: state.mdlAddress || '',
+      // Carried so a START, which rewrites settings.json from this object, keeps
+      // the switch. main also saves it the moment it is flipped.
+      shareLlm: state.shareLlm,
     };
   }
 
@@ -732,6 +767,16 @@
     });
     el.connectedRename.addEventListener('click', () => { state.view = 'settings'; renderView(); });
 
+    // Share the local LLM on the network. Applied at once by main, not at START.
+    el.setShare.addEventListener('change', () => {
+      state.shareLlm = el.setShare.checked;
+      if (api.setShareLlm) api.setShareLlm(state.shareLlm);
+      renderShare();
+    });
+    el.apiLanUrl.addEventListener('click', () => {
+      if (api.copyText) api.copyText(el.apiLanUrl.textContent);
+    });
+
     document.querySelectorAll('[data-ext]').forEach((a) =>
       a.addEventListener('click', (e) => {
         e.preventDefault();
@@ -764,6 +809,7 @@
       state.address = s.address || '';
       el.addrInput.value = state.address;
       state.mdlAddress = s.mdlAddress || '';
+      state.shareLlm = s.shareLlm === true;
       el.setWorker.value = s.worker || 'rig01';
       // main migrates a stale AlphaPool id before we see it, so this always
       // names an option that exists.
@@ -779,6 +825,7 @@
       resumeMining = !!(s.resumeMining && isValid(state.address));
     }
     renderMode();
+    renderShare();
     if (api.onLlm) api.onLlm(renderLlm);
     if (api.getLlmStatus) api.getLlmStatus().then(renderLlm);
     if (api.onChatDelta) api.onChatDelta(onChatDelta);

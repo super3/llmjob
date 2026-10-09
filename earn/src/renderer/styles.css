@@ -105,6 +105,15 @@ input.field-box { user-select: text; }
 .engine-status { margin-top: 12px; text-align: center; font-size: 12.5px; color: var(--muted); }
 .engine-status.err { color: #dc2626; }
 
+/* On/off switches in Settings: a native checkbox drawn as a switch, so the
+   keyboard and screen readers get a real checkbox. */
+.toggle-row { cursor: pointer; }
+.toggle { appearance: none; -webkit-appearance: none; flex: none; margin: 0; width: 34px; height: 20px; border-radius: 10px; background: #d9d6cc; position: relative; cursor: pointer; transition: background .15s; }
+.toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.2); transition: transform .15s; }
+.toggle:checked { background: var(--accent); }
+.toggle:checked::after { transform: translateX(14px); }
+.toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 /* GPU Activity hero: Mining | LLM two-column */
 .hero2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; margin-bottom: 10px; }
 .hero-col.right { text-align: right; }
@@ -177,6 +186,8 @@ input.field-box { user-select: text; }
 .endpoint-row.tight { margin-bottom: 10px; }
 .api-note { font-size: 12px; color: var(--muted); margin: 0 0 26px; line-height: 1.5; }
 .api-note b { color: var(--ink-3); font-weight: 600; }
+.api-lan { font-size: 12px; color: var(--muted); margin: 0 0 8px; }
+.api-lan b { color: var(--ink-3); font-weight: 600; cursor: pointer; user-select: text; }
 .endpoint-url { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 13px; color: var(--ink-3); cursor: pointer; }
 .model-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--line); background: var(--field); border-radius: 9px; padding: 12px 14px; margin-bottom: 26px; }
 .model-row .meta { font-size: 12px; color: var(--muted); white-space: nowrap; }
@@ -259,6 +270,7 @@ select.rv-input { cursor: pointer; }
 .settings-note a { color: var(--accent); cursor: pointer; }
 .settings-note .ok { color: var(--green); font-weight: 600; }
 .settings-note .warn { color: #dc2626; font-weight: 600; }
+.settings-note.err { color: #dc2626; }
 
 /* merge mining */
 
