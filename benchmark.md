@@ -30,11 +30,12 @@ host:
   SXM4 97%. The California A100 SXM4 (89%, on a host that cools the card
   poorly) and the CMP 170HX (87%) are from an earlier build. A speed test of
   v0.5.13's kernel on the CMP 170HX read 98%.
-- Hopper (sm_90a, new in v0.5.13): 93–94% on the H100 NVL, H100 PCIe, H200
-  and H200 NVL, re-measured with the published v0.5.13 release. The H100 SXM
-  (83%) is from a build before v0.5.13, without the fold change that gained
-  6.1–8.0% on the other four. These cards couldn't mine at all before
-  v0.5.13.
+- Hopper (sm_90a, new in v0.5.13): 100–102% on the H100 NVL, H100 PCIe, H200
+  and H200 NVL, re-measured with PR #256's build (`79e26da`, not yet
+  released). That's 6.5–8.8% above their v0.5.13 pool runs. The H100 SXM
+  (83%) is still from a build before v0.5.13, without the fold changes
+  since; a speed test of PR #256's fold on another H100 SXM host read 96%.
+  These cards couldn't mine at all before v0.5.13.
 - Ada workstation and data-center cards (sm_89: L40S, L40, L4, RTX 6000,
   5000, 4500, 4000 and 2000 Ada): 101–111%. Ten rows are from PR #256's
   build, which gained 0.7–1.7% over v0.5.13 in the same rental on the L4s
@@ -48,16 +49,15 @@ host:
 
 1. Get our CLI and core. The v0.5.11 runs downloaded them from the published
    release on GitHub, the same files a user gets. So did the re-measures of
-   ten RTX rows and four Hopper rows on 2026-10-08, 17:03–18:47 UTC, from
-   the published v0.5.13 release; those boxes also checked the files against
-   the release digests. The 20-, 30- and 50-series and Hopper sections name
-   those rows. Other later runs built a commit from source, or as CI builds
-   it; each section names the commit and says whether its kernel is
-   byte-identical to v0.5.13's. The first 20-series run predates the
-   release: it built PR #250 from source, which is the code that shipped as
-   v0.5.11. On an RTX 50-series card with driver 580 or newer, the CLI loads
-   the CUDA 13 core, as a user's rig would, and the hit check runs on that
-   core.
+   ten RTX rows on 2026-10-08, 18:21–18:47 UTC, from the published v0.5.13
+   release; those boxes also checked the files against the release digests.
+   The 20-, 30- and 50-series sections name those rows. Other later runs
+   built a commit from source, or as CI builds it; each section names the
+   commit and says whether its kernel is byte-identical to v0.5.13's. The
+   first 20-series run predates the release: it built PR #250 from source,
+   which is the code that shipped as v0.5.11. On an RTX 50-series card with
+   driver 580 or newer, the CLI loads the CUDA 13 core, as a user's rig
+   would, and the hit check runs on that core.
 2. Hit check: `earn/native/probes/verify-hits.js` runs the core for 90 s and
    recomputes the first 400 hits from scratch the way the pool's verifier would.
    Every one must match. It checks that the answers are right, not the speed.
@@ -85,10 +85,11 @@ isn't a re-measure: `hashrate.js` runs the core alone, with no pool, for
 3–4 rounds of 60 s after a 15 s warm-up, and the figure is the mean of the
 rounds. Speed tests go in the section notes and never change a row. On the
 hosts that have both a speed test and a pool run of the same kernel, the two
-agree within 1% when the card holds the same clock in both. When it
-doesn't, the rate follows the clock: the Alberta 2070 Super tested 57.3 at
-about 1605 MHz and read 60.0 in its pool run at 1680 MHz. The Kentucky
-A4000, at 92–94 C, tested 54.7 and read 56.9 in its pool run.
+agree within 1% when the card holds the same clock in both, except the Japan
+H100 NVL: its pool run read 1.7% below its speed test, both at 1155 MHz.
+When the clock differs, the rate follows it: the Alberta 2070 Super tested
+57.3 at about 1605 MHz and read 60.0 in its pool run at 1680 MHz. The
+Kentucky A4000, at 92–94 C, tested 54.7 and read 56.9 in its pool run.
 
 ## How hosts are picked
 
@@ -490,7 +491,7 @@ California A100 SXM4 are still from `feba1ca`.
   8 GB and 70 SMs. Every CMP 170HX on Vast is like this, so a stock card
   hasn't been tested.
 
-## Hopper (sm_90a, v0.5.13 and a build before it)
+## Hopper (sm_90a, PR #256's build and a build before v0.5.13)
 
 Run on 2026-10-08, 06:35–07:17 UTC, with PR #253's release build at `e8c04b4`,
 which mines with Hopper's wgmma fold by default. Each box built the core as
@@ -500,23 +501,25 @@ v0.5.13 supports these cards, with a faster fold than this build (see "Since
 PeakMiner and SRBMiner on the H100 SXM and NVL hosts are the 2026-10-07
 runs; the other three hosts are new, so all three miners ran there.
 
-Four rows were re-measured on 2026-10-08 with the published v0.5.13
-release: the H100 NVL, the H100 PCIe and the H200 NVL at 17:03–17:09 UTC,
-and the H200 at 18:21–18:26 UTC. Each box downloaded the CLI and core from
-GitHub, checked them against the release digests, and ran the hit check and
-a 5-minute pool run. The H100 SXM is still from `e8c04b4`.
+Four rows were re-measured on 2026-10-09, 00:33–00:48 UTC, with 5-minute
+pool runs of PR #256's build at `79e26da`, not yet released: the H100 NVL,
+the H100 PCIe, the H200 and the H200 NVL. Each box built that commit as
+native-core.yml does and ran the hit check and the pool run on that core.
+Its sm_90a fold is not v0.5.13's: it runs the fold's three-warpgroup form
+(see "After v0.5.13" below). The H100 SXM is still from `e8c04b4`.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
 | H100 SXM 80 GB | New York (700 W) | 153443 | 630.8 | 757.7 | 734.4 | 83% |
-| H100 NVL 94 GB | Japan (400 W) | 29785 | 505.1 | 533.0 | 537.6 | 94% |
-| H100 PCIe 80 GB | Czechia (350 W) | 147981 | 454.4 | 391.6 | 481.0 | 94% |
-| H200 141 GB | Saudi Arabia (700 W) | 131919 | 669.7 | 718.6 | 720.4 | 93% |
-| H200 NVL 141 GB | Quebec (600 W) | 153365 | 627.4 | 669.8 | 675.3 | 93% |
+| H100 NVL 94 GB | Japan (400 W) | 29785 | 537.9 | 533.0 | 537.6 | 100% |
+| H100 PCIe 80 GB | Czechia (350 W) | 147981 | 490.7 | 391.6 | 481.0 | 102% |
+| H200 141 GB | Saudi Arabia (700 W) | 131919 | 719.9 | 718.6 | 720.4 | 100% |
+| H200 NVL 141 GB | Quebec (600 W) | 153365 | 682.9 | 669.8 | 675.3 | 101% |
 
-- **Every host:** passed the hit check and picked the wgmma fold (2-CTA
-  clusters, 128x256 tiles). The CLI got 26, 16, 18, 20 and 26 shares
-  accepted, none rejected.
+- **Every host:** passed the hit check and picked the wgmma fold with 2-CTA
+  clusters: 192x256 tiles on `79e26da`, 128x256 in the H100 SXM's
+  `e8c04b4` run. The CLI got 26, 19, 21, 20 and 23 shares accepted, none
+  rejected.
 - **The gap is work per clock.** Every miner ran at the power cap. On
   `e8c04b4` we ran 70–290 MHz faster than the other two at the same watts.
   Per clock that fold did 71–75% of the wgmma peak and the competitors
@@ -525,6 +528,10 @@ a 5-minute pool run. The H100 SXM is still from `e8c04b4`.
   `e8c04b4`. The card clocks 30–60 MHz lower at the same cap, which is still
   30–250 MHz faster than the other two, and per clock we do 90–92% of
   SRBMiner's work.
+- **On v0.5.13:** before PR #256's build, the re-measured rows read, on
+  2026-10-08 with the published release: 505.1 (94%) on the H100 NVL,
+  454.4 (94%) on the H100 PCIe and 627.4 (93%) on the H200 NVL at
+  17:03–17:09 UTC, and 669.7 (93%) on the H200 at 18:21–18:26 UTC.
 - **On `e8c04b4`:** the re-measured rows read 471.0 (88%) on the H100 NVL,
   423.1 (88%) on the H100 PCIe, 619.9 (86%) on the H200 and 591.5 (88%) on
   the H200 NVL.
@@ -543,13 +550,20 @@ a 5-minute pool run. The H100 SXM is still from `e8c04b4`.
   a different method, so the H100 SXM row is unchanged.
 - **After v0.5.13:** PR #256 makes the fold's three-warpgroup form the
   default (192x256 tiles, band 8; `PEARL_HOPPER_WG3` in `pearl_config.h`).
-  `hashrate.js` speed tests on 2026-10-08, 22:46–23:39 UTC, of that sm_90a
-  kernel against v0.5.13's, 3 rounds each, ahead in every round: 547.1
-  against 501.0 (+9.2%) on the H100 NVL (Japan, 29785, this table's host),
-  101.8% of SRBMiner's 537.6; and 729.3 against 670.8 (+8.7%) on an H100 SXM
-  (California, 152422, 700 W; New York 153443 had no offer), 96.3% of
-  PeakMiner's 757.7. That is a different method, and for the SXM a different
-  host, so both rows are unchanged until a pool run.
+  In the table's pool runs of `79e26da`, the H100 NVL read 6.5% more than
+  in its v0.5.13 pool run, the H100 PCIe 8.0%, the H200 7.5% and the H200
+  NVL 8.8%. Each compares two rentals of the same host. The H200 is at
+  99.9% of SRBMiner, which rounds to 100%.
+- **Speed tests of the new fold:** `hashrate.js` speed tests on 2026-10-08,
+  22:46–23:39 UTC, of a build with `79e26da`'s sm_90a kernel against
+  v0.5.13's in the same rental, 3 rounds each, ahead in every round: 547.1
+  against 501.0 (+9.2%) on the H100 NVL (Japan, 29785, this table's host);
+  and 729.3 against 670.8 (+8.7%) on an H100 SXM (California, 152422,
+  700 W; New York 153443 had no offer), 96.3% of PeakMiner's 757.7. The
+  H100 NVL's pool run read 1.7% below its speed test, at the same 1155 MHz.
+  The SXM test is a different method on a different host, so the H100 SXM
+  row is unchanged. 152422 blocks outbound port 1200, so it can't do a pool
+  run.
 - **H100 PCIe:** 81035 wasn't offered, so this is a new host. PeakMiner ran
   at 915 MHz and fell from about 404 to 391.6 by 5:00. SRBMiner is the faster
   competitor here either way.
