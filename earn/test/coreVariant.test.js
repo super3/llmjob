@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const {
-  CU12, CU13, FILES, MIN_DRIVER_CU13, cu13HasCodeFor, cu13AutoSelectsFor,
+  CU12, CU13, AMD, FILES, LABELS, MIN_DRIVER_CU13, cu13HasCodeFor, cu13AutoSelectsFor,
   parseCudaCards, pickCoreVariant, isRuntimeError,
 } = require('../src/shared/coreVariant');
 
@@ -27,6 +27,12 @@ describe('core file names', () => {
     expect(FILES[CU12]).toBe('pearl_core.node');
     expect(FILES[CU13]).toBe('pearl_core_cu13.node');
     expect(MIN_DRIVER_CU13).toBe(580);
+  });
+
+  // build-amd.sh writes this name, and the AMD README tells operators to use it.
+  test('the AMD core is pearl_core_hip.node', () => {
+    expect(FILES[AMD]).toBe('pearl_core_hip.node');
+    expect(LABELS[AMD]).toBe('AMD build (ROCm)');
   });
 });
 
@@ -297,6 +303,21 @@ describe('pickCoreVariant', () => {
         .toEqual({ variant: CU12, reason: 'PEARL_CORE_VARIANT=cu12' });
     });
 
+    // The AMD core is never chosen on its own, only asked for. With nvidia-smi
+    // saying nothing (an AMD rig) it is what the operator gets; with NVIDIA cards
+    // listed, the operator's word still stands.
+    test('amd asks for the AMD build, whatever nvidia-smi said', () => {
+      expect(pickCoreVariant({ env: { PEARL_CORE_VARIANT: 'AMD' }, cards: [] }))
+        .toEqual({ variant: AMD, reason: 'PEARL_CORE_VARIANT=amd' });
+      expect(pickCoreVariant({ env: { PEARL_CORE_VARIANT: 'amd' }, cards: [RTX5090(0)] }).variant).toBe(AMD);
+    });
+
+    test('nothing picks the AMD build without being asked', () => {
+      for (const cards of [[], [RTX5090(0)], [RTX4090(0)], [RTX2080TI(0)], [card(0, '12.0', null)]]) {
+        expect(pickCoreVariant({ env: {}, cards }).variant).not.toBe(AMD);
+      }
+    });
+
     test('blank is the same as unset', () => {
       expect(pickCoreVariant({ env: { PEARL_CORE_VARIANT: '  ' }, cards: [RTX5090(0)] }).variant).toBe(CU13);
     });
@@ -305,10 +326,10 @@ describe('pickCoreVariant', () => {
     test('anything else is ignored, and the reason says so', () => {
       expect(pickCoreVariant({ env: { PEARL_CORE_VARIANT: '13' }, cards: [RTX5090(0)] })).toEqual({
         variant: CU13,
-        reason: 'PEARL_CORE_VARIANT=13 ignored (use cu12 or cu13); driver 610, mining card is compute 12.0',
+        reason: 'PEARL_CORE_VARIANT=13 ignored (use cu12, cu13 or amd); driver 610, mining card is compute 12.0',
       });
       expect(pickCoreVariant({ env: { PEARL_CORE_VARIANT: 'x' }, cards: [] }).reason)
-        .toBe('PEARL_CORE_VARIANT=x ignored (use cu12 or cu13); GPU compute capability unknown');
+        .toBe('PEARL_CORE_VARIANT=x ignored (use cu12, cu13 or amd); GPU compute capability unknown');
     });
   });
 });
