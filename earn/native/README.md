@@ -6,6 +6,8 @@ lifecycle half is JavaScript, under `earn/src/shared/miner/` and
 
 An AMD (HIP/ROCm) port, not yet run on an AMD card, is in `amd/`; see `amd/README.md`.
 
+An Intel (SYCL) port, not yet run on an Intel GPU, is in `sycl/`; see `sycl/README.md`.
+
 ## Why this exists
 
 Every third-party Pearl miner we evaluated is blocked for a product like ours:
