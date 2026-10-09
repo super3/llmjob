@@ -10,26 +10,32 @@ power limits and cooling differ from host to host.
 How close our miner gets to the faster of PeakMiner and SRBMiner on the same
 host:
 
-- RTX 20-series: 94–98% on the six hosts re-measured with v0.5.13's kernel.
-  Two rows are still from v0.5.11: the RTX 2070 (89%) and the 2060 Super
-  (88%).
+- RTX 20-series: 94–98% on all eight hosts, on v0.5.13's kernel. The RTX
+  2070 (95%) and the 2060 Super (94%) ran PR #256's build (`9adc88a`, not
+  yet released), which has the same sm_75 kernel.
 - RTX 30-series: 97–104% on the eleven hosts re-measured with v0.5.13's
+  kernel, two of them on PR #256's build (`9adc88a`), which has the same
   kernel. Four rows are still from v0.5.11, at 78–80%: both 3090 Tis, the
   Ukraine 3090 and the 220 W Quebec 3070.
-- RTX 40-series: 97–103% on the ten hosts re-measured with PR #256's build
-  (`51d88e8`, not yet released), and 97–101% on the eight still from
-  v0.5.11. Against v0.5.13 in the same rental, the build gained 0.5% on the
-  209 W 4070 Super and was level on the rest. That card is at 97% because
-  its host ran 2% slower than in its earlier rental.
-- RTX 50-series: 99–100% on the four hosts re-measured with v0.5.13's kernel.
-  Of the eight still from v0.5.11, the 5090s and 5080s are close to even
-  (98–102%); the 5070 Tis, the Poland 5070 and the India 5060 trail by
-  5–10%.
-- A100-class (sm_80, new in v0.5.13): 97–107% on the three rows with
-  v0.5.13's kernel: the A30 107%, the A100 PCIe 99% and the New York A100
-  SXM4 97%. The California A100 SXM4 (89%, on a host that cools the card
-  poorly) and the CMP 170HX (87%) are from an earlier build. A speed test of
-  v0.5.13's kernel on the CMP 170HX read 98%.
+- RTX 40-series: 96–103% on the twelve hosts re-measured with PR #256's
+  build (`51d88e8` or `9adc88a`, not yet released), and 99–101% on the six
+  still from v0.5.11. Against v0.5.13 in the same rental, `51d88e8` gained
+  0.5% on the 209 W 4070 Super and was level on the rest. That card is at
+  96% because its host has run slower in each later rental: 138.5 on
+  v0.5.13, then 136.0 on `51d88e8` and 134.5 on `9adc88a`.
+- RTX 50-series: 99–100% on the three hosts re-measured with v0.5.13's
+  kernel, and 95–99% on the four re-measured with PR #256's build
+  (`3b8ffce`, not yet released), which has the same kernel. The India 5090
+  (95%) held a lower clock than in its earlier rental, and the 5070 Ti and
+  the Poland 5070 may share their GPU with another workload. Of the five
+  still from v0.5.11, the South Korea 5090 and the 5080s are close to even
+  (98–102%); the 5070 Ti on 28852 and the India 5060 trail by 6–10%.
+- A100-class (sm_80, new in v0.5.13): 94–107% on the four rows with
+  v0.5.13's kernel: the A30 107%, the A100 PCIe 98%, the New York A100
+  SXM4 96% and the California A100 SXM4 94%, on a host that cools the card
+  poorly. The three A100s are from PR #256's build (`9adc88a`, not yet
+  released), which has the same kernel. The CMP 170HX (87%) is from an
+  earlier build; a speed test of v0.5.13's kernel on it read 98%.
 - Hopper (sm_90a, new in v0.5.13): 100–102% on the H100 NVL, H100 PCIe, H200
   and H200 NVL, re-measured with PR #256's build (`1df3c20`, not yet
   released). That's 6.5–8.8% above their v0.5.13 pool runs. The H100 SXM
@@ -41,8 +47,10 @@ host:
   build, which gained 0.7–1.7% over v0.5.13 in the same rental on the L4s
   and the RTX 2000, 4000 and 4500 Ada, and was level on the rest. Three are
   still from 2026-10-07, on v0.5.13's kernel.
-- RTX PRO Blackwell (sm_120): 99–101%. The 6000 Max-Q and the RTX 6000D are
-  level; the RTX PRO 5000 and 6000 Server are 0.7% short.
+- RTX PRO Blackwell (sm_120): 98–101%. The 6000 Max-Q and the RTX 6000D are
+  level; the RTX PRO 5000 is 0.7% short and the 6000 Server 1.5%. The RTX
+  6000D and 6000 Server rows are from PR #256's build (`9adc88a`, not yet
+  released), which has v0.5.13's kernel.
 - Ampere workstation and data-center cards (sm_86: RTX A6000, A5000, A4000
   and A2000, and the A40): 97–102% on v0.5.13's kernel. Seven of the ten
   rows are at 100–102%. The Kansas A6000 (99.8%) and the Belgium A40
@@ -58,7 +66,7 @@ host:
 
 1. Get our CLI and core. The v0.5.11 runs downloaded them from the published
    release on GitHub, the same files a user gets. So did the re-measures of
-   ten RTX rows on 2026-10-08, 18:21–18:47 UTC, and the eight new sm_86 rows
+   nine RTX rows on 2026-10-08, 18:21–18:47 UTC, and the eight new sm_86 rows
    on 2026-10-09, from the published v0.5.13 release; those boxes also
    checked the files against the release digests. The 20-, 30-, 50-series
    and sm_86 sections name those rows. Other later runs
@@ -82,9 +90,8 @@ the end of its 5 minutes. For our miner it's the mean of every reading after
 the first minute. Up to v0.5.11 a single reading covered only about 0.5 s
 and could be off by one batch (see the RTX 2070 note); from v0.5.12 each
 reading is the average since the previous one. The first 20-series run used
-the last reading, so the one row still from it, the 2060 Super, is a
-single reading. On a multi-GPU rental, every miner is pinned to GPU 0 and
-checked to use only that card.
+the last reading; no row is still from it. On a multi-GPU rental, every
+miner is pinned to GPU 0 and checked to use only that card.
 
 "% of best" is our rate divided by the faster of PeakMiner and
 SRBMiner on the same host.
@@ -135,19 +142,21 @@ existed, so the Thailand 2080 Ti (170 W of 250 W) is on the list.
   host is tested" name the right release, and that no section calls a
   shipped card unreleased.
 
-## RTX 20-series (v0.5.13 and v0.5.11)
+## RTX 20-series (PR #256's build and v0.5.13)
 
 Run on 2026-10-06, 09:15–09:38 UTC, with PR #250 built from source at
 `f66f80c`: the code that shipped as v0.5.11. The RTX 2070 was rerun at
 10:24 UTC with the v0.5.11 release, averaging our readings.
 
-Six rows were re-measured later with 5-minute pool runs. The Pennsylvania
+Every row was re-measured later with a 5-minute pool run. The Pennsylvania
 2080 Ti ran on 2026-10-08, 14:10–14:19 UTC, with the v0.5.13 release
 candidate (`26c50b3`) built as CI builds it, which has the same sm_75
 kernel as v0.5.12 and v0.5.13, byte for byte. The Thailand 2080 Ti, the
 2080, the 2070 Super and both 2060s ran on 2026-10-08, 18:21–18:37 UTC,
-with the published v0.5.13 release. The RTX 2070 and the 2060 Super are
-still from v0.5.11.
+with the published v0.5.13 release. The RTX 2070 and the 2060 Super ran on
+2026-10-09, 04:28–06:02 UTC, with PR #256's build at `9adc88a`, not yet
+released, built on each box with CI's flags. Its sm_75 kernel is
+v0.5.13's, byte for byte.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
@@ -155,26 +164,31 @@ still from v0.5.11.
 | RTX 2080 Ti | Pennsylvania (260 W) | 150735 | 89.6 | 94.2 | 94.2 | 95% |
 | RTX 2080 | Colorado (275 W) | 149439 | 78.3 | waiting | 80.3 | 97% |
 | RTX 2070 Super | Alberta (215 W) | 31798 | 60.0 | 60.9 | 59.1 | 98% |
-| RTX 2070 | South Korea (150 W) | 139007 | 44.5 | 50.1 | 48.9 | 89% |
-| RTX 2060 Super | Germany (175 W) | 149900 | 41.1 | 46.5 | 45.0 | 88% |
+| RTX 2070 | South Korea (150 W) | 139007 | 47.8 | 50.1 | 48.9 | 95% |
+| RTX 2060 Super | Germany (175 W) | 149900 | 43.8 | 46.5 | 45.0 | 94% |
 | RTX 2060 | Australia (190 W, 6 GB) | 152547 | 48.8 | 50.3 | 47.3 | 97% |
 | RTX 2060 | South Korea (184 W, 12 GB) | 27568 | 49.8 | 52.9 | 52.3 | 94% |
 
 Every host passed the hit check, and every run had 0 rejected shares.
 
-- **Against the top competitor:** the six re-measured hosts are at 94–98%.
-  On v0.5.11 every card was at 85–91%, and the RTX 2070 and the 2060 Super
-  still show that. The top competitor is PeakMiner everywhere except the
-  2080, where PeakMiner didn't run and SRBMiner is the comparison. On the
-  Pennsylvania 2080 Ti the two tie at 94.2. On v0.5.11, PeakMiner kept the
-  tensor cores busier: about 92% of peak against our 78–82%.
-- **On v0.5.11:** the re-measured rows read 60.5 (85%) on the Thailand
+- **Against the top competitor:** every host is at 94–98%. On v0.5.11
+  every card was at 85–91%. The top competitor is PeakMiner everywhere
+  except the 2080, where PeakMiner didn't run and SRBMiner is the
+  comparison. On the Pennsylvania 2080 Ti the two tie at 94.2. On v0.5.11,
+  PeakMiner kept the tensor cores busier: about 92% of peak against our
+  78–82%.
+- **On v0.5.11:** on 2026-10-06 the rows read 60.5 (85%) on the Thailand
   2080 Ti, 85.7 (91%) on the Pennsylvania 2080 Ti, 70.9 (88%) on the 2080,
-  55.0 (90%) on the 2070 Super, and 43.4 (86%) and 46.3 (88%) on the
-  Australia and South Korea 2060s.
-- **RTX 2060 Super:** a speed test of the v0.5.13 kernel on this host read
-  44.0 (95%) on 2026-10-06, on `dc97cbd` with a patch and build flags. It
-  isn't a pool run, so the row keeps its v0.5.11 figure.
+  55.0 (90%) on the 2070 Super, 44.5 (89%) on the 2070 (the 10:24 UTC rerun
+  with the v0.5.11 release), 41.1 (88%) on the 2060 Super (on `f66f80c`, a
+  single reading), and 43.4 (86%) and 46.3 (88%) on the Australia and South
+  Korea 2060s.
+- **RTX 2060 Super:** the row is the pool run that came right after the hit
+  check. An earlier rental of the same host that day, at 04:29 UTC, ran the
+  same build and read 42.9 in its pool run, which came after 4 minutes of
+  speed tests with the card at 77 C. On 2026-10-06 a speed test of the
+  v0.5.13 kernel on this host read 44.0 (95%), on `dc97cbd` with a patch
+  and build flags.
 - **RTX 2080 Ti, Thailand:** the host holds the card at about 1095 MHz,
   below its 170 W limit. It did for all three miners on 2026-10-06 and for
   the v0.5.13 pool run, which drew about 148 W.
@@ -193,19 +207,19 @@ Every host passed the hit check, and every run had 0 rejected shares.
 - **SRBMiner** logs an OpenCL error at start on every 20-series card, then
   mines normally on CUDA.
 
-## RTX 30-series (v0.5.13 and v0.5.11)
+## RTX 30-series (PR #256's build, v0.5.13 and v0.5.11)
 
 Run on 2026-10-06, 10:24–11:10 UTC, with the v0.5.11 release.
 
-Eleven rows were re-measured later with pool runs. Eight ran on 2026-10-07,
-02:39–16:18 UTC, built from source at `a7247f1`, or with a patch on
-`79173e2`, or with a patch and build flags on `1c0db74`. All three builds
-have the same sm_86 kernel as v0.5.12 and v0.5.13, byte for byte. Those are
-5-minute pool runs, except the Portugal 3080 Ti's, which ran 10 minutes.
-The Quebec 3090, the 3070 Ti and the 180 W Quebec 3070 ran 5-minute pool
-runs on 2026-10-08, 18:29–18:47 UTC, with the published v0.5.13 release.
-Still from v0.5.11: both 3090 Tis, the Ukraine 3090 and the 220 W Quebec
-3070.
+Eleven rows were re-measured later with 5-minute pool runs. Six ran on
+2026-10-07, 05:09–16:18 UTC, built from source at `a7247f1`, which has the
+same sm_86 kernel as v0.5.12 and v0.5.13, byte for byte. The Quebec 3090,
+the 3070 Ti and the 180 W Quebec 3070 ran on 2026-10-08, 18:29–18:47 UTC,
+with the published v0.5.13 release. The Portugal 3080 Ti and the Vietnam
+3060 ran on 2026-10-09, 04:46–05:18 UTC, with PR #256's build at
+`9adc88a`, not yet released, built on each box with CI's flags. Its sm_86
+kernel is v0.5.13's, byte for byte. Still from v0.5.11: both 3090 Tis, the
+Ukraine 3090 and the 220 W Quebec 3070.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
@@ -214,7 +228,7 @@ Still from v0.5.11: both 3090 Tis, the Ukraine 3090 and the 220 W Quebec
 | RTX 3090 | Ukraine (390 W) | 141130 | 103.9 | 129.9 | 131.2 | 79% |
 | RTX 3090 | Quebec (300 W) | 152641 | 121.8 | 117.6 | 114.9 | 104% |
 | RTX 3080 Ti | Japan (330 W) | 137807 | 127.1 | didn't start | 124.5 | 102% |
-| RTX 3080 Ti | Portugal (350 W) | 56596 | 123.2 | 126.7 | 127.3 | 97% |
+| RTX 3080 Ti | Portugal (350 W) | 56596 | 123.4 | 126.7 | 127.3 | 97% |
 | RTX 3080 | Kentucky (320 W) | 29108 | 106.9 | 107.6 | 108.1 | 99% |
 | RTX 3080 | Washington (280 W) | 25433 | 90.6 | 91.5 | 91.3 | 99% |
 | RTX 3070 Ti | Ontario (310 W) | 43435 | 85.9 | 85.8 | 85.6 | 100% |
@@ -239,19 +253,23 @@ Every host passed the hit check, and every run had 0 rejected shares.
   - 3070 Ti 63.5 (74%), and 3070 Quebec 57.1 (79%) at 180 W.
   - 3060 Ti Japan 50.0 (78%) and New Zealand 51.7 (79%).
   - 3060 Poland 39.1 (78%) and Vietnam 38.0 (78%).
+- **Before PR #256's build:** on 2026-10-07 the Portugal 3080 Ti read
+  123.2 (97%) in a 10-minute pool run on `79173e2` with a patch, and the
+  Vietnam 3060 read 48.4 (99%) on `1c0db74` with a patch and build flags.
 - **Speed tests, not pool runs:** on 2026-10-07 a speed test of the v0.5.13
   kernel on the Washington 3090 Ti read 153.2 (100%), on `79173e2` with a
   patch, and one on the 220 W Quebec 3070 read 74.7 (99%), on `a7247f1`.
   They aren't pool runs, so both rows keep their v0.5.11 figures.
-- **RTX 3080 Ti, Portugal:** in the re-measure the card drew about 314 W.
-  In the v0.5.11 run all three miners drew 348–349 W, so this row is
+- **RTX 3080 Ti, Portugal:** the card drew about 314 W in the 2026-10-07
+  pool run, and 313–314 W in the speed tests just before the 2026-10-09
+  one. In the v0.5.11 run all three miners drew 348–349 W, so this row is
   probably low.
 - **RTX 3060 Ti, Japan:** the rate follows the card's temperature. This pool
   run was at 70 C. An earlier one of the same kernel on this host, at 74 C,
   read 62.8 (98%).
-- **RTX 3060, Vietnam:** the pool run got no share accepted in its 5
-  minutes, and none rejected. It passed the hit check. The rate is the
-  CLI's own figure. The box kept only the run's summary, not the CLI log.
+- **RTX 3060, Vietnam:** neither re-measure got a share accepted in its 5
+  minutes, and none was rejected. Both passed the hit check. The rate is
+  the CLI's own figure.
 - **Our readings swung on v0.5.11.** Single readings landed 20–35% either
   side of the mean, for example 69.8 to 105.5 around 87.3 on the Quebec 3090.
   The mean is what the card does; a single reading could mislead.
@@ -278,16 +296,20 @@ Every host passed the hit check, and every run had 0 rejected shares.
 
 Run on 2026-10-06, 11:12–12:10 UTC, with the v0.5.11 release.
 
-Ten rows were re-measured on 2026-10-08, 19:19–20:53 UTC, with 5-minute
+Eight rows were re-measured on 2026-10-08, 19:19–20:53 UTC, with 5-minute
 pool runs of PR #256's build at `51d88e8`, not yet released: the Australia
-4090, both 4080 Supers, both 4080s, both 4070 Supers, both 4060 Tis and the
-New Zealand 4060. Each box built the core from source (CUDA 12.8, sm_89,
-native-core.yml's flags) with `-DPEARL_LOG_ADA_L2=1`, which only prints the
-card's L2 and the batch width, and ran it under the v0.5.13 CLI. The only
-change from v0.5.13 is host code that picks the batch width from the L2
-(see "Ada batch width (PR #256)" below), so the sm_89 kernel is v0.5.13's.
-Still from v0.5.11: the British Columbia 4090, the 4090D, both 4070 Ti
-Supers, both 4070 Tis, the 4070 and the Australia 4060.
+4090, both 4080 Supers, both 4080s, both 4060 Tis and the New Zealand 4060.
+Each box built the core from source (CUDA 12.8, sm_89, native-core.yml's
+flags) with `-DPEARL_LOG_ADA_L2=1`, which only prints the card's L2 and the
+batch width, and ran it under the v0.5.13 CLI. The only change from v0.5.13
+is host code that picks the batch width from the L2 (see "Ada batch width
+(PR #256)" below), so the sm_89 kernel is v0.5.13's.
+Four more ran on 2026-10-09, 06:19–08:12 UTC, with 5-minute pool runs of
+PR #256's build at `9adc88a`, built on each box with CI's flags: the Texas
+4070 Ti Super, both 4070 Supers and the Australia 4060. It picks the same
+batch widths as `51d88e8`, and its sm_89 kernel is v0.5.13's too. Still
+from v0.5.11: the British Columbia 4090, the 4090D, the United States 4070
+Ti Super, both 4070 Tis and the 4070.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
@@ -298,22 +320,22 @@ Supers, both 4070 Tis, the 4070 and the Australia 4060.
 | RTX 4080 Super | California (275 W) | 138449 | 198.6 | 192.9 | 192.6 | 103% |
 | RTX 4080 | Taiwan (280 W) | 149135 | 190.4 | 187.4 | 188.1 | 101% |
 | RTX 4080 | Nevada (320 W) | 147894 | 197.8 | 197.4 | 197.1 | 100% |
-| RTX 4070 Ti Super | Texas (285 W) | 142663 | 171.6 | 171.9 | 171.7 | 100% |
+| RTX 4070 Ti Super | Texas (285 W) | 142663 | 172.3 | 171.9 | 171.7 | 100% |
 | RTX 4070 Ti Super | United States (285 W) | 43741 | 167.4 | 169.5 | 168.8 | 99% |
 | RTX 4070 Ti | United Kingdom (285 W) | 149163 | 159.8 | 160.6 | 159.7 | 100% |
 | RTX 4070 Ti | Delaware (285 W) | 39901 | 156.1 | 157.5 | 156.8 | 99% |
-| RTX 4070 Super | California (209 W) | 145255 | 136.0 | 139.6 | 139.3 | 97% |
-| RTX 4070 Super | California (220 W) | 153237 | 140.1 | 139.0 | 141.3 | 99% |
+| RTX 4070 Super | California (209 W) | 145255 | 134.5 | 139.6 | 139.3 | 96% |
+| RTX 4070 Super | California (220 W) | 153237 | 140.0 | 139.0 | 141.3 | 99% |
 | RTX 4070 | New York (200 W) | 19053 | 122.0 | 120.9 | 119.4 | 101% |
 | RTX 4060 Ti | Ontario (160 W) | 37799 | 85.9 | 86.1 | 86.6 | 99% |
 | RTX 4060 Ti | Brazil (160 W) | 152073 | 89.0 | 88.3 | 89.0 | 100% |
 | RTX 4060 | New Zealand (115 W) | 148383 | 60.3 | 60.3 | 58.7 | 100% |
-| RTX 4060 | Australia (120 W) | 143986 | 46.5 | 47.7 | 47.5 | 97% |
+| RTX 4060 | Australia (120 W) | 143986 | 47.0 | 47.7 | 47.5 | 99% |
 
 Every host passed the hit check, and every run had 0 rejected shares.
 
-- **Against the top competitor:** 97–103% on the ten hosts re-measured with
-  PR #256's build and 97–101% on the eight still from v0.5.11. All three
+- **Against the top competitor:** 96–103% on the twelve hosts re-measured
+  with PR #256's build and 99–101% on the six still from v0.5.11. All three
   miners finish within about 3% of each other on Ada, so there's little left
   to gain here.
 - **On v0.5.13:** before PR #256's build, eight of the re-measured rows read,
@@ -326,13 +348,16 @@ Every host passed the hit check, and every run had 0 rejected shares.
 - **On v0.5.11:** the re-measured rows read 314.9 (100%) on the Australia
   4090, 196.5 (100%) and 193.4 (100%) on the Florida and California 4080
   Supers, 189.6 (101%) on the Taiwan 4080, 194.7 (99%) on the Nevada 4080,
-  138.5 (99%) and 139.9 (99%) on the 209 W and 220 W 4070 Supers, 86.3
-  (100%) and 89.1 (100%) on the Ontario and Brazil 4060 Tis, and 59.9 (99%)
-  on the New Zealand 4060.
+  171.6 (100%) on the Texas 4070 Ti Super, 138.5 (99%) and 139.9 (99%) on
+  the 209 W and 220 W 4070 Supers, 86.3 (100%) and 89.1 (100%) on the
+  Ontario and Brazil 4060 Tis, and 59.9 (99%) and 46.5 (97%) on the New
+  Zealand and Australia 4060s.
+- **On `51d88e8`:** on 2026-10-08 the 4070 Supers read 136.0 (97%) at
+  209 W and 140.1 (99%) at 220 W.
 - **The release in the same rental:** each box ran the v0.5.13 release
-  before and after PR #256's build (A1 and A2, in "Ada batch width (PR
-  #256)" below). Four rows went down because the host was slower than in
-  its earlier rental, not because of the build:
+  before and after `51d88e8` (A1 and A2, in "Ada batch width (PR #256)"
+  below). Four hosts read lower than in their earlier rental because the
+  host was slower, not because of the build:
   - Australia 4090: the release read 317.4 both times, against 323.5 on
     `26c50b3`.
   - 209 W 4070 Super: 135.4 and 135.3, against 138.5.
@@ -342,9 +367,8 @@ Every host passed the hit check, and every run had 0 rejected shares.
 - **Speed tests, not pool runs:** on 2026-10-07 a speed test of the v0.5.13
   kernel, on `79173e2`, read 198.1 (100%) on the Nevada 4080, 171.6 (100%)
   on the Texas 4070 Ti Super and 160.0 (100%) on the United Kingdom
-  4070 Ti. They aren't pool runs. The Texas and United Kingdom rows keep
-  their v0.5.11 figures; the Nevada row is now a pool run of PR #256's
-  build.
+  4070 Ti. They aren't pool runs. The United Kingdom row keeps its v0.5.11
+  figure; the Nevada and Texas rows are now pool runs of PR #256's build.
 - **RTX 4060, Australia:** the host runs the card in two clock states. It
   sometimes locks it at 1995 MHz and sometimes leaves it power-capped at
   about 2600 MHz. In the v0.5.11 session all three miners ran at 1995 MHz,
@@ -354,15 +378,21 @@ Every host passed the hit check, and every run had 0 rejected shares.
   rentals ran in the other state, at about 2600 MHz: a pool run of the
   published v0.5.13 release read 61.1, and at 19:18–19:39 UTC PR #256's
   build read 61.9, between release runs of 61.9 and 62.0 (62.0 with the
-  width forced to 1024). They can't be compared with this row, which keeps
-  its v0.5.11 figure. All the later runs had a 115 W limit; the v0.5.11
-  session had 120 W.
+  width forced to 1024). They can't be compared with this row. On
+  2026-10-09 the host was back at 1995 MHz, and the row is that pool run
+  of `9adc88a`. All the later runs had a 115 W limit; the v0.5.11 session
+  had 120 W.
 - **RTX 4060 Ti, Brazil:** the earlier v0.5.13 pool run (88.7) got no share
   accepted in its 5 minutes, and none rejected. The run in the row got 3.
 - **RTX 4070 Super, California (220 W):** in the earlier v0.5.13 pool run
   (141.7) the card ran at a median 81 C, reached 85 C, and slowed for heat
-  in 8 of 49 samples. In the rental for the row it ran at 70–72 C and only
-  the power limit held it, yet every run read about 140.1.
+  in 8 of 49 samples. In the `51d88e8` rental it ran at 70–72 C and only
+  the power limit held it, yet every run read about 140.1. In the row's
+  run on 2026-10-09 it ran at 84 C and slowed for heat in 15 of 49
+  samples, and read 140.0.
+- **RTX 4070 Super, California (209 W):** in the row's run the card held
+  2445 MHz at 85 C, against 2475 MHz at 79 C for `51d88e8` on 2026-10-08,
+  both at about 208 W. The rate fell by about as much as the clock.
 - **RTX 4080 Super, Florida:** PeakMiner exited at once with code 127 and
   wrote nothing (see the 50-series notes). The comparison there is SRBMiner.
   It's a 2-GPU rental. Every miner was pinned to GPU 0, and each one's rate
@@ -370,56 +400,77 @@ Every host passed the hit check, and every run had 0 rejected shares.
 - **RTX 4090D:** one host. The Tanzania host (70632) never started its
   container, in two tries of 16 and 30 minutes, and no other 4090D is listed.
 
-## RTX 50-series (v0.5.13 and v0.5.11)
+## RTX 50-series (PR #256's build, v0.5.13 and v0.5.11)
 
 Run in the same window as the 40-series.
 
-Four rows were re-measured later with 5-minute pool runs, all on the CUDA 13
-core. The Virginia 5060 Ti ran on 2026-10-08, 13:24–13:34 UTC, with the
-v0.5.13 release candidate (`26c50b3`) built as CI builds it, and the
-Virginia 5060 on 2026-10-07 on `3005e42`. Both have the same sm_120 kernel
-as v0.5.12 and v0.5.13, byte for byte. The Colombia 5070 and the Ontario
-5060 Ti ran on 2026-10-08, 18:35–18:47 UTC, with the published v0.5.13
-release. Still from v0.5.11: both 5090s, both 5080s, both 5070 Tis, the
-Poland 5070 and the India 5060.
+Seven rows were re-measured later with 5-minute pool runs. The Virginia
+5060 Ti ran on 2026-10-08, 13:24–13:34 UTC, with the v0.5.13 release
+candidate (`26c50b3`) built as CI builds it, and the Virginia 5060 on
+2026-10-07 on `3005e42`. Both have the same sm_120 kernel as v0.5.12 and
+v0.5.13, byte for byte. The Colombia 5070 ran on 2026-10-08, 18:35–18:40
+UTC, with the published v0.5.13 release. The India 5090, the 5070 Ti on
+27661, the Poland 5070 and the Ontario 5060 Ti ran on 2026-10-09,
+07:33–10:31 UTC, with PR #256's build at `3b8ffce`, not yet released,
+built on each box with CI's flags. Its sm_120 kernel is v0.5.13's, byte for
+byte. Every re-measure ran on the CUDA 13 core except the India 5090's:
+that host has driver 570, so the CLI loads the CUDA 12.8 core there. Still
+from v0.5.11: the South Korea 5090, both 5080s, the 5070 Ti on 28852 and
+the India 5060.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
 | RTX 5090 | South Korea (500 W) | 145183 | 384.5 | didn't start | 378.0 | 102% |
-| RTX 5090 | India (500 W) | 151861 | 369.0 | driver too old | 375.3 | 98% |
+| RTX 5090 | India (500 W) | 151861 | 358.1 | driver too old | 375.3 | 95% |
 | RTX 5080 | New Jersey (360 W) | 152066 | 223.5 | 227.0 | 229.0 | 98% |
 | RTX 5080 | Poland (360 W) | 153231 | 223.6 | 227.8 | 228.3 | 98% |
-| RTX 5070 Ti | South Korea (250 W) | 27661 | 89.5 | 93.6 | 94.6 | 95% |
+| RTX 5070 Ti | South Korea (250 W) | 27661 | 92.3 | 93.6 | 94.6 | 98% |
 | RTX 5070 Ti | South Korea (250 W) | 28852 | 89.2 | 93.6 | 94.5 | 94% |
 | RTX 5070 | Colombia (250 W) | 145974 | 132.1 | 132.3 | 133.5 | 99% |
-| RTX 5070 | Poland (250 W) | 31379 | 126.1 | 132.7 | 134.2 | 94% |
+| RTX 5070 | Poland (250 W) | 31379 | 130.7 | 132.7 | 134.2 | 97% |
 | RTX 5060 Ti | Virginia (150 W) | 151123 | 94.1 | 94.5 | 94.3 | 100% |
-| RTX 5060 Ti | Ontario (180 W) | 153080 | 95.3 | 95.3 | 95.7 | 100% |
+| RTX 5060 Ti | Ontario (180 W) | 153080 | 94.9 | 95.3 | 95.7 | 99% |
 | RTX 5060 | Virginia (125 W) | 151478 | 76.8 | 76.8 | 77.1 | 100% |
 | RTX 5060 | India (145 W) | 119163 | 68.8 | 76.4 | didn't mine | 90% |
 
 Every host passed the hit check, and every run had 0 rejected shares.
 
-- **Against the top competitor:** 99–100% on the four re-measured hosts. The
-  v0.5.11 run was at 98–102% on the 5090 and 5080, 94–95% on the 5070 Ti and
-  5070, and 90–93% on the 5060 Ti and 5060. On the power-capped cards below
-  the 5080, v0.5.11 ran 60–185 MHz slower than the other two at the same
-  power. It used more power per clock, so the card clocked down to stay under
-  its cap. That's where the gap on the smaller cards came from. On v0.5.13
-  the four re-measured cards ran 30–53 MHz faster than the other two did.
-- **On v0.5.11:** the re-measured rows read 88.0 (93%) on the Virginia
-  5060 Ti, 87.6 (92%) on the Ontario 5060 Ti, 70.7 (92%) on the Virginia
-  5060 and 125.7 (94%) on the Colombia 5070.
+- **Against the top competitor:** 99–100% on the three hosts re-measured
+  with v0.5.13's kernel, and 95–99% on the four re-measured with PR #256's
+  build. The v0.5.11 run was at 98–102% on the 5090 and 5080, 94–95% on the
+  5070 Ti and 5070, and 90–93% on the 5060 Ti and 5060. On the power-capped
+  cards below the 5080, v0.5.11 ran 60–185 MHz slower than the other two at
+  the same power. It used more power per clock, so the card clocked down to
+  stay under its cap. That's where the gap on the smaller cards came from.
+  On v0.5.13's kernel, the two Virginia cards, the Colombia 5070 and the
+  Ontario 5060 Ti (in its 2026-10-08 run) ran 30–53 MHz faster than the
+  other two did.
+- **On v0.5.11:** the re-measured rows read 369.0 (98%) on the India 5090,
+  89.5 (95%) on the 5070 Ti on 27661, 126.1 (94%) on the Poland 5070,
+  88.0 (93%) on the Virginia 5060 Ti, 87.6 (92%) on the Ontario 5060 Ti,
+  70.7 (92%) on the Virginia 5060 and 125.7 (94%) on the Colombia 5070.
+- **On v0.5.13:** on 2026-10-08 the published release read 95.3 (100%) on
+  the Ontario 5060 Ti, at 2715 MHz and 76 C. The row's run held 2700 MHz
+  at 77 C.
 - **Speed tests, not pool runs:** on 2026-10-07 a speed test of the v0.5.13
   kernel read 229.7 (101%) on the Poland 5080, on `3005e42`, and 92.3 (98%)
   on the 5070 Ti on 27661, on `79173e2` with a patch and a build flag. They
-  aren't pool runs, so both rows keep their v0.5.11 figures.
+  aren't pool runs. The Poland 5080 row keeps its v0.5.11 figure; the 5070
+  Ti row on 27661 is now a pool run of PR #256's build.
+- **RTX 5090, India:** the row's run held 2250 MHz at the 500 W limit,
+  against 2340 MHz in the v0.5.11 session, also at 500 W. Per clock it did
+  0.9% more work than v0.5.11, so the rate fell because the clock did. These
+  runs don't show whether the host or the newer kernel set the lower clock.
+- **RTX 5070 Ti on 27661 and RTX 5070, Poland:** before our miner started
+  on 2026-10-09, each GPU already showed 100% use: at 28 W on the 5070 Ti,
+  and at 43 W and 2925 MHz on the 5070. Another workload may share these
+  cards.
 - **Which core we load:** on a 50-series card with driver 580 or newer, the
   CLI loads the CUDA 13 core. The India 5090 has driver 570, so it loaded the
-  CUDA 12.8 core. The South Korea 5090, on CUDA 13, ran 4% faster than the
-  India 5090 at the same power and clock, while SRBMiner scored within 1% on
-  both. That points to the CUDA 13 core being faster on Blackwell, but it's
-  two different hosts.
+  CUDA 12.8 core. In the v0.5.11 run the South Korea 5090, on CUDA 13, ran
+  4% faster than the India 5090 at the same power and clock, while SRBMiner
+  scored within 1% on both. That points to the CUDA 13 core being faster on
+  Blackwell, but it's two different hosts.
   - The first batch of boxes printed the core line before our miner started,
     so it doesn't name a core. Every one of those hosts has driver 580 or
     newer, so the CLI's rule picks CUDA 13 there, and their hit checks ran on
@@ -439,12 +490,13 @@ Every host passed the hit check, and every run had 0 rejected shares.
   maximum is 3120. All three miners ran at 89–95 TH/s on under 140 W, far
   below a stock 5070 Ti. The percentage is still a fair same-host
   comparison. On v0.5.11, at that clock our miner drew 135–139 W against
-  94–99 W for the other two; in the speed test on 27661 it drew 87–88 W.
+  94–99 W for the other two; in the speed test on 27661 it drew 87–88 W,
+  and in the row's pool run 87 W at 1342 MHz.
   Two 300 W hosts were tried and couldn't attach the GPU.
 - **Not tested:** the RTX 5090D, which no host lists, and laptop GPUs (3060,
   4070 and 4080 laptop), which are on Vast but left out.
 
-## A100-class (sm_80, v0.5.13 and an earlier build)
+## A100-class (sm_80, PR #256's build, v0.5.13 and an earlier build)
 
 Run on 2026-10-07, 14:53–22:52 UTC. The A100 PCIe and the New York A100
 SXM4 ran `3804a7c` and the A30 `1f699da`, each with PeakMiner and SRBMiner
@@ -454,16 +506,16 @@ SXM4 ran the first build, `feba1ca`, whose sm_80 kernel differs.
 v0.5.13 is the first release that supports these cards. Same harness, pool
 and miner versions as the RTX tables.
 
-One row was re-measured later, with v0.5.13's sm_80 kernel: the A100 PCIe,
-a 5-minute pool run on 2026-10-08, 13:13–13:22 UTC, with the v0.5.13
-release candidate (`26c50b3`) built as CI builds it. The CMP 170HX and the
-California A100 SXM4 are still from `feba1ca`.
+The three A100s were re-measured on 2026-10-09, 11:11–11:18 UTC, with
+5-minute pool runs of PR #256's build at `9adc88a`, not yet released,
+built on each box with CI's flags. Its sm_80 kernel is v0.5.13's, byte for
+byte. The A30 is still from `1f699da` and the CMP 170HX from `feba1ca`.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
-| A100 PCIe 40 GB | Japan (250 W) | 146405 | 212.8 | 212.2 | 213.9 | 99% |
-| A100 SXM4 40 GB | New York (400 W) | 152837 | 246.5 | 252.2 | 254.7 | 97% |
-| A100 SXM4 40 GB | California (400 W) | 152356 | 177.3 | 197.4 | 199.8 | 89% |
+| A100 PCIe 40 GB | Japan (250 W) | 146405 | 209.5 | 212.2 | 213.9 | 98% |
+| A100 SXM4 40 GB | New York (400 W) | 152837 | 244.5 | 252.2 | 254.7 | 96% |
+| A100 SXM4 40 GB | California (400 W) | 152356 | 188.1 | 197.4 | 199.8 | 94% |
 | A30 24 GB | Australia (155 W) | 145742 | 104.7 | 98.1 | 96.2 | 107% |
 | CMP 170HX | Georgia (250 W) | 147823 | 146.9 | 167.9 | 165.0 | 87% |
 
@@ -473,23 +525,29 @@ California A100 SXM4 are still from `feba1ca`.
   clock. On `feba1ca` the PCIe read 192.0 (89%) and on `dd64b2c` the SXM4
   read 240.3 (95%). The copy points (`dd64b2c`), the hash in its own kernel
   (`1f699da`) and band 32 (`3804a7c`) closed most of it.
-- **A100 PCIe, re-measured:** in the session with PeakMiner and SRBMiner it
-  read 209.5 (98%). This host runs the card at about 1170 MHz in some
-  sessions and about 1200 MHz in others, at the same 250 W, and the same
-  build reads about 209 and 213. The re-measure ran at 1200 MHz. PeakMiner
-  and SRBMiner ran in a 1170 MHz session, at 1136–1143 MHz themselves, so
-  this row is probably high.
+- **A100 PCIe, re-measured:** in the session with PeakMiner and SRBMiner,
+  on 2026-10-07 on `3804a7c`, it read 209.5 (98%). This host runs the card
+  at about 1170 MHz in some sessions and about 1200 MHz in others, at the
+  same 250 W, and the same build reads about 209 and 213. On 2026-10-08, in
+  a 1200 MHz session, `26c50b3` read 212.8 (99%). The row's run on
+  2026-10-09 was at 1170 MHz, the same state as the session PeakMiner and
+  SRBMiner ran in (at 1136–1143 MHz themselves).
 - **CMP 170HX:** all three miners ran at the 250 W limit on `feba1ca`, when
   we got about 70% of the tensor peak per clock to their 85%. A speed test
   of the v0.5.13 kernel on this host read 164.6 (98%) on 2026-10-07, on
   `e07b1ab` at the same 250 W, and an earlier one of the same kernel read
   165.0. They aren't pool runs, so the row keeps its `feba1ca` figure.
 - **A100 SXM4, New York:** all three miners ran at the 400 W limit, at
-  75–77 C. This is the row that shows the card at its rated power.
+  75–77 C. This is the row that shows the card at its rated power. In that
+  session, on 2026-10-07 on `3804a7c`, ours read 246.5 (97%). The row's
+  run on 2026-10-09 was also at the 400 W limit, at 1380 MHz and 70 C.
 - **A100 SXM4, California:** the host cools the card poorly. All three miners
   ran at 85 C and the thermal limit, drawing about 215 W of the 400 W allowed,
-  so this row says more about the host than the card. The first SXM4 host
-  tried (149846) failed during setup.
+  so this row says more about the host than the card. In that session, on
+  2026-10-07 on `feba1ca`, ours read 177.3 (89%). The row's run on
+  2026-10-09 was held by heat too: 84 C, 1050 MHz and about 194 W, slowed
+  for heat in every sample. The first SXM4 host tried (149846) failed
+  during setup.
 - **A30:** the host enforces 155 W, not its listed 165 W, and all three
   miners were power-capped at 82 C. This row is a second run on `1f699da`,
   with PeakMiner and SRBMiner re-run on the same box at the same 154 W. On
@@ -712,10 +770,10 @@ the rental.
   of 2048 cost 0.9% on the RTX 6000 Ada, and 512 instead of 1024 cost 0.5%
   on the Czechia L4. The RTX 2000 Ada's C at 512 is the rule's own width,
   forced; it read 0.3% below B, which is about the run-to-run noise.
-- **RTX 4060, Australia:** ran in its 2600 MHz state, so its row is
-  unchanged (see the 40-series notes).
+- **RTX 4060, Australia:** ran in its 2600 MHz state, so these runs don't
+  set its row (see the 40-series notes).
 
-## RTX PRO Blackwell (sm_120, v0.5.13)
+## RTX PRO Blackwell (sm_120, PR #256's build and v0.5.13)
 
 Run on 2026-10-07, 19:20–21:15 UTC, with PR #253's core at `54c993d` or
 `e0bee03` (their sm_120 kernels are byte-identical to each other and to
@@ -723,10 +781,15 @@ v0.5.13's), on the CUDA 13 core, as a rig with driver 580 or newer loads it.
 No change was made for these cards. Same harness, pool and miner versions as
 the RTX tables.
 
+Two rows were re-measured on 2026-10-09, 09:51–10:06 UTC, with 5-minute
+pool runs of PR #256's build at `9adc88a`, not yet released, built on each
+box with CI's flags for the CUDA 13 core: the RTX PRO 6000 Server and the
+RTX 6000D. Its sm_120 kernel is v0.5.13's, byte for byte.
+
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
 | RTX PRO 6000 Workstation | Mississippi (600 W) | 148552 | 397.0 | 389.9 | 393.9 | 101% |
-| RTX PRO 6000 Server | California (600 W) | 150951 | 378.8 | 377.2 | 381.5 | 99% |
+| RTX PRO 6000 Server | California (600 W) | 150951 | 375.7 | 377.2 | 381.5 | 98% |
 | RTX PRO 6000 Max-Q | Illinois (300 W) | 153399 | 311.4 | 307.4 | 311.5 | 100% |
 | RTX PRO 5000 48 GB | California (250 W) | 150611 | 211.4 | 208.7 | 212.8 | 99% |
 | RTX PRO 4500 | Arizona (200 W) | 148915 | 175.5 | 170.8 | 172.9 | 101% |
@@ -737,13 +800,18 @@ the RTX tables.
   97–98%. At the power cap we run 2.6–4.1% faster at the same watts, which
   is enough on most cards. The RTX PRO 5000 (2.6%) is 0.7% short, and the
   6000 Max-Q (99.97%) and the RTX 6000D (99.9%) round to 100%.
+- **Earlier figures:** on 2026-10-07, on `e0bee03`, ours read 378.8 (99%)
+  on the RTX PRO 6000 Server and 144.6 (100%) on the RTX 6000D.
 - **RTX PRO 6000 Server:** a passive server card. Once it reached 85 C it
   held about 2065 MHz and 440 W of its 600 W, for every miner, so heat, not
-  power, set its rate on this host.
+  power, set its rate on this host. In the row's run on 2026-10-09 it held
+  2055 MHz and about 438 W at 85 C, and the row is 1.5% short of SRBMiner.
+  The driver reported no slowdown reason in 48 of the 49 samples.
 - **RTX PRO 5000 48 GB:** the host sets 250 W, 83% of the card's 300 W.
 - **RTX 6000D:** Vast's name for a cut-down card with 156 SMs and 84 GB. Its
   int8 tensor rate is capped at about 37% of the RTX PRO 6000's per SM per
-  clock. All three miners tie at its top clock and about 253 W.
+  clock. All three miners tie at its top clock and about 253 W. The row's
+  run on 2026-10-09 held the same 2422 MHz at about 264 W.
 - **Not in the table:** the RTX PRO 5000 72 GB. Its only host (California,
   153314) blocks outbound port 1200, so no miner could reach the pool. Our
   speed test read 239.4 at 300 W. Vast lists no RTX PRO 2000 or 4000 SFF.
