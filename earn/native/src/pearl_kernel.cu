@@ -2778,9 +2778,8 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
 #define PEARL_TALL_RED_ON 0
 #endif
 // Whether this compile's tall fold folds its readout before the chunk-0 hand-off guard
-// (PEARL_TALL_PREGUARD): Blackwell's TMA build only.
-#if PEARL_TALL_RED_ON && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200 && PEARL_TALL_TMA_BODY \
-    && PEARL_TALL_TMA_ROLES && PEARL_TALL_PREGUARD
+// (PEARL_TALL_PREGUARD): Blackwell's TMA build only (sm_120, and sm_100 on the same code).
+#if PEARL_TALL_RED_ON && PEARL_TALL_TMA_BODY && PEARL_TALL_TMA_ROLES && PEARL_TALL_PREGUARD
 #define PEARL_TALL_PREGUARD_ON 1
 #else
 #define PEARL_TALL_PREGUARD_ON 0

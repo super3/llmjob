@@ -36,7 +36,7 @@ on:
 jobs:
   build:
     # Two builds per OS. The first two entries are the core every rig has run
-    # (CUDA 12.8.1, sm_75/80/86/89/90a/120); their job names ("ubuntu-latest",
+    # (CUDA 12.8.1, sm_75/80/86/89/90a/100/120); their job names ("ubuntu-latest",
     # "windows-2022") and artifact names (pearl-core-<os>) are unchanged, and
     # miner-build.yml still downloads them by those names.
     #
@@ -51,8 +51,8 @@ jobs:
     # probes/hashrate.js and probes/verify-hits.js at pearl_core_cu13.node
     # (they take the .node path as their first argument and read no
     # environment variable). PEARL_CORE_VARIANT=cu13 is the override for the
-    # app and earn-cli only. No sm_80, sm_86 or sm_90a, so this build never
-    # loads on an A100, a 3090 or an H100.
+    # app and earn-cli only. No sm_80, sm_86, sm_90a or sm_100, so this build
+    # never loads on an A100, a 3090, an H100 or a B200.
     # It is a separate file because a CUDA 13 runtime needs driver 580+: the
     # app loads it only on an all-Blackwell rig with a new enough driver
     # (src/shared/coreVariant.js).
@@ -79,6 +79,7 @@ jobs:
               -gencode arch=compute_86,code=sm_86
               -gencode arch=compute_89,code=sm_89
               -gencode arch=compute_90a,code=sm_90a
+              -gencode arch=compute_100,code=sm_100
               -gencode arch=compute_120,code=sm_120
             # Architectures on which a register spill in a fold kernel fails
             # the job (the spill check below): the ones a run of this check
@@ -98,8 +99,13 @@ jobs:
             # fails the job. Its three-warpgroup form (PEARL_HOPPER_WG3, on by
             # default) has 16 warps, so it launches with 128 registers a thread
             # (setmaxnreg then gives the consumers 160); local 12.8 and 13.3
-            # builds have it at 128 and 0 spill.
-            spill_fail_archs: sm_80 sm_86 sm_89 sm_90a sm_120
+            # builds have it at 128 and 0 spill. sm_100 (B200, GB200), added
+            # 2026-10-09, builds sm_120's TMA tall fold, which is the fold that
+            # mines there, so a spill in it fails the job. It is in the list
+            # ahead of its first run here, on a local build with nvcc V12.8.93,
+            # the compiler this entry installs: every fold at 0 spill, the tall
+            # fold 255 registers and the wmma fold 128.
+            spill_fail_archs: sm_80 sm_86 sm_89 sm_90a sm_100 sm_120
           - os: windows-2022
             variant: ''
             file: pearl_core.node
@@ -112,8 +118,9 @@ jobs:
               -gencode arch=compute_86,code=sm_86
               -gencode arch=compute_89,code=sm_89
               -gencode arch=compute_90a,code=sm_90a
+              -gencode arch=compute_100,code=sm_100
               -gencode arch=compute_120,code=sm_120
-            spill_fail_archs: sm_80 sm_86 sm_89 sm_90a sm_120
+            spill_fail_archs: sm_80 sm_86 sm_89 sm_90a sm_100 sm_120
           # 13.3.1 is the newest toolkit Jimver/cuda-toolkit v0.2.36 (the
           # version already pinned here) lists, on Linux and Windows alike, and
           # it is the toolkit the 5090 rig builds with (nvcc V13.3.73) -- so the
@@ -231,10 +238,10 @@ jobs:
         working-directory: earn/native
         run: npm install --no-save node-addon-api node-gyp
 
-      # Compile the CUDA half into a static library. sm_75/80/86/89/90a/120
-      # covers Turing, Ampere (GA100 and GA10x), Ada, Hopper and Blackwell —
-      # the cards the app actually targets. The CUDA 13 entries pass sm_89 and sm_120; every
-      # other flag is the same.
+      # Compile the CUDA half into a static library. sm_75/80/86/89/90a/100/120
+      # covers Turing, Ampere (GA100 and GA10x), Ada, Hopper and Blackwell (B200
+      # and the RTX 50 and RTX PRO cards) — the cards the app actually targets.
+      # The CUDA 13 entries pass sm_89 and sm_120; every other flag is the same.
       - name: Compile the CUDA kernels
         working-directory: earn/native
         shell: bash
@@ -262,10 +269,13 @@ jobs:
       # ships it, so nothing else would notice if its PTX stopped assembling --
       # multicast TMA, mapa, barrier.cluster, cluster-scope mbarrier -- or if the
       # host's cluster launch stopped compiling. So it is compiled a second time
-      # here, sm_120 only (the only build with the body), into a scratch directory
-      # that no later step reads. Compile only: not archived, not linked, not
-      # uploaded. ptxas -v is printed so a spill or the register count can be read
-      # off the log; it is not gated, since the build has no measured baseline.
+      # here, sm_120 only, into a scratch directory that no later step reads.
+      # Compile only: not archived, not linked, not uploaded. ptxas -v is printed
+      # so a spill or the register count can be read off the log; it is not
+      # gated, since the build has no measured baseline.
+      # sm_100 builds the same TMA body, so the switch gives it a cluster body
+      # too, but ptxas advises sm_100a for the multicast; a B200 cluster build
+      # belongs with the sm_100a work (pearl_config.h, PEARL_TALL_CLUSTER).
       #
       # Non-blocking, for the reason the CUDA 13 entries are: a build nothing ships
       # must not fail the run and leave miner-build.yml on the previous run's
@@ -298,8 +308,8 @@ jobs:
       # hash kernel (pearl_tall_hash80, a body only on sm_80 and sm_90a), on
       # every architecture and prints one row each. A spill fails the job on
       # the architectures in the entry's spill_fail_archs (the comment there
-      # says why each is in it): sm_80, sm_86, sm_89, sm_90a and sm_120 in the
-      # 12.8 entries, and sm_120 alone in the cu13 entries, whose sm_89 half
+      # says why each is in it): sm_80, sm_86, sm_89, sm_90a, sm_100 and sm_120 in
+      # the 12.8 entries, and sm_120 alone in the cu13 entries, whose sm_89 half
       # nothing ships (see those entries). Any other architecture, sm_75
       # included, is a warning. A failed cu13 job uploads no
       # pearl_core_cu13.node, and a failed ubuntu 12.8 job makes
@@ -380,7 +390,8 @@ jobs:
       # (src/pearl_tensor_map.h) spells the alignment in our own code; this step
       # reads what the compiler actually did, so the fault cannot come back
       # quietly. Every entry builds sm_120, so every entry runs it, and the 12.8
-      # entries also build sm_90a, so they check pearl_tile_fold_hopper there too.
+      # entries also build sm_90a and sm_100, so they check pearl_tile_fold_hopper
+      # on sm_90a and the tall fold on sm_100 (B200), which runs sm_120's TMA body.
       #
       # 128, not the hardware's 64: 128 is what the code asks for, so anything
       # less means the declared alignment was lost, which is the bug. A 64 check
@@ -393,9 +404,9 @@ jobs:
       # (EIATTR_KPARAM_INFO, Size 0x80). On sm_120 the base is itself a multiple
       # of 128, so this is the same as checking the offsets, but it stays right if
       # a toolkit moves the base. Only the copies that read the descriptors are
-      # checked: the tall fold's on sm_120 and the wgmma fold's on sm_90a. (GA100's
-      # unfused fold puts a buffer address in tmA's first bytes, which TMA never
-      # reads, and every other copy ignores both.)
+      # checked: the tall fold's on sm_120 and sm_100, and the wgmma fold's on
+      # sm_90a. (GA100's unfused fold puts a buffer address in tmA's first bytes,
+      # which TMA never reads, and every other copy ignores both.)
       #
       # Anything the step cannot find is a failure, not a pass: no cuobjdump, no
       # ELF for a checked kernel and architecture, no bank base, or not exactly two
@@ -422,6 +433,9 @@ jobs:
           checks="pearl_tile_fold_tall:sm_120"
           case " ${{ matrix.gencode }} " in
             *"code=sm_90a "*) checks="$checks pearl_tile_fold_hopper:sm_90a" ;;
+          esac
+          case " ${{ matrix.gencode }} " in
+            *"code=sm_100 "*) checks="$checks pearl_tile_fold_tall:sm_100" ;;
           esac
           bad=0
           for pair in $checks; do
@@ -453,6 +467,21 @@ jobs:
             if [ "$n" != 2 ]; then
               echo "::error::expected $kernel's two 128-byte tensor-map parameters on $want, found $n"
               exit 1
+            fi
+            # The tall fold must have its body too. A build without it (a gate in
+            # pearl_config.h that lost sm_100, say) still has the kernel and its two
+            # parameters, so everything above passes, and the host then quietly
+            # runs the slower wmma fold on that card. Only the body sets up the
+            # ring's mbarriers (EIATTR_NUM_MBARRIERS, 0x2 on sm_100 and sm_120 under
+            # 12.8 and 13.3).
+            if [ "$kernel" = pearl_tile_fold_tall ]; then
+              nmb=$(printf '%s\n' "$info" | grep -A2 'EIATTR_NUM_MBARRIERS' \
+                | sed -n 's/.*Value:[[:space:]]*\(0x[0-9a-fA-F]*\).*/\1/p' | head -n 1 || true)
+              if [ -z "$nmb" ] || [ "$nmb" = 0x0 ]; then
+                echo "::error::$kernel on $want has no mbarriers (EIATTR_NUM_MBARRIERS: '${nmb:-none}'), so the build has no tall fold body; cards that need it would fall back to the wmma fold"
+                exit 1
+              fi
+              echo "$want $kernel: $nmb mbarriers, so the tall fold body is in"
             fi
             # The wgmma fold must also have its body. A build whose sm_90a pass
             # leaves PEARL_HOPPER_WGMMA_BODY at 0 (compute_90 instead of

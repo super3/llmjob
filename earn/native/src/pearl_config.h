@@ -370,6 +370,21 @@ typedef struct {
 #define PEARL_HOPPER_ARCH(a) ((a) == 900)
 #define PEARL_AMPERE_ARCH(a) ((a) == 800 || (a) == 860 || PEARL_HOPPER_ARCH(a))
 
+// Data-center Blackwell (sm_100: B200, GB200, compute 10.0). Its SM has sm_90's TMA,
+// mbarrier try_wait and expect_tx, and the int8 m16n8k32 mma.sync, ldmatrix and cp.async,
+// but not wgmma, which is sm_90a only. Its own tensor path, tcgen05, is sm_100a and has no
+// fold yet. Until it does, sm_100 builds the TMA tall fold that sm_120 mines on, with
+// sm_120's switches and host rules (PEARL_TMA_BODY_ARCH). That fold issues each stage as
+// two TMA boxes from one thread, so the other 255 threads run no copy instructions beside
+// their mma, and it uses no L2 cache hints (the cp.async fold's A' hint faulted on sm_90).
+// Plain sm_100, not sm_100a: nothing it issues is arch-specific. ptxas 12.8 builds the
+// fold for sm_100 in 255 registers with no spill, and keeps B in the operand cache for 159
+// of a chunk's 192 IMMA, where its sm_120 build keeps it for none. It has not run on a card.
+#define PEARL_SM100_ARCH(a) ((a) == 1000)
+// The builds whose tall fold stages with TMA (PEARL_TALL_TMA): consumer Blackwell (sm_120)
+// and sm_100. The device pass tests __CUDA_ARCH__, the host binaryVersion * 10.
+#define PEARL_TMA_BODY_ARCH(a) ((a) >= 1200 || PEARL_SM100_ARCH(a))
+
 // Walk the bands as a serpentine: odd bands take their column groups in
 // reverse, so each band starts on the B columns the one before it ended on.
 //
@@ -755,10 +770,11 @@ typedef struct {
 // both sides.
 //
 // Which builds carry a tall-fold body, by __CUDA_ARCH__: Ampere's and Ada's, both the
-// cp.async ring, and Blackwell's, which stages with TMA unless PEARL_TALL_TMA is 0.
+// cp.async ring, and Blackwell's (sm_120, and sm_100 on the same code), which stages with
+// TMA unless PEARL_TALL_TMA is 0.
 // This one list is what the default below, the fold's own #if in pearl_kernel.cu and
 // PEARL_TALL_ARCH all test, so they cannot drift apart.
-#define PEARL_TALL_BODY_ARCH(a) (PEARL_AMPERE_ARCH(a) || (a) == 890 || (a) >= 1200)
+#define PEARL_TALL_BODY_ARCH(a) (PEARL_AMPERE_ARCH(a) || (a) == 890 || PEARL_TMA_BODY_ARCH(a))
 #ifdef PEARL_FOLD_TALL
 #define PEARL_FOLD_TALL_FORCED 1
 #endif
@@ -770,12 +786,12 @@ typedef struct {
 #endif
 #endif
 // The same test for the host, by the architecture number it reads back as
-// cudaFuncAttributes::binaryVersion (75, 80, 86, 89, 90, 120: the binary ships sm_75,
-// sm_80, sm_86, sm_89, sm_90a and sm_120 SASS and no PTX, so that is exactly the build
-// that runs; sm_90a reads back as 90).
+// cudaFuncAttributes::binaryVersion (75, 80, 86, 89, 90, 100, 120: the binary ships sm_75,
+// sm_80, sm_86, sm_89, sm_90a, sm_100 and sm_120 SASS and no PTX, so that is exactly the
+// build that runs; sm_90a reads back as 90).
 // binaryVersion is __CUDA_ARCH__ / 10. Turing (75) has no tall fold.
 #define PEARL_TALL_ARCH(v) PEARL_TALL_BODY_ARCH((v) * 10)
-#define PEARL_TALL_TMA_ARCH(v) ((v) >= 120)
+#define PEARL_TALL_TMA_ARCH(v) PEARL_TMA_BODY_ARCH((v) * 10)
 // The tall geometry by name, for the host: two row slots of six 16-row blocks by four
 // column slots of 64 columns, three 64-deep stages.
 #define PEARL_TALL_THREADS 256u
@@ -854,9 +870,11 @@ typedef struct {
 // Blackwell walks bands one row group deep: consecutive tiles share a row group of A
 // and sweep B. That is PEARL_BLOCK_GROUP 1 there, which is what its measurements ran
 // on, and the TMA fold was tuned with (perf/sm120-throughput, one tile a block). A
-// persistent grid of one block an SM walks the same tiles in the same order.
+// persistent grid of one block an SM walks the same tiles in the same order. sm_100
+// takes the same 1, unmeasured. The host's width rule (PEARL_TMA_L2_SHARE) reads the
+// card's L2 at run time and narrows the batch if the B' a row group sweeps would not fit.
 #ifndef PEARL_TALL_BAND
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
+#if defined(__CUDA_ARCH__) && PEARL_TMA_BODY_ARCH(__CUDA_ARCH__)
 #define PEARL_TALL_BAND 1u
 #else
 #define PEARL_TALL_BAND 16u
@@ -1063,7 +1081,9 @@ typedef struct {
 // Blackwell (sm_120) takes it too, but only from the CUDA 13 compiler: under 12.8 the
 // paired hash spills (255 registers, 160 bytes of spill stores), so the 12.8 core keeps
 // two passes. Under 13.3 the sm_120 fold stays at 254 registers with no spill, and its
-// chunk loop is unchanged (468 instructions).
+// chunk loop is unchanged (468 instructions). sm_100 ships from the 12.8 core only and
+// keeps two passes too: ptxas 12.8 spills its paired hash the same way (255 registers,
+// 160 bytes of spill stores, 204 of loads).
 // Cycles a tile (PEARL_TALL_CYC), RTX 5070 Ti at its locked 1346 MHz, 4 rounds:
 // 103,451 -> 103,098 (-353, every round). hashrate.js, ahead in every round, 400/400 hits:
 //   RTX 5070 Ti (locked 1346 MHz)  91.72 -> 92.28   +0.61%
@@ -1094,7 +1114,8 @@ typedef struct {
 //   RTX 5060 (125 W)               76.78 -> 76.84   +0.08%
 // Both are under the usual three-round-spreads bar. 254 registers, no spill, chunk loop
 // 468 -> 469 instructions (13.3; 12.8 634 -> 635). Same hit lists as without it over a
-// fixed job in both hash byte orders. sm_120's TMA build only; 0 turns it off.
+// fixed job in both hash byte orders. The TMA build only (sm_120, and sm_100 on the
+// same code, unmeasured there); 0 turns it off.
 #ifndef PEARL_TALL_PREGUARD
 #define PEARL_TALL_PREGUARD 1
 #endif
@@ -1425,10 +1446,10 @@ typedef struct {
 #endif
 
 // How the tall fold's per-chunk readout combines the four lanes that hold a region, on
-// Ada (sm_89), Ampere (sm_86) and Blackwell (sm_120); Turing ignores it. 0: three shuffles
-// give every lane the whole XOR, and the lane that keeps the chunk stores the word. 1:
-// each lane XORs its own quarter into the word in shared (red.shared.xor), with no
-// shuffle and no select. The words then
+// Ada (sm_89), Ampere (sm_86) and Blackwell (sm_120, and sm_100); Turing ignores it. 0:
+// three shuffles give every lane the whole XOR, and the lane that keeps the chunk stores
+// the word. 1: each lane XORs its own quarter into the word in shared (red.shared.xor),
+// with no shuffle and no select. The words then
 // have to start at zero: the kernel zeroes them once before its first tile, and the hasher
 // zeroes each region's after reading it. The ring orders that before the partner warp's
 // next writes, as it orders the hasher's reads (see the fold's hand-off).
@@ -1460,7 +1481,9 @@ typedef struct {
 #define PEARL_TALL_RED_READOUT 1
 #endif
 
-// Blackwell (sm_120) stages the tall fold with TMA instead of cp.async.
+// Blackwell (sm_120) stages the tall fold with TMA instead of cp.async. sm_100 (B200)
+// builds the same body with the same switches (PEARL_SM100_ARCH); what follows was
+// measured on sm_120 only.
 //
 // One elected thread -- lane 0 of warp 4, a warp that does not hash (see the fold) --
 // issues each 64-deep stage as two cp.async.bulk.tensor boxes, 64 bytes of k by the
@@ -1508,8 +1531,8 @@ typedef struct {
 #ifndef PEARL_TALL_TMA
 #define PEARL_TALL_TMA 1
 #endif
-// Device side: whether THIS compile's tall fold is the TMA one.
-#if PEARL_TALL_TMA && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
+// Device side: whether THIS compile's tall fold is the TMA one: sm_120's, and sm_100's.
+#if PEARL_TALL_TMA && defined(__CUDA_ARCH__) && PEARL_TMA_BODY_ARCH(__CUDA_ARCH__)
 #define PEARL_TALL_TMA_BODY 1
 #else
 #define PEARL_TALL_TMA_BODY 0
@@ -1574,7 +1597,10 @@ typedef struct {
 // "CUDA error during search".
 // The host reads the value too (Ctx::foldCluster), so -DPEARL_TALL_CLUSTER=1 binds
 // both sides. The CI workflow compiles the switch on, sm_120 only, so it stays
-// buildable; nothing of it ships.
+// buildable; nothing of it ships. sm_100's TMA body takes the switch too: ptxas 12.8
+// builds it with 255 registers and 160 bytes of spill stores (220 of loads), and
+// advises sm_100a for the multicast, so a B200 cluster build belongs with the sm_100a
+// (tcgen05) work rather than in this one.
 #ifndef PEARL_TALL_CLUSTER
 #define PEARL_TALL_CLUSTER 0
 #endif

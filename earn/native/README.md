@@ -157,7 +157,7 @@ nvcc -lib cuda-build/pearl_kernel.o cuda-build/pearl_host.o -o cuda-build/pearl_
 npx node-gyp rebuild
 ```
 
-`.github/workflows/native-core.yml` does exactly this for sm_75/80/86/89/90a/120, and it
+`.github/workflows/native-core.yml` does exactly this for sm_75/80/86/89/90a/100/120, and it
 is green on Linux: the workflow produces a real `pearl_core.node`. So the core
 compiles and links today, even though nothing on a runner can execute it.
 
@@ -184,14 +184,17 @@ registers; a compiler or gate change that spills still compiles, links and
 ships, and nothing else in CI can see it. A spill fails the job on every
 architecture in that matrix entry's `spill_fail_archs`:
 
-- **The 12.8 entries fail on sm_80, sm_86, sm_89, sm_90a and sm_120.** The
+- **The 12.8 entries fail on sm_80, sm_86, sm_89, sm_90a, sm_100 and sm_120.** The
   check's first run (2026-10-02) had every fold at 0 spill on sm_86, sm_89 and
   sm_120. sm_90a went in when it replaced sm_90 (2026-10-08): run 37718450743
   built every sm_90a fold at 0 spill, the wgmma fold at 163 registers. Its
   three-warpgroup form, the default now, builds at 128 registers and 0 spill
   (local 12.8 and 13.3 builds). sm_80 went in the same day, after run
   37737801086 built it clean (tall fold 255 registers, wmma fold 235,
-  transcript hash 40).
+  transcript hash 40). sm_100 (B200) went in on 2026-10-09, ahead of its first
+  run here: a local build with nvcc V12.8.93, the compiler those entries
+  install, had every fold at 0 spill (tall fold 255 registers, wmma fold 128).
+  It runs sm_120's TMA tall fold.
 - **The CUDA 13 entries fail on sm_120 only.** Their sm_89 half is never picked
   automatically, and a failed CUDA 13 job ships no `pearl_core_cu13.node`,
   which would cost every all-Blackwell rig the +3.2%. A spill on sm_89 there is
@@ -201,7 +204,10 @@ architecture in that matrix entry's `spill_fail_archs`:
 
 The tensor-map step also checks that the sm_90a wgmma fold has its body (its
 512-thread launch bound). A build that drops it still compiles and links, and
-Hopper cards would quietly mine on the slower cp.async fold.
+Hopper cards would quietly mine on the slower cp.async fold. It checks the tall
+fold's descriptors on sm_100 as well as sm_120, and that the tall fold has its
+body on both (the ring's mbarriers): without it a B200 or an RTX 50 card would
+quietly mine on the wmma fold.
 
 The CUDA 13 jobs are non-blocking: if they fail, the run still succeeds with a
 current 12.8 core and the release ships without the CUDA 13 one, with a warning.

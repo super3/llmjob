@@ -151,7 +151,7 @@ A release ships two builds of the mining core side by side, in the installer's
 
 | File | Toolkit | Cards |
 |---|---|---|
-| `pearl_core.node` | CUDA 12.8 | RTX 20, 30, 40 and 50, A100 / A800 / A30 / CMP 170HX, and H100 / H200 (sm_75/80/86/89/90a/120) — every rig |
+| `pearl_core.node` | CUDA 12.8 | RTX 20, 30, 40 and 50, A100 / A800 / A30 / CMP 170HX, H100 / H200 and B200 (sm_75/80/86/89/90a/100/120) — every rig |
 | `pearl_core_cu13.node` | CUDA 13.3 | sm_89 and sm_120; picked automatically for RTX 50 / Blackwell only (the sm_89 half measured no faster on a 4090) |
 
 **RTX 30 (Ampere) note.** The sm_86 half of `pearl_core.node` now runs the same
@@ -162,12 +162,18 @@ in this build. If a 3090 mines slower on this release,
 `PEARL_CORE_PATH=<path to the previous release's pearl_core.node>` loads the old
 core unchanged, and a report with both numbers is what settles it.
 
+**B200 note.** A B200 or GB200 (compute 10.0) runs the sm_100 half of
+`pearl_core.node`: the tall fold that RTX 50 cards mine on, built for sm_100. It
+does not use the B200's own tensor instructions (tcgen05) yet, and it has not
+been run on a B200: there is no hashrate figure for it. Before this build the
+core had no sm_100 code, so a B200 could not mine at all.
+
 The CUDA 13 compiler produces faster code for Blackwell: on an RTX 5090 at
 600 W the same source ran 107.27 TH/s built with CUDA 13.3 against 103.97 with
 12.8 (+3.2%). But a CUDA 13 build needs NVIDIA driver 580 or newer, so it is used
 only when **the driver is 580+ and every card that will mine is compute 12.x**
 (read from `nvidia-smi --query-gpu=index,compute_cap,driver_version`). Everything
-else — a 2080 Ti, 3090 or 4090, a mixed 4090 + 5090 rig, an older driver, or a rig where
+else — a 2080 Ti, 3090, 4090 or B200, a mixed 4090 + 5090 rig, an older driver, or a rig where
 `nvidia-smi` can't say — loads `pearl_core.node`, as before. If the CUDA 13 core
 is missing, won't load, or fails its first start with a driver/runtime error, the
 app falls back to `pearl_core.node` and logs why. The choice is logged once per

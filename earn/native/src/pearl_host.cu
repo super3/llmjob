@@ -246,13 +246,16 @@ struct Ctx {
   // kernel, pearl_tile_fold_tall, over 192x256 tiles. Read off that kernel's
   // loaded binary (PEARL_TALL_ARCH of its binaryVersion) with the others.
   bool foldTall = false;
-  // Whether that is Blackwell's build, which stages with TMA (PEARL_TALL_TMA),
-  // through the tensor maps below, and reads A' and B' k-blocked. Ada's reads them
-  // in per-tile order (foldTiled, PEARL_TALL_TILE_ORDER). The operand draw writes the
-  // order the fold reads; it runs before any search, so all of this is resolved when
-  // the context is created (resolve_fold) and never changes after.
+  // Whether that is Blackwell's build (sm_120, or sm_100 on the same code), which stages
+  // with TMA (PEARL_TALL_TMA), through the tensor maps below, and reads A' and B'
+  // k-blocked. Ada's reads them in per-tile order (foldTiled, PEARL_TALL_TILE_ORDER). The
+  // operand draw writes the order the fold reads; it runs before any search, so all of
+  // this is resolved when the context is created (resolve_fold) and never changes after.
   bool foldTma = false;
   bool foldTiled = false;
+  // The loaded tall fold's binaryVersion (100 for sm_100, 120 for sm_120), for the fold's
+  // name; 0 when it has none.
+  int tallArch = 0;
   // Whether that TMA build is the two-CTA cluster one (PEARL_TALL_CLUSTER, off by
   // default): the tall fold is then launched in clusters of PEARL_TALL_CLUSTER_SIZE
   // over tiles of two row groups, and its resident count is in clusters.
@@ -904,8 +907,9 @@ bool pearl_encode_operand(PearlTensorMap *map, const void *base, uint64_t rows, 
 // takes Ada's switches on the shared SM layout, unmeasured) are the persistent one
 // (PEARL_FOLD_PERSISTENT) and the eight-warp one (PEARL_FOLD_WIDE_WARPS); the tall
 // fold is its own kernel, with a body only in the builds PEARL_TALL_ARCH names, so
-// its binary answers for itself, and Blackwell's also says the noised operands are
-// read k-blocked through tensor maps (PEARL_TALL_TMA).
+// its binary answers for itself, and Blackwell's (sm_120, and sm_100, which builds the
+// same body) also says the noised operands are read k-blocked through tensor maps
+// (PEARL_TALL_TMA).
 //
 // Once per context, when it is created: the job's first operand draw has to know
 // the layout, and it runs before any search. Nothing here changes afterwards, so the
@@ -954,8 +958,11 @@ void resolve_fold(Ctx *ctx) {
 #else
     ctx->foldTall = tallBody;
 #endif
+    ctx->tallArch = ctx->foldTall ? ft.binaryVersion : 0;
     // -DPEARL_TALL_TMA=0 builds Blackwell's tall fold on cp.async instead; the host
-    // pass sees the same value.
+    // pass sees the same value. sm_100 (binaryVersion 100) runs the TMA fold too
+    // (PEARL_TMA_BODY_ARCH), with sm_120's width rule and launch, and no cluster unless
+    // PEARL_TALL_CLUSTER.
     ctx->foldTma = ctx->foldTall && PEARL_TALL_TMA != 0 && PEARL_TALL_TMA_ARCH(ft.binaryVersion);
     ctx->foldTiled = ctx->foldTall && !ctx->foldTma && PEARL_TALL_TILE_ORDER != 0;
     // -DPEARL_TALL_CLUSTER=1 builds that TMA fold as a two-CTA cluster; the host pass
@@ -1073,11 +1080,12 @@ void resolve_fold(Ctx *ctx) {
   ctx->foldKnown = true;
 }
 
-// The column offsets one batch of Blackwell's TMA fold covers (see PEARL_TMA_L2_SHARE):
-// the profile's col_batch, halved while the B' a row group sweeps -- col_batch * 16
-// columns of k bytes -- is more than PEARL_TMA_L2_SHARE percent of the L2. Never below
-// one tile's 16 column offsets, and only to a width that divides the valid offsets, so
-// a salt still splits into whole batches. -DPEARL_TMA_COL_BATCH=N forces N instead.
+// The column offsets one batch of Blackwell's TMA fold (sm_120 and sm_100) covers (see
+// PEARL_TMA_L2_SHARE): the profile's col_batch, halved while the B' a row group sweeps --
+// col_batch * 16 columns of k bytes -- is more than PEARL_TMA_L2_SHARE percent of the
+// L2. Never below one tile's 16 column offsets, and only to a width that divides the
+// valid offsets, so a salt still splits into whole batches. -DPEARL_TMA_COL_BATCH=N
+// forces N instead.
 uint32_t pearl_tma_col_batch(uint32_t colBatch, uint32_t colsValid, uint32_t k, uint64_t l2) {
 #ifdef PEARL_TMA_COL_BATCH
   (void)k;
@@ -1505,8 +1513,8 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
 
   // Which fold runs, before any operand is drawn (see resolve_fold).
   resolve_fold(ctx);
-  // Blackwell (the TMA fold): a batch narrow enough that the B' it sweeps fits the L2.
-  // See PEARL_TMA_L2_SHARE.
+  // Blackwell (the TMA fold, sm_120 and sm_100): a batch narrow enough that the B' it
+  // sweeps fits the L2. See PEARL_TMA_L2_SHARE.
   if (ctx->foldTma) {
     int l2 = 0;
     if (cudaDeviceGetAttribute(&l2, cudaDevAttrL2CacheSize, ctx->device) != cudaSuccess) {
@@ -2710,6 +2718,11 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
              ctx->foldUnfused ? ", hash in its own kernel" : "");
     return ctx->foldName;
   }
+  // sm_100 runs sm_120's TMA fold; its name says so, so a B200 reading is not taken for a
+  // fold of its own.
+  if (ctx->foldTall && ctx->foldTma && PEARL_SM100_ARCH(ctx->tallArch * 10))
+    return "tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands, sm_100 build of "
+           "sm_120's fold";
   if (ctx->foldTall)
     return ctx->foldTma ? "tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands"
                         : (ctx->foldTiled ? "tall 192x256, 8 warps of 96x64, cp.async ring, per-tile operands"
