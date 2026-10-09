@@ -96,6 +96,11 @@ cd earn/native/sycl
 sycl-ls                           # should show [level_zero:gpu] for the card
 ```
 
+The build records the compiler's lib directory in the addon's run path, so the
+addon finds the SYCL runtime without the environment script. Only building, and
+the CPU device (`PEARL_SYCL_DEVICE=cpu`, which needs `OCL_ICD_VENDORS` from
+`envrc.sh`), need it sourced.
+
 ### 3. The four commands
 
 All run from `earn/native/sycl`.
