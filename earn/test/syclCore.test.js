@@ -17,7 +17,9 @@ const { PROFILE, regionToTile } = require('../src/shared/miner/pearlhash');
 
 const NATIVE = path.join(__dirname, '..', 'native');
 const SYCL = path.join(NATIVE, 'sycl');
-const read = (...p) => fs.readFileSync(path.join(...p), 'utf8');
+// CRLF to LF: a Windows checkout gives the C++ sources CRLF endings, and the
+// line-based helpers below read a trailing \r as part of the line.
+const read = (...p) => fs.readFileSync(path.join(...p), 'utf8').replace(/\r\n/g, '\n');
 const CORE = read(NATIVE, 'src', 'pearl_core.cc');
 const HOST = read(SYCL, 'pearl_sycl_host.cpp');
 const KERNELS = read(SYCL, 'pearl_sycl_kernels.hpp');
