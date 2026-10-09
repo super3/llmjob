@@ -1151,11 +1151,18 @@ uint32_t pearl_ampere_col_batch(uint32_t colBatch, uint32_t colsValid) {
 // loses some of it: each launch re-reads all of A' (256 MB), and there are more launches.
 // (A band of 64 row groups instead, at 2048, measured +2%: fewer bands, fewer B' re-reads.)
 //
-// At 100% the rule keeps 2048 on a 72 MB L2 (RTX 4090: 70 MB fits) or larger, where it
-// was tuned; takes 1024 on 48-64 MB (4070 Super, 4070 Ti, 4080); and 512 on 24-36 MB
-// (4060, 4060 Ti, 4070), where 1024's 38 MB does not fit. Only the 48 MB pick has been
-// measured. Only the batch width changes: the same regions, searched in more, shorter
-// launches. -DPEARL_ADA_COL_BATCH=N forces N instead.
+// At 100% the rule keeps 2048 on a 72 MB L2 (RTX 4090: 70 MB fits) or larger (L40S, L40,
+// RTX 6000 Ada: 96 MB); takes 1024 on 40-64 MB (4070 Super, 4070 Ti, 4080, L4, RTX 4000,
+// 4500 and 5000 Ada); and 512 on 24-36 MB (4060, 4060 Ti, 4070, and the RTX 2000 Ada,
+// which reports 24 MB), where 1024's 38 MB does not fit. Measured on 21 Ada hosts on
+// 2026-10-08 (benchmark.md, "Ada batch width"): the release, then the rule, then the
+// release again in one rental, 5 minutes each on the pool. The rule never lost, and it
+// gains most where the power cap is tight: L4 (72 W, 48 MB) +1.7%, RTX 2000 Ada (70 W)
+// +1.4%, RTX 4000 Ada (130 W, 40 MB) +1.1%, RTX 4500 Ada (210 W) +0.7%, RTX 4070 Super
+// (209 W) +0.5%; cards at stock caps 0 to +0.4%. 1024 in place of 512 on 24-32 MB cards
+// was level, and narrower than the pick was level or worse (512 on a 48 MB L4 -0.5%,
+// 1024 on a 96 MB RTX 6000 Ada -0.9%). Only the batch width changes: the same regions,
+// searched in more, shorter launches. -DPEARL_ADA_COL_BATCH=N forces N instead.
 #ifndef PEARL_ADA_L2_SHARE
 #define PEARL_ADA_L2_SHARE 100u
 #endif
