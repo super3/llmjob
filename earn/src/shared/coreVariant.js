@@ -43,11 +43,17 @@
 // Anything else, including anything we could not read, gets the 12.8 build.
 // A mixed rig (a 4090 beside a 5090) loads one addon for all its cards, so it
 // gets the 12.8 build too.
+//
+// A third core, for AMD cards, is opt-in only: pearl_core_hip.node, built with
+// ROCm from earn/native/amd (see its README). Nothing here picks it on its
+// own; PEARL_CORE_VARIANT=amd asks for it, and PEARL_CORE_PATH can name it.
+// It is not in a release yet.
 
 const CU12 = 'cu12';
 const CU13 = 'cu13';
-const FILES = { [CU12]: 'pearl_core.node', [CU13]: 'pearl_core_cu13.node' };
-const LABELS = { [CU12]: 'CUDA 12.8 build', [CU13]: 'CUDA 13 build' };
+const AMD = 'amd';
+const FILES = { [CU12]: 'pearl_core.node', [CU13]: 'pearl_core_cu13.node', [AMD]: 'pearl_core_hip.node' };
+const LABELS = { [CU12]: 'CUDA 12.8 build', [CU13]: 'CUDA 13 build', [AMD]: 'AMD build (ROCm)' };
 // NVIDIA's minor-version compatibility table: every 13.x runtime runs on any
 // driver >= 580, on Linux and Windows alike. Below that it cannot start at all.
 const MIN_DRIVER_CU13 = 580;
@@ -100,14 +106,15 @@ function parseCudaCards(out) {
   return list;
 }
 
-// PEARL_CORE_VARIANT=cu12|cu13 forces one build, for debugging. Anything else
-// is ignored (and said so in the reason), never guessed at.
+// PEARL_CORE_VARIANT=cu12|cu13 forces one build, for debugging, and
+// PEARL_CORE_VARIANT=amd asks for the AMD one. Anything else is ignored (and
+// said so in the reason), never guessed at.
 function readForced(env) {
   const raw = env && env.PEARL_CORE_VARIANT;
   if (raw == null || String(raw).trim() === '') return { forced: null, note: '' };
   const v = String(raw).trim().toLowerCase();
-  if (v === CU12 || v === CU13) return { forced: v, note: '' };
-  return { forced: null, note: 'PEARL_CORE_VARIANT=' + raw + ' ignored (use cu12 or cu13); ' };
+  if (v === CU12 || v === CU13 || v === AMD) return { forced: v, note: '' };
+  return { forced: null, note: 'PEARL_CORE_VARIANT=' + raw + ' ignored (use cu12, cu13 or amd); ' };
 }
 
 // Decide the build. `cards` is parseCudaCards' list; `gpus` is the mining list
@@ -179,7 +186,7 @@ function isRuntimeError(err) {
 }
 
 module.exports = {
-  CU12, CU13, FILES, LABELS, MIN_DRIVER_CU13,
+  CU12, CU13, AMD, FILES, LABELS, MIN_DRIVER_CU13,
   cu13HasCodeFor, cu13AutoSelectsFor,
   parseCudaCards, pickCoreVariant, isRuntimeError,
 };
