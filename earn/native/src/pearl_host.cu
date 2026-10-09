@@ -273,9 +273,9 @@ struct Ctx {
   // pearl_tall_hash80 hashes them after it on the slot's stream.
   bool foldUnfused = false;
   // Whether Hopper's wgmma fold runs instead (PEARL_HOPPER_WGMMA): pearl_tile_fold_hopper
-  // on the operands through tmA and tmB, per-tile (128-row A blocks) or k-blocked as
-  // PEARL_HOPPER_TILED says, writing dTrG[slot] for pearl_tall_hash80, on hopperBlocks
-  // CTAs (one an SM).
+  // on the operands through tmA and tmB, per-tile (PEARL_HOPPER_BM-row A blocks) or
+  // k-blocked as PEARL_HOPPER_TILED says, writing dTrG[slot] for pearl_tall_hash80, on
+  // hopperBlocks CTAs (one an SM).
   bool foldHopper = false;
   unsigned hopperBlocks = 0;
   // With PEARL_HOPPER_CLUSTER: CTAs a launch, whole clusters of two (asked on first launch).
@@ -966,12 +966,15 @@ void resolve_fold(Ctx *ctx) {
     ctx->foldPersistA = ctx->foldAmpere && PEARL_AMPERE_PERSIST_ARCH(ft.binaryVersion * 10);
     ctx->foldUnfused = ctx->foldAmpere && ft.binaryVersion == 80 && PEARL_TALL_UNFUSED != 0;
     // Hopper's wgmma fold: only when this binary has its body, which alone carries the
-    // 288-thread launch bound (an sm_90a build with PEARL_HOPPER_WGMMA). It reads the
-    // operands through TMA in the order its build has, per-tile in 128-row A blocks or
-    // k-blocked (PEARL_HOPPER_TILED), and the draw writes them that way.
+    // launch bound of PEARL_HOPPER_THREADS (an sm_90a build with PEARL_HOPPER_WGMMA). It
+    // reads the operands through TMA in the order its build has, per-tile in
+    // PEARL_HOPPER_BM-row A blocks or k-blocked (PEARL_HOPPER_TILED), and the draw writes
+    // them that way.
 #if PEARL_HOPPER_WGMMA
     // Per-tile, the A' allocation (padded to 192-row tiles, PEARL_TALL_A_ROWS) must hold
-    // whole 128-row blocks; at mainnet m is a multiple of both. Else the cp.async fold runs.
+    // whole PEARL_HOPPER_BM-row blocks. 192-row blocks always fit; 128-row ones
+    // (PEARL_HOPPER_WG3=0) do at mainnet, where m is a multiple of both. Else the cp.async
+    // fold runs.
     const uint64_t hRows =
         ((uint64_t)ctx->profile.m + PEARL_HOPPER_BM - 1u) / PEARL_HOPPER_BM * PEARL_HOPPER_BM;
     if (ctx->foldAmpere && ft.binaryVersion == 90
@@ -1018,8 +1021,9 @@ void resolve_fold(Ctx *ctx) {
   // TMA zero-fills the last row group's rows past it (see PEARL_TALL_TMA).
 #if PEARL_HOPPER_WGMMA
   // Hopper's wgmma fold on per-tile operands (PEARL_HOPPER_TILED): each tile block's k-blocks
-  // are consecutive boxes of 128 (A) or 256 (B) rows of 64 bytes, so the maps are
-  // {64 bytes, box rows, blocks x k-blocks}, the A map over m rounded up to 128 rows.
+  // are consecutive boxes of PEARL_HOPPER_BM (A) or 256 (B) rows of 64 bytes, so the maps are
+  // {64 bytes, block rows, blocks x k-blocks}, the A map over m rounded up to PEARL_HOPPER_BM
+  // rows.
   if (ctx->foldHopper && ctx->foldTiled) {
     PFN_cuTensorMapEncodeTiled_v12000 enc = pearl_encode_tiled();
     const uint32_t kbs = ctx->profile.k / PEARL_TALL_STAGE_K;
@@ -1554,6 +1558,11 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
       l2 = 0;
     }
     ctx->tallBand = pearl_ampere_band_for(profile->k, (uint64_t)l2, ctx->foldUnfused);
+#if PEARL_HOPPER_WGMMA
+    // Hopper's wgmma fold takes its own depth (PEARL_HOPPER_BAND: 8 with the 192-row tiles
+    // of PEARL_HOPPER_WG3), unless that is 0. It reaches the fold as a kernel argument.
+    if (ctx->foldHopper && PEARL_HOPPER_BAND != 0u) ctx->tallBand = PEARL_HOPPER_BAND;
+#endif
     // The fold reads it PEARL_BD_BAND_WORD words past its slot's hit counter.
     const uint32_t bands[Ctx::kSlots] = {ctx->tallBand, ctx->tallBand};
     CUDA_OK(cudaMemcpy(ctx->dHitCount + PEARL_BD_BAND_WORD, bands, sizeof bands,
@@ -2196,8 +2205,9 @@ void pearl_cluster_config(cudaLaunchConfig_t *cfg, cudaLaunchAttribute attr[1], 
 }
 
 #if PEARL_HOPPER_WGMMA
-// Launch Hopper's wgmma fold over one batch on `st`. Its tiles are row groups of 8 row
-// offsets (128 rows) by the batch's column groups: one CTA an SM, or with
+// Launch Hopper's wgmma fold over one batch on `st`. Its tiles are row groups of
+// PEARL_HOPPER_ROW_OFFSETS row offsets (PEARL_HOPPER_BM rows: 12 and 192, or 8 and 128 with
+// PEARL_HOPPER_WG3=0) by the batch's column groups: one CTA an SM, or with
 // PEARL_HOPPER_CLUSTER clusters of two CTAs over row-group pairs, as many clusters as the
 // runtime says fit at once (asked on the first launch).
 void pearl_launch_hopper(Ctx *ctx, cudaStream_t st, uint32_t k, uint32_t rank, uint32_t chunks,
@@ -2675,8 +2685,13 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
            "2-CTA cluster sharing B by multicast";
   if (ctx->foldHopper) {
     snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,
+#if PEARL_HOPPER_WG3
+             "hopper 192x256, 3 warpgroups of wgmma 2 x m64n128 and a producer warpgroup, "
+             "TMA ring, %s operands, band %u, hash in its own kernel%s",
+#else
              "hopper 128x256, 2 warpgroups of wgmma m64n256 and a producer warp, TMA ring, %s "
              "operands, band %u, hash in its own kernel%s",
+#endif
              ctx->foldTiled ? "per-tile" : "k-blocked", ctx->tallBand,
              PEARL_HOPPER_CLUSTER ? ", 2-CTA clusters sharing B by multicast" : "");
     return ctx->foldName;

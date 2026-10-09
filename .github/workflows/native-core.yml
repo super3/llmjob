@@ -95,7 +95,10 @@ jobs:
             # with every fold at 0 spill, the wgmma fold 163 registers, the
             # tall fold 254, the wmma fold 231 and the transcript hash 40. On
             # Hopper the wgmma fold is the one that mines, so a spill in it
-            # fails the job.
+            # fails the job. Its three-warpgroup form (PEARL_HOPPER_WG3, on by
+            # default) has 16 warps, so it launches with 128 registers a thread
+            # (setmaxnreg then gives the consumers 160); local 12.8 and 13.3
+            # builds have it at 128 and 0 spill.
             spill_fail_archs: sm_80 sm_86 sm_89 sm_90a sm_120
           - os: windows-2022
             variant: ''
@@ -455,17 +458,19 @@ jobs:
             # leaves PEARL_HOPPER_WGMMA_BODY at 0 (compute_90 instead of
             # compute_90a, say) still has the kernel and its two parameters, so
             # everything above passes. But on a card the host then finds no
-            # 288-thread launch bound, and H100s and H200s quietly mine on the
+            # 512-thread launch bound, and H100s and H200s quietly mine on the
             # slower cp.async fold. Only the body carries that bound
-            # (EIATTR_MAX_THREADS 0x120 = PEARL_HOPPER_THREADS); change both together.
+            # (EIATTR_MAX_THREADS 0x200 = PEARL_HOPPER_THREADS, 512 with the
+            # default PEARL_HOPPER_WG3=1; 0x120 = 288 with WG3=0); change both
+            # together.
             if [ "$kernel" = pearl_tile_fold_hopper ]; then
               maxt=$(printf '%s\n' "$info" | grep -A2 'EIATTR_MAX_THREADS' \
                 | sed -n 's/.*Value:[[:space:]]*\(0x[0-9a-fA-F]*\).*/\1/p' | head -n 1 || true)
-              if [ "$maxt" != 0x120 ]; then
-                echo "::error::$kernel on $want has no 288-thread launch bound (EIATTR_MAX_THREADS: '${maxt:-none}'), so the build has no wgmma fold body; was sm_90a compiled from compute_90a? H100 and H200 cards would fall back to the cp.async fold"
+              if [ "$maxt" != 0x200 ]; then
+                echo "::error::$kernel on $want has no 512-thread launch bound (EIATTR_MAX_THREADS: '${maxt:-none}'), so the build has no wgmma fold body; was sm_90a compiled from compute_90a? H100 and H200 cards would fall back to the cp.async fold"
                 exit 1
               fi
-              echo "$want $kernel: launch bound $maxt (288 threads), so the wgmma fold body is in"
+              echo "$want $kernel: launch bound $maxt (512 threads), so the wgmma fold body is in"
             fi
             bank=$(( 16#$base & 0xffff ))
             printf '%s %s: parameters start at c[0x0][0x%x]\n' "$want" "$kernel" "$bank"

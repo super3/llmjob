@@ -187,9 +187,11 @@ architecture in that matrix entry's `spill_fail_archs`:
 - **The 12.8 entries fail on sm_80, sm_86, sm_89, sm_90a and sm_120.** The
   check's first run (2026-10-02) had every fold at 0 spill on sm_86, sm_89 and
   sm_120. sm_90a went in when it replaced sm_90 (2026-10-08): run 37718450743
-  built every sm_90a fold at 0 spill, the wgmma fold at 163 registers. sm_80
-  went in the same day, after run 37737801086 built it clean (tall fold 255
-  registers, wmma fold 235, transcript hash 40).
+  built every sm_90a fold at 0 spill, the wgmma fold at 163 registers. Its
+  three-warpgroup form, the default now, builds at 128 registers and 0 spill
+  (local 12.8 and 13.3 builds). sm_80 went in the same day, after run
+  37737801086 built it clean (tall fold 255 registers, wmma fold 235,
+  transcript hash 40).
 - **The CUDA 13 entries fail on sm_120 only.** Their sm_89 half is never picked
   automatically, and a failed CUDA 13 job ships no `pearl_core_cu13.node`,
   which would cost every all-Blackwell rig the +3.2%. A spill on sm_89 there is
@@ -198,7 +200,7 @@ architecture in that matrix entry's `spill_fail_archs`:
   architecture warns until a run has shown it clean.
 
 The tensor-map step also checks that the sm_90a wgmma fold has its body (its
-288-thread launch bound). A build that drops it still compiles and links, and
+512-thread launch bound). A build that drops it still compiles and links, and
 Hopper cards would quietly mine on the slower cp.async fold.
 
 The CUDA 13 jobs are non-blocking: if they fail, the run still succeeds with a

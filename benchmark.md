@@ -541,6 +541,15 @@ a 5-minute pool run. The H100 SXM is still from `e8c04b4`.
   152422, 700 W: 670.2 against 623.0) and 7.1% more on an H100 NVL (South
   Korea, 58970, 400 W: 509.4 against 475.4). Those are different hosts and
   a different method, so the H100 SXM row is unchanged.
+- **After v0.5.13:** PR #256 makes the fold's three-warpgroup form the
+  default (192x256 tiles, band 8; `PEARL_HOPPER_WG3` in `pearl_config.h`).
+  `hashrate.js` speed tests on 2026-10-08, 22:46–23:39 UTC, of that sm_90a
+  kernel against v0.5.13's, 3 rounds each, ahead in every round: 547.1
+  against 501.0 (+9.2%) on the H100 NVL (Japan, 29785, this table's host),
+  101.8% of SRBMiner's 537.6; and 729.3 against 670.8 (+8.7%) on an H100 SXM
+  (California, 152422, 700 W; New York 153443 had no offer), 96.3% of
+  PeakMiner's 757.7. That is a different method, and for the SXM a different
+  host, so both rows are unchanged until a pool run.
 - **H100 PCIe:** 81035 wasn't offered, so this is a new host. PeakMiner ran
   at 915 MHz and fell from about 404 to 391.6 by 5:00. SRBMiner is the faster
   competitor here either way.
