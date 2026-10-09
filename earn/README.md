@@ -162,11 +162,14 @@ in this build. If a 3090 mines slower on this release,
 `PEARL_CORE_PATH=<path to the previous release's pearl_core.node>` loads the old
 core unchanged, and a report with both numbers is what settles it.
 
-**B200 note.** A B200 or GB200 (compute 10.0) runs the sm_100 half of
-`pearl_core.node`: the tall fold that RTX 50 cards mine on, built for sm_100. It
-does not use the B200's own tensor instructions (tcgen05) yet, and it has not
-been run on a B200: there is no hashrate figure for it. Before this build the
-core had no sm_100 code, so a B200 could not mine at all.
+**B200 note.** A B200 (compute 10.0, in an HGX or DGX system with an x86-64
+host) runs the sm_100 half of `pearl_core.node`: the CUDA 12.8 build of the tall
+fold source that RTX 50 cards use, built for sm_100. (An RTX 50 card on driver
+580 or newer mines on the CUDA 13 build of it.) It does not use the B200's own
+tensor instructions (tcgen05) yet, and it has not been run on a B200: there is
+no hashrate figure for it. Before this build the core had no sm_100 code, so a
+B200 could not mine at all. A GB200 can't run the miner: its host CPU is Arm
+(Grace), and the core is built for x86-64 Linux and Windows only.
 
 The CUDA 13 compiler produces faster code for Blackwell: on an RTX 5090 at
 600 W the same source ran 107.27 TH/s built with CUDA 13.3 against 103.97 with

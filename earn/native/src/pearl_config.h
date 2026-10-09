@@ -370,7 +370,7 @@ typedef struct {
 #define PEARL_HOPPER_ARCH(a) ((a) == 900)
 #define PEARL_AMPERE_ARCH(a) ((a) == 800 || (a) == 860 || PEARL_HOPPER_ARCH(a))
 
-// Data-center Blackwell (sm_100: B200, GB200, compute 10.0). Its SM has sm_90's TMA,
+// Data-center Blackwell (sm_100: B200, compute 10.0). Its SM has sm_90's TMA,
 // mbarrier try_wait and expect_tx, and the int8 m16n8k32 mma.sync, ldmatrix and cp.async,
 // but not wgmma, which is sm_90a only. Its own tensor path, tcgen05, is sm_100a and has no
 // fold yet. Until it does, sm_100 builds the TMA tall fold that sm_120 mines on, with

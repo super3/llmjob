@@ -184,23 +184,25 @@ registers; a compiler or gate change that spills still compiles, links and
 ships, and nothing else in CI can see it. A spill fails the job on every
 architecture in that matrix entry's `spill_fail_archs`:
 
-- **The 12.8 entries fail on sm_80, sm_86, sm_89, sm_90a, sm_100 and sm_120.** The
+- **The 12.8 entries fail on sm_80, sm_86, sm_89, sm_90a and sm_120.** The
   check's first run (2026-10-02) had every fold at 0 spill on sm_86, sm_89 and
   sm_120. sm_90a went in when it replaced sm_90 (2026-10-08): run 37718450743
   built every sm_90a fold at 0 spill, the wgmma fold at 163 registers. Its
   three-warpgroup form, the default now, builds at 128 registers and 0 spill
   (local 12.8 and 13.3 builds). sm_80 went in the same day, after run
   37737801086 built it clean (tall fold 255 registers, wmma fold 235,
-  transcript hash 40). sm_100 (B200) went in on 2026-10-09, ahead of its first
-  run here: a local build with nvcc V12.8.93, the compiler those entries
-  install, had every fold at 0 spill (tall fold 255 registers, wmma fold 128).
-  It runs sm_120's TMA tall fold.
+  transcript hash 40).
 - **The CUDA 13 entries fail on sm_120 only.** Their sm_89 half is never picked
   automatically, and a failed CUDA 13 job ships no `pearl_core_cu13.node`,
   which would cost every all-Blackwell rig the +3.2%. A spill on sm_89 there is
   a warning in the log.
-- **Any other architecture is a warning:** today that is sm_75. A newly added
-  architecture warns until a run has shown it clean.
+- **Any other architecture is a warning:** today that is sm_75 and sm_100. A
+  newly added architecture warns until a run has shown it clean. sm_100 (B200)
+  was added on 2026-10-09 and has not been through a run yet. A local build
+  with nvcc V12.8.93, the compiler the 12.8 entries install, had every fold at
+  0 spill (tall fold 255 registers, wmma fold 128). It builds sm_120's TMA tall
+  fold, so a change to the shared tall-fold code should be checked for an
+  sm_100 spill before it merges.
 
 The tensor-map step also checks that the sm_90a wgmma fold has its body (its
 512-thread launch bound). A build that drops it still compiles and links, and

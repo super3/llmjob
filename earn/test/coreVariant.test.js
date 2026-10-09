@@ -60,7 +60,7 @@ describe('cu13HasCodeFor / cu13AutoSelectsFor', () => {
     expect(cu13AutoSelectsFor(H100(0))).toBe(false);
   });
 
-  // 10.0 is data-center Blackwell (B200, GB200). It is Blackwell, but its sm_100
+  // 10.0 is data-center Blackwell (B200). It is Blackwell, but its sm_100
   // code is in the 12.8 build only, so it must not be taken for compute 12.x.
   test('B200 has no code', () => {
     expect(cu13HasCodeFor(B200(0))).toBe(false);

@@ -54,9 +54,9 @@ const MIN_DRIVER_CU13 = 580;
 // Blackwell consumer and workstation cards (RTX 50, RTX PRO) are compute 12.x.
 // Ada (RTX 40) is compute 8.9 exactly; 8.6 is Ampere (RTX 30) and 8.0 is
 // GA100 Ampere (A100, A800, A30, CMP 170HX). 9.0 is Hopper (H100, H200), whose
-// sm_90a code is in the 12.8 build only. 10.0 is data-center Blackwell (B200,
-// GB200): also Blackwell, but a different major, and its sm_100 code is in the
-// 12.8 build only, so it must never be matched as compute 12.x is.
+// sm_90a code is in the 12.8 build only. 10.0 is data-center Blackwell (B200):
+// also Blackwell, but a different major, and its sm_100 code is in the 12.8
+// build only, so it must never be matched as compute 12.x is.
 const BLACKWELL_COMPUTE_MAJOR = 12;
 const ADA_COMPUTE_MAJOR = 8;
 const ADA_COMPUTE_MINOR = 9;
