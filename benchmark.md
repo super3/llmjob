@@ -51,6 +51,8 @@ host:
   `mma.sync`, which tops out at about 41% of the competitors on this card.
   Matching them needs a fold on the B200's own tensor instructions
   (tcgen05). Before this build a B200 couldn't mine at all.
+- Tesla T4 (sm_75): 27.7 TH/s at its 70 W limit in one 5-minute pool run
+  of v0.5.13. PeakMiner and SRBMiner weren't run, so there is no % of best.
 
 ## How a host is tested
 
@@ -830,6 +832,31 @@ for a compute 10.0 card. Same pool and miner versions as the RTX tables.
   are their last reading, at 295 s.
 - **Host:** the cheapest 1-GPU offer, reliability 0.997, driver 580.126.09,
   148 SMs and 126.5 MiB of L2.
+
+## Tesla T4 (sm_75, v0.5.13)
+
+Run on 2026-10-09, 08:48–08:53 UTC, from the published v0.5.13 files, checked
+against the release digests. PR #256's sm_75 code is byte-identical to
+v0.5.13's. This was one 5-minute pool run of our miner only: PeakMiner and
+SRBMiner weren't run and there was no hit check, so there is no "% of best"
+and no table row.
+
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
+|---|---|---|---|---|---|---|
+| Tesla T4 16 GB | Czechia (70 W) | 28909 | 27.7 | not run | not run | — |
+
+- **Ours:** 27.65 TH/s, the mean of the CLI's 188 readings after the first
+  minute (median 27.5, range 26.8–29.1). Per minute: 30.2, 28.3, 27.5, 27.4,
+  27.4. The rate fell as the card warmed and held about 27.4 from minute 4.
+  No share was accepted or rejected in the 5 minutes; about 1.5 were
+  expected at this rate.
+- **Core:** the CLI loaded the CUDA 12.8 core ("GPU 0 is compute 7.5 (the
+  CUDA 13 build has no code for it)"), on driver 580.178.04.
+- **Clocks and power:** the T4's 70 W limit is its default and maximum. The
+  card ran at a median 750 MHz of its 1590 MHz maximum, 67.5 W and 73 C, at
+  the power cap (0x4) in every sample after the first minute.
+- **Per clock:** at a steady 750 MHz, 27.4 TH/s is 913 int8 MACs per clock
+  per SM, 89% of Turing's IMMA peak, in line with the 20-series cards.
 
 ## Replaced hosts (40/50-series)
 
