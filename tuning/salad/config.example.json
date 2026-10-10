@@ -1,2 +1,2 @@
 {"max_active": 1, "search": true, "search_token": 0, "restart_token": 0,
- "credit_start": 100.0, "credit_offset": 0.0, "box_ver": "v0.5.13", "ver_override": {}}
+ "credit_start": 100.0, "credit_offset": 0.0, "box_ver": "v0.5.13", "ver_override": {}, "report_min": 10}
