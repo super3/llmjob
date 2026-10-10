@@ -1450,6 +1450,8 @@ describe('both mode', () => {
     expect(allOut()).toContain('downloading… 10%\n');
     expect(allOut()).toContain('downloading model… 20%\n');
     expect(allOut()).not.toContain('\r  downloading');
+    // The mock reports 20% then 25%: the same tenth, so one line, not two.
+    expect(allOut().match(/downloading model… 20%/g)).toHaveLength(1);
 
     // Planned against the empty card, as before: the whole model on GPU 0.
     const llm = m.LlmManager.instances[0];
@@ -1971,19 +1973,33 @@ describe('demand-driven auto: the model is fetched while mining', () => {
     const m = load();
     m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
     m.LlmEngineManager.mmprojInstalled = true;
+    let release;
+    m.LlmEngineManager.modelHold = new Promise((r) => { release = r; });
     const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
     await settle(8);
 
     const miner = m.PearlEngine.instances[0];
     const model = m.LlmEngineManager.instances.find((e) => e.ensureModel.mock.calls.length);
     expect(miner.start.mock.invocationCallOrder[0]).toBeLessThan(model.ensureModel.mock.invocationCallOrder[0]);
-    expect(allOut()).toContain(LLM.tiers[0].name + ' is on disk; a request now waits only for it to load');
-    expect(m.LlmManager.instances).toHaveLength(0);   // fetched, not loaded
+    // Whole lines beside the miner, never the foreground's \r redraw.
+    expect(allOut()).toContain('downloading model… 20%\n');
+    expect(allOut()).not.toContain('\r  downloading');
 
-    // The gate's hook hands back the same download, so a wake can wait on it
-    // while the miner keeps the card.
+    // The gate's hook hands back the same download, so a wake that arrives
+    // mid-download waits for it while the miner keeps the card, instead of
+    // stopping the miner and starting a second download.
     const gate = m.autoGate.createAutoGate.instances[0];
-    await expect(gate.opts.prepareLlm()).resolves.toBeUndefined();
+    let ready = false;
+    const waiting = gate.opts.prepareLlm().then(() => { ready = true; });
+    await settle();
+    expect(ready).toBe(false);   // still downloading
+
+    release();
+    await waiting;
+    expect(allOut()).toContain(LLM.tiers[0].name + ' is on disk; a request now waits only for it to load');
+    const downloads = m.LlmEngineManager.instances.reduce((n, e) => n + e.ensureModel.mock.calls.length, 0);
+    expect(downloads).toBe(1);
+    expect(m.LlmManager.instances).toHaveLength(0);   // fetched, not loaded
 
     miner.emit('stopped', 0);
     await expect(p).resolves.toBe(0);
