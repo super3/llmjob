@@ -3118,6 +3118,103 @@ describe('mining only when the computer is idle', () => {
       expect(ctx.sent('miner:stopped')).toEqual([]);
     });
 
+    // A promise the test settles by hand, for a slow first-run model download.
+    const deferred = () => { let resolve; const p = new Promise((r) => { resolve = r; }); return { p, resolve }; };
+    afterEach(() => {
+      require('../src/main/llmEngineManager').LlmEngineManager.behavior.ensureModel = () => Promise.resolve('/tmp/llm/model.gguf');
+    });
+
+    it('a resume mines at once, without waiting for the model download a paused START began', async () => {
+      const ctx = await bootAuto();
+      const dl = deferred();
+      ctx.LlmEngineManager.behavior.ensureModel = () => dl.p;
+      ctx.emit('miner:start', AUTO); // someone is at the computer: the model starts downloading
+      await flush();
+      idle(ctx, 'idle');
+      watcher(ctx).fn();
+      await flush();
+      expect(ctx.PearlEngine.instances).toHaveLength(1);
+      expect(ctx.PearlEngine.instances[0].isRunning()).toBe(true);
+      dl.resolve('/tmp/llm/model.gguf');
+      await flush();
+      expect(ctx.PearlEngine.instances).toHaveLength(1);
+      expect(ctx.LlmManager.instances).toHaveLength(1);
+    });
+
+    it('a resume that cannot start the miner says so', async () => {
+      const ctx = await bootAuto();
+      const dl = deferred();
+      ctx.LlmEngineManager.behavior.ensureModel = () => dl.p;
+      ctx.emit('miner:start', AUTO);
+      await flush();
+      ctx.probe.detectMinerGpus.mockRejectedValueOnce(new Error('nvidia-smi failed'));
+      idle(ctx, 'idle');
+      watcher(ctx).fn();
+      await flush();
+      expect(ctx.sent('miner:log').map((l) => l.line)).toContain('start failed: nvidia-smi failed');
+      dl.resolve('/tmp/llm/model.gguf');
+      await flush();
+    });
+
+    it('a run queued before the share switch flips saves the switch as it is now', async () => {
+      const ctx = await bootAuto();
+      const dl = deferred();
+      ctx.LlmEngineManager.behavior.ensureModel = () => dl.p;
+      idle(ctx, 'idle');
+      ctx.emit('miner:start', Object.assign({ shareLlm: true }, AUTO));
+      await flush();
+      ctx.PearlEngine.instances[0].emit('event', { type: 'status', hashrate: 300 });
+      await flush(); // the run now waits on the model download
+      idle(ctx, 'active');
+      watcher(ctx).fn(); // the pause queues a run
+      await flush();
+      ctx.emit('llm:share', false);
+      dl.resolve('/tmp/llm/model.gguf');
+      await flush();
+      const last = ctx.fs.writeFileSync.mock.calls.filter((c) => c[0] === SETTINGS_PATH).pop();
+      expect(JSON.parse(last[1]).shareLlm).toBe(false);
+    });
+
+    it('adopts a running llama-server once, not again on every pause and resume', async () => {
+      const ctx = await bootAuto();
+      wireHealthOk(ctx);
+      ctx.emit('miner:start', AUTO);
+      await flush();
+      idle(ctx, 'idle');
+      watcher(ctx).fn();
+      await flush();
+      ctx.PearlEngine.instances[0].emit('event', { type: 'status', hashrate: 300 });
+      await flush();
+      idle(ctx, 'active');
+      watcher(ctx).fn();
+      await flush();
+      expect(ctx.sent('miner:log').filter((l) => /reusing it/.test(l.line))).toHaveLength(1);
+    });
+
+    it('a model that dies before it is ready while mining is paused shows why', async () => {
+      const ctx = await bootAuto();
+      ctx.emit('miner:start', AUTO);
+      await flush();
+      ctx.LlmManager.instances[0].emit('stopped', 1);
+      await flush();
+      expect(ctx.sent('llm:status').pop()).toMatchObject({ error: 'The local LLM stopped before it was ready. See Logs.' });
+    });
+
+    it('STOP, then START with the same settings during a slow start, still starts', async () => {
+      const ctx = await bootAuto();
+      const dl = deferred();
+      ctx.LlmEngineManager.behavior.ensureModel = () => dl.p;
+      ctx.emit('miner:start', AUTO); // paused START, downloading the model
+      await flush();
+      ctx.emit('miner:stop');
+      idle(ctx, 'idle');
+      ctx.emit('miner:start', AUTO);
+      await flush();
+      dl.resolve('/tmp/llm/model.gguf');
+      await flush();
+      expect(ctx.PearlEngine.instances.filter((m) => m.isRunning())).toHaveLength(1);
+    });
+
     it('does nothing in LLM mode, where there is no mining to hold back', async () => {
       const ctx = await bootAuto();
       ctx.emit('miner:start', { mode: 'llm' });

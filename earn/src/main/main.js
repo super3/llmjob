@@ -339,6 +339,15 @@ function poolLookup() {
   return poolLookupFn;
 }
 
+// One miner start at a time. runPlan and an idle resume can each ask for one
+// while the other's is still in its nvidia-smi await, before `miner` is set; the
+// second joins the first instead of building a second engine on the same cards.
+let minerStarting = null;
+function startMiningOnce(settings, llmCoRuns) {
+  if (!minerStarting) minerStarting = startMining(settings, llmCoRuns).finally(() => { minerStarting = null; });
+  return minerStarting;
+}
+
 // `llmCoRuns` is runPlan's plan.llm: whether a local LLM will share the cards
 // for this run. It decides the memory clock plan below.
 async function startMining(settings, llmCoRuns) {
@@ -845,7 +854,10 @@ function progressReporter(label, now) {
 // whether the server was actually started (callers use it to reset the UI when
 // an LLM-only session ends up running nothing).
 async function startLlm(reserveMb) {
-  if (fleet && fleet.hasSpawned()) return true; // a spawned fleet is already up
+  // A fleet already up, spawned or adopted. An adopted server has no manager, so
+  // hasSpawned() alone missed it, and every idle pause and resume adopted the
+  // same server again, with another cluster worker each time.
+  if (fleet && (fleet.hasSpawned() || fleet.isReady())) return true;
 
   // One fleet drives both paths: adopt a lingering server, or spawn one instance
   // per eligible GPU. Build it once with the process/GPU factories injected.
@@ -1017,9 +1029,10 @@ function buildFleet() {
     cancelChat('the local LLM stopped');
     resetLlmStatus();
     syncLanShare();
-    // Every instance died before any became ready while mining keeps running —
-    // the silent-failure case (typically a port-bind/OOM), not a user stop.
-    if (!llmEverReady && miner && miner.isRunning()) {
+    // Every instance died before any became ready while mining keeps running, or
+    // while idle-only has it paused — the silent-failure case (typically a
+    // port-bind/OOM), not a user stop.
+    if (!llmEverReady && ((miner && miner.isRunning()) || (session && session.paused))) {
       llmStatus = Object.assign({}, llmStatus, { ready: false, error: 'The local LLM stopped before it was ready. See Logs.' });
       sendLlmStatus();
     }
@@ -1364,7 +1377,11 @@ function planFor(settings) {
 // plan ends up running nothing (LLM-only mode with the VRAM gate refusing, or
 // no engine at all), tell the renderer — otherwise its optimistic "running"
 // state shows STOP for a session in which nothing runs.
-async function runPlan(settings) {
+async function runPlan(queuedSettings) {
+  // The session's settings as they are now, not as they were when this run was
+  // queued: the network-share switch is saved live, and a run queued before it
+  // was flipped would save the old value back.
+  const settings = session ? session.settings : queuedSettings;
   const epoch = miningEpoch;
   const mode = settings.mode || DEFAULT_MODE;
   // macOS can serve the local LLM but has no mining engine to run, so the miner
@@ -1388,7 +1405,7 @@ async function runPlan(settings) {
     // its share. Waiting for real TH/s confirms the GPU is mining and its VRAM is
     // allocated, so the LLM then sizes its offload to what's actually left.
     try {
-      await startMining(settings, plan.llm);
+      await startMiningOnce(settings, plan.llm);
     } catch (e) {
       send('miner:log', { level: 'error', line: 'start failed: ' + e.message });
     }
@@ -1479,6 +1496,9 @@ function endSession() {
   // A pause or resume queued behind a slow start (a first model download can
   // take minutes) must not replay after STOP and start mining nobody asked for.
   planQueued = null;
+  // And the cancelled run still in flight is no longer what's running, so a
+  // START with the same settings must not be dropped as a duplicate of it.
+  planActive = null;
   syncIdleWatcher();
   stopMining();
   stopLlm();
@@ -1517,7 +1537,16 @@ function resumeSession() {
   session.paused = false;
   send('miner:idle', { paused: false, idleAfterSec: appPrefs.IDLE_AFTER_SEC });
   send('miner:log', { level: 'info', line: 'the computer is idle; mining' });
-  applyPlan(session.settings, true);
+  if (!planRun) {
+    applyPlan(session.settings, true);
+    return;
+  }
+  // A run is still in flight: usually a paused START bringing up the model,
+  // which on a first run downloads several GB. Mining doesn't wait for it. That
+  // model was planned with the mining reserve, so the miner starts beside it
+  // now, and the run goes on to finish the model.
+  startMiningOnce(session.settings, planFor(session.settings).llm)
+    .catch((e) => send('miner:log', { level: 'error', line: 'start failed: ' + e.message }));
 }
 
 function checkIdle() {

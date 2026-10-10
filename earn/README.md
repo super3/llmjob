@@ -253,7 +253,9 @@ Three switches in **Settings → Background**, saved in `preferences.json` next 
   LLM keeps running, so chat, cluster jobs and the network share go on, and it
   stays sized to leave mining its share of the card. **STOP** still shows,
   because the START stands. Mining resumes on its own once the computer goes
-  idle again. In LLM mode there is no mining, so the switch does nothing. A desktop that cannot report idle time (some
+  idle again, without waiting for a model that is still downloading. With no
+  mining to pause (LLM mode, no payout address, or macOS), the switch does
+  nothing. A desktop that cannot report idle time (some
   Linux setups) counts as idle.
 
 ## macOS (LLM only)
