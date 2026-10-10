@@ -1,0 +1,9 @@
+{
+  "default": {"core": "release", "flags": "", "env": {}},
+  "gpus": {},
+  "builds": {
+    "cb1024r": {"ref": "04c7c244fcf6aa3a4d51d048e8f154526a8b436b", "defines": "-DPEARL_ADA_COL_BATCH=1024u"},
+    "apt4bpt7b": {"ref": "54e91d8825b9b08d83c0283bcfaf1721fd6b103c", "defines": "-DPEARL_TALL_APT=4u -DPEARL_TALL_BPT=7u"},
+    "apt3bpt8": {"ref": "54e91d8825b9b08d83c0283bcfaf1721fd6b103c", "defines": "-DPEARL_TALL_APT=3u -DPEARL_TALL_BPT=8u"}
+  }
+}

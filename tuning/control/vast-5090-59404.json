@@ -1,0 +1,7 @@
+{
+  "default": {"core": "release", "flags": "", "env": {}},
+  "gpus": {},
+  "builds": {"jit": {"ref": "f4f6d63", "defines": "-DPEARL_FORCE_PTX_JIT=1 -gencode arch=compute_120,code=compute_120"},
+             "jitcb1024": {"ref": "f4f6d63", "defines": "-DPEARL_FORCE_PTX_JIT=1 -gencode arch=compute_120,code=compute_120 -DPEARL_TMA_COL_BATCH=1024"},
+             "jitserp": {"ref": "f4f6d63", "defines": "-DPEARL_FORCE_PTX_JIT=1 -gencode arch=compute_120,code=compute_120 -DPEARL_FOLD_SERPENTINE=1"}}
+}

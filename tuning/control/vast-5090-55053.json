@@ -1,0 +1,6 @@
+{
+  "default": {"core": "release", "flags": "", "env": {}},
+  "gpus": {},
+  "builds": {"cb1024": {"ref": "084655752cc5c8296cd575a1bbb5ba7e37045aa0", "defines": "-DPEARL_TMA_COL_BATCH=1024u"},
+             "serp": {"ref": "084655752cc5c8296cd575a1bbb5ba7e37045aa0", "defines": "-DPEARL_FOLD_SERPENTINE=1"}}
+}

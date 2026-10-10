@@ -1,0 +1,4 @@
+# Per-account settings and the run's state stay on the machine that runs it
+config.json
+groups/
+candidates.json

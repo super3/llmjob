@@ -1,0 +1,4 @@
+{
+  "default": {"core": "release", "flags": "", "env": {}},
+  "gpus": {}
+}
