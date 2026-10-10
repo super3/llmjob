@@ -4455,21 +4455,3 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
 #endif
 }
 #endif  // PEARL_HOPPER_WGMMA
-
-// -DPEARL_FORCE_PTX_JIT=1 (off by default; Linux tuning builds only): have the driver
-// compile this core's embedded PTX when it loads, instead of running the SASS nvcc built.
-// A rented box builds with nvcc 12.8, whose ptxas schedules the sm_120 tall fold about
-// 3% slower than ptxas 13 (the release's cu13 core). A 580+ driver's JIT compiler is
-// from CUDA 13, so the same source may run at cu13 speed. Build with
-// "-gencode arch=compute_120,code=compute_120" as well, so there is PTX to compile; a
-// kernel without PTX fails to load, which the on-box hit check catches. The driver reads
-// the variable when CUDA starts, so it is set as the module loads, before any CUDA call,
-// and the hit check (same process) runs the JIT code too.
-#if defined(PEARL_FORCE_PTX_JIT) && PEARL_FORCE_PTX_JIT && !defined(_WIN32)
-#include <stdio.h>
-#include <stdlib.h>
-__attribute__((constructor(101))) static void pearl_force_ptx_jit(void) {
-  setenv("CUDA_FORCE_PTX_JIT", "1", 1);
-  fprintf(stderr, "[pearl] CUDA_FORCE_PTX_JIT=1: the driver compiles this core from PTX\n");
-}
-#endif
