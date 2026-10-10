@@ -340,6 +340,58 @@ describe('coreFactory — choosing a build', () => {
     });
   });
 
+  // PEARL_CORE_VARIANT=amd: the AMD core, from the packaged locations or the dev
+  // tree, and never a CUDA build in its place.
+  describe('the AMD build', () => {
+    const AMD_BESIDE = path.join('/opt/rig', 'pearl_core_hip.node');
+    const AMD_DEV = path.join(__dirname, '..', 'native', 'amd', 'build', 'pearl_core_hip.node');
+    const AMD_ENV = { env: { PEARL_CORE_VARIANT: 'amd' } };
+
+    test('loads pearl_core_hip.node beside the executable, and says so', () => {
+      const amd = { createCore: jest.fn(() => ({ build: 'amd' })) };
+      const r = rig({ [AMD_BESIDE]: amd });
+      const f = factory(r, AMD_ENV);
+      expect(f({ rank: 128 }, { deviceIndex: 1 })).toEqual({ build: 'amd' });
+      expect(amd.createCore).toHaveBeenCalledWith({ rank: 128 }, { deviceIndex: 1 });
+      expect(r.cu12.createCore).not.toHaveBeenCalled();
+      expect(r.req).not.toHaveBeenCalledWith(CU12_BESIDE);
+      expect(r.lines).toEqual([['info', 'Pearl core: AMD build (ROCm) · PEARL_CORE_VARIANT=amd']]);
+    });
+
+    test('finds a dev-tree build and logs its path', () => {
+      const amd = { createCore: jest.fn(() => ({ build: 'amd-dev' })) };
+      const r = rig({ [AMD_DEV]: amd });
+      expect(factory(r, AMD_ENV)({})).toEqual({ build: 'amd-dev' });
+      expect(r.lines).toEqual([['info', 'Pearl core: AMD build (ROCm) · local build ' + AMD_DEV
+        + ', PEARL_CORE_VARIANT=amd']]);
+    });
+
+    test('is null, with the reason, when it is not built; the CUDA build does not stand in', () => {
+      const r = rig();
+      expect(factory(r, Object.assign({}, AMD_ENV, BLACKWELL))).toBeNull();
+      expect(r.req).not.toHaveBeenCalledWith(CU12_BESIDE);
+      expect(r.req).not.toHaveBeenCalledWith(CU13_BESIDE);
+      expect(r.lines).toEqual([['error', 'Pearl core: AMD build (ROCm) · pearl_core_hip.node not found '
+        + '(PEARL_CORE_VARIANT=amd; build it with earn/native/amd/build-amd.sh gpu, or set PEARL_CORE_PATH)']]);
+    });
+
+    test('is never looked for unless asked', () => {
+      const amd = { createCore: jest.fn(() => ({ build: 'amd' })) };
+      const r = rig({ [AMD_BESIDE]: amd });
+      expect(factory(r, TURING)({})).toEqual({ build: 'cu12' });
+      expect(r.req).not.toHaveBeenCalledWith(AMD_BESIDE);
+      expect(r.req).not.toHaveBeenCalledWith(AMD_DEV);
+    });
+
+    test('PEARL_CORE_PATH still names the file', () => {
+      const mine = { createCore: jest.fn(() => ({ build: 'mine' })) };
+      const r = rig({ '/src/pearl_core_hip.node': mine });
+      const env = { PEARL_CORE_VARIANT: 'amd', PEARL_CORE_PATH: '/src/pearl_core_hip.node' };
+      expect(factory(r, { env })({})).toEqual({ build: 'mine' });
+      expect(r.lines).toEqual([['info', 'Pearl core: /src/pearl_core_hip.node (PEARL_CORE_PATH)']]);
+    });
+  });
+
   describe('PEARL_CORE_PATH', () => {
     // An operator who names a file gets that file -- no choosing, no fallback.
     test('beats the choice entirely, and says which file loaded', () => {
