@@ -48,7 +48,7 @@ function ask(lookup, opts) {
 }
 
 describe('makePoolLookup', () => {
-  test('uses the system lookup when it works, and remembers the answer', async () => {
+  test('uses the system lookup when it works', async () => {
     const addrs = [{ address: '51.81.1.1', family: 4 }];
     const { dns } = fakeDns({ system: addrs });
     const cache = memCache();
@@ -57,7 +57,7 @@ describe('makePoolLookup', () => {
     expect(await ask(lookup, { family: 0 })).toEqual({ err: null, address: '51.81.1.1', family: 4 });
     // It always asks the system for every address, keeping net's own options.
     expect(dns.lookup).toHaveBeenCalledWith(HOST, { family: 0, all: true }, expect.any(Function));
-    expect(cache.set).toHaveBeenCalledWith(HOST, addrs);
+    expect(cache.set).not.toHaveBeenCalled();
     expect(dns.promises.Resolver).not.toHaveBeenCalled();
     expect(log).not.toHaveBeenCalled();
   });
@@ -85,7 +85,7 @@ describe('makePoolLookup', () => {
     expect(await ask(lookup, {})).toEqual({ err: null, address: '51.81.2.2', family: 4 });
     expect(resolvers[0].opts).toEqual({ timeout: QUERY_TIMEOUT_MS, tries: 1 });
     expect(resolvers[0].setServers).not.toHaveBeenCalled();
-    expect(cache.set).toHaveBeenCalledWith(HOST, [{ address: '51.81.2.2', family: 4 }]);
+    expect(cache.set).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith('could not look up ' + HOST + ' (ENOENT); using 51.81.2.2 from DNS');
   });
 
@@ -134,6 +134,46 @@ describe('makePoolLookup', () => {
   });
 });
 
+// An address is saved once the pool has taken the login there, not when a lookup
+// returns it. Some filters block with an address that looks real (a hosts-file
+// 127.0.0.1, Pi-hole's own address, a block page), and saving that answer
+// replaced the good address with one that leads nowhere.
+describe('the last address that worked', () => {
+  test('is saved when the pool takes the login there, with its family', () => {
+    const { dns } = fakeDns({ system: ENOENT });
+    const cache = memCache();
+    const lookup = makePoolLookup({ dns, cache });
+    lookup.worked(HOST, '51.81.1.1', 'IPv4');
+    lookup.worked(HOST, '2001:db8::1', 'IPv6');
+    lookup.worked(HOST, '51.81.5.5', 4);
+    lookup.worked(HOST, '2001:db8::5', 6);
+    expect(cache.set.mock.calls).toEqual([
+      [HOST, [{ address: '51.81.1.1', family: 4 }]],
+      [HOST, [{ address: '2001:db8::1', family: 6 }]],
+      [HOST, [{ address: '51.81.5.5', family: 4 }]],
+      [HOST, [{ address: '2001:db8::5', family: 6 }]],
+    ]);
+  });
+
+  test('an answer from a filter that looks real never replaces it, since no login follows', async () => {
+    const { dns } = fakeDns({ system: [{ address: '127.0.0.1', family: 4 }] });
+    const cache = memCache({ [HOST]: [{ address: '51.81.4.4', family: 4 }] });
+    const lookup = makePoolLookup({ dns, cache });
+    expect((await ask(lookup, {})).address).toBe('127.0.0.1');
+    expect(cache.entries[HOST]).toEqual([{ address: '51.81.4.4', family: 4 }]);
+  });
+
+  test('skips a literal address, a blocked one, and a socket that has none', () => {
+    const { dns } = fakeDns({ system: ENOENT });
+    const cache = memCache();
+    const lookup = makePoolLookup({ dns, cache });
+    lookup.worked('51.81.1.1', '51.81.1.1', 'IPv4');
+    lookup.worked(HOST, '0.0.0.0', 'IPv4');
+    lookup.worked(HOST, undefined, undefined);
+    expect(cache.set).not.toHaveBeenCalled();
+  });
+});
+
 // A DNS filter (the user's router forwarded to Cloudflare's 1.1.1.2, which
 // blocks crypto-mining names) often answers a blocked name with 0.0.0.0 rather
 // than failing. That answer leads nowhere, so it counts as no answer at every
@@ -167,16 +207,14 @@ describe('blocked answers', () => {
     const log = jest.fn();
     const lookup = makePoolLookup({ dns, cache, log });
     expect((await ask(lookup, {})).address).toBe('51.81.3.3');
-    expect(cache.set.mock.calls).toEqual([[HOST, [{ address: '51.81.3.3', family: 4 }]]]);
+    expect(cache.set).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith('could not look up ' + HOST + ' (' + BLOCKED_REASON + '); using 51.81.3.3 from public DNS');
   });
 
-  test('a mixed answer keeps only the real addresses, and saves only those', async () => {
+  test('a mixed answer keeps only the real addresses', async () => {
     const { dns } = fakeDns({ system: [{ address: '0.0.0.0', family: 4 }, { address: '51.81.1.1', family: 4 }] });
-    const cache = memCache();
-    const lookup = makePoolLookup({ dns, cache });
+    const lookup = makePoolLookup({ dns, cache: memCache() });
     expect(await ask(lookup, { all: true })).toEqual({ err: null, address: [{ address: '51.81.1.1', family: 4 }], family: undefined });
-    expect(cache.set).toHaveBeenCalledWith(HOST, [{ address: '51.81.1.1', family: 4 }]);
   });
 
   test('the last address that worked still serves when every lookup is filtered', async () => {

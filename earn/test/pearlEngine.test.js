@@ -1,7 +1,7 @@
 'use strict';
 
 const { EventEmitter } = require('events');
-const { PearlEngine } = require('../src/main/pearlEngine');
+const { PearlEngine, POOL_GRACE_MS } = require('../src/main/pearlEngine');
 const { RESTART_MS, RESTART_LIMIT } = require('../src/main/pearlMiner');
 
 // PearlEngine's whole job is to make our own miner indistinguishable from
@@ -106,19 +106,61 @@ describe('PearlEngine — the MinerManager surface', () => {
 });
 
 // The network board reports no hashrate while this is false (see offPool), so
-// it must be true only while the pool has accepted the login on the connection
-// that is open now.
+// it must be true only while the pool has the login, or has just lost it to a
+// routine reconnect.
 describe('PearlEngine — whether the pool is connected', () => {
-  test('false before a start, until the login is accepted, and after a drop', () => {
+  const AUTH_OK = JSON.stringify({ id: 1, result: true, error: null }) + '\n';
+
+  test('false before a start, and until the login is accepted', () => {
     const b = boot();
     expect(b.e.poolConnected()).toBe(false);
     b.e.start({ address: ADDR, worker: 'rig01', endpoint: 'us.pearl.herominers.com:1200' });
     b.sock.emit('connect');
     expect(b.e.poolConnected()).toBe(false);
-    b.sock.emit('data', JSON.stringify({ id: 1, result: true, error: null }) + '\n');
+    b.sock.emit('data', AUTH_OK);
     expect(b.e.poolConnected()).toBe(true);
-    b.sock.emit('close');
+    b.e.stop();
     expect(b.e.poolConnected()).toBe(false);
+  });
+
+  // Pools close connections every few minutes and the miner is back in
+  // seconds. A report in that gap used to put the rig on the board at 0 TH/s
+  // for a minute.
+  test('a drop counts only once it has lasted POOL_GRACE_MS', () => {
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1000000);
+    try {
+      const b = boot();
+      b.e.start({ address: ADDR, worker: 'rig01', endpoint: 'us.pearl.herominers.com:1200' });
+      b.sock.emit('connect');
+      b.sock.emit('close'); // never logged in: nothing to bridge
+      expect(b.e.poolConnected()).toBe(false);
+      b.sock.emit('data', AUTH_OK);
+      b.sock.emit('close');
+      expect(b.e.poolConnected(1000000 + POOL_GRACE_MS - 1)).toBe(true);
+      expect(b.e.poolConnected(1000000 + POOL_GRACE_MS)).toBe(false);
+      // Back before then: the next drop starts its own count.
+      b.sock.emit('data', AUTH_OK);
+      now.mockReturnValue(2000000);
+      b.sock.emit('close');
+      expect(b.e.poolConnected(2000000 + POOL_GRACE_MS - 1)).toBe(true);
+      expect(POOL_GRACE_MS).toBe(30000);
+      b.e.stop();
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  // The pool lookup saves an address once the pool takes the login there.
+  test('passes on where the pool took the login', () => {
+    const b = boot();
+    const seen = [];
+    b.e.on('authorized', (info) => seen.push(info));
+    b.e.start({ address: ADDR, worker: 'rig01', endpoint: 'us.pearl.herominers.com:1200' });
+    b.sock.remoteAddress = '51.81.1.1';
+    b.sock.remoteFamily = 'IPv4';
+    b.sock.emit('connect');
+    b.sock.emit('data', AUTH_OK);
+    expect(seen).toEqual([{ host: 'us.pearl.herominers.com', address: '51.81.1.1', family: 'IPv4' }]);
     b.e.stop();
   });
 });

@@ -18,6 +18,11 @@
 //   3. the same query to public DNS servers;
 //   4. the last address that worked for this name, saved on disk, which also
 //      covers the minutes right after a restart.
+// "Worked" means the pool accepted the rig's login there (see worked() below).
+// An answer is not saved just for arriving: some filters block with an
+// address that looks real (a hosts-file 127.0.0.1, Pi-hole's own address,
+// OpenDNS's block page, a captive portal), and saving that would replace the
+// good address with one that leads nowhere.
 // Stratum is plain TCP and never sends the name, so an address from any step
 // connects to the same pool.
 //
@@ -68,6 +73,10 @@ function failureReason(err) {
 
 // `dns` is node's dns module (injected for tests). `cache` is { get(host),
 // set(host, addresses) }, see fileCache. `log(line)` hears each fallback used.
+//
+// Returns the lookup function, with `worked(host, address, family)` on it for
+// the miner to call once the pool has accepted the login on a connection to
+// `address`. `family` is a socket's remoteFamily ('IPv4' or 'IPv6').
 function makePoolLookup({ dns, cache, log = () => {}, publicServers = PUBLIC_DNS }) {
   // Steps 2 and 3. A server list of null means the computer's own.
   async function queryDns(hostname) {
@@ -85,7 +94,7 @@ function makePoolLookup({ dns, cache, log = () => {}, publicServers = PUBLIC_DNS
     return null;
   }
 
-  return function poolLookup(hostname, options, callback) {
+  function poolLookup(hostname, options, callback) {
     if (typeof options === 'function') {
       callback = options;
       options = {};
@@ -98,7 +107,6 @@ function makePoolLookup({ dns, cache, log = () => {}, publicServers = PUBLIC_DNS
     dns.lookup(hostname, Object.assign({}, opts, { all: true }), (lookupErr, all) => {
       const usable = lookupErr ? [] : all.filter((a) => usableAddress(a.address));
       if (usable.length) {
-        cache.set(hostname, usable);
         answer(usable);
         return;
       }
@@ -112,16 +120,22 @@ function makePoolLookup({ dns, cache, log = () => {}, publicServers = PUBLIC_DNS
           callback(err);
           return;
         }
-        if (found) cache.set(hostname, addresses);
         log('could not look up ' + hostname + ' (' + failureReason(err) + '); using '
           + addresses[0].address + ' from ' + (found ? found.source : 'the last address that worked'));
         answer(addresses);
       });
     });
+  }
+
+  poolLookup.worked = (hostname, address, family) => {
+    // A literal address needs no lookup, so there is nothing to remember.
+    if (typeof address !== 'string' || address === hostname || !usableAddress(address)) return;
+    cache.set(hostname, [{ address, family: family === 'IPv6' || family === 6 ? 6 : 4 }]);
   };
+  return poolLookup;
 }
 
-// The last addresses that worked, per name, in one small JSON file shared by
+// The last address that worked, per name, in one small JSON file shared by
 // both shells. Read once. Written only when an address changes, so a steady
 // pool does not rewrite it on every reconnect. Any read or write failure leaves
 // the cache empty or unsaved: it is a fallback, never a reason to fail.

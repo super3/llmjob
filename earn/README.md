@@ -86,6 +86,10 @@ Both shells look up the pool's name with the system resolver first. If that
 fails, they try the computer's DNS servers directly (skipping the system's
 resolver and its cache), then public DNS (1.1.1.1, 8.8.8.8), then the last
 address that worked, saved in `pool-addresses.json` beside the node identity.
+An address is saved once the pool has accepted the rig's login there. A filter
+that blocks with a real-looking address (a hosts-file `127.0.0.1`, Pi-hole's
+own address, a block page) never gets that far, so it can't replace the saved
+one.
 An answer of `0.0.0.0` or `::` counts as no answer at every step and is never
 saved: it is how DNS filters that block crypto-mining names (Cloudflare's
 1.1.1.2, Pi-hole, AdGuard) answer. The log names the fallback used:
@@ -94,8 +98,10 @@ saved: it is how DNS filters that block crypto-mining names (Cloudflare's
 could not look up us2.pearl.herominers.com (ENOENT); using 203.0.113.7 from the last address that worked
 ```
 
-While the pool connection is down, the rig reports 0 TH/s to the network
-board, so the board agrees with the pool about whether the rig is mining.
+Once the pool connection has been down for 30 seconds, the rig reports 0 TH/s
+to the network board, so the board agrees with the pool about whether the rig
+is mining. A shorter drop doesn't show: pools close connections every few
+minutes, the miner is back within seconds, and the cards mine throughout.
 
 ### Which GPUs it mines on
 
@@ -241,12 +247,19 @@ Three switches in **Settings → Background**, saved in `preferences.json` next 
   the window hides it and mining carries on. The first time, a notification says
   so. The tray icon opens the window again, and its menu has **Quit**. Opening
   the app a second time shows the running window instead of starting a second
-  copy. On a Linux desktop with no tray, closing quits as before.
+  copy. On a desktop with no tray, closing quits as before. That includes GNOME
+  without an AppIndicator extension, which draws no tray icon: the app asks the
+  session bus whether anything will. On Windows, a close from another program
+  (the installer, the uninstaller, Task Manager's End task) quits the app, so
+  the miner stops cleanly before the installer replaces the files.
 - **Start with my computer, and start mining** (off by default). Windows gets a
-  login item, and a Linux AppImage gets an entry in `~/.config/autostart`. Both
-  start the app with `--hidden`, so it stays in the tray and starts mining with
-  the saved payout address. Only the installed app can do this; a dev run turns
-  the switch back off.
+  login item, a Linux AppImage an entry in `~/.config/autostart`, and macOS a
+  LaunchAgent in `~/Library/LaunchAgents`. Each starts the app with `--hidden`,
+  so it stays in the tray and starts mining with the saved payout address. Only
+  the installed app can do this; a dev run turns the switch back off. Each
+  start points the entry at the app again if an update moved it, and otherwise
+  leaves it alone, so turning it off in Task Manager or the desktop's startup
+  settings sticks.
 - **Only mine when my computer is idle** (off by default). Idle means 5 minutes
   without keyboard or mouse input, or a locked screen. While someone uses the
   computer, mining stops and the window says what it is waiting for. The local
@@ -257,6 +270,13 @@ Three switches in **Settings → Background**, saved in `preferences.json` next 
   mining to pause (LLM mode, no payout address, or macOS), the switch does
   nothing. A desktop that cannot report idle time (some
   Linux setups) counts as idle.
+
+Updates download in the background. With the window open, the update bar's
+**Update & restart** installs one. With the window in the tray, the app installs
+it as soon as it has downloaded, restarts in the tray, and picks its START back
+up. It waits for a START that is still downloading the model, and leaves an
+install for all users (in Program Files) to the button, since Windows would ask
+for an administrator.
 
 ## macOS (LLM only)
 

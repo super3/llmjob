@@ -892,6 +892,8 @@ async function run(argv) {
         // omitting it here was an oversight, not a decision.
         readTemps: () => probe.detectGpuTemps(),
       });
+      // The pool took the login, so this address is one that worked.
+      miner.on('authorized', (e) => lookup.worked(e.host, e.address, e.family));
     }
     if (miner) {
     miner.on('log', (l) => log(l.line, l.level === 'error' ? process.stderr : process.stdout));

@@ -6,7 +6,7 @@
 // testable logic lives in ../shared and ./minerManager.
 
 const {
-  app, BrowserWindow, Menu, Tray, Notification, powerMonitor, ipcMain, shell, clipboard,
+  app, BrowserWindow, Menu, Tray, Notification, nativeImage, powerMonitor, ipcMain, shell, clipboard,
 } = require('electron');
 const { spawn, execFile } = require('child_process');
 const path = require('path');
@@ -62,6 +62,14 @@ const earnings = require('../shared/earnings');
 const format = require('../shared/format');
 const appPrefs = require('../shared/appPrefs');
 const autostart = require('../shared/autostart');
+const trayHost = require('../shared/trayHost');
+
+// The id the installer gives the Start menu shortcut (build.appId in
+// package.json). Windows shows a notification only from an app whose id matches
+// a shortcut; without it the one-time "still running in the tray" notice never
+// appeared. The login item is filed under it too.
+const APP_ID = 'com.llmjob.earn';
+if (process.platform === 'win32') app.setAppUserModelId(APP_ID);
 
 // Number the GPUs the way nvidia-smi does, before anything opens a CUDA device.
 // Everything here — the device label, per-card VRAM, temperatures, the board's
@@ -86,6 +94,9 @@ let tray = null;
 // Set on a real quit (the tray's Quit, an update, logging off), so the window's
 // close handler lets the window close instead of hiding it.
 let quitting = false;
+// The Windows message a user's close arrives as (see the window's close handler).
+const WM_SYSCOMMAND = 0x0112;
+const SC_CLOSE = 0xf060;
 
 let win = null;
 let miner = null;
@@ -167,22 +178,20 @@ function savePrefs(change) {
 // computer will now start it, which is what Settings shows.
 //
 // Only in the installed app: a dev run would register the bare Electron binary.
-// Windows has a login item for it. Linux has none, so the AppImage gets a
-// freedesktop autostart entry, pointing at the AppImage file ($APPIMAGE), not
-// the binary inside it, whose mount is gone after a reboot.
+// Windows has a login item for it. Linux and macOS get a file instead (see
+// loginFile). macOS has a login item too, but it can't pass --hidden, and on
+// macOS 13 and later the app can't tell it was started at login.
 function applyLoginItem(on) {
   if (!app.isPackaged) return false;
-  if (process.platform !== 'linux') {
+  if (process.platform === 'win32') {
     app.setLoginItemSettings({ openAtLogin: on, args: on ? [autostart.HIDDEN_ARG] : [] });
     return on;
   }
-  const configHome = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
-  const file = autostart.linuxAutostartFile(configHome);
-  const appImage = process.env.APPIMAGE;
+  const { file, body } = loginFile();
   try {
-    if (on && appImage) {
+    if (on && body) {
       fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, autostart.linuxDesktopEntry(appImage));
+      fs.writeFileSync(file, body);
       return true;
     }
     if (fs.existsSync(file)) fs.unlinkSync(file);
@@ -190,6 +199,47 @@ function applyLoginItem(on) {
     send('miner:log', { level: 'error', line: 'could not change the start-with-computer setting: ' + e.message });
   }
   return false;
+}
+
+// The file that starts the app at login, and what it should say: a freedesktop
+// autostart entry for the AppImage on Linux, a LaunchAgent on macOS. The Linux
+// entry runs the AppImage file ($APPIMAGE), not the binary inside it, whose
+// mount is gone after a reboot. `body` is null when this copy can't start that
+// way: a Linux build that is not an AppImage.
+function loginFile(appImage) {
+  if (process.platform === 'darwin') {
+    return { file: autostart.macLaunchAgentFile(os.homedir()), body: autostart.macLaunchAgent(process.execPath) };
+  }
+  const configHome = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+  const image = appImage || process.env.APPIMAGE;
+  return { file: autostart.linuxAutostartFile(configHome), body: image ? autostart.linuxDesktopEntry(image) : null };
+}
+
+// While the switch is on: point the login item at this copy again if it no
+// longer does (an update renamed the AppImage, a test build took it over), and
+// otherwise leave it alone. Writing it every start undid the user's own switch
+// for it: Windows' setLoginItemSettings re-enables an entry disabled in Task
+// Manager, and a rewritten autostart entry loses Hidden=true or
+// X-GNOME-Autostart-enabled=false. `appImage` is the AppImage's new name, when
+// an update gave it one.
+function refreshLoginItem(appImage) {
+  if (!app.isPackaged || !getPrefs().runAtStartup) return;
+  if (process.platform === 'win32') {
+    if (!app.getLoginItemSettings({ args: [autostart.HIDDEN_ARG] }).openAtLogin) applyLoginItem(true);
+    return;
+  }
+  const { file, body } = loginFile(appImage);
+  if (!body) return;
+  let current = null;
+  try { current = fs.readFileSync(file, 'utf8'); } catch (e) { /* missing: written below */ }
+  const next = current != null && process.platform === 'linux' ? autostart.retargetDesktopEntry(current, body) : body;
+  if (next === current) return;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, next);
+  } catch (e) {
+    send('miner:log', { level: 'error', line: 'could not update the start-with-computer entry: ' + e.message });
+  }
 }
 
 function send(channel, payload) {
@@ -505,6 +555,8 @@ function wireMinerEvents(miner, endpoint) {
   });
   miner.on('error', (err) => reportLaunchFailure(err));
   miner.on('stopped', (code) => send('miner:log', { level: 'info', line: 'engine exited (code ' + code + ')' }));
+  // The pool took the login, so this address is one that worked.
+  miner.on('authorized', (e) => poolLookup().worked(e.host, e.address, e.family));
 }
 
 function stopMining() {
@@ -539,6 +591,16 @@ function appIcon() {
   return path.join(dir, process.platform === 'win32' ? 'icon.ico' : 'icon.png');
 }
 
+// The tray icon. The macOS menu bar wants a 16-point image, and icon.png is the
+// 1024 px app icon, so it is scaled down there, with a 32 px copy for Retina.
+function trayIcon() {
+  if (process.platform !== 'darwin') return appIcon();
+  const full = nativeImage.createFromPath(appIcon());
+  const icon = full.resize({ width: 16, height: 16 });
+  icon.addRepresentation({ scaleFactor: 2, buffer: full.resize({ width: 32, height: 32 }).toPNG() });
+  return icon;
+}
+
 // Detect the machine's GPU for the settings/device label. Uses Windows'
 // Win32_VideoController via PowerShell (already a dependency of the llama unzip);
 // resolves to a display name or null. Never rejects.
@@ -553,10 +615,87 @@ async function detectGpu() {
 
 // Wire electron-updater to the renderer's update bar. autoUpdater pulls from the
 // GitHub Releases feed (see build.publish); it only works in a packaged app, so
-// main.js guards the call with app.isPackaged. Downloads happen automatically;
-// the user chooses when to restart via the 'app:update:install' channel.
+// main.js guards the call with app.isPackaged. Downloads happen automatically.
+// With the window open, the user chooses when to restart via the
+// 'app:update:install' channel; out of sight, it installs on its own (see
+// installWhenHidden).
 let manualUpdateCheck = false; // true while a user-initiated check is in flight
 let updateTimer = null; // periodic re-check, so startup is not the only chance
+let updateReady = false; // an update has downloaded and waits to install
+
+// How long after an update's restart the new copy still counts as that restart,
+// for starting in the tray (see resumeHidden in whenReady).
+const UPDATE_RESTART_MS = 10 * 60 * 1000;
+
+// Install the downloaded update now and restart into it. `hidden`: the window
+// was out of sight, so the new copy starts in the tray too.
+function installUpdate(hidden) {
+  // Mining now, or paused waiting for the computer to go idle: resume after the
+  // restart.
+  const resume = !!session;
+  // The relaunch needs this window to really close, not hide to the tray.
+  quitting = true;
+  try {
+    // isSilent=true: install to the existing directory without re-showing the
+    // assisted-installer wizard. isForceRunAfter=true: relaunch the app afterwards.
+    autoUpdater.quitAndInstall(true, true);
+  } catch (e) {
+    quitting = false;
+    send('miner:log', { level: 'error', line: 'update install failed: ' + e.message });
+    return;
+  }
+  // An install the updater refused (no installer file, say) is reported through
+  // its 'error' event and returns without quitting. The app carries on as it
+  // was: a live START, and a window that closes to the tray.
+  if (autoUpdater.quitAndInstallCalled === false) {
+    quitting = false;
+    return;
+  }
+  const restart = {};
+  if (resume) restart.resumeMining = true;
+  if (hidden) restart.resumeHidden = Date.now();
+  if (resume || hidden) persistSettings(Object.assign({}, loadSettings(), restart));
+  // Stop the LLM and miner now, before the installer relaunches the app.
+  // llama-server binds a fixed port (8080); if the outgoing server still holds it,
+  // the resumed instance's llama-server can't bind and the LLM silently fails to
+  // start (the miner binds no port, so it's fine — exactly the "miner came back,
+  // LLM didn't" symptom). Stopping here frees the port and VRAM before the new
+  // instance starts. The quit itself comes on the next tick.
+  endSession();
+}
+
+// An update installs when the app quits, and with the window closing to the
+// tray the app rarely quits: a rig started at login could run an old build for
+// months. So a downloaded update installs as soon as the window is out of sight
+// (in the tray, or never shown after a launch at login), and the app restarts
+// in the tray and picks its START back up. An open window keeps the "Update &
+// restart" button instead.
+//
+// Not while a START is still bringing up the model: on a first run that is a
+// download of several GB, which the restart would throw away. And not where the
+// installer would ask for an administrator's approval, which nobody is there to
+// give: an install for all users, in Program Files.
+function installWhenHidden() {
+  if (!updateReady || quitting || planRun) return;
+  if (win && !win.isDestroyed() && win.isVisible()) return;
+  if (!canInstallQuietly()) return;
+  installUpdate(true);
+}
+
+// Whether this user can write to the app's own folder, which is what an update
+// replaces. Windows only: it is the install for all users that elevates. Tried
+// with a real file, because fs.access ignores Windows' folder permissions.
+function canInstallQuietly() {
+  if (process.platform !== 'win32') return true;
+  const probe = path.join(path.dirname(process.execPath), '.update-probe-' + process.pid);
+  try {
+    fs.writeFileSync(probe, '');
+    fs.unlinkSync(probe);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
 
 function setupUpdater() {
   const push = (phase, payload) => send('app:update', formatUpdate(phase, payload));
@@ -571,7 +710,16 @@ function setupUpdater() {
     else push('none');
   });
   autoUpdater.on('download-progress', (p) => push('progress', p));
-  autoUpdater.on('update-downloaded', (info) => push('ready', info));
+  autoUpdater.on('update-downloaded', (info) => {
+    updateReady = true;
+    push('ready', info);
+    installWhenHidden();
+  });
+  // An AppImage update moves to a new file named for its version and deletes
+  // this one. Point a start-at-login entry at the new file now: after an install
+  // on quit, the next start may be the login itself, and an entry naming the
+  // deleted file would start nothing.
+  autoUpdater.on('appimage-filename-updated', (file) => refreshLoginItem(file));
   autoUpdater.on('error', (err) => {
     manualUpdateCheck = false;
     push('error');
@@ -653,12 +801,30 @@ function createWindow() {
 
   // Closing the window hides it to the tray, and mining carries on, unless the
   // user turned that off in Settings or the app is really quitting.
+  //
+  // Only when the user closed it. On Windows the window's X, Alt+F4 and the
+  // taskbar's Close all arrive as SC_CLOSE first. A close without one comes from
+  // another program that wants the app gone: the installer before it replaces
+  // the app's files, the uninstaller, Task Manager's End task. Hiding the window
+  // from those left the app running until the installer force-killed it a second
+  // later, so the miner never stopped cleanly. They quit it instead. A focused
+  // window counts as the user's too, in case a close reaches it some other way.
+  let userClose = false;
+  if (process.platform === 'win32') {
+    win.hookWindowMessage(WM_SYSCOMMAND, (wParam) => {
+      if (Buffer.isBuffer(wParam) && (wParam.readUInt32LE(0) & 0xfff0) === SC_CLOSE) userClose = true;
+    });
+  }
   win.on('close', (e) => {
-    if (quitting || !tray || !getPrefs().closeToTray) return;
+    const fromUser = process.platform !== 'win32' || userClose || win.isFocused();
+    userClose = false;
+    if (quitting || !fromUser || !tray || !getPrefs().closeToTray) return;
     e.preventDefault();
     win.hide();
     trayHint();
   });
+  // Out of sight, a downloaded update can install.
+  win.on('hide', installWhenHidden);
   // Logging off or shutting down on Windows: let the window close.
   win.on('session-end', () => { quitting = true; });
 
@@ -700,7 +866,7 @@ function quitApp() {
 // The tray icon: the way back to a closed window, and the way to quit.
 function createTray() {
   try {
-    tray = new Tray(appIcon());
+    tray = new Tray(trayIcon());
   } catch (e) {
     // No tray on this desktop. Closing the window then quits, as before.
     tray = null;
@@ -715,17 +881,43 @@ function createTray() {
   tray.on('click', showWindow);
 }
 
+// GNOME draws no tray icon without an AppIndicator extension, though Electron
+// makes one without complaint (see shared/trayHost). There, drop the icon, so
+// closing the window quits rather than hiding it with no way back. Waits up to
+// `waitMs` for the extension, which may still be loading at login.
+const TRAY_WAIT_MS = 15000;
+async function confirmTray(waitMs) {
+  if (!tray || process.platform !== 'linux' || !trayHost.isGnome(process.env)) return;
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    // false means no host; null means the bus couldn't be asked, which keeps
+    // the icon, as before.
+    if ((await trayHost.queryTrayHost(execFile)) !== false) return;
+    if (Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  tray.destroy();
+  tray = null;
+}
+
 // The first time the window closes to the tray, say so once. Otherwise the app
-// looks closed while the GPU is still working.
+// looks closed while the GPU is still working. Marked shown only once the
+// notification was: one that never appeared is tried again on the next run.
+let trayHintTried = false;
 function trayHint() {
-  if (getPrefs().trayHintShown) return;
-  savePrefs({ trayHintShown: true });
-  if (!Notification.isSupported()) return;
-  new Notification({
+  if (getPrefs().trayHintShown || trayHintTried) return;
+  trayHintTried = true;
+  if (!Notification.isSupported()) {
+    savePrefs({ trayHintShown: true });
+    return;
+  }
+  const notice = new Notification({
     title: 'LLMJob Earn is still running',
     body: 'It keeps running in the tray. Click the tray icon to open it, or right-click it to quit. '
       + 'You can change this in Settings.',
-  }).show();
+  });
+  notice.on('show', () => savePrefs({ trayHintShown: true }));
+  notice.show();
 }
 
 // How far the frame may sit from the measured content before it is worth
@@ -833,6 +1025,9 @@ function progressReporter(label, now) {
   let lastPct = -1;
   let lastAt = 0;
   return (pct) => {
+    // A download goes on after STOP (it can't be cancelled), and its progress
+    // would bring back a note the stop cleared.
+    if (!session) return;
     // progressPercent returns null when the server sends no content-length, and
     // Number(null) is 0 — so null must be rejected explicitly or a sizeless
     // download would sit at a permanent, wrong "0%".
@@ -853,7 +1048,14 @@ function progressReporter(label, now) {
 // endpoint. Best-effort — failures are logged, never thrown to the UI. Returns
 // whether the server was actually started (callers use it to reset the UI when
 // an LLM-only session ends up running nothing).
-async function startLlm(reserveMb) {
+//
+// `epoch` is the run's miningEpoch. A STOP or an idle pause during the awaits
+// below (a first run downloads several GB) moves it, and the run then stops
+// short instead of starting a model for a START that is gone, or leaving the
+// LLM row on "Starting…" after a STOP. A pause queues the next run, which picks
+// up from the files this one downloaded.
+async function startLlm(reserveMb, epoch) {
+  const stale = () => epoch !== miningEpoch;
   // A fleet already up, spawned or adopted. An adopted server has no manager, so
   // hasSpawned() alone missed it, and every idle pause and resume adopted the
   // same server again, with another cluster worker each time.
@@ -868,7 +1070,9 @@ async function startLlm(reserveMb) {
   // would double-load the model and risk an OOM. Reusing it is safe — it serves
   // the same model on the same OpenAI endpoint.
   const targetBase = 'http://' + LLM.host + ':' + LLM.port;
-  if (await probeLlmHealth(targetBase)) {
+  const healthy = await probeLlmHealth(targetBase);
+  if (stale()) return false;
+  if (healthy) {
     fleet.adopt(targetBase);
     llmEverReady = true;
     llmStatus = Object.assign({}, llmStatus, { ready: true, error: null, note: null, endpoint: targetBase + '/v1', webUrl: targetBase });
@@ -887,6 +1091,7 @@ async function startLlm(reserveMb) {
   // did; when VRAM can't be read the planner returns one unknown-placement
   // instance and lets llama.cpp decide.
   const cards = await detectGpusVram();
+  if (stale()) return false;
   // Which model this run serves. Chosen from the best card's free VRAM, because
   // the fleet loads ONE model across every instance — planLlmInstances then drops
   // any card that cannot hold it. On a mixed rig that trades breadth for
@@ -938,6 +1143,7 @@ async function startLlm(reserveMb) {
     // progress line would make the last 5% look like a stall.
     mmprojPath = await modelEngine.ensureMmproj(progressReporter('downloading vision projector…'), model);
   } catch (e) {
+    if (stale()) return false;
     // Surface the failure on the hero, not only in the log. Clearing the note
     // without setting an error dropped the row straight back to a grey dot and
     // the model name — identical to "not started yet" — so a download that died
@@ -947,6 +1153,12 @@ async function startLlm(reserveMb) {
     llmStatus = Object.assign({}, llmStatus, { ready: false, note: null, error: 'Setup failed — see Logs' });
     sendLlmStatus();
     send('miner:log', { level: 'error', line: 'LLM setup failed: ' + e.message });
+    return false;
+  }
+  if (stale()) {
+    // A pause's queued run takes over and sets its own note. After a STOP, the
+    // download's last progress note goes.
+    if (!session) setLlmNote(null);
     return false;
   }
 
@@ -1036,11 +1248,12 @@ function buildFleet() {
       llmStatus = Object.assign({}, llmStatus, { ready: false, error: 'The local LLM stopped before it was ready. See Logs.' });
       sendLlmStatus();
     }
-    // An LLM-only session ends when the fleet exits — tell the renderer or the UI
-    // keeps showing a running session with nothing running. Not while idle-only
-    // has mining paused: that START still stands, and mining (and the LLM with
-    // it) comes back on the next resume.
-    if ((!miner || !miner.isRunning()) && !(session && session.paused)) send('miner:stopped');
+    // An LLM-only session ends when the fleet exits, and so does one whose miner
+    // never started — or the UI keeps showing a running session with nothing
+    // running, and the idle watcher can bring things back behind it (see
+    // runPlan). Not while idle-only has mining paused: that START still stands,
+    // and mining comes back on the next resume.
+    if ((!miner || !miner.isRunning()) && !(session && session.paused)) endSession();
   });
   return f;
 }
@@ -1430,11 +1643,18 @@ async function runPlan(queuedSettings) {
   if (epoch !== miningEpoch) return;
   syncNodeName(settings);
   if (plan.llm) {
-    const started = await startLlm(plan.miner ? LLM.miningReserveMb : 0).catch(() => false);
-    if (!started && !plan.miner) send('miner:stopped');
+    const started = await startLlm(plan.miner ? LLM.miningReserveMb : 0, epoch).catch(() => false);
+    // A run cut short by STOP or a pause ends nothing: the START it belonged to
+    // is already gone, or the next run carries it on.
+    if (epoch !== miningEpoch) return;
+    // Nothing runs for this START: the card had no room for an LLM-only start.
+    // End the START itself, not just the window's STOP button: a session left
+    // behind kept the idle watcher going, which could bring the model back while
+    // the window showed START.
+    if (!started && !plan.miner) endSession();
   } else {
     stopLlm();
-    if (!plan.miner) send('miner:stopped');
+    if (!plan.miner) endSession();
   }
 }
 
@@ -1467,6 +1687,8 @@ function applyPlan(settings, force) {
     const next = planQueued;
     planQueued = null;
     if (next) applyPlan(next);
+    // An update that downloaded during the run may install now.
+    installWhenHidden();
   });
   return planRun;
 }
@@ -1642,41 +1864,33 @@ ipcMain.handle('node:disconnect', () => disconnectNode());
 ipcMain.on('node:dashboard', () => openExternalSafe(NODE.dashboardUrl));
 ipcMain.handle('app:version', () => app.getVersion());
 ipcMain.on('app:update:check', () => checkForUpdate());
-ipcMain.on('app:update:install', () => {
-  try {
-    // If mining right now, or paused waiting for the computer to go idle,
-    // remember to resume automatically after the restart.
-    if (session) persistSettings(Object.assign({}, loadSettings(), { resumeMining: true }));
-    // The relaunch needs this window to really close, not hide to the tray.
-    quitting = true;
-    // Stop the LLM and miner BEFORE relaunching. llama-server binds a fixed port
-    // (8080) and quitAndInstall relaunches immediately; if the outgoing server is
-    // still holding the port, the resumed instance's llama-server can't bind and
-    // the LLM silently fails to start (the miner binds no port, so it's fine —
-    // exactly the "miner came back, LLM didn't" symptom). Killing them here frees
-    // the port and VRAM deterministically before the new instance starts.
-    stopLlm();
-    stopMining();
-    // isSilent=true: install to the existing directory without re-showing the
-    // assisted-installer wizard. isForceRunAfter=true: relaunch the app afterwards.
-    autoUpdater.quitAndInstall(true, true);
-  } catch (e) {
-    send('miner:log', { level: 'error', line: 'update install failed: ' + e.message });
-  }
-});
+ipcMain.on('app:update:install', () => installUpdate(false));
 
 app.on('second-instance', () => showWindow());
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // The second copy is on its way out (see requestSingleInstanceLock above).
   if (!primaryInstance) return;
+  // Restarted by an update that installed while the window was in the tray:
+  // start in the tray again. Only straight after that restart, so an install
+  // that never restarted the app can't make the next ordinary launch start out
+  // of sight.
+  const saved = loadSettings();
+  if (saved.resumeHidden) {
+    if (Date.now() - Number(saved.resumeHidden) < UPDATE_RESTART_MS) hiddenLaunch = true;
+    delete saved.resumeHidden;
+    persistSettings(saved);
+  }
   createTray();
+  // A launch at login waits to know there's a tray to start in. A window on
+  // screen doesn't wait: the answer is in long before anyone closes it.
+  if (hiddenLaunch) await confirmTray(TRAY_WAIT_MS).catch(() => {});
+  else confirmTray(0).catch(() => {});
   createWindow();
   // Logging off or shutting down on Linux: let the window close.
   powerMonitor.on('shutdown', () => { quitting = true; });
-  // Re-register the login item on every start, so it points at this install
-  // after an update moved or renamed it.
-  if (getPrefs().runAtStartup) applyLoginItem(true);
+  // Point the login item at this install, if an update moved or renamed it.
+  refreshLoginItem();
   // Not on macOS: Squirrel.Mac checks the downloaded bundle's signature against
   // the running app's, and this build carries only an ad-hoc one, so wiring the
   // updater there buys a periodic download that always ends in an error bar the
@@ -1693,8 +1907,10 @@ app.whenReady().then(() => {
   // Resume pinging if this machine is already linked to an account.
   const node = loadNode();
   if (node && node.connected) startNodePinger();
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  // macOS: clicking the Dock icon brings the window back, from the tray too.
+  // showWindow makes a new one if it was closed.
+  app.on('activate', (_e, hasVisibleWindows) => {
+    if (!hasVisibleWindows) showWindow();
   });
 });
 

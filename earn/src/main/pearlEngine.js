@@ -31,6 +31,10 @@ const { PROFILE } = require('../shared/miner/pearlhash');
 // rather than a display one.
 const TEMP_POLL_MS = 5000;
 
+// How long a dropped pool connection may take to come back before the network
+// board hears 0 TH/s (see poolConnected).
+const POOL_GRACE_MS = 30000;
+
 class PearlEngine extends EventEmitter {
   constructor({ connect, createCore, profile, readTemps, tempPollMs } = {}) {
     super();
@@ -66,11 +70,22 @@ class PearlEngine extends EventEmitter {
     return !!(this.miner && this.miner.isRunning());
   }
 
-  // Whether the pool has accepted this rig's login on the current connection.
-  // False while a dropped connection is being reopened, which is when the
-  // network board should stop showing the rig as mining.
-  poolConnected() {
-    return !!(this.miner && this.miner.authorized);
+  // Whether the pool has this rig's login, give or take a routine reconnect. The
+  // network board shows 0 TH/s while this is false.
+  //
+  // Pools close connections every few minutes (one user's log shows 61 closes
+  // in 7.4 hours), and the miner is back within seconds: RECONNECT_MS, then the
+  // login.
+  // The cards keep mining their job throughout. A report sent in that gap used
+  // to post 0 TH/s, which then stood on the board until the next report a minute
+  // later. So a drop counts for POOL_GRACE_MS before the board hears of it. A
+  // connection that stays down, like a rig whose DNS fails for minutes, still
+  // shows 0.
+  poolConnected(now = Date.now()) {
+    const m = this.miner;
+    if (!m || !m.running) return false;
+    if (m.authorized) return true;
+    return m.lostAt != null && now - m.lostAt < POOL_GRACE_MS;
   }
 
   // One card's current numbers, or null when that card isn't mining. Read-only:
@@ -90,6 +105,8 @@ class PearlEngine extends EventEmitter {
 
     m.on('log', (l) => this.emit('log', l));
     m.on('error', (err) => this.emit('error', err));
+    // The pool took the login: { host, address, family }, for the pool lookup.
+    m.on('authorized', (info) => this.emit('authorized', info));
     // 1 when the miner stopped itself because every card failed, the only stop
     // nobody asked for. The CLI exits with this code, and a 0 there reads as a
     // clean exit: under the service's Restart=on-failure a rig whose cards all
@@ -227,4 +244,4 @@ class PearlEngine extends EventEmitter {
   }
 }
 
-module.exports = { PearlEngine };
+module.exports = { PearlEngine, POOL_GRACE_MS };

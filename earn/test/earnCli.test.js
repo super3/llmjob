@@ -679,7 +679,8 @@ describe('mining', () => {
   });
 
   // A failed system lookup falls back (shared/poolLookup), and the CLI says
-  // which address it used.
+  // which address it used. It saves the address once the pool takes the login
+  // there, not before.
   test('finds the pool by a fallback when the system lookup fails, and says so', async () => {
     const m = load();
     const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
@@ -699,6 +700,10 @@ describe('mining', () => {
       const got = await new Promise((resolve) => lookup('pool.example', {}, (err, address) => resolve({ err, address })));
       expect(got).toEqual({ err: null, address: '203.0.113.7' });
       expect(allOut()).toContain('could not look up pool.example (ENOENT); using 203.0.113.7 from DNS');
+      const saved = () => m.fs.writeFileSync.mock.calls.filter((c) => String(c[0]).endsWith('pool-addresses.json'));
+      expect(saved()).toEqual([]);
+      m.PearlEngine.instances[0].emit('authorized', { host: 'pool.example', address: '203.0.113.7', family: 'IPv4' });
+      expect(JSON.parse(saved()[0][1])).toEqual({ 'pool.example': [{ address: '203.0.113.7', family: 4 }] });
     } finally {
       fail.mockRestore();
       resolver.mockRestore();

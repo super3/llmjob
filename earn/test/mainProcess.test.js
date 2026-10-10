@@ -16,6 +16,7 @@ jest.mock('electron', () => {
   function makeWindow() {
     const wcEvents = {};
     const events = {};
+    const hooks = {};
     const w = {
       loadFile: jest.fn(),
       show: jest.fn(),
@@ -27,6 +28,9 @@ jest.mock('electron', () => {
       _events: events,
       isDestroyed: jest.fn(() => false),
       isVisible: jest.fn(() => false),
+      isFocused: jest.fn(() => false),
+      hookWindowMessage: jest.fn((msg, fn) => { hooks[msg] = fn; }),
+      _hooks: hooks,
       getContentSize: jest.fn(() => [620, 650]),
       setContentSize: jest.fn(),
       webContents: {
@@ -52,6 +56,8 @@ jest.mock('electron', () => {
       whenReady: jest.fn(() => ({ then(fn) { state.readyCb = fn; } })),
       requestSingleInstanceLock: jest.fn(() => true),
       setLoginItemSettings: jest.fn(),
+      getLoginItemSettings: jest.fn(() => ({ openAtLogin: false })),
+      setAppUserModelId: jest.fn(),
     },
     BrowserWindow: Object.assign(jest.fn(() => makeWindow()), {
       getAllWindows: jest.fn(() => []),
@@ -63,12 +69,22 @@ jest.mock('electron', () => {
         setToolTip: jest.fn(),
         setContextMenu: jest.fn(),
         on: jest.fn((ev, fn) => { events[ev] = fn; }),
+        destroy: jest.fn(),
         _events: events,
       };
       trays.push(t);
       return t;
     }),
-    Notification: Object.assign(jest.fn(() => ({ show: jest.fn() })), { isSupported: jest.fn(() => true) }),
+    Notification: Object.assign(jest.fn(() => {
+      const events = {};
+      return { show: jest.fn(), on: jest.fn((ev, fn) => { events[ev] = fn; }), _events: events };
+    }), { isSupported: jest.fn(() => true) }),
+    nativeImage: {
+      createFromPath: jest.fn(() => {
+        const img = { resize: jest.fn(() => ({ toPNG: jest.fn(() => 'png'), addRepresentation: jest.fn(), _size: 'resized' })) };
+        return img;
+      }),
+    },
     powerMonitor: {
       getSystemIdleState: jest.fn(() => 'active'),
       on: jest.fn((ev, fn) => { powerEvents[ev] = fn; }),
@@ -500,14 +516,18 @@ describe('app boot and window lifecycle', () => {
     expect(Menu._menu.popup).toHaveBeenCalledTimes(2);
   });
 
-  it('recreates a window on activate only when none exist', async () => {
+  // macOS: a Dock click brings the window back from the tray, and makes a new
+  // one if it was closed. It used to do nothing while the window was hidden.
+  it('shows the window on activate when none is on screen', async () => {
     const ctx = await boot();
     const activate = ctx.electron._appEvents['activate'];
-    ctx.electron.BrowserWindow.getAllWindows.mockReturnValueOnce([]);
-    activate();
-    expect(ctx.electron.BrowserWindow).toHaveBeenCalledTimes(2);
-    ctx.electron.BrowserWindow.getAllWindows.mockReturnValueOnce([{}]);
-    activate();
+    const w = ctx.win();
+    activate({}, true);
+    expect(w.show).not.toHaveBeenCalled();
+    activate({}, false);
+    expect(w.show).toHaveBeenCalledTimes(1);
+    w.isDestroyed.mockReturnValue(true);
+    activate({}, false);
     expect(ctx.electron.BrowserWindow).toHaveBeenCalledTimes(2);
   });
 
@@ -2571,8 +2591,8 @@ describe('the mining engine', () => {
   });
 
   // A failed system lookup falls back (shared/poolLookup); the app says which
-  // address it used, and keeps the address beside the node identity for next
-  // time. One lookup serves every start.
+  // address it used, and once the pool takes the login there, keeps the address
+  // beside the node identity for next time. One lookup serves every start.
   it('finds the pool by a fallback when the system lookup fails, and says so', async () => {
     const ctx = await boot();
     ctx.PearlEngine.instances.length = 0;
@@ -2596,7 +2616,11 @@ describe('the mining engine', () => {
         level: 'warn',
         line: 'could not look up pool.example (ENOENT); using 203.0.113.7 from DNS',
       });
-      expect(ctx.fs.writeFileSync).toHaveBeenCalledWith(path.join('/tmp/store', 'pool-addresses.json'), expect.any(String));
+      const cacheFile = path.join('/tmp/store', 'pool-addresses.json');
+      expect(ctx.fs.writeFileSync).not.toHaveBeenCalledWith(cacheFile, expect.any(String));
+      ctx.PearlEngine.instances[0].emit('authorized', { host: 'pool.example', address: '203.0.113.7', family: 'IPv4' });
+      expect(JSON.parse(ctx.fs.writeFileSync.mock.calls.find((c) => c[0] === cacheFile)[1]))
+        .toEqual({ 'pool.example': [{ address: '203.0.113.7', family: 4 }] });
     } finally {
       fail.mockRestore();
       resolver.mockRestore();
@@ -2710,6 +2734,9 @@ describe('the tray and closing the window', () => {
     expect(w.hide).toHaveBeenCalledTimes(1);
     expect(ctx.electron.Notification).toHaveBeenCalledTimes(1);
     expect(ctx.electron.Notification.mock.calls[0][0].title).toBe('LLMJob Earn is still running');
+    // Marked shown once the desktop shows it.
+    expect(savedPrefs(ctx)).toBeNull();
+    ctx.electron.Notification.mock.results[0].value._events.show();
     expect(savedPrefs(ctx).trayHintShown).toBe(true);
 
     w._events.close(closeEvent());
@@ -2856,11 +2883,92 @@ describe('starting with the computer', () => {
       .toContain('could not change the start-with-computer setting: EACCES');
   });
 
-  // An update can move or rename the installed app, so the login item is
-  // pointed at it again on every start.
-  it('re-registers the login item on every start while it is on', async () => {
+  // An update can move or rename the installed app, so a start points the
+  // login item at it again when it no longer does.
+  it('re-registers the login item on start when it no longer points here', async () => {
     const ctx = await boot({ platform: 'win32', isPackaged: true, before: withPrefs({ runAtStartup: true }) });
+    expect(ctx.electron.app.getLoginItemSettings).toHaveBeenCalledWith({ args: ['--hidden'] });
     expect(ctx.electron.app.setLoginItemSettings).toHaveBeenCalledWith({ openAtLogin: true, args: ['--hidden'] });
+  });
+
+  // setLoginItemSettings re-enables an entry, so writing it on every start undid
+  // a "Disabled" set in Task Manager.
+  it('leaves a login item that still points here alone', async () => {
+    const ctx = await boot({
+      platform: 'win32',
+      isPackaged: true,
+      before: (c) => {
+        withPrefs({ runAtStartup: true })(c);
+        c.electron.app.getLoginItemSettings.mockReturnValue({ openAtLogin: true });
+      },
+    });
+    expect(ctx.electron.app.setLoginItemSettings).not.toHaveBeenCalled();
+  });
+
+  it('touches nothing on start while the switch is off', async () => {
+    const ctx = await boot({ platform: 'win32', isPackaged: true });
+    expect(ctx.electron.app.getLoginItemSettings).not.toHaveBeenCalled();
+    expect(ctx.electron.app.setLoginItemSettings).not.toHaveBeenCalled();
+  });
+
+  describe('the Linux entry on start', () => {
+    const file = path.join('/home/u/.cfg', 'autostart', 'llmjob-earn.desktop');
+    const autostart = require('../src/shared/autostart');
+    // preferences.json says the switch is on; the entry holds `onDisk`, or is
+    // missing when that is null.
+    const onDisk = (entry) => (c) => {
+      withPrefs({ runAtStartup: true })(c);
+      const prefs = c.fs.readFileSync.getMockImplementation();
+      c.fs.readFileSync.mockImplementation((p, enc) => {
+        if (p !== file) return prefs(p, enc);
+        if (entry == null) throw new Error('ENOENT');
+        return entry;
+      });
+    };
+    const written = (ctx) => ctx.fs.writeFileSync.mock.calls.filter((c) => c[0] === file).map((c) => c[1]);
+    beforeEach(() => {
+      process.env.APPIMAGE = '/home/u/LLMJob-Earn-0.5.15.AppImage';
+      process.env.XDG_CONFIG_HOME = '/home/u/.cfg';
+    });
+
+    it('follows an AppImage an update renamed, keeping the desktop\'s own switch for it', async () => {
+      const old = autostart.linuxDesktopEntry('/home/u/LLMJob-Earn-0.5.14.AppImage') + 'Hidden=true\n';
+      const ctx = await boot({ isPackaged: true, before: onDisk(old) });
+      const [entry] = written(ctx);
+      expect(entry).toContain('Exec="/home/u/LLMJob-Earn-0.5.15.AppImage" --hidden');
+      expect(entry).toContain('Hidden=true');
+    });
+
+    it('leaves an entry that already points here alone, and writes a missing one', async () => {
+      const current = autostart.linuxDesktopEntry('/home/u/LLMJob-Earn-0.5.15.AppImage');
+      expect(written(await boot({ isPackaged: true, before: onDisk(current) }))).toEqual([]);
+      expect(written(await boot({ isPackaged: true, before: onDisk(null) }))).toEqual([current]);
+    });
+
+    it('does nothing outside an AppImage', async () => {
+      delete process.env.APPIMAGE;
+      const ctx = await boot({ isPackaged: true, before: onDisk(null) });
+      expect(written(ctx)).toEqual([]);
+    });
+
+    it('says so in the log when the entry cannot be written', async () => {
+      const ctx = await boot({
+        isPackaged: true,
+        before: (c) => {
+          onDisk(null)(c);
+          c.fs.mkdirSync.mockImplementationOnce(() => { throw new Error('EACCES'); });
+        },
+      });
+      expect(ctx.sent('miner:log').map((l) => l.line)).toContain('could not update the start-with-computer entry: EACCES');
+    });
+
+    // The update moves the AppImage to a new name and deletes this one. After an
+    // install on quit, the next start may be the login itself.
+    it('follows the AppImage when an update renames it', async () => {
+      const ctx = await boot({ isPackaged: true, before: onDisk(autostart.linuxDesktopEntry('/home/u/LLMJob-Earn-0.5.15.AppImage')) });
+      ctx.updater._events['appimage-filename-updated']('/home/u/LLMJob-Earn-0.5.16.AppImage');
+      expect(written(ctx).pop()).toContain('Exec="/home/u/LLMJob-Earn-0.5.16.AppImage" --hidden');
+    });
   });
 });
 
@@ -3225,5 +3333,464 @@ describe('mining only when the computer is idle', () => {
       expect(ctx.LlmManager.instances).toHaveLength(1);
       expect(ctx.LlmManager.instances[0].stop).not.toHaveBeenCalled();
     });
+  });
+});
+
+// What main.js last wrote to settings.json.
+function lastSettings(ctx) {
+  const writes = ctx.fs.writeFileSync.mock.calls.filter((c) => c[0] === SETTINGS_PATH);
+  return writes.length ? JSON.parse(writes[writes.length - 1][1]) : null;
+}
+
+// A promise the test settles by hand.
+function later() {
+  let resolve;
+  let reject;
+  const p = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { p, resolve, reject };
+}
+
+// Windows: the window's X, Alt+F4 and the taskbar's Close send SC_CLOSE before
+// the close. A bare close is another program asking the app to exit: the
+// installer, the uninstaller, Task Manager. Hiding from those left the app
+// running until the installer force-killed it a second later.
+describe('closing the window on Windows', () => {
+  const WM_SYSCOMMAND = 0x0112;
+  const wParam = (v) => { const b = Buffer.alloc(8); b.writeUInt32LE(v, 0); return b; };
+
+  it('hides on the user\'s close, and quits on another program\'s', async () => {
+    const ctx = await boot({ platform: 'win32' });
+    const w = ctx.win();
+    expect(w.hookWindowMessage).toHaveBeenCalledWith(WM_SYSCOMMAND, expect.any(Function));
+    const sysCommand = w._hooks[WM_SYSCOMMAND];
+
+    sysCommand(wParam(0xf060), Buffer.alloc(8)); // SC_CLOSE
+    let e = closeEvent();
+    w._events.close(e);
+    expect(e.preventDefault).toHaveBeenCalled();
+    expect(w.hide).toHaveBeenCalledTimes(1);
+
+    // The installer's taskkill: no SC_CLOSE before it. The flag was used up.
+    e = closeEvent();
+    w._events.close(e);
+    expect(e.preventDefault).not.toHaveBeenCalled();
+
+    // Another system command (SC_MINIMIZE) is not a close.
+    sysCommand(wParam(0xf020), Buffer.alloc(8));
+    e = closeEvent();
+    w._events.close(e);
+    expect(e.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it('counts a close as the user\'s when the window has the focus', async () => {
+    const ctx = await boot({ platform: 'win32' });
+    ctx.win().isFocused.mockReturnValue(true);
+    const e = closeEvent();
+    ctx.win()._events.close(e);
+    expect(e.preventDefault).toHaveBeenCalled();
+  });
+
+  it('listens for SC_CLOSE on Windows only', async () => {
+    const ctx = await boot();
+    expect(ctx.win().hookWindowMessage).not.toHaveBeenCalled();
+  });
+
+  // Windows shows a notification only from an app whose id matches a Start
+  // menu shortcut, which the installer makes with build.appId.
+  it('takes the installer\'s app id on Windows, so its notification shows', () => {
+    const ctx = loadMain({ platform: 'win32' });
+    expect(ctx.electron.app.setAppUserModelId).toHaveBeenCalledWith(require('../package.json').build.appId);
+    expect(loadMain().electron.app.setAppUserModelId).not.toHaveBeenCalled();
+  });
+
+  it('the tray notice is tried once a run, and saved as shown only when it shows', async () => {
+    const ctx = await boot({ platform: 'win32' });
+    const w = ctx.win();
+    w.isFocused.mockReturnValue(true);
+    w._events.close(closeEvent());
+    w._events.close(closeEvent());
+    expect(ctx.electron.Notification).toHaveBeenCalledTimes(1);
+    expect(savedPrefs(ctx)).toBeNull();
+  });
+});
+
+// GNOME draws no tray icon without an AppIndicator extension, and Electron
+// can't tell. Closing would hide the window with no way back.
+describe('a GNOME desktop', () => {
+  let savedDesktop;
+  let savedArgv;
+  beforeEach(() => {
+    savedDesktop = process.env.XDG_CURRENT_DESKTOP;
+    savedArgv = process.argv;
+    process.env.XDG_CURRENT_DESKTOP = 'ubuntu:GNOME';
+  });
+  afterEach(() => {
+    if (savedDesktop === undefined) delete process.env.XDG_CURRENT_DESKTOP;
+    else process.env.XDG_CURRENT_DESKTOP = savedDesktop;
+    process.argv = savedArgv;
+  });
+  // The bus says whether a tray host is there: `host()` decides each time.
+  const bus = (host) => (c) => c.cp.execFile.mockImplementation((cmd, args, opts, cb) => cb(null, host() ? '(<true>,)' : '(<false>,)'));
+
+  it('with no tray host, drops the icon, and closing the window quits', async () => {
+    const ctx = await boot({ before: bus(() => false) });
+    expect(ctx.cp.execFile).toHaveBeenCalledWith('gdbus', expect.any(Array), expect.any(Object), expect.any(Function));
+    expect(ctx.electron._trays[0].destroy).toHaveBeenCalled();
+    const e = closeEvent();
+    ctx.win()._events.close(e);
+    expect(e.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it('keeps the icon when an AppIndicator extension draws it', async () => {
+    const ctx = await boot({ before: bus(() => true) });
+    expect(ctx.electron._trays[0].destroy).not.toHaveBeenCalled();
+    const e = closeEvent();
+    ctx.win()._events.close(e);
+    expect(e.preventDefault).toHaveBeenCalled();
+  });
+
+  // At login the extension may still be loading.
+  it('a launch at login waits for the extension, then starts in the tray', async () => {
+    process.argv = process.argv.concat('--hidden');
+    let host = false;
+    const ctx = await boot({ before: bus(() => host) });
+    expect(ctx.electron.BrowserWindow).not.toHaveBeenCalled();
+    host = true;
+    ctx.timers.timeouts.filter((h) => h.ms === 1000).pop().fn();
+    await flush();
+    expect(ctx.electron.BrowserWindow).toHaveBeenCalledTimes(1);
+    expect(ctx.electron._trays[0].destroy).not.toHaveBeenCalled();
+    ctx.win()._wcEvents['did-finish-load']();
+    await flush();
+    expect(ctx.win().show).not.toHaveBeenCalled();
+  });
+
+  it('a launch at login with no extension shows the window after the wait', async () => {
+    process.argv = process.argv.concat('--hidden');
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1000);
+    try {
+      const ctx = await boot({ before: bus(() => false) });
+      expect(ctx.electron.BrowserWindow).not.toHaveBeenCalled();
+      now.mockReturnValue(1000 + 15000);
+      ctx.timers.timeouts.filter((h) => h.ms === 1000).pop().fn();
+      await flush();
+      expect(ctx.electron._trays[0].destroy).toHaveBeenCalled();
+      ctx.win()._wcEvents['did-finish-load']();
+      await flush();
+      expect(ctx.win().show).toHaveBeenCalled();
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  // The check is a convenience: if asking the bus throws, the app starts as it
+  // did before it asked, with the icon Electron made.
+  it('a check that throws leaves the icon, and the window still opens', async () => {
+    const throws = (c) => c.cp.execFile.mockImplementation(() => { throw new Error('spawn EACCES'); });
+    const shown = await boot({ before: throws });
+    expect(shown.electron.BrowserWindow).toHaveBeenCalledTimes(1);
+    expect(shown.electron._trays[0].destroy).not.toHaveBeenCalled();
+
+    process.argv = process.argv.concat('--hidden');
+    const hidden = await boot({ before: throws });
+    expect(hidden.electron.BrowserWindow).toHaveBeenCalledTimes(1);
+    expect(hidden.electron._trays[0].destroy).not.toHaveBeenCalled();
+  });
+
+  it('asks nothing on other desktops, or when there is no tray icon at all', async () => {
+    process.env.XDG_CURRENT_DESKTOP = 'KDE';
+    expect((await boot()).cp.execFile).not.toHaveBeenCalled();
+    process.env.XDG_CURRENT_DESKTOP = 'GNOME';
+    const ctx = await boot({ before: (c) => c.electron.Tray.mockImplementation(() => { throw new Error('no tray'); }) });
+    expect(ctx.cp.execFile).not.toHaveBeenCalled();
+  });
+});
+
+describe('macOS in the background', () => {
+  it('gives the tray a menu-bar-sized icon, with a Retina copy', async () => {
+    const ctx = await boot({ platform: 'darwin' });
+    const full = ctx.electron.nativeImage.createFromPath.mock.results[0].value;
+    expect(ctx.electron.nativeImage.createFromPath).toHaveBeenCalledWith(expect.stringMatching(/icon\.png$/));
+    expect(full.resize.mock.calls).toEqual([[{ width: 16, height: 16 }], [{ width: 32, height: 32 }]]);
+    const icon = full.resize.mock.results[0].value;
+    expect(icon.addRepresentation).toHaveBeenCalledWith({ scaleFactor: 2, buffer: 'png' });
+    expect(ctx.electron.Tray).toHaveBeenCalledWith(icon);
+  });
+
+  // macOS's own login item can't pass --hidden, and from macOS 13 the app
+  // can't tell it was started at login. A LaunchAgent can.
+  it('starts with the computer through a LaunchAgent that starts it hidden', async () => {
+    const ctx = await boot({ platform: 'darwin', isPackaged: true });
+    const file = path.join(os.homedir(), 'Library', 'LaunchAgents', 'com.llmjob.earn.plist');
+    expect((await ctx.invoke('prefs:set', { runAtStartup: true })).runAtStartup).toBe(true);
+    const plist = ctx.fs.writeFileSync.mock.calls.find((c) => c[0] === file)[1];
+    expect(plist).toContain('<string>--hidden</string>');
+    expect(ctx.electron.app.setLoginItemSettings).not.toHaveBeenCalled();
+
+    ctx.fs.existsSync.mockImplementation((p) => p === file);
+    expect((await ctx.invoke('prefs:set', { runAtStartup: false })).runAtStartup).toBe(false);
+    expect(ctx.fs.unlinkSync).toHaveBeenCalledWith(file);
+  });
+
+  it('rewrites the LaunchAgent on start only when the app has moved', async () => {
+    const file = path.join(os.homedir(), 'Library', 'LaunchAgents', 'com.llmjob.earn.plist');
+    const current = require('../src/shared/autostart').macLaunchAgent(process.execPath);
+    for (const [onDisk, rewritten] of [[current, false], [current.replace('<string>--hidden', '<string>/old/app</string>\n    <string>--hidden'), true]]) {
+      const ctx = await boot({
+        platform: 'darwin',
+        isPackaged: true,
+        before: (c) => {
+          withPrefs({ runAtStartup: true })(c);
+          const prefs = c.fs.readFileSync.getMockImplementation();
+          c.fs.readFileSync.mockImplementation((p, enc) => (p === file ? onDisk : prefs(p, enc)));
+        },
+      });
+      expect(ctx.fs.writeFileSync.mock.calls.some((c) => c[0] === file)).toBe(rewritten);
+    }
+  });
+});
+
+// With the window closing to the tray the app rarely quits, and an update
+// installs on quit: a rig started at login could run an old build for months.
+describe('installing a downloaded update', () => {
+  const START = { address: VALID_ADDR, mode: 'mining' };
+  const downloaded = (ctx) => ctx.updater._events['update-downloaded']({ version: '9.9.9' });
+
+  it('installs at once while the window is out of sight, and restarts in the tray, mining', async () => {
+    const ctx = await boot({ isPackaged: true });
+    ctx.emit('miner:start', START);
+    await flush();
+    const now = jest.spyOn(Date, 'now').mockReturnValue(5000);
+    try {
+      downloaded(ctx);
+    } finally {
+      now.mockRestore();
+    }
+    expect(ctx.updater.quitAndInstall).toHaveBeenCalledWith(true, true);
+    expect(lastSettings(ctx)).toEqual({ resumeMining: true, resumeHidden: 5000 });
+    expect(ctx.PearlEngine.instances[0].stop).toHaveBeenCalled();
+    expect(ctx.sent('miner:stopped')).toHaveLength(1);
+  });
+
+  it('waits while the window is open, and installs once it goes to the tray', async () => {
+    const ctx = await boot({ isPackaged: true });
+    const w = ctx.win();
+    w.isVisible.mockReturnValue(true);
+    downloaded(ctx);
+    expect(ctx.updater.quitAndInstall).not.toHaveBeenCalled();
+    w._events.close(closeEvent());
+    w.isVisible.mockReturnValue(false);
+    w._events.hide();
+    expect(ctx.updater.quitAndInstall).toHaveBeenCalledWith(true, true);
+    // Nothing was running: nothing to resume, only where to start.
+    expect(Object.keys(lastSettings(ctx))).toEqual(['resumeHidden']);
+  });
+
+  it('a hide with no update waiting installs nothing', async () => {
+    const ctx = await boot({ isPackaged: true });
+    ctx.win()._events.hide();
+    expect(ctx.updater.quitAndInstall).not.toHaveBeenCalled();
+  });
+
+  // On a first run the model is a download of several GB, which the restart
+  // would throw away.
+  it('waits for a START that is still bringing up the model', async () => {
+    const ctx = await boot({ isPackaged: true });
+    const dl = later();
+    ctx.LlmEngineManager.behavior.ensureModel = () => dl.p;
+    try {
+      ctx.emit('miner:start', { mode: 'llm' });
+      await flush();
+      downloaded(ctx);
+      expect(ctx.updater.quitAndInstall).not.toHaveBeenCalled();
+      dl.resolve('/tmp/llm/model.gguf');
+      await flush();
+      expect(ctx.updater.quitAndInstall).toHaveBeenCalledWith(true, true);
+    } finally {
+      ctx.LlmEngineManager.behavior.ensureModel = () => Promise.resolve('/tmp/llm/model.gguf');
+    }
+  });
+
+  // An install for all users would ask for an administrator's approval, with
+  // nobody there to give it.
+  it('on Windows, installs out of sight only where this user can write the app\'s folder', async () => {
+    const probe = path.join(path.dirname(process.execPath), '.update-probe-' + process.pid);
+    const ctx = await boot({ platform: 'win32', isPackaged: true });
+    downloaded(ctx);
+    expect(ctx.fs.writeFileSync).toHaveBeenCalledWith(probe, '');
+    expect(ctx.fs.unlinkSync).toHaveBeenCalledWith(probe);
+    expect(ctx.updater.quitAndInstall).toHaveBeenCalledTimes(1);
+
+    const locked = await boot({ platform: 'win32', isPackaged: true });
+    locked.fs.writeFileSync.mockImplementation((p) => { if (p === probe) throw new Error('EPERM'); });
+    downloaded(locked);
+    expect(locked.updater.quitAndInstall).not.toHaveBeenCalled();
+    // The window's button still installs it.
+    locked.emit('app:update:install');
+    expect(locked.updater.quitAndInstall).toHaveBeenCalledWith(true, true);
+  });
+
+  // electron-updater reports a refused install (no installer file, say) through
+  // 'error' and returns without quitting.
+  it('an install the updater refuses leaves the START running and the window going to the tray', async () => {
+    const ctx = await boot({ isPackaged: true });
+    ctx.emit('miner:start', START);
+    await flush();
+    const before = ctx.fs.writeFileSync.mock.calls.length;
+    ctx.updater.quitAndInstall.mockImplementationOnce(function refuse() { this.quitAndInstallCalled = false; });
+    ctx.emit('app:update:install');
+    expect(ctx.PearlEngine.instances[0].stop).not.toHaveBeenCalled();
+    expect(ctx.sent('miner:stopped')).toEqual([]);
+    expect(ctx.fs.writeFileSync.mock.calls.length).toBe(before);
+    const e = closeEvent();
+    ctx.win()._events.close(e);
+    expect(e.preventDefault).toHaveBeenCalled();
+  });
+
+  it('and so does one that throws', async () => {
+    const ctx = await boot({ isPackaged: true });
+    ctx.updater.quitAndInstall.mockImplementationOnce(() => { throw new Error('locked'); });
+    ctx.emit('app:update:install');
+    expect(ctx.sent('miner:log').map((l) => l.line)).toContain('update install failed: locked');
+    const e = closeEvent();
+    ctx.win()._events.close(e);
+    expect(e.preventDefault).toHaveBeenCalled();
+  });
+
+  describe('the restart', () => {
+    const SAVED = (resumeHidden) => (c) => {
+      c.fs.existsSync.mockImplementation((p) => p === SETTINGS_PATH);
+      c.fs.readFileSync.mockImplementation((p) => (p === SETTINGS_PATH ? JSON.stringify({ address: VALID_ADDR, resumeHidden }) : '{}'));
+    };
+
+    it('starts in the tray straight after an update that installed out of sight', async () => {
+      const now = jest.spyOn(Date, 'now').mockReturnValue(10 * 60 * 1000);
+      try {
+        const ctx = await boot({ before: SAVED(1) });
+        expect(lastSettings(ctx)).toEqual({ address: VALID_ADDR });
+        ctx.win()._wcEvents['did-finish-load']();
+        await flush();
+        expect(ctx.win().show).not.toHaveBeenCalled();
+      } finally {
+        now.mockRestore();
+      }
+    });
+
+    // An install that never restarted the app must not hide the next launch.
+    it('but not on an ordinary launch later', async () => {
+      const now = jest.spyOn(Date, 'now').mockReturnValue(10 * 60 * 1000 + 1);
+      try {
+        const ctx = await boot({ before: SAVED(1) });
+        expect(lastSettings(ctx)).toEqual({ address: VALID_ADDR });
+        ctx.win()._wcEvents['did-finish-load']();
+        await flush();
+        expect(ctx.win().show).toHaveBeenCalled();
+      } finally {
+        now.mockRestore();
+      }
+    });
+  });
+});
+
+// A START that nothing runs for any more ends, not just its STOP button. A
+// session left behind kept the idle watcher going, which could bring the model
+// and mining back while the window showed START.
+describe('a START that ends on its own', () => {
+  const watcher = (ctx) => ctx.timers.intervals.find((h) => h.fn.name === 'checkIdle');
+
+  it('LLM mode with no room on the card ends the START and its idle watcher', async () => {
+    const ctx = await boot({ before: withPrefs({ mineWhenIdle: true }) });
+    ctx.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'gpu', usedMb: 4000, totalMb: 8000 }]);
+    ctx.emit('miner:start', { mode: 'llm' });
+    const w = watcher(ctx);
+    await flush();
+    expect(ctx.sent('miner:stopped')).toHaveLength(1);
+    expect(global.clearInterval).toHaveBeenCalledWith(w);
+  });
+
+  it('LLM mode whose model dies ends the START and its idle watcher', async () => {
+    const ctx = await boot({ before: withPrefs({ mineWhenIdle: true }) });
+    ctx.emit('miner:start', { mode: 'llm' });
+    const w = watcher(ctx);
+    await flush();
+    ctx.LlmManager.instances[0].emit('stopped', 1);
+    await flush();
+    expect(ctx.sent('miner:stopped')).toHaveLength(1);
+    expect(global.clearInterval).toHaveBeenCalledWith(w);
+  });
+
+  // auto mode whose miner could not start, then whose model died: nothing runs.
+  it('auto mode whose miner never started ends when its model dies', async () => {
+    const ctx = await boot();
+    ctx.PearlEngine.instances.length = 0;
+    ctx.PearlEngine.startError = new Error('no core');
+    try {
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+      await flush();
+    } finally {
+      ctx.PearlEngine.startError = null;
+    }
+    ctx.LlmManager.instances[0].emit('stopped', 1);
+    await flush();
+    expect(ctx.sent('miner:stopped')).toHaveLength(1);
+  });
+});
+
+// The model download can't be cancelled, so it goes on after STOP. It must not
+// bring the LLM row back to life when it ends.
+describe('STOP during the model download', () => {
+  afterEach(() => {
+    require('../src/main/llmEngineManager').LlmEngineManager.behavior.ensureModel = () => Promise.resolve('/tmp/llm/model.gguf');
+  });
+
+  async function downloading() {
+    const ctx = await boot();
+    const dl = later();
+    let progress;
+    ctx.LlmEngineManager.behavior.ensureModel = (onProgress) => { progress = onProgress; return dl.p; };
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    progress(10);
+    expect(ctx.sent('llm:status').pop().note).toMatch(/^downloading model .* 10%$/);
+    ctx.emit('miner:stop');
+    return { ctx, dl, progress };
+  }
+
+  it('shows no more progress, and no "Starting…", and starts nothing', async () => {
+    const { ctx, dl, progress } = await downloading();
+    const sentAtStop = ctx.sent('llm:status').length;
+    progress(60);
+    dl.resolve('/tmp/llm/model.gguf');
+    await flush();
+    const after = ctx.sent('llm:status').slice(sentAtStop);
+    expect(after.every((s) => s.note === null)).toBe(true);
+    expect(ctx.LlmManager.instances).toHaveLength(0);
+    expect(ctx.sent('miner:stopped')).toHaveLength(1);
+  });
+
+  it('a download that fails after STOP shows no error', async () => {
+    const { ctx, dl } = await downloading();
+    dl.reject(new Error('connection reset'));
+    await flush();
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ note: null, error: null });
+    expect(ctx.sent('miner:log').map((l) => l.line).join('\n')).not.toContain('LLM setup failed');
+  });
+
+  it('a STOP while the app looks for a running server, or reads the cards, starts nothing', async () => {
+    const ctx = await boot();
+    ctx.emit('miner:start', { mode: 'llm' }); // waiting on the health probe
+    ctx.emit('miner:stop');
+    await flush();
+    expect(ctx.probe.detectGpusVram).not.toHaveBeenCalled();
+
+    const cards = later();
+    ctx.probe.detectGpusVram.mockImplementationOnce(() => cards.p);
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    ctx.emit('miner:stop');
+    cards.resolve([]);
+    await flush();
+    expect(ctx.LlmEngineManager.instances).toHaveLength(0);
+    expect(ctx.LlmManager.instances).toHaveLength(0);
   });
 });

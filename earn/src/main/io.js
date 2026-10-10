@@ -209,6 +209,50 @@ async function trustRecoveryCa(url) {
 // Serial number for scratch download paths — see `part` in downloadFile.
 let partSeq = 0;
 
+// Scratch files of this process's downloads still in flight. A process that
+// exits mid-download deletes them on the way out: the CLI exits when its miner
+// dies, for systemd to restart it, and the restart starts the download again.
+const liveParts = new Set();
+let partExitHook = false;
+function trackPart(part) {
+  liveParts.add(part);
+  if (partExitHook) return;
+  partExitHook = true;
+  process.on('exit', () => {
+    for (const p of liveParts) {
+      try { fs.unlinkSync(p); } catch (e) { /* already gone */ }
+    }
+  });
+}
+
+// Scratch files a killed process left behind: `<dest>.<pid>.<n>.part` from a
+// process that no longer runs. A kill that skips the exit handler leaves one
+// each time, a model's is several GB, and nothing else deletes them. Another
+// process still running keeps its own: it may be downloading the same file.
+function removeStaleParts(dest) {
+  const dir = path.dirname(dest);
+  const prefix = path.basename(dest) + '.';
+  let names;
+  try { names = fs.readdirSync(dir); } catch (e) { return; }
+  if (!Array.isArray(names)) return;
+  for (const name of names) {
+    const m = name.startsWith(prefix) && /^(\d+)\.\d+\.part$/.exec(name.slice(prefix.length));
+    if (!m || processRuns(Number(m[1]))) continue;
+    try { fs.unlinkSync(path.join(dir, name)); } catch (e) { /* in use, or already gone */ }
+  }
+}
+
+// Signal 0 only asks whether the process exists. EPERM: it does, as another user.
+function processRuns(pid) {
+  if (pid === process.pid) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === 'EPERM';
+  }
+}
+
 // Stream a URL to a file, following redirects and reporting download progress.
 // Writes to a scratch `<dest>.<pid>.<n>.part` and renames on completion, so an
 // interrupted download (multi-GB GGUFs especially) never leaves a truncated file
@@ -222,7 +266,8 @@ let partSeq = 0;
 // llama-download.archive.part`. Uniqueness makes concurrent attempts merely
 // redundant (last writer wins the rename) instead of failing.
 // A dropped connection is retried a few times with a backoff, and every attempt
-// starts the scratch file from scratch.
+// starts the scratch file from scratch. Scratch files a killed run left behind
+// are deleted when the next download of the same file starts (removeStaleParts).
 //
 // Resuming from the bytes already on disk (a Range request, appending to the
 // partial) is the obvious optimisation and was deliberately removed: the model
@@ -240,7 +285,9 @@ const DOWNLOAD_ATTEMPTS = 4;
 const DOWNLOAD_RETRY_MS = 2000;
 
 function downloadFile(url, dest, onProgress, redirects) {
+  removeStaleParts(dest);
   const part = dest + '.' + process.pid + '.' + (partSeq = (partSeq + 1) % 1e6) + '.part';
+  trackPart(part);
   return downloadAttempt(url, dest, part, onProgress, redirects || 0, 1, null)
     .catch(async (err) => {
       // Certificate chain we couldn't verify: gather more trust anchors (OS
@@ -252,7 +299,9 @@ function downloadFile(url, dest, onProgress, redirects) {
       const ca = await trustRecoveryCa(err.url);
       if (!ca) throw err;
       return downloadAttempt(url, dest, part, onProgress, redirects || 0, 1, ca);
-    });
+    })
+    // Renamed into place, or deleted on the final failure: nothing to clean.
+    .finally(() => liveParts.delete(part));
 }
 
 // One HTTP attempt for `url` into `part`. On a transport failure it waits and
