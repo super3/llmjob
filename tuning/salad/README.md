@@ -51,7 +51,8 @@ each PC on its own readings.
 1. **Search** hourly at :01. Take classes with a known rate that clear a 10% margin at the cheapest
    priority with a GPU free. Classes that paid before come first, then by profit per hour. Create up to
    3 one-replica groups an hour, inside `max_active` and the quota. Each class is tried once on an
-   account, as on the first one: a class whose group ended isn't created again.
+   account, as on the first one: a class whose group failed (rules 4 to 6) isn't created again. A class
+   whose groups only got no PC (released) is tried again in a search at least an hour later.
 2. **No PC at a priority within 10 min:** move to the next priority that still clears 10%. If none is
    left, delete the group. The 10 minutes start once the image is ready: while the group is `pending`
    it isn't looking for a PC, and Salad refuses a priority change (`pending_update_in_progress`).

@@ -521,12 +521,14 @@ class W:
         room = min(self.cfg["max_active"], quota) - len(active)
         if room <= 0:
             return
-        # Each class is tried once on this account, as on the first one: a class whose group ended,
-        # for whatever reason, isn't created again.
-        tried = {g["class"] for g in st["groups"].values()}
+        # Each class is tried once on this account, as on the first one, except that a class whose groups only
+        # ended for want of a PC (released) is tried again in a search at least an hour after.
+        t = now()
+        skip = {g["class"] for g in st["groups"].values()
+                if not g["ended"] or g["end_kind"] != "released" or t - g["ended"] < 3600}
         cands = []
         for cls, (rate, _) in KNOWN.items():
-            if cls not in st["classes"] or cls in tried:
+            if cls not in st["classes"] or cls in skip:
                 continue
             body = {"cpu": 2, "memory": 4096, "storage_amount": 10737418240, "gpu_classes": [st["classes"][cls]["id"]]}
             s, a = http("POST", f"{BASE}/availability/sce-gpu-availability", body)
