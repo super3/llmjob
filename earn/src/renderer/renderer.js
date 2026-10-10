@@ -199,27 +199,28 @@
     updateSendEnabled();
   }
 
-  // Settings → Local network, and the network address on the API tab. main
-  // reports lan only while the network gate runs (or failed to bind).
+  // The share switch under Settings → Compute Mode, and the network address on
+  // the API tab. main reports lan only while the network gate runs (or failed to
+  // bind). Each note is one line inside the switch's row, so it stays short; the
+  // full text is also its tooltip in case a long address cuts it off.
   function renderShare() {
     el.setShare.checked = state.shareLlm;
     const lan = state.shareLlm ? state.llm.lan : null;
     const url = lan && lan.urls[0];
     let note;
     if (!state.shareLlm) {
-      note = 'Lets phones and other computers on your network use the local LLM, on port 8000. '
-        + 'Anyone on the network can use it, with no key, so turn this on only on a network you trust.';
+      note = 'Anyone on your network can use it on port 8000, with no key.';
     } else if (lan && lan.error) {
       note = 'Could not share it: ' + lan.error + '.';
     } else if (url) {
-      note = 'Other devices on your network can use it at ' + url + ', with no key. '
-        + 'If your firewall asks, allow LLMJob Earn on private networks.';
+      note = 'Other devices can use it at ' + url + ', with no key.';
     } else if (lan) {
       note = 'Shared on port 8000, but this computer has no network address right now.';
     } else {
-      note = 'Other devices on your network can reach it on port 8000 while the local LLM runs.';
+      note = 'Other devices can reach it on port 8000 while the local LLM runs.';
     }
     el.shareNote.textContent = note;
+    el.shareNote.title = note;
     el.shareNote.classList.toggle('err', !!(lan && lan.error));
     el.apiLan.hidden = !url;
     if (url) el.apiLanUrl.textContent = url;

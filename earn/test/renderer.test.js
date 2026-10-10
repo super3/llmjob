@@ -245,19 +245,20 @@ describe('boot with the full bridge', () => {
     };
     // Off: the note says what it would do, and nothing claims the network.
     expect($('set-share').checked).toBe(false);
-    expect($('share-note').textContent).toContain('turn this on only on a network you trust');
+    expect($('share-note').textContent).toBe('Anyone on your network can use it on port 8000, with no key.');
     expect($('api-lan').hidden).toBe(true);
     expect($('connect-reach').textContent).toBe('this computer');
 
     // On, before any model runs.
     flip(true);
     expect(api.setShareLlm).toHaveBeenLastCalledWith(true);
-    expect($('share-note').textContent).toBe('Other devices on your network can reach it on port 8000 while the local LLM runs.');
+    expect($('share-note').textContent).toBe('Other devices can reach it on port 8000 while the local LLM runs.');
 
     // main reports the gate up: the first address is the one shown.
     makeReady(cbs, { lan: { urls: ['http://192.168.0.220:8000/v1', 'http://10.0.0.7:8000/v1'], error: null } });
-    expect($('share-note').textContent).toBe('Other devices on your network can use it at http://192.168.0.220:8000/v1, with no key. '
-      + 'If your firewall asks, allow LLMJob Earn on private networks.');
+    expect($('share-note').textContent).toBe('Other devices can use it at http://192.168.0.220:8000/v1, with no key.');
+    // A long address can cut the one-line note short, so the whole note is its tooltip.
+    expect($('share-note').title).toBe('Other devices can use it at http://192.168.0.220:8000/v1, with no key.');
     expect($('api-lan').hidden).toBe(false);
     expect($('api-lan-url').textContent).toBe('http://192.168.0.220:8000/v1');
     expect($('connect-reach').textContent).toBe('this computer and your network');

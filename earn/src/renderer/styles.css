@@ -231,6 +231,14 @@ input.field-box { user-select: text; }
 .view-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .view-head .lbl { font-size: 14px; font-weight: 700; color: var(--ink-2); }
 .back { font-size: 12.5px; font-weight: 600; color: var(--accent); cursor: pointer; }
+/* The Settings head also carries the version and the update check, which used
+   to take a section of their own at the bottom. Without that section Settings
+   fits its 470px with no scrollbar. */
+.head-title { display: inline-flex; align-items: baseline; gap: 8px; flex: none; }
+.head-version { font-size: 12px; font-weight: 600; color: var(--muted); }
+.head-actions { display: inline-flex; align-items: center; gap: 14px; min-width: 0; }
+/* Only the status gives way when space runs out; the link and Back never wrap. */
+.head-actions .update-check-btn, .head-actions .back { flex: none; white-space: nowrap; }
 .settings-section { font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: #a7abb2; margin: 14px 0 8px; }
 .settings-section:first-of-type { margin: 0 0 7px; }
 /* Connection sits below the mode hint, and the mock gives it more air than the
@@ -260,20 +268,26 @@ input.field-box { user-select: text; }
 .rv-input { font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 13px; color: var(--ink-3); background: var(--field); border: 1px solid var(--line); border-radius: 7px; padding: 6px 11px; outline: none; user-select: text; }
 .rv-input:focus { border-color: var(--accent); }
 select.rv-input { cursor: pointer; }
-.update-check-btn { border: 1px solid #dbe6fb; background: #eff4ff; color: var(--accent); font-family: inherit; font-weight: 600; font-size: 13px; padding: 6px 13px; border-radius: 7px; cursor: pointer; transition: background .15s, border-color .15s; }
-.update-check-btn:hover:not(:disabled) { background: #e2ecff; border-color: #c7dbfa; }
-.update-check-btn:disabled { cursor: default; color: var(--muted); background: var(--field); border-color: var(--line); }
-.update-check-btn.ready { background: var(--accent); color: #fff; border-color: var(--accent); }
-.update-check-btn.ready:hover:not(:disabled) { background: #1d4ed8; border-color: #1d4ed8; }
-.update-actions { display: inline-flex; align-items: center; gap: 12px; }
-.update-status { font-size: 12.5px; color: var(--muted); }
+/* A text button beside the Settings title, filled once an update is ready. */
+.update-check-btn { border: none; background: none; color: var(--accent); font-family: inherit; font-weight: 600; font-size: 12.5px; padding: 0; cursor: pointer; }
+.update-check-btn:hover:not(:disabled) { text-decoration: underline; }
+.update-check-btn:disabled { cursor: default; color: var(--muted); }
+.update-check-btn.ready { background: var(--accent); color: #fff; padding: 3px 9px; border-radius: 6px; }
+.update-check-btn.ready:hover:not(:disabled) { background: #1d4ed8; text-decoration: none; }
+/* One line, cut short if it has to be, so a long status never grows the head. */
+.update-status { font-size: 12px; color: var(--muted); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .update-status.err { color: #dc2626; }
 .settings-note { font-size: 12px; color: var(--muted); margin-top: 10px; line-height: 1.5; }
 #mode-hint { margin-top: 5px; }
 .settings-note a { color: var(--accent); cursor: pointer; }
 .settings-note .ok { color: var(--green); font-weight: 600; }
 .settings-note .warn { color: #dc2626; font-weight: 600; }
-.settings-note.err { color: #dc2626; }
+/* A switch row with a one-line explanation under its label. One line only, so
+   the page height never depends on the text. */
+.row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.row-sub { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row-sub.err { color: #dc2626; }
+.mode-share { margin-top: 10px; }
 
 /* merge mining */
 

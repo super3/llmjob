@@ -204,14 +204,14 @@ beats both and loads exactly that file.
 ## Sharing the local LLM on your network
 
 The local LLM listens on `127.0.0.1:8080`, so only this computer can use it.
-**Settings → Local network → Share the local LLM on my network** lets phones and
+**Share the local LLM on my network**, under Compute Mode in Settings, lets phones and
 other computers on the same network use it too.
 
 - **How:** the app runs the gate the CLI serves on (`autoGate.createServeGate`)
   on port **8000**, on every network interface. It passes requests to
   `llama-server`, which stays on `127.0.0.1`, so the in-app chat and cluster jobs
-  don't change. The address to use, `http://<this computer>:8000/v1`, shows under
-  the switch and on the API tab.
+  don't change. The address to use, `http://<this computer>:8000/v1`, shows in
+  the switch's row and on the API tab.
 - **Off by default, and no key.** While it's on, anyone on the network can use
   the model.
 - **When it runs:** only while the local LLM runs (Auto or LLM mode). The switch

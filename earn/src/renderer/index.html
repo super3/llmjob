@@ -159,7 +159,14 @@
 
   <!-- ══════════ SETTINGS ══════════ -->
   <section id="view-settings" hidden>
-    <div class="view-head"><span class="lbl">Settings</span><span class="back" data-back>← Back</span></div>
+    <div class="view-head">
+      <span class="head-title"><span class="lbl">Settings</span><b class="mono head-version" id="app-version">—</b></span>
+      <span class="head-actions">
+        <span id="update-status" class="update-status" hidden></span>
+        <button id="btn-check-update" class="update-check-btn" type="button">Check for updates</button>
+        <span class="back" data-back>← Back</span>
+      </span>
+    </div>
     <div class="settings-section">Compute Mode</div>
     <div id="mode-seg" class="seg">
       <button class="seg-btn" type="button" data-mode="auto">Auto</button>
@@ -167,6 +174,12 @@
       <button class="seg-btn" type="button" data-mode="llm">LLM</button>
     </div>
     <p id="mode-hint" class="settings-note">Balances mining and the local LLM from free VRAM.</p>
+    <div class="settings-rows mode-share">
+      <label class="settings-row toggle-row">
+        <span class="row-text"><span class="rk">Share the local LLM on my network</span><span id="share-note" class="row-sub"></span></span>
+        <input id="set-share" class="toggle" type="checkbox" />
+      </label>
+    </div>
 
     <div class="settings-section">Connection</div>
     <div class="conn-grid">
@@ -180,15 +193,6 @@
       </div>
     </div>
 
-    <div class="settings-section">Local network</div>
-    <div class="settings-rows">
-      <label class="settings-row toggle-row">
-        <span class="rk">Share the local LLM on my network</span>
-        <input id="set-share" class="toggle" type="checkbox" />
-      </label>
-    </div>
-    <p id="share-note" class="settings-note"></p>
-
     <div class="settings-section">Background</div>
     <div class="settings-rows">
       <label class="settings-row toggle-row">
@@ -200,22 +204,11 @@
         <input id="pref-startup" class="toggle" type="checkbox" />
       </label>
       <label class="settings-row toggle-row">
-        <span class="rk">Only mine when my computer is idle</span>
+        <span class="row-text"><span class="rk">Only mine when my computer is idle</span><span class="row-sub">After 5 minutes without keyboard or mouse use. Pauses when you&#39;re back.</span></span>
         <input id="pref-idle" class="toggle" type="checkbox" />
       </label>
     </div>
-    <p id="pref-note" class="settings-note">Idle means 5 minutes without keyboard or mouse use. Mining pauses as soon as you're back.</p>
 
-    <div class="settings-section">Software Update</div>
-    <div class="settings-rows">
-      <div class="settings-row">
-        <span class="rk">Version <b class="mono" id="app-version">—</b></span>
-        <span class="update-actions">
-          <span id="update-status" class="update-status" hidden></span>
-          <button id="btn-check-update" class="update-check-btn" type="button">Check for updates</button>
-        </span>
-      </div>
-    </div>
   </section>
 
   <!-- ══════════ LOGS ══════════ -->
