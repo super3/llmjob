@@ -1,0 +1,9 @@
+{
+  "org": "your-salad-organization",
+  "project": "your-salad-project",
+  "prefix": "biz",
+  "wallet": "prl1px5ervx6ftaegmdhqa5ajemh20j2uw7l9jt5j5s97rljp72yt3s8qncrxud",
+  "credit": 100,
+  "box_ref": "f0369f92651c2b3b1e24245e50cfe89b02281592",
+  "miner_version": "v0.5.13"
+}
