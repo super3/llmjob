@@ -41,13 +41,16 @@ Tests: `python3 -m unittest discover -s tuning/salad`. They fake Salad, the pool
 
 ## Rules
 
+**Margin** is profit as a share of earnings: (earnings − price) / earnings, as the first account
+measured it. A 2060 at 40 TH/s earning $0.047/hr on a $0.030/hr PC is +36%, not +56%.
+
 1. **Search** hourly at :01. Take classes with a known rate that clear a 10% margin at the cheapest
    priority with a GPU free. Classes that paid before come first, then by profit per hour. Create up to
    3 one-replica groups an hour, inside `max_active` and the quota. A class with a group still waiting
    for a PC is skipped.
 2. **No PC at a priority within 10 min:** move to the next priority that still clears 10%. If none is
-   left, delete the group. Salad refuses the change while the group is `pending` (image preparation), so
-   the watcher waits.
+   left, delete the group. The 10 minutes start once the image is ready: while the group is `pending`
+   it isn't looking for a PC, and Salad refuses a priority change (`pending_update_in_progress`).
 3. **Had a PC, lost it, no other within 20 min:** delete.
 4. **No share for max(10 min, 8 expected share gaps) after 20 min on a PC:** reallocate if the class
    paid before, otherwise delete.
@@ -60,9 +63,11 @@ Tests: `python3 -m unittest discover -s tuning/salad`. They fake Salad, the pool
    taken as this case. Bump `restart_token` after a top-up.
 8. It only acts on groups in its own ledger.
 
-Reallocations are capped at 3 a group, shared by rules 4 to 6; the next one deletes it. A deleted
-group counts as **released** when it never got going (no PC, or lost it) and **failed** when it mined
-badly (no shares, under cost, port blocked).
+A class has **paid before** if it paid on the first account, or once any group of it here passes a
+profit check. Reallocations are capped at 3 a group, shared by rules 4 to 6; the next one deletes it.
+A deleted group counts as **released** when it never got going (no PC, or lost it) and **failed** when
+it mined badly (no shares, under cost, port blocked). Its deletion event carries the box's last log
+lines, so it says why.
 
 **Spend** counts the group's price for every minute it has a PC (instance downloading, creating or
 running). A group waiting for a PC isn't billed. **PRL mined** adds each `[mining g0]` reading (one a
@@ -79,7 +84,7 @@ Base `https://api.salad.com/api/public/organizations/<org>`, key in the `Salad-A
 - `GET /gpu-classes`: a price for each priority (batch, low, medium, high), CPU and RAM included.
 - `POST /availability/sce-gpu-availability` with the container's resources gives
   `available_gpu_<priority>` counts. They aren't reliable for busy cards.
-- `GET /quotas`: a new org gets 10 replicas.
+- `GET /quotas`: a new org gets 10 replicas. Stopped groups don't count against it.
 - `GET .../containers/<name>` shows `priority` at the top level, but a change goes in
   `container.priority`: `PATCH` with `Content-Type: application/merge-patch+json` and
   `{"container":{"priority":"medium"}}`. Refused while the group is `pending`.
@@ -89,15 +94,20 @@ Base `https://api.salad.com/api/public/organizations/<org>`, key in the `Salad-A
 - `POST /log-entries`: `page_size` must be 1 to 100. A call takes 1 to 10 s and sometimes returns 408 or
   500. A query with `OR` timed out (408), so the watcher reads all container lines in one query and
   pages when a round has more than 100. A query per group made a round take 11 minutes.
+  `log contains "..."` joined by `AND` works (the first account's watcher used
+  `resource.type = "container" AND log contains "[mining g"`).
+- Salad can move an instance to another PC without a gap in `running`, so a new PC shows only as a
+  new `machine_id`.
 
 ## The container
 
-- Image `nvidia/cuda:12.2.2-base-ubuntu22.04`. The 12.8.1 image sat in "preparing" for 45+ min; the
-  miner brings its own CUDA.
+- Image `nvidia/cuda:12.2.2-base-ubuntu22.04`. The 12.8.1 image sat in "preparing" for 45+ min. The
+  PCs run driver 610 and the miner brings its own CUDA runtime, so the image's CUDA doesn't matter.
 - Resources `{"cpu":2,"memory":4096,"storage_amount":10737418240,"gpu_classes":[<id>]}`, 1 replica,
   `restart_policy` `always`, `autostart_policy` true.
 - The command installs curl and runs `tuning/box.sh` at commit `f0369f9`, with the worker name and
-  payout address put in by `sed`. Salad refuses `; curl`, so curl comes after `&&`.
+  payout address put in by `sed`. Salad refuses `; curl` (HTTP 400, no detail), so curl comes after
+  `&&`.
 - box.sh mines with release v0.5.13 and prints `[mining g0] HH:MM:SS <TH/s> TH/s · <n> accepted · ...`
   once a minute. A PC that blocks the pool port prints `[run] FAIL: outbound port 1200 blocked`.
 - Workers are named `biz-<card>` (a second group of a card gets `-2`). The pool shows `<worker>-g0`.
@@ -106,33 +116,49 @@ Base `https://api.salad.com/api/public/organizations/<org>`, key in the `Salad-A
 
 - $/TH-hr = 1e12 × 3600 / (difficulty × 2^48) × reward_grains / 1e8 × PRL price, from
   `api.prlscan.com/v1/blocks?limit=1` and `/v1/market/prl`.
-- One pool unit/s = 419/93644 TH/s; one share = 2^21 units. A 4080 at 199 TH/s finds a share about
-  every 47 s, a 2060 at 40 TH/s about every 4 min.
+- One pool unit/s = 419/93644 TH/s (a 5090's 24-hour pool average against its miner's 419 TH/s); one
+  share = 2^21 units. A 4080 at 199 TH/s finds a share about every 47 s, a 2060 at 40 TH/s about every
+  4 min. One 2060 went 11 min without a share while mining steadily, which is why rule 4 waits 8 gaps:
+  a working miner goes that long without a share about 1 time in 3000.
 
 ## Classes measured on Salad
 
-From the first Salad account (October 2026). TH/s at the priority that worked; margins at PRL
-$1.37–1.40.
+From the first Salad account (personal, Oct 9–10 2026). TH/s is the median of a group's readings at
+the priority that worked; margins at PRL $1.37–1.42.
 
 | Result | Class | Priority, $/hr | TH/s | Margin |
 |---|---|---|---|---|
 | Paid | RTX 2060 | low, 0.030 | 40 | +32% |
 | Paid | RTX 2080 | low, 0.060 | 72 | +25% |
-| Paid | RTX 3080 | low, 0.087 | 105 | +25% |
+| Paid | RTX 3080 | low, 0.087 | 107 | +25% |
 | Paid | RTX 4080 | medium, 0.190 | 199 | +14% |
-| Paid | RTX 5080 | medium, 0.223 | 227 | +11% |
+| Paid | RTX 5080 | medium, 0.223 | 223 | +11% |
 | Thin | RTX 4070 | medium, 0.123 | 89–120 | about +5% |
 | Thin | RTX 4070 Ti | medium, 0.160 | 152 | +5% |
 | Thin | RTX 3090 Ti | medium, 0.160 | 152 | +5% |
 | Thin | RTX 5070 | medium, 0.137 | 115–128 | 0 to +4% |
 | Thin | RTX 3060 Ti | low, 0.047 | 45 | +6% |
+| Lost money | RTX 3080 Ti | low, 0.105 | 70 | under cost |
+| Lost money | RTX 3090 | low, 0.117 | 93–121 | +17% on one PC, under cost on one capped at 262 W |
+| Lost money | RTX 4070 Ti Super | medium, 0.170 | 137 | under cost |
+| No share | RTX 3070 Ti | batch, 0.060 | | |
 
-Didn't work: 3080 Ti (low), 3090 (low) and 4070 Ti Super (medium) earned less than they cost. 3070 Ti
-sent no share. 5060, 5060 Ti, 5070 Ti, 4090 and 5090 got no PC at a price that pays. A 4090 at high
-landed on a 300 W PC.
+5060, 5060 Ti, 5070 Ti, 4090 and 5090 got no PC at a price that pays. A 4090 at high landed on a 300 W
+PC.
 
 Batch rarely gets a PC for 40- and 50-series cards; low works for older cards. The same class varies
-about ±15% between PCs. Salad has AMD classes, but the miner is CUDA-only.
+about ±15% between PCs, because owners cap the card's power. Salad has AMD classes, but the miner is
+CUDA-only.
+
+What went wrong on the first account:
+
+- A 4090 sat 20+ min at low and at medium with about 100 reported free, then got a PC at high in a
+  minute. That's why rule 2 climbs the priorities.
+- A 3090 waited 2 hours at batch for a PC, holding a quota slot.
+- A 4080's PC blocked port 1200 (rule 6). A 4070 Super's PC later couldn't reach github.com to fetch
+  the miner, though it had mined at +44% earlier: when a class that pays stops, the PC is the problem.
+- The credit ran out on Oct 10 at 07:43 UTC. Salad stopped every group at once, and none started again
+  on its own.
 
 v0.5.14 adds an L2 rule worth about +0.5 to 1.7% on power-capped RTX 40 cards. Try it on one group
 (`ver_override`) before switching `box_ver`.

@@ -103,6 +103,12 @@ class TestCommand(Base):
         self.assertEqual(self.http.made("POST", "/containers$")[1][2]["name"], "biz-rtx4080-2")
 
 
+class TestMargin(Base):
+    def test_margin_is_profit_over_earnings(self):
+        earn = 199 * USD_TH_HR
+        self.assertAlmostEqual(self.x.margin("RTX 4080 (16 GB)", "medium"), (earn - 0.19) / earn)
+
+
 class TestRule2NoPc(Base):
     def test_moves_up_after_10_min(self):
         g = self.group(status="deploying")
@@ -117,6 +123,15 @@ class TestRule2NoPc(Base):
         g = self.group(status="pending")
         self.step(g, 15)
         self.assertFalse(self.http.made("PATCH", ""))
+
+    def test_the_10_minutes_start_when_the_image_is_ready(self):
+        g = self.group(status="pending")
+        self.step(g, 15)
+        g["status"] = "deploying"
+        self.step(g, 9)
+        self.assertFalse(self.http.made("PATCH", ""))
+        self.step(g, 2)
+        self.assertTrue(self.http.made("PATCH", ""))
 
     def test_deletes_when_no_higher_priority_clears_10_percent(self):
         g = self.group(pri="medium", status="deploying")  # high is +2% for a 4080
@@ -169,6 +184,35 @@ class TestRule4NoShare(Base):
         self.assertFalse(self.http.made("POST", "/reallocate"))
         self.step(g, 8, "m1")
         self.assertTrue(self.http.made("POST", "/reallocate"))
+
+
+class TestPaidClasses(Base):
+    def test_a_thin_class_that_pays_here_counts_as_paid(self):
+        g = self.group(cls="RTX 4070 (12 GB)", pri="low")  # never paid on the first account
+        self.step(g, 1, "m1")
+        g["mined_min"] = 20
+        g["last_share"] = self.clock[0] + 15 * 60
+        g["readings"] = [[self.clock[0] + i * 60, "m1", 120.0, i] for i in range(12)]  # $0.140/hr > $0.09/hr
+        self.step(g, 12, "m1")
+        self.assertIn("RTX 4070 (12 GB)", self.x.st["paid_classes"])
+        self.assertIn("PAID biz-rtx4070", self.events())
+        self.step(g, 20, "m1")  # then its shares stop: the PC is the problem now, not the class
+        self.assertTrue(self.http.made("POST", "/reallocate"))
+        self.assertIsNone(g["ended"])
+
+
+class TestDeleteReason(Base):
+    def test_a_deletion_carries_the_boxes_last_lines(self):
+        g = self.group(cls="RTX 4070 (12 GB)", pri="low")
+        self.step(g, 1, "m1")
+        lines = ["[run] g0 miner exited 08:30:00 (restart 1): out of memory", "[mining g0] 08:29:00 0.0 TH/s"]
+        self.http.on("POST", "/log-entries", lambda b: (200, {"items": [{"text_log": l} for l in lines]}))
+        self.step(g, 21, "m1")
+        ev = self.events()
+        self.assertIn("DELETED biz-rtx4070", ev)
+        self.assertIn("WHY biz-rtx4070: [mining g0] 08:29:00 0.0 TH/s\n    WHY biz-rtx4070: [run] g0 miner exited", ev)
+        body = self.http.made("POST", "/log-entries")[0][2]
+        self.assertIn('container_group_name = "biz-rtx4070"', body["query"])
 
 
 class TestRule5Profit(Base):

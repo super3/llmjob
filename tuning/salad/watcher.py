@@ -20,10 +20,11 @@ UNIT_TH = 419 / 93644          # TH/s per pool unit/s
 SHARE_UNITS = 2 ** 21
 MIN = 60
 
-# Measured TH/s on Salad and whether the class paid. Thin classes have a rate but never paid.
+# Measured TH/s on Salad (the median of a group's readings) and whether the class paid on the first account.
+# Thin classes have a rate but never paid there; one that pays here counts as paid from then on.
 KNOWN = {
-    "RTX 2060 (6 GB)": (40, True), "RTX 2080 (8 GB)": (72, True), "RTX 3080 (10 GB)": (105, True),
-    "RTX 4080 (16 GB)": (199, True), "RTX 5080 (16 GB)": (227, True),
+    "RTX 2060 (6 GB)": (40, True), "RTX 2080 (8 GB)": (72, True), "RTX 3080 (10 GB)": (107, True),
+    "RTX 4080 (16 GB)": (199, True), "RTX 5080 (16 GB)": (223, True),
     "RTX 4070 (12 GB)": (105, False), "RTX 4070 Ti (12 GB)": (152, False), "RTX 3090 Ti (24 GB)": (152, False),
     "RTX 5070 (12 GB)": (121, False), "RTX 3060 Ti (8 GB)": (45, False),
 }
@@ -142,9 +143,24 @@ class W:
             err(f"gpu-classes failed {s} {j}")
 
     def margin(self, cls, pri, rate=None):
-        rate = rate or KNOWN[cls][0]
-        price = self.st["classes"][cls]["prices"][pri]
-        return (rate * self.st["mkt"]["usd_th_hr"] - price) / price
+        """Profit as a share of earnings, as the first account measured it: (earn - price) / earn."""
+        earn = (rate or KNOWN[cls][0]) * self.st["mkt"]["usd_th_hr"]
+        return (earn - self.st["classes"][cls]["prices"][pri]) / earn if earn > 0 else float("-inf")
+
+    def paid(self, g_or_cls):
+        cls = g_or_cls["class"] if isinstance(g_or_cls, dict) else g_or_cls
+        return KNOWN[cls][1] or cls in self.st.setdefault("paid_classes", [])
+
+    def last_lines(self, g, n=5):
+        """The box's last log lines, so a deletion says why. One query, only when a group is deleted."""
+        t = now()
+        body = {"start_time": iso(t - 2400), "end_time": iso(t), "page_size": 12, "sort_order": "desc",
+                "query": f'resource.type = "container" AND resource.labels.container_group_name = "{g["name"]}"'}
+        s, j = http("POST", f"{BASE}/log-entries", body, timeout=60)
+        if s != 200:
+            return [f"(log query failed: HTTP {s})"]
+        lines = [(it.get("text_log") or "").strip()[:160] for it in (j.get("items") or [])]
+        return [l for l in lines if l][:n][::-1] or ["(no container output)"]
 
     def logs(self, active):
         """One query for every group: all container lines since the last successful query (5 min overlap).
@@ -200,10 +216,12 @@ class W:
 
     # ---------- actions ----------
     def delete(self, g, kind, reason):
+        why = self.last_lines(g) if g["had_pc"] else []
         s, j = http("DELETE", f"{CB}/{g['name']}")
         if 200 <= s < 300 or s == 404:
             g.update(ended=now(), end_kind=kind, end_reason=reason, has_pc=False)
-            event(f"DELETED {g['name']} ({g['class']}, {g['pri']}): {reason} [{'released' if kind == 'released' else 'failed'}]")
+            event(f"DELETED {g['name']} ({g['class']}, {g['pri']}): {reason} [{'released' if kind == 'released' else 'failed'}]"
+                  + "".join(f"\n    WHY {g['name']}: {l}" for l in why))
         else:
             err(f"delete {g['name']} failed {s} {j}")
 
@@ -415,6 +433,7 @@ class W:
             if not g["had_pc"] and t - g["last_start"] > 300:
                 g["last_start"] = t
                 s, j = http("POST", f"{CB}/{g['name']}/start")
+                g["pri_since"] = t
                 event(f"START {g['name']}: it was stopped before getting a PC; POST /start -> HTTP {s}")
             elif g["had_pc"]:
                 st["credits_out"] = True
@@ -442,9 +461,9 @@ class W:
                     g["lost_since"] = t
                 if t - g["lost_since"] >= 20 * MIN:
                     self.delete(g, "released", "lost its PC and got no other in 20 min")
+            elif g["status"] == "pending":
+                g["pri_since"] = t  # preparing the image: not looking for a PC yet, and a priority change is refused
             elif t - g["pri_since"] >= 10 * MIN:
-                if g["status"] == "pending":
-                    return  # Salad refuses a priority change while the image is prepared
                 nxt = next((p for p in PRIS[PRIS.index(g["pri"]) + 1:] if self.margin(g["class"], p) >= 0.10), None)
                 if nxt is None:
                     self.delete(g, "released", f"no PC at {g['pri']} and no higher priority clears 10%")
@@ -464,7 +483,7 @@ class W:
             ref = max(g["pc_since"], g["last_share"] or 0)
             if t - ref >= limit:
                 why = f"no share for {(t - ref) / 60:.0f} min on PC {g['machine'][:8]}"
-                if g["paid"]:
+                if self.paid(g):
                     self.reallocate(g, why)
                 else:
                     self.delete(g, "failed", why)
@@ -482,9 +501,12 @@ class W:
                       f"({g['profit_fail']} in a row)")
             else:
                 g["profit_fail"] = 0
+                if not self.paid(g):
+                    st["paid_classes"].append(g["class"])
+                    event(f"PAID {g['name']}: {g['class']} earns more than it costs here ({avg:.0f} TH/s); it counts as paid now")
             if g["profit_fail"] >= 2:
                 why = f"earned less than cost twice ({avg:.0f} TH/s)"
-                if g["paid"]:
+                if self.paid(g):
                     self.reallocate(g, why)
                 else:
                     self.delete(g, "failed", why)
@@ -499,7 +521,7 @@ class W:
             return
         waiting = {g["class"] for g in active if not g["has_pc"]}
         cands = []
-        for cls, (rate, paid) in KNOWN.items():
+        for cls, (rate, _) in KNOWN.items():
             if cls not in st["classes"] or cls in waiting:
                 continue
             body = {"cpu": 2, "memory": 4096, "storage_amount": 10737418240, "gpu_classes": [st["classes"][cls]["id"]]}
@@ -509,7 +531,7 @@ class W:
             for p in PRIS:
                 if (a.get(f"available_gpu_{p}") or 0) > 0 and self.margin(cls, p) >= 0.10:
                     profit = rate * st["mkt"]["usd_th_hr"] - st["classes"][cls]["prices"][p]
-                    cands.append((not paid, -profit, cls, p))
+                    cands.append((not self.paid(cls), -profit, cls, p))
                     break
         cands.sort()
         made = 0
@@ -535,12 +557,7 @@ class W:
             ths = sum(r[2] for r in cur) / len(cur) if cur else 0.0
             cost = g["price"] if g["has_pc"] else 0.0
             earn = ths * usd
-            if g["status"] == "stopped":
-                state = "⏹️ stopped"
-            elif g["has_pc"]:
-                state = "⛏️ mining" if cur else "⛏️ starting"
-            else:
-                state = "⏳ waiting for a PC"
+            state = "⏹️" if g["status"] == "stopped" else "⛏️" if g["has_pc"] else "⏳"
             if g["has_pc"] and cur:
                 mining += 1
             all_ths += ths; all_cost += cost; all_earn += earn
@@ -548,7 +565,7 @@ class W:
             host = g["name"] + (f" · PC {g['machine'][:8]}" if g["machine"] else "")
             short = g["class"].split(" (")[0]
             rows.append(f"| ⚡ {short} ×1 (Salad, {g['pri']}) | {host} | {state} | {ths:.0f} | {cost:.3f} | "
-                        f"{earn - cost:+.3f} | {pct(earn - cost, cost)} | {g['prl']:.3f} | {prof:+.2f} |")
+                        f"{earn - cost:+.3f} | {pct(earn - cost, earn)} | {g['prl']:.3f} | {prof:+.2f} |")
         if ended:
             rel = sum(1 for g in ended if g["end_kind"] == "released")
             fail = len(ended) - rel
@@ -559,15 +576,16 @@ class W:
         spend = sum(g["spend"] for g in st["groups"].values())
         prl = sum(g["prl"] for g in st["groups"].values())
         rows.append(f"| **All** | {mining} GPU{'s' if mining != 1 else ''} mining | | **{all_ths:.0f}** | **{all_cost:.3f}** | "
-                    f"**{all_earn - all_cost:+.3f}** | **{pct(all_earn - all_cost, all_cost)}** | **{prl:.3f}** | "
+                    f"**{all_earn - all_cost:+.3f}** | **{pct(all_earn - all_cost, all_earn)}** | **{prl:.3f}** | "
                     f"**{prl * price - spend:+.2f}** |")
         credit = self.cfg["credit_start"] + self.cfg["credit_offset"] - spend
         hours = credit / all_cost if all_cost > 0 else None
         lines = [f"PRL ${price:.3f} · ${usd:.6f}/TH-hr · {iso(t)}", "",
                  "| Box | Machine / host | State | TH/s | $/hr | Profit/hr | Margin | PRL | Profit $ |",
                  "|---|---|---|---|---|---|---|---|---|", *rows, "",
-                 "TH/s is the miner's average over the last 10 min on its current PC. $/hr is what Salad bills while a "
-                 "group has a PC (a waiting group costs nothing). Profit $ is PRL mined at today's price minus spend.", "",
+                 "⛏️ on a PC · ⏳ waiting for a PC · ⏹️ stopped. TH/s is the miner's average over the last 10 min on its "
+                 "current PC (0 while it starts). $/hr is what Salad bills while a group has a PC (a waiting group costs "
+                 "nothing). Profit $ is PRL mined at today's price minus spend.", "",
                  f"- Spent ${spend:.2f}; mined {prl:.3f} PRL.",
                  (f"- Each PRL cost ${spend / prl:.3f} to mine (break-even sale price); it's worth ${price:.3f} today."
                   if prl > 0 else "- No PRL mined yet, so no cost per PRL."),
