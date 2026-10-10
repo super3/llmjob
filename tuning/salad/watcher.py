@@ -152,37 +152,46 @@ class W:
         return KNOWN[cls][1] or cls in self.st.setdefault("paid_classes", [])
 
     def last_lines(self, g, n=5):
-        """The box's last log lines, so a deletion says why. One query, only when a group is deleted."""
+        """The box's last log lines, so a deletion says why. Only when a group is deleted."""
         t = now()
-        body = {"start_time": iso(t - 2400), "end_time": iso(t), "page_size": 12, "sort_order": "desc",
-                "query": f'resource.type = "container" AND resource.labels.container_group_name = "{g["name"]}"'}
-        s, j = http("POST", f"{BASE}/log-entries", body, timeout=60)
+        items = self.read_logs(t - 2400, t, f'resource.type = "container" AND '
+                                             f'resource.labels.container_group_name = "{g["name"]}"')
+        if items is None:
+            return ["(log query failed)"]
+        items.sort(key=lambda it: it.get("time") or "")
+        lines = [(it.get("text_log") or "").strip()[:160] for it in items]
+        return [l for l in lines if l][-n:] or ["(no container output)"]
+
+    def read_logs(self, start, end, query, depth=0):
+        """Every log line in [start, end]. Salad returns at most 100 a call, and when more match, which 100
+        it returns isn't reliably the newest or the oldest, whatever sort_order says. So a window that comes
+        back full is split in half and each half read again. None if a call fails."""
+        body = {"start_time": iso(start), "end_time": iso(end), "query": query, "page_size": 100, "sort_order": "asc"}
+        s, j = http("POST", f"{BASE}/log-entries", body, timeout=90)
         if s != 200:
-            return [f"(log query failed: HTTP {s})"]
-        lines = [(it.get("text_log") or "").strip()[:160] for it in (j.get("items") or [])]
-        return [l for l in lines if l][:n][::-1] or ["(no container output)"]
+            err(f"log-entries failed {s} {str(j)[:200]}")
+            return None
+        items = j.get("items") or []
+        if len(items) < 100:
+            return items
+        if depth >= 5 or end - start < 2:
+            err(f"log-entries: {iso(start)}..{iso(end)} still has 100+ lines after {depth} splits; some may be missed")
+            return items
+        mid = start + (end - start) / 2
+        a = self.read_logs(start, mid, query, depth + 1)
+        b = self.read_logs(mid, end, query, depth + 1) if a is not None else None
+        return None if b is None else a + b
 
     def logs(self, active):
-        """One query for every group: all container lines since the last successful query (5 min overlap).
-        Salad returns at most 100 lines a page, so a busy round reads up to 5 pages, oldest first."""
+        """One query for every group: all container lines since the last successful read (2 min overlap).
+        A busy window is split (see read_logs); a failed read is tried again next round, up to 30 min back."""
         st = self.st
         t = now()
-        start = max(min(g["created"] for g in active) - 60, (st["last_log_end"] or 0) - 300, t - 1800)
-        items = []
-        for page in range(5):
-            body = {"start_time": iso(start), "end_time": iso(t), "query": 'resource.type = "container"',
-                    "page_size": 100, "sort_order": "asc"}
-            s, j = http("POST", f"{BASE}/log-entries", body, timeout=90)
-            if s != 200:
-                err(f"log-entries failed {s} {str(j)[:200]}")
-                break
-            got = j.get("items") or []
-            items += got
-            if len(got) < 100:
-                st["last_log_end"] = t
-                break
-            start = parse_iso(got[-1]["time"])   # the next page starts at this page's last line
-            st["last_log_end"] = start
+        start = max(min(g["created"] for g in active) - 60, (st["last_log_end"] or 0) - 120, t - 1800)
+        items = self.read_logs(start, t, 'resource.type = "container"')
+        if items is None:
+            return []
+        st["last_log_end"] = t
         out = []
         seen = st["seen"]
         for it in items:
