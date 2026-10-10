@@ -7,7 +7,7 @@ directory:
 
 - `state.json`: the ledger (every group it created, spend, PRL mined, shares, readings).
 - `events.log`: one line per action or notable change (created, got a PC, first share, reallocated,
-  deleted, alerts) plus a `REPORT` line every 15 minutes.
+  deleted, alerts) plus a `REPORT` line every `report_min` minutes (10 by default).
 - `report.md`: the status table.
 
 `keeper.sh` restarts the watcher if it stops. `config.json` in the data directory is re-read every round.
@@ -36,6 +36,7 @@ Config keys:
 | `credit_start`, `credit_offset` | Credit left = start + offset − spend. Set the offset when the portal shows a different balance. |
 | `box_ver` | Miner release for new groups. `ver_override` maps a group name to a release, to try one on a single group. |
 | `wallet` | Payout address, if `PRL_WALLET` isn't set. |
+| `report_min` | Minutes between `REPORT` lines. |
 
 Tests: `python3 -m unittest discover -s tuning/salad`. They fake Salad, the pool and the clock.
 

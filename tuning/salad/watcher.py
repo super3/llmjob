@@ -29,7 +29,7 @@ KNOWN = {
     "RTX 5070 (12 GB)": (121, False), "RTX 3060 Ti (8 GB)": (45, False),
 }
 DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_token": 0,
-               "credit_start": 100.0, "credit_offset": 0.0, "box_ver": "v0.5.13", "ver_override": {},
+               "credit_start": 100.0, "credit_offset": 0.0, "box_ver": "v0.5.13", "ver_override": {}, "report_min": 10,
                "wallet": os.environ.get("PRL_WALLET", "")}
 
 
@@ -418,9 +418,9 @@ class W:
             st["search_hour"], st["search_token"] = hour, self.cfg["search_token"]
             self.search()
 
-        # Credit warning and 15-minute report tick.
+        # Credit warning and the report tick, every report_min minutes.
         self.write_report()
-        q = int(t // 900)
+        q = int(t // (60 * self.cfg["report_min"]))
         if st["last_report_q"] != q:
             st["last_report_q"] = q
             event("REPORT")
