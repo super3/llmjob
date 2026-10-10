@@ -152,3 +152,7 @@ earn/native/cuda-build/
 earn/native/node_modules/
 # compare-miners.sh output
 earn/native/probes/compare-*/
+
+# Salad mining watcher data (ledger, events, report)
+tuning/salad/run/
+tuning/salad/__pycache__/
