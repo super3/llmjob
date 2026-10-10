@@ -3403,6 +3403,14 @@ describe('closing the window on Windows', () => {
     expect(loadMain().electron.app.setAppUserModelId).not.toHaveBeenCalled();
   });
 
+  // electron-builder makes the description the exe's FileDescription, which
+  // Windows shows as the app's name, in the firewall prompt and in Task
+  // Manager. A sentence there filled the whole prompt.
+  it('gives the exe a name for a description, not a sentence', () => {
+    const pkg = require('../package.json');
+    expect(pkg.description).toBe(pkg.build.productName);
+  });
+
   it('the tray notice is tried once a run, and saved as shown only when it shows', async () => {
     const ctx = await boot({ platform: 'win32' });
     const w = ctx.win();
