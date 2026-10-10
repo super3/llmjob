@@ -25,7 +25,7 @@ const gpuClocks = require('./gpuClocks');
 // Emits, for the app to relay to the renderer exactly like MinerManager does:
 //   started        { pool, wallet, worker }
 //   log            { level, line }
-//   authorized     {}
+//   authorized     { host, address, family }  (the pool's address that took the login)
 //   job            { jobId, height }
 //   share          { jobId, accepted:true }        (pool confirmed)
 //   rejected       { jobId, reason }
@@ -91,6 +91,10 @@ class PearlMiner extends EventEmitter {
     this.hashrates = new Map();   // card index -> its latest TH/s
     this.running = false;
     this.authorized = false;
+    // When a connection the pool had accepted closed, until the next login. The
+    // engine lets a routine reconnect pass without telling the board (see
+    // PearlEngine.poolConnected).
+    this.lostAt = null;
     this.job = null;          // the current parsed job the core is searching
     this.buf = '';            // partial-line accumulator for the socket
     this.submitId = 100;      // submit request ids start clear of the authorize id (1)
@@ -380,6 +384,7 @@ class PearlMiner extends EventEmitter {
       return;
     }
     this.sock = sock;
+    this.poolHost = host;
 
     sock.on('connect', () => {
       this.emit('log', { level: 'info', line: 'connecting to ' + host + ':' + port + ' · worker ' + worker });
@@ -414,7 +419,12 @@ class PearlMiner extends EventEmitter {
     switch (m.kind) {
       case 'auth-ok':
         this.authorized = true;
-        this.emit('authorized', {});
+        this.lostAt = null;
+        // The address this socket reached, which the pool lookup saves as one
+        // that worked (see shared/poolLookup). The reply came in on this.sock.
+        this.emit('authorized', {
+          host: this.poolHost, address: this.sock.remoteAddress, family: this.sock.remoteFamily,
+        });
         this.emit('log', { level: 'info', line: 'authorized' });
         break;
       case 'auth-fail':
@@ -663,6 +673,7 @@ class PearlMiner extends EventEmitter {
   }
 
   _onClose(host, port, wallet, worker) {
+    if (this.authorized) this.lostAt = Date.now();
     this.authorized = false;
     if (!this.running) return;
     // The core keeps its current job loaded across a reconnect, so a brief pool

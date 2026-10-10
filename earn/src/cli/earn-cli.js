@@ -17,6 +17,7 @@ const { parseCliArgs, USAGE } = require('../shared/cliArgs');
 const selfUpdater = require('./selfUpdater');
 const { planUpdate } = require('../shared/selfUpdate');
 const net = require('net');
+const dns = require('dns');
 const { PearlEngine } = require('../main/pearlEngine');
 const { coreFactory } = require('../main/pearlCore');
 const { LlmManager } = require('../main/llmManager');
@@ -27,7 +28,8 @@ const {
 } = require('../main/probe');
 const probe = require('../main/probe');
 const nodeStore = require('../main/nodeStore');
-const { initStats, applyEvent, snapshot, createRateMeter, meterSample, meterRead } = require('../shared/miningStats');
+const { initStats, applyEvent, snapshot, offPool, createRateMeter, meterSample, meterRead } = require('../shared/miningStats');
+const { makePoolLookup, fileCache } = require('../shared/poolLookup');
 const { NETWORK, LLM, NODE, REGIONS, resolveEndpoint, regionLabel } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
 const nodeProto = require('../shared/node');
@@ -182,12 +184,33 @@ function llmDir(settings) {
   return settings.llmDir || path.join(os.homedir(), '.local', 'share', 'llmjob-earn', 'llm');
 }
 
+// Download progress. In the foreground it redraws one line. Beside a running
+// miner, whose own line goes out every second, it logs a line per 10% instead,
+// so the two don't write over each other.
+function downloadProgress(label, background) {
+  if (!background) {
+    return {
+      onPct: (pct) => { if (pct != null) process.stdout.write('\r  ' + label + ' ' + pct + '%   '); },
+      done: () => process.stdout.write('\n'),
+    };
+  }
+  let last = -1;
+  return {
+    onPct: (pct) => {
+      if (pct == null) return;
+      const step = Math.floor(pct / 10) * 10;
+      if (step > last) { last = step; log(label + ' ' + step + '%'); }
+    },
+    done: () => {},
+  };
+}
+
 // Resolve the llama-server binary for the local LLM. An explicit --llm-binary
 // wins; otherwise fall back to a previously installed one in the cache dir, and
 // only then download the llama.cpp release and unpack it (io.extractLlamaZip:
 // tar for Linux's .tar.gz). If that fails, the error names the tool that failed
 // and points at --llm-binary as the escape hatch.
-async function resolveLlmBinary(settings, dir) {
+async function resolveLlmBinary(settings, dir, background) {
   if (settings.llmBinary) {
     if (!fs.existsSync(settings.llmBinary)) {
       throw new Error('llama-server binary not found: ' + settings.llmBinary);
@@ -204,14 +227,13 @@ async function resolveLlmBinary(settings, dir) {
     return engine.serverBinaryPath();
   }
   log('downloading llama-server from ' + serverUrl + ' …');
+  const progress = downloadProgress('downloading…', background);
   try {
-    return await engine.ensureServer((pct) => {
-      if (pct != null) process.stdout.write('\r  downloading… ' + pct + '%   ');
-    });
+    return await engine.ensureServer(progress.onPct);
   } catch (e) {
     throw new Error(e.message + ' — pass --llm-binary </path/to/llama-server> instead');
   } finally {
-    process.stdout.write('\n');
+    progress.done();
   }
 }
 
@@ -221,7 +243,7 @@ async function resolveLlmBinary(settings, dir) {
 // `model` is the tier the caller chose (shared/models.pickModel); it is always
 // passed, so there is deliberately no `|| LLM.model` default here — a silent
 // fallback would be indistinguishable from the selection failing.
-async function resolveLlmModel(settings, dir, model) {
+async function resolveLlmModel(settings, dir, model, background) {
   const m = model;
   // An explicit --llm-model is the operator's own file: we cannot know whether
   // it ships a projector, so it is served exactly as given, text-only.
@@ -238,10 +260,9 @@ async function resolveLlmModel(settings, dir, model) {
     log('LLM model found: ' + modelPath);
   } else {
     log('downloading LLM model (' + m.name + ') …');
-    modelPath = await engine.ensureModel((pct) => {
-      if (pct != null) process.stdout.write('\r  downloading model… ' + pct + '%   ');
-    }, m);
-    process.stdout.write('\n');
+    const progress = downloadProgress('downloading model…', background);
+    modelPath = await engine.ensureModel(progress.onPct, m);
+    progress.done();
   }
   // The vision projector, for a model that ships one. Separate from the weights
   // so a node that already has 17 GB on disk can pick up a ~1 GB projector
@@ -249,10 +270,9 @@ async function resolveLlmModel(settings, dir, model) {
   let mmprojPath = null;
   if (!engine.isMmprojInstalled(m)) {
     log('downloading vision projector …');
-    mmprojPath = await engine.ensureMmproj((pct) => {
-      if (pct != null) process.stdout.write('\r  downloading projector… ' + pct + '%   ');
-    }, m);
-    process.stdout.write('\n');
+    const progress = downloadProgress('downloading projector…', background);
+    mmprojPath = await engine.ensureMmproj(progress.onPct, m);
+    progress.done();
   } else {
     mmprojPath = engine.mmprojPath(m);
   }
@@ -451,8 +471,14 @@ function makeCliJobWorker(nodeCfg, base, baseUrl, gate) {
 // and a fleet arming its own on every wake would double-poll, race for the same
 // jobs, and leak a ping timer per cycle.
 async function startLlm(settings, reserveMb, modelOverride, armServe = true) {
-  const dir = llmDir(settings);
+  const planned = await planLlm(settings, reserveMb, modelOverride);
+  return planned ? launchLlm(settings, planned, armServe) : null;
+}
 
+// The VRAM half of startLlm: which model, on which cards. Reads the cards and
+// downloads nothing, so co-running auto can make this call before the miner
+// claims its share of the card and leave the slow half for later.
+async function planLlm(settings, reserveMb, modelOverride) {
   // Plan one llama-server per eligible GPU before doing anything expensive
   // (downloading a ~5 GB model). Each instance runs --split-mode none and is
   // pinned to its card (--main-gpu), so the per-card free VRAM is what sizes and
@@ -488,13 +514,22 @@ async function startLlm(settings, reserveMb, modelOverride, armServe = true) {
       + ' MB for ' + model.name + ' — skipping the LLM.', process.stderr);
     return null;
   }
+  return { model, plan };
+}
 
+// The slow half: fetch llama-server and the model if they aren't cached yet,
+// then spawn one server per planned card. `background` is set when the miner is
+// already running beside it (co-running auto), which only changes how download
+// progress is printed.
+async function launchLlm(settings, planned, armServe, background) {
+  const dir = llmDir(settings);
+  const { model, plan } = planned;
   log('preparing local LLM (' + model.name + ') …');
 
   let binaryPath, modelPath, mmprojPath = null;
   try {
-    binaryPath = await resolveLlmBinary(settings, dir);
-    ({ modelPath, mmprojPath } = await resolveLlmModel(settings, dir, model));
+    binaryPath = await resolveLlmBinary(settings, dir, background);
+    ({ modelPath, mmprojPath } = await resolveLlmModel(settings, dir, model, background));
   } catch (e) {
     log('LLM setup failed: ' + e.message, process.stderr);
     return null;
@@ -560,6 +595,21 @@ async function startLlm(settings, reserveMb, modelOverride, armServe = true) {
   const gpus = plan.map((p) => (p.index == null ? 'auto' : p.index)).join(', ');
   log('local LLM starting on ' + plan.length + ' GPU' + (plan.length === 1 ? '' : 's') + ' [' + gpus + ']');
   return fleet;
+}
+
+// Demand mode's model, fetched while the miner runs. Without this the first
+// request stopped the miner and then downloaded the model (about 30 GB for the
+// 5090 tier) with the card idle. Never throws: a failed download is logged and
+// the wake tries again, as it always has.
+async function prefetchLlm(settings, model) {
+  const dir = llmDir(settings);
+  try {
+    await resolveLlmBinary(settings, dir, true);
+    await resolveLlmModel(settings, dir, model, true);
+    log('auto:       ' + model.name + ' is on disk; a request now waits only for it to load');
+  } catch (e) {
+    log('LLM download failed: ' + e.message + ' — it will be tried again when a request arrives', process.stderr);
+  }
 }
 
 // Wait for the GPU to actually report `needMb` free.
@@ -825,8 +875,16 @@ async function run(argv) {
       log('continuing with the local LLM only.', process.stderr);
     }
     if (createCore) {
+      // The pool's name resolves through fallbacks when the system lookup fails
+      // (see shared/poolLookup), with the last good addresses kept beside the
+      // node identity, shared with the desktop app.
+      const lookup = makePoolLookup({
+        dns,
+        cache: fileCache(path.join(path.dirname(nodeStore.nodePath()), 'pool-addresses.json'), fs, path),
+        log: (line) => log(line),
+      });
       miner = new PearlEngine({
-        connect: (host, port) => net.connect(port, host),
+        connect: (host, port) => net.connect({ port, host, lookup }),
         createCore,
         // Without this the engine never polls for a card temperature, so every
         // headless rig reported temp 0 -- to the stats file, to the miner report,
@@ -834,6 +892,8 @@ async function run(argv) {
         // omitting it here was an oversight, not a decision.
         readTemps: () => probe.detectGpuTemps(),
       });
+      // The pool took the login, so this address is one that worked.
+      miner.on('authorized', (e) => lookup.worked(e.host, e.address, e.family));
     }
     if (miner) {
     miner.on('log', (l) => log(l.line, l.level === 'error' ? process.stderr : process.stdout));
@@ -873,7 +933,10 @@ async function run(argv) {
       // hashrate evenly, so a card turned off in HiveOS would show as mining.
       const miningCards = new Set(settings.gpus.map((g) => g.index));
       const report = async () => {
-        const snap = snapshot(stats, Date.now());
+        // No hashrate on the board while the pool connection is down: the pool is
+        // getting none, and the board should agree with it.
+        const live = snapshot(stats, Date.now());
+        const snap = miner && !miner.poolConnected() ? offPool(live) : live;
         const allVram = await detectGpusVram();
         const gpuVram = gpuPick ? allVram.filter((v) => miningCards.has(Number(v.index))) : allVram;
         // Tag the cards serving the local LLM so the board shows which model each
@@ -971,8 +1034,16 @@ async function run(argv) {
 
   // Keep a mining reserve free only when co-running with the miner. In demand
   // mode nothing is co-resident, so the model is sized against the whole card.
+  //
+  // Co-running with a miner, only the VRAM plan is made here, while the card is
+  // still empty -- the same reading and the same reserve as before. Fetching the
+  // model and starting llama-server wait until the miner is running (startCoRun,
+  // below), so a first run's multi-GB download no longer costs any mining time.
+  // With no miner the LLM is all there is, and it starts now as it always has.
+  let coRun = null;
   if (plan.llm && !demand) {
-    llm = await startLlm(settings, plan.miner ? LLM.miningReserveMb : 0);
+    if (miner) coRun = await planLlm(settings, LLM.miningReserveMb);
+    else llm = await startLlm(settings, plan.miner ? LLM.miningReserveMb : 0);
   }
 
   // Nothing to run (e.g. the LLM failed to set up and there's no miner): exit
@@ -1037,19 +1108,36 @@ async function run(argv) {
     // Restart=on-failure supervisor never restarts the node. A deliberate stop
     // goes through fleet.stop(), which suppresses the fleet's 'stopped' event —
     // so reaching here always means the whole fleet died on its own.
-    if (llm) {
-      llm.on('stopped', (code) => {
+    const watchLlm = (fleet) => {
+      fleet.on('stopped', (code) => {
         // Keep `model`: the run is over but the last telemetry ping should still
         // name what this node was serving, and fullTelemetry dereferences it.
         // No demand-mode guard needed here either: this handler is only
-        // registered when the LLM was started up front, which demand mode
-        // never does.
+        // registered for an LLM started up front or beside the miner, which
+        // demand mode never does.
         serveLlmState = { ready: false, tps: 0, model: serveLlmState.model };
         stopServe();
         log('local LLM exited (code ' + code + ')', process.stderr);
         if (!miner) finish(code || 1);
       });
-    }
+    };
+    if (llm) watchLlm(llm);
+
+    // Co-running auto: the miner is already running; fetch and start the LLM
+    // beside it. A setup failure is logged inside launchLlm and mining carries
+    // on, as it did when the LLM started first. A run that ended while the model
+    // was downloading must not leave a server behind.
+    const startCoRun = async () => {
+      const fleet = await launchLlm(settings, coRun, true, true);
+      if (!fleet) return;
+      if (settled || stopping) { fleet.stop(); stopServe(); return; }
+      llm = fleet;
+      watchLlm(fleet);
+    };
+    // Demand mode's model, fetched while mining (prefetchLlm). The gate waits on
+    // it BEFORE stopping the miner, so a request that arrives mid-download keeps
+    // the card mining until the files are there.
+    let prefetch = null;
 
     // Stood up BEFORE the miner starts, not after: a fatal start calls finish(),
     // and finish() closes the gate. Created afterwards it would bind the public
@@ -1060,6 +1148,7 @@ async function run(argv) {
     if (demand && miner) {
       auto = createAutoGate({
         miner,
+        prepareLlm: () => prefetch,
         startMinerArgs: () => Object.assign({}, settings, { endpoint: resolveEndpoint(settings) }),
         isLlmReady: () => !!(llm && llm.readyCount && llm.readyCount() > 0),
         // Returns the fleet; the gate owns waiting for it to answer.
@@ -1246,14 +1335,21 @@ async function run(argv) {
         // Left unchecked the process simply ran out of work and exited 0 -- which
         // under Restart=always is a ten-second restart loop that mines nothing and
         // looks healthy to systemd. Exit non-zero so a supervisor can see it.
+        // No LLM to stop on either failure: a co-running one starts only once the
+        // miner has, and demand mode loads one only on request.
         if (miner.start(Object.assign({}, settings, { endpoint: resolveEndpoint(settings) })) === false) {
           log('engine failed to start — see the error above', process.stderr);
-          if (llm) llm.stop();
           finish(1);
+        } else if (coRun) {
+          // Not awaited, so nothing may escape it: an unhandled rejection would
+          // end the process, miner and all. Setting up the node's identity can
+          // throw (it writes a key file), which launchLlm doesn't catch.
+          startCoRun().catch((e) => log('LLM start failed: ' + e.message + ' — mining carries on', process.stderr));
+        } else if (demand) {
+          prefetch = prefetchLlm(settings, autoPlan.model);
         }
       } catch (e) {
         log('failed to launch engine: ' + e.message, process.stderr);
-        if (llm) llm.stop();
         finish(1);
       }
     }

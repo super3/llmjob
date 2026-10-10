@@ -1,5 +1,7 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
 const {
   CU12, CU13, FILES, MIN_DRIVER_CU13, cu13HasCodeFor, cu13AutoSelectsFor,
   parseCudaCards, pickCoreVariant, isRuntimeError,
@@ -16,6 +18,7 @@ const RTX2080TI = (index, drv) => card(index, '7.5', drv == null ? 610 : drv);
 const RTX3090 = (index, drv) => card(index, '8.6', drv == null ? 610 : drv);
 const A100 = (index, drv) => card(index, '8.0', drv == null ? 610 : drv);
 const H100 = (index, drv) => card(index, '9.0', drv == null ? 610 : drv);
+const B200 = (index, drv) => card(index, '10.0', drv == null ? 610 : drv);
 
 describe('core file names', () => {
   // These are the release asset names too: the self-updater and the workflows
@@ -56,6 +59,54 @@ describe('cu13HasCodeFor / cu13AutoSelectsFor', () => {
     expect(cu13HasCodeFor(H100(0))).toBe(false);
     expect(cu13AutoSelectsFor(H100(0))).toBe(false);
   });
+
+  // 10.0 is data-center Blackwell (B200). It is Blackwell, but its sm_100
+  // code is in the 12.8 build only, so it must not be taken for compute 12.x.
+  test('B200 has no code', () => {
+    expect(cu13HasCodeFor(B200(0))).toBe(false);
+    expect(cu13AutoSelectsFor(B200(0))).toBe(false);
+  });
+});
+
+// What each core is compiled for, read from the workflow that builds both
+// (native-core.yml, its matrix's gencode lists), so the loader's choice cannot
+// drift from them. The binary carries SASS only, no PTX: a card whose
+// architecture is not on a core's list cannot run that core at all.
+describe('the gencode lists the two cores are built from', () => {
+  const wf = fs.readFileSync(
+    path.join(__dirname, '..', '..', '.github', 'workflows', 'native-core.yml'), 'utf8');
+  const matrix = wf.slice(wf.indexOf('include:'), wf.indexOf('\n    steps:'));
+  const entries = matrix.split(/\n(?=\s+- os: )/).slice(1).map((block) => ({
+    variant: (/variant: '([^']*)'/.exec(block) || [])[1],
+    codes: [...block.matchAll(/^\s*-gencode arch=compute_\w+,code=(sm_\w+)\s*$/gm)]
+      .map((m) => m[1]),
+  }));
+  const of = (variant) => entries.filter((e) => e.variant === variant);
+  // One card of each architecture the app mines on, and the code it runs.
+  const fleet = [
+    [RTX2080TI(0), 'sm_75'], [A100(0), 'sm_80'], [RTX3090(0), 'sm_86'],
+    [RTX4090(0), 'sm_89'], [H100(0), 'sm_90a'], [B200(0), 'sm_100'], [RTX5090(0), 'sm_120'],
+  ];
+
+  test('has the two 12.8 entries and the two CUDA 13 entries', () => {
+    expect(of('')).toHaveLength(2);
+    expect(of('-cu13')).toHaveLength(2);
+  });
+
+  // The 12.8 build is what every card falls back to, so it has code for all
+  // of them; a B200 (compute 10.0) is one it always gets.
+  test('the 12.8 build has code for every card, sm_100 included', () => {
+    for (const e of of('')) {
+      for (const [, sm] of fleet) expect(e.codes).toContain(sm);
+    }
+  });
+
+  test('cu13HasCodeFor says what the CUDA 13 build was compiled for', () => {
+    for (const e of of('-cu13')) {
+      expect(e.codes).not.toContain('sm_100');
+      for (const [c, sm] of fleet) expect([sm, cu13HasCodeFor(c)]).toEqual([sm, e.codes.includes(sm)]);
+    }
+  });
 });
 
 describe('parseCudaCards', () => {
@@ -69,6 +120,13 @@ describe('parseCudaCards', () => {
   test('reads a Turing card (compute 7.5)', () => {
     expect(parseCudaCards('0, 7.5, 575.57.08')).toEqual([
       { index: 0, major: 7, minor: 5, driverMajor: 575 },
+    ]);
+  });
+
+  // Two digits of major: a B200 is 10.0, not 1.0 or 0.0.
+  test('reads a B200 (compute 10.0)', () => {
+    expect(parseCudaCards('0, 10.0, 580.95.05')).toEqual([
+      { index: 0, major: 10, minor: 0, driverMajor: 580 },
     ]);
   });
 
@@ -144,6 +202,30 @@ describe('pickCoreVariant', () => {
     expect(pickCoreVariant({ env: {}, cards: [H100(0, 580)], gpus: [] })).toEqual({
       variant: CU12, reason: 'GPU 0 is compute 9.0 (the CUDA 13 build has no code for it)',
     });
+  });
+
+  // A B200 (compute 10.0) has sm_100 code in the 12.8 build only, so it loads
+  // that build on every driver, including the 580+ ones that would put a 5090
+  // on the CUDA 13 build.
+  test('a B200 rig keeps the 12.8 build: the CUDA 13 one has no code for it', () => {
+    expect(pickCoreVariant({ env: {}, cards: [B200(0)], gpus: [{ index: 0 }] })).toEqual({
+      variant: CU12, reason: 'GPU 0 is compute 10.0 (the CUDA 13 build has no code for it)',
+    });
+    expect(pickCoreVariant({ env: {}, cards: [B200(0, 580), B200(1, 580)], gpus: [] })).toEqual({
+      variant: CU12, reason: 'GPU 0 is compute 10.0 (the CUDA 13 build has no code for it)',
+    });
+    expect(pickCoreVariant({ env: {}, cards: [B200(0, 575)], gpus: [{ index: 0 }] })).toEqual({
+      variant: CU12, reason: 'driver 575 (the CUDA 13 build needs 580+)',
+    });
+  });
+
+  // One B200 beside a 5090 decides for the rig, as any card without code does.
+  test('a 5090 + B200 rig keeps the 12.8 build', () => {
+    const out = pickCoreVariant({
+      env: {}, cards: [RTX5090(0), B200(1)], gpus: [{ index: 0 }, { index: 1 }],
+    });
+    expect(out.variant).toBe(CU12);
+    expect(out.reason).toBe('GPU 1 is compute 10.0 (the CUDA 13 build has no code for it)');
   });
 
   // Turing's code is in the 12.8 build only (sm_75); the CUDA 13 one is sm_120.

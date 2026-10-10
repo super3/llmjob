@@ -14,6 +14,7 @@ const fs = require('fs');
 const tls = require('tls');
 const { execFile } = require('child_process');
 const { EventEmitter } = require('events');
+const path = require('path');
 const io = require('../src/main/io');
 
 // A fake IncomingMessage.
@@ -246,6 +247,96 @@ describe('downloadFile', () => {
     // Both still land at the real destination — last writer wins, nobody errors.
     expect(fs.renameSync).toHaveBeenCalledWith(first, '/tmp/llama-download.archive');
     expect(fs.renameSync).toHaveBeenCalledWith(second, '/tmp/llama-download.archive');
+  });
+
+  // A run killed mid-download leaves its scratch file, named for its pid, and a
+  // model's is several GB. A CLI that systemd restarted a few times during a
+  // download kept every one of them. The next download of the same file deletes
+  // those of processes that are gone, and leaves a live one's alone.
+  it('deletes the scratch files of dead processes before it starts', async () => {
+    const res = fakeRes({ statusCode: 200, headers: {} });
+    wire(https, [res]);
+    const out = fakeWrite();
+    fs.createWriteStream.mockReturnValue(out);
+    fs.renameSync.mockImplementation(() => {});
+    fs.readdirSync.mockReturnValueOnce([
+      'f.bin.111.1.part', 'f.bin.222.4.part', 'f.bin.333.2.part', 'f.bin.' + process.pid + '.9.part',
+      'f.bin', 'g.bin.111.1.part', 'f.bin.x.1.part',
+    ]);
+    const kill = jest.spyOn(process, 'kill').mockImplementation((pid) => {
+      if (pid === 111) throw Object.assign(new Error('no such process'), { code: 'ESRCH' });
+      if (pid === 333) throw Object.assign(new Error('not yours'), { code: 'EPERM' });
+      return true;
+    });
+    fs.unlinkSync.mockImplementation((p) => {
+      if (p.endsWith('222.4.part')) throw new Error('should not be deleted');
+    });
+    try {
+      const p = io.downloadFile('https://host/f.bin', '/tmp/f.bin');
+      expect(fs.readdirSync).toHaveBeenCalledWith('/tmp');
+      expect(fs.unlinkSync.mock.calls.map((c) => c[0])).toEqual([path.join('/tmp', 'f.bin.111.1.part')]);
+      expect(kill).not.toHaveBeenCalledWith(process.pid, 0);
+      out.emit('finish');
+      await p;
+    } finally {
+      kill.mockRestore();
+      fs.unlinkSync.mockReset();
+    }
+  });
+
+  it('carries on when the folder cannot be read, or a stale file cannot be deleted', async () => {
+    fs.readdirSync.mockImplementationOnce(() => { throw new Error('EACCES'); });
+    fs.createWriteStream.mockReturnValue(fakeWrite());
+    wire(https, [fakeRes({ statusCode: 200, headers: {} })]);
+    io.downloadFile('https://host/f.bin', '/tmp/f.bin');
+    expect(fs.createWriteStream).toHaveBeenCalled();
+
+    fs.readdirSync.mockReturnValueOnce(['f.bin.111.1.part']);
+    const kill = jest.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('gone'), { code: 'ESRCH' });
+    });
+    fs.unlinkSync.mockImplementationOnce(() => { throw new Error('EBUSY'); });
+    try {
+      wire(https, [fakeRes({ statusCode: 200, headers: {} })]);
+      io.downloadFile('https://host/f.bin', '/tmp/f.bin');
+      expect(fs.createWriteStream).toHaveBeenCalledTimes(2);
+    } finally {
+      kill.mockRestore();
+    }
+  });
+
+  // The CLI exits when its miner dies, for systemd to restart it. A download
+  // still running then would leave its scratch file behind.
+  it('deletes the scratch files of downloads still running when the process exits', async () => {
+    let exit;
+    let fsi;
+    let parts;
+    // A fresh io, so its exit handler is set up by this test's downloads.
+    jest.isolateModules(() => {
+      fsi = require('fs');
+      const httpsi = require('https');
+      const ioi = require('../src/main/io');
+      const on = jest.spyOn(process, 'on').mockImplementation((ev, fn) => {
+        if (ev === 'exit') exit = fn;
+        return process;
+      });
+      try {
+        wire(httpsi, [fakeRes({ statusCode: 200, headers: {} }), fakeRes({ statusCode: 200, headers: {} })]);
+        const [o1, o2] = [fakeWrite(), fakeWrite()];
+        fsi.createWriteStream.mockReturnValueOnce(o1).mockReturnValueOnce(o2);
+        fsi.renameSync.mockImplementation(() => {});
+        ioi.downloadFile('https://host/a', '/tmp/a.bin');
+        ioi.downloadFile('https://host/b', '/tmp/b.bin');
+        parts = fsi.createWriteStream.mock.calls.map((c) => c[0]);
+        o1.emit('finish'); // the first finishes; the second is still running
+      } finally {
+        on.mockRestore();
+      }
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    fsi.unlinkSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    exit();
+    expect(fsi.unlinkSync.mock.calls.map((c) => c[0])).toEqual([parts[1]]);
   });
 
   it('works over http and without an onProgress callback', async () => {

@@ -246,13 +246,16 @@ struct Ctx {
   // kernel, pearl_tile_fold_tall, over 192x256 tiles. Read off that kernel's
   // loaded binary (PEARL_TALL_ARCH of its binaryVersion) with the others.
   bool foldTall = false;
-  // Whether that is Blackwell's build, which stages with TMA (PEARL_TALL_TMA),
-  // through the tensor maps below, and reads A' and B' k-blocked. Ada's reads them
-  // in per-tile order (foldTiled, PEARL_TALL_TILE_ORDER). The operand draw writes the
-  // order the fold reads; it runs before any search, so all of this is resolved when
-  // the context is created (resolve_fold) and never changes after.
+  // Whether that is Blackwell's build (sm_120, or sm_100 on the same code), which stages
+  // with TMA (PEARL_TALL_TMA), through the tensor maps below, and reads A' and B'
+  // k-blocked. Ada's reads them in per-tile order (foldTiled, PEARL_TALL_TILE_ORDER). The
+  // operand draw writes the order the fold reads; it runs before any search, so all of
+  // this is resolved when the context is created (resolve_fold) and never changes after.
   bool foldTma = false;
   bool foldTiled = false;
+  // The loaded tall fold's binaryVersion (100 for sm_100, 120 for sm_120), for the fold's
+  // name; 0 when it has none.
+  int tallArch = 0;
   // Whether that TMA build is the two-CTA cluster one (PEARL_TALL_CLUSTER, off by
   // default): the tall fold is then launched in clusters of PEARL_TALL_CLUSTER_SIZE
   // over tiles of two row groups, and its resident count is in clusters.
@@ -265,14 +268,17 @@ struct Ctx {
   // (PEARL_AMPERE_PERSIST_ARCH: Ampere's, not Hopper's).
   bool foldPersistA = false;
   uint32_t tallBand = 0;
+  // Whether it is Ada's cp.async build (binaryVersion 89), whose batch width the host
+  // picks from the L2 (pearl_ada_col_batch).
+  bool foldAda = false;
   // Whether that is GA100's unfused fold (binaryVersion 80, PEARL_TALL_UNFUSED): it writes
   // each slot's transcripts to dTrG[slot], 64 bytes a region of the batch, and
   // pearl_tall_hash80 hashes them after it on the slot's stream.
   bool foldUnfused = false;
   // Whether Hopper's wgmma fold runs instead (PEARL_HOPPER_WGMMA): pearl_tile_fold_hopper
-  // on the operands through tmA and tmB, per-tile (128-row A blocks) or k-blocked as
-  // PEARL_HOPPER_TILED says, writing dTrG[slot] for pearl_tall_hash80, on hopperBlocks
-  // CTAs (one an SM).
+  // on the operands through tmA and tmB, per-tile (PEARL_HOPPER_BM-row A blocks) or
+  // k-blocked as PEARL_HOPPER_TILED says, writing dTrG[slot] for pearl_tall_hash80, on
+  // hopperBlocks CTAs (one an SM).
   bool foldHopper = false;
   unsigned hopperBlocks = 0;
   // With PEARL_HOPPER_CLUSTER: CTAs a launch, whole clusters of two (asked on first launch).
@@ -901,8 +907,9 @@ bool pearl_encode_operand(PearlTensorMap *map, const void *base, uint64_t rows, 
 // takes Ada's switches on the shared SM layout, unmeasured) are the persistent one
 // (PEARL_FOLD_PERSISTENT) and the eight-warp one (PEARL_FOLD_WIDE_WARPS); the tall
 // fold is its own kernel, with a body only in the builds PEARL_TALL_ARCH names, so
-// its binary answers for itself, and Blackwell's also says the noised operands are
-// read k-blocked through tensor maps (PEARL_TALL_TMA).
+// its binary answers for itself, and Blackwell's (sm_120, and sm_100, which builds the
+// same body) also says the noised operands are read k-blocked through tensor maps
+// (PEARL_TALL_TMA).
 //
 // Once per context, when it is created: the job's first operand draw has to know
 // the layout, and it runs before any search. Nothing here changes afterwards, so the
@@ -951,23 +958,30 @@ void resolve_fold(Ctx *ctx) {
 #else
     ctx->foldTall = tallBody;
 #endif
+    ctx->tallArch = ctx->foldTall ? ft.binaryVersion : 0;
     // -DPEARL_TALL_TMA=0 builds Blackwell's tall fold on cp.async instead; the host
-    // pass sees the same value.
+    // pass sees the same value. sm_100 (binaryVersion 100) runs the TMA fold too
+    // (PEARL_TMA_BODY_ARCH), with sm_120's width rule and launch, and no cluster unless
+    // PEARL_TALL_CLUSTER.
     ctx->foldTma = ctx->foldTall && PEARL_TALL_TMA != 0 && PEARL_TALL_TMA_ARCH(ft.binaryVersion);
     ctx->foldTiled = ctx->foldTall && !ctx->foldTma && PEARL_TALL_TILE_ORDER != 0;
     // -DPEARL_TALL_CLUSTER=1 builds that TMA fold as a two-CTA cluster; the host pass
     // sees the same value, so the launch shape follows the body.
     ctx->foldCluster = ctx->foldTma && PEARL_TALL_CLUSTER != 0;
     ctx->foldAmpere = ctx->foldTall && !ctx->foldTma && PEARL_AMPERE_ARCH(ft.binaryVersion * 10);
+    ctx->foldAda = ctx->foldTall && !ctx->foldTma && ft.binaryVersion == 89;
     ctx->foldPersistA = ctx->foldAmpere && PEARL_AMPERE_PERSIST_ARCH(ft.binaryVersion * 10);
     ctx->foldUnfused = ctx->foldAmpere && ft.binaryVersion == 80 && PEARL_TALL_UNFUSED != 0;
     // Hopper's wgmma fold: only when this binary has its body, which alone carries the
-    // 288-thread launch bound (an sm_90a build with PEARL_HOPPER_WGMMA). It reads the
-    // operands through TMA in the order its build has, per-tile in 128-row A blocks or
-    // k-blocked (PEARL_HOPPER_TILED), and the draw writes them that way.
+    // launch bound of PEARL_HOPPER_THREADS (an sm_90a build with PEARL_HOPPER_WGMMA). It
+    // reads the operands through TMA in the order its build has, per-tile in
+    // PEARL_HOPPER_BM-row A blocks or k-blocked (PEARL_HOPPER_TILED), and the draw writes
+    // them that way.
 #if PEARL_HOPPER_WGMMA
     // Per-tile, the A' allocation (padded to 192-row tiles, PEARL_TALL_A_ROWS) must hold
-    // whole 128-row blocks; at mainnet m is a multiple of both. Else the cp.async fold runs.
+    // whole PEARL_HOPPER_BM-row blocks. 192-row blocks always fit; 128-row ones
+    // (PEARL_HOPPER_WG3=0) do at mainnet, where m is a multiple of both. Else the cp.async
+    // fold runs.
     const uint64_t hRows =
         ((uint64_t)ctx->profile.m + PEARL_HOPPER_BM - 1u) / PEARL_HOPPER_BM * PEARL_HOPPER_BM;
     if (ctx->foldAmpere && ft.binaryVersion == 90
@@ -1014,8 +1028,9 @@ void resolve_fold(Ctx *ctx) {
   // TMA zero-fills the last row group's rows past it (see PEARL_TALL_TMA).
 #if PEARL_HOPPER_WGMMA
   // Hopper's wgmma fold on per-tile operands (PEARL_HOPPER_TILED): each tile block's k-blocks
-  // are consecutive boxes of 128 (A) or 256 (B) rows of 64 bytes, so the maps are
-  // {64 bytes, box rows, blocks x k-blocks}, the A map over m rounded up to 128 rows.
+  // are consecutive boxes of PEARL_HOPPER_BM (A) or 256 (B) rows of 64 bytes, so the maps are
+  // {64 bytes, block rows, blocks x k-blocks}, the A map over m rounded up to PEARL_HOPPER_BM
+  // rows.
   if (ctx->foldHopper && ctx->foldTiled) {
     PFN_cuTensorMapEncodeTiled_v12000 enc = pearl_encode_tiled();
     const uint32_t kbs = ctx->profile.k / PEARL_TALL_STAGE_K;
@@ -1065,11 +1080,12 @@ void resolve_fold(Ctx *ctx) {
   ctx->foldKnown = true;
 }
 
-// The column offsets one batch of Blackwell's TMA fold covers (see PEARL_TMA_L2_SHARE):
-// the profile's col_batch, halved while the B' a row group sweeps -- col_batch * 16
-// columns of k bytes -- is more than PEARL_TMA_L2_SHARE percent of the L2. Never below
-// one tile's 16 column offsets, and only to a width that divides the valid offsets, so
-// a salt still splits into whole batches. -DPEARL_TMA_COL_BATCH=N forces N instead.
+// The column offsets one batch of Blackwell's TMA fold (sm_120 and sm_100) covers (see
+// PEARL_TMA_L2_SHARE): the profile's col_batch, halved while the B' a row group sweeps --
+// col_batch * 16 columns of k bytes -- is more than PEARL_TMA_L2_SHARE percent of the
+// L2. Never below one tile's 16 column offsets, and only to a width that divides the
+// valid offsets, so a salt still splits into whole batches. -DPEARL_TMA_COL_BATCH=N
+// forces N instead.
 uint32_t pearl_tma_col_batch(uint32_t colBatch, uint32_t colsValid, uint32_t k, uint64_t l2) {
 #ifdef PEARL_TMA_COL_BATCH
   (void)k;
@@ -1121,6 +1137,62 @@ uint32_t pearl_ampere_col_batch(uint32_t colBatch, uint32_t colsValid) {
       && colsValid % want == 0u)
     return want;
   return colBatch;
+}
+
+// Ada's batch width (host side, the sm_89 cp.async tall fold only): the profile's
+// col_batch, halved while what one launch keeps re-reading -- the B' every row group
+// sweeps, col_batch * 16 columns of k bytes, plus one band of A', PEARL_TALL_BAND row
+// groups of 192 rows of k bytes -- is more than PEARL_ADA_L2_SHARE percent of the L2.
+// Never below one tile's 16 column offsets, and only to a width that divides the valid
+// offsets, so a salt still splits into whole batches.
+//
+// At 2048 a launch sweeps 64 MB of B' plus a 6 MB band of A'. A 48 MB L2 cannot hold
+// that, so B' comes back from DRAM once a band, 43 times a launch. On a power-capped card
+// those DRAM watts come out of the SM clock, as on Blackwell (PEARL_TMA_L2_SHARE).
+// Measured on an RTX 4070 Super, 48 MB L2, 160 W cap (Vast 116195): one GPU on the build,
+// two GPUs of the same box on the release over the same 10 minutes, 400/400 hits, no
+// invalid shares:
+//   col_batch 2048 (release)  109.7 TH/s on the control GPUs; test GPU at 2040-2070 MHz
+//   col_batch 1024 (38 MB)    +2.5 to +3.1%, test GPU at 2115-2130 MHz, same 160 W
+//   col_batch 512 (22 MB)     1.4% behind 1024 (+0.9% over 2048), against three 1024 GPUs
+// The clock rises at the same power: the DRAM watts come back. Narrower than the L2 needs
+// loses some of it: each launch re-reads all of A' (256 MB), and there are more launches.
+// (A band of 64 row groups instead, at 2048, measured +2%: fewer bands, fewer B' re-reads.)
+//
+// At 100% the rule keeps 2048 on a 72 MB L2 (RTX 4090: 70 MB fits) or larger (L40S, L40,
+// RTX 6000 Ada: 96 MB); takes 1024 on 40-64 MB (4070 Super, 4070 Ti, 4080, L4, RTX 4000,
+// 4500 and 5000 Ada); and 512 on 24-36 MB (4060, 4060 Ti, 4070, and the RTX 2000 Ada,
+// which reports 24 MB), where 1024's 38 MB does not fit. Measured on 21 Ada hosts on
+// 2026-10-08 (benchmark.md, "Ada batch width"): the release, then the rule, then the
+// release again in one rental, 5 minutes each on the pool. The rule never lost, and it
+// gains most where the power cap is tight: L4 (72 W, 48 MB) +1.7%, RTX 2000 Ada (70 W)
+// +1.4%, RTX 4000 Ada (130 W, 40 MB) +1.1%, RTX 4500 Ada (210 W) +0.7%, RTX 4070 Super
+// (209 W) +0.5%; cards at stock caps 0 to +0.4%. 1024 in place of 512 on 24-32 MB cards
+// was level, and narrower than the pick was level or worse (512 on a 48 MB L4 -0.5%,
+// 1024 on a 96 MB RTX 6000 Ada -0.9%). Only the batch width changes: the same regions,
+// searched in more, shorter launches. -DPEARL_ADA_COL_BATCH=N forces N instead.
+#ifndef PEARL_ADA_L2_SHARE
+#define PEARL_ADA_L2_SHARE 100u
+#endif
+uint32_t pearl_ada_col_batch(uint32_t colBatch, uint32_t colsValid, uint32_t k, uint64_t l2) {
+#ifdef PEARL_ADA_COL_BATCH
+  (void)k;
+  (void)l2;
+  const uint32_t want = (uint32_t)PEARL_ADA_COL_BATCH;
+  if (want >= PEARL_TALL_COL_OFFSETS && want < colBatch && want % PEARL_TALL_COL_OFFSETS == 0u
+      && colsValid % want == 0u)
+    return want;
+  return colBatch;
+#else
+  if (l2 == 0u) return colBatch;
+  const uint64_t colBytes = (uint64_t)PEARL_COLS_COUNT * k;
+  const uint64_t bandBytes = (uint64_t)PEARL_TALL_BAND * PEARL_TALL_BM * k;
+  uint32_t cb = colBatch;
+  while (((uint64_t)cb * colBytes + bandBytes) * 100u > l2 * (uint64_t)PEARL_ADA_L2_SHARE
+         && cb % 2u == 0u && (cb / 2u) % PEARL_TALL_COL_OFFSETS == 0u && colsValid % (cb / 2u) == 0u)
+    cb /= 2u;
+  return cb;
+#endif
 }
 
 // Ampere's band depth for the tall fold (see PEARL_AMPERE_BAND_L2_SHARE): 16, halved
@@ -1441,8 +1513,8 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
 
   // Which fold runs, before any operand is drawn (see resolve_fold).
   resolve_fold(ctx);
-  // Blackwell (the TMA fold): a batch narrow enough that the B' it sweeps fits the L2.
-  // See PEARL_TMA_L2_SHARE.
+  // Blackwell (the TMA fold, sm_120 and sm_100): a batch narrow enough that the B' it
+  // sweeps fits the L2. See PEARL_TMA_L2_SHARE.
   if (ctx->foldTma) {
     int l2 = 0;
     if (cudaDeviceGetAttribute(&l2, cudaDevAttrL2CacheSize, ctx->device) != cudaSuccess) {
@@ -1454,6 +1526,26 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
       ctx->colBatch = cb;
       ctx->batch = ctx->colBatch * ctx->rowsValid;
     }
+  }
+  // Ada (the sm_89 tall fold): a batch narrow enough that its B' and a band of A' fit the
+  // L2. See pearl_ada_col_batch.
+  if (ctx->foldAda) {
+    int l2 = 0;
+    if (cudaDeviceGetAttribute(&l2, cudaDevAttrL2CacheSize, ctx->device) != cudaSuccess) {
+      (void)cudaGetLastError();
+      l2 = 0;
+    }
+    const uint32_t cb = pearl_ada_col_batch(ctx->colBatch, ctx->colsValid, profile->k, (uint64_t)l2);
+    if (cb != ctx->colBatch) {
+      ctx->colBatch = cb;
+      ctx->batch = ctx->colBatch * ctx->rowsValid;
+    }
+#if defined(PEARL_LOG_ADA_L2) && PEARL_LOG_ADA_L2
+    // Tuning builds only (off by default): say which L2 the card reports and which
+    // width that gave, so a rented box's miner log shows it.
+    fprintf(stderr, "[pearl] Ada fold: L2 %d bytes (%.1f MB), col_batch %u\n", l2,
+            l2 / 1048576.0, ctx->colBatch);
+#endif
   }
   // Ampere (the sm_80, sm_86 and sm_90 tall fold): a band of row groups whose A' fits the
   // L2. See PEARL_AMPERE_BAND_L2_SHARE.
@@ -1481,6 +1573,11 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
       l2 = 0;
     }
     ctx->tallBand = pearl_ampere_band_for(profile->k, (uint64_t)l2, ctx->foldUnfused);
+#if PEARL_HOPPER_WGMMA
+    // Hopper's wgmma fold takes its own depth (PEARL_HOPPER_BAND: 8 with the 192-row tiles
+    // of PEARL_HOPPER_WG3), unless that is 0. It reaches the fold as a kernel argument.
+    if (ctx->foldHopper && PEARL_HOPPER_BAND != 0u) ctx->tallBand = PEARL_HOPPER_BAND;
+#endif
     // The fold reads it PEARL_BD_BAND_WORD words past its slot's hit counter.
     const uint32_t bands[Ctx::kSlots] = {ctx->tallBand, ctx->tallBand};
     CUDA_OK(cudaMemcpy(ctx->dHitCount + PEARL_BD_BAND_WORD, bands, sizeof bands,
@@ -2123,8 +2220,9 @@ void pearl_cluster_config(cudaLaunchConfig_t *cfg, cudaLaunchAttribute attr[1], 
 }
 
 #if PEARL_HOPPER_WGMMA
-// Launch Hopper's wgmma fold over one batch on `st`. Its tiles are row groups of 8 row
-// offsets (128 rows) by the batch's column groups: one CTA an SM, or with
+// Launch Hopper's wgmma fold over one batch on `st`. Its tiles are row groups of
+// PEARL_HOPPER_ROW_OFFSETS row offsets (PEARL_HOPPER_BM rows: 12 and 192, or 8 and 128 with
+// PEARL_HOPPER_WG3=0) by the batch's column groups: one CTA an SM, or with
 // PEARL_HOPPER_CLUSTER clusters of two CTAs over row-group pairs, as many clusters as the
 // runtime says fit at once (asked on the first launch).
 void pearl_launch_hopper(Ctx *ctx, cudaStream_t st, uint32_t k, uint32_t rank, uint32_t chunks,
@@ -2602,8 +2700,13 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
            "2-CTA cluster sharing B by multicast";
   if (ctx->foldHopper) {
     snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,
+#if PEARL_HOPPER_WG3
+             "hopper 192x256, 3 warpgroups of wgmma 2 x m64n128 and a producer warpgroup, "
+             "TMA ring, %s operands, band %u, hash in its own kernel%s",
+#else
              "hopper 128x256, 2 warpgroups of wgmma m64n256 and a producer warp, TMA ring, %s "
              "operands, band %u, hash in its own kernel%s",
+#endif
              ctx->foldTiled ? "per-tile" : "k-blocked", ctx->tallBand,
              PEARL_HOPPER_CLUSTER ? ", 2-CTA clusters sharing B by multicast" : "");
     return ctx->foldName;
@@ -2615,6 +2718,11 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
              ctx->foldUnfused ? ", hash in its own kernel" : "");
     return ctx->foldName;
   }
+  // sm_100 runs sm_120's TMA fold; its name says so, so a B200 reading is not taken for a
+  // fold of its own.
+  if (ctx->foldTall && ctx->foldTma && PEARL_SM100_ARCH(ctx->tallArch * 10))
+    return "tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands, sm_100 build of "
+           "sm_120's fold";
   if (ctx->foldTall)
     return ctx->foldTma ? "tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands"
                         : (ctx->foldTiled ? "tall 192x256, 8 warps of 96x64, cp.async ring, per-tile operands"

@@ -1,7 +1,7 @@
 {
   "name": "llmjob-earn",
-  "version": "0.5.13",
-  "description": "LLMJob Earn — desktop GUI that turns the excess compute on GPUs you already own into crypto (Pearl / PRL) with our own CUDA miner. Paste a payout address and start earning, no command line.",
+  "version": "0.5.14",
+  "description": "LLMJob Earn",
   "main": "src/main/main.js",
   "bin": {
     "llmjob-earn-cli": "src/cli/earn-cli.js"

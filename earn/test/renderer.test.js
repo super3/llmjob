@@ -245,19 +245,20 @@ describe('boot with the full bridge', () => {
     };
     // Off: the note says what it would do, and nothing claims the network.
     expect($('set-share').checked).toBe(false);
-    expect($('share-note').textContent).toContain('turn this on only on a network you trust');
+    expect($('share-note').textContent).toBe('Anyone on your network can use it on port 8000, with no key.');
     expect($('api-lan').hidden).toBe(true);
     expect($('connect-reach').textContent).toBe('this computer');
 
     // On, before any model runs.
     flip(true);
     expect(api.setShareLlm).toHaveBeenLastCalledWith(true);
-    expect($('share-note').textContent).toBe('Other devices on your network can reach it on port 8000 while the local LLM runs.');
+    expect($('share-note').textContent).toBe('Other devices can reach it on port 8000 while the local LLM runs.');
 
     // main reports the gate up: the first address is the one shown.
     makeReady(cbs, { lan: { urls: ['http://192.168.0.220:8000/v1', 'http://10.0.0.7:8000/v1'], error: null } });
-    expect($('share-note').textContent).toBe('Other devices on your network can use it at http://192.168.0.220:8000/v1, with no key. '
-      + 'If your firewall asks, allow LLMJob Earn on private networks.');
+    expect($('share-note').textContent).toBe('Other devices can use it at http://192.168.0.220:8000/v1, with no key.');
+    // A long address can cut the one-line note short, so the whole note is its tooltip.
+    expect($('share-note').title).toBe('Other devices can use it at http://192.168.0.220:8000/v1, with no key.');
     expect($('api-lan').hidden).toBe(false);
     expect($('api-lan-url').textContent).toBe('http://192.168.0.220:8000/v1');
     expect($('connect-reach').textContent).toBe('this computer and your network');
@@ -1246,5 +1247,101 @@ describe('hashrate sparkline scale', () => {
     expect($('mk-line').getAttribute('d')).not.toMatch(/NaN/);
     cbs.stats({ total: '226.0', acceptedLabel: '1', uptime: '0m 06s', estDay: '$2.50', gpu: 'g', points: [226] });
     expect($('mk-line').getAttribute('d')).not.toMatch(/NaN/);
+  });
+});
+
+describe('Background settings: tray, start with the computer, idle-only', () => {
+  function withPrefs(api, cbs, prefs) {
+    api.getPrefs = jest.fn().mockResolvedValue(prefs);
+    // Main answers with what now holds; here, whatever was asked.
+    api.setPrefs = jest.fn((change) => Promise.resolve(Object.assign({}, prefs, change)));
+    api.onIdle = jest.fn((cb) => { cbs.idle = cb; });
+  }
+
+  it('shows the saved switches and saves each change', async () => {
+    const { api, cbs } = makeFullApi();
+    withPrefs(api, cbs, { closeToTray: true, runAtStartup: false, mineWhenIdle: false });
+    await boot({ api });
+    expect($('pref-tray').checked).toBe(true);
+    expect($('pref-startup').checked).toBe(false);
+    expect($('pref-idle').checked).toBe(false);
+
+    $('pref-tray').checked = false;
+    $('pref-tray').dispatchEvent(new window.Event('change'));
+    expect(api.setPrefs).toHaveBeenLastCalledWith({ closeToTray: false });
+    $('pref-idle').checked = true;
+    $('pref-idle').dispatchEvent(new window.Event('change'));
+    expect(api.setPrefs).toHaveBeenLastCalledWith({ mineWhenIdle: true });
+    await flush();
+    expect($('pref-idle').checked).toBe(true);
+  });
+
+  // A dev run, or Linux outside an AppImage, cannot start with the computer.
+  // Main says so, and the switch goes back off.
+  it('shows what main says holds, not just what was clicked', async () => {
+    const { api, cbs } = makeFullApi();
+    withPrefs(api, cbs, { closeToTray: true, runAtStartup: false, mineWhenIdle: false });
+    api.setPrefs = jest.fn().mockResolvedValue({ closeToTray: true, runAtStartup: false, mineWhenIdle: false });
+    await boot({ api });
+    $('pref-startup').checked = true;
+    $('pref-startup').dispatchEvent(new window.Event('change'));
+    expect(api.setPrefs).toHaveBeenCalledWith({ runAtStartup: true });
+    await flush();
+    expect($('pref-startup').checked).toBe(false);
+  });
+
+  it('keeps STOP while paused for idle, and says what it is waiting for', async () => {
+    const { api, cbs } = makeFullApi();
+    withPrefs(api, cbs, { closeToTray: true, runAtStartup: false, mineWhenIdle: true });
+    await boot({ api });
+    click($('btn-start'));
+    cbs.idle({ paused: true, idleAfterSec: 600 });
+    expect($('btn-stop').hidden).toBe(false);
+    expect($('idle-status').hidden).toBe(false);
+    expect($('idle-status').textContent)
+      .toBe('Waiting for your computer to be idle. Mining starts after 10 minutes without keyboard or mouse use.');
+    expect($('mine-dot').className).toBe('dot2');
+
+    cbs.idle({ paused: false });
+    expect($('idle-status').hidden).toBe(true);
+    expect($('mine-dot').className).toBe('dot2 on');
+
+    // Paused again, then STOP: nothing left to wait for.
+    cbs.idle({ paused: true });
+    click($('btn-stop'));
+    expect($('idle-status').hidden).toBe(true);
+    expect($('btn-start').hidden).toBe(false);
+
+    // A stop from main clears the wait too.
+    click($('btn-start'));
+    cbs.idle({ paused: true });
+    cbs.stopped();
+    expect($('idle-status').hidden).toBe(true);
+
+    // An empty event counts as running.
+    click($('btn-start'));
+    cbs.idle(undefined);
+    expect($('idle-status').hidden).toBe(true);
+  });
+
+  // Region detection can take seconds on a real network. The switches must not
+  // wait for it, or Settings shows them all off until it answers.
+  it('shows the switches before the slow detection at startup has answered', async () => {
+    const { api, cbs } = makeFullApi();
+    withPrefs(api, cbs, { closeToTray: true, runAtStartup: false, mineWhenIdle: false });
+    api.detectRegion = jest.fn(() => new Promise(() => {}));
+    await boot({ api });
+    expect($('pref-tray').checked).toBe(true);
+  });
+
+  it('works with a bridge that has none of this', async () => {
+    const { api } = makeFullApi();
+    await boot({ api });
+    $('pref-tray').checked = false;
+    expect(() => $('pref-tray').dispatchEvent(new window.Event('change'))).not.toThrow();
+    // A bridge that answers with nothing leaves the switches as they are.
+    api.getPrefs = jest.fn().mockResolvedValue(null);
+    await boot({ api });
+    expect($('pref-tray').checked).toBe(false);
   });
 });

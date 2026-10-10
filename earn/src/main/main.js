@@ -5,16 +5,20 @@
 // the user come only from the engine's own output — no simulated data. All
 // testable logic lives in ../shared and ./minerManager.
 
-const { app, BrowserWindow, Menu, ipcMain, shell, clipboard } = require('electron');
+const {
+  app, BrowserWindow, Menu, Tray, Notification, nativeImage, powerMonitor, ipcMain, shell, clipboard,
+} = require('electron');
 const { spawn, execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const http = require('http');
 const https = require('https');
 
 const { autoUpdater } = require('electron-updater');
 
 const net = require('net');
+const dns = require('dns');
 const { PearlEngine } = require('./pearlEngine');
 const { coreFactory } = require('./pearlCore');
 const { LlmManager } = require('./llmManager');
@@ -27,7 +31,8 @@ const {
 const probe = require('./probe');
 const nodeStore = require('./nodeStore');
 const settingsStore = require('../shared/settingsStore');
-const { initStats, applyEvent, snapshot } = require('../shared/miningStats');
+const { initStats, applyEvent, snapshot, offPool } = require('../shared/miningStats');
+const { makePoolLookup, fileCache } = require('../shared/poolLookup');
 const {
   REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE, resolveEndpoint, migrateRegion,
 } = require('../shared/config');
@@ -55,6 +60,16 @@ const {
 const { planMemClocks, readMemClockEnv, GUI_MEM_CLOCK_ENV } = require('../shared/memClock');
 const earnings = require('../shared/earnings');
 const format = require('../shared/format');
+const appPrefs = require('../shared/appPrefs');
+const autostart = require('../shared/autostart');
+const trayHost = require('../shared/trayHost');
+
+// The id the installer gives the Start menu shortcut (build.appId in
+// package.json). Windows shows a notification only from an app whose id matches
+// a shortcut; without it the one-time "still running in the tray" notice never
+// appeared. The login item is filed under it too.
+const APP_ID = 'com.llmjob.earn';
+if (process.platform === 'win32') app.setAppUserModelId(APP_ID);
 
 // Number the GPUs the way nvidia-smi does, before anything opens a CUDA device.
 // Everything here — the device label, per-card VRAM, temperatures, the board's
@@ -64,6 +79,24 @@ const format = require('../shared/format');
 // lists; the removed value is logged on each start, since there is no window yet.
 alignCudaDeviceOrder(process.env);
 const clearedCudaLine = describeClearedCuda(clearCudaVisibleDevices(process.env));
+
+// One copy of the app at a time. With the window closing to the tray, opening
+// the app again is how someone gets it back, and a second copy would mine the
+// same cards beside the first. A second launch shows this one's window and
+// exits.
+const primaryInstance = app.requestSingleInstanceLock();
+if (!primaryInstance) app.quit();
+
+// Started by the login item or the autostart entry: stay in the tray and start
+// mining. Read once; a window made later (from the tray) shows as usual.
+let hiddenLaunch = autostart.launchedHidden(process.argv);
+let tray = null;
+// Set on a real quit (the tray's Quit, an update, logging off), so the window's
+// close handler lets the window close instead of hiding it.
+let quitting = false;
+// The Windows message a user's close arrives as (see the window's close handler).
+const WM_SYSCOMMAND = 0x0112;
+const SC_CLOSE = 0xf060;
 
 let win = null;
 let miner = null;
@@ -123,6 +156,90 @@ function withLiveRegion(s) {
 
 function persistSettings(s) {
   return settingsStore.writeSettings(settingsPath(), s, { fs, log: settingsLog });
+}
+
+// The app's behaviour switches (tray, startup, idle-only), from Settings. In
+// their own file, see shared/appPrefs. Read once, then kept here.
+let prefs = null;
+function prefsPath() {
+  return path.join(app.getPath('userData'), 'preferences.json');
+}
+function getPrefs() {
+  if (!prefs) prefs = appPrefs.normalizePrefs(settingsStore.readSettings(prefsPath(), { fs, log: settingsLog }));
+  return prefs;
+}
+function savePrefs(change) {
+  prefs = appPrefs.normalizePrefs(Object.assign({}, getPrefs(), change));
+  settingsStore.writeSettings(prefsPath(), prefs, { fs, log: settingsLog });
+  return prefs;
+}
+
+// Make the app start (or stop starting) with the computer. Returns whether the
+// computer will now start it, which is what Settings shows.
+//
+// Only in the installed app: a dev run would register the bare Electron binary.
+// Windows has a login item for it. Linux and macOS get a file instead (see
+// loginFile). macOS has a login item too, but it can't pass --hidden, and on
+// macOS 13 and later the app can't tell it was started at login.
+function applyLoginItem(on) {
+  if (!app.isPackaged) return false;
+  if (process.platform === 'win32') {
+    app.setLoginItemSettings({ openAtLogin: on, args: on ? [autostart.HIDDEN_ARG] : [] });
+    return on;
+  }
+  const { file, body } = loginFile();
+  try {
+    if (on && body) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, body);
+      return true;
+    }
+    if (fs.existsSync(file)) fs.unlinkSync(file);
+  } catch (e) {
+    send('miner:log', { level: 'error', line: 'could not change the start-with-computer setting: ' + e.message });
+  }
+  return false;
+}
+
+// The file that starts the app at login, and what it should say: a freedesktop
+// autostart entry for the AppImage on Linux, a LaunchAgent on macOS. The Linux
+// entry runs the AppImage file ($APPIMAGE), not the binary inside it, whose
+// mount is gone after a reboot. `body` is null when this copy can't start that
+// way: a Linux build that is not an AppImage.
+function loginFile(appImage) {
+  if (process.platform === 'darwin') {
+    return { file: autostart.macLaunchAgentFile(os.homedir()), body: autostart.macLaunchAgent(process.execPath) };
+  }
+  const configHome = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+  const image = appImage || process.env.APPIMAGE;
+  return { file: autostart.linuxAutostartFile(configHome), body: image ? autostart.linuxDesktopEntry(image) : null };
+}
+
+// While the switch is on: point the login item at this copy again if it no
+// longer does (an update renamed the AppImage, a test build took it over), and
+// otherwise leave it alone. Writing it every start undid the user's own switch
+// for it: Windows' setLoginItemSettings re-enables an entry disabled in Task
+// Manager, and a rewritten autostart entry loses Hidden=true or
+// X-GNOME-Autostart-enabled=false. `appImage` is the AppImage's new name, when
+// an update gave it one.
+function refreshLoginItem(appImage) {
+  if (!app.isPackaged || !getPrefs().runAtStartup) return;
+  if (process.platform === 'win32') {
+    if (!app.getLoginItemSettings({ args: [autostart.HIDDEN_ARG] }).openAtLogin) applyLoginItem(true);
+    return;
+  }
+  const { file, body } = loginFile(appImage);
+  if (!body) return;
+  let current = null;
+  try { current = fs.readFileSync(file, 'utf8'); } catch (e) { /* missing: written below */ }
+  const next = current != null && process.platform === 'linux' ? autostart.retargetDesktopEntry(current, body) : body;
+  if (next === current) return;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, next);
+  } catch (e) {
+    send('miner:log', { level: 'error', line: 'could not update the start-with-computer entry: ' + e.message });
+  }
 }
 
 function send(channel, payload) {
@@ -257,6 +374,30 @@ function extractLlamaZipWin(zipPath, dest) {
   });
 }
 
+// How the pool's name becomes an address: the system lookup, then fallbacks
+// when it fails (see shared/poolLookup). One for the life of the app, with the
+// last good addresses kept beside the node identity, shared with the CLI.
+let poolLookupFn = null;
+function poolLookup() {
+  if (!poolLookupFn) {
+    poolLookupFn = makePoolLookup({
+      dns,
+      cache: fileCache(path.join(path.dirname(nodeStore.nodePath()), 'pool-addresses.json'), fs, path),
+      log: (line) => send('miner:log', { level: 'warn', line }),
+    });
+  }
+  return poolLookupFn;
+}
+
+// One miner start at a time. runPlan and an idle resume can each ask for one
+// while the other's is still in its nvidia-smi await, before `miner` is set; the
+// second joins the first instead of building a second engine on the same cards.
+let minerStarting = null;
+function startMiningOnce(settings, llmCoRuns) {
+  if (!minerStarting) minerStarting = startMining(settings, llmCoRuns).finally(() => { minerStarting = null; });
+  return minerStarting;
+}
+
 // `llmCoRuns` is runPlan's plan.llm: whether a local LLM will share the cards
 // for this run. It decides the memory clock plan below.
 async function startMining(settings, llmCoRuns) {
@@ -288,7 +429,10 @@ async function startMining(settings, llmCoRuns) {
   // Publish live status to the network page's board while mining, including live
   // GPU VRAM (used/total) so the board shows headroom for co-running LLMs.
   const report = async () => {
-    const snap = snapshot(stats, Date.now());
+    // While the pool connection is down, the board hears no hashrate: the pool
+    // is getting none, and the board should agree with it.
+    const live = snapshot(stats, Date.now());
+    const snap = miner && !miner.poolConnected() ? offPool(live) : live;
     const gpuVram = await detectGpusVram();
     // Tag the cards serving the local LLM so the board shows which model each GPU
     // runs; null when the fleet isn't up (mining only) → blank on the board.
@@ -364,7 +508,7 @@ async function startMining(settings, llmCoRuns) {
   if (memPlan.reason) send('miner:log', { level: memPlan.dropped ? 'warn' : 'info', line: memPlan.reason });
 
   miner = new PearlEngine({
-    connect: (host, port) => net.connect(port, host),
+    connect: (host, port) => net.connect({ port, host, lookup: poolLookup() }),
     createCore: coreFactory({
       resourcesPath: process.resourcesPath,
       gpus,
@@ -411,6 +555,8 @@ function wireMinerEvents(miner, endpoint) {
   });
   miner.on('error', (err) => reportLaunchFailure(err));
   miner.on('stopped', (code) => send('miner:log', { level: 'info', line: 'engine exited (code ' + code + ')' }));
+  // The pool took the login, so this address is one that worked.
+  miner.on('authorized', (e) => poolLookup().worked(e.host, e.address, e.family));
 }
 
 function stopMining() {
@@ -445,6 +591,16 @@ function appIcon() {
   return path.join(dir, process.platform === 'win32' ? 'icon.ico' : 'icon.png');
 }
 
+// The tray icon. The macOS menu bar wants a 16-point image, and icon.png is the
+// 1024 px app icon, so it is scaled down there, with a 32 px copy for Retina.
+function trayIcon() {
+  if (process.platform !== 'darwin') return appIcon();
+  const full = nativeImage.createFromPath(appIcon());
+  const icon = full.resize({ width: 16, height: 16 });
+  icon.addRepresentation({ scaleFactor: 2, buffer: full.resize({ width: 32, height: 32 }).toPNG() });
+  return icon;
+}
+
 // Detect the machine's GPU for the settings/device label. Uses Windows'
 // Win32_VideoController via PowerShell (already a dependency of the llama unzip);
 // resolves to a display name or null. Never rejects.
@@ -459,10 +615,87 @@ async function detectGpu() {
 
 // Wire electron-updater to the renderer's update bar. autoUpdater pulls from the
 // GitHub Releases feed (see build.publish); it only works in a packaged app, so
-// main.js guards the call with app.isPackaged. Downloads happen automatically;
-// the user chooses when to restart via the 'app:update:install' channel.
+// main.js guards the call with app.isPackaged. Downloads happen automatically.
+// With the window open, the user chooses when to restart via the
+// 'app:update:install' channel; out of sight, it installs on its own (see
+// installWhenHidden).
 let manualUpdateCheck = false; // true while a user-initiated check is in flight
 let updateTimer = null; // periodic re-check, so startup is not the only chance
+let updateReady = false; // an update has downloaded and waits to install
+
+// How long after an update's restart the new copy still counts as that restart,
+// for starting in the tray (see resumeHidden in whenReady).
+const UPDATE_RESTART_MS = 10 * 60 * 1000;
+
+// Install the downloaded update now and restart into it. `hidden`: the window
+// was out of sight, so the new copy starts in the tray too.
+function installUpdate(hidden) {
+  // Mining now, or paused waiting for the computer to go idle: resume after the
+  // restart.
+  const resume = !!session;
+  // The relaunch needs this window to really close, not hide to the tray.
+  quitting = true;
+  try {
+    // isSilent=true: install to the existing directory without re-showing the
+    // assisted-installer wizard. isForceRunAfter=true: relaunch the app afterwards.
+    autoUpdater.quitAndInstall(true, true);
+  } catch (e) {
+    quitting = false;
+    send('miner:log', { level: 'error', line: 'update install failed: ' + e.message });
+    return;
+  }
+  // An install the updater refused (no installer file, say) is reported through
+  // its 'error' event and returns without quitting. The app carries on as it
+  // was: a live START, and a window that closes to the tray.
+  if (autoUpdater.quitAndInstallCalled === false) {
+    quitting = false;
+    return;
+  }
+  const restart = {};
+  if (resume) restart.resumeMining = true;
+  if (hidden) restart.resumeHidden = Date.now();
+  if (resume || hidden) persistSettings(Object.assign({}, loadSettings(), restart));
+  // Stop the LLM and miner now, before the installer relaunches the app.
+  // llama-server binds a fixed port (8080); if the outgoing server still holds it,
+  // the resumed instance's llama-server can't bind and the LLM silently fails to
+  // start (the miner binds no port, so it's fine — exactly the "miner came back,
+  // LLM didn't" symptom). Stopping here frees the port and VRAM before the new
+  // instance starts. The quit itself comes on the next tick.
+  endSession();
+}
+
+// An update installs when the app quits, and with the window closing to the
+// tray the app rarely quits: a rig started at login could run an old build for
+// months. So a downloaded update installs as soon as the window is out of sight
+// (in the tray, or never shown after a launch at login), and the app restarts
+// in the tray and picks its START back up. An open window keeps the "Update &
+// restart" button instead.
+//
+// Not while a START is still bringing up the model: on a first run that is a
+// download of several GB, which the restart would throw away. And not where the
+// installer would ask for an administrator's approval, which nobody is there to
+// give: an install for all users, in Program Files.
+function installWhenHidden() {
+  if (!updateReady || quitting || planRun) return;
+  if (win && !win.isDestroyed() && win.isVisible()) return;
+  if (!canInstallQuietly()) return;
+  installUpdate(true);
+}
+
+// Whether this user can write to the app's own folder, which is what an update
+// replaces. Windows only: it is the install for all users that elevates. Tried
+// with a real file, because fs.access ignores Windows' folder permissions.
+function canInstallQuietly() {
+  if (process.platform !== 'win32') return true;
+  const probe = path.join(path.dirname(process.execPath), '.update-probe-' + process.pid);
+  try {
+    fs.writeFileSync(probe, '');
+    fs.unlinkSync(probe);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
 
 function setupUpdater() {
   const push = (phase, payload) => send('app:update', formatUpdate(phase, payload));
@@ -477,7 +710,16 @@ function setupUpdater() {
     else push('none');
   });
   autoUpdater.on('download-progress', (p) => push('progress', p));
-  autoUpdater.on('update-downloaded', (info) => push('ready', info));
+  autoUpdater.on('update-downloaded', (info) => {
+    updateReady = true;
+    push('ready', info);
+    installWhenHidden();
+  });
+  // An AppImage update moves to a new file named for its version and deletes
+  // this one. Point a start-at-login entry at the new file now: after an install
+  // on quit, the next start may be the login itself, and an entry naming the
+  // deleted file would start nothing.
+  autoUpdater.on('appimage-filename-updated', (file) => refreshLoginItem(file));
   autoUpdater.on('error', (err) => {
     manualUpdateCheck = false;
     push('error');
@@ -542,15 +784,49 @@ function createWindow() {
   });
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
 
+  // A launch at login stays in the tray. Only when there is a tray to find it
+  // in: without one, a hidden window could never be opened.
+  const showOnLoad = !(hiddenLaunch && tray);
+  hiddenLaunch = false;
+
   // Size the window to the rendered content so there's no default scrollbar and
   // no trailing whitespace, whatever the platform chrome / font metrics / DPI.
   // Do it before showing (window starts hidden) to avoid a resize flash. The
   // renderer keeps overflow-y:auto, so a transient taller state (update bar,
   // engine error) still scrolls rather than clipping.
   win.webContents.on('did-finish-load', () => {
-    fitWindowToContent().finally(() => { if (win && !win.isDestroyed()) win.show(); });
+    fitWindowToContent().finally(() => { if (showOnLoad && win && !win.isDestroyed()) win.show(); });
   });
-  setTimeout(() => { if (win && !win.isDestroyed() && !win.isVisible()) win.show(); }, 1500);
+  setTimeout(() => { if (showOnLoad && win && !win.isDestroyed() && !win.isVisible()) win.show(); }, 1500);
+
+  // Closing the window hides it to the tray, and mining carries on, unless the
+  // user turned that off in Settings or the app is really quitting.
+  //
+  // Only when the user closed it. On Windows the window's X, Alt+F4 and the
+  // taskbar's Close all arrive as SC_CLOSE first. A close without one comes from
+  // another program that wants the app gone: the installer before it replaces
+  // the app's files, the uninstaller, Task Manager's End task. Hiding the window
+  // from those left the app running until the installer force-killed it a second
+  // later, so the miner never stopped cleanly. They quit it instead. A focused
+  // window counts as the user's too, in case a close reaches it some other way.
+  let userClose = false;
+  if (process.platform === 'win32') {
+    win.hookWindowMessage(WM_SYSCOMMAND, (wParam) => {
+      if (Buffer.isBuffer(wParam) && (wParam.readUInt32LE(0) & 0xfff0) === SC_CLOSE) userClose = true;
+    });
+  }
+  win.on('close', (e) => {
+    const fromUser = process.platform !== 'win32' || userClose || win.isFocused();
+    userClose = false;
+    if (quitting || !fromUser || !tray || !getPrefs().closeToTray) return;
+    e.preventDefault();
+    win.hide();
+    trayHint();
+  });
+  // Out of sight, a downloaded update can install.
+  win.on('hide', installWhenHidden);
+  // Logging off or shutting down on Windows: let the window close.
+  win.on('session-end', () => { quitting = true; });
 
   // Right-click cut/copy/paste — Electron has no default context menu, so
   // pasting a payout address (or copying it) is otherwise mouse-inaccessible.
@@ -568,6 +844,80 @@ function createWindow() {
     }
     if (items.length && !win.isDestroyed()) Menu.buildFromTemplate(items).popup({ window: win });
   });
+}
+
+// Bring the window back: from the tray, or when the app is opened again while
+// it runs (second-instance).
+function showWindow() {
+  if (!win || win.isDestroyed()) {
+    createWindow();
+    return;
+  }
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+}
+
+function quitApp() {
+  quitting = true;
+  app.quit();
+}
+
+// The tray icon: the way back to a closed window, and the way to quit.
+function createTray() {
+  try {
+    tray = new Tray(trayIcon());
+  } catch (e) {
+    // No tray on this desktop. Closing the window then quits, as before.
+    tray = null;
+    return;
+  }
+  tray.setToolTip('LLMJob Earn');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Open LLMJob Earn', click: showWindow },
+    { type: 'separator' },
+    { label: 'Quit', click: quitApp },
+  ]));
+  tray.on('click', showWindow);
+}
+
+// GNOME draws no tray icon without an AppIndicator extension, though Electron
+// makes one without complaint (see shared/trayHost). There, drop the icon, so
+// closing the window quits rather than hiding it with no way back. Waits up to
+// `waitMs` for the extension, which may still be loading at login.
+const TRAY_WAIT_MS = 15000;
+async function confirmTray(waitMs) {
+  if (!tray || process.platform !== 'linux' || !trayHost.isGnome(process.env)) return;
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    // false means no host; null means the bus couldn't be asked, which keeps
+    // the icon, as before.
+    if ((await trayHost.queryTrayHost(execFile)) !== false) return;
+    if (Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  tray.destroy();
+  tray = null;
+}
+
+// The first time the window closes to the tray, say so once. Otherwise the app
+// looks closed while the GPU is still working. Marked shown only once the
+// notification was: one that never appeared is tried again on the next run.
+let trayHintTried = false;
+function trayHint() {
+  if (getPrefs().trayHintShown || trayHintTried) return;
+  trayHintTried = true;
+  if (!Notification.isSupported()) {
+    savePrefs({ trayHintShown: true });
+    return;
+  }
+  const notice = new Notification({
+    title: 'LLMJob Earn is still running',
+    body: 'It keeps running in the tray. Click the tray icon to open it, or right-click it to quit. '
+      + 'You can change this in Settings.',
+  });
+  notice.on('show', () => savePrefs({ trayHintShown: true }));
+  notice.show();
 }
 
 // How far the frame may sit from the measured content before it is worth
@@ -675,6 +1025,9 @@ function progressReporter(label, now) {
   let lastPct = -1;
   let lastAt = 0;
   return (pct) => {
+    // A download goes on after STOP (it can't be cancelled), and its progress
+    // would bring back a note the stop cleared.
+    if (!session) return;
     // progressPercent returns null when the server sends no content-length, and
     // Number(null) is 0 — so null must be rejected explicitly or a sizeless
     // download would sit at a permanent, wrong "0%".
@@ -695,8 +1048,18 @@ function progressReporter(label, now) {
 // endpoint. Best-effort — failures are logged, never thrown to the UI. Returns
 // whether the server was actually started (callers use it to reset the UI when
 // an LLM-only session ends up running nothing).
-async function startLlm(reserveMb) {
-  if (fleet && fleet.hasSpawned()) return true; // a spawned fleet is already up
+//
+// `epoch` is the run's miningEpoch. A STOP or an idle pause during the awaits
+// below (a first run downloads several GB) moves it, and the run then stops
+// short instead of starting a model for a START that is gone, or leaving the
+// LLM row on "Starting…" after a STOP. A pause queues the next run, which picks
+// up from the files this one downloaded.
+async function startLlm(reserveMb, epoch) {
+  const stale = () => epoch !== miningEpoch;
+  // A fleet already up, spawned or adopted. An adopted server has no manager, so
+  // hasSpawned() alone missed it, and every idle pause and resume adopted the
+  // same server again, with another cluster worker each time.
+  if (fleet && (fleet.hasSpawned() || fleet.isReady())) return true;
 
   // One fleet drives both paths: adopt a lingering server, or spawn one instance
   // per eligible GPU. Build it once with the process/GPU factories injected.
@@ -707,7 +1070,9 @@ async function startLlm(reserveMb) {
   // would double-load the model and risk an OOM. Reusing it is safe — it serves
   // the same model on the same OpenAI endpoint.
   const targetBase = 'http://' + LLM.host + ':' + LLM.port;
-  if (await probeLlmHealth(targetBase)) {
+  const healthy = await probeLlmHealth(targetBase);
+  if (stale()) return false;
+  if (healthy) {
     fleet.adopt(targetBase);
     llmEverReady = true;
     llmStatus = Object.assign({}, llmStatus, { ready: true, error: null, note: null, endpoint: targetBase + '/v1', webUrl: targetBase });
@@ -726,6 +1091,7 @@ async function startLlm(reserveMb) {
   // did; when VRAM can't be read the planner returns one unknown-placement
   // instance and lets llama.cpp decide.
   const cards = await detectGpusVram();
+  if (stale()) return false;
   // Which model this run serves. Chosen from the best card's free VRAM, because
   // the fleet loads ONE model across every instance — planLlmInstances then drops
   // any card that cannot hold it. On a mixed rig that trades breadth for
@@ -777,6 +1143,7 @@ async function startLlm(reserveMb) {
     // progress line would make the last 5% look like a stall.
     mmprojPath = await modelEngine.ensureMmproj(progressReporter('downloading vision projector…'), model);
   } catch (e) {
+    if (stale()) return false;
     // Surface the failure on the hero, not only in the log. Clearing the note
     // without setting an error dropped the row straight back to a grey dot and
     // the model name — identical to "not started yet" — so a download that died
@@ -786,6 +1153,12 @@ async function startLlm(reserveMb) {
     llmStatus = Object.assign({}, llmStatus, { ready: false, note: null, error: 'Setup failed — see Logs' });
     sendLlmStatus();
     send('miner:log', { level: 'error', line: 'LLM setup failed: ' + e.message });
+    return false;
+  }
+  if (stale()) {
+    // A pause's queued run takes over and sets its own note. After a STOP, the
+    // download's last progress note goes.
+    if (!session) setLlmNote(null);
     return false;
   }
 
@@ -868,15 +1241,19 @@ function buildFleet() {
     cancelChat('the local LLM stopped');
     resetLlmStatus();
     syncLanShare();
-    // Every instance died before any became ready while mining keeps running —
-    // the silent-failure case (typically a port-bind/OOM), not a user stop.
-    if (!llmEverReady && miner && miner.isRunning()) {
+    // Every instance died before any became ready while mining keeps running, or
+    // while idle-only has it paused — the silent-failure case (typically a
+    // port-bind/OOM), not a user stop.
+    if (!llmEverReady && ((miner && miner.isRunning()) || (session && session.paused))) {
       llmStatus = Object.assign({}, llmStatus, { ready: false, error: 'The local LLM stopped before it was ready. See Logs.' });
       sendLlmStatus();
     }
-    // An LLM-only session ends when the fleet exits — tell the renderer or the UI
-    // keeps showing a running session with nothing running.
-    if (!miner || !miner.isRunning()) send('miner:stopped');
+    // An LLM-only session ends when the fleet exits, and so does one whose miner
+    // never started — or the UI keeps showing a running session with nothing
+    // running, and the idle watcher can bring things back behind it (see
+    // runPlan). Not while idle-only has mining paused: that START still stands,
+    // and mining comes back on the next resume.
+    if ((!miner || !miner.isRunning()) && !(session && session.paused)) endSession();
   });
   return f;
 }
@@ -1201,11 +1578,23 @@ function waitForMinerUp(capMs) {
   });
 }
 
+// Which engines a START asks for.
+function planFor(settings) {
+  return resolvePlan(settings.mode || DEFAULT_MODE, {
+    canMine: isValidAddress(settings.address) && minerSupported(process.platform),
+    canLlm: true,
+  });
+}
+
 // Apply the compute mode: run the miner and/or the LLM per the plan. When the
 // plan ends up running nothing (LLM-only mode with the VRAM gate refusing, or
 // no engine at all), tell the renderer — otherwise its optimistic "running"
 // state shows STOP for a session in which nothing runs.
-async function runPlan(settings) {
+async function runPlan(queuedSettings) {
+  // The session's settings as they are now, not as they were when this run was
+  // queued: the network-share switch is saved live, and a run queued before it
+  // was flipped would save the old value back.
+  const settings = session ? session.settings : queuedSettings;
   const epoch = miningEpoch;
   const mode = settings.mode || DEFAULT_MODE;
   // macOS can serve the local LLM but has no mining engine to run, so the miner
@@ -1215,11 +1604,12 @@ async function runPlan(settings) {
   // runs nothing at all with no reason on screen.
   const note = minerUnsupportedNote(process.platform, mode);
   if (note) send('miner:log', { level: 'warn', line: note });
-  const plan = resolvePlan(mode, {
-    canMine: isValidAddress(settings.address) && minerSupported(process.platform),
-    canLlm: true,
-  });
-  if (plan.miner) {
+  const plan = planFor(settings);
+  // Idle-only, while someone uses the computer: the miner waits, the LLM runs.
+  // The model is still sized with the mining reserve, so mining can start
+  // beside it later without reloading it.
+  const mineNow = plan.miner && !(session && session.paused);
+  if (mineNow) {
     // Start mining FIRST, then — when co-running — wait until the miner reports a
     // non-zero hashrate before starting the LLM. Spawning the process (or even
     // connecting to the pool) isn't enough proof mining works: the LLM loads its
@@ -1228,16 +1618,17 @@ async function runPlan(settings) {
     // its share. Waiting for real TH/s confirms the GPU is mining and its VRAM is
     // allocated, so the LLM then sizes its offload to what's actually left.
     try {
-      await startMining(settings, plan.llm);
+      await startMiningOnce(settings, plan.llm);
     } catch (e) {
       send('miner:log', { level: 'error', line: 'start failed: ' + e.message });
     }
     if (plan.llm && miner && miner.isRunning()) await waitForMinerUp();
   } else {
     // A miner from an earlier plan can still be running: LLM-only picked while
-    // mining. Stop it. Mining is no longer asked for, and the model is about to
-    // be served from these cards with no mining reserve, under the miner's
-    // memory clock lock if it holds one (on an RTX 5090 that slows the model).
+    // mining, or idle-only holding mining back. Stop it. For LLM-only, mining is
+    // no longer asked for, and the model is about to be served from these cards
+    // with no mining reserve, under the miner's memory clock lock if it holds
+    // one (on an RTX 5090 that slows the model).
     // Not stopMining(): the session goes on, so the epoch stays (this run still
     // starts the model) and the renderer is not told it stopped. Its mining
     // figures are zeroed instead, as an LLM-only start shows them.
@@ -1252,11 +1643,18 @@ async function runPlan(settings) {
   if (epoch !== miningEpoch) return;
   syncNodeName(settings);
   if (plan.llm) {
-    const started = await startLlm(plan.miner ? LLM.miningReserveMb : 0).catch(() => false);
-    if (!started && !plan.miner) send('miner:stopped');
+    const started = await startLlm(plan.miner ? LLM.miningReserveMb : 0, epoch).catch(() => false);
+    // A run cut short by STOP or a pause ends nothing: the START it belonged to
+    // is already gone, or the next run carries it on.
+    if (epoch !== miningEpoch) return;
+    // Nothing runs for this START: the card had no room for an LLM-only start.
+    // End the START itself, not just the window's STOP button: a session left
+    // behind kept the idle watcher going, which could bring the model back while
+    // the window showed START.
+    if (!started && !plan.miner) endSession();
   } else {
     stopLlm();
-    if (!plan.miner) send('miner:stopped');
+    if (!plan.miner) endSession();
   }
 }
 
@@ -1274,9 +1672,12 @@ let planRun = null;
 let planActive = null;
 let planQueued = null;
 
-function applyPlan(settings) {
+// `force` replays even the same settings once the run in flight ends. An idle
+// pause and resume need it: the pause cancelled that run (miningEpoch), and the
+// same settings now mean a different run, with or without the miner.
+function applyPlan(settings, force) {
   if (planRun) {
-    if (JSON.stringify(settings) !== planActive) planQueued = settings;
+    if (force || JSON.stringify(settings) !== planActive) planQueued = settings;
     return planRun;
   }
   planActive = JSON.stringify(settings);
@@ -1286,23 +1687,145 @@ function applyPlan(settings) {
     const next = planQueued;
     planQueued = null;
     if (next) applyPlan(next);
+    // An update that downloaded during the run may install now.
+    installWhenHidden();
   });
   return planRun;
 }
 
+// The START the user pressed, kept until they press STOP: { settings, paused }.
+// With "only mine when idle" on, the idle watcher pauses its mining while
+// someone uses the computer and resumes it when they leave. The local LLM is
+// not paused: it keeps serving chat, cluster jobs and the network share. The
+// renderer keeps showing STOP throughout, because the user's START still stands.
+let session = null;
+let idleTimer = null;
+
+function startSession(settings) {
+  session = { settings, paused: false };
+  syncIdleWatcher();
+  // Someone just pressed START, so with idle-only on the computer is in use:
+  // mining waits for it to go idle instead of starting now.
+  if (getPrefs().mineWhenIdle && sessionMines() && appPrefs.idleAction(idleState(), false) === 'pause') {
+    pauseSession();
+    return;
+  }
+  applyPlan(settings);
+}
+
+function endSession() {
+  session = null;
+  // A pause or resume queued behind a slow start (a first model download can
+  // take minutes) must not replay after STOP and start mining nobody asked for.
+  planQueued = null;
+  // And the cancelled run still in flight is no longer what's running, so a
+  // START with the same settings must not be dropped as a duplicate of it.
+  planActive = null;
+  syncIdleWatcher();
+  stopMining();
+  stopLlm();
+}
+
+// Idle-only only ever holds back mining, so a START with no miner in it (LLM
+// mode, or no payout address) has nothing to pause.
+function sessionMines() {
+  return planFor(session.settings).miner;
+}
+
+function idleState() {
+  return powerMonitor.getSystemIdleState(appPrefs.IDLE_AFTER_SEC);
+}
+
+// Stop mining for the user, keeping their START and the local LLM. Not
+// stopMining(): that tells the renderer mining stopped. The epoch still moves,
+// so a miner start in flight does not finish after the pause; that also cancels
+// the LLM half of a run in flight, so the plan runs again without the miner,
+// which brings the LLM up if it isn't already (and leaves it alone if it is).
+function pauseSession() {
+  session.paused = true;
+  miningEpoch++;
+  haltMiner();
+  applyPlan(session.settings, true);
+  send('miner:stats', statsView(snapshot(initStats(Date.now()), Date.now())));
+  send('miner:idle', { paused: true, idleAfterSec: appPrefs.IDLE_AFTER_SEC });
+  send('miner:log', {
+    level: 'info',
+    line: 'paused while the computer is in use; mining starts again after '
+      + appPrefs.IDLE_AFTER_SEC / 60 + ' minutes without keyboard or mouse input',
+  });
+}
+
+function resumeSession() {
+  session.paused = false;
+  send('miner:idle', { paused: false, idleAfterSec: appPrefs.IDLE_AFTER_SEC });
+  send('miner:log', { level: 'info', line: 'the computer is idle; mining' });
+  if (!planRun) {
+    applyPlan(session.settings, true);
+    return;
+  }
+  // A run is still in flight: usually a paused START bringing up the model,
+  // which on a first run downloads several GB. Mining doesn't wait for it. That
+  // model was planned with the mining reserve, so the miner starts beside it
+  // now, and the run goes on to finish the model.
+  startMiningOnce(session.settings, planFor(session.settings).llm)
+    .catch((e) => send('miner:log', { level: 'error', line: 'start failed: ' + e.message }));
+}
+
+function checkIdle() {
+  if (!session.paused && !sessionMines()) return;
+  const action = appPrefs.idleAction(idleState(), session.paused);
+  if (action === 'pause') pauseSession();
+  else if (action === 'resume') resumeSession();
+}
+
+// The watcher runs only while there is a START to pause and idle-only is on.
+function syncIdleWatcher() {
+  const wanted = !!session && getPrefs().mineWhenIdle;
+  if (wanted && !idleTimer) idleTimer = setInterval(checkIdle, appPrefs.IDLE_POLL_MS);
+  else if (!wanted && idleTimer) {
+    clearInterval(idleTimer);
+    idleTimer = null;
+  }
+}
+
+// Settings changed one or more of the app's switches. Returns what now holds.
+function setPrefs(change) {
+  const next = Object.assign({}, change);
+  // Starting with the computer is reported as it ended up: a dev run, or a
+  // Linux build that is not an AppImage, cannot do it.
+  if (typeof next.runAtStartup === 'boolean') next.runAtStartup = applyLoginItem(next.runAtStartup);
+  const saved = savePrefs(next);
+  // Idle-only switched off while paused: there is nothing left to wait for.
+  if (!saved.mineWhenIdle && session && session.paused) resumeSession();
+  syncIdleWatcher();
+  return saved;
+}
+
 // The renderer gets a region that EXISTS. A saved AlphaPool id would otherwise
 // reach a <select> with no matching option, which blanks it silently.
-ipcMain.handle('settings:get', () => withLiveRegion(Object.assign(
-  // Both clients default to the shared DEFAULT_MODE ('auto': mine + serve the
-  // LLM, balanced from free VRAM).
-  // worker defaults to this machine's hostname, not the shared "rig01" constant:
-  // two rigs on one payout address under the same name collide into a single
-  // board identity (and if either is multi-GPU, the other's row is dropped
-  // outright). Only fills a FRESH install — loadSettings() below wins, so an
-  // existing worker name is never rewritten out from under someone's board row.
-  { region: DEFAULTS.region, worker: defaultWorker(), address: '', mdlAddress: '', mode: DEFAULT_MODE },
-  loadSettings(),
-)));
+// A launch at login starts mining once, the first time the renderer asks.
+let startMiningOnLaunch = hiddenLaunch;
+
+ipcMain.handle('settings:get', () => {
+  const s = withLiveRegion(Object.assign(
+    // Both clients default to the shared DEFAULT_MODE ('auto': mine + serve the
+    // LLM, balanced from free VRAM).
+    // worker defaults to this machine's hostname, not the shared "rig01" constant:
+    // two rigs on one payout address under the same name collide into a single
+    // board identity (and if either is multi-GPU, the other's row is dropped
+    // outright). Only fills a FRESH install — loadSettings() below wins, so an
+    // existing worker name is never rewritten out from under someone's board row.
+    { region: DEFAULTS.region, worker: defaultWorker(), address: '', mdlAddress: '', mode: DEFAULT_MODE },
+    loadSettings(),
+  ));
+  // The renderer already resumes mining after an update; a launch at login asks
+  // for the same thing. It only starts with a valid payout address.
+  if (startMiningOnLaunch) s.resumeMining = true;
+  startMiningOnLaunch = false;
+  return s;
+});
+ipcMain.handle('prefs:get', () => getPrefs());
+ipcMain.handle('prefs:set', (_e, change) => setPrefs(change || {}));
 ipcMain.handle('llm:status', () => llmStatus);
 // `platform` rides along on the config the renderer already fetches at startup,
 // so the UI can stop offering what this OS can't do (the mining compute modes on
@@ -1316,8 +1839,8 @@ ipcMain.handle('config:get', () => ({
 ipcMain.handle('gpu:detect', () => detectGpu());
 ipcMain.handle('region:detect', () => detectRegion());
 ipcMain.handle('balance:get', (_e, address) => fetchBalance(address, liveEcon.PRL_USD));
-ipcMain.on('miner:start', (_e, settings) => applyPlan(settings || {}));
-ipcMain.on('miner:stop', () => { stopMining(); stopLlm(); });
+ipcMain.on('miner:start', (_e, settings) => startSession(settings || {}));
+ipcMain.on('miner:stop', () => endSession());
 ipcMain.on('open-external', (_e, url) => { openExternalSafe(url); });
 // Re-fit the window to its content when the renderer's layout changes (tab
 // switch, mining start/stop, etc.), so the frame never leaves a gap under the
@@ -1330,6 +1853,9 @@ ipcMain.on('llm:chat', (_e, messages) => llmChat(messages));
 // the settings START sends, so a START never turns it back off.
 ipcMain.on('llm:share', (_e, on) => {
   persistSettings(Object.assign({}, loadSettings(), { shareLlm: on === true }));
+  // An idle pause or resume replays the START's settings and saves them; without
+  // this they would put the switch back where it was at START.
+  if (session) session.settings = Object.assign({}, session.settings, { shareLlm: on === true });
   syncLanShare();
 });
 ipcMain.handle('node:status', () => nodeStatus());
@@ -1338,28 +1864,33 @@ ipcMain.handle('node:disconnect', () => disconnectNode());
 ipcMain.on('node:dashboard', () => openExternalSafe(NODE.dashboardUrl));
 ipcMain.handle('app:version', () => app.getVersion());
 ipcMain.on('app:update:check', () => checkForUpdate());
-ipcMain.on('app:update:install', () => {
-  try {
-    // If mining right now, remember to resume automatically after the restart.
-    if (stats) persistSettings(Object.assign({}, loadSettings(), { resumeMining: true }));
-    // Stop the LLM and miner BEFORE relaunching. llama-server binds a fixed port
-    // (8080) and quitAndInstall relaunches immediately; if the outgoing server is
-    // still holding the port, the resumed instance's llama-server can't bind and
-    // the LLM silently fails to start (the miner binds no port, so it's fine —
-    // exactly the "miner came back, LLM didn't" symptom). Killing them here frees
-    // the port and VRAM deterministically before the new instance starts.
-    stopLlm();
-    stopMining();
-    // isSilent=true: install to the existing directory without re-showing the
-    // assisted-installer wizard. isForceRunAfter=true: relaunch the app afterwards.
-    autoUpdater.quitAndInstall(true, true);
-  } catch (e) {
-    send('miner:log', { level: 'error', line: 'update install failed: ' + e.message });
-  }
-});
+ipcMain.on('app:update:install', () => installUpdate(false));
 
-app.whenReady().then(() => {
+app.on('second-instance', () => showWindow());
+
+app.whenReady().then(async () => {
+  // The second copy is on its way out (see requestSingleInstanceLock above).
+  if (!primaryInstance) return;
+  // Restarted by an update that installed while the window was in the tray:
+  // start in the tray again. Only straight after that restart, so an install
+  // that never restarted the app can't make the next ordinary launch start out
+  // of sight.
+  const saved = loadSettings();
+  if (saved.resumeHidden) {
+    if (Date.now() - Number(saved.resumeHidden) < UPDATE_RESTART_MS) hiddenLaunch = true;
+    delete saved.resumeHidden;
+    persistSettings(saved);
+  }
+  createTray();
+  // A launch at login waits to know there's a tray to start in. A window on
+  // screen doesn't wait: the answer is in long before anyone closes it.
+  if (hiddenLaunch) await confirmTray(TRAY_WAIT_MS).catch(() => {});
+  else confirmTray(0).catch(() => {});
   createWindow();
+  // Logging off or shutting down on Linux: let the window close.
+  powerMonitor.on('shutdown', () => { quitting = true; });
+  // Point the login item at this install, if an update moved or renamed it.
+  refreshLoginItem();
   // Not on macOS: Squirrel.Mac checks the downloaded bundle's signature against
   // the running app's, and this build carries only an ad-hoc one, so wiring the
   // updater there buys a periodic download that always ends in an error bar the
@@ -1376,16 +1907,19 @@ app.whenReady().then(() => {
   // Resume pinging if this machine is already linked to an account.
   const node = loadNode();
   if (node && node.connected) startNodePinger();
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  // macOS: clicking the Dock icon brings the window back, from the tray too.
+  // showWindow makes a new one if it was closed.
+  app.on('activate', (_e, hasVisibleWindows) => {
+    if (!hasVisibleWindows) showWindow();
   });
 });
 
 // Kill the children we spawned. Idempotent — both quit paths below call it, and
 // on the common path both of them fire.
 function shutdownChildren() {
-  stopMining();
-  stopLlm(); // never orphan llama-server (it would hold VRAM + port 8080)
+  // endSession stops the miner and the LLM (never orphan llama-server: it would
+  // hold VRAM + port 8080), and the idle watcher with them.
+  endSession();
 }
 
 app.on('window-all-closed', () => {
@@ -1401,5 +1935,7 @@ app.on('window-all-closed', () => {
 // longer see, and the next launch found port 8080 already held (the same
 // symptom the update path documents at 'app:update:install').
 app.on('before-quit', () => {
+  // Every real quit comes through here, so the window may close now.
+  quitting = true;
   shutdownChildren();
 });

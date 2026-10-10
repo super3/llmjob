@@ -17,16 +17,22 @@ Run the tests before you start work and again when you finish. Use `npm test` in
 the directory you changed: the repo root for the server, `earn/` for the desktop
 app. The job isn't done until every test passes.
 
+## Benchmarks
+
+Follow "Keeping this file current" in `benchmark.md`. A re-measure goes into
+`benchmark.md` in the same PR, and the file is checked before every release.
+
 ## Git
 
-- Don't commit unless I ask. "Commit", "push", and "save" mean I'm asking.
-- "Push" means commit and push.
-- Any other time: make the edit, stop, and wait for me.
-- Before you commit, show me `git status` so I can see what's included.
+- You can commit and push your working changes to the open PR's branch without
+  asking. Push once the tests pass, so I can see the work on the PR.
+- Show me `git status` in your reply when you commit, so I can see what's
+  included.
+- Don't push to `main`. A PR branch is the only place you push.
 - Write commit messages that explain why you made the change, not just what you
   changed.
 
-I want to decide what goes into the repo, which is the point of all of the above.
+I decide what goes into `main`: that happens when I merge a PR.
 
 ## Pull requests
 

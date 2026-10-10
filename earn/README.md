@@ -18,6 +18,9 @@ Paste a payout address, hit **Start**, and earn — no command line. Built with 
   page (your Pearl address only — nothing else is reported).
 - **Zero-config** — mines on every GPU, picks the lowest-latency pool region,
   and updates itself.
+- **Runs in the background** — closes to the tray, can start with the computer,
+  and can mine only while nobody is using it. See
+  [Running in the background](#running-in-the-background).
 
 ## How it works
 
@@ -76,6 +79,29 @@ Earlier versions wrapped AlphaPool's `alpha-miner`. That engine and
 that pool are gone. An old AlphaPool region id (`us1`, `eu1`, `eu2`, `ru1`,
 `sg1`, `hk1`, `in1`), in saved settings or passed to the CLI, maps to the
 nearest HeroMiners region.
+
+### When the pool's name won't resolve
+
+Both shells look up the pool's name with the system resolver first. If that
+fails, they try the computer's DNS servers directly (skipping the system's
+resolver and its cache), then public DNS (1.1.1.1, 8.8.8.8), then the last
+address that worked, saved in `pool-addresses.json` beside the node identity.
+An address is saved once the pool has accepted the rig's login there. A filter
+that blocks with a real-looking address (a hosts-file `127.0.0.1`, Pi-hole's
+own address, a block page) never gets that far, so it can't replace the saved
+one.
+An answer of `0.0.0.0` or `::` counts as no answer at every step and is never
+saved: it is how DNS filters that block crypto-mining names (Cloudflare's
+1.1.1.2, Pi-hole, AdGuard) answer. The log names the fallback used:
+
+```
+could not look up us2.pearl.herominers.com (ENOENT); using 203.0.113.7 from the last address that worked
+```
+
+Once the pool connection has been down for 30 seconds, the rig reports 0 TH/s
+to the network board, so the board agrees with the pool about whether the rig
+is mining. A shorter drop doesn't show: pools close connections every few
+minutes, the miner is back within seconds, and the cards mine throughout.
 
 ### Which GPUs it mines on
 
@@ -151,7 +177,7 @@ A release ships two builds of the mining core side by side, in the installer's
 
 | File | Toolkit | Cards |
 |---|---|---|
-| `pearl_core.node` | CUDA 12.8 | RTX 20, 30, 40 and 50, A100 / A800 / A30 / CMP 170HX, and H100 / H200 (sm_75/80/86/89/90a/120) — every rig |
+| `pearl_core.node` | CUDA 12.8 | RTX 20, 30, 40 and 50, A100 / A800 / A30 / CMP 170HX, H100 / H200 and B200 (sm_75/80/86/89/90a/100/120) — every rig |
 | `pearl_core_cu13.node` | CUDA 13.3 | sm_89 and sm_120; picked automatically for RTX 50 / Blackwell only (the sm_89 half measured no faster on a 4090) |
 
 **RTX 30 (Ampere) note.** The sm_86 half of `pearl_core.node` now runs the same
@@ -162,12 +188,21 @@ in this build. If a 3090 mines slower on this release,
 `PEARL_CORE_PATH=<path to the previous release's pearl_core.node>` loads the old
 core unchanged, and a report with both numbers is what settles it.
 
+**B200 note.** A B200 (compute 10.0, in an HGX or DGX system with an x86-64
+host) runs the sm_100 half of `pearl_core.node`: the CUDA 12.8 build of the tall
+fold source that RTX 50 cards use, built for sm_100. (An RTX 50 card on driver
+580 or newer mines on the CUDA 13 build of it.) It does not use the B200's own
+tensor instructions (tcgen05) yet, so it is slow: a 1000 W B200 mined 460 TH/s
+on it, a third of PeakMiner's and SRBMiner's 1,380 (`benchmark.md`, "B200").
+Before this build the core had no sm_100 code, so a B200 could not mine at all. A GB200 can't run the miner: its host CPU is Arm
+(Grace), and the core is built for x86-64 Linux and Windows only.
+
 The CUDA 13 compiler produces faster code for Blackwell: on an RTX 5090 at
 600 W the same source ran 107.27 TH/s built with CUDA 13.3 against 103.97 with
 12.8 (+3.2%). But a CUDA 13 build needs NVIDIA driver 580 or newer, so it is used
 only when **the driver is 580+ and every card that will mine is compute 12.x**
 (read from `nvidia-smi --query-gpu=index,compute_cap,driver_version`). Everything
-else — a 2080 Ti, 3090 or 4090, a mixed 4090 + 5090 rig, an older driver, or a rig where
+else — a 2080 Ti, 3090, 4090 or B200, a mixed 4090 + 5090 rig, an older driver, or a rig where
 `nvidia-smi` can't say — loads `pearl_core.node`, as before. If the CUDA 13 core
 is missing, won't load, or fails its first start with a driver/runtime error, the
 app falls back to `pearl_core.node` and logs why. The choice is logged once per
@@ -186,14 +221,14 @@ beats both and loads exactly that file.
 ## Sharing the local LLM on your network
 
 The local LLM listens on `127.0.0.1:8080`, so only this computer can use it.
-**Settings → Local network → Share the local LLM on my network** lets phones and
+**Share the local LLM on my network**, under Compute Mode in Settings, lets phones and
 other computers on the same network use it too.
 
 - **How:** the app runs the gate the CLI serves on (`autoGate.createServeGate`)
   on port **8000**, on every network interface. It passes requests to
   `llama-server`, which stays on `127.0.0.1`, so the in-app chat and cluster jobs
-  don't change. The address to use, `http://<this computer>:8000/v1`, shows under
-  the switch and on the API tab.
+  don't change. The address to use, `http://<this computer>:8000/v1`, shows in
+  the switch's row and on the API tab.
 - **Off by default, and no key.** While it's on, anyone on the network can use
   the model.
 - **When it runs:** only while the local LLM runs (Auto or LLM mode). The switch
@@ -202,6 +237,46 @@ other computers on the same network use it too.
   the firewall. Allow it on private networks.
 - **Port 8000 taken** (for example by the CLI on the same computer): the switch
   says so, and the app carries on without it.
+
+## Running in the background
+
+Three switches in **Settings → Background**, saved in `preferences.json` next to
+`settings.json` in the app's data folder:
+
+- **Keep running in the tray when I close the window** (on by default). Closing
+  the window hides it and mining carries on. The first time, a notification says
+  so. The tray icon opens the window again, and its menu has **Quit**. Opening
+  the app a second time shows the running window instead of starting a second
+  copy. On a desktop with no tray, closing quits as before. That includes GNOME
+  without an AppIndicator extension, which draws no tray icon: the app asks the
+  session bus whether anything will. On Windows, a close from another program
+  (the installer, the uninstaller, Task Manager's End task) quits the app, so
+  the miner stops cleanly before the installer replaces the files.
+- **Start with my computer, and start mining** (off by default). Windows gets a
+  login item, a Linux AppImage an entry in `~/.config/autostart`, and macOS a
+  LaunchAgent in `~/Library/LaunchAgents`. Each starts the app with `--hidden`,
+  so it stays in the tray and starts mining with the saved payout address. Only
+  the installed app can do this; a dev run turns the switch back off. Each
+  start points the entry at the app again if an update moved it, and otherwise
+  leaves it alone, so turning it off in Task Manager or the desktop's startup
+  settings sticks.
+- **Only mine when my computer is idle** (off by default). Idle means 5 minutes
+  without keyboard or mouse input, or a locked screen. While someone uses the
+  computer, mining stops and the window says what it is waiting for. The local
+  LLM keeps running, so chat, cluster jobs and the network share go on, and it
+  stays sized to leave mining its share of the card. **STOP** still shows,
+  because the START stands. Mining resumes on its own once the computer goes
+  idle again, without waiting for a model that is still downloading. With no
+  mining to pause (LLM mode, no payout address, or macOS), the switch does
+  nothing. A desktop that cannot report idle time (some
+  Linux setups) counts as idle.
+
+Updates download in the background. With the window open, the update bar's
+**Update & restart** installs one. With the window in the tray, the app installs
+it as soon as it has downloaded, restarts in the tray, and picks its START back
+up. It waits for a START that is still downloading the model, and leaves an
+install for all users (in Program Files) to the button, since Windows would ask
+for an administrator.
 
 ## macOS (LLM only)
 

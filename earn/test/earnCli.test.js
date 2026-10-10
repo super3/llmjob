@@ -40,6 +40,7 @@ jest.mock('../src/main/io', () => ({
   extractEnginePackage: jest.fn(),
 }));
 jest.mock('../src/main/nodeStore', () => ({
+  nodePath: jest.fn(() => '/tmp/store/node.json'),
   loadNode: jest.fn(),
   saveNode: jest.fn(),
   getOrCreateNode: jest.fn(),
@@ -69,6 +70,7 @@ jest.mock('../src/main/pearlEngine', () => {
       });
       this.stop = jest.fn();
       this.isRunning = jest.fn(() => true);
+      this.poolConnected = jest.fn(() => true);
       PearlEngine.instances.push(this);
     }
   }
@@ -117,7 +119,10 @@ jest.mock('../src/main/llmEngineManager', () => {
       this.isModelInstalled = jest.fn(() => LlmEngineManager.modelInstalled);
       this.modelPath = jest.fn(() => '/cache/model.gguf');
       this.ensureModel = jest.fn(async (onPct) => {
-        if (onPct) { onPct(20); onPct(null); }
+        // 25 after 20: the same tenth, which a background download logs once.
+        if (onPct) { onPct(20); onPct(25); onPct(null); }
+        // A test can hold the download open (a promise it resolves later).
+        if (LlmEngineManager.modelHold) await LlmEngineManager.modelHold;
         return '/cache/model.gguf';
       });
       // The vision projector half. Defaults to "already satisfied, none to
@@ -138,6 +143,7 @@ jest.mock('../src/main/llmEngineManager', () => {
   LlmEngineManager.mmprojInstalled = true;   // text-only default: nothing to fetch
   LlmEngineManager.mmprojFile = null;
   LlmEngineManager.serverError = null;
+  LlmEngineManager.modelHold = null;
   return { LlmEngineManager };
 });
 jest.mock('../src/main/jobWorker', () => {
@@ -517,6 +523,10 @@ describe('mining', () => {
     }));
     miner.emit('log', { line: 'hello', level: 'info' });
     miner.emit('log', { line: 'bad', level: 'error' });
+    // The throttle reads the clock, so pin it. With the real clock, a busy Windows
+    // runner that stalled a second between the two emits below printed two lines.
+    const t0 = Date.now();
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(t0);
     miner.emit('event', { type: 'status', hashrate: 3.2, accepted: 5, rejected: 1 });
     // Each card ticks about twice a second, so the rig line is throttled: this
     // second status is folded into the totals but writes no second line.
@@ -527,7 +537,7 @@ describe('mining', () => {
     expect(allOut().match(/⛏/g)).toHaveLength(1);
     // A second later the line prints the rig rate averaged over that second (card 0
     // at 3.2 and card 1 at 1 the whole time: 4.2), not the latest window alone.
-    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 1500);
+    nowSpy.mockReturnValue(t0 + 1500);
     miner.emit('event', { type: 'status', gpuIndex: 1, hashrate: 1, accepted: 0, rejected: 0 });
     nowSpy.mockRestore();
     expect(allOut().match(/⛏/g)).toHaveLength(2);
@@ -640,7 +650,66 @@ describe('mining', () => {
     await settle();
     m.net.connect.mockClear();
     m.PearlEngine.instances[0].opts.connect('pool.example', 1200);
-    expect(m.net.connect).toHaveBeenCalledWith(1200, 'pool.example');
+    expect(m.net.connect).toHaveBeenCalledWith({ port: 1200, host: 'pool.example', lookup: expect.any(Function) });
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await p;
+  });
+
+  // The GPU keeps working on its last job while the pool connection is being
+  // reopened, but the pool gets nothing, so neither should the board.
+  test('reports no hashrate to the board while the pool is not connected', async () => {
+    const m = load();
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+    await settle();
+    const miner = m.PearlEngine.instances[0];
+    miner.emit('event', { type: 'status', hashrate: 120 });
+    const reporter = intervalFor(NETWORK.reportIntervalMs);
+
+    m.probe.postMinerReport.mockClear();
+    await reporter.fn();
+    expect(m.probe.postMinerReport.mock.calls.map((c) => c[0].hashrate)).toEqual([120]);
+
+    miner.poolConnected.mockReturnValue(false);
+    m.probe.postMinerReport.mockClear();
+    await reporter.fn();
+    expect(m.probe.postMinerReport.mock.calls.map((c) => c[0].hashrate)).toEqual([0]);
+
+    miner.emit('stopped', 0);
+    await p;
+  });
+
+  // A failed system lookup falls back (shared/poolLookup), and the CLI says
+  // which address it used. It saves the address once the pool takes the login
+  // there, not before.
+  test('finds the pool by a fallback when the system lookup fails, and says so', async () => {
+    const m = load();
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+    await settle();
+    m.net.connect.mockClear();
+    m.PearlEngine.instances[0].opts.connect('pool.example', 1200);
+    const { lookup } = m.net.connect.mock.calls[0][0];
+    const dns = require('dns');
+    const fail = jest.spyOn(dns, 'lookup').mockImplementation((h, o, cb) => cb(Object.assign(new Error('no data'), { code: 'ENOENT' })));
+    const resolver = jest.spyOn(dns.promises, 'Resolver').mockImplementation(() => ({
+      setServers: jest.fn(),
+      resolve4: jest.fn(() => Promise.resolve(['203.0.113.7'])),
+    }));
+    const write = jest.spyOn(require('fs'), 'writeFileSync').mockImplementation(() => {});
+    const mkdir = jest.spyOn(require('fs'), 'mkdirSync').mockImplementation(() => {});
+    try {
+      const got = await new Promise((resolve) => lookup('pool.example', {}, (err, address) => resolve({ err, address })));
+      expect(got).toEqual({ err: null, address: '203.0.113.7' });
+      expect(allOut()).toContain('could not look up pool.example (ENOENT); using 203.0.113.7 from DNS');
+      const saved = () => m.fs.writeFileSync.mock.calls.filter((c) => String(c[0]).endsWith('pool-addresses.json'));
+      expect(saved()).toEqual([]);
+      m.PearlEngine.instances[0].emit('authorized', { host: 'pool.example', address: '203.0.113.7', family: 'IPv4' });
+      expect(JSON.parse(saved()[0][1])).toEqual({ 'pool.example': [{ address: '203.0.113.7', family: 4 }] });
+    } finally {
+      fail.mockRestore();
+      resolver.mockRestore();
+      write.mockRestore();
+      mkdir.mockRestore();
+    }
     m.PearlEngine.instances[0].emit('stopped', 0);
     await p;
   });
@@ -1411,12 +1480,99 @@ describe('both mode', () => {
     await expect(p).resolves.toBe(0);
   });
 
-  test('a miner that fails to launch also stops the LLM', async () => {
+  // The LLM now starts after the miner, so a miner that cannot launch ends the
+  // run before any model is fetched or any llama-server spawned.
+  test('a miner that fails to launch exits 1 before any LLM is fetched or started', async () => {
     const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 1000, totalMb: 16000 }]);
     m.PearlEngine.startError = new Error('spawn ENOENT');
-    const p = m.run(argvBoth);
+    const p = m.run(['-a', ADDR, '--mode', 'auto', '--no-update', '--no-report']);
     await expect(p).resolves.toBe(1);
+    await settle();
     expect(allErr()).toContain('failed to launch engine: spawn ENOENT');
+    expect(m.LlmManager.instances).toHaveLength(0);
+    expect(m.LlmEngineManager.instances).toHaveLength(0);
+  });
+
+  // The point of the change: on a first run the model is several GB, and the
+  // miner used to wait for it. Now the miner starts first and the download runs
+  // beside it, printed as whole lines so it doesn't overwrite the mining line.
+  test('mines before it fetches the model, then starts the LLM beside the miner', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 1000, totalMb: 16000 }]);
+    const p = m.run(['-a', ADDR, '--mode', 'auto', '--no-update', '--no-report', '--no-serve']);
+    await settle(8);
+
+    const miner = m.PearlEngine.instances[0];
+    const server = m.LlmEngineManager.instances.find((e) => e.ensureServer.mock.calls.length);
+    const model = m.LlmEngineManager.instances.find((e) => e.ensureModel.mock.calls.length);
+    expect(miner.start.mock.invocationCallOrder[0]).toBeLessThan(server.ensureServer.mock.invocationCallOrder[0]);
+    expect(miner.start.mock.invocationCallOrder[0]).toBeLessThan(model.ensureModel.mock.invocationCallOrder[0]);
+    expect(allOut()).toContain('downloading… 10%\n');
+    expect(allOut()).toContain('downloading model… 20%\n');
+    expect(allOut()).not.toContain('\r  downloading');
+    // The mock reports 20% then 25%: the same tenth, so one line, not two.
+    expect(allOut().match(/downloading model… 20%/g)).toHaveLength(1);
+
+    // Planned against the empty card, as before: the whole model on GPU 0.
+    const llm = m.LlmManager.instances[0];
+    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({ nGpuLayers: ALL_LAYERS, mainGpu: 0 }));
+    llm.emit('stopped', 3);   // the LLM it started is watched like the up-front one
+    expect(allErr()).toContain('local LLM exited (code 3)');
+
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('an LLM that fails to set up beside the miner leaves mining running', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 1000, totalMb: 16000 }]);
+    m.LlmEngineManager.serverError = new Error('HTTP 404');
+    const p = m.run(['-a', ADDR, '--mode', 'auto', '--no-update', '--no-report', '--no-serve']);
+    await settle(8);
+
+    expect(allErr()).toContain('LLM setup failed: HTTP 404');
+    expect(m.LlmManager.instances).toHaveLength(0);
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('an error setting up the LLM beside the miner is logged, not fatal', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 1000, totalMb: 16000 }]);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    // Serving is on and there is no stored identity, so one is minted -- and the
+    // key file can't be written.
+    m.nodeStore.getOrCreateNode.mockImplementation(() => { throw new Error('ENOSPC: no space left on device'); });
+    const p = m.run(['-a', ADDR, '--mode', 'auto', '--no-update', '--no-report']);
+    await settle(8);
+
+    expect(allErr()).toContain('LLM start failed: ENOSPC: no space left on device — mining carries on');
+    let done = false;
+    p.then(() => { done = true; });
+    await settle();
+    expect(done).toBe(false);   // still mining
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('a run stopped while the model downloads leaves no llama-server behind', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 1000, totalMb: 16000 }]);
+    let release;
+    m.LlmEngineManager.modelHold = new Promise((r) => { release = r; });
+    const p = m.run(['-a', ADDR, '--mode', 'auto', '--no-update', '--no-report', '--no-serve']);
+    await settle(8);
+    expect(m.LlmManager.instances).toHaveLength(0);   // still downloading
+
+    fire('SIGINT');
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+
+    release();
+    await settle(8);
+    // The download finished after the run ended: the server it spawned is stopped.
     expect(m.LlmManager.instances[0].stop).toHaveBeenCalled();
   });
 
@@ -1873,6 +2029,59 @@ describe('auto mode on a card that cannot co-run its best model', () => {
   });
 });
 
+describe('demand-driven auto: the model is fetched while mining', () => {
+  test('downloads the model beside the miner, and a wake waits on that download', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+    m.LlmEngineManager.mmprojInstalled = true;
+    let release;
+    m.LlmEngineManager.modelHold = new Promise((r) => { release = r; });
+    const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
+    await settle(8);
+
+    const miner = m.PearlEngine.instances[0];
+    const model = m.LlmEngineManager.instances.find((e) => e.ensureModel.mock.calls.length);
+    expect(miner.start.mock.invocationCallOrder[0]).toBeLessThan(model.ensureModel.mock.invocationCallOrder[0]);
+    // Whole lines beside the miner, never the foreground's \r redraw.
+    expect(allOut()).toContain('downloading model… 20%\n');
+    expect(allOut()).not.toContain('\r  downloading');
+
+    // The gate's hook hands back the same download, so a wake that arrives
+    // mid-download waits for it while the miner keeps the card, instead of
+    // stopping the miner and starting a second download.
+    const gate = m.autoGate.createAutoGate.instances[0];
+    let ready = false;
+    const waiting = gate.opts.prepareLlm().then(() => { ready = true; });
+    await settle();
+    expect(ready).toBe(false);   // still downloading
+
+    release();
+    await waiting;
+    expect(allOut()).toContain(LLM.tiers[0].name + ' is on disk; a request now waits only for it to load');
+    const downloads = m.LlmEngineManager.instances.reduce((n, e) => n + e.ensureModel.mock.calls.length, 0);
+    expect(downloads).toBe(1);
+    expect(m.LlmManager.instances).toHaveLength(0);   // fetched, not loaded
+
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('a failed download is logged and left for the first request to retry', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+    m.LlmEngineManager.serverError = new Error('HTTP 404');
+    const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
+    await settle(8);
+
+    expect(allErr()).toContain('LLM download failed: HTTP 404');
+    expect(allErr()).toContain('it will be tried again when a request arrives');
+    expect(m.PearlEngine.instances[0].start).toHaveBeenCalled();   // still mining
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+});
+
 describe('demand-driven auto: the switching flag and failure paths', () => {
   test('a deliberate stop is ignored, a real one is not; and the default port is used', async () => {
     const m = load();
@@ -1973,9 +2182,9 @@ test('an engine that cannot start exits non-zero, not 0', async () => {
   expect(allErr()).toContain('engine failed to start');
 });
 
-test('a fatal engine start also stops an LLM that had already come up', async () => {
-  // auto mode starts the LLM before the miner, so a fatal engine failure must
-  // tear the LLM down rather than leave a server orphaned behind a dead node.
+test('a fatal engine start ends an auto run before any LLM comes up', async () => {
+  // auto mode starts the LLM only once the miner has started, so a fatal engine
+  // failure ends the run with no server to orphan behind a dead node.
   const m = load();
   m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 3000, totalMb: 24000 }]);
   m.LlmEngineManager.serverInstalled = true;
@@ -1983,7 +2192,8 @@ test('a fatal engine start also stops an LLM that had already come up', async ()
   m.PearlEngine.startReturns = false;
   const code = await m.run(['--address', ADDR, '--no-update', '--no-serve']);
   expect(code).toBe(1);
-  expect(m.LlmManager.instances[0].stop).toHaveBeenCalled();
+  await settle();
+  expect(m.LlmManager.instances).toHaveLength(0);
 });
 
 test('a fatal engine start closes the demand gate rather than leaking its port', async () => {
