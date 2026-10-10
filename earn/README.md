@@ -18,6 +18,9 @@ Paste a payout address, hit **Start**, and earn — no command line. Built with 
   page (your Pearl address only — nothing else is reported).
 - **Zero-config** — mines on every GPU, picks the lowest-latency pool region,
   and updates itself.
+- **Runs in the background** — closes to the tray, can start with the computer,
+  and can mine only while nobody is using it. See
+  [Running in the background](#running-in-the-background).
 
 ## How it works
 
@@ -76,6 +79,23 @@ Earlier versions wrapped AlphaPool's `alpha-miner`. That engine and
 that pool are gone. An old AlphaPool region id (`us1`, `eu1`, `eu2`, `ru1`,
 `sg1`, `hk1`, `in1`), in saved settings or passed to the CLI, maps to the
 nearest HeroMiners region.
+
+### When the pool's name won't resolve
+
+Both shells look up the pool's name with the system resolver first. If that
+fails, they try the computer's DNS servers directly (skipping the system's
+resolver and its cache), then public DNS (1.1.1.1, 8.8.8.8), then the last
+address that worked, saved in `pool-addresses.json` beside the node identity.
+An answer of `0.0.0.0` or `::` counts as no answer at every step and is never
+saved: it is how DNS filters that block crypto-mining names (Cloudflare's
+1.1.1.2, Pi-hole, AdGuard) answer. The log names the fallback used:
+
+```
+could not look up us2.pearl.herominers.com (ENOENT); using 203.0.113.7 from the last address that worked
+```
+
+While the pool connection is down, the rig reports 0 TH/s to the network
+board, so the board agrees with the pool about whether the rig is mining.
 
 ### Which GPUs it mines on
 
@@ -195,14 +215,14 @@ beats both and loads exactly that file.
 ## Sharing the local LLM on your network
 
 The local LLM listens on `127.0.0.1:8080`, so only this computer can use it.
-**Settings → Local network → Share the local LLM on my network** lets phones and
+**Share the local LLM on my network**, under Compute Mode in Settings, lets phones and
 other computers on the same network use it too.
 
 - **How:** the app runs the gate the CLI serves on (`autoGate.createServeGate`)
   on port **8000**, on every network interface. It passes requests to
   `llama-server`, which stays on `127.0.0.1`, so the in-app chat and cluster jobs
-  don't change. The address to use, `http://<this computer>:8000/v1`, shows under
-  the switch and on the API tab.
+  don't change. The address to use, `http://<this computer>:8000/v1`, shows in
+  the switch's row and on the API tab.
 - **Off by default, and no key.** While it's on, anyone on the network can use
   the model.
 - **When it runs:** only while the local LLM runs (Auto or LLM mode). The switch
@@ -211,6 +231,28 @@ other computers on the same network use it too.
   the firewall. Allow it on private networks.
 - **Port 8000 taken** (for example by the CLI on the same computer): the switch
   says so, and the app carries on without it.
+
+## Running in the background
+
+Three switches in **Settings → Background**, saved in `preferences.json` next to
+`settings.json` in the app's data folder:
+
+- **Keep running in the tray when I close the window** (on by default). Closing
+  the window hides it and mining carries on. The first time, a notification says
+  so. The tray icon opens the window again, and its menu has **Quit**. Opening
+  the app a second time shows the running window instead of starting a second
+  copy. On a Linux desktop with no tray, closing quits as before.
+- **Start with my computer, and start mining** (off by default). Windows gets a
+  login item, and a Linux AppImage gets an entry in `~/.config/autostart`. Both
+  start the app with `--hidden`, so it stays in the tray and starts mining with
+  the saved payout address. Only the installed app can do this; a dev run turns
+  the switch back off.
+- **Only mine when my computer is idle** (off by default). Idle means 5 minutes
+  without keyboard or mouse input, or a locked screen. While someone uses the
+  computer, mining and the local LLM stop and the window says what it is waiting
+  for. **STOP** still shows, because the START stands. Mining resumes on its own
+  once the computer goes idle again. A desktop that cannot report idle time (some
+  Linux setups) counts as idle.
 
 ## macOS (LLM only)
 

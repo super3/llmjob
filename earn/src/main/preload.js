@@ -33,6 +33,9 @@ contextBridge.exposeInMainWorld('llmjob', {
   onStopped: (cb) => ipcRenderer.on('miner:stopped', () => cb()),
   onUpdate: (cb) => ipcRenderer.on('app:update', (_e, d) => cb(d)),
   getVersion: () => ipcRenderer.invoke('app:version'),
+  getPrefs: () => ipcRenderer.invoke('prefs:get'),
+  setPrefs: (change) => ipcRenderer.invoke('prefs:set', change),
+  onIdle: (cb) => ipcRenderer.on('miner:idle', (_e, d) => cb(d)),
   checkForUpdate: () => ipcRenderer.send('app:update:check'),
   installUpdate: () => ipcRenderer.send('app:update:install'),
 });

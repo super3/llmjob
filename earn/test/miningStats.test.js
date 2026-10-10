@@ -1,6 +1,6 @@
 'use strict';
 
-const { MAX_POINTS, initStats, applyEvent, snapshot, createRateMeter, meterSample, meterRead } = require('../src/shared/miningStats');
+const { MAX_POINTS, initStats, applyEvent, snapshot, offPool, createRateMeter, meterSample, meterRead } = require('../src/shared/miningStats');
 
 describe('initStats', () => {
   test('anchors the uptime clock and starts with no cards', () => {
@@ -248,5 +248,23 @@ describe('rate meter', () => {
     meterSample(m, 10, 100);
     meterSample(m, 30, 500);
     expect(meterRead(m, 1000)).toBe(20);
+  });
+});
+
+// While the pool connection is down the board must not show the rig as mining:
+// the pool gets no hashrate, so the board reports none. Everything else stays.
+describe('offPool', () => {
+  test('zeroes the hashrate, total and per card, and keeps the rest', () => {
+    const stats = initStats(0);
+    applyEvent(stats, { type: 'status', gpuIndex: 0, hashrate: 120, accepted: 7, gpu: 'RTX 5070 Ti' }, 1000);
+    applyEvent(stats, { type: 'status', gpuIndex: 1, hashrate: 80, accepted: 3 }, 1000);
+    const live = snapshot(stats, 2000);
+    const off = offPool(live);
+    expect(off.total).toBe(0);
+    expect(off.gpus.map((g) => g.hashrate)).toEqual([0, 0]);
+    expect(off.accepted).toBe(10);
+    expect(off.gpus[0].gpu).toBe('RTX 5070 Ti');
+    // The live snapshot itself is untouched.
+    expect(live.total).toBe(200);
   });
 });

@@ -15,9 +15,16 @@ jest.mock('electron', () => {
   const state = { readyCb: null };
   function makeWindow() {
     const wcEvents = {};
+    const events = {};
     const w = {
       loadFile: jest.fn(),
       show: jest.fn(),
+      hide: jest.fn(),
+      focus: jest.fn(),
+      restore: jest.fn(),
+      isMinimized: jest.fn(() => false),
+      on: jest.fn((ev, fn) => { events[ev] = fn; }),
+      _events: events,
       isDestroyed: jest.fn(() => false),
       isVisible: jest.fn(() => false),
       getContentSize: jest.fn(() => [620, 650]),
@@ -33,6 +40,8 @@ jest.mock('electron', () => {
     return w;
   }
   const menu = { popup: jest.fn() };
+  const trays = [];
+  const powerEvents = {};
   return {
     app: {
       getPath: jest.fn(() => '/tmp/userData'),
@@ -41,11 +50,31 @@ jest.mock('electron', () => {
       quit: jest.fn(),
       on: jest.fn((ev, fn) => { appEvents[ev] = fn; }),
       whenReady: jest.fn(() => ({ then(fn) { state.readyCb = fn; } })),
+      requestSingleInstanceLock: jest.fn(() => true),
+      setLoginItemSettings: jest.fn(),
     },
     BrowserWindow: Object.assign(jest.fn(() => makeWindow()), {
       getAllWindows: jest.fn(() => []),
     }),
     Menu: { buildFromTemplate: jest.fn(() => menu), _menu: menu },
+    Tray: jest.fn(() => {
+      const events = {};
+      const t = {
+        setToolTip: jest.fn(),
+        setContextMenu: jest.fn(),
+        on: jest.fn((ev, fn) => { events[ev] = fn; }),
+        _events: events,
+      };
+      trays.push(t);
+      return t;
+    }),
+    Notification: Object.assign(jest.fn(() => ({ show: jest.fn() })), { isSupported: jest.fn(() => true) }),
+    powerMonitor: {
+      getSystemIdleState: jest.fn(() => 'active'),
+      on: jest.fn((ev, fn) => { powerEvents[ev] = fn; }),
+      _events: powerEvents,
+    },
+    _trays: trays,
     ipcMain: {
       handle: jest.fn((ch, fn) => { handlers[ch] = fn; }),
       on: jest.fn((ch, fn) => { listeners[ch] = fn; }),
@@ -83,6 +112,7 @@ jest.mock('fs', () => ({
   copyFileSync: jest.fn(),
   chmodSync: jest.fn(),
   mkdirSync: jest.fn(),
+  unlinkSync: jest.fn(),
 }));
 
 // Default: any health probe fails fast (connection error on next tick).
@@ -155,6 +185,7 @@ jest.mock('../src/main/pearlEngine', () => {
       });
       this.stop = jest.fn(() => { this._running = false; });
       this.isRunning = jest.fn(() => this._running);
+      this.poolConnected = jest.fn(() => true);
       this.releaseMemClocks = jest.fn();
       PearlEngine.instances.push(this);
     }
@@ -448,6 +479,8 @@ describe('app boot and window lifecycle', () => {
     const w = ctx.win();
     const menuHandler = w._wcEvents['context-menu'];
     const Menu = ctx.electron.Menu;
+    // The tray built its menu at startup; count only the context menu's.
+    Menu.buildFromTemplate.mockClear();
 
     menuHandler({}, { isEditable: true, selectionText: '', editFlags: { canCut: true, canCopy: true, canPaste: true } });
     expect(Menu.buildFromTemplate).toHaveBeenCalledTimes(1);
@@ -2511,7 +2544,71 @@ describe('the mining engine', () => {
     const net = require('net');
     net.connect.mockClear();
     ctx.PearlEngine.instances[0].opts.connect('pool.example', 1200);
-    expect(net.connect).toHaveBeenCalledWith(1200, 'pool.example');
+    expect(net.connect).toHaveBeenCalledWith({ port: 1200, host: 'pool.example', lookup: expect.any(Function) });
+  });
+
+  // The GPU keeps working on its last job while the pool connection is being
+  // reopened, but the pool gets nothing, so neither should the board.
+  it('reports no hashrate to the board while the pool is not connected', async () => {
+    const ctx = await boot();
+    ctx.PearlEngine.instances.length = 0;
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    const miner = ctx.PearlEngine.instances[0];
+    miner.emit('event', { type: 'status', hashrate: 120 });
+    const reporter = ctx.interval(ctx.config.NETWORK.reportIntervalMs);
+
+    ctx.probe.postMinerReport.mockClear();
+    reporter.fn();
+    await flush();
+    expect(ctx.probe.postMinerReport.mock.calls.map((c) => c[0].hashrate)).toEqual([120]);
+
+    miner.poolConnected.mockReturnValue(false);
+    ctx.probe.postMinerReport.mockClear();
+    reporter.fn();
+    await flush();
+    expect(ctx.probe.postMinerReport.mock.calls.map((c) => c[0].hashrate)).toEqual([0]);
+  });
+
+  // A failed system lookup falls back (shared/poolLookup); the app says which
+  // address it used, and keeps the address beside the node identity for next
+  // time. One lookup serves every start.
+  it('finds the pool by a fallback when the system lookup fails, and says so', async () => {
+    const ctx = await boot();
+    ctx.PearlEngine.instances.length = 0;
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    const net = require('net');
+    const dns = require('dns');
+    net.connect.mockClear();
+    ctx.PearlEngine.instances[0].opts.connect('pool.example', 1200);
+    const { lookup } = net.connect.mock.calls[0][0];
+
+    const fail = jest.spyOn(dns, 'lookup').mockImplementation((h, o, cb) => cb(Object.assign(new Error('no data'), { code: 'ENOENT' })));
+    const resolver = jest.spyOn(dns.promises, 'Resolver').mockImplementation(() => ({
+      setServers: jest.fn(),
+      resolve4: jest.fn(() => Promise.resolve(['203.0.113.7'])),
+    }));
+    try {
+      const got = await new Promise((resolve) => lookup('pool.example', {}, (err, address) => resolve({ err, address })));
+      expect(got).toEqual({ err: null, address: '203.0.113.7' });
+      expect(ctx.sent('miner:log')).toContainEqual({
+        level: 'warn',
+        line: 'could not look up pool.example (ENOENT); using 203.0.113.7 from DNS',
+      });
+      expect(ctx.fs.writeFileSync).toHaveBeenCalledWith(path.join('/tmp/store', 'pool-addresses.json'), expect.any(String));
+    } finally {
+      fail.mockRestore();
+      resolver.mockRestore();
+    }
+
+    // The next start reuses the same lookup and its saved addresses.
+    ctx.emit('miner:stop');
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    net.connect.mockClear();
+    ctx.PearlEngine.instances[1].opts.connect('pool.example', 1200);
+    expect(net.connect.mock.calls[0][0].lookup).toBe(lookup);
   });
 
   // Loading the addon is the one thing here that runs before the try/catch
@@ -2552,5 +2649,375 @@ describe('the mining engine', () => {
     } finally {
       ctx.PearlEngine.startError = null;
     }
+  });
+});
+
+// ── tray, start with the computer, idle-only mining ───────────────────────────
+
+const os = require('os');
+const PREFS_PATH = path.join('/tmp/userData', 'preferences.json');
+
+// Saved preferences, read the way main.js reads them: preferences.json exists
+// and holds `saved`; every other file reads as missing.
+function withPrefs(saved) {
+  return (ctx) => {
+    ctx.fs.existsSync.mockImplementation((p) => p === PREFS_PATH);
+    ctx.fs.readFileSync.mockImplementation((p) => (p === PREFS_PATH ? JSON.stringify(saved) : '{}'));
+  };
+}
+
+// What main.js last wrote to preferences.json.
+function savedPrefs(ctx) {
+  const writes = ctx.fs.writeFileSync.mock.calls.filter((c) => c[0] === PREFS_PATH);
+  return writes.length ? JSON.parse(writes[writes.length - 1][1]) : null;
+}
+
+function closeEvent() {
+  return { preventDefault: jest.fn() };
+}
+
+describe('the tray and closing the window', () => {
+  it('puts an icon in the tray that opens the window and quits the app', async () => {
+    const ctx = await boot();
+    const tray = ctx.electron._trays[0];
+    expect(ctx.electron.Tray).toHaveBeenCalledTimes(1);
+    expect(tray.setToolTip).toHaveBeenCalledWith('LLMJob Earn');
+    const template = ctx.electron.Menu.buildFromTemplate.mock.calls
+      .map((c) => c[0]).find((t) => t.some((i) => i.label === 'Quit'));
+    expect(template.map((i) => i.label || i.type)).toEqual(['Open LLMJob Earn', 'separator', 'Quit']);
+
+    const w = ctx.win();
+    template[0].click();
+    expect(w.show).toHaveBeenCalled();
+    expect(w.focus).toHaveBeenCalled();
+    tray._events.click();
+    expect(w.show).toHaveBeenCalledTimes(2);
+
+    template[2].click();
+    expect(ctx.electron.app.quit).toHaveBeenCalled();
+    // A real quit: the window closes instead of hiding.
+    const e = closeEvent();
+    w._events.close(e);
+    expect(e.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it('closing the window hides it to the tray, and says so the first time only', async () => {
+    const ctx = await boot();
+    const w = ctx.win();
+    const e = closeEvent();
+    w._events.close(e);
+    expect(e.preventDefault).toHaveBeenCalled();
+    expect(w.hide).toHaveBeenCalledTimes(1);
+    expect(ctx.electron.Notification).toHaveBeenCalledTimes(1);
+    expect(ctx.electron.Notification.mock.calls[0][0].title).toBe('LLMJob Earn is still running');
+    expect(savedPrefs(ctx).trayHintShown).toBe(true);
+
+    w._events.close(closeEvent());
+    expect(w.hide).toHaveBeenCalledTimes(2);
+    expect(ctx.electron.Notification).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the notice where the desktop has no notifications, and does not try again', async () => {
+    const ctx = await boot({ before: (c) => c.electron.Notification.isSupported.mockReturnValue(false) });
+    ctx.win()._events.close(closeEvent());
+    expect(ctx.win().hide).toHaveBeenCalled();
+    expect(ctx.electron.Notification).not.toHaveBeenCalled();
+    expect(savedPrefs(ctx).trayHintShown).toBe(true);
+  });
+
+  it('closing quits as before when the tray is switched off in Settings', async () => {
+    const ctx = await boot({ before: withPrefs({ closeToTray: false }) });
+    const e = closeEvent();
+    ctx.win()._events.close(e);
+    expect(e.preventDefault).not.toHaveBeenCalled();
+    expect(ctx.win().hide).not.toHaveBeenCalled();
+  });
+
+  // Some Linux desktops have no tray. Hiding the window there would leave no
+  // way back to it, so closing quits.
+  it('closing quits when no tray icon could be made', async () => {
+    const ctx = await boot({
+      before: (c) => c.electron.Tray.mockImplementation(() => { throw new Error('no tray'); }),
+    });
+    const e = closeEvent();
+    ctx.win()._events.close(e);
+    expect(e.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it('lets the window close on every real quit: quit, log-off, shutdown', async () => {
+    const quits = [
+      (ctx) => ctx.electron._appEvents['before-quit'](),
+      (ctx) => ctx.win()._events['session-end'](),
+      (ctx) => ctx.electron.powerMonitor._events.shutdown(),
+    ];
+    for (const quit of quits) {
+      const ctx = await boot();
+      quit(ctx);
+      const e = closeEvent();
+      ctx.win()._events.close(e);
+      expect(e.preventDefault).not.toHaveBeenCalled();
+    }
+  });
+
+  // Opening the app again while it runs brings this window back rather than
+  // starting a second miner on the same cards.
+  it('a second launch shows the window, restoring or recreating it', async () => {
+    const ctx = await boot();
+    const w = ctx.win();
+    w.isMinimized.mockReturnValue(true);
+    ctx.electron._appEvents['second-instance']();
+    expect(w.restore).toHaveBeenCalled();
+    expect(w.show).toHaveBeenCalled();
+
+    w.isDestroyed.mockReturnValue(true);
+    ctx.electron._appEvents['second-instance']();
+    expect(ctx.electron.BrowserWindow).toHaveBeenCalledTimes(2);
+  });
+
+  it('a second copy quits at once without a window or a tray', async () => {
+    const ctx = await boot({
+      before: (c) => c.electron.app.requestSingleInstanceLock.mockReturnValue(false),
+    });
+    expect(ctx.electron.app.quit).toHaveBeenCalled();
+    expect(ctx.electron.BrowserWindow).not.toHaveBeenCalled();
+    expect(ctx.electron.Tray).not.toHaveBeenCalled();
+  });
+});
+
+describe('starting with the computer', () => {
+  const ENV_KEYS = ['APPIMAGE', 'XDG_CONFIG_HOME'];
+  let savedEnv;
+  beforeEach(() => { savedEnv = ENV_KEYS.map((k) => [k, process.env[k]]); });
+  afterEach(() => {
+    for (const [k, v] of savedEnv) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it('reports the defaults, and an empty change leaves them alone', async () => {
+    const ctx = await boot();
+    const defaults = { closeToTray: true, runAtStartup: false, mineWhenIdle: false, trayHintShown: false };
+    expect(await ctx.invoke('prefs:get')).toEqual(defaults);
+    expect(await ctx.invoke('prefs:set')).toEqual(defaults);
+  });
+
+  it('on Windows, sets a login item that starts the app hidden', async () => {
+    const ctx = await boot({ platform: 'win32', isPackaged: true });
+    const on = await ctx.invoke('prefs:set', { runAtStartup: true });
+    expect(on.runAtStartup).toBe(true);
+    expect(ctx.electron.app.setLoginItemSettings).toHaveBeenLastCalledWith({ openAtLogin: true, args: ['--hidden'] });
+    expect(savedPrefs(ctx).runAtStartup).toBe(true);
+
+    const off = await ctx.invoke('prefs:set', { runAtStartup: false });
+    expect(off.runAtStartup).toBe(false);
+    expect(ctx.electron.app.setLoginItemSettings).toHaveBeenLastCalledWith({ openAtLogin: false, args: [] });
+  });
+
+  // A dev run would register the bare Electron binary, so it refuses and
+  // Settings shows the switch off.
+  it('a dev run cannot start with the computer', async () => {
+    const ctx = await boot({ platform: 'win32' });
+    expect((await ctx.invoke('prefs:set', { runAtStartup: true })).runAtStartup).toBe(false);
+    expect(ctx.electron.app.setLoginItemSettings).not.toHaveBeenCalled();
+  });
+
+  it('on Linux, writes an autostart entry that runs the AppImage, and removes it', async () => {
+    process.env.APPIMAGE = '/home/u/Apps/LLMJob Earn.AppImage';
+    process.env.XDG_CONFIG_HOME = '/home/u/.cfg';
+    const ctx = await boot({ isPackaged: true });
+    const file = path.join('/home/u/.cfg', 'autostart', 'llmjob-earn.desktop');
+
+    expect((await ctx.invoke('prefs:set', { runAtStartup: true })).runAtStartup).toBe(true);
+    expect(ctx.fs.mkdirSync).toHaveBeenCalledWith(path.dirname(file), { recursive: true });
+    const write = ctx.fs.writeFileSync.mock.calls.find((c) => c[0] === file);
+    expect(write[1]).toContain('Exec="/home/u/Apps/LLMJob Earn.AppImage" --hidden');
+
+    ctx.fs.existsSync.mockImplementation((p) => p === file);
+    expect((await ctx.invoke('prefs:set', { runAtStartup: false })).runAtStartup).toBe(false);
+    expect(ctx.fs.unlinkSync).toHaveBeenCalledWith(file);
+  });
+
+  it('on Linux outside an AppImage, it cannot, and finds the entry under ~/.config', async () => {
+    delete process.env.APPIMAGE;
+    delete process.env.XDG_CONFIG_HOME;
+    const ctx = await boot({ isPackaged: true });
+    expect((await ctx.invoke('prefs:set', { runAtStartup: true })).runAtStartup).toBe(false);
+    expect(ctx.fs.existsSync).toHaveBeenCalledWith(path.join(os.homedir(), '.config', 'autostart', 'llmjob-earn.desktop'));
+    expect(ctx.fs.unlinkSync).not.toHaveBeenCalled();
+  });
+
+  it('says so in the log when the autostart entry cannot be written', async () => {
+    process.env.APPIMAGE = '/home/u/LLMJob.AppImage';
+    const ctx = await boot({ isPackaged: true });
+    ctx.fs.mkdirSync.mockImplementationOnce(() => { throw new Error('EACCES'); });
+    expect((await ctx.invoke('prefs:set', { runAtStartup: true })).runAtStartup).toBe(false);
+    expect(ctx.sent('miner:log').map((l) => l.line))
+      .toContain('could not change the start-with-computer setting: EACCES');
+  });
+
+  // An update can move or rename the installed app, so the login item is
+  // pointed at it again on every start.
+  it('re-registers the login item on every start while it is on', async () => {
+    const ctx = await boot({ platform: 'win32', isPackaged: true, before: withPrefs({ runAtStartup: true }) });
+    expect(ctx.electron.app.setLoginItemSettings).toHaveBeenCalledWith({ openAtLogin: true, args: ['--hidden'] });
+  });
+});
+
+describe('a launch at login', () => {
+  let savedArgv;
+  beforeEach(() => { savedArgv = process.argv; process.argv = process.argv.concat('--hidden'); });
+  afterEach(() => { process.argv = savedArgv; });
+
+  it('stays in the tray, and asks the renderer to start mining once', async () => {
+    const ctx = await boot();
+    const w = ctx.win();
+    w._wcEvents['did-finish-load']();
+    await flush();
+    ctx.timeout(1500).fn();
+    expect(w.show).not.toHaveBeenCalled();
+
+    expect((await ctx.invoke('settings:get')).resumeMining).toBe(true);
+    expect((await ctx.invoke('settings:get')).resumeMining).toBeUndefined();
+
+    // Opened from the tray, it shows as usual.
+    ctx.electron._trays[0]._events.click();
+    expect(w.show).toHaveBeenCalled();
+  });
+
+  it('shows the window anyway when there is no tray to find it in', async () => {
+    const ctx = await boot({
+      before: (c) => c.electron.Tray.mockImplementation(() => { throw new Error('no tray'); }),
+    });
+    ctx.win()._wcEvents['did-finish-load']();
+    await flush();
+    expect(ctx.win().show).toHaveBeenCalled();
+  });
+});
+
+describe('mining only when the computer is idle', () => {
+  const START = { address: VALID_ADDR, mode: 'mining' };
+  const watcher = (ctx) => ctx.timers.intervals.find((h) => h.fn.name === 'checkIdle');
+  const idle = (ctx, state) => ctx.electron.powerMonitor.getSystemIdleState.mockReturnValue(state);
+
+  async function bootIdleOnly() {
+    const ctx = await boot({ before: withPrefs({ mineWhenIdle: true }) });
+    ctx.PearlEngine.instances.length = 0;
+    return ctx;
+  }
+
+  it('a START while the computer is in use waits for it to go idle', async () => {
+    const ctx = await bootIdleOnly();
+    ctx.emit('miner:start', START);
+    await flush();
+    expect(ctx.electron.powerMonitor.getSystemIdleState).toHaveBeenCalledWith(300);
+    expect(ctx.PearlEngine.instances).toHaveLength(0);
+    expect(ctx.sent('miner:idle')).toEqual([{ paused: true, idleAfterSec: 300 }]);
+    expect(ctx.sent('miner:log').map((l) => l.line)).toContain(
+      'paused while the computer is in use; mining starts again after 5 minutes without keyboard or mouse input',
+    );
+    // The renderer keeps its STOP button: the START still stands.
+    expect(ctx.sent('miner:stopped')).toEqual([]);
+    expect(watcher(ctx).ms).toBe(2000);
+  });
+
+  it('mines while nobody is at the computer, and stops as soon as someone is', async () => {
+    const ctx = await bootIdleOnly();
+    ctx.emit('miner:start', START);
+    await flush();
+
+    idle(ctx, 'idle');
+    watcher(ctx).fn();
+    await flush();
+    expect(ctx.PearlEngine.instances).toHaveLength(1);
+    expect(ctx.PearlEngine.instances[0].isRunning()).toBe(true);
+    expect(ctx.sent('miner:idle').slice(-1)).toEqual([{ paused: false, idleAfterSec: 300 }]);
+
+    // Nothing changes while it stays idle.
+    watcher(ctx).fn();
+    await flush();
+    expect(ctx.PearlEngine.instances).toHaveLength(1);
+
+    idle(ctx, 'active');
+    watcher(ctx).fn();
+    expect(ctx.PearlEngine.instances[0].stop).toHaveBeenCalled();
+    expect(ctx.sent('miner:stats').slice(-1)[0].total).toBe(ctx.sent('miner:stats')[0].total);
+    expect(ctx.sent('miner:stopped')).toEqual([]);
+
+    // A locked screen is someone who walked away.
+    idle(ctx, 'locked');
+    watcher(ctx).fn();
+    await flush();
+    expect(ctx.PearlEngine.instances).toHaveLength(2);
+  });
+
+  it('starts at once when the computer is already idle', async () => {
+    const ctx = await bootIdleOnly();
+    idle(ctx, 'idle');
+    ctx.emit('miner:start', START);
+    await flush();
+    expect(ctx.PearlEngine.instances).toHaveLength(1);
+    expect(ctx.sent('miner:idle')).toEqual([]);
+  });
+
+  it('STOP ends the wait and the watcher', async () => {
+    const ctx = await bootIdleOnly();
+    ctx.emit('miner:start', START);
+    await flush();
+    const w = watcher(ctx);
+    ctx.emit('miner:stop');
+    expect(global.clearInterval).toHaveBeenCalledWith(w);
+    expect(ctx.sent('miner:stopped')).toHaveLength(1);
+  });
+
+  it('switching idle-only off while waiting starts mining now', async () => {
+    const ctx = await bootIdleOnly();
+    ctx.emit('miner:start', START);
+    await flush();
+    const w = watcher(ctx);
+    const prefs = await ctx.invoke('prefs:set', { mineWhenIdle: false });
+    await flush();
+    expect(prefs.mineWhenIdle).toBe(false);
+    expect(ctx.PearlEngine.instances).toHaveLength(1);
+    expect(global.clearInterval).toHaveBeenCalledWith(w);
+  });
+
+  it('switching idle-only on while mining pauses once someone is at the computer', async () => {
+    const ctx = await boot();
+    ctx.PearlEngine.instances.length = 0;
+    ctx.emit('miner:start', START);
+    await flush();
+    expect(watcher(ctx)).toBeUndefined();
+    await ctx.invoke('prefs:set', { mineWhenIdle: true });
+    watcher(ctx).fn();
+    expect(ctx.PearlEngine.instances[0].stop).toHaveBeenCalled();
+    expect(ctx.sent('miner:idle')).toEqual([{ paused: true, idleAfterSec: 300 }]);
+  });
+
+  // A pause cancels a start still in flight. A resume before that start has
+  // wound down must still run, even with the same settings.
+  it('a resume during a cancelled start still starts mining', async () => {
+    const ctx = await bootIdleOnly();
+    idle(ctx, 'idle');
+    ctx.emit('miner:start', START);
+    idle(ctx, 'active');
+    watcher(ctx).fn();
+    idle(ctx, 'idle');
+    watcher(ctx).fn();
+    await flush();
+    const running = ctx.PearlEngine.instances.filter((m) => m.isRunning());
+    expect(running).toHaveLength(1);
+  });
+
+  it('an update while waiting resumes after the restart, and lets the window close', async () => {
+    const ctx = await boot({ isPackaged: true, before: withPrefs({ mineWhenIdle: true }) });
+    ctx.emit('miner:start', START);
+    await flush();
+    ctx.emit('app:update:install');
+    const write = ctx.fs.writeFileSync.mock.calls.find((c) => c[0] === SETTINGS_PATH);
+    expect(JSON.parse(write[1]).resumeMining).toBe(true);
+    const e = closeEvent();
+    ctx.win()._events.close(e);
+    expect(e.preventDefault).not.toHaveBeenCalled();
   });
 });

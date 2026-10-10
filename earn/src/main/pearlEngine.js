@@ -66,6 +66,13 @@ class PearlEngine extends EventEmitter {
     return !!(this.miner && this.miner.isRunning());
   }
 
+  // Whether the pool has accepted this rig's login on the current connection.
+  // False while a dropped connection is being reopened, which is when the
+  // network board should stop showing the rig as mining.
+  poolConnected() {
+    return !!(this.miner && this.miner.authorized);
+  }
+
   // One card's current numbers, or null when that card isn't mining. Read-only:
   // unlike _card it never creates a bucket, so asking about a card the rig does
   // not mine on cannot invent one.

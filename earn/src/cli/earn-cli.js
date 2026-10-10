@@ -17,6 +17,7 @@ const { parseCliArgs, USAGE } = require('../shared/cliArgs');
 const selfUpdater = require('./selfUpdater');
 const { planUpdate } = require('../shared/selfUpdate');
 const net = require('net');
+const dns = require('dns');
 const { PearlEngine } = require('../main/pearlEngine');
 const { coreFactory } = require('../main/pearlCore');
 const { LlmManager } = require('../main/llmManager');
@@ -27,7 +28,8 @@ const {
 } = require('../main/probe');
 const probe = require('../main/probe');
 const nodeStore = require('../main/nodeStore');
-const { initStats, applyEvent, snapshot, createRateMeter, meterSample, meterRead } = require('../shared/miningStats');
+const { initStats, applyEvent, snapshot, offPool, createRateMeter, meterSample, meterRead } = require('../shared/miningStats');
+const { makePoolLookup, fileCache } = require('../shared/poolLookup');
 const { NETWORK, LLM, NODE, REGIONS, resolveEndpoint, regionLabel } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
 const nodeProto = require('../shared/node');
@@ -873,8 +875,16 @@ async function run(argv) {
       log('continuing with the local LLM only.', process.stderr);
     }
     if (createCore) {
+      // The pool's name resolves through fallbacks when the system lookup fails
+      // (see shared/poolLookup), with the last good addresses kept beside the
+      // node identity, shared with the desktop app.
+      const lookup = makePoolLookup({
+        dns,
+        cache: fileCache(path.join(path.dirname(nodeStore.nodePath()), 'pool-addresses.json'), fs, path),
+        log: (line) => log(line),
+      });
       miner = new PearlEngine({
-        connect: (host, port) => net.connect(port, host),
+        connect: (host, port) => net.connect({ port, host, lookup }),
         createCore,
         // Without this the engine never polls for a card temperature, so every
         // headless rig reported temp 0 -- to the stats file, to the miner report,
@@ -921,7 +931,10 @@ async function run(argv) {
       // hashrate evenly, so a card turned off in HiveOS would show as mining.
       const miningCards = new Set(settings.gpus.map((g) => g.index));
       const report = async () => {
-        const snap = snapshot(stats, Date.now());
+        // No hashrate on the board while the pool connection is down: the pool is
+        // getting none, and the board should agree with it.
+        const live = snapshot(stats, Date.now());
+        const snap = miner && !miner.poolConnected() ? offPool(live) : live;
         const allVram = await detectGpusVram();
         const gpuVram = gpuPick ? allVram.filter((v) => miningCards.has(Number(v.index))) : allVram;
         // Tag the cards serving the local LLM so the board shows which model each
