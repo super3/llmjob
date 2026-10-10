@@ -37,13 +37,16 @@ Config keys:
 | `box_ver` | Miner release for new groups. `ver_override` maps a group name to a release, to try one on a single group. |
 | `wallet` | Payout address, if `PRL_WALLET` isn't set. |
 | `report_min` | Minutes between `REPORT` lines. |
+| `min_margin` | The margin every class and PC must clear (0.10). |
 
 Tests: `python3 -m unittest discover -s tuning/salad`. They fake Salad, the pool and the clock.
 
 ## Rules
 
 **Margin** is profit as a share of earnings: (earnings − price) / earnings, as the first account
-measured it. A 2060 at 40 TH/s earning $0.047/hr on a $0.030/hr PC is +36%, not +56%.
+measured it. A 2060 at 40 TH/s earning $0.047/hr on a $0.030/hr PC is +36%, not +56%. The bar is
+10% (`min_margin`) everywhere: for the search and priority moves on a class's measured rate, and for
+each PC on its own readings.
 
 1. **Search** hourly at :01. Take classes with a known rate that clear a 10% margin at the cheapest
    priority with a GPU free. Classes that paid before come first, then by profit per hour. Create up to
@@ -54,9 +57,9 @@ measured it. A 2060 at 40 TH/s earning $0.047/hr on a $0.030/hr PC is +36%, not 
    it isn't looking for a PC, and Salad refuses a priority change (`pending_update_in_progress`).
 3. **Had a PC, lost it, no other within 20 min:** delete.
 4. **No share for max(10 min, 8 expected share gaps) after 20 min on a PC:** leave the PC.
-5. **Only profitable PCs.** Skip the miner's first 2 minutes (warm-up). From then on, every round, the
-   last 3 readings (one a minute) must earn at least the PC's price. The first time they don't, leave
-   the PC. A PC with no mining reading 10 min after we got it is left too.
+5. **Only PCs that clear 10%.** Skip the miner's first 2 minutes (warm-up). From then on, every round,
+   the last 3 readings (one a minute) must clear the margin at the PC's price. The first time they
+   don't, leave the PC. A PC with no mining reading 10 min after we got it is left too.
 6. **"port 1200 blocked"** in the logs: reallocate.
 7. **Credit runs out:** Salad stops every group, and creating one returns `no_credits_available`. The
    watcher leaves stopped groups alone and stops creating. A group that stops after it had a PC is
@@ -65,7 +68,7 @@ measured it. A 2060 at 40 TH/s earning $0.047/hr on a $0.030/hr PC is +36%, not 
 
 **Leaving a PC** means reallocating to another PC if the class has paid before, and deleting the group
 if it hasn't. A class has **paid before** if it paid on the first account, or once a group of it here
-earns its price over 10 readings with shares at the pool. Reallocations are capped at 3 a group, shared
+clears the margin over 10 readings with shares at the pool. Reallocations are capped at 3 a group, shared
 by rules 4 to 6; the next one deletes it.
 A deleted group counts as **released** when it never got going (no PC, or lost it) and **failed** when
 it mined badly (no shares, under cost, port blocked). Its deletion event carries the box's last log

@@ -216,7 +216,20 @@ class TestRule5Profit(Base):
         self.assertFalse(self.http.made("POST", "/reallocate"))
         self.mine(g, "m1", 100, 1)  # the 3rd reading after warm-up
         self.assertTrue(self.http.made("POST", "/reallocate"))
-        self.assertIn("under its $0.190/hr", self.events())
+        self.assertIn("against its $0.190/hr (-62%, under 10%)", self.events())
+
+    def test_a_pc_that_pays_under_10_percent_is_left(self):
+        g = self.group(pri="medium")  # $0.19/hr; 170 TH/s earns $0.199: +4.5%
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 170, 5)
+        self.assertTrue(self.http.made("POST", "/reallocate"))
+
+    def test_the_bar_comes_from_config(self):
+        self.x.cfg["min_margin"] = 0.0
+        g = self.group(pri="medium")
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 170, 10)
+        self.assertFalse(self.http.made("POST", "/reallocate"))
 
     def test_warm_up_is_ignored(self):
         g = self.group(pri="medium")
@@ -236,7 +249,7 @@ class TestRule5Profit(Base):
         g = self.group(pri="medium")
         self.step(g, 1, "m1")
         self.mine(g, "m1", 199, 10)
-        self.mine(g, "m1", 120, 1)
+        self.mine(g, "m1", 160, 1)  # the 3 readings average 186 TH/s: +13%
         self.mine(g, "m1", 199, 5)
         self.assertFalse(self.http.made("POST", "/reallocate"))
 
