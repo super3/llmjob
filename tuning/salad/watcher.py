@@ -30,7 +30,7 @@ KNOWN = {
 }
 DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_token": 0,
                "credit_start": 100.0, "credit_offset": 0.0, "box_ver": "v0.5.13", "ver_override": {}, "report_min": 10,
-               "min_margin": 0.10,
+               "min_margin": 0.10, "max_new_per_hour": 3, "max_per_class": 1,
                "wallet": os.environ.get("PRL_WALLET", "")}
 
 
@@ -515,6 +515,16 @@ class W:
                 st["paid_classes"].append(g["class"])
                 event(f"PAID {g['name']}: {g['class']} clears {bar:.0%} here ({avg:.0f} TH/s); it counts as paid now")
 
+    def pc_margin(self, g):
+        """The margin on this PC's last 3 readings after warm-up, or None while there aren't 3."""
+        if not g.get("has_pc") or not g.get("machine") or not g.get("pc_since"):
+            return None
+        cur = [r for r in g["readings"] if r[1] == g["machine"] and r[2] > 0 and r[0] >= g["pc_since"] - 5 * MIN]
+        post = [r for r in cur if r[0] >= cur[0][0] + 2 * MIN] if cur else []
+        if len(post) < 3:
+            return None
+        return margin_of(sum(r[2] for r in post[-3:]) / 3 * self.st["mkt"]["usd_th_hr"], g["price"])
+
     def leave(self, g, why):
         """Stop paying for this PC: another PC if the class has paid before, otherwise delete the group."""
         if self.paid(g):
@@ -530,13 +540,19 @@ class W:
         room = min(self.cfg["max_active"], quota) - len(active)
         t = now()
         this_hour = sum(1 for g in st["groups"].values() if g["created"] >= t - t % 3600)
-        room = min(room, 3 - this_hour)   # at most 3 new groups an hour, however the search was started
+        room = min(room, self.cfg["max_new_per_hour"] - this_hour)   # however the search was started
         if room <= 0:
             return
         # Each class is tried once on this account, as on the first one, except that a class whose groups only
         # ended for want of a PC (released) is tried again in a search at least an hour after.
         skip = {g["class"] for g in st["groups"].values()
                 if not g["ended"] or g["end_kind"] != "released" or t - g["ended"] < 3600}
+        # A class whose groups are all on a PC clearing the margin may get another group, up to max_per_class.
+        for cls in {g["class"] for g in active}:
+            mine = [g for g in active if g["class"] == cls]
+            if len(mine) < self.cfg["max_per_class"] and all((self.pc_margin(g) or -1) >= self.cfg["min_margin"] for g in mine) \
+                    and not any(g["ended"] and g["end_kind"] == "failed" for g in st["groups"].values() if g["class"] == cls):
+                skip.discard(cls)
         cands = []
         for cls, (rate, _) in KNOWN.items():
             if cls not in st["classes"] or cls in skip:
