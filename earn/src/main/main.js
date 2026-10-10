@@ -1024,8 +1024,10 @@ function buildFleet() {
       sendLlmStatus();
     }
     // An LLM-only session ends when the fleet exits — tell the renderer or the UI
-    // keeps showing a running session with nothing running.
-    if (!miner || !miner.isRunning()) send('miner:stopped');
+    // keeps showing a running session with nothing running. Not while idle-only
+    // has mining paused: that START still stands, and mining (and the LLM with
+    // it) comes back on the next resume.
+    if ((!miner || !miner.isRunning()) && !(session && session.paused)) send('miner:stopped');
   });
   return f;
 }
@@ -1350,6 +1352,14 @@ function waitForMinerUp(capMs) {
   });
 }
 
+// Which engines a START asks for.
+function planFor(settings) {
+  return resolvePlan(settings.mode || DEFAULT_MODE, {
+    canMine: isValidAddress(settings.address) && minerSupported(process.platform),
+    canLlm: true,
+  });
+}
+
 // Apply the compute mode: run the miner and/or the LLM per the plan. When the
 // plan ends up running nothing (LLM-only mode with the VRAM gate refusing, or
 // no engine at all), tell the renderer — otherwise its optimistic "running"
@@ -1364,11 +1374,12 @@ async function runPlan(settings) {
   // runs nothing at all with no reason on screen.
   const note = minerUnsupportedNote(process.platform, mode);
   if (note) send('miner:log', { level: 'warn', line: note });
-  const plan = resolvePlan(mode, {
-    canMine: isValidAddress(settings.address) && minerSupported(process.platform),
-    canLlm: true,
-  });
-  if (plan.miner) {
+  const plan = planFor(settings);
+  // Idle-only, while someone uses the computer: the miner waits, the LLM runs.
+  // The model is still sized with the mining reserve, so mining can start
+  // beside it later without reloading it.
+  const mineNow = plan.miner && !(session && session.paused);
+  if (mineNow) {
     // Start mining FIRST, then — when co-running — wait until the miner reports a
     // non-zero hashrate before starting the LLM. Spawning the process (or even
     // connecting to the pool) isn't enough proof mining works: the LLM loads its
@@ -1384,9 +1395,10 @@ async function runPlan(settings) {
     if (plan.llm && miner && miner.isRunning()) await waitForMinerUp();
   } else {
     // A miner from an earlier plan can still be running: LLM-only picked while
-    // mining. Stop it. Mining is no longer asked for, and the model is about to
-    // be served from these cards with no mining reserve, under the miner's
-    // memory clock lock if it holds one (on an RTX 5090 that slows the model).
+    // mining, or idle-only holding mining back. Stop it. For LLM-only, mining is
+    // no longer asked for, and the model is about to be served from these cards
+    // with no mining reserve, under the miner's memory clock lock if it holds
+    // one (on an RTX 5090 that slows the model).
     // Not stopMining(): the session goes on, so the epoch stays (this run still
     // starts the model) and the renderer is not told it stopped. Its mining
     // figures are zeroed instead, as an LLM-only start shows them.
@@ -1423,9 +1435,9 @@ let planRun = null;
 let planActive = null;
 let planQueued = null;
 
-// `force` replays even the same settings once the run in flight ends. A resume
-// after an idle pause needs it: the pause cancelled that run (miningEpoch), so
-// its settings are no longer running whatever they say.
+// `force` replays even the same settings once the run in flight ends. An idle
+// pause and resume need it: the pause cancelled that run (miningEpoch), and the
+// same settings now mean a different run, with or without the miner.
 function applyPlan(settings, force) {
   if (planRun) {
     if (force || JSON.stringify(settings) !== planActive) planQueued = settings;
@@ -1443,9 +1455,10 @@ function applyPlan(settings, force) {
 }
 
 // The START the user pressed, kept until they press STOP: { settings, paused }.
-// With "only mine when idle" on, the idle watcher pauses it while someone uses
-// the computer and resumes it when they leave. The renderer keeps showing STOP
-// throughout, because the user's START still stands.
+// With "only mine when idle" on, the idle watcher pauses its mining while
+// someone uses the computer and resumes it when they leave. The local LLM is
+// not paused: it keeps serving chat, cluster jobs and the network share. The
+// renderer keeps showing STOP throughout, because the user's START still stands.
 let session = null;
 let idleTimer = null;
 
@@ -1453,8 +1466,8 @@ function startSession(settings) {
   session = { settings, paused: false };
   syncIdleWatcher();
   // Someone just pressed START, so with idle-only on the computer is in use:
-  // wait for it to go idle instead of starting now.
-  if (getPrefs().mineWhenIdle && appPrefs.idleAction(idleState(), false) === 'pause') {
+  // mining waits for it to go idle instead of starting now.
+  if (getPrefs().mineWhenIdle && sessionMines() && appPrefs.idleAction(idleState(), false) === 'pause') {
     pauseSession();
     return;
   }
@@ -1463,23 +1476,34 @@ function startSession(settings) {
 
 function endSession() {
   session = null;
+  // A pause or resume queued behind a slow start (a first model download can
+  // take minutes) must not replay after STOP and start mining nobody asked for.
+  planQueued = null;
   syncIdleWatcher();
   stopMining();
   stopLlm();
+}
+
+// Idle-only only ever holds back mining, so a START with no miner in it (LLM
+// mode, or no payout address) has nothing to pause.
+function sessionMines() {
+  return planFor(session.settings).miner;
 }
 
 function idleState() {
   return powerMonitor.getSystemIdleState(appPrefs.IDLE_AFTER_SEC);
 }
 
-// Stop the GPU work for the user, keeping their START. Not stopMining(): that
-// tells the renderer mining stopped. The epoch still moves, so a start in
-// flight does not finish after the pause.
+// Stop mining for the user, keeping their START and the local LLM. Not
+// stopMining(): that tells the renderer mining stopped. The epoch still moves,
+// so a miner start in flight does not finish after the pause; that also cancels
+// the LLM half of a run in flight, so the plan runs again without the miner,
+// which brings the LLM up if it isn't already (and leaves it alone if it is).
 function pauseSession() {
   session.paused = true;
   miningEpoch++;
   haltMiner();
-  stopLlm();
+  applyPlan(session.settings, true);
   send('miner:stats', statsView(snapshot(initStats(Date.now()), Date.now())));
   send('miner:idle', { paused: true, idleAfterSec: appPrefs.IDLE_AFTER_SEC });
   send('miner:log', {
@@ -1497,6 +1521,7 @@ function resumeSession() {
 }
 
 function checkIdle() {
+  if (!session.paused && !sessionMines()) return;
   const action = appPrefs.idleAction(idleState(), session.paused);
   if (action === 'pause') pauseSession();
   else if (action === 'resume') resumeSession();
@@ -1577,6 +1602,9 @@ ipcMain.on('llm:chat', (_e, messages) => llmChat(messages));
 // the settings START sends, so a START never turns it back off.
 ipcMain.on('llm:share', (_e, on) => {
   persistSettings(Object.assign({}, loadSettings(), { shareLlm: on === true }));
+  // An idle pause or resume replays the START's settings and saves them; without
+  // this they would put the switch back where it was at START.
+  if (session) session.settings = Object.assign({}, session.settings, { shareLlm: on === true });
   syncLanShare();
 });
 ipcMain.handle('node:status', () => nodeStatus());

@@ -249,9 +249,11 @@ Three switches in **Settings → Background**, saved in `preferences.json` next 
   the switch back off.
 - **Only mine when my computer is idle** (off by default). Idle means 5 minutes
   without keyboard or mouse input, or a locked screen. While someone uses the
-  computer, mining and the local LLM stop and the window says what it is waiting
-  for. **STOP** still shows, because the START stands. Mining resumes on its own
-  once the computer goes idle again. A desktop that cannot report idle time (some
+  computer, mining stops and the window says what it is waiting for. The local
+  LLM keeps running, so chat, cluster jobs and the network share go on, and it
+  stays sized to leave mining its share of the card. **STOP** still shows,
+  because the START stands. Mining resumes on its own once the computer goes
+  idle again. In LLM mode there is no mining, so the switch does nothing. A desktop that cannot report idle time (some
   Linux setups) counts as idle.
 
 ## macOS (LLM only)

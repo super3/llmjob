@@ -3014,10 +3014,119 @@ describe('mining only when the computer is idle', () => {
     ctx.emit('miner:start', START);
     await flush();
     ctx.emit('app:update:install');
-    const write = ctx.fs.writeFileSync.mock.calls.find((c) => c[0] === SETTINGS_PATH);
+    // The last write: a START while in use also saves the settings when it
+    // brings up the plan without the miner.
+    const write = ctx.fs.writeFileSync.mock.calls.filter((c) => c[0] === SETTINGS_PATH).pop();
     expect(JSON.parse(write[1]).resumeMining).toBe(true);
     const e = closeEvent();
     ctx.win()._events.close(e);
     expect(e.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it('STOP drops a run queued behind a start still in flight', async () => {
+    const ctx = await bootIdleOnly();
+    let release;
+    ctx.probe.detectMinerGpus.mockImplementationOnce(() => new Promise((r) => { release = () => r([]); }));
+    idle(ctx, 'idle');
+    ctx.emit('miner:start', START); // this run waits on nvidia-smi
+    await flush();
+    idle(ctx, 'active');
+    watcher(ctx).fn(); // a pause queues a run
+    idle(ctx, 'idle');
+    watcher(ctx).fn(); // and so does a resume
+    ctx.emit('miner:stop');
+    release();
+    await flush();
+    expect(ctx.PearlEngine.instances.filter((m) => m.isRunning())).toHaveLength(0);
+  });
+
+  it('a pause saves the network switch as it is now, not as it was at START', async () => {
+    const ctx = await bootIdleOnly();
+    idle(ctx, 'idle');
+    ctx.emit('miner:start', Object.assign({ shareLlm: true }, START));
+    await flush();
+    ctx.emit('llm:share', false);
+    idle(ctx, 'active');
+    watcher(ctx).fn();
+    await flush();
+    const last = ctx.fs.writeFileSync.mock.calls.filter((c) => c[0] === SETTINGS_PATH).pop();
+    expect(JSON.parse(last[1]).shareLlm).toBe(false);
+  });
+
+  // Idle-only holds back mining only. The local LLM keeps serving chat, cluster
+  // jobs and the network share while someone uses the computer.
+  describe('with the local LLM', () => {
+    const AUTO = { address: VALID_ADDR, mode: 'auto' };
+    const ONE_CARD = [{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }];
+    async function bootAuto() {
+      const ctx = await boot({ before: (c) => { withPrefs({ mineWhenIdle: true })(c); c.probe.detectGpusVram.mockResolvedValue(ONE_CARD); } });
+      ctx.PearlEngine.instances.length = 0;
+      return ctx;
+    }
+
+    it('a pause stops mining and keeps the model, and a resume mines beside it', async () => {
+      const ctx = await bootAuto();
+      idle(ctx, 'idle');
+      ctx.emit('miner:start', AUTO);
+      await flush();
+      const m = ctx.PearlEngine.instances[0];
+      m.emit('event', { type: 'status', hashrate: 300 });
+      await flush();
+      const llm = ctx.LlmManager.instances[0];
+      llm.emit('ready', { baseUrl: llm.baseUrl });
+      await flush();
+
+      idle(ctx, 'active');
+      watcher(ctx).fn();
+      await flush();
+      expect(m.stop).toHaveBeenCalled();
+      expect(llm.stop).not.toHaveBeenCalled();
+      expect(ctx.LlmManager.instances).toHaveLength(1);
+      expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: true });
+      expect(ctx.sent('miner:idle').pop()).toEqual({ paused: true, idleAfterSec: 300 });
+
+      idle(ctx, 'idle');
+      watcher(ctx).fn();
+      await flush();
+      expect(ctx.PearlEngine.instances).toHaveLength(2);
+      expect(ctx.PearlEngine.instances[1].isRunning()).toBe(true);
+      expect(ctx.LlmManager.instances).toHaveLength(1);
+      expect(llm.stop).not.toHaveBeenCalled();
+    });
+
+    it('a model that dies while mining is paused leaves the START standing', async () => {
+      const ctx = await bootAuto();
+      ctx.emit('miner:start', AUTO);
+      await flush();
+      const llm = ctx.LlmManager.instances[0];
+      llm.emit('ready', { baseUrl: llm.baseUrl });
+      await flush();
+      llm.emit('stopped');
+      await flush();
+      expect(ctx.sent('miner:stopped')).toEqual([]);
+      expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false });
+    });
+
+    it('a START while someone is at the computer still starts the model', async () => {
+      const ctx = await bootAuto();
+      ctx.emit('miner:start', AUTO);
+      await flush();
+      expect(ctx.PearlEngine.instances).toHaveLength(0);
+      expect(ctx.LlmManager.instances).toHaveLength(1);
+      expect(ctx.LlmManager.instances[0].start).toHaveBeenCalled();
+      expect(ctx.sent('miner:idle')).toEqual([{ paused: true, idleAfterSec: 300 }]);
+      expect(ctx.sent('miner:stopped')).toEqual([]);
+    });
+
+    it('does nothing in LLM mode, where there is no mining to hold back', async () => {
+      const ctx = await bootAuto();
+      ctx.emit('miner:start', { mode: 'llm' });
+      await flush();
+      watcher(ctx).fn();
+      await flush();
+      expect(ctx.sent('miner:idle')).toEqual([]);
+      expect(ctx.LlmManager.instances).toHaveLength(1);
+      expect(ctx.LlmManager.instances[0].stop).not.toHaveBeenCalled();
+    });
   });
 });
