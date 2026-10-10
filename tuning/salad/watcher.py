@@ -519,10 +519,12 @@ class W:
         room = min(self.cfg["max_active"], quota) - len(active)
         if room <= 0:
             return
-        waiting = {g["class"] for g in active if not g["has_pc"]}
+        # Each class is tried once on this account, as on the first one: a class whose group ended,
+        # for whatever reason, isn't created again.
+        tried = {g["class"] for g in st["groups"].values()}
         cands = []
         for cls, (rate, _) in KNOWN.items():
-            if cls not in st["classes"] or cls in waiting:
+            if cls not in st["classes"] or cls in tried:
                 continue
             body = {"cpu": 2, "memory": 4096, "storage_amount": 10737418240, "gpu_classes": [st["classes"][cls]["id"]]}
             s, a = http("POST", f"{BASE}/availability/sce-gpu-availability", body)
