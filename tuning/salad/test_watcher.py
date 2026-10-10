@@ -347,16 +347,32 @@ class TestSearch(Base):
         made = [(c[2]["name"], c[2]["container"]["priority"]) for c in self.http.made("POST", "/containers$")]
         self.assertEqual(made, [("biz-rtx4080", "low"), ("biz-rtx2060", "low")])
 
-    def test_a_class_is_tried_once(self):
+    def searched(self, kind, minutes_ago):
+        """Search after a 4080 group ended `minutes_ago` with `kind`; return the groups created by the search."""
         self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
         self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10}}))
         g = self.group(cls="RTX 4080 (16 GB)", pri="low")
-        g["ended"], g["end_kind"] = self.clock[0], "released"
+        g["ended"], g["end_kind"] = self.clock[0], kind
+        self.clock[0] += minutes_ago * 60
         self.x.cfg["max_active"] = 10
         self.x.search()
-        names = [c[2]["name"] for c in self.http.made("POST", "/containers$")]
-        self.assertEqual(names.count("biz-rtx4080"), 1)  # only the first one
-        self.assertEqual(names[1:], ["biz-rtx2060", "biz-rtx4070"])  # the classes not tried yet
+        return [c[2]["name"] for c in self.http.made("POST", "/containers$")][1:]
+
+    def test_a_class_that_failed_is_not_tried_again(self):
+        self.assertEqual(self.searched("failed", 300), ["biz-rtx2060", "biz-rtx4070"])  # the classes not tried yet
+
+    def test_a_class_that_got_no_pc_is_tried_again_an_hour_later(self):
+        self.assertEqual(self.searched("released", 59), ["biz-rtx2060", "biz-rtx4070"])
+        self.setUp()
+        self.assertEqual(self.searched("released", 61), ["biz-rtx4080", "biz-rtx2060", "biz-rtx4070"])
+
+    def test_a_class_with_a_live_group_is_not_doubled(self):
+        self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
+        self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10}}))
+        self.group(cls="RTX 4080 (16 GB)", pri="low")
+        self.x.cfg["max_active"] = 10
+        self.x.search()
+        self.assertNotIn("biz-rtx4080-2", [c[2]["name"] for c in self.http.made("POST", "/containers$")])
 
     def test_respects_max_active(self):
         self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
