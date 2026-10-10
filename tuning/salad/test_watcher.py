@@ -110,6 +110,15 @@ class TestCommand(Base):
         self.assertEqual(body["container"]["resources"]["gpu_classes"], ["c4080"])
         self.assertEqual((body["restart_policy"], body["autostart_policy"], body["replicas"]), ("always", True, 1))
 
+    def test_a_name_salad_still_holds_is_skipped(self):
+        self.http.on("POST", "/containers$", lambda b: (400, {"type": "name_conflict"}) if b["name"] == "biz-rtx4080"
+                     else (201, {}))
+        self.assertTrue(self.x.create("RTX 4080 (16 GB)", "low"))
+        names = [c[2]["name"] for c in self.http.made("POST", "/containers$")]
+        self.assertEqual(names, ["biz-rtx4080", "biz-rtx4080-2"])
+        body = self.http.made("POST", "/containers$")[1][2]
+        self.assertIn("WORKER=biz-rtx4080-2/", body["container"]["command"][2])
+
     def test_second_group_of_a_class_gets_its_own_name(self):
         self.group()
         self.group()

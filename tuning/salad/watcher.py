@@ -260,12 +260,14 @@ class W:
         err(f"patch {g['name']} -> {pri} refused {s} {str(j)[:200]}")
         return False
 
-    def create(self, cls, pri):
+    def create(self, cls, pri, taken=()):
+        """Create a group of `cls` at `pri`. Salad keeps a deleted group's name for a while (name_conflict),
+        so a name it refuses is skipped and the next suffix tried."""
         st = self.st
-        active_names = {g["name"] for g in st["groups"].values() if not g["ended"]}
+        taken = {g["name"] for g in st["groups"].values() if not g["ended"]} | set(taken)
         base = "biz-" + slug(cls)
         name, i = base, 2
-        while name in active_names:
+        while name in taken:
             name, i = f"{base}-{i}", i + 1
         ver = self.cfg["ver_override"].get(name, self.cfg["box_ver"])
         body = {"name": name, "display_name": name, "replicas": 1, "restart_policy": "always", "autostart_policy": True,
@@ -290,6 +292,8 @@ class W:
                   f"{self.margin(cls, pri) * 100:+.0f}% margin at {rate} TH/s), miner {ver}")
             return True
         text = json.dumps(j)
+        if "name_conflict" in text and len(taken) < 20:
+            return self.create(cls, pri, taken | {name})
         if "no_credits_available" in text:
             if not st["credits_out"]:
                 event("ALERT Salad says no credits are available; not creating groups until a top-up")
