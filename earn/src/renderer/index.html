@@ -112,6 +112,7 @@
         <button id="api-copy" class="chip" type="button" title="Copy the API endpoint">Copy API</button>
         <button id="api-open" class="chip" type="button" title="Open the llama-server web UI">Open ↗</button>
       </div>
+      <p id="api-lan" class="api-lan" hidden>On your network: <b class="mono" id="api-lan-url" title="Copy the network address"></b></p>
       <p class="api-note">Works with any OpenAI SDK — point <b class="mono">base_url</b> at the endpoint.</p>
 
       <div class="field-label"><span class="lbl">Model</span></div>
@@ -123,7 +124,7 @@
       <div class="field-label"><span class="lbl">Connect</span><span class="meta" id="connect-hint">Not linked to an account</span></div>
       <!-- Not connected: connect callout + collapsible pairing-token flow -->
       <div id="connect-form" class="connect-card">
-        <p>This endpoint only answers on <b>this computer</b>. Connect your LLMJob account to use it anywhere — other devices, web chat, and one shared cluster API.</p>
+        <p>This endpoint only answers on <b id="connect-reach">this computer</b>. Connect your LLMJob account to use it anywhere — other devices, web chat, and one shared cluster API.</p>
         <div class="connect-actions">
           <button id="connect-dashboard" class="connect-btn" type="button">Connect with LLMJob</button>
           <button id="connect-pair-toggle" class="connect-alt-btn" type="button">Use a pairing token</button>
@@ -177,6 +178,15 @@
         <input id="set-worker" class="rv-input" type="text" />
       </div>
     </div>
+
+    <div class="settings-section">Local network</div>
+    <div class="settings-rows">
+      <label class="settings-row toggle-row">
+        <span class="rk">Share the local LLM on my network</span>
+        <input id="set-share" class="toggle" type="checkbox" />
+      </label>
+    </div>
+    <p id="share-note" class="settings-note"></p>
 
     <div class="settings-section">Software Update</div>
     <div class="settings-rows">

@@ -38,6 +38,7 @@ const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
 const { planLlmInstances } = require('../shared/llmPlan');
 const { pickModel, ctxLadder } = require('../shared/models');
 const { LlmFleet } = require('./llmFleet');
+const { createLanShare } = require('./lanShare');
 const { buildChatBody } = require('../shared/llmChat');
 const { JobWorker } = require('./jobWorker');
 const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
@@ -92,6 +93,18 @@ let llmStatus = { ready: false, endpoint: null, webUrl: null, tokensPerSec: 0, m
 // `model` field of every gateway completion that it was serving Gemma. Seeded
 // with the default so a report before the first start is still truthful.
 let servingModel = LLM.model;
+// Sharing the local LLM on the network (Settings → Local network, #257): the
+// CLI's gate on port 8000, in front of llama-server. syncLanShare() decides
+// when it runs.
+const lanShare = createLanShare({
+  upstreamUrl: () => fleet && fleet.webUrl(),
+  isLlmReady: () => !!(fleet && fleet.isReady()),
+  log: (line) => send('miner:log', { level: 'info', line }),
+  onChange: () => {
+    llmStatus = Object.assign({}, llmStatus, { lan: lanShare.status() });
+    sendLlmStatus();
+  },
+});
 
 function settingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -700,6 +713,7 @@ async function startLlm(reserveMb) {
     llmStatus = Object.assign({}, llmStatus, { ready: true, error: null, note: null, endpoint: targetBase + '/v1', webUrl: targetBase });
     send('miner:log', { level: 'info', line: 'local LLM already running on ' + targetBase + ' — reusing it' });
     sendLlmStatus();
+    syncLanShare();
     syncWorker();
     warmUpLlm(targetBase);
     return true;
@@ -845,6 +859,7 @@ function buildFleet() {
     llmStatus = Object.assign({}, llmStatus, { ready: true, error: null, endpoint: web + '/v1', webUrl: web, note: null });
     send('miner:log', { level: 'info', line: 'local LLM ready — OpenAI endpoint ' + baseUrl + '/v1' });
     sendLlmStatus();
+    syncLanShare();
     syncWorker(); // serve cluster jobs once a model is up, if we're linked
   });
   f.on('stats', ({ tokensPerSec }) => { llmStatus = Object.assign({}, llmStatus, { tokensPerSec }); sendLlmStatus(); });
@@ -852,6 +867,7 @@ function buildFleet() {
   f.on('stopped', () => {
     cancelChat('the local LLM stopped');
     resetLlmStatus();
+    syncLanShare();
     // Every instance died before any became ready while mining keeps running —
     // the silent-failure case (typically a port-bind/OOM), not a user stop.
     if (!llmEverReady && miner && miner.isRunning()) {
@@ -882,6 +898,14 @@ function stopLlm() {
   if (fleet) { fleet.stop(); fleet = null; }
   serveLogged = false;
   resetLlmStatus();
+  syncLanShare();
+}
+
+// Run the network gate while the switch is on and a model is answering, and
+// only then. Called whenever either changes.
+function syncLanShare() {
+  const want = loadSettings().shareLlm === true && !!fleet && fleet.isReady();
+  lanShare.sync(want, { name: servingModel.name, ctxSize: ctxLadder(servingModel)[0] });
 }
 
 // ── In-app chat: stream the local llama-server's OpenAI chat completions ──────
@@ -1301,6 +1325,13 @@ ipcMain.on('open-external', (_e, url) => { openExternalSafe(url); });
 ipcMain.on('app:fit', () => { fitWindowToContent(); });
 ipcMain.on('clipboard:write', (_e, text) => { clipboard.writeText(String(text == null ? '' : text)); });
 ipcMain.on('llm:chat', (_e, messages) => llmChat(messages));
+// The network switch applies at once, beside a running model, rather than at the
+// next START. Saved straight to settings.json; the renderer also carries it in
+// the settings START sends, so a START never turns it back off.
+ipcMain.on('llm:share', (_e, on) => {
+  persistSettings(Object.assign({}, loadSettings(), { shareLlm: on === true }));
+  syncLanShare();
+});
 ipcMain.handle('node:status', () => nodeStatus());
 ipcMain.handle('node:connect', (_e, opts) => connectNode(opts || {}));
 ipcMain.handle('node:disconnect', () => disconnectNode());

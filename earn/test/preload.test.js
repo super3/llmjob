@@ -49,6 +49,7 @@ describe('invoke-based methods', () => {
 describe('send-based methods', () => {
   const cases = [
     ['sendChat', 'llm:chat', [{ role: 'user', content: 'hi' }]],
+    ['setShareLlm', 'llm:share', true],
     ['openNodeDashboard', 'node:dashboard'],
     ['startMiner', 'miner:start', { address: 'prl1abc' }],
     ['stopMiner', 'miner:stop'],

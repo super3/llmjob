@@ -229,6 +229,14 @@ jest.mock('../src/main/jobWorker', () => {
   return { JobWorker };
 });
 
+// The network gate opens real sockets, and this suite mocks http down to get(),
+// so main gets a stand-in that records what it was asked to do. The real one is
+// tested in lanShare.test.js.
+jest.mock('../src/main/lanShare', () => {
+  const share = { opts: null, sync: jest.fn(), status: jest.fn(() => null) };
+  return { createLanShare: jest.fn((opts) => { share.opts = opts; return share; }), share };
+});
+
 const { EventEmitter } = require('events');
 const nodeProto = require('../src/shared/node');
 const { defaultWorker } = require('../src/shared/worker');
@@ -317,6 +325,7 @@ function loadMain(opts = {}) {
   ctx.LlmManager = require('../src/main/llmManager').LlmManager;
   ctx.LlmEngineManager = require('../src/main/llmEngineManager').LlmEngineManager;
   ctx.JobWorker = require('../src/main/jobWorker').JobWorker;
+  ctx.lanShare = require('../src/main/lanShare').share;
   ctx.config = require('../src/shared/config');
   ctx.timers = timers;
   if (opts.isPackaged) ctx.electron.app.isPackaged = true;
@@ -2042,6 +2051,103 @@ describe('local LLM', () => {
 });
 
 // ── health probe variants ────────────────────────────────────────────────────
+
+describe('sharing the local LLM on the network', () => {
+  const ONE_CARD = [{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }];
+  // settings.json with the switch on.
+  const switchedOn = (c) => {
+    c.fs.existsSync.mockImplementation((p) => p === SETTINGS_PATH);
+    c.fs.readFileSync.mockReturnValue('{"shareLlm":true}');
+  };
+
+  it('opens the gate once a model answers, and closes it when the LLM stops', async () => {
+    const ctx = await boot({ before: (c) => { switchedOn(c); c.probe.detectGpusVram.mockResolvedValue(ONE_CARD); } });
+    const share = ctx.lanShare;
+    // Before any model: nothing to forward to.
+    expect(share.opts.upstreamUrl()).toBeFalsy();
+    expect(share.opts.isLlmReady()).toBe(false);
+
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(share.sync).not.toHaveBeenCalledWith(true, expect.anything());
+
+    const llm = ctx.LlmManager.instances[0];
+    llm.emit('ready', { baseUrl: llm.baseUrl });
+    await flush();
+    expect(share.sync).toHaveBeenLastCalledWith(true, { name: ctx.config.LLM.model.name, ctxSize: ctx.config.LLM.ctxSize });
+    expect(share.opts.upstreamUrl()).toBe('http://127.0.0.1:8080');
+    expect(share.opts.isLlmReady()).toBe(true);
+
+    // llama-server dies on its own: the gate goes with it.
+    share.sync.mockClear();
+    llm.emit('stopped');
+    await flush();
+    expect(share.sync).toHaveBeenCalledWith(false, expect.anything());
+
+    // And a user STOP closes it too.
+    share.sync.mockClear();
+    ctx.emit('miner:stop');
+    expect(share.sync).toHaveBeenLastCalledWith(false, expect.anything());
+  });
+
+  it('keeps the gate shut while the switch is off', async () => {
+    const ctx = await boot({ before: (c) => c.probe.detectGpusVram.mockResolvedValue(ONE_CARD) });
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    const llm = ctx.LlmManager.instances[0];
+    llm.emit('ready', { baseUrl: llm.baseUrl });
+    await flush();
+    expect(ctx.lanShare.sync).toHaveBeenLastCalledWith(false, expect.anything());
+    expect(ctx.lanShare.sync).not.toHaveBeenCalledWith(true, expect.anything());
+  });
+
+  it('opens the gate in front of an adopted llama-server', async () => {
+    const ctx = await boot({ before: switchedOn });
+    wireHealthOk(ctx);
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(ctx.LlmManager.instances).toHaveLength(0);
+    expect(ctx.lanShare.sync).toHaveBeenLastCalledWith(true, expect.anything());
+    expect(ctx.lanShare.opts.upstreamUrl()).toBe('http://127.0.0.1:8080');
+  });
+
+  it('applies the switch at once and saves it beside the other settings', async () => {
+    const ctx = await boot({ before: (c) => c.probe.detectGpusVram.mockResolvedValue(ONE_CARD) });
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    const llm = ctx.LlmManager.instances[0];
+    llm.emit('ready', { baseUrl: llm.baseUrl });
+    await flush();
+
+    ctx.fs.existsSync.mockImplementation((p) => p === SETTINGS_PATH);
+    ctx.fs.readFileSync.mockReturnValue('{"address":"prl1x","mode":"llm"}');
+    ctx.fs.writeFileSync.mockClear();
+    ctx.emit('llm:share', true);
+    const saved = JSON.parse(ctx.fs.writeFileSync.mock.calls.pop()[1]);
+    expect(saved).toEqual({ address: 'prl1x', mode: 'llm', shareLlm: true });
+    // It was saved, so the sync that follows reads it as on.
+    ctx.fs.readFileSync.mockReturnValue(JSON.stringify(saved));
+    ctx.emit('llm:share', true);
+    expect(ctx.lanShare.sync).toHaveBeenLastCalledWith(true, expect.anything());
+
+    // Anything but true is off.
+    ctx.emit('llm:share', 'yes');
+    expect(JSON.parse(ctx.fs.writeFileSync.mock.calls.pop()[1]).shareLlm).toBe(false);
+  });
+
+  it('tells the window when sharing starts, stops or fails, and logs what the gate says', async () => {
+    const ctx = await boot();
+    const share = ctx.lanShare;
+    share.status.mockReturnValue({ urls: ['http://192.168.0.5:8000/v1'], error: null });
+    share.opts.onChange();
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ lan: { urls: ['http://192.168.0.5:8000/v1'], error: null } });
+    share.status.mockReturnValue(null);
+    share.opts.onChange();
+    expect(ctx.sent('llm:status').pop().lan).toBeNull();
+    share.opts.log('sharing the local LLM on your network at http://192.168.0.5:8000/v1');
+    expect(ctx.sent('miner:log').pop()).toEqual({ level: 'info', line: 'sharing the local LLM on your network at http://192.168.0.5:8000/v1' });
+  });
+});
 
 describe('llama-server health probe', () => {
   // Each case wires one degenerate response; the probe must resolve false so
