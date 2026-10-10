@@ -30,6 +30,7 @@ KNOWN = {
 }
 DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_token": 0,
                "credit_start": 100.0, "credit_offset": 0.0, "box_ver": "v0.5.13", "ver_override": {}, "report_min": 10,
+               "min_margin": 0.10,
                "wallet": os.environ.get("PRL_WALLET", "")}
 
 
@@ -143,9 +144,8 @@ class W:
             err(f"gpu-classes failed {s} {j}")
 
     def margin(self, cls, pri, rate=None):
-        """Profit as a share of earnings, as the first account measured it: (earn - price) / earn."""
-        earn = (rate or KNOWN[cls][0]) * self.st["mkt"]["usd_th_hr"]
-        return (earn - self.st["classes"][cls]["prices"][pri]) / earn if earn > 0 else float("-inf")
+        """The margin a class should make at a priority, at its measured rate."""
+        return margin_of((rate or KNOWN[cls][0]) * self.st["mkt"]["usd_th_hr"], self.st["classes"][cls]["prices"][pri])
 
     def paid(self, g_or_cls):
         cls = g_or_cls["class"] if isinstance(g_or_cls, dict) else g_or_cls
@@ -464,9 +464,10 @@ class W:
             elif g["status"] == "pending":
                 g["pri_since"] = t  # preparing the image: not looking for a PC yet, and a priority change is refused
             elif t - g["pri_since"] >= 10 * MIN:
-                nxt = next((p for p in PRIS[PRIS.index(g["pri"]) + 1:] if self.margin(g["class"], p) >= 0.10), None)
+                nxt = next((p for p in PRIS[PRIS.index(g["pri"]) + 1:] if self.margin(g["class"], p) >= self.cfg["min_margin"]), None)
                 if nxt is None:
-                    self.delete(g, "released", f"no PC at {g['pri']} and no higher priority clears 10%")
+                    self.delete(g, "released", f"no PC at {g['pri']} and no higher priority clears "
+                                               f"{self.cfg['min_margin']:.0%}")
                 else:
                     self.set_priority(g, nxt)
             return
@@ -489,21 +490,21 @@ class W:
             if t - ref >= limit:
                 self.leave(g, f"no share for {(t - ref) / 60:.0f} min on PC {g['machine'][:8]}")
                 return
-        # Rule 5: only profitable PCs. After the miner's first 2 minutes (warm-up), the last 3 readings must
-        # earn at least the price, every round; the first time they don't, the PC is left.
+        # Rule 5: only PCs that clear the margin. After the miner's first 2 minutes (warm-up), the last 3
+        # readings must clear min_margin at the PC's price, every round; the first time they don't, the PC is left.
         post = [r for r in cur if r[0] >= cur[0][0] + 2 * MIN] if cur else []
         if len(post) >= 3:
-            usd = st["mkt"]["usd_th_hr"]
+            usd, bar = st["mkt"]["usd_th_hr"], self.cfg["min_margin"]
             avg = sum(r[2] for r in post[-3:]) / 3
-            if avg * usd < g["price"]:
-                self.leave(g, f"earns ${avg * usd:.3f}/hr at {avg:.0f} TH/s on PC {g['machine'][:8]}, "
-                              f"under its ${g['price']:.3f}/hr")
+            if margin_of(avg * usd, g["price"]) < bar:
+                self.leave(g, f"earns ${avg * usd:.3f}/hr at {avg:.0f} TH/s on PC {g['machine'][:8]} against its "
+                              f"${g['price']:.3f}/hr ({margin_of(avg * usd, g['price']) * 100:+.0f}%, under {bar:.0%})")
                 return
             ten = post[-10:]
             shared = (g["last_share"] or 0) >= g["pc_since"]   # the pool accepts its work, not just the miner's figure
-            if not self.paid(g) and shared and len(ten) == 10 and sum(r[2] for r in ten) / 10 * usd >= g["price"]:
+            if not self.paid(g) and shared and len(ten) == 10 and margin_of(sum(r[2] for r in ten) / 10 * usd, g["price"]) >= bar:
                 st["paid_classes"].append(g["class"])
-                event(f"PAID {g['name']}: {g['class']} earns more than it costs here ({avg:.0f} TH/s); it counts as paid now")
+                event(f"PAID {g['name']}: {g['class']} clears {bar:.0%} here ({avg:.0f} TH/s); it counts as paid now")
 
     def leave(self, g, why):
         """Stop paying for this PC: another PC if the class has paid before, otherwise delete the group."""
@@ -532,7 +533,7 @@ class W:
             if s != 200:
                 continue
             for p in PRIS:
-                if (a.get(f"available_gpu_{p}") or 0) > 0 and self.margin(cls, p) >= 0.10:
+                if (a.get(f"available_gpu_{p}") or 0) > 0 and self.margin(cls, p) >= self.cfg["min_margin"]:
                     profit = rate * st["mkt"]["usd_th_hr"] - st["classes"][cls]["prices"][p]
                     cands.append((not self.paid(cls), -profit, cls, p))
                     break
@@ -602,6 +603,11 @@ class W:
         if hours is not None and hours < 12 and t - st["last_credit_alert"] > 3600:
             st["last_credit_alert"] = t
             event(f"ALERT credit ${credit:.2f} lasts about {hours:.1f} h at ${all_cost:.3f}/hr")
+
+
+def margin_of(earn, price):
+    """Profit as a share of earnings, as the first account measured it: (earn - price) / earn."""
+    return (earn - price) / earn if earn > 0 else float("-inf")
 
 
 def pct(a, b):
