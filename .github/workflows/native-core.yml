@@ -100,14 +100,14 @@ jobs:
             # default) has 16 warps, so it launches with 128 registers a thread
             # (setmaxnreg then gives the consumers 160); local 12.8 and 13.3
             # builds have it at 128 and 0 spill. sm_100 (B200), added
-            # 2026-10-09, is not in it yet: by the rule above it is a warning
-            # until a run here has built it clean. A local build with nvcc
-            # V12.8.93, the compiler this entry installs, had every fold at 0
-            # spill, the tall fold 255 registers and the wmma fold 128. sm_100
-            # builds sm_120's TMA tall fold, and at 255 registers it has no
-            # room, so a change to the shared tall-fold code should be checked
-            # for an sm_100 spill (this step's warning) before it merges.
-            spill_fail_archs: sm_80 sm_86 sm_89 sm_90a sm_120
+            # 2026-10-09, builds sm_120's TMA tall fold, which is the fold that
+            # mines there. It started as a warning and went in on 2026-10-10,
+            # after native core runs 38049301121 (this entry) and 38047962205
+            # (windows-2022) built it clean: the tall fold 255 registers, the
+            # wmma fold 128, every fold 0 spill. At 255 registers the tall fold
+            # has no room left, so a change to the shared tall-fold code that
+            # spills on sm_100 fails the job.
+            spill_fail_archs: sm_80 sm_86 sm_89 sm_90a sm_100 sm_120
           - os: windows-2022
             variant: ''
             file: pearl_core.node
@@ -122,7 +122,7 @@ jobs:
               -gencode arch=compute_90a,code=sm_90a
               -gencode arch=compute_100,code=sm_100
               -gencode arch=compute_120,code=sm_120
-            spill_fail_archs: sm_80 sm_86 sm_89 sm_90a sm_120
+            spill_fail_archs: sm_80 sm_86 sm_89 sm_90a sm_100 sm_120
           # 13.3.1 is the newest toolkit Jimver/cuda-toolkit v0.2.36 (the
           # version already pinned here) lists, on Linux and Windows alike, and
           # it is the toolkit the 5090 rig builds with (nvcc V13.3.73) -- so the
@@ -310,10 +310,10 @@ jobs:
       # hash kernel (pearl_tall_hash80, a body only on sm_80 and sm_90a), on
       # every architecture and prints one row each. A spill fails the job on
       # the architectures in the entry's spill_fail_archs (the comment there
-      # says why each is in it): sm_80, sm_86, sm_89, sm_90a and sm_120 in the
-      # 12.8 entries, and sm_120 alone in the cu13 entries, whose sm_89 half
-      # nothing ships (see those entries). Any other architecture, sm_75 and
-      # sm_100 included, is a warning. A failed cu13 job uploads no
+      # says why each is in it): sm_80, sm_86, sm_89, sm_90a, sm_100 and sm_120
+      # in the 12.8 entries, and sm_120 alone in the cu13 entries, whose sm_89
+      # half nothing ships (see those entries). Any other architecture, sm_75
+      # included, is a warning. A failed cu13 job uploads no
       # pearl_core_cu13.node, and a failed ubuntu 12.8 job makes
       # miner-build.yml fall back to the previous run's core, which is the
       # right outcome for a fold that spills. Needs no GPU.
