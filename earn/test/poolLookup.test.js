@@ -1,7 +1,9 @@
 'use strict';
 
 const path = require('path');
-const { makePoolLookup, fileCache, PUBLIC_DNS, QUERY_TIMEOUT_MS } = require('../src/shared/poolLookup');
+const {
+  makePoolLookup, fileCache, usableAddress, PUBLIC_DNS, QUERY_TIMEOUT_MS,
+} = require('../src/shared/poolLookup');
 
 const HOST = 'us2.pearl.herominers.com';
 const ENOENT = Object.assign(new Error('getaddrinfo ENOENT ' + HOST), { code: 'ENOENT' });
@@ -129,6 +131,72 @@ describe('makePoolLookup', () => {
     const { dns } = fakeDns({ system: ENOENT, direct: ['51.81.2.2'] });
     const lookup = makePoolLookup({ dns, cache: memCache() });
     expect((await ask(lookup, {})).address).toBe('51.81.2.2');
+  });
+});
+
+// A DNS filter (the user's router forwarded to Cloudflare's 1.1.1.2, which
+// blocks crypto-mining names) often answers a blocked name with 0.0.0.0 rather
+// than failing. That answer leads nowhere, so it counts as no answer at every
+// step and is never saved over the last address that worked.
+describe('blocked answers', () => {
+  const BLOCKED_REASON = 'DNS answered 0.0.0.0, the address a DNS filter gives a name it blocks';
+
+  test('only real addresses are usable', () => {
+    for (const a of ['0.0.0.0', '0.1.2.3', '::', '0:0:0:0:0:0:0:0', '::0000', '::ffff:0.0.0.0', 'nonsense', undefined]) {
+      expect([a, usableAddress(a)]).toEqual([a, false]);
+    }
+    for (const a of ['51.81.1.1', '2001:db8::1', '::ffff:51.81.1.1', '1::', '::2']) {
+      expect([a, usableAddress(a)]).toEqual([a, true]);
+    }
+  });
+
+  // A local stratum proxy reached by name (localhost:3333) must keep working.
+  test('loopback is a real answer, not a blocked one', () => {
+    for (const a of ['127.0.0.1', '::1', '::ffff:127.0.0.1']) {
+      expect([a, usableAddress(a)]).toEqual([a, true]);
+    }
+  });
+
+  test('a system answer of 0.0.0.0 falls through, past a filtered DNS server too, to public DNS', async () => {
+    const { dns } = fakeDns({
+      system: [{ address: '0.0.0.0', family: 4 }, { address: '::', family: 6 }],
+      direct: ['0.0.0.0'],
+      publicDns: ['51.81.3.3'],
+    });
+    const cache = memCache();
+    const log = jest.fn();
+    const lookup = makePoolLookup({ dns, cache, log });
+    expect((await ask(lookup, {})).address).toBe('51.81.3.3');
+    expect(cache.set.mock.calls).toEqual([[HOST, [{ address: '51.81.3.3', family: 4 }]]]);
+    expect(log).toHaveBeenCalledWith('could not look up ' + HOST + ' (' + BLOCKED_REASON + '); using 51.81.3.3 from public DNS');
+  });
+
+  test('a mixed answer keeps only the real addresses, and saves only those', async () => {
+    const { dns } = fakeDns({ system: [{ address: '0.0.0.0', family: 4 }, { address: '51.81.1.1', family: 4 }] });
+    const cache = memCache();
+    const lookup = makePoolLookup({ dns, cache });
+    expect(await ask(lookup, { all: true })).toEqual({ err: null, address: [{ address: '51.81.1.1', family: 4 }], family: undefined });
+    expect(cache.set).toHaveBeenCalledWith(HOST, [{ address: '51.81.1.1', family: 4 }]);
+  });
+
+  test('the last address that worked still serves when every lookup is filtered', async () => {
+    const { dns } = fakeDns({ system: [{ address: '0.0.0.0', family: 4 }], direct: ['0.0.0.0'], publicDns: [] });
+    const cache = memCache({ [HOST]: [{ address: '0.0.0.0', family: 4 }, { address: '51.81.4.4', family: 4 }] });
+    const log = jest.fn();
+    const lookup = makePoolLookup({ dns, cache, log });
+    expect((await ask(lookup, {})).address).toBe('51.81.4.4');
+    expect(cache.set).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith('could not look up ' + HOST + ' (' + BLOCKED_REASON + '); using 51.81.4.4 from the last address that worked');
+  });
+
+  // It reads like the system's own lookup errors ("getaddrinfo ..."), so the
+  // app's "could not resolve ... check DNS" hint still shows.
+  test('with nothing else, fails with an error that says the name was blocked', async () => {
+    const { dns } = fakeDns({ system: [{ address: '0.0.0.0', family: 4 }] });
+    const lookup = makePoolLookup({ dns, cache: memCache({ [HOST]: [{ address: '0.0.0.0', family: 4 }] }) });
+    const { err } = await ask(lookup, {});
+    expect(err.code).toBe('EBLOCKED');
+    expect(err.message).toBe('getaddrinfo EBLOCKED ' + HOST + ' (' + BLOCKED_REASON + ')');
   });
 });
 

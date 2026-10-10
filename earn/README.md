@@ -86,7 +86,9 @@ Both shells look up the pool's name with the system resolver first. If that
 fails, they try the computer's DNS servers directly (skipping the system's
 resolver and its cache), then public DNS (1.1.1.1, 8.8.8.8), then the last
 address that worked, saved in `pool-addresses.json` beside the node identity.
-The log names the fallback used:
+An answer of `0.0.0.0` or `::` counts as no answer at every step and is never
+saved: it is how DNS filters that block crypto-mining names (Cloudflare's
+1.1.1.2, Pi-hole, AdGuard) answer. The log names the fallback used:
 
 ```
 could not look up us2.pearl.herominers.com (ENOENT); using 203.0.113.7 from the last address that worked
