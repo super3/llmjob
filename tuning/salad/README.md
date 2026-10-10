@@ -53,25 +53,27 @@ measured it. A 2060 at 40 TH/s earning $0.047/hr on a $0.030/hr PC is +36%, not 
    left, delete the group. The 10 minutes start once the image is ready: while the group is `pending`
    it isn't looking for a PC, and Salad refuses a priority change (`pending_update_in_progress`).
 3. **Had a PC, lost it, no other within 20 min:** delete.
-4. **No share for max(10 min, 8 expected share gaps) after 20 min on a PC:** reallocate if the class
-   paid before, otherwise delete.
-5. **Profit check** every 5 min, once the group has mined 20 min and has 10 readings from its current
-   PC. It compares the last 10 min average TH/s × $/TH-hr with the price. Two checks in a row under
-   cost: reallocate if the class paid before, otherwise delete.
+4. **No share for max(10 min, 8 expected share gaps) after 20 min on a PC:** leave the PC.
+5. **Only profitable PCs.** Skip the miner's first 2 minutes (warm-up). From then on, every round, the
+   last 3 readings (one a minute) must earn at least the PC's price. The first time they don't, leave
+   the PC. A PC with no mining reading 10 min after we got it is left too.
 6. **"port 1200 blocked"** in the logs: reallocate.
 7. **Credit runs out:** Salad stops every group, and creating one returns `no_credits_available`. The
    watcher leaves stopped groups alone and stops creating. A group that stops after it had a PC is
    taken as this case. Bump `restart_token` after a top-up.
 8. It only acts on groups in its own ledger.
 
-A class has **paid before** if it paid on the first account, or once any group of it here passes a
-profit check. Reallocations are capped at 3 a group, shared by rules 4 to 6; the next one deletes it.
+**Leaving a PC** means reallocating to another PC if the class has paid before, and deleting the group
+if it hasn't. A class has **paid before** if it paid on the first account, or once a group of it here
+earns its price over 10 readings with shares at the pool. Reallocations are capped at 3 a group, shared
+by rules 4 to 6; the next one deletes it.
 A deleted group counts as **released** when it never got going (no PC, or lost it) and **failed** when
 it mined badly (no shares, under cost, port blocked). Its deletion event carries the box's last log
 lines, so it says why.
 
 **Spend** counts the group's price for every minute it has a PC (instance downloading, creating or
-running). A group waiting for a PC isn't billed. **PRL mined** adds each `[mining g0]` reading (one a
+running). A group waiting for a PC isn't billed. The first account counted only `running` minutes.
+Neither way has been checked against the portal. **PRL mined** adds each `[mining g0]` reading (one a
 minute) as TH/s × 1 min × PRL per TH-hr at that moment.
 
 ## Salad API notes
@@ -85,7 +87,17 @@ Base `https://api.salad.com/api/public/organizations/<org>`, key in the `Salad-A
 - `GET /gpu-classes`: a price for each priority (batch, low, medium, high), CPU and RAM included.
 - `POST /availability/sce-gpu-availability` with the container's resources gives
   `available_gpu_<priority>` counts. They aren't reliable for busy cards.
-- `GET /quotas`: a new org gets 10 replicas. Stopped groups don't count against it.
+- `GET /quotas`: a new org gets 10 replicas. Stopped groups count against it: with 10 stopped groups,
+  creating one failed with `created_replicas_quota_exceeded`, although `container_replicas_used`
+  read 0 once Salad had stopped them for lack of credit. A raise goes through "Request Increase" in
+  the portal, usually answered within 2 business days.
+- Create errors are HTTP 400 with a type: `container_group_update_exception` (the `; curl` command),
+  `created_replicas_quota_exceeded`, `cannot_start_container_group_with_current_status` (start while
+  pending) and `no_credits_available` ("Entitlement check failed"). A 408 is `connection_timeout`.
+- A group created with `autostart_policy: true` can still end up `stopped` once its image is ready;
+  `POST .../start` starts it.
+- Changing a running group's environment (a new version) makes Salad stop the instance and move it
+  to another PC.
 - `GET .../containers/<name>` shows `priority` at the top level, but a change goes in
   `container.priority`: `PATCH` with `Content-Type: application/merge-patch+json` and
   `{"container":{"priority":"medium"}}`. Refused while the group is `pending`.
@@ -94,9 +106,9 @@ Base `https://api.salad.com/api/public/organizations/<org>`, key in the `Salad-A
   `POST .../instances/<id>/reallocate` moves it to another PC.
 - `POST /log-entries`: `page_size` must be 1 to 100. A call takes 1 to 10 s and sometimes returns 408 or
   500. A query with `OR` timed out (408), so the watcher reads all container lines in one query and
-  pages when a round has more than 100. A query per group made a round take 11 minutes.
-  `log contains "..."` joined by `AND` works (the first account's watcher used
-  `resource.type = "container" AND log contains "[mining g"`).
+  pages when a round has more than 100. A query per group made a round take 11 minutes. The first
+  account ran `(log contains "A" OR log contains "B")` fine, so the one 408 here was probably the
+  API's usual timeout. `resource.type = "deployment_controller"` returns Salad's system events.
 - Salad can move an instance to another PC without a gap in `running`, so a new PC shows only as a
   new `machine_id`.
 
@@ -112,6 +124,9 @@ Base `https://api.salad.com/api/public/organizations/<org>`, key in the `Salad-A
 - box.sh mines with release v0.5.13 and prints `[mining g0] HH:MM:SS <TH/s> TH/s · <n> accepted · ...`
   once a minute. A PC that blocks the pool port prints `[run] FAIL: outbound port 1200 blocked`.
 - Workers are named `biz-<card>` (a second group of a card gets `-2`). The pool shows `<worker>-g0`.
+- The miner can't lock the memory clock on Salad: its log says the user has no permission.
+- Image preparation took from 1 to 60+ min on the first account, with the same image. A PC came within
+  about a minute when one was free, and the first share 1–3 min after that.
 
 ## Money
 
@@ -160,6 +175,18 @@ What went wrong on the first account:
   the miner, though it had mined at +44% earlier: when a class that pays stops, the PC is the problem.
 - The credit ran out on Oct 10 at 07:43 UTC. Salad stopped every group at once, and none started again
   on its own.
+- Rates swing a lot between PCs of one class: a 4070 did 120 TH/s on one PC and 57 on another, a 3070
+  76 then 59, a 3060 Ti 61 then 45 (on a PC at 85 °C). That's why rule 5 leaves a PC at once.
+
+The first account spent $24.43 and mined 20.65 PRL over about a day, about $1.18 a PRL, worth about
++$4.3 at PRL $1.40.
+
+## The business account
+
+- Oct 10, 19:33: the first 2080 group got a 2080 SUPER at 85–87 °C, held to 750–900 MHz and 115 of
+  250 W: 33 TH/s. The first 2060 got a card reporting no power limit at 55 W, likely a laptop: 22
+  TH/s. Both were moved to other PCs.
+- Salad's "RTX 2060" class includes the CMP 40HX mining card (110 W).
 
 v0.5.14 adds an L2 rule worth about +0.5 to 1.7% on power-capped RTX 40 cards. Try it on one group
 (`ver_override`) before switching `box_ver`.

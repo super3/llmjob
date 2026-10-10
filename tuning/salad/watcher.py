@@ -476,40 +476,41 @@ class W:
         if g["machine"] in g["blocked"]:
             self.reallocate(g, "PC blocks outbound port 1200")
             return
+        # This PC's readings (one a minute). A PC that isn't mining 10 min after we got it is left.
+        cur = [r for r in g["readings"] if r[1] == g["machine"] and r[2] > 0 and r[0] >= g["pc_since"] - 5 * MIN]
+        if not cur and on >= 10 * MIN:
+            self.leave(g, f"no mining reading {on / 60:.0f} min after getting PC {g['machine'][:8]}")
+            return
         # Rule 4: no share after 20 min on a PC.
         if on >= 20 * MIN:
             gap = SHARE_UNITS / (g["rate"] / UNIT_TH)
             limit = max(10 * MIN, 8 * gap)
             ref = max(g["pc_since"], g["last_share"] or 0)
             if t - ref >= limit:
-                why = f"no share for {(t - ref) / 60:.0f} min on PC {g['machine'][:8]}"
-                if self.paid(g):
-                    self.reallocate(g, why)
-                else:
-                    self.delete(g, "failed", why)
+                self.leave(g, f"no share for {(t - ref) / 60:.0f} min on PC {g['machine'][:8]}")
                 return
-        # Rule 5: profit check every 5 min, on the last 10 min of readings from this PC.
-        cur = [r for r in g["readings"] if r[1] == g["machine"] and r[2] > 0]
-        if g["mined_min"] >= 20 and len(cur) >= 10 and t - g["last_check"] >= 5 * MIN:
-            g["last_check"] = t
-            last = [r[2] for r in cur if r[0] >= cur[-1][0] - 10 * MIN]
-            avg = sum(last) / len(last)
-            earn = avg * st["mkt"]["usd_th_hr"]
-            if earn < g["price"]:
-                g["profit_fail"] += 1
-                event(f"PROFIT CHECK {g['name']}: {avg:.0f} TH/s earns ${earn:.3f}/hr < ${g['price']:.3f}/hr "
-                      f"({g['profit_fail']} in a row)")
-            else:
-                g["profit_fail"] = 0
-                if not self.paid(g):
-                    st["paid_classes"].append(g["class"])
-                    event(f"PAID {g['name']}: {g['class']} earns more than it costs here ({avg:.0f} TH/s); it counts as paid now")
-            if g["profit_fail"] >= 2:
-                why = f"earned less than cost twice ({avg:.0f} TH/s)"
-                if self.paid(g):
-                    self.reallocate(g, why)
-                else:
-                    self.delete(g, "failed", why)
+        # Rule 5: only profitable PCs. After the miner's first 2 minutes (warm-up), the last 3 readings must
+        # earn at least the price, every round; the first time they don't, the PC is left.
+        post = [r for r in cur if r[0] >= cur[0][0] + 2 * MIN] if cur else []
+        if len(post) >= 3:
+            usd = st["mkt"]["usd_th_hr"]
+            avg = sum(r[2] for r in post[-3:]) / 3
+            if avg * usd < g["price"]:
+                self.leave(g, f"earns ${avg * usd:.3f}/hr at {avg:.0f} TH/s on PC {g['machine'][:8]}, "
+                              f"under its ${g['price']:.3f}/hr")
+                return
+            ten = post[-10:]
+            shared = (g["last_share"] or 0) >= g["pc_since"]   # the pool accepts its work, not just the miner's figure
+            if not self.paid(g) and shared and len(ten) == 10 and sum(r[2] for r in ten) / 10 * usd >= g["price"]:
+                st["paid_classes"].append(g["class"])
+                event(f"PAID {g['name']}: {g['class']} earns more than it costs here ({avg:.0f} TH/s); it counts as paid now")
+
+    def leave(self, g, why):
+        """Stop paying for this PC: another PC if the class has paid before, otherwise delete the group."""
+        if self.paid(g):
+            self.reallocate(g, why)
+        else:
+            self.delete(g, "failed", why)
 
     def search(self):
         st = self.st

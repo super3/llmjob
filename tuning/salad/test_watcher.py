@@ -67,6 +67,18 @@ class Base(unittest.TestCase):
             g["instance"] = "inst-" + machine
         self.x.rules(g, self.clock[0])
 
+    def mine(self, g, machine, ths, minutes, shares=True):
+        """Mine on `machine` at `ths`: one reading (and a share, unless shares=False) and one round a minute."""
+        for _ in range(minutes):
+            self.clock[0] += 60
+            g["readings"].append([self.clock[0], machine, float(ths), 0])
+            if shares:
+                g["last_share"] = self.clock[0]
+            g["has_pc"], g["_machine"], g["instance"] = True, machine, "inst-" + machine
+            self.x.rules(g, self.clock[0])
+            if g["ended"] or g["machine"] is None:
+                return
+
     def events(self):
         try:
             with open(os.path.join(TMP, "events.log")) as f:
@@ -158,45 +170,91 @@ class TestRule4NoShare(Base):
     def test_paid_class_is_reallocated(self):
         g = self.group()
         self.step(g, 1, "m1")
-        self.step(g, 19, "m1")
+        self.mine(g, "m1", 199, 19, shares=False)
         self.assertFalse(self.http.made("POST", "/reallocate"))
-        self.step(g, 2, "m1")
+        self.mine(g, "m1", 199, 2, shares=False)
         self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
         self.assertEqual(g["reallocs"], 1)
 
     def test_shares_keep_it(self):
         g = self.group()
         self.step(g, 1, "m1")
-        g["last_share"] = self.clock[0] + 15 * 60
-        self.step(g, 21, "m1")
+        self.mine(g, "m1", 199, 30)
         self.assertFalse(self.http.made("POST", "/reallocate"))
 
     def test_class_that_never_paid_is_deleted(self):
         g = self.group(cls="RTX 4070 (12 GB)", pri="low")
         self.step(g, 1, "m1")
-        self.step(g, 21, "m1")
+        self.mine(g, "m1", 120, 21, shares=False)
         self.assertEqual(g["end_kind"], "failed")
+        self.assertNotIn("RTX 4070 (12 GB)", self.x.st.get("paid_classes", []))  # a good rate with no shares isn't paying
 
     def test_slow_card_waits_8_share_gaps(self):
         g = self.group(cls="RTX 2060 (6 GB)", pri="low")  # 40 TH/s: a share every ~4 min, 8 gaps ~31 min
         self.step(g, 1, "m1")
-        self.step(g, 25, "m1")
+        self.mine(g, "m1", 40, 25, shares=False)
         self.assertFalse(self.http.made("POST", "/reallocate"))
-        self.step(g, 8, "m1")
+        self.mine(g, "m1", 40, 8, shares=False)
         self.assertTrue(self.http.made("POST", "/reallocate"))
+
+
+class TestNotMining(Base):
+    def test_a_pc_with_no_reading_after_10_min_is_left(self):
+        g = self.group()
+        self.step(g, 1, "m1")
+        self.step(g, 9, "m1")
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.step(g, 1, "m1")
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
+
+
+class TestRule5Profit(Base):
+    def test_an_unprofitable_pc_is_left_at_once(self):
+        g = self.group(pri="medium")  # $0.19/hr; 100 TH/s earns $0.117
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 100, 4)  # 2 min of warm-up, then 2 readings: not enough yet
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.mine(g, "m1", 100, 1)  # the 3rd reading after warm-up
+        self.assertTrue(self.http.made("POST", "/reallocate"))
+        self.assertIn("under its $0.190/hr", self.events())
+
+    def test_warm_up_is_ignored(self):
+        g = self.group(pri="medium")
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 50, 2)
+        self.mine(g, "m1", 199, 30)
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+
+    def test_it_keeps_checking_while_it_mines(self):
+        g = self.group(pri="medium")
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 30)
+        self.mine(g, "m1", 120, 3)  # the owner starts using the card
+        self.assertTrue(self.http.made("POST", "/reallocate"))
+
+    def test_one_slow_reading_is_averaged_out(self):
+        g = self.group(pri="medium")
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 10)
+        self.mine(g, "m1", 120, 1)
+        self.mine(g, "m1", 199, 5)
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+
+    def test_class_that_never_paid_is_deleted(self):
+        g = self.group(cls="RTX 4070 (12 GB)", pri="low")  # $0.09/hr; 50 TH/s earns $0.059
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 50, 5)
+        self.assertEqual(g["end_kind"], "failed")
 
 
 class TestPaidClasses(Base):
     def test_a_thin_class_that_pays_here_counts_as_paid(self):
         g = self.group(cls="RTX 4070 (12 GB)", pri="low")  # never paid on the first account
         self.step(g, 1, "m1")
-        g["mined_min"] = 20
-        g["last_share"] = self.clock[0] + 15 * 60
-        g["readings"] = [[self.clock[0] + i * 60, "m1", 120.0, i] for i in range(12)]  # $0.140/hr > $0.09/hr
-        self.step(g, 12, "m1")
+        self.mine(g, "m1", 120, 12)  # $0.140/hr > $0.09/hr, with shares
         self.assertIn("RTX 4070 (12 GB)", self.x.st["paid_classes"])
         self.assertIn("PAID biz-rtx4070", self.events())
-        self.step(g, 20, "m1")  # then its shares stop: the PC is the problem now, not the class
+        self.mine(g, "m1", 60, 3)  # then this PC slows down: the PC is the problem now, not the class
         self.assertTrue(self.http.made("POST", "/reallocate"))
         self.assertIsNone(g["ended"])
 
@@ -207,38 +265,12 @@ class TestDeleteReason(Base):
         self.step(g, 1, "m1")
         lines = ["[run] g0 miner exited 08:30:00 (restart 1): out of memory", "[mining g0] 08:29:00 0.0 TH/s"]
         self.http.on("POST", "/log-entries", lambda b: (200, {"items": [{"text_log": l} for l in lines]}))
-        self.step(g, 21, "m1")
+        self.mine(g, "m1", 50, 5)
         ev = self.events()
         self.assertIn("DELETED biz-rtx4070", ev)
         self.assertIn("WHY biz-rtx4070: [mining g0] 08:29:00 0.0 TH/s\n    WHY biz-rtx4070: [run] g0 miner exited", ev)
         body = self.http.made("POST", "/log-entries")[0][2]
         self.assertIn('container_group_name = "biz-rtx4070"', body["query"])
-
-
-class TestRule5Profit(Base):
-    def test_two_checks_under_cost_reallocate(self):
-        g = self.group(pri="medium")
-        self.step(g, 1, "m1")
-        g["mined_min"] = 20
-        g["last_share"] = T0 + 10 ** 6  # shares keep coming
-        g["readings"] = [[self.clock[0] + i * 60, "m1", 100.0, i] for i in range(12)]  # 100 TH/s earns $0.117 < $0.19
-        self.step(g, 12, "m1")
-        self.assertEqual(g["profit_fail"], 1)
-        self.step(g, 1, "m1")
-        self.assertEqual(g["profit_fail"], 1)  # checks are 5 min apart
-        self.step(g, 4, "m1")
-        self.assertTrue(self.http.made("POST", "/reallocate"))
-
-    def test_good_rate_passes(self):
-        g = self.group(pri="medium")
-        self.step(g, 1, "m1")
-        g["mined_min"] = 20
-        g["last_share"] = T0 + 10 ** 6
-        g["readings"] = [[self.clock[0] + i * 60, "m1", 199.0, i] for i in range(12)]
-        self.step(g, 12, "m1")
-        self.step(g, 5, "m1")
-        self.assertEqual(g["profit_fail"], 0)
-        self.assertFalse(self.http.made("POST", "/reallocate"))
 
 
 class TestRule6PortBlocked(Base):
