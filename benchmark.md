@@ -11,21 +11,21 @@ How close our miner gets to the faster of PeakMiner and SRBMiner on the same
 host:
 
 - RTX 20-series: 94–98% on all eight hosts, on v0.5.13's kernel. The RTX
-  2070 (95%) and the 2060 Super (94%) ran PR #256's build (`9adc88a`, not
-  yet released), which has the same sm_75 kernel.
+  2070 (95%) and the 2060 Super (94%) ran v0.5.14's core (PR #256's build
+  at `9adc88a`), which has the same sm_75 kernel.
 - RTX 30-series: 97–104% on the eleven hosts re-measured with v0.5.13's
-  kernel, two of them on PR #256's build (`9adc88a`), which has the same
-  kernel. Four rows are still from v0.5.11, at 78–80%: both 3090 Tis, the
-  Ukraine 3090 and the 220 W Quebec 3070.
-- RTX 40-series: 96–103% on the twelve hosts re-measured with PR #256's
-  build (`51d88e8` or `9adc88a`, not yet released), and 99–101% on the six
+  kernel, two of them on v0.5.14's core (PR #256's build at `9adc88a`),
+  which has the same kernel. Four rows are still from v0.5.11, at 78–80%:
+  both 3090 Tis, the Ukraine 3090 and the 220 W Quebec 3070.
+- RTX 40-series: 96–103% on the twelve hosts re-measured with v0.5.14's
+  code (PR #256's build at `51d88e8` or `9adc88a`), and 99–101% on the six
   still from v0.5.11. Against v0.5.13 in the same rental, `51d88e8` gained
   0.5% on the 209 W 4070 Super and was level on the rest. That card is at
   96% because its host has run slower in each later rental: 138.5 on
   v0.5.13, then 136.0 on `51d88e8` and 134.5 on `9adc88a`.
 - RTX 50-series: 99–100% on the three hosts re-measured with v0.5.13's
-  kernel, and 95–99% on the four re-measured with PR #256's build
-  (`3b8ffce`, not yet released), which has the same kernel. The India 5090
+  kernel, and 95–99% on the four re-measured with v0.5.14's core (PR #256's
+  build at `3b8ffce`), which has the same kernel. The India 5090
   (95%) held a lower clock than in its earlier rental, and the 5070 Ti and
   the Poland 5070 may share their GPU with another workload. Of the five
   still from v0.5.11, the South Korea 5090 and the 5080s are close to even
@@ -33,32 +33,33 @@ host:
 - A100-class (sm_80, new in v0.5.13): 94–107% on the four rows with
   v0.5.13's kernel: the A30 107%, the A100 PCIe 98%, the New York A100
   SXM4 96% and the California A100 SXM4 94%, on a host that cools the card
-  poorly. The three A100s are from PR #256's build (`9adc88a`, not yet
-  released), which has the same kernel. The CMP 170HX (87%) is from an
+  poorly. The three A100s are from v0.5.14's core (PR #256's build at
+  `9adc88a`), which has the same kernel. The CMP 170HX (87%) is from an
   earlier build; a speed test of v0.5.13's kernel on it read 98%.
 - Hopper (sm_90a, new in v0.5.13): 100–102% on the H100 NVL, H100 PCIe, H200
-  and H200 NVL, re-measured with PR #256's build (`1df3c20`, not yet
-  released). That's 6.5–8.8% above their v0.5.13 pool runs. The H100 SXM
+  and H200 NVL, re-measured with v0.5.14's Hopper fold (PR #256's build at
+  `1df3c20`). That's 6.5–8.8% above their v0.5.13 pool runs. The H100 SXM
   (83%) is still from a build before v0.5.13, without the fold changes
-  since; a speed test of PR #256's fold on another H100 SXM host read 96%.
+  since; a speed test of v0.5.14's fold on another H100 SXM host read 96%.
   These cards couldn't mine at all before v0.5.13.
 - Ada workstation and data-center cards (sm_89: L40S, L40, L4, RTX 6000,
-  5000, 4500, 4000 and 2000 Ada): 101–111%. Ten rows are from PR #256's
-  build, which gained 0.7–1.7% over v0.5.13 in the same rental on the L4s
-  and the RTX 2000, 4000 and 4500 Ada, and was level on the rest. Three are
-  still from 2026-10-07, on v0.5.13's kernel.
+  5000, 4500, 4000 and 2000 Ada): 101–111%. Ten rows are from v0.5.14's
+  code (PR #256's build at `51d88e8`), which gained 0.7–1.7% over v0.5.13
+  in the same rental on the L4s and the RTX 2000, 4000 and 4500 Ada, and
+  was level on the rest. Three are still from 2026-10-07, on v0.5.13's
+  kernel.
 - RTX PRO Blackwell (sm_120): 98–101%. The 6000 Max-Q and the RTX 6000D are
   level; the RTX PRO 5000 is 0.7% short and the 6000 Server 1.5%. The RTX
-  6000D and 6000 Server rows are from PR #256's build (`9adc88a`, not yet
-  released), which has v0.5.13's kernel.
+  6000D and 6000 Server rows are from v0.5.14's core (PR #256's build at
+  `9adc88a`), which has v0.5.13's kernel.
 - Ampere workstation and data-center cards (sm_86: RTX A6000, A5000, A4000
   and A2000, and the A40): 97–102% on v0.5.13's kernel. Seven of the ten
   rows are at 100–102%. The Kansas A6000 (99.8%) and the Belgium A40
   (99.4%) are just short, and the 6 GB A2000 is at 97%.
-- B200 (sm_100, new in PR #256): 33%. Its hits are correct, but it mines on
+- B200 (sm_100, new in v0.5.14): 33%. Its hits are correct, but it mines on
   `mma.sync`, which tops out at about 41% of the competitors on this card.
   Matching them needs a fold on the B200's own tensor instructions
-  (tcgen05). Before this build a B200 couldn't mine at all.
+  (tcgen05). Before v0.5.14 a B200 couldn't mine at all.
 - Tesla T4 (sm_75): 27.7 TH/s at its 70 W limit in one 5-minute pool run
   of v0.5.13. PeakMiner and SRBMiner weren't run, so there is no % of best.
 
@@ -72,7 +73,9 @@ host:
    and sm_86 sections name those rows. Other later runs
    built a commit from source, or as CI builds it; each section names the
    commit and says whether its kernel is byte-identical to v0.5.13's. The
-   first 20-series run predates the release: it built PR #250 from source,
+   rows from PR #256's build ran a commit that has v0.5.14's core for that
+   card; none ran the published v0.5.14 files. The first 20-series run
+   predates v0.5.11: it built PR #250 from source,
    which is the code that shipped as v0.5.11. On an RTX 50-series card with
    driver 580 or newer, the CLI loads the CUDA 13 core, as a user's rig
    would, and the hit check runs on that core.
@@ -142,7 +145,7 @@ existed, so the Thailand 2080 Ti (170 W of 250 W) is on the list.
   host is tested" name the right release, and that no section calls a
   shipped card unreleased.
 
-## RTX 20-series (PR #256's build and v0.5.13)
+## RTX 20-series (v0.5.14 and v0.5.13)
 
 Run on 2026-10-06, 09:15–09:38 UTC, with PR #250 built from source at
 `f66f80c`: the code that shipped as v0.5.11. The RTX 2070 was rerun at
@@ -154,9 +157,9 @@ candidate (`26c50b3`) built as CI builds it, which has the same sm_75
 kernel as v0.5.12 and v0.5.13, byte for byte. The Thailand 2080 Ti, the
 2080, the 2070 Super and both 2060s ran on 2026-10-08, 18:21–18:37 UTC,
 with the published v0.5.13 release. The RTX 2070 and the 2060 Super ran on
-2026-10-09, 04:28–06:02 UTC, with PR #256's build at `9adc88a`, not yet
-released, built on each box with CI's flags. Its sm_75 kernel is
-v0.5.13's, byte for byte.
+2026-10-09, 04:28–06:02 UTC, with PR #256's build at `9adc88a`, built on
+each box with CI's flags. That build has v0.5.14's core for these cards.
+Its sm_75 kernel is v0.5.13's, byte for byte.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
@@ -207,7 +210,7 @@ Every host passed the hit check, and every run had 0 rejected shares.
 - **SRBMiner** logs an OpenCL error at start on every 20-series card, then
   mines normally on CUDA.
 
-## RTX 30-series (PR #256's build, v0.5.13 and v0.5.11)
+## RTX 30-series (v0.5.14, v0.5.13 and v0.5.11)
 
 Run on 2026-10-06, 10:24–11:10 UTC, with the v0.5.11 release.
 
@@ -217,9 +220,9 @@ same sm_86 kernel as v0.5.12 and v0.5.13, byte for byte. The Quebec 3090,
 the 3070 Ti and the 180 W Quebec 3070 ran on 2026-10-08, 18:29–18:47 UTC,
 with the published v0.5.13 release. The Portugal 3080 Ti and the Vietnam
 3060 ran on 2026-10-09, 04:46–05:18 UTC, with PR #256's build at
-`9adc88a`, not yet released, built on each box with CI's flags. Its sm_86
-kernel is v0.5.13's, byte for byte. Still from v0.5.11: both 3090 Tis, the
-Ukraine 3090 and the 220 W Quebec 3070.
+`9adc88a`, built on each box with CI's flags. That build has v0.5.14's core
+for these cards. Its sm_86 kernel is v0.5.13's, byte for byte. Still from
+v0.5.11: both 3090 Tis, the Ukraine 3090 and the 220 W Quebec 3070.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
@@ -292,18 +295,19 @@ Every host passed the hit check, and every run had 0 rejected shares.
   - Three hosts planned earlier (3090 Ti Vietnam, 3090 Argentina, 3080
     France) were no longer listed when the run started.
 
-## RTX 40-series (PR #256's build and v0.5.11)
+## RTX 40-series (v0.5.14 and v0.5.11)
 
 Run on 2026-10-06, 11:12–12:10 UTC, with the v0.5.11 release.
 
 Eight rows were re-measured on 2026-10-08, 19:19–20:53 UTC, with 5-minute
-pool runs of PR #256's build at `51d88e8`, not yet released: the Australia
-4090, both 4080 Supers, both 4080s, both 4060 Tis and the New Zealand 4060.
+pool runs of PR #256's build at `51d88e8`, which has v0.5.14's core for
+these cards: the Australia 4090, both 4080 Supers, both 4080s, both 4060
+Tis and the New Zealand 4060.
 Each box built the core from source (CUDA 12.8, sm_89, native-core.yml's
 flags) with `-DPEARL_LOG_ADA_L2=1`, which only prints the card's L2 and the
 batch width, and ran it under the v0.5.13 CLI. The only change from v0.5.13
 is host code that picks the batch width from the L2 (see "Ada batch width
-(PR #256)" below), so the sm_89 kernel is v0.5.13's.
+(v0.5.14)" below), so the sm_89 kernel is v0.5.13's.
 Four more ran on 2026-10-09, 06:19–08:12 UTC, with 5-minute pool runs of
 PR #256's build at `9adc88a`, built on each box with CI's flags: the Texas
 4070 Ti Super, both 4070 Supers and the Australia 4060. It picks the same
@@ -355,7 +359,7 @@ Every host passed the hit check, and every run had 0 rejected shares.
 - **On `51d88e8`:** on 2026-10-08 the 4070 Supers read 136.0 (97%) at
   209 W and 140.1 (99%) at 220 W.
 - **The release in the same rental:** each box ran the v0.5.13 release
-  before and after `51d88e8` (A1 and A2, in "Ada batch width (PR #256)"
+  before and after `51d88e8` (A1 and A2, in "Ada batch width (v0.5.14)"
   below). Four hosts read lower than in their earlier rental because the
   host was slower, not because of the build:
   - Australia 4090: the release read 317.4 both times, against 323.5 on
@@ -400,7 +404,7 @@ Every host passed the hit check, and every run had 0 rejected shares.
 - **RTX 4090D:** one host. The Tanzania host (70632) never started its
   container, in two tries of 16 and 30 minutes, and no other 4090D is listed.
 
-## RTX 50-series (PR #256's build, v0.5.13 and v0.5.11)
+## RTX 50-series (v0.5.14, v0.5.13 and v0.5.11)
 
 Run in the same window as the 40-series.
 
@@ -411,12 +415,12 @@ candidate (`26c50b3`) built as CI builds it, and the Virginia 5060 on
 v0.5.13, byte for byte. The Colombia 5070 ran on 2026-10-08, 18:35–18:40
 UTC, with the published v0.5.13 release. The India 5090, the 5070 Ti on
 27661, the Poland 5070 and the Ontario 5060 Ti ran on 2026-10-09,
-07:33–10:31 UTC, with PR #256's build at `3b8ffce`, not yet released,
-built on each box with CI's flags. Its sm_120 kernel is v0.5.13's, byte for
-byte. Every re-measure ran on the CUDA 13 core except the India 5090's:
-that host has driver 570, so the CLI loads the CUDA 12.8 core there. Still
-from v0.5.11: the South Korea 5090, both 5080s, the 5070 Ti on 28852 and
-the India 5060.
+07:33–10:31 UTC, with PR #256's build at `3b8ffce`, built on each box
+with CI's flags. That build has v0.5.14's core for these cards. Its sm_120
+kernel is v0.5.13's, byte for byte. Every re-measure ran on the CUDA 13
+core except the India 5090's: that host has driver 570, so the CLI loads
+the CUDA 12.8 core there. Still from v0.5.11: the South Korea 5090, both
+5080s, the 5070 Ti on 28852 and the India 5060.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
@@ -496,7 +500,7 @@ Every host passed the hit check, and every run had 0 rejected shares.
 - **Not tested:** the RTX 5090D, which no host lists, and laptop GPUs (3060,
   4070 and 4080 laptop), which are on Vast but left out.
 
-## A100-class (sm_80, PR #256's build, v0.5.13 and an earlier build)
+## A100-class (sm_80, v0.5.14, v0.5.13 and an earlier build)
 
 Run on 2026-10-07, 14:53–22:52 UTC. The A100 PCIe and the New York A100
 SXM4 ran `3804a7c` and the A30 `1f699da`, each with PeakMiner and SRBMiner
@@ -507,9 +511,10 @@ v0.5.13 is the first release that supports these cards. Same harness, pool
 and miner versions as the RTX tables.
 
 The three A100s were re-measured on 2026-10-09, 11:11–11:18 UTC, with
-5-minute pool runs of PR #256's build at `9adc88a`, not yet released,
-built on each box with CI's flags. Its sm_80 kernel is v0.5.13's, byte for
-byte. The A30 is still from `1f699da` and the CMP 170HX from `feba1ca`.
+5-minute pool runs of PR #256's build at `9adc88a`, built on each box with
+CI's flags. That build has v0.5.14's core for these cards. Its sm_80 kernel
+is v0.5.13's, byte for byte. The A30 is still from `1f699da` and the CMP
+170HX from `feba1ca`.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
@@ -559,7 +564,7 @@ byte. The A30 is still from `1f699da` and the CMP 170HX from `feba1ca`.
   8 GB and 70 SMs. Every CMP 170HX on Vast is like this, so a stock card
   hasn't been tested.
 
-## Hopper (sm_90a, PR #256's build and a build before v0.5.13)
+## Hopper (sm_90a, v0.5.14 and a build before v0.5.13)
 
 Run on 2026-10-08, 06:35–07:17 UTC, with PR #253's release build at `e8c04b4`,
 which mines with Hopper's wgmma fold by default. Each box built the core as
@@ -570,11 +575,11 @@ PeakMiner and SRBMiner on the H100 SXM and NVL hosts are the 2026-10-07
 runs; the other three hosts are new, so all three miners ran there.
 
 Four rows were re-measured on 2026-10-09, 00:33–00:48 UTC, with 5-minute
-pool runs of PR #256's build at `1df3c20`, not yet released: the H100 NVL,
-the H100 PCIe, the H200 and the H200 NVL. Each box built it as
-native-core.yml does and ran the hit check and the pool run on that core.
-The boxes built `79e26da`, a local commit that differs from `1df3c20` only
-in comments.
+pool runs of PR #256's build at `1df3c20`, which has v0.5.14's Hopper
+fold: the H100 NVL, the H100 PCIe, the H200 and the H200 NVL. Each box
+built it as native-core.yml does and ran the hit check and the pool run on
+that core. The boxes built a local commit that differs from `1df3c20`
+only in comments.
 Its sm_90a fold is not v0.5.13's: it runs the fold's three-warpgroup form
 (see "After v0.5.13" below). The H100 SXM is still from `e8c04b4`.
 
@@ -618,12 +623,12 @@ Its sm_90a fold is not v0.5.13's: it runs the fold's three-warpgroup form
   152422, 700 W: 670.2 against 623.0) and 7.1% more on an H100 NVL (South
   Korea, 58970, 400 W: 509.4 against 475.4). Those are different hosts and
   a different method, so the H100 SXM row is unchanged.
-- **After v0.5.13:** PR #256 makes the fold's three-warpgroup form the
-  default (192x256 tiles, band 8; `PEARL_HOPPER_WG3` in `pearl_config.h`).
-  In the table's pool runs of `1df3c20`, the H100 NVL read 6.5% more than
-  in its v0.5.13 pool run, the H100 PCIe 8.0%, the H200 7.5% and the H200
-  NVL 8.8%. Each compares two rentals of the same host. The H200 is at
-  99.9% of SRBMiner, which rounds to 100%.
+- **After v0.5.13:** v0.5.14 (PR #256) makes the fold's three-warpgroup
+  form the default (192x256 tiles, band 8; `PEARL_HOPPER_WG3` in
+  `pearl_config.h`). In the table's pool runs of `1df3c20`, the H100 NVL
+  read 6.5% more than in its v0.5.13 pool run, the H100 PCIe 8.0%, the
+  H200 7.5% and the H200 NVL 8.8%. Each compares two rentals of the same
+  host. The H200 is at 99.9% of SRBMiner, which rounds to 100%.
 - **Speed tests of the new fold:** `hashrate.js` speed tests on 2026-10-08,
   22:46–23:39 UTC, of a build with `1df3c20`'s sm_90a kernel against
   v0.5.13's in the same rental, 3 rounds each, ahead in every round: 547.1
@@ -647,7 +652,7 @@ Its sm_90a fold is not v0.5.13's: it runs the fold's three-warpgroup form
   $5.61/h against the $3.74 listed, destroyed after 14 s), and H100 PCIe
   France (153139, restarts the container).
 
-## Ada workstation and data-center cards (sm_89, PR #256's build and v0.5.13)
+## Ada workstation and data-center cards (sm_89, v0.5.14 and v0.5.13)
 
 Run on 2026-10-07, 16:55–21:45 UTC, with PR #253's core at `5f427dd`,
 `54c993d` or `e0bee03`. Their sm_89 kernels are byte-identical to each other
@@ -656,11 +661,12 @@ same sm_89 code as the RTX 40-series. Same harness, pool and miner versions as
 the RTX tables.
 
 Ten rows were re-measured on 2026-10-08, 19:23–20:17 UTC, with 5-minute
-pool runs of PR #256's build at `51d88e8`, not yet released, built on each
-box as for the RTX 40-series. It has v0.5.13's sm_89 kernel and changes
-only the batch width the host picks from the card's L2 (see "Ada batch
-width (PR #256)" below). Still from PR #253's core: the Germany RTX 6000
-Ada, the New York L40 and the France RTX 4000 Ada.
+pool runs of PR #256's build at `51d88e8`, built on each box as for the
+RTX 40-series. That build has v0.5.14's core for these cards. It has
+v0.5.13's sm_89 kernel and changes only the batch width the host picks
+from the card's L2 (see "Ada batch width (v0.5.14)" below). Still from
+PR #253's core: the Germany RTX 6000 Ada, the New York L40 and the France
+RTX 4000 Ada.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
@@ -686,8 +692,8 @@ Ada, the New York L40 and the France RTX 4000 Ada.
   78.5 (102%) on the Czechia and Washington L4s, and 47.8 (102%) on the
   RTX 2000 Ada.
 - **The release in the same rental:** each box ran the v0.5.13 release
-  before and after PR #256's build (A1 and A2, in "Ada batch width (PR
-  #256)" below).
+  before and after PR #256's build (A1 and A2, in "Ada batch width
+  (v0.5.14)" below).
   - Both L40S and the L40 went down 0.1–0.5%. The build keeps the
     release's own width there, and the release read about the same as the
     build: 288.7 and 288.1 in Texas, 288.6 and 288.5 in Taiwan, and 172.8
@@ -713,7 +719,7 @@ Ada, the New York L40 and the France RTX 4000 Ada.
   competitors couldn't run. L4 Utah (109523) is thermally limited: it drew
   about 50 W of its 72 W at 87–88 C, and every miner's rate swung by ±4 TH/s.
 
-## Ada batch width (PR #256)
+## Ada batch width (v0.5.14)
 
 PR #256's `51d88e8` ports a host-only rule from PR #255 for the sm_89 tall
 fold. At v0.5.13's batch width (`col_batch` 2048), one launch keeps
@@ -721,8 +727,9 @@ re-reading 64 MB of one input (B') and a 6 MB band of the other (A'). When
 the L2 can't hold that, B' comes back from memory once a band, and on a
 power-capped card that memory power comes out of the SM clock. The rule
 halves `col_batch` until B' and one band fit the L2 the card reports. On
-these cards that gave 512 on 24 and 32 MB, 1024 on 40–64 MB, and 2048, the
-release's width, on 72 MB and up. The kernel is unchanged.
+these cards that gave 512 on 24 and 32 MB, 1024 on 40–64 MB, and 2048,
+v0.5.13's width, on 72 MB and up. The kernel is unchanged. The rule ships
+in v0.5.14. Below, "the release" is v0.5.13.
 
 Each host ran three to five 5-minute pool runs in one rental on 2026-10-08,
 19:18–20:53 UTC: the v0.5.13 release (A1), `51d88e8` (B), on some hosts
@@ -773,7 +780,7 @@ the rental.
 - **RTX 4060, Australia:** ran in its 2600 MHz state, so these runs don't
   set its row (see the 40-series notes).
 
-## RTX PRO Blackwell (sm_120, PR #256's build and v0.5.13)
+## RTX PRO Blackwell (sm_120, v0.5.14 and v0.5.13)
 
 Run on 2026-10-07, 19:20–21:15 UTC, with PR #253's core at `54c993d` or
 `e0bee03` (their sm_120 kernels are byte-identical to each other and to
@@ -782,9 +789,10 @@ No change was made for these cards. Same harness, pool and miner versions as
 the RTX tables.
 
 Two rows were re-measured on 2026-10-09, 09:51–10:06 UTC, with 5-minute
-pool runs of PR #256's build at `9adc88a`, not yet released, built on each
-box with CI's flags for the CUDA 13 core: the RTX PRO 6000 Server and the
-RTX 6000D. Its sm_120 kernel is v0.5.13's, byte for byte.
+pool runs of PR #256's build at `9adc88a`, built on each box with CI's
+flags for the CUDA 13 core: the RTX PRO 6000 Server and the RTX 6000D. That
+build has v0.5.14's core for these cards. Its sm_120 kernel is v0.5.13's,
+byte for byte.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
@@ -822,9 +830,9 @@ These cards run the same sm_86 code as the RTX 30-series. The A4000 rows ran
 on 2026-10-07, 16:53–17:47 UTC, with PR #253's core at `5f427dd`, whose sm_86
 kernel is byte-identical to v0.5.13's. The other eight ran on 2026-10-09,
 04:54–05:24 UTC, from the published v0.5.13 files, checked against the
-release digests. PR #256 doesn't change this kernel: all 20 sm_86 functions
-built from `9adc88a` match the published core. Same harness, pool and miner
-versions as the RTX tables.
+release digests. v0.5.14 doesn't change this kernel: all 20 sm_86 functions
+built from PR #256's `9adc88a` match the published v0.5.13 core. Same
+harness, pool and miner versions as the RTX tables.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
@@ -870,13 +878,13 @@ versions as the RTX tables.
 - **Replaced host:** Germany (14335). Another workload was using the GPU,
   and the tensor probe read 37 T-MAC/s against 92 on a clean card.
 
-## B200 (sm_100, PR #256's build)
+## B200 (sm_100, v0.5.14)
 
-Run on 2026-10-09, 05:28–06:09 UTC, with PR #256's build at `7f92992`, not
-yet released. The box built it as native-core.yml does: CUDA 12.8, the
-release's architectures plus sm_100. Our miner ran from source with
-`PEARL_CORE_PATH` set to that core; the app picks the same CUDA 12.8 core
-for a compute 10.0 card. Same pool and miner versions as the RTX tables.
+Run on 2026-10-09, 05:28–06:09 UTC, with PR #256's build at `7f92992`,
+which has v0.5.14's sm_100 core. The box built it as native-core.yml does:
+CUDA 12.8, v0.5.13's architectures plus sm_100. Our miner ran from source
+with `PEARL_CORE_PATH` set to that core; the app picks the same CUDA 12.8
+core for a compute 10.0 card. Same pool and miner versions as the RTX tables.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
@@ -904,7 +912,7 @@ for a compute 10.0 card. Same pool and miner versions as the RTX tables.
 ## Tesla T4 (sm_75, v0.5.13)
 
 Run on 2026-10-09, 08:48–08:53 UTC, from the published v0.5.13 files, checked
-against the release digests. PR #256's sm_75 code is byte-identical to
+against the release digests. v0.5.14's sm_75 code is byte-identical to
 v0.5.13's. This was one 5-minute pool run of our miner only: PeakMiner and
 SRBMiner weren't run and there was no hit check, so there is no "% of best"
 and no table row.
