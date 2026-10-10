@@ -109,8 +109,12 @@ Base `https://api.salad.com/api/public/organizations/<org>`, key in the `Salad-A
   (`allocating`, `downloading`, `creating`, `running`, `stopping`).
   `POST .../instances/<id>/reallocate` moves it to another PC.
 - `POST /log-entries`: `page_size` must be 1 to 100. A call takes 1 to 10 s and sometimes returns 408 or
-  500. A query with `OR` timed out (408), so the watcher reads all container lines in one query and
-  pages when a round has more than 100. A query per group made a round take 11 minutes. The first
+  500. A query per group made a round take 11 minutes, so the watcher reads all container lines in one
+  query a round.
+- **When more lines match than `page_size`, which ones come back isn't reliable**, whatever
+  `sort_order` says. Asking for the last 12 lines of a group over 40 minutes returned lines from 19:43
+  to 19:54 and missed 19:57 to 20:02; asking for 100 returned all 34. Only a reply with fewer lines
+  than `page_size` is complete, so the watcher splits a window that comes back full and reads each half. The first
   account ran `(log contains "A" OR log contains "B")` fine, so the one 408 here was probably the
   API's usual timeout. `resource.type = "deployment_controller"` returns Salad's system events.
 - Salad can move an instance to another PC without a gap in `running`, so a new PC shows only as a

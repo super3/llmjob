@@ -277,8 +277,9 @@ class TestDeleteReason(Base):
     def test_a_deletion_carries_the_boxes_last_lines(self):
         g = self.group(cls="RTX 4070 (12 GB)", pri="low")
         self.step(g, 1, "m1")
-        lines = ["[run] g0 miner exited 08:30:00 (restart 1): out of memory", "[mining g0] 08:29:00 0.0 TH/s"]
-        self.http.on("POST", "/log-entries", lambda b: (200, {"items": [{"text_log": l} for l in lines]}))
+        lines = [("2027-01-15T08:30:00Z", "[run] g0 miner exited 08:30:00 (restart 1): out of memory"),
+                 ("2027-01-15T08:29:00Z", "[mining g0] 08:29:00 0.0 TH/s")]  # newest first: the watcher sorts them
+        self.http.on("POST", "/log-entries", lambda b: (200, {"items": [{"time": tm, "text_log": l} for tm, l in lines]}))
         self.mine(g, "m1", 50, 5)
         ev = self.events()
         self.assertIn("DELETED biz-rtx4070", ev)
@@ -437,16 +438,23 @@ class TestRound(Base):
         g = self.group()
         g["created"] = T0 - 3600
         lines = [{"text_log": f"[mining g0] 07:{i // 60:02d}:{i % 60:02d} 199.0 TH/s · {i} accepted · 0 rejected · up 1h",
-                  "time": w.iso(T0 - 600 + i), "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}}
-                 for i in range(150)]
-        def page(b):
-            start = w.parse_iso(b["start_time"])
-            return 200, {"items": [x for x in lines if w.parse_iso(x["time"]) >= start][:b["page_size"]]}
+                  "time": w.iso(T0 - 600 + 4 * i), "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}}
+                 for i in range(150)]  # a line every 4 s: busier than 10 boxes starting at once
+        def page(b):  # like Salad: at most page_size lines from the window, and not the oldest ones
+            start, end = w.parse_iso(b["start_time"]), w.parse_iso(b["end_time"])
+            return 200, {"items": [x for x in lines if start <= w.parse_iso(x["time"]) <= end][-b["page_size"]:]}
         self.http.on("POST", "/log-entries", page)
         got = self.x.logs([g])
-        self.assertEqual(len(got), 150)  # the line on the page boundary is not counted twice
-        self.assertEqual(len(self.http.made("POST", "/log-entries")), 2)
+        self.assertEqual(len(got), 150)  # every line, and the one on the split counted once
+        self.assertLess(len(self.http.made("POST", "/log-entries")), 10)
         self.assertEqual(self.x.st["last_log_end"], self.clock[0])
+
+    def test_a_failed_read_is_tried_again_next_round(self):
+        g = self.group()
+        self.x.st["last_log_end"] = self.clock[0] - 120
+        self.http.on("POST", "/log-entries", (408, {}))
+        self.assertEqual(self.x.logs([g]), [])
+        self.assertEqual(self.x.st["last_log_end"], self.clock[0] - 120)
 
     def test_billing_counts_only_minutes_on_a_pc(self):
         self.x.cfg["search"] = False
