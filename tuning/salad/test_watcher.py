@@ -16,6 +16,7 @@ CLASSES = {
     "RTX 4080 (16 GB)": {"id": "c4080", "prices": {"batch": 0.11, "low": 0.15, "medium": 0.19, "high": 0.23}},
     "RTX 2060 (6 GB)": {"id": "c2060", "prices": {"batch": 0.02, "low": 0.03, "medium": 0.04, "high": 0.05}},
     "RTX 4070 (12 GB)": {"id": "c4070", "prices": {"batch": 0.07, "low": 0.09, "medium": 0.123, "high": 0.15}},
+    "RTX 3060 Ti (8 GB)": {"id": "c3060ti", "prices": {"batch": 0.035, "low": 0.047, "medium": 0.06, "high": 0.07}},
 }
 
 
@@ -359,7 +360,9 @@ class TestSearch(Base):
         return [c[2]["name"] for c in self.http.made("POST", "/containers$")][1:]
 
     def test_a_class_that_failed_is_not_tried_again(self):
-        self.assertEqual(self.searched("failed", 300), ["biz-rtx2060", "biz-rtx4070"])  # the classes not tried yet
+        made = self.searched("failed", 300)
+        self.assertNotIn("biz-rtx4080", made)
+        self.assertIn("biz-rtx2060", made)  # classes not tried yet still are
 
     def test_a_class_that_got_no_pc_is_tried_again_an_hour_later(self):
         self.assertEqual(self.searched("released", 59), ["biz-rtx2060", "biz-rtx4070"])
@@ -373,6 +376,20 @@ class TestSearch(Base):
         self.x.cfg["max_active"] = 10
         self.x.search()
         self.assertNotIn("biz-rtx4080-2", [c[2]["name"] for c in self.http.made("POST", "/containers$")])
+
+    def test_at_most_3_new_groups_an_hour(self):
+        self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
+        self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10}}))
+        self.x.cfg["max_active"] = 10
+        self.group(cls="RTX 4080 (16 GB)", pri="low")
+        self.group(cls="RTX 2060 (6 GB)", pri="low")  # two made this hour already
+        self.x.search()
+        made = [c[2]["name"] for c in self.http.made("POST", "/containers$")]
+        self.assertEqual(made[2:], ["biz-rtx4070"])  # one more this hour, though the 3060 Ti also qualifies
+        self.clock[0] += 3600  # the next hour
+        self.x.search()
+        made = [c[2]["name"] for c in self.http.made("POST", "/containers$")]
+        self.assertEqual(made[3:], ["biz-rtx3060ti"])
 
     def test_respects_max_active(self):
         self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))

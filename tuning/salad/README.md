@@ -50,7 +50,7 @@ each PC on its own readings.
 
 1. **Search** hourly at :01. Take classes with a known rate that clear a 10% margin at the cheapest
    priority with a GPU free. Classes that paid before come first, then by profit per hour. Create up to
-   3 one-replica groups an hour, inside `max_active` and the quota. Each class is tried once on an
+   3 one-replica groups an hour (however the search was started), inside `max_active` and the quota. Each class is tried once on an
    account, as on the first one: a class whose group failed (rules 4 to 6) isn't created again. A class
    whose groups only got no PC (released) is tried again in a search at least an hour later.
 2. **No PC at a priority within 10 min:** move to the next priority that still clears 10%. If none is
@@ -190,7 +190,8 @@ The first account spent $24.43 and mined 20.65 PRL over about a day, about $1.18
 - Oct 10, 19:33: the first 2080 group got a 2080 SUPER at 85–87 °C, held to 750–900 MHz and 115 of
   250 W: 33 TH/s. The first 2060 got a card reporting no power limit at 55 W, likely a laptop: 22
   TH/s. Both were moved to other PCs.
-- Salad's "RTX 2060" class includes the CMP 40HX mining card (110 W).
+- Salad's "RTX 2060" class includes the CMP 40HX mining card (110 W). Our miner did 0.8 TH/s on it,
+  and rule 5 moved the group off it 5 minutes after the miner started.
 
 v0.5.14 adds an L2 rule worth about +0.5 to 1.7% on power-capped RTX 40 cards. Try it on one group
 (`ver_override`) before switching `box_ver`.
