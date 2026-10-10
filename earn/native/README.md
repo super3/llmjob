@@ -4,6 +4,8 @@ Our own PearlHash core. This is the compute half of the miner; the protocol and
 lifecycle half is JavaScript, under `earn/src/shared/miner/` and
 `earn/src/main/pearlMiner.js`.
 
+An Intel (SYCL) port, not yet run on an Intel GPU, is in `sycl/`; see `sycl/README.md`.
+
 ## Why this exists
 
 Every third-party Pearl miner we evaluated is blocked for a product like ours:
