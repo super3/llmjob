@@ -392,6 +392,36 @@ class TestSearch(Base):
         made = [c[2]["name"] for c in self.http.made("POST", "/containers$")]
         self.assertEqual(made[3:], ["biz-rtx3060ti"])
 
+    def paying_4080(self):
+        self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
+        self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10}}))
+        self.x.cfg.update(max_active=10, max_new_per_hour=10, max_per_class=2)
+        g = self.group(cls="RTX 4080 (16 GB)", pri="low")
+        self.step(g, 1, "m1")
+        return g
+
+    def test_a_class_paying_on_its_pc_gets_a_second_group(self):
+        g = self.paying_4080()
+        self.mine(g, "m1", 199, 6)
+        self.x.search()
+        names = [c[2]["name"] for c in self.http.made("POST", "/containers$")]
+        self.assertIn("biz-rtx4080-2", names)
+        self.x.search()  # but not a third
+        self.assertNotIn("biz-rtx4080-3", [c[2]["name"] for c in self.http.made("POST", "/containers$")])
+
+    def test_no_second_group_before_the_first_proves_itself(self):
+        g = self.paying_4080()
+        self.mine(g, "m1", 199, 3)  # still warming up
+        self.x.search()
+        self.assertNotIn("biz-rtx4080-2", [c[2]["name"] for c in self.http.made("POST", "/containers$")])
+
+    def test_the_hourly_cap_comes_from_config(self):
+        self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
+        self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10}}))
+        self.x.cfg.update(max_active=10, max_new_per_hour=10)
+        self.x.search()
+        self.assertEqual(len(self.http.made("POST", "/containers$")), 4)  # every class in the fixture
+
     def test_respects_max_active(self):
         self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
         self.group(cls="RTX 2060 (6 GB)", pri="low")

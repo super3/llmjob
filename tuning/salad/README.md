@@ -38,6 +38,8 @@ Config keys:
 | `wallet` | Payout address, if `PRL_WALLET` isn't set. |
 | `report_min` | Minutes between `REPORT` lines. |
 | `min_margin` | The margin every class and PC must clear (0.10). |
+| `max_new_per_hour` | Most new groups an hour (3). |
+| `max_per_class` | Most groups of one class (1). |
 
 Tests: `python3 -m unittest discover -s tuning/salad`. They fake Salad, the pool and the clock.
 
@@ -50,7 +52,9 @@ each PC on its own readings.
 
 1. **Search** hourly at :01. Take classes with a known rate that clear a 10% margin at the cheapest
    priority with a GPU free. Classes that paid before come first, then by profit per hour. Create up to
-   3 one-replica groups an hour (however the search was started), inside `max_active` and the quota. Each class is tried once on an
+   `max_new_per_hour` one-replica groups an hour (however the search was started), inside `max_active`
+   and the quota. A class gets `max_per_class` groups, but a second only while every group of it is on a
+   PC clearing the margin, and never after one of its groups failed. Each class is tried once on an
    account, as on the first one: a class whose group failed (rules 4 to 6) isn't created again. A class
    whose groups only got no PC (released) is tried again in a search at least an hour later.
 2. **No PC at a priority within 10 min:** move to the next priority that still clears 10%. If none is
