@@ -27,10 +27,18 @@ KNOWN = {
     "RTX 4080 (16 GB)": (199, True), "RTX 5080 (16 GB)": (223, True),
     "RTX 4070 (12 GB)": (105, False), "RTX 4070 Ti (12 GB)": (152, False), "RTX 3090 Ti (24 GB)": (152, False),
     "RTX 5070 (12 GB)": (121, False), "RTX 3060 Ti (8 GB)": (45, False),
+    # Not tried on Salad yet: benchmark.md or our Vast boxes (the rates #255's search used). Salad PCs often run
+    # power-capped under these, so rule 5 judges each PC on its own readings within minutes. Left out: the 3080 Ti,
+    # 3090 and 4070 Ti Super (lost money on the first account) and the 3070 Ti (no share).
+    "RTX 2070 (8 GB)": (48, False), "RTX 2080 Ti (11 GB)": (79, False), "RTX 3060 (12 GB)": (49, False),
+    "RTX 3070 (8 GB)": (59, False), "RTX 4060 (8 GB)": (55, False), "RTX 4060 Ti (16 GB)": (89, False),
+    "RTX 4090 (24 GB)": (315, False), "RTX 5060 (8 GB)": (76, False), "RTX 5060 Ti (16 GB)": (94, False),
+    "RTX 5070 Ti (16 GB)": (174, False), "RTX 5090 (32 GB)": (418, False),
 }
 DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_token": 0,
                "credit_start": 100.0, "credit_offset": 0.0, "box_ver": "v0.5.13", "ver_override": {}, "report_min": 10,
                "min_margin": 0.10, "max_new_per_hour": 3, "max_per_class": 1,
+               "search_every_min": 60, "retry_after_min": 60,
                "wallet": os.environ.get("PRL_WALLET", "")}
 
 
@@ -427,8 +435,11 @@ class W:
         tm = time.gmtime(t)
         hour = time.strftime("%Y-%m-%dT%H", tm)
         asked = self.cfg["search_token"] != st["search_token"]
-        if self.cfg["search"] and not st["credits_out"] and (asked or (tm.tm_min >= 1 and st["search_hour"] != hour)):
-            st["search_hour"], st["search_token"] = hour, self.cfg["search_token"]
+        # Also every search_every_min while a slot is empty: waiting for a PC costs nothing.
+        empty = sum(1 for g in st["groups"].values() if not g["ended"]) < self.cfg["max_active"]
+        often = empty and t - st.get("last_search", 0) >= 60 * self.cfg["search_every_min"]
+        if self.cfg["search"] and not st["credits_out"] and (asked or often or (tm.tm_min >= 1 and st["search_hour"] != hour)):
+            st["search_hour"], st["search_token"], st["last_search"] = hour, self.cfg["search_token"], t
             self.search()
 
         # Credit warning and the report tick, every report_min minutes.
@@ -548,9 +559,9 @@ class W:
         if room <= 0:
             return
         # Each class is tried once on this account, as on the first one, except that a class whose groups only
-        # ended for want of a PC (released) is tried again in a search at least an hour after.
+        # ended for want of a PC (released) is tried again retry_after_min after.
         skip = {g["class"] for g in st["groups"].values()
-                if not g["ended"] or g["end_kind"] != "released" or t - g["ended"] < 3600}
+                if not g["ended"] or g["end_kind"] != "released" or t - g["ended"] < 60 * self.cfg["retry_after_min"]}
         # A class whose groups are all on a PC clearing the margin may get another group, up to max_per_class.
         for cls in {g["class"] for g in active}:
             mine = [g for g in active if g["class"] == cls]
