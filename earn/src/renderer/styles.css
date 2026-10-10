@@ -235,10 +235,12 @@ input.field-box { user-select: text; }
    to take a section of their own at the bottom. Without that section Settings
    fits its 470px with no scrollbar. */
 .head-title { display: inline-flex; align-items: baseline; gap: 8px; flex: none; }
+/* Back leads the title, where a back button is expected, on Settings and Logs alike. */
+.head-title .back { margin-right: 6px; }
 .head-version { font-size: 12px; font-weight: 600; color: var(--muted); }
 .head-actions { display: inline-flex; align-items: center; gap: 14px; min-width: 0; }
-/* Only the status gives way when space runs out; the link and Back never wrap. */
-.head-actions .update-check-btn, .head-actions .back { flex: none; white-space: nowrap; }
+/* Only the status gives way when space runs out; the link never wraps. */
+.head-actions .update-check-btn { flex: none; white-space: nowrap; }
 .settings-section { font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: #a7abb2; margin: 14px 0 8px; }
 .settings-section:first-of-type { margin: 0 0 7px; }
 /* Connection sits below the mode hint, and the mock gives it more air than the
