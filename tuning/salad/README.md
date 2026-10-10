@@ -104,6 +104,9 @@ Base `https://api.salad.com/api/public/organizations/<org>`, key in the `Salad-A
   pending) and `no_credits_available` ("Entitlement check failed"). A 408 is `connection_timeout`.
 - A group created with `autostart_policy: true` can still end up `stopped` once its image is ready;
   `POST .../start` starts it.
+- Salad keeps a deleted group's name for a while: creating a group with it an hour later failed with
+  `name_conflict`, though the old group no longer showed in the list. The watcher then tries the next
+  suffix (`-2`, `-3`).
 - Changing a running group's environment (a new version) makes Salad stop the instance and move it
   to another PC.
 - `GET .../containers/<name>` shows `priority` at the top level, but a change goes in
