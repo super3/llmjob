@@ -519,11 +519,13 @@ class W:
         s, q = http("GET", f"{BASE}/quotas")
         quota = (q or {}).get("container_groups_quotas", {}).get("container_replicas_quota", 10) if s == 200 else 10
         room = min(self.cfg["max_active"], quota) - len(active)
+        t = now()
+        this_hour = sum(1 for g in st["groups"].values() if g["created"] >= t - t % 3600)
+        room = min(room, 3 - this_hour)   # at most 3 new groups an hour, however the search was started
         if room <= 0:
             return
         # Each class is tried once on this account, as on the first one, except that a class whose groups only
         # ended for want of a PC (released) is tried again in a search at least an hour after.
-        t = now()
         skip = {g["class"] for g in st["groups"].values()
                 if not g["ended"] or g["end_kind"] != "released" or t - g["ended"] < 3600}
         cands = []
@@ -542,7 +544,7 @@ class W:
         cands.sort()
         made = 0
         for _, _, cls, p in cands:
-            if made >= min(3, room) or st["credits_out"]:
+            if made >= room or st["credits_out"]:
                 break
             if self.create(cls, p):
                 made += 1
