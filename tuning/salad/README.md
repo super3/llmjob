@@ -40,6 +40,8 @@ Config keys:
 | `min_margin` | The margin every class and PC must clear (0.10). |
 | `max_new_per_hour` | Most new groups an hour (3). |
 | `max_per_class` | Most groups of one class (1). |
+| `search_every_min` | Minutes between searches while a slot is empty (60). |
+| `retry_after_min` | Minutes before a class released for want of a PC is tried again (60). |
 
 Tests: `python3 -m unittest discover -s tuning/salad`. They fake Salad, the pool and the clock.
 
@@ -50,13 +52,15 @@ measured it. A 2060 at 40 TH/s earning $0.047/hr on a $0.030/hr PC is +36%, not 
 10% (`min_margin`) everywhere: for the search and priority moves on a class's measured rate, and for
 each PC on its own readings.
 
-1. **Search** hourly at :01. Take classes with a known rate that clear a 10% margin at the cheapest
+1. **Search** hourly at :01, and every `search_every_min` while a slot is empty. Take classes with a known rate that clear a 10% margin at the cheapest
    priority with a GPU free. Classes that paid before come first, then by profit per hour. Create up to
    `max_new_per_hour` one-replica groups an hour (however the search was started), inside `max_active`
    and the quota. A class gets `max_per_class` groups, but a second only while every group of it is on a
    PC clearing the margin, and never after one of its groups failed. Each class is tried once on an
    account, as on the first one: a class whose group failed (rules 4 to 6) isn't created again. A class
-   whose groups only got no PC (released) is tried again in a search at least an hour later.
+   whose groups only got no PC (released) is tried again `retry_after_min` later. Besides the classes
+   measured on Salad, the search knows benchmark rates for cards not tried there yet (see `KNOWN`);
+   rule 5 judges each of their PCs on its own readings.
 2. **No PC at a priority within 10 min:** move to the next priority that still clears 10%. If none is
    left, delete the group. The 10 minutes start once the image is ready: while the group is `pending`
    it isn't looking for a PC, and Salad refuses a priority change (`pending_update_in_progress`).

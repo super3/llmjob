@@ -431,12 +431,34 @@ class TestSearch(Base):
         self.x.search()
         self.assertEqual(len(self.http.made("POST", "/containers$")), 4)  # every class in the fixture
 
+    def test_the_retry_wait_comes_from_config(self):
+        self.x.cfg["retry_after_min"] = 10
+        self.assertIn("biz-rtx4080", self.searched("released", 11))
+
     def test_respects_max_active(self):
         self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
         self.group(cls="RTX 2060 (6 GB)", pri="low")
         n = len(self.http.made("POST", "/containers$"))
         self.x.search()
         self.assertEqual(len(self.http.made("POST", "/containers$")), n)
+
+
+class TestSearchTiming(Base):
+    def rounds(self, minutes, empty=True):
+        w.save(w.CFG, {"search_every_min": 5, "max_active": 10 if empty else 0})  # round() re-reads config.json
+        self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10}}))
+        calls = []
+        self.x.search = lambda: calls.append(self.clock[0])
+        for _ in range(minutes):
+            self.clock[0] += 60
+            self.x.round()
+        return calls
+
+    def test_it_searches_every_5_min_while_a_slot_is_empty(self):
+        self.assertEqual(len(self.rounds(16)), 4)  # at 08:01 (the hour's), 08:06, 08:11 and 08:16
+
+    def test_full_means_only_the_hourly_search(self):
+        self.assertEqual(len(self.rounds(16, empty=False)), 1)
 
 
 class TestRound(Base):
