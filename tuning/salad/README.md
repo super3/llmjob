@@ -46,7 +46,8 @@ Config keys:
 | `upgrade_gain` | How much more an hour a class must be expected to make before it takes the weakest group's slot (0.05). `null` turns swaps off. |
 | `upgrade_every_min` | Minutes between swap checks while every slot is taken (15). |
 | `drift` | How far the ledger and the pool may disagree before a `DRIFT` event (0.15). |
-| `trader` | Railway ids of the SafeTrade autoseller: `{"project", "service", "environment"}`. Unset: no SafeTrade row. |
+| `trader` | Railway ids of the SafeTrade autoseller: `{"project", "service", "environment"}`. Unset: no SafeTrade line. |
+| `safetrade` | SafeTrade sales entered by hand (`sold`, `received`, `fees`, `usdt`, `prl`), used until the trader's logs can be read. |
 
 Tests: `python3 -m unittest discover -s tuning/salad`. They fake Salad, the pool and the clock.
 
@@ -182,17 +183,27 @@ watcher checks it against the pool and writes a `DRIFT` event when they disagree
 Each table row fits on one line. A box's first cell holds its state, its group name without `biz-rtx`,
 its priority (`med` for medium) and its PC (`⛏️ 2080-2 low cb6d4bd1`), joined by no-break spaces so it doesn't wrap. Boxes are sorted by profit an hour, best first.
 
-The table has a **🏦 Pool credited** row under **All**: the PRL the pool has credited (paid, unlocked
-and unconfirmed), and the profit on it, next to the expected figures above it. The bullet under the
-table splits it into paid, unlocked and unconfirmed.
+Each row has the group's whole Salad bill so far (**Spent $**), its PRL and Profit $ = PRL × today's
+price − Spent $. A row's PRL is our estimate from the miner's speed: the pool pays per account, not
+per box, so only the account's total can be checked against the pool.
+
+Under the table, a **Money** block follows the PRL from the bill to the sale:
+
+- 💵 spent on Salad, PRL mined and what each cost (the break-even price);
+- 🏦 at the pool: unconfirmed, unlocked (paid out at 1 PRL) and paid to SafeTrade, and what share of
+  the mined PRL that is;
+- 💱 sold on SafeTrade and what's held there;
+- 🔒 **locked in**: USDT received after fees, less the sold PRL at the average cost to mine;
+- ⏳ **not yet locked**: the unsold PRL at today's price, less the same cost. This still moves with the
+  price and the pool's luck.
+
+Every PRL carries the average cost, so spending now and selling hours later still gives one number.
 
 ## SafeTrade row
 
 When `trader` is set, the watcher reads the newest `STATUS` line of the autoseller (`trader/`) from its
-Railway logs, at most every 5 minutes. The table then gets a **💱 SafeTrade sold** row under the pool
-row: the PRL sold so far, and the USDT received after fees less what that PRL cost to mine. A bullet
-gives the USDT and PRL on the exchange, the total received, the average price, the fees and what the
-last run sold.
+Railway logs, at most every 5 minutes, and uses it for the 💱, 🔒 and ⏳ lines of the Money block.
+Until it can, sales entered by hand in config `safetrade` stand in.
 
 It needs a Railway project token for the production environment, set as `RAILWAY_TOKEN` or added by the
 cloud session's network proxy for `backboard.railway.com`. Without one, Railway answers "Not Authorized"
