@@ -20,6 +20,9 @@ const { autoUpdater } = require('electron-updater');
 const net = require('net');
 const dns = require('dns');
 const { PearlEngine } = require('./pearlEngine');
+const { XmrEngine } = require('./xmrEngine');
+const { findWorker, makeSpawnWorker } = require('./xmrWorker');
+const { readCpuFacts } = require('./cpuFacts');
 const { coreFactory } = require('./pearlCore');
 const { LlmManager } = require('./llmManager');
 const { LlmEngineManager } = require('./llmEngineManager');
@@ -34,7 +37,7 @@ const settingsStore = require('../shared/settingsStore');
 const { initStats, applyEvent, snapshot, offPool } = require('../shared/miningStats');
 const { makePoolLookup, fileCache } = require('../shared/poolLookup');
 const {
-  REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE, resolveEndpoint, migrateRegion,
+  REGIONS, DEFAULTS, MINER, XMR, NETWORK, ECON, ECON_API, LLM, NODE, resolveEndpoint, migrateRegion,
 } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
 const { resolveEconomics } = require('../shared/economics');
@@ -51,6 +54,8 @@ const { minerSupported, minerUnsupportedNote, autoUpdateSupported } = require('.
 const { resolveServerUrl } = require('../shared/llama');
 const { buildBalanceUrl, parseBalance } = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
+const { checkXmrAddress } = require('../shared/xmr/address');
+const { planCpuThreads } = require('../shared/xmr/cpuPlan');
 const { formatUpdate, describeUpdateError } = require('../shared/updateStatus');
 const { buildMinerReports } = require('../shared/minerReport');
 const { runtimeCopyPlan } = require('../shared/llmRuntime');
@@ -286,6 +291,90 @@ async function fetchBalance(address, priceUsd) {
   }
 }
 
+// The Monero balance on HeroMiners' Monero pool, the CPU miner's. Same pool
+// software and payload as the Pearl one, in 1e12 units, and with no `balance`
+// field until there is one. Best-effort like fetchBalance: null on any failure.
+async function fetchXmrBalance(address) {
+  if (!checkXmrAddress(address).ok) return null;
+  const json = await getJson(buildBalanceUrl(String(address).trim(), XMR.apiBase)).catch(() => null);
+  if (json == null) return null;
+  return parseBalance(json, undefined, { units: XMR.coinUnits, absentIsZero: true });
+}
+
+// ── CPU mining (Monero) ─────────────────────────────────────────────────────
+// Opt-in and off by default (Settings → CPU Mining). It starts and stops with
+// the GPU miner, so STOP and the idle pause cover both. The hashing runs in a
+// worker process of its own (see xmrEngine), so a crash there, or an antivirus
+// removing the worker, stops the CPU miner and nothing else.
+let cpuMiner = null;
+let cpuError = null;     // why the CPU miner last stopped, for the Mine tab
+let cpuFacts = null;     // read once: CPUs, cgroup limit, memory, L3
+
+// The thread plan for a requested count (0 for the default).
+function cpuPlan(threads) {
+  if (!cpuFacts) cpuFacts = readCpuFacts({ fs, os });
+  return planCpuThreads(cpuFacts, threads);
+}
+
+function startCpuMining(settings) {
+  if (cpuMiner || !settings.cpuMining) return;
+  cpuError = null;
+  const say = (level, line) => send('miner:log', { level, line: 'cpu: ' + line });
+  const addr = checkXmrAddress(settings.xmrAddress);
+  if (!addr.ok) {
+    cpuError = 'Monero address: ' + addr.error;
+    say('warn', 'not mining Monero: ' + cpuError);
+    return;
+  }
+  const plan = cpuPlan(Number(settings.cpuThreads) || 0);
+  if (!plan.threads) {
+    cpuError = plan.reason;
+    say('warn', 'not mining Monero: ' + plan.reason);
+    return;
+  }
+  const engine = new XmrEngine({
+    connect: (host, port) => net.connect({ port, host, lookup: poolLookup() }),
+    spawnWorker: makeSpawnWorker(spawn),
+    workerPath: findWorker({ resourcesPath: process.resourcesPath, env: process.env, exists: fs.existsSync }),
+    agent: 'llmjob-earn/' + app.getVersion(),
+  });
+  engine.on('log', (l) => send('miner:log', l));
+  engine.on('error', (e) => {
+    cpuError = e.message;
+    say('error', e.message);
+  });
+  // The pool took the login, so this address is one that worked.
+  engine.on('authorized', (e) => poolLookup().worked(e.host, e.address, e.family));
+  cpuMiner = engine;
+  if (plan.reason) say('info', plan.reason);
+  engine.start({
+    address: String(settings.xmrAddress).trim(),
+    worker: settings.worker || DEFAULTS.worker,
+    endpoint: XMR.endpoint,
+    threads: plan.threads,
+  });
+}
+
+function stopCpuMining() {
+  if (cpuMiner) cpuMiner.stop();
+  cpuMiner = null;
+  cpuError = null;
+}
+
+// The CPU line on the Mine tab, or null when CPU mining was not started.
+function cpuView() {
+  if (!cpuMiner && !cpuError) return null;
+  const s = cpuMiner ? cpuMiner.snapshot() : { state: 'stopped', hashrate: 0, accepted: 0, rejected: 0, threads: 0 };
+  return {
+    state: s.state,
+    hashrate: format.formatKhs(s.hashrate),
+    accepted: s.accepted,
+    rejected: s.rejected,
+    threads: s.threads,
+    error: s.state === 'stopped' ? cpuError : null,
+  };
+}
+
 // Live network economics for earnings estimates. Starts as the static ECON
 // fallback and is refreshed from the prlscan API so the app's $/day and the
 // balance's USD figure track the real network + price instead of drifting
@@ -331,6 +420,7 @@ function statsView(snap) {
     temp: snap.temp,
     uptime: format.formatUptime(snap.uptimeSec),
     estDay: earnings.estDailyUsdLabel(snap.total, liveEcon),
+    cpu: cpuView(),
   };
 }
 
@@ -529,6 +619,8 @@ async function startMining(settings, llmCoRuns) {
   } catch (e) {
     reportLaunchFailure(e);
   }
+  // Beside the GPU miner, whatever became of it: the two are independent.
+  startCpuMining(settings);
 }
 
 // Miner event wiring. PearlEngine translates our miner's events into the two
@@ -584,6 +676,7 @@ function haltMiner() {
     miner.stop();
     miner = null;
   }
+  stopCpuMining();
 }
 
 function appIcon() {
@@ -1815,7 +1908,11 @@ ipcMain.handle('settings:get', () => {
     // board identity (and if either is multi-GPU, the other's row is dropped
     // outright). Only fills a FRESH install — loadSettings() below wins, so an
     // existing worker name is never rewritten out from under someone's board row.
-    { region: DEFAULTS.region, worker: defaultWorker(), address: '', mdlAddress: '', mode: DEFAULT_MODE },
+    // CPU mining is opt-in: off, no Monero address, and the default thread count.
+    {
+      region: DEFAULTS.region, worker: defaultWorker(), address: '', mdlAddress: '', mode: DEFAULT_MODE,
+      cpuMining: false, xmrAddress: '', cpuThreads: 0,
+    },
     loadSettings(),
   ));
   // The renderer already resumes mining after an update; a launch at login asks
@@ -1830,15 +1927,26 @@ ipcMain.handle('llm:status', () => llmStatus);
 // `platform` rides along on the config the renderer already fetches at startup,
 // so the UI can stop offering what this OS can't do (the mining compute modes on
 // macOS) without a second round trip or a new preload method.
-ipcMain.handle('config:get', () => ({
-  regions: REGIONS,
-  defaults: DEFAULTS,
-  miner: MINER,
-  platform: { minerSupported: minerSupported(process.platform) },
-}));
+ipcMain.handle('config:get', () => {
+  // What CPU mining would do here, for its Settings section: the default, and
+  // whether it can run at all (one thread asked for by hand).
+  const plan = cpuPlan(0);
+  return {
+    regions: REGIONS,
+    defaults: DEFAULTS,
+    miner: MINER,
+    platform: { minerSupported: minerSupported(process.platform) },
+    cpu: {
+      available: plan.available, auto: plan.auto, reason: plan.reason, canMine: cpuPlan(1).threads > 0,
+    },
+  };
+});
 ipcMain.handle('gpu:detect', () => detectGpu());
 ipcMain.handle('region:detect', () => detectRegion());
 ipcMain.handle('balance:get', (_e, address) => fetchBalance(address, liveEcon.PRL_USD));
+ipcMain.handle('xmr:balance', (_e, address) => fetchXmrBalance(address));
+// The renderer has no Keccak, so the address check runs here.
+ipcMain.handle('xmr:check', (_e, address) => checkXmrAddress(address));
 ipcMain.on('miner:start', (_e, settings) => startSession(settings || {}));
 ipcMain.on('miner:stop', () => endSession());
 ipcMain.on('open-external', (_e, url) => { openExternalSafe(url); });
