@@ -47,16 +47,20 @@ Optional variables: `MAX_SLIPPAGE` (0.03), `MIN_PRICE` (0), `MIN_VOLUME` (0.5), 
 From SafeTrade's REST API page (base `https://safe.trade/api/v2`) and its example client
 (github.com/safetrade-exchange/example-client):
 
-- **Private calls** are under `/trade`: `GET /trade/account/balances/spot`, `GET` and `POST
-  /trade/market/orders`, `GET /trade/market/orders/{id}`, `POST /trade/market/orders/{id}/cancel`. An
-  order is `{market, side, amount, type, price}`. That's not Peatio's `volume` and `ord_type`, and
-  `/peatio/market/orders` answers 404.
-- **Public data** is under `/trade/public`: `markets`, `markets/{id}`, `markets/{id}/depth`. The older
-  `/peatio/public` paths answered on the first run and stay as a fallback.
+- **Private calls** are under `/trade`: `GET /trade/account/balances/spot` (`currency`, `balance`,
+  `locked`), `GET` and `POST /trade/market/orders`, `GET /trade/market/orders/{id}`, `POST
+  /trade/market/orders/{id}/cancel`, `GET /trade/market/trades`. An order is
+  `{market, side, amount, price}` as numbers. A price makes it a limit order; there's no `type` field.
+  An order comes back with `origin_amount`, `filled_amount` and `state` but no average price, so the
+  average and the fee come from its trades. `/peatio/market/orders` answers 404.
+- **Public data** is under `/trade/public`: `markets` (the whole list, not paged), `markets/{id}`
+  (`amount_precision`, `price_precision`, `min_amount`, `base_unit`, `quote_unit`) and
+  `markets/{id}/depth` (`bids` and `asks` as `[price, amount]`). The older `/peatio/public` paths
+  answered on the first run and stay as a fallback.
 - **Signing:** `X-Auth-Apikey`, `X-Auth-Nonce` (a millisecond timestamp) and `X-Auth-Signature`, the
   hex HMAC-SHA256 of nonce + key under the secret.
 
-SafeTrade's Cloudflare blocks the cloud session this was written in, swagger file included, so the
-field names in responses (precisions, fills) are read defensively. The dry run on Railway checks them.
+These come from the swagger file at `safetrade.com/api/v2/trade/public/swagger.json`. SafeTrade's
+Cloudflare blocks the cloud session this was written in, so it was pasted in from a browser.
 
 Tests: `python3 -m unittest discover -s trader`. They fake SafeTrade.

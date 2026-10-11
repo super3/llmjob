@@ -78,12 +78,12 @@ def need(status, body, what):
 
 def floor_to(x, places):
     f = 10 ** places
-    return math.floor(x * f + 1e-9) / f
+    return round(math.floor(x * f + 1e-9) / f, places)   # round(): no 4.1200000001 in the JSON
 
 
 def ceil_to(x, places):
     f = 10 ** places
-    return math.ceil(x * f - 1e-9) / f
+    return round(math.ceil(x * f - 1e-9) / f, places)
 
 
 def levels(side):
@@ -116,8 +116,11 @@ def market_info():
             return pub, market_fields(m)
         for page in range(1, 21):
             s, j = http("GET", pub + "/markets", {"limit": 100, "page": page})
-            if not 200 <= s < 300 or not isinstance(j, list):
+            if not 200 <= s < 300 or not isinstance(j, list) or not j:
                 break
+            if page > 1 and j[0].get("id") == top:
+                break   # the trade API returns the whole list on every page
+            top = j[0].get("id")
             for m in j:
                 mid = str(m.get("id", ""))
                 base = str(m.get("base_unit") or m.get("base_currency") or "").lower()
@@ -179,14 +182,14 @@ def run(live):
     pub, info = market_info()
 
     # Last run's unfilled rest: cancel it, so its PRL counts in the balance again.
-    s, orders = http("GET", PRIV + "/market/orders", {"market": MARKET, "state": "wait"}, auth=True)
+    s, orders = http("GET", PRIV + "/market/orders", {"market": MARKET, "state": "wait", "side": "sell"}, auth=True)
     need(s, orders, "open orders")
     for o in orders or []:
         if o.get("side") == "sell" and str(o.get("market", MARKET)).lower() == MARKET.lower():
             if live:
                 need(*http("POST", f"{PRIV}/market/orders/{o['id']}/cancel", {}, auth=True), f"cancel order {o['id']}")
-            log(f"{'cancelled' if live else 'would cancel'} open sell {o['id']}: "
-                f"{first(o, 'remaining_volume', 'remaining_amount', 'amount')} at {o.get('price')}")
+            rest = float(o.get("origin_amount") or 0) - float(o.get("filled_amount") or 0)
+            log(f"{'cancelled' if live else 'would cancel'} open sell {o['id']}: {rest:g} at {o.get('price')}")
     if orders and live:
         time.sleep(2)
 
@@ -203,16 +206,22 @@ def run(live):
         log(f"DRY RUN: would sell {vol} {COIN.upper()} with a limit at {price} (best bid {max(p for p, _ in bids)}, "
             f"balance {balance})")
         return
-    # The order's fields as SafeTrade's example client sends them: amount and type, not Peatio's volume and ord_type.
-    s, o = http("POST", PRIV + "/market/orders", {"market": MARKET, "side": "sell", "amount": str(vol), "type": "limit",
-                                                  "price": str(price)}, auth=True)
+    # CreateOrderParams: market, side, amount and price as numbers; a price makes it a limit order (no type field).
+    s, o = http("POST", PRIV + "/market/orders", {"market": MARKET, "side": "sell", "amount": vol, "price": price}, auth=True)
     need(s, o, "sell order")
     time.sleep(3)
     s, o2 = http("GET", f"{PRIV}/market/orders/{o['id']}", auth=True)
     o = o2 if 200 <= s < 300 and isinstance(o2, dict) else o
-    done = float(first(o, "executed_volume", "executed_amount", "filled_amount") or 0)
-    avg = first(o, "avg_price", "price")
-    log(f"SOLD {done} of {vol} {COIN.upper()} at about {avg} USDT (limit {price}, order {o.get('id')}, "
+    done = float(o.get("filled_amount") or 0)
+    # The order doesn't carry an average price; its trades do, with the fee.
+    s, trades = http("GET", PRIV + "/market/trades", {"market": MARKET, "side": "sell", "limit": 100}, auth=True)
+    mine = [t for t in trades or [] if str(t.get("order_id")) == str(o.get("id"))] if 200 <= s < 300 else []
+    got = sum(float(t.get("total") or 0) for t in mine)
+    fee = sum(float(t.get("fee") or 0) for t in mine)
+    amt = sum(float(t.get("amount") or 0) for t in mine)
+    avg = f"{got / amt:.4f}" if amt else "?"
+    log(f"SOLD {done} of {vol} {COIN.upper()} at {avg} USDT average for {got:.2f} USDT (fee {fee:g} "
+        f"{(mine[0].get('fee_currency') or '').upper() if mine else ''}; limit {price}, order {o.get('id')}, "
         f"state {o.get('state')}); the rest waits for the next run")
 
 
