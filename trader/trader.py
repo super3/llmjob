@@ -8,7 +8,13 @@
 # what it would do. Standard library only.
 import hashlib, hmac, json, math, os, sys, time, urllib.error, urllib.parse, urllib.request
 
-BASE = os.environ.get("SAFETRADE_BASE", "https://safe.trade/api/v2/peatio").rstrip("/")
+# Paths from SafeTrade's REST API page (safe.trade/api/v2): private calls under /trade (balances at
+# /trade/account/balances/spot; orders at /trade/market/orders, /{id} and /{id}/cancel), public data under
+# /trade/public. /peatio/market/orders answers 404 there. The old /peatio/public paths answered on the first run,
+# so they stay as a fallback for market data.
+BASE = os.environ.get("SAFETRADE_BASE", "https://safe.trade/api/v2").rstrip("/")
+PUBS, PRIV = ["/trade/public", "/peatio/public"], "/trade"
+BALANCE_PATHS = ["/trade/account/balances/spot", "/trade/account/balances"]
 COIN = os.environ.get("COIN", "prl")
 QUOTE = os.environ.get("QUOTE", "usdt")
 MARKET = os.environ.get("MARKET", COIN + QUOTE)   # replaced by the id SafeTrade uses, once found
@@ -93,29 +99,47 @@ def levels(side):
     return out
 
 
+def market_fields(m):
+    return {"amount_precision": int(m.get("amount_precision", 4)), "price_precision": int(m.get("price_precision", 6)),
+            "min_amount": float(first(m, "min_amount", "min_volume") or 0)}
+
+
 def market_info():
-    """The PRL/USDT market. The list comes 100 to a page, so every page is read; the market is matched on its id
-    or on its base and quote currencies, since the id's spelling can differ."""
+    """The PRL/USDT market: by id first, then from the market list (100 to a page, every page read), matched on
+    its id or on its base and quote currencies, since the id's spelling can differ."""
     global MARKET
     seen = []
-    for page in range(1, 21):
-        s, j = http("GET", "/public/markets", {"limit": 100, "page": page})
-        need(s, j, "markets")
-        if not j:
-            break
-        for m in j:
-            mid = str(m.get("id", ""))
-            base = str(m.get("base_unit") or m.get("base_currency") or "").lower()
-            quote = str(m.get("quote_unit") or m.get("quote_currency") or "").lower()
-            seen.append(mid)
-            if mid.lower() == MARKET.lower() or (base == COIN and quote == QUOTE):
-                MARKET = mid
-                return {"amount_precision": int(m.get("amount_precision", 4)), "price_precision": int(m.get("price_precision", 6)),
-                        "min_amount": float(m.get("min_amount") or 0)}
-        if len(j) < 100:
-            break
-    near = [i for i in seen if COIN in i.lower()]
-    raise Fail(f"no {COIN.upper()}/{QUOTE.upper()} market among {len(seen)} listed; ids with {COIN!r}: {near or 'none'}")
+    for pub in PUBS:
+        s, m = http("GET", f"{pub}/markets/{MARKET}")
+        if 200 <= s < 300 and isinstance(m, dict) and m.get("id"):
+            MARKET = str(m["id"])
+            return pub, market_fields(m)
+        for page in range(1, 21):
+            s, j = http("GET", pub + "/markets", {"limit": 100, "page": page})
+            if not 200 <= s < 300 or not isinstance(j, list):
+                break
+            for m in j:
+                mid = str(m.get("id", ""))
+                base = str(m.get("base_unit") or m.get("base_currency") or "").lower()
+                quote = str(m.get("quote_unit") or m.get("quote_currency") or "").lower()
+                seen.append(mid)
+                if mid.lower() == MARKET.lower() or (base == COIN and quote == QUOTE):
+                    MARKET = mid
+                    return pub, market_fields(m)
+            if len(j) < 100:
+                break
+    near = sorted({i for i in seen if COIN in i.lower()})
+    raise Fail(f"no {COIN.upper()}/{QUOTE.upper()} market among {len(set(seen))} listed; ids with {COIN!r}: {near or 'none'}")
+
+
+def order_book(pub):
+    """Bids as (price, volume): /markets/{id}/depth on the trade API, /order-book on the old one."""
+    for path, params in ((f"{pub}/markets/{MARKET}/depth", {"limit": 50}),
+                         (f"{pub}/markets/{MARKET}/order-book", {"asks_limit": 1, "bids_limit": 50})):
+        s, book = http("GET", path, params)
+        if 200 <= s < 300 and isinstance(book, dict) and "bids" in book:
+            return levels(book.get("bids"))
+    raise Fail(f"order book failed for {MARKET}")
 
 
 def plan(balance, bids, info):
@@ -133,28 +157,42 @@ def plan(balance, bids, info):
     return (vol, price), None
 
 
+def first(d, *keys):
+    """The first of these fields that's set: Peatio and SafeTrade's trade API name some differently."""
+    return next((d[k] for k in keys if d.get(k) not in (None, "")), None)
+
+
+def balance_of():
+    tried = []
+    for path in BALANCE_PATHS:
+        s, bal = http("GET", path, auth=True)
+        if 200 <= s < 300 and isinstance(bal, (list, dict)):
+            rows = bal if isinstance(bal, list) else bal.get("balances") or bal.get("data") or [bal]
+            row = next((b for b in rows if isinstance(b, dict) and str(b.get("currency", "")).lower() == COIN), {})
+            log(f"balances from {path}")
+            return float(first(row, "balance", "available", "free") or 0)
+        tried.append(f"{path} HTTP {s}")
+    raise Fail("balances failed: " + "; ".join(tried))
+
+
 def run(live):
-    info = market_info()
+    pub, info = market_info()
 
     # Last run's unfilled rest: cancel it, so its PRL counts in the balance again.
-    s, orders = http("GET", "/market/orders", {"market": MARKET, "state": "wait"}, auth=True)
+    s, orders = http("GET", PRIV + "/market/orders", {"market": MARKET, "state": "wait"}, auth=True)
     need(s, orders, "open orders")
     for o in orders or []:
-        if o.get("side") == "sell":
+        if o.get("side") == "sell" and str(o.get("market", MARKET)).lower() == MARKET.lower():
             if live:
-                need(*http("POST", f"/market/orders/{o['id']}/cancel", {}, auth=True), f"cancel order {o['id']}")
-            log(f"{'cancelled' if live else 'would cancel'} open sell {o['id']}: {o.get('remaining_volume')} at {o.get('price')}")
+                need(*http("POST", f"{PRIV}/market/orders/{o['id']}/cancel", {}, auth=True), f"cancel order {o['id']}")
+            log(f"{'cancelled' if live else 'would cancel'} open sell {o['id']}: "
+                f"{first(o, 'remaining_volume', 'remaining_amount', 'amount')} at {o.get('price')}")
     if orders and live:
         time.sleep(2)
 
-    s, bal = http("GET", "/account/balances", auth=True)
-    need(s, bal, "balances")
-    row = next((b for b in bal or [] if str(b.get("currency", "")).lower() == COIN), {})
-    balance = float(row.get("balance") or 0)
+    balance = balance_of()
 
-    s, book = http("GET", f"/public/markets/{MARKET}/order-book", {"asks_limit": 1, "bids_limit": 50})
-    need(s, book, "order book")
-    bids = levels((book or {}).get("bids"))
+    bids = order_book(pub)
 
     what, why = plan(balance, bids, info)
     if what is None:
@@ -165,14 +203,15 @@ def run(live):
         log(f"DRY RUN: would sell {vol} {COIN.upper()} with a limit at {price} (best bid {max(p for p, _ in bids)}, "
             f"balance {balance})")
         return
-    s, o = http("POST", "/market/orders", {"market": MARKET, "side": "sell", "volume": str(vol), "ord_type": "limit",
-                                            "price": str(price)}, auth=True)
+    # The order's fields as SafeTrade's example client sends them: amount and type, not Peatio's volume and ord_type.
+    s, o = http("POST", PRIV + "/market/orders", {"market": MARKET, "side": "sell", "amount": str(vol), "type": "limit",
+                                                  "price": str(price)}, auth=True)
     need(s, o, "sell order")
     time.sleep(3)
-    s, o2 = http("GET", f"/market/orders/{o['id']}", auth=True)
+    s, o2 = http("GET", f"{PRIV}/market/orders/{o['id']}", auth=True)
     o = o2 if 200 <= s < 300 and isinstance(o2, dict) else o
-    done = float(o.get("executed_volume") or 0)
-    avg = o.get("avg_price") or o.get("price")
+    done = float(first(o, "executed_volume", "executed_amount", "filled_amount") or 0)
+    avg = first(o, "avg_price", "price")
     log(f"SOLD {done} of {vol} {COIN.upper()} at about {avg} USDT (limit {price}, order {o.get('id')}, "
         f"state {o.get('state')}); the rest waits for the next run")
 

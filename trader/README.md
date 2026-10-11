@@ -40,15 +40,23 @@ Service `trader` in the `llmjob` project:
 | Variables | `SAFETRADE_API_KEY`, `SAFETRADE_API_SECRET` (sealed), `DRY_RUN` (`1` until the dry run looks right, then `0`) |
 
 Optional variables: `MAX_SLIPPAGE` (0.03), `MIN_PRICE` (0), `MIN_VOLUME` (0.5), `MARKET` (`prlusdt`),
-`COIN` (`prl`), `QUOTE` (`usdt`), `SAFETRADE_BASE` (`https://safe.trade/api/v2/peatio`).
+`COIN` (`prl`), `QUOTE` (`usdt`), `SAFETRADE_BASE` (`https://safe.trade/api/v2`).
 
 ## The API
 
-SafeTrade runs OpenDAX/Peatio. Private calls send `X-Auth-Apikey`, `X-Auth-Nonce` (a millisecond
-timestamp) and `X-Auth-Signature`, the hex HMAC-SHA256 of nonce + key under the secret. Paths used:
-`GET /public/markets`, `GET /public/markets/prlusdt/order-book`, `GET /account/balances`,
-`GET /market/orders?state=wait`, `POST /market/orders`, `POST /market/orders/{id}/cancel`,
-`GET /market/orders/{id}`. These come from Openware's Peatio docs; SafeTrade's Cloudflare blocks the
-cloud session they were written in, so the first dry run on Railway is the real check.
+From SafeTrade's REST API page (base `https://safe.trade/api/v2`) and its example client
+(github.com/safetrade-exchange/example-client):
+
+- **Private calls** are under `/trade`: `GET /trade/account/balances/spot`, `GET` and `POST
+  /trade/market/orders`, `GET /trade/market/orders/{id}`, `POST /trade/market/orders/{id}/cancel`. An
+  order is `{market, side, amount, type, price}`. That's not Peatio's `volume` and `ord_type`, and
+  `/peatio/market/orders` answers 404.
+- **Public data** is under `/trade/public`: `markets`, `markets/{id}`, `markets/{id}/depth`. The older
+  `/peatio/public` paths answered on the first run and stay as a fallback.
+- **Signing:** `X-Auth-Apikey`, `X-Auth-Nonce` (a millisecond timestamp) and `X-Auth-Signature`, the
+  hex HMAC-SHA256 of nonce + key under the secret.
+
+SafeTrade's Cloudflare blocks the cloud session this was written in, swagger file included, so the
+field names in responses (precisions, fills) are read defensively. The dry run on Railway checks them.
 
 Tests: `python3 -m unittest discover -s trader`. They fake SafeTrade.
