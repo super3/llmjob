@@ -81,6 +81,19 @@ async function applyUpdate(plan, execPath) {
       // Nothing to undo: downloadFile removes its own partial file.
     }
   }
+  // The CPU worker. A failed download keeps the one already there, which the
+  // CLI checks for a matching protocol when it starts it.
+  if (plan.xmrWorkerUrl) {
+    const worker = require('path').join(dir, 'llmjob-xmr-worker');
+    const workerTmp = worker + '.new-' + process.pid;
+    try {
+      await downloadFile(plan.xmrWorkerUrl, workerTmp);
+      fs.chmodSync(workerTmp, 0o755);
+      fs.renameSync(workerTmp, worker);
+    } catch (e) {
+      // Nothing to undo: downloadFile removes its own partial file.
+    }
+  }
   return exe;
 }
 

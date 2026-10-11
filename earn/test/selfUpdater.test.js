@@ -233,6 +233,55 @@ describe('applyUpdate', () => {
     expect(fs.rmSync).toHaveBeenCalledWith(require('path').join('/opt/rig', 'pearl_core_cu13.node'), { force: true });
   });
 
+  // The CPU worker is a program: it lands executable, beside the binary.
+  it('downloads the CPU worker beside the exe, executable, when the plan has one', async () => {
+    const res1 = fakeRes({ statusCode: 200 });
+    const res2 = fakeRes({ statusCode: 200 });
+    wire([res1, res2]);
+    const out1 = fakeWrite();
+    const out2 = fakeWrite();
+    fs.createWriteStream.mockReturnValueOnce(out1).mockReturnValueOnce(out2);
+    fs.renameSync.mockImplementation(() => {});
+    fs.chmodSync.mockImplementation(() => {});
+
+    const p = updater.applyUpdate({ downloadUrl: 'https://host/bin', xmrWorkerUrl: 'https://host/llmjob-xmr-worker' },
+      '/opt/rig/earn');
+    res1.emit('data', Buffer.from('x'));
+    out1.emit('finish');
+    await new Promise((r) => setImmediate(r));
+    res2.emit('data', Buffer.from('y'));
+    out2.emit('finish');
+    await expect(p).resolves.toBe('/opt/rig/earn');
+    const worker = require('path').join('/opt/rig', 'llmjob-xmr-worker');
+    expect(fs.chmodSync).toHaveBeenCalledWith(worker + '.new-' + process.pid, 0o755);
+    expect(fs.renameSync).toHaveBeenCalledWith(worker + '.new-' + process.pid, worker);
+  });
+
+  // It is optional, and the one already there checks its protocol at start.
+  it('keeps the old CPU worker when the new one cannot be installed', async () => {
+    const res1 = fakeRes({ statusCode: 200 });
+    const res2 = fakeRes({ statusCode: 200 });
+    wire([res1, res2]);
+    const out1 = fakeWrite();
+    const out2 = fakeWrite();
+    fs.createWriteStream.mockReturnValueOnce(out1).mockReturnValueOnce(out2);
+    const worker = require('path').join('/opt/rig', 'llmjob-xmr-worker');
+    fs.renameSync.mockImplementation((from, to) => {
+      if (to === worker) throw new Error('ETXTBSY');
+    });
+    fs.chmodSync.mockImplementation(() => {});
+
+    const p = updater.applyUpdate({ downloadUrl: 'https://host/bin', xmrWorkerUrl: 'https://host/llmjob-xmr-worker' },
+      '/opt/rig/earn');
+    res1.emit('data', Buffer.from('x'));
+    out1.emit('finish');
+    await new Promise((r) => setImmediate(r));
+    res2.emit('data', Buffer.from('y'));
+    out2.emit('finish');
+    await expect(p).resolves.toBe('/opt/rig/earn');
+    expect(fs.rmSync).not.toHaveBeenCalledWith(worker, expect.anything());
+  });
+
   it('defaults the exe path to process.execPath', async () => {
     const res = fakeRes({ statusCode: 200 });
     wire([res]);

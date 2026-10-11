@@ -93,6 +93,16 @@ if (existsSync(cu13)) {
   console.error('warning: no pearl_core_cu13.node — RTX 50 rigs will use the CUDA 12.8 core');
 }
 
+// The RandomX CPU worker, for --xmr-address in Extra config. Optional like the
+// CUDA 13 core: without it the rig mines Pearl as before.
+const xmrWorker = join(dist, 'llmjob-xmr-worker');
+if (existsSync(xmrWorker)) {
+  copyFileSync(xmrWorker, join(pkgDir, 'llmjob-xmr-worker'));
+  chmodSync(join(pkgDir, 'llmjob-xmr-worker'), 0o755);
+} else {
+  console.error('warning: no llmjob-xmr-worker — this package cannot mine Monero on the CPU');
+}
+
 // The tarball name carries the version. HiveOS reinstalls only when the
 // Installation URL changes, and then reuses any archive of the same file name
 // it already downloaded, even one from another URL. So only a new file name

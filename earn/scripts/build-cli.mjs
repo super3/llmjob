@@ -66,4 +66,16 @@ if (existsSync(cu13)) {
 } else {
   process.stdout.write('warning: no vendor/native/pearl_core_cu13.node — RTX 50 rigs will use the CUDA 12.8 core\n');
 }
+// The RandomX CPU worker (earn/xmr-worker, built by build-xmr-worker.sh) goes
+// beside the binary too: it is an executable of its own, run as a child
+// process. Optional: without it --xmr-address says the worker is missing, and
+// the GPU miner is unaffected.
+const xmrWorker = join(root, 'vendor', 'native', 'llmjob-xmr-worker');
+if (existsSync(xmrWorker)) {
+  copyFileSync(xmrWorker, join(dist, 'llmjob-xmr-worker'));
+  chmodSync(join(dist, 'llmjob-xmr-worker'), 0o755);
+  process.stdout.write('staged llmjob-xmr-worker beside the CLI\n');
+} else {
+  process.stdout.write('warning: no vendor/native/llmjob-xmr-worker — this CLI cannot mine Monero on the CPU\n');
+}
 process.stdout.write('built ' + out + '\n');

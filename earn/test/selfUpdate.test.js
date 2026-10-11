@@ -101,10 +101,11 @@ describe('planUpdate', () => {
         'llmjob-earn-cli-linux': 'https://x/cli',
         'pearl_core.node': 'https://x/core',
         'pearl_core_cu13.node': 'https://x/core13',
+        'llmjob-xmr-worker': 'https://x/xmr',
       },
     };
     const p = planUpdate({ currentVersion: '0.1.11', release, platform: 'linux' });
-    expect(p).toMatchObject({ coreUrl: 'https://x/core', coreCu13Url: 'https://x/core13' });
+    expect(p).toMatchObject({ coreUrl: 'https://x/core', coreCu13Url: 'https://x/core13', xmrWorkerUrl: 'https://x/xmr' });
   });
 
   // Null, not absent: the updater reads null as "delete any old copy".
@@ -112,6 +113,7 @@ describe('planUpdate', () => {
     const p = planUpdate({ currentVersion: '0.1.11', release: linuxRelease, platform: 'linux' });
     expect(p.coreUrl).toBeNull();
     expect(p.coreCu13Url).toBeNull();
+    expect(p.xmrWorkerUrl).toBeNull();
   });
 
   test('unsupported platform', () => {

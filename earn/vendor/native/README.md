@@ -9,6 +9,11 @@ CI stages it here from the `native-core` workflow's artifact (see
 the same way when the native-core run built one; it is optional (see
 `src/shared/coreVariant.js` for when it is loaded).
 
+`llmjob-xmr-worker` (`.exe` on Windows), the opt-in Monero CPU miner's worker,
+is built in the same CI job by `scripts/build-xmr-worker.sh --stage` and lands
+here too; `src/main/xmrWorker.js` finds it in `resources/native/`. It is also
+optional: without it Pearl mines as before and CPU mining says it is missing.
+
 Nothing to check in: the file is a compiled addon and is built per platform. A
 local dev build is found automatically at `earn/native/build/Release/`, so this
 directory stays empty outside CI.

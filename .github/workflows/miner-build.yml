@@ -158,6 +158,36 @@ jobs:
             echo "**Warning:** $msg" >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      # The Monero CPU miner's worker (earn/xmr-worker): plain C++ against
+      # tevador/RandomX at a pinned commit, so unlike the Pearl core it builds
+      # right here, with the runner's own compiler (gcc, static, on Linux;
+      # MSVC with the static runtime on Windows). The script runs the worker's
+      # self-test against RandomX's own test vectors before it stages it in
+      # vendor/native, where electron-builder and dist:cli pick it up.
+      #
+      # Optional. CPU mining is opt-in and off by default, so a build without
+      # the worker still mines Pearl exactly as before; the verify step below
+      # warns, and the app says the worker is missing if someone turns CPU
+      # mining on.
+      - name: Build the RandomX CPU worker (Monero)
+        id: xmrworker
+        if: runner.os == 'Windows' || runner.os == 'Linux'
+        continue-on-error: true
+        shell: bash
+        run: bash scripts/build-xmr-worker.sh --stage
+
+      - name: Check the RandomX CPU worker
+        if: runner.os == 'Windows' || runner.os == 'Linux'
+        shell: bash
+        run: |
+          if ls vendor/native/llmjob-xmr-worker* >/dev/null 2>&1; then
+            echo "staged CPU worker: $(ls -l vendor/native/llmjob-xmr-worker*)"
+          else
+            msg="no llmjob-xmr-worker staged — this build cannot mine Monero on the CPU. See the 'Build the RandomX CPU worker' step."
+            echo "::warning::$msg"
+            echo "**Warning:** $msg" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Build installer (publishes on v* tag or manual publish)
         run: npx electron-builder --${{ matrix.platform }} --publish ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.publish) && 'always' || 'never' }}
         env:
@@ -227,6 +257,13 @@ jobs:
           else
             echo "::warning::publishing v$VERSION without pearl_core_cu13.node"
             gh release delete-asset "v$VERSION" pearl_core_cu13.node --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+          fi
+          # The CPU worker, before the binary for the same reason as the cores.
+          # Optional: a release without it keeps each rig's old one.
+          if [ -f dist/llmjob-xmr-worker ]; then
+            gh release upload "v$VERSION" dist/llmjob-xmr-worker --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            echo "::warning::publishing v$VERSION without llmjob-xmr-worker"
           fi
           gh release upload "v$VERSION" dist/llmjob-earn-cli-linux --clobber --repo "$GITHUB_REPOSITORY"
 
@@ -357,6 +394,7 @@ jobs:
           # archive of the same name: to retest, see the README's HiveOS section.
           path: |
             earn/dist/llmjob-earn-cli-linux
+            earn/dist/llmjob-xmr-worker
             earn/dist/llmjob-earn-[0-9]*.tar.gz
             earn/dist/llmjob-earn-hiveos.tar.gz
           if-no-files-found: error
