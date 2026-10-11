@@ -97,7 +97,8 @@ each PC on its own readings.
 **Leaving a PC** means reallocating to another PC if the class has paid before, and deleting the group
 if it hasn't. A class has **paid before** if it paid on the first account, or once a group of it here
 clears the margin over 10 readings with shares at the pool. Reallocations are capped at 3 a group, shared
-by rules 4 to 6; the next one deletes it.
+by rules 4 to 6; the next one deletes it, as released: running out of moves means bad PCs, not a bad
+class, so the class isn't barred from new groups.
 A deleted group counts as **released** when it never got going (no PC, or lost it) and **failed** when
 it mined badly (no shares, under cost, port blocked). Its deletion event carries the box's last log
 lines, so it says why.
