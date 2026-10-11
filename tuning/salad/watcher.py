@@ -694,7 +694,7 @@ class W:
             fail = len(ended) - rel
             eprl = sum(g["prl"] for g in ended)
             esp = sum(g["spend"] for g in ended)
-            rows.append(f"| Others ×{len(ended)} | 🔁 {rel} released / ❌ {fail} failed | ended | — | — | — | — | "
+            rows.append(f"| Others ×{len(ended)} | 🔁 {rel} released / ❌ {fail} failed | | — | — | — | — | "
                         f"{eprl:.3f} | {eprl * price - esp:+.2f} |")
         spend = sum(g["spend"] for g in st["groups"].values())
         prl = sum(g["prl"] for g in st["groups"].values())
@@ -705,8 +705,8 @@ class W:
         pt = st.get("pool_tot")
         if pt:
             cred = pt["paid"] + pt["balance"] + pt["unconfirmed"]
-            rows.append(f"| 🏦 Pool balance | paid {pt['paid']:.3f} · unlocked {pt['balance']:.3f} · unconfirmed "
-                        f"{pt['unconfirmed']:.3f} | | | | | | {cred:.3f} | {cred * price - spend:+.2f} |")
+            rows.append(f"| 🏦 Pool balance | {pt['paid']:.2f} paid · {pt['balance'] + pt['unconfirmed']:.2f} pending | | | | | | "
+                        f"{cred:.3f} | {cred * price - spend:+.2f} |")
         credit = self.cfg["credit_start"] + self.cfg["credit_offset"] - spend
         hours = credit / all_cost if all_cost > 0 else None
         lines = [f"PRL ${price:.3f} · ${usd:.6f}/TH-hr · {iso(t)}", "",
@@ -721,7 +721,8 @@ class W:
                  f"- Salad credit left: ${credit:.2f} of ${self.cfg['credit_start'] + self.cfg['credit_offset']:.2f} (our count)"
                  + (f"; lasts {hours:.0f} h at ${all_cost:.3f}/hr." if hours is not None else "; nothing is billing now.")]
         if pt:
-            lines.append(f"- The pool has credited {cred / prl * 100 if prl > 0 else 0:.0f}% of the PRL we expected. It pays "
+            lines.append(f"- The pool has credited {cred / prl * 100 if prl > 0 else 0:.0f}% of the PRL we expected (paid "
+                         f"{pt['paid']:.3f}, unlocked {pt['balance']:.3f}, unconfirmed {pt['unconfirmed']:.3f}). It pays "
                          "as it finds blocks, so this lags and swings with its luck.")
         if st["credits_out"]:
             lines.append("- ⚠️ Credit ran out: Salad stopped the groups. They restart after a top-up.")
