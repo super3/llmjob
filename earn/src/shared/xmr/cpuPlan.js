@@ -52,7 +52,8 @@ function gb(bytes) {
 //   reserve    how many the default leaves free
 //   auto       the default thread count (0: off by default here)
 //   threads    what to run: the request (capped), or auto
-//   reason     one line on why threads is 0 or was capped, or null
+//   reason     one line on why threads is 0 or was capped (by the request or
+//              by L3 cache), or null
 function planCpuThreads(facts, requested) {
   const f = facts || {};
   const cpus = Math.max(1, Math.floor(Number(f.cpus) || 1));
@@ -89,6 +90,11 @@ function planCpuThreads(facts, requested) {
     return out(0, 0, 'off by default with ' + available + ' CPUs'
       + (memory > 0 && memory < RECOMMENDED_MEMORY ? ' and ' + gb(memory) + ' of memory' : '')
       + ' (it turns on by itself above 4 CPUs and 8 GB); set a thread count to mine anyway');
+  }
+  // Said, or "N of M CPUs" reads as if the rest were kept for the GPU miner.
+  if (auto < available - reserve) {
+    return out(auto, auto, 'one thread per 2 MB of L3 cache, and this CPU has ' + Math.round(l3 / MIB)
+      + ' MB; more threads add power, not hashrate');
   }
   return out(auto, auto, null);
 }

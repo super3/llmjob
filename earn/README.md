@@ -668,7 +668,8 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
                            (default: 7001 on the RTX 5090; 0 turns it off; see below)
       --xmr-address <4…|8…>  Also mine Monero (XMR) on the CPU, paid here (see below)
       --cpu-threads <n>    CPU threads for Monero (default: all CPUs but 1, or but 2
-                           on 6 CPUs or fewer; off on 4 or fewer or under 8 GB)
+                           on 6 CPUs or fewer, at most 1 per 2 MB of L3 cache;
+                           off on 4 or fewer or under 8 GB)
       --cpu-priority <p>   Monero thread priority: idle, low or normal (default:
                            low on Linux, idle on Windows)
       --stats-file <path>  Write live stats JSON here every 10 s (HiveOS's h-stats.sh reads it)

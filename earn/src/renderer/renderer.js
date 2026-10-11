@@ -549,6 +549,8 @@
     if (!c.canMine) return 'Can\'t run here: ' + c.reason + '.';
     const n = cpuThreadsNow();
     if (!n) return 'Auto: ' + c.reason + '.';
+    // The default capped by L3 cache says so.
+    if (!state.cpuThreads && c.reason) return n + ' of ' + c.available + ' CPUs mine: ' + c.reason + '.';
     return n + ' of ' + c.available + ' CPUs mine; the rest stay free for the GPU miner.';
   }
 

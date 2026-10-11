@@ -895,6 +895,14 @@ describe('CPU mining', () => {
     m2.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--xmr-address', XMR_ADDR, '--cpu-threads', '64']);
     await settle();
     expect(allOut()).toContain('cpu:        15 of 16 CPUs  (64 threads asked for; running 15 so one of the 16 CPUs stays free for the GPU miner)');
+
+    // The default, capped by L3 cache, says why.
+    const m3 = load();
+    m3.cpuFacts.readCpuFacts.mockReturnValue({ cpus: 12, memoryBytes: 16 * 2 ** 30, l3Bytes: 12 * 2 ** 20 });
+    m3.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--xmr-address', XMR_ADDR]);
+    await settle();
+    expect(allOut()).toContain('cpu:        6 of 12 CPUs  (auto: one thread per 2 MB of L3 cache, and this CPU has 12 MB;'
+      + ' more threads add power, not hashrate)');
   });
 
   test('off: by --cpu-threads 0, by the plan, or with no worker beside the binary', async () => {

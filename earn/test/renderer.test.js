@@ -1537,6 +1537,17 @@ describe('CPU mining', () => {
     expect($('set-cpu').disabled).toBe(true);
   });
 
+  it('a default capped by L3 cache says why', async () => {
+    const l3 = { available: 12, auto: 6, canMine: true,
+      reason: 'one thread per 2 MB of L3 cache, and this CPU has 12 MB; more threads add power, not hashrate' };
+    const h = cpuApi({}, l3);
+    await boot({ api: h.api });
+    expect($('cpu-note').textContent).toBe('6 of 12 CPUs mine: ' + l3.reason + '.');
+    $('set-cpu-threads').value = '8';
+    change($('set-cpu-threads'));
+    expect($('cpu-note').textContent).toBe('8 of 12 CPUs mine; the rest stay free for the GPU miner.');
+  });
+
   it('notes for a computer where it is off by default, or cannot run, or main did not say', async () => {
     const off = { available: 4, auto: 0, canMine: true, reason: 'off by default with 4 CPUs (it turns on by itself above 4 CPUs and 8 GB); set a thread count to mine anyway' };
     let h = cpuApi({}, off);

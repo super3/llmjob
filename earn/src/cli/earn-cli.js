@@ -750,8 +750,9 @@ function setUpCpuMining(settings, poolLookup) {
       + ' or set LLMJOB_XMR_WORKER=/path/to/llmjob-xmr-worker.', process.stderr);
     return null;
   }
-  log('cpu:        ' + plan.threads + ' of ' + plan.available + ' CPUs'
-    + (plan.reason ? '  (' + plan.reason + ')' : settings.cpuThreads ? '' : '  (auto)'));
+  const auto = settings.cpuThreads ? '' : 'auto';
+  const why = plan.reason ? (auto && auto + ': ') + plan.reason : auto;
+  log('cpu:        ' + plan.threads + ' of ' + plan.available + ' CPUs' + (why ? '  (' + why + ')' : ''));
   const engine = new XmrEngine({
     connect: (host, port) => net.connect({ port, host, lookup: poolLookup() }),
     spawnWorker: makeSpawnWorker(spawn),
