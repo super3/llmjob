@@ -1,0 +1,6 @@
+# Railway config for the trader service (Root Directory: /trader). It replaces the repo-root railway.toml,
+# whose /health check is for the web server and would fail a cron job.
+[deploy]
+startCommand = "python3 trader.py"
+cronSchedule = "5 * * * *"
+restartPolicyType = "NEVER"
