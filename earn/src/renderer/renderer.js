@@ -77,7 +77,7 @@
     chat: { messages: [], streaming: false, streamText: '', bubble: null },
     node: { connected: false, nodeId: null, name: null },
     // Monero on the CPU (Settings → CPU Mining). Off by default. `cpu` is what
-    // main says this computer can do; `cpuView` the CPU line of each stats tick.
+    // main says this computer can do; `cpuView` the CPU line main last sent.
     cpuMining: false, xmrAddress: '', xmrOk: false, xmrError: null, xmrBalance: null, cpuThreads: 0,
     cpu: null, cpuView: null,
   };
@@ -572,9 +572,12 @@
 
   const fmt4 = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
 
+  // It runs for any START, with or without the GPU miner, and waits out an
+  // idle-only pause like it.
   function cpuMetaText(v) {
-    if (!state.mining) return state.xmrOk ? 'starts with mining' : 'needs a Monero address in Settings';
-    if (!v) return 'waiting for mining';
+    if (!state.mining) return state.xmrOk ? 'starts when you press START' : 'needs a Monero address in Settings';
+    if (state.paused) return 'paused while the computer is in use';
+    if (!v) return 'starting…';
     if (v.error) return 'stopped: ' + v.error;
     if (v.state === 'mining') {
       return v.accepted + ' accepted' + (v.rejected ? ' · ' + v.rejected + ' rejected' : '') + ' · ' + v.threads + ' threads';
@@ -721,7 +724,10 @@
     const p = chartPaths(s.points);
     el.line.setAttribute('d', p.line);
     el.area.setAttribute('d', p.area);
-    state.cpuView = s.cpu || null;
+  }
+
+  function applyCpuStats(v) {
+    state.cpuView = v || null;
     renderCpuRow();
   }
 
@@ -1021,6 +1027,7 @@
       if (region) el.setRegion.value = region;
     }
     if (api.onStats) api.onStats(applyStats);
+    if (api.onCpuStats) api.onCpuStats(applyCpuStats);
     if (api.onLog) api.onLog(appendLog);
     if (api.onStopped) api.onStopped(() => { state.mining = false; state.paused = false; renderMiningState(); });
     if (api.onEngine) api.onEngine((e) => {

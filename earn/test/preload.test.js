@@ -82,6 +82,7 @@ describe('event subscriptions', () => {
     ['onChatError', 'llm:chat:error', true],
     ['onNodeStatus', 'node:status', true],
     ['onStats', 'miner:stats', true],
+    ['onCpuStats', 'cpu:stats', true],
     ['onLog', 'miner:log', true],
     ['onEvent', 'miner:event', true],
     ['onEngine', 'miner:engine', true],

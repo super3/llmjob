@@ -228,8 +228,11 @@ It is **off by default** and does nothing until you turn it on.
 **Turning it on**
 
 - Desktop app: **Settings → CPU Mining**, switch it on, paste a Monero address,
-  then START. The Mine tab then shows a CPU line: the CPU hashrate, its shares
-  and the XMR balance. The settings apply at the next START.
+  then START. It runs in any mode, with or without the GPU miner, and STOP
+  stops it. With "Only mine when my computer is idle" on, it waits for an idle
+  computer like the GPU miner does. The Mine tab then shows a CPU line: the CPU
+  hashrate, its shares and the XMR balance. The settings apply at the next
+  START.
 - CLI: `--xmr-address 4…` (or `8…`). `--cpu-threads <n>` sets the thread count;
   `0` turns it off.
 - HiveOS: put `--xmr-address 4…` in **Extra config arguments**. The dashboard

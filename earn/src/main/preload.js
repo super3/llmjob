@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('llmjob', {
   copyText: (text) => ipcRenderer.send('clipboard:write', text),
   fitWindow: () => ipcRenderer.send('app:fit'),
   onStats: (cb) => ipcRenderer.on('miner:stats', (_e, d) => cb(d)),
+  onCpuStats: (cb) => ipcRenderer.on('cpu:stats', (_e, d) => cb(d)),
   onLog: (cb) => ipcRenderer.on('miner:log', (_e, d) => cb(d)),
   onEvent: (cb) => ipcRenderer.on('miner:event', (_e, d) => cb(d)),
   onEngine: (cb) => ipcRenderer.on('miner:engine', (_e, d) => cb(d)),

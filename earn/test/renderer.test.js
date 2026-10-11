@@ -86,6 +86,7 @@ function makeFullApi() {
     copyText: jest.fn(),
     fitWindow: jest.fn(),
     onStats: jest.fn((cb) => { cbs.stats = cb; }),
+    onCpuStats: jest.fn((cb) => { cbs.cpu = cb; }),
     onLog: jest.fn((cb) => { cbs.log = cb; }),
     onEvent: jest.fn(),
     onEngine: jest.fn((cb) => { cbs.engine = cb; }),
@@ -1364,6 +1365,7 @@ describe('CPU mining', () => {
     api.checkXmrAddress = jest.fn((a) => Promise.resolve(a === XMR_ADDR
       ? { ok: true, kind: 'subaddress' } : { ok: false, error: 'the checksum does not match: check for a typo' }));
     api.getXmrBalance = jest.fn().mockResolvedValue({ earned: 0.0125, pending: 0.0125, paid: 0 });
+    api.onIdle = jest.fn((cb) => { cbs.idle = cb; });
     return { api, cbs };
   }
 
@@ -1391,7 +1393,7 @@ describe('CPU mining', () => {
     expect($('set-cpu-threads').value).toBe('3');
     expect($('cpu-note').textContent).toBe('3 of 8 CPUs mine; the rest stay free for the GPU miner.');
     expect($('cpu-row').hidden).toBe(false);
-    expect($('cpu-meta').textContent).toBe('starts with mining');
+    expect($('cpu-meta').textContent).toBe('starts when you press START');
     expect($('cpu-balance').textContent).toBe('0.0125 XMR');
 
     click($('btn-start'));
@@ -1399,10 +1401,14 @@ describe('CPU mining', () => {
     // Locked while mining: the settings ride on the START.
     expect($('set-cpu').disabled).toBe(true);
     expect($('set-xmr').disabled).toBe(true);
-    expect($('cpu-meta').textContent).toBe('waiting for mining');
+    expect($('cpu-meta').textContent).toBe('starting…');
+    expect($('cpu-dot').className).toBe('dot2');
 
-    const tick = (cpu) => cbs.stats({ total: '1.0', acceptedLabel: '0', uptime: '00m 01s', estDay: '$0.01', points: [1], cpu });
+    // Its own channel: an LLM-only START sends no GPU ticks. Those leave the
+    // CPU line alone.
+    const tick = (cpu) => cbs.cpu(cpu);
     tick({ state: 'starting', hashrate: '0.00', accepted: 0, rejected: 0, threads: 3, error: null });
+    cbs.stats({ total: '1.0', acceptedLabel: '0', uptime: '00m 01s', estDay: '$0.01', points: [1] });
     expect($('cpu-meta').textContent).toBe('starting…');
     expect($('cpu-dot').className).toBe('dot2 busy');
     tick({ state: 'dataset', hashrate: '0.00', accepted: 0, rejected: 0, threads: 3, error: null });
@@ -1421,7 +1427,12 @@ describe('CPU mining', () => {
     expect($('cpu-meta').classList.contains('err')).toBe(true);
     expect($('cpu-dot').className).toBe('dot2 err');
     tick(undefined);
-    expect($('cpu-meta').textContent).toBe('waiting for mining');
+    expect($('cpu-meta').textContent).toBe('starting…');
+
+    // Idle-only pauses it with the GPU miner.
+    cbs.idle({ paused: true, idleAfterSec: 300 });
+    expect($('cpu-meta').textContent).toBe('paused while the computer is in use');
+    cbs.idle({ paused: false });
 
     // The balance refreshes with the Pearl one.
     api.getXmrBalance.mockResolvedValue({ earned: 0.5 });

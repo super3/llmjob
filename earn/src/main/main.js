@@ -302,10 +302,13 @@ async function fetchXmrBalance(address) {
 }
 
 // ── CPU mining (Monero) ─────────────────────────────────────────────────────
-// Opt-in and off by default (Settings → CPU Mining). It starts and stops with
-// the GPU miner, so STOP and the idle pause cover both. The hashing runs in a
-// worker process of its own (see xmrEngine), so a crash there, or an antivirus
-// removing the worker, stops the CPU miner and nothing else.
+// Opt-in and off by default (Settings → CPU Mining). runPlan starts it for any
+// START that asks for it, whether or not the GPU miner runs (the CLI does the
+// same), and STOP and the idle pause stop it. The hashing runs in a worker
+// process of its own (see xmrEngine), so a crash there, or an antivirus
+// removing the worker, stops the CPU miner and nothing else. Its line on the
+// Mine tab comes on 'cpu:stats', apart from the GPU miner's ticks, which an
+// LLM-only START never sends.
 let cpuMiner = null;
 let cpuError = null;     // why the CPU miner last stopped, for the Mine tab
 let cpuFacts = null;     // read once: CPUs, cgroup limit, memory, L3
@@ -316,6 +319,14 @@ function cpuPlan(threads) {
   return planCpuThreads(cpuFacts, threads);
 }
 
+function cpuRunning() {
+  return !!(cpuMiner && cpuMiner.isRunning());
+}
+
+function sendCpu() {
+  send('cpu:stats', cpuView());
+}
+
 function startCpuMining(settings) {
   if (cpuMiner || !settings.cpuMining) return;
   cpuError = null;
@@ -324,12 +335,14 @@ function startCpuMining(settings) {
   if (!addr.ok) {
     cpuError = 'Monero address: ' + addr.error;
     say('warn', 'not mining Monero: ' + cpuError);
+    sendCpu();
     return;
   }
   const plan = cpuPlan(Number(settings.cpuThreads) || 0);
   if (!plan.threads) {
     cpuError = plan.reason;
     say('warn', 'not mining Monero: ' + plan.reason);
+    sendCpu();
     return;
   }
   const engine = new XmrEngine({
@@ -343,6 +356,8 @@ function startCpuMining(settings) {
   engine.on('error', (e) => { cpuError = e.message; });
   // The pool took the login, so this address is one that worked.
   engine.on('authorized', (e) => poolLookup().worked(e.host, e.address, e.family));
+  // Every status change and hashrate tick (every 2 s) updates the Mine tab.
+  engine.on('event', () => { if (cpuMiner === engine) sendCpu(); });
   cpuMiner = engine;
   if (plan.reason) say('info', plan.reason);
   engine.start({
@@ -351,15 +366,19 @@ function startCpuMining(settings) {
     endpoint: XMR.endpoint,
     threads: plan.threads,
   });
+  sendCpu();
 }
 
 function stopCpuMining() {
-  if (cpuMiner) cpuMiner.stop();
+  if (!cpuMiner && !cpuError) return;
+  const m = cpuMiner;
   cpuMiner = null;
   cpuError = null;
+  if (m) m.stop();
+  sendCpu();
 }
 
-// The CPU line on the Mine tab, or null when CPU mining was not started.
+// The CPU line on the Mine tab, or null when CPU mining is not running.
 function cpuView() {
   if (!cpuMiner && !cpuError) return null;
   const s = cpuMiner ? cpuMiner.snapshot() : { state: 'stopped', hashrate: 0, accepted: 0, rejected: 0, threads: 0 };
@@ -418,7 +437,6 @@ function statsView(snap) {
     temp: snap.temp,
     uptime: format.formatUptime(snap.uptimeSec),
     estDay: earnings.estDailyUsdLabel(snap.total, liveEcon),
-    cpu: cpuView(),
   };
 }
 
@@ -617,8 +635,6 @@ async function startMining(settings, llmCoRuns) {
   } catch (e) {
     reportLaunchFailure(e);
   }
-  // Beside the GPU miner, whatever became of it: the two are independent.
-  startCpuMining(settings);
 }
 
 // Miner event wiring. PearlEngine translates our miner's events into the two
@@ -654,12 +670,13 @@ function stopMining() {
   // start the LLM after this stop.
   miningEpoch++;
   haltMiner();
+  stopCpuMining();
   send('miner:stopped');
 }
 
-// Stop the engine, its stats ticker and its board reports, and forget it. Half
-// of stopMining(): runPlan also uses it alone, when a plan drops mining but the
-// session goes on with the LLM.
+// Stop the GPU engine, its stats ticker and its board reports, and forget it.
+// Half of stopMining(): runPlan also uses it alone, when a plan drops mining
+// but the session goes on with the LLM (and the CPU miner, if it runs).
 function haltMiner() {
   if (ticker) {
     clearInterval(ticker);
@@ -674,7 +691,6 @@ function haltMiner() {
     miner.stop();
     miner = null;
   }
-  stopCpuMining();
 }
 
 function appIcon() {
@@ -1344,7 +1360,7 @@ function buildFleet() {
     // running, and the idle watcher can bring things back behind it (see
     // runPlan). Not while idle-only has mining paused: that START still stands,
     // and mining comes back on the next resume.
-    if ((!miner || !miner.isRunning()) && !(session && session.paused)) endSession();
+    if ((!miner || !miner.isRunning()) && !cpuRunning() && !(session && session.paused)) endSession();
   });
   return f;
 }
@@ -1732,6 +1748,10 @@ async function runPlan(queuedSettings) {
   // STOP arrived during miner setup or the hashrate wait: don't bring the LLM up
   // (or re-touch node state) for a session the user has already stopped.
   if (epoch !== miningEpoch) return;
+  // The CPU miner runs for any START that asks for it, whatever the GPU does,
+  // and waits out an idle-only pause like the GPU miner.
+  if (settings.cpuMining && !(session && session.paused)) startCpuMining(settings);
+  else stopCpuMining();
   syncNodeName(settings);
   if (plan.llm) {
     const started = await startLlm(plan.miner ? LLM.miningReserveMb : 0, epoch).catch(() => false);
@@ -1742,10 +1762,10 @@ async function runPlan(queuedSettings) {
     // End the START itself, not just the window's STOP button: a session left
     // behind kept the idle watcher going, which could bring the model back while
     // the window showed START.
-    if (!started && !plan.miner) endSession();
+    if (!started && !plan.miner && !cpuRunning()) endSession();
   } else {
     stopLlm();
-    if (!plan.miner) endSession();
+    if (!plan.miner && !cpuRunning()) endSession();
   }
 }
 
@@ -1817,10 +1837,10 @@ function endSession() {
   stopLlm();
 }
 
-// Idle-only only ever holds back mining, so a START with no miner in it (LLM
-// mode, or no payout address) has nothing to pause.
+// Idle-only only ever holds back mining, GPU or CPU, so a START with neither
+// in it (LLM mode with CPU mining off, say) has nothing to pause.
 function sessionMines() {
-  return planFor(session.settings).miner;
+  return planFor(session.settings).miner || !!session.settings.cpuMining;
 }
 
 function idleState() {
@@ -1836,6 +1856,7 @@ function pauseSession() {
   session.paused = true;
   miningEpoch++;
   haltMiner();
+  stopCpuMining();
   applyPlan(session.settings, true);
   send('miner:stats', statsView(snapshot(initStats(Date.now()), Date.now())));
   send('miner:idle', { paused: true, idleAfterSec: appPrefs.IDLE_AFTER_SEC });
@@ -1858,8 +1879,12 @@ function resumeSession() {
   // which on a first run downloads several GB. Mining doesn't wait for it. That
   // model was planned with the mining reserve, so the miner starts beside it
   // now, and the run goes on to finish the model.
-  startMiningOnce(session.settings, planFor(session.settings).llm)
-    .catch((e) => send('miner:log', { level: 'error', line: 'start failed: ' + e.message }));
+  const plan = planFor(session.settings);
+  if (plan.miner) {
+    startMiningOnce(session.settings, plan.llm)
+      .catch((e) => send('miner:log', { level: 'error', line: 'start failed: ' + e.message }));
+  }
+  startCpuMining(session.settings);
 }
 
 function checkIdle() {
