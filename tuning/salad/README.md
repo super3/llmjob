@@ -29,7 +29,7 @@ Config keys:
 
 | Key | Meaning |
 |---|---|
-| `max_active` | Most groups alive at once. The quota caps it too. |
+| `max_active` | Most groups alive at once. Salad's quota caps it too, so set it above the quota and a raised quota is used at once (live: 30, with a quota of 10). |
 | `search` | Run the hourly search. |
 | `search_token` | Change it to run a search now. |
 | `restart_token` | Change it after a top-up: restarts groups Salad stopped for lack of credit. |
@@ -43,6 +43,8 @@ Config keys:
 | `search_every_min` | Minutes between searches while a slot is empty (60). |
 | `retry_after_min` | Minutes before a class released for want of a PC is tried again (60). |
 | `no_pc_streak`, `no_pc_hold_min` | A class whose last 3 groups got no PC goes last for 180 min. |
+| `upgrade_gain` | How much more an hour a class must be expected to make before it takes the weakest group's slot (0.05). `null` turns swaps off. |
+| `upgrade_every_min` | Minutes between swap checks while every slot is taken (15). |
 | `drift` | How far the ledger and the pool may disagree before a `DRIFT` event (0.15). |
 | `trader` | Railway ids of the SafeTrade autoseller: `{"project", "service", "environment"}`. Unset: no SafeTrade row. |
 
@@ -81,7 +83,14 @@ each PC on its own readings.
 7. **Credit runs out:** Salad stops every group, and creating one returns `no_credits_available`. The
    watcher leaves stopped groups alone and stops creating. A group that stops after it had a PC is
    taken as this case. Bump `restart_token` after a top-up.
-8. It only acts on groups in its own ledger.
+8. **Swap the weakest slot.** With every slot taken, every `upgrade_every_min`, compare the group making
+   the least on its PC (profit an hour on its last 3 readings) with the best class the search could create.
+   That class is expected to make its measured rate at its free priority, counted no cheaper than low,
+   because batch PCs are seldom handed out and a group that gets none moves up. If it should make
+   `upgrade_gain` more an hour, delete the weak group (released) and create the new one. One swap per check.
+   At $0.05 a 2060 or 2080 making $0.01–0.02 gives way to a 4080 at low ($0.07), but a 5070 at low or a
+   5080 at medium ($0.03) doesn't, so groups don't churn between similar classes.
+9. It only acts on groups in its own ledger.
 
 **Leaving a PC** means reallocating to another PC if the class has paid before, and deleting the group
 if it hasn't. A class has **paid before** if it paid on the first account, or once a group of it here
