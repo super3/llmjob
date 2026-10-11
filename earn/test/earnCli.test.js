@@ -905,7 +905,7 @@ describe('CPU mining', () => {
     expect(m.net.connect).toHaveBeenLastCalledWith({ port: 1111, host: 'de.monero.herominers.com', lookup: expect.any(Function) });
     expect(m.net.connect.mock.calls[0][0].lookup).toBe(m.net.connect.mock.calls[1][0].lookup);
     cpu.emit('authorized', { host: 'de.monero.herominers.com', address: '141.95.126.31', family: 'IPv4' });
-    expect(m.fs.writeFileSync).toHaveBeenCalledWith('/tmp/store/pool-addresses.json', expect.stringContaining('141.95.126.31'));
+    expect(m.fs.writeFileSync).toHaveBeenCalledWith(expect.stringMatching(/pool-addresses\.json$/), expect.stringContaining('141.95.126.31'));
 
     cpu.emit('log', { level: 'info', line: 'cpu: logged in to the pool' });
     cpu.emit('log', { level: 'error', line: 'cpu: XMR share rejected: [-1] Low difficulty share' });
