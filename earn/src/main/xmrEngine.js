@@ -93,6 +93,7 @@ class XmrEngine extends EventEmitter {
     this.loginRefused = false;
     this.job = null;
     this.sentNonces = new Set();   // nonces submitted for this.job
+    this.workerPaused = false;     // told to pause: the pool sent nothing it can mine
     this.difficulty = null;
     this.submitId = 10;
     this.pending = new Map();      // submit id -> job id
@@ -199,6 +200,7 @@ class XmrEngine extends EventEmitter {
     }
     this.child = child;
     this.childBuf = '';
+    this.workerPaused = false;
     this.restart.startedAt = this.now();
     this.hashrate = 0;
     this._setState('starting');
@@ -383,6 +385,9 @@ class XmrEngine extends EventEmitter {
       if (this.authorized) this.lostAt = this.now();
       this.authorized = false;
       this.sessionId = null;
+      // The next session has jobs of its own. Its pool would reject a share
+      // of this one.
+      this.job = null;
       this.pending.clear();
       this.keepaliveIds.clear();
       // stop() lets go of the socket before closing it, so this is a close
@@ -426,9 +431,20 @@ class XmrEngine extends EventEmitter {
           this._log('info', 'pool difficulty ' + m.difficulty);
         }
         this._send(workerProto.jobCommand(m));
+        if (this.workerPaused) {
+          this._send(workerProto.resumeCommand());
+          this.workerPaused = false;
+        }
         break;
       case 'bad-job':
+        // The last job is over, and every share of it would be rejected. The
+        // worker waits, dataset kept, for one it can mine.
         this._log('error', 'ignoring a job the CPU miner cannot mine' + (m.jobId ? ' (' + m.jobId + ')' : '') + ': ' + m.reason);
+        this.job = null;
+        if (!this.workerPaused && this.child) {
+          this._send(workerProto.pauseCommand());
+          this.workerPaused = true;
+        }
         break;
       case 'submit-accepted':
         if (this.pending.delete(m.id)) {

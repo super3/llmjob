@@ -40,7 +40,9 @@ describe('commands to the worker', () => {
     expect(Number.isInteger(n) && n >= 0 && n < 2 ** 32).toBe(true);
   });
 
-  test('quit', () => {
+  test('pause, resume and quit', () => {
+    expect(w.pauseCommand()).toBe('{"cmd":"pause"}\n');
+    expect(w.resumeCommand()).toBe('{"cmd":"resume"}\n');
     expect(w.quitCommand()).toBe('{"cmd":"quit"}\n');
   });
 });

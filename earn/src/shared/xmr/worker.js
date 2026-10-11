@@ -70,6 +70,16 @@ function jobCommand(job, nonce = randomNonce()) {
   });
 }
 
+// Stop hashing, keeping the dataset, until resume. Resume starts the current
+// job over from its start nonce, so the engine sends a new job line first.
+function pauseCommand() {
+  return encode({ cmd: 'pause' });
+}
+
+function resumeCommand() {
+  return encode({ cmd: 'resume' });
+}
+
 function quitCommand() {
   return encode({ cmd: 'quit' });
 }
@@ -130,5 +140,6 @@ function parseWorkerLine(line) {
 }
 
 module.exports = {
-  PROTOCOL, PRIORITIES, defaultPriority, workerArgs, randomNonce, jobCommand, quitCommand, parseWorkerLine,
+  PROTOCOL, PRIORITIES, defaultPriority, workerArgs, randomNonce, jobCommand, pauseCommand, resumeCommand, quitCommand,
+  parseWorkerLine,
 };

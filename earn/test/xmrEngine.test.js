@@ -595,6 +595,43 @@ describe('the pool', () => {
     expect(h.engine.snapshot().rejected).toBe(1);
   });
 
+  // Monero's next fork changes the algorithm, for one. Every share of the
+  // last job would be rejected from then on.
+  test('a job it cannot mine pauses the worker until one it can', () => {
+    const h = mining();
+    const c = h.child();
+    h.sock().recv({ method: 'job', params: job('j2', { algo: 'rx/2' }) });
+    h.sock().recv({ method: 'job', params: job('j3', { algo: 'rx/2' }) });
+    expect(c.stdin.lines.slice(1)).toEqual([{ cmd: 'pause' }]);
+    c.say({ type: 'share', job: 'j1', nonce: '3a000000', result: RESULT });
+    expect(h.sock().written.filter((m) => m.method === 'submit')).toEqual([]);
+    // The new job goes first, so resume starts on it.
+    h.sock().recv({ method: 'job', params: job('j4') });
+    expect(c.stdin.lines.slice(2).map((l) => l.cmd + (l.id ? ' ' + l.id : ''))).toEqual(['job j4', 'resume']);
+    h.sock().recv({ method: 'job', params: job('j5') });
+    expect(c.stdin.lines.slice(4).map((l) => l.cmd)).toEqual(['job']);
+  });
+
+  test('a bad job in the login after a reconnect leaves no old job live', () => {
+    const h = mining();
+    h.sock().emit('close');
+    h.advance(RECONNECT_MS);
+    h.sock().recv({ id: 1, result: { id: 'sess2', job: job('j2', { seed_hash: undefined }) } });
+    h.child().say({ type: 'share', job: 'j1', nonce: '3a000000', result: RESULT });
+    expect(h.sock().written.filter((m) => m.method === 'submit')).toEqual([]);
+    expect(h.child().stdin.lines.slice(-1)).toEqual([{ cmd: 'pause' }]);
+  });
+
+  test('a bad job between worker restarts: the new worker just waits', () => {
+    const h = mining();
+    h.child().emit('exit', 1, null);
+    h.sock().recv({ method: 'job', params: job('j2', { algo: 'rx/2' }) });
+    h.advance(RESTART_MS);
+    expect(h.child().stdin.lines).toEqual([]);
+    h.sock().recv({ method: 'job', params: job('j3') });
+    expect(h.child().stdin.lines.map((l) => l.cmd)).toEqual(['job']);
+  });
+
   test('bad jobs, pool errors and unknown lines are logged', () => {
     const h = mining();
     h.sock().recv({ method: 'job', params: job('j2', { algo: 'rx/arq' }) });

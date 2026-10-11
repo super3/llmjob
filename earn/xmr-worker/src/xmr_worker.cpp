@@ -19,6 +19,8 @@
 //       Nth nonce after it (N threads). The same job from the same start finds
 //       the same shares, so the app sends a random start with every job line.
 //   {"cmd":"pause"}  {"cmd":"resume"}  {"cmd":"quit"}   (EOF on stdin = quit)
+//       resume starts the current job over from its start nonce. A job line
+//       sent while paused replaces it, and is what the app sends first.
 //
 // Events (worker -> app):
 //   {"type":"hello", ...}      what it is and what it will run with
