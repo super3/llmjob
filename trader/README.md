@@ -4,7 +4,9 @@ Sells the PRL that mining pays out for USDT on SafeTrade, once an hour, as a Rai
 
 ## What a run does
 
-1. Cancels our open sell orders on `prlusdt`: whatever the last run couldn't sell.
+1. Finds the PRL/USDT market: by id, or by its base and quote currencies, reading every page of
+   SafeTrade's market list (it comes 100 to a page). Then cancels our open sell orders there:
+   whatever the last run couldn't sell.
 2. Reads the PRL balance.
 3. Reads the order book and works out a floor price: 3% under the best bid (`MAX_SLIPPAGE`), and never
    under `MIN_PRICE`.
@@ -38,7 +40,7 @@ Service `trader` in the `llmjob` project:
 | Variables | `SAFETRADE_API_KEY`, `SAFETRADE_API_SECRET` (sealed), `DRY_RUN` (`1` until the dry run looks right, then `0`) |
 
 Optional variables: `MAX_SLIPPAGE` (0.03), `MIN_PRICE` (0), `MIN_VOLUME` (0.5), `MARKET` (`prlusdt`),
-`COIN` (`prl`), `SAFETRADE_BASE` (`https://safe.trade/api/v2/peatio`).
+`COIN` (`prl`), `QUOTE` (`usdt`), `SAFETRADE_BASE` (`https://safe.trade/api/v2/peatio`).
 
 ## The API
 
