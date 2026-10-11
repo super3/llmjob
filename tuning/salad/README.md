@@ -184,7 +184,9 @@ hourly (`--dry-run` only reports):
 PRL_WALLET=prl1... python3 -I tuning/salad/guard.py
 ```
 
-On the business account a Routine runs it every hour in a fresh cloud session.
+On the business account a Routine runs it every hour in a cloud session that has this repo checked
+out. A fresh session without the repo would have to download the script, and its permission check
+blocks running downloaded code.
 
 ## Money
 
