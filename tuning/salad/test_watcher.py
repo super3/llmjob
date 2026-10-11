@@ -435,6 +435,31 @@ class TestSearch(Base):
         self.x.cfg["retry_after_min"] = 10
         self.assertIn("biz-rtx4080", self.searched("released", 11))
 
+    def test_a_class_that_keeps_getting_no_pc_goes_last(self):
+        self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
+        self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10}}))
+        self.x.cfg.update(max_active=10, max_new_per_hour=1, retry_after_min=10, max_per_class=3)
+        for _ in range(3):
+            g = self.group(cls="RTX 4080 (16 GB)", pri="low")
+            g["ended"], g["end_kind"] = self.clock[0], "released"   # never had a PC
+            self.clock[0] += 3600
+        self.x.search()
+        self.assertEqual(self.http.made("POST", "/containers$")[-1][2]["name"], "biz-rtx2060")  # not the 4080
+        self.clock[0] += 181 * 60  # the hold ends
+        self.x.search()
+        self.assertEqual(self.http.made("POST", "/containers$")[-1][2]["name"], "biz-rtx4080")
+
+    def test_a_class_that_mined_isnt_held_back(self):
+        self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
+        self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10}}))
+        self.x.cfg.update(max_active=10, max_new_per_hour=1, retry_after_min=10)
+        for had in (False, True, False):
+            g = self.group(cls="RTX 4080 (16 GB)", pri="low")
+            g["ended"], g["end_kind"], g["had_pc"] = self.clock[0], "released", had
+            self.clock[0] += 3600
+        self.x.search()
+        self.assertEqual(self.http.made("POST", "/containers$")[-1][2]["name"], "biz-rtx4080")
+
     def test_respects_max_active(self):
         self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
         self.group(cls="RTX 2060 (6 GB)", pri="low")
