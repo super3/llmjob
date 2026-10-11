@@ -22,8 +22,12 @@ class Fake:
                        ("GET", r"/account/balances$", (200, [{"currency": "usdt", "balance": "9"},
                                                               {"currency": "prl", "balance": balance}])),
                        ("POST", r"/market/orders$", (201, {"id": 77, "state": "wait"})),
-                       ("GET", r"/market/orders/77$", (200, {"id": 77, "state": "done", "executed_volume": "4.12",
-                                                              "avg_price": "1.392"})),
+                       ("GET", r"/market/orders/77$", (200, {"id": 77, "state": "done", "filled_amount": 4.12,
+                                                              "origin_amount": 4.12, "price": 1.358})),
+                       ("GET", r"/market/trades$", (200, [
+                           {"order_id": 77, "amount": 3, "total": 4.2, "fee": 0.0084, "fee_currency": "usdt"},
+                           {"order_id": 77, "amount": 1.12, "total": 1.5456, "fee": 0.0031, "fee_currency": "usdt"},
+                           {"order_id": 12, "amount": 9, "total": 9, "fee": 0, "fee_currency": "usdt"}])),
                        ("POST", r"/cancel$", (200, {}))]
 
     def __call__(self, method, path, params=None, auth=False):
@@ -58,14 +62,14 @@ class TestSell(Base):
         order = self.fake.made("POST", r"/market/orders$")[0]
         # 3% under the best bid of 1.40 is 1.358: the bids at 1.40 and 1.38 (5 PRL) qualify; we have 4.123
         self.assertEqual(order[1], "/trade/market/orders")
-        self.assertEqual(order[2], {"market": "prlusdt", "side": "sell", "amount": "4.12", "type": "limit",
-                                    "price": "1.358"})
+        self.assertEqual(order[2], {"market": "prlusdt", "side": "sell", "amount": 4.12, "price": 1.358})
         self.assertTrue(order[3])
-        self.assertIn("SOLD 4.12 of 4.12 PRL at about 1.392", self.logs[-1])
+        # 5.7456 USDT for 4.12 PRL from this order's two trades; the other order's trade isn't counted
+        self.assertIn("SOLD 4.12 of 4.12 PRL at 1.3946 USDT average for 5.75 USDT (fee 0.0115 USDT", self.logs[-1])
 
     def test_sells_only_what_the_bids_above_the_floor_take(self):
         self.go(Fake(balance="20"))
-        self.assertEqual(self.fake.made("POST", r"/market/orders$")[0][2]["amount"], "5.0")
+        self.assertEqual(self.fake.made("POST", r"/market/orders$")[0][2]["amount"], 5.0)
 
     def test_never_under_min_price(self):
         t.MIN_PRICE = 1.45
@@ -86,7 +90,7 @@ class TestSell(Base):
 
     def test_book_as_price_volume_pairs(self):
         self.go(Fake(book={"bids": [["1.40", "10"]], "asks": []}))
-        self.assertEqual(self.fake.made("POST", r"/market/orders$")[0][2]["amount"], "4.12")
+        self.assertEqual(self.fake.made("POST", r"/market/orders$")[0][2]["amount"], 4.12)
 
 
 class TestPaths(Base):
@@ -104,7 +108,7 @@ class TestPaths(Base):
         f.routes.insert(0, ("GET", r"^/peatio/public/markets$", (200, MARKETS)))
         f.routes.insert(0, ("GET", r"^/peatio/public/markets/prlusdt/order-book$", (200, BOOK)))
         self.go(f)
-        self.assertEqual(f.made("POST", r"/market/orders$")[0][2]["amount"], "4.12")
+        self.assertEqual(f.made("POST", r"/market/orders$")[0][2]["amount"], 4.12)
 
     def test_the_market_by_id(self):
         f = Fake()
@@ -112,22 +116,29 @@ class TestPaths(Base):
                                                                               "price_precision": 3})))
         self.go(f)
         self.assertFalse(f.made("GET", r"/public/markets$"))
-        self.assertEqual(f.made("POST", r"/market/orders$")[0][2]["amount"], "4.1")
+        self.assertEqual(f.made("POST", r"/market/orders$")[0][2]["amount"], 4.1)
 
     def test_balances_come_from_the_first_path_that_answers(self):
         f = Fake(balance="99")
         f.routes.insert(0, ("GET", r"/trade/account/balances/spot$", (200, [{"currency": "prl", "balance": "4.123"}])))
         self.go(f)
-        self.assertEqual(f.made("POST", r"/market/orders$")[0][2]["amount"], "4.12")
+        self.assertEqual(f.made("POST", r"/market/orders$")[0][2]["amount"], 4.12)
         self.assertFalse(f.made("GET", r"/trade/account/balances$"))
         self.assertIn("balances from /trade/account/balances/spot", self.logs)
 
-    def test_fill_fields_named_the_trade_api_way(self):
+    def test_a_cancelled_rest_is_reported_from_its_amounts(self):
+        self.go(Fake(orders=[{"id": 5, "side": "sell", "market": "prlusdt", "origin_amount": 2, "filled_amount": 0.5,
+                              "price": 1.5}]))
+        self.assertIn("cancelled open sell 5: 1.5 at 1.5", self.logs)
+
+    def test_an_unpaged_market_list_is_read_once(self):
         f = Fake()
-        f.routes.insert(0, ("GET", r"/market/orders/77$", (200, {"id": 77, "state": "done", "filled_amount": "4.12",
-                                                                   "avg_price": "1.39"})))
-        self.go(f)
-        self.assertIn("SOLD 4.12 of 4.12 PRL at about 1.39", self.logs[-1])
+        many = [{"id": f"x{i}usdt"} for i in range(150)]
+        f.routes.insert(0, ("GET", r"^/trade/public/markets$", (200, many)))
+        f.routes.insert(0, ("GET", r"^/peatio/public/markets$", (404, {})))
+        self.assertEqual(self.go(f), 1)
+        self.assertEqual(len(f.made("GET", r"^/trade/public/markets$")), 2)   # page 2 repeats page 1, so it stops
+        self.assertIn("among 150 listed", self.logs[-1])
 
 
 class TestMarket(Base):
