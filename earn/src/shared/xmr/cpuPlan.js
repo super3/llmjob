@@ -24,11 +24,16 @@ const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
 
 // RandomX's fast mode: a 2080 MiB dataset, a 256 MiB cache and 2 MiB of
-// scratchpad per thread. Below MIN_MEMORY the dataset doesn't fit beside the
-// app and the OS.
+// scratchpad per thread. Below 4 GB of RAM the dataset doesn't fit beside the
+// app and the OS, and below 8 GB it is off by default.
+//
+// The thresholds sit under 4 and 8 GiB because memoryBytes is what the OS
+// reports (os.totalmem), which is less than the RAM fitted: the firmware, the
+// kernel and an integrated GPU keep some. 8 GB of RAM reads as 7.6-7.8 GiB,
+// so 8 GiB here would leave every 8 GB desktop off by default.
 const DATASET_BYTES = 2080 * MIB;
-const MIN_MEMORY = 4 * GIB;
-const RECOMMENDED_MEMORY = 8 * GIB;
+const MIN_MEMORY = 3.5 * GIB;
+const RECOMMENDED_MEMORY = 7 * GIB;
 const L3_PER_THREAD = 2 * MIB;
 
 function gb(bytes) {
@@ -65,7 +70,8 @@ function planCpuThreads(facts, requested) {
     return out(0, 0, 'this app may use only 1 CPU here, and one always stays free for the GPU miner');
   }
   if (memory > 0 && memory < MIN_MEMORY) {
-    return out(0, 0, 'it needs about 2.4 GB of memory for its RandomX dataset, and this computer has ' + gb(memory));
+    return out(0, 0, 'it needs at least 4 GB of memory (2.4 GB for RandomX, plus the app and the OS), and this'
+      + ' computer has ' + gb(memory));
   }
 
   const recommended = available > 4 && (memory === 0 || memory >= RECOMMENDED_MEMORY);

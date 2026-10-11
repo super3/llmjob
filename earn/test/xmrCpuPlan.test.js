@@ -62,9 +62,17 @@ describe('planCpuThreads', () => {
       reason: 'this app may use only 1 CPU here, and one always stays free for the GPU miner',
     });
     expect(planCpuThreads({ cpus: 64, quotaCpus: 0.5, memoryBytes: 16 * GB }).threads).toBe(0);
-    expect(planCpuThreads({ cpus: 8, memoryBytes: 3 * GB }, 4)).toMatchObject({
-      threads: 0, reason: 'it needs about 2.4 GB of memory for its RandomX dataset, and this computer has 3.0 GB',
+    expect(planCpuThreads({ cpus: 8, memoryBytes: 3.4 * GB }, 4)).toMatchObject({
+      threads: 0,
+      reason: 'it needs at least 4 GB of memory (2.4 GB for RandomX, plus the app and the OS), and this computer has 3.4 GB',
     });
+  });
+
+  // The OS reports less than the RAM fitted: 8 GB reads as about 7.7 GiB.
+  test('memory as the OS reports it: 4 GB and 8 GB computers count as such', () => {
+    expect(planCpuThreads({ cpus: 8, memoryBytes: 7.7 * GB })).toMatchObject({ auto: 7, threads: 7 });
+    expect(planCpuThreads({ cpus: 8, memoryBytes: 3.8 * GB }, 2)).toMatchObject({ threads: 2, reason: null });
+    expect(planCpuThreads({ cpus: 8, memoryBytes: 3.8 * GB }).auto).toBe(0);
   });
 
   test('unknown memory does not hold it back, and missing facts are one CPU', () => {
@@ -75,8 +83,8 @@ describe('planCpuThreads', () => {
 
   test('constants', () => {
     expect(DATASET_BYTES).toBe(2080 * MB);
-    expect(MIN_MEMORY).toBe(4 * GB);
-    expect(RECOMMENDED_MEMORY).toBe(8 * GB);
+    expect(MIN_MEMORY).toBe(3.5 * GB);
+    expect(RECOMMENDED_MEMORY).toBe(7 * GB);
     expect(L3_PER_THREAD).toBe(2 * MB);
   });
 });
