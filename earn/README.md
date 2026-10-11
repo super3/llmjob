@@ -227,8 +227,8 @@ It is **off by default** and does nothing until you turn it on.
 
 **Turning it on**
 
-- Desktop app: **Settings → CPU Mining**, switch it on, paste a Monero address,
-  then START. It runs in any mode, with or without the GPU miner, and STOP
+- Desktop app: paste a Monero address in **Settings → CPU Mining**, then
+  START. Leaving the box blank keeps it off, as merge mining's address did. It runs in any mode, with or without the GPU miner, and STOP
   stops it. With "Only mine when my computer is idle" on, it waits for an idle
   computer like the GPU miner does. The Mine tab then shows a CPU line: the CPU
   hashrate, its shares and the XMR balance. The settings apply at the next

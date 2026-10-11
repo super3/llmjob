@@ -48,7 +48,7 @@
     prefTray: $('pref-tray'), prefStartup: $('pref-startup'), prefIdle: $('pref-idle'),
     idleStatus: $('idle-status'),
     // CPU mining (Monero)
-    setCpu: $('set-cpu'), cpuNote: $('cpu-note'), cpuFields: $('cpu-fields'), setXmr: $('set-xmr'),
+    xmrNote: $('xmr-note'), cpuNote: $('cpu-note'), cpuFields: $('cpu-fields'), setXmr: $('set-xmr'),
     xmrErr: $('xmr-err'), setCpuThreads: $('set-cpu-threads'), cpuCost: $('cpu-cost'),
     cpuRow: $('cpu-row'), cpuDot: $('cpu-dot'), cpuRate: $('cpu-rate'), cpuMeta: $('cpu-meta'), cpuBalance: $('cpu-balance'),
     logTerm: $('log-term'),
@@ -76,8 +76,9 @@
     llm: { ready: false, endpoint: null, webUrl: null, tps: 0, model: null, error: null, note: null, lan: null },
     chat: { messages: [], streaming: false, streamText: '', bubble: null },
     node: { connected: false, nodeId: null, name: null },
-    // Monero on the CPU (Settings → CPU Mining). Off by default. `cpu` is what
-    // main says this computer can do; `cpuView` the CPU line main last sent.
+    // Monero on the CPU (Settings → CPU Mining). On while a Monero address is
+    // filled in, the way merge mining was. `cpu` is what main says this
+    // computer can do; `cpuView` the CPU line main last sent.
     cpuMining: false, xmrAddress: '', xmrOk: false, xmrError: null, xmrBalance: null, cpuThreads: 0,
     cpu: null, cpuView: null,
   };
@@ -542,10 +543,14 @@
     return !!state.cpu && state.cpu.worker === false;
   }
 
+  function xmrNote() {
+    if (cpuNoWorker()) return 'This build has no CPU miner (llmjob-xmr-worker is not beside the app).';
+    return 'Mine Monero on the CPU while the GPU mines Pearl. Leave blank to mine Pearl only.';
+  }
+
   function cpuNote() {
     const c = state.cpu;
     if (!c) return 'Mines beside the GPU on the CPU threads it leaves free.';
-    if (cpuNoWorker()) return 'This build has no CPU miner (llmjob-xmr-worker is not beside the app).';
     if (!c.canMine) return 'Can\'t run here: ' + c.reason + '.';
     const n = cpuThreadsNow();
     if (!n) return 'Auto: ' + c.reason + '.';
@@ -556,13 +561,13 @@
 
   function renderCpuSettings() {
     const c = state.cpu;
-    el.setCpu.checked = state.cpuMining;
     el.cpuFields.hidden = !state.cpuMining;
     el.cpuCost.hidden = !state.cpuMining;
+    el.xmrNote.textContent = xmrNote();
     el.cpuNote.textContent = cpuNote();
     el.cpuNote.title = el.cpuNote.textContent;
     el.xmrErr.hidden = !state.xmrError;
-    el.xmrErr.textContent = state.xmrError || '';
+    el.xmrErr.textContent = state.xmrError ? 'This address won\'t work: ' + state.xmrError + '.' : '';
     el.setCpuThreads.innerHTML = '';
     const max = c ? c.available - 1 : 0;
     const auto = document.createElement('option');
@@ -576,10 +581,10 @@
       el.setCpuThreads.appendChild(opt);
     }
     el.setCpuThreads.value = String(Math.min(state.cpuThreads, max));
-    for (const f of [el.setCpu, el.setXmr, el.setCpuThreads]) f.disabled = state.mining;
-    // Without the worker it can't be turned on, but one saved on can be
-    // turned off.
-    if (cpuNoWorker() && !state.cpuMining) el.setCpu.disabled = true;
+    for (const f of [el.setXmr, el.setCpuThreads]) f.disabled = state.mining;
+    // Without the worker it can't be turned on, but a saved address can be
+    // cleared.
+    if (cpuNoWorker() && !state.cpuMining) el.setXmr.disabled = true;
   }
 
   const fmt4 = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
@@ -587,7 +592,8 @@
   // It runs for any START, with or without the GPU miner, and waits out an
   // idle-only pause like it.
   function cpuMetaText(v) {
-    if (!state.mining) return state.xmrOk ? 'starts when you press START' : 'needs a Monero address in Settings';
+    // The line shows only with an address, so one that isn't OK is wrong.
+    if (!state.mining) return state.xmrOk ? 'starts when you press START' : 'check the Monero address in Settings';
     if (state.paused) return 'paused while the computer is in use';
     if (!v) return 'starting…';
     if (v.error) return 'stopped: ' + v.error;
@@ -945,14 +951,16 @@
       if (api.setShareLlm) api.setShareLlm(state.shareLlm);
       renderShare();
     });
-    el.setCpu.addEventListener('change', () => {
-      state.cpuMining = el.setCpu.checked;
-      renderCpuSettings();
-      renderCpuRow();
-      refreshXmrBalance();
-    });
     el.setXmr.addEventListener('input', (e) => {
       state.xmrAddress = e.target.value;
+      // An address turns it on and a blank box turns it off, at once; the
+      // check follows.
+      const on = !!state.xmrAddress.trim();
+      if (on !== state.cpuMining) {
+        state.cpuMining = on;
+        renderCpuSettings();
+        renderCpuRow();
+      }
       if (xmrCheckTimer) clearTimeout(xmrCheckTimer);
       xmrCheckTimer = setTimeout(checkXmr, 400);
     });
@@ -1002,8 +1010,8 @@
       el.addrInput.value = state.address;
       state.mdlAddress = s.mdlAddress || '';
       state.shareLlm = s.shareLlm === true;
-      state.cpuMining = s.cpuMining === true;
       state.xmrAddress = s.xmrAddress || '';
+      state.cpuMining = !!state.xmrAddress.trim();
       el.setXmr.value = state.xmrAddress;
       state.cpuThreads = Number(s.cpuThreads) || 0;
       el.setWorker.value = s.worker || 'rig01';

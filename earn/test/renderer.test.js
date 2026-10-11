@@ -1369,10 +1369,11 @@ describe('CPU mining', () => {
     return { api, cbs };
   }
 
-  it('is off by default: no CPU line, fields hidden, the default in the note', async () => {
+  it('is off by default: a blank address, no CPU line, fields hidden, the default in the note', async () => {
     const { api } = cpuApi({});
     await boot({ api });
-    expect($('set-cpu').checked).toBe(false);
+    expect($('set-xmr').value).toBe('');
+    expect($('xmr-note').textContent).toBe('Mine Monero on the CPU while the GPU mines Pearl. Leave blank to mine Pearl only.');
     expect($('cpu-fields').hidden).toBe(true);
     expect($('cpu-cost').hidden).toBe(true);
     expect($('cpu-row').hidden).toBe(true);
@@ -1383,8 +1384,9 @@ describe('CPU mining', () => {
     expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ cpuMining: false, xmrAddress: '', cpuThreads: 0 }));
   });
 
-  it('turned on with a good address: the balance, the CPU line, and the settings START sends', async () => {
-    const { api, cbs } = cpuApi({ cpuMining: true, xmrAddress: XMR_ADDR, cpuThreads: 3 });
+  it('on with a good address: the balance, the CPU line, and the settings START sends', async () => {
+    // A saved address is what turns it on, whatever cpuMining says.
+    const { api, cbs } = cpuApi({ cpuMining: false, xmrAddress: XMR_ADDR, cpuThreads: 3 });
     await boot({ api });
     expect(api.checkXmrAddress).toHaveBeenCalledWith(XMR_ADDR);
     expect($('set-xmr').value).toBe(XMR_ADDR);
@@ -1399,8 +1401,8 @@ describe('CPU mining', () => {
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ cpuMining: true, xmrAddress: XMR_ADDR, cpuThreads: 3 }));
     // Locked while mining: the settings ride on the START.
-    expect($('set-cpu').disabled).toBe(true);
     expect($('set-xmr').disabled).toBe(true);
+    expect($('set-cpu-threads').disabled).toBe(true);
     expect($('cpu-meta').textContent).toBe('starting…');
     expect($('cpu-dot').className).toBe('dot2');
 
@@ -1447,21 +1449,25 @@ describe('CPU mining', () => {
     expect($('cpu-balance').textContent).toBe('0.5000 XMR');
 
     click($('btn-stop'));
-    expect($('set-cpu').disabled).toBe(false);
+    expect($('set-xmr').disabled).toBe(false);
     expect($('cpu-rate').textContent).toBe('0.00');
   });
 
   it('checks the address as it is typed, and says what is wrong', async () => {
-    const { api } = cpuApi({ cpuMining: true });
+    const { api } = cpuApi({});
     await boot({ api });
-    expect($('cpu-meta').textContent).toBe('needs a Monero address in Settings');
+    expect($('cpu-row').hidden).toBe(true);
     setInput($('set-xmr'), XMR_ADDR + 'x');
+    // Typing turns it on before the check answers.
+    expect($('cpu-row').hidden).toBe(false);
+    expect($('cpu-fields').hidden).toBe(false);
     setInput($('set-xmr'), XMR_ADDR.slice(0, -1) + '8');
     jest.advanceTimersByTime(400);
     await flush();
     expect(api.checkXmrAddress).toHaveBeenCalledTimes(1);
     expect($('xmr-err').hidden).toBe(false);
-    expect($('xmr-err').textContent).toBe('the checksum does not match: check for a typo');
+    expect($('xmr-err').textContent).toBe('This address won\'t work: the checksum does not match: check for a typo.');
+    expect($('cpu-meta').textContent).toBe('check the Monero address in Settings');
     expect($('cpu-balance').textContent).toBe('');
 
     setInput($('set-xmr'), XMR_ADDR);
@@ -1469,17 +1475,23 @@ describe('CPU mining', () => {
     await flush();
     expect($('xmr-err').hidden).toBe(true);
     expect($('cpu-balance').textContent).toBe('0.0125 XMR');
+    click($('btn-start'));
+    expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ cpuMining: true, xmrAddress: XMR_ADDR }));
+    click($('btn-stop'));
 
-    // Cleared: nothing to check, no balance.
+    // Cleared: off at once, nothing to check, no balance.
     setInput($('set-xmr'), '  ');
+    expect($('cpu-row').hidden).toBe(true);
+    expect($('cpu-fields').hidden).toBe(true);
     jest.advanceTimersByTime(400);
     await flush();
     expect($('cpu-balance').textContent).toBe('');
-    expect($('cpu-meta').textContent).toBe('needs a Monero address in Settings');
+    click($('btn-start'));
+    expect(api.startMiner).toHaveBeenLastCalledWith(expect.objectContaining({ cpuMining: false, xmrAddress: '' }));
   });
 
   it('a check or a balance that comes back for an address since changed is dropped', async () => {
-    const { api } = cpuApi({ cpuMining: true });
+    const { api } = cpuApi({});
     let release;
     api.checkXmrAddress.mockImplementationOnce(() => new Promise((r) => { release = r; }));
     await boot({ api });
@@ -1500,17 +1512,19 @@ describe('CPU mining', () => {
     pay({ earned: 9 });
     await flush();
     expect($('cpu-balance').textContent).toBe('');
+    // A pool that answers with no balance leaves it blank.
     api.getXmrBalance.mockResolvedValueOnce(null);
-    click($('set-cpu'));
-    click($('set-cpu'));
+    setInput($('set-xmr'), XMR_ADDR);
+    jest.advanceTimersByTime(400);
     await flush();
     expect($('cpu-balance').textContent).toBe('');
   });
 
-  it('the switch and the thread count update the section', async () => {
-    const { api } = cpuApi({ xmrAddress: XMR_ADDR });
+  it('typing an address and the thread count update the section', async () => {
+    const { api } = cpuApi({});
     await boot({ api });
-    click($('set-cpu'));
+    setInput($('set-xmr'), XMR_ADDR);
+    jest.advanceTimersByTime(400);
     await flush();
     expect($('cpu-fields').hidden).toBe(false);
     expect($('cpu-row').hidden).toBe(false);
@@ -1522,19 +1536,19 @@ describe('CPU mining', () => {
     expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ cpuMining: true, cpuThreads: 5 }));
   });
 
-  it('a build without the CPU miner says so, and the switch only turns off', async () => {
+  it('a build without the CPU miner says so, and a saved address can only be cleared', async () => {
     const none = Object.assign({}, CPU, { worker: false });
     let h = cpuApi({}, none);
     await boot({ api: h.api });
-    expect($('cpu-note').textContent).toBe('This build has no CPU miner (llmjob-xmr-worker is not beside the app).');
-    expect($('set-cpu').disabled).toBe(true);
+    expect($('xmr-note').textContent).toBe('This build has no CPU miner (llmjob-xmr-worker is not beside the app).');
+    expect($('set-xmr').disabled).toBe(true);
 
-    h = cpuApi({ cpuMining: true, xmrAddress: XMR_ADDR }, none);
+    h = cpuApi({ xmrAddress: XMR_ADDR }, none);
     await boot({ api: h.api });
-    expect($('set-cpu').disabled).toBe(false);
-    click($('set-cpu'));
-    expect($('set-cpu').checked).toBe(false);
-    expect($('set-cpu').disabled).toBe(true);
+    expect($('set-xmr').disabled).toBe(false);
+    setInput($('set-xmr'), '');
+    expect($('cpu-row').hidden).toBe(true);
+    expect($('set-xmr').disabled).toBe(true);
   });
 
   it('a default capped by L3 cache says why', async () => {
@@ -1577,11 +1591,11 @@ describe('CPU mining', () => {
   });
 
   it('without the bridge\'s Monero calls, nothing is checked and no balance shows', async () => {
-    const { api } = cpuApi({ cpuMining: true, xmrAddress: XMR_ADDR });
+    const { api } = cpuApi({ xmrAddress: XMR_ADDR });
     delete api.checkXmrAddress;
     delete api.getXmrBalance;
     await boot({ api });
-    expect($('cpu-meta').textContent).toBe('needs a Monero address in Settings');
+    expect($('cpu-meta').textContent).toBe('check the Monero address in Settings');
     expect($('cpu-balance').textContent).toBe('');
   });
 });

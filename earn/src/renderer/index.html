@@ -201,21 +201,15 @@
       </div>
     </div>
 
-    <div class="settings-section">CPU Mining</div>
-    <div class="settings-rows">
-      <label class="settings-row toggle-row">
-        <span class="row-text"><span class="rk">Also mine Monero (XMR) on the CPU</span><span id="cpu-note" class="row-sub"></span></span>
-        <input id="set-cpu" class="toggle" type="checkbox" />
-      </label>
-    </div>
-    <div id="cpu-fields" class="conn-grid cpu-fields" hidden>
-      <div class="conn-field">
-        <div class="fk">Monero payout address <span id="xmr-err" class="fk-err" hidden></span></div>
-        <input id="set-xmr" class="rv-input" type="text" spellcheck="false" placeholder="4… or 8…" />
-      </div>
-      <div class="conn-field">
-        <div class="fk">CPU threads</div>
-        <select id="set-cpu-threads" class="rv-input"></select>
+    <!-- Like merge mining was: an optional address, and blank means off. -->
+    <div class="settings-section">CPU Mining <span class="badge-xmr">XMR</span></div>
+    <input id="set-xmr" class="field-box xmr-input" type="text" spellcheck="false" placeholder="Paste your 4… or 8… Monero address (optional)" />
+    <p id="xmr-err" class="settings-note xmr-err" hidden></p>
+    <p id="xmr-note" class="settings-note"></p>
+    <div id="cpu-fields" class="settings-rows cpu-fields" hidden>
+      <div class="settings-row">
+        <span class="row-text"><span class="rk">CPU threads</span><span id="cpu-note" class="row-sub"></span></span>
+        <select id="set-cpu-threads" class="rv-input cpu-threads"></select>
       </div>
     </div>
     <p id="cpu-cost" class="settings-note" hidden>Needs about 2.4 GB of memory. A desktop CPU draws about 45-65 W more, which can cost as much as it earns. Paid by HeroMiners (0.9% fee) once you reach 0.01 XMR.</p>
