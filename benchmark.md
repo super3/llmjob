@@ -2,7 +2,8 @@
 
 Our miner, v0.5.14, against PeakMiner 2.18.3 and SRBMiner 3.7.4 on rented
 Vast hosts, one or two hosts per card. Every figure in the card tables comes
-from one full rerun on 2026-10-10, 15:58–21:05 UTC. Each host runs all three
+from one full rerun on 2026-10-10, 15:58–21:05 UTC, except six RTX 20-series
+rows rerun on 2026-10-11 against SRBMiner 3.7.5. Each host runs all three
 miners one after another on the same pool, so rates within a row compare
 directly. Don't compare across rows: power limits and cooling differ from
 host to host.
@@ -14,9 +15,10 @@ the same host. 92 of the 95 rows ran. The H200 and H200 NVL weren't run
 because one pass cost more than the budget left. The Vietnam L40 wasn't run
 because no L40 was for rent other than the New York one.
 
-- RTX 20-series: 92–96%. Our clock is within 30 MHz of the faster
-  competitor's on every host, and equal or higher on six of the eight, so
-  the gap is work per clock: we do 5–7% less.
+- RTX 20-series: 92–99%. Our clock is never more than 30 MHz below the
+  faster competitor's, so the gap is work per clock: we do 5–7.5% less.
+  SRBMiner 3.7.5 also mines Monero on the CPU alongside; PeakMiner doesn't
+  (see the section).
 - RTX 30-series: 97–101%. The two 3070s trail most, at 97%. SRBMiner didn't
   start on the Oman 3090 Ti, so that row compares with PeakMiner.
 - RTX 40-series: 98–102%, and 99.5% or better on 15 of the 18 hosts. The
@@ -196,31 +198,82 @@ section notes. The notes don't give the earlier figures of the rows that
 ran; those are in git history. This run is the baseline for this file. From
 here the rules above apply again.
 
+On 2026-10-11 the founder asked for the RTX 20-series rows to be rerun
+against the newest SRBMiner (3.7.5), with its Monero figures. That rerun
+replaced all three miners' figures on the six rows that ran on their own
+machine. The other sections still compare with SRBMiner 3.7.4.
+
 ## RTX 20-series
 
-Run on 2026-10-10, 16:22–17:23 UTC, every row on its own machine.
+Six rows were rerun on 2026-10-11, 07:21–07:56 UTC, on their own machines,
+against PeakMiner 2.18.3 and SRBMiner 3.7.5. The Pennsylvania 2080 Ti and
+the Colorado 2080 couldn't be rerun, so they keep their 2026-10-10 figures
+against SRBMiner 3.7.4.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
-| RTX 2080 Ti | Thailand (170 W) | 95392 | 67.8 | 71.5 | 72.2 | 94% |
+| RTX 2080 Ti | Thailand (170 W) | 95392 | 63.4 | 64.1 | 64.2 | 99% |
 | RTX 2080 Ti | Pennsylvania (260 W) | 150735 | 89.0 | 93.2 | 92.0 | 96% |
 | RTX 2080 | Colorado (275 W) | 149439 | 77.6 | 81.7 | 82.8 | 94% |
-| RTX 2070 Super | Alberta (215 W) | 31798 | 60.1 | 62.1 | 64.3 | 93% |
-| RTX 2070 | South Korea (150 W) | 139007 | 47.4 | 49.7 | 50.6 | 94% |
-| RTX 2060 Super | Germany (175 W) | 149900 | 42.5 | 44.8 | 46.1 | 92% |
-| RTX 2060 | Australia (190 W, 6 GB) | 152547 | 48.0 | 50.4 | 49.1 | 95% |
-| RTX 2060 | South Korea (184 W, 12 GB) | 27568 | 49.9 | 53.8 | 53.2 | 93% |
+| RTX 2070 Super | Alberta (215 W) | 31798 | 60.3 | 62.4 | 64.0 | 94% |
+| RTX 2070 | South Korea (150 W) | 139007 | 47.8 | 50.4 | 51.7 | 93% |
+| RTX 2060 Super | Germany (175 W) | 149900 | 42.7 | 45.3 | 46.4 | 92% |
+| RTX 2060 | Australia (190 W, 6 GB) | 152547 | 47.8 | 49.9 | 48.4 | 96% |
+| RTX 2060 | South Korea (184 W, 12 GB) | 27568 | 49.8 | 52.9 | 52.4 | 94% |
 
-- **RTX 2080 Ti, Thailand:** the host holds the card at 1095 MHz, about
-  155 W of its 170 W limit, for every miner.
-- **RTX 2060 Super:** the card stayed at about 121–123 W of its 175 W limit,
-  at 1380–1410 MHz, for every miner.
-- **Reruns:** the two 2080 Tis and the 2080 ran twice. The first runs' raw
-  files were lost (see "How a host is tested"), so the table has the reruns.
-  The first runs read ours 89.1, PeakMiner 93.4 and SRBMiner 93.2 on the
-  Pennsylvania 2080 Ti, and 77.7, 81.8 and 82.2 on the 2080. The Thailand
-  card was held near 800 MHz in its first run (50.9, 51.6 and 52.2), so
-  that run doesn't compare.
+- **2026-10-10 figures of the rerun rows** (ours, PeakMiner, SRBMiner 3.7.4):
+  Thailand 67.8, 71.5, 72.2 (94%); Alberta 60.1, 62.1, 64.3 (93%); South
+  Korea 2070 47.4, 49.7, 50.6 (94%); Germany 42.5, 44.8, 46.1 (92%);
+  Australia 48.0, 50.4, 49.1 (95%); South Korea 2060 49.9, 53.8, 53.2 (93%).
+  Ours moved by half a TH/s or less on every host except Thailand.
+- **RTX 2080 Ti, Thailand:** the host held the card at 975–1020 MHz and
+  165 W of its 170 W limit, against 1095 MHz and about 155 W the day before,
+  so all three miners read 6–11% lower. The competitors lost more than we
+  did, which is why the row moved from 94% to 99%.
+- **RTX 2080 Ti, Pennsylvania:** its machine wasn't for rent from 07:23 to
+  08:24 UTC. The stand-in, Florida (47144, 260 W), was held at 84–85 °C at
+  about 155 W and 1,250–1,300 MHz, with a fan reading of 126%, so it isn't
+  used: ours 39.8, PeakMiner 40.6, SRBMiner 32.8 (one low end reading; 40.9
+  on average after the first minute).
+- **RTX 2080, Colorado:** its machine wasn't for rent at any point from
+  07:23 to 09:00 UTC, and Vast had no other RTX 2080 for rent.
+- **RTX 2060 Super:** the card is held at 76–78 °C, 118–136 W of its 175 W
+  limit, at 1380–1425 MHz, below the card's 1470 MHz base clock, for every
+  miner.
+- **RTX 2060, Australia:** our miner found no pool share in its 5 minutes
+  (about 1.6 were expected). Its hit check passed 400 of 400.
+
+### Monero on the CPU
+
+SRBMiner 3.7.5 mines Monero (RandomX) on the CPU and Pearl on the GPU in one
+process. Its fee is 0.85% on RandomX and 2% on Pearl. PeakMiner 2.18.3
+doesn't mine Monero: it rejects `-c randomx` and `-c monero`. Each rental
+above also ran SRBMiner for 5 minutes on both at once and 5 minutes on
+Monero alone, on HeroMiners' Monero pool (port 1111). The pool accepted 14
+shares and rejected none.
+
+| Card | Host | CPU (CPUs the container got) | Monero alone | Monero with PRL | SRBMiner PRL alone → with Monero |
+|---|---|---|---|---|---|
+| RTX 2080 Ti | Thailand | EPYC 7B13 (17.6 of 256) | 504 H/s | 556 H/s | 64.2 → 44.0 |
+| RTX 2080 Ti | Florida (stand-in) | Ryzen 9 5900X (11.5 of 24) | 4,133 H/s | 3,869 H/s | 32.8 (see above) → 40.1 |
+| RTX 2070 Super | Alberta | Ryzen 5 5500 (11.5 of 12) | 2,677 H/s | 2,509 H/s | 64.0 → 64.2 |
+| RTX 2070 | South Korea | Xeon E5-2680 v4 (13.4 of 56) | 3,672 H/s | 3,760 H/s | 51.7 → 50.5 |
+| RTX 2060 Super | Germany | Core i5-10400 (7.7 of 8) | 1,845 H/s | 1,810 H/s | 46.4 → 45.3 |
+| RTX 2060 | Australia | Xeon E5-2699 v3 (34.6 of 72) | 4,128 H/s | 4,209 H/s | 48.4 → 49.4 |
+| RTX 2060 | South Korea (12 GB) | Xeon E5-2680 v4 (9.0 of 56) | 2,399 H/s | 2,575 H/s | 52.4 → 52.6* |
+
+- These are rented containers, not desktops. None allowed huge pages or
+  CPU tuning (MSR), which a tuned desktop can have, so the Monero rates are
+  low for these CPUs.
+- SRBMiner ignores the container's CPU quota when it picks its thread
+  count. It ran 2–15 times more threads than CPUs on Thailand,
+  Florida and both South Korea hosts. On Thailand (256 threads on 17.6
+  CPUs) that cut its Pearl rate by 31% and the pool saw no Monero share.
+  On Alberta, the South Korea 2070, Germany and Australia the Pearl rate
+  moved by 2.4% or less.
+- \* On the South Korea 2060 the GPU sat at 88% use during the dual run.
+  SRBMiner's own average over the run was 45.3 TH/s, so the end figure
+  overstates it.
 
 ## RTX 30-series
 
