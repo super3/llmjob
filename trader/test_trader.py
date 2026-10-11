@@ -1,5 +1,5 @@
 # Tests for trader.py with SafeTrade faked. Run: python3 -m unittest discover -s trader
-import importlib.util, os, re, unittest
+import importlib.util, json, os, re, unittest
 
 os.environ.update(SAFETRADE_API_KEY="k", SAFETRADE_API_SECRET="s")
 spec = importlib.util.spec_from_file_location("trader", os.path.join(os.path.dirname(os.path.abspath(__file__)), "trader.py"))
@@ -50,6 +50,9 @@ class Base(unittest.TestCase):
         os.environ["DRY_RUN"] = "0"
         os.environ["RAILWAY_ENVIRONMENT_NAME"] = "production"
 
+    def saw(self, text):
+        self.assertTrue(any(text in line for line in self.logs), f"{text!r} not in {self.logs}")
+
     def go(self, fake):
         self.fake = fake
         t.http = fake
@@ -65,7 +68,7 @@ class TestSell(Base):
         self.assertEqual(order[2], {"market": "prlusdt", "side": "sell", "amount": 4.12, "price": 1.358})
         self.assertTrue(order[3])
         # 5.7456 USDT for 4.12 PRL from this order's two trades; the other order's trade isn't counted
-        self.assertIn("SOLD 4.12 of 4.12 PRL at 1.3946 USDT average for 5.75 USDT (fee 0.0115 USDT", self.logs[-1])
+        self.saw("SOLD 4.12 of 4.12 PRL at 1.3946 USDT average for 5.75 USDT (fee 0.0115 USDT")
 
     def test_sells_only_what_the_bids_above_the_floor_take(self):
         self.go(Fake(balance="20"))
@@ -75,12 +78,12 @@ class TestSell(Base):
         t.MIN_PRICE = 1.45
         self.go(Fake())
         self.assertFalse(self.fake.made("POST", r"/market/orders$"))
-        self.assertIn("under the floor", self.logs[-1])
+        self.saw("under the floor")
 
     def test_dust_is_left(self):
         self.go(Fake(balance="0.3"))
         self.assertFalse(self.fake.made("POST", r"/market/orders$"))
-        self.assertIn("nothing to sell", self.logs[-1])
+        self.saw("nothing to sell")
 
     def test_last_runs_open_sell_is_cancelled_first(self):
         self.go(Fake(orders=[{"id": 5, "side": "sell", "remaining_volume": "1", "price": "1.5"}]))
@@ -124,7 +127,6 @@ class TestPaths(Base):
         self.go(f)
         self.assertEqual(f.made("POST", r"/market/orders$")[0][2]["amount"], 4.12)
         self.assertFalse(f.made("GET", r"/trade/account/balances$"))
-        self.assertIn("balances from /trade/account/balances/spot", self.logs)
 
     def test_a_cancelled_rest_is_reported_from_its_amounts(self):
         self.go(Fake(orders=[{"id": 5, "side": "sell", "market": "prlusdt", "origin_amount": 2, "filled_amount": 0.5,
@@ -138,7 +140,33 @@ class TestPaths(Base):
         f.routes.insert(0, ("GET", r"^/peatio/public/markets$", (404, {})))
         self.assertEqual(self.go(f), 1)
         self.assertEqual(len(f.made("GET", r"^/trade/public/markets$")), 2)   # page 2 repeats page 1, so it stops
-        self.assertIn("among 150 listed", self.logs[-1])
+        self.saw("among 150 listed")
+
+
+class TestStatus(Base):
+    def run_capturing(self, fake):
+        import contextlib, io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.go(fake)
+        return [json.loads(l[7:]) for l in out.getvalue().splitlines() if l.startswith("STATUS ")]
+
+    def test_every_run_reports_the_account_and_lifetime_sales(self):
+        st = self.run_capturing(Fake())
+        self.assertEqual(len(st), 1)
+        # balances: PRL 4.123, USDT 9; lifetime: every sell trade on the market, the other order's included
+        self.assertEqual((st[0]["prl"], st[0]["usdt"], st[0]["trades"]), (4.123, 9.0, 3))
+        self.assertAlmostEqual(st[0]["sold"], 13.12)
+        self.assertAlmostEqual(st[0]["received"], 14.7456)
+        self.assertEqual(st[0]["last"]["order"], 77)
+        self.assertAlmostEqual(st[0]["last"]["average"], 1.394563, places=5)
+        self.saw("ACCOUNT 4.123 PRL free + 0 in orders · 9.00 USDT free + 0.00 in orders · sold so far 13.12 PRL for 14.75 USDT")
+
+    def test_a_dry_run_reports_too(self):
+        del os.environ["DRY_RUN"]
+        st = self.run_capturing(Fake())
+        self.assertEqual(len(st), 1)
+        self.assertIsNone(st[0]["last"])
 
 
 class TestMarket(Base):
@@ -168,7 +196,7 @@ class TestMarket(Base):
         f = Fake()
         f.routes.insert(0, ("GET", r"/public/markets$", (200, [{"id": "prlbtc"}, {"id": "ethusdt"}])))
         self.assertEqual(self.go(f), 1)
-        self.assertIn("no PRL/USDT market among 2 listed; ids with 'prl': ['prlbtc']", self.logs[-1])
+        self.saw("no PRL/USDT market among 2 listed; ids with 'prl': ['prlbtc']")
 
 
 class TestSafety(Base):
@@ -176,7 +204,7 @@ class TestSafety(Base):
         del os.environ["DRY_RUN"]
         self.go(Fake())
         self.assertEqual([c for c in self.fake.calls if c[0] == "POST"], [])
-        self.assertIn("DRY RUN: would sell 4.12 PRL with a limit at 1.358", self.logs[-1])
+        self.saw("DRY RUN: would sell 4.12 PRL with a limit at 1.358")
 
     def test_no_trading_outside_production(self):
         os.environ["RAILWAY_ENVIRONMENT_NAME"] = "llmjob-pr-261"

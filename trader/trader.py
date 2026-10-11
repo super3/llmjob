@@ -165,17 +165,58 @@ def first(d, *keys):
     return next((d[k] for k in keys if d.get(k) not in (None, "")), None)
 
 
-def balance_of():
+def balances():
+    """{currency: (available, locked)} for the spot account."""
     tried = []
     for path in BALANCE_PATHS:
         s, bal = http("GET", path, auth=True)
         if 200 <= s < 300 and isinstance(bal, (list, dict)):
             rows = bal if isinstance(bal, list) else bal.get("balances") or bal.get("data") or [bal]
-            row = next((b for b in rows if isinstance(b, dict) and str(b.get("currency", "")).lower() == COIN), {})
-            log(f"balances from {path}")
-            return float(first(row, "balance", "available", "free") or 0)
+            return {str(b.get("currency", "")).lower(): (float(first(b, "balance", "available", "free") or 0),
+                                                         float(b.get("locked") or 0))
+                    for b in rows if isinstance(b, dict)}
         tried.append(f"{path} HTTP {s}")
     raise Fail("balances failed: " + "; ".join(tried))
+
+
+def balance_of():
+    return balances().get(COIN, (0.0, 0.0))[0]
+
+
+def lifetime():
+    """Every sell trade on the market so far, summed: (PRL sold, USDT received, fees, trades). From SafeTrade's
+    trade history, so it needs no state of its own."""
+    prl = usdt = fees = 0.0
+    n, top = 0, None
+    for page in range(1, 51):
+        s, j = http("GET", PRIV + "/market/trades", {"market": MARKET, "side": "sell", "page": page, "limit": 100},
+                    auth=True)
+        if not 200 <= s < 300 or not isinstance(j, list) or not j or (page > 1 and j[0].get("id") == top):
+            break
+        top = j[0].get("id")
+        for t in j:
+            if t.get("side", "sell") == "sell":
+                prl += float(t.get("amount") or 0)
+                usdt += float(t.get("total") or 0)
+                fees += float(t.get("fee") or 0)
+                n += 1
+        if len(j) < 100:
+            break
+    return prl, usdt, fees, n
+
+
+def status(last=None):
+    """One readable line and one STATUS line of JSON with the account after this run: what's on the exchange and
+    everything sold so far. The JSON line is for tools that read the logs."""
+    b = balances()
+    c, q = b.get(COIN, (0.0, 0.0)), b.get(QUOTE, (0.0, 0.0))
+    prl, usdt, fees, n = lifetime()
+    log(f"ACCOUNT {c[0]:g} {COIN.upper()} free + {c[1]:g} in orders · {q[0]:.2f} {QUOTE.upper()} free + {q[1]:.2f} "
+        f"in orders · sold so far {prl:g} {COIN.upper()} for {usdt:.2f} {QUOTE.upper()}"
+        + (f" (average {usdt / prl:.4f}, fees {fees:.4f})" if prl else ""))
+    print("STATUS " + json.dumps({"t": int(time.time()), "market": MARKET, COIN: c[0], COIN + "_locked": c[1],
+                                  QUOTE: q[0], QUOTE + "_locked": q[1], "sold": prl, "received": usdt, "fees": fees,
+                                  "trades": n, "last": last}), flush=True)
 
 
 def run(live):
@@ -200,12 +241,12 @@ def run(live):
     what, why = plan(balance, bids, info)
     if what is None:
         log(f"nothing to sell: {why}")
-        return
+        return status()
     vol, price = what
     if not live:
         log(f"DRY RUN: would sell {vol} {COIN.upper()} with a limit at {price} (best bid {max(p for p, _ in bids)}, "
             f"balance {balance})")
-        return
+        return status()
     # CreateOrderParams: market, side, amount and price as numbers; a price makes it a limit order (no type field).
     s, o = http("POST", PRIV + "/market/orders", {"market": MARKET, "side": "sell", "amount": vol, "price": price}, auth=True)
     need(s, o, "sell order")
@@ -223,6 +264,8 @@ def run(live):
     log(f"SOLD {done} of {vol} {COIN.upper()} at {avg} USDT average for {got:.2f} USDT (fee {fee:g} "
         f"{(mine[0].get('fee_currency') or '').upper() if mine else ''}; limit {price}, order {o.get('id')}, "
         f"state {o.get('state')}); the rest waits for the next run")
+    status({"order": o.get("id"), "sold": done, "of": vol, "received": round(got, 6), "fee": fee,
+            "average": round(got / amt, 6) if amt else None, "limit": price})
 
 
 def main():

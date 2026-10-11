@@ -155,4 +155,4 @@ earn/native/probes/compare-*/
 
 # Salad mining watcher data (ledger, events, report)
 tuning/salad/run/
-tuning/salad/__pycache__/
+__pycache__/
