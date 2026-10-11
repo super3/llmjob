@@ -736,7 +736,8 @@ class W:
 
     def upgrade(self, t):
         """With every slot taken, swap the group making the least for a class expected to make upgrade_gain $/hr
-        more. A class is expected to make its measured rate at its free priority, counted no cheaper than low:
+        more, among classes that have had a PC here. A class is expected to make its measured rate at its free
+        priority, counted no cheaper than low:
         batch PCs are seldom handed out, and a group that gets none moves up. One swap per check."""
         st = self.st
         st["last_upgrade"] = t
@@ -749,9 +750,11 @@ class W:
         if not mining:
             return
         worst, g = min(mining, key=lambda x: x[0])
+        # Only a class that has had a PC on this account: a working box isn't given up for one Salad may never place.
+        placed = {x["class"] for x in st["groups"].values() if x["had_pc"]}
         best = None
         for unplaced, _, _, cls, p in self.candidates(active, t):
-            if unplaced or cls == g["class"]:
+            if unplaced or cls == g["class"] or cls not in placed:
                 continue
             expect = KNOWN[cls][0] * u - st["classes"][cls]["prices"][PRIS[max(PRIS.index(p), 1)]]
             if best is None or expect > best[0]:

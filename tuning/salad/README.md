@@ -85,7 +85,8 @@ each PC on its own readings.
    watcher leaves stopped groups alone and stops creating. A group that stops after it had a PC is
    taken as this case. Bump `restart_token` after a top-up.
 8. **Swap the weakest slot.** With every slot taken, every `upgrade_every_min`, compare the group making
-   the least on its PC (profit an hour on its last 3 readings) with the best class the search could create.
+   the least on its PC (profit an hour on its last 3 readings) with the best class the search could create
+   that has had a PC on this account (a working box isn't given up for a class Salad may never place).
    That class is expected to make its measured rate at its free priority, counted no cheaper than low,
    because batch PCs are seldom handed out and a group that gets none moves up. If it should make
    `upgrade_gain` more an hour, delete the weak group (released) and create the new one. One swap per check.

@@ -528,18 +528,22 @@ class TestSearch(Base):
 
 
 class TestUpgrade(Base):
-    def full_with_a_2060(self, avail):
-        """Every slot taken by one 2060 mining at 40 TH/s at low: $0.017/hr. A 4080 at low should make $0.083/hr."""
+    def full_with_a_2060(self, avail, placed=True):
+        """Every slot taken by one 2060 mining at 40 TH/s at low: $0.017/hr. A 4080 at low should make $0.083/hr.
+        With placed, an earlier 4080 group had a PC here."""
         self.http.on("POST", "/availability/", lambda b: (200, avail if b["gpu_classes"][0] == "c4080" else {}))
         self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10}}))
         self.x.cfg.update(max_active=1, max_new_per_hour=10)
+        old = self.group(cls="RTX 4080 (16 GB)", pri="low")
+        old.update(ended=self.clock[0], end_kind="released", had_pc=placed)
+        self.clock[0] += 3600
         g = self.group(cls="RTX 2060 (6 GB)", pri="low")
         self.step(g, 1, "m1")
         self.mine(g, "m1", 40, 6)
         return g
 
     def made(self):
-        return [(c[2]["name"], c[2]["container"]["priority"]) for c in self.http.made("POST", "/containers$")][1:]
+        return [(c[2]["name"], c[2]["container"]["priority"]) for c in self.http.made("POST", "/containers$")][2:]
 
     def test_the_weakest_group_is_swapped_for_a_class_that_should_make_more(self):
         g = self.full_with_a_2060({"available_gpu_low": 5})
@@ -548,6 +552,12 @@ class TestUpgrade(Base):
         self.assertTrue(self.http.made("DELETE", "/containers/biz-rtx2060$"))
         self.assertEqual(self.made(), [("biz-rtx4080", "low")])
         self.assertIn("UPGRADE biz-rtx2060", self.events())
+
+    def test_no_swap_to_a_class_that_never_had_a_pc_here(self):
+        g = self.full_with_a_2060({"available_gpu_low": 5}, placed=False)
+        self.x.upgrade(self.clock[0])
+        self.assertIsNone(g["ended"])
+        self.assertEqual(self.made(), [])
 
     def test_no_swap_when_the_gain_is_too_small(self):
         g = self.full_with_a_2060({"available_gpu_low": 5})
