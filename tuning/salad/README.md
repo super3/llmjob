@@ -70,7 +70,8 @@ each PC on its own readings.
 4. **No share for max(10 min, 8 expected share gaps) after 20 min on a PC:** leave the PC.
 5. **Only PCs that clear 10%.** Skip the miner's first 2 minutes (warm-up). From then on, every round,
    the last 3 readings (one a minute) must clear the margin at the PC's price. The first time they
-   don't, leave the PC. A PC with no mining reading 10 min after we got it is left too.
+   don't, leave the PC. A PC with no mining reading 10 min after we got it is left too, and so is one
+   whose newest reading is 6 min old (its miner stopped).
 6. **"port 1200 blocked"** in the logs: reallocate.
 7. **Credit runs out:** Salad stops every group, and creating one returns `no_credits_available`. The
    watcher leaves stopped groups alone and stops creating. A group that stops after it had a PC is
