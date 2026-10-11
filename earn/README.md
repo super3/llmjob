@@ -618,16 +618,17 @@ network is reachable through the shared API without opening a port or exposing
 CI packages the CLI into a **standalone single-file Linux executable**
 (`llmjob-earn-cli-linux`, built with [Node SEA](https://nodejs.org/api/single-executable-applications.html))
 and attaches it to each GitHub Release, so a headless box can run it with **no
-Node install**. The mining cores are separate files on the same release, and
-the binary looks for them beside itself (`pearl_core_cu13.node` is used only on
+Node install**. The mining cores and the CPU worker (`llmjob-xmr-worker`, used
+only with `--xmr-address`) are separate files on the same release, and the
+binary looks for them beside itself (`pearl_core_cu13.node` is used only on
 Blackwell cards, such as the RTX 50 series and RTX PRO Blackwell, with driver
 580 or newer):
 
 ```bash
 base=https://github.com/super3/llmjob/releases/latest/download
 curl -L -o llmjob-earn-cli $base/llmjob-earn-cli-linux
-curl -L -O $base/pearl_core.node -O $base/pearl_core_cu13.node
-chmod +x llmjob-earn-cli
+curl -L -O $base/pearl_core.node -O $base/pearl_core_cu13.node -O $base/llmjob-xmr-worker
+chmod +x llmjob-earn-cli llmjob-xmr-worker
 ./llmjob-earn-cli --address prl1pYOUR_ADDRESS
 ```
 
@@ -701,7 +702,7 @@ llmjob-earn-cli --address prl1p… --mode mining --region de --no-update --no-re
 - `--mode mining` mines only, so no model is downloaded.
 - `--region de` skips the latency probe and always mines in one region.
 - `--no-update` keeps this version: the CLI never replaces itself, or the
-  mining cores beside it.
+  mining cores and CPU worker beside it.
 - `--no-report` (optional) keeps the rig off the public network board.
 
 The mining cores (`pearl_core.node`, and `pearl_core_cu13.node` for Blackwell

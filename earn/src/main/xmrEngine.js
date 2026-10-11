@@ -235,13 +235,21 @@ class XmrEngine extends EventEmitter {
       for (const line of String(chunk).split('\n')) if (line.trim()) this._log('warn', line.trim());
     });
     // A missing or unrunnable file is reported here, after spawn returned.
+    // Neither is worth a restart: it would be the same file again.
     child.on('error', (e) => {
       if (this.child !== child) return;
       this.child = null;
-      const missing = e && e.code === 'ENOENT';
-      this._workerFailed(missing
-        ? 'the CPU miner is missing (' + this.workerPath + '). An antivirus may have removed it; reinstalling puts it back.'
-        : 'the CPU miner could not run: ' + errText(e), !missing);
+      const code = e && e.code;
+      if (code === 'ENOENT') {
+        this._workerFailed('the CPU miner is missing (' + this.workerPath + '). An antivirus may have removed it;'
+          + ' reinstalling puts it back.', false);
+      } else if (code === 'EACCES') {
+        // On Linux, most often a copy downloaded by hand without chmod +x.
+        this._workerFailed('the CPU miner is not allowed to run (' + this.workerPath + '): '
+          + (this.platform === 'win32' ? 'an antivirus may be blocking it.' : 'make it executable with chmod +x.'), false);
+      } else {
+        this._workerFailed('the CPU miner could not run: ' + errText(e), true);
+      }
     });
     child.on('exit', (code, signal) => {
       if (this.child !== child) return;

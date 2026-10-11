@@ -354,10 +354,22 @@ describe('the worker', () => {
     expect(h.errors[0]).toBe('the CPU miner is missing (/opt/llmjob-xmr-worker). An antivirus may have removed it; reinstalling puts it back.');
     expect(h.stopped).toEqual([1]);
 
+    // Not executable: a hand download without chmod +x, or on Windows an
+    // antivirus. Neither is worth a restart.
+    const h3 = setup();
+    h3.engine.start(SETTINGS);
+    h3.child().emit('error', Object.assign(new Error('spawn EACCES'), { code: 'EACCES' }));
+    expect(h3.errors).toEqual(['the CPU miner is not allowed to run (/opt/llmjob-xmr-worker): make it executable with chmod +x.']);
+    expect(h3.stopped).toEqual([1]);
+    const h4 = setup({ platform: 'win32' });
+    h4.engine.start(SETTINGS);
+    h4.child().emit('error', Object.assign(new Error('spawn EACCES'), { code: 'EACCES' }));
+    expect(h4.errors).toEqual(['the CPU miner is not allowed to run (/opt/llmjob-xmr-worker): an antivirus may be blocking it.']);
+
     const h2 = setup();
     h2.engine.start(SETTINGS);
-    h2.child().emit('error', new Error('spawn EACCES'));
-    expect(h2.lines()).toContain('cpu: the CPU miner could not run: spawn EACCES');
+    h2.child().emit('error', new Error('spawn EMFILE'));
+    expect(h2.lines()).toContain('cpu: the CPU miner could not run: spawn EMFILE');
     expect(h2.engine.snapshot().state).toBe('restarting');
     h2.children[0].emit('exit', 1, null);   // the same child's exit is already handled
     expect(h2.children).toHaveLength(1);
