@@ -20,8 +20,24 @@ describe('commands to the worker', () => {
     const line = w.jobCommand(job);
     expect(line.endsWith('\n')).toBe(true);
     expect(JSON.parse(line)).toEqual({
-      cmd: 'job', id: 'j1', blob: BLOB, target: '00068db8bac710cb', seed: SEED, variant: 'v1', commit: false, nonce: 0,
+      cmd: 'job', id: 'j1', blob: BLOB, target: '00068db8bac710cb', seed: SEED, variant: 'v1', commit: false,
+      nonce: expect.any(Number),
     });
+    expect(JSON.parse(w.jobCommand(job, 7)).nonce).toBe(7);
+  });
+
+  // A job sent twice from the same start finds the same shares twice.
+  test('each job line starts the search at a random 32-bit nonce', () => {
+    const job = parseJob({ job_id: 'j1', blob: BLOB, target: 'b88d0600', seed_hash: SEED, algo: 'rx/0' });
+    const starts = new Set();
+    for (let i = 0; i < 20; i++) {
+      const n = JSON.parse(w.jobCommand(job)).nonce;
+      expect(Number.isInteger(n) && n >= 0 && n < 2 ** 32).toBe(true);
+      starts.add(n);
+    }
+    expect(starts.size).toBeGreaterThan(1);
+    const n = w.randomNonce();
+    expect(Number.isInteger(n) && n >= 0 && n < 2 ** 32).toBe(true);
   });
 
   test('quit', () => {

@@ -5,6 +5,7 @@
 // worker's stdin, and the events it reads from its stdout, one JSON object per
 // line each way. Pure; main/xmrEngine.js owns the process.
 
+const { randomInt } = require('crypto');
 const { workerTarget } = require('./stratum');
 
 // The protocol version the worker states in its hello. A worker that states
@@ -45,8 +46,18 @@ function workerArgs({ threads, priority, hugePages } = {}) {
   return args;
 }
 
+// Where the worker's threads start on the job's 32-bit nonce. The worker
+// searches from there in a fixed order, so a job sent twice from the same
+// start (to a restarted worker, say) finds the same shares twice. A pool counts
+// a repeated share as invalid, and cryptonote-nodejs-pool, which HeroMiners
+// runs, can ban the IP for one. A random start makes a repeat unlikely; the
+// engine also drops any nonce it already sent.
+function randomNonce() {
+  return randomInt(0, 2 ** 32);
+}
+
 // A parsed pool job (stratum.parseJob) as a worker command.
-function jobCommand(job) {
+function jobCommand(job, nonce = randomNonce()) {
   return encode({
     cmd: 'job',
     id: job.jobId,
@@ -55,7 +66,7 @@ function jobCommand(job) {
     seed: job.seedHash,
     variant: job.variant,
     commit: !!job.commit,
-    nonce: 0,
+    nonce,
   });
 }
 
@@ -118,4 +129,6 @@ function parseWorkerLine(line) {
   return { kind: 'unknown', raw: s };
 }
 
-module.exports = { PROTOCOL, PRIORITIES, defaultPriority, workerArgs, jobCommand, quitCommand, parseWorkerLine };
+module.exports = {
+  PROTOCOL, PRIORITIES, defaultPriority, workerArgs, randomNonce, jobCommand, quitCommand, parseWorkerLine,
+};

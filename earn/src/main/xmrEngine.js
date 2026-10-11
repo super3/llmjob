@@ -85,6 +85,7 @@ class XmrEngine extends EventEmitter {
     this.lostAt = null;
     this.loginRefused = false;
     this.job = null;
+    this.sentNonces = new Set();   // nonces submitted for this.job
     this.difficulty = null;
     this.submitId = 10;
     this.pending = new Map();      // submit id -> job id
@@ -227,6 +228,8 @@ class XmrEngine extends EventEmitter {
     });
     // stdin breaks when the worker dies; the exit handler says so.
     child.stdin.on('error', () => {});
+    // The pool won't send this job again. jobCommand gives it a new start
+    // nonce, so the new worker doesn't find the old one's shares again.
     if (this.job) this._send(workerProto.jobCommand(this.job));
     return true;
   }
@@ -405,6 +408,10 @@ class XmrEngine extends EventEmitter {
         this.sock.destroy();
         break;
       case 'job':
+        // The job the worker already has. Sending it again would restart its
+        // search for no gain.
+        if (this.job && m.jobId === this.job.jobId && m.blob === this.job.blob && m.target === this.job.target) break;
+        if (!this.job || m.jobId !== this.job.jobId) this.sentNonces.clear();
         this.job = m;
         if (m.difficulty !== this.difficulty) {
           this.difficulty = m.difficulty;
@@ -445,12 +452,19 @@ class XmrEngine extends EventEmitter {
 
   // A share the worker found and checked. Only shares of the job the pool is
   // on now go out: HeroMiners holds back pay from a miner whose stale shares
-  // pass 2-5%, and a share of the last job is usually stale.
+  // pass 2-5%, and a share of the last job is usually stale. A share sent once
+  // never goes again: cryptonote-nodejs-pool, which HeroMiners runs, can ban
+  // the IP for a duplicate.
   _submit(share) {
     if (!this.authorized || !this.job || share.jobId !== this.job.jobId) {
       this._log('info', 'dropping a share for a job the pool has moved on from');
       return;
     }
+    if (this.sentNonces.has(share.nonce)) {
+      this._log('warn', 'dropping a share already sent (job ' + share.jobId + ', nonce ' + share.nonce + ')');
+      return;
+    }
+    this.sentNonces.add(share.nonce);
     const id = this.submitId++;
     this.pending.set(id, share.jobId);
     this.sock.write(stratum.encode(stratum.buildSubmit(id, this.sessionId, share)));

@@ -195,7 +195,8 @@ describe('the worker', () => {
   test('the job goes to the worker as soon as the pool sends it', () => {
     const h = mining();
     expect(h.child().stdin.lines[0]).toEqual({
-      cmd: 'job', id: 'j1', blob: BLOB, target: '00068db8bac710cb', seed: SEED, variant: 'v1', commit: false, nonce: 0,
+      cmd: 'job', id: 'j1', blob: BLOB, target: '00068db8bac710cb', seed: SEED, variant: 'v1', commit: false,
+      nonce: expect.any(Number),
     });
     h.sock().recv({ jsonrpc: '2.0', method: 'job', params: job('j2') });
     expect(h.child().stdin.lines[1].id).toBe('j2');
@@ -203,6 +204,17 @@ describe('the worker', () => {
     expect(h.lines().filter((l) => l.startsWith('cpu: pool difficulty'))).toEqual(['cpu: pool difficulty 10000']);
     h.sock().recv({ method: 'job', params: job('j3', { target: '0000000000000001' }) });
     expect(h.lines()).toContain('cpu: pool difficulty 255');
+  });
+
+  // Sent again, it would restart the worker's search for nothing.
+  test('a job the worker already has is not sent again', () => {
+    const h = mining();
+    h.sock().recv({ method: 'job', params: job('j1') });
+    expect(h.child().stdin.lines).toHaveLength(1);
+    // The same id with a new target is a new job.
+    h.sock().recv({ method: 'job', params: job('j1', { target: '0000000000000001' }) });
+    h.sock().recv({ method: 'job', params: job('j1', { target: '0000000000000001', blob: 'ce'.repeat(76) }) });
+    expect(h.child().stdin.lines.map((l) => l.id)).toEqual(['j1', 'j1', 'j1']);
   });
 
   test('hashrate ticks become status events', () => {
@@ -277,7 +289,10 @@ describe('the worker', () => {
     expect(h.engine.snapshot()).toMatchObject({ state: 'restarting', hashrate: 0, pages: null });
     h.advance(RESTART_MS);
     expect(h.children).toHaveLength(2);
-    expect(h.child().stdin.lines[0].id).toBe('j1');   // the pool won't resend it
+    // The pool won't resend it. A new start nonce keeps the new worker from
+    // finding the old one's shares again.
+    expect(h.child().stdin.lines[0].id).toBe('j1');
+    expect(h.child().stdin.lines[0].nonce).not.toBe(h.children[0].stdin.lines[0].nonce);
 
     // Killed: out of memory, or an antivirus.
     h.child().emit('exit', null, 'SIGKILL');
@@ -398,6 +413,28 @@ describe('shares', () => {
     h.child().say({ type: 'share', job: 'j2', nonce: '3b000000', result: RESULT });
     expect(h.lines().filter((l) => l === 'cpu: dropping a share for a job the pool has moved on from')).toHaveLength(2);
     expect(h.sockets[0].written).toHaveLength(1);   // the login only
+  });
+
+  // cryptonote-nodejs-pool can ban the IP for a duplicate share.
+  test('a share already sent for this job is not sent again', () => {
+    const h = mining();
+    const share = { type: 'share', job: 'j1', nonce: '3a000000', result: RESULT };
+    h.child().say(share);
+    h.child().say(share);
+    expect(h.lines()).toContain('cpu: dropping a share already sent (job j1, nonce 3a000000)');
+    // The same job with a new target still remembers it.
+    h.sock().recv({ method: 'job', params: job('j1', { target: '0000000000000001' }) });
+    h.child().say(share);
+    // A worker restarted on the same job too.
+    h.child().emit('exit', 1, null);
+    h.advance(RESTART_MS);
+    h.child().say(share);
+    const submits = () => h.sock().written.filter((m) => m.method === 'submit').map((m) => m.params.job_id + ':' + m.params.nonce);
+    expect(submits()).toEqual(['j1:3a000000']);
+    // On the next job the same nonce is a new share.
+    h.sock().recv({ method: 'job', params: job('j2') });
+    h.child().say(Object.assign({}, share, { job: 'j2' }));
+    expect(submits()).toEqual(['j1:3a000000', 'j2:3a000000']);
   });
 
   test('a share before any job is dropped', () => {

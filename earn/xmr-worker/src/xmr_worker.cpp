@@ -9,12 +9,15 @@
 //
 // Commands (app -> worker):
 //   {"cmd":"job","id":"<job id>","blob":"<hex>","target":"<16 hex>",
-//    "seed":"<64 hex>","variant":"v1","commit":false,"nonce":0}
+//    "seed":"<64 hex>","variant":"v1","commit":false,"nonce":<start>}
 //       target is the 64-bit share target as a big-endian hex number. A hash
 //       is a share when its last 8 bytes, read little-endian, are below it.
 //       variant "v2" turns on RandomX v2, and commit compares the RandomX
 //       commitment against the target instead of the hash. Monero's v17 fork
 //       will need both; until then the app sends v1 and no commit.
+//       nonce is where the search starts: thread t hashes nonce+t, then every
+//       Nth nonce after it (N threads). The same job from the same start finds
+//       the same shares, so the app sends a random start with every job line.
 //   {"cmd":"pause"}  {"cmd":"resume"}  {"cmd":"quit"}   (EOF on stdin = quit)
 //
 // Events (worker -> app):
