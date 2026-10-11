@@ -6,7 +6,7 @@ from one full rerun on 2026-10-10, 15:58–21:05 UTC, except six RTX 20-series
 rows rerun on 2026-10-11 against SRBMiner 3.7.5. Each host runs all three
 miners one after another on the same pool, so rates within a row compare
 directly. Don't compare across rows: power limits and cooling differ from
-host to host. v0.5.15 adds Monero mining on the CPU and leaves the GPU miner
+host to host. v0.6.0 adds Monero mining on the CPU and leaves the GPU miner
 as it was in v0.5.14, so these figures hold for it too.
 
 ## Summary
@@ -19,7 +19,7 @@ because no L40 was for rent other than the New York one.
 - RTX 20-series: 92–99%. Our clock is never more than 30 MHz below the
   faster competitor's, so the gap is work per clock: we do 5–7.5% less.
   SRBMiner 3.7.5 also mines Monero on the CPU alongside, and so does ours
-  from v0.5.15; PeakMiner doesn't (see the section).
+  from v0.6.0; PeakMiner doesn't (see the section).
 - RTX 30-series: 97–101%. The two 3070s trail most, at 97%. SRBMiner didn't
   start on the Oman 3090 Ti, so that row compares with PeakMiner.
 - RTX 40-series: 98–102%, and 99.5% or better on 15 of the 18 hosts. The
@@ -276,7 +276,7 @@ shares and rejected none.
   SRBMiner's own average over the run was 45.3 TH/s, so the end figure
   overstates it.
 
-Our CPU miner, new in v0.5.15, ran on 2026-10-11 on two other rentals, not
+Our CPU miner, new in v0.6.0, ran on 2026-10-11 on two other rentals, not
 the rows above, built from its PR branch. Each ran ours and SRBMiner 3.7.5
 for 5 minutes on Monero alone, one after the other, with the same thread
 count and pool. "% of best" is ours divided by SRBMiner's rate. PeakMiner
