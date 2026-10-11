@@ -555,17 +555,57 @@ describe('the pool', () => {
     expect(h.sockets).toHaveLength(2);
   });
 
+  // cryptonote-nodejs-pool bans an IP by forgetting its session and leaving
+  // the socket open. Nothing comes back on that socket but errors.
+  test('a pool that drops the session but keeps the socket open gets a new login', () => {
+    const h = mining();
+    h.advance(KEEPALIVE_MS);
+    h.sock().recv({ id: 10, jsonrpc: '2.0', error: { code: -1, message: 'Unauthenticated' }, result: null });
+    expect(h.lines()).toContain('cpu: the pool dropped this session ([-1] Unauthenticated); logging in again');
+    expect(h.lines()).toContain('cpu: pool connection closed; reconnecting in 5 s');
+    expect(h.sockets[0].destroy).toHaveBeenCalledTimes(1);
+    h.advance(RECONNECT_MS);
+    expect(h.sockets).toHaveLength(2);
+
+    // A banned IP: the rejected share counts, and the next login waits a minute.
+    h.sock().recv({ id: 1, result: { id: 'sess2', job: job('j2') } });
+    h.child().say({ type: 'share', job: 'j2', nonce: '3a000000', result: RESULT });
+    const id = h.sock().written.filter((m) => m.method === 'submit')[0].id;
+    h.sock().recv({ id, error: { code: -1, message: 'Your IP is banned' } });
+    expect(h.engine.snapshot().rejected).toBe(1);
+    expect(h.lines()).toContain('cpu: pool connection closed; reconnecting in 60 s');
+    h.advance(LOGIN_RETRY_MS);
+    expect(h.sockets).toHaveLength(3);
+
+    // A pool error with no id, and the rest of its chunk is not read.
+    h.sock().recv({ id: 1, result: { id: 'sess3', job: job('j3') } });
+    h.sock().emit('data', JSON.stringify({ id: null, error: { code: -1, message: 'Invalid job id' } }) + '\n'
+      + JSON.stringify({ method: 'job', params: job('j4') }) + '\n');
+    expect(h.sockets[2].destroy).toHaveBeenCalledTimes(1);
+    expect(h.child().stdin.lines.map((l) => l.id)).not.toContain('j4');
+  });
+
+  test('other errors leave the session alone', () => {
+    const h = mining();
+    h.advance(KEEPALIVE_MS);
+    h.sock().recv({ id: 10, error: { code: -1, message: 'Server busy' } });
+    h.child().say({ type: 'share', job: 'j1', nonce: '3a000000', result: RESULT });
+    h.sock().recv({ id: 11, error: { code: -1, message: 'Low difficulty share' } });
+    expect(h.sock().destroy).not.toHaveBeenCalled();
+    expect(h.engine.snapshot().rejected).toBe(1);
+  });
+
   test('bad jobs, pool errors and unknown lines are logged', () => {
     const h = mining();
     h.sock().recv({ method: 'job', params: job('j2', { algo: 'rx/arq' }) });
     h.sock().recv({ method: 'job', params: {} });
-    h.sock().recv({ id: null, error: { code: -1, message: 'Unauthenticated' } });
+    h.sock().recv({ id: null, error: { code: -1, message: 'Server busy' } });
     h.sock().emit('data', 'hello\n\n');
     h.sock().recv({ method: 'mining.notify' });
     expect(h.lines().slice(-5, -1)).toEqual([
       'cpu: ignoring a job the CPU miner cannot mine (j2): algorithm rx/arq is not one this miner mines',
       'cpu: ignoring a job the CPU miner cannot mine: no job_id',
-      'cpu: pool: [-1] Unauthenticated',
+      'cpu: pool: [-1] Server busy',
       'cpu: pool: hello',
     ]);
   });

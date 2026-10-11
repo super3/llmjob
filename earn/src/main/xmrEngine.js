@@ -44,6 +44,13 @@ const STABLE_MS = 10 * 60 * 1000;
 const KILL_MS = 5000;
 const POOL_GRACE_MS = 30 * 1000;
 
+// Pool errors that mean it has dropped this rig's session while keeping the
+// socket open. cryptonote-nodejs-pool, which HeroMiners runs, does that when
+// it bans an IP: every submit and keepalive is then answered with "Your IP is
+// banned", later "Unauthenticated", and no job comes again. Only a new login
+// gets work back. XMRig reconnects on the same messages.
+const SESSION_LOST = /unauthenticated|banned|invalid job id/i;
+
 const PAGES = {
   hugetlb: 'huge pages',
   thp: 'transparent huge pages',
@@ -356,7 +363,8 @@ class XmrEngine extends EventEmitter {
       this.lastRx = this.now();
       this.buf += String(chunk);
       let i;
-      while ((i = this.buf.indexOf('\n')) >= 0) {
+      // Re-checked per line: a line can end this connection.
+      while (this.sock === sock && !sock.destroyed && (i = this.buf.indexOf('\n')) >= 0) {
         const line = this.buf.slice(0, i);
         this.buf = this.buf.slice(i + 1);
         if (line.trim()) this._onPoolMessage(stratum.parseMessage(line, this.keepaliveIds));
@@ -436,12 +444,15 @@ class XmrEngine extends EventEmitter {
           this._log('error', 'XMR share rejected: ' + stratum.errorText(m.error));
           this._status();
         }
+        this._checkSessionLost(m.error);
         break;
       case 'keepalive':
         this.keepaliveIds.delete(m.id);
+        this._checkSessionLost(m.error);
         break;
       case 'pool-error':
         this._log('error', 'pool: ' + stratum.errorText(m.error));
+        this._checkSessionLost(m.error);
         break;
       case 'unknown':
       case 'unparseable':
@@ -468,6 +479,16 @@ class XmrEngine extends EventEmitter {
     const id = this.submitId++;
     this.pending.set(id, share.jobId);
     this.sock.write(stratum.encode(stratum.buildSubmit(id, this.sessionId, share)));
+  }
+
+  // An error that means the pool dropped the session closes the socket, and
+  // the close handler logs in again: in a minute after a ban, as after a
+  // refused login, else in the usual few seconds.
+  _checkSessionLost(error) {
+    if (!error || !SESSION_LOST.test(error.message)) return;
+    this._log('warn', 'the pool dropped this session (' + stratum.errorText(error) + '); logging in again');
+    if (/banned/i.test(error.message)) this.loginRefused = true;
+    this.sock.destroy();
   }
 
   _sendKeepalive() {
