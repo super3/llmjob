@@ -19,6 +19,11 @@ const { planUpdate } = require('../shared/selfUpdate');
 const net = require('net');
 const dns = require('dns');
 const { PearlEngine } = require('../main/pearlEngine');
+const { XmrEngine } = require('../main/xmrEngine');
+const { findWorker, makeSpawnWorker } = require('../main/xmrWorker');
+const { readCpuFacts } = require('../main/cpuFacts');
+const { planCpuThreads } = require('../shared/xmr/cpuPlan');
+const { shortenXmrAddress } = require('../shared/xmr/address');
 const { coreFactory } = require('../main/pearlCore');
 const { LlmManager } = require('../main/llmManager');
 const { LlmEngineManager } = require('../main/llmEngineManager');
@@ -30,7 +35,7 @@ const probe = require('../main/probe');
 const nodeStore = require('../main/nodeStore');
 const { initStats, applyEvent, snapshot, offPool, createRateMeter, meterSample, meterRead } = require('../shared/miningStats');
 const { makePoolLookup, fileCache } = require('../shared/poolLookup');
-const { NETWORK, LLM, NODE, REGIONS, resolveEndpoint, regionLabel } = require('../shared/config');
+const { NETWORK, LLM, NODE, REGIONS, XMR, resolveEndpoint, regionLabel } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
 const nodeProto = require('../shared/node');
 const { buildMinerReports } = require('../shared/minerReport');
@@ -66,6 +71,9 @@ const clearedCuda = clearCudaVisibleDevices(process.env);
 
 // The shortest gap between two mining status lines. See the miner event handler.
 const MINE_LOG_MS = 1000;
+// And between two CPU miner lines. Its worker reports every 2 s; a Monero
+// share takes about a minute on a desktop CPU, so this is plenty.
+const CPU_LOG_MS = 30000;
 
 // Write a log line. When attached to a TTY we prefix a wall-clock time; when
 // piped (systemd/journald, `docker logs`, a file) we drop it, since the log
@@ -722,6 +730,39 @@ async function runConnect(argv) {
   });
 }
 
+// Monero on the CPU, when --xmr-address asks for it: the thread plan (said in
+// the log) and the engine, or null when it won't run here. It mines beside the
+// GPU miner whatever the mode, and stops with it.
+function setUpCpuMining(settings, poolLookup) {
+  log('cpu:        Monero to ' + shortenXmrAddress(settings.xmrAddress) + ' · ' + XMR.endpoint);
+  if (settings.cpuThreads === 0) {
+    log('cpu:        off (--cpu-threads 0)');
+    return null;
+  }
+  const plan = planCpuThreads(readCpuFacts({ fs, os }), settings.cpuThreads);
+  if (!plan.threads) {
+    log('cpu:        off: ' + plan.reason);
+    return null;
+  }
+  const workerPath = findWorker({ execPath: process.execPath, env: process.env, exists: fs.existsSync });
+  if (!workerPath) {
+    log('cpu:        off: llmjob-xmr-worker is not beside the executable. Keep it from the release next to it,'
+      + ' or set LLMJOB_XMR_WORKER=/path/to/llmjob-xmr-worker.', process.stderr);
+    return null;
+  }
+  log('cpu:        ' + plan.threads + ' of ' + plan.available + ' CPUs'
+    + (plan.reason ? '  (' + plan.reason + ')' : settings.cpuThreads ? '' : '  (auto)'));
+  const engine = new XmrEngine({
+    connect: (host, port) => net.connect({ port, host, lookup: poolLookup() }),
+    spawnWorker: makeSpawnWorker(spawn),
+    workerPath,
+    agent: 'llmjob-earn/' + pkg.version,
+  });
+  // The pool took the login, so this address is one that worked.
+  engine.on('authorized', (e) => poolLookup().worked(e.host, e.address, e.family));
+  return { engine, threads: plan.threads };
+}
+
 async function run(argv) {
   if (argv[0] === 'update') return runExplicitUpdate();
   if (argv[0] === 'connect') return runConnect(argv.slice(1));
@@ -773,6 +814,22 @@ async function run(argv) {
   if (noGpus && normalizeMode(settings.mode) !== 'llm') {
     log('mining on:  no GPU  (' + (gpuPick.from === '--gpu-index' ? '--gpu-index none' : 'PEARL_GPU_INDEX=none') + ')');
   }
+
+  // The pool's name resolves through fallbacks when the system lookup fails
+  // (see shared/poolLookup), with the last good addresses kept beside the
+  // node identity, shared with the desktop app. Made once for both miners:
+  // the cache is one file, and two copies of it would overwrite each other.
+  let lookupFn = null;
+  const poolLookup = () => {
+    if (!lookupFn) {
+      lookupFn = makePoolLookup({
+        dns,
+        cache: fileCache(path.join(path.dirname(nodeStore.nodePath()), 'pool-addresses.json'), fs, path),
+        log: (line) => log(line),
+      });
+    }
+    return lookupFn;
+  };
 
   let endpoint = null;
   if (plan.miner) {
@@ -828,6 +885,9 @@ async function run(argv) {
     }
   }
 
+  // ── CPU miner (Monero) ─────────────────────────────────────────────────────
+  const xmr = settings.xmrAddress ? setUpCpuMining(settings, poolLookup) : null;
+
   const stats = initStats(Date.now());
   let miner = null;
   let reporter = null;
@@ -875,14 +935,7 @@ async function run(argv) {
       log('continuing with the local LLM only.', process.stderr);
     }
     if (createCore) {
-      // The pool's name resolves through fallbacks when the system lookup fails
-      // (see shared/poolLookup), with the last good addresses kept beside the
-      // node identity, shared with the desktop app.
-      const lookup = makePoolLookup({
-        dns,
-        cache: fileCache(path.join(path.dirname(nodeStore.nodePath()), 'pool-addresses.json'), fs, path),
-        log: (line) => log(line),
-      });
+      const lookup = poolLookup();
       miner = new PearlEngine({
         connect: (host, port) => net.connect({ port, host, lookup }),
         createCore,
@@ -1049,7 +1102,7 @@ async function run(argv) {
   // Nothing to run (e.g. the LLM failed to set up and there's no miner): exit
   // with an error rather than hanging on an idle process. Unless nothing was
   // asked to run: no GPU in mining mode waits (see noGpus above).
-  if (!miner && !llm && !idleByChoice) {
+  if (!miner && !llm && !idleByChoice && !xmr) {
     log('nothing to run — no miner and the LLM did not start', process.stderr);
     return 1;
   }
@@ -1066,6 +1119,7 @@ async function run(argv) {
       if (demandWorker) { demandWorker.stop(); demandWorker = null; }
       if (demandPinger) { clearInterval(demandPinger); demandPinger = null; }
       if (idle) { clearInterval(idle); idle = null; }
+      if (xmr) xmr.engine.stop();
       resolve(code);
     };
     // A deliberate switch must not look like an engine dying: the handlers below
@@ -1308,6 +1362,7 @@ async function run(argv) {
             mining: !!(miner && miner.isRunning()),
             llm: serveLlmState,
             pciBusIds,
+            xmr: xmr ? xmr.engine.snapshot() : null,
           });
           const tmp = settings.statsFile + '.tmp';
           fs.writeFileSync(tmp, JSON.stringify(payload));
@@ -1317,6 +1372,34 @@ async function run(argv) {
       writeStats();
       statsWriter = setInterval(writeStats, 10000);
       if (statsWriter.unref) statsWriter.unref();
+    }
+
+    // The CPU miner runs beside whatever else runs. It ends the run only when it
+    // is all there is and it gave up.
+    if (xmr) {
+      const cpu = xmr.engine;
+      cpu.on('log', (l) => log(l.line, l.level === 'error' ? process.stderr : process.stdout));
+      cpu.on('error', (err) => log('cpu: ' + err.message, process.stderr));
+      let lastCpuLog = 0;
+      cpu.on('event', (e) => {
+        if (e.type !== 'status' || e.state !== 'mining') return;
+        const now = Date.now();
+        if (now - lastCpuLog < CPU_LOG_MS) return;
+        lastCpuLog = now;
+        log('cpu: ' + format.formatKhs(e.hashrate) + ' kH/s · ' + format.formatInt(e.accepted) + ' accepted · '
+          + e.rejected + ' rejected · ' + e.threads + ' threads');
+      });
+      // Outside a shutdown, a stop is the engine giving up on its own.
+      cpu.on('stopped', () => {
+        if (settled || stopping) return;
+        if (!miner && !llm && !idle) finish(1);
+      });
+      cpu.start({
+        address: settings.xmrAddress,
+        worker: settings.workerProvided ? settings.worker : defaultWorker(),
+        endpoint: XMR.endpoint,
+        threads: xmr.threads,
+      });
     }
 
     if (miner) {

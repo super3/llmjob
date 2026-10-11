@@ -9,7 +9,7 @@ describe('statsFilePayload', () => {
       ver: '0.1.14', algo: 'pearlhash', ths: 354.1, accepted: 14820, rejected: 3,
       uptimeSec: 15128, gpu: 'RTX 5090', updatedMs: 1783300000000,
       schema: 1, mode: null, strategy: null, gate: null, mining: false,
-      lastShareMs: null, model: null, tps: { gen: 0, prefill: 0 }, gpus: [],
+      lastShareMs: null, model: null, tps: { gen: 0, prefill: 0 }, gpus: [], xmr: null,
     });
   });
 
@@ -18,7 +18,7 @@ describe('statsFilePayload', () => {
       ver: '', algo: 'pearlhash', ths: 0, accepted: 0, rejected: 0,
       uptimeSec: 0, gpu: null, updatedMs: 0,
       schema: 1, mode: null, strategy: null, gate: null, mining: false,
-      lastShareMs: null, model: null, tps: { gen: 0, prefill: 0 }, gpus: [],
+      lastShareMs: null, model: null, tps: { gen: 0, prefill: 0 }, gpus: [], xmr: null,
     });
   });
 
@@ -26,6 +26,24 @@ describe('statsFilePayload', () => {
     expect(statsFilePayload({ total: NaN }).ths).toBe(0);
     expect(statsFilePayload({ total: -5 }).ths).toBe(0);
     expect(statsFilePayload({ total: 'x' }).ths).toBe(0);
+  });
+});
+
+// The CPU miner, for HiveOS's second algorithm. Its hashrate is H/s.
+describe('statsFilePayload: the CPU miner', () => {
+  test('carries the Monero engine\'s snapshot', () => {
+    const xmr = { state: 'mining', hashrate: 1845.2, accepted: 3, rejected: 1, threads: 7, pages: 'thp' };
+    expect(statsFilePayload({}, { xmr }).xmr).toEqual({
+      algo: 'randomx', hs: 1845.2, accepted: 3, rejected: 1, threads: 7, state: 'mining',
+    });
+  });
+
+  test('zeros what is missing, and is null with no CPU miner', () => {
+    expect(statsFilePayload({}, { xmr: { hashrate: -3 } }).xmr).toEqual({
+      algo: 'randomx', hs: 0, accepted: 0, rejected: 0, threads: 0, state: null,
+    });
+    expect(statsFilePayload({}, { xmr: {} }).xmr.hs).toBe(0);
+    expect(statsFilePayload({}, { xmr: null }).xmr).toBeNull();
   });
 });
 

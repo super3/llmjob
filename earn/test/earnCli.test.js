@@ -79,6 +79,25 @@ jest.mock('../src/main/pearlEngine', () => {
   PearlEngine.startReturns = undefined;
   return { PearlEngine };
 });
+// The Monero CPU miner: an engine that records what it is asked, the CPU facts
+// its thread plan reads, and where its worker file is.
+jest.mock('../src/main/xmrEngine', () => {
+  const { EventEmitter } = require('events');
+  class XmrEngine extends EventEmitter {
+    constructor(opts) {
+      super();
+      this.opts = opts;
+      this.start = jest.fn((settings) => { this.settings = settings; return true; });
+      this.stop = jest.fn();
+      this.snapshot = jest.fn(() => ({ state: 'mining', hashrate: 1845.2, accepted: 3, rejected: 0, threads: 15 }));
+      XmrEngine.instances.push(this);
+    }
+  }
+  XmrEngine.instances = [];
+  return { XmrEngine };
+});
+jest.mock('../src/main/cpuFacts', () => ({ readCpuFacts: jest.fn() }));
+jest.mock('../src/main/xmrWorker', () => ({ findWorker: jest.fn(), makeSpawnWorker: jest.fn(() => 'spawnWorker') }));
 jest.mock('../src/main/pearlCore', () => ({
   loadCore: jest.fn(() => null),
   // A loadable core by default: the CLI decides UP FRONT whether it can mine,
@@ -226,6 +245,8 @@ function applyDefaults(m) {
   m.selfUpdater.reexec.mockReturnValue(0);
   m.selfUpdate.planUpdate.mockReturnValue({ updateAvailable: false, reason: 'up-to-date' });
   m.PearlEngine.startReturns = undefined;
+  m.cpuFacts.readCpuFacts.mockReturnValue({ cpus: 16, quotaCpus: null, memoryBytes: 32 * 2 ** 30, l3Bytes: null });
+  m.xmrWorker.findWorker.mockReturnValue('/opt/llmjob-xmr-worker');
 }
 
 // Load a fresh earn-cli plus fresh instances of every mocked dependency.
@@ -242,6 +263,9 @@ function load() {
     m.selfUpdate = require('../src/shared/selfUpdate');
     m.net = require('net');
     m.PearlEngine = require('../src/main/pearlEngine').PearlEngine;
+    m.XmrEngine = require('../src/main/xmrEngine').XmrEngine;
+    m.cpuFacts = require('../src/main/cpuFacts');
+    m.xmrWorker = require('../src/main/xmrWorker');
     m.autoGate = require('../src/main/autoGate');
     m.autoGate.createAutoGate.instances = [];
     m.autoGate.createServeGate.instances = [];
@@ -790,6 +814,137 @@ describe('mining', () => {
     expect(m.PearlEngine.instances.length).toBe(0);
     // The LLM half is alive; shut it down the way an operator would.
     fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+});
+
+// ── Monero on the CPU (--xmr-address) ────────────────────────────────────────
+
+describe('CPU mining', () => {
+  const XMR_ADDR = '87wTMj88rEGV3BFiYXJc2UHeTGmHikMRWAvAskmPgaF3PZxuxonkKaJZsprNmuhM1Aca7P6UbyatGFHkQfUTYgoNN1JxND9';
+
+  test('mines beside the GPU on all CPUs but one, logs its numbers, and stops with the run', async () => {
+    const m = load();
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--xmr-address', XMR_ADDR,
+      '--stats-file', '/tmp/s.json']);
+    await settle();
+    expect(allOut()).toContain('cpu:        Monero to 87wTMj88…1JxND9 · de.monero.herominers.com:1111');
+    expect(allOut()).toContain('cpu:        15 of 16 CPUs  (auto)');
+    expect(m.xmrWorker.findWorker).toHaveBeenCalledWith(expect.objectContaining({ execPath: process.execPath }));
+    const cpu = m.XmrEngine.instances[0];
+    expect(cpu.opts).toMatchObject({ workerPath: '/opt/llmjob-xmr-worker', spawnWorker: 'spawnWorker', agent: 'llmjob-earn/' + pkg.version });
+    expect(cpu.start).toHaveBeenCalledWith({
+      address: XMR_ADDR, worker: 'rig-host', endpoint: 'de.monero.herominers.com:1111', threads: 15,
+    });
+
+    // Its pool socket goes through the same lookup as the GPU miner's, and a
+    // login that worked is saved to the same file.
+    m.PearlEngine.instances[0].opts.connect('us.pearl.herominers.com', 1200);
+    cpu.opts.connect('de.monero.herominers.com', 1111);
+    expect(m.net.connect).toHaveBeenLastCalledWith({ port: 1111, host: 'de.monero.herominers.com', lookup: expect.any(Function) });
+    expect(m.net.connect.mock.calls[0][0].lookup).toBe(m.net.connect.mock.calls[1][0].lookup);
+    cpu.emit('authorized', { host: 'de.monero.herominers.com', address: '141.95.126.31', family: 'IPv4' });
+    expect(m.fs.writeFileSync).toHaveBeenCalledWith('/tmp/store/pool-addresses.json', expect.stringContaining('141.95.126.31'));
+
+    cpu.emit('log', { level: 'info', line: 'cpu: logged in to the pool' });
+    cpu.emit('log', { level: 'error', line: 'cpu: XMR share rejected: [-1] Low difficulty share' });
+    cpu.emit('error', new Error('the CPU miner stopped (exit code 1)'));
+    const t0 = Date.now();
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(t0);
+    cpu.emit('event', { type: 'status', state: 'dataset', hashrate: 0, accepted: 0, rejected: 0, threads: 15 });
+    cpu.emit('event', { type: 'connect-failed', reason: 'x' });
+    cpu.emit('event', { type: 'status', state: 'mining', hashrate: 1845.2, accepted: 1234, rejected: 1, threads: 15 });
+    cpu.emit('event', { type: 'status', state: 'mining', hashrate: 1900, accepted: 1235, rejected: 1, threads: 15 });
+    nowSpy.mockReturnValue(t0 + 30000);
+    cpu.emit('event', { type: 'status', state: 'mining', hashrate: 1900, accepted: 1235, rejected: 1, threads: 15 });
+    nowSpy.mockRestore();
+    expect(allOut()).toContain('cpu: logged in to the pool');
+    expect(allErr()).toContain('cpu: XMR share rejected: [-1] Low difficulty share');
+    expect(allErr()).toContain('cpu: the CPU miner stopped (exit code 1)');
+    expect(allOut()).toContain('cpu: 1.85 kH/s · 1,234 accepted · 1 rejected · 15 threads');
+    expect(allOut()).toContain('cpu: 1.90 kH/s · 1,235 accepted · 1 rejected · 15 threads');
+    expect(allOut().match(/cpu: \d+\.\d+ kH\/s/g)).toHaveLength(2);
+
+    // The stats file carries it, for HiveOS's second algorithm.
+    intervalFor(10000).fn();
+    const written = JSON.parse(m.fs.writeFileSync.mock.calls.filter((c) => c[0] === '/tmp/s.json.tmp').pop()[1]);
+    expect(written.xmr).toEqual({ algo: 'randomx', hs: 1845.2, accepted: 3, rejected: 0, threads: 15, state: 'mining' });
+
+    // With the GPU miner running, the CPU miner giving up does not end the run.
+    cpu.emit('stopped', 1);
+    expect(cpu.stop).not.toHaveBeenCalled();
+    fire('SIGINT');
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+    expect(cpu.stop).toHaveBeenCalled();
+    cpu.emit('stopped', 0);   // the stop it was asked for
+  });
+
+  test('a thread count by hand, and one cut down to leave a CPU free', async () => {
+    const m = load();
+    m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '-w', 'rig9', '--xmr-address', XMR_ADDR, '--cpu-threads', '3']);
+    await settle();
+    expect(allOut()).toContain('cpu:        3 of 16 CPUs\n');
+    expect(m.XmrEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ threads: 3, worker: 'rig9' }));
+
+    const m2 = load();
+    m2.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--xmr-address', XMR_ADDR, '--cpu-threads', '64']);
+    await settle();
+    expect(allOut()).toContain('cpu:        15 of 16 CPUs  (64 threads asked for; running 15 so one of the 16 CPUs stays free for the GPU miner)');
+  });
+
+  test('off: by --cpu-threads 0, by the plan, or with no worker beside the binary', async () => {
+    const m = load();
+    m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--xmr-address', XMR_ADDR, '--cpu-threads', '0']);
+    await settle();
+    expect(allOut()).toContain('cpu:        off (--cpu-threads 0)');
+    expect(m.XmrEngine.instances).toHaveLength(0);
+
+    const m2 = load();
+    m2.cpuFacts.readCpuFacts.mockReturnValue({ cpus: 4, memoryBytes: 16 * 2 ** 30 });
+    m2.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--xmr-address', XMR_ADDR]);
+    await settle();
+    expect(allOut()).toContain('cpu:        off: off by default with 4 CPUs (it turns on by itself above 4 CPUs and 8 GB); set a thread count to mine anyway');
+    expect(m2.XmrEngine.instances).toHaveLength(0);
+
+    const m3 = load();
+    m3.xmrWorker.findWorker.mockReturnValue(null);
+    m3.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--xmr-address', XMR_ADDR]);
+    await settle();
+    expect(allErr()).toContain('cpu:        off: llmjob-xmr-worker is not beside the executable. Keep it from the release next to it, or set LLMJOB_XMR_WORKER=/path/to/llmjob-xmr-worker.');
+    expect(m3.XmrEngine.instances).toHaveLength(0);
+  });
+
+  // With nothing else running (here the LLM had no room), the CPU miner is the
+  // run: a stop it made on its own ends it non-zero, so systemd restarts it.
+  test('when it is all there is, its giving up ends the run, and a signal stops it', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 7000, totalMb: 8000 }]);
+    const p = m.run(['--mode', 'llm', '--no-update', '--xmr-address', XMR_ADDR]);
+    await settle();
+    expect(allErr()).not.toContain('nothing to run');
+    const cpu = m.XmrEngine.instances[0];
+    expect(cpu.start).toHaveBeenCalledWith(expect.objectContaining({ worker: 'rig-host' }));
+    cpu.emit('stopped', 1);
+    await expect(p).resolves.toBe(1);
+
+    const m2 = load();
+    m2.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 7000, totalMb: 8000 }]);
+    const p2 = m2.run(['--mode', 'llm', '--no-update', '--xmr-address', XMR_ADDR]);
+    await settle();
+    fire('SIGINT');
+    await expect(p2).resolves.toBe(0);
+    expect(m2.XmrEngine.instances[0].stop).toHaveBeenCalled();
+    m2.XmrEngine.instances[0].emit('stopped', 0);
+  });
+
+  test('with every GPU off, it keeps mining while the run waits', async () => {
+    const m = load();
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu-index=none', '--xmr-address', XMR_ADDR]);
+    await settle();
+    const cpu = m.XmrEngine.instances[0];
+    cpu.emit('stopped', 1);   // the idle wait still holds the run
+    fire('SIGTERM');
     await expect(p).resolves.toBe(0);
   });
 });
