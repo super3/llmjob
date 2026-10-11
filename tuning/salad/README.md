@@ -44,6 +44,7 @@ Config keys:
 | `retry_after_min` | Minutes before a class released for want of a PC is tried again (60). |
 | `no_pc_streak`, `no_pc_hold_min` | A class whose last 3 groups got no PC goes last for 180 min. |
 | `drift` | How far the ledger and the pool may disagree before a `DRIFT` event (0.15). |
+| `trader` | Railway ids of the SafeTrade autoseller: `{"project", "service", "environment"}`. Unset: no SafeTrade row. |
 
 Tests: `python3 -m unittest discover -s tuning/salad`. They fake Salad, the pool and the clock.
 
@@ -172,6 +173,17 @@ watcher checks it against the pool and writes a `DRIFT` event when they disagree
 The table has a **Pool balance** row under **All**: what the pool has paid and still holds (unlocked
 plus unconfirmed), and the profit on that credited PRL, next to the expected figures above it. The
 bullet under the table splits out unlocked and unconfirmed.
+
+## SafeTrade row
+
+When `trader` is set, the watcher reads the newest `STATUS` line of the autoseller (`trader/`) from its
+Railway logs, at most every 5 minutes. The table then gets a **💱 SafeTrade** row under the pool
+balance, showing the USDT and PRL on the exchange and the PRL sold so far. A bullet gives the total
+received, the average price, the fees and what the last run sold.
+
+It needs a Railway project token for the production environment, set as `RAILWAY_TOKEN` or added by the
+cloud session's network proxy for `backboard.railway.com`. Without one, Railway answers "Not Authorized"
+and there's one `WARN` event.
 
 ## Safety net
 

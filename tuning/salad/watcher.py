@@ -10,6 +10,7 @@ import json, os, re, sys, time, urllib.request, urllib.error, datetime as dt, tr
 D = os.environ.get("SALAD_MINE_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "run")
 STATE, CFG, EV, REPORT = (os.path.join(D, f) for f in ("state.json", "config.json", "events.log", "report.md"))
 ORG = os.environ.get("SALAD_ORG", "llmjob")
+RAILWAY = "https://backboard.railway.com/graphql/v2"
 PROJECT = os.environ.get("SALAD_PROJECT", "default")
 BASE = f"https://api.salad.com/api/public/organizations/{ORG}"
 CB = f"{BASE}/projects/{PROJECT}/containers"
@@ -39,6 +40,7 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                "credit_start": 100.0, "credit_offset": 0.0, "box_ver": "v0.5.13", "ver_override": {}, "report_min": 10,
                "min_margin": 0.10, "max_new_per_hour": 3, "max_per_class": 1,
                "search_every_min": 60, "retry_after_min": 60, "no_pc_streak": 3, "no_pc_hold_min": 180, "drift": 0.15,
+               "trader": None,
                "wallet": os.environ.get("PRL_WALLET", "")}
 
 
@@ -54,9 +56,11 @@ def parse_iso(s):
     return dt.datetime.fromisoformat(base + tz).timestamp() + (float(frac) if frac else 0)
 
 
-def http(method, url, body=None, ctype="application/json", timeout=60):
+def http(method, url, body=None, ctype="application/json", timeout=60, headers=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
+    for k, v in (headers or {}).items():
+        req.add_header(k, v)
     if data is not None:
         req.add_header("Content-Type", ctype)
     req.add_header("Accept", "application/json")
@@ -248,6 +252,51 @@ class W:
                 res[w["name"]] = w
         return res
 
+    def trader(self):
+        """The SafeTrade autoseller's newest STATUS line (trader/trader.py), read from its Railway logs at most every
+        5 min. Needs config "trader": {"project", "service", "environment"} (Railway ids) and a Railway token: in
+        $RAILWAY_TOKEN, or added by the network proxy. A failed read keeps the last status."""
+        cfg, st, t = self.cfg.get("trader"), self.st, now()
+        if not cfg or t - st.get("trader_t", 0) < 300:
+            return
+        st["trader_t"] = t
+        tok = os.environ.get("RAILWAY_TOKEN")
+        # A project token goes in Project-Access-Token; an account or team token is a bearer token.
+        hdrs = ({"Project-Access-Token": tok} if cfg.get("token_kind", "project") == "project" else
+                {"Authorization": f"Bearer {tok}"}) if tok else {}
+
+        def gql(query, variables):
+            s, j = http("POST", RAILWAY, {"query": query, "variables": variables}, timeout=30, headers=hdrs)
+            if s != 200 or not isinstance(j, dict) or j.get("errors"):
+                if not st.get("trader_warned"):
+                    st["trader_warned"] = True
+                    event(f"WARN can't read the trader's Railway logs: HTTP {s} {str((j or {}).get('errors') or j)[:150]}")
+                return None
+            return j.get("data")
+
+        d = gql("query($i: DeploymentListInput!) { deployments(input: $i, first: 5) "
+                "{ edges { node { id status createdAt } } } }",
+                {"i": {"projectId": cfg["project"], "serviceId": cfg["service"], "environmentId": cfg["environment"]}})
+        if d is None:
+            return
+        for edge in (d.get("deployments") or {}).get("edges") or []:
+            logs = gql("query($id: String!) { deploymentLogs(deploymentId: $id, limit: 1000) { message timestamp } }",
+                       {"id": edge["node"]["id"]})
+            if logs is None:
+                return
+            found = None
+            for line in logs.get("deploymentLogs") or []:
+                msg = (line.get("message") or "").strip()
+                if msg.startswith("STATUS "):
+                    try:
+                        found = (json.loads(msg[7:]), line.get("timestamp"))
+                    except ValueError:
+                        pass
+            if found:
+                st["trader_status"] = dict(found[0], seen=found[1])
+                st["trader_warned"] = False
+                return
+
     # ---------- actions ----------
     def delete(self, g, kind, reason):
         why = self.last_lines(g) if g["had_pc"] else []
@@ -428,6 +477,7 @@ class W:
 
         # Pool: shares and pool-side hashrate.
         pw = self.pool() if by_name else {}
+        self.trader()
         for g in by_name.values():
             w = pw.get(f"{g['name']}-g0")
             if not w:
@@ -708,6 +758,11 @@ class W:
             cred = pt["paid"] + pt["balance"] + pt["unconfirmed"]
             rows.append(f"| 🏦 Pool balance | {pt['paid']:.2f} paid · {pt['balance'] + pt['unconfirmed']:.2f} pending | | | | | | "
                         f"{cred:.3f} | {cred * price - spend:+.2f} |")
+        # The autoseller on SafeTrade: what's there now, and everything it has sold.
+        ts = st.get("trader_status")
+        if ts:
+            rows.append(f"| 💱 SafeTrade | {ts.get('usdt', 0):.2f} USDT · {ts.get('prl', 0) + ts.get('prl_locked', 0):.2f} PRL held "
+                        f"| | | | | | {ts.get('sold', 0):.3f} sold | |")
         credit = self.cfg["credit_start"] + self.cfg["credit_offset"] - spend
         hours = credit / all_cost if all_cost > 0 else None
         lines = [f"PRL ${price:.3f} · ${usd:.6f}/TH-hr · {iso(t)}", "",
@@ -725,6 +780,14 @@ class W:
             lines.append(f"- The pool has credited {cred / prl * 100 if prl > 0 else 0:.0f}% of the PRL we expected (paid "
                          f"{pt['paid']:.3f}, unlocked {pt['balance']:.3f}, unconfirmed {pt['unconfirmed']:.3f}). It pays "
                          "as it finds blocks, so this lags and swings with its luck.")
+        if ts:
+            when = time.strftime("%H:%M", time.gmtime(ts["t"])) if ts.get("t") else "?"
+            last = ts.get("last") or {}
+            lines.append(f"- SafeTrade at the trader's {when}Z run: sold {ts.get('sold', 0):g} PRL so far for "
+                         f"{ts.get('received', 0):.2f} USDT"
+                         + (f" (average {ts['received'] / ts['sold']:.4f}, fees {ts.get('fees', 0):.4f})" if ts.get("sold") else "")
+                         + (f"; that run sold {last.get('sold', 0):g} PRL at {last.get('average')}" if last else "; that run sold nothing")
+                         + ".")
         if st["credits_out"]:
             lines.append("- ⚠️ Credit ran out: Salad stopped the groups. They restart after a top-up.")
         with open(REPORT + ".tmp", "w") as f:
