@@ -121,11 +121,13 @@ class XmrEngine extends EventEmitter {
     return this.lostAt != null && now - this.lostAt < POOL_GRACE_MS;
   }
 
-  // The numbers the UI and the stats file show.
+  // The numbers the UI and the stats file show. Off the pool (past the grace
+  // for a routine reconnect) the hashrate is 0: the worker may still be
+  // hashing, but no share of it can go anywhere. Pearl's figure does the same.
   snapshot(now = this.now()) {
     return {
       state: this.running ? this.state : 'stopped',
-      hashrate: this.running ? this.hashrate : 0,
+      hashrate: this.poolConnected(now) ? this.hashrate : 0,
       accepted: this.accepted,
       rejected: this.rejected,
       threads: this.settings ? this.settings.threads : 0,

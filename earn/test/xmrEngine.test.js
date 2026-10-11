@@ -226,6 +226,21 @@ describe('the worker', () => {
     expect(h.engine.snapshot().hashrate).toBe(1845.2);
   });
 
+  // No share of it can reach a pool, so HiveOS and the Mine tab say 0.
+  test('the hashrate reads 0 while the pool is out of reach', () => {
+    const h = mining();
+    h.child().say({ type: 'hashrate', hs: 4100, total: 10, threads: 6 });
+    h.sock().emit('close');
+    expect(h.engine.snapshot().hashrate).toBe(4100);   // a routine reconnect
+    h.setNow(1000000 + POOL_GRACE_MS);
+    expect(h.engine.snapshot().hashrate).toBe(0);
+    h.child().say({ type: 'hashrate', hs: 4100, total: 20, threads: 6 });
+    expect(h.events[h.events.length - 1]).toMatchObject({ type: 'status', hashrate: 0 });
+    h.advance(RECONNECT_MS);
+    h.sock().recv({ id: 1, result: { id: 'sess2', job: job('j2') } });
+    expect(h.engine.snapshot().hashrate).toBe(4100);
+  });
+
   test('its log lines, errors, stderr and junk reach the log; bench and blank lines don\'t', () => {
     const h = mining();
     h.child().say({ type: 'log', level: 'warn', msg: 'searched every nonce' });
