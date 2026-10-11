@@ -119,6 +119,21 @@ class TestCommand(Base):
         body = self.http.made("POST", "/containers$")[1][2]
         self.assertIn("WORKER=biz-rtx4080-2/", body["container"]["command"][2])
 
+    def test_live_groups_dont_use_up_the_name_retries(self):
+        # 9 live groups and Salad still holding biz-rtx4080 to biz-rtx4080-12, as on 2026-10-11
+        for i in range(9):
+            self.x.st["groups"][f"g{i}"] = {"name": f"biz-other-{i}", "ended": None}
+        held = {"biz-rtx4080"} | {f"biz-rtx4080-{i}" for i in range(2, 13)}
+        self.http.on("POST", "/containers$", lambda b: (400, {"type": "name_conflict"}) if b["name"] in held
+                     else (201, {}))
+        self.assertTrue(self.x.create("RTX 4080 (16 GB)", "low"))
+        self.assertEqual(self.http.made("POST", "/containers$")[-1][2]["name"], "biz-rtx4080-13")
+
+    def test_name_retries_stop_after_20(self):
+        self.http.on("POST", "/containers$", (400, {"type": "name_conflict"}))
+        self.assertFalse(self.x.create("RTX 4080 (16 GB)", "low"))
+        self.assertEqual(len(self.http.made("POST", "/containers$")), 21)
+
     def test_second_group_of_a_class_gets_its_own_name(self):
         self.group()
         self.group()
