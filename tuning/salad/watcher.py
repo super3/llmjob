@@ -506,6 +506,11 @@ class W:
         if not cur and on >= 10 * MIN:
             self.leave(g, f"no mining reading {on / 60:.0f} min after getting PC {g['machine'][:8]}")
             return
+        # A miner that stops (the card is taken back, the driver fails) stops sending readings: leave the PC
+        # once the newest is 6 min old, which allows for a few failed log reads.
+        if cur and t - cur[-1][0] >= 6 * MIN:
+            self.leave(g, f"no mining reading for {(t - cur[-1][0]) / 60:.0f} min on PC {g['machine'][:8]}")
+            return
         # Rule 4: no share after 20 min on a PC.
         if on >= 20 * MIN:
             gap = SHARE_UNITS / (g["rate"] / UNIT_TH)

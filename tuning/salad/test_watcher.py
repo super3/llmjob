@@ -218,6 +218,18 @@ class TestNotMining(Base):
         self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
 
 
+class TestMinerStops(Base):
+    def test_a_pc_whose_miner_stops_is_left(self):
+        g = self.group(pri="medium")
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 10)
+        self.step(g, 5, "m1")  # no readings since
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.step(g, 1, "m1")
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
+        self.assertIn("no mining reading for 6 min", self.events())
+
+
 class TestRule5Profit(Base):
     def test_an_unprofitable_pc_is_left_at_once(self):
         g = self.group(pri="medium")  # $0.19/hr; 100 TH/s earns $0.117
