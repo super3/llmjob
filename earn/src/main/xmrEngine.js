@@ -92,6 +92,12 @@ class XmrEngine extends EventEmitter {
     this.authorized = false;
     this.lostAt = null;
     this.loginRefused = false;
+    // Why the pool can't be used right now, for the UI; cleared by a login.
+    this.poolError = null;
+    // Connections in a row that ended without a login, and the socket error
+    // last logged. A pool that can't be reached is logged once, not every 5 s.
+    this.poolFails = 0;
+    this.lastSockError = null;
     this.job = null;
     this.sentNonces = new Set();   // nonces submitted for this.job
     this.workerPaused = false;     // told to pause: the pool sent nothing it can mine
@@ -135,6 +141,7 @@ class XmrEngine extends EventEmitter {
       pages: this.pages,
       difficulty: this.difficulty,
       lastShareMs: this.lastShareMs,
+      poolError: this.poolConnected(now) ? null : this.poolError,
       uptimeSec: this.running ? Math.max(0, Math.floor((now - this.startedAt) / 1000)) : 0,
     };
   }
@@ -378,7 +385,11 @@ class XmrEngine extends EventEmitter {
       }
     });
     sock.on('error', (err) => {
-      this._log('error', 'pool socket error: ' + err.message);
+      this.poolError = 'can\'t reach the Monero pool: ' + err.message;
+      if (this.poolFails === 0 || err.message !== this.lastSockError) {
+        this._log('error', 'pool socket error: ' + err.message);
+      }
+      this.lastSockError = err.message;
       this.emit('event', {
         type: 'connect-failed', reason: err.message,
         dns: /ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(String(err.message)),
@@ -388,6 +399,10 @@ class XmrEngine extends EventEmitter {
       if (this.sock !== sock) return;
       this.sock = null;
       if (this.authorized) this.lostAt = this.now();
+      else {
+        this.poolFails++;
+        if (!this.poolError) this.poolError = 'the Monero pool closed the connection before the login';
+      }
       this.authorized = false;
       this.sessionId = null;
       // The next session has jobs of its own. Its pool would reject a share
@@ -397,9 +412,13 @@ class XmrEngine extends EventEmitter {
       this.keepaliveIds.clear();
       // stop() lets go of the socket before closing it, so this is a close
       // nobody asked for.
-      const wait = this.loginRefused ? this.t.loginRetry : this.t.reconnect;
+      const refused = this.loginRefused;
+      const wait = refused ? this.t.loginRetry : this.t.reconnect;
       this.loginRefused = false;
-      this._log('info', 'pool connection closed; reconnecting in ' + Math.round(wait / 1000) + ' s');
+      if (this.poolFails <= 1) {
+        this._log('info', 'pool connection closed; reconnecting in ' + Math.round(wait / 1000) + ' s'
+          + (this.poolFails && !refused ? ' (until it connects, the retries are not logged)' : ''));
+      }
       this._scheduleReconnect(wait);
     });
   }
@@ -415,6 +434,9 @@ class XmrEngine extends EventEmitter {
         this.sessionId = m.sessionId;
         this.authorized = true;
         this.lostAt = null;
+        this.poolError = null;
+        this.poolFails = 0;
+        this.lastSockError = null;
         // The reply came in on this.sock, so that is the address that worked.
         this.emit('authorized', { host: this.host, address: this.sock.remoteAddress, family: this.sock.remoteFamily });
         this._log('info', 'logged in to the pool');
@@ -422,6 +444,7 @@ class XmrEngine extends EventEmitter {
         break;
       case 'login-fail':
         this.loginRefused = true;
+        this.poolError = 'the Monero pool refused the login: ' + stratum.errorText(m.error);
         this._log('error', 'the pool refused the login: ' + stratum.errorText(m.error));
         this.sock.destroy();
         break;

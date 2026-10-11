@@ -579,6 +579,7 @@
     if (state.paused) return 'paused while the computer is in use';
     if (!v) return 'starting…';
     if (v.error) return 'stopped: ' + v.error;
+    if (v.pool) return v.pool;
     if (v.state === 'mining') {
       return v.accepted + ' accepted' + (v.rejected ? ' · ' + v.rejected + ' rejected' : '') + ' · ' + v.threads + ' threads';
     }
@@ -589,9 +590,10 @@
     el.cpuRow.hidden = !state.cpuMining;
     const v = state.mining ? state.cpuView : null;
     el.cpuRate.textContent = v ? v.hashrate : '0.00';
-    el.cpuDot.className = 'dot2' + (!v ? '' : v.error ? ' err' : v.state === 'mining' ? ' on' : CPU_STATES[v.state] ? ' busy' : '');
+    const bad = !!(v && (v.error || v.pool));
+    el.cpuDot.className = 'dot2' + (!v ? '' : bad ? ' err' : v.state === 'mining' ? ' on' : CPU_STATES[v.state] ? ' busy' : '');
     el.cpuMeta.textContent = cpuMetaText(v);
-    el.cpuMeta.classList.toggle('err', !!(v && v.error));
+    el.cpuMeta.classList.toggle('err', bad);
     el.cpuBalance.textContent = state.xmrBalance != null && state.xmrOk ? fmt4(state.xmrBalance) + ' XMR' : '';
   }
 

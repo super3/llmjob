@@ -389,6 +389,8 @@ function cpuView() {
     rejected: s.rejected,
     threads: s.threads,
     error: s.state === 'stopped' ? cpuError : null,
+    // Why the pool can't be used, while the miner runs without it.
+    pool: s.state === 'stopped' ? null : s.poolError || null,
   };
 }
 

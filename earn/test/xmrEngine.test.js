@@ -484,9 +484,56 @@ describe('the pool', () => {
     expect(h.sockets).toHaveLength(1);
     h.advance(LOGIN_RETRY_MS);
     expect(h.sockets).toHaveLength(2);
+    expect(h.engine.snapshot().poolError).toBe('the Monero pool refused the login: [-1] Invalid address used for login');
     // The next close is a normal one again.
     h.sock().emit('close');
-    expect(h.lines()).toContain('cpu: pool connection closed; reconnecting in 5 s');
+    h.advance(RECONNECT_MS);
+    expect(h.sockets).toHaveLength(3);
+  });
+
+  // DNS filters, antivirus web protection and firewalls often block Monero
+  // pools. The Mine tab says so, and the log isn't flooded every 5 s.
+  test('a pool it can\'t reach: said once in the log, and kept for the UI until a login', () => {
+    const h = setup();
+    h.engine.start(SETTINGS);
+    for (let i = 0; i < 3; i++) {
+      h.sock().emit('error', new Error('connect ECONNREFUSED 141.95.126.31:1111'));
+      h.sock().emit('close');
+      h.advance(RECONNECT_MS);
+    }
+    expect(h.sockets).toHaveLength(4);
+    expect(h.lines().filter((l) => /pool socket error|pool connection closed/.test(l))).toEqual([
+      'cpu: pool socket error: connect ECONNREFUSED 141.95.126.31:1111',
+      'cpu: pool connection closed; reconnecting in 5 s (until it connects, the retries are not logged)',
+    ]);
+    expect(h.events.filter((e) => e.type === 'connect-failed')).toHaveLength(3);
+    expect(h.engine.snapshot().poolError).toBe('can\'t reach the Monero pool: connect ECONNREFUSED 141.95.126.31:1111');
+    // A new reason is news.
+    h.sock().emit('error', new Error('getaddrinfo ENOTFOUND de.monero.herominers.com'));
+    expect(h.lines()).toContain('cpu: pool socket error: getaddrinfo ENOTFOUND de.monero.herominers.com');
+    h.sock().emit('close');
+    h.advance(RECONNECT_MS);
+
+    h.sock().recv({ id: 1, result: { id: 'sess', job: job('j1') } });
+    expect(h.engine.snapshot().poolError).toBeNull();
+    // After a session, a lost connection is logged again.
+    h.sock().emit('error', new Error('read ECONNRESET'));
+    h.sock().emit('close');
+    expect(h.lines().slice(-2)).toEqual([
+      'cpu: pool socket error: read ECONNRESET',
+      'cpu: pool connection closed; reconnecting in 5 s',
+    ]);
+    // Within the grace for a routine reconnect, the UI doesn't hear of it.
+    expect(h.engine.snapshot().poolError).toBeNull();
+    h.advance(POOL_GRACE_MS);
+    expect(h.engine.snapshot().poolError).toBe('can\'t reach the Monero pool: read ECONNRESET');
+  });
+
+  test('a pool that closes before the login, with no error', () => {
+    const h = setup();
+    h.engine.start(SETTINGS);
+    h.sock().emit('close');
+    expect(h.engine.snapshot().poolError).toBe('the Monero pool closed the connection before the login');
   });
 
   test('a dropped connection reconnects, and counts as up for the grace period', () => {

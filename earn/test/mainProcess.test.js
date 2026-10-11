@@ -236,6 +236,7 @@ jest.mock('../src/main/xmrEngine', () => {
       this.isRunning = jest.fn(() => this.running);
       this.snapshot = jest.fn(() => ({
         state: this.running ? 'mining' : 'stopped', hashrate: 1845.2, accepted: 3, rejected: 1, threads: 7,
+        poolError: this.poolError,
       }));
       XmrEngine.instances.push(this);
     }
@@ -3893,8 +3894,12 @@ describe('CPU mining (Monero)', () => {
     expect(ctx.sent('cpu:stats')).toHaveLength(1);
     cpu.emit('event', { type: 'status' });
     expect(ctx.sent('cpu:stats').slice(-1)[0]).toEqual({
-      state: 'mining', hashrate: '1.85', accepted: 3, rejected: 1, threads: 7, error: null,
+      state: 'mining', hashrate: '1.85', accepted: 3, rejected: 1, threads: 7, error: null, pool: null,
     });
+    // A pool it can't reach shows on the line.
+    cpu.poolError = 'can\'t reach the Monero pool: connect ECONNREFUSED';
+    cpu.emit('event', { type: 'connect-failed', reason: 'connect ECONNREFUSED', dns: false });
+    expect(ctx.sent('cpu:stats').slice(-1)[0].pool).toBe('can\'t reach the Monero pool: connect ECONNREFUSED');
     expect(ctx.sent('miner:stats').slice(-1)[0]).not.toHaveProperty('cpu');
 
     ctx.emit('miner:stop');
@@ -3924,7 +3929,7 @@ describe('CPU mining (Monero)', () => {
     expect(logs(ctx)).toContain('cpu: not mining Monero: Monero address: the checksum does not match: check for a typo');
     expect(ctx.sent('cpu:stats').slice(-1)[0]).toEqual({
       state: 'stopped', hashrate: '0.00', accepted: 0, rejected: 0, threads: 0,
-      error: 'Monero address: the checksum does not match: check for a typo',
+      error: 'Monero address: the checksum does not match: check for a typo', pool: null,
     });
     ctx.emit('miner:stop');
 

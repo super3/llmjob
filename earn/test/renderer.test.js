@@ -1422,6 +1422,12 @@ describe('CPU mining', () => {
     tick({ state: 'odd', hashrate: '0.00', accepted: 0, rejected: 0, threads: 3, error: null });
     expect($('cpu-meta').textContent).toBe('odd');
     expect($('cpu-dot').className).toBe('dot2');
+    // A pool it can't reach, while it runs.
+    tick({ state: 'starting', hashrate: '0.00', accepted: 0, rejected: 0, threads: 3, error: null,
+      pool: 'can\'t reach the Monero pool: getaddrinfo ENOTFOUND de.monero.herominers.com' });
+    expect($('cpu-meta').textContent).toBe('can\'t reach the Monero pool: getaddrinfo ENOTFOUND de.monero.herominers.com');
+    expect($('cpu-meta').classList.contains('err')).toBe(true);
+    expect($('cpu-dot').className).toBe('dot2 err');
     tick({ state: 'stopped', hashrate: '0.00', accepted: 0, rejected: 0, threads: 0, error: 'the CPU miner is missing' });
     expect($('cpu-meta').textContent).toBe('stopped: the CPU miner is missing');
     expect($('cpu-meta').classList.contains('err')).toBe(true);
