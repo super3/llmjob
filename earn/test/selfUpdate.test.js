@@ -130,6 +130,16 @@ describe('planUpdate', () => {
   test('up to date', () => {
     const p = planUpdate({ currentVersion: '0.1.12', release: linuxRelease, platform: 'linux' });
     expect(p.reason).toBe('up-to-date');
+    expect(p.xmrWorkerUrl).toBeNull();
+  });
+
+  // So a CLI without its worker gets this release's, not the next one's.
+  test('up to date on the same release still carries its CPU worker', () => {
+    const release = { version: '0.1.12', assets: { 'llmjob-xmr-worker': 'https://x/xmr' } };
+    expect(planUpdate({ currentVersion: '0.1.12', release, platform: 'linux' }))
+      .toMatchObject({ updateAvailable: false, reason: 'up-to-date', xmrWorkerUrl: 'https://x/xmr' });
+    // A build newer than the latest release keeps its own.
+    expect(planUpdate({ currentVersion: '0.1.13', release, platform: 'linux' }).xmrWorkerUrl).toBeNull();
   });
 
   test('newer release but the asset is missing', () => {

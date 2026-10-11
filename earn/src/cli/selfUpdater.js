@@ -6,6 +6,7 @@
 // download path, not two.
 
 const fs = require('fs');
+const path = require('path');
 const { spawnSync } = require('child_process');
 const { LATEST_RELEASE_API, parseRelease, planUpdate } = require('../shared/selfUpdate');
 const { getJson, downloadFile } = require('../main/io');
@@ -82,19 +83,50 @@ async function applyUpdate(plan, execPath) {
     }
   }
   // The CPU worker. A failed download keeps the one already there, which the
-  // CLI checks for a matching protocol when it starts it.
+  // CLI checks for a matching protocol when it starts it, and the next start
+  // fetches it again (syncXmrWorker).
   if (plan.xmrWorkerUrl) {
-    const worker = require('path').join(dir, 'llmjob-xmr-worker');
-    const workerTmp = worker + '.new-' + process.pid;
     try {
-      await downloadFile(plan.xmrWorkerUrl, workerTmp);
-      fs.chmodSync(workerTmp, 0o755);
-      fs.renameSync(workerTmp, worker);
+      await fetchWorker(plan.xmrWorkerUrl, path.join(dir, WORKER));
     } catch (e) {
-      // Nothing to undo: downloadFile removes its own partial file.
+      // Nothing to undo: fetchWorker removes its temp file.
     }
   }
   return exe;
+}
+
+const WORKER = 'llmjob-xmr-worker';
+
+// Download the CPU worker beside the binary: to a temp file, executable, then
+// renamed into place, so a failure never leaves half a program there.
+async function fetchWorker(url, worker) {
+  const tmp = worker + '.new-' + process.pid;
+  try {
+    await downloadFile(url, tmp);
+    fs.chmodSync(tmp, 0o755);
+    fs.renameSync(tmp, worker);
+  } catch (e) {
+    fs.rmSync(tmp, { force: true });
+    throw e;
+  }
+}
+
+// The version the worker states (--version), or null when it is missing or
+// won't run, such as a copy downloaded by hand without chmod +x.
+function workerVersion(worker) {
+  const r = spawnSync(worker, ['--version'], { encoding: 'utf8', timeout: 10000 });
+  if (r.error || r.status !== 0) return null;
+  return String(r.stdout || '').trim() || null;
+}
+
+// Make the worker beside the binary this release's: fetch it when it is
+// missing, won't run, or states another version. True when it fetched one;
+// throws when the download fails.
+async function syncXmrWorker(url, version, execPath) {
+  const worker = path.join(path.dirname(execPath || process.execPath), WORKER);
+  if (workerVersion(worker) === version) return false;
+  await fetchWorker(url, worker);
+  return true;
 }
 
 // Re-run the (now updated) binary with the same args, flagged so it won't loop.
@@ -110,6 +142,7 @@ module.exports = {
   fetchLatestRelease,
   isPackaged,
   applyUpdate,
+  syncXmrWorker,
   reexec,
   planUpdate,
 };

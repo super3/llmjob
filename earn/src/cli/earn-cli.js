@@ -138,6 +138,7 @@ async function runExplicitUpdate() {
   const plan = planUpdate({ currentVersion: pkg.version, release, platform: process.platform });
   if (!plan.updateAvailable) {
     if (plan.reason === 'up-to-date') log('already up to date (v' + pkg.version + ')');
+    if (plan.xmrWorkerUrl && selfUpdater.isPackaged()) await repairXmrWorker(plan.xmrWorkerUrl);
     else if (plan.reason === 'asset-missing') log('v' + plan.latestVersion + ' is out but has no Linux CLI binary yet', process.stderr);
     else if (plan.reason === 'unsupported-platform') log('self-update is only available for the Linux binary', process.stderr);
     else log('no newer release found', process.stderr);
@@ -161,15 +162,33 @@ async function runExplicitUpdate() {
   }
 }
 
+// The CPU worker beside the binary, made this release's when it is missing,
+// won't run, or is from another release. Without this, a worker download
+// that failed, or an install that never had one, waits for the next release.
+async function repairXmrWorker(url) {
+  try {
+    if (await selfUpdater.syncXmrWorker(url, pkg.version)) {
+      log('fetched llmjob-xmr-worker v' + pkg.version + ' (it was missing, would not run, or was from another release)');
+    }
+  } catch (e) {
+    log('could not fetch llmjob-xmr-worker: ' + e.message, process.stderr);
+  }
+}
+
 // Best-effort auto-update on start. Returns an exit code when it replaced and
 // re-ran the binary (caller should return it), or null to keep mining.
-async function maybeAutoUpdate(argv) {
+async function maybeAutoUpdate(argv, settings) {
   if (process.env[selfUpdater.UPDATED_ENV]) return null; // already the updated child
   const release = await selfUpdater.fetchLatestRelease();
   if (!release) return null; // offline — never block mining
 
   const plan = planUpdate({ currentVersion: pkg.version, release, platform: process.platform });
-  if (!plan.updateAvailable) return null;
+  if (!plan.updateAvailable) {
+    // Only for a rig that mines Monero: a Pearl-only one gets no coin miner
+    // it didn't ask for.
+    if (plan.xmrWorkerUrl && settings.xmrAddress && selfUpdater.isPackaged()) await repairXmrWorker(plan.xmrWorkerUrl);
+    return null;
+  }
 
   if (!selfUpdater.isPackaged()) {
     log('a newer release is available: v' + plan.latestVersion + ' (run "llmjob-earn-cli update")');
@@ -792,7 +811,7 @@ async function run(argv) {
   const noGpus = !!(gpuPick && !gpuPick.indices.length);
 
   if (settings.update) {
-    const code = await maybeAutoUpdate(argv);
+    const code = await maybeAutoUpdate(argv, settings);
     if (code != null) return code;
   }
 

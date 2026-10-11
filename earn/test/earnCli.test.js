@@ -50,6 +50,7 @@ jest.mock('../src/cli/selfUpdater', () => ({
   fetchLatestRelease: jest.fn(),
   isPackaged: jest.fn(),
   applyUpdate: jest.fn(),
+  syncXmrWorker: jest.fn(),
   reexec: jest.fn(),
 }));
 jest.mock('../src/shared/selfUpdate', () => ({ planUpdate: jest.fn() }));
@@ -243,6 +244,7 @@ function applyDefaults(m) {
   m.selfUpdater.isPackaged.mockReturnValue(false);
   m.selfUpdater.applyUpdate.mockResolvedValue('/opt/earn');
   m.selfUpdater.reexec.mockReturnValue(0);
+  m.selfUpdater.syncXmrWorker.mockResolvedValue(false);
   m.selfUpdate.planUpdate.mockReturnValue({ updateAvailable: false, reason: 'up-to-date' });
   m.PearlEngine.startReturns = undefined;
   m.cpuFacts.readCpuFacts.mockReturnValue({ cpus: 16, quotaCpus: null, memoryBytes: 32 * 2 ** 30, l3Bytes: null });
@@ -384,6 +386,34 @@ describe('update subcommand', () => {
     });
   });
 
+  // A CLI installed without its CPU worker, or whose worker download failed.
+  test('up to date, it still fetches this release\'s CPU worker when it needs one', async () => {
+    const m = load();
+    m.selfUpdater.fetchLatestRelease.mockResolvedValue({ version: pkg.version });
+    m.selfUpdater.isPackaged.mockReturnValue(true);
+    m.selfUpdate.planUpdate.mockReturnValue({ updateAvailable: false, reason: 'up-to-date', xmrWorkerUrl: 'https://dl/w' });
+    m.selfUpdater.syncXmrWorker.mockResolvedValue(true);
+    await expect(m.run(['update'])).resolves.toBe(0);
+    expect(m.selfUpdater.syncXmrWorker).toHaveBeenCalledWith('https://dl/w', pkg.version);
+    expect(allOut()).toContain('fetched llmjob-xmr-worker v' + pkg.version + ' (it was missing, would not run, or was from another release)');
+
+    // One already in step says nothing; a failed fetch says why.
+    const m2 = load();
+    m2.selfUpdater.fetchLatestRelease.mockResolvedValue({ version: pkg.version });
+    m2.selfUpdater.isPackaged.mockReturnValue(true);
+    m2.selfUpdate.planUpdate.mockReturnValue({ updateAvailable: false, reason: 'up-to-date', xmrWorkerUrl: 'https://dl/w' });
+    m2.selfUpdater.syncXmrWorker.mockRejectedValue(new Error('HTTP 404'));
+    await expect(m2.run(['update'])).resolves.toBe(0);
+    expect(allErr()).toContain('could not fetch llmjob-xmr-worker: HTTP 404');
+
+    // From source there is no binary to put it beside.
+    const m3 = load();
+    m3.selfUpdater.fetchLatestRelease.mockResolvedValue({ version: pkg.version });
+    m3.selfUpdate.planUpdate.mockReturnValue({ updateAvailable: false, reason: 'up-to-date', xmrWorkerUrl: 'https://dl/w' });
+    await m3.run(['update']);
+    expect(m3.selfUpdater.syncXmrWorker).not.toHaveBeenCalled();
+  });
+
   test('points a from-source run at the download instead of updating', async () => {
     const m = load();
     m.selfUpdater.fetchLatestRelease.mockResolvedValue({ version: '9.9.9' });
@@ -457,6 +487,37 @@ describe('auto-update on start', () => {
     m.selfUpdater.fetchLatestRelease.mockResolvedValue({ version: pkg.version });
     await expect(quick(m)).resolves.toBe(1);
     expect(allOut()).not.toContain('newer release');
+  });
+
+  // Only for a rig that mines Monero: a Pearl-only one gets no coin miner it
+  // did not ask for.
+  test('up to date, a Monero rig fetches a missing CPU worker before it starts', async () => {
+    const XMR_ADDR = '87wTMj88rEGV3BFiYXJc2UHeTGmHikMRWAvAskmPgaF3PZxuxonkKaJZsprNmuhM1Aca7P6UbyatGFHkQfUTYgoNN1JxND9';
+    const m = load();
+    m.fs.existsSync.mockReturnValue(false);
+    m.selfUpdater.fetchLatestRelease.mockResolvedValue({ version: pkg.version });
+    m.selfUpdater.isPackaged.mockReturnValue(true);
+    m.selfUpdate.planUpdate.mockReturnValue({ updateAvailable: false, reason: 'up-to-date', xmrWorkerUrl: 'https://dl/w' });
+    m.PearlEngine.startError = new Error('core not built');
+    await m.run(['--address', ADDR, '--mode', 'mining', '--xmr-address', XMR_ADDR]);
+    expect(m.selfUpdater.syncXmrWorker).toHaveBeenCalledWith('https://dl/w', pkg.version);
+
+    const m2 = load();
+    m2.fs.existsSync.mockReturnValue(false);
+    m2.selfUpdater.fetchLatestRelease.mockResolvedValue({ version: pkg.version });
+    m2.selfUpdater.isPackaged.mockReturnValue(true);
+    m2.selfUpdate.planUpdate.mockReturnValue({ updateAvailable: false, reason: 'up-to-date', xmrWorkerUrl: 'https://dl/w' });
+    await expect(quick(m2)).resolves.toBe(1);
+    expect(m2.selfUpdater.syncXmrWorker).not.toHaveBeenCalled();
+
+    // Nor from source.
+    const m3 = load();
+    m3.fs.existsSync.mockReturnValue(false);
+    m3.selfUpdater.fetchLatestRelease.mockResolvedValue({ version: pkg.version });
+    m3.selfUpdate.planUpdate.mockReturnValue({ updateAvailable: false, reason: 'up-to-date', xmrWorkerUrl: 'https://dl/w' });
+    m3.PearlEngine.startError = new Error('core not built');
+    await m3.run(['--address', ADDR, '--mode', 'mining', '--xmr-address', XMR_ADDR]);
+    expect(m3.selfUpdater.syncXmrWorker).not.toHaveBeenCalled();
   });
 
   test('only mentions a newer release when running from source', async () => {

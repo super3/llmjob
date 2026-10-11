@@ -280,6 +280,7 @@ describe('applyUpdate', () => {
     out2.emit('finish');
     await expect(p).resolves.toBe('/opt/rig/earn');
     expect(fs.rmSync).not.toHaveBeenCalledWith(worker, expect.anything());
+    expect(fs.rmSync).toHaveBeenCalledWith(worker + '.new-' + process.pid, { force: true });
   });
 
   it('defaults the exe path to process.execPath', async () => {
@@ -293,6 +294,65 @@ describe('applyUpdate', () => {
     const out = fs.createWriteStream.mock.results[0].value;
     out.emit('finish');
     await expect(p).resolves.toBe(process.execPath);
+  });
+});
+
+// An install without the worker, or whose worker download failed, gets this
+// release's on the next start instead of at the next release.
+describe('syncXmrWorker', () => {
+  const worker = require('path').join('/opt/rig', 'llmjob-xmr-worker');
+  const tmp = worker + '.new-' + process.pid;
+
+  // Run syncXmrWorker with the worker answering --version as `answer`, and a
+  // download that finishes.
+  async function sync(answer) {
+    spawnSync.mockReturnValue(answer);
+    const res = fakeRes({ statusCode: 200 });
+    wire([res]);
+    const out = fakeWrite();
+    fs.createWriteStream.mockReturnValue(out);
+    const p = updater.syncXmrWorker('https://host/llmjob-xmr-worker', '0.5.14', '/opt/rig/earn');
+    await new Promise((r) => setImmediate(r));
+    res.emit('data', Buffer.from('x'));
+    out.emit('finish');
+    return p;
+  }
+
+  beforeEach(() => {
+    fs.renameSync.mockImplementation(() => {});
+    fs.chmodSync.mockImplementation(() => {});
+  });
+
+  it('leaves a worker from this release alone', async () => {
+    await expect(sync({ status: 0, stdout: '0.5.14\n' })).resolves.toBe(false);
+    expect(spawnSync).toHaveBeenCalledWith(worker, ['--version'], expect.objectContaining({ timeout: 10000 }));
+    expect(https.get).not.toHaveBeenCalled();
+  });
+
+  it('fetches one that is missing, will not run, or is from another release', async () => {
+    for (const answer of [
+      { error: Object.assign(new Error('spawnSync ENOENT'), { code: 'ENOENT' }) },
+      { status: 126, stdout: '' },
+      { status: 0, stdout: '0.5.13\n' },
+      { status: 0, stdout: null },
+    ]) {
+      jest.clearAllMocks();
+      await expect(sync(answer)).resolves.toBe(true);
+      expect(fs.chmodSync).toHaveBeenCalledWith(tmp, 0o755);
+      expect(fs.renameSync).toHaveBeenCalledWith(tmp, worker);
+    }
+  });
+
+  it('a fetch that fails removes its temp file and says why', async () => {
+    fs.renameSync.mockImplementation((from, to) => { if (to === worker) throw new Error('ETXTBSY'); });
+    await expect(sync({ status: 0, stdout: '0.5.13' })).rejects.toThrow('ETXTBSY');
+    expect(fs.rmSync).toHaveBeenCalledWith(tmp, { force: true });
+  });
+
+  it('looks beside the running binary by default', async () => {
+    spawnSync.mockReturnValue({ status: 0, stdout: '0.5.14' });
+    await expect(updater.syncXmrWorker('https://host/w', '0.5.14')).resolves.toBe(false);
+    expect(spawnSync.mock.calls[0][0]).toBe(require('path').join(require('path').dirname(process.execPath), 'llmjob-xmr-worker'));
   });
 });
 
