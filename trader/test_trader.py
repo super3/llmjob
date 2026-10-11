@@ -17,7 +17,7 @@ class Fake:
     def __init__(self, balance="4.123", orders=(), book=BOOK):
         self.calls = []
         self.routes = [("GET", r"/public/markets$", (200, MARKETS)),
-                       ("GET", r"/order-book$", (200, book)),
+                       ("GET", r"/depth$", (200, book)),
                        ("GET", r"/market/orders$", (200, list(orders))),
                        ("GET", r"/account/balances$", (200, [{"currency": "usdt", "balance": "9"},
                                                               {"currency": "prl", "balance": balance}])),
@@ -57,14 +57,15 @@ class TestSell(Base):
         self.assertEqual(self.go(Fake()), 0)
         order = self.fake.made("POST", r"/market/orders$")[0]
         # 3% under the best bid of 1.40 is 1.358: the bids at 1.40 and 1.38 (5 PRL) qualify; we have 4.123
-        self.assertEqual(order[2], {"market": "prlusdt", "side": "sell", "volume": "4.12", "ord_type": "limit",
+        self.assertEqual(order[1], "/trade/market/orders")
+        self.assertEqual(order[2], {"market": "prlusdt", "side": "sell", "amount": "4.12", "type": "limit",
                                     "price": "1.358"})
         self.assertTrue(order[3])
         self.assertIn("SOLD 4.12 of 4.12 PRL at about 1.392", self.logs[-1])
 
     def test_sells_only_what_the_bids_above_the_floor_take(self):
         self.go(Fake(balance="20"))
-        self.assertEqual(self.fake.made("POST", r"/market/orders$")[0][2]["volume"], "5.0")
+        self.assertEqual(self.fake.made("POST", r"/market/orders$")[0][2]["amount"], "5.0")
 
     def test_never_under_min_price(self):
         t.MIN_PRICE = 1.45
@@ -81,11 +82,52 @@ class TestSell(Base):
         self.go(Fake(orders=[{"id": 5, "side": "sell", "remaining_volume": "1", "price": "1.5"}]))
         self.assertTrue(self.fake.made("POST", r"/market/orders/5/cancel$"))
         posts = [c[1] for c in self.fake.calls if c[0] == "POST"]
-        self.assertEqual(posts, ["/market/orders/5/cancel", "/market/orders"])
+        self.assertEqual(posts, ["/trade/market/orders/5/cancel", "/trade/market/orders"])
 
     def test_book_as_price_volume_pairs(self):
         self.go(Fake(book={"bids": [["1.40", "10"]], "asks": []}))
-        self.assertEqual(self.fake.made("POST", r"/market/orders$")[0][2]["volume"], "4.12")
+        self.assertEqual(self.fake.made("POST", r"/market/orders$")[0][2]["amount"], "4.12")
+
+
+class TestPaths(Base):
+    def test_the_documented_paths(self):
+        self.go(Fake())
+        paths = {c[1] for c in self.fake.calls}
+        for p in ("/trade/public/markets", "/trade/public/markets/prlusdt/depth", "/trade/account/balances/spot",
+                  "/trade/market/orders"):
+            self.assertIn(p, paths)
+        self.assertFalse([p for p in paths if p.startswith("/peatio")])
+
+    def test_the_old_public_paths_are_a_fallback(self):
+        f = Fake()
+        f.routes = [r for r in f.routes if r[1] not in (r"/public/markets$", r"/depth$")]
+        f.routes.insert(0, ("GET", r"^/peatio/public/markets$", (200, MARKETS)))
+        f.routes.insert(0, ("GET", r"^/peatio/public/markets/prlusdt/order-book$", (200, BOOK)))
+        self.go(f)
+        self.assertEqual(f.made("POST", r"/market/orders$")[0][2]["amount"], "4.12")
+
+    def test_the_market_by_id(self):
+        f = Fake()
+        f.routes.insert(0, ("GET", r"^/trade/public/markets/prlusdt$", (200, {"id": "prlusdt", "amount_precision": 1,
+                                                                              "price_precision": 3})))
+        self.go(f)
+        self.assertFalse(f.made("GET", r"/public/markets$"))
+        self.assertEqual(f.made("POST", r"/market/orders$")[0][2]["amount"], "4.1")
+
+    def test_balances_come_from_the_first_path_that_answers(self):
+        f = Fake(balance="99")
+        f.routes.insert(0, ("GET", r"/trade/account/balances/spot$", (200, [{"currency": "prl", "balance": "4.123"}])))
+        self.go(f)
+        self.assertEqual(f.made("POST", r"/market/orders$")[0][2]["amount"], "4.12")
+        self.assertFalse(f.made("GET", r"/trade/account/balances$"))
+        self.assertIn("balances from /trade/account/balances/spot", self.logs)
+
+    def test_fill_fields_named_the_trade_api_way(self):
+        f = Fake()
+        f.routes.insert(0, ("GET", r"/market/orders/77$", (200, {"id": 77, "state": "done", "filled_amount": "4.12",
+                                                                   "avg_price": "1.39"})))
+        self.go(f)
+        self.assertIn("SOLD 4.12 of 4.12 PRL at about 1.39", self.logs[-1])
 
 
 class TestMarket(Base):
@@ -94,7 +136,7 @@ class TestMarket(Base):
 
         class Paged(Fake):
             def __call__(self, method, path, params=None, auth=False):
-                if method == "GET" and path == "/public/markets":
+                if method == "GET" and path == "/trade/public/markets":
                     self.calls.append((method, path, params, auth))
                     return 200, page1 if params["page"] == 1 else MARKETS
                 return super().__call__(method, path, params, auth)
@@ -109,7 +151,7 @@ class TestMarket(Base):
                                                                  "amount_precision": 2, "price_precision": 4}])))
         self.go(f)
         self.assertEqual(f.made("POST", r"/market/orders$")[0][2]["market"], "PRL_USDT")
-        self.assertTrue(f.made("GET", r"/public/markets/PRL_USDT/order-book$"))
+        self.assertTrue(f.made("GET", r"^/trade/public/markets/PRL_USDT/depth$"))
 
     def test_a_missing_market_says_what_is_listed(self):
         f = Fake()
@@ -140,7 +182,8 @@ class TestSafety(Base):
         f = Fake()
         f.routes.insert(0, ("GET", r"/account/balances$", (401, {"errors": ["authz.invalid_signature"]})))
         self.assertEqual(self.go(f), 1)
-        self.assertIn("FAILED: balances failed: HTTP 401", self.logs[-1])
+        self.assertIn("FAILED: balances failed: /trade/account/balances/spot HTTP 404; /trade/account/balances HTTP 401",
+                      self.logs[-1])
         self.assertFalse(f.made("POST", r"/market/orders$"))
 
     def test_signature(self):
