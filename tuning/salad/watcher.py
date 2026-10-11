@@ -785,7 +785,8 @@ class W:
             prof = g["prl"] * price - g["spend"]
             # One cell for the box: state, group name less "biz-rtx", priority and PC, joined by no-break spaces
             # so the row stays on one line in a narrow window.
-            box = NB.join([state, re.sub(r"^biz-(rtx)?", "", g["name"]), g["pri"]] + ([g["machine"][:8]] if g["machine"] else []))
+            pri = "med" if g["pri"] == "medium" else g["pri"]
+            box = NB.join([state, re.sub(r"^biz-(rtx)?", "", g["name"]), pri] + ([g["machine"][:8]] if g["machine"] else []))
             rows.append(f"| {box} | {ths:.0f} | {cost:.3f} | "
                         f"{earn - cost:+.3f} | {pct(earn - cost, earn)} | {g['prl']:.3f} | {prof:+.2f} |")
         if ended:
@@ -816,7 +817,7 @@ class W:
         lines = [f"PRL ${price:.3f} · ${usd:.6f}/TH-hr · {iso(t)}", "",
                  "| Box | TH/s | $/hr | Profit/hr | Margin | PRL | Profit $ |",
                  "|---|---|---|---|---|---|---|", *rows, "",
-                 "Box: ⛏️ on a PC · ⏳ waiting for a PC · ⏹️ stopped, then the group (biz-rtx left off), its priority and "
+                 "Box: ⛏️ on a PC · ⏳ waiting for a PC · ⏹️ stopped, then the group (biz-rtx left off), its priority (med = medium) and "
                  "its PC. Others: 🔁 released · ❌ failed. TH/s is the miner's average over the last 10 min on its "
                  "current PC (0 while it starts). $/hr is what Salad bills while a group has a PC (a waiting group costs "
                  "nothing). Profit $ is PRL mined at today's price minus spend; for SafeTrade, USDT received less what "

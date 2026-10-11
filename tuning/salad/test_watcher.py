@@ -855,6 +855,13 @@ class TestRound(Base):
         self.assertIn("**All\u00a0·\u00a01\u00a0mining**", report)
         self.assertTrue(all(l.count("|") == 8 for l in report.splitlines() if l.startswith("|")))
 
+    def test_medium_is_shortened_in_the_table(self):
+        g = self.group(pri="medium")
+        g["has_pc"], g["machine"] = True, "abcdef1234"
+        self.x.write_report()
+        with open(os.path.join(TMP, "report.md")) as f:
+            self.assertIn("| ⛏️\u00a04080\u00a0med\u00a0abcdef12 |", f.read())
+
     def test_a_busy_round_reads_more_pages(self):
         g = self.group()
         g["created"] = T0 - 3600
