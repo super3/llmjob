@@ -585,8 +585,8 @@ class TestPoolTotals(Base):
         with open(os.path.join(TMP, "report.md")) as f:
             report = f.read()
         # 6 PRL × $1.39 = $8.34 against $6.00 spent
-        self.assertIn("Pool credited 6.000 PRL (paid 1.500, unlocked 0.500, unconfirmed 4.000), 75% of the 8.000 "
-                      "expected: +$2.34 at today's price", report)
+        self.assertIn("| 🏦 Pool balance | paid 1.500 · unlocked 0.500 · unconfirmed 4.000 | | | | | | 6.000 | +2.34 |", report)
+        self.assertIn("The pool has credited 75% of the PRL we expected.", report)
 
 
 class TestCritic(Base):
