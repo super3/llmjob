@@ -686,9 +686,13 @@ class TestPoolTotals(Base):
         self.x.write_report()
         with open(os.path.join(TMP, "report.md")) as f:
             report = f.read()
-        # 6 PRL × $1.39 = $8.34 against $6.00 spent
-        self.assertIn("| 🏦\u00a0Pool\u00a0credited | | | | | 6.000 | +2.34 |", report)
-        self.assertIn("The pool has credited 75% of the PRL we expected (paid 1.500, unlocked 0.500, unconfirmed 4.000).", report)
+        # 8 PRL mined for $6.00: $0.750 each. The pool has credited 6 of them.
+        self.assertIn("| **6.00** | **8.000** | **+5.12** |", report)
+        self.assertIn("- 💵 Spent on Salad: $6.00; 8.000 PRL mined at $0.750 each (break-even), worth $1.390 today.", report)
+        self.assertIn("- 🏦 Pool: 4.000 unconfirmed · 0.500 unlocked (paid out at 1 PRL) · 1.500 paid to SafeTrade. "
+                      "That's 75% of what we mined", report)
+        self.assertIn("- ⏳ Not yet locked: +5.12 (8.000 PRL not sold yet", report)  # nothing sold: 8 × (1.39 − 0.75)
+        self.assertNotIn("Locked in", report)
 
 
 class TestCritic(Base):
@@ -809,15 +813,28 @@ class TestTraderStatus(Base):
         self.assertEqual(self.x.st["trader_status"]["usdt"], 7.08)
 
     def test_the_report_shows_safetrade(self):
-        self.group()
+        g = self.group()
+        g["prl"], g["spend"] = 10.0, 8.0   # $0.80 a PRL
         self.x.st["trader_status"] = dict(self.STATUS)
         self.x.write_report()
         with open(os.path.join(TMP, "report.md")) as f:
             report = f.read()
-        # 7.10 USDT less 0.0142 fees, less 5.2564 PRL at the ledger's cost per PRL (no PRL mined here, so none)
-        self.assertIn("| 💱\u00a0SafeTrade\u00a0sold | | | | | 5.256 | +7.09 |", report)
-        self.assertIn("- SafeTrade at the trader's 09:05Z run: holds 7.08 USDT and 0.00 PRL; sold 5.2564 PRL so far for 7.10 USDT (average 1.3507, "
-                      "fees 0.0142); that run sold 5.2564 PRL at 1.3507.", report)
+        self.assertIn("- 💱 SafeTrade (at the trader's 09:05Z run): sold 5.256 PRL for 7.09 USDT after fees (average 1.3507); "
+                      "holds 7.08 USDT and 0.000 PRL.", report)
+        self.assertIn("- The trader's last run sold 5.2564 PRL at 1.3507.", report)
+        # 7.0858 USDT net, less 5.2564 PRL × $0.80 = +2.88; 4.7436 PRL unsold × ($1.39 − $0.80) = +2.80
+        self.assertIn("- 🔒 Locked in: +2.88 (5.256 PRL sold, less $0.800 each to mine).", report)
+        self.assertIn("- ⏳ Not yet locked: +2.80 (4.744 PRL not sold yet", report)
+
+    def test_sales_entered_by_hand_count_until_the_logs_can_be_read(self):
+        g = self.group()
+        g["prl"], g["spend"] = 10.0, 8.0
+        self.x.cfg["safetrade"] = {"sold": 5.2564, "received": 7.1, "fees": 0.0142, "usdt": 7.08}
+        self.x.write_report()
+        with open(os.path.join(TMP, "report.md")) as f:
+            report = f.read()
+        self.assertIn("- 💱 SafeTrade (entered by hand): sold 5.256 PRL", report)
+        self.assertIn("- 🔒 Locked in: +2.88", report)
 
 
 class TestRound(Base):
@@ -853,7 +870,7 @@ class TestRound(Base):
             report = f.read()
         self.assertIn("| ⛏️\u00a04080\u00a0batch\u00a0m1 | 199 |", report)
         self.assertIn("**All\u00a0·\u00a01\u00a0mining**", report)
-        self.assertTrue(all(l.count("|") == 8 for l in report.splitlines() if l.startswith("|")))
+        self.assertTrue(all(l.count("|") == 9 for l in report.splitlines() if l.startswith("|")))
 
     def test_boxes_are_sorted_by_profit_an_hour(self):
         slow = self.group(cls="RTX 2060 (6 GB)", pri="low")

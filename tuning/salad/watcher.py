@@ -42,7 +42,7 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                "min_margin": 0.10, "max_new_per_hour": 3, "max_per_class": 1,
                "search_every_min": 60, "retry_after_min": 60, "no_pc_streak": 3, "no_pc_hold_min": 180, "drift": 0.15,
                "upgrade_gain": 0.05, "upgrade_every_min": 15,
-               "trader": None,
+               "trader": None, "safetrade": None,
                "wallet": os.environ.get("PRL_WALLET", "")}
 
 
@@ -787,8 +787,8 @@ class W:
             # so the row stays on one line in a narrow window.
             pri = "med" if g["pri"] == "medium" else g["pri"]
             box = NB.join([state, re.sub(r"^biz-(rtx)?", "", g["name"]), pri] + ([g["machine"][:8]] if g["machine"] else []))
-            act_rows.append((earn - cost, f"| {box} | {ths:.0f} | {cost:.3f} | "
-                             f"{earn - cost:+.3f} | {pct(earn - cost, earn)} | {g['prl']:.3f} | {prof:+.2f} |"))
+            act_rows.append((earn - cost, f"| {box} | {ths:.0f} | {cost:.3f} | {earn - cost:+.3f} | "
+                             f"{pct(earn - cost, earn)} | {g['spend']:.2f} | {g['prl']:.3f} | {prof:+.2f} |"))
         # Most profitable an hour first; groups waiting for a PC make nothing, so they sit above any losing.
         rows = [r for _, r in sorted(act_rows, key=lambda x: -x[0])]
         if ended:
@@ -797,51 +797,54 @@ class W:
             eprl = sum(g["prl"] for g in ended)
             esp = sum(g["spend"] for g in ended)
             rows.append(f"| {NB.join(['Others', f'×{len(ended)}', f'🔁{rel}', f'❌{fail}'])} | — | — | — | — | "
-                        f"{eprl:.3f} | {eprl * price - esp:+.2f} |")
+                        f"{esp:.2f} | {eprl:.3f} | {eprl * price - esp:+.2f} |")
         spend = sum(g["spend"] for g in st["groups"].values())
         prl = sum(g["prl"] for g in st["groups"].values())
+        cost_prl = spend / prl if prl > 0 else 0.0
         rows.append(f"| **All{NB}·{NB}{mining}{NB}mining** | **{all_ths:.0f}** | **{all_cost:.3f}** | "
-                    f"**{all_earn - all_cost:+.3f}** | **{pct(all_earn - all_cost, all_earn)}** | **{prl:.3f}** | "
-                    f"**{prl * price - spend:+.2f}** |")
-        # What the pool has credited for the same work, with profit on that instead of on the miners' figures.
-        pt = st.get("pool_tot")
-        if pt:
-            cred = pt["paid"] + pt["balance"] + pt["unconfirmed"]
-            rows.append(f"| 🏦{NB}Pool{NB}credited | | | | | {cred:.3f} | {cred * price - spend:+.2f} |")
-        # The autoseller on SafeTrade: what's there now, and everything it has sold.
-        ts = st.get("trader_status")
-        if ts:
-            # Profit on what was sold: USDT received after fees, less what that PRL cost to mine.
-            got = ts.get("received", 0) - ts.get("fees", 0) - (ts.get("sold", 0) * spend / prl if prl > 0 else 0)
-            rows.append(f"| 💱{NB}SafeTrade{NB}sold | | | | | {ts.get('sold', 0):.3f} | {got:+.2f} |")
+                    f"**{all_earn - all_cost:+.3f}** | **{pct(all_earn - all_cost, all_earn)}** | **{spend:.2f}** | "
+                    f"**{prl:.3f}** | **{prl * price - spend:+.2f}** |")
         credit = self.cfg["credit_start"] + self.cfg["credit_offset"] - spend
         hours = credit / all_cost if all_cost > 0 else None
         lines = [f"PRL ${price:.3f} · ${usd:.6f}/TH-hr · {iso(t)}", "",
-                 "| Box | TH/s | $/hr | Profit/hr | Margin | PRL | Profit $ |",
-                 "|---|---|---|---|---|---|---|", *rows, "",
-                 "Boxes are sorted by profit an hour. Box: ⛏️ on a PC · ⏳ waiting for a PC · ⏹️ stopped, then the group (biz-rtx left off), its priority (med = medium) and "
-                 "its PC. Others: 🔁 released · ❌ failed. TH/s is the miner's average over the last 10 min on its "
-                 "current PC (0 while it starts). $/hr is what Salad bills while a group has a PC (a waiting group costs "
-                 "nothing). Profit $ is PRL mined at today's price minus spend; for SafeTrade, USDT received less what "
-                 "the sold PRL cost to mine.", "",
-                 f"- Spent ${spend:.2f}; mined {prl:.3f} PRL.",
-                 (f"- Each PRL cost ${spend / prl:.3f} to mine (break-even sale price); it's worth ${price:.3f} today."
-                  if prl > 0 else "- No PRL mined yet, so no cost per PRL."),
-                 f"- Salad credit left: ${credit:.2f} of ${self.cfg['credit_start'] + self.cfg['credit_offset']:.2f} (our count)"
-                 + (f"; lasts {hours:.0f} h at ${all_cost:.3f}/hr." if hours is not None else "; nothing is billing now.")]
+                 "| Box | TH/s | $/hr | Profit/hr | Margin | Spent $ | PRL | Profit $ |",
+                 "|---|---|---|---|---|---|---|---|", *rows, "",
+                 "Boxes are sorted by profit an hour. Box: ⛏️ on a PC · ⏳ waiting for a PC · ⏹️ stopped, then the group "
+                 "(biz-rtx left off), its priority (med = medium) and its PC. Others: 🔁 released · ❌ failed. TH/s is the "
+                 "miner's average over the last 10 min on its current PC (0 while it starts). $/hr is what Salad bills while "
+                 "a group has a PC (a waiting group costs nothing). Spent $ is the group's whole bill so far. PRL is our "
+                 "estimate from the miner's speed: the pool pays per account, not per box. Profit $ is that PRL at today's "
+                 "price minus Spent $.", ""]
+        # Money, stage by stage: Salad bill, PRL mined, at the pool, paid to SafeTrade, sold. What's sold is
+        # locked in; the rest still moves with the price and the pool's luck. Each PRL carries the average cost.
+        lines.append("**Money**")
+        lines.append(f"- 💵 Spent on Salad: ${spend:.2f}" + (f"; {prl:.3f} PRL mined at ${cost_prl:.3f} each "
+                     f"(break-even), worth ${price:.3f} today." if prl > 0 else "; no PRL mined yet."))
+        pt = st.get("pool_tot")
         if pt:
-            lines.append(f"- The pool has credited {cred / prl * 100 if prl > 0 else 0:.0f}% of the PRL we expected (paid "
-                         f"{pt['paid']:.3f}, unlocked {pt['balance']:.3f}, unconfirmed {pt['unconfirmed']:.3f}). It pays "
-                         "as it finds blocks, so this lags and swings with its luck.")
+            cred = pt["paid"] + pt["balance"] + pt["unconfirmed"]
+            lines.append(f"- 🏦 Pool: {pt['unconfirmed']:.3f} unconfirmed · {pt['balance']:.3f} unlocked (paid out at 1 PRL) "
+                         f"· {pt['paid']:.3f} paid to SafeTrade. That's {cred / prl * 100 if prl > 0 else 0:.0f}% of what "
+                         "we mined; the rest comes as the pool finds blocks.")
+        # SafeTrade from the trader's logs, or from config "safetrade" (entered by hand) until those can be read.
+        ts = st.get("trader_status") or self.cfg.get("safetrade")
+        sold = (ts or {}).get("sold", 0)
         if ts:
-            when = time.strftime("%H:%M", time.gmtime(ts["t"])) if ts.get("t") else "?"
-            last = ts.get("last") or {}
-            lines.append(f"- SafeTrade at the trader's {when}Z run: holds {ts.get('usdt', 0):.2f} USDT and "
-                         f"{ts.get('prl', 0) + ts.get('prl_locked', 0):.2f} PRL; sold {ts.get('sold', 0):g} PRL so far for "
-                         f"{ts.get('received', 0):.2f} USDT"
-                         + (f" (average {ts['received'] / ts['sold']:.4f}, fees {ts.get('fees', 0):.4f})" if ts.get("sold") else "")
-                         + (f"; that run sold {last.get('sold', 0):g} PRL at {last.get('average')}" if last else "; that run sold nothing")
-                         + ".")
+            when = (f"at the trader's {time.strftime('%H:%M', time.gmtime(ts['t']))}Z run" if ts.get("t")
+                    else "entered by hand")
+            net = ts.get("received", 0) - ts.get("fees", 0)
+            lines.append(f"- 💱 SafeTrade ({when}): sold {sold:.3f} PRL for {net:.2f} USDT after fees"
+                         + (f" (average {ts['received'] / sold:.4f})" if sold else "")
+                         + f"; holds {ts.get('usdt', 0):.2f} USDT and {ts.get('prl', 0) + ts.get('prl_locked', 0):.3f} PRL.")
+            last = ts.get("last")
+            if last:
+                lines.append(f"- The trader's last run sold {last.get('sold', 0):g} PRL at {last.get('average')}.")
+            lines.append(f"- 🔒 Locked in: {net - sold * cost_prl:+.2f} ({sold:.3f} PRL sold, less ${cost_prl:.3f} each to mine).")
+        unsold = prl - sold
+        lines.append(f"- ⏳ Not yet locked: {unsold * (price - cost_prl):+.2f} ({unsold:.3f} PRL not sold yet, at today's "
+                     "price; it moves with the price and the pool's luck).")
+        lines.append(f"- Salad credit left: ${credit:.2f} of ${self.cfg['credit_start'] + self.cfg['credit_offset']:.2f} (our count)"
+                     + (f"; lasts {hours:.0f} h at ${all_cost:.3f}/hr." if hours is not None else "; nothing is billing now."))
         if st["credits_out"]:
             lines.append("- ⚠️ Credit ran out: Salad stopped the groups. They restart after a top-up.")
         with open(REPORT + ".tmp", "w") as f:
