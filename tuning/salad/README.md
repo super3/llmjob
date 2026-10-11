@@ -180,7 +180,7 @@ watcher checks it against the pool and writes a `DRIFT` event when they disagree
   this fires only when it's short by more than 2 / √blocks too.
 
 Each table row fits on one line. A box's first cell holds its state, its group name without `biz-rtx`,
-its priority (`med` for medium) and its PC (`⛏️ 2080-2 low cb6d4bd1`), joined by no-break spaces so it doesn't wrap.
+its priority (`med` for medium) and its PC (`⛏️ 2080-2 low cb6d4bd1`), joined by no-break spaces so it doesn't wrap. Boxes are sorted by profit an hour, best first.
 
 The table has a **🏦 Pool credited** row under **All**: the PRL the pool has credited (paid, unlocked
 and unconfirmed), and the profit on it, next to the expected figures above it. The bullet under the

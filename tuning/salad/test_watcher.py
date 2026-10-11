@@ -855,6 +855,18 @@ class TestRound(Base):
         self.assertIn("**All\u00a0·\u00a01\u00a0mining**", report)
         self.assertTrue(all(l.count("|") == 8 for l in report.splitlines() if l.startswith("|")))
 
+    def test_boxes_are_sorted_by_profit_an_hour(self):
+        slow = self.group(cls="RTX 2060 (6 GB)", pri="low")
+        fast = self.group(cls="RTX 4080 (16 GB)", pri="low")
+        self.group(cls="RTX 4070 (12 GB)", pri="low")  # waiting: no PC
+        for g, m, ths in ((slow, "m1", 40), (fast, "m2", 199)):
+            g["has_pc"], g["machine"] = True, m
+            g["readings"] = [[self.clock[0] - 60, m, float(ths), 0]]
+        self.x.write_report()
+        with open(os.path.join(TMP, "report.md")) as f:
+            boxes = [l.split(" | ")[0] for l in f.read().splitlines() if l.startswith("| ⛏") or l.startswith("| ⏳")]
+        self.assertEqual([b.split("\u00a0")[1] for b in boxes], ["4080", "2060", "4070"])
+
     def test_medium_is_shortened_in_the_table(self):
         g = self.group(pri="medium")
         g["has_pc"], g["machine"] = True, "abcdef1234"
