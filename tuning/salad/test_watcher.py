@@ -367,7 +367,10 @@ class TestRule6PortBlocked(Base):
         self.step(g, 1, "m2")
         g["blocked"].append("m2")
         self.step(g, 1, "m2")
-        self.assertEqual(g["end_kind"], "failed")
+        # Out of moves means bad PCs, not a bad class: released, so the class can still get new groups.
+        self.assertEqual(g["ended"] is not None, True)
+        self.assertEqual(g["end_kind"], "released")
+        self.assertIn("already reallocated 3 times", g["end_reason"])
 
     def test_old_pc_still_showing_after_a_reallocation_is_not_a_new_pc(self):
         g = self.group()

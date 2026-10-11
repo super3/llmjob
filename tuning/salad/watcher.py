@@ -312,7 +312,9 @@ class W:
 
     def reallocate(self, g, reason):
         if g["reallocs"] >= 3:
-            self.delete(g, "failed", f"{reason}; already reallocated 3 times")
+            # Running out of moves means bad PCs (slow, capped, blocked port), not a bad class: leave() only
+            # reallocates classes that have paid. Released, so the class isn't barred from new groups.
+            self.delete(g, "released", f"{reason}; already reallocated 3 times")
             return
         if not g.get("instance"):
             return
