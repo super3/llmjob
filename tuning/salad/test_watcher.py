@@ -230,6 +230,37 @@ class TestMinerStops(Base):
         self.assertIn("no mining reading for 6 min", self.events())
 
 
+class TestRepeatedLine(Base):
+    def test_a_repeated_line_from_a_dead_miner_is_not_a_reading(self):
+        self.x.cfg["search"] = False
+        g = self.group()
+        g["created"] = T0 - 3600
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
+        lines = [("2027-01-15T07:5%d:00Z" % i, "[mining g0] 07:5%d:00 112.1 TH/s · 326 accepted · 0 rejected · up 1h 02m" % i)
+                 for i in range(5)]  # the same line five times, uptime frozen
+        self.http.on("POST", "/log-entries", (200, {"items": [
+            {"text_log": txt, "time": tm, "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}}
+            for tm, txt in lines]}))
+        self.x.round()
+        self.assertEqual(len(g["readings"]), 1)
+        self.assertAlmostEqual(g["prl"], 112.1 / 60 * USD_TH_HR / PRICE)
+
+    def test_a_steady_live_miner_still_counts(self):
+        self.x.cfg["search"] = False
+        g = self.group()
+        g["created"] = T0 - 3600
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
+        lines = [("2027-01-15T07:5%d:00Z" % i, "[mining g0] 07:5%d:00 45.0 TH/s · 12 accepted · 0 rejected · up 1h 0%dm" % (i, i))
+                 for i in range(5)]  # same rate and shares, but the uptime moves
+        self.http.on("POST", "/log-entries", (200, {"items": [
+            {"text_log": txt, "time": tm, "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}}
+            for tm, txt in lines]}))
+        self.x.round()
+        self.assertEqual(len(g["readings"]), 5)
+
+
 class TestRule5Profit(Base):
     def test_an_unprofitable_pc_is_left_at_once(self):
         g = self.group(pri="medium")  # $0.19/hr; 100 TH/s earns $0.117
