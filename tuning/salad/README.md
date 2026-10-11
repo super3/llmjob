@@ -169,7 +169,8 @@ watcher checks it against the pool and writes a `DRIFT` event when they disagree
   pays a share of each block it finds, so with few blocks credit runs well above or below the work;
   this fires only when it's short by more than 2 / √blocks too.
 
-The report shows the credited PRL and the profit on it next to the expected figures.
+The table has a **Pool balance** row under **All**: what the pool has paid, unlocked and still holds
+unconfirmed, and the profit on that credited PRL, next to the expected figures above it.
 
 ## Safety net
 

@@ -701,6 +701,12 @@ class W:
         rows.append(f"| **All** | {mining} GPU{'s' if mining != 1 else ''} mining | | **{all_ths:.0f}** | **{all_cost:.3f}** | "
                     f"**{all_earn - all_cost:+.3f}** | **{pct(all_earn - all_cost, all_earn)}** | **{prl:.3f}** | "
                     f"**{prl * price - spend:+.2f}** |")
+        # What the pool has credited for the same work, with profit on that instead of on the miners' figures.
+        pt = st.get("pool_tot")
+        if pt:
+            cred = pt["paid"] + pt["balance"] + pt["unconfirmed"]
+            rows.append(f"| 🏦 Pool balance | paid {pt['paid']:.3f} · unlocked {pt['balance']:.3f} · unconfirmed "
+                        f"{pt['unconfirmed']:.3f} | | | | | | {cred:.3f} | {cred * price - spend:+.2f} |")
         credit = self.cfg["credit_start"] + self.cfg["credit_offset"] - spend
         hours = credit / all_cost if all_cost > 0 else None
         lines = [f"PRL ${price:.3f} · ${usd:.6f}/TH-hr · {iso(t)}", "",
@@ -714,13 +720,9 @@ class W:
                   if prl > 0 else "- No PRL mined yet, so no cost per PRL."),
                  f"- Salad credit left: ${credit:.2f} of ${self.cfg['credit_start'] + self.cfg['credit_offset']:.2f} (our count)"
                  + (f"; lasts {hours:.0f} h at ${all_cost:.3f}/hr." if hours is not None else "; nothing is billing now.")]
-        pt = st.get("pool_tot")
         if pt:
-            cred = pt["paid"] + pt["balance"] + pt["unconfirmed"]
-            lines.append(f"- Pool credited {cred:.3f} PRL (paid {pt['paid']:.3f}, unlocked {pt['balance']:.3f}, "
-                         f"unconfirmed {pt['unconfirmed']:.3f}), {cred / prl * 100 if prl > 0 else 0:.0f}% of the "
-                         f"{prl:.3f} expected: {'+' if cred * price >= spend else '-'}${abs(cred * price - spend):.2f} at today's price. "
-                         "The pool pays as it finds blocks, so this lags and swings with its luck.")
+            lines.append(f"- The pool has credited {cred / prl * 100 if prl > 0 else 0:.0f}% of the PRL we expected. It pays "
+                         "as it finds blocks, so this lags and swings with its luck.")
         if st["credits_out"]:
             lines.append("- ⚠️ Credit ran out: Salad stopped the groups. They restart after a top-up.")
         with open(REPORT + ".tmp", "w") as f:
