@@ -537,6 +537,10 @@ describe('--xmr-address / --cpu-threads', () => {
     const r = parseCliArgs(['-a', ADDR, '--xmr-address', XMR, '--cpu-priority=realtime']);
     expect(r.errors).toEqual(['invalid --cpu-priority: realtime (choices: idle, low, normal)']);
     expect(r.settings.cpuPriority).toBeNull();
+    // A HiveOS Extra config with a priority and no address mined nothing on
+    // the CPU and said nothing.
+    expect(parseCliArgs(['-a', ADDR, '--cpu-priority', 'normal']).errors)
+      .toEqual(['--cpu-priority needs --xmr-address (the Monero address CPU mining pays)']);
   });
 
   test('--help says what they do', () => {

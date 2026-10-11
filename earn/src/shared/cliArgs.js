@@ -217,8 +217,11 @@ function buildSettings(opts, errors, report, update, serve) {
   let cpuPriority = null;
   if (opts['--cpu-priority'] != null) {
     const p = String(opts['--cpu-priority']).trim();
-    if (PRIORITIES.includes(p)) cpuPriority = p;
-    else errors.push('invalid --cpu-priority: ' + p + ' (choices: ' + PRIORITIES.join(', ') + ')');
+    if (!PRIORITIES.includes(p)) errors.push('invalid --cpu-priority: ' + p + ' (choices: ' + PRIORITIES.join(', ') + ')');
+    // Without an address there is no CPU mining for it to apply to; say so
+    // rather than ignore it, as --cpu-threads does.
+    else if (opts['--xmr-address'] == null) errors.push('--cpu-priority needs --xmr-address (the Monero address CPU mining pays)');
+    else cpuPriority = p;
   }
 
   const statsFile = opts['--stats-file'] != null ? String(opts['--stats-file']) : null;
