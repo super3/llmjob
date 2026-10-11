@@ -279,7 +279,8 @@ around [tevador/RandomX](https://github.com/tevador/RandomX) (BSD-3-Clause),
 the library Monero itself uses ([`xmr-worker/`](xmr-worker)). The app runs it
 as a separate process, so if it crashes, or an antivirus removes it, CPU mining
 stops and Pearl mining carries on. A worker that stops is started again after
-30 seconds, and left off after three quick failures in a row. It checks itself
+30 seconds, up to three times; if it stops within 10 minutes of each of those
+restarts, it is left off. It checks itself
 against RandomX's test vectors when it starts and checks every share again
 before it is sent. It ships beside the Pearl cores: in the
 installer's `resources/native/` and beside the CLI binary. There is none for
