@@ -42,6 +42,7 @@ Config keys:
 | `max_per_class` | Most groups of one class (1). |
 | `search_every_min` | Minutes between searches while a slot is empty (60). |
 | `retry_after_min` | Minutes before a class released for want of a PC is tried again (60). |
+| `no_pc_streak`, `no_pc_hold_min` | A class whose last 3 groups got no PC goes last for 180 min. |
 
 Tests: `python3 -m unittest discover -s tuning/salad`. They fake Salad, the pool and the clock.
 
@@ -58,7 +59,8 @@ each PC on its own readings.
    and the quota. A class gets `max_per_class` groups, but a second only while every group of it is on a
    PC clearing the margin, and never after one of its groups failed. Each class is tried once on an
    account, as on the first one: a class whose group failed (rules 4 to 6) isn't created again. A class
-   whose groups only got no PC (released) is tried again `retry_after_min` later. Besides the classes
+   whose groups only got no PC (released) is tried again `retry_after_min` later, but when its last
+   `no_pc_streak` groups never got a PC at all, it goes after every other class for `no_pc_hold_min`. Besides the classes
    measured on Salad, the search knows benchmark rates for cards not tried there yet (see `KNOWN`);
    rule 5 judges each of their PCs on its own readings.
 2. **No PC at a priority within 10 min:** move to the next priority that still clears 10%. If none is

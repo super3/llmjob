@@ -38,7 +38,7 @@ KNOWN = {
 DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_token": 0,
                "credit_start": 100.0, "credit_offset": 0.0, "box_ver": "v0.5.13", "ver_override": {}, "report_min": 10,
                "min_margin": 0.10, "max_new_per_hour": 3, "max_per_class": 1,
-               "search_every_min": 60, "retry_after_min": 60,
+               "search_every_min": 60, "retry_after_min": 60, "no_pc_streak": 3, "no_pc_hold_min": 180,
                "wallet": os.environ.get("PRL_WALLET", "")}
 
 
@@ -540,6 +540,14 @@ class W:
             return None
         return margin_of(sum(r[2] for r in post[-3:]) / 3 * self.st["mkt"]["usd_th_hr"], g["price"])
 
+    def unplaced(self, cls, t):
+        """True when the class's last no_pc_streak groups all ended without ever getting a PC, the latest within
+        no_pc_hold_min: the search then tries it after every other class, so it stops taking a slot it can't fill."""
+        ended = sorted((g for g in self.st["groups"].values() if g["class"] == cls and g["ended"]),
+                       key=lambda g: g["ended"], reverse=True)[:self.cfg["no_pc_streak"]]
+        return (len(ended) == self.cfg["no_pc_streak"] and all(g["end_kind"] == "released" and not g["had_pc"] for g in ended)
+                and t - ended[0]["ended"] < 60 * self.cfg["no_pc_hold_min"])
+
     def leave(self, g, why):
         """Stop paying for this PC: another PC if the class has paid before, otherwise delete the group."""
         if self.paid(g):
@@ -579,11 +587,11 @@ class W:
             for p in PRIS:
                 if (a.get(f"available_gpu_{p}") or 0) > 0 and self.margin(cls, p) >= self.cfg["min_margin"]:
                     profit = rate * st["mkt"]["usd_th_hr"] - st["classes"][cls]["prices"][p]
-                    cands.append((not self.paid(cls), -profit, cls, p))
+                    cands.append((self.unplaced(cls, t), not self.paid(cls), -profit, cls, p))
                     break
         cands.sort()
         made = 0
-        for _, _, cls, p in cands:
+        for *_, cls, p in cands:
             if made >= room or st["credits_out"]:
                 break
             if self.create(cls, p):
