@@ -1,6 +1,6 @@
 # Tests for watcher.py's rules, with Salad, the pool and the clock faked.
 # Run: python3 -m unittest discover -s tuning/salad
-import importlib.util, os, re, tempfile, unittest
+import importlib.util, json, os, re, tempfile, unittest
 
 TMP = tempfile.mkdtemp()
 os.environ["SALAD_MINE_DIR"] = TMP
@@ -28,8 +28,9 @@ class Fake:
     def on(self, method, frag, resp):
         self.routes.insert(0, (method, frag, resp))
 
-    def __call__(self, method, url, body=None, ctype="application/json", timeout=60):
+    def __call__(self, method, url, body=None, ctype="application/json", timeout=60, headers=None):
         self.calls.append((method, url, body))
+        self.headers = headers
         for m, frag, resp in self.routes:
             if m == method and re.search(frag, url):
                 return resp(body) if callable(resp) else resp
@@ -653,6 +654,83 @@ class TestCritic(Base):
         self.pool(cred=3.0, blocks=6)  # 2 / sqrt(6) = 82%
         self.x.critic(self.clock[0])
         self.assertNotIn("DRIFT", self.events())
+
+
+class TestTraderStatus(Base):
+    CFG = {"project": "p1", "service": "s1", "environment": "e1"}
+    STATUS = {"t": 1800003900, "market": "prlusdt", "prl": 0.0, "prl_locked": 0.0, "usdt": 7.08, "usdt_locked": 0.0,
+              "sold": 5.2564, "received": 7.1, "fees": 0.0142, "trades": 2,
+              "last": {"order": 77, "sold": 5.2564, "average": 1.3507}}
+
+    def railway(self, deployments=("d2", "d1"), logs=None, status=200):
+        logs = logs if logs is not None else {"d2": ["starting", "STATUS " + json.dumps(self.STATUS)]}
+        def answer(body):
+            q = body["query"]
+            if "deployments(" in q:
+                return status, {"data": {"deployments": {"edges": [{"node": {"id": d}} for d in deployments]}}}
+            return status, {"data": {"deploymentLogs": [{"message": m, "timestamp": "2027-01-15T08:05:01Z"}
+                                                        for m in logs.get(body["variables"]["id"], [])]}}
+        self.http.on("POST", "backboard.railway.com", answer)
+
+    def test_the_newest_status_line_is_read(self):
+        self.x.cfg["trader"] = self.CFG
+        self.railway()
+        self.x.trader()
+        self.assertEqual(self.x.st["trader_status"]["usdt"], 7.08)
+        q = self.http.made("POST", "backboard")[0][2]
+        self.assertEqual(q["variables"]["i"], {"projectId": "p1", "serviceId": "s1", "environmentId": "e1"})
+
+    def test_an_older_deployment_is_read_when_the_newest_has_no_status(self):
+        self.x.cfg["trader"] = self.CFG
+        self.railway(logs={"d2": ["building"], "d1": ["STATUS " + json.dumps(self.STATUS)]})
+        self.x.trader()
+        self.assertEqual(self.x.st["trader_status"]["sold"], 5.2564)
+
+    def test_read_at_most_every_5_min(self):
+        self.x.cfg["trader"] = self.CFG
+        self.railway()
+        self.x.trader()
+        self.clock[0] += 120
+        self.x.trader()
+        self.assertEqual(len(self.http.made("POST", "backboard")), 2)   # deployments + one deployment's logs
+        self.clock[0] += 300
+        self.x.trader()
+        self.assertEqual(len(self.http.made("POST", "backboard")), 4)
+
+    def test_the_token_is_sent_as_a_project_token(self):
+        self.x.cfg["trader"] = self.CFG
+        self.railway()
+        os.environ["RAILWAY_TOKEN"] = "tok"
+        try:
+            self.x.trader()
+        finally:
+            del os.environ["RAILWAY_TOKEN"]
+        self.assertEqual(self.http.headers, {"Project-Access-Token": "tok"})
+
+    def test_off_without_config(self):
+        self.railway()
+        self.x.trader()
+        self.assertFalse(self.http.made("POST", "backboard"))
+
+    def test_a_refused_read_warns_once_and_keeps_the_last_status(self):
+        self.x.cfg["trader"] = self.CFG
+        self.x.st["trader_status"] = dict(self.STATUS)
+        self.http.on("POST", "backboard.railway.com", (200, {"errors": [{"message": "Not Authorized"}]}))
+        self.x.trader()
+        self.clock[0] += 600
+        self.x.trader()
+        self.assertEqual(self.events().count("WARN can't read the trader's Railway logs"), 1)
+        self.assertEqual(self.x.st["trader_status"]["usdt"], 7.08)
+
+    def test_the_report_shows_safetrade(self):
+        self.group()
+        self.x.st["trader_status"] = dict(self.STATUS)
+        self.x.write_report()
+        with open(os.path.join(TMP, "report.md")) as f:
+            report = f.read()
+        self.assertIn("| 💱 SafeTrade | 7.08 USDT · 0.00 PRL held | | | | | | 5.256 sold | |", report)
+        self.assertIn("- SafeTrade at the trader's 09:05Z run: sold 5.2564 PRL so far for 7.10 USDT (average 1.3507, "
+                      "fees 0.0142); that run sold 5.2564 PRL at 1.3507.", report)
 
 
 class TestRound(Base):
