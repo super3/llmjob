@@ -787,8 +787,10 @@ class W:
             # so the row stays on one line in a narrow window.
             pri = "med" if g["pri"] == "medium" else g["pri"]
             box = NB.join([state, re.sub(r"^biz-(rtx)?", "", g["name"]), pri] + ([g["machine"][:8]] if g["machine"] else []))
-            rows.append(f"| {box} | {ths:.0f} | {cost:.3f} | "
-                        f"{earn - cost:+.3f} | {pct(earn - cost, earn)} | {g['prl']:.3f} | {prof:+.2f} |")
+            act_rows.append((earn - cost, f"| {box} | {ths:.0f} | {cost:.3f} | "
+                             f"{earn - cost:+.3f} | {pct(earn - cost, earn)} | {g['prl']:.3f} | {prof:+.2f} |"))
+        # Most profitable an hour first; groups waiting for a PC make nothing, so they sit above any losing.
+        rows = [r for _, r in sorted(act_rows, key=lambda x: -x[0])]
         if ended:
             rel = sum(1 for g in ended if g["end_kind"] == "released")
             fail = len(ended) - rel
@@ -817,7 +819,7 @@ class W:
         lines = [f"PRL ${price:.3f} · ${usd:.6f}/TH-hr · {iso(t)}", "",
                  "| Box | TH/s | $/hr | Profit/hr | Margin | PRL | Profit $ |",
                  "|---|---|---|---|---|---|---|", *rows, "",
-                 "Box: ⛏️ on a PC · ⏳ waiting for a PC · ⏹️ stopped, then the group (biz-rtx left off), its priority (med = medium) and "
+                 "Boxes are sorted by profit an hour. Box: ⛏️ on a PC · ⏳ waiting for a PC · ⏹️ stopped, then the group (biz-rtx left off), its priority (med = medium) and "
                  "its PC. Others: 🔁 released · ❌ failed. TH/s is the miner's average over the last 10 min on its "
                  "current PC (0 while it starts). $/hr is what Salad bills while a group has a PC (a waiting group costs "
                  "nothing). Profit $ is PRL mined at today's price minus spend; for SafeTrade, USDT received less what "
