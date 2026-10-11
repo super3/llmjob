@@ -13,7 +13,11 @@ Sells the PRL that mining pays out for USDT on SafeTrade, once an hour, as a Rai
 4. Places one limit sell at that floor for as much PRL as the bids at or above it can take. A limit
    order at the floor fills against every bid above it, best first, so it acts like a market order
    that won't sink the price on a thin book. What the book can't take waits for the next run.
-5. Logs what sold and at what average price, then exits.
+5. Logs what sold, the average price and the fee, read from the order's trades.
+6. Logs the account and exits. That's an `ACCOUNT` line for people (PRL and USDT, free and in orders,
+   and everything sold so far) and a `STATUS` line of JSON for tools that read the logs. "Sold so far"
+   is summed from SafeTrade's trade history, so the trader keeps no state of its own. Dry runs and runs
+   with nothing to sell log the account too.
 
 Less than `MIN_VOLUME` (0.5 PRL), or the market's minimum, isn't sold.
 
