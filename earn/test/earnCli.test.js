@@ -852,6 +852,7 @@ describe('CPU mining', () => {
     const t0 = Date.now();
     const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(t0);
     cpu.emit('event', { type: 'status', state: 'dataset', hashrate: 0, accepted: 0, rejected: 0, threads: 15 });
+    cpu.emit('event', { type: 'status', state: 'mining', hashrate: 0, accepted: 0, rejected: 0, threads: 15 });
     cpu.emit('event', { type: 'connect-failed', reason: 'x' });
     cpu.emit('event', { type: 'status', state: 'mining', hashrate: 1845.2, accepted: 1234, rejected: 1, threads: 15 });
     cpu.emit('event', { type: 'status', state: 'mining', hashrate: 1900, accepted: 1235, rejected: 1, threads: 15 });

@@ -261,8 +261,8 @@ class XmrEngine extends EventEmitter {
             + (m.threads === 1 ? '' : 's') + ' (about a minute; again when Monero changes its seed, every 2048 blocks)');
         } else {
           this.pages = m.pages;
-          this._setState('mining');
           this._log('info', 'dataset ready in ' + (Math.round(m.ms / 100) / 10) + ' s · ' + (PAGES[m.pages] || m.pages));
+          this._setState('mining');
         }
         break;
       case 'share':

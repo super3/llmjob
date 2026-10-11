@@ -1381,8 +1381,10 @@ async function run(argv) {
       cpu.on('log', (l) => log(l.line, l.level === 'error' ? process.stderr : process.stdout));
       cpu.on('error', (err) => log('cpu: ' + err.message, process.stderr));
       let lastCpuLog = 0;
+      // Rated lines only: the first status after the dataset is built comes
+      // before the worker's first tick, at 0 H/s.
       cpu.on('event', (e) => {
-        if (e.type !== 'status' || e.state !== 'mining') return;
+        if (e.type !== 'status' || e.state !== 'mining' || !(e.hashrate > 0)) return;
         const now = Date.now();
         if (now - lastCpuLog < CPU_LOG_MS) return;
         lastCpuLog = now;
