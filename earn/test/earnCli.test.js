@@ -848,6 +848,8 @@ describe('CPU mining', () => {
 
     cpu.emit('log', { level: 'info', line: 'cpu: logged in to the pool' });
     cpu.emit('log', { level: 'error', line: 'cpu: XMR share rejected: [-1] Low difficulty share' });
+    // The engine logs why it gave up; its 'error' is not logged again.
+    cpu.emit('log', { level: 'error', line: 'cpu: the CPU miner stopped (exit code 1)' });
     cpu.emit('error', new Error('the CPU miner stopped (exit code 1)'));
     const t0 = Date.now();
     const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(t0);
@@ -861,7 +863,7 @@ describe('CPU mining', () => {
     nowSpy.mockRestore();
     expect(allOut()).toContain('cpu: logged in to the pool');
     expect(allErr()).toContain('cpu: XMR share rejected: [-1] Low difficulty share');
-    expect(allErr()).toContain('cpu: the CPU miner stopped (exit code 1)');
+    expect(allErr().match(/cpu: the CPU miner stopped \(exit code 1\)/g)).toHaveLength(1);
     expect(allOut()).toContain('cpu: 1.85 kH/s · 1,234 accepted · 1 rejected · 15 threads');
     expect(allOut()).toContain('cpu: 1.90 kH/s · 1,235 accepted · 1 rejected · 15 threads');
     expect(allOut().match(/cpu: \d+\.\d+ kH\/s/g)).toHaveLength(2);

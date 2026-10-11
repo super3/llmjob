@@ -15,7 +15,8 @@ const { shortenXmrAddress } = require('../shared/xmr/address');
 //                { type: 'connect-failed', reason, dns }
 //   'authorized' { host, address, family }   (for the pool-address cache)
 //   'stopped'    code: 1 when it gave up on its own, else 0
-//   'error'      Error
+//   'error'      Error: why it gave up. Already in the log, so a listener
+//                keeps it for the UI rather than logging it again.
 //
 // The worker runs as its own process, never inside this one. If it crashes, or
 // an antivirus deletes or kills it, the CPU miner stops and is restarted, and
@@ -170,8 +171,10 @@ class XmrEngine extends EventEmitter {
     this.settings = Object.assign({}, settings);
     if (!this.settings.priority) this.settings.priority = workerProto.defaultPriority(this.platform);
     if (!this.workerPath || !this.spawnWorker) {
-      this.emit('error', new Error('the CPU miner (llmjob-xmr-worker) is not installed beside the app.'
-        + ' An antivirus may have removed it; reinstalling puts it back.'));
+      const message = 'the CPU miner (llmjob-xmr-worker) is not installed beside the app.'
+        + ' An antivirus may have removed it; reinstalling puts it back.';
+      this._log('error', message);
+      this.emit('error', new Error(message));
       return false;
     }
     this.running = true;

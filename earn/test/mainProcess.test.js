@@ -224,6 +224,8 @@ jest.mock('../src/main/xmrEngine', () => {
       this.start = jest.fn((settings) => {
         this.settings = settings;
         if (XmrEngine.noWorker) {
+          // As the real one: logged, then emitted.
+          this.emit('log', { level: 'error', line: 'cpu: the CPU miner (llmjob-xmr-worker) is not installed beside the app.' });
           this.emit('error', new Error('the CPU miner (llmjob-xmr-worker) is not installed beside the app.'));
           return false;
         }
@@ -3934,7 +3936,7 @@ describe('CPU mining (Monero)', () => {
     const ctx = await boot();
     ctx.XmrEngine.noWorker = true;
     await start(ctx, { cpuMining: true, xmrAddress: XMR_ADDR });
-    expect(logs(ctx)).toContain('cpu: the CPU miner (llmjob-xmr-worker) is not installed beside the app.');
+    expect(logs(ctx).filter((l) => l === 'cpu: the CPU miner (llmjob-xmr-worker) is not installed beside the app.')).toHaveLength(1);
     ctx.interval(1000).fn();
     expect(ctx.sent('miner:stats').slice(-1)[0].cpu).toMatchObject({
       state: 'stopped', error: 'the CPU miner (llmjob-xmr-worker) is not installed beside the app.',

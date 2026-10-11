@@ -339,10 +339,8 @@ function startCpuMining(settings) {
     agent: 'llmjob-earn/' + app.getVersion(),
   });
   engine.on('log', (l) => send('miner:log', l));
-  engine.on('error', (e) => {
-    cpuError = e.message;
-    say('error', e.message);
-  });
+  // Kept for the Mine tab. The engine has logged it.
+  engine.on('error', (e) => { cpuError = e.message; });
   // The pool took the login, so this address is one that worked.
   engine.on('authorized', (e) => poolLookup().worked(e.host, e.address, e.family));
   cpuMiner = engine;

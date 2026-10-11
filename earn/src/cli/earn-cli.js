@@ -1379,7 +1379,8 @@ async function run(argv) {
     if (xmr) {
       const cpu = xmr.engine;
       cpu.on('log', (l) => log(l.line, l.level === 'error' ? process.stderr : process.stdout));
-      cpu.on('error', (err) => log('cpu: ' + err.message, process.stderr));
+      // Already in the log; this listener keeps it from being thrown.
+      cpu.on('error', () => {});
       let lastCpuLog = 0;
       // Rated lines only: the first status after the dataset is built comes
       // before the worker's first tick, at 0 H/s.

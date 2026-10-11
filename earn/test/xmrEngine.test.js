@@ -130,6 +130,7 @@ describe('start', () => {
     const h = setup({ workerPath: null });
     expect(h.engine.start(SETTINGS)).toBe(false);
     expect(h.errors[0]).toMatch(/^the CPU miner \(llmjob-xmr-worker\) is not installed beside the app/);
+    expect(h.lines()).toEqual(['cpu: ' + h.errors[0]]);
     expect(h.engine.isRunning()).toBe(false);
     expect(h.engine.snapshot()).toMatchObject({ state: 'stopped', hashrate: 0, threads: 6 });
     const bare = new XmrEngine({ workerPath: '/w' });
