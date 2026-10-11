@@ -225,8 +225,8 @@ jest.mock('../src/main/xmrEngine', () => {
         this.settings = settings;
         if (XmrEngine.noWorker) {
           // As the real one: logged, then emitted.
-          this.emit('log', { level: 'error', line: 'cpu: the CPU miner (llmjob-xmr-worker) is not installed beside the app.' });
-          this.emit('error', new Error('the CPU miner (llmjob-xmr-worker) is not installed beside the app.'));
+          this.emit('log', { level: 'error', line: 'cpu: there is no CPU miner (llmjob-xmr-worker) beside the app.' });
+          this.emit('error', new Error('there is no CPU miner (llmjob-xmr-worker) beside the app.'));
           return false;
         }
         this.running = true;
@@ -675,7 +675,7 @@ describe('simple ipc handlers', () => {
     expect(await ctx.invoke('config:get')).toEqual({
       regions: ctx.config.REGIONS, defaults: ctx.config.DEFAULTS, miner: ctx.config.MINER,
       platform: { minerSupported: true },
-      cpu: { available: 8, auto: 7, reason: null, canMine: true },
+      cpu: { available: 8, auto: 7, reason: null, canMine: true, worker: true },
     });
     expect(await ctx.invoke('llm:status')).toMatchObject({ ready: false, model: ctx.config.LLM.model.name });
     expect(await ctx.invoke('app:version')).toBe('0.0.0-test');
@@ -3941,18 +3941,21 @@ describe('CPU mining (Monero)', () => {
     expect(logs(ctx2)).toContain('cpu: not mining Monero: off by default with 4 CPUs (it turns on by itself above 4 CPUs and 8 GB); set a thread count to mine anyway');
     expect(ctx2.sent('cpu:stats').slice(-1)[0]).toMatchObject({ state: 'stopped', error: expect.stringMatching(/^off by default/) });
     expect((await ctx2.invoke('config:get')).cpu).toEqual({
-      available: 4, auto: 0, canMine: true,
+      available: 4, auto: 0, canMine: true, worker: true,
       reason: 'off by default with 4 CPUs (it turns on by itself above 4 CPUs and 8 GB); set a thread count to mine anyway',
     });
+    // A build with no worker (macOS, or one CI built without it) says so.
+    ctx2.xmrWorker.findWorker.mockReturnValueOnce(null);
+    expect((await ctx2.invoke('config:get')).cpu.worker).toBe(false);
   });
 
   it('shows why the CPU miner stopped, until mining stops', async () => {
     const ctx = await boot();
     ctx.XmrEngine.noWorker = true;
     await start(ctx, { cpuMining: true, xmrAddress: XMR_ADDR });
-    expect(logs(ctx).filter((l) => l === 'cpu: the CPU miner (llmjob-xmr-worker) is not installed beside the app.')).toHaveLength(1);
+    expect(logs(ctx).filter((l) => l === 'cpu: there is no CPU miner (llmjob-xmr-worker) beside the app.')).toHaveLength(1);
     expect(ctx.sent('cpu:stats').slice(-1)[0]).toMatchObject({
-      state: 'stopped', error: 'the CPU miner (llmjob-xmr-worker) is not installed beside the app.',
+      state: 'stopped', error: 'there is no CPU miner (llmjob-xmr-worker) beside the app.',
     });
     ctx.emit('miner:stop');
     expect(ctx.sent('miner:stopped')).toHaveLength(1);

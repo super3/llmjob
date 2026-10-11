@@ -313,6 +313,12 @@ let cpuMiner = null;
 let cpuError = null;     // why the CPU miner last stopped, for the Mine tab
 let cpuFacts = null;     // read once: CPUs, cgroup limit, memory, L3
 
+// Where this install's RandomX worker is, or null: a build without one (macOS
+// has none), or an antivirus removed it.
+function cpuWorkerPath() {
+  return findWorker({ resourcesPath: process.resourcesPath, env: process.env, exists: fs.existsSync });
+}
+
 // The thread plan for a requested count (0 for the default).
 function cpuPlan(threads) {
   if (!cpuFacts) cpuFacts = readCpuFacts({ fs, os });
@@ -348,7 +354,7 @@ function startCpuMining(settings) {
   const engine = new XmrEngine({
     connect: (host, port) => net.connect({ port, host, lookup: poolLookup() }),
     spawnWorker: makeSpawnWorker(spawn),
-    workerPath: findWorker({ resourcesPath: process.resourcesPath, env: process.env, exists: fs.existsSync }),
+    workerPath: cpuWorkerPath(),
     agent: 'llmjob-earn/' + app.getVersion(),
   });
   engine.on('log', (l) => send('miner:log', l));
@@ -1953,8 +1959,9 @@ ipcMain.handle('llm:status', () => llmStatus);
 // so the UI can stop offering what this OS can't do (the mining compute modes on
 // macOS) without a second round trip or a new preload method.
 ipcMain.handle('config:get', () => {
-  // What CPU mining would do here, for its Settings section: the default, and
-  // whether it can run at all (one thread asked for by hand).
+  // What CPU mining would do here, for its Settings section: the default,
+  // whether it can run at all (one thread asked for by hand), and whether this
+  // install has the worker that does it.
   const plan = cpuPlan(0);
   return {
     regions: REGIONS,
@@ -1963,6 +1970,7 @@ ipcMain.handle('config:get', () => {
     platform: { minerSupported: minerSupported(process.platform) },
     cpu: {
       available: plan.available, auto: plan.auto, reason: plan.reason, canMine: cpuPlan(1).threads > 0,
+      worker: cpuWorkerPath() != null,
     },
   };
 });

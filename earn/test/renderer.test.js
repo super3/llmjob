@@ -1522,6 +1522,21 @@ describe('CPU mining', () => {
     expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ cpuMining: true, cpuThreads: 5 }));
   });
 
+  it('a build without the CPU miner says so, and the switch only turns off', async () => {
+    const none = Object.assign({}, CPU, { worker: false });
+    let h = cpuApi({}, none);
+    await boot({ api: h.api });
+    expect($('cpu-note').textContent).toBe('This build has no CPU miner (llmjob-xmr-worker is not beside the app).');
+    expect($('set-cpu').disabled).toBe(true);
+
+    h = cpuApi({ cpuMining: true, xmrAddress: XMR_ADDR }, none);
+    await boot({ api: h.api });
+    expect($('set-cpu').disabled).toBe(false);
+    click($('set-cpu'));
+    expect($('set-cpu').checked).toBe(false);
+    expect($('set-cpu').disabled).toBe(true);
+  });
+
   it('notes for a computer where it is off by default, or cannot run, or main did not say', async () => {
     const off = { available: 4, auto: 0, canMine: true, reason: 'off by default with 4 CPUs (it turns on by itself above 4 CPUs and 8 GB); set a thread count to mine anyway' };
     let h = cpuApi({}, off);

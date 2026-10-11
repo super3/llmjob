@@ -536,9 +536,16 @@
     return state.cpuThreads > 0 ? Math.min(state.cpuThreads, c.available - 1) : c.auto;
   }
 
+  // A build without the worker (macOS has none, and CI builds it as an
+  // optional step) can't mine on the CPU at all.
+  function cpuNoWorker() {
+    return !!state.cpu && state.cpu.worker === false;
+  }
+
   function cpuNote() {
     const c = state.cpu;
     if (!c) return 'Mines beside the GPU on the CPU threads it leaves free.';
+    if (cpuNoWorker()) return 'This build has no CPU miner (llmjob-xmr-worker is not beside the app).';
     if (!c.canMine) return 'Can\'t run here: ' + c.reason + '.';
     const n = cpuThreadsNow();
     if (!n) return 'Auto: ' + c.reason + '.';
@@ -568,6 +575,9 @@
     }
     el.setCpuThreads.value = String(Math.min(state.cpuThreads, max));
     for (const f of [el.setCpu, el.setXmr, el.setCpuThreads]) f.disabled = state.mining;
+    // Without the worker it can't be turned on, but one saved on can be
+    // turned off.
+    if (cpuNoWorker() && !state.cpuMining) el.setCpu.disabled = true;
   }
 
   const fmt4 = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 });

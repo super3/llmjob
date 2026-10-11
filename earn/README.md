@@ -282,7 +282,8 @@ stops and Pearl mining carries on. A worker that stops is started again after
 30 seconds, and left off after three quick failures in a row. It checks itself
 against RandomX's test vectors when it starts and checks every share again
 before it is sent. It ships beside the Pearl cores: in the
-installer's `resources/native/` and beside the CLI binary.
+installer's `resources/native/` and beside the CLI binary. There is none for
+macOS, and Settings says so on a build without it.
 
 **Antivirus.** Any program that mines Monero may be flagged as a coin miner,
 on Windows especially. If only the worker is flagged, CPU mining stops and the

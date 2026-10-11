@@ -178,8 +178,11 @@ class XmrEngine extends EventEmitter {
     this.settings = Object.assign({}, settings);
     if (!this.settings.priority) this.settings.priority = workerProto.defaultPriority(this.platform);
     if (!this.workerPath || !this.spawnWorker) {
-      const message = 'the CPU miner (llmjob-xmr-worker) is not installed beside the app.'
-        + ' An antivirus may have removed it; reinstalling puts it back.';
+      // A build can ship without the worker (CI builds it as an optional
+      // step), so reinstalling is not the advice here. It is when the file
+      // was found and then went missing (the ENOENT case below).
+      const message = 'there is no CPU miner (llmjob-xmr-worker) beside the app: this build has none,'
+        + ' or an antivirus removed it.';
       this._log('error', message);
       this.emit('error', new Error(message));
       return false;
