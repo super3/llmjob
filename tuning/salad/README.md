@@ -43,6 +43,7 @@ Config keys:
 | `search_every_min` | Minutes between searches while a slot is empty (60). |
 | `retry_after_min` | Minutes before a class released for want of a PC is tried again (60). |
 | `no_pc_streak`, `no_pc_hold_min` | A class whose last 3 groups got no PC goes last for 180 min. |
+| `drift` | How far the ledger and the pool may disagree before a `DRIFT` event (0.15). |
 
 Tests: `python3 -m unittest discover -s tuning/salad`. They fake Salad, the pool and the clock.
 
@@ -71,7 +72,10 @@ each PC on its own readings.
 5. **Only PCs that clear 10%.** Skip the miner's first 2 minutes (warm-up). From then on, every round,
    the last 3 readings (one a minute) must clear the margin at the PC's price. The first time they
    don't, leave the PC. A PC with no mining reading 10 min after we got it is left too, and so is one
-   whose newest reading is 6 min old (its miner stopped).
+   whose newest reading is 6 min old (its miner stopped). Readings come from Salad's log service, which
+   sometimes fails for minutes at a time (6 in a row once), so both clocks count only up to the last
+   log read that worked, and neither leaves a PC the pool got a share from in the last 6 min. After 10
+   min of failed reads there's one `WARN` event.
 6. **"port 1200 blocked"** in the logs: reallocate.
 7. **Credit runs out:** Salad stops every group, and creating one returns `no_credits_available`. The
    watcher leaves stopped groups alone and stops creating. A group that stops after it had a PC is
@@ -153,6 +157,33 @@ Base `https://api.salad.com/api/public/organizations/<org>`, key in the `Salad-A
   enough: a slow card's rate and shares can stay the same for minutes while it mines.
 - Image preparation took from 1 to 60+ min on the first account, with the same image. A PC came within
   about a minute when one was free, and the first share 1–3 min after that.
+
+## Checks against the pool
+
+The ledger is an estimate: PRL from the miners' own TH/s, spend from list prices. Once an hour the
+watcher checks it against the pool and writes a `DRIFT` event when they disagree by more than `drift`:
+
+- **Hashrate:** the pool's 1-hour average for the wallet against the miners' readings over the same hour.
+- **Ledger:** the pool's count of our hashes, at today's PRL per TH-hr, against the ledger's PRL.
+- **Credit:** what the pool has credited (paid + unlocked + unconfirmed) against that work. The pool
+  pays a share of each block it finds, so with few blocks credit runs well above or below the work;
+  this fires only when it's short by more than 2 / √blocks too.
+
+The report shows the credited PRL and the profit on it next to the expected figures.
+
+## Safety net
+
+`guard.py` is for when the watcher isn't running, for example because the machine it ran on went away
+while the groups keep billing on Salad. It keeps no state. It stops every running `biz-` group that is
+at least an hour old, has a running PC, and from which the pool has seen no work in the last hour. The
+watcher never lets that happen, so a hit means nothing is watching. Stopping is reversible. Run it
+hourly (`--dry-run` only reports):
+
+```sh
+PRL_WALLET=prl1... python3 -I tuning/salad/guard.py
+```
+
+On the business account a Routine runs it every hour in a fresh cloud session.
 
 ## Money
 

@@ -529,6 +529,117 @@ class TestSearchTiming(Base):
         self.assertEqual(len(self.rounds(16, empty=False)), 1)
 
 
+class TestLogOutage(Base):
+    def test_a_log_outage_doesnt_drop_a_mining_pc(self):
+        g = self.group(pri="medium")
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 10, shares=False)
+        self.x.st["last_log_ok"] = self.clock[0]  # then Salad's log reads fail
+        self.step(g, 8, "m1")
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.x.st["last_log_ok"] = self.clock[0]  # reads work again, and still no reading: the miner stopped
+        self.step(g, 1, "m1")
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
+
+    def test_pool_shares_keep_a_pc_whose_readings_stopped(self):
+        g = self.group(pri="medium")
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 10)
+        for _ in range(8):
+            g["last_share"] = self.clock[0]  # the pool still gets shares, though no reading comes
+            self.step(g, 1, "m1")
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+
+    def test_a_long_outage_is_reported_once(self):
+        g = self.group()
+        self.x.st["last_log_ok"] = self.clock[0] - 11 * 60
+        self.http.on("POST", "/log-entries", (408, {}))
+        self.x.logs([g])
+        self.x.logs([g])
+        self.assertEqual(self.events().count("WARN Salad log reads have failed for 11 min"), 1)
+
+
+class TestPoolTotals(Base):
+    POOL = {"stats": {"paid": "156064257", "balance": "20000000", "hashes": "8875147264", "hashrate_1h": 264765.8},
+            "unconfirmed": [{"reward": "102092647"}, {"reward": "50000000"}],
+            "unlocked": ["126028:4f27:2262:2266:92794907", "1791673994", "126003:bbff:2260:2266:56925295", "1791670000"],
+            "workers": []}
+
+    def test_the_pool_totals_are_read(self):
+        self.x.cfg["wallet"] = os.environ["PRL_WALLET"]
+        self.http.on("GET", "herominers", (200, self.POOL))
+        self.x.pool()
+        pt = self.x.st["pool_tot"]
+        self.assertAlmostEqual(pt["paid"], 1.56064257)
+        self.assertAlmostEqual(pt["balance"], 0.2)
+        self.assertAlmostEqual(pt["unconfirmed"], 1.52092647)
+        self.assertEqual(pt["blocks"], 4)
+        self.assertAlmostEqual(pt["ths_1h"], 264765.8 * 419 / 93644)
+
+    def test_the_report_shows_what_the_pool_credited(self):
+        g = self.group()
+        g["prl"], g["spend"] = 8.0, 6.0
+        self.x.st["pool_tot"] = {"t": T0, "paid": 1.5, "balance": 0.5, "unconfirmed": 4.0, "blocks": 6,
+                                 "hashes": 0, "ths_1h": 0}
+        self.x.write_report()
+        with open(os.path.join(TMP, "report.md")) as f:
+            report = f.read()
+        # 6 PRL × $1.39 = $8.34 against $6.00 spent
+        self.assertIn("Pool credited 6.000 PRL (paid 1.500, unlocked 0.500, unconfirmed 4.000), 75% of the 8.000 "
+                      "expected: +$2.34 at today's price", report)
+
+
+class TestCritic(Base):
+    def setUp(self):
+        super().setUp()
+        self.x.st["created"] = T0 - 7200
+        self.g = self.group()
+
+    def pool(self, ths_1h=200.0, work=None, cred=None, blocks=100):
+        work = self.g["prl"] if work is None else work
+        hashes = work * 3600 / (419 / 93644 * USD_TH_HR / PRICE)
+        cred = work if cred is None else cred
+        self.x.st["pool_tot"] = {"t": self.clock[0], "paid": cred, "balance": 0.0, "unconfirmed": 0.0,
+                                 "blocks": blocks, "hashes": hashes, "ths_1h": ths_1h}
+
+    def mined_an_hour(self, ths=200.0):
+        self.g["readings"] = [[self.clock[0] - 60 * i, "m1", ths, 0] for i in range(60)]
+        self.g["prl"] = 5.0
+
+    def test_no_drift_when_the_pool_agrees(self):
+        self.mined_an_hour()
+        self.pool(ths_1h=190.0)
+        self.x.critic(self.clock[0])
+        self.assertNotIn("DRIFT", self.events())
+
+    def test_the_pool_seeing_less_hashrate_is_drift(self):
+        self.mined_an_hour()
+        self.pool(ths_1h=150.0)
+        self.x.critic(self.clock[0])
+        self.assertIn("DRIFT hashrate: the pool saw 150 TH/s over the last hour; the miners reported 200 (-25%)", self.events())
+        self.x.critic(self.clock[0] + 60)  # once an hour
+        self.assertEqual(self.events().count("DRIFT"), 1)
+
+    def test_a_ledger_ahead_of_the_pools_work_is_drift(self):
+        self.mined_an_hour()
+        self.pool(work=4.0)
+        self.x.critic(self.clock[0])
+        self.assertIn("DRIFT ledger: the pool's count of our work is worth 4.000 PRL; the ledger says 5.000 (-20%)",
+                      self.events())
+
+    def test_credit_short_by_more_than_luck_is_drift(self):
+        self.mined_an_hour()
+        self.pool(cred=3.0, blocks=100)  # 2 / sqrt(100) = 20%; 40% short
+        self.x.critic(self.clock[0])
+        self.assertIn("DRIFT credit: the pool has credited 3.000 PRL for work worth 5.000 (-40%", self.events())
+
+    def test_credit_short_over_few_blocks_is_luck(self):
+        self.mined_an_hour()
+        self.pool(cred=3.0, blocks=6)  # 2 / sqrt(6) = 82%
+        self.x.critic(self.clock[0])
+        self.assertNotIn("DRIFT", self.events())
+
+
 class TestRound(Base):
     def test_logs_and_pool_feed_the_ledger(self):
         self.x.cfg["search"] = False

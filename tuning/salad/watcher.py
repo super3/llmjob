@@ -38,7 +38,7 @@ KNOWN = {
 DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_token": 0,
                "credit_start": 100.0, "credit_offset": 0.0, "box_ver": "v0.5.13", "ver_override": {}, "report_min": 10,
                "min_margin": 0.10, "max_new_per_hour": 3, "max_per_class": 1,
-               "search_every_min": 60, "retry_after_min": 60, "no_pc_streak": 3, "no_pc_hold_min": 180,
+               "search_every_min": 60, "retry_after_min": 60, "no_pc_streak": 3, "no_pc_hold_min": 180, "drift": 0.15,
                "wallet": os.environ.get("PRL_WALLET", "")}
 
 
@@ -198,8 +198,14 @@ class W:
         start = max(min(g["created"] for g in active) - 60, (st["last_log_end"] or 0) - 120, t - 1800)
         items = self.read_logs(start, t, 'resource.type = "container"')
         if items is None:
+            ok = st.get("last_log_ok") or t
+            if t - ok >= 10 * MIN and not st.get("log_warned"):
+                st["log_warned"] = True
+                event(f"WARN Salad log reads have failed for {(t - ok) / 60:.0f} min; PCs whose pool shares keep "
+                      "coming stay, and the ledger catches up when reads work again (up to 30 min back)")
             return []
-        st["last_log_end"] = t
+        st["last_log_end"] = st["last_log_ok"] = t
+        st["log_warned"] = False
         out = []
         seen = st["seen"]
         for it in items:
@@ -223,6 +229,17 @@ class W:
         res = {}
         if s != 200 or not isinstance(j, dict):
             return res
+        ps = j.get("stats") or {}
+        unc = [b for b in (j.get("unconfirmed") or []) if isinstance(b, dict)]
+        try:
+            self.st["pool_tot"] = {
+                "t": now(), "paid": float(ps.get("paid") or 0) / 1e8, "balance": float(ps.get("balance") or 0) / 1e8,
+                "unconfirmed": sum(float(b.get("reward") or 0) for b in unc) / 1e8,
+                # Blocks we've been credited in: pending ones, and unlocked ones ("height:hash:..." entries).
+                "blocks": len(unc) + sum(1 for x in (j.get("unlocked") or []) if isinstance(x, str) and ":" in x),
+                "hashes": float(ps.get("hashes") or 0), "ths_1h": float(ps.get("hashrate_1h") or 0) * UNIT_TH}
+        except (TypeError, ValueError):
+            pass
         ws = j.get("workers") or []
         if isinstance(ws, dict):
             ws = [dict(v, name=k) for k, v in ws.items()]
@@ -437,6 +454,8 @@ class W:
                 continue
             self.rules(g, t)
 
+        self.critic(t)
+
         # Hourly search at :01, or when asked through config.search_token.
         tm = time.gmtime(t)
         hour = time.strftime("%Y-%m-%dT%H", tm)
@@ -508,13 +527,19 @@ class W:
             self.reallocate(g, "PC blocks outbound port 1200")
             return
         # This PC's readings (one a minute). A PC that isn't mining 10 min after we got it is left.
+        # Readings come from Salad's log service, which sometimes fails for minutes at a time. Missing readings
+        # then say nothing about the miner, so these two rules count only up to the last log read that worked,
+        # and leave nothing while the pool still gets shares from this PC (in the last 6 min).
+        seen_to = min(t, st.get("last_log_ok") or t)
+        ls = g["last_share"] or 0
+        sharing = ls >= g["pc_since"] and t - ls < 6 * MIN
         cur = [r for r in g["readings"] if r[1] == g["machine"] and r[2] > 0 and r[0] >= g["pc_since"] - 5 * MIN]
-        if not cur and on >= 10 * MIN:
+        if not cur and seen_to - g["pc_since"] >= 10 * MIN and not sharing:
             self.leave(g, f"no mining reading {on / 60:.0f} min after getting PC {g['machine'][:8]}")
             return
         # A miner that stops (the card is taken back, the driver fails) stops sending readings: leave the PC
-        # once the newest is 6 min old, which allows for a few failed log reads.
-        if cur and t - cur[-1][0] >= 6 * MIN:
+        # once the newest is 6 min old.
+        if cur and seen_to - cur[-1][0] >= 6 * MIN and not sharing:
             self.leave(g, f"no mining reading for {(t - cur[-1][0]) / 60:.0f} min on PC {g['machine'][:8]}")
             return
         # Rule 4: no share after 20 min on a PC.
@@ -540,6 +565,37 @@ class W:
             if not self.paid(g) and shared and len(ten) == 10 and margin_of(sum(r[2] for r in ten) / 10 * usd, g["price"]) >= bar:
                 st["paid_classes"].append(g["class"])
                 event(f"PAID {g['name']}: {g['class']} clears {bar:.0%} here ({avg:.0f} TH/s); it counts as paid now")
+
+    def critic(self, t):
+        """Once an hour, checks the ledger against the pool and writes a DRIFT event when they disagree by more
+        than `drift` (15%): the miners' reported hashrate against what the pool saw in the last hour; the ledger's
+        PRL against what the pool's count of our work is worth; and what the pool has credited against that work,
+        when the gap is more than its luck explains."""
+        st, pt = self.st, self.st.get("pool_tot")
+        hour = int(t // 3600)
+        if not pt or t - pt["t"] > 300 or st.get("critic_hour") == hour:
+            return
+        st["critic_hour"] = hour
+        bar = self.cfg["drift"]
+        # Hashrate. Readings are one a minute a group, so their sum over an hour / 60 is the average TH/s.
+        if t - st["created"] >= 3600:
+            miner = sum(r[2] for g in st["groups"].values() for r in g["readings"] if r[0] > t - 3600) / 60
+            if miner > 0 and abs(pt["ths_1h"] / miner - 1) > bar:
+                event(f"DRIFT hashrate: the pool saw {pt['ths_1h']:.0f} TH/s over the last hour; the miners reported "
+                      f"{miner:.0f} ({pct(pt['ths_1h'] - miner, miner)})")
+        # Work: the pool's count of our hashes, at today's PRL per TH-hr (the ledger used the rate at each minute).
+        prl = sum(g["prl"] for g in st["groups"].values())
+        work = pt["hashes"] * UNIT_TH / 3600 * st["mkt"]["prl_th_hr"]
+        if prl >= 1 and abs(work / prl - 1) > bar:
+            event(f"DRIFT ledger: the pool's count of our work is worth {work:.3f} PRL; the ledger says {prl:.3f} "
+                  f"({pct(work - prl, prl)})")
+        # Credit: the pool pays a share of each block it finds, so with few blocks it runs well above or below
+        # the work. Two standard deviations of that luck is about 2 / sqrt(blocks).
+        cred = pt["paid"] + pt["balance"] + pt["unconfirmed"]
+        luck = 2 / pt["blocks"] ** 0.5 if pt["blocks"] else 1.0
+        if work >= 1 and cred / work < 1 - max(bar, luck):
+            event(f"DRIFT credit: the pool has credited {cred:.3f} PRL for work worth {work:.3f} "
+                  f"({pct(cred - work, work)}, more than luck explains over {pt['blocks']} blocks)")
 
     def pc_margin(self, g):
         """The margin on this PC's last 3 readings after warm-up, or None while there aren't 3."""
@@ -658,6 +714,13 @@ class W:
                   if prl > 0 else "- No PRL mined yet, so no cost per PRL."),
                  f"- Salad credit left: ${credit:.2f} of ${self.cfg['credit_start'] + self.cfg['credit_offset']:.2f} (our count)"
                  + (f"; lasts {hours:.0f} h at ${all_cost:.3f}/hr." if hours is not None else "; nothing is billing now.")]
+        pt = st.get("pool_tot")
+        if pt:
+            cred = pt["paid"] + pt["balance"] + pt["unconfirmed"]
+            lines.append(f"- Pool credited {cred:.3f} PRL (paid {pt['paid']:.3f}, unlocked {pt['balance']:.3f}, "
+                         f"unconfirmed {pt['unconfirmed']:.3f}), {cred / prl * 100 if prl > 0 else 0:.0f}% of the "
+                         f"{prl:.3f} expected: {'+' if cred * price >= spend else '-'}${abs(cred * price - spend):.2f} at today's price. "
+                         "The pool pays as it finds blocks, so this lags and swings with its luck.")
         if st["credits_out"]:
             lines.append("- ⚠️ Credit ran out: Salad stopped the groups. They restart after a top-up.")
         with open(REPORT + ".tmp", "w") as f:
