@@ -310,8 +310,8 @@ static unsigned usableCpus() {
     if (n > 0) return static_cast<unsigned>(n);
   }
 #elif defined(_WIN32)
-  DWORD n = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
-  if (n > 0) return n;
+  DWORD active = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+  if (active > 0) return active;
 #endif
   unsigned n = std::thread::hardware_concurrency();
   return n ? n : 1;
