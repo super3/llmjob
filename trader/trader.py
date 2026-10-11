@@ -9,8 +9,9 @@
 import hashlib, hmac, json, math, os, sys, time, urllib.error, urllib.parse, urllib.request
 
 BASE = os.environ.get("SAFETRADE_BASE", "https://safe.trade/api/v2/peatio").rstrip("/")
-MARKET = os.environ.get("MARKET", "prlusdt")
 COIN = os.environ.get("COIN", "prl")
+QUOTE = os.environ.get("QUOTE", "usdt")
+MARKET = os.environ.get("MARKET", COIN + QUOTE)   # replaced by the id SafeTrade uses, once found
 KEY = os.environ.get("SAFETRADE_API_KEY", "")
 SECRET = os.environ.get("SAFETRADE_API_SECRET", "")
 MAX_SLIPPAGE = float(os.environ.get("MAX_SLIPPAGE", "0.03"))   # sell down to 3% under the best bid
@@ -93,13 +94,28 @@ def levels(side):
 
 
 def market_info():
-    s, j = http("GET", "/public/markets")
-    need(s, j, "markets")
-    for m in j or []:
-        if m.get("id") == MARKET:
-            return {"amount_precision": int(m.get("amount_precision", 4)), "price_precision": int(m.get("price_precision", 6)),
-                    "min_amount": float(m.get("min_amount") or 0)}
-    raise Fail(f"market {MARKET} not listed")
+    """The PRL/USDT market. The list comes 100 to a page, so every page is read; the market is matched on its id
+    or on its base and quote currencies, since the id's spelling can differ."""
+    global MARKET
+    seen = []
+    for page in range(1, 21):
+        s, j = http("GET", "/public/markets", {"limit": 100, "page": page})
+        need(s, j, "markets")
+        if not j:
+            break
+        for m in j:
+            mid = str(m.get("id", ""))
+            base = str(m.get("base_unit") or m.get("base_currency") or "").lower()
+            quote = str(m.get("quote_unit") or m.get("quote_currency") or "").lower()
+            seen.append(mid)
+            if mid.lower() == MARKET.lower() or (base == COIN and quote == QUOTE):
+                MARKET = mid
+                return {"amount_precision": int(m.get("amount_precision", 4)), "price_precision": int(m.get("price_precision", 6)),
+                        "min_amount": float(m.get("min_amount") or 0)}
+        if len(j) < 100:
+            break
+    near = [i for i in seen if COIN in i.lower()]
+    raise Fail(f"no {COIN.upper()}/{QUOTE.upper()} market among {len(seen)} listed; ids with {COIN!r}: {near or 'none'}")
 
 
 def plan(balance, bids, info):

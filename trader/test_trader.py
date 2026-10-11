@@ -42,6 +42,7 @@ class Base(unittest.TestCase):
         self.logs = []
         t.log = self.logs.append
         t.MAX_SLIPPAGE, t.MIN_PRICE, t.MIN_VOLUME = 0.03, 0.0, 0.5
+        t.MARKET = "prlusdt"
         os.environ["DRY_RUN"] = "0"
         os.environ["RAILWAY_ENVIRONMENT_NAME"] = "production"
 
@@ -85,6 +86,36 @@ class TestSell(Base):
     def test_book_as_price_volume_pairs(self):
         self.go(Fake(book={"bids": [["1.40", "10"]], "asks": []}))
         self.assertEqual(self.fake.made("POST", r"/market/orders$")[0][2]["volume"], "4.12")
+
+
+class TestMarket(Base):
+    def test_the_market_is_found_on_a_later_page(self):
+        page1 = [{"id": f"x{i}usdt", "base_unit": f"x{i}", "quote_unit": "usdt"} for i in range(100)]
+
+        class Paged(Fake):
+            def __call__(self, method, path, params=None, auth=False):
+                if method == "GET" and path == "/public/markets":
+                    self.calls.append((method, path, params, auth))
+                    return 200, page1 if params["page"] == 1 else MARKETS
+                return super().__call__(method, path, params, auth)
+
+        self.go(Paged())
+        self.assertEqual([c[2]["page"] for c in self.fake.made("GET", r"/public/markets$")], [1, 2])
+        self.assertEqual(self.fake.made("POST", r"/market/orders$")[0][2]["market"], "prlusdt")
+
+    def test_the_market_is_matched_on_its_currencies(self):
+        f = Fake()
+        f.routes.insert(0, ("GET", r"/public/markets$", (200, [{"id": "PRL_USDT", "base_unit": "prl", "quote_unit": "usdt",
+                                                                 "amount_precision": 2, "price_precision": 4}])))
+        self.go(f)
+        self.assertEqual(f.made("POST", r"/market/orders$")[0][2]["market"], "PRL_USDT")
+        self.assertTrue(f.made("GET", r"/public/markets/PRL_USDT/order-book$"))
+
+    def test_a_missing_market_says_what_is_listed(self):
+        f = Fake()
+        f.routes.insert(0, ("GET", r"/public/markets$", (200, [{"id": "prlbtc"}, {"id": "ethusdt"}])))
+        self.assertEqual(self.go(f), 1)
+        self.assertIn("no PRL/USDT market among 2 listed; ids with 'prl': ['prlbtc']", self.logs[-1])
 
 
 class TestSafety(Base):
