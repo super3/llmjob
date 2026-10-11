@@ -52,6 +52,7 @@ function setup(opts = {}) {
     workerPath: '/opt/llmjob-xmr-worker',
     agent: 'llmjob-earn/0.5.14',
     now: () => t,
+    platform: 'linux',
   }, opts));
   const logs = [];
   const events = [];
@@ -92,7 +93,7 @@ describe('start', () => {
     const h = setup();
     expect(h.engine.start(SETTINGS)).toBe(true);
     expect(h.engine.isRunning()).toBe(true);
-    expect(h.engine.spawnWorker).toHaveBeenCalledWith('/opt/llmjob-xmr-worker', ['--threads', '6']);
+    expect(h.engine.spawnWorker).toHaveBeenCalledWith('/opt/llmjob-xmr-worker', ['--threads', '6', '--priority', 'low']);
     expect(h.engine.connect).toHaveBeenCalledWith('de.monero.herominers.com', 1111);
     h.sock().emit('connect');
     expect(h.sock().written[0]).toEqual({
@@ -100,7 +101,7 @@ describe('start', () => {
       params: { login: ADDRESS, pass: 'rig01', agent: 'llmjob-earn/0.5.14', rigid: 'rig01', algo: ['rx/0'] },
     });
     expect(h.lines()).toEqual([
-      'cpu: mining Monero for 87wTMj88…1JxND9 on 6 CPU threads · de.monero.herominers.com:1111',
+      'cpu: mining Monero for 87wTMj88…1JxND9 on 6 CPU threads at low priority · de.monero.herominers.com:1111',
       'cpu: connecting to de.monero.herominers.com:1111 · worker rig01',
     ]);
     expect(h.engine.snapshot().state).toBe('starting');
@@ -111,8 +112,18 @@ describe('start', () => {
     const h = setup();
     h.engine.start(Object.assign({}, SETTINGS, { threads: 1, worker: '' }));
     h.sock().emit('connect');
-    expect(h.lines()[0]).toMatch(/ on 1 CPU thread · /);
+    expect(h.lines()[0]).toMatch(/ on 1 CPU thread at low priority · /);
     expect(h.lines()[1]).toBe('cpu: connecting to de.monero.herominers.com:1111 · worker x');
+  });
+
+  test('the priority: the one asked for, or the platform\'s default', () => {
+    const h = setup({ platform: 'win32' });
+    h.engine.start(SETTINGS);
+    expect(h.engine.spawnWorker).toHaveBeenLastCalledWith('/opt/llmjob-xmr-worker', ['--threads', '6', '--priority', 'idle']);
+    h.engine.stop();
+    h.engine.start(Object.assign({}, SETTINGS, { priority: 'normal' }));
+    expect(h.engine.spawnWorker).toHaveBeenLastCalledWith('/opt/llmjob-xmr-worker', ['--threads', '6', '--priority', 'normal']);
+    expect(h.lines()).toContain('cpu: mining Monero for 87wTMj88…1JxND9 on 6 CPU threads at normal priority · de.monero.herominers.com:1111');
   });
 
   test('without a worker file there is nothing to start', () => {
@@ -147,6 +158,7 @@ describe('start', () => {
     expect(new XmrEngine({ timing: t }).t).toEqual(t);
     expect(e.agent).toBe('llmjob-earn');
     expect(e.now).toBe(Date.now);
+    expect(e.platform).toBe(process.platform);
     expect(e.snapshot()).toMatchObject({ threads: 0, state: 'stopped' });
     expect([RECONNECT_MS, RESTART_LIMIT, STABLE_MS, POOL_GRACE_MS]).toEqual([5000, 3, 600000, 30000]);
   });

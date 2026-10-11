@@ -23,6 +23,8 @@ const { shortenXmrAddress } = require('../shared/xmr/address');
 // -> socket, spawnWorker -> child process), so the tests run with neither.
 //
 // settings: { address, worker, endpoint, threads, priority, hugePages }
+// priority is the worker's (idle, low or normal); without one it is
+// worker.defaultPriority for this platform.
 
 const RECONNECT_MS = 5000;
 // After the pool refuses the login. It means a wrong address far more often
@@ -53,13 +55,14 @@ function errText(e) {
 }
 
 class XmrEngine extends EventEmitter {
-  constructor({ connect, spawnWorker, workerPath, agent, now, timing } = {}) {
+  constructor({ connect, spawnWorker, workerPath, agent, now, timing, platform } = {}) {
     super();
     this.connect = connect;
     this.spawnWorker = spawnWorker;
     this.workerPath = workerPath || null;
     this.agent = agent || 'llmjob-earn';
     this.now = now || Date.now;
+    this.platform = platform || process.platform;
     const t = timing || {};
     this.t = {
       reconnect: t.reconnect == null ? RECONNECT_MS : t.reconnect,
@@ -154,6 +157,7 @@ class XmrEngine extends EventEmitter {
     if (this.running) return false;
     this._reset();
     this.settings = Object.assign({}, settings);
+    if (!this.settings.priority) this.settings.priority = workerProto.defaultPriority(this.platform);
     if (!this.workerPath || !this.spawnWorker) {
       this.emit('error', new Error('the CPU miner (llmjob-xmr-worker) is not installed beside the app.'
         + ' An antivirus may have removed it; reinstalling puts it back.'));
@@ -165,7 +169,8 @@ class XmrEngine extends EventEmitter {
     this.host = host;
     this.port = Number(port);
     this._log('info', 'mining Monero for ' + shortenXmrAddress(settings.address) + ' on ' + settings.threads
-      + ' CPU thread' + (settings.threads === 1 ? '' : 's') + ' · ' + settings.endpoint);
+      + ' CPU thread' + (settings.threads === 1 ? '' : 's') + ' at ' + this.settings.priority + ' priority · '
+      + settings.endpoint);
     if (!this._startWorker()) return false;
     this._openSocket();
     this._timer(() => this._checkSilence(), this.t.watchdog, true);

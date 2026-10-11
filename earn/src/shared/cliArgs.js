@@ -13,6 +13,7 @@ const { MODES, DEFAULT_MODE, isValidMode } = require('./llmMode');
 const { parseMemClockMhz } = require('./memClock');
 const { parseGpuIndexList } = require('./gpu');
 const { checkXmrAddress } = require('./xmr/address');
+const { PRIORITIES } = require('./xmr/worker');
 
 // Short flags → their canonical long form.
 // --mdl / -m are deliberately absent from USAGE: merge mining is retired from
@@ -36,7 +37,7 @@ const VALUE_FLAGS = new Set([
   '--stats-file',
   '--mode', '--llm-binary', '--llm-model', '--llm-max-instances', '--gate-port', '--gate-host',
   '--gate-quiet', '--mine-mem-clock',
-  '--xmr-address', '--cpu-threads',
+  '--xmr-address', '--cpu-threads', '--cpu-priority',
 ]);
 
 // Own keys only, so `--region constructor` is not a region.
@@ -107,6 +108,11 @@ const USAGE = [
   '                           off by default on 4 CPUs or fewer or under 8 GB).',
   '                           At least one CPU always stays free for the GPU',
   '                           miner. 0 turns CPU mining off.',
+  '      --cpu-priority <p>   Priority of the Monero threads: ' + PRIORITIES.join(', '),
+  '                           (default: low on Linux, idle on Windows). One CPU',
+  '                           stays free for the GPU miner at any priority;',
+  '                           normal gets the most from a server whose CPUs',
+  '                           are busy with other work.',
   '      --stats-file <path>  Write live stats JSON here every 10s (for HiveOS h-stats etc.)',
   '      --no-report          Do not publish live status to the public network board',
   '      --no-serve           Do not serve inference jobs for the LLMJob network',
@@ -206,6 +212,14 @@ function buildSettings(opts, errors, report, update, serve) {
     }
   }
 
+  // null: the platform's default (shared/xmr/worker.defaultPriority).
+  let cpuPriority = null;
+  if (opts['--cpu-priority'] != null) {
+    const p = String(opts['--cpu-priority']).trim();
+    if (PRIORITIES.includes(p)) cpuPriority = p;
+    else errors.push('invalid --cpu-priority: ' + p + ' (choices: ' + PRIORITIES.join(', ') + ')');
+  }
+
   const statsFile = opts['--stats-file'] != null ? String(opts['--stats-file']) : null;
   const llmBinary = opts['--llm-binary'] != null ? String(opts['--llm-binary']) : null;
   const llmModel = opts['--llm-model'] != null ? String(opts['--llm-model']) : null;
@@ -274,7 +288,7 @@ function buildSettings(opts, errors, report, update, serve) {
   const modeProvided = opts['--mode'] != null;
 
   return {
-    address, mdlAddress, region, legacyRegion, worker, gpu, gpuIndices, statsFile, xmrAddress, cpuThreads,
+    address, mdlAddress, region, legacyRegion, worker, gpu, gpuIndices, statsFile, xmrAddress, cpuThreads, cpuPriority,
     mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs, mineMemClockMhz,
     report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,
   };

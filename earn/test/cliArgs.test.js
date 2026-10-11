@@ -529,8 +529,19 @@ describe('--xmr-address / --cpu-threads', () => {
     expect(parseCliArgs(['-a', ADDR, '--cpu-threads', '0']).errors).toEqual([]);
   });
 
+  test('--cpu-priority: idle, low or normal; none is the platform default', () => {
+    expect(parseCliArgs(['-a', ADDR]).settings.cpuPriority).toBeNull();
+    for (const p of ['idle', 'low', 'normal']) {
+      expect(parseCliArgs(['-a', ADDR, '--xmr-address', XMR, '--cpu-priority', p]).settings.cpuPriority).toBe(p);
+    }
+    const r = parseCliArgs(['-a', ADDR, '--xmr-address', XMR, '--cpu-priority=realtime']);
+    expect(r.errors).toEqual(['invalid --cpu-priority: realtime (choices: idle, low, normal)']);
+    expect(r.settings.cpuPriority).toBeNull();
+  });
+
   test('--help says what they do', () => {
     expect(USAGE).toContain('--xmr-address <4…|8…>');
+    expect(USAGE).toContain('--cpu-priority <p>');
     expect(USAGE).toContain('--cpu-threads <n>');
     expect(VALUE_FLAGS.has('--xmr-address')).toBe(true);
     expect(VALUE_FLAGS.has('--cpu-threads')).toBe(true);

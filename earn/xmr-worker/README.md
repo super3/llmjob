@@ -30,8 +30,12 @@ copy from an older release is never run.
 - Tries huge pages (hugetlbfs on Linux, large pages on Windows) and falls back.
   On Linux without reserved huge pages it asks for transparent huge pages for
   the dataset. The log says which it got.
-- Mines at idle priority: `SCHED_IDLE` threads on Linux, the idle priority class
-  on Windows. Any normal thread, the GPU miner's included, runs first.
+- Mines at the priority the app asks for: `idle` (`SCHED_IDLE` threads on
+  Linux, the idle priority class on Windows), `low` (nice 19, or below-normal)
+  or `normal`. The app asks for low on Linux and idle on Windows
+  (`defaultPriority` in `src/shared/xmr/worker.js` says why). The GPU miner
+  is kept whole by the free CPU the thread plan always leaves, not by the
+  priority.
 - Compares each hash with the job's target itself and reports only shares, each
   checked again in light mode before it goes out.
 - Exits when stdin closes, so it never outlives the app (on Linux also when the

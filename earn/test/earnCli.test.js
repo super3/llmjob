@@ -834,7 +834,7 @@ describe('CPU mining', () => {
     const cpu = m.XmrEngine.instances[0];
     expect(cpu.opts).toMatchObject({ workerPath: '/opt/llmjob-xmr-worker', spawnWorker: 'spawnWorker', agent: 'llmjob-earn/' + pkg.version });
     expect(cpu.start).toHaveBeenCalledWith({
-      address: XMR_ADDR, worker: 'rig-host', endpoint: 'de.monero.herominers.com:1111', threads: 15,
+      address: XMR_ADDR, worker: 'rig-host', endpoint: 'de.monero.herominers.com:1111', threads: 15, priority: null,
     });
 
     // Its pool socket goes through the same lookup as the GPU miner's, and a
@@ -883,10 +883,11 @@ describe('CPU mining', () => {
 
   test('a thread count by hand, and one cut down to leave a CPU free', async () => {
     const m = load();
-    m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '-w', 'rig9', '--xmr-address', XMR_ADDR, '--cpu-threads', '3']);
+    m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '-w', 'rig9', '--xmr-address', XMR_ADDR, '--cpu-threads', '3',
+      '--cpu-priority', 'normal']);
     await settle();
     expect(allOut()).toContain('cpu:        3 of 16 CPUs\n');
-    expect(m.XmrEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ threads: 3, worker: 'rig9' }));
+    expect(m.XmrEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ threads: 3, worker: 'rig9', priority: 'normal' }));
 
     const m2 = load();
     m2.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--xmr-address', XMR_ADDR, '--cpu-threads', '64']);

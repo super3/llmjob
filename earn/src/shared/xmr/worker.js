@@ -13,6 +13,26 @@ const PROTOCOL = 1;
 
 const PRIORITIES = ['idle', 'low', 'normal'];
 
+// The worker's priority when nobody picks one. Either way at least one CPU is
+// left free (see cpuPlan), and that is what keeps the GPU miner whole: on a
+// rented Ryzen 9 5950X its Pearl rate was the same at all three priorities.
+// What the priority decides is how the CPU miner fares against everything else
+// on the computer.
+//
+// Linux gets "low" (nice 19). "idle" (SCHED_IDLE) gave up nearly everything
+// there: on that host, with other tenants keeping all 32 CPUs busy, 14 threads
+// made 1.74 kH/s at idle, 3.97 at low and 6.47 at normal. A SCHED_IDLE thread
+// weighs almost nothing in its cgroup's share of a CPU once the GPU miner's
+// normal threads are in the same cgroup. Nice 19 still lets any normal program
+// have about 98% of a CPU it wants.
+//
+// Windows keeps "idle" (the idle priority class): its scheduler runs strictly
+// by priority, so idle threads take every CPU nothing else wants, and step
+// aside at once for anything that does.
+function defaultPriority(platform) {
+  return platform === 'win32' ? 'idle' : 'low';
+}
+
 function encode(msg) {
   return JSON.stringify(msg) + '\n';
 }
@@ -98,4 +118,4 @@ function parseWorkerLine(line) {
   return { kind: 'unknown', raw: s };
 }
 
-module.exports = { PROTOCOL, PRIORITIES, workerArgs, jobCommand, quitCommand, parseWorkerLine };
+module.exports = { PROTOCOL, PRIORITIES, defaultPriority, workerArgs, jobCommand, quitCommand, parseWorkerLine };

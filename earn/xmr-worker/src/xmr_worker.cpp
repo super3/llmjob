@@ -267,9 +267,12 @@ static void writeLe32(uint8_t* p, uint32_t v) {
 // ── Priority ────────────────────────────────────────────────────────────────
 //
 // The CPU miner must never slow the GPU miner, whose share proofs and CUDA host
-// threads run on the CPU too, or the desktop. So its threads run at idle
-// priority by default: on Linux SCHED_IDLE, which any normal thread preempts;
-// on Windows the idle priority class.
+// threads run on the CPU too, or the desktop. The app keeps a CPU free for the
+// GPU miner and picks the priority (src/shared/xmr/worker.js defaultPriority):
+//   idle    Linux SCHED_IDLE, which any normal thread preempts; Windows the
+//           idle priority class (the default when run by hand)
+//   low     nice 19; Windows below-normal
+//   normal  unchanged
 
 enum class Priority { Idle, Low, Normal };
 static Priority gPriority = Priority::Idle;

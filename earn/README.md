@@ -573,6 +573,8 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
       --xmr-address <4…|8…>  Also mine Monero (XMR) on the CPU, paid here (see below)
       --cpu-threads <n>    CPU threads for Monero (default: all CPUs but 1, or but 2
                            on 6 CPUs or fewer; off on 4 or fewer or under 8 GB)
+      --cpu-priority <p>   Monero thread priority: idle, low or normal (default:
+                           low on Linux, idle on Windows)
       --stats-file <path>  Write live stats JSON here every 10 s (HiveOS's h-stats.sh reads it)
       --llm-binary <path>  Use this llama-server instead of downloading one
       --llm-model <path>   Use this GGUF model instead of downloading the default

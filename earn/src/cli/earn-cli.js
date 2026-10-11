@@ -1401,6 +1401,7 @@ async function run(argv) {
         worker: settings.workerProvided ? settings.worker : defaultWorker(),
         endpoint: XMR.endpoint,
         threads: xmr.threads,
+        priority: settings.cpuPriority,
       });
     }
 

@@ -87,6 +87,14 @@ describe('parseWorkerLine', () => {
     expect(p({ type: 'what' })).toEqual({ kind: 'unknown', raw: '{"type":"what"}' });
   });
 
+  // Measured on a rented Ryzen 9 5950X with every CPU busy: 14 threads made
+  // 1.74 kH/s at idle, 3.97 at low and 6.47 at normal, with Pearl the same.
+  test('the default priority: low on Linux, idle on Windows', () => {
+    expect(w.defaultPriority('linux')).toBe('low');
+    expect(w.defaultPriority('win32')).toBe('idle');
+    expect(w.defaultPriority('darwin')).toBe('low');
+  });
+
   test('constants', () => {
     expect(w.PROTOCOL).toBe(1);
     expect(w.PRIORITIES).toEqual(['idle', 'low', 'normal']);
