@@ -149,6 +149,9 @@ dist/
 # never committed.
 earn/native/build/
 earn/native/cuda-build/
+# The RandomX CPU worker's build (scripts/build-xmr-worker.sh), RandomX
+# checkout included.
+earn/xmr-worker/build/
 earn/native/node_modules/
 # compare-miners.sh output
 earn/native/probes/compare-*/
