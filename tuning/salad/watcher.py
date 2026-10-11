@@ -40,6 +40,7 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                "credit_start": 100.0, "credit_offset": 0.0, "box_ver": "v0.5.13", "ver_override": {}, "report_min": 10,
                "min_margin": 0.10, "max_new_per_hour": 3, "max_per_class": 1,
                "search_every_min": 60, "retry_after_min": 60, "no_pc_streak": 3, "no_pc_hold_min": 180, "drift": 0.15,
+               "upgrade_gain": 0.05, "upgrade_every_min": 15,
                "trader": None,
                "wallet": os.environ.get("PRL_WALLET", "")}
 
@@ -512,11 +513,15 @@ class W:
         hour = time.strftime("%Y-%m-%dT%H", tm)
         asked = self.cfg["search_token"] != st["search_token"]
         # Also every search_every_min while a slot is empty: waiting for a PC costs nothing.
-        empty = sum(1 for g in st["groups"].values() if not g["ended"]) < self.cfg["max_active"]
+        slots = min(self.cfg["max_active"], st.get("quota") or self.cfg["max_active"])
+        empty = sum(1 for g in st["groups"].values() if not g["ended"]) < slots
         often = empty and t - st.get("last_search", 0) >= 60 * self.cfg["search_every_min"]
         if self.cfg["search"] and not st["credits_out"] and (asked or often or (tm.tm_min >= 1 and st["search_hour"] != hour)):
             st["search_hour"], st["search_token"], st["last_search"] = hour, self.cfg["search_token"], t
             self.search()
+        # With every slot taken, every upgrade_every_min, see whether a better class should take the weakest one's.
+        elif self.cfg["search"] and not empty and t - st.get("last_upgrade", 0) >= 60 * self.cfg["upgrade_every_min"]:
+            self.upgrade(t)
 
         # Credit warning and the report tick, every report_min minutes.
         self.write_report()
@@ -648,15 +653,20 @@ class W:
             event(f"DRIFT credit: the pool has credited {cred:.3f} PRL for work worth {work:.3f} "
                   f"({pct(cred - work, work)}, more than luck explains over {pt['blocks']} blocks)")
 
-    def pc_margin(self, g):
-        """The margin on this PC's last 3 readings after warm-up, or None while there aren't 3."""
+    def pc_rate(self, g):
+        """The miner's average TH/s on this PC's last 3 readings after warm-up, or None while there aren't 3."""
         if not g.get("has_pc") or not g.get("machine") or not g.get("pc_since"):
             return None
         cur = [r for r in g["readings"] if r[1] == g["machine"] and r[2] > 0 and r[0] >= g["pc_since"] - 5 * MIN]
         post = [r for r in cur if r[0] >= cur[0][0] + 2 * MIN] if cur else []
         if len(post) < 3:
             return None
-        return margin_of(sum(r[2] for r in post[-3:]) / 3 * self.st["mkt"]["usd_th_hr"], g["price"])
+        return sum(r[2] for r in post[-3:]) / 3
+
+    def pc_margin(self, g):
+        """The margin on this PC's last 3 readings after warm-up, or None while there aren't 3."""
+        rate = self.pc_rate(g)
+        return None if rate is None else margin_of(rate * self.st["mkt"]["usd_th_hr"], g["price"])
 
     def unplaced(self, cls, t):
         """True when the class's last no_pc_streak groups all ended without ever getting a PC, the latest within
@@ -678,12 +688,26 @@ class W:
         active = [g for g in st["groups"].values() if not g["ended"]]
         s, q = http("GET", f"{BASE}/quotas")
         quota = (q or {}).get("container_groups_quotas", {}).get("container_replicas_quota", 10) if s == 200 else 10
+        st["quota"] = quota
         room = min(self.cfg["max_active"], quota) - len(active)
         t = now()
         this_hour = sum(1 for g in st["groups"].values() if g["created"] >= t - t % 3600)
         room = min(room, self.cfg["max_new_per_hour"] - this_hour)   # however the search was started
         if room <= 0:
             return
+        made = 0
+        for *_, cls, p in self.candidates(active, t):
+            if made >= room or st["credits_out"]:
+                break
+            if self.create(cls, p):
+                made += 1
+        if not made:
+            event(f"SEARCH found nothing to create (room {room})")
+
+    def candidates(self, active, t):
+        """Classes a new group may use, each at its cheapest free priority that clears the margin, best first:
+        classes not held for want of PCs, then paid classes, then by expected profit an hour."""
+        st = self.st
         # Each class is tried once on this account, as on the first one, except that a class whose groups only
         # ended for want of a PC (released) is tried again retry_after_min after.
         skip = {g["class"] for g in st["groups"].values()
@@ -707,15 +731,37 @@ class W:
                     profit = rate * st["mkt"]["usd_th_hr"] - st["classes"][cls]["prices"][p]
                     cands.append((self.unplaced(cls, t), not self.paid(cls), -profit, cls, p))
                     break
-        cands.sort()
-        made = 0
-        for *_, cls, p in cands:
-            if made >= room or st["credits_out"]:
-                break
-            if self.create(cls, p):
-                made += 1
-        if not made:
-            event(f"SEARCH found nothing to create (room {room}, {len(cands)} candidates)")
+        return sorted(cands)
+
+    def upgrade(self, t):
+        """With every slot taken, swap the group making the least for a class expected to make upgrade_gain $/hr
+        more. A class is expected to make its measured rate at its free priority, counted no cheaper than low:
+        batch PCs are seldom handed out, and a group that gets none moves up. One swap per check."""
+        st = self.st
+        st["last_upgrade"] = t
+        this_hour = sum(1 for g in st["groups"].values() if g["created"] >= t - t % 3600)
+        if self.cfg["upgrade_gain"] is None or st["credits_out"] or this_hour >= self.cfg["max_new_per_hour"]:
+            return
+        u = st["mkt"]["usd_th_hr"]
+        active = [g for g in st["groups"].values() if not g["ended"]]
+        mining = [(self.pc_rate(g) * u - g["price"], g) for g in active if self.pc_rate(g) is not None]
+        if not mining:
+            return
+        worst, g = min(mining, key=lambda x: x[0])
+        best = None
+        for unplaced, _, _, cls, p in self.candidates(active, t):
+            if unplaced or cls == g["class"]:
+                continue
+            expect = KNOWN[cls][0] * u - st["classes"][cls]["prices"][PRIS[max(PRIS.index(p), 1)]]
+            if best is None or expect > best[0]:
+                best = (expect, cls, p)
+        if best is None or best[0] - worst < self.cfg["upgrade_gain"]:
+            return
+        expect, cls, p = best
+        event(f"UPGRADE {g['name']} makes ${worst:+.3f}/hr on its PC; a {cls} should make ${expect:+.3f}/hr")
+        self.delete(g, "released", f"swapped for a {cls}, expected to make ${expect - worst:.3f}/hr more")
+        if g["ended"]:
+            self.create(cls, p)
 
     # ---------- report ----------
     def write_report(self):
@@ -738,7 +784,7 @@ class W:
             prof = g["prl"] * price - g["spend"]
             host = g["name"] + (f" · PC {g['machine'][:8]}" if g["machine"] else "")
             short = g["class"].split(" (")[0]
-            rows.append(f"| ⚡ {short} ×1 (Salad, {g['pri']}) | {host} | {state} | {ths:.0f} | {cost:.3f} | "
+            rows.append(f"| ⚡ {short} ({g['pri']}) | {host} | {state} | {ths:.0f} | {cost:.3f} | "
                         f"{earn - cost:+.3f} | {pct(earn - cost, earn)} | {g['prl']:.3f} | {prof:+.2f} |")
         if ended:
             rel = sum(1 for g in ended if g["end_kind"] == "released")

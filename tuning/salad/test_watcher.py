@@ -527,6 +527,92 @@ class TestSearch(Base):
         self.assertEqual(len(self.http.made("POST", "/containers$")), n)
 
 
+class TestUpgrade(Base):
+    def full_with_a_2060(self, avail):
+        """Every slot taken by one 2060 mining at 40 TH/s at low: $0.017/hr. A 4080 at low should make $0.083/hr."""
+        self.http.on("POST", "/availability/", lambda b: (200, avail if b["gpu_classes"][0] == "c4080" else {}))
+        self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10}}))
+        self.x.cfg.update(max_active=1, max_new_per_hour=10)
+        g = self.group(cls="RTX 2060 (6 GB)", pri="low")
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 40, 6)
+        return g
+
+    def made(self):
+        return [(c[2]["name"], c[2]["container"]["priority"]) for c in self.http.made("POST", "/containers$")][1:]
+
+    def test_the_weakest_group_is_swapped_for_a_class_that_should_make_more(self):
+        g = self.full_with_a_2060({"available_gpu_low": 5})
+        self.x.upgrade(self.clock[0])
+        self.assertEqual(g["end_kind"], "released")
+        self.assertTrue(self.http.made("DELETE", "/containers/biz-rtx2060$"))
+        self.assertEqual(self.made(), [("biz-rtx4080", "low")])
+        self.assertIn("UPGRADE biz-rtx2060", self.events())
+
+    def test_no_swap_when_the_gain_is_too_small(self):
+        g = self.full_with_a_2060({"available_gpu_low": 5})
+        self.x.cfg["upgrade_gain"] = 0.07
+        self.x.upgrade(self.clock[0])
+        self.assertIsNone(g["ended"])
+        self.assertEqual(self.made(), [])
+
+    def test_a_free_batch_pc_is_counted_at_the_low_price(self):
+        # At batch a 4080 would make $0.123/hr, $0.106 more; counted at low it's $0.066 more, under the bar.
+        g = self.full_with_a_2060({"available_gpu_batch": 5})
+        self.x.cfg["upgrade_gain"] = 0.07
+        self.x.upgrade(self.clock[0])
+        self.assertIsNone(g["ended"])
+        self.x.cfg["upgrade_gain"] = 0.05
+        self.x.upgrade(self.clock[0])
+        self.assertEqual(self.made(), [("biz-rtx4080", "batch")])  # still asked for at batch
+
+    def test_a_group_still_warming_up_is_left_alone(self):
+        self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
+        self.x.cfg.update(max_active=1, max_new_per_hour=10)
+        g = self.group(cls="RTX 2060 (6 GB)", pri="low")
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 40, 2)
+        self.x.upgrade(self.clock[0])
+        self.assertIsNone(g["ended"])
+
+    def test_off_when_upgrade_gain_is_unset(self):
+        g = self.full_with_a_2060({"available_gpu_low": 5})
+        self.x.cfg["upgrade_gain"] = None
+        self.x.upgrade(self.clock[0])
+        self.assertIsNone(g["ended"])
+
+    def test_it_checks_every_15_min_once_full_and_not_while_a_slot_is_empty(self):
+        self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10}}))
+        for full in (True, False):
+            self.setUp()
+            w.save(w.CFG, {"max_active": 0 if full else 10, "search_every_min": 5})
+            checks = []
+            self.x.upgrade = lambda t: (checks.append(t), self.x.st.update(last_upgrade=t))
+            self.x.search = lambda: None
+            for _ in range(31):
+                self.clock[0] += 60
+                self.x.round()
+            self.assertEqual(len(checks), 2 if full else 0)
+
+    def test_salads_quota_caps_the_slots_when_max_active_is_higher(self):
+        # max_active is set above the quota so a raised quota is used at once. Until then, full means full.
+        self.group(cls="RTX 2060 (6 GB)", pri="low")
+        self.x.st["quota"] = 1
+        w.save(w.CFG, {"max_active": 30, "search_every_min": 5})
+        calls = []
+        self.x.search = lambda: calls.append(1)
+        self.x.upgrade = lambda t: self.x.st.update(last_upgrade=t)
+        for _ in range(16):
+            self.clock[0] += 60
+            self.x.round()
+        self.assertEqual(len(calls), 1)  # only the hourly search
+        self.x.st["quota"] = 2           # Salad raises the quota
+        for _ in range(16):
+            self.clock[0] += 60
+            self.x.round()
+        self.assertGreater(len(calls), 2)  # now a slot is empty
+
+
 class TestSearchTiming(Base):
     def rounds(self, minutes, empty=True):
         w.save(w.CFG, {"search_every_min": 5, "max_active": 10 if empty else 0})  # round() re-reads config.json
@@ -764,7 +850,7 @@ class TestRound(Base):
         self.assertIn("FIRST SHARE biz-rtx4080", ev)
         with open(os.path.join(TMP, "report.md")) as f:
             report = f.read()
-        self.assertIn("⚡ RTX 4080 ×1 (Salad, batch)", report)
+        self.assertIn("⚡ RTX 4080 (batch)", report)
         self.assertIn("1 GPU mining", report)
 
     def test_a_busy_round_reads_more_pages(self):
