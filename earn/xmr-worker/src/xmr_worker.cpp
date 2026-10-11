@@ -333,6 +333,9 @@ static bool gLargeVm = false;                         // scratchpads in large pa
 static randomx_cache* gCache = nullptr;
 static randomx_dataset* gDataset = nullptr;
 static const char* gPages = "normal";                 // how the dataset is backed
+#ifdef __linux__
+static bool gThpAsked = false;                        // madvise'd for THP; checked once written
+#endif
 static unsigned gThreads = 1;
 static unsigned gInitThreads = 1;
 
@@ -380,11 +383,41 @@ static bool allocDataset() {
     size_t size = randomx_dataset_item_count() * RANDOMX_DATASET_ITEM_SIZE;
     uintptr_t start = (base + page - 1) & ~(page - 1);
     uintptr_t end = (base + size) & ~(page - 1);
-    if (end > start && madvise(reinterpret_cast<void*>(start), end - start, MADV_HUGEPAGE) == 0) gPages = "thp";
+    if (end > start && madvise(reinterpret_cast<void*>(start), end - start, MADV_HUGEPAGE) == 0) {
+      gPages = "thp";
+      gThpAsked = true;
+    }
   }
 #endif
   return true;
 }
+
+#ifdef __linux__
+// madvise(MADV_HUGEPAGE) only marks the range, and returns 0 even when the
+// kernel goes on to back it with 4 KiB pages: transparent huge pages set to
+// "never", turned off for this process, or memory too fragmented. So once the
+// dataset is written, count what the process got (AnonHugePages), and call it
+// THP only when that covers at least half the dataset. Before Linux 4.14 there
+// is no smaps_rollup, and the sysfs setting is the best guess.
+static bool thpBacked(size_t datasetBytes) {
+  if (FILE* f = fopen("/proc/self/smaps_rollup", "r")) {
+    char line[256];
+    long long kb = -1;
+    while (fgets(line, sizeof line, f)) {
+      if (sscanf(line, "AnonHugePages: %lld kB", &kb) == 1) break;
+    }
+    fclose(f);
+    if (kb >= 0) return static_cast<unsigned long long>(kb) * 1024 >= datasetBytes / 2;
+  }
+  char buf[128] = {0};
+  if (FILE* f = fopen("/sys/kernel/mm/transparent_hugepage/enabled", "r")) {
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    buf[n] = 0;
+    fclose(f);
+  }
+  return strstr(buf, "[always]") != nullptr || strstr(buf, "[madvise]") != nullptr;
+}
+#endif
 
 static randomx_vm* createFullVm(bool v2) {
   randomx_flags f = static_cast<randomx_flags>(gFlags | RANDOMX_FLAG_FULL_MEM | (v2 ? RANDOMX_FLAG_V2 : 0));
@@ -661,6 +694,11 @@ static void datasetThread() {
     }
     if (!initDataset()) return;
     long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    // "building" says what was asked for; "ready" says what the dataset got.
+    const char* pages = gPages;
+#ifdef __linux__
+    if (gThpAsked) pages = thpBacked(randomx_dataset_item_count() * RANDOMX_DATASET_ITEM_SIZE) ? "thp" : "normal";
+#endif
     if (!checkDataset(v2)) {
       emitError("the RandomX dataset failed its check after it was built; not mining with it", true);
       std::lock_guard<std::mutex> lk(gMutex);
@@ -672,6 +710,7 @@ static void datasetThread() {
     }
     {
       std::lock_guard<std::mutex> lk(gMutex);
+      gPages = pages;
       memcpy(gDatasetSeed, seed, 32);
       gDatasetGen++;
       gBuilding = false;

@@ -29,7 +29,11 @@ copy from an older release is never run.
   After each build it checks one hash against light mode.
 - Tries huge pages (hugetlbfs on Linux, large pages on Windows) and falls back.
   On Linux without reserved huge pages it asks for transparent huge pages for
-  the dataset. The log says which it got.
+  the dataset, and once the dataset is built, reads how much of it the kernel
+  really put on them (`/proc/self/smaps_rollup`). The log says which it got.
+- Starts each job's search at the nonce the app sends. The same job from the
+  same start finds the same shares, so the app sends a random start with every
+  job line.
 - Mines at the priority the app asks for: `idle` (`SCHED_IDLE` threads on
   Linux, the idle priority class on Windows), `low` (nice 19, or below-normal)
   or `normal`. The app asks for low on Linux and idle on Windows
