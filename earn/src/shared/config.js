@@ -61,6 +61,24 @@ const MINER = {
   minPayoutPrl: 1,
 };
 
+// Monero on the CPU, opt-in and off by default (main/xmrEngine.js drives the
+// worker built from earn/xmr-worker). HeroMiners' terms, read from
+// https://monero.herominers.com/api/stats on 2026-10-11: fee 0.9%, coinUnits
+// 1e12, minPaymentThreshold 1e10 (0.01 XMR), paymentsInterval 600 s. Port 1111
+// starts at difficulty 480,000; 1112 is its NiceHash port. Every regional name
+// (us, de, sg, ...) resolves to the same server, so there is no region to pick;
+// this is the pool's own poolHost.
+const XMR = {
+  pool: 'HeroMiners',
+  endpoint: 'de.monero.herominers.com:1111',
+  apiBase: 'https://monero.herominers.com',
+  coinUnits: 1e12,
+  poolFeePct: 0.9,
+  minPayoutXmr: 0.01,
+  payoutIntervalSec: 600,
+  algo: 'rx/0',
+};
+
 // Network economics used to estimate earnings. Mirrors the design mock.
 // LLMJob network page: where the app reports its live mining status so it shows
 // up on the public "who's mining now" board, and how often.
@@ -494,7 +512,7 @@ function regionLabel(region) {
 
 
 module.exports = {
-  REGIONS, LEGACY_REGIONS, DEFAULTS, MINER, NETWORK, ECON, ECON_API, LLM, NODE,
+  REGIONS, LEGACY_REGIONS, DEFAULTS, MINER, XMR, NETWORK, ECON, ECON_API, LLM, NODE,
   regionFor, endpointFor, normalizeEndpoint, resolveEndpoint, splitEndpoint, regionLabel,
   migrateRegion,
 };

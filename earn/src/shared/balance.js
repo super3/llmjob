@@ -60,14 +60,22 @@ function paymentAmount(entry) {
 // Reduce the pool payload to the display fields, or null when it's unusable.
 // `earned` is the balance we show: pending payout plus everything already paid.
 // priceUsd (optional) converts the total to USD; omit it to show the coin only.
-function parseBalance(json, priceUsd) {
+//
+// opts is for the other coin on the same pool software, Monero:
+//   units          atomic units per coin (XMR: 1e12; default COIN_UNITS)
+//   absentIsZero   a payload with no `balance` reads as 0. HeroMiners' Monero
+//                  pool leaves the field out for an address that has shares
+//                  but no balance yet, where the Pearl pool always sends it.
+function parseBalance(json, priceUsd, opts) {
   if (!json || typeof json !== 'object' || Array.isArray(json)) return null;
   const stats = json.stats;
   if (!stats || typeof stats !== 'object') return null;
+  const o = opts || {};
+  const units = Number(o.units) > 0 ? Number(o.units) : COIN_UNITS;
 
   // Atomic units arrive as a STRING on this pool, which Number() handles — but
   // a missing or negative balance is a payload we cannot show.
-  const pendingRaw = Number(stats.balance);
+  const pendingRaw = o.absentIsZero && stats.balance == null ? 0 : Number(stats.balance);
   if (!Number.isFinite(pendingRaw) || pendingRaw < 0) return null;
 
   // The pool's own lifetime total, when it reports one. Only fall back to
@@ -85,8 +93,8 @@ function parseBalance(json, priceUsd) {
       ? json.payments.reduce((a, p) => a + paymentAmount(p), 0)
       : 0);
 
-  const pending = pendingRaw / COIN_UNITS;
-  const paid = paidRaw / COIN_UNITS;
+  const pending = pendingRaw / units;
+  const paid = paidRaw / units;
   const earned = pending + paid;
   const price = Number(priceUsd);
   const usd = Number.isFinite(price) && price >= 0 ? earned * price : null;

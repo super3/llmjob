@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-  REGIONS, DEFAULTS, MINER, ECON,
+  REGIONS, DEFAULTS, MINER, XMR, ECON,
   regionFor, endpointFor, normalizeEndpoint, resolveEndpoint, splitEndpoint, regionLabel,
   migrateRegion, LEGACY_REGIONS,
 } = require('../src/shared/config');
@@ -50,6 +50,16 @@ describe('config', () => {
 // pre-1.9.4 vector — wrote it as `stratum+tcp://host:port`, so that form gets
 // pasted in; passing it through made the engine resolve the scheme as part of
 // the hostname and loop on "DNS lookup failed: No such host is known".
+// HeroMiners' Monero pool, from its /api/stats on 2026-10-11.
+describe('XMR', () => {
+  test('mines on HeroMiners\' Monero pool on its low-difficulty port, rx/0', () => {
+    expect(XMR).toMatchObject({
+      pool: 'HeroMiners', endpoint: 'de.monero.herominers.com:1111', apiBase: 'https://monero.herominers.com',
+      coinUnits: 1e12, poolFeePct: 0.9, minPayoutXmr: 0.01, payoutIntervalSec: 600, algo: 'rx/0',
+    });
+  });
+});
+
 describe('normalizeEndpoint / resolveEndpoint', () => {
   test('strips a scheme, trailing slash and surrounding space', () => {
     expect(normalizeEndpoint('stratum+tcp://us.pearl.herominers.com:1200')).toBe('us.pearl.herominers.com:1200');

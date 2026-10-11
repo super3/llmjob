@@ -1,0 +1,101 @@
+'use strict';
+
+// The line protocol between the app and the RandomX worker
+// (earn/xmr-worker/src/xmr_worker.cpp): the commands the app writes to the
+// worker's stdin, and the events it reads from its stdout, one JSON object per
+// line each way. Pure; main/xmrEngine.js owns the process.
+
+const { workerTarget } = require('./stratum');
+
+// The protocol version the worker states in its hello. A worker that states
+// another one is from a different release and is not used.
+const PROTOCOL = 1;
+
+const PRIORITIES = ['idle', 'low', 'normal'];
+
+function encode(msg) {
+  return JSON.stringify(msg) + '\n';
+}
+
+// The worker's command line.
+function workerArgs({ threads, priority, hugePages } = {}) {
+  const args = ['--threads', String(Math.max(1, Math.floor(Number(threads) || 1)))];
+  if (priority && PRIORITIES.includes(priority)) args.push('--priority', priority);
+  if (hugePages === false) args.push('--no-huge-pages');
+  return args;
+}
+
+// A parsed pool job (stratum.parseJob) as a worker command.
+function jobCommand(job) {
+  return encode({
+    cmd: 'job',
+    id: job.jobId,
+    blob: job.blob,
+    target: workerTarget(job.target),
+    seed: job.seedHash,
+    variant: job.variant,
+    commit: !!job.commit,
+    nonce: 0,
+  });
+}
+
+function quitCommand() {
+  return encode({ cmd: 'quit' });
+}
+
+const HEX = (s, chars) => typeof s === 'string' && s.length === chars && /^[0-9a-f]+$/.test(s);
+const num = (v) => (Number.isFinite(v) ? v : null);
+
+// One line from the worker, as { kind, ... }. Never throws.
+function parseWorkerLine(line) {
+  const s = String(line == null ? '' : line).trim();
+  if (!s) return { kind: 'empty' };
+  let m;
+  try {
+    m = JSON.parse(s);
+  } catch (e) {
+    return { kind: 'unparseable', raw: s };
+  }
+  if (!m || typeof m !== 'object' || Array.isArray(m)) return { kind: 'unparseable', raw: s };
+  switch (m.type) {
+    case 'hello':
+      return {
+        kind: 'hello',
+        protocol: num(m.protocol),
+        version: String(m.version || ''),
+        randomx: String(m.randomx || ''),
+        cpus: num(m.cpus),
+        threads: num(m.threads),
+        jit: !!m.jit,
+        hardAes: !!m.hardAes,
+      };
+    case 'selftest':
+      return { kind: 'selftest', ok: m.ok === true, ms: num(m.ms), message: m.msg ? String(m.msg) : null };
+    case 'dataset':
+      if (m.state !== 'building' && m.state !== 'ready') break;
+      return {
+        kind: 'dataset',
+        state: m.state,
+        ms: num(m.ms),
+        threads: num(m.threads),
+        pages: m.pages ? String(m.pages) : null,
+      };
+    case 'share':
+      if (typeof m.job !== 'string' || !HEX(m.nonce, 8) || !HEX(m.result, 64)) break;
+      return {
+        kind: 'share', jobId: m.job, nonce: m.nonce, result: m.result,
+        commitment: HEX(m.commitment, 64) ? m.commitment : null,
+      };
+    case 'hashrate':
+      return { kind: 'hashrate', hs: Math.max(0, num(m.hs) || 0), total: num(m.total), threads: num(m.threads) };
+    case 'log':
+      return { kind: 'log', level: m.level === 'warn' || m.level === 'error' ? m.level : 'info', message: String(m.msg || '') };
+    case 'error':
+      return { kind: 'error', fatal: m.fatal === true, message: String(m.msg || 'unknown error') };
+    case 'bench':
+      return { kind: 'bench', hs: num(m.hs), seconds: num(m.seconds) };
+  }
+  return { kind: 'unknown', raw: s };
+}
+
+module.exports = { PROTOCOL, PRIORITIES, workerArgs, jobCommand, quitCommand, parseWorkerLine };
