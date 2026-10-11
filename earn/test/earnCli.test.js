@@ -954,6 +954,8 @@ describe('CPU mining', () => {
     const m = load();
     const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu-index=none', '--xmr-address', XMR_ADDR]);
     await settle();
+    expect(allOut()).toContain('no GPU mines (every one is turned off); mining Monero on the CPU');
+    expect(allOut()).not.toContain('nothing to run');
     const cpu = m.XmrEngine.instances[0];
     cpu.emit('stopped', 1);   // the idle wait still holds the run
     fire('SIGTERM');

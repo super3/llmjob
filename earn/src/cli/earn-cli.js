@@ -1107,7 +1107,10 @@ async function run(argv) {
     log('nothing to run — no miner and the LLM did not start', process.stderr);
     return 1;
   }
-  if (idleByChoice) log('nothing to run with every GPU turned off; waiting until stopped');
+  if (idleByChoice) {
+    log(xmr ? 'no GPU mines (every one is turned off); mining Monero on the CPU'
+      : 'nothing to run with every GPU turned off; waiting until stopped');
+  }
 
   return new Promise((resolve) => {
     let settled = false;
