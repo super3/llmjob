@@ -378,10 +378,16 @@ class W:
                 g = by_name.get(name)
                 if not g or tm < g["created"]:
                     continue
-                m = re.search(r"\[mining g(\d+)\] \d\d:\d\d:\d\d\s+([0-9.]+) TH/s · ([0-9,]+) accepted", text)
+                m = re.search(r"\[mining g(\d+)\] \d\d:\d\d:\d\d\s+([0-9.]+) TH/s · ([0-9,]+) accepted(?:.*?up (\S+ \S+))?", text)
                 if m:
-                    ths, acc = float(m.group(2)), int(m.group(3).replace(",", ""))
-                    g["readings"].append([tm, mach, ths, acc])
+                    ths, acc, up = float(m.group(2)), int(m.group(3).replace(",", "")), m.group(4)
+                    # box.sh repeats the miner's last line after the miner dies. Its uptime ("up 1h 23m") then
+                    # stops moving; a live miner's moves every minute, though its rate and share count can repeat.
+                    # A repeat isn't a reading: it earns nothing, and the stale-reading rule sees the miner stopped.
+                    same = [r for r in g["readings"] if r[1] == mach]
+                    if up and same and len(same[-1]) > 4 and same[-1][4] == up:
+                        continue
+                    g["readings"].append([tm, mach, ths, acc, up])
                     g["readings"] = [r for r in g["readings"] if t - r[0] < 7200]
                     if ths > 0:
                         g["prl"] += ths / 60 * st["mkt"]["prl_th_hr"]

@@ -147,6 +147,10 @@ Base `https://api.salad.com/api/public/organizations/<org>`, key in the `Salad-A
   once a minute. A PC that blocks the pool port prints `[run] FAIL: outbound port 1200 blocked`.
 - Workers are named `biz-<card>` (a second group of a card gets `-2`). The pool shows `<worker>-g0`.
 - The miner can't lock the memory clock on Salad: its log says the user has no permission.
+- After the miner dies, box.sh keeps printing its last `[mining g0]` line every minute, uptime and all.
+  The watcher ignores a line whose uptime ("up 1h 23m") hasn't moved, so a dead miner earns nothing in
+  the ledger and its PC is left 6 min after the last real reading. Rate and share count alone aren't
+  enough: a slow card's rate and shares can stay the same for minutes while it mines.
 - Image preparation took from 1 to 60+ min on the first account, with the same image. A PC came within
   about a minute when one was free, and the first share 1–3 min after that.
 
