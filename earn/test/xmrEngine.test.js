@@ -1,0 +1,581 @@
+'use strict';
+
+const { EventEmitter } = require('events');
+const {
+  XmrEngine, RECONNECT_MS, LOGIN_RETRY_MS, KEEPALIVE_MS, SILENCE_MS, RESTART_MS, RESTART_LIMIT, STABLE_MS,
+  KILL_MS, POOL_GRACE_MS,
+} = require('../src/main/xmrEngine');
+
+const ADDRESS = '87wTMj88rEGV3BFiYXJc2UHeTGmHikMRWAvAskmPgaF3PZxuxonkKaJZsprNmuhM1Aca7P6UbyatGFHkQfUTYgoNN1JxND9';
+const SEED = 'ab'.repeat(32);
+const BLOB = 'cd'.repeat(76);
+const RESULT = 'ef'.repeat(32);
+const SETTINGS = { address: ADDRESS, worker: 'rig01', endpoint: 'de.monero.herominers.com:1111', threads: 6 };
+
+// A socket that records what is written to it.
+function fakeSocket() {
+  const s = new EventEmitter();
+  s.written = [];
+  s.write = (line) => { s.written.push(JSON.parse(line)); };
+  s.destroy = jest.fn(() => { s.destroyed = true; s.emit('close'); });
+  s.remoteAddress = '141.95.126.31';
+  s.remoteFamily = 'IPv4';
+  s.recv = (o) => s.emit('data', Buffer.from(JSON.stringify(o) + '\n'));
+  return s;
+}
+
+// A worker process: stdout/stderr to push lines on, stdin that records.
+function fakeChild() {
+  const c = new EventEmitter();
+  c.stdout = new EventEmitter();
+  c.stderr = new EventEmitter();
+  c.stdin = new EventEmitter();
+  c.stdin.lines = [];
+  c.stdin.write = (line) => { c.stdin.lines.push(JSON.parse(line)); };
+  c.stdin.end = jest.fn();
+  c.kill = jest.fn();
+  c.say = (o) => c.stdout.emit('data', Buffer.from(JSON.stringify(o) + '\n'));
+  return c;
+}
+
+const HELLO = { type: 'hello', protocol: 1, version: '0.5.14', randomx: '7607fb2faed2', jit: true, hardAes: true };
+const job = (id, extra) => Object.assign({ blob: BLOB, job_id: id, target: 'b88d0600', algo: 'rx/0', height: 1, seed_hash: SEED }, extra);
+
+// An engine with fakes for everything, and what it said.
+function setup(opts = {}) {
+  const sockets = [];
+  const children = [];
+  let t = 1000000;
+  const engine = new XmrEngine(Object.assign({
+    connect: jest.fn(() => { const s = fakeSocket(); sockets.push(s); return s; }),
+    spawnWorker: jest.fn(() => { const c = fakeChild(); children.push(c); return c; }),
+    workerPath: '/opt/llmjob-xmr-worker',
+    agent: 'llmjob-earn/0.5.14',
+    now: () => t,
+  }, opts));
+  const logs = [];
+  const events = [];
+  const errors = [];
+  const stopped = [];
+  engine.on('log', (l) => logs.push(l));
+  engine.on('event', (e) => events.push(e));
+  engine.on('error', (e) => errors.push(e.message));
+  engine.on('stopped', (c) => stopped.push(c));
+  const lines = () => logs.map((l) => l.line);
+  return {
+    engine, sockets, children, logs, lines, events, errors, stopped,
+    advance: (ms) => { t += ms; jest.advanceTimersByTime(ms); },
+    setNow: (v) => { t = v; },
+    sock: () => sockets[sockets.length - 1],
+    child: () => children[children.length - 1],
+  };
+}
+
+// Started, logged in with a job, and the worker through its dataset.
+function mining(opts) {
+  const h = setup(opts);
+  h.engine.start(SETTINGS);
+  h.sock().emit('connect');
+  h.sock().recv({ id: 1, jsonrpc: '2.0', error: null, result: { id: 'sess', job: job('j1'), status: 'OK' } });
+  h.child().say(HELLO);
+  h.child().say({ type: 'selftest', ok: true, ms: 1800 });
+  h.child().say({ type: 'dataset', state: 'building', threads: 6, pages: 'thp' });
+  h.child().say({ type: 'dataset', state: 'ready', ms: 42268, pages: 'thp' });
+  return h;
+}
+
+beforeEach(() => jest.useFakeTimers());
+afterEach(() => jest.useRealTimers());
+
+describe('start', () => {
+  test('spawns the worker with the plan\'s threads and logs in to the pool', () => {
+    const h = setup();
+    expect(h.engine.start(SETTINGS)).toBe(true);
+    expect(h.engine.isRunning()).toBe(true);
+    expect(h.engine.spawnWorker).toHaveBeenCalledWith('/opt/llmjob-xmr-worker', ['--threads', '6']);
+    expect(h.engine.connect).toHaveBeenCalledWith('de.monero.herominers.com', 1111);
+    h.sock().emit('connect');
+    expect(h.sock().written[0]).toEqual({
+      id: 1, jsonrpc: '2.0', method: 'login',
+      params: { login: ADDRESS, pass: 'rig01', agent: 'llmjob-earn/0.5.14', rigid: 'rig01', algo: ['rx/0'] },
+    });
+    expect(h.lines()).toEqual([
+      'cpu: mining Monero for 87wTMj88…1JxND9 on 6 CPU threads · de.monero.herominers.com:1111',
+      'cpu: connecting to de.monero.herominers.com:1111 · worker rig01',
+    ]);
+    expect(h.engine.snapshot().state).toBe('starting');
+    expect(h.engine.start(SETTINGS)).toBe(false);   // already running
+  });
+
+  test('one thread, and no worker name', () => {
+    const h = setup();
+    h.engine.start(Object.assign({}, SETTINGS, { threads: 1, worker: '' }));
+    h.sock().emit('connect');
+    expect(h.lines()[0]).toMatch(/ on 1 CPU thread · /);
+    expect(h.lines()[1]).toBe('cpu: connecting to de.monero.herominers.com:1111 · worker x');
+  });
+
+  test('without a worker file there is nothing to start', () => {
+    const h = setup({ workerPath: null });
+    expect(h.engine.start(SETTINGS)).toBe(false);
+    expect(h.errors[0]).toMatch(/^the CPU miner \(llmjob-xmr-worker\) is not installed beside the app/);
+    expect(h.engine.isRunning()).toBe(false);
+    expect(h.engine.snapshot()).toMatchObject({ state: 'stopped', hashrate: 0, threads: 6 });
+    const bare = new XmrEngine({ workerPath: '/w' });
+    bare.on('error', () => {});
+    expect(bare.start()).toBe(false);
+  });
+
+  test('a worker that cannot be spawned stops the CPU miner', () => {
+    const h = setup({ spawnWorker: () => { throw new Error('EACCES'); } });
+    expect(h.engine.start(SETTINGS)).toBe(false);
+    expect(h.errors).toEqual(['could not start /opt/llmjob-xmr-worker: EACCES']);
+    expect(h.stopped).toEqual([1]);
+    expect(h.engine.snapshot().state).toBe('stopped');
+    const h2 = setup({ spawnWorker: () => { throw 'nope'; } });
+    h2.engine.start(SETTINGS);
+    expect(h2.errors).toEqual(['could not start /opt/llmjob-xmr-worker: nope']);
+  });
+
+  test('defaults: timings, agent and clock', () => {
+    const e = new XmrEngine();
+    expect(e.t).toEqual({
+      reconnect: RECONNECT_MS, loginRetry: LOGIN_RETRY_MS, keepalive: KEEPALIVE_MS, silence: SILENCE_MS,
+      watchdog: 30000, restart: RESTART_MS, kill: KILL_MS,
+    });
+    const t = { reconnect: 1, loginRetry: 2, keepalive: 3, silence: 4, watchdog: 5, restart: 6, kill: 7 };
+    expect(new XmrEngine({ timing: t }).t).toEqual(t);
+    expect(e.agent).toBe('llmjob-earn');
+    expect(e.now).toBe(Date.now);
+    expect(e.snapshot()).toMatchObject({ threads: 0, state: 'stopped' });
+    expect([RECONNECT_MS, RESTART_LIMIT, STABLE_MS, POOL_GRACE_MS]).toEqual([5000, 3, 600000, 30000]);
+  });
+});
+
+describe('the worker', () => {
+  test('logs its hello, self-test and dataset, then mines', () => {
+    const h = mining();
+    expect(h.lines()).toEqual(expect.arrayContaining([
+      'cpu: RandomX worker 0.5.14 (RandomX 7607fb2faed2) · JIT · hardware AES',
+      'cpu: RandomX self-test passed (1800 ms)',
+      'cpu: building the 2080 MiB RandomX dataset on 6 threads (about a minute; again when Monero changes its seed, every 2048 blocks)',
+      'cpu: dataset ready in 42.3 s · transparent huge pages',
+    ]));
+    expect(h.engine.snapshot()).toMatchObject({ state: 'mining', pages: 'thp', difficulty: 10000 });
+    expect(h.events.map((e) => e.state)).toEqual(expect.arrayContaining(['starting', 'dataset', 'mining']));
+  });
+
+  test('other hellos, one dataset thread, and every kind of pages', () => {
+    const h = setup();
+    h.engine.start(SETTINGS);
+    h.child().say(Object.assign({}, HELLO, { jit: false, hardAes: false }));
+    h.child().say({ type: 'dataset', state: 'building', threads: 1 });
+    for (const pages of ['hugetlb', 'normal', 'odd']) h.child().say({ type: 'dataset', state: 'ready', ms: 1000, pages });
+    expect(h.lines()).toEqual(expect.arrayContaining([
+      'cpu: RandomX worker 0.5.14 (RandomX 7607fb2faed2) · no JIT · software AES',
+      expect.stringMatching(/dataset on 1 thread \(/),
+      'cpu: dataset ready in 1 s · huge pages',
+      'cpu: dataset ready in 1 s · no huge pages (hashrate is up to 30% lower without them)',
+      'cpu: dataset ready in 1 s · odd',
+    ]));
+  });
+
+  test('the job goes to the worker as soon as the pool sends it', () => {
+    const h = mining();
+    expect(h.child().stdin.lines[0]).toEqual({
+      cmd: 'job', id: 'j1', blob: BLOB, target: '00068db8bac710cb', seed: SEED, variant: 'v1', commit: false, nonce: 0,
+    });
+    h.sock().recv({ jsonrpc: '2.0', method: 'job', params: job('j2') });
+    expect(h.child().stdin.lines[1].id).toBe('j2');
+    // Same difficulty: said once.
+    expect(h.lines().filter((l) => l.startsWith('cpu: pool difficulty'))).toEqual(['cpu: pool difficulty 10000']);
+    h.sock().recv({ method: 'job', params: job('j3', { target: '0000000000000001' }) });
+    expect(h.lines()).toContain('cpu: pool difficulty 255');
+  });
+
+  test('hashrate ticks become status events', () => {
+    const h = mining();
+    h.child().say({ type: 'hashrate', hs: 1845.2, total: 10, threads: 6 });
+    expect(h.events[h.events.length - 1]).toEqual({
+      type: 'status', hashrate: 1845.2, accepted: 0, rejected: 0, threads: 6, state: 'mining',
+    });
+    expect(h.engine.snapshot().hashrate).toBe(1845.2);
+  });
+
+  test('its log lines, errors, stderr and junk reach the log; bench and blank lines don\'t', () => {
+    const h = mining();
+    h.child().say({ type: 'log', level: 'warn', msg: 'searched every nonce' });
+    h.child().say({ type: 'error', fatal: false, msg: 'dropped a share' });
+    h.child().say({ type: 'bench', hs: 1 });
+    h.child().stdout.emit('data', 'Segmentation fault\n\n');
+    h.child().say({ type: 'mystery' });
+    h.child().stderr.emit('data', 'missing value for --threads\n\n');
+    expect(h.logs.slice(-5)).toEqual([
+      { level: 'warn', line: 'cpu: searched every nonce' },
+      { level: 'error', line: 'cpu: dropped a share' },
+      { level: 'info', line: 'cpu: worker: Segmentation fault' },
+      { level: 'info', line: 'cpu: worker: {"type":"mystery"}' },
+      { level: 'warn', line: 'cpu: missing value for --threads' },
+    ]);
+  });
+
+  test('a line split across chunks is read whole', () => {
+    const h = setup();
+    h.engine.start(SETTINGS);
+    const line = JSON.stringify({ type: 'selftest', ok: true, ms: 5 }) + '\n';
+    h.child().stdout.emit('data', line.slice(0, 10));
+    h.child().stdout.emit('data', line.slice(10));
+    expect(h.lines()).toContain('cpu: RandomX self-test passed (5 ms)');
+  });
+
+  // A worker from another release is refused, not run: it is not worth a
+  // restart, since it would be the same file again.
+  test('a worker that speaks another protocol is killed and the CPU miner stops', () => {
+    const h = setup();
+    h.engine.start(SETTINGS);
+    const c = h.child();
+    c.stdout.emit('data', JSON.stringify(Object.assign({}, HELLO, { protocol: 2 })) + '\n'
+      + JSON.stringify({ type: 'log', msg: 'too late' }) + '\n');
+    expect(c.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(h.errors[0]).toMatch(/^this llmjob-xmr-worker speaks protocol 2, the app speaks 1/);
+    expect(h.lines()).not.toContain('cpu: too late');
+    expect(h.stopped).toEqual([1]);
+    expect(h.engine.isRunning()).toBe(false);
+    c.stdout.emit('data', JSON.stringify({ type: 'log', msg: 'later still' }) + '\n');
+    c.emit('exit', null, 'SIGKILL');
+    expect(h.lines()).not.toContain('cpu: later still');
+  });
+
+  test('a failed self-test stops the CPU miner without a restart', () => {
+    const h = setup();
+    h.engine.start(SETTINGS);
+    h.child().say({ type: 'selftest', ok: false, msg: 'wrong hash for "This is a test"' });
+    expect(h.errors).toEqual(['RandomX self-test failed, so nothing was mined: wrong hash for "This is a test"']);
+    expect(h.stopped).toEqual([1]);
+    expect(h.engine.snapshot().state).toBe('stopped');
+    h.advance(RESTART_MS * 2);
+    expect(h.children).toHaveLength(1);
+  });
+
+  test('a worker that dies is started again, given the job, and restarts are capped', () => {
+    const h = mining();
+    h.child().emit('exit', 139, null);
+    expect(h.lines()).toContain('cpu: the CPU miner stopped (exit code 139)');
+    expect(h.lines()).toContain('cpu: restarting the CPU miner in 30 s');
+    expect(h.engine.snapshot()).toMatchObject({ state: 'restarting', hashrate: 0, pages: null });
+    h.advance(RESTART_MS);
+    expect(h.children).toHaveLength(2);
+    expect(h.child().stdin.lines[0].id).toBe('j1');   // the pool won't resend it
+
+    // Killed: out of memory, or an antivirus.
+    h.child().emit('exit', null, 'SIGKILL');
+    expect(h.lines()).toContain('cpu: the CPU miner stopped (signal SIGKILL) (killed: out of memory, or an antivirus)');
+    h.advance(RESTART_MS);
+    h.child().emit('exit', null, 'SIGSEGV');
+    h.advance(RESTART_MS);
+    expect(h.children).toHaveLength(4);
+    h.child().emit('exit', 1, null);
+    expect(h.lines()).toContain('cpu: leaving the CPU miner off: it stopped within 10 minutes of each of 3 restarts');
+    expect(h.errors).toEqual(['the CPU miner stopped (exit code 1)']);
+    expect(h.stopped).toEqual([1]);
+    expect(h.engine.snapshot().state).toBe('stopped');
+  });
+
+  test('a worker that ran a good while starts the restart count over', () => {
+    const h = mining();
+    for (let i = 0; i < RESTART_LIMIT; i++) {
+      h.child().emit('exit', 1, null);
+      h.advance(RESTART_MS);
+    }
+    h.setNow(10 ** 9);   // mined long past STABLE_MS
+    h.child().emit('exit', 1, null);
+    expect(h.stopped).toEqual([]);
+    expect(h.engine.snapshot().state).toBe('restarting');
+  });
+
+  test('a fatal worker error ends that worker and restarts it', () => {
+    const h = mining();
+    const c = h.child();
+    c.say({ type: 'error', fatal: true, msg: 'could not allocate the 2080 MiB RandomX dataset: not enough free memory' });
+    expect(c.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(h.lines()).toContain('cpu: could not allocate the 2080 MiB RandomX dataset: not enough free memory');
+    h.advance(RESTART_MS);
+    expect(h.children).toHaveLength(2);
+  });
+
+  test('a worker file that went missing, or would not run', () => {
+    const h = setup();
+    h.engine.start(SETTINGS);
+    h.child().emit('error', Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' }));
+    expect(h.errors[0]).toBe('the CPU miner is missing (/opt/llmjob-xmr-worker). An antivirus may have removed it; reinstalling puts it back.');
+    expect(h.stopped).toEqual([1]);
+
+    const h2 = setup();
+    h2.engine.start(SETTINGS);
+    h2.child().emit('error', new Error('spawn EACCES'));
+    expect(h2.lines()).toContain('cpu: the CPU miner could not run: spawn EACCES');
+    expect(h2.engine.snapshot().state).toBe('restarting');
+    h2.children[0].emit('exit', 1, null);   // the same child's exit is already handled
+    expect(h2.children).toHaveLength(1);
+    h2.advance(RESTART_MS);
+    h2.children[0].emit('error', new Error('late'));   // nor is an old child's error
+    expect(h2.lines()).not.toContain('cpu: the CPU miner could not run: late');
+  });
+
+  test('a kill that throws is fine', () => {
+    const h = setup();
+    h.engine.start(SETTINGS);
+    h.child().kill = () => { throw new Error('ESRCH'); };
+    h.child().say({ type: 'selftest', ok: false, msg: 'x' });
+    expect(h.stopped).toEqual([1]);
+  });
+
+  test('a job for a worker that is between restarts waits for the next one', () => {
+    const h = mining();
+    h.child().emit('exit', 1, null);
+    h.sock().recv({ method: 'job', params: job('j9') });
+    h.advance(RESTART_MS);
+    expect(h.child().stdin.lines[0].id).toBe('j9');
+  });
+
+  test('writes to a worker whose stdin is gone are dropped', () => {
+    const h = mining();
+    h.child().stdin.destroyed = true;
+    h.sock().recv({ method: 'job', params: job('j2') });
+    expect(h.child().stdin.lines).toHaveLength(1);
+    h.child().stdin.destroyed = false;
+    h.child().stdin.write = () => { throw new Error('EPIPE'); };
+    h.sock().recv({ method: 'job', params: job('j3') });
+    h.child().stdin.emit('error', new Error('EPIPE'));
+    expect(h.engine.isRunning()).toBe(true);
+  });
+});
+
+describe('shares', () => {
+  test('a share of the current job is submitted under the session and counted when accepted', () => {
+    const h = mining();
+    h.child().say({ type: 'share', job: 'j1', nonce: '3a000000', result: RESULT });
+    const submit = h.sock().written[1];
+    expect(submit).toEqual({
+      id: 10, jsonrpc: '2.0', method: 'submit', params: { id: 'sess', job_id: 'j1', nonce: '3a000000', result: RESULT },
+    });
+    h.sock().recv({ id: 10, jsonrpc: '2.0', error: null, result: { status: 'OK' } });
+    expect(h.lines()).toContain('cpu: XMR share accepted');
+    expect(h.engine.snapshot()).toMatchObject({ accepted: 1, rejected: 0, lastShareMs: 1000000 });
+    // A reply to nothing we sent counts for nothing.
+    h.sock().recv({ id: 10, error: null, result: { status: 'OK' } });
+    expect(h.engine.snapshot().accepted).toBe(1);
+  });
+
+  test('a rejected share is counted and its reason logged', () => {
+    const h = mining();
+    h.child().say({ type: 'share', job: 'j1', nonce: '3a000000', result: RESULT });
+    h.sock().recv({ id: 10, error: { code: -1, message: 'Low difficulty share' }, result: null });
+    expect(h.lines()).toContain('cpu: XMR share rejected: [-1] Low difficulty share');
+    expect(h.engine.snapshot().rejected).toBe(1);
+    h.sock().recv({ id: 99, error: { code: -1, message: 'x' } });
+    expect(h.engine.snapshot().rejected).toBe(1);
+  });
+
+  // HeroMiners holds back pay from a miner with too many stale shares.
+  test('a share for an older job, or with no pool to send it to, is dropped', () => {
+    const h = mining();
+    h.sock().recv({ method: 'job', params: job('j2') });
+    h.child().say({ type: 'share', job: 'j1', nonce: '3a000000', result: RESULT });
+    h.sock().destroy();
+    h.child().say({ type: 'share', job: 'j2', nonce: '3b000000', result: RESULT });
+    expect(h.lines().filter((l) => l === 'cpu: dropping a share for a job the pool has moved on from')).toHaveLength(2);
+    expect(h.sockets[0].written).toHaveLength(1);   // the login only
+  });
+
+  test('a share before any job is dropped', () => {
+    const h = setup();
+    h.engine.start(SETTINGS);
+    h.sock().recv({ id: 1, result: { id: 'sess' } });
+    h.child().say({ type: 'share', job: 'j1', nonce: '3a000000', result: RESULT });
+    expect(h.lines()).toContain('cpu: dropping a share for a job the pool has moved on from');
+  });
+});
+
+describe('the pool', () => {
+  test('a login takes the session and the address that worked', () => {
+    const h = setup();
+    const authorized = [];
+    h.engine.on('authorized', (a) => authorized.push(a));
+    h.engine.start(SETTINGS);
+    h.sock().recv({ id: 1, result: { id: 'sess' } });
+    expect(authorized).toEqual([{ host: 'de.monero.herominers.com', address: '141.95.126.31', family: 'IPv4' }]);
+    expect(h.lines()).toContain('cpu: logged in to the pool');
+    expect(h.engine.poolConnected()).toBe(true);
+  });
+
+  test('a refused login closes the socket and waits a minute', () => {
+    const h = setup();
+    h.engine.start(SETTINGS);
+    h.sock().recv({ id: 1, error: { code: -1, message: 'Invalid address used for login' }, result: null });
+    expect(h.lines()).toContain('cpu: the pool refused the login: [-1] Invalid address used for login');
+    expect(h.lines()).toContain('cpu: pool connection closed; reconnecting in 60 s');
+    h.advance(RECONNECT_MS);
+    expect(h.sockets).toHaveLength(1);
+    h.advance(LOGIN_RETRY_MS);
+    expect(h.sockets).toHaveLength(2);
+    // The next close is a normal one again.
+    h.sock().emit('close');
+    expect(h.lines()).toContain('cpu: pool connection closed; reconnecting in 5 s');
+  });
+
+  test('a dropped connection reconnects, and counts as up for the grace period', () => {
+    const h = mining();
+    h.sock().emit('close');
+    expect(h.engine.poolConnected()).toBe(true);
+    h.setNow(1000000 + POOL_GRACE_MS);
+    expect(h.engine.poolConnected()).toBe(false);
+    h.advance(RECONNECT_MS);
+    expect(h.sockets).toHaveLength(2);
+    // Data from the old socket is ignored, and so is its late close.
+    h.sockets[0].recv({ method: 'job', params: job('old') });
+    h.sockets[0].emit('close');
+    expect(h.sockets).toHaveLength(2);
+    expect(h.child().stdin.lines.map((l) => l.id)).toEqual(['j1']);
+  });
+
+  test('a connection that never logged in has no grace', () => {
+    const h = setup();
+    h.engine.start(SETTINGS);
+    expect(h.engine.poolConnected()).toBe(false);
+    h.sock().emit('close');
+    expect(h.engine.poolConnected()).toBe(false);
+  });
+
+  test('a socket error is logged, and a DNS failure is said to be one', () => {
+    const h = setup();
+    h.engine.start(SETTINGS);
+    h.sock().emit('error', new Error('getaddrinfo ENOTFOUND de.monero.herominers.com'));
+    h.sock().emit('error', new Error('connect ECONNREFUSED'));
+    expect(h.events.filter((e) => e.type === 'connect-failed')).toEqual([
+      { type: 'connect-failed', reason: 'getaddrinfo ENOTFOUND de.monero.herominers.com', dns: true },
+      { type: 'connect-failed', reason: 'connect ECONNREFUSED', dns: false },
+    ]);
+    expect(h.lines()).toContain('cpu: pool socket error: connect ECONNREFUSED');
+  });
+
+  test('no endpoint is no host and no port', () => {
+    const h = setup();
+    h.engine.start({ address: ADDRESS, threads: 2 });
+    expect(h.engine.connect).toHaveBeenCalledWith('', NaN);
+  });
+
+  test('a connect that throws tries again later', () => {
+    let n = 0;
+    const h = setup({ connect: () => { n++; if (n === 1) throw new Error('EMFILE'); return fakeSocket(); } });
+    h.engine.start(SETTINGS);
+    expect(h.lines()).toContain('cpu: pool connection failed: EMFILE');
+    h.advance(RECONNECT_MS);
+    expect(n).toBe(2);
+  });
+
+  test('keepalives go out while logged in, and their replies are not shares', () => {
+    const h = mining();
+    h.advance(KEEPALIVE_MS);
+    const ka = h.sock().written[1];
+    expect(ka).toEqual({ id: 10, jsonrpc: '2.0', method: 'keepalived', params: { id: 'sess' } });
+    h.sock().recv({ id: 10, error: null, result: { status: 'KEEPALIVED' } });
+    expect(h.engine.snapshot().accepted).toBe(0);
+    h.sock().emit('close');
+    h.advance(KEEPALIVE_MS);
+    expect(h.sockets[0].written).toHaveLength(2);
+  });
+
+  test('a pool that never answers keepalives does not grow the list forever', () => {
+    const h = mining();
+    for (let i = 0; i < 20; i++) h.engine._sendKeepalive();
+    expect(h.engine.keepaliveIds.size).toBe(16);
+  });
+
+  test('five quiet minutes means a dead connection', () => {
+    const h = mining({ timing: { reconnect: 120000 } });
+    h.advance(SILENCE_MS - 30000);
+    expect(h.sockets).toHaveLength(1);
+    h.advance(30000);
+    expect(h.lines()).toContain('cpu: no word from the pool in 5 minutes; reconnecting');
+    expect(h.sockets[0].destroy).toHaveBeenCalledTimes(1);
+    // Between sockets there is nothing to watch.
+    h.advance(60000);
+    expect(h.sockets).toHaveLength(1);
+    h.advance(60000);
+    expect(h.sockets).toHaveLength(2);
+  });
+
+  test('bad jobs, pool errors and unknown lines are logged', () => {
+    const h = mining();
+    h.sock().recv({ method: 'job', params: job('j2', { algo: 'rx/arq' }) });
+    h.sock().recv({ method: 'job', params: {} });
+    h.sock().recv({ id: null, error: { code: -1, message: 'Unauthenticated' } });
+    h.sock().emit('data', 'hello\n\n');
+    h.sock().recv({ method: 'mining.notify' });
+    expect(h.lines().slice(-5, -1)).toEqual([
+      'cpu: ignoring a job the CPU miner cannot mine (j2): algorithm rx/arq is not one this miner mines',
+      'cpu: ignoring a job the CPU miner cannot mine: no job_id',
+      'cpu: pool: [-1] Unauthenticated',
+      'cpu: pool: hello',
+    ]);
+  });
+});
+
+describe('stop', () => {
+  test('asks the worker to quit, closes the pool, and kills a worker that lingers', () => {
+    const h = mining();
+    const c = h.child();
+    const s = h.sock();
+    expect(h.engine.stop()).toBe(true);
+    expect(c.stdin.lines[c.stdin.lines.length - 1]).toEqual({ cmd: 'quit' });
+    expect(c.stdin.end).toHaveBeenCalled();
+    expect(s.destroy).toHaveBeenCalled();
+    expect(h.stopped).toEqual([0]);
+    expect(h.events[h.events.length - 1]).toMatchObject({ type: 'status', state: 'stopped', hashrate: 0 });
+    expect(h.engine.isRunning()).toBe(false);
+    expect(h.engine.poolConnected()).toBe(false);
+    h.advance(KILL_MS);
+    expect(c.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(h.engine.stop()).toBe(false);
+  });
+
+  test('a worker that exits in time is not killed, and its exit is not a failure', () => {
+    const h = mining();
+    const c = h.child();
+    h.engine.stop();
+    c.emit('exit', 0, null);
+    h.advance(KILL_MS);
+    expect(c.kill).not.toHaveBeenCalled();
+    expect(h.errors).toEqual([]);
+  });
+
+  test('a worker already gone, a quit that throws, a kill that throws', () => {
+    const h = mining();
+    const c = h.child();
+    c.stdin.write = () => { throw new Error('EPIPE'); };
+    c.kill = () => { throw new Error('ESRCH'); };
+    h.engine.stop();
+    h.advance(KILL_MS);
+    expect(h.stopped).toEqual([0]);
+
+    const h2 = mining();
+    h2.child().emit('exit', 1, null);   // between restarts: no worker, no socket after a close
+    h2.sock().emit('close');
+    h2.engine.stop();
+    expect(h2.stopped).toEqual([0]);
+    h2.advance(RESTART_MS + RECONNECT_MS);
+    expect(h2.children).toHaveLength(1);
+    expect(h2.sockets).toHaveLength(1);
+  });
+
+  test('the engine can start again after a stop, with fresh counters', () => {
+    const h = mining();
+    h.child().say({ type: 'share', job: 'j1', nonce: '3a000000', result: RESULT });
+    h.sock().recv({ id: 10, result: { status: 'OK' } });
+    h.engine.stop();
+    h.engine.start(SETTINGS);
+    expect(h.engine.snapshot()).toMatchObject({ accepted: 0, state: 'starting' });
+    expect(h.children).toHaveLength(2);
+  });
+});
