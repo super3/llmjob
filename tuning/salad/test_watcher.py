@@ -687,7 +687,7 @@ class TestPoolTotals(Base):
         with open(os.path.join(TMP, "report.md")) as f:
             report = f.read()
         # 6 PRL × $1.39 = $8.34 against $6.00 spent
-        self.assertIn("| 🏦 Pool balance | 1.50 paid · 4.50 pending | | | | | | 6.000 | +2.34 |", report)
+        self.assertIn("| 🏦\u00a0Pool\u00a0credited | | | | | 6.000 | +2.34 |", report)
         self.assertIn("The pool has credited 75% of the PRL we expected (paid 1.500, unlocked 0.500, unconfirmed 4.000).", report)
 
 
@@ -814,8 +814,9 @@ class TestTraderStatus(Base):
         self.x.write_report()
         with open(os.path.join(TMP, "report.md")) as f:
             report = f.read()
-        self.assertIn("| 💱 SafeTrade | 7.08 USDT · 0.00 PRL held | | | | | | 5.256 sold | |", report)
-        self.assertIn("- SafeTrade at the trader's 09:05Z run: sold 5.2564 PRL so far for 7.10 USDT (average 1.3507, "
+        # 7.10 USDT less 0.0142 fees, less 5.2564 PRL at the ledger's cost per PRL (no PRL mined here, so none)
+        self.assertIn("| 💱\u00a0SafeTrade\u00a0sold | | | | | 5.256 | +7.09 |", report)
+        self.assertIn("- SafeTrade at the trader's 09:05Z run: holds 7.08 USDT and 0.00 PRL; sold 5.2564 PRL so far for 7.10 USDT (average 1.3507, "
                       "fees 0.0142); that run sold 5.2564 PRL at 1.3507.", report)
 
 
@@ -850,8 +851,9 @@ class TestRound(Base):
         self.assertIn("FIRST SHARE biz-rtx4080", ev)
         with open(os.path.join(TMP, "report.md")) as f:
             report = f.read()
-        self.assertIn("⚡ RTX 4080 (batch)", report)
-        self.assertIn("1 GPU mining", report)
+        self.assertIn("| ⛏️\u00a04080\u00a0batch\u00a0m1 | 199 |", report)
+        self.assertIn("**All\u00a0·\u00a01\u00a0mining**", report)
+        self.assertTrue(all(l.count("|") == 8 for l in report.splitlines() if l.startswith("|")))
 
     def test_a_busy_round_reads_more_pages(self):
         g = self.group()

@@ -179,16 +179,20 @@ watcher checks it against the pool and writes a `DRIFT` event when they disagree
   pays a share of each block it finds, so with few blocks credit runs well above or below the work;
   this fires only when it's short by more than 2 / √blocks too.
 
-The table has a **Pool balance** row under **All**: what the pool has paid and still holds (unlocked
-plus unconfirmed), and the profit on that credited PRL, next to the expected figures above it. The
-bullet under the table splits out unlocked and unconfirmed.
+Each table row fits on one line. A box's first cell holds its state, its group name without `biz-rtx`,
+its priority and its PC (`⛏️ 2080-2 low cb6d4bd1`), joined by no-break spaces so it doesn't wrap.
+
+The table has a **🏦 Pool credited** row under **All**: the PRL the pool has credited (paid, unlocked
+and unconfirmed), and the profit on it, next to the expected figures above it. The bullet under the
+table splits it into paid, unlocked and unconfirmed.
 
 ## SafeTrade row
 
 When `trader` is set, the watcher reads the newest `STATUS` line of the autoseller (`trader/`) from its
-Railway logs, at most every 5 minutes. The table then gets a **💱 SafeTrade** row under the pool
-balance, showing the USDT and PRL on the exchange and the PRL sold so far. A bullet gives the total
-received, the average price, the fees and what the last run sold.
+Railway logs, at most every 5 minutes. The table then gets a **💱 SafeTrade sold** row under the pool
+row: the PRL sold so far, and the USDT received after fees less what that PRL cost to mine. A bullet
+gives the USDT and PRL on the exchange, the total received, the average price, the fees and what the
+last run sold.
 
 It needs a Railway project token for the production environment, set as `RAILWAY_TOKEN` or added by the
 cloud session's network proxy for `backboard.railway.com`. Without one, Railway answers "Not Authorized"
