@@ -50,6 +50,7 @@
     // CPU mining (Monero)
     cpuNote: $('cpu-note'), setXmr: $('set-xmr'),
     setCpuThreads: $('set-cpu-threads'),
+    chartCard: $('chart-card'), activityLabel: $('activity-label'), cpuBalStat: $('cpu-bal-stat'),
     cpuRow: $('cpu-row'), cpuDot: $('cpu-dot'), cpuRate: $('cpu-rate'), cpuMeta: $('cpu-meta'), cpuBalance: $('cpu-balance'),
     logTerm: $('log-term'),
   };
@@ -531,7 +532,7 @@
   // renderer has no Keccak for Monero's checksum.
   const CPU_STATES = {
     starting: 'starting…',
-    dataset: 'preparing its 2 GB dataset, about a minute…',
+    dataset: 'building its dataset…',
     restarting: 'restarting…',
   };
   let xmrCheckTimer = null;
@@ -606,7 +607,7 @@
   // idle-only pause like it.
   function cpuMetaText(v) {
     if (!state.mining) return cpuIdleText();
-    if (state.paused) return 'paused while the computer is in use';
+    if (state.paused) return 'paused while in use';
     if (!v) return 'starting…';
     if (v.error) return 'stopped: ' + v.error;
     if (v.pool) return v.pool;
@@ -620,16 +621,19 @@
   // so this works it out from what it knows of this computer.
   function cpuIdleText() {
     // The line shows only with an address, so one that isn't OK is wrong.
-    if (state.xmrChecking) return 'checking the Monero address…';
-    if (!state.xmrOk) return 'check the Monero address in Settings';
-    if (cpuNoWorker()) return "won't start: this build has no CPU miner";
-    if (state.cpu && !state.cpu.canMine) return "won't start: can't run on this computer";
-    if (state.cpu && !cpuThreadsNow()) return "won't start: choose a thread count in Settings";
-    return 'starts when you press START';
+    if (state.xmrChecking) return 'checking address…';
+    if (!state.xmrOk) return 'check the address';
+    if (cpuNoWorker()) return "no CPU miner here";
+    if (state.cpu && !state.cpu.canMine) return "can't run here";
+    if (state.cpu && !cpuThreadsNow()) return "off: set CPU threads";
+    return 'ready to start';
   }
 
   function renderCpuRow() {
     el.cpuRow.hidden = !state.cpuMining;
+    el.cpuBalStat.hidden = !state.cpuMining;
+    el.chartCard.classList.toggle('with-cpu', state.cpuMining);
+    el.activityLabel.textContent = state.cpuMining ? 'GPU & CPU Activity' : 'GPU Activity';
     const v = state.mining ? state.cpuView : null;
     el.cpuRate.textContent = v ? v.hashrate : '0.00';
     const bad = !!(v && (v.error || v.pool));

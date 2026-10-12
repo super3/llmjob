@@ -90,7 +90,20 @@ input.field-box { user-select: text; }
    right — rather than all hugging the left of their grid cell. Aligning the cell
    (not just the value) keeps each label sitting over its own number. */
 .mk-stat:nth-child(2) { text-align: center; }
-.mk-stat:nth-child(3) { text-align: right; }
+.mk-stat:nth-child(3), .mk-stat:nth-child(4) { text-align: right; }
+/* With Monero on, the card reads GPU, CPU, LLM across the top, and its
+   balance joins the stats. */
+.chart-card.with-cpu .hero2 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.chart-card.with-cpu .mk-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.chart-card.with-cpu .mk-stat:nth-child(3) { text-align: center; }
+.hero-col { min-width: 0; }
+.hero-col.mid { text-align: center; }
+.hero-col.mid .hero-num, .hero-col.mid .hero-sub { justify-content: center; }
+.hero-col.mid .hero-label, .hero-col.mid .dot2 { flex: none; }
+/* A third of the width cuts the details short, so each gets its own line. */
+.chart-card.with-cpu .hero-sub { flex-wrap: wrap; row-gap: 2px; }
+.chart-card.with-cpu .hero-detail { flex-basis: 100%; }
+#cpu-balance:empty::before { content: '—'; color: var(--muted-2); }
 .mk-stat .k { font-size: 11.5px; color: var(--muted); font-weight: 500; margin-bottom: 4px; }
 .mk-stat .v { font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 17px; font-weight: 600; color: var(--ink); }
 .mk-stat .v.accent { color: var(--accent); }
@@ -330,12 +343,6 @@ select.rv-input { cursor: pointer; }
 .update-bar-btn:hover { background: #1d4ed8; }
 
 /* Monero on the CPU: one line under the GPU card, and its Settings fields. */
-.cpu-row { display: flex; align-items: center; gap: 10px; margin: -12px 0 22px; padding: 10px 14px; border: 1px solid var(--line); background: var(--field); border-radius: 9px; font-size: 13px; color: var(--ink-3); }
-.cpu-row .cpu-label { font-weight: 600; color: var(--ink-2); white-space: nowrap; }
-.cpu-row .cpu-rate { font-weight: 600; color: var(--ink); white-space: nowrap; }
-.cpu-row .cpu-meta { flex: 1; min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.cpu-row .cpu-meta.err { color: #dc2626; }
-.cpu-row .cpu-bal { color: var(--muted); white-space: nowrap; }
 /* The address box and its badge are the old merge-mining ones, in Monero orange. */
 .badge-xmr { display: inline-block; margin-left: 6px; padding: 0 6px; line-height: 14px; border-radius: 5px; background: #fff1e6; color: #e8590c; font-size: 9.5px; font-weight: 700; letter-spacing: .04em; vertical-align: middle; text-transform: none; }
 .xmr-row { display: flex; gap: 10px; }

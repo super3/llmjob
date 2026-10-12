@@ -39,14 +39,20 @@
     <div id="addr-static" class="field-box mono" hidden></div>
 
     <div class="field-label">
-      <span class="lbl">GPU Activity</span>
+      <span class="lbl" id="activity-label">GPU Activity</span>
       <span class="meta" id="device-label">GPU · auto-detect</span>
     </div>
-    <div class="chart-card">
+    <div class="chart-card" id="chart-card">
       <div class="hero2">
         <div class="hero-col">
           <div class="hero-num"><span class="num" id="hashrate">0.0</span><span class="unit">TH/s</span></div>
           <div class="hero-sub"><span class="dot2" id="mine-dot"></span><span class="hero-label">Mining</span></div>
+        </div>
+        <!-- Monero on the CPU (Settings → CPU Mining), between the GPU's two
+             readings; hidden while that is off. -->
+        <div class="hero-col mid" id="cpu-row" hidden>
+          <div class="hero-num"><span class="num" id="cpu-rate">0.00</span><span class="unit">kH/s</span></div>
+          <div class="hero-sub"><span class="dot2" id="cpu-dot"></span><span class="hero-label">Monero</span><span class="hero-detail mono" id="cpu-meta"></span></div>
         </div>
         <div class="hero-col right">
           <div class="hero-num"><span class="num" id="llm-hero-tps">0.0</span><span class="unit">tok/s</span></div>
@@ -61,17 +67,9 @@
       <div class="mk-stats">
         <div class="mk-stat"><div class="k">Accepted shares</div><div class="v" id="accepted">0</div></div>
         <div class="mk-stat"><div class="k">Uptime</div><div class="v" id="uptime">0m 00s</div></div>
+        <div class="mk-stat" id="cpu-bal-stat" hidden><div class="k">Monero balance</div><div class="v" id="cpu-balance"></div></div>
         <div class="mk-stat"><div class="k">Est. earnings</div><div class="v accent"><span id="estday">$0.00</span><span class="day">/day</span></div></div>
       </div>
-    </div>
-
-    <!-- Monero on the CPU (Settings → CPU Mining); hidden while that is off. -->
-    <div id="cpu-row" class="cpu-row" hidden>
-      <span class="dot2" id="cpu-dot"></span>
-      <span class="cpu-label">CPU · Monero</span>
-      <span class="cpu-rate mono"><span id="cpu-rate">0.00</span> kH/s</span>
-      <span class="cpu-meta" id="cpu-meta"></span>
-      <span class="cpu-bal mono" id="cpu-balance"></span>
     </div>
 
     <button id="btn-start" class="start-btn" type="button" disabled>START</button>
