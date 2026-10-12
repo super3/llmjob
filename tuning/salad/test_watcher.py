@@ -794,6 +794,49 @@ class TestCreditRatio(Base):
         self.assertIn("REALLOCATED", self.events())
 
 
+class TestMeasuredRates(Base):
+    """A class is judged on the median TH/s of the PCs it has mined on here, not its benchmark."""
+    def mined(self, cls, pcs, pri="low"):
+        for i, ths in enumerate(pcs):
+            g = self.group(cls=cls, pri=pri)
+            self.step(g, 1, f"p{len(self.x.st['groups'])}")
+            self.mine(g, g["machine"], ths, 6)
+            self.x.record_rates(self.clock[0])
+
+    def test_the_benchmark_until_a_pc_has_mined(self):
+        self.assertEqual(self.x.rate("RTX 4080 (16 GB)"), 199)
+
+    def test_the_median_of_the_pcs_it_mined_on(self):
+        self.mined("RTX 4080 (16 GB)", [150, 210, 220], pri="medium")
+        self.assertEqual(self.x.rate("RTX 4080 (16 GB)"), 210)
+
+    def test_a_faster_measured_rate_lets_a_class_move_up(self):
+        # At its 40 TH/s benchmark a 2060 clears 10% only up to medium ($0.040, +15%) and not high ($0.050).
+        # Measured at 60 here, high clears too: 60 × 0.00117 = $0.070 against $0.050 (+29%).
+        self.assertLess(self.x.margin("RTX 2060 (6 GB)", "high"), 0.10)
+        self.mined("RTX 2060 (6 GB)", [60])
+        self.assertGreater(self.x.margin("RTX 2060 (6 GB)", "high"), 0.10)
+
+    def test_old_pcs_are_forgotten(self):
+        self.mined("RTX 4080 (16 GB)", [150], pri="medium")
+        self.clock[0] += 8 * 86400
+        self.x.record_rates(self.clock[0])
+        self.assertEqual(self.x.rate("RTX 4080 (16 GB)"), 199)
+
+    def test_the_first_time_it_fills_from_the_ledger(self):
+        g = self.group(pri="medium")
+        g["readings"] = [[self.clock[0] + 60 * i, "m1", 180.0, 0] for i in range(6)]
+        g["ended"] = self.clock[0]
+        self.x.record_rates(self.clock[0] + 600)
+        self.assertEqual(self.x.rate("RTX 4080 (16 GB)"), 180)
+
+    def test_a_new_group_is_created_at_the_measured_rate(self):
+        self.mined("RTX 4080 (16 GB)", [210], pri="medium")
+        g = self.group(pri="low")
+        self.assertEqual(g["rate"], 210)
+        self.assertIn("margin at 210 TH/s", self.events())
+
+
 class TestStartingBoxes(Base):
     def test_a_box_starting_on_a_new_pc_is_left_out_of_the_profit_total(self):
         a, b = self.group(pri="medium"), self.group(cls="RTX 2060 (6 GB)", pri="low")

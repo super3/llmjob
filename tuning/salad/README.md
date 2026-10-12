@@ -49,6 +49,7 @@ Config keys:
 | `yield` | The share of the network-rate estimate the rules count on when they judge a margin: `"auto"` for the pool's credit ratio (below), or a number. Live: `1.0` for now. |
 | `yield_min_blocks`, `yield_floor` | The credit ratio is used once the pool has credited us in 10 blocks, and never below 0.5. |
 | `bad_pc_hold_h` | Hours a PC that a group left stays on the shared bad list (24). |
+| `rate_days` | Days a PC's measured rate counts toward its class's rate (7). |
 | `drift` | How far the ledger and the pool may disagree before a `DRIFT` event (0.15). |
 | `trader` | Railway ids of the SafeTrade autoseller: `{"project", "service", "environment"}`. Unset: no SafeTrade line. |
 | `safetrade` | SafeTrade sales entered by hand (`sold`, `received`, `fees`, `usdt`, `prl`), used until the trader's logs can be read. |
@@ -61,6 +62,12 @@ Tests: `python3 -m unittest discover -s tuning/salad`. They fake Salad, the pool
 measured it. A 2060 at 40 TH/s earning $0.047/hr on a $0.030/hr PC is +36%, not +56%. The bar is
 10% (`min_margin`) everywhere: for the search and priority moves on a class's measured rate, and for
 each PC on its own readings.
+
+**A class's rate** is the median TH/s of the PCs it has mined on here in the last `rate_days`, each PC
+on its last 3 readings after warm-up, capped and slow PCs included. Before a class has mined, it's the
+benchmark in `KNOWN`. The search, priority moves and swaps all use it. On 12 October the 3070 measured
+77 TH/s against a 59 benchmark. With `yield` 0.9 the benchmark cleared 10% only at batch, so a second
+3070 was released for want of a batch PC although 3070s clear low easily; the 2080 measured 64 against 72.
 
 **Earnings** are TH/s × the network's $ per TH-hr × `yield`. The network's rate is what the work is
 worth if the pool paid us exactly our share of every block. It doesn't: on 12 October, after 25 blocks,

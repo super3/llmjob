@@ -43,7 +43,7 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                "min_margin": 0.10, "max_new_per_hour": 3, "max_per_class": 1,
                "search_every_min": 60, "retry_after_min": 60, "no_pc_streak": 3, "no_pc_hold_min": 180, "drift": 0.15,
                "upgrade_gain": 0.05, "upgrade_every_min": 15, "swap_wait_min": 20,
-               "yield": "auto", "yield_min_blocks": 10, "yield_floor": 0.5, "bad_pc_hold_h": 24,
+               "yield": "auto", "yield_min_blocks": 10, "yield_floor": 0.5, "bad_pc_hold_h": 24, "rate_days": 7,
                "trader": None, "safetrade": None,
                "wallet": os.environ.get("PRL_WALLET", "")}
 
@@ -161,7 +161,40 @@ class W:
 
     def margin(self, cls, pri, rate=None):
         """The margin a class should make at a priority, at its measured rate."""
-        return margin_of((rate or KNOWN[cls][0]) * self.usd(), self.st["classes"][cls]["prices"][pri])
+        return margin_of((rate or self.rate(cls)) * self.usd(), self.st["classes"][cls]["prices"][pri])
+
+    def rate(self, cls):
+        """The TH/s a new group of this class should make: the median of the PCs it has mined on here in the
+        last rate_days (each PC's rate on its last 3 readings after warm-up, capped and slow PCs included), or
+        the benchmark in KNOWN before any has."""
+        pcs = sorted(r for r, _ in self.st.get("pc_rates", {}).get(cls, {}).values())
+        if not pcs:
+            return KNOWN[cls][0]
+        n = len(pcs)
+        return pcs[n // 2] if n % 2 else (pcs[n // 2 - 1] + pcs[n // 2]) / 2
+
+    def record_rates(self, t):
+        """Keep each PC's latest rate, by class, for rate(). The first time, fill it from the readings in the
+        ledger (the last 2 hours of each group's PCs)."""
+        st = self.st
+        if "pc_rates" not in st:
+            st["pc_rates"] = {}
+            for g in st["groups"].values():
+                by = {}
+                for r in g.get("readings", []):
+                    if r[2] > 0 and r[1]:
+                        by.setdefault(r[1], []).append(r)
+                for mach, rs in by.items():
+                    post = [r for r in rs if r[0] >= rs[0][0] + 2 * MIN][-3:]
+                    if len(post) == 3:
+                        st["pc_rates"].setdefault(g["class"], {})[mach] = [sum(r[2] for r in post) / 3, post[-1][0]]
+        for g in st["groups"].values():
+            r = None if g["ended"] else self.pc_rate(g)
+            if r is not None:
+                st["pc_rates"].setdefault(g["class"], {})[g["machine"]] = [r, t]
+        for pcs in st["pc_rates"].values():
+            for m in [m for m, (_, seen) in pcs.items() if t - seen >= 86400 * self.cfg["rate_days"]]:
+                del pcs[m]
 
     def credit_ratio(self):
         """The share of our estimated PRL that the pool has credited (paid, unlocked and unconfirmed), once it has
@@ -381,7 +414,7 @@ class W:
                               "command": ["/bin/sh", "-c", cmd_for(name, self.cfg["wallet"], ver)]}}
         s, j = http("POST", CB, body)
         if 200 <= s < 300:
-            rate, paid = KNOWN[cls]
+            rate, paid = round(self.rate(cls)), KNOWN[cls][1]
             t = now()
             key = f"{name}@{int(t)}"
             st["groups"][key] = {
@@ -537,6 +570,7 @@ class W:
                 continue
             self.rules(g, t)
 
+        self.record_rates(t)
         self.critic(t)
 
         # Hourly search at :01, or when asked through config.search_token.
@@ -758,9 +792,10 @@ class W:
                     and not any(g["ended"] and g["end_kind"] == "failed" for g in st["groups"].values() if g["class"] == cls):
                 skip.discard(cls)
         cands = []
-        for cls, (rate, _) in KNOWN.items():
+        for cls in KNOWN:
             if cls not in st["classes"] or cls in skip:
                 continue
+            rate = self.rate(cls)
             body = {"cpu": 2, "memory": 4096, "storage_amount": 10737418240, "gpu_classes": [st["classes"][cls]["id"]]}
             s, a = http("POST", f"{BASE}/availability/sce-gpu-availability", body)
             if s != 200:
@@ -802,7 +837,7 @@ class W:
             if unplaced or cls == g["class"] or cls not in placed or (latest[cls]["ended"] and not latest[cls]["had_pc"]):
                 continue
             price = st["classes"][cls]["prices"][PRIS[max(PRIS.index(p), PRIS.index(placed[cls]), 1)]]
-            expect = KNOWN[cls][0] * u - price
+            expect = self.rate(cls) * u - price
             switch = max(worst, 0) * self.cfg["swap_wait_min"] / 60 + price * START_MIN / 60
             if best is None or expect - switch > best[0] - best[1]:
                 best = (expect, switch, cls, p)
