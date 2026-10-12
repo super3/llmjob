@@ -801,6 +801,7 @@ async function run(argv) {
   }
 
   const settings = parsed.settings;
+  for (const w of settings.warnings) log('warning: ' + w);
   const gpuPick = gpuChoice(settings, process.env);
   if (gpuPick && gpuPick.error) {
     log('error: ' + gpuPick.error, process.stderr);
@@ -1126,7 +1127,11 @@ async function run(argv) {
   // Nothing to run (e.g. the LLM failed to set up and there's no miner): exit
   // with an error rather than hanging on an idle process. Unless nothing was
   // asked to run: no GPU in mining mode waits (see noGpus above).
-  if (!miner && !llm && !idleByChoice && !xmr) {
+  // The CPU miner does not cover for a GPU that was meant to serve the LLM and
+  // serves nothing: that exits 1 too, so the failure is seen and retried. With
+  // every GPU turned off, the CPU is all that was meant to run, so it runs.
+  const llmFailed = plan.llm && !noGpus;
+  if (!miner && !llm && !idleByChoice && (!xmr || llmFailed)) {
     log('nothing to run — no miner and the LLM did not start', process.stderr);
     return 1;
   }
@@ -1419,10 +1424,14 @@ async function run(argv) {
         log('cpu: ' + format.formatKhs(e.hashrate) + ' kH/s · ' + format.formatInt(e.accepted) + ' accepted · '
           + e.rejected + ' rejected · ' + e.threads + ' threads');
       });
-      // Outside a shutdown, a stop is the engine giving up on its own.
+      // Outside a shutdown, a stop is the engine giving up on its own. With
+      // every GPU turned off (idle) the CPU miner was the run, so it ends too.
       cpu.on('stopped', () => {
         if (settled || stopping) return;
-        if (!miner && !llm && !idle) finish(1);
+        if (!miner && !llm) {
+          log('the CPU miner gave up and nothing else runs; exiting', process.stderr);
+          finish(1);
+        }
       });
       cpu.start({
         address: settings.xmrAddress,

@@ -243,8 +243,7 @@ input.field-box { user-select: text; }
 .head-actions .update-check-btn { flex: none; white-space: nowrap; }
 .settings-section { font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: #a7abb2; margin: 12px 0 8px; }
 .settings-section:first-of-type { margin: 0 0 7px; }
-/* Connection sits below the mode hint, and the mock gives it more air than the
-   section-to-section default. */
+/* A section under a note gets more air than the section-to-section default. */
 .settings-note + .settings-section { margin-top: 14px; }
 /* The Settings view-head supplies its own spacing; keep the first section tight
    under it (the view-head div steals :first-of-type from .settings-section). */
@@ -264,6 +263,7 @@ input.field-box { user-select: text; }
    Local network section needs to keep Settings inside its 470px without a
    scrollbar. */
 .conn-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }
+.mode-share + .conn-grid { margin-top: 12px; }
 .conn-field .fk { font-size: 12px; color: var(--muted-2, #8a8f98); font-weight: 500; margin-bottom: 5px; }
 /* One height for both: a select draws 2px taller than a text input, which shows
    once they sit side by side. */
@@ -341,10 +341,11 @@ select.rv-input { cursor: pointer; }
 .xmr-row { display: flex; gap: 10px; }
 .xmr-input { flex: 1; min-width: 0; margin-bottom: 0; padding: 10px 14px; }
 .cpu-threads { flex: none; width: 150px; }
-/* One line, so Settings keeps its height whatever it says; the title has all of it. */
-.settings-note.one-line { margin-top: 7px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* At most two lines, so Settings stays inside its 470px; the title has all of it. */
+.settings-note.two-lines { margin-top: 7px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .settings-note.err { color: #dc2626; }
 /* Background: three switches side by side. */
 .bg-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .bg-tile { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 12px; border: 1px solid #ebe9e1; border-radius: 10px; cursor: pointer; }
 .bg-tile .rk { font-size: 13px; line-height: 1.35; color: var(--ink-3); font-weight: 500; }
+.settings-note.bg-note { margin-top: 7px; }

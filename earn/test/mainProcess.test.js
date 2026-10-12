@@ -3901,6 +3901,13 @@ describe('CPU mining (Monero)', () => {
     cpu.emit('event', { type: 'connect-failed', reason: 'connect ECONNREFUSED', dns: false });
     expect(ctx.sent('cpu:stats').slice(-1)[0].pool).toBe('can\'t reach the Monero pool: connect ECONNREFUSED');
     expect(ctx.sent('miner:stats').slice(-1)[0]).not.toHaveProperty('cpu');
+    // One that gave up says why, not why the pool was out.
+    cpu.snapshot.mockReturnValueOnce({ state: 'failed', hashrate: 0, accepted: 3, rejected: 1, threads: 7, poolError: cpu.poolError });
+    cpu.emit('error', new Error('the CPU miner stopped (exit code 1)'));
+    cpu.emit('event', { type: 'status' });
+    expect(ctx.sent('cpu:stats').slice(-1)[0]).toMatchObject({
+      state: 'failed', error: 'the CPU miner stopped (exit code 1)', pool: null,
+    });
 
     ctx.emit('miner:stop');
     expect(cpu.stop).toHaveBeenCalled();

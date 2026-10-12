@@ -389,15 +389,16 @@ function stopCpuMining() {
 function cpuView() {
   if (!cpuMiner && !cpuError) return null;
   const s = cpuMiner ? cpuMiner.snapshot() : { state: 'stopped', hashrate: 0, accepted: 0, rejected: 0, threads: 0 };
+  const off = s.state === 'stopped' || s.state === 'failed';
   return {
     state: s.state,
     hashrate: format.formatKhs(s.hashrate),
     accepted: s.accepted,
     rejected: s.rejected,
     threads: s.threads,
-    error: s.state === 'stopped' ? cpuError : null,
+    error: off ? cpuError : null,
     // Why the pool can't be used, while the miner runs without it.
-    pool: s.state === 'stopped' ? null : s.poolError || null,
+    pool: off ? null : s.poolError || null,
   };
 }
 

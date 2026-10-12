@@ -32,9 +32,13 @@ const RECONNECT_MS = 5000;
 // than a pool hiccup, so it is not worth asking every 5 seconds.
 const LOGIN_RETRY_MS = 60 * 1000;
 const KEEPALIVE_MS = 60 * 1000;
-// Nothing from the pool for this long, not even a new job (Monero has a block
-// every 2 minutes): the connection is dead without having closed.
+// Nothing from the pool for this long, not even a keepalive reply: the
+// connection is dead without having closed.
 const SILENCE_MS = 5 * 60 * 1000;
+// No new job for this long while the pool still answers keepalives: it has
+// stopped following the chain, and its shares would be stale. Monero has a
+// block every 2 minutes, and a 10-minute gap comes about once in 150.
+const JOB_SILENCE_MS = 10 * 60 * 1000;
 const WATCHDOG_MS = 30 * 1000;
 // A worker that stops on its own is started again after RESTART_MS, unless it
 // stopped within STABLE_MS of each of its last RESTART_LIMIT starts.
@@ -77,6 +81,7 @@ class XmrEngine extends EventEmitter {
       loginRetry: t.loginRetry == null ? LOGIN_RETRY_MS : t.loginRetry,
       keepalive: t.keepalive == null ? KEEPALIVE_MS : t.keepalive,
       silence: t.silence == null ? SILENCE_MS : t.silence,
+      jobSilence: t.jobSilence == null ? JOB_SILENCE_MS : t.jobSilence,
       watchdog: t.watchdog == null ? WATCHDOG_MS : t.watchdog,
       restart: t.restart == null ? RESTART_MS : t.restart,
       kill: t.kill == null ? KILL_MS : t.kill,
@@ -106,6 +111,7 @@ class XmrEngine extends EventEmitter {
     this.pending = new Map();      // submit id -> job id
     this.keepaliveIds = new Set();
     this.lastRx = 0;
+    this.lastJobRx = 0;
     this.child = null;
     this.childBuf = '';
     this.state = 'stopped';
@@ -133,7 +139,8 @@ class XmrEngine extends EventEmitter {
   // hashing, but no share of it can go anywhere. Pearl's figure does the same.
   snapshot(now = this.now()) {
     return {
-      state: this.running ? this.state : 'stopped',
+      // A miner that gave up says so until it starts again.
+      state: this.running || this.state === 'failed' ? this.state : 'stopped',
       hashrate: this.poolConnected(now) ? this.hashrate : 0,
       accepted: this.accepted,
       rejected: this.rejected,
@@ -381,6 +388,7 @@ class XmrEngine extends EventEmitter {
     this.sock = sock;
     this.buf = '';
     this.lastRx = this.now();
+    this.lastJobRx = this.lastRx;
     sock.on('connect', () => {
       this._log('info', 'connecting to ' + this.host + ':' + this.port + ' · worker ' + (this.settings.worker || 'x'));
       sock.write(stratum.encode(stratum.buildLogin({
@@ -464,6 +472,7 @@ class XmrEngine extends EventEmitter {
         this.sock.destroy();
         break;
       case 'job':
+        this.lastJobRx = this.now();
         // The job the worker already has. Sending it again would restart its
         // search for no gain.
         if (this.job && m.jobId === this.job.jobId && m.blob === this.job.blob && m.target === this.job.target) break;
@@ -560,8 +569,14 @@ class XmrEngine extends EventEmitter {
   }
 
   _checkSilence() {
-    if (!this.sock || this.now() - this.lastRx < this.t.silence) return;
-    this._log('warn', 'no word from the pool in ' + Math.round(this.t.silence / 60000) + ' minutes; reconnecting');
+    if (!this.sock) return;
+    const now = this.now();
+    const mins = (ms) => Math.round(ms / 60000) + ' minutes';
+    if (now - this.lastRx >= this.t.silence) {
+      this._log('warn', 'no word from the pool in ' + mins(this.t.silence) + '; reconnecting');
+    } else if (now - this.lastJobRx >= this.t.jobSilence) {
+      this._log('warn', 'no new job from the pool in ' + mins(this.t.jobSilence) + '; reconnecting');
+    } else return;
     this.sock.destroy();
   }
 
@@ -597,6 +612,6 @@ class XmrEngine extends EventEmitter {
 }
 
 module.exports = {
-  XmrEngine, RECONNECT_MS, LOGIN_RETRY_MS, KEEPALIVE_MS, SILENCE_MS, RESTART_MS, RESTART_LIMIT, STABLE_MS,
+  XmrEngine, RECONNECT_MS, LOGIN_RETRY_MS, KEEPALIVE_MS, SILENCE_MS, JOB_SILENCE_MS, RESTART_MS, RESTART_LIMIT, STABLE_MS,
   KILL_MS, POOL_GRACE_MS,
 };

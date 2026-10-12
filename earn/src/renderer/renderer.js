@@ -79,7 +79,7 @@
     // Monero on the CPU (Settings → CPU Mining). On while a Monero address is
     // filled in, the way merge mining was. `cpu` is what main says this
     // computer can do; `cpuView` the CPU line main last sent.
-    cpuMining: false, xmrAddress: '', xmrOk: false, xmrError: null, xmrBalance: null, cpuThreads: 0,
+    cpuMining: false, xmrAddress: '', xmrOk: false, xmrChecking: false, xmrError: null, xmrBalance: null, cpuThreads: 0,
     cpu: null, cpuView: null,
   };
 
@@ -178,9 +178,15 @@
   }
 
   // START is allowed when we can mine (valid address) or the mode will run the
-  // LLM anyway (llm/auto co-run the model even without a payout address).
+  // LLM anyway (llm/auto co-run the model even without a payout address). A
+  // Monero address that checked out is enough on its own: the CPU miner runs for
+  // any START, with or without Pearl.
   function canStart() {
-    return isValid(state.address) || state.mode !== 'mining';
+    return isValid(state.address) || state.mode !== 'mining' || cpuReady();
+  }
+
+  function cpuReady() {
+    return state.cpuMining && state.xmrOk;
   }
 
   // ── Local LLM (GPU Activity hero + chat/api gating) ────────────────────────
@@ -543,17 +549,18 @@
     return !!state.cpu && state.cpu.worker === false;
   }
 
-  const CPU_COST = 'About 2.4 GB of memory and 45-65 W more on a desktop CPU, which can cost as much as it earns.'
-    + ' Paid by HeroMiners (0.9% fee) once you reach 0.01 XMR.';
+  const CPU_COST = 'Uses about 2.4 GB of memory and 45-65 W more, which can cost as much as it earns.';
+  const CPU_PAY = 'HeroMiners pays at 0.01 XMR, less a 0.9% fee.';
 
-  // The one line under the address: what is wrong with it, what a blank box
-  // means, or what will run and what it costs. One line keeps Settings in its
-  // 470px; the title has all of it.
+  // The two lines under the address: what is wrong with it, what a blank box
+  // means, or what it costs and what will run. Two lines keep Settings in its
+  // 470px, and the title has all of it. The cost comes first so a long thread
+  // note never cuts it off.
   function cpuNote() {
     if (state.xmrError) return 'This address won\'t work: ' + state.xmrError + '.';
     if (cpuNoWorker()) return 'This build has no CPU miner (llmjob-xmr-worker is not beside the app).';
     if (!state.cpuMining) return 'Mines Monero on the CPU while the GPU mines Pearl. Leave blank to mine Pearl only.';
-    return cpuThreadsNote() + ' ' + CPU_COST;
+    return CPU_COST + ' ' + cpuThreadsNote() + ' ' + CPU_PAY;
   }
 
   function cpuThreadsNote() {
@@ -598,8 +605,7 @@
   // It runs for any START, with or without the GPU miner, and waits out an
   // idle-only pause like it.
   function cpuMetaText(v) {
-    // The line shows only with an address, so one that isn't OK is wrong.
-    if (!state.mining) return state.xmrOk ? 'starts when you press START' : 'check the Monero address in Settings';
+    if (!state.mining) return cpuIdleText();
     if (state.paused) return 'paused while the computer is in use';
     if (!v) return 'starting…';
     if (v.error) return 'stopped: ' + v.error;
@@ -610,6 +616,18 @@
     return CPU_STATES[v.state] || v.state;
   }
 
+  // Stopped: what START will do. main forgets why the last run failed on STOP,
+  // so this works it out from what it knows of this computer.
+  function cpuIdleText() {
+    // The line shows only with an address, so one that isn't OK is wrong.
+    if (state.xmrChecking) return 'checking the Monero address…';
+    if (!state.xmrOk) return 'check the Monero address in Settings';
+    if (cpuNoWorker()) return "won't start: this build has no CPU miner";
+    if (state.cpu && !state.cpu.canMine) return "won't start: can't run on this computer";
+    if (state.cpu && !cpuThreadsNow()) return "won't start: choose a thread count in Settings";
+    return 'starts when you press START';
+  }
+
   function renderCpuRow() {
     el.cpuRow.hidden = !state.cpuMining;
     const v = state.mining ? state.cpuView : null;
@@ -617,6 +635,8 @@
     const bad = !!(v && (v.error || v.pool));
     el.cpuDot.className = 'dot2' + (!v ? '' : bad ? ' err' : v.state === 'mining' ? ' on' : CPU_STATES[v.state] ? ' busy' : '');
     el.cpuMeta.textContent = cpuMetaText(v);
+    // The line can be cut short; an error is worth reading in full.
+    el.cpuMeta.title = el.cpuMeta.textContent;
     el.cpuMeta.classList.toggle('err', bad);
     el.cpuBalance.textContent = state.xmrBalance != null && state.xmrOk ? fmt4(state.xmrBalance) + ' XMR' : '';
   }
@@ -635,15 +655,18 @@
     state.xmrBalance = null;
     if (!a || !api.checkXmrAddress) {
       state.xmrOk = false;
+      state.xmrChecking = false;
       state.xmrError = null;
     } else {
       const r = await api.checkXmrAddress(a);
       if (a !== state.xmrAddress.trim()) return;
       state.xmrOk = !!(r && r.ok);
+      state.xmrChecking = false;
       state.xmrError = r && !r.ok ? r.error : null;
     }
     renderCpuSettings();
     renderCpuRow();
+    el.btnStart.disabled = !canStart();
     refreshXmrBalance();
   }
 
@@ -965,14 +988,20 @@
       if (on !== state.cpuMining) {
         state.cpuMining = on;
         renderCpuSettings();
-        renderCpuRow();
       }
+      // Not OK until the check answers.
+      state.xmrOk = false;
+      state.xmrChecking = on;
+      renderCpuRow();
+      el.btnStart.disabled = !canStart();
       if (xmrCheckTimer) clearTimeout(xmrCheckTimer);
       xmrCheckTimer = setTimeout(checkXmr, 400);
     });
     el.setCpuThreads.addEventListener('change', () => {
       state.cpuThreads = Number(el.setCpuThreads.value) || 0;
       renderCpuSettings();
+      // Auto can mean off, which the Mine tab says.
+      renderCpuRow();
     });
     el.apiLanUrl.addEventListener('click', () => {
       if (api.copyText) api.copyText(el.apiLanUrl.textContent);
@@ -1018,6 +1047,7 @@
       state.shareLlm = s.shareLlm === true;
       state.xmrAddress = s.xmrAddress || '';
       state.cpuMining = !!state.xmrAddress.trim();
+      state.xmrChecking = state.cpuMining;
       el.setXmr.value = state.xmrAddress;
       state.cpuThreads = Number(s.cpuThreads) || 0;
       el.setWorker.value = s.worker || 'rig01';
@@ -1032,7 +1062,7 @@
       // not be the quiet default. A missing key already falls through to main's
       // default; this covers the value being present but empty.
       state.mode = usableMode(s.mode || 'auto');
-      resumeMining = !!(s.resumeMining && isValid(state.address));
+      resumeMining = !!s.resumeMining;
     }
     renderMode();
     renderShare();
@@ -1103,9 +1133,10 @@
     renderMiningState();
     renderBalanceMeta();
     refreshBalance();
-    checkXmr();
+    // Awaited so a rig that mines only Monero can resume too.
+    await checkXmr();
     setInterval(() => { refreshBalance(); refreshXmrBalance(); }, BAL_REFRESH_MS);
-    if (resumeMining) start();
+    if (resumeMining && (isValid(state.address) || cpuReady())) start();
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

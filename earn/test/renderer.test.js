@@ -1358,8 +1358,9 @@ describe('CPU mining', () => {
   const options = () => Array.from($('set-cpu-threads').options).map((o) => o.textContent);
   const BLANK = 'Mines Monero on the CPU while the GPU mines Pearl. Leave blank to mine Pearl only.';
   // With an address, the one line says what will run, then what it costs.
-  const withCost = (threads) => threads + ' About 2.4 GB of memory and 45-65 W more on a desktop CPU, which can cost'
-    + ' as much as it earns. Paid by HeroMiners (0.9% fee) once you reach 0.01 XMR.';
+  // The cost comes first, so a long thread note never cuts it off.
+  const withCost = (threads) => 'Uses about 2.4 GB of memory and 45-65 W more, which can cost as much as it earns. '
+    + threads + ' HeroMiners pays at 0.01 XMR, less a 0.9% fee.';
 
   // A bridge with CPU mining set up the way main answers.
   function cpuApi(settings, cpu) {
@@ -1384,6 +1385,56 @@ describe('CPU mining', () => {
     expect(api.checkXmrAddress).not.toHaveBeenCalled();
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ cpuMining: false, xmrAddress: '', cpuThreads: 0 }));
+  });
+
+  // Mining mode greyed START out without a Pearl address, though main runs the
+  // CPU miner on its own.
+  it('a Monero address alone can START, and resume, in Mining mode', async () => {
+    let h = cpuApi({ address: '', mode: 'mining' });
+    await boot({ api: h.api });
+    expect($('btn-start').disabled).toBe(true);
+    setInput($('set-xmr'), XMR_ADDR);
+    // Not until the check says it is good. Until then the line says it is
+    // checking, not that the address is wrong.
+    expect($('btn-start').disabled).toBe(true);
+    expect($('cpu-meta').textContent).toBe('checking the Monero address…');
+    jest.advanceTimersByTime(400);
+    await flush();
+    expect($('btn-start').disabled).toBe(false);
+    expect($('cpu-meta').textContent).toBe('starts when you press START');
+    expect($('cpu-meta').title).toBe('starts when you press START');
+    click($('btn-start'));
+    expect(h.api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ address: '', cpuMining: true, xmrAddress: XMR_ADDR }));
+    click($('btn-stop'));
+    setInput($('set-xmr'), XMR_ADDR + 'x');
+    expect($('btn-start').disabled).toBe(true);
+
+    h = cpuApi({ address: '', mode: 'mining', xmrAddress: XMR_ADDR, resumeMining: true });
+    await boot({ api: h.api });
+    expect(h.api.startMiner).toHaveBeenCalledTimes(1);
+    h = cpuApi({ address: '', mode: 'mining', xmrAddress: XMR_ADDR + 'x', resumeMining: true });
+    await boot({ api: h.api });
+    expect(h.api.startMiner).not.toHaveBeenCalled();
+  });
+
+  // Main forgets why the last run's CPU miner did not start, so the stopped
+  // line said START would start it.
+  it('stopped, the CPU line says when START will not run it', async () => {
+    const meta = async (cpu, settings) => {
+      const h = cpuApi(Object.assign({ xmrAddress: XMR_ADDR }, settings), cpu);
+      await boot({ api: h.api });
+      return $('cpu-meta').textContent;
+    };
+    expect(await meta(Object.assign({}, CPU, { worker: false }))).toBe("won't start: this build has no CPU miner");
+    expect(await meta({ available: 1, auto: 0, canMine: false, reason: 'x' })).toBe("won't start: can't run on this computer");
+    expect(await meta({ available: 4, auto: 0, canMine: true, reason: 'x' })).toBe("won't start: choose a thread count in Settings");
+    expect(await meta({ available: 4, auto: 0, canMine: true, reason: 'x' }, { cpuThreads: 2 })).toBe('starts when you press START');
+    expect(await meta(null)).toBe('starts when you press START');
+    // Picking a count in Settings changes it at once.
+    await meta({ available: 4, auto: 0, canMine: true, reason: 'x' });
+    $('set-cpu-threads').value = '2';
+    change($('set-cpu-threads'));
+    expect($('cpu-meta').textContent).toBe('starts when you press START');
   });
 
   it('on with a good address: the balance, the CPU line, and the settings START sends', async () => {

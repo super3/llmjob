@@ -2,7 +2,7 @@
 
 const { EventEmitter } = require('events');
 const {
-  XmrEngine, RECONNECT_MS, LOGIN_RETRY_MS, KEEPALIVE_MS, SILENCE_MS, RESTART_MS, RESTART_LIMIT, STABLE_MS,
+  XmrEngine, RECONNECT_MS, LOGIN_RETRY_MS, KEEPALIVE_MS, SILENCE_MS, JOB_SILENCE_MS, RESTART_MS, RESTART_LIMIT, STABLE_MS,
   KILL_MS, POOL_GRACE_MS,
 } = require('../src/main/xmrEngine');
 
@@ -144,7 +144,7 @@ describe('start', () => {
     expect(h.engine.start(SETTINGS)).toBe(false);
     expect(h.errors).toEqual(['could not start /opt/llmjob-xmr-worker: EACCES']);
     expect(h.stopped).toEqual([1]);
-    expect(h.engine.snapshot().state).toBe('stopped');
+    expect(h.engine.snapshot().state).toBe('failed');
     const h2 = setup({ spawnWorker: () => { throw 'nope'; } });
     h2.engine.start(SETTINGS);
     expect(h2.errors).toEqual(['could not start /opt/llmjob-xmr-worker: nope']);
@@ -154,9 +154,9 @@ describe('start', () => {
     const e = new XmrEngine();
     expect(e.t).toEqual({
       reconnect: RECONNECT_MS, loginRetry: LOGIN_RETRY_MS, keepalive: KEEPALIVE_MS, silence: SILENCE_MS,
-      watchdog: 30000, restart: RESTART_MS, kill: KILL_MS,
+      jobSilence: JOB_SILENCE_MS, watchdog: 30000, restart: RESTART_MS, kill: KILL_MS,
     });
-    const t = { reconnect: 1, loginRetry: 2, keepalive: 3, silence: 4, watchdog: 5, restart: 6, kill: 7 };
+    const t = { reconnect: 1, loginRetry: 2, keepalive: 3, silence: 4, jobSilence: 8, watchdog: 5, restart: 6, kill: 7 };
     expect(new XmrEngine({ timing: t }).t).toEqual(t);
     expect(e.agent).toBe('llmjob-earn');
     expect(e.now).toBe(Date.now);
@@ -293,7 +293,7 @@ describe('the worker', () => {
     h.child().say({ type: 'selftest', ok: false, msg: 'wrong hash for "This is a test"' });
     expect(h.errors).toEqual(['RandomX self-test failed, so nothing was mined: wrong hash for "This is a test"']);
     expect(h.stopped).toEqual([1]);
-    expect(h.engine.snapshot().state).toBe('stopped');
+    expect(h.engine.snapshot().state).toBe('failed');
     h.advance(RESTART_MS * 2);
     expect(h.children).toHaveLength(1);
   });
@@ -335,7 +335,7 @@ describe('the worker', () => {
     expect(h.lines()).toContain('cpu: leaving the CPU miner off: it stopped within 10 minutes of each of 3 restarts');
     expect(h.errors).toEqual(['the CPU miner stopped (exit code 1)']);
     expect(h.stopped).toEqual([1]);
-    expect(h.engine.snapshot().state).toBe('stopped');
+    expect(h.engine.snapshot().state).toBe('failed');
   });
 
   test('a worker that ran a good while starts the restart count over', () => {
@@ -642,6 +642,25 @@ describe('the pool', () => {
     expect(h.sockets).toHaveLength(1);
     h.advance(60000);
     expect(h.sockets).toHaveLength(2);
+  });
+
+  // Keepalive replies kept the five-minute watch happy, so a pool that answered
+  // them and sent no jobs was never left.
+  test('ten minutes with no new job means a pool that stopped, even if it answers keepalives', () => {
+    const h = mining({ timing: { reconnect: 120000 } });
+    const answer = () => {
+      const w = h.sock().written;
+      h.sock().recv({ id: w[w.length - 1].id, error: null, result: { status: 'KEEPALIVED' } });
+    };
+    for (let m = 1; m <= 5; m++) { h.advance(KEEPALIVE_MS); answer(); }
+    // A job resets the clock.
+    h.sock().recv({ method: 'job', params: job('j2') });
+    for (let m = 1; m < 10; m++) { h.advance(KEEPALIVE_MS); answer(); }
+    expect(h.sockets[0].destroy).not.toHaveBeenCalled();
+    h.advance(KEEPALIVE_MS);
+    expect(h.lines()).toContain('cpu: no new job from the pool in 10 minutes; reconnecting');
+    expect(h.lines()).not.toContain('cpu: no word from the pool in 5 minutes; reconnecting');
+    expect(h.sockets[0].destroy).toHaveBeenCalledTimes(1);
   });
 
   // cryptonote-nodejs-pool bans an IP by forgetting its session and leaving

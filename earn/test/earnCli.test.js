@@ -990,36 +990,59 @@ describe('CPU mining', () => {
 
   // With nothing else running (here the LLM had no room), the CPU miner is the
   // run: a stop it made on its own ends it non-zero, so systemd restarts it.
-  test('when it is all there is, its giving up ends the run, and a signal stops it', async () => {
+  // The CPU miner kept the run going, so an LLM that never started exited 0
+  // with the GPU idle.
+  test('it does not cover for an LLM that failed: that still exits 1', async () => {
     const m = load();
     m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 7000, totalMb: 8000 }]);
-    const p = m.run(['--mode', 'llm', '--no-update', '--xmr-address', XMR_ADDR]);
-    await settle();
-    expect(allErr()).not.toContain('nothing to run');
-    const cpu = m.XmrEngine.instances[0];
-    expect(cpu.start).toHaveBeenCalledWith(expect.objectContaining({ worker: 'rig-host' }));
-    cpu.emit('stopped', 1);
-    await expect(p).resolves.toBe(1);
-
-    const m2 = load();
-    m2.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 7000, totalMb: 8000 }]);
-    const p2 = m2.run(['--mode', 'llm', '--no-update', '--xmr-address', XMR_ADDR]);
-    await settle();
-    fire('SIGINT');
-    await expect(p2).resolves.toBe(0);
-    expect(m2.XmrEngine.instances[0].stop).toHaveBeenCalled();
-    m2.XmrEngine.instances[0].emit('stopped', 0);
+    await expect(m.run(['--mode', 'llm', '--no-update', '--xmr-address', XMR_ADDR])).resolves.toBe(1);
+    expect(allErr()).toContain('nothing to run — no miner and the LLM did not start');
+    expect(m.XmrEngine.instances[0].start).not.toHaveBeenCalled();
   });
 
-  test('with every GPU off, it keeps mining while the run waits', async () => {
+  test('with every GPU off, it is the run: it ends the run when it gives up, and a signal stops it', async () => {
     const m = load();
     const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu-index=none', '--xmr-address', XMR_ADDR]);
     await settle();
     expect(allOut()).toContain('no GPU mines (every one is turned off); mining Monero on the CPU');
     expect(allOut()).not.toContain('nothing to run');
     const cpu = m.XmrEngine.instances[0];
-    cpu.emit('stopped', 1);   // the idle wait still holds the run
+    expect(cpu.start).toHaveBeenCalledWith(expect.objectContaining({ worker: 'rig-host' }));
+    cpu.emit('stopped', 1);
+    await expect(p).resolves.toBe(1);
+    expect(allErr()).toContain('the CPU miner gave up and nothing else runs; exiting');
+
+    const m2 = load();
+    const p2 = m2.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu-index=none', '--xmr-address', XMR_ADDR]);
+    await settle();
     fire('SIGTERM');
+    await expect(p2).resolves.toBe(0);
+    expect(m2.XmrEngine.instances[0].stop).toHaveBeenCalled();
+    m2.XmrEngine.instances[0].emit('stopped', 0);
+  });
+
+  // With every GPU off the LLM may still find a card. If it can't, the CPU is
+  // what was meant to run.
+  test('with every GPU off, an LLM that cannot start leaves the CPU mining', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 7000, totalMb: 8000 }]);
+    const p = m.run(['--mode', 'llm', '--no-update', '--gpu-index=none', '--xmr-address', XMR_ADDR]);
+    await settle();
+    expect(allErr()).not.toContain('nothing to run');
+    expect(m.XmrEngine.instances[0].start).toHaveBeenCalled();
+    fire('SIGTERM');
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('a CPU flag with no address is a warning, and Pearl mines', async () => {
+    const m = load();
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--cpu-threads', '4']);
+    await settle();
+    expect(allOut()).toContain('warning: --cpu-threads does nothing without --xmr-address: no CPU mining');
+    expect(m.PearlEngine.instances).toHaveLength(1);
+    expect(m.XmrEngine.instances).toHaveLength(0);
+    fire('SIGINT');
+    m.PearlEngine.instances[0].emit('stopped', 0);
     await expect(p).resolves.toBe(0);
   });
 

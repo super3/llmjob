@@ -194,6 +194,11 @@ function buildSettings(opts, errors, report, update, serve) {
   // Monero on the CPU (shared/xmr). Off unless an address is given; the thread
   // count is null for the default, which shared/xmr/cpuPlan works out from
   // the CPUs this process may use.
+  // A CPU flag with no address is a warning, not an error. A HiveOS Extra
+  // config whose address was removed still carries them, and an error there
+  // stopped Pearl too, the CLI exiting and restarting every few seconds.
+  const warnings = [];
+  const noCpuMining = (flag) => flag + ' does nothing without --xmr-address: no CPU mining';
   let xmrAddress = null;
   if (opts['--xmr-address'] != null) {
     const a = String(opts['--xmr-address']).trim();
@@ -209,7 +214,7 @@ function buildSettings(opts, errors, report, update, serve) {
       errors.push('invalid --cpu-threads: ' + opts['--cpu-threads'] + ' (must be 0 or more)');
       cpuThreads = null;
     } else if (cpuThreads > 0 && opts['--xmr-address'] == null) {
-      errors.push('--cpu-threads needs --xmr-address (the Monero address CPU mining pays)');
+      warnings.push(noCpuMining('--cpu-threads'));
     }
   }
 
@@ -218,9 +223,7 @@ function buildSettings(opts, errors, report, update, serve) {
   if (opts['--cpu-priority'] != null) {
     const p = String(opts['--cpu-priority']).trim();
     if (!PRIORITIES.includes(p)) errors.push('invalid --cpu-priority: ' + p + ' (choices: ' + PRIORITIES.join(', ') + ')');
-    // Without an address there is no CPU mining for it to apply to; say so
-    // rather than ignore it, as --cpu-threads does.
-    else if (opts['--xmr-address'] == null) errors.push('--cpu-priority needs --xmr-address (the Monero address CPU mining pays)');
+    else if (opts['--xmr-address'] == null) warnings.push(noCpuMining('--cpu-priority'));
     else cpuPriority = p;
   }
 
@@ -295,6 +298,7 @@ function buildSettings(opts, errors, report, update, serve) {
     address, mdlAddress, region, legacyRegion, worker, gpu, gpuIndices, statsFile, xmrAddress, cpuThreads, cpuPriority,
     mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs, mineMemClockMhz,
     report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,
+    warnings,
   };
 }
 

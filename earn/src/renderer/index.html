@@ -153,7 +153,7 @@
         <span class="connected-avatar" id="connected-avatar">N</span>
         <div class="connected-info">
           <div class="connected-title" id="connected-title">Connected</div>
-          <div class="connected-sub">Live in your cluster as <span class="mono" id="connected-name">this rig</span> · <span class="link-inline" id="connected-rename" title="Set the worker name in Settings → Connection">rename in Settings</span></div>
+          <div class="connected-sub">Live in your cluster as <span class="mono" id="connected-name">this rig</span> · <span class="link-inline" id="connected-rename" title="Set the worker name in Settings">rename in Settings</span></div>
         </div>
         <button id="connect-disconnect" class="chip" type="button">Disconnect</button>
       </div>
@@ -189,7 +189,8 @@
       </label>
     </div>
 
-    <div class="settings-section">Connection</div>
+    <!-- No heading: each field has its own label, and the room went to the
+         notes under CPU Mining and Background. -->
     <div class="conn-grid">
       <div class="conn-field">
         <div class="fk">Pool region</div>
@@ -207,25 +208,26 @@
       <input id="set-xmr" class="field-box xmr-input" type="text" spellcheck="false" placeholder="Paste your 4… or 8… Monero address (optional)" />
       <select id="set-cpu-threads" class="rv-input cpu-threads" title="CPU threads for Monero"></select>
     </div>
-    <p id="cpu-note" class="settings-note one-line"></p>
+    <p id="cpu-note" class="settings-note two-lines"></p>
 
-    <!-- Three tiles in a row keep Settings inside its 470px. The longer
-         explanations are in each tile's title. -->
+    <!-- Three tiles in a row, and one line under them that says what they do,
+         keep Settings inside its 470px. -->
     <div class="settings-section">Background</div>
     <div class="bg-tiles">
       <label class="bg-tile" title="Closing the window hides it in the tray, and mining carries on. The tray icon opens it again, and its menu has Quit.">
-        <span class="rk">Keep running in the tray</span>
+        <span class="rk">Keep in the tray</span>
         <input id="pref-tray" class="toggle" type="checkbox" />
       </label>
       <label class="bg-tile" title="Starts the app in the tray when you log in, and starts mining.">
-        <span class="rk">Start with my computer</span>
+        <span class="rk">Start at login</span>
         <input id="pref-startup" class="toggle" type="checkbox" />
       </label>
       <label class="bg-tile" title="Mines after 5 minutes without keyboard or mouse use, and pauses when you're back.">
-        <span class="rk">Only mine when idle</span>
+        <span class="rk">Only when idle</span>
         <input id="pref-idle" class="toggle" type="checkbox" />
       </label>
     </div>
+    <p class="settings-note bg-note">Closing the window leaves it mining in the tray. Idle means no keyboard or mouse for 5 minutes.</p>
 
   </section>
 

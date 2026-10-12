@@ -229,12 +229,14 @@ It is **off by default** and does nothing until you turn it on.
 
 - Desktop app: paste a Monero address in **Settings → CPU Mining**, then
   START. Leaving the box blank keeps it off, as merge mining's address did. It runs in any mode, with or without the GPU miner, and STOP
-  stops it. With "Only mine when idle" on, it waits for an idle
+  stops it. A Monero address is enough to START in Mining mode, with no Pearl
+  address. With "Only when idle" on, it waits for an idle
   computer like the GPU miner does. The Mine tab then shows a CPU line: the CPU
   hashrate, its shares and the XMR balance. The settings apply at the next
   START.
 - CLI: `--xmr-address 4…` (or `8…`). `--cpu-threads <n>` sets the thread count;
-  `0` turns it off.
+  `0` turns it off. `--cpu-threads` or `--cpu-priority` without an address
+  only logs a warning, so Pearl still mines.
 - HiveOS: put `--xmr-address 4…` in **Extra config arguments**. The dashboard
   gets the CPU's hashrate as the rig's second algorithm, `randomx`.
 
@@ -339,7 +341,7 @@ other computers on the same network use it too.
 Three switches in **Settings → Background**, saved in `preferences.json` next to
 `settings.json` in the app's data folder:
 
-- **Keep running in the tray** (on by default). Closing
+- **Keep in the tray** (on by default). Closing
   the window hides it and mining carries on. The first time, a notification says
   so. The tray icon opens the window again, and its menu has **Quit**. Opening
   the app a second time shows the running window instead of starting a second
@@ -348,7 +350,7 @@ Three switches in **Settings → Background**, saved in `preferences.json` next 
   session bus whether anything will. On Windows, a close from another program
   (the installer, the uninstaller, Task Manager's End task) quits the app, so
   the miner stops cleanly before the installer replaces the files.
-- **Start with my computer** (off by default). Windows gets a
+- **Start at login** (off by default). Windows gets a
   login item, a Linux AppImage an entry in `~/.config/autostart`, and macOS a
   LaunchAgent in `~/Library/LaunchAgents`. Each starts the app with `--hidden`,
   so it stays in the tray and starts mining with the saved payout address. Only
@@ -356,7 +358,7 @@ Three switches in **Settings → Background**, saved in `preferences.json` next 
   start points the entry at the app again if an update moved it, and otherwise
   leaves it alone, so turning it off in Task Manager or the desktop's startup
   settings sticks.
-- **Only mine when idle** (off by default). Idle means 5 minutes
+- **Only when idle** (off by default). Idle means 5 minutes
   without keyboard or mouse input, or a locked screen. While someone uses the
   computer, mining stops and the window says what it is waiting for. The local
   LLM keeps running, so chat, cluster jobs and the network share go on, and it
