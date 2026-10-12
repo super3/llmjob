@@ -45,6 +45,10 @@ Config keys:
 | `no_pc_streak`, `no_pc_hold_min` | A class whose last 3 groups got no PC goes last for 180 min. |
 | `upgrade_gain` | How much more an hour a class must be expected to make before it takes the weakest group's slot (0.05). `null` turns swaps off. |
 | `upgrade_every_min` | Minutes between swap checks while every slot is taken (15). |
+| `swap_wait_min` | Minutes a swapped slot is expected to earn nothing while the new group gets a PC and starts (20). Part of a swap's cost. |
+| `yield` | The share of the network-rate estimate the rules count on when they judge a margin: `"auto"` for the pool's credit ratio (below), or a number. Live: `1.0` for now. |
+| `yield_min_blocks`, `yield_floor` | The credit ratio is used once the pool has credited us in 10 blocks, and never below 0.5. |
+| `bad_pc_hold_h` | Hours a PC that a group left stays on the shared bad list (24). |
 | `drift` | How far the ledger and the pool may disagree before a `DRIFT` event (0.15). |
 | `trader` | Railway ids of the SafeTrade autoseller: `{"project", "service", "environment"}`. Unset: no SafeTrade line. |
 | `safetrade` | SafeTrade sales entered by hand (`sold`, `received`, `fees`, `usdt`, `prl`), used until the trader's logs can be read. |
@@ -57,6 +61,13 @@ Tests: `python3 -m unittest discover -s tuning/salad`. They fake Salad, the pool
 measured it. A 2060 at 40 TH/s earning $0.047/hr on a $0.030/hr PC is +36%, not +56%. The bar is
 10% (`min_margin`) everywhere: for the search and priority moves on a class's measured rate, and for
 each PC on its own readings.
+
+**Earnings** are TH/s × the network's $ per TH-hr × `yield`. The network's rate is what the work is
+worth if the pool paid us exactly our share of every block. It doesn't: on 12 October, after 25 blocks,
+the pool had credited 83% of that estimate, with the fee, orphaned blocks and luck all in the gap.
+With `yield: "auto"` the rules count on that credit ratio. On that day it would have dropped the three
+5080s and three 4080s at medium (+15–25% on the network's rate, −2% to +9% on 83% of it) and kept the
+2080 Tis and the 3070, so it's set to `1.0` until we decide. The table always uses the credit ratio.
 
 1. **Search** hourly at :01, and every `search_every_min` while a slot is empty. Take classes with a known rate that clear a 10% margin at the cheapest
    priority with a GPU free. Classes that paid before come first, then by profit per hour. Create up to
@@ -86,16 +97,21 @@ each PC on its own readings.
    taken as this case. Bump `restart_token` after a top-up.
 8. **Swap the weakest slot.** With every slot taken, every `upgrade_every_min`, compare the group making
    the least on its PC (profit an hour on its last 3 readings) with the best class the search could create
-   that has had a PC on this account (a working box isn't given up for a class Salad may never place).
-   That class is expected to make its measured rate at its free priority, counted no cheaper than low,
-   because batch PCs are seldom handed out and a group that gets none moves up. If it should make
-   `upgrade_gain` more an hour, delete the weak group (released) and create the new one. One swap per check.
-   At $0.05 a 2060 or 2080 making $0.01–0.02 gives way to a 4080 at low ($0.07), but a 5070 at low or a
-   5080 at medium ($0.03) doesn't, so groups don't churn between similar classes.
+   that has had a PC on this account (a working box isn't given up for a class Salad may never place),
+   and not while that class's latest group got no PC. That class is expected to make its measured rate
+   at the priority its latest group got a PC at, or its free priority if that's higher, counted no
+   cheaper than low: batch PCs are seldom handed out, and a group that gets none moves up. Switching
+   costs the weak box's profit for `swap_wait_min` and the new box's bill for its first 5 minutes,
+   taken off the first hour's gain. If what's left is `upgrade_gain` or more, delete the weak group
+   (released) and create the new one. One swap per check. On 12 October three swaps priced 4080s at low,
+   where they never got a PC; they got PCs at medium, about $0.04/hr less than the swap expected.
 9. It only acts on groups in its own ledger.
 
 **Leaving a PC** means reallocating to another PC if the class has paid before, and deleting the group
-if it hasn't. A class has **paid before** if it paid on the first account, or once a group of it here
+if it hasn't. The PC goes on a shared **bad list** for `bad_pc_hold_h`: a group that gets a PC another
+group left is moved off it at once, and that move doesn't count toward its 3. (On 12 October one 2080 Ti
+PC that overheated to 66 TH/s was handed to a second group two hours later.) A PC Salad takes back isn't
+bad. A class has **paid before** if it paid on the first account, or once a group of it here
 clears the margin over 10 readings with shares at the pool. Reallocations are capped at 3 a group, shared
 by rules 4 to 6; the next one deletes it, as released: running out of moves means bad PCs, not a bad
 class, so the class isn't barred from new groups.
@@ -187,20 +203,28 @@ Each table row fits on one line. A box's first cell holds its state, its group n
 its priority (`med` for medium) and its PC (`⛏️ 2080-2 low cb6d4bd1`), joined by no-break spaces so it doesn't wrap. Boxes are sorted by profit an hour, best first.
 
 Each row has the group's whole Salad bill so far (**Spent $**), its PRL and Profit $ = PRL × today's
-price − Spent $. A row's PRL is our estimate from the miner's speed: the pool pays per account, not
-per box, so only the account's total can be checked against the pool.
+price − Spent $. A row's PRL is what we expect the pool to credit for the miner's speed: the network-rate
+estimate times the pool's **credit ratio** (credited ÷ estimate, once the pool has credited us in 10
+blocks). The first line shows both rates. The pool pays per account, not per box, so only the account's
+total can be checked against the pool.
+
+A box on a new PC with no reading yet (under 15 minutes) is **starting**: it shows — for Profit/hr and
+Margin, and the total leaves it out until its first reading. Its bill still counts in $/hr. Before
+this, two boxes changing PCs at once took the total from +$0.41 to +$0.07 for a few minutes.
 
 Under the table, a **Money** block follows the PRL from the bill to the sale:
 
-- 💵 spent on Salad, PRL mined and what each cost (the break-even price);
+- 💵 spent on Salad, the PRL we expect the pool to credit, and what each cost (the break-even price);
 - 🏦 at the pool: unconfirmed, unlocked (paid out at 1 PRL) and paid to SafeTrade, and what share of
-  the mined PRL that is;
+  our estimate that is (the credit ratio);
 - 💱 sold on SafeTrade and what's held there;
 - 🔒 **locked in**: USDT received after fees, less the sold PRL at the average cost to mine;
 - ⏳ **not yet locked**: the unsold PRL at today's price, less the same cost. This still moves with the
   price and the pool's luck.
 
 Every PRL carries the average cost, so spending now and selling hours later still gives one number.
+The cost is per credited PRL, not per estimated PRL: at 83% that's $1.35, not $1.12, and locked in on
+26.24 PRL sold for 35.53 USDT is +$0.22, not +$6.22.
 
 ## SafeTrade row
 

@@ -542,8 +542,9 @@ class TestSearch(Base):
 
 class TestUpgrade(Base):
     def full_with_a_2060(self, avail, placed=True):
-        """Every slot taken by one 2060 mining at 40 TH/s at low: $0.017/hr. A 4080 at low should make $0.083/hr.
-        With placed, an earlier 4080 group had a PC here."""
+        """Every slot taken by one 2060 mining at 40 TH/s at low: $0.017/hr. A 4080 at low should make $0.083/hr,
+        less about $0.018 to switch (the 2060's profit for 20 min, the 4080's bill for 5): $0.048 more.
+        With placed, an earlier 4080 group had a PC here, at low."""
         self.http.on("POST", "/availability/", lambda b: (200, avail if b["gpu_classes"][0] == "c4080" else {}))
         self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10}}))
         self.x.cfg.update(max_active=1, max_new_per_hour=10)
@@ -560,11 +561,41 @@ class TestUpgrade(Base):
 
     def test_the_weakest_group_is_swapped_for_a_class_that_should_make_more(self):
         g = self.full_with_a_2060({"available_gpu_low": 5})
+        self.x.cfg["upgrade_gain"] = 0.04
         self.x.upgrade(self.clock[0])
         self.assertEqual(g["end_kind"], "released")
         self.assertTrue(self.http.made("DELETE", "/containers/biz-rtx2060$"))
         self.assertEqual(self.made(), [("biz-rtx4080-2", "low")])
         self.assertIn("UPGRADE biz-rtx2060", self.events())
+
+    def test_the_cost_of_switching_counts(self):
+        # $0.066 more an hour, but $0.018 of it goes on switching: under a $0.05 bar.
+        g = self.full_with_a_2060({"available_gpu_low": 5})
+        self.x.upgrade(self.clock[0])
+        self.assertIsNone(g["ended"])
+        self.x.cfg["swap_wait_min"] = 0
+        self.x.upgrade(self.clock[0])
+        self.assertEqual(g["end_kind"], "released")
+
+    def test_a_class_is_priced_where_it_last_got_a_pc(self):
+        # The last 4080 only got a PC at medium: $0.043/hr there, not $0.083 at low.
+        g = self.full_with_a_2060({"available_gpu_low": 5})
+        [old] = [x for x in self.x.st["groups"].values() if x["class"] == "RTX 4080 (16 GB)"]
+        old["pri"] = "medium"
+        self.x.cfg.update(upgrade_gain=0.0, swap_wait_min=0)
+        self.x.upgrade(self.clock[0])
+        self.assertIn("a RTX 4080 (16 GB) should make $+0.043/hr", self.events())
+        self.assertEqual(self.made(), [("biz-rtx4080-2", "low")])  # still asked for at its free priority
+
+    def test_no_swap_to_a_class_whose_latest_group_got_no_pc(self):
+        g = self.full_with_a_2060({"available_gpu_low": 5})
+        self.x.cfg["upgrade_gain"] = 0.04
+        self.clock[0] += 60
+        nopc = self.group(cls="RTX 4080 (16 GB)", pri="medium")
+        nopc.update(ended=self.clock[0] - 3600, end_kind="released")
+        self.clock[0] += 3600
+        self.x.upgrade(self.clock[0])
+        self.assertIsNone(g["ended"])
 
     def test_no_swap_to_a_class_that_never_had_a_pc_here(self):
         g = self.full_with_a_2060({"available_gpu_low": 5}, placed=False)
@@ -580,12 +611,12 @@ class TestUpgrade(Base):
         self.assertEqual(self.made(), [])
 
     def test_a_free_batch_pc_is_counted_at_the_low_price(self):
-        # At batch a 4080 would make $0.123/hr, $0.106 more; counted at low it's $0.066 more, under the bar.
+        # At batch a 4080 would make $0.123/hr, $0.106 more; counted at low it's $0.066 more, $0.048 after switching.
         g = self.full_with_a_2060({"available_gpu_batch": 5})
-        self.x.cfg["upgrade_gain"] = 0.07
+        self.x.cfg["upgrade_gain"] = 0.05
         self.x.upgrade(self.clock[0])
         self.assertIsNone(g["ended"])
-        self.x.cfg["upgrade_gain"] = 0.05
+        self.x.cfg["upgrade_gain"] = 0.04
         self.x.upgrade(self.clock[0])
         self.assertEqual(self.made(), [("biz-rtx4080-2", "batch")])  # still asked for at batch
 
@@ -713,9 +744,106 @@ class TestPoolTotals(Base):
         self.assertIn("| **6.00** | **8.000** | **+5.12** |", report)
         self.assertIn("- 💵 Spent on Salad: $6.00; 8.000 PRL mined at $0.750 each (break-even), worth $1.390 today.", report)
         self.assertIn("- 🏦 Pool: 4.000 unconfirmed · 0.500 unlocked (paid out at 1 PRL) · 1.500 paid to SafeTrade. "
-                      "That's 75% of what we mined", report)
+                      "That's 75% of our estimate over 6 blocks; from 10 blocks on the table counts on that share", report)
         self.assertIn("- ⏳ Not yet locked: +5.12 (8.000 PRL not sold yet", report)  # nothing sold: 8 × (1.39 − 0.75)
         self.assertNotIn("Locked in", report)
+
+
+class TestCreditRatio(Base):
+    """Once the pool has credited us in 10 blocks, the table counts on the share of our estimate it credited."""
+    def report(self, blocks=20, cfg=None):
+        g = self.group()
+        g["prl"], g["spend"] = 8.0, 6.0
+        self.x.st["pool_tot"] = {"t": T0, "paid": 1.5, "balance": 0.5, "unconfirmed": 4.0, "blocks": blocks,
+                                 "hashes": 0, "ths_1h": 0}
+        self.x.cfg.update(cfg or {})
+        self.x.write_report()
+        with open(os.path.join(TMP, "report.md")) as f:
+            return f.read()
+
+    def test_the_table_counts_on_what_the_pool_credits(self):
+        report = self.report()
+        # 75% of 8 PRL is 6, mined for $6.00: $1.000 each. Worth 6 × 1.39 − 6.00 = +2.34.
+        self.assertIn("· $0.001170/TH-hr × 75% credited = $0.000878 ·", report)
+        self.assertIn("| **6.00** | **6.000** | **+2.34** |", report)
+        self.assertIn("is worth 8.000 PRL at the network's rate, and the pool has credited 75% of that, so we expect "
+                      "6.000 PRL: $1.000 each (break-even)", report)
+        self.assertIn("- ⏳ Not yet locked: +2.34 (6.000 PRL not sold yet", report)
+        self.assertIn("That's 75% of our estimate over 20 blocks.", report)
+
+    def test_the_ratio_has_a_floor(self):
+        self.assertIn("× 90% credited", self.report(cfg={"yield_floor": 0.9}))
+
+    def test_the_rules_use_config_yield(self):
+        self.report()
+        self.assertAlmostEqual(self.x.usd(), USD_TH_HR * 0.75)        # "auto": the credit ratio
+        self.x.cfg["yield"] = 1.0
+        self.assertAlmostEqual(self.x.usd(), USD_TH_HR)               # fixed: the network's rate
+        self.x.write_report()
+        with open(os.path.join(TMP, "report.md")) as f:
+            self.assertIn("× 75% credited", f.read())                 # the table still shows the ratio
+
+    def test_a_pc_judged_at_the_credited_rate(self):
+        # 199 TH/s at medium clears 10% at the network's rate (+18%), not at 75% of it (−9%).
+        self.report()
+        g = list(self.x.st["groups"].values())[0]
+        g.update(pri="medium", price=0.19)
+        self.x.st["paid_classes"] = []
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 6)
+        self.assertIn("REALLOCATED", self.events())
+
+
+class TestStartingBoxes(Base):
+    def test_a_box_starting_on_a_new_pc_is_left_out_of_the_profit_total(self):
+        a, b = self.group(pri="medium"), self.group(cls="RTX 2060 (6 GB)", pri="low")
+        self.step(a, 1, "m1")
+        self.mine(a, "m1", 200, 5)
+        self.step(b, 0, "m2")
+        self.x.write_report()
+        with open(os.path.join(TMP, "report.md")) as f:
+            report = f.read()
+        self.assertIn(f"| ⛏️{w.NB}2060{w.NB}low{w.NB}m2 | 0 | 0.030 | — | — |", report)
+        # $/hr counts both bills; Profit/hr only the 4080: 200 × 0.00117 − 0.19 = +0.044.
+        self.assertIn(f"| **All{w.NB}·{w.NB}1{w.NB}mining{w.NB}·{w.NB}1{w.NB}starting** | **200** | **0.220** | **+0.044** |", report)
+
+    def test_a_box_with_no_reading_after_15_min_counts_again(self):
+        a = self.group(pri="medium")
+        self.step(a, 1, "m1")
+        self.clock[0] += 16 * 60
+        self.x.write_report()
+        with open(os.path.join(TMP, "report.md")) as f:
+            self.assertIn("| 0 | 0.190 | -0.190 |", f.read())
+
+
+class TestBadPcs(Base):
+    def test_a_pc_another_group_left_is_left_at_once(self):
+        a = self.group(pri="medium")
+        self.step(a, 1, "m1")
+        self.mine(a, "m1", 120, 6)   # slow: left
+        self.assertIn("REALLOCATED biz-rtx4080 off PC m1", self.events())
+        b = self.group(pri="medium")
+        self.step(b, 1, "m1")        # another group gets the same PC
+        self.assertEqual(len(self.http.made("POST", "/instances/inst-m1/reallocate")), 2)
+        self.assertIn("REALLOCATED biz-rtx4080-2 off PC m1 (biz-rtx4080 left this PC at", self.events())
+        self.assertIn("not counted toward its 3", self.events())
+        self.assertEqual(b["reallocs"], 0)
+
+    def test_the_bad_list_forgets_after_a_day(self):
+        a = self.group(pri="medium")
+        self.step(a, 1, "m1")
+        self.mine(a, "m1", 120, 6)
+        self.clock[0] += 25 * 3600
+        b = self.group(pri="medium")
+        self.step(b, 1, "m1")
+        self.assertEqual(len(self.http.made("POST", "/instances/inst-m1/reallocate")), 1)
+
+    def test_a_pc_salad_took_back_isnt_bad(self):
+        a = self.group(pri="medium")
+        self.step(a, 1, "m1")
+        self.mine(a, "m1", 200, 6)
+        self.step(a, 1, None)       # Salad takes the PC back
+        self.assertEqual(self.x.st.get("bad_pcs", {}), {})
 
 
 class TestCritic(Base):

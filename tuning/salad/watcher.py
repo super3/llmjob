@@ -20,6 +20,7 @@ PRIS = ["batch", "low", "medium", "high"]
 UNIT_TH = 419 / 93644          # TH/s per pool unit/s
 SHARE_UNITS = 2 ** 21
 MIN = 60
+START_MIN = 5   # minutes a new PC is billed before its miner sends a reading
 NB = "\u00a0"   # no-break space: keeps a table cell on one line
 
 # Measured TH/s on Salad (the median of a group's readings) and whether the class paid on the first account.
@@ -41,7 +42,8 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                "credit_start": 100.0, "credit_offset": 0.0, "box_ver": "v0.5.13", "ver_override": {}, "report_min": 10,
                "min_margin": 0.10, "max_new_per_hour": 3, "max_per_class": 1,
                "search_every_min": 60, "retry_after_min": 60, "no_pc_streak": 3, "no_pc_hold_min": 180, "drift": 0.15,
-               "upgrade_gain": 0.05, "upgrade_every_min": 15,
+               "upgrade_gain": 0.05, "upgrade_every_min": 15, "swap_wait_min": 20,
+               "yield": "auto", "yield_min_blocks": 10, "yield_floor": 0.5, "bad_pc_hold_h": 24,
                "trader": None, "safetrade": None,
                "wallet": os.environ.get("PRL_WALLET", "")}
 
@@ -159,7 +161,26 @@ class W:
 
     def margin(self, cls, pri, rate=None):
         """The margin a class should make at a priority, at its measured rate."""
-        return margin_of((rate or KNOWN[cls][0]) * self.st["mkt"]["usd_th_hr"], self.st["classes"][cls]["prices"][pri])
+        return margin_of((rate or KNOWN[cls][0]) * self.usd(), self.st["classes"][cls]["prices"][pri])
+
+    def credit_ratio(self):
+        """The share of our estimated PRL that the pool has credited (paid, unlocked and unconfirmed), once it has
+        credited us in yield_min_blocks blocks; 1.0 before that. Kept within [yield_floor, 1]. The estimate is the
+        miners' speed at the network's rate, so this ratio carries the pool's fee, orphaned blocks and its luck."""
+        pt = self.st.get("pool_tot")
+        if not pt or pt["blocks"] < self.cfg["yield_min_blocks"]:
+            return 1.0
+        prl = sum(g.get("prl", 0.0) for g in self.st["groups"].values())
+        if prl < 1:
+            return 1.0
+        cred = pt["paid"] + pt["balance"] + pt["unconfirmed"]
+        return min(1.0, max(self.cfg["yield_floor"], cred / prl))
+
+    def usd(self):
+        """$ per TH-hr the rules count on: the network's rate times config "yield", a number, or "auto" for the
+        pool's credit ratio."""
+        y = self.cfg.get("yield", "auto")
+        return self.st["mkt"]["usd_th_hr"] * (self.credit_ratio() if y == "auto" else float(y))
 
     def paid(self, g_or_cls):
         cls = g_or_cls["class"] if isinstance(g_or_cls, dict) else g_or_cls
@@ -310,8 +331,10 @@ class W:
         else:
             err(f"delete {g['name']} failed {s} {j}")
 
-    def reallocate(self, g, reason):
-        if g["reallocs"] >= 3:
+    def reallocate(self, g, reason, count=True):
+        """Ask Salad for another PC. count=False for a PC another group already left: that move isn't the
+        group's fault, so it doesn't use up one of its 3."""
+        if count and g["reallocs"] >= 3:
             # Running out of moves means bad PCs (slow, capped, blocked port), not a bad class: leave() only
             # reallocates classes that have paid. Released, so the class isn't barred from new groups.
             self.delete(g, "released", f"{reason}; already reallocated 3 times")
@@ -320,9 +343,10 @@ class W:
             return
         s, j = http("POST", f"{CB}/{g['name']}/instances/{g['instance']}/reallocate")
         if 200 <= s < 300:
-            g["reallocs"] += 1
+            g["reallocs"] += 1 if count else 0
             g.setdefault("left", []).append(g["machine"])
-            event(f"REALLOCATED {g['name']} off PC {(g['machine'] or '')[:8]} ({reason}); reallocation {g['reallocs']} of 3")
+            event(f"REALLOCATED {g['name']} off PC {(g['machine'] or '')[:8]} ({reason}); "
+                  + (f"reallocation {g['reallocs']} of 3" if count else "not counted toward its 3"))
             g.update(machine=None, pc_since=None, lost_since=now(), profit_fail=0, has_pc=False)
         else:
             err(f"reallocate {g['name']} failed {s} {j}")
@@ -391,6 +415,9 @@ class W:
         self.classes()
         if not st["mkt"] or not st["classes"]:
             return
+        bad = st.setdefault("bad_pcs", {})
+        for m in [m for m, b in bad.items() if t - b["t"] >= 3600 * self.cfg["bad_pc_hold_h"]]:
+            del bad[m]
         dt_s = min(t - st["last_round"], 1800) if st["last_round"] else 0
         st["last_round"] = t
         active = [g for g in st["groups"].values() if not g["ended"]]
@@ -561,6 +588,11 @@ class W:
                 first = not g["had_pc"]
                 g.update(machine=mach, pc_since=t, lost_since=None, profit_fail=0, had_pc=True)
                 event(f"{'GOT PC' if first else 'NEW PC'} {g['name']} ({g['class']}, {g['pri']}): PC {mach[:8]}")
+                # A PC that another group left lately (slow, capped, not mining) is left again at once.
+                bad = st.setdefault("bad_pcs", {}).get(mach)
+                if bad and t - bad["t"] < 3600 * self.cfg["bad_pc_hold_h"]:
+                    self.reallocate(g, f"{bad['group']} left this PC at {hm(bad['t'])}Z: {bad['why']}", count=False)
+                    return
         else:
             if g["had_pc"]:
                 if g["machine"] is not None:
@@ -614,7 +646,7 @@ class W:
         # readings must clear min_margin at the PC's price, every round; the first time they don't, the PC is left.
         post = [r for r in cur if r[0] >= cur[0][0] + 2 * MIN] if cur else []
         if len(post) >= 3:
-            usd, bar = st["mkt"]["usd_th_hr"], self.cfg["min_margin"]
+            usd, bar = self.usd(), self.cfg["min_margin"]
             avg = sum(r[2] for r in post[-3:]) / 3
             if margin_of(avg * usd, g["price"]) < bar:
                 self.leave(g, f"earns ${avg * usd:.3f}/hr at {avg:.0f} TH/s on PC {g['machine'][:8]} against its "
@@ -670,7 +702,7 @@ class W:
     def pc_margin(self, g):
         """The margin on this PC's last 3 readings after warm-up, or None while there aren't 3."""
         rate = self.pc_rate(g)
-        return None if rate is None else margin_of(rate * self.st["mkt"]["usd_th_hr"], g["price"])
+        return None if rate is None else margin_of(rate * self.usd(), g["price"])
 
     def unplaced(self, cls, t):
         """True when the class's last no_pc_streak groups all ended without ever getting a PC, the latest within
@@ -681,7 +713,10 @@ class W:
                 and t - ended[0]["ended"] < 60 * self.cfg["no_pc_hold_min"])
 
     def leave(self, g, why):
-        """Stop paying for this PC: another PC if the class has paid before, otherwise delete the group."""
+        """Stop paying for this PC: another PC if the class has paid before, otherwise delete the group. The PC goes
+        on the bad list, so another group that gets it leaves it at once (for bad_pc_hold_h)."""
+        if g.get("machine"):
+            self.st.setdefault("bad_pcs", {})[g["machine"]] = {"t": now(), "group": g["name"], "why": why}
         if self.paid(g):
             self.reallocate(g, why)
         else:
@@ -732,40 +767,50 @@ class W:
                 continue
             for p in PRIS:
                 if (a.get(f"available_gpu_{p}") or 0) > 0 and self.margin(cls, p) >= self.cfg["min_margin"]:
-                    profit = rate * st["mkt"]["usd_th_hr"] - st["classes"][cls]["prices"][p]
+                    profit = rate * self.usd() - st["classes"][cls]["prices"][p]
                     cands.append((self.unplaced(cls, t), not self.paid(cls), -profit, cls, p))
                     break
         return sorted(cands)
 
     def upgrade(self, t):
         """With every slot taken, swap the group making the least for a class expected to make upgrade_gain $/hr
-        more, among classes that have had a PC here. A class is expected to make its measured rate at its free
-        priority, counted no cheaper than low:
-        batch PCs are seldom handed out, and a group that gets none moves up. One swap per check."""
+        more, after the cost of switching. Only classes that have had a PC here, and not one whose latest group
+        got none. A class is expected to make its measured rate at the priority its latest group got a PC at,
+        or its free priority if that's higher, and never cheaper than low: batch PCs are seldom handed out.
+        Switching costs the old box's profit for swap_wait_min (getting a PC, starting the miner) and the new
+        box's bill for its first START_MIN minutes; that is taken off the first hour's gain. One swap per check."""
         st = self.st
         st["last_upgrade"] = t
         this_hour = sum(1 for g in st["groups"].values() if g["created"] >= t - t % 3600)
         if self.cfg["upgrade_gain"] is None or st["credits_out"] or this_hour >= self.cfg["max_new_per_hour"]:
             return
-        u = st["mkt"]["usd_th_hr"]
+        u = self.usd()
         active = [g for g in st["groups"].values() if not g["ended"]]
         mining = [(self.pc_rate(g) * u - g["price"], g) for g in active if self.pc_rate(g) is not None]
         if not mining:
             return
         worst, g = min(mining, key=lambda x: x[0])
-        # Only a class that has had a PC on this account: a working box isn't given up for one Salad may never place.
-        placed = {x["class"] for x in st["groups"].values() if x["had_pc"]}
+        # Each class's latest group, and the priority its latest group with a PC got it at.
+        latest, placed = {}, {}
+        for x in sorted(st["groups"].values(), key=lambda x: x["created"]):
+            latest[x["class"]] = x
+            if x["had_pc"]:
+                placed[x["class"]] = x["pri"]
         best = None
         for unplaced, _, _, cls, p in self.candidates(active, t):
-            if unplaced or cls == g["class"] or cls not in placed:
+            # Only a class Salad has placed for us, and not while its latest try got no PC.
+            if unplaced or cls == g["class"] or cls not in placed or (latest[cls]["ended"] and not latest[cls]["had_pc"]):
                 continue
-            expect = KNOWN[cls][0] * u - st["classes"][cls]["prices"][PRIS[max(PRIS.index(p), 1)]]
-            if best is None or expect > best[0]:
-                best = (expect, cls, p)
-        if best is None or best[0] - worst < self.cfg["upgrade_gain"]:
+            price = st["classes"][cls]["prices"][PRIS[max(PRIS.index(p), PRIS.index(placed[cls]), 1)]]
+            expect = KNOWN[cls][0] * u - price
+            switch = max(worst, 0) * self.cfg["swap_wait_min"] / 60 + price * START_MIN / 60
+            if best is None or expect - switch > best[0] - best[1]:
+                best = (expect, switch, cls, p)
+        if best is None or best[0] - best[1] - worst < self.cfg["upgrade_gain"]:
             return
-        expect, cls, p = best
-        event(f"UPGRADE {g['name']} makes ${worst:+.3f}/hr on its PC; a {cls} should make ${expect:+.3f}/hr")
+        expect, switch, cls, p = best
+        event(f"UPGRADE {g['name']} makes ${worst:+.3f}/hr on its PC; a {cls} should make ${expect:+.3f}/hr "
+              f"(switching costs about ${switch:.3f})")
         self.delete(g, "released", f"swapped for a {cls}, expected to make ${expect - worst:.3f}/hr more")
         if g["ended"]:
             self.create(cls, p)
@@ -774,10 +819,13 @@ class W:
     def write_report(self):
         st, t = self.st, now()
         mk = st["mkt"]
-        price, usd = mk["price"], mk["usd_th_hr"]
+        # The table counts on what the pool credits: the network's rate times its credit ratio. The rules may
+        # use a different yield (config "yield"); the table shows what we expect to be paid.
+        y = self.credit_ratio()
+        price, usd = mk["price"], mk["usd_th_hr"] * y
         rows, act_rows = [], []
-        all_ths = all_cost = all_earn = 0.0
-        mining = 0
+        all_ths = all_cost = all_earn = run_cost = 0.0
+        mining = starting = 0
         ended = [g for g in st["groups"].values() if g["ended"]]
         for g in sorted((g for g in st["groups"].values() if not g["ended"]), key=lambda g: g["created"]):
             cur = [r for r in g["readings"] if r[1] == g["machine"] and r[2] > 0 and r[0] >= t - 10 * MIN] if g["has_pc"] else []
@@ -785,53 +833,73 @@ class W:
             cost = g["price"] if g["has_pc"] else 0.0
             earn = ths * usd
             state = "⏹️" if g["status"] == "stopped" else "⛏️" if g["has_pc"] else "⏳"
+            # A box on a new PC with no reading yet is starting: billed, but left out of the profit total.
+            start = bool(g["has_pc"] and not cur and g.get("pc_since") and t - g["pc_since"] < 15 * MIN)
             if g["has_pc"] and cur:
                 mining += 1
+            starting += start
             all_ths += ths; all_cost += cost; all_earn += earn
-            prof = g["prl"] * price - g["spend"]
+            run_cost += 0.0 if start else cost
+            prof = g["prl"] * y * price - g["spend"]
             # One cell for the box: state, group name less "biz-rtx", priority and PC, joined by no-break spaces
             # so the row stays on one line in a narrow window.
             pri = "med" if g["pri"] == "medium" else g["pri"]
             box = NB.join([state, re.sub(r"^biz-(rtx)?", "", g["name"]), pri] + ([g["machine"][:8]] if g["machine"] else []))
-            act_rows.append((earn - cost, f"| {box} | {ths:.0f} | {cost:.3f} | {earn - cost:+.3f} | "
-                             f"{pct(earn - cost, earn)} | {g['spend']:.2f} | {g['prl']:.3f} | {prof:+.2f} |"))
+            hr, mg = ("—", "—") if start else (f"{earn - cost:+.3f}", pct(earn - cost, earn))
+            act_rows.append((0.0 if start else earn - cost, f"| {box} | {ths:.0f} | {cost:.3f} | {hr} | "
+                             f"{mg} | {g['spend']:.2f} | {g['prl'] * y:.3f} | {prof:+.2f} |"))
         # Most profitable an hour first; groups waiting for a PC make nothing, so they sit above any losing.
         rows = [r for _, r in sorted(act_rows, key=lambda x: -x[0])]
         if ended:
             rel = sum(1 for g in ended if g["end_kind"] == "released")
             fail = len(ended) - rel
-            eprl = sum(g["prl"] for g in ended)
+            eprl = sum(g["prl"] for g in ended) * y
             esp = sum(g["spend"] for g in ended)
             rows.append(f"| {NB.join(['Others', f'×{len(ended)}', f'🔁{rel}', f'❌{fail}'])} | — | — | — | — | "
                         f"{esp:.2f} | {eprl:.3f} | {eprl * price - esp:+.2f} |")
         spend = sum(g["spend"] for g in st["groups"].values())
-        prl = sum(g["prl"] for g in st["groups"].values())
+        est = sum(g["prl"] for g in st["groups"].values())
+        prl = est * y
         cost_prl = spend / prl if prl > 0 else 0.0
-        rows.append(f"| **All{NB}·{NB}{mining}{NB}mining** | **{all_ths:.0f}** | **{all_cost:.3f}** | "
-                    f"**{all_earn - all_cost:+.3f}** | **{pct(all_earn - all_cost, all_earn)}** | **{spend:.2f}** | "
+        label = f"{mining}{NB}mining" + (f"{NB}·{NB}{starting}{NB}starting" if starting else "")
+        rows.append(f"| **All{NB}·{NB}{label}** | **{all_ths:.0f}** | **{all_cost:.3f}** | "
+                    f"**{all_earn - run_cost:+.3f}** | **{pct(all_earn - run_cost, all_earn)}** | **{spend:.2f}** | "
                     f"**{prl:.3f}** | **{prl * price - spend:+.2f}** |")
         credit = self.cfg["credit_start"] + self.cfg["credit_offset"] - spend
         hours = credit / all_cost if all_cost > 0 else None
-        lines = [f"PRL ${price:.3f} · ${usd:.6f}/TH-hr · {iso(t)}", "",
+        rate = f"${mk['usd_th_hr']:.6f}/TH-hr" + (f" × {y:.0%} credited = ${usd:.6f}" if y < 1 else "")
+        lines = [f"PRL ${price:.3f} · {rate} · {iso(t)}", "",
                  "| Box | TH/s | $/hr | Profit/hr | Margin | Spent $ | PRL | Profit $ |",
                  "|---|---|---|---|---|---|---|---|", *rows, "",
                  "Boxes are sorted by profit an hour. Box: ⛏️ on a PC · ⏳ waiting for a PC · ⏹️ stopped, then the group "
                  "(biz-rtx left off), its priority (med = medium) and its PC. Others: 🔁 released · ❌ failed. TH/s is the "
                  "miner's average over the last 10 min on its current PC (0 while it starts). $/hr is what Salad bills while "
-                 "a group has a PC (a waiting group costs nothing). Spent $ is the group's whole bill so far. PRL is our "
-                 "estimate from the miner's speed: the pool pays per account, not per box. Profit $ is that PRL at today's "
-                 "price minus Spent $.", ""]
+                 "a group has a PC (a waiting group costs nothing). A box starting on a new PC shows — for Profit/hr and "
+                 "Margin and is left out of the total until its first reading; its bill is in $/hr. Spent $ is the "
+                 "group's whole bill so far. PRL is what we expect the pool to credit for the miner's speed: the pool "
+                 "pays per account, not per box"
+                 + (f", and has credited {y:.0%} of the network-rate estimate, so earnings and PRL are scaled to that"
+                    if y < 1 else "") + ". Profit $ is that PRL at today's price minus Spent $.", ""]
         # Money, stage by stage: Salad bill, PRL mined, at the pool, paid to SafeTrade, sold. What's sold is
         # locked in; the rest still moves with the price and the pool's luck. Each PRL carries the average cost.
         lines.append("**Money**")
-        lines.append(f"- 💵 Spent on Salad: ${spend:.2f}" + (f"; {prl:.3f} PRL mined at ${cost_prl:.3f} each "
-                     f"(break-even), worth ${price:.3f} today." if prl > 0 else "; no PRL mined yet."))
+        if prl <= 0:
+            lines.append(f"- 💵 Spent on Salad: ${spend:.2f}; no PRL mined yet.")
+        elif y < 1:
+            lines.append(f"- 💵 Spent on Salad: ${spend:.2f}; the miners' speed is worth {est:.3f} PRL at the network's "
+                         f"rate, and the pool has credited {y:.0%} of that, so we expect {prl:.3f} PRL: ${cost_prl:.3f} "
+                         f"each (break-even), worth ${price:.3f} today.")
+        else:
+            lines.append(f"- 💵 Spent on Salad: ${spend:.2f}; {prl:.3f} PRL mined at ${cost_prl:.3f} each (break-even), "
+                         f"worth ${price:.3f} today.")
         pt = st.get("pool_tot")
         if pt:
             cred = pt["paid"] + pt["balance"] + pt["unconfirmed"]
             lines.append(f"- 🏦 Pool: {pt['unconfirmed']:.3f} unconfirmed · {pt['balance']:.3f} unlocked (paid out at 1 PRL) "
-                         f"· {pt['paid']:.3f} paid to SafeTrade. That's {cred / prl * 100 if prl > 0 else 0:.0f}% of what "
-                         "we mined; the rest comes as the pool finds blocks.")
+                         f"· {pt['paid']:.3f} paid to SafeTrade. That's {cred / est * 100 if est > 0 else 0:.0f}% of our "
+                         f"estimate over {pt['blocks']} blocks"
+                         + (f"; from {self.cfg['yield_min_blocks']} blocks on the table counts on that share, not all of it."
+                            if y == 1 and pt["blocks"] < self.cfg["yield_min_blocks"] else "."))
         # SafeTrade from the trader's logs, or from config "safetrade" (entered by hand) until those can be read.
         ts = st.get("trader_status") or self.cfg.get("safetrade")
         sold = (ts or {}).get("sold", 0)
