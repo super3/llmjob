@@ -120,6 +120,13 @@
         <button id="api-copy" class="chip" type="button" title="Copy the API endpoint">Copy API</button>
         <button id="api-open" class="chip" type="button" title="Open the llama-server web UI">Open ↗</button>
       </div>
+      <!-- Beside the endpoint it shares, and the address it shares it on. -->
+      <div class="settings-rows api-share">
+        <label class="settings-row toggle-row">
+          <span class="row-text"><span class="rk">Share the local LLM on my network</span><span id="share-note" class="row-sub"></span></span>
+          <input id="set-share" class="toggle" type="checkbox" />
+        </label>
+      </div>
       <p id="api-lan" class="api-lan" hidden>On your network: <b class="mono" id="api-lan-url" title="Copy the network address"></b></p>
       <p class="api-note">Works with any OpenAI SDK — point <b class="mono">base_url</b> at the endpoint.</p>
 
@@ -180,12 +187,6 @@
       <button class="seg-btn" type="button" data-mode="llm">LLM</button>
     </div>
     <p id="mode-hint" class="settings-note">Balances mining and the local LLM from free VRAM.</p>
-    <div class="settings-rows mode-share">
-      <label class="settings-row toggle-row">
-        <span class="row-text"><span class="rk">Share the local LLM on my network</span><span id="share-note" class="row-sub"></span></span>
-        <input id="set-share" class="toggle" type="checkbox" />
-      </label>
-    </div>
 
     <!-- No heading: each field has its own label, and the room went to the
          notes under CPU Mining and Background. -->

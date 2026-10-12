@@ -236,10 +236,13 @@ describe('boot with the full bridge', () => {
   // keeps earning. Settings are persisted FROM currentSettings(), so the value
   // has to survive a round trip it is never shown in — otherwise the first
   // Start quietly erases it and ends the earnings we kept it for.
-  it('shares the local LLM on the network from Settings', async () => {
+  it('shares the local LLM on the network from the API tab', async () => {
     const { api, cbs } = makeFullApi();
     api.setShareLlm = jest.fn();
     await boot({ api });
+    // Beside the endpoint it shares, not in Settings.
+    expect($('view-api').contains($('set-share'))).toBe(true);
+    expect($('view-settings').contains($('set-share'))).toBe(false);
     const flip = (on) => {
       $('set-share').checked = on;
       $('set-share').dispatchEvent(new window.Event('change', { bubbles: true }));
@@ -257,9 +260,9 @@ describe('boot with the full bridge', () => {
 
     // main reports the gate up: the first address is the one shown.
     makeReady(cbs, { lan: { urls: ['http://192.168.0.220:8000/v1', 'http://10.0.0.7:8000/v1'], error: null } });
-    expect($('share-note').textContent).toBe('Other devices can use it at http://192.168.0.220:8000/v1, with no key.');
-    // A long address can cut the one-line note short, so the whole note is its tooltip.
-    expect($('share-note').title).toBe('Other devices can use it at http://192.168.0.220:8000/v1, with no key.');
+    expect($('share-note').textContent).toBe('Other devices on your network can use it, with no key.');
+    // The whole note is its tooltip too, in case it is cut short.
+    expect($('share-note').title).toBe('Other devices on your network can use it, with no key.');
     expect($('api-lan').hidden).toBe(false);
     expect($('api-lan-url').textContent).toBe('http://192.168.0.220:8000/v1');
     expect($('connect-reach').textContent).toBe('this computer and your network');

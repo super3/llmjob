@@ -131,7 +131,7 @@ let llmStatus = { ready: false, endpoint: null, webUrl: null, tokensPerSec: 0, m
 // `model` field of every gateway completion that it was serving Gemma. Seeded
 // with the default so a report before the first start is still truthful.
 let servingModel = LLM.model;
-// Sharing the local LLM on the network (Settings → Local network, #257): the
+// Sharing the local LLM on the network (the API tab, #257): the
 // CLI's gate on port 8000, in front of llama-server. syncLanShare() decides
 // when it runs.
 const lanShare = createLanShare({

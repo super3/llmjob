@@ -276,7 +276,7 @@ input.field-box { user-select: text; }
    Local network section needs to keep Settings inside its 470px without a
    scrollbar. */
 .conn-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }
-.mode-share + .conn-grid { margin-top: 12px; }
+.settings-note + .conn-grid { margin-top: 12px; }
 .conn-field .fk { font-size: 12px; color: var(--muted-2, #8a8f98); font-weight: 500; margin-bottom: 5px; }
 /* One height for both: a select draws 2px taller than a text input, which shows
    once they sit side by side. */
@@ -303,7 +303,7 @@ select.rv-input { cursor: pointer; }
 .row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .row-sub { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row-sub.err { color: #dc2626; }
-.mode-share { margin-top: 10px; }
+.api-share { margin: 0 0 8px; }
 
 /* merge mining */
 

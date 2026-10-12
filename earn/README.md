@@ -319,7 +319,7 @@ That is why Linux now defaults to low.
 ## Sharing the local LLM on your network
 
 The local LLM listens on `127.0.0.1:8080`, so only this computer can use it.
-**Share the local LLM on my network**, under Compute Mode in Settings, lets phones and
+**Share the local LLM on my network**, on the API tab, lets phones and
 other computers on the same network use it too.
 
 - **How:** the app runs the gate the CLI serves on (`autoGate.createServeGate`)

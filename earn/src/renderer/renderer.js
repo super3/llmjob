@@ -67,7 +67,7 @@
     view: 'mine',        // mine | chat | api | settings | logs
     returnTab: 'mine',   // where settings/logs return to
     address: '', gpu: '', mode: 'auto', mdlAddress: '',
-    shareLlm: false,     // Settings → Local network: share the local LLM on port 8000
+    shareLlm: false,     // API tab: share the local LLM on port 8000
     // The card the ENGINE says it is mining on, once it says so. `gpu` above is
     // only the startup auto-detect, and on a multi-GPU rig the two can be
     // different cards (issue #226) — this one is the one doing the work.
@@ -215,8 +215,8 @@
     updateSendEnabled();
   }
 
-  // The share switch under Settings → Compute Mode, and the network address on
-  // the API tab. main reports lan only while the network gate runs (or failed to
+  // The share switch on the API tab, and the network address above it. main
+  // reports lan only while the network gate runs (or failed to
   // bind). Each note is one line inside the switch's row, so it stays short; the
   // full text is also its tooltip in case a long address cuts it off.
   function renderShare() {
@@ -229,7 +229,8 @@
     } else if (lan && lan.error) {
       note = 'Could not share it: ' + lan.error + '.';
     } else if (url) {
-      note = 'Other devices can use it at ' + url + ', with no key.';
+      // The address is on the line below, where a click copies it.
+      note = 'Other devices on your network can use it, with no key.';
     } else if (lan) {
       note = 'Shared on port 8000, but this computer has no network address right now.';
     } else {
