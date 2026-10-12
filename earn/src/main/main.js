@@ -37,7 +37,7 @@ const settingsStore = require('../shared/settingsStore');
 const { initStats, applyEvent, snapshot, offPool } = require('../shared/miningStats');
 const { makePoolLookup, fileCache } = require('../shared/poolLookup');
 const {
-  REGIONS, DEFAULTS, MINER, XMR, NETWORK, ECON, ECON_API, LLM, NODE, resolveEndpoint, migrateRegion,
+  REGIONS, DEFAULTS, MINER, XMR, NETWORK, ECON, ECON_API, LLM, NODE, resolveEndpoint, migrateRegion, xmrEndpointFor,
 } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
 const { resolveEconomics } = require('../shared/economics');
@@ -369,7 +369,8 @@ function startCpuMining(settings) {
   engine.start({
     address: String(settings.xmrAddress).trim(),
     worker: settings.worker || DEFAULTS.worker,
-    endpoint: XMR.endpoint,
+    // The Monero host follows the Pearl region.
+    endpoint: xmrEndpointFor(migrateRegion(settings.region)),
     threads: plan.threads,
   });
   sendCpu();

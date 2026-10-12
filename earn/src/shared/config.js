@@ -65,12 +65,11 @@ const MINER = {
 // worker built from earn/xmr-worker). HeroMiners' terms, read from
 // https://monero.herominers.com/api/stats on 2026-10-11: fee 0.9%, coinUnits
 // 1e12, minPaymentThreshold 1e10 (0.01 XMR), paymentsInterval 600 s. Port 1111
-// starts at difficulty 480,000; 1112 is its NiceHash port. Every regional name
-// (us, de, sg, ...) resolves to the same server, so there is no region to pick;
-// this is the pool's own poolHost.
+// starts at difficulty 480,000; 1112 is its NiceHash port. The host follows
+// the Pearl region (xmrEndpointFor below).
 const XMR = {
   pool: 'HeroMiners',
-  endpoint: 'de.monero.herominers.com:1111',
+  port: 1111,
   apiBase: 'https://monero.herominers.com',
   coinUnits: 1e12,
   poolFeePct: 0.9,
@@ -436,6 +435,15 @@ function endpointFor(region) {
   return regionFor(region).endpoint;
 }
 
+// The Monero pool host for a Pearl region, so the CPU miner picks its pool the
+// way the GPU miner does: us2 mines on us2.monero.herominers.com. HeroMiners
+// has a Monero name for each of the regions above. On 2026-10-12 they all
+// pointed at one server in Frankfurt, so today this changes nothing, but a
+// region the pool adds later is used without a release.
+function xmrEndpointFor(region) {
+  return (REGIONS[region] ? region : DEFAULTS.region) + '.monero.herominers.com:' + XMR.port;
+}
+
 // Normalise a hand-supplied endpoint override into the bare `host:port` the
 // engine's --host wants.
 //
@@ -513,6 +521,6 @@ function regionLabel(region) {
 
 module.exports = {
   REGIONS, LEGACY_REGIONS, DEFAULTS, MINER, XMR, NETWORK, ECON, ECON_API, LLM, NODE,
-  regionFor, endpointFor, normalizeEndpoint, resolveEndpoint, splitEndpoint, regionLabel,
+  regionFor, endpointFor, xmrEndpointFor, normalizeEndpoint, resolveEndpoint, splitEndpoint, regionLabel,
   migrateRegion,
 };

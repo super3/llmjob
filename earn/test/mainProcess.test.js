@@ -3870,14 +3870,14 @@ describe('CPU mining (Monero)', () => {
 
   it('mines beside the GPU on the planned threads, shows its numbers, and stops with it', async () => {
     const ctx = await boot({ resourcesPath: '/app/resources' });
-    await start(ctx, { cpuMining: true, xmrAddress: ' ' + XMR_ADDR + ' ', cpuThreads: 0 });
+    await start(ctx, { region: 'sg', cpuMining: true, xmrAddress: ' ' + XMR_ADDR + ' ', cpuThreads: 0 });
     const cpu = ctx.XmrEngine.instances[0];
     expect(ctx.xmrWorker.findWorker).toHaveBeenCalledWith(expect.objectContaining({ resourcesPath: '/app/resources' }));
     expect(cpu.opts).toMatchObject({
       workerPath: '/app/resources/native/llmjob-xmr-worker', spawnWorker: 'spawnWorker', agent: 'llmjob-earn/0.0.0-test',
     });
     expect(cpu.start).toHaveBeenCalledWith({
-      address: XMR_ADDR, worker: 'w1', endpoint: 'de.monero.herominers.com:1111', threads: 7,
+      address: XMR_ADDR, worker: 'w1', endpoint: 'sg.monero.herominers.com:1111', threads: 7,
     });
 
     // Its socket uses the same pool lookup, and a login that worked is saved.

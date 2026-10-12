@@ -55,9 +55,16 @@ describe('findWorker', () => {
 });
 
 describe('makeSpawnWorker', () => {
-  test('pipes all three streams and hides the window', () => {
+  test('pipes all three streams, hides the window, and keeps Ctrl+C from the worker on Linux', () => {
     const spawn = jest.fn(() => 'child');
-    expect(makeSpawnWorker(spawn)('/w', ['--threads', '2'])).toBe('child');
-    expect(spawn).toHaveBeenCalledWith('/w', ['--threads', '2'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    const pipes = { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true };
+    expect(makeSpawnWorker(spawn, 'linux')('/w', ['--threads', '2'])).toBe('child');
+    expect(spawn).toHaveBeenLastCalledWith('/w', ['--threads', '2'], Object.assign({ detached: true }, pipes));
+    // On Windows detached would give the worker a console of its own.
+    makeSpawnWorker(spawn, 'win32')('w.exe', []);
+    expect(spawn).toHaveBeenLastCalledWith('w.exe', [], Object.assign({ detached: false }, pipes));
+    // This platform when none is named.
+    makeSpawnWorker(spawn)('/w', []);
+    expect(spawn.mock.calls[2][2].detached).toBe(process.platform !== 'win32');
   });
 });

@@ -1356,6 +1356,10 @@ describe('CPU mining', () => {
   const CPU = { available: 8, auto: 7, reason: null, canMine: true };
   const change = (elm) => elm.dispatchEvent(new window.Event('change', { bubbles: true }));
   const options = () => Array.from($('set-cpu-threads').options).map((o) => o.textContent);
+  const BLANK = 'Mines Monero on the CPU while the GPU mines Pearl. Leave blank to mine Pearl only.';
+  // With an address, the one line says what will run, then what it costs.
+  const withCost = (threads) => threads + ' About 2.4 GB of memory and 45-65 W more on a desktop CPU, which can cost'
+    + ' as much as it earns. Paid by HeroMiners (0.9% fee) once you reach 0.01 XMR.';
 
   // A bridge with CPU mining set up the way main answers.
   function cpuApi(settings, cpu) {
@@ -1369,16 +1373,14 @@ describe('CPU mining', () => {
     return { api, cbs };
   }
 
-  it('is off by default: a blank address, no CPU line, fields hidden, the default in the note', async () => {
+  it('is off by default: a blank address, no CPU line, and the note says what blank means', async () => {
     const { api } = cpuApi({});
     await boot({ api });
     expect($('set-xmr').value).toBe('');
-    expect($('xmr-note').textContent).toBe('Mine Monero on the CPU while the GPU mines Pearl. Leave blank to mine Pearl only.');
-    expect($('cpu-fields').hidden).toBe(true);
-    expect($('cpu-cost').hidden).toBe(true);
+    expect($('cpu-note').textContent).toBe(BLANK);
+    expect($('cpu-note').title).toBe(BLANK);
     expect($('cpu-row').hidden).toBe(true);
-    expect($('cpu-note').textContent).toBe('7 of 8 CPUs mine; the rest stay free for the GPU miner.');
-    expect(options()).toEqual(['Auto (7)', '1', '2', '3', '4', '5', '6', '7']);
+    expect(options()).toEqual(['Auto (7 threads)', '1 thread', '2 threads', '3 threads', '4 threads', '5 threads', '6 threads', '7 threads']);
     expect(api.checkXmrAddress).not.toHaveBeenCalled();
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ cpuMining: false, xmrAddress: '', cpuThreads: 0 }));
@@ -1390,10 +1392,8 @@ describe('CPU mining', () => {
     await boot({ api });
     expect(api.checkXmrAddress).toHaveBeenCalledWith(XMR_ADDR);
     expect($('set-xmr').value).toBe(XMR_ADDR);
-    expect($('cpu-fields').hidden).toBe(false);
-    expect($('cpu-cost').hidden).toBe(false);
     expect($('set-cpu-threads').value).toBe('3');
-    expect($('cpu-note').textContent).toBe('3 of 8 CPUs mine; the rest stay free for the GPU miner.');
+    expect($('cpu-note').textContent).toBe(withCost('3 of 8 CPUs mine; the rest stay free for the GPU miner.'));
     expect($('cpu-row').hidden).toBe(false);
     expect($('cpu-meta').textContent).toBe('starts when you press START');
     expect($('cpu-balance').textContent).toBe('0.0125 XMR');
@@ -1460,20 +1460,21 @@ describe('CPU mining', () => {
     setInput($('set-xmr'), XMR_ADDR + 'x');
     // Typing turns it on before the check answers.
     expect($('cpu-row').hidden).toBe(false);
-    expect($('cpu-fields').hidden).toBe(false);
+    expect($('cpu-note').textContent).toBe(withCost('7 of 8 CPUs mine; the rest stay free for the GPU miner.'));
     setInput($('set-xmr'), XMR_ADDR.slice(0, -1) + '8');
     jest.advanceTimersByTime(400);
     await flush();
     expect(api.checkXmrAddress).toHaveBeenCalledTimes(1);
-    expect($('xmr-err').hidden).toBe(false);
-    expect($('xmr-err').textContent).toBe('This address won\'t work: the checksum does not match: check for a typo.');
+    // The same line, in red, so Settings keeps its height.
+    expect($('cpu-note').textContent).toBe('This address won\'t work: the checksum does not match: check for a typo.');
+    expect($('cpu-note').classList.contains('err')).toBe(true);
     expect($('cpu-meta').textContent).toBe('check the Monero address in Settings');
     expect($('cpu-balance').textContent).toBe('');
 
     setInput($('set-xmr'), XMR_ADDR);
     jest.advanceTimersByTime(400);
     await flush();
-    expect($('xmr-err').hidden).toBe(true);
+    expect($('cpu-note').classList.contains('err')).toBe(false);
     expect($('cpu-balance').textContent).toBe('0.0125 XMR');
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ cpuMining: true, xmrAddress: XMR_ADDR }));
@@ -1482,7 +1483,7 @@ describe('CPU mining', () => {
     // Cleared: off at once, nothing to check, no balance.
     setInput($('set-xmr'), '  ');
     expect($('cpu-row').hidden).toBe(true);
-    expect($('cpu-fields').hidden).toBe(true);
+    expect($('cpu-note').textContent).toBe(BLANK);
     jest.advanceTimersByTime(400);
     await flush();
     expect($('cpu-balance').textContent).toBe('');
@@ -1500,7 +1501,7 @@ describe('CPU mining', () => {
     setInput($('set-xmr'), 'other');
     release({ ok: true, kind: 'subaddress' });
     await flush();
-    expect($('xmr-err').hidden).toBe(true);
+    expect($('cpu-note').classList.contains('err')).toBe(false);
     expect(api.getXmrBalance).not.toHaveBeenCalled();
 
     let pay;
@@ -1526,12 +1527,11 @@ describe('CPU mining', () => {
     setInput($('set-xmr'), XMR_ADDR);
     jest.advanceTimersByTime(400);
     await flush();
-    expect($('cpu-fields').hidden).toBe(false);
     expect($('cpu-row').hidden).toBe(false);
     expect(api.getXmrBalance).toHaveBeenCalledWith(XMR_ADDR);
     $('set-cpu-threads').value = '5';
     change($('set-cpu-threads'));
-    expect($('cpu-note').textContent).toBe('5 of 8 CPUs mine; the rest stay free for the GPU miner.');
+    expect($('cpu-note').textContent).toBe(withCost('5 of 8 CPUs mine; the rest stay free for the GPU miner.'));
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ cpuMining: true, cpuThreads: 5 }));
   });
@@ -1540,7 +1540,7 @@ describe('CPU mining', () => {
     const none = Object.assign({}, CPU, { worker: false });
     let h = cpuApi({}, none);
     await boot({ api: h.api });
-    expect($('xmr-note').textContent).toBe('This build has no CPU miner (llmjob-xmr-worker is not beside the app).');
+    expect($('cpu-note').textContent).toBe('This build has no CPU miner (llmjob-xmr-worker is not beside the app).');
     expect($('set-xmr').disabled).toBe(true);
 
     h = cpuApi({ xmrAddress: XMR_ADDR }, none);
@@ -1554,37 +1554,37 @@ describe('CPU mining', () => {
   it('a default capped by L3 cache says why', async () => {
     const l3 = { available: 12, auto: 6, canMine: true,
       reason: 'one thread per 2 MB of L3 cache, and this CPU has 12 MB; more threads add power, not hashrate' };
-    const h = cpuApi({}, l3);
+    const h = cpuApi({ xmrAddress: XMR_ADDR }, l3);
     await boot({ api: h.api });
-    expect($('cpu-note').textContent).toBe('6 of 12 CPUs mine: ' + l3.reason + '.');
+    expect($('cpu-note').textContent).toBe(withCost('6 of 12 CPUs mine: ' + l3.reason + '.'));
     $('set-cpu-threads').value = '8';
     change($('set-cpu-threads'));
-    expect($('cpu-note').textContent).toBe('8 of 12 CPUs mine; the rest stay free for the GPU miner.');
+    expect($('cpu-note').textContent).toBe(withCost('8 of 12 CPUs mine; the rest stay free for the GPU miner.'));
   });
 
   it('notes for a computer where it is off by default, or cannot run, or main did not say', async () => {
     const off = { available: 4, auto: 0, canMine: true, reason: 'off by default with 4 CPUs (it turns on by itself above 4 CPUs and 8 GB); set a thread count to mine anyway' };
-    let h = cpuApi({}, off);
+    let h = cpuApi({ xmrAddress: XMR_ADDR }, off);
     await boot({ api: h.api });
-    expect($('cpu-note').textContent).toBe('Auto: ' + off.reason + '.');
-    expect(options()).toEqual(['Auto (off)', '1', '2', '3']);
+    expect($('cpu-note').textContent).toBe(withCost('Auto: ' + off.reason + '.'));
+    expect(options()).toEqual(['Auto (off)', '1 thread', '2 threads', '3 threads']);
     $('set-cpu-threads').value = '3';
     change($('set-cpu-threads'));
-    expect($('cpu-note').textContent).toBe('3 of 4 CPUs mine; the rest stay free for the GPU miner.');
+    expect($('cpu-note').textContent).toBe(withCost('3 of 4 CPUs mine; the rest stay free for the GPU miner.'));
 
     // A saved count above what this computer allows shows the most it allows.
     h = cpuApi({ cpuThreads: 12 }, off);
     await boot({ api: h.api });
     expect($('set-cpu-threads').value).toBe('3');
 
-    h = cpuApi({}, { available: 1, auto: 0, canMine: false, reason: 'this app may use only 1 CPU here, and one always stays free for the GPU miner' });
+    h = cpuApi({ xmrAddress: XMR_ADDR }, { available: 1, auto: 0, canMine: false, reason: 'this app may use only 1 CPU here, and one always stays free for the GPU miner' });
     await boot({ api: h.api });
-    expect($('cpu-note').textContent).toBe('Can\'t run here: this app may use only 1 CPU here, and one always stays free for the GPU miner.');
+    expect($('cpu-note').textContent).toBe(withCost('Can\'t run here: this app may use only 1 CPU here, and one always stays free for the GPU miner.'));
     expect(options()).toEqual(['Auto (off)']);
 
-    h = cpuApi({ cpuThreads: 'x' }, null);
+    h = cpuApi({ xmrAddress: XMR_ADDR, cpuThreads: 'x' }, null);
     await boot({ api: h.api });
-    expect($('cpu-note').textContent).toBe('Mines beside the GPU on the CPU threads it leaves free.');
+    expect($('cpu-note').textContent).toBe(withCost('Mines on the CPU threads the GPU miner leaves free.'));
     expect(options()).toEqual(['Auto (off)']);
     $('set-cpu-threads').value = '0';
     change($('set-cpu-threads'));

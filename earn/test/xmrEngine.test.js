@@ -298,13 +298,26 @@ describe('the worker', () => {
     expect(h.children).toHaveLength(1);
   });
 
+  // Ctrl+C or a service stop can reach the worker before the app's shutdown
+  // runs. The stop that follows must not leave a restart in the log.
+  test('a stop soon after the worker dies says nothing about restarting it', () => {
+    const h = mining();
+    h.child().emit('exit', 130, null);
+    h.engine.stop();
+    h.advance(RESTART_MS * 2);
+    expect(h.lines().filter((l) => l.includes('restarting'))).toEqual([]);
+    expect(h.children).toHaveLength(1);
+  });
+
   test('a worker that dies is started again, given the job, and restarts are capped', () => {
     const h = mining();
     h.child().emit('exit', 139, null);
     expect(h.lines()).toContain('cpu: the CPU miner stopped (exit code 139)');
-    expect(h.lines()).toContain('cpu: restarting the CPU miner in 30 s');
     expect(h.engine.snapshot()).toMatchObject({ state: 'restarting', hashrate: 0, pages: null });
+    // Said when it happens, not before.
+    expect(h.lines()).not.toContain('cpu: restarting the CPU miner');
     h.advance(RESTART_MS);
+    expect(h.lines()).toContain('cpu: restarting the CPU miner');
     expect(h.children).toHaveLength(2);
     // The pool won't resend it. A new start nonce keeps the new worker from
     // finding the old one's shares again.

@@ -889,13 +889,13 @@ describe('CPU mining', () => {
     const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--xmr-address', XMR_ADDR,
       '--stats-file', '/tmp/s.json']);
     await settle();
-    expect(allOut()).toContain('cpu:        Monero to 87wTMj88…1JxND9 · de.monero.herominers.com:1111');
+    expect(allOut()).toContain('cpu:        Monero to 87wTMj88…1JxND9 · us.monero.herominers.com:1111');
     expect(allOut()).toContain('cpu:        15 of 16 CPUs  (auto)');
     expect(m.xmrWorker.findWorker).toHaveBeenCalledWith(expect.objectContaining({ execPath: process.execPath }));
     const cpu = m.XmrEngine.instances[0];
     expect(cpu.opts).toMatchObject({ workerPath: '/opt/llmjob-xmr-worker', spawnWorker: 'spawnWorker', agent: 'llmjob-earn/' + pkg.version });
     expect(cpu.start).toHaveBeenCalledWith({
-      address: XMR_ADDR, worker: 'rig-host', endpoint: 'de.monero.herominers.com:1111', threads: 15, priority: null,
+      address: XMR_ADDR, worker: 'rig-host', endpoint: 'us.monero.herominers.com:1111', threads: 15, priority: null,
     });
 
     // Its pool socket goes through the same lookup as the GPU miner's, and a
@@ -1021,6 +1021,25 @@ describe('CPU mining', () => {
     cpu.emit('stopped', 1);   // the idle wait still holds the run
     fire('SIGTERM');
     await expect(p).resolves.toBe(0);
+  });
+
+  // The Monero host follows the Pearl region, detected even when no GPU mines,
+  // unless --region names one.
+  test('picks the Monero pool by region, like the GPU miner', async () => {
+    const m = load();
+    m.probe.detectRegion.mockResolvedValue('kr');
+    m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu-index=none', '--xmr-address', XMR_ADDR]);
+    await settle();
+    expect(allOut()).toContain('cpu:        Monero to 87wTMj88…1JxND9 · kr.monero.herominers.com:1111');
+    expect(m.XmrEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ endpoint: 'kr.monero.herominers.com:1111' }));
+    fire('SIGTERM');
+
+    const m2 = load();
+    m2.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu-index=none', '-r', 'fi', '--xmr-address', XMR_ADDR]);
+    await settle();
+    expect(m2.probe.detectRegion).not.toHaveBeenCalled();
+    expect(m2.XmrEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ endpoint: 'fi.monero.herominers.com:1111' }));
+    fire('SIGTERM');
   });
 });
 

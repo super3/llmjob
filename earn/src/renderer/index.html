@@ -203,29 +203,26 @@
 
     <!-- Like merge mining was: an optional address, and blank means off. -->
     <div class="settings-section">CPU Mining <span class="badge-xmr">XMR</span></div>
-    <input id="set-xmr" class="field-box xmr-input" type="text" spellcheck="false" placeholder="Paste your 4… or 8… Monero address (optional)" />
-    <p id="xmr-err" class="settings-note xmr-err" hidden></p>
-    <p id="xmr-note" class="settings-note"></p>
-    <div id="cpu-fields" class="settings-rows cpu-fields" hidden>
-      <div class="settings-row">
-        <span class="row-text"><span class="rk">CPU threads</span><span id="cpu-note" class="row-sub"></span></span>
-        <select id="set-cpu-threads" class="rv-input cpu-threads"></select>
-      </div>
+    <div class="xmr-row">
+      <input id="set-xmr" class="field-box xmr-input" type="text" spellcheck="false" placeholder="Paste your 4… or 8… Monero address (optional)" />
+      <select id="set-cpu-threads" class="rv-input cpu-threads" title="CPU threads for Monero"></select>
     </div>
-    <p id="cpu-cost" class="settings-note" hidden>Needs about 2.4 GB of memory. A desktop CPU draws about 45-65 W more, which can cost as much as it earns. Paid by HeroMiners (0.9% fee) once you reach 0.01 XMR.</p>
+    <p id="cpu-note" class="settings-note one-line"></p>
 
+    <!-- Three tiles in a row keep Settings inside its 470px. The longer
+         explanations are in each tile's title. -->
     <div class="settings-section">Background</div>
-    <div class="settings-rows">
-      <label class="settings-row toggle-row">
-        <span class="rk">Keep running in the tray when I close the window</span>
+    <div class="bg-tiles">
+      <label class="bg-tile" title="Closing the window hides it in the tray, and mining carries on. The tray icon opens it again, and its menu has Quit.">
+        <span class="rk">Keep running in the tray</span>
         <input id="pref-tray" class="toggle" type="checkbox" />
       </label>
-      <label class="settings-row toggle-row">
-        <span class="rk">Start with my computer, and start mining</span>
+      <label class="bg-tile" title="Starts the app in the tray when you log in, and starts mining.">
+        <span class="rk">Start with my computer</span>
         <input id="pref-startup" class="toggle" type="checkbox" />
       </label>
-      <label class="settings-row toggle-row">
-        <span class="row-text"><span class="rk">Only mine when my computer is idle</span><span class="row-sub">After 5 minutes without keyboard or mouse use. Pauses when you&#39;re back.</span></span>
+      <label class="bg-tile" title="Mines after 5 minutes without keyboard or mouse use, and pauses when you're back.">
+        <span class="rk">Only mine when idle</span>
         <input id="pref-idle" class="toggle" type="checkbox" />
       </label>
     </div>

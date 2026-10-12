@@ -241,14 +241,15 @@ input.field-box { user-select: text; }
 .head-actions { display: inline-flex; align-items: center; gap: 14px; min-width: 0; }
 /* Only the status gives way when space runs out; the link never wraps. */
 .head-actions .update-check-btn { flex: none; white-space: nowrap; }
-.settings-section { font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: #a7abb2; margin: 14px 0 8px; }
+.settings-section { font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: #a7abb2; margin: 12px 0 8px; }
 .settings-section:first-of-type { margin: 0 0 7px; }
 /* Connection sits below the mode hint, and the mock gives it more air than the
    section-to-section default. */
-.settings-note + .settings-section { margin-top: 20px; }
+.settings-note + .settings-section { margin-top: 14px; }
 /* The Settings view-head supplies its own spacing; keep the first section tight
    under it (the view-head div steals :first-of-type from .settings-section). */
 #view-settings .view-head + .settings-section { margin-top: 0; }
+#view-settings .view-head { margin-bottom: 13px; }
 .device-card { display: flex; align-items: center; gap: 11px; background: #eff4ff; border: 1px solid #dbe6fb; border-radius: 10px; padding: 12px 14px; }
 .device-left { display: flex; align-items: center; gap: 11px; flex: 1; }
 .device-ic { width: 30px; height: 30px; flex: none; border-radius: 7px; background: #dbe6fb; display: inline-flex; align-items: center; justify-content: center; }
@@ -336,8 +337,14 @@ select.rv-input { cursor: pointer; }
 .cpu-row .cpu-meta.err { color: #dc2626; }
 .cpu-row .cpu-bal { color: var(--muted); white-space: nowrap; }
 /* The address box and its badge are the old merge-mining ones, in Monero orange. */
-.badge-xmr { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 5px; background: #fff1e6; color: #e8590c; font-size: 9.5px; font-weight: 700; letter-spacing: .04em; vertical-align: middle; text-transform: none; }
-.xmr-input { margin-bottom: 0; padding: 10px 14px; }
-.settings-note.xmr-err { color: #dc2626; margin-top: 6px; }
-.cpu-fields { margin-top: 10px; }
-.cpu-threads { flex: none; width: 110px; }
+.badge-xmr { display: inline-block; margin-left: 6px; padding: 0 6px; line-height: 14px; border-radius: 5px; background: #fff1e6; color: #e8590c; font-size: 9.5px; font-weight: 700; letter-spacing: .04em; vertical-align: middle; text-transform: none; }
+.xmr-row { display: flex; gap: 10px; }
+.xmr-input { flex: 1; min-width: 0; margin-bottom: 0; padding: 10px 14px; }
+.cpu-threads { flex: none; width: 150px; }
+/* One line, so Settings keeps its height whatever it says; the title has all of it. */
+.settings-note.one-line { margin-top: 7px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.settings-note.err { color: #dc2626; }
+/* Background: three switches side by side. */
+.bg-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.bg-tile { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 12px; border: 1px solid #ebe9e1; border-radius: 10px; cursor: pointer; }
+.bg-tile .rk { font-size: 13px; line-height: 1.35; color: var(--ink-3); font-weight: 500; }

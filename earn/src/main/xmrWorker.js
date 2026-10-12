@@ -36,8 +36,17 @@ function findWorker({ resourcesPath, execPath, env, platform, exists }) {
 
 // A spawnWorker for XmrEngine. Pipes on all three: the protocol is stdin and
 // stdout, and stderr goes to the log. No window on Windows.
-function makeSpawnWorker(spawn) {
-  return (file, args) => spawn(file, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+//
+// On Linux the worker gets its own process group. Ctrl+C in a terminal signals
+// the whole foreground group, and a worker killed that way could die before
+// the CLI's shutdown ran, which logged a crash and a restart on a normal stop.
+// Now only the CLI gets the signal, and it stops the worker. The worker still
+// exits when its stdin closes or the app dies. (On Windows, detached would give
+// it a console of its own, so it stays as it is.)
+function makeSpawnWorker(spawn, platform = process.platform) {
+  return (file, args) => spawn(file, args, {
+    stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: platform !== 'win32',
+  });
 }
 
 module.exports = { FILES, workerFile, findWorker, makeSpawnWorker };

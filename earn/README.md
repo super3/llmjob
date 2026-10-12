@@ -229,7 +229,7 @@ It is **off by default** and does nothing until you turn it on.
 
 - Desktop app: paste a Monero address in **Settings → CPU Mining**, then
   START. Leaving the box blank keeps it off, as merge mining's address did. It runs in any mode, with or without the GPU miner, and STOP
-  stops it. With "Only mine when my computer is idle" on, it waits for an idle
+  stops it. With "Only mine when idle" on, it waits for an idle
   computer like the GPU miner does. The Mine tab then shows a CPU line: the CPU
   hashrate, its shares and the XMR balance. The settings apply at the next
   START.
@@ -244,8 +244,9 @@ Feather or Cake Wallet. The app checks its checksum, so a typo is caught before
 anything is mined. Integrated addresses, and exchange deposits that need a
 payment ID, are not taken.
 
-**The pool** is HeroMiners' Monero pool (`de.monero.herominers.com:1111`;
-every regional name points at the same server). It charges 0.9%, and pays every
+**The pool** is HeroMiners' Monero pool, port 1111, in the same region as the
+Pearl pool: a rig on `us2` mines Monero on `us2.monero.herominers.com`. Today
+every regional name points at one server in Frankfurt. It charges 0.9%, and pays every
 10 minutes once the balance reaches 0.01 XMR. There is no dev fee.
 
 **How many threads.** It counts the CPUs this process may use, its affinity
@@ -338,7 +339,7 @@ other computers on the same network use it too.
 Three switches in **Settings → Background**, saved in `preferences.json` next to
 `settings.json` in the app's data folder:
 
-- **Keep running in the tray when I close the window** (on by default). Closing
+- **Keep running in the tray** (on by default). Closing
   the window hides it and mining carries on. The first time, a notification says
   so. The tray icon opens the window again, and its menu has **Quit**. Opening
   the app a second time shows the running window instead of starting a second
@@ -347,7 +348,7 @@ Three switches in **Settings → Background**, saved in `preferences.json` next 
   session bus whether anything will. On Windows, a close from another program
   (the installer, the uninstaller, Task Manager's End task) quits the app, so
   the miner stops cleanly before the installer replaces the files.
-- **Start with my computer, and start mining** (off by default). Windows gets a
+- **Start with my computer** (off by default). Windows gets a
   login item, a Linux AppImage an entry in `~/.config/autostart`, and macOS a
   LaunchAgent in `~/Library/LaunchAgents`. Each starts the app with `--hidden`,
   so it stays in the tray and starts mining with the saved payout address. Only
@@ -355,7 +356,7 @@ Three switches in **Settings → Background**, saved in `preferences.json` next 
   start points the entry at the app again if an update moved it, and otherwise
   leaves it alone, so turning it off in Task Manager or the desktop's startup
   settings sticks.
-- **Only mine when my computer is idle** (off by default). Idle means 5 minutes
+- **Only mine when idle** (off by default). Idle means 5 minutes
   without keyboard or mouse input, or a locked screen. While someone uses the
   computer, mining stops and the window says what it is waiting for. The local
   LLM keeps running, so chat, cluster jobs and the network share go on, and it

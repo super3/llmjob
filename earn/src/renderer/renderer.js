@@ -48,8 +48,8 @@
     prefTray: $('pref-tray'), prefStartup: $('pref-startup'), prefIdle: $('pref-idle'),
     idleStatus: $('idle-status'),
     // CPU mining (Monero)
-    xmrNote: $('xmr-note'), cpuNote: $('cpu-note'), cpuFields: $('cpu-fields'), setXmr: $('set-xmr'),
-    xmrErr: $('xmr-err'), setCpuThreads: $('set-cpu-threads'), cpuCost: $('cpu-cost'),
+    cpuNote: $('cpu-note'), setXmr: $('set-xmr'),
+    setCpuThreads: $('set-cpu-threads'),
     cpuRow: $('cpu-row'), cpuDot: $('cpu-dot'), cpuRate: $('cpu-rate'), cpuMeta: $('cpu-meta'), cpuBalance: $('cpu-balance'),
     logTerm: $('log-term'),
   };
@@ -543,14 +543,22 @@
     return !!state.cpu && state.cpu.worker === false;
   }
 
-  function xmrNote() {
+  const CPU_COST = 'About 2.4 GB of memory and 45-65 W more on a desktop CPU, which can cost as much as it earns.'
+    + ' Paid by HeroMiners (0.9% fee) once you reach 0.01 XMR.';
+
+  // The one line under the address: what is wrong with it, what a blank box
+  // means, or what will run and what it costs. One line keeps Settings in its
+  // 470px; the title has all of it.
+  function cpuNote() {
+    if (state.xmrError) return 'This address won\'t work: ' + state.xmrError + '.';
     if (cpuNoWorker()) return 'This build has no CPU miner (llmjob-xmr-worker is not beside the app).';
-    return 'Mine Monero on the CPU while the GPU mines Pearl. Leave blank to mine Pearl only.';
+    if (!state.cpuMining) return 'Mines Monero on the CPU while the GPU mines Pearl. Leave blank to mine Pearl only.';
+    return cpuThreadsNote() + ' ' + CPU_COST;
   }
 
-  function cpuNote() {
+  function cpuThreadsNote() {
     const c = state.cpu;
-    if (!c) return 'Mines beside the GPU on the CPU threads it leaves free.';
+    if (!c) return 'Mines on the CPU threads the GPU miner leaves free.';
     if (!c.canMine) return 'Can\'t run here: ' + c.reason + '.';
     const n = cpuThreadsNow();
     if (!n) return 'Auto: ' + c.reason + '.';
@@ -559,25 +567,23 @@
     return n + ' of ' + c.available + ' CPUs mine; the rest stay free for the GPU miner.';
   }
 
+  const threadsText = (n) => n + (n === 1 ? ' thread' : ' threads');
+
   function renderCpuSettings() {
     const c = state.cpu;
-    el.cpuFields.hidden = !state.cpuMining;
-    el.cpuCost.hidden = !state.cpuMining;
-    el.xmrNote.textContent = xmrNote();
     el.cpuNote.textContent = cpuNote();
     el.cpuNote.title = el.cpuNote.textContent;
-    el.xmrErr.hidden = !state.xmrError;
-    el.xmrErr.textContent = state.xmrError ? 'This address won\'t work: ' + state.xmrError + '.' : '';
+    el.cpuNote.classList.toggle('err', !!state.xmrError);
     el.setCpuThreads.innerHTML = '';
     const max = c ? c.available - 1 : 0;
     const auto = document.createElement('option');
     auto.value = '0';
-    auto.textContent = c && c.auto ? 'Auto (' + c.auto + ')' : 'Auto (off)';
+    auto.textContent = c && c.auto ? 'Auto (' + threadsText(c.auto) + ')' : 'Auto (off)';
     el.setCpuThreads.appendChild(auto);
     for (let n = 1; n <= max; n++) {
       const opt = document.createElement('option');
       opt.value = String(n);
-      opt.textContent = String(n);
+      opt.textContent = threadsText(n);
       el.setCpuThreads.appendChild(opt);
     }
     el.setCpuThreads.value = String(Math.min(state.cpuThreads, max));

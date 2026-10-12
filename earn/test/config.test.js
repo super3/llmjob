@@ -2,7 +2,7 @@
 
 const {
   REGIONS, DEFAULTS, MINER, XMR, ECON,
-  regionFor, endpointFor, normalizeEndpoint, resolveEndpoint, splitEndpoint, regionLabel,
+  regionFor, endpointFor, xmrEndpointFor, normalizeEndpoint, resolveEndpoint, splitEndpoint, regionLabel,
   migrateRegion, LEGACY_REGIONS,
 } = require('../src/shared/config');
 
@@ -54,9 +54,15 @@ describe('config', () => {
 describe('XMR', () => {
   test('mines on HeroMiners\' Monero pool on its low-difficulty port, rx/0', () => {
     expect(XMR).toMatchObject({
-      pool: 'HeroMiners', endpoint: 'de.monero.herominers.com:1111', apiBase: 'https://monero.herominers.com',
+      pool: 'HeroMiners', port: 1111, apiBase: 'https://monero.herominers.com',
       coinUnits: 1e12, poolFeePct: 0.9, minPayoutXmr: 0.01, payoutIntervalSec: 600, algo: 'rx/0',
     });
+  });
+
+  test('the Monero host follows the Pearl region, and an unknown one gets the default', () => {
+    for (const r of Object.keys(REGIONS)) expect(xmrEndpointFor(r)).toBe(r + '.monero.herominers.com:1111');
+    expect(xmrEndpointFor('nowhere')).toBe(DEFAULTS.region + '.monero.herominers.com:1111');
+    expect(xmrEndpointFor(undefined)).toBe('us.monero.herominers.com:1111');
   });
 });
 

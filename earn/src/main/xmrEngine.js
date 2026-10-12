@@ -351,9 +351,13 @@ class XmrEngine extends EventEmitter {
       if (this.restart.fails < RESTART_LIMIT) {
         this.restart.fails++;
         this._setState('restarting');
-        this._log('info', 'restarting the CPU miner in ' + Math.round(this.t.restart / 1000) + ' s');
+        // Said when it happens, not when it is planned: a stop in the meantime
+        // (a shutdown whose signal reached the worker first) restarts nothing.
         // stop() clears this timer, so it only fires while still running.
-        this._timer(() => this._startWorker(), this.t.restart);
+        this._timer(() => {
+          this._log('info', 'restarting the CPU miner');
+          this._startWorker();
+        }, this.t.restart);
         return;
       }
       this._log('error', 'leaving the CPU miner off: it stopped within ' + STABLE_MS / 60000

@@ -35,7 +35,7 @@ const probe = require('../main/probe');
 const nodeStore = require('../main/nodeStore');
 const { initStats, applyEvent, snapshot, offPool, createRateMeter, meterSample, meterRead } = require('../shared/miningStats');
 const { makePoolLookup, fileCache } = require('../shared/poolLookup');
-const { NETWORK, LLM, NODE, REGIONS, XMR, resolveEndpoint, regionLabel } = require('../shared/config');
+const { NETWORK, LLM, NODE, REGIONS, resolveEndpoint, regionLabel, xmrEndpointFor } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
 const nodeProto = require('../shared/node');
 const { buildMinerReports } = require('../shared/minerReport');
@@ -753,7 +753,9 @@ async function runConnect(argv) {
 // the log) and the engine, or null when it won't run here. It mines beside the
 // GPU miner whatever the mode, and stops with it.
 function setUpCpuMining(settings, poolLookup) {
-  log('cpu:        Monero to ' + shortenXmrAddress(settings.xmrAddress) + ' · ' + XMR.endpoint);
+  // The Monero host follows the Pearl region.
+  const endpoint = xmrEndpointFor(settings.region);
+  log('cpu:        Monero to ' + shortenXmrAddress(settings.xmrAddress) + ' · ' + endpoint);
   if (settings.cpuThreads === 0) {
     log('cpu:        off (--cpu-threads 0)');
     return null;
@@ -780,7 +782,7 @@ function setUpCpuMining(settings, poolLookup) {
   });
   // The pool took the login, so this address is one that worked.
   engine.on('authorized', (e) => poolLookup().worked(e.host, e.address, e.family));
-  return { engine, threads: plan.threads };
+  return { engine, threads: plan.threads, endpoint };
 }
 
 async function run(argv) {
@@ -906,6 +908,8 @@ async function run(argv) {
   }
 
   // ── CPU miner (Monero) ─────────────────────────────────────────────────────
+  // Without the GPU miner the region is still detected, for the Monero host.
+  if (settings.xmrAddress && !plan.miner && !settings.regionProvided) settings.region = await detectRegion();
   const xmr = settings.xmrAddress ? setUpCpuMining(settings, poolLookup) : null;
 
   const stats = initStats(Date.now());
@@ -1423,7 +1427,7 @@ async function run(argv) {
       cpu.start({
         address: settings.xmrAddress,
         worker: settings.workerProvided ? settings.worker : defaultWorker(),
-        endpoint: XMR.endpoint,
+        endpoint: xmr.endpoint,
         threads: xmr.threads,
         priority: settings.cpuPriority,
       });
