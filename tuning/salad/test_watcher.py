@@ -130,6 +130,16 @@ class TestCommand(Base):
         self.assertTrue(self.x.create("RTX 4080 (16 GB)", "low"))
         self.assertEqual(self.http.made("POST", "/containers$")[-1][2]["name"], "biz-rtx4080-13")
 
+    def test_names_of_deleted_groups_are_skipped_too(self):
+        # 21 deleted 4080 groups, all names still held by Salad, as on 2026-10-12
+        names = ["biz-rtx4080"] + [f"biz-rtx4080-{i}" for i in range(2, 22)]
+        for n in names:
+            self.x.st["groups"][n] = {"name": n, "ended": T0}
+        self.http.on("POST", "/containers$", lambda b: (400, {"type": "name_conflict"}) if b["name"] in names
+                     else (201, {}))
+        self.assertTrue(self.x.create("RTX 4080 (16 GB)", "low"))
+        self.assertEqual([c[2]["name"] for c in self.http.made("POST", "/containers$")], ["biz-rtx4080-22"])
+
     def test_name_retries_stop_after_20(self):
         self.http.on("POST", "/containers$", (400, {"type": "name_conflict"}))
         self.assertFalse(self.x.create("RTX 4080 (16 GB)", "low"))
@@ -439,7 +449,7 @@ class TestSearch(Base):
     def test_a_class_that_got_no_pc_is_tried_again_an_hour_later(self):
         self.assertEqual(self.searched("released", 59), ["biz-rtx2060", "biz-rtx4070"])
         self.setUp()
-        self.assertEqual(self.searched("released", 61), ["biz-rtx4080", "biz-rtx2060", "biz-rtx4070"])
+        self.assertEqual(self.searched("released", 61), ["biz-rtx4080-2", "biz-rtx2060", "biz-rtx4070"])  # its old name is skipped
 
     def test_a_class_with_a_live_group_is_not_doubled(self):
         self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
@@ -495,7 +505,7 @@ class TestSearch(Base):
 
     def test_the_retry_wait_comes_from_config(self):
         self.x.cfg["retry_after_min"] = 10
-        self.assertIn("biz-rtx4080", self.searched("released", 11))
+        self.assertIn("biz-rtx4080-2", self.searched("released", 11))
 
     def test_a_class_that_keeps_getting_no_pc_goes_last(self):
         self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
@@ -509,7 +519,7 @@ class TestSearch(Base):
         self.assertEqual(self.http.made("POST", "/containers$")[-1][2]["name"], "biz-rtx2060")  # not the 4080
         self.clock[0] += 181 * 60  # the hold ends
         self.x.search()
-        self.assertEqual(self.http.made("POST", "/containers$")[-1][2]["name"], "biz-rtx4080")
+        self.assertEqual(self.http.made("POST", "/containers$")[-1][2]["name"], "biz-rtx4080-4")
 
     def test_a_class_that_mined_isnt_held_back(self):
         self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
@@ -520,7 +530,7 @@ class TestSearch(Base):
             g["ended"], g["end_kind"], g["had_pc"] = self.clock[0], "released", had
             self.clock[0] += 3600
         self.x.search()
-        self.assertEqual(self.http.made("POST", "/containers$")[-1][2]["name"], "biz-rtx4080")
+        self.assertEqual(self.http.made("POST", "/containers$")[-1][2]["name"], "biz-rtx4080-4")
 
     def test_respects_max_active(self):
         self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
@@ -553,7 +563,7 @@ class TestUpgrade(Base):
         self.x.upgrade(self.clock[0])
         self.assertEqual(g["end_kind"], "released")
         self.assertTrue(self.http.made("DELETE", "/containers/biz-rtx2060$"))
-        self.assertEqual(self.made(), [("biz-rtx4080", "low")])
+        self.assertEqual(self.made(), [("biz-rtx4080-2", "low")])
         self.assertIn("UPGRADE biz-rtx2060", self.events())
 
     def test_no_swap_to_a_class_that_never_had_a_pc_here(self):
@@ -577,7 +587,7 @@ class TestUpgrade(Base):
         self.assertIsNone(g["ended"])
         self.x.cfg["upgrade_gain"] = 0.05
         self.x.upgrade(self.clock[0])
-        self.assertEqual(self.made(), [("biz-rtx4080", "batch")])  # still asked for at batch
+        self.assertEqual(self.made(), [("biz-rtx4080-2", "batch")])  # still asked for at batch
 
     def test_a_group_still_warming_up_is_left_alone(self):
         self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))

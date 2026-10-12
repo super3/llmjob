@@ -129,8 +129,9 @@ Base `https://api.salad.com/api/public/organizations/<org>`, key in the `Salad-A
 - A group created with `autostart_policy: true` can still end up `stopped` once its image is ready;
   `POST .../start` starts it.
 - Salad keeps a deleted group's name for a while: creating a group with it an hour later failed with
-  `name_conflict`, though the old group no longer showed in the list. The watcher then tries the next
-  suffix (`-2`, `-3`).
+  `name_conflict`, though the old group no longer showed in the list. The watcher skips every name in its
+  ledger, live or deleted, then tries the next suffix (`-2`, `-3`) up to 20 refused names. Skipping only
+  live names once ran out of retries: after 21 deleted 4080 groups, `-2` to `-21` were all still held.
 - Changing a running group's environment (a new version) makes Salad stop the instance and move it
   to another PC.
 - `GET .../containers/<name>` shows `priority` at the top level, but a change goes in

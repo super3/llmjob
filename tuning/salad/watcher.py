@@ -340,10 +340,11 @@ class W:
 
     def create(self, cls, pri, taken=(), tries=0):
         """Create a group of `cls` at `pri`. Salad keeps a deleted group's name for a while (name_conflict),
-        so a name it refuses is skipped and the next suffix tried, up to 20 refused names. Live groups' names
-        are skipped without asking and don't count toward the 20."""
+        so a name it refuses is skipped and the next suffix tried, up to 20 refused names. Every name in the
+        ledger, live or deleted, is skipped without asking and doesn't count toward the 20: a deleted group's
+        name is often still held, and after 20 deleted 4080 groups the retries ran out before a free name."""
         st = self.st
-        taken = {g["name"] for g in st["groups"].values() if not g["ended"]} | set(taken)
+        taken = {g["name"] for g in st["groups"].values()} | set(taken)
         base = "biz-" + slug(cls)
         name, i = base, 2
         while name in taken:
