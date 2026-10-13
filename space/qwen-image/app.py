@@ -16,7 +16,6 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import spaces  # noqa: E402  (must precede torch / any CUDA-touching import)
 
-import json  # noqa: E402
 import math  # noqa: E402
 import random  # noqa: E402
 import tempfile  # noqa: E402
@@ -39,7 +38,6 @@ PE_MAX_NEW_TOKENS = int(os.environ.get("PE_MAX_NEW_TOKENS", "1024"))
 
 MAX_SEED = 2**31 - 1
 MAX_INPUT_IMAGES = 10
-EXAMPLE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "examples")
 
 GUARD_REJECTION_MESSAGE = "prompt invalid based on our classifiers, try again"
 GUARD_THRESHOLD = 0.5
@@ -62,9 +60,7 @@ KV_CACHE_BYTES_PER_TOKEN = 32 * 2 * 4096 * 2
 KV_CACHE_BUDGET_GB = 10.0
 
 PROMPT_INFO = (
-    "Describe what to generate, or how to edit the input images (refer to them as "
-    "<image1>…<image10> in upload order). The model follows long, detailed prompts best. "
-    "For a transparent result, say “This is an RGBA image with transparency … the background is transparent.”"
+    "Long, detailed prompts work best. Put any words you want in the image in quotes."
 )
 
 
@@ -316,113 +312,169 @@ def prepare(prompt, input_images, enhance, seed, randomize_seed, aspect_ratio):
     return final_prompt, rewritten, resolved_seed, aspect_ratio
 
 
-# Example wrappers: gr.Examples fills values positionally, so each group gets a function whose
-# signature matches its inputs; everything else uses the defaults of generate_image.
-def run_t2i_example(prompt: str, aspect_ratio: str = "Auto"):
-    """Text-to-image example with the default settings."""
-    return generate_image(prompt, None, 0, DEFAULT_RESOLUTION, aspect_ratio)
 
-
-def run_edit_example(prompt: str, input_images=None):
-    """Image-editing example with the default settings."""
-    return generate_image(prompt, input_images, 0, DEFAULT_RESOLUTION, "Auto")
+def run_example(prompt: str, aspect_ratio: str = "1:1"):
+    """Text-to-image example at 1K, the fastest tier."""
+    return generate_image(prompt, None, 0, 1024, aspect_ratio)
 
 
 # --------------------------------------------------------------------------------------
-# Examples: the model card's own two cases first, then official Qwen-Image-2.1 demo cases.
+# Examples: our own text-to-image prompts. Each one shows something the model is good at:
+# text in the image, layout, photo realism, illustration and transparency.
 # --------------------------------------------------------------------------------------
 
-
-def _load_cases(name):
-    with open(os.path.join(EXAMPLE_DIR, name), encoding="utf-8") as fh:
-        return json.load(fh)
-
-
-CASES = _load_cases("turbo_cases.json") + _load_cases("qwen_cases.json")
-T2I_RATIO = {"Chemistry study poster (model card)": "2:3", "Travel planner UI": "9:16", "Mathematics exam paper": "3:4"}
-T2I_EXAMPLES = [[c["prompt"], T2I_RATIO.get(c["title_en"], "1:1")] for c in CASES if not c["inputs"]]
-T2I_LABELS = [c["title_en"] for c in CASES if not c["inputs"]]
-EDIT_EXAMPLES = [[c["prompt"], [os.path.join(EXAMPLE_DIR, n) for n in c["inputs"]]] for c in CASES if c["inputs"]]
-EDIT_LABELS = [c["title_en"] for c in CASES if c["inputs"]]
+EXAMPLES = [
+    ("Neon sign", "16:9",
+     "A narrow alley in Tokyo at night in the rain. A pink neon sign above a small ramen shop reads "
+     "\"OPEN ALL NIGHT\". Reflections on the wet pavement, steam from the doorway, cinematic photo."),
+    ("Mars travel poster", "2:3",
+     "A 1930s art deco travel poster for Mars. Bold lettering at the top reads \"VISIT OLYMPUS MONS\", "
+     "with \"Daily rockets from Earth\" in smaller type at the bottom. A red volcano at sunset, a sleek "
+     "silver rocket, warm orange and teal palette."),
+    ("Product photo", "4:3",
+     "Product photo of a matte black coffee grinder on a walnut kitchen counter. Soft morning light "
+     "from a window on the left, a few coffee beans scattered in front, shallow depth of field."),
+    ("Recipe card", "4:3",
+     "A handwritten recipe card on a wooden kitchen table. The title reads \"Grandma's Lemon Bars\". "
+     "Below it, a list of ingredients and three numbered steps in neat blue ink. A lemon and a "
+     "rolling pin beside the card, top-down view."),
+    ("How a GPU draws", "3:4",
+     "A clean flat-design infographic titled \"How a GPU draws a picture\". Four numbered steps with "
+     "simple icons: 1. Read the prompt, 2. Start from noise, 3. Remove noise 8 times, 4. Decode the "
+     "image. White background, blue accents, readable sans-serif text."),
+    ("Watercolor nook", "1:1",
+     "A cozy reading nook by a window on a rainy afternoon, a ginger cat asleep on a stack of books, "
+     "a steaming mug of tea. Loose watercolor illustration with soft edges."),
+    ("Robot sticker", "1:1",
+     "This is an RGBA image with transparency. A die-cut sticker of a friendly cartoon robot waving "
+     "and holding a wrench, thick white outline, bright colors. The image has alpha channel and the "
+     "background is transparent."),
+    ("Mountain cabin", "16:9",
+     "A small wooden cabin on a snowy mountain ridge at blue hour, warm light glowing from the "
+     "windows, the Milky Way overhead. Wide-angle landscape photo."),
+]
+EXAMPLE_ROWS = [[text, ratio] for _, ratio, text in EXAMPLES]
+EXAMPLE_LABELS = [label for label, _, _ in EXAMPLES]
 
 
 # --------------------------------------------------------------------------------------
 # UI
 # --------------------------------------------------------------------------------------
 
+# LLMJob's colors and fonts, from llmjob.com.
+theme = gr.themes.Base(
+    primary_hue=gr.themes.colors.blue,
+    neutral_hue=gr.themes.colors.stone,
+    radius_size=gr.themes.sizes.radius_md,
+    font=[gr.themes.GoogleFont("Schibsted Grotesk"), "ui-sans-serif", "system-ui", "sans-serif"],
+    font_mono=[gr.themes.GoogleFont("IBM Plex Mono"), "ui-monospace", "monospace"],
+).set(
+    body_background_fill="#fcfcfb",
+    body_background_fill_dark="#121211",
+    body_text_color="#0e0f10",
+    block_background_fill="#ffffff",
+    block_background_fill_dark="#1a1a17",
+    block_border_color="#e3e1d9",
+    block_border_color_dark="#2c2c28",
+    block_label_text_color="#5b5e62",
+    input_background_fill="#faf9f6",
+    input_background_fill_dark="#161614",
+    button_primary_background_fill="#2563eb",
+    button_primary_background_fill_hover="#1d4ed8",
+    button_primary_text_color="#ffffff",
+    button_large_text_weight="600",
+)
+
 css = """
-#col-container { margin: 0 auto; max-width: 1100px; }
-.dark .gradio-container { color: var(--body-text-color); }
+#app { margin: 0 auto; max-width: 1180px; padding: 8px 4px 0; }
+#hero { padding: 18px 2px 6px; }
+#hero h1 { font-size: 34px; font-weight: 800; letter-spacing: -0.02em; margin: 0 0 6px; }
+#hero h1 span { color: #2563eb; }
+#hero p { color: var(--body-text-color-subdued); font-size: 16px; margin: 0 0 12px; max-width: 760px; }
+#hero .links a { margin-right: 14px; font-size: 14px; color: var(--body-text-color-subdued); text-decoration: none; }
+#hero .links a:hover { color: #2563eb; }
+.pills { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
+.pill { font-family: 'IBM Plex Mono', monospace; font-size: 12px; padding: 4px 10px; border-radius: 999px;
+        background: #eff4ff; color: #1d4ed8; border: 1px solid #dbe6fb; }
+.dark .pill { background: #16213a; color: #9bb8f5; border-color: #24365e; }
+#generate { min-height: 52px; font-size: 17px; }
+#result { min-height: 560px; }
+#footer { text-align: center; color: var(--body-text-color-subdued); font-size: 14px; padding: 18px 0 6px; }
+#footer a { color: #2563eb; text-decoration: none; padding: 0; margin: 0; }
 """
 
-with gr.Blocks(title="Qwen-Image-2.1-Turbo") as demo:
-    with gr.Column(elem_id="col-container"):
-        gr.Markdown(
-            "# ⚡ Qwen-Image-2.1-Turbo\n"
-            "Official **8-step** distilled checkpoint of Qwen-Image-2.1 for text-to-image and multi-image editing. "
-            "[Model](https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo) · "
-            "[GitHub](https://github.com/QwenLM/Qwen-Image-2.1) · "
-            "[Blog](https://qwen.ai/blog?id=qwen-image-2.1)\n\n"
-            "Hosted by [LLMJob](https://llmjob.com), a network of GPUs that mine when they aren't "
-            "serving. Want an API for this model? [Get in touch](https://llmjob.com)."
-        )
-        with gr.Row():
-            with gr.Column():
-                input_images = gr.Gallery(
-                    label="Input images (optional, for editing, up to 10)",
-                    type="filepath",
-                    interactive=True,
-                    columns=5,
-                    height=320,
-                )
-            with gr.Column():
-                result = gr.Image(label="Result", type="pil", image_mode="RGBA", format="png", height=320)
+HERO = """
+<div id="hero">
+  <h1>Qwen-Image 2.1 <span>Turbo</span></h1>
+  <p>Make an image from a sentence, or edit one you upload. Turbo uses 8 steps instead of 50,
+     so a 1K image takes a few seconds.</p>
+  <div class="pills">
+    <span class="pill">8 steps</span>
+    <span class="pill">up to 2K</span>
+    <span class="pill">text in images</span>
+    <span class="pill">transparent PNG</span>
+    <span class="pill">free</span>
+  </div>
+  <div class="links">
+    <a href="https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo" target="_blank">Model</a>
+    <a href="https://github.com/QwenLM/Qwen-Image-2.1" target="_blank">GitHub</a>
+    <a href="https://qwen.ai/blog?id=qwen-image-2.1" target="_blank">Blog</a>
+  </div>
+</div>
+"""
 
-        prompt = gr.Textbox(label="Prompt", info=PROMPT_INFO, lines=4, max_lines=24,
-                            placeholder="Describe what you want to generate or edit…")
-        with gr.Row():
-            enhance = gr.Checkbox(label="Enhance prompt (slower, rewrites short prompts)", value=False, scale=1)
-            generate_button = gr.Button("Generate", variant="primary", scale=2)
+FOOTER = """
+<div id="footer">Hosted by <a href="https://llmjob.com" target="_blank">LLMJob</a>, a network of GPUs that mine when they aren't serving. Want an API for this model? <a href="https://llmjob.com" target="_blank">Get in touch</a>.</div>
+"""
 
-        rewritten_prompt_output = gr.Textbox(label="Rewritten prompt", lines=3, max_lines=20,
-                                             interactive=False, visible=True,
-                                             placeholder="With prompt enhancement on, the rewritten prompt appears here.")
-
-        with gr.Accordion("Advanced settings", open=False):
-            with gr.Row():
-                resolution = gr.Dropdown(label="Resolution", choices=RESOLUTION_CHOICES, value=DEFAULT_RESOLUTION,
-                                         info="With 2+ input images it is lowered automatically to fit GPU memory.")
-                aspect_ratio = gr.Dropdown(label="Aspect ratio", choices=["Auto"] + list(ASPECT_RATIOS), value="Auto",
-                                           info="Auto follows the input image, or square for text-to-image.")
-            with gr.Row():
-                seed = gr.Slider(label="Seed", minimum=0, maximum=MAX_SEED, step=1, value=0)
-                randomize_seed = gr.Checkbox(label="Randomize seed", value=True)
-            gr.Markdown("Sampling uses the checkpoint's saved 8-step schedule with CFG 1, as recommended on the model card.")
+with gr.Blocks(title="Qwen-Image 2.1 Turbo · LLMJob") as demo:
+    with gr.Column(elem_id="app"):
+        gr.HTML(HERO)
+        with gr.Row(equal_height=False):
+            with gr.Column(scale=5, min_width=320):
+                prompt = gr.Textbox(label="Prompt", info=PROMPT_INFO, lines=5, max_lines=24,
+                                    placeholder="A neon sign in the rain that reads \"OPEN ALL NIGHT\"…")
+                aspect_ratio = gr.Radio(label="Shape", choices=["Auto"] + list(ASPECT_RATIOS), value="Auto",
+                                        info="Auto follows the input image, or square for text to image.")
+                generate_button = gr.Button("Generate", variant="primary", size="lg", elem_id="generate")
+                enhance = gr.Checkbox(label="Enhance prompt (slower, expands short prompts)", value=False)
+                rewritten_prompt_output = gr.Textbox(label="Rewritten prompt", lines=3, max_lines=20,
+                                                     interactive=False, visible=False)
+                with gr.Accordion("Edit an image (optional)", open=False):
+                    input_images = gr.Gallery(
+                        label="Upload up to 10 images, then refer to them as <image1>, <image2>… in the prompt",
+                        type="filepath",
+                        interactive=True,
+                        columns=5,
+                        height=220,
+                    )
+                with gr.Accordion("Advanced settings", open=False):
+                    resolution = gr.Radio(label="Resolution", choices=RESOLUTION_CHOICES, value=DEFAULT_RESOLUTION,
+                                          info="Lowered automatically when you upload 2 or more images.")
+                    with gr.Row():
+                        seed = gr.Slider(label="Seed", minimum=0, maximum=MAX_SEED, step=1, value=0)
+                        randomize_seed = gr.Checkbox(label="Random seed", value=True)
+                    gr.Markdown("Sampling uses the checkpoint's saved 8-step schedule with CFG 1, as the model card recommends.")
+            with gr.Column(scale=6, min_width=320):
+                result = gr.Image(label="Result", type="pil", image_mode="RGBA", format="png",
+                                  height=560, elem_id="result")
 
         final_prompt_box = gr.Textbox(visible=False, label="Prompt")
 
-        gr.Markdown("### Examples")
         gr.Examples(
-            examples=T2I_EXAMPLES,
-            example_labels=T2I_LABELS,
+            examples=EXAMPLE_ROWS,
+            example_labels=EXAMPLE_LABELS,
             inputs=[prompt, aspect_ratio],
-            fn=run_t2i_example,
+            fn=run_example,
             outputs=[result],
             cache_examples=True,
             cache_mode="lazy",
-            label="Text to image",
+            label="Try one",
         )
-        gr.Examples(
-            examples=EDIT_EXAMPLES,
-            example_labels=EDIT_LABELS,
-            inputs=[prompt, input_images],
-            fn=run_edit_example,
-            outputs=[result],
-            cache_examples=True,
-            cache_mode="lazy",
-            label="Image editing (loads the reference images too)",
-        )
+        gr.HTML(FOOTER)
 
+    enhance.change(lambda on: gr.update(visible=on), inputs=enhance, outputs=rewritten_prompt_output,
+                   api_visibility="private")
     generate_button.click(
         fn=prepare,
         inputs=[prompt, input_images, enhance, seed, randomize_seed, aspect_ratio],
@@ -435,4 +487,4 @@ with gr.Blocks(title="Qwen-Image-2.1-Turbo") as demo:
     )
 
 if __name__ == "__main__":
-    demo.launch(mcp_server=True, theme=gr.themes.Citrus(), css=css, allowed_paths=[EXAMPLE_DIR])
+    demo.launch(mcp_server=True, theme=theme, css=css)

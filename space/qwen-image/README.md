@@ -2,7 +2,7 @@
 title: Qwen-Image-2.1-Turbo
 emoji: ⚡
 colorFrom: blue
-colorTo: red
+colorTo: indigo
 sdk: gradio
 sdk_version: 6.30.0
 app_file: app.py
@@ -18,7 +18,8 @@ license_link: https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo/blob/main/LICENSE
 
 LLMJob's copy of Hugging Face's
 [`hugging-apps/qwen-qwen-image-2-1-turbo`](https://huggingface.co/spaces/hugging-apps/qwen-qwen-image-2-1-turbo)
-Space. The code is theirs, with LLMJob branding added. It runs on ZeroGPU for now. The next step
+Space. Generation, the safety check and the kernel loading are theirs. The page design and the
+examples are ours. It runs on ZeroGPU for now. The next step
 is to send generation to the [LLMJob](https://llmjob.com) GPU network, which has no per-user
 limits.
 
@@ -59,12 +60,10 @@ which serves the official `Qwen-Image-2.1-PE-T2I` / `PE-I2I` rewriters.
 Editing requests (any submission with input images) are screened with
 [`hfmlsoc/ncii-guard-v02`](https://huggingface.co/hfmlsoc/ncii-guard-v02) before anything is generated.
 
-## Example assets
+## Examples
 
-`examples/turbo-boat-input.png` and the two "model card" prompts come from the
-[Qwen-Image-2.1-Turbo model card](https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo). The other images
-under `examples/` are official demo assets from the [`Qwen/Qwen-Image-2.1`](https://huggingface.co/spaces/Qwen/Qwen-Image-2.1)
-Space. All are redistributed under the Qwen Research License for non-commercial demonstration.
+The example prompts are our own, written into `app.py`. They are text-to-image only, so the Space
+ships no example images.
 
 ## License
 
