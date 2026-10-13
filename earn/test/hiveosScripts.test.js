@@ -339,6 +339,22 @@ suite('h-stats.sh', () => {
     });
   });
 
+  // CPU mining on (--xmr-address): Monero is the rig's second algorithm, in
+  // kH/s like the first. It is the CPU's, so no card gets an hs2 entry.
+  test('the CPU miner is the second algorithm', () => {
+    const xmr = { algo: 'randomx', hs: 1845.2, accepted: 3, rejected: 1, threads: 7, state: 'mining' };
+    const { khs, stats } = runStats(statsFile([card(0, 315.8, '00000000:01:00.0')], { xmr }),
+      gpuLists([['01:00.0', 64, 72]]));
+    expectHiveOsShape(khs, stats);
+    expect(khs).toBe(kh(315.8));
+    expect(stats).toMatchObject({ total_khs2: 1.8452, hs_units2: 'khs', algo2: 'randomx', ar2: [3, 1] });
+    expect(stats).not.toHaveProperty('hs2');
+    // A file from before CPU mining, or with it off, has no second algorithm.
+    expect(runStats(statsFile([card(0, 1, null)], { xmr: null })).stats).not.toHaveProperty('algo2');
+    expect(runStats(statsFile([card(0, 1, null)], { xmr: { state: 'starting' } })).stats)
+      .toMatchObject({ total_khs2: 0, ar2: [0, 0] });
+  });
+
   // It used to split the total evenly over the cards.
   test('2 GPUs: each card its own hashrate, bound to its own bus', () => {
     const { khs, stats } = runStats(

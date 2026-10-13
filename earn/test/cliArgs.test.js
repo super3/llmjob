@@ -492,3 +492,66 @@ describe('the README\'s usage block', () => {
     for (const { long } of flagsIn(USAGE)) expect(names).toContain(long);
   });
 });
+
+// Monero on the CPU: off unless an address is given.
+describe('--xmr-address / --cpu-threads', () => {
+  const XMR = '87wTMj88rEGV3BFiYXJc2UHeTGmHikMRWAvAskmPgaF3PZxuxonkKaJZsprNmuhM1Aca7P6UbyatGFHkQfUTYgoNN1JxND9';
+
+  test('off by default', () => {
+    const s = parseCliArgs(['-a', ADDR]).settings;
+    expect(s.xmrAddress).toBeNull();
+    expect(s.cpuThreads).toBeNull();
+  });
+
+  test('an address turns it on with the default thread count; a count can be given', () => {
+    expect(parseCliArgs(['-a', ADDR, '--xmr-address', ' ' + XMR + ' ']).settings).toMatchObject({ xmrAddress: XMR, cpuThreads: null });
+    const r = parseCliArgs(['-a', ADDR, '--xmr-address=' + XMR, '--cpu-threads', '6']);
+    expect(r.errors).toEqual([]);
+    expect(r.settings.cpuThreads).toBe(6);
+    expect(parseCliArgs(['-a', ADDR, '--xmr-address', XMR, '--cpu-threads', '0']).settings.cpuThreads).toBe(0);
+  });
+
+  test('a bad address says why', () => {
+    const r = parseCliArgs(['-a', ADDR, '--xmr-address', XMR.slice(0, -1) + '8']);
+    expect(r.errors).toEqual(['invalid Monero address: ' + XMR.slice(0, -1) + '8 (the checksum does not match: check for a typo)']);
+    expect(r.settings.xmrAddress).toBeNull();
+  });
+
+  test('a bad thread count, or one with no address to pay', () => {
+    for (const bad of ['', '-1', '2.5', 'all']) {
+      const r = parseCliArgs(['-a', ADDR, '--xmr-address', XMR, '--cpu-threads=' + bad]);
+      expect(r.errors).toEqual(['invalid --cpu-threads: ' + bad + ' (must be 0 or more)']);
+      expect(r.settings.cpuThreads).toBeNull();
+    }
+    // With no address it is a warning: an error stopped Pearl too.
+    const none = parseCliArgs(['-a', ADDR, '--cpu-threads', '4']);
+    expect(none.errors).toEqual([]);
+    expect(none.settings.warnings).toEqual(['--cpu-threads does nothing without --xmr-address: no CPU mining']);
+    // 0 asks for nothing, so it needs no address.
+    expect(parseCliArgs(['-a', ADDR, '--cpu-threads', '0']).settings.warnings).toEqual([]);
+  });
+
+  test('--cpu-priority: idle, low or normal; none is the platform default', () => {
+    expect(parseCliArgs(['-a', ADDR]).settings.cpuPriority).toBeNull();
+    for (const p of ['idle', 'low', 'normal']) {
+      expect(parseCliArgs(['-a', ADDR, '--xmr-address', XMR, '--cpu-priority', p]).settings.cpuPriority).toBe(p);
+    }
+    const r = parseCliArgs(['-a', ADDR, '--xmr-address', XMR, '--cpu-priority=realtime']);
+    expect(r.errors).toEqual(['invalid --cpu-priority: realtime (choices: idle, low, normal)']);
+    expect(r.settings.cpuPriority).toBeNull();
+    // A HiveOS Extra config with a priority and no address mines Pearl and
+    // says the priority does nothing.
+    const none = parseCliArgs(['-a', ADDR, '--cpu-priority', 'normal']);
+    expect(none.errors).toEqual([]);
+    expect(none.settings.cpuPriority).toBeNull();
+    expect(none.settings.warnings).toEqual(['--cpu-priority does nothing without --xmr-address: no CPU mining']);
+  });
+
+  test('--help says what they do', () => {
+    expect(USAGE).toContain('--xmr-address <4…|8…>');
+    expect(USAGE).toContain('--cpu-priority <p>');
+    expect(USAGE).toContain('--cpu-threads <n>');
+    expect(VALUE_FLAGS.has('--xmr-address')).toBe(true);
+    expect(VALUE_FLAGS.has('--cpu-threads')).toBe(true);
+  });
+});

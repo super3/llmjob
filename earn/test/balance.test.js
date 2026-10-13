@@ -144,3 +144,28 @@ describe('parseBalance', () => {
     expect(parseBalance({ stats: { balance: -2 } }, 0.47)).toBeNull();  // negative
   });
 });
+
+// The same pool software runs HeroMiners' Monero pool, the CPU miner's.
+describe('parseBalance for Monero', () => {
+  const XMR = { units: 1e12, absentIsZero: true };
+
+  test('scales by the units it is given', () => {
+    expect(parseBalance({ stats: { balance: '12500000000', paid: '1000000000000' } }, 300, XMR))
+      .toEqual({ pending: 0.0125, paid: 1, earned: 1.0125, usd: 1.0125 * 300 });
+  });
+
+  // An address with shares and no balance yet: the Monero pool leaves
+  // `balance` out, and that is 0, not an unreadable payload. Captured from
+  // monero.herominers.com for an address with 12 good shares.
+  test('reads a missing balance as 0 when told to', () => {
+    const payload = { stats: { shares_good: 12, hashes: '5760000', payments_24h: 0 }, payments: [] };
+    expect(parseBalance(payload, undefined, XMR)).toEqual({ pending: 0, paid: 0, earned: 0, usd: null });
+    expect(parseBalance(payload)).toBeNull();
+    expect(parseBalance({ stats: { balance: null } }, null, XMR).pending).toBe(0);
+    expect(parseBalance({ stats: { balance: 'x' } }, null, XMR)).toBeNull();
+  });
+
+  test('falls back to the default units for a bad one', () => {
+    expect(parseBalance({ stats: { balance: String(COIN_UNITS) } }, null, { units: 0 }).pending).toBe(1);
+  });
+});

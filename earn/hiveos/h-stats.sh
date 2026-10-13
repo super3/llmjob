@@ -24,6 +24,10 @@
 # A stats file older than 2 minutes means the miner is hung or gone, so khs is 0
 # and stats is null rather than old numbers.
 #
+# With CPU mining on (--xmr-address), the file has an `xmr` block, and its
+# Monero hashrate goes to HiveOS as the rig's second algorithm: total_khs2,
+# algo2 "randomx" and ar2. It is the CPU's, so it gets no per-card hs2.
+#
 # LLMJOB_EARN_STATS_FILE overrides the file's path, for tests.
 llmjob_earn_stats() {
   local file=${LLMJOB_EARN_STATS_FILE:-/run/hive/llmjob-earn-stats.json}
@@ -79,6 +83,10 @@ llmjob_earn_stats() {
         ar: [(.accepted // 0), (.rejected // 0)],
         algo: "pearlhash" }
       + (if ($bus // []) | length > 0 then { bus_numbers: $bus } else {} end)
+      + (if (.xmr | type) == "object" then
+           { total_khs2: ((.xmr.hs // 0) / 1000), hs_units2: "khs", algo2: "randomx",
+             ar2: [(.xmr.accepted // 0), (.xmr.rejected // 0)] }
+         else {} end)
   ' <<< "$data" 2>/dev/null) || return 0
   [[ -n $out ]] || return 0
 

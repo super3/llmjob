@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-  pad2, formatUptime, formatHashrate, formatInt, formatLogTime, formatDeviceLabel,
+  pad2, formatUptime, formatHashrate, formatKhs, formatInt, formatLogTime, formatDeviceLabel,
 } = require('../src/shared/format');
 
 describe('format', () => {
@@ -20,6 +20,12 @@ describe('format', () => {
   test('formatHashrate fixes to one decimal', () => {
     expect(formatHashrate(354.137)).toBe('354.1');
     expect(formatHashrate('x')).toBe('0.0');
+  });
+
+  test('formatKhs turns the CPU miner\'s H/s into kH/s', () => {
+    expect(formatKhs(1845.24)).toBe('1.85');
+    expect(formatKhs(23764)).toBe('23.76');
+    expect(formatKhs(null)).toBe('0.00');
   });
 
   test('formatInt groups thousands', () => {

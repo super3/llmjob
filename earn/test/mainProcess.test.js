@@ -211,6 +211,48 @@ jest.mock('../src/main/pearlEngine', () => {
   return { PearlEngine };
 });
 
+// The Monero CPU miner: an engine that records what it is asked, the CPU facts
+// its plan reads (8 CPUs, 16 GB: the default is 7 threads), and where its
+// worker is. The real ones are tested in xmrEngine, cpuFacts and xmrWorker.
+jest.mock('../src/main/xmrEngine', () => {
+  const { EventEmitter } = require('events');
+  class XmrEngine extends EventEmitter {
+    constructor(opts) {
+      super();
+      this.opts = opts;
+      this.running = false;
+      this.start = jest.fn((settings) => {
+        this.settings = settings;
+        if (XmrEngine.noWorker) {
+          // As the real one: logged, then emitted.
+          this.emit('log', { level: 'error', line: 'cpu: there is no CPU miner (llmjob-xmr-worker) beside the app.' });
+          this.emit('error', new Error('there is no CPU miner (llmjob-xmr-worker) beside the app.'));
+          return false;
+        }
+        this.running = true;
+        return true;
+      });
+      this.stop = jest.fn(() => { this.running = false; });
+      this.isRunning = jest.fn(() => this.running);
+      this.snapshot = jest.fn(() => ({
+        state: this.running ? 'mining' : 'stopped', hashrate: 1845.2, accepted: 3, rejected: 1, threads: 7,
+        poolError: this.poolError,
+      }));
+      XmrEngine.instances.push(this);
+    }
+  }
+  XmrEngine.instances = [];
+  XmrEngine.noWorker = false;
+  return { XmrEngine };
+});
+jest.mock('../src/main/cpuFacts', () => ({
+  readCpuFacts: jest.fn(() => ({ cpus: 8, quotaCpus: null, memoryBytes: 16 * 2 ** 30, l3Bytes: null })),
+}));
+jest.mock('../src/main/xmrWorker', () => ({
+  findWorker: jest.fn(() => '/app/resources/native/llmjob-xmr-worker'),
+  makeSpawnWorker: jest.fn(() => 'spawnWorker'),
+}));
+
 jest.mock('../src/main/pearlCore', () => ({
   loadCore: jest.fn(() => null),
   coreFactory: jest.fn(() => null),
@@ -369,6 +411,9 @@ function loadMain(opts = {}) {
   ctx.probe = require('../src/main/probe');
   ctx.nodeStore = require('../src/main/nodeStore');
   ctx.PearlEngine = require('../src/main/pearlEngine').PearlEngine;
+  ctx.XmrEngine = require('../src/main/xmrEngine').XmrEngine;
+  ctx.cpuFacts = require('../src/main/cpuFacts');
+  ctx.xmrWorker = require('../src/main/xmrWorker');
   ctx.LlmManager = require('../src/main/llmManager').LlmManager;
   ctx.LlmEngineManager = require('../src/main/llmEngineManager').LlmEngineManager;
   ctx.JobWorker = require('../src/main/jobWorker').JobWorker;
@@ -630,6 +675,7 @@ describe('simple ipc handlers', () => {
     expect(await ctx.invoke('config:get')).toEqual({
       regions: ctx.config.REGIONS, defaults: ctx.config.DEFAULTS, miner: ctx.config.MINER,
       platform: { minerSupported: true },
+      cpu: { available: 8, auto: 7, reason: null, canMine: true, worker: true },
     });
     expect(await ctx.invoke('llm:status')).toMatchObject({ ready: false, model: ctx.config.LLM.model.name });
     expect(await ctx.invoke('app:version')).toBe('0.0.0-test');
@@ -3800,5 +3846,245 @@ describe('STOP during the model download', () => {
     await flush();
     expect(ctx.LlmEngineManager.instances).toHaveLength(0);
     expect(ctx.LlmManager.instances).toHaveLength(0);
+  });
+});
+
+// ── Monero on the CPU ────────────────────────────────────────────────────────
+
+describe('CPU mining (Monero)', () => {
+  const XMR_ADDR = '87wTMj88rEGV3BFiYXJc2UHeTGmHikMRWAvAskmPgaF3PZxuxonkKaJZsprNmuhM1Aca7P6UbyatGFHkQfUTYgoNN1JxND9';
+  const logs = (ctx) => ctx.sent('miner:log').map((l) => l.line);
+  const start = async (ctx, extra) => {
+    ctx.emit('miner:start', Object.assign({ address: VALID_ADDR, mode: 'mining', worker: 'w1' }, extra));
+    await flush();
+  };
+
+  it('is off by default, and saved settings say so', async () => {
+    const ctx = await boot();
+    expect(await ctx.invoke('settings:get')).toMatchObject({ cpuMining: false, xmrAddress: '', cpuThreads: 0 });
+    await start(ctx);
+    expect(ctx.XmrEngine.instances).toHaveLength(0);
+    ctx.emit('miner:stop');
+    expect(ctx.sent('cpu:stats')).toEqual([]);
+  });
+
+  it('mines beside the GPU on the planned threads, shows its numbers, and stops with it', async () => {
+    const ctx = await boot({ resourcesPath: '/app/resources' });
+    await start(ctx, { region: 'sg', cpuMining: true, xmrAddress: ' ' + XMR_ADDR + ' ', cpuThreads: 0 });
+    const cpu = ctx.XmrEngine.instances[0];
+    expect(ctx.xmrWorker.findWorker).toHaveBeenCalledWith(expect.objectContaining({ resourcesPath: '/app/resources' }));
+    expect(cpu.opts).toMatchObject({
+      workerPath: '/app/resources/native/llmjob-xmr-worker', spawnWorker: 'spawnWorker', agent: 'llmjob-earn/0.0.0-test',
+    });
+    expect(cpu.start).toHaveBeenCalledWith({
+      address: XMR_ADDR, worker: 'w1', endpoint: 'sg.monero.herominers.com:1111', threads: 7,
+    });
+
+    // Its socket uses the same pool lookup, and a login that worked is saved.
+    const net = require('net');
+    cpu.opts.connect('de.monero.herominers.com', 1111);
+    expect(net.connect).toHaveBeenLastCalledWith({ port: 1111, host: 'de.monero.herominers.com', lookup: expect.any(Function) });
+    cpu.emit('authorized', { host: 'de.monero.herominers.com', address: '141.95.126.31', family: 'IPv4' });
+    expect(ctx.fs.writeFileSync).toHaveBeenCalledWith(path.join('/tmp/store', 'pool-addresses.json'), expect.stringContaining('141.95.126.31'));
+
+    cpu.emit('log', { level: 'info', line: 'cpu: XMR share accepted' });
+    expect(logs(ctx)).toContain('cpu: XMR share accepted');
+
+    // Its line comes on its own channel, at start and on every engine event.
+    expect(ctx.sent('cpu:stats')).toHaveLength(1);
+    cpu.emit('event', { type: 'status' });
+    expect(ctx.sent('cpu:stats').slice(-1)[0]).toEqual({
+      state: 'mining', hashrate: '1.85', accepted: 3, rejected: 1, threads: 7, error: null, pool: null,
+    });
+    // A pool it can't reach shows on the line.
+    cpu.poolError = 'can\'t reach the Monero pool: connect ECONNREFUSED';
+    cpu.emit('event', { type: 'connect-failed', reason: 'connect ECONNREFUSED', dns: false });
+    expect(ctx.sent('cpu:stats').slice(-1)[0].pool).toBe('can\'t reach the Monero pool: connect ECONNREFUSED');
+    expect(ctx.sent('miner:stats').slice(-1)[0]).not.toHaveProperty('cpu');
+    // One that gave up says why, not why the pool was out.
+    cpu.snapshot.mockReturnValueOnce({ state: 'failed', hashrate: 0, accepted: 3, rejected: 1, threads: 7, poolError: cpu.poolError });
+    cpu.emit('error', new Error('the CPU miner stopped (exit code 1)'));
+    cpu.emit('event', { type: 'status' });
+    expect(ctx.sent('cpu:stats').slice(-1)[0]).toMatchObject({
+      state: 'failed', error: 'the CPU miner stopped (exit code 1)', pool: null,
+    });
+
+    ctx.emit('miner:stop');
+    expect(cpu.stop).toHaveBeenCalled();
+    expect(ctx.sent('cpu:stats').slice(-1)[0]).toBeNull();
+    // A late event from the stopped engine changes nothing.
+    const n = ctx.sent('cpu:stats').length;
+    cpu.emit('event', { type: 'status' });
+    expect(ctx.sent('cpu:stats')).toHaveLength(n);
+  });
+
+  it('takes a thread count, capped so a CPU stays free, and the default worker name', async () => {
+    const ctx = await boot();
+    await start(ctx, { cpuMining: true, xmrAddress: XMR_ADDR, cpuThreads: 3, worker: '' });
+    expect(ctx.XmrEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ threads: 3, worker: 'rig01' }));
+    ctx.emit('miner:stop');
+
+    await start(ctx, { cpuMining: true, xmrAddress: XMR_ADDR, cpuThreads: 64 });
+    expect(ctx.XmrEngine.instances[1].start).toHaveBeenCalledWith(expect.objectContaining({ threads: 7 }));
+    expect(logs(ctx)).toContain('cpu: 64 threads asked for; running 7 so one of the 8 CPUs stays free for the GPU miner');
+  });
+
+  it('says why it does not mine: a bad address, or a computer it is off on', async () => {
+    const ctx = await boot();
+    await start(ctx, { cpuMining: true, xmrAddress: XMR_ADDR.slice(0, -1) + '8' });
+    expect(ctx.XmrEngine.instances).toHaveLength(0);
+    expect(logs(ctx)).toContain('cpu: not mining Monero: Monero address: the checksum does not match: check for a typo');
+    expect(ctx.sent('cpu:stats').slice(-1)[0]).toEqual({
+      state: 'stopped', hashrate: '0.00', accepted: 0, rejected: 0, threads: 0,
+      error: 'Monero address: the checksum does not match: check for a typo', pool: null,
+    });
+    ctx.emit('miner:stop');
+
+    const ctx2 = loadMain({ before: (c) => c.cpuFacts.readCpuFacts.mockReturnValue({ cpus: 4, memoryBytes: 16 * 2 ** 30 }) });
+    ctx2.electron._fireReady();
+    await flush();
+    await start(ctx2, { cpuMining: true, xmrAddress: XMR_ADDR });
+    expect(ctx2.XmrEngine.instances).toHaveLength(0);
+    expect(logs(ctx2)).toContain('cpu: not mining Monero: off by default with 4 CPUs (it turns on by itself above 4 CPUs and 8 GB); set a thread count to mine anyway');
+    expect(ctx2.sent('cpu:stats').slice(-1)[0]).toMatchObject({ state: 'stopped', error: expect.stringMatching(/^off by default/) });
+    expect((await ctx2.invoke('config:get')).cpu).toEqual({
+      available: 4, auto: 0, canMine: true, worker: true,
+      reason: 'off by default with 4 CPUs (it turns on by itself above 4 CPUs and 8 GB); set a thread count to mine anyway',
+    });
+    // A build with no worker (macOS, or one CI built without it) says so.
+    ctx2.xmrWorker.findWorker.mockReturnValueOnce(null);
+    expect((await ctx2.invoke('config:get')).cpu.worker).toBe(false);
+  });
+
+  it('shows why the CPU miner stopped, until mining stops', async () => {
+    const ctx = await boot();
+    ctx.XmrEngine.noWorker = true;
+    await start(ctx, { cpuMining: true, xmrAddress: XMR_ADDR });
+    expect(logs(ctx).filter((l) => l === 'cpu: there is no CPU miner (llmjob-xmr-worker) beside the app.')).toHaveLength(1);
+    expect(ctx.sent('cpu:stats').slice(-1)[0]).toMatchObject({
+      state: 'stopped', error: 'there is no CPU miner (llmjob-xmr-worker) beside the app.',
+    });
+    ctx.emit('miner:stop');
+    expect(ctx.sent('miner:stopped')).toHaveLength(1);
+    expect(ctx.sent('cpu:stats').slice(-1)[0]).toBeNull();
+  });
+
+  // The CLI mines Monero whatever the mode. So does the app: a START that runs
+  // no GPU miner (LLM mode, or no Pearl address) still runs the CPU miner.
+  it('mines in LLM mode, and with no Pearl address, and keeps the START while it runs', async () => {
+    const ctx = await boot();
+    // The card has no room for the model, so the LLM never starts.
+    ctx.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'gpu', usedMb: 4000, totalMb: 8000 }]);
+    await start(ctx, { mode: 'llm', cpuMining: true, xmrAddress: XMR_ADDR });
+    expect(ctx.PearlEngine.instances).toHaveLength(0);
+    expect(ctx.XmrEngine.instances).toHaveLength(1);
+    expect(ctx.XmrEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ threads: 7 }));
+    expect(ctx.sent('cpu:stats').slice(-1)[0]).toMatchObject({ state: 'mining' });
+    expect(ctx.sent('miner:stopped')).toEqual([]);
+    ctx.emit('miner:stop');
+    expect(ctx.XmrEngine.instances[0].stop).toHaveBeenCalled();
+
+    // Mining mode with no Pearl address: no GPU miner, no LLM, the CPU miner.
+    await start(ctx, { address: '', mode: 'mining', cpuMining: true, xmrAddress: XMR_ADDR });
+    expect(ctx.PearlEngine.instances).toHaveLength(0);
+    expect(ctx.XmrEngine.instances[1].isRunning()).toBe(true);
+    expect(ctx.sent('miner:stopped')).toHaveLength(1);
+    ctx.emit('miner:stop');
+
+    // A CPU miner that could not start holds nothing up.
+    ctx.XmrEngine.noWorker = true;
+    await start(ctx, { mode: 'llm', cpuMining: true, xmrAddress: XMR_ADDR });
+    expect(ctx.sent('miner:stopped')).toHaveLength(3);
+  });
+
+  it('keeps an LLM-mode START going when the model stops, while the CPU mines', async () => {
+    const ctx = await boot();
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    ctx.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 1000 });
+    await start(ctx, { mode: 'llm', cpuMining: true, xmrAddress: XMR_ADDR });
+    const llm = ctx.LlmManager.instances[0];
+    llm.emit('stopped');
+    await flush();
+    expect(ctx.sent('miner:stopped')).toEqual([]);
+    expect(ctx.XmrEngine.instances[0].isRunning()).toBe(true);
+  });
+
+  it('a START that turns it off stops the one running', async () => {
+    const ctx = await boot();
+    await start(ctx, { cpuMining: true, xmrAddress: XMR_ADDR });
+    await start(ctx, { cpuMining: false, xmrAddress: XMR_ADDR });
+    expect(ctx.XmrEngine.instances[0].stop).toHaveBeenCalled();
+    expect(ctx.sent('cpu:stats').slice(-1)[0]).toBeNull();
+  });
+
+  describe('with idle-only on', () => {
+    const watcher = (ctx) => ctx.timers.intervals.find((h) => h.fn.name === 'checkIdle');
+    const idle = (ctx, state) => ctx.electron.powerMonitor.getSystemIdleState.mockReturnValue(state);
+
+    it('waits for the computer to be idle, and stops when someone is back', async () => {
+      const ctx = await boot({ before: withPrefs({ mineWhenIdle: true }) });
+      await start(ctx, { cpuMining: true, xmrAddress: XMR_ADDR });
+      expect(ctx.XmrEngine.instances).toHaveLength(0);
+      idle(ctx, 'idle');
+      watcher(ctx).fn();
+      await flush();
+      expect(ctx.XmrEngine.instances).toHaveLength(1);
+      idle(ctx, 'active');
+      watcher(ctx).fn();
+      await flush();
+      expect(ctx.XmrEngine.instances[0].stop).toHaveBeenCalled();
+      expect(ctx.sent('cpu:stats').slice(-1)[0]).toBeNull();
+      expect(ctx.XmrEngine.instances).toHaveLength(1);
+    });
+
+    // LLM mode runs no GPU miner, but the CPU miner is mining all the same.
+    it('pauses an LLM-mode START that mines on the CPU, and a resume mid-download starts only the CPU miner', async () => {
+      const ctx = await boot({ before: withPrefs({ mineWhenIdle: true }) });
+      let release;
+      ctx.LlmEngineManager.behavior.ensureModel = () => new Promise((r) => { release = r; });
+      await start(ctx, { mode: 'llm', cpuMining: true, xmrAddress: XMR_ADDR });
+      expect(ctx.sent('miner:idle')).toEqual([{ paused: true, idleAfterSec: 300 }]);
+      expect(ctx.XmrEngine.instances).toHaveLength(0);
+      idle(ctx, 'idle');
+      watcher(ctx).fn();
+      await flush();
+      expect(ctx.XmrEngine.instances).toHaveLength(1);
+      expect(ctx.PearlEngine.instances).toHaveLength(0);
+      release('/tmp/llm/model.gguf');
+      await flush();
+      ctx.LlmEngineManager.behavior.ensureModel = () => Promise.resolve('/tmp/llm/model.gguf');
+    });
+  });
+
+  // A START that runs the GPU miner again (here after its core failed) must
+  // not start a second CPU miner beside the first.
+  it('does not start a second CPU miner beside a running one', async () => {
+    const ctx = await boot();
+    ctx.PearlEngine.startError = new Error('no core');
+    await start(ctx, { cpuMining: true, xmrAddress: XMR_ADDR });
+    ctx.PearlEngine.startError = null;
+    await start(ctx, { cpuMining: true, xmrAddress: XMR_ADDR, mode: 'auto' });
+    expect(ctx.PearlEngine.instances.length).toBeGreaterThan(1);
+    expect(ctx.XmrEngine.instances).toHaveLength(1);
+  });
+
+  it('checks Monero addresses and reads the balance from HeroMiners\' Monero pool', async () => {
+    const ctx = loadMain();
+    expect(await ctx.invoke('xmr:check', XMR_ADDR)).toEqual({ ok: true, kind: 'subaddress' });
+    expect(await ctx.invoke('xmr:check', 'nope')).toEqual({ ok: false, error: 'not a Monero address' });
+
+    ctx.io.getJson.mockResolvedValueOnce({ stats: { balance: '12500000000', paid: '0' } });
+    expect(await ctx.invoke('xmr:balance', XMR_ADDR)).toEqual({ pending: 0.0125, paid: 0, earned: 0.0125, usd: null });
+    expect(ctx.io.getJson).toHaveBeenLastCalledWith(
+      'https://monero.herominers.com/api/stats_address?address=' + XMR_ADDR + '&longpoll=false');
+    // No balance yet: the pool leaves the field out.
+    ctx.io.getJson.mockResolvedValueOnce({ stats: { shares_good: 12 } });
+    expect((await ctx.invoke('xmr:balance', XMR_ADDR)).earned).toBe(0);
+
+    expect(await ctx.invoke('xmr:balance', 'nope')).toBeNull();
+    ctx.io.getJson.mockRejectedValueOnce(new Error('offline'));
+    expect(await ctx.invoke('xmr:balance', XMR_ADDR)).toBeNull();
+    ctx.io.getJson.mockResolvedValueOnce(null);
+    expect(await ctx.invoke('xmr:balance', XMR_ADDR)).toBeNull();
   });
 });

@@ -56,6 +56,9 @@ function parseRelease(json) {
 // Decide whether to update. Returns a plan describing the outcome; `reason` is
 // one of: unsupported-platform, no-release, up-to-date, asset-missing,
 // update-available. Only `update-available` carries a downloadUrl.
+// `up-to-date` carries xmrWorkerUrl when this very release is the latest, so
+// a CLI installed without the CPU worker, or whose worker download failed,
+// can fetch it without waiting for the next release.
 function planUpdate(opts) {
   const o = opts || {};
   const currentVersion = normalizeVersion(o.currentVersion);
@@ -65,7 +68,12 @@ function planUpdate(opts) {
 
   if (!assetName) return Object.assign(base, { reason: 'unsupported-platform' });
   if (!rel.version) return Object.assign(base, { reason: 'no-release' });
-  if (!isNewer(currentVersion, rel.version)) return Object.assign(base, { reason: 'up-to-date' });
+  if (!isNewer(currentVersion, rel.version)) {
+    const same = compareVersions(currentVersion, rel.version) === 0;
+    return Object.assign(base, {
+      reason: 'up-to-date', xmrWorkerUrl: (same && rel.assets['llmjob-xmr-worker']) || null,
+    });
+  }
 
   const downloadUrl = rel.assets[assetName] || null;
   if (!downloadUrl) return Object.assign(base, { reason: 'asset-missing' });
@@ -79,6 +87,11 @@ function planUpdate(opts) {
   // in CI -- and the updater then REMOVES any copy beside the binary, because a
   // stale one would be loaded ahead of the fresh 12.8 core on a 5090.
   const coreCu13Url = rel.assets['pearl_core_cu13.node'] || null;
+  // The RandomX CPU worker (earn/xmr-worker) rides along too. Null on a
+  // release without it, and then the copy beside the binary stays: the worker
+  // states its protocol version when it starts, so an old one that no longer
+  // fits is refused there, not run.
+  const xmrWorkerUrl = rel.assets['llmjob-xmr-worker'] || null;
 
   return {
     updateAvailable: true,
@@ -89,6 +102,7 @@ function planUpdate(opts) {
     downloadUrl,
     coreUrl,
     coreCu13Url,
+    xmrWorkerUrl,
   };
 }
 

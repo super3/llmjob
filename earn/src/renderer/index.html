@@ -39,18 +39,25 @@
     <div id="addr-static" class="field-box mono" hidden></div>
 
     <div class="field-label">
-      <span class="lbl">GPU Activity</span>
+      <span class="lbl" id="activity-label">GPU Activity</span>
       <span class="meta" id="device-label">GPU · auto-detect</span>
     </div>
-    <div class="chart-card">
+    <div class="chart-card" id="chart-card">
       <div class="hero2">
         <div class="hero-col">
           <div class="hero-num"><span class="num" id="hashrate">0.0</span><span class="unit">TH/s</span></div>
-          <div class="hero-sub"><span class="dot2" id="mine-dot"></span><span class="hero-label">Mining</span></div>
+          <div class="hero-sub"><span class="dot2" id="mine-dot"></span><span class="hero-label" id="mine-label">Mining</span><span class="hw-tag">GPU</span></div>
         </div>
-        <div class="hero-col right">
+        <!-- Monero on the CPU (Settings → CPU Mining), between the GPU's two
+             readings; hidden while that is off. The GPU/CPU tags show only
+             then, to tell the three apart. -->
+        <div class="hero-col mid" id="cpu-row" hidden>
+          <div class="hero-num"><span class="num" id="cpu-rate">0.00</span><span class="unit">kH/s</span></div>
+          <div class="hero-sub"><span class="dot2" id="cpu-dot"></span><span class="hero-label">Monero</span><span class="hw-tag cpu">CPU</span><span class="hero-detail mono" id="cpu-meta"></span></div>
+        </div>
+        <div class="hero-col right" id="llm-col">
           <div class="hero-num"><span class="num" id="llm-hero-tps">0.0</span><span class="unit">tok/s</span></div>
-          <div class="hero-sub"><span class="dot2" id="llm-hero-dot"></span><span class="hero-label">LLM</span><span class="hero-detail mono" id="llm-hero-detail">—</span></div>
+          <div class="hero-sub"><span class="dot2" id="llm-hero-dot"></span><span class="hero-label">LLM</span><span class="hw-tag">GPU</span><span class="hero-detail mono" id="llm-hero-detail">—</span></div>
         </div>
       </div>
       <svg viewBox="0 0 480 56" width="100%" height="84" preserveAspectRatio="none">
@@ -59,7 +66,7 @@
         <path id="mk-line" d="M0 55 L480 55" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>
       </svg>
       <div class="mk-stats">
-        <div class="mk-stat"><div class="k">Accepted shares</div><div class="v" id="accepted">0</div></div>
+        <div class="mk-stat"><div class="k">Accepted shares</div><div class="v"><span id="accepted">0</span><span id="cpu-shares" hidden><span class="day"> PRL</span> · <span id="cpu-accepted">0</span><span class="day"> XMR</span></span></div></div>
         <div class="mk-stat"><div class="k">Uptime</div><div class="v" id="uptime">0m 00s</div></div>
         <div class="mk-stat"><div class="k">Est. earnings</div><div class="v accent"><span id="estday">$0.00</span><span class="day">/day</span></div></div>
       </div>
@@ -113,6 +120,13 @@
         <button id="api-copy" class="chip" type="button" title="Copy the API endpoint">Copy API</button>
         <button id="api-open" class="chip" type="button" title="Open the llama-server web UI">Open ↗</button>
       </div>
+      <!-- Beside the endpoint it shares, and the address it shares it on. -->
+      <div class="settings-rows api-share">
+        <label class="settings-row toggle-row">
+          <span class="row-text"><span class="rk">Share the local LLM on my network</span><span id="share-note" class="row-sub"></span></span>
+          <input id="set-share" class="toggle" type="checkbox" />
+        </label>
+      </div>
       <p id="api-lan" class="api-lan" hidden>On your network: <b class="mono" id="api-lan-url" title="Copy the network address"></b></p>
       <p class="api-note">Works with any OpenAI SDK — point <b class="mono">base_url</b> at the endpoint.</p>
 
@@ -163,7 +177,7 @@
       <span class="head-title"><span class="back" data-back>← Back</span><span class="lbl">Settings</span><b class="mono head-version" id="app-version">—</b></span>
       <span class="head-actions">
         <span id="update-status" class="update-status" hidden></span>
-        <button id="btn-check-update" class="update-check-btn" type="button">Check for updates</button>
+        <button id="btn-check-update" class="update-check-btn" type="button"><svg class="update-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"></path><path d="M21 3v6h-6"></path></svg><span id="update-check-label">Check for updates</span></button>
       </span>
     </div>
     <div class="settings-section">Compute Mode</div>
@@ -173,12 +187,6 @@
       <button class="seg-btn" type="button" data-mode="llm">LLM</button>
     </div>
     <p id="mode-hint" class="settings-note">Balances mining and the local LLM from free VRAM.</p>
-    <div class="settings-rows mode-share">
-      <label class="settings-row toggle-row">
-        <span class="row-text"><span class="rk">Share the local LLM on my network</span><span id="share-note" class="row-sub"></span></span>
-        <input id="set-share" class="toggle" type="checkbox" />
-      </label>
-    </div>
 
     <div class="settings-section">Connection</div>
     <div class="conn-grid">
@@ -192,18 +200,27 @@
       </div>
     </div>
 
+    <!-- Like merge mining was: an optional address, and blank means off. -->
+    <div class="settings-section">CPU Mining <span class="badge-xmr">XMR</span></div>
+    <div class="xmr-row">
+      <input id="set-xmr" class="field-box xmr-input" type="text" spellcheck="false" placeholder="Paste your 4… or 8… Monero address (optional)" />
+      <select id="set-cpu-threads" class="rv-input cpu-threads" title="CPU threads for Monero"></select>
+    </div>
+    <p id="cpu-note" class="settings-note one-line" hidden></p>
+
+    <!-- One card, a row per switch, each saying what it does. -->
     <div class="settings-section">Background</div>
-    <div class="settings-rows">
-      <label class="settings-row toggle-row">
-        <span class="rk">Keep running in the tray when I close the window</span>
+    <div class="bg-list">
+      <label class="bg-row">
+        <span class="bg-text"><span class="rk">Keep in the tray</span><span class="bg-desc">Closing the window keeps it mining. The tray icon opens it again.</span></span>
         <input id="pref-tray" class="toggle" type="checkbox" />
       </label>
-      <label class="settings-row toggle-row">
-        <span class="rk">Start with my computer, and start mining</span>
+      <label class="bg-row">
+        <span class="bg-text"><span class="rk">Start at login</span><span class="bg-desc">Opens in the tray and starts mining when you log in.</span></span>
         <input id="pref-startup" class="toggle" type="checkbox" />
       </label>
-      <label class="settings-row toggle-row">
-        <span class="row-text"><span class="rk">Only mine when my computer is idle</span><span class="row-sub">After 5 minutes without keyboard or mouse use. Pauses when you&#39;re back.</span></span>
+      <label class="bg-row">
+        <span class="bg-text"><span class="rk">Only when idle</span><span class="bg-desc">Mines after 5 minutes without keyboard or mouse, and pauses when you're back.</span></span>
         <input id="pref-idle" class="toggle" type="checkbox" />
       </label>
     </div>

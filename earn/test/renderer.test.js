@@ -86,6 +86,7 @@ function makeFullApi() {
     copyText: jest.fn(),
     fitWindow: jest.fn(),
     onStats: jest.fn((cb) => { cbs.stats = cb; }),
+    onCpuStats: jest.fn((cb) => { cbs.cpu = cb; }),
     onLog: jest.fn((cb) => { cbs.log = cb; }),
     onEvent: jest.fn(),
     onEngine: jest.fn((cb) => { cbs.engine = cb; }),
@@ -235,10 +236,13 @@ describe('boot with the full bridge', () => {
   // keeps earning. Settings are persisted FROM currentSettings(), so the value
   // has to survive a round trip it is never shown in — otherwise the first
   // Start quietly erases it and ends the earnings we kept it for.
-  it('shares the local LLM on the network from Settings', async () => {
+  it('shares the local LLM on the network from the API tab', async () => {
     const { api, cbs } = makeFullApi();
     api.setShareLlm = jest.fn();
     await boot({ api });
+    // Beside the endpoint it shares, not in Settings.
+    expect($('view-api').contains($('set-share'))).toBe(true);
+    expect($('view-settings').contains($('set-share'))).toBe(false);
     const flip = (on) => {
       $('set-share').checked = on;
       $('set-share').dispatchEvent(new window.Event('change', { bubbles: true }));
@@ -256,9 +260,9 @@ describe('boot with the full bridge', () => {
 
     // main reports the gate up: the first address is the one shown.
     makeReady(cbs, { lan: { urls: ['http://192.168.0.220:8000/v1', 'http://10.0.0.7:8000/v1'], error: null } });
-    expect($('share-note').textContent).toBe('Other devices can use it at http://192.168.0.220:8000/v1, with no key.');
-    // A long address can cut the one-line note short, so the whole note is its tooltip.
-    expect($('share-note').title).toBe('Other devices can use it at http://192.168.0.220:8000/v1, with no key.');
+    expect($('share-note').textContent).toBe('Other devices on your network can use it, with no key.');
+    // The whole note is its tooltip too, in case it is cut short.
+    expect($('share-note').title).toBe('Other devices on your network can use it, with no key.');
     expect($('api-lan').hidden).toBe(false);
     expect($('api-lan-url').textContent).toBe('http://192.168.0.220:8000/v1');
     expect($('connect-reach').textContent).toBe('this computer and your network');
@@ -472,6 +476,7 @@ describe('boot with the full bridge', () => {
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenCalledWith({
       address: ADDR, worker: 'w1', region: 'eu1', mode: 'auto', mdlAddress: '', shareLlm: false,
+      cpuMining: false, xmrAddress: '', cpuThreads: 0,
     });
     expect($('addr-static').hidden).toBe(false);
     expect($('addr-static').textContent).toBe(ADDR);
@@ -548,6 +553,7 @@ describe('boot with the full bridge', () => {
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenLastCalledWith({
       address: ADDR, worker: 'rig01', region: 'us2', mode: 'mining', mdlAddress: '', shareLlm: false,
+      cpuMining: false, xmrAddress: '', cpuThreads: 0,
     });
     // A new run forgets the last run's card, so an engine that names none (an
     // older core, or a rig with no CUDA device list to report) shows the detected
@@ -610,6 +616,7 @@ describe('boot with the full bridge', () => {
 
     cbs.llm({ note: 'downloading model gemma… 42%' });
     expect($('llm-hero-detail').textContent).toBe('downloading model gemma… 42%');
+    expect($('llm-hero-detail').classList.contains('quiet')).toBe(false);
     expect($('llm-hero-dot').className).toBe('dot2 busy');
 
     cbs.llm({ note: 'Starting…' });
@@ -623,6 +630,8 @@ describe('boot with the full bridge', () => {
     // …and so does being ready, so a stale note can't linger over a live model.
     makeReady(cbs, { note: 'Starting…' });
     expect($('llm-hero-detail').textContent).toBe('gemma');
+    expect($('llm-hero-detail').classList.contains('quiet')).toBe(true);
+    expect($('llm-col').title).toBe('gemma');
     expect($('llm-hero-dot').className).toBe('dot2 on');
   });
 
@@ -633,6 +642,7 @@ describe('boot with the full bridge', () => {
     expect($('llm-hero-dot').className).toBe('dot2 err');
     expect($('llm-hero-detail').textContent).toBe('GPU died');
     expect($('llm-hero-detail').classList.contains('err')).toBe(true);
+    expect($('llm-hero-detail').classList.contains('quiet')).toBe(false);
     expect($('llm-hero-tps').textContent).toBe('0.0');
     makeReady(cbs);
     expect($('llm-hero-tps').textContent).toBe('12.3');
@@ -888,6 +898,8 @@ describe('boot with the full bridge', () => {
     expect(api.checkForUpdate).toHaveBeenCalledTimes(1);
     expect($('btn-check-update').disabled).toBe(true);
     expect($('btn-check-update').textContent).toBe('Checking…');
+    expect($('btn-check-update').classList.contains('checking')).toBe(true);
+    expect($('btn-check-update').querySelector('svg')).not.toBeNull();
     cbs.update(null);
     cbs.update({ show: true, phase: 'checking', text: 'Checking for updates…' });
     expect($('update-status').hidden).toBe(true);
@@ -898,6 +910,7 @@ describe('boot with the full bridge', () => {
     expect($('update-status').textContent).toBe('Up to date');
     expect($('btn-check-update').disabled).toBe(false);
     expect($('btn-check-update').textContent).toBe('Check for updates');
+    expect($('btn-check-update').classList.contains('checking')).toBe(false);
     cbs.update({ show: true, phase: 'none', text: 'Still up to date', transient: true });
     jest.advanceTimersByTime(5000);
     expect($('update-status').hidden).toBe(true);
@@ -1343,5 +1356,326 @@ describe('Background settings: tray, start with the computer, idle-only', () => 
     api.getPrefs = jest.fn().mockResolvedValue(null);
     await boot({ api });
     expect($('pref-tray').checked).toBe(false);
+  });
+});
+
+// ── Monero on the CPU ────────────────────────────────────────────────────────
+
+describe('CPU mining', () => {
+  const XMR_ADDR = '87wTMj88rEGV3BFiYXJc2UHeTGmHikMRWAvAskmPgaF3PZxuxonkKaJZsprNmuhM1Aca7P6UbyatGFHkQfUTYgoNN1JxND9';
+  const CPU = { available: 8, auto: 7, reason: null, canMine: true };
+  const change = (elm) => elm.dispatchEvent(new window.Event('change', { bubbles: true }));
+  const options = () => Array.from($('set-cpu-threads').options).map((o) => o.textContent);
+  // The note under the address shows only a problem.
+  const noteHidden = () => $('cpu-note').hidden && $('cpu-note').textContent === '';
+
+  // A bridge with CPU mining set up the way main answers.
+  function cpuApi(settings, cpu) {
+    const { api, cbs } = makeFullApi();
+    api.getSettings.mockResolvedValue(Object.assign({ address: ADDR, worker: 'w1', region: 'us2' }, settings));
+    api.getConfig.mockResolvedValue({ regions: {}, defaults: { region: 'us2' }, cpu: cpu === undefined ? CPU : cpu });
+    api.checkXmrAddress = jest.fn((a) => Promise.resolve(a === XMR_ADDR
+      ? { ok: true, kind: 'subaddress' } : { ok: false, error: 'the checksum does not match: check for a typo' }));
+    api.getXmrBalance = jest.fn().mockResolvedValue({ earned: 0.0125, pending: 0.0125, paid: 0 });
+    api.onIdle = jest.fn((cb) => { cbs.idle = cb; });
+    return { api, cbs };
+  }
+
+  it('is off by default: a blank address, no CPU line, and the note says what blank means', async () => {
+    const { api } = cpuApi({});
+    await boot({ api });
+    expect($('set-xmr').value).toBe('');
+    expect(noteHidden()).toBe(true);
+    expect($('cpu-row').hidden).toBe(true);
+    // The activity card is the GPU's alone, as before CPU mining.
+    expect($('cpu-shares').hidden).toBe(true);
+    expect($('chart-card').classList.contains('with-cpu')).toBe(false);
+    expect($('activity-label').textContent).toBe('GPU Activity');
+    expect($('mine-label').textContent).toBe('Mining');
+    expect(options()).toEqual(['Auto (7 threads)', '1 thread', '2 threads', '3 threads', '4 threads', '5 threads', '6 threads', '7 threads']);
+    expect(api.checkXmrAddress).not.toHaveBeenCalled();
+    click($('btn-start'));
+    expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ cpuMining: false, xmrAddress: '', cpuThreads: 0 }));
+  });
+
+  // Mining mode greyed START out without a Pearl address, though main runs the
+  // CPU miner on its own.
+  it('a Monero address alone can START, and resume, in Mining mode', async () => {
+    let h = cpuApi({ address: '', mode: 'mining' });
+    await boot({ api: h.api });
+    expect($('btn-start').disabled).toBe(true);
+    setInput($('set-xmr'), XMR_ADDR);
+    // Not until the check says it is good. Until then the line says it is
+    // checking, not that the address is wrong.
+    expect($('btn-start').disabled).toBe(true);
+    expect($('cpu-meta').textContent).toBe('checking address…');
+    jest.advanceTimersByTime(400);
+    await flush();
+    expect($('btn-start').disabled).toBe(false);
+    expect($('cpu-meta').textContent).toBe('ready to start');
+    expect($('cpu-meta').title).toBe('ready to start');
+    click($('btn-start'));
+    expect(h.api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ address: '', cpuMining: true, xmrAddress: XMR_ADDR }));
+    // Only the CPU mines: the GPU's dot stays grey.
+    expect($('mine-dot').className).toBe('dot2');
+    click($('btn-stop'));
+    setInput($('set-xmr'), XMR_ADDR + 'x');
+    expect($('btn-start').disabled).toBe(true);
+
+    h = cpuApi({ address: '', mode: 'mining', xmrAddress: XMR_ADDR, resumeMining: true });
+    await boot({ api: h.api });
+    expect(h.api.startMiner).toHaveBeenCalledTimes(1);
+    h = cpuApi({ address: '', mode: 'mining', xmrAddress: XMR_ADDR + 'x', resumeMining: true });
+    await boot({ api: h.api });
+    expect(h.api.startMiner).not.toHaveBeenCalled();
+  });
+
+  // Main forgets why the last run's CPU miner did not start, so the stopped
+  // line said START would start it.
+  it('stopped, the CPU line says when START will not run it', async () => {
+    const meta = async (cpu, settings) => {
+      const h = cpuApi(Object.assign({ xmrAddress: XMR_ADDR }, settings), cpu);
+      await boot({ api: h.api });
+      return $('cpu-meta').textContent;
+    };
+    expect(await meta(Object.assign({}, CPU, { worker: false }))).toBe("no CPU miner here");
+    expect(await meta({ available: 1, auto: 0, canMine: false, reason: 'x' })).toBe("can't run here");
+    expect(await meta({ available: 4, auto: 0, canMine: true, reason: 'x' })).toBe("off: set CPU threads");
+    expect(await meta({ available: 4, auto: 0, canMine: true, reason: 'x' }, { cpuThreads: 2 })).toBe('ready to start');
+    expect(await meta(null)).toBe('ready to start');
+    // Picking a count in Settings changes it at once.
+    await meta({ available: 4, auto: 0, canMine: true, reason: 'x' });
+    $('set-cpu-threads').value = '2';
+    change($('set-cpu-threads'));
+    expect($('cpu-meta').textContent).toBe('ready to start');
+  });
+
+  it('on with a good address: the balance, the CPU line, and the settings START sends', async () => {
+    // A saved address is what turns it on, whatever cpuMining says.
+    const { api, cbs } = cpuApi({ cpuMining: false, xmrAddress: XMR_ADDR, cpuThreads: 3 });
+    await boot({ api });
+    expect(api.checkXmrAddress).toHaveBeenCalledWith(XMR_ADDR);
+    expect($('set-xmr').value).toBe(XMR_ADDR);
+    expect($('set-cpu-threads').value).toBe('3');
+    expect(noteHidden()).toBe(true);
+    expect($('cpu-row').hidden).toBe(false);
+    expect($('cpu-meta').textContent).toBe('ready to start');
+    expect($('cpu-row').title).toContain('0.0125 XMR earned');
+    // Monero joins the activity card: a third reading, named by its coin, and
+    // its shares beside Pearl's.
+    expect($('cpu-shares').hidden).toBe(false);
+    expect($('chart-card').classList.contains('with-cpu')).toBe(true);
+    expect($('activity-label').textContent).toBe('GPU & CPU Activity');
+    expect($('mine-label').textContent).toBe('Pearl');
+    // "ready to start" adds nothing to the grey dot, so it stays in the tooltip.
+    expect($('cpu-meta').classList.contains('quiet')).toBe(true);
+    expect($('cpu-row').title).toBe('ready to start · 0.0125 XMR earned');
+
+    click($('btn-start'));
+    expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ cpuMining: true, xmrAddress: XMR_ADDR, cpuThreads: 3 }));
+    // Locked while mining: the settings ride on the START.
+    expect($('set-xmr').disabled).toBe(true);
+    expect($('set-cpu-threads').disabled).toBe(true);
+    expect($('cpu-meta').textContent).toBe('starting…');
+    expect($('cpu-dot').className).toBe('dot2');
+
+    // Its own channel: an LLM-only START sends no GPU ticks. Those leave the
+    // CPU line alone.
+    const tick = (cpu) => cbs.cpu(cpu);
+    tick({ state: 'starting', hashrate: '0.00', accepted: 0, rejected: 0, threads: 3, error: null });
+    cbs.stats({ total: '1.0', acceptedLabel: '0', uptime: '00m 01s', estDay: '$0.01', points: [1] });
+    expect($('cpu-meta').textContent).toBe('starting…');
+    expect($('cpu-dot').className).toBe('dot2 busy');
+    tick({ state: 'dataset', hashrate: '0.00', accepted: 0, rejected: 0, threads: 3, error: null });
+    expect($('cpu-meta').textContent).toBe('building its dataset…');
+    expect($('cpu-meta').classList.contains('quiet')).toBe(false);
+    tick({ state: 'mining', hashrate: '1.85', accepted: 4, rejected: 0, threads: 3, error: null });
+    expect($('cpu-rate').textContent).toBe('1.85');
+    expect($('cpu-meta').textContent).toBe('4 accepted · 3 threads');
+    // The count moves to the stats; the line is off the card.
+    expect($('cpu-accepted').textContent).toBe('4');
+    expect($('cpu-meta').classList.contains('quiet')).toBe(true);
+    expect($('cpu-dot').className).toBe('dot2 on');
+    tick({ state: 'mining', hashrate: '1.85', accepted: 4, rejected: 1, threads: 3, error: null });
+    expect($('cpu-meta').textContent).toBe('4 accepted · 1 rejected · 3 threads');
+    tick({ state: 'odd', hashrate: '0.00', accepted: 0, rejected: 0, threads: 3, error: null });
+    expect($('cpu-meta').textContent).toBe('odd');
+    expect($('cpu-dot').className).toBe('dot2');
+    // A pool it can't reach, while it runs.
+    tick({ state: 'starting', hashrate: '0.00', accepted: 0, rejected: 0, threads: 3, error: null,
+      pool: 'can\'t reach the Monero pool: getaddrinfo ENOTFOUND de.monero.herominers.com' });
+    expect($('cpu-meta').textContent).toBe('can\'t reach the Monero pool: getaddrinfo ENOTFOUND de.monero.herominers.com');
+    expect($('cpu-meta').classList.contains('err')).toBe(true);
+    expect($('cpu-dot').className).toBe('dot2 err');
+    tick({ state: 'stopped', hashrate: '0.00', accepted: 0, rejected: 0, threads: 0, error: 'the CPU miner is missing' });
+    expect($('cpu-meta').textContent).toBe('stopped: the CPU miner is missing');
+    expect($('cpu-meta').classList.contains('err')).toBe(true);
+    expect($('cpu-meta').classList.contains('quiet')).toBe(false);
+    expect($('cpu-dot').className).toBe('dot2 err');
+    tick(undefined);
+    expect($('cpu-meta').textContent).toBe('starting…');
+
+    // Idle-only pauses it with the GPU miner.
+    cbs.idle({ paused: true, idleAfterSec: 300 });
+    expect($('cpu-meta').textContent).toBe('paused while in use');
+    cbs.idle({ paused: false });
+
+    // The balance refreshes with the Pearl one.
+    api.getXmrBalance.mockResolvedValue({ earned: 0.5 });
+    jest.advanceTimersByTime(60000);
+    await flush();
+    expect($('cpu-row').title).toContain('0.5000 XMR earned');
+
+    click($('btn-stop'));
+    expect($('set-xmr').disabled).toBe(false);
+    expect($('cpu-rate').textContent).toBe('0.00');
+    expect($('cpu-accepted').textContent).toBe('0');
+  });
+
+  it('checks the address as it is typed, and says what is wrong', async () => {
+    const { api } = cpuApi({});
+    await boot({ api });
+    expect($('cpu-row').hidden).toBe(true);
+    setInput($('set-xmr'), XMR_ADDR + 'x');
+    // Typing turns it on before the check answers.
+    expect($('cpu-row').hidden).toBe(false);
+    expect(noteHidden()).toBe(true);
+    setInput($('set-xmr'), XMR_ADDR.slice(0, -1) + '8');
+    jest.advanceTimersByTime(400);
+    await flush();
+    expect(api.checkXmrAddress).toHaveBeenCalledTimes(1);
+    // The same line, in red, so Settings keeps its height.
+    expect($('cpu-note').textContent).toBe('This address won\'t work: the checksum does not match: check for a typo.');
+    expect($('cpu-note').classList.contains('err')).toBe(true);
+    expect($('cpu-meta').textContent).toBe('check the address');
+    expect($('cpu-row').title).not.toContain('XMR earned');
+
+    setInput($('set-xmr'), XMR_ADDR);
+    jest.advanceTimersByTime(400);
+    await flush();
+    expect($('cpu-note').classList.contains('err')).toBe(false);
+    expect($('cpu-row').title).toContain('0.0125 XMR earned');
+    click($('btn-start'));
+    expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ cpuMining: true, xmrAddress: XMR_ADDR }));
+    click($('btn-stop'));
+
+    // Cleared: off at once, nothing to check, no balance.
+    setInput($('set-xmr'), '  ');
+    expect($('cpu-row').hidden).toBe(true);
+    expect(noteHidden()).toBe(true);
+    jest.advanceTimersByTime(400);
+    await flush();
+    expect($('cpu-row').title).not.toContain('XMR earned');
+    click($('btn-start'));
+    expect(api.startMiner).toHaveBeenLastCalledWith(expect.objectContaining({ cpuMining: false, xmrAddress: '' }));
+  });
+
+  it('a check or a balance that comes back for an address since changed is dropped', async () => {
+    const { api } = cpuApi({});
+    let release;
+    api.checkXmrAddress.mockImplementationOnce(() => new Promise((r) => { release = r; }));
+    await boot({ api });
+    setInput($('set-xmr'), XMR_ADDR);
+    jest.advanceTimersByTime(400);
+    setInput($('set-xmr'), 'other');
+    release({ ok: true, kind: 'subaddress' });
+    await flush();
+    expect($('cpu-note').classList.contains('err')).toBe(false);
+    expect(api.getXmrBalance).not.toHaveBeenCalled();
+
+    let pay;
+    api.getXmrBalance.mockImplementationOnce(() => new Promise((r) => { pay = r; }));
+    setInput($('set-xmr'), XMR_ADDR);
+    jest.advanceTimersByTime(400);
+    await flush();
+    setInput($('set-xmr'), 'something else');
+    pay({ earned: 9 });
+    await flush();
+    expect($('cpu-row').title).not.toContain('XMR earned');
+    // A pool that answers with no balance leaves it blank.
+    api.getXmrBalance.mockResolvedValueOnce(null);
+    setInput($('set-xmr'), XMR_ADDR);
+    jest.advanceTimersByTime(400);
+    await flush();
+    expect($('cpu-row').title).not.toContain('XMR earned');
+  });
+
+  it('typing an address and the thread count update the section', async () => {
+    const { api } = cpuApi({});
+    await boot({ api });
+    setInput($('set-xmr'), XMR_ADDR);
+    jest.advanceTimersByTime(400);
+    await flush();
+    expect($('cpu-row').hidden).toBe(false);
+    expect(api.getXmrBalance).toHaveBeenCalledWith(XMR_ADDR);
+    $('set-cpu-threads').value = '5';
+    change($('set-cpu-threads'));
+    expect(noteHidden()).toBe(true);
+    click($('btn-start'));
+    expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ cpuMining: true, cpuThreads: 5 }));
+  });
+
+  it('a build without the CPU miner says so, and a saved address can only be cleared', async () => {
+    const none = Object.assign({}, CPU, { worker: false });
+    let h = cpuApi({}, none);
+    await boot({ api: h.api });
+    expect($('cpu-note').textContent).toBe('This build has no CPU miner (llmjob-xmr-worker is not beside the app).');
+    expect($('set-xmr').disabled).toBe(true);
+
+    h = cpuApi({ xmrAddress: XMR_ADDR }, none);
+    await boot({ api: h.api });
+    expect($('set-xmr').disabled).toBe(false);
+    setInput($('set-xmr'), '');
+    expect($('cpu-row').hidden).toBe(true);
+    expect($('set-xmr').disabled).toBe(true);
+  });
+
+  it('a default capped by L3 cache shows in the Auto count, with no note', async () => {
+    const l3 = { available: 12, auto: 6, canMine: true,
+      reason: 'one thread per 2 MB of L3 cache, and this CPU has 12 MB; more threads add power, not hashrate' };
+    const h = cpuApi({ xmrAddress: XMR_ADDR }, l3);
+    await boot({ api: h.api });
+    expect(noteHidden()).toBe(true);
+    expect(options()[0]).toBe('Auto (6 threads)');
+    $('set-cpu-threads').value = '8';
+    change($('set-cpu-threads'));
+    expect(noteHidden()).toBe(true);
+  });
+
+  it('notes for a computer where it is off by default, or cannot run, or main did not say', async () => {
+    const off = { available: 4, auto: 0, canMine: true, reason: 'off by default with 4 CPUs (it turns on by itself above 4 CPUs and 8 GB); set a thread count to mine anyway' };
+    let h = cpuApi({ xmrAddress: XMR_ADDR }, off);
+    await boot({ api: h.api });
+    expect($('cpu-note').textContent).toBe('Auto: ' + off.reason + '.');
+    expect(options()).toEqual(['Auto (off)', '1 thread', '2 threads', '3 threads']);
+    $('set-cpu-threads').value = '3';
+    change($('set-cpu-threads'));
+    expect(noteHidden()).toBe(true);
+
+    // A saved count above what this computer allows shows the most it allows.
+    h = cpuApi({ cpuThreads: 12 }, off);
+    await boot({ api: h.api });
+    expect($('set-cpu-threads').value).toBe('3');
+
+    h = cpuApi({ xmrAddress: XMR_ADDR }, { available: 1, auto: 0, canMine: false, reason: 'this app may use only 1 CPU here, and one always stays free for the GPU miner' });
+    await boot({ api: h.api });
+    expect($('cpu-note').textContent).toBe('Can\'t run here: this app may use only 1 CPU here, and one always stays free for the GPU miner.');
+    expect(options()).toEqual(['Auto (off)']);
+
+    h = cpuApi({ xmrAddress: XMR_ADDR, cpuThreads: 'x' }, null);
+    await boot({ api: h.api });
+    expect(noteHidden()).toBe(true);
+    expect(options()).toEqual(['Auto (off)']);
+    $('set-cpu-threads').value = '0';
+    change($('set-cpu-threads'));
+  });
+
+  it('without the bridge\'s Monero calls, nothing is checked and no balance shows', async () => {
+    const { api } = cpuApi({ xmrAddress: XMR_ADDR });
+    delete api.checkXmrAddress;
+    delete api.getXmrBalance;
+    await boot({ api });
+    expect($('cpu-meta').textContent).toBe('check the address');
+    expect($('cpu-row').title).not.toContain('XMR earned');
   });
 });

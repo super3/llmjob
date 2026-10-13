@@ -19,6 +19,12 @@ function formatHashrate(ths) {
   return (Number(ths) || 0).toFixed(1);
 }
 
+// The CPU miner's H/s as kH/s, e.g. 1845.2 -> '1.85'. Monero CPU rates run
+// from a few hundred H/s to a few tens of kH/s.
+function formatKhs(hs) {
+  return ((Number(hs) || 0) / 1000).toFixed(2);
+}
+
 function formatInt(n) {
   return (Number(n) || 0).toLocaleString('en-US');
 }
@@ -52,5 +58,5 @@ function formatDeviceLabel(names) {
 }
 
 module.exports = {
-  pad2, formatUptime, formatHashrate, formatInt, formatLogTime, formatDeviceLabel,
+  pad2, formatUptime, formatHashrate, formatKhs, formatInt, formatLogTime, formatDeviceLabel,
 };
