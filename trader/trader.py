@@ -6,7 +6,7 @@
 # first. Anything the book can't take now waits for the next run.
 # It trades only when DRY_RUN=0 and it runs in Railway's production environment; anything else just logs
 # what it would do. Standard library only.
-import hashlib, hmac, json, math, os, sys, time, urllib.error, urllib.parse, urllib.request
+import hashlib, hmac, json, math, os, signal, sys, time, urllib.error, urllib.parse, urllib.request
 
 # Paths from SafeTrade's REST API page (safe.trade/api/v2): private calls under /trade (balances at
 # /trade/account/balances/spot; orders at /trade/market/orders, /{id} and /{id}/cancel), public data under
@@ -23,6 +23,9 @@ SECRET = os.environ.get("SAFETRADE_API_SECRET", "")
 MAX_SLIPPAGE = float(os.environ.get("MAX_SLIPPAGE", "0.03"))   # sell down to 3% under the best bid
 MIN_PRICE = float(os.environ.get("MIN_PRICE", "0"))           # never sell under this (USDT per PRL)
 MIN_VOLUME = float(os.environ.get("MIN_VOLUME", "0.5"))        # don't bother with less PRL than this
+# A run that hangs keeps the cron service busy, and Railway skips every later run until it ends, so a run
+# is stopped after this long.
+MAX_RUN_SECONDS = int(os.environ.get("MAX_RUN_SECONDS", "300"))
 
 
 def now_ms():
@@ -276,11 +279,19 @@ def main():
     if not KEY or not SECRET:
         log("SAFETRADE_API_KEY and SAFETRADE_API_SECRET aren't set; nothing to do")
         return 0
+    log("run started")
+
+    def too_long(*_):
+        raise Fail(f"run took over {MAX_RUN_SECONDS} s; stopped so the next hourly run isn't skipped")
+    signal.signal(signal.SIGALRM, too_long)
+    signal.alarm(MAX_RUN_SECONDS)
     try:
         run(live)
     except Fail as e:
         log(f"FAILED: {e}")
         return 1
+    finally:
+        signal.alarm(0)
     return 0
 
 
