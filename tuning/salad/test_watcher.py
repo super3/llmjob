@@ -761,10 +761,13 @@ class TestCreditRatio(Base):
         with open(os.path.join(TMP, "report.md")) as f:
             return f.read()
 
+    def test_the_first_line_starts_with_a_readable_time(self):
+        self.assertTrue(self.report().startswith("**08:00 UTC, Fri 15 Jan** · PRL $1.390 · "))
+
     def test_the_table_counts_on_what_the_pool_credits(self):
         report = self.report()
         # 75% of 8 PRL is 6, mined for $6.00: $1.000 each. Worth 6 × 1.39 − 6.00 = +2.34.
-        self.assertIn("· $0.001170/TH-hr × 75% credited = $0.000878 ·", report)
+        self.assertIn("· $0.001170/TH-hr × 75% credited = $0.000878\n", report)
         self.assertIn("| **6.00** | **6.000** | **+2.34** |", report)
         self.assertIn("is worth 8.000 PRL at the network's rate, and the pool has credited 75% of that, so we expect "
                       "6.000 PRL: $1.000 each (break-even)", report)

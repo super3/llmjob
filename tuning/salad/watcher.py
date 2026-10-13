@@ -51,6 +51,9 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
 def now(): return time.time()
 def hm(t=None): return time.strftime("%H:%M", time.gmtime(t or now()))
 def iso(t): return dt.datetime.fromtimestamp(t, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def stamp(t):
+    d = dt.datetime.fromtimestamp(t, dt.timezone.utc)
+    return f"{d:%H:%M} UTC, {d:%a} {d.day} {d:%b}"
 
 
 def parse_iso(s):
@@ -903,7 +906,7 @@ class W:
         credit = self.cfg["credit_start"] + self.cfg["credit_offset"] - spend
         hours = credit / all_cost if all_cost > 0 else None
         rate = f"${mk['usd_th_hr']:.6f}/TH-hr" + (f" × {y:.0%} credited = ${usd:.6f}" if y < 1 else "")
-        lines = [f"PRL ${price:.3f} · {rate} · {iso(t)}", "",
+        lines = [f"**{stamp(t)}** · PRL ${price:.3f} · {rate}", "",
                  "| Box | TH/s | $/hr | Profit/hr | Margin | Spent $ | PRL | Profit $ |",
                  "|---|---|---|---|---|---|---|---|", *rows, "",
                  "Boxes are sorted by profit an hour. Box: ⛏️ on a PC · ⏳ waiting for a PC · ⏹️ stopped, then the group "
