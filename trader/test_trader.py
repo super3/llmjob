@@ -47,6 +47,8 @@ class Base(unittest.TestCase):
         t.log = self.logs.append
         t.MAX_SLIPPAGE, t.MIN_PRICE, t.MIN_VOLUME = 0.03, 0.0, 0.5
         t.MARKET = "prlusdt"
+        t.PROXY = ""
+        t.out_ip = lambda: "203.0.113.7"
         os.environ["DRY_RUN"] = "0"
         os.environ["RAILWAY_ENVIRONMENT_NAME"] = "production"
 
@@ -263,6 +265,51 @@ class TestSafety(Base):
         self.assertEqual(seen["X-auth-apikey"], "k")
         self.assertEqual(seen["X-auth-nonce"], "1584087661035")
         self.assertEqual(seen["X-auth-signature"], want)
+
+class TestProxy(Base):
+    def test_calls_go_through_the_static_proxy(self):
+        seen = {}
+
+        class Resp:
+            status = 200
+            def read(self): return b"[]"
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        class Opener:
+            def open(self, req, timeout):
+                seen["url"] = req.full_url
+                return Resp()
+
+        def build_opener(*handlers):
+            seen["proxies"] = handlers[0].proxies
+            return Opener()
+
+        def direct(req, timeout):
+            raise AssertionError("went out directly")
+
+        real = t.urllib.request.build_opener, t.urllib.request.urlopen
+        t.urllib.request.build_opener, t.urllib.request.urlopen = build_opener, direct
+        t.PROXY = "http://user:secret@proxy.example:9293"
+        try:
+            self.assertEqual(HTTP("GET", "/account/balances", auth=True), (200, []))
+        finally:
+            t.urllib.request.build_opener, t.urllib.request.urlopen = real
+        self.assertEqual(seen["proxies"], {"http": t.PROXY, "https": t.PROXY})
+        self.assertTrue(seen["url"].endswith("/account/balances"))
+
+    def test_the_run_says_where_calls_go_out_without_the_login(self):
+        t.PROXY = "http://user:secret@proxy.example:9293"
+        self.go(Fake())
+        self.saw("run started: calls go out from 203.0.113.7 through the proxy at proxy.example:9293")
+        self.assertFalse(any("secret" in line for line in self.logs))
+
+    def test_a_refused_key_names_the_ip_to_whitelist(self):
+        fake = Fake()
+        fake.routes.insert(0, ("GET", r"/market/orders$", (403, {"raw": ""})))
+        self.assertEqual(self.go(fake), 1)
+        self.saw("open orders failed: HTTP 403 {\"raw\": \"\"} (calls go out from 203.0.113.7: is it on the key's IP whitelist?)")
+
 
 if __name__ == "__main__":
     unittest.main()
