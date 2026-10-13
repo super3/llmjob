@@ -433,9 +433,9 @@ class W:
 
     def xmr_sync(self, active, t):
         """Turn Monero on or off in a running group when config asks for it. The PATCH makes a new version of the
-        group, but a running instance keeps the command it started with, so the box is then restarted on the same
-        PC; it comes back on the new version about 2 minutes later. A refused update is tried again after 10
-        minutes."""
+        group, but a running instance keeps the command it started with, so the box is then restarted. It comes
+        back on the new version about 2 minutes later, possibly on another PC: the first restart (13 October)
+        moved the box. A refused update is tried again after 10 minutes."""
         for g in active:
             want = self.wants_xmr(g["name"])
             if g["ended"] or want == bool(g.get("xmr")) or t - g.get("xmr_try", 0) < 600:
@@ -450,7 +450,7 @@ class W:
                 if g.get("has_pc") and g.get("instance"):
                     rs, _ = http("POST", f"{CB}/{g['name']}/instances/{g['instance']}/restart")
                 event(f"MONERO {'ON' if want else 'OFF'} {g['name']}: miner {ver} on {res['cpu']} vCPUs and "
-                      f"{res['memory'] // 1024} GB; " + (f"box restarted on its PC (HTTP {rs})" if rs else
+                      f"{res['memory'] // 1024} GB; " + (f"box restarted (HTTP {rs})" if rs else
                                                          "it starts that way on its next PC"))
             else:
                 event(f"WARN Monero {'on' if want else 'off'} for {g['name']} refused: HTTP {s} {str(j)[:150]}")
