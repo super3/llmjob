@@ -94,7 +94,9 @@ input.field-box { user-select: text; }
 /* With Monero on, the card reads Pearl, Monero, LLM across the top, each
    tagged with the chip it runs on. */
 .chart-card.with-cpu .hero2 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.hw-tag { display: none; flex: none; height: 16px; align-items: center; padding: 0 5px; border-radius: 4px; background: #eef2fb; color: #3557b7; font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 10px; font-weight: 600; line-height: 1; }
+/* Centred on the label's letters rather than its line box, which sits 1-2px
+   higher: measured on the Mine card's pixels. */
+.hw-tag { display: none; flex: none; position: relative; top: 1px; height: 16px; align-items: center; padding: 1px 5px 0; border-radius: 4px; background: #eef2fb; color: #3557b7; font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 10px; font-weight: 600; line-height: 1; }
 .hw-tag.cpu { background: #fdf0e6; color: #b45309; }
 .chart-card.with-cpu .hw-tag { display: inline-flex; }
 /* Routine details (the model, the share count) move to the tooltip; a
