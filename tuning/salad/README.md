@@ -152,8 +152,8 @@ started with until it restarts. It comes back on the new version about 2 minutes
 - **Earnings** come from the pool, by worker (`<group>-g0`). The pool counts every accepted hash, so the XMR a box
   earned is its new hashes times what a hash earns (the last block's reward over the network difficulty, less the
   fee). The price is CoinGecko's. The address's pool balance also counts any other rig that mines to it.
-- **The rules** still judge every box on Pearl alone. Monero's earnings are shown in the table (a kH/s column, and
-  in Profit/hr, Margin and Profit $) but don't keep a slow PC or a weak class.
+- **The rules** still judge every box on Pearl alone. Monero's earnings are shown in the table (a kH/s column, an
+  XMR column with what each box has earned, and in Profit/hr, Margin and Profit $) but don't keep a slow PC or a weak class.
 
 ## Salad API notes
 
