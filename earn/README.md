@@ -645,9 +645,10 @@ replaces itself in place, and re-launches with the same arguments before mining
 core is always deleted first, so a release without one (or a failed download of
 it) leaves the 12.8 core in charge rather than last release's CUDA 13 core
 paired with a newer binary. The CPU worker, `llmjob-xmr-worker`, updates with
-it too. On a rig that mines Monero (`--xmr-address`), a start that finds the
-worker missing, not executable or from another release also fetches this
-release's copy, as does `update`. Opt out per-run with
+it on a rig that mines Monero (`--xmr-address`) or already has one; a
+Pearl-only rig never gets it. On a Monero rig, a start that finds the worker
+missing, not executable or from another release also fetches this release's
+copy, and `update` repairs one that is already there. Opt out per-run with
 `--no-update`, or update on demand without (re)starting a mine:
 
 ```bash

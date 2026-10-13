@@ -137,9 +137,12 @@ async function runExplicitUpdate() {
 
   const plan = planUpdate({ currentVersion: pkg.version, release, platform: process.platform });
   if (!plan.updateAvailable) {
-    if (plan.reason === 'up-to-date') log('already up to date (v' + pkg.version + ')');
-    if (plan.xmrWorkerUrl && selfUpdater.isPackaged()) await repairXmrWorker(plan.xmrWorkerUrl);
-    else if (plan.reason === 'asset-missing') log('v' + plan.latestVersion + ' is out but has no Linux CLI binary yet', process.stderr);
+    if (plan.reason === 'up-to-date') {
+      log('already up to date (v' + pkg.version + ')');
+      // `update` has no flags to say whether this rig mines Monero, so it only
+      // repairs a worker that is already there.
+      if (plan.xmrWorkerUrl && selfUpdater.isPackaged() && selfUpdater.hasXmrWorker()) await repairXmrWorker(plan.xmrWorkerUrl);
+    } else if (plan.reason === 'asset-missing') log('v' + plan.latestVersion + ' is out but has no Linux CLI binary yet', process.stderr);
     else if (plan.reason === 'unsupported-platform') log('self-update is only available for the Linux binary', process.stderr);
     else log('no newer release found', process.stderr);
     return 0;
@@ -197,7 +200,7 @@ async function maybeAutoUpdate(argv, settings) {
 
   log('updating ' + plan.currentVersion + ' → ' + plan.latestVersion + ' before starting…');
   try {
-    await selfUpdater.applyUpdate(plan);
+    await selfUpdater.applyUpdate(plan, undefined, { xmr: !!settings.xmrAddress });
     log('updated to v' + plan.latestVersion + '; restarting');
     return selfUpdater.reexec(argv);
   } catch (e) {

@@ -50,6 +50,7 @@ jest.mock('../src/cli/selfUpdater', () => ({
   fetchLatestRelease: jest.fn(),
   isPackaged: jest.fn(),
   applyUpdate: jest.fn(),
+  hasXmrWorker: jest.fn(),
   syncXmrWorker: jest.fn(),
   reexec: jest.fn(),
 }));
@@ -245,6 +246,7 @@ function applyDefaults(m) {
   m.selfUpdater.applyUpdate.mockResolvedValue('/opt/earn');
   m.selfUpdater.reexec.mockReturnValue(0);
   m.selfUpdater.syncXmrWorker.mockResolvedValue(false);
+  m.selfUpdater.hasXmrWorker.mockReturnValue(true);
   m.selfUpdate.planUpdate.mockReturnValue({ updateAvailable: false, reason: 'up-to-date' });
   m.PearlEngine.startReturns = undefined;
   m.cpuFacts.readCpuFacts.mockReturnValue({ cpus: 16, quotaCpus: null, memoryBytes: 32 * 2 ** 30, l3Bytes: null });
@@ -380,6 +382,9 @@ describe('update subcommand', () => {
       m.selfUpdate.planUpdate.mockReturnValue({ updateAvailable: false, reason: c.reason, latestVersion: '9.9.9' });
       await expect(m.run(['update'])).resolves.toBe(0);
       expect(allOut() + allErr()).toContain(c.text);
+      // One answer only: "already up to date" used to go on to "no newer
+      // release found".
+      if (c.reason === 'up-to-date') expect(allOut() + allErr()).not.toContain('no newer release found');
       expect(m.selfUpdate.planUpdate).toHaveBeenCalledWith({
         currentVersion: pkg.version, release: { version: '9.9.9' }, platform: process.platform,
       });
@@ -412,6 +417,15 @@ describe('update subcommand', () => {
     m3.selfUpdate.planUpdate.mockReturnValue({ updateAvailable: false, reason: 'up-to-date', xmrWorkerUrl: 'https://dl/w' });
     await m3.run(['update']);
     expect(m3.selfUpdater.syncXmrWorker).not.toHaveBeenCalled();
+
+    // Nor on a rig with no worker: `update` can't tell it mines Monero.
+    const m4 = load();
+    m4.selfUpdater.fetchLatestRelease.mockResolvedValue({ version: pkg.version });
+    m4.selfUpdater.isPackaged.mockReturnValue(true);
+    m4.selfUpdater.hasXmrWorker.mockReturnValue(false);
+    m4.selfUpdate.planUpdate.mockReturnValue({ updateAvailable: false, reason: 'up-to-date', xmrWorkerUrl: 'https://dl/w' });
+    await expect(m4.run(['update'])).resolves.toBe(0);
+    expect(m4.selfUpdater.syncXmrWorker).not.toHaveBeenCalled();
   });
 
   test('points a from-source run at the download instead of updating', async () => {
@@ -538,6 +552,8 @@ describe('auto-update on start', () => {
     m.selfUpdate.planUpdate.mockReturnValue({ updateAvailable: true, latestVersion: '9.9.9', currentVersion: pkg.version });
     await expect(quick(m)).resolves.toBe(42);
     expect(m.selfUpdater.reexec).toHaveBeenCalledWith(argvQuick);
+    // A Pearl-only rig: the worker comes along only if one is already there.
+    expect(m.selfUpdater.applyUpdate).toHaveBeenCalledWith(expect.anything(), undefined, { xmr: false });
   });
 
   test('keeps mining on the old version when the auto-update fails', async () => {

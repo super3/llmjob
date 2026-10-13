@@ -329,7 +329,8 @@ static unsigned usableCpus() {
 
 static randomx_flags gFlags = RANDOMX_FLAG_DEFAULT;   // VM flags, without FULL_MEM or V2
 static bool gTryLargePages = true;
-static bool gLargeVm = false;                         // scratchpads in large pages worked
+// Scratchpads in large pages worked. Atomic: every mining thread creates a VM.
+static std::atomic<bool> gLargeVm{false};
 static randomx_cache* gCache = nullptr;
 static randomx_dataset* gDataset = nullptr;
 static const char* gPages = "normal";                 // how the dataset is backed
@@ -423,7 +424,7 @@ static randomx_vm* createFullVm(bool v2) {
   randomx_flags f = static_cast<randomx_flags>(gFlags | RANDOMX_FLAG_FULL_MEM | (v2 ? RANDOMX_FLAG_V2 : 0));
   if (gTryLargePages) {
     randomx_vm* vm = randomx_create_vm(static_cast<randomx_flags>(f | RANDOMX_FLAG_LARGE_PAGES), nullptr, gDataset);
-    if (vm) { gLargeVm = true; return vm; }
+    if (vm) { gLargeVm.store(true); return vm; }
   }
   return randomx_create_vm(f, nullptr, gDataset);
 }
@@ -668,6 +669,9 @@ static bool checkDataset(bool v2) {
 }
 
 static void datasetThread() {
+  // It builds the cache and checks each dataset itself. On Linux priority is
+  // per thread, so without this that work ran at normal priority.
+  applyThreadPriority();
   for (;;) {
     uint8_t seed[32];
     bool v2;
@@ -720,7 +724,7 @@ static void datasetThread() {
       bump();
     }
     emit("{\"type\":\"dataset\",\"state\":\"ready\",\"seed\":\"" + toHex(seed, 32) + "\",\"ms\":"
-         + std::to_string(ms) + ",\"pages\":\"" + gPages + "\",\"vmLargePages\":" + (gLargeVm ? "true" : "false") + "}");
+         + std::to_string(ms) + ",\"pages\":\"" + gPages + "\",\"vmLargePages\":" + (gLargeVm.load() ? "true" : "false") + "}");
   }
 }
 

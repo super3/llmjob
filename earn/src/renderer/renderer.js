@@ -673,12 +673,19 @@
     refreshXmrBalance();
   }
 
+  // Whether this run mines Pearl on the GPU, by main's rule (planFor): a
+  // valid address, a mode that mines, and a platform with a miner. A Monero-
+  // or LLM-only run leaves the GPU's dot grey.
+  function gpuMinerOn() {
+    return state.mining && !state.paused && state.mode !== 'llm' && state.canMine !== false && isValid(state.address);
+  }
+
   function renderMiningState() {
     el.addrInput.hidden = state.mining;
     el.addrStatic.hidden = !state.mining;
     el.btnStart.hidden = state.mining;
     el.btnStop.hidden = !state.mining;
-    el.mineDot.className = 'dot2' + (state.mining && !state.paused ? ' on' : '');
+    el.mineDot.className = 'dot2' + (gpuMinerOn() ? ' on' : '');
     el.idleStatus.hidden = !(state.mining && state.paused);
     el.idleStatus.textContent = 'Waiting for your computer to be idle. Mining starts after '
       + Math.round(state.idleAfterSec / 60) + ' minutes without keyboard or mouse use.';

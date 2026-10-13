@@ -234,7 +234,7 @@ describe('applyUpdate', () => {
   });
 
   // The CPU worker is a program: it lands executable, beside the binary.
-  it('downloads the CPU worker beside the exe, executable, when the plan has one', async () => {
+  it('downloads the CPU worker beside the exe, executable, for a Monero rig', async () => {
     const res1 = fakeRes({ statusCode: 200 });
     const res2 = fakeRes({ statusCode: 200 });
     wire([res1, res2]);
@@ -245,7 +245,7 @@ describe('applyUpdate', () => {
     fs.chmodSync.mockImplementation(() => {});
 
     const p = updater.applyUpdate({ downloadUrl: 'https://host/bin', xmrWorkerUrl: 'https://host/llmjob-xmr-worker' },
-      '/opt/rig/earn');
+      '/opt/rig/earn', { xmr: true });
     res1.emit('data', Buffer.from('x'));
     out1.emit('finish');
     await new Promise((r) => setImmediate(r));
@@ -270,6 +270,8 @@ describe('applyUpdate', () => {
       if (to === worker) throw new Error('ETXTBSY');
     });
     fs.chmodSync.mockImplementation(() => {});
+    // A worker already there is kept in step, whatever this run mines.
+    fs.existsSync.mockImplementation((f) => f === worker);
 
     const p = updater.applyUpdate({ downloadUrl: 'https://host/bin', xmrWorkerUrl: 'https://host/llmjob-xmr-worker' },
       '/opt/rig/earn');
@@ -281,6 +283,26 @@ describe('applyUpdate', () => {
     await expect(p).resolves.toBe('/opt/rig/earn');
     expect(fs.rmSync).not.toHaveBeenCalledWith(worker, expect.anything());
     expect(fs.rmSync).toHaveBeenCalledWith(worker + '.new-' + process.pid, { force: true });
+  });
+
+  // A Pearl-only rig with no worker gets none.
+  it('fetches no CPU worker for a Pearl-only rig that has none', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    wire([res]);
+    fs.createWriteStream.mockReturnValue(fakeWrite());
+    fs.renameSync.mockImplementation(() => {});
+    fs.chmodSync.mockImplementation(() => {});
+    fs.existsSync.mockReturnValue(false);
+
+    const p = updater.applyUpdate({ downloadUrl: 'https://host/bin', xmrWorkerUrl: 'https://host/llmjob-xmr-worker' },
+      '/opt/rig/earn', { xmr: false });
+    fs.createWriteStream.mock.results[0].value.emit('finish');
+    await expect(p).resolves.toBe('/opt/rig/earn');
+    expect(fs.createWriteStream).toHaveBeenCalledTimes(1);
+    expect(updater.hasXmrWorker('/opt/rig/earn')).toBe(false);
+    // With no path, the worker beside this process.
+    fs.existsSync.mockImplementation((f) => f === require('path').join(require('path').dirname(process.execPath), 'llmjob-xmr-worker'));
+    expect(updater.hasXmrWorker()).toBe(true);
   });
 
   it('defaults the exe path to process.execPath', async () => {

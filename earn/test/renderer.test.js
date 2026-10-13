@@ -1416,6 +1416,8 @@ describe('CPU mining', () => {
     expect($('cpu-meta').title).toBe('ready to start');
     click($('btn-start'));
     expect(h.api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ address: '', cpuMining: true, xmrAddress: XMR_ADDR }));
+    // Only the CPU mines: the GPU's dot stays grey.
+    expect($('mine-dot').className).toBe('dot2');
     click($('btn-stop'));
     setInput($('set-xmr'), XMR_ADDR + 'x');
     expect($('btn-start').disabled).toBe(true);

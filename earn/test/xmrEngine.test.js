@@ -260,6 +260,18 @@ describe('the worker', () => {
     ]);
   });
 
+  test('a replaced worker\'s stderr is not logged; an exited one\'s last words are', () => {
+    const h = mining();
+    const old = h.child();
+    old.emit('exit', 1, null);
+    old.stderr.emit('data', 'terminate called after throwing\n');
+    expect(h.lines()).toContain('cpu: terminate called after throwing');
+    h.advance(RESTART_MS);
+    expect(h.child()).not.toBe(old);
+    old.stderr.emit('data', 'late noise\n');
+    expect(h.lines()).not.toContain('cpu: late noise');
+  });
+
   test('a line split across chunks is read whole', () => {
     const h = setup();
     h.engine.start(SETTINGS);
@@ -477,6 +489,23 @@ describe('shares', () => {
     h.sock().recv({ method: 'job', params: job('j2') });
     h.child().say(Object.assign({}, share, { job: 'j2' }));
     expect(submits()).toEqual(['j1:3a000000', 'j2:3a000000']);
+  });
+
+  // A real socket closes a moment after destroy(). A share in that moment
+  // went to a socket on its way out, and was never seen again.
+  test('a share found while the socket is closing is dropped and logged', () => {
+    const h = mining();
+    const s = h.sock();
+    s.destroy = jest.fn(() => { s.destroyed = true; });   // close comes later
+    h.sock().recv({ id: 50, error: { code: -1, message: 'Unauthenticated' } });
+    expect(s.destroy).toHaveBeenCalledTimes(1);
+    h.child().say({ type: 'share', job: 'j1', nonce: '3c000000', result: RESULT });
+    expect(s.written.filter((m) => m.method === 'submit')).toHaveLength(0);
+    expect(h.lines()).toContain('cpu: dropping a share for a job the pool has moved on from');
+    // The close still counts as losing a session that was logged in.
+    s.emit('close');
+    expect(h.engine.lostAt).not.toBeNull();
+    expect(h.engine.poolFails).toBe(0);
   });
 
   test('a share before any job is dropped', () => {

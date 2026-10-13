@@ -44,7 +44,11 @@ function isPackaged() {
 // on the current version"), no stall timeout (a hung socket blocked mining
 // forever, since auto-update runs before mining starts), and left its temp file
 // behind on failure. io.downloadFile has all three (plus retry with backoff).
-async function applyUpdate(plan, execPath) {
+//
+// `opts.xmr`: this rig mines Monero. The CPU worker comes along only then, or
+// when one is already beside the binary to keep in step: a Pearl-only rig gets
+// no coin miner it didn't ask for.
+async function applyUpdate(plan, execPath, opts) {
   const exe = execPath || process.execPath;
   const tmp = exe + '.new-' + process.pid;
   await downloadFile(plan.downloadUrl, tmp);
@@ -85,7 +89,7 @@ async function applyUpdate(plan, execPath) {
   // The CPU worker. A failed download keeps the one already there, which the
   // CLI checks for a matching protocol when it starts it, and the next start
   // fetches it again (syncXmrWorker).
-  if (plan.xmrWorkerUrl) {
+  if (plan.xmrWorkerUrl && ((opts && opts.xmr) || hasXmrWorker(exe))) {
     try {
       await fetchWorker(plan.xmrWorkerUrl, path.join(dir, WORKER));
     } catch (e) {
@@ -96,6 +100,11 @@ async function applyUpdate(plan, execPath) {
 }
 
 const WORKER = 'llmjob-xmr-worker';
+
+// Whether a CPU worker sits beside the binary.
+function hasXmrWorker(execPath) {
+  return fs.existsSync(path.join(path.dirname(execPath || process.execPath), WORKER));
+}
 
 // Download the CPU worker beside the binary: to a temp file, executable, then
 // renamed into place, so a failure never leaves half a program there.
@@ -142,6 +151,7 @@ module.exports = {
   fetchLatestRelease,
   isPackaged,
   applyUpdate,
+  hasXmrWorker,
   syncXmrWorker,
   reexec,
   planUpdate,

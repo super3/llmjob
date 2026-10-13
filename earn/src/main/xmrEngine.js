@@ -95,6 +95,7 @@ class XmrEngine extends EventEmitter {
     this.buf = '';
     this.sessionId = null;
     this.authorized = false;
+    this.closingAuthorized = false;   // logged in when _closeSocket() closed it
     this.lostAt = null;
     this.loginRefused = false;
     // Why the pool can't be used right now, for the UI; cleared by a login.
@@ -239,6 +240,9 @@ class XmrEngine extends EventEmitter {
       }
     });
     child.stderr.on('data', (chunk) => {
+      // A worker since replaced has nothing to say about this one. One that
+      // just exited, with none after it, may be saying why.
+      if (this.child && this.child !== child) return;
       for (const line of String(chunk).split('\n')) if (line.trim()) this._log('warn', line.trim());
     });
     // A missing or unrunnable file is reported here, after spawn returned.
@@ -421,7 +425,9 @@ class XmrEngine extends EventEmitter {
     sock.on('close', () => {
       if (this.sock !== sock) return;
       this.sock = null;
-      if (this.authorized) this.lostAt = this.now();
+      const wasIn = this.authorized || this.closingAuthorized;
+      this.closingAuthorized = false;
+      if (wasIn) this.lostAt = this.now();
       else {
         this.poolFails++;
         if (!this.poolError) this.poolError = 'the Monero pool closed the connection before the login';
@@ -444,6 +450,15 @@ class XmrEngine extends EventEmitter {
       }
       this._scheduleReconnect(wait);
     });
+  }
+
+  // Close the socket on purpose; its close handler reconnects. Logged out from
+  // here, not from the close event: a share the worker finds in between is
+  // dropped and logged, where it was written to a socket on its way out.
+  _closeSocket() {
+    this.closingAuthorized = this.authorized;
+    this.authorized = false;
+    this.sock.destroy();
   }
 
   // stop() clears this timer, so it only fires while still running.
@@ -469,7 +484,7 @@ class XmrEngine extends EventEmitter {
         this.loginRefused = true;
         this.poolError = 'the Monero pool refused the login: ' + stratum.errorText(m.error);
         this._log('error', 'the pool refused the login: ' + stratum.errorText(m.error));
-        this.sock.destroy();
+        this._closeSocket();
         break;
       case 'job':
         this.lastJobRx = this.now();
@@ -556,7 +571,7 @@ class XmrEngine extends EventEmitter {
     if (!error || !SESSION_LOST.test(error.message)) return;
     this._log('warn', 'the pool dropped this session (' + stratum.errorText(error) + '); logging in again');
     if (/banned/i.test(error.message)) this.loginRefused = true;
-    this.sock.destroy();
+    this._closeSocket();
   }
 
   _sendKeepalive() {
@@ -577,7 +592,7 @@ class XmrEngine extends EventEmitter {
     } else if (now - this.lastJobRx >= this.t.jobSilence) {
       this._log('warn', 'no new job from the pool in ' + mins(this.t.jobSilence) + '; reconnecting');
     } else return;
-    this.sock.destroy();
+    this._closeSocket();
   }
 
   // `failed` marks the stop the engine makes on its own, which 'stopped' carries
@@ -593,6 +608,7 @@ class XmrEngine extends EventEmitter {
       try { s.destroy(); } catch (e) { /* already closed */ }
     }
     this.authorized = false;
+    this.closingAuthorized = false;
     const c = this.child;
     this.child = null;
     if (c) {

@@ -259,10 +259,10 @@ input.field-box { user-select: text; }
 .head-actions { display: inline-flex; align-items: center; gap: 14px; min-width: 0; }
 /* Only the status gives way when space runs out; the link never wraps. */
 .head-actions .update-check-btn { flex: none; white-space: nowrap; }
-.settings-section { font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: #a7abb2; margin: 12px 0 8px; }
+.settings-section { font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: #a7abb2; margin: 10px 0 6px; }
 .settings-section:first-of-type { margin: 0 0 7px; }
 /* A section under a note gets more air than the section-to-section default. */
-.settings-note + .settings-section { margin-top: 14px; }
+.settings-note + .settings-section { margin-top: 11px; }
 /* The Settings view-head supplies its own spacing; keep the first section tight
    under it (the view-head div steals :first-of-type from .settings-section). */
 #view-settings .view-head + .settings-section { margin-top: 0; }
@@ -361,7 +361,7 @@ select.rv-input { cursor: pointer; }
 .settings-note.err { color: #dc2626; }
 /* Background: three switches side by side. */
 .bg-list { border: 1px solid #ebe9e1; border-radius: 10px; background: #fff; }
-.bg-row { display: flex; align-items: center; gap: 12px; padding: 6px 14px; cursor: pointer; }
+.bg-row { display: flex; align-items: center; gap: 12px; padding: 5px 14px; cursor: pointer; }
 .bg-row + .bg-row { border-top: 1px solid #f0eee7; }
 .bg-text { flex: 1; min-width: 0; }
 .bg-row .rk { display: block; font-size: 13px; line-height: 1.35; color: var(--ink-3); font-weight: 600; }
