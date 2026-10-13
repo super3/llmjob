@@ -359,6 +359,7 @@ select.rv-input { cursor: pointer; }
 .settings-note.err { color: #dc2626; }
 /* Background: three switches side by side. */
 .bg-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-.bg-tile { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 12px; border: 1px solid #ebe9e1; border-radius: 10px; cursor: pointer; }
-.bg-tile .rk { font-size: 13px; line-height: 1.35; color: var(--ink-3); font-weight: 500; }
-.settings-note.bg-note { margin-top: 7px; }
+.bg-tile { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px 8px; padding: 12px 12px 13px 14px; border: 1px solid #ebe9e1; border-radius: 10px; cursor: pointer; }
+.bg-tile .bg-desc { grid-column: 1 / -1; }
+.bg-tile .rk { font-size: 13px; line-height: 1.35; color: var(--ink-3); font-weight: 600; }
+.bg-desc { font-size: 11.5px; line-height: 1.4; color: var(--muted); }

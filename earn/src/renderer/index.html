@@ -209,24 +209,25 @@
     </div>
     <p id="cpu-note" class="settings-note two-lines" hidden></p>
 
-    <!-- Three tiles in a row, and one line under them that says what they do,
-         keep Settings inside its 470px. -->
+    <!-- Three tiles in a row, each with a line that says what it does. -->
     <div class="settings-section">Background</div>
     <div class="bg-tiles">
       <label class="bg-tile" title="Closing the window hides it in the tray, and mining carries on. The tray icon opens it again, and its menu has Quit.">
         <span class="rk">Keep in the tray</span>
         <input id="pref-tray" class="toggle" type="checkbox" />
+        <span class="bg-desc">Closing the window keeps it mining.</span>
       </label>
       <label class="bg-tile" title="Starts the app in the tray when you log in, and starts mining.">
         <span class="rk">Start at login</span>
         <input id="pref-startup" class="toggle" type="checkbox" />
+        <span class="bg-desc">Opens in the tray and starts mining.</span>
       </label>
       <label class="bg-tile" title="Mines after 5 minutes without keyboard or mouse use, and pauses when you're back.">
         <span class="rk">Only when idle</span>
         <input id="pref-idle" class="toggle" type="checkbox" />
+        <span class="bg-desc">Mines after 5 minutes without input.</span>
       </label>
     </div>
-    <p class="settings-note bg-note">Closing the window leaves it mining in the tray. Idle means no keyboard or mouse for 5 minutes.</p>
 
   </section>
 
