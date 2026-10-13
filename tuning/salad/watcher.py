@@ -45,7 +45,13 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                "upgrade_gain": 0.05, "upgrade_every_min": 15, "swap_wait_min": 20,
                "yield": "auto", "yield_min_blocks": 10, "yield_floor": 0.5, "bad_pc_hold_h": 24, "rate_days": 7,
                "trader": None, "safetrade": None,
-               "wallet": os.environ.get("PRL_WALLET", "")}
+               "wallet": os.environ.get("PRL_WALLET", ""),
+               # Monero on the box's CPU (release v0.6.0 on): the groups named in xmr_groups ("*" for every group)
+               # mine it to xmr_wallet. Salad bills a GPU group the same for any vCPU and RAM, so they ask for
+               # xmr_cpu vCPUs and xmr_memory MB; the CLI picks the threads (xmr_threads 0) and keeps one CPU free.
+               "xmr_wallet": "", "xmr_groups": [], "xmr_ver": "v0.6.0", "xmr_cpu": 8, "xmr_memory": 8192,
+               "xmr_threads": 0}
+XMR_FEE = 0.009   # HeroMiners' Monero pool fee
 
 
 def now(): return time.time()
@@ -117,10 +123,22 @@ def slug(cls):
     return "rtx" + re.sub(r"[^a-z0-9]", "", cls.split("(")[0].lower().replace("rtx", ""))
 
 
-def cmd_for(worker, wallet, ver):
+def vnum(ver):
+    """A release tag as numbers, for comparing: "v0.6.0" -> (0, 6, 0)."""
+    return tuple(int(x) for x in re.findall(r"\d+", ver))
+
+
+def cmd_for(worker, wallet, ver, xmr=None, threads=0):
     sed = f"sed -e 's/^WORKER=__WORKER__$/WORKER={worker}/' -e 's/^W=prl1.*$/W={wallet}/'"
     if ver != "v0.5.13":
         sed += f" -e 's/^VER=v0.5.13;/VER={ver};/'"
+    if xmr:
+        # Monero: box.sh also downloads the release's CPU worker, puts it beside each GPU's CLI, and passes the
+        # address in the default flags (a control file for the box would override them; the biz- boxes have none).
+        flags = f"--xmr-address {xmr}" + (f" --cpu-threads {threads}" if threads else "")
+        sed += (" -e 's/ pearl_core_cu13.node; do/ pearl_core_cu13.node llmjob-xmr-worker; do/'"
+                " -e 's|cp $D/rel/cli $R/|cp $D/rel/cli $D/rel/llmjob-xmr-worker $R/ \\&\\& chmod +x $R/llmjob-xmr-worker|'"
+                f" -e 's|\"flags\":\"\"}}|\"flags\":\"{flags}\"}}|'")
     return ("apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 && "
             f"curl -fsSL {BOX} | {sed} > /root/box.sh; bash /root/box.sh 2>&1 | tee -a /root/box.log")
 
@@ -398,6 +416,81 @@ class W:
         err(f"patch {g['name']} -> {pri} refused {s} {str(j)[:200]}")
         return False
 
+    def wants_xmr(self, name):
+        """Whether config asks this group to mine Monero on its CPU too."""
+        gs = self.cfg["xmr_groups"]
+        return bool(self.cfg["xmr_wallet"]) and ("*" in gs or name in gs)
+
+    def box(self, name, xmr):
+        """The release, start command and CPU/RAM for a group's box. Monero needs release xmr_ver or later."""
+        ver = self.cfg["ver_override"].get(name, self.cfg["box_ver"])
+        if not xmr:
+            return ver, ["/bin/sh", "-c", cmd_for(name, self.cfg["wallet"], ver)], {"cpu": 2, "memory": 4096}
+        if vnum(ver) < vnum(self.cfg["xmr_ver"]):
+            ver = self.cfg["xmr_ver"]
+        cmd = cmd_for(name, self.cfg["wallet"], ver, self.cfg["xmr_wallet"], self.cfg["xmr_threads"])
+        return ver, ["/bin/sh", "-c", cmd], {"cpu": self.cfg["xmr_cpu"], "memory": self.cfg["xmr_memory"]}
+
+    def xmr_sync(self, active, t):
+        """Turn Monero on or off in a running group when config asks for it. Salad restarts the group with the new
+        command and vCPUs, often on another PC. A refused update is tried again after 10 minutes."""
+        for g in active:
+            want = self.wants_xmr(g["name"])
+            if g["ended"] or want == bool(g.get("xmr")) or t - g.get("xmr_try", 0) < 600:
+                continue
+            g["xmr_try"] = t
+            ver, command, res = self.box(g["name"], want)
+            s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": command, "resources": res}},
+                        ctype="application/merge-patch+json")
+            if 200 <= s < 300:
+                g["xmr"], g["ver"] = want, ver
+                event(f"MONERO {'ON' if want else 'OFF'} {g['name']}: miner {ver} on {res['cpu']} vCPUs and "
+                      f"{res['memory'] // 1024} GB; Salad restarts the box")
+            else:
+                event(f"WARN Monero {'on' if want else 'off'} for {g['name']} refused: HTTP {s} {str(j)[:150]}")
+
+    def xmr_market(self):
+        """Monero's price and what one accepted hash earns at the pool (the network's reward per hash, less the
+        pool's fee), at most every 5 minutes."""
+        st = self.st
+        if st.get("xmr_mkt") and now() - st["xmr_mkt"]["t"] < 300:
+            return
+        s1, j = http("GET", "https://monero.herominers.com/api/stats", timeout=30)
+        s2, p = http("GET", "https://api.coingecko.com/api/v3/simple/price?ids=monero&vs_currencies=usd", timeout=30)
+        try:
+            per_hash = float(j["lastblock"]["reward"]) / 1e12 / float(j["network"]["difficulty"]) * (1 - XMR_FEE)
+            price = float(p["monero"]["usd"])
+        except (KeyError, TypeError, ValueError, ZeroDivisionError):
+            err(f"Monero market fetch failed {s1} {s2}")
+            return
+        st["xmr_mkt"] = {"t": now(), "price": price, "per_hash": per_hash, "usd_khs_hr": per_hash * 1000 * 3600 * price}
+
+    def xmr_pool(self, groups, t):
+        """Each Monero box's CPU rate and the XMR it has earned, from its worker at the pool ("<group>-g0"). The
+        pool counts every accepted hash, so the XMR earned is the new hashes times what a hash earns."""
+        st, mk = self.st, self.st.get("xmr_mkt")
+        s, j = http("GET", f"https://monero.herominers.com/api/stats_address?address={self.cfg['xmr_wallet']}"
+                           "&longpoll=false", timeout=30)
+        if s != 200 or not isinstance(j, dict) or not mk:
+            return
+        ps = j.get("stats") or {}
+        try:
+            st["xmr_tot"] = {"balance": float(ps.get("balance") or 0) / 1e12, "paid": float(ps.get("paid") or 0) / 1e12}
+        except (TypeError, ValueError):
+            pass
+        ws = {w["name"]: w for w in (j.get("workers") or []) if isinstance(w, dict) and w.get("name")}
+        for g in groups:
+            w = ws.get(f"{g['name']}-g0")
+            if not w:
+                continue
+            try:
+                hashes, khs = float(w.get("hashes") or 0), float(w.get("hashrate") or 0) / 1000
+            except (TypeError, ValueError):
+                continue
+            last = g.get("xmr_hashes", 0.0)
+            g["xmr_coins"] = g.get("xmr_coins", 0.0) + (hashes - last if hashes >= last else hashes) * mk["per_hash"]
+            g["xmr_hashes"], g["xmr_khs"], g["xmr_seen"] = hashes, khs, t
+
     def create(self, cls, pri, taken=(), tries=0):
         """Create a group of `cls` at `pri`. Salad keeps a deleted group's name for a while (name_conflict),
         so a name it refuses is skipped and the next suffix tried, up to 20 refused names. Every name in the
@@ -409,12 +502,11 @@ class W:
         name, i = base, 2
         while name in taken:
             name, i = f"{base}-{i}", i + 1
-        ver = self.cfg["ver_override"].get(name, self.cfg["box_ver"])
+        xmr = self.wants_xmr(name)
+        ver, command, res = self.box(name, xmr)
+        res.update(storage_amount=10737418240, gpu_classes=[st["classes"][cls]["id"]])
         body = {"name": name, "display_name": name, "replicas": 1, "restart_policy": "always", "autostart_policy": True,
-                "container": {"image": IMAGE, "priority": pri,
-                              "resources": {"cpu": 2, "memory": 4096, "storage_amount": 10737418240,
-                                            "gpu_classes": [st["classes"][cls]["id"]]},
-                              "command": ["/bin/sh", "-c", cmd_for(name, self.cfg["wallet"], ver)]}}
+                "container": {"image": IMAGE, "priority": pri, "resources": res, "command": command}}
         s, j = http("POST", CB, body)
         if 200 <= s < 300:
             rate, paid = round(self.rate(cls)), KNOWN[cls][1]
@@ -427,9 +519,10 @@ class W:
                 "reallocs": 0, "spend": 0.0, "prl": 0.0, "pc_min": 0.0, "mined_min": 0, "readings": [],
                 "acc": {}, "last_share": None, "profit_fail": 0, "last_check": 0, "status": "pending",
                 "ended": None, "end_kind": None, "end_reason": None, "blocked": [], "cards": [], "pool_ths": None,
-                "last_start": 0, "first_share_said": False}
+                "last_start": 0, "first_share_said": False, "xmr": xmr}
             event(f"CREATED {name}: {cls} at {pri} (${st['classes'][cls]['prices'][pri]:.3f}/hr, "
-                  f"{self.margin(cls, pri) * 100:+.0f}% margin at {rate} TH/s), miner {ver}")
+                  f"{self.margin(cls, pri) * 100:+.0f}% margin at {rate} TH/s), miner {ver}"
+                  + (f", Monero on {res['cpu']} vCPUs" if xmr else ""))
             return True
         text = json.dumps(j)
         if "name_conflict" in text and tries < 20:
@@ -562,6 +655,12 @@ class W:
                 g["pool_ths"] = float(w.get("hashrate") or 0) * UNIT_TH
             except (TypeError, ValueError):
                 pass
+        # Monero: switch groups on or off as config asks, then read the CPU workers at the pool.
+        self.xmr_sync(list(by_name.values()), t)
+        xg = [g for g in by_name.values() if g.get("xmr")]
+        if xg:
+            self.xmr_market()
+            self.xmr_pool(xg, t)
         for g in by_name.values():
             if g["last_share"] and not g["first_share_said"]:
                 g["first_share_said"] = True
@@ -862,29 +961,34 @@ class W:
         y = self.credit_ratio()
         price, usd = mk["price"], mk["usd_th_hr"] * y
         rows, act_rows = [], []
-        all_ths = all_cost = all_earn = run_cost = 0.0
+        all_ths = all_cost = all_earn = run_cost = all_khs = 0.0
+        # Monero on the CPU: a kH/s column, and its earnings in each box's profit, once config has an address.
+        xon, xm = bool(self.cfg["xmr_wallet"]), st.get("xmr_mkt") or {}
+        xusd, xprice = xm.get("usd_khs_hr", 0.0), xm.get("price", 0.0)
         mining = starting = 0
         ended = [g for g in st["groups"].values() if g["ended"]]
         for g in sorted((g for g in st["groups"].values() if not g["ended"]), key=lambda g: g["created"]):
             cur = [r for r in g["readings"] if r[1] == g["machine"] and r[2] > 0 and r[0] >= t - 10 * MIN] if g["has_pc"] else []
             ths = sum(r[2] for r in cur) / len(cur) if cur else 0.0
             cost = g["price"] if g["has_pc"] else 0.0
-            earn = ths * usd
+            khs = g.get("xmr_khs", 0.0) if g.get("xmr") and g["has_pc"] and t - g.get("xmr_seen", 0) < 15 * MIN else 0.0
+            earn = ths * usd + khs * xusd
             state = "⏹️" if g["status"] == "stopped" else "⛏️" if g["has_pc"] else "⏳"
             # A box on a new PC with no reading yet is starting: billed, but left out of the profit total.
             start = bool(g["has_pc"] and not cur and g.get("pc_since") and t - g["pc_since"] < 15 * MIN)
             if g["has_pc"] and cur:
                 mining += 1
             starting += start
-            all_ths += ths; all_cost += cost; all_earn += earn
+            all_ths += ths; all_cost += cost; all_earn += earn; all_khs += khs
             run_cost += 0.0 if start else cost
-            prof = g["prl"] * y * price - g["spend"]
+            prof = g["prl"] * y * price + g.get("xmr_coins", 0.0) * xprice - g["spend"]
             # One cell for the box: state, group name less "biz-rtx", priority and PC, joined by no-break spaces
             # so the row stays on one line in a narrow window.
             pri = "med" if g["pri"] == "medium" else g["pri"]
             box = NB.join([state, re.sub(r"^biz-(rtx)?", "", g["name"]), pri] + ([g["machine"][:8]] if g["machine"] else []))
             hr, mg = ("—", "—") if start else (f"{earn - cost:+.3f}", pct(earn - cost, earn))
-            act_rows.append((0.0 if start else earn - cost, f"| {box} | {ths:.0f} | {cost:.3f} | {hr} | "
+            kcell = (f" {khs:.2f} |" if g.get("xmr") else " — |") if xon else ""
+            act_rows.append((0.0 if start else earn - cost, f"| {box} | {ths:.0f} |{kcell} {cost:.3f} | {hr} | "
                              f"{mg} | {g['spend']:.2f} | {g['prl'] * y:.3f} | {prof:+.2f} |"))
         # Most profitable an hour first; groups waiting for a PC make nothing, so they sit above any losing.
         rows = [r for _, r in sorted(act_rows, key=lambda x: -x[0])]
@@ -893,22 +997,26 @@ class W:
             fail = len(ended) - rel
             eprl = sum(g["prl"] for g in ended) * y
             esp = sum(g["spend"] for g in ended)
-            rows.append(f"| {NB.join(['Others', f'×{len(ended)}', f'🔁{rel}', f'❌{fail}'])} | — | — | — | — | "
-                        f"{esp:.2f} | {eprl:.3f} | {eprl * price - esp:+.2f} |")
+            exmr = sum(g.get("xmr_coins", 0.0) for g in ended) * xprice
+            rows.append(f"| {NB.join(['Others', f'×{len(ended)}', f'🔁{rel}', f'❌{fail}'])} | — |{' — |' if xon else ''} "
+                        f"— | — | — | {esp:.2f} | {eprl:.3f} | {eprl * price + exmr - esp:+.2f} |")
         spend = sum(g["spend"] for g in st["groups"].values())
         est = sum(g["prl"] for g in st["groups"].values())
         prl = est * y
         cost_prl = spend / prl if prl > 0 else 0.0
+        coins = sum(g.get("xmr_coins", 0.0) for g in st["groups"].values())
         label = f"{mining}{NB}mining" + (f"{NB}·{NB}{starting}{NB}starting" if starting else "")
-        rows.append(f"| **All{NB}·{NB}{label}** | **{all_ths:.0f}** | **{all_cost:.3f}** | "
-                    f"**{all_earn - run_cost:+.3f}** | **{pct(all_earn - run_cost, all_earn)}** | **{spend:.2f}** | "
-                    f"**{prl:.3f}** | **{prl * price - spend:+.2f}** |")
+        rows.append(f"| **All{NB}·{NB}{label}** | **{all_ths:.0f}** |{f' **{all_khs:.2f}** |' if xon else ''} "
+                    f"**{all_cost:.3f}** | **{all_earn - run_cost:+.3f}** | **{pct(all_earn - run_cost, all_earn)}** | "
+                    f"**{spend:.2f}** | **{prl:.3f}** | **{prl * price + coins * xprice - spend:+.2f}** |")
         credit = self.cfg["credit_start"] + self.cfg["credit_offset"] - spend
         hours = credit / all_cost if all_cost > 0 else None
         rate = f"${mk['usd_th_hr']:.6f}/TH-hr" + (f" × {y:.0%} credited = ${usd:.6f}" if y < 1 else "")
+        if xon and xm:
+            rate += f" · XMR ${xprice:.0f} · ${xusd:.5f}/kH-hr"
         lines = [f"**{stamp(t)}** · PRL ${price:.3f} · {rate}", "",
-                 "| Box | TH/s | $/hr | Profit/hr | Margin | Spent $ | PRL | Profit $ |",
-                 "|---|---|---|---|---|---|---|---|", *rows, "",
+                 "| Box | TH/s |" + (" kH/s |" if xon else "") + " $/hr | Profit/hr | Margin | Spent $ | PRL | Profit $ |",
+                 "|---|---|" + ("---|" if xon else "") + "---|---|---|---|---|---|", *rows, "",
                  "Boxes are sorted by profit an hour. Box: ⛏️ on a PC · ⏳ waiting for a PC · ⏹️ stopped, then the group "
                  "(biz-rtx left off), its priority (med = medium) and its PC. Others: 🔁 released · ❌ failed. TH/s is the "
                  "miner's average over the last 10 min on its current PC (0 while it starts). $/hr is what Salad bills while "
@@ -917,7 +1025,10 @@ class W:
                  "group's whole bill so far. PRL is what we expect the pool to credit for the miner's speed: the pool "
                  "pays per account, not per box"
                  + (f", and has credited {y:.0%} of the network-rate estimate, so earnings and PRL are scaled to that"
-                    if y < 1 else "") + ". Profit $ is that PRL at today's price minus Spent $.", ""]
+                    if y < 1 else "") + ". Profit $ is that PRL at today's price minus Spent $."
+                 + (" kH/s is the box's Monero rate on its CPU, as the pool measures it (— for a box that doesn't mine "
+                    "Monero). Its earnings are in Profit/hr, Margin and Profit $; the rules still judge each box on "
+                    "Pearl alone." if xon else ""), ""]
         # Money, stage by stage: Salad bill, PRL mined, at the pool, paid to SafeTrade, sold. What's sold is
         # locked in; the rest still moves with the price and the pool's luck. Each PRL carries the average cost.
         lines.append("**Money**")
@@ -955,6 +1066,13 @@ class W:
         unsold = prl - sold
         lines.append(f"- ⏳ Not yet locked: {unsold * (price - cost_prl):+.2f} ({unsold:.3f} PRL not sold yet, at today's "
                      "price; it moves with the price and the pool's luck).")
+        if xon:
+            n = sum(1 for g in st["groups"].values() if g.get("xmr") and not g["ended"])
+            xt = st.get("xmr_tot")
+            lines.append(f"- 🪙 Monero (CPU): {n} box{'es' if n != 1 else ''} at {all_khs:.2f} kH/s, worth "
+                         f"${all_khs * xusd:.4f}/hr; our boxes have mined {coins:.6f} XMR (${coins * xprice:.2f})."
+                         + (f" The pool holds {xt['balance']:.6f} XMR for the address and has paid {xt['paid']:.6f}"
+                            " (it pays at 0.01 XMR); that includes any other rig mining to it." if xt else ""))
         lines.append(f"- Salad credit left: ${credit:.2f} of ${self.cfg['credit_start'] + self.cfg['credit_offset']:.2f} (our count)"
                      + (f"; lasts {hours:.0f} h at ${all_cost:.3f}/hr." if hours is not None else "; nothing is billing now."))
         if st["credits_out"]:
