@@ -1172,21 +1172,19 @@ class TestMonero(Base):
         self.x.cfg["xmr_groups"] = []
         g = self.group()
         self.x.cfg["xmr_groups"] = ["*"]
-        g.update(has_pc=True, instance="i1", machine="m1")
+        g.update(has_pc=True, instance="i1")
         self.http.on("PATCH", "/containers/biz-rtx4080", (200, {}))
-        self.http.on("POST", "/instances/i1/reallocate", (202, {}))
+        self.http.on("POST", "/instances/i1/restart", (202, {}))
         self.x.xmr_sync([g], self.clock[0])
         patch = self.http.made("PATCH", "/containers/biz-rtx4080")[-1][2]["container"]
         self.assertEqual(patch["resources"], {"cpu": 8, "memory": 8192})
         self.assertIn(XMR, patch["command"][2])
         self.assertTrue(g["xmr"])
-        # A running instance keeps its old command, so the box moves to a new PC: not one of its 3, PC not bad.
-        self.assertEqual(len(self.http.made("POST", "/containers/biz-rtx4080/instances/i1/reallocate")), 1)
-        self.assertIn("MONERO ON biz-rtx4080: miner v0.6.0 on 8 vCPUs and 8 GB; moving it to a new PC", self.events())
-        self.assertIn("REALLOCATED biz-rtx4080 off PC m1 (Monero switched on); not counted toward its 3", self.events())
-        self.assertEqual(g["reallocs"], 0)
-        self.assertNotIn("m1", self.x.st.get("bad_pcs", {}))
-        g["has_pc"] = False  # no PC: nothing to move
+        # A running instance keeps its old command until it restarts, so the box is restarted on its PC.
+        self.assertEqual(len(self.http.made("POST", "/containers/biz-rtx4080/instances/i1/restart")), 1)
+        self.assertIn("MONERO ON biz-rtx4080: miner v0.6.0 on 8 vCPUs and 8 GB; box restarted on its PC (HTTP 202)",
+                      self.events())
+        g["has_pc"] = False  # no PC: nothing to restart
         self.x.xmr_sync([g], self.clock[0] + 700)  # already on: nothing sent
         self.assertEqual(len(self.http.made("PATCH", "/containers/biz-rtx4080")), 1)
         self.x.cfg["xmr_wallet"] = ""
@@ -1197,7 +1195,7 @@ class TestMonero(Base):
         self.assertFalse(g["xmr"])
         self.assertIn("MONERO OFF biz-rtx4080: miner v0.5.13 on 2 vCPUs and 4 GB; it starts that way on its next PC",
                       self.events())
-        self.assertEqual(len(self.http.made("POST", "/reallocate")), 1)
+        self.assertEqual(len(self.http.made("POST", "/restart")), 1)
 
     def test_a_refused_switch_is_tried_again_after_10_minutes(self):
         self.x.cfg["xmr_groups"] = []

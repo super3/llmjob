@@ -433,10 +433,9 @@ class W:
 
     def xmr_sync(self, active, t):
         """Turn Monero on or off in a running group when config asks for it. The PATCH makes a new version of the
-        group, but a running instance keeps the command and vCPUs it started with, and Salad's instance restart
-        didn't change that (tried on 13 October), so the box is moved to another PC, which starts on the new
-        version. The move doesn't count toward its 3, and the PC isn't marked bad. A refused update is tried
-        again after 10 minutes."""
+        group, but a running instance keeps the command it started with, so the box is then restarted on the same
+        PC; it comes back on the new version about 2 minutes later. A refused update is tried again after 10
+        minutes."""
         for g in active:
             want = self.wants_xmr(g["name"])
             if g["ended"] or want == bool(g.get("xmr")) or t - g.get("xmr_try", 0) < 600:
@@ -447,12 +446,12 @@ class W:
                         ctype="application/merge-patch+json")
             if 200 <= s < 300:
                 g["xmr"], g["ver"] = want, ver
-                move = bool(g.get("has_pc") and g.get("instance"))
+                rs = None
+                if g.get("has_pc") and g.get("instance"):
+                    rs, _ = http("POST", f"{CB}/{g['name']}/instances/{g['instance']}/restart")
                 event(f"MONERO {'ON' if want else 'OFF'} {g['name']}: miner {ver} on {res['cpu']} vCPUs and "
-                      f"{res['memory'] // 1024} GB; " + ("moving it to a new PC to start that way" if move else
+                      f"{res['memory'] // 1024} GB; " + (f"box restarted on its PC (HTTP {rs})" if rs else
                                                          "it starts that way on its next PC"))
-                if move:
-                    self.reallocate(g, f"Monero switched {'on' if want else 'off'}", count=False)
             else:
                 event(f"WARN Monero {'on' if want else 'off'} for {g['name']} refused: HTTP {s} {str(j)[:150]}")
 
