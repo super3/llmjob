@@ -355,11 +355,12 @@ select.rv-input { cursor: pointer; }
 .xmr-input { flex: 1; min-width: 0; margin-bottom: 0; padding: 10px 14px; }
 .cpu-threads { flex: none; width: 150px; }
 /* At most two lines, so Settings stays inside its 470px; the title has all of it. */
-.settings-note.two-lines { margin-top: 7px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.settings-note.one-line { margin-top: 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .settings-note.err { color: #dc2626; }
 /* Background: three switches side by side. */
-.bg-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-.bg-tile { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px 8px; padding: 12px 12px 13px 14px; border: 1px solid #ebe9e1; border-radius: 10px; cursor: pointer; }
-.bg-tile .bg-desc { grid-column: 1 / -1; }
-.bg-tile .rk { font-size: 13px; line-height: 1.35; color: var(--ink-3); font-weight: 600; }
-.bg-desc { font-size: 11.5px; line-height: 1.4; color: var(--muted); }
+.bg-list { border: 1px solid #ebe9e1; border-radius: 10px; background: #fff; }
+.bg-row { display: flex; align-items: center; gap: 12px; padding: 6px 14px; cursor: pointer; }
+.bg-row + .bg-row { border-top: 1px solid #f0eee7; }
+.bg-text { flex: 1; min-width: 0; }
+.bg-row .rk { display: block; font-size: 13px; line-height: 1.35; color: var(--ink-3); font-weight: 600; }
+.bg-desc { display: block; margin-top: 1px; font-size: 12px; line-height: 1.35; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -207,25 +207,22 @@
       <input id="set-xmr" class="field-box xmr-input" type="text" spellcheck="false" placeholder="Paste your 4… or 8… Monero address (optional)" />
       <select id="set-cpu-threads" class="rv-input cpu-threads" title="CPU threads for Monero"></select>
     </div>
-    <p id="cpu-note" class="settings-note two-lines" hidden></p>
+    <p id="cpu-note" class="settings-note one-line" hidden></p>
 
-    <!-- Three tiles in a row, each with a line that says what it does. -->
+    <!-- One card, a row per switch, each saying what it does. -->
     <div class="settings-section">Background</div>
-    <div class="bg-tiles">
-      <label class="bg-tile" title="Closing the window hides it in the tray, and mining carries on. The tray icon opens it again, and its menu has Quit.">
-        <span class="rk">Keep in the tray</span>
+    <div class="bg-list">
+      <label class="bg-row">
+        <span class="bg-text"><span class="rk">Keep in the tray</span><span class="bg-desc">Closing the window keeps it mining. The tray icon opens it again.</span></span>
         <input id="pref-tray" class="toggle" type="checkbox" />
-        <span class="bg-desc">Closing the window keeps it mining.</span>
       </label>
-      <label class="bg-tile" title="Starts the app in the tray when you log in, and starts mining.">
-        <span class="rk">Start at login</span>
+      <label class="bg-row">
+        <span class="bg-text"><span class="rk">Start at login</span><span class="bg-desc">Opens in the tray and starts mining when you log in.</span></span>
         <input id="pref-startup" class="toggle" type="checkbox" />
-        <span class="bg-desc">Opens in the tray and starts mining.</span>
       </label>
-      <label class="bg-tile" title="Mines after 5 minutes without keyboard or mouse use, and pauses when you're back.">
-        <span class="rk">Only when idle</span>
+      <label class="bg-row">
+        <span class="bg-text"><span class="rk">Only when idle</span><span class="bg-desc">Mines after 5 minutes without keyboard or mouse, and pauses when you're back.</span></span>
         <input id="pref-idle" class="toggle" type="checkbox" />
-        <span class="bg-desc">Mines after 5 minutes without input.</span>
       </label>
     </div>
 

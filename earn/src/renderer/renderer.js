@@ -555,7 +555,7 @@
   }
 
   // The line under the address shows only when something stops CPU mining:
-  // a bad address, no worker, or no threads. Two lines keep Settings in its
+  // a bad address, no worker, or no threads. One line keeps Settings in its
   // 470px, and the title has all of it.
   function cpuNote() {
     if (state.xmrError) return 'This address won\'t work: ' + state.xmrError + '.';
