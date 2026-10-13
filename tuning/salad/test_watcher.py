@@ -1263,13 +1263,18 @@ class TestMonero(Base):
         with open(os.path.join(TMP, "report.md")) as f:
             report = f.read()
         self.assertIn("· XMR $500 · $0.00200/kH-hr", report)
-        self.assertIn("| Box | TH/s | kH/s | $/hr |", report)
+        self.assertIn("| Box | TH/s | kH/s | $/hr | Profit/hr | Margin | Spent $ | PRL | XMR | Profit $ |", report)
+        self.assertIn("| 0.000000 | +0.00 |", report)  # the 2060 has mined no XMR
+        # The 4080's 0.0001 XMR is $0.05 at $500, in its Profit $ beside its PRL.
+        row = next(l for l in report.splitlines() if l.startswith("| ⛏️\u00a04080"))
+        prl = float(row.split(" | ")[7])
+        self.assertIn(f"| {prl:.3f} | 0.000100 | {prl * 1.39 + 0.05 - g['spend']:+.2f} |", row)
         # 200 TH/s × 0.00117 + 2 kH/s × 0.002 = 0.238 an hour, less 0.11 billed. 0.0001 XMR is $0.05.
         self.assertIn("| ⛏️ 4080 batch m1 | 200 | 2.00 | 0.110 | +0.128 |", report)
         self.assertIn("| ⏳ 2060 batch | 0 | — | 0.000 |", report)
         self.assertIn("- 🪙 Monero (CPU): 1 box at 2.00 kH/s, worth $0.0040/hr; our boxes have mined 0.000100 XMR ($0.05).", report)
         self.assertIn("The pool holds 0.005000 XMR for the address", report)
-        self.assertTrue(all(l.count("|") == 10 for l in report.splitlines() if l.startswith("|")))
+        self.assertTrue(all(l.count("|") == 11 for l in report.splitlines() if l.startswith("|")))
 
     def test_without_an_address_the_table_is_unchanged(self):
         self.x.cfg["xmr_wallet"] = ""

@@ -998,7 +998,8 @@ class W:
             hr, mg = ("—", "—") if start else (f"{earn - cost:+.3f}", pct(earn - cost, earn))
             kcell = (f" {khs:.2f} |" if g.get("xmr") else " — |") if xon else ""
             act_rows.append((0.0 if start else earn - cost, f"| {box} | {ths:.0f} |{kcell} {cost:.3f} | {hr} | "
-                             f"{mg} | {g['spend']:.2f} | {g['prl'] * y:.3f} | {prof:+.2f} |"))
+                             f"{mg} | {g['spend']:.2f} | {g['prl'] * y:.3f} |"
+                             + (f" {g.get('xmr_coins', 0.0):.6f} |" if xon else "") + f" {prof:+.2f} |"))
         # Most profitable an hour first; groups waiting for a PC make nothing, so they sit above any losing.
         rows = [r for _, r in sorted(act_rows, key=lambda x: -x[0])]
         if ended:
@@ -1006,9 +1007,10 @@ class W:
             fail = len(ended) - rel
             eprl = sum(g["prl"] for g in ended) * y
             esp = sum(g["spend"] for g in ended)
-            exmr = sum(g.get("xmr_coins", 0.0) for g in ended) * xprice
+            ecoins = sum(g.get("xmr_coins", 0.0) for g in ended)
             rows.append(f"| {NB.join(['Others', f'×{len(ended)}', f'🔁{rel}', f'❌{fail}'])} | — |{' — |' if xon else ''} "
-                        f"— | — | — | {esp:.2f} | {eprl:.3f} | {eprl * price + exmr - esp:+.2f} |")
+                        f"— | — | — | {esp:.2f} | {eprl:.3f} |" + (f" {ecoins:.6f} |" if xon else "")
+                        + f" {eprl * price + ecoins * xprice - esp:+.2f} |")
         spend = sum(g["spend"] for g in st["groups"].values())
         est = sum(g["prl"] for g in st["groups"].values())
         prl = est * y
@@ -1017,15 +1019,17 @@ class W:
         label = f"{mining}{NB}mining" + (f"{NB}·{NB}{starting}{NB}starting" if starting else "")
         rows.append(f"| **All{NB}·{NB}{label}** | **{all_ths:.0f}** |{f' **{all_khs:.2f}** |' if xon else ''} "
                     f"**{all_cost:.3f}** | **{all_earn - run_cost:+.3f}** | **{pct(all_earn - run_cost, all_earn)}** | "
-                    f"**{spend:.2f}** | **{prl:.3f}** | **{prl * price + coins * xprice - spend:+.2f}** |")
+                    f"**{spend:.2f}** | **{prl:.3f}** |" + (f" **{coins:.6f}** |" if xon else "")
+                    + f" **{prl * price + coins * xprice - spend:+.2f}** |")
         credit = self.cfg["credit_start"] + self.cfg["credit_offset"] - spend
         hours = credit / all_cost if all_cost > 0 else None
         rate = f"${mk['usd_th_hr']:.6f}/TH-hr" + (f" × {y:.0%} credited = ${usd:.6f}" if y < 1 else "")
         if xon and xm:
             rate += f" · XMR ${xprice:.0f} · ${xusd:.5f}/kH-hr"
         lines = [f"**{stamp(t)}** · PRL ${price:.3f} · {rate}", "",
-                 "| Box | TH/s |" + (" kH/s |" if xon else "") + " $/hr | Profit/hr | Margin | Spent $ | PRL | Profit $ |",
-                 "|---|---|" + ("---|" if xon else "") + "---|---|---|---|---|---|", *rows, "",
+                 "| Box | TH/s |" + (" kH/s |" if xon else "") + " $/hr | Profit/hr | Margin | Spent $ | PRL |"
+                 + (" XMR |" if xon else "") + " Profit $ |",
+                 "|---|---|" + ("---|---|" if xon else "") + "---|---|---|---|---|---|", *rows, "",
                  "Boxes are sorted by profit an hour. Box: ⛏️ on a PC · ⏳ waiting for a PC · ⏹️ stopped, then the group "
                  "(biz-rtx left off), its priority (med = medium) and its PC. Others: 🔁 released · ❌ failed. TH/s is the "
                  "miner's average over the last 10 min on its current PC (0 while it starts). $/hr is what Salad bills while "
@@ -1036,8 +1040,9 @@ class W:
                  + (f", and has credited {y:.0%} of the network-rate estimate, so earnings and PRL are scaled to that"
                     if y < 1 else "") + ". Profit $ is that PRL at today's price minus Spent $."
                  + (" kH/s is the box's Monero rate on its CPU, as the pool measures it (— for a box that doesn't mine "
-                    "Monero). Its earnings are in Profit/hr, Margin and Profit $; the rules still judge each box on "
-                    "Pearl alone." if xon else ""), ""]
+                    "Monero), and XMR is the Monero the box has earned: its accepted hashes at the pool times what a "
+                    "hash earns, less the fee. Monero's earnings are in Profit/hr, Margin and Profit $ (XMR at today's "
+                    "price); the rules still judge each box on Pearl alone." if xon else ""), ""]
         # Money, stage by stage: Salad bill, PRL mined, at the pool, paid to SafeTrade, sold. What's sold is
         # locked in; the rest still moves with the price and the pool's luck. Each PRL carries the average cost.
         lines.append("**Money**")
