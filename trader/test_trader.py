@@ -1,5 +1,5 @@
 # Tests for trader.py with SafeTrade faked. Run: python3 -m unittest discover -s trader
-import importlib.util, json, os, re, unittest
+import importlib.util, json, os, re, select, unittest
 
 os.environ.update(SAFETRADE_API_KEY="k", SAFETRADE_API_SECRET="s")
 spec = importlib.util.spec_from_file_location("trader", os.path.join(os.path.dirname(os.path.abspath(__file__)), "trader.py"))
@@ -224,6 +224,19 @@ class TestSafety(Base):
         self.assertIn("FAILED: balances failed: /trade/account/balances/spot HTTP 404; /trade/account/balances HTTP 401",
                       self.logs[-1])
         self.assertFalse(f.made("POST", r"/market/orders$"))
+
+    def test_a_hung_run_is_stopped(self):
+        # A call that never answers must not hold the cron service: Railway skips every run while one is going.
+        def hangs(method, path, params=None, auth=False):
+            select.select([], [], [], 5)
+            return 200, MARKETS
+        t.MAX_RUN_SECONDS = 1
+        try:
+            self.assertEqual(self.go(hangs), 1)
+        finally:
+            t.MAX_RUN_SECONDS = 300
+        self.saw("run started")
+        self.saw("FAILED: run took over 1 s")
 
     def test_signature(self):
         # hex HMAC-SHA256(secret, nonce + key), as the Peatio docs give it

@@ -21,6 +21,10 @@ Sells the PRL that mining pays out for USDT on SafeTrade, once an hour, as a Rai
 
 Less than `MIN_VOLUME` (0.5 PRL), or the market's minimum, isn't sold.
 
+Each run logs `run started` first and is stopped after `MAX_RUN_SECONDS` (300). Railway skips a cron run while
+the last one is still going, so one hung run used to stop all selling: on 12 October a run started at 21:00,
+never finished, and no run happened for the next 15 hours.
+
 ## Safety
 
 - **Dry run by default.** It places or cancels nothing until `DRY_RUN=0`. A dry run still makes the
@@ -43,7 +47,7 @@ Service `trader` in the `llmjob` project:
 | Start and schedule | From `railway.toml` here: `python3 trader.py` at minute 5 of every hour, no restarts |
 | Variables | `SAFETRADE_API_KEY`, `SAFETRADE_API_SECRET` (sealed), `DRY_RUN` (`1` until the dry run looks right, then `0`) |
 
-Optional variables: `MAX_SLIPPAGE` (0.03), `MIN_PRICE` (0), `MIN_VOLUME` (0.5), `MARKET` (`prlusdt`),
+Optional variables: `MAX_SLIPPAGE` (0.03), `MIN_PRICE` (0), `MIN_VOLUME` (0.5), `MAX_RUN_SECONDS` (300), `MARKET` (`prlusdt`),
 `COIN` (`prl`), `QUOTE` (`usdt`), `SAFETRADE_BASE` (`https://safe.trade/api/v2`).
 
 ## The API
