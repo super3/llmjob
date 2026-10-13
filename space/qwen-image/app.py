@@ -387,13 +387,15 @@ theme = gr.themes.Base(
 
 css = """
 #app { margin: 0 auto; max-width: 1180px; padding: 8px 4px 0; }
-#hero { padding: 18px 2px 6px; }
+#hero { padding: 18px 2px 0; }
 #hero h1 { font-size: 34px; font-weight: 800; letter-spacing: -0.02em; margin: 0 0 6px; }
 #hero h1 span { color: #2563eb; }
 #hero p { color: var(--body-text-color-subdued); font-size: 16px; margin: 0 0 12px; max-width: 760px; }
-#hero .links a { margin-right: 14px; font-size: 14px; color: var(--body-text-color-subdued); text-decoration: none; }
+#hero .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+#hero .links { margin-left: auto; font-size: 14px; color: var(--body-text-color-subdued); }
+#hero .links a { padding: 0; margin: 0; color: var(--body-text-color-subdued); text-decoration: none; }
 #hero .links a:hover { color: #2563eb; }
-.pills { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
+.pills { display: flex; flex-wrap: wrap; gap: 8px; }
 .pill { font-family: 'IBM Plex Mono', monospace; font-size: 12px; padding: 4px 10px; border-radius: 999px;
         background: #eff4ff; color: #1d4ed8; border: 1px solid #dbe6fb; }
 .dark .pill { background: #16213a; color: #9bb8f5; border-color: #24365e; }
@@ -408,17 +410,15 @@ HERO = """
   <h1>Qwen-Image 2.1 <span>Turbo</span></h1>
   <p>Make an image from a sentence, or edit one you upload. Turbo uses 8 steps instead of 50,
      so a 1K image takes a few seconds.</p>
-  <div class="pills">
-    <span class="pill">8 steps</span>
-    <span class="pill">up to 2K</span>
-    <span class="pill">text in images</span>
-    <span class="pill">transparent PNG</span>
-    <span class="pill">free</span>
-  </div>
-  <div class="links">
-    <a href="https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo" target="_blank">Model</a>
-    <a href="https://github.com/QwenLM/Qwen-Image-2.1" target="_blank">GitHub</a>
-    <a href="https://qwen.ai/blog?id=qwen-image-2.1" target="_blank">Blog</a>
+  <div class="meta">
+    <div class="pills">
+      <span class="pill">8 steps</span>
+      <span class="pill">up to 2K</span>
+      <span class="pill">text in images</span>
+      <span class="pill">transparent PNG</span>
+      <span class="pill">free</span>
+    </div>
+    <div class="links"><a href="https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo" target="_blank">Model</a> · <a href="https://github.com/QwenLM/Qwen-Image-2.1" target="_blank">GitHub</a> · <a href="https://qwen.ai/blog?id=qwen-image-2.1" target="_blank">Blog</a></div>
   </div>
 </div>
 """
