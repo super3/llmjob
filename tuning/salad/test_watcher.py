@@ -1182,7 +1182,7 @@ class TestMonero(Base):
         self.assertTrue(g["xmr"])
         # A running instance keeps its old command until it restarts, so the box is restarted.
         self.assertEqual(len(self.http.made("POST", "/containers/biz-rtx4080/instances/i1/restart")), 1)
-        self.assertIn("MONERO ON biz-rtx4080: miner v0.6.0 on 8 vCPUs and 8 GB; box restarted (HTTP 202)",
+        self.assertIn("MONERO ON biz-rtx4080: miner v0.6.0 on 8 vCPUs and 8 GB; box restarted",
                       self.events())
         g["has_pc"] = False  # no PC: nothing to restart
         self.x.xmr_sync([g], self.clock[0] + 700)  # already on: nothing sent
@@ -1196,6 +1196,19 @@ class TestMonero(Base):
         self.assertIn("MONERO OFF biz-rtx4080: miner v0.5.13 on 2 vCPUs and 4 GB; it starts that way on its next PC",
                       self.events())
         self.assertEqual(len(self.http.made("POST", "/restart")), 1)
+
+    def test_a_box_salad_dropped_on_the_switch_is_said_so(self):
+        # A PC that can't give the new vCPUs loses the instance at the PATCH, so the restart finds none (404).
+        self.x.cfg["xmr_groups"] = []
+        g = self.group()
+        self.x.cfg["xmr_groups"] = ["*"]
+        g.update(has_pc=True, instance="i1", machine="m1")
+        self.http.on("PATCH", "/containers/biz-rtx4080", (200, {}))
+        self.http.on("POST", "/instances/i1/restart", (404, {}))
+        self.x.xmr_sync([g], self.clock[0])
+        self.assertTrue(g["xmr"])
+        self.assertIn("Salad dropped its instance (the PC can't take the new size); it starts that way on its next PC",
+                      self.events())
 
     def test_a_refused_switch_is_tried_again_after_10_minutes(self):
         self.x.cfg["xmr_groups"] = []

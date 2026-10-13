@@ -450,7 +450,10 @@ class W:
                 if g.get("has_pc") and g.get("instance"):
                     rs, _ = http("POST", f"{CB}/{g['name']}/instances/{g['instance']}/restart")
                 event(f"MONERO {'ON' if want else 'OFF'} {g['name']}: miner {ver} on {res['cpu']} vCPUs and "
-                      f"{res['memory'] // 1024} GB; " + (f"box restarted (HTTP {rs})" if rs else
+                      f"{res['memory'] // 1024} GB; " + ("box restarted" if rs and 200 <= rs < 300 else
+                                                         "Salad dropped its instance (the PC can't take the new size); it starts "
+                                                         "that way on its next PC" if rs == 404 else
+                                                         f"restart refused (HTTP {rs})" if rs else
                                                          "it starts that way on its next PC"))
             else:
                 event(f"WARN Monero {'on' if want else 'off'} for {g['name']} refused: HTTP {s} {str(j)[:150]}")
