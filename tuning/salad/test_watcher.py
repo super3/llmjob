@@ -1125,5 +1125,140 @@ class TestRound(Base):
         self.assertAlmostEqual(g["spend"], 0.11 * 600 / 3600)
 
 
+XMR = "8" + "a" * 94
+
+
+class TestMonero(Base):
+    """Monero on the box's CPU: the groups config names get release v0.6.0, more vCPUs and the address."""
+    def setUp(self):
+        super().setUp()
+        self.x.cfg.update(xmr_wallet=XMR, xmr_groups=["biz-rtx4080"])
+
+    def test_the_command_adds_the_worker_and_the_address(self):
+        cmd = w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.0", XMR)
+        sed = re.search(r"(sed .*?) > /root/box\.sh", cmd).group(1)
+        # The three box.sh lines it changes, as they are at the pinned commit.
+        box = ("  declare -A dl; for f in llmjob-earn-cli-linux pearl_core.node pearl_core_cu13.node; do   # all three at once\n"
+               "BASE='{\"core\":\"release\",\"env\":{},\"flags\":\"\"}'\n"
+               "  rm -rf $R && mkdir -p $R && cp $D/rel/cli $R/\n")
+        import subprocess
+        out = subprocess.run(["sh", "-c", sed], input=box, capture_output=True, text=True).stdout
+        self.assertIn("pearl_core_cu13.node llmjob-xmr-worker; do", out)
+        self.assertIn(f"BASE='{{\"core\":\"release\",\"env\":{{}},\"flags\":\"--xmr-address {XMR}\"}}'", out)
+        self.assertIn("cp $D/rel/cli $D/rel/llmjob-xmr-worker $R/ && chmod +x $R/llmjob-xmr-worker", out)
+        self.assertIn("--cpu-threads 3", w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.0", XMR, 3))
+        self.assertNotIn("xmr", w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.0"))
+
+    def test_a_named_group_is_created_with_monero(self):
+        g = self.group()
+        body = self.http.made("POST", "/containers$")[-1][2]
+        res = body["container"]["resources"]
+        self.assertEqual((res["cpu"], res["memory"], res["gpu_classes"]), (8, 8192, ["c4080"]))
+        self.assertIn(f"--xmr-address {XMR}", body["container"]["command"][2])
+        self.assertIn("VER=v0.6.0;", body["container"]["command"][2])
+        self.assertTrue(g["xmr"])
+        self.assertEqual(g["ver"], "v0.6.0")
+        self.assertIn("Monero on 8 vCPUs", self.events())
+
+    def test_other_groups_are_created_as_before(self):
+        self.x.cfg["xmr_groups"] = []
+        g = self.group()
+        body = self.http.made("POST", "/containers$")[-1][2]
+        self.assertEqual((body["container"]["resources"]["cpu"], body["container"]["resources"]["memory"]), (2, 4096))
+        self.assertNotIn("xmr", body["container"]["command"][2])
+        self.assertFalse(g["xmr"])
+
+    def test_a_running_group_is_switched_on_and_off(self):
+        self.x.cfg["xmr_groups"] = []
+        g = self.group()
+        self.x.cfg["xmr_groups"] = ["*"]
+        self.http.on("PATCH", "/containers/biz-rtx4080", (200, {}))
+        self.x.xmr_sync([g], self.clock[0])
+        patch = self.http.made("PATCH", "/containers/biz-rtx4080")[-1][2]["container"]
+        self.assertEqual(patch["resources"], {"cpu": 8, "memory": 8192})
+        self.assertIn(XMR, patch["command"][2])
+        self.assertTrue(g["xmr"])
+        self.assertIn("MONERO ON biz-rtx4080: miner v0.6.0 on 8 vCPUs and 8 GB", self.events())
+        self.x.xmr_sync([g], self.clock[0] + 700)  # already on: nothing sent
+        self.assertEqual(len(self.http.made("PATCH", "/containers/biz-rtx4080")), 1)
+        self.x.cfg["xmr_wallet"] = ""
+        self.x.xmr_sync([g], self.clock[0] + 1400)
+        patch = self.http.made("PATCH", "/containers/biz-rtx4080")[-1][2]["container"]
+        self.assertEqual(patch["resources"], {"cpu": 2, "memory": 4096})
+        self.assertNotIn("xmr", patch["command"][2])
+        self.assertFalse(g["xmr"])
+        self.assertIn("MONERO OFF biz-rtx4080: miner v0.5.13", self.events())
+
+    def test_a_refused_switch_is_tried_again_after_10_minutes(self):
+        self.x.cfg["xmr_groups"] = []
+        g = self.group()
+        self.x.cfg["xmr_groups"] = ["biz-rtx4080"]
+        self.http.on("PATCH", "/containers/biz-rtx4080", (400, {"title": "nope"}))
+        self.x.xmr_sync([g], self.clock[0])
+        self.x.xmr_sync([g], self.clock[0] + 300)
+        self.assertEqual(len(self.http.made("PATCH", "/containers/biz-rtx4080")), 1)
+        self.assertIn("WARN Monero on for biz-rtx4080 refused: HTTP 400", self.events())
+        self.http.on("PATCH", "/containers/biz-rtx4080", (200, {}))
+        self.x.xmr_sync([g], self.clock[0] + 600)
+        self.assertTrue(g["xmr"])
+
+    def pool(self, hashes, hashrate=900, name="biz-rtx4080-g0"):
+        return 200, {"stats": {"balance": "5000000000", "paid": "0"},
+                     "workers": [{"name": name, "hashes": str(hashes), "hashrate": hashrate},
+                                 {"name": "rig01", "hashes": "999999999", "hashrate": 700}]}
+
+    def test_the_pool_counts_each_box_s_new_hashes(self):
+        g = self.group()
+        self.x.st["xmr_mkt"] = {"t": self.clock[0], "price": 500.0, "per_hash": 1e-12, "usd_khs_hr": 1e-12 * 3.6e6 * 500}
+        self.http.on("GET", "stats_address", self.pool(4_000_000))
+        self.x.xmr_pool([g], self.clock[0])
+        self.assertAlmostEqual(g["xmr_coins"], 4e-6)
+        self.assertEqual(g["xmr_khs"], 0.9)
+        self.http.on("GET", "stats_address", self.pool(5_000_000))
+        self.x.xmr_pool([g], self.clock[0] + 60)
+        self.assertAlmostEqual(g["xmr_coins"], 5e-6)  # only the million new hashes
+        self.http.on("GET", "stats_address", self.pool(200_000))  # the pool restarted its count
+        self.x.xmr_pool([g], self.clock[0] + 120)
+        self.assertAlmostEqual(g["xmr_coins"], 5.2e-6)
+        self.assertAlmostEqual(self.x.st["xmr_tot"]["balance"], 0.005)
+
+    def test_the_market_gives_what_a_hash_earns(self):
+        self.http.on("GET", "monero.herominers.com/api/stats$",
+                     (200, {"network": {"difficulty": 600_000_000_000}, "lastblock": {"reward": 600_000_000_000}}))
+        self.http.on("GET", "coingecko", (200, {"monero": {"usd": 500}}))
+        self.x.xmr_market()
+        mk = self.x.st["xmr_mkt"]
+        self.assertAlmostEqual(mk["per_hash"], 0.6 / 6e11 * 0.991)
+        self.assertAlmostEqual(mk["usd_khs_hr"], 0.6 / 6e11 * 0.991 * 3.6e6 * 500)
+
+    def test_the_table_shows_monero(self):
+        g = self.group()
+        plain = self.group(cls="RTX 2060 (6 GB)")
+        self.x.st["xmr_mkt"] = {"t": self.clock[0], "price": 500.0, "per_hash": 1e-12, "usd_khs_hr": 0.002}
+        self.x.st["xmr_tot"] = {"balance": 0.005, "paid": 0.0}
+        g.update(has_pc=True, machine="m1", readings=[[self.clock[0] - 60, "m1", 200.0, 0]],
+                 xmr_khs=2.0, xmr_seen=self.clock[0], xmr_coins=0.0001)
+        self.x.write_report()
+        with open(os.path.join(TMP, "report.md")) as f:
+            report = f.read()
+        self.assertIn("· XMR $500 · $0.00200/kH-hr", report)
+        self.assertIn("| Box | TH/s | kH/s | $/hr |", report)
+        # 200 TH/s × 0.00117 + 2 kH/s × 0.002 = 0.238 an hour, less 0.11 billed. 0.0001 XMR is $0.05.
+        self.assertIn("| ⛏️ 4080 batch m1 | 200 | 2.00 | 0.110 | +0.128 |", report)
+        self.assertIn("| ⏳ 2060 batch | 0 | — | 0.000 |", report)
+        self.assertIn("- 🪙 Monero (CPU): 1 box at 2.00 kH/s, worth $0.0040/hr; our boxes have mined 0.000100 XMR ($0.05).", report)
+        self.assertIn("The pool holds 0.005000 XMR for the address", report)
+        self.assertTrue(all(l.count("|") == 10 for l in report.splitlines() if l.startswith("|")))
+
+    def test_without_an_address_the_table_is_unchanged(self):
+        self.x.cfg["xmr_wallet"] = ""
+        self.group()
+        self.x.write_report()
+        with open(os.path.join(TMP, "report.md")) as f:
+            report = f.read()
+        self.assertNotIn("kH/s", report)
+        self.assertNotIn("Monero", report)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -53,6 +53,8 @@ Config keys:
 | `drift` | How far the ledger and the pool may disagree before a `DRIFT` event (0.15). |
 | `trader` | Railway ids of the SafeTrade autoseller: `{"project", "service", "environment"}`. Unset: no SafeTrade line. |
 | `safetrade` | SafeTrade sales entered by hand (`sold`, `received`, `fees`, `usdt`, `prl`), used until the trader's logs can be read. |
+| `xmr_wallet`, `xmr_groups` | Monero on the box's CPU (see [Monero](#monero-on-the-cpu)): the address, and the groups that mine it (`["*"]` for every group). Unset: no Monero, and the table is as before. |
+| `xmr_ver`, `xmr_cpu`, `xmr_memory`, `xmr_threads` | A Monero box runs release `v0.6.0` or later on 8 vCPUs and 8192 MB. `xmr_threads` 0 lets the CLI choose (it keeps one CPU free for Pearl). |
 
 Tests: `python3 -m unittest discover -s tuning/salad`. They fake Salad, the pool and the clock.
 
@@ -130,6 +132,27 @@ lines, so it says why.
 running). A group waiting for a PC isn't billed. The first account counted only `running` minutes.
 Neither way has been checked against the portal. **PRL mined** adds each `[mining g0]` reading (one a
 minute) as TH/s × 1 min × PRL per TH-hr at that moment.
+
+## Monero on the CPU
+
+Release v0.6.0 can also mine Monero (XMR) on the CPU, paid to `xmr_wallet` on HeroMiners' Monero pool (0.9% fee,
+payouts from 0.01 XMR). The groups in `xmr_groups` get it. A new group starts with it; a running group is switched
+by a PATCH of its command and resources, and Salad then restarts it, usually on another PC. Taking a group out of
+`xmr_groups` (or clearing `xmr_wallet`) switches it back to Pearl alone, on 2 vCPUs.
+
+- **vCPUs are free on a GPU group.** Salad's GPU price includes the vCPUs and RAM, so a Monero box asks for 8 vCPUs
+  and 8 GB instead of 2 and 4. With 2, the CLI could run one thread at most, and with the Pearl miner using about
+  one CPU the container would reach its CPU limit, which slows every process in it, Pearl's included. On 8 the CLI
+  runs up to 7 threads (fewer when the CPU's L3 cache is small) at low priority, and one CPU stays free for Pearl.
+  The cost is that fewer PCs have 8 vCPUs and 8 GB to spare, so a group may wait longer for one.
+- **The box command** is box.sh at the same pinned commit, with three more edits made by `sed`: it downloads
+  `llmjob-xmr-worker` from the release, copies it beside each GPU's CLI, and adds `--xmr-address` to the default
+  flags.
+- **Earnings** come from the pool, by worker (`<group>-g0`). The pool counts every accepted hash, so the XMR a box
+  earned is its new hashes times what a hash earns (the last block's reward over the network difficulty, less the
+  fee). The price is CoinGecko's. The address's pool balance also counts any other rig that mines to it.
+- **The rules** still judge every box on Pearl alone. Monero's earnings are shown in the table (a kH/s column, and
+  in Profit/hr, Margin and Profit $) but don't keep a slow PC or a weak class.
 
 ## Salad API notes
 
