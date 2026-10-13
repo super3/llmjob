@@ -212,7 +212,7 @@ its priority (`med` for medium) and its PC (`⛏️ 2080-2 low cb6d4bd1`), joine
 Each row has the group's whole Salad bill so far (**Spent $**), its PRL and Profit $ = PRL × today's
 price − Spent $. A row's PRL is what we expect the pool to credit for the miner's speed: the network-rate
 estimate times the pool's **credit ratio** (credited ÷ estimate, once the pool has credited us in 10
-blocks). The first line shows both rates. The pool pays per account, not per box, so only the account's
+blocks). The first line shows the time it was written (`08:00 UTC, Fri 15 Jan`), the PRL price and both rates. The pool pays per account, not per box, so only the account's
 total can be checked against the pool.
 
 A box on a new PC with no reading yet (under 15 minutes) is **starting**: it shows — for Profit/hr and
