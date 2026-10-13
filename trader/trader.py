@@ -26,10 +26,37 @@ MIN_VOLUME = float(os.environ.get("MIN_VOLUME", "0.5"))        # don't bother wi
 # A run that hangs keeps the cron service busy, and Railway skips every later run until it ends, so a run
 # is stopped after this long.
 MAX_RUN_SECONDS = int(os.environ.get("MAX_RUN_SECONDS", "300"))
+# SafeTrade takes the key only from the IPs on its whitelist. SAFETRADE_PROXY (http://user:pass@host:port) sends
+# every call through a proxy with a static IP, so the whitelist needs just that address, whatever IP Railway uses.
+PROXY = os.environ.get("SAFETRADE_PROXY", "")
+OUT_IP = "?"   # the IP SafeTrade sees, read at the start of each run
 
 
 def now_ms():
     return str(int(time.time() * 1000))
+
+
+def urlopen(req, timeout):
+    if PROXY:
+        proxies = urllib.request.ProxyHandler({"http": PROXY, "https": PROXY})
+        return urllib.request.build_opener(proxies).open(req, timeout=timeout)
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def proxy_name():
+    """The proxy's host and port, without its login."""
+    u = urllib.parse.urlsplit(PROXY)
+    return f"{u.hostname}:{u.port}" if u.port else str(u.hostname)
+
+
+def out_ip():
+    """The IP our calls leave from (through the proxy, if there is one), so a 403 can be checked against the whitelist."""
+    try:
+        req = urllib.request.Request("https://api.ipify.org", headers={"User-Agent": "llmjob-trader/1.0"})
+        with urlopen(req, timeout=15) as r:
+            return r.read().decode().strip()[:45]
+    except Exception as e:
+        return f"unknown ({str(e)[:80]})"
 
 
 def http(method, path, params=None, auth=False):
@@ -52,7 +79,7 @@ def http(method, path, params=None, auth=False):
         req.add_header("X-Auth-Nonce", nonce)
         req.add_header("X-Auth-Signature", hmac.new(SECRET.encode(), (nonce + KEY).encode(), hashlib.sha256).hexdigest())
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with urlopen(req, timeout=30) as r:
             txt = r.read().decode()
             return r.status, (json.loads(txt) if txt.strip() else None)
     except urllib.error.HTTPError as e:
@@ -75,7 +102,8 @@ class Fail(Exception):
 
 def need(status, body, what):
     if not 200 <= status < 300:
-        raise Fail(f"{what} failed: HTTP {status} {json.dumps(body)[:300]}")
+        hint = f" (calls go out from {OUT_IP}: is it on the key's IP whitelist?)" if status in (401, 403) else ""
+        raise Fail(f"{what} failed: HTTP {status} {json.dumps(body)[:300]}{hint}")
     return body
 
 
@@ -279,7 +307,9 @@ def main():
     if not KEY or not SECRET:
         log("SAFETRADE_API_KEY and SAFETRADE_API_SECRET aren't set; nothing to do")
         return 0
-    log("run started")
+    global OUT_IP
+    OUT_IP = out_ip()
+    log(f"run started: calls go out from {OUT_IP}" + (f" through the proxy at {proxy_name()}" if PROXY else ""))
 
     def too_long(*_):
         raise Fail(f"run took over {MAX_RUN_SECONDS} s; stopped so the next hourly run isn't skipped")

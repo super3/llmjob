@@ -34,7 +34,11 @@ never finished, and no run happened for the next 15 hours.
   environments may copy the service; there it only logs. Previews also lack the static IP, so the
   SafeTrade whitelist refuses them anyway.
 - **The key** should allow trading and reading only, never withdrawals, and be whitelisted to the
-  service's static IPs.
+  static proxy's IP only.
+- **One fixed IP.** With `SAFETRADE_PROXY` set, every SafeTrade call goes through that proxy, so SafeTrade
+  always sees the proxy's IP, whatever IP Railway gives the service. Each run starts with the IP its calls
+  leave from (`run started: calls go out from …`), and a 401 or 403 names it, so a refused key can be checked
+  against the whitelist. The log shows the proxy's host and port, never its login.
 
 ## Railway setup
 
@@ -43,9 +47,9 @@ Service `trader` in the `llmjob` project:
 | Setting | Value |
 |---|---|
 | Source | `super3/llmjob`, Root Directory `/trader`, Watch Paths `/trader/**` |
-| Networking | Static outbound IPs on; all of them in SafeTrade's IP whitelist |
+| Networking | SafeTrade calls go through the static proxy in `SAFETRADE_PROXY`; its IP is the only one in SafeTrade's IP whitelist |
 | Start and schedule | From `railway.toml` here: `python3 trader.py` at minute 5 of every hour, no restarts |
-| Variables | `SAFETRADE_API_KEY`, `SAFETRADE_API_SECRET` (sealed), `DRY_RUN` (`1` until the dry run looks right, then `0`) |
+| Variables | `SAFETRADE_API_KEY`, `SAFETRADE_API_SECRET` (sealed), `SAFETRADE_PROXY` (sealed: `http://user:pass@host:port` from the static proxy provider), `DRY_RUN` (`1` until the dry run looks right, then `0`) |
 
 Optional variables: `MAX_SLIPPAGE` (0.03), `MIN_PRICE` (0), `MIN_VOLUME` (0.5), `MAX_RUN_SECONDS` (300), `MARKET` (`prlusdt`),
 `COIN` (`prl`), `QUOTE` (`usdt`), `SAFETRADE_BASE` (`https://safe.trade/api/v2`).
