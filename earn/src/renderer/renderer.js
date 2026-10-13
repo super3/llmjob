@@ -554,29 +554,17 @@
     return !!state.cpu && state.cpu.worker === false;
   }
 
-  const CPU_COST = 'Uses about 2.4 GB of memory and 45-65 W more, which can cost as much as it earns.';
-  const CPU_PAY = 'HeroMiners pays at 0.01 XMR, less a 0.9% fee.';
-
-  // The two lines under the address: what is wrong with it, what a blank box
-  // means, or what it costs and what will run. Two lines keep Settings in its
-  // 470px, and the title has all of it. The cost comes first so a long thread
-  // note never cuts it off.
+  // The line under the address shows only when something stops CPU mining:
+  // a bad address, no worker, or no threads. Two lines keep Settings in its
+  // 470px, and the title has all of it.
   function cpuNote() {
     if (state.xmrError) return 'This address won\'t work: ' + state.xmrError + '.';
     if (cpuNoWorker()) return 'This build has no CPU miner (llmjob-xmr-worker is not beside the app).';
-    if (!state.cpuMining) return 'Mines Monero on the CPU while the GPU mines Pearl. Leave blank to mine Pearl only.';
-    return CPU_COST + ' ' + cpuThreadsNote() + ' ' + CPU_PAY;
-  }
-
-  function cpuThreadsNote() {
     const c = state.cpu;
-    if (!c) return 'Mines on the CPU threads the GPU miner leaves free.';
+    if (!state.cpuMining || !c) return '';
     if (!c.canMine) return 'Can\'t run here: ' + c.reason + '.';
-    const n = cpuThreadsNow();
-    if (!n) return 'Auto: ' + c.reason + '.';
-    // The default capped by L3 cache says so.
-    if (!state.cpuThreads && c.reason) return n + ' of ' + c.available + ' CPUs mine: ' + c.reason + '.';
-    return n + ' of ' + c.available + ' CPUs mine; the rest stay free for the GPU miner.';
+    if (!cpuThreadsNow()) return 'Auto: ' + c.reason + '.';
+    return '';
   }
 
   const threadsText = (n) => n + (n === 1 ? ' thread' : ' threads');
@@ -585,6 +573,7 @@
     const c = state.cpu;
     el.cpuNote.textContent = cpuNote();
     el.cpuNote.title = el.cpuNote.textContent;
+    el.cpuNote.hidden = !el.cpuNote.textContent;
     el.cpuNote.classList.toggle('err', !!state.xmrError);
     el.setCpuThreads.innerHTML = '';
     const max = c ? c.available - 1 : 0;
