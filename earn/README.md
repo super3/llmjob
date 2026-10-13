@@ -231,8 +231,9 @@ It is **off by default** and does nothing until you turn it on.
   START. Leaving the box blank keeps it off, as merge mining's address did. It runs in any mode, with or without the GPU miner, and STOP
   stops it. A Monero address is enough to START in Mining mode, with no Pearl
   address. With "Only when idle" on, it waits for an idle
-  computer like the GPU miner does. The Mine tab then shows a CPU line: the CPU
-  hashrate, its shares and the XMR balance. The settings apply at the next
+  computer like the GPU miner does. The Mine tab then shows Monero's
+  hashrate between Pearl's and the LLM's, tagged CPU, and its shares beside
+  Pearl's. Its tooltip has the XMR balance. The settings apply at the next
   START.
 - CLI: `--xmr-address 4…` (or `8…`). `--cpu-threads <n>` sets the thread count;
   `0` turns it off. `--cpu-threads` or `--cpu-priority` without an address

@@ -46,17 +46,18 @@
       <div class="hero2">
         <div class="hero-col">
           <div class="hero-num"><span class="num" id="hashrate">0.0</span><span class="unit">TH/s</span></div>
-          <div class="hero-sub"><span class="dot2" id="mine-dot"></span><span class="hero-label">Mining</span></div>
+          <div class="hero-sub"><span class="dot2" id="mine-dot"></span><span class="hero-label" id="mine-label">Mining</span><span class="hw-tag">GPU</span></div>
         </div>
         <!-- Monero on the CPU (Settings → CPU Mining), between the GPU's two
-             readings; hidden while that is off. -->
+             readings; hidden while that is off. The GPU/CPU tags show only
+             then, to tell the three apart. -->
         <div class="hero-col mid" id="cpu-row" hidden>
           <div class="hero-num"><span class="num" id="cpu-rate">0.00</span><span class="unit">kH/s</span></div>
-          <div class="hero-sub"><span class="dot2" id="cpu-dot"></span><span class="hero-label">Monero</span><span class="hero-detail mono" id="cpu-meta"></span></div>
+          <div class="hero-sub"><span class="dot2" id="cpu-dot"></span><span class="hero-label">Monero</span><span class="hw-tag cpu">CPU</span><span class="hero-detail mono" id="cpu-meta"></span></div>
         </div>
-        <div class="hero-col right">
+        <div class="hero-col right" id="llm-col">
           <div class="hero-num"><span class="num" id="llm-hero-tps">0.0</span><span class="unit">tok/s</span></div>
-          <div class="hero-sub"><span class="dot2" id="llm-hero-dot"></span><span class="hero-label">LLM</span><span class="hero-detail mono" id="llm-hero-detail">—</span></div>
+          <div class="hero-sub"><span class="dot2" id="llm-hero-dot"></span><span class="hero-label">LLM</span><span class="hw-tag">GPU</span><span class="hero-detail mono" id="llm-hero-detail">—</span></div>
         </div>
       </div>
       <svg viewBox="0 0 480 56" width="100%" height="84" preserveAspectRatio="none">
@@ -65,9 +66,8 @@
         <path id="mk-line" d="M0 55 L480 55" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>
       </svg>
       <div class="mk-stats">
-        <div class="mk-stat"><div class="k">Accepted shares</div><div class="v" id="accepted">0</div></div>
+        <div class="mk-stat"><div class="k">Accepted shares</div><div class="v"><span id="accepted">0</span><span id="cpu-shares" hidden><span class="day"> PRL</span> · <span id="cpu-accepted">0</span><span class="day"> XMR</span></span></div></div>
         <div class="mk-stat"><div class="k">Uptime</div><div class="v" id="uptime">0m 00s</div></div>
-        <div class="mk-stat" id="cpu-bal-stat" hidden><div class="k">Monero balance</div><div class="v" id="cpu-balance"></div></div>
         <div class="mk-stat"><div class="k">Est. earnings</div><div class="v accent"><span id="estday">$0.00</span><span class="day">/day</span></div></div>
       </div>
     </div>
@@ -177,7 +177,7 @@
       <span class="head-title"><span class="back" data-back>← Back</span><span class="lbl">Settings</span><b class="mono head-version" id="app-version">—</b></span>
       <span class="head-actions">
         <span id="update-status" class="update-status" hidden></span>
-        <button id="btn-check-update" class="update-check-btn" type="button">Check for updates</button>
+        <button id="btn-check-update" class="update-check-btn" type="button"><svg class="update-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"></path><path d="M21 3v6h-6"></path></svg><span id="update-check-label">Check for updates</span></button>
       </span>
     </div>
     <div class="settings-section">Compute Mode</div>

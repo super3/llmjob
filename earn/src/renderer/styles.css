@@ -91,11 +91,15 @@ input.field-box { user-select: text; }
    (not just the value) keeps each label sitting over its own number. */
 .mk-stat:nth-child(2) { text-align: center; }
 .mk-stat:nth-child(3), .mk-stat:nth-child(4) { text-align: right; }
-/* With Monero on, the card reads GPU, CPU, LLM across the top, and its
-   balance joins the stats. */
+/* With Monero on, the card reads Pearl, Monero, LLM across the top, each
+   tagged with the chip it runs on. */
 .chart-card.with-cpu .hero2 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.chart-card.with-cpu .mk-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.chart-card.with-cpu .mk-stat:nth-child(3) { text-align: center; }
+.hw-tag { display: none; flex: none; height: 16px; align-items: center; padding: 0 5px; border-radius: 4px; background: #eef2fb; color: #3557b7; font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 10px; font-weight: 600; line-height: 1; }
+.hw-tag.cpu { background: #fdf0e6; color: #b45309; }
+.chart-card.with-cpu .hw-tag { display: inline-flex; }
+/* Routine details (the model, the share count) move to the tooltip; a
+   problem or a stage in progress still shows. */
+.chart-card.with-cpu .hero-detail.quiet { display: none; }
 .hero-col { min-width: 0; }
 .hero-col.mid { text-align: center; }
 .hero-col.mid .hero-num, .hero-col.mid .hero-sub { justify-content: center; }
@@ -103,7 +107,6 @@ input.field-box { user-select: text; }
 /* A third of the width cuts the details short, so each gets its own line. */
 .chart-card.with-cpu .hero-sub { flex-wrap: wrap; row-gap: 2px; }
 .chart-card.with-cpu .hero-detail { flex-basis: 100%; }
-#cpu-balance:empty::before { content: '—'; color: var(--muted-2); }
 .mk-stat .k { font-size: 11.5px; color: var(--muted); font-weight: 500; margin-bottom: 4px; }
 .mk-stat .v { font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 17px; font-weight: 600; color: var(--ink); }
 .mk-stat .v.accent { color: var(--accent); }
@@ -285,10 +288,13 @@ input.field-box { user-select: text; }
 .rv-input:focus { border-color: var(--accent); }
 select.rv-input { cursor: pointer; }
 /* A text button beside the Settings title, filled once an update is ready. */
-.update-check-btn { border: none; background: none; color: var(--accent); font-family: inherit; font-weight: 600; font-size: 12.5px; padding: 0; cursor: pointer; }
+.update-check-btn { display: inline-flex; align-items: center; gap: 6px; border: none; background: none; color: var(--accent); font-family: inherit; font-weight: 600; font-size: 12.5px; padding: 0; cursor: pointer; }
 .update-check-btn:hover:not(:disabled) { text-decoration: underline; }
 .update-check-btn:disabled { cursor: default; color: var(--muted); }
 .update-check-btn.ready { background: var(--accent); color: #fff; padding: 3px 9px; border-radius: 6px; }
+.update-check-btn.ready .update-icon { display: none; }
+.update-check-btn.checking .update-icon { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .update-check-btn.ready:hover:not(:disabled) { background: #1d4ed8; text-decoration: none; }
 /* One line, cut short if it has to be, so a long status never grows the head. */
 .update-status { font-size: 12px; color: var(--muted); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

@@ -616,6 +616,7 @@ describe('boot with the full bridge', () => {
 
     cbs.llm({ note: 'downloading model gemma… 42%' });
     expect($('llm-hero-detail').textContent).toBe('downloading model gemma… 42%');
+    expect($('llm-hero-detail').classList.contains('quiet')).toBe(false);
     expect($('llm-hero-dot').className).toBe('dot2 busy');
 
     cbs.llm({ note: 'Starting…' });
@@ -629,6 +630,8 @@ describe('boot with the full bridge', () => {
     // …and so does being ready, so a stale note can't linger over a live model.
     makeReady(cbs, { note: 'Starting…' });
     expect($('llm-hero-detail').textContent).toBe('gemma');
+    expect($('llm-hero-detail').classList.contains('quiet')).toBe(true);
+    expect($('llm-col').title).toBe('gemma');
     expect($('llm-hero-dot').className).toBe('dot2 on');
   });
 
@@ -639,6 +642,7 @@ describe('boot with the full bridge', () => {
     expect($('llm-hero-dot').className).toBe('dot2 err');
     expect($('llm-hero-detail').textContent).toBe('GPU died');
     expect($('llm-hero-detail').classList.contains('err')).toBe(true);
+    expect($('llm-hero-detail').classList.contains('quiet')).toBe(false);
     expect($('llm-hero-tps').textContent).toBe('0.0');
     makeReady(cbs);
     expect($('llm-hero-tps').textContent).toBe('12.3');
@@ -894,6 +898,8 @@ describe('boot with the full bridge', () => {
     expect(api.checkForUpdate).toHaveBeenCalledTimes(1);
     expect($('btn-check-update').disabled).toBe(true);
     expect($('btn-check-update').textContent).toBe('Checking…');
+    expect($('btn-check-update').classList.contains('checking')).toBe(true);
+    expect($('btn-check-update').querySelector('svg')).not.toBeNull();
     cbs.update(null);
     cbs.update({ show: true, phase: 'checking', text: 'Checking for updates…' });
     expect($('update-status').hidden).toBe(true);
@@ -904,6 +910,7 @@ describe('boot with the full bridge', () => {
     expect($('update-status').textContent).toBe('Up to date');
     expect($('btn-check-update').disabled).toBe(false);
     expect($('btn-check-update').textContent).toBe('Check for updates');
+    expect($('btn-check-update').classList.contains('checking')).toBe(false);
     cbs.update({ show: true, phase: 'none', text: 'Still up to date', transient: true });
     jest.advanceTimersByTime(5000);
     expect($('update-status').hidden).toBe(true);
@@ -1385,9 +1392,10 @@ describe('CPU mining', () => {
     expect($('cpu-note').title).toBe(BLANK);
     expect($('cpu-row').hidden).toBe(true);
     // The activity card is the GPU's alone, as before CPU mining.
-    expect($('cpu-bal-stat').hidden).toBe(true);
+    expect($('cpu-shares').hidden).toBe(true);
     expect($('chart-card').classList.contains('with-cpu')).toBe(false);
     expect($('activity-label').textContent).toBe('GPU Activity');
+    expect($('mine-label').textContent).toBe('Mining');
     expect(options()).toEqual(['Auto (7 threads)', '1 thread', '2 threads', '3 threads', '4 threads', '5 threads', '6 threads', '7 threads']);
     expect(api.checkXmrAddress).not.toHaveBeenCalled();
     click($('btn-start'));
@@ -1454,11 +1462,16 @@ describe('CPU mining', () => {
     expect($('cpu-note').textContent).toBe(withCost('3 of 8 CPUs mine; the rest stay free for the GPU miner.'));
     expect($('cpu-row').hidden).toBe(false);
     expect($('cpu-meta').textContent).toBe('ready to start');
-    expect($('cpu-balance').textContent).toBe('0.0125 XMR');
-    // Monero joins the activity card: a third reading and a fourth stat.
-    expect($('cpu-bal-stat').hidden).toBe(false);
+    expect($('cpu-row').title).toContain('0.0125 XMR earned');
+    // Monero joins the activity card: a third reading, named by its coin, and
+    // its shares beside Pearl's.
+    expect($('cpu-shares').hidden).toBe(false);
     expect($('chart-card').classList.contains('with-cpu')).toBe(true);
     expect($('activity-label').textContent).toBe('GPU & CPU Activity');
+    expect($('mine-label').textContent).toBe('Pearl');
+    // "ready to start" adds nothing to the grey dot, so it stays in the tooltip.
+    expect($('cpu-meta').classList.contains('quiet')).toBe(true);
+    expect($('cpu-row').title).toBe('ready to start · 0.0125 XMR earned');
 
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ cpuMining: true, xmrAddress: XMR_ADDR, cpuThreads: 3 }));
@@ -1477,9 +1490,13 @@ describe('CPU mining', () => {
     expect($('cpu-dot').className).toBe('dot2 busy');
     tick({ state: 'dataset', hashrate: '0.00', accepted: 0, rejected: 0, threads: 3, error: null });
     expect($('cpu-meta').textContent).toBe('building its dataset…');
+    expect($('cpu-meta').classList.contains('quiet')).toBe(false);
     tick({ state: 'mining', hashrate: '1.85', accepted: 4, rejected: 0, threads: 3, error: null });
     expect($('cpu-rate').textContent).toBe('1.85');
     expect($('cpu-meta').textContent).toBe('4 accepted · 3 threads');
+    // The count moves to the stats; the line is off the card.
+    expect($('cpu-accepted').textContent).toBe('4');
+    expect($('cpu-meta').classList.contains('quiet')).toBe(true);
     expect($('cpu-dot').className).toBe('dot2 on');
     tick({ state: 'mining', hashrate: '1.85', accepted: 4, rejected: 1, threads: 3, error: null });
     expect($('cpu-meta').textContent).toBe('4 accepted · 1 rejected · 3 threads');
@@ -1495,6 +1512,7 @@ describe('CPU mining', () => {
     tick({ state: 'stopped', hashrate: '0.00', accepted: 0, rejected: 0, threads: 0, error: 'the CPU miner is missing' });
     expect($('cpu-meta').textContent).toBe('stopped: the CPU miner is missing');
     expect($('cpu-meta').classList.contains('err')).toBe(true);
+    expect($('cpu-meta').classList.contains('quiet')).toBe(false);
     expect($('cpu-dot').className).toBe('dot2 err');
     tick(undefined);
     expect($('cpu-meta').textContent).toBe('starting…');
@@ -1508,11 +1526,12 @@ describe('CPU mining', () => {
     api.getXmrBalance.mockResolvedValue({ earned: 0.5 });
     jest.advanceTimersByTime(60000);
     await flush();
-    expect($('cpu-balance').textContent).toBe('0.5000 XMR');
+    expect($('cpu-row').title).toContain('0.5000 XMR earned');
 
     click($('btn-stop'));
     expect($('set-xmr').disabled).toBe(false);
     expect($('cpu-rate').textContent).toBe('0.00');
+    expect($('cpu-accepted').textContent).toBe('0');
   });
 
   it('checks the address as it is typed, and says what is wrong', async () => {
@@ -1531,13 +1550,13 @@ describe('CPU mining', () => {
     expect($('cpu-note').textContent).toBe('This address won\'t work: the checksum does not match: check for a typo.');
     expect($('cpu-note').classList.contains('err')).toBe(true);
     expect($('cpu-meta').textContent).toBe('check the address');
-    expect($('cpu-balance').textContent).toBe('');
+    expect($('cpu-row').title).not.toContain('XMR earned');
 
     setInput($('set-xmr'), XMR_ADDR);
     jest.advanceTimersByTime(400);
     await flush();
     expect($('cpu-note').classList.contains('err')).toBe(false);
-    expect($('cpu-balance').textContent).toBe('0.0125 XMR');
+    expect($('cpu-row').title).toContain('0.0125 XMR earned');
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ cpuMining: true, xmrAddress: XMR_ADDR }));
     click($('btn-stop'));
@@ -1548,7 +1567,7 @@ describe('CPU mining', () => {
     expect($('cpu-note').textContent).toBe(BLANK);
     jest.advanceTimersByTime(400);
     await flush();
-    expect($('cpu-balance').textContent).toBe('');
+    expect($('cpu-row').title).not.toContain('XMR earned');
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenLastCalledWith(expect.objectContaining({ cpuMining: false, xmrAddress: '' }));
   });
@@ -1574,13 +1593,13 @@ describe('CPU mining', () => {
     setInput($('set-xmr'), 'something else');
     pay({ earned: 9 });
     await flush();
-    expect($('cpu-balance').textContent).toBe('');
+    expect($('cpu-row').title).not.toContain('XMR earned');
     // A pool that answers with no balance leaves it blank.
     api.getXmrBalance.mockResolvedValueOnce(null);
     setInput($('set-xmr'), XMR_ADDR);
     jest.advanceTimersByTime(400);
     await flush();
-    expect($('cpu-balance').textContent).toBe('');
+    expect($('cpu-row').title).not.toContain('XMR earned');
   });
 
   it('typing an address and the thread count update the section', async () => {
@@ -1658,6 +1677,6 @@ describe('CPU mining', () => {
     delete api.getXmrBalance;
     await boot({ api });
     expect($('cpu-meta').textContent).toBe('check the address');
-    expect($('cpu-balance').textContent).toBe('');
+    expect($('cpu-row').title).not.toContain('XMR earned');
   });
 });

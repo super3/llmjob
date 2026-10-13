@@ -44,14 +44,15 @@
     modeSeg: $('mode-seg'), modeHint: $('mode-hint'),
     setWorker: $('set-worker'), setRegion: $('set-region'),
     setShare: $('set-share'), shareNote: $('share-note'),
-    appVersion: $('app-version'), btnCheckUpdate: $('btn-check-update'), updateStatus: $('update-status'),
+    appVersion: $('app-version'), btnCheckUpdate: $('btn-check-update'), updateCheckLabel: $('update-check-label'), updateStatus: $('update-status'),
     prefTray: $('pref-tray'), prefStartup: $('pref-startup'), prefIdle: $('pref-idle'),
     idleStatus: $('idle-status'),
     // CPU mining (Monero)
     cpuNote: $('cpu-note'), setXmr: $('set-xmr'),
     setCpuThreads: $('set-cpu-threads'),
-    chartCard: $('chart-card'), activityLabel: $('activity-label'), cpuBalStat: $('cpu-bal-stat'),
-    cpuRow: $('cpu-row'), cpuDot: $('cpu-dot'), cpuRate: $('cpu-rate'), cpuMeta: $('cpu-meta'), cpuBalance: $('cpu-balance'),
+    chartCard: $('chart-card'), activityLabel: $('activity-label'), mineLabel: $('mine-label'), llmCol: $('llm-col'),
+    cpuRow: $('cpu-row'), cpuDot: $('cpu-dot'), cpuRate: $('cpu-rate'), cpuMeta: $('cpu-meta'),
+    cpuShares: $('cpu-shares'), cpuAccepted: $('cpu-accepted'),
     logTerm: $('log-term'),
   };
 
@@ -204,6 +205,8 @@
     el.llmHeroDot.className = 'dot2' + (err ? ' err' : ready ? ' on' : note ? ' busy' : '');
     el.llmHeroDetail.textContent = err || note || state.llm.model || 'gemma-4-E4B-it';
     el.llmHeroDetail.classList.toggle('err', !!err);
+    el.llmHeroDetail.classList.toggle('quiet', !err && !note);
+    el.llmCol.title = state.llm.model || '';
     el.chatStoppedModel.textContent = state.llm.model || 'the local model';
     el.apiModel.textContent = state.llm.model || '—';
   }
@@ -632,18 +635,24 @@
 
   function renderCpuRow() {
     el.cpuRow.hidden = !state.cpuMining;
-    el.cpuBalStat.hidden = !state.cpuMining;
+    el.cpuShares.hidden = !state.cpuMining;
     el.chartCard.classList.toggle('with-cpu', state.cpuMining);
     el.activityLabel.textContent = state.cpuMining ? 'GPU & CPU Activity' : 'GPU Activity';
+    // Next to Monero, "Mining" doesn't say which; the coin does.
+    el.mineLabel.textContent = state.cpuMining ? 'Pearl' : 'Mining';
     const v = state.mining ? state.cpuView : null;
     el.cpuRate.textContent = v ? v.hashrate : '0.00';
+    el.cpuAccepted.textContent = v ? String(v.accepted || 0) : '0';
     const bad = !!(v && (v.error || v.pool));
     el.cpuDot.className = 'dot2' + (!v ? '' : bad ? ' err' : v.state === 'mining' ? ' on' : CPU_STATES[v.state] ? ' busy' : '');
     el.cpuMeta.textContent = cpuMetaText(v);
-    // The line can be cut short; an error is worth reading in full.
     el.cpuMeta.title = el.cpuMeta.textContent;
     el.cpuMeta.classList.toggle('err', bad);
-    el.cpuBalance.textContent = state.xmrBalance != null && state.xmrOk ? fmt4(state.xmrBalance) + ' XMR' : '';
+    // The share count is in the stats and "ready to start" says nothing the
+    // grey dot doesn't, so those two stay off the card.
+    el.cpuMeta.classList.toggle('quiet', !bad && (v ? v.state === 'mining' : el.cpuMeta.textContent === 'ready to start'));
+    const bal = state.xmrBalance != null && state.xmrOk ? fmt4(state.xmrBalance) + ' XMR earned' : '';
+    el.cpuRow.title = [el.cpuMeta.textContent, bal].filter(Boolean).join(' · ');
   }
 
   async function refreshXmrBalance() {
@@ -919,7 +928,8 @@
       if (updateReady) { if (api.installUpdate) api.installUpdate(); return; }
       if (!api.checkForUpdate) return;
       el.btnCheckUpdate.disabled = true;
-      el.btnCheckUpdate.textContent = 'Checking…';
+      el.btnCheckUpdate.classList.add('checking');
+      el.updateCheckLabel.textContent = 'Checking…';
       api.checkForUpdate();
     });
 
@@ -1113,10 +1123,11 @@
       el.updateStatus.hidden = !s.show || s.phase === 'checking';
       el.updateStatus.textContent = s.text;
       el.updateStatus.classList.toggle('err', !!s.error);
+      if (s.phase !== 'checking') el.btnCheckUpdate.classList.remove('checking');
       if (s.ready) {
         updateReady = true;
         el.btnCheckUpdate.disabled = false;
-        el.btnCheckUpdate.textContent = 'Update & restart';
+        el.updateCheckLabel.textContent = 'Update & restart';
         el.btnCheckUpdate.classList.add('ready');
         // Announce it on the Mine view too: Settings is the one screen nobody
         // opens, so a downloaded update could sit there unnoticed.
@@ -1126,7 +1137,7 @@
       } else if (s.phase !== 'checking') {
         updateReady = false;
         el.btnCheckUpdate.disabled = false;
-        el.btnCheckUpdate.textContent = 'Check for updates';
+        el.updateCheckLabel.textContent = 'Check for updates';
         el.btnCheckUpdate.classList.remove('ready');
         el.updateBar.hidden = true;
       }
