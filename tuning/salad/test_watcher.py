@@ -1180,9 +1180,9 @@ class TestMonero(Base):
         self.assertEqual(patch["resources"], {"cpu": 8, "memory": 8192})
         self.assertIn(XMR, patch["command"][2])
         self.assertTrue(g["xmr"])
-        # A running instance keeps its old command until it restarts, so the box is restarted on its PC.
+        # A running instance keeps its old command until it restarts, so the box is restarted.
         self.assertEqual(len(self.http.made("POST", "/containers/biz-rtx4080/instances/i1/restart")), 1)
-        self.assertIn("MONERO ON biz-rtx4080: miner v0.6.0 on 8 vCPUs and 8 GB; box restarted on its PC (HTTP 202)",
+        self.assertIn("MONERO ON biz-rtx4080: miner v0.6.0 on 8 vCPUs and 8 GB; box restarted (HTTP 202)",
                       self.events())
         g["has_pc"] = False  # no PC: nothing to restart
         self.x.xmr_sync([g], self.clock[0] + 700)  # already on: nothing sent

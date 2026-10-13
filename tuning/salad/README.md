@@ -137,7 +137,8 @@ minute) as TH/s × 1 min × PRL per TH-hr at that moment.
 
 Release v0.6.0 can also mine Monero (XMR) on the CPU, paid to `xmr_wallet` on HeroMiners' Monero pool (0.9% fee,
 payouts from 0.01 XMR). The groups in `xmr_groups` get it. A new group starts with it; a running group is switched
-by a PATCH of its command and resources, and Salad then restarts it, usually on another PC. Taking a group out of
+by a PATCH of its command and resources, then a restart of its instance: a running instance keeps the command it
+started with until it restarts. It comes back on the new version about 2 minutes later, possibly on another PC. Taking a group out of
 `xmr_groups` (or clearing `xmr_wallet`) switches it back to Pearl alone, on 2 vCPUs.
 
 - **vCPUs are free on a GPU group.** Salad's GPU price includes the vCPUs and RAM, so a Monero box asks for 8 vCPUs
