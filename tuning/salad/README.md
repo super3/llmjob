@@ -287,6 +287,12 @@ is a Railway cron service next to the trader: Root Directory `/tuning/salad`, st
 
 ## Money
 
+- **Every figure we count or estimate ourselves has a `*`** in `report.md`; a number without one comes
+  straight from an API (Salad, the pool, prlscan, CoinGecko) or from the trader's log. Starred: Spent $
+  and the credit left (Salad's API has no balance or billing, so the watcher adds each group's price for
+  every minute it has a PC; on 14 October it was $1.01 high over $100), PRL expected, profit and margin,
+  XMR per box, and SafeTrade entered by hand. Not starred: TH/s, kH/s, $/hr, the pool's totals and
+  prices. Set `credit_offset` from the portal now and then so the credit count stays right.
 - $/TH-hr = 1e12 × 3600 / (difficulty × 2^48) × reward_grains / 1e8 × PRL price, from
   `api.prlscan.com/v1/blocks?limit=1` and `/v1/market/prl`.
 - One pool unit/s = 419/93644 TH/s (a 5090's 24-hour pool average against its miner's 419 TH/s); one
