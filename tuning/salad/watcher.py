@@ -1032,11 +1032,11 @@ class W:
             # Each coin's speed (Pearl on the GPU, Monero on the CPU), then the bill, profit and margin.
             kc = [f"{khs:.2f}" if g.get("xmr") else "—"] if xon else []
             if not g["has_pc"]:
-                cells = ["—"] + (["—"] if xon else []) + ["—", "—", "—"]
+                cells = ["—"] + (["—"] if xon else []) + ["—", "—"]
             elif start:
-                cells = ["0"] + kc + [f"{cost:.3f}", "—", "—"]
+                cells = ["0"] + kc + [f"{cost:.3f}", "—"]
             else:
-                cells = [f"{ths:.0f}"] + kc + [f"{cost:.3f}", f"{earn - cost:+.3f}{EST}", star(pct(earn - cost, earn))]
+                cells = [f"{ths:.0f}"] + kc + [f"{cost:.3f}", with_margin(earn - cost, earn)]
             cells = " | ".join(cells)
             rows.append((0.0 if start or not g["has_pc"] else earn - cost, f"| {box} | {cells} | {prof:+.2f}{EST} |"))
         # Most profitable an hour first; groups waiting for a PC make nothing, so they sit above any losing.
@@ -1047,12 +1047,12 @@ class W:
             eprof = (sum(g["prl"] for g in ended) * y * per_prl + sum(g.get("xmr_coins", 0.0) for g in ended) * xprice
                      - sum(g["spend"] for g in ended))
             lines.append(f"| {NB.join(['Others', f'×{len(ended)}', f'🔁{rel}', f'❌{len(ended) - rel}'])} |"
-                         + " — |" * (5 if xon else 4) + f" {eprof:+.2f}{EST} |")
+                         + " — |" * (4 if xon else 3) + f" {eprof:+.2f}{EST} |")
         total = prl * per_prl + coins * xprice - spend
         hr_all, mg_all = all_earn - run_cost, star(pct(all_earn - run_cost, all_earn))
         lines.append(f"| **All** | **{all_ths:.0f}** |" + (f" **{all_khs:.2f}** |" if xon else "")
-                     + f" **{all_cost:.3f}** | **{hr_all:+.3f}{EST}** | **{mg_all}** | **{total:+.2f}{EST}** |")
-        gap = " |" * (5 if xon else 4)  # the money rows put their amount under Profit $
+                     + f" **{all_cost:.3f}** | **{with_margin(hr_all, all_earn)}** | **{total:+.2f}{EST}** |")
+        gap = " |" * (4 if xon else 3)  # the money rows put their amount under Profit $
 
         def money(label, v):
             lines.append(f"| {label} |{gap} {v:+.2f}{EST} |")
@@ -1101,7 +1101,7 @@ class W:
         trail.append(f"Salad credit left ${credit:.2f}{EST} of ${self.cfg['credit_start'] + self.cfg['credit_offset']:.2f}{EST}"
                      + (f", {hours:.0f}{EST} h at ${all_cost:.3f}/hr" if hours is not None else ", nothing billing now")
                      + " (our count: set config credit_offset from the portal now and then)")
-        cols = ["Box", "TH/s"] + (["kH/s"] if xon else []) + ["$/hr", "Profit/hr", "Margin", "Profit $"]
+        cols = ["Box", "TH/s"] + (["kH/s"] if xon else []) + ["$/hr", "Profit/hr (margin)", "Profit $"]
         lines = [head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, "",
                  key, "", ". ".join(x[0].upper() + x[1:] for x in trail) + "."]
         if st["credits_out"]:
@@ -1112,6 +1112,12 @@ class W:
         if hours is not None and hours < 12 and t - st["last_credit_alert"] > 3600:
             st["last_credit_alert"] = t
             event(f"ALERT credit ${credit:.2f} lasts about {hours:.1f} h at ${all_cost:.3f}/hr")
+
+
+def with_margin(profit, earn):
+    """Profit an hour with its margin in brackets, or alone when there's no margin to show."""
+    m = star(pct(profit, earn))
+    return f"{profit:+.3f}{EST}" + (f" ({m})" if m != "—" else "")
 
 
 def margin_of(earn, price):

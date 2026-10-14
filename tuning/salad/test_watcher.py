@@ -765,7 +765,7 @@ class TestPoolTotals(Base):
             report = f.read()
         # 8 PRL mined for $6.00: $0.750 each. The pool has credited 6 of them. Nothing sold: 8 × (1.39 − 0.75) = +5.12.
         self.assertIn("· **profit so far +$5.12***", report)
-        self.assertIn(f"| 📈 Not{w.NB}yet{w.NB}locked{w.NB}·{w.NB}8.000*{w.NB}PRL | | | | | +5.12* |", report)
+        self.assertIn(f"| 📈 Not{w.NB}yet{w.NB}locked{w.NB}·{w.NB}8.000*{w.NB}PRL | | | | +5.12* |", report)
         self.assertIn("Spent $6.00* on Salad for 8.000* PRL, $0.750* each.", report)
         self.assertIn("Pool: 4.000 unconfirmed · 0.500 unlocked (paid at 1) · 1.500 paid to SafeTrade, 75%* of our estimate "
                       "over 6 blocks (from 10 blocks on the table counts on that share).", report)
@@ -791,7 +791,7 @@ class TestCreditRatio(Base):
         report = self.report()
         # 75% of 8 PRL is 6, mined for $6.00: $1.000 each. Worth 6 × 1.39 − 6.00 = +2.34.
         self.assertIn("· **profit so far +$2.34***", report)
-        self.assertIn(f"| 📈 Not{w.NB}yet{w.NB}locked{w.NB}·{w.NB}6.000*{w.NB}PRL | | | | | +2.34* |", report)
+        self.assertIn(f"| 📈 Not{w.NB}yet{w.NB}locked{w.NB}·{w.NB}6.000*{w.NB}PRL | | | | +2.34* |", report)
         self.assertIn("Spent $6.00* on Salad for 6.000* PRL (8.000* at the network's rate × 75%* credited), $1.000* each.", report)
         self.assertIn("75%* of our estimate over 20 blocks.", report)
         self.assertNotIn("from 10 blocks on", report)
@@ -871,9 +871,9 @@ class TestStartingBoxes(Base):
         self.x.write_report()
         with open(os.path.join(TMP, "report.md")) as f:
             report = f.read()
-        self.assertIn(f"| ⛏️{w.NB}2060{w.NB}low | 0 | 0.030 | — | — |", report)
+        self.assertIn(f"| ⛏️{w.NB}2060{w.NB}low | 0 | 0.030 | — |", report)
         # $/hr counts both bills; Profit/hr only the 4080: 200 × 0.00117 − 0.19 = +0.044.
-        self.assertIn("| **All** | **200** | **0.220** | **+0.044*** |", report)
+        self.assertIn("| **All** | **200** | **0.220** | **+0.044* (+19%*)** |", report)
         self.assertIn(" · 1 of 2 mining · 1 starting · **+$0.044*/hr** · ", report)
 
     def test_estimates_are_starred_and_api_figures_are_not(self):
@@ -884,7 +884,7 @@ class TestStartingBoxes(Base):
         with open(os.path.join(TMP, "report.md")) as f:
             report = f.read()
         # TH/s (the miner's log) and $/hr (Salad's price list) come from an API; the rest is our own count.
-        self.assertIn(f"| ⛏️{w.NB}4080{w.NB}med | 200 | 0.190 | +0.044* | +19%* |", report)
+        self.assertIn(f"| ⛏️{w.NB}4080{w.NB}med | 200 | 0.190 | +0.044* (+19%*) |", report)
         self.assertIn("* our own count or estimate, or entered by hand", report)
         self.assertRegex(report, r"Salad credit left \$[\d.]+\* of \$[\d.]+\*, \d+\* h at \$[\d.]+/hr \(our count")
 
@@ -1054,8 +1054,8 @@ class TestTraderStatus(Base):
         self.assertIn("SafeTrade at the 09:05Z run: 5.256 PRL sold for 7.09 USDT net (avg 1.3507), holds 7.08 USDT and "
                       "0.000 PRL; last run sold 5.2564 PRL at 1.3507.", report)
         # 7.0858 USDT net, less 5.2564 PRL × $0.80 = +2.88; 4.7436 PRL unsold × ($1.39 − $0.80) = +2.80
-        self.assertIn(f"| 🔒 Locked{w.NB}in{w.NB}·{w.NB}5.256{w.NB}PRL{w.NB}sold | | | | | +2.88* |", report)
-        self.assertIn(f"| 📈 Not{w.NB}yet{w.NB}locked{w.NB}·{w.NB}4.744*{w.NB}PRL | | | | | +2.80* |", report)
+        self.assertIn(f"| 🔒 Locked{w.NB}in{w.NB}·{w.NB}5.256{w.NB}PRL{w.NB}sold | | | | +2.88* |", report)
+        self.assertIn(f"| 📈 Not{w.NB}yet{w.NB}locked{w.NB}·{w.NB}4.744*{w.NB}PRL | | | | +2.80* |", report)
         # The box's Profit $ counts its sold PRL at what it sold for, so it adds up to the two: +5.68, not 10 × 1.39 − 8.
         self.assertIn("| — | +5.68* |\n", report)
         self.assertIn("**profit so far +$5.68***", report)
@@ -1068,7 +1068,7 @@ class TestTraderStatus(Base):
         with open(os.path.join(TMP, "report.md")) as f:
             report = f.read()
         self.assertIn("SafeTrade entered by hand: 5.256* PRL sold for 7.09* USDT net (avg 1.3507*)", report)
-        self.assertIn(f"| 🔒 Locked{w.NB}in{w.NB}·{w.NB}5.256*{w.NB}PRL{w.NB}sold | | | | | +2.88* |", report)
+        self.assertIn(f"| 🔒 Locked{w.NB}in{w.NB}·{w.NB}5.256*{w.NB}PRL{w.NB}sold | | | | +2.88* |", report)
 
 
 class TestRound(Base):
@@ -1104,7 +1104,7 @@ class TestRound(Base):
             report = f.read()
         self.assertIn(f"| ⛏️{w.NB}4080{w.NB}batch | 199 |", report)
         self.assertIn(" · 1 of 1 mining · ", report)
-        self.assertTrue(all(l.count("|") == 7 for l in report.splitlines() if l.startswith("|")))
+        self.assertTrue(all(l.count("|") == 6 for l in report.splitlines() if l.startswith("|")))
 
     def test_boxes_are_sorted_by_profit_an_hour(self):
         slow = self.group(cls="RTX 2060 (6 GB)", pri="low")
@@ -1299,15 +1299,15 @@ class TestMonero(Base):
         self.x.write_report()
         with open(os.path.join(TMP, "report.md")) as f:
             report = f.read()
-        self.assertIn("| Box | TH/s | kH/s | $/hr | Profit/hr | Margin | Profit $ |", report)
+        self.assertIn("| Box | TH/s | kH/s | $/hr | Profit/hr (margin) | Profit $ |", report)
         # 200 TH/s × 0.00117 + 2 kH/s × 0.002 = 0.238 an hour, less 0.11 billed. 0.0001 XMR is $0.05, in its Profit $.
-        self.assertIn(f"| ⛏️{w.NB}4080{w.NB}batch | 200 | 2.00 | 0.110 | +0.128* | +54%* | +0.05* |", report)
-        self.assertIn(f"| ⏳{w.NB}2060{w.NB}batch | — | — | — | — | — | +0.00* |", report)
+        self.assertIn(f"| ⛏️{w.NB}4080{w.NB}batch | 200 | 2.00 | 0.110 | +0.128* (+54%*) | +0.05* |", report)
+        self.assertIn(f"| ⏳{w.NB}2060{w.NB}batch | — | — | — | — | +0.00* |", report)
         self.assertIn("| **All** | **200** | **2.00** | **0.110** |", report)
-        self.assertIn(f"| 🪙 Monero{w.NB}·{w.NB}0.000100*{w.NB}XMR | | | | | | +0.05* |", report)
+        self.assertIn(f"| 🪙 Monero{w.NB}·{w.NB}0.000100*{w.NB}XMR | | | | | +0.05* |", report)
         self.assertIn("Monero: 1 box at 2.00 kH/s, XMR $500; the pool holds 0.005000 and has paid 0.000000", report)
         rows = [l for l in report.splitlines() if l.startswith("|")]
-        self.assertTrue(all(l.count("|") == 8 for l in rows))  # one table, with a kH/s column
+        self.assertTrue(all(l.count("|") == 7 for l in rows))  # one table, with a kH/s column
         self.assertTrue(all(len(l) <= 90 for l in rows), max(rows, key=len))  # each row on one line in a chat window
 
     def test_without_an_address_the_table_is_unchanged(self):
