@@ -765,10 +765,10 @@ class TestPoolTotals(Base):
             report = f.read()
         # 8 PRL mined for $6.00: $0.750 each. The pool has credited 6 of them. Nothing sold: 8 × (1.39 − 0.75) = +5.12.
         self.assertIn("· **profit so far +$5.12\\***", report)
-        self.assertIn(f"| 📈 Not{w.NB}yet{w.NB}locked{w.NB}·{w.NB}8.000*{w.NB}PRL | | | | +5.12* |", report)
         self.assertIn("Spent $6.00* on Salad for 8.000* PRL, $0.750* each.", report)
-        self.assertIn("Pool: 4.000 unconfirmed · 0.500 unlocked (paid at 1) · 1.500 paid to SafeTrade, 75%* of our estimate "
-                      "over 6 blocks (from 10 blocks on the table counts on that share).", report)
+        self.assertIn("| ⛏️ PRL | 0 TH/s | 0.500 | 4.000 | 1.500 |", report)  # straight from the pool: no stars
+        self.assertIn("The PRL pool has credited 75%* of our estimate over 6 blocks, and pays out from 1 PRL "
+                      "(from 10 blocks on the table counts on that share).", report)
         self.assertNotIn("Locked", report)
 
 
@@ -791,9 +791,8 @@ class TestCreditRatio(Base):
         report = self.report()
         # 75% of 8 PRL is 6, mined for $6.00: $1.000 each. Worth 6 × 1.39 − 6.00 = +2.34.
         self.assertIn("· **profit so far +$2.34\\***", report)
-        self.assertIn(f"| 📈 Not{w.NB}yet{w.NB}locked{w.NB}·{w.NB}6.000*{w.NB}PRL | | | | +2.34* |", report)
         self.assertIn("Spent $6.00* on Salad for 6.000* PRL (8.000* at the network's rate × 75%* credited), $1.000* each.", report)
-        self.assertIn("75%* of our estimate over 20 blocks.", report)
+        self.assertIn("The PRL pool has credited 75%* of our estimate over 20 blocks, and pays out from 1 PRL.", report)
         self.assertNotIn("from 10 blocks on", report)
 
     def test_the_ratio_has_a_floor(self):
@@ -1067,11 +1066,10 @@ class TestTraderStatus(Base):
             report = f.read()
         self.assertIn("SafeTrade at the 09:05Z run: 5.256 PRL sold for 7.09 USDT net (avg 1.3507), holds 7.08 USDT and "
                       "0.000 PRL; last run sold 5.2564 PRL at 1.3507.", report)
-        # 7.0858 USDT net, less 5.2564 PRL × $0.80 = +2.88; 4.7436 PRL unsold × ($1.39 − $0.80) = +2.80
-        self.assertIn(f"| 🔒 Locked{w.NB}in{w.NB}·{w.NB}5.256{w.NB}PRL{w.NB}sold | | | | +2.88* |", report)
-        self.assertIn(f"| 📈 Not{w.NB}yet{w.NB}locked{w.NB}·{w.NB}4.744*{w.NB}PRL | | | | +2.80* |", report)
-        # The box's Profit $ counts its sold PRL at what it sold for, so it adds up to the two: +5.68, not 10 × 1.39 − 8.
+        # The box's Profit $ counts its sold PRL at what it sold for: 7.0858 USDT net + 4.7436 unsold PRL × $1.39
+        # − $8.00 = +5.68, not 10 × 1.39 − 8.
         self.assertIn("| — | +5.68* |\n", report)
+        self.assertNotIn("Locked", report)
         self.assertIn("**profit so far +$5.68\\***", report)
 
     def test_sales_entered_by_hand_count_until_the_logs_can_be_read(self):
@@ -1082,7 +1080,7 @@ class TestTraderStatus(Base):
         with open(os.path.join(TMP, "report.md")) as f:
             report = f.read()
         self.assertIn("SafeTrade entered by hand: 5.256* PRL sold for 7.09* USDT net (avg 1.3507*)", report)
-        self.assertIn(f"| 🔒 Locked{w.NB}in{w.NB}·{w.NB}5.256*{w.NB}PRL{w.NB}sold | | | | +2.88* |", report)
+        self.assertNotIn("Locked", report)
 
 
 class TestRound(Base):
@@ -1275,7 +1273,8 @@ class TestMonero(Base):
         self.assertTrue(g["xmr"])
 
     def pool(self, hashes, hashrate=900, name="biz-rtx4080-g0"):
-        return 200, {"stats": {"balance": "5000000000", "paid": "0"},
+        return 200, {"stats": {"balance": "5000000000", "paid": "0", "hashrate_1h": 32078.2},
+                     "unconfirmed": [{"reward": "1000000000"}],
                      "workers": [{"name": name, "hashes": str(hashes), "hashrate": hashrate},
                                  {"name": "rig01", "hashes": "999999999", "hashrate": 700}]}
 
@@ -1293,6 +1292,8 @@ class TestMonero(Base):
         self.x.xmr_pool([g], self.clock[0] + 120)
         self.assertAlmostEqual(g["xmr_coins"], 5.2e-6)
         self.assertAlmostEqual(self.x.st["xmr_tot"]["balance"], 0.005)
+        self.assertAlmostEqual(self.x.st["xmr_tot"]["pending"], 0.001)   # the unconfirmed rewards
+        self.assertAlmostEqual(self.x.st["xmr_tot"]["khs_1h"], 32.0782)  # the pool's own 1-hour hashrate
 
     def test_the_market_gives_what_a_hash_earns(self):
         self.http.on("GET", "monero.herominers.com/api/stats$",
@@ -1307,7 +1308,7 @@ class TestMonero(Base):
         g = self.group()
         plain = self.group(cls="RTX 2060 (6 GB)")
         self.x.st["xmr_mkt"] = {"t": self.clock[0], "price": 500.0, "per_hash": 1e-12, "usd_khs_hr": 0.002}
-        self.x.st["xmr_tot"] = {"balance": 0.005, "paid": 0.0}
+        self.x.st["xmr_tot"] = {"balance": 0.005, "paid": 0.0, "pending": 0.0001, "khs_1h": 1.5}
         g.update(has_pc=True, machine="m1", readings=[[self.clock[0] - 60, "m1", 200.0, 0]],
                  xmr_khs=2.0, xmr_seen=self.clock[0], xmr_coins=0.0001)
         self.x.write_report()
@@ -1318,9 +1319,10 @@ class TestMonero(Base):
         self.assertIn(f"| ⛏️{w.NB}4080{w.NB}batch | 200 | 2.0 | 0.11 | +0.13* (+54%*) | +0.05* |", report)
         self.assertIn(f"| ⏳{w.NB}2060{w.NB}batch | — | — | — | — | +0.00* |", report)
         self.assertIn("| **All** | **200** | **2.0** | **0.11** |", report)
-        self.assertIn(f"| 🪙 Monero{w.NB}·{w.NB}0.000100*{w.NB}XMR | | | | | +0.05* |", report)
-        self.assertIn("Monero: 1 box at 2.0 kH/s, XMR $500; the pool holds 0.005000 and has paid 0.000000", report)
-        rows = [l for l in report.splitlines() if l.startswith("|")]
+        self.assertIn("| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", report)
+        self.assertIn("| 🪙 XMR | 1.5 kH/s | 0.005000 | 0.000100 | 0.000000 |", report)  # straight from the pool: no stars
+        self.assertIn("Our boxes have mined 0.000100* XMR ($0.05* at $500)", report)
+        rows = [l for l in report.split("| Pool |")[0].splitlines() if l.startswith("|")]
         self.assertTrue(all(l.count("|") == 7 for l in rows))  # one table, with a kH/s column
         self.assertTrue(all(len(l) <= 90 for l in rows), max(rows, key=len))  # each row on one line in a chat window
 
