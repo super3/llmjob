@@ -155,8 +155,8 @@ started with until it restarts. It comes back on the new version about 2 minutes
 - **Earnings** come from the pool, by worker (`<group>-g0`). The pool counts every accepted hash, so the XMR a box
   earned is its new hashes times what a hash earns (the last block's reward over the network difficulty, less the
   fee). The price is CoinGecko's. The address's pool balance also counts any other rig that mines to it.
-- **The rules** still judge every box on Pearl alone. Monero's earnings are shown in the table (a kH/s column, an
-  XMR column with what each box has earned, and in Profit/hr, Margin and Profit $) but don't keep a slow PC or a weak class.
+- **The rules** still judge every box on Pearl alone. Monero's earnings count in the table's Profit/hr, Margin and
+  Profit $, with a 🪙 row for what the boxes have mined, but they don't keep a slow PC or a weak class.
 
 ## Salad API notes
 
@@ -233,43 +233,41 @@ watcher checks it against the pool and writes a `DRIFT` event when they disagree
   pays a share of each block it finds, so with few blocks credit runs well above or below the work;
   this fires only when it's short by more than 2 / √blocks too.
 
-Each table row fits on one line. A box's first cell holds its state, its group name without `biz-rtx`,
-its priority (`med` for medium) and its PC (`⛏️ 2080-2 low cb6d4bd1`), joined by no-break spaces so it doesn't wrap. Boxes are sorted by profit an hour, best first.
+The report is **one table** with six columns, so each row fits on one line in a chat window:
 
-Each row has the group's whole Salad bill so far (**Spent $**), its PRL and Profit $ = PRL × today's
-price − Spent $. A row's PRL is what we expect the pool to credit for the miner's speed: the network-rate
-estimate times the pool's **credit ratio** (credited ÷ estimate, once the pool has credited us in 10
-blocks). The first line shows the time it was written (`08:00 UTC, Fri 15 Jan`), the PRL price and both rates. The pool pays per account, not per box, so only the account's
-total can be checked against the pool.
+```
+**22:40 UTC, Wed 14 Oct** · PRL $1.882 · 7 of 10 mining · **+$0.335*/hr** · +26%* margin · **profit so far +$36.42***
+
+| Box | TH/s | $/hr | Profit/hr | Margin | Profit $ |
+|---|---|---|---|---|---|
+| ⛏️ 3090ti-4 med | 150 | 0.160 | +0.066* | +29%* | +1.17* |
+| ⏳ 5070-22 med | — | — | — | — | +0.00* |
+| Others ×206 🔁201 ❌5 | — | — | — | — | +34.47* |
+| **All** | **867** | **0.954** | **+0.335*** | **+26%*** | **+36.42*** |
+| 🔒 Locked in · 46.793* PRL sold | | | | | +7.39* |
+| 📈 Not yet locked · 45.791* PRL | | | | | +27.59* |
+| 🪙 Monero · 0.002598* XMR | | | | | +1.44* |
+```
+
+- **The first line** answers "how is it going": the time, the PRL price, how many boxes are mining, profit an
+  hour, the margin, and the profit so far.
+- **A box row** holds its state, its group name without `biz-rtx` and its priority (`med` for medium), joined
+  by no-break spaces so it doesn't wrap. Boxes are sorted by profit an hour, best first. The PC id is in the
+  events, not the table.
+- **Profit $** counts the PRL we expect the pool to credit for the box's speed (the network-rate estimate times
+  the pool's **credit ratio**, credited ÷ estimate once the pool has credited us in 10 blocks), plus its Monero,
+  less its Salad bill. Sold PRL counts at what it sold for and the rest at today's price, so the column adds up to
+  the three rows under the total: 🔒 **locked in** (USDT received after fees, less the sold PRL at the average
+  cost to mine), 📈 **not yet locked** (the unsold PRL at today's price, less the same cost; it moves with the
+  price and the pool's luck) and 🪙 Monero. Before 14 October, Profit $ valued sold PRL at today's price, which
+  put it about $22 above what the pool and SafeTrade showed.
+- **Under the table**, one line gives the key (what ⛏️ ⏳ ⏹️ and `*` mean), and one more gives the money trail:
+  what Salad cost and what each PRL cost to mine, what's at the pool, what SafeTrade sold and holds, Monero at
+  the pool, and the Salad credit left.
 
 A box on a new PC with no reading yet (under 15 minutes) is **starting**: it shows — for Profit/hr and
 Margin, and the total leaves it out until its first reading. Its bill still counts in $/hr. Before
 this, two boxes changing PCs at once took the total from +$0.41 to +$0.07 for a few minutes.
-
-Under the box table, a **Money** table follows the PRL from the bill to the sale, one row per step,
-each with its amount and where it comes from:
-
-- 💵 spent on Salad, and the PRL we expect the pool to credit;
-- ⚖️ the break-even price: what each credited PRL cost to mine;
-- 🏦 at the pool: unconfirmed and unlocked (paid out at 1 PRL), then paid to SafeTrade, with what share
-  of our estimate the pool has credited (the credit ratio);
-- 💱 sold on SafeTrade, what's held there, and the trader's last run;
-- 🔒 **locked in**: USDT received after fees, less the sold PRL at the average cost to mine;
-- 📈 **not yet locked**: the unsold PRL at today's price, less the same cost. This still moves with the
-  price and the pool's luck;
-- 🪙 Monero mined, and 💳 the Salad credit left.
-
-```
-| | Amount | From |
-|---|---|---|
-| 💵 Spent on Salad | $118.33* | 98.364* PRL × 93%* credited = 91.839* PRL |
-| ⚖️ Break-even | $1.288*/PRL | PRL $1.887 today |
-| 🔒 Locked in | +$6.96* | 46.793* PRL sold, $1.288* each to mine |
-| 📈 Not yet locked | +$26.98* | 45.046* PRL unsold, at today's price |
-```
-
-Each row fits on one line; what doesn't fit (that not yet locked moves with the price and the pool's luck,
-what the XMR pool holds, that the Salad credit is our own count) goes in one line under the table.
 
 Every PRL carries the average cost, so spending now and selling hours later still gives one number.
 The cost is per credited PRL, not per estimated PRL: at 83% that's $1.35, not $1.12, and locked in on
@@ -278,7 +276,7 @@ The cost is per credited PRL, not per estimated PRL: at 83% that's $1.35, not $1
 ## SafeTrade row
 
 When `trader` is set, the watcher reads the newest `STATUS` line of the autoseller (`trader/`) from its
-Railway logs, at most every 5 minutes, and uses it for the 💱, 🔒 and 📈 rows of the Money table.
+Railway logs, at most every 5 minutes, and uses it for the 🔒 and 📈 rows and the SafeTrade part of the line under the table.
 Until it can, sales entered by hand in config `safetrade` stand in.
 
 It needs a Railway project token for the production environment, set as `RAILWAY_TOKEN` or added by the
@@ -309,8 +307,7 @@ is a Railway cron service next to the trader: Root Directory `/tuning/salad`, st
   straight from an API (Salad, the pool, prlscan, CoinGecko) or from the trader's log. Starred: Spent $
   and the credit left (Salad's API has no balance or billing, so the watcher adds each group's price for
   every minute it has a PC; on 14 October it was $1.01 high over $100), PRL expected, profit and margin,
-  XMR per box, and SafeTrade entered by hand. Not starred: TH/s, kH/s, $/hr, the pool's totals and
-  prices. Set `credit_offset` from the portal now and then so the credit count stays right.
+  XMR mined, and SafeTrade entered by hand. Not starred: TH/s, $/hr, the pool's totals and prices. Set `credit_offset` from the portal now and then so the credit count stays right.
 - $/TH-hr = 1e12 × 3600 / (difficulty × 2^48) × reward_grains / 1e8 × PRL price, from
   `api.prlscan.com/v1/blocks?limit=1` and `/v1/market/prl`.
 - One pool unit/s = 419/93644 TH/s (a 5090's 24-hour pool average against its miner's 419 TH/s); one

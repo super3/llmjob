@@ -980,20 +980,38 @@ class W:
 
     # ---------- report ----------
     def write_report(self):
+        """One table: a row per box, a total, then where the profit stands (locked in, not yet locked, Monero),
+        with the details in two lines under it. Every row fits on one line in a chat window."""
         st, t = self.st, now()
         mk = st["mkt"]
         # The table counts on what the pool credits: the network's rate times its credit ratio. The rules may
         # use a different yield (config "yield"); the table shows what we expect to be paid.
         y = self.credit_ratio()
         price, usd = mk["price"], mk["usd_th_hr"] * y
-        rows, act_rows = [], []
-        all_ths = all_cost = all_earn = run_cost = all_khs = 0.0
-        # Monero on the CPU: a kH/s column, and its earnings in each box's profit, once config has an address.
+        # Monero on the CPU: its earnings count in each box's profit, once config has an address.
         xon, xm = bool(self.cfg["xmr_wallet"]), st.get("xmr_mkt") or {}
         xusd, xprice = xm.get("usd_khs_hr", 0.0), xm.get("price", 0.0)
+        groups = list(st["groups"].values())
+        spend = sum(g["spend"] for g in groups)
+        est = sum(g["prl"] for g in groups)
+        prl = est * y
+        cost_prl = spend / prl if prl > 0 else 0.0
+        coins = sum(g.get("xmr_coins", 0.0) for g in groups)
+        # SafeTrade from the trader's logs, or from config "safetrade" (entered by hand) until those can be read.
+        ts = st.get("trader_status") or self.cfg.get("safetrade")
+        sold = (ts or {}).get("sold", 0)
+        net = (ts or {}).get("received", 0) - (ts or {}).get("fees", 0)
+        h = "" if (ts or {}).get("t") else EST  # entered by hand: we can't check it
+        unsold = prl - sold
+        # A PRL is worth what it sold for if it sold, today's price if not, so the boxes' Profit $ adds up to
+        # locked in + not yet locked + Monero instead of valuing sold PRL at today's price.
+        per_prl = (net + max(unsold, 0) * price) / prl if ts and prl > 0 else price
+
+        rows = []
+        all_ths = all_cost = all_earn = run_cost = all_khs = 0.0
         mining = starting = 0
-        ended = [g for g in st["groups"].values() if g["ended"]]
-        for g in sorted((g for g in st["groups"].values() if not g["ended"]), key=lambda g: g["created"]):
+        live = sorted((g for g in groups if not g["ended"]), key=lambda g: g["created"])
+        for g in live:
             cur = [r for r in g["readings"] if r[1] == g["machine"] and r[2] > 0 and r[0] >= t - 10 * MIN] if g["has_pc"] else []
             ths = sum(r[2] for r in cur) / len(cur) if cur else 0.0
             cost = g["price"] if g["has_pc"] else 0.0
@@ -1007,119 +1025,77 @@ class W:
             starting += start
             all_ths += ths; all_cost += cost; all_earn += earn; all_khs += khs
             run_cost += 0.0 if start else cost
-            prof = g["prl"] * y * price + g.get("xmr_coins", 0.0) * xprice - g["spend"]
-            # One cell for the box: state, group name less "biz-rtx", priority and PC, joined by no-break spaces
-            # so the row stays on one line in a narrow window.
+            prof = g["prl"] * y * per_prl + g.get("xmr_coins", 0.0) * xprice - g["spend"]
+            # One cell for the box: state, group name less "biz-rtx" and priority, joined by no-break spaces.
             pri = "med" if g["pri"] == "medium" else g["pri"]
-            box = NB.join([state, re.sub(r"^biz-(rtx)?", "", g["name"]), pri] + ([g["machine"][:8]] if g["machine"] else []))
-            hr, mg = ("—", "—") if start else (f"{earn - cost:+.3f}{EST}", star(pct(earn - cost, earn)))
-            kcell = (f" {khs:.2f} |" if g.get("xmr") else " — |") if xon else ""
-            act_rows.append((0.0 if start else earn - cost, f"| {box} | {ths:.0f} |{kcell} {cost:.3f} | {hr} | "
-                             f"{mg} | {g['spend']:.2f}{EST} | {g['prl'] * y:.3f}{EST} |"
-                             + (f" {g.get('xmr_coins', 0.0):.6f}{EST} |" if xon else "") + f" {prof:+.2f}{EST} |"))
+            box = NB.join([state, re.sub(r"^biz-(rtx)?", "", g["name"]), pri])
+            if not g["has_pc"]:
+                cells = "— | — | — | —"
+            elif start:
+                cells = f"0 | {cost:.3f} | — | —"
+            else:
+                cells = f"{ths:.0f} | {cost:.3f} | {earn - cost:+.3f}{EST} | {star(pct(earn - cost, earn))}"
+            rows.append((0.0 if start or not g["has_pc"] else earn - cost, f"| {box} | {cells} | {prof:+.2f}{EST} |"))
         # Most profitable an hour first; groups waiting for a PC make nothing, so they sit above any losing.
-        rows = [r for _, r in sorted(act_rows, key=lambda x: -x[0])]
+        lines = [r for _, r in sorted(rows, key=lambda x: -x[0])]
+        ended = [g for g in groups if g["ended"]]
         if ended:
             rel = sum(1 for g in ended if g["end_kind"] == "released")
-            fail = len(ended) - rel
-            eprl = sum(g["prl"] for g in ended) * y
-            esp = sum(g["spend"] for g in ended)
-            ecoins = sum(g.get("xmr_coins", 0.0) for g in ended)
-            rows.append(f"| {NB.join(['Others', f'×{len(ended)}', f'🔁{rel}', f'❌{fail}'])} | — |{' — |' if xon else ''} "
-                        f"— | — | — | {esp:.2f}{EST} | {eprl:.3f}{EST} |" + (f" {ecoins:.6f}{EST} |" if xon else "")
-                        + f" {eprl * price + ecoins * xprice - esp:+.2f}{EST} |")
-        spend = sum(g["spend"] for g in st["groups"].values())
-        est = sum(g["prl"] for g in st["groups"].values())
-        prl = est * y
-        cost_prl = spend / prl if prl > 0 else 0.0
-        coins = sum(g.get("xmr_coins", 0.0) for g in st["groups"].values())
-        label = f"{mining}{NB}mining" + (f"{NB}·{NB}{starting}{NB}starting" if starting else "")
-        rows.append(f"| **All{NB}·{NB}{label}** | **{all_ths:.0f}** |{f' **{all_khs:.2f}** |' if xon else ''} "
-                    f"**{all_cost:.3f}** | **{all_earn - run_cost:+.3f}{EST}** | **{star(pct(all_earn - run_cost, all_earn))}** | "
-                    f"**{spend:.2f}{EST}** | **{prl:.3f}{EST}** |" + (f" **{coins:.6f}{EST}** |" if xon else "")
-                    + f" **{prl * price + coins * xprice - spend:+.2f}{EST}** |")
+            eprof = (sum(g["prl"] for g in ended) * y * per_prl + sum(g.get("xmr_coins", 0.0) for g in ended) * xprice
+                     - sum(g["spend"] for g in ended))
+            lines.append(f"| {NB.join(['Others', f'×{len(ended)}', f'🔁{rel}', f'❌{len(ended) - rel}'])} | — | — | — | — "
+                         f"| {eprof:+.2f}{EST} |")
+        total = prl * per_prl + coins * xprice - spend
+        hr_all, mg_all = all_earn - run_cost, star(pct(all_earn - run_cost, all_earn))
+        lines.append(f"| **All** | **{all_ths:.0f}** | **{all_cost:.3f}** | **{hr_all:+.3f}{EST}** | **{mg_all}** | **{total:+.2f}{EST}** |")
+        if ts:
+            lines.append(f"| 🔒 Locked{NB}in{NB}·{NB}{sold:.3f}{h}{NB}PRL{NB}sold | | | | | {net - sold * cost_prl:+.2f}{EST} |")
+        lines.append(f"| 📈 Not{NB}yet{NB}locked{NB}·{NB}{unsold:.3f}{EST}{NB}PRL | | | | | {unsold * (price - cost_prl):+.2f}{EST} |")
+        if xon:
+            lines.append(f"| 🪙 Monero{NB}·{NB}{coins:.6f}{EST}{NB}XMR | | | | | {coins * xprice:+.2f}{EST} |")
+
+        n_live = len(live)
+        head = (f"**{stamp(t)}** · PRL ${price:.3f} · {mining} of {n_live} mining"
+                + (f" · {starting} starting" if starting else "")
+                + f" · **{'+' if hr_all >= 0 else '-'}${abs(hr_all):.3f}{EST}/hr** · {mg_all} margin"
+                + f" · **profit so far {'+' if total >= 0 else '-'}${abs(total):.2f}{EST}**")
         credit = self.cfg["credit_start"] + self.cfg["credit_offset"] - spend
         hours = credit / all_cost if all_cost > 0 else None
-        rate = f"${mk['usd_th_hr']:.6f}/TH-hr" + (f" × {y:.0%}{EST} credited = ${usd:.6f}{EST}" if y < 1 else "")
-        if xon and xm:
-            rate += f" · XMR ${xprice:.0f} · ${xusd:.5f}/kH-hr"
-        lines = [f"**{stamp(t)}** · PRL ${price:.3f} · {rate}", "",
-                 "| Box | TH/s |" + (" kH/s |" if xon else "") + " $/hr | Profit/hr | Margin | Spent $ | PRL |"
-                 + (" XMR |" if xon else "") + " Profit $ |",
-                 "|---|---|" + ("---|---|" if xon else "") + "---|---|---|---|---|---|", *rows, "",
-                 "Boxes are sorted by profit an hour. Box: ⛏️ on a PC · ⏳ waiting for a PC · ⏹️ stopped, then the group "
-                 "(biz-rtx left off), its priority (med = medium) and its PC. Others: 🔁 released · ❌ failed. TH/s is the "
-                 "miner's average over the last 10 min on its current PC (0 while it starts). $/hr is what Salad bills while "
-                 "a group has a PC (a waiting group costs nothing). A box starting on a new PC shows — for Profit/hr and "
-                 "Margin and is left out of the total until its first reading; its bill is in $/hr. Spent $ is the "
-                 "group's whole bill so far. PRL is what we expect the pool to credit for the miner's speed: the pool "
-                 "pays per account, not per box"
-                 + (f", and has credited {y:.0%} of the network-rate estimate, so earnings and PRL are scaled to that"
-                    if y < 1 else "") + ". Profit $ is that PRL at today's price minus Spent $."
-                 + (" kH/s is the box's Monero rate on its CPU, as the pool measures it (— for a box that doesn't mine "
-                    "Monero), and XMR is the Monero the box has earned: its accepted hashes at the pool times what a "
-                    "hash earns, less the fee. Monero's earnings are in Profit/hr, Margin and Profit $ (XMR at today's "
-                    "price); the rules still judge each box on Pearl alone." if xon else "")
-                 + f" {EST} marks our own count or estimate, or a figure entered by hand; a number without one comes"
-                 " straight from an API (Salad, the pool, prlscan, CoinGecko) or from the trader's log.", ""]
-        # Money, stage by stage: Salad bill, PRL mined, at the pool, paid to SafeTrade, sold. What's sold is
-        # locked in; the rest still moves with the price and the pool's luck. Each PRL carries the average cost.
-        lines += ["**Money**", "", "| | Amount | From |", "|---|---|---|"]
-        notes = []  # what doesn't fit on a row goes in one line under the table
-
-        def row(label, amount, note):
-            lines.append(f"| {label} | {amount} | {note} |")
-
-        def usd_signed(v):
-            return f"{'+' if v >= 0 else '-'}${abs(v):.2f}{EST}"
-
-        if prl <= 0:
-            row("💵 Spent on Salad", f"${spend:.2f}{EST}", "no PRL mined yet")
-        elif y < 1:
-            row("💵 Spent on Salad", f"${spend:.2f}{EST}", f"{est:.3f}{EST} PRL × {y:.0%}{EST} credited = {prl:.3f}{EST} PRL")
-        else:
-            row("💵 Spent on Salad", f"${spend:.2f}{EST}", f"{prl:.3f}{EST} PRL mined")
+        # What doesn't fit on a row, in two lines: the key, then the money trail.
+        key = ("⛏️ mining · ⏳ waiting for a PC · ⏹️ stopped · * our own count or estimate, or entered by hand; the rest "
+               "comes from an API (Salad, the pool, prlscan, CoinGecko) or the trader's log. Profit $ counts sold PRL at "
+               "what it sold for and the rest at today's price" + (", plus Monero" if xon else "") + ".")
+        trail = [f"Spent ${spend:.2f}{EST} on Salad"]
         if prl > 0:
-            row("⚖️ Break-even", f"${cost_prl:.3f}{EST}/PRL", f"PRL ${price:.3f} today")
+            trail[0] += (f" for {prl:.3f}{EST} PRL" + (f" ({est:.3f}{EST} at the network's rate × {y:.0%}{EST} credited)"
+                                                        if y < 1 else "") + f", ${cost_prl:.3f}{EST} each")
         pt = st.get("pool_tot")
         if pt:
             cred = pt["paid"] + pt["balance"] + pt["unconfirmed"]
-            row("🏦 At the pool", f"{pt['unconfirmed']:.3f} · {pt['balance']:.3f} PRL", "unconfirmed · unlocked (paid at 1)")
-            row("🏦 Paid to SafeTrade", f"{pt['paid']:.3f} PRL",
-                f"{cred / est * 100 if est > 0 else 0:.0f}%{EST} of our estimate, {pt['blocks']} blocks")
-            if y == 1 and pt["blocks"] < self.cfg["yield_min_blocks"]:
-                notes.append(f"From {self.cfg['yield_min_blocks']} blocks on, the table counts on the share the pool credits, not all of it.")
-        # SafeTrade from the trader's logs, or from config "safetrade" (entered by hand) until those can be read.
-        ts = st.get("trader_status") or self.cfg.get("safetrade")
-        sold = (ts or {}).get("sold", 0)
+            trail.append(f"pool: {pt['unconfirmed']:.3f} unconfirmed · {pt['balance']:.3f} unlocked (paid at 1) · "
+                         f"{pt['paid']:.3f} paid to SafeTrade, {cred / est * 100 if est > 0 else 0:.0f}%{EST} of our "
+                         f"estimate over {pt['blocks']} blocks"
+                         + (f" (from {self.cfg['yield_min_blocks']} blocks on the table counts on that share)"
+                            if y == 1 and pt["blocks"] < self.cfg["yield_min_blocks"] else ""))
         if ts:
-            when = (f"{time.strftime('%H:%M', time.gmtime(ts['t']))}Z run" if ts.get("t") else "by hand")
-            net = ts.get("received", 0) - ts.get("fees", 0)
-            h = "" if ts.get("t") else EST  # entered by hand: we can't check it
-            row("💱 Sold", f"{sold:.3f}{h} PRL", f"{net:.2f}{h} USDT net"
-                + (f", avg {ts['received'] / sold:.4f}{h}" if sold else "") + f", {when}")
-            row("💱 SafeTrade holds", f"{ts.get('usdt', 0):.2f}{h} USDT · {ts.get('prl', 0) + ts.get('prl_locked', 0):.3f}{h} PRL", when)
-            last = ts.get("last")
-            if last:
-                row("💱 Last run", f"{last.get('sold', 0):g} PRL", f"at {last.get('average')}")
-            row("🔒 Locked in", usd_signed(net - sold * cost_prl), f"{sold:.3f}{h} PRL sold, ${cost_prl:.3f}{EST} each to mine")
-        unsold = prl - sold
-        row("📈 Not yet locked", usd_signed(unsold * (price - cost_prl)), f"{unsold:.3f}{EST} PRL unsold, at today's price")
-        notes.append("Not yet locked moves with the price and the pool's luck.")
+            when = (f"at the {time.strftime('%H:%M', time.gmtime(ts['t']))}Z run" if ts.get("t") else "entered by hand")
+            trail.append(f"SafeTrade {when}: {sold:.3f}{h} PRL sold for {net:.2f}{h} USDT net"
+                         + (f" (avg {ts['received'] / sold:.4f}{h})" if sold else "")
+                         + f", holds {ts.get('usdt', 0):.2f}{h} USDT and {ts.get('prl', 0) + ts.get('prl_locked', 0):.3f}{h} PRL"
+                         + (f"; last run sold {ts['last'].get('sold', 0):g} PRL at {ts['last'].get('average')}" if ts.get("last") else ""))
         if xon:
-            n = sum(1 for g in st["groups"].values() if g.get("xmr") and not g["ended"])
             xt = st.get("xmr_tot")
-            row("🪙 Monero", f"{coins:.6f}{EST} XMR (${coins * xprice:.2f}{EST})",
-                f"{n} box{'es' if n != 1 else ''}, {all_khs:.2f} kH/s, ${all_khs * xusd:.4f}/hr")
-            if xt:
-                notes.append(f"The XMR pool holds {xt['balance']:.6f} for the address and has paid {xt['paid']:.6f} (it pays "
-                             "at 0.01), counting any other rig mining to it.")
-        row("💳 Salad credit", f"${credit:.2f}{EST} of ${self.cfg['credit_start'] + self.cfg['credit_offset']:.2f}{EST}",
-            f"lasts {hours:.0f}{EST} h at ${all_cost:.3f}/hr" if hours is not None else "nothing is billing now")
-        notes.append("Salad credit is our count: Salad's API has no balance, so set config credit_offset from the portal now and then.")
+            nx = sum(1 for g in live if g.get("xmr"))
+            trail.append(f"Monero: {nx} box{'es' if nx != 1 else ''} at {all_khs:.2f} kH/s, XMR ${xprice:.0f}"
+                         + (f"; the pool holds {xt['balance']:.6f} and has paid {xt['paid']:.6f} (it pays at 0.01), "
+                            "counting any other rig mining to the address" if xt else ""))
+        trail.append(f"Salad credit left ${credit:.2f}{EST} of ${self.cfg['credit_start'] + self.cfg['credit_offset']:.2f}{EST}"
+                     + (f", {hours:.0f}{EST} h at ${all_cost:.3f}/hr" if hours is not None else ", nothing billing now")
+                     + " (our count: set config credit_offset from the portal now and then)")
+        lines = [head, "", "| Box | TH/s | $/hr | Profit/hr | Margin | Profit $ |", "|---|---|---|---|---|---|", *lines, "",
+                 key, "", ". ".join(x[0].upper() + x[1:] for x in trail) + "."]
         if st["credits_out"]:
-            row("⚠️ Credit ran out", "—", "groups stopped until a top-up")
-        lines += ["", " ".join(notes)]
+            lines += ["", "⚠️ Credit ran out: Salad stopped the groups. They restart after a top-up."]
         with open(REPORT + ".tmp", "w") as f:
             f.write("\n".join(lines) + "\n")
         os.replace(REPORT + ".tmp", REPORT)
