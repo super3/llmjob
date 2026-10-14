@@ -1029,12 +1029,15 @@ class W:
             # One cell for the box: state, group name less "biz-rtx" and priority, joined by no-break spaces.
             pri = "med" if g["pri"] == "medium" else g["pri"]
             box = NB.join([state, re.sub(r"^biz-(rtx)?", "", g["name"]), pri])
+            # Each coin's speed (Pearl on the GPU, Monero on the CPU), then the bill, profit and margin.
+            kc = [f"{khs:.2f}" if g.get("xmr") else "—"] if xon else []
             if not g["has_pc"]:
-                cells = "— | — | — | —"
+                cells = ["—"] + (["—"] if xon else []) + ["—", "—", "—"]
             elif start:
-                cells = f"0 | {cost:.3f} | — | —"
+                cells = ["0"] + kc + [f"{cost:.3f}", "—", "—"]
             else:
-                cells = f"{ths:.0f} | {cost:.3f} | {earn - cost:+.3f}{EST} | {star(pct(earn - cost, earn))}"
+                cells = [f"{ths:.0f}"] + kc + [f"{cost:.3f}", f"{earn - cost:+.3f}{EST}", star(pct(earn - cost, earn))]
+            cells = " | ".join(cells)
             rows.append((0.0 if start or not g["has_pc"] else earn - cost, f"| {box} | {cells} | {prof:+.2f}{EST} |"))
         # Most profitable an hour first; groups waiting for a PC make nothing, so they sit above any losing.
         lines = [r for _, r in sorted(rows, key=lambda x: -x[0])]
@@ -1043,16 +1046,21 @@ class W:
             rel = sum(1 for g in ended if g["end_kind"] == "released")
             eprof = (sum(g["prl"] for g in ended) * y * per_prl + sum(g.get("xmr_coins", 0.0) for g in ended) * xprice
                      - sum(g["spend"] for g in ended))
-            lines.append(f"| {NB.join(['Others', f'×{len(ended)}', f'🔁{rel}', f'❌{len(ended) - rel}'])} | — | — | — | — "
-                         f"| {eprof:+.2f}{EST} |")
+            lines.append(f"| {NB.join(['Others', f'×{len(ended)}', f'🔁{rel}', f'❌{len(ended) - rel}'])} |"
+                         + " — |" * (5 if xon else 4) + f" {eprof:+.2f}{EST} |")
         total = prl * per_prl + coins * xprice - spend
         hr_all, mg_all = all_earn - run_cost, star(pct(all_earn - run_cost, all_earn))
-        lines.append(f"| **All** | **{all_ths:.0f}** | **{all_cost:.3f}** | **{hr_all:+.3f}{EST}** | **{mg_all}** | **{total:+.2f}{EST}** |")
+        lines.append(f"| **All** | **{all_ths:.0f}** |" + (f" **{all_khs:.2f}** |" if xon else "")
+                     + f" **{all_cost:.3f}** | **{hr_all:+.3f}{EST}** | **{mg_all}** | **{total:+.2f}{EST}** |")
+        gap = " |" * (5 if xon else 4)  # the money rows put their amount under Profit $
+
+        def money(label, v):
+            lines.append(f"| {label} |{gap} {v:+.2f}{EST} |")
         if ts:
-            lines.append(f"| 🔒 Locked{NB}in{NB}·{NB}{sold:.3f}{h}{NB}PRL{NB}sold | | | | | {net - sold * cost_prl:+.2f}{EST} |")
-        lines.append(f"| 📈 Not{NB}yet{NB}locked{NB}·{NB}{unsold:.3f}{EST}{NB}PRL | | | | | {unsold * (price - cost_prl):+.2f}{EST} |")
+            money(f"🔒 Locked{NB}in{NB}·{NB}{sold:.3f}{h}{NB}PRL{NB}sold", net - sold * cost_prl)
+        money(f"📈 Not{NB}yet{NB}locked{NB}·{NB}{unsold:.3f}{EST}{NB}PRL", unsold * (price - cost_prl))
         if xon:
-            lines.append(f"| 🪙 Monero{NB}·{NB}{coins:.6f}{EST}{NB}XMR | | | | | {coins * xprice:+.2f}{EST} |")
+            money(f"🪙 Monero{NB}·{NB}{coins:.6f}{EST}{NB}XMR", coins * xprice)
 
         n_live = len(live)
         head = (f"**{stamp(t)}** · PRL ${price:.3f} · {mining} of {n_live} mining"
@@ -1063,8 +1071,9 @@ class W:
         hours = credit / all_cost if all_cost > 0 else None
         # What doesn't fit on a row, in two lines: the key, then the money trail.
         key = ("⛏️ mining · ⏳ waiting for a PC · ⏹️ stopped · * our own count or estimate, or entered by hand; the rest "
-               "comes from an API (Salad, the pool, prlscan, CoinGecko) or the trader's log. Profit $ counts sold PRL at "
-               "what it sold for and the rest at today's price" + (", plus Monero" if xon else "") + ".")
+               "comes from an API (Salad, the pool, prlscan, CoinGecko) or the trader's log. TH/s is Pearl on the GPU"
+               + (", kH/s Monero on the CPU" if xon else "") + "; $/hr is Salad's bill. Profit $ counts sold PRL at what "
+               "it sold for and the rest at today's price" + (", plus Monero" if xon else "") + ".")
         trail = [f"Spent ${spend:.2f}{EST} on Salad"]
         if prl > 0:
             trail[0] += (f" for {prl:.3f}{EST} PRL" + (f" ({est:.3f}{EST} at the network's rate × {y:.0%}{EST} credited)"
@@ -1092,7 +1101,8 @@ class W:
         trail.append(f"Salad credit left ${credit:.2f}{EST} of ${self.cfg['credit_start'] + self.cfg['credit_offset']:.2f}{EST}"
                      + (f", {hours:.0f}{EST} h at ${all_cost:.3f}/hr" if hours is not None else ", nothing billing now")
                      + " (our count: set config credit_offset from the portal now and then)")
-        lines = [head, "", "| Box | TH/s | $/hr | Profit/hr | Margin | Profit $ |", "|---|---|---|---|---|---|", *lines, "",
+        cols = ["Box", "TH/s"] + (["kH/s"] if xon else []) + ["$/hr", "Profit/hr", "Margin", "Profit $"]
+        lines = [head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, "",
                  key, "", ". ".join(x[0].upper() + x[1:] for x in trail) + "."]
         if st["credits_out"]:
             lines += ["", "⚠️ Credit ran out: Salad stopped the groups. They restart after a top-up."]
