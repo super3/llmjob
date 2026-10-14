@@ -895,7 +895,7 @@ class W:
             event(f"SEARCH found nothing to create (room {room})")
 
     def candidates(self, active, t):
-        """Classes a new group may use, each at its cheapest free priority that clears the margin, best first:
+        """Classes a new group may use, each at its cheapest free priority from start_pri that clears the margin, best first:
         classes not held for want of PCs, then paid classes, then by expected profit an hour."""
         st = self.st
         # Each class is tried once on this account, as on the first one, except that a class whose groups only
@@ -917,12 +917,23 @@ class W:
             s, a = http("POST", f"{BASE}/availability/sce-gpu-availability", body)
             if s != 200:
                 continue
-            for p in PRIS:
+            for p in PRIS[PRIS.index(self.start_pri(cls)):]:
                 if (a.get(f"available_gpu_{p}") or 0) > 0 and self.margin(cls, p) >= self.cfg["min_margin"]:
                     profit = rate * self.usd() - st["classes"][cls]["prices"][p]
                     cands.append((self.unplaced(cls, t), not self.paid(cls), -profit, cls, p))
                     break
         return sorted(cands)
+
+    def start_pri(self, cls):
+        """The cheapest priority a new group of `cls` starts at. Batch, unless the class's latest ended group never
+        got a PC: then the priority its latest group with a PC got it at. On 14 October 4080s and 5080s only got
+        PCs at medium or high, and each new group spent 30 min climbing from batch first."""
+        gs = [g for g in self.st["groups"].values() if g["class"] == cls]
+        ended = max((g for g in gs if g["ended"]), key=lambda g: g["ended"], default=None)
+        placed = max((g for g in gs if g["had_pc"]), key=lambda g: g["created"], default=None)
+        if ended is None or ended["had_pc"] or placed is None:
+            return "batch"
+        return placed["pri"]
 
     def upgrade(self, t):
         """With every slot taken, swap the group making the least for a class expected to make upgrade_gain $/hr

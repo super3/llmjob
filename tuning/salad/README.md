@@ -85,7 +85,10 @@ With `yield: "auto"` the rules count on that credit ratio. On that day it would 
    PC clearing the margin, and never after one of its groups failed. Each class is tried once on an
    account, as on the first one: a class whose group failed (rules 4 to 6) isn't created again. A class
    whose groups only got no PC (released) is tried again `retry_after_min` later, but when its last
-   `no_pc_streak` groups never got a PC at all, it goes after every other class for `no_pc_hold_min`. Besides the classes
+   `no_pc_streak` groups never got a PC at all, it goes after every other class for `no_pc_hold_min`. When a
+   class's latest ended group never got a PC, its next group starts at the priority its latest group with a PC
+   got it at, not at batch: on 14 October 4080s and 5080s only got PCs at medium or high, and each new group
+   spent 30 min climbing from batch first. Besides the classes
    measured on Salad, the search knows benchmark rates for cards not tried there yet (see `KNOWN`);
    rule 5 judges each of their PCs on its own readings.
 2. **No PC at a priority within 10 min:** move to the next priority that still clears 10%. If none is
