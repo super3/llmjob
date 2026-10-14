@@ -1064,24 +1064,31 @@ class W:
                  " straight from an API (Salad, the pool, prlscan, CoinGecko) or from the trader's log.", ""]
         # Money, stage by stage: Salad bill, PRL mined, at the pool, paid to SafeTrade, sold. What's sold is
         # locked in; the rest still moves with the price and the pool's luck. Each PRL carries the average cost.
-        lines.append("**Money**")
+        lines += ["**Money**", "", "| | Amount | How we got it |", "|---|---|---|"]
+
+        def row(label, amount, note):
+            lines.append(f"| {label} | {amount} | {note} |")
+
+        def usd_signed(v):
+            return f"{'+' if v >= 0 else '-'}${abs(v):.2f}{EST}"
+
         if prl <= 0:
-            lines.append(f"- 💵 Spent on Salad: ${spend:.2f}{EST}; no PRL mined yet.")
+            row("💵 Spent on Salad", f"${spend:.2f}{EST}", "no PRL mined yet")
         elif y < 1:
-            lines.append(f"- 💵 Spent on Salad: ${spend:.2f}{EST}; the miners' speed is worth {est:.3f}{EST} PRL at the network's "
-                         f"rate, and the pool has credited {y:.0%}{EST} of that, so we expect {prl:.3f}{EST} PRL: ${cost_prl:.3f}{EST} "
-                         f"each (break-even), worth ${price:.3f} today.")
+            row("💵 Spent on Salad", f"${spend:.2f}{EST}", f"the miners' speed is worth {est:.3f}{EST} PRL at the network's "
+                f"rate; the pool has credited {y:.0%}{EST} of that, so we expect {prl:.3f}{EST} PRL")
         else:
-            lines.append(f"- 💵 Spent on Salad: ${spend:.2f}{EST}; {prl:.3f}{EST} PRL mined at ${cost_prl:.3f}{EST} each (break-even), "
-                         f"worth ${price:.3f} today.")
+            row("💵 Spent on Salad", f"${spend:.2f}{EST}", f"{prl:.3f}{EST} PRL mined")
+        if prl > 0:
+            row("⚖️ Break-even", f"${cost_prl:.3f}{EST} a PRL", f"PRL is ${price:.3f} today")
         pt = st.get("pool_tot")
         if pt:
             cred = pt["paid"] + pt["balance"] + pt["unconfirmed"]
-            lines.append(f"- 🏦 Pool: {pt['unconfirmed']:.3f} unconfirmed · {pt['balance']:.3f} unlocked (paid out at 1 PRL) "
-                         f"· {pt['paid']:.3f} paid to SafeTrade. That's {cred / est * 100 if est > 0 else 0:.0f}%{EST} of our "
-                         f"estimate over {pt['blocks']} blocks"
-                         + (f"; from {self.cfg['yield_min_blocks']} blocks on the table counts on that share, not all of it."
-                            if y == 1 and pt["blocks"] < self.cfg["yield_min_blocks"] else "."))
+            row("🏦 At the pool", f"{pt['unconfirmed']:.3f} unconfirmed · {pt['balance']:.3f} unlocked", "PRL; paid out at 1 PRL")
+            row("🏦 Paid to SafeTrade", f"{pt['paid']:.3f} PRL", f"the pool has credited {cred / est * 100 if est > 0 else 0:.0f}%{EST} "
+                f"of our estimate over {pt['blocks']} blocks"
+                + (f"; from {self.cfg['yield_min_blocks']} blocks on the table counts on that share, not all of it"
+                   if y == 1 and pt["blocks"] < self.cfg["yield_min_blocks"] else ""))
         # SafeTrade from the trader's logs, or from config "safetrade" (entered by hand) until those can be read.
         ts = st.get("trader_status") or self.cfg.get("safetrade")
         sold = (ts or {}).get("sold", 0)
@@ -1090,28 +1097,28 @@ class W:
                     else "entered by hand")
             net = ts.get("received", 0) - ts.get("fees", 0)
             h = "" if ts.get("t") else EST  # entered by hand: we can't check it
-            lines.append(f"- 💱 SafeTrade ({when}): sold {sold:.3f}{h} PRL for {net:.2f}{h} USDT after fees"
-                         + (f" (average {ts['received'] / sold:.4f}{h})" if sold else "")
-                         + f"; holds {ts.get('usdt', 0):.2f}{h} USDT and {ts.get('prl', 0) + ts.get('prl_locked', 0):.3f}{h} PRL.")
+            row("💱 Sold on SafeTrade", f"{sold:.3f}{h} PRL", f"for {net:.2f}{h} USDT after fees"
+                + (f" (average {ts['received'] / sold:.4f}{h})" if sold else "") + f"; {when}")
+            row("💱 SafeTrade holds", f"{ts.get('usdt', 0):.2f}{h} USDT · {ts.get('prl', 0) + ts.get('prl_locked', 0):.3f}{h} PRL", when)
             last = ts.get("last")
             if last:
-                lines.append(f"- The trader's last run sold {last.get('sold', 0):g} PRL at {last.get('average')}.")
-            lines.append(f"- 🔒 Locked in: {net - sold * cost_prl:+.2f}{EST} ({sold:.3f}{h} PRL sold, less ${cost_prl:.3f}{EST} each to mine).")
+                row("💱 Trader's last run", f"{last.get('sold', 0):g} PRL", f"sold at {last.get('average')}")
+            row("🔒 Locked in", usd_signed(net - sold * cost_prl), f"{sold:.3f}{h} PRL sold, less ${cost_prl:.3f}{EST} each to mine")
         unsold = prl - sold
-        lines.append(f"- ⏳ Not yet locked: {unsold * (price - cost_prl):+.2f}{EST} ({unsold:.3f}{EST} PRL not sold yet, at today's "
-                     "price; it moves with the price and the pool's luck).")
+        row("📈 Not yet locked", usd_signed(unsold * (price - cost_prl)), f"{unsold:.3f}{EST} PRL not sold yet, at today's price; "
+            "it moves with the price and the pool's luck")
         if xon:
             n = sum(1 for g in st["groups"].values() if g.get("xmr") and not g["ended"])
             xt = st.get("xmr_tot")
-            lines.append(f"- 🪙 Monero (CPU): {n} box{'es' if n != 1 else ''} at {all_khs:.2f} kH/s, worth "
-                         f"${all_khs * xusd:.4f}/hr; our boxes have mined {coins:.6f}{EST} XMR (${coins * xprice:.2f}{EST})."
-                         + (f" The pool holds {xt['balance']:.6f} XMR for the address and has paid {xt['paid']:.6f}"
-                            " (it pays at 0.01 XMR); that includes any other rig mining to it." if xt else ""))
-        lines.append(f"- Salad credit left: ${credit:.2f}{EST} of ${self.cfg['credit_start'] + self.cfg['credit_offset']:.2f}{EST} (our count; "
-                     "Salad's API has no balance, so set config credit_offset from the portal now and then)"
-                     + (f"; lasts {hours:.0f}{EST} h at ${all_cost:.3f}/hr." if hours is not None else "; nothing is billing now."))
+            row("🪙 Monero (CPU)", f"{coins:.6f}{EST} XMR (${coins * xprice:.2f}{EST})",
+                f"{n} box{'es' if n != 1 else ''} at {all_khs:.2f} kH/s, worth ${all_khs * xusd:.4f}/hr"
+                + (f"; the pool holds {xt['balance']:.6f} XMR for the address and has paid {xt['paid']:.6f} (it pays at "
+                   "0.01 XMR), counting any other rig mining to it" if xt else ""))
+        row("💳 Salad credit left", f"${credit:.2f}{EST} of ${self.cfg['credit_start'] + self.cfg['credit_offset']:.2f}{EST}",
+            (f"lasts {hours:.0f}{EST} h at ${all_cost:.3f}/hr" if hours is not None else "nothing is billing now")
+            + "; our count, since Salad's API has no balance: set config credit_offset from the portal now and then")
         if st["credits_out"]:
-            lines.append("- ⚠️ Credit ran out: Salad stopped the groups. They restart after a top-up.")
+            row("⚠️ Credit ran out", "—", "Salad stopped the groups; they restart after a top-up")
         with open(REPORT + ".tmp", "w") as f:
             f.write("\n".join(lines) + "\n")
         os.replace(REPORT + ".tmp", REPORT)
