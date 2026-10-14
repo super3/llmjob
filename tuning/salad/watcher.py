@@ -1095,7 +1095,7 @@ class W:
         if xon:
             xt = st.get("xmr_tot")
             nx = sum(1 for g in live if g.get("xmr"))
-            trail.append(f"Monero: {nx} box{'es' if nx != 1 else ''} at {all_khs:.2f} kH/s, XMR ${xprice:.0f}"
+            trail.append(f"Monero: {nx} box{'es' if nx != 1 else ''} at {all_khs:.1f} kH/s, XMR ${xprice:.0f}"
                          + (f"; the pool holds {xt['balance']:.6f} and has paid {xt['paid']:.6f} (it pays at 0.01), "
                             "counting any other rig mining to the address" if xt else ""))
         trail.append(f"Salad credit left ${credit:.2f}{EST} of ${self.cfg['credit_start'] + self.cfg['credit_offset']:.2f}{EST}"

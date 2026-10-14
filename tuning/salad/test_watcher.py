@@ -1305,7 +1305,7 @@ class TestMonero(Base):
         self.assertIn(f"| ⏳{w.NB}2060{w.NB}batch | — | — | — | — | +0.00* |", report)
         self.assertIn("| **All** | **200** | **2.0** | **0.11** |", report)
         self.assertIn(f"| 🪙 Monero{w.NB}·{w.NB}0.000100*{w.NB}XMR | | | | | +0.05* |", report)
-        self.assertIn("Monero: 1 box at 2.00 kH/s, XMR $500; the pool holds 0.005000 and has paid 0.000000", report)
+        self.assertIn("Monero: 1 box at 2.0 kH/s, XMR $500; the pool holds 0.005000 and has paid 0.000000", report)
         rows = [l for l in report.splitlines() if l.startswith("|")]
         self.assertTrue(all(l.count("|") == 7 for l in rows))  # one table, with a kH/s column
         self.assertTrue(all(len(l) <= 90 for l in rows), max(rows, key=len))  # each row on one line in a chat window
