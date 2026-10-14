@@ -236,14 +236,14 @@ watcher checks it against the pool and writes a `DRIFT` event when they disagree
 The report is **one table** with six columns (five without a Monero address), so each row fits on one line in a chat window:
 
 ```
-**22:49 UTC, Wed 14 Oct** · PRL $1.901 · 8 of 10 mining · **+$0.38*/hr** · +25%* margin · **profit so far +$37.14***
+**22:49 UTC, Wed 14 Oct** · PRL $1.901 · 8 of 10 mining · **+$0.38\*/hr** · +25%* margin · **profit so far +$37.14\***
 
 | Box | TH/s | kH/s | $/hr | Profit/hr (margin) | Profit $ |
 |---|---|---|---|---|---|
 | ⛏️ 3090ti-4 med | 150 | 8.0 | 0.16 | +0.07* (+31%*) | +1.20* |
 | ⏳ 5070ti-30 low | — | — | — | — | +0.00* |
 | Others ×207 | — | — | — | — | +35.12* |
-| **All** | **1001** | **30.4** | **1.12** | **+0.38* (+25%*)** | **+37.14*** |
+| **All** | **1001** | **30.4** | **1.12** | **+0.38\* (+25%\*)** | **+37.14\*** |
 | 🔒 Locked in · 46.793* PRL sold | | | | | +7.31* |
 | 📈 Not yet locked · 45.791* PRL | | | | | +28.39* |
 | 🪙 Monero · 0.002609* XMR | | | | | +1.45* |
@@ -252,6 +252,7 @@ The report is **one table** with six columns (five without a Monero address), so
 - **The first line** answers "how is it going": the time, the PRL price, how many boxes are mining, profit an
   hour, the margin, and the profit so far.
 - **Profit/hr** has the margin (profit ÷ earnings) in brackets beside it.
+- Inside bold text the estimate stars are written `\*`, or Markdown reads them as emphasis and the bold breaks.
 - **TH/s and kH/s** are each box's speed on both coins: Pearl on the GPU (the miner's 10-minute average) and
   Monero on the CPU (as the Monero pool measures it; — for a box that doesn't mine it).
 - **Others** is one row for every group that has ended, with its count; the events say which were released and which failed.

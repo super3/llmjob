@@ -1050,8 +1050,8 @@ class W:
                          + " — |" * (4 if xon else 3) + f" {eprof:+.2f}{EST} |")
         total = prl * per_prl + coins * xprice - spend
         hr_all, mg_all = all_earn - run_cost, star(pct(all_earn - run_cost, all_earn))
-        lines.append(f"| **All** | **{all_ths:.0f}** |" + (f" **{all_khs:.1f}** |" if xon else "")
-                     + f" **{all_cost:.2f}** | **{with_margin(hr_all, all_earn)}** | **{total:+.2f}{EST}** |")
+        lines.append(f"| **All** | {bold(f'{all_ths:.0f}')} |" + (f" {bold(f'{all_khs:.1f}')} |" if xon else "")
+                     + f" {bold(f'{all_cost:.2f}')} | {bold(with_margin(hr_all, all_earn))} | {bold(f'{total:+.2f}{EST}')} |")
         gap = " |" * (4 if xon else 3)  # the money rows put their amount under Profit $
 
         def money(label, v):
@@ -1065,8 +1065,8 @@ class W:
         n_live = len(live)
         head = (f"**{stamp(t)}** · PRL ${price:.3f} · {mining} of {n_live} mining"
                 + (f" · {starting} starting" if starting else "")
-                + f" · **{'+' if hr_all >= 0 else '-'}${abs(hr_all):.2f}{EST}/hr** · {mg_all} margin"
-                + f" · **profit so far {'+' if total >= 0 else '-'}${abs(total):.2f}{EST}**")
+                + " · " + bold(f"{'+' if hr_all >= 0 else '-'}${abs(hr_all):.2f}{EST}/hr") + f" · {mg_all} margin"
+                + " · " + bold(f"profit so far {'+' if total >= 0 else '-'}${abs(total):.2f}{EST}"))
         credit = self.cfg["credit_start"] + self.cfg["credit_offset"] - spend
         hours = credit / all_cost if all_cost > 0 else None
         # What doesn't fit on a row, in two lines: the key, then the money trail.
@@ -1112,6 +1112,12 @@ class W:
         if hours is not None and hours < 12 and t - st["last_credit_alert"] > 3600:
             st["last_credit_alert"] = t
             event(f"ALERT credit ${credit:.2f} lasts about {hours:.1f} h at ${all_cost:.3f}/hr")
+
+
+def bold(text):
+    """Markdown bold. The estimate stars inside are escaped, or Markdown reads them as more emphasis
+    and "**+0.27* (+24%*)**" doesn't come out bold."""
+    return "**" + text.replace("*", "\\*") + "**"
 
 
 def with_margin(profit, earn):
