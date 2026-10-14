@@ -532,6 +532,29 @@ class TestSearch(Base):
         self.x.search()
         self.assertEqual(self.http.made("POST", "/containers$")[-1][2]["name"], "biz-rtx4080-4")
 
+    def start_after(self, tries):
+        """Search after 4080 groups ended as (priority, had_pc), oldest first; return the new 4080's priority."""
+        self.http.on("POST", "/availability/", (200, {f"available_gpu_{p}": 5 for p in w.PRIS}))
+        self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10}}))
+        self.x.cfg.update(max_active=10, max_new_per_hour=10, retry_after_min=10)
+        for pri, had in tries:
+            g = self.group(cls="RTX 4080 (16 GB)", pri=pri)
+            g["ended"], g["end_kind"], g["had_pc"] = self.clock[0], "released", had
+            self.clock[0] += 3600
+        self.x.search()
+        return next(c[2]["container"]["priority"] for c in self.http.made("POST", "/containers$")[len(tries):]
+                    if c[2]["name"].startswith("biz-rtx4080"))
+
+    def test_a_class_whose_last_try_got_no_pc_starts_where_it_last_got_one(self):
+        self.assertEqual(self.start_after([("medium", True), ("high", False)]), "medium")
+        self.setUp()
+        self.assertEqual(self.start_after([("high", True), ("medium", True), ("high", False)]), "medium")  # the latest PC
+
+    def test_a_class_whose_last_try_got_a_pc_starts_at_batch(self):
+        self.assertEqual(self.start_after([("high", False), ("medium", True)]), "batch")
+        self.setUp()
+        self.assertEqual(self.start_after([("high", False)]), "batch")  # never placed: nothing to go on
+
     def test_respects_max_active(self):
         self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
         self.group(cls="RTX 2060 (6 GB)", pri="low")
