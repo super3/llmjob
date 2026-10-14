@@ -1043,10 +1043,10 @@ class W:
         lines = [r for _, r in sorted(rows, key=lambda x: -x[0])]
         ended = [g for g in groups if g["ended"]]
         if ended:
-            rel = sum(1 for g in ended if g["end_kind"] == "released")
+            # Groups that have ended, as one row with their count; the events say which were released or failed.
             eprof = (sum(g["prl"] for g in ended) * y * per_prl + sum(g.get("xmr_coins", 0.0) for g in ended) * xprice
                      - sum(g["spend"] for g in ended))
-            lines.append(f"| {NB.join(['Others', f'×{len(ended)}', f'🔁{rel}', f'❌{len(ended) - rel}'])} |"
+            lines.append(f"| Others{NB}×{len(ended)} |"
                          + " — |" * (4 if xon else 3) + f" {eprof:+.2f}{EST} |")
         total = prl * per_prl + coins * xprice - spend
         hr_all, mg_all = all_earn - run_cost, star(pct(all_earn - run_cost, all_earn))

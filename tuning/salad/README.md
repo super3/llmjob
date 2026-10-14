@@ -242,7 +242,7 @@ The report is **one table** with six columns (five without a Monero address), so
 |---|---|---|---|---|---|
 | ⛏️ 3090ti-4 med | 150 | 8.0 | 0.16 | +0.07* (+31%*) | +1.20* |
 | ⏳ 5070ti-30 low | — | — | — | — | +0.00* |
-| Others ×207 🔁202 ❌5 | — | — | — | — | +35.12* |
+| Others ×207 | — | — | — | — | +35.12* |
 | **All** | **1001** | **30.4** | **1.12** | **+0.38* (+25%*)** | **+37.14*** |
 | 🔒 Locked in · 46.793* PRL sold | | | | | +7.31* |
 | 📈 Not yet locked · 45.791* PRL | | | | | +28.39* |
@@ -254,6 +254,7 @@ The report is **one table** with six columns (five without a Monero address), so
 - **Profit/hr** has the margin (profit ÷ earnings) in brackets beside it.
 - **TH/s and kH/s** are each box's speed on both coins: Pearl on the GPU (the miner's 10-minute average) and
   Monero on the CPU (as the Monero pool measures it; — for a box that doesn't mine it).
+- **Others** is one row for every group that has ended, with its count; the events say which were released and which failed.
 - **A box row** holds its state, its group name without `biz-rtx` and its priority (`med` for medium), joined
   by no-break spaces so it doesn't wrap. Boxes are sorted by profit an hour, best first. The PC id is in the
   events, not the table.

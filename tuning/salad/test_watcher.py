@@ -876,6 +876,16 @@ class TestStartingBoxes(Base):
         self.assertIn("| **All** | **200** | **0.22** | **+0.04* (+19%*)** |", report)
         self.assertIn(" · 1 of 2 mining · 1 starting · **+$0.04*/hr** · ", report)
 
+    def test_ended_groups_are_one_row_with_their_count(self):
+        for kind in ("released", "released", "failed"):
+            g = self.group()
+            g["ended"], g["end_kind"], g["prl"], g["spend"] = self.clock[0], kind, 1.0, 1.0
+        self.x.write_report()
+        with open(os.path.join(TMP, "report.md")) as f:
+            report = f.read()
+        # 3 PRL at $1.39 less $3.00 spent
+        self.assertIn(f"| Others{w.NB}×3 | — | — | — | +1.17* |", report)
+
     def test_estimates_are_starred_and_api_figures_are_not(self):
         a = self.group(pri="medium")
         self.step(a, 1, "m1")
