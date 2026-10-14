@@ -1030,13 +1030,13 @@ class W:
             pri = "med" if g["pri"] == "medium" else g["pri"]
             box = NB.join([state, re.sub(r"^biz-(rtx)?", "", g["name"]), pri])
             # Each coin's speed (Pearl on the GPU, Monero on the CPU), then the bill, profit and margin.
-            kc = [f"{khs:.2f}" if g.get("xmr") else "—"] if xon else []
+            kc = [f"{khs:.1f}" if g.get("xmr") else "—"] if xon else []
             if not g["has_pc"]:
                 cells = ["—"] + (["—"] if xon else []) + ["—", "—"]
             elif start:
-                cells = ["0"] + kc + [f"{cost:.3f}", "—"]
+                cells = ["0"] + kc + [f"{cost:.2f}", "—"]
             else:
-                cells = [f"{ths:.0f}"] + kc + [f"{cost:.3f}", with_margin(earn - cost, earn)]
+                cells = [f"{ths:.0f}"] + kc + [f"{cost:.2f}", with_margin(earn - cost, earn)]
             cells = " | ".join(cells)
             rows.append((0.0 if start or not g["has_pc"] else earn - cost, f"| {box} | {cells} | {prof:+.2f}{EST} |"))
         # Most profitable an hour first; groups waiting for a PC make nothing, so they sit above any losing.
@@ -1050,8 +1050,8 @@ class W:
                          + " — |" * (4 if xon else 3) + f" {eprof:+.2f}{EST} |")
         total = prl * per_prl + coins * xprice - spend
         hr_all, mg_all = all_earn - run_cost, star(pct(all_earn - run_cost, all_earn))
-        lines.append(f"| **All** | **{all_ths:.0f}** |" + (f" **{all_khs:.2f}** |" if xon else "")
-                     + f" **{all_cost:.3f}** | **{with_margin(hr_all, all_earn)}** | **{total:+.2f}{EST}** |")
+        lines.append(f"| **All** | **{all_ths:.0f}** |" + (f" **{all_khs:.1f}** |" if xon else "")
+                     + f" **{all_cost:.2f}** | **{with_margin(hr_all, all_earn)}** | **{total:+.2f}{EST}** |")
         gap = " |" * (4 if xon else 3)  # the money rows put their amount under Profit $
 
         def money(label, v):
@@ -1065,7 +1065,7 @@ class W:
         n_live = len(live)
         head = (f"**{stamp(t)}** · PRL ${price:.3f} · {mining} of {n_live} mining"
                 + (f" · {starting} starting" if starting else "")
-                + f" · **{'+' if hr_all >= 0 else '-'}${abs(hr_all):.3f}{EST}/hr** · {mg_all} margin"
+                + f" · **{'+' if hr_all >= 0 else '-'}${abs(hr_all):.2f}{EST}/hr** · {mg_all} margin"
                 + f" · **profit so far {'+' if total >= 0 else '-'}${abs(total):.2f}{EST}**")
         credit = self.cfg["credit_start"] + self.cfg["credit_offset"] - spend
         hours = credit / all_cost if all_cost > 0 else None
@@ -1117,7 +1117,7 @@ class W:
 def with_margin(profit, earn):
     """Profit an hour with its margin in brackets, or alone when there's no margin to show."""
     m = star(pct(profit, earn))
-    return f"{profit:+.3f}{EST}" + (f" ({m})" if m != "—" else "")
+    return f"{profit:+.2f}{EST}" + (f" ({m})" if m != "—" else "")
 
 
 def margin_of(earn, price):

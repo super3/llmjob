@@ -236,14 +236,14 @@ watcher checks it against the pool and writes a `DRIFT` event when they disagree
 The report is **one table** with six columns (five without a Monero address), so each row fits on one line in a chat window:
 
 ```
-**22:49 UTC, Wed 14 Oct** · PRL $1.901 · 8 of 10 mining · **+$0.383*/hr** · +25%* margin · **profit so far +$37.14***
+**22:49 UTC, Wed 14 Oct** · PRL $1.901 · 8 of 10 mining · **+$0.38*/hr** · +25%* margin · **profit so far +$37.14***
 
 | Box | TH/s | kH/s | $/hr | Profit/hr (margin) | Profit $ |
 |---|---|---|---|---|---|
-| ⛏️ 3090ti-4 med | 150 | 8.00 | 0.160 | +0.071* (+31%*) | +1.20* |
+| ⛏️ 3090ti-4 med | 150 | 8.0 | 0.16 | +0.07* (+31%*) | +1.20* |
 | ⏳ 5070ti-30 low | — | — | — | — | +0.00* |
 | Others ×207 🔁202 ❌5 | — | — | — | — | +35.12* |
-| **All** | **1001** | **30.40** | **1.119** | **+0.383* (+25%*)** | **+37.14*** |
+| **All** | **1001** | **30.4** | **1.12** | **+0.38* (+25%*)** | **+37.14*** |
 | 🔒 Locked in · 46.793* PRL sold | | | | | +7.31* |
 | 📈 Not yet locked · 45.791* PRL | | | | | +28.39* |
 | 🪙 Monero · 0.002609* XMR | | | | | +1.45* |

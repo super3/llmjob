@@ -871,10 +871,10 @@ class TestStartingBoxes(Base):
         self.x.write_report()
         with open(os.path.join(TMP, "report.md")) as f:
             report = f.read()
-        self.assertIn(f"| ⛏️{w.NB}2060{w.NB}low | 0 | 0.030 | — |", report)
+        self.assertIn(f"| ⛏️{w.NB}2060{w.NB}low | 0 | 0.03 | — |", report)
         # $/hr counts both bills; Profit/hr only the 4080: 200 × 0.00117 − 0.19 = +0.044.
-        self.assertIn("| **All** | **200** | **0.220** | **+0.044* (+19%*)** |", report)
-        self.assertIn(" · 1 of 2 mining · 1 starting · **+$0.044*/hr** · ", report)
+        self.assertIn("| **All** | **200** | **0.22** | **+0.04* (+19%*)** |", report)
+        self.assertIn(" · 1 of 2 mining · 1 starting · **+$0.04*/hr** · ", report)
 
     def test_estimates_are_starred_and_api_figures_are_not(self):
         a = self.group(pri="medium")
@@ -884,7 +884,7 @@ class TestStartingBoxes(Base):
         with open(os.path.join(TMP, "report.md")) as f:
             report = f.read()
         # TH/s (the miner's log) and $/hr (Salad's price list) come from an API; the rest is our own count.
-        self.assertIn(f"| ⛏️{w.NB}4080{w.NB}med | 200 | 0.190 | +0.044* (+19%*) |", report)
+        self.assertIn(f"| ⛏️{w.NB}4080{w.NB}med | 200 | 0.19 | +0.04* (+19%*) |", report)
         self.assertIn("* our own count or estimate, or entered by hand", report)
         self.assertRegex(report, r"Salad credit left \$[\d.]+\* of \$[\d.]+\*, \d+\* h at \$[\d.]+/hr \(our count")
 
@@ -894,7 +894,7 @@ class TestStartingBoxes(Base):
         self.clock[0] += 16 * 60
         self.x.write_report()
         with open(os.path.join(TMP, "report.md")) as f:
-            self.assertIn("| 0 | 0.190 | -0.190* |", f.read())
+            self.assertIn("| 0 | 0.19 | -0.19* |", f.read())
 
 
 class TestBadPcs(Base):
@@ -1301,9 +1301,9 @@ class TestMonero(Base):
             report = f.read()
         self.assertIn("| Box | TH/s | kH/s | $/hr | Profit/hr (margin) | Profit $ |", report)
         # 200 TH/s × 0.00117 + 2 kH/s × 0.002 = 0.238 an hour, less 0.11 billed. 0.0001 XMR is $0.05, in its Profit $.
-        self.assertIn(f"| ⛏️{w.NB}4080{w.NB}batch | 200 | 2.00 | 0.110 | +0.128* (+54%*) | +0.05* |", report)
+        self.assertIn(f"| ⛏️{w.NB}4080{w.NB}batch | 200 | 2.0 | 0.11 | +0.13* (+54%*) | +0.05* |", report)
         self.assertIn(f"| ⏳{w.NB}2060{w.NB}batch | — | — | — | — | +0.00* |", report)
-        self.assertIn("| **All** | **200** | **2.00** | **0.110** |", report)
+        self.assertIn("| **All** | **200** | **2.0** | **0.11** |", report)
         self.assertIn(f"| 🪙 Monero{w.NB}·{w.NB}0.000100*{w.NB}XMR | | | | | +0.05* |", report)
         self.assertIn("Monero: 1 box at 2.00 kH/s, XMR $500; the pool holds 0.005000 and has paid 0.000000", report)
         rows = [l for l in report.splitlines() if l.startswith("|")]
