@@ -155,8 +155,8 @@ started with until it restarts. It comes back on the new version about 2 minutes
 - **Earnings** come from the pool, by worker (`<group>-g0`). The pool counts every accepted hash, so the XMR a box
   earned is its new hashes times what a hash earns (the last block's reward over the network difficulty, less the
   fee). The price is CoinGecko's. The address's pool balance also counts any other rig that mines to it.
-- **The rules** still judge every box on Pearl alone. Monero's earnings count in the table's Profit/hr, Margin and
-  Profit $, with a 🪙 row for what the boxes have mined, but they don't keep a slow PC or a weak class.
+- **The rules** still judge every box on Pearl alone. Monero's speed is the table's kH/s column and its earnings count
+  in Profit/hr, Margin and Profit $, with a 🪙 row for what the boxes have mined, but they don't keep a slow PC or a weak class.
 
 ## Salad API notes
 
@@ -233,24 +233,26 @@ watcher checks it against the pool and writes a `DRIFT` event when they disagree
   pays a share of each block it finds, so with few blocks credit runs well above or below the work;
   this fires only when it's short by more than 2 / √blocks too.
 
-The report is **one table** with six columns, so each row fits on one line in a chat window:
+The report is **one table** with seven columns (six without a Monero address), so each row fits on one line in a chat window:
 
 ```
-**22:40 UTC, Wed 14 Oct** · PRL $1.882 · 7 of 10 mining · **+$0.335*/hr** · +26%* margin · **profit so far +$36.42***
+**22:47 UTC, Wed 14 Oct** · PRL $1.901 · 8 of 10 mining · **+$0.372*/hr** · +25%* margin · **profit so far +$37.18***
 
-| Box | TH/s | $/hr | Profit/hr | Margin | Profit $ |
-|---|---|---|---|---|---|
-| ⛏️ 3090ti-4 med | 150 | 0.160 | +0.066* | +29%* | +1.17* |
-| ⏳ 5070-22 med | — | — | — | — | +0.00* |
-| Others ×206 🔁201 ❌5 | — | — | — | — | +34.47* |
-| **All** | **867** | **0.954** | **+0.335*** | **+26%*** | **+36.42*** |
-| 🔒 Locked in · 46.793* PRL sold | | | | | +7.39* |
-| 📈 Not yet locked · 45.791* PRL | | | | | +27.59* |
-| 🪙 Monero · 0.002598* XMR | | | | | +1.44* |
+| Box | TH/s | kH/s | $/hr | Profit/hr | Margin | Profit $ |
+|---|---|---|---|---|---|---|
+| ⛏️ 3090ti-4 med | 150 | 4.80 | 0.160 | +0.066* | +29%* | +1.20* |
+| ⏳ 5070-22 med | — | — | — | — | — | +0.00* |
+| Others ×206 🔁201 ❌5 | — | — | — | — | — | +35.16* |
+| **All** | **1001** | **23.20** | **1.119** | **+0.372*** | **+25%*** | **+37.18*** |
+| 🔒 Locked in · 46.793* PRL sold | | | | | | +7.33* |
+| 📈 Not yet locked · 45.791* PRL | | | | | | +28.41* |
+| 🪙 Monero · 0.002604* XMR | | | | | | +1.44* |
 ```
 
 - **The first line** answers "how is it going": the time, the PRL price, how many boxes are mining, profit an
   hour, the margin, and the profit so far.
+- **TH/s and kH/s** are each box's speed on both coins: Pearl on the GPU (the miner's 10-minute average) and
+  Monero on the CPU (as the Monero pool measures it; — for a box that doesn't mine it).
 - **A box row** holds its state, its group name without `biz-rtx` and its priority (`med` for medium), joined
   by no-break spaces so it doesn't wrap. Boxes are sorted by profit an hour, best first. The PC id is in the
   events, not the table.
@@ -307,7 +309,7 @@ is a Railway cron service next to the trader: Root Directory `/tuning/salad`, st
   straight from an API (Salad, the pool, prlscan, CoinGecko) or from the trader's log. Starred: Spent $
   and the credit left (Salad's API has no balance or billing, so the watcher adds each group's price for
   every minute it has a PC; on 14 October it was $1.01 high over $100), PRL expected, profit and margin,
-  XMR mined, and SafeTrade entered by hand. Not starred: TH/s, $/hr, the pool's totals and prices. Set `credit_offset` from the portal now and then so the credit count stays right.
+  XMR mined, and SafeTrade entered by hand. Not starred: TH/s, kH/s, $/hr, the pool's totals and prices. Set `credit_offset` from the portal now and then so the credit count stays right.
 - $/TH-hr = 1e12 × 3600 / (difficulty × 2^48) × reward_grains / 1e8 × PRL price, from
   `api.prlscan.com/v1/blocks?limit=1` and `/v1/market/prl`.
 - One pool unit/s = 419/93644 TH/s (a 5090's 24-hour pool average against its miner's 419 TH/s); one
