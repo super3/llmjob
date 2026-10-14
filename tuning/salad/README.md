@@ -246,15 +246,27 @@ A box on a new PC with no reading yet (under 15 minutes) is **starting**: it sho
 Margin, and the total leaves it out until its first reading. Its bill still counts in $/hr. Before
 this, two boxes changing PCs at once took the total from +$0.41 to +$0.07 for a few minutes.
 
-Under the table, a **Money** block follows the PRL from the bill to the sale:
+Under the box table, a **Money** table follows the PRL from the bill to the sale, one row per step,
+each with its amount and how we got it:
 
-- 💵 spent on Salad, the PRL we expect the pool to credit, and what each cost (the break-even price);
-- 🏦 at the pool: unconfirmed, unlocked (paid out at 1 PRL) and paid to SafeTrade, and what share of
-  our estimate that is (the credit ratio);
-- 💱 sold on SafeTrade and what's held there;
+- 💵 spent on Salad, and the PRL we expect the pool to credit;
+- ⚖️ the break-even price: what each credited PRL cost to mine;
+- 🏦 at the pool: unconfirmed and unlocked (paid out at 1 PRL), then paid to SafeTrade, with what share
+  of our estimate the pool has credited (the credit ratio);
+- 💱 sold on SafeTrade, what's held there, and the trader's last run;
 - 🔒 **locked in**: USDT received after fees, less the sold PRL at the average cost to mine;
-- ⏳ **not yet locked**: the unsold PRL at today's price, less the same cost. This still moves with the
-  price and the pool's luck.
+- 📈 **not yet locked**: the unsold PRL at today's price, less the same cost. This still moves with the
+  price and the pool's luck;
+- 🪙 Monero mined, and 💳 the Salad credit left.
+
+```
+| | Amount | How we got it |
+|---|---|---|
+| 💵 Spent on Salad | $118.26* | the miners' speed is worth 98.310* PRL at the network's rate; the pool has credited 93%* of that, so we expect 91.839* PRL |
+| ⚖️ Break-even | $1.288* a PRL | PRL is $1.887 today |
+| 🔒 Locked in | +$7.00* | 46.793* PRL sold, less $1.288* each to mine |
+| 📈 Not yet locked | +$27.01* | 45.046* PRL not sold yet, at today's price; it moves with the price and the pool's luck |
+```
 
 Every PRL carries the average cost, so spending now and selling hours later still gives one number.
 The cost is per credited PRL, not per estimated PRL: at 83% that's $1.35, not $1.12, and locked in on
@@ -263,7 +275,7 @@ The cost is per credited PRL, not per estimated PRL: at 83% that's $1.35, not $1
 ## SafeTrade row
 
 When `trader` is set, the watcher reads the newest `STATUS` line of the autoseller (`trader/`) from its
-Railway logs, at most every 5 minutes, and uses it for the 💱, 🔒 and ⏳ lines of the Money block.
+Railway logs, at most every 5 minutes, and uses it for the 💱, 🔒 and 📈 rows of the Money table.
 Until it can, sales entered by hand in config `safetrade` stand in.
 
 It needs a Railway project token for the production environment, set as `RAILWAY_TOKEN` or added by the
