@@ -233,24 +233,25 @@ watcher checks it against the pool and writes a `DRIFT` event when they disagree
   pays a share of each block it finds, so with few blocks credit runs well above or below the work;
   this fires only when it's short by more than 2 / √blocks too.
 
-The report is **one table** with seven columns (six without a Monero address), so each row fits on one line in a chat window:
+The report is **one table** with six columns (five without a Monero address), so each row fits on one line in a chat window:
 
 ```
-**22:47 UTC, Wed 14 Oct** · PRL $1.901 · 8 of 10 mining · **+$0.372*/hr** · +25%* margin · **profit so far +$37.18***
+**22:49 UTC, Wed 14 Oct** · PRL $1.901 · 8 of 10 mining · **+$0.383*/hr** · +25%* margin · **profit so far +$37.14***
 
-| Box | TH/s | kH/s | $/hr | Profit/hr | Margin | Profit $ |
-|---|---|---|---|---|---|---|
-| ⛏️ 3090ti-4 med | 150 | 4.80 | 0.160 | +0.066* | +29%* | +1.20* |
-| ⏳ 5070-22 med | — | — | — | — | — | +0.00* |
-| Others ×206 🔁201 ❌5 | — | — | — | — | — | +35.16* |
-| **All** | **1001** | **23.20** | **1.119** | **+0.372*** | **+25%*** | **+37.18*** |
-| 🔒 Locked in · 46.793* PRL sold | | | | | | +7.33* |
-| 📈 Not yet locked · 45.791* PRL | | | | | | +28.41* |
-| 🪙 Monero · 0.002604* XMR | | | | | | +1.44* |
+| Box | TH/s | kH/s | $/hr | Profit/hr (margin) | Profit $ |
+|---|---|---|---|---|---|
+| ⛏️ 3090ti-4 med | 150 | 8.00 | 0.160 | +0.071* (+31%*) | +1.20* |
+| ⏳ 5070ti-30 low | — | — | — | — | +0.00* |
+| Others ×207 🔁202 ❌5 | — | — | — | — | +35.12* |
+| **All** | **1001** | **30.40** | **1.119** | **+0.383* (+25%*)** | **+37.14*** |
+| 🔒 Locked in · 46.793* PRL sold | | | | | +7.31* |
+| 📈 Not yet locked · 45.791* PRL | | | | | +28.39* |
+| 🪙 Monero · 0.002609* XMR | | | | | +1.45* |
 ```
 
 - **The first line** answers "how is it going": the time, the PRL price, how many boxes are mining, profit an
   hour, the margin, and the profit so far.
+- **Profit/hr** has the margin (profit ÷ earnings) in brackets beside it.
 - **TH/s and kH/s** are each box's speed on both coins: Pearl on the GPU (the miner's 10-minute average) and
   Monero on the CPU (as the Monero pool measures it; — for a box that doesn't mine it).
 - **A box row** holds its state, its group name without `biz-rtx` and its priority (`med` for medium), joined
