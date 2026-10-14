@@ -1064,7 +1064,8 @@ class W:
                  " straight from an API (Salad, the pool, prlscan, CoinGecko) or from the trader's log.", ""]
         # Money, stage by stage: Salad bill, PRL mined, at the pool, paid to SafeTrade, sold. What's sold is
         # locked in; the rest still moves with the price and the pool's luck. Each PRL carries the average cost.
-        lines += ["**Money**", "", "| | Amount | How we got it |", "|---|---|---|"]
+        lines += ["**Money**", "", "| | Amount | From |", "|---|---|---|"]
+        notes = []  # what doesn't fit on a row goes in one line under the table
 
         def row(label, amount, note):
             lines.append(f"| {label} | {amount} | {note} |")
@@ -1075,50 +1076,50 @@ class W:
         if prl <= 0:
             row("💵 Spent on Salad", f"${spend:.2f}{EST}", "no PRL mined yet")
         elif y < 1:
-            row("💵 Spent on Salad", f"${spend:.2f}{EST}", f"the miners' speed is worth {est:.3f}{EST} PRL at the network's "
-                f"rate; the pool has credited {y:.0%}{EST} of that, so we expect {prl:.3f}{EST} PRL")
+            row("💵 Spent on Salad", f"${spend:.2f}{EST}", f"{est:.3f}{EST} PRL × {y:.0%}{EST} credited = {prl:.3f}{EST} PRL")
         else:
             row("💵 Spent on Salad", f"${spend:.2f}{EST}", f"{prl:.3f}{EST} PRL mined")
         if prl > 0:
-            row("⚖️ Break-even", f"${cost_prl:.3f}{EST} a PRL", f"PRL is ${price:.3f} today")
+            row("⚖️ Break-even", f"${cost_prl:.3f}{EST}/PRL", f"PRL ${price:.3f} today")
         pt = st.get("pool_tot")
         if pt:
             cred = pt["paid"] + pt["balance"] + pt["unconfirmed"]
-            row("🏦 At the pool", f"{pt['unconfirmed']:.3f} unconfirmed · {pt['balance']:.3f} unlocked", "PRL; paid out at 1 PRL")
-            row("🏦 Paid to SafeTrade", f"{pt['paid']:.3f} PRL", f"the pool has credited {cred / est * 100 if est > 0 else 0:.0f}%{EST} "
-                f"of our estimate over {pt['blocks']} blocks"
-                + (f"; from {self.cfg['yield_min_blocks']} blocks on the table counts on that share, not all of it"
-                   if y == 1 and pt["blocks"] < self.cfg["yield_min_blocks"] else ""))
+            row("🏦 At the pool", f"{pt['unconfirmed']:.3f} · {pt['balance']:.3f} PRL", "unconfirmed · unlocked (paid at 1)")
+            row("🏦 Paid to SafeTrade", f"{pt['paid']:.3f} PRL",
+                f"{cred / est * 100 if est > 0 else 0:.0f}%{EST} of our estimate, {pt['blocks']} blocks")
+            if y == 1 and pt["blocks"] < self.cfg["yield_min_blocks"]:
+                notes.append(f"From {self.cfg['yield_min_blocks']} blocks on, the table counts on the share the pool credits, not all of it.")
         # SafeTrade from the trader's logs, or from config "safetrade" (entered by hand) until those can be read.
         ts = st.get("trader_status") or self.cfg.get("safetrade")
         sold = (ts or {}).get("sold", 0)
         if ts:
-            when = (f"at the trader's {time.strftime('%H:%M', time.gmtime(ts['t']))}Z run" if ts.get("t")
-                    else "entered by hand")
+            when = (f"{time.strftime('%H:%M', time.gmtime(ts['t']))}Z run" if ts.get("t") else "by hand")
             net = ts.get("received", 0) - ts.get("fees", 0)
             h = "" if ts.get("t") else EST  # entered by hand: we can't check it
-            row("💱 Sold on SafeTrade", f"{sold:.3f}{h} PRL", f"for {net:.2f}{h} USDT after fees"
-                + (f" (average {ts['received'] / sold:.4f}{h})" if sold else "") + f"; {when}")
+            row("💱 Sold", f"{sold:.3f}{h} PRL", f"{net:.2f}{h} USDT net"
+                + (f", avg {ts['received'] / sold:.4f}{h}" if sold else "") + f", {when}")
             row("💱 SafeTrade holds", f"{ts.get('usdt', 0):.2f}{h} USDT · {ts.get('prl', 0) + ts.get('prl_locked', 0):.3f}{h} PRL", when)
             last = ts.get("last")
             if last:
-                row("💱 Trader's last run", f"{last.get('sold', 0):g} PRL", f"sold at {last.get('average')}")
-            row("🔒 Locked in", usd_signed(net - sold * cost_prl), f"{sold:.3f}{h} PRL sold, less ${cost_prl:.3f}{EST} each to mine")
+                row("💱 Last run", f"{last.get('sold', 0):g} PRL", f"at {last.get('average')}")
+            row("🔒 Locked in", usd_signed(net - sold * cost_prl), f"{sold:.3f}{h} PRL sold, ${cost_prl:.3f}{EST} each to mine")
         unsold = prl - sold
-        row("📈 Not yet locked", usd_signed(unsold * (price - cost_prl)), f"{unsold:.3f}{EST} PRL not sold yet, at today's price; "
-            "it moves with the price and the pool's luck")
+        row("📈 Not yet locked", usd_signed(unsold * (price - cost_prl)), f"{unsold:.3f}{EST} PRL unsold, at today's price")
+        notes.append("Not yet locked moves with the price and the pool's luck.")
         if xon:
             n = sum(1 for g in st["groups"].values() if g.get("xmr") and not g["ended"])
             xt = st.get("xmr_tot")
-            row("🪙 Monero (CPU)", f"{coins:.6f}{EST} XMR (${coins * xprice:.2f}{EST})",
-                f"{n} box{'es' if n != 1 else ''} at {all_khs:.2f} kH/s, worth ${all_khs * xusd:.4f}/hr"
-                + (f"; the pool holds {xt['balance']:.6f} XMR for the address and has paid {xt['paid']:.6f} (it pays at "
-                   "0.01 XMR), counting any other rig mining to it" if xt else ""))
-        row("💳 Salad credit left", f"${credit:.2f}{EST} of ${self.cfg['credit_start'] + self.cfg['credit_offset']:.2f}{EST}",
-            (f"lasts {hours:.0f}{EST} h at ${all_cost:.3f}/hr" if hours is not None else "nothing is billing now")
-            + "; our count, since Salad's API has no balance: set config credit_offset from the portal now and then")
+            row("🪙 Monero", f"{coins:.6f}{EST} XMR (${coins * xprice:.2f}{EST})",
+                f"{n} box{'es' if n != 1 else ''}, {all_khs:.2f} kH/s, ${all_khs * xusd:.4f}/hr")
+            if xt:
+                notes.append(f"The XMR pool holds {xt['balance']:.6f} for the address and has paid {xt['paid']:.6f} (it pays "
+                             "at 0.01), counting any other rig mining to it.")
+        row("💳 Salad credit", f"${credit:.2f}{EST} of ${self.cfg['credit_start'] + self.cfg['credit_offset']:.2f}{EST}",
+            f"lasts {hours:.0f}{EST} h at ${all_cost:.3f}/hr" if hours is not None else "nothing is billing now")
+        notes.append("Salad credit is our count: Salad's API has no balance, so set config credit_offset from the portal now and then.")
         if st["credits_out"]:
-            row("⚠️ Credit ran out", "—", "Salad stopped the groups; they restart after a top-up")
+            row("⚠️ Credit ran out", "—", "groups stopped until a top-up")
+        lines += ["", " ".join(notes)]
         with open(REPORT + ".tmp", "w") as f:
             f.write("\n".join(lines) + "\n")
         os.replace(REPORT + ".tmp", REPORT)

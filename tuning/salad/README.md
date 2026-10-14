@@ -247,7 +247,7 @@ Margin, and the total leaves it out until its first reading. Its bill still coun
 this, two boxes changing PCs at once took the total from +$0.41 to +$0.07 for a few minutes.
 
 Under the box table, a **Money** table follows the PRL from the bill to the sale, one row per step,
-each with its amount and how we got it:
+each with its amount and where it comes from:
 
 - 💵 spent on Salad, and the PRL we expect the pool to credit;
 - ⚖️ the break-even price: what each credited PRL cost to mine;
@@ -260,13 +260,16 @@ each with its amount and how we got it:
 - 🪙 Monero mined, and 💳 the Salad credit left.
 
 ```
-| | Amount | How we got it |
+| | Amount | From |
 |---|---|---|
-| 💵 Spent on Salad | $118.26* | the miners' speed is worth 98.310* PRL at the network's rate; the pool has credited 93%* of that, so we expect 91.839* PRL |
-| ⚖️ Break-even | $1.288* a PRL | PRL is $1.887 today |
-| 🔒 Locked in | +$7.00* | 46.793* PRL sold, less $1.288* each to mine |
-| 📈 Not yet locked | +$27.01* | 45.046* PRL not sold yet, at today's price; it moves with the price and the pool's luck |
+| 💵 Spent on Salad | $118.33* | 98.364* PRL × 93%* credited = 91.839* PRL |
+| ⚖️ Break-even | $1.288*/PRL | PRL $1.887 today |
+| 🔒 Locked in | +$6.96* | 46.793* PRL sold, $1.288* each to mine |
+| 📈 Not yet locked | +$26.98* | 45.046* PRL unsold, at today's price |
 ```
+
+Each row fits on one line; what doesn't fit (that not yet locked moves with the price and the pool's luck,
+what the XMR pool holds, that the Salad credit is our own count) goes in one line under the table.
 
 Every PRL carries the average cost, so spending now and selling hours later still gives one number.
 The cost is per credited PRL, not per estimated PRL: at 83% that's $1.35, not $1.12, and locked in on
