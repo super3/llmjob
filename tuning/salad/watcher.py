@@ -22,6 +22,12 @@ SHARE_UNITS = 2 ** 21
 MIN = 60
 START_MIN = 5   # minutes a new PC is billed before its miner sends a reading
 NB = "\u00a0"   # no-break space: keeps a table cell on one line
+EST = "*"  # marks a figure that is our own count or estimate, or entered by hand, not read from an API
+
+
+def star(cell):
+    """A figure we count or estimate ourselves gets EST; a dash stays a dash."""
+    return cell if cell == "—" else cell + EST
 
 # Measured TH/s on Salad (the median of a group's readings) and whether the class paid on the first account.
 # Thin classes have a rate but never paid there; one that pays here counts as paid from then on.
@@ -995,11 +1001,11 @@ class W:
             # so the row stays on one line in a narrow window.
             pri = "med" if g["pri"] == "medium" else g["pri"]
             box = NB.join([state, re.sub(r"^biz-(rtx)?", "", g["name"]), pri] + ([g["machine"][:8]] if g["machine"] else []))
-            hr, mg = ("—", "—") if start else (f"{earn - cost:+.3f}", pct(earn - cost, earn))
+            hr, mg = ("—", "—") if start else (f"{earn - cost:+.3f}{EST}", star(pct(earn - cost, earn)))
             kcell = (f" {khs:.2f} |" if g.get("xmr") else " — |") if xon else ""
             act_rows.append((0.0 if start else earn - cost, f"| {box} | {ths:.0f} |{kcell} {cost:.3f} | {hr} | "
-                             f"{mg} | {g['spend']:.2f} | {g['prl'] * y:.3f} |"
-                             + (f" {g.get('xmr_coins', 0.0):.6f} |" if xon else "") + f" {prof:+.2f} |"))
+                             f"{mg} | {g['spend']:.2f}{EST} | {g['prl'] * y:.3f}{EST} |"
+                             + (f" {g.get('xmr_coins', 0.0):.6f}{EST} |" if xon else "") + f" {prof:+.2f}{EST} |"))
         # Most profitable an hour first; groups waiting for a PC make nothing, so they sit above any losing.
         rows = [r for _, r in sorted(act_rows, key=lambda x: -x[0])]
         if ended:
@@ -1009,8 +1015,8 @@ class W:
             esp = sum(g["spend"] for g in ended)
             ecoins = sum(g.get("xmr_coins", 0.0) for g in ended)
             rows.append(f"| {NB.join(['Others', f'×{len(ended)}', f'🔁{rel}', f'❌{fail}'])} | — |{' — |' if xon else ''} "
-                        f"— | — | — | {esp:.2f} | {eprl:.3f} |" + (f" {ecoins:.6f} |" if xon else "")
-                        + f" {eprl * price + ecoins * xprice - esp:+.2f} |")
+                        f"— | — | — | {esp:.2f}{EST} | {eprl:.3f}{EST} |" + (f" {ecoins:.6f}{EST} |" if xon else "")
+                        + f" {eprl * price + ecoins * xprice - esp:+.2f}{EST} |")
         spend = sum(g["spend"] for g in st["groups"].values())
         est = sum(g["prl"] for g in st["groups"].values())
         prl = est * y
@@ -1018,12 +1024,12 @@ class W:
         coins = sum(g.get("xmr_coins", 0.0) for g in st["groups"].values())
         label = f"{mining}{NB}mining" + (f"{NB}·{NB}{starting}{NB}starting" if starting else "")
         rows.append(f"| **All{NB}·{NB}{label}** | **{all_ths:.0f}** |{f' **{all_khs:.2f}** |' if xon else ''} "
-                    f"**{all_cost:.3f}** | **{all_earn - run_cost:+.3f}** | **{pct(all_earn - run_cost, all_earn)}** | "
-                    f"**{spend:.2f}** | **{prl:.3f}** |" + (f" **{coins:.6f}** |" if xon else "")
-                    + f" **{prl * price + coins * xprice - spend:+.2f}** |")
+                    f"**{all_cost:.3f}** | **{all_earn - run_cost:+.3f}{EST}** | **{star(pct(all_earn - run_cost, all_earn))}** | "
+                    f"**{spend:.2f}{EST}** | **{prl:.3f}{EST}** |" + (f" **{coins:.6f}{EST}** |" if xon else "")
+                    + f" **{prl * price + coins * xprice - spend:+.2f}{EST}** |")
         credit = self.cfg["credit_start"] + self.cfg["credit_offset"] - spend
         hours = credit / all_cost if all_cost > 0 else None
-        rate = f"${mk['usd_th_hr']:.6f}/TH-hr" + (f" × {y:.0%} credited = ${usd:.6f}" if y < 1 else "")
+        rate = f"${mk['usd_th_hr']:.6f}/TH-hr" + (f" × {y:.0%}{EST} credited = ${usd:.6f}{EST}" if y < 1 else "")
         if xon and xm:
             rate += f" · XMR ${xprice:.0f} · ${xusd:.5f}/kH-hr"
         lines = [f"**{stamp(t)}** · PRL ${price:.3f} · {rate}", "",
@@ -1042,24 +1048,26 @@ class W:
                  + (" kH/s is the box's Monero rate on its CPU, as the pool measures it (— for a box that doesn't mine "
                     "Monero), and XMR is the Monero the box has earned: its accepted hashes at the pool times what a "
                     "hash earns, less the fee. Monero's earnings are in Profit/hr, Margin and Profit $ (XMR at today's "
-                    "price); the rules still judge each box on Pearl alone." if xon else ""), ""]
+                    "price); the rules still judge each box on Pearl alone." if xon else "")
+                 + f" {EST} marks our own count or estimate, or a figure entered by hand; a number without one comes"
+                 " straight from an API (Salad, the pool, prlscan, CoinGecko) or from the trader's log.", ""]
         # Money, stage by stage: Salad bill, PRL mined, at the pool, paid to SafeTrade, sold. What's sold is
         # locked in; the rest still moves with the price and the pool's luck. Each PRL carries the average cost.
         lines.append("**Money**")
         if prl <= 0:
-            lines.append(f"- 💵 Spent on Salad: ${spend:.2f}; no PRL mined yet.")
+            lines.append(f"- 💵 Spent on Salad: ${spend:.2f}{EST}; no PRL mined yet.")
         elif y < 1:
-            lines.append(f"- 💵 Spent on Salad: ${spend:.2f}; the miners' speed is worth {est:.3f} PRL at the network's "
-                         f"rate, and the pool has credited {y:.0%} of that, so we expect {prl:.3f} PRL: ${cost_prl:.3f} "
+            lines.append(f"- 💵 Spent on Salad: ${spend:.2f}{EST}; the miners' speed is worth {est:.3f}{EST} PRL at the network's "
+                         f"rate, and the pool has credited {y:.0%}{EST} of that, so we expect {prl:.3f}{EST} PRL: ${cost_prl:.3f}{EST} "
                          f"each (break-even), worth ${price:.3f} today.")
         else:
-            lines.append(f"- 💵 Spent on Salad: ${spend:.2f}; {prl:.3f} PRL mined at ${cost_prl:.3f} each (break-even), "
+            lines.append(f"- 💵 Spent on Salad: ${spend:.2f}{EST}; {prl:.3f}{EST} PRL mined at ${cost_prl:.3f}{EST} each (break-even), "
                          f"worth ${price:.3f} today.")
         pt = st.get("pool_tot")
         if pt:
             cred = pt["paid"] + pt["balance"] + pt["unconfirmed"]
             lines.append(f"- 🏦 Pool: {pt['unconfirmed']:.3f} unconfirmed · {pt['balance']:.3f} unlocked (paid out at 1 PRL) "
-                         f"· {pt['paid']:.3f} paid to SafeTrade. That's {cred / est * 100 if est > 0 else 0:.0f}% of our "
+                         f"· {pt['paid']:.3f} paid to SafeTrade. That's {cred / est * 100 if est > 0 else 0:.0f}%{EST} of our "
                          f"estimate over {pt['blocks']} blocks"
                          + (f"; from {self.cfg['yield_min_blocks']} blocks on the table counts on that share, not all of it."
                             if y == 1 and pt["blocks"] < self.cfg["yield_min_blocks"] else "."))
@@ -1070,25 +1078,27 @@ class W:
             when = (f"at the trader's {time.strftime('%H:%M', time.gmtime(ts['t']))}Z run" if ts.get("t")
                     else "entered by hand")
             net = ts.get("received", 0) - ts.get("fees", 0)
-            lines.append(f"- 💱 SafeTrade ({when}): sold {sold:.3f} PRL for {net:.2f} USDT after fees"
-                         + (f" (average {ts['received'] / sold:.4f})" if sold else "")
-                         + f"; holds {ts.get('usdt', 0):.2f} USDT and {ts.get('prl', 0) + ts.get('prl_locked', 0):.3f} PRL.")
+            h = "" if ts.get("t") else EST  # entered by hand: we can't check it
+            lines.append(f"- 💱 SafeTrade ({when}): sold {sold:.3f}{h} PRL for {net:.2f}{h} USDT after fees"
+                         + (f" (average {ts['received'] / sold:.4f}{h})" if sold else "")
+                         + f"; holds {ts.get('usdt', 0):.2f}{h} USDT and {ts.get('prl', 0) + ts.get('prl_locked', 0):.3f}{h} PRL.")
             last = ts.get("last")
             if last:
                 lines.append(f"- The trader's last run sold {last.get('sold', 0):g} PRL at {last.get('average')}.")
-            lines.append(f"- 🔒 Locked in: {net - sold * cost_prl:+.2f} ({sold:.3f} PRL sold, less ${cost_prl:.3f} each to mine).")
+            lines.append(f"- 🔒 Locked in: {net - sold * cost_prl:+.2f}{EST} ({sold:.3f}{h} PRL sold, less ${cost_prl:.3f}{EST} each to mine).")
         unsold = prl - sold
-        lines.append(f"- ⏳ Not yet locked: {unsold * (price - cost_prl):+.2f} ({unsold:.3f} PRL not sold yet, at today's "
+        lines.append(f"- ⏳ Not yet locked: {unsold * (price - cost_prl):+.2f}{EST} ({unsold:.3f}{EST} PRL not sold yet, at today's "
                      "price; it moves with the price and the pool's luck).")
         if xon:
             n = sum(1 for g in st["groups"].values() if g.get("xmr") and not g["ended"])
             xt = st.get("xmr_tot")
             lines.append(f"- 🪙 Monero (CPU): {n} box{'es' if n != 1 else ''} at {all_khs:.2f} kH/s, worth "
-                         f"${all_khs * xusd:.4f}/hr; our boxes have mined {coins:.6f} XMR (${coins * xprice:.2f})."
+                         f"${all_khs * xusd:.4f}/hr; our boxes have mined {coins:.6f}{EST} XMR (${coins * xprice:.2f}{EST})."
                          + (f" The pool holds {xt['balance']:.6f} XMR for the address and has paid {xt['paid']:.6f}"
                             " (it pays at 0.01 XMR); that includes any other rig mining to it." if xt else ""))
-        lines.append(f"- Salad credit left: ${credit:.2f} of ${self.cfg['credit_start'] + self.cfg['credit_offset']:.2f} (our count)"
-                     + (f"; lasts {hours:.0f} h at ${all_cost:.3f}/hr." if hours is not None else "; nothing is billing now."))
+        lines.append(f"- Salad credit left: ${credit:.2f}{EST} of ${self.cfg['credit_start'] + self.cfg['credit_offset']:.2f}{EST} (our count; "
+                     "Salad's API has no balance, so set config credit_offset from the portal now and then)"
+                     + (f"; lasts {hours:.0f}{EST} h at ${all_cost:.3f}/hr." if hours is not None else "; nothing is billing now."))
         if st["credits_out"]:
             lines.append("- ⚠️ Credit ran out: Salad stopped the groups. They restart after a top-up.")
         with open(REPORT + ".tmp", "w") as f:
