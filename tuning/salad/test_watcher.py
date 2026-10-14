@@ -764,7 +764,7 @@ class TestPoolTotals(Base):
         with open(os.path.join(TMP, "report.md")) as f:
             report = f.read()
         # 8 PRL mined for $6.00: $0.750 each. The pool has credited 6 of them. Nothing sold: 8 × (1.39 − 0.75) = +5.12.
-        self.assertIn("· **profit so far +$5.12***", report)
+        self.assertIn("· **profit so far +$5.12\\***", report)
         self.assertIn(f"| 📈 Not{w.NB}yet{w.NB}locked{w.NB}·{w.NB}8.000*{w.NB}PRL | | | | +5.12* |", report)
         self.assertIn("Spent $6.00* on Salad for 8.000* PRL, $0.750* each.", report)
         self.assertIn("Pool: 4.000 unconfirmed · 0.500 unlocked (paid at 1) · 1.500 paid to SafeTrade, 75%* of our estimate "
@@ -790,7 +790,7 @@ class TestCreditRatio(Base):
     def test_the_table_counts_on_what_the_pool_credits(self):
         report = self.report()
         # 75% of 8 PRL is 6, mined for $6.00: $1.000 each. Worth 6 × 1.39 − 6.00 = +2.34.
-        self.assertIn("· **profit so far +$2.34***", report)
+        self.assertIn("· **profit so far +$2.34\\***", report)
         self.assertIn(f"| 📈 Not{w.NB}yet{w.NB}locked{w.NB}·{w.NB}6.000*{w.NB}PRL | | | | +2.34* |", report)
         self.assertIn("Spent $6.00* on Salad for 6.000* PRL (8.000* at the network's rate × 75%* credited), $1.000* each.", report)
         self.assertIn("75%* of our estimate over 20 blocks.", report)
@@ -873,8 +873,12 @@ class TestStartingBoxes(Base):
             report = f.read()
         self.assertIn(f"| ⛏️{w.NB}2060{w.NB}low | 0 | 0.03 | — |", report)
         # $/hr counts both bills; Profit/hr only the 4080: 200 × 0.00117 − 0.19 = +0.044.
-        self.assertIn("| **All** | **200** | **0.22** | **+0.04* (+19%*)** |", report)
-        self.assertIn(" · 1 of 2 mining · 1 starting · **+$0.04*/hr** · ", report)
+        self.assertIn("| **All** | **200** | **0.22** | **+0.04\\* (+19%\\*)** |", report)
+        self.assertIn(" · 1 of 2 mining · 1 starting · **+$0.04\\*/hr** · ", report)
+
+    def test_stars_inside_bold_are_escaped(self):
+        # "**+0.27* (+24%*)**" doesn't render as bold: Markdown takes the stars for more emphasis.
+        self.assertEqual(w.bold("+0.27* (+24%*)"), "**+0.27\\* (+24%\\*)**")
 
     def test_ended_groups_are_one_row_with_their_count(self):
         for kind in ("released", "released", "failed"):
@@ -1068,7 +1072,7 @@ class TestTraderStatus(Base):
         self.assertIn(f"| 📈 Not{w.NB}yet{w.NB}locked{w.NB}·{w.NB}4.744*{w.NB}PRL | | | | +2.80* |", report)
         # The box's Profit $ counts its sold PRL at what it sold for, so it adds up to the two: +5.68, not 10 × 1.39 − 8.
         self.assertIn("| — | +5.68* |\n", report)
-        self.assertIn("**profit so far +$5.68***", report)
+        self.assertIn("**profit so far +$5.68\\***", report)
 
     def test_sales_entered_by_hand_count_until_the_logs_can_be_read(self):
         g = self.group()
