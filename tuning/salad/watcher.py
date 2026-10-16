@@ -391,6 +391,36 @@ class W:
         else:
             err(f"delete {g['name']} failed {s} {j}")
 
+    def sweep(self, t):
+        """Delete groups on Salad that the ledger doesn't count as live. Salad sometimes answers a delete with
+        202 and keeps the group, and a create that errors can still make one. Such a group bills while nothing
+        watches it and takes a replica from the quota, so new groups can't start. A stray is deleted once it
+        has been seen for 10 min, which gives a normal delete time to finish. Only names starting "biz-"."""
+        st = self.st
+        if t - st.get("sweep_t", 0) < 5 * MIN:
+            return
+        st["sweep_t"] = t
+        s, j = http("GET", CB)
+        if s != 200:
+            return
+        live = {g["name"] for g in st["groups"].values() if not g["ended"]}
+        names = {c.get("name") for c in (j or {}).get("items") or []}
+        stray = st.setdefault("stray", {})
+        for name in list(stray):
+            if name not in names or name in live:
+                del stray[name]
+        for name in sorted(n for n in names if n and n.startswith("biz-") and n not in live):
+            first = stray.setdefault(name, {"t": t, "said": False})
+            if t - first["t"] < 10 * MIN:
+                continue
+            s, j = http("DELETE", f"{CB}/{name}")
+            if not first["said"]:
+                first["said"] = True
+                event(f"SWEPT {name}: on Salad for {(t - first['t']) / MIN:.0f} min but not live in the ledger "
+                      f"(a delete that didn't take, or a create that errored); deleted, HTTP {s}")
+            elif not (200 <= s < 300 or s == 404):
+                err(f"sweep delete {name} failed {s} {j}")
+
     def reallocate(self, g, reason, count=True):
         """Ask Salad for another PC. count=False for a PC another group already left: that move isn't the
         group's fault, so it doesn't use up one of its 3."""
@@ -610,6 +640,8 @@ class W:
                 ins = insts[0] if insts else {}
                 g["instance"] = ins.get("instance_id") or ins.get("id") or g.get("instance")
                 g["_machine"] = None
+
+        self.sweep(t)
 
         # Billing: price for every minute a group has a PC.
         for g in active:

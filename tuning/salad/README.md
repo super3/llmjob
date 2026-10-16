@@ -293,6 +293,12 @@ and there's one `WARN` event.
 
 ## Safety net
 
+**Strays.** Salad sometimes answers a delete with 202 and keeps the group, and a create that errors can
+still make one. Such a group bills while nothing watches it, and it takes a replica from the quota, so
+a new group can't start. Every 5 minutes the watcher lists the groups on Salad and deletes any `biz-`
+group that isn't live in its ledger and has been there for 10 minutes (`SWEPT` in the events). The 10
+minutes give a normal delete time to finish.
+
 `guard.py` is for when the watcher isn't running, for example because the machine it ran on went away
 while the groups keep billing on Salad. It keeps no state. It stops every running `biz-` group that is
 at least an hour old, has a running PC, and from which the pool has seen no work in the last hour. The
