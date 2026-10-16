@@ -366,6 +366,57 @@ class TestDeleteReason(Base):
         self.assertIn('container_group_name = "biz-rtx4070"', body["query"])
 
 
+class TestSweep(Base):
+    def listing(self, *names):
+        self.http.on("GET", "/containers$", (200, {"items": [{"name": n} for n in names]}))
+
+    def sweep_at(self, minutes):
+        self.clock[0] = T0 + minutes * w.MIN
+        self.x.sweep(self.clock[0])
+
+    def test_a_group_the_ledger_let_go_is_deleted_after_10_min(self):
+        g = self.group()
+        g["ended"] = T0  # the watcher deleted it, Salad answered 202 and kept it
+        self.listing(g["name"])
+        self.sweep_at(0)
+        self.sweep_at(5)
+        self.assertEqual(self.http.made("DELETE", "/containers/"), [])
+        self.sweep_at(10)
+        self.assertEqual(len(self.http.made("DELETE", f"/containers/{g['name']}$")), 1)
+        self.assertIn(f"SWEPT {g['name']}: on Salad for 10 min", self.events())
+
+    def test_live_groups_and_other_names_are_left_alone(self):
+        g = self.group()
+        self.listing(g["name"], "someone-elses-group")
+        for m in (0, 10, 20):
+            self.sweep_at(m)
+        self.assertEqual(self.http.made("DELETE", "/containers/"), [])
+
+    def test_a_stray_that_goes_away_by_itself_is_not_deleted(self):
+        self.listing("biz-rtx3070-8")
+        self.sweep_at(0)
+        self.listing()
+        self.sweep_at(5)
+        self.listing("biz-rtx3070-8")  # back again: the 10 minutes start over
+        self.sweep_at(10)
+        self.assertEqual(self.http.made("DELETE", "/containers/"), [])
+
+    def test_runs_at_most_every_5_min(self):
+        self.listing()
+        self.sweep_at(0)
+        self.sweep_at(2)
+        self.assertEqual(len(self.http.made("GET", "/containers$")), 1)
+
+    def test_says_it_once_and_keeps_trying(self):
+        self.listing("biz-rtx3070-8")
+        self.http.on("DELETE", "/containers/", (202, {}))
+        for m in (0, 10, 15, 20):
+            self.sweep_at(m)
+        self.assertEqual(len(self.http.made("DELETE", "/containers/biz-rtx3070-8$")), 3)
+        self.assertEqual(self.events().count("SWEPT biz-rtx3070-8"), 1)
+
+
+
 class TestRule6PortBlocked(Base):
     def test_reallocates_then_deletes_after_3(self):
         g = self.group()
