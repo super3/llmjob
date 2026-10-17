@@ -1589,6 +1589,26 @@ class TestKryptex(Base):
         self.assertAlmostEqual(g["prl_kx"], 198 / 60 * USD_TH_HR / PRICE)
         self.assertAlmostEqual(g["prl"], g["prl_kx"])
 
+    def test_a_late_reading_from_the_pc_a_box_left_counts_as_herominers(self):
+        self.x.cfg["search"] = False
+        g = self.group()
+        g.update(kx=True, kx_since=T0 + 300, kx_from="m0", created=T0 - 3600)
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
+        line = lambda tm, mach, up: {"text_log": f"[mining g0] {tm[11:19]} 198.0 TH/s · 2 accepted · 0 rejected · up {up}",
+                                     "time": tm, "resource": {"labels": {"container_group_name": "biz-rtx4080",
+                                                                         "machine_id": mach}}}
+        # The switch was at 08:05. 08:04: the old PC, before it; 08:06: the old PC again, a late line after it;
+        # 08:07: the new PC.
+        items = [line("2027-01-15T08:04:00Z", "m0", "4h 1m"), line("2027-01-15T08:06:00Z", "m0", "4h 3m"),
+                 line("2027-01-15T08:07:00Z", "m1", "0h 1m")]
+        self.http.on("POST", "/log-entries", (200, {"items": items}))
+        self.clock[0] = T0 + 500
+        self.x.round()
+        one = 198 / 60 * USD_TH_HR / PRICE
+        self.assertAlmostEqual(g["prl"], 3 * one)
+        self.assertAlmostEqual(g["prl_kx"], one)   # only the new PC's reading
+
     def test_the_report_marks_kryptex_boxes_and_shows_both_pools(self):
         kg = self.group()
         hg = self.group()
