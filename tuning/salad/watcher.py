@@ -505,7 +505,7 @@ class W:
             self.delete(g, "released", f"{reason}; already reallocated 3 times")
             return
         if not g.get("instance"):
-            return
+            return False
         s, j = http("POST", f"{CB}/{g['name']}/instances/{g['instance']}/reallocate")
         if 200 <= s < 300:
             g["reallocs"] += 1 if count else 0
@@ -513,8 +513,9 @@ class W:
             event(f"REALLOCATED {g['name']} off PC {(g['machine'] or '')[:8]} ({reason}); "
                   + (f"reallocation {g['reallocs']} of 3" if count else "not counted toward its 3"))
             g.update(machine=None, pc_since=None, lost_since=now(), profit_fail=0, has_pc=False)
-        else:
-            err(f"reallocate {g['name']} failed {s} {j}")
+            return True
+        err(f"reallocate {g['name']} failed {s} {j}")
+        return False
 
     def set_priority(self, g, pri):
         s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"priority": pri}}, ctype="application/merge-patch+json")
@@ -581,10 +582,13 @@ class W:
             st["kx_token"], st["kx_fails"] = cfg["kryptex_token"], 0
         stopped = st.get("kx_fails", 0) >= 2
         want = 0 if stopped else cfg["kryptex_groups"]
-        live = [g for g in active if not g["ended"] and not g.get("_skip")]
+        # A group whose state read failed this round (_skip) keeps its place by its last known state, so one failed
+        # read doesn't switch another box in; it is only never switched itself that round.
+        live = [g for g in active if not g["ended"]]
         kx = [g for g in live if g.get("kx")]
         if sum(1 for g in kx if g["has_pc"]) < want and t - st.get("kx_switch_t", 0) >= 15 * MIN:
-            cands = [g for g in live if not g.get("kx") and g["has_pc"] and g["status"] == "running" and g.get("pc_since")
+            cands = [g for g in live if not g.get("kx") and not g.get("_skip") and g["has_pc"] and g["status"] == "running"
+                     and g.get("pc_since") and g.get("kx_failed_tok") != st["kx_token"]   # failed there: not again
                      and any(r[1] == g.get("machine") and r[2] > 0 and r[0] >= t - 10 * MIN for r in g["readings"])]
             usd = self.usd()
             earning = [(r * usd - g["price"], g) for g in cands if (r := self.pc_rate(g)) is not None]
@@ -597,7 +601,7 @@ class W:
         for g in sorted(kx, key=lambda g: (g["has_pc"], -(g.get("kx_since") or g["created"]))):
             if extra <= 0:
                 break
-            if t - (g.get("kx_since") or g["created"]) < 15 * MIN:
+            if g.get("_skip") or t - (g.get("kx_since") or g["created"]) < 15 * MIN:
                 continue
             why = ("the Kryptex test stopped after 2 boxes mined no shares there" if stopped else
                    "a Kryptex box with a PC took its place" if not g["has_pc"] else "more Kryptex boxes than config asks")
@@ -615,23 +619,36 @@ class W:
         if not 200 <= s < 300:
             event(f"WARN Kryptex {'on' if on else 'off'} for {g['name']} refused: HTTP {s} {str(j)[:150]}")
             return False
-        g.update(kx=on, ver=ver, kx_since=t if on else None, kx_from=g.get("machine") if on else None)
         moving = bool(g["has_pc"] and g.get("instance"))
+        if moving and not self.reallocate(g, f"to start on {'Kryptex' if on else 'HeroMiners'}", count=False):
+            # Still on its PC with the command it started with: put the group's command back to match, and try again
+            # in 15 minutes.
+            _, back, _ = self.box(g["name"], bool(g.get("xmr")), bool(g.get("kx")))
+            http("PATCH", f"{CB}/{g['name']}", {"container": {"command": back}}, ctype="application/merge-patch+json")
+            event(f"WARN Kryptex {'on' if on else 'off'} for {g['name']}: Salad refused to move it to a new PC; "
+                  "it stays where it was")
+            return False
+        # Readings the box still sends from the PC it left, or from before now, were mined on the old pool.
+        g.update(kx=on, ver=ver, kx_since=t if on else None, sw_t=t, sw_from=g.get("machine") if not moving else
+                 (g.get("left") or [None])[-1], sw_prev=not on)
+        self.st["kx_any_t"] = t
         event(f"KRYPTEX {'ON' if on else 'OFF'} {g['name']} ({why}): Pearl on {'Kryptex' if on else 'HeroMiners'}; "
-              + ("moving it to a new PC, where it starts that way" if moving else "it starts that way on its next PC"))
-        if moving:
-            self.reallocate(g, f"to start on {'Kryptex' if on else 'HeroMiners'}", count=False)
+              + ("moved to a new PC, where it starts that way" if moving else "it starts that way on its next PC"))
         return True
 
     def kx_failed(self, g, why):
         """A Kryptex box that sends no shares or no readings points at Kryptex, not at the PC: it goes back to
         HeroMiners on a new PC, and the PC stays off the bad list. Two of these stop the test."""
-        st = self.st
+        st, t = self.st, now()
+        if not self.kx_switch(g, False, t, f"on Kryptex: {why}"):
+            return False
         st["kx_fails"] = st.get("kx_fails", 0) + 1
-        self.kx_switch(g, False, now(), f"on Kryptex: {why}")
+        st["kx_switch_t"] = t                         # no other box for 15 minutes
+        g["kx_failed_tok"] = st.get("kx_token")       # and not this one again until kryptex_token changes
         if st["kx_fails"] == 2:
             event("WARN Kryptex test stopped: 2 Kryptex boxes mined no shares. Boxes stay on HeroMiners until "
                   "config kryptex_token changes")
+        return True
 
     def xmr_market(self):
         """Monero's price and what one accepted hash earns at the pool (the network's reward per hash, less the
@@ -808,9 +825,12 @@ class W:
                     g["readings"] = [r for r in g["readings"] if t - r[0] < 7200]
                     if ths > 0:
                         g["prl"] += ths / 60 * st["mkt"]["prl_th_hr"]
-                        # The part mined on Kryptex, which has its own credit ratio: from a PC the box got after its
-                        # switch, not a late reading from the PC it left (that one mined on HeroMiners).
-                        if g.get("kx") and mach != g.get("kx_from") and tm >= (g.get("kx_since") or 0):
+                        # The part mined on Kryptex, which has its own credit ratio. A reading from the PC a box left
+                        # at its last switch, or from before the switch, was mined on the pool it was on before.
+                        on_kx = g.get("kx")
+                        if g.get("sw_t") and (mach == g.get("sw_from") or tm < g["sw_t"]):
+                            on_kx = g.get("sw_prev")
+                        if on_kx:
                             g["prl_kx"] = g.get("prl_kx", 0.0) + ths / 60 * st["mkt"]["prl_th_hr"]
                         g["mined_min"] += 1
                     prev = g["acc"].get(mach)
@@ -834,7 +854,8 @@ class W:
 
         # Pool: shares and pool-side hashrate.
         pw = self.pool() if by_name else {}
-        kw = self.kx_pool() if any(g.get("kx") for g in by_name.values()) else {}
+        kw = (self.kx_pool() if any((g.get("kx") and not g["ended"]) or g.get("prl_kx") for g in st["groups"].values())
+              else {})
         self.trader()
         for g in by_name.values():
             if g.get("kx"):
@@ -1017,7 +1038,8 @@ class W:
         st["critic_hour"] = hour
         bar = self.cfg["drift"]
         # Hashrate. Readings are one a minute a group, so their sum over an hour / 60 is the average TH/s.
-        if t - st["created"] >= 3600:
+        # After a switch, an hour of readings mixes both pools, so the check waits an hour.
+        if t - st["created"] >= 3600 and t - st.get("kx_any_t", 0) >= 3600:
             miner = sum(r[2] for g in st["groups"].values() if not g.get("kx") for r in g["readings"] if r[0] > t - 3600) / 60
             if miner > 0 and abs(pt["ths_1h"] / miner - 1) > bar:
                 event(f"DRIFT hashrate: the pool saw {pt['ths_1h']:.0f} TH/s over the last hour; the miners reported "
@@ -1062,9 +1084,9 @@ class W:
     def leave(self, g, why):
         """Stop paying for this PC: another PC if the class has paid before, otherwise delete the group. The PC goes
         on the bad list, so another group that gets it leaves it at once (for bad_pc_hold_h)."""
-        if g.get("kx") and why.startswith(("no share", "no mining reading")):
-            self.kx_failed(g, why)
-            return
+        if (g.get("kx") and why.startswith(("no share", "no mining reading"))
+                and (g["last_share"] or 0) < (g.get("kx_since") or g["created"]) and self.kx_failed(g, why)):
+            return   # a box that has had Kryptex shares and then stops is a PC problem, left as usual below
         if g.get("machine"):
             self.st.setdefault("bad_pcs", {})[g["machine"]] = {"t": now(), "group": g["name"], "why": why}
         if self.paid(g):
