@@ -169,7 +169,14 @@ shares. Its Pearl fee is **3%** (checked on 17 October 2026 at `pool.kryptex.com
 said 2%), and it pays out from 1 PRL. At HeroMiners' recent 92% that's about 5 points more, roughly
 +$0.06/hr on $1.17/hr of earnings; the main gain is knowing the pay.
 
-The watcher runs it on `kryptex_groups` boxes (live: 1, a first try), marked **(K)** in the table:
+**Status: off (`kryptex_groups` 0), blocked.** `/etc/hosts` is read-only inside Salad containers: on
+17 October the first box that started with the Kryptex command stopped at `cannot create /etc/hosts:
+Read-only file system`, before box.sh ran. The CLI only takes a HeroMiners region (`--region`); it has an
+endpoint override inside (`settings.endpoint`, used by the desktop app) but no flag for it. So no box has
+mined on Kryptex yet. The way forward is a `--pool host:port` flag in the CLI (and a release), or a
+`NODE_OPTIONS` preload that redirects the connection without changing the miner.
+
+What's built for it, with `kryptex_groups` boxes marked **(K)** in the table:
 
 - **Which boxes:** ones that are mining. The first try put a new group on Kryptex, and two new groups in a
   row got no PC at medium in 10 minutes. So new groups start on HeroMiners, and while fewer Kryptex boxes
