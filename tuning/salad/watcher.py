@@ -58,8 +58,10 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                # xmr_cpu vCPUs and xmr_memory MB; the CLI picks the threads (xmr_threads 0) and keeps one CPU free.
                "xmr_wallet": "", "xmr_groups": [], "xmr_ver": "v0.6.0", "xmr_cpu": 8, "xmr_memory": 8192,
                "xmr_threads": 0,
-               # Kryptex's PPS+ pool for Pearl: up to kryptex_groups new groups mine there instead of HeroMiners.
-               "kryptex_groups": 0, "kryptex_host": "prl-us.kryptex.network:7048", "kryptex_fee": 0.03}
+               # Kryptex's PPS+ pool for Pearl: kryptex_groups boxes that already have a PC mine there instead of
+               # HeroMiners. Two Kryptex boxes that mine no shares stop the test until kryptex_token changes.
+               "kryptex_groups": 0, "kryptex_host": "prl-us.kryptex.network:7048", "kryptex_fee": 0.03,
+               "kryptex_token": 0}
 XMR_FEE = 0.009   # HeroMiners' Monero pool fee
 KX_API = "https://pool.kryptex.com/prl/api"
 # The miner only knows HeroMiners' regions, so a Kryptex box points all of them at a local port forward to Kryptex.
@@ -249,7 +251,7 @@ class W:
         pt = self.st.get("pool_tot")
         if not pt or pt["blocks"] < self.cfg["yield_min_blocks"]:
             return 1.0
-        prl = sum(g.get("prl", 0.0) for g in self.st["groups"].values() if not g.get("kx"))
+        prl = sum(g.get("prl", 0.0) - g.get("prl_kx", 0.0) for g in self.st["groups"].values())
         if prl < 1:
             return 1.0
         cred = pt["paid"] + pt["balance"] + pt["unconfirmed"]
@@ -259,14 +261,22 @@ class W:
         """The same for Kryptex: what it has credited (balance and payouts) over its boxes' estimate. PPS+ credits
         each share as it is accepted, so this holds from the first PRL; before that, 1 less its fee."""
         kt = self.st.get("kx_tot")
-        prl = sum(g.get("prl", 0.0) for g in self.st["groups"].values() if g.get("kx"))
+        prl = sum(g.get("prl_kx", 0.0) for g in self.st["groups"].values())
         if not kt or prl < 1:
             return 1 - self.cfg["kryptex_fee"]
         return min(1.0, max(self.cfg["yield_floor"], (kt["total"] + kt["paid"]) / prl))
 
     def ratio(self, g):
-        """The credit ratio for a group's pool."""
+        """The credit ratio for a group's pool now."""
         return self.kx_ratio() if g.get("kx") else self.credit_ratio()
+
+    def credited(self, g, hy=None, ky=None):
+        """The PRL a group's pools should have credited: its HeroMiners part and its Kryptex part, each at its
+        pool's ratio."""
+        hy = self.credit_ratio() if hy is None else hy
+        ky = self.kx_ratio() if ky is None else ky
+        k = g.get("prl_kx", 0.0)
+        return (g.get("prl", 0.0) - k) * hy + k * ky
 
     def usd(self):
         """$ per TH-hr the rules count on: the network's rate times config "yield", a number, or "auto" for the
@@ -522,11 +532,6 @@ class W:
         gs = self.cfg["xmr_groups"]
         return bool(self.cfg["xmr_wallet"]) and ("*" in gs or name in gs)
 
-    def wants_kryptex(self):
-        """Whether a new group should mine on Kryptex: while fewer than kryptex_groups live groups do."""
-        live = sum(1 for g in self.st["groups"].values() if not g["ended"] and g.get("kx"))
-        return live < self.cfg["kryptex_groups"]
-
     def box(self, name, xmr, kx=False):
         """The release, start command and CPU/RAM for a group's box. Monero needs release xmr_ver or later."""
         ver = self.cfg["ver_override"].get(name, self.cfg["box_ver"])
@@ -564,6 +569,70 @@ class W:
                                                          "it starts that way on its next PC"))
             else:
                 event(f"WARN Monero {'on' if want else 'off'} for {g['name']} refused: HTTP {s} {str(j)[:150]}")
+
+    def kx_sync(self, active, t):
+        """Keeps kryptex_groups boxes mining on Kryptex, on PCs we already have: a new group can wait a long time
+        for one. While fewer Kryptex boxes have a PC than config asks, the HeroMiners box that has held its PC
+        longest (and is mining) is switched, as for Monero: its command is updated and its box restarted. At most
+        one switch to Kryptex every 15 minutes, so a restart can finish before another box is touched. Kryptex
+        groups beyond the count go back to HeroMiners, those without a PC first, never one switched in the last
+        15 minutes."""
+        st, cfg = self.st, self.cfg
+        if st.setdefault("kx_token", cfg["kryptex_token"]) != cfg["kryptex_token"]:
+            st["kx_token"], st["kx_fails"] = cfg["kryptex_token"], 0
+        stopped = st.get("kx_fails", 0) >= 2
+        want = 0 if stopped else cfg["kryptex_groups"]
+        live = [g for g in active if not g["ended"] and not g.get("_skip")]
+        kx = [g for g in live if g.get("kx")]
+        if sum(1 for g in kx if g["has_pc"]) < want and t - st.get("kx_switch_t", 0) >= 15 * MIN:
+            cands = [g for g in live if not g.get("kx") and g["has_pc"] and g["status"] == "running" and g.get("pc_since")
+                     and any(r[1] == g.get("machine") and r[2] > 0 and r[0] >= t - 10 * MIN for r in g["readings"])]
+            if cands:
+                g = min(cands, key=lambda g: g["pc_since"])
+                st["kx_switch_t"] = t
+                if self.kx_switch(g, True, t, "it has held its PC longest"):
+                    kx.append(g)
+        extra = len(kx) - want
+        for g in sorted(kx, key=lambda g: (g["has_pc"], -(g.get("kx_since") or g["created"]))):
+            if extra <= 0:
+                break
+            if t - (g.get("kx_since") or g["created"]) < 15 * MIN:
+                continue
+            why = ("the Kryptex test stopped after 2 boxes mined no shares there" if stopped else
+                   "a Kryptex box with a PC took its place" if not g["has_pc"] else "more Kryptex boxes than config asks")
+            if self.kx_switch(g, False, t, why):
+                extra -= 1
+
+    def kx_switch(self, g, on, t, why):
+        """Point a group's box at Kryptex (on) or back at HeroMiners: update its command, and restart its box if it
+        has a PC. A restarted box gets 10 minutes to send a new reading (see rules)."""
+        ver, command, _ = self.box(g["name"], bool(g.get("xmr")), on)
+        s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": command}},
+                    ctype="application/merge-patch+json")
+        if not 200 <= s < 300:
+            event(f"WARN Kryptex {'on' if on else 'off'} for {g['name']} refused: HTTP {s} {str(j)[:150]}")
+            return False
+        g.update(kx=on, ver=ver, kx_since=t if on else None)
+        rs = None
+        if g["has_pc"] and g.get("instance"):
+            rs, _ = http("POST", f"{CB}/{g['name']}/instances/{g['instance']}/restart")
+            if rs and 200 <= rs < 300:
+                g["restart_t"] = t
+        event(f"KRYPTEX {'ON' if on else 'OFF'} {g['name']} ({why}): Pearl on {'Kryptex' if on else 'HeroMiners'}; "
+              + ("box restarted" if rs and 200 <= rs < 300 else
+                 "Salad dropped its instance; it starts that way on its next PC" if rs == 404 else
+                 f"restart refused (HTTP {rs})" if rs else "it starts that way on its next PC"))
+        return True
+
+    def kx_failed(self, g, why):
+        """A Kryptex box that sends no shares or no readings points at Kryptex, not at the PC: it goes back to
+        HeroMiners and keeps its PC (and the PC stays off the bad list). Two of these stop the test."""
+        st = self.st
+        st["kx_fails"] = st.get("kx_fails", 0) + 1
+        self.kx_switch(g, False, now(), f"on Kryptex: {why}")
+        if st["kx_fails"] == 2:
+            event("WARN Kryptex test stopped: 2 Kryptex boxes mined no shares. Boxes stay on HeroMiners until "
+                  "config kryptex_token changes")
 
     def xmr_market(self):
         """Monero's price and what one accepted hash earns at the pool (the network's reward per hash, less the
@@ -621,7 +690,7 @@ class W:
         name, i = base, 2
         while name in taken:
             name, i = f"{base}-{i}", i + 1
-        xmr, kx = self.wants_xmr(name), self.wants_kryptex()
+        xmr, kx = self.wants_xmr(name), False   # new groups start on HeroMiners; kx_sync moves boxes with a PC
         ver, command, res = self.box(name, xmr, kx)
         res.update(storage_amount=10737418240, gpu_classes=[st["classes"][cls]["id"]])
         body = {"name": name, "display_name": name, "replicas": 1, "restart_policy": "always", "autostart_policy": True,
@@ -740,6 +809,8 @@ class W:
                     g["readings"] = [r for r in g["readings"] if t - r[0] < 7200]
                     if ths > 0:
                         g["prl"] += ths / 60 * st["mkt"]["prl_th_hr"]
+                        if g.get("kx"):   # the part mined on Kryptex, which has its own credit ratio
+                            g["prl_kx"] = g.get("prl_kx", 0.0) + ths / 60 * st["mkt"]["prl_th_hr"]
                         g["mined_min"] += 1
                     prev = g["acc"].get(mach)
                     if (prev is None and acc > 0) or (prev is not None and acc > prev) or (prev is not None and acc < prev and acc > 0):
@@ -795,6 +866,7 @@ class W:
                 pass
         # Monero: switch groups on or off as config asks, then read the CPU workers at the pool.
         self.xmr_sync(list(by_name.values()), t)
+        self.kx_sync(list(by_name.values()), t)
         xg = [g for g in by_name.values() if g.get("xmr")]
         if xg:
             self.xmr_market()
@@ -900,19 +972,21 @@ class W:
         ls = g["last_share"] or 0
         sharing = ls >= g["pc_since"] and t - ls < 6 * MIN
         cur = [r for r in g["readings"] if r[1] == g["machine"] and r[2] > 0 and r[0] >= g["pc_since"] - 5 * MIN]
-        if not cur and seen_to - g["pc_since"] >= 10 * MIN and not sharing:
+        # A box restarted on its PC (a pool switch) sends nothing while it sets up again: give it 10 minutes.
+        rt = g.get("restart_t") or 0
+        if not cur and seen_to - max(g["pc_since"], rt) >= 10 * MIN and not sharing:
             self.leave(g, f"no mining reading {on / 60:.0f} min after getting PC {g['machine'][:8]}")
             return
         # A miner that stops (the card is taken back, the driver fails) stops sending readings: leave the PC
         # once the newest is 6 min old.
-        if cur and seen_to - cur[-1][0] >= 6 * MIN and not sharing:
+        if cur and seen_to - max(cur[-1][0], rt + 4 * MIN) >= 6 * MIN and not sharing:
             self.leave(g, f"no mining reading for {(t - cur[-1][0]) / 60:.0f} min on PC {g['machine'][:8]}")
             return
         # Rule 4: no share after 20 min on a PC.
         if on >= 20 * MIN:
             gap = SHARE_UNITS / (g["rate"] / UNIT_TH)
             limit = max(10 * MIN, 8 * gap)
-            ref = max(g["pc_since"], g["last_share"] or 0)
+            ref = max(g["pc_since"], g["last_share"] or 0, rt)
             if t - ref >= limit:
                 self.leave(g, f"no share for {(t - ref) / 60:.0f} min on PC {g['machine'][:8]}")
                 return
@@ -950,7 +1024,7 @@ class W:
                 event(f"DRIFT hashrate: the pool saw {pt['ths_1h']:.0f} TH/s over the last hour; the miners reported "
                       f"{miner:.0f} ({pct(pt['ths_1h'] - miner, miner)})")
         # Work: the pool's count of our hashes, at today's PRL per TH-hr (the ledger used the rate at each minute).
-        prl = sum(g["prl"] for g in st["groups"].values() if not g.get("kx"))   # HeroMiners' boxes only
+        prl = sum(g["prl"] - g.get("prl_kx", 0.0) for g in st["groups"].values())   # what was mined on HeroMiners
         work = pt["hashes"] * UNIT_TH / 3600 * st["mkt"]["prl_th_hr"]
         if prl >= 1 and abs(work / prl - 1) > bar:
             event(f"DRIFT ledger: the pool's count of our work is worth {work:.3f} PRL; the ledger says {prl:.3f} "
@@ -989,6 +1063,9 @@ class W:
     def leave(self, g, why):
         """Stop paying for this PC: another PC if the class has paid before, otherwise delete the group. The PC goes
         on the bad list, so another group that gets it leaves it at once (for bad_pc_hold_h)."""
+        if g.get("kx") and why.startswith(("no share", "no mining reading")):
+            self.kx_failed(g, why)
+            return
         if g.get("machine"):
             self.st.setdefault("bad_pcs", {})[g["machine"]] = {"t": now(), "group": g["name"], "why": why}
         if self.paid(g):
@@ -1118,7 +1195,7 @@ class W:
         groups = list(st["groups"].values())
         spend = sum(g["spend"] for g in groups)
         est = sum(g["prl"] for g in groups)
-        prl = sum(g["prl"] * yg(g) for g in groups)
+        prl = sum(self.credited(g, hy, ky) for g in groups)
         y = prl / est if est > 0 else hy
         cost_prl = spend / prl if prl > 0 else 0.0
         coins = sum(g.get("xmr_coins", 0.0) for g in groups)
@@ -1149,7 +1226,7 @@ class W:
                 mining += 1
             all_ths += ths; all_cost += cost; all_earn += earn; all_khs += khs
             run_cost += 0.0 if start else cost
-            prof = g["prl"] * yg(g) * per_prl + g.get("xmr_coins", 0.0) * xprice - g["spend"]
+            prof = self.credited(g, hy, ky) * per_prl + g.get("xmr_coins", 0.0) * xprice - g["spend"]
             # One cell for the box: state, group name less "biz-rtx" and priority, joined by no-break spaces.
             pri = "med" if g["pri"] == "medium" else g["pri"]
             box = NB.join([state, re.sub(r"^biz-(rtx)?", "", g["name"]), pri] + (["(K)"] if g.get("kx") else []))
@@ -1168,7 +1245,7 @@ class W:
         ended = [g for g in groups if g["ended"]]
         if ended:
             # Groups that have ended, as one row with their count; the events say which were released or failed.
-            eprof = (sum(g["prl"] * yg(g) for g in ended) * per_prl + sum(g.get("xmr_coins", 0.0) for g in ended) * xprice
+            eprof = (sum(self.credited(g, hy, ky) for g in ended) * per_prl + sum(g.get("xmr_coins", 0.0) for g in ended) * xprice
                      - sum(g["spend"] for g in ended))
             lines.append(f"| Others{NB}×{len(ended)} |"
                          + " — |" * (4 if xon else 3) + f" {eprof:+.2f}{EST} |")
@@ -1178,7 +1255,7 @@ class W:
                      + f" {bold(f'{all_cost:.2f}')} | {bold(with_margin(hr_all, all_earn))} | {bold(f'{total:+.2f}{EST}')} |")
         # What each pool reports for the account: its own hashrate (1-hour average) and the coins it holds and paid.
         pt, xt = st.get("pool_tot"), st.get("xmr_tot") if xon else None
-        kt = st.get("kx_tot") if any(g.get("kx") for g in groups) else None
+        kt = st.get("kx_tot") if any(g.get("kx") or g.get("prl_kx") for g in groups) else None
         pool = []
         if pt:
             pool.append(f"| ⛏️ PRL{NB + 'HeroMiners' if kt else ''} | {pt.get('ths_1h', 0):.0f} TH/s | {pt['balance']:.3f} "
@@ -1204,20 +1281,20 @@ class W:
                "comes from an API (Salad, the pool, prlscan, CoinGecko) or the trader's log. TH/s is Pearl on the GPU"
                + (", kH/s Monero on the CPU" if xon else "") + "; $/hr is Salad's bill. Profit $ counts sold PRL at what "
                "it sold for and the rest at today's price" + (", plus Monero" if xon else "") + "."
-               + (" (K) mines Pearl on Kryptex (PPS+), the rest on HeroMiners." if any(g.get("kx") for g in groups) else ""))
+               + (" (K) mines Pearl on Kryptex (PPS+), the rest on HeroMiners." if kt else ""))
         trail = [f"Spent ${spend:.2f}{EST} on Salad"]
         if prl > 0:
             trail[0] += (f" for {prl:.3f}{EST} PRL" + (f" ({est:.3f}{EST} at the network's rate × {y:.0%}{EST} credited)"
                                                         if y < 1 else "") + f", ${cost_prl:.3f}{EST} each")
         if pt:
             cred = pt["paid"] + pt["balance"] + pt["unconfirmed"]
-            hest = sum(g["prl"] for g in groups if not g.get("kx"))
+            hest = sum(g["prl"] - g.get("prl_kx", 0.0) for g in groups)
             trail.append(f"the PRL pool{' HeroMiners' if kt else ''} has credited {cred / hest * 100 if hest > 0 else 0:.0f}%{EST} of our "
                          f"estimate over {pt['blocks']} blocks, and pays out from 1 PRL"
                          + (f" (from {self.cfg['yield_min_blocks']} blocks on the table counts on that share)"
                             if hy == 1 and pt["blocks"] < self.cfg["yield_min_blocks"] else ""))
         if kt:
-            kest = sum(g["prl"] for g in groups if g.get("kx"))
+            kest = sum(g.get("prl_kx", 0.0) for g in groups)
             trail.append(f"Kryptex has credited {kt['total'] + kt['paid']:.3f} PRL for {kest:.3f}{EST} at the network's "
                          f"rate ({ky:.0%}{EST}; PPS+ pays each share less its {self.cfg['kryptex_fee']:.0%} fee), "
                          "and pays out from 1 PRL")
