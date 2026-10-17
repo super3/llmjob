@@ -59,14 +59,12 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                "xmr_wallet": "", "xmr_groups": [], "xmr_ver": "v0.6.0", "xmr_cpu": 8, "xmr_memory": 8192,
                "xmr_threads": 0,
                # Kryptex's PPS+ pool for Pearl: kryptex_groups boxes that already have a PC mine there instead of
-               # HeroMiners. Two Kryptex boxes that mine no shares stop the test until kryptex_token changes.
-               "kryptex_groups": 0, "kryptex_host": "prl-us.kryptex.network:7048", "kryptex_pay": 0.94,
-               "kryptex_token": 0}
+               # HeroMiners, with release kryptex_ver or later (the first with --pool). Two Kryptex boxes that mine
+               # no shares stop the test until kryptex_token changes.
+               "kryptex_groups": 0, "kryptex_host": "prl-us.kryptex.network:7048", "kryptex_ver": "v0.6.1",
+               "kryptex_pay": 0.94, "kryptex_token": 0}
 XMR_FEE = 0.009   # HeroMiners' Monero pool fee
 KX_API = "https://pool.kryptex.com/prl/api"
-# The miner only knows HeroMiners' regions, so a Kryptex box points all of them at a local port forward to Kryptex.
-# Both pools run Pearl's reference stratum (Kryptex lists "pearl-source" among its miners) at the same difficulty.
-HM_REGIONS = ["us", "us2", "ca", "br", "de", "fi", "fr", "tr", "sg", "hk", "kr", "au"]
 
 
 def now(): return time.time()
@@ -151,22 +149,19 @@ def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None):
     sed = f"sed -e 's/^WORKER=__WORKER__$/WORKER={worker}/' -e 's/^W=prl1.*$/W={wallet}/'"
     if ver != "v0.5.13":
         sed += f" -e 's/^VER=v0.5.13;/VER={ver};/'"
-    if xmr:
-        # Monero: box.sh also downloads the release's CPU worker, puts it beside each GPU's CLI, and passes the
-        # address in the default flags (a control file for the box would override them; the biz- boxes have none).
-        flags = f"--xmr-address {xmr}" + (f" --cpu-threads {threads}" if threads else "")
-        sed += (" -e 's/ pearl_core_cu13.node; do/ pearl_core_cu13.node llmjob-xmr-worker; do/'"
-                " -e 's|cp $D/rel/cli $R/|cp $D/rel/cli $D/rel/llmjob-xmr-worker $R/ \\&\\& chmod +x $R/llmjob-xmr-worker|'"
-                f" -e 's|\"flags\":\"\"}}|\"flags\":\"{flags}\"}}|'")
-    pkgs, fwd = "curl ca-certificates", ""
+    flags = []
     if kryptex:
-        # Kryptex: every HeroMiners region name resolves here, and port 1200 here forwards to Kryptex's stratum.
-        hosts = " ".join(f"{r}.pearl.herominers.com" for r in HM_REGIONS)
-        pkgs += " socat"
-        # Salad's firewall refuses a request with the literal path /etc/hosts in it (HTTP 403), so it's built.
-        fwd = (f"E=/etc && echo '127.0.0.1 {hosts}' >> $E/hosts && "
-               f"(socat TCP-LISTEN:1200,fork,reuseaddr TCP:{kryptex} >/dev/null 2>&1 &) && ")
-    return (f"apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq {pkgs} >/dev/null 2>&1 && {fwd}"
+        # Kryptex: Pearl on its stratum (release v0.6.1 on). The miner logs in there as "wallet/worker" by itself.
+        flags.append(f"--pool {kryptex}")
+    if xmr:
+        # Monero: box.sh also downloads the release's CPU worker and puts it beside each GPU's CLI.
+        flags.append(f"--xmr-address {xmr}" + (f" --cpu-threads {threads}" if threads else ""))
+        sed += (" -e 's/ pearl_core_cu13.node; do/ pearl_core_cu13.node llmjob-xmr-worker; do/'"
+                " -e 's|cp $D/rel/cli $R/|cp $D/rel/cli $D/rel/llmjob-xmr-worker $R/ \\&\\& chmod +x $R/llmjob-xmr-worker|'")
+    if flags:
+        # Both go in box.sh's default flags (a control file for the box would override them; the biz- boxes have none).
+        sed += f" -e 's|\"flags\":\"\"}}|\"flags\":\"{' '.join(flags)}\"}}|'"
+    return (f"apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 && "
             f"curl -fsSL {BOX} | {sed} > /root/box.sh; bash /root/box.sh 2>&1 | tee -a /root/box.log")
 
 
@@ -531,9 +526,12 @@ class W:
         return bool(self.cfg["xmr_wallet"]) and ("*" in gs or name in gs)
 
     def box(self, name, xmr, kx=False):
-        """The release, start command and CPU/RAM for a group's box. Monero needs release xmr_ver or later."""
+        """The release, start command and CPU/RAM for a group's box. Monero needs release xmr_ver or later, and
+        Kryptex kryptex_ver or later."""
         ver = self.cfg["ver_override"].get(name, self.cfg["box_ver"])
         host = self.cfg["kryptex_host"] if kx else None
+        if kx and vnum(ver) < vnum(self.cfg["kryptex_ver"]):
+            ver = self.cfg["kryptex_ver"]
         if not xmr:
             return ver, ["/bin/sh", "-c", cmd_for(name, self.cfg["wallet"], ver, kryptex=host)], {"cpu": 2, "memory": 4096}
         if vnum(ver) < vnum(self.cfg["xmr_ver"]):

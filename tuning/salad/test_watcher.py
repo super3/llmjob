@@ -1417,21 +1417,41 @@ class TestKryptex(Base):
     def commands(self):
         return [c[2]["container"]["command"][2] for c in self.http.made("PATCH", "/containers/")]
 
-    def test_the_command_points_every_herominers_region_at_a_forward_to_kryptex(self):
-        cmd = w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.0", kryptex="prl-us.kryptex.network:7048")
-        self.assertIn("install -y -qq curl ca-certificates socat", cmd)
-        self.assertIn("socat TCP-LISTEN:1200,fork,reuseaddr TCP:prl-us.kryptex.network:7048", cmd)
-        for r in w.HM_REGIONS:
-            self.assertIn(f" {r}.pearl.herominers.com", cmd)
-        self.assertLess(cmd.index("$E/hosts"), cmd.index("bash /root/box.sh"))
-        self.assertNotIn("; curl", cmd)  # Salad refuses "; curl"
-        self.assertNotIn("/etc/hosts", cmd)  # and its firewall refuses this path (HTTP 403)
-        self.assertNotIn("socat", w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.0"))
+    def test_the_command_points_the_miner_at_kryptex_with_pool(self):
+        cmd = w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.1", kryptex="prl-us.kryptex.network:7048")
+        sed = re.search(r"(sed .*?) > /root/box\.sh", cmd).group(1)
+        import subprocess
+        base = "BASE='{\"core\":\"release\",\"env\":{},\"flags\":\"\"}'\n"
+        out = subprocess.run(["sh", "-c", sed], input=base, capture_output=True, text=True).stdout
+        self.assertEqual(out, "BASE='{\"core\":\"release\",\"env\":{},\"flags\":\"--pool prl-us.kryptex.network:7048\"}'\n")
+        # With Monero too, both flags go in, and the CPU worker is downloaded as before.
+        both = w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.1", XMR, 0, "prl-us.kryptex.network:7048")
+        sed = re.search(r"(sed .*?) > /root/box\.sh", both).group(1)
+        out = subprocess.run(["sh", "-c", sed], input=base, capture_output=True, text=True).stdout
+        self.assertIn(f"\"flags\":\"--pool prl-us.kryptex.network:7048 --xmr-address {XMR}\"", out)
+        self.assertIn("llmjob-xmr-worker", both)
+        # No /etc/hosts redirect or local forward any more (the file is read-only on Salad), and no "; curl".
+        for c in (cmd, both):
+            self.assertNotIn("socat", c)
+            self.assertNotIn("hosts", c)
+            self.assertNotIn("; curl", c)
+        self.assertNotIn("--pool", w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.0"))
+        self.assertNotIn("--pool", w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.0", XMR))
+
+    def test_a_kryptex_box_gets_at_least_the_release_with_pool(self):
+        self.x.cfg.update(box_ver="v0.5.13", xmr_ver="v0.6.0")
+        self.assertEqual(self.x.box("biz-rtx4080", False, True)[0], "v0.6.1")
+        self.assertEqual(self.x.box("biz-rtx4080", True, True)[0], "v0.6.1")
+        self.assertEqual(self.x.box("biz-rtx4080", True, False)[0], "v0.6.0")
+        self.assertEqual(self.x.box("biz-rtx4080", False, False)[0], "v0.5.13")
+        self.assertIn("VER=v0.6.1;", self.x.box("biz-rtx4080", False, True)[1][2])
+        self.x.cfg["box_ver"] = "v0.6.2"
+        self.assertEqual(self.x.box("biz-rtx4080", True, True)[0], "v0.6.2")   # never lowered
 
     def test_new_groups_start_on_herominers(self):
         g = self.group()
         self.assertFalse(g["kx"])
-        self.assertNotIn("socat", self.http.made("POST", "/containers$")[0][2]["container"]["command"][2])
+        self.assertNotIn("--pool", self.http.made("POST", "/containers$")[0][2]["container"]["command"][2])
 
     def test_the_box_earning_least_is_switched_and_moved_to_a_new_pc(self):
         self.x.cfg["yield"] = 1.0
@@ -1442,7 +1462,7 @@ class TestKryptex(Base):
         patch = self.http.made("PATCH", "/containers/biz-rtx4080-2$")
         self.assertEqual(len(patch), 1)
         self.assertEqual(list(patch[0][2]["container"]), ["command"])  # resources stay as they are
-        self.assertIn("socat", patch[0][2]["container"]["command"][2])
+        self.assertIn("--pool", patch[0][2]["container"]["command"][2])
         # Salad's restart answers 202 and leaves the old command running, so the box moves to a new PC instead.
         self.assertFalse(self.http.made("POST", "/restart$"))
         self.assertTrue(self.http.made("POST", "/containers/biz-rtx4080-2/instances/inst-m2/reallocate"))
@@ -1491,7 +1511,7 @@ class TestKryptex(Base):
         self.x.kx_sync([waiting, box], self.clock[0])
         self.assertTrue(box["kx"])
         self.assertFalse(waiting["kx"])
-        self.assertNotIn("socat", self.commands()[-1])
+        self.assertNotIn("--pool", self.commands()[-1])
 
     def test_a_kryptex_group_switched_lately_is_left_alone(self):
         waiting = self.group()
@@ -1518,7 +1538,7 @@ class TestKryptex(Base):
         self.assertFalse(g["ended"])
         self.assertNotIn("m1", self.x.st.get("bad_pcs", {}))
         self.assertEqual(g["reallocs"], 0)   # not counted toward its 3
-        self.assertNotIn("socat", self.commands()[-1])
+        self.assertNotIn("--pool", self.commands()[-1])
         self.assertIn("KRYPTEX OFF biz-rtx4080 (on Kryptex: no share for 25 min on PC m1)", self.events())
         self.assertEqual(self.x.st["kx_fails"], 1)
         # A HeroMiners box leaves its PC as before.
@@ -1551,8 +1571,8 @@ class TestKryptex(Base):
         self.assertEqual((g["machine"], g["has_pc"]), ("m1", True))
         cmds = self.commands()
         self.assertEqual(len(cmds), 2)                  # the Kryptex command, then the HeroMiners one put back
-        self.assertIn("socat", cmds[0])
-        self.assertNotIn("socat", cmds[1])
+        self.assertIn("--pool", cmds[0])
+        self.assertNotIn("--pool", cmds[1])
         self.assertIn("WARN Kryptex on for biz-rtx4080: Salad refused to move it to a new PC", self.events())
         self.assertNotIn("KRYPTEX ON", self.events())
 
@@ -1641,7 +1661,7 @@ class TestKryptex(Base):
     def test_if_salad_refuses_the_move_and_the_put_back_the_ledger_follows_salad(self):
         g = self.mining("m1", 300)
         self.http.on("POST", "/reallocate$", (500, {}))
-        self.http.on("PATCH", "/containers/", lambda b: (200, {}) if "socat" in b["container"]["command"][2] else (503, {}))
+        self.http.on("PATCH", "/containers/", lambda b: (200, {}) if "--pool" in b["container"]["command"][2] else (503, {}))
         self.x.kx_sync([g], self.clock[0])
         self.assertTrue(g["kx"])                         # Salad has the Kryptex command: the next PC starts on it
         self.assertEqual((g["machine"], g["sw_from"], g["sw_prev"]), ("m1", "m1", False))   # this PC stays HeroMiners

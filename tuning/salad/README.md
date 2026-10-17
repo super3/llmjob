@@ -55,7 +55,7 @@ Config keys:
 | `safetrade` | SafeTrade sales entered by hand (`sold`, `received`, `fees`, `usdt`, `prl`), used until the trader's logs can be read. |
 | `xmr_wallet`, `xmr_groups` | Monero on the box's CPU (see [Monero](#monero-on-the-cpu)): the address, and the groups that mine it (`["*"]` for every group). Unset: no Monero, and the table is as before. |
 | `xmr_ver`, `xmr_cpu`, `xmr_memory`, `xmr_threads` | A Monero box runs release `v0.6.0` or later on 8 vCPUs and 8192 MB. `xmr_threads` 0 lets the CLI choose (it keeps one CPU free for Pearl). |
-| `kryptex_groups`, `kryptex_host`, `kryptex_pay`, `kryptex_token` | How many boxes with a PC mine Pearl on Kryptex instead of HeroMiners (see [Kryptex](#kryptex-pps)), its stratum (`prl-us.kryptex.network:7048`) and the share of each share's value it pays (0.94, measured; used until Kryptex has credited 1 PRL). Change `kryptex_token` to restart the test after it stopped. 0: none, and the table is as before. |
+| `kryptex_groups`, `kryptex_host`, `kryptex_ver`, `kryptex_pay`, `kryptex_token` | How many boxes with a PC mine Pearl on Kryptex instead of HeroMiners (see [Kryptex](#kryptex-pps)), its stratum (`prl-us.kryptex.network:7048`), the release a Kryptex box needs at least (v0.6.1, the first with `--pool`) and the share of each share's value it pays (0.94, measured; used until Kryptex has credited 1 PRL). Change `kryptex_token` to restart the test after it stopped. 0: none, and the table is as before. |
 
 Tests: `python3 -m unittest discover -s tuning/salad`. They fake Salad, the pool and the clock.
 
@@ -175,13 +175,13 @@ lists them. They have `avg_hashrate_24h`, `avg_hashrate_3h` and `avg_hashrate_30
 watcher reads the 30-minute one. Their `valid` count includes the last finished 10-minute bucket twice, so
 it isn't used.
 
-**Status: off (`kryptex_groups` 0), blocked.** `/etc/hosts` is read-only inside Salad containers: on
-17 October the first box that started with the Kryptex command stopped at `cannot create /etc/hosts:
-Read-only file system`, before box.sh ran. The CLI only takes a HeroMiners region (`--region`); it has an
-endpoint override inside (`settings.endpoint`, used by the desktop app) but no flag for it. So no box has
-mined on Kryptex from Salad yet. The CLI gets `--pool host:port` in release v0.6.1 (PR #265, not yet
-published); with it the miner logs in to `*.kryptex.network` as `wallet/worker` by itself. Once it's out,
-the watcher's command switches to that flag.
+**Status: on, one box (`kryptex_groups` 1), from 17 October with release v0.6.1.** The first try
+redirected HeroMiners' names to Kryptex through `/etc/hosts`, which is read-only inside Salad containers:
+on 17 October that box stopped at `cannot create /etc/hosts: Read-only file system`, before box.sh ran.
+Release v0.6.1 (PR #265) added `--pool host:port` to the CLI, tested on an RTX 4090 for 26 minutes
+against Kryptex (316 TH/s, 51 accepted, 0 rejected, all 51 credited). The miner logs in to
+`*.kryptex.network` as `wallet/worker` by itself, and from v0.6.1 counts a share only when the pool
+accepts it.
 
 Instructions for finishing it on a machine with a GPU are in [KRYPTEX.md](KRYPTEX.md).
 
@@ -201,20 +201,18 @@ What's built for it, with `kryptex_groups` boxes marked **(K)** in the table:
   no readings goes back to HeroMiners instead, on a new PC, and the PC stays off the bad list (the pool
   is the likelier cause). Two of these stop the test: every box stays on HeroMiners until config
   `kryptex_token` changes.
-- **How:** the miner only knows HeroMiners' 12 regions, and both pools run Pearl's reference stratum at
-  the same difficulty (Kryptex lists `pearl-source` among its miners). So a Kryptex box installs
-  `socat`, points every HeroMiners region name at 127.0.0.1 in `/etc/hosts`, and forwards local port
-  1200 to Kryptex's plain stratum port (7048). Nothing in the miner changes.
-  The command builds the hosts path from a variable: Salad's firewall refuses any request with the literal
-  path `/etc/hosts` in it (HTTP 403, seen on 17 October).
+- **How:** a Kryptex box runs release `kryptex_ver` (v0.6.1) or later, and its command puts
+  `--pool prl-us.kryptex.network:7048` into box.sh's default flags, the same way Monero adds
+  `--xmr-address`. Monero stays on HeroMiners. Going back to HeroMiners drops the flag; the box keeps the
+  release it would have had anyway (v0.6.0 with Monero).
 - **Reading it:** Kryptex's API (`pool.kryptex.com/openapi.yaml`): each worker's last share and
-  hashrate every round, and the wallet's balance, payouts and the pool's figures every 5 minutes. Its
-  hashrate unit is turned into TH/s from the network's rate. The miner's own share count still feeds the
+  30-minute hashrate (`avg_hashrate_30m`, H/s) every round, and the wallet's balance and payouts every 5
+  minutes. The miner's own share count still feeds the
   rules, as for every box.
 - **Credit:** each pool has its own credit ratio. PRL mined while a box is on Kryptex is counted apart
   (`prl_kx`), so a switched box's earlier PRL stays with HeroMiners. HeroMiners' ratio is what it
   credited over the PRL mined there; Kryptex's is what it has credited (balance and payouts) over the PRL
-  mined there, or 1 less the fee before 1 PRL. Each box's profit counts each part at its pool's ratio.
+  mined there, or `kryptex_pay` (94%) before 1 PRL. Each box's profit counts each part at its pool's ratio.
   The rules still judge every PC at `yield`.
 - **In the report:** a Kryptex row in the pool table (its hashrate is the sum of our Kryptex workers' now,
   not an hour's average), and a line saying what it has credited against its boxes' estimate.
