@@ -455,21 +455,18 @@ class PearlMiner extends EventEmitter {
         this.emit('log', { level: 'info', line: 'pool difficulty → ' + m.difficulty });
         break;
       case 'submit-accepted': {
-        const p = this.pending.get(m.id);
-        this.pending.delete(m.id);
+        const p = this._answered(m);
+        if (!p) break;
         // `index` is the card that found it, so a multi-card rig credits the
-        // right one. Card 0 when the submit is unknown to us, which is the same
-        // bucket a single-card rig has always used.
-        this.emit('share', { jobId: p ? p.jobId : null, accepted: true, index: p ? p.index : 0 });
+        // right one.
+        this.emit('share', { jobId: p.jobId, accepted: true, index: p.index });
         this.emit('log', { level: 'info', line: 'share accepted' });
         break;
       }
       case 'submit-rejected': {
-        const p = this.pending.get(m.id);
-        this.pending.delete(m.id);
-        this.emit('rejected', {
-          jobId: p ? p.jobId : null, reason: errText(m.error), index: p ? p.index : 0,
-        });
+        const p = this._answered(m);
+        if (!p) break;
+        this.emit('rejected', { jobId: p.jobId, reason: errText(m.error), index: p.index });
         this.emit('log', { level: 'error', line: 'share rejected: ' + errText(m.error) });
         break;
       }
@@ -480,6 +477,26 @@ class PearlMiner extends EventEmitter {
       // No default: blank lines are filtered before dispatch, so 'empty' never
       // reaches this switch and a default would be a branch that cannot run.
     }
+  }
+
+  // The submit a verdict answers, taken off the waiting list. A verdict for an id
+  // with nothing waiting (one this miner never sent, or a second answer to one)
+  // counts for nothing: counting it would put our figures out of step with the
+  // pool's. Its answer is still logged, at error level for an error: an error
+  // with no id at all is how a pool says why it is dropping the worker.
+  _answered(m) {
+    const p = this.pending.get(m.id);
+    if (!p) {
+      const failed = m.kind === 'submit-rejected';
+      this.emit('log', {
+        level: failed ? 'error' : 'warn',
+        line: 'pool answered ' + (m.id == null ? 'with no share id' : 'share id ' + m.id + ', which this miner is not waiting on')
+          + ': ' + (failed ? errText(m.error) : 'accepted') + '; not counted',
+      });
+      return null;
+    }
+    this.pending.delete(m.id);
+    return p;
   }
 
   _onJob(job) {

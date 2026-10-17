@@ -388,10 +388,34 @@ describe('PearlMiner — shares', () => {
       .toEqual({ jobId: '00000000_2097152', reason: '[21] Job not found', index: 0 });
   });
 
-  test('a verdict for an unknown id still resolves without throwing', () => {
-    const { sock, events } = withJob();
+  // Our count has to be the pool's count. A verdict for a submit we never sent,
+  // or a second verdict for one, is logged and counted nowhere.
+  test('a verdict for an id with no submit waiting is not counted', () => {
+    const { core, sock, events } = withJob();
     sock.emit('data', '{"id":9999,"result":true,"error":null}\n');
-    expect(events.share[0]).toEqual({ jobId: null, accepted: true, index: 0 });
+    sock.emit('data', '{"id":9998,"result":null,"error":[21,"Job not found"]}\n');
+    expect(events.share).toHaveLength(0);
+    expect(events.rejected).toHaveLength(0);
+    expect(events.log.map((l) => l.line)).toEqual(expect.arrayContaining([
+      'pool answered share id 9999, which this miner is not waiting on: accepted; not counted',
+      'pool answered share id 9998, which this miner is not waiting on: [21] Job not found; not counted',
+    ]));
+
+    core.emit('hit', goodHit());
+    const id = JSON.parse(sock.written[0]).id;
+    sock.emit('data', JSON.stringify({ id, result: true, error: null }) + '\n');
+    sock.emit('data', JSON.stringify({ id, result: true, error: null }) + '\n');
+    expect(events.share).toHaveLength(1);
+  });
+
+  test('a submit answered with no error but result false counts as rejected', () => {
+    const { core, sock, events } = withJob();
+    core.emit('hit', goodHit());
+    const id = JSON.parse(sock.written[0]).id;
+    sock.emit('data', JSON.stringify({ id, result: false, error: null }) + '\n');
+    expect(events.share).toHaveLength(0);
+    expect(events.rejected[0])
+      .toEqual({ jobId: '00000000_2097152', reason: 'no reason given (result false)', index: 0 });
   });
 
   // The core may still be finishing a job the pool has replaced. Submitting that
@@ -472,18 +496,32 @@ describe('PearlMiner — defaults and edges', () => {
     expect(b.events.log.some((l) => /ignoring an unusable job$/.test(l.line))).toBe(true);
   });
 
-  test('a rejection for an unknown id reports a null job rather than throwing', () => {
+  test('a rejection for an unknown id is not counted, and does not throw', () => {
     const b = boot();
     b.m.start(settings);
     b.sock.emit('connect');
     b.sock.emit('data', '{"id":4242,"result":null,"error":[21,"Job not found"]}\n');
-    expect(b.events.rejected[0]).toEqual({ jobId: null, reason: '[21] Job not found', index: 0 });
+    expect(b.events.rejected).toHaveLength(0);
+  });
+
+  // A pool error with no id answers no share, but it is how a pool says why it
+  // is dropping the worker, so the reason has to reach the log.
+  test('a pool error with no share id is logged with its reason, and not counted', () => {
+    const b = boot();
+    b.m.start(settings);
+    b.sock.emit('connect');
+    b.sock.emit('data', '{"id":null,"result":null,"error":[24,"Unauthorized worker"]}\n');
+    expect(b.events.rejected).toHaveLength(0);
+    expect(b.events.log).toContainEqual({
+      level: 'error', line: 'pool answered with no share id: [24] Unauthorized worker; not counted',
+    });
   });
 
   test('a verdict with no error detail still renders a reason', () => {
     const b = boot();
     b.m.start(settings);
     b.sock.emit('connect');
+    b.m.pending.set(4243, { jobId: 'j', index: 0 });
     b.sock.emit('data', '{"id":4243,"result":null,"error":[]}\n');
     expect(b.events.rejected[0].reason).toBe('');
   });
@@ -584,6 +622,7 @@ describe('PearlMiner — lifecycle', () => {
     const b = boot();
     b.m.start(settings);
     b.sock.emit('connect');
+    b.m.pending.set(5, { jobId: 'j', index: 0 });
     b.sock.emit('data', '{"id":5,"result":null,"error":[21,""]}' + String.fromCharCode(10));
     expect(b.events.rejected[0].reason).toBe('[21] ');
   });

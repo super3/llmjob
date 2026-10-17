@@ -107,6 +107,18 @@ describe('parseMessage — results', () => {
     expect(parseMessage('{"id":1,"error":null}')).toEqual({ kind: 'auth-ok', id: 1, error: null });
   });
 
+  // No error is not the same as accepted. A share counts only on result true.
+  test('a submit answered with no error but no true result is rejected, saying what came back', () => {
+    expect(parseMessage('{"id":7,"result":false,"error":null}')).toEqual({
+      kind: 'submit-rejected', id: 7, error: { code: null, message: 'no reason given (result false)' },
+    });
+    expect(parseMessage('{"id":7,"result":null,"error":null}').error.message).toBe('no reason given (result null)');
+    expect(parseMessage('{"id":7,"error":null}').error.message).toBe('no reason given (no result)');
+    expect(parseMessage('{"id":7,"result":"OK"}').error.message).toBe('no reason given (result "OK")');
+    expect(parseMessage('{"id":7,"result":{"status":"' + 'x'.repeat(200) + '"}}').error.message)
+      .toHaveLength('no reason given (result '.length + 80 + 1);
+  });
+
   // A method we do not handle must not be mistaken for a result, even though it
   // carries neither result nor error.
   test('an unhandled method is unknown, not a verdict', () => {
@@ -117,6 +129,9 @@ describe('parseMessage — results', () => {
     expect(parseMessage('{"id":7,"result":true,"error":null}')).toEqual({
       kind: 'submit-accepted', id: 7, error: null,
     });
+    // Both pools, verbatim (2026-10-17): HeroMiners, then Kryptex.
+    expect(parseMessage('{"id":100,"error":null,"result":true}').kind).toBe('submit-accepted');
+    expect(parseMessage('{"id":100,"result":true,"error":null}').kind).toBe('submit-accepted');
     // The reference notes the submit-error array form [code,"text"].
     expect(parseMessage('{"id":8,"result":null,"error":[21,"Job not found"]}')).toEqual({
       kind: 'submit-rejected', id: 8, error: { code: 21, message: 'Job not found' },
