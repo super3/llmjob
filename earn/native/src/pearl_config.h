@@ -1294,11 +1294,13 @@ typedef struct {
 // writes B' fragment-ordered. The fold would read past its shared and skip half
 // the columns. With PEARL_TURING_WIDE=0 the host launches the 128x128 tile, and
 // B-direct is off.
+// Turing's block is sm_75's only: the passes below it (Pascal, PEARL_DP4A_ARCH) have no
+// int8 mma and build their own fold, pearl_tile_fold_dp4a.
 #if defined(PEARL_FOLD_THREADS) && !PEARL_FOLD_WIDE_WARPS && defined(__CUDA_ARCH__) \
-    && __CUDA_ARCH__ < 800 && PEARL_TURING_WIDE
+    && __CUDA_ARCH__ >= 750 && __CUDA_ARCH__ < 800 && PEARL_TURING_WIDE
 #error "a forced PEARL_FOLD_THREADS replaces Turing's fold: build sm_75 with PEARL_TURING_WIDE=0"
 #endif
-#if !defined(PEARL_FOLD_THREADS) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
+#if !defined(PEARL_FOLD_THREADS) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 750 && __CUDA_ARCH__ < 800
 #define PEARL_FOLD_THREADS PEARL_FOLD_TURING_THREADS
 #if PEARL_TURING_WIDE
 #define PEARL_WARP_ROWS PEARL_FOLD_WIDE_WARP_ROWS
@@ -1312,6 +1314,60 @@ typedef struct {
 // (PEARL_FOLD_WIDE_WARPS), which the host does not treat as Turing's either.
 #ifndef PEARL_TURING_BD_BODY
 #define PEARL_TURING_BD_BODY 0
+#endif
+
+// Pascal (sm_61: GTX 10 series, Tesla P4 and P40). No tensor cores, so none of the folds
+// above can run. What Pascal has is __dp4a: four int8 products summed into an int32
+// accumulator, one instruction a lane a clock. pearl_tile_fold_dp4a is a plain int8 GEMM
+// on it, with the same tile pattern, readout, hash and hit list as the tensor folds.
+//
+// Why the result is bit-identical. The protocol's arithmetic is all integer: int8 A' and
+// B', int32 accumulators that run over the whole of k, and the XOR of each region's 256
+// accumulators read out after every `rank` (128) elements of k. No product is larger than
+// 128 * 128 = 2^14, so a sum of 2048 of them is at most 2^25 and never wraps; and int32
+// addition is exact and order-free anyway. So an accumulator holds the same number after chunk c
+// whether mma.sync summed it 32 at a time or __dp4a four at a time. The fold reads the
+// accumulators out at the same chunk boundaries, so the transcripts and hashes match.
+// "Rank-128" is that chunk length (and the noise rank): it fixes WHEN the accumulators are
+// read, not how they are summed.
+//
+// The CTA tile is 128x128 (8 row offsets by 8 column offsets, 64 regions), 256 threads,
+// each holding an 8x8 block of accumulators that all belong to one region (see the
+// kernel). 32 bytes of k a stage, double buffered through registers (Pascal has no
+// cp.async): 21 KB of static shared, so no opt-in, and two blocks fit an SM.
+//
+// The body is built only where __CUDA_ARCH__ is in PEARL_DP4A_ARCH: sm_61 and up (sm_60,
+// the P100, has no dp4a), below Turing. Elsewhere it is an empty kernel nothing launches,
+// as the tall and Hopper folds are on the archs that do not run them. The host takes a
+// card for it when the loaded binary of pearl_tile_fold_dp4a says so (binaryVersion 61).
+#define PEARL_DP4A_ARCH(a) ((a) >= 610 && (a) < 750)
+#if defined(__CUDA_ARCH__) && PEARL_DP4A_ARCH(__CUDA_ARCH__)
+#define PEARL_DP4A_BODY 1
+#else
+#define PEARL_DP4A_BODY 0
+#endif
+#define PEARL_DP4A_THREADS 256u
+#define PEARL_DP4A_BM 128u                              // rows of A a tile
+#define PEARL_DP4A_BN 128u                              // columns of B a tile
+#define PEARL_DP4A_ROW_OFFSETS (PEARL_DP4A_BM / 16u)    // 8
+#define PEARL_DP4A_COL_OFFSETS (PEARL_DP4A_BN / 16u)    // 8
+#define PEARL_DP4A_STAGE_K 32u                          // bytes of k a stage
+// Words between two k-quads of a stage in shared: 128 rows plus 4, so the two halves
+// of a staged row land on different banks. 4 mod 8 keeps every row's 16-byte loads
+// aligned.
+#define PEARL_DP4A_SSTRIDE 132u
+// The tile walk: bands of this many row groups, each walked down before stepping
+// across, so the tiles resident together share their A and B in L2 (as
+// PEARL_BLOCK_GROUP does for the tensor folds). Not measured on a card yet.
+#ifndef PEARL_DP4A_BAND
+#define PEARL_DP4A_BAND 8u
+#endif
+// Column offsets a batch (Ctx::colBatch). The profile's 2048 is a 4090's batch: on a
+// GTX 1080 Ti it would be about 0.4 s a launch. 256 keeps a launch near 50 ms there and
+// a few hundred ms on the smallest Pascal cards, well inside Windows' 2 s watchdog.
+// -DPEARL_DP4A_COL_BATCH=N forces N (a multiple of 8 that divides the valid offsets).
+#ifndef PEARL_DP4A_COL_BATCH
+#define PEARL_DP4A_COL_BATCH 256u
 #endif
 
 // A 192x256 CTA tile: eight 96x64 warp tiles (256 threads), staged in three 64-deep

@@ -307,7 +307,7 @@ describe('Turing fold geometry', () => {
   // Compared line by line, trimmed: a Windows checkout has CRLF endings.
   const LINES = HEADER.split(String.fromCharCode(10)).map((l) => l.trim());
   const SM75_BLOCK =
-    '#if !defined(PEARL_FOLD_THREADS) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800';
+    '#if !defined(PEARL_FOLD_THREADS) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 750 && __CUDA_ARCH__ < 800';
 
   function defines(names) {
     const out = {};
@@ -387,8 +387,9 @@ describe('Turing fold geometry', () => {
   });
 
   // The kernel picks Turing's thread count, and the B-direct body, only for
-  // sm_75 builds. Everything from sm_80 up keeps its own fold.
-  test('only builds below sm_80 take it', () => {
+  // sm_75 builds. Everything from sm_80 up keeps its own fold, and Pascal (sm_61),
+  // which has no int8 mma, builds the dp4a fold instead.
+  test('only sm_75 builds take it', () => {
     const at = LINES.indexOf(SM75_BLOCK);
     expect(at).toBeGreaterThanOrEqual(0);
     expect(LINES[at + 1]).toBe('#define PEARL_FOLD_THREADS PEARL_FOLD_TURING_THREADS');
@@ -415,5 +416,75 @@ describe('Turing fold geometry', () => {
       '#define PEARL_TURING_BD_BODY PEARL_TURING_BDIRECT',
       '#define PEARL_TURING_BD_BODY 0',
     ]);
+  });
+});
+
+// Pascal (sm_61, GTX 10): no tensor cores, so its build mines on
+// pearl_tile_fold_dp4a. Nothing here can run that kernel; probes/dp4a-check.js
+// runs its layout on the CPU against reference.js. These pin what the host and the
+// kernel must agree on.
+describe('Pascal dp4a fold', () => {
+  const SRC = path.join(__dirname, '..', 'native', 'src');
+  const HOST = fs.readFileSync(path.join(SRC, 'pearl_host.cu'), 'utf8');
+  const KERNEL = fs.readFileSync(path.join(SRC, 'pearl_kernel.cu'), 'utf8');
+  const LINES = HEADER.split(String.fromCharCode(10)).map((l) => l.trim());
+
+  // __dp4a is sm_61 and up (the P100, sm_60, has none), and Turing and later
+  // have their tensor folds. The kernel and the host read the same macro.
+  test('the body is built from sm_61 up to, not including, sm_75', () => {
+    expect(LINES).toContain('#define PEARL_DP4A_ARCH(a) ((a) >= 610 && (a) < 750)');
+    expect(LINES).toContain('#if defined(__CUDA_ARCH__) && PEARL_DP4A_ARCH(__CUDA_ARCH__)');
+    const arch = (a) => a >= 610 && a < 750;
+    expect([600, 610, 620, 700, 750, 800, 890, 1200].map(arch))
+      .toEqual([false, true, true, true, false, false, false, false]);
+  });
+
+  // The host takes a card for the fold from the binary it loaded, as for the
+  // other folds, and launches it with the block its launch bound names.
+  test('the host picks it from the loaded binary and launches its own block', () => {
+    expect(HOST).toContain('PEARL_DP4A_ARCH(fd.binaryVersion * 10)');
+    expect(HOST).toContain('(uint32_t)fd.maxThreadsPerBlock == PEARL_DP4A_THREADS');
+    expect(HOST).toContain('pearl_tile_fold_dp4a<<<tiles, PEARL_DP4A_THREADS, 0, st>>>(');
+    expect(KERNEL).toContain('__launch_bounds__(PEARL_DP4A_THREADS, 2) void pearl_tile_fold_dp4a(');
+  });
+
+  // 16x16 threads of 8x8 accumulators over a 128x128 tile: 8 row offsets by 8
+  // column offsets. Two 32-byte stages of both operands plus 64 transcripts fit
+  // the 48 KB a block gets without an opt-in, twice over in a Pascal SM's 96 KB.
+  test('its tile and shared memory fit a GTX 10 block', () => {
+    const threads = numericDefineOf('PEARL_DP4A_THREADS');
+    const bm = numericDefineOf('PEARL_DP4A_BM');
+    const bn = numericDefineOf('PEARL_DP4A_BN');
+    const stageK = numericDefineOf('PEARL_DP4A_STAGE_K');
+    const stride = numericDefineOf('PEARL_DP4A_SSTRIDE');
+    expect([threads, bm, bn, stageK]).toEqual([256, 128, 128, 32]);
+    expect((threads / 16) * 8).toBe(bm);
+    // 4 mod 8 words: 16-byte loads stay aligned and a row's two halves sit 16
+    // banks apart.
+    expect(stride % 8).toBe(4);
+    expect(stride).toBeGreaterThanOrEqual(bm);
+    const smem = 2 * 2 * (stageK / 4) * stride * 4 + 64 * 17 * 4;
+    expect(smem).toBe(21248);
+    expect(2 * smem).toBeLessThanOrEqual(96 * 1024);
+    expect(smem).toBeLessThanOrEqual(48 * 1024);
+    // A chunk is whole stages.
+    expect(PROFILE.rank % stageK).toBe(0);
+  });
+
+  // The batch is narrowed to keep a launch short on these cards. It must be whole
+  // tiles and divide the valid column offsets, or pearl_dp4a_col_batch keeps the
+  // profile's width.
+  test('the batch width is whole tiles and splits a salt into whole batches', () => {
+    // A tile's offsets: 16 rows (columns) of the pattern an offset.
+    expect(LINES).toContain('#define PEARL_DP4A_ROW_OFFSETS (PEARL_DP4A_BM / 16u)    // 8');
+    expect(LINES).toContain('#define PEARL_DP4A_COL_OFFSETS (PEARL_DP4A_BN / 16u)    // 8');
+    const rowOffsets = numericDefineOf('PEARL_DP4A_BM') / PROFILE.rows.length;
+    const colOffsets = numericDefineOf('PEARL_DP4A_BN') / PROFILE.cols.length;
+    const cb = numericDefineOf('PEARL_DP4A_COL_BATCH');
+    const colsValid = PROFILE.n / PROFILE.cols.length;
+    expect(cb % colOffsets).toBe(0);
+    expect(colsValid % cb).toBe(0);
+    expect(cb).toBeLessThan(2048);
+    expect((PROFILE.m / PROFILE.rows.length) % rowOffsets).toBe(0);
   });
 });

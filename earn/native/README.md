@@ -32,7 +32,9 @@ This table and "Where it actually stands" below are from August 2026, before
 the tensor-core work, and are kept as a record. The search now runs on the int8
 tensor cores, in the tile folds (`pearl_tile_fold_wmma`, `pearl_tile_fold_tall`,
 and `pearl_tile_fold_hopper` on sm_90a). The scalar/dp4a fold and its partials
-pass are gone. Later measurements are in `probes/README.md`.
+pass are gone. GTX 10 cards (sm_61), which have no tensor cores, run
+`pearl_tile_fold_dp4a`, a tiled int8 GEMM on `dp4a` written like the tensor
+folds (see Building). Later measurements are in `probes/README.md`.
 
 | Piece | State |
 |---|---|
@@ -157,7 +159,7 @@ nvcc -lib cuda-build/pearl_kernel.o cuda-build/pearl_host.o -o cuda-build/pearl_
 npx node-gyp rebuild
 ```
 
-`.github/workflows/native-core.yml` does exactly this for sm_75/80/86/89/90a/100/120, and it
+`.github/workflows/native-core.yml` does exactly this for sm_61/75/80/86/89/90a/100/120, and it
 is green on Linux: the workflow produces a real `pearl_core.node`. So the core
 compiles and links today, even though nothing on a runner can execute it.
 
@@ -178,8 +180,9 @@ keeps `pearl_core.node` for everything else.
 
 Every entry also compiles `pearl_kernel.cu` with `-Xptxas -v` and reads what
 ptxas said, on every architecture, about the tall fold, the wmma fold, Hopper's
-wgmma fold (`pearl_tile_fold_hopper`, with a body only on sm_90a) and the
-transcript hash (`pearl_tall_hash80`). The tall fold sits at 253–255
+wgmma fold (`pearl_tile_fold_hopper`, with a body only on sm_90a), Pascal's
+dp4a fold (`pearl_tile_fold_dp4a`, a body only on sm_61) and the transcript
+hash (`pearl_tall_hash80`). The tall fold sits at 253–255
 registers; a compiler or gate change that spills still compiles, links and
 ships, and nothing else in CI can see it. A spill fails the job on every
 architecture in that matrix entry's `spill_fail_archs`:
@@ -200,8 +203,10 @@ architecture in that matrix entry's `spill_fail_archs`:
   automatically, and a failed CUDA 13 job ships no `pearl_core_cu13.node`,
   which would cost every all-Blackwell rig the +3.2%. A spill on sm_89 there is
   a warning in the log.
-- **Any other architecture is a warning:** today that is sm_75. A newly added
-  architecture warns until a run has shown it clean.
+- **Any other architecture is a warning:** today that is sm_75 and sm_61. A
+  newly added architecture warns until a run has shown it clean. The same step
+  fails the job if the sm_61 dp4a fold has no body (under 64 registers), since
+  GTX 10 cards would then have no fold at all.
 
 The tensor-map step also checks that the sm_90a wgmma fold has its body (its
 512-thread launch bound). A build that drops it still compiles and links, and
@@ -227,7 +232,7 @@ the Server 2025 runner (exit `0xE0E1E1D9`) before reaching any of our source.
 The compile-and-link signal is platform independent, so Linux is the gate.
 
 `CUDA_PATH` is picked up automatically; override the arch for other cards
-(`sm_75` Turing, `sm_80` A100 / A800 / A30 / CMP 170HX, `sm_86` Ampere, `sm_89`
+(`sm_61` Pascal, `sm_75` Turing, `sm_80` A100 / A800 / A30 / CMP 170HX, `sm_86` Ampere, `sm_89`
 Ada, `sm_90a` Hopper, `sm_120` Blackwell). Hopper has to be `sm_90a`, not
 `sm_90`: a plain sm_90 build compiles and links, but it has no wgmma fold, so
 it mines on the slower cp.async tall fold.
@@ -241,6 +246,21 @@ Ada numbers in the tuning log are Ada's only, and Ampere's much smaller L2 means
 the band walk that keeps B resident on a 4090 will miss there. Its correctness
 has been checked: an sm_86-only build runs on a 4090 (compute 8.9 runs sm_86
 code), took the tall fold, and passed verify-hits 400/400 (probes/README.md).
+
+The sm_61 build (Pascal: GTX 10, Tesla P4 and P40) has no tensor cores, so it
+builds none of the folds above. It mines on `pearl_tile_fold_dp4a`, an int8
+GEMM on the `__dp4a` instruction over 128x128 tiles (`src/pearl_fold_dp4a.h`
+and `PEARL_DP4A_ARCH` in `src/pearl_config.h`). The result is bit-identical:
+the accumulators are exact int32 sums whatever adds them, and the fold reads
+them out at the same `rank`-byte chunk boundaries. A launch covers 256 column
+offsets rather than 2048, so it stays near 50 ms on a GTX 1080 Ti. Every other
+architecture's kernels compile to the same SASS as before (only an empty
+`pearl_tile_fold_dp4a` is added). It has not run on a Pascal card yet. Without
+one, `node probes/dp4a-check.js` runs the fold's layout and inner loop on the
+CPU and checks them against `src/shared/miner/reference.js`; it needs a C++
+compiler and nothing from CUDA. On a card, check it with
+`probes/verify-hits.js` like any other build. On start the core prints one
+line on stderr naming the fold, and a search error names it too.
 
 The addon lands at `build/Release/pearl_core.node`, which is exactly where
 `src/main/pearlCore.js` looks for it. When it is absent — as on any machine

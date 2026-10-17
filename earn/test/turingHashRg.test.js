@@ -1376,11 +1376,16 @@ describe('the second sm_75 kernel, HASH_RG\'s code by L2 size (PEARL_BD_RG_KERNE
     const sites = [...HOST.matchAll(/(cudaFuncSetAttribute|cudaFuncGetAttributes|cudaOccupancyMaxActiveBlocksPerMultiprocessor|cudaOccupancyMaxActiveClusters)\((?:&\w+,\s*)?(reinterpret_cast<const void \*>\(\w+\)|\w+)/g)]
       .map((x) => [x[1], x[2]]);
     const off = sites.filter(([, k]) => k !== 'foldFn');
+    // Two more aren't fold kernels the search picks: Pascal's dp4a fold, which resolve_fold
+    // checks first, and pearl_gen_perm, which create asks whether the core has code for
+    // the card at all.
     expect(off).toEqual([
+      ['cudaFuncGetAttributes', cast('pearl_tile_fold_dp4a')],
       ['cudaFuncGetAttributes', cast('pearl_tile_fold_wmma')],
       ['cudaFuncGetAttributes', cast('pearl_tile_fold_tall')],
       ['cudaFuncGetAttributes', cast('pearl_tile_fold_hopper')],
       ['cudaFuncSetAttribute', cast('pearl_tile_fold_hopper')],
+      ['cudaFuncGetAttributes', cast('pearl_gen_perm')],
       ['cudaFuncGetAttributes', cast('pearl_tile_fold_wmma_rg')],
       ['cudaOccupancyMaxActiveClusters', 'pearl_tile_fold_hopper'],
     ]);
