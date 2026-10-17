@@ -1556,6 +1556,16 @@ class TestKryptex(Base):
         self.assertIn("WARN Kryptex on for biz-rtx4080: Salad refused to move it to a new PC", self.events())
         self.assertNotIn("KRYPTEX ON", self.events())
 
+    def test_an_instance_salad_no_longer_has_counts_as_moved(self):
+        g = self.mining("m1", 300)
+        g.update(kx=True, kx_since=self.clock[0] - 3600)
+        self.x.cfg["kryptex_groups"] = 0
+        self.http.on("POST", "/reallocate$", (404, {"type": "container_group_instance_not_found"}))
+        self.x.kx_sync([g], self.clock[0])
+        self.assertFalse(g["kx"])                         # the switch stands: the next instance starts on HeroMiners
+        self.assertEqual(len(self.commands()), 1)        # nothing put back
+        self.assertIn("KRYPTEX OFF biz-rtx4080", self.events())
+
     def test_a_failed_switch_back_is_no_strike_and_the_pc_is_left_as_usual(self):
         g = self.mining("m1", 300)
         g.update(kx=True, kx_since=self.clock[0] - 3600)
