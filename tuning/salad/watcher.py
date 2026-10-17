@@ -60,7 +60,7 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                "xmr_threads": 0,
                # Kryptex's PPS+ pool for Pearl: kryptex_groups boxes that already have a PC mine there instead of
                # HeroMiners. Two Kryptex boxes that mine no shares stop the test until kryptex_token changes.
-               "kryptex_groups": 0, "kryptex_host": "prl-us.kryptex.network:7048", "kryptex_fee": 0.03,
+               "kryptex_groups": 0, "kryptex_host": "prl-us.kryptex.network:7048", "kryptex_pay": 0.94,
                "kryptex_token": 0}
 XMR_FEE = 0.009   # HeroMiners' Monero pool fee
 KX_API = "https://pool.kryptex.com/prl/api"
@@ -259,11 +259,12 @@ class W:
 
     def kx_ratio(self):
         """The same for Kryptex: what it has credited (balance and payouts) over its boxes' estimate. PPS+ credits
-        each share as it is accepted, so this holds from the first PRL; before that, 1 less its fee."""
+        each share as it is accepted, so this holds from the first PRL; before that, the 94% of a share's value that it was
+        measured to pay on 17 October (its advertised fee is 3%)."""
         kt = self.st.get("kx_tot")
         prl = sum(g.get("prl_kx", 0.0) for g in self.st["groups"].values())
         if not kt or prl < 1:
-            return 1 - self.cfg["kryptex_fee"]
+            return self.cfg["kryptex_pay"]
         return min(1.0, max(self.cfg["yield_floor"], (kt["total"] + kt["paid"]) / prl))
 
     def ratio(self, g):
@@ -394,20 +395,13 @@ class W:
         st["kx_tot_try"] = t
         s1, b = http("GET", f"{KX_API}/v1/miner/balance/{wallet}", timeout=30)
         s2, p = http("GET", f"{KX_API}/v1/miner/payouts/{wallet}", timeout=30)
-        s3, i = http("GET", f"{KX_API}/v1/pool/info", timeout=30)
         if s1 != 200 or not isinstance(b, dict) or s2 != 200 or not isinstance(p, dict):
             return res
         try:
             kt = {"t": t, "total": float(b.get("total") or 0), "confirmed": float(b.get("confirmed") or 0),
                   "unconfirmed": float(b.get("unconfirmed") or 0),
-                  "paid": sum(float(x.get("received") or 0) for x in p.get("results") or [] if isinstance(x, dict)),
-                  # Kryptex's hashrate unit in TH/s: the network's TH/s (block reward an hour over PRL per TH-hr)
-                  # over Kryptex's figure for the network.
-                  "unit_th": kt.get("unit_th")}
-            if s3 == 200 and isinstance(i, dict) and i.get("net_hashrate") and st["mkt"].get("prl_th_hr"):
-                net_th = float(i["block_reward"]) * 3600 / float(i["block_time"]) / st["mkt"]["prl_th_hr"]
-                kt["unit_th"] = net_th / float(i["net_hashrate"])
-        except (TypeError, ValueError, ZeroDivisionError):
+                  "paid": sum(float(x.get("received") or 0) for x in p.get("results") or [] if isinstance(x, dict))}
+        except (TypeError, ValueError):
             return res
         st["kx_tot"] = kt
         return res
@@ -889,8 +883,8 @@ class W:
                         if ls >= g["created"]:
                             g["last_share"] = max(g["last_share"] or 0, ls)
                             g["kx_share"] = max(g.get("kx_share") or 0, ls)
-                        unit = (st.get("kx_tot") or {}).get("unit_th")
-                        g["pool_ths"] = float(x.get("hashrate") or 0) * unit if unit else None
+                        # The live rows have no "hashrate" (openapi.yaml lists one): avg_hashrate_30m, a string in H/s.
+                        g["pool_ths"] = float(x.get("avg_hashrate_30m") or 0) / 1e12
                     except (TypeError, ValueError):
                         pass
                 continue
@@ -1342,7 +1336,7 @@ class W:
         if kt:
             kest = sum(g.get("prl_kx", 0.0) for g in groups)
             trail.append(f"Kryptex has credited {kt['total'] + kt['paid']:.3f} PRL for {kest:.3f}{EST} at the network's "
-                         f"rate ({ky:.0%}{EST}; PPS+ pays each share less its {self.cfg['kryptex_fee']:.0%} fee), "
+                         f"rate ({ky:.0%}{EST}; {self.cfg['kryptex_pay']:.0%} expected), "
                          "and pays out from 1 PRL")
         if ts:
             when = (f"at the {time.strftime('%H:%M', time.gmtime(ts['t']))}Z run" if ts.get("t") else "entered by hand")

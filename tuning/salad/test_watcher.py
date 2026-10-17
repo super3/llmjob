@@ -1707,16 +1707,13 @@ class TestKryptex(Base):
     def test_kryptex_workers_and_totals_are_read(self):
         wl = os.environ["PRL_WALLET"]
         self.http.on("GET", f"v3/miner/workers/{wl}", (200, {"results": [
-            {"worker": "biz-rtx4080-g0", "hashrate": 2.0e14, "shares": 12, "last_share": int(T0)}]}))
+            {"worker": "biz-rtx4080-g0", "valid": 12, "avg_hashrate_30m": "200000000000000.5", "last_share": int(T0)}]}))
         self.http.on("GET", f"v1/miner/balance/{wl}", (200, {"total": 0.6, "confirmed": 0.4, "unconfirmed": 0.2}))
         self.http.on("GET", f"v1/miner/payouts/{wl}", (200, {"results": [{"received": 1.5}, {"received": 1.0}]}))
-        self.http.on("GET", "v1/pool/info", (200, {"net_hashrate": 1.0e19, "block_reward": 2000.0, "block_time": 200}))
         ws = self.x.kx_pool()
-        self.assertEqual(ws["biz-rtx4080-g0"]["shares"], 12)
+        self.assertEqual(ws["biz-rtx4080-g0"]["valid"], 12)
         kt = self.x.st["kx_tot"]
         self.assertEqual((kt["total"], kt["confirmed"], kt["unconfirmed"], kt["paid"]), (0.6, 0.4, 0.2, 2.5))
-        # The network: 2000 PRL × 18 blocks an hour ÷ PRL per TH-hr, over Kryptex's 1e19 for it.
-        self.assertAlmostEqual(kt["unit_th"], 2000 * 18 / (USD_TH_HR / PRICE) / 1.0e19)
         self.clock[0] += 60
         self.x.kx_pool()
         self.assertEqual(len(self.http.made("GET", "v1/miner/balance")), 1)  # totals at most every 5 minutes
@@ -1729,12 +1726,12 @@ class TestKryptex(Base):
         self.x.st["pool_tot"] = {"t": T0, "paid": 6.0, "balance": 1.0, "unconfirmed": 1.0, "blocks": 20,
                                  "hashes": 0, "ths_1h": 0}
         self.assertAlmostEqual(self.x.credit_ratio(), 0.8)  # 8 credited for HeroMiners' 10, not for all 14
-        self.assertAlmostEqual(self.x.kx_ratio(), 0.97)     # nothing read from Kryptex yet: 1 less its fee
-        self.x.st["kx_tot"] = {"t": T0, "total": 1.88, "confirmed": 1.0, "unconfirmed": 0.88, "paid": 2.0}
-        self.assertAlmostEqual(self.x.kx_ratio(), 0.97)
-        self.assertAlmostEqual(self.x.ratio(kg), 0.97)
+        self.assertAlmostEqual(self.x.kx_ratio(), 0.94)     # nothing read from Kryptex yet: what it was measured to pay
+        self.x.st["kx_tot"] = {"t": T0, "total": 1.76, "confirmed": 1.0, "unconfirmed": 0.76, "paid": 2.0}
+        self.assertAlmostEqual(self.x.kx_ratio(), 0.94)
+        self.assertAlmostEqual(self.x.ratio(kg), 0.94)
         self.assertAlmostEqual(self.x.ratio(hg), 0.8)
-        self.assertAlmostEqual(self.x.credited(kg), 2 * 0.8 + 4 * 0.97)
+        self.assertAlmostEqual(self.x.credited(kg), 2 * 0.8 + 4 * 0.94)
 
     def test_prl_mined_while_on_kryptex_is_counted_apart(self):
         self.x.cfg["search"] = False
@@ -1786,8 +1783,8 @@ class TestKryptex(Base):
         self.assertIn(f"| ⛏️ PRL{w.NB}Kryptex | 200 TH/s | 1.000 | 0.880 | 2.000 |", report)
         self.assertIn("(K) mines Pearl on Kryptex (PPS+), the rest on HeroMiners.", report)
         self.assertIn("The PRL pool HeroMiners has credited 80%* of our estimate over 20 blocks", report)
-        self.assertIn("Kryptex has credited 3.880 PRL for 4.000* at the network's rate (97%*; PPS+ pays each share "
-                      "less its 3% fee), and pays out from 1 PRL", report)
+        self.assertIn("Kryptex has credited 3.880 PRL for 4.000* at the network's rate (97%*; 94% expected), "
+                      "and pays out from 1 PRL", report)
         # 4 × 0.97 + 10 × 0.8 = 11.88 PRL credited, for $11.00: (11.88 × 1.39) − 11 = +5.51.
         self.assertIn("| **+5.51\\*** |\n", report)
         self.assertIn("Spent $11.00* on Salad for 11.880* PRL (14.000* at the network's rate × 85%* credited)", report)
@@ -1805,8 +1802,8 @@ class TestKryptex(Base):
         self.http.on("GET", "herominers", (200, {"workers": [{"name": "biz-rtx4080-g0", "hashrate": 44500,
                                                                "lastShare": int(T0) + 450}]}))
         self.http.on("GET", "v3/miner/workers", (200, {"results": [
-            {"worker": "biz-rtx4080-g0", "hashrate": 5.0, "shares": 3, "last_share": (int(T0) + 400) * 1000}]}))
-        self.x.st["kx_tot"] = {"t": T0 + 400, "total": 0, "confirmed": 0, "unconfirmed": 0, "paid": 0, "unit_th": 40.0}
+            {"worker": "biz-rtx4080-g0", "valid": 3, "avg_hashrate_30m": "200000000000000", "last_share": (int(T0) + 400) * 1000}]}))
+        self.x.st["kx_tot"] = {"t": T0 + 400, "total": 0, "confirmed": 0, "unconfirmed": 0, "paid": 0}
         g["created"] = T0 - 3600
         self.clock[0] = T0 + 500
         self.x.round()
