@@ -176,6 +176,8 @@ endpoint override inside (`settings.endpoint`, used by the desktop app) but no f
 mined on Kryptex yet. The way forward is a `--pool host:port` flag in the CLI (and a release), or a
 `NODE_OPTIONS` preload that redirects the connection without changing the miner.
 
+Instructions for finishing it on a machine with a GPU are in [KRYPTEX.md](KRYPTEX.md).
+
 What's built for it, with `kryptex_groups` boxes marked **(K)** in the table:
 
 - **Which boxes:** ones that are mining. The first try put a new group on Kryptex, and two new groups in a
