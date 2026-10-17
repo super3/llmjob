@@ -156,6 +156,7 @@ jest.mock('../src/main/probe', () => ({
   detectRegion: jest.fn(() => Promise.resolve('us1')),
   detectVram: jest.fn(() => Promise.resolve(null)),
   detectGpusVram: jest.fn(() => Promise.resolve([])),
+  detectPciBusIds: jest.fn(() => Promise.resolve({})),
   // No card list by default: one core that places itself, which is what a rig
   // with no nvidia-smi gets. The multi-card tests set it explicitly.
   detectMinerGpus: jest.fn(() => Promise.resolve([])),
@@ -203,11 +204,15 @@ jest.mock('../src/main/pearlEngine', () => {
       this.isRunning = jest.fn(() => this._running);
       this.poolConnected = jest.fn(() => true);
       this.releaseMemClocks = jest.fn();
+      // The cards a pause or resume acted on: one card, unless a test says none.
+      this.pauseCards = jest.fn(() => (PearlEngine.noCards ? [] : [{ index: 0, name: 'GPU0' }]));
+      this.resumeCards = jest.fn(() => [{ index: 0, name: 'GPU0' }]);
       PearlEngine.instances.push(this);
     }
   }
   PearlEngine.instances = [];
   PearlEngine.startError = null;
+  PearlEngine.noCards = false;
   return { PearlEngine };
 });
 
@@ -1738,7 +1743,7 @@ describe('local LLM', () => {
     // per-node, at which point a 5090 serving Qwen told the hero, the network
     // board and — through metrics.model → openaiController.modelName — the
     // `model` field of every gateway completion that it was serving Gemma.
-    expect(ctx.sent('llm:status').pop()).toMatchObject({ model: tier.name });
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ model: tier.name, vramMb: 30150, ctxSize: 262144 });
     llm.emit('ready', { baseUrl: llm.baseUrl });
     await flush();
     expect(ctx.JobWorker.instances[0].opts.servingModel()).toBe(tier);
@@ -1884,8 +1889,10 @@ describe('local LLM', () => {
   it('sends chat to the faster card, not the first one', async () => {
     const ctx = await boot({
       before: (c) => {
+        // Both cards too small for the big model, so both serve the default and
+        // the test is only about which one chat goes to.
         c.probe.detectGpusVram.mockResolvedValue([
-          { index: 0, name: 'RTX PRO 4500', usedMb: 2000, totalMb: 32000 },
+          { index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 },
           { index: 1, name: 'RTX 4070', usedMb: 1000, totalMb: 12000 },
         ]);
         c.probe.findFreePort.mockImplementation((h, p) => Promise.resolve(p));
@@ -4086,5 +4093,111 @@ describe('CPU mining (Monero)', () => {
     expect(await ctx.invoke('xmr:balance', XMR_ADDR)).toBeNull();
     ctx.io.getJson.mockResolvedValueOnce(null);
     expect(await ctx.invoke('xmr:balance', XMR_ADDR)).toBeNull();
+  });
+});
+
+// While the LLM co-runs with the miner, a prompt hands its card to the LLM: the
+// miner pauses that card and mines on it again after (shared/promptPause, where
+// the timing is tested). Here: the app wires the busy signal to the miner, says
+// so in the log, and lets go when the LLM stops.
+describe('mining pauses while the local LLM answers a prompt', () => {
+  const lines = (ctx) => ctx.sent('miner:log').map((l) => l.line);
+  async function coRunning(ctx) {
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    ctx.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 }]);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+    await flush();
+    const miner = ctx.PearlEngine.instances[0];
+    miner.emit('event', { type: 'status', hashrate: '2.5' });
+    await flush(30);
+    return { miner, llm: ctx.LlmManager.instances[0] };
+  }
+  afterEach(() => { require('../src/main/pearlEngine').PearlEngine.noCards = false; });
+
+  it('pauses the card the prompt runs on, and mines on it again at once when the LLM stops', async () => {
+    const ctx = await boot();
+    const { miner, llm } = await coRunning(ctx);
+    llm.emit('busy', true);
+    expect(miner.pauseCards).toHaveBeenCalledWith([0]);
+    expect(lines(ctx)).toContain('mining paused on GPU 0 while the local LLM answers a prompt');
+
+    // Mining-only stops the LLM. Nothing is left to answer a prompt, so the
+    // card mines again now rather than after the usual wait.
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush(30);
+    expect(miner.resumeCards).toHaveBeenCalledWith([0]);
+    expect(lines(ctx)).toContain('mining resumed on GPU 0');
+  });
+
+  it('a miner that starts while a prompt runs starts with that card paused', async () => {
+    const ctx = await boot();
+    const { miner, llm } = await coRunning(ctx);
+    llm.emit('busy', true);
+    // Idle-only style: the miner goes and a new one comes back mid-prompt.
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'llm' });
+    await flush(30);
+    expect(miner.isRunning()).toBe(false);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+    await flush(30);
+    const again = ctx.PearlEngine.instances[1];
+    expect(again).toBeTruthy();
+    expect(again.pauseCards).toHaveBeenCalledWith([0]);
+  });
+
+  it('in LLM-only mode a prompt pauses nothing and says nothing', async () => {
+    const ctx = await boot();
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush(30);
+    ctx.LlmManager.instances[0].emit('busy', true);
+    expect(ctx.PearlEngine.instances).toHaveLength(0);
+    expect(lines(ctx).some((l) => l.startsWith('mining paused'))).toBe(false);
+  });
+
+  it('STOP mid-prompt stops the miner and the LLM, and resumes nothing on a miner that is gone', async () => {
+    const ctx = await boot();
+    const { miner, llm } = await coRunning(ctx);
+    llm.emit('busy', true);
+    ctx.emit('miner:stop');
+    await flush();
+    expect(miner.stop).toHaveBeenCalled();
+    expect(miner.resumeCards).not.toHaveBeenCalled();
+    // And the log does not claim it did.
+    expect(lines(ctx).some((l) => l.startsWith('mining resumed'))).toBe(false);
+  });
+
+  it('pauses the card the model really loaded on, not the one it was planned for', async () => {
+    const ctx = await boot();
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    ctx.probe.detectGpusVram.mockResolvedValue([
+      { index: 0, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+      { index: 1, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+    ]);
+    ctx.probe.detectPciBusIds.mockResolvedValue({ 0: '00000000:01:00.0', 1: '00000000:02:00.0' });
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+    await flush();
+    const miner = ctx.PearlEngine.instances[0];
+    miner.emit('event', { type: 'status', hashrate: '2.5' });
+    await flush(30);
+    // Started for card 0, but Vulkan put it on the card at bus 02, nvidia-smi's 1.
+    const llm = ctx.LlmManager.instances[0];
+    llm.deviceBusId = '0000:02:00.0';
+    llm.emit('busy', true);
+    expect(miner.pauseCards).toHaveBeenCalledWith([1]);
+    // An instance that never said where it loaded, on a two-card rig: left alone.
+    miner.pauseCards.mockClear();
+    llm.deviceBusId = null;
+    llm.emit('busy', false);
+    llm.emit('busy', true);
+    expect(miner.pauseCards).not.toHaveBeenCalled();
+  });
+
+  it('says nothing when the prompt runs on a card that is not mining', async () => {
+    const ctx = await boot();
+    const { miner, llm } = await coRunning(ctx);
+    require('../src/main/pearlEngine').PearlEngine.noCards = true;
+    llm.emit('busy', true);
+    expect(miner.pauseCards).toHaveBeenCalled();
+    expect(lines(ctx).some((l) => l.startsWith('mining paused'))).toBe(false);
   });
 });

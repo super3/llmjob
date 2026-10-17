@@ -201,3 +201,47 @@ describe('parseTiming', () => {
     expect(parseTokensPerSec('nothing here')).toBeNull();
   });
 });
+
+describe('parseSlotEvent', () => {
+  const { parseSlotEvent } = require('../src/shared/llama');
+
+  // The exact lines the pinned build (b9902) prints. If an upgrade rewords them,
+  // these fail, rather than a node pausing mining for a prompt it never sees end.
+  test('reads the start and the end of a request from the pinned build', () => {
+    expect(parseSlotEvent('slot launch_slot_: id  0 | task 12 | processing task, is_child = 0'))
+      .toEqual({ slot: 0, busy: true });
+    expect(parseSlotEvent('slot      release: id  0 | task 12 | stop processing: n_tokens = 250, truncated = 0'))
+      .toEqual({ slot: 0, busy: false });
+  });
+
+  test('keeps the slot number, and accepts a slot with no task', () => {
+    expect(parseSlotEvent('slot launch_slot_: id  3 | task -1 | processing task, is_child = 1'))
+      .toEqual({ slot: 3, busy: true });
+  });
+
+  test('ignores every other line', () => {
+    expect(parseSlotEvent('srv  update_slots: all slots are idle')).toBeNull();
+    expect(parseSlotEvent('slot print_timing: id  0 | task 12 | prompt eval time = 10 ms')).toBeNull();
+    expect(parseSlotEvent('que    start_loop: processing task, id = 7')).toBeNull();
+    expect(parseSlotEvent('')).toBeNull();
+    expect(parseSlotEvent(null)).toBeNull();
+  });
+});
+
+describe('parseUsingDevice', () => {
+  const { parseUsingDevice } = require('../src/shared/llama');
+
+  test('reads the bus id of the card the pinned build loaded on', () => {
+    expect(parseUsingDevice('llama_model_load_from_file_impl: using device Vulkan0 (NVIDIA GeForce RTX 3090) (0000:02:00.0) - 23893 MiB free'))
+      .toBe('0000:02:00.0');
+    // A name with brackets of its own.
+    expect(parseUsingDevice('x: using device Vulkan1 (NVIDIA RTX PRO 4500 (Blackwell)) (0000:0a:00.0) - 31000 MiB free'))
+      .toBe('0000:0a:00.0');
+  });
+
+  test('null when the backend does not know the bus id, and for every other line', () => {
+    expect(parseUsingDevice('x: using device Vulkan0 (Some GPU) (unknown id) - 8000 MiB free')).toBeNull();
+    expect(parseUsingDevice('srv  update_slots: all slots are idle')).toBeNull();
+    expect(parseUsingDevice(null)).toBeNull();
+  });
+});

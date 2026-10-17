@@ -2,7 +2,8 @@
 
 const { EventEmitter } = require('events');
 const {
-  resolveServerBinary, buildServerArgs, serverBaseUrl, isServerReady, parseTiming,
+  resolveServerBinary, buildServerArgs, serverBaseUrl, isServerReady, parseTiming, parseSlotEvent,
+  parseUsingDevice,
 } = require('../shared/llama');
 
 // Spawns and supervises the llama.cpp `llama-server` child process. Like
@@ -64,9 +65,20 @@ class LlmManager extends EventEmitter {
     // problem we can actually fix ourselves — see _onExit.
     this._ladder = [];
     this._ctxIdx = 0;
+    // Slots working on a request right now, from llama-server's own log (see
+    // _scanSlots). 'busy' fires when the first one starts and when the last one
+    // ends, which is what lets the shells pause mining while a prompt runs.
+    this._busySlots = new Set();
+    // The unfinished end of the last chunk, per stream, for _scanSlots only.
+    this._slotCarry = { out: '', err: '' };
+    // The PCI bus id of the card this server loaded on, once it says (see
+    // llama.parseUsingDevice). Null until then, and for a backend that does not
+    // know it.
+    this.deviceBusId = null;
   }
 
   isRunning() { return this.running; }
+  isBusy() { return this._busySlots.size > 0; }
   isReady() { return this.ready; }
 
   start(opts = {}) {
@@ -100,9 +112,11 @@ class LlmManager extends EventEmitter {
 
     this.proc = proc;
     this.ready = false;
+    this.deviceBusId = null;
 
-    if (proc.stdout) proc.stdout.on('data', (c) => this._onData(c));
-    if (proc.stderr) proc.stderr.on('data', (c) => this._onData(c)); // llama logs to stderr
+    if (proc.stdout) proc.stdout.on('data', (c) => { this._onData(c); this._scanSlots(c, 'out'); });
+    // llama logs to stderr
+    if (proc.stderr) proc.stderr.on('data', (c) => { this._onData(c); this._scanSlots(c, 'err'); });
     proc.on('exit', (code) => this._onExit(code));
     proc.on('error', (err) => this.emit('error', err));
 
@@ -110,6 +124,9 @@ class LlmManager extends EventEmitter {
   }
 
   _onExit(code) {
+    // A server that is gone is working on nothing, whatever its last line said.
+    this._slotCarry = { out: '', err: '' };
+    this._setBusy(null, false, true);
     const wasReady = this.ready;
     const servedFor = wasReady ? this.now() - this._readyAt : 0;
     this.proc = null;
@@ -199,6 +216,34 @@ class LlmManager extends EventEmitter {
           : { tokensPerSec: t.tokensPerSec, promptTokensPerSec: null, tokens: t.tokens });
       }
     }
+  }
+
+  // Slot start and end lines, read from whole lines only. _onData splits each
+  // chunk as it comes, which is fine for the log, but a line cut across two
+  // chunks there is two halves that each match nothing. For the log that costs
+  // one odd line. Here it would lose a "stop processing" and leave mining
+  // paused, so the unfinished end of a chunk waits for the rest.
+  _scanSlots(chunk, stream) {
+    const text = this._slotCarry[stream] + String(chunk);
+    const lines = text.split(/\r?\n/);
+    this._slotCarry[stream] = lines.pop();
+    for (const line of lines) {
+      const ev = parseSlotEvent(line);
+      if (ev) this._setBusy(ev.slot, ev.busy, false);
+      const busId = parseUsingDevice(line);
+      if (busId) this.deviceBusId = busId;
+    }
+  }
+
+  // `all` clears every slot (the server exited). 'busy' fires only when the
+  // instance as a whole goes from idle to busy or back.
+  _setBusy(slot, busy, all) {
+    const was = this._busySlots.size > 0;
+    if (all) this._busySlots.clear();
+    else if (busy) this._busySlots.add(slot);
+    else this._busySlots.delete(slot);
+    const now = this._busySlots.size > 0;
+    if (now !== was) this.emit('busy', now);
   }
 
   stop() {

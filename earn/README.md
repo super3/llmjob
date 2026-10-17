@@ -574,6 +574,20 @@ out-of-memory crash; it logs a clear "not enough free VRAM" line and skips the
 LLM (mining, if enabled, carries on). If VRAM can't be read (non-NVIDIA / no
 driver) it proceeds and lets llama.cpp decide.
 
+**Mining pauses while a prompt runs** — when the LLM co-runs with the miner,
+a card stops mining the moment its `llama-server` starts answering a request,
+and mines again 10 s after the last one ends. Other cards keep mining, and the
+pool connection stays open. The board and HiveOS show that card at 0 TH/s
+while it is paused. The signal is `llama-server`'s own log, so it covers every
+caller: the API endpoint, its web UI, cluster jobs and the network share. A card
+busy for 10 minutes without a break mines again regardless. On a rig with
+several cards it pauses the card the model really loaded on, matched by the PCI
+bus id `llama-server` prints at load, and pauses nothing if it can't tell. If
+something else takes the card's memory during a pause, the card stays paused
+and tries again every 30 s. Demand-driven
+`auto` is unchanged: there the miner already stops for as long as the model
+serves.
+
 `llama-server` comes from a llama.cpp release, a `.tar.gz` on Linux. The CLI
 extracts it with `tar` into the same `llm/` dir, so the binary sits next to its
 shared libraries. To skip the download, or pin your own build, pass
@@ -670,6 +684,10 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
   -r, --region <id>        Pool region: us/us2/ca/br/de/fi/fr/tr/sg/hk/kr/au
                            (default: the fastest). An old AlphaPool id such as
                            eu1 maps to the nearest.
+      --pool <host:port>   Mine Pearl on this stratum endpoint instead of a
+                           HeroMiners region, such as prl-us.kryptex.network:7048.
+                           It must use the same protocol as HeroMiners. Monero
+                           still follows the region.
   -w, --worker <name>      Worker/rig name (default: this machine's hostname)
   -g, --gpu <card>         GPU name to report on the board (default: from nvidia-smi)
       --gpu-index <list>   Mine only on these GPUs: nvidia-smi indices such as

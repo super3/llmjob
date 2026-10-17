@@ -43,7 +43,8 @@ const { statsFilePayload } = require('../shared/statsFile');
 const { shortenAddress, isValidAddress } = require('../shared/address');
 const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
 const { planLlmInstances } = require('../shared/llmPlan');
-const { pickModel, ctxLadder, planAutoMode } = require('../shared/models');
+const { allModels, pickModel, ctxLadder, planAutoMode } = require('../shared/models');
+const { createPromptPause, cardForPrompt } = require('../shared/promptPause');
 const { LlmFleet } = require('../main/llmFleet');
 const { createAutoGate, createServeGate } = require('../main/autoGate');
 const { JobWorker } = require('../main/jobWorker');
@@ -505,6 +506,18 @@ async function startLlm(settings, reserveMb, modelOverride, armServe = true) {
   return planned ? launchLlm(settings, planned, armServe) : null;
 }
 
+// The models this node may pick from: null (the whole catalogue) unless the
+// operator passed their own file with --llm-model. That file is served with the
+// settings of the catalogue entry it IS, matched by file name, or else the
+// default model's. Picking by VRAM alone handed a 32 GB card the 27B tier, so
+// an operator's own Gemma copy started with the 27B's context, its MTP
+// speculation flags and its name, which the server routes jobs on.
+function candidateModels(settings) {
+  if (!settings.llmModel) return null;
+  const file = path.basename(settings.llmModel);
+  return allModels().filter((m) => m === LLM.model || m.file === file);
+}
+
 // The VRAM half of startLlm: which model, on which cards. Reads the cards and
 // downloads nothing, so co-running auto can make this call before the miner
 // claims its share of the card and leave the slow half for later.
@@ -522,7 +535,8 @@ async function planLlm(settings, reserveMb, modelOverride) {
   // shell has to make the same choice the GUI does, or a large card running
   // under systemd silently keeps serving the small default.
   const bestCard = pickLlmGpu(cards);
-  const model = modelOverride || pickModel(bestCard ? bestCard.freeMb : null, reserveMb || 0);
+  const model = modelOverride
+    || pickModel(bestCard ? bestCard.freeMb : null, reserveMb || 0, candidateModels(settings));
   serveLlmState.model = model;
   const plan = planLlmInstances(cards, model, reserveMb || 0, {
     maxInstances: settings.llmMaxInstances,
@@ -550,8 +564,9 @@ async function planLlm(settings, reserveMb, modelOverride) {
 // The slow half: fetch llama-server and the model if they aren't cached yet,
 // then spawn one server per planned card. `background` is set when the miner is
 // already running beside it (co-running auto), which only changes how download
-// progress is printed.
-async function launchLlm(settings, planned, armServe, background) {
+// progress is printed. `onBusy` hears each card start and finish a prompt
+// ({ index, busy }); it is attached before any card can take one.
+async function launchLlm(settings, planned, armServe, background, onBusy) {
   const dir = llmDir(settings);
   const { model, plan } = planned;
   log('preparing local LLM (' + model.name + ') …');
@@ -611,6 +626,7 @@ async function launchLlm(settings, planned, armServe, background) {
     log('🧠 ' + Number(serveLlmState.tps).toFixed(1) + ' tok/s');
   });
   fleet.on('error', (err) => log('LLM error: ' + err.message, process.stderr));
+  if (onBusy) fleet.on('busy', onBusy);
 
   fleet.syncWorkers(canServe && armServe); // arm serving before instances come up
   // Same run bits the GUI passes: llmFleet merges these into every
@@ -863,7 +879,8 @@ async function run(argv) {
     // back to the defaults already in `settings` and never blocks mining. Explicit
     // --region / --gpu always win.
     if (!settings.workerProvided) settings.worker = defaultWorker();
-    if (!settings.regionProvided) settings.region = await detectRegion();
+    // --pool needs no region for Pearl; Monero still mines in one.
+    if (!settings.regionProvided && (!settings.endpoint || settings.xmrAddress)) settings.region = await detectRegion();
     // Probe regardless of --gpu. Naming the card and counting the cards are two
     // different questions, and folding them into one `if` meant that passing
     // --gpu (to name it) also skipped the COUNT — so an N-card rig fell back to
@@ -884,7 +901,8 @@ async function run(argv) {
       log('region ' + settings.legacyRegion + ' is now ' + settings.region
         + ' (' + REGIONS[settings.region].name + ')');
     }
-    log('pool:       ' + endpoint + '  ' + regionLabel(settings.region) + (settings.regionProvided ? '' : '  (auto)'));
+    if (settings.endpoint) log('pool:       ' + endpoint + '  (--pool)');
+    else log('pool:       ' + endpoint + '  ' + regionLabel(settings.region) + (settings.regionProvided ? '' : '  (auto)'));
     log('worker:     ' + settings.worker + (settings.workerProvided ? '' : '  (auto)'));
     if (settings.gpu) {
       log('gpu:        ' + (settings.gpuCount > 1 ? settings.gpuCount + '× ' : '') + settings.gpu
@@ -929,6 +947,18 @@ async function run(argv) {
   let reportNow = null;
   let llm = null;
   let stopping = false;
+  // Co-running only: mining stops on a card while the LLM beside it answers a
+  // prompt, and starts again a little after (shared/promptPause). Demand mode
+  // has the whole card stop mining for as long as it serves, and LLM-only has no
+  // miner, so neither feeds it: there is always a miner when this is called. One
+  // that has stopped pauses and resumes nothing (PearlMiner).
+  const promptPause = createPromptPause({
+    pause: (indices) => miner.pauseCards(indices).length > 0,
+    resume: (indices) => miner.resumeCards(indices).length > 0,
+    log: (level, line) => log(line, level === 'warn' ? process.stderr : process.stdout),
+    resumeAfterMs: LLM.promptPause.resumeAfterMs,
+    maxPauseMs: LLM.promptPause.maxPauseMs,
+  });
   // nvidia-smi's compute capability per card, read with the miner below. The
   // memory clock plan needs it too, further down, once the LLM plan is known.
   let cudaCards = [];
@@ -1063,7 +1093,7 @@ async function run(argv) {
   if (plan.llm && plan.miner && normalizeMode(settings.mode) === 'auto') {
     const cards = await detectGpusVram();
     const best = pickLlmGpu(cards);
-    autoPlan = planAutoMode(best ? best.freeMb : null, LLM.miningReserveMb);
+    autoPlan = planAutoMode(best ? best.freeMb : null, LLM.miningReserveMb, candidateModels(settings));
   }
   // `miner` is null when the mining core failed to load. Without that guard the
   // node believed it was in demand mode, skipped the up-front LLM start, never
@@ -1172,6 +1202,7 @@ async function run(argv) {
       if (stopping) return;
       stopping = true;
       log('shutting down…');
+      promptPause.stop();
       if (reporter) clearInterval(reporter);
       if (statsWriter) clearInterval(statsWriter);
       stopServe();
@@ -1205,6 +1236,8 @@ async function run(argv) {
         // registered for an LLM started up front or beside the miner, which
         // demand mode never does.
         serveLlmState = { ready: false, tps: 0, model: serveLlmState.model };
+        // Nothing is left to answer a prompt: every card mines now.
+        promptPause.reset();
         stopServe();
         log('local LLM exited (code ' + code + ')', process.stderr);
         if (!miner) finish(code || 1);
@@ -1217,7 +1250,12 @@ async function run(argv) {
     // on, as it did when the LLM started first. A run that ended while the model
     // was downloading must not leave a server behind.
     const startCoRun = async () => {
-      const fleet = await launchLlm(settings, coRun, true, true);
+      // Which card each llama-server really loaded on (promptPause.cardForPrompt).
+      const busIds = await probe.detectPciBusIds();
+      const fleet = await launchLlm(settings, coRun, true, true, (e) => {
+        const card = cardForPrompt(e, busIds);
+        if (card !== undefined) promptPause.setBusy(card, e.busy);
+      });
       if (!fleet) return;
       if (settled || stopping) { fleet.stop(); stopServe(); return; }
       llm = fleet;

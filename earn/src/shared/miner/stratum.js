@@ -26,6 +26,10 @@
 //        "header":"000000203a49…b7b5d155918b6a0dea0018",   (76 bytes = 152 hex)
 //        "target":"00000000000007fff800…0000",             (32 bytes = 64 hex)
 //        "height":103353,"cert_version":3}}
+//   >> {"id":100,"method":"mining.submit","params":{"job_id":…,"plain_proof":…,"hs":…}}
+//   << {"id":100,"error":null,"result":true}
+// Kryptex (prl-us.kryptex.network:7048) answers the same, with the keys in the
+// other order: {"id":100,"result":true,"error":null}. Both captured 2026-10-17.
 
 const HEADER_BYTES = 76;
 const TARGET_BYTES = 32;
@@ -35,8 +39,18 @@ const TARGET_BYTES = 32;
 // with id null, and submits carry their own ids allocated by the caller.
 const AUTHORIZE_ID = 1;
 
-function buildAuthorize(wallet, worker) {
-  return { id: AUTHORIZE_ID, method: 'mining.authorize', params: { wallet, worker } };
+// Kryptex (`--pool prl-us.kryptex.network:7048`) takes the same message, but
+// names the worker from "wallet/worker" and ignores the worker field: a login
+// that sent only the field showed up there as "worker". Only Kryptex gets the
+// slash. HeroMiners' message stays exactly as captured, and another pool gets
+// the standard one rather than a guess.
+function isKryptexHost(host) {
+  return /(^|\.)kryptex\.network$/i.test(String(host || ''));
+}
+
+function buildAuthorize(wallet, worker, host) {
+  const login = worker && isKryptexHost(host) ? wallet + '/' + worker : wallet;
+  return { id: AUTHORIZE_ID, method: 'mining.authorize', params: { wallet: login, worker } };
 }
 
 // A share submission. The proof encoding is pool-specific and is the one part of
@@ -116,13 +130,24 @@ function parseMessage(line) {
     if (msg.id === AUTHORIZE_ID) {
       return { kind: failed ? 'auth-fail' : 'auth-ok', id: msg.id, error: normalizeError(msg.error) };
     }
+    // A share counts only on result true, the answer both pools give. One with
+    // no error and any other result, such as false, was not accepted: counting
+    // it would put our figure above the pool's.
+    if (!failed && msg.result === true) return { kind: 'submit-accepted', id: msg.id, error: null };
     return {
-      kind: failed ? 'submit-rejected' : 'submit-accepted',
+      kind: 'submit-rejected',
       id: msg.id,
-      error: normalizeError(msg.error),
+      error: failed ? normalizeError(msg.error)
+        : { code: null, message: 'no reason given (' + describeResult(msg) + ')' },
     };
   }
   return { kind: 'unknown', raw: s };
+}
+
+// What a reply with no error said instead of true, for the log.
+function describeResult(msg) {
+  if (!('result' in msg)) return 'no result';
+  return 'result ' + String(JSON.stringify(msg.result)).slice(0, 80);
 }
 
 // The pool reports errors in two shapes seen live: a bare object
@@ -185,6 +210,7 @@ module.exports = {
   TARGET_BYTES,
   AUTHORIZE_ID,
   buildAuthorize,
+  isKryptexHost,
   buildSubmit,
   serializeProof,
   encode,

@@ -170,6 +170,18 @@ const LLM = {
   // either way -- the axis is whether anything is ASKING for tokens, not whether
   // the GPU has work.
   gate: { port: 8000, quietMs: 60000 },
+  // Pausing mining while a co-running LLM answers a prompt (shared/promptPause).
+  // A card stops mining as soon as its llama-server starts a request, and mines
+  // again `resumeAfterMs` after the last one ends: long enough that a chat turn
+  // or the next cluster job does not stop and start the miner every few
+  // seconds, short enough that a node nobody is calling is mining again almost
+  // at once. A resume reopens the card's core, so it is not free.
+  //
+  // `maxPauseMs` is a safety net. A card paused this long mines again whatever
+  // the log says, so a missed "stop processing" line cannot stop mining for
+  // good. Longer than any real request: the gateway gives up at 280 s, and the
+  // longest generation seen was ~454 s.
+  promptPause: { resumeAfterMs: 10000, maxPauseMs: 10 * 60 * 1000 },
   // What to keep free for the miner when deciding whether a model can co-run.
   //
   // Measured, not guessed: the rank-128 profile asks for 2,081 MiB and the CUDA
@@ -350,6 +362,23 @@ const LLM = {
       //     is the dominant cost -- a 100K-token prompt is ~6 min rather than ~50 s.
       vramFullMb: 30150,
       minVramMb: 30720,   // measurement + ~570 MiB so we never spawn at the edge.
+      // The same sweep, by context, so a card can be given the largest context it
+      // can hold instead of all of it or none. The two figures above are the
+      // 262144 row. Every row is measured (CUDA, q8_0 KV, the flags above); the
+      // same ~570 MiB margin is added to each when it is used as a floor.
+      //
+      // This is what lets a 32 GB card serve this model WHILE it mines. At 262144
+      // it needs 30,150 + the 2,600 mining reserve = 32,750, more than the card
+      // has. At 131072 it needs 24,518 + 2,600 = 27,118 free. The CLI measures on
+      // the empty card, so that leaves ~5 GB of a 5090 for a desktop. The app
+      // measures after the miner is up and still adds the reserve, so there it
+      // leaves ~2.9 GB; a desktop using more gets Gemma, as before.
+      vramByCtxMb: { 262144: 30150, 131072: 24518, 65536: 21702, 32768: 20324 },
+      // The smallest context this model is CHOSEN at. The rungs below it stay in
+      // ctxLadder as start-up fallbacks only. Without this floor a 24 GB card
+      // would pick the model at 32768 and run with under 1 GB to spare beside the
+      // miner; at 131072 and up it is a 32 GB-card model, as intended.
+      minCtxSize: 131072,
       quant: 'Q4_K_XL',
     },
   ],

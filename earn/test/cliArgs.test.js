@@ -139,6 +139,23 @@ describe('buildSettings — validation', () => {
     expect(parseCliArgs(['--address', ADDR]).settings.mdlAddress).toBeNull();
   });
 
+  test('--pool takes a host:port and leaves the region alone', () => {
+    const s = parseCliArgs(['-a', ADDR, '--pool', 'prl-us.kryptex.network:7048']).settings;
+    expect(s).toMatchObject({ endpoint: 'prl-us.kryptex.network:7048', regionProvided: false });
+    const both = parseCliArgs(['-a', ADDR, '--pool', 'stratum+tcp://pool.example:3333/', '-r', 'de']);
+    expect(both.errors).toEqual([]);
+    expect(both.settings).toMatchObject({ endpoint: 'pool.example:3333', region: 'de', regionProvided: true });
+    expect(parseCliArgs(['-a', ADDR]).settings.endpoint).toBeNull();
+  });
+
+  test('--pool without a valid port is an error', () => {
+    for (const bad of ['prl-us.kryptex.network', 'pool.example:0', 'pool.example:65536', ':7048', '']) {
+      const r = parseCliArgs(['-a', ADDR, '--pool=' + bad]);
+      expect(r.errors).toContain('invalid --pool: ' + bad + ' (expected host:port, such as prl-us.kryptex.network:7048)');
+      expect(r.settings.endpoint).toBeNull();
+    }
+  });
+
   test('unknown region is rejected with choices', () => {
     const r = parseCliArgs(['--address', ADDR, '--region', 'mars']);
     expect(r.errors).toContain('unknown region: mars (choices: ' + regionChoices() + ')');

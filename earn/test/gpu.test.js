@@ -62,6 +62,23 @@ describe('countGpus', () => {
 
 // What HiveOS's h-stats.sh turns into bus_numbers, so each card's hashrate lands
 // on its own dashboard row.
+describe('normalizePciBusId', () => {
+  const { normalizePciBusId } = require('../src/shared/gpu');
+
+  test('nvidia-smi and llama.cpp spell the same card the same way', () => {
+    expect(normalizePciBusId('00000000:0A:00.0')).toBe(normalizePciBusId('0000:0a:00.0'));
+    expect(normalizePciBusId('00000000:0A:00.0')).toBe('0:a:0.0');
+    expect(normalizePciBusId(' 00000001:41:00.1 ')).toBe('1:41:0.1');
+  });
+
+  test('null for anything that is not a bus id', () => {
+    expect(normalizePciBusId('unknown id')).toBeNull();
+    expect(normalizePciBusId('')).toBeNull();
+    expect(normalizePciBusId(null)).toBeNull();
+    expect(normalizePciBusId('0000:02:00')).toBeNull();
+  });
+});
+
 describe('parsePciBusIds', () => {
   test('maps each card index to its PCI bus id', () => {
     const out = '0, 00000000:01:00.0\n1, 00000000:0A:00.0\n';

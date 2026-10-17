@@ -73,6 +73,8 @@ jest.mock('../src/main/pearlEngine', () => {
       this.stop = jest.fn();
       this.isRunning = jest.fn(() => true);
       this.poolConnected = jest.fn(() => true);
+      this.pauseCards = jest.fn(() => [{ index: 0, name: 'GPU0' }]);
+      this.resumeCards = jest.fn(() => [{ index: 0, name: 'GPU0' }]);
       PearlEngine.instances.push(this);
     }
   }
@@ -702,6 +704,31 @@ describe('mining', () => {
       expect.objectContaining({ region: 'de', endpoint: 'de.pearl.herominers.com:1200' }));
     m.PearlEngine.instances[0].emit('stopped', 0);
     await expect(p).resolves.toBe(0);
+  });
+
+  // --pool: the Salad watcher points boxes at Kryptex this way.
+  test('--pool mines on that endpoint and skips region detection', async () => {
+    const m = load();
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--pool', 'prl-us.kryptex.network:7048']);
+    await settle();
+    expect(allOut()).toContain('pool:       prl-us.kryptex.network:7048  (--pool)');
+    expect(m.probe.detectRegion).not.toHaveBeenCalled();
+    expect(m.PearlEngine.instances[0].start).toHaveBeenCalledWith(
+      expect.objectContaining({ endpoint: 'prl-us.kryptex.network:7048' }));
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('--pool with Monero still detects a region, for the Monero host', async () => {
+    const XMR_ADDR = '87wTMj88rEGV3BFiYXJc2UHeTGmHikMRWAvAskmPgaF3PZxuxonkKaJZsprNmuhM1Aca7P6UbyatGFHkQfUTYgoNN1JxND9';
+    const m = load();
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--pool', 'prl-us.kryptex.network:7048',
+      '--xmr-address', XMR_ADDR]);
+    await settle();
+    expect(m.probe.detectRegion).toHaveBeenCalled();
+    expect(allOut()).toContain('pool:       prl-us.kryptex.network:7048  (--pool)');
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await p;
   });
 
   test('an unknown region still exits 1 with the list', async () => {
@@ -1389,6 +1416,162 @@ describe('local LLM', () => {
     await settle();
     llm.emit('stopped', 0);
     await expect(p).resolves.toBe(1);
+  });
+
+  // A mining 32 GB card used to fall back to the default model: the tier at
+  // 262144 plus the mining reserve does not fit. It now co-runs the tier at the
+  // largest measured context that does, 131072. An idle 5090 still goes
+  // demand-driven at 262144 (see the demand tests), so these cards have a
+  // desktop on them: 3 GB used, which leaves 29,149 MB free.
+  const argvCoRun = ['-a', ADDR, '--mode', 'both', '--no-update', '--no-report', '--llm-binary', '/lb'];
+  const fiveNinety = (m, usedMb = 3000) => {
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb, totalMb: 32149 }]);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    m.LlmEngineManager.mmprojInstalled = true;
+  };
+
+  test('a mining 32 GB card co-runs the vision tier at 131072', async () => {
+    const m = load();
+    fiveNinety(m);
+    const p = m.run(argvCoRun);
+    await settle();
+
+    const tier = LLM.tiers[0];
+    const llm = m.LlmManager.instances[0];
+    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({
+      ctxSize: 131072,
+      ctxLadder: [131072, 65536, 32768],
+      extraArgs: tier.extraArgs,
+      alias: tier.name,
+    }));
+    expect(m.PearlEngine.instances[0].start).toHaveBeenCalled();
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  // A prompt hands its card to the LLM: mining pauses on that card and comes
+  // back after (shared/promptPause has the timing). Here: the busy signal from
+  // llama-server reaches the miner, and lets go when the LLM exits.
+  test('a prompt pauses mining on its card while the LLM co-runs, and the card mines again when the LLM exits', async () => {
+    const m = load();
+    fiveNinety(m);
+    const p = m.run(argvCoRun);
+    await settle();
+
+    const miner = m.PearlEngine.instances[0];
+    const llm = m.LlmManager.instances[0];
+    llm.emit('busy', true);
+    expect(miner.pauseCards).toHaveBeenCalledWith([0]);
+    expect(allOut()).toContain('mining paused on GPU 0 while the local LLM answers a prompt');
+
+    llm.emit('stopped', 1);
+    expect(miner.resumeCards).toHaveBeenCalledWith([0]);
+    expect(allOut()).toContain('mining resumed on GPU 0');
+
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('a card busy for 10 minutes without a break mines again, and the warning goes to stderr', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'setInterval', 'clearInterval'] });
+    try {
+      const m = load();
+      fiveNinety(m);
+      const p = m.run(argvCoRun);
+      await settle();
+      const miner = m.PearlEngine.instances[0];
+      m.LlmManager.instances[0].emit('busy', true);
+      jest.advanceTimersByTime(LLM.promptPause.maxPauseMs);
+      expect(miner.resumeCards).toHaveBeenCalledWith([0]);
+      expect(allErr()).toContain('mining resumed on GPU 0: the local LLM has been busy for 10 minutes without a break');
+      miner.emit('stopped', 0);
+      await expect(p).resolves.toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('on a rig of several cards, a server that never said which card it loaded on pauses nothing', async () => {
+    const m = load();
+    fiveNinety(m);
+    m.probe.detectPciBusIds.mockResolvedValue({ 0: '00000000:01:00.0', 1: '00000000:02:00.0' });
+    const p = m.run(argvCoRun);
+    await settle();
+    const miner = m.PearlEngine.instances[0];
+    m.LlmManager.instances[0].emit('busy', true);
+    expect(miner.pauseCards).not.toHaveBeenCalled();
+    // Once it has said, the card it named is the one that pauses.
+    m.LlmManager.instances[0].deviceBusId = '0000:02:00.0';
+    m.LlmManager.instances[0].emit('busy', true);
+    expect(miner.pauseCards).toHaveBeenCalledWith([1]);
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('a shutdown mid-prompt leaves the pause to the miner\'s own stop', async () => {
+    const m = load();
+    fiveNinety(m);
+    const p = m.run(argvCoRun);
+    await settle();
+    const miner = m.PearlEngine.instances[0];
+    m.LlmManager.instances[0].emit('busy', true);
+    fire('SIGTERM');
+    expect(miner.stop).toHaveBeenCalled();
+    expect(miner.resumeCards).not.toHaveBeenCalled();
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('--llm-model serves the operator file as the default model, not as the tier the card could hold', async () => {
+    // The operator's own Gemma copy started with the tier's context, its MTP
+    // speculation flags and its name -- which the server routes jobs on.
+    const m = load();
+    fiveNinety(m);
+    const p = m.run([...argvCoRun, '--llm-model', '/models/my-gemma.gguf']);
+    await settle();
+
+    const llm = m.LlmManager.instances[0];
+    const opts = llm.start.mock.calls[0][0];
+    expect(opts.alias).toBe(LLM.model.name);
+    expect(opts.modelPath).toBe('/models/my-gemma.gguf');
+    expect(opts.extraArgs).not.toEqual(LLM.tiers[0].extraArgs);
+    expect(opts.ctxSize).not.toBe(131072);
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('--llm-model pointing at the tier file keeps the tier and its settings', async () => {
+    const m = load();
+    fiveNinety(m);
+    const p = m.run([...argvCoRun, '--llm-model', '/models/' + LLM.tiers[0].file]);
+    await settle();
+
+    const llm = m.LlmManager.instances[0];
+    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({
+      ctxSize: 131072, extraArgs: LLM.tiers[0].extraArgs, alias: LLM.tiers[0].name,
+    }));
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('--llm-model in auto co-runs its file instead of going demand-driven for the tier', async () => {
+    // Auto on a 5090 goes demand-driven for the tier. An operator's own small
+    // model has no bigger choice to wait for, so it co-runs as it always has.
+    const m = load();
+    fiveNinety(m, 0);
+    const p = m.run(['-a', ADDR, '--no-update', '--no-report', '--no-serve', '--llm-binary', '/lb',
+      '--llm-model', '/models/my-gemma.gguf']);
+    await settle();
+
+    expect(allOut()).not.toContain('needs the GPU to itself');
+    expect(m.autoGate.createAutoGate.instances).toHaveLength(0);
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
   });
 
   // Starting the tier is half the job; SAYING you started it is the other half.

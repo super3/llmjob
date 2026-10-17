@@ -7,7 +7,7 @@
 // pure and dependency-free so it's fully unit-tested; the CLI shell wires the
 // real IO (download, spawn, network reporting) around it.
 
-const { REGIONS, LEGACY_REGIONS, DEFAULTS } = require('./config');
+const { REGIONS, LEGACY_REGIONS, DEFAULTS, splitEndpoint } = require('./config');
 const { isValidAddress, isValidMdlAddress, normalizeAddress } = require('./address');
 const { MODES, DEFAULT_MODE, isValidMode } = require('./llmMode');
 const { parseMemClockMhz } = require('./memClock');
@@ -32,7 +32,7 @@ const ALIASES = {
 
 // Options that consume a following value.
 const VALUE_FLAGS = new Set([
-  '--address', '--mdl', '--region', '--worker',
+  '--address', '--mdl', '--region', '--pool', '--worker',
   '--gpu', '--gpu-index',
   '--stats-file',
   '--mode', '--llm-binary', '--llm-model', '--llm-max-instances', '--gate-port', '--gate-host',
@@ -93,6 +93,10 @@ const USAGE = [
   '                           co-runs with it.',
   '  -r, --region <id>        Pool region: ' + Object.keys(REGIONS).join('/') + ' (default: auto-detect fastest)',
   '                           An old AlphaPool id (eu1, sg1, …) maps to the nearest.',
+  '      --pool <host:port>   Mine Pearl on this stratum endpoint instead of a',
+  '                           HeroMiners region, such as',
+  '                           prl-us.kryptex.network:7048. It must use the same',
+  '                           protocol as HeroMiners. Monero still follows the region.',
   '  -w, --worker <name>      Worker/rig name (default: this machine\'s hostname)',
   '  -g, --gpu <card>         GPU name to report on the board (default: auto-detect via nvidia-smi)',
   '      --gpu-index <list>   Mine only on these GPUs: nvidia-smi indices such as',
@@ -170,6 +174,15 @@ function buildSettings(opts, errors, report, update, serve) {
         errors.push('unknown region: ' + region + ' (choices: ' + regionChoices() + ')');
       }
     }
+  }
+
+  // Another pool for Pearl. Both parts are required: a pool has no default
+  // port, and a missing one should be loud, not a connect to the wrong port.
+  let endpoint = null;
+  if (opts['--pool'] != null) {
+    const { host, port } = splitEndpoint(opts['--pool']);
+    if (host && Number.isInteger(port) && port >= 1 && port <= 65535) endpoint = host + ':' + port;
+    else errors.push('invalid --pool: ' + opts['--pool'] + ' (expected host:port, such as prl-us.kryptex.network:7048)');
   }
 
   const worker = opts['--worker'] != null ? String(opts['--worker']).trim() : DEFAULTS.worker;
@@ -295,7 +308,7 @@ function buildSettings(opts, errors, report, update, serve) {
   const modeProvided = opts['--mode'] != null;
 
   return {
-    address, mdlAddress, region, legacyRegion, worker, gpu, gpuIndices, statsFile, xmrAddress, cpuThreads, cpuPriority,
+    address, mdlAddress, region, legacyRegion, endpoint, worker, gpu, gpuIndices, statsFile, xmrAddress, cpuThreads, cpuPriority,
     mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs, mineMemClockMhz,
     report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,
     warnings,

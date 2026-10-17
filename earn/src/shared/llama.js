@@ -132,7 +132,44 @@ function parseTokensPerSec(line) {
   return t ? t.tokensPerSec : null;
 }
 
+// A slot starting or finishing a request, from llama-server's own log. Every
+// prompt shows up here, whichever way it arrived: the API tab's address, the
+// built-in web UI, cluster jobs, the LAN share, or another app on the machine.
+// Most of those never pass through our code, so this is the one place that sees
+// them all. The lines (b9902, tools/server/server-context.cpp) are:
+//
+//   slot launch_slot_: id  0 | task 12 | processing task, is_child = 0
+//   slot      release: id  0 | task 12 | stop processing: n_tokens = 250, truncated = 0
+//
+// Every "processing task" has exactly one "stop processing": release() is the
+// only place a slot goes idle, cancelled requests included. Both print at the
+// default INFO level. Pinned by a test, so a llama.cpp upgrade that rewords them
+// fails CI instead of leaving mining paused.
+//
+// Returns { slot, busy } or null.
+function parseSlotEvent(line) {
+  const m = String(line == null ? '' : line)
+    .match(/\bid\s+(\d+)\s*\|\s*task\s+-?\d+\s*\|\s*(processing task|stop processing)\b/);
+  if (!m) return null;
+  return { slot: Number(m[1]), busy: m[2] === 'processing task' };
+}
+
+// The card a llama-server actually loaded on, as its PCI bus id, from the line
+// it prints once at load (b9902, src/llama.cpp):
+//
+//   llama_model_load_from_file_impl: using device Vulkan0 (NVIDIA GeForce RTX 3090) (0000:02:00.0) - 23893 MiB free
+//
+// Needed because --main-gpu counts cards in Vulkan's order, which need not be
+// nvidia-smi's: on Windows it follows the adapter driving the desktop. With
+// --split-mode none there is exactly one such line. Null when the backend did
+// not know the bus id ("unknown id") or the line is anything else.
+function parseUsingDevice(line) {
+  const m = String(line == null ? '' : line)
+    .match(/using device \S+ \(.*\) \(([0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+\.[0-9a-fA-F])\) - \d+ MiB free/);
+  return m ? m[1] : null;
+}
+
 module.exports = {
   resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, isServerReady,
-  parseTokensPerSec, parseTiming,
+  parseTokensPerSec, parseTiming, parseSlotEvent, parseUsingDevice,
 };

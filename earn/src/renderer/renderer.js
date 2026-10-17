@@ -32,7 +32,7 @@
     // api
     apiRunning: $('api-running'), apiStopped: $('api-stopped'),
     apiEndpointUrl: $('api-endpoint-url'), apiCopy: $('api-copy'), apiOpen: $('api-open'),
-    apiModel: $('api-model'), apiLan: $('api-lan'), apiLanUrl: $('api-lan-url'),
+    apiModel: $('api-model'), apiModelMeta: $('api-model-meta'), apiLan: $('api-lan'), apiLanUrl: $('api-lan-url'),
     // connect
     connectHint: $('connect-hint'), connectForm: $('connect-form'), connectToken: $('connect-token'),
     connectError: $('connect-error'), connectLink: $('connect-link'), connectDashboard: $('connect-dashboard'),
@@ -75,7 +75,7 @@
     engineGpu: '',
     temp: 0,             // last core temperature reported, so a frame without one keeps it
     canMine: true,       // false on macOS — no alpha-miner build exists for it
-    llm: { ready: false, endpoint: null, webUrl: null, tps: 0, model: null, error: null, note: null, lan: null },
+    llm: { ready: false, endpoint: null, webUrl: null, tps: 0, model: null, vramMb: null, ctxSize: null, error: null, note: null, lan: null },
     chat: { messages: [], streaming: false, streamText: '', bubble: null },
     node: { connected: false, nodeId: null, name: null },
     // Monero on the CPU (Settings → CPU Mining). On while a Monero address is
@@ -209,6 +209,17 @@
     el.llmCol.title = state.llm.model || '';
     el.chatStoppedModel.textContent = state.llm.model || 'the local model';
     el.apiModel.textContent = state.llm.model || '—';
+    el.apiModelMeta.textContent = modelMeta(state.llm.vramMb, state.llm.ctxSize);
+  }
+
+  // "~24 GB VRAM · 128K ctx" for the model being served. Was hard-coded to
+  // "~5 GB VRAM · 128K ctx", which matched no model the app runs. Either half
+  // is left out when main has not said.
+  function modelMeta(vramMb, ctxSize) {
+    const parts = [];
+    if (vramMb > 0) parts.push('~' + Math.round(vramMb / 1024) + ' GB VRAM');
+    if (ctxSize > 0) parts.push(Math.round(ctxSize / 1024) + 'K ctx');
+    return parts.join(' · ');
   }
 
   function renderChatGate() {
@@ -261,6 +272,8 @@
       webUrl: (s && s.webUrl) || null,
       tps: (s && s.tokensPerSec) || 0,
       model: (s && s.model) || state.llm.model,
+      vramMb: (s && s.vramMb) || state.llm.vramMb,
+      ctxSize: (s && s.ctxSize) || state.llm.ctxSize,
       error: (s && s.error) || null,
       note: (s && s.note) || null,
       lan: (s && s.lan) || null,

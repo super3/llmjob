@@ -243,6 +243,16 @@ function parseGpuStats(out) {
 // parse are skipped.
 const PCI_BUS_ID_RE = /^[0-9a-f]{4,8}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]$/i;
 
+// One PCI bus id in one spelling, so ids from different tools compare equal:
+// nvidia-smi writes 00000000:0A:00.0, llama.cpp's Vulkan backend 0000:0a:00.0.
+// Null for anything that is not a bus id ("unknown id", junk).
+function normalizePciBusId(id) {
+  const m = String(id == null ? '' : id).trim()
+    .match(/^([0-9a-f]{1,8}):([0-9a-f]{1,2}):([0-9a-f]{1,2})\.([0-9a-f])$/i);
+  if (!m) return null;
+  return [m[1], m[2], m[3]].map((h) => parseInt(h, 16).toString(16)).join(':') + '.' + m[4].toLowerCase();
+}
+
 function parsePciBusIds(out) {
   const map = {};
   for (const row of String(out == null ? '' : out).split(/\r?\n/)) {
@@ -285,5 +295,5 @@ module.exports = {
   IGNORE, INTEGRATED, pickGpu, countGpus, alignCudaDeviceOrder,
   clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexList, readGpuIndexEnv,
   describeSkippedGpus,
-  planMinerGpus, parseGpuStats, parsePciBusIds, parseMacGpu,
+  planMinerGpus, parseGpuStats, parsePciBusIds, normalizePciBusId, parseMacGpu,
 };

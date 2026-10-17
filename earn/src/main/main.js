@@ -45,6 +45,7 @@ const nodeProto = require('../shared/node');
 const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
 const { planLlmInstances } = require('../shared/llmPlan');
 const { pickModel, ctxLadder } = require('../shared/models');
+const { createPromptPause, cardForPrompt } = require('../shared/promptPause');
 const { LlmFleet } = require('./llmFleet');
 const { createLanShare } = require('./lanShare');
 const { buildChatBody } = require('../shared/llmChat');
@@ -114,6 +115,21 @@ let reporter = null;
 // starting the LLM after the user already stopped.
 let miningEpoch = 0;
 let fleet = null;               // LlmFleet (one llama-server per eligible GPU) while up
+// Mining stops on a card while the LLM beside it answers a prompt, and starts
+// again a little after (see shared/promptPause). Acts on whatever miner runs at
+// the time, so a miner started mid-prompt starts paused (startMining calls
+// reapply). In LLM-only mode there is no miner and it pauses, and says, nothing.
+const promptPause = createPromptPause({
+  // A miner that is not running pauses and resumes nothing (PearlMiner).
+  pause: (indices) => (miner ? miner.pauseCards(indices).length > 0 : false),
+  resume: (indices) => (miner ? miner.resumeCards(indices).length > 0 : false),
+  log: (level, line) => send('miner:log', { level, line }),
+  resumeAfterMs: LLM.promptPause.resumeAfterMs,
+  maxPauseMs: LLM.promptPause.maxPauseMs,
+});
+// nvidia-smi's PCI bus id per card, read when the LLM starts, to find the card
+// each llama-server really loaded on (see promptPause.cardForPrompt).
+let llmBusIds = {};
 let llmEverReady = false;       // did any instance reach "ready" this run (vs. dying first)
 let serveLogged = false;        // "serving cluster jobs" logged once per serving run
 let registeredUnlinked = false; // self-registered an unlinked node once this run
@@ -123,7 +139,10 @@ let registeredUnlinked = false; // self-registered an unlinked node once this ru
 // however long a ~5 GB model takes, which reads as a hang: a user on a 2-GPU rig
 // hit START seventeen times over ninety seconds while the download was in fact
 // progressing normally.
-let llmStatus = { ready: false, endpoint: null, webUrl: null, tokensPerSec: 0, model: LLM.model.name, error: null, note: null };
+// `vramMb` and `ctxSize` describe the model being served, for the API tab's
+// "~N GB VRAM · NK ctx" line, which was hard-coded to Gemma's old numbers.
+let llmStatus = { ready: false, endpoint: null, webUrl: null, tokensPerSec: 0, model: LLM.model.name,
+  vramMb: LLM.model.vramFullMb, ctxSize: ctxLadder(LLM.model)[0], error: null, note: null };
 // Which model this machine actually loaded, once a run has chosen one. Every
 // place that reports a model name reads this rather than LLM.model, which stopped
 // being the answer when selection became per-node: a 5090 serving Qwen3.8 would
@@ -645,6 +664,8 @@ async function startMining(settings, llmCoRuns) {
   } catch (e) {
     reportLaunchFailure(e);
   }
+  // A prompt that is running now keeps its card from mining.
+  promptPause.reapply();
 }
 
 // Miner event wiring. PearlEngine translates our miner's events into the two
@@ -1207,8 +1228,9 @@ async function startLlm(reserveMb, epoch) {
   // means VRAM was measured but nothing fits — refuse, as the single-card path
   // did; when VRAM can't be read the planner returns one unknown-placement
   // instance and lets llama.cpp decide.
-  const cards = await detectGpusVram();
+  const [cards, busIds] = await Promise.all([detectGpusVram(), probe.detectPciBusIds()]);
   if (stale()) return false;
+  llmBusIds = busIds;
   // Which model this run serves. Chosen from the best card's free VRAM, because
   // the fleet loads ONE model across every instance — planLlmInstances then drops
   // any card that cannot hold it. On a mixed rig that trades breadth for
@@ -1223,7 +1245,7 @@ async function startLlm(reserveMb, epoch) {
   // updated — fine while every node ran the same model, wrong the moment one
   // doesn't. Set before the first failure path below so even "Needs ~N GB free
   // VRAM" names the model it was actually short for.
-  llmStatus = Object.assign({}, llmStatus, { model: model.name });
+  llmStatus = Object.assign({}, llmStatus, { model: model.name, vramMb: model.vramFullMb, ctxSize: ctxLadder(model)[0] });
   const plan = planLlmInstances(cards, model, reserveMb || 0);
   if (!plan.length) {
     // An empty plan means VRAM was measured but no card had room — so at least
@@ -1353,6 +1375,10 @@ function buildFleet() {
     syncWorker(); // serve cluster jobs once a model is up, if we're linked
   });
   f.on('stats', ({ tokensPerSec }) => { llmStatus = Object.assign({}, llmStatus, { tokensPerSec }); sendLlmStatus(); });
+  f.on('busy', (e) => {
+    const card = cardForPrompt(e, llmBusIds);
+    if (card !== undefined) promptPause.setBusy(card, e.busy);
+  });
   f.on('error', () => { /* transient instance error — the fleet keeps the others */ });
   f.on('stopped', () => {
     cancelChat('the local LLM stopped');
@@ -1389,6 +1415,9 @@ function warmUpLlm(baseUrl) {
 
 function stopLlm() {
   cancelChat('the local LLM was stopped');
+  // Nothing is left to answer a prompt, so every card mines now rather than
+  // after the usual wait.
+  promptPause.reset();
   if (fleet) { fleet.stop(); fleet = null; }
   serveLogged = false;
   resetLlmStatus();
