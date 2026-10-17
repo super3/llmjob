@@ -496,9 +496,10 @@ class W:
             elif not (200 <= s < 300 or s == 404):
                 err(f"sweep delete {name} failed {s} {j}")
 
-    def reallocate(self, g, reason, count=True):
+    def reallocate(self, g, reason, count=True, gone_ok=False):
         """Ask Salad for another PC. count=False for a PC another group already left: that move isn't the
-        group's fault, so it doesn't use up one of its 3."""
+        group's fault, so it doesn't use up one of its 3. gone_ok: an instance Salad no longer has (404) counts as
+        moved, since the group starts a new one anyway (for a pool switch, which needs only a fresh start)."""
         if count and g["reallocs"] >= 3:
             # Running out of moves means bad PCs (slow, capped, blocked port), not a bad class: leave() only
             # reallocates classes that have paid. Released, so the class isn't barred from new groups.
@@ -507,7 +508,7 @@ class W:
         if not g.get("instance"):
             return False
         s, j = http("POST", f"{CB}/{g['name']}/instances/{g['instance']}/reallocate")
-        if 200 <= s < 300:
+        if 200 <= s < 300 or (gone_ok and s == 404):
             g["reallocs"] += 1 if count else 0
             g.setdefault("left", []).append(g["machine"])
             event(f"REALLOCATED {g['name']} off PC {(g['machine'] or '')[:8]} ({reason}); "
@@ -620,7 +621,7 @@ class W:
             event(f"WARN Kryptex {'on' if on else 'off'} for {g['name']} refused: HTTP {s} {str(j)[:150]}")
             return False
         moving = bool(g["has_pc"] and g.get("instance"))
-        if moving and not self.reallocate(g, f"to start on {'Kryptex' if on else 'HeroMiners'}", count=False):
+        if moving and not self.reallocate(g, f"to start on {'Kryptex' if on else 'HeroMiners'}", count=False, gone_ok=True):
             # Still on its PC with the command it started with: put the group's command back to match, and try again
             # in 15 minutes.
             _, back, _ = self.box(g["name"], bool(g.get("xmr")), bool(g.get("kx")))
