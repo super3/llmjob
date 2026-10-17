@@ -47,6 +47,7 @@ because no L40 was for rent other than the New York one.
   (PeakMiner's docs), and both got nothing on a GTX 1080 on Salad. We have no
   Pascal build either.
 - GTX 16-series: being measured on Salad; see its section.
+- AMD Radeon: not run yet. PeakMiner and SRBMiner baselines on Salad; our miner is CUDA only.
 - Tesla T4: 91%. As on the 20-series, the clock is close (15 MHz below the
   competitors') and we do 7% less work per clock.
 
@@ -700,6 +701,30 @@ cores, which our kernel uses. PeakMiner's docs say GTX 16xx cards can't mine Pea
 | GTX 1660 | Salad (— W, 6 GB) | — | not run | not run | not run | — |
 | GTX 1650 | Salad (— W, 4 GB) | — | not run | not run | not run | — |
 | GTX 1650 | Salad (— W, 4 GB) | — | not run | not run | not run | — |
+
+## AMD Radeon (RDNA 3 and 4, on Salad)
+
+Not run yet. These are the AMD cards Salad rents. Each PC runs PeakMiner and SRBMiner for 5 minutes each
+after a 60-second unmeasured warm-up, the way the GTX rows are run, as a baseline. Our miner is CUDA only,
+so "Ours" is "no build". PeakMiner's README lists AMD support only for CSD, Alphanumeric and Quantus, not
+Pearl; SRBMiner lists pearlhash for AMD (RX 5000 to 9000).
+
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
+|---|---|---|---|---|---|---|
+| RX 9070 XT | Salad (— W, 16 GB) | — | no build | not run | not run | — |
+| RX 9070 XT | Salad (— W, 16 GB) | — | no build | not run | not run | — |
+| RX 9060 XT | Salad (— W, 16 GB) | — | no build | not run | not run | — |
+| RX 9060 XT | Salad (— W, 16 GB) | — | no build | not run | not run | — |
+| RX 7900 XTX | Salad (— W, 24 GB) | — | no build | not run | not run | — |
+| RX 7900 XTX | Salad (— W, 24 GB) | — | no build | not run | not run | — |
+| RX 7900 XT | Salad (— W, 20 GB) | — | no build | not run | not run | — |
+| RX 7900 XT | Salad (— W, 20 GB) | — | no build | not run | not run | — |
+| RX 7800 XT | Salad (— W, 16 GB) | — | no build | not run | not run | — |
+| RX 7800 XT | Salad (— W, 16 GB) | — | no build | not run | not run | — |
+
+Salad's prices per hour on 17 October (batch / low / medium / high): RX 9070 XT $0.070 / 0.110 / 0.155 /
+0.196; RX 9060 XT $0.049 / 0.075 / 0.100 / 0.126; RX 7900 XTX $0.066 / 0.100 / 0.134 / 0.168; RX 7900 XT
+$0.054 / 0.088 / 0.122 / 0.156; RX 7800 XT $0.042 / 0.072 / 0.102 / 0.132.
 
 ## Hosts replaced in this run
 
