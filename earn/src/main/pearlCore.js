@@ -3,7 +3,7 @@
 const path = require('path');
 const { createRequire } = require('module');
 const {
-  CU12, CU13, FILES, LABELS, pickCoreVariant, isRuntimeError,
+  CU12, CU13, AMD, FILES, LABELS, pickCoreVariant, isRuntimeError,
 } = require('../shared/coreVariant');
 
 // Loads the native PearlHash core (earn/native → a compiled `pearl_core.node`
@@ -28,7 +28,8 @@ const {
 //
 // There are two builds of the addon -- see shared/coreVariant for which one a
 // rig gets and why. loadCore finds `pearl_core.node` (CUDA 12.8); coreFactory
-// decides whether to try `pearl_core_cu13.node` first.
+// decides whether to try `pearl_core_cu13.node` first. A third, for AMD cards
+// (`pearl_core_hip.node`), loads only when PEARL_CORE_VARIANT=amd asks for it.
 
 // What every probe shares: the require to load with, and the directories a
 // packaged install keeps its addons in.
@@ -95,6 +96,16 @@ function findCu13Core(opts) {
   return firstLoadable(req, dirs.map((d) => path.join(d, FILES[CU13])));
 }
 
+// The AMD core (PEARL_CORE_VARIANT=amd only): the packaged locations, then the
+// dev tree's build folder, earn/native/amd/build, where build-amd.sh writes it.
+function findAmdCore(opts) {
+  const { req, dirs } = loaderContext(opts);
+  const dev = path.join(__dirname, '..', '..', 'native', 'amd', 'build', FILES[AMD]);
+  const found = firstLoadable(req, dirs.map((d) => path.join(d, FILES[AMD])).concat([dev]));
+  if (found && found.file === dev) found.dev = true;
+  return found;
+}
+
 function loadCore(opts = {}) {
   const found = findCore(opts);
   return found ? found.addon : null;
@@ -128,6 +139,20 @@ function coreFactory(opts = {}) {
   const wrap = (addon) => (profile, coreOpts) => addon.createCore(profile, coreOpts || {});
 
   if (env.PEARL_CORE_PATH) {
+    // With PEARL_CORE_VARIANT=amd the named file is the only one tried: every
+    // fallback findCore has is a CUDA build, which on an AMD rig would load and
+    // then fail on every start. The path counts from the executable's folder
+    // when it is relative, not from where the command ran.
+    if (pickCoreVariant({ env }).variant === AMD) {
+      const named = firstLoadable(loaderContext(opts).req, [env.PEARL_CORE_PATH]);
+      if (!named) {
+        log('error', 'Pearl core: ' + LABELS[AMD] + ' · PEARL_CORE_PATH=' + env.PEARL_CORE_PATH
+          + ' did not load (PEARL_CORE_VARIANT=amd, so no CUDA build is tried; use an absolute path)');
+        return null;
+      }
+      log('info', 'Pearl core: ' + named.file + ' (PEARL_CORE_PATH)');
+      return wrap(named.addon);
+    }
     const found = findCore(opts);
     if (!found) return null;
     log('info', 'Pearl core: ' + found.file
@@ -136,6 +161,20 @@ function coreFactory(opts = {}) {
   }
 
   const pick = pickCoreVariant({ env, cards: opts.cards, gpus: opts.gpus });
+
+  // Asked for by name, so no fallback to a CUDA build: on an AMD rig there is
+  // nothing for one to run on, and on an NVIDIA rig the operator said otherwise.
+  if (pick.variant === AMD) {
+    const amd = findAmdCore(opts);
+    if (!amd) {
+      log('error', 'Pearl core: ' + LABELS[AMD] + ' · ' + FILES[AMD] + ' not found ('
+        + pick.reason + '; build it with earn/native/amd/build-amd.sh gpu, or set PEARL_CORE_PATH)');
+      return null;
+    }
+    say('info', AMD, (amd.dev ? 'local build ' + amd.file + ', ' : '') + pick.reason);
+    return wrap(amd.addon);
+  }
+
   const cu13 = pick.variant === CU13 ? findCu13Core(opts) : null;
 
   if (!cu13) {
