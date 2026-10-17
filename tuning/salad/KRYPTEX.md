@@ -24,7 +24,7 @@ from its accepted shares. Work on PR #261, branch `claude/amazing-newton-mu7lgq`
 - Stratum: `prl-us.kryptex.network:7048` (plain TCP), SSL on 8048. Other regions: `prl`, `prl-eu`,
   `prl-br`, `prl-sg`, `prl-hk`, `prl-ru`, `prl-ae`, all `.kryptex.network`.
 - Login: "wallet/worker" (slash), or the wallet alone. `solo:wallet` is SOLO mining; don't use it.
-- PPS+ fee 3%, SOLO 1%, payout from 1 PRL. Static share difficulty 2097152, the same as HeroMiners'
+- PPS+ fee 3% advertised, but it pays 94% of a share's value (measured 17 October); SOLO 1%; payout from 1 PRL. Static share difficulty 2097152, the same as HeroMiners'
   (`job_id` ends in `_2097152` there).
 - Kryptex lists `pearl-source` among the miners on the pool, so Pearl's reference stratum likely works.
 - API: `https://pool.kryptex.com/openapi.yaml`. The watcher uses
@@ -119,7 +119,8 @@ cd earn && node src/cli/earn-cli.js -a "$W" -w kx-test --mode mining --no-serve 
    shares. If Kryptex rejects the work, the box goes back to HeroMiners by itself, and two such
    failures stop the test until `kryptex_token` changes.
 5. After a few hours, compare Kryptex's credited PRL with the box's estimate (the report's Kryptex
-   line). Expect about 97% against HeroMiners' 92%. If it holds, raise `kryptex_groups` to 3.
+   line). Expect about 94% (measured in the release session) against HeroMiners' 92%. If it holds, raise
+   `kryptex_groups` to 3.
 
 ## Things not to do
 
