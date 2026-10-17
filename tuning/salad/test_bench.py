@@ -59,6 +59,8 @@ class TestBench(unittest.TestCase):
         st["results"]["GTX 1660 Ti"] = [{"machine": "741f9c56", "power": "120.00 W", "ours": (1.2, None),
                                          "peak": (1.2, None), "srb": (1.2, None)}]
         self.assertEqual(b.render(st).count("| GTX 1660 Ti |"), 1)
+        st["results"]["GTX 1660 Ti"][0]["power"] = "[N/A]"
+        self.assertIn("| GTX 1660 Ti | Salad (— W, 6 GB) | 741f9c56 |", b.render(st))
 
     def test_a_group_stopped_before_a_pc_is_started_again_every_5_minutes(self):
         calls, now = [], [10_000]
