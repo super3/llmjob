@@ -1,4 +1,5 @@
 {"default": {"core": "release", "flags": "", "env": {}},
- "gpus": {"0": {"core": "build:pascalb"}},
+ "gpus": {"0": {"core": "build:pascalc"}},
  "builds": {"pascal": {"ref": "4c48c3dec3437d93cfe672683c6bbeddae2cfd2d"},
-            "pascalb": {"ref": "4c48c3dec3437d93cfe672683c6bbeddae2cfd2d"}}}
+            "pascalb": {"ref": "4c48c3dec3437d93cfe672683c6bbeddae2cfd2d"},
+            "pascalc": {"ref": "d42508526b2988b71905e1e1de70e55d0f42e154"}}}
