@@ -46,7 +46,8 @@ because no L40 was for rent other than the New York one.
 - GTX 10-series: 0 for PeakMiner and SRBMiner. Pearl needs RTX 20xx or newer
   (PeakMiner's docs), and both got nothing on a GTX 1080 on Salad. We have no
   Pascal build either.
-- GTX 16-series: being measured on Salad; see its section.
+- GTX 16-series: 0.7–1.3 TH/s for all three miners (96–104%). The cards have no tensor cores, and
+  every miner's tensor instructions run on a slow shared unit. Not worth mining on Salad.
 - AMD Radeon: not run yet. PeakMiner and SRBMiner baselines on Salad; our miner is CUDA only.
 - Tesla T4: 91%. As on the 20-series, the clock is close (15 MHz below the
   competitors') and we do 7% less work per clock.
@@ -732,21 +733,38 @@ no Pascal build (its lowest target is sm_75, and its kernel uses int8 tensor cor
 
 ## GTX 16-series (Turing without tensor cores, sm_75, on Salad)
 
-In progress. These cards are rented on Salad, not Vast: each row is one Salad PC (a home computer), named by
-the first 8 characters of its Salad machine ID, with the power limit from `nvidia-smi`. Salad doesn't say where
-a PC is. Each PC runs PeakMiner, SRBMiner and our release v0.6.0 one after another, 5 minutes each after a
-60-second unmeasured warm-up, on `us.pearl.herominers.com`, PeakMiner and SRBMiner alternating which goes
-first (`tuning/salad/bench.sh`). These cards are sm_75, which v0.6.0 is built for, but they have no tensor
-cores, which our kernel uses. PeakMiner's docs say GTX 16xx cards can't mine Pearl.
+Run on 17 October 2026, 20:09–22:33 UTC. These cards are rented on Salad, not Vast: each row is one Salad PC
+(a home computer), named by the first 8 characters of its Salad machine ID, with the power limit from
+`nvidia-smi`. Salad doesn't say where a PC is. Each PC ran PeakMiner 2.17.6, SRBMiner 3.7.1 and our release
+v0.6.0 one after another, 5 minutes each after a 60-second unmeasured warm-up, on `us.pearl.herominers.com`,
+PeakMiner and SRBMiner alternating which went first (`tuning/salad/bench.sh`).
+
+All three miners run at the same speed on every card, 0.7–1.3 TH/s, with the card drawing only 28–58 W.
+These cards are sm_75, which our release is built for, but they have no tensor cores: the tensor
+instructions every miner uses run on a slow shared unit, about 25–30 int8 multiply-adds per clock per SM
+against 1,024 on an RTX 2080 Ti. No miner found a share in 5 minutes (at 1 TH/s one share takes about 2.5
+hours). A dp4a path could reach 5–9 TH/s, but even that earns less than Salad's cheapest price for these
+cards ($0.015–0.02/hr), so it isn't being built. Our CLI prints its rate to one decimal, so "% of best" is
+only good to about ±5%.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
-| GTX 1660 Super | Salad (— W, 6 GB) | — | not run | not run | not run | — |
-| GTX 1660 Super | Salad (— W, 6 GB) | — | not run | not run | not run | — |
-| GTX 1660 | Salad (— W, 6 GB) | — | not run | not run | not run | — |
-| GTX 1660 | Salad (— W, 6 GB) | — | not run | not run | not run | — |
-| GTX 1650 | Salad (— W, 4 GB) | — | not run | not run | not run | — |
-| GTX 1650 | Salad (— W, 4 GB) | — | not run | not run | not run | — |
+| GTX 1660 Super | Salad (106 W, 6 GB) | 1535c250 | 1.1 | 1.13 | 1.13 | 97% |
+| GTX 1660 Super | Salad (119 W, 6 GB) | 535c608c | 1.0 | 1.01 | 0.96 | 96% |
+| GTX 1660 Ti | Salad (6 GB) | 741f9c56 | 1.2 | 1.14 | 1.16 | 104% |
+| GTX 1660 Ti | Salad (88 W, 6 GB) | 30b3c19c | 1.3 | 1.28 | 1.29 | 101% |
+| GTX 1660 | Salad (120 W, 6 GB) | 095beb7b | 1.1 | 1.05 | 1.04 | 104% |
+| GTX 1660 | Salad (6 GB) | not run | not run | not run | not run | — |
+| GTX 1650 | Salad (75 W, 4 GB) | 522e3507 | 0.7 | 0.68 | 0.69 | 99% |
+| GTX 1650 | Salad (4 GB) | not run | not run | not run | not run | — |
+
+- **GTX 1660 Ti** rows came from Salad's "GTX 1660" class, which handed out 7 Tis in 10 PCs. The 741f9c56
+  PC's driver doesn't report a power limit.
+- **The second GTX 1660** wasn't found in 10 PCs. Of the two plain 1660s, one (e3babbec) couldn't keep a
+  connection to HeroMiners (PeakMiner's authorize timed out, SRBMiner had a rate for 15 seconds, ours never
+  got a job), so it isn't a result.
+- **The second GTX 1650** wasn't run: the benchmark was stopped after the first, since every 16-series card
+  gives the same answer.
 
 ## AMD Radeon (RDNA 3 and 4, on Salad)
 
