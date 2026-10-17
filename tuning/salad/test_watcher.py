@@ -815,7 +815,7 @@ class TestPoolTotals(Base):
         with open(os.path.join(TMP, "report.md")) as f:
             report = f.read()
         # 8 PRL mined for $6.00: $0.750 each. The pool has credited 6 of them. Nothing sold: 8 × (1.39 − 0.75) = +5.12.
-        self.assertIn("· **profit so far +$5.12\\***", report)
+        self.assertIn("| **+5.12\\*** |\n", report)  # the All row
         self.assertIn("Spent $6.00* on Salad for 8.000* PRL, $0.750* each.", report)
         self.assertIn("| ⛏️ PRL | 0 TH/s | 0.500 | 4.000 | 1.500 |", report)  # straight from the pool: no stars
         self.assertIn("The PRL pool has credited 75%* of our estimate over 6 blocks, and pays out from 1 PRL "
@@ -838,10 +838,14 @@ class TestCreditRatio(Base):
     def test_the_first_line_starts_with_a_readable_time(self):
         self.assertTrue(self.report().startswith("**08:00 UTC, Fri 15 Jan** · PRL $1.390 · "))
 
+    def test_the_first_line_leaves_out_what_the_all_row_shows(self):
+        first = self.report().split("\n")[0]
+        self.assertEqual(first, "**08:00 UTC, Fri 15 Jan** · PRL $1.390 · 0/1 mining")
+
     def test_the_table_counts_on_what_the_pool_credits(self):
         report = self.report()
         # 75% of 8 PRL is 6, mined for $6.00: $1.000 each. Worth 6 × 1.39 − 6.00 = +2.34.
-        self.assertIn("· **profit so far +$2.34\\***", report)
+        self.assertIn("| **+2.34\\*** |\n", report)  # the All row
         self.assertIn("Spent $6.00* on Salad for 6.000* PRL (8.000* at the network's rate × 75%* credited), $1.000* each.", report)
         self.assertIn("The PRL pool has credited 75%* of our estimate over 20 blocks, and pays out from 1 PRL.", report)
         self.assertNotIn("from 10 blocks on", report)
@@ -924,7 +928,7 @@ class TestStartingBoxes(Base):
         self.assertIn(f"| ⛏️{w.NB}2060{w.NB}low | 0 | 0.03 | — |", report)
         # $/hr counts both bills; Profit/hr only the 4080: 200 × 0.00117 − 0.19 = +0.044.
         self.assertIn("| **All** | **200** | **0.22** | **+0.04\\* (+19%\\*)** |", report)
-        self.assertIn(" · 1 of 2 mining · 1 starting · **+$0.04\\*/hr** · ", report)
+        self.assertIn(" · 1/2 mining\n", report)  # the starting box counts as not mining yet
 
     def test_stars_inside_bold_are_escaped(self):
         # "**+0.27* (+24%*)**" doesn't render as bold: Markdown takes the stars for more emphasis.
@@ -1121,7 +1125,7 @@ class TestTraderStatus(Base):
         # − $8.00 = +5.68, not 10 × 1.39 − 8.
         self.assertIn("| — | +5.68* |\n", report)
         self.assertNotIn("Locked", report)
-        self.assertIn("**profit so far +$5.68\\***", report)
+        self.assertIn("| **+5.68\\*** |\n", report)  # the All row
 
     def test_sales_entered_by_hand_count_until_the_logs_can_be_read(self):
         g = self.group()
@@ -1166,7 +1170,7 @@ class TestRound(Base):
         with open(os.path.join(TMP, "report.md")) as f:
             report = f.read()
         self.assertIn(f"| ⛏️{w.NB}4080{w.NB}batch | 199 |", report)
-        self.assertIn(" · 1 of 1 mining · ", report)
+        self.assertIn(" · 1/1 mining\n", report)
         self.assertTrue(all(l.count("|") == 6 for l in report.splitlines() if l.startswith("|")))
 
     def test_boxes_are_sorted_by_profit_an_hour(self):
