@@ -1601,11 +1601,71 @@ class TestKryptex(Base):
 
     def test_a_kryptex_box_that_had_shares_and_stops_is_a_pc_problem(self):
         g = self.mining("m1", 300)
-        g.update(kx=True, kx_since=self.clock[0] - 3600, last_share=self.clock[0] - 1800)   # Kryptex took its work
+        g.update(kx=True, kx_since=self.clock[0] - 3600, kx_share=self.clock[0] - 1800)   # Kryptex took its work
         self.x.leave(g, "no mining reading for 7 min on PC m1")
         self.assertTrue(g["kx"])                         # still a Kryptex box, moved off a bad PC
         self.assertEqual(self.x.st.get("kx_fails", 0), 0)
         self.assertIn("m1", self.x.st["bad_pcs"])
+
+    def test_a_late_herominers_share_is_no_proof_kryptex_works(self):
+        self.x.cfg["search"] = False
+        g = self.group()
+        g.update(kx=True, kx_since=T0 + 300, sw_t=T0 + 300, sw_from="m0", sw_prev=False, created=T0 - 3600,
+                 acc={"m0": 10})
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
+        # The PC it left sends one more HeroMiners share after the switch.
+        items = [{"text_log": "[mining g0] 08:06:00 198.0 TH/s · 11 accepted · 0 rejected · up 4h 3m",
+                  "time": "2027-01-15T08:06:00Z",
+                  "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m0"}}}]
+        self.http.on("POST", "/log-entries", (200, {"items": items}))
+        self.clock[0] = T0 + 500
+        self.x.round()
+        self.assertGreater(g["last_share"], g["kx_since"])
+        self.assertIsNone(g.get("kx_share"))
+        g.update(has_pc=True, machine="m1", pc_since=self.clock[0], instance="inst-m1")
+        self.x.leave(g, "no mining reading 10 min after getting PC m1")
+        self.assertFalse(g["kx"])                        # a Kryptex failure: back to HeroMiners
+        self.assertEqual(self.x.st["kx_fails"], 1)
+        self.assertNotIn("m1", self.x.st.get("bad_pcs", {}))
+
+    def test_without_a_box_on_kryptex_only_the_totals_are_read_every_5_minutes(self):
+        self.x.cfg["wallet"] = os.environ["PRL_WALLET"]
+        self.http.on("GET", "v1/miner/balance", (503, {}))
+        for _ in range(7):
+            self.x.kx_pool(workers=False)
+            self.clock[0] += 60
+        self.assertFalse(self.http.made("GET", "v3/miner/workers"))
+        self.assertEqual(len(self.http.made("GET", "v1/miner/balance")), 2)   # 08:00 and 08:05, though both failed
+
+    def test_if_salad_refuses_the_move_and_the_put_back_the_ledger_follows_salad(self):
+        g = self.mining("m1", 300)
+        self.http.on("POST", "/reallocate$", (500, {}))
+        self.http.on("PATCH", "/containers/", lambda b: (200, {}) if "socat" in b["container"]["command"][2] else (503, {}))
+        self.x.kx_sync([g], self.clock[0])
+        self.assertTrue(g["kx"])                         # Salad has the Kryptex command: the next PC starts on it
+        self.assertEqual((g["machine"], g["sw_from"], g["sw_prev"]), ("m1", "m1", False))   # this PC stays HeroMiners
+        self.assertIn("refused to move it and to put its command back (HTTP 503)", self.events())
+
+    def test_a_refused_switch_back_waits_15_minutes(self):
+        g = self.mining("m1", 300)
+        g.update(kx=True, kx_since=self.clock[0] - 3600)
+        self.x.cfg["kryptex_groups"] = 0
+        self.http.on("POST", "/reallocate$", (409, {}))
+        for _ in range(5):
+            self.x.kx_sync([g], self.clock[0])
+            self.clock[0] += 60
+        self.assertEqual(len(self.http.made("POST", "/reallocate$")), 1)
+        self.clock[0] += 11 * 60
+        self.x.kx_sync([g], self.clock[0])
+        self.assertEqual(len(self.http.made("POST", "/reallocate$")), 2)
+
+    def test_a_box_that_changed_pc_this_round_waits_a_round(self):
+        g = self.mining("m1", 300)
+        g["_machine"] = "m5"                             # Salad moved it; rules() hasn't seen the new PC yet
+        self.x.kx_sync([g], self.clock[0])
+        self.assertFalse(g["kx"])
+        self.assertFalse(self.http.made("PATCH", "/containers/"))
 
     def test_a_late_reading_after_a_switch_back_counts_as_kryptex(self):
         self.x.cfg["search"] = False
