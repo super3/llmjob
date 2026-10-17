@@ -1406,12 +1406,12 @@ class TestKryptex(Base):
         with open(os.path.join(TMP, "report.md")) as f:
             return f.read()
 
-    def mining(self, machine, since_min, pri="medium"):
-        """A HeroMiners group on `machine` for `since_min` minutes, with a reading a minute ago."""
+    def mining(self, machine, since_min, ths=199.0, pri="medium"):
+        """A HeroMiners group on `machine` for `since_min` minutes, with a reading a minute for the last 6."""
         g = self.group(pri=pri)
         t = self.clock[0]
         g.update(has_pc=True, had_pc=True, machine=machine, pc_since=t - since_min * 60, instance="inst-" + machine,
-                 readings=[[t - 60, machine, 199.0, 5, "1h 0m"]])
+                 readings=[[t - k * 60, machine, ths, 10 - k, f"1h {60 - k}m"] for k in range(6, 0, -1)])
         return g
 
     def commands(self):
@@ -1433,44 +1433,54 @@ class TestKryptex(Base):
         self.assertFalse(g["kx"])
         self.assertNotIn("socat", self.http.made("POST", "/containers$")[0][2]["container"]["command"][2])
 
-    def test_the_box_holding_its_pc_longest_is_switched_and_restarted(self):
-        newer, older = self.mining("m1", 30), self.mining("m2", 300)
-        self.x.kx_sync([newer, older], self.clock[0])
-        self.assertTrue(older["kx"])
-        self.assertFalse(newer["kx"])
+    def test_the_box_earning_least_is_switched_and_moved_to_a_new_pc(self):
+        self.x.cfg["yield"] = 1.0
+        strong, weak = self.mining("m1", 300, ths=199.0), self.mining("m2", 30, ths=170.0)
+        self.x.kx_sync([strong, weak], self.clock[0])
+        self.assertTrue(weak["kx"])
+        self.assertFalse(strong["kx"])
         patch = self.http.made("PATCH", "/containers/biz-rtx4080-2$")
         self.assertEqual(len(patch), 1)
         self.assertEqual(list(patch[0][2]["container"]), ["command"])  # resources stay as they are
         self.assertIn("socat", patch[0][2]["container"]["command"][2])
-        self.assertTrue(self.http.made("POST", "/containers/biz-rtx4080-2/instances/inst-m2/restart"))
-        self.assertEqual(older["restart_t"], self.clock[0])
-        self.assertIn("KRYPTEX ON biz-rtx4080-2 (it has held its PC longest): Pearl on Kryptex; box restarted",
+        # Salad's restart answers 202 and leaves the old command running, so the box moves to a new PC instead.
+        self.assertFalse(self.http.made("POST", "/restart$"))
+        self.assertTrue(self.http.made("POST", "/containers/biz-rtx4080-2/instances/inst-m2/reallocate"))
+        self.assertEqual((weak["reallocs"], weak["machine"], weak["has_pc"]), (0, None, False))
+        self.assertNotIn("m2", self.x.st.get("bad_pcs", {}))
+        # 170 TH/s × $0.00117 − $0.19 = +$0.009/hr
+        self.assertIn("KRYPTEX ON biz-rtx4080-2 (it earns least, $+0.009/hr): Pearl on Kryptex; moving it to a new PC, "
+                      "where it starts that way", self.events())
+        self.assertIn("REALLOCATED biz-rtx4080-2 off PC m2 (to start on Kryptex); not counted toward its 3",
                       self.events())
 
     def test_a_box_that_isnt_mining_is_not_switched(self):
         g = self.mining("m1", 300)
-        g["readings"] = [[self.clock[0] - 20 * 60, "m1", 199.0, 5, "1h 0m"]]  # nothing for 20 min
+        for r in g["readings"]:
+            r[0] -= 20 * 60   # nothing for 20 min
         self.x.kx_sync([g], self.clock[0])
         self.assertFalse(g["kx"])
         self.assertFalse(self.http.made("PATCH", "/containers/"))
 
     def test_at_most_one_switch_to_kryptex_every_15_minutes(self):
-        a, b = self.mining("m1", 300), self.mining("m2", 100)
+        a, b = self.mining("m1", 300, ths=150.0), self.mining("m2", 100)
         self.x.kx_sync([a, b], self.clock[0])
         self.assertTrue(a["kx"])
-        a["has_pc"] = False   # the restarted box hasn't come back yet
+        self.assertFalse(a["has_pc"])   # moved: waiting for its new PC
         self.clock[0] += 5 * 60
-        b["readings"].append([self.clock[0] - 60, "m2", 199.0, 6, "1h 5m"])
+        for r in b["readings"]:
+            r[0] += 5 * 60
         self.x.kx_sync([a, b], self.clock[0])
         self.assertFalse(b["kx"])
         self.clock[0] += 11 * 60
-        b["readings"].append([self.clock[0] - 60, "m2", 199.0, 7, "1h 16m"])
+        for r in b["readings"]:
+            r[0] += 11 * 60
         self.x.kx_sync([a, b], self.clock[0])
         self.assertTrue(b["kx"])      # a still has no PC after 16 min: b takes over
         self.assertFalse(a["kx"])     # and a, without a PC, goes back to HeroMiners
         self.assertIn("KRYPTEX OFF biz-rtx4080 (a Kryptex box with a PC took its place): Pearl on HeroMiners; "
                       "it starts that way on its next PC", self.events())
-        self.assertEqual(len(self.http.made("POST", "/restart$")), 2)  # a's PATCH back has nothing to restart
+        self.assertEqual(len(self.http.made("POST", "/reallocate$")), 2)  # a's switch back had no PC to leave
 
     def test_a_waiting_kryptex_group_goes_back_once_a_box_with_a_pc_takes_over(self):
         waiting = self.group()
@@ -1496,24 +1506,24 @@ class TestKryptex(Base):
         self.x.cfg["kryptex_groups"] = 0
         self.x.kx_sync([g], self.clock[0])
         self.assertFalse(g["kx"])
-        self.assertTrue(self.http.made("POST", "/instances/inst-m1/restart"))
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
         self.assertIn("KRYPTEX OFF biz-rtx4080 (more Kryptex boxes than config asks)", self.events())
 
-    def test_a_kryptex_box_with_no_shares_goes_back_and_keeps_its_pc(self):
+    def test_a_kryptex_box_with_no_shares_goes_back_and_its_pc_stays_off_the_bad_list(self):
         g = self.mining("m1", 300)
         g.update(kx=True, kx_since=self.clock[0] - 3600)
         self.x.leave(g, "no share for 25 min on PC m1")
         self.assertFalse(g["kx"])
         self.assertFalse(g["ended"])
-        self.assertEqual(g["machine"], "m1")
         self.assertNotIn("m1", self.x.st.get("bad_pcs", {}))
-        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.assertEqual(g["reallocs"], 0)   # not counted toward its 3
         self.assertNotIn("socat", self.commands()[-1])
         self.assertIn("KRYPTEX OFF biz-rtx4080 (on Kryptex: no share for 25 min on PC m1)", self.events())
         self.assertEqual(self.x.st["kx_fails"], 1)
         # A HeroMiners box leaves its PC as before.
-        self.x.leave(g, "no share for 25 min on PC m1")
-        self.assertIn("m1", self.x.st["bad_pcs"])
+        g.update(has_pc=True, machine="m3", pc_since=self.clock[0], instance="inst-m3")
+        self.x.leave(g, "no share for 25 min on PC m3")
+        self.assertIn("m3", self.x.st["bad_pcs"])
 
     def test_two_failures_stop_the_test_until_the_token_changes(self):
         a, b = self.mining("m1", 300), self.mining("m2", 200)
@@ -1521,23 +1531,16 @@ class TestKryptex(Base):
             g.update(kx=True, kx_since=self.clock[0] - 3600)
             self.x.leave(g, "no mining reading 12 min after getting PC")
         self.assertIn("WARN Kryptex test stopped: 2 Kryptex boxes mined no shares", self.events())
+        # Both went back on new PCs; with PCs and readings again, neither is switched while the test is stopped.
+        for g, m in ((a, "m3"), (b, "m4")):
+            g.update(has_pc=True, machine=m, pc_since=self.clock[0] - 3600, instance="inst-" + m,
+                     readings=[[self.clock[0] - k * 60, m, 199.0, 10 - k, "1h"] for k in range(6, 0, -1)])
+        self.x.st["kx_switch_t"] = 0
         self.x.kx_sync([a, b], self.clock[0])
         self.assertFalse(a["kx"] or b["kx"])
         self.x.cfg["kryptex_token"] = 1
         self.x.kx_sync([a, b], self.clock[0])
-        self.assertTrue(a["kx"])
-
-    def test_a_restarted_box_gets_10_minutes_to_send_a_reading(self):
-        self.x.cfg["yield"] = 1.0
-        g = self.mining("m1", 300)
-        g["restart_t"] = self.clock[0] - 60   # restarted right after its last reading
-        g["last_share"] = self.clock[0] - 120
-        self.x.st["last_log_ok"] = None
-        self.step(g, 7, "m1")                 # 8 min without a reading: a box not restarted would be left at 6
-        self.assertEqual(g["machine"], "m1")
-        self.assertFalse(self.http.made("POST", "/reallocate"))
-        self.step(g, 3, "m1")                 # 11 min
-        self.assertIn("no mining reading", self.events())
+        self.assertTrue(a["kx"] or b["kx"])
 
     def test_kryptex_workers_and_totals_are_read(self):
         wl = os.environ["PRL_WALLET"]
