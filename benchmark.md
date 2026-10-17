@@ -60,6 +60,7 @@ host:
   `mma.sync`, which tops out at about 41% of the competitors on this card.
   Matching them needs a fold on the B200's own tensor instructions
   (tcgen05). Before v0.5.14 a B200 couldn't mine at all.
+- GTX 10- and 16-series: being measured on Salad (PeakMiner and SRBMiner first); see their sections.
 - Tesla T4 (sm_75): 27.7 TH/s at its 70 W limit in one 5-minute pool run
   of v0.5.13. PeakMiner and SRBMiner weren't run, so there is no % of best.
 
@@ -935,6 +936,43 @@ and no table row.
   the power cap (0x4) in every sample after the first minute.
 - **Per clock:** at a steady 750 MHz, 27.4 TH/s is 913 int8 MACs per clock
   per SM, 89% of Turing's IMMA peak, in line with the 20-series cards.
+
+## GTX 10-series (Pascal, sm_61, on Salad)
+
+In progress. These cards are rented on Salad, not Vast: each row is one Salad PC (a home computer), named by
+the first 8 characters of its Salad machine ID, with the power limit from `nvidia-smi`. Salad doesn't say where
+a PC is. Each PC runs PeakMiner and SRBMiner one after another, 5 minutes each after a 60-second unmeasured
+warm-up, on `us.pearl.herominers.com`, the order alternating between a card's two hosts
+(`tuning/salad/bench.sh`). Our miner has no Pascal build: release v0.6.0 is tried for 90 seconds to record
+what it does, and "Ours" stays empty until a Pascal core exists. The 1070, 1080 and 1080 Ti share one Salad
+class, so their rows fill as those cards turn up.
+
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
+|---|---|---|---|---|---|---|
+| GTX 1080 Ti | Salad (— W) | — | not run | not run | not run | — |
+| GTX 1080 Ti | Salad (— W) | — | not run | not run | not run | — |
+| GTX 1080 | Salad (— W) | — | not run | not run | not run | — |
+| GTX 1080 | Salad (— W) | — | not run | not run | not run | — |
+| GTX 1070 | Salad (— W) | — | not run | not run | not run | — |
+| GTX 1070 | Salad (— W) | — | not run | not run | not run | — |
+| GTX 1060 | Salad (— W, 6 GB) | — | not run | not run | not run | — |
+| GTX 1060 | Salad (— W, 6 GB) | — | not run | not run | not run | — |
+| GTX 1050 Ti | Salad (— W, 4 GB) | — | not run | not run | not run | — |
+| GTX 1050 Ti | Salad (— W, 4 GB) | — | not run | not run | not run | — |
+
+## GTX 16-series (Turing without tensor cores, sm_75, on Salad)
+
+In progress, on Salad as above. These cards are sm_75, which release v0.6.0 is built for, but they have no
+tensor cores, which our kernel uses; v0.6.0 runs the full 5 minutes here, after PeakMiner and SRBMiner.
+
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
+|---|---|---|---|---|---|---|
+| GTX 1660 Super | Salad (— W, 6 GB) | — | not run | not run | not run | — |
+| GTX 1660 Super | Salad (— W, 6 GB) | — | not run | not run | not run | — |
+| GTX 1660 | Salad (— W, 6 GB) | — | not run | not run | not run | — |
+| GTX 1660 | Salad (— W, 6 GB) | — | not run | not run | not run | — |
+| GTX 1650 | Salad (— W, 4 GB) | — | not run | not run | not run | — |
+| GTX 1650 | Salad (— W, 4 GB) | — | not run | not run | not run | — |
 
 ## Replaced hosts (40/50-series)
 
