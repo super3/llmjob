@@ -96,13 +96,12 @@ def figure(m, mean_after=None):
     """A miner's TH/s: its own figure at the end (PeakMiner, SRBMiner), or the mean after the first minute (ours)."""
     if not m:
         return None, "not run"
-    good = [x["th"] for x in m.get("samples", []) if x["th"] is not None and x["th"] > 0]
-    if mean_after is not None:
-        good = [x["th"] for x in m.get("samples", []) if x["th"] and x["t"] >= mean_after]
-        if good:
-            return sum(good) / len(good), None
-    elif good:
-        return good[-1], None
+    # Only after the first minute, and only a miner that had a rate for at least half of that: one on a PC that
+    # loses the pool shows a rate for its first seconds and 0 after (SRBMiner on a GTX 1660, 17 October).
+    late = [x for x in m.get("samples", []) if x["t"] >= 60]
+    good = [x["th"] for x in late if x["th"] is not None and x["th"] > 0]
+    if good and len(good) * 2 >= len(late):
+        return (sum(good) / len(good) if mean_after is not None else good[-1]), None
     return None, ("didn't start" if m.get("exited") and not m.get("samples") else "no rate")
 
 
@@ -305,6 +304,14 @@ class Bench:
                    "exits": {k: v.get("exited") for k, v in r["miners"].items() if v.get("exited")}}
             if res["ours"][0] is None and res["ours"][1] in ("didn't start", "no rate", "not run") and ours == 90:
                 res["ours"] = (None, "no build")
+            if ours != 90 and all(res[k][0] is None for k in ("ours", "peak", "srb")):
+                # Where our release has a build, a PC on which no miner gets work points at its network, not the
+                # card: try another PC instead of filling the row with it.
+                self.note(f"{self.st['machine'][:8]} ({r['card']['name']}): no miner got work from the pool; "
+                          "not recorded")
+                self.st["seen"].append(self.st["machine"])
+                self.move_on("no miner got work")
+                return True
             self.st["results"].setdefault(row, []).append(res)
             self.st["seen"].append(self.st["machine"])
             log(f"RESULT {row} on {self.st['machine'][:8]}: ours {cell(*res['ours'])}, PeakMiner {cell(*res['peak'])}, "
