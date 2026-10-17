@@ -125,7 +125,8 @@ def render(st):
                     out.append(f"| {r} | Salad (— W{mem}) | — | not run | not run | not run | — |")
                     continue
                 h = hosts[i]
-                p = re.sub(r"\.0+ W$", " W", h["power"]) if h.get("power") else "— W"
+                # nvidia-smi says "[N/A]" on a PC whose driver doesn't report a power limit.
+                p = re.sub(r"\.0+ W$", " W", h["power"]) if re.match(r"\d", h.get("power") or "") else "— W"
                 o, ow = h["ours"]
                 pk, pw = h["peak"]
                 sr, sw = h["srb"]
