@@ -1468,6 +1468,23 @@ describe('local LLM', () => {
     }
   });
 
+  test('on a rig of several cards, a server that never said which card it loaded on pauses nothing', async () => {
+    const m = load();
+    fiveNinety(m);
+    m.probe.detectPciBusIds.mockResolvedValue({ 0: '00000000:01:00.0', 1: '00000000:02:00.0' });
+    const p = m.run(argvCoRun);
+    await settle();
+    const miner = m.PearlEngine.instances[0];
+    m.LlmManager.instances[0].emit('busy', true);
+    expect(miner.pauseCards).not.toHaveBeenCalled();
+    // Once it has said, the card it named is the one that pauses.
+    m.LlmManager.instances[0].deviceBusId = '0000:02:00.0';
+    m.LlmManager.instances[0].emit('busy', true);
+    expect(miner.pauseCards).toHaveBeenCalledWith([1]);
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
   test('a shutdown mid-prompt leaves the pause to the miner\'s own stop', async () => {
     const m = load();
     fiveNinety(m);

@@ -156,6 +156,7 @@ jest.mock('../src/main/probe', () => ({
   detectRegion: jest.fn(() => Promise.resolve('us1')),
   detectVram: jest.fn(() => Promise.resolve(null)),
   detectGpusVram: jest.fn(() => Promise.resolve([])),
+  detectPciBusIds: jest.fn(() => Promise.resolve({})),
   // No card list by default: one core that places itself, which is what a rig
   // with no nvidia-smi gets. The multi-card tests set it explicitly.
   detectMinerGpus: jest.fn(() => Promise.resolve([])),
@@ -4161,6 +4162,34 @@ describe('mining pauses while the local LLM answers a prompt', () => {
     await flush();
     expect(miner.stop).toHaveBeenCalled();
     expect(miner.resumeCards).not.toHaveBeenCalled();
+    // And the log does not claim it did.
+    expect(lines(ctx).some((l) => l.startsWith('mining resumed'))).toBe(false);
+  });
+
+  it('pauses the card the model really loaded on, not the one it was planned for', async () => {
+    const ctx = await boot();
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    ctx.probe.detectGpusVram.mockResolvedValue([
+      { index: 0, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+      { index: 1, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+    ]);
+    ctx.probe.detectPciBusIds.mockResolvedValue({ 0: '00000000:01:00.0', 1: '00000000:02:00.0' });
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+    await flush();
+    const miner = ctx.PearlEngine.instances[0];
+    miner.emit('event', { type: 'status', hashrate: '2.5' });
+    await flush(30);
+    // Started for card 0, but Vulkan put it on the card at bus 02, nvidia-smi's 1.
+    const llm = ctx.LlmManager.instances[0];
+    llm.deviceBusId = '0000:02:00.0';
+    llm.emit('busy', true);
+    expect(miner.pauseCards).toHaveBeenCalledWith([1]);
+    // An instance that never said where it loaded, on a two-card rig: left alone.
+    miner.pauseCards.mockClear();
+    llm.deviceBusId = null;
+    llm.emit('busy', false);
+    llm.emit('busy', true);
+    expect(miner.pauseCards).not.toHaveBeenCalled();
   });
 
   it('says nothing when the prompt runs on a card that is not mining', async () => {

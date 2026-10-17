@@ -154,7 +154,22 @@ function parseSlotEvent(line) {
   return { slot: Number(m[1]), busy: m[2] === 'processing task' };
 }
 
+// The card a llama-server actually loaded on, as its PCI bus id, from the line
+// it prints once at load (b9902, src/llama.cpp):
+//
+//   llama_model_load_from_file_impl: using device Vulkan0 (NVIDIA GeForce RTX 3090) (0000:02:00.0) - 23893 MiB free
+//
+// Needed because --main-gpu counts cards in Vulkan's order, which need not be
+// nvidia-smi's: on Windows it follows the adapter driving the desktop. With
+// --split-mode none there is exactly one such line. Null when the backend did
+// not know the bus id ("unknown id") or the line is anything else.
+function parseUsingDevice(line) {
+  const m = String(line == null ? '' : line)
+    .match(/using device \S+ \(.*\) \(([0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+\.[0-9a-fA-F])\) - \d+ MiB free/);
+  return m ? m[1] : null;
+}
+
 module.exports = {
   resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, isServerReady,
-  parseTokensPerSec, parseTiming, parseSlotEvent,
+  parseTokensPerSec, parseTiming, parseSlotEvent, parseUsingDevice,
 };

@@ -58,6 +58,9 @@ const STABLE_MS = 10 * 60 * 1000;
 // several a second, so 2^32 of them is years. Moving in steps of the stride keeps
 // the card in its own lane, clear of every other card.
 const SALT_RUN = 2 ** 32;
+// The core's refusal when the card has too little free memory for its profile
+// (native/src/pearl_host.cu, pearl_host_create's pre-flight).
+const NO_VRAM_RE = /not enough free VRAM/i;
 
 // The card a core opened, as { index, name }, or null when it won't say.
 //
@@ -112,6 +115,9 @@ class PearlMiner extends EventEmitter {
     // slot -> device (see pauseCards). Not in `cores`, so jobs, hashrate ticks
     // and stop() pass them by, but still this run's cards.
     this.paused = new Map();
+    // slot -> timer for a paused card whose resume found its VRAM taken (see
+    // resumeCards). Cleared by stop(), and by a new pause of that card.
+    this.resumeRetries = new Map();
   }
 
   isRunning() { return this.running; }
@@ -663,6 +669,12 @@ class PearlMiner extends EventEmitter {
   // the card is not mining rather than its last tick.
   pauseCards(indices) {
     if (!this.running) return [];
+    // A card still waiting to come back from the last pause waits for this
+    // prompt instead: its retry must not start it under the model.
+    for (const [slot, device] of this.paused) {
+      const index = device ? device.index : null;
+      if (indices == null || indices.includes(index)) this._cancelResumeRetry(slot);
+    }
     const done = [];
     for (const c of [...this.cores]) {
       const index = c.device ? c.device.index : null;
@@ -692,6 +704,7 @@ class PearlMiner extends EventEmitter {
       const index = device ? device.index : null;
       if (indices != null && !indices.includes(index)) continue;
       this.paused.delete(slot);
+      this._cancelResumeRetry(slot);
       // A pause is not a fault. Keep when the card last came up, so a fault
       // soon after a resume is not counted as one soon after a restart.
       const startedAt = slot.startedAt;
@@ -700,18 +713,56 @@ class PearlMiner extends EventEmitter {
         ({ core } = this._openCore(slot, this.wallet, this.worker, { quiet: true }));
       } catch (e) {
         slot.startedAt = startedAt;
+        const message = (e && e.message) || String(e);
+        // The VRAM the pause gave up was taken while the LLM answered: a game,
+        // a browser, another GPU app. That is not the card failing, and
+        // counting it as one would leave the card off for the session after
+        // four tries (or stop a one-card rig). Keep it paused and try again
+        // until the memory is back, saying so once.
+        if (NO_VRAM_RE.test(message)) {
+          this.paused.set(slot, device);
+          if (!slot.waitingForVram) {
+            slot.waitingForVram = true;
+            this.emit('log', {
+              level: 'warn',
+              line: 'could not resume ' + cardName(device) + ': ' + message + ' Something else took the '
+                + 'memory it gave up while the local LLM answered. Trying again every '
+                + Math.round(this.restartMs / 1000) + ' s.',
+            });
+          }
+          const timer = setTimeout(() => {
+            this.restartTimers.delete(timer);
+            this.resumeRetries.delete(slot);
+            this.resumeCards(device ? [device.index] : null);
+          }, this.restartMs);
+          this.restartTimers.add(timer);
+          this.resumeRetries.set(slot, timer);
+          continue;
+        }
         this.emit('log', {
           level: 'error',
-          line: 'could not resume ' + cardName(device) + ': ' + ((e && e.message) || String(e)),
+          line: 'could not resume ' + cardName(device) + ': ' + message,
         });
         this._cardDown(slot, device, e);
         continue;
       }
       slot.startedAt = startedAt;
+      if (slot.waitingForVram) {
+        slot.waitingForVram = false;
+        this.emit('log', { level: 'info', line: cardName(device) + ' has its memory back and is mining again' });
+      }
       this._giveJob(core);
       done.push(device);
     }
     return done;
+  }
+
+  _cancelResumeRetry(slot) {
+    const timer = this.resumeRetries.get(slot);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.restartTimers.delete(timer);
+    this.resumeRetries.delete(slot);
   }
 
   // The rig's throughput: every card's latest tick, added up. A card that has
@@ -776,6 +827,7 @@ class PearlMiner extends EventEmitter {
     if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
     for (const t of this.restartTimers) clearTimeout(t);
     this.restartTimers.clear();
+    this.resumeRetries.clear();
     for (const c of this.cores) {
       try { c.core.stop(); } catch (e) { /* that core is already gone */ }
     }

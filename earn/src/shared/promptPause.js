@@ -14,15 +14,45 @@
 // told: `pause(indices)` and `resume(indices)` act on whatever miner is running
 // at the time, with `indices` an array of card numbers or null for every card.
 // An instance with no known card (llama.cpp chose it) pauses every card.
-// `pause` returns whether it stopped any card. Only then is anything logged: in
-// LLM-only mode, or on a card that is not mining, a prompt pauses nothing, and
-// saying "mining paused" there would be wrong.
+// `pause` and `resume` return whether they stopped or started any card, and
+// only then is anything logged. In LLM-only mode, on a card that is not mining,
+// or after STOP or an idle-only pause took the miner away, a prompt pauses or
+// resumes nothing, and saying it did would be wrong.
 //
 // Kept apart from the miner object on purpose. The shells stop and start the
 // miner for their own reasons (idle-only, STOP, a mode change), and a miner that
 // starts while a prompt is running must start paused: reapply() does that.
 
+const { normalizePciBusId } = require('./gpu');
+
 const ALL = 'all';
+
+// Which card a prompt runs on, as setBusy takes it: a card number, null for
+// every card, or undefined to leave mining alone. `ev` is LlmFleet's busy event,
+// `busIds` nvidia-smi's { index: pciBusId } (probe.detectPciBusIds).
+//
+// The card an instance was planned for is the number it was started with
+// (--main-gpu), but llama-server counts cards in Vulkan's order, which need not
+// be nvidia-smi's (the miner's): on Windows it follows the adapter driving the
+// desktop. So a two-card rig with its monitor on the second card can load the
+// model on card 1 when asked for card 0, and pausing card 0 would stop the idle
+// card while the busy one kept mining. The bus id the server printed at load
+// says which card it really is.
+//
+// Without that id, a one-card rig has only one card it can be, and several
+// cards are left mining: guessing wrong costs a card's mining on every prompt
+// for no gain. A bus id nvidia-smi does not list is a card that does not mine
+// (an AMD card, say), so nothing pauses for it.
+function cardForPrompt(ev, busIds) {
+  const ids = Object.entries(busIds || {});
+  const want = normalizePciBusId(ev && ev.busId);
+  if (want && ids.length) {
+    const hit = ids.find(([, id]) => normalizePciBusId(id) === want);
+    return hit ? Number(hit[0]) : undefined;
+  }
+  if (ids.length > 1) return undefined;
+  return ev && Number.isInteger(ev.index) ? ev.index : null;
+}
 
 function createPromptPause({
   pause, resume, log = () => {}, resumeAfterMs, maxPauseMs,
@@ -47,8 +77,8 @@ function createPromptPause({
   function doResume(key, why) {
     clearTimers(key);
     if (!paused.delete(key)) return;
-    resume(indicesOf(key));
-    if (!shown.delete(key)) return;
+    const acted = resume(indicesOf(key));
+    if (!shown.delete(key) || !acted) return;
     if (why) log('warn', 'mining resumed' + name(key) + ': ' + why);
     else log('info', 'mining resumed' + name(key));
   }
@@ -91,8 +121,10 @@ function createPromptPause({
     doPause(key);
   }
 
-  // A miner just started. Pause on it whatever is paused now.
+  // A miner just started. Pause on it whatever is paused now, and say so: what
+  // was said about the last miner is no longer true.
   function reapply() {
+    shown.clear();
     for (const key of paused) doPause(key);
   }
 
@@ -117,4 +149,4 @@ function createPromptPause({
   };
 }
 
-module.exports = { createPromptPause };
+module.exports = { createPromptPause, cardForPrompt };

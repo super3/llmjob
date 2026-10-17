@@ -1,13 +1,13 @@
 'use strict';
 
-const { createPromptPause } = require('../src/shared/promptPause');
+const { createPromptPause, cardForPrompt } = require('../src/shared/promptPause');
 
 function make(over = {}) {
   const calls = [];
   const logs = [];
   const p = createPromptPause(Object.assign({
     pause: (i) => { calls.push(['pause', i]); return true; },
-    resume: (i) => calls.push(['resume', i]),
+    resume: (i) => { calls.push(['resume', i]); return true; },
     log: (level, line) => logs.push([level, line]),
     resumeAfterMs: 10000,
     maxPauseMs: 600000,
@@ -136,6 +136,23 @@ describe('promptPause', () => {
     expect(p.isPaused(0)).toBe(false);
   });
 
+  test('says nothing about a resume that started nothing, as when STOP took the miner away', () => {
+    const { p, logs } = make({ resume: () => false });
+    p.setBusy(0, true);
+    p.reset();
+    expect(logs).toEqual([['info', 'mining paused on GPU 0 while the local LLM answers a prompt']]);
+  });
+
+  test('a new miner announces its own pause, even when the last one already had', () => {
+    const { p, logs } = make();
+    p.setBusy(0, true);
+    p.reapply();
+    expect(logs).toEqual([
+      ['info', 'mining paused on GPU 0 while the local LLM answers a prompt'],
+      ['info', 'mining paused on GPU 0 while the local LLM answers a prompt'],
+    ]);
+  });
+
   test('says nothing when there was no mining to pause, but still remembers the pause', () => {
     let mining = false;
     const { p, calls, logs } = make({ pause: (i) => { calls.push(['pause', i]); return mining; } });
@@ -144,7 +161,6 @@ describe('promptPause', () => {
     expect(p.isPaused(0)).toBe(true);
     // A miner that starts during the prompt is paused, and that is said once.
     mining = true;
-    p.reapply();
     p.reapply();
     expect(logs).toEqual([['info', 'mining paused on GPU 0 while the local LLM answers a prompt']]);
     p.setBusy(0, false);
@@ -169,5 +185,35 @@ describe('promptPause', () => {
     p.setBusy(0, false);
     timers.forEach((fn) => fn());
     expect(p.isPaused(0)).toBe(false);
+  });
+});
+
+describe('cardForPrompt', () => {
+  const TWO = { 0: '00000000:01:00.0', 1: '00000000:0A:00.0' };
+
+  test('the card the server says it loaded on, whatever it was planned for', () => {
+    // Planned for card 0, loaded on card 1: Vulkan counted the cards its own way.
+    expect(cardForPrompt({ index: 0, busId: '0000:0a:00.0' }, TWO)).toBe(1);
+    expect(cardForPrompt({ index: 1, busId: '0000:01:00.0' }, TWO)).toBe(0);
+  });
+
+  test('a bus id nvidia-smi does not list is a card that does not mine: leave mining alone', () => {
+    expect(cardForPrompt({ index: 0, busId: '0000:05:00.0' }, TWO)).toBeUndefined();
+  });
+
+  test('without a bus id, several cards are left mining rather than guessed at', () => {
+    expect(cardForPrompt({ index: 0, busId: null }, TWO)).toBeUndefined();
+    expect(cardForPrompt({ index: 0, busId: 'unknown id' }, TWO)).toBeUndefined();
+  });
+
+  test('without a bus id, a one-card rig has only one card it can be', () => {
+    expect(cardForPrompt({ index: 0, busId: null }, { 0: '00000000:01:00.0' })).toBe(0);
+    expect(cardForPrompt({ index: null, busId: null }, { 0: '00000000:01:00.0' })).toBeNull();
+  });
+
+  test('with no bus ids from nvidia-smi, the planned card (or every card) is all there is to go on', () => {
+    expect(cardForPrompt({ index: 2, busId: '0000:0a:00.0' }, {})).toBe(2);
+    expect(cardForPrompt({ index: undefined, busId: null }, null)).toBeNull();
+    expect(cardForPrompt(null, {})).toBeNull();
   });
 });

@@ -3,6 +3,7 @@
 const { EventEmitter } = require('events');
 const {
   resolveServerBinary, buildServerArgs, serverBaseUrl, isServerReady, parseTiming, parseSlotEvent,
+  parseUsingDevice,
 } = require('../shared/llama');
 
 // Spawns and supervises the llama.cpp `llama-server` child process. Like
@@ -70,6 +71,10 @@ class LlmManager extends EventEmitter {
     this._busySlots = new Set();
     // The unfinished end of the last chunk, per stream, for _scanSlots only.
     this._slotCarry = { out: '', err: '' };
+    // The PCI bus id of the card this server loaded on, once it says (see
+    // llama.parseUsingDevice). Null until then, and for a backend that does not
+    // know it.
+    this.deviceBusId = null;
   }
 
   isRunning() { return this.running; }
@@ -107,6 +112,7 @@ class LlmManager extends EventEmitter {
 
     this.proc = proc;
     this.ready = false;
+    this.deviceBusId = null;
 
     if (proc.stdout) proc.stdout.on('data', (c) => { this._onData(c); this._scanSlots(c, 'out'); });
     // llama logs to stderr
@@ -224,6 +230,8 @@ class LlmManager extends EventEmitter {
     for (const line of lines) {
       const ev = parseSlotEvent(line);
       if (ev) this._setBusy(ev.slot, ev.busy, false);
+      const busId = parseUsingDevice(line);
+      if (busId) this.deviceBusId = busId;
     }
   }
 

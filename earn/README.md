@@ -580,7 +580,11 @@ and mines again 10 s after the last one ends. Other cards keep mining, and the
 pool connection stays open. The board and HiveOS show that card at 0 TH/s
 while it is paused. The signal is `llama-server`'s own log, so it covers every
 caller: the API endpoint, its web UI, cluster jobs and the network share. A card
-busy for 10 minutes without a break mines again regardless. Demand-driven
+busy for 10 minutes without a break mines again regardless. On a rig with
+several cards it pauses the card the model really loaded on, matched by the PCI
+bus id `llama-server` prints at load, and pauses nothing if it can't tell. If
+something else takes the card's memory during a pause, the card stays paused
+and tries again every 30 s. Demand-driven
 `auto` is unchanged: there the miner already stops for as long as the model
 serves.
 

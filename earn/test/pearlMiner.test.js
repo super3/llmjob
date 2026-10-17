@@ -1663,6 +1663,106 @@ describe('PearlMiner — pausing cards while the LLM answers a prompt', () => {
     expect(b.m.devices()).toEqual([GPUS[1], GPUS[0]]);
   });
 
+  describe('a resume refused for lack of VRAM', () => {
+    const NO_VRAM = new Error('GPU 0: not enough free VRAM for the rank-128 profile: need ~2081 MiB, 900 MiB free.');
+
+    test('stays paused and tries again, without counting a fault, until the memory is back', () => {
+      let refuse = false;
+      const b = rig({ refuse: (o) => refuse && o.deviceIndex === 0, refuseWith: NO_VRAM });
+      mining(b, [GPUS[0]]);
+      b.m.pauseCards([0]);
+      refuse = true;
+      expect(b.m.resumeCards([0])).toEqual([]);
+      const warned = b.lines().filter((l) => l.startsWith('could not resume GPU 0'));
+      expect(warned).toHaveLength(1);
+      expect(warned[0]).toMatch(/Something else took the memory it gave up while the local LLM answered\. Trying again every 30 s\.$/);
+      // Not a card down: no restart counting, and a one-card rig keeps its pool connection.
+      expect(b.lines().some((l) => l.startsWith('restarting'))).toBe(false);
+      expect(b.m.isRunning()).toBe(true);
+      expect(b.events.stopped).toEqual([]);
+
+      // Still short: tries again, and says nothing new.
+      jest.advanceTimersByTime(RESTART_MS);
+      expect(b.lines().filter((l) => l.startsWith('could not resume'))).toHaveLength(1);
+      // The memory is back: it mines again, and says so.
+      refuse = false;
+      jest.advanceTimersByTime(RESTART_MS);
+      expect(b.m.devices()).toEqual([GPUS[0]]);
+      expect(b.lines()).toContain('GPU 0 (NVIDIA GeForce RTX 5090) has its memory back and is mining again');
+      expect(b.m.cores[0].slot.fails).toBe(0);
+    });
+
+    test('a new prompt while it waits cancels the retry, so it does not start under the model', () => {
+      let refuse = false;
+      const b = rig({ refuse: () => refuse, refuseWith: NO_VRAM });
+      mining(b, [GPUS[0]]);
+      b.m.pauseCards([0]);
+      refuse = true;
+      b.m.resumeCards([0]);
+      refuse = false;
+      expect(b.m.pauseCards([0])).toEqual([]);
+      jest.advanceTimersByTime(RESTART_MS * 3);
+      expect(b.m.devices()).toEqual([]);
+      expect(b.m.resumeCards([0])).toEqual([GPUS[0]]);
+    });
+
+    test('stop() drops the retry', () => {
+      const b = rig({ refuse: (o) => b.m.paused.size > 0 && o.deviceIndex === 0, refuseWith: NO_VRAM });
+      mining(b, [GPUS[0]]);
+      b.m.pauseCards([0]);
+      b.m.resumeCards([0]);
+      b.m.stop();
+      expect(b.m.resumeRetries.size).toBe(0);
+      jest.advanceTimersByTime(RESTART_MS);
+      expect(b.createCore).toHaveBeenCalledTimes(2);
+    });
+
+    test('a core that will not name its card is retried as every card', () => {
+      let refuse = false;
+      const b = rig({ silentDevice: true, refuse: () => refuse, refuseWith: NO_VRAM });
+      b.m.start({ ...settings });
+      b.sock.emit('connect');
+      b.sock.emit('data', jobLine());
+      b.m.pauseCards(null);
+      refuse = true;
+      b.m.resumeCards(null);
+      expect(b.lines()).toContain('could not resume the GPU: ' + NO_VRAM.message
+        + ' Something else took the memory it gave up while the local LLM answered. Trying again every 30 s.');
+      refuse = false;
+      jest.advanceTimersByTime(RESTART_MS);
+      expect(b.m.cores).toHaveLength(1);
+    });
+
+    test('a pause of every card while an unnamed card waits cancels its retry', () => {
+      let refuse = false;
+      const b = rig({ silentDevice: true, refuse: () => refuse, refuseWith: NO_VRAM });
+      b.m.start({ ...settings });
+      b.sock.emit('connect');
+      b.sock.emit('data', jobLine());
+      b.m.pauseCards(null);
+      refuse = true;
+      b.m.resumeCards(null);
+      refuse = false;
+      b.m.pauseCards(null);
+      jest.advanceTimersByTime(RESTART_MS);
+      expect(b.m.cores).toHaveLength(0);
+      expect(b.m.resumeCards(null)).toEqual([null]);
+    });
+
+    test('pausing another card leaves this card\'s retry alone', () => {
+      let refuse = false;
+      const b = rig({ refuse: (o) => refuse && o.deviceIndex === 0, refuseWith: NO_VRAM });
+      mining(b);
+      b.m.pauseCards([0]);
+      refuse = true;
+      b.m.resumeCards([0]);
+      refuse = false;
+      b.m.pauseCards([1]);
+      jest.advanceTimersByTime(RESTART_MS);
+      expect(b.m.devices()).toEqual([GPUS[0]]);
+    });
+  });
+
   test('a refusal that is not an Error is still named in the log', () => {
     let refuse = false;
     const b = rig({ refuse: () => refuse, refuseWith: 'no device' });

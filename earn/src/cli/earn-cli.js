@@ -44,7 +44,7 @@ const { shortenAddress, isValidAddress } = require('../shared/address');
 const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
 const { planLlmInstances } = require('../shared/llmPlan');
 const { allModels, pickModel, ctxLadder, planAutoMode } = require('../shared/models');
-const { createPromptPause } = require('../shared/promptPause');
+const { createPromptPause, cardForPrompt } = require('../shared/promptPause');
 const { LlmFleet } = require('../main/llmFleet');
 const { createAutoGate, createServeGate } = require('../main/autoGate');
 const { JobWorker } = require('../main/jobWorker');
@@ -952,7 +952,7 @@ async function run(argv) {
   // that has stopped pauses and resumes nothing (PearlMiner).
   const promptPause = createPromptPause({
     pause: (indices) => miner.pauseCards(indices).length > 0,
-    resume: (indices) => { miner.resumeCards(indices); },
+    resume: (indices) => miner.resumeCards(indices).length > 0,
     log: (level, line) => log(line, level === 'warn' ? process.stderr : process.stdout),
     resumeAfterMs: LLM.promptPause.resumeAfterMs,
     maxPauseMs: LLM.promptPause.maxPauseMs,
@@ -1248,8 +1248,12 @@ async function run(argv) {
     // on, as it did when the LLM started first. A run that ended while the model
     // was downloading must not leave a server behind.
     const startCoRun = async () => {
-      const fleet = await launchLlm(settings, coRun, true, true,
-        ({ index, busy }) => promptPause.setBusy(index, busy));
+      // Which card each llama-server really loaded on (promptPause.cardForPrompt).
+      const busIds = await probe.detectPciBusIds();
+      const fleet = await launchLlm(settings, coRun, true, true, (e) => {
+        const card = cardForPrompt(e, busIds);
+        if (card !== undefined) promptPause.setBusy(card, e.busy);
+      });
       if (!fleet) return;
       if (settled || stopping) { fleet.stop(); stopServe(); return; }
       llm = fleet;

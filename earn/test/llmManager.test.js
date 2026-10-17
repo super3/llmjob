@@ -435,6 +435,15 @@ describe('LlmManager busy (a prompt is running)', () => {
     expect(m.isBusy()).toBe(false);
   });
 
+  test('remembers the bus id of the card it loaded on, and forgets it on a respawn', () => {
+    const { child, m } = started();
+    expect(m.deviceBusId).toBeNull();
+    child.stderr.emit('data', 'llama_model_load_from_file_impl: using device Vulkan0 (NVIDIA GeForce RTX 3090) (0000:02:00.0) - 23893 MiB free\n');
+    expect(m.deviceBusId).toBe('0000:02:00.0');
+    m._spawn();
+    expect(m.deviceBusId).toBeNull();
+  });
+
   test('an exit while idle fires nothing', () => {
     const { child, m, busy } = started();
     m.stop();

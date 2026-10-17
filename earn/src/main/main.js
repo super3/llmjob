@@ -45,7 +45,7 @@ const nodeProto = require('../shared/node');
 const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
 const { planLlmInstances } = require('../shared/llmPlan');
 const { pickModel, ctxLadder } = require('../shared/models');
-const { createPromptPause } = require('../shared/promptPause');
+const { createPromptPause, cardForPrompt } = require('../shared/promptPause');
 const { LlmFleet } = require('./llmFleet');
 const { createLanShare } = require('./lanShare');
 const { buildChatBody } = require('../shared/llmChat');
@@ -122,11 +122,14 @@ let fleet = null;               // LlmFleet (one llama-server per eligible GPU) 
 const promptPause = createPromptPause({
   // A miner that is not running pauses and resumes nothing (PearlMiner).
   pause: (indices) => (miner ? miner.pauseCards(indices).length > 0 : false),
-  resume: (indices) => { if (miner) miner.resumeCards(indices); },
+  resume: (indices) => (miner ? miner.resumeCards(indices).length > 0 : false),
   log: (level, line) => send('miner:log', { level, line }),
   resumeAfterMs: LLM.promptPause.resumeAfterMs,
   maxPauseMs: LLM.promptPause.maxPauseMs,
 });
+// nvidia-smi's PCI bus id per card, read when the LLM starts, to find the card
+// each llama-server really loaded on (see promptPause.cardForPrompt).
+let llmBusIds = {};
 let llmEverReady = false;       // did any instance reach "ready" this run (vs. dying first)
 let serveLogged = false;        // "serving cluster jobs" logged once per serving run
 let registeredUnlinked = false; // self-registered an unlinked node once this run
@@ -1225,8 +1228,9 @@ async function startLlm(reserveMb, epoch) {
   // means VRAM was measured but nothing fits — refuse, as the single-card path
   // did; when VRAM can't be read the planner returns one unknown-placement
   // instance and lets llama.cpp decide.
-  const cards = await detectGpusVram();
+  const [cards, busIds] = await Promise.all([detectGpusVram(), probe.detectPciBusIds()]);
   if (stale()) return false;
+  llmBusIds = busIds;
   // Which model this run serves. Chosen from the best card's free VRAM, because
   // the fleet loads ONE model across every instance — planLlmInstances then drops
   // any card that cannot hold it. On a mixed rig that trades breadth for
@@ -1371,7 +1375,10 @@ function buildFleet() {
     syncWorker(); // serve cluster jobs once a model is up, if we're linked
   });
   f.on('stats', ({ tokensPerSec }) => { llmStatus = Object.assign({}, llmStatus, { tokensPerSec }); sendLlmStatus(); });
-  f.on('busy', ({ index, busy }) => promptPause.setBusy(index, busy));
+  f.on('busy', (e) => {
+    const card = cardForPrompt(e, llmBusIds);
+    if (card !== undefined) promptPause.setBusy(card, e.busy);
+  });
   f.on('error', () => { /* transient instance error — the fleet keeps the others */ });
   f.on('stopped', () => {
     cancelChat('the local LLM stopped');

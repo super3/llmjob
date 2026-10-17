@@ -227,3 +227,21 @@ describe('parseSlotEvent', () => {
     expect(parseSlotEvent(null)).toBeNull();
   });
 });
+
+describe('parseUsingDevice', () => {
+  const { parseUsingDevice } = require('../src/shared/llama');
+
+  test('reads the bus id of the card the pinned build loaded on', () => {
+    expect(parseUsingDevice('llama_model_load_from_file_impl: using device Vulkan0 (NVIDIA GeForce RTX 3090) (0000:02:00.0) - 23893 MiB free'))
+      .toBe('0000:02:00.0');
+    // A name with brackets of its own.
+    expect(parseUsingDevice('x: using device Vulkan1 (NVIDIA RTX PRO 4500 (Blackwell)) (0000:0a:00.0) - 31000 MiB free'))
+      .toBe('0000:0a:00.0');
+  });
+
+  test('null when the backend does not know the bus id, and for every other line', () => {
+    expect(parseUsingDevice('x: using device Vulkan0 (Some GPU) (unknown id) - 8000 MiB free')).toBeNull();
+    expect(parseUsingDevice('srv  update_slots: all slots are idle')).toBeNull();
+    expect(parseUsingDevice(null)).toBeNull();
+  });
+});
