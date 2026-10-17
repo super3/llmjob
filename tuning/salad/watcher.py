@@ -6,6 +6,7 @@
 # The Salad key is sent as the Salad-Api-Key header from $SALAD_API_KEY when it is set; in a Claude
 # cloud session the network proxy adds it instead.
 import json, os, re, sys, time, urllib.request, urllib.error, datetime as dt, traceback
+from zoneinfo import ZoneInfo
 
 D = os.environ.get("SALAD_MINE_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "run")
 STATE, CFG, EV, REPORT = (os.path.join(D, f) for f in ("state.json", "config.json", "events.log", "report.md"))
@@ -63,9 +64,13 @@ XMR_FEE = 0.009   # HeroMiners' Monero pool fee
 def now(): return time.time()
 def hm(t=None): return time.strftime("%H:%M", time.gmtime(t or now()))
 def iso(t): return dt.datetime.fromtimestamp(t, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+# The report's clock is New York time (EDT in summer, EST in winter), where the user is.
+NY = ZoneInfo("America/New_York")
+
+
 def stamp(t):
-    d = dt.datetime.fromtimestamp(t, dt.timezone.utc)
-    return f"{d:%H:%M} UTC, {d:%a} {d.day} {d:%b}"
+    d = dt.datetime.fromtimestamp(t, NY)
+    return f"{d:%H:%M %Z}, {d:%a} {d.day} {d:%b}"
 
 
 def parse_iso(s):
