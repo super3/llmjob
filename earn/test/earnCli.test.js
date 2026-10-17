@@ -1391,6 +1391,89 @@ describe('local LLM', () => {
     await expect(p).resolves.toBe(1);
   });
 
+  // A mining 32 GB card used to fall back to the default model: the tier at
+  // 262144 plus the mining reserve does not fit. It now co-runs the tier at the
+  // largest measured context that does, 131072. An idle 5090 still goes
+  // demand-driven at 262144 (see the demand tests), so these cards have a
+  // desktop on them: 3 GB used, which leaves 29,149 MB free.
+  const argvCoRun = ['-a', ADDR, '--mode', 'both', '--no-update', '--no-report', '--llm-binary', '/lb'];
+  const fiveNinety = (m, usedMb = 3000) => {
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb, totalMb: 32149 }]);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    m.LlmEngineManager.mmprojInstalled = true;
+  };
+
+  test('a mining 32 GB card co-runs the vision tier at 131072', async () => {
+    const m = load();
+    fiveNinety(m);
+    const p = m.run(argvCoRun);
+    await settle();
+
+    const tier = LLM.tiers[0];
+    const llm = m.LlmManager.instances[0];
+    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({
+      ctxSize: 131072,
+      ctxLadder: [131072, 65536, 32768],
+      extraArgs: tier.extraArgs,
+      alias: tier.name,
+    }));
+    expect(m.PearlEngine.instances[0].start).toHaveBeenCalled();
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('--llm-model serves the operator file as the default model, not as the tier the card could hold', async () => {
+    // The operator's own Gemma copy started with the tier's context, its MTP
+    // speculation flags and its name -- which the server routes jobs on.
+    const m = load();
+    fiveNinety(m);
+    const p = m.run([...argvCoRun, '--llm-model', '/models/my-gemma.gguf']);
+    await settle();
+
+    const llm = m.LlmManager.instances[0];
+    const opts = llm.start.mock.calls[0][0];
+    expect(opts.alias).toBe(LLM.model.name);
+    expect(opts.modelPath).toBe('/models/my-gemma.gguf');
+    expect(opts.extraArgs).not.toEqual(LLM.tiers[0].extraArgs);
+    expect(opts.ctxSize).not.toBe(131072);
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('--llm-model pointing at the tier file keeps the tier and its settings', async () => {
+    const m = load();
+    fiveNinety(m);
+    const p = m.run([...argvCoRun, '--llm-model', '/models/' + LLM.tiers[0].file]);
+    await settle();
+
+    const llm = m.LlmManager.instances[0];
+    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({
+      ctxSize: 131072, extraArgs: LLM.tiers[0].extraArgs, alias: LLM.tiers[0].name,
+    }));
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('--llm-model in auto co-runs its file instead of going demand-driven for the tier', async () => {
+    // Auto on a 5090 goes demand-driven for the tier. An operator's own small
+    // model has no bigger choice to wait for, so it co-runs as it always has.
+    const m = load();
+    fiveNinety(m, 0);
+    const p = m.run(['-a', ADDR, '--no-update', '--no-report', '--no-serve', '--llm-binary', '/lb',
+      '--llm-model', '/models/my-gemma.gguf']);
+    await settle();
+
+    expect(allOut()).not.toContain('needs the GPU to itself');
+    expect(m.autoGate.createAutoGate.instances).toHaveLength(0);
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
   // Starting the tier is half the job; SAYING you started it is the other half.
   // Every reporting site read LLM.model directly, which was the right answer
   // only while every node ran the same model — so a serving 5090 told the

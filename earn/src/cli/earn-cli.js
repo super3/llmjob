@@ -43,7 +43,7 @@ const { statsFilePayload } = require('../shared/statsFile');
 const { shortenAddress, isValidAddress } = require('../shared/address');
 const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
 const { planLlmInstances } = require('../shared/llmPlan');
-const { pickModel, ctxLadder, planAutoMode } = require('../shared/models');
+const { allModels, pickModel, ctxLadder, planAutoMode } = require('../shared/models');
 const { LlmFleet } = require('../main/llmFleet');
 const { createAutoGate, createServeGate } = require('../main/autoGate');
 const { JobWorker } = require('../main/jobWorker');
@@ -505,6 +505,18 @@ async function startLlm(settings, reserveMb, modelOverride, armServe = true) {
   return planned ? launchLlm(settings, planned, armServe) : null;
 }
 
+// The models this node may pick from: null (the whole catalogue) unless the
+// operator passed their own file with --llm-model. That file is served with the
+// settings of the catalogue entry it IS, matched by file name, or else the
+// default model's. Picking by VRAM alone handed a 32 GB card the 27B tier, so
+// an operator's own Gemma copy started with the 27B's context, its MTP
+// speculation flags and its name, which the server routes jobs on.
+function candidateModels(settings) {
+  if (!settings.llmModel) return null;
+  const file = path.basename(settings.llmModel);
+  return allModels().filter((m) => m === LLM.model || m.file === file);
+}
+
 // The VRAM half of startLlm: which model, on which cards. Reads the cards and
 // downloads nothing, so co-running auto can make this call before the miner
 // claims its share of the card and leave the slow half for later.
@@ -522,7 +534,8 @@ async function planLlm(settings, reserveMb, modelOverride) {
   // shell has to make the same choice the GUI does, or a large card running
   // under systemd silently keeps serving the small default.
   const bestCard = pickLlmGpu(cards);
-  const model = modelOverride || pickModel(bestCard ? bestCard.freeMb : null, reserveMb || 0);
+  const model = modelOverride
+    || pickModel(bestCard ? bestCard.freeMb : null, reserveMb || 0, candidateModels(settings));
   serveLlmState.model = model;
   const plan = planLlmInstances(cards, model, reserveMb || 0, {
     maxInstances: settings.llmMaxInstances,
@@ -1063,7 +1076,7 @@ async function run(argv) {
   if (plan.llm && plan.miner && normalizeMode(settings.mode) === 'auto') {
     const cards = await detectGpusVram();
     const best = pickLlmGpu(cards);
-    autoPlan = planAutoMode(best ? best.freeMb : null, LLM.miningReserveMb);
+    autoPlan = planAutoMode(best ? best.freeMb : null, LLM.miningReserveMb, candidateModels(settings));
   }
   // `miner` is null when the mining core failed to load. Without that guard the
   // node believed it was in demand mode, skipped the up-front LLM start, never
