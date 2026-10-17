@@ -402,6 +402,19 @@ describe('coreFactory — choosing a build', () => {
       expect(r.req).not.toHaveBeenCalledWith(AMD_DEV);
     });
 
+    // The fallbacks behind PEARL_CORE_PATH are CUDA builds. On an AMD rig one
+    // would load, then fail on every start.
+    test('a PEARL_CORE_PATH that does not load is the end of it: no CUDA build is tried', () => {
+      const r = rig();
+      const env = { PEARL_CORE_VARIANT: 'amd', PEARL_CORE_PATH: '/opt/amd/pearl_core_hip.nod' };
+      expect(factory(r, Object.assign({ env }, BLACKWELL))).toBeNull();
+      expect(r.req).toHaveBeenCalledWith('/opt/amd/pearl_core_hip.nod');
+      expect(r.req).not.toHaveBeenCalledWith(CU12_BESIDE);
+      expect(r.req).not.toHaveBeenCalledWith(CU13_BESIDE);
+      expect(r.lines).toEqual([['error', 'Pearl core: AMD build (ROCm) · PEARL_CORE_PATH=/opt/amd/pearl_core_hip.nod '
+        + 'did not load (PEARL_CORE_VARIANT=amd, so no CUDA build is tried; use an absolute path)']]);
+    });
+
     test('PEARL_CORE_PATH still names the file', () => {
       const mine = { createCore: jest.fn(() => ({ build: 'mine' })) };
       const r = rig({ '/src/pearl_core_hip.node': mine });

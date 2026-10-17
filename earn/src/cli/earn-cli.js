@@ -47,6 +47,7 @@ const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
 const { planLlmInstances } = require('../shared/llmPlan');
 const { allModels, pickModel, ctxLadder, planAutoMode } = require('../shared/models');
 const { createPromptPause, cardForPrompt } = require('../shared/promptPause');
+const { AMD: CORE_AMD, FILES: CORE_FILES, pickCoreVariant } = require('../shared/coreVariant');
 const { createAutoGate, createServeGate } = require('../main/autoGate');
 const { resolvePlan, normalizeMode } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote } = require('../shared/platform');
@@ -938,9 +939,18 @@ async function run(argv) {
       log: (level, line) => log(line, level === 'error' ? process.stderr : process.stdout),
     });
     if (!createCore) {
-      const where = 'searched: PEARL_CORE_PATH, beside the executable, and the dev tree';
-      log('pearl_core.node not found -- this build cannot mine (' + where + ').', process.stderr);
-      log('Fix: keep pearl_core.node from the release next to the executable, or set PEARL_CORE_PATH=/path/to/pearl_core.node.', process.stderr);
+      // PEARL_CORE_VARIANT=amd asked for the AMD core, a different file that no
+      // release ships yet. Pointing at pearl_core.node there would load a CUDA
+      // core on an AMD rig. The core loader has already said what failed (the
+      // file is missing, or PEARL_CORE_PATH didn't load); this says where it goes.
+      if (pickCoreVariant({ env: process.env }).variant === CORE_AMD) {
+        const file = CORE_FILES[CORE_AMD];
+        log('Fix: put ' + file + ' next to the executable (a run from the source tree also finds earn/native/amd/build), or set PEARL_CORE_PATH to its absolute path.', process.stderr);
+      } else {
+        const where = 'searched: PEARL_CORE_PATH, beside the executable, and the dev tree';
+        log('pearl_core.node not found -- this build cannot mine (' + where + ').', process.stderr);
+        log('Fix: keep pearl_core.node from the release next to the executable, or set PEARL_CORE_PATH=/path/to/pearl_core.node.', process.stderr);
+      }
       if (settings.mode === 'mining') return 1;
       log('continuing with the local LLM only.', process.stderr);
     }
@@ -1217,7 +1227,7 @@ async function run(argv) {
       // (promptPause.cardForPrompt).
       const busIds = await probe.detectPciBusIds();
       const fleet = await launchLlm(settings, coRun, true, true, (e) => {
-        const card = cardForPrompt(e, busIds);
+        const card = cardForPrompt(e, busIds, settings.gpus.length);
         if (card !== undefined) promptPause.setBusy(card, e.busy);
       });
       if (!fleet) return;

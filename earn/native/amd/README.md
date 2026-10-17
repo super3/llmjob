@@ -179,7 +179,9 @@ runs.
 `PEARL_CORE_VARIANT=amd` makes the app and `earn-cli` load `pearl_core_hip.node`: beside
 the executable, in the packaged `native/` folder, or in this folder's `build/`. It is
 never chosen on its own, and when it is asked for and missing, nothing falls back to a
-CUDA build. `PEARL_CORE_PATH=/path/to/pearl_core_hip.node` works too.
+CUDA build. `PEARL_CORE_PATH=/path/to/pearl_core_hip.node` works too. Give it an absolute
+path: a relative one counts from the executable's folder. With `PEARL_CORE_VARIANT=amd`,
+a `PEARL_CORE_PATH` that doesn't load is the end of it; the CUDA cores aren't tried.
 
 The app finds cards with nvidia-smi, which lists no AMD card. So one core starts and picks
 the AMD card with the most compute units times clock. On a rig with several, choose them
@@ -188,8 +190,17 @@ nvidia-smi does not list straight to the core, one core each. Indices are HIP's,
 follow `rocm-smi` unless `HIP_VISIBLE_DEVICES` says otherwise. Temperatures, VRAM rows on
 the board and memory clocks are read with nvidia-smi and stay empty on AMD.
 
+Without nvidia-smi the app also can't tell which card the local LLM loaded on. While the
+LLM co-runs on a rig mining on one AMD card, each prompt pauses that card, whichever card
+the model is on. On several mining AMD cards it pauses none of them, and prompts run
+beside the miner. Pausing only the LLM's card needs AMD bus ids for the mining cards (from
+`rocm-smi`, say).
+
 ## Gaps and next steps
 
+- Pause only the LLM's card for a prompt on a rig of several AMD cards (see "Using it in
+  the app"): read the mining cards' bus ids with `rocm-smi` or sysfs, and check HIP's
+  card order against them on hardware.
 - Run steps 1-4 above on an MI300X, an RX 7900 and an RX 9070.
 - Speed: nothing is tuned. Obvious first steps: DPP or `ds_swizzle` instead of
   `__shfl_xor` in the readout; `v_mfma_i32_32x32x32_i8` on gfx950 (2x the rate; its

@@ -134,6 +134,20 @@ function coreFactory(opts = {}) {
   const wrap = (addon) => (profile, coreOpts) => addon.createCore(profile, coreOpts || {});
 
   if (env.PEARL_CORE_PATH) {
+    // With PEARL_CORE_VARIANT=amd the named file is the only one tried: every
+    // fallback findCore has is a CUDA build, which on an AMD rig would load and
+    // then fail on every start. The path counts from the executable's folder
+    // when it is relative, not from where the command ran.
+    if (pickCoreVariant({ env }).variant === AMD) {
+      const named = firstLoadable(loaderContext(opts).req, [env.PEARL_CORE_PATH]);
+      if (!named) {
+        log('error', 'Pearl core: ' + LABELS[AMD] + ' · PEARL_CORE_PATH=' + env.PEARL_CORE_PATH
+          + ' did not load (PEARL_CORE_VARIANT=amd, so no CUDA build is tried; use an absolute path)');
+        return null;
+      }
+      log('info', 'Pearl core: ' + named.file + ' (PEARL_CORE_PATH)');
+      return wrap(named.addon);
+    }
     const found = findCore(opts);
     if (!found) return null;
     log('info', 'Pearl core: ' + found.file
