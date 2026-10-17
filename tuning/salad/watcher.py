@@ -1254,7 +1254,9 @@ class W:
                      + f" {bold(f'{all_cost:.2f}')} | {bold(with_margin(hr_all, all_earn))} | {bold(f'{total:+.2f}{EST}')} |")
         # What each pool reports for the account: its own hashrate (1-hour average) and the coins it holds and paid.
         pt, xt = st.get("pool_tot"), st.get("xmr_tot") if xon else None
-        kt = st.get("kx_tot") if any(g.get("kx") or g.get("prl_kx") for g in groups) else None
+        # Kryptex shows once a live box is on it or some PRL was mined there; an ended group that never mined
+        # there (its switch failed) doesn't count.
+        kt = st.get("kx_tot") if any((g.get("kx") and not g["ended"]) or g.get("prl_kx") for g in groups) else None
         pool = []
         if pt:
             pool.append(f"| ⛏️ PRL{NB + 'HeroMiners' if kt else ''} | {pt.get('ths_1h', 0):.0f} TH/s | {pt['balance']:.3f} "
