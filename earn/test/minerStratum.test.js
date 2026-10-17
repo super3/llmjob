@@ -2,7 +2,7 @@
 
 const {
   HEADER_BYTES, TARGET_BYTES, AUTHORIZE_ID,
-  buildAuthorize, buildSubmit, serializeProof, encode,
+  buildAuthorize, isKryptexHost, buildSubmit, serializeProof, encode,
   decodeTarget, parseMessage, parseJob, parseDifficulty, normalizeError,
 } = require('../src/shared/miner/stratum');
 
@@ -25,6 +25,21 @@ describe('buildAuthorize', () => {
       method: 'mining.authorize',
       params: { wallet: 'prl1pabc', worker: 'rig01' },
     });
+    // The same with HeroMiners' host: the captured message, unchanged.
+    expect(buildAuthorize('prl1pabc', 'rig01', 'us2.pearl.herominers.com')).toEqual(buildAuthorize('prl1pabc', 'rig01'));
+  });
+
+  test('Kryptex gets wallet/worker, since it ignores the worker field', () => {
+    expect(buildAuthorize('prl1pabc', 'kx-test', 'prl-us.kryptex.network').params)
+      .toEqual({ wallet: 'prl1pabc/kx-test', worker: 'kx-test' });
+    expect(buildAuthorize('prl1pabc', 'rig', 'PRL.KRYPTEX.NETWORK').params.wallet).toBe('prl1pabc/rig');
+    // No worker name: the wallet alone, which Kryptex also takes.
+    expect(buildAuthorize('prl1pabc', '', 'prl-us.kryptex.network').params.wallet).toBe('prl1pabc');
+    // Another pool, or a name that only ends like Kryptex's, gets the standard message.
+    expect(buildAuthorize('prl1pabc', 'rig', 'pool.example').params.wallet).toBe('prl1pabc');
+    expect(buildAuthorize('prl1pabc', 'rig', 'notkryptex.network').params.wallet).toBe('prl1pabc');
+    expect(isKryptexHost('kryptex.network')).toBe(true);
+    expect(isKryptexHost(null)).toBe(false);
   });
 });
 

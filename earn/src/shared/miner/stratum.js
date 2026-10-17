@@ -35,8 +35,18 @@ const TARGET_BYTES = 32;
 // with id null, and submits carry their own ids allocated by the caller.
 const AUTHORIZE_ID = 1;
 
-function buildAuthorize(wallet, worker) {
-  return { id: AUTHORIZE_ID, method: 'mining.authorize', params: { wallet, worker } };
+// Kryptex (`--pool prl-us.kryptex.network:7048`) takes the same message, but
+// names the worker from "wallet/worker" and ignores the worker field: a login
+// that sent only the field showed up there as "worker". Only Kryptex gets the
+// slash. HeroMiners' message stays exactly as captured, and another pool gets
+// the standard one rather than a guess.
+function isKryptexHost(host) {
+  return /(^|\.)kryptex\.network$/i.test(String(host || ''));
+}
+
+function buildAuthorize(wallet, worker, host) {
+  const login = worker && isKryptexHost(host) ? wallet + '/' + worker : wallet;
+  return { id: AUTHORIZE_ID, method: 'mining.authorize', params: { wallet: login, worker } };
 }
 
 // A share submission. The proof encoding is pool-specific and is the one part of
@@ -185,6 +195,7 @@ module.exports = {
   TARGET_BYTES,
   AUTHORIZE_ID,
   buildAuthorize,
+  isKryptexHost,
   buildSubmit,
   serializeProof,
   encode,

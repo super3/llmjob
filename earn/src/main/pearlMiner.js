@@ -401,7 +401,7 @@ class PearlMiner extends EventEmitter {
 
     sock.on('connect', () => {
       this.emit('log', { level: 'info', line: 'connecting to ' + host + ':' + port + ' · worker ' + worker });
-      sock.write(encode(buildAuthorize(wallet, worker)));
+      sock.write(encode(buildAuthorize(wallet, worker, host)));
     });
     sock.on('data', (chunk) => this._onData(chunk, wallet, worker));
     sock.on('error', (err) => {

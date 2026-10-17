@@ -879,7 +879,8 @@ async function run(argv) {
     // back to the defaults already in `settings` and never blocks mining. Explicit
     // --region / --gpu always win.
     if (!settings.workerProvided) settings.worker = defaultWorker();
-    if (!settings.regionProvided) settings.region = await detectRegion();
+    // --pool needs no region for Pearl; Monero still mines in one.
+    if (!settings.regionProvided && (!settings.endpoint || settings.xmrAddress)) settings.region = await detectRegion();
     // Probe regardless of --gpu. Naming the card and counting the cards are two
     // different questions, and folding them into one `if` meant that passing
     // --gpu (to name it) also skipped the COUNT — so an N-card rig fell back to
@@ -900,7 +901,8 @@ async function run(argv) {
       log('region ' + settings.legacyRegion + ' is now ' + settings.region
         + ' (' + REGIONS[settings.region].name + ')');
     }
-    log('pool:       ' + endpoint + '  ' + regionLabel(settings.region) + (settings.regionProvided ? '' : '  (auto)'));
+    if (settings.endpoint) log('pool:       ' + endpoint + '  (--pool)');
+    else log('pool:       ' + endpoint + '  ' + regionLabel(settings.region) + (settings.regionProvided ? '' : '  (auto)'));
     log('worker:     ' + settings.worker + (settings.workerProvided ? '' : '  (auto)'));
     if (settings.gpu) {
       log('gpu:        ' + (settings.gpuCount > 1 ? settings.gpuCount + '× ' : '') + settings.gpu

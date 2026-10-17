@@ -684,6 +684,10 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
   -r, --region <id>        Pool region: us/us2/ca/br/de/fi/fr/tr/sg/hk/kr/au
                            (default: the fastest). An old AlphaPool id such as
                            eu1 maps to the nearest.
+      --pool <host:port>   Mine Pearl on this stratum endpoint instead of a
+                           HeroMiners region, such as prl-us.kryptex.network:7048.
+                           It must use the same protocol as HeroMiners. Monero
+                           still follows the region.
   -w, --worker <name>      Worker/rig name (default: this machine's hostname)
   -g, --gpu <card>         GPU name to report on the board (default: from nvidia-smi)
       --gpu-index <list>   Mine only on these GPUs: nvidia-smi indices such as

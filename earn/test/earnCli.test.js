@@ -706,6 +706,31 @@ describe('mining', () => {
     await expect(p).resolves.toBe(0);
   });
 
+  // --pool: the Salad watcher points boxes at Kryptex this way.
+  test('--pool mines on that endpoint and skips region detection', async () => {
+    const m = load();
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--pool', 'prl-us.kryptex.network:7048']);
+    await settle();
+    expect(allOut()).toContain('pool:       prl-us.kryptex.network:7048  (--pool)');
+    expect(m.probe.detectRegion).not.toHaveBeenCalled();
+    expect(m.PearlEngine.instances[0].start).toHaveBeenCalledWith(
+      expect.objectContaining({ endpoint: 'prl-us.kryptex.network:7048' }));
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('--pool with Monero still detects a region, for the Monero host', async () => {
+    const XMR_ADDR = '87wTMj88rEGV3BFiYXJc2UHeTGmHikMRWAvAskmPgaF3PZxuxonkKaJZsprNmuhM1Aca7P6UbyatGFHkQfUTYgoNN1JxND9';
+    const m = load();
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--pool', 'prl-us.kryptex.network:7048',
+      '--xmr-address', XMR_ADDR]);
+    await settle();
+    expect(m.probe.detectRegion).toHaveBeenCalled();
+    expect(allOut()).toContain('pool:       prl-us.kryptex.network:7048  (--pool)');
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await p;
+  });
+
   test('an unknown region still exits 1 with the list', async () => {
     const m = load();
     await expect(m.run(['-a', ADDR, '--no-update', '--region', 'eu9'])).resolves.toBe(1);
