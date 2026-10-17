@@ -571,12 +571,11 @@ class W:
                 event(f"WARN Monero {'on' if want else 'off'} for {g['name']} refused: HTTP {s} {str(j)[:150]}")
 
     def kx_sync(self, active, t):
-        """Keeps kryptex_groups boxes mining on Kryptex, on PCs we already have: a new group can wait a long time
-        for one. While fewer Kryptex boxes have a PC than config asks, the HeroMiners box that has held its PC
-        longest (and is mining) is switched, as for Monero: its command is updated and its box restarted. At most
-        one switch to Kryptex every 15 minutes, so a restart can finish before another box is touched. Kryptex
-        groups beyond the count go back to HeroMiners, those without a PC first, never one switched in the last
-        15 minutes."""
+        """Keeps kryptex_groups boxes mining on Kryptex. A new group can wait a long time for a PC, so a box that is
+        mining is switched instead: the HeroMiners box earning least an hour, while fewer Kryptex boxes have a PC
+        than config asks. At most one switch to Kryptex every 15 minutes, so a moved box can get its new PC before
+        another is touched. Kryptex groups beyond the count go back to HeroMiners, those without a PC first, never
+        one switched in the last 15 minutes."""
         st, cfg = self.st, self.cfg
         if st.setdefault("kx_token", cfg["kryptex_token"]) != cfg["kryptex_token"]:
             st["kx_token"], st["kx_fails"] = cfg["kryptex_token"], 0
@@ -587,10 +586,12 @@ class W:
         if sum(1 for g in kx if g["has_pc"]) < want and t - st.get("kx_switch_t", 0) >= 15 * MIN:
             cands = [g for g in live if not g.get("kx") and g["has_pc"] and g["status"] == "running" and g.get("pc_since")
                      and any(r[1] == g.get("machine") and r[2] > 0 and r[0] >= t - 10 * MIN for r in g["readings"])]
-            if cands:
-                g = min(cands, key=lambda g: g["pc_since"])
+            usd = self.usd()
+            earning = [(r * usd - g["price"], g) for g in cands if (r := self.pc_rate(g)) is not None]
+            if earning:
+                gain, g = min(earning, key=lambda x: x[0])
                 st["kx_switch_t"] = t
-                if self.kx_switch(g, True, t, "it has held its PC longest"):
+                if self.kx_switch(g, True, t, f"it earns least, ${gain:+.3f}/hr"):
                     kx.append(g)
         extra = len(kx) - want
         for g in sorted(kx, key=lambda g: (g["has_pc"], -(g.get("kx_since") or g["created"]))):
@@ -604,8 +605,10 @@ class W:
                 extra -= 1
 
     def kx_switch(self, g, on, t, why):
-        """Point a group's box at Kryptex (on) or back at HeroMiners: update its command, and restart its box if it
-        has a PC. A restarted box gets 10 minutes to send a new reading (see rules)."""
+        """Point a group's box at Kryptex (on) or back at HeroMiners: update its command, then, if it has a PC, move
+        it to a new PC, where it starts with the new command. Salad's instance restart doesn't do it: on 17 October
+        it answered 202 twice and the box kept running its old command. The move isn't counted toward the group's
+        3, and the PC it leaves doesn't go on the bad list."""
         ver, command, _ = self.box(g["name"], bool(g.get("xmr")), on)
         s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": command}},
                     ctype="application/merge-patch+json")
@@ -613,20 +616,16 @@ class W:
             event(f"WARN Kryptex {'on' if on else 'off'} for {g['name']} refused: HTTP {s} {str(j)[:150]}")
             return False
         g.update(kx=on, ver=ver, kx_since=t if on else None)
-        rs = None
-        if g["has_pc"] and g.get("instance"):
-            rs, _ = http("POST", f"{CB}/{g['name']}/instances/{g['instance']}/restart")
-            if rs and 200 <= rs < 300:
-                g["restart_t"] = t
+        moving = bool(g["has_pc"] and g.get("instance"))
         event(f"KRYPTEX {'ON' if on else 'OFF'} {g['name']} ({why}): Pearl on {'Kryptex' if on else 'HeroMiners'}; "
-              + ("box restarted" if rs and 200 <= rs < 300 else
-                 "Salad dropped its instance; it starts that way on its next PC" if rs == 404 else
-                 f"restart refused (HTTP {rs})" if rs else "it starts that way on its next PC"))
+              + ("moving it to a new PC, where it starts that way" if moving else "it starts that way on its next PC"))
+        if moving:
+            self.reallocate(g, f"to start on {'Kryptex' if on else 'HeroMiners'}", count=False)
         return True
 
     def kx_failed(self, g, why):
         """A Kryptex box that sends no shares or no readings points at Kryptex, not at the PC: it goes back to
-        HeroMiners and keeps its PC (and the PC stays off the bad list). Two of these stop the test."""
+        HeroMiners on a new PC, and the PC stays off the bad list. Two of these stop the test."""
         st = self.st
         st["kx_fails"] = st.get("kx_fails", 0) + 1
         self.kx_switch(g, False, now(), f"on Kryptex: {why}")
@@ -972,21 +971,19 @@ class W:
         ls = g["last_share"] or 0
         sharing = ls >= g["pc_since"] and t - ls < 6 * MIN
         cur = [r for r in g["readings"] if r[1] == g["machine"] and r[2] > 0 and r[0] >= g["pc_since"] - 5 * MIN]
-        # A box restarted on its PC (a pool switch) sends nothing while it sets up again: give it 10 minutes.
-        rt = g.get("restart_t") or 0
-        if not cur and seen_to - max(g["pc_since"], rt) >= 10 * MIN and not sharing:
+        if not cur and seen_to - g["pc_since"] >= 10 * MIN and not sharing:
             self.leave(g, f"no mining reading {on / 60:.0f} min after getting PC {g['machine'][:8]}")
             return
         # A miner that stops (the card is taken back, the driver fails) stops sending readings: leave the PC
         # once the newest is 6 min old.
-        if cur and seen_to - max(cur[-1][0], rt + 4 * MIN) >= 6 * MIN and not sharing:
+        if cur and seen_to - cur[-1][0] >= 6 * MIN and not sharing:
             self.leave(g, f"no mining reading for {(t - cur[-1][0]) / 60:.0f} min on PC {g['machine'][:8]}")
             return
         # Rule 4: no share after 20 min on a PC.
         if on >= 20 * MIN:
             gap = SHARE_UNITS / (g["rate"] / UNIT_TH)
             limit = max(10 * MIN, 8 * gap)
-            ref = max(g["pc_since"], g["last_share"] or 0, rt)
+            ref = max(g["pc_since"], g["last_share"] or 0)
             if t - ref >= limit:
                 self.leave(g, f"no share for {(t - ref) / 60:.0f} min on PC {g['machine'][:8]}")
                 return

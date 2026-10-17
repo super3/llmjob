@@ -171,16 +171,18 @@ said 2%), and it pays out from 1 PRL. At HeroMiners' recent 92% that's about 5 p
 
 The watcher runs it on `kryptex_groups` boxes (live: 1, a first try), marked **(K)** in the table:
 
-- **Which boxes:** ones that already have a PC. The first try put a new group on Kryptex, and a new group
-  can wait a long time for a PC. So new groups start on HeroMiners, and while fewer Kryptex boxes have a
-  PC than config asks, the HeroMiners box that has held its PC longest (and is mining) is switched: its
-  command is updated and its box restarted, as for Monero. At most one switch to Kryptex every 15
-  minutes. Kryptex groups beyond the count go back to HeroMiners, those without a PC first, never one
-  switched in the last 15 minutes.
-- **A restarted box** sets up again before it mines, so the reading rules give it 10 minutes after the
-  restart before they leave its PC, and the no-share rule counts from the restart.
+- **Which boxes:** ones that are mining. The first try put a new group on Kryptex, and two new groups in a
+  row got no PC at medium in 10 minutes. So new groups start on HeroMiners, and while fewer Kryptex boxes
+  have a PC than config asks, the HeroMiners box earning least an hour is switched: its command is
+  updated and it moves to a new PC (reallocated, not counted toward its 3), where it starts with the new
+  command. Reallocated boxes here get a new PC in 2 minutes (median of 420), 3 at the 75th percentile.
+  At most one switch to Kryptex every 15 minutes. Kryptex groups beyond the count go back to HeroMiners,
+  those without a PC first, never one switched in the last 15 minutes.
+- **Why a move and not a restart:** Salad's instance restart answers 202 but doesn't restart the box. On
+  17 October two restarts of a box whose command had been switched left its miner running (its uptime
+  kept counting) on the old command, though the instance reported the new version.
 - **When Kryptex doesn't take a box's work:** a Kryptex box that would be left for sending no shares or
-  no readings goes back to HeroMiners instead, and keeps its PC, which stays off the bad list (the pool
+  no readings goes back to HeroMiners instead, on a new PC, and the PC stays off the bad list (the pool
   is the likelier cause). Two of these stop the test: every box stays on HeroMiners until config
   `kryptex_token` changes.
 - **How:** the miner only knows HeroMiners' 12 regions, and both pools run Pearl's reference stratum at
