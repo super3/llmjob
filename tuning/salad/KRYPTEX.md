@@ -7,8 +7,11 @@ from its accepted shares. Work on PR #261, branch `claude/amazing-newton-mu7lgq`
 ## Where things stand (17 October 2026)
 
 **Done.** Release v0.6.1 has `--pool`, and the watcher uses it: Kryptex boxes run v0.6.1 or later with
-`--pool prl-us.kryptex.network:7048` in box.sh's flags, and `kryptex_groups` is 1. The notes below are
-kept as the record of how it got there.
+`--pool prl-us.kryptex.network:7048` in box.sh's flags, and `kryptex_groups` is 1. The release session's
+test reached Kryptex and was paid for every share. The rest of this file is the plan as it was written
+before that, kept as the record; where it differs from the code, `tuning/salad/README.md` ("Kryptex
+(PPS+)") is current. In particular the watcher no longer calls `/v1/pool/info`, and it reads a worker's
+`avg_hashrate_30m`, since the rows have no `hashrate` field.
 
 - The watcher side is built and tested (`tuning/salad/watcher.py`, `KX_API`, `kx_sync`, `kx_switch`,
   `kx_failed`, `kx_pool`, the `(K)` mark, PRL counted per pool as `prl_kx`). It is switched off live:

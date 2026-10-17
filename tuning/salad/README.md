@@ -200,7 +200,11 @@ What's built for it, with `kryptex_groups` boxes marked **(K)** in the table:
 - **When Kryptex doesn't take a box's work:** a Kryptex box that would be left for sending no shares or
   no readings goes back to HeroMiners instead, on a new PC, and the PC stays off the bad list (the pool
   is the likelier cause). Two of these stop the test: every box stays on HeroMiners until config
-  `kryptex_token` changes.
+  `kryptex_token` changes. This counts only when the box reached Kryptex from that PC: the miner prints
+  `connecting to prl-us.kryptex.network:7048` once its connection is up, and box.sh passes its first lines
+  on as `[minerlog g0]`. A PC that never shows it (its network may block port 7048; box.sh only checks
+  HeroMiners' 1200) goes on the bad list and the box moves on, still on Kryptex, without a strike, once
+  per switch; a second such PC counts, in case the line was missed.
 - **How:** a Kryptex box runs release `kryptex_ver` (v0.6.1) or later, and its command puts
   `--pool prl-us.kryptex.network:7048` into box.sh's default flags, the same way Monero adds
   `--xmr-address`. Monero stays on HeroMiners. Going back to HeroMiners drops the flag; the box keeps the
@@ -361,8 +365,10 @@ minutes give a normal delete time to finish.
 
 `guard.py` is for when the watcher isn't running, for example because the machine it ran on went away
 while the groups keep billing on Salad. It keeps no state. It stops every running `biz-` group that is
-at least an hour old, has a running PC, and from which the pool has seen no work in the last hour. The
-watcher never lets that happen, so a hit means nothing is watching. Stopping is reversible. Run it
+at least an hour old, has a running PC, and from which neither pool has seen work in the last hour:
+HeroMiners, or Kryptex for a box mining Pearl there (its 30-minute hashrate or a share in the hour). If
+either pool can't be read, it stops nothing. The watcher never lets that happen, so a hit means nothing
+is watching. Stopping is reversible. Run it
 hourly (`--dry-run` only reports):
 
 ```sh
