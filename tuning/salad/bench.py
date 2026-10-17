@@ -31,9 +31,14 @@ PLAN = [
     ("GTX 1660 (6 GB)", ["GTX 1660"], 300),
     ("GTX 1650 (4 GB)", ["GTX 1650"], 300),
 ]
+# Cards a class also hands out that aren't rows of their own: recorded in their own row when they turn up, but not
+# waited for. Salad's "GTX 1660" class gave a GTX 1660 Ti on 17 October.
+EXTRA = {"GTX 1660 (6 GB)": ["GTX 1660 Ti"]}
 SECTIONS = [("GTX 10-series (Pascal, sm_61, on Salad)", ["GTX 1080 Ti", "GTX 1080", "GTX 1070", "GTX 1060", "GTX 1050 Ti"]),
-            ("GTX 16-series (Turing without tensor cores, sm_75, on Salad)", ["GTX 1660 Super", "GTX 1660", "GTX 1650"])]
-MEM = {"GTX 1060": "6 GB", "GTX 1050 Ti": "4 GB", "GTX 1660 Super": "6 GB", "GTX 1660": "6 GB", "GTX 1650": "4 GB"}
+            ("GTX 16-series (Turing without tensor cores, sm_75, on Salad)",
+             ["GTX 1660 Super", "GTX 1660 Ti", "GTX 1660", "GTX 1650"])]
+MEM = {"GTX 1060": "6 GB", "GTX 1050 Ti": "4 GB", "GTX 1660 Super": "6 GB", "GTX 1660 Ti": "6 GB", "GTX 1660": "6 GB",
+       "GTX 1650": "4 GB"}
 
 
 def log(msg):
@@ -44,12 +49,10 @@ def log(msg):
 
 
 def row_for(card, rows):
-    """The table row a card name belongs to, longest name first so "GTX 1080 Ti" isn't read as "GTX 1080"."""
-    c = card.upper()
-    for r in sorted(rows, key=len, reverse=True):
-        if re.search(r"\b" + re.escape(r.upper()) + r"\b", c):
-            return r
-    return None
+    """The table row a card name is, the whole name without "NVIDIA GeForce", so neither "GTX 1080 Ti" nor
+    "GTX 1660 Ti" is read as the card without the Ti."""
+    c = re.sub(r"^(NVIDIA\s+)?(GEFORCE\s+)?", "", card.strip().upper())
+    return next((r for r in rows if r.upper() == c), None)
 
 
 def parse(lines):
@@ -115,7 +118,8 @@ def render(st):
                 "|---|---|---|---|---|---|---|"]
         for r in rows:
             hosts = st["results"].get(r, [])
-            for i in range(HOSTS):
+            extra = any(r in e for e in EXTRA.values())
+            for i in range(len(hosts) if extra else HOSTS):    # a card no class is for: only the hosts it had
                 mem = f", {MEM[r]}" if r in MEM else ""
                 if i >= len(hosts):
                     out.append(f"| {r} | Salad (— W{mem}) | — | not run | not run | not run | — |")
@@ -280,7 +284,7 @@ class Bench:
         self.read()
         r = parse(x.split("|", 1)[1] for x in self.st["lines"])
         if r["card"]:
-            row = row_for(r["card"]["name"], rows)
+            row = row_for(r["card"]["name"], rows + EXTRA.get(cls, []))
             if row is None or len(self.st["results"].get(row, [])) >= HOSTS:
                 self.st["seen"].append(self.st["machine"])
                 self.move_on(f"{r['card']['name']}: " + ("not a card in this class's rows" if row is None
@@ -292,7 +296,7 @@ class Bench:
             self.move_on(r["fail"])
             return True
         if r["done"] and r["card"]:
-            row = row_for(r["card"]["name"], rows)
+            row = row_for(r["card"]["name"], rows + EXTRA.get(cls, []))
             res = {"machine": self.st["machine"], "card": r["card"]["name"], "power": r["card"]["power"],
                    "driver": r["card"]["driver"], "group": self.st["group"],
                    "ours": figure(r["miners"].get("ours"), mean_after=60),

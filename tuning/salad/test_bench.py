@@ -28,6 +28,9 @@ class TestBench(unittest.TestCase):
         self.assertEqual(b.row_for("NVIDIA GeForce GTX 1660 SUPER", ["GTX 1660 Super", "GTX 1660"]), "GTX 1660 Super")
         self.assertEqual(b.row_for("NVIDIA GeForce GTX 1660", ["GTX 1660 Super", "GTX 1660"]), "GTX 1660")
         self.assertIsNone(b.row_for("NVIDIA GeForce GTX 1050 Ti", rows))
+        self.assertIsNone(b.row_for("NVIDIA GeForce GTX 1660 Ti", ["GTX 1660"]))   # a different card
+        self.assertEqual(b.row_for("NVIDIA GeForce GTX 1660 Ti", ["GTX 1660", "GTX 1660 Ti"]), "GTX 1660 Ti")
+        self.assertIsNone(b.row_for("NVIDIA GeForce GTX 1080 Ti", ["GTX 1080"]))
 
     def test_parse_reads_card_samples_exits_and_done(self):
         r = b.parse(LINES)
@@ -52,6 +55,10 @@ class TestBench(unittest.TestCase):
         st["results"]["GTX 1660"] = [{"machine": "abcd1234", "power": "120.00 W", "ours": (30.0, None),
                                       "peak": (40.0, None), "srb": (38.0, None)}]
         self.assertIn("| GTX 1660 | Salad (120 W, 6 GB) | abcd1234 | 30.0 | 40.0 | 38.0 | 75% |", b.render(st))
+        self.assertNotIn("GTX 1660 Ti", b.render(st))     # a card no class is for shows only when it turned up
+        st["results"]["GTX 1660 Ti"] = [{"machine": "741f9c56", "power": "120.00 W", "ours": (1.2, None),
+                                         "peak": (1.2, None), "srb": (1.2, None)}]
+        self.assertEqual(b.render(st).count("| GTX 1660 Ti |"), 1)
 
     def test_a_group_stopped_before_a_pc_is_started_again_every_5_minutes(self):
         calls, now = [], [10_000]
