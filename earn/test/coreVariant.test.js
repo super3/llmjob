@@ -19,6 +19,7 @@ const RTX3090 = (index, drv) => card(index, '8.6', drv == null ? 610 : drv);
 const A100 = (index, drv) => card(index, '8.0', drv == null ? 610 : drv);
 const H100 = (index, drv) => card(index, '9.0', drv == null ? 610 : drv);
 const B200 = (index, drv) => card(index, '10.0', drv == null ? 610 : drv);
+const GTX1080TI = (index, drv) => card(index, '6.1', drv == null ? 580 : drv);
 
 describe('core file names', () => {
   // These are the release asset names too: the self-updater and the workflows
@@ -66,6 +67,13 @@ describe('cu13HasCodeFor / cu13AutoSelectsFor', () => {
     expect(cu13HasCodeFor(B200(0))).toBe(false);
     expect(cu13AutoSelectsFor(B200(0))).toBe(false);
   });
+
+  // 6.1 is Pascal (GTX 10). CUDA 13 cannot build it, so its sm_61 code is in the
+  // 12.8 build only.
+  test('Pascal has no code', () => {
+    expect(cu13HasCodeFor(GTX1080TI(0))).toBe(false);
+    expect(cu13AutoSelectsFor(GTX1080TI(0))).toBe(false);
+  });
 });
 
 // What each core is compiled for, read from the workflow that builds both
@@ -84,7 +92,7 @@ describe('the gencode lists the two cores are built from', () => {
   const of = (variant) => entries.filter((e) => e.variant === variant);
   // One card of each architecture the app mines on, and the code it runs.
   const fleet = [
-    [RTX2080TI(0), 'sm_75'], [A100(0), 'sm_80'], [RTX3090(0), 'sm_86'],
+    [GTX1080TI(0), 'sm_61'], [RTX2080TI(0), 'sm_75'], [A100(0), 'sm_80'], [RTX3090(0), 'sm_86'],
     [RTX4090(0), 'sm_89'], [H100(0), 'sm_90a'], [B200(0), 'sm_100'], [RTX5090(0), 'sm_120'],
   ];
 
@@ -99,6 +107,13 @@ describe('the gencode lists the two cores are built from', () => {
     for (const e of of('')) {
       for (const [, sm] of fleet) expect(e.codes).toContain(sm);
     }
+  });
+
+  // A GTX 10 card has only the 12.8 build to run: CUDA 13 dropped Pascal, so its
+  // entries must not list it (nvcc 13 would refuse the whole compile).
+  test('sm_61 (Pascal) is in both 12.8 entries and neither CUDA 13 one', () => {
+    for (const e of of('')) expect(e.codes).toContain('sm_61');
+    for (const e of of('-cu13')) expect(e.codes).not.toContain('sm_61');
   });
 
   test('cu13HasCodeFor says what the CUDA 13 build was compiled for', () => {
@@ -228,6 +243,28 @@ describe('pickCoreVariant', () => {
     expect(out.reason).toBe('GPU 1 is compute 10.0 (the CUDA 13 build has no code for it)');
   });
 
+  // Pascal's code (sm_61, the dp4a fold) is in the 12.8 build only, on every
+  // driver, including the 580+ ones that put a 5090 on the CUDA 13 build.
+  test('a GTX 1080 Ti rig keeps the 12.8 build: the CUDA 13 one has no code for it', () => {
+    expect(pickCoreVariant({ env: {}, cards: [GTX1080TI(0)], gpus: [{ index: 0 }] })).toEqual({
+      variant: CU12, reason: 'GPU 0 is compute 6.1 (the CUDA 13 build has no code for it)',
+    });
+    expect(pickCoreVariant({ env: {}, cards: [GTX1080TI(0), GTX1080TI(1)], gpus: [] })).toEqual({
+      variant: CU12, reason: 'GPU 0 is compute 6.1 (the CUDA 13 build has no code for it)',
+    });
+    expect(pickCoreVariant({ env: {}, cards: [GTX1080TI(0, 575)], gpus: [{ index: 0 }] })).toEqual({
+      variant: CU12, reason: 'driver 575 (the CUDA 13 build needs 580+)',
+    });
+  });
+
+  test('a 5090 + GTX 1080 Ti rig keeps the 12.8 build', () => {
+    const out = pickCoreVariant({
+      env: {}, cards: [RTX5090(0, 580), GTX1080TI(1)], gpus: [{ index: 0 }, { index: 1 }],
+    });
+    expect(out.variant).toBe(CU12);
+    expect(out.reason).toBe('GPU 1 is compute 6.1 (the CUDA 13 build has no code for it)');
+  });
+
   // Turing's code is in the 12.8 build only (sm_75); the CUDA 13 one is sm_120.
   test('a 2080 Ti rig keeps the 12.8 build', () => {
     expect(pickCoreVariant({ env: {}, cards: [RTX2080TI(0)], gpus: [{ index: 0 }] })).toEqual({
@@ -330,6 +367,13 @@ describe('isRuntimeError', () => {
       'device kernel image is invalid',
       'API call is not supported in the installed CUDA driver',
     ]) expect(isRuntimeError(new Error(m))).toBe(true);
+  });
+
+  // pearl_host.cu refuses a card its core has no code for, before allocating,
+  // with the card's compute capability; the 12.8 build may have that code.
+  test('matches the core\'s own "no GPU code" refusal', () => {
+    expect(isRuntimeError(new Error('this Pearl core has no GPU code for compute 6.1 '
+      + '(GPU 0, NVIDIA GeForce GTX 1080 Ti): invalid device function'))).toBe(true);
   });
 
   // A card that is merely full is not a reason to change builds.

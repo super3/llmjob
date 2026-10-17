@@ -11,6 +11,13 @@ losing information, cut it.
 This applies to commit messages, PR titles and descriptions, code comments, and
 what you say in chat.
 
+## Show the result of every change to something I can see
+
+When I ask you to change a table, a report, a page, or any other output I read,
+show me the changed result in your reply, rendered from the real code or data,
+not described. Do this every time, even for a small change and even if the next
+scheduled report would show it anyway.
+
 ## Tests
 
 Run the tests before you start work and again when you finish. Use `npm test` in

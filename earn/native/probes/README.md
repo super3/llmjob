@@ -12,6 +12,7 @@ nvcc -arch=sm_120 -O3 -o mmapeak mmapeak.cu && ./mmapeak 512
 | Probe | Answers |
 |---|---|
 | `mmapeak.cu` | Pure `mma.m16n8k32.s8` from registers, no memory. Hardware ceiling + power. |
+| `dp4a-check.js` | Pascal's dp4a fold run on the CPU (`dp4a-check.cc`, the kernel's own layout and inner loop) against `reference.js`. No GPU or CUDA needed, only a C++ compiler. |
 
 ## Measured
 

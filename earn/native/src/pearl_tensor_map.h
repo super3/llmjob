@@ -60,4 +60,14 @@ static_assert(alignof(PearlTensorMap) == 128, "a TMA descriptor must be 128-byte
 static_assert(sizeof(PearlTensorMap) == 128,
               "PearlTensorMap must be exactly one CUtensorMap (128 bytes), with no padding");
 
+// The descriptors are __grid_constant__ kernel parameters, which nvcc accepts only from
+// compute_70 on. Pascal's pass (sm_61) builds neither fold that reads them (their bodies
+// are empty there), so it takes them as plain const parameters. The type and the place
+// in the parameter list do not change, so the launch is the same for every build.
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 700
+#define PEARL_GRID_CONSTANT
+#else
+#define PEARL_GRID_CONSTANT __grid_constant__
+#endif
+
 #endif  // PEARL_TENSOR_MAP_H

@@ -43,6 +43,12 @@ because no L40 was for rent other than the New York one.
 - B200: 33%. Its hits are correct, but it mines on `mma.sync`, which tops
   out at about 41% of the competitors on this card. Matching them needs a
   fold on the B200's own tensor instructions (tcgen05).
+- GTX 10-series: 0 for PeakMiner and SRBMiner. Pearl needs RTX 20xx or newer
+  (PeakMiner's docs), and both got nothing on a GTX 1080 on Salad. We have no
+  Pascal build either.
+- GTX 16-series: 0.7–1.3 TH/s for all three miners (96–104%). The cards have no tensor cores, and
+  every miner's tensor instructions run on a slow shared unit. Not worth mining on Salad.
+- AMD Radeon: not run yet. PeakMiner and SRBMiner baselines on Salad; our miner is CUDA only.
 - Tesla T4: 91%. As on the 20-series, the clock is close (15 MHz below the
   competitors') and we do 7% less work per clock.
 
@@ -656,6 +662,87 @@ the CUDA 12.8 core on this compute 7.5 card.
   is its default and maximum: ours at 825 MHz, the competitors at 840 MHz.
 - **Hit check:** the longer check ran on another T4 in the same machine (see
   "How a host is tested").
+
+## GTX 10-series (Pascal, sm_61, on Salad)
+
+Pearl can't be mined on these cards with PeakMiner or SRBMiner, so both are 0. PeakMiner's README says
+"Pearl (PRL) requires RTX 20xx or newer": since its v2.11.0 the network enforces rank-128 consensus rules that
+its Pascal kernels can't mine. SRBMiner's docs list Pascal among its architectures but say nothing about
+pearlhash on it.
+
+One card was measured, a GTX 1080 on Salad PC `c868132d` (180 W), on 17 October with `tuning/salad/bench.sh`
+(5 minutes each on `us.pearl.herominers.com` after a 60-second warm-up). PeakMiner 2.17.6 quit within 15
+seconds, twice, with no shares. SRBMiner 3.7.1 ran the full 5 minutes at 0 H/s with no shares, the card idle
+at 8 W and 139 MHz. The other rows are taken as 0 from that and PeakMiner's docs, without a run. Our miner has
+no Pascal build (its lowest target is sm_75, and its kernel uses int8 tensor cores, which Pascal lacks), so
+"Ours" is "no build".
+
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
+|---|---|---|---|---|---|---|
+| GTX 1080 Ti | Salad | not run | no build | 0 | 0 | — |
+| GTX 1080 | Salad (180 W) | c868132d | no build | 0 | 0 | — |
+| GTX 1070 | Salad | not run | no build | 0 | 0 | — |
+| GTX 1060 | Salad (6 GB) | not run | no build | 0 | 0 | — |
+| GTX 1050 Ti | Salad (4 GB) | not run | no build | 0 | 0 | — |
+
+## GTX 16-series (Turing without tensor cores, sm_75, on Salad)
+
+Run on 17 October 2026, 20:09–22:33 UTC. These cards are rented on Salad, not Vast: each row is one Salad PC
+(a home computer), named by the first 8 characters of its Salad machine ID, with the power limit from
+`nvidia-smi`. Salad doesn't say where a PC is. Each PC ran PeakMiner 2.17.6, SRBMiner 3.7.1 and our release
+v0.6.0 one after another, 5 minutes each after a 60-second unmeasured warm-up, on `us.pearl.herominers.com`,
+PeakMiner and SRBMiner alternating which went first (`tuning/salad/bench.sh`).
+
+All three miners run at the same speed on every card, 0.7–1.3 TH/s, with the card drawing only 28–58 W.
+These cards are sm_75, which our release is built for, but they have no tensor cores: the tensor
+instructions every miner uses run on a slow shared unit, about 25–30 int8 multiply-adds per clock per SM
+against 1,024 on an RTX 2080 Ti. No miner found a share in 5 minutes (at 1 TH/s one share takes about 2.5
+hours). A dp4a path could reach 5–9 TH/s, but even that earns less than Salad's cheapest price for these
+cards ($0.015–0.02/hr), so it isn't being built. Our CLI prints its rate to one decimal, so "% of best" is
+only good to about ±5%.
+
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
+|---|---|---|---|---|---|---|
+| GTX 1660 Super | Salad (106 W, 6 GB) | 1535c250 | 1.1 | 1.13 | 1.13 | 97% |
+| GTX 1660 Super | Salad (119 W, 6 GB) | 535c608c | 1.0 | 1.01 | 0.96 | 96% |
+| GTX 1660 Ti | Salad (6 GB) | 741f9c56 | 1.2 | 1.14 | 1.16 | 104% |
+| GTX 1660 Ti | Salad (88 W, 6 GB) | 30b3c19c | 1.3 | 1.28 | 1.29 | 101% |
+| GTX 1660 | Salad (120 W, 6 GB) | 095beb7b | 1.1 | 1.05 | 1.04 | 104% |
+| GTX 1660 | Salad (6 GB) | not run | not run | not run | not run | — |
+| GTX 1650 | Salad (75 W, 4 GB) | 522e3507 | 0.7 | 0.68 | 0.69 | 99% |
+| GTX 1650 | Salad (4 GB) | not run | not run | not run | not run | — |
+
+- **GTX 1660 Ti** rows came from Salad's "GTX 1660" class, which handed out 7 Tis in 10 PCs. The 741f9c56
+  PC's driver doesn't report a power limit.
+- **The second GTX 1660** wasn't found in 10 PCs. Of the two plain 1660s, one (e3babbec) couldn't keep a
+  connection to HeroMiners (PeakMiner's authorize timed out, SRBMiner had a rate for 15 seconds, ours never
+  got a job), so it isn't a result.
+- **The second GTX 1650** wasn't run: the benchmark was stopped after the first, since every 16-series card
+  gives the same answer.
+
+## AMD Radeon (RDNA 3 and 4, on Salad)
+
+Not run yet. These are the AMD cards Salad rents. Each PC runs PeakMiner and SRBMiner for 5 minutes each
+after a 60-second unmeasured warm-up, the way the GTX rows are run, as a baseline. Our miner is CUDA only,
+so "Ours" is "no build". PeakMiner's README lists AMD support only for CSD, Alphanumeric and Quantus, not
+Pearl; SRBMiner lists pearlhash for AMD (RX 5000 to 9000).
+
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
+|---|---|---|---|---|---|---|
+| RX 9070 XT | Salad (— W, 16 GB) | — | no build | not run | not run | — |
+| RX 9070 XT | Salad (— W, 16 GB) | — | no build | not run | not run | — |
+| RX 9060 XT | Salad (— W, 16 GB) | — | no build | not run | not run | — |
+| RX 9060 XT | Salad (— W, 16 GB) | — | no build | not run | not run | — |
+| RX 7900 XTX | Salad (— W, 24 GB) | — | no build | not run | not run | — |
+| RX 7900 XTX | Salad (— W, 24 GB) | — | no build | not run | not run | — |
+| RX 7900 XT | Salad (— W, 20 GB) | — | no build | not run | not run | — |
+| RX 7900 XT | Salad (— W, 20 GB) | — | no build | not run | not run | — |
+| RX 7800 XT | Salad (— W, 16 GB) | — | no build | not run | not run | — |
+| RX 7800 XT | Salad (— W, 16 GB) | — | no build | not run | not run | — |
+
+Salad's prices per hour on 17 October (batch / low / medium / high): RX 9070 XT $0.070 / 0.110 / 0.155 /
+0.196; RX 9060 XT $0.049 / 0.075 / 0.100 / 0.126; RX 7900 XTX $0.066 / 0.100 / 0.134 / 0.168; RX 7900 XT
+$0.054 / 0.088 / 0.122 / 0.156; RX 7800 XT $0.042 / 0.072 / 0.102 / 0.132.
 
 ## Hosts replaced in this run
 

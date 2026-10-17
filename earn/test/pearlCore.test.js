@@ -167,6 +167,7 @@ describe('coreFactory — choosing a build', () => {
   const BLACKWELL = { cards: [{ index: 0, major: 12, minor: 0, driverMajor: 610 }], gpus: [{ index: 0 }] };
   const ADA = { cards: [{ index: 0, major: 8, minor: 9, driverMajor: 610 }], gpus: [{ index: 0 }] };
   const TURING = { cards: [{ index: 0, major: 7, minor: 5, driverMajor: 610 }], gpus: [{ index: 0 }] };
+  const PASCAL = { cards: [{ index: 0, major: 6, minor: 1, driverMajor: 580 }], gpus: [{ index: 0 }] };
 
   // Both builds installed beside the executable, each with a spy createCore.
   function rig(overrides = {}) {
@@ -221,6 +222,17 @@ describe('coreFactory — choosing a build', () => {
     expect(r.req).not.toHaveBeenCalledWith(CU13_BESIDE);
     expect(r.lines).toEqual([['info',
       'Pearl core: CUDA 12.8 build · GPU 0 is compute 7.5 (the CUDA 13 build has no code for it)']]);
+  });
+
+  // A GTX 10 card mines on the 12.8 build's sm_61 dp4a fold; CUDA 13 has no Pascal.
+  test('a GTX 1080 Ti rig loads the 12.8 build and never looks for the CUDA 13 one', () => {
+    const r = rig();
+    const f = factory(r, PASCAL);
+    expect(f({ rank: 128 }, { deviceIndex: 0 })).toEqual({ build: 'cu12' });
+    expect(r.cu12.createCore).toHaveBeenCalledWith({ rank: 128 }, { deviceIndex: 0 });
+    expect(r.req).not.toHaveBeenCalledWith(CU13_BESIDE);
+    expect(r.lines).toEqual([['info',
+      'Pearl core: CUDA 12.8 build · GPU 0 is compute 6.1 (the CUDA 13 build has no code for it)']]);
   });
 
   // An install from before there were two, or a release whose CUDA 13 job failed.
@@ -278,6 +290,21 @@ describe('coreFactory — choosing a build', () => {
       expect(f({ rank: 128 }, { deviceIndex: 1 })).toEqual({ build: 'cu12' });
       expect(r.cu13.createCore).toHaveBeenCalledTimes(1);
       expect(r.lines).toHaveLength(2);
+    });
+
+    // Forced onto the CUDA 13 build, a GTX 10 card is refused by that core (it has
+    // no sm_61 code), and the 12.8 build, which has, takes over.
+    test('when PEARL_CORE_VARIANT=cu13 meets a card the CUDA 13 build has no code for', () => {
+      const r = rig();
+      r.cu13.createCore.mockImplementation(() => {
+        throw new Error('this Pearl core has no GPU code for compute 6.1 (GPU 0, NVIDIA GeForce '
+          + 'GTX 1080 Ti): no kernel image is available for execution on the device');
+      });
+      const f = factory(r, Object.assign({ env: { PEARL_CORE_VARIANT: 'cu13' } }, PASCAL));
+      expect(f({ rank: 128 }, { deviceIndex: 0 })).toEqual({ build: 'cu12' });
+      expect(r.cu12.createCore).toHaveBeenCalledWith({ rank: 128 }, { deviceIndex: 0 });
+      expect(r.lines[1][0]).toBe('warn');
+      expect(r.lines[1][1]).toMatch(/could not start \(this Pearl core has no GPU code for compute 6\.1/);
     });
 
     test('a thrown non-Error is described too', () => {

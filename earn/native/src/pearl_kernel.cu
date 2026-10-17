@@ -10,7 +10,8 @@
 //
 // STATUS: the search runs on the int8 tensor cores, in the tile folds
 // (pearl_tile_fold_wmma, pearl_tile_fold_tall, and pearl_tile_fold_hopper on
-// sm_90a). Each computes C and folds the tiles in one pass. Every kernel here
+// sm_90a), and on Pascal (sm_61), which has none, in pearl_tile_fold_dp4a at the
+// end of this file. Each computes C and folds the tiles in one pass. Every kernel here
 // is written to be bit-exact with the JS reference so the two can be
 // cross-checked; a fast core that disagrees with the spec mines nothing.
 //
@@ -35,6 +36,7 @@
 
 #include "pearl_config.h"
 #include "pearl_tensor_map.h"  // the tall fold's TMA descriptors (sm_120)
+#include "pearl_fold_dp4a.h"   // Pascal's fold: its layout and inner loop
 
 namespace {
 
@@ -1155,7 +1157,8 @@ extern "C" __global__ void pearl_restamp_commit(const PearlRestampRecord rec, in
 //   jackpot[tid] = rotl13(jackpot[tid]) ^ xor(tile),  tid = chunk % 16
 //
 // They run on the int8 tensor cores: pearl_tile_fold_wmma and
-// pearl_tile_fold_tall below, and pearl_tile_fold_hopper on sm_90a. The
+// pearl_tile_fold_tall below, and pearl_tile_fold_hopper on sm_90a. Pascal's
+// pearl_tile_fold_dp4a, at the end of the file, runs on __dp4a instead. The
 // accumulator is kept ACROSS chunks, which is what the protocol actually
 // specifies.
 //
@@ -1552,6 +1555,13 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
     uint32_t m, uint32_t n, uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg,
     uint32_t col_off, uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
     const PearlTranscriptTest test, const PearlHitList hits) {
+#if PEARL_DP4A_BODY
+  // Pascal has no int8 mma (nor nvcuda::wmma): its fold is pearl_tile_fold_dp4a, and the
+  // host never launches this one there.
+  (void)Aprime; (void)Bprime; (void)m; (void)n; (void)k_arg; (void)rank_arg;
+  (void)chunks_arg; (void)col_off; (void)rows_valid; (void)col_groups; (void)tiles;
+  (void)test; (void)hits;
+#else
   using namespace nvcuda;
 #if PEARL_TURING_BD_BODY
   // Turing's B-direct fold (PEARL_TURING_BDIRECT, pearl_fold_bd.cuh) is this
@@ -2688,6 +2698,7 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
     }();
   }
 #endif  // PEARL_TURING_BD_BODY
+#endif  // PEARL_DP4A_BODY
 }
 
 // The tall fold (PEARL_FOLD_TALL, Ada, Ampere and Blackwell): pearl_tile_fold_wmma's fold
@@ -2878,7 +2889,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
     // (PEARL_TALL_TMA); Ada's ignores them. Last, so no other parameter moves.
     // PearlTensorMap, not CUtensorMap: cuda.h's alignment is lost under MSVC,
     // which put these at 0x98 and faulted every TMA load (pearl_tensor_map.h).
-    const __grid_constant__ PearlTensorMap tmA, const __grid_constant__ PearlTensorMap tmB) {
+    const PEARL_GRID_CONSTANT PearlTensorMap tmA, const PEARL_GRID_CONSTANT PearlTensorMap tmB) {
 #if PEARL_FOLD_TALL && defined(__CUDA_ARCH__) && PEARL_TALL_BODY_ARCH(__CUDA_ARCH__)
   constexpr uint32_t k = PEARL_FOLD_K;
   constexpr uint32_t rank = PEARL_FOLD_RANK;
@@ -3995,8 +4006,8 @@ __launch_bounds__(PEARL_HOPPER_THREADS, 1)
 pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, uint32_t col_off,
                        uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
                        uint32_t band_depth, uint4 *__restrict__ trg,
-                       const __grid_constant__ PearlTensorMap tmA,
-                       const __grid_constant__ PearlTensorMap tmB) {
+                       const PEARL_GRID_CONSTANT PearlTensorMap tmA,
+                       const PEARL_GRID_CONSTANT PearlTensorMap tmB) {
 #if PEARL_HOPPER_WGMMA_BODY
   constexpr uint32_t k = PEARL_FOLD_K, rank = PEARL_FOLD_RANK, chunks = PEARL_FOLD_CHUNKS;
   if (k_arg != k || rank_arg != rank || chunks_arg != chunks) return;
@@ -4455,3 +4466,139 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
 #endif
 }
 #endif  // PEARL_HOPPER_WGMMA
+
+// Pascal's fold (PEARL_DP4A_ARCH: sm_61, the GTX 10 series). An int8 GEMM on __dp4a over
+// 128x128 tiles, with the tensor folds' tile pattern, chunk readout, transcript hash and
+// hit list, so a hit from it is the same hit any other fold would report. The layout and
+// the inner loop live in pearl_fold_dp4a.h, which probes/dp4a-check.cc also runs on the
+// CPU against the JS reference. Why the integers come out identical: PEARL_DP4A_ARCH.
+//
+// One block a tile, not persistent. Two blocks share an SM (21 KB of static shared each
+// and at most 128 registers a thread), so one block's first stage and its hash at the end
+// run under the other's dp4a.
+//
+// A stage is 32 bytes of k: one 32-byte k-block of the k-blocked A' and B', so a tile's
+// stage is a contiguous 4 KB of each (pearl_fold_dp4a.h). At its top each thread loads
+// its two 16-byte copies of the NEXT stage into registers (one of A', one of B'); then
+// it multiplies this stage out of shared; then it stores the copies into the other
+// buffer, and one barrier publishes them. That barrier also says every thread is done
+// reading this stage's buffer, so the next stage may overwrite it: one barrier a stage.
+// Pascal has no cp.async, so the copies go through registers, as Turing's do
+// (PEARL_STAGE_REGS).
+//
+// Four stages are one chunk of rank (128) bytes. After the fourth, each thread XORs its
+// 64 accumulators, two shuffles combine the four threads that share a region, and one of
+// them writes the region's word for that chunk into shared. After the sixteenth chunk,
+// threads 0-63 hash one region each, exactly as the tensor folds' hashers do.
+//
+// Built for every architecture, because the host launches it by name; the body is empty
+// outside PEARL_DP4A_ARCH, and the host launches it only where it has one
+// (Ctx::foldDp4a).
+extern "C" __global__ __launch_bounds__(PEARL_DP4A_THREADS, 2) void pearl_tile_fold_dp4a(
+    const int8_t *__restrict__ Aprime, const int8_t *__restrict__ Bprime, uint32_t a_rows,
+    uint32_t b_rows, uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, uint32_t col_off,
+    uint32_t rows_valid, uint32_t col_groups, uint32_t tiles, uint32_t band,
+    const PearlTranscriptTest test, const PearlHitList hits) {
+#if PEARL_DP4A_BODY
+  constexpr uint32_t k = PEARL_FOLD_K;
+  constexpr uint32_t chunks = PEARL_FOLD_CHUNKS;
+  constexpr uint32_t stages = k / PEARL_DP4A_STAGE_K;                         // 64
+  constexpr uint32_t per_chunk = PEARL_FOLD_RANK / PEARL_DP4A_STAGE_K;        // 4
+  static_assert(PEARL_FOLD_RANK % PEARL_DP4A_STAGE_K == 0u, "a chunk is whole stages");
+  static_assert(chunks == PEARL_JACKPOT_BUCKETS, "one transcript word a chunk, no rotation");
+  // The host refuses any other geometry; a mismatched launch does nothing rather than
+  // fold the wrong shape (as the other folds).
+  if (k_arg != k || rank_arg != PEARL_FOLD_RANK || chunks_arg != chunks) return;
+  if (blockDim.x != PEARL_DP4A_THREADS || blockIdx.x >= tiles || band == 0u) return;
+
+  __shared__ __align__(16) uint32_t sA[2][PEARL_DP4A_STAGE_WORDS];
+  __shared__ __align__(16) uint32_t sB[2][PEARL_DP4A_STAGE_WORDS];
+  __shared__ uint32_t sT[PEARL_DP4A_REGIONS * PEARL_DP4A_TR_STRIDE];
+
+  const uint32_t tid = threadIdx.x;
+  const uint32_t tx = pearl_dp4a_tx(tid), ty = pearl_dp4a_ty(tid);
+  uint32_t R, C;
+  pearl_dp4a_tile(blockIdx.x, rows_valid / PEARL_DP4A_ROW_OFFSETS,
+                  col_groups / PEARL_DP4A_COL_OFFSETS, band, &R, &C);
+  // A' and B' are k-blocked (pearl_fold_dp4a.h): a thread's next stage is one k-block,
+  // a_rows (b_rows) times 32 bytes, further on.
+  const int8_t *srcA = Aprime + pearl_dp4a_a_src(tid, R);
+  const int8_t *srcB = Bprime + pearl_dp4a_b_src(tid, C, col_off);
+  const size_t stepA = (size_t)pearl_dp4a_stage_step(a_rows);
+  const size_t stepB = (size_t)pearl_dp4a_stage_step(b_rows);
+  const uint32_t dst = pearl_dp4a_dst(tid, 0u);
+
+  int32_t acc[8][8];
+#pragma unroll
+  for (uint32_t i = 0; i < 8; i++) {
+#pragma unroll
+    for (uint32_t j = 0; j < 8; j++) acc[i][j] = 0;
+  }
+
+  // A thread's copy into stage buffer `buf`: word i of each 16 bytes to k-quad
+  // 4 * (tid & 1) + i of its slot (pearl_dp4a_dst).
+  auto store = [&](uint32_t buf, const int4 &a, const int4 &b) {
+    uint32_t *dA = sA[buf] + dst;
+    uint32_t *dB = sB[buf] + dst;
+    dA[0] = (uint32_t)a.x;
+    dA[PEARL_DP4A_SSTRIDE] = (uint32_t)a.y;
+    dA[2u * PEARL_DP4A_SSTRIDE] = (uint32_t)a.z;
+    dA[3u * PEARL_DP4A_SSTRIDE] = (uint32_t)a.w;
+    dB[0] = (uint32_t)b.x;
+    dB[PEARL_DP4A_SSTRIDE] = (uint32_t)b.y;
+    dB[2u * PEARL_DP4A_SSTRIDE] = (uint32_t)b.z;
+    dB[3u * PEARL_DP4A_SSTRIDE] = (uint32_t)b.w;
+  };
+
+  int4 ra = __ldg(reinterpret_cast<const int4 *>(srcA));
+  int4 rb = __ldg(reinterpret_cast<const int4 *>(srcB));
+  store(0u, ra, rb);
+  __syncthreads();
+
+  for (uint32_t s = 0; s < stages; s++) {
+    const bool more = s + 1u < stages;
+    if (more) {
+      srcA += stepA;
+      srcB += stepB;
+      ra = __ldg(reinterpret_cast<const int4 *>(srcA));
+      rb = __ldg(reinterpret_cast<const int4 *>(srcB));
+    }
+    pearl_dp4a_mac_stage(sA[s & 1u], sB[s & 1u], tx, ty, acc);
+    // Chunk boundary: the running tile, XORed into the region's word for this chunk.
+    // Uniform across the block, so every lane of a warp takes it together.
+    if (s % per_chunk == per_chunk - 1u) {
+      uint32_t x = pearl_dp4a_xor64(acc);
+      x ^= __shfl_xor_sync(0xffffffffu, x, 1);
+      x ^= __shfl_xor_sync(0xffffffffu, x, 8);
+      if (pearl_dp4a_writer(tid))
+        sT[pearl_dp4a_region(tid) * PEARL_DP4A_TR_STRIDE + s / per_chunk] = x;
+    }
+    if (more) store((s + 1u) & 1u, ra, rb);
+    __syncthreads();
+  }
+
+  // The last barrier above published chunk 15's words. Threads 0-63 hash a region
+  // each; the rest are done.
+  if (tid >= PEARL_DP4A_REGIONS) return;
+  uint32_t tm[16];
+#pragma unroll
+  for (uint32_t w = 0; w < 16; w++) tm[w] = sT[tid * PEARL_DP4A_TR_STRIDE + w];
+  // The key and target arrive by value, as constant-bank operands (see the wmma fold).
+  if (pearl_transcript_msw(test.key, tm, test.hash_big_endian) > test.target_w[0]) return;
+  uint32_t h[8];
+  pearl_transcript_hash_again(test.key, tm, h);
+  if (!pearl_hash_meets_words(h, test.target_w, test.hash_big_endian)) return;
+  const uint32_t slot = atomicAdd(hits.count, 1u);
+  if (slot >= PEARL_MAX_HITS) return;
+  hits.index[slot] = pearl_dp4a_region_index(R, C, tid, rows_valid);
+  // Little-endian words ARE the hash's bytes in order.
+#pragma unroll
+  for (int i = 0; i < 8; i++) hits.hash[slot * 8u + i] = h[i];
+#pragma unroll
+  for (int i = 0; i < 16; i++) hits.transcript[slot * 16u + i] = tm[i];
+#else
+  (void)Aprime; (void)Bprime; (void)a_rows; (void)b_rows; (void)k_arg; (void)rank_arg;
+  (void)chunks_arg; (void)col_off; (void)rows_valid; (void)col_groups; (void)tiles; (void)band;
+  (void)test; (void)hits;
+#endif
+}
