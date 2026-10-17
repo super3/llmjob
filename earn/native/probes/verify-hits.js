@@ -5,6 +5,13 @@
 // hash -- and must match the device's jackpot hash exactly. Later hits are only
 // counted, so a longer run checks no more. The target is set easy enough to hit
 // about once a batch so the run crosses many operand redraws.
+//
+// Besides PASS, the JSON says where the time went, so a slow run can be read from the
+// one line: the card and the fold it got (core.device), seconds from setJob to the
+// first hit and to the first hashrate sample, the last and the best hashrate sample
+// (TH/s, the core's own windows of about half a second; a best far above the last
+// means the time goes between batches, not in them), and the second each salt was
+// first seen in a hit. None of it changes what passes.
 'use strict';
 const path = require('path');
 const R = path.join(__dirname, '..', '..', 'src', 'shared', 'miner') + path.sep;
@@ -19,12 +26,15 @@ const secs = Number(process.argv[3] || 40);
 const bits = BigInt(process.argv[4] || 232);
 const addon = require(file);
 const core = addon.createCore(PROFILE, {});
+const device = core.device;
 const header = Buffer.alloc(76, 0x5A);
 const jobKey = hash(Buffer.concat([header, buildConfig52(PROFILE)]));
 const target = 2n ** bits;
 const tb = Buffer.alloc(32); { let t = target; for (let i = 31; i >= 0; i--) { tb[i] = Number(t & 0xffn); t >>= 8n; } }
 const { k, rank, m, n } = PROFILE;
 let hits = 0, ok = 0, bad = 0; const salts = new Set(); const fails = [];
+let t0 = 0, firstHit = null, firstRate = null, thLast = null, thMax = null; const saltAt = [];
+const since = () => +((Date.now() - t0) / 1000).toFixed(1);
 function rowsFromLeaves(side, idxs, want) {
   // leaves are 1024-byte chunks in leafIndices order; row r spans bytes [r*k, r*k+k)
   const map = new Map(); const L = Array.from(side.leafIndices);
@@ -52,12 +62,18 @@ function check(hit) {
   return null;
 }
 core.on('hit', (hit) => {
+  if (firstHit === null) firstHit = since();
+  if (!salts.has(hit.salt)) saltAt.push(since());
   hits++; salts.add(hit.salt);
   if (ok + bad >= 400) return;
   let why; try { why = check(hit); } catch (e) { why = 'exception: ' + e.message; }
   if (why) { bad++; if (fails.length < 5) fails.push({ nonce: hit.nonce, salt: hit.salt, why }); } else ok++;
 });
 core.on('error', (e) => { console.log(JSON.stringify({ error: String(e) })); process.exit(2); });
-core.on('hashrate', () => {});
+core.on('hashrate', (th) => {
+  if (firstRate === null) firstRate = since();
+  thLast = +Number(th).toFixed(2); thMax = thMax === null ? thLast : Math.max(thMax, thLast);
+});
+t0 = Date.now();
 core.setJob({ header, target, jobId: 'verify' });
-setTimeout(() => { core.stop(); const res = { file: path.basename(path.dirname(file)), hits, verified: ok, failed: bad, salts: salts.size, fails, PASS: bad === 0 && ok >= 20 && salts.size >= 3 }; console.log(JSON.stringify(res)); process.exit(res.PASS ? 0 : 1); }, secs * 1000);
+setTimeout(() => { core.stop(); const res = { file: path.basename(path.dirname(file)), hits, verified: ok, failed: bad, salts: salts.size, fails, PASS: bad === 0 && ok >= 20 && salts.size >= 3, device, firstHitS: firstHit, firstHashrateS: firstRate, thLast, thMax, saltSeenS: saltAt }; console.log(JSON.stringify(res)); process.exit(res.PASS ? 0 : 1); }, secs * 1000);
