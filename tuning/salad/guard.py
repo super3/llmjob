@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # A safety net for when watcher.py isn't running, for example because the machine it ran on went away.
-# It keeps no state: it reads Salad and the pool, and stops every biz- group that is on a running PC but
-# from which the pool has seen no work in the last hour, while the group is at least an hour old.
+# It keeps no state: it reads Salad and the pools (HeroMiners, and Kryptex for boxes mining Pearl there), and
+# stops every biz- group that is on a running PC but from which neither pool has seen work in the last hour,
+# while the group is at least an hour old.
 # The watcher never lets that happen (it leaves a PC that isn't mining within 10 min, and deletes a group
 # after 3 tries), so a hit means nothing is watching. Stopping is reversible: start the group again from
 # the portal, or bump restart_token once the watcher runs. Run it hourly, e.g. from a Routine:
@@ -26,6 +27,12 @@ def check(wallet, dry=False):
     if isinstance(ws, dict):
         ws = [dict(v, name=k) for k, v in ws.items()]
     workers = {w["name"]: w for w in ws if isinstance(w, dict) and w.get("name")}
+    s, kj = W.http("GET", f"{W.KX_API}/v3/miner/workers/{wallet}", timeout=30)
+    if s != 200 or not isinstance(kj, dict):
+        return [f"Kryptex: workers failed (HTTP {s}); did nothing"], []
+    # Kryptex names a worker "wallet/worker"; its rows have no "hashrate", only averages in H/s, as strings.
+    kx = {x["worker"].split("/")[-1].split(".")[-1]: x for x in kj.get("results") or []
+          if isinstance(x, dict) and x.get("worker")}
     t = W.now()
     out, stopped, checked = [], [], 0
     for g in j.get("items") or []:
@@ -45,13 +52,16 @@ def check(wallet, dry=False):
             continue
         if not any(i.get("state") == "running" and i.get("machine_id") for i in ji.get("instances") or []):
             continue
-        w = workers.get(f"{name}-g0") or {}
+        w, k = workers.get(f"{name}-g0") or {}, kx.get(f"{name}-g0") or {}
         try:
             if float(w.get("hashrate_1h") or 0) > 0 or float(w.get("hashrate") or 0) > 0:
                 continue
+            ls = float(k.get("last_share") or 0)
+            if float(k.get("avg_hashrate_30m") or 0) > 0 or t - (ls / 1000 if ls > 1e12 else ls) < 3600:
+                continue
         except (TypeError, ValueError):
             continue
-        why = "on a running PC, but the pool has seen no work from it in the last hour"
+        why = "on a running PC, but neither pool has seen work from it in the last hour"
         if dry:
             out.append(f"WOULD STOP {name}: {why}")
             continue

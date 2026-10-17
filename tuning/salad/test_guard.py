@@ -28,11 +28,12 @@ def group(name, age_min, status="running"):
 
 
 class TestGuard(unittest.TestCase):
-    def run_guard(self, groups, workers, instances=None, dry=False):
+    def run_guard(self, groups, workers, instances=None, dry=False, kx=None, kx_status=200):
         inst = instances if instances is not None else [{"state": "running", "machine_id": "m1"}]
         self.fake = Fake([("GET", r"/containers$", (200, {"items": groups})),
                           ("GET", r"/instances$", (200, {"instances": inst})),
                           ("GET", "herominers", (200, {"workers": workers})),
+                          ("GET", "kryptex", (kx_status, {"results": kx or []})),
                           ("POST", r"/stop$", (202, None))])
         W.http, W.now = self.fake, lambda: T0
         return guard.check(WALLET, dry=dry)
@@ -53,6 +54,23 @@ class TestGuard(unittest.TestCase):
     def test_a_mining_group_is_left_alone(self):
         _, stopped = self.run_guard([group("biz-rtx4080", 300)], [{"name": "biz-rtx4080-g0", "hashrate": 0, "hashrate_1h": 44000}])
         self.assertEqual(stopped, [])
+
+    def test_a_group_mining_on_kryptex_is_left_alone(self):
+        # Kryptex's rows: the worker as "wallet/worker", averages in H/s as strings, last_share in ms.
+        row = {"worker": f"{WALLET}/biz-rtx4080-g0", "avg_hashrate_30m": "199000000000000.5", "last_share": 0}
+        _, stopped = self.run_guard([group("biz-rtx4080", 300)], [], kx=[row])
+        self.assertEqual(stopped, [])
+        row = {"worker": f"{WALLET}/biz-rtx4080-g0", "avg_hashrate_30m": "0", "last_share": int(T0 - 600) * 1000}
+        _, stopped = self.run_guard([group("biz-rtx4080", 300)], [], kx=[row])
+        self.assertEqual(stopped, [])
+        row = {"worker": f"{WALLET}/biz-rtx4080-g0", "avg_hashrate_30m": "0", "last_share": int(T0 - 7200) * 1000}
+        _, stopped = self.run_guard([group("biz-rtx4080", 300)], [], kx=[row])
+        self.assertEqual(stopped, ["biz-rtx4080"])
+
+    def test_nothing_is_stopped_when_kryptex_cant_be_read(self):
+        out, stopped = self.run_guard([group("biz-rtx4080", 90)], [], kx_status=503)
+        self.assertEqual(stopped, [])
+        self.assertIn("Kryptex: workers failed", out[0])
 
     def test_a_young_group_is_left_alone(self):
         _, stopped = self.run_guard([group("biz-rtx4080", 50)], [])

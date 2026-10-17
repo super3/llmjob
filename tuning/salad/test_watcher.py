@@ -1439,7 +1439,11 @@ class TestKryptex(Base):
         self.assertNotIn("--pool", w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.0", XMR))
 
     def test_a_kryptex_box_gets_at_least_the_release_with_pool(self):
-        self.x.cfg.update(box_ver="v0.5.13", xmr_ver="v0.6.0")
+        self.x.cfg.update(box_ver="v0.5.13", xmr_ver="v0.6.0", xmr_wallet=XMR, xmr_groups=["*"])
+        cmd = self.x.box("biz-rtx4080", True, True)[1][2]
+        self.assertIn(f"--pool prl-us.kryptex.network:7048 --xmr-address {XMR}", cmd)
+        self.assertIn("VER=v0.6.1;", cmd)
+        self.assertNotIn("--pool", self.x.box("biz-rtx4080", True, False)[1][2])
         self.assertEqual(self.x.box("biz-rtx4080", False, True)[0], "v0.6.1")
         self.assertEqual(self.x.box("biz-rtx4080", True, True)[0], "v0.6.1")
         self.assertEqual(self.x.box("biz-rtx4080", True, False)[0], "v0.6.0")
@@ -1447,6 +1451,23 @@ class TestKryptex(Base):
         self.assertIn("VER=v0.6.1;", self.x.box("biz-rtx4080", False, True)[1][2])
         self.x.cfg["box_ver"] = "v0.6.2"
         self.assertEqual(self.x.box("biz-rtx4080", True, True)[0], "v0.6.2")   # never lowered
+
+    def test_turning_monero_on_or_off_keeps_a_kryptex_box_on_kryptex(self):
+        g = self.mining("m1", 300)
+        g.update(kx=True, ver="v0.6.1", xmr=False)
+        self.x.cfg.update(xmr_wallet=XMR, xmr_groups=["*"])
+        self.x.xmr_sync([g], self.clock[0])
+        cmd = self.commands()[-1]
+        self.assertIn(f"--pool prl-us.kryptex.network:7048 --xmr-address {XMR}", cmd)
+        self.assertIn("VER=v0.6.1;", cmd)
+        self.assertEqual(g["ver"], "v0.6.1")
+        self.x.cfg.update(xmr_wallet="", xmr_groups=[])
+        g["xmr_try"] = 0
+        self.clock[0] += 3600
+        self.x.xmr_sync([g], self.clock[0])
+        cmd = self.commands()[-1]
+        self.assertIn("--pool prl-us.kryptex.network:7048", cmd)
+        self.assertNotIn("--xmr-address", cmd)
 
     def test_new_groups_start_on_herominers(self):
         g = self.group()
@@ -1532,7 +1553,7 @@ class TestKryptex(Base):
 
     def test_a_kryptex_box_with_no_shares_goes_back_and_its_pc_stays_off_the_bad_list(self):
         g = self.mining("m1", 300)
-        g.update(kx=True, kx_since=self.clock[0] - 3600)
+        g.update(kx=True, kx_since=self.clock[0] - 3600, kx_conn="m1")   # it reached Kryptex from this PC
         self.x.leave(g, "no share for 25 min on PC m1")
         self.assertFalse(g["kx"])
         self.assertFalse(g["ended"])
@@ -1546,10 +1567,46 @@ class TestKryptex(Base):
         self.x.leave(g, "no share for 25 min on PC m3")
         self.assertIn("m3", self.x.st["bad_pcs"])
 
+    def test_a_pc_that_never_reaches_kryptex_is_moved_on_without_a_strike_once(self):
+        g = self.mining("m1", 300)
+        g.update(kx=True, kx_since=self.clock[0] - 3600)          # no "connecting to" line from m1
+        self.x.leave(g, "no mining reading 10 min after getting PC m1")
+        self.assertTrue(g["kx"])                                 # still on Kryptex, on a new PC
+        self.assertIsNone(self.x.st.get("kx_fails"))
+        self.assertIn("m1", self.x.st["bad_pcs"])                # the PC's network is the likelier cause
+        self.assertTrue(self.http.made("POST", "/containers/biz-rtx4080/instances/inst-m1/reallocate"))
+        self.assertIn("WARN biz-rtx4080: PC m1 never reached Kryptex", self.events())
+        # The next PC doesn't reach it either: that counts, in case the line was missed.
+        g.update(has_pc=True, machine="m2", pc_since=self.clock[0], instance="inst-m2")
+        self.x.leave(g, "no mining reading 10 min after getting PC m2")
+        self.assertFalse(g["kx"])
+        self.assertEqual(self.x.st["kx_fails"], 1)
+
+    def test_the_connecting_line_from_the_box_s_pc_marks_it_as_reaching_kryptex(self):
+        self.x.cfg["search"] = False
+        g = self.group()
+        g.update(kx=True, kx_since=T0 + 300, sw_t=T0 + 300, sw_from="m0", sw_prev=False, created=T0 - 3600,
+                 has_pc=True, machine="m1", instance="i1", pc_since=T0 + 400)
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
+        line = "[minerlog g0] connecting to prl-us.kryptex.network:7048 · worker biz-rtx4080-g0"
+        items = [{"text_log": line, "time": "2027-01-15T08:06:00Z",
+                  "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}},
+                 {"text_log": line, "time": "2027-01-15T08:06:00Z",      # the PC it left: not this PC's proof
+                  "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m0"}}}]
+        self.http.on("POST", "/log-entries", (200, {"items": items}))
+        self.clock[0] = T0 + 500
+        self.x.round()
+        self.assertEqual(g.get("kx_conn"), "m1")
+        # A switch clears it: the proof is per switch and per PC.
+        self.x.kx_switch(g, False, self.clock[0], "test")
+        self.assertIsNone(g.get("kx_conn"))
+        self.assertFalse(g.get("kx_noconn"))
+
     def test_two_failures_stop_the_test_until_the_token_changes(self):
         a, b = self.mining("m1", 300), self.mining("m2", 200)
         for g in (a, b):
-            g.update(kx=True, kx_since=self.clock[0] - 3600)
+            g.update(kx=True, kx_since=self.clock[0] - 3600, kx_conn=g["machine"])
             self.x.leave(g, "no mining reading 12 min after getting PC")
         self.assertIn("WARN Kryptex test stopped: 2 Kryptex boxes mined no shares", self.events())
         # Both went back on new PCs; with PCs and readings again, neither is switched while the test is stopped.
@@ -1643,7 +1700,7 @@ class TestKryptex(Base):
         self.x.round()
         self.assertGreater(g["last_share"], g["kx_since"])
         self.assertIsNone(g.get("kx_share"))
-        g.update(has_pc=True, machine="m1", pc_since=self.clock[0], instance="inst-m1")
+        g.update(has_pc=True, machine="m1", pc_since=self.clock[0], instance="inst-m1", kx_conn="m1")
         self.x.leave(g, "no mining reading 10 min after getting PC m1")
         self.assertFalse(g["kx"])                        # a Kryptex failure: back to HeroMiners
         self.assertEqual(self.x.st["kx_fails"], 1)
