@@ -44,9 +44,15 @@
     modeSeg: $('mode-seg'), modeHint: $('mode-hint'),
     setWorker: $('set-worker'), setRegion: $('set-region'),
     setShare: $('set-share'), shareNote: $('share-note'),
-    appVersion: $('app-version'), btnCheckUpdate: $('btn-check-update'), updateStatus: $('update-status'),
+    appVersion: $('app-version'), btnCheckUpdate: $('btn-check-update'), updateCheckLabel: $('update-check-label'), updateStatus: $('update-status'),
     prefTray: $('pref-tray'), prefStartup: $('pref-startup'), prefIdle: $('pref-idle'),
     idleStatus: $('idle-status'),
+    // CPU mining (Monero)
+    cpuNote: $('cpu-note'), setXmr: $('set-xmr'),
+    setCpuThreads: $('set-cpu-threads'),
+    chartCard: $('chart-card'), activityLabel: $('activity-label'), mineLabel: $('mine-label'), llmCol: $('llm-col'),
+    cpuRow: $('cpu-row'), cpuDot: $('cpu-dot'), cpuRate: $('cpu-rate'), cpuMeta: $('cpu-meta'),
+    cpuShares: $('cpu-shares'), cpuAccepted: $('cpu-accepted'),
     logTerm: $('log-term'),
   };
 
@@ -62,7 +68,7 @@
     view: 'mine',        // mine | chat | api | settings | logs
     returnTab: 'mine',   // where settings/logs return to
     address: '', gpu: '', mode: 'auto', mdlAddress: '',
-    shareLlm: false,     // Settings → Local network: share the local LLM on port 8000
+    shareLlm: false,     // API tab: share the local LLM on port 8000
     // The card the ENGINE says it is mining on, once it says so. `gpu` above is
     // only the startup auto-detect, and on a multi-GPU rig the two can be
     // different cards (issue #226) — this one is the one doing the work.
@@ -72,6 +78,11 @@
     llm: { ready: false, endpoint: null, webUrl: null, tps: 0, model: null, error: null, note: null, lan: null },
     chat: { messages: [], streaming: false, streamText: '', bubble: null },
     node: { connected: false, nodeId: null, name: null },
+    // Monero on the CPU (Settings → CPU Mining). On while a Monero address is
+    // filled in, the way merge mining was. `cpu` is what main says this
+    // computer can do; `cpuView` the CPU line main last sent.
+    cpuMining: false, xmrAddress: '', xmrOk: false, xmrChecking: false, xmrError: null, xmrBalance: null, cpuThreads: 0,
+    cpu: null, cpuView: null,
   };
 
   const BAL_REFRESH_MS = 60000; // re-poll the pool balance once a minute
@@ -169,9 +180,15 @@
   }
 
   // START is allowed when we can mine (valid address) or the mode will run the
-  // LLM anyway (llm/auto co-run the model even without a payout address).
+  // LLM anyway (llm/auto co-run the model even without a payout address). A
+  // Monero address that checked out is enough on its own: the CPU miner runs for
+  // any START, with or without Pearl.
   function canStart() {
-    return isValid(state.address) || state.mode !== 'mining';
+    return isValid(state.address) || state.mode !== 'mining' || cpuReady();
+  }
+
+  function cpuReady() {
+    return state.cpuMining && state.xmrOk;
   }
 
   // ── Local LLM (GPU Activity hero + chat/api gating) ────────────────────────
@@ -188,6 +205,8 @@
     el.llmHeroDot.className = 'dot2' + (err ? ' err' : ready ? ' on' : note ? ' busy' : '');
     el.llmHeroDetail.textContent = err || note || state.llm.model || 'gemma-4-E4B-it';
     el.llmHeroDetail.classList.toggle('err', !!err);
+    el.llmHeroDetail.classList.toggle('quiet', !err && !note);
+    el.llmCol.title = state.llm.model || '';
     el.chatStoppedModel.textContent = state.llm.model || 'the local model';
     el.apiModel.textContent = state.llm.model || '—';
   }
@@ -199,8 +218,8 @@
     updateSendEnabled();
   }
 
-  // The share switch under Settings → Compute Mode, and the network address on
-  // the API tab. main reports lan only while the network gate runs (or failed to
+  // The share switch on the API tab, and the network address above it. main
+  // reports lan only while the network gate runs (or failed to
   // bind). Each note is one line inside the switch's row, so it stays short; the
   // full text is also its tooltip in case a long address cuts it off.
   function renderShare() {
@@ -213,7 +232,8 @@
     } else if (lan && lan.error) {
       note = 'Could not share it: ' + lan.error + '.';
     } else if (url) {
-      note = 'Other devices can use it at ' + url + ', with no key.';
+      // The address is on the line below, where a click copies it.
+      note = 'Other devices on your network can use it, with no key.';
     } else if (lan) {
       note = 'Shared on port 8000, but this computer has no network address right now.';
     } else {
@@ -510,12 +530,162 @@
     return { line, area };
   }
 
+  // ── CPU mining (Monero) ────────────────────────────────────────────────────
+  // The settings ride on START like the others, so they are locked while
+  // mining and apply at the next START. The address is checked in main: the
+  // renderer has no Keccak for Monero's checksum.
+  const CPU_STATES = {
+    starting: 'starting…',
+    dataset: 'building its dataset…',
+    restarting: 'restarting…',
+  };
+  let xmrCheckTimer = null;
+
+  // The thread count that will run: the one picked, capped to leave a CPU
+  // free, or the default.
+  function cpuThreadsNow() {
+    const c = state.cpu;
+    return state.cpuThreads > 0 ? Math.min(state.cpuThreads, c.available - 1) : c.auto;
+  }
+
+  // A build without the worker (macOS has none, and CI builds it as an
+  // optional step) can't mine on the CPU at all.
+  function cpuNoWorker() {
+    return !!state.cpu && state.cpu.worker === false;
+  }
+
+  // The line under the address shows only when something stops CPU mining:
+  // a bad address, no worker, or no threads. One line keeps Settings in its
+  // 470px, and the title has all of it.
+  function cpuNote() {
+    if (state.xmrError) return 'This address won\'t work: ' + state.xmrError + '.';
+    if (cpuNoWorker()) return 'This build has no CPU miner (llmjob-xmr-worker is not beside the app).';
+    const c = state.cpu;
+    if (!state.cpuMining || !c) return '';
+    if (!c.canMine) return 'Can\'t run here: ' + c.reason + '.';
+    if (!cpuThreadsNow()) return 'Auto: ' + c.reason + '.';
+    return '';
+  }
+
+  const threadsText = (n) => n + (n === 1 ? ' thread' : ' threads');
+
+  function renderCpuSettings() {
+    const c = state.cpu;
+    el.cpuNote.textContent = cpuNote();
+    el.cpuNote.title = el.cpuNote.textContent;
+    el.cpuNote.hidden = !el.cpuNote.textContent;
+    el.cpuNote.classList.toggle('err', !!state.xmrError);
+    el.setCpuThreads.innerHTML = '';
+    const max = c ? c.available - 1 : 0;
+    const auto = document.createElement('option');
+    auto.value = '0';
+    auto.textContent = c && c.auto ? 'Auto (' + threadsText(c.auto) + ')' : 'Auto (off)';
+    el.setCpuThreads.appendChild(auto);
+    for (let n = 1; n <= max; n++) {
+      const opt = document.createElement('option');
+      opt.value = String(n);
+      opt.textContent = threadsText(n);
+      el.setCpuThreads.appendChild(opt);
+    }
+    el.setCpuThreads.value = String(Math.min(state.cpuThreads, max));
+    for (const f of [el.setXmr, el.setCpuThreads]) f.disabled = state.mining;
+    // Without the worker it can't be turned on, but a saved address can be
+    // cleared.
+    if (cpuNoWorker() && !state.cpuMining) el.setXmr.disabled = true;
+  }
+
+  const fmt4 = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+
+  // It runs for any START, with or without the GPU miner, and waits out an
+  // idle-only pause like it.
+  function cpuMetaText(v) {
+    if (!state.mining) return cpuIdleText();
+    if (state.paused) return 'paused while in use';
+    if (!v) return 'starting…';
+    if (v.error) return 'stopped: ' + v.error;
+    if (v.pool) return v.pool;
+    if (v.state === 'mining') {
+      return v.accepted + ' accepted' + (v.rejected ? ' · ' + v.rejected + ' rejected' : '') + ' · ' + v.threads + ' threads';
+    }
+    return CPU_STATES[v.state] || v.state;
+  }
+
+  // Stopped: what START will do. main forgets why the last run failed on STOP,
+  // so this works it out from what it knows of this computer.
+  function cpuIdleText() {
+    // The line shows only with an address, so one that isn't OK is wrong.
+    if (state.xmrChecking) return 'checking address…';
+    if (!state.xmrOk) return 'check the address';
+    if (cpuNoWorker()) return "no CPU miner here";
+    if (state.cpu && !state.cpu.canMine) return "can't run here";
+    if (state.cpu && !cpuThreadsNow()) return "off: set CPU threads";
+    return 'ready to start';
+  }
+
+  function renderCpuRow() {
+    el.cpuRow.hidden = !state.cpuMining;
+    el.cpuShares.hidden = !state.cpuMining;
+    el.chartCard.classList.toggle('with-cpu', state.cpuMining);
+    el.activityLabel.textContent = state.cpuMining ? 'GPU & CPU Activity' : 'GPU Activity';
+    // Next to Monero, "Mining" doesn't say which; the coin does.
+    el.mineLabel.textContent = state.cpuMining ? 'Pearl' : 'Mining';
+    const v = state.mining ? state.cpuView : null;
+    el.cpuRate.textContent = v ? v.hashrate : '0.00';
+    el.cpuAccepted.textContent = v ? String(v.accepted || 0) : '0';
+    const bad = !!(v && (v.error || v.pool));
+    el.cpuDot.className = 'dot2' + (!v ? '' : bad ? ' err' : v.state === 'mining' ? ' on' : CPU_STATES[v.state] ? ' busy' : '');
+    el.cpuMeta.textContent = cpuMetaText(v);
+    el.cpuMeta.title = el.cpuMeta.textContent;
+    el.cpuMeta.classList.toggle('err', bad);
+    // The share count is in the stats and "ready to start" says nothing the
+    // grey dot doesn't, so those two stay off the card.
+    el.cpuMeta.classList.toggle('quiet', !bad && (v ? v.state === 'mining' : el.cpuMeta.textContent === 'ready to start'));
+    const bal = state.xmrBalance != null && state.xmrOk ? fmt4(state.xmrBalance) + ' XMR earned' : '';
+    el.cpuRow.title = [el.cpuMeta.textContent, bal].filter(Boolean).join(' · ');
+  }
+
+  async function refreshXmrBalance() {
+    const a = state.xmrAddress.trim();
+    if (!state.cpuMining || !state.xmrOk || !api.getXmrBalance) return;
+    const b = await api.getXmrBalance(a);
+    if (!b || a !== state.xmrAddress.trim()) return;
+    state.xmrBalance = b.earned;
+    renderCpuRow();
+  }
+
+  async function checkXmr() {
+    const a = state.xmrAddress.trim();
+    state.xmrBalance = null;
+    if (!a || !api.checkXmrAddress) {
+      state.xmrOk = false;
+      state.xmrChecking = false;
+      state.xmrError = null;
+    } else {
+      const r = await api.checkXmrAddress(a);
+      if (a !== state.xmrAddress.trim()) return;
+      state.xmrOk = !!(r && r.ok);
+      state.xmrChecking = false;
+      state.xmrError = r && !r.ok ? r.error : null;
+    }
+    renderCpuSettings();
+    renderCpuRow();
+    el.btnStart.disabled = !canStart();
+    refreshXmrBalance();
+  }
+
+  // Whether this run mines Pearl on the GPU, by main's rule (planFor): a
+  // valid address, a mode that mines, and a platform with a miner. A Monero-
+  // or LLM-only run leaves the GPU's dot grey.
+  function gpuMinerOn() {
+    return state.mining && !state.paused && state.mode !== 'llm' && state.canMine !== false && isValid(state.address);
+  }
+
   function renderMiningState() {
     el.addrInput.hidden = state.mining;
     el.addrStatic.hidden = !state.mining;
     el.btnStart.hidden = state.mining;
     el.btnStop.hidden = !state.mining;
-    el.mineDot.className = 'dot2' + (state.mining && !state.paused ? ' on' : '');
+    el.mineDot.className = 'dot2' + (gpuMinerOn() ? ' on' : '');
     el.idleStatus.hidden = !(state.mining && state.paused);
     el.idleStatus.textContent = 'Waiting for your computer to be idle. Mining starts after '
       + Math.round(state.idleAfterSec / 60) + ' minutes without keyboard or mouse use.';
@@ -530,8 +700,11 @@
       el.line.setAttribute('d', FLAT_LINE);
       el.area.setAttribute('d', FLAT_AREA);
       el.engineStatus.hidden = true;
+      state.cpuView = null;
     }
     el.btnStart.disabled = !canStart();
+    renderCpuSettings();
+    renderCpuRow();
   }
 
   function renderBalanceMeta() {
@@ -612,6 +785,11 @@
     el.area.setAttribute('d', p.area);
   }
 
+  function applyCpuStats(v) {
+    state.cpuView = v || null;
+    renderCpuRow();
+  }
+
   function appendLog(l) {
     const div = document.createElement('div');
     div.className = 'ln ' + (l.level || 'info');
@@ -664,6 +842,9 @@
       // Carried so a START, which rewrites settings.json from this object, keeps
       // the switch. main also saves it the moment it is flipped.
       shareLlm: state.shareLlm,
+      cpuMining: state.cpuMining,
+      xmrAddress: state.xmrAddress.trim(),
+      cpuThreads: state.cpuThreads,
     };
   }
 
@@ -743,7 +924,8 @@
       if (updateReady) { if (api.installUpdate) api.installUpdate(); return; }
       if (!api.checkForUpdate) return;
       el.btnCheckUpdate.disabled = true;
-      el.btnCheckUpdate.textContent = 'Checking…';
+      el.btnCheckUpdate.classList.add('checking');
+      el.updateCheckLabel.textContent = 'Checking…';
       api.checkForUpdate();
     });
 
@@ -809,6 +991,29 @@
       if (api.setShareLlm) api.setShareLlm(state.shareLlm);
       renderShare();
     });
+    el.setXmr.addEventListener('input', (e) => {
+      state.xmrAddress = e.target.value;
+      // An address turns it on and a blank box turns it off, at once; the
+      // check follows.
+      const on = !!state.xmrAddress.trim();
+      if (on !== state.cpuMining) {
+        state.cpuMining = on;
+        renderCpuSettings();
+      }
+      // Not OK until the check answers.
+      state.xmrOk = false;
+      state.xmrChecking = on;
+      renderCpuRow();
+      el.btnStart.disabled = !canStart();
+      if (xmrCheckTimer) clearTimeout(xmrCheckTimer);
+      xmrCheckTimer = setTimeout(checkXmr, 400);
+    });
+    el.setCpuThreads.addEventListener('change', () => {
+      state.cpuThreads = Number(el.setCpuThreads.value) || 0;
+      renderCpuSettings();
+      // Auto can mean off, which the Mine tab says.
+      renderCpuRow();
+    });
     el.apiLanUrl.addEventListener('click', () => {
       if (api.copyText) api.copyText(el.apiLanUrl.textContent);
     });
@@ -832,6 +1037,7 @@
       const config = await api.getConfig();
       // Before the saved settings are applied — usableMode() below depends on it.
       applyPlatform(config && config.platform);
+      state.cpu = (config && config.cpu) || null;
       const regions = (config && config.regions) || {};
       const cfgDefaults = (config && config.defaults) || {};
       state.defaultRegion = cfgDefaults.region || state.defaultRegion;
@@ -850,6 +1056,11 @@
       el.addrInput.value = state.address;
       state.mdlAddress = s.mdlAddress || '';
       state.shareLlm = s.shareLlm === true;
+      state.xmrAddress = s.xmrAddress || '';
+      state.cpuMining = !!state.xmrAddress.trim();
+      state.xmrChecking = state.cpuMining;
+      el.setXmr.value = state.xmrAddress;
+      state.cpuThreads = Number(s.cpuThreads) || 0;
       el.setWorker.value = s.worker || 'rig01';
       // main migrates a stale AlphaPool id before we see it, so this always
       // names an option that exists.
@@ -862,7 +1073,7 @@
       // not be the quiet default. A missing key already falls through to main's
       // default; this covers the value being present but empty.
       state.mode = usableMode(s.mode || 'auto');
-      resumeMining = !!(s.resumeMining && isValid(state.address));
+      resumeMining = !!s.resumeMining;
     }
     renderMode();
     renderShare();
@@ -885,6 +1096,7 @@
       if (region) el.setRegion.value = region;
     }
     if (api.onStats) api.onStats(applyStats);
+    if (api.onCpuStats) api.onCpuStats(applyCpuStats);
     if (api.onLog) api.onLog(appendLog);
     if (api.onStopped) api.onStopped(() => { state.mining = false; state.paused = false; renderMiningState(); });
     if (api.onEngine) api.onEngine((e) => {
@@ -907,10 +1119,11 @@
       el.updateStatus.hidden = !s.show || s.phase === 'checking';
       el.updateStatus.textContent = s.text;
       el.updateStatus.classList.toggle('err', !!s.error);
+      if (s.phase !== 'checking') el.btnCheckUpdate.classList.remove('checking');
       if (s.ready) {
         updateReady = true;
         el.btnCheckUpdate.disabled = false;
-        el.btnCheckUpdate.textContent = 'Update & restart';
+        el.updateCheckLabel.textContent = 'Update & restart';
         el.btnCheckUpdate.classList.add('ready');
         // Announce it on the Mine view too: Settings is the one screen nobody
         // opens, so a downloaded update could sit there unnoticed.
@@ -920,7 +1133,7 @@
       } else if (s.phase !== 'checking') {
         updateReady = false;
         el.btnCheckUpdate.disabled = false;
-        el.btnCheckUpdate.textContent = 'Check for updates';
+        el.updateCheckLabel.textContent = 'Check for updates';
         el.btnCheckUpdate.classList.remove('ready');
         el.updateBar.hidden = true;
       }
@@ -932,8 +1145,10 @@
     renderMiningState();
     renderBalanceMeta();
     refreshBalance();
-    setInterval(refreshBalance, BAL_REFRESH_MS);
-    if (resumeMining) start();
+    // Awaited so a rig that mines only Monero can resume too.
+    await checkXmr();
+    setInterval(() => { refreshBalance(); refreshXmrBalance(); }, BAL_REFRESH_MS);
+    if (resumeMining && (isValid(state.address) || cpuReady())) start();
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

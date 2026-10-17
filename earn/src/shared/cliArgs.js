@@ -12,6 +12,8 @@ const { isValidAddress, isValidMdlAddress, normalizeAddress } = require('./addre
 const { MODES, DEFAULT_MODE, isValidMode } = require('./llmMode');
 const { parseMemClockMhz } = require('./memClock');
 const { parseGpuIndexList } = require('./gpu');
+const { checkXmrAddress } = require('./xmr/address');
+const { PRIORITIES } = require('./xmr/worker');
 
 // Short flags → their canonical long form.
 // --mdl / -m are deliberately absent from USAGE: merge mining is retired from
@@ -35,6 +37,7 @@ const VALUE_FLAGS = new Set([
   '--stats-file',
   '--mode', '--llm-binary', '--llm-model', '--llm-max-instances', '--gate-port', '--gate-host',
   '--gate-quiet', '--mine-mem-clock',
+  '--xmr-address', '--cpu-threads', '--cpu-priority',
 ]);
 
 // Own keys only, so `--region constructor` is not a region.
@@ -97,6 +100,20 @@ const USAGE = [
   '                           local LLM picks its own cards. PEARL_GPU_INDEX takes',
   '                           the same list; the flag wins.',
 
+  '      --xmr-address <4…|8…>  Also mine Monero (XMR) on the CPU, paid to this',
+  '                           address (a standard 4… address or an 8… subaddress).',
+  '                           Off without it. Mines on HeroMiners, 0.9% pool fee.',
+  '      --cpu-threads <n>    CPU threads for Monero (default: every CPU this',
+  '                           process may use, less 1, or 2 on 6 CPUs or fewer,',
+  '                           and no more than 1 per 2 MB of L3 cache; off by',
+  '                           default on 4 CPUs or fewer or under 8 GB).',
+  '                           At least one CPU always stays free for the GPU',
+  '                           miner. 0 turns CPU mining off.',
+  '      --cpu-priority <p>   Priority of the Monero threads: ' + PRIORITIES.join(', '),
+  '                           (default: low on Linux, idle on Windows). One CPU',
+  '                           stays free for the GPU miner at any priority;',
+  '                           normal gets the most from a server whose CPUs',
+  '                           are busy with other work.',
   '      --stats-file <path>  Write live stats JSON here every 10s (for HiveOS h-stats etc.)',
   '      --no-report          Do not publish live status to the public network board',
   '      --no-serve           Do not serve inference jobs for the LLMJob network',
@@ -174,6 +191,42 @@ function buildSettings(opts, errors, report, update, serve) {
 
 
 
+  // Monero on the CPU (shared/xmr). Off unless an address is given; the thread
+  // count is null for the default, which shared/xmr/cpuPlan works out from
+  // the CPUs this process may use.
+  // A CPU flag with no address is a warning, not an error. A HiveOS Extra
+  // config whose address was removed still carries them, and an error there
+  // stopped Pearl too, the CLI exiting and restarting every few seconds.
+  const warnings = [];
+  const noCpuMining = (flag) => flag + ' does nothing without --xmr-address: no CPU mining';
+  let xmrAddress = null;
+  if (opts['--xmr-address'] != null) {
+    const a = String(opts['--xmr-address']).trim();
+    const check = checkXmrAddress(a);
+    if (check.ok) xmrAddress = a;
+    else errors.push('invalid Monero address: ' + a + ' (' + check.error + ')');
+  }
+  let cpuThreads = null;
+  if (opts['--cpu-threads'] != null) {
+    const raw = String(opts['--cpu-threads']).trim();
+    cpuThreads = raw === '' ? NaN : Number(raw);
+    if (!Number.isInteger(cpuThreads) || cpuThreads < 0) {
+      errors.push('invalid --cpu-threads: ' + opts['--cpu-threads'] + ' (must be 0 or more)');
+      cpuThreads = null;
+    } else if (cpuThreads > 0 && opts['--xmr-address'] == null) {
+      warnings.push(noCpuMining('--cpu-threads'));
+    }
+  }
+
+  // null: the platform's default (shared/xmr/worker.defaultPriority).
+  let cpuPriority = null;
+  if (opts['--cpu-priority'] != null) {
+    const p = String(opts['--cpu-priority']).trim();
+    if (!PRIORITIES.includes(p)) errors.push('invalid --cpu-priority: ' + p + ' (choices: ' + PRIORITIES.join(', ') + ')');
+    else if (opts['--xmr-address'] == null) warnings.push(noCpuMining('--cpu-priority'));
+    else cpuPriority = p;
+  }
+
   const statsFile = opts['--stats-file'] != null ? String(opts['--stats-file']) : null;
   const llmBinary = opts['--llm-binary'] != null ? String(opts['--llm-binary']) : null;
   const llmModel = opts['--llm-model'] != null ? String(opts['--llm-model']) : null;
@@ -242,9 +295,10 @@ function buildSettings(opts, errors, report, update, serve) {
   const modeProvided = opts['--mode'] != null;
 
   return {
-    address, mdlAddress, region, legacyRegion, worker, gpu, gpuIndices, statsFile,
+    address, mdlAddress, region, legacyRegion, worker, gpu, gpuIndices, statsFile, xmrAddress, cpuThreads, cpuPriority,
     mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs, mineMemClockMhz,
     report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,
+    warnings,
   };
 }
 

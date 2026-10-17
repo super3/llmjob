@@ -33,6 +33,7 @@ Paste a payout address, hit **Start**, and earn — no command line. Built with 
   - `llama.js` / `vram.js` — build the local `llama-server` command line + parse its output, and size the GPU offload (`--n-gpu-layers`) from free VRAM.
   - `selfUpdate.js` — decides, from the running version + GitHub's latest release, whether the CLI binary should self-update.
   - `miner/` — the Pearl protocol: Stratum messages, PearlHash, and the share proofs the pool checks.
+  - `xmr/` — Monero on the CPU ([below](#monero-on-the-cpu-opt-in)): its Stratum, address check (Keccak-256), thread plan, and the worker's line protocol.
   - `coreVariant.js` — which build of the mining core a rig loads (CUDA 12.8 or CUDA 13).
   - `memClock.js` — which mining cards get their memory clock locked, and at what.
   - `miningStats.js` — accumulates the miner's events into the live stats snapshot.
@@ -48,6 +49,7 @@ Paste a payout address, hit **Start**, and earn — no command line. Built with 
   - `pearlMiner.js` — the miner: one core per card, the pool connection, and share submission.
   - `pearlEngine.js` — wraps `pearlMiner.js` in the start/stop and event interface both shells drive.
   - `pearlCore.js` — loads `pearl_core.node` (built from [`native/`](native)), picking the CUDA 12.8 or CUDA 13 build.
+  - `xmrEngine.js` — the Monero CPU miner: the pool connection and the RandomX worker process (built from [`xmr-worker/`](xmr-worker)); `xmrWorker.js` finds the worker, `cpuFacts.js` reads the CPUs, cgroup limit, memory and L3 the thread plan needs.
   - `probe.js` — asks `nvidia-smi` about the cards (names, VRAM, temperatures, PCI bus ids), pings the pool regions, and posts the board report.
   - `gpuClocks.js` — locks and releases a card's memory clock while it mines.
   - `llmManager.js` / `llmEngineManager.js` — spawn/supervise the local `llama-server` and download its binary + GGUF model on demand (injected IO, unit-tested).
@@ -218,10 +220,107 @@ To override it, set `PEARL_CORE_VARIANT=cu12` or `cu13`, which forces that
 build (a forced `cu13` still falls back if it can't start). `PEARL_CORE_PATH=/path/to/core.node`
 beats both and loads exactly that file.
 
+## Monero on the CPU (opt-in)
+
+The app can also mine Monero (**XMR**) on the CPU while the GPU mines Pearl.
+It is **off by default** and does nothing until you turn it on.
+
+**Turning it on**
+
+- Desktop app: paste a Monero address in **Settings → CPU Mining**, then
+  START. Leaving the box blank keeps it off, as merge mining's address did. It runs in any mode, with or without the GPU miner, and STOP
+  stops it. A Monero address is enough to START in Mining mode, with no Pearl
+  address. With "Only when idle" on, it waits for an idle
+  computer like the GPU miner does. The Mine tab then shows Monero's
+  hashrate between Pearl's and the LLM's, tagged CPU, and its shares beside
+  Pearl's. Its tooltip has the XMR balance. The settings apply at the next
+  START.
+- CLI: `--xmr-address 4…` (or `8…`). `--cpu-threads <n>` sets the thread count;
+  `0` turns it off. `--cpu-threads` or `--cpu-priority` without an address
+  only logs a warning, so Pearl still mines.
+- HiveOS: put `--xmr-address 4…` in **Extra config arguments**. The dashboard
+  gets the CPU's hashrate as the rig's second algorithm, `randomx`.
+
+**The address** is a standard Monero address (95 characters, starts with `4`)
+or a subaddress (starts with `8`) from your own wallet, such as the Monero GUI,
+Feather or Cake Wallet. The app checks its checksum, so a typo is caught before
+anything is mined. Integrated addresses, and exchange deposits that need a
+payment ID, are not taken.
+
+**The pool** is HeroMiners' Monero pool, port 1111, in the same region as the
+Pearl pool: a rig on `us2` mines Monero on `us2.monero.herominers.com`. Today
+every regional name points at one server in Frankfurt. It charges 0.9%, and pays every
+10 minutes once the balance reaches 0.01 XMR. There is no dev fee.
+
+**How many threads.** It counts the CPUs this process may use, its affinity
+and any container CPU limit (cgroup), not just the machine's cores, and always
+leaves one free for the GPU miner (two on 6 CPUs or fewer). It also stops at
+2 MB of L3 cache per thread: past that, threads add power, not hashrate. With 4
+CPUs or fewer, or under 8 GB of memory, the default is off; pick a thread count
+to mine anyway. The log and Settings say what it chose and why.
+
+**Priority.** The free CPU is what keeps the GPU miner whole, so on top of it
+the CPU miner runs at low priority on Linux (nice 19) and at idle priority on
+Windows, and steps aside for the programs you use. On a server whose CPUs are
+busy with other work, low priority gets less out of it; the CLI's
+`--cpu-priority normal` takes its full share (measured below).
+
+**What it costs.** About 2.4 GB of memory (RandomX's 2080 MiB dataset and its
+cache), and on a typical desktop CPU 45-65 W more power, more on a big one. At
+$0.15/kWh a Ryzen 5 5600X earns about what that power costs, and most Intel
+desktop CPUs earn less. It pays when power is cheap or the computer is on
+anyway for the GPU.
+
+**Huge pages** make RandomX up to 20-30% faster. The worker uses them when it
+can and falls back when it can't, and the log says which it got
+(`dataset ready in 5.2 s · transparent huge pages`). On Linux, root can reserve
+them with `sudo sysctl -w vm.nr_hugepages=1280`; without that it asks for
+transparent huge pages. On Windows they need the "Lock pages in memory" right
+(Local Security Policy, then sign out and back in).
+
+**How it works.** The hashing is `llmjob-xmr-worker`, our own small program
+around [tevador/RandomX](https://github.com/tevador/RandomX) (BSD-3-Clause),
+the library Monero itself uses ([`xmr-worker/`](xmr-worker)). The app runs it
+as a separate process, so if it crashes, or an antivirus removes it, CPU mining
+stops and Pearl mining carries on. A worker that stops is started again after
+30 seconds, up to three times; if it stops within 10 minutes of each of those
+restarts, it is left off. It checks itself
+against RandomX's test vectors when it starts and checks every share again
+before it is sent. It ships beside the Pearl cores: in the
+installer's `resources/native/` and beside the CLI binary. There is none for
+macOS, and Settings says so on a build without it.
+
+**Antivirus.** Any program that mines Monero may be flagged as a coin miner,
+on Windows especially. If only the worker is flagged, CPU mining stops and the
+app goes on. If the Windows installer, which contains the worker, is flagged,
+the whole download could be blocked. That has not been tested.
+
+**Monero's next fork** (v17, not scheduled yet) changes the proof of work to
+RandomX v2. The worker already has it; the app will need a release that turns it
+on when the fork is scheduled.
+
+**Measured** on 2026-10-11 on rented hosts, with the CLI built from source the
+way CI builds it, mining Pearl on the GPU and Monero for one address on
+HeroMiners. Each host was a container with a CPU limit, and neither had huge
+pages, so both miners ran without them (ours used transparent huge pages).
+
+| Host | CPU threads (of CPUs it may use) | Pearl alone → with Monero | Monero beside Pearl | Monero alone: ours vs SRBMiner 3.7.5, same threads |
+|---|---|---|---|---|
+| Core i5-11400, RTX 3060 | 6 (of 11; L3 caps it) | 44.23 → 44.03 TH/s | 2.48 kH/s | 2.46 vs 1.88 kH/s |
+| Ryzen 9 5950X, RTX 2060 | 14 (of 15) | 42.21 → 41.90 TH/s | 1.74 kH/s at idle priority | 6.44 vs 4.53 kH/s |
+
+The pool accepted every share our miner sent (34 across these runs, 0 rejected,
+0 stale), and its stats for the address count the same. The Pearl miner used one CPU
+throughout. The 5950X host's other tenants kept all 32 of its CPUs busy, which
+is what held the CPU miner back beside Pearl. Run there again with each
+priority, Pearl was the same every time (40.91-40.92 TH/s, against 40.92-41.14
+alone) and the CPU miner made 1.89 kH/s at idle, 3.97 at low and 6.47 at normal.
+That is why Linux now defaults to low.
+
 ## Sharing the local LLM on your network
 
 The local LLM listens on `127.0.0.1:8080`, so only this computer can use it.
-**Share the local LLM on my network**, under Compute Mode in Settings, lets phones and
+**Share the local LLM on my network**, on the API tab, lets phones and
 other computers on the same network use it too.
 
 - **How:** the app runs the gate the CLI serves on (`autoGate.createServeGate`)
@@ -243,7 +342,7 @@ other computers on the same network use it too.
 Three switches in **Settings → Background**, saved in `preferences.json` next to
 `settings.json` in the app's data folder:
 
-- **Keep running in the tray when I close the window** (on by default). Closing
+- **Keep in the tray** (on by default). Closing
   the window hides it and mining carries on. The first time, a notification says
   so. The tray icon opens the window again, and its menu has **Quit**. Opening
   the app a second time shows the running window instead of starting a second
@@ -252,7 +351,7 @@ Three switches in **Settings → Background**, saved in `preferences.json` next 
   session bus whether anything will. On Windows, a close from another program
   (the installer, the uninstaller, Task Manager's End task) quits the app, so
   the miner stops cleanly before the installer replaces the files.
-- **Start with my computer, and start mining** (off by default). Windows gets a
+- **Start at login** (off by default). Windows gets a
   login item, a Linux AppImage an entry in `~/.config/autostart`, and macOS a
   LaunchAgent in `~/Library/LaunchAgents`. Each starts the app with `--hidden`,
   so it stays in the tray and starts mining with the saved payout address. Only
@@ -260,7 +359,7 @@ Three switches in **Settings → Background**, saved in `preferences.json` next 
   start points the entry at the app again if an update moved it, and otherwise
   leaves it alone, so turning it off in Task Manager or the desktop's startup
   settings sticks.
-- **Only mine when my computer is idle** (off by default). Idle means 5 minutes
+- **Only when idle** (off by default). Idle means 5 minutes
   without keyboard or mouse input, or a locked screen. While someone uses the
   computer, mining stops and the window says what it is waiting for. The local
   LLM keeps running, so chat, cluster jobs and the network share go on, and it
@@ -377,6 +476,8 @@ Flight sheet:
     the RTX 5090 default (see below).
   - `--mode auto` also serves a local LLM (next paragraph).
   - `--no-report` keeps the rig off the public network board.
+  - `--xmr-address 4…` also mines Monero on the CPU (see
+    [Monero on the CPU](#monero-on-the-cpu-opt-in)).
 
   `llmjob-earn-cli-linux --help` lists every flag. A flag the CLI doesn't have
   makes it exit at once. HiveOS then restarts it every few seconds and shows
@@ -522,16 +623,17 @@ network is reachable through the shared API without opening a port or exposing
 CI packages the CLI into a **standalone single-file Linux executable**
 (`llmjob-earn-cli-linux`, built with [Node SEA](https://nodejs.org/api/single-executable-applications.html))
 and attaches it to each GitHub Release, so a headless box can run it with **no
-Node install**. The mining cores are separate files on the same release, and
-the binary looks for them beside itself (`pearl_core_cu13.node` is used only on
+Node install**. The mining cores and the CPU worker (`llmjob-xmr-worker`, used
+only with `--xmr-address`) are separate files on the same release, and the
+binary looks for them beside itself (`pearl_core_cu13.node` is used only on
 Blackwell cards, such as the RTX 50 series and RTX PRO Blackwell, with driver
 580 or newer):
 
 ```bash
 base=https://github.com/super3/llmjob/releases/latest/download
 curl -L -o llmjob-earn-cli $base/llmjob-earn-cli-linux
-curl -L -O $base/pearl_core.node -O $base/pearl_core_cu13.node
-chmod +x llmjob-earn-cli
+curl -L -O $base/pearl_core.node -O $base/pearl_core_cu13.node -O $base/llmjob-xmr-worker
+chmod +x llmjob-earn-cli llmjob-xmr-worker
 ./llmjob-earn-cli --address prl1pYOUR_ADDRESS
 ```
 
@@ -542,7 +644,11 @@ replaces itself in place, and re-launches with the same arguments before mining
 (`pearl_core.node` and `pearl_core_cu13.node`) update with it; the old CUDA 13
 core is always deleted first, so a release without one (or a failed download of
 it) leaves the 12.8 core in charge rather than last release's CUDA 13 core
-paired with a newer binary. Opt out per-run with
+paired with a newer binary. The CPU worker, `llmjob-xmr-worker`, updates with
+it on a rig that mines Monero (`--xmr-address`) or already has one; a
+Pearl-only rig never gets it. On a Monero rig, a start that finds the worker
+missing, not executable or from another release also fetches this release's
+copy, and `update` repairs one that is already there. Opt out per-run with
 `--no-update`, or update on demand without (re)starting a mine:
 
 ```bash
@@ -570,6 +676,12 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
                            0,2, or "none" (default: every GPU)
       --mine-mem-clock <MHz>  Lock each mining GPU's memory clock while it mines
                            (default: 7001 on the RTX 5090; 0 turns it off; see below)
+      --xmr-address <4…|8…>  Also mine Monero (XMR) on the CPU, paid here (see below)
+      --cpu-threads <n>    CPU threads for Monero (default: all CPUs but 1, or but 2
+                           on 6 CPUs or fewer, at most 1 per 2 MB of L3 cache;
+                           off on 4 or fewer or under 8 GB)
+      --cpu-priority <p>   Monero thread priority: idle, low or normal (default:
+                           low on Linux, idle on Windows)
       --stats-file <path>  Write live stats JSON here every 10 s (HiveOS's h-stats.sh reads it)
       --llm-binary <path>  Use this llama-server instead of downloading one
       --llm-model <path>   Use this GGUF model instead of downloading the default
@@ -596,7 +708,7 @@ llmjob-earn-cli --address prl1p… --mode mining --region de --no-update --no-re
 - `--mode mining` mines only, so no model is downloaded.
 - `--region de` skips the latency probe and always mines in one region.
 - `--no-update` keeps this version: the CLI never replaces itself, or the
-  mining cores beside it.
+  mining cores and CPU worker beside it.
 - `--no-report` (optional) keeps the rig off the public network board.
 
 The mining cores (`pearl_core.node`, and `pearl_core_cu13.node` for Blackwell

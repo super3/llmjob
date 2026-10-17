@@ -50,6 +50,22 @@ function statsFilePayload(snap, meta) {
     // bus_numbers, which is how the dashboard puts each card's hashrate on that
     // card's row instead of matching by position.
     gpus: Array.isArray(s.gpus) ? s.gpus.map((g) => withBusId(g, m.pciBusIds)) : [],
+    // The CPU miner (Monero), or null when it isn't on. `hs` is in H/s, not
+    // TH/s like everything above. h-stats.sh sends it to HiveOS as the rig's
+    // second algorithm.
+    xmr: xmrOf(m.xmr),
+  };
+}
+
+function xmrOf(x) {
+  if (!x) return null;
+  return {
+    algo: 'randomx',
+    hs: Math.max(0, Number(x.hashrate) || 0),
+    accepted: Number(x.accepted) || 0,
+    rejected: Number(x.rejected) || 0,
+    threads: Number(x.threads) || 0,
+    state: x.state || null,
   };
 }
 

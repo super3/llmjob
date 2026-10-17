@@ -1,6 +1,6 @@
 {
   "name": "llmjob-earn",
-  "version": "0.5.14",
+  "version": "0.6.0",
   "description": "LLMJob Earn",
   "main": "src/main/main.js",
   "bin": {
@@ -61,7 +61,9 @@
           "from": "vendor/native",
           "to": "native",
           "filter": [
-            "**/*.node"
+            "**/*.node",
+            "llmjob-xmr-worker",
+            "llmjob-xmr-worker.exe"
           ]
         }
       ]
@@ -89,7 +91,9 @@
           "from": "vendor/native",
           "to": "native",
           "filter": [
-            "**/*.node"
+            "**/*.node",
+            "llmjob-xmr-worker",
+            "llmjob-xmr-worker.exe"
           ]
         }
       ]

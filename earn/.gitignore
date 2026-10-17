@@ -10,3 +10,6 @@ bin/
 *.exe
 vendor/engine/*
 !vendor/engine/README.md
+# The CPU worker, staged here by scripts/build-xmr-worker.sh --stage.
+vendor/native/llmjob-xmr-worker
+vendor/native/llmjob-xmr-worker.exe
