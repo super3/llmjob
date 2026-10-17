@@ -1653,6 +1653,18 @@ class TestKryptex(Base):
         self.assertTrue(g["kx"])   # it has a PC: nothing to switch
         self.assertIn("LOG biz-rtx4080 PC m1: [minerlog g0] pool accepted login as biz-rtx4080-g0", self.events())
 
+    def test_an_ended_kryptex_group_that_never_mined_there_leaves_the_table_as_before(self):
+        g = self.group()
+        g.update(kx=True, ended=self.clock[0], prl=0.0)
+        h = self.group()
+        h["prl"], h["spend"] = 8.0, 6.0
+        self.x.st["pool_tot"] = {"t": T0, "paid": 1.5, "balance": 0.5, "unconfirmed": 4.0, "blocks": 6,
+                                 "hashes": 0, "ths_1h": 0}
+        self.x.st["kx_tot"] = {"t": T0, "total": 0.0, "confirmed": 0.0, "unconfirmed": 0.0, "paid": 0.0}
+        report = self.report()
+        self.assertIn("| ⛏️ PRL | 0 TH/s | 0.500 | 4.000 | 1.500 |", report)
+        self.assertNotIn("Kryptex", report)
+
     def test_without_kryptex_groups_the_report_is_unchanged(self):
         self.x.cfg["kryptex_groups"] = 0
         g = self.group()
