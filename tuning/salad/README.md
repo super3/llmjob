@@ -55,7 +55,7 @@ Config keys:
 | `safetrade` | SafeTrade sales entered by hand (`sold`, `received`, `fees`, `usdt`, `prl`), used until the trader's logs can be read. |
 | `xmr_wallet`, `xmr_groups` | Monero on the box's CPU (see [Monero](#monero-on-the-cpu)): the address, and the groups that mine it (`["*"]` for every group). Unset: no Monero, and the table is as before. |
 | `xmr_ver`, `xmr_cpu`, `xmr_memory`, `xmr_threads` | A Monero box runs release `v0.6.0` or later on 8 vCPUs and 8192 MB. `xmr_threads` 0 lets the CLI choose (it keeps one CPU free for Pearl). |
-| `kryptex_groups`, `kryptex_host`, `kryptex_fee` | How many groups mine Pearl on Kryptex instead of HeroMiners (see [Kryptex](#kryptex-pps)), its stratum (`prl-us.kryptex.network:7048`) and its PPS+ fee (0.03). 0: none, and the table is as before. |
+| `kryptex_groups`, `kryptex_host`, `kryptex_fee`, `kryptex_token` | How many boxes with a PC mine Pearl on Kryptex instead of HeroMiners (see [Kryptex](#kryptex-pps)), its stratum (`prl-us.kryptex.network:7048`) and its PPS+ fee (0.03). Change `kryptex_token` to restart the test after it stopped. 0: none, and the table is as before. |
 
 Tests: `python3 -m unittest discover -s tuning/salad`. They fake Salad, the pool and the clock.
 
@@ -169,10 +169,20 @@ shares. Its Pearl fee is **3%** (checked on 17 October 2026 at `pool.kryptex.com
 said 2%), and it pays out from 1 PRL. At HeroMiners' recent 92% that's about 5 points more, roughly
 +$0.06/hr on $1.17/hr of earnings; the main gain is knowing the pay.
 
-The watcher runs it on `kryptex_groups` groups (live: 1, a first try), marked **(K)** in the table:
+The watcher runs it on `kryptex_groups` boxes (live: 1, a first try), marked **(K)** in the table:
 
-- **Which groups:** a new group mines on Kryptex while fewer than `kryptex_groups` live groups do.
-  Groups already running stay on HeroMiners.
+- **Which boxes:** ones that already have a PC. The first try put a new group on Kryptex, and a new group
+  can wait a long time for a PC. So new groups start on HeroMiners, and while fewer Kryptex boxes have a
+  PC than config asks, the HeroMiners box that has held its PC longest (and is mining) is switched: its
+  command is updated and its box restarted, as for Monero. At most one switch to Kryptex every 15
+  minutes. Kryptex groups beyond the count go back to HeroMiners, those without a PC first, never one
+  switched in the last 15 minutes.
+- **A restarted box** sets up again before it mines, so the reading rules give it 10 minutes after the
+  restart before they leave its PC, and the no-share rule counts from the restart.
+- **When Kryptex doesn't take a box's work:** a Kryptex box that would be left for sending no shares or
+  no readings goes back to HeroMiners instead, and keeps its PC, which stays off the bad list (the pool
+  is the likelier cause). Two of these stop the test: every box stays on HeroMiners until config
+  `kryptex_token` changes.
 - **How:** the miner only knows HeroMiners' 12 regions, and both pools run Pearl's reference stratum at
   the same difficulty (Kryptex lists `pearl-source` among its miners). So a Kryptex box installs
   `socat`, points every HeroMiners region name at 127.0.0.1 in `/etc/hosts`, and forwards local port
@@ -183,12 +193,14 @@ The watcher runs it on `kryptex_groups` groups (live: 1, a first try), marked **
   hashrate every round, and the wallet's balance, payouts and the pool's figures every 5 minutes. Its
   hashrate unit is turned into TH/s from the network's rate. The miner's own share count still feeds the
   rules, as for every box.
-- **Credit:** each pool has its own credit ratio. HeroMiners' counts only its boxes; Kryptex's is what it
-  has credited (balance and payouts) over its boxes' estimate, or 1 less the fee before 1 PRL. Each box's
-  profit uses its pool's ratio. The rules still judge every PC at `yield`.
+- **Credit:** each pool has its own credit ratio. PRL mined while a box is on Kryptex is counted apart
+  (`prl_kx`), so a switched box's earlier PRL stays with HeroMiners. HeroMiners' ratio is what it
+  credited over the PRL mined there; Kryptex's is what it has credited (balance and payouts) over the PRL
+  mined there, or 1 less the fee before 1 PRL. Each box's profit counts each part at its pool's ratio.
+  The rules still judge every PC at `yield`.
 - **In the report:** a Kryptex row in the pool table (its hashrate is the sum of our Kryptex workers' now,
   not an hour's average), and a line saying what it has credited against its boxes' estimate.
-- **The hourly drift check** compares HeroMiners only with HeroMiners' boxes.
+- **The hourly drift check** compares HeroMiners only with the PRL mined there.
 
 ## Salad API notes
 
