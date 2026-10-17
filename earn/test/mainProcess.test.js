@@ -1738,7 +1738,7 @@ describe('local LLM', () => {
     // per-node, at which point a 5090 serving Qwen told the hero, the network
     // board and — through metrics.model → openaiController.modelName — the
     // `model` field of every gateway completion that it was serving Gemma.
-    expect(ctx.sent('llm:status').pop()).toMatchObject({ model: tier.name });
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ model: tier.name, vramMb: 30150, ctxSize: 262144 });
     llm.emit('ready', { baseUrl: llm.baseUrl });
     await flush();
     expect(ctx.JobWorker.instances[0].opts.servingModel()).toBe(tier);

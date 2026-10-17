@@ -123,7 +123,10 @@ let registeredUnlinked = false; // self-registered an unlinked node once this ru
 // however long a ~5 GB model takes, which reads as a hang: a user on a 2-GPU rig
 // hit START seventeen times over ninety seconds while the download was in fact
 // progressing normally.
-let llmStatus = { ready: false, endpoint: null, webUrl: null, tokensPerSec: 0, model: LLM.model.name, error: null, note: null };
+// `vramMb` and `ctxSize` describe the model being served, for the API tab's
+// "~N GB VRAM · NK ctx" line, which was hard-coded to Gemma's old numbers.
+let llmStatus = { ready: false, endpoint: null, webUrl: null, tokensPerSec: 0, model: LLM.model.name,
+  vramMb: LLM.model.vramFullMb, ctxSize: ctxLadder(LLM.model)[0], error: null, note: null };
 // Which model this machine actually loaded, once a run has chosen one. Every
 // place that reports a model name reads this rather than LLM.model, which stopped
 // being the answer when selection became per-node: a 5090 serving Qwen3.8 would
@@ -1223,7 +1226,7 @@ async function startLlm(reserveMb, epoch) {
   // updated — fine while every node ran the same model, wrong the moment one
   // doesn't. Set before the first failure path below so even "Needs ~N GB free
   // VRAM" names the model it was actually short for.
-  llmStatus = Object.assign({}, llmStatus, { model: model.name });
+  llmStatus = Object.assign({}, llmStatus, { model: model.name, vramMb: model.vramFullMb, ctxSize: ctxLadder(model)[0] });
   const plan = planLlmInstances(cards, model, reserveMb || 0);
   if (!plan.length) {
     // An empty plan means VRAM was measured but no card had room — so at least

@@ -298,8 +298,13 @@ console.log(resp.choices[0].message.content);</code></pre>
               <td><span class="pill pub">public keys</span></td>
             </tr>
             <tr>
+              <td><span class="m">Qwen3.8-27B-UD-Q4_K_XL</span></td>
+              <td>The node network — a GPU with 32 GB or more</td>
+              <td><span class="pill any">any key</span></td>
+            </tr>
+            <tr>
               <td><span class="m">Gemma-4-E4B-it-Q4_K_M</span></td>
-              <td>The node network — a GPU running LLMJob Earn</td>
+              <td>The node network — any other GPU running LLMJob Earn</td>
               <td><span class="pill any">any key</span></td>
             </tr>
           </tbody>
@@ -310,10 +315,12 @@ console.log(resp.choices[0].message.content);</code></pre>
         today, before your own nodes are up. It draws on a shared free allowance — see
         <a href="#limits">Limits</a>.</p>
 
-      <p>The split is a hardware one. Gemma-4-E4B is small enough to load on the range of consumer
-        GPUs that actually run LLMJob Earn, which is what makes it the network model. A 27B model is
-        not, so Qwen is hosted rather than mined — a node serving it would have nothing left to earn
-        with.</p>
+      <p>Which model a node serves depends on its GPU. Gemma-4-E4B is small enough for the range of
+        consumer GPUs that run LLMJob Earn. A card with 32 GB or more serves Qwen3.8-27B instead, with
+        a 128K context while it mines and 256K when the LLM has the card to itself. Name
+        <code class="ic">Qwen3.8-27B-UD-Q4_K_XL</code> or <code class="ic">Gemma-4-E4B-it-Q4_K_M</code>
+        to send a request to a node serving that model while one is online;
+        <code class="ic">/v1/models</code> lists what is online now.</p>
 
       <p><b>Anything else falls through to the node network.</b> Omit <code class="ic">model</code>
         entirely, or send <code class="ic">gpt-4</code>, or send whatever string your framework

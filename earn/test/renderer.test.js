@@ -181,6 +181,7 @@ describe('boot with the full bridge', () => {
     expect($('llm-hero-detail').textContent).toBe('gemma-4-E4B-it');
     expect($('chat-stopped-model').textContent).toBe('the local model');
     expect($('api-model').textContent).toBe('—');
+    expect($('api-model-meta').textContent).toBe('');
   });
 
   it('navigates tabs, settings, logs and unknown views', async () => {
@@ -653,6 +654,11 @@ describe('boot with the full bridge', () => {
     expect($('api-running').hidden).toBe(false);
     expect($('api-endpoint-url').textContent).toBe(ENDPOINT);
     expect($('api-model').textContent).toBe('gemma');
+    // The VRAM and context of whatever is served, not a fixed Gemma label.
+    cbs.llm({ ready: true, model: 'Qwen3.8-27B-UD-Q4_K_XL', vramMb: 24518, ctxSize: 131072 });
+    expect($('api-model-meta').textContent).toBe('~24 GB VRAM · 128K ctx');
+    cbs.llm({ ready: true, model: 'gemma', vramMb: 4096, ctxSize: 32768 });
+    expect($('api-model-meta').textContent).toBe('~4 GB VRAM · 32K ctx');
     // ready without endpoint keeps the last endpoint text, model is remembered
     cbs.llm({ ready: true });
     expect($('api-endpoint-url').textContent).toBe(ENDPOINT);
