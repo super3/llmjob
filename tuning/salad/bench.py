@@ -12,8 +12,14 @@ _spec = importlib.util.spec_from_file_location("watcher", os.path.join(HERE, "wa
 w = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(w)
 
-STATE, STATUS, LOG = (os.path.join(w.D, f) for f in ("bench.json", "bench_status.md", "bench.log"))
+# BENCH_SET picks the cards: "gtx" (the GTX 10- and 16-series) or "amd" (the Radeon baseline). Each set has its own
+# state, status and log files, so the two runs never share a place in a plan.
+SET = os.environ.get("BENCH_SET", "gtx")
+STATE, STATUS, LOG = (os.path.join(w.D, f"bench{'' if SET == 'gtx' else '-' + SET}{x}") for x in (".json", "_status.md", ".log"))
 COMMIT = os.environ.get("BENCH_COMMIT", "")   # the commit whose bench.sh the boxes run (pinned, like box.sh)
+SRB_EXTRA = os.environ.get("BENCH_SRB_EXTRA", "")   # extra SRBMiner flags, e.g. --gpu-sensors-disable
+# Salad's AMD PCs run containers in WSL2 with the GPU behind /dev/dxg; the image brings its own ROCm (7.1 or later).
+AMD_IMAGE = "rocm/dev-ubuntu-24.04:7.2"
 MIN = 60
 HOSTS = 2               # PCs per card, as in benchmark.md
 MAX_TRIES = 10          # boxes per class before moving on (the 1070/1080/1080 Ti class may not show all three)
@@ -39,6 +45,18 @@ SECTIONS = [("GTX 10-series (Pascal, sm_61, on Salad)", ["GTX 1080 Ti", "GTX 108
              ["GTX 1660 Super", "GTX 1660 Ti", "GTX 1660", "GTX 1650"])]
 MEM = {"GTX 1060": "6 GB", "GTX 1050 Ti": "4 GB", "GTX 1660 Super": "6 GB", "GTX 1660 Ti": "6 GB", "GTX 1660": "6 GB",
        "GTX 1650": "4 GB"}
+if SET == "amd":
+    # Our miner is CUDA only: 90 marks a card with no build, so "Ours" reads "no build". PeakMiner has no Pearl
+    # kernel for AMD and is run anyway; SRBMiner goes first, so a PeakMiner that quits at once doesn't leave
+    # SRBMiner a cold card.
+    PLAN = [("AMD RX 9070 XT (16GB)", ["RX 9070 XT"], 90), ("AMD RX 9060 XT (16GB)", ["RX 9060 XT"], 90),
+            ("AMD RX 7900 XTX (24GB)", ["RX 7900 XTX"], 90), ("AMD RX 7900 XT (20GB)", ["RX 7900 XT"], 90),
+            ("AMD RX 7800 XT (16GB)", ["RX 7800 XT"], 90)]
+    EXTRA = {}
+    SECTIONS = [("AMD Radeon (RDNA 3 and 4, on Salad)", ["RX 9070 XT", "RX 9060 XT", "RX 7900 XTX", "RX 7900 XT",
+                                                         "RX 7800 XT"])]
+    MEM = {"RX 9070 XT": "16 GB", "RX 9060 XT": "16 GB", "RX 7900 XTX": "24 GB", "RX 7900 XT": "20 GB",
+           "RX 7800 XT": "16 GB"}
 
 
 def log(msg):
@@ -49,9 +67,9 @@ def log(msg):
 
 
 def row_for(card, rows):
-    """The table row a card name is, the whole name without "NVIDIA GeForce", so neither "GTX 1080 Ti" nor
-    "GTX 1660 Ti" is read as the card without the Ti."""
-    c = re.sub(r"^(NVIDIA\s+)?(GEFORCE\s+)?", "", card.strip().upper())
+    """The table row a card name is, the whole name without "NVIDIA GeForce" or "AMD Radeon", so neither
+    "GTX 1080 Ti" nor "GTX 1660 Ti" is read as the card without the Ti, nor "RX 7900 XTX" as "RX 7900 XT"."""
+    c = re.sub(r"^(NVIDIA\s+)?(GEFORCE\s+)?(AMD\s+)?(RADEON\s+)?", "", card.strip().upper())
     return next((r for r in rows if r.upper() == c), None)
 
 
@@ -159,10 +177,14 @@ class Bench:
         return all(len(self.st["results"].get(r, [])) >= HOSTS for r in rows)
 
     def command(self, ours_secs):
-        order = "peak,srb,ours" if self.st["tries"] % 2 == 0 else "srb,peak,ours"
+        if SET == "amd":
+            order = "srb,peak"
+        else:
+            order = "peak,srb,ours" if self.st["tries"] % 2 == 0 else "srb,peak,ours"
         url = f"https://raw.githubusercontent.com/super3/llmjob/{COMMIT}/tuning/salad/bench.sh"
+        extra = f" SRB_EXTRA='{SRB_EXTRA}'" if SRB_EXTRA else ""
         return (f"apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 && "
-                f"curl -fsSL {url} -o /root/bench.sh && W={self.wallet} ORDER={order} OURS_SECS={ours_secs} "
+                f"curl -fsSL {url} -o /root/bench.sh && W={self.wallet} ORDER={order} OURS_SECS={ours_secs}{extra} "
                 f"bash /root/bench.sh 2>&1 | tee -a /root/bench.log")
 
     def create(self):
@@ -172,10 +194,12 @@ class Bench:
             self.note(f"{cls}: no such class on Salad; skipped")
             self.next_class()
             return
-        name = f"bench-{w.slug(cls).replace('rtx', 'gtx')}-{self.st['tries'] + 1}"[:60]
+        slug = re.sub(r"[^a-z0-9]", "", cls.split("(")[0].lower().replace("amd", "")) if SET == "amd" else \
+            w.slug(cls).replace("rtx", "gtx")
+        name = f"bench-{slug}-{self.st['tries'] + 1}"[:60]
         body = {"name": name, "display_name": name, "replicas": 1, "restart_policy": "never",
                 "autostart_policy": True,
-                "container": {"image": w.IMAGE, "priority": "high",
+                "container": {"image": AMD_IMAGE if SET == "amd" else w.IMAGE, "priority": "high",
                               "resources": {"cpu": 2, "memory": 4096, "gpu_classes": [cid],
                                             "storage_amount": 10737418240},
                               "command": ["/bin/sh", "-c", self.command(ours)]}}

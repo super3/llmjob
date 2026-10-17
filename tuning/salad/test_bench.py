@@ -124,5 +124,61 @@ class TestBench(unittest.TestCase):
             b.w.http, b.w.now = old
 
 
+class TestBenchAMD(unittest.TestCase):
+    """The Radeon set (BENCH_SET=amd): its own plan, files, image and miner order."""
+    @classmethod
+    def setUpClass(cls):
+        old = os.environ.get("BENCH_SET")
+        os.environ["BENCH_SET"] = "amd"
+        try:
+            s = importlib.util.spec_from_file_location("bench_amd", os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench.py"))
+            cls.a = importlib.util.module_from_spec(s)
+            s.loader.exec_module(cls.a)
+        finally:
+            if old is None:
+                del os.environ["BENCH_SET"]
+            else:
+                os.environ["BENCH_SET"] = old
+
+    def test_its_own_files_and_salad_s_class_names(self):
+        self.assertTrue(self.a.STATE.endswith("bench-amd.json"))
+        self.assertTrue(b.STATE.endswith("bench.json"))           # the GTX set keeps its files
+        self.assertEqual([p[0] for p in self.a.PLAN][0], "AMD RX 9070 XT (16GB)")
+        self.assertEqual(len(self.a.PLAN), 5)
+
+    def test_amd_card_names_match_their_rows_and_xt_is_not_xtx(self):
+        rows = ["RX 9070 XT", "RX 9060 XT", "RX 7900 XTX", "RX 7900 XT", "RX 7800 XT"]
+        self.assertEqual(self.a.row_for("Radeon RX 7900 XTX", rows), "RX 7900 XTX")
+        self.assertEqual(self.a.row_for("AMD Radeon RX 7900 XT", rows), "RX 7900 XT")
+        self.assertIsNone(self.a.row_for("AMD Radeon RX 7900 GRE", rows))
+
+    def test_the_box_runs_srbminer_then_peakminer_on_the_rocm_image(self):
+        calls = []
+        def http(method, url, body=None, timeout=None):
+            calls.append((method, url, body))
+            if url.endswith("/gpu-classes"):
+                return 200, {"items": [{"name": "AMD RX 9070 XT (16GB)", "id": "c1"}]}
+            return 201, {}
+        old = (self.a.w.http, self.a.w.now)
+        self.a.w.http, self.a.w.now = http, lambda: 30_000
+        try:
+            bench = self.a.Bench()
+            bench.wallet = "prl1x"
+            bench.st.update(cls=0, tries=0, group=None)
+            bench.create()
+            body = next(c[2] for c in calls if c[0] == "POST")
+            self.assertEqual(body["name"], "bench-rx9070xt-1")
+            self.assertEqual(body["container"]["image"], "rocm/dev-ubuntu-24.04:7.2")
+            self.assertIn("ORDER=srb,peak ", body["container"]["command"][2])
+        finally:
+            self.a.w.http, self.a.w.now = old
+
+    def test_ours_reads_no_build_on_amd(self):
+        st = {"results": {"RX 7900 XTX": [{"machine": "aaaa1111", "power": "[N/A]", "ours": (None, "no build"),
+                                           "peak": (None, "didn't start"), "srb": (47.0, None)}]}}
+        self.assertIn("| RX 7900 XTX | Salad (— W, 24 GB) | aaaa1111 | no build | didn't start | 47.0 | — |",
+                      self.a.render(st))
+
+
 if __name__ == "__main__":
     unittest.main()
