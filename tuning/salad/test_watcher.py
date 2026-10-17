@@ -1412,8 +1412,9 @@ class TestKryptex(Base):
         self.assertIn("socat TCP-LISTEN:1200,fork,reuseaddr TCP:prl-us.kryptex.network:7048", cmd)
         for r in w.HM_REGIONS:
             self.assertIn(f" {r}.pearl.herominers.com", cmd)
-        self.assertLess(cmd.index("/etc/hosts"), cmd.index("bash /root/box.sh"))
+        self.assertLess(cmd.index("$E/hosts"), cmd.index("bash /root/box.sh"))
         self.assertNotIn("; curl", cmd)  # Salad refuses "; curl"
+        self.assertNotIn("/etc/hosts", cmd)  # and its firewall refuses this path (HTTP 403)
         self.assertNotIn("socat", w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.0"))
 
     def test_only_the_first_groups_up_to_the_count_mine_on_kryptex(self):
