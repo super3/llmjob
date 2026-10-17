@@ -240,6 +240,10 @@ class Bench:
         if items:
             self.st["log_t"] = max(self.st["log_t"], w.parse_iso(items[-1]["time"]) - 30)
 
+    def stopped(self):
+        s, j = w.http("GET", f"{w.CB}/{self.st['group']}")
+        return s == 200 and ((j or {}).get("current_state") or {}).get("status") == "stopped"
+
     def tick(self):
         if not self.plan():
             return False
@@ -262,6 +266,11 @@ class Bench:
                 if m in self.st["seen"]:
                     self.move_on(f"PC {m[:8]} was benchmarked already")
                     return True
+        elif not self.st.get("pc_t") and t - self.st.get("start_t", 0) >= 5 * MIN and self.stopped():
+            # Salad sometimes stops a new group before it gets a PC, as the watcher sees too. Start it again.
+            s, _ = w.http("POST", f"{w.CB}/{self.st['group']}/start")
+            self.st["start_t"] = t
+            log(f"STARTED {self.st['group']} again: it was stopped with no PC (HTTP {s})")
         elif not self.st.get("pc_t") and t - self.st["created"] >= NO_PC_MIN * MIN:
             self.note(f"{cls}: no PC at high in {NO_PC_MIN} min")
             self.next_class()

@@ -53,6 +53,31 @@ class TestBench(unittest.TestCase):
                                       "peak": (40.0, None), "srb": (38.0, None)}]
         self.assertIn("| GTX 1660 | Salad (120 W, 6 GB) | abcd1234 | 30.0 | 40.0 | 38.0 | 75% |", b.render(st))
 
+    def test_a_group_stopped_before_a_pc_is_started_again_every_5_minutes(self):
+        calls, now = [], [10_000]
+        def http(method, url, body=None, timeout=None):
+            calls.append((method, url))
+            if url.endswith("/instances"):
+                return 200, {"instances": []}
+            if method == "GET":
+                return 200, {"current_state": {"status": "stopped"}}
+            return 202, None
+        old = (b.w.http, b.w.now)
+        b.w.http, b.w.now = http, lambda: now[0]
+        try:
+            bench = b.Bench()
+            bench.st.update(cls=0, group="bench-x-1", created=now[0], pc_t=None, machine=None)
+            bench.tick()
+            self.assertIn(("POST", f"{b.w.CB}/bench-x-1/start"), calls)
+            calls.clear(); now[0] += 60
+            bench.tick()
+            self.assertNotIn(("POST", f"{b.w.CB}/bench-x-1/start"), calls)
+            calls.clear(); now[0] += 5 * 60
+            bench.tick()
+            self.assertIn(("POST", f"{b.w.CB}/bench-x-1/start"), calls)
+        finally:
+            b.w.http, b.w.now = old
+
 
 if __name__ == "__main__":
     unittest.main()
