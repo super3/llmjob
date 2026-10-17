@@ -236,7 +236,7 @@ watcher checks it against the pool and writes a `DRIFT` event when they disagree
 The report is **one table** with six columns (five without a Monero address), so each row fits on one line in a chat window:
 
 ```
-**22:49 UTC, Wed 14 Oct** · PRL $1.901 · 8/10 mining
+**18:49 EDT, Wed 14 Oct** · PRL $1.901 · 8/10 mining
 
 | Box | TH/s | kH/s | $/hr | Profit/hr (margin) | Profit $ |
 |---|---|---|---|---|---|
@@ -251,7 +251,7 @@ The report is **one table** with six columns (five without a Monero address), so
 | 🪙 XMR | 32.1 kH/s | 0.002222 | 0.000000 | 0.000000 |
 ```
 
-- **The first line** gives only what the table doesn't: the time, the PRL price and how many boxes are mining.
+- **The first line** gives only what the table doesn't: the time (New York: EDT or EST), the PRL price and how many boxes are mining.
   Profit an hour, the margin and the profit so far are in the **All** row.
 - **Profit/hr** has the margin (profit ÷ earnings) in brackets beside it.
 - Inside bold text the estimate stars are written `\*`, or Markdown reads them as emphasis and the bold breaks.

@@ -836,11 +836,15 @@ class TestCreditRatio(Base):
             return f.read()
 
     def test_the_first_line_starts_with_a_readable_time(self):
-        self.assertTrue(self.report().startswith("**08:00 UTC, Fri 15 Jan** · PRL $1.390 · "))
+        self.assertTrue(self.report().startswith("**03:00 EST, Fri 15 Jan** · PRL $1.390 · "))
+
+    def test_the_time_is_new_york_time_and_says_edt_in_summer(self):
+        t = w.parse_iso("2026-10-17T15:53:00Z")
+        self.assertEqual(w.stamp(t), "11:53 EDT, Sat 17 Oct")
 
     def test_the_first_line_leaves_out_what_the_all_row_shows(self):
         first = self.report().split("\n")[0]
-        self.assertEqual(first, "**08:00 UTC, Fri 15 Jan** · PRL $1.390 · 0/1 mining")
+        self.assertEqual(first, "**03:00 EST, Fri 15 Jan** · PRL $1.390 · 0/1 mining")
 
     def test_the_table_counts_on_what_the_pool_credits(self):
         report = self.report()
