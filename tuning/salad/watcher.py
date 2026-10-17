@@ -377,19 +377,21 @@ class W:
                 res[w["name"]] = w
         return res
 
-    def kx_pool(self):
-        """Kryptex: each worker's shares, and what it holds and has paid for the wallet. Pool totals at most every
-        5 minutes; the workers every round, keyed by name ("<group>-g0")."""
+    def kx_pool(self, workers=True):
+        """Kryptex: each worker's shares (when a box is on Kryptex), keyed by name ("<group>-g0"), and what the wallet
+        holds and has been paid, at most every 5 minutes, failed tries included, so an outage costs one try in 5."""
         wallet, st, t = self.cfg["wallet"], self.st, now()
         res = {}
-        s, j = http("GET", f"{KX_API}/v3/miner/workers/{wallet}", timeout=30)
-        if s == 200 and isinstance(j, dict):
-            for x in j.get("results") or []:
-                if isinstance(x, dict) and x.get("worker"):
-                    res[x["worker"].split("/")[-1].split(".")[-1]] = x
+        if workers:
+            s, j = http("GET", f"{KX_API}/v3/miner/workers/{wallet}", timeout=30)
+            if s == 200 and isinstance(j, dict):
+                for x in j.get("results") or []:
+                    if isinstance(x, dict) and x.get("worker"):
+                        res[x["worker"].split("/")[-1].split(".")[-1]] = x
         kt = st.get("kx_tot") or {}
-        if t - kt.get("t", 0) < 5 * MIN:
+        if t - max(kt.get("t", 0), st.get("kx_tot_try", 0)) < 5 * MIN:
             return res
+        st["kx_tot_try"] = t
         s1, b = http("GET", f"{KX_API}/v1/miner/balance/{wallet}", timeout=30)
         s2, p = http("GET", f"{KX_API}/v1/miner/payouts/{wallet}", timeout=30)
         s3, i = http("GET", f"{KX_API}/v1/pool/info", timeout=30)
@@ -588,7 +590,7 @@ class W:
         live = [g for g in active if not g["ended"]]
         kx = [g for g in live if g.get("kx")]
         if sum(1 for g in kx if g["has_pc"]) < want and t - st.get("kx_switch_t", 0) >= 15 * MIN:
-            cands = [g for g in live if not g.get("kx") and not g.get("_skip") and g["has_pc"] and g["status"] == "running"
+            cands = [g for g in live if not g.get("kx") and self.kx_ready(g, t) and g["has_pc"] and g["status"] == "running"
                      and g.get("pc_since") and g.get("kx_failed_tok") != st["kx_token"]   # failed there: not again
                      and any(r[1] == g.get("machine") and r[2] > 0 and r[0] >= t - 10 * MIN for r in g["readings"])]
             usd = self.usd()
@@ -602,12 +604,19 @@ class W:
         for g in sorted(kx, key=lambda g: (g["has_pc"], -(g.get("kx_since") or g["created"]))):
             if extra <= 0:
                 break
-            if g.get("_skip") or t - (g.get("kx_since") or g["created"]) < 15 * MIN:
+            if not self.kx_ready(g, t) or t - (g.get("kx_since") or g["created"]) < 15 * MIN:
                 continue
             why = ("the Kryptex test stopped after 2 boxes mined no shares there" if stopped else
                    "a Kryptex box with a PC took its place" if not g["has_pc"] else "more Kryptex boxes than config asks")
             if self.kx_switch(g, False, t, why):
                 extra -= 1
+
+    def kx_ready(self, g, t):
+        """Whether a group can be switched this round: its state was read, it didn't just change PC (rules() hasn't
+        seen the new one yet, so the move would name the old PC), and Salad didn't refuse its last move lately."""
+        if g.get("_skip") or (g["has_pc"] and g.get("_machine") not in (None, g.get("machine"))):
+            return False
+        return t - g.get("kx_try", 0) >= 15 * MIN
 
     def kx_switch(self, g, on, t, why):
         """Point a group's box at Kryptex (on) or back at HeroMiners: update its command, then, if it has a PC, move
@@ -624,14 +633,23 @@ class W:
         if moving and not self.reallocate(g, f"to start on {'Kryptex' if on else 'HeroMiners'}", count=False, gone_ok=True):
             # Still on its PC with the command it started with: put the group's command back to match, and try again
             # in 15 minutes.
+            g["kx_try"] = t
             _, back, _ = self.box(g["name"], bool(g.get("xmr")), bool(g.get("kx")))
-            http("PATCH", f"{CB}/{g['name']}", {"container": {"command": back}}, ctype="application/merge-patch+json")
-            event(f"WARN Kryptex {'on' if on else 'off'} for {g['name']}: Salad refused to move it to a new PC; "
-                  "it stays where it was")
-            return False
+            sb, _ = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": back}},
+                         ctype="application/merge-patch+json")
+            if 200 <= sb < 300:
+                event(f"WARN Kryptex {'on' if on else 'off'} for {g['name']}: Salad refused to move it to a new PC; "
+                      "it stays where it was")
+                return False
+            # Salad keeps the new command, so the box starts on the new pool at its next PC: the ledger follows,
+            # and this PC's readings stay with the old pool.
+            moving = False
+            event(f"WARN Kryptex {'on' if on else 'off'} for {g['name']}: Salad refused to move it and to put its "
+                  f"command back (HTTP {sb}); it mines on {'HeroMiners' if on else 'Kryptex'} here and starts on "
+                  f"{'Kryptex' if on else 'HeroMiners'} at its next PC")
         # Readings the box still sends from the PC it left, or from before now, were mined on the old pool.
         g.update(kx=on, ver=ver, kx_since=t if on else None, sw_t=t, sw_from=g.get("machine") if not moving else
-                 (g.get("left") or [None])[-1], sw_prev=not on)
+                 (g.get("left") or [None])[-1], sw_prev=not on, kx_share=None if on else g.get("kx_share"))
         self.st["kx_any_t"] = t
         event(f"KRYPTEX {'ON' if on else 'OFF'} {g['name']} ({why}): Pearl on {'Kryptex' if on else 'HeroMiners'}; "
               + ("moved to a new PC, where it starts that way" if moving else "it starts that way on its next PC"))
@@ -824,19 +842,21 @@ class W:
                         continue
                     g["readings"].append([tm, mach, ths, acc, up])
                     g["readings"] = [r for r in g["readings"] if t - r[0] < 7200]
+                    # The pool this reading was mined on. One from the PC a box left at its last switch, or from
+                    # before the switch, was mined on the pool it was on before.
+                    on_kx = g.get("kx")
+                    if g.get("sw_t") and (mach == g.get("sw_from") or tm < g["sw_t"]):
+                        on_kx = g.get("sw_prev")
                     if ths > 0:
                         g["prl"] += ths / 60 * st["mkt"]["prl_th_hr"]
-                        # The part mined on Kryptex, which has its own credit ratio. A reading from the PC a box left
-                        # at its last switch, or from before the switch, was mined on the pool it was on before.
-                        on_kx = g.get("kx")
-                        if g.get("sw_t") and (mach == g.get("sw_from") or tm < g["sw_t"]):
-                            on_kx = g.get("sw_prev")
-                        if on_kx:
+                        if on_kx:   # the part mined on Kryptex, which has its own credit ratio
                             g["prl_kx"] = g.get("prl_kx", 0.0) + ths / 60 * st["mkt"]["prl_th_hr"]
                         g["mined_min"] += 1
                     prev = g["acc"].get(mach)
                     if (prev is None and acc > 0) or (prev is not None and acc > prev) or (prev is not None and acc < prev and acc > 0):
                         g["last_share"] = max(g["last_share"] or 0, tm)
+                        if on_kx:   # proof Kryptex takes this box's work (see leave)
+                            g["kx_share"] = max(g.get("kx_share") or 0, tm)
                     g["acc"][mach] = acc
                     continue
                 text = text.strip()
@@ -855,7 +875,8 @@ class W:
 
         # Pool: shares and pool-side hashrate.
         pw = self.pool() if by_name else {}
-        kw = (self.kx_pool() if any((g.get("kx") and not g["ended"]) or g.get("prl_kx") for g in st["groups"].values())
+        live_kx = any(g.get("kx") for g in by_name.values())
+        kw = (self.kx_pool(workers=live_kx) if live_kx or any(g.get("prl_kx") for g in st["groups"].values())
               else {})
         self.trader()
         for g in by_name.values():
@@ -867,6 +888,7 @@ class W:
                         ls = ls / 1000 if ls > 1e12 else ls
                         if ls >= g["created"]:
                             g["last_share"] = max(g["last_share"] or 0, ls)
+                            g["kx_share"] = max(g.get("kx_share") or 0, ls)
                         unit = (st.get("kx_tot") or {}).get("unit_th")
                         g["pool_ths"] = float(x.get("hashrate") or 0) * unit if unit else None
                     except (TypeError, ValueError):
@@ -1086,7 +1108,7 @@ class W:
         """Stop paying for this PC: another PC if the class has paid before, otherwise delete the group. The PC goes
         on the bad list, so another group that gets it leaves it at once (for bad_pc_hold_h)."""
         if (g.get("kx") and why.startswith(("no share", "no mining reading"))
-                and (g["last_share"] or 0) < (g.get("kx_since") or g["created"]) and self.kx_failed(g, why)):
+                and (g.get("kx_share") or 0) < (g.get("kx_since") or g["created"]) and self.kx_failed(g, why)):
             return   # a box that has had Kryptex shares and then stops is a PC problem, left as usual below
         if g.get("machine"):
             self.st.setdefault("bad_pcs", {})[g["machine"]] = {"t": now(), "group": g["name"], "why": why}
