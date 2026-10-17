@@ -203,11 +203,15 @@ jest.mock('../src/main/pearlEngine', () => {
       this.isRunning = jest.fn(() => this._running);
       this.poolConnected = jest.fn(() => true);
       this.releaseMemClocks = jest.fn();
+      // The cards a pause or resume acted on: one card, unless a test says none.
+      this.pauseCards = jest.fn(() => (PearlEngine.noCards ? [] : [{ index: 0, name: 'GPU0' }]));
+      this.resumeCards = jest.fn(() => [{ index: 0, name: 'GPU0' }]);
       PearlEngine.instances.push(this);
     }
   }
   PearlEngine.instances = [];
   PearlEngine.startError = null;
+  PearlEngine.noCards = false;
   return { PearlEngine };
 });
 
@@ -4088,5 +4092,83 @@ describe('CPU mining (Monero)', () => {
     expect(await ctx.invoke('xmr:balance', XMR_ADDR)).toBeNull();
     ctx.io.getJson.mockResolvedValueOnce(null);
     expect(await ctx.invoke('xmr:balance', XMR_ADDR)).toBeNull();
+  });
+});
+
+// While the LLM co-runs with the miner, a prompt hands its card to the LLM: the
+// miner pauses that card and mines on it again after (shared/promptPause, where
+// the timing is tested). Here: the app wires the busy signal to the miner, says
+// so in the log, and lets go when the LLM stops.
+describe('mining pauses while the local LLM answers a prompt', () => {
+  const lines = (ctx) => ctx.sent('miner:log').map((l) => l.line);
+  async function coRunning(ctx) {
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    ctx.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 }]);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+    await flush();
+    const miner = ctx.PearlEngine.instances[0];
+    miner.emit('event', { type: 'status', hashrate: '2.5' });
+    await flush(30);
+    return { miner, llm: ctx.LlmManager.instances[0] };
+  }
+  afterEach(() => { require('../src/main/pearlEngine').PearlEngine.noCards = false; });
+
+  it('pauses the card the prompt runs on, and mines on it again at once when the LLM stops', async () => {
+    const ctx = await boot();
+    const { miner, llm } = await coRunning(ctx);
+    llm.emit('busy', true);
+    expect(miner.pauseCards).toHaveBeenCalledWith([0]);
+    expect(lines(ctx)).toContain('mining paused on GPU 0 while the local LLM answers a prompt');
+
+    // Mining-only stops the LLM. Nothing is left to answer a prompt, so the
+    // card mines again now rather than after the usual wait.
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush(30);
+    expect(miner.resumeCards).toHaveBeenCalledWith([0]);
+    expect(lines(ctx)).toContain('mining resumed on GPU 0');
+  });
+
+  it('a miner that starts while a prompt runs starts with that card paused', async () => {
+    const ctx = await boot();
+    const { miner, llm } = await coRunning(ctx);
+    llm.emit('busy', true);
+    // Idle-only style: the miner goes and a new one comes back mid-prompt.
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'llm' });
+    await flush(30);
+    expect(miner.isRunning()).toBe(false);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+    await flush(30);
+    const again = ctx.PearlEngine.instances[1];
+    expect(again).toBeTruthy();
+    expect(again.pauseCards).toHaveBeenCalledWith([0]);
+  });
+
+  it('in LLM-only mode a prompt pauses nothing and says nothing', async () => {
+    const ctx = await boot();
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush(30);
+    ctx.LlmManager.instances[0].emit('busy', true);
+    expect(ctx.PearlEngine.instances).toHaveLength(0);
+    expect(lines(ctx).some((l) => l.startsWith('mining paused'))).toBe(false);
+  });
+
+  it('STOP mid-prompt stops the miner and the LLM, and resumes nothing on a miner that is gone', async () => {
+    const ctx = await boot();
+    const { miner, llm } = await coRunning(ctx);
+    llm.emit('busy', true);
+    ctx.emit('miner:stop');
+    await flush();
+    expect(miner.stop).toHaveBeenCalled();
+    expect(miner.resumeCards).not.toHaveBeenCalled();
+  });
+
+  it('says nothing when the prompt runs on a card that is not mining', async () => {
+    const ctx = await boot();
+    const { miner, llm } = await coRunning(ctx);
+    require('../src/main/pearlEngine').PearlEngine.noCards = true;
+    llm.emit('busy', true);
+    expect(miner.pauseCards).toHaveBeenCalled();
+    expect(lines(ctx).some((l) => l.startsWith('mining paused'))).toBe(false);
   });
 });

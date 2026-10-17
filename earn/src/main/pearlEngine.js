@@ -184,6 +184,17 @@ class PearlEngine extends EventEmitter {
     if (this.miner) this.miner.releaseMemClocks();
   }
 
+  // Set cards aside while the local LLM answers a prompt, and bring them back
+  // (see PearlMiner.pauseCards). `indices` is the cards, or null for all of
+  // them. Nothing to do before a start.
+  pauseCards(indices) {
+    return this.miner ? this.miner.pauseCards(indices) : [];
+  }
+
+  resumeCards(indices) {
+    return this.miner ? this.miner.resumeCards(indices) : [];
+  }
+
   // Poll the card temperature while mining. Sampled once immediately so the
   // reading appears with the first status rather than five seconds into the
   // run, then on a timer -- a status event fires on every share and every

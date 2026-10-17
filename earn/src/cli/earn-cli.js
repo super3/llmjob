@@ -44,6 +44,7 @@ const { shortenAddress, isValidAddress } = require('../shared/address');
 const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
 const { planLlmInstances } = require('../shared/llmPlan');
 const { allModels, pickModel, ctxLadder, planAutoMode } = require('../shared/models');
+const { createPromptPause } = require('../shared/promptPause');
 const { LlmFleet } = require('../main/llmFleet');
 const { createAutoGate, createServeGate } = require('../main/autoGate');
 const { JobWorker } = require('../main/jobWorker');
@@ -563,8 +564,9 @@ async function planLlm(settings, reserveMb, modelOverride) {
 // The slow half: fetch llama-server and the model if they aren't cached yet,
 // then spawn one server per planned card. `background` is set when the miner is
 // already running beside it (co-running auto), which only changes how download
-// progress is printed.
-async function launchLlm(settings, planned, armServe, background) {
+// progress is printed. `onBusy` hears each card start and finish a prompt
+// ({ index, busy }); it is attached before any card can take one.
+async function launchLlm(settings, planned, armServe, background, onBusy) {
   const dir = llmDir(settings);
   const { model, plan } = planned;
   log('preparing local LLM (' + model.name + ') …');
@@ -624,6 +626,7 @@ async function launchLlm(settings, planned, armServe, background) {
     log('🧠 ' + Number(serveLlmState.tps).toFixed(1) + ' tok/s');
   });
   fleet.on('error', (err) => log('LLM error: ' + err.message, process.stderr));
+  if (onBusy) fleet.on('busy', onBusy);
 
   fleet.syncWorkers(canServe && armServe); // arm serving before instances come up
   // Same run bits the GUI passes: llmFleet merges these into every
@@ -942,6 +945,18 @@ async function run(argv) {
   let reportNow = null;
   let llm = null;
   let stopping = false;
+  // Co-running only: mining stops on a card while the LLM beside it answers a
+  // prompt, and starts again a little after (shared/promptPause). Demand mode
+  // has the whole card stop mining for as long as it serves, and LLM-only has no
+  // miner, so neither feeds it: there is always a miner when this is called. One
+  // that has stopped pauses and resumes nothing (PearlMiner).
+  const promptPause = createPromptPause({
+    pause: (indices) => miner.pauseCards(indices).length > 0,
+    resume: (indices) => { miner.resumeCards(indices); },
+    log: (level, line) => log(line, level === 'warn' ? process.stderr : process.stdout),
+    resumeAfterMs: LLM.promptPause.resumeAfterMs,
+    maxPauseMs: LLM.promptPause.maxPauseMs,
+  });
   // nvidia-smi's compute capability per card, read with the miner below. The
   // memory clock plan needs it too, further down, once the LLM plan is known.
   let cudaCards = [];
@@ -1185,6 +1200,7 @@ async function run(argv) {
       if (stopping) return;
       stopping = true;
       log('shutting down…');
+      promptPause.stop();
       if (reporter) clearInterval(reporter);
       if (statsWriter) clearInterval(statsWriter);
       stopServe();
@@ -1218,6 +1234,8 @@ async function run(argv) {
         // registered for an LLM started up front or beside the miner, which
         // demand mode never does.
         serveLlmState = { ready: false, tps: 0, model: serveLlmState.model };
+        // Nothing is left to answer a prompt: every card mines now.
+        promptPause.reset();
         stopServe();
         log('local LLM exited (code ' + code + ')', process.stderr);
         if (!miner) finish(code || 1);
@@ -1230,7 +1248,8 @@ async function run(argv) {
     // on, as it did when the LLM started first. A run that ended while the model
     // was downloading must not leave a server behind.
     const startCoRun = async () => {
-      const fleet = await launchLlm(settings, coRun, true, true);
+      const fleet = await launchLlm(settings, coRun, true, true,
+        ({ index, busy }) => promptPause.setBusy(index, busy));
       if (!fleet) return;
       if (settled || stopping) { fleet.stop(); stopServe(); return; }
       llm = fleet;

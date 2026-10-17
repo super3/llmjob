@@ -132,7 +132,29 @@ function parseTokensPerSec(line) {
   return t ? t.tokensPerSec : null;
 }
 
+// A slot starting or finishing a request, from llama-server's own log. Every
+// prompt shows up here, whichever way it arrived: the API tab's address, the
+// built-in web UI, cluster jobs, the LAN share, or another app on the machine.
+// Most of those never pass through our code, so this is the one place that sees
+// them all. The lines (b9902, tools/server/server-context.cpp) are:
+//
+//   slot launch_slot_: id  0 | task 12 | processing task, is_child = 0
+//   slot      release: id  0 | task 12 | stop processing: n_tokens = 250, truncated = 0
+//
+// Every "processing task" has exactly one "stop processing": release() is the
+// only place a slot goes idle, cancelled requests included. Both print at the
+// default INFO level. Pinned by a test, so a llama.cpp upgrade that rewords them
+// fails CI instead of leaving mining paused.
+//
+// Returns { slot, busy } or null.
+function parseSlotEvent(line) {
+  const m = String(line == null ? '' : line)
+    .match(/\bid\s+(\d+)\s*\|\s*task\s+-?\d+\s*\|\s*(processing task|stop processing)\b/);
+  if (!m) return null;
+  return { slot: Number(m[1]), busy: m[2] === 'processing task' };
+}
+
 module.exports = {
   resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, isServerReady,
-  parseTokensPerSec, parseTiming,
+  parseTokensPerSec, parseTiming, parseSlotEvent,
 };

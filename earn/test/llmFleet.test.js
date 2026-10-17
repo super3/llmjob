@@ -42,6 +42,19 @@ function makeFleet(over = {}) {
 const drain = () => new Promise((r) => setTimeout(r, 25));
 
 describe('LlmFleet', () => {
+  test('passes on each card\'s busy and idle, tagged with the card', async () => {
+    const { fleet, mgrs } = makeFleet();
+    const seen = [];
+    fleet.on('busy', (e) => seen.push(e));
+    await fleet.start([{ index: 0, nGpuLayers: 42 }, { index: 2, nGpuLayers: 40 }],
+      { binaryPath: 'b', modelPath: 'm', platform: 'linux' });
+    await drain();
+    mgrs[1].emit('busy', true);
+    mgrs[0].emit('busy', true);
+    mgrs[1].emit('busy', false);
+    expect(seen).toEqual([{ index: 2, busy: true }, { index: 0, busy: true }, { index: 2, busy: false }]);
+  });
+
   test('start() launches one manager per plan entry on distinct ports', async () => {
     const { fleet, mgrs } = makeFleet();
     const n = await fleet.start(

@@ -378,3 +378,67 @@ describe('LlmManager context ladder', () => {
     expect(ctxOf(spawn, 0)).toBe('65536');
   });
 });
+
+describe('LlmManager busy (a prompt is running)', () => {
+  const START = 'slot launch_slot_: id  0 | task 7 | processing task, is_child = 0\n';
+  const END = 'slot      release: id  0 | task 7 | stop processing: n_tokens = 40, truncated = 0\n';
+
+  function started() {
+    const child = makeChild();
+    const m = new LlmManager({ spawn: () => child, sleep: () => new Promise(() => {}) });
+    const busy = [];
+    m.on('busy', (b) => busy.push(b));
+    m.start({ modelPath: '/m.gguf' });
+    return { child, m, busy };
+  }
+
+  test('fires busy when a slot starts a request and idle when it ends', () => {
+    const { child, m, busy } = started();
+    expect(m.isBusy()).toBe(false);
+    child.stderr.emit('data', START);
+    expect(m.isBusy()).toBe(true);
+    child.stderr.emit('data', END);
+    expect(m.isBusy()).toBe(false);
+    expect(busy).toEqual([true, false]);
+  });
+
+  test('reads stdout too', () => {
+    const { child, busy } = started();
+    child.stdout.emit('data', START + END);
+    expect(busy).toEqual([true, false]);
+  });
+
+  test('a line cut across two chunks still counts', () => {
+    const { child, busy } = started();
+    child.stderr.emit('data', START);
+    child.stderr.emit('data', END.slice(0, 30));
+    expect(busy).toEqual([true]);
+    child.stderr.emit('data', END.slice(30));
+    expect(busy).toEqual([true, false]);
+  });
+
+  test('stays busy until the last of several slots ends', () => {
+    const { child, busy } = started();
+    child.stderr.emit('data', START + START.replace('id  0', 'id  1'));
+    child.stderr.emit('data', END);
+    expect(busy).toEqual([true]);
+    child.stderr.emit('data', END.replace('id  0', 'id  1'));
+    expect(busy).toEqual([true, false]);
+  });
+
+  test('a server that exits mid-request is no longer busy', () => {
+    const { child, m, busy } = started();
+    child.stderr.emit('data', START + 'half a line');
+    m.stop();
+    child.emit('exit', 0);
+    expect(busy).toEqual([true, false]);
+    expect(m.isBusy()).toBe(false);
+  });
+
+  test('an exit while idle fires nothing', () => {
+    const { child, m, busy } = started();
+    m.stop();
+    child.emit('exit', 0);
+    expect(busy).toEqual([]);
+  });
+});

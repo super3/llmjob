@@ -158,6 +158,9 @@ class LlmFleet extends EventEmitter {
     mgr.on('log', (l) => this.emit('log', l));
     mgr.on('ready', ({ baseUrl }) => this._onReady(inst, baseUrl));
     mgr.on('stats', (s) => this._onStats(s, inst));
+    // A prompt started or finished on this card. Passed on with the card, so the
+    // shells can pause mining on that card alone while the model works.
+    mgr.on('busy', (busy) => this.emit('busy', { index: inst.index, busy }));
     mgr.on('crashed', (info) => this._onCrashed(inst, info));
     mgr.on('stopped', (code) => this._onStopped(inst, code));
     mgr.on('error', (err) => this.emit('error', err));

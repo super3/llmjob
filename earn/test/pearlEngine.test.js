@@ -84,6 +84,20 @@ describe('PearlEngine — the MinerManager surface', () => {
     e.stop();
   });
 
+  test('pauseCards and resumeCards reach the running miner, and are nothing before a start', () => {
+    const { e } = boot();
+    expect(e.pauseCards([0])).toEqual([]);
+    expect(e.resumeCards([0])).toEqual([]);
+    e.start({ address: ADDR, worker: 'rig01', endpoint: 'us.pearl.herominers.com:1200' });
+    const pause = jest.spyOn(e.miner, 'pauseCards').mockReturnValue(['p']);
+    const resume = jest.spyOn(e.miner, 'resumeCards').mockReturnValue(['r']);
+    expect(e.pauseCards([1])).toEqual(['p']);
+    expect(e.resumeCards(null)).toEqual(['r']);
+    expect(pause).toHaveBeenCalledWith([1]);
+    expect(resume).toHaveBeenCalledWith(null);
+    e.stop();
+  });
+
   test('runs once started and stops on stop', () => {
     const { e, core } = started();
     expect(e.isRunning()).toBe(true);

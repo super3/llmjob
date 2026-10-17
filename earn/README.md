@@ -574,6 +574,16 @@ out-of-memory crash; it logs a clear "not enough free VRAM" line and skips the
 LLM (mining, if enabled, carries on). If VRAM can't be read (non-NVIDIA / no
 driver) it proceeds and lets llama.cpp decide.
 
+**Mining pauses while a prompt runs** — when the LLM co-runs with the miner,
+a card stops mining the moment its `llama-server` starts answering a request,
+and mines again 10 s after the last one ends. Other cards keep mining, and the
+pool connection stays open. The board and HiveOS show that card at 0 TH/s
+while it is paused. The signal is `llama-server`'s own log, so it covers every
+caller: the API endpoint, its web UI, cluster jobs and the network share. A card
+busy for 10 minutes without a break mines again regardless. Demand-driven
+`auto` is unchanged: there the miner already stops for as long as the model
+serves.
+
 `llama-server` comes from a llama.cpp release, a `.tar.gz` on Linux. The CLI
 extracts it with `tar` into the same `llm/` dir, so the binary sits next to its
 shared libraries. To skip the download, or pin your own build, pass

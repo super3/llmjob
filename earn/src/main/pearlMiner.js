@@ -108,6 +108,10 @@ class PearlMiner extends EventEmitter {
     // stop(), and a start that fails locks nothing, so start() never finds any
     // -- and if it somehow did, forgetting them would leave them locked.
     this.memClockLocked = new Set();
+    // Cards set aside while the local LLM answers a prompt on them, as
+    // slot -> device (see pauseCards). Not in `cores`, so jobs, hashrate ticks
+    // and stop() pass them by, but still this run's cards.
+    this.paused = new Map();
   }
 
   isRunning() { return this.running; }
@@ -236,7 +240,7 @@ class PearlMiner extends EventEmitter {
   // and, when the memory-clock plan names its card, locked. Returns
   // { core, device }, or throws when the card will not open. Used by start() and
   // by a restart alike.
-  _openCore(slot, wallet, worker) {
+  _openCore(slot, wallet, worker, { quiet = false } = {}) {
     const { opts } = slot;
     // A fresh run of salts each time this card opens (see SALT_RUN). The first
     // run starts where it always has, at the card's own base.
@@ -256,7 +260,10 @@ class PearlMiner extends EventEmitter {
     // two halves of "which GPU is mining" are written down together. A rig
     // whose UI names one card and whose fan spins up on another (issue #226)
     // is diagnosable from a log file because of it.
-    if (device) {
+    //
+    // Not on a resume after a prompt: that happens every time the LLM answers
+    // one, and the pause and resume are logged already.
+    if (device && !quiet) {
       this.emit('log', {
         level: 'info',
         line: 'mining on GPU ' + device.index + ' · ' + device.name,
@@ -579,7 +586,9 @@ class PearlMiner extends EventEmitter {
   // for its restart, the pool connection stays open, so it comes back to work.
   _cardDown(slot, device, err) {
     if (this._scheduleRestart(slot, device)) return;
-    if (!this.cores.length) {
+    // A paused card is still one of this run's cards: it comes back when the
+    // prompt ends, so the rig is not out of cards yet.
+    if (!this.cores.length && !this.paused.size) {
       this.emit('error', err);
       this.stop(true);
     }
@@ -632,9 +641,77 @@ class PearlMiner extends EventEmitter {
       this._cardDown(slot, device, e);
       return;
     }
+    this._giveJob(core);
+  }
+
+  // Hand a card that just opened the job the rest of the rig is on. Until it has
+  // one it does not search, and the pool will not send this job again.
+  _giveJob(core) {
     const job = this.job;
     const bound = job && shareBound(job.target, this.profile());
     if (bound != null) core.setJob({ header: job.header, target: bound, jobId: job.jobId });
+  }
+
+  // Set cards aside while the local LLM answers a prompt on them, and bring them
+  // back after (see shared/promptPause). `indices` is the cards' numbers, or
+  // null for every card. Returns the cards it acted on, as devices.
+  //
+  // A pause closes the card's core, which stops its search and frees its VRAM,
+  // and keeps everything else: the pool connection, the job and the other
+  // cards. It is the core's only way to stop searching (native/src/pearl_core.cc
+  // has no lighter one). Its hashrate goes to 0, so the app and the board show
+  // the card is not mining rather than its last tick.
+  pauseCards(indices) {
+    if (!this.running) return [];
+    const done = [];
+    for (const c of [...this.cores]) {
+      const index = c.device ? c.device.index : null;
+      if (indices != null && !indices.includes(index)) continue;
+      this.cores.splice(this.cores.indexOf(c), 1);
+      try { c.core.stop(); } catch (e) { /* already gone */ }
+      this.paused.set(c.slot, c.device);
+      if (c.device) {
+        this.hashrates.delete(index);
+        this.hashrate = this.totalHashrate();
+        this.emit('hashrate', 0, c.device);
+        // A model must never run on a locked card (see releaseMemClocks).
+        this._releaseMemClock(index);
+      }
+      done.push(c.device);
+    }
+    return done;
+  }
+
+  // Open paused cards again the way a restart after a fault does: on a fresh run
+  // of salts, so the pool is never sent a share twice, and on the current job.
+  // A card that will not open is a card down like any other (see _cardDown).
+  resumeCards(indices) {
+    if (!this.running) return [];
+    const done = [];
+    for (const [slot, device] of [...this.paused]) {
+      const index = device ? device.index : null;
+      if (indices != null && !indices.includes(index)) continue;
+      this.paused.delete(slot);
+      // A pause is not a fault. Keep when the card last came up, so a fault
+      // soon after a resume is not counted as one soon after a restart.
+      const startedAt = slot.startedAt;
+      let core;
+      try {
+        ({ core } = this._openCore(slot, this.wallet, this.worker, { quiet: true }));
+      } catch (e) {
+        slot.startedAt = startedAt;
+        this.emit('log', {
+          level: 'error',
+          line: 'could not resume ' + cardName(device) + ': ' + ((e && e.message) || String(e)),
+        });
+        this._cardDown(slot, device, e);
+        continue;
+      }
+      slot.startedAt = startedAt;
+      this._giveJob(core);
+      done.push(device);
+    }
+    return done;
   }
 
   // The rig's throughput: every card's latest tick, added up. A card that has
@@ -704,6 +781,7 @@ class PearlMiner extends EventEmitter {
     }
     this._releaseMemClocks();
     this.cores = [];
+    this.paused.clear();
     this.hashrates.clear();
     if (this.sock) { try { this.sock.destroy(); } catch (e) { /* already closed */ } this.sock = null; }
     this.job = null;

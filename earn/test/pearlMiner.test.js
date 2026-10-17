@@ -1515,3 +1515,186 @@ describe('PearlMiner — the memory clock lock', () => {
     expect(gpuClocks.resetMemoryClock).toHaveBeenCalledWith(0);
   });
 });
+
+describe('PearlMiner — pausing cards while the LLM answers a prompt', () => {
+  const GPUS = [
+    { index: 0, name: 'NVIDIA GeForce RTX 5090' },
+    { index: 1, name: 'NVIDIA GeForce RTX 4070' },
+  ];
+
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => {
+    jest.clearAllTimers();
+    jest.useRealTimers();
+  });
+
+  function rig(over = {}) {
+    const made = [];
+    const sock = makeSocket();
+    const clocks = {
+      lockMemoryClock: jest.fn(() => ({ ok: true, error: null })),
+      resetMemoryClock: jest.fn(() => ({ ok: true, error: null })),
+    };
+    const createCore = jest.fn((profile, opts) => {
+      if (over.refuse && over.refuse(opts)) throw over.refuseWith !== undefined ? over.refuseWith : new Error('out of memory');
+      const c = makeCore();
+      if (!over.silentDevice) c.device = { index: opts.deviceIndex, name: GPUS[opts.deviceIndex].name };
+      made.push(c);
+      return c;
+    });
+    const m = new PearlMiner({ connect: () => sock, createCore, reconnectMs: 0, clocks });
+    const events = { log: [], hashrate: [], error: [], stopped: [] };
+    for (const k of Object.keys(events)) m.on(k, (...a) => events[k].push(a.length > 1 ? a : a[0]));
+    const lines = () => events.log.map((l) => l.line);
+    return { m, sock, made, clocks, createCore, events, lines };
+  }
+  const coreFor = (b, index) => b.made.filter((c) => c.device.index === index).pop();
+
+  function mining(b, gpus = GPUS, extra = {}) {
+    b.m.start({ ...settings, gpus, ...extra });
+    b.sock.emit('connect');
+    b.sock.emit('data', jobLine());
+  }
+
+  test('pauses one card and leaves the pool connection and the other card alone', () => {
+    const b = rig();
+    mining(b);
+    b.made[0].emit('hashrate', 400);
+    b.made[1].emit('hashrate', 115);
+
+    expect(b.m.pauseCards([0])).toEqual([GPUS[0]]);
+    expect(b.made[0].stop).toHaveBeenCalled();
+    expect(b.made[1].stop).not.toHaveBeenCalled();
+    expect(b.sock.destroy).not.toHaveBeenCalled();
+    expect(b.m.isRunning()).toBe(true);
+    expect(b.m.devices()).toEqual([GPUS[1]]);
+    // Its hashrate goes to 0 rather than standing at its last tick.
+    expect(b.events.hashrate).toContainEqual([0, GPUS[0]]);
+    expect(b.m.totalHashrate()).toBe(115);
+    // A job that arrives while paused goes to the card still mining only.
+    b.sock.emit('data', jobLine({ job_id: '00000000_2097153' }));
+    expect(b.made[0].setJob).toHaveBeenCalledTimes(1);
+    expect(b.made[1].setJob).toHaveBeenCalledTimes(2);
+  });
+
+  test('resumes the card on fresh salts and the current job, without logging it as a new start', () => {
+    const b = rig();
+    mining(b);
+    b.m.pauseCards([0]);
+    b.sock.emit('data', jobLine({ job_id: '00000000_2097153' }));
+    const before = b.lines().length;
+
+    expect(b.m.resumeCards([0])).toEqual([GPUS[0]]);
+    const again = coreFor(b, 0);
+    expect(again).not.toBe(b.made[0]);
+    // A fresh run of salts, so the pool is never sent a share twice.
+    expect(b.createCore.mock.calls[2][1]).toEqual({ deviceIndex: 0, saltStride: 2, saltBase: 0 + 2 * SALT_RUN });
+    expect(again.setJob.mock.calls[0][0].jobId).toBe('00000000_2097153');
+    expect(b.m.devices()).toEqual([GPUS[1], GPUS[0]]);
+    expect(b.lines().length).toBe(before);
+    // Nothing is left paused, so a second resume does nothing.
+    expect(b.m.resumeCards([0])).toEqual([]);
+  });
+
+  test('null means every card', () => {
+    const b = rig();
+    mining(b);
+    expect(b.m.pauseCards(null)).toEqual(GPUS);
+    expect(b.m.devices()).toEqual([]);
+    // Still running, with the pool connection open, waiting for the prompt to end.
+    expect(b.m.isRunning()).toBe(true);
+    expect(b.m.resumeCards(null)).toEqual(GPUS);
+    expect(b.m.devices()).toEqual(GPUS);
+  });
+
+  test('a card that is not mining, or a resume of a card not paused, is left alone', () => {
+    const b = rig();
+    mining(b, [GPUS[1]]);
+    expect(b.m.pauseCards([0])).toEqual([]);
+    expect(b.m.resumeCards([1])).toEqual([]);
+    expect(b.made[0].stop).not.toHaveBeenCalled();
+  });
+
+  test('a core that will not name its card is paused only by an all-cards pause', () => {
+    const b = rig({ silentDevice: true });
+    b.m.start({ ...settings });
+    b.sock.emit('connect');
+    b.sock.emit('data', jobLine());
+    expect(b.m.pauseCards([0])).toEqual([]);
+    expect(b.m.pauseCards(null)).toEqual([null]);
+    expect(b.events.hashrate).toEqual([]);
+    expect(b.m.resumeCards([0])).toEqual([]);
+    expect(b.m.resumeCards(null)).toEqual([null]);
+    expect(b.createCore).toHaveBeenCalledTimes(2);
+  });
+
+  test('does nothing before a start or after a stop', () => {
+    const b = rig();
+    expect(b.m.pauseCards(null)).toEqual([]);
+    expect(b.m.resumeCards(null)).toEqual([]);
+    mining(b);
+    b.m.pauseCards([0]);
+    b.m.stop();
+    expect(b.m.resumeCards(null)).toEqual([]);
+    expect(b.m.paused.size).toBe(0);
+  });
+
+  test('releases a memory-clock lock on the card it pauses, and takes it again on resume', () => {
+    const b = rig();
+    mining(b, [GPUS[0]], { mineMemClockByIndex: { 0: 7001 } });
+    b.m.pauseCards([0]);
+    expect(b.clocks.resetMemoryClock).toHaveBeenCalledWith(0);
+    b.m.resumeCards([0]);
+    expect(b.clocks.lockMemoryClock.mock.calls).toEqual([[0, 7001], [0, 7001]]);
+  });
+
+  test('a card that will not open again is a card down: restarted later, and the rig keeps running', () => {
+    let refuse = false;
+    const b = rig({ refuse: () => refuse });
+    mining(b);
+    b.m.pauseCards([0]);
+    refuse = true;
+    expect(b.m.resumeCards([0])).toEqual([]);
+    expect(b.lines()).toContain('could not resume GPU 0 (NVIDIA GeForce RTX 5090): out of memory');
+    expect(b.lines()).toContain('restarting GPU 0 (NVIDIA GeForce RTX 5090) in 30 s');
+    expect(b.m.isRunning()).toBe(true);
+    refuse = false;
+    jest.advanceTimersByTime(RESTART_MS);
+    expect(b.m.devices()).toEqual([GPUS[1], GPUS[0]]);
+  });
+
+  test('a refusal that is not an Error is still named in the log', () => {
+    let refuse = false;
+    const b = rig({ refuse: () => refuse, refuseWith: 'no device' });
+    mining(b);
+    b.m.pauseCards([1]);
+    refuse = true;
+    b.m.resumeCards([1]);
+    expect(b.lines()).toContain('could not resume GPU 1 (NVIDIA GeForce RTX 4070): no device');
+  });
+
+  test('a pause does not make a later fault count as a quick repeat', () => {
+    const b = rig();
+    mining(b, [GPUS[1]]);
+    const startedAt = b.m.cores[0].slot.startedAt;
+    jest.advanceTimersByTime(STABLE_MS);
+    b.m.pauseCards([1]);
+    b.m.resumeCards([1]);
+    expect(b.m.cores[0].slot.startedAt).toBe(startedAt);
+  });
+
+  test('the last card failing while another is paused does not end the run', () => {
+    const b = rig();
+    mining(b);
+    b.m.pauseCards([0]);
+    // Fail card 1 enough times that it is left off.
+    for (let i = 0; i <= RESTART_LIMIT; i++) {
+      coreFor(b, 1).emit('error', new Error('GPU 1: boom'));
+      jest.advanceTimersByTime(RESTART_MS);
+    }
+    expect(b.lines().some((l) => l.startsWith('leaving GPU 1'))).toBe(true);
+    expect(b.m.isRunning()).toBe(true);
+    expect(b.events.stopped).toEqual([]);
+    expect(b.m.resumeCards([0])).toEqual([GPUS[0]]);
+  });
+});

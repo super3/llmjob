@@ -45,6 +45,7 @@ const nodeProto = require('../shared/node');
 const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
 const { planLlmInstances } = require('../shared/llmPlan');
 const { pickModel, ctxLadder } = require('../shared/models');
+const { createPromptPause } = require('../shared/promptPause');
 const { LlmFleet } = require('./llmFleet');
 const { createLanShare } = require('./lanShare');
 const { buildChatBody } = require('../shared/llmChat');
@@ -114,6 +115,18 @@ let reporter = null;
 // starting the LLM after the user already stopped.
 let miningEpoch = 0;
 let fleet = null;               // LlmFleet (one llama-server per eligible GPU) while up
+// Mining stops on a card while the LLM beside it answers a prompt, and starts
+// again a little after (see shared/promptPause). Acts on whatever miner runs at
+// the time, so a miner started mid-prompt starts paused (startMining calls
+// reapply). In LLM-only mode there is no miner and it pauses, and says, nothing.
+const promptPause = createPromptPause({
+  // A miner that is not running pauses and resumes nothing (PearlMiner).
+  pause: (indices) => (miner ? miner.pauseCards(indices).length > 0 : false),
+  resume: (indices) => { if (miner) miner.resumeCards(indices); },
+  log: (level, line) => send('miner:log', { level, line }),
+  resumeAfterMs: LLM.promptPause.resumeAfterMs,
+  maxPauseMs: LLM.promptPause.maxPauseMs,
+});
 let llmEverReady = false;       // did any instance reach "ready" this run (vs. dying first)
 let serveLogged = false;        // "serving cluster jobs" logged once per serving run
 let registeredUnlinked = false; // self-registered an unlinked node once this run
@@ -648,6 +661,8 @@ async function startMining(settings, llmCoRuns) {
   } catch (e) {
     reportLaunchFailure(e);
   }
+  // A prompt that is running now keeps its card from mining.
+  promptPause.reapply();
 }
 
 // Miner event wiring. PearlEngine translates our miner's events into the two
@@ -1356,6 +1371,7 @@ function buildFleet() {
     syncWorker(); // serve cluster jobs once a model is up, if we're linked
   });
   f.on('stats', ({ tokensPerSec }) => { llmStatus = Object.assign({}, llmStatus, { tokensPerSec }); sendLlmStatus(); });
+  f.on('busy', ({ index, busy }) => promptPause.setBusy(index, busy));
   f.on('error', () => { /* transient instance error — the fleet keeps the others */ });
   f.on('stopped', () => {
     cancelChat('the local LLM stopped');
@@ -1392,6 +1408,9 @@ function warmUpLlm(baseUrl) {
 
 function stopLlm() {
   cancelChat('the local LLM was stopped');
+  // Nothing is left to answer a prompt, so every card mines now rather than
+  // after the usual wait.
+  promptPause.reset();
   if (fleet) { fleet.stop(); fleet = null; }
   serveLogged = false;
   resetLlmStatus();

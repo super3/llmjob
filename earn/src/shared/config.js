@@ -170,6 +170,18 @@ const LLM = {
   // either way -- the axis is whether anything is ASKING for tokens, not whether
   // the GPU has work.
   gate: { port: 8000, quietMs: 60000 },
+  // Pausing mining while a co-running LLM answers a prompt (shared/promptPause).
+  // A card stops mining as soon as its llama-server starts a request, and mines
+  // again `resumeAfterMs` after the last one ends: long enough that a chat turn
+  // or the next cluster job does not stop and start the miner every few
+  // seconds, short enough that a node nobody is calling is mining again almost
+  // at once. A resume reopens the card's core, so it is not free.
+  //
+  // `maxPauseMs` is a safety net. A card paused this long mines again whatever
+  // the log says, so a missed "stop processing" line cannot stop mining for
+  // good. Longer than any real request: the gateway gives up at 280 s, and the
+  // longest generation seen was ~454 s.
+  promptPause: { resumeAfterMs: 10000, maxPauseMs: 10 * 60 * 1000 },
   // What to keep free for the miner when deciding whether a model can co-run.
   //
   // Measured, not guessed: the rank-128 profile asks for 2,081 MiB and the CUDA

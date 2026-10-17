@@ -73,6 +73,8 @@ jest.mock('../src/main/pearlEngine', () => {
       this.stop = jest.fn();
       this.isRunning = jest.fn(() => true);
       this.poolConnected = jest.fn(() => true);
+      this.pauseCards = jest.fn(() => [{ index: 0, name: 'GPU0' }]);
+      this.resumeCards = jest.fn(() => [{ index: 0, name: 'GPU0' }]);
       PearlEngine.instances.push(this);
     }
   }
@@ -1421,6 +1423,62 @@ describe('local LLM', () => {
     expect(m.PearlEngine.instances[0].start).toHaveBeenCalled();
 
     m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  // A prompt hands its card to the LLM: mining pauses on that card and comes
+  // back after (shared/promptPause has the timing). Here: the busy signal from
+  // llama-server reaches the miner, and lets go when the LLM exits.
+  test('a prompt pauses mining on its card while the LLM co-runs, and the card mines again when the LLM exits', async () => {
+    const m = load();
+    fiveNinety(m);
+    const p = m.run(argvCoRun);
+    await settle();
+
+    const miner = m.PearlEngine.instances[0];
+    const llm = m.LlmManager.instances[0];
+    llm.emit('busy', true);
+    expect(miner.pauseCards).toHaveBeenCalledWith([0]);
+    expect(allOut()).toContain('mining paused on GPU 0 while the local LLM answers a prompt');
+
+    llm.emit('stopped', 1);
+    expect(miner.resumeCards).toHaveBeenCalledWith([0]);
+    expect(allOut()).toContain('mining resumed on GPU 0');
+
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('a card busy for 10 minutes without a break mines again, and the warning goes to stderr', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'setInterval', 'clearInterval'] });
+    try {
+      const m = load();
+      fiveNinety(m);
+      const p = m.run(argvCoRun);
+      await settle();
+      const miner = m.PearlEngine.instances[0];
+      m.LlmManager.instances[0].emit('busy', true);
+      jest.advanceTimersByTime(LLM.promptPause.maxPauseMs);
+      expect(miner.resumeCards).toHaveBeenCalledWith([0]);
+      expect(allErr()).toContain('mining resumed on GPU 0: the local LLM has been busy for 10 minutes without a break');
+      miner.emit('stopped', 0);
+      await expect(p).resolves.toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('a shutdown mid-prompt leaves the pause to the miner\'s own stop', async () => {
+    const m = load();
+    fiveNinety(m);
+    const p = m.run(argvCoRun);
+    await settle();
+    const miner = m.PearlEngine.instances[0];
+    m.LlmManager.instances[0].emit('busy', true);
+    fire('SIGTERM');
+    expect(miner.stop).toHaveBeenCalled();
+    expect(miner.resumeCards).not.toHaveBeenCalled();
+    miner.emit('stopped', 0);
     await expect(p).resolves.toBe(0);
   });
 
