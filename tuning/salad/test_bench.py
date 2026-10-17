@@ -41,6 +41,13 @@ class TestBench(unittest.TestCase):
         self.assertEqual(b.figure(r["miners"]["srb"]), (None, "no rate"))
         self.assertEqual(b.figure(r["miners"].get("ours"), mean_after=60), (None, "didn't start"))
 
+    def test_a_rate_only_in_the_first_seconds_is_no_rate(self):
+        # SRBMiner on a GTX 1660 whose PC lost the pool: 1.15 TH/s at t=15, then 0 for the rest of the run.
+        m = {"samples": [{"t": 15, "th": 1.15}] + [{"t": t, "th": 0.0} for t in range(60, 301, 15)]}
+        self.assertEqual(b.figure(m), (None, "no rate"))
+        m = {"samples": [{"t": t, "th": 1.1 if t < 200 else 0.0} for t in range(15, 301, 15)]}
+        self.assertEqual(b.figure(m), (1.1, None))       # most of the run counts
+
     def test_ours_is_the_mean_after_the_first_minute(self):
         m = {"samples": [{"t": 15, "th": 10.0}, {"t": 60, "th": 20.0}, {"t": 75, "th": 22.0}]}
         self.assertEqual(b.figure(m, mean_after=60), (21.0, None))
@@ -84,6 +91,35 @@ class TestBench(unittest.TestCase):
             calls.clear(); now[0] += 5 * 60
             bench.tick()
             self.assertIn(("POST", f"{b.w.CB}/bench-x-1/start"), calls)
+        finally:
+            b.w.http, b.w.now = old
+
+    def test_a_pc_where_no_miner_gets_work_is_not_recorded(self):
+        calls, now = [], [20_000]
+        def http(method, url, body=None, timeout=None):
+            calls.append((method, url))
+            if url.endswith("/instances"):
+                return 200, {"instances": [{"machine_id": "e3babbec-xx", "id": "i1", "state": "running"}]}
+            if url.endswith("/log-entries"):
+                return 200, {"items": []}
+            return 202, None
+        lines = ["[bench] 21:27:00 card NVIDIA GeForce GTX 1660, 617.42, 130.00 W, 130.00 W, 6144 MiB, 7.5"]
+        for name in ("peak", "srb", "ours"):
+            lines += [f"[bench] 21:30:00 sample {name} t={t} hs=0 acc=0 rej=0 gpu=22,1530,46" for t in range(15, 301, 15)]
+        lines.append("[bench] 21:43:41 all done")
+        old = (b.w.http, b.w.now)
+        b.w.http, b.w.now = http, lambda: now[0]
+        try:
+            bench = b.Bench()
+            cls = next(i for i, p in enumerate(b.PLAN) if p[0].startswith("GTX 1660 ("))
+            bench.st.update(cls=cls, tries=0, group="bench-gtxgtx1660-1", created=now[0] - 900, machine="e3babbec-xx",
+                            instance="i1", pc_t=now[0] - 900, log_t=now[0] - 60, lines=[f"t|{x}" for x in lines],
+                            results={}, notes=[])
+            bench.tick()
+            self.assertNotIn("GTX 1660", bench.st["results"])
+            self.assertIn("e3babbec-xx", bench.st["seen"])
+            self.assertIn("no miner got work", bench.st["notes"][-1])
+            self.assertIn(("POST", f"{b.w.CB}/bench-gtxgtx1660-1/instances/i1/reallocate"), calls)
         finally:
             b.w.http, b.w.now = old
 
