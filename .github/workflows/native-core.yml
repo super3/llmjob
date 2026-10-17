@@ -114,7 +114,7 @@ jobs:
             # wmma fold 128, every fold 0 spill. At 255 registers the tall fold
             # has no room left, so a change to the shared tall-fold code that
             # spills on sm_100 fails the job. sm_61 (Pascal), added 2026-10-17,
-            # starts as a warning: a local 12.8 build has the dp4a fold at 118
+            # starts as a warning: a local 12.8 build has the dp4a fold at 123
             # registers and 0 spill, but no run of this check has shown it yet.
             spill_fail_archs: sm_80 sm_86 sm_89 sm_90a sm_100 sm_120
           - os: windows-2022
@@ -330,7 +330,7 @@ jobs:
       # and sm_61 included, is a warning. The sm_61 dp4a fold must also have
       # its body: a build whose gate lost Pascal still compiles and links, and
       # GTX 10 cards would then have no fold at all. Only the body uses more
-      # than a handful of registers (118 under 12.8), so fewer than 64 fails the
+      # than a handful of registers (123 under 12.8), so fewer than 64 fails the
       # job. A failed cu13 job uploads no
       # pearl_core_cu13.node, and a failed ubuntu 12.8 job makes
       # miner-build.yml fall back to the previous run's core, which is the

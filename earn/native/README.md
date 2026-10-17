@@ -253,14 +253,28 @@ GEMM on the `__dp4a` instruction over 128x128 tiles (`src/pearl_fold_dp4a.h`
 and `PEARL_DP4A_ARCH` in `src/pearl_config.h`). The result is bit-identical:
 the accumulators are exact int32 sums whatever adds them, and the fold reads
 them out at the same `rank`-byte chunk boundaries. A launch covers 256 column
-offsets rather than 2048, so it stays near 50 ms on a GTX 1080 Ti. Every other
-architecture's kernels compile to the same SASS as before (only an empty
-`pearl_tile_fold_dp4a` is added). It has not run on a Pascal card yet. Without
-one, `node probes/dp4a-check.js` runs the fold's layout and inner loop on the
-CPU and checks them against `src/shared/miner/reference.js`; it needs a C++
+offsets rather than 2048, so it stays near 50 ms on a GTX 1080 Ti. Its A' and
+B' are k-blocked in 32-byte blocks, so each stage of a tile is one contiguous
+4 KB read. Every other architecture's kernels compile to the same SASS as
+before (only an empty `pearl_tile_fold_dp4a` is added). Without a card,
+`node probes/dp4a-check.js` runs the fold's layout and inner loop on the CPU
+and checks them against `src/shared/miner/reference.js`; it needs a C++
 compiler and nothing from CUDA. On a card, check it with
-`probes/verify-hits.js` like any other build. On start the core prints one
-line on stderr naming the fold, and a search error names it too.
+`probes/verify-hits.js` like any other build. Its JSON names the card and fold
+(`core.device`) and says where the time went: seconds to the first hit and the
+first hashrate sample, the last and best sample, and when each salt was first
+seen. On start the core prints one line on stderr naming the fold, and a
+search error names it too.
+
+The first run on a GTX 1080 Ti (Salad, Windows and WSL2, 2026-10-17) verified
+7 of 7 hits but saw one salt in 90 seconds, under 1 TH/s against the 15-20
+TH/s the instruction count allows. What took the time is not known yet. Two
+changes followed. The operands went k-blocked (above). And a hit's capture
+(its hash, transcript, proof leaves and siblings), which was about 120 copies
+each with its own wait while the GPU ran out of queued work, now queues them
+all and waits once (`HitReads` in `src/pearl_host.cu`): a wait costs much more
+under WSL2 and WDDM than on Linux, and no card had found hits that often on
+Salad before.
 
 The addon lands at `build/Release/pearl_core.node`, which is exactly where
 `src/main/pearlCore.js` looks for it. When it is absent — as on any machine

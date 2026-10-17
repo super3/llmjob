@@ -4604,12 +4604,14 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
 // and at most 128 registers a thread), so one block's first stage and its hash at the end
 // run under the other's dp4a.
 //
-// A stage is 32 bytes of k. At its top each thread loads its two 16-byte copies of the
-// NEXT stage into registers (one of A', one of B'); then it multiplies this stage out of
-// shared; then it stores the copies into the other buffer, and one barrier publishes
-// them. That barrier also says every thread is done reading this stage's buffer, so the
-// next stage may overwrite it: one barrier a stage. Pascal has no cp.async, so the
-// copies go through registers, as Turing's do (PEARL_STAGE_REGS).
+// A stage is 32 bytes of k: one 32-byte k-block of the k-blocked A' and B', so a tile's
+// stage is a contiguous 4 KB of each (pearl_fold_dp4a.h). At its top each thread loads
+// its two 16-byte copies of the NEXT stage into registers (one of A', one of B'); then
+// it multiplies this stage out of shared; then it stores the copies into the other
+// buffer, and one barrier publishes them. That barrier also says every thread is done
+// reading this stage's buffer, so the next stage may overwrite it: one barrier a stage.
+// Pascal has no cp.async, so the copies go through registers, as Turing's do
+// (PEARL_STAGE_REGS).
 //
 // Four stages are one chunk of rank (128) bytes. After the fourth, each thread XORs its
 // 64 accumulators, two shuffles combine the four threads that share a region, and one of
@@ -4620,10 +4622,10 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
 // outside PEARL_DP4A_ARCH, and the host launches it only where it has one
 // (Ctx::foldDp4a).
 extern "C" __global__ __launch_bounds__(PEARL_DP4A_THREADS, 2) void pearl_tile_fold_dp4a(
-    const int8_t *__restrict__ Aprime, const int8_t *__restrict__ Bprime, uint32_t k_arg,
-    uint32_t rank_arg, uint32_t chunks_arg, uint32_t col_off, uint32_t rows_valid,
-    uint32_t col_groups, uint32_t tiles, uint32_t band, const PearlTranscriptTest test,
-    const PearlHitList hits) {
+    const int8_t *__restrict__ Aprime, const int8_t *__restrict__ Bprime, uint32_t a_rows,
+    uint32_t b_rows, uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, uint32_t col_off,
+    uint32_t rows_valid, uint32_t col_groups, uint32_t tiles, uint32_t band,
+    const PearlTranscriptTest test, const PearlHitList hits) {
 #if PEARL_DP4A_BODY
   constexpr uint32_t k = PEARL_FOLD_K;
   constexpr uint32_t chunks = PEARL_FOLD_CHUNKS;
@@ -4645,8 +4647,12 @@ extern "C" __global__ __launch_bounds__(PEARL_DP4A_THREADS, 2) void pearl_tile_f
   uint32_t R, C;
   pearl_dp4a_tile(blockIdx.x, rows_valid / PEARL_DP4A_ROW_OFFSETS,
                   col_groups / PEARL_DP4A_COL_OFFSETS, band, &R, &C);
-  const int8_t *srcA = Aprime + pearl_dp4a_a_src(tid, R, k);
-  const int8_t *srcB = Bprime + pearl_dp4a_b_src(tid, C, col_off, k);
+  // A' and B' are k-blocked (pearl_fold_dp4a.h): a thread's next stage is one k-block,
+  // a_rows (b_rows) times 32 bytes, further on.
+  const int8_t *srcA = Aprime + pearl_dp4a_a_src(tid, R);
+  const int8_t *srcB = Bprime + pearl_dp4a_b_src(tid, C, col_off);
+  const size_t stepA = (size_t)pearl_dp4a_stage_step(a_rows);
+  const size_t stepB = (size_t)pearl_dp4a_stage_step(b_rows);
   const uint32_t dst = pearl_dp4a_dst(tid, 0u);
 
   int32_t acc[8][8];
@@ -4679,8 +4685,10 @@ extern "C" __global__ __launch_bounds__(PEARL_DP4A_THREADS, 2) void pearl_tile_f
   for (uint32_t s = 0; s < stages; s++) {
     const bool more = s + 1u < stages;
     if (more) {
-      ra = __ldg(reinterpret_cast<const int4 *>(srcA + (s + 1u) * PEARL_DP4A_STAGE_K));
-      rb = __ldg(reinterpret_cast<const int4 *>(srcB + (s + 1u) * PEARL_DP4A_STAGE_K));
+      srcA += stepA;
+      srcB += stepB;
+      ra = __ldg(reinterpret_cast<const int4 *>(srcA));
+      rb = __ldg(reinterpret_cast<const int4 *>(srcB));
     }
     pearl_dp4a_mac_stage(sA[s & 1u], sB[s & 1u], tx, ty, acc);
     // Chunk boundary: the running tile, XORed into the region's word for this chunk.
@@ -4716,7 +4724,8 @@ extern "C" __global__ __launch_bounds__(PEARL_DP4A_THREADS, 2) void pearl_tile_f
 #pragma unroll
   for (int i = 0; i < 16; i++) hits.transcript[slot * 16u + i] = tm[i];
 #else
-  (void)Aprime; (void)Bprime; (void)k_arg; (void)rank_arg; (void)chunks_arg; (void)col_off;
-  (void)rows_valid; (void)col_groups; (void)tiles; (void)band; (void)test; (void)hits;
+  (void)Aprime; (void)Bprime; (void)a_rows; (void)b_rows; (void)k_arg; (void)rank_arg;
+  (void)chunks_arg; (void)col_off; (void)rows_valid; (void)col_groups; (void)tiles; (void)band;
+  (void)test; (void)hits;
 #endif
 }

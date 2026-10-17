@@ -155,9 +155,9 @@ extern "C" __global__ void pearl_tile_fold_tall(
     const PearlTensorMap tmA, const PearlTensorMap tmB);
 // Pascal's dp4a fold (PEARL_DP4A_ARCH; a body only in an sm_61 build).
 extern "C" __global__ void pearl_tile_fold_dp4a(
-    const int8_t *Aprime, const int8_t *Bprime, uint32_t k, uint32_t rank, uint32_t chunks,
-    uint32_t col_off, uint32_t rows_valid, uint32_t col_groups, uint32_t tiles, uint32_t band,
-    const PearlTranscriptTest test, const PearlHitList hits);
+    const int8_t *Aprime, const int8_t *Bprime, uint32_t a_rows, uint32_t b_rows, uint32_t k,
+    uint32_t rank, uint32_t chunks, uint32_t col_off, uint32_t rows_valid, uint32_t col_groups,
+    uint32_t tiles, uint32_t band, const PearlTranscriptTest test, const PearlHitList hits);
 #if PEARL_HOPPER_WGMMA
 // Hopper's wgmma fold (PEARL_HOPPER_WGMMA; a body only in an sm_90a build with the switch).
 extern "C" __global__ void pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg,
@@ -307,8 +307,9 @@ struct Ctx {
   // hopperBlocks CTAs (one an SM).
   bool foldHopper = false;
   // Whether this card runs Pascal's dp4a fold (PEARL_DP4A_ARCH): pearl_tile_fold_dp4a,
-  // over 128x128 tiles of the row-major A' and B', one block a tile. Read off that
-  // kernel's loaded binary (binaryVersion 61). Set, no other fold flag is.
+  // over 128x128 tiles of A' and B' k-blocked in 32-byte blocks (draw_noise), one block
+  // a tile. Read off that kernel's loaded binary (binaryVersion 61). Set, no other fold
+  // flag is.
   bool foldDp4a = false;
   // The card's compute capability, for the fold's name and its errors.
   int ccMajor = 0, ccMinor = 0;
@@ -465,6 +466,11 @@ struct Ctx {
   // The collected batch's hits after the first, for pearl_host_next_hit.
   std::vector<PearlSearchResult> extraHits;
   size_t extraNext = 0;
+  // Pinned landing space for a hit's device reads (HitReads), so they can all be queued
+  // and waited for once. Allocated on the first hit; null if pinned memory was refused,
+  // and the reads then go one wait at a time, as they always did.
+  uint8_t *hStage = nullptr;
+  size_t hStageBytes = 0;
 
   // Host-side restamps (host_record). What the job's full draw leaves for them: job_key,
   // leaf 0's bytes and node 1 of every level (the siblings of leaf 0's path, which no
@@ -685,6 +691,78 @@ void side_copy(Ctx *ctx, void *dst, const void *src, size_t n) {
   cudaStreamSynchronize(ctx->side);
 }
 
+// The device reads one hit needs: its hash and transcript, the proof's leaves and
+// sibling nodes, and the roots. Each used to be its own copy and its own wait, about
+// 120 a hit, and the search thread does this between batches, so the GPU runs dry
+// once the one batch queued behind it is done. A wait is cheap on Linux and costs far
+// more under WDDM and WSL2 (Windows rigs, Salad), where nothing had measured it: a
+// card with no tensor cores never found a hit at a pool's target. Queued, the reads
+// cost one wait. A read lands at a fixed address, or at an offset into a vector that
+// may still grow until the reads run.
+struct HitReads {
+  struct Read {
+    std::vector<uint8_t> *vec;
+    uint8_t *ptr;
+    size_t off;
+    const void *src;
+    size_t n;
+  };
+  // Host bytes laid over a read once it has landed: leaf 0's head from a restamp record.
+  struct Patch {
+    std::vector<uint8_t> *vec;
+    size_t off;
+    uint8_t bytes[sizeof(PearlRestampRecord::head)];
+  };
+  std::vector<Read> reads;
+  std::vector<Patch> patches;
+  size_t bytes = 0;
+  void to(void *dst, const void *src, size_t n) {
+    reads.push_back({nullptr, static_cast<uint8_t *>(dst), 0, src, n});
+    bytes += n;
+  }
+  void into(std::vector<uint8_t> *vec, size_t off, const void *src, size_t n) {
+    reads.push_back({vec, nullptr, off, src, n});
+    bytes += n;
+  }
+};
+
+// Run a hit's reads: all queued on the side stream into the pinned stage, one wait,
+// then each copied to where it belongs and the patches laid over them. Without a stage
+// (pinned memory refused) each read is a side_copy, as before.
+void run_reads(Ctx *ctx, HitReads *r) {
+  auto land = [](const HitReads::Read &x) { return x.vec ? x.vec->data() + x.off : x.ptr; };
+  if (r->bytes > ctx->hStageBytes) {
+    if (ctx->hStage) cudaFreeHost(ctx->hStage);
+    ctx->hStage = nullptr;
+    ctx->hStageBytes = 0;
+    const size_t want = r->bytes > ((size_t)128 << 10) ? r->bytes : ((size_t)128 << 10);
+    if (cudaHostAlloc(reinterpret_cast<void **>(&ctx->hStage), want, cudaHostAllocDefault)
+        == cudaSuccess) {
+      ctx->hStageBytes = want;
+    } else {
+      ctx->hStage = nullptr;
+      (void)cudaGetLastError();
+    }
+  }
+  if (ctx->hStage) {
+    size_t off = 0;
+    for (const HitReads::Read &x : r->reads) {
+      cudaMemcpyAsync(ctx->hStage + off, x.src, x.n, cudaMemcpyDeviceToHost, ctx->side);
+      off += x.n;
+    }
+    cudaStreamSynchronize(ctx->side);
+    off = 0;
+    for (const HitReads::Read &x : r->reads) {
+      memcpy(land(x), ctx->hStage + off, x.n);
+      off += x.n;
+    }
+  } else {
+    for (const HitReads::Read &x : r->reads) side_copy(ctx, land(x), x.src, x.n);
+  }
+  for (const HitReads::Patch &p : r->patches)
+    memcpy(p.vec->data() + p.off, p.bytes, sizeof p.bytes);
+}
+
 
 // Which 1024-byte chunks hold these matrix rows. A row of k bytes can straddle
 // a boundary, so this is a range per row.
@@ -709,9 +787,12 @@ void leafIndicesForRows(const uint32_t *rows, uint32_t nrows, uint32_t k,
 // restamped A for the next salt, so the parts a restamp changes -- leaf 0's head and node
 // 0 of every level -- come from the record; every other leaf and node is the same for
 // every salt of the job.
+// The device reads go into `reads`, which the caller runs once it has queued all of the
+// hit's (run_reads); until then the leaf and sibling bytes are placeholders.
 void snapshotProof(Ctx *ctx, bool isA, const uint32_t *rows, uint32_t nrows,
                    std::vector<uint32_t> *leafIdx, std::vector<uint8_t> *leaves,
-                   std::vector<uint8_t> *sibs, const PearlRestampRecord *rec) {
+                   std::vector<uint8_t> *sibs, const PearlRestampRecord *rec,
+                   HitReads *reads) {
   if (!isA) rec = nullptr;
   const uint32_t k = ctx->profile.k;
   const int8_t *operand = isA ? ctx->dA : ctx->dB;
@@ -724,8 +805,14 @@ void snapshotProof(Ctx *ctx, bool isA, const uint32_t *rows, uint32_t nrows,
 
   leaves->resize(leafIdx->size() * 1024);
   for (size_t i = 0; i < leafIdx->size(); i++) {
-    side_copy(ctx, leaves->data() + i * 1024, operand_chunk(ctx, operand, (*leafIdx)[i]), 1024);
-    if (rec && (*leafIdx)[i] == 0) memcpy(leaves->data() + i * 1024, rec->head, sizeof rec->head);
+    reads->into(leaves, i * 1024, operand_chunk(ctx, operand, (*leafIdx)[i]), 1024);
+    if (rec && (*leafIdx)[i] == 0) {
+      HitReads::Patch patch;
+      patch.vec = leaves;
+      patch.off = i * 1024;
+      memcpy(patch.bytes, rec->head, sizeof patch.bytes);
+      reads->patches.push_back(patch);
+    }
   }
 
   sibs->clear();
@@ -743,12 +830,15 @@ void snapshotProof(Ctx *ctx, bool isA, const uint32_t *rows, uint32_t nrows,
         if (live.count(i + 1) || (uint64_t)i + 1 >= levelLen) continue;
         want = i + 1;
       }
-      uint8_t node[PEARL_HASH_BYTES];
-      if (rec && want == 0)
+      if (rec && want == 0) {
+        uint8_t node[PEARL_HASH_BYTES];
         hb3_bytes(rec->path[level], node);
-      else
-        side_copy(ctx, node, tree + (offs[level] + want) * 8, PEARL_HASH_BYTES);
-      sibs->insert(sibs->end(), node, node + PEARL_HASH_BYTES);
+        sibs->insert(sibs->end(), node, node + PEARL_HASH_BYTES);
+      } else {
+        const size_t at = sibs->size();
+        sibs->resize(at + PEARL_HASH_BYTES);
+        reads->into(sibs, at, tree + (offs[level] + want) * 8, PEARL_HASH_BYTES);
+      }
     }
     std::set<uint32_t> next;
     for (uint32_t i : current) next.insert(i / 2);
@@ -961,9 +1051,9 @@ void resolve_fold(Ctx *ctx) {
   }
   // Pascal (sm_61): the dp4a fold, when the binary loaded for this card has its body
   // (PEARL_DP4A_ARCH). No tensor fold has code for such a card, so nothing below
-  // applies, and its operands stay row-major (draw_noise's plain materialise). The
-  // launch bound alone does not say it: the empty kernel every other build carries has
-  // the same one.
+  // applies; draw_noise writes its operands k-blocked in 32-byte blocks. The launch
+  // bound alone does not say it: the empty kernel every other build carries has the same
+  // one.
   {
     cudaFuncAttributes fd;
     if (cudaFuncGetAttributes(&fd, reinterpret_cast<const void *>(pearl_tile_fold_dp4a))
@@ -1945,6 +2035,7 @@ extern "C" void pearl_host_destroy(void *handle) {
   for (int i = 0; i < Ctx::kSlots; i++)
     if (ctx->foldStream[i]) cudaStreamDestroy(ctx->foldStream[i]);
   if (ctx->hSlotCount) cudaFreeHost(ctx->hSlotCount);
+  if (ctx->hStage) cudaFreeHost(ctx->hStage);
   delete ctx;
 }
 
@@ -2150,7 +2241,17 @@ void draw_noise(Ctx *ctx, bool isA) {
         src, dense, perm, dst, rows, kLog2, rank, readVecs, fillWord);
   } else
 #endif
-  if (fused) {
+  if (ctx->foldDp4a && kPow2 && k >= PEARL_DP4A_STAGE_K) {
+    // Pascal's dp4a fold reads both noised operands k-blocked in 32-byte blocks, its
+    // stage (pearl_fold_dp4a.h): a tile's stage is then one contiguous 4 KB run rather
+    // than one sector of each of 128 lines. Same values, only the addresses differ, as
+    // for the tall fold below. (The dp4a fold runs only at k = 2048; the search
+    // refuses any other.)
+    uint32_t dpLog2 = 0;
+    while ((1u << dpLog2) < PEARL_DP4A_STAGE_K) dpLog2++;
+    pearl_materialize16_kblocked<<<draw_blocks(len / 16), kDrawThreads>>>(
+        src, dense, perm, dst, rows, kLog2, rank, dpLog2, readVecs, fillWord);
+  } else if (fused) {
     pearl_noise_materialize_kblocked<<<rows / 32u, 256>>>(seed, label, perm, src, dst, rows,
                                                          kLog2, rank, kbLog2, readVecs,
                                                          fillWord, blockRows);
@@ -2438,7 +2539,9 @@ void fill_hit(Ctx *ctx, const Ctx::Pending &p, int slot, uint32_t i, PearlSearch
   const uint8_t *dHashes = ctx->dHashes + (size_t)slot * PEARL_MAX_HITS * PEARL_HASH_BYTES;
   const uint32_t *dTranscripts =
       ctx->dHitTranscript + (size_t)slot * PEARL_MAX_HITS * PEARL_JACKPOT_BUCKETS;
-  side_copy(ctx, out->jackpot_hash, dHashes + (size_t)i * PEARL_HASH_BYTES, PEARL_HASH_BYTES);
+  // Every device read below is queued here and run once, at the end (HitReads).
+  HitReads reads;
+  reads.to(out->jackpot_hash, dHashes + (size_t)i * PEARL_HASH_BYTES, PEARL_HASH_BYTES);
   memcpy(out->a_seed, p.aSeed, PEARL_HASH_BYTES);
   memcpy(out->b_seed, ctx->bSeed, PEARL_HASH_BYTES);
   out->nonce = p.nonceBase + ctx->hHitIndex[i];
@@ -2462,22 +2565,23 @@ void fill_hit(Ctx *ctx, const Ctx::Pending &p, int slot, uint32_t i, PearlSearch
   for (int j = 0; j < PEARL_COLS_COUNT; j++) cols[j] = colOff | PEARL_COLS_PATTERN[j];
 
   snapshotProof(ctx, true, rows, PEARL_ROWS_COUNT, &out->proof_a.leaf_indices,
-                &out->proof_a.leaves, &out->proof_a.siblings, rec);
+                &out->proof_a.leaves, &out->proof_a.siblings, rec, &reads);
   snapshotProof(ctx, false, cols, PEARL_COLS_COUNT, &out->proof_bt.leaf_indices,
-                &out->proof_bt.leaves, &out->proof_bt.siblings, nullptr);
+                &out->proof_bt.leaves, &out->proof_bt.siblings, nullptr, &reads);
   if (rec)
     hb3_bytes(rec->path[rec->levels - 1], out->proof_a.root);
   else
-    side_copy(ctx, out->proof_a.root, ctx->dHashA, PEARL_HASH_BYTES);
-  side_copy(ctx, out->proof_bt.root, ctx->dHashB, PEARL_HASH_BYTES);
+    reads.to(out->proof_a.root, ctx->dHashA, PEARL_HASH_BYTES);
+  reads.to(out->proof_bt.root, ctx->dHashB, PEARL_HASH_BYTES);
   out->proof_a.total_leaves = (uint64_t)ctx->profile.m * ctx->profile.k / 1024;
   out->proof_bt.total_leaves = (uint64_t)ctx->profile.n * ctx->profile.k / 1024;
 
   out->proof.assign(PEARL_JACKPOT_BUCKETS * 4, 0);
   // Indexed by the hit's SLOT in the list, like the hash: the fold keeps no
   // per-region transcripts, only the ones that hit.
-  side_copy(ctx, out->proof.data(), dTranscripts + (size_t)i * PEARL_JACKPOT_BUCKETS,
-            PEARL_JACKPOT_BUCKETS * 4);
+  reads.to(out->proof.data(), dTranscripts + (size_t)i * PEARL_JACKPOT_BUCKETS,
+           PEARL_JACKPOT_BUCKETS * 4);
+  run_reads(ctx, &reads);
   out->found = true;
 }
 
@@ -2613,7 +2717,7 @@ bool pearl_queue_batch(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base,
 // by 8 column offsets, one block of PEARL_DP4A_THREADS a tile. Its 21 KB of shared is
 // static, inside the 48 KB every block gets, so there is no opt-in; two blocks fit a
 // GTX 10 SM (96 KB of shared, 64K registers, at most 128 registers a thread). The
-// operands are the row-major A' and B' (draw_noise's plain materialise).
+// operands are A' and B' k-blocked in 32-byte blocks (draw_noise), m and n rows.
 bool pearl_submit_dp4a(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base, uint32_t k,
                        uint32_t rank, uint32_t chunks, uint64_t *regions_out, char *err,
                        size_t err_len) {
@@ -2647,8 +2751,8 @@ bool pearl_submit_dp4a(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base,
   const PearlHitList hitList = pearl_slot_hits(ctx, slot);
   cudaMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);
   pearl_tile_fold_dp4a<<<tiles, PEARL_DP4A_THREADS, 0, st>>>(
-      ctx->dAp, ctx->dBp, k, rank, chunks, col_off, ctx->rowsValid, col_groups, tiles,
-      PEARL_DP4A_BAND, test, hitList);
+      ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks, col_off,
+      ctx->rowsValid, col_groups, tiles, PEARL_DP4A_BAND, test, hitList);
   // A launch the card refuses (too many registers or too much shared for it, say) is
   // known now; say what was launched, so a log alone shows why.
   const cudaError_t le = cudaGetLastError();
