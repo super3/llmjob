@@ -615,7 +615,7 @@ class W:
         if not 200 <= s < 300:
             event(f"WARN Kryptex {'on' if on else 'off'} for {g['name']} refused: HTTP {s} {str(j)[:150]}")
             return False
-        g.update(kx=on, ver=ver, kx_since=t if on else None)
+        g.update(kx=on, ver=ver, kx_since=t if on else None, kx_from=g.get("machine") if on else None)
         moving = bool(g["has_pc"] and g.get("instance"))
         event(f"KRYPTEX {'ON' if on else 'OFF'} {g['name']} ({why}): Pearl on {'Kryptex' if on else 'HeroMiners'}; "
               + ("moving it to a new PC, where it starts that way" if moving else "it starts that way on its next PC"))
@@ -808,7 +808,9 @@ class W:
                     g["readings"] = [r for r in g["readings"] if t - r[0] < 7200]
                     if ths > 0:
                         g["prl"] += ths / 60 * st["mkt"]["prl_th_hr"]
-                        if g.get("kx"):   # the part mined on Kryptex, which has its own credit ratio
+                        # The part mined on Kryptex, which has its own credit ratio: from a PC the box got after its
+                        # switch, not a late reading from the PC it left (that one mined on HeroMiners).
+                        if g.get("kx") and mach != g.get("kx_from") and tm >= (g.get("kx_since") or 0):
                             g["prl_kx"] = g.get("prl_kx", 0.0) + ths / 60 * st["mkt"]["prl_th_hr"]
                         g["mined_min"] += 1
                     prev = g["acc"].get(mach)
