@@ -43,8 +43,10 @@ because no L40 was for rent other than the New York one.
 - B200: 33%. Its hits are correct, but it mines on `mma.sync`, which tops
   out at about 41% of the competitors on this card. Matching them needs a
   fold on the B200's own tensor instructions (tcgen05).
-- GTX 10- and 16-series: being measured on Salad (PeakMiner and SRBMiner first); see their
-  sections.
+- GTX 10-series: 0 for PeakMiner and SRBMiner. Pearl needs RTX 20xx or newer
+  (PeakMiner's docs), and both got nothing on a GTX 1080 on Salad. We have no
+  Pascal build either.
+- GTX 16-series: being measured on Salad; see its section.
 - Tesla T4: 91%. As on the 20-series, the clock is close (15 MHz below the
   competitors') and we do 7% less work per clock.
 
@@ -661,31 +663,34 @@ the CUDA 12.8 core on this compute 7.5 card.
 
 ## GTX 10-series (Pascal, sm_61, on Salad)
 
-In progress. These cards are rented on Salad, not Vast: each row is one Salad PC (a home computer), named by
-the first 8 characters of its Salad machine ID, with the power limit from `nvidia-smi`. Salad doesn't say where
-a PC is. Each PC runs PeakMiner and SRBMiner one after another, 5 minutes each after a 60-second unmeasured
-warm-up, on `us.pearl.herominers.com`, the order alternating between a card's two hosts
-(`tuning/salad/bench.sh`). Our miner has no Pascal build: release v0.6.0 is tried for 90 seconds to record
-what it does, and "Ours" stays empty until a Pascal core exists. The 1070, 1080 and 1080 Ti share one Salad
-class, so their rows fill as those cards turn up.
+Pearl can't be mined on these cards with PeakMiner or SRBMiner, so both are 0. PeakMiner's README says
+"Pearl (PRL) requires RTX 20xx or newer": since its v2.11.0 the network enforces rank-128 consensus rules that
+its Pascal kernels can't mine. SRBMiner's docs list Pascal among its architectures but say nothing about
+pearlhash on it.
+
+One card was measured, a GTX 1080 on Salad PC `c868132d` (180 W), on 17 October with `tuning/salad/bench.sh`
+(5 minutes each on `us.pearl.herominers.com` after a 60-second warm-up). PeakMiner 2.17.6 quit within 15
+seconds, twice, with no shares. SRBMiner 3.7.1 ran the full 5 minutes at 0 H/s with no shares, the card idle
+at 8 W and 139 MHz. The other rows are taken as 0 from that and PeakMiner's docs, without a run. Our miner has
+no Pascal build (its lowest target is sm_75, and its kernel uses int8 tensor cores, which Pascal lacks), so
+"Ours" is "no build".
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
-| GTX 1080 Ti | Salad (— W) | — | not run | not run | not run | — |
-| GTX 1080 Ti | Salad (— W) | — | not run | not run | not run | — |
-| GTX 1080 | Salad (— W) | — | not run | not run | not run | — |
-| GTX 1080 | Salad (— W) | — | not run | not run | not run | — |
-| GTX 1070 | Salad (— W) | — | not run | not run | not run | — |
-| GTX 1070 | Salad (— W) | — | not run | not run | not run | — |
-| GTX 1060 | Salad (— W, 6 GB) | — | not run | not run | not run | — |
-| GTX 1060 | Salad (— W, 6 GB) | — | not run | not run | not run | — |
-| GTX 1050 Ti | Salad (— W, 4 GB) | — | not run | not run | not run | — |
-| GTX 1050 Ti | Salad (— W, 4 GB) | — | not run | not run | not run | — |
+| GTX 1080 Ti | Salad | not run | no build | 0 | 0 | — |
+| GTX 1080 | Salad (180 W) | c868132d | no build | 0 | 0 | — |
+| GTX 1070 | Salad | not run | no build | 0 | 0 | — |
+| GTX 1060 | Salad (6 GB) | not run | no build | 0 | 0 | — |
+| GTX 1050 Ti | Salad (4 GB) | not run | no build | 0 | 0 | — |
 
 ## GTX 16-series (Turing without tensor cores, sm_75, on Salad)
 
-In progress, on Salad as above. These cards are sm_75, which release v0.6.0 is built for, but they have no
-tensor cores, which our kernel uses; v0.6.0 runs the full 5 minutes here, after PeakMiner and SRBMiner.
+In progress. These cards are rented on Salad, not Vast: each row is one Salad PC (a home computer), named by
+the first 8 characters of its Salad machine ID, with the power limit from `nvidia-smi`. Salad doesn't say where
+a PC is. Each PC runs PeakMiner, SRBMiner and our release v0.6.0 one after another, 5 minutes each after a
+60-second unmeasured warm-up, on `us.pearl.herominers.com`, PeakMiner and SRBMiner alternating which goes
+first (`tuning/salad/bench.sh`). These cards are sm_75, which v0.6.0 is built for, but they have no tensor
+cores, which our kernel uses. PeakMiner's docs say GTX 16xx cards can't mine Pearl.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
