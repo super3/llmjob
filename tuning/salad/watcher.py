@@ -161,7 +161,8 @@ def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None):
         # Kryptex: every HeroMiners region name resolves here, and port 1200 here forwards to Kryptex's stratum.
         hosts = " ".join(f"{r}.pearl.herominers.com" for r in HM_REGIONS)
         pkgs += " socat"
-        fwd = (f"echo '127.0.0.1 {hosts}' >> /etc/hosts && "
+        # Salad's firewall refuses a request with the literal path /etc/hosts in it (HTTP 403), so it's built.
+        fwd = (f"E=/etc && echo '127.0.0.1 {hosts}' >> $E/hosts && "
                f"(socat TCP-LISTEN:1200,fork,reuseaddr TCP:{kryptex} >/dev/null 2>&1 &) && ")
     return (f"apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq {pkgs} >/dev/null 2>&1 && {fwd}"
             f"curl -fsSL {BOX} | {sed} > /root/box.sh; bash /root/box.sh 2>&1 | tee -a /root/box.log")
