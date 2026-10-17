@@ -1044,7 +1044,7 @@ class W:
 
         rows = []
         all_ths = all_cost = all_earn = run_cost = all_khs = 0.0
-        mining = starting = 0
+        mining = 0
         live = sorted((g for g in groups if not g["ended"]), key=lambda g: g["created"])
         for g in live:
             cur = [r for r in g["readings"] if r[1] == g["machine"] and r[2] > 0 and r[0] >= t - 10 * MIN] if g["has_pc"] else []
@@ -1057,7 +1057,6 @@ class W:
             start = bool(g["has_pc"] and not cur and g.get("pc_since") and t - g["pc_since"] < 15 * MIN)
             if g["has_pc"] and cur:
                 mining += 1
-            starting += start
             all_ths += ths; all_cost += cost; all_earn += earn; all_khs += khs
             run_cost += 0.0 if start else cost
             prof = g["prl"] * y * per_prl + g.get("xmr_coins", 0.0) * xprice - g["spend"]
@@ -1084,7 +1083,7 @@ class W:
             lines.append(f"| Others{NB}×{len(ended)} |"
                          + " — |" * (4 if xon else 3) + f" {eprof:+.2f}{EST} |")
         total = prl * per_prl + coins * xprice - spend
-        hr_all, mg_all = all_earn - run_cost, star(pct(all_earn - run_cost, all_earn))
+        hr_all = all_earn - run_cost
         lines.append(f"| **All** | {bold(f'{all_ths:.0f}')} |" + (f" {bold(f'{all_khs:.1f}')} |" if xon else "")
                      + f" {bold(f'{all_cost:.2f}')} | {bold(with_margin(hr_all, all_earn))} | {bold(f'{total:+.2f}{EST}')} |")
         # What each pool reports for the account: its own hashrate (1-hour average) and the coins it holds and paid.
@@ -1099,10 +1098,8 @@ class W:
             pool = ["", "| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", "|---|---|---|---|---|", *pool]
 
         n_live = len(live)
-        head = (f"**{stamp(t)}** · PRL ${price:.3f} · {mining} of {n_live} mining"
-                + (f" · {starting} starting" if starting else "")
-                + " · " + bold(f"{'+' if hr_all >= 0 else '-'}${abs(hr_all):.2f}{EST}/hr") + f" · {mg_all} margin"
-                + " · " + bold(f"profit so far {'+' if total >= 0 else '-'}${abs(total):.2f}{EST}"))
+        # Just what the table doesn't show: profit an hour, margin and profit so far are in its All row.
+        head = f"**{stamp(t)}** · PRL ${price:.3f} · {mining}/{n_live} mining"
         credit = self.cfg["credit_start"] + self.cfg["credit_offset"] - spend
         hours = credit / all_cost if all_cost > 0 else None
         # What doesn't fit on a row, in two lines: the key, then the money trail.
