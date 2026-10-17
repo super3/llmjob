@@ -55,6 +55,7 @@ Config keys:
 | `safetrade` | SafeTrade sales entered by hand (`sold`, `received`, `fees`, `usdt`, `prl`), used until the trader's logs can be read. |
 | `xmr_wallet`, `xmr_groups` | Monero on the box's CPU (see [Monero](#monero-on-the-cpu)): the address, and the groups that mine it (`["*"]` for every group). Unset: no Monero, and the table is as before. |
 | `xmr_ver`, `xmr_cpu`, `xmr_memory`, `xmr_threads` | A Monero box runs release `v0.6.0` or later on 8 vCPUs and 8192 MB. `xmr_threads` 0 lets the CLI choose (it keeps one CPU free for Pearl). |
+| `kryptex_groups`, `kryptex_host`, `kryptex_fee` | How many groups mine Pearl on Kryptex instead of HeroMiners (see [Kryptex](#kryptex-pps)), its stratum (`prl-us.kryptex.network:7048`) and its PPS+ fee (0.03). 0: none, and the table is as before. |
 
 Tests: `python3 -m unittest discover -s tuning/salad`. They fake Salad, the pool and the clock.
 
@@ -157,6 +158,35 @@ started with until it restarts. It comes back on the new version about 2 minutes
   fee). The price is CoinGecko's. The address's pool balance also counts any other rig that mines to it.
 - **The rules** still judge every box on Pearl alone. Monero's speed is the table's kH/s column and its earnings count
   in Profit/hr, Margin and Profit $, with a 🪙 row for what the boxes have mined, but they don't keep a slow PC or a weak class.
+
+## Kryptex (PPS+)
+
+HeroMiners pays each block's reward across the shares since the last few blocks, so what we're due
+depends on its luck and its orphaned blocks: it has credited 82–95% of our network-rate estimate.
+Kryptex's PPS+ pays a fixed amount for each accepted share (the network's reward per share less its
+fee), plus a share of the blocks' transaction fees. So what a box has earned is known from its accepted
+shares. Its Pearl fee is **3%** (checked on 17 October 2026 at `pool.kryptex.com/prl`; an earlier note
+said 2%), and it pays out from 1 PRL. At HeroMiners' recent 92% that's about 5 points more, roughly
++$0.06/hr on $1.17/hr of earnings; the main gain is knowing the pay.
+
+The watcher runs it on `kryptex_groups` groups (live: 3), marked **(K)** in the table:
+
+- **Which groups:** a new group mines on Kryptex while fewer than `kryptex_groups` live groups do.
+  Groups already running stay on HeroMiners.
+- **How:** the miner only knows HeroMiners' 12 regions, and both pools run Pearl's reference stratum at
+  the same difficulty (Kryptex lists `pearl-source` among its miners). So a Kryptex box installs
+  `socat`, points every HeroMiners region name at 127.0.0.1 in `/etc/hosts`, and forwards local port
+  1200 to Kryptex's plain stratum port (7048). Nothing in the miner changes.
+- **Reading it:** Kryptex's API (`pool.kryptex.com/openapi.yaml`): each worker's last share and
+  hashrate every round, and the wallet's balance, payouts and the pool's figures every 5 minutes. Its
+  hashrate unit is turned into TH/s from the network's rate. The miner's own share count still feeds the
+  rules, as for every box.
+- **Credit:** each pool has its own credit ratio. HeroMiners' counts only its boxes; Kryptex's is what it
+  has credited (balance and payouts) over its boxes' estimate, or 1 less the fee before 1 PRL. Each box's
+  profit uses its pool's ratio. The rules still judge every PC at `yield`.
+- **In the report:** a Kryptex row in the pool table (its hashrate is the sum of our Kryptex workers' now,
+  not an hour's average), and a line saying what it has credited against its boxes' estimate.
+- **The hourly drift check** compares HeroMiners only with HeroMiners' boxes.
 
 ## Salad API notes
 

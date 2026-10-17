@@ -1395,5 +1395,122 @@ class TestMonero(Base):
         self.assertNotIn("Monero", report)
 
 
+class TestKryptex(Base):
+    """Up to kryptex_groups new groups mine Pearl on Kryptex's PPS+ pool through a port forward on the box."""
+    def setUp(self):
+        super().setUp()
+        self.x.cfg.update(wallet=os.environ["PRL_WALLET"], kryptex_groups=2)
+
+    def report(self):
+        self.x.write_report()
+        with open(os.path.join(TMP, "report.md")) as f:
+            return f.read()
+
+    def test_the_command_points_every_herominers_region_at_a_forward_to_kryptex(self):
+        cmd = w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.0", kryptex="prl-us.kryptex.network:7048")
+        self.assertIn("install -y -qq curl ca-certificates socat", cmd)
+        self.assertIn("socat TCP-LISTEN:1200,fork,reuseaddr TCP:prl-us.kryptex.network:7048", cmd)
+        for r in w.HM_REGIONS:
+            self.assertIn(f" {r}.pearl.herominers.com", cmd)
+        self.assertLess(cmd.index("/etc/hosts"), cmd.index("bash /root/box.sh"))
+        self.assertNotIn("; curl", cmd)  # Salad refuses "; curl"
+        self.assertNotIn("socat", w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.0"))
+
+    def test_only_the_first_groups_up_to_the_count_mine_on_kryptex(self):
+        a, b, c = self.group(), self.group(), self.group()
+        self.assertEqual([g["kx"] for g in (a, b, c)], [True, True, False])
+        cmds = [p[2]["container"]["command"][2] for p in self.http.made("POST", "/containers$")]
+        self.assertEqual(["socat" in x for x in cmds], [True, True, False])
+        self.assertIn("CREATED biz-rtx4080: RTX 4080 (16 GB) at batch", self.events())
+        self.assertIn(", Pearl on Kryptex", self.events())
+        a["ended"] = self.clock[0]
+        self.assertTrue(self.group()["kx"])  # one ended, so the next takes its place
+
+    def test_kryptex_workers_and_totals_are_read(self):
+        wl = os.environ["PRL_WALLET"]
+        self.http.on("GET", f"v3/miner/workers/{wl}", (200, {"results": [
+            {"worker": "biz-rtx4080-g0", "hashrate": 2.0e14, "shares": 12, "last_share": int(T0)}]}))
+        self.http.on("GET", f"v1/miner/balance/{wl}", (200, {"total": 0.6, "confirmed": 0.4, "unconfirmed": 0.2}))
+        self.http.on("GET", f"v1/miner/payouts/{wl}", (200, {"results": [{"received": 1.5}, {"received": 1.0}]}))
+        self.http.on("GET", "v1/pool/info", (200, {"net_hashrate": 1.0e19, "block_reward": 2000.0, "block_time": 200}))
+        ws = self.x.kx_pool()
+        self.assertEqual(ws["biz-rtx4080-g0"]["shares"], 12)
+        kt = self.x.st["kx_tot"]
+        self.assertEqual((kt["total"], kt["confirmed"], kt["unconfirmed"], kt["paid"]), (0.6, 0.4, 0.2, 2.5))
+        # The network: 2000 PRL × 18 blocks an hour ÷ PRL per TH-hr, over Kryptex's 1e19 for it.
+        self.assertAlmostEqual(kt["unit_th"], 2000 * 18 / (USD_TH_HR / PRICE) / 1.0e19)
+        self.clock[0] += 60
+        self.x.kx_pool()
+        self.assertEqual(len(self.http.made("GET", "v1/miner/balance")), 1)  # totals at most every 5 minutes
+        self.assertEqual(len(self.http.made("GET", "v3/miner/workers")), 2)
+
+    def test_each_pool_has_its_own_credit_ratio(self):
+        kg, hg = self.group(), self.group()
+        hg["kx"] = False
+        kg["prl"], hg["prl"] = 4.0, 10.0
+        self.x.st["pool_tot"] = {"t": T0, "paid": 6.0, "balance": 1.0, "unconfirmed": 1.0, "blocks": 20,
+                                 "hashes": 0, "ths_1h": 0}
+        self.assertAlmostEqual(self.x.credit_ratio(), 0.8)  # 8 credited for HeroMiners' 10, not for all 14
+        self.assertAlmostEqual(self.x.kx_ratio(), 0.97)     # nothing read from Kryptex yet: 1 less its fee
+        self.x.st["kx_tot"] = {"t": T0, "total": 1.88, "confirmed": 1.0, "unconfirmed": 0.88, "paid": 2.0}
+        self.assertAlmostEqual(self.x.kx_ratio(), 0.97)
+        self.assertAlmostEqual(self.x.ratio(kg), 0.97)
+        self.assertAlmostEqual(self.x.ratio(hg), 0.8)
+
+    def test_the_report_marks_kryptex_boxes_and_shows_both_pools(self):
+        kg = self.group()
+        hg = self.group()
+        hg["kx"] = False
+        kg["prl"], kg["spend"], hg["prl"], hg["spend"] = 4.0, 3.0, 10.0, 8.0
+        kg["has_pc"], kg["pool_ths"] = True, 199.6
+        self.x.st["pool_tot"] = {"t": T0, "paid": 6.0, "balance": 1.0, "unconfirmed": 1.0, "blocks": 20,
+                                 "hashes": 0, "ths_1h": 0}
+        self.x.st["kx_tot"] = {"t": T0, "total": 1.88, "confirmed": 1.0, "unconfirmed": 0.88, "paid": 2.0}
+        report = self.report()
+        self.assertIn(f"| ⏳{w.NB}4080{w.NB}batch{w.NB}(K) |", report.replace("⛏️", "⏳"))
+        self.assertIn(f"| ⏳{w.NB}4080-2{w.NB}batch |", report)
+        self.assertIn(f"| ⛏️ PRL{w.NB}HeroMiners | 0 TH/s | 1.000 | 1.000 | 6.000 |", report)
+        self.assertIn(f"| ⛏️ PRL{w.NB}Kryptex | 200 TH/s | 1.000 | 0.880 | 2.000 |", report)
+        self.assertIn("(K) mines Pearl on Kryptex (PPS+), the rest on HeroMiners.", report)
+        self.assertIn("The PRL pool HeroMiners has credited 80%* of our estimate over 20 blocks", report)
+        self.assertIn("Kryptex has credited 3.880 PRL for 4.000* at the network's rate (97%*; PPS+ pays each share "
+                      "less its 3% fee), and pays out from 1 PRL", report)
+        # 4 × 0.97 + 10 × 0.8 = 11.88 PRL credited, for $11.00: (11.88 × 1.39) − 11 = +5.51.
+        self.assertIn("| **+5.51\\*** |\n", report)
+        self.assertIn("Spent $11.00* on Salad for 11.880* PRL (14.000* at the network's rate × 85%* credited)", report)
+
+    def test_a_round_reads_a_kryptex_box_from_kryptex_and_logs_its_miner_lines(self):
+        self.x.cfg["search"] = False
+        g = self.group()
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
+        items = [{"text_log": "[minerlog g0] pool accepted login as biz-rtx4080-g0", "time": "2027-01-15T08:06:00Z",
+                  "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}}]
+        self.http.on("POST", "/log-entries", (200, {"items": items}))
+        # HeroMiners has a worker of that name too (an earlier group): a Kryptex box must not take its figures.
+        self.http.on("GET", "herominers", (200, {"workers": [{"name": "biz-rtx4080-g0", "hashrate": 44500,
+                                                               "lastShare": int(T0) + 450}]}))
+        self.http.on("GET", "v3/miner/workers", (200, {"results": [
+            {"worker": "biz-rtx4080-g0", "hashrate": 5.0, "shares": 3, "last_share": (int(T0) + 400) * 1000}]}))
+        self.x.st["kx_tot"] = {"t": T0 + 400, "total": 0, "confirmed": 0, "unconfirmed": 0, "paid": 0, "unit_th": 40.0}
+        g["created"] = T0 - 3600
+        self.clock[0] = T0 + 500
+        self.x.round()
+        self.assertEqual(g["last_share"], T0 + 400)
+        self.assertAlmostEqual(g["pool_ths"], 200.0)
+        self.assertIn("LOG biz-rtx4080 PC m1: [minerlog g0] pool accepted login as biz-rtx4080-g0", self.events())
+
+    def test_without_kryptex_groups_the_report_is_unchanged(self):
+        self.x.cfg["kryptex_groups"] = 0
+        g = self.group()
+        g["prl"], g["spend"] = 8.0, 6.0
+        self.x.st["pool_tot"] = {"t": T0, "paid": 1.5, "balance": 0.5, "unconfirmed": 4.0, "blocks": 6,
+                                 "hashes": 0, "ths_1h": 0}
+        report = self.report()
+        self.assertIn("| ⛏️ PRL | 0 TH/s | 0.500 | 4.000 | 1.500 |", report)
+        self.assertNotIn("Kryptex", report)
+        self.assertNotIn("(K)", report)
+
+
 if __name__ == "__main__":
     unittest.main()
