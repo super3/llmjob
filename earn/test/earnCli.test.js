@@ -887,6 +887,36 @@ describe('mining', () => {
     expect(m.PearlEngine.instances.length).toBe(0);
   });
 
+  // The AMD core is a different file that no release ships. Telling an AMD rig
+  // to fetch pearl_core.node would load a CUDA core on it.
+  // The core loader has already said what failed (pearlCore.test.js); the CLI
+  // adds where the AMD core goes, once, and never sends an AMD rig to fetch the
+  // CUDA one.
+  const AMD_FIX = 'Fix: put pearl_core_hip.node next to the executable (a run from the source tree also finds earn/native/amd/build), or set PEARL_CORE_PATH to its absolute path.';
+  test('with PEARL_CORE_VARIANT=amd and no AMD core, it says where the AMD core goes', async () => {
+    await withEnv({ PEARL_CORE_VARIANT: ' AMD ', PEARL_CORE_PATH: undefined }, async () => {
+      const m = load();
+      m.pearlCore.coreFactory.mockReturnValue(null);
+      await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update'])).resolves.toBe(1);
+      expect(allErr()).toContain(AMD_FIX);
+      expect(allErr()).not.toContain('pearl_core.node');
+    });
+  });
+
+  test('with PEARL_CORE_VARIANT=amd and a PEARL_CORE_PATH that did not load, the same, and auto serves the LLM', async () => {
+    await withEnv({ PEARL_CORE_VARIANT: 'amd', PEARL_CORE_PATH: '/opt/amd/pearl_core_hip.nod' }, async () => {
+      const m = load();
+      m.pearlCore.coreFactory.mockReturnValue(null);
+      const p = m.run(['-a', ADDR, '--mode', 'auto', '--no-update']);
+      await settle();
+      expect(allErr()).toContain(AMD_FIX);
+      expect(allErr()).not.toContain('pearl_core.node');
+      expect(allErr()).toContain('continuing with the local LLM only.');
+      fire('SIGINT');
+      await expect(p).resolves.toBe(0);
+    });
+  });
+
   // Which build of the core loads is the factory's call (pearlCore.test.js); the
   // CLI's part is handing it the mining cards and nvidia-smi's answer, and
   // printing what it says -- an error on stderr, anything else on stdout.
@@ -1506,6 +1536,21 @@ describe('local LLM', () => {
     m.LlmManager.instances[0].deviceBusId = '0000:02:00.0';
     m.LlmManager.instances[0].emit('busy', true);
     expect(miner.pauseCards).toHaveBeenCalledWith([1]);
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  // An AMD rig: no nvidia-smi, so no bus ids, but the miner runs two cards.
+  test('on a rig of several cards with no bus ids at all, a prompt pauses nothing', async () => {
+    const m = load();
+    fiveNinety(m);
+    m.probe.detectPciBusIds.mockResolvedValue({});
+    m.probe.detectMinerGpus.mockResolvedValue([{ index: 0, name: 'AMD' }, { index: 1, name: 'AMD' }]);
+    const p = m.run(argvCoRun);
+    await settle();
+    const miner = m.PearlEngine.instances[0];
+    m.LlmManager.instances[0].emit('busy', true);
+    expect(miner.pauseCards).not.toHaveBeenCalled();
     miner.emit('stopped', 0);
     await expect(p).resolves.toBe(0);
   });

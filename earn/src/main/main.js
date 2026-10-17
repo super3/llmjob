@@ -62,6 +62,7 @@ const { buildMinerReports } = require('../shared/minerReport');
 const { runtimeCopyPlan } = require('../shared/llmRuntime');
 const {
   alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda, readGpuIndexEnv, describeSkippedGpus,
+  planMinerGpus,
 } = require('../shared/gpu');
 const { planMemClocks, readMemClockEnv, GUI_MEM_CLOCK_ENV } = require('../shared/memClock');
 const earnings = require('../shared/earnings');
@@ -130,6 +131,11 @@ const promptPause = createPromptPause({
 // nvidia-smi's PCI bus id per card, read when the LLM starts, to find the card
 // each llama-server really loaded on (see promptPause.cardForPrompt).
 let llmBusIds = {};
+// How many cards mine, for the same function: a rig with no nvidia-smi (an AMD
+// one) has no bus ids, and several cards are left mining. Read with the bus ids
+// when the LLM starts and kept for its life, so a prompt's start and its end map
+// to the same card even when the miner starts in between.
+let llmMiningCards = 0;
 let llmEverReady = false;       // did any instance reach "ready" this run (vs. dying first)
 let serveLogged = false;        // "serving cluster jobs" logged once per serving run
 let registeredUnlinked = false; // self-registered an unlinked node once this run
@@ -1231,6 +1237,7 @@ async function startLlm(reserveMb, epoch) {
   const [cards, busIds] = await Promise.all([detectGpusVram(), probe.detectPciBusIds()]);
   if (stale()) return false;
   llmBusIds = busIds;
+  llmMiningCards = planMinerGpus(cards, readGpuIndexEnv(process.env).indices).length;
   // Which model this run serves. Chosen from the best card's free VRAM, because
   // the fleet loads ONE model across every instance — planLlmInstances then drops
   // any card that cannot hold it. On a mixed rig that trades breadth for
@@ -1376,7 +1383,7 @@ function buildFleet() {
   });
   f.on('stats', ({ tokensPerSec }) => { llmStatus = Object.assign({}, llmStatus, { tokensPerSec }); sendLlmStatus(); });
   f.on('busy', (e) => {
-    const card = cardForPrompt(e, llmBusIds);
+    const card = cardForPrompt(e, llmBusIds, llmMiningCards);
     if (card !== undefined) promptPause.setBusy(card, e.busy);
   });
   f.on('error', () => { /* transient instance error — the fleet keeps the others */ });

@@ -29,7 +29,8 @@ const ALL = 'all';
 
 // Which card a prompt runs on, as setBusy takes it: a card number, null for
 // every card, or undefined to leave mining alone. `ev` is LlmFleet's busy event,
-// `busIds` nvidia-smi's { index: pciBusId } (probe.detectPciBusIds).
+// `busIds` nvidia-smi's { index: pciBusId } (probe.detectPciBusIds), and
+// `miningCards` how many cards the miner runs on.
 //
 // The card an instance was planned for is the number it was started with
 // (--main-gpu), but llama-server counts cards in Vulkan's order, which need not
@@ -41,16 +42,19 @@ const ALL = 'all';
 //
 // Without that id, a one-card rig has only one card it can be, and several
 // cards are left mining: guessing wrong costs a card's mining on every prompt
-// for no gain. A bus id nvidia-smi does not list is a card that does not mine
-// (an AMD card, say), so nothing pauses for it.
-function cardForPrompt(ev, busIds) {
+// for no gain. The cards are counted both ways, because nvidia-smi is not the
+// only way a rig mines: an AMD rig (PEARL_CORE_VARIANT=amd) has no nvidia-smi
+// and so no bus ids, and only the miner knows it runs several cards. A bus id
+// nvidia-smi does not list is a card it does not know (an AMD card beside
+// NVIDIA ones, say), so nothing pauses for it.
+function cardForPrompt(ev, busIds, miningCards = 0) {
   const ids = Object.entries(busIds || {});
   const want = normalizePciBusId(ev && ev.busId);
   if (want && ids.length) {
     const hit = ids.find(([, id]) => normalizePciBusId(id) === want);
     return hit ? Number(hit[0]) : undefined;
   }
-  if (ids.length > 1) return undefined;
+  if (Math.max(ids.length, miningCards) > 1) return undefined;
   return ev && Number.isInteger(ev.index) ? ev.index : null;
 }
 
