@@ -200,11 +200,11 @@ What's built for it, with `kryptex_groups` boxes marked **(K)** in the table:
 - **When Kryptex doesn't take a box's work:** a Kryptex box that would be left for sending no shares or
   no readings goes back to HeroMiners instead, on a new PC, and the PC stays off the bad list (the pool
   is the likelier cause). Two of these stop the test: every box stays on HeroMiners until config
-  `kryptex_token` changes. This counts only when the box reached Kryptex from that PC: the miner prints
-  `connecting to prl-us.kryptex.network:7048` once its connection is up, and box.sh passes its first lines
-  on as `[minerlog g0]`. A PC that never shows it (its network may block port 7048; box.sh only checks
-  HeroMiners' 1200) goes on the bad list and the box moves on, still on Kryptex, without a strike, once
-  per switch; a second such PC counts, in case the line was missed.
+  `kryptex_token` changes. One gap: box.sh only checks HeroMiners' port 1200, so a PC whose network
+  blocks Kryptex's 7048 also counts as a Kryptex failure. That's rare, and at worst it stops the test
+  early. A check for it (proof from the miner's `connecting to` line) was tried on 17 October and taken
+  out: that line comes after box.sh's first 12 lines on a box with Monero, so it never arrived, and the
+  extra path let boxes trade places on Kryptex until their groups were deleted.
 - **How:** a Kryptex box runs release `kryptex_ver` (v0.6.1) or later, and its command puts
   `--pool prl-us.kryptex.network:7048` into box.sh's default flags, the same way Monero adds
   `--xmr-address`. Monero stays on HeroMiners. Going back to HeroMiners drops the flag; the box keeps the
@@ -367,8 +367,9 @@ minutes give a normal delete time to finish.
 while the groups keep billing on Salad. It keeps no state. It stops every running `biz-` group that is
 at least an hour old, has a running PC, and from which neither pool has seen work in the last hour:
 HeroMiners, or Kryptex for a box mining Pearl there (its 30-minute hashrate or a share in the hour). If
-either pool can't be read, it stops nothing. The watcher never lets that happen, so a hit means nothing
-is watching. Stopping is reversible. Run it
+HeroMiners can't be read, it stops nothing; if Kryptex can't be read, it leaves the boxes on Kryptex
+(`--pool` in their command) alone and checks the rest. The watcher never lets that happen, so a hit means
+nothing is watching. Stopping is reversible. Run it
 hourly (`--dry-run` only reports):
 
 ```sh

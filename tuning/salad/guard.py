@@ -27,19 +27,25 @@ def check(wallet, dry=False):
     if isinstance(ws, dict):
         ws = [dict(v, name=k) for k, v in ws.items()]
     workers = {w["name"]: w for w in ws if isinstance(w, dict) and w.get("name")}
+    # Kryptex, for boxes mining Pearl there (their command has --pool). Its rows have no "hashrate", only
+    # averages in H/s, as strings. When it can't be read, those boxes are left alone and the rest checked as usual.
     s, kj = W.http("GET", f"{W.KX_API}/v3/miner/workers/{wallet}", timeout=30)
-    if s != 200 or not isinstance(kj, dict):
-        return [f"Kryptex: workers failed (HTTP {s}); did nothing"], []
-    # Kryptex names a worker "wallet/worker"; its rows have no "hashrate", only averages in H/s, as strings.
-    kx = {x["worker"].split("/")[-1].split(".")[-1]: x for x in kj.get("results") or []
-          if isinstance(x, dict) and x.get("worker")}
+    kx = None
+    if s == 200 and isinstance(kj, dict) and isinstance(kj.get("results"), list):
+        kx = {x["worker"].split("/")[-1].split(".")[-1]: x for x in kj["results"]
+              if isinstance(x, dict) and x.get("worker")}
     t = W.now()
     out, stopped, checked = [], [], 0
+    if kx is None:
+        out.append(f"Kryptex: workers failed (HTTP {s}); boxes on Kryptex left alone")
     for g in j.get("items") or []:
         name = g.get("name") or ""
         if not name.startswith("biz-") or (g.get("current_state") or {}).get("status") != "running":
             continue
         checked += 1
+        on_kx = "--pool" in " ".join(str(c) for c in ((g.get("container") or {}).get("command") or []))
+        if on_kx and kx is None:
+            continue
         try:
             age = t - W.parse_iso(g.get("create_time") or "")
         except (AttributeError, TypeError, ValueError):
@@ -52,7 +58,7 @@ def check(wallet, dry=False):
             continue
         if not any(i.get("state") == "running" and i.get("machine_id") for i in ji.get("instances") or []):
             continue
-        w, k = workers.get(f"{name}-g0") or {}, kx.get(f"{name}-g0") or {}
+        w, k = workers.get(f"{name}-g0") or {}, (kx or {}).get(f"{name}-g0") or {}
         try:
             if float(w.get("hashrate_1h") or 0) > 0 or float(w.get("hashrate") or 0) > 0:
                 continue

@@ -23,17 +23,19 @@ class Fake:
         return 404, {}
 
 
-def group(name, age_min, status="running"):
-    return {"name": name, "create_time": W.iso(T0 - age_min * 60), "current_state": {"status": status}}
+def group(name, age_min, status="running", kx=False):
+    cmd = ["/bin/sh", "-c", "... -e 's|\"flags\":\"\"}|\"flags\":\"--pool prl-us.kryptex.network:7048\"}|' ..." if kx else "..."]
+    return {"name": name, "create_time": W.iso(T0 - age_min * 60), "current_state": {"status": status},
+            "container": {"command": cmd}}
 
 
 class TestGuard(unittest.TestCase):
-    def run_guard(self, groups, workers, instances=None, dry=False, kx=None, kx_status=200):
+    def run_guard(self, groups, workers, instances=None, dry=False, kx=None, kx_status=200, kx_body=None):
         inst = instances if instances is not None else [{"state": "running", "machine_id": "m1"}]
         self.fake = Fake([("GET", r"/containers$", (200, {"items": groups})),
                           ("GET", r"/instances$", (200, {"instances": inst})),
                           ("GET", "herominers", (200, {"workers": workers})),
-                          ("GET", "kryptex", (kx_status, {"results": kx or []})),
+                          ("GET", "kryptex", (kx_status, kx_body if kx_body is not None else {"results": kx or []})),
                           ("POST", r"/stop$", (202, None))])
         W.http, W.now = self.fake, lambda: T0
         return guard.check(WALLET, dry=dry)
@@ -67,10 +69,14 @@ class TestGuard(unittest.TestCase):
         _, stopped = self.run_guard([group("biz-rtx4080", 300)], [], kx=[row])
         self.assertEqual(stopped, ["biz-rtx4080"])
 
-    def test_nothing_is_stopped_when_kryptex_cant_be_read(self):
-        out, stopped = self.run_guard([group("biz-rtx4080", 90)], [], kx_status=503)
-        self.assertEqual(stopped, [])
-        self.assertIn("Kryptex: workers failed", out[0])
+    def test_when_kryptex_cant_be_read_only_its_boxes_are_left_alone(self):
+        groups = [group("biz-rtx4080", 90, kx=True), group("biz-rtx3090", 90)]
+        out, stopped = self.run_guard(groups, [], kx_status=503)
+        self.assertEqual(stopped, ["biz-rtx3090"])      # a dead HeroMiners box is still stopped
+        self.assertIn("Kryptex: workers failed (HTTP 503); boxes on Kryptex left alone", out[0])
+        # A 200 without a results list is a failed read too, not "no Kryptex workers".
+        _, stopped = self.run_guard(groups, [], kx_body={"error": "busy"})
+        self.assertEqual(stopped, ["biz-rtx3090"])
 
     def test_a_young_group_is_left_alone(self):
         _, stopped = self.run_guard([group("biz-rtx4080", 50)], [])

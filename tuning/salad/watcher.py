@@ -641,8 +641,7 @@ class W:
                   f"{'Kryptex' if on else 'HeroMiners'} at its next PC")
         # Readings the box still sends from the PC it left, or from before now, were mined on the old pool.
         g.update(kx=on, ver=ver, kx_since=t if on else None, sw_t=t, sw_from=g.get("machine") if not moving else
-                 (g.get("left") or [None])[-1], sw_prev=not on, kx_share=None if on else g.get("kx_share"),
-                 kx_conn=None, kx_noconn=False)
+                 (g.get("left") or [None])[-1], sw_prev=not on, kx_share=None if on else g.get("kx_share"))
         self.st["kx_any_t"] = t
         event(f"KRYPTEX {'ON' if on else 'OFF'} {g['name']} ({why}): Pearl on {'Kryptex' if on else 'HeroMiners'}; "
               + ("moved to a new PC, where it starts that way" if moving else "it starts that way on its next PC"))
@@ -863,13 +862,8 @@ class W:
                 elif re.match(r"\[run\] (FAIL|g\d miner exited)", text) or text.startswith("[run] release"):
                     event(f"LOG {name} PC {(mach or '')[:8]}: {text.strip()[:200]}")
                 elif g.get("kx") and text.startswith("[minerlog"):
-                    # A Kryptex box's first miner lines show whether Kryptex took its login. The miner prints
-                    # "connecting to <host>:<port>" once the connection is up, so a PC whose network blocks Kryptex's
-                    # port never shows it (see leave).
+                    # A Kryptex box's first miner lines show whether Kryptex took its login.
                     event(f"LOG {name} PC {(mach or '')[:8]}: {text.strip()[:200]}")
-                    if (f"connecting to {self.cfg['kryptex_host']}" in text and mach == g.get("machine")
-                            and tm >= (g.get("sw_t") or 0)):
-                        g["kx_conn"] = mach
 
         # Pool: shares and pool-side hashrate.
         pw = self.pool() if by_name else {}
@@ -1106,16 +1100,8 @@ class W:
         """Stop paying for this PC: another PC if the class has paid before, otherwise delete the group. The PC goes
         on the bad list, so another group that gets it leaves it at once (for bad_pc_hold_h)."""
         if (g.get("kx") and why.startswith(("no share", "no mining reading"))
-                and (g.get("kx_share") or 0) < (g.get("kx_since") or g["created"])):
-            # A box that never reached Kryptex from this PC points at the PC's network, not at Kryptex: once per
-            # switch it moves on, still on Kryptex, without a strike. (A second time counts, in case the miner's
-            # "connecting to" line was missed.)
-            if g.get("machine") and g.get("kx_conn") != g["machine"] and not g.get("kx_noconn"):
-                g["kx_noconn"] = True
-                event(f"WARN {g['name']}: PC {g['machine'][:8]} never reached Kryptex ({self.cfg['kryptex_host']}); "
-                      "a new PC, still on Kryptex, without counting it against Kryptex")
-            elif self.kx_failed(g, why):
-                return   # a box that has had Kryptex shares and then stops is a PC problem, left as usual below
+                and (g.get("kx_share") or 0) < (g.get("kx_since") or g["created"]) and self.kx_failed(g, why)):
+            return   # a box that has had Kryptex shares and then stops is a PC problem, left as usual below
         if g.get("machine"):
             self.st.setdefault("bad_pcs", {})[g["machine"]] = {"t": now(), "group": g["name"], "why": why}
         if self.paid(g):
