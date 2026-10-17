@@ -1884,8 +1884,10 @@ describe('local LLM', () => {
   it('sends chat to the faster card, not the first one', async () => {
     const ctx = await boot({
       before: (c) => {
+        // Both cards too small for the big model, so both serve the default and
+        // the test is only about which one chat goes to.
         c.probe.detectGpusVram.mockResolvedValue([
-          { index: 0, name: 'RTX PRO 4500', usedMb: 2000, totalMb: 32000 },
+          { index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 },
           { index: 1, name: 'RTX 4070', usedMb: 1000, totalMb: 12000 },
         ]);
         c.probe.findFreePort.mockImplementation((h, p) => Promise.resolve(p));

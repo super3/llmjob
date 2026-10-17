@@ -350,6 +350,21 @@ const LLM = {
       //     is the dominant cost -- a 100K-token prompt is ~6 min rather than ~50 s.
       vramFullMb: 30150,
       minVramMb: 30720,   // measurement + ~570 MiB so we never spawn at the edge.
+      // The same sweep, by context, so a card can be given the largest context it
+      // can hold instead of all of it or none. The two figures above are the
+      // 262144 row. Every row is measured (CUDA, q8_0 KV, the flags above); the
+      // same ~570 MiB margin is added to each when it is used as a floor.
+      //
+      // This is what lets a 32 GB card serve this model WHILE it mines. At 262144
+      // it needs 30,150 + the 2,600 mining reserve = 32,750, more than the card
+      // has. At 131072 it needs 24,518 + 2,600 = 27,118, which a 32 GB card holds
+      // with ~5 GB to spare for a desktop and the driver.
+      vramByCtxMb: { 262144: 30150, 131072: 24518, 65536: 21702, 32768: 20324 },
+      // The smallest context this model is CHOSEN at. The rungs below it stay in
+      // ctxLadder as start-up fallbacks only. Without this floor a 24 GB card
+      // would pick the model at 32768 and run with under 1 GB to spare beside the
+      // miner; at 131072 and up it is a 32 GB-card model, as intended.
+      minCtxSize: 131072,
       quant: 'Q4_K_XL',
     },
   ],
