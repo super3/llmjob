@@ -8,7 +8,9 @@
 //
 // It does what one launch of pearl_tile_fold_dp4a does, block by block and thread by
 // thread, in the kernel's own phases and with the kernel's own functions
-// (src/pearl_fold_dp4a.h): which tile a block takes, where each thread's two 16-byte
+// (src/pearl_fold_dp4a.h). It first lays the operands out k-blocked, as the device draw
+// does for this fold, and reads them only through that layout: which tile a block
+// takes, where each thread's two 16-byte
 // copies come from and land in the two stage buffers, the 64 dp4a a k-quad (the same
 // pearl_dp4a_mac_stage, with __dp4a written out byte by byte), the readout's XOR, the
 // two shuffles, which thread writes the word, and the region index a hasher reports.
@@ -70,6 +72,14 @@ int main(int argc, char **argv) {
     die("geometry is not whole 128x128 tiles inside the operands");
   const std::vector<int8_t> A = slurp(argv[1], (size_t)m * k);
   const std::vector<int8_t> B = slurp(argv[2], (size_t)n * k);
+  // The noised operands as the fold reads them: k-blocked (pearl_dp4a_kblocked, the
+  // layout pearl_materialize16_kblocked writes with 32-byte blocks). The plain fold
+  // below reads the row-major originals.
+  std::vector<int8_t> Ak((size_t)m * k), Bk((size_t)n * k);
+  for (uint32_t r = 0; r < m; r++)
+    for (uint32_t kk = 0; kk < k; kk++) Ak[pearl_dp4a_kblocked(r, kk, m)] = A[(size_t)r * k + kk];
+  for (uint32_t c = 0; c < n; c++)
+    for (uint32_t kk = 0; kk < k; kk++) Bk[pearl_dp4a_kblocked(c, kk, n)] = B[(size_t)c * k + kk];
 
   const uint32_t rowGroups = rows_valid / PEARL_DP4A_ROW_OFFSETS;
   const uint32_t colGroups = col_groups / PEARL_DP4A_COL_OFFSETS;
@@ -104,9 +114,8 @@ int main(int argc, char **argv) {
     for (auto &a : acc) a = 0;
 
     auto copy = [&](uint32_t tid, uint32_t s) {
-      load16(A, pearl_dp4a_a_src(tid, R, k) + (uint64_t)s * PEARL_DP4A_STAGE_K, &ra[tid * 4]);
-      load16(B, pearl_dp4a_b_src(tid, C, col_off, k) + (uint64_t)s * PEARL_DP4A_STAGE_K,
-             &rb[tid * 4]);
+      load16(Ak, pearl_dp4a_a_src(tid, R) + s * pearl_dp4a_stage_step(m), &ra[tid * 4]);
+      load16(Bk, pearl_dp4a_b_src(tid, C, col_off) + s * pearl_dp4a_stage_step(n), &rb[tid * 4]);
     };
     auto store = [&](uint32_t tid, uint32_t buf, uint32_t s) {
       for (uint32_t i = 0; i < 4; i++) {

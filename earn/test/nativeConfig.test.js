@@ -471,6 +471,31 @@ describe('Pascal dp4a fold', () => {
     expect(PROFILE.rank % stageK).toBe(0);
   });
 
+  // The fold reads A' and B' k-blocked in 32-byte blocks (pearl_fold_dp4a.h), so the
+  // draw must write them that way, and the fold's address rule must be the one the
+  // materialise kernel stores with. The CPU check (probes/dp4a-check.js) lays its
+  // operands out with the fold's rule, so this is what ties it to the device's.
+  test('the draw writes the k-blocked layout the fold reads', () => {
+    const FOLD = fs.readFileSync(path.join(SRC, 'pearl_fold_dp4a.h'), 'utf8');
+    expect(HOST).toContain('if (ctx->foldDp4a && kPow2 && k >= PEARL_DP4A_STAGE_K) {');
+    expect(HOST).toContain('while ((1u << dpLog2) < PEARL_DP4A_STAGE_K) dpLog2++;');
+    expect(HOST).toContain('src, dense, perm, dst, rows, kLog2, rank, dpLog2, readVecs, fillWord);');
+    expect(HOST).toContain('ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks, col_off,');
+    expect(KERNEL).toContain('const uint64_t o = ((((uint64_t)(kk >> kb_log2) * rows + r) << kb_log2)');
+    expect(KERNEL).toContain('| (kk & ((1u << kb_log2) - 1u)));');
+    expect(FOLD).toContain('return ((uint64_t)(kk / PEARL_DP4A_STAGE_K) * rows + row) * PEARL_DP4A_STAGE_K');
+    expect(FOLD).toContain('+ kk % PEARL_DP4A_STAGE_K;');
+    // The two rules, transcribed, agree at kb = 32.
+    const kb = numericDefineOf('PEARL_DP4A_STAGE_K');
+    const kbLog2 = Math.log2(kb);
+    for (const [r, kk, rows] of [[0, 0, 256], [5, 31, 256], [7, 32, 256], [255, 2047, 256],
+      [131071, 2047, 131072], [262143, 1000, 262144]]) {
+      const device = (((Math.floor(kk / 2 ** kbLog2) * rows + r) * 2 ** kbLog2) + (kk % kb));
+      const fold = (Math.floor(kk / kb) * rows + r) * kb + (kk % kb);
+      expect(fold).toBe(device);
+    }
+  });
+
   // The batch is narrowed to keep a launch short on these cards. It must be whole
   // tiles and divide the valid column offsets, or pearl_dp4a_col_batch keeps the
   // profile's width.

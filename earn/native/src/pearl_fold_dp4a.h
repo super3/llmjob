@@ -30,6 +30,14 @@
 // 16-byte units covering all 32 banks, and the 4 ty of a warp 4 units, each one read by
 // 8 lanes at once. So slot p belongs to thread (p & 63) >> 2, as its element
 // (p & 3) + 4 * (p >> 6) of eight.
+//
+// In global memory A' and B' are k-BLOCKED for this fold, in 32-byte blocks of k:
+// element (row, kk) sits at ((kk / 32) * rows + row) * 32 + kk % 32, which is what
+// pearl_materialize16_kblocked writes with kb_log2 = 5. One stage of a tile, 32 bytes of
+// k from 128 consecutive rows, is then one contiguous 4 KB run of whole 128-byte lines.
+// Row-major, the same stage was one 32-byte sector out of each of 128 lines 2 KB apart,
+// and the other three sectors of every line were asked for in the next three stages,
+// thousands of cycles later. The raw A and B (commitments, proofs) stay row-major.
 
 #ifndef PEARL_FOLD_DP4A_H
 #define PEARL_FOLD_DP4A_H
@@ -116,17 +124,29 @@ PEARL_HD inline uint32_t pearl_dp4a_region_index(uint32_t R, uint32_t C, uint32_
 }
 
 // Where a staging thread's 16 bytes come from and go: slot tid >> 1, k bytes
-// 16 * (tid & 1) .. + 15 of the stage. Byte offsets into the row-major A' and B' at
-// k = 0 of tile (R, C); a stage adds its k offset. The tile's first row is 128 R, its
-// first column the expansion of column offset index col_off + 8C, a multiple of four:
-// 16 * (col_off + 8C).
-PEARL_HD inline uint64_t pearl_dp4a_a_src(uint32_t tid, uint32_t R, uint32_t k) {
-  return ((uint64_t)R * PEARL_DP4A_BM + pearl_dp4a_row_of(tid >> 1)) * k + 16u * (tid & 1u);
+// 16 * (tid & 1) .. + 15 of the stage. Byte offsets into the k-blocked A' and B' (see
+// the top) at stage 0 of tile (R, C); stage s is pearl_dp4a_stage_step(rows) * s bytes
+// further on. The tile's first row is 128 R, its first column the expansion of column
+// offset index col_off + 8C, a multiple of four: 16 * (col_off + 8C).
+static_assert((PEARL_DP4A_STAGE_K & (PEARL_DP4A_STAGE_K - 1u)) == 0u,
+              "a stage is one power-of-two k-block of the operands");
+PEARL_HD inline uint64_t pearl_dp4a_a_src(uint32_t tid, uint32_t R) {
+  return ((uint64_t)R * PEARL_DP4A_BM + pearl_dp4a_row_of(tid >> 1)) * PEARL_DP4A_STAGE_K
+         + 16u * (tid & 1u);
 }
-PEARL_HD inline uint64_t pearl_dp4a_b_src(uint32_t tid, uint32_t C, uint32_t col_off,
-                                          uint32_t k) {
+PEARL_HD inline uint64_t pearl_dp4a_b_src(uint32_t tid, uint32_t C, uint32_t col_off) {
   const uint64_t col0 = 16ull * (col_off + C * PEARL_DP4A_COL_OFFSETS);
-  return (col0 + pearl_dp4a_col_of(tid >> 1)) * k + 16u * (tid & 1u);
+  return (col0 + pearl_dp4a_col_of(tid >> 1)) * PEARL_DP4A_STAGE_K + 16u * (tid & 1u);
+}
+// From one stage of an operand to the next: one k-block of all `rows` rows.
+PEARL_HD inline uint64_t pearl_dp4a_stage_step(uint32_t rows) {
+  return (uint64_t)rows * PEARL_DP4A_STAGE_K;
+}
+// Where element (row, kk) of an operand of `rows` rows sits in that layout. The CPU
+// check lays its operands out with this; the device draw is pearl_materialize16_kblocked.
+PEARL_HD inline uint64_t pearl_dp4a_kblocked(uint32_t row, uint32_t kk, uint32_t rows) {
+  return ((uint64_t)(kk / PEARL_DP4A_STAGE_K) * rows + row) * PEARL_DP4A_STAGE_K
+         + kk % PEARL_DP4A_STAGE_K;
 }
 // Word i (0..3) of that copy: k-quad 4 * (tid & 1) + i, slot tid >> 1.
 PEARL_HD inline uint32_t pearl_dp4a_dst(uint32_t tid, uint32_t i) {
