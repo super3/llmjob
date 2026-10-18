@@ -1839,6 +1839,20 @@ class TestKryptex(Base):
         g["machine"] = "m9"                               # once it has left m1, m1's shares count again
         self.assertEqual(self.x.kx_log_proof(g), last)
 
+    def test_a_box_that_just_switched_shows_no_hashrate_until_its_new_pool_has_a_row(self):
+        self.config_file()
+        k, h = self.two_on_pcs()
+        k["pool_ths"] = 160.0                             # from HeroMiners, before its switch
+        k["readings"] = [[self.clock[0] - n * 60, "m1", 160.0, 10 - n, f"1h {60 - n}m"] for n in range(5, 0, -1)]
+        k["last_share"] = self.clock[0] - 60              # mining on Kryptex since its switch
+        self.http.on("GET", "herominers", (200, {"workers": [{"name": "biz-rtx4080-2-g0", "hashrate": 33000,
+                                                               "lastShare": int(self.clock[0]) - 30}]}))
+        self.x.round()                                    # Kryptex has no row for it yet
+        self.assertIsNone(k["pool_ths"])
+        self.assertAlmostEqual(h["pool_ths"], 33000 * w.UNIT_TH)
+        self.x.st["kx_tot"] = {"t": T0, "total": 0.5, "confirmed": 0.3, "unconfirmed": 0.2, "paid": 0.0}
+        self.assertIn(f"| ⛏️ PRL{w.NB}Kryptex | 0 TH/s |", self.report())
+
     def test_the_kryptex_row_sums_the_boxes_that_mine_there(self):
         k, h = self.group(kx=True), self.group()
         k.update(has_pc=True, machine="m1", pc_pool={"m1": False}, pool_ths=199.0)   # its box mines on HeroMiners

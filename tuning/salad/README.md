@@ -247,7 +247,7 @@ What's built for it, with `kryptex_groups` boxes marked **(K)** in the table:
   mined there, or `kryptex_pay` (94%) before 1 PRL. Each box's profit counts each part at its pool's ratio.
   The rules still judge every PC at `yield`.
 - **In the report:** a Kryptex row in the pool table (its hashrate is the sum of our Kryptex workers' now,
-  not an hour's average), and a line saying what it has credited against its boxes' estimate.
+  not an hour's average; a box that just switched counts once Kryptex has a row for it), and a line saying what it has credited against its boxes' estimate.
 - **The hourly drift check** compares HeroMiners only with the PRL mined there.
 
 ## Salad API notes
