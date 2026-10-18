@@ -55,7 +55,7 @@ Config keys:
 | `safetrade` | SafeTrade sales entered by hand (`sold`, `received`, `fees`, `usdt`, `prl`), used until the trader's logs can be read. |
 | `xmr_wallet`, `xmr_groups` | Monero on the box's CPU (see [Monero](#monero-on-the-cpu)): the address, and the groups that mine it (`["*"]` for every group). Unset: no Monero, and the table is as before. |
 | `xmr_ver`, `xmr_cpu`, `xmr_memory`, `xmr_threads` | A Monero box runs release `v0.6.0` or later on 8 vCPUs and 8192 MB. `xmr_threads` 0 lets the CLI choose (it keeps one CPU free for Pearl). |
-| `kryptex_groups`, `kryptex_host`, `kryptex_ver`, `kryptex_pay`, `kryptex_token` | How many boxes with a PC mine Pearl on Kryptex instead of HeroMiners (see [Kryptex](#kryptex-pps)), its stratum (`prl-us.kryptex.network:7048`), the release a Kryptex box needs at least (v0.6.1, the first with `--pool`) and the share of each share's value it pays (0.94, measured; used until Kryptex has credited 1 PRL). Change `kryptex_token` to restart the test after it stopped. 0: none, and the table is as before. |
+| `kryptex_groups`, `kryptex_host`, `kryptex_ver`, `kryptex_pay`, `kryptex_token` | How many groups mine Pearl on Kryptex instead of HeroMiners (see [Kryptex](#kryptex-pps)), its stratum (`prl-us.kryptex.network:7048`), the release a Kryptex box needs at least (v0.6.1, the first with `--pool`) and the share of each share's value it pays (0.94, measured; used until Kryptex has credited 1 PRL). Change `kryptex_token` to restart the test after it stopped. 0: none, and the table is as before. |
 
 Tests: `python3 -m unittest discover -s tuning/salad`. They fake Salad, the pool and the clock.
 
@@ -175,7 +175,7 @@ lists them. They have `avg_hashrate_24h`, `avg_hashrate_3h` and `avg_hashrate_30
 watcher reads the 30-minute one. Their `valid` count includes the last finished 10-minute bucket twice, so
 it isn't used.
 
-**Status: on, one box (`kryptex_groups` 1), from 17 October with release v0.6.1.** The first try
+**Status: on from 17 October with release v0.6.1: one group, then 5 (`kryptex_groups` 5) from 18 October.** The first try
 redirected HeroMiners' names to Kryptex through `/etc/hosts`, which is read-only inside Salad containers:
 on 17 October that box stopped at `cannot create /etc/hosts: Read-only file system`, before box.sh ran.
 Release v0.6.1 (PR #265) added `--pool host:port` to the CLI, tested on an RTX 4090 for 26 minutes
@@ -187,20 +187,29 @@ Instructions for finishing it on a machine with a GPU are in [KRYPTEX.md](KRYPTE
 
 What's built for it, with `kryptex_groups` boxes marked **(K)** in the table:
 
-- **Which boxes:** ones that are mining. The first try put a new group on Kryptex, and two new groups in a
-  row got no PC at medium in 10 minutes. So new groups start on HeroMiners, and while fewer Kryptex boxes
-  have a PC than config asks, the HeroMiners box earning least an hour is switched: its command is
-  updated and it moves to a new PC (reallocated, not counted toward its 3), where it starts with the new
-  command. Reallocated boxes here get a new PC in 2 minutes (median of 420), 3 at the 75th percentile.
-  At most one switch to Kryptex every 15 minutes. Kryptex groups beyond the count go back to HeroMiners,
-  those without a PC first, never one switched in the last 15 minutes.
-- **Why a move and not a restart:** Salad's instance restart answers 202 but doesn't restart the box. On
-  17 October two restarts of a box whose command had been switched left its miner running (its uptime
-  kept counting) on the old command, though the instance reported the new version.
+- **Which groups:** new groups start on Kryptex while fewer than `kryptex_groups` are on it, and while
+  fewer are, HeroMiners groups waiting for a PC are switched by updating their command, the cheapest
+  first. A Kryptex group stays on Kryptex when it loses its PC and starts there on its next one. A box
+  that is mining is never moved to switch it. Kryptex groups beyond the count go back to HeroMiners once
+  they have no PC.
+- **Why not move a mining box:** until 18 October new groups started on HeroMiners (on the first try two
+  new Kryptex groups in a row got no PC at medium in 10 minutes, though Salad picks a PC by class and
+  priority, not by command), and the HeroMiners box earning least was moved to a new PC whenever the
+  Kryptex box had none. On 18 October, while PCs were scarce, that gave up a working PC every 15
+  minutes: Salad took back the Kryptex box's PC, a mining box was moved over and waited for a new one,
+  and 15 minutes later the next box was moved.
+- **Why a move and not a restart,** when a Kryptex box with a PC has to go back (it failed, or the test
+  stopped): Salad's instance restart answers 202 but doesn't restart the box. On 17 October two restarts
+  of a box whose command had been switched left its miner running (its uptime kept counting) on the old
+  command, though the instance reported the new version. The move isn't counted toward the group's 3.
 - **When Kryptex doesn't take a box's work:** a Kryptex box that would be left for sending no shares or
-  no readings goes back to HeroMiners instead, on a new PC, and the PC stays off the bad list (the pool
-  is the likelier cause). Two of these stop the test: every box stays on HeroMiners until config
-  `kryptex_token` changes. One gap: box.sh only checks HeroMiners' port 1200, so a PC whose network
+  no readings, while no other box's work has reached Kryptex in 30 minutes, goes back to HeroMiners
+  instead, on a new PC, and the PC stays off the bad list (the pool is the likelier cause). If another
+  box's work did reach Kryptex, the PC is the likelier cause: the box is left as usual and stays on
+  Kryptex. A new PC that never sends a reading is common here (46 times by 18 October), and with new
+  groups starting on Kryptex, two of those would stop the test. Two Kryptex failures stop it: Kryptex
+  boxes with a PC are moved to start on HeroMiners at once, and every group stays on HeroMiners until
+  config `kryptex_token` changes. One gap: box.sh only checks HeroMiners' port 1200, so a PC whose network
   blocks Kryptex's 7048 also counts as a Kryptex failure. That's rare, and at worst it stops the test
   early. A check for it (proof from the miner's `connecting to` line) was tried on 17 October and taken
   out: that line comes after box.sh's first 12 lines on a box with Monero, so it never arrived, and the

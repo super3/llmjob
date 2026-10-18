@@ -566,42 +566,51 @@ class W:
             else:
                 event(f"WARN Monero {'on' if want else 'off'} for {g['name']} refused: HTTP {s} {str(j)[:150]}")
 
-    def kx_sync(self, active, t):
-        """Keeps kryptex_groups boxes mining on Kryptex. A new group can wait a long time for a PC, so a box that is
-        mining is switched instead: the HeroMiners box earning least an hour, while fewer Kryptex boxes have a PC
-        than config asks. At most one switch to Kryptex every 15 minutes, so a moved box can get its new PC before
-        another is touched. Kryptex groups beyond the count go back to HeroMiners, those without a PC first, never
-        one switched in the last 15 minutes."""
+    def kx_want(self):
+        """How many groups config asks to have on Kryptex: kryptex_groups, or 0 once the test has stopped, until
+        config kryptex_token changes."""
         st, cfg = self.st, self.cfg
         if st.setdefault("kx_token", cfg["kryptex_token"]) != cfg["kryptex_token"]:
             st["kx_token"], st["kx_fails"] = cfg["kryptex_token"], 0
-        stopped = st.get("kx_fails", 0) >= 2
-        want = 0 if stopped else cfg["kryptex_groups"]
-        # A group whose state read failed this round (_skip) keeps its place by its last known state, so one failed
-        # read doesn't switch another box in; it is only never switched itself that round.
+        return 0 if st.get("kx_fails", 0) >= 2 else cfg["kryptex_groups"]
+
+    def kx_sync(self, active, t):
+        """Keeps kryptex_groups groups on Kryptex without moving a box that is mining. New groups start on Kryptex
+        while fewer are (see create), a Kryptex group stays on Kryptex when it loses its PC, and while fewer than
+        the count are on Kryptex, HeroMiners groups waiting for a PC are switched by updating their command, the
+        cheapest first. Until 18 October the HeroMiners box earning least was moved over whenever the Kryptex box
+        had no PC: each time Salad took back the Kryptex box's PC, a working PC was given up, every 15 minutes
+        while PCs were scarce. Kryptex groups beyond the count go back to HeroMiners once they have no PC. When
+        the test has stopped, Kryptex isn't taking their work, so those with a PC are moved to a new PC at once."""
+        want = self.kx_want()
+        stopped = self.st.get("kx_fails", 0) >= 2
+        # A group whose state read failed this round (_skip) counts by its last known state, so one failed read
+        # doesn't switch another group in; it is only never switched itself that round.
         live = [g for g in active if not g["ended"]]
         kx = [g for g in live if g.get("kx")]
-        if sum(1 for g in kx if g["has_pc"]) < want and t - st.get("kx_switch_t", 0) >= 15 * MIN:
-            cands = [g for g in live if not g.get("kx") and self.kx_ready(g, t) and g["has_pc"] and g["status"] == "running"
-                     and g.get("pc_since") and g.get("kx_failed_tok") != st["kx_token"]   # failed there: not again
-                     and any(r[1] == g.get("machine") and r[2] > 0 and r[0] >= t - 10 * MIN for r in g["readings"])]
-            usd = self.usd()
-            earning = [(r * usd - g["price"], g) for g in cands if (r := self.pc_rate(g)) is not None]
-            if earning:
-                gain, g = min(earning, key=lambda x: x[0])
-                st["kx_switch_t"] = t
-                if self.kx_switch(g, True, t, f"it earns least, ${gain:+.3f}/hr"):
-                    kx.append(g)
+        if len(kx) < want:
+            waiting = sorted((g for g in live if not g.get("kx") and not g["has_pc"] and self.kx_ready(g, t)
+                              and g.get("kx_failed_tok") != self.st["kx_token"]),   # failed there: not again
+                             key=lambda g: g["price"])
+            for g in waiting[:want - len(kx)]:
+                if not self.kx_switch(g, True, t, "waiting for a PC"):
+                    break   # Salad refused the update; the rest wait for the next round
         extra = len(kx) - want
         for g in sorted(kx, key=lambda g: (g["has_pc"], -(g.get("kx_since") or g["created"]))):
             if extra <= 0:
                 break
-            if not self.kx_ready(g, t) or t - (g.get("kx_since") or g["created"]) < 15 * MIN:
+            if not self.kx_ready(g, t) or (g["has_pc"] and not stopped):
                 continue
             why = ("the Kryptex test stopped after 2 boxes mined no shares there" if stopped else
-                   "a Kryptex box with a PC took its place" if not g["has_pc"] else "more Kryptex boxes than config asks")
+                   "more Kryptex groups than config asks")
             if self.kx_switch(g, False, t, why):
                 extra -= 1
+
+    def kx_works(self, g, t):
+        """Whether Kryptex took another box's work in the last 30 minutes. A Kryptex box that sends nothing then
+        points at its PC, not at Kryptex: a new PC that never sends a reading is common here (46 times by 18
+        October), and once new groups started on Kryptex, two of those would have stopped the test."""
+        return any(o is not g and (o.get("kx_share") or 0) >= t - 30 * MIN for o in self.st["groups"].values())
 
     def kx_ready(self, g, t):
         """Whether a group can be switched this round: its state was read, it didn't just change PC (rules() hasn't
@@ -648,14 +657,14 @@ class W:
         return True
 
     def kx_failed(self, g, why):
-        """A Kryptex box that sends no shares or no readings points at Kryptex, not at the PC: it goes back to
-        HeroMiners on a new PC, and the PC stays off the bad list. Two of these stop the test."""
+        """A Kryptex box that sends no shares or no readings while no other box's work reaches Kryptex points at
+        Kryptex, not at the PC: it goes back to HeroMiners on a new PC, and the PC stays off the bad list. Two of
+        these stop the test."""
         st, t = self.st, now()
         if not self.kx_switch(g, False, t, f"on Kryptex: {why}"):
             return False
         st["kx_fails"] = st.get("kx_fails", 0) + 1
-        st["kx_switch_t"] = t                         # no other box for 15 minutes
-        g["kx_failed_tok"] = st.get("kx_token")       # and not this one again until kryptex_token changes
+        g["kx_failed_tok"] = st.get("kx_token")       # not this one again until kryptex_token changes
         if st["kx_fails"] == 2:
             event("WARN Kryptex test stopped: 2 Kryptex boxes mined no shares. Boxes stay on HeroMiners until "
                   "config kryptex_token changes")
@@ -717,7 +726,9 @@ class W:
         name, i = base, 2
         while name in taken:
             name, i = f"{base}-{i}", i + 1
-        xmr, kx = self.wants_xmr(name), False   # new groups start on HeroMiners; kx_sync moves boxes with a PC
+        xmr = self.wants_xmr(name)
+        # On Kryptex while fewer groups than config asks are (see kx_sync).
+        kx = sum(1 for g in st["groups"].values() if not g["ended"] and g.get("kx")) < self.kx_want()
         ver, command, res = self.box(name, xmr, kx)
         res.update(storage_amount=10737418240, gpu_classes=[st["classes"][cls]["id"]])
         body = {"name": name, "display_name": name, "replicas": 1, "restart_policy": "always", "autostart_policy": True,
@@ -734,7 +745,7 @@ class W:
                 "reallocs": 0, "spend": 0.0, "prl": 0.0, "pc_min": 0.0, "mined_min": 0, "readings": [],
                 "acc": {}, "last_share": None, "profit_fail": 0, "last_check": 0, "status": "pending",
                 "ended": None, "end_kind": None, "end_reason": None, "blocked": [], "cards": [], "pool_ths": None,
-                "last_start": 0, "first_share_said": False, "xmr": xmr, "kx": kx}
+                "last_start": 0, "first_share_said": False, "xmr": xmr, "kx": kx, "kx_since": t if kx else None}
             event(f"CREATED {name}: {cls} at {pri} (${st['classes'][cls]['prices'][pri]:.3f}/hr, "
                   f"{self.margin(cls, pri) * 100:+.0f}% margin at {rate} TH/s), miner {ver}"
                   + (f", Monero on {res['cpu']} vCPUs" if xmr else "") + (", Pearl on Kryptex" if kx else ""))
@@ -1099,9 +1110,12 @@ class W:
     def leave(self, g, why):
         """Stop paying for this PC: another PC if the class has paid before, otherwise delete the group. The PC goes
         on the bad list, so another group that gets it leaves it at once (for bad_pc_hold_h)."""
+        # A Kryptex box that has had Kryptex shares and then stops, or stops while other boxes' work reaches
+        # Kryptex, has a PC problem: it is left as usual below.
         if (g.get("kx") and why.startswith(("no share", "no mining reading"))
-                and (g.get("kx_share") or 0) < (g.get("kx_since") or g["created"]) and self.kx_failed(g, why)):
-            return   # a box that has had Kryptex shares and then stops is a PC problem, left as usual below
+                and (g.get("kx_share") or 0) < (g.get("kx_since") or g["created"]) and not self.kx_works(g, now())
+                and self.kx_failed(g, why)):
+            return
         if g.get("machine"):
             self.st.setdefault("bad_pcs", {})[g["machine"]] = {"t": now(), "group": g["name"], "why": why}
         if self.paid(g):
