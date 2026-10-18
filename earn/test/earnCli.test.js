@@ -1512,6 +1512,31 @@ describe('local LLM', () => {
     await expect(p).resolves.toBe(0);
   });
 
+  // Two 5090s, which Vulkan lists the other way round. The probe's bus ids put
+  // the model on the planned card, and a prompt pauses that card.
+  test('on a rig of several cards, a prompt pauses the card matched by bus id', async () => {
+    const m = load();
+    fiveNinety(m);
+    m.probe.detectGpusVram.mockResolvedValue([
+      { index: 0, name: 'RTX 5090', usedMb: 3000, totalMb: 32149 },
+      { index: 1, name: 'RTX 5090', usedMb: 3000, totalMb: 32149 },
+    ]);
+    m.probe.detectPciBusIds.mockResolvedValue({ 0: '00000000:01:00.0', 1: '00000000:02:00.0' });
+    m.probe.detectLlmDevices.mockResolvedValue([
+      { device: 'Vulkan0', name: 'RTX 5090', busId: '0000:02:00.0' },
+      { device: 'Vulkan1', name: 'RTX 5090', busId: '0000:01:00.0' },
+    ]);
+    const p = m.run(argvCoRun);
+    await settle();
+    const miner = m.PearlEngine.instances[0];
+    const llm = m.LlmManager.instances[0];
+    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({ mainGpu: 0, device: 'Vulkan1' }));
+    llm.emit('busy', true);
+    expect(miner.pauseCards).toHaveBeenCalledWith([0]);
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
   test('a shutdown mid-prompt leaves the pause to the miner\'s own stop', async () => {
     const m = load();
     fiveNinety(m);
@@ -1873,7 +1898,7 @@ describe('local LLM', () => {
     ]);
     const p = m.run(['--mode', 'llm', '--no-update', '--llm-binary', '/lb']);
     await settle();
-    expect(m.probe.detectLlmDevices).toHaveBeenCalledWith('/lb');
+    expect(m.probe.detectLlmDevices).toHaveBeenCalledWith('/lb', '/cache/model.gguf');
     expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ mainGpu: 0, device: 'Vulkan1' }));
     expect(allOut()).toContain('local LLM starting on 1 GPU [0] (llama-server calls it Vulkan1)');
     fire('SIGINT');

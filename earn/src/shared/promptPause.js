@@ -34,15 +34,17 @@ const ALL = 'all';
 // The card an instance was planned for is `ev.index`, but it need not be the
 // card the model is on. llama-server counts cards in Vulkan's order, which need
 // not be nvidia-smi's (the miner's): on Windows it follows the adapter driving
-// the desktop. The shells match its cards to nvidia-smi's by name and start
-// each instance with --device (llama.placeLlmPlan), but cards of the same name
-// are paired in order, and a card with no match keeps --main-gpu. So a rig of
-// two such cards can still load the model on card 1 when asked for card 0, and
-// pausing card 0 would stop the idle card while the busy one kept mining. The
-// bus id the server prints at load says which card it really is, when it
-// prints one: b9902 does only at -lv 4, which the shells do not pass.
+// the desktop. The shells match its cards to nvidia-smi's and start each
+// instance with --device (llama.placeLlmPlan), by bus id where llama-server
+// gave one, else by name. Cards of the same name matched by name are paired in
+// order, and a card with no match keeps --main-gpu. So a rig of two such cards
+// can still load the model on card 1 when asked for card 0, and pausing card 0
+// would stop the idle card while the busy one kept mining. `ev.busId` says
+// which card it really is: the bus id of the card it was matched to, when that
+// match is certain (by bus id, or by a name no other card has), or the one the
+// server printed at load, if it did.
 //
-// Without that id, a one-card rig has only one card it can be, and several
+// Without a bus id, a one-card rig has only one card it can be, and several
 // cards are left mining: guessing wrong costs a card's mining on every prompt
 // for no gain. A bus id nvidia-smi does not list is a card that does not mine
 // (an AMD card, say), so nothing pauses for it.

@@ -61,6 +61,23 @@ describe('LlmFleet', () => {
     ]);
   });
 
+  // The server never prints its bus id at the default log level, so the one
+  // the shell matched the card to stands in. The server's own wins.
+  test('tags a busy card with the bus id it was placed by', async () => {
+    const { fleet, mgrs } = makeFleet();
+    const seen = [];
+    fleet.on('busy', (e) => seen.push(e));
+    await fleet.start([{ index: 0, nGpuLayers: 42, device: 'Vulkan1', busId: '00000000:01:00.0' }],
+      { binaryPath: 'b', modelPath: 'm', platform: 'linux' });
+    mgrs[0].emit('busy', true);
+    mgrs[0].deviceBusId = '0000:02:00.0';
+    mgrs[0].emit('busy', false);
+    expect(seen).toEqual([
+      { index: 0, busId: '00000000:01:00.0', busy: true },
+      { index: 0, busId: '0000:02:00.0', busy: false },
+    ]);
+  });
+
   test('start() launches one manager per plan entry on distinct ports', async () => {
     const { fleet, mgrs } = makeFleet();
     const n = await fleet.start(

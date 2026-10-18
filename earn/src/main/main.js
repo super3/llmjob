@@ -1323,8 +1323,9 @@ async function startLlm(reserveMb, epoch) {
 
   // llama-server counts cards its own way, so ask it for its list and put each
   // instance on the card it was planned for (shared/llama.placeLlmPlan). After
-  // the DLL copy: without them the listing can't run on Windows.
-  const placed = placeLlmPlan(plan, cards, await probe.detectLlmDevices(binaryPath));
+  // the DLL copy: without them the listing can't run on Windows. With the
+  // model, it reads each card's bus id too, which prompt pause needs.
+  const placed = placeLlmPlan(plan, cards, await probe.detectLlmDevices(binaryPath, modelPath), busIds);
   if (stale()) {
     if (!session) setLlmNote(null);
     return false;

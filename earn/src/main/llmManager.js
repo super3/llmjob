@@ -2,8 +2,8 @@
 
 const { EventEmitter } = require('events');
 const {
-  resolveServerBinary, buildServerArgs, serverBaseUrl, isServerReady, parseTiming, parseSlotEvent,
-  parseUsingDevice,
+  resolveServerBinary, buildServerArgs, buildServerEnv, serverBaseUrl, isServerReady, parseTiming,
+  parseSlotEvent, parseUsingDevice,
 } = require('../shared/llama');
 
 // Spawns and supervises the llama.cpp `llama-server` child process. Like
@@ -40,9 +40,11 @@ const {
 //   stopped  exitCode
 //   error    Error
 class LlmManager extends EventEmitter {
-  constructor({ spawn, sleep, startAttempts, retryDelayMs, crashRestarts, crashSettleMs, now } = {}) {
+  constructor({ spawn, sleep, startAttempts, retryDelayMs, crashRestarts, crashSettleMs, now, env } = {}) {
     super();
     this.spawn = spawn;
+    // The environment the server starts from (llama.buildServerEnv).
+    this.env = env || process.env;
     this.sleep = sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.now = now || Date.now;
     this.startAttempts = startAttempts || 1; // total spawn attempts (1 = no retry)
@@ -73,7 +75,8 @@ class LlmManager extends EventEmitter {
     this._slotCarry = { out: '', err: '' };
     // The PCI bus id of the card this server loaded on, once it says (see
     // llama.parseUsingDevice). Null until then, and for a backend that does not
-    // know it.
+    // know it. b9902 says only at -lv 4, so in practice the fleet's own bus id
+    // for the instance (llama.placeLlmPlan) is the one used.
     this.deviceBusId = null;
   }
 
@@ -108,7 +111,9 @@ class LlmManager extends EventEmitter {
     this._attempt++;
     const bin = resolveServerBinary(this._opts.binaryPath, this._opts.platform);
     const args = buildServerArgs({ ...this._opts, ctxSize: this._ctxSize() });
-    const proc = this.spawn(bin, args);
+    // Its own environment only when it needs one: the projector's card.
+    const env = buildServerEnv(this._opts, this.env);
+    const proc = env ? this.spawn(bin, args, { env }) : this.spawn(bin, args);
 
     this.proc = proc;
     this.ready = false;

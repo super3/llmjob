@@ -5,7 +5,8 @@ const { ALL_LAYERS } = require('../src/shared/vram');
 const { LLM } = require('../src/shared/config');
 
 const {
-  resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, isServerReady, parseTokensPerSec,
+  resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, buildServerEnv, isServerReady,
+  parseTokensPerSec,
 } = require('../src/shared/llama');
 
 describe('resolveServerBinary', () => {
@@ -146,6 +147,21 @@ describe('buildServerArgs — vision projector', () => {
     expect(buildServerArgs({ modelPath: '/m.gguf' })).not.toContain('--mmproj');
     expect(buildServerArgs({ modelPath: '/m.gguf', mmprojPath: '' })).not.toContain('--mmproj');
     expect(buildServerArgs({ modelPath: '/m.gguf', mmprojPath: null })).not.toContain('--mmproj');
+  });
+});
+
+// mtmd ignores --device and loads the projector on the first GPU unless told.
+describe('buildServerEnv', () => {
+  test('puts the projector on the model\'s card', () => {
+    expect(buildServerEnv({ device: 'Vulkan1', mmprojPath: '/p.gguf' }, { PATH: '/bin' }))
+      .toEqual({ PATH: '/bin', MTMD_BACKEND_DEVICE: 'Vulkan1' });
+  });
+
+  test('null without a device or a projector, or when the user set it', () => {
+    expect(buildServerEnv({ mmprojPath: '/p.gguf' }, {})).toBeNull();
+    expect(buildServerEnv({ device: 'Vulkan1' }, {})).toBeNull();
+    expect(buildServerEnv({ device: 'Vulkan1', mmprojPath: '/p.gguf' }, { MTMD_BACKEND_DEVICE: 'Vulkan0' })).toBeNull();
+    expect(buildServerEnv()).toBeNull();
   });
 });
 
@@ -342,6 +358,33 @@ describe('matchLlmDevices', () => {
     expect(matchLlmDevices([card(0, 'RTX 4090')], [])).toEqual({});
     expect(matchLlmDevices(null, null)).toEqual({});
   });
+
+  // Two 3090s, the desktop on nvidia-smi's GPU 1, which Vulkan lists first.
+  // By name they pair in order, the wrong way round. Bus ids say which is which.
+  test('pairs cards by bus id first, same-name cards included', () => {
+    const name = 'NVIDIA GeForce RTX 3090';
+    const busIds = { 0: '00000000:01:00.0', 1: '00000000:02:00.0' };
+    const vk = [{ device: 'Vulkan0', name, busId: '0000:02:00.0' }, { device: 'Vulkan1', name, busId: '0000:01:00.0' }];
+    expect(matchLlmDevices([card(0, name), card(1, name)], vk, busIds)).toEqual({ 0: 'Vulkan1', 1: 'Vulkan0' });
+    // Without them, the old guess.
+    expect(matchLlmDevices([card(0, name), card(1, name)], vk)).toEqual({ 0: 'Vulkan0', 1: 'Vulkan1' });
+  });
+
+  test('matches by name the cards bus ids leave over, but never two that differ', () => {
+    const vk = [
+      { device: 'Vulkan0', name: 'NVIDIA GeForce RTX 4070', busId: '0000:02:00.0' },
+      { device: 'Vulkan1', name: 'NVIDIA RTX PRO 4500 Blackwell' },
+    ];
+    // GPU 0 has no bus id, so its name decides. GPU 1's matched by bus id.
+    expect(matchLlmDevices([card(0, 'NVIDIA RTX PRO 4500 Blackwell'), card(1, 'NVIDIA GeForce RTX 4070')], vk,
+      { 1: '00000000:02:00.0' })).toEqual({ 0: 'Vulkan1', 1: 'Vulkan0' });
+    // Same name, but the bus ids say they are different cards.
+    expect(matchLlmDevices([card(0, 'NVIDIA GeForce RTX 4070')], vk.slice(0, 1), { 0: '00000000:03:00.0' }))
+      .toEqual({});
+    // Nor as the one card left on each side.
+    expect(matchLlmDevices([card(0, 'NVIDIA RTX A')], [{ device: 'Vulkan0', name: 'NVIDIA RTX B', busId: '0000:02:00.0' }],
+      { 0: '00000000:03:00.0' })).toEqual({});
+  });
 });
 
 describe('placeLlmPlan', () => {
@@ -428,6 +471,34 @@ describe('placeLlmPlan', () => {
     const vk = [0, 1, 2].map((i) => ({ device: 'Vulkan' + i, name }));
     expect(placeLlmPlan([{ index: 0, freeMb: 23576 }, { index: 1, freeMb: 23576 }], rig, vk).warnings).toEqual([]);
   });
+
+  // Prompt pause reads the instance's bus id to know which card to stop.
+  test('gives a card its bus id when the match is certain', () => {
+    const busIds = { 0: '00000000:01:00.0', 1: '00000000:02:00.0' };
+    // By a name no other card has.
+    expect(placeLlmPlan([{ index: 0 }], cards, devices, busIds).plan)
+      .toEqual([{ index: 0, device: 'Vulkan1', busId: '00000000:01:00.0' }]);
+    // Not when nvidia-smi gave none.
+    expect(placeLlmPlan([{ index: 0 }], cards, devices, {}).plan).toEqual([{ index: 0, device: 'Vulkan1' }]);
+  });
+
+  test('matched by bus id, a twin gets its bus id and no warning', () => {
+    const name = 'NVIDIA GeForce RTX 5090';
+    const twins = [{ index: 0, name, usedMb: 400, totalMb: 32607 }, { index: 1, name, usedMb: 2900, totalMb: 32607 }];
+    const busIds = { 0: '00000000:01:00.0', 1: '00000000:02:00.0' };
+    const vk = [{ device: 'Vulkan0', name, busId: '0000:02:00.0' }, { device: 'Vulkan1', name, busId: '0000:01:00.0' }];
+    expect(placeLlmPlan([{ index: 0, freeMb: 32207 }], twins, vk, busIds)).toEqual({
+      plan: [{ index: 0, freeMb: 32207, device: 'Vulkan1', busId: '00000000:01:00.0' }],
+      warnings: [],
+    });
+    // Paired by name, it is only a guess: a warning, and no bus id.
+    const byName = vk.map((d) => ({ device: d.device, name }));
+    const guess = placeLlmPlan([{ index: 0, freeMb: 32207 }, { index: 1, freeMb: 29707 }], twins, byName, busIds);
+    expect(guess.plan).toEqual([
+      { index: 0, freeMb: 32207, device: 'Vulkan0' },
+      { index: 1, freeMb: 29707, device: 'Vulkan1' },
+    ]);
+  });
 });
 
 describe('describeLlmStart', () => {
@@ -447,6 +518,21 @@ describe('describeLlmStart', () => {
       .toBe('local LLM starting on 1 GPU [0] (llama-server calls it Vulkan1)');
     expect(describeLlmStart([{ index: 0, device: 'Vulkan1' }, { index: 1 }]))
       .toBe('local LLM starting on 2 GPUs [0, 1] (llama-server calls them Vulkan1, ?)');
+  });
+});
+
+describe('parseUsingDeviceLine', () => {
+  const { parseUsingDeviceLine } = require('../src/shared/llama');
+
+  test('reads the device and its bus id from the line b9902 prints', () => {
+    expect(parseUsingDeviceLine('0.00.513.847 I llama_prepare_model_devices: using device Vulkan0 (NVIDIA GeForce RTX 4090) (0000:01:00.0) - 23370 MiB free'))
+      .toEqual({ device: 'Vulkan0', busId: '0000:01:00.0' });
+  });
+
+  test('null without a bus id, and for every other line', () => {
+    expect(parseUsingDeviceLine('x: using device Vulkan0 (Some GPU) (unknown id) - 8000 MiB free')).toBeNull();
+    expect(parseUsingDeviceLine('load: 0 unused tokens')).toBeNull();
+    expect(parseUsingDeviceLine(undefined)).toBeNull();
   });
 });
 

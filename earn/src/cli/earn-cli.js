@@ -581,8 +581,12 @@ async function launchLlm(settings, planned, armServe, background, onBusy) {
   }
 
   // llama-server counts cards its own way, so ask it for its list and put each
-  // instance on the card it was planned for (shared/llama.placeLlmPlan).
-  const placed = placeLlmPlan(planned.plan, cards, await probe.detectLlmDevices(binaryPath));
+  // instance on the card it was planned for (shared/llama.placeLlmPlan). With
+  // the model, it reads each card's bus id too, which prompt pause needs.
+  const [devices, busIds] = await Promise.all([
+    probe.detectLlmDevices(binaryPath, modelPath), probe.detectPciBusIds(),
+  ]);
+  const placed = placeLlmPlan(planned.plan, cards, devices, busIds);
   for (const w of placed.warnings) log(w);
   const plan = placed.plan;
 

@@ -10,7 +10,7 @@
 const net = require('net');
 const http = require('http');
 const https = require('https');
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 
 const { REGIONS, DEFAULTS, NETWORK } = require('../shared/config');
 const { pickFastestRegion } = require('../shared/region');
@@ -19,7 +19,7 @@ const {
   parsePciBusIds,
 } = require('../shared/gpu');
 const { parseCudaCards } = require('../shared/coreVariant');
-const { parseDeviceList } = require('../shared/llama');
+const { parseDeviceList, parseUsingDeviceLine } = require('../shared/llama');
 // Major version out of an nvidia-smi driver string. Lived in shared/engine
 // until alpha-miner was removed; the driver version is a property of the
 // machine, not of any engine.
@@ -178,13 +178,82 @@ function detectPciBusIds() {
 // The cards llama-server can load on, in its own order, as [{ device, name }]
 // (see shared/llama.parseDeviceList). `binaryPath` is the installed
 // llama-server. Asked before each start so the model can be put on the card it
-// was planned for (llama.placeLlmPlan). It loads no model. Resolves [] when it
-// can't be run. Never rejects.
-function detectLlmDevices(binaryPath) {
+// was planned for (llama.placeLlmPlan). The listing loads no model.
+//
+// With more than one card listed and `modelPath` given, each card also gets
+// `busId`, its PCI bus id, from detectLlmBusIds. That tells cards of the same
+// name apart, and tells prompt pause which card a prompt runs on. A card whose
+// bus id could not be read has none. Resolves [] when llama-server can't be
+// run. Never rejects.
+function detectLlmDevices(binaryPath, modelPath) {
   return new Promise((resolve) => {
     if (!binaryPath) return resolve([]);
     execFile(binaryPath, ['--list-devices'], { timeout: 30000, windowsHide: true },
       (err, stdout) => resolve(err ? [] : parseDeviceList(stdout)));
+  }).then(async (list) => {
+    if (list.length < 2 || !modelPath) return list;
+    const ids = await detectLlmBusIds(binaryPath, modelPath);
+    return list.map((d) => (ids[d.device] ? Object.assign({}, d, { busId: ids[d.device] }) : d));
+  });
+}
+
+// Each card's PCI bus id as llama-server sees it, as { device: busId }.
+//
+// --list-devices prints none. b9902 prints them only while it loads a model,
+// one "using device" line per card, and only at -lv 4
+// (llama.parseUsingDeviceLine). That level is too chatty for a server that
+// runs for hours: loading a model logged 231 lines instead of 10, and each
+// prompt 35 instead of 10. So this runs a short one that reads the model's
+// header and nothing more: CPU only (-ngl 0, --fit off), every card it would
+// use (--split-mode layer), any free port (it binds before loading), killed at
+// the first line after its device lines. On a 4090 box with the 27B model that
+// took under a second. Resolves {} when it fails, after 30 s at most. Never
+// rejects.
+function detectLlmBusIds(binaryPath, modelPath) {
+  return new Promise((resolve) => {
+    const ids = {};
+    let proc;
+    try {
+      proc = spawn(binaryPath, ['--model', modelPath, '--n-gpu-layers', '0', '--split-mode', 'layer',
+        '--fit', 'off', '-lv', '4', '--host', '127.0.0.1', '--port', '0'],
+      { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) {
+      return resolve(ids);
+    }
+    let stopping = false;
+    let grace = null;
+    const done = () => { clearTimeout(timer); clearTimeout(grace); resolve(ids); };
+    // Killed, it exits at once. If it never says so, carry on after 5 s.
+    const stop = () => {
+      if (stopping) return;
+      stopping = true;
+      proc.kill();
+      grace = setTimeout(done, 5000);
+    };
+    const timer = setTimeout(stop, 30000);
+    // Whole lines only, since a chunk can end mid-line. The device lines come
+    // out together, so the next line on the same stream means they are all in.
+    const read = (stream) => {
+      let carry = '';
+      let seen = false;
+      stream.on('data', (chunk) => {
+        const lines = (carry + chunk).split(/\r?\n/);
+        carry = lines.pop();
+        for (const line of lines) {
+          if (/using device \S+/.test(line)) {
+            seen = true;
+            const e = parseUsingDeviceLine(line);
+            if (e) ids[e.device] = e.busId;
+          } else if (seen && line.trim()) {
+            stop();
+          }
+        }
+      });
+    };
+    read(proc.stdout);
+    read(proc.stderr);
+    proc.on('error', done);
+    proc.on('exit', done);
   });
 }
 
@@ -303,6 +372,7 @@ module.exports = {
   detectCudaCards,
   detectPciBusIds,
   detectLlmDevices,
+  detectLlmBusIds,
   postMinerReport,
   findFreePort,
   detectGpuInfo,

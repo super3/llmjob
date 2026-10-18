@@ -161,8 +161,12 @@ class LlmFleet extends EventEmitter {
     // A prompt started or finished on this card. Passed on with the card, so the
     // shells can pause mining on that card alone while the model works: the
     // card it was planned for, and the bus id of the card it really loaded on
-    // (see shared/promptPause.cardForPrompt for why both).
-    mgr.on('busy', (busy) => this.emit('busy', { index: inst.index, busId: mgr.deviceBusId || null, busy }));
+    // (see shared/promptPause.cardForPrompt for why both). That bus id is the
+    // server's own, if it printed one, else the one the shell matched it to
+    // (shared/llama.placeLlmPlan).
+    mgr.on('busy', (busy) => this.emit('busy', {
+      index: inst.index, busId: mgr.deviceBusId || e.busId || null, busy,
+    }));
     mgr.on('crashed', (info) => this._onCrashed(inst, info));
     mgr.on('stopped', (code) => this._onStopped(inst, code));
     mgr.on('error', (err) => this.emit('error', err));

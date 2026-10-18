@@ -19,6 +19,18 @@ describe('LlmManager', () => {
     expect(m.stop()).toBe(false);
   });
 
+  // mtmd puts the vision projector on the first GPU unless told otherwise.
+  test('starts a server with a device and a projector with the projector on that device', () => {
+    const spawn = jest.fn(() => makeChild());
+    const m = new LlmManager({ spawn, env: { PATH: '/bin' } });
+    m.start({ modelPath: '/m.gguf', mmprojPath: '/p.gguf', device: 'Vulkan1', platform: 'linux' });
+    expect(spawn.mock.calls[0][2]).toEqual({ env: { PATH: '/bin', MTMD_BACKEND_DEVICE: 'Vulkan1' } });
+    // Without a projector the server inherits the environment as before.
+    const spawn2 = jest.fn(() => makeChild());
+    new LlmManager({ spawn: spawn2 }).start({ modelPath: '/m.gguf', device: 'Vulkan1', platform: 'linux' });
+    expect(spawn2.mock.calls[0]).toHaveLength(2);
+  });
+
   test('start spawns llama-server with built args and emits started with the base URL', () => {
     const child = makeChild();
     const spawn = jest.fn(() => child);

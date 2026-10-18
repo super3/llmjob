@@ -1772,7 +1772,7 @@ describe('local LLM', () => {
     await flush();
 
     // After the runtime DLLs, which the listing needs on Windows.
-    expect(ctx.probe.detectLlmDevices).toHaveBeenCalledWith('/tmp/llm/llama-server');
+    expect(ctx.probe.detectLlmDevices).toHaveBeenCalledWith('/tmp/llm/llama-server', '/tmp/llm/model.gguf');
     const llm = ctx.LlmManager.instances[0];
     expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({ mainGpu: 0, device: 'Vulkan1' }));
     expect(ctx.sent('miner:log').map((l) => l.line))
@@ -4268,6 +4268,31 @@ describe('mining pauses while the local LLM answers a prompt', () => {
     llm.emit('busy', false);
     llm.emit('busy', true);
     expect(miner.pauseCards).not.toHaveBeenCalled();
+  });
+
+  // Two 4090s, which Vulkan lists the other way round. The probe's bus ids put
+  // the model on the planned card, and a prompt pauses that card.
+  it('pauses the card matched by bus id when the server never says', async () => {
+    const ctx = await boot();
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    ctx.probe.detectGpusVram.mockResolvedValue([
+      { index: 0, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+      { index: 1, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+    ]);
+    ctx.probe.detectPciBusIds.mockResolvedValue({ 0: '00000000:01:00.0', 1: '00000000:02:00.0' });
+    ctx.probe.detectLlmDevices.mockResolvedValue([
+      { device: 'Vulkan0', name: 'RTX 4090', busId: '0000:02:00.0' },
+      { device: 'Vulkan1', name: 'RTX 4090', busId: '0000:01:00.0' },
+    ]);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+    await flush();
+    const miner = ctx.PearlEngine.instances[0];
+    miner.emit('event', { type: 'status', hashrate: '2.5' });
+    await flush(30);
+    const llm = ctx.LlmManager.instances[0];
+    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({ mainGpu: 0, device: 'Vulkan1' }));
+    llm.emit('busy', true);
+    expect(miner.pauseCards).toHaveBeenCalledWith([0]);
   });
 
   it('says nothing when the prompt runs on a card that is not mining', async () => {
