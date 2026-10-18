@@ -986,6 +986,9 @@ class W:
                 # Kryptex's own count is the proof it takes a box's work (see leave and kx_works): the miner's log
                 # can't tell which pool accepted a share.
                 g["kx_share"] = max(g.get("kx_share") or 0, ls)
+            # The hashrate is from the row of the pool it mines on now, or none: a box that just switched has no row
+            # there yet, and the other pool's figure would show under this one.
+            g["pool_ths"] = None
             if self.on_kx(g, g.get("machine"), t):   # the pool it mines on now: last share and hashrate from there
                 if x:
                     if ls >= g["created"]:
