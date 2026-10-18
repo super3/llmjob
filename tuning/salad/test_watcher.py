@@ -1379,7 +1379,7 @@ class TestMonero(Base):
         self.assertIn(f"| ⏳{w.NB}2060{w.NB}batch | — | — | — | — | +0.00* |", report)
         self.assertIn("| **All** | **200** | **2.0** | **0.11** |", report)
         self.assertIn("| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", report)
-        self.assertIn("| 🪙 XMR | 1.5 kH/s | 0.005000 | 0.000100 | 0.000000 |", report)  # straight from the pool: no stars
+        self.assertIn("| 🪙 XMR HeroMiners | 1.5 kH/s | 0.005000 | 0.000100 | 0.000000 |", report)  # straight from the pool: no stars
         self.assertIn("Our boxes have mined 0.000100* XMR ($0.05* at $500)", report)
         rows = [l for l in report.split("| Pool |")[0].splitlines() if l.startswith("|")]
         self.assertTrue(all(l.count("|") == 7 for l in rows))  # one table, with a kH/s column

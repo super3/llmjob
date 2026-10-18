@@ -351,7 +351,7 @@ The report is **one table** with six columns (five without a Monero address), so
 | Pool | Hashrate (1h) | Confirmed | Pending | Paid |
 |---|---|---|---|---|
 | ⛏️ PRL | 961 TH/s | 0.884 | 5.092 | 86.608 |
-| 🪙 XMR | 32.1 kH/s | 0.002222 | 0.000000 | 0.000000 |
+| 🪙 XMR HeroMiners | 32.1 kH/s | 0.002222 | 0.000000 | 0.000000 |
 ```
 
 - **The first line** gives only what the table doesn't: the time (New York: EDT or EST), the PRL price and how many boxes are mining.
