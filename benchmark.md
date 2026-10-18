@@ -49,7 +49,8 @@ because no L40 was for rent other than the New York one.
   1080 Ti on Salad (the section's notes).
 - GTX 16-series: 0.7–1.3 TH/s for all three miners (96–104%). The cards have no tensor cores, and
   every miner's tensor instructions run on a slow shared unit. Not worth mining on Salad.
-- AMD Radeon: not run yet. PeakMiner and SRBMiner baselines on Salad; our miner is CUDA only.
+- AMD Radeon on Salad: SRBMiner 32–85 TH/s, from the RX 7800 XT to the RX 9070 XT. PeakMiner doesn't
+  mine Pearl on AMD (0), and our miner is CUDA only.
 - Tesla T4: 91%. As on the 20-series, the clock is close (15 MHz below the
   competitors') and we do 7% less work per clock.
 
@@ -735,32 +736,51 @@ only good to about ±5%.
 - **The second GTX 1660** wasn't found in 10 PCs. Of the two plain 1660s, one (e3babbec) couldn't keep a
   connection to HeroMiners (PeakMiner's authorize timed out, SRBMiner had a rate for 15 seconds, ours never
   got a job), so it isn't a result.
-- **The second GTX 1650** wasn't run: the benchmark was stopped after the first, since every 16-series card
-  gives the same answer.
+- **The second GTX 1650** wasn't run: the benchmark was stopped after the ## AMD Radeon (RDNA 3 and 4, on Salad)
 
-## AMD Radeon (RDNA 3 and 4, on Salad)
+Run on 18 October 2026, 00:04–02:28 UTC. These are the AMD cards Salad rents. Each row is one Salad PC (a home
+computer that runs containers in WSL2), named by the first 8 characters of its Salad machine ID. Each PC ran
+SRBMiner 3.7.1 and then PeakMiner 2.17.6, 5 minutes each after a 60-second unmeasured warm-up, on
+`us.pearl.herominers.com` (`tuning/salad/bench.sh` at `8da98db`, on the `rocm/dev-ubuntu-24.04:7.2` image).
+Our miner is CUDA only, so "Ours" is "no build" and there's no "% of best".
 
-Not run yet. These are the AMD cards Salad rents. Each PC runs PeakMiner and SRBMiner for 5 minutes each
-after a 60-second unmeasured warm-up, the way the GTX rows are run, as a baseline. Our miner is CUDA only,
-so "Ours" is "no build". PeakMiner's README lists AMD support only for CSD, Alphanumeric and Quantus, not
-Pearl; SRBMiner lists pearlhash for AMD (RX 5000 to 9000).
+SRBMiner mines Pearl on every one of these cards, through AMD's OpenCL. PeakMiner started on all ten PCs and
+quit within 15 seconds with no hashrate and no shares: its README lists AMD support only for CSD,
+Alphanumeric and Quantus, not Pearl, so it's 0.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
-| RX 9070 XT | Salad (— W, 16 GB) | — | no build | not run | not run | — |
-| RX 9070 XT | Salad (— W, 16 GB) | — | no build | not run | not run | — |
-| RX 9060 XT | Salad (— W, 16 GB) | — | no build | not run | not run | — |
-| RX 9060 XT | Salad (— W, 16 GB) | — | no build | not run | not run | — |
-| RX 7900 XTX | Salad (— W, 24 GB) | — | no build | not run | not run | — |
-| RX 7900 XTX | Salad (— W, 24 GB) | — | no build | not run | not run | — |
-| RX 7900 XT | Salad (— W, 20 GB) | — | no build | not run | not run | — |
-| RX 7900 XT | Salad (— W, 20 GB) | — | no build | not run | not run | — |
-| RX 7800 XT | Salad (— W, 16 GB) | — | no build | not run | not run | — |
-| RX 7800 XT | Salad (— W, 16 GB) | — | no build | not run | not run | — |
+| RX 9070 XT | Salad (16 GB) | 83151dba | no build | 0 | 79.4 | — |
+| RX 9070 XT | Salad (16 GB) | 3d6cb276 | no build | 0 | 85.1 | — |
+| RX 9060 XT | Salad (16 GB) | e235d465 | no build | 0 | 42.2 | — |
+| RX 9060 XT | Salad (16 GB) | 3540c3e2 | no build | 0 | 40.7 | — |
+| RX 7900 XTX | Salad (24 GB) | d3b480e3 | no build | 0 | 52.8 | — |
+| RX 7900 XTX | Salad (24 GB) | 44d3716f | no build | 0 | 53.5 | — |
+| RX 7900 XT | Salad (20 GB) | 67c308d2 | no build | 0 | 46.8 | — |
+| RX 7900 XT | Salad (20 GB) | 2c7775f7 | no build | 0 | 44.6 | — |
+| RX 7800 XT | Salad (16 GB) | 56ae1be5 | no build | 0 | 32.4 | — |
+| RX 7800 XT | Salad (16 GB) | b9d70479 | no build | 0 | 32.4 | — |
+
+- **SRBMiner's figure** is its own hashrate at the end of the run, read from its API. After the first 30
+  seconds every run stayed within about 4% of it, apart from one RX 7800 XT (`56ae1be5`, 28.7–33.0). The pool
+  accepted its shares on 8 of the 10 PCs, 0 rejected; the other two found none in 5 minutes, which is
+  normal at their rates (a share is 2^53 hashes, about 3 minutes at 50 TH/s).
+- **No power figures.** Salad's `amd-smi` (mounted at `/opt/rocm-wsl`) answered `static --json` with nothing
+  and `monitor` with only its header line, so the Host column has no power limit and the box logged no draw
+  or clocks. `rocminfo` named every card; AMD's OpenCL listed each as one device.
+- **SRBMiner's own checks don't work here, but mining does.** `--list-devices` printed nothing on every PC.
+  On the first PC SRBMiner's warm-up run quit after 15 seconds with no output, and the measured run after
+  it mined normally.
+- **Hosts not used:** an RX 7900 XT (`8e4144bb`) ran SRBMiner at 43.4 TH/s for 15 seconds, then at 0 with no
+  shares for the rest of the run (it lost the pool or the GPU stalled), so it isn't a result; the next two
+  7900 XTs held 44–48. Salad took another 7900 XT PC (`8dae4b18`) back before its image downloaded. The
+  "AMD RX 7900 XTX" class once handed out a PC with an NVIDIA RTX 2080 Ti (`4f7066fe`), which was skipped.
 
 Salad's prices per hour on 17 October (batch / low / medium / high): RX 9070 XT $0.070 / 0.110 / 0.155 /
 0.196; RX 9060 XT $0.049 / 0.075 / 0.100 / 0.126; RX 7900 XTX $0.066 / 0.100 / 0.134 / 0.168; RX 7900 XT
 $0.054 / 0.088 / 0.122 / 0.156; RX 7800 XT $0.042 / 0.072 / 0.102 / 0.132.
+
+ 0.122 / 0.156; RX 7800 XT $0.042 / 0.072 / 0.102 / 0.132.
 
 ## Hosts replaced in this run
 
