@@ -44,8 +44,9 @@ because no L40 was for rent other than the New York one.
   out at about 41% of the competitors on this card. Matching them needs a
   fold on the B200's own tensor instructions (tcgen05).
 - GTX 10-series: 0 for PeakMiner and SRBMiner. Pearl needs RTX 20xx or newer
-  (PeakMiner's docs), and both got nothing on a GTX 1080 on Salad. We have no
-  Pascal build either.
+  (PeakMiner's docs), and both got nothing on a GTX 1080 on Salad. Our release
+  has no Pascal build either; an unreleased one mined at 17.8 TH/s on a GTX
+  1080 Ti on Salad (the section's notes).
 - GTX 16-series: 0.7–1.3 TH/s for all three miners (96–104%). The cards have no tensor cores, and
   every miner's tensor instructions run on a slow shared unit. Not worth mining on Salad.
 - AMD Radeon: not run yet. PeakMiner and SRBMiner baselines on Salad; our miner is CUDA only.
@@ -719,9 +720,9 @@ pearlhash on it.
 One card was measured, a GTX 1080 on Salad PC `c868132d` (180 W), on 17 October with `tuning/salad/bench.sh`
 (5 minutes each on `us.pearl.herominers.com` after a 60-second warm-up). PeakMiner 2.17.6 quit within 15
 seconds, twice, with no shares. SRBMiner 3.7.1 ran the full 5 minutes at 0 H/s with no shares, the card idle
-at 8 W and 139 MHz. The other rows are taken as 0 from that and PeakMiner's docs, without a run. Our miner has
-no Pascal build (its lowest target is sm_75, and its kernel uses int8 tensor cores, which Pascal lacks), so
-"Ours" is "no build".
+at 8 W and 139 MHz. The other rows are taken as 0 from that and PeakMiner's docs, without a run. Our released miner
+has no Pascal build (its lowest target is sm_75, and its kernel uses int8 tensor cores, which Pascal lacks), so
+"Ours" is "no build". An unreleased Pascal build was measured afterwards; see the notes under the table.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
@@ -730,6 +731,23 @@ no Pascal build (its lowest target is sm_75, and its kernel uses int8 tensor cor
 | GTX 1070 | Salad | not run | no build | 0 | 0 | — |
 | GTX 1060 | Salad (6 GB) | not run | no build | 0 | 0 | — |
 | GTX 1050 Ti | Salad (4 GB) | not run | no build | 0 | 0 | — |
+
+- **Our Pascal core, not released (17–18 October).** PR #261 adds a fold on Pascal's `dp4a` instruction for
+  sm_61. It isn't in a release, and it ran by a different method from "How a host is tested" (`tuning/box.sh`
+  on a mining box, the CLI picking its own HeroMiners host, rates from the miner's minute lines), so the rows
+  stay "no build" until a release has it.
+- **GTX 1080 Ti, Salad PC `af9f7a6e` (250 W), commit `d425085`:** the hit check verified 156 of 156 hits, 24
+  salts in 90 s, 20.4 TH/s at the end on a cool card. Mining: **17.8 TH/s**, the mean of the minute samples
+  over 5 minutes after a 1-minute warm-up (17.5–18.0), the card at 100%, 214–222 W, 82–83 °C and 1594–1620
+  MHz (1911 MHz when cool). The pool accepted its first share at 4 minutes, 0 rejected.
+- **Same PC, commit `4c48c3d`** (the first version: operands row-major rather than in 32-byte k-blocks, and
+  one GPU wait per read of a hit rather than one per hit): 139 of 139 hits, 22 salts, on the warm card.
+  Mining: 17.5 TH/s by the same method (17.3–17.6), at 236–237 W, 82 °C and 1620 MHz. So `d425085` is at most
+  about 2% faster.
+- **A first 1080 Ti PC (`2afc1bcc`, 200 W) isn't a result.** Both commits verified every hit there (7 of 7,
+  three checks) but saw one salt in 90 s, about 0.9 TH/s. Its GPU ran at 93–95% and 160–186 W even while only
+  the release was on it, which has no code that runs on compute 6.1, so another load on that PC was using the
+  card.
 
 ## GTX 16-series (Turing without tensor cores, sm_75, on Salad)
 
