@@ -1777,8 +1777,8 @@ class TestKryptex(Base):
         g, other = self.mining("m1", 300), self.mining("m2", 300)
         for x in (g, other):
             x.update(kx=True, kx_since=self.clock[0] - 3600)
-        self.x.st["kx_read_t"] = self.clock[0] - 31 * 60   # Kryptex's API unread for 31 min
-        other["kx_log_share"] = self.clock[0] - 120          # but other's miner counts shares on Kryptex
+        self.x.st["kx_read_t"] = self.clock[0] - 31 * 60   # Kryptex's API unread for 31 min,
+        # but other's miner counts accepted shares on Kryptex (mining() gives it a rising count).
         self.x.leave(g, "no mining reading 12 min after getting PC m1")
         self.assertTrue(g["kx"])                             # Kryptex's pool works: a PC problem
         self.assertEqual(self.x.st.get("kx_fails", 0), 0)
@@ -1790,11 +1790,63 @@ class TestKryptex(Base):
         for x in (g, other):
             x.update(kx=True, kx_since=self.clock[0] - 3600)
         self.x.st["kx_read_t"] = self.clock[0] - 31 * 60
-        other["kx_share"] = self.clock[0] - 10 * 60           # Kryptex's count, from before its API went down
+        other["kx_share"] = self.clock[0] - 35 * 60           # Kryptex's count, from before its API went down
+        for r in g["readings"] + other["readings"]:
+            r[3] = 0                                         # and no miner has counted an accepted share
         self.x.leave(g, "no mining reading 12 min after getting PC m1")
         self.assertFalse(g["kx"])                            # no box's miner counts a share there either
         self.assertEqual(self.x.st["kx_fails"], 1)
         self.assertNotIn("m1", self.x.st.get("bad_pcs", {}))
+
+    def test_a_lone_kryptex_box_s_own_log_shares_stand_in_while_kryptex_cannot_be_read(self):
+        g = self.mining("m1", 60)                         # a rising accepted count on m1, an hour on it
+        g.update(kx=True, kx_since=self.clock[0] - 3000)
+        self.x.st["kx_read_t"] = self.clock[0] - 40 * 60
+        self.x.leave(g, "no mining reading for 7 min on PC m1")
+        self.assertTrue(g["kx"])                          # it mined on Kryptex: a PC problem
+        self.assertEqual(self.x.st.get("kx_fails", 0), 0)
+        self.assertIn("m1", self.x.st["bad_pcs"])
+
+    def test_log_shares_count_from_the_moment_kryptex_s_api_stops_answering(self):
+        self.x.cfg["kryptex_groups"] = 2
+        g, other = self.mining("m1", 300), self.mining("m2", 300)
+        for x in (g, other):
+            x.update(kx=True, kx_since=self.clock[0] - 3600)
+        for r in g["readings"]:
+            r[3] = 5
+        other["kx_share"] = self.clock[0] - 35 * 60
+        self.x.st["kx_read_t"] = self.clock[0]            # read this round: Kryptex's own count decides
+        self.assertFalse(self.x.kx_works(g, self.clock[0]))
+        self.x.st["kx_read_t"] = self.clock[0] - 3 * 60   # no answer for 3 min: other's log shares since then count
+        self.assertTrue(self.x.kx_works(g, self.clock[0]))
+        self.x.st["kx_read_t"] = self.clock[0] - 90       # one missed round isn't an outage
+        self.assertFalse(self.x.kx_works(g, self.clock[0]))
+        self.x.st["kx_read_t"] = self.clock[0] - 3 * 60
+        for r in other["readings"]:
+            r[0] -= 10 * 60                               # its log shares are from before Kryptex's last answer,
+        self.assertFalse(self.x.kx_works(g, self.clock[0]))   # which had no share from it
+
+    def test_the_miner_s_own_count_is_proof_only_on_a_pc_mining_on_kryptex(self):
+        g = self.mining("m1", 60)
+        g.update(kx=True, kx_since=self.clock[0] - 7200)
+        last = g["readings"][-1][0]
+        self.assertEqual(self.x.kx_log_proof(g), last)
+        g["pc_pool"] = {"m1": False}                      # seen mining on HeroMiners there
+        self.assertEqual(self.x.kx_log_proof(g), 0)
+        g["pc_pool"] = {}
+        g["pc_since"] = self.clock[0] - 4 * 60            # its first 5 minutes there: not yet
+        self.assertEqual(self.x.kx_log_proof(g), 0)
+        g["machine"] = "m9"                               # once it has left m1, m1's shares count again
+        self.assertEqual(self.x.kx_log_proof(g), last)
+
+    def test_the_kryptex_row_sums_the_boxes_that_mine_there(self):
+        k, h = self.group(kx=True), self.group()
+        k.update(has_pc=True, machine="m1", pc_pool={"m1": False}, pool_ths=199.0)   # its box mines on HeroMiners
+        h.update(has_pc=True, machine="m2", pc_pool={"m2": True}, pool_ths=150.0)    # its box mines on Kryptex
+        self.x.st["pool_tot"] = {"t": T0, "paid": 6.0, "balance": 1.0, "unconfirmed": 1.0, "blocks": 20,
+                                 "hashes": 0, "ths_1h": 199}
+        self.x.st["kx_tot"] = {"t": T0, "total": 0.5, "confirmed": 0.3, "unconfirmed": 0.2, "paid": 0.0}
+        self.assertIn(f"| ⛏️ PRL{w.NB}Kryptex | 150 TH/s |", self.report())
 
     def test_kryptex_s_workers_read_is_dated_only_when_it_works(self):
         self.config_file()
@@ -1861,12 +1913,17 @@ class TestKryptex(Base):
         self.config_file(kryptex_groups=0)
         k, h = self.two_on_pcs()
         k["ended"] = self.clock[0]                           # no group on Kryptex
-        h.update(sw_t=self.clock[0] - 7200, sw_from="m0", sw_prev=True)   # switched off two hours ago
+        h.update(sw_t=self.clock[0] - 3600, sw_from="m0", sw_prev=True)   # switched off an hour ago
         self.http.on("GET", "v3/miner/workers", (200, {"results": [
             {"worker": "biz-rtx4080-2-g0", "avg_hashrate_30m": "199000000000000", "last_share": int(self.clock[0]) - 60}]}))
         self.x.round()
         self.assertTrue(self.http.made("GET", "v3/miner/workers"))
         self.assertEqual(h["pc_pool"], {"m2": True})
+        # Two hours after the switch, its box has long shown its pool: the workers aren't read for it any more.
+        self.clock[0] += 3600 + 60
+        n = len(self.http.made("GET", "v3/miner/workers"))
+        self.x.round()
+        self.assertEqual(len(self.http.made("GET", "v3/miner/workers")), n)
 
     def test_a_box_seen_on_herominers_takes_its_last_share_from_there(self):
         self.config_file()
@@ -1893,6 +1950,11 @@ class TestKryptex(Base):
         self.assertFalse(self.http.made("POST", "/reallocate$"))
         self.assertIn("KRYPTEX OFF biz-rtx4080 (the Kryptex test stopped after 2 boxes mined no shares there): Pearl "
                       "on HeroMiners; it mines that way on this PC already", self.events())
+        self.assertEqual((g["sw_from"], g["sw_prev"]), ("m1", False))   # m1's box mined on HeroMiners all along
+        g.update(machine=None, has_pc=False)              # Salad takes m1 back, and hands it back later
+        self.step(g, 1, "m1")
+        self.assertIsNone(g["sw_from"])                   # the new box there runs the group's command
+        self.assertFalse(self.x.on_kx(g, "m1", self.clock[0]))
 
     def test_the_hashrate_check_counts_a_box_seen_on_herominers(self):
         a, k = self.group(), self.group()
@@ -1950,7 +2012,7 @@ class TestKryptex(Base):
         self.x.round()
         self.assertGreater(g["prl"], 0)
         self.assertEqual(g.get("prl_kx", 0.0), 0.0)
-        self.assertIsNone(g.get("kx_log_share"))          # its shares went to HeroMiners
+        self.assertEqual(self.x.kx_log_proof(g), 0)        # its shares went to HeroMiners
 
     def test_only_kryptex_s_own_count_proves_it_takes_a_box_s_work(self):
         self.config_file()
@@ -1966,7 +2028,6 @@ class TestKryptex(Base):
         self.x.round()
         self.assertGreater(g.get("prl_kx", 0.0), 0)       # booked to Kryptex, as its command says
         self.assertIsNone(g.get("kx_share"))
-        self.assertGreater(g["kx_log_share"], g["kx_since"])   # what stands in while Kryptex can't be read
         self.http.on("GET", "v3/miner/workers", (200, {"results": [
             {"worker": "biz-rtx4080-g0", "avg_hashrate_30m": "198000000000000", "last_share": int(T0) + 520}]}))
         self.clock[0] += 60

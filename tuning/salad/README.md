@@ -200,9 +200,10 @@ What's built for it, with `kryptex_groups` boxes marked **(K)** in the table:
   expect, from 5 minutes after the box got its PC and after its last switch (the PC it left can still
   send some), means the box mines there. That PC's readings then count to that pool (in the ledger and
   the hourly hashrate check), its last share and hashrate come from that pool's row, a `WARN` says so
-  once, and the group's next PC starts on the pool its command names. Kryptex's rows are read while any
-  group is on Kryptex or has been switched. If Salad hands the group the same PC again, the new box there
-  starts on the group's command. When the test stops, a Kryptex box already seen mining on HeroMiners
+  once, and the group's next PC starts on the pool its command names. The report's Kryptex hashrate sums
+  the boxes that mine there. Kryptex's rows are read while any group is on Kryptex or was switched in the
+  last 2 hours. If Salad hands the group the same PC again, the new box there starts on the group's
+  command. When the test stops, a Kryptex box already seen mining on HeroMiners
   isn't moved. The ledger also follows the command Salad has for each group: an update that timed out
   can still go through, and the PC the box is on keeps the pool its readings were booked to.
 - **Why not move a mining box:** until 18 October new groups started on HeroMiners (on the first try two
@@ -219,9 +220,11 @@ What's built for it, with `kryptex_groups` boxes marked **(K)** in the table:
   no readings, while no other box's work has reached Kryptex in 30 minutes, goes back to HeroMiners
   instead, on a new PC, and the PC stays off the bad list (the pool is the likelier cause). "Reached
   Kryptex" is by Kryptex's own count (its worker rows' last share): the miner's log can't tell which
-  pool accepted a share. While Kryptex's API can't be read, the miners' own accepted counts on PCs
-  booked to Kryptex stand in, so an outage of the API alone isn't blamed on Kryptex, and one of its pool
-  too still is. If another box's work did reach Kryptex, or the box was seen mining on HeroMiners at
+  pool accepted a share. When Kryptex's API hasn't answered for 2 minutes, the miners' own accepted
+  counts since its last answer stand in, for the box itself as for the others: only on PCs whose readings
+  count to Kryptex, and on a box's current PC from 5 minutes in (by then a box that started on HeroMiners
+  would have been seen). So an outage of the API alone isn't blamed on Kryptex, and one of its pool too
+  still is. If another box's work did reach Kryptex, or the box was seen mining on HeroMiners at
   that PC, the PC is the likelier cause: the box is left as usual and stays on Kryptex. A new PC that never sends a reading is common here (46 times by
   18 October), and with new groups starting on Kryptex, two of those would stop the test. Two Kryptex failures stop it: Kryptex
   boxes with a PC are moved to start on HeroMiners at once, and every group stays on HeroMiners until
