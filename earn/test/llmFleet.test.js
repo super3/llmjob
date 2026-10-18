@@ -123,6 +123,16 @@ describe('LlmFleet', () => {
     expect(fleet.webUrl()).toBeNull();
   });
 
+  // The shell's match of the card to llama-server's own name for it.
+  test('passes each entry\'s llama-server device along with its index', async () => {
+    const { fleet, mgrs } = makeFleet();
+    await fleet.start([{ index: 0, nGpuLayers: 42, device: 'Vulkan1' }, { index: 1, nGpuLayers: 42 }], {});
+    await drain();
+    expect(mgrs[0].startOpts).toMatchObject({ mainGpu: 0, device: 'Vulkan1' });
+    expect(mgrs[1].startOpts.mainGpu).toBe(1);
+    expect(mgrs[1].startOpts.device).toBeUndefined();
+  });
+
   test('an unmeasured (null-index) instance omits --main-gpu', async () => {
     const { fleet, mgrs } = makeFleet();
     await fleet.start([{ index: null, nGpuLayers: 42 }], {});

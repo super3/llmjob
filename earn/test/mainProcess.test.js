@@ -157,6 +157,9 @@ jest.mock('../src/main/probe', () => ({
   detectVram: jest.fn(() => Promise.resolve(null)),
   detectGpusVram: jest.fn(() => Promise.resolve([])),
   detectPciBusIds: jest.fn(() => Promise.resolve({})),
+  // llama-server's own card list. Empty by default, so every card keeps
+  // --main-gpu; the tests that care set it.
+  detectLlmDevices: jest.fn(() => Promise.resolve([])),
   // No card list by default: one core that places itself, which is what a rig
   // with no nvidia-smi gets. The multi-card tests set it explicitly.
   detectMinerGpus: jest.fn(() => Promise.resolve([])),
@@ -1747,6 +1750,49 @@ describe('local LLM', () => {
     llm.emit('ready', { baseUrl: llm.baseUrl });
     await flush();
     expect(ctx.JobWorker.instances[0].opts.servingModel()).toBe(tier);
+  });
+
+  // The report this fix came from. nvidia-smi's GPU 0 is a 32 GB RTX PRO 4500,
+  // but Vulkan lists the 12 GB RTX 4070 that drives the desktop first, so
+  // --main-gpu 0 put the 27B model on the 4070 and it never started.
+  it('loads on the planned card by llama-server\'s own name for it', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        c.probe.detectGpusVram.mockResolvedValue([
+          { index: 0, name: 'NVIDIA RTX PRO 4500 Blackwell', usedMb: 4360, totalMb: 32623 },
+      { index: 1, name: 'NVIDIA GeForce RTX 4070', usedMb: 1500, totalMb: 12282 },
+        ]);
+        c.probe.detectLlmDevices.mockResolvedValue([
+      { device: 'Vulkan0', name: 'NVIDIA GeForce RTX 4070' },
+      { device: 'Vulkan1', name: 'NVIDIA RTX PRO 4500 Blackwell' },
+    ]);
+      },
+    });
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+
+    // After the runtime DLLs, which the listing needs on Windows.
+    expect(ctx.probe.detectLlmDevices).toHaveBeenCalledWith('/tmp/llm/llama-server');
+    const llm = ctx.LlmManager.instances[0];
+    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({ mainGpu: 0, device: 'Vulkan1' }));
+    expect(ctx.sent('miner:log').map((l) => l.line))
+      .toContain('local LLM starting on 1 GPU [0] (llama-server calls it Vulkan1)');
+  });
+
+  it('says so when it cannot tell which card is which, and keeps --main-gpu', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        c.probe.detectGpusVram.mockResolvedValue([
+          { index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 },
+          { index: 1, name: 'RTX 3060', usedMb: 1000, totalMb: 12000 },
+        ]);
+      },
+    });
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(ctx.sent('miner:log')).toContainEqual({ level: 'warn',
+      line: 'llama-server did not list its cards, so the local LLM is placed by GPU number (--main-gpu), which may be a different card' });
+    expect(ctx.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ mainGpu: 0, device: undefined }));
   });
 
   it('starts llama-server, goes ready, serves jobs, streams stats, and reports its exit', async () => {
@@ -3835,6 +3881,38 @@ describe('STOP during the model download', () => {
     await flush();
     expect(ctx.sent('llm:status').pop()).toMatchObject({ note: null, error: null });
     expect(ctx.sent('miner:log').map((l) => l.line).join('\n')).not.toContain('LLM setup failed');
+  });
+
+  it('a STOP while llama-server lists its cards starts nothing', async () => {
+    const ctx = await boot();
+    const listing = later();
+    ctx.probe.detectLlmDevices.mockImplementationOnce(() => listing.p);
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(ctx.probe.detectLlmDevices).toHaveBeenCalled();
+    ctx.emit('miner:stop');
+    listing.resolve([]);
+    await flush();
+    expect(ctx.LlmManager.instances).toHaveLength(0);
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ note: null });
+    expect(ctx.sent('miner:log').map((l) => l.line).join('\n')).not.toContain('local LLM starting');
+  });
+
+  // A STOP and a new START move the epoch but leave a session: that START's own
+  // run sets the note, so the stale one leaves it alone and starts nothing.
+  it('a STOP and a new START while llama-server lists its cards start the model once', async () => {
+    const ctx = await boot();
+    const listing = later();
+    ctx.probe.detectLlmDevices.mockImplementationOnce(() => listing.p);
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    ctx.emit('miner:stop');
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    listing.resolve([]);
+    await flush();
+    expect(ctx.LlmManager.instances).toHaveLength(1);
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ note: 'Starting…' });
   });
 
   it('a STOP while the app looks for a running server, or reads the cards, starts nothing', async () => {

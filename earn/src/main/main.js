@@ -52,7 +52,7 @@ const { buildChatBody } = require('../shared/llmChat');
 const { JobWorker } = require('./jobWorker');
 const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote, autoUpdateSupported } = require('../shared/platform');
-const { resolveServerUrl } = require('../shared/llama');
+const { resolveServerUrl, placeLlmPlan, describeLlmStart } = require('../shared/llama');
 const { buildBalanceUrl, parseBalance } = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
 const { checkXmrAddress } = require('../shared/xmr/address');
@@ -1224,7 +1224,7 @@ async function startLlm(reserveMb, epoch) {
 
   // Plan one llama-server per eligible GPU: the model is small enough to hold a
   // copy on every card with room, so a multi-GPU rig serves from all of them
-  // (each pinned via --main-gpu) instead of only the best card. An empty plan
+  // (each pinned to its card) instead of only the best card. An empty plan
   // means VRAM was measured but nothing fits — refuse, as the single-card path
   // did; when VRAM can't be read the planner returns one unknown-placement
   // instance and lets llama.cpp decide.
@@ -1321,9 +1321,16 @@ async function startLlm(reserveMb, epoch) {
     send('miner:log', { level: 'error', line: 'could not install the LLM runtime DLLs: ' + e.message });
   }
 
-  const gpus = plan.map((p) => (p.index == null ? 'auto' : p.index)).join(', ');
-  send('miner:log', { level: 'info', line: 'local LLM starting on ' + plan.length + ' GPU'
-    + (plan.length === 1 ? '' : 's') + ' [' + gpus + ']' });
+  // llama-server counts cards its own way, so ask it for its list and put each
+  // instance on the card it was planned for (shared/llama.placeLlmPlan). After
+  // the DLL copy: without them the listing can't run on Windows.
+  const placed = placeLlmPlan(plan, cards, await probe.detectLlmDevices(binaryPath));
+  if (stale()) {
+    if (!session) setLlmNote(null);
+    return false;
+  }
+  for (const w of placed.warnings) send('miner:log', { level: 'warn', line: w });
+  send('miner:log', { level: 'info', line: describeLlmStart(placed.plan) });
   // Loading a multi-GB model off disk takes seconds even when nothing downloads,
   // and until 'ready' fires the hero is otherwise indistinguishable from idle.
   llmStatus = Object.assign({}, llmStatus, { ready: false, error: null, note: 'Starting…' });
@@ -1335,7 +1342,7 @@ async function startLlm(reserveMb, epoch) {
   // model.ctxSize directly here handed llama-server `undefined` for exactly that
   // model — the one every small node runs.
   const ladder = ctxLadder(model);
-  await fleet.start(plan, {
+  await fleet.start(placed.plan, {
     platform: process.platform, binaryPath, modelPath, mmprojPath,
     ctxSize: ladder[0], ctxLadder: ladder, extraArgs: model.extraArgs,
     alias: model.name,

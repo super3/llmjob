@@ -171,6 +171,9 @@ class LlmFleet extends EventEmitter {
       port,
       nGpuLayers: e.nGpuLayers,
       mainGpu: e.index == null ? undefined : e.index,
+      // llama-server's own name for the card, when the shell matched one
+      // (shared/llama.placeLlmPlan). It beats mainGpu: see buildServerArgs.
+      device: e.device || undefined,
     }));
     inst.baseUrl = mgr.baseUrl;
     return inst;

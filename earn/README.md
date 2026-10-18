@@ -168,9 +168,16 @@ log says so. It hides cards from CUDA but not from `nvidia-smi`, so the two
 disagreed about which card was which, and once kept a rig's second card idle.
 
 The local LLM works the same way — an instance on every card with room for the
-model (`--main-gpu <index>` each), mining cards included. Its `llama-server` is a
-Vulkan build, so those indices are Vulkan's own and the CUDA ordering above does
-not apply to them.
+model, mining cards included. Its `llama-server` is a Vulkan build, which numbers
+cards its own way (on Windows the card driving the desktop comes first), so the
+CUDA ordering above does not apply to it. Before each start the app runs
+`llama-server --list-devices`, matches its cards to nvidia-smi's by name, and
+starts each instance with `--device VulkanN`. The GPU numbers in the log are
+nvidia-smi's, and the start line adds llama-server's name when it differs:
+`local LLM starting on 1 GPU [0] (llama-server calls it Vulkan1)`. A card it
+can't match is started with `--main-gpu <index>`, as before, and the log warns
+that it may load on a different card. Cards with the same name are paired in
+order, and the log warns when that may pick the wrong one.
 
 ### Two builds of the core (CUDA 12.8 and CUDA 13)
 

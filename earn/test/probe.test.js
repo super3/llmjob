@@ -246,6 +246,29 @@ describe('detectPciBusIds', () => {
   });
 });
 
+// llama-server's own card list, so the model goes on the card it was planned for.
+describe('detectLlmDevices', () => {
+  it('asks the installed llama-server, hidden, and reads its list', async () => {
+    execCb(null, 'Available devices:\n  Vulkan0: NVIDIA GeForce RTX 4070 (11874 MiB, 11200 MiB free)\n'
+      + '  Vulkan1: NVIDIA RTX PRO 4500 Blackwell (32111 MiB, 31500 MiB free)\n');
+    expect(await probe.detectLlmDevices('/llm/llama-server')).toEqual([
+      { device: 'Vulkan0', name: 'NVIDIA GeForce RTX 4070' },
+      { device: 'Vulkan1', name: 'NVIDIA RTX PRO 4500 Blackwell' },
+    ]);
+    expect(execFile.mock.calls[0][0]).toBe('/llm/llama-server');
+    expect(execFile.mock.calls[0][1]).toEqual(['--list-devices']);
+    expect(execFile.mock.calls[0][2]).toMatchObject({ windowsHide: true });
+  });
+
+  it('is empty when it cannot run, or there is no binary', async () => {
+    execCb(new Error('spawn ENOENT'));
+    expect(await probe.detectLlmDevices('/llm/llama-server')).toEqual([]);
+    execFile.mockClear();
+    expect(await probe.detectLlmDevices(null)).toEqual([]);
+    expect(execFile).not.toHaveBeenCalled();
+  });
+});
+
 describe('postMinerReport', () => {
   it('POSTs over https (the configured report url) and resolves on end', async () => {
     const req = fakeReq();

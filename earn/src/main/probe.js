@@ -19,6 +19,7 @@ const {
   parsePciBusIds,
 } = require('../shared/gpu');
 const { parseCudaCards } = require('../shared/coreVariant');
+const { parseDeviceList } = require('../shared/llama');
 // Major version out of an nvidia-smi driver string. Lived in shared/engine
 // until alpha-miner was removed; the driver version is a property of the
 // machine, not of any engine.
@@ -174,6 +175,19 @@ function detectPciBusIds() {
   });
 }
 
+// The cards llama-server can load on, in its own order, as [{ device, name }]
+// (see shared/llama.parseDeviceList). `binaryPath` is the installed
+// llama-server. Asked before each start so the model can be put on the card it
+// was planned for (llama.placeLlmPlan). It loads no model. Resolves [] when it
+// can't be run. Never rejects.
+function detectLlmDevices(binaryPath) {
+  return new Promise((resolve) => {
+    if (!binaryPath) return resolve([]);
+    execFile(binaryPath, ['--list-devices'], { timeout: 30000, windowsHide: true },
+      (err, stdout) => resolve(err ? [] : parseDeviceList(stdout)));
+  });
+}
+
 // Publish this miner's live status to the network board (best-effort — never
 // throws; timeouts and errors are swallowed so mining is never affected).
 function postMinerReport(payload) {
@@ -288,6 +302,7 @@ module.exports = {
   detectDriverMajor,
   detectCudaCards,
   detectPciBusIds,
+  detectLlmDevices,
   postMinerReport,
   findFreePort,
   detectGpuInfo,

@@ -31,13 +31,16 @@ const ALL = 'all';
 // every card, or undefined to leave mining alone. `ev` is LlmFleet's busy event,
 // `busIds` nvidia-smi's { index: pciBusId } (probe.detectPciBusIds).
 //
-// The card an instance was planned for is the number it was started with
-// (--main-gpu), but llama-server counts cards in Vulkan's order, which need not
-// be nvidia-smi's (the miner's): on Windows it follows the adapter driving the
-// desktop. So a two-card rig with its monitor on the second card can load the
-// model on card 1 when asked for card 0, and pausing card 0 would stop the idle
-// card while the busy one kept mining. The bus id the server printed at load
-// says which card it really is.
+// The card an instance was planned for is `ev.index`, but it need not be the
+// card the model is on. llama-server counts cards in Vulkan's order, which need
+// not be nvidia-smi's (the miner's): on Windows it follows the adapter driving
+// the desktop. The shells match its cards to nvidia-smi's by name and start
+// each instance with --device (llama.placeLlmPlan), but cards of the same name
+// are paired in order, and a card with no match keeps --main-gpu. So a rig of
+// two such cards can still load the model on card 1 when asked for card 0, and
+// pausing card 0 would stop the idle card while the busy one kept mining. The
+// bus id the server prints at load says which card it really is, when it
+// prints one: b9902 does only at -lv 4, which the shells do not pass.
 //
 // Without that id, a one-card rig has only one card it can be, and several
 // cards are left mining: guessing wrong costs a card's mining on every prompt

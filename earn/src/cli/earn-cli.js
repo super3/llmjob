@@ -50,7 +50,7 @@ const { createAutoGate, createServeGate } = require('../main/autoGate');
 const { JobWorker } = require('../main/jobWorker');
 const { resolvePlan, normalizeMode } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote } = require('../shared/platform');
-const { resolveServerUrl } = require('../shared/llama');
+const { resolveServerUrl, placeLlmPlan, describeLlmStart } = require('../shared/llama');
 const {
   alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexList,
   describeSkippedGpus,
@@ -524,12 +524,12 @@ function candidateModels(settings) {
 async function planLlm(settings, reserveMb, modelOverride) {
   // Plan one llama-server per eligible GPU before doing anything expensive
   // (downloading a ~5 GB model). Each instance runs --split-mode none and is
-  // pinned to its card (--main-gpu), so the per-card free VRAM is what sizes and
-  // gates it — never the rig's summed total (the model can't span cards, and
-  // sizing against the sum would cram it onto device 0 and OOM). An empty plan
-  // means VRAM was measured but no card had room — refuse. When VRAM can't be
-  // read (non-NVIDIA / no driver) the planner returns one unknown-placement
-  // instance and lets llama.cpp decide.
+  // pinned to its card (--device, or --main-gpu), so the per-card free VRAM is
+  // what sizes and gates it — never the rig's summed total (the model can't
+  // span cards, and sizing against the sum would cram it onto device 0 and
+  // OOM). An empty plan means VRAM was measured but no card had room — refuse.
+  // When VRAM can't be read (non-NVIDIA / no driver) the planner returns one
+  // unknown-placement instance and lets llama.cpp decide.
   const cards = await detectGpusVram();
   // Which model this run serves, from the best card's free VRAM. The headless
   // shell has to make the same choice the GUI does, or a large card running
@@ -558,7 +558,7 @@ async function planLlm(settings, reserveMb, modelOverride) {
       + ' MB for ' + model.name + ' — skipping the LLM.', process.stderr);
     return null;
   }
-  return { model, plan };
+  return { model, plan, cards };
 }
 
 // The slow half: fetch llama-server and the model if they aren't cached yet,
@@ -568,7 +568,7 @@ async function planLlm(settings, reserveMb, modelOverride) {
 // ({ index, busy }); it is attached before any card can take one.
 async function launchLlm(settings, planned, armServe, background, onBusy) {
   const dir = llmDir(settings);
-  const { model, plan } = planned;
+  const { model, cards } = planned;
   log('preparing local LLM (' + model.name + ') …');
 
   let binaryPath, modelPath, mmprojPath = null;
@@ -579,6 +579,12 @@ async function launchLlm(settings, planned, armServe, background, onBusy) {
     log('LLM setup failed: ' + e.message, process.stderr);
     return null;
   }
+
+  // llama-server counts cards its own way, so ask it for its list and put each
+  // instance on the card it was planned for (shared/llama.placeLlmPlan).
+  const placed = placeLlmPlan(planned.plan, cards, await probe.detectLlmDevices(binaryPath));
+  for (const w of placed.warnings) log(w);
+  const plan = placed.plan;
 
   // Serve cluster jobs once a model is up — by DEFAULT, account or not. A rig
   // that can run the model is useful to the network whether or not anyone has
@@ -638,8 +644,7 @@ async function launchLlm(settings, planned, armServe, background, onBusy) {
     ctxSize: ladder[0], ctxLadder: ladder, extraArgs: model.extraArgs,
     alias: model.name,
   });
-  const gpus = plan.map((p) => (p.index == null ? 'auto' : p.index)).join(', ');
-  log('local LLM starting on ' + plan.length + ' GPU' + (plan.length === 1 ? '' : 's') + ' [' + gpus + ']');
+  log(describeLlmStart(plan));
   return fleet;
 }
 
@@ -1250,7 +1255,8 @@ async function run(argv) {
     // on, as it did when the LLM started first. A run that ended while the model
     // was downloading must not leave a server behind.
     const startCoRun = async () => {
-      // Which card each llama-server really loaded on (promptPause.cardForPrompt).
+      // Each card's bus id, to tell which card a prompt runs on
+      // (promptPause.cardForPrompt).
       const busIds = await probe.detectPciBusIds();
       const fleet = await launchLlm(settings, coRun, true, true, (e) => {
         const card = cardForPrompt(e, busIds);

@@ -25,6 +25,7 @@ jest.mock('../src/main/probe', () => ({
   detectDriverMajor: jest.fn(),
   detectCudaCards: jest.fn(),
   detectPciBusIds: jest.fn(),
+  detectLlmDevices: jest.fn(),
   postMinerReport: jest.fn(),
   findFreePort: jest.fn(),
   // Shared with the GUI now — one detection path for both shells.
@@ -234,6 +235,7 @@ function applyDefaults(m) {
   // Nothing known about the cards: the core factory then picks the 12.8 build.
   m.probe.detectCudaCards.mockResolvedValue([]);
   m.probe.detectPciBusIds.mockResolvedValue({});
+  m.probe.detectLlmDevices.mockResolvedValue([]);
   m.probe.postMinerReport.mockResolvedValue(undefined);
   m.probe.findFreePort.mockResolvedValue(8080);
   m.probe.detectGpuInfo.mockResolvedValue(null); // no identifiable GPU by default
@@ -1855,6 +1857,41 @@ describe('local LLM', () => {
     fire('SIGINT');
     m.LlmManager.instances[0].emit('stopped', 0);
     await p;
+  });
+
+  // The report this fix came from: nvidia-smi's GPU 0 is the 32 GB card, but
+  // Vulkan lists the 12 GB card that drives the desktop first.
+  test('loads on the planned card by llama-server\'s own name for it', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([
+          { index: 0, name: 'NVIDIA RTX PRO 4500 Blackwell', usedMb: 4360, totalMb: 32623 },
+      { index: 1, name: 'NVIDIA GeForce RTX 4070', usedMb: 1500, totalMb: 12282 },
+    ]);
+    m.probe.detectLlmDevices.mockResolvedValue([
+      { device: 'Vulkan0', name: 'NVIDIA GeForce RTX 4070' },
+      { device: 'Vulkan1', name: 'NVIDIA RTX PRO 4500 Blackwell' },
+    ]);
+    const p = m.run(['--mode', 'llm', '--no-update', '--llm-binary', '/lb']);
+    await settle();
+    expect(m.probe.detectLlmDevices).toHaveBeenCalledWith('/lb');
+    expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ mainGpu: 0, device: 'Vulkan1' }));
+    expect(allOut()).toContain('local LLM starting on 1 GPU [0] (llama-server calls it Vulkan1)');
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('says so when it cannot tell which card is which', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([
+      { index: 0, name: 'RTX 4090', usedMb: 3000, totalMb: 24000 },
+      { index: 1, name: 'RTX 3060', usedMb: 1000, totalMb: 12000 },
+    ]);
+    const p = m.run(['--mode', 'llm', '--no-update', '--llm-binary', '/lb']);
+    await settle();
+    expect(allOut()).toContain('llama-server did not list its cards, so the local LLM is placed by GPU number (--main-gpu), which may be a different card');
+    expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ mainGpu: 0 }));
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
   });
 
   test('runs one instance and worker per eligible GPU, summing their active jobs', async () => {
