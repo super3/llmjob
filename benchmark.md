@@ -782,7 +782,10 @@ only good to about ±5%.
 - **The second GTX 1660** wasn't found in 10 PCs. Of the two plain 1660s, one (e3babbec) couldn't keep a
   connection to HeroMiners (PeakMiner's authorize timed out, SRBMiner had a rate for 15 seconds, ours never
   got a job), so it isn't a result.
-- **The second GTX 1650** wasn't run: the benchmark was stopped after the ## AMD Radeon (RDNA 3 and 4, on Salad)
+- **The second GTX 1650** wasn't run: the benchmark was stopped after the first, since every 16-series card
+  gives the same answer.
+
+## AMD Radeon (RDNA 3 and 4, on Salad)
 
 Run on 18 October 2026, 00:04–02:28 UTC. These are the AMD cards Salad rents. Each row is one Salad PC (a home
 computer that runs containers in WSL2), named by the first 8 characters of its Salad machine ID. Each PC ran
@@ -825,8 +828,6 @@ Alphanumeric and Quantus, not Pearl, so it's 0.
 Salad's prices per hour on 17 October (batch / low / medium / high): RX 9070 XT $0.070 / 0.110 / 0.155 /
 0.196; RX 9060 XT $0.049 / 0.075 / 0.100 / 0.126; RX 7900 XTX $0.066 / 0.100 / 0.134 / 0.168; RX 7900 XT
 $0.054 / 0.088 / 0.122 / 0.156; RX 7800 XT $0.042 / 0.072 / 0.102 / 0.132.
-
- 0.122 / 0.156; RX 7800 XT $0.042 / 0.072 / 0.102 / 0.132.
 
 ## Hosts replaced in this run
 
