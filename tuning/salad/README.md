@@ -29,7 +29,7 @@ Config keys:
 
 | Key | Meaning |
 |---|---|
-| `max_active` | Most groups alive at once. Salad's quota caps it too, so set it above the quota and a raised quota is used at once (live: 30, with a quota of 10). |
+| `max_active` | Most groups alive at once. Salad's quota caps it too, so set it above the quota and a raised quota is used at once (live: 10, the quota; 9 while one slot ran benchmarks on 17–18 October). |
 | `search` | Run the hourly search. |
 | `search_token` | Change it to run a search now. |
 | `restart_token` | Change it after a top-up: restarts groups Salad stopped for lack of credit. |
@@ -265,6 +265,14 @@ Base `https://api.salad.com/api/public/organizations/<org>`, key in the `Salad-A
   API's usual timeout. `resource.type = "deployment_controller"` returns Salad's system events.
 - Salad can move an instance to another PC without a gap in `running`, so a new PC shows only as a
   new `machine_id`.
+- **A class can hand out a card it doesn't name.** The "GTX 1660" class mostly handed out 1660 Tis, the
+  "GTX 1070, 1080, 1080Ti" class gave a 1080 Ti on 2 of 16 PCs, and on 18 October the "AMD RX 7900 XTX" class
+  gave a PC with an NVIDIA RTX 2080 Ti. Read the card from the box, not the class.
+- **Some PCs share the GPU with another load.** A GTX 1080 Ti PC on 17 October ran at 93–95% and 160–186 W
+  while nothing of ours could run on it, and our miner got about a twentieth of its rate on an idle 1080 Ti.
+- **AMD PCs run containers in WSL2** with the GPU behind `/dev/dxg`. Salad mounts its own `amd-smi` at
+  `/opt/rocm-wsl`, but on our boxes it answered `static --json` with nothing and `monitor` with only a
+  header, so there's no power reading. `rocminfo` and AMD's OpenCL see the card.
 
 ## The container
 
@@ -423,7 +431,7 @@ PC.
 
 Batch rarely gets a PC for 40- and 50-series cards; low works for older cards. The same class varies
 about ±15% between PCs, because owners cap the card's power. Salad has AMD classes, but the miner is
-CUDA-only.
+CUDA-only. SRBMiner mines Pearl on them at 32–85 TH/s (benchmark.md's AMD section).
 
 What went wrong on the first account:
 
