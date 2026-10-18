@@ -1400,6 +1400,7 @@ class TestKryptex(Base):
     def setUp(self):
         super().setUp()
         self.x.cfg.update(wallet=os.environ["PRL_WALLET"], kryptex_groups=1)
+        self.x.st["kx_read_t"] = self.clock[0]   # Kryptex's workers were just read
 
     def group(self, *a, kx=False, **kw):
         """A new group on HeroMiners, or on Kryptex with kx. (create puts a new group on Kryptex while fewer than
@@ -1410,6 +1411,10 @@ class TestKryptex(Base):
             return super().group(*a, **kw)
         finally:
             self.x.cfg["kryptex_groups"] = want
+
+    def config_file(self, **kw):
+        """config.json for a whole round(), which re-reads it: one group on Kryptex, no search."""
+        w.save(w.CFG, dict(wallet=os.environ["PRL_WALLET"], kryptex_groups=1, search=False, **kw))
 
     def report(self):
         self.x.write_report()
@@ -1517,6 +1522,76 @@ class TestKryptex(Base):
         self.assertEqual(cheap["kx_since"], self.clock[0])
         self.assertIn("KRYPTEX ON biz-rtx4080-3 (waiting for a PC): Pearl on Kryptex; it starts that way on its "
                       "next PC", self.events())
+
+    def test_only_as_many_waiting_groups_as_are_missing_are_switched(self):
+        self.x.cfg["kryptex_groups"] = 5
+        kx = [self.group(kx=True) for _ in range(4)]
+        waiting = [self.group() for _ in range(3)]
+        for i, g in enumerate(waiting):
+            g["price"] = 0.10 + i / 100
+        self.x.kx_sync(kx + waiting, self.clock[0])
+        self.assertEqual([g["kx"] for g in waiting], [True, False, False])   # 4 + 1: the cheapest
+        self.assertEqual(len(self.http.made("PATCH", "/containers/")), 1)
+
+    def test_with_none_on_kryptex_the_cheapest_waiting_groups_fill_every_slot_at_once(self):
+        self.x.cfg["kryptex_groups"] = 5
+        waiting = [self.group() for _ in range(7)]
+        for i, g in enumerate(waiting):
+            g["price"] = 0.20 - i / 100                   # the last five are the cheapest
+        self.x.kx_sync(waiting, self.clock[0])
+        self.assertEqual([g["kx"] for g in waiting], [False, False, True, True, True, True, True])
+        self.clock[0] += 60
+        self.x.kx_sync(waiting, self.clock[0])
+        self.assertEqual(len(self.http.made("PATCH", "/containers/")), 5)   # none the round after
+
+    def test_a_group_salad_is_still_deploying_is_not_switched(self):
+        pending, deploying = self.group(status="pending"), self.group(status="deploying")
+        self.x.kx_sync([pending, deploying], self.clock[0])
+        self.assertFalse(pending["kx"] or deploying["kx"])
+        self.assertFalse(self.http.made("PATCH", "/containers/"))
+
+    def test_a_refused_update_is_tried_again_in_15_minutes_and_the_next_group_takes_the_slot(self):
+        cheap, dear = self.group(), self.group()
+        cheap["price"], dear["price"] = 0.05, 0.20
+        self.http.on("PATCH", "/containers/biz-rtx4080$", (502, {}))
+        self.x.kx_sync([cheap, dear], self.clock[0])
+        self.assertFalse(cheap["kx"])
+        self.assertTrue(dear["kx"])                       # the slot is filled this round
+        self.x.cfg["kryptex_groups"] = 2
+        for _ in range(14):
+            self.clock[0] += 60
+            self.x.kx_sync([cheap, dear], self.clock[0])
+        self.assertEqual(len(self.http.made("PATCH", "/containers/biz-rtx4080$")), 1)
+        self.assertEqual(self.events().count("WARN Kryptex on for biz-rtx4080 refused"), 1)
+        self.clock[0] += 60
+        self.x.kx_sync([cheap, dear], self.clock[0])
+        self.assertEqual(len(self.http.made("PATCH", "/containers/biz-rtx4080$")), 2)
+
+    def test_a_waiting_group_whose_read_failed_is_not_switched(self):
+        g = self.group()
+        g["_skip"] = True                                 # it may have a PC by now
+        self.x.kx_sync([g], self.clock[0])
+        self.assertFalse(g["kx"])
+        self.assertFalse(self.http.made("PATCH", "/containers/"))
+
+    def test_a_group_whose_state_salad_did_not_answer_is_left_alone_that_round(self):
+        self.config_file()
+        box, w = self.mining("m1", 300), self.group()
+        box.update(machine="m1", pc_since=self.clock[0] - 300 * 60)
+        self.http.on("GET", "/containers/biz-rtx4080(-2)?$", (502, {}))
+        self.clock[0] += 60
+        self.x.round()                                    # no rule runs on last round's state
+        self.assertEqual((box["machine"], box["has_pc"], box["_skip"]), ("m1", True, True))
+        self.assertFalse(w["kx"])                         # nor a switch: w may have got a PC
+        self.assertFalse(self.http.made("PATCH", "/containers/"))
+        self.assertNotIn("NEW PC", self.events())
+
+    def test_a_late_line_from_the_pc_a_group_just_left_counts_to_its_old_pool(self):
+        g = self.mining("m0", 300)
+        self.x.reallocate(g, "slow")                      # it left m0 and waits for a PC
+        self.x.kx_sync([g], self.clock[0])
+        self.assertTrue(g["kx"])
+        self.assertEqual((g["sw_from"], g["sw_prev"]), ("m0", False))
 
     def test_a_kryptex_group_keeps_kryptex_when_it_loses_its_pc(self):
         k, box = self.mining("m1", 300), self.mining("m2", 300, ths=150.0)
@@ -1683,6 +1758,98 @@ class TestKryptex(Base):
         self.assertFalse(g["kx"])                        # a Kryptex failure: back to HeroMiners
         self.assertEqual(self.x.st["kx_fails"], 1)
         self.assertNotIn("m1", self.x.st.get("bad_pcs", {}))
+
+    def test_a_kryptex_box_that_sends_nothing_while_kryptex_cannot_be_read_has_a_pc_problem(self):
+        g = self.mining("m1", 300)
+        g.update(kx=True, kx_since=self.clock[0] - 3600)
+        self.x.st["kx_read_t"] = self.clock[0] - 31 * 60   # Kryptex's workers unread for 31 min: can't tell
+        self.x.leave(g, "no mining reading 12 min after getting PC m1")
+        self.assertTrue(g["kx"])
+        self.assertEqual(self.x.st.get("kx_fails", 0), 0)
+        self.assertIn("m1", self.x.st["bad_pcs"])
+
+    def test_a_kryptex_box_seen_mining_on_herominers_at_its_pc_counts_there(self):
+        g = self.mining("m1", 20)
+        g.update(kx=True, kx_since=self.clock[0] - 25 * 60, sw_t=self.clock[0] - 25 * 60)
+        t = self.clock[0]
+        self.x.pc_pool(g, None, {"lastShare": g["pc_since"] + 4 * 60})   # within 5 min of the PC: not yet
+        self.assertNotIn("pc_pool", g)
+        self.x.pc_pool(g, None, {"lastShare": t - 60})
+        self.assertEqual(g["pc_pool"], {"m1": False})
+        self.assertIn("WARN biz-rtx4080 mines Pearl on HeroMiners on PC m1, though its command is for Kryptex: it "
+                      "got the PC as its command changed. This PC's readings count to HeroMiners; its next PC starts "
+                      "on Kryptex", self.events())
+        self.x.pc_pool(g, None, {"lastShare": t})
+        self.assertEqual(self.events().count("mines Pearl on HeroMiners on PC m1"), 1)   # said once
+        # Its PC failing is no Kryptex failure: the box wasn't on Kryptex.
+        self.x.leave(g, "no mining reading for 7 min on PC m1")
+        self.assertTrue(g["kx"])
+        self.assertEqual(self.x.st.get("kx_fails", 0), 0)
+        self.assertIn("m1", self.x.st["bad_pcs"])
+
+    def test_a_herominers_box_seen_mining_on_kryptex_at_its_pc_counts_there(self):
+        g = self.mining("m1", 20)
+        self.x.pc_pool(g, {"last_share": int(self.clock[0] - 60) * 1000}, None)
+        self.assertEqual(g["pc_pool"], {"m1": True})
+        self.assertIn("WARN biz-rtx4080 mines Pearl on Kryptex on PC m1, though its command is for HeroMiners",
+                      self.events())
+
+    def test_readings_from_a_pc_seen_on_herominers_count_there(self):
+        self.config_file()
+        g = self.group()
+        g.update(kx=True, kx_since=T0, created=T0 - 3600, pc_pool={"m1": False})
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
+        items = [{"text_log": "[mining g0] 08:06:00 198.0 TH/s · 2 accepted · 0 rejected · up 4h 3m",
+                  "time": "2027-01-15T08:06:00Z",
+                  "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}}]
+        self.http.on("POST", "/log-entries", (200, {"items": items}))
+        self.clock[0] = T0 + 500
+        self.x.round()
+        self.assertGreater(g["prl"], 0)
+        self.assertEqual(g.get("prl_kx", 0.0), 0.0)
+        self.assertIsNone(g.get("kx_share"))              # the miner's own count is no proof of Kryptex
+
+    def test_only_kryptex_s_own_count_proves_it_takes_a_box_s_work(self):
+        self.config_file()
+        g = self.group()
+        g.update(kx=True, kx_since=T0, created=T0 - 3600)
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
+        items = [{"text_log": "[mining g0] 08:06:00 198.0 TH/s · 2 accepted · 0 rejected · up 4h 3m",
+                  "time": "2027-01-15T08:06:00Z",
+                  "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}}]
+        self.http.on("POST", "/log-entries", (200, {"items": items}))
+        self.clock[0] = T0 + 500
+        self.x.round()
+        self.assertGreater(g.get("prl_kx", 0.0), 0)       # booked to Kryptex, as its command says
+        self.assertIsNone(g.get("kx_share"))
+        self.http.on("GET", "v3/miner/workers", (200, {"results": [
+            {"worker": "biz-rtx4080-g0", "avg_hashrate_30m": "198000000000000", "last_share": int(T0) + 520}]}))
+        self.clock[0] += 60
+        self.x.round()
+        self.assertEqual(g["kx_share"], T0 + 520)
+
+    def test_the_ledger_follows_the_command_salad_has(self):
+        self.config_file()
+        g = self.group()
+        box = "apt-get ...; curl -fsSL x | sed > /root/box.sh; bash /root/box.sh"
+        cmd = {"current_state": {"status": "running"},
+               "container": {"command": ["/bin/sh", "-c", box.replace("sed", "sed -e '--pool prl-us.kryptex.network:7048'")]}}
+        self.http.on("GET", "/containers/biz-rtx4080$", (200, cmd))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
+        g["sw_t"] = self.clock[0]                          # just switched: Salad may not show it yet
+        self.clock[0] += 60
+        self.x.round()
+        self.assertFalse(g["kx"])
+        self.clock[0] += 120
+        self.x.round()                                     # an update that timed out went through
+        self.assertTrue(g["kx"])
+        self.assertEqual(g["kx_since"], self.clock[0])
+        self.assertEqual((g["sw_from"], g["sw_prev"]), ("m1", False))   # the box on m1 started on HeroMiners
+        self.assertIn("WARN biz-rtx4080: Salad has the Kryptex command for it, though the ledger said HeroMiners",
+                      self.events())
+        self.assertFalse(self.http.made("PATCH", "/containers/"))   # one on Kryptex: nothing else switched
 
     def test_without_a_box_on_kryptex_only_the_totals_are_read_every_5_minutes(self):
         self.x.cfg["wallet"] = os.environ["PRL_WALLET"]
