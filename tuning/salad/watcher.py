@@ -642,13 +642,14 @@ class W:
 
     def kx_log_proof(self, g):
         """The last accepted share the miner's own log shows on a PC whose readings count to Kryptex (on_kx, so a PC
-        seen mining on HeroMiners later doesn't count), and on its current PC only from 5 minutes in: before that
-        pc_pool can't have seen a box that started on HeroMiners."""
-        last, acc = 0, {}
+        seen mining on HeroMiners later doesn't count), from 5 minutes into each PC (its pc_since, or its first
+        reading for a PC it has left): before that pc_pool can't have seen a box that started on HeroMiners, and a
+        box that left within 5 minutes was never seen at all. A PC seen mining on Kryptex counts from the start."""
+        last, acc, first, seen = 0, {}, {}, g.get("pc_pool") or {}
         for r in g["readings"]:
             tm, m, n = r[0], r[1], r[3]
-            if (n > acc.get(m, 0) and self.on_kx(g, m, tm)
-                    and not (m == g.get("machine") and tm < (g.get("pc_since") or 0) + 5 * MIN)):
+            start = g.get("pc_since") if m == g.get("machine") and g.get("pc_since") else first.setdefault(m, tm)
+            if n > acc.get(m, 0) and self.on_kx(g, m, tm) and (seen.get(m) is True or tm >= start + 5 * MIN):
                 last = max(last, tm)
             acc[m] = n
         return last
@@ -973,8 +974,10 @@ class W:
 
         # Pool: shares and pool-side hashrate.
         pw = self.pool() if by_name else {}
-        # Workers while a group is on Kryptex, or was switched in the last 2 hours and its box may mine there (pc_pool).
-        live_kx = any(g.get("kx") or t - (g.get("sw_t") or 0) < 2 * 3600 for g in by_name.values())
+        # Workers while a group is on Kryptex, was switched in the last 2 hours (its box may mine there: pc_pool), or
+        # has a box whose PC mines there.
+        live_kx = any(g.get("kx") or t - (g.get("sw_t") or 0) < 2 * 3600
+                      or (g["has_pc"] and self.on_kx(g, g.get("machine"), t)) for g in by_name.values())
         kw = (self.kx_pool(workers=live_kx) if live_kx or any(g.get("prl_kx") for g in st["groups"].values())
               else {})
         self.trader()

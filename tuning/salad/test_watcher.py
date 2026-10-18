@@ -1836,7 +1836,11 @@ class TestKryptex(Base):
         g["pc_pool"] = {}
         g["pc_since"] = self.clock[0] - 4 * 60            # its first 5 minutes there: not yet
         self.assertEqual(self.x.kx_log_proof(g), 0)
-        g["machine"] = "m9"                               # once it has left m1, m1's shares count again
+        g["machine"] = "m9"                               # once it has left m1, m1's shares count again,
+        self.assertEqual(self.x.kx_log_proof(g), last)    # from 5 minutes after its first reading there
+        g["readings"] = [r for r in g["readings"] if r[0] >= last - 4 * 60]
+        self.assertEqual(self.x.kx_log_proof(g), 0)       # left within 5 minutes: never seen, so no proof
+        g["pc_pool"] = {"m1": True}                       # unless seen mining on Kryptex
         self.assertEqual(self.x.kx_log_proof(g), last)
 
     def test_a_box_that_just_switched_shows_no_hashrate_until_its_new_pool_has_a_row(self):
@@ -1933,11 +1937,16 @@ class TestKryptex(Base):
         self.x.round()
         self.assertTrue(self.http.made("GET", "v3/miner/workers"))
         self.assertEqual(h["pc_pool"], {"m2": True})
-        # Two hours after the switch, its box has long shown its pool: the workers aren't read for it any more.
+        # Two hours after the switch the workers are still read: its box on m2 mines on Kryptex.
         self.clock[0] += 3600 + 60
         n = len(self.http.made("GET", "v3/miner/workers"))
         self.x.round()
-        self.assertEqual(len(self.http.made("GET", "v3/miner/workers")), n)
+        self.assertEqual(len(self.http.made("GET", "v3/miner/workers")), n + 1)
+        # Once it is on a PC mining on HeroMiners, they aren't.
+        h["pc_pool"] = {}
+        self.clock[0] += 60
+        self.x.round()
+        self.assertEqual(len(self.http.made("GET", "v3/miner/workers")), n + 1)
 
     def test_a_box_seen_on_herominers_takes_its_last_share_from_there(self):
         self.config_file()
