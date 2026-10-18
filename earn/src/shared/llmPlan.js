@@ -13,7 +13,8 @@ const { ALL_LAYERS, computeGpuLayers, hasEnoughVram } = require('./vram');
 // model after the reserve:
 //   { index, freeMb, nGpuLayers }
 // sorted by GPU index. Each entry becomes a separate llama-server pinned to that
-// card (--main-gpu <index>) on its own port.
+// card on its own port: by llama-server's own name for it when the shell could
+// match one (llama.placeLlmPlan, --device), else by --main-gpu <index>.
 //
 // VRAM handling mirrors the single-card path:
 //   • cards measured, some fit   → one entry per fitting card

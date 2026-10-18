@@ -62,8 +62,9 @@ function countGpus(names) {
 // The variable is read when the CUDA driver initialises, which for our core is
 // inside this process on the first Start, so it has to be in place before then:
 // both shells set it at load. (It does NOT reach the local LLM: llama-server
-// ships as a Vulkan build, whose --main-gpu indices come from Vulkan's own
-// device enumeration and are a separate question.)
+// ships as a Vulkan build, which numbers cards its own way. The shells match
+// its cards to nvidia-smi's by bus id or name instead: see
+// shared/llama.placeLlmPlan.)
 //
 // An operator who has already set CUDA_DEVICE_ORDER means it — leave it alone.
 // Returns the value now in effect, for the caller to log.

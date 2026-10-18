@@ -7,7 +7,7 @@ jest.mock('child_process');
 
 const net = require('net');
 const https = require('https');
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const { EventEmitter } = require('events');
 const probe = require('../src/main/probe');
 
@@ -243,6 +243,132 @@ describe('detectPciBusIds', () => {
   it('is empty when nvidia-smi fails', async () => {
     execCb(new Error('nvidia-smi: not found'));
     expect(await probe.detectPciBusIds()).toEqual({});
+  });
+});
+
+// llama-server's own card list, so the model goes on the card it was planned for.
+describe('detectLlmDevices', () => {
+  it('asks the installed llama-server, hidden, and reads its list', async () => {
+    execCb(null, 'Available devices:\n  Vulkan0: NVIDIA GeForce RTX 4070 (11874 MiB, 11200 MiB free)\n'
+      + '  Vulkan1: NVIDIA RTX PRO 4500 Blackwell (32111 MiB, 31500 MiB free)\n');
+    expect(await probe.detectLlmDevices('/llm/llama-server')).toEqual([
+      { device: 'Vulkan0', name: 'NVIDIA GeForce RTX 4070' },
+      { device: 'Vulkan1', name: 'NVIDIA RTX PRO 4500 Blackwell' },
+    ]);
+    expect(execFile.mock.calls[0][0]).toBe('/llm/llama-server');
+    expect(execFile.mock.calls[0][1]).toEqual(['--list-devices']);
+    expect(execFile.mock.calls[0][2]).toMatchObject({ windowsHide: true });
+  });
+
+  it('is empty when it cannot run, or there is no binary', async () => {
+    execCb(new Error('spawn ENOENT'));
+    expect(await probe.detectLlmDevices('/llm/llama-server')).toEqual([]);
+    execFile.mockClear();
+    expect(await probe.detectLlmDevices(null)).toEqual([]);
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  const two = 'Available devices:\n  Vulkan0: NVIDIA GeForce RTX 4070 (11874 MiB, 11200 MiB free)\n'
+    + '  Vulkan1: NVIDIA RTX PRO 4500 Blackwell (32111 MiB, 31500 MiB free)\n';
+
+  it('adds each card\'s bus id on a rig of several, given the model', async () => {
+    execCb(null, two);
+    const child = fakeChild();
+    spawn.mockImplementation(() => child);
+    const p = probe.detectLlmDevices('/llm/llama-server', '/llm/m.gguf');
+    await new Promise((r) => setImmediate(r));
+    child.stdout.emit('data', 'x: using device Vulkan0 (NVIDIA GeForce RTX 4070) (0000:02:00.0) - 11200 MiB free\n'
+      + 'x: using device Vulkan1 (NVIDIA RTX PRO 4500 Blackwell) (0000:01:00.0) - 31500 MiB free\nload: done\n');
+    child.emit('exit', null);
+    expect(await p).toEqual([
+      { device: 'Vulkan0', name: 'NVIDIA GeForce RTX 4070', busId: '0000:02:00.0' },
+      { device: 'Vulkan1', name: 'NVIDIA RTX PRO 4500 Blackwell', busId: '0000:01:00.0' },
+    ]);
+  });
+
+  it('does not run the probe for one card, or without a model', async () => {
+    execCb(null, 'Available devices:\n  Vulkan0: NVIDIA GeForce RTX 4090 (24138 MiB, 23370 MiB free)\n');
+    expect(await probe.detectLlmDevices('/llm/llama-server', '/llm/m.gguf')).toHaveLength(1);
+    execCb(null, two);
+    expect(await probe.detectLlmDevices('/llm/llama-server')).toHaveLength(2);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('leaves out a bus id the probe did not read', async () => {
+    execCb(null, two);
+    const child = fakeChild();
+    spawn.mockImplementation(() => child);
+    const p = probe.detectLlmDevices('/llm/llama-server', '/llm/m.gguf');
+    await new Promise((r) => setImmediate(r));
+    child.emit('exit', 1);
+    expect(await p).toEqual([
+      { device: 'Vulkan0', name: 'NVIDIA GeForce RTX 4070' },
+      { device: 'Vulkan1', name: 'NVIDIA RTX PRO 4500 Blackwell' },
+    ]);
+  });
+});
+
+function fakeChild() {
+  const c = new EventEmitter();
+  c.stdout = new EventEmitter();
+  c.stderr = new EventEmitter();
+  c.kill = jest.fn();
+  return c;
+}
+
+// --list-devices gives no bus ids, so a short llama-server run reads them.
+describe('detectLlmBusIds', () => {
+  it('runs a CPU-only load at -lv 4 on any free port, hidden', async () => {
+    const child = fakeChild();
+    spawn.mockImplementation(() => child);
+    const p = probe.detectLlmBusIds('/llm/llama-server', '/llm/m.gguf');
+    expect(spawn).toHaveBeenCalledWith('/llm/llama-server', ['--model', '/llm/m.gguf', '--n-gpu-layers', '0',
+      '--split-mode', 'layer', '--fit', 'off', '-lv', '4', '--host', '127.0.0.1', '--port', '0'],
+    { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    child.emit('exit', 0);
+    expect(await p).toEqual({});
+  });
+
+  it('reads whole lines across chunks, and stops it once the device lines are out', async () => {
+    const child = fakeChild();
+    spawn.mockImplementation(() => child);
+    const p = probe.detectLlmBusIds('/llm/llama-server', '/llm/m.gguf');
+    child.stdout.emit('data', 'print_info: file size = 16 GiB\nx: using device Vulkan0 (A) (0000:02');
+    child.stderr.emit('data', 'W something\n');
+    child.stdout.emit('data', ':00.0) - 11200 MiB free\n\nx: using device Vulkan1 (B) (unknown id) - 900 MiB free\n');
+    child.stdout.emit('data', 'x: using device Vulkan2 (C) (0000:03:00.0) - 31500 MiB free\n');
+    expect(child.kill).not.toHaveBeenCalled();
+    child.stdout.emit('data', 'load: 0 unused tokens\nload: more\n');
+    expect(child.kill).toHaveBeenCalledTimes(1);
+    child.emit('exit', null);
+    expect(await p).toEqual({ Vulkan0: '0000:02:00.0', Vulkan2: '0000:03:00.0' });
+  });
+
+  it('gives up after 30 s, and carries on 5 s after a kill that never exits', async () => {
+    jest.useFakeTimers();
+    try {
+      const child = fakeChild();
+      spawn.mockImplementation(() => child);
+      const p = probe.detectLlmBusIds('/llm/llama-server', '/llm/m.gguf');
+      jest.advanceTimersByTime(29999);
+      expect(child.kill).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(1);
+      expect(child.kill).toHaveBeenCalledTimes(1);
+      jest.advanceTimersByTime(5000);
+      expect(await p).toEqual({});
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('resolves empty when it cannot start', async () => {
+    spawn.mockImplementation(() => { throw new Error('EINVAL'); });
+    expect(await probe.detectLlmBusIds('/llm/llama-server', '/llm/m.gguf')).toEqual({});
+    const child = fakeChild();
+    spawn.mockImplementation(() => child);
+    const p = probe.detectLlmBusIds('/llm/llama-server', '/llm/m.gguf');
+    child.emit('error', new Error('spawn ENOENT'));
+    expect(await p).toEqual({});
   });
 });
 

@@ -168,9 +168,21 @@ log says so. It hides cards from CUDA but not from `nvidia-smi`, so the two
 disagreed about which card was which, and once kept a rig's second card idle.
 
 The local LLM works the same way — an instance on every card with room for the
-model (`--main-gpu <index>` each), mining cards included. Its `llama-server` is a
-Vulkan build, so those indices are Vulkan's own and the CUDA ordering above does
-not apply to them.
+model, mining cards included. Its `llama-server` is a Vulkan build, which numbers
+cards its own way (on Windows the card driving the desktop comes first), so the
+CUDA ordering above does not apply to it. Before each start the app runs
+`llama-server --list-devices`, matches its cards to nvidia-smi's, and starts
+each instance with `--device VulkanN`. On a rig with more than one card it
+also reads each card's PCI bus id, with a short `llama-server` run that loads
+only the model's header and is killed after about a second. Cards are matched
+by bus id where it has one, else by name. The GPU numbers in the log are
+nvidia-smi's, and the start line adds llama-server's name when it differs:
+`local LLM starting on 1 GPU [0] (llama-server calls it Vulkan1)`. A card it
+can't match is started with `--main-gpu <index>`, as before, and the log warns
+that it may load on a different card. Cards with the same name and no bus id
+are paired in order, and the log warns when that may pick the wrong one. A
+vision model's projector goes on the same card as the model
+(`MTMD_BACKEND_DEVICE`, unless you set it yourself).
 
 ### Two builds of the core (CUDA 12.8 and CUDA 13)
 
@@ -581,8 +593,9 @@ pool connection stays open. The board and HiveOS show that card at 0 TH/s
 while it is paused. The signal is `llama-server`'s own log, so it covers every
 caller: the API endpoint, its web UI, cluster jobs and the network share. A card
 busy for 10 minutes without a break mines again regardless. On a rig with
-several cards it pauses the card the model really loaded on, matched by the PCI
-bus id `llama-server` prints at load, and pauses nothing if it can't tell. If
+several cards it pauses the card the model really loaded on, by the PCI bus id
+of the card it was matched to (see the GPU section), and pauses nothing if it
+can't tell, as with two same-name cards whose bus ids could not be read. If
 something else takes the card's memory during a pause, the card stays paused
 and tries again every 30 s. Demand-driven
 `auto` is unchanged: there the miner already stops for as long as the model

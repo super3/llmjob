@@ -61,6 +61,23 @@ describe('LlmFleet', () => {
     ]);
   });
 
+  // The server never prints its bus id at the default log level, so the one
+  // the shell matched the card to stands in. The server's own wins.
+  test('tags a busy card with the bus id it was placed by', async () => {
+    const { fleet, mgrs } = makeFleet();
+    const seen = [];
+    fleet.on('busy', (e) => seen.push(e));
+    await fleet.start([{ index: 0, nGpuLayers: 42, device: 'Vulkan1', busId: '00000000:01:00.0' }],
+      { binaryPath: 'b', modelPath: 'm', platform: 'linux' });
+    mgrs[0].emit('busy', true);
+    mgrs[0].deviceBusId = '0000:02:00.0';
+    mgrs[0].emit('busy', false);
+    expect(seen).toEqual([
+      { index: 0, busId: '00000000:01:00.0', busy: true },
+      { index: 0, busId: '0000:02:00.0', busy: false },
+    ]);
+  });
+
   test('start() launches one manager per plan entry on distinct ports', async () => {
     const { fleet, mgrs } = makeFleet();
     const n = await fleet.start(
@@ -121,6 +138,16 @@ describe('LlmFleet', () => {
     expect(mgrs).toHaveLength(0);
     expect(fleet.isReady()).toBe(false);
     expect(fleet.webUrl()).toBeNull();
+  });
+
+  // The shell's match of the card to llama-server's own name for it.
+  test('passes each entry\'s llama-server device along with its index', async () => {
+    const { fleet, mgrs } = makeFleet();
+    await fleet.start([{ index: 0, nGpuLayers: 42, device: 'Vulkan1' }, { index: 1, nGpuLayers: 42 }], {});
+    await drain();
+    expect(mgrs[0].startOpts).toMatchObject({ mainGpu: 0, device: 'Vulkan1' });
+    expect(mgrs[1].startOpts.mainGpu).toBe(1);
+    expect(mgrs[1].startOpts.device).toBeUndefined();
   });
 
   test('an unmeasured (null-index) instance omits --main-gpu', async () => {

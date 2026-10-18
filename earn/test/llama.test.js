@@ -5,7 +5,8 @@ const { ALL_LAYERS } = require('../src/shared/vram');
 const { LLM } = require('../src/shared/config');
 
 const {
-  resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, isServerReady, parseTokensPerSec,
+  resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, buildServerEnv, isServerReady,
+  parseTokensPerSec,
 } = require('../src/shared/llama');
 
 describe('resolveServerBinary', () => {
@@ -93,6 +94,16 @@ describe('buildServerArgs', () => {
     expect(buildServerArgs({ mainGpu: 3 })).toEqual(expect.arrayContaining(['--main-gpu', '3']));
   });
 
+  // --main-gpu counts cards in llama-server's order. A name says which card it
+  // is, and with one device named, --main-gpu 1 would be out of range.
+  test('loads on the named device instead of --main-gpu when it has one', () => {
+    const a = buildServerArgs({ mainGpu: 1, device: 'Vulkan0' });
+    expect(a).toEqual(expect.arrayContaining(['--device', 'Vulkan0', '--split-mode', 'none']));
+    expect(a.includes('--main-gpu')).toBe(false);
+    expect(buildServerArgs({ mainGpu: 1, device: '' })).toEqual(expect.arrayContaining(['--main-gpu', '1']));
+    expect(buildServerArgs({ mainGpu: 1 }).includes('--device')).toBe(false);
+  });
+
   test('omits --main-gpu for a missing or invalid index (llama falls back to device 0)', () => {
     expect(buildServerArgs({}).includes('--main-gpu')).toBe(false);
     expect(buildServerArgs({ mainGpu: -1 }).includes('--main-gpu')).toBe(false);   // negative
@@ -136,6 +147,21 @@ describe('buildServerArgs — vision projector', () => {
     expect(buildServerArgs({ modelPath: '/m.gguf' })).not.toContain('--mmproj');
     expect(buildServerArgs({ modelPath: '/m.gguf', mmprojPath: '' })).not.toContain('--mmproj');
     expect(buildServerArgs({ modelPath: '/m.gguf', mmprojPath: null })).not.toContain('--mmproj');
+  });
+});
+
+// mtmd ignores --device and loads the projector on the first GPU unless told.
+describe('buildServerEnv', () => {
+  test('puts the projector on the model\'s card', () => {
+    expect(buildServerEnv({ device: 'Vulkan1', mmprojPath: '/p.gguf' }, { PATH: '/bin' }))
+      .toEqual({ PATH: '/bin', MTMD_BACKEND_DEVICE: 'Vulkan1' });
+  });
+
+  test('null without a device or a projector, or when the user set it', () => {
+    expect(buildServerEnv({ mmprojPath: '/p.gguf' }, {})).toBeNull();
+    expect(buildServerEnv({ device: 'Vulkan1' }, {})).toBeNull();
+    expect(buildServerEnv({ device: 'Vulkan1', mmprojPath: '/p.gguf' }, { MTMD_BACKEND_DEVICE: 'Vulkan0' })).toBeNull();
+    expect(buildServerEnv()).toBeNull();
   });
 });
 
@@ -225,6 +251,288 @@ describe('parseSlotEvent', () => {
     expect(parseSlotEvent('que    start_loop: processing task, id = 7')).toBeNull();
     expect(parseSlotEvent('')).toBeNull();
     expect(parseSlotEvent(null)).toBeNull();
+  });
+});
+
+describe('parseDeviceList', () => {
+  const { parseDeviceList } = require('../src/shared/llama');
+
+  test('reads llama-server --list-devices, in its order', () => {
+    // As b9902 prints it on a one-card Windows rig.
+    expect(parseDeviceList('Available devices:\r\n  Vulkan0: NVIDIA GeForce RTX 4090 (24138 MiB, 23370 MiB free)\r\n'))
+      .toEqual([{ device: 'Vulkan0', name: 'NVIDIA GeForce RTX 4090' }]);
+    expect(parseDeviceList([
+      'Available devices:',
+      '  Vulkan0: NVIDIA GeForce RTX 4070 (11874 MiB, 11200 MiB free)',
+      '  Vulkan1: AMD Radeon RX 7900 XTX (RADV NAVI31) (24560 MiB, 24000 MiB free)',
+      '  Vulkan2: NVIDIA RTX PRO 4500 Blackwell (32111 MiB, 31500 MiB free)',
+    ].join('\n'))).toEqual([
+      { device: 'Vulkan0', name: 'NVIDIA GeForce RTX 4070' },
+      { device: 'Vulkan1', name: 'AMD Radeon RX 7900 XTX (RADV NAVI31)' },
+      { device: 'Vulkan2', name: 'NVIDIA RTX PRO 4500 Blackwell' },
+    ]);
+  });
+
+  test('empty for anything else', () => {
+    expect(parseDeviceList('Available devices:\n')).toEqual([]);
+    expect(parseDeviceList('ggml_vulkan: Found 1 Vulkan devices:')).toEqual([]);
+    expect(parseDeviceList(null)).toEqual([]);
+  });
+});
+
+describe('matchLlmDevices', () => {
+  const { matchLlmDevices } = require('../src/shared/llama');
+  const card = (index, name) => ({ index, name, usedMb: 0, totalMb: 24000 });
+  const dev = (device, name) => ({ device, name });
+
+  // The report: nvidia-smi's GPU 0 is a 32 GB RTX PRO 4500, but Vulkan lists the
+  // 12 GB RTX 4070 that drives the desktop first. --main-gpu 0 put the 27B model
+  // on the 4070, and it never started.
+  test('finds each card under llama-server\'s own number', () => {
+    expect(matchLlmDevices(
+      [card(0, 'NVIDIA RTX PRO 4500 Blackwell'), card(1, 'NVIDIA GeForce RTX 4070')],
+      [dev('Vulkan0', 'NVIDIA GeForce RTX 4070'), dev('Vulkan1', 'NVIDIA RTX PRO 4500 Blackwell')],
+    )).toEqual({ 0: 'Vulkan1', 1: 'Vulkan0' });
+  });
+
+  test('ignores case and punctuation in names, and cards llama-server has that nvidia-smi does not', () => {
+    expect(matchLlmDevices(
+      [card(0, 'NVIDIA RTX PRO 4500 Blackwell')],
+      [dev('Vulkan0', 'AMD Radeon RX 7900 XTX'), dev('Vulkan1', 'nvidia rtx pro 4500 (Blackwell)')],
+    )).toEqual({ 0: 'Vulkan1' });
+  });
+
+  // Nothing tells two cards of one name apart, and either holds what the other does.
+  test('pairs cards of the same name in order', () => {
+    expect(matchLlmDevices(
+      [card(2, 'RTX 3090'), card(0, 'RTX 3090'), card(1, 'RTX 4070')],
+      [dev('Vulkan0', 'RTX 4070'), dev('Vulkan1', 'RTX 3090'), dev('Vulkan2', 'RTX 3090')],
+    )).toEqual({ 0: 'Vulkan1', 1: 'Vulkan0', 2: 'Vulkan2' });
+  });
+
+  test('pairs the one NVIDIA card left on each side when both list as many', () => {
+    expect(matchLlmDevices(
+      [card(0, 'NVIDIA RTX PRO 4500 Blackwell'), card(1, 'NVIDIA GeForce RTX 4070')],
+      [dev('Vulkan0', 'NVIDIA GeForce RTX 4070'), dev('Vulkan1', 'NVIDIA RTX PRO Blackwell 4500')],
+    )).toEqual({ 0: 'Vulkan1', 1: 'Vulkan0' });
+    // Other makers' cards in llama-server's list don't count against that.
+    expect(matchLlmDevices(
+      [card(0, 'NVIDIA RTX PRO 4500 Blackwell'), card(1, 'NVIDIA GeForce RTX 4070')],
+      [dev('Vulkan0', 'NVIDIA GeForce RTX 4070'), dev('Vulkan1', 'Intel(R) UHD Graphics 770'),
+        dev('Vulkan2', 'NVIDIA RTX PRO Blackwell 4500')],
+    )).toEqual({ 0: 'Vulkan2', 1: 'Vulkan0' });
+    // Not when the counts differ: the one left over could be any card.
+    expect(matchLlmDevices(
+      [card(0, 'NVIDIA RTX A'), card(1, 'NVIDIA RTX B')],
+      [dev('Vulkan0', 'NVIDIA RTX B'), dev('Vulkan1', 'NVIDIA RTX C'), dev('Vulkan2', 'NVIDIA RTX D')],
+    )).toEqual({ 1: 'Vulkan0' });
+  });
+
+  // An A6000 in TCC mode is in nvidia-smi's list but not Vulkan's. Pairing it
+  // with the iGPU, the other one left over, would put the model in shared
+  // system memory, where --main-gpu never could: llama.cpp skips iGPUs when a
+  // discrete card is there.
+  test('never pairs a card with an integrated GPU or another maker\'s card', () => {
+    expect(matchLlmDevices(
+      [card(0, 'NVIDIA RTX A6000'), card(1, 'NVIDIA GeForce RTX 4090')],
+      [dev('Vulkan0', 'NVIDIA GeForce RTX 4090'), dev('Vulkan1', 'Intel(R) UHD Graphics 770')],
+    )).toEqual({ 1: 'Vulkan0' });
+    expect(matchLlmDevices(
+      [card(0, 'Tesla P40'), card(1, 'NVIDIA GeForce RTX 3060')],
+      [dev('Vulkan0', 'NVIDIA GeForce RTX 3060'), dev('Vulkan1', 'AMD Radeon(TM) Graphics')],
+    )).toEqual({ 1: 'Vulkan0' });
+  });
+
+  test('leaves out a name whose counts differ, or with no name at all', () => {
+    expect(matchLlmDevices(
+      [card(0, 'RTX 3090'), card(1, 'RTX 3090'), card(2, 'RTX 4070')],
+      [dev('Vulkan0', 'RTX 3090'), dev('Vulkan1', 'RTX 4070')],
+    )).toEqual({ 2: 'Vulkan1' });
+    expect(matchLlmDevices(
+      [card(0, ''), card(1, 'RTX 4070'), card(2, 'RTX 4070'), { index: null, name: 'RTX 4070' }, null],
+      [dev('Vulkan0', ''), dev('Vulkan1', 'RTX 4070'), { name: 'RTX 4070' }],
+    )).toEqual({});
+  });
+
+  test('empty without both lists', () => {
+    expect(matchLlmDevices([card(0, 'RTX 4090')], [])).toEqual({});
+    expect(matchLlmDevices(null, null)).toEqual({});
+  });
+
+  // Two 3090s, the desktop on nvidia-smi's GPU 1, which Vulkan lists first.
+  // By name they pair in order, the wrong way round. Bus ids say which is which.
+  test('pairs cards by bus id first, same-name cards included', () => {
+    const name = 'NVIDIA GeForce RTX 3090';
+    const busIds = { 0: '00000000:01:00.0', 1: '00000000:02:00.0' };
+    const vk = [{ device: 'Vulkan0', name, busId: '0000:02:00.0' }, { device: 'Vulkan1', name, busId: '0000:01:00.0' }];
+    expect(matchLlmDevices([card(0, name), card(1, name)], vk, busIds)).toEqual({ 0: 'Vulkan1', 1: 'Vulkan0' });
+    // Without them, the old guess.
+    expect(matchLlmDevices([card(0, name), card(1, name)], vk)).toEqual({ 0: 'Vulkan0', 1: 'Vulkan1' });
+  });
+
+  test('matches by name the cards bus ids leave over, but never two that differ', () => {
+    const vk = [
+      { device: 'Vulkan0', name: 'NVIDIA GeForce RTX 4070', busId: '0000:02:00.0' },
+      { device: 'Vulkan1', name: 'NVIDIA RTX PRO 4500 Blackwell' },
+    ];
+    // GPU 0 has no bus id, so its name decides. GPU 1's matched by bus id.
+    expect(matchLlmDevices([card(0, 'NVIDIA RTX PRO 4500 Blackwell'), card(1, 'NVIDIA GeForce RTX 4070')], vk,
+      { 1: '00000000:02:00.0' })).toEqual({ 0: 'Vulkan1', 1: 'Vulkan0' });
+    // Same name, but the bus ids say they are different cards.
+    expect(matchLlmDevices([card(0, 'NVIDIA GeForce RTX 4070')], vk.slice(0, 1), { 0: '00000000:03:00.0' }))
+      .toEqual({});
+    // Nor as the one card left on each side.
+    expect(matchLlmDevices([card(0, 'NVIDIA RTX A')], [{ device: 'Vulkan0', name: 'NVIDIA RTX B', busId: '0000:02:00.0' }],
+      { 0: '00000000:03:00.0' })).toEqual({});
+  });
+});
+
+describe('placeLlmPlan', () => {
+  const { placeLlmPlan } = require('../src/shared/llama');
+  const cards = [
+    { index: 0, name: 'NVIDIA RTX PRO 4500 Blackwell' },
+    { index: 1, name: 'NVIDIA GeForce RTX 4070' },
+  ];
+  const devices = [
+    { device: 'Vulkan0', name: 'NVIDIA GeForce RTX 4070' },
+    { device: 'Vulkan1', name: 'NVIDIA RTX PRO 4500 Blackwell' },
+  ];
+
+  test('gives each planned card its device, and leaves the plan itself alone', () => {
+    const plan = [{ index: 0, freeMb: 28000, nGpuLayers: 999 }];
+    expect(placeLlmPlan(plan, cards, devices)).toEqual({
+      plan: [{ index: 0, freeMb: 28000, nGpuLayers: 999, device: 'Vulkan1' }],
+      warnings: [],
+    });
+    expect(plan[0].device).toBeUndefined();
+  });
+
+  const amd = [{ device: 'Vulkan0', name: 'AMD Radeon RX 7900 XTX' }];
+
+  test('warns for a card it could not match on a rig of several, which keeps --main-gpu', () => {
+    const plan = [{ index: 0, nGpuLayers: 999 }, { index: 1, nGpuLayers: 999 }];
+    expect(placeLlmPlan(plan, cards, amd)).toEqual({
+      plan,
+      warnings: [
+        "could not tell which of llama-server's cards is GPU 0 (NVIDIA RTX PRO 4500 Blackwell), so the local LLM may load on a different card",
+        "could not tell which of llama-server's cards is GPU 1 (NVIDIA GeForce RTX 4070), so the local LLM may load on a different card",
+      ],
+    });
+    // A card nvidia-smi gave no name, or that is not in its list.
+    expect(placeLlmPlan([{ index: 0 }, { index: 3 }], [{ index: 0 }, null, { index: 1, name: 'x' }], amd).warnings).toEqual([
+      "could not tell which of llama-server's cards is GPU 0, so the local LLM may load on a different card",
+      "could not tell which of llama-server's cards is GPU 3, so the local LLM may load on a different card",
+    ]);
+  });
+
+  // Once, and on a one-card rig too: a failed listing should not pass unseen.
+  test('says once when llama-server listed no cards', () => {
+    const line = 'llama-server did not list its cards, so the local LLM is placed by GPU number (--main-gpu), which may be a different card';
+    expect(placeLlmPlan([{ index: 0 }, { index: 1 }], cards, []).warnings).toEqual([line]);
+    expect(placeLlmPlan([{ index: 0 }], [cards[0]], null).warnings).toEqual([line]);
+  });
+
+  // One NVIDIA card Vulkan can't see (TCC mode, say) and an AMD card or iGPU
+  // it can: --main-gpu 0 then loads on that, the model sized for the NVIDIA card.
+  test('warns on a one-card rig too when the card is not in llama-server\'s list', () => {
+    expect(placeLlmPlan([{ index: 0 }], [{ index: 0, name: 'NVIDIA RTX A6000' }], amd)).toEqual({
+      plan: [{ index: 0 }],
+      warnings: ["could not tell which of llama-server's cards is GPU 0 (NVIDIA RTX A6000), so the local LLM may load on a different card"],
+    });
+  });
+
+  test('quiet for a matched card and an unmeasured one, and an empty plan stays empty', () => {
+    expect(placeLlmPlan([{ index: 0 }], [cards[0]], devices).warnings).toEqual([]);
+    expect(placeLlmPlan([{ index: null }], cards, [])).toEqual({ plan: [{ index: null }], warnings: [] });
+    expect(placeLlmPlan(null, null, null)).toEqual({ plan: [], warnings: [] });
+  });
+
+  // Two 5090s with the desktop on GPU 1: the plan takes only GPU 0, but Vulkan
+  // may list GPU 1 first, and the names can't tell them apart.
+  test('warns when a planned card shares its name with one the plan left out for less room', () => {
+    const name = 'NVIDIA GeForce RTX 5090';
+    const twins = [{ index: 0, name, usedMb: 400, totalMb: 32607 }, { index: 1, name, usedMb: 2900, totalMb: 32607 }];
+    const vk = [{ device: 'Vulkan0', name }, { device: 'Vulkan1', name }];
+    expect(placeLlmPlan([{ index: 0, freeMb: 32207 }], twins, vk)).toEqual({
+      plan: [{ index: 0, freeMb: 32207, device: 'Vulkan0' }],
+      warnings: ['GPU 0 (NVIDIA GeForce RTX 5090) has the same name as another card here, so llama-server may load the local LLM on that one instead'],
+    });
+    // Unmeasured counts as less room.
+    expect(placeLlmPlan([{ index: 0 }], [{ index: 0, name }, { index: 1, name }], vk).warnings).toHaveLength(1);
+    // Every twin planned: whichever card each gets, each has room.
+    expect(placeLlmPlan([{ index: 0, freeMb: 32207 }, { index: 1, freeMb: 29707 }], twins, vk).warnings).toEqual([]);
+  });
+
+  // The CLI's --llm-max-instances leaves out cards that have room. Landing on
+  // one of those is no worse than landing on the planned card.
+  test('quiet when the twin left out has as much room', () => {
+    const name = 'NVIDIA GeForce RTX 3090';
+    const rig = [0, 1, 2].map((index) => ({ index, name, usedMb: 1000, totalMb: 24576 }));
+    const vk = [0, 1, 2].map((i) => ({ device: 'Vulkan' + i, name }));
+    expect(placeLlmPlan([{ index: 0, freeMb: 23576 }, { index: 1, freeMb: 23576 }], rig, vk).warnings).toEqual([]);
+  });
+
+  // Prompt pause reads the instance's bus id to know which card to stop.
+  test('gives a card its bus id when the match is certain', () => {
+    const busIds = { 0: '00000000:01:00.0', 1: '00000000:02:00.0' };
+    // By a name no other card has.
+    expect(placeLlmPlan([{ index: 0 }], cards, devices, busIds).plan)
+      .toEqual([{ index: 0, device: 'Vulkan1', busId: '00000000:01:00.0' }]);
+    // Not when nvidia-smi gave none.
+    expect(placeLlmPlan([{ index: 0 }], cards, devices, {}).plan).toEqual([{ index: 0, device: 'Vulkan1' }]);
+  });
+
+  test('matched by bus id, a twin gets its bus id and no warning', () => {
+    const name = 'NVIDIA GeForce RTX 5090';
+    const twins = [{ index: 0, name, usedMb: 400, totalMb: 32607 }, { index: 1, name, usedMb: 2900, totalMb: 32607 }];
+    const busIds = { 0: '00000000:01:00.0', 1: '00000000:02:00.0' };
+    const vk = [{ device: 'Vulkan0', name, busId: '0000:02:00.0' }, { device: 'Vulkan1', name, busId: '0000:01:00.0' }];
+    expect(placeLlmPlan([{ index: 0, freeMb: 32207 }], twins, vk, busIds)).toEqual({
+      plan: [{ index: 0, freeMb: 32207, device: 'Vulkan1', busId: '00000000:01:00.0' }],
+      warnings: [],
+    });
+    // Paired by name, it is only a guess: a warning, and no bus id.
+    const byName = vk.map((d) => ({ device: d.device, name }));
+    const guess = placeLlmPlan([{ index: 0, freeMb: 32207 }, { index: 1, freeMb: 29707 }], twins, byName, busIds);
+    expect(guess.plan).toEqual([
+      { index: 0, freeMb: 32207, device: 'Vulkan0' },
+      { index: 1, freeMb: 29707, device: 'Vulkan1' },
+    ]);
+  });
+});
+
+describe('describeLlmStart', () => {
+  const { describeLlmStart } = require('../src/shared/llama');
+
+  test('names the cards by nvidia-smi index', () => {
+    expect(describeLlmStart([{ index: 0 }])).toBe('local LLM starting on 1 GPU [0]');
+    expect(describeLlmStart([{ index: 0, device: 'Vulkan0' }, { index: 1, device: 'Vulkan1' }]))
+      .toBe('local LLM starting on 2 GPUs [0, 1]');
+    expect(describeLlmStart([{ index: null }])).toBe('local LLM starting on 1 GPU [auto]');
+    expect(describeLlmStart(null)).toBe('local LLM starting on 0 GPUs []');
+  });
+
+  // So a log shows which card the model really went to.
+  test('adds llama-server\'s names when it numbers the cards differently', () => {
+    expect(describeLlmStart([{ index: 0, device: 'Vulkan1' }]))
+      .toBe('local LLM starting on 1 GPU [0] (llama-server calls it Vulkan1)');
+    expect(describeLlmStart([{ index: 0, device: 'Vulkan1' }, { index: 1 }]))
+      .toBe('local LLM starting on 2 GPUs [0, 1] (llama-server calls them Vulkan1, ?)');
+  });
+});
+
+describe('parseUsingDeviceLine', () => {
+  const { parseUsingDeviceLine } = require('../src/shared/llama');
+
+  test('reads the device and its bus id from the line b9902 prints', () => {
+    expect(parseUsingDeviceLine('0.00.513.847 I llama_prepare_model_devices: using device Vulkan0 (NVIDIA GeForce RTX 4090) (0000:01:00.0) - 23370 MiB free'))
+      .toEqual({ device: 'Vulkan0', busId: '0000:01:00.0' });
+  });
+
+  test('null without a bus id, and for every other line', () => {
+    expect(parseUsingDeviceLine('x: using device Vulkan0 (Some GPU) (unknown id) - 8000 MiB free')).toBeNull();
+    expect(parseUsingDeviceLine('load: 0 unused tokens')).toBeNull();
+    expect(parseUsingDeviceLine(undefined)).toBeNull();
   });
 });
 

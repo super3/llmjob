@@ -2,6 +2,7 @@
 
 const { LLM } = require('./config');
 const { ALL_LAYERS } = require('./vram');
+const { normalizePciBusId } = require('./gpu');
 
 // Pure helpers for the local llama.cpp `llama-server` (OpenAI-compatible). The
 // process spawn/supervision lives in main/llmManager.js; this module just builds
@@ -55,12 +56,21 @@ function buildServerArgs(opts = {}) {
     '--split-mode', 'none',
   ];
   // Pin the model to a specific GPU when the caller picked one. With
-  // --split-mode none the model loads on a single device; without --main-gpu
+  // --split-mode none the model loads on a single device; without a choice
   // that's always device 0, which on a mining rig is busy and may lack the
   // headroom the model needs. The caller (VRAM budgeter) chooses the card with
-  // the most free VRAM and passes its index here so the server lands there
-  // instead. A non-negative integer only; anything else falls back to device 0.
-  if (Number.isInteger(opts.mainGpu) && opts.mainGpu >= 0) {
+  // the most free VRAM so the server lands there instead.
+  //
+  // `device` is llama-server's own name for that card ("Vulkan1"), from
+  // placeLlmPlan below, and it wins. --main-gpu counts cards in llama-server's
+  // order, which need not be nvidia-smi's, so an index can name another card.
+  // With one device named there is only one to pick, and --main-gpu is left
+  // out: any index but 0 would then be out of range. Without a name, a
+  // non-negative integer `mainGpu` is passed as before; anything else falls
+  // back to device 0.
+  if (opts.device) {
+    args.push('--device', String(opts.device));
+  } else if (Number.isInteger(opts.mainGpu) && opts.mainGpu >= 0) {
     args.push('--main-gpu', String(opts.mainGpu));
   }
   // The vision projector, for a multimodal model that ships one. The weights
@@ -86,6 +96,20 @@ function buildServerArgs(opts = {}) {
     for (const a of opts.extraArgs) if (a != null && a !== '') args.push(String(a));
   }
   return args;
+}
+
+// The environment for a llama-server, or null to inherit ours unchanged.
+//
+// The vision projector does not follow --device. mtmd loads it on the card
+// named by MTMD_BACKEND_DEVICE, or else on the first GPU in llama-server's list
+// (b9902, tools/mtmd/clip.cpp). On a rig whose first card is not the model's,
+// that put ~1 GB of projector on another card. So an instance with a device and
+// a projector gets MTMD_BACKEND_DEVICE set to the same device. A name mtmd
+// doesn't know only logs a warning and falls back to the first GPU. A value
+// already set is the user's, and is kept.
+function buildServerEnv(opts = {}, env = {}) {
+  if (!opts.device || !opts.mmprojPath || env.MTMD_BACKEND_DEVICE != null) return null;
+  return Object.assign({}, env, { MTMD_BACKEND_DEVICE: String(opts.device) });
 }
 
 // Flip the manager to "ready" only on lines llama-server prints AFTER the model
@@ -154,22 +178,190 @@ function parseSlotEvent(line) {
   return { slot: Number(m[1]), busy: m[2] === 'processing task' };
 }
 
-// The card a llama-server actually loaded on, as its PCI bus id, from the line
-// it prints once at load (b9902, src/llama.cpp):
+// A card llama-server loads on, and its PCI bus id, from the line it prints
+// for each one while loading a model (b9902, src/llama.cpp):
 //
-//   llama_model_load_from_file_impl: using device Vulkan0 (NVIDIA GeForce RTX 3090) (0000:02:00.0) - 23893 MiB free
+//   llama_prepare_model_devices: using device Vulkan0 (NVIDIA GeForce RTX 3090) (0000:02:00.0) - 23893 MiB free
 //
-// Needed because --main-gpu counts cards in Vulkan's order, which need not be
-// nvidia-smi's: on Windows it follows the adapter driving the desktop. With
-// --split-mode none there is exactly one such line. Null when the backend did
-// not know the bus id ("unknown id") or the line is anything else.
-function parseUsingDevice(line) {
+// With --split-mode none there is one such line. b9902 prints it only at -lv 4,
+// since it counts llama.cpp's own info lines as trace, so the servers the app
+// runs never show it. probe.detectLlmDevices runs a short one that does.
+// Returns { device, busId }, or null when the backend did not know the bus id
+// ("unknown id") or the line is anything else.
+function parseUsingDeviceLine(line) {
   const m = String(line == null ? '' : line)
-    .match(/using device \S+ \(.*\) \(([0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+\.[0-9a-fA-F])\) - \d+ MiB free/);
-  return m ? m[1] : null;
+    .match(/using device (\S+) \(.*\) \(([0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+\.[0-9a-fA-F])\) - \d+ MiB free/);
+  return m ? { device: m[1], busId: m[2] } : null;
+}
+
+// The bus id alone (parseUsingDeviceLine), for a server that prints one.
+function parseUsingDevice(line) {
+  const e = parseUsingDeviceLine(line);
+  return e ? e.busId : null;
+}
+
+// The cards llama-server can load on, from `llama-server --list-devices`
+// (b9902, common/arg.cpp), as [{ device, name }] in its order:
+//
+//   Available devices:
+//     Vulkan0: NVIDIA GeForce RTX 4070 (11874 MiB, 11200 MiB free)
+//     Vulkan1: NVIDIA RTX PRO 4500 Blackwell (32111 MiB, 31500 MiB free)
+//
+// `device` is what --device takes. Any other line is skipped.
+function parseDeviceList(out) {
+  const list = [];
+  for (const line of String(out == null ? '' : out).split(/\r?\n/)) {
+    const m = line.match(/^\s*(\S+): (.*) \(\d+ MiB, \d+ MiB free\)\s*$/);
+    if (m) list.push({ device: m[1], name: m[2].trim() });
+  }
+  return list;
+}
+
+// Which of llama-server's cards is each nvidia-smi card, as { index: device }.
+// `devices` is probe.detectLlmDevices's list, `busIds` nvidia-smi's
+// { index: pciBusId } (probe.detectPciBusIds).
+//
+// llama-server ships as a Vulkan build, and Vulkan numbers cards its own way:
+// on Windows the card driving the desktop comes first. So --main-gpu with
+// nvidia-smi's index could load the model on another card. On a rig with a
+// 32 GB RTX PRO 4500 (GPU 0) and a 12 GB RTX 4070 (Vulkan0), the 27B model
+// planned for the PRO 4500 went to the 4070, ran out of memory, and never
+// started.
+//
+// Cards are matched by PCI bus id first, where both sides have one: that is
+// exact, cards of the same name included. A device carries a bus id when the
+// probe read one (more than one card listed, and a model on disk to load).
+//
+// The rest are matched by name, ignoring case and punctuation. A card and a
+// device that both have a bus id, and differ, are never paired. Cards of the
+// same name are paired in order, which is only a guess: nothing in the list
+// tells them apart (its free-memory figure leaves out other programs on
+// Windows), so placeLlmPlan warns when it matters.
+//
+// When one NVIDIA card is left over on each side, and both sides list as many
+// NVIDIA cards, those two are paired, so a name spelled differently still
+// matches. Only NVIDIA devices count there: llama-server also lists
+// integrated GPUs and other makers' cards, which nvidia-smi does not, and
+// pairing a card nvidia-smi lists but Vulkan can't see (a card in TCC mode,
+// say) with an iGPU would put the model in shared system memory. A card with
+// no match is left out of the map.
+function matchLlmDevices(cards, devices, busIds) {
+  const gpus = (Array.isArray(cards) ? cards : [])
+    .filter((c) => c && Number.isInteger(c.index))
+    .sort((a, b) => a.index - b.index);
+  const devs = (Array.isArray(devices) ? devices : []).filter((d) => d && d.device);
+  const cardBus = (c) => normalizePciBusId(busIds && busIds[c.index]);
+  const devBus = (d) => normalizePciBusId(d.busId);
+  const open = (c, d) => !(cardBus(c) && devBus(d));
+  const map = {};
+  const taken = new Set();
+  for (const c of gpus) {
+    const d = cardBus(c) && devs.find((x) => !taken.has(x.device) && devBus(x) === cardBus(c));
+    if (d) { map[c.index] = d.device; taken.add(d.device); }
+  }
+  const rest = gpus.filter((c) => map[c.index] === undefined);
+  for (const name of new Set(rest.map((c) => nameKey(c.name)).filter(Boolean))) {
+    const mine = rest.filter((c) => nameKey(c.name) === name);
+    const theirs = devs.filter((d) => !taken.has(d.device) && nameKey(d.name) === name);
+    if (mine.length !== theirs.length || !mine.every((c, i) => open(c, theirs[i]))) continue;
+    mine.forEach((c, i) => { map[c.index] = theirs[i].device; taken.add(theirs[i].device); });
+  }
+  const nvidia = devs.filter((d) => nameKey(d.name).includes('nvidia'));
+  const leftCards = gpus.filter((c) => map[c.index] === undefined);
+  const leftDevs = nvidia.filter((d) => !taken.has(d.device));
+  if (gpus.length === nvidia.length && leftCards.length === 1 && leftDevs.length === 1
+    && open(leftCards[0], leftDevs[0])) {
+    map[leftCards[0].index] = leftDevs[0].device;
+  }
+  return map;
+}
+
+// A card's name as matchLlmDevices compares it: lower case, letters and digits.
+function nameKey(s) {
+  return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+// The plan with each card's llama-server device set (matchLlmDevices), and
+// the warnings that go with it. A card with no device keeps --main-gpu, as
+// before.
+//
+// A placed entry also gets `busId`, nvidia-smi's bus id for its card, when the
+// card it loads on is certain: matched by bus id, or by a name no other card
+// here has. Prompt pause needs it to know which card to stop mining on, since
+// the server's own "using device" line is not printed at the log level the
+// app runs it at (parseUsingDeviceLine).
+// Twins paired by name get none, and a prompt on a rig of several cards then
+// pauses nothing (promptPause.cardForPrompt).
+//
+// The warnings:
+//
+//   * llama-server listed no cards (it would not run, say). One line, so a
+//     failed listing shows even on a one-card rig.
+//   * a planned card had no match. On a one-card rig too: a card Vulkan can't
+//     see (one in TCC mode, say) beside an iGPU or another maker's card sends
+//     --main-gpu 0 there, since llama.cpp uses an iGPU when no discrete card
+//     is listed.
+//   * a planned card, paired by name, shares it with a card the plan left out
+//     that has less free memory. Same-name cards are paired in order, so it
+//     may be on that one, such as the card driving the desktop. A twin left out
+//     with as much room (by the CLI's --llm-max-instances) holds the model just
+//     as well. A card matched by bus id is never in doubt.
+function placeLlmPlan(plan, cards, devices, busIds) {
+  const list = (Array.isArray(cards) ? cards : []).filter(Boolean);
+  const entries = Array.isArray(plan) ? plan : [];
+  const listed = Array.isArray(devices) && devices.length > 0;
+  const map = matchLlmDevices(list, devices, busIds);
+  const planned = new Set(entries.map((e) => e.index));
+  const warnings = [];
+  if (!listed && entries.some((e) => e.index != null)) {
+    warnings.push('llama-server did not list its cards, so the local LLM is placed by GPU number'
+      + ' (--main-gpu), which may be a different card');
+  }
+  const describe = (card, index) => 'GPU ' + index + (card && card.name ? ' (' + card.name + ')' : '');
+  // Unmeasured reads as no room, so the warning errs on the side of showing.
+  const roomy = (c, e) => Number(c.totalMb) - Number(c.usedMb) >= Number(e.freeMb);
+  const placed = entries.map((e) => {
+    if (e.index == null) return e;
+    const card = list.find((c) => c.index === e.index);
+    if (map[e.index]) {
+      const bus = busIds && busIds[e.index];
+      const dev = devices.find((d) => d && d.device === map[e.index]);
+      const byBus = !!normalizePciBusId(bus) && normalizePciBusId(bus) === normalizePciBusId(dev.busId);
+      const twin = (c) => c.index !== e.index && nameKey(c.name) === nameKey(card.name);
+      const twins = !byBus && !!card && !!nameKey(card.name) && list.some(twin);
+      if (twins && list.some((c) => twin(c) && !planned.has(c.index) && !roomy(c, e))) {
+        warnings.push(describe(card, e.index) + ' has the same name as another card here, so llama-server'
+          + ' may load the local LLM on that one instead');
+      }
+      const out = Object.assign({}, e, { device: map[e.index] });
+      if (!twins && normalizePciBusId(bus)) out.busId = bus;
+      return out;
+    }
+    if (listed) {
+      warnings.push('could not tell which of llama-server\'s cards is ' + describe(card, e.index)
+        + ', so the local LLM may load on a different card');
+    }
+    return e;
+  });
+  return { plan: placed, warnings };
+}
+
+// The log line for a fleet start: "local LLM starting on 1 GPU [0]". When
+// llama-server numbers a card differently, its names follow, so a log shows
+// which card the model went to: "[0] (llama-server calls it Vulkan1)".
+function describeLlmStart(plan) {
+  const list = Array.isArray(plan) ? plan : [];
+  const gpus = list.map((p) => (p.index == null ? 'auto' : p.index)).join(', ');
+  let line = 'local LLM starting on ' + list.length + ' GPU' + (list.length === 1 ? '' : 's') + ' [' + gpus + ']';
+  if (list.some((p) => p.device && String(p.device).replace(/^\D+/, '') !== String(p.index))) {
+    line += ' (llama-server calls ' + (list.length === 1 ? 'it ' : 'them ')
+      + list.map((p) => p.device || '?').join(', ') + ')';
+  }
+  return line;
 }
 
 module.exports = {
-  resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, isServerReady,
-  parseTokensPerSec, parseTiming, parseSlotEvent, parseUsingDevice,
+  resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, buildServerEnv, isServerReady,
+  parseTokensPerSec, parseTiming, parseSlotEvent, parseUsingDevice, parseUsingDeviceLine,
+  parseDeviceList, matchLlmDevices, placeLlmPlan, describeLlmStart,
 };
