@@ -601,9 +601,9 @@ class W:
         live = [g for g in active if not g["ended"]]
         kx = [g for g in live if g.get("kx")]
         if len(kx) < want:
-            # Not a group Salad is still deploying: it refuses an update then (pending_update_in_progress).
+            # Not a group still preparing its image: Salad refuses an update then (pending_update_in_progress).
             waiting = sorted((g for g in live if not g.get("kx") and not g["has_pc"]
-                              and g["status"] in ("running", "stopped") and self.kx_ready(g, t)
+                              and g["status"] not in ("pending", "failed") and self.kx_ready(g, t)
                               and g.get("kx_failed_tok") != self.st["kx_token"]),   # failed there: not again
                              key=lambda g: g["price"])
             need = want - len(kx)
@@ -624,13 +624,25 @@ class W:
                 extra -= 1
 
     def kx_works(self, g, t):
-        """Whether Kryptex took another box's work in the last 30 minutes, by its own count, or can't be read to tell.
-        A Kryptex box that sends nothing then points at its PC, not at Kryptex: a new PC that never sends a reading
-        is common here (46 times by 18 October), and once new groups started on Kryptex, two of those would have
-        stopped the test. When Kryptex can't be read, its boxes are left as any box (as guard.py does)."""
-        if t - self.st.get("kx_read_t", 0) >= 30 * MIN:
-            return True
-        return any(o is not g and (o.get("kx_share") or 0) >= t - 30 * MIN for o in self.st["groups"].values())
+        """Whether Kryptex took another box's work in the last 30 minutes. A Kryptex box that sends nothing then
+        points at its PC, not at Kryptex: a new PC that never sends a reading is common here (46 times by 18
+        October), and once new groups started on Kryptex, two of those would have stopped the test. The proof is
+        Kryptex's own count (kx_share); while Kryptex's API can't be read, the miners' own accepted counts on PCs
+        booked to Kryptex stand in (kx_log_share), so an outage of Kryptex's API alone isn't blamed on Kryptex,
+        and one of its pool too still is."""
+        key = "kx_share" if t - self.st.get("kx_read_t", 0) < 30 * MIN else "kx_log_share"
+        return any(o is not g and (o.get(key) or 0) >= t - 30 * MIN for o in self.st["groups"].values())
+
+    def on_kx(self, g, mach, t):
+        """Whether what a group's box mines on PC `mach` at time `t` goes to Kryptex: the pool seen taking that
+        PC's shares (pc_pool), else the pool before the group's last switch for the PC it left or a time before
+        the switch, else the pool its command names."""
+        seen = (g.get("pc_pool") or {}).get(mach)
+        if seen is not None:
+            return seen
+        if g.get("sw_t") and (mach == g.get("sw_from") or t < g["sw_t"]):
+            return bool(g.get("sw_prev"))
+        return bool(g.get("kx"))
 
     def pc_pool(self, g, kx_row, hm_row):
         """Which pool a group's box mines on at its PC, by which pool has its shares. A switch by command alone can
@@ -659,8 +671,11 @@ class W:
         if "box.sh" not in cmd or ("--pool " in cmd) == bool(g.get("kx")) or t - g.get("sw_t", 0) < 2 * MIN:
             return
         on = not g.get("kx")
-        g.update(kx=on, kx_since=t if on else None, sw_t=t, sw_from=g.get("machine") or (g.get("left") or [None])[-1],
-                 sw_prev=not on, kx_share=None if on else g.get("kx_share"))
+        # The PC it is on, or just left, keeps the pool its readings are booked to: the box there started on the
+        # command before this one.
+        m = g.get("machine") or (g.get("left") or [None])[-1]
+        g.update(kx=on, kx_since=t if on else None, sw_t=t, sw_from=m, sw_prev=self.on_kx(g, m, t),
+                 kx_share=None if on else g.get("kx_share"))
         self.st["kx_any_t"] = t
         event(f"WARN {g['name']}: Salad has the {'Kryptex' if on else 'HeroMiners'} command for it, though the ledger "
               f"said {'HeroMiners' if on else 'Kryptex'} (an update that timed out went through); the ledger follows "
@@ -685,7 +700,8 @@ class W:
             g["kx_try"] = t   # tried again in 15 minutes
             event(f"WARN Kryptex {'on' if on else 'off'} for {g['name']} refused: HTTP {s} {str(j)[:150]}")
             return False
-        moving = bool(g["has_pc"] and g.get("instance"))
+        # A box seen mining on the target pool already (pc_pool) stays on its PC.
+        moving = bool(g["has_pc"] and g.get("instance")) and self.on_kx(g, g.get("machine"), t) != on
         if moving and not self.reallocate(g, f"to start on {'Kryptex' if on else 'HeroMiners'}", count=False, gone_ok=True):
             # Still on its PC with the command it started with: put the group's command back to match, and try again
             # in 15 minutes.
@@ -709,7 +725,9 @@ class W:
                  or (g.get("left") or [None])[-1], sw_prev=not on, kx_share=None if on else g.get("kx_share"))
         self.st["kx_any_t"] = t
         event(f"KRYPTEX {'ON' if on else 'OFF'} {g['name']} ({why}): Pearl on {'Kryptex' if on else 'HeroMiners'}; "
-              + ("moved to a new PC, where it starts that way" if moving else "it starts that way on its next PC"))
+              + ("moved to a new PC, where it starts that way" if moving else
+                 "it mines that way on this PC already" if g["has_pc"] and self.on_kx(g, g.get("machine"), t) == on else
+                 "it starts that way on its next PC"))
         return True
 
     def kx_failed(self, g, why):
@@ -905,10 +923,7 @@ class W:
                     g["readings"] = [r for r in g["readings"] if t - r[0] < 7200]
                     # The pool this reading was mined on. One from the PC a box left at its last switch, or from
                     # before the switch, was mined on the pool it was on before.
-                    on_kx = g.get("kx")
-                    if g.get("sw_t") and (mach == g.get("sw_from") or tm < g["sw_t"]):
-                        on_kx = g.get("sw_prev")
-                    on_kx = (g.get("pc_pool") or {}).get(mach, on_kx)   # the pool seen taking this PC's shares
+                    on_kx = self.on_kx(g, mach, tm)
                     if ths > 0:
                         g["prl"] += ths / 60 * st["mkt"]["prl_th_hr"]
                         if on_kx:   # the part mined on Kryptex, which has its own credit ratio
@@ -917,6 +932,8 @@ class W:
                     prev = g["acc"].get(mach)
                     if (prev is None and acc > 0) or (prev is not None and acc > prev) or (prev is not None and acc < prev and acc > 0):
                         g["last_share"] = max(g["last_share"] or 0, tm)
+                        if on_kx:   # only stands in for Kryptex's own count while that can't be read (kx_works)
+                            g["kx_log_share"] = max(g.get("kx_log_share") or 0, tm)
                     g["acc"][mach] = acc
                     continue
                 text = text.strip()
@@ -935,7 +952,8 @@ class W:
 
         # Pool: shares and pool-side hashrate.
         pw = self.pool() if by_name else {}
-        live_kx = any(g.get("kx") for g in by_name.values())
+        # Workers while a group is on Kryptex, or was switched and its box may still mine there (pc_pool).
+        live_kx = any(g.get("kx") or g.get("sw_t") for g in by_name.values())
         kw = (self.kx_pool(workers=live_kx) if live_kx or any(g.get("prl_kx") for g in st["groups"].values())
               else {})
         self.trader()
@@ -947,7 +965,7 @@ class W:
                 # Kryptex's own count is the proof it takes a box's work (see leave and kx_works): the miner's log
                 # can't tell which pool accepted a share.
                 g["kx_share"] = max(g.get("kx_share") or 0, ls)
-            if g.get("kx"):
+            if self.on_kx(g, g.get("machine"), t):   # the pool it mines on now: last share and hashrate from there
                 if x:
                     if ls >= g["created"]:
                         g["last_share"] = max(g["last_share"] or 0, ls)
@@ -1035,6 +1053,7 @@ class W:
             if mach != g["machine"]:
                 first = not g["had_pc"]
                 g.update(machine=mach, pc_since=t, lost_since=None, profit_fail=0, had_pc=True)
+                (g.get("pc_pool") or {}).pop(mach, None)   # a new box there starts on the group's command
                 event(f"{'GOT PC' if first else 'NEW PC'} {g['name']} ({g['class']}, {g['pri']}): PC {mach[:8]}")
                 # A PC that another group left lately (slow, capped, not mining) is left again at once.
                 bad = st.setdefault("bad_pcs", {}).get(mach)
@@ -1120,7 +1139,8 @@ class W:
         # Hashrate. Readings are one a minute a group, so their sum over an hour / 60 is the average TH/s.
         # After a switch, an hour of readings mixes both pools, so the check waits an hour.
         if t - st["created"] >= 3600 and t - st.get("kx_any_t", 0) >= 3600:
-            miner = sum(r[2] for g in st["groups"].values() if not g.get("kx") for r in g["readings"] if r[0] > t - 3600) / 60
+            miner = sum(r[2] for g in st["groups"].values() for r in g["readings"]
+                        if r[0] > t - 3600 and not self.on_kx(g, r[1], r[0])) / 60
             if miner > 0 and abs(pt["ths_1h"] / miner - 1) > bar:
                 event(f"DRIFT hashrate: the pool saw {pt['ths_1h']:.0f} TH/s over the last hour; the miners reported "
                       f"{miner:.0f} ({pct(pt['ths_1h'] - miner, miner)})")
