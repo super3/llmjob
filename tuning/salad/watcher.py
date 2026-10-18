@@ -1422,7 +1422,7 @@ class W:
             pool.append(f"| ⛏️ PRL{NB}Kryptex | {kths:.0f} TH/s | {kt['confirmed']:.3f} | {kt['unconfirmed']:.3f} "
                         f"| {kt['paid']:.3f} |")
         if xt:
-            pool.append(f"| 🪙 XMR | {xt.get('khs_1h', 0):.1f} kH/s | {xt['balance']:.6f} | {xt.get('pending', 0):.6f} "
+            pool.append(f"| 🪙 XMR HeroMiners | {xt.get('khs_1h', 0):.1f} kH/s | {xt['balance']:.6f} | {xt.get('pending', 0):.6f} "
                         f"| {xt['paid']:.6f} |")
         if pool:
             pool = ["", "| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", "|---|---|---|---|---|", *pool]
