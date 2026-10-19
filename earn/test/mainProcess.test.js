@@ -1843,6 +1843,148 @@ describe('local LLM', () => {
     });
   }
 
+  // Compute Mode LLM gives a 32 GB card the 27B at 262144. Picking Auto in
+  // Settings and pressing START LLM, with no STOP between, brings the miner in
+  // beside it. On Windows the 27B must not co-run, and on Linux 262144 plus the
+  // miner does not fit the card, so it is stopped before the miner starts and
+  // planned again once the miner is up.
+  describe('when the miner joins a model planned without it', () => {
+    const CARD = 'NVIDIA RTX PRO 4500 Blackwell';
+    const card = (usedMb) => [{ index: 0, name: CARD, usedMb, totalMb: 32623 }];
+    const RESTART = 'restarting the local LLM: Qwen3.8-27B-UD-Q4_K_XL was sized for the card alone, and the miner is joining it';
+
+    // LLM mode on an empty card: the 27B at 262144. Then the card as it reads
+    // once the miner has its share, for whatever is measured next.
+    async function serveAlone(platform, prefs) {
+      const ctx = await boot({
+        platform,
+        before: (c) => {
+          if (prefs) prefs(c);
+          c.probe.detectGpusVram.mockResolvedValue(card(500));
+          c.LlmEngineManager.behavior.ensureMmproj = () => Promise.resolve('/tmp/llm/mmproj.gguf');
+        },
+      });
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'llm' });
+      await flush(30);
+      const big = ctx.LlmManager.instances[0];
+      expect(big.start.mock.calls[0][0]).toMatchObject({ alias: ctx.config.LLM.tiers[0].name, ctxSize: 262144 });
+      ctx.probe.detectGpusVram.mockResolvedValue(card(3600));
+      return { ctx, big };
+    }
+
+    for (const [platform, ctxWanted] of [['win32', null], ['linux', 131072]]) {
+      it('on ' + platform + ', stops the 27B before the miner starts and serves '
+        + (ctxWanted ? 'it at ' + ctxWanted : 'Gemma'), async () => {
+        const { ctx, big } = await serveAlone(platform);
+        // Still loading, so its process is alive until it exits.
+        big.running = true;
+
+        ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+        await flush(30);
+        expect(big.stop).toHaveBeenCalledTimes(1);
+        expect(ctx.sent('miner:log').map((l) => l.line)).toContain(RESTART);
+        // The miner waits for the 27B to exit.
+        expect(ctx.PearlEngine.instances).toHaveLength(0);
+        big.emit('stopped', null);
+        await flush(30);
+        expect(ctx.PearlEngine.instances).toHaveLength(1);
+        // And the model waits for the miner's hashrate, as on any Auto start.
+        expect(ctx.LlmManager.instances).toHaveLength(1);
+        ctx.PearlEngine.instances[0].emit('event', { type: 'status', hashrate: '2.5' });
+        await flush(30);
+
+        expect(ctx.LlmManager.instances).toHaveLength(2);
+        const opts = ctx.LlmManager.instances[1].start.mock.calls[0][0];
+        if (ctxWanted) expect(opts).toMatchObject({ alias: ctx.config.LLM.tiers[0].name, ctxSize: ctxWanted });
+        else expect(opts.alias).toBe(ctx.config.LLM.model.name);
+        expect(ctx.sent('llm:status').pop()).toMatchObject({ model: opts.alias, ctxSize: opts.ctxSize, error: null });
+        // The session and the miner carry on: the old model said no 'stopped'.
+        expect(ctx.sent('miner:stopped')).toHaveLength(0);
+        expect(ctx.PearlEngine.instances[0].isRunning()).toBe(true);
+      });
+    }
+
+    // Idle-only with someone at the computer: the miner waits, but the model is
+    // sized for it all the same, so the 27B goes now.
+    it('re-plans a START that idle-only holds back', async () => {
+      const { ctx } = await serveAlone('win32', withPrefs({ mineWhenIdle: true }));
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+      await flush(30);
+      expect(ctx.sent('miner:idle')).toEqual([{ paused: true, idleAfterSec: 300 }]);
+      expect(ctx.PearlEngine.instances).toHaveLength(0);
+      expect(ctx.LlmManager.instances).toHaveLength(2);
+      expect(ctx.LlmManager.instances[1].start.mock.calls[0][0].alias).toBe(ctx.config.LLM.model.name);
+    });
+
+    // The driver can count the 27B for a moment after it exits. A second card
+    // with room does not end the wait: the 27B was on card 0.
+    it('waits for the card to come back before the miner starts', async () => {
+      const { ctx } = await serveAlone('win32');
+      ctx.probe.detectGpusVram.mockResolvedValueOnce([
+        ...card(30650), { index: 1, name: 'NVIDIA GeForce RTX 4070', usedMb: 500, totalMb: 12282 },
+      ]);
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+      await flush(30);
+      expect(ctx.PearlEngine.instances).toHaveLength(0);
+      ctx.timeout(250).fn();
+      await flush(30);
+      expect(ctx.PearlEngine.instances).toHaveLength(1);
+    });
+
+    it('a STOP while it waits starts neither the miner nor a model', async () => {
+      const { ctx } = await serveAlone('win32');
+      ctx.probe.detectGpusVram.mockResolvedValueOnce(card(30650));
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+      await flush(30);
+      ctx.emit('miner:stop');
+      ctx.timeout(250).fn();
+      await flush(30);
+      expect(ctx.PearlEngine.instances).toHaveLength(0);
+      expect(ctx.LlmManager.instances).toHaveLength(1);
+      expect(ctx.sent('miner:stopped')).toHaveLength(1);
+    });
+
+    // The common cases change nothing: the same reserve, or a reserve that
+    // gives the card the same model at the same context.
+    for (const [what, first, usedMb] of [
+      ['Auto started again on a 32 GB Linux card', 'auto', 3600],
+      ['the miner joining Gemma on a card with 24 GB free', 'llm', 8600],
+    ]) {
+      it('keeps the model for ' + what, async () => {
+        const ctx = await boot({ before: (c) => { c.probe.detectGpusVram.mockResolvedValue(card(usedMb)); } });
+        ctx.emit('miner:start', { address: VALID_ADDR, mode: first });
+        await flush(30);
+        if (first === 'auto') {
+          ctx.PearlEngine.instances[0].emit('event', { type: 'status', hashrate: '2.5' });
+          await flush(30);
+        }
+        ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+        await flush(30);
+        ctx.PearlEngine.instances[0].emit('event', { type: 'status', hashrate: '2.5' });
+        await flush(30);
+        expect(ctx.LlmManager.instances).toHaveLength(1);
+        expect(ctx.LlmManager.instances[0].stop).not.toHaveBeenCalled();
+        expect(ctx.sent('miner:log').map((l) => l.line).join('\n')).not.toContain('restarting the local LLM');
+      });
+    }
+
+    // A server adopted in LLM mode is kept: nothing here planned it, and
+    // stopping the fleet would not stop it.
+    it('keeps an adopted server', async () => {
+      const ctx = await boot({ platform: 'win32', before: (c) => { c.probe.detectGpusVram.mockResolvedValue(card(500)); } });
+      wireHealthOk(ctx);
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'llm' });
+      await flush(30);
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+      await flush(30);
+      ctx.PearlEngine.instances[0].emit('event', { type: 'status', hashrate: '2.5' });
+      await flush(30);
+      expect(ctx.LlmManager.instances).toHaveLength(0);
+      expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: true });
+      expect(ctx.sent('miner:log').filter((l) => /reusing it/.test(l.line))).toHaveLength(1);
+    });
+  });
+
   // The report this fix came from. nvidia-smi's GPU 0 is a 32 GB RTX PRO 4500,
   // but Vulkan lists the 12 GB RTX 4070 that drives the desktop first, so
   // --main-gpu 0 put the 27B model on the 4070 and it never started.
@@ -2397,6 +2539,25 @@ describe('a card that keeps losing its GPU', () => {
     ctx.emit('miner:start', { mode: 'llm' });
     await flush();
     expect(ctx.LlmManager.instances[0].start.mock.calls[0][0].alias).toBe(tier.name);
+  });
+
+  // The miner joining a model planned for the card alone re-plans it (see
+  // llmReplan), and the card's record is part of that plan: Gemma, run there in
+  // place of the 27B, stays. Linux, where the 27B co-runs at 131072.
+  it('keeps the model it fell back to when the miner joins', async () => {
+    const tier = require('../src/shared/config').LLM.tiers[0];
+    const ctx = await bootWith([PRO], { version: '0.0.0-test', cards: { '0:1:0.0': [tier.name] } }, BUS);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'llm' });
+    await flush();
+    const gemma = ctx.LlmManager.instances[0];
+    expect(gemma.start.mock.calls[0][0].alias).toBe(ctx.config.LLM.model.name);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+    await flush(30);
+    ctx.PearlEngine.instances[0].emit('event', { type: 'status', hashrate: '2.5' });
+    await flush(30);
+    expect(ctx.LlmManager.instances).toHaveLength(1);
+    expect(gemma.stop).not.toHaveBeenCalled();
+    expect(ctx.sent('miner:log').map((l) => l.line).join('\n')).not.toContain('restarting the local LLM');
   });
 
   // Without bus ids the card is its number and name. Another card still

@@ -157,6 +157,9 @@ let llmStatus = { ready: false, endpoint: null, webUrl: null, tokensPerSec: 0, m
 // `model` field of every gateway completion that it was serving Gemma. Seeded
 // with the default so a report before the first start is still truthful.
 let servingModel = LLM.model;
+// What the running fleet's model was chosen on: the best card, its free VRAM,
+// and the models it kept losing its GPU under (see llmReplan).
+let llmPlannedOn = { index: null, freeMb: null, lost: [] };
 // Sharing the local LLM on the network (the API tab, #257): the
 // CLI's gate on port 8000, in front of llama-server. syncLanShare() decides
 // when it runs.
@@ -1329,6 +1332,7 @@ async function startLlm(reserveMb, epoch) {
     + model.name + ' runs there instead. To try it again, press STOP, then START LLM on the Chat tab.';
   if (held) send('miner:log', { level: 'warn', line: held });
   servingModel = model;
+  llmPlannedOn = { index: bestIndex, freeMb: bestFree, lost };
   // The hero shows this name, and it was seeded once at startup and never
   // updated — fine while every node ran the same model, wrong the moment one
   // doesn't. Set before the first failure path below so even "Needs ~N GB free
@@ -1517,6 +1521,45 @@ function warmUpLlm(baseUrl) {
     body.max_tokens = 24;
     streamChatCompletion(baseUrl, body, () => {}).done.catch(() => {});
   } catch (e) { /* best effort — never blocks startup */ }
+}
+
+// The model a run that mines should serve in place of the running one, or null
+// to keep it. A model planned for the card alone (Compute Mode LLM) can be
+// joined by the miner with no STOP between: Auto picked in Settings, then START
+// LLM. With the mining reserve the same card may get another model or context.
+// On Windows the 27B must not co-run at all (config.js noCoRunOn), and on Linux
+// 262144 plus the miner does not fit a 32 GB card. Judged on what the fleet was
+// planned on, because a reading now counts the fleet itself, and with the same
+// models left out, so a card held to Gemma (see rememberGpuLoss) keeps it.
+//
+// Only a fleet we spawned. An adopted server has no manager, so stopping the
+// fleet would not stop it, and the next plan would adopt it again.
+function llmReplan() {
+  if (!fleet || !fleet.hasSpawned()) return null;
+  const next = modelFor(llmPlannedOn.freeMb, LLM.miningReserveMb, llmPlannedOn.lost);
+  const same = next.name === servingModel.name && ctxLadder(next)[0] === ctxLadder(servingModel)[0];
+  return same ? null : next;
+}
+
+// Stop the running fleet for a fresh plan, and wait until the card is back.
+// stopAndWait stops the fleet itself; stopLlm then does the rest of a STOP. A
+// fleet says no 'stopped' for a stop it was asked for, so its handler neither
+// ends the session nor shows an error.
+async function stopLlmForReplan(needMb, epoch) {
+  const exited = fleet.stopAndWait();
+  stopLlm();
+  await exited;
+  // An exited server can still hold its VRAM for a moment (the CLI's
+  // waitForFreeVram). A miner started then fails to build its core, and a plan
+  // made then reads the card as full. About 8s at most, as the CLI waits; a
+  // card that is really short is left for the plan to refuse. The card the
+  // model was planned on, not the emptiest: on a rig with a second card, that
+  // one has room at once.
+  for (let i = 0; i < 32 && epoch === miningEpoch; i++) {
+    const card = pickLlmGpu((await detectGpusVram()).filter((c) => c.index === llmPlannedOn.index));
+    if (!card || card.freeMb >= needMb) return;
+    await new Promise((r) => setTimeout(r, 250));
+  }
 }
 
 function stopLlm() {
@@ -1857,6 +1900,17 @@ async function runPlan(queuedSettings) {
   const note = minerUnsupportedNote(process.platform, mode);
   if (note) send('miner:log', { level: 'warn', line: note });
   const plan = planFor(settings);
+  // A model planned without the miner, that the miner must not join (see
+  // llmReplan). It goes before the miner starts, so the two never share the
+  // card, and startLlm below plans again beside the miner. Paused or not: an
+  // idle-only pause sizes the model for the miner too.
+  const replan = plan.llm && plan.miner ? llmReplan() : null;
+  if (replan) {
+    send('miner:log', { level: 'info', line: 'restarting the local LLM: ' + servingModel.name
+      + ' was sized for the card alone, and the miner is joining it' });
+    await stopLlmForReplan(requiredFreeMb(replan, LLM.miningReserveMb), epoch);
+    if (epoch !== miningEpoch) return;
+  }
   // Idle-only, while someone uses the computer: the miner waits, the LLM runs.
   // The model is still sized with the mining reserve, so mining can start
   // beside it later without reloading it.
