@@ -312,12 +312,14 @@ class LlmManager extends EventEmitter {
     if (now !== was) this.emit('busy', now);
   }
 
-  // Every stop of a running manager ends in one 'stopped'. With a live process
-  // that comes from its exit (_onExit). Between restarts there is none: the old
-  // server has exited and the next is waiting to spawn, so nothing would ever
-  // exit and nothing said 'stopped'. LlmFleet.stopAndWait waited out its whole
-  // timeout for it, and the CLI's auto mode handed the card back to the miner
-  // 45 s late, logging that the LLM "did not exit".
+  // A stop with a live process gets its 'stopped' from the exit (_onExit).
+  // Between restarts there is none: the old server has exited and the next is
+  // waiting to spawn, so nothing would ever exit and nothing said 'stopped'.
+  // LlmFleet.stopAndWait waited out its whole timeout for it, and the CLI's auto
+  // mode handed the card back to the miner 45 s late, logging that the LLM "did
+  // not exit". One case is still open: a spawn that fails outright (missing
+  // binary, fork error) emits 'error' but never 'exit', so it never says
+  // 'stopped' either.
   stop() {
     if (!this.running && !this.proc) return false;
     this._stopping = true; // cancels any pending retry
