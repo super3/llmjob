@@ -846,6 +846,30 @@ class TestCreditRatio(Base):
         first = self.report().split("\n")[0]
         self.assertEqual(first, "**03:00 EST, Fri 15 Jan** · PRL $1.390 · 0/1 mining")
 
+    def test_every_slot_has_a_row_and_an_empty_one_says_so(self):
+        report = self.report(cfg={"max_active": 10})
+        empty = f"| ⬜{w.NB}empty | — | — | — | — |"
+        self.assertEqual(report.count(empty + "\n"), 9)              # 1 group, 10 slots
+        self.assertIn(" · 0/10 mining\n", report)                    # counted against the slots, not the groups
+        self.assertIn("⏹️ stopped · ⬜ empty slot · *", report)
+        rows = [l for l in report.split("\n") if l.startswith("| ")]
+        self.assertLess(rows.index(empty), rows.index(next(l for l in rows if l.startswith("| **All**"))))
+        self.assertTrue(all(len(l) <= 90 for l in rows))
+
+    def test_a_full_account_has_no_empty_rows(self):
+        report = self.report()                                       # 1 group, 1 slot
+        self.assertNotIn("empty", report)
+
+    def test_salads_quota_caps_the_rows_too(self):
+        self.x.st["quota"] = 3
+        report = self.report(cfg={"max_active": 10})
+        self.assertEqual(report.count(f"| ⬜{w.NB}empty |"), 2)
+        self.assertIn(" · 0/3 mining\n", report)
+
+    def test_an_empty_slot_has_a_cell_for_monero_when_it_is_on(self):
+        self.x.cfg["xmr_wallet"] = "4abc"
+        self.assertIn(f"| ⬜{w.NB}empty | — | — | — | — | — |\n", self.report(cfg={"max_active": 2}))
+
     def test_the_table_counts_on_what_the_pool_credits(self):
         report = self.report()
         # 75% of 8 PRL is 6, mined for $6.00: $1.000 each. Worth 6 × 1.39 − 6.00 = +2.34.

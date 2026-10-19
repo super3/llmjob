@@ -1396,6 +1396,10 @@ class W:
             rows.append((0.0 if start or not g["has_pc"] else earn - cost, f"| {box} | {cells} | {prof:+.2f}{EST} |"))
         # Most profitable an hour first; groups waiting for a PC make nothing, so they sit above any losing.
         lines = [r for _, r in sorted(rows, key=lambda x: -x[0])]
+        # A row for every slot, so a slot the search couldn't fill shows as empty instead of vanishing.
+        slots = max(len(live), min(self.cfg["max_active"], st.get("quota") or self.cfg["max_active"]))
+        empty = slots - len(live)
+        lines += [f"| ⬜{NB}empty |" + " — |" * (5 if xon else 4)] * empty
         ended = [g for g in groups if g["ended"]]
         if ended:
             # Groups that have ended, as one row with their count; the events say which were released or failed.
@@ -1427,13 +1431,13 @@ class W:
         if pool:
             pool = ["", "| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", "|---|---|---|---|---|", *pool]
 
-        n_live = len(live)
         # Just what the table doesn't show: profit an hour, margin and profit so far are in its All row.
-        head = f"**{stamp(t)}** · PRL ${price:.3f} · {mining}/{n_live} mining"
+        head = f"**{stamp(t)}** · PRL ${price:.3f} · {mining}/{slots} mining"
         credit = self.cfg["credit_start"] + self.cfg["credit_offset"] - spend
         hours = credit / all_cost if all_cost > 0 else None
         # What doesn't fit on a row, in two lines: the key, then the money trail.
-        key = ("⛏️ mining · ⏳ waiting for a PC · ⏹️ stopped · * our own count or estimate, or entered by hand; the rest "
+        key = ("⛏️ mining · ⏳ waiting for a PC · ⏹️ stopped" + (" · ⬜ empty slot" if empty else "")
+               + " · * our own count or estimate, or entered by hand; the rest "
                "comes from an API (Salad, the pool, prlscan, CoinGecko) or the trader's log. TH/s is Pearl on the GPU"
                + (", kH/s Monero on the CPU" if xon else "") + "; $/hr is Salad's bill. Profit $ counts sold PRL at what "
                "it sold for and the rest at today's price" + (", plus Monero" if xon else "") + "."

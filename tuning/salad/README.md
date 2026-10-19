@@ -354,8 +354,10 @@ The report is **one table** with six columns (five without a Monero address), so
 | 🪙 XMR HeroMiners | 32.1 kH/s | 0.002222 | 0.000000 | 0.000000 |
 ```
 
-- **The first line** gives only what the table doesn't: the time (New York: EDT or EST), the PRL price and how many boxes are mining.
-  Profit an hour, the margin and the profit so far are in the **All** row.
+- **The first line** gives only what the table doesn't: the time (New York: EDT or EST), the PRL price and how many boxes are mining
+  out of the slots (`max_active`, or Salad's quota if lower). Profit an hour, the margin and the profit so far are in the **All** row.
+- **Every slot has a row.** A slot with no group (the search found no class it could use yet) shows as `⬜ empty`, so the table
+  always has `max_active` box rows.
 - **Profit/hr** has the margin (profit ÷ earnings) in brackets beside it.
 - Inside bold text the estimate stars are written `\*`, or Markdown reads them as emphasis and the bold breaks.
 - **TH/s and kH/s** are each box's speed on both coins: Pearl on the GPU (the miner's 10-minute average) and
