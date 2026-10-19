@@ -260,40 +260,45 @@ class TestRename(Base):
         self.saw("1.3 more PRL is held as 'prl', which pearlusdt doesn't trade; it isn't sold")
         self.assertEqual(self.fake.made("POST", r"/market/orders$")[0][2]["amount"], 4.123)
 
-    def history(self, by_market):
-        """A fake whose trade history answers per market (by_market: market -> (status, trades))."""
+    def history(self, pages):
+        """A fake whose trade history answers page by page (pages: page number -> (status, trades))."""
         f = self.renamed(held=())   # nothing to sell, so the run goes straight to the account
         real = f.__call__
 
         def call(method, path, params=None, auth=False):
             if method == "GET" and path.endswith("/market/trades"):
                 f.calls.append((method, path, params, auth))
-                return by_market(params["market"])
+                return pages(params["page"])
             return real(method, path, params, auth)
         call.calls, call.made = f.calls, f.made
         return call
 
-    def test_sales_so_far_count_both_markets(self):
+    def test_sales_so_far_count_both_markets_and_no_other(self):
         old = {"id": 1, "market": "prlusdt", "side": "sell", "amount": 90.0204, "total": 149.066956, "fee": 0.149067}
         new = {"id": 2, "market": "pearlusdt", "side": "sell", "amount": 4.12, "total": 7.6632, "fee": 0.0077}
-        st = self.run_capturing(self.history(lambda m: (200, {"prlusdt": [old], "pearlusdt": [new]}[m])))
+        other = {"id": 3, "market": "ethusdt", "side": "sell", "amount": 1, "total": 2500, "fee": 2.5}
+        st = self.run_capturing(self.history(lambda page: (200, [old, new, other])))
         self.assertEqual(st[0]["trades"], 2)
         self.assertAlmostEqual(st[0]["sold"], 94.1404)
         self.assertAlmostEqual(st[0]["received"], 156.730156)
-        markets = [c[2]["market"] for c in self.fake.made("GET", r"/market/trades$")]
-        self.assertEqual(markets, ["pearlusdt", "prlusdt"])
 
-    def test_a_trade_counts_once_if_the_market_asked_for_is_ignored(self):
-        both = [{"id": 1, "market": "prlusdt", "amount": 90, "total": 149, "fee": 0.15},
-                {"id": 2, "market": "pearlusdt", "amount": 4, "total": 7, "fee": 0.01}]
-        st = self.run_capturing(self.history(lambda m: (200, both)))
-        self.assertEqual((st[0]["trades"], st[0]["sold"], st[0]["received"]), (2, 94.0, 156.0))
+    def test_the_history_is_never_asked_for_by_market(self):
+        # Cloudflare rewrites "prl" anywhere in a SafeTrade URL to "PEARL", so no request may name prlusdt
+        self.run_capturing(self.history(lambda page: (200, [])))
+        asked = self.fake.made("GET", r"/market/trades$")
+        self.assertEqual([c[2] for c in asked], [{"side": "sell", "page": 1, "limit": 100}])
+
+    def test_a_trade_on_two_pages_counts_once(self):
+        first = [{"id": i, "market": "pearlusdt", "amount": 1, "total": 2, "fee": 0} for i in range(100, 0, -1)]
+        second = [{"id": 0, "market": "pearlusdt", "amount": 1, "total": 2, "fee": 0}, first[-1]]   # id 1 again
+        st = self.run_capturing(self.history(lambda page: (200, first if page == 1 else second)))
+        self.assertEqual((st[0]["trades"], st[0]["sold"]), (101, 101.0))
 
     def test_history_that_cant_be_read_is_said(self):
-        new = {"id": 2, "market": "pearlusdt", "amount": 4, "total": 7, "fee": 0.01}
-        st = self.run_capturing(self.history(lambda m: (200, [new]) if m == "pearlusdt" else (404, {})))
-        self.assertEqual(st[0]["sold"], 4.0)
-        self.saw("sold so far 4 PRL for 7.00 USDT (average 1.7500, fees 0.0100) · not counted: prlusdt HTTP 404")
+        first = [{"id": i, "market": "pearlusdt", "amount": 1, "total": 2, "fee": 0} for i in range(100, 0, -1)]
+        st = self.run_capturing(self.history(lambda page: (200, first) if page == 1 else (500, {})))
+        self.assertEqual(st[0]["sold"], 100.0)
+        self.saw("sold so far 100 PRL for 200.00 USDT (average 2.0000, fees 0.0000) · not counted: trade history page 2: HTTP 500")
 
 
 class TestSafety(Base):
