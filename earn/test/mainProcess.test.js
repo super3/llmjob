@@ -2295,6 +2295,164 @@ describe('local LLM', () => {
 
 // ── health probe variants ────────────────────────────────────────────────────
 
+// v0.6.3 stops the LLM after a card loses its GPU three times in an hour, but
+// start() forgot that, so every START and every launch at login loaded the
+// model there again, at the cost of up to three more driver resets each time.
+describe('a card that keeps losing its GPU', () => {
+  const GPU_LOST_PATH = path.join('/tmp/userData', 'gpu-lost.json');
+  const ERROR = 'GPU kept failing — START LLM to retry';
+  // The PRO 4500 from the report: 32 GB, nothing else on it.
+  const PRO = { index: 0, name: 'NVIDIA RTX PRO 4500 Blackwell', usedMb: 0, totalMb: 32623 };
+  const BUS = { 0: '00000000:01:00.0' };
+
+  // gpu-lost.json in memory, so what main writes the next start reads back.
+  function wireGpuLost(c, record) {
+    const file = { body: record ? JSON.stringify(record) : null };
+    c.fs.existsSync.mockImplementation((p) => p === GPU_LOST_PATH && file.body != null);
+    c.fs.readFileSync.mockImplementation((p) => (p === GPU_LOST_PATH ? file.body : '{}'));
+    c.fs.writeFileSync.mockImplementation((p, data) => { if (p === GPU_LOST_PATH) file.body = data; });
+    return () => JSON.parse(file.body);
+  }
+
+  async function bootWith(cards, record, busIds) {
+    let read;
+    const ctx = await boot({
+      before: (c) => {
+        read = wireGpuLost(c, record);
+        c.probe.detectGpusVram.mockResolvedValue(cards);
+        c.probe.detectPciBusIds.mockResolvedValue(busIds || {});
+      },
+    });
+    ctx.read = () => read();
+    return ctx;
+  }
+
+  // The manager gives up: 'gpu-lost', then 'stopped' (see LlmManager).
+  function giveUp(llm) {
+    llm.emit('gpu-lost', { losses: 3 });
+    llm.emit('stopped', null);
+  }
+
+  it('remembers the card, and the next START serves the next model down there', async () => {
+    const ctx = await bootWith([PRO], null, BUS);
+    const tier = ctx.config.LLM.tiers[0];
+    const gemma = ctx.config.LLM.model;
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    const first = ctx.LlmManager.instances[0];
+    expect(first.start.mock.calls[0][0].alias).toBe(tier.name);
+    first.emit('ready', { baseUrl: first.baseUrl });
+    await flush();
+
+    giveUp(first);
+    await flush();
+    // Keyed by the card's bus id, which stays with it when cards move.
+    expect(ctx.read()).toEqual({ version: '0.0.0-test', cards: { '0:1:0.0': [tier.name] } });
+    expect(ctx.sent('miner:log').map((l) => l.line)).toContain(tier.name + ' kept losing GPU 0. It won\'t be started'
+      + ' there again until the app updates or you press START LLM on the Chat tab.');
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false, error: ERROR });
+    expect(ctx.sent('miner:stopped')).toHaveLength(1); // LLM-only: the session ends
+
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(ctx.LlmManager.instances[1].start.mock.calls[0][0].alias).toBe(gemma.name);
+    const held = tier.name + ' kept losing GPU 0, so ' + gemma.name + ' runs there instead.'
+      + ' To try it again, press STOP, then START LLM on the Chat tab.';
+    expect(ctx.sent('miner:log').map((l) => l.line)).toContain(held);
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ model: gemma.name, held, error: null });
+  });
+
+  it('starts nothing on a card that lost it even with the smallest model, until START LLM', async () => {
+    const tier = require('../src/shared/config').LLM.tiers[0];
+    const gemma = require('../src/shared/config').LLM.model;
+    const ctx = await bootWith([PRO], { version: '0.0.0-test', cards: { '0:1:0.0': [tier.name, gemma.name] } }, BUS);
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(ctx.LlmManager.instances).toHaveLength(0);
+    const why = 'not starting the local LLM: it kept losing the GPU even with ' + gemma.name
+      + '. Press START LLM on the Chat tab to try again.';
+    expect(ctx.sent('miner:log').map((l) => l.line)).toContain(why);
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false, error: ERROR, held: why });
+    expect(ctx.sent('miner:stopped')).toHaveLength(1);
+
+    // START LLM sends this before its START.
+    ctx.emit('llm:retry');
+    expect(ctx.read()).toEqual({ version: '0.0.0-test', cards: {} });
+    expect(ctx.sent('miner:log').map((l) => l.line)).toContain('trying the cards that kept losing their GPU again');
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(ctx.LlmManager.instances[0].start.mock.calls[0][0].alias).toBe(tier.name);
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ held: null });
+
+    // With nothing remembered there is nothing to write.
+    const writes = ctx.fs.writeFileSync.mock.calls.length;
+    ctx.emit('llm:retry');
+    expect(ctx.fs.writeFileSync.mock.calls.length).toBe(writes);
+  });
+
+  // An update may have fixed what went wrong.
+  it('forgets it when the app version changes', async () => {
+    const tier = require('../src/shared/config').LLM.tiers[0];
+    const ctx = await bootWith([PRO], { version: '0.6.4', cards: { '0:1:0.0': [tier.name] } }, BUS);
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(ctx.LlmManager.instances[0].start.mock.calls[0][0].alias).toBe(tier.name);
+  });
+
+  // Without bus ids the card is its number and name. Another card still
+  // serving keeps the row free of the error, and the next START leaves the card
+  // out of the plan rather than not starting at all.
+  it('leaves a card out of a multi-card plan, and says nothing while another serves', async () => {
+    const cards = [
+      { index: 0, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+      { index: 1, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 },
+    ];
+    const ctx = await bootWith(cards, null);
+    ctx.probe.findFreePort.mockImplementation((h, p) => Promise.resolve(p));
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    const [g0] = ctx.LlmManager.instances;
+    g0.emit('ready', { baseUrl: g0.baseUrl });
+    await flush();
+    const g1 = ctx.LlmManager.instances[1];
+    g1.emit('ready', { baseUrl: g1.baseUrl });
+    await flush();
+
+    giveUp(g0);
+    await flush();
+    const gemma = ctx.config.LLM.model.name;
+    expect(ctx.read().cards).toEqual({ '0:RTX 4090': [gemma] });
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: true, error: null });
+
+    ctx.emit('miner:stop');
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(ctx.sent('miner:log').map((l) => l.line)).toContain('local LLM starting on 1 GPU [1]');
+    expect(ctx.LlmManager.instances[2].start).toHaveBeenCalledWith(expect.objectContaining({ mainGpu: 1 }));
+  });
+
+  // No nvidia-smi: one instance, on whatever card llama.cpp picks.
+  it('remembers the card llama.cpp picked itself', async () => {
+    const ctx = await bootWith([], null);
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    const llm = ctx.LlmManager.instances[0];
+    llm.emit('ready', { baseUrl: llm.baseUrl });
+    await flush();
+    giveUp(llm);
+    await flush();
+    const gemma = ctx.config.LLM.model.name;
+    expect(ctx.read().cards).toEqual({ auto: [gemma] });
+    expect(ctx.sent('miner:log').map((l) => l.line)).toContain(gemma + ' kept losing the GPU. It won\'t be started'
+      + ' there again until the app updates or you press START LLM on the Chat tab.');
+
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(ctx.LlmManager.instances).toHaveLength(1);
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ error: ERROR });
+  });
+});
+
 describe('sharing the local LLM on the network', () => {
   const ONE_CARD = [{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }];
   // settings.json with the switch on.

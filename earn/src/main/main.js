@@ -44,7 +44,8 @@ const { resolveEconomics } = require('../shared/economics');
 const nodeProto = require('../shared/node');
 const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
 const { planLlmInstances } = require('../shared/llmPlan');
-const { pickModel, ctxLadder } = require('../shared/models');
+const { allModels, pickModel, ctxLadder } = require('../shared/models');
+const gpuLoss = require('../shared/gpuLoss');
 const { createPromptPause, cardForPrompt } = require('../shared/promptPause');
 const { LlmFleet } = require('./llmFleet');
 const { createLanShare } = require('./lanShare');
@@ -131,6 +132,9 @@ const promptPause = createPromptPause({
 // nvidia-smi's PCI bus id per card, read when the LLM starts, to find the card
 // each llama-server really loaded on (see promptPause.cardForPrompt).
 let llmBusIds = {};
+// And nvidia-smi's cards, read at the same time, to name a card that gives up
+// on its GPU (see rememberGpuLoss).
+let llmCards = [];
 let llmEverReady = false;       // did any instance reach "ready" this run (vs. dying first)
 let serveLogged = false;        // "serving cluster jobs" logged once per serving run
 let registeredUnlinked = false; // self-registered an unlinked node once this run
@@ -142,8 +146,10 @@ let registeredUnlinked = false; // self-registered an unlinked node once this ru
 // progressing normally.
 // `vramMb` and `ctxSize` describe the model being served, for the API tab's
 // "~N GB VRAM · NK ctx" line, which was hard-coded to Gemma's old numbers.
+// `held` says, in a sentence, which model a card that kept losing its GPU is
+// not running, and how to try it again (see startLlm).
 let llmStatus = { ready: false, endpoint: null, webUrl: null, tokensPerSec: 0, model: LLM.model.name,
-  vramMb: LLM.model.vramFullMb, ctxSize: ctxLadder(LLM.model)[0], error: null, note: null };
+  vramMb: LLM.model.vramFullMb, ctxSize: ctxLadder(LLM.model)[0], error: null, note: null, held: null };
 // Which model this machine actually loaded, once a run has chosen one. Every
 // place that reports a model name reads this rather than LLM.model, which stopped
 // being the answer when selection became per-node: a 5090 serving Qwen3.8 would
@@ -181,6 +187,19 @@ function withLiveRegion(s) {
 
 function persistSettings(s) {
   return settingsStore.writeSettings(settingsPath(), s, { fs, log: settingsLog });
+}
+
+// Cards that kept losing their GPU, and the models they lost it under (see
+// shared/gpuLoss). In their own file, for the reason appPrefs gives: every
+// START rewrites settings.json from the renderer's fields.
+function gpuLostPath() {
+  return path.join(app.getPath('userData'), 'gpu-lost.json');
+}
+function loadGpuLost() {
+  return gpuLoss.forVersion(settingsStore.readSettings(gpuLostPath(), { fs, log: settingsLog }), app.getVersion());
+}
+function saveGpuLost(record) {
+  settingsStore.writeSettings(gpuLostPath(), record, { fs, log: settingsLog });
 }
 
 // The app's behaviour switches (tray, startup, idle-only), from Settings. In
@@ -1110,6 +1129,20 @@ function fitWindowToContent() {
 
 function sendLlmStatus() { send('llm:status', llmStatus); }
 
+// The LLM row when a card gives up on its GPU and nothing else serves, and when
+// no card is left to start on (see startLlm). START LLM clears it ('llm:retry').
+const GPU_LOST_ERROR = 'GPU kept failing — START LLM to retry';
+
+// An instance gave up on its card after losing the GPU again and again
+// (LlmManager 'gpu-lost'). Remember the card and the model, so the next START
+// or launch at login does not load that model there again.
+function rememberGpuLoss(e) {
+  const key = gpuLoss.cardKey(e.index, llmCards, llmBusIds, e.busId);
+  saveGpuLost(gpuLoss.remember(loadGpuLost(), key, servingModel.name));
+  send('miner:log', { level: 'error', line: servingModel.name + ' kept losing ' + (e.index == null ? 'the GPU' : 'GPU ' + e.index)
+    + '. It won\'t be started there again until the app updates or you press START LLM on the Chat tab.' });
+}
+
 // Prefer a bundled llama-server (it ships with its DLLs, like the miner engine);
 // otherwise download it on demand. NOTE: the llama.cpp release is a folder of
 // exe + shared libs — bundling the whole folder is the reliable path; the
@@ -1201,6 +1234,16 @@ function progressReporter(label, now) {
   };
 }
 
+// The model for a card with `freeMb` free and `reserveMb` set aside for mining,
+// without the models it kept losing its GPU under (`lost`, see rememberGpuLoss).
+// The default is never left out, so it is still the fallback. The platform, so
+// a Windows card that mines is not handed a model that has only been verified
+// co-running on Linux (config.js noCoRunOn).
+function modelFor(freeMb, reserveMb, lost) {
+  const models = allModels().filter((m) => m === LLM.model || !lost.includes(m.name));
+  return pickModel(freeMb, reserveMb, models, process.platform);
+}
+
 // Start the local LLM: ensure binary + model, size the GPU offload to leave
 // `reserveMb` free for mining, spawn llama-server, and surface its OpenAI
 // endpoint. Best-effort — failures are logged, never thrown to the UI. Returns
@@ -1251,6 +1294,22 @@ async function startLlm(reserveMb, epoch) {
   const [cards, busIds] = await Promise.all([detectGpusVram(), probe.detectPciBusIds()]);
   if (stale()) return false;
   llmBusIds = busIds;
+  llmCards = cards;
+  // A model that kept losing the GPU on a card is not loaded there again until
+  // the app updates or the user presses START LLM (see rememberGpuLoss). A card
+  // that lost it even under the smallest model is left out altogether. Without
+  // nvidia-smi there are no cards, and the one llama.cpp picks is index null.
+  const gpuLost = loadGpuLost();
+  const lostOn = (index) => gpuLost.cards[gpuLoss.cardKey(index, cards, busIds)] || [];
+  const usable = cards.filter((c) => !lostOn(c.index).includes(LLM.model.name));
+  if (cards.length ? !usable.length : lostOn(null).includes(LLM.model.name)) {
+    const why = 'not starting the local LLM: it kept losing the GPU even with ' + LLM.model.name
+      + '. Press START LLM on the Chat tab to try again.';
+    send('miner:log', { level: 'error', line: why });
+    llmStatus = Object.assign({}, llmStatus, { ready: false, note: null, error: GPU_LOST_ERROR, held: why });
+    sendLlmStatus();
+    return false;
+  }
   // Which model this run serves. Chosen from the best card's free VRAM, because
   // the fleet loads ONE model across every instance — planLlmInstances then drops
   // any card that cannot hold it. On a mixed rig that trades breadth for
@@ -1258,17 +1317,25 @@ async function startLlm(reserveMb, epoch) {
   // model from the one card rather than the small model from four. That is the
   // intended reading of "for cards that can support it", but it is a trade, and
   // the small-card case is unaffected because those rigs resolve to the default.
-  const bestCard = pickLlmGpu(cards);
-  // The platform, so a Windows card that mines is not handed a model that has
-  // only been verified co-running on Linux (config.js noCoRunOn).
-  const model = pickModel(bestCard ? bestCard.freeMb : null, reserveMb || 0, null, process.platform);
+  const bestCard = pickLlmGpu(usable);
+  const bestIndex = bestCard ? bestCard.index : null;
+  const bestFree = bestCard ? bestCard.freeMb : null;
+  const lost = lostOn(bestIndex);
+  const wanted = modelFor(bestFree, reserveMb || 0, []);
+  // The same choice without the models this card kept losing the GPU under:
+  // the next one down, or `wanted` itself when it isn't one of them.
+  const model = modelFor(bestFree, reserveMb || 0, lost);
+  const held = model.name === wanted.name ? null : wanted.name + ' kept losing GPU ' + bestIndex + ', so '
+    + model.name + ' runs there instead. To try it again, press STOP, then START LLM on the Chat tab.';
+  if (held) send('miner:log', { level: 'warn', line: held });
   servingModel = model;
   // The hero shows this name, and it was seeded once at startup and never
   // updated — fine while every node ran the same model, wrong the moment one
   // doesn't. Set before the first failure path below so even "Needs ~N GB free
   // VRAM" names the model it was actually short for.
-  llmStatus = Object.assign({}, llmStatus, { model: model.name, vramMb: model.vramFullMb, ctxSize: ctxLadder(model)[0] });
-  const plan = planLlmInstances(cards, model, reserveMb || 0);
+  llmStatus = Object.assign({}, llmStatus, { model: model.name, vramMb: model.vramFullMb, ctxSize: ctxLadder(model)[0], held });
+  // Any other card that lost the GPU under this model is left out too.
+  const plan = planLlmInstances(usable.filter((c) => !lostOn(c.index).includes(model.name)), model, reserveMb || 0);
   if (!plan.length) {
     // An empty plan means VRAM was measured but no card had room — so at least
     // one card parsed, and pickLlmGpu (same parse rules) returns it for the error.
@@ -1408,6 +1475,15 @@ function buildFleet() {
   f.on('busy', (e) => {
     const card = cardForPrompt(e, llmBusIds);
     if (card !== undefined) promptPause.setBusy(card, e.busy);
+  });
+  // An instance gave up on its card (see rememberGpuLoss), and its 'stopped'
+  // follows. The row says why when no other card is still serving.
+  f.on('gpu-lost', (e) => {
+    rememberGpuLoss(e);
+    if (!f.isReady()) {
+      llmStatus = Object.assign({}, llmStatus, { error: GPU_LOST_ERROR });
+      sendLlmStatus();
+    }
   });
   f.on('error', () => { /* transient instance error — the fleet keeps the others */ });
   f.on('stopped', () => {
@@ -2050,6 +2126,13 @@ ipcMain.on('open-external', (_e, url) => { openExternalSafe(url); });
 ipcMain.on('app:fit', () => { fitWindowToContent(); });
 ipcMain.on('clipboard:write', (_e, text) => { clipboard.writeText(String(text == null ? '' : text)); });
 ipcMain.on('llm:chat', (_e, messages) => llmChat(messages));
+// START LLM on the Chat or API tab: the cards that kept losing their GPU get
+// another try. The renderer sends this just before that START.
+ipcMain.on('llm:retry', () => {
+  if (!Object.keys(loadGpuLost().cards).length) return;
+  saveGpuLost({ version: app.getVersion(), cards: {} });
+  send('miner:log', { level: 'info', line: 'trying the cards that kept losing their GPU again' });
+});
 // The network switch applies at once, beside a running model, rather than at the
 // next START. Saved straight to settings.json; the renderer also carries it in
 // the settings START sends, so a START never turns it back off.

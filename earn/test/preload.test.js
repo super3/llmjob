@@ -54,6 +54,7 @@ describe('send-based methods', () => {
   const cases = [
     ['sendChat', 'llm:chat', [{ role: 'user', content: 'hi' }]],
     ['setShareLlm', 'llm:share', true],
+    ['retryLlm', 'llm:retry'],
     ['openNodeDashboard', 'node:dashboard'],
     ['startMiner', 'miner:start', { address: 'prl1abc' }],
     ['stopMiner', 'miner:stop'],

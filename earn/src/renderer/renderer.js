@@ -75,7 +75,7 @@
     engineGpu: '',
     temp: 0,             // last core temperature reported, so a frame without one keeps it
     canMine: true,       // false on macOS — no alpha-miner build exists for it
-    llm: { ready: false, endpoint: null, webUrl: null, tps: 0, model: null, vramMb: null, ctxSize: null, error: null, note: null, lan: null },
+    llm: { ready: false, endpoint: null, webUrl: null, tps: 0, model: null, vramMb: null, ctxSize: null, error: null, note: null, lan: null, held: null },
     chat: { messages: [], streaming: false, streamText: '', bubble: null },
     node: { connected: false, nodeId: null, name: null },
     // Monero on the CPU (Settings → CPU Mining). On while a Monero address is
@@ -206,7 +206,9 @@
     el.llmHeroDetail.textContent = err || note || state.llm.model || 'gemma-4-E4B-it';
     el.llmHeroDetail.classList.toggle('err', !!err);
     el.llmHeroDetail.classList.toggle('quiet', !err && !note);
-    el.llmCol.title = state.llm.model || '';
+    // Why a card is not running a model, when main says, since the line above
+    // has room for only a few words of it.
+    el.llmCol.title = state.llm.held || state.llm.model || '';
     el.chatStoppedModel.textContent = state.llm.model || 'the local model';
     el.apiModel.textContent = state.llm.model || '—';
     el.apiModelMeta.textContent = modelMeta(state.llm.vramMb, state.llm.ctxSize);
@@ -277,6 +279,7 @@
       error: (s && s.error) || null,
       note: (s && s.note) || null,
       lan: (s && s.lan) || null,
+      held: (s && s.held) || null,
     };
     renderLlmHero();
     renderChatGate();
@@ -883,8 +886,12 @@
   // START LLM (from the Chat/API tabs): make sure the compute mode actually runs
   // the model, then start. Mining-only becomes Auto (or LLM-only with no
   // payout address); llm/auto start as-is.
+  //
+  // It also gives a card that kept losing its GPU another try. START and a
+  // launch at login leave that card alone.
   function startLlmIntent() {
     if (state.llm.ready) return;
+    if (api.retryLlm) api.retryLlm();
     if (state.mode === 'mining') setMode(isValid(state.address) ? 'auto' : 'llm');
     start();
   }

@@ -30,6 +30,8 @@ const MIN_RATE_TOKENS = 32;
 //   first-ready { baseUrl }    once, on the first instance to become ready
 //   stats    { tokensPerSec, promptTokensPerSec }  latest generation and prefill
 //                                                  rates from any instance
+//   gpu-lost { index, busId, losses }  an instance gave up on its card after
+//                              losing the GPU again and again
 //   stopped                    once, when the last running instance stops
 //   error    Error             re-emitted (a listener is required, as ever)
 class LlmFleet extends EventEmitter {
@@ -164,10 +166,10 @@ class LlmFleet extends EventEmitter {
     // (see shared/promptPause.cardForPrompt for why both). That bus id is the
     // server's own, if it printed one, else the one the shell matched it to
     // (shared/llama.placeLlmPlan).
-    mgr.on('busy', (busy) => this.emit('busy', {
-      index: inst.index, busId: mgr.deviceBusId || e.busId || null, busy,
-    }));
+    const busId = () => mgr.deviceBusId || e.busId || null;
+    mgr.on('busy', (busy) => this.emit('busy', { index: inst.index, busId: busId(), busy }));
     mgr.on('crashed', (info) => this._onCrashed(inst, info));
+    mgr.on('gpu-lost', (info) => this._onGpuLost(inst, busId(), info));
     mgr.on('stopped', (code) => this._onStopped(inst, code));
     mgr.on('error', (err) => this.emit('error', err));
     mgr.start(Object.assign({}, this._run, {
@@ -238,6 +240,15 @@ class LlmFleet extends EventEmitter {
     inst.ready = false;
     if (inst.worker) { inst.worker.stop(); inst.worker = null; }
     this.emit('crashed', Object.assign({ index: inst.index }, info));
+  }
+
+  // The manager gave up on this card after losing the GPU again and again, and
+  // 'stopped' follows. Out of service first, so a listener sees what is still
+  // serving, then passed on with the card, like 'busy', so the shell can
+  // remember it.
+  _onGpuLost(inst, busId, info) {
+    inst.ready = false;
+    this.emit('gpu-lost', Object.assign({ index: inst.index, busId }, info));
   }
 
   // Each line carries ONE phase, so hold both and re-emit both every time. That
