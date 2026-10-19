@@ -46,7 +46,7 @@ class Base(unittest.TestCase):
         self.logs = []
         t.log = self.logs.append
         t.MAX_SLIPPAGE, t.MIN_PRICE, t.MIN_VOLUME = 0.03, 0.0, 0.5
-        t.MARKET = "prlusdt"
+        t.MARKET, t.COINS, t.COIN_ID = "", ["pearl", "prl"], "pearl"
         t.PROXY = ""
         t.out_ip = lambda: "203.0.113.7"
         os.environ["DRY_RUN"] = "0"
@@ -59,6 +59,13 @@ class Base(unittest.TestCase):
         self.fake = fake
         t.http = fake
         return t.main()
+
+    def run_capturing(self, fake):
+        import contextlib, io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.go(fake)
+        return [json.loads(l[7:]) for l in out.getvalue().splitlines() if l.startswith("STATUS ")]
 
 
 class TestSell(Base):
@@ -146,13 +153,6 @@ class TestPaths(Base):
 
 
 class TestStatus(Base):
-    def run_capturing(self, fake):
-        import contextlib, io
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            self.go(fake)
-        return [json.loads(l[7:]) for l in out.getvalue().splitlines() if l.startswith("STATUS ")]
-
     def test_every_run_reports_the_account_and_lifetime_sales(self):
         st = self.run_capturing(Fake())
         self.assertEqual(len(st), 1)
@@ -198,7 +198,102 @@ class TestMarket(Base):
         f = Fake()
         f.routes.insert(0, ("GET", r"/public/markets$", (200, [{"id": "prlbtc"}, {"id": "ethusdt"}])))
         self.assertEqual(self.go(f), 1)
-        self.saw("no PRL/USDT market among 2 listed; ids with 'prl': ['prlbtc']")
+        self.saw("no enabled PRL/USDT market among 2 listed (SafeTrade ids tried: pearl, prl); ids with them: ['prlbtc']")
+
+
+# SafeTrade renamed PRL to PEARL on 18 October 2026: it opened pearl and pearlusdt and disabled prl and prlusdt.
+RENAMED = [{"id": "prlusdt", "base_unit": "prl", "quote_unit": "usdt", "amount_precision": 4, "price_precision": 2,
+            "min_amount": "2", "state": "disabled"},
+           {"id": "pearlusdt", "base_unit": "pearl", "quote_unit": "usdt", "amount_precision": 4, "price_precision": 2,
+            "min_amount": "2", "state": "enabled"}]
+
+
+class TestRename(Base):
+    def renamed(self, held=(("pearl", "4.123"),), **kw):
+        f = Fake(**kw)
+        f.routes.insert(0, ("GET", r"/public/markets$", (200, RENAMED)))
+        f.routes.insert(0, ("GET", r"/account/balances$", (200, [{"currency": "usdt", "balance": "9"}]
+                                                           + [{"currency": c, "balance": b} for c, b in held])))
+        return f
+
+    def test_sells_pearl_on_pearlusdt(self):
+        st = self.run_capturing(self.renamed())
+        # 3% under the best bid of 1.40 is 1.358, which the market's 2 decimals round up to 1.36
+        self.assertEqual(self.fake.made("POST", r"/market/orders$")[0][2],
+                         {"market": "pearlusdt", "side": "sell", "amount": 4.123, "price": 1.36})
+        self.assertTrue(self.fake.made("GET", r"/markets/pearlusdt/depth$"))
+        self.assertFalse(self.fake.made("GET", r"/markets/prlusdt/depth$"))
+        # The STATUS line keeps its prl key for the watcher, and says which id it sold
+        self.assertEqual((st[0]["market"], st[0]["coin"], st[0]["prl"], st[0]["prl_locked"]), ("pearlusdt", "pearl", 4.123, 0.0))
+        self.saw("SOLD 4.12 of 4.123 PRL")
+        self.saw("ACCOUNT 4.123 PRL free")
+
+    def test_a_disabled_market_asked_for_by_id_is_passed_over(self):
+        t.MARKET = "prlusdt"   # as if the service still had MARKET=prlusdt set
+        f = self.renamed()
+        f.routes.insert(0, ("GET", r"^/trade/public/markets/prlusdt$", (200, RENAMED[0])))
+        f.routes.insert(0, ("GET", r"^/trade/public/markets/pearlusdt$", (200, RENAMED[1])))
+        self.assertEqual(self.go(f), 0)
+        self.assertEqual(f.made("POST", r"/market/orders$")[0][2]["market"], "pearlusdt")
+        self.assertFalse(f.made("GET", r"/public/markets$"))
+
+    def test_coin_set_to_prl_still_sells_pearl(self):
+        t.COINS = t.coin_ids("prl")
+        self.assertEqual(t.COINS, ["prl", "pearl"])
+        self.go(self.renamed())
+        self.assertEqual(self.fake.made("POST", r"/market/orders$")[0][2]["market"], "pearlusdt")
+
+    def test_the_coin_ids(self):
+        self.assertEqual(t.coin_ids(), ["pearl", "prl"])
+        self.assertEqual(t.coin_ids(" PEARL "), ["pearl", "prl"])
+
+    def test_no_enabled_market_fails_and_names_the_disabled_one(self):
+        f = self.renamed()
+        f.routes.insert(0, ("GET", r"/public/markets$", (200, RENAMED[:1])))
+        self.assertEqual(self.go(f), 1)
+        self.saw("no enabled PRL/USDT market among 1 listed (SafeTrade ids tried: pearl, prl); ids with them: "
+                 "['prlusdt']; disabled: ['prlusdt']")
+        self.assertFalse(f.made("POST", r"/market/orders$"))
+
+    def test_prl_left_under_the_old_id_is_said_not_sold(self):
+        self.go(self.renamed(held=(("pearl", "4.123"), ("prl", "1.3"))))
+        self.saw("1.3 more PRL is held as 'prl', which pearlusdt doesn't trade; it isn't sold")
+        self.assertEqual(self.fake.made("POST", r"/market/orders$")[0][2]["amount"], 4.123)
+
+    def history(self, by_market):
+        """A fake whose trade history answers per market (by_market: market -> (status, trades))."""
+        f = self.renamed(held=())   # nothing to sell, so the run goes straight to the account
+        real = f.__call__
+
+        def call(method, path, params=None, auth=False):
+            if method == "GET" and path.endswith("/market/trades"):
+                f.calls.append((method, path, params, auth))
+                return by_market(params["market"])
+            return real(method, path, params, auth)
+        call.calls, call.made = f.calls, f.made
+        return call
+
+    def test_sales_so_far_count_both_markets(self):
+        old = {"id": 1, "market": "prlusdt", "side": "sell", "amount": 90.0204, "total": 149.066956, "fee": 0.149067}
+        new = {"id": 2, "market": "pearlusdt", "side": "sell", "amount": 4.12, "total": 7.6632, "fee": 0.0077}
+        st = self.run_capturing(self.history(lambda m: (200, {"prlusdt": [old], "pearlusdt": [new]}[m])))
+        self.assertEqual(st[0]["trades"], 2)
+        self.assertAlmostEqual(st[0]["sold"], 94.1404)
+        self.assertAlmostEqual(st[0]["received"], 156.730156)
+        markets = [c[2]["market"] for c in self.fake.made("GET", r"/market/trades$")]
+        self.assertEqual(markets, ["pearlusdt", "prlusdt"])
+
+    def test_a_trade_counts_once_if_the_market_asked_for_is_ignored(self):
+        both = [{"id": 1, "market": "prlusdt", "amount": 90, "total": 149, "fee": 0.15},
+                {"id": 2, "market": "pearlusdt", "amount": 4, "total": 7, "fee": 0.01}]
+        st = self.run_capturing(self.history(lambda m: (200, both)))
+        self.assertEqual((st[0]["trades"], st[0]["sold"], st[0]["received"]), (2, 94.0, 156.0))
+
+    def test_history_that_cant_be_read_is_said(self):
+        new = {"id": 2, "market": "pearlusdt", "amount": 4, "total": 7, "fee": 0.01}
+        st = self.run_capturing(self.history(lambda m: (200, [new]) if m == "pearlusdt" else (404, {})))
+        self.assertEqual(st[0]["sold"], 4.0)
+        self.saw("sold so far 4 PRL for 7.00 USDT (average 1.7500, fees 0.0100) · not counted: prlusdt HTTP 404")
 
 
 class TestSafety(Base):

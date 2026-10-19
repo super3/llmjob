@@ -4,10 +4,11 @@ Sells the PRL that mining pays out for USDT on SafeTrade, once an hour, as a Rai
 
 ## What a run does
 
-1. Finds the PRL/USDT market: by id, or by its base and quote currencies, reading every page of
-   SafeTrade's market list (it comes 100 to a page). Then cancels our open sell orders there:
-   whatever the last run couldn't sell.
-2. Reads the PRL balance.
+1. Finds the market to sell on: the first enabled one for SafeTrade's ids for the coin against USDT,
+   `pearl` then `prl` (see below). Each is asked for by id, then matched by id or by its base and quote
+   currencies, reading every page of SafeTrade's market list (it comes 100 to a page). Then cancels our
+   open sell orders there: whatever the last run couldn't sell.
+2. Reads the coin's balance under that id. Any left under another id is logged, not sold.
 3. Reads the order book and works out a floor price: 3% under the best bid (`MAX_SLIPPAGE`), and never
    under `MIN_PRICE`.
 4. Places one limit sell at that floor for as much PRL as the bids at or above it can take. A limit
@@ -16,8 +17,16 @@ Sells the PRL that mining pays out for USDT on SafeTrade, once an hour, as a Rai
 5. Logs what sold, the average price and the fee, read from the order's trades.
 6. Logs the account and exits. That's an `ACCOUNT` line for people (PRL and USDT, free and in orders,
    and everything sold so far) and a `STATUS` line of JSON for tools that read the logs. "Sold so far"
-   is summed from SafeTrade's trade history, so the trader keeps no state of its own. Dry runs and runs
-   with nothing to sell log the account too.
+   is summed from SafeTrade's trade history on the coin's markets, the retired `prlusdt` included, so the
+   trader keeps no state of its own. A history it can't read is named on the `ACCOUNT` line. Dry runs and
+   runs with nothing to sell log the account too.
+
+**PRL became PEARL on SafeTrade on 18 October 2026.** At 16:53 UTC SafeTrade opened a new `pearl` coin
+with its own markets (`pearlusdt` among them, same 2-coin minimum), and at 17:51 it disabled `prl` and its
+markets. A trader that only knew `prl` had no market to sell on from then. It now tries `pearl` first,
+passes over disabled markets, and still counts the sales made on `prlusdt`. The logs still call the coin PRL,
+and the `STATUS` line keeps its `prl` and `prl_locked` keys, since the Salad watcher reads them. Its `coin`
+field says which id the run used.
 
 Less than `MIN_VOLUME` (0.5 PRL), or the market's minimum, isn't sold.
 
@@ -51,8 +60,9 @@ Service `trader` in the `llmjob` project:
 | Start and schedule | From `railway.toml` here: `python3 trader.py` at minute 5 of every hour, no restarts |
 | Variables | `SAFETRADE_API_KEY`, `SAFETRADE_API_SECRET` (sealed), `SAFETRADE_PROXY` (sealed: `http://user:pass@host:port` from the static proxy provider), `DRY_RUN` (`1` until the dry run looks right, then `0`) |
 
-Optional variables: `MAX_SLIPPAGE` (0.03), `MIN_PRICE` (0), `MIN_VOLUME` (0.5), `MAX_RUN_SECONDS` (300), `MARKET` (`prlusdt`),
-`COIN` (`prl`), `QUOTE` (`usdt`), `SAFETRADE_BASE` (`https://safe.trade/api/v2`).
+Optional variables: `MAX_SLIPPAGE` (0.03), `MIN_PRICE` (0), `MIN_VOLUME` (0.5), `MAX_RUN_SECONDS` (300), `MARKET`
+(unset: found from the coin's ids), `COIN` (unset: `pearl`, then `prl`; a value here is tried first), `QUOTE` (`usdt`),
+`SAFETRADE_BASE` (`https://safe.trade/api/v2`). A disabled market is passed over even when `MARKET` or `COIN` names it.
 
 ## The API
 

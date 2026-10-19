@@ -15,9 +15,22 @@ import hashlib, hmac, json, math, os, signal, sys, time, urllib.error, urllib.pa
 BASE = os.environ.get("SAFETRADE_BASE", "https://safe.trade/api/v2").rstrip("/")
 PUBS, PRIV = ["/trade/public", "/peatio/public"], "/trade"
 BALANCE_PATHS = ["/trade/account/balances/spot", "/trade/account/balances"]
-COIN = os.environ.get("COIN", "prl")
 QUOTE = os.environ.get("QUOTE", "usdt")
-MARKET = os.environ.get("MARKET", COIN + QUOTE)   # replaced by the id SafeTrade uses, once found
+
+
+def coin_ids(first=""):
+    """SafeTrade's ids for the coin, newest first. It listed Pearl as PRL until 18 October 2026, when it opened a new
+    PEARL coin with its own markets (pearlusdt) and disabled PRL's (prlusdt). A run sells on the first id with an
+    enabled market and counts past sales on all of them. COIN, if set, goes first."""
+    return list(dict.fromkeys(c for c in (str(first).strip().lower(), "pearl", "prl") if c))
+
+
+COINS = coin_ids(os.environ.get("COIN", ""))
+MARKET = os.environ.get("MARKET", "")   # SafeTrade's id for the market, if set; otherwise found from COINS and QUOTE
+COIN_ID = COINS[0]   # the coin's id on the market a run sells on, once found
+# What the logs call the coin, and the STATUS line's key for it (lower case), whatever SafeTrade's id: the Salad
+# watcher reads that line.
+NAME = "PRL"
 KEY = os.environ.get("SAFETRADE_API_KEY", "")
 SECRET = os.environ.get("SAFETRADE_API_SECRET", "")
 MAX_SLIPPAGE = float(os.environ.get("MAX_SLIPPAGE", "0.03"))   # sell down to 3% under the best bid
@@ -135,16 +148,47 @@ def market_fields(m):
             "min_amount": float(first(m, "min_amount", "min_volume") or 0)}
 
 
+def enabled(m):
+    """SafeTrade disables a market it retires, as it did prlusdt. The old public API gives no state at all."""
+    return str(m.get("state") or "enabled").lower() == "enabled"
+
+
+def base_of(m):
+    return str(m.get("base_unit") or m.get("base_currency") or "").lower()
+
+
 def market_info():
-    """The PRL/USDT market: by id first, then from the market list (100 to a page, every page read), matched on
-    its id or on its base and quote currencies, since the id's spelling can differ."""
-    global MARKET
-    seen = []
+    """The market to sell on: the first enabled one in our order, which is MARKET if set, then each of COINS against
+    QUOTE. Each pub is asked by id first, then its market list is read (100 to a page, every page), matched on the
+    id or on the base and quote currencies, since the id's spelling can differ. Sets MARKET and COIN_ID."""
+    global MARKET, COIN_ID
+    ids = [i.lower() for i in dict.fromkeys(([MARKET] if MARKET else []) + [c + QUOTE for c in COINS])]
+
+    def rank(m):
+        """Where a market comes in our order, or None if it isn't one of ours."""
+        mid = str(m.get("id", "")).lower()
+        quote = str(m.get("quote_unit") or m.get("quote_currency") or "").lower()
+        if mid in ids:
+            return ids.index(mid)
+        if base_of(m) in COINS and quote == QUOTE:
+            return len(ids) + COINS.index(base_of(m))
+        return None
+
+    def use(pub, m):
+        global MARKET, COIN_ID
+        MARKET = str(m["id"])
+        COIN_ID = base_of(m) or next((c for c in COINS if MARKET.lower() == c + QUOTE), COINS[0])
+        return pub, market_fields(m)
+
+    seen, off = [], set()
     for pub in PUBS:
-        s, m = http("GET", f"{pub}/markets/{MARKET}")
-        if 200 <= s < 300 and isinstance(m, dict) and m.get("id"):
-            MARKET = str(m["id"])
-            return pub, market_fields(m)
+        for mid in ids:
+            s, m = http("GET", f"{pub}/markets/{mid}")
+            if 200 <= s < 300 and isinstance(m, dict) and m.get("id") and rank(m) is not None:
+                if enabled(m):
+                    return use(pub, m)
+                off.add(str(m["id"]))
+        found = []
         for page in range(1, 21):
             s, j = http("GET", pub + "/markets", {"limit": 100, "page": page})
             if not 200 <= s < 300 or not isinstance(j, list) or not j:
@@ -154,16 +198,19 @@ def market_info():
             top = j[0].get("id")
             for m in j:
                 mid = str(m.get("id", ""))
-                base = str(m.get("base_unit") or m.get("base_currency") or "").lower()
-                quote = str(m.get("quote_unit") or m.get("quote_currency") or "").lower()
                 seen.append(mid)
-                if mid.lower() == MARKET.lower() or (base == COIN and quote == QUOTE):
-                    MARKET = mid
-                    return pub, market_fields(m)
+                r = rank(m)
+                if r is not None and enabled(m):
+                    found.append((r, len(found), m))
+                elif r is not None:
+                    off.add(mid)
             if len(j) < 100:
                 break
-    near = sorted({i for i in seen if COIN in i.lower()})
-    raise Fail(f"no {COIN.upper()}/{QUOTE.upper()} market among {len(set(seen))} listed; ids with {COIN!r}: {near or 'none'}")
+        if found:
+            return use(pub, min(found)[2])
+    near = sorted({i for i in seen if any(c in i.lower() for c in COINS)})
+    raise Fail(f"no enabled {NAME}/{QUOTE.upper()} market among {len(set(seen))} listed (SafeTrade ids tried: "
+               f"{', '.join(COINS)}); ids with them: {near or 'none'}" + (f"; disabled: {sorted(off)}" if off else ""))
 
 
 def order_book(pub):
@@ -187,7 +234,7 @@ def plan(balance, bids, info):
     room = sum(v for p, v in bids if p >= price)
     vol = floor_to(min(balance, room), info["amount_precision"])
     if vol < max(MIN_VOLUME, info["min_amount"]):
-        return None, f"only {vol} {COIN.upper()} to sell (balance {balance}, bids down to {price} take {room:.4f})"
+        return None, f"only {vol} {NAME} to sell (balance {balance}, bids down to {price} take {room:.4f})"
     return (vol, price), None
 
 
@@ -210,42 +257,51 @@ def balances():
     raise Fail("balances failed: " + "; ".join(tried))
 
 
-def balance_of():
-    return balances().get(COIN, (0.0, 0.0))[0]
-
-
 def lifetime():
-    """Every sell trade on the market so far, summed: (PRL sold, USDT received, fees, trades). From SafeTrade's
-    trade history, so it needs no state of its own."""
+    """Every sell trade of the coin so far, summed: (PRL sold, USDT received, fees, trades, markets not read). From
+    SafeTrade's trade history on the market a run sells on and on the coin's other markets (prlusdt, retired), so it
+    needs no state of its own. A trade counts once, under its own market, even if the API ignores the one asked for."""
     prl = usdt = fees = 0.0
-    n, top = 0, None
-    for page in range(1, 51):
-        s, j = http("GET", PRIV + "/market/trades", {"market": MARKET, "side": "sell", "page": page, "limit": 100},
-                    auth=True)
-        if not 200 <= s < 300 or not isinstance(j, list) or not j or (page > 1 and j[0].get("id") == top):
-            break
-        top = j[0].get("id")
-        for t in j:
-            if t.get("side", "sell") == "sell":
+    n, counted, unread = 0, set(), []
+    for market in dict.fromkeys([MARKET] + [c + QUOTE for c in COINS]):
+        top = None
+        for page in range(1, 51):
+            s, j = http("GET", PRIV + "/market/trades", {"market": market, "side": "sell", "page": page, "limit": 100},
+                        auth=True)
+            if not 200 <= s < 300:
+                if page == 1:
+                    unread.append(f"{market} HTTP {s}")
+                break
+            if not isinstance(j, list) or not j or (page > 1 and j[0].get("id") == top):
+                break
+            top = j[0].get("id")
+            for t in j:
+                key = t.get("id") if t.get("id") is not None else json.dumps(t, sort_keys=True)
+                if t.get("side", "sell") != "sell" or str(t.get("market", market)).lower() != market.lower() \
+                        or key in counted:
+                    continue
+                counted.add(key)
                 prl += float(t.get("amount") or 0)
                 usdt += float(t.get("total") or 0)
                 fees += float(t.get("fee") or 0)
                 n += 1
-        if len(j) < 100:
-            break
-    return prl, usdt, fees, n
+            if len(j) < 100:
+                break
+    return prl, usdt, fees, n, unread
 
 
 def status(last=None):
     """One readable line and one STATUS line of JSON with the account after this run: what's on the exchange and
     everything sold so far. The JSON line is for tools that read the logs."""
     b = balances()
-    c, q = b.get(COIN, (0.0, 0.0)), b.get(QUOTE, (0.0, 0.0))
-    prl, usdt, fees, n = lifetime()
-    log(f"ACCOUNT {c[0]:g} {COIN.upper()} free + {c[1]:g} in orders · {q[0]:.2f} {QUOTE.upper()} free + {q[1]:.2f} "
-        f"in orders · sold so far {prl:g} {COIN.upper()} for {usdt:.2f} {QUOTE.upper()}"
-        + (f" (average {usdt / prl:.4f}, fees {fees:.4f})" if prl else ""))
-    print("STATUS " + json.dumps({"t": int(time.time()), "market": MARKET, COIN: c[0], COIN + "_locked": c[1],
+    c, q = b.get(COIN_ID, (0.0, 0.0)), b.get(QUOTE, (0.0, 0.0))
+    prl, usdt, fees, n, unread = lifetime()
+    log(f"ACCOUNT {c[0]:g} {NAME} free + {c[1]:g} in orders · {q[0]:.2f} {QUOTE.upper()} free + {q[1]:.2f} "
+        f"in orders · sold so far {prl:g} {NAME} for {usdt:.2f} {QUOTE.upper()}"
+        + (f" (average {usdt / prl:.4f}, fees {fees:.4f})" if prl else "")
+        + (f" · not counted: {'; '.join(unread)}" if unread else ""))
+    key = NAME.lower()
+    print("STATUS " + json.dumps({"t": int(time.time()), "market": MARKET, "coin": COIN_ID, key: c[0], key + "_locked": c[1],
                                   QUOTE: q[0], QUOTE + "_locked": q[1], "sold": prl, "received": usdt, "fees": fees,
                                   "trades": n, "last": last}), flush=True)
 
@@ -265,7 +321,12 @@ def run(live):
     if orders and live:
         time.sleep(2)
 
-    balance = balance_of()
+    held = balances()
+    balance = held.get(COIN_ID, (0.0, 0.0))[0]
+    for c in COINS:
+        left = sum(held.get(c, (0.0, 0.0)))
+        if c != COIN_ID and left > 0:
+            log(f"{left:g} more {NAME} is held as {c!r}, which {MARKET} doesn't trade; it isn't sold")
 
     bids = order_book(pub)
 
@@ -275,7 +336,7 @@ def run(live):
         return status()
     vol, price = what
     if not live:
-        log(f"DRY RUN: would sell {vol} {COIN.upper()} with a limit at {price} (best bid {max(p for p, _ in bids)}, "
+        log(f"DRY RUN: would sell {vol} {NAME} with a limit at {price} (best bid {max(p for p, _ in bids)}, "
             f"balance {balance})")
         return status()
     # CreateOrderParams: market, side, amount and price as numbers; a price makes it a limit order (no type field).
@@ -292,7 +353,7 @@ def run(live):
     fee = sum(float(t.get("fee") or 0) for t in mine)
     amt = sum(float(t.get("amount") or 0) for t in mine)
     avg = f"{got / amt:.4f}" if amt else "?"
-    log(f"SOLD {done} of {vol} {COIN.upper()} at {avg} USDT average for {got:.2f} USDT (fee {fee:g} "
+    log(f"SOLD {done} of {vol} {NAME} at {avg} USDT average for {got:.2f} USDT (fee {fee:g} "
         f"{(mine[0].get('fee_currency') or '').upper() if mine else ''}; limit {price}, order {o.get('id')}, "
         f"state {o.get('state')}); the rest waits for the next run")
     status({"order": o.get("id"), "sold": done, "of": vol, "received": round(got, 6), "fee": fee,
