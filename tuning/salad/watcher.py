@@ -164,6 +164,12 @@ def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None):
     if kryptex:
         # Kryptex: Pearl on its stratum (release v0.6.1 on). The miner logs in there as "wallet/worker" by itself.
         flags.append(f"--pool {kryptex}")
+        # box.sh checks HeroMiners' port 1200 before it starts; a Kryptex box checks Kryptex's host and port instead,
+        # so it doesn't leave a PC that blocks only a port it never uses.
+        host, port = kryptex.rsplit(":", 1)
+        sed += (f" -e 's|for h in us us2 ca de; do timeout 5 bash -c \"exec 3<>/dev/tcp/$h.pearl.herominers.com/1200\"|"
+                f"for h in {host}; do timeout 5 bash -c \"exec 3<>/dev/tcp/$h/{port}\"|'"
+                f" -e 's|outbound port 1200 blocked|outbound port {port} blocked|'")
     if xmr:
         # Monero: box.sh also downloads the release's CPU worker and puts it beside each GPU's CLI.
         flags.append(f"--xmr-address {xmr}" + (f" --cpu-threads {threads}" if threads else ""))
@@ -754,6 +760,10 @@ class W:
                  "it mines that way on this PC already" if already else "it starts that way on its next PC"))
         return True
 
+    def pool_port(self, kx):
+        """The port a box's port check tries: Kryptex's for a Kryptex box, HeroMiners' 1200 otherwise."""
+        return int(self.cfg["kryptex_host"].rsplit(":", 1)[1]) if kx else 1200
+
     def kx_failed(self, g, why):
         """A Kryptex box that sends no shares or no readings while no other box's work reaches Kryptex points at
         Kryptex, not at the PC: it goes back to HeroMiners on a new PC, and the PC stays off the bad list. Two of
@@ -959,9 +969,11 @@ class W:
                     g["acc"][mach] = acc
                     continue
                 text = text.strip()
-                if "port 1200 blocked" in text:
+                blocked = re.search(r"outbound port (\d+) blocked", text)
+                if blocked:
                     if mach not in g["blocked"]:
                         g["blocked"].append(mach)
+                        g.setdefault("blocked_port", {})[mach] = int(blocked.group(1))   # which pool's port it tried
                         event(f"PORT BLOCKED {name} on PC {(mach or '')[:8]}: {text.strip()[:120]}")
                 elif text.startswith("[card]") and mach not in g["cards"]:
                     g["cards"].append(mach)
@@ -1087,7 +1099,7 @@ class W:
                 event(f"{'GOT PC' if first else 'NEW PC'} {g['name']} ({g['class']}, {g['pri']}): PC {mach[:8]}")
                 # A PC that another group left lately (slow, capped, not mining) is left again at once.
                 bad = st.setdefault("bad_pcs", {}).get(mach)
-                if bad and t - bad["t"] < 3600 * self.cfg["bad_pc_hold_h"]:
+                if bad and t - bad["t"] < 3600 * self.cfg["bad_pc_hold_h"] and bad.get("port") in (None, self.pool_port(g.get("kx"))):
                     self.reallocate(g, f"{bad['group']} left this PC at {hm(bad['t'])}Z: {bad['why']}", count=False)
                     return
         else:
@@ -1114,9 +1126,18 @@ class W:
         # Rule 6: the PC blocks the pool port. It goes on the bad list like any PC a group leaves: Salad hands the
         # same PCs out again. On 18–19 October one blocked PC cost six groups a move each, and two groups were
         # deleted on a PC another group had already found blocked.
+        # A box checks the port of the pool its command names: 1200 for HeroMiners, Kryptex's own for a Kryptex box.
         if g["machine"] in g["blocked"]:
-            st.setdefault("bad_pcs", {})[g["machine"]] = {"t": t, "group": g["name"], "why": "PC blocks outbound port 1200"}
-            self.reallocate(g, "PC blocks outbound port 1200")
+            port = (g.get("blocked_port") or {}).get(g["machine"], 1200)
+            why = f"PC blocks outbound port {port}"
+            # Kryptex's port unreachable while nothing shows Kryptex took any box's work in 30 min may be Kryptex
+            # itself: that counts as a Kryptex failure (back to HeroMiners), as a box with no shares would.
+            reached = self.kx_works(g, t) or self.kx_proof(g, t) >= t - 30 * MIN
+            if port == self.pool_port(True) and g.get("kx") and not reached and self.kx_failed(g, why):
+                return
+            # The PC goes on the bad list for boxes that check the same port; a box on the other pool may use it.
+            st.setdefault("bad_pcs", {})[g["machine"]] = {"t": t, "group": g["name"], "why": why, "port": port}
+            self.reallocate(g, why)
             return
         # This PC's readings (one a minute). A PC that isn't mining 10 min after we got it is left.
         # Readings come from Salad's log service, which sometimes fails for minutes at a time. Missing readings

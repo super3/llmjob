@@ -106,10 +106,13 @@ With `yield: "auto"` the rules count on that credit ratio. On that day it would 
    sometimes fails for minutes at a time (6 in a row once), so both clocks count only up to the last
    log read that worked, and neither leaves a PC the pool got a share from in the last 6 min. After 10
    min of failed reads there's one `WARN` event.
-6. **"port 1200 blocked"** in the logs: reallocate, and put the PC on the bad list (below). Until
+6. **"outbound port N blocked"** in the logs: reallocate, and put the PC on the bad list (below) for
+   boxes that check the same port. Before it starts, box.sh checks the port of the box's pool:
+   HeroMiners' 1200, or Kryptex's own host and port (`kryptex_host`, 7048) on a Kryptex box. So a
+   Kryptex box keeps a PC that blocks only 1200, and a HeroMiners box one that blocks only 7048. Until
    19 October the PC stayed off the list, and Salad handed the same blocked PCs out again: on 18–19 October
    one cost six groups a move each, and two groups were deleted on a PC another group had already
-   found blocked.
+   found blocked. Every box checked 1200 then, so Kryptex boxes also left PCs they could have mined on.
 7. **Credit runs out:** Salad stops every group, and creating one returns `no_credits_available`. The
    watcher leaves stopped groups alone and stops creating. A group that stops after it had a PC is
    taken as this case. Bump `restart_token` after a top-up.
@@ -235,11 +238,16 @@ What's built for it, with `kryptex_groups` boxes marked **(K)** in the table:
   that PC, the PC is the likelier cause: the box is left as usual and stays on Kryptex. A new PC that never sends a reading is common here (46 times by
   18 October), and with new groups starting on Kryptex, two of those would stop the test. Two Kryptex failures stop it: Kryptex
   boxes with a PC are moved to start on HeroMiners at once, and every group stays on HeroMiners until
-  config `kryptex_token` changes. One gap: box.sh only checks HeroMiners' port 1200, so a PC whose network
-  blocks Kryptex's 7048 also counts as a Kryptex failure. That's rare, and at worst it stops the test
-  early. A check for it (proof from the miner's `connecting to` line) was tried on 17 October and taken
-  out: that line comes after box.sh's first 12 lines on a box with Monero, so it never arrived, and the
-  extra path let boxes trade places on Kryptex until their groups were deleted.
+  config `kryptex_token` changes. **A Kryptex box checks Kryptex's port** before it starts (rule 6). A PC
+  that blocks it is left and listed for Kryptex boxes, and the box stays on Kryptex, while some box's
+  work reached Kryptex in the last 30 minutes. If none did, Kryptex itself may be down, so it counts as
+  a Kryptex failure, as a box with no shares would: an outage then still stops the test after two,
+  instead of every Kryptex box leaving PC after PC. Until 19 October box.sh checked only HeroMiners'
+  port 1200, so a PC that blocked 7048 showed up as no shares, and Kryptex boxes left PCs that blocked
+  only 1200. An earlier check (proof from the miner's `connecting to` line) was tried on 17 October and
+  taken out: that line comes after box.sh's first 12 lines on a box with Monero, so it never arrived, and
+  the extra path let boxes trade places on Kryptex until their groups were deleted. The port check
+  doesn't switch pools, so it can't do that.
 - **How:** a Kryptex box runs release `kryptex_ver` (v0.6.1) or later, and its command puts
   `--pool prl-us.kryptex.network:7048` into box.sh's default flags, the same way Monero adds
   `--xmr-address`. Monero stays on HeroMiners. Going back to HeroMiners drops the flag; the box keeps the
@@ -322,7 +330,8 @@ Base `https://api.salad.com/api/public/organizations/<org>`, key in the `Salad-A
   payout address put in by `sed`. Salad refuses `; curl` (HTTP 400, no detail), so curl comes after
   `&&`.
 - box.sh mines with release v0.5.13 and prints `[mining g0] HH:MM:SS <TH/s> TH/s · <n> accepted · ...`
-  once a minute. A PC that blocks the pool port prints `[run] FAIL: outbound port 1200 blocked`.
+  once a minute. A PC that blocks the pool port prints `[run] FAIL: outbound port 1200 blocked` (on a
+  Kryptex box, the watcher's `sed` makes it check and print Kryptex's port, 7048).
 - Workers are named `biz-<card>` (a second group of a card gets `-2`). The pool shows `<worker>-g0`.
 - The miner can't lock the memory clock on Salad: its log says the user has no permission.
 - After the miner dies, box.sh keeps printing its last `[mining g0]` line every minute, uptime and all.
