@@ -1239,12 +1239,10 @@ function progressReporter(label, now) {
 
 // The model for a card with `freeMb` free and `reserveMb` set aside for mining,
 // without the models it kept losing its GPU under (`lost`, see rememberGpuLoss).
-// The default is never left out, so it is still the fallback. The platform, so
-// a Windows card that mines is not handed a model that has only been verified
-// co-running on Linux (config.js noCoRunOn).
+// The default is never left out, so it is still the fallback.
 function modelFor(freeMb, reserveMb, lost) {
   const models = allModels().filter((m) => m === LLM.model || !lost.includes(m.name));
-  return pickModel(freeMb, reserveMb, models, process.platform);
+  return pickModel(freeMb, reserveMb, models);
 }
 
 // Start the local LLM: ensure binary + model, size the GPU offload to leave
@@ -1526,9 +1524,8 @@ function warmUpLlm(baseUrl) {
 // The model a run that mines should serve in place of the running one, or null
 // to keep it. A model planned for the card alone (Compute Mode LLM) can be
 // joined by the miner with no STOP between: Auto picked in Settings, then START
-// LLM. With the mining reserve the same card may get another model or context.
-// On Windows the 27B must not co-run at all (config.js noCoRunOn), and on Linux
-// 262144 plus the miner does not fit a 32 GB card. Judged on what the fleet was
+// LLM. With the mining reserve the same card may get another model: the 27B
+// plus the miner does not fit a 32 GB card, which serves Gemma. Judged on what the fleet was
 // planned on, because a reading now counts the fleet itself, and with the same
 // models left out, so a card held to Gemma (see rememberGpuLoss) keeps it.
 //

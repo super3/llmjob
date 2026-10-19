@@ -535,8 +535,24 @@ async function planLlm(settings, reserveMb, modelOverride) {
   // shell has to make the same choice the GUI does, or a large card running
   // under systemd silently keeps serving the small default.
   const bestCard = pickLlmGpu(cards);
-  const model = modelOverride
+  let model = modelOverride
     || pickModel(bestCard ? bestCard.freeMb : null, reserveMb || 0, candidateModels(settings));
+  // The operator's own copy of a larger model that does not fit here. pickModel
+  // falls back to the default, and the file would start under the default's
+  // name and settings: the 27B's weights taking Gemma's jobs, without the 27B's
+  // flags. Skipped instead, like any model that does not fit. With no VRAM
+  // reading there is nothing to check, so the file is served as what it is.
+  const asked = settings.llmModel
+    ? allModels().find((m) => m.file === path.basename(settings.llmModel)) : null;
+  if (asked && model.name !== asked.name) {
+    if (bestCard) {
+      log('not enough free VRAM on any single GPU for --llm-model: ' + bestCard.freeMb + ' MB free on GPU '
+        + bestCard.index + ', need ~' + requiredFreeMb(asked, reserveMb) + ' MB for ' + asked.name
+        + ' — skipping the LLM.', process.stderr);
+      return null;
+    }
+    model = asked;
+  }
   serveLlmState.model = model;
   const plan = planLlmInstances(cards, model, reserveMb || 0, {
     maxInstances: settings.llmMaxInstances,

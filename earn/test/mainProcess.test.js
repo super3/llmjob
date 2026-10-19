@@ -1809,11 +1809,10 @@ describe('local LLM', () => {
     expect(ctx.JobWorker.instances[0].opts.servingModel()).toBe(tier);
   });
 
-  // The one Windows report of the 27B co-running lost its GPU on every prompt.
-  // A Windows card that mines serves Gemma again, as it did before v0.6.1; a
-  // Linux card still gets the 27B at 131072 beside the miner.
-  for (const [platform, tierWanted] of [['win32', false], ['linux', true]]) {
-    it('a 32 GB card that mines on ' + platform + ' serves ' + (tierWanted ? 'the 27B' : 'Gemma'), async () => {
+  // A card that mines serves Gemma, as it did before v0.6.1, on Windows and
+  // Linux alike: the 27B plus the miner does not fit 32 GB.
+  for (const platform of ['win32', 'linux']) {
+    it('a 32 GB card that mines on ' + platform + ' serves Gemma', async () => {
       const ctx = await boot({
         platform,
         before: (c) => {
@@ -1830,24 +1829,17 @@ describe('local LLM', () => {
       await flush(30);
 
       const tier = ctx.config.LLM.tiers[0];
-      const status = ctx.sent('llm:status').pop();
       const opts = ctx.LlmManager.instances[0].start.mock.calls[0][0];
-      if (tierWanted) {
-        expect(status).toMatchObject({ model: tier.name, ctxSize: 131072 });
-        expect(opts.extraArgs).toEqual(tier.extraArgs);
-      } else {
-        expect(status).toMatchObject({ model: ctx.config.LLM.model.name });
-        expect(opts.alias).toBe(ctx.config.LLM.model.name);
-        expect(opts.extraArgs).not.toEqual(tier.extraArgs);
-      }
+      expect(ctx.sent('llm:status').pop()).toMatchObject({ model: ctx.config.LLM.model.name });
+      expect(opts.alias).toBe(ctx.config.LLM.model.name);
+      expect(opts.extraArgs).not.toEqual(tier.extraArgs);
     });
   }
 
   // Compute Mode LLM gives a 32 GB card the 27B at 262144. Picking Auto in
   // Settings and pressing START LLM, with no STOP between, brings the miner in
-  // beside it. On Windows the 27B must not co-run, and on Linux 262144 plus the
-  // miner does not fit the card, so it is stopped before the miner starts and
-  // planned again once the miner is up.
+  // beside it. The 27B plus the miner does not fit the card, so it is stopped
+  // before the miner starts, and Gemma is planned once the miner is up.
   describe('when the miner joins a model planned without it', () => {
     const CARD = 'NVIDIA RTX PRO 4500 Blackwell';
     const card = (usedMb) => [{ index: 0, name: CARD, usedMb, totalMb: 32623 }];
@@ -1872,9 +1864,8 @@ describe('local LLM', () => {
       return { ctx, big };
     }
 
-    for (const [platform, ctxWanted] of [['win32', null], ['linux', 131072]]) {
-      it('on ' + platform + ', stops the 27B before the miner starts and serves '
-        + (ctxWanted ? 'it at ' + ctxWanted : 'Gemma'), async () => {
+    for (const platform of ['win32', 'linux']) {
+      it('on ' + platform + ', stops the 27B before the miner starts and serves Gemma', async () => {
         const { ctx, big } = await serveAlone(platform);
         // Still loading, so its process is alive until it exits.
         big.running = true;
@@ -1895,8 +1886,7 @@ describe('local LLM', () => {
 
         expect(ctx.LlmManager.instances).toHaveLength(2);
         const opts = ctx.LlmManager.instances[1].start.mock.calls[0][0];
-        if (ctxWanted) expect(opts).toMatchObject({ alias: ctx.config.LLM.tiers[0].name, ctxSize: ctxWanted });
-        else expect(opts.alias).toBe(ctx.config.LLM.model.name);
+        expect(opts.alias).toBe(ctx.config.LLM.model.name);
         expect(ctx.sent('llm:status').pop()).toMatchObject({ model: opts.alias, ctxSize: opts.ctxSize, error: null });
         // The session and the miner carry on: the old model said no 'stopped'.
         expect(ctx.sent('miner:stopped')).toHaveLength(0);
@@ -1947,7 +1937,7 @@ describe('local LLM', () => {
     // The common cases change nothing: the same reserve, or a reserve that
     // gives the card the same model at the same context.
     for (const [what, first, usedMb] of [
-      ['Auto started again on a 32 GB Linux card', 'auto', 3600],
+      ['Auto started again on a 32 GB card', 'auto', 3600],
       ['the miner joining Gemma on a card with 24 GB free', 'llm', 8600],
     ]) {
       it('keeps the model for ' + what, async () => {
@@ -1992,7 +1982,7 @@ describe('local LLM', () => {
     const ctx = await boot({
       before: (c) => {
         c.probe.detectGpusVram.mockResolvedValue([
-          { index: 0, name: 'NVIDIA RTX PRO 4500 Blackwell', usedMb: 4360, totalMb: 32623 },
+          { index: 0, name: 'NVIDIA RTX PRO 4500 Blackwell', usedMb: 500, totalMb: 32623 },
       { index: 1, name: 'NVIDIA GeForce RTX 4070', usedMb: 1500, totalMb: 12282 },
         ]);
         c.probe.detectLlmDevices.mockResolvedValue([
@@ -2543,10 +2533,12 @@ describe('a card that keeps losing its GPU', () => {
 
   // The miner joining a model planned for the card alone re-plans it (see
   // llmReplan), and the card's record is part of that plan: Gemma, run there in
-  // place of the 27B, stays. Linux, where the 27B co-runs at 131072.
+  // place of the 27B, stays. A 48 GB card, which holds the 27B beside the miner;
+  // a 32 GB card gets Gemma there either way.
   it('keeps the model it fell back to when the miner joins', async () => {
     const tier = require('../src/shared/config').LLM.tiers[0];
-    const ctx = await bootWith([PRO], { version: '0.0.0-test', cards: { '0:1:0.0': [tier.name] } }, BUS);
+    const big = { index: 0, name: 'NVIDIA RTX 6000 Ada Generation', usedMb: 0, totalMb: 49140 };
+    const ctx = await bootWith([big], { version: '0.0.0-test', cards: { '0:1:0.0': [tier.name] } }, BUS);
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'llm' });
     await flush();
     const gemma = ctx.LlmManager.instances[0];

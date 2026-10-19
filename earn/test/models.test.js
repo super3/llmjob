@@ -65,82 +65,6 @@ describe('pickModel', () => {
   });
 });
 
-// A tier measured at several contexts, with round numbers. 300 MiB of margin
-// between its figure and its floor, like the shipped tier's ~570.
-const SIZED = {
-  key: 'sized', name: 'Sized', vramFullMb: 20000, minVramMb: 20300, ctxSize: 262144,
-  ctxLadder: [262144, 131072, 65536, 32768],
-  vramByCtxMb: { 262144: 20000, 131072: 14000, 65536: 11000, 32768: 9500 },
-  minCtxSize: 65536,
-  extraArgs: ['--jinja'],
-};
-
-describe('pickModel with per-context figures', () => {
-  test('takes the largest context the card can hold', () => {
-    expect(pickModel(30000, 0, [SIZED, SMALL])).toBe(SIZED);
-    const mid = pickModel(16000, 0, [SIZED, SMALL]);
-    expect(mid.ctxSize).toBe(131072);
-    expect(mid.vramFullMb).toBe(14000);
-    expect(mid.minVramMb).toBe(14300);
-    expect(pickModel(12000, 0, [SIZED, SMALL]).ctxSize).toBe(65536);
-  });
-
-  test('prefers the big model at a smaller context over the small model', () => {
-    // 14,000 + a 3,000 reserve fits 17,500; 20,000 + 3,000 does not.
-    expect(pickModel(17500, 3000, [SIZED, SMALL]).key).toBe('sized');
-    expect(pickModel(17500, 3000, [SIZED, SMALL]).ctxSize).toBe(131072);
-  });
-
-  test('never chooses a context below minCtxSize', () => {
-    // 9,500 fits the 32768 rung, but the floor is 65536.
-    expect(pickModel(10000, 0, [SIZED, SMALL])).toBe(SMALL);
-  });
-
-  test('the chosen model keeps only the ladder rungs at or below its context', () => {
-    const m = pickModel(16000, 0, [SIZED, SMALL]);
-    expect(m.ctxLadder).toEqual([131072, 65536, 32768]);
-    expect(ctxLadder(m)[0]).toBe(131072);
-  });
-
-  test('keeps everything else, and leaves the configured tier untouched', () => {
-    const m = pickModel(16000, 0, [SIZED, SMALL]);
-    expect(m).not.toBe(SIZED);
-    expect(m.key).toBe('sized');
-    expect(m.extraArgs).toEqual(['--jinja']);
-    expect(SIZED.ctxSize).toBe(262144);
-    expect(SIZED.vramFullMb).toBe(20000);
-    expect(SIZED.ctxLadder).toEqual([262144, 131072, 65536, 32768]);
-  });
-
-  test('skips rungs that have no figure', () => {
-    const holes = Object.assign({}, SIZED, { vramByCtxMb: { 262144: 20000, 65536: 11000 } });
-    expect(pickModel(16000, 0, [holes, SMALL]).ctxSize).toBe(65536);
-  });
-
-  test('with no minCtxSize every measured rung may be chosen', () => {
-    const any = Object.assign({}, SIZED, { minCtxSize: undefined });
-    expect(pickModel(10000, 0, [any, SMALL]).ctxSize).toBe(32768);
-  });
-
-  test('with no floor figures the margin is zero', () => {
-    const bare = { key: 'bare', ctxLadder: [8192, 4096], vramByCtxMb: { 8192: 900, 4096: 600 } };
-    const m = pickModel(700, 0, [bare, SMALL]);
-    expect(m.ctxSize).toBe(4096);
-    expect(m.vramFullMb).toBe(600);
-    expect(m.minVramMb).toBe(600);
-  });
-
-  test('a model with only per-context figures is held to them at its top context too', () => {
-    // It has no vramFullMb of its own, so returning it unchanged at 8192 would
-    // leave it with no floor and hand it to a card with 500 MiB free.
-    const bare = { key: 'bare', ctxLadder: [8192, 4096], vramByCtxMb: { 8192: 900, 4096: 600 } };
-    expect(pickModel(500, 0, [bare, SMALL])).toBe(SMALL);
-    const top = pickModel(1000, 0, [bare, SMALL]);
-    expect(top.ctxSize).toBe(8192);
-    expect(top.vramFullMb).toBe(900);
-  });
-});
-
 describe('ctxLadder', () => {
   test('returns the model ladder when it has one', () => {
     expect(ctxLadder({ ctxLadder: [262144, 65536] })).toEqual([262144, 65536]);
@@ -222,7 +146,7 @@ describe('the shipped config', () => {
     expect(q.minVramMb).toBeGreaterThan(q.vramFullMb);
   });
 
-  test('a 5090 cannot mine and serve this at 262144, so mining it is offered 131072', () => {
+  test('a 5090 cannot mine and serve this at 262144, and is not offered it', () => {
     // Measured on the card: llama at full settings holds 30,150 MiB, leaving
     // 2,457 free, while the miner needs 2,081 for its rank-128 profile plus the
     // ~500 MiB every CUDA process costs for its context — ~2,581, so it is short
@@ -236,71 +160,34 @@ describe('the shipped config', () => {
     const q = allModels().find((m) => m.key === 'qwen3.8-27b');
 
     // Mining: free VRAM is what the miner has left, and that is below the
-    // model's own resident size at 262144 before any reserve is even considered.
-    // It used to fall back to Gemma here. It now gets the same model at 131072,
-    // measured at 24,518 MiB, which fits beside the miner with room to spare.
+    // model's own resident size before any reserve is even considered.
     const whileMining = TOTAL - MINER;
     expect(whileMining).toBeLessThan(q.vramFullMb);
-    const mining = pickModel(whileMining, LLM.miningReserveMb);
-    expect(mining.key).toBe('qwen3.8-27b');
-    expect(mining.ctxSize).toBe(131072);
-    expect(mining.vramFullMb).toBe(24518);
-    expect(whileMining).toBeGreaterThanOrEqual(requiredFreeMb(mining, LLM.miningReserveMb));
+    expect(pickModel(whileMining, LLM.miningReserveMb)).toBe(LLM.model);   // -> Gemma
 
-    // Idle: the card clears the full floor and gets the full context.
-    expect(pickModel(TOTAL, 0)).toBe(q);
+    // Idle: the card clears the floor and the tier is offered.
+    expect(pickModel(TOTAL, 0).key).toBe('qwen3.8-27b');
   });
 
-  test('a 32 GB card that is mining gets the big model at 131072, whatever runs first', () => {
+  // v0.6.1 to v0.6.4 gave a mining 32 GB card the 27B at 131072. v0.6.5 took
+  // that back out, on every platform, so these pin the rule as it was before.
+  test('a 32 GB card that mines gets the default, whether measured before or after the miner starts', () => {
+    // The CLI plans before the miner starts; the app plans after, with the
+    // miner's ~2.6 GB already gone. An RTX PRO 4500 or 5090 with ~1 GB of desktop.
+    expect(pickModel(32607 - 1000, LLM.miningReserveMb)).toBe(LLM.model);
+    expect(pickModel(32607 - 1000 - 2600, LLM.miningReserveMb)).toBe(LLM.model);
+  });
+
+  test('the big model is chosen only at its full context', () => {
     const q = allModels().find((m) => m.key === 'qwen3.8-27b');
-    // The CLI plans before the miner starts: an RTX PRO 4500 or 5090 with a
-    // desktop on it, ~1 GB used.
-    const before = pickModel(32607 - 1000, LLM.miningReserveMb);
-    expect(before.key).toBe(q.key);
-    expect(before.ctxSize).toBe(131072);
-    // The app plans after the miner is running, so its ~2.6 GB is already gone
-    // AND the reserve is charged again. It still fits.
-    const after = pickModel(32607 - 1000 - 2600, LLM.miningReserveMb);
-    expect(after.key).toBe(q.key);
-    expect(after.ctxSize).toBe(131072);
+    expect(q.vramByCtxMb).toBeUndefined();
+    expect(q.minCtxSize).toBeUndefined();
+    expect(pickModel(32149, 0)).toBe(q);
+    expect(ctxLadder(pickModel(32149, 0))[0]).toBe(262144);
   });
 
-  // The one Windows report of the 27B co-running lost its GPU on every prompt,
-  // and the model had only been verified on Linux. Before v0.6.1 a mining
-  // Windows card served Gemma, which worked, so that is what it gets again.
-  test('on Windows a mining 32 GB card gets the default, not the big model', () => {
-    const q = allModels().find((m) => m.key === 'qwen3.8-27b');
-    expect(q.noCoRunOn).toEqual(['win32']);
-    const free = 32607 - 1000 - 2600;
-    expect(pickModel(free, LLM.miningReserveMb, null, 'win32')).toBe(LLM.model);
-    // Linux, and a caller that gives no platform (the CLI), are unchanged.
-    expect(pickModel(free, LLM.miningReserveMb, null, 'linux').key).toBe(q.key);
-    expect(pickModel(free, LLM.miningReserveMb).key).toBe(q.key);
-  });
-
-  test('on Windows the big model is still offered when the LLM has the card to itself', () => {
-    const q = allModels().find((m) => m.key === 'qwen3.8-27b');
-    expect(pickModel(32149, 0, null, 'win32')).toBe(q);
-  });
-
-  test('a model that does not rule itself out still co-runs on Windows', () => {
-    expect(pickModel(17500, 3000, [SIZED, SMALL], 'win32').key).toBe(SIZED.key);
-  });
-
-  test('a 24 GB card keeps serving the default, mining or not', () => {
-    // The 32768 and 65536 rungs would fit a 4090 by a few hundred MiB. minCtxSize
-    // keeps them as start-up fallbacks only, so a 24 GB card is not handed a
-    // 27B model it can barely hold.
-    expect(pickModel(24564 - 300, 0)).toBe(LLM.model);
-    expect(pickModel(24564 - 300, LLM.miningReserveMb)).toBe(LLM.model);
-  });
-
-  test('the per-context figures are the measured sweep, and the top one matches vramFullMb', () => {
-    const q = allModels().find((m) => m.key === 'qwen3.8-27b');
-    expect(q.vramByCtxMb).toEqual({ 262144: 30150, 131072: 24518, 65536: 21702, 32768: 20324 });
-    expect(q.vramByCtxMb[ctxLadder(q)[0]]).toBe(q.vramFullMb);
-    for (const ctx of ctxLadder(q)) expect(q.vramByCtxMb[ctx]).toBeGreaterThan(0);
-    expect(ctxLadder(q)).toContain(q.minCtxSize);
+  test('a 48 GB card still serves the big model beside the miner', () => {
+    expect(pickModel(49140 - 1000, LLM.miningReserveMb).key).toBe('qwen3.8-27b');
   });
 
   test('the flags that make 256K fit are actually configured', () => {
@@ -395,25 +282,10 @@ describe('planAutoMode', () => {
     expect(p.model).toBeTruthy();
   });
 
-  test('the same model at a bigger context alone also goes demand-driven', () => {
-    // SIZED fits 262144 alone (20,300) but only 131072 beside a 3,000 reserve.
-    const p = planAutoMode(22000, 3000, [SIZED, SMALL]);
-    expect(p.strategy).toBe('demand');
-    expect(p.model).toBe(SIZED);
-  });
-
-  test('the same model at the same context co-runs', () => {
-    const p = planAutoMode(17500, 3000, [SIZED, SMALL]);
-    expect(p.strategy).toBe('corun');
-    expect(p.model.ctxSize).toBe(131072);
-  });
-
-  test('a 32 GB card in CLI auto stays demand-driven at the full context', () => {
-    // As before this change: alone it holds 262144, mining only 131072, so it
-    // mines until asked and keeps the 5090 memory-clock lock while it does.
+  test('a 32 GB card in CLI auto goes demand-driven for the big model', () => {
     const p = planAutoMode(32607 - 1000, LLM.miningReserveMb);
     expect(p.strategy).toBe('demand');
-    expect(p.model.ctxSize).toBe(262144);
+    expect(p.model.key).toBe('qwen3.8-27b');
   });
 
   test('an empty model list yields corun with no model rather than throwing', () => {
