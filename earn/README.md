@@ -609,6 +609,12 @@ back. The request that hit the error fails, even one already streaming its
 answer, so a cluster job is reported as failed, not done. If that happens 3 times within an hour, it stops the LLM and says so in
 the log. This covers the Vulkan build the app uses on Windows and Linux.
 
+The app also remembers that card and model, in `gpu-lost.json` in its data
+folder. Later starts, and launches at login, don't load that model on that
+card again: Qwen3.8-27B falls back to Gemma, and a card that also lost its GPU
+under Gemma gets no LLM. START LLM on the Chat or API tab clears the record,
+and so does an app update. The CLI still tries again on every start.
+
 A `llama-server` that exits on its own after it was serving also restarts,
 after 2 s, then 4 s, and so on. If it keeps dying within 5 minutes of coming
 up, the app stops after 5 restarts.

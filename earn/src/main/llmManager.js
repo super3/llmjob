@@ -49,6 +49,7 @@ const {
 //   log      { level: 'info'|'error', line }
 //   stats    { tokensPerSec, promptTokensPerSec, tokens }  one phase per event
 //   crashed  { code, restartInMs, attempt }   — down, restarting shortly
+//   gpu-lost { losses }   — gave up after gpuLossLimit lost GPUs; 'stopped' follows
 //   stopped  exitCode
 //   error    Error
 class LlmManager extends EventEmitter {
@@ -202,6 +203,10 @@ class LlmManager extends EventEmitter {
         if (this._gpuLosses.length >= this.gpuLossLimit) {
           this.emit('log', { level: 'error', line: 'local LLM lost its GPU ' + this._gpuLosses.length + ' times in ' + Math.round(this.gpuLossWindowMs / 60000) + ' minutes — giving up. See Logs.' });
           this.running = false;
+          // Said apart from 'stopped', which every stop sends, so the shell can
+          // remember the card: start() forgets the losses, and the next start
+          // would load the model there again.
+          this.emit('gpu-lost', { losses: this._gpuLosses.length });
           this.emit('stopped', code);
           return;
         }

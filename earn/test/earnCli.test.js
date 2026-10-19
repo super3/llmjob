@@ -1420,11 +1420,10 @@ describe('local LLM', () => {
     await expect(p).resolves.toBe(1);
   });
 
-  // A mining 32 GB card used to fall back to the default model: the tier at
-  // 262144 plus the mining reserve does not fit. It now co-runs the tier at the
-  // largest measured context that does, 131072. An idle 5090 still goes
-  // demand-driven at 262144 (see the demand tests), so these cards have a
-  // desktop on them: 3 GB used, which leaves 29,149 MB free.
+  // A mining 32 GB card serves the default model: the tier plus the mining
+  // reserve does not fit. An idle 5090 goes demand-driven for the tier (see the
+  // demand tests), so these cards have a desktop on them: 3 GB used, which
+  // leaves 29,149 MB free.
   const argvCoRun = ['-a', ADDR, '--mode', 'both', '--no-update', '--no-report', '--llm-binary', '/lb'];
   const fiveNinety = (m, usedMb = 3000) => {
     m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb, totalMb: 32149 }]);
@@ -1433,20 +1432,15 @@ describe('local LLM', () => {
     m.LlmEngineManager.mmprojInstalled = true;
   };
 
-  test('a mining 32 GB card co-runs the vision tier at 131072', async () => {
+  test('a mining 32 GB card co-runs the default model, not the vision tier', async () => {
     const m = load();
     fiveNinety(m);
     const p = m.run(argvCoRun);
     await settle();
 
-    const tier = LLM.tiers[0];
-    const llm = m.LlmManager.instances[0];
-    expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({
-      ctxSize: 131072,
-      ctxLadder: [131072, 65536, 32768],
-      extraArgs: tier.extraArgs,
-      alias: tier.name,
-    }));
+    const opts = m.LlmManager.instances[0].start.mock.calls[0][0];
+    expect(opts.alias).toBe(LLM.model.name);
+    expect(opts.extraArgs).not.toEqual(LLM.tiers[0].extraArgs);
     expect(m.PearlEngine.instances[0].start).toHaveBeenCalled();
 
     m.PearlEngine.instances[0].emit('stopped', 0);
@@ -1555,8 +1549,8 @@ describe('local LLM', () => {
     // The operator's own Gemma copy started with the tier's context, its MTP
     // speculation flags and its name -- which the server routes jobs on.
     const m = load();
-    fiveNinety(m);
-    const p = m.run([...argvCoRun, '--llm-model', '/models/my-gemma.gguf']);
+    fiveNinety(m, 0);
+    const p = m.run(['--mode', 'llm', '--no-update', '--llm-binary', '/lb', '--llm-model', '/models/my-gemma.gguf']);
     await settle();
 
     const llm = m.LlmManager.instances[0];
@@ -1564,24 +1558,57 @@ describe('local LLM', () => {
     expect(opts.alias).toBe(LLM.model.name);
     expect(opts.modelPath).toBe('/models/my-gemma.gguf');
     expect(opts.extraArgs).not.toEqual(LLM.tiers[0].extraArgs);
-    expect(opts.ctxSize).not.toBe(131072);
+    expect(opts.ctxSize).not.toBe(262144);
 
-    m.PearlEngine.instances[0].emit('stopped', 0);
+    fire('SIGINT');
     await expect(p).resolves.toBe(0);
   });
 
   test('--llm-model pointing at the tier file keeps the tier and its settings', async () => {
     const m = load();
-    fiveNinety(m);
-    const p = m.run([...argvCoRun, '--llm-model', '/models/' + LLM.tiers[0].file]);
+    fiveNinety(m, 0);
+    const p = m.run(['--mode', 'llm', '--no-update', '--llm-binary', '/lb', '--llm-model', '/models/' + LLM.tiers[0].file]);
     await settle();
 
     const llm = m.LlmManager.instances[0];
     expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({
-      ctxSize: 131072, extraArgs: LLM.tiers[0].extraArgs, alias: LLM.tiers[0].name,
+      ctxSize: 262144, extraArgs: LLM.tiers[0].extraArgs, alias: LLM.tiers[0].name,
     }));
 
+    fire('SIGINT');
+    await expect(p).resolves.toBe(0);
+  });
+
+  // Beside the miner the tier does not fit a 32 GB card, and the default is
+  // what pickModel falls back to. The tier's weights must not start under
+  // Gemma's name, which jobs are routed on, without the tier's flags.
+  test('--llm-model naming the tier skips the LLM where the tier does not fit, and mines', async () => {
+    const m = load();
+    fiveNinety(m);
+    const p = m.run([...argvCoRun, '--llm-model', '/models/' + LLM.tiers[0].file]);
+    await settle();
+
+    expect(m.LlmManager.instances).toHaveLength(0);
+    expect(allErr()).toContain('not enough free VRAM on any single GPU for --llm-model: 29149 MB free on GPU 0');
+    expect(allErr()).toContain('MB for ' + LLM.tiers[0].name + ' — skipping the LLM.');
+    expect(m.PearlEngine.instances[0].start).toHaveBeenCalled();
+
     m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('--llm-model naming the tier is served as the tier when VRAM cannot be read', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([]);
+    m.LlmEngineManager.serverInstalled = true;
+    const p = m.run(['--mode', 'llm', '--no-update', '--llm-binary', '/lb', '--llm-model', '/models/' + LLM.tiers[0].file]);
+    await settle();
+
+    expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+      alias: LLM.tiers[0].name, extraArgs: LLM.tiers[0].extraArgs,
+    }));
+
+    fire('SIGINT');
     await expect(p).resolves.toBe(0);
   });
 
@@ -1889,7 +1916,7 @@ describe('local LLM', () => {
   test('loads on the planned card by llama-server\'s own name for it', async () => {
     const m = load();
     m.probe.detectGpusVram.mockResolvedValue([
-          { index: 0, name: 'NVIDIA RTX PRO 4500 Blackwell', usedMb: 4360, totalMb: 32623 },
+          { index: 0, name: 'NVIDIA RTX PRO 4500 Blackwell', usedMb: 500, totalMb: 32623 },
       { index: 1, name: 'NVIDIA GeForce RTX 4070', usedMb: 1500, totalMb: 12282 },
     ]);
     m.probe.detectLlmDevices.mockResolvedValue([

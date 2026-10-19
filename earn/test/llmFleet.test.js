@@ -78,6 +78,32 @@ describe('LlmFleet', () => {
     ]);
   });
 
+  // A card that kept losing its GPU. Passed on with the card, like busy, so the
+  // shell can remember it, and out of service by then, so the shell can tell
+  // whether another card still serves. 'stopped' follows from the manager.
+  test('passes on a card giving up on its GPU, tagged with the card', async () => {
+    const { fleet, mgrs } = makeFleet();
+    const seen = [];
+    fleet.on('gpu-lost', (e) => seen.push([e, fleet.servingIndices(), fleet.isReady()]));
+    const stopped = jest.fn();
+    fleet.on('stopped', stopped);
+    await fleet.start([{ index: 0, nGpuLayers: 42, device: 'Vulkan1', busId: '00000000:01:00.0' }, { index: 2, nGpuLayers: 40 }],
+      { binaryPath: 'b', modelPath: 'm', platform: 'linux' });
+    await drain();
+    mgrs[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    mgrs[1].emit('ready', { baseUrl: 'http://127.0.0.1:8081' });
+
+    mgrs[0].emit('gpu-lost', { losses: 3 });
+    mgrs[0].emit('stopped', null);
+    expect(seen).toEqual([[{ index: 0, busId: '00000000:01:00.0', losses: 3 }, [2], true]]);
+    expect(stopped).not.toHaveBeenCalled(); // card 2 still serves
+
+    mgrs[1].emit('gpu-lost', { losses: 3 });
+    expect(seen[1]).toEqual([{ index: 2, busId: null, losses: 3 }, [], false]);
+    mgrs[1].emit('stopped', null);
+    expect(stopped).toHaveBeenCalledTimes(1);
+  });
+
   test('start() launches one manager per plan entry on distinct ports', async () => {
     const { fleet, mgrs } = makeFleet();
     const n = await fleet.start(

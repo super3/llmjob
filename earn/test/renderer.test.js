@@ -82,6 +82,7 @@ function makeFullApi() {
     openNodeDashboard: jest.fn(),
     startMiner: jest.fn(),
     stopMiner: jest.fn(),
+    retryLlm: jest.fn(),
     openExternal: jest.fn(),
     copyText: jest.fn(),
     fitWindow: jest.fn(),
@@ -643,6 +644,12 @@ describe('boot with the full bridge', () => {
     expect($('llm-hero-dot').className).toBe('dot2 err');
     expect($('llm-hero-detail').textContent).toBe('GPU died');
     expect($('llm-hero-detail').classList.contains('err')).toBe(true);
+    // The whole reason a card is held back is on hover; the line has room for
+    // only a few words of it.
+    cbs.llm({ error: 'GPU kept failing — START LLM to retry', held: 'it kept losing GPU 0' });
+    expect($('llm-hero-detail').textContent).toBe('GPU kept failing — START LLM to retry');
+    expect($('llm-col').title).toBe('it kept losing GPU 0');
+    cbs.llm({ error: 'GPU died' });
     expect($('llm-hero-detail').classList.contains('quiet')).toBe(false);
     expect($('llm-hero-tps').textContent).toBe('0.0');
     makeReady(cbs);
@@ -784,6 +791,10 @@ describe('boot with the full bridge', () => {
     click(startLlm);
     expect(api.startMiner).toHaveBeenCalledTimes(1);
     expect(api.startMiner.mock.calls[0][0].mode).toBe('auto');
+    // START LLM, unlike START, gives a card that kept losing its GPU another
+    // try, and says so before the start.
+    expect(api.retryLlm).toHaveBeenCalledTimes(1);
+    expect(api.retryLlm.mock.invocationCallOrder[0]).toBeLessThan(api.startMiner.mock.invocationCallOrder[0]);
     click($('btn-stop'));
     // mining-only + valid address → auto (was 'both', which meant the same)
     click(document.querySelector('[data-mode="mining"]'));
@@ -799,6 +810,11 @@ describe('boot with the full bridge', () => {
     makeReady(cbs);
     click(startLlm);
     expect(api.startMiner).toHaveBeenCalledTimes(3);
+    expect(api.retryLlm).toHaveBeenCalledTimes(3);
+    // START never does.
+    click($('btn-stop'));
+    click($('btn-start'));
+    expect(api.retryLlm).toHaveBeenCalledTimes(3);
   });
 
   it('copies and opens the API endpoint', async () => {
@@ -1026,6 +1042,11 @@ describe('partial bridge (fallback settings, missing action methods)', () => {
     expect($('btn-stop').hidden).toBe(false);
     click($('btn-stop'));
     expect($('btn-start').hidden).toBe(false);
+    // START LLM without the retry bridge still starts
+    cbs.llm({});
+    click(document.querySelector('[data-start-llm]'));
+    expect($('btn-stop').hidden).toBe(false);
+    click($('btn-stop'));
     // update ready but no installer; then not-ready with no checker
     cbs.update({ show: true, phase: 'downloaded', text: 'r', ready: true });
     click($('btn-check-update'));

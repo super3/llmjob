@@ -514,13 +514,15 @@ describe('LlmManager lost GPU', () => {
     const busy = [];
     const stopped = jest.fn();
     const crashed = jest.fn();
+    const gpuLost = jest.fn();
     m.on('log', (l) => logs.push(l.line));
     m.on('busy', (b) => busy.push(b));
     m.on('stopped', stopped);
     m.on('crashed', crashed);
+    m.on('gpu-lost', gpuLost);
     m.start({ modelPath: '/m.gguf' });
     children[0].stderr.emit('data', READY);
-    return { m, spawn, children, waits, logs, busy, stopped, crashed };
+    return { m, spawn, children, waits, logs, busy, stopped, crashed, gpuLost };
   }
 
   // Lose the GPU on the newest server and let it die, as the kill makes it do.
@@ -553,6 +555,7 @@ describe('LlmManager lost GPU', () => {
     expect(t.logs).toContain('local LLM lost its GPU — restarting in 10s (1/3 within 60 minutes)');
     expect(t.logs.some((l) => /code null/.test(l))).toBe(false);
     expect(t.stopped).not.toHaveBeenCalled();
+    expect(t.gpuLost).not.toHaveBeenCalled();
   });
 
   test('a request that never logs its end still lets mining resume', async () => {
@@ -626,6 +629,11 @@ describe('LlmManager lost GPU', () => {
     expect(t.stopped).toHaveBeenCalledTimes(1);
     expect(t.m.isRunning()).toBe(false);
     expect(t.logs).toContain('local LLM lost its GPU 3 times in 60 minutes — giving up. See Logs.');
+    // Said apart from 'stopped', and before it, so the shell can remember the
+    // card before it reacts to the stop: the next start forgets these losses.
+    expect(t.gpuLost).toHaveBeenCalledTimes(1);
+    expect(t.gpuLost).toHaveBeenCalledWith({ losses: 3 });
+    expect(t.gpuLost.mock.invocationCallOrder[0]).toBeLessThan(t.stopped.mock.invocationCallOrder[0]);
   });
 
   test('losses more than an hour apart keep restarting', async () => {
@@ -658,6 +666,7 @@ describe('LlmManager lost GPU', () => {
     t.m.start({ modelPath: '/m.gguf' });
     await lose(t);
     expect(t.stopped).toHaveBeenCalledTimes(1); // the user's stop, not a give-up
+    expect(t.gpuLost).not.toHaveBeenCalled();
     expect(t.m.isRunning()).toBe(true);
   });
 });
