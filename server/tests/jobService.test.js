@@ -464,7 +464,7 @@ describe('JobService', () => {
 
     it('ignores a stale measurement rather than gating on it', async () => {
       await addNode('rusty', 1); // slow enough to gate everything…
-      await db.query('UPDATE nodes SET speed_at = $1 WHERE node_id = $2', [Date.now() - 7 * 60 * 60 * 1000, 'rusty']);
+      await db.query('UPDATE nodes SET speed_at = $1 WHERE node_id = $2', [Date.now() - 25 * 60 * 60 * 1000, 'rusty']);
       await jobService.createJob({ prompt: 'long', maxTokens: 6400, userId: 'u' });
       // …but the figure describes hardware that may not be there any more.
       expect(await jobService.assignJobsToNode('rusty', 5)).toHaveLength(1);

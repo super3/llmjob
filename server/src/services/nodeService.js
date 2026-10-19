@@ -11,7 +11,10 @@ const SPEED_ALPHA = 0.3;
 // A measurement older than this is treated as unknown: a node that has been idle
 // this long may have swapped cards, changed models, or started co-running the
 // miner, and the stale figure would gate it on evidence that no longer holds.
-const SPEED_STALE_MS = 6 * 60 * 60 * 1000;
+// A day, because that is also how often benchmarkService re-measures an idle
+// node: any shorter and an idle node would show as unmeasured for most of the
+// day between its benchmarks.
+const SPEED_STALE_MS = 24 * 60 * 60 * 1000;
 // Discard a sample claiming more than this. The token count comes from the node's
 // own final-chunk metrics, and the rate now decides which jobs it is offered — so
 // over-reporting tokens is a way to attract longer work than the hardware can

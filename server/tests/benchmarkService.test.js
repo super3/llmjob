@@ -45,7 +45,7 @@ describe('BenchmarkService', () => {
   });
 
   it('re-benchmarks a node whose measurement went stale, without the warm-up flag', async () => {
-    await seedNode(db, 'stale1', { tps: 30, samples: 5, speedAt: Date.now() - 7 * HOUR });
+    await seedNode(db, 'stale1', { tps: 30, samples: 5, speedAt: Date.now() - 25 * HOUR });
 
     expect(await svc.sweep()).toEqual(['stale1']);
 
@@ -58,6 +58,15 @@ describe('BenchmarkService', () => {
     await seedNode(db, 'fresh1', { tps: 40, samples: 9, speedAt: Date.now() });
     expect(await svc.sweep()).toEqual([]);
     expect((await db.query('SELECT id FROM jobs', [])).rows).toHaveLength(0);
+  });
+
+  it('re-measures a node once a day, not sooner', async () => {
+    expect(BenchmarkService.BENCH_INTERVAL_MS).toBe(24 * HOUR);
+    // The measurement lasts exactly as long, so a node is re-measured as its
+    // speed goes stale rather than sitting unmeasured in between.
+    expect(BenchmarkService.BENCH_INTERVAL_MS).toBe(NodeService.SPEED_STALE_MS);
+    await seedNode(db, 'day1', { tps: 30, samples: 5, speedAt: Date.now() - 23 * HOUR });
+    expect(await svc.sweep()).toEqual([]);
   });
 
   it('ignores a node that has gone offline', async () => {
@@ -75,26 +84,59 @@ describe('BenchmarkService', () => {
     expect((await db.query('SELECT id FROM jobs', [])).rows).toHaveLength(1);
   });
 
-  it('re-benchmarks once an in-flight one has aged out', async () => {
+  it('waits a day after a benchmark that failed', async () => {
+    // The reported case: the node's GPU had dropped out from under llama-server,
+    // so every benchmark failed, no speed was recorded, and each 5-minute sweep
+    // sent another one, pausing the node's miner every time.
+    await seedNode(db, 'lost01');
+    expect(await svc.sweep()).toEqual(['lost01']);
+    const [job] = await jobs.assignJobsToNode('lost01', 1);
+    await jobs.failJob(job.id, 'lost01', 'llama-server HTTP 500', job.lockToken);
+    expect((await db.query('SELECT status FROM jobs', [])).rows[0].status).toBe('failed');
+
+    expect(await svc.sweep()).toEqual([]);
+    expect((await db.query('SELECT id FROM jobs', [])).rows).toHaveLength(1);
+
+    // A day on, it gets one more try.
+    await db.query('UPDATE jobs SET created_at = $1', [Date.now() - BenchmarkService.BENCH_INTERVAL_MS - 1000]);
+    expect(await svc.sweep()).toEqual(['lost01']);
+  });
+
+  it('tries again soon after a benchmark nobody picked up', async () => {
+    // A linked app pings before its model is up, so the first benchmark often
+    // expires unclaimed. It never ran, so it doesn't use up the day.
     await seedNode(db, 'cold01');
     await svc.sweep();
-    // Push the existing benchmark past its TTL: it is never coming back, so the
-    // node is unmeasured again and deserves another go.
-    await db.query('UPDATE jobs SET created_at = $1', [Date.now() - 2 * BenchmarkService.BENCH_TTL_MS]);
+    await db.query('UPDATE jobs SET created_at = $1', [Date.now() - 10 * 60 * 1000]);
+    await jobs.expireStalePending();
+    expect((await db.query('SELECT status FROM jobs', [])).rows[0].status).toBe('failed');
     expect(await svc.sweep()).toEqual(['cold01']);
   });
 
-  it('re-measures a node that admission control has gated', async () => {
-    // The safety net, and previously a no-op in exactly the case it exists for: a
-    // gated node gets no jobs, so it earns no passive samples, so speed_at freezes
-    // at the reading that gated it — recent, therefore never "stale". The node
-    // stayed dark for a full six hours on one measurement.
-    await seedNode(db, 'gated1', { tps: 4, samples: 3, speedAt: Date.now() - 31 * 60 * 1000 });
-    expect(await svc.sweep()).toEqual(['gated1']);
+  it('still waits a day after one that was picked up, timed out and expired', async () => {
+    // It ran (and paused the miner) before the node went quiet, so it counts.
+    await seedNode(db, 'hung01');
+    await svc.sweep();
+    await jobs.assignJobsToNode('hung01', 1);
+    await db.query('UPDATE jobs SET lock_expires_at = $1', [Date.now() - 1000]);
+    await jobs.checkTimeouts();
+    await db.query('UPDATE jobs SET created_at = $1', [Date.now() - 10 * 60 * 1000]);
+    await jobs.expireStalePending();
+    expect((await db.query('SELECT status FROM jobs', [])).rows[0].status).toBe('failed');
+    expect(await svc.sweep()).toEqual([]);
   });
 
-  it('leaves a gated node alone until the recheck window passes', async () => {
-    await seedNode(db, 'gated2', { tps: 4, samples: 3, speedAt: Date.now() });
+  it('does not count a request the caller pinned to the node as a benchmark', async () => {
+    await seedNode(db, 'pin01');
+    // X-LLMJob-Node pins a real request to one node; that is not a measurement.
+    await jobs.createJob({ prompt: 'hi', targetNode: 'pin01', userId: 'u' });
+    expect(await svc.sweep()).toEqual(['pin01']);
+  });
+
+  it('leaves a gated node for the daily re-measure like any other', async () => {
+    // It used to be re-measured every 30 minutes. Each one paused its miner, and
+    // the network carries too little traffic to be worth that.
+    await seedNode(db, 'gated1', { tps: 4, samples: 3, speedAt: Date.now() - 31 * 60 * 1000 });
     expect(await svc.sweep()).toEqual([]);
   });
 

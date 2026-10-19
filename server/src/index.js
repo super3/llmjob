@@ -154,10 +154,11 @@ async function startServer() {
     }, 30000);
 
     // Measure any node we can't currently vouch for — never benchmarked, or
-    // benchmarked too long ago to trust. Runs every 5 minutes rather than
+    // benchmarked more than a day ago. Runs every 5 minutes rather than
     // continuously because it only ever has work right after a node joins or a
     // measurement ages out; nodes carrying real traffic re-measure themselves on
-    // every completed job and never appear here.
+    // every completed job and never appear here. A node gets at most one
+    // benchmark a day, even when the last one failed (see BenchmarkService).
     const benchmarkService = new BenchmarkService(db);
     const benchmarkInterval = setInterval(async () => {
       try {

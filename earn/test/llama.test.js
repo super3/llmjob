@@ -254,6 +254,37 @@ describe('parseSlotEvent', () => {
   });
 });
 
+describe('isDeviceLost', () => {
+  const { isDeviceLost } = require('../src/shared/llama');
+
+  // As the pinned build (b9902) prints them, with the log's timestamp, from a
+  // node whose card dropped out from under it. If an upgrade rewords them, these
+  // fail, rather than the node going back to failing every job.
+  test('reads both shapes of a lost GPU from the pinned build', () => {
+    expect(isDeviceLost('4.55.314.438 E srv  update_slots: decode() failed: vk::Device::waitForFences: ErrorDeviceLost')).toBe(true);
+    expect(isDeviceLost('9.52.225.242 E slot      iterate: id  0 | task 14 | got exception: vk::Queue::submit: ErrorDeviceLost')).toBe(true);
+    // Without the timestamp, with a trailing carriage return, and from the
+    // other calls the same error can come out of.
+    expect(isDeviceLost('E srv  update_slots: decode() failed: vk::Device::waitForFences: ErrorDeviceLost\r')).toBe(true);
+    expect(isDeviceLost('srv  update_slots: post_decode() failed: vk::Device::getFenceStatus: ErrorDeviceLost')).toBe(true);
+    expect(isDeviceLost('121.03.000.001 E srv  update_slots: pre_decode() failed: vk::Device::waitSemaphores: ErrorDeviceLost')).toBe(true);
+  });
+
+  test('ignores a card that ran out of memory, and lines that only repeat or quote the error', () => {
+    // Out of memory is a sizing problem with its own handling, not a lost card.
+    expect(isDeviceLost('ggml_vulkan: vk::Device::allocateMemory: ErrorOutOfDeviceMemory')).toBe(false);
+    expect(isDeviceLost('E srv  update_slots: decode() failed: vk::Device::allocateMemory: ErrorOutOfDeviceMemory')).toBe(false);
+    expect(isDeviceLost('0.10.213.478 E alloc_tensor_range: failed to allocate Vulkan0 buffer of size 1060214272')).toBe(false);
+    // The line after the real one repeats it; one is enough.
+    expect(isDeviceLost('4.55.314.461 E srv    send_error: task id = 0, error: decode() failed: vk::Device::waitForFences: ErrorDeviceLost')).toBe(false);
+    // A request echoed into the log can carry any text.
+    expect(isDeviceLost('W srv    operator(): got exception: {"error":"decode() failed: vk::Device::waitForFences: ErrorDeviceLost"}')).toBe(false);
+    expect(isDeviceLost('srv  update_slots: decode() failed: vk::Device::waitForFences: ErrorDeviceLost and more')).toBe(false);
+    expect(isDeviceLost('')).toBe(false);
+    expect(isDeviceLost(null)).toBe(false);
+  });
+});
+
 describe('parseDeviceList', () => {
   const { parseDeviceList } = require('../src/shared/llama');
 

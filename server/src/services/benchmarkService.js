@@ -12,6 +12,14 @@ const NodeService = require('./nodeService');
 // forever, since an unmeasured node is served permissively and a gated one would
 // never earn a fresh sample on its own.
 //
+// A benchmark is not free for the node: on a card that also mines, the app
+// pauses mining while any prompt runs, this one included. So a node gets one
+// when it first shows up, then at most one a day (BENCH_INTERVAL_MS), whatever
+// became of the last one. That last part matters. A node whose benchmark failed
+// (its GPU had dropped out from under llama-server) recorded no speed, so every
+// 5-minute sweep sent it another, and its miner paused every 5 minutes for a
+// test that could never pass.
+//
 // It rides entirely on machinery that already exists: a benchmark is an ordinary
 // job pinned to one node with `target_node`, which is why none of this needs a
 // client release. The prompt and the budget below can be changed in a deploy.
@@ -34,21 +42,15 @@ const BENCH_MAX_TOKENS = 1024;
 // Benchmarks run at negative priority so they always queue behind real traffic —
 // measuring the fleet must never delay serving it.
 const BENCH_PRIORITY = -1;
-// Give a benchmark this long to come back before we conclude it isn't going to and
-// allow another. Comfortably over the gateway budget, so a slow-but-working node
-// isn't re-benchmarked while its first one is still running.
-const BENCH_TTL_MS = 6 * 60 * 1000;
+// The most often one node is benchmarked: once a day. The same span as a
+// measurement stays trusted, so a node is re-measured as its speed goes stale.
+// It is also the window in which an earlier benchmark, passed or not, counts —
+// which relies on jobService.cleanupOldJobs keeping finished jobs at least this
+// long (it keeps them a day).
+const BENCH_INTERVAL_MS = NodeService.SPEED_STALE_MS;
 // Cap per sweep so a fleet that all goes stale at once (a redeploy, a long quiet
 // weekend) doesn't flood the queue with benchmarks ahead of real work.
 const MAX_PER_SWEEP = 5;
-// A node measured below this is being held back by admission control (it can't
-// produce a typical reply inside the gateway budget), so it earns no passive
-// samples and can never argue its way back on its own.
-const GATED_TPS = JobService.TYPICAL_TOKENS / 224;
-// How often to re-measure one. Far shorter than SPEED_STALE_MS: a gated node is
-// contributing nothing, so the cost of asking again is a few seconds of GPU and
-// the cost of not asking is a card sitting idle for six hours.
-const GATED_RECHECK_MS = 30 * 60 * 1000;
 
 class BenchmarkService {
   constructor(db, opts = {}) {
@@ -59,18 +61,14 @@ class BenchmarkService {
     this.maxPerSweep = opts.maxPerSweep || MAX_PER_SWEEP;
   }
 
-  // Nodes online right now whose speed we can't vouch for: never measured,
-  // measured too long ago to trust, or measured slow enough that assignment is
-  // now withholding work from them.
+  // Nodes online right now whose speed we can't vouch for: never measured, or
+  // measured longer ago than BENCH_INTERVAL_MS.
   //
-  // That last case is the safety net, and without it this sweeper was a no-op in
-  // exactly the situation it exists for. A gated node receives no jobs, so it
-  // produces no passive samples, so `speed_at` freezes at the moment of the
-  // reading that gated it — and a frozen-but-recent timestamp does not match
-  // "stale". The node stayed dark for the full six hours on the strength of one
-  // measurement, whether that measurement was unlucky, taken while the miner was
-  // co-running, or hostile. Re-measuring gated nodes on a much shorter cycle is
-  // what makes the gate recoverable rather than a one-way door.
+  // A node held back by admission control waits for the same daily re-measure
+  // as any other. It used to be re-measured every 30 minutes, since a gated node
+  // gets no jobs and so never earns a sample on its own. A day is a long time
+  // for a card to sit out, but the network carries little traffic, and each
+  // re-measure paused that node's miner.
   //
   // Ordered oldest-first so the least-known node is served by the sweep cap
   // rather than whichever row Postgres returned first.
@@ -79,23 +77,33 @@ class BenchmarkService {
     const r = await this.db.query(
       `SELECT node_id, speed_at, speed_samples FROM nodes
        WHERE last_seen >= $1
-         AND (speed_at IS NULL
-              OR speed_at < $2
-              OR (measured_tps IS NOT NULL AND measured_tps < $3 AND speed_at < $4))
+         AND (speed_at IS NULL OR speed_at < $2)
        ORDER BY speed_at ASC NULLS FIRST`,
-      [now - 15 * 60 * 1000, now - NodeService.SPEED_STALE_MS, GATED_TPS, now - GATED_RECHECK_MS]
+      [now - 15 * 60 * 1000, now - BENCH_INTERVAL_MS]
     );
     return r.rows;
   }
 
-  // Benchmarks already in flight for these nodes, so a sweep doesn't queue a
-  // second one behind the first — the sweeper runs far more often than a
-  // benchmark takes to come back.
-  async _inFlight() {
+  // Nodes that had a benchmark inside the interval: one still queued, or one
+  // the node picked up, whatever became of it after that (passed, failed, or
+  // timed out). A pass already shows in speed_at. The others leave speed_at as
+  // it was, which is why this looks at the jobs themselves: without it a node
+  // whose benchmark failed was due again on the very next sweep.
+  //
+  // One that expired with nobody picking it up doesn't count. A linked app
+  // pings before its model is up (a first download takes a while), so the
+  // first benchmark often expires unclaimed, and counting it would leave the
+  // node unmeasured for its first day. It never ran, so it never paused a
+  // miner either. `assignedAt` marks a pickup and survives a timeout requeue.
+  //
+  // By the benchmark flag, not just target_node, since a caller can pin its own
+  // request to a node (X-LLMJob-Node) and that is not a benchmark.
+  async _recentlyBenchmarked() {
     const r = await this.db.query(
-      `SELECT target_node FROM jobs
-       WHERE status IN ('pending', 'assigned', 'running') AND target_node IS NOT NULL AND created_at >= $1`,
-      [this.now() - BENCH_TTL_MS]
+      `SELECT DISTINCT target_node FROM jobs
+       WHERE target_node IS NOT NULL AND created_at >= $1 AND data->>'benchmark' = 'true'
+         AND (status <> 'failed' OR data->>'assignedAt' IS NOT NULL)`,
+      [this.now() - BENCH_INTERVAL_MS]
     );
     return new Set(r.rows.map((row) => row.target_node));
   }
@@ -105,12 +113,12 @@ class BenchmarkService {
   async sweep() {
     const due = await this._needBenchmark();
     if (!due.length) return [];
-    const busy = await this._inFlight();
+    const recent = await this._recentlyBenchmarked();
 
     const queued = [];
     for (const row of due) {
       if (queued.length >= this.maxPerSweep) break;
-      if (busy.has(row.node_id)) continue;
+      if (recent.has(row.node_id)) continue;
       await this.jobs.createJob({
         prompt: BENCH_PROMPT,
         messages: [{ role: 'user', content: BENCH_PROMPT }],
@@ -132,8 +140,6 @@ class BenchmarkService {
 
 BenchmarkService.BENCH_PROMPT = BENCH_PROMPT;
 BenchmarkService.BENCH_MAX_TOKENS = BENCH_MAX_TOKENS;
-BenchmarkService.BENCH_TTL_MS = BENCH_TTL_MS;
-BenchmarkService.GATED_TPS = GATED_TPS;
-BenchmarkService.GATED_RECHECK_MS = GATED_RECHECK_MS;
+BenchmarkService.BENCH_INTERVAL_MS = BENCH_INTERVAL_MS;
 
 module.exports = BenchmarkService;

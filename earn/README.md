@@ -601,6 +601,18 @@ and tries again every 30 s. Demand-driven
 `auto` is unchanged: there the miner already stops for as long as the model
 serves.
 
+**The LLM restarts when the GPU drops out** — if the driver resets or loses
+the card, `llama-server` logs `ErrorDeviceLost` and keeps running, but fails
+every request after that. When the app sees that line during a request, it
+stops `llama-server` and starts a fresh one 10 s later, which gets the card
+back. The request that hit the error fails, even one already streaming its
+answer, so a cluster job is reported as failed, not done. If that happens 3 times within an hour, it stops the LLM and says so in
+the log. This covers the Vulkan build the app uses on Windows and Linux.
+
+A `llama-server` that exits on its own after it was serving also restarts,
+after 2 s, then 4 s, and so on. If it keeps dying within 5 minutes of coming
+up, the app stops after 5 restarts.
+
 `llama-server` comes from a llama.cpp release, a `.tar.gz` on Linux. The CLI
 extracts it with `tar` into the same `llm/` dir, so the binary sits next to its
 shared libraries. To skip the download, or pin your own build, pass
@@ -644,6 +656,13 @@ result back in chunks (`POST /api/jobs/:id/chunks` → `…/complete`). Every ca
 **outbound** and signed with the node key, so a GPU behind NAT or a provider
 network is reachable through the shared API without opening a port or exposing
 `127.0.0.1:8080`. Stop serving by stopping the LLM or disconnecting.
+
+The server also tests each node's speed, so it knows which jobs the node can
+finish in time. A speed test is an ordinary cluster job pinned to that node,
+so the log shows it as `cluster job … running locally`, and on a card that
+also mines it pauses mining like any other prompt. A node gets one when it
+first serves, then at most one a day, whether the last one passed or failed.
+Real jobs keep a busy node's speed current without any test.
 
 ### Standalone binary + self-update
 

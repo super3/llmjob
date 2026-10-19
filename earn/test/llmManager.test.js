@@ -463,3 +463,174 @@ describe('LlmManager busy (a prompt is running)', () => {
     expect(busy).toEqual([]);
   });
 });
+
+// The card dropped out from under llama-server. It stays up and fails every
+// request after that, so we kill it and start a fresh one. From a node that
+// failed every job sent to it, pausing mining for each one.
+describe('LlmManager lost GPU', () => {
+  const READY = 'srv  llama_server: model loaded\n';
+  const START = 'slot launch_slot_: id  0 | task 0 | processing task, is_child = 0\n';
+  const LOST = '4.55.314.438 E srv  update_slots: decode() failed: vk::Device::waitForFences: ErrorDeviceLost\n';
+  const REPEAT = '4.55.314.461 E srv    send_error: task id = 0, error: decode() failed: vk::Device::waitForFences: ErrorDeviceLost\n';
+  const END = 'slot      release: id  0 | task 0 | stop processing: n_tokens = 106, truncated = 0\n';
+  const NEXT = '9.52.225.242 E slot      iterate: id  0 | task 14 | got exception: vk::Queue::submit: ErrorDeviceLost\n';
+  const flush = () => new Promise((r) => setImmediate(r));
+
+  function serving(opts = {}) {
+    const children = [];
+    const spawn = jest.fn(() => { const c = makeChild(); children.push(c); return c; });
+    const waits = [];
+    const m = new LlmManager({
+      spawn, sleep: (ms) => { waits.push(ms); return Promise.resolve(); }, retryDelayMs: 1, ...opts,
+    });
+    const logs = [];
+    const busy = [];
+    const stopped = jest.fn();
+    const crashed = jest.fn();
+    m.on('log', (l) => logs.push(l.line));
+    m.on('busy', (b) => busy.push(b));
+    m.on('stopped', stopped);
+    m.on('crashed', crashed);
+    m.start({ modelPath: '/m.gguf' });
+    children[0].stderr.emit('data', READY);
+    return { m, spawn, children, waits, logs, busy, stopped, crashed };
+  }
+
+  // Lose the GPU on the newest server and let it die, as the kill makes it do.
+  async function lose(t) {
+    const c = t.children[t.children.length - 1];
+    c.stderr.emit('data', READY + START + LOST);
+    c.emit('exit', null);
+    await flush();
+  }
+
+  test('kills the server once and starts a fresh one, after a pause for the driver', async () => {
+    const t = serving();
+    const c = t.children[0];
+    c.stderr.emit('data', START + LOST + REPEAT + END);
+    expect(c.kill).toHaveBeenCalledTimes(1);
+    expect(c.kill).toHaveBeenCalledWith('SIGKILL');
+    // Every request after the first logs it again. One kill is enough.
+    c.stderr.emit('data', START + NEXT);
+    expect(c.kill).toHaveBeenCalledTimes(1);
+    expect(t.logs).toContain('local LLM lost its GPU (the driver reset or dropped the card) — stopping llama-server');
+
+    c.emit('exit', null);
+    await flush();
+    expect(t.spawn).toHaveBeenCalledTimes(2);
+    // A driver reset takes a few seconds; starting sooner can find no card.
+    expect(t.waits).toEqual([10000]);
+    expect(t.crashed).toHaveBeenCalledWith(expect.objectContaining({ restartInMs: 10000, attempt: 1 }));
+    // A killed process's exit code says nothing, so the log says what happened,
+    // and counts against the cap that applies.
+    expect(t.logs).toContain('local LLM lost its GPU — restarting in 10s (1/3 within 60 minutes)');
+    expect(t.logs.some((l) => /code null/.test(l))).toBe(false);
+    expect(t.stopped).not.toHaveBeenCalled();
+  });
+
+  test('a request that never logs its end still lets mining resume', async () => {
+    const t = serving();
+    t.children[0].stderr.emit('data', START + NEXT);
+    expect(t.children[0].kill).toHaveBeenCalledWith('SIGKILL');
+    t.children[0].emit('exit', null);
+    await flush();
+    expect(t.busy).toEqual([true, false]);
+  });
+
+  test('the error split across two chunks still counts', () => {
+    const t = serving();
+    t.children[0].stderr.emit('data', START + LOST.slice(0, 40));
+    expect(t.children[0].kill).not.toHaveBeenCalled();
+    t.children[0].stderr.emit('data', LOST.slice(40));
+    expect(t.children[0].kill).toHaveBeenCalledWith('SIGKILL');
+  });
+
+  test('ignores the error when no request is running', () => {
+    // It comes from a running request. Outside one, it is only text the server
+    // printed, such as a request echoed into the log.
+    const t = serving();
+    t.children[0].stderr.emit('data', LOST);
+    expect(t.children[0].kill).not.toHaveBeenCalled();
+  });
+
+  test('leaves a server we are already stopping alone', () => {
+    const t = serving();
+    t.children[0].stderr.emit('data', START);
+    t.m.stop();
+    t.children[0].stderr.emit('data', LOST);
+    expect(t.children[0].kill).toHaveBeenCalledTimes(1);
+    expect(t.children[0].kill).not.toHaveBeenCalledWith('SIGKILL');
+  });
+
+  test('a late line from a server that already exited does not kill its replacement', async () => {
+    const t = serving();
+    t.children[0].emit('exit', 1);
+    await flush();
+    t.children[1].stderr.emit('data', READY + START);
+    t.children[0].stderr.emit('data', LOST);
+    expect(t.children[0].kill).not.toHaveBeenCalled();
+    expect(t.children[1].kill).not.toHaveBeenCalled();
+    // And an ordinary crash of the replacement is still reported as one.
+    t.children[1].emit('exit', 1);
+    await flush();
+    expect(t.logs).toContain('local LLM crashed (code 1) after serving — restarting in 0s (2/5)');
+  });
+
+  test('a slower crash backoff wins over the pause for the driver', async () => {
+    const t = serving({ retryDelayMs: 20000 });
+    await lose(t);
+    expect(t.waits).toEqual([20000]);
+  });
+
+  test('gives up after three lost GPUs in an hour, and says so', async () => {
+    let now = 0;
+    const t = serving({ now: () => now });
+    await lose(t);
+    now += 20 * 60 * 1000;
+    await lose(t);
+    expect(t.spawn).toHaveBeenCalledTimes(3);
+    expect(t.logs).toContain('local LLM lost its GPU — restarting in 10s (2/3 within 60 minutes)');
+    now += 20 * 60 * 1000;
+    await lose(t);
+    // A card that keeps losing its GPU would otherwise reload the model for
+    // every request, forever: it can sit idle between losses for longer than
+    // the crash tally waits before it forgives.
+    expect(t.spawn).toHaveBeenCalledTimes(3);
+    expect(t.stopped).toHaveBeenCalledTimes(1);
+    expect(t.m.isRunning()).toBe(false);
+    expect(t.logs).toContain('local LLM lost its GPU 3 times in 60 minutes — giving up. See Logs.');
+  });
+
+  test('losses more than an hour apart keep restarting', async () => {
+    let now = 0;
+    const t = serving({ now: () => now });
+    for (let i = 0; i < 4; i++) {
+      await lose(t);
+      now += 61 * 60 * 1000;
+    }
+    expect(t.spawn).toHaveBeenCalledTimes(5);
+    expect(t.stopped).not.toHaveBeenCalled();
+  });
+
+  test('the window and the pause can be set', async () => {
+    let now = 0;
+    const t = serving({ now: () => now, gpuLossLimit: 2, gpuLossWindowMs: 10 * 60 * 1000, gpuLossRestartMs: 3000 });
+    await lose(t);
+    now += 11 * 60 * 1000;
+    await lose(t);
+    expect(t.stopped).not.toHaveBeenCalled();
+    expect(t.waits).toEqual([3000, 3000]);
+  });
+
+  test('a fresh start forgets earlier losses', async () => {
+    const t = serving({ gpuLossLimit: 2 });
+    await lose(t);
+    t.m.stop();
+    t.children[1].emit('exit', 0);
+    await flush();
+    t.m.start({ modelPath: '/m.gguf' });
+    await lose(t);
+    expect(t.stopped).toHaveBeenCalledTimes(1); // the user's stop, not a give-up
+    expect(t.m.isRunning()).toBe(true);
+  });
+});
