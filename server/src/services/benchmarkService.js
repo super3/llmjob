@@ -84,18 +84,25 @@ class BenchmarkService {
     return r.rows;
   }
 
-  // Nodes that had a benchmark inside the interval, whatever became of it:
-  // still queued or running, passed, failed, or expired with nobody picking it
-  // up. A pass already shows in speed_at. The others leave speed_at as it was,
-  // which is why this looks at the jobs themselves: without it a node whose
-  // benchmark failed was due again on the very next sweep.
+  // Nodes that had a benchmark inside the interval: one still queued, or one
+  // the node picked up, whatever became of it after that (passed, failed, or
+  // timed out). A pass already shows in speed_at. The others leave speed_at as
+  // it was, which is why this looks at the jobs themselves: without it a node
+  // whose benchmark failed was due again on the very next sweep.
+  //
+  // One that expired with nobody picking it up doesn't count. A linked app
+  // pings before its model is up (a first download takes a while), so the
+  // first benchmark often expires unclaimed, and counting it would leave the
+  // node unmeasured for its first day. It never ran, so it never paused a
+  // miner either. `assignedAt` marks a pickup and survives a timeout requeue.
   //
   // By the benchmark flag, not just target_node, since a caller can pin its own
   // request to a node (X-LLMJob-Node) and that is not a benchmark.
   async _recentlyBenchmarked() {
     const r = await this.db.query(
       `SELECT DISTINCT target_node FROM jobs
-       WHERE target_node IS NOT NULL AND created_at >= $1 AND data->>'benchmark' = 'true'`,
+       WHERE target_node IS NOT NULL AND created_at >= $1 AND data->>'benchmark' = 'true'
+         AND (status <> 'failed' OR data->>'assignedAt' IS NOT NULL)`,
       [this.now() - BENCH_INTERVAL_MS]
     );
     return new Set(r.rows.map((row) => row.target_node));

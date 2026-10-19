@@ -179,12 +179,14 @@ function parseSlotEvent(line) {
 }
 
 // The GPU dropped out from under a running llama-server: the driver reset the
-// card, or lost it. The Vulkan build (the only one the app ships) throws
-// vk::DeviceLostError, and the server catches it per request, logs it, answers
-// HTTP 500 and carries on. It never recovers in-process (ggml-vulkan keeps one
-// device for the life of the process), so from then on every request fails
-// while /health still says ok. Only a new process gets the card back. The lines
-// (b9902, tools/server/server-context.cpp, after the log's timestamp) are:
+// card, or lost it. The Vulkan build (what the app ships on Windows and Linux)
+// throws vk::DeviceLostError, and the server catches it per request, logs it,
+// fails the request (a 500, or an error at the end of a reply that was already
+// streaming) and carries on. It never recovers in-process (ggml-vulkan keeps
+// one device for the life of the process), so from then on every request fails
+// while /health still says ok. Only a new process gets the card back. The
+// macOS Metal build reports a lost GPU differently and isn't covered here. The
+// lines (b9902, tools/server/server-context.cpp, after the log's timestamp) are:
 //
 //   E srv  update_slots: decode() failed: vk::Device::waitForFences: ErrorDeviceLost
 //   E slot      iterate: id  0 | task 14 | got exception: vk::Queue::submit: ErrorDeviceLost

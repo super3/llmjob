@@ -606,9 +606,11 @@ the card, `llama-server` logs `ErrorDeviceLost` and keeps running, but fails
 every request after that. When the app sees that line during a request, it
 stops `llama-server` and starts a fresh one 10 s later, which gets the card
 back. If that happens 3 times within an hour, it stops the LLM and says so in
-the log. A `llama-server` that exits on its own after it was
-serving is also restarted, after 2 s, then 4 s, and so on, and after 5 crashes
-in a row, less than 5 minutes apart, the app stops trying.
+the log. This covers the Vulkan build the app uses on Windows and Linux.
+
+A `llama-server` that exits on its own after it was serving also restarts,
+after 2 s, then 4 s, and so on. If it keeps dying within 5 minutes of coming
+up, the app stops after 5 restarts.
 
 `llama-server` comes from a llama.cpp release, a `.tar.gz` on Linux. The CLI
 extracts it with `tar` into the same `llm/` dir, so the binary sits next to its

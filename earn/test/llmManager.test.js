@@ -521,8 +521,9 @@ describe('LlmManager lost GPU', () => {
     // A driver reset takes a few seconds; starting sooner can find no card.
     expect(t.waits).toEqual([10000]);
     expect(t.crashed).toHaveBeenCalledWith(expect.objectContaining({ restartInMs: 10000, attempt: 1 }));
-    // A killed process's exit code says nothing, so the log says what happened.
-    expect(t.logs).toContain('local LLM lost its GPU — restarting in 10s (1/5)');
+    // A killed process's exit code says nothing, so the log says what happened,
+    // and counts against the cap that applies.
+    expect(t.logs).toContain('local LLM lost its GPU — restarting in 10s (1/3 within 60 minutes)');
     expect(t.logs.some((l) => /code null/.test(l))).toBe(false);
     expect(t.stopped).not.toHaveBeenCalled();
   });
@@ -588,6 +589,7 @@ describe('LlmManager lost GPU', () => {
     now += 20 * 60 * 1000;
     await lose(t);
     expect(t.spawn).toHaveBeenCalledTimes(3);
+    expect(t.logs).toContain('local LLM lost its GPU — restarting in 10s (2/3 within 60 minutes)');
     now += 20 * 60 * 1000;
     await lose(t);
     // A card that keeps losing its GPU would otherwise reload the model for

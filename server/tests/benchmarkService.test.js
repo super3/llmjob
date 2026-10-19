@@ -102,12 +102,25 @@ describe('BenchmarkService', () => {
     expect(await svc.sweep()).toEqual(['lost01']);
   });
 
-  it('waits a day after a benchmark nobody picked up', async () => {
+  it('tries again soon after a benchmark nobody picked up', async () => {
+    // A linked app pings before its model is up, so the first benchmark often
+    // expires unclaimed. It never ran, so it doesn't use up the day.
     await seedNode(db, 'cold01');
     await svc.sweep();
-    // Expired unclaimed: it is never coming back, but it still counts as this
-    // day's try.
-    await db.query('UPDATE jobs SET created_at = $1', [Date.now() - HOUR]);
+    await db.query('UPDATE jobs SET created_at = $1', [Date.now() - 10 * 60 * 1000]);
+    await jobs.expireStalePending();
+    expect((await db.query('SELECT status FROM jobs', [])).rows[0].status).toBe('failed');
+    expect(await svc.sweep()).toEqual(['cold01']);
+  });
+
+  it('still waits a day after one that was picked up, timed out and expired', async () => {
+    // It ran (and paused the miner) before the node went quiet, so it counts.
+    await seedNode(db, 'hung01');
+    await svc.sweep();
+    await jobs.assignJobsToNode('hung01', 1);
+    await db.query('UPDATE jobs SET lock_expires_at = $1', [Date.now() - 1000]);
+    await jobs.checkTimeouts();
+    await db.query('UPDATE jobs SET created_at = $1', [Date.now() - 10 * 60 * 1000]);
     await jobs.expireStalePending();
     expect((await db.query('SELECT status FROM jobs', [])).rows[0].status).toBe('failed');
     expect(await svc.sweep()).toEqual([]);

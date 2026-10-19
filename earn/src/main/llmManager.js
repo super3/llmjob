@@ -32,8 +32,8 @@ const {
 // `crashSettleMs` counts as recovered and clears the tally.
 //
 // A lost GPU is a crash that llama-server doesn't notice. When the driver resets
-// or drops the card, the server logs the error, answers that request with a 500
-// and stays up, failing every request after it while /health still says ok
+// or drops the card, the server logs the error, fails that request and stays
+// up, failing every request after it while /health still says ok
 // (see llama.isDeviceLost). In the field that was a node failing every job sent
 // to it, with mining pausing for each one. So we kill it and let the crash path
 // above bring up a fresh one, which gets the card back. That restart waits at
@@ -215,9 +215,13 @@ class LlmManager extends EventEmitter {
         // doesn't spin the GPU, while a one-off comes back in seconds.
         const wait = Math.max(this.retryDelayMs * this._crashes, gpuLost ? this.gpuLossRestartMs : 0);
         // The exit code of a process we killed says nothing, so a lost GPU says
-        // what happened instead.
-        const what = gpuLost ? 'lost its GPU' : 'crashed (code ' + code + ') after serving';
-        this.emit('log', { level: 'error', line: 'local LLM ' + what + ' — restarting in ' + Math.round(wait / 1000) + 's (' + this._crashes + '/' + this.crashRestarts + ')' });
+        // what happened instead, and counts against its own cap.
+        const what = gpuLost
+          ? 'lost its GPU — restarting in ' + Math.round(wait / 1000) + 's (' + this._gpuLosses.length + '/'
+            + this.gpuLossLimit + ' within ' + Math.round(this.gpuLossWindowMs / 60000) + ' minutes)'
+          : 'crashed (code ' + code + ') after serving — restarting in ' + Math.round(wait / 1000) + 's ('
+            + this._crashes + '/' + this.crashRestarts + ')';
+        this.emit('log', { level: 'error', line: 'local LLM ' + what });
         // Distinct from 'stopped', which means the LLM is gone for good. This says
         // "down, coming back": the fleet must stop offering this instance to the
         // cluster now, or it keeps advertising a model that isn't listening and
