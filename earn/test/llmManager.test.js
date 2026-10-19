@@ -253,6 +253,33 @@ describe('LlmManager', () => {
     expect(stopped).toHaveBeenCalledWith(0);
   });
 
+  test('a stop between a crash and its restart says stopped at once, and spawns nothing', async () => {
+    const children = [];
+    const spawn = jest.fn(() => { const c = makeChild(); children.push(c); return c; });
+    let wake;
+    const m = new LlmManager({ spawn, sleep: () => new Promise((r) => { wake = r; }), retryDelayMs: 1 });
+    const stopped = jest.fn();
+    m.on('stopped', stopped);
+
+    m.start({ modelPath: '/m.gguf' });
+    children[0].stderr.emit('data', 'srv  llama_server: model loaded\n');
+    children[0].emit('exit', 1);           // crashed; the restart is waiting
+    expect(m.isRunning()).toBe(true);
+
+    // Nothing is left to exit, so 'stopped' can't come from an exit. Without it,
+    // a caller waiting for the LLM to stop (LlmFleet.stopAndWait) waited out
+    // its whole budget.
+    expect(m.stop()).toBe(true);
+    expect(stopped).toHaveBeenCalledTimes(1);
+    expect(stopped).toHaveBeenCalledWith(null);
+
+    wake();                                // the restart's wait ends
+    await flush();
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(stopped).toHaveBeenCalledTimes(1);
+    expect(m.stop()).toBe(false);          // already stopped
+  });
+
   test('gives up after startAttempts spawns and emits stopped', async () => {
     const children = [];
     const spawn = jest.fn(() => { const c = makeChild(); children.push(c); return c; });
