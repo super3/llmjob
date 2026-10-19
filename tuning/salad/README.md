@@ -109,7 +109,9 @@ With `yield: "auto"` the rules count on that credit ratio. On that day it would 
 6. **"outbound port N blocked"** in the logs: reallocate, and put the PC on the bad list (below) for
    boxes that check the same port. Before it starts, box.sh checks the port of the box's pool:
    HeroMiners' 1200, or Kryptex's own host and port (`kryptex_host`, 7048) on a Kryptex box. So a
-   Kryptex box keeps a PC that blocks only 1200, and a HeroMiners box one that blocks only 7048. Until
+   Kryptex box keeps a PC that blocks only 1200, and a HeroMiners box one that blocks only 7048. A PC
+   found blocking both stays listed for both: on 19 October e8c084ab blocked 1200 for a HeroMiners box,
+   then 7048 for the first Kryptex box with the new check. Until
    19 October the PC stayed off the list, and Salad handed the same blocked PCs out again: on 18–19 October
    one cost six groups a move each, and two groups were deleted on a PC another group had already
    found blocked. Every box checked 1200 then, so Kryptex boxes also left PCs they could have mined on.

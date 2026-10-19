@@ -764,6 +764,13 @@ class W:
         """The port a box's port check tries: Kryptex's for a Kryptex box, HeroMiners' 1200 otherwise."""
         return int(self.cfg["kryptex_host"].rsplit(":", 1)[1]) if kx else 1200
 
+    @staticmethod
+    def bad_ports(entry):
+        """The ports a bad-list entry is for, or None when the PC is bad for every box (slow, capped, not mining)."""
+        if entry is None:
+            return None
+        return entry.get("ports") or ([entry["port"]] if "port" in entry else None)
+
     def kx_failed(self, g, why):
         """A Kryptex box that sends no shares or no readings while no other box's work reaches Kryptex points at
         Kryptex, not at the PC: it goes back to HeroMiners on a new PC, and the PC stays off the bad list. Two of
@@ -1099,7 +1106,8 @@ class W:
                 event(f"{'GOT PC' if first else 'NEW PC'} {g['name']} ({g['class']}, {g['pri']}): PC {mach[:8]}")
                 # A PC that another group left lately (slow, capped, not mining) is left again at once.
                 bad = st.setdefault("bad_pcs", {}).get(mach)
-                if bad and t - bad["t"] < 3600 * self.cfg["bad_pc_hold_h"] and bad.get("port") in (None, self.pool_port(g.get("kx"))):
+                if (bad and t - bad["t"] < 3600 * self.cfg["bad_pc_hold_h"]
+                        and self.pool_port(g.get("kx")) in (self.bad_ports(bad) or [self.pool_port(g.get("kx"))])):
                     self.reallocate(g, f"{bad['group']} left this PC at {hm(bad['t'])}Z: {bad['why']}", count=False)
                     return
         else:
@@ -1135,9 +1143,16 @@ class W:
             reached = self.kx_works(g, t) or self.kx_proof(g, t) >= t - 30 * MIN
             if port == self.pool_port(True) and g.get("kx") and not reached and self.kx_failed(g, why):
                 return
-            # The PC goes on the bad list for boxes that check the same port; a box on the other pool may use it.
-            st.setdefault("bad_pcs", {})[g["machine"]] = {"t": t, "group": g["name"], "why": why, "port": port}
-            self.reallocate(g, why)
+            # The PC goes on the bad list for boxes that check the same port; a box on the other pool may use it. A PC
+            # can block both: on 19 October e8c084ab blocked 1200 for a HeroMiners box and then 7048 for a Kryptex box.
+            bad = st.setdefault("bad_pcs", {})
+            old = bad.get(g["machine"])
+            held = old is not None and t - old["t"] < 3600 * self.cfg["bad_pc_hold_h"]
+            if not (held and self.bad_ports(old) is None):   # a PC already bad for every box stays so
+                ports = sorted({port} | set((self.bad_ports(old) or []) if held else []))
+                why = "PC blocks outbound port" + ("s " if len(ports) > 1 else " ") + " and ".join(map(str, ports))
+                bad[g["machine"]] = {"t": t, "group": g["name"], "why": why, "ports": ports}
+            self.reallocate(g, f"PC blocks outbound port {port}")
             return
         # This PC's readings (one a minute). A PC that isn't mining 10 min after we got it is left.
         # Readings come from Salad's log service, which sometimes fails for minutes at a time. Missing readings
