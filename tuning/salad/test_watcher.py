@@ -1558,7 +1558,7 @@ class TestKryptex(Base):
         g = self.blocked_on_kryptex()
         self.assertEqual(g["reallocs"], 1)
         self.assertTrue(g["kx"])                                          # a PC problem: it stays on Kryptex
-        self.assertEqual(self.x.st["bad_pcs"]["m1"]["port"], 7048)
+        self.assertEqual(self.x.st["bad_pcs"]["m1"]["ports"], [7048])
         hm = self.group()                                                 # a HeroMiners box checks 1200: m1 may suit it
         self.step(hm, 1, "m1")
         self.assertEqual(hm["machine"], "m1")
@@ -1566,6 +1566,32 @@ class TestKryptex(Base):
         self.step(kb, 1, "m1")
         self.assertIsNone(kb["machine"])
         self.assertEqual(kb["reallocs"], 0)
+
+    def test_a_pc_that_blocks_both_ports_stays_listed_for_both(self):
+        # On 19 October e8c084ab blocked 1200 for a HeroMiners box, then 7048 for a Kryptex box.
+        self.x.st["bad_pcs"] = {"m1": {"t": self.clock[0], "group": "biz-rtx3060", "why": "PC blocks outbound port 1200",
+                                       "ports": [1200]}}
+        self.blocked_on_kryptex()
+        self.assertEqual(self.x.st["bad_pcs"]["m1"]["ports"], [1200, 7048])
+        self.assertEqual(self.x.st["bad_pcs"]["m1"]["why"], "PC blocks outbound ports 1200 and 7048")
+        for kx in (False, True):
+            g = self.group(kx=kx)
+            self.step(g, 1, "m1")
+            self.assertIsNone(g["machine"])                               # neither pool's boxes take it
+
+    def test_a_pc_bad_for_every_box_isnt_narrowed_to_a_port(self):
+        self.x.st["bad_pcs"] = {"m1": {"t": self.clock[0], "group": "biz-rtx3060", "why": "no mining reading"}}
+        g = self.group(kx=True)
+        self.step(g, 1, "m1")                                             # moved off at once, as before
+        self.assertIsNone(g["machine"])
+        # A box that still runs on it (the list was written after it got the PC) and finds a port blocked
+        # leaves the entry as it was.
+        h = self.group()
+        h.update(has_pc=True, machine="m1", pc_since=self.clock[0], instance="inst-m1", blocked=["m1"],
+                 blocked_port={"m1": 1200})
+        self.step(h, 1, "m1")
+        self.assertEqual(self.x.st["bad_pcs"]["m1"]["why"], "no mining reading")
+        self.assertIsNone(w.W.bad_ports(self.x.st["bad_pcs"]["m1"]))
 
     def test_a_kryptex_box_keeps_a_pc_that_blocks_only_1200(self):
         self.x.st["bad_pcs"] = {"m1": {"t": self.clock[0], "group": "biz-rtx3060", "why": "PC blocks outbound port 1200",
