@@ -47,7 +47,7 @@ Config keys:
 | `upgrade_gain` | How much more an hour a class must be expected to make before it takes the weakest group's slot (0.05). `null` turns swaps off. |
 | `upgrade_every_min` | Minutes between swap checks while every slot is taken (15). |
 | `swap_wait_min` | Minutes a swapped slot is expected to earn nothing while the new group gets a PC and starts (20). Part of a swap's cost. |
-| `yield` | The share of the network-rate estimate the rules count on when they judge a margin: `"auto"` for the pool's credit ratio (below), or a number. Live: `1.0` for now. |
+| `yield` | The share of the network-rate estimate the rules count on when they judge a margin: `"auto"` for the pool's credit ratio (below), or a number. Live: `"auto"` since 19 October (it was `0.9`, under what the pools credit: 92% and 93%). |
 | `yield_min_blocks`, `yield_floor` | The credit ratio is used once the pool has credited us in 10 blocks, and never below 0.5. |
 | `bad_pc_hold_h` | Hours a PC that a group left stays on the shared bad list (24). |
 | `rate_days` | Days a PC's measured rate counts toward its class's rate (7). |
@@ -91,7 +91,9 @@ With `yield: "auto"` the rules count on that credit ratio. On that day it would 
    `no_pc_streak` groups never got a PC at all, it goes after every other class for `no_pc_hold_min`. When a
    class's latest ended group never got a PC, its next group starts at the priority its latest group with a PC
    got it at, not at batch: on 14 October 4080s and 5080s only got PCs at medium or high, and each new group
-   spent 30 min climbing from batch first. Besides the classes
+   spent 30 min climbing from batch first. If that priority no longer clears the margin, it starts at the
+   dearest cheaper one that does and has a GPU free: on 19 October 5090s were only tried at high (+1% after
+   PRL fell), while 13 were free at medium (+18%). Besides the classes
    measured on Salad, the search knows benchmark rates for cards not tried there yet (see `KNOWN`);
    rule 5 judges each of their PCs on its own readings.
 2. **No PC at a priority within 10 min:** move to the next priority that still clears 10%. If none is

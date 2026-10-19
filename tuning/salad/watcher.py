@@ -1289,7 +1289,10 @@ class W:
 
     def candidates(self, active, t):
         """Classes a new group may use, each at its cheapest free priority from start_pri that clears the margin, best first:
-        classes not held for want of PCs, then paid classes, then by expected profit an hour."""
+        classes not held for want of PCs, then paid classes, then by expected profit an hour. When no priority from
+        start_pri up clears it, the dearest cheaper one that does and has a GPU free: on 19 October 5090s started at
+        high, where their last PC came from, which cleared 1% at a lower PRL price, so with 13 free at medium (+18%)
+        no 5090 was tried."""
         st = self.st
         # A class is tried again retry_after_min after a group of it ended for want of a PC (released), and
         # retry_failed_h after one failed. A failure used to bar the class for good: on 19 October 7 of 21
@@ -1314,7 +1317,8 @@ class W:
             s, a = http("POST", f"{BASE}/availability/sce-gpu-availability", body)
             if s != 200:
                 continue
-            for p in PRIS[PRIS.index(self.start_pri(cls)):]:
+            start = PRIS.index(self.start_pri(cls))
+            for p in PRIS[start:] + PRIS[:start][::-1]:
                 if (a.get(f"available_gpu_{p}") or 0) > 0 and self.margin(cls, p) >= self.cfg["min_margin"]:
                     profit = rate * self.usd() - st["classes"][cls]["prices"][p]
                     cands.append((self.unplaced(cls, t), not self.paid(cls), -profit, cls, p))

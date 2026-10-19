@@ -644,6 +644,31 @@ class TestSearch(Base):
         self.setUp()
         self.assertEqual(self.start_after([("high", False)]), "batch")  # never placed: nothing to go on
 
+    def dear(self, high=1.0, medium=0.19):
+        """The 4080 at a high price that clears no margin, and at `medium`."""
+        self.x.st["classes"] = dict(CLASSES, **{"RTX 4080 (16 GB)": {"id": "c4080", "prices": {
+            "batch": 0.11, "low": 0.15, "medium": medium, "high": high}}})
+
+    def test_a_start_priority_that_no_longer_clears_the_margin_falls_back_to_a_cheaper_one(self):
+        self.dear()
+        self.assertEqual(self.start_after([("high", True), ("high", False)]), "medium")  # the dearest that clears it
+        self.setUp()
+        self.dear(medium=1.0)
+        self.assertEqual(self.start_after([("high", True), ("high", False)]), "low")
+
+    def test_the_fallback_needs_a_gpu_free(self):
+        self.dear()
+        self.http.on("POST", "/availability/", lambda b: (200, {"available_gpu_high": 5, "available_gpu_low": 5}))
+        self.x.cfg.update(max_active=10, max_new_per_hour=10, retry_after_min=10)
+        self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10}}))
+        for had in (True, False):
+            g = self.group(cls="RTX 4080 (16 GB)", pri="high")
+            g["ended"], g["end_kind"], g["had_pc"] = self.clock[0], "released", had
+            self.clock[0] += 3600
+        self.x.search()
+        made = [(c[2]["name"], c[2]["container"]["priority"]) for c in self.http.made("POST", "/containers$")][2:]
+        self.assertIn(("biz-rtx4080-3", "low"), made)   # none free at medium
+
     def test_respects_max_active(self):
         self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
         self.group(cls="RTX 2060 (6 GB)", pri="low")
