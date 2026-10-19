@@ -3,7 +3,7 @@
 const { EventEmitter } = require('events');
 const {
   resolveServerBinary, buildServerArgs, buildServerEnv, serverBaseUrl, isServerReady, parseTiming,
-  parseSlotEvent, parseUsingDevice,
+  parseSlotEvent, parseUsingDevice, isDeviceLost,
 } = require('../shared/llama');
 
 // Spawns and supervises the llama.cpp `llama-server` child process. Like
@@ -31,6 +31,18 @@ const {
 // install surfaces as a stopped LLM instead of spinning forever; staying up for
 // `crashSettleMs` counts as recovered and clears the tally.
 //
+// A lost GPU is a crash that llama-server doesn't notice. When the driver resets
+// or drops the card, the server logs the error, answers that request with a 500
+// and stays up, failing every request after it while /health still says ok
+// (see llama.isDeviceLost). In the field that was a node failing every job sent
+// to it, with mining pausing for each one. So we kill it and let the crash path
+// above bring up a fresh one, which gets the card back. That restart waits at
+// least `gpuLossRestartMs`, so a driver reset can finish first. It has its own
+// cap: `gpuLossLimit` losses within `gpuLossWindowMs` stop the LLM. The crash
+// tally can't do that job, because a card that only loses its GPU when a
+// request arrives can sit idle past crashSettleMs between losses, which clears
+// the tally, and it would reload the model forever.
+//
 // Events:
 //   started  { bin, args, baseUrl }
 //   ready    { baseUrl }
@@ -40,7 +52,10 @@ const {
 //   stopped  exitCode
 //   error    Error
 class LlmManager extends EventEmitter {
-  constructor({ spawn, sleep, startAttempts, retryDelayMs, crashRestarts, crashSettleMs, now, env } = {}) {
+  constructor({
+    spawn, sleep, startAttempts, retryDelayMs, crashRestarts, crashSettleMs, now, env,
+    gpuLossLimit, gpuLossWindowMs, gpuLossRestartMs,
+  } = {}) {
     super();
     this.spawn = spawn;
     // The environment the server starts from (llama.buildServerEnv).
@@ -53,6 +68,13 @@ class LlmManager extends EventEmitter {
     this.crashRestarts = crashRestarts == null ? 5 : crashRestarts;
     // Serving this long before dying counts as a recovery, not a crash loop.
     this.crashSettleMs = crashSettleMs == null ? 5 * 60 * 1000 : crashSettleMs;
+    // A lost GPU: this many within the window stop the LLM, and a restart after
+    // one waits at least this long.
+    this.gpuLossLimit = gpuLossLimit == null ? 3 : gpuLossLimit;
+    this.gpuLossWindowMs = gpuLossWindowMs == null ? 60 * 60 * 1000 : gpuLossWindowMs;
+    this.gpuLossRestartMs = gpuLossRestartMs == null ? 10 * 1000 : gpuLossRestartMs;
+    this._gpuLost = false; // the current process lost its GPU and is being killed
+    this._gpuLosses = [];  // when each loss happened, for gpuLossLimit
     this.proc = null;
     this.running = false;
     this.ready = false;
@@ -90,6 +112,7 @@ class LlmManager extends EventEmitter {
     this._attempt = 0;
     this._stopping = false;
     this._crashes = 0;
+    this._gpuLosses = [];
     this._readyAt = 0;
     // A model may offer several context sizes to try. Anything else keeps the
     // single size the caller asked for, so behaviour is unchanged without one.
@@ -118,10 +141,11 @@ class LlmManager extends EventEmitter {
     this.proc = proc;
     this.ready = false;
     this.deviceBusId = null;
+    this._gpuLost = false;
 
-    if (proc.stdout) proc.stdout.on('data', (c) => { this._onData(c); this._scanSlots(c, 'out'); });
+    if (proc.stdout) proc.stdout.on('data', (c) => { this._onData(c); this._scanSlots(c, 'out', proc); });
     // llama logs to stderr
-    if (proc.stderr) proc.stderr.on('data', (c) => { this._onData(c); this._scanSlots(c, 'err'); });
+    if (proc.stderr) proc.stderr.on('data', (c) => { this._onData(c); this._scanSlots(c, 'err', proc); });
     proc.on('exit', (code) => this._onExit(code));
     proc.on('error', (err) => this.emit('error', err));
 
@@ -168,8 +192,20 @@ class LlmManager extends EventEmitter {
       return;
     }
 
-    // It was serving and we didn't stop it: llama-server crashed. Bring it back.
+    // It was serving and we didn't stop it: llama-server crashed, or lost its GPU
+    // and we killed it. Bring it back.
     if (wasReady && !this._stopping) {
+      const gpuLost = this._gpuLost;
+      if (gpuLost) {
+        const t = this.now();
+        this._gpuLosses = this._gpuLosses.filter((at) => t - at < this.gpuLossWindowMs).concat(t);
+        if (this._gpuLosses.length >= this.gpuLossLimit) {
+          this.emit('log', { level: 'error', line: 'local LLM lost its GPU ' + this._gpuLosses.length + ' times in ' + Math.round(this.gpuLossWindowMs / 60000) + ' minutes — giving up. See Logs.' });
+          this.running = false;
+          this.emit('stopped', code);
+          return;
+        }
+      }
       // A server that stayed up a good while and then died is an isolated crash,
       // not a loop — forgive the earlier ones so a long-lived node keeps healing.
       if (servedFor >= this.crashSettleMs) this._crashes = 0;
@@ -177,8 +213,11 @@ class LlmManager extends EventEmitter {
         this._crashes++;
         // Back off per consecutive crash so a model that dies on every request
         // doesn't spin the GPU, while a one-off comes back in seconds.
-        const wait = this.retryDelayMs * this._crashes;
-        this.emit('log', { level: 'error', line: 'local LLM crashed (code ' + code + ') after serving — restarting in ' + Math.round(wait / 1000) + 's (' + this._crashes + '/' + this.crashRestarts + ')' });
+        const wait = Math.max(this.retryDelayMs * this._crashes, gpuLost ? this.gpuLossRestartMs : 0);
+        // The exit code of a process we killed says nothing, so a lost GPU says
+        // what happened instead.
+        const what = gpuLost ? 'lost its GPU' : 'crashed (code ' + code + ') after serving';
+        this.emit('log', { level: 'error', line: 'local LLM ' + what + ' — restarting in ' + Math.round(wait / 1000) + 's (' + this._crashes + '/' + this.crashRestarts + ')' });
         // Distinct from 'stopped', which means the LLM is gone for good. This says
         // "down, coming back": the fleet must stop offering this instance to the
         // cluster now, or it keeps advertising a model that isn't listening and
@@ -228,7 +267,7 @@ class LlmManager extends EventEmitter {
   // chunks there is two halves that each match nothing. For the log that costs
   // one odd line. Here it would lose a "stop processing" and leave mining
   // paused, so the unfinished end of a chunk waits for the rest.
-  _scanSlots(chunk, stream) {
+  _scanSlots(chunk, stream, proc) {
     const text = this._slotCarry[stream] + String(chunk);
     const lines = text.split(/\r?\n/);
     this._slotCarry[stream] = lines.pop();
@@ -237,7 +276,25 @@ class LlmManager extends EventEmitter {
       if (ev) this._setBusy(ev.slot, ev.busy, false);
       const busId = parseUsingDevice(line);
       if (busId) this.deviceBusId = busId;
+      if (isDeviceLost(line)) this._onGpuLost(proc);
     }
+  }
+
+  // The card dropped out from under llama-server, and it will fail every request
+  // from here on (llama.isDeviceLost). Kill it; _onExit restarts it.
+  //
+  // Only for the process that is running now, so a late line from one that
+  // already exited can't kill its replacement. Only once per process, since each
+  // request after the first logs the error again. And only while a request is
+  // running, which is where the error comes from: a line the server merely
+  // printed, a request echoed into the log, doesn't restart it. Killed outright
+  // rather than asked to stop, because a graceful shutdown tears down Vulkan on
+  // the lost device and can hang there.
+  _onGpuLost(proc) {
+    if (proc !== this.proc || this._stopping || this._gpuLost || !this.isBusy()) return;
+    this._gpuLost = true;
+    this.emit('log', { level: 'error', line: 'local LLM lost its GPU (the driver reset or dropped the card) — stopping llama-server' });
+    proc.kill('SIGKILL');
   }
 
   // `all` clears every slot (the server exited). 'busy' fires only when the

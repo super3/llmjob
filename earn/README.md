@@ -601,6 +601,15 @@ and tries again every 30 s. Demand-driven
 `auto` is unchanged: there the miner already stops for as long as the model
 serves.
 
+**The LLM restarts when the GPU drops out** — if the driver resets or loses
+the card, `llama-server` logs `ErrorDeviceLost` and keeps running, but fails
+every request after that. When the app sees that line during a request, it
+stops `llama-server` and starts a fresh one 10 s later, which gets the card
+back. If that happens 3 times within an hour, it stops the LLM and says so in
+the log. A `llama-server` that exits on its own after it was
+serving is also restarted, after 2 s, then 4 s, and so on, and after 5 crashes
+in a row, less than 5 minutes apart, the app stops trying.
+
 `llama-server` comes from a llama.cpp release, a `.tar.gz` on Linux. The CLI
 extracts it with `tar` into the same `llm/` dir, so the binary sits next to its
 shared libraries. To skip the download, or pin your own build, pass

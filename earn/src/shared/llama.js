@@ -178,6 +178,27 @@ function parseSlotEvent(line) {
   return { slot: Number(m[1]), busy: m[2] === 'processing task' };
 }
 
+// The GPU dropped out from under a running llama-server: the driver reset the
+// card, or lost it. The Vulkan build (the only one the app ships) throws
+// vk::DeviceLostError, and the server catches it per request, logs it, answers
+// HTTP 500 and carries on. It never recovers in-process (ggml-vulkan keeps one
+// device for the life of the process), so from then on every request fails
+// while /health still says ok. Only a new process gets the card back. The lines
+// (b9902, tools/server/server-context.cpp, after the log's timestamp) are:
+//
+//   E srv  update_slots: decode() failed: vk::Device::waitForFences: ErrorDeviceLost
+//   E slot      iterate: id  0 | task 14 | got exception: vk::Queue::submit: ErrorDeviceLost
+//
+// The first is the request that hit it; the second is each one after, which
+// fails on submit. Anchored to those two shapes, so the follow-up "send_error"
+// line (it repeats the message) and anything that merely quotes it, such as a
+// request echoed into the log, do not count. Pinned by a test, like
+// parseSlotEvent.
+function isDeviceLost(line) {
+  return /^(?:\d+\.\d{2}\.\d{3}\.\d{3} )?(?:E )?(?:srv +update_slots: (?:pre_|post_)?decode\(\) failed|slot +iterate: id +\d+ \| task -?\d+ \| got exception): vk::\w+::\w+: ErrorDeviceLost\s*$/
+    .test(String(line == null ? '' : line));
+}
+
 // A card llama-server loads on, and its PCI bus id, from the line it prints
 // for each one while loading a model (b9902, src/llama.cpp):
 //
@@ -362,6 +383,6 @@ function describeLlmStart(plan) {
 
 module.exports = {
   resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, buildServerEnv, isServerReady,
-  parseTokensPerSec, parseTiming, parseSlotEvent, parseUsingDevice, parseUsingDeviceLine,
+  parseTokensPerSec, parseTiming, parseSlotEvent, isDeviceLost, parseUsingDevice, parseUsingDeviceLine,
   parseDeviceList, matchLlmDevices, placeLlmPlan, describeLlmStart,
 };
