@@ -367,9 +367,10 @@ const LLM = {
       // 262144 row. Every row is measured (CUDA, q8_0 KV, the flags above); the
       // same ~570 MiB margin is added to each when it is used as a floor.
       //
-      // This is what lets a 32 GB card serve this model WHILE it mines. At 262144
-      // it needs 30,150 + the 2,600 mining reserve = 32,750, more than the card
-      // has. At 131072 it needs 24,518 + 2,600 = 27,118 free. The CLI measures on
+      // This is what lets a 32 GB card serve this model WHILE it mines (not on
+      // Windows, see noCoRunOn below). At 262144 it needs 30,150 + the 2,600
+      // mining reserve = 32,750, more than the card has. At 131072 it needs
+      // 24,518 + 2,600 = 27,118 free. The CLI measures on
       // the empty card, so that leaves ~5 GB of a 5090 for a desktop. The app
       // measures after the miner is up and still adds the reserve, so there it
       // leaves ~2.9 GB; a desktop using more gets Gemma, as before.
@@ -379,6 +380,15 @@ const LLM = {
       // would pick the model at 32768 and run with under 1 GB to spare beside the
       // miner; at 131072 and up it is a 32 GB-card model, as intended.
       minCtxSize: 131072,
+      // Never chosen beside the miner on Windows; there a mining card serves
+      // Gemma, as it did before v0.6.1. The one Windows report of this model
+      // co-running, an RTX PRO 4500 Blackwell from v0.6.2 on, lost its GPU on
+      // every prompt (Vulkan ErrorDeviceLost) and once answered with garbage.
+      // Gemma had co-run on that card without trouble, and this model with
+      // these flags has only ever been verified on Linux. Windows still gets it
+      // when the LLM has the card to itself (Compute Mode LLM), so it can be
+      // tested there before this comes off.
+      noCoRunOn: ['win32'],
       quant: 'Q4_K_XL',
     },
   ],

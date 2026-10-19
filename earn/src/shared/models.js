@@ -63,17 +63,23 @@ function contextChoices(model) {
 // serve Qwen3.8 at 131072 while it mines, where it used to fall back to Gemma
 // because 262144 plus the mining reserve does not fit.
 //
+// A model can rule itself out of co-running on some platforms (`noCoRunOn`).
+// A reserve means the miner shares the card, so on a listed `platform` the
+// model is skipped then and the card gets the next one down. Without a
+// platform nothing is skipped, which is how the CLI calls this.
+//
 // `freeMb == null` means VRAM could not be measured (no NVIDIA, no driver). That
 // is NOT treated as "unlimited": an unmeasured card gets the default model,
 // because the alternative is downloading 17 GB onto a machine that may not be
 // able to run it. vram.js makes the same call for the same reason.
-function pickModel(freeMb, reserveMb = 0, models = null) {
+function pickModel(freeMb, reserveMb = 0, models = null, platform = null) {
   const list = models || allModels();
   const fallback = list[list.length - 1] || null;
   const free = Number(freeMb);
   if (freeMb == null || !Number.isFinite(free)) return fallback;
   for (const m of list) {
     if (!m) continue;
+    if (reserveMb > 0 && platform && (m.noCoRunOn || []).includes(platform)) continue;
     for (const choice of contextChoices(m)) {
       if (free >= requiredFreeMb(choice, reserveMb)) return choice;
     }

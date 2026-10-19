@@ -1239,7 +1239,9 @@ async function startLlm(reserveMb, epoch) {
   // intended reading of "for cards that can support it", but it is a trade, and
   // the small-card case is unaffected because those rigs resolve to the default.
   const bestCard = pickLlmGpu(cards);
-  const model = pickModel(bestCard ? bestCard.freeMb : null, reserveMb || 0);
+  // The platform, so a Windows card that mines is not handed a model that has
+  // only been verified co-running on Linux (config.js noCoRunOn).
+  const model = pickModel(bestCard ? bestCard.freeMb : null, reserveMb || 0, null, process.platform);
   servingModel = model;
   // The hero shows this name, and it was seeded once at startup and never
   // updated — fine while every node ran the same model, wrong the moment one

@@ -317,7 +317,8 @@ console.log(resp.choices[0].message.content);</code></pre>
 
       <p>Which model a node serves depends on its GPU. Gemma-4-E4B is small enough for the range of
         consumer GPUs that run LLMJob Earn. A card with 32 GB or more serves Qwen3.8-27B instead, with
-        a 128K context while it mines and 256K when the LLM has the card to itself. Name
+        a 128K context while it mines and 256K when the LLM has the card to itself. On Windows, a
+        card that mines serves Gemma for now. Name
         <code class="ic">Qwen3.8-27B-UD-Q4_K_XL</code> or <code class="ic">Gemma-4-E4B-it-Q4_K_M</code>
         to send a request to a node serving that model while one is online;
         <code class="ic">/v1/models</code> lists what is online now.</p>

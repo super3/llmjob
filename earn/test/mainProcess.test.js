@@ -1752,6 +1752,40 @@ describe('local LLM', () => {
     expect(ctx.JobWorker.instances[0].opts.servingModel()).toBe(tier);
   });
 
+  // The one Windows report of the 27B co-running lost its GPU on every prompt.
+  // A Windows card that mines serves Gemma again, as it did before v0.6.1; a
+  // Linux card still gets the 27B at 131072 beside the miner.
+  for (const [platform, tierWanted] of [['win32', false], ['linux', true]]) {
+    it('a 32 GB card that mines on ' + platform + ' serves ' + (tierWanted ? 'the 27B' : 'Gemma'), async () => {
+      const ctx = await boot({
+        platform,
+        before: (c) => {
+          // The PRO 4500 from the report, after the miner took its share.
+          c.probe.detectGpusVram.mockResolvedValue([
+            { index: 0, name: 'NVIDIA RTX PRO 4500 Blackwell', usedMb: 3600, totalMb: 32623 },
+          ]);
+          c.LlmEngineManager.behavior.ensureMmproj = () => Promise.resolve('/tmp/llm/mmproj.gguf');
+        },
+      });
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'both' });
+      await flush();
+      ctx.PearlEngine.instances[0].emit('event', { type: 'status', hashrate: '2.5' });
+      await flush(30);
+
+      const tier = ctx.config.LLM.tiers[0];
+      const status = ctx.sent('llm:status').pop();
+      const opts = ctx.LlmManager.instances[0].start.mock.calls[0][0];
+      if (tierWanted) {
+        expect(status).toMatchObject({ model: tier.name, ctxSize: 131072 });
+        expect(opts.extraArgs).toEqual(tier.extraArgs);
+      } else {
+        expect(status).toMatchObject({ model: ctx.config.LLM.model.name });
+        expect(opts.alias).toBe(ctx.config.LLM.model.name);
+        expect(opts.extraArgs).not.toEqual(tier.extraArgs);
+      }
+    });
+  }
+
   // The report this fix came from. nvidia-smi's GPU 0 is a 32 GB RTX PRO 4500,
   // but Vulkan lists the 12 GB RTX 4070 that drives the desktop first, so
   // --main-gpu 0 put the 27B model on the 4070 and it never started.

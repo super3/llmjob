@@ -265,6 +265,28 @@ describe('the shipped config', () => {
     expect(after.ctxSize).toBe(131072);
   });
 
+  // The one Windows report of the 27B co-running lost its GPU on every prompt,
+  // and the model had only been verified on Linux. Before v0.6.1 a mining
+  // Windows card served Gemma, which worked, so that is what it gets again.
+  test('on Windows a mining 32 GB card gets the default, not the big model', () => {
+    const q = allModels().find((m) => m.key === 'qwen3.8-27b');
+    expect(q.noCoRunOn).toEqual(['win32']);
+    const free = 32607 - 1000 - 2600;
+    expect(pickModel(free, LLM.miningReserveMb, null, 'win32')).toBe(LLM.model);
+    // Linux, and a caller that gives no platform (the CLI), are unchanged.
+    expect(pickModel(free, LLM.miningReserveMb, null, 'linux').key).toBe(q.key);
+    expect(pickModel(free, LLM.miningReserveMb).key).toBe(q.key);
+  });
+
+  test('on Windows the big model is still offered when the LLM has the card to itself', () => {
+    const q = allModels().find((m) => m.key === 'qwen3.8-27b');
+    expect(pickModel(32149, 0, null, 'win32')).toBe(q);
+  });
+
+  test('a model that does not rule itself out still co-runs on Windows', () => {
+    expect(pickModel(17500, 3000, [SIZED, SMALL], 'win32').key).toBe(SIZED.key);
+  });
+
   test('a 24 GB card keeps serving the default, mining or not', () => {
     // The 32768 and 65536 rungs would fit a 4090 by a few hundred MiB. minCtxSize
     // keeps them as start-up fallbacks only, so a 24 GB card is not handed a
