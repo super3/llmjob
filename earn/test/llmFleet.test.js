@@ -757,4 +757,33 @@ describe('stopAndWait', () => {
     const { fleet } = makeFleet();
     await expect(fleet.stopAndWait(5000)).resolves.toBe(false);
   });
+
+  // The real manager, caught between a crash and its restart: the old server has
+  // exited and the next is waiting to spawn. Nothing is left to exit, so the
+  // wait used to run its whole budget (45 s in the CLI's auto mode) and then
+  // log that the LLM "did not exit".
+  test('does not wait out its budget on a server that is between restarts', async () => {
+    const { LlmManager } = require('../src/main/llmManager');
+    const children = [];
+    const spawn = jest.fn(() => {
+      const c = new EventEmitter();
+      c.stdout = new EventEmitter();
+      c.stderr = new EventEmitter();
+      c.kill = jest.fn();
+      children.push(c);
+      return c;
+    });
+    const { fleet } = makeFleet({
+      makeManager: () => new LlmManager({ spawn, sleep: () => new Promise(() => {}), retryDelayMs: 1 }),
+    });
+    const lines = [];
+    fleet.on('log', (l) => lines.push(l.line));
+    await fleet.start([{ index: 0 }], { binaryPath: 'b', modelPath: 'm', platform: 'linux' });
+    children[0].stderr.emit('data', 'srv  llama_server: model loaded\n');
+    children[0].emit('exit', 1); // crashed; the restart is waiting to spawn
+
+    await expect(fleet.stopAndWait(5000)).resolves.toBe(false);
+    expect(lines.join(' ')).not.toContain('did not exit');
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
 });
