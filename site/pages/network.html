@@ -132,7 +132,8 @@
   /* Amber: the node serves, but we measured it too slow to be handed a
      full-length job, so assignment only offers it shorter work. Not a fault
      state — it earns on what it can finish instead of timing out on what it
-     can't. Grey: online but not measured yet (a benchmark is queued). */
+     can't. Grey: online but not measured yet (a benchmark is queued, or the
+     last one failed and the next is a day away). */
   .mr-serving.is-limited { background: #d97706; }
   .mr-serving.is-unknown { background: transparent; box-shadow: inset 0 0 0 1.5px var(--muted-3); }
   /* A host running several cards is one clickable row; the chevron expands it
@@ -324,7 +325,7 @@
       // A measurement alone is NOT enough to paint the dot green, because the two
       // halves of this row have different clocks. `model` comes from the miner
       // ping and is live to within a minute, so it goes null the moment
-      // llama-server dies; the measurement stays valid for six hours
+      // llama-server dies; the measurement stays valid for a day
       // (SPEED_STALE_MS). A node that lost its LLM therefore kept a green dot
       // next to an em-dash for the rest of that window — the dot answering "we
       // measured this recently and it was fast" while the reader takes it to mean
