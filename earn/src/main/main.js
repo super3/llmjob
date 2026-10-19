@@ -58,6 +58,7 @@ const { isValidAddress } = require('../shared/address');
 const { checkXmrAddress } = require('../shared/xmr/address');
 const { planCpuThreads } = require('../shared/xmr/cpuPlan');
 const { formatUpdate, describeUpdateError } = require('../shared/updateStatus');
+const { repairUpdateConfig } = require('../shared/updateConfig');
 const { buildMinerReports } = require('../shared/minerReport');
 const { runtimeCopyPlan } = require('../shared/llmRuntime');
 const {
@@ -835,8 +836,27 @@ function canInstallQuietly() {
   }
 }
 
+// electron-updater reads resources/app-update.yml before every check. A crash or
+// power cut during an install can leave that file unreadable (one Windows
+// install's was all NUL bytes), and every check then fails until a reinstall.
+// Point the updater at a good copy instead. The next update writes a good file
+// again, and this then finds nothing to do.
+function useGoodUpdateConfig() {
+  try {
+    const file = repairUpdateConfig({
+      resourcesPath: process.resourcesPath, userDataPath: app.getPath('userData'), fs, join: path.join,
+    });
+    if (!file) return;
+    autoUpdater.updateConfigPath = file;
+    send('miner:log', { level: 'warn', line: 'the updater\'s app-update.yml was missing or damaged — using a good copy from the app\'s data folder' });
+  } catch (e) {
+    send('miner:log', { level: 'error', line: 'could not repair the updater\'s app-update.yml: ' + e.message });
+  }
+}
+
 function setupUpdater() {
   const push = (phase, payload) => send('app:update', formatUpdate(phase, payload));
+  useGoodUpdateConfig();
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.on('checking-for-update', () => push('checking'));

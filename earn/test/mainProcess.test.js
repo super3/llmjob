@@ -931,6 +931,63 @@ describe('updater', () => {
     expect(ctx.sent('app:update').map((u) => u.phase).slice(-1)).toEqual(['none']);
   });
 
+  // One Windows install's resources/app-update.yml was all NUL bytes, after an
+  // update was cut off. electron-updater reads it before every check, so every
+  // check failed and the app could never update itself again.
+  describe('a damaged app-update.yml', () => {
+    const CONFIG = path.join('/res', 'app-update.yml');
+    const COPY = path.join('/tmp/userData', 'app-update.yml');
+    const { UPDATE_CONFIG } = require('../src/shared/updateConfig');
+    const onDisk = (text) => (c) => c.fs.readFileSync.mockImplementation((p) => {
+      if (p !== CONFIG) return '{}';
+      if (text == null) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      return text;
+    });
+    const logs = (ctx) => ctx.sent('miner:log').filter((l) => /app-update\.yml/.test(l.line));
+
+    it('is replaced by a good copy before the first check', async () => {
+      let readFrom;
+      const ctx = await boot({
+        isPackaged: true,
+        resourcesPath: '/res',
+        before: (c) => {
+          onDisk('\0'.repeat(96))(c);
+          c.updater.checkForUpdates.mockImplementation(() => { readFrom = c.updater.updateConfigPath; return Promise.resolve(); });
+        },
+      });
+      expect(ctx.fs.writeFileSync).toHaveBeenCalledWith(COPY, UPDATE_CONFIG);
+      expect(readFrom).toBe(COPY);
+      expect(logs(ctx)).toEqual([{ level: 'warn', line: 'the updater\'s app-update.yml was missing or damaged — using a good copy from the app\'s data folder' }]);
+    });
+
+    it('and so is a missing one', async () => {
+      const ctx = await boot({ isPackaged: true, resourcesPath: '/res', before: onDisk(null) });
+      expect(ctx.updater.updateConfigPath).toBe(COPY);
+    });
+
+    it('a good one is left alone', async () => {
+      const ctx = await boot({ isPackaged: true, resourcesPath: '/res', before: onDisk(UPDATE_CONFIG) });
+      expect(ctx.updater.updateConfigPath).toBeUndefined();
+      expect(ctx.fs.writeFileSync).not.toHaveBeenCalledWith(COPY, expect.anything());
+      expect(logs(ctx)).toEqual([]);
+    });
+
+    // The check still runs: it fails as it did before, and says why.
+    it('a copy that cannot be written is logged, and the check runs anyway', async () => {
+      const ctx = await boot({
+        isPackaged: true,
+        resourcesPath: '/res',
+        before: (c) => {
+          onDisk('\0')(c);
+          c.fs.writeFileSync.mockImplementation((p) => { if (p === COPY) throw new Error('EACCES: permission denied'); });
+        },
+      });
+      expect(ctx.updater.updateConfigPath).toBeUndefined();
+      expect(logs(ctx)).toEqual([{ level: 'error', line: 'could not repair the updater\'s app-update.yml: EACCES: permission denied' }]);
+      expect(ctx.updater.checkForUpdates).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('app:update:install stops engines and relaunches; failures are logged', async () => {
     const ctx = await boot({ isPackaged: true });
     ctx.emit('app:update:install');
