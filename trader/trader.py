@@ -258,35 +258,36 @@ def balances():
 
 
 def lifetime():
-    """Every sell trade of the coin so far, summed: (PRL sold, USDT received, fees, trades, markets not read). From
-    SafeTrade's trade history on the market a run sells on and on the coin's other markets (prlusdt, retired), so it
-    needs no state of its own. A trade counts once, under its own market, even if the API ignores the one asked for."""
+    """Every sell of the coin so far, summed: (PRL sold, USDT received, fees, trades, what couldn't be read). From
+    SafeTrade's trade history, so it needs no state of its own.
+
+    The history is read whole and each trade is kept by its own market: the one a run sells on, or any of COINS
+    against QUOTE (a trade without a market counts as ours). It can't be asked for by market, because Cloudflare in
+    front of SafeTrade rewrites "prl" to "PEARL" anywhere in a URL, so a request for prlusdt's trades reaches
+    SafeTrade as PEARLusdt, which isn't a market. After the rename SafeTrade's public trade lists show PRL's old trades
+    under the pearl markets; whichever id a trade carries, it's counted. Each trade counts once, by its id."""
+    ours = {MARKET.lower()} | {c + QUOTE for c in COINS}
     prl = usdt = fees = 0.0
-    n, counted, unread = 0, set(), []
-    for market in dict.fromkeys([MARKET] + [c + QUOTE for c in COINS]):
-        top = None
-        for page in range(1, 51):
-            s, j = http("GET", PRIV + "/market/trades", {"market": market, "side": "sell", "page": page, "limit": 100},
-                        auth=True)
-            if not 200 <= s < 300:
-                if page == 1:
-                    unread.append(f"{market} HTTP {s}")
-                break
-            if not isinstance(j, list) or not j or (page > 1 and j[0].get("id") == top):
-                break
-            top = j[0].get("id")
-            for t in j:
-                key = t.get("id") if t.get("id") is not None else json.dumps(t, sort_keys=True)
-                if t.get("side", "sell") != "sell" or str(t.get("market", market)).lower() != market.lower() \
-                        or key in counted:
-                    continue
-                counted.add(key)
-                prl += float(t.get("amount") or 0)
-                usdt += float(t.get("total") or 0)
-                fees += float(t.get("fee") or 0)
-                n += 1
-            if len(j) < 100:
-                break
+    n, counted, unread, top = 0, set(), [], None
+    for page in range(1, 51):
+        s, j = http("GET", PRIV + "/market/trades", {"side": "sell", "page": page, "limit": 100}, auth=True)
+        if not 200 <= s < 300:
+            unread.append(f"trade history page {page}: HTTP {s}")
+            break
+        if not isinstance(j, list) or not j or (page > 1 and j[0].get("id") == top):
+            break
+        top = j[0].get("id")
+        for t in j:
+            key = t.get("id") if t.get("id") is not None else json.dumps(t, sort_keys=True)
+            if t.get("side", "sell") != "sell" or str(t.get("market") or MARKET).lower() not in ours or key in counted:
+                continue
+            counted.add(key)
+            prl += float(t.get("amount") or 0)
+            usdt += float(t.get("total") or 0)
+            fees += float(t.get("fee") or 0)
+            n += 1
+        if len(j) < 100:
+            break
     return prl, usdt, fees, n, unread
 
 

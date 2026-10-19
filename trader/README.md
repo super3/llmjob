@@ -17,14 +17,20 @@ Sells the PRL that mining pays out for USDT on SafeTrade, once an hour, as a Rai
 5. Logs what sold, the average price and the fee, read from the order's trades.
 6. Logs the account and exits. That's an `ACCOUNT` line for people (PRL and USDT, free and in orders,
    and everything sold so far) and a `STATUS` line of JSON for tools that read the logs. "Sold so far"
-   is summed from SafeTrade's trade history on the coin's markets, the retired `prlusdt` included, so the
-   trader keeps no state of its own. A history it can't read is named on the `ACCOUNT` line. Dry runs and
-   runs with nothing to sell log the account too.
+   is summed from SafeTrade's trade history, so the trader keeps no state of its own. It reads the whole
+   history and keeps the sells on the coin's markets, `pearlusdt` or the retired `prlusdt`, each trade once.
+   A page it can't read is named on the `ACCOUNT` line. Dry runs and runs with nothing to sell log the
+   account too.
 
 **PRL became PEARL on SafeTrade on 18 October 2026.** At 16:53 UTC SafeTrade opened a new `pearl` coin
 with its own markets (`pearlusdt` among them, same 2-coin minimum), and at 17:51 it disabled `prl` and its
 markets. A trader that only knew `prl` had no market to sell on from then. It now tries `pearl` first,
-passes over disabled markets, and still counts the sales made on `prlusdt`. The logs still call the coin PRL,
+passes over disabled markets, and still counts the sales made before the rename. SafeTrade's public trade
+lists now show PRL's old trades under the `pearl` markets, and a trade still tagged `prlusdt` counts too.
+
+Cloudflare in front of SafeTrade rewrites `prl` to `PEARL` anywhere in a URL, query string included, so a
+request that names `prlusdt` reaches SafeTrade as `PEARLusdt`, which isn't a market. That's why the history is
+read without naming a market, and why asking for `prlusdt` by id just fails. The logs still call the coin PRL,
 and the `STATUS` line keeps its `prl` and `prl_locked` keys, since the Salad watcher reads them. Its `coin`
 field says which id the run used.
 
