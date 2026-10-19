@@ -1512,6 +1512,78 @@ class TestKryptex(Base):
             self.assertNotIn("socat", c)
             self.assertNotIn("hosts", c)
             self.assertNotIn("; curl", c)
+
+    # box.sh's port check, as it is at the pinned commit.
+    PORT_CHECK = ("  ok=0; for h in us us2 ca de; do timeout 5 bash -c \"exec 3<>/dev/tcp/$h.pearl.herominers.com/1200\" "
+                  "2>/dev/null && { ok=1; break; }; done\n"
+                  "  [ $ok = 1 ] || { echo \"[run] FAIL: outbound port 1200 blocked\"; sleep infinity; }\n")
+
+    def port_check(self, cmd):
+        import subprocess
+        sed = re.search(r"(sed .*?) > /root/box\.sh", cmd).group(1)
+        return subprocess.run(["sh", "-c", sed], input=self.PORT_CHECK, capture_output=True, text=True).stdout
+
+    def test_a_kryptex_box_checks_kryptexs_port_and_others_check_1200_as_before(self):
+        out = self.port_check(w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.1", XMR, 0, "prl-us.kryptex.network:7048"))
+        self.assertIn("for h in prl-us.kryptex.network; do timeout 5 bash -c \"exec 3<>/dev/tcp/$h/7048\" 2>/dev/null", out)
+        self.assertIn("echo \"[run] FAIL: outbound port 7048 blocked\"", out)
+        self.assertNotIn("1200", out)
+        self.assertEqual(self.port_check(w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.0", XMR)), self.PORT_CHECK)
+
+    def test_the_round_reads_which_port_a_box_found_blocked(self):
+        self.config_file()
+        g = self.group(kx=True)
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
+        items = [{"text_log": "[run] FAIL: outbound port 7048 blocked", "time": "2027-01-15T08:01:00Z",
+                  "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}}]
+        self.http.on("POST", "/log-entries", (200, {"items": items}))
+        self.clock[0] += 120
+        self.x.round()
+        self.assertEqual(g["blocked_port"], {"m1": 7048})
+        self.assertIn("PORT BLOCKED biz-rtx4080 on PC m1: [run] FAIL: outbound port 7048 blocked", self.events())
+
+    def blocked_on_kryptex(self, works=True):
+        """A Kryptex box on m1 that found Kryptex's port blocked; `works`: another box's work reached Kryptex lately."""
+        if works:
+            self.group(kx=True)["kx_share"] = self.clock[0]
+        g = self.group(kx=True)
+        self.step(g, 1, "m1")
+        g["blocked"].append("m1")
+        g["blocked_port"] = {"m1": 7048}
+        self.step(g, 1, "m1")
+        return g
+
+    def test_a_kryptex_box_leaves_a_pc_blocking_kryptexs_port_and_lists_it_for_kryptex_boxes_only(self):
+        g = self.blocked_on_kryptex()
+        self.assertEqual(g["reallocs"], 1)
+        self.assertTrue(g["kx"])                                          # a PC problem: it stays on Kryptex
+        self.assertEqual(self.x.st["bad_pcs"]["m1"]["port"], 7048)
+        hm = self.group()                                                 # a HeroMiners box checks 1200: m1 may suit it
+        self.step(hm, 1, "m1")
+        self.assertEqual(hm["machine"], "m1")
+        kb = self.group(kx=True)                                          # another Kryptex box doesn't take it
+        self.step(kb, 1, "m1")
+        self.assertIsNone(kb["machine"])
+        self.assertEqual(kb["reallocs"], 0)
+
+    def test_a_kryptex_box_keeps_a_pc_that_blocks_only_1200(self):
+        self.x.st["bad_pcs"] = {"m1": {"t": self.clock[0], "group": "biz-rtx3060", "why": "PC blocks outbound port 1200",
+                                       "port": 1200}}
+        kb = self.group(kx=True)
+        self.step(kb, 1, "m1")
+        self.assertEqual(kb["machine"], "m1")
+        hm = self.group()
+        self.step(hm, 1, "m1")                                            # a HeroMiners box still leaves it
+        self.assertIsNone(hm["machine"])
+
+    def test_kryptexs_port_unreachable_with_no_proof_kryptex_works_is_a_kryptex_failure(self):
+        self.http.on("PATCH", "/containers/", (200, {}))
+        self.http.on("POST", "/reallocate", (202, {}))
+        g = self.blocked_on_kryptex(works=False)
+        self.assertFalse(g["kx"])                                         # back to HeroMiners, as a box with no shares
+        self.assertEqual(self.x.st["kx_fails"], 1)
+        self.assertNotIn("m1", self.x.st.get("bad_pcs", {}))              # the PC isn't blamed
         self.assertNotIn("--pool", w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.0"))
         self.assertNotIn("--pool", w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.0", XMR))
 
