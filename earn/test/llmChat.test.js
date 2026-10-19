@@ -92,9 +92,27 @@ describe('parseChatStream', () => {
     expect(r.done).toBe(true);
   });
 
+  test('an error frame mid-stream reports its message, after the deltas before it', () => {
+    // What b9902 sends when a request fails after streaming began, e.g. the GPU
+    // dropping out: one error frame, then the stream closes with no [DONE].
+    const r = parseChatStream([
+      frame('Hel').trim(),
+      'data: {"error":{"code":500,"message":"vk::Queue::submit: ErrorDeviceLost","type":"server_error"}}',
+      '',
+    ].join('\n'));
+    expect(r.deltas).toEqual(['Hel']);
+    expect(r.error).toBe('vk::Queue::submit: ErrorDeviceLost');
+    expect(r.done).toBe(false);
+  });
+
+  test('an error frame with no message reports the error object', () => {
+    expect(parseChatStream('data: {"error":{"code":500}}\n').error).toBe('{"code":500}');
+    expect(parseChatStream('data: {"error":{"message":""}}\n').error).toBe('{"message":""}');
+  });
+
   test('empty / null buffer yields nothing', () => {
-    expect(parseChatStream('')).toEqual({ deltas: [], reasoning: [], finishReason: null, done: false, rest: '' });
-    expect(parseChatStream(null)).toEqual({ deltas: [], reasoning: [], finishReason: null, done: false, rest: '' });
+    expect(parseChatStream('')).toEqual({ deltas: [], reasoning: [], finishReason: null, error: null, done: false, rest: '' });
+    expect(parseChatStream(null)).toEqual({ deltas: [], reasoning: [], finishReason: null, error: null, done: false, rest: '' });
   });
 
   test('a missing-choices object contributes no delta', () => {

@@ -24,8 +24,14 @@ function buildChatBody(messages, opts = {}) {
 
 // Parse a rolling SSE buffer from llama-server's streamed response. Frames are
 // `data: {json}` lines (with `data: [DONE]` to finish), separated by newlines.
-// Returns { deltas, reasoning, finishReason, done, rest }, where `rest` is the
-// trailing partial line the caller must keep and prepend to the next chunk.
+// Returns { deltas, reasoning, finishReason, error, done, rest }, where `rest` is
+// the trailing partial line the caller must keep and prepend to the next chunk.
+//
+// A request that fails after streaming has begun can't change the HTTP status,
+// so llama-server sends one `data: {"error":{"message":...}}` frame and closes
+// the stream without [DONE] (b9902, tools/server/server-context.cpp). `error` is
+// that message, so the caller can fail the request rather than take the closed
+// stream for a finished answer.
 //
 // Thinking models split their output across two delta fields: `reasoning_content`
 // (the chain of thought) and `content` (the answer). Both burn tokens against
@@ -38,6 +44,7 @@ function parseChatStream(buffer) {
   const deltas = [];
   const reasoning = [];
   let finishReason = null;
+  let error = null;
   let done = false;
   const parts = String(buffer == null ? '' : buffer).split('\n');
   const rest = parts.pop(); // last (possibly incomplete) line stays buffered
@@ -48,6 +55,11 @@ function parseChatStream(buffer) {
     if (payload === '[DONE]') { done = true; continue; }
     let obj;
     try { obj = JSON.parse(payload); } catch (e) { continue; } // ignore a torn frame
+    if (obj && obj.error) {
+      const msg = obj.error.message;
+      error = typeof msg === 'string' && msg ? msg : JSON.stringify(obj.error);
+      continue;
+    }
     const choice = obj && obj.choices && obj.choices[0];
     const delta = choice && choice.delta;
     const content = delta && delta.content;
@@ -58,7 +70,7 @@ function parseChatStream(buffer) {
       finishReason = choice.finish_reason;
     }
   }
-  return { deltas, reasoning, finishReason, done, rest: rest || '' };
+  return { deltas, reasoning, finishReason, error, done, rest: rest || '' };
 }
 
 module.exports = { buildChatBody, parseChatStream };

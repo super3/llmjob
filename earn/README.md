@@ -605,7 +605,8 @@ serves.
 the card, `llama-server` logs `ErrorDeviceLost` and keeps running, but fails
 every request after that. When the app sees that line during a request, it
 stops `llama-server` and starts a fresh one 10 s later, which gets the card
-back. If that happens 3 times within an hour, it stops the LLM and says so in
+back. The request that hit the error fails, even one already streaming its
+answer, so a cluster job is reported as failed, not done. If that happens 3 times within an hour, it stops the LLM and says so in
 the log. This covers the Vulkan build the app uses on Windows and Linux.
 
 A `llama-server` that exits on its own after it was serving also restarts,

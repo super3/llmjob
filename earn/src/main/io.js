@@ -390,8 +390,8 @@ function downloadAttempt(url, dest, part, onProgress, redirects, attempt, ca) {
 // per token. A thinking model's `reasoning_content` is reported the same way via
 // the optional onReasoning(text, tokenCount), so those tokens are accounted for
 // rather than silently dropped. Returns { done, cancel }: `done` resolves with
-// { finishReason } when the stream finishes and rejects on transport/HTTP errors
-// or cancel(reason); cancel is safe to call at any point and settles `done`
+// { finishReason } when the stream finishes and rejects on transport/HTTP errors,
+// an error frame from llama-server, or cancel(reason); cancel is safe to call at any point and settles `done`
 // before destroying the request, so callers always observe an outcome (no
 // orphaned in-flight state).
 function streamChatCompletion(baseUrl, chatBody, onDelta, onReasoning) {
@@ -425,6 +425,7 @@ function streamChatCompletion(baseUrl, chatBody, onDelta, onReasoning) {
         onReasoning(parsed.reasoning.join(''), parsed.reasoning.length);
       }
       if (parsed.finishReason) finishReason = parsed.finishReason;
+      if (parsed.error) { res.destroy(); return fail(new Error('llama-server error: ' + parsed.error)); }
       if (parsed.done) { res.destroy(); finish(); }
     });
     res.on('end', finish);

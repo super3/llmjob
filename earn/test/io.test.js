@@ -663,6 +663,19 @@ describe('streamChatCompletion', () => {
     await expect(done).resolves.toEqual({ finishReason: null });
   });
 
+  it('rejects on an error frame mid-stream, after passing on the text before it', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    wire(http, [res]);
+    const onDelta = jest.fn();
+    const { done } = io.streamChatCompletion('http://127.0.0.1:8080', {}, onDelta);
+    res.emit('data', 'data: {"choices":[{"delta":{"content":"He"}}]}\n\n'
+      + 'data: {"error":{"code":500,"message":"vk::Queue::submit: ErrorDeviceLost","type":"server_error"}}\n\n');
+    res.emit('end'); // the stream closes without [DONE]; it must not count as finished
+    await expect(done).rejects.toThrow('llama-server error: vk::Queue::submit: ErrorDeviceLost');
+    expect(onDelta).toHaveBeenCalledWith('He', 1);
+    expect(res.destroy).toHaveBeenCalled();
+  });
+
   it('rejects on a non-200 from llama-server', async () => {
     const res = fakeRes({ statusCode: 503 });
     wire(http, [res]);
