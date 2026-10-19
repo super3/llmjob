@@ -48,7 +48,7 @@ KNOWN = {
 DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_token": 0,
                "credit_start": 100.0, "credit_offset": 0.0, "box_ver": "v0.5.13", "ver_override": {}, "report_min": 10,
                "min_margin": 0.10, "max_new_per_hour": 3, "max_per_class": 1,
-               "search_every_min": 60, "retry_after_min": 60, "no_pc_streak": 3, "no_pc_hold_min": 180, "drift": 0.15,
+               "search_every_min": 60, "retry_after_min": 60, "retry_failed_h": 24, "no_pc_streak": 3, "no_pc_hold_min": 180, "drift": 0.15,
                "upgrade_gain": 0.05, "upgrade_every_min": 15, "swap_wait_min": 20,
                "yield": "auto", "yield_min_blocks": 10, "yield_floor": 0.5, "bad_pc_hold_h": 24, "rate_days": 7,
                "trader": None, "safetrade": None,
@@ -1111,8 +1111,11 @@ class W:
             return
 
         on = t - g["pc_since"]
-        # Rule 6: the PC blocks the pool port.
+        # Rule 6: the PC blocks the pool port. It goes on the bad list like any PC a group leaves: Salad hands the
+        # same PCs out again. On 18–19 October one blocked PC cost six groups a move each, and two groups were
+        # deleted on a PC another group had already found blocked.
         if g["machine"] in g["blocked"]:
+            st.setdefault("bad_pcs", {})[g["machine"]] = {"t": t, "group": g["name"], "why": "PC blocks outbound port 1200"}
             self.reallocate(g, "PC blocks outbound port 1200")
             return
         # This PC's readings (one a minute). A PC that isn't mining 10 min after we got it is left.
@@ -1252,15 +1255,19 @@ class W:
         """Classes a new group may use, each at its cheapest free priority from start_pri that clears the margin, best first:
         classes not held for want of PCs, then paid classes, then by expected profit an hour."""
         st = self.st
-        # Each class is tried once on this account, as on the first one, except that a class whose groups only
-        # ended for want of a PC (released) is tried again retry_after_min after.
-        skip = {g["class"] for g in st["groups"].values()
-                if not g["ended"] or g["end_kind"] != "released" or t - g["ended"] < 60 * self.cfg["retry_after_min"]}
+        # A class is tried again retry_after_min after a group of it ended for want of a PC (released), and
+        # retry_failed_h after one failed. A failure used to bar the class for good: on 19 October 7 of 21
+        # classes were barred, two by a single PC that never mined a week before.
+        def held(g):
+            wait = 60 * self.cfg["retry_after_min"] if g["end_kind"] == "released" else 3600 * self.cfg["retry_failed_h"]
+            return t - g["ended"] < wait
+        skip = {g["class"] for g in st["groups"].values() if not g["ended"] or held(g)}
         # A class whose groups are all on a PC clearing the margin may get another group, up to max_per_class.
         for cls in {g["class"] for g in active}:
             mine = [g for g in active if g["class"] == cls]
             if len(mine) < self.cfg["max_per_class"] and all((self.pc_margin(g) or -1) >= self.cfg["min_margin"] for g in mine) \
-                    and not any(g["ended"] and g["end_kind"] == "failed" for g in st["groups"].values() if g["class"] == cls):
+                    and not any(g["ended"] and g["end_kind"] == "failed" and held(g)
+                                for g in st["groups"].values() if g["class"] == cls):
                 skip.discard(cls)
         cands = []
         for cls in KNOWN:

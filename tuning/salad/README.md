@@ -42,6 +42,7 @@ Config keys:
 | `max_per_class` | Most groups of one class (1). |
 | `search_every_min` | Minutes between searches while a slot is empty (60). |
 | `retry_after_min` | Minutes before a class released for want of a PC is tried again (60). |
+| `retry_failed_h` | Hours before a class whose group failed is tried again (24). |
 | `no_pc_streak`, `no_pc_hold_min` | A class whose last 3 groups got no PC goes last for 180 min. |
 | `upgrade_gain` | How much more an hour a class must be expected to make before it takes the weakest group's slot (0.05). `null` turns swaps off. |
 | `upgrade_every_min` | Minutes between swap checks while every slot is taken (15). |
@@ -83,9 +84,10 @@ With `yield: "auto"` the rules count on that credit ratio. On that day it would 
    priority with a GPU free. Classes that paid before come first, then by profit per hour. Create up to
    `max_new_per_hour` one-replica groups an hour (however the search was started), inside `max_active`
    and the quota. A class gets `max_per_class` groups, but a second only while every group of it is on a
-   PC clearing the margin, and never after one of its groups failed. Each class is tried once on an
-   account, as on the first one: a class whose group failed (rules 4 to 6) isn't created again. A class
-   whose groups only got no PC (released) is tried again `retry_after_min` later, but when its last
+   PC clearing the margin, and not within `retry_failed_h` of one of its groups failing. A class whose
+   group failed (rules 4 and 5) is tried again `retry_failed_h` later. It used to be barred for good: on
+   19 October that had barred 7 of 21 classes, the 4070 and 2070 by a single PC that sent no mining
+   reading a week before. A class whose groups only got no PC (released) is tried again `retry_after_min` later, but when its last
    `no_pc_streak` groups never got a PC at all, it goes after every other class for `no_pc_hold_min`. When a
    class's latest ended group never got a PC, its next group starts at the priority its latest group with a PC
    got it at, not at batch: on 14 October 4080s and 5080s only got PCs at medium or high, and each new group
@@ -104,7 +106,10 @@ With `yield: "auto"` the rules count on that credit ratio. On that day it would 
    sometimes fails for minutes at a time (6 in a row once), so both clocks count only up to the last
    log read that worked, and neither leaves a PC the pool got a share from in the last 6 min. After 10
    min of failed reads there's one `WARN` event.
-6. **"port 1200 blocked"** in the logs: reallocate.
+6. **"port 1200 blocked"** in the logs: reallocate, and put the PC on the bad list (below). Until
+   19 October the PC stayed off the list, and Salad handed the same blocked PCs out again: on 18–19 October
+   one cost six groups a move each, and two groups were deleted on a PC another group had already
+   found blocked.
 7. **Credit runs out:** Salad stops every group, and creating one returns `no_credits_available`. The
    watcher leaves stopped groups alone and stops creating. A group that stops after it had a PC is
    taken as this case. Bump `restart_token` after a top-up.
@@ -121,15 +126,17 @@ With `yield: "auto"` the rules count on that credit ratio. On that day it would 
 9. It only acts on groups in its own ledger.
 
 **Leaving a PC** means reallocating to another PC if the class has paid before, and deleting the group
-if it hasn't. The PC goes on a shared **bad list** for `bad_pc_hold_h`: a group that gets a PC another
-group left is moved off it at once, and that move doesn't count toward its 3. (On 12 October one 2080 Ti
+if it hasn't. The PC goes on a shared **bad list** for `bad_pc_hold_h`, and so does a PC that blocks the
+pool port (rule 6): a group that gets a PC another group left is moved off it at once, and that move
+doesn't count toward its 3. (On 12 October one 2080 Ti
 PC that overheated to 66 TH/s was handed to a second group two hours later.) A PC Salad takes back isn't
 bad. A class has **paid before** if it paid on the first account, or once a group of it here
 clears the margin over 10 readings with shares at the pool. Reallocations are capped at 3 a group, shared
 by rules 4 to 6; the next one deletes it, as released: running out of moves means bad PCs, not a bad
 class, so the class isn't barred from new groups.
 A deleted group counts as **released** when it never got going (no PC, or lost it) and **failed** when
-it mined badly (no shares, under cost, port blocked). Its deletion event carries the box's last log
+it mined badly on its first PC before the class had paid (no shares, under cost, never mined); a blocked
+port never fails a group. Its deletion event carries the box's last log
 lines, so it says why.
 
 **Spend** counts the group's price for every minute it has a PC (instance downloading, creating or

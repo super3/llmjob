@@ -433,6 +433,18 @@ class TestRule6PortBlocked(Base):
         self.assertEqual(g["end_kind"], "released")
         self.assertIn("already reallocated 3 times", g["end_reason"])
 
+    def test_a_blocked_pc_goes_on_the_bad_list_and_the_next_group_leaves_it_free(self):
+        a = self.group()
+        self.step(a, 1, "m1")
+        a["blocked"].append("m1")
+        self.step(a, 1, "m1")
+        self.assertEqual(self.x.st["bad_pcs"]["m1"]["why"], "PC blocks outbound port 1200")
+        b = self.group()
+        self.step(b, 1, "m1")                      # Salad hands the same PC to another group
+        self.assertEqual(b["reallocs"], 0)         # moved off at once, without using one of its 3
+        self.assertIn("(biz-rtx4080 left this PC at 08:02Z: PC blocks outbound port 1200); not counted toward its 3",
+                      self.events())
+
     def test_old_pc_still_showing_after_a_reallocation_is_not_a_new_pc(self):
         g = self.group()
         self.step(g, 1, "m1")
@@ -492,10 +504,36 @@ class TestSearch(Base):
         self.x.search()
         return [c[2]["name"] for c in self.http.made("POST", "/containers$")][1:]
 
-    def test_a_class_that_failed_is_not_tried_again(self):
+    def test_a_class_that_failed_is_not_tried_again_within_a_day(self):
         made = self.searched("failed", 300)
-        self.assertNotIn("biz-rtx4080", made)
+        self.assertNotIn("biz-rtx4080-2", made)
         self.assertIn("biz-rtx2060", made)  # classes not tried yet still are
+
+    def test_a_class_that_failed_is_tried_again_after_retry_failed_h(self):
+        self.assertNotIn("biz-rtx4080-2", self.searched("failed", 24 * 60 - 1))
+        self.setUp()
+        self.assertIn("biz-rtx4080-2", self.searched("failed", 24 * 60 + 1))
+        self.setUp()
+        self.x.cfg["retry_failed_h"] = 48
+        self.assertNotIn("biz-rtx4080-2", self.searched("failed", 24 * 60 + 1))
+
+    def test_an_old_failure_doesnt_stop_a_paying_class_getting_a_second_group(self):
+        old = self.group(cls="RTX 4080 (16 GB)", pri="low")
+        old["ended"], old["end_kind"] = self.clock[0], "failed"
+        self.clock[0] += 25 * 3600
+        g = self.paying_4080()
+        self.mine(g, "m1", 199, 6)
+        self.x.search()
+        self.assertIn("biz-rtx4080-3", [c[2]["name"] for c in self.http.made("POST", "/containers$")])
+
+    def test_a_recent_failure_still_stops_a_second_group(self):
+        old = self.group(cls="RTX 4080 (16 GB)", pri="low")
+        old["ended"], old["end_kind"] = self.clock[0], "failed"
+        self.clock[0] += 3600
+        g = self.paying_4080()
+        self.mine(g, "m1", 199, 6)
+        self.x.search()
+        self.assertNotIn("biz-rtx4080-3", [c[2]["name"] for c in self.http.made("POST", "/containers$")])
 
     def test_a_class_that_got_no_pc_is_tried_again_an_hour_later(self):
         self.assertEqual(self.searched("released", 59), ["biz-rtx2060", "biz-rtx4070"])
