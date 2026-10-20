@@ -190,7 +190,9 @@ lists them. They have `avg_hashrate_24h`, `avg_hashrate_3h` and `avg_hashrate_30
 watcher reads the 30-minute one. Their `valid` count includes the last finished 10-minute bucket twice, so
 it isn't used.
 
-**Status: on from 17 October with release v0.6.1: one group, then 5 (`kryptex_groups` 5) from 18 October.** The first try
+**Status: on from 17 October with release v0.6.1: one group, then 5 (`kryptex_groups` 5) from 18 October, and every
+slot (`kryptex_groups` 10, the same as `max_active`) from 10:02 pm EDT on 19 October.** A box mining on HeroMiners
+then keeps its PC and moves to Kryptex when it next gets one, as the rule below says. The first try
 redirected HeroMiners' names to Kryptex through `/etc/hosts`, which is read-only inside Salad containers:
 on 17 October that box stopped at `cannot create /etc/hosts: Read-only file system`, before box.sh ran.
 Release v0.6.1 (PR #265) added `--pool host:port` to the CLI, tested on an RTX 4090 for 26 minutes
