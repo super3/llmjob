@@ -1071,7 +1071,9 @@ class W:
                     # the miner's last line). It earns nothing meanwhile, and the rules wait (paused, pause_end).
                     if mach == g.get("machine"):
                         g["paused_t"] = max(g.get("paused_t") or 0, tm)
-                        g["pause_since"] = g.get("pause_since") or tm
+                        if not g.get("pause_since"):
+                            g["pause_since"] = tm
+                            event(f"PAUSED {name}: mining stopped on PC {(mach or '')[:8]} while Gemma answers a prompt")
                     continue
                 m = re.search(r"\[mining g(\d+)\] \d\d:\d\d:\d\d\s+([0-9.]+) TH/s · ([0-9,]+) accepted(?:.*?up (\S+ \S+))?", text)
                 if m:
@@ -1084,6 +1086,8 @@ class W:
                         continue
                     g["readings"].append([tm, mach, ths, acc, up])
                     if g.get("pause_since") and mach == g.get("machine") and tm > (g.get("paused_t") or 0):
+                        event(f"RESUMED {name}: mining again on PC {(mach or '')[:8]} after "
+                              f"{(tm - g['pause_since']) / 60:.0f} min paused for Gemma")
                         g["pause_since"] = None   # mining again
                     g["readings"] = [r for r in g["readings"] if t - r[0] < 7200]
                     # The pool this reading was mined on. One from the PC a box left at its last switch, or from

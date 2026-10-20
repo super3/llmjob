@@ -2758,6 +2758,7 @@ class TestGemma(Base):
         self.clock[0] = T0 + 500
         self.x.round()
         self.assertEqual((g["pause_since"], g["paused_t"]), (T0 + 360, T0 + 420))
+        self.assertEqual(self.events().count("PAUSED biz-rtx4080: mining stopped on PC m1 while Gemma answers a prompt"), 1)
         self.assertTrue(self.x.paused(g, self.clock[0]))
         with open(os.path.join(TMP, "report.md")) as f:
             self.assertIn(f"| 🧠{w.NB}4080{w.NB}batch |", f.read())
@@ -2766,6 +2767,7 @@ class TestGemma(Base):
         self.clock[0] = T0 + 600
         self.x.round()
         self.assertIsNone(g["pause_since"])
+        self.assertIn("RESUMED biz-rtx4080: mining again on PC m1 after 3 min paused for Gemma", self.events())
         self.assertEqual(g["paused_t"], T0 + 420)               # its end still gives the next readings their warm-up
         self.assertFalse(self.x.paused(g, self.clock[0]))
 

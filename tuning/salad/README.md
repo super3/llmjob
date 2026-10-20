@@ -179,7 +179,8 @@ started with until it restarts. It comes back on the new version about 2 minutes
 
 With config `llm` on, each box runs the miner in auto mode (`--mode auto`) and serves the LLMJob network's jobs
 (no `--no-serve`), with release `llm_ver` (v0.6.5) or later. The model is the CLI's default, Gemma-4-E4B (Q4_K_M,
-4.6 GB).
+4.6 GB). On since 10:23 pm EDT on 19 October, as asked: within two minutes every live group had the new
+command (`GEMMA ON` events), and no box was moved.
 
 - **The miner comes first.** From release v0.6.1 the CLI makes only the VRAM plan before the miner starts; it
   downloads Gemma and starts llama-server once the miner is running, so a first run's download costs no mining
@@ -195,7 +196,7 @@ With config `llm` on, each box runs the miner in auto mode (`--mode auto`) and s
   when a node first shows up, then at most once a day, and each Salad box is a new node on each PC. The CLI prints
   no hashrate meanwhile, and box.sh used to repeat the miner's last line, which the watcher reads as a dead miner
   (left after 6 minutes). Now box.sh says `paused for a prompt` from the CLI's own pause lines, and the watcher:
-  - shows the box as 🧠 in the report;
+  - shows the box as 🧠 in the report, and logs `PAUSED` when a pause starts and `RESUMED` with its length;
   - counts the "no mining reading" and "no share" rules from the end of the pause, so a pause doesn't cost a PC,
     counting at most 15 minutes of one pause (the CLI resumes after 10, so a longer one is a miner gone quiet);
   - starts the margin rule's 2-minute warm-up again from the first reading after a pause, so the card coming back
