@@ -875,6 +875,14 @@ async function run(argv) {
 
   const stats = initStats(Date.now());
   let miner = null;
+  // The numbers the board and the stats file publish: no hashrate while the
+  // pool connection is down or the miner is stopped (demand mode serving the
+  // LLM), since the pool is getting none. The stats file used to read the raw
+  // snapshot, so HiveOS showed the last hashrate while the GPU served.
+  const poolSnapshot = () => {
+    const live = snapshot(stats, Date.now());
+    return miner && !miner.poolConnected() ? offPool(live) : live;
+  };
   let reporter = null;
   let statsWriter = null;
   // Set once the auto plan is known, for demand mode only: the node id this
@@ -977,16 +985,11 @@ async function run(argv) {
       // just like the GUI — otherwise the board shows 0 GB for a CLI-driven rig.
       //
       // nvidia-smi lists every card, mining or not. When --gpu-index or
-      // PEARL_GPU_INDEX chose the cards, only those get a row. Given more cards
-      // than the engine reports, buildMinerReports assumes an engine that lumps
-      // its cards together: it posts a row for every card and splits the
-      // hashrate evenly, so a card turned off in HiveOS would show as mining.
+      // PEARL_GPU_INDEX chose the cards, only those get a row, so a card turned
+      // off in HiveOS is not on the board at all.
       const miningCards = new Set(settings.gpus.map((g) => g.index));
       const report = async () => {
-        // No hashrate on the board while the pool connection is down: the pool is
-        // getting none, and the board should agree with it.
-        const live = snapshot(stats, Date.now());
-        const snap = miner && !miner.poolConnected() ? offPool(live) : live;
+        const snap = poolSnapshot();
         const allVram = await detectGpusVram();
         const gpuVram = gpuPick ? allVram.filter((v) => miningCards.has(Number(v.index))) : allVram;
         // Tag the cards serving the local LLM so the board shows which model each
@@ -1380,7 +1383,7 @@ async function run(argv) {
       probe.detectPciBusIds().then((ids) => { pciBusIds = ids; });
       const writeStats = () => {
         try {
-          const payload = statsFilePayload(snapshot(stats, Date.now()), {
+          const payload = statsFilePayload(poolSnapshot(), {
             version: pkg.version,
             nowMs: Date.now(),
             mode: normalizeMode(settings.mode),

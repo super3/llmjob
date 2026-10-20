@@ -801,6 +801,31 @@ describe('mining', () => {
     await p;
   });
 
+  // HiveOS reads the stats file, and it must agree with the board. The real
+  // engine also answers poolConnected() false once it has stopped, which is how
+  // demand mode leaves it while the LLM serves. The file used to keep the last
+  // hashrate through both.
+  test('the stats file reports no hashrate while the pool hears none', async () => {
+    const m = load();
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--stats-file', '/tmp/s.json']);
+    await settle();
+    const miner = m.PearlEngine.instances[0];
+    miner.emit('event', { type: 'status', gpuIndex: 0, hashrate: 120, accepted: 4 });
+    const written = () => {
+      m.fs.writeFileSync.mockClear();
+      intervalFor(10000).fn();
+      const w = JSON.parse(m.fs.writeFileSync.mock.calls[0][1]);
+      return [w.ths, w.accepted, w.gpus.map((g) => g.hashrate)];
+    };
+    expect(written()).toEqual([120, 4, [120]]);
+
+    miner.poolConnected.mockReturnValue(false);
+    expect(written()).toEqual([0, 4, [0]]);
+
+    miner.emit('stopped', 0);
+    await p;
+  });
+
   // A failed system lookup falls back (shared/poolLookup), and the CLI says
   // which address it used. It saves the address once the pool takes the login
   // there, not before.

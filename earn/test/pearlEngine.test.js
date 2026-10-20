@@ -172,18 +172,24 @@ describe('PearlEngine — whether the pool is connected', () => {
   // seconds. A report in that gap used to put the rig on the board at 0 TH/s
   // for a minute.
   test('a drop counts only once it has lasted POOL_GRACE_MS', () => {
+    jest.useFakeTimers({ doNotFake: ['Date'] });
     const now = jest.spyOn(Date, 'now').mockReturnValue(1000000);
     try {
       const b = boot();
+      // The miner opens the connection again after its backoff. This fake hands
+      // back the same socket each time.
+      const reconnect = () => { jest.runOnlyPendingTimers(); b.sock.emit('connect'); };
       b.e.start({ address: ADDR, worker: 'rig01', endpoint: 'us.pearl.herominers.com:1200' });
       b.sock.emit('connect');
       b.sock.emit('close'); // never logged in: nothing to bridge
       expect(b.e.poolConnected()).toBe(false);
+      reconnect();
       b.sock.emit('data', AUTH_OK);
       b.sock.emit('close');
       expect(b.e.poolConnected(1000000 + POOL_GRACE_MS - 1)).toBe(true);
       expect(b.e.poolConnected(1000000 + POOL_GRACE_MS)).toBe(false);
       // Back before then: the next drop starts its own count.
+      reconnect();
       b.sock.emit('data', AUTH_OK);
       now.mockReturnValue(2000000);
       b.sock.emit('close');
@@ -192,6 +198,7 @@ describe('PearlEngine — whether the pool is connected', () => {
       b.e.stop();
     } finally {
       now.mockRestore();
+      jest.useRealTimers();
     }
   });
 
@@ -410,6 +417,29 @@ describe('start() reports whether the engine actually started', () => {
     e.on('error', (err) => errs.push(err.message));
     expect(e.start({ address: 'prl1p', endpoint: 'pool:1200' })).toBe(false);
     expect(errs.join(' ')).toMatch(/rank-128/);
+  });
+
+  // The app does not stop the engine after a start that failed, so a poller
+  // started anyway ran nvidia-smi every 5 s until the user pressed STOP.
+  test('a start that failed reads no temperatures and keeps no card', () => {
+    jest.useFakeTimers();
+    try {
+      const readTemps = jest.fn(() => Promise.resolve({ 0: 70 }));
+      const e = new PearlEngine({
+        connect: () => ({ on() {}, write() {}, destroy() {} }),
+        createCore: () => { throw new Error('not enough free VRAM for the rank-128 profile'); },
+        readTemps,
+        tempPollMs: 1000,
+      });
+      e.on('error', () => {});
+      expect(e.start({ address: 'prl1p', endpoint: 'pool:1200', gpu: 'RTX 4090' })).toBe(false);
+      jest.advanceTimersByTime(5000);
+      expect(readTemps).not.toHaveBeenCalled();
+      expect(e.tempTimer).toBeNull();
+      expect(e.cards.size).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test('a miner that starts is not reported as failed', () => {

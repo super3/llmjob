@@ -97,15 +97,17 @@ describe('formatUpdate', () => {
     });
   });
 
+  // The version rides along on its own too: the Mine view's banner reads it.
+  // It used to be only in `text`, so the banner never named the update.
   test('ready with a version reveals the restart affordance', () => {
     expect(formatUpdate('ready', { version: '0.1.2' })).toEqual({
-      phase: 'ready', text: 'Update v0.1.2 ready', show: true, ready: true,
+      phase: 'ready', text: 'Update v0.1.2 ready', show: true, ready: true, version: '0.1.2',
     });
   });
 
   test('ready without a version', () => {
     expect(formatUpdate('ready')).toEqual({
-      phase: 'ready', text: 'Update ready', show: true, ready: true,
+      phase: 'ready', text: 'Update ready', show: true, ready: true, version: null,
     });
   });
 

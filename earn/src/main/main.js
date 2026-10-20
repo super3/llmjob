@@ -619,6 +619,11 @@ async function startMining(settings, llmCoRuns) {
   if (ticker) clearInterval(ticker);
   ticker = setInterval(() => send('miner:stats', statsView(snapshot(stats, Date.now()))), 1000);
 
+  // PEARL_GPU_INDEX can narrow the cards (read here so the first board report
+  // already knows). A value the app can't use, and a listed card nvidia-smi
+  // doesn't show, are logged below rather than dropped quietly.
+  const gpuEnv = readGpuIndexEnv(process.env);
+
   // Publish live status to the network page's board while mining, including live
   // GPU VRAM (used/total) so the board shows headroom for co-running LLMs.
   const report = async () => {
@@ -626,7 +631,10 @@ async function startMining(settings, llmCoRuns) {
     // is getting none, and the board should agree with it.
     const live = snapshot(stats, Date.now());
     const snap = miner && !miner.poolConnected() ? offPool(live) : live;
-    const gpuVram = await detectGpusVram();
+    // nvidia-smi lists every card. A card PEARL_GPU_INDEX left out does not
+    // mine, so it gets no row, as in the CLI.
+    const allVram = await detectGpusVram();
+    const gpuVram = gpuEnv.indices ? allVram.filter((v) => gpuEnv.indices.includes(Number(v.index))) : allVram;
     // Tag the cards serving the local LLM so the board shows which model each GPU
     // runs; null when the fleet isn't up (mining only) → blank on the board.
     // `nodeId` rides along whenever the fleet is up, because that is now exactly
@@ -664,9 +672,6 @@ async function startMining(settings, llmCoRuns) {
   // has already stopped would leave an engine nobody is holding.
   const epoch = miningEpoch;
   if (clearedCudaLine) send('miner:log', { level: 'info', line: clearedCudaLine });
-  // PEARL_GPU_INDEX can narrow the cards. A value the app can't use, and a
-  // listed card nvidia-smi doesn't show, are logged rather than dropped quietly.
-  const gpuEnv = readGpuIndexEnv(process.env);
   if (gpuEnv.warning) send('miner:log', { level: 'warn', line: gpuEnv.warning });
   // The same nvidia-smi round also reads each card's compute capability and the
   // driver version, which decide whether this rig loads the CUDA 12.8 core or
@@ -2112,6 +2117,7 @@ function setPrefs(change) {
 let startMiningOnLaunch = hiddenLaunch;
 
 ipcMain.handle('settings:get', () => {
+  const saved = loadSettings();
   const s = withLiveRegion(Object.assign(
     // Both clients default to the shared DEFAULT_MODE ('auto': mine + serve the
     // LLM, balanced from free VRAM).
@@ -2125,8 +2131,11 @@ ipcMain.handle('settings:get', () => {
       region: DEFAULTS.region, worker: defaultWorker(), address: '', mdlAddress: '', mode: DEFAULT_MODE,
       cpuMining: false, xmrAddress: '', cpuThreads: 0,
     },
-    loadSettings(),
+    saved,
   ));
+  // The renderer picks the nearest region only when none was saved. The region
+  // above is filled in either way, so it can't tell by itself.
+  s.regionSaved = !!saved.region;
   // The renderer already resumes a START after an update; a launch at login asks
   // for the same thing. It starts only what START could: with no payout
   // address, an LLM-only or Auto run, or the CPU miner.
@@ -2147,7 +2156,9 @@ ipcMain.handle('config:get', () => {
   const plan = cpuPlan(0);
   return {
     regions: REGIONS,
-    defaults: DEFAULTS,
+    // The worker default is this machine's, as settings:get fills it, so a
+    // Worker box cleared in Settings falls back to it rather than to "rig01".
+    defaults: Object.assign({}, DEFAULTS, { worker: defaultWorker() }),
     platform: { minerSupported: minerSupported(process.platform) },
     cpu: {
       available: plan.available, auto: plan.auto, reason: plan.reason, canMine: cpuPlan(1).threads > 0,

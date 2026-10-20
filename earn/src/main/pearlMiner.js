@@ -97,6 +97,11 @@ class PearlMiner extends EventEmitter {
     // engine lets a routine reconnect pass without telling the board (see
     // PearlEngine.poolConnected).
     this.lostAt = null;
+    // Connections in a row that closed before the pool took the login, and the
+    // last socket error said. A pool out of reach is retried every few seconds,
+    // and saying so each time filled the log (see _openSocket).
+    this.poolFails = 0;
+    this.lastSockError = null;
     this.job = null;          // the current parsed job the core is searching
     this.buf = '';            // partial-line accumulator for the socket
     this.submitId = 100;      // submit request ids start clear of the authorize id (1)
@@ -133,6 +138,8 @@ class PearlMiner extends EventEmitter {
     this.settings = settings;
     this.running = true;
     this.authorized = false;
+    this.poolFails = 0;
+    this.lastSockError = null;
     this.job = null;
     this.buf = '';
     // Cleared here, not left from the last run: if no core starts this time, the
@@ -401,9 +408,15 @@ class PearlMiner extends EventEmitter {
       this.emit('log', { level: 'info', line: 'connecting to ' + host + ':' + port + ' · worker ' + worker });
       sock.write(encode(buildAuthorize(wallet, worker, host)));
     });
-    sock.on('data', (chunk) => this._onData(chunk, wallet, worker));
+    // Only the current socket is heard (see 'close' below).
+    sock.on('data', (chunk) => { if (this.sock === sock) this._onData(chunk, wallet, worker); });
     sock.on('error', (err) => {
-      this.emit('log', { level: 'error', line: 'pool socket error: ' + err.message });
+      // Said once, not on every retry while the pool stays out of reach. A
+      // different error is said again, and so is the first one after a login.
+      if (err.message !== this.lastSockError) {
+        this.emit('log', { level: 'error', line: 'pool socket error: ' + err.message });
+      }
+      this.lastSockError = err.message;
       // Structured, because a name that never resolves and a pool that is down
       // look identical in the log line above. The host says so once, naming the
       // host it tried — a rig that cannot do DNS otherwise just looks broken.
@@ -412,7 +425,12 @@ class PearlMiner extends EventEmitter {
         dns: /ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(String(err.message)),
       });
     });
-    sock.on('close', () => this._onClose(host, port, wallet, worker));
+    sock.on('close', () => {
+      // A socket this miner already let go of: stop() destroyed it, and a start
+      // since may have opened another. Its close must not touch that one.
+      if (this.sock !== sock) return;
+      this._onClose(host, port, wallet, worker);
+    });
   }
 
   _onData(chunk, wallet, worker) {
@@ -431,6 +449,8 @@ class PearlMiner extends EventEmitter {
       case 'auth-ok':
         this.authorized = true;
         this.lostAt = null;
+        this.poolFails = 0;
+        this.lastSockError = null;
         // The address this socket reached, which the pool lookup saves as one
         // that worked (see shared/poolLookup). The reply came in on this.sock.
         this.emit('authorized', {
@@ -793,6 +813,14 @@ class PearlMiner extends EventEmitter {
   // since moved, and a bad submit earns a ban. Stale hits are dropped silently —
   // they are not errors, just races.
   _onHit(hit, wallet, worker, device) {
+    // The pool connection is down (see _onClose), so there is nowhere to send
+    // it, and the next connection brings jobs of its own. Said, because this is
+    // a share lost to the reconnect, not a race. It used to be written to the
+    // closed socket, which drops it without a word.
+    if (this.running && !this.sock) {
+      this.emit('log', { level: 'info', line: 'dropping a hit found while the pool connection is down' });
+      return;
+    }
     const job = this.job;
     if (!job || hit.jobId !== job.jobId) return;
     if (!meetsTarget(hit.jackpotHash, shareBound(job.target, this.profile()))) {
@@ -817,11 +845,27 @@ class PearlMiner extends EventEmitter {
 
   _onClose(host, port, wallet, worker) {
     if (this.authorized) this.lostAt = Date.now();
+    else this.poolFails++;
     this.authorized = false;
+    // The socket goes, and what belonged to it: the pool will not answer the
+    // submits sent on it, and the next connection sends jobs of its own, so a
+    // share of this one must not reach it. The cores keep searching the job
+    // they have, so a brief pool blip does not idle the GPU; a hit found before
+    // the next job is dropped (see _onHit).
+    this.sock = null;
+    this.job = null;
+    this.pending.clear();
+    this.buf = '';
     if (!this.running) return;
-    // The core keeps its current job loaded across a reconnect, so a brief pool
-    // blip does not idle the GPU. Reopen after a backoff.
-    this.emit('log', { level: 'info', line: 'pool connection closed; reconnecting' });
+    // Reopen after a backoff. Said for the first close and the first retry
+    // that fails, not for every retry while the pool stays out of reach.
+    if (this.poolFails <= 1) {
+      this.emit('log', {
+        level: 'info',
+        line: 'pool connection closed; reconnecting'
+          + (this.poolFails ? ' (until it connects, the retries are not logged)' : ''),
+      });
+    }
     this._scheduleReconnect(host, port, wallet, worker);
   }
 

@@ -139,6 +139,10 @@ class PearlEngine extends EventEmitter {
     // this return dropped the only signal that the engine is dead rather than
     // merely quiet.
     const ok = m.start(Object.assign({}, settings, { profile: this.profile }));
+    // A start that failed mines on no card, so there is nothing to name and no
+    // temperature to read. Nothing stops the engine after it in the app, so a
+    // poller started here ran nvidia-smi every few seconds until STOP.
+    if (!ok) return ok;
 
     // The cores have now chosen their cards, so stop guessing at them. The GPU
     // name used to be detected separately (nvidia-smi's first card) and the index

@@ -39,27 +39,39 @@ describe('buildMinerReports', () => {
     expect(none).toMatchObject({ gpu: null, vramUsedMb: 0, vramTotalMb: 0 });
   });
 
-  test('safety net: engine under-enumerates GPUs → one row per physical card, VRAM per card, hashrate split evenly', () => {
-    // The engine logged a single aggregate line (one card, whole-rig hashrate),
-    // but nvidia-smi sees three cards. Don't collapse the rig into one 24 GB row.
-    const snap = { gpu: 'RTX 3070 Laptop GPU', total: 172.8,
-      gpus: [{ index: 0, gpu: 'RTX 3070 Laptop GPU', hashrate: 172.8, accepted: 30 }] };
+  // The engine mines on card 0 only: card 1's core refused because the local
+  // LLM holds its VRAM. Card 1 still shows, with its VRAM and its model, at 0.
+  // The rig's hashrate used to be split evenly over both, which put an idle
+  // card on the board at half the real card's rate.
+  test('a card the engine does not report reads 0, and each card keeps its own numbers', () => {
+    const snap = { gpu: 'RTX 4090', total: 172.8,
+      gpus: [{ index: 0, gpu: 'RTX 4090', hashrate: 172.8, accepted: 30 }] };
     const vram = [
-      { index: 0, name: 'RTX 3070 Laptop GPU', usedMb: 2000, totalMb: 8192 },
-      { index: 1, name: 'RTX 3070 Laptop GPU', usedMb: 2000, totalMb: 8192 },
-      { index: 2, name: 'RTX 3070 Laptop GPU', usedMb: 2000, totalMb: 8192 },
+      { index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24564 },
+      { index: 1, name: 'RTX 3090', usedMb: 20000, totalMb: 24576 },
     ];
-    const rows = buildMinerReports({ address: 'prl1pabc', worker: 'IPTU', region: 'us2' }, snap, vram);
-    expect(rows).toHaveLength(3);
-    expect(rows.map((r) => r.worker)).toEqual(['IPTU/gpu0', 'IPTU/gpu1', 'IPTU/gpu2']);
-    expect(rows.every((r) => r.gpu === 'RTX 3070 Laptop GPU')).toBe(true);
-    expect(rows.every((r) => r.vramTotalMb === 8192 && r.vramUsedMb === 2000)).toBe(true);
-    expect(rows.every((r) => r.hashrate === 57.6)).toBe(true);       // 172.8 / 3
-    expect(rows.reduce((a, r) => a + r.hashrate, 0)).toBeCloseTo(172.8); // total preserved
-    expect(rows.every((r) => r.accepted === 10)).toBe(true);         // 30 / 3
+    const rows = buildMinerReports({ address: 'prl1pabc', worker: 'IPTU', region: 'us2' }, snap, vram, '0.6.6',
+      { model: 'Gemma-4-E4B-it-Q4_K_M', indices: [1] });
+    expect(rows).toEqual([
+      { address: 'prl1pabc', worker: 'IPTU/gpu0', region: 'us2', version: '0.6.6', gpu: 'RTX 4090', hashrate: 172.8, accepted: 30, vramUsedMb: 2000, vramTotalMb: 24564, llmModel: null, nodeId: null },
+      { address: 'prl1pabc', worker: 'IPTU/gpu1', region: 'us2', version: '0.6.6', gpu: 'RTX 3090', hashrate: 0, accepted: 0, vramUsedMb: 20000, vramTotalMb: 24576, llmModel: 'Gemma-4-E4B-it-Q4_K_M', nodeId: null },
+    ]);
   });
 
-  test('safety net with no engine hashrate/shares and a nameless zero-VRAM card falls back cleanly', () => {
+  test('a card the engine reports that nvidia-smi does not list still gets a row', () => {
+    const snap = { gpus: [
+      { index: 0, gpu: 'RTX 4090', hashrate: 200, accepted: 10 },
+      { index: 1, gpu: 'RTX 4060', hashrate: 100, accepted: 4 },
+    ] };
+    const rows = buildMinerReports({ address: 'prl1pabc', worker: 'rig01' }, snap,
+      [{ index: 0, name: 'RTX 4090', usedMb: 4096, totalMb: 24564 }]);
+    expect(rows.map((r) => [r.worker, r.gpu, r.hashrate, r.vramTotalMb])).toEqual([
+      ['rig01/gpu0', 'RTX 4090', 200, 24564],
+      ['rig01/gpu1', 'RTX 4060', 100, 0],
+    ]);
+  });
+
+  test('no engine hashrate/shares and a nameless zero-VRAM card falls back cleanly', () => {
     const snap = { gpus: [{ index: 0, gpu: 'RTX 3070' }] };   // engine name, but no hashrate/accepted
     const vram = [
       { index: 0, name: null, usedMb: 0, totalMb: 0 },        // no probe name → engine name; zero VRAM
@@ -71,7 +83,7 @@ describe('buildMinerReports', () => {
     expect(rows[1]).toMatchObject({ gpu: 'RTX 3070', vramTotalMb: 8192 });
   });
 
-  test('safety net with no name anywhere reports a null gpu', () => {
+  test('no name anywhere reports a null gpu', () => {
     const snap = { gpus: [{ index: 0 }] };                    // no engine name
     const vram = [
       { index: 0, name: null, usedMb: 1, totalMb: 2 },
@@ -81,7 +93,7 @@ describe('buildMinerReports', () => {
     expect(rows.every((r) => r.gpu === null)).toBe(true);
   });
 
-  test('safety net does NOT trigger when the engine already reports every card (per-card hashrate kept)', () => {
+  test('the engine reports every card: per-card hashrate kept', () => {
     const snap = { gpus: [
       { index: 0, gpu: 'RTX 4090', hashrate: 200, accepted: 10 },
       { index: 1, gpu: 'RTX 4060 Ti', hashrate: 100, accepted: 4 },
@@ -91,10 +103,10 @@ describe('buildMinerReports', () => {
       { index: 1, name: 'RTX 4060 Ti', usedMb: 2000, totalMb: 16380 },
     ];
     const rows = buildMinerReports({ address: 'prl1pabc', worker: 'rig01' }, snap, vram);
-    expect(rows.map((r) => r.hashrate)).toEqual([200, 100]);   // measured, not split
+    expect(rows.map((r) => r.hashrate)).toEqual([200, 100]);
   });
 
-  test('safety net needs nvidia-smi: one aggregate line with no probe stays a single row', () => {
+  test('one engine card with no nvidia-smi stays a single bare row', () => {
     const snap = { gpu: 'RTX 3070', total: 57.6, gpus: [{ index: 0, gpu: 'RTX 3070', hashrate: 57.6 }] };
     const rows = buildMinerReports({ address: 'prl1pabc', worker: 'rig01' }, snap, []);
     expect(rows).toHaveLength(1);
@@ -121,18 +133,6 @@ describe('buildMinerReports', () => {
     expect(rows.map((r) => r.worker)).toEqual(['rig01/gpu0', 'rig01/gpu1']);
     expect(rows.every((r) => r.gpu === 'RTX 4070' && r.hashrate === 0)).toBe(true);
     expect(rows[1]).toMatchObject({ vramUsedMb: 500, vramTotalMb: 12282 }); // each card's own VRAM, not summed
-  });
-
-  test('multi-GPU rig, no per-card data, with a rig-level total → split evenly across the cards', () => {
-    const snap = { gpu: 'RTX 4090', total: 100, accepted: 7, gpus: [] };
-    const vram = [
-      { index: 0, name: 'RTX 4090', usedMb: 4096, totalMb: 24564 },
-      { index: 1, name: 'RTX 4090', usedMb: 2048, totalMb: 24564 },
-    ];
-    expect(buildMinerReports({ address: 'prl1pabc', worker: 'rig01', region: 'us2' }, snap, vram)).toEqual([
-      { address: 'prl1pabc', worker: 'rig01/gpu0', region: 'us2', version: null, gpu: 'RTX 4090', hashrate: 50, accepted: 4, vramUsedMb: 4096, vramTotalMb: 24564, llmModel: null, nodeId: null },
-      { address: 'prl1pabc', worker: 'rig01/gpu1', region: 'us2', version: null, gpu: 'RTX 4090', hashrate: 50, accepted: 4, vramUsedMb: 2048, vramTotalMb: 24564, llmModel: null, nodeId: null },
-    ]);
   });
 
   test('single GPU, no per-card data → one bare-worker row named from the snapshot', () => {
@@ -197,8 +197,8 @@ describe('buildMinerReports', () => {
     expect(local.map((r) => r.nodeId)).toEqual([null, null]);
   });
 
-  test('serving tags flow through the split-rows and single-row paths', () => {
-    // Split-rows path: engine under-enumerates, both physical cards serve.
+  test('serving tags flow through the per-card and single-row paths', () => {
+    // Per-card path: the engine reports one card, both physical cards serve.
     const splitSnap = { gpu: 'RTX 4090', total: 172.8, gpus: [{ index: 0, gpu: 'RTX 4090', hashrate: 172.8 }] };
     const splitVram = [
       { index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24564 },
@@ -244,11 +244,11 @@ describe('buildMinerReports', () => {
       expect(buildMinerReports(settings, snap, vram(1)).map((r) => r.gpu)).toEqual([FULL]);
     });
 
-    test('the split-rows path, both ways in', () => {
+    test('a multi-GPU rig, with and without engine data for every card', () => {
       // multi-GPU rig with no per-card engine data
       const aggregate = { gpu: SHORT, total: 620, accepted: 6, gpus: [] };
       expect(buildMinerReports(settings, aggregate, vram(2)).map((r) => r.gpu)).toEqual([FULL, FULL]);
-      // engine under-enumerated the cards
+      // the engine reports one of the two cards
       const under = { gpu: SHORT, total: 620, accepted: 6,
         gpus: [{ index: 0, gpu: SHORT, hashrate: 620, accepted: 6 }] };
       expect(buildMinerReports(settings, under, vram(2)).map((r) => r.gpu)).toEqual([FULL, FULL]);

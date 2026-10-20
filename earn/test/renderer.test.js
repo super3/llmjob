@@ -9,6 +9,9 @@
 
 const fs = require('fs');
 const path = require('path');
+// main sends exactly what this builds; a hand-written payload once hid that the
+// banner's version never arrived.
+const { formatUpdate } = require('../src/shared/updateStatus');
 
 const RENDERER = path.join(__dirname, '..', 'src', 'renderer', 'renderer.js');
 const HTML = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'index.html'), 'utf8');
@@ -53,8 +56,9 @@ class ROStub {
 function makeFullApi() {
   const cbs = {};
   const api = {
+    // A rig that has STARTed before: main says its region was saved.
     getSettings: jest.fn().mockResolvedValue({
-      address: ADDR, worker: 'w1', region: 'us2',
+      address: ADDR, worker: 'w1', region: 'us2', regionSaved: true,
     }),
     getConfig: jest.fn().mockResolvedValue({
       regions: {
@@ -63,8 +67,9 @@ function makeFullApi() {
       },
       // main always sends these. The region fallback reads defaults.region
       // rather than carrying its own copy of the default, which is what used to
-      // pin it to a pool-specific id.
-      defaults: { region: 'us2' },
+      // pin it to a pool-specific id. The worker is this machine's own default
+      // (main's defaultWorker()).
+      defaults: { region: 'us2', worker: 'this-rig' },
     }),
     detectGpu: jest.fn().mockResolvedValue('RTX 4090'),
     detectRegion: jest.fn().mockResolvedValue('eu1'),
@@ -176,7 +181,10 @@ describe('boot with the full bridge', () => {
     const opts = Array.from($('set-region').options).map((o) => o.value);
     expect(opts).toEqual(['us2', 'eu1']);
     expect($('set-region').options[0].textContent).toBe('US US · Dallas');
-    expect($('set-region').value).toBe('eu1');
+    // The saved region stands. Detection used to replace it on every launch,
+    // and the next START saved the replacement.
+    expect($('set-region').value).toBe('us2');
+    expect(api.detectRegion).not.toHaveBeenCalled();
     expect($('device-label').textContent).toBe('RTX 4090');
     expect($('balance').textContent).toBe('1,234.568');
     expect($('balance-usd').textContent).toBe('≈ $12.30');
@@ -191,6 +199,40 @@ describe('boot with the full bridge', () => {
     expect($('chat-stopped-model').textContent).toBe('the local model');
     expect($('api-model').textContent).toBe('—');
     expect($('api-model-meta').textContent).toBe('');
+  });
+
+  // The window lives on in the tray for weeks, with a line for every accepted
+  // share. The Logs view used to keep every one of them.
+  it('keeps the last 2,000 log lines', async () => {
+    const { api, cbs } = makeFullApi();
+    await boot({ api });
+    for (let i = 1; i <= 2005; i++) cbs.log({ level: 'info', line: 'line ' + i });
+    const lines = $('log-term').querySelectorAll('.ln');
+    expect(lines).toHaveLength(2000);
+    expect(lines[0].textContent).toMatch(/ line 6$/);
+    expect(lines[1999].textContent).toMatch(/ line 2005$/);
+  });
+
+  // A fresh install has no region of its own yet, so it takes the nearest.
+  it('picks the nearest region only when none was saved', async () => {
+    const { api } = makeFullApi();
+    api.getSettings.mockResolvedValue({ address: ADDR, worker: 'w1', region: 'us2', regionSaved: false });
+    await boot({ api });
+    expect(api.detectRegion).toHaveBeenCalledTimes(1);
+    expect($('set-region').value).toBe('eu1');
+  });
+
+  // A cleared Worker box falls back to this machine's name, which the box shows
+  // as its placeholder. "rig01" put every rig on one address under one name.
+  it('falls back to this machine\'s worker name, not rig01', async () => {
+    const { api } = makeFullApi();
+    api.getSettings.mockResolvedValue({ address: ADDR, region: 'us2', regionSaved: true });
+    await boot({ api });
+    expect($('set-worker').value).toBe('this-rig');
+    expect($('set-worker').placeholder).toBe('this-rig');
+    setInput($('set-worker'), '  ');
+    click($('btn-start'));
+    expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ worker: 'this-rig' }));
   });
 
   it('navigates tabs, settings, logs and unknown views', async () => {
@@ -330,7 +372,7 @@ describe('boot with the full bridge', () => {
     await boot({ api });
     expect($('update-bar').hidden).toBe(true);
 
-    cbs.update({ show: true, ready: true, version: '9.9.9', text: 'Update ready' });
+    cbs.update(formatUpdate('ready', { version: '9.9.9' }));
     expect($('update-bar').hidden).toBe(false);
     expect($('update-bar-text').textContent).toBe('Update downloaded (v9.9.9) — restart to apply.');
 
@@ -346,7 +388,7 @@ describe('boot with the full bridge', () => {
   it('omits the version when the update payload has none', async () => {
     const { api, cbs } = makeFullApi();
     await boot({ api });
-    cbs.update({ show: true, ready: true, text: 'Update ready' });
+    cbs.update(formatUpdate('ready'));
     expect($('update-bar-text').textContent).toBe('Update downloaded — restart to apply.');
   });
 
@@ -357,7 +399,7 @@ describe('boot with the full bridge', () => {
     const { api, cbs } = makeFullApi();
     delete api.installUpdate;
     await boot({ api });
-    cbs.update({ show: true, ready: true, version: '9.9.9', text: 'Update ready' });
+    cbs.update(formatUpdate('ready', { version: '9.9.9' }));
     expect($('update-bar').hidden).toBe(false);
     expect(() => click($('update-bar-btn'))).not.toThrow();
   });
@@ -371,7 +413,7 @@ describe('boot with the full bridge', () => {
     await boot({ api });
     expect($('update-bar-btn').textContent).toBe('Update & restart');
 
-    cbs.update({ show: true, ready: true, version: '9.9.9', text: 'Update ready' });
+    cbs.update(formatUpdate('ready', { version: '9.9.9' }));
     expect($('btn-check-update').textContent).toBe('Update & restart');
 
     click($('btn-logs'));
@@ -485,7 +527,7 @@ describe('boot with the full bridge', () => {
     click(document.querySelector('[data-mode="auto"]'));
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenCalledWith({
-      address: ADDR, worker: 'w1', region: 'eu1', mode: 'auto', mdlAddress: '', shareLlm: false,
+      address: ADDR, worker: 'w1', region: 'us2', mode: 'auto', mdlAddress: '', shareLlm: false,
       cpuMining: false, xmrAddress: '', cpuThreads: 0,
     });
     expect($('addr-static').hidden).toBe(false);
@@ -493,8 +535,9 @@ describe('boot with the full bridge', () => {
     expect($('btn-stop').hidden).toBe(false);
     expect($('mine-dot').className).toBe('dot2 on');
     expect($('log-term').textContent).toMatch(/starting LLMJob Earn/);
-    // live stats: multi-point chart + gpu label
-    cbs.stats({ total: '1.2', acceptedLabel: '34', uptime: '5m 00s', estDay: '$0.42', gpu: 'gpu-live', points: [1, 2, 3] });
+    // live stats: multi-point chart + gpu label. main sends temp 0 until the
+    // engine has a reading.
+    cbs.stats({ total: '1.2', acceptedLabel: '34', uptime: '5m 00s', estDay: '$0.42', gpu: 'gpu-live', temp: 0, points: [1, 2, 3] });
     expect($('hashrate').textContent).toBe('1.2');
     expect($('accepted').textContent).toBe('34');
     expect($('uptime').textContent).toBe('5m 00s');
@@ -508,11 +551,15 @@ describe('boot with the full bridge', () => {
     // a rig that keeps crashing can be checked for heat without nvidia-smi.
     cbs.stats({ total: '1.2', acceptedLabel: '34', uptime: '5m 00s', estDay: '$0.42', gpu: 'gpu-live', temp: 86.4, points: [1, 2, 3] });
     expect($('device-label').textContent).toBe('gpu-live (86°C)');
-    // single point (flat-span pad fallback), no gpu — the label keeps whatever it
-    // last showed, name and temperature both, rather than reverting to the
-    // startup guess for a frame.
-    cbs.stats({ total: '1', acceptedLabel: '1', uptime: '1m', estDay: '$1', points: [5] });
+    // single point (flat-span pad fallback), no gpu — the label keeps the name
+    // it last showed rather than reverting to the startup guess for a frame.
+    // main's accumulator keeps the last reading, so the frame still carries it.
+    cbs.stats({ total: '1', acceptedLabel: '1', uptime: '1m', estDay: '$1', temp: 86.4, points: [5] });
     expect($('device-label').textContent).toBe('gpu-live (86°C)');
+    // An idle pause sends a zeroed frame: the card is no longer mining, so its
+    // mining temperature goes. The label used to keep it for the whole pause.
+    cbs.stats({ total: '0.0', acceptedLabel: '0', uptime: '0m 00s', estDay: '$0.00', temp: 0, points: [] });
+    expect($('device-label').textContent).toBe('gpu-live');
 
     // A temperature with NO name on the frame still lands, against the name last
     // reported. Gating the label on the engine naming the card in the SAME frame
@@ -559,14 +606,16 @@ describe('boot with the full bridge', () => {
     click($('mode-empty'));
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenLastCalledWith({
-      address: ADDR, worker: 'rig01', region: 'us2', mode: 'mining', mdlAddress: '', shareLlm: false,
+      address: ADDR, worker: 'this-rig', region: 'us2', mode: 'mining', mdlAddress: '', shareLlm: false,
       cpuMining: false, xmrAddress: '', cpuThreads: 0,
     });
     // A new run forgets the last run's card, so an engine that names none (an
     // older core, or a rig with no CUDA device list to report) shows the detected
-    // name again rather than a card the previous run happened to pick.
-    cbs.stats({ total: '2.0', acceptedLabel: '1', uptime: '1m', estDay: '$1', points: [1, 2] });
-    expect($('device-label').textContent).toBe('RTX 4090 (64°C)');
+    // name again rather than a card the previous run happened to pick. Nor does
+    // it keep the last run's temperature: a new START's frames read 0 until the
+    // engine has a reading.
+    cbs.stats({ total: '2.0', acceptedLabel: '1', uptime: '1m', estDay: '$1', temp: 0, points: [1, 2] });
+    expect($('device-label').textContent).toBe('RTX 4090');
     // manual stop
     click($('btn-stop'));
     expect(api.stopMiner).toHaveBeenCalled();
@@ -1000,7 +1049,8 @@ describe('partial bridge (fallback settings, missing action methods)', () => {
     const { api, cbs } = makePartialApi();
     await boot({ api });
     expect($('addr-input').value).toBe('');
-    expect($('set-worker').value).toBe('rig01');
+    // No config, so no machine name to fall back to; main fills the default.
+    expect($('set-worker').value).toBe('');
     expect($('set-region').options).toHaveLength(0);
     // A falsy stored mode falls back to DEFAULT_MODE, not to mining-only:
     // mining-only switches the LLM off silently, which reads as "the LLM is
@@ -1225,6 +1275,20 @@ describe('mine view height', () => {
 
   // The views that scroll internally still need a definite height, or their
   // flex children (chat list, log terminal) grow instead of scrolling.
+  // main logs at info, warn and error. Each level has a colour of its own, so a
+  // warning does not look like an ordinary line. Warnings had none.
+  it('gives every log level its own colour', () => {
+    const bare = CSS.replace(/\/\*[\s\S]*?\*\//g, '');
+    const colour = (sel) => {
+      const rule = bare.split('}').map((c) => c.split('{')).find((p) => p.length === 2 && p[0].trim() === sel);
+      const m = rule && rule[1].match(/color:\s*([^;]+)/);
+      return m ? m[1].trim() : null;
+    };
+    const levels = ['info', 'warn', 'error'].map((l) => colour('.log-term .ln.' + l + ' .m'));
+    expect(levels.every(Boolean)).toBe(true);
+    expect(new Set([colour('.log-term .ln .m'), ...levels]).size).toBe(4);
+  });
+
   it('leaves the internally-scrolling views on a fixed height', () => {
     expect(/#view-chat[^{]*{[^}]*height:\s*(calc\(\s*)?\d/.test(CSS.replace(/\/\*[\s\S]*?\*\//g, ''))).toBe(true);
   });

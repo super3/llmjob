@@ -121,15 +121,25 @@ jest.mock('electron-updater', () => {
 
 jest.mock('child_process', () => ({ spawn: jest.fn(), execFile: jest.fn() }));
 
-jest.mock('fs', () => ({
-  existsSync: jest.fn(() => false),
-  readFileSync: jest.fn(() => '{}'),
-  writeFileSync: jest.fn(),
-  copyFileSync: jest.fn(),
-  chmodSync: jest.fn(),
-  mkdirSync: jest.fn(),
-  unlinkSync: jest.fn(),
-}));
+jest.mock('fs', () => {
+  const fs = {
+    existsSync: jest.fn(() => false),
+    readFileSync: jest.fn(() => '{}'),
+    writeFileSync: jest.fn(),
+    copyFileSync: jest.fn(),
+    chmodSync: jest.fn(),
+    mkdirSync: jest.fn(),
+    unlinkSync: jest.fn(),
+  };
+  // A JSON state file is replaced whole: written to a temp file beside it, then
+  // renamed over (shared/settingsStore). The rename replays the temp file's
+  // body as a write to the real path, so a test reads what landed there.
+  fs.renameSync = jest.fn((from, to) => {
+    const last = fs.writeFileSync.mock.calls.filter((c) => c[0] === from).pop();
+    if (last) fs.writeFileSync(to, last[1]);
+  });
+  return fs;
+});
 
 // Default: any health probe fails fast (connection error on next tick).
 jest.mock('http', () => ({
@@ -700,12 +710,32 @@ describe('simple ipc handlers', () => {
     // so two rigs on one payout address don't collide into one board identity.
     expect(s).toMatchObject({ region: 'us', worker: defaultWorker(), mode: 'auto', address: '' });
     expect(s.worker).toMatch(/^[a-z0-9-]{1,32}$/);
+    // The region is filled in, but it was not saved: the renderer may pick the
+    // nearest one.
+    expect(s.regionSaved).toBe(false);
 
     ctx.fs.existsSync.mockImplementation((p) => p === SETTINGS_PATH);
     ctx.fs.readFileSync.mockReturnValue('{"address":"prl1x","mode":"llm"}');
     const s2 = await ctx.invoke('settings:get');
     expect(s2.address).toBe('prl1x');
     expect(s2.mode).toBe('llm');
+    expect(s2.regionSaved).toBe(false);
+
+    // A saved region is the user's choice, and the renderer leaves it alone.
+    ctx.fs.readFileSync.mockReturnValue('{"address":"prl1x","region":"fr"}');
+    expect(await ctx.invoke('settings:get')).toMatchObject({ region: 'fr', regionSaved: true });
+  });
+
+  // Every state file is replaced whole, through a temp file renamed over it,
+  // so a power cut mid-write cannot leave half of one.
+  it('saves settings through a temp file renamed over settings.json', async () => {
+    const ctx = await boot();
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    const tmp = SETTINGS_PATH + '.' + process.pid + '.tmp';
+    expect(ctx.fs.writeFileSync).toHaveBeenCalledWith(tmp, expect.stringContaining(VALID_ADDR), undefined);
+    expect(ctx.fs.renameSync).toHaveBeenCalledWith(tmp, SETTINGS_PATH);
+    ctx.emit('miner:stop');
   });
 
   it('settings:get logs and falls back to defaults on a corrupt settings file', async () => {
@@ -719,8 +749,11 @@ describe('simple ipc handlers', () => {
 
   it('config:get, llm:status, app:version and region:detect answer directly', async () => {
     const ctx = loadMain();
+    // The worker default is this machine's, the same one settings:get fills in,
+    // so the renderer never falls back to the shared "rig01".
     expect(await ctx.invoke('config:get')).toEqual({
-      regions: ctx.config.REGIONS, defaults: ctx.config.DEFAULTS,
+      regions: ctx.config.REGIONS,
+      defaults: Object.assign({}, ctx.config.DEFAULTS, { worker: defaultWorker() }),
       platform: { minerSupported: true },
       cpu: { available: 8, auto: 7, reason: null, canMine: true, worker: true },
     });
@@ -1197,6 +1230,25 @@ describe('mining', () => {
       await flush();
       expect(ctx.probe.detectMinerGpus).toHaveBeenCalledWith(process.env, null);
       expect(warnings(ctx).filter((l) => l.includes(ENV))).toEqual([]);
+    });
+
+    // A card it leaves out does not mine, so it is not on the board, as in the
+    // CLI. It used to get a row at half the mining card's hashrate.
+    it('posts no board row for a card it leaves out', async () => {
+      process.env[ENV] = '0';
+      const ctx = await boot();
+      ctx.probe.detectMinerGpus.mockResolvedValue([{ index: 0, name: 'RTX 4090' }]);
+      ctx.probe.detectGpusVram.mockResolvedValue([
+        { index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24564 },
+        { index: 1, name: 'RTX 3090', usedMb: 500, totalMb: 24576 },
+      ]);
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining', worker: 'rig' });
+      await flush();
+      ctx.PearlEngine.instances[0].emit('event', { type: 'status', gpuIndex: 0, hashrate: 300, accepted: 10 });
+      ctx.probe.postMinerReport.mockClear();
+      ctx.interval(ctx.config.NETWORK.reportIntervalMs).fn();
+      await flush();
+      expect(ctx.probe.postMinerReport.mock.calls.map((c) => [c[0].worker, c[0].hashrate])).toEqual([['rig', 300]]);
     });
   });
 
