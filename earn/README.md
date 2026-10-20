@@ -724,8 +724,8 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
                            eu1 maps to the nearest.
       --pool <host:port>   Mine Pearl on this stratum endpoint instead of a
                            HeroMiners region, such as prl-us.kryptex.network:7048.
-                           It must use the same protocol as HeroMiners. Monero
-                           still follows the region.
+                           It must use the same protocol as HeroMiners.
+                           --xmr-pool moves Monero.
   -w, --worker <name>      Worker/rig name (default: this machine's hostname)
   -g, --gpu <card>         GPU name to report on the board (default: from nvidia-smi)
       --gpu-index <list>   Mine only on these GPUs: nvidia-smi indices such as
@@ -733,6 +733,8 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
       --mine-mem-clock <MHz>  Lock each mining GPU's memory clock while it mines
                            (default: 7001 on the RTX 5090; 0 turns it off; see below)
       --xmr-address <4…|8…>  Also mine Monero (XMR) on the CPU, paid here (see below)
+      --xmr-pool <host:port>  Mine Monero on this stratum endpoint instead of
+                           HeroMiners, such as xmr-us.kryptex.network:7029
       --cpu-threads <n>    CPU threads for Monero (default: all CPUs but 1, or but 2
                            on 6 CPUs or fewer, at most 1 per 2 MB of L3 cache;
                            off on 4 or fewer or under 8 GB)

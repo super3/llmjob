@@ -156,6 +156,38 @@ describe('buildSettings — validation', () => {
     }
   });
 
+  const XMR = '87wTMj88rEGV3BFiYXJc2UHeTGmHikMRWAvAskmPgaF3PZxuxonkKaJZsprNmuhM1Aca7P6UbyatGFHkQfUTYgoNN1JxND9';
+
+  test('--xmr-pool takes a host:port for Monero, and nothing without it', () => {
+    const r = parseCliArgs(['-a', ADDR, '--xmr-address', XMR, '--xmr-pool', 'xmr-us.kryptex.network:7029']);
+    expect(r.errors).toEqual([]);
+    expect(r.settings).toMatchObject({ xmrEndpoint: 'xmr-us.kryptex.network:7029', endpoint: null, regionProvided: false });
+    expect(parseCliArgs(['-a', ADDR, '--xmr-address', XMR]).settings.xmrEndpoint).toBeNull();
+  });
+
+  test('--xmr-pool without a valid port is an error', () => {
+    for (const bad of ['xmr-us.kryptex.network', 'pool.example:0', ':7029', '']) {
+      const r = parseCliArgs(['-a', ADDR, '--xmr-address', XMR, '--xmr-pool=' + bad]);
+      expect(r.errors).toContain('invalid --xmr-pool: ' + bad + ' (expected host:port, such as xmr-us.kryptex.network:7029)');
+      expect(r.settings.xmrEndpoint).toBeNull();
+    }
+  });
+
+  // Like the other CPU flags: a HiveOS config that lost its address must not
+  // stop Pearl.
+  test('--xmr-pool without --xmr-address is a warning, not an error', () => {
+    const r = parseCliArgs(['-a', ADDR, '--xmr-pool', 'xmr-us.kryptex.network:7029']);
+    expect(r.errors).toEqual([]);
+    expect(r.settings.warnings).toContain('--xmr-pool does nothing without --xmr-address: no CPU mining');
+    expect(r.settings.xmrEndpoint).toBeNull();
+  });
+
+  test('the usage text documents --xmr-pool', () => {
+    expect(USAGE).toContain('--xmr-pool <host:port>  Mine Monero on this stratum endpoint instead of');
+    expect(USAGE).toContain('unless --xmr-pool says otherwise.');
+    expect(USAGE).toContain('--xmr-pool moves Monero.');
+  });
+
   test('unknown region is rejected with choices', () => {
     const r = parseCliArgs(['--address', ADDR, '--region', 'mars']);
     expect(r.errors).toContain('unknown region: mars (choices: ' + regionChoices() + ')');

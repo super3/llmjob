@@ -396,7 +396,7 @@ class XmrEngine extends EventEmitter {
     sock.on('connect', () => {
       this._log('info', 'connecting to ' + this.host + ':' + this.port + ' · worker ' + (this.settings.worker || 'x'));
       sock.write(stratum.encode(stratum.buildLogin({
-        address: this.settings.address, worker: this.settings.worker, agent: this.agent,
+        address: this.settings.address, worker: this.settings.worker, agent: this.agent, host: this.host,
       })));
     });
     sock.on('data', (chunk) => {

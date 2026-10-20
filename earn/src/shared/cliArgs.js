@@ -37,7 +37,7 @@ const VALUE_FLAGS = new Set([
   '--stats-file',
   '--mode', '--llm-binary', '--llm-model', '--llm-max-instances', '--gate-port', '--gate-host',
   '--gate-quiet', '--mine-mem-clock',
-  '--xmr-address', '--cpu-threads', '--cpu-priority',
+  '--xmr-address', '--xmr-pool', '--cpu-threads', '--cpu-priority',
 ]);
 
 // Own keys only, so `--region constructor` is not a region.
@@ -96,7 +96,7 @@ const USAGE = [
   '      --pool <host:port>   Mine Pearl on this stratum endpoint instead of a',
   '                           HeroMiners region, such as',
   '                           prl-us.kryptex.network:7048. It must use the same',
-  '                           protocol as HeroMiners. Monero still follows the region.',
+  '                           protocol as HeroMiners. --xmr-pool moves Monero.',
   '  -w, --worker <name>      Worker/rig name (default: this machine\'s hostname)',
   '  -g, --gpu <card>         GPU name to report on the board (default: auto-detect via nvidia-smi)',
   '      --gpu-index <list>   Mine only on these GPUs: nvidia-smi indices such as',
@@ -106,7 +106,10 @@ const USAGE = [
 
   '      --xmr-address <4…|8…>  Also mine Monero (XMR) on the CPU, paid to this',
   '                           address (a standard 4… address or an 8… subaddress).',
-  '                           Off without it. Mines on HeroMiners, 0.9% pool fee.',
+  '                           Off without it. Mines on HeroMiners, 0.9% pool fee,',
+  '                           unless --xmr-pool says otherwise.',
+  '      --xmr-pool <host:port>  Mine Monero on this stratum endpoint instead of',
+  '                           HeroMiners, such as xmr-us.kryptex.network:7029.',
   '      --cpu-threads <n>    CPU threads for Monero (default: every CPU this',
   '                           process may use, less 1, or 2 on 6 CPUs or fewer,',
   '                           and no more than 1 per 2 MB of L3 cache; off by',
@@ -232,6 +235,20 @@ function buildSettings(opts, errors, report, update, serve) {
   }
 
   // null: the platform's default (shared/xmr/worker.defaultPriority).
+  // Another pool for Monero, built like --pool. Without an address there is no
+  // Monero to move, which is a warning like the other CPU flags.
+  let xmrEndpoint = null;
+  if (opts['--xmr-pool'] != null) {
+    const { host, port } = splitEndpoint(opts['--xmr-pool']);
+    if (!(host && Number.isInteger(port) && port >= 1 && port <= 65535)) {
+      errors.push('invalid --xmr-pool: ' + opts['--xmr-pool'] + ' (expected host:port, such as xmr-us.kryptex.network:7029)');
+    } else if (opts['--xmr-address'] == null) {
+      warnings.push(noCpuMining('--xmr-pool'));
+    } else {
+      xmrEndpoint = host + ':' + port;
+    }
+  }
+
   let cpuPriority = null;
   if (opts['--cpu-priority'] != null) {
     const p = String(opts['--cpu-priority']).trim();
@@ -308,7 +325,7 @@ function buildSettings(opts, errors, report, update, serve) {
   const modeProvided = opts['--mode'] != null;
 
   return {
-    address, mdlAddress, region, legacyRegion, endpoint, worker, gpu, gpuIndices, statsFile, xmrAddress, cpuThreads, cpuPriority,
+    address, mdlAddress, region, legacyRegion, endpoint, worker, gpu, gpuIndices, statsFile, xmrAddress, xmrEndpoint, cpuThreads, cpuPriority,
     mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs, mineMemClockMhz,
     report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,
     warnings,

@@ -108,6 +108,15 @@ describe('start', () => {
     expect(h.engine.start(SETTINGS)).toBe(false);   // already running
   });
 
+  // The login knows the host, so a Kryptex pool gets "address/worker".
+  test('logs in to a Kryptex pool with the worker after a slash', () => {
+    const h = setup();
+    h.engine.start(Object.assign({}, SETTINGS, { endpoint: 'xmr-us.kryptex.network:7029' }));
+    expect(h.engine.connect).toHaveBeenCalledWith('xmr-us.kryptex.network', 7029);
+    h.sock().emit('connect');
+    expect(h.sock().written[0].params).toMatchObject({ login: ADDRESS + '/rig01', pass: 'rig01', rigid: 'rig01' });
+  });
+
   test('one thread, and no worker name', () => {
     const h = setup();
     h.engine.start(Object.assign({}, SETTINGS, { threads: 1, worker: '' }));

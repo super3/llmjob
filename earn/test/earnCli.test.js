@@ -1109,6 +1109,28 @@ describe('CPU mining', () => {
     expect(m2.XmrEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ endpoint: 'fi.monero.herominers.com:1111' }));
     fire('SIGTERM');
   });
+
+  // --xmr-pool names the Monero host, so Monero needs no region: with no GPU
+  // miner, and with Pearl on --pool, nothing is detected.
+  test('--xmr-pool mines Monero there and skips region detection Monero needed', async () => {
+    const m = load();
+    m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu-index=none', '--xmr-address', XMR_ADDR,
+      '--xmr-pool', 'xmr-us.kryptex.network:7029']);
+    await settle();
+    expect(m.probe.detectRegion).not.toHaveBeenCalled();
+    expect(allOut()).toContain('cpu:        Monero to 87wTMj88…1JxND9 · xmr-us.kryptex.network:7029  (--xmr-pool)');
+    expect(m.XmrEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ endpoint: 'xmr-us.kryptex.network:7029' }));
+    fire('SIGTERM');
+
+    const m2 = load();
+    const p = m2.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--pool', 'prl-us.kryptex.network:7048',
+      '--xmr-address', XMR_ADDR, '--xmr-pool', 'xmr-us.kryptex.network:7029']);
+    await settle();
+    expect(m2.probe.detectRegion).not.toHaveBeenCalled();
+    expect(m2.XmrEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ endpoint: 'xmr-us.kryptex.network:7029' }));
+    m2.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
 });
 
 // ── local LLM ────────────────────────────────────────────────────────────────

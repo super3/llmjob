@@ -797,9 +797,10 @@ async function runConnect(argv) {
 // the log) and the engine, or null when it won't run here. It mines beside the
 // GPU miner whatever the mode, and stops with it.
 function setUpCpuMining(settings, poolLookup) {
-  // The Monero host follows the Pearl region.
-  const endpoint = xmrEndpointFor(settings.region);
-  log('cpu:        Monero to ' + shortenXmrAddress(settings.xmrAddress) + ' · ' + endpoint);
+  // --xmr-pool, else the HeroMiners host for the Pearl region.
+  const endpoint = settings.xmrEndpoint || xmrEndpointFor(settings.region);
+  log('cpu:        Monero to ' + shortenXmrAddress(settings.xmrAddress) + ' · ' + endpoint
+    + (settings.xmrEndpoint ? '  (--xmr-pool)' : ''));
   if (settings.cpuThreads === 0) {
     log('cpu:        off (--cpu-threads 0)');
     return null;
@@ -904,8 +905,9 @@ async function run(argv) {
     // back to the defaults already in `settings` and never blocks mining. Explicit
     // --region / --gpu always win.
     if (!settings.workerProvided) settings.worker = defaultWorker();
-    // --pool needs no region for Pearl; Monero still mines in one.
-    if (!settings.regionProvided && (!settings.endpoint || settings.xmrAddress)) settings.region = await detectRegion();
+    // A region is needed for Pearl without --pool, and for Monero without --xmr-pool.
+    const moneroNeedsRegion = settings.xmrAddress && !settings.xmrEndpoint;
+    if (!settings.regionProvided && (!settings.endpoint || moneroNeedsRegion)) settings.region = await detectRegion();
     // Probe regardless of --gpu. Naming the card and counting the cards are two
     // different questions, and folding them into one `if` meant that passing
     // --gpu (to name it) also skipped the COUNT — so an N-card rig fell back to
@@ -955,8 +957,9 @@ async function run(argv) {
   }
 
   // ── CPU miner (Monero) ─────────────────────────────────────────────────────
-  // Without the GPU miner the region is still detected, for the Monero host.
-  if (settings.xmrAddress && !plan.miner && !settings.regionProvided) settings.region = await detectRegion();
+  // Without the GPU miner the region is still detected, for the Monero host,
+  // unless --xmr-pool names it.
+  if (settings.xmrAddress && !settings.xmrEndpoint && !plan.miner && !settings.regionProvided) settings.region = await detectRegion();
   const xmr = settings.xmrAddress ? setUpCpuMining(settings, poolLookup) : null;
 
   const stats = initStats(Date.now());
